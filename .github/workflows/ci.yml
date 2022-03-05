@@ -34,10 +34,14 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
-      - run: sudo apt-get update && sudo apt-get install python3-pip libssl-dev libturbojpeg0-dev libgtk-3-dev
-      - run: pip3 install setuptools_rust --user
-      - run: pip3 install .[dev] --user
-      - run: pytest test/
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install python3-pip libssl-dev libturbojpeg0-dev libgtk-3-dev
+      - name: Install Rust dependencies
+        run: pip3 install setuptools_rust --user
+      - name: Compile Rust code
+        run: pip3 install .[dev] --user
+      - name: Test
+        run: pytest test/
 
   fmt:
     name: Rustfmt

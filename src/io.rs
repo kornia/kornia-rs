@@ -49,7 +49,7 @@ pub fn read_image_jpeg(file_path: String) -> cv::Tensor {
 pub fn read_image_rs(file_path: String) -> cv::Tensor {
     let img: image::DynamicImage = image::open(file_path).unwrap();
     let data = img.to_rgb8().to_vec();
-    let shape = vec![img.width() as i64, img.height() as i64, 3];
+    let shape = vec![img.height() as i64, img.width() as i64, 3];
     cv::Tensor::new(shape, data)
 }
 

@@ -10,6 +10,7 @@ setup(name='kornia-rs',
           'dev': [
               'kornia',
               'pytest',
+              'numpy',
           ]
       },
       packages=find_packages(),
