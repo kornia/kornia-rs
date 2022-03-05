@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 from setuptools_rust import Binding, RustExtension
 
-setup(name='kornia_rs',
+setup(name='kornia-rs',
       version='0.1.0',
       description='Low level implementations for computer vision in Rust.',
       author='Kornia.org',
