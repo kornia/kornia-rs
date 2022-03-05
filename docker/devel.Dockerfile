@@ -7,8 +7,8 @@ RUN apt-get update --fix-missing && \
     git \
     python3-pip \
     libssl-dev \
-    libjpeg62-turbo-dev \
-    mesa-utils \
+    libturbojpeg0-dev \
+    libegl1-mesa-dev \
     && \
     apt-get clean
 

@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 from setuptools_rust import Binding, RustExtension
 
-setup(name='kornia_io',
+setup(name='kornia_rs',
       version='0.1.0',
       description='Kornia input and output wrapper.',
       author='Kornia.org',
