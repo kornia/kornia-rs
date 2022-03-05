@@ -3,6 +3,10 @@ Low level implementations for computer vision in Rust
 
 ## (🚨 Warning: Unstable Prototype 🚨)
 
+[![Continuous integration](https://github.com/kornia/kornia-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/kornia/kornia-rs/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENCE)
+[![Slack](https://img.shields.io/badge/Slack-4A154B?logo=slack&logoColor=white)](https://join.slack.com/t/kornia/shared_invite/zt-csobk21g-CnydWe5fmvkcktIeRFGCEQ)
+
 ## Development
 
 To test the project use the following instructions:
