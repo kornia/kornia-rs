@@ -8,7 +8,7 @@ RUN apt-get update --fix-missing && \
     python3-pip \
     libssl-dev \
     libturbojpeg0-dev \
-    libegl1-mesa-dev \
+    libgtk-3-dev \
     && \
     apt-get clean
 

@@ -3,7 +3,7 @@ from setuptools_rust import Binding, RustExtension
 
 setup(name='kornia_rs',
       version='0.1.0',
-      description='Kornia input and output wrapper.',
+      description='Low level implementations for computer vision in Rust.',
       author='Kornia.org',
       url='https://github.com/kornia/kornia_rs',
       extras_require={

@@ -29,7 +29,7 @@ cd kornia_rs/docker
 (you should be inside the docker container)
 
 ```bash
-python3 setup.py develop 
+pip3 install -e .[dev]
 ```
 
 4. Run the tests
