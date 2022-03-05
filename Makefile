@@ -4,7 +4,7 @@ all:
 	make build
 
 build:
-	pip3 install -e .[dev] --user
+	pip3 install -e .[dev]
 
 test:
 	pytest test/

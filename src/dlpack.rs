@@ -144,7 +144,7 @@ fn bindgen_test_layout___fsid_t() {
         concat!("Alignment of ", stringify!(__fsid_t))
     );
     assert_eq!(
-        unsafe { &(*(0 as *const __fsid_t)).__val as *const _ as usize },
+        unsafe { &(*std::ptr::null::<__fsid_t>()).__val as *const _ as usize },
         0usize,
         concat!(
             "Alignment of field: ",
@@ -215,7 +215,9 @@ fn bindgen_test_layout_max_align_t() {
         concat!("Size of: ", stringify!(max_align_t))
     );
     assert_eq!(
-        unsafe { &(*(0 as *const max_align_t)).__clang_max_align_nonce1 as *const _ as usize },
+        unsafe {
+            &(*std::ptr::null::<max_align_t>()).__clang_max_align_nonce1 as *const _ as usize
+        },
         0usize,
         concat!(
             "Alignment of field: ",
@@ -225,7 +227,9 @@ fn bindgen_test_layout_max_align_t() {
         )
     );
     assert_eq!(
-        unsafe { &(*(0 as *const max_align_t)).__clang_max_align_nonce2 as *const _ as usize },
+        unsafe {
+            &(*std::ptr::null::<max_align_t>()).__clang_max_align_nonce2 as *const _ as usize
+        },
         16usize,
         concat!(
             "Alignment of field: ",
@@ -273,7 +277,7 @@ fn bindgen_test_layout_DLDevice() {
         concat!("Alignment of ", stringify!(DLDevice))
     );
     assert_eq!(
-        unsafe { &(*(0 as *const DLDevice)).device_type as *const _ as usize },
+        unsafe { &(*std::ptr::null::<DLDevice>()).device_type as *const _ as usize },
         0usize,
         concat!(
             "Alignment of field: ",
@@ -283,7 +287,7 @@ fn bindgen_test_layout_DLDevice() {
         )
     );
     assert_eq!(
-        unsafe { &(*(0 as *const DLDevice)).device_id as *const _ as usize },
+        unsafe { &(*std::ptr::null::<DLDevice>()).device_id as *const _ as usize },
         4usize,
         concat!(
             "Alignment of field: ",
@@ -333,7 +337,7 @@ fn bindgen_test_layout_DLDataType() {
         concat!("Alignment of ", stringify!(DLDataType))
     );
     assert_eq!(
-        unsafe { &(*(0 as *const DLDataType)).code as *const _ as usize },
+        unsafe { &(*std::ptr::null::<DLDataType>()).code as *const _ as usize },
         0usize,
         concat!(
             "Alignment of field: ",
@@ -343,7 +347,7 @@ fn bindgen_test_layout_DLDataType() {
         )
     );
     assert_eq!(
-        unsafe { &(*(0 as *const DLDataType)).bits as *const _ as usize },
+        unsafe { &(*std::ptr::null::<DLDataType>()).bits as *const _ as usize },
         1usize,
         concat!(
             "Alignment of field: ",
@@ -353,7 +357,7 @@ fn bindgen_test_layout_DLDataType() {
         )
     );
     assert_eq!(
-        unsafe { &(*(0 as *const DLDataType)).lanes as *const _ as usize },
+        unsafe { &(*std::ptr::null::<DLDataType>()).lanes as *const _ as usize },
         2usize,
         concat!(
             "Alignment of field: ",
@@ -419,7 +423,7 @@ fn bindgen_test_layout_DLTensor() {
         concat!("Alignment of ", stringify!(DLTensor))
     );
     assert_eq!(
-        unsafe { &(*(0 as *const DLTensor)).data as *const _ as usize },
+        unsafe { &(*std::ptr::null::<DLTensor>()).data as *const _ as usize },
         0usize,
         concat!(
             "Alignment of field: ",
@@ -429,7 +433,7 @@ fn bindgen_test_layout_DLTensor() {
         )
     );
     assert_eq!(
-        unsafe { &(*(0 as *const DLTensor)).device as *const _ as usize },
+        unsafe { &(*std::ptr::null::<DLTensor>()).device as *const _ as usize },
         8usize,
         concat!(
             "Alignment of field: ",
@@ -439,7 +443,7 @@ fn bindgen_test_layout_DLTensor() {
         )
     );
     assert_eq!(
-        unsafe { &(*(0 as *const DLTensor)).ndim as *const _ as usize },
+        unsafe { &(*std::ptr::null::<DLTensor>()).ndim as *const _ as usize },
         16usize,
         concat!(
             "Alignment of field: ",
@@ -449,7 +453,7 @@ fn bindgen_test_layout_DLTensor() {
         )
     );
     assert_eq!(
-        unsafe { &(*(0 as *const DLTensor)).dtype as *const _ as usize },
+        unsafe { &(*std::ptr::null::<DLTensor>()).dtype as *const _ as usize },
         20usize,
         concat!(
             "Alignment of field: ",
@@ -459,7 +463,7 @@ fn bindgen_test_layout_DLTensor() {
         )
     );
     assert_eq!(
-        unsafe { &(*(0 as *const DLTensor)).shape as *const _ as usize },
+        unsafe { &(*std::ptr::null::<DLTensor>()).shape as *const _ as usize },
         24usize,
         concat!(
             "Alignment of field: ",
@@ -469,7 +473,7 @@ fn bindgen_test_layout_DLTensor() {
         )
     );
     assert_eq!(
-        unsafe { &(*(0 as *const DLTensor)).strides as *const _ as usize },
+        unsafe { &(*std::ptr::null::<DLTensor>()).strides as *const _ as usize },
         32usize,
         concat!(
             "Alignment of field: ",
@@ -479,7 +483,7 @@ fn bindgen_test_layout_DLTensor() {
         )
     );
     assert_eq!(
-        unsafe { &(*(0 as *const DLTensor)).byte_offset as *const _ as usize },
+        unsafe { &(*std::ptr::null::<DLTensor>()).byte_offset as *const _ as usize },
         40usize,
         concat!(
             "Alignment of field: ",
@@ -521,7 +525,7 @@ fn bindgen_test_layout_DLManagedTensor() {
         concat!("Alignment of ", stringify!(DLManagedTensor))
     );
     assert_eq!(
-        unsafe { &(*(0 as *const DLManagedTensor)).dl_tensor as *const _ as usize },
+        unsafe { &(*std::ptr::null::<DLManagedTensor>()).dl_tensor as *const _ as usize },
         0usize,
         concat!(
             "Alignment of field: ",
@@ -531,7 +535,7 @@ fn bindgen_test_layout_DLManagedTensor() {
         )
     );
     assert_eq!(
-        unsafe { &(*(0 as *const DLManagedTensor)).manager_ctx as *const _ as usize },
+        unsafe { &(*std::ptr::null::<DLManagedTensor>()).manager_ctx as *const _ as usize },
         48usize,
         concat!(
             "Alignment of field: ",
@@ -541,7 +545,7 @@ fn bindgen_test_layout_DLManagedTensor() {
         )
     );
     assert_eq!(
-        unsafe { &(*(0 as *const DLManagedTensor)).deleter as *const _ as usize },
+        unsafe { &(*std::ptr::null::<DLManagedTensor>()).deleter as *const _ as usize },
         56usize,
         concat!(
             "Alignment of field: ",

@@ -1,5 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use kornia_rs::read_image;
+use criterion::{criterion_group, criterion_main, Criterion};
+use kornia_rs::io::read_image_rs;
 use std::path::PathBuf;
 
 mod perf;
@@ -11,7 +11,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     c.bench_function("benchmark", |b| {
         b.iter(|| {
-            let info = read_image(str_path.clone());
+            let _info = read_image_rs(str_path.clone());
         })
     });
 }
