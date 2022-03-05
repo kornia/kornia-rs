@@ -32,9 +32,9 @@ pub mod cv {
         pub fn new(shape: Vec<i64>, data: Vec<u8>) -> Self {
             let strides = get_strides_from_shape(&shape);
             Tensor {
-                shape: shape,
-                data: data,
-                strides: strides,
+                shape,
+                data,
+                strides,
             }
         }
     }

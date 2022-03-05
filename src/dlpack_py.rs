@@ -35,7 +35,7 @@ unsafe extern "C" fn deleter(x: *mut dlpack::DLManagedTensor) {
 }
 
 // TODO: RuntimeError: Unsupported device_type
-fn cvtensor_to_dltensor(x: &Box<cv::Tensor>) -> dlpack::DLTensor {
+fn cvtensor_to_dltensor(x: &cv::Tensor) -> dlpack::DLTensor {
     dlpack::DLTensor {
         data: x.data.as_ptr() as *mut c_void,
         device: dlpack::DLDevice {
@@ -61,7 +61,7 @@ pub fn cvtensor_to_dlpack(x: cv::Tensor) -> PyResult<*mut pyo3::ffi::PyObject> {
 
     // create dlpack managed tensor
     let dlm_tensor = dlpack::DLManagedTensor {
-        dl_tensor: dl_tensor,
+        dl_tensor,
         manager_ctx: Box::into_raw(tensor_bx) as *mut c_void,
         deleter: Some(deleter),
     };

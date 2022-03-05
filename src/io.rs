@@ -25,9 +25,9 @@ fn _read_image_jpeg_impl(
     let mut pixels = vec![0; height * width * 3];
     let image = Image {
         pixels: pixels.as_mut_slice(),
-        width: width,
+        width,
         pitch: 3 * width, // we use no padding between rows
-        height: height,
+        height,
         format: PixelFormat::RGB,
     };
 
@@ -53,43 +53,43 @@ pub fn read_image_rs(file_path: String) -> cv::Tensor {
     cv::Tensor::new(shape, data)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-    use std::time::SystemTime;
-    use test::Bencher;
-
-    #[test]
-    fn load() {
-        let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "clients", "test.jpg"]
-            .iter()
-            .collect();
-
-        let str_path = path.into_os_string().into_string().unwrap();
-        let start = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("get millis error");
-        let info = read_image_rs(str_path.clone());
-        let end = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("get millis error");
-        println!("{}", str_path);
-        println!("{:?}", info);
-        println!(
-            "time {:?} secs",
-            (end.as_millis() - start.as_millis()) as f64 / 1000.,
-        );
-    }
-
-    #[bench]
-    fn bench(b: &mut Bencher) {
-        let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "clients", "test.jpg"]
-            .iter()
-            .collect();
-        let str_path = path.into_os_string().into_string().unwrap();
-        b.iter(|| {
-            let info = read_image_rs(str_path.clone());
-        });
-    }
-}
+//#[cfg(test)]
+//mod tests {
+//    use super::*;
+//    use std::path::PathBuf;
+//    use std::time::SystemTime;
+//    use test::Bencher;
+//
+//    #[test]
+//    fn load() {
+//        let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "clients", "test.jpg"]
+//            .iter()
+//            .collect();
+//
+//        let str_path = path.into_os_string().into_string().unwrap();
+//        let start = SystemTime::now()
+//            .duration_since(SystemTime::UNIX_EPOCH)
+//            .expect("get millis error");
+//        let info = read_image_rs(str_path.clone());
+//        let end = SystemTime::now()
+//            .duration_since(SystemTime::UNIX_EPOCH)
+//            .expect("get millis error");
+//        println!("{}", str_path);
+//        println!("{:?}", info);
+//        println!(
+//            "time {:?} secs",
+//            (end.as_millis() - start.as_millis()) as f64 / 1000.,
+//        );
+//    }
+//
+//    #[bench]
+//    fn bench(b: &mut Bencher) {
+//        let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "clients", "test.jpg"]
+//            .iter()
+//            .collect();
+//        let str_path = path.into_os_string().into_string().unwrap();
+//        b.iter(|| {
+//            let info = read_image_rs(str_path.clone());
+//        });
+//    }
+//}
