@@ -38,7 +38,6 @@ pub mod cv {
             }
         }
     }
-
 } // namespace cv
 
 // TODO(carlos): enable tests later
