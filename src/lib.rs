@@ -11,11 +11,11 @@ pub mod io;
 pub mod tensor;
 pub mod viz;
 
-use crate::dlpack_py::__pyo3_get_function_cvtensor_to_dlpack;
-use crate::io::__pyo3_get_function_read_image_jpeg;
 use crate::io::__pyo3_get_function_read_image_rs;
+use crate::io::__pyo3_get_function_read_image_jpeg;
 use crate::viz::__pyo3_get_function_show_image_from_file;
 use crate::viz::__pyo3_get_function_show_image_from_tensor;
+use crate::dlpack_py::__pyo3_get_function_cvtensor_to_dlpack;
 
 use pyo3::prelude::*;
 

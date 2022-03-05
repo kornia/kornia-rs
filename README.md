@@ -1,4 +1,4 @@
-# kornia_rs
+# kornia-rs
 Low level implementations for computer vision in Rust
 
 ## (🚨 Warning: Unstable Prototype 🚨)
@@ -10,7 +10,7 @@ To test the project use the following instructions:
 1. Clone the repository in your local directory
 
 ```bash
-git clone https://github.com/kornia/kornia_rs.git
+git clone https://github.com/kornia/kornia-rs.git
 ```
 
 2. Build the `devel.Dockerfile`
