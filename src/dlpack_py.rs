@@ -5,14 +5,14 @@ use std::ffi::{c_void, CStr, CString};
 
 // desctructor function for the python capsule
 unsafe extern "C" fn destructor(o: *mut pyo3::ffi::PyObject) {
-    println!("PyCapsule destructor");
+    // println!("PyCapsule destructor");
 
     let name = CString::new("dltensor").unwrap();
 
     let ptr = pyo3::ffi::PyCapsule_GetName(o);
     let current_name = CStr::from_ptr(ptr);
-    println!("Expected Name: {:?}", name);
-    println!("Current Name: {:?}", current_name);
+    // println!("Expected Name: {:?}", name);
+    // println!("Current Name: {:?}", current_name);
 
     if current_name != name.as_c_str() {
         return;
@@ -21,11 +21,11 @@ unsafe extern "C" fn destructor(o: *mut pyo3::ffi::PyObject) {
     let ptr = pyo3::ffi::PyCapsule_GetPointer(o, name.as_ptr()) as *mut dlpack::DLManagedTensor;
     (*ptr).deleter.unwrap()(ptr);
 
-    println!("Delete by Python");
+    // println!("Delete by Python");
 }
 
 unsafe extern "C" fn deleter(x: *mut dlpack::DLManagedTensor) {
-    println!("DLManagedTensor deleter");
+    // println!("DLManagedTensor deleter");
 
     let ctx = (*x).manager_ctx as *mut cv::Tensor;
     ctx.drop_in_place();
@@ -34,7 +34,6 @@ unsafe extern "C" fn deleter(x: *mut dlpack::DLManagedTensor) {
     x.drop_in_place();
 }
 
-// TODO: RuntimeError: Unsupported device_type
 fn cvtensor_to_dltensor(x: &cv::Tensor) -> dlpack::DLTensor {
     dlpack::DLTensor {
         data: x.data.as_ptr() as *mut c_void,
