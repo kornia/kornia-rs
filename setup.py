@@ -8,7 +8,8 @@ setup(name='kornia-rs',
       url='https://github.com/kornia/kornia_rs',
       extras_require={
           'dev': [
-              'kornia',
+              'torch==1.8.1',
+              'kornia==0.6.3',
               'pytest',
               'numpy',
           ]

@@ -34,10 +34,16 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install python3-pip libssl-dev libturbojpeg0-dev libgtk-3-dev
-      - name: Install Rust dependencies
-        run: pip3 install setuptools_rust --user
+      - name: Create docker container
+        run: cd ./docker && ./build_devel.sh
+      - name: Enter docker container
+        run: |
+          echo "ls1"
+          ls
+          echo "ls2"
+          ./devel.sh
+          echo "ls3"
+          ls
       - name: Compile Rust code
         run: pip3 install .[dev] --user
       - name: Test

@@ -4,7 +4,11 @@ if [[ -z "$bash_args" ]] ; then
     bash_args="bash"
 fi
 
-docker run -it \
+test -t 1 && USE_TTY="-t"
+set -x
+
+docker run -i \
+       $USE_TTY \
        -w /workspace \
        -v $(pwd):/workspace \
        kornia_rs/devel \

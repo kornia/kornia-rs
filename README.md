@@ -23,9 +23,8 @@ Let's prepare the development environment with Docker.
 Make sure you have docker in your system: https://docs.docker.com/engine/install/ubuntu/
 
 ```bash
-cd kornia_rs/docker
-./build_devel.sh && cd ../ 
-./docker/devel.sh
+cd ./docker && ./build_devel.sh
+cd ../ && ./devel.sh
 ```
 
 3. Build the project

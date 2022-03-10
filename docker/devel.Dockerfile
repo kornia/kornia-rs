@@ -1,4 +1,4 @@
-FROM rust:slim-buster
+FROM rust:latest
 
 RUN apt-get update --fix-missing && \
     apt-get install -y --no-install-recommends \
@@ -12,4 +12,6 @@ RUN apt-get update --fix-missing && \
     && \
     apt-get clean
 
-RUN python3 -m pip install --upgrade pip setuptools setuptools_rust
+RUN python3 -m pip install --user --upgrade pip setuptools setuptools_rust
+
+WORKDIR /workspace
