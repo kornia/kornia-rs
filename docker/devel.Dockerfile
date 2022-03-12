@@ -25,8 +25,6 @@ RUN apt-get update --fix-missing && \
 
 RUN pip3 install maturin[patchelf]
 
-RUN python3 -m venv .venv
-
 #USER $USERNAME
 
 WORKDIR /workspace
