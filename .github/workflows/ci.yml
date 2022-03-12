@@ -42,10 +42,12 @@ jobs:
           ls
           echo "ls2"
           ./devel.sh
+          python3 -m venv .venv
+          source .venv/bin/activate
           echo "ls3"
           ls
       - name: Compile Rust code
-        run: pip3 install .[dev] --user
+        run: maturin devel --extras dev
       - name: Test
         run: pytest test/
 
