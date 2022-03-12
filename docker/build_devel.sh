@@ -10,4 +10,4 @@ docker build \
        --build-arg USER_UID=$USER_UID \
        --build-arg USER_GID=$USER_GID \
        -f devel.Dockerfile \
-       -t kornia_rs/devel:latest ./
+       -t kornia_rs/devel:local ./

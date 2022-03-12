@@ -60,7 +60,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }} 
       -
         name: Compile and Run the tests
-        run: ./devel.sh "source .venv/bin/activate; maturin develop --extras dev; pytest test/"
+        run: ./run_tests.sh
 
   check:
     name: Check

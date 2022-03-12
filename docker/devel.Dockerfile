@@ -1,11 +1,14 @@
 FROM rust:latest
 
+# rust image comes with sh, we like bash more
+SHELL ["/bin/bash", "-c"]
+
 ARG USERNAME=kornian
 ARG USER_UID=1000
 ARG USER_GID=$USER_UID
 
-RUN groupadd --gid $USER_GID $USERNAME
-RUN useradd --uid $USER_UID --gid $USER_GID -m $USERNAME
+#RUN groupadd --gid $USER_GID $USERNAME
+#RUN useradd --uid $USER_UID --gid $USER_GID -m $USERNAME
 
 RUN apt-get update --fix-missing && \
     apt-get install -y --no-install-recommends \
@@ -20,11 +23,10 @@ RUN apt-get update --fix-missing && \
     && \
     apt-get clean
 
-# create path for `maturin develop`
-RUN python3 -m venv .venv
-
 RUN pip3 install maturin[patchelf]
 
-USER $USERNAME
+RUN python3 -m venv .venv
+
+#USER $USERNAME
 
 WORKDIR /workspace
