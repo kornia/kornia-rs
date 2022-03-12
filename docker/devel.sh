@@ -1,4 +1,7 @@
 #!/bin/bash -e
+
+KORNIA_RS_DEVEL_IMAGE="ghcr.io/kornia/kornia-rs/devel:latest"
+
 bash_args=$@
 if [[ -z "$bash_args" ]] ; then
     bash_args="bash"
@@ -11,6 +14,5 @@ docker run -i \
        $USE_TTY \
        -w /workspace \
        -v $(pwd):/workspace \
-       -u $USER:$USER \
-       kornia_rs/devel \
+       $KORNIA_RS_DEVEL_IMAGE \
        bash -c "$bash_args"
