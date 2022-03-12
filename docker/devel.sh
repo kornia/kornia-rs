@@ -1,6 +1,6 @@
 #!/bin/bash -e
 
-KORNIA_RS_DEVEL_IMAGE="ghcr.io/kornia/kornia-rs/devel:latest"
+KORNIA_RS_DEVEL_IMAGE=${KORNIA_RS_DEVEL_IMAGE:-"ghcr.io/kornia/kornia-rs/devel:latest"}
 
 bash_args=$@
 if [[ -z "$bash_args" ]] ; then

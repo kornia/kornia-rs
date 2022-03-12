@@ -4,11 +4,22 @@ on:
   push:
   pull_request:
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
 jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
+    - name: Log in to the Container registry
+      uses: docker/login-action@v1
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }} 
+    - run: ./dev_env.sh
     - uses: messense/maturin-action@v1
       with:
         manylinux: auto
