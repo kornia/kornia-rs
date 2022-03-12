@@ -9,7 +9,59 @@ on:
     branches:
       - main
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
 jobs:
+  build_docker:
+    runs-on: ubuntu-latest
+    steps:
+      -
+        name: Checkout the repository
+        uses: actions/checkout@v2
+      -
+        name: Set up QEMU
+        uses: docker/setup-qemu-action@v1
+      -
+        name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+      -
+        name: Log in to the Container registry
+        uses: docker/login-action@v1
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} 
+      -
+        name: Build and push Docker image
+        uses: docker/build-push-action@v2
+        with:
+          context: .
+          file: ./docker/devel.Dockerfile
+          platforms: linux/amd64, linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/devel:latest
+
+  test:
+    name: Test Suite
+    needs: [build_docker]
+    runs-on: ubuntu-latest
+    steps:
+      - 
+        name: Checkout the repository
+        uses: actions/checkout@v2
+      -
+        name: Log in to the Container registry
+        uses: docker/login-action@v1
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} 
+      -
+        name: Compile and Run the tests
+        run: ./run_tests.sh
+
   check:
     name: Check
     runs-on: ubuntu-latest
@@ -23,31 +75,6 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: check
-
-  test:
-    name: Test Suite
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-      - name: Create docker container
-        run: cd ./docker && ./build_devel.sh
-      - name: Enter docker container
-        run: |
-          echo "ls1"
-          ls
-          echo "ls2"
-          ./devel.sh
-          echo "ls3"
-          ls
-      - name: Compile Rust code
-        run: pip3 install .[dev] --user
-      - name: Test
-        run: pytest test/
 
   fmt:
     name: Rustfmt
