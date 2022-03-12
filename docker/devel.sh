@@ -11,5 +11,6 @@ docker run -i \
        $USE_TTY \
        -w /workspace \
        -v $(pwd):/workspace \
+       -u $USER:$USER \
        kornia_rs/devel \
        bash -c "$bash_args"
