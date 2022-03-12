@@ -27,7 +27,8 @@ classifiers = [
 [project.optional-dependencies]
 dev = [
   "pytest",
-  "kornia==0.6.3"
+  "kornia==0.6.3",
+  "numpy",
 ]
 
 [project.urls]
