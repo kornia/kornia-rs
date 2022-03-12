@@ -32,6 +32,6 @@ dev = [
 ]
 
 [project.urls]
-homepage = "kornia.com"
+homepage = "https://www.kornia.org"
 documentation = "https://kornia.readthedocs.io"
 repository = "https://github.com/kornia/kornia-rs"
