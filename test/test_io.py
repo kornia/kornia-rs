@@ -4,7 +4,6 @@ import kornia_rs as K
 from kornia_rs import Tensor as cvTensor
 
 import torch
-import jax
 import numpy as np
 
 DATA_DIR = Path(__file__).parent / "data"
