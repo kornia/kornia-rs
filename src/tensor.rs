@@ -5,14 +5,15 @@ pub mod cv {
     use crate::dlpack_py::{cvtensor_to_dltensor, cvtensor_to_dlpack};
     use std::ffi::{c_void};
 
-    unsafe extern "C" fn deleter(x: *mut dlpack::DLManagedTensor) {
+    // in our case we don not want to delete the data
+    unsafe extern "C" fn deleter(_: *mut dlpack::DLManagedTensor) {
         // println!("DLManagedTensor deleter");
 
-        let ctx = (*x).manager_ctx as *mut Tensor;
-        ctx.drop_in_place();
-        (*x).dl_tensor.shape.drop_in_place();
-        (*x).dl_tensor.strides.drop_in_place();
-        x.drop_in_place();
+        //let ctx = (*x).manager_ctx as *mut Tensor;
+        //ctx.drop_in_place();
+        //(*x).dl_tensor.shape.drop_in_place();
+        //(*x).dl_tensor.strides.drop_in_place();
+        //x.drop_in_place();
     }
 
     fn get_strides_from_shape(shape: &[i64]) -> Vec<i64> {
@@ -26,6 +27,11 @@ pub mod cv {
         }
 
         strides
+    }
+
+    struct CvDlmTensor<'a> {
+        pub handle: &'a Tensor,
+        pub tensor: dlpack::DLManagedTensor,
     }
 
     #[pyclass]
@@ -68,7 +74,7 @@ pub mod cv {
         pub fn to_dlpack(&self) -> dlpack::DLManagedTensor {
             // we need to clone to avoid race conditions
             // TODO: check how to avoid that
-            let tensor_bx = Box::new(self.clone());
+            let tensor_bx = Box::new(self);
             let dl_tensor = cvtensor_to_dltensor(&tensor_bx);
 
             // create dlpack managed tensor
