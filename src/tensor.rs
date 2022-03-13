@@ -1,6 +1,20 @@
 pub mod cv {
 
+    use crate::dlpack;
+    use crate::dlpack_py::{cvtensor_to_dlpack, cvtensor_to_dltensor};
     use pyo3::prelude::*;
+    use std::ffi::c_void;
+
+    // in our case we don not want to delete the data
+    unsafe extern "C" fn deleter(_: *mut dlpack::DLManagedTensor) {
+        // println!("DLManagedTensor deleter");
+
+        //let ctx = (*x).manager_ctx as *mut Tensor;
+        //ctx.drop_in_place();
+        //(*x).dl_tensor.shape.drop_in_place();
+        //(*x).dl_tensor.strides.drop_in_place();
+        //x.drop_in_place();
+    }
 
     fn get_strides_from_shape(shape: &[i64]) -> Vec<i64> {
         let mut strides = vec![0i64; shape.len()];
@@ -35,6 +49,33 @@ pub mod cv {
                 shape,
                 data,
                 strides,
+            }
+        }
+
+        #[pyo3(name = "__dlpack__")]
+        pub fn to_dlpack_py(&self) -> PyResult<*mut pyo3::ffi::PyObject> {
+            cvtensor_to_dlpack(self)
+        }
+
+        #[pyo3(name = "__dlpack_device__")]
+        pub fn to_dlpack_device_py(&self) -> (u32, i32) {
+            let tensor_bx = Box::new(self);
+            let dl_tensor = cvtensor_to_dltensor(&tensor_bx);
+            (dl_tensor.device.device_type, dl_tensor.device.device_id)
+        }
+    }
+
+    impl Tensor {
+        pub fn to_dlpack(&self) -> dlpack::DLManagedTensor {
+            let tensor_bx = Box::new(self);
+            let dl_tensor = cvtensor_to_dltensor(&tensor_bx);
+
+            // create dlpack managed tensor
+
+            dlpack::DLManagedTensor {
+                dl_tensor,
+                manager_ctx: Box::into_raw(tensor_bx) as *mut c_void,
+                deleter: Some(deleter),
             }
         }
     }
