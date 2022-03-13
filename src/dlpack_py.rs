@@ -24,17 +24,7 @@ unsafe extern "C" fn destructor(o: *mut pyo3::ffi::PyObject) {
     // println!("Delete by Python");
 }
 
-unsafe extern "C" fn deleter(x: *mut dlpack::DLManagedTensor) {
-    // println!("DLManagedTensor deleter");
-
-    let ctx = (*x).manager_ctx as *mut cv::Tensor;
-    ctx.drop_in_place();
-    (*x).dl_tensor.shape.drop_in_place();
-    (*x).dl_tensor.strides.drop_in_place();
-    x.drop_in_place();
-}
-
-fn cvtensor_to_dltensor(x: &cv::Tensor) -> dlpack::DLTensor {
+pub fn cvtensor_to_dltensor(x: &cv::Tensor) -> dlpack::DLTensor {
     dlpack::DLTensor {
         data: x.data.as_ptr() as *mut c_void,
         device: dlpack::DLDevice {
@@ -54,17 +44,9 @@ fn cvtensor_to_dltensor(x: &cv::Tensor) -> dlpack::DLTensor {
 }
 
 #[pyfunction]
-pub fn cvtensor_to_dlpack(x: cv::Tensor) -> PyResult<*mut pyo3::ffi::PyObject> {
-    let tensor_bx = Box::new(x);
-    let dl_tensor = cvtensor_to_dltensor(&tensor_bx);
+pub fn cvtensor_to_dlpack(x: &cv::Tensor) -> PyResult<*mut pyo3::ffi::PyObject> {
 
-    // create dlpack managed tensor
-    let dlm_tensor = dlpack::DLManagedTensor {
-        dl_tensor,
-        manager_ctx: Box::into_raw(tensor_bx) as *mut c_void,
-        deleter: Some(deleter),
-    };
-
+    let dlm_tensor: dlpack::DLManagedTensor = x.to_dlpack();
     let dlm_tensor_bx = Box::new(dlm_tensor);
 
     let name = CString::new("dltensor").unwrap();
