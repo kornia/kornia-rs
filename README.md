@@ -24,15 +24,15 @@ The visualisation API is based on `vviz`: https://github.com/strasdat/vviz
     import kornia_rs as K
     from kornia_rs import Tensor as cvTensor
 
-    img_path: Path = DATA_DIR / "dog.jpeg"
-    cv_tensor: cvTensor = K.read_image_jpeg(str(img_path.absolute()))
+    cv_tensor: cvTensor = K.read_image_jpeg("dog.jpeg")
     assert cv_tensor.shape == [195, 258, 3]
 
-    # convert to dlpack to import to torch
-    # NOTE: later we will support to numpy, jax and mxnet.
-    dlpack = K.cvtensor_to_dlpack(cv_tensor)
-    th_tensor = torch.utils.dlpack.from_dlpack(dlpack)
+    # convert to dlpack to import to torch and numpy
+    # NOTE: later we will support to jax and mxnet.
+    th_tensor = torch.utils.dlpack.from_dlpack(cv_tensor)
+    np_tensor = np._from_dlpack(cv_tensor)
     assert th_tensor.shape == (195, 258, 3)
+    assert np_tensor.shape == (195, 258, 3)
 ```
 
 ## TODO
