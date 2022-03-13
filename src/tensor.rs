@@ -1,9 +1,9 @@
 pub mod cv {
 
-    use pyo3::prelude::*;
     use crate::dlpack;
-    use crate::dlpack_py::{cvtensor_to_dltensor, cvtensor_to_dlpack};
-    use std::ffi::{c_void};
+    use crate::dlpack_py::{cvtensor_to_dlpack, cvtensor_to_dltensor};
+    use pyo3::prelude::*;
+    use std::ffi::c_void;
 
     // in our case we don not want to delete the data
     unsafe extern "C" fn deleter(_: *mut dlpack::DLManagedTensor) {
@@ -27,11 +27,6 @@ pub mod cv {
         }
 
         strides
-    }
-
-    struct CvDlmTensor<'a> {
-        pub handle: &'a Tensor,
-        pub tensor: dlpack::DLManagedTensor,
     }
 
     #[pyclass]
@@ -59,7 +54,7 @@ pub mod cv {
 
         #[pyo3(name = "__dlpack__")]
         pub fn to_dlpack_py(&self) -> PyResult<*mut pyo3::ffi::PyObject> {
-            return cvtensor_to_dlpack(self);
+            cvtensor_to_dlpack(self)
         }
 
         #[pyo3(name = "__dlpack_device__")]
@@ -72,21 +67,18 @@ pub mod cv {
 
     impl Tensor {
         pub fn to_dlpack(&self) -> dlpack::DLManagedTensor {
-            // we need to clone to avoid race conditions
-            // TODO: check how to avoid that
             let tensor_bx = Box::new(self);
             let dl_tensor = cvtensor_to_dltensor(&tensor_bx);
 
             // create dlpack managed tensor
-            let dlm_tensor = dlpack::DLManagedTensor {
+
+            dlpack::DLManagedTensor {
                 dl_tensor,
                 manager_ctx: Box::into_raw(tensor_bx) as *mut c_void,
                 deleter: Some(deleter),
-            };
-            dlm_tensor
+            }
         }
     }
-
 } // namespace cv
 
 // TODO(carlos): enable tests later

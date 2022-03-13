@@ -45,7 +45,6 @@ pub fn cvtensor_to_dltensor(x: &cv::Tensor) -> dlpack::DLTensor {
 
 #[pyfunction]
 pub fn cvtensor_to_dlpack(x: &cv::Tensor) -> PyResult<*mut pyo3::ffi::PyObject> {
-
     let dlm_tensor: dlpack::DLManagedTensor = x.to_dlpack();
     let dlm_tensor_bx = Box::new(dlm_tensor);
 
