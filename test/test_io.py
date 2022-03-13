@@ -20,11 +20,13 @@ def test_read_image_jpeg():
     th_tensor = torch.utils.dlpack.from_dlpack(dlpack)
     assert th_tensor.shape == (195, 258, 3)
 
-    # TODO: needs to be fixed
+    # test __dlpack__()
+    torch.testing.assert_close(
+        th_tensor, torch.utils.dlpack.from_dlpack(cv_tensor))
+
     # convert to dlpack to import to numpy
-    #dlpack = K.cvtensor_to_dlpack(cv_tensor)
-    #np_array = np._from_dlpack(dlpack)
-    #assert np_array.shape == (195, 258, 3)
+    np_array = np._from_dlpack(cv_tensor)
+    assert np_array.shape == (195, 258, 3)
 
 def test_read_image_rs():
     # load an image with image-rs
