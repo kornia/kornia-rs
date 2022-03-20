@@ -1,13 +1,15 @@
 use pyo3::prelude::*;
 
-// for libjpeg-turbo
 use image;
+
+#[cfg(feature = "libjpeg-turbo")]
 use turbojpeg::{Decompressor, Image, PixelFormat};
 
 // internal libs
 use crate::tensor::cv;
 
 // implementation function for libjpeg-turbo to load images
+#[cfg(feature = "libjpeg-turbo")]
 fn _read_image_jpeg_impl(
     file_path: String,
 ) -> Result<(Vec<u8>, Vec<i64>), Box<dyn std::error::Error>> {
@@ -38,6 +40,7 @@ fn _read_image_jpeg_impl(
     Ok((pixels, vec![height as i64, width as i64, 3]))
 }
 
+#[cfg(feature = "libjpeg-turbo")]
 #[pyfunction]
 pub fn read_image_jpeg(file_path: String) -> cv::Tensor {
     // decode image and return tuple with data and shape

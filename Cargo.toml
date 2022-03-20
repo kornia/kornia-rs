@@ -1,6 +1,6 @@
 [package]
 name = "kornia_rs"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 pyo3 = { version = "0.16.1", features = ["extension-module"] }
 image = "0.24.0"
 vviz = {version = "0.3.0"}
-turbojpeg = {version = "^0.3", features = ["image"]}
+turbojpeg = {version = "^0.3"}
 
 [dev-dependencies]
 criterion = "0.3"
@@ -21,3 +21,8 @@ pprof = { version = "0.3", features = ["flamegraph"] }
 [[bench]]
 name = "my_benchmark"
 harness = false
+
+[features]
+default = []
+viz = []
+libjpeg-turbo = []

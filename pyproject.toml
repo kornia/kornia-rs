@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "kornia_rs"
 description = "Low level implementations for computer vision in Rust"
 readme = "README.md"
-requires-python = ">=3.6"
+requires-python = ">=3.7"
 license = {file = "LICENSE"}
 keywords = ["computer vision", "rust"]
 authors = [
@@ -29,6 +29,7 @@ dev = [
   "pytest",
   "kornia==0.6.3",
   "numpy",
+  "jax[cpu]",
 ]
 
 [project.urls]

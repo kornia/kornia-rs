@@ -14,7 +14,10 @@ RUN apt-get update --fix-missing && \
     apt-get install -y --no-install-recommends \
     sudo \
     pkg-config \
+    ca-certificates \
+    build-essential \
     git \
+    python3-dev \
     python3-pip \
     python3-venv \
     libssl-dev \
