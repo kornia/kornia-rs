@@ -24,7 +24,7 @@ The visualisation API is based on `vviz`: https://github.com/strasdat/vviz
     import kornia_rs as K
     from kornia_rs import Tensor as cvTensor
 
-    cv_tensor: cvTensor = K.read_image_jpeg("dog.jpeg")
+    cv_tensor: cvTensor = K.read_image_rs("dog.jpeg")
     assert cv_tensor.shape == [195, 258, 3]
 
     # convert to dlpack to import to torch and numpy
