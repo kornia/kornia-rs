@@ -27,6 +27,12 @@ jobs:
           maturin-version: latest
           command: build
           args: --release
+      - name: Upload wheels
+        uses: actions/upload-artifact@v2
+        with:
+          name: wheels
+          path: dist
+
 
   macos:
     runs-on: macos-latest
@@ -46,6 +52,12 @@ jobs:
           maturin-version: latest
           command: build
           args: --release
+      - name: Upload wheels
+        uses: actions/upload-artifact@v2
+        with:
+          name: wheels
+          path: dist
+
   windows:
     runs-on: windows-latest
     strategy:
@@ -67,6 +79,12 @@ jobs:
           maturin-version: latest
           command: build
           args: --release
+      - name: Upload wheels
+        uses: actions/upload-artifact@v2
+        with:
+          name: wheels
+          path: dist
+
   release:
     name: Release
     runs-on: ubuntu-latest
