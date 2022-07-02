@@ -91,10 +91,13 @@ jobs:
       - uses: actions/download-artifact@v2
         with:
           name: wheels
-      - name: Publish to PyPI
-        uses: messense/maturin-action@v1
-        env:
-          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      - uses: actions/setup-python@v2
         with:
-          command: upload
-          args: --skip-existing
+          python-version: 3.9
+      - name: Publish to PyPi
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
+        run: |
+          pip install --upgrade twine
+          twine upload --skip-existing *
