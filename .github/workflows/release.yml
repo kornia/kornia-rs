@@ -76,7 +76,7 @@ jobs:
         with:
           maturin-version: latest
           command: build
-          args: --release --out dist --no-dist
+          args: --release --out dist --no-sdist
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
