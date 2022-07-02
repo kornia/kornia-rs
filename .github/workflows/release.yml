@@ -25,13 +25,7 @@ jobs:
         with:
           maturin-version: latest
           command: build
-          args: --release
-      - name: Log in to the Container registry
-        uses: docker/login-action@v1
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          args: --release --out dist --no-sdist
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
@@ -55,13 +49,7 @@ jobs:
         with:
           maturin-version: latest
           command: build
-          args: --release
-      - name: Log in to the Container registry
-        uses: docker/login-action@v1
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          args: --release --out dist --no-sdist
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
@@ -88,13 +76,7 @@ jobs:
         with:
           maturin-version: latest
           command: build
-          args: --release
-      - name: Log in to the Container registry
-        uses: docker/login-action@v1
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          args: --release --out dist --no-dist
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
