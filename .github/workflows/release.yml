@@ -9,6 +9,7 @@ jobs:
     strategy:
       matrix:
         python-version: [3.7, 3.8, 3.9]
+        target: [x86_64, i686]
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v2
@@ -22,8 +23,9 @@ jobs:
           override: true
       - uses: messense/maturin-action@v1
         with:
-          maturin-version: latest
-          command: build
+          rust-toolchain: nightly
+          target: ${{ matrix.target }}
+          manylinux: auto
           args: --release --out dist --no-sdist
       - name: Upload wheels
         uses: actions/upload-artifact@v2
@@ -99,8 +101,8 @@ jobs:
           python-version: 3.9
       - name: Publish to PyPi
         env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
-        run: |
-          pip install --upgrade twine
-          twine upload --skip-existing *
+          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_PASSWORD }}
+        uses: messense/maturin-action@v1
+        with:
+          command: upload
+          args: --skip-existing *
