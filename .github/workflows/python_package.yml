@@ -22,4 +22,4 @@ jobs:
     - name: Download Kornia binary
       run: |
         pip install kornia_rs
-        python -c "import kornia_rs; print(kornia_rs.__version__)"
+        python -c "import kornia_rs"
