@@ -33,7 +33,6 @@ jobs:
           override: true
       - uses: messense/maturin-action@v1
         with:
-          rust-toolchain: nightly
           container: ghcr.io/kornia/kornia-rs/release:latest
           target: ${{ matrix.target }}
           manylinux: auto
