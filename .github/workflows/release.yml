@@ -13,7 +13,7 @@ jobs:
     strategy:
       matrix:
         python-version: [3.7, 3.8, 3.9]
-        target: [x86_64, i686]
+        target: [x86_64]
     steps:
       - uses: actions/checkout@v3
       - name: Log in to the Container registry
@@ -22,18 +22,8 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }} 
-      - uses: actions/setup-python@v2
-        with:
-          python-version: ${{ matrix.python-version }}
-          architecture: x64
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
       - uses: messense/maturin-action@v1
         with:
-          rust-toolchain: nightly
           container: ghcr.io/kornia/kornia-rs/release:latest
           target: ${{ matrix.target }}
           manylinux: auto
