@@ -13,7 +13,7 @@ authors = [
     {email = "edgar@kornia.org"},
     {name = "Edgar Riba"}
 ]
-maintiners = [
+maintainers = [
     {email = "edgar@kornia.org"},
     {name = "Edgar Riba"}
 
@@ -28,7 +28,7 @@ classifiers = [
 dev = [
   "pytest",
   "kornia==0.6.3",
-  "numpy",
+  "numpy==1.23.0",
   "jax[cpu]",
 ]
 
