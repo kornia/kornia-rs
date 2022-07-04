@@ -3,15 +3,6 @@ FROM quay.io/pypa/manylinux2010_x86_64
 # rust image comes with sh, we like bash more
 SHELL ["/bin/bash", "-c"]
 
-ARG USERNAME=kornian
-ARG USER_UID=1000
-ARG USER_GID=$USER_UID
-
-#RUN groupadd --gid $USER_GID $USERNAME
-#RUN useradd --uid $USER_UID --gid $USER_GID -m $USERNAME
-
-RUN uname -a
-
 RUN yum -y update && \
     yum -y install python3 \
                    python-devel \
