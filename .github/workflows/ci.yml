@@ -16,7 +16,6 @@ env:
 jobs:
   test:
     name: Test Suite
-    needs: [build_docker]
     runs-on: ubuntu-latest
     steps:
       - 
