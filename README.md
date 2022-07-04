@@ -30,7 +30,7 @@ The visualisation API is based on `vviz`: https://github.com/strasdat/vviz
     # convert to dlpack to import to torch and numpy
     # NOTE: later we will support to jax and mxnet.
     th_tensor = torch.utils.dlpack.from_dlpack(cv_tensor)
-    np_tensor = np._from_dlpack(cv_tensor)
+    np_tensor = np.from_dlpack(cv_tensor)
     assert th_tensor.shape == (195, 258, 3)
     assert np_tensor.shape == (195, 258, 3)
 ```
