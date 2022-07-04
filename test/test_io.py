@@ -25,7 +25,7 @@ def test_read_image_jpeg():
         th_tensor, torch.utils.dlpack.from_dlpack(cv_tensor))
 
     # convert to dlpack to import to numpy
-    np_array = np._from_dlpack(cv_tensor)
+    np_array = np.from_dlpack(cv_tensor)
     assert np_array.shape == (195, 258, 3)
 
 def test_read_image_rs():
