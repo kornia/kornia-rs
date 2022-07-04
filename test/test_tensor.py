@@ -30,5 +30,5 @@ def test_conversions2():
 
     # to dlpack / torch / numpy
     th_tensor = torch.utils.dlpack.from_dlpack(cv_tensor)
-    np_array = np._from_dlpack(cv_tensor)
+    np_array = np.from_dlpack(cv_tensor)
     np.testing.assert_array_equal(np_array, th_tensor.numpy())
