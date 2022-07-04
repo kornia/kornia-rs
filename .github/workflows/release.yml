@@ -13,7 +13,7 @@ jobs:
     strategy:
       matrix:
         python-version: [3.7, 3.8, 3.9]
-        target: [x86_64, i686]
+        target: [x86_64]
     steps:
       - uses: actions/checkout@v3
       - name: Log in to the Container registry
