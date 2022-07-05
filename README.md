@@ -20,7 +20,6 @@ to the DLPack protocol to share tensor data across deep learning frameworks with
 The visualisation API is based on `vviz`: https://github.com/strasdat/vviz
 
 ```python
-
     import kornia_rs as K
     from kornia_rs import Tensor as cvTensor
 
@@ -37,14 +36,15 @@ The visualisation API is based on `vviz`: https://github.com/strasdat/vviz
 
 ## TODO
 
-- [ ] [infra] Automate packaging for manywheels.
+- [x] [infra] Automate packaging for manywheels.
+- [x] [kornia] integrate with the new `Image` API
+- [ ] [dlpack] move dlpack implementation to dlpack-rs.
+- [ ] [dlpack] implement test for numpy, jax and mxnet.
+- [ ] [dlpack] implement `DLPack` to `cv::Tensor`.
 - [ ] [io] Implement image encoding and explore video.
 - [ ] [viz] Fix minor issues and implement a full `VizManager` to work on the browser.
-- [ ] [dlpack] implement `DLPack` to `cv::Tensor`.
-- [ ] [dlpack] implement test for numpy, jax and mxnet.
 - [ ] [tensor] implement basic functionality to test: add, sub, mul, etc.
 - [ ] [tensor] explore xnnpack and openvino integration.
-- [ ] [kornia] integrate with the new `Image` API
 
 ## Development
 
@@ -56,7 +56,7 @@ To test the project in lyour local machine use the following instructions:
 git clone https://github.com/kornia/kornia-rs.git
 ```
 
-2. Build the `devel.Dockerfile`
+2.1 (optional) Build the `devel.Dockerfile`
 
 Let's prepare the development environment with Docker.
 Make sure you have docker in your system: https://docs.docker.com/engine/install/ubuntu/
@@ -64,6 +64,12 @@ Make sure you have docker in your system: https://docs.docker.com/engine/install
 ```bash
 cd ./docker && ./build_devel.sh
 KORNIA_RS_DEVEL_IMAGE="kornia_rs/devel:local" ./devel.sh
+```
+
+2.2 Enter to the `devel` docker container.
+
+```bash
+./devel.sh
 ```
 
 3. Build the project
