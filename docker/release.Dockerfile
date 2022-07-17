@@ -12,7 +12,7 @@ RUN yum -y update && \
                    python3-pip \
                    openssl-devel \
                    gtk3-devel \
-                   nasm \
+                   yasm \
                    && yum -y clean all \
                    && rm -rf /var/cache
 
