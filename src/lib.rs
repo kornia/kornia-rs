@@ -10,9 +10,8 @@ pub mod io;
 pub mod tensor;
 
 use crate::dlpack_py::cvtensor_to_dlpack;
-use crate::io::read_image_rs;
 
-#[cfg(feature = "libjpeg-turbo")]
+use crate::io::read_image_rs;
 use crate::io::read_image_jpeg;
 
 #[cfg(feature = "viz")]
@@ -37,12 +36,10 @@ pub fn get_version() -> String {
 #[pymodule]
 pub fn kornia_rs(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add("__version__", get_version())?;
+    m.add_function(wrap_pyfunction!(read_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_rs, m)?)?;
     m.add_function(wrap_pyfunction!(cvtensor_to_dlpack, m)?)?;
     m.add_class::<tensor::cv::Tensor>()?;
-
-    #[cfg(feature = "libjpeg-turbo")]
-    m.add_function(wrap_pyfunction!(read_image_jpeg, m)?)?;
 
     #[cfg(feature = "viz")]
     {
