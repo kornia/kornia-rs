@@ -1,7 +1,7 @@
 pub mod cv {
 
-    use crate::dlpack;
     use crate::dlpack_py::{cvtensor_to_dlpack, cvtensor_to_dltensor};
+    use dlpack_rs as dlpack;
     use pyo3::prelude::*;
     use std::ffi::c_void;
 
