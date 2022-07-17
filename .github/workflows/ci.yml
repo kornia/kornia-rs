@@ -36,13 +36,18 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
+      -
+        name: Checkout the repository
+        uses: actions/checkout@v2
+      -
+        name: Log in to the Container registry
+        uses: docker/login-action@v1
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
-      - uses: actions-rs/cargo@v1
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} 
+      -
+        uses: actions-rs/cargo@v1
         with:
           command: check
 
@@ -50,14 +55,19 @@ jobs:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
+      -
+        name: Checkout the repository
+        uses: actions/checkout@v2
+      -
+        name: Log in to the Container registry
+        uses: docker/login-action@v1
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
-      - run: rustup component add rustfmt
-      - uses: actions-rs/cargo@v1
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} 
+      -
+        name: rustup component add rustfmt
+        uses: actions-rs/cargo@v1
         with:
           command: fmt
           args: --all -- --check
@@ -66,14 +76,19 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
+      -
+        name: Checkout the repository
+        uses: actions/checkout@v2
+      -
+        name: Log in to the Container registry
+        uses: docker/login-action@v1
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
-      - run: rustup component add clippy
-      - uses: actions-rs/cargo@v1
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} 
+      -
+        name: rustup component add clippy
+        uses: actions-rs/cargo@v1
         with:
           command: clippy
           args: -- -D warnings
