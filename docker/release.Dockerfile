@@ -10,7 +10,6 @@ RUN yum -y update && \
                    python3-devel \
                    python3-pip \
                    openssl-devel \
-                   libjpeg-turbo-devel \
                    gtk3-devel \
                    && yum -y clean all \
                    && rm -rf /var/cache

@@ -15,7 +15,6 @@ RUN apt-get update --fix-missing && \
     python3-venv \
     libclang-dev \
     libssl-dev \
-    libturbojpeg0-dev \
     libgtk-3-dev \
     && \
     apt-get clean

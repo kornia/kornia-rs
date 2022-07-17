@@ -2,14 +2,12 @@ use pyo3::prelude::*;
 
 use image;
 
-#[cfg(feature = "libjpeg-turbo")]
 use turbojpeg::{Decompressor, Image, PixelFormat};
 
 // internal libs
 use crate::tensor::cv;
 
 // implementation function for libjpeg-turbo to load images
-#[cfg(feature = "libjpeg-turbo")]
 fn _read_image_jpeg_impl(
     file_path: String,
 ) -> Result<(Vec<u8>, Vec<i64>), Box<dyn std::error::Error>> {
@@ -25,7 +23,7 @@ fn _read_image_jpeg_impl(
 
     // prepare a storage for the raw pixel data
     let mut pixels = vec![0; height * width * 3];
-    let image = Image {
+    let mut image = Image {
         pixels: pixels.as_mut_slice(),
         width,
         pitch: 3 * width, // we use no padding between rows
@@ -34,13 +32,12 @@ fn _read_image_jpeg_impl(
     };
 
     // decompress the JPEG data
-    decompressor.decompress_to_slice(&jpeg_data, image)?;
+    decompressor.decompress(&jpeg_data, image.as_deref_mut())?;
 
     // return the raw pixel data and shape
     Ok((pixels, vec![height as i64, width as i64, 3]))
 }
 
-#[cfg(feature = "libjpeg-turbo")]
 #[pyfunction]
 pub fn read_image_jpeg(file_path: String) -> cv::Tensor {
     // decode image and return tuple with data and shape
