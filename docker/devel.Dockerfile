@@ -5,6 +5,7 @@ SHELL ["/bin/bash", "-c"]
 
 RUN apt-get update --fix-missing && \
     apt-get install -y --no-install-recommends \
+    cmake \
     sudo \
     pkg-config \
     ca-certificates \
@@ -16,6 +17,7 @@ RUN apt-get update --fix-missing && \
     libclang-dev \
     libssl-dev \
     libgtk-3-dev \
+    nasm \
     && \
     apt-get clean
 
