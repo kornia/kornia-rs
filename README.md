@@ -38,7 +38,7 @@ The visualisation API is based on `vviz`: https://github.com/strasdat/vviz
 
 - [x] [infra] Automate packaging for manywheels.
 - [x] [kornia] integrate with the new `Image` API
-- [ ] [dlpack] move dlpack implementation to dlpack-rs.
+- [x] [dlpack] move dlpack implementation to dlpack-rs.
 - [ ] [dlpack] implement test for numpy, jax and mxnet.
 - [ ] [dlpack] implement `DLPack` to `cv::Tensor`.
 - [ ] [io] Implement image encoding and explore video.

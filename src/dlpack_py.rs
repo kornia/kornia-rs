@@ -1,5 +1,6 @@
-use crate::dlpack;
 use crate::tensor::cv;
+use dlpack_rs as dlpack;
+
 use pyo3::prelude::*;
 use std::ffi::{c_void, CStr, CString};
 
