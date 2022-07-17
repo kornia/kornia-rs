@@ -4,13 +4,15 @@ FROM quay.io/pypa/manylinux2010_x86_64
 SHELL ["/bin/bash", "-c"]
 
 RUN yum -y update && \
-    yum -y install clang \
+    yum -y install cmake \
+                   clang \
                    python3 \
                    python-devel \
                    python3-devel \
                    python3-pip \
                    openssl-devel \
                    gtk3-devel \
+                   nasm \
                    && yum -y clean all \
                    && rm -rf /var/cache
 
