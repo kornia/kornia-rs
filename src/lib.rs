@@ -9,12 +9,12 @@ pub mod io;
 #[allow(dead_code)]
 pub mod tensor;
 
-use crate::io::read_image_rs;
 use crate::io::read_image_jpeg;
+use crate::io::read_image_rs;
 use crate::io::write_image_jpeg;
-use crate::io::ImageSize;
 use crate::io::ImageDecoder;
 use crate::io::ImageEncoder;
+use crate::io::ImageSize;
 
 #[cfg(feature = "viz")]
 pub mod viz;
@@ -45,7 +45,6 @@ pub fn kornia_rs(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<ImageSize>()?;
     m.add_class::<ImageDecoder>()?;
     m.add_class::<ImageEncoder>()?;
-
 
     #[cfg(feature = "viz")]
     {

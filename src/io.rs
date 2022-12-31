@@ -38,12 +38,18 @@ impl ImageEncoder {
             width: shape[1],
             pitch: 3 * shape[1],
             height: shape[0],
-            format: turbojpeg::PixelFormat::RGB
+            format: turbojpeg::PixelFormat::RGB,
         };
 
         let jpeg_data = self.compressor.compress_to_vec(image);
 
         jpeg_data.unwrap()
+    }
+}
+
+impl Default for ImageEncoder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -88,7 +94,12 @@ impl ImageDecoder {
 
         cv::Tensor::new(shape, pixels)
     }
+}
 
+impl Default for ImageDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[pyfunction]
