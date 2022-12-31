@@ -5,7 +5,6 @@ from kornia_rs import Tensor as cvTensor
 
 import torch
 import numpy as np
-import cv2
 
 DATA_DIR = Path(__file__).parent / "data"
 
