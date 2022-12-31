@@ -9,11 +9,11 @@ name = "kornia_rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.16.1", features = ["extension-module"] }
-image = "0.24.0"
+pyo3 = { version = "0.17.3", features = ["extension-module"] }
+image = { version = "0.24.5" }
 dlpack-rs = {version = "^0.1.1"}
 vviz = {version = "0.3.0", optional = true}
-turbojpeg = {version = "^0.3", optional = true}
+turbojpeg = {version = "0.5.2"}
 
 [dev-dependencies]
 criterion = "0.3"
@@ -26,4 +26,3 @@ harness = false
 [features]
 default = []
 viz = ["dep:vviz"]
-libjpeg-turbo = ["dep:turbojpeg"]

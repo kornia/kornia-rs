@@ -5,18 +5,20 @@ SHELL ["/bin/bash", "-c"]
 
 RUN apt-get update --fix-missing && \
     apt-get install -y --no-install-recommends \
-    sudo \
-    pkg-config \
-    ca-certificates \
     build-essential \
+    ca-certificates \
+    cmake \
     git \
-    python3-dev \
-    python3-pip \
-    python3-venv \
     libclang-dev \
     libssl-dev \
     libturbojpeg0-dev \
     libgtk-3-dev \
+    nasm \
+    pkg-config \
+    python3-dev \
+    python3-pip \
+    python3-venv \
+    sudo \
     && \
     apt-get clean
 

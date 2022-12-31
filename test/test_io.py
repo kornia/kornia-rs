@@ -5,6 +5,7 @@ from kornia_rs import Tensor as cvTensor
 
 import torch
 import numpy as np
+import cv2
 
 DATA_DIR = Path(__file__).parent / "data"
 
@@ -16,13 +17,8 @@ def test_read_image_jpeg():
     assert cv_tensor.shape == [195, 258, 3]
 
     # convert to dlpack to import to torch
-    dlpack = K.cvtensor_to_dlpack(cv_tensor)
-    th_tensor = torch.utils.dlpack.from_dlpack(dlpack)
+    th_tensor = torch.utils.dlpack.from_dlpack(cv_tensor)
     assert th_tensor.shape == (195, 258, 3)
-
-    # test __dlpack__()
-    torch.testing.assert_close(
-        th_tensor, torch.utils.dlpack.from_dlpack(cv_tensor))
 
     # convert to dlpack to import to numpy
     np_array = np.from_dlpack(cv_tensor)
@@ -35,6 +31,24 @@ def test_read_image_rs():
     assert cv_tensor.shape == [195, 258, 3]
 
     # convert to dlpack to import to torch
-    dlpack = K.cvtensor_to_dlpack(cv_tensor)
-    th_tensor = torch.utils.dlpack.from_dlpack(dlpack)
+    th_tensor = torch.utils.dlpack.from_dlpack(cv_tensor)
     assert th_tensor.shape == (195, 258, 3)
+
+
+def test_decompress():
+    # load an image with libjpeg-turbo
+    img_path: Path = DATA_DIR / "dog.jpeg"
+    tensor_rs = K.read_image_jpeg(str(img_path))
+    image = np.from_dlpack(tensor_rs)
+
+    image_encoder = K.ImageEncoder()
+    image_encoded: list = image_encoder.encode(image.tobytes(), image.shape)
+    K.write_image_jpeg(str(DATA_DIR/"dog_rs.jpeg"), image_encoded)
+
+    image_decoder = K.ImageDecoder()
+    image_size: K.ImageSize = image_decoder.read_header(bytes(image_encoded))
+    assert image_size.width == 258
+    assert image_size.height == 195
+
+    decoded_tensor: K.cvTensor = image_decoder.decode(bytes(image_encoded))
+    decoded_image = np.from_dlpack(decoded_tensor)
