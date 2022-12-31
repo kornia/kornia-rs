@@ -8,11 +8,10 @@ const DLPACK_CAPSULE_NAME: &[u8] = b"dltensor\0";
 
 // desctructor function for the python capsule
 unsafe extern "C" fn dlpack_capsule_destructor(capsule: *mut pyo3::ffi::PyObject) {
-    if pyo3::ffi::PyCapsule_IsValid(
-        capsule, DLPACK_CAPSULE_NAME.as_ptr() as *const i8) == 1 {
-            // println!("Is an invalid capsule!");
-            return;
-        }
+    if pyo3::ffi::PyCapsule_IsValid(capsule, DLPACK_CAPSULE_NAME.as_ptr() as *const i8) == 1 {
+        // println!("Is an invalid capsule!");
+        return;
+    }
 
     // println!("PyCapsule destructor");
 
@@ -27,10 +26,9 @@ unsafe extern "C" fn dlpack_capsule_destructor(capsule: *mut pyo3::ffi::PyObject
         return;
     }
 
-    let managed: *mut dlpack::DLManagedTensor = 
-        pyo3::ffi::PyCapsule_GetPointer(
-            capsule, current_name_ptr) as *mut dlpack::DLManagedTensor;
-    
+    let managed: *mut dlpack::DLManagedTensor =
+        pyo3::ffi::PyCapsule_GetPointer(capsule, current_name_ptr) as *mut dlpack::DLManagedTensor;
+
     if managed.is_null() {
         // println!("Invalid managed pointer");
         return;
@@ -72,9 +70,7 @@ pub fn cvtensor_to_dltensor(x: &cv::Tensor) -> dlpack::DLTensor {
     }
 }
 
-
 fn cvtensor_to_dlmtensor(x: &cv::Tensor) -> dlpack::DLManagedTensor {
-
     // create dl tensor
 
     let dl_tensor_bx = Box::new(x);
@@ -88,7 +84,6 @@ fn cvtensor_to_dlmtensor(x: &cv::Tensor) -> dlpack::DLManagedTensor {
         deleter: Some(dlpack_deleter),
     }
 }
-
 
 pub fn cvtensor_to_dlpack(x: &cv::Tensor, py: Python) -> PyResult<PyObject> {
     // create the managed tensor

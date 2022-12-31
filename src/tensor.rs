@@ -51,7 +51,6 @@ pub mod cv {
             (dl_tensor.device.device_type, dl_tensor.device.device_id)
         }
     }
-
 } // namespace cv
 
 // TODO(carlos): enable tests later
