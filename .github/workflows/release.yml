@@ -15,6 +15,7 @@ jobs:
         python-version: ["3.7", "3.8", "3.9", "3.10", "3.11"]
         target: [x86_64]
     steps:
+      - uses: egor-tensin/setup-clang@v1
       - uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v3
       - name: Log in to the Container registry
