@@ -17,16 +17,11 @@ jobs:
     steps:
       - uses: egor-tensin/setup-clang@v1
       - uses: ilammy/setup-nasm@v1
+      - name: Install libclang-dev
+        run: sudo apt-get install libclang-dev
       - uses: actions/checkout@v3
-      - name: Log in to the Container registry
-        uses: docker/login-action@v1
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }} 
       - uses: messense/maturin-action@v1
         with:
-          #container: ghcr.io/kornia/kornia-rs/release:latest
           target: ${{ matrix.target }}
           manylinux: auto
           args: --release --out dist -i python${{ matrix.python-version }}
