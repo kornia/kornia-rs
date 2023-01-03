@@ -16,7 +16,7 @@ jobs:
         target: [x86_64]
     steps:
       - uses: ilammy/setup-nasm@v1
-      - name: Install libclang-dev
+      - name: Install clang libclang-dev
         run: sudo apt-get install libclang-dev
       - uses: actions/checkout@v3
       - uses: messense/maturin-action@v1
