@@ -38,7 +38,6 @@ jobs:
     container:
       image: ghcr.io/kornia/kornia-rs/devel:latest
       credentials:
-          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
     steps:
