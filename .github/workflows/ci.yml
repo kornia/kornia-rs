@@ -45,23 +45,37 @@ jobs:
         name: Checkout the repository
         uses: actions/checkout@v3
       -
-        name: Compile and Run the tests
+        name: Run cargo fmt
         run: pre-commit run fmt --all-files
 
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/kornia/kornia-rs/devel:latest
+      credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       -
         name: Checkout the repository
         uses: actions/checkout@v3
       -
-        name: Log in to the Container registry
-        uses: docker/login-action@v1
-        with:
-          registry: ${{ env.REGISTRY }}
+        name: Run cargo clippy
+        run: pre-commit run clippy --all-files
+
+  check:
+    name: Cargo Check
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/kornia/kornia-rs/devel:latest
+      credentials:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
       -
-        name: Compile and Run the tests
-        run: ./run_clippy.sh
+        name: Checkout the repository
+        uses: actions/checkout@v3
+      -
+        name: Run cargo check
+        run: pre-commit run cargo-check --all-files
