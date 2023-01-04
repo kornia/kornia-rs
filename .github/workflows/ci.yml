@@ -35,21 +35,19 @@ jobs:
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
-    container: ghcr.io/kornia/kornia-rs/devel:latest
+    container:
+      image: ghcr.io/kornia/kornia-rs/devel:latest
+      credentials:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       -
         name: Checkout the repository
         uses: actions/checkout@v3
       -
-        name: Log in to the Container registry
-        uses: docker/login-action@v1
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      -
         name: Compile and Run the tests
-        run: ./run_fmt.sh
+        run: pre-commit run fmt --all-files
 
   clippy:
     name: Clippy
