@@ -50,7 +50,7 @@ pub mod cv {
             let dl_tensor = cvtensor_to_dltensor(&tensor_bx);
             (
                 dl_tensor.device.device_type as i32,
-                dl_tensor.device.device_id as i32,
+                dl_tensor.device.device_id,
             )
         }
     }
