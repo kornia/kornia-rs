@@ -15,12 +15,16 @@ jobs:
         python-version: ["3.7", "3.8", "3.9", "3.10", "3.11"]
         target: [x86_64]
     steps:
-      - uses: ilammy/setup-nasm@v1
-      - name: Install clang libclang-dev
-        run: sudo apt-get install libclang-dev
       - uses: actions/checkout@v3
+      - name: Log in to the Container registry
+        uses: docker/login-action@v1
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} 
       - uses: messense/maturin-action@v1
         with:
+          container: ghcr.io/kornia/kornia-rs/release:latest
           target: ${{ matrix.target }}
           manylinux: auto
           args: --release --out dist -i python${{ matrix.python-version }}
