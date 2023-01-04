@@ -45,6 +45,10 @@ impl ImageEncoder {
 
         jpeg_data.unwrap()
     }
+
+    pub fn set_quality(&mut self, quality: i32) {
+        self.compressor.set_quality(quality)
+    }
 }
 
 impl Default for ImageEncoder {
