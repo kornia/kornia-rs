@@ -18,7 +18,7 @@ jobs:
     name: Test Suite
     runs-on: ubuntu-latest
     steps:
-      - 
+      -
         name: Checkout the repository
         uses: actions/checkout@v3
       -
@@ -27,7 +27,7 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }} 
+          password: ${{ secrets.GITHUB_TOKEN }}
       -
         name: Compile and Run the tests
         run: ./run_tests.sh
@@ -36,7 +36,7 @@ jobs:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - 
+      -
         name: Checkout the repository
         uses: actions/checkout@v3
       -
@@ -49,12 +49,12 @@ jobs:
       -
         name: Compile and Run the tests
         run: ./run_fmt.sh
-        
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - 
+      -
         name: Checkout the repository
         uses: actions/checkout@v3
       -
