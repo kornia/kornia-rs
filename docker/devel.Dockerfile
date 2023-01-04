@@ -23,5 +23,10 @@ RUN apt-get update --fix-missing && \
     apt-get clean
 
 RUN pip3 install maturin[patchelf]
+RUN pip3 install pre-commit
+
+# add rust tools
+RUN rustup component add rustfmt
+RUN rustup component add clippy
 
 WORKDIR /workspace
