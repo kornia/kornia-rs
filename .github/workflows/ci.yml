@@ -35,6 +35,7 @@ jobs:
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
+    container: ghcr.io/kornia/kornia-rs/devel:latest
     steps:
       -
         name: Checkout the repository
