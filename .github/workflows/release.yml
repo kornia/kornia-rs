@@ -27,7 +27,7 @@ jobs:
           container: ghcr.io/kornia/kornia-rs/release:latest
           target: ${{ matrix.target }}
           manylinux: auto
-          args: --release --out dist --no-sdist -i python${{ matrix.python-version }}
+          args: --release --out dist -i python${{ matrix.python-version }}
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
@@ -54,7 +54,7 @@ jobs:
         with:
           maturin-version: latest
           command: build
-          args: --release --out dist --no-sdist
+          args: --release --out dist
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
@@ -82,7 +82,7 @@ jobs:
         with:
           maturin-version: latest
           command: build
-          args: --release --out dist --no-sdist
+          args: --release --out dist
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
