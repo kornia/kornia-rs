@@ -13,7 +13,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.7", "3.8", "3.9", "3.10", "3.11"]
-        target: [x86_64, aarch64]
+        target: [x86_64]
     steps:
       - uses: actions/checkout@v3
       - name: Set up QEMU
@@ -58,7 +58,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: messense/maturin-action@v1
         with:
-          container: ghcr.io/rust-cross/manylinux2014-cross:aarch64
           target: ${{ matrix.target }}
           manylinux: auto
           args: --release --out dist -i python${{ matrix.python-version }}
