@@ -1,4 +1,5 @@
-FROM quay.io/pypa/manylinux2014_x86_64
+ARG base_image=quay.io/pypa/manylinux2014_x86_64
+FROM $base_image
 
 # rust image comes with sh, we like bash more
 SHELL ["/bin/bash", "-c"]

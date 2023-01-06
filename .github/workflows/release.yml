@@ -24,7 +24,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: messense/maturin-action@v1
         with:
-          container: ghcr.io/kornia/kornia-rs/release:latest
+          container: ghcr.io/kornia/kornia-rs/release-amd64:latest
           target: ${{ matrix.target }}
           manylinux: auto
           args: --release --out dist -i python${{ matrix.python-version }}
