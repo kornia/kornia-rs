@@ -15,10 +15,14 @@ jobs:
         include:
           - arch: amd64
             base_image: quay.io/pypa/manylinux2014_x86_64
+            label: x86_64
+          - arch: arm64
+            base_image: ghcr.io/rust-cross/manylinux2014-cross:aarch64
+            label: aarch64
     steps:
       -
         name: Checkout the repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       -
         name: Set up QEMU
         uses: docker/setup-qemu-action@v1
@@ -40,6 +44,6 @@ jobs:
           file: ./docker/release.Dockerfile
           platforms: linux/${{ matrix.arch }}
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/release-${{ matrix.arch }}:latest
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/release-${{ matrix.label }}:latest
           build-args: |
             base_image=${{ matrix.base_image }}
