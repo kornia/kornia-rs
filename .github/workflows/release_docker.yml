@@ -10,6 +10,11 @@ env:
 jobs:
   build_docker:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            base_image: quay.io/pypa/manylinux2014_x86_64
     steps:
       -
         name: Checkout the repository
@@ -33,6 +38,8 @@ jobs:
         with:
           context: .
           file: ./docker/release.Dockerfile
-          platforms: linux/amd64
+          platforms: linux/${{ matrix.arch }}
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/release:latest
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/release-${{ matrix.arch }}:latest
+          build-args: |
+            base_image=${{ matrix.base_image }}
