@@ -17,7 +17,8 @@ jobs:
             base_image: quay.io/pypa/manylinux2014_x86_64
             label: x86_64
           - arch: arm64
-            base_image: ghcr.io/rust-cross/manylinux2014-cross:aarch64
+            #base_image: ghcr.io/rust-cross/manylinux2014-cross:aarch64
+            base_image: messense/manylinux_2_24-cross:aarch64
             label: aarch64
     steps:
       -
