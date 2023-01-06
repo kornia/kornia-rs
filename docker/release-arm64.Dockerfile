@@ -5,6 +5,6 @@ SHELL ["/bin/bash", "-c"]
 
 RUN apt-get update --fix-missing && \
     apt-get install -y --no-install-recommends \
-    gcc-multilib \
+    gcc-multilib-arm-linux-gnueabi \
     && \
     apt-get clean
