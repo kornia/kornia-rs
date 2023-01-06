@@ -58,6 +58,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: messense/maturin-action@v1
         with:
+          container: messense/manylinux_2_24-cross:aarch64
           target: ${{ matrix.target }}
           manylinux: auto
           args: --release --out dist -i python${{ matrix.python-version }}
