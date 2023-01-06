@@ -32,6 +32,19 @@ jobs:
         name: Compile and Run the tests
         run: ./run_tests.sh
 
+  pre-commit-ci:
+    name: pre-commit-ci
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/kornia/kornia-rs/devel:latest
+      credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+    - uses: pre-commit/action@v3.0.0
+    - uses: pre-commit-ci/lite-action@v1.0.0
+      if: always()
+
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
