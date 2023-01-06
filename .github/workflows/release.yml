@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: [3.7, 3.8, 3.9]
+        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11"]
         target: [x86_64]
     steps:
       - uses: actions/checkout@v3
@@ -21,13 +21,13 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }} 
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: messense/maturin-action@v1
         with:
           container: ghcr.io/kornia/kornia-rs/release:latest
           target: ${{ matrix.target }}
           manylinux: auto
-          args: --release --out dist --no-sdist -i python${{ matrix.python-version }}
+          args: --release --out dist -i python${{ matrix.python-version }}
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
@@ -38,8 +38,9 @@ jobs:
     runs-on: macos-latest
     strategy:
       matrix:
-        python-version: [3.7, 3.8, 3.9]
+        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11"]
     steps:
+      - uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v2
         with:
@@ -54,7 +55,7 @@ jobs:
         with:
           maturin-version: latest
           command: build
-          args: --release --out dist --no-sdist
+          args: --release --out dist -i python${{ matrix.python-version }}
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
@@ -65,9 +66,10 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        python-version: [3.7, 3.8, 3.9]
+        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11"]
         target: [x64, x86]
     steps:
+      - uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v2
         with:
@@ -82,7 +84,7 @@ jobs:
         with:
           maturin-version: latest
           command: build
-          args: --release --out dist --no-sdist
+          args: --release --out dist -i python${{ matrix.python-version }}
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:

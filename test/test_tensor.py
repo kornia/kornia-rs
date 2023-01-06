@@ -19,8 +19,7 @@ def test_conversions():
     cv_tensor = cvTensor([H, W, C], data)
 
     # to dlpack / torch / numpy
-    dlpack = K.cvtensor_to_dlpack(cv_tensor)
-    th_tensor = torch.utils.dlpack.from_dlpack(dlpack)
+    th_tensor = torch.utils.dlpack.from_dlpack(cv_tensor)
     assert [x for x in th_tensor.shape] == cv_tensor.shape
 
 def test_conversions2():

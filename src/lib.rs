@@ -9,11 +9,12 @@ pub mod io;
 #[allow(dead_code)]
 pub mod tensor;
 
-use crate::dlpack_py::cvtensor_to_dlpack;
-use crate::io::read_image_rs;
-
-#[cfg(feature = "libjpeg-turbo")]
 use crate::io::read_image_jpeg;
+use crate::io::read_image_rs;
+use crate::io::write_image_jpeg;
+use crate::io::ImageDecoder;
+use crate::io::ImageEncoder;
+use crate::io::ImageSize;
 
 #[cfg(feature = "viz")]
 pub mod viz;
@@ -37,12 +38,13 @@ pub fn get_version() -> String {
 #[pymodule]
 pub fn kornia_rs(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add("__version__", get_version())?;
-    m.add_function(wrap_pyfunction!(read_image_rs, m)?)?;
-    m.add_function(wrap_pyfunction!(cvtensor_to_dlpack, m)?)?;
-    m.add_class::<tensor::cv::Tensor>()?;
-
-    #[cfg(feature = "libjpeg-turbo")]
     m.add_function(wrap_pyfunction!(read_image_jpeg, m)?)?;
+    m.add_function(wrap_pyfunction!(write_image_jpeg, m)?)?;
+    m.add_function(wrap_pyfunction!(read_image_rs, m)?)?;
+    m.add_class::<tensor::cv::Tensor>()?;
+    m.add_class::<ImageSize>()?;
+    m.add_class::<ImageDecoder>()?;
+    m.add_class::<ImageEncoder>()?;
 
     #[cfg(feature = "viz")]
     {
