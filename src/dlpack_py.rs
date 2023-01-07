@@ -92,14 +92,13 @@ pub fn cvtensor_to_dlpack(x: &cv::Tensor, py: Python) -> PyResult<PyObject> {
     let dlm_tensor_bx = Box::new(dlm_tensor);
 
     // create python capsule
-    let capsule: PyObject = unsafe {
+    let capsule = unsafe {
         let ptr = pyo3::ffi::PyCapsule_New(
-            &*dlm_tensor_bx as *const dlpack::DLManagedTensor as *mut c_void,
+            Box::into_raw(dlm_tensor_bx) as *mut c_void,
             DLPACK_CAPSULE_NAME.as_ptr() as *const c_char,
             Some(dlpack_capsule_destructor as pyo3::ffi::PyCapsule_Destructor),
         );
         PyObject::from_owned_ptr(py, ptr)
     };
-    Box::leak(dlm_tensor_bx); // to hold reference until program exits
     Ok(capsule)
 }
