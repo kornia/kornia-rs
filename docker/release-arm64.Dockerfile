@@ -7,6 +7,6 @@ RUN uname -a
 
 RUN apt-get update --fix-missing && \
     apt-get install -y --no-install-recommends \
-    gcc-multilib-arm-linux-gnueabi \
+    g++-multilib \
     && \
     apt-get clean
