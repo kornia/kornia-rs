@@ -40,14 +40,13 @@ pub mod cv {
         }
 
         #[pyo3(name = "__dlpack__")]
-        pub fn to_dlpack_py(&self, py: Python) -> PyResult<PyObject> {
+        pub fn dlpack_py(&self, py: Python) -> PyResult<PyObject> {
             cvtensor_to_dlpack(self, py)
         }
 
         #[pyo3(name = "__dlpack_device__")]
-        pub fn to_dlpack_device_py(&self) -> (i32, i32) {
-            let tensor_bx = Box::new(self);
-            let dl_tensor = cvtensor_to_dltensor(&tensor_bx);
+        pub fn dlpack_device_py(&self) -> (i32, i32) {
+            let dl_tensor = cvtensor_to_dltensor(self);
             (
                 dl_tensor.device.device_type as i32,
                 dl_tensor.device.device_id,
