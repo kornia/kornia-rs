@@ -7,6 +7,6 @@ RUN uname -a
 
 RUN apt-get update --fix-missing && \
     apt-get install -y --no-install-recommends \
-    g++-multilib \
+    gcc-aarch64-linux-gnu \
     && \
     apt-get clean
