@@ -8,7 +8,7 @@ const DLPACK_CAPSULE_NAME: &[u8] = b"dltensor\0";
 
 // desctructor function for the python capsule
 unsafe extern "C" fn dlpack_capsule_destructor(capsule: *mut pyo3::ffi::PyObject) {
-    if pyo3::ffi::PyCapsule_IsValid(capsule, DLPACK_CAPSULE_NAME.as_ptr() as *const i8) == 1 {
+    if pyo3::ffi::PyCapsule_IsValid(capsule, DLPACK_CAPSULE_NAME.as_ptr() as *const u8) == 1 {
         // println!("Is an invalid capsule!");
         return;
     }
@@ -17,7 +17,7 @@ unsafe extern "C" fn dlpack_capsule_destructor(capsule: *mut pyo3::ffi::PyObject
 
     let expected_name = CString::new("dltensor").unwrap();
 
-    let current_name_ptr: *const i8 = pyo3::ffi::PyCapsule_GetName(capsule);
+    let current_name_ptr: *const u8 = pyo3::ffi::PyCapsule_GetName(capsule);
     let current_name = CStr::from_ptr(current_name_ptr);
     // println!("Expected Name: {:?}", expected_name);
     // println!("Current Name: {:?}", current_name);
@@ -94,7 +94,7 @@ pub fn cvtensor_to_dlpack(x: &cv::Tensor, py: Python) -> PyResult<PyObject> {
     let capsule: PyObject = unsafe {
         let ptr = pyo3::ffi::PyCapsule_New(
             &*dlm_tensor_bx as *const dlpack::DLManagedTensor as *mut c_void,
-            DLPACK_CAPSULE_NAME.as_ptr() as *const i8,
+            DLPACK_CAPSULE_NAME.as_ptr() as *const u8,
             Some(dlpack_capsule_destructor as pyo3::ffi::PyCapsule_Destructor),
         );
         PyObject::from_owned_ptr(py, ptr)
