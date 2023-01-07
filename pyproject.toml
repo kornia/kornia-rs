@@ -27,6 +27,7 @@ classifiers = [
 [project.optional-dependencies]
 dev = [
   "pytest",
+  "pytest-asyncio",
   "kornia==0.6.3",
   "numpy==1.23.0",
   "jax[cpu]",

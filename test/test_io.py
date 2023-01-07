@@ -1,4 +1,7 @@
 from pathlib import Path
+import pytest
+import random
+import asyncio
 
 import kornia_rs as K
 from kornia_rs import Tensor as cvTensor
@@ -84,3 +87,22 @@ def test_write_read_jpeg():
     read_image = np.from_dlpack(read_tensor)
 
     np.testing.assert_allclose(decoded_image, read_image)
+
+async def encode_frame(i: int) -> bytes:
+    img = (np.random.rand(480, 640, 3) * 255).astype(np.uint8)
+    frame = K.ImageEncoder().encode(img.tobytes(), img.shape)
+    await asyncio.sleep(random.random())
+    img_decoded = K.ImageDecoder().decode(bytes(frame))
+    await asyncio.sleep(random.random())
+    img = np.from_dlpack(img_decoded)
+    await asyncio.sleep(random.random())
+    print(f"End: {i}")
+    return img.mean()
+
+
+@pytest.mark.asyncio
+async def test_receive_stream_task():
+    tasks = [asyncio.create_task(encode_frame(i)) for i in range(3)]
+    results = await asyncio.gather(*tasks)
+    mean = sum(results) / len(results)
+    print(mean)
