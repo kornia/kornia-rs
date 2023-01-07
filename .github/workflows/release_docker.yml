@@ -39,7 +39,7 @@ jobs:
         uses: docker/build-push-action@v2
         with:
           context: .
-          file: ./docker/release-${{ matrix.arch }}.Dockerfile
+          file: ./docker/release-${{ matrix.label }}.Dockerfile
           platforms: linux/${{ matrix.arch }}
           push: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/release-${{ matrix.label }}:latest
