@@ -37,7 +37,7 @@ jobs:
         with:
           name: wheels
           path: dist
-  
+
   macos:
     runs-on: macos-latest
     strategy:
