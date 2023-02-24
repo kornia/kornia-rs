@@ -4,6 +4,7 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+  push:
 
 env:
   REGISTRY: ghcr.io
