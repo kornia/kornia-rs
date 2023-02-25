@@ -12,6 +12,22 @@ This project provides low level functionality for Computer Vision written in [Ru
 - We package with support for Linux [amd64/arm64], Macos and WIndows.
 - Supported Python versions are 3.7/3.8/3.9/3.10/3.11
 
+## Installation
+
+From pip:
+
+```bash
+pip install kornia-rs
+```
+
+From source:
+
+```bash
+pip install maturin
+maturin build --release --out dist -i $(which python3)
+pip install dist/*.whl
+```
+
 ## Basic Usage
 
 Load an image, that is converted to `cv::Tensor` wich is a centric structure to the DLPack protocol to share tensor data across frameworks with a zero-copy cost.
