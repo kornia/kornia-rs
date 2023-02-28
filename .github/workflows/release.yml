@@ -45,6 +45,7 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.7", "3.8", "3.9", "3.10", "3.11"]
+        target: [x86_64, aarch64]
     steps:
       - uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v3
@@ -56,12 +57,13 @@ jobs:
         with:
           profile: minimal
           toolchain: stable
+          target: ${{ matrix.target }}-apple-darwin
           override: true
       - uses: messense/maturin-action@v1
         with:
           maturin-version: latest
           command: build
-          args: --release --out dist -i python${{ matrix.python-version }}
+          args: --target ${{ matrix.target }}-apple-darwin --release --out dist -i python${{ matrix.python-version }}
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
