@@ -6,8 +6,8 @@
 #[allow(dead_code)]
 pub mod dlpack_py;
 pub mod io;
-#[allow(dead_code)]
 pub mod tensor;
+//pub mod interpolation;
 
 use crate::io::read_image_jpeg;
 use crate::io::read_image_rs;
