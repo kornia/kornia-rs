@@ -16,13 +16,6 @@ use crate::io::ImageDecoder;
 use crate::io::ImageEncoder;
 use crate::io::ImageSize;
 
-#[cfg(feature = "viz")]
-pub mod viz;
-#[cfg(feature = "viz")]
-use crate::viz::show_image_from_file;
-#[cfg(feature = "viz")]
-use crate::viz::show_image_from_tensor;
-
 use pyo3::prelude::*;
 
 pub fn get_version() -> String {
@@ -45,12 +38,5 @@ pub fn kornia_rs(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<ImageSize>()?;
     m.add_class::<ImageDecoder>()?;
     m.add_class::<ImageEncoder>()?;
-
-    #[cfg(feature = "viz")]
-    {
-        m.add_function(wrap_pyfunction!(show_image_from_file, m)?)?;
-        m.add_function(wrap_pyfunction!(show_image_from_tensor, m)?)?;
-    }
-
     Ok(())
 }
