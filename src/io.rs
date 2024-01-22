@@ -4,7 +4,7 @@ use image;
 use turbojpeg;
 
 // internal libs
-use crate::tensor::cv;
+use crate::tensor::Tensor;
 
 #[pyclass]
 pub struct ImageSize {
@@ -74,7 +74,7 @@ impl ImageDecoder {
         }
     }
 
-    pub fn decode(&mut self, jpeg_data: &[u8]) -> cv::Tensor {
+    pub fn decode(&mut self, jpeg_data: &[u8]) -> Tensor {
         // get the image size to allocate th data storage
         let image_size: ImageSize = self.read_header(jpeg_data);
 
@@ -96,7 +96,7 @@ impl ImageDecoder {
         // return the raw pixel data and shape as Tensor
         let shape = vec![image_size.height as i64, image_size.width as i64, 3];
 
-        cv::Tensor::new(shape, pixels)
+        Tensor::new(shape, pixels)
     }
 }
 
@@ -107,7 +107,7 @@ impl Default for ImageDecoder {
 }
 
 #[pyfunction]
-pub fn read_image_jpeg(file_path: String) -> cv::Tensor {
+pub fn read_image_jpeg(file_path: String) -> Tensor {
     // get the JPEG data
     let jpeg_data = std::fs::read(file_path).unwrap();
 
@@ -124,11 +124,11 @@ pub fn write_image_jpeg(file_path: String, jpeg_data: Vec<u8>) {
 }
 
 #[pyfunction]
-pub fn read_image_rs(file_path: String) -> cv::Tensor {
+pub fn read_image_rs(file_path: String) -> Tensor {
     let img: image::DynamicImage = image::open(file_path).unwrap();
     let data = img.to_rgb8().to_vec();
     let shape = vec![img.height() as i64, img.width() as i64, 3];
-    cv::Tensor::new(shape, data)
+    Tensor::new(shape, data)
 }
 
 //#[cfg(test)]
