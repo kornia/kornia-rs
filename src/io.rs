@@ -1,8 +1,12 @@
+use std::path::Path;
+
 use pyo3::prelude::*;
 
 use image;
+use sophus_rs::image::mut_image::{MutImage2F32, MutImage3F32, MutImage3U8};
 use turbojpeg;
 use sophus_rs::image::view::ImageSize as _ImageSize;
+use sophus_rs::tensor::mut_tensor::MutTensor;
 
 // internal libs
 use crate::tensor::Tensor;
@@ -153,6 +157,15 @@ pub fn read_image_rs(file_path: String) -> Tensor {
     let data = img.to_rgb8().to_vec();
     let shape = vec![img.height() as i64, img.width() as i64, 3];
     Tensor::new(shape, data)
+}
+
+pub fn read_image(file_path: &Path) -> MutImage3U8 {
+    let img: image::DynamicImage = image::open(file_path.to_str().unwrap()).unwrap();
+    let data = img.as_bytes();
+    MutImage3U8::from_image_size_and_val(_ImageSize { 
+        width: img.width() as usize, 
+        height: img.height() as usize 
+    }, data)
 }
 
 #[cfg(test)]
