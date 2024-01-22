@@ -1,14 +1,9 @@
-// TODO(carlos): enable
-//#![feature(test)]
-//extern crate test;
-#[allow(non_upper_case_globals)]
-#[allow(non_camel_case_types)]
-#[allow(dead_code)]
+// rust public modules
 pub mod dlpack_py;
 pub mod io;
-#[allow(dead_code)]
 pub mod tensor;
 
+// rust private modules to expose to python
 use crate::io::read_image_jpeg;
 use crate::io::read_image_rs;
 use crate::io::write_image_jpeg;

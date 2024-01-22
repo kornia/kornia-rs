@@ -2,16 +2,43 @@ use pyo3::prelude::*;
 
 use image;
 use turbojpeg;
+use sophus_rs::image::view::ImageSize as _ImageSize;
 
 // internal libs
 use crate::tensor::Tensor;
 
+//#[pyclass]
+//pub struct ImageSize {
+//    #[pyo3(get)]
+//    pub width: usize,
+//    #[pyo3(get)]
+//    pub height: usize,
+//}
+
+// wrap the ImageSize struct from sophus_rs
 #[pyclass]
 pub struct ImageSize {
-    #[pyo3(get)]
-    pub width: usize,
-    #[pyo3(get)]
-    pub height: usize,
+    inner: _ImageSize,
+}
+
+#[pymethods]
+impl ImageSize {
+    #[new]
+    pub fn new(width: usize, height: usize) -> Self {
+        ImageSize {
+            inner: _ImageSize{ width, height },
+        }
+    }
+
+    #[getter]
+    pub fn width(&self) -> usize {
+        self.inner.width
+    }
+
+    #[getter]
+    pub fn height(&self) -> usize {
+        self.inner.height
+    }
 }
 
 #[pyclass]
@@ -68,10 +95,7 @@ impl ImageDecoder {
     pub fn read_header(&mut self, jpeg_data: &[u8]) -> ImageSize {
         // read the JPEG header with image size
         let header = self.decompressor.read_header(jpeg_data).unwrap();
-        ImageSize {
-            width: header.width,
-            height: header.height,
-        }
+        ImageSize::new(header.width, header.height)
     }
 
     pub fn decode(&mut self, jpeg_data: &[u8]) -> Tensor {
@@ -79,14 +103,14 @@ impl ImageDecoder {
         let image_size: ImageSize = self.read_header(jpeg_data);
 
         // prepare a storage for the raw pixel data
-        let mut pixels = vec![0; image_size.height * image_size.width * 3];
+        let mut pixels = vec![0; image_size.height() * image_size.width() * 3];
 
         // allocate image container
         let image = turbojpeg::Image {
             pixels: pixels.as_mut_slice(),
-            width: image_size.width,
-            pitch: 3 * image_size.width, // we use no padding between rows
-            height: image_size.height,
+            width: image_size.width(),
+            pitch: 3 * image_size.width(), // we use no padding between rows
+            height: image_size.height(),
             format: turbojpeg::PixelFormat::RGB,
         };
 
@@ -94,7 +118,7 @@ impl ImageDecoder {
         self.decompressor.decompress(jpeg_data, image).unwrap();
 
         // return the raw pixel data and shape as Tensor
-        let shape = vec![image_size.height as i64, image_size.width as i64, 3];
+        let shape = vec![image_size.height() as i64, image_size.width() as i64, 3];
 
         Tensor::new(shape, pixels)
     }
@@ -131,43 +155,12 @@ pub fn read_image_rs(file_path: String) -> Tensor {
     Tensor::new(shape, data)
 }
 
-//#[cfg(test)]
-//mod tests {
-//    use super::*;
-//    use std::path::PathBuf;
-//    use std::time::SystemTime;
-//    use test::Bencher;
-//
-//    #[test]
-//    fn load() {
-//        let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "clients", "test.jpg"]
-//            .iter()
-//            .collect();
-//
-//        let str_path = path.into_os_string().into_string().unwrap();
-//        let start = SystemTime::now()
-//            .duration_since(SystemTime::UNIX_EPOCH)
-//            .expect("get millis error");
-//        let info = read_image_rs(str_path.clone());
-//        let end = SystemTime::now()
-//            .duration_since(SystemTime::UNIX_EPOCH)
-//            .expect("get millis error");
-//        println!("{}", str_path);
-//        println!("{:?}", info);
-//        println!(
-//            "time {:?} secs",
-//            (end.as_millis() - start.as_millis()) as f64 / 1000.,
-//        );
-//    }
-//
-//    #[bench]
-//    fn bench(b: &mut Bencher) {
-//        let path: PathBuf = [env!("CARGO_MANIFEST_DIR"), "clients", "test.jpg"]
-//            .iter()
-//            .collect();
-//        let str_path = path.into_os_string().into_string().unwrap();
-//        b.iter(|| {
-//            let info = read_image_rs(str_path.clone());
-//        });
-//    }
-//}
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn image_size() {
+        let image_size = super::ImageSize::new(10, 20);
+        assert_eq!(image_size.width(), 10);
+        assert_eq!(image_size.height(), 20);
+    }
+}
