@@ -21,4 +21,7 @@ jobs:
         with:
           toolchain: stable
           use-cross: true
-      - run: cross build --release --all-features --target ${{ matrix.target }}
+      - uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --all-features --target ${{ matrix.target }}
