@@ -1,0 +1,49 @@
+[build-system]
+requires = ["maturin>=1.3.2"]
+build-backend = "maturin"
+
+[project]
+name = "kornia_rs"
+description = "Low level implementations for computer vision in Rust"
+readme = "README.md"
+authors = [
+    { email = "edgar@kornia.org"}, name = "Edgar Riba" },
+]
+maintainers = [
+    { email = "edgar@kornia.org"}, name = "Edgar Riba" },
+]
+license = {file = "LICENSE"}
+requires-python = ">=3.7"
+
+keywords = ["computer vision", "rust"]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering","Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+]
+
+[project.urls]
+homepage = "https://www.kornia.org"
+documentation = "https://kornia.readthedocs.io"
+repository = "https://github.com/kornia/kornia-rs"
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "pytest-asyncio",
+  "kornia>=0.6.3",
+  "numpy==1.23.0",
+  "jax[cpu]",
+]

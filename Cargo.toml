@@ -1,24 +1,21 @@
 [package]
 name = "kornia_rs"
-version = "0.0.8"
+version = "0.0.9"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-[lib]
-name = "kornia_rs"
-crate-type = ["cdylib"]
-
 [dependencies]
-pyo3 = { version = "0.17.3", features = ["extension-module"] }
+pyo3 = { version = "0.20" }
 image = { version = "0.24.5" }
 dlpack-rs = {version = "^0.1.1"}
 vviz = {version = "0.3.0", optional = true}
 turbojpeg = {version = "0.5.2"}
-sophus-rs = {git="https://github.com/farm-ng/sophus-rs.git"}
+#sophus-rs = {git="https://github.com/farm-ng/sophus-rs.git"}
+sophus-rs = {path = "../sophus-rs"}
 
 [dev-dependencies]
-criterion = "0.3"
-pprof = { version = "0.3", features = ["flamegraph"] }
+criterion = "0.5"
+pprof = { version = "0.13", features = ["flamegraph"] }
+tempfile = "3.9.0"
 
 [[bench]]
 name = "my_benchmark"
