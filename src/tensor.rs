@@ -37,6 +37,7 @@ fn get_strides_from_shape(shape: &[i64]) -> Vec<i64> {
 /// let data: Vec<u8> = vec![1, 2, 3, 4];
 /// let t = Tensor::new(shape, data);
 /// assert_eq!(t.shape, vec![1, 1, 2, 2]);
+#[derive(Clone)]
 pub struct Tensor {
     pub shape: Vec<i64>,
     pub data: Vec<u8>,

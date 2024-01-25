@@ -1,16 +1,12 @@
-// rust public modules
-//pub mod dlpack_py;
-//pub mod io;
-//pub mod tensor;
+mod dlpack;
+mod image;
+mod io;
+mod tensor;
 
-// rust private modules to expose to python
-//use crate::io::read_image_jpeg;
-//use crate::io::read_image_rs;
-//use crate::io::write_image_jpeg;
-//use crate::io::ImageDecoder;
-//use crate::io::ImageEncoder;
-//use crate::io::ImageSize;
-
+use crate::image::PyImageSize;
+use crate::io::functions::{read_image_any, read_image_jpeg, write_image_jpeg};
+use crate::io::jpeg::{PyImageDecoder, PyImageEncoder};
+use crate::tensor::PyTensor;
 use pyo3::prelude::*;
 
 pub fn get_version() -> String {
@@ -26,12 +22,12 @@ pub fn get_version() -> String {
 #[pymodule]
 pub fn kornia_rs(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add("__version__", get_version())?;
-    //m.add_function(wrap_pyfunction!(read_image_jpeg, m)?)?;
-    //m.add_function(wrap_pyfunction!(write_image_jpeg, m)?)?;
-    //m.add_function(wrap_pyfunction!(read_image_rs, m)?)?;
-    //m.add_class::<tensor::Tensor>()?;
-    //m.add_class::<ImageSize>()?;
-    //m.add_class::<ImageDecoder>()?;
-    //m.add_class::<ImageEncoder>()?;
+    m.add_function(wrap_pyfunction!(read_image_jpeg, m)?)?;
+    m.add_function(wrap_pyfunction!(write_image_jpeg, m)?)?;
+    m.add_function(wrap_pyfunction!(read_image_any, m)?)?;
+    m.add_class::<PyTensor>()?;
+    m.add_class::<PyImageSize>()?;
+    m.add_class::<PyImageDecoder>()?;
+    m.add_class::<PyImageEncoder>()?;
     Ok(())
 }

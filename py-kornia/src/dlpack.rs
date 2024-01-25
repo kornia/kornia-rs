@@ -1,5 +1,5 @@
-use crate::tensor::Tensor;
 use dlpack_rs as dlpack;
+use kornia_rs::tensor::Tensor;
 
 use pyo3::prelude::*;
 use std::ffi::{c_void, CStr, CString};

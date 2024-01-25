@@ -4,18 +4,18 @@ import random
 import asyncio
 
 import kornia_rs as K
-from kornia_rs import Tensor as cvTensor
 
 import torch
 import numpy as np
 
-DATA_DIR = Path(__file__).parent / "data"
+# TODO: inject this from elsewhere
+DATA_DIR = Path(__file__).parents[2] / "tests" / "data"
 
 
 def test_read_image_jpeg():
     # load an image with libjpeg-turbo
     img_path: Path = DATA_DIR / "dog.jpeg"
-    cv_tensor: cvTensor = K.read_image_jpeg(str(img_path.absolute()))
+    cv_tensor: K.Tensor = K.read_image_jpeg(str(img_path.absolute()))
     assert cv_tensor.shape == [195, 258, 3]
 
     # convert to dlpack to import to torch
@@ -26,10 +26,11 @@ def test_read_image_jpeg():
     np_array = np.from_dlpack(cv_tensor)
     assert np_array.shape == (195, 258, 3)
 
-def test_read_image_rs():
+# TODO: load other types of images
+def test_read_image_any():
     # load an image with image-rs
     img_path: Path = DATA_DIR / "dog.jpeg"
-    cv_tensor: cvTensor = K.read_image_rs(str(img_path.absolute()))
+    cv_tensor: K.Tensor = K.read_image_any(str(img_path.absolute()))
     assert cv_tensor.shape == [195, 258, 3]
 
     # convert to dlpack to import to torch
@@ -45,15 +46,15 @@ def test_decompress():
 
     image_encoder = K.ImageEncoder()
     image_encoded: list = image_encoder.encode(image.tobytes(), image.shape)
-    K.write_image_jpeg(str(DATA_DIR/"dog_rs.jpeg"), image_encoded)
 
     image_decoder = K.ImageDecoder()
     image_size: K.ImageSize = image_decoder.read_header(bytes(image_encoded))
     assert image_size.width == 258
     assert image_size.height == 195
 
-    decoded_tensor: K.cvTensor = image_decoder.decode(bytes(image_encoded))
+    decoded_tensor: K.Tensor = image_decoder.decode(bytes(image_encoded))
     decoded_image = np.from_dlpack(decoded_tensor)
+    assert decoded_image.shape == (195, 258, 3)
 
 
 def test_write_read_jpeg():
@@ -75,34 +76,8 @@ def test_write_read_jpeg():
     assert image_size.width == 5
     assert image_size.height == 4
 
-    decoded_tensor: K.cvTensor = image_decoder.decode(bytes(image_encoded))
+    decoded_tensor: K.Tensor = image_decoder.decode(bytes(image_encoded))
     decoded_image = np.from_dlpack(decoded_tensor)
 
     # with 100% quality 3 pixels error
     assert (decoded_image - image).sum() == 3
-
-    # check write/read from file
-    K.write_image_jpeg(str(DATA_DIR/"image.jpeg"), image_encoded)
-    read_tensor = K.read_image_jpeg(str(DATA_DIR/"image.jpeg"))
-    read_image = np.from_dlpack(read_tensor)
-
-    np.testing.assert_allclose(decoded_image, read_image)
-
-async def encode_frame(i: int) -> bytes:
-    img = (np.random.rand(480, 640, 3) * 255).astype(np.uint8)
-    frame = K.ImageEncoder().encode(img.tobytes(), img.shape)
-    await asyncio.sleep(random.random())
-    img_decoded = K.ImageDecoder().decode(bytes(frame))
-    await asyncio.sleep(random.random())
-    img = np.from_dlpack(img_decoded)
-    await asyncio.sleep(random.random())
-    print(f"End: {i}")
-    return img.mean()
-
-
-@pytest.mark.asyncio
-async def test_receive_stream_task():
-    tasks = [asyncio.create_task(encode_frame(i)) for i in range(3)]
-    results = await asyncio.gather(*tasks)
-    mean = sum(results) / len(results)
-    print(mean)

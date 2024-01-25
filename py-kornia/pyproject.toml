@@ -7,10 +7,10 @@ name = "kornia_rs"
 description = "Low level implementations for computer vision in Rust"
 readme = "README.md"
 authors = [
-    { email = "edgar@kornia.org"}, name = "Edgar Riba" },
+    { email = "edgar@kornia.org", name = "Edgar Riba" },
 ]
 maintainers = [
-    { email = "edgar@kornia.org"}, name = "Edgar Riba" },
+    { email = "edgar@kornia.org", name = "Edgar Riba" },
 ]
 license = {file = "LICENSE"}
 requires-python = ">=3.7"
