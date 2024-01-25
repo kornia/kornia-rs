@@ -22,11 +22,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: stable
+          profile: minimal
           target: ${{ matrix.target }}
           override: true
       - uses: actions-rs/cargo@v1
         with:
-          command: build
-          args: --release --all-features --target ${{ matrix.target }}
+          command: test
+          args: --target ${{ matrix.target }}
           use-cross: true

@@ -8,10 +8,6 @@ on:
     branches:
       - main
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-
 jobs:
   fmt:
     name: Rustfmt
@@ -46,9 +42,9 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           args: --all-features
           name: Clippy Output
-          #use-cross: true
+
   check:
-    name: Cargo Check
+    name: Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,4 +57,3 @@ jobs:
         with:
           command: check
           args: --all -- --all-features
-          #use-cross: true
