@@ -46,7 +46,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           args: --all-features
           name: Clippy Output
-          use-cross: true
+          #use-cross: true
   check:
     name: Cargo Check
     runs-on: ubuntu-latest
@@ -61,4 +61,4 @@ jobs:
         with:
           command: check
           args: --all -- --all-features
-          use-cross: true
+          #use-cross: true
