@@ -2346,7 +2346,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
-name = "kornia_rs"
+name = "kornia-py"
+version = "0.0.9"
+dependencies = [
+ "dlpack-rs",
+ "kornia-rs",
+ "pyo3",
+]
+
+[[package]]
+name = "kornia-rs"
 version = "0.0.9"
 dependencies = [
  "image",
@@ -3231,15 +3240,6 @@ dependencies = [
  "libm",
  "num-complex 0.4.4",
  "reborrow",
-]
-
-[[package]]
-name = "py-kornia"
-version = "0.0.9"
-dependencies = [
- "dlpack-rs",
- "kornia_rs",
- "pyo3",
 ]
 
 [[package]]
