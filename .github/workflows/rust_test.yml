@@ -20,8 +20,8 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-          use-cross: true
       - uses: actions-rs/cargo@v1
         with:
           command: build
           args: --release --all-features --target ${{ matrix.target }}
+          use-cross: true
