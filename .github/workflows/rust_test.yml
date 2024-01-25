@@ -14,7 +14,7 @@ jobs:
     strategy:
       matrix:
         #target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
-        target: [x86_64-unknown-linux-gnu]:w
+        target: [x86_64-unknown-linux-gnu]
 
     runs-on: ubuntu-latest
     steps:
