@@ -1,7 +1,6 @@
 use turbojpeg;
 
-use crate::image::ImageSize;
-use crate::tensor::Tensor;
+use crate::image::{ImageSize, Image};
 
 /// A JPEG decoder using the turbojpeg library.
 pub struct ImageDecoder {
@@ -48,26 +47,29 @@ impl ImageEncoder {
     ///
     /// # Arguments
     ///
-    /// * `data` - The data to encode.
-    /// * `shape` - The shape of the data.
-    ///
+    /// * `image` - The image to encode.
+    /// 
     /// # Returns
-    ///
-    /// The encoded JPEG data.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the data cannot be encoded.
-    pub fn encode(&mut self, data: &[u8], shape: [usize; 3]) -> Vec<u8> {
-        let image = turbojpeg::Image {
-            pixels: data,
-            width: shape[1],
-            pitch: 3 * shape[1],
-            height: shape[0],
+    /// 
+    /// The encoded data as Vec<u8>.
+    pub fn encode(&mut self, image: &Image) -> Vec<u8> {
+        // get the image data
+        let image_data = match image.data.as_slice() {
+            Some(d) => d,
+            None => panic!("Image data is not contiguous"),
+        };
+
+        // create a turbojpeg image
+        let _image = turbojpeg::Image {
+            pixels: image_data,
+            width: image.image_size().width,
+            pitch: 3 * image.image_size().width,
+            height: image.image_size().height,
             format: turbojpeg::PixelFormat::RGB,
         };
 
-        match self.compressor.compress_to_vec(image) {
+        // encode the image
+        match self.compressor.compress_to_vec(_image) {
             Ok(d) => d,
             Err(e) => panic!("Error compressing image: {}", e),
         }
@@ -132,7 +134,7 @@ impl ImageDecoder {
     /// # Returns
     ///
     /// The decoded data as Tensor.
-    pub fn decode(&mut self, jpeg_data: &[u8]) -> Tensor {
+    pub fn decode(&mut self, jpeg_data: &[u8]) -> Image {
         // get the image size to allocate th data storage
         let image_size: ImageSize = self.read_header(jpeg_data);
 
@@ -154,11 +156,7 @@ impl ImageDecoder {
             Err(e) => panic!("Error decompressing image: {}", e),
         };
 
-        // return the raw pixel data and shape as Tensor
-        let shape = vec![image_size.height as i64, image_size.width as i64, 3];
-
-        // TODO: return sophus::TensorView
-        Tensor::new(shape, pixels)
+        Image::new(image_size, pixels)
     }
 }
 
@@ -175,19 +173,23 @@ mod tests {
         assert_eq!(image_size.width, 258);
         assert_eq!(image_size.height, 195);
         // load the image as file and decode it
-        let tensor = decoder.decode(&jpeg_data);
-        assert_eq!(tensor.shape, vec![195, 258, 3]);
-        assert_eq!(tensor.data.len(), 195 * 258 * 3);
+        let image = decoder.decode(&jpeg_data);
+        assert_eq!(image.image_size().width, 258);
+        assert_eq!(image.image_size().height, 195);
+        assert_eq!(image.num_channels(), 3);
     }
 
     #[test]
     fn image_encoder() {
         let mut decoder = ImageDecoder::new();
         let jpeg_data_fs = std::fs::read("tests/data/dog.jpeg").unwrap();
-        let tensor = decoder.decode(&jpeg_data_fs);
+        let image = decoder.decode(&jpeg_data_fs);
         let mut encoder = ImageEncoder::new();
-        let jpeg_data = encoder.encode(&tensor.data, [195, 258, 3]);
-        let tensor_back = decoder.decode(&jpeg_data);
-        assert_eq!(tensor_back.shape, vec![195, 258, 3]);
+        //let data_slice: &[u8] = &image.data.as_slice().unwrap();
+        let jpeg_data = encoder.encode(&image);
+        let image_back = decoder.decode(&jpeg_data);
+        assert_eq!(image_back.image_size().width, 258);
+        assert_eq!(image_back.image_size().height, 195);
+        assert_eq!(image_back.num_channels(), 3);
     }
 }

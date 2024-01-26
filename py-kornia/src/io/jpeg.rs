@@ -1,8 +1,7 @@
 use kornia_rs::io::jpeg::{ImageDecoder, ImageEncoder};
 use pyo3::prelude::*;
 
-use crate::image::PyImageSize;
-use crate::tensor::PyTensor;
+use crate::image::{PyImageSize, PyImage};
 
 #[pyclass(name = "ImageDecoder")]
 pub struct PyImageDecoder {
@@ -22,9 +21,9 @@ impl PyImageDecoder {
         Ok(image_size.into())
     }
 
-    pub fn decode(&mut self, jpeg_data: &[u8]) -> PyResult<PyTensor> {
-        let tensor = self.inner.decode(jpeg_data);
-        Ok(tensor.into())
+    pub fn decode(&mut self, jpeg_data: &[u8]) -> PyResult<PyImage> {
+        let image = self.inner.decode(jpeg_data);
+        Ok(image.into())
     }
 }
 
@@ -41,8 +40,8 @@ impl PyImageEncoder {
         Ok(PyImageEncoder { inner })
     }
 
-    pub fn encode(&mut self, data: &[u8], shape: [usize; 3]) -> PyResult<Vec<u8>> {
-        let jpeg_data = self.inner.encode(data, shape);
+    pub fn encode(&mut self, image: PyImage) -> PyResult<Vec<u8>> {
+        let jpeg_data = self.inner.encode(&image.inner);
         Ok(jpeg_data)
     }
 

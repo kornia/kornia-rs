@@ -6,8 +6,7 @@ edition = "2021"
 [dependencies]
 image = { version = "0.24.5" }
 turbojpeg = {version = "0.5.2"}
-sophus-rs = {git="https://github.com/farm-ng/sophus-rs.git"}
-#sophus-rs = {path = "../sophus-rs"}
+ndarray = { version = "0.15.6" }
 
 [dev-dependencies]
 tempfile = "3.9.0"

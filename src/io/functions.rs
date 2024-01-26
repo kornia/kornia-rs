@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::tensor::Tensor;
+use crate::image::{Image, ImageSize};
 
 use super::jpeg::{ImageDecoder, ImageEncoder};
 
@@ -13,7 +13,7 @@ use super::jpeg::{ImageDecoder, ImageEncoder};
 /// # Returns
 ///
 /// A tensor containing the JPEG image data.
-pub fn read_image_jpeg(file_path: &Path) -> Tensor {
+pub fn read_image_jpeg(file_path: &Path) -> Image {
     // verify the file exists and is a JPEG
     if !file_path.exists() {
         panic!("File does not exist: {}", file_path.to_str().unwrap());
@@ -49,12 +49,9 @@ pub fn read_image_jpeg(file_path: &Path) -> Tensor {
 ///
 /// * `file_path` - The path to the JPEG image.
 /// * `image` - The tensor containing the JPEG image data.
-pub fn write_image_jpeg(file_path: &Path, image: Tensor) {
+pub fn write_image_jpeg(file_path: &Path, image: Image) {
     // compress the image
-    let jpeg_data = ImageEncoder::new().encode(
-        &image.data,
-        [image.shape[0] as usize, image.shape[1] as usize, 3],
-    );
+    let jpeg_data = ImageEncoder::new().encode(&image);
 
     // write the data directly to a file
     match std::fs::write(file_path, jpeg_data) {
@@ -72,7 +69,7 @@ pub fn write_image_jpeg(file_path: &Path, image: Tensor) {
 /// * `file_path` - The path to the image.
 ///
 // TODO: return sophus::TensorView
-pub fn read_image_any(file_path: &Path) -> Tensor {
+pub fn read_image_any(file_path: &Path) -> Image {
     // verify the file exists
     if !file_path.exists() {
         panic!("File does not exist: {}", file_path.to_str().unwrap());
@@ -84,10 +81,9 @@ pub fn read_image_any(file_path: &Path) -> Tensor {
         Err(e) => panic!("Error reading image: {}", e),
     };
 
-    // return the raw pixel data and shape as Tensor
+    // return the image data
     let data = img.to_rgb8().to_vec();
-    let shape = vec![img.height() as i64, img.width() as i64, 3];
-    Tensor::new(shape, data)
+    Image::new(ImageSize { width: img.width() as usize, height: img.height() as usize}, data)
 }
 
 #[cfg(test)]
@@ -101,15 +97,17 @@ mod tests {
     #[test]
     fn read_jpeg() {
         let image_path = Path::new("tests/data/dog.jpeg");
-        let image_data = read_image_jpeg(image_path);
-        assert_eq!(image_data.shape, vec![195, 258, 3]);
+        let image = read_image_jpeg(image_path);
+        assert_eq!(image.image_size().width, 258);
+        assert_eq!(image.image_size().height, 195);
     }
 
     #[test]
     fn read_any() {
         let image_path = Path::new("tests/data/dog.jpeg");
-        let image_data = read_image_any(image_path);
-        assert_eq!(image_data.shape, vec![195, 258, 3]);
+        let image = read_image_any(image_path);
+        assert_eq!(image.image_size().width, 258);
+        assert_eq!(image.image_size().height, 195);
     }
 
     #[test]
@@ -122,6 +120,8 @@ mod tests {
         write_image_jpeg(&file_path, image_data);
         let image_data_back = read_image_jpeg(&file_path);
         assert!(file_path.exists(), "File does not exist: {:?}", file_path);
-        assert_eq!(image_data_back.shape, vec![195, 258, 3]);
+        assert_eq!(image_data_back.image_size().width, 258);
+        assert_eq!(image_data_back.image_size().height, 195);
+        assert_eq!(image_data_back.num_channels(), 3);
     }
 }

@@ -16,6 +16,7 @@ def test_read_image_jpeg():
     # load an image with libjpeg-turbo
     img_path: Path = DATA_DIR / "dog.jpeg"
     cv_tensor: K.Tensor = K.read_image_jpeg(str(img_path.absolute()))
+    import pdb; pdb.set_trace()
     assert cv_tensor.shape == [195, 258, 3]
 
     # convert to dlpack to import to torch
