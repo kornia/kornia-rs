@@ -41,7 +41,7 @@ impl PyImageEncoder {
     }
 
     pub fn encode(&mut self, image: PyImage) -> PyResult<Vec<u8>> {
-        let jpeg_data = self.inner.encode(&image.inner);
+        let jpeg_data = self.inner.encode(image.into());
         Ok(jpeg_data)
     }
 
