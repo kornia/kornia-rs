@@ -42,6 +42,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           args: --all-features
           name: Clippy Output
+          use-cross: true
 
   check:
     name: Check
@@ -57,3 +58,4 @@ jobs:
         with:
           command: check
           args: --all -- --all-features
+          use-cross: true
