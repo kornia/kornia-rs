@@ -34,6 +34,8 @@ jobs:
         with:
           command: login
           args: ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }}
-      - name: Publish to Crates.io
-        run: cargo publish --verbose
-
+      - name: Cargo Publish 
+        uses: actions-rs/cargo@v1
+        with:
+          command: publish
+          args: --verbose --target ${{ matrix.target }}
