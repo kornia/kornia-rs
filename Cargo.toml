@@ -2,6 +2,11 @@
 name = "kornia-rs"
 version = "0.0.1"
 edition = "2021"
+description = "Low-level computer vision library in Rust"
+homepage = "http://kornia.org"
+repository = "https://github.com/kornia/kornia-rs"
+categories = ["image-processing", "computer-vision", "machine-learning"]
+license-file = "LICENSE"
 
 [dependencies]
 image = { version = "0.24.5" }
