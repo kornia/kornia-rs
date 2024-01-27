@@ -1,6 +1,6 @@
 use turbojpeg;
 
-use crate::image::{ImageSize, Image};
+use crate::image::{Image, ImageSize};
 
 /// A JPEG decoder using the turbojpeg library.
 pub struct ImageDecoder {
@@ -48,10 +48,10 @@ impl ImageEncoder {
     /// # Arguments
     ///
     /// * `image` - The image to encode.
-    /// 
+    ///
     /// # Returns
-    /// 
-    /// The encoded data as Vec<u8>.
+    ///
+    /// The encoded data as `Vec<u8>`.
     pub fn encode(&mut self, image: &Image) -> Vec<u8> {
         // get the image data
         let image_data = match image.data.as_slice() {

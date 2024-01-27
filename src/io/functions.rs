@@ -83,7 +83,13 @@ pub fn read_image_any(file_path: &Path) -> Image {
 
     // return the image data
     let data = img.to_rgb8().to_vec();
-    Image::new(ImageSize { width: img.width() as usize, height: img.height() as usize}, data)
+    Image::new(
+        ImageSize {
+            width: img.width() as usize,
+            height: img.height() as usize,
+        },
+        data,
+    )
 }
 
 #[cfg(test)]
