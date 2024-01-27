@@ -22,9 +22,12 @@ pub struct ImageSize {
     pub height: usize,
 }
 
+pub type ImageData8C3 = ndarray::Array<u8, ndarray::Dim<[usize; 3]>>;
+pub type ImageData8C1 = ndarray::Array<u8, ndarray::Dim<[usize; 1]>>;
+
 #[derive(Clone)]
 pub struct Image {
-    pub data: ndarray::Array<u8, ndarray::Dim<[usize; 3]>>,
+    pub data: ImageData8C3,
 }
 
 impl Image {

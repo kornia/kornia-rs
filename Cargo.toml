@@ -15,3 +15,4 @@ ndarray = { version = "0.15.6" }
 
 [dev-dependencies]
 tempfile = "3.9.0"
+rerun = "0.12.1"
