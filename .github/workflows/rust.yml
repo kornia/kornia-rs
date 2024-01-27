@@ -28,8 +28,8 @@ jobs:
         with:
           profile: minimal
           toolchain: stable
+          target: ${{ matrix.target }}
           override: true
-          components: rustfmt
       - uses: actions-rs/cargo@v1
         with:
           command: login
