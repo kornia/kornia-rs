@@ -38,17 +38,11 @@ jobs:
           toolchain: stable
           override: true
           components: clippy
-      #- uses: actions-rs/cargo@v1
-      #  with:
-      #    command: clippy
-      #    args: --tests -- -D warnings
-      #    use-cross: true
       - uses: actions-rs/clippy-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           args: --all-features
           name: Clippy Output
-          use-cross: true
 
   check:
     name: Check
