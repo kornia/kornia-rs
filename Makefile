@@ -22,14 +22,23 @@ requirements: .venv  ## Install/refresh Python project requirements
 	$(VENV_BIN)/python -m pip install --upgrade pip
 	$(VENV_BIN)/python -m pip install -r py-kornia/requirements-dev.txt
 
-.PHONY: build-rust
-build-rust:  ## Compile Rust Polars for development
-	cargo build
-
 .PHONY: build-python
 build-python: .venv  ## Compile and install Python Polars for development
 	@unset CONDA_PREFIX && source $(VENV_BIN)/activate \
 	&& maturin develop -m py-kornia/Cargo.toml \
+	$(FILTER_PIP_WARNINGS)
+
+.PHONY: build-python-release
+build-python-release: .venv  ## Compile and install a faster Python Polars binary with full optimizations
+	@unset CONDA_PREFIX && source $(VENV_BIN)/activate \
+	&& maturin develop -m py-kornia/Cargo.toml --release \
+	$(FILTER_PIP_WARNINGS)
+
+.PHONY: test-python
+test-python: .venv  ## Run Python tests
+	@unset CONDA_PREFIX && source $(VENV_BIN)/activate \
+	&& maturin develop -m py-kornia/Cargo.toml \
+	&& $(VENV_BIN)/pytest py-kornia/tests
 	$(FILTER_PIP_WARNINGS)
 
 .PHONY: clippy

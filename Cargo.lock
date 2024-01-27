@@ -279,7 +279,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-rs"
-version = "0.0.9"
+version = "0.0.1"
 dependencies = [
  "image",
  "ndarray",

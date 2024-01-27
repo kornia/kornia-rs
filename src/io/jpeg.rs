@@ -52,7 +52,7 @@ impl ImageEncoder {
     /// # Returns
     ///
     /// The encoded data as `Vec<u8>`.
-    pub fn encode(&mut self, image: &Image) -> Vec<u8> {
+    pub fn encode(&mut self, image: Image) -> Vec<u8> {
         // get the image data
         let image_data = match image.data.as_slice() {
             Some(d) => d,
@@ -166,14 +166,13 @@ mod tests {
 
     #[test]
     fn image_decoder() {
-        let mut decoder = ImageDecoder::new();
         let jpeg_data = std::fs::read("tests/data/dog.jpeg").unwrap();
         // read the header
-        let image_size = decoder.read_header(&jpeg_data);
+        let image_size = ImageDecoder::new().read_header(&jpeg_data);
         assert_eq!(image_size.width, 258);
         assert_eq!(image_size.height, 195);
         // load the image as file and decode it
-        let image = decoder.decode(&jpeg_data);
+        let image = ImageDecoder::new().decode(&jpeg_data);
         assert_eq!(image.image_size().width, 258);
         assert_eq!(image.image_size().height, 195);
         assert_eq!(image.num_channels(), 3);
@@ -181,13 +180,10 @@ mod tests {
 
     #[test]
     fn image_encoder() {
-        let mut decoder = ImageDecoder::new();
         let jpeg_data_fs = std::fs::read("tests/data/dog.jpeg").unwrap();
-        let image = decoder.decode(&jpeg_data_fs);
-        let mut encoder = ImageEncoder::new();
-        //let data_slice: &[u8] = &image.data.as_slice().unwrap();
-        let jpeg_data = encoder.encode(&image);
-        let image_back = decoder.decode(&jpeg_data);
+        let image = ImageDecoder::new().decode(&jpeg_data_fs);
+        let jpeg_data = ImageEncoder::new().encode(image);
+        let image_back = ImageDecoder::new().decode(&jpeg_data);
         assert_eq!(image_back.image_size().width, 258);
         assert_eq!(image_back.image_size().height, 195);
         assert_eq!(image_back.num_channels(), 3);

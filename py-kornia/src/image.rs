@@ -1,7 +1,8 @@
-use kornia_rs::image::{ImageSize, Image};
+use kornia_rs::image::{Image, ImageSize};
 use pyo3::prelude::*;
 
 #[pyclass(name = "ImageSize")]
+#[derive(Clone)]
 pub struct PyImageSize {
     inner: ImageSize,
 }
@@ -40,6 +41,7 @@ impl PyImageSize {
 }
 
 #[pyclass(name = "Image")]
+#[derive(Clone)]
 pub struct PyImage {
     pub inner: Image,
 }
@@ -49,7 +51,7 @@ impl PyImage {
     #[new]
     pub fn new(image_size: PyImageSize, data: Vec<u8>) -> PyResult<PyImage> {
         let image = Image::new(image_size.inner, data);
-        Ok(PyImage { inner: image })
+        Ok(image.into())
     }
 
     #[getter]

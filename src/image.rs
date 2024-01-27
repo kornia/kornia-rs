@@ -14,6 +14,7 @@
 /// assert_eq!(image_size.width, 10);
 /// assert_eq!(image_size.height, 20);
 /// ```
+#[derive(Clone)]
 pub struct ImageSize {
     /// Width of the image in pixels
     pub width: usize,
@@ -21,6 +22,7 @@ pub struct ImageSize {
     pub height: usize,
 }
 
+#[derive(Clone)]
 pub struct Image {
     pub data: ndarray::Array<u8, ndarray::Dim<[usize; 3]>>,
 }

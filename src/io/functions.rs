@@ -51,7 +51,7 @@ pub fn read_image_jpeg(file_path: &Path) -> Image {
 /// * `image` - The tensor containing the JPEG image data.
 pub fn write_image_jpeg(file_path: &Path, image: Image) {
     // compress the image
-    let jpeg_data = ImageEncoder::new().encode(&image);
+    let jpeg_data = ImageEncoder::new().encode(image);
 
     // write the data directly to a file
     match std::fs::write(file_path, jpeg_data) {
