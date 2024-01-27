@@ -58,3 +58,4 @@ jobs:
         with:
           command: check
           args: --all --all-features
+          use-cross: true
