@@ -14,7 +14,7 @@
 /// assert_eq!(image_size.width, 10);
 /// assert_eq!(image_size.height, 20);
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ImageSize {
     /// Width of the image in pixels
     pub width: usize,
