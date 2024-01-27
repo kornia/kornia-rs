@@ -40,6 +40,7 @@ jobs:
         with:
           command: clippy
           args: --tests -- -D warnings
+          use-cross: true
       #- uses: actions-rs/clippy-check@v1
       #  with:
       #    token: ${{ secrets.GITHUB_TOKEN }}
