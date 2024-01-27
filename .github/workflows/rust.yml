@@ -1,0 +1,32 @@
+name: Rust Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    #release:
+    #types: [published]
+
+jobs:
+  release:
+    name: Release Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: rustfmt
+      - uses: actions-rs/cargo@v1
+        with:
+          command: login
+          args: ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }}
+      - name: Publish to Crates.io
+        run: cargo publish --verbose
+
