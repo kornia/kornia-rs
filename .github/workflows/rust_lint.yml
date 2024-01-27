@@ -55,4 +55,4 @@ jobs:
           toolchain: stable
           override: true
       - run: cargo install cross
-      - run: cargo check --all --all-features
+      - run: cross check --all --all-features
