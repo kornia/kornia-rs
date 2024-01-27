@@ -14,6 +14,11 @@ on:
 jobs:
   release:
     name: Release Rust
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
     runs-on: ubuntu-latest
     steps:
       - name: Install system dependencies
