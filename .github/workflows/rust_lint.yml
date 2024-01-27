@@ -54,8 +54,5 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
-      - uses: actions-rs/cargo@v1
-        with:
-          command: check
-          args: --all -- --all-features
-          use-cross: true
+      - run: cargo install cross
+      - run: cargo check --all --all-features
