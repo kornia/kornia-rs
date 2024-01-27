@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Install system dependencies
-        run: apt-get update && apt-get install -y cmake nasm
+        run: sudo apt-get update && apt-get install -y cmake nasm
       - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
         with:
