@@ -36,12 +36,12 @@ jobs:
           toolchain: stable
           override: true
           components: clippy
-      - run: cargo install cross
-      - run: cross clippy --tests -- -D warnings
-      #- uses: actions-rs/cargo@v1
-      #  with:
-      #    command: clippy
-      #    args: --tests -- -D warnings
+      #- run: cargo install cross
+      #- run: cross clippy --tests -- -D warnings
+      - uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: --tests -- -D warnings
       #    use-cross: true
       #- uses: actions-rs/clippy-check@v1
       #  with:
