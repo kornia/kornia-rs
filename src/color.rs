@@ -23,3 +23,18 @@ pub fn grayscale_from_rgb(image: Image) -> Image {
     };
     Image { data: gray_stacked }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::io::functions as F;
+
+    #[test]
+    fn grayscale_from_rgb() {
+        let image_path = std::path::Path::new("tests/data/dog.jpeg");
+        let image = F::read_image_jpeg(image_path);
+        let gray = super::grayscale_from_rgb(image);
+        assert_eq!(gray.num_channels(), 3);
+        assert_eq!(gray.image_size().width, 258);
+        assert_eq!(gray.image_size().height, 195);
+    }
+}
