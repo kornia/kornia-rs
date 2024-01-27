@@ -16,3 +16,8 @@ ndarray = { version = "0.15.6" }
 [dev-dependencies]
 tempfile = "3.9.0"
 rerun = "0.12.1"
+criterion = { version = "0.4", features = ["html_reports"] }
+
+[[bench]]
+name = "color_benchmark"
+harness = false
