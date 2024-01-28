@@ -1,0 +1,40 @@
+use crate::image::Image;
+use ndarray::{s, stack, Axis};
+
+pub fn grayscale_from_rgb(image: Image) -> Image {
+    // convert to f32
+    let mut image_f32 = image.data.mapv(|x| x as f32);
+
+    // get channels
+    let mut binding = image_f32.view_mut();
+    let (r, g, b) = binding.multi_slice_mut((s![.., .., 0], s![.., .., 1], s![.., .., 2]));
+
+    // weighted sum
+    // TODO: check data type, for u8 or f32/f64
+    let gray_f32 = (&r * 76.0 + &g * 150.0 + &b * 29.0) / 255.0;
+    let gray_u8 = gray_f32.mapv(|x| x as u8);
+
+    // TODO: ideally we stack the channels. Not working yet.
+    let gray_stacked = match stack(Axis(2), &[gray_u8.view(), gray_u8.view(), gray_u8.view()]) {
+        Ok(gray_stacked) => gray_stacked,
+        Err(err) => {
+            panic!("Error stacking channels: {}", err);
+        }
+    };
+    Image { data: gray_stacked }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::io::functions as F;
+
+    #[test]
+    fn grayscale_from_rgb() {
+        let image_path = std::path::Path::new("tests/data/dog.jpeg");
+        let image = F::read_image_jpeg(image_path);
+        let gray = super::grayscale_from_rgb(image);
+        assert_eq!(gray.num_channels(), 3);
+        assert_eq!(gray.image_size().width, 258);
+        assert_eq!(gray.image_size().height, 195);
+    }
+}
