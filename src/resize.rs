@@ -61,9 +61,7 @@ fn nearest_neighbor_interpolation(image: Image, u: f32, v: f32, c: usize) -> f32
     let iu = iu.clamp(0, width - 1);
     let iv = iv.clamp(0, height - 1);
 
-    let val = image.data[[iv, iu, c]] as f32;
-
-    val
+    image.data[[iv, iu, c]] as f32
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -118,6 +116,7 @@ pub fn resize(image: Image, new_size: ImageSize, optional_args: ResizeOptions) -
     //}
 
     // TODO: benchmark this
+    // stack the x and y coordinates into a single array of shape (height, width, 2)
     let xy = stack![ndarray::Axis(2), xx, yy];
 
     Zip::from(xy.rows())
@@ -126,30 +125,18 @@ pub fn resize(image: Image, new_size: ImageSize, optional_args: ResizeOptions) -
             assert_eq!(xy.len(), 2);
             let x = xy[0];
             let y = xy[1];
-            //println!("x: {:?}", x);
-            //println!("y: {:?}", y);
-            //println!("###########3");
-            //println!("out: {:?}", out.shape());
+
+            // TODO: this assumes 3 channels
             for k in [0, 1, 2].iter() {
-                //output[[i, j, k]] = image_data[[y as usize, x as usize, k]];
-                //out[*k] = bilinear_interpolation(image.clone(), x, y, *k) as u8;
-                //out[*k] = nearest_neighbor_interpolation(image.clone(), x, y, *k) as u8;
-                //out[*k] = match interpolation {
-                //    Interpolation::Bilinear => bilinear_interpolation(image.clone(), x, y, *k) as u8,
-                //    Interpolation::NearestNeighbor => nearest_neighbor_interpolation(image.clone(), x, y, *k) as u8,
-                //};
-                match optional_args.interpolation {
+                out[*k] = match optional_args.interpolation {
                     InterpolationMode::Bilinear => {
-                        out[*k] = bilinear_interpolation(image.clone(), x, y, *k) as u8
+                        bilinear_interpolation(image.clone(), x, y, *k) as u8
                     }
                     InterpolationMode::NearestNeighbor => {
-                        out[*k] = nearest_neighbor_interpolation(image.clone(), x, y, *k) as u8
+                        nearest_neighbor_interpolation(image.clone(), x, y, *k) as u8
                     }
-                }
+                };
             }
-            //for k in 0..3 {
-            //    out[k] = bilinear_interpolation(image.clone(), x, y, k) as u8;
-            //}
         });
 
     Image { data: output }
