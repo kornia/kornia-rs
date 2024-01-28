@@ -1,5 +1,3 @@
-use std::ops::Deref;
-
 use crate::image::Image;
 use ndarray::{Array3, Zip};
 

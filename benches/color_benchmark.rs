@@ -2,9 +2,11 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 
 use kornia_rs::color as F;
 use kornia_rs::image::{Image, ImageSize};
+use kornia_rs::resize as FR;
 
 use candle_core::{DType, Device, Storage, Tensor};
 use ndarray::{s, stack, Axis};
+use std::ops::Deref;
 
 // vanilla version
 fn gray_iter(image: Image) -> Image {

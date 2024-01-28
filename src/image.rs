@@ -1,3 +1,6 @@
+use crate::io;
+use std::path::Path;
+
 /// Image size in pixels
 ///
 /// A struct to represent the size of an image in pixels.
@@ -32,12 +35,11 @@ impl std::fmt::Display for ImageSize {
     }
 }
 
-pub type ImageData8C3 = ndarray::Array<u8, ndarray::Dim<[usize; 3]>>;
-pub type ImageData8C1 = ndarray::Array<u8, ndarray::Dim<[usize; 1]>>;
-
 #[derive(Clone)]
+/// Represents an image with pixel data.
 pub struct Image {
-    pub data: ImageData8C3,
+    /// The pixel data of the image.
+    pub data: ndarray::Array<u8, ndarray::Dim<[usize; 3]>>,
 }
 
 impl Image {
@@ -72,6 +74,13 @@ impl Image {
         };
         Image { data: image }
     }
+
+    pub fn from_file(image_path: &Path) -> Image {
+        match image_path.extension().and_then(|ext| ext.to_str()) {
+            Some("jpeg") | Some("jpg") => io::functions::read_image_jpeg(image_path),
+            _ => io::functions::read_image_any(image_path),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -99,6 +108,25 @@ mod tests {
         );
         assert_eq!(image.image_size().width, 10);
         assert_eq!(image.image_size().height, 20);
+        assert_eq!(image.num_channels(), 3);
+    }
+
+    #[test]
+    fn image_from_file() {
+        use crate::image::Image;
+        let image_path = std::path::Path::new("tests/data/dog.jpeg");
+        let image = Image::from_file(image_path);
+        assert_eq!(image.image_size().width, 258);
+        assert_eq!(image.image_size().height, 195);
+        assert_eq!(image.num_channels(), 3);
+    }
+
+    #[test]
+    fn image_from_vec() {
+        use crate::image::Image;
+        let image = Image::from_shape_vec([2, 2, 3], vec![0; 2 * 2 * 3]);
+        assert_eq!(image.image_size().width, 2);
+        assert_eq!(image.image_size().height, 2);
         assert_eq!(image.num_channels(), 3);
     }
 }

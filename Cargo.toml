@@ -22,3 +22,7 @@ candle-core = "0.3.2"
 [[bench]]
 name = "color_benchmark"
 harness = false
+
+[[bench]]
+name = "imgproc_benchmark"
+harness = false
