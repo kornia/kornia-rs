@@ -7,7 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image = F::read_image_jpeg(image_path);
 
     // convert the image to grayscale
-    let gray = kornia_rs::color::grayscale_from_rgb(image.clone());
+    let gray = kornia_rs::color::gray_from_rgb(image.clone());
 
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").connect()?;

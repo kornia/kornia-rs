@@ -22,6 +22,16 @@ pub struct ImageSize {
     pub height: usize,
 }
 
+impl std::fmt::Display for ImageSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "ImageSize {{ width: {}, height: {} }}",
+            self.width, self.height
+        )
+    }
+}
+
 pub type ImageData8C3 = ndarray::Array<u8, ndarray::Dim<[usize; 3]>>;
 pub type ImageData8C1 = ndarray::Array<u8, ndarray::Dim<[usize; 1]>>;
 
@@ -51,6 +61,16 @@ impl Image {
 
     pub fn num_channels(&self) -> usize {
         self.data.shape()[2]
+    }
+
+    pub fn from_shape_vec(shape: [usize; 3], data: Vec<u8>) -> Image {
+        let image = match ndarray::Array::<u8, _>::from_shape_vec(shape, data) {
+            Ok(image) => image,
+            Err(err) => {
+                panic!("Error converting image: {}", err);
+            }
+        };
+        Image { data: image }
     }
 }
 

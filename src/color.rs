@@ -1,27 +1,27 @@
+use std::ops::Deref;
+
 use crate::image::Image;
-use ndarray::{s, stack, Axis};
+use ndarray::{Array3, Zip};
 
-pub fn grayscale_from_rgb(image: Image) -> Image {
-    // convert to f32
-    let mut image_f32 = image.data.mapv(|x| x as f32);
+pub fn gray_from_rgb(image: Image) -> Image {
+    let image_data = image.data;
+    let mut output = Array3::<u8>::zeros(image_data.dim());
 
-    // get channels
-    let mut binding = image_f32.view_mut();
-    let (r, g, b) = binding.multi_slice_mut((s![.., .., 0], s![.., .., 1], s![.., .., 2]));
+    Zip::from(output.rows_mut())
+        .and(image_data.rows())
+        .par_for_each(|mut out, inp| {
+            assert!(inp.len() == 3);
+            let r = inp[0] as f32;
+            let g = inp[1] as f32;
+            let b = inp[2] as f32;
+            let gray = (76. * r + 150. * g + 29. * b) / 255.;
 
-    // weighted sum
-    // TODO: check data type, for u8 or f32/f64
-    let gray_f32 = (&r * 76.0 + &g * 150.0 + &b * 29.0) / 255.0;
-    let gray_u8 = gray_f32.mapv(|x| x as u8);
+            out[0] = gray as u8;
+            out[1] = gray as u8;
+            out[2] = gray as u8;
+        });
 
-    // TODO: ideally we stack the channels. Not working yet.
-    let gray_stacked = match stack(Axis(2), &[gray_u8.view(), gray_u8.view(), gray_u8.view()]) {
-        Ok(gray_stacked) => gray_stacked,
-        Err(err) => {
-            panic!("Error stacking channels: {}", err);
-        }
-    };
-    Image { data: gray_stacked }
+    Image { data: output }
 }
 
 #[cfg(test)]
@@ -29,10 +29,10 @@ mod tests {
     use crate::io::functions as F;
 
     #[test]
-    fn grayscale_from_rgb() {
+    fn gray_from_rgb() {
         let image_path = std::path::Path::new("tests/data/dog.jpeg");
         let image = F::read_image_jpeg(image_path);
-        let gray = super::grayscale_from_rgb(image);
+        let gray = super::gray_from_rgb(image);
         assert_eq!(gray.num_channels(), 3);
         assert_eq!(gray.image_size().width, 258);
         assert_eq!(gray.image_size().height, 195);

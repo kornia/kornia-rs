@@ -11,12 +11,13 @@ license-file = "LICENSE"
 [dependencies]
 image = { version = "0.24.5" }
 turbojpeg = {version = "0.5.2"}
-ndarray = { version = "0.15.6" }
+ndarray = { version = "0.15.6", features = ["rayon"] }
 
 [dev-dependencies]
 tempfile = "3.9.0"
 rerun = "0.12.1"
-criterion = { version = "0.4", features = ["html_reports"] }
+criterion = { version = "0.5.1", features = ["html_reports"] }
+candle-core = "0.3.2"
 
 [[bench]]
 name = "color_benchmark"
