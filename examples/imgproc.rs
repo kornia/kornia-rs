@@ -12,8 +12,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gray_resize = kornia_rs::resize::resize(
         gray.clone(),
         kornia_rs::image::ImageSize {
-            width: 1024,
-            height: 768,
+            width: 128,
+            height: 128,
         },
         kornia_rs::resize::ResizeOptions {
             interpolation: kornia_rs::resize::InterpolationMode::Bilinear,

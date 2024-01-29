@@ -1,7 +1,7 @@
 use crate::image::{Image, ImageSize};
-use ndarray::{stack, Array, Array2, Array3, Ix2, Zip};
+use ndarray::{stack, Array2, Array3, Zip};
 
-fn meshgrid(x: &Array<f32, Ix2>, y: &Array<f32, Ix2>) -> (Array2<f32>, Array2<f32>) {
+fn meshgrid(x: &Array2<f32>, y: &Array2<f32>) -> (Array2<f32>, Array2<f32>) {
     let nx = x.len_of(ndarray::Axis(1));
     let ny = y.len_of(ndarray::Axis(1));
     //println!("nx: {:?}", nx);
@@ -18,28 +18,25 @@ fn meshgrid(x: &Array<f32, Ix2>, y: &Array<f32, Ix2>) -> (Array2<f32>, Array2<f3
     (xx, yy)
 }
 
-fn bilinear_interpolation(image: Image, u: f32, v: f32, c: usize) -> f32 {
-    let image_size = image.image_size();
-    let height = image_size.height;
-    let width = image_size.width;
-
+fn bilinear_interpolation(image: &Array3<u8>, u: f32, v: f32, c: usize) -> f32 {
+    let (height, width, _) = image.dim();
     let iu = u.trunc() as usize;
     let iv = v.trunc() as usize;
     let frac_u = u.fract();
     let frac_v = v.fract();
-    let val00 = image.data[[iv, iu, c]] as f32;
+    let val00 = image[[iv, iu, c]] as f32;
     let val01 = if iu + 1 < width {
-        image.data[[iv, iu + 1, c]] as f32
+        image[[iv, iu + 1, c]] as f32
     } else {
         val00
     };
     let val10 = if iv + 1 < height {
-        image.data[[iv + 1, iu, c]] as f32
+        image[[iv + 1, iu, c]] as f32
     } else {
         val00
     };
     let val11 = if iu + 1 < width && iv + 1 < height {
-        image.data[[iv + 1, iu + 1, c]] as f32
+        image[[iv + 1, iu + 1, c]] as f32
     } else {
         val00
     };
@@ -50,10 +47,8 @@ fn bilinear_interpolation(image: Image, u: f32, v: f32, c: usize) -> f32 {
         + val11 * frac_u * frac_v
 }
 
-fn nearest_neighbor_interpolation(image: Image, u: f32, v: f32, c: usize) -> f32 {
-    let image_size = image.image_size();
-    let height = image_size.height;
-    let width = image_size.width;
+fn nearest_neighbor_interpolation(image: &Array3<u8>, u: f32, v: f32, c: usize) -> f32 {
+    let (height, width, _) = image.dim();
 
     let iu = u.round() as usize;
     let iv = v.round() as usize;
@@ -61,7 +56,7 @@ fn nearest_neighbor_interpolation(image: Image, u: f32, v: f32, c: usize) -> f32
     let iu = iu.clamp(0, width - 1);
     let iv = iv.clamp(0, height - 1);
 
-    image.data[[iv, iu, c]] as f32
+    image[[iv, iu, c]] as f32
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -121,21 +116,19 @@ pub fn resize(image: Image, new_size: ImageSize, optional_args: ResizeOptions) -
 
     Zip::from(xy.rows())
         .and(output.rows_mut())
-        .par_for_each(|xy, mut out| {
-            assert_eq!(xy.len(), 2);
-            let x = xy[0];
-            let y = xy[1];
+        .par_for_each(|uv, mut out| {
+            assert_eq!(uv.len(), 2);
+            let (u, v) = (uv[0], uv[1]);
 
             // TODO: this assumes 3 channels
             for k in [0, 1, 2].iter() {
-                out[*k] = match optional_args.interpolation {
-                    InterpolationMode::Bilinear => {
-                        bilinear_interpolation(image.clone(), x, y, *k) as u8
-                    }
+                let pixel = match optional_args.interpolation {
+                    InterpolationMode::Bilinear => bilinear_interpolation(&image.data, u, v, *k),
                     InterpolationMode::NearestNeighbor => {
-                        nearest_neighbor_interpolation(image.clone(), x, y, *k) as u8
+                        nearest_neighbor_interpolation(&image.data, u, v, *k)
                     }
                 };
+                out[*k] = pixel as u8;
             }
         });
 

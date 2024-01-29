@@ -1,6 +1,11 @@
 use crate::image::Image;
 use ndarray::{Array3, Zip};
 
+// TODO: ideally we want something like this:
+// let rgb: Image<u8, RGB> = load_image("image.jpg");
+// let gray: Image<u8, GRAY> = image.map(|x| (76. * x[0] + 150. * x[1] + 29. * x[2]) / 255.);
+// or automatically:
+// let gray = Image<u8, 1>::try_from(rgb);
 pub fn gray_from_rgb(image: Image) -> Image {
     let image_data = image.data;
     let mut output = Array3::<u8>::zeros(image_data.dim());
