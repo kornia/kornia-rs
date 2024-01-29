@@ -45,7 +45,7 @@ pub struct Image {
 impl Image {
     pub fn new(shape: ImageSize, data: Vec<u8>) -> Image {
         let image =
-            match ndarray::Array::<u8, _>::from_shape_vec([shape.height, shape.width, 3], data) {
+            match ndarray::Array::<u8, _>::from_shape_vec((shape.height, shape.width, 3), data) {
                 Ok(image) => image,
                 Err(err) => {
                     panic!("Error converting image: {}", err);
