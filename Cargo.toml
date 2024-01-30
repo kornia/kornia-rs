@@ -17,7 +17,7 @@ ndarray = { version = "0.15.6", features = ["rayon"] }
 tempfile = "3.9.0"
 rerun = "0.12.1"
 criterion = { version = "0.5.1", features = ["html_reports"] }
-candle-core = "0.3.2"
+#candle-core = "0.3.2"
 
 [[bench]]
 name = "color_benchmark"
