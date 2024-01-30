@@ -7,10 +7,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image = F::read_image_jpeg(image_path);
 
     // convert the image to grayscale
-    let gray = kornia_rs::color::gray_from_rgb(image.clone());
+    let gray = kornia_rs::color::gray_from_rgb(&image);
 
     let gray_resize = kornia_rs::resize::resize(
-        gray.clone(),
+        &gray,
         kornia_rs::image::ImageSize {
             width: 128,
             height: 128,

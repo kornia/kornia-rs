@@ -77,7 +77,7 @@ impl Default for ResizeOptions {
     }
 }
 
-pub fn resize(image: Image, new_size: ImageSize, optional_args: ResizeOptions) -> Image {
+pub fn resize(image: &Image, new_size: ImageSize, optional_args: ResizeOptions) -> Image {
     let image_size = image.image_size();
 
     // create the output image
@@ -143,7 +143,7 @@ mod tests {
         use crate::image::{Image, ImageSize};
         let image = Image::from_shape_vec([4, 5, 3], vec![0; 4 * 5 * 3]);
         let image_resized = super::resize(
-            image,
+            &image,
             ImageSize {
                 width: 2,
                 height: 3,

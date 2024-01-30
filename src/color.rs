@@ -6,8 +6,8 @@ use ndarray::{Array3, Zip};
 // let gray: Image<u8, GRAY> = image.map(|x| (76. * x[0] + 150. * x[1] + 29. * x[2]) / 255.);
 // or automatically:
 // let gray = Image<u8, 1>::try_from(rgb);
-pub fn gray_from_rgb(image: Image) -> Image {
-    let image_data = image.data;
+pub fn gray_from_rgb(image: &Image) -> Image {
+    let image_data = &image.data;
     let mut output = Array3::<u8>::zeros(image_data.dim());
 
     Zip::from(output.rows_mut())
@@ -35,7 +35,7 @@ mod tests {
     fn gray_from_rgb() {
         let image_path = std::path::Path::new("tests/data/dog.jpeg");
         let image = F::read_image_jpeg(image_path);
-        let gray = super::gray_from_rgb(image);
+        let gray = super::gray_from_rgb(&image);
         assert_eq!(gray.num_channels(), 3);
         assert_eq!(gray.image_size().width, 258);
         assert_eq!(gray.image_size().height, 195);
