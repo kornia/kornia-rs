@@ -26,9 +26,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
         with:
-          #toolchain: stable
-          #profile: minimal
-          toolchain: nightly
+          toolchain: stable
+          profile: minimal
           target: ${{ matrix.target }}
           override: true
       - uses: actions-rs/cargo@v1

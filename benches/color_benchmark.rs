@@ -2,10 +2,12 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 
 use kornia_rs::color as F;
 use kornia_rs::image::{Image, ImageSize};
-use kornia_rs::resize as FR;
-
-use candle_core::{DType, Device, Storage, Tensor};
 use ndarray::{s, stack, Axis};
+
+#[cfg(feature = "candle")]
+use candle_core::{DType, Device, Storage, Tensor};
+
+#[cfg(feature = "candle")]
 use std::ops::Deref;
 
 // vanilla version
@@ -50,44 +52,45 @@ fn gray_vec(image: Image) -> Image {
     Image { data: gray_stacked }
 }
 
-//fn gray_candle(image: Image) -> Image {
-//    let image_data = image.data.as_slice().unwrap();
-//    let shape = (image.image_size().height, image.image_size().width, 3);
-//
-//    let device = Device::Cpu;
-//    let image_u8 = Tensor::from_vec(image_data.to_vec(), shape, &device).unwrap();
-//    //println!("image_t: {:?}", image_u8.shape());
-//
-//    let image_f32 = image_u8.to_dtype(DType::F32).unwrap();
-//
-//    let weight = Tensor::from_vec(vec![76.0f32, 150.0, 29.0], (1, 1, 3), &device).unwrap();
-//
-//    let gray_f32 = image_f32.broadcast_mul(&weight).unwrap();
-//    let gray_f32 = gray_f32.sum_keepdim(2).unwrap();
-//    let gray_f32 = (gray_f32 / 255.0).unwrap();
-//    let gray_f32 = gray_f32.repeat((1, 1, 3)).unwrap();
-//    //println!("gray_f32: {:?}", gray_f32.shape());
-//
-//    let gray_u8 = gray_f32.to_dtype(DType::U8).unwrap();
-//
-//    // https://github.com/huggingface/candle/issues/973
-//    let (storage, layout) = gray_u8.storage_and_layout();
-//
-//    let data = match storage.deref() {
-//        Storage::Cpu(storage) => {
-//            let data = storage.as_slice().unwrap();
-//            data.to_vec()
-//        }
-//        Storage::Cuda(_) => {
-//            panic!("Cuda not implemented yet");
-//        }
-//        Storage::Metal(_) => {
-//            panic!("Metal not implemented yet");
-//        }
-//    };
-//
-//    Image::from_shape_vec([shape.0, shape.1, shape.2], data)
-//}
+#[cfg(feature = "candle")]
+fn gray_candle(image: Image) -> Image {
+    let image_data = image.data.as_slice().unwrap();
+    let shape = (image.image_size().height, image.image_size().width, 3);
+
+    let device = Device::Cpu;
+    let image_u8 = Tensor::from_vec(image_data.to_vec(), shape, &device).unwrap();
+    //println!("image_t: {:?}", image_u8.shape());
+
+    let image_f32 = image_u8.to_dtype(DType::F32).unwrap();
+
+    let weight = Tensor::from_vec(vec![76.0f32, 150.0, 29.0], (1, 1, 3), &device).unwrap();
+
+    let gray_f32 = image_f32.broadcast_mul(&weight).unwrap();
+    let gray_f32 = gray_f32.sum_keepdim(2).unwrap();
+    let gray_f32 = (gray_f32 / 255.0).unwrap();
+    let gray_f32 = gray_f32.repeat((1, 1, 3)).unwrap();
+    //println!("gray_f32: {:?}", gray_f32.shape());
+
+    let gray_u8 = gray_f32.to_dtype(DType::U8).unwrap();
+
+    // https://github.com/huggingface/candle/issues/973
+    let (storage, _layout) = gray_u8.storage_and_layout();
+
+    let data = match storage.deref() {
+        Storage::Cpu(storage) => {
+            let data = storage.as_slice().unwrap();
+            data.to_vec()
+        }
+        Storage::Cuda(_) => {
+            panic!("Cuda not implemented yet");
+        }
+        Storage::Metal(_) => {
+            panic!("Metal not implemented yet");
+        }
+    };
+
+    Image::from_shape_vec([shape.0, shape.1, shape.2], data)
+}
 
 fn bench_grayscale(c: &mut Criterion) {
     let mut group = c.benchmark_group("Grayscale");
@@ -106,9 +109,10 @@ fn bench_grayscale(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("vec", &id), &image, |b, i| {
             b.iter(|| gray_vec(black_box(i.clone())))
         });
-        //group.bench_with_input(BenchmarkId::new("candle", &id), &image, |b, i| {
-        //    b.iter(|| gray_candle(black_box(i.clone())))
-        //});
+        #[cfg(feature = "candle")]
+        group.bench_with_input(BenchmarkId::new("candle", &id), &image, |b, i| {
+            b.iter(|| gray_candle(black_box(i.clone())))
+        });
     }
     group.finish();
 }

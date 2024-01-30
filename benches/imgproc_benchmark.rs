@@ -2,6 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 
 use kornia_rs::image::{Image, ImageSize};
 use kornia_rs::resize as F;
+use kornia_rs::resize::ResizeOptions;
 
 fn bench_resize(c: &mut Criterion) {
     let mut group = c.benchmark_group("Resize");
@@ -16,7 +17,13 @@ fn bench_resize(c: &mut Criterion) {
             height: height / 2,
         };
         group.bench_with_input(BenchmarkId::new("iter", &id), &image, |b, i| {
-            b.iter(|| F::resize(black_box(i.clone()), new_size.clone()))
+            b.iter(|| {
+                F::resize(
+                    black_box(i.clone()),
+                    new_size.clone(),
+                    ResizeOptions::default(),
+                )
+            })
         });
     }
     group.finish();
