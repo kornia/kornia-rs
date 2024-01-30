@@ -28,7 +28,7 @@ jobs:
         with:
           command: login
           args: ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }}
-      - name: Cargo Publish 
+      - name: Cargo Publish
         uses: actions-rs/cargo@v1
         with:
           command: publish
