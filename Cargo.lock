@@ -2859,6 +2859,7 @@ dependencies = [
  "criterion",
  "image",
  "ndarray",
+ "num-traits",
  "rerun",
  "tempfile",
  "turbojpeg",

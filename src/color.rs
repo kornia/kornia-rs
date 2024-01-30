@@ -7,11 +7,12 @@ use ndarray::{Array3, Zip};
 // or automatically:
 // let gray = Image<u8, 1>::try_from(rgb);
 pub fn gray_from_rgb(image: &Image) -> Image {
-    let image_data = &image.data;
-    let mut output = Array3::<u8>::zeros(image_data.dim());
+    // TODO: implement this using a map or cast
+    // let image_f32 = image.cast::<f32>();
+    let mut output = Array3::<u8>::zeros(image.data.dim());
 
     Zip::from(output.rows_mut())
-        .and(image_data.rows())
+        .and(image.data.rows())
         .par_for_each(|mut out, inp| {
             assert!(inp.len() == 3);
             let r = inp[0] as f32;

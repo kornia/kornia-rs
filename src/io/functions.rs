@@ -13,7 +13,7 @@ use super::jpeg::{ImageDecoder, ImageEncoder};
 /// # Returns
 ///
 /// A tensor containing the JPEG image data.
-pub fn read_image_jpeg(file_path: &Path) -> Image {
+pub fn read_image_jpeg(file_path: &Path) -> Image<u8> {
     // verify the file exists and is a JPEG
     if !file_path.exists() {
         panic!("File does not exist: {}", file_path.to_str().unwrap());

@@ -9,6 +9,7 @@ categories = ["image-processing", "computer-vision", "machine-learning"]
 license-file = "LICENSE"
 
 [dependencies]
+num-traits = "0.2.17"
 image = { version = "0.24.5" }
 turbojpeg = {version = "0.5.2"}
 ndarray = { version = "0.15.6", features = ["rayon"] }
