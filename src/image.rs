@@ -38,7 +38,8 @@ impl std::fmt::Display for ImageSize {
 #[derive(Clone)]
 /// Represents an image with pixel data.
 pub struct Image<T = u8> {
-    /// The pixel data of the image.
+    /// The pixel data of the image. Is mutable so that we can manipulate the image
+    /// from the outside.
     pub data: ndarray::Array<T, ndarray::Dim<[usize; 3]>>,
 }
 
