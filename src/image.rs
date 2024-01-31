@@ -60,6 +60,7 @@ impl<T> Image<T> {
         Image { data: image }
     }
 
+    // TODO: implement without `num_traits`
     pub fn cast<U>(&self) -> Image<U>
     where
         T: num_traits::cast::AsPrimitive<U>,
@@ -96,6 +97,9 @@ impl<T> Image<T> {
             _ => io::functions::read_image_any(image_path),
         }
     }
+
+    // TODO: implement from bytes
+    // pub fn from_bytes(bytes: &[u8]) -> Image {
 }
 
 #[cfg(test)]
@@ -157,5 +161,14 @@ mod tests {
 
         let image_i32: Image<i32> = image_u8.cast();
         assert_eq!(image_i32.data.get((1, 0, 2)).unwrap(), &5i32);
+    }
+
+    #[test]
+    fn image_rgbd() {
+        use crate::image::Image;
+        let image = Image::from_shape_vec([2, 2, 4], vec![0f32; 2 * 2 * 4]);
+        assert_eq!(image.image_size().width, 2);
+        assert_eq!(image.image_size().height, 2);
+        assert_eq!(image.num_channels(), 4);
     }
 }

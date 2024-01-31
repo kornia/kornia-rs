@@ -81,7 +81,7 @@ pub fn resize(image: &Image, new_size: ImageSize, optional_args: ResizeOptions) 
     let image_size = image.image_size();
 
     // create the output image
-    let mut output = Array3::<u8>::zeros((new_size.height, new_size.width, 3));
+    let mut output = Array3::<u8>::zeros((new_size.height, new_size.width, image.num_channels()));
 
     // create a grid of x and y coordinates for the output image
     // and interpolate the values from the input image.
@@ -120,15 +120,17 @@ pub fn resize(image: &Image, new_size: ImageSize, optional_args: ResizeOptions) 
             assert_eq!(uv.len(), 2);
             let (u, v) = (uv[0], uv[1]);
 
-            // TODO: this assumes 3 channels
-            for k in [0, 1, 2].iter() {
-                let pixel = match optional_args.interpolation {
-                    InterpolationMode::Bilinear => bilinear_interpolation(&image.data, u, v, *k),
-                    InterpolationMode::NearestNeighbor => {
-                        nearest_neighbor_interpolation(&image.data, u, v, *k)
-                    }
-                };
-                out[*k] = pixel as u8;
+            // compute the pixel values for each channel
+            let pixels = (0..image.num_channels()).map(|k| match optional_args.interpolation {
+                InterpolationMode::Bilinear => bilinear_interpolation(&image.data, u, v, k),
+                InterpolationMode::NearestNeighbor => {
+                    nearest_neighbor_interpolation(&image.data, u, v, k)
+                }
+            });
+
+            // write the pixel values to the output image
+            for (k, pixel) in pixels.enumerate() {
+                out[k] = pixel as u8;
             }
         });
 
@@ -139,7 +141,7 @@ pub fn resize(image: &Image, new_size: ImageSize, optional_args: ResizeOptions) 
 mod tests {
 
     #[test]
-    fn resize_smoke() {
+    fn resize_smoke_ch3() {
         use crate::image::{Image, ImageSize};
         let image = Image::from_shape_vec([4, 5, 3], vec![0; 4 * 5 * 3]);
         let image_resized = super::resize(
@@ -151,6 +153,23 @@ mod tests {
             super::ResizeOptions::default(),
         );
         assert_eq!(image_resized.num_channels(), 3);
+        assert_eq!(image_resized.image_size().width, 2);
+        assert_eq!(image_resized.image_size().height, 3);
+    }
+
+    #[test]
+    fn resize_smoke_ch1() {
+        use crate::image::{Image, ImageSize};
+        let image = Image::from_shape_vec([4, 5, 1], vec![0; 4 * 5 * 1]);
+        let image_resized = super::resize(
+            &image,
+            ImageSize {
+                width: 2,
+                height: 3,
+            },
+            super::ResizeOptions::default(),
+        );
+        assert_eq!(image_resized.num_channels(), 1);
         assert_eq!(image_resized.image_size().width, 2);
         assert_eq!(image_resized.image_size().height, 3);
     }

@@ -7,9 +7,16 @@ use ndarray::{Array3, Zip};
 // or automatically:
 // let gray = Image<u8, 1>::try_from(rgb);
 pub fn gray_from_rgb(image: &Image) -> Image {
+    assert_eq!(image.num_channels(), 3);
+
     // TODO: implement this using a map or cast
     // let image_f32 = image.cast::<f32>();
-    let mut output = Array3::<u8>::zeros(image.data.dim());
+    //let mut output = Array3::<u8>::zeros(image.data.dim());
+    let mut output = Array3::<u8>::zeros((
+        image.image_size().height as usize,
+        image.image_size().width as usize,
+        1,
+    ));
 
     Zip::from(output.rows_mut())
         .and(image.data.rows())
@@ -21,8 +28,6 @@ pub fn gray_from_rgb(image: &Image) -> Image {
             let gray = (76. * r + 150. * g + 29. * b) / 255.;
 
             out[0] = gray as u8;
-            out[1] = gray as u8;
-            out[2] = gray as u8;
         });
 
     Image { data: output }
@@ -37,7 +42,7 @@ mod tests {
         let image_path = std::path::Path::new("tests/data/dog.jpeg");
         let image = F::read_image_jpeg(image_path);
         let gray = super::gray_from_rgb(&image);
-        assert_eq!(gray.num_channels(), 3);
+        assert_eq!(gray.num_channels(), 1);
         assert_eq!(gray.image_size().width, 258);
         assert_eq!(gray.image_size().height, 195);
     }
