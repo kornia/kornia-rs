@@ -30,5 +30,5 @@ name = "color_benchmark"
 harness = false
 
 [[bench]]
-name = "imgproc_benchmark"
+name = "resize_benchmark"
 harness = false

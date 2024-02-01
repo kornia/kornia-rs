@@ -92,22 +92,43 @@ fn gray_candle(image: Image) -> Image {
     Image::from_shape_vec([shape.0, shape.1, shape.2], data)
 }
 
+fn gray_image_crate(image: Image) -> Image {
+    let image_data = image.data.as_slice().unwrap();
+    let rgb = image::RgbImage::from_raw(
+        image.image_size().width as u32,
+        image.image_size().height as u32,
+        image_data.to_vec(),
+    )
+    .unwrap();
+    let image_crate = image::DynamicImage::ImageRgb8(rgb);
+
+    let image_gray = image_crate.grayscale();
+
+    Image::from_shape_vec(
+        [image_gray.height() as usize, image_gray.width() as usize, 1],
+        image_gray.into_bytes(),
+    )
+}
+
 fn bench_grayscale(c: &mut Criterion) {
     let mut group = c.benchmark_group("Grayscale");
     let image_sizes = vec![(256, 224), (512, 448), (1024, 896)];
 
     for (width, height) in image_sizes {
-        let image_size = ImageSize { width, height };
         let id = format!("{}x{}", width, height);
-        let image = Image::new(image_size.clone(), vec![0; width * height * 3]);
+        let image_data = vec![0u8; width * height * 3];
+        let image = Image::from_shape_vec([height, width, 3], image_data);
         group.bench_with_input(BenchmarkId::new("zip", &id), &image, |b, i| {
-            b.iter(|| F::gray_from_rgb(black_box(i.clone())))
+            b.iter(|| F::gray_from_rgb(black_box(i)))
         });
         group.bench_with_input(BenchmarkId::new("iter", &id), &image, |b, i| {
             b.iter(|| gray_iter(black_box(i.clone())))
         });
         group.bench_with_input(BenchmarkId::new("vec", &id), &image, |b, i| {
             b.iter(|| gray_vec(black_box(i.clone())))
+        });
+        group.bench_with_input(BenchmarkId::new("image_crate", &id), &image, |b, i| {
+            b.iter(|| gray_image_crate(black_box(i.clone())))
         });
         #[cfg(feature = "candle")]
         group.bench_with_input(BenchmarkId::new("candle", &id), &image, |b, i| {
