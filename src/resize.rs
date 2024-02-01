@@ -22,6 +22,7 @@ fn bilinear_interpolation(image: &Array3<u8>, u: f32, v: f32, c: usize) -> f32 {
     let (height, width, _) = image.dim();
     let iu = u.trunc() as usize;
     let iv = v.trunc() as usize;
+
     let frac_u = u.fract();
     let frac_v = v.fract();
     let val00 = image[[iv, iu, c]] as f32;
@@ -41,9 +42,12 @@ fn bilinear_interpolation(image: &Array3<u8>, u: f32, v: f32, c: usize) -> f32 {
         val00
     };
 
-    val00 * (1. - frac_u) * (1. - frac_v)
-        + val01 * frac_u * (1. - frac_v)
-        + val10 * (1. - frac_u) * frac_v
+    let frac_uu = 1. - frac_u;
+    let frac_vv = 1. - frac_v;
+
+    val00 * frac_uu * frac_vv
+        + val01 * frac_u * frac_vv
+        + val10 * frac_uu * frac_v
         + val11 * frac_u * frac_v
 }
 
@@ -126,6 +130,7 @@ pub fn resize(image: &Image, new_size: ImageSize, optional_args: ResizeOptions) 
                 InterpolationMode::NearestNeighbor => {
                     nearest_neighbor_interpolation(&image.data, u, v, k)
                 }
+                _ => panic!("Interpolation mode not implemented"),
             });
 
             // write the pixel values to the output image
