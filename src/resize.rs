@@ -1,23 +1,54 @@
 use crate::image::{Image, ImageSize};
 use ndarray::{stack, Array2, Array3, Zip};
 
-fn meshgrid(x: &Array2<f32>, y: &Array2<f32>) -> (Array2<f32>, Array2<f32>) {
+/// Create a meshgrid of x and y coordinates
+///
+/// # Arguments
+///
+/// * `x` - A 1D array of x coordinates
+/// * `y` - A 1D array of y coordinates
+///
+/// # Returns
+///
+/// A tuple of 2D arrays of shape (height, width) containing the x and y coordinates
+///
+/// # Example
+///
+/// ```
+/// let x = ndarray::Array::linspace(0., 4., 5).insert_axis(ndarray::Axis(0));
+/// let y = ndarray::Array::linspace(0., 3., 4).insert_axis(ndarray::Axis(0));
+/// let (xx, yy) = kornia_rs::resize::meshgrid(&x, &y);
+/// assert_eq!(xx.shape(), &[4, 5]);
+/// assert_eq!(yy.shape(), &[4, 5]);
+/// assert_eq!(xx[[0, 0]], 0.);
+/// assert_eq!(xx[[0, 4]], 4.);
+/// ```
+pub fn meshgrid(x: &Array2<f32>, y: &Array2<f32>) -> (Array2<f32>, Array2<f32>) {
+    // create the meshgrid of x and y coordinates
     let nx = x.len_of(ndarray::Axis(1));
     let ny = y.len_of(ndarray::Axis(1));
-    //println!("nx: {:?}", nx);
-    //println!("ny: {:?}", ny);
 
-    //println!("x: {:?}", x.shape());
+    // broadcast the x and y coordinates to create a 2D grid, and then transpose the y coordinates
+    // to create the meshgrid of x and y coordinates of shape (height, width)
     let xx = x.broadcast((ny, nx)).unwrap().to_owned();
-    //println!("xx: {:?}", xx);
-
-    //println!("y: {:?}", y.shape());
     let yy = y.broadcast((nx, ny)).unwrap().t().to_owned();
-    //println!("yy: {:?}", yy);
 
     (xx, yy)
 }
 
+/// Kernel for bilinear interpolation
+///
+/// # Arguments
+///
+/// * `image` - The input image container.
+/// * `u` - The x coordinate of the pixel to interpolate.
+/// * `v` - The y coordinate of the pixel to interpolate.
+/// * `c` - The channel of the pixel to interpolate.
+///
+/// # Returns
+///
+/// The interpolated pixel value.
+// TODO: add support for other data types. Maybe use a trait? or template?
 fn bilinear_interpolation(image: &Array3<u8>, u: f32, v: f32, c: usize) -> f32 {
     let (height, width, _) = image.dim();
     let iu = u.trunc() as usize;
@@ -51,6 +82,18 @@ fn bilinear_interpolation(image: &Array3<u8>, u: f32, v: f32, c: usize) -> f32 {
         + val11 * frac_u * frac_v
 }
 
+/// Kernel for nearest neighbor interpolation
+///
+/// # Arguments
+///
+/// * `image` - The input image container.
+/// * `u` - The x coordinate of the pixel to interpolate.
+/// * `v` - The y coordinate of the pixel to interpolate.
+/// * `c` - The channel of the pixel to interpolate.
+///
+/// # Returns
+///
+/// The interpolated pixel value.
 fn nearest_neighbor_interpolation(image: &Array3<u8>, u: f32, v: f32, c: usize) -> f32 {
     let (height, width, _) = image.dim();
 
@@ -69,6 +112,7 @@ pub enum InterpolationMode {
     NearestNeighbor,
 }
 
+// TODO: implement builder pattern
 pub struct ResizeOptions {
     pub interpolation: InterpolationMode,
 }
@@ -81,6 +125,19 @@ impl Default for ResizeOptions {
     }
 }
 
+/// Resize an image to a new size
+///
+/// The function resizes an image to a new size using the specified interpolation mode.
+///
+/// # Arguments
+///
+/// * `image` - The input image container.
+/// * `new_size` - The new size of the image.
+/// * `optional_args` - Optional arguments for the resize operation.
+///
+/// # Returns
+///
+/// The resized image.
 pub fn resize(image: &Image, new_size: ImageSize, optional_args: ResizeOptions) -> Image {
     let image_size = image.image_size();
 
@@ -94,29 +151,14 @@ pub fn resize(image: &Image, new_size: ImageSize, optional_args: ResizeOptions) 
     let y = ndarray::Array::linspace(0., (image_size.height - 1) as f32, new_size.height)
         .insert_axis(ndarray::Axis(0));
 
+    // create the meshgrid of x and y coordinates, arranged in a 2D grid of shape (height, width)
     let (xx, yy) = meshgrid(&x, &y);
-    //println!("xx: {:?}", xx);
-    //println!("yy: {:?}", yy);
-
-    // TODO: parallelize this
-    //for i in 0..xx.shape()[0] {
-    //    for j in 0..xx.shape()[1] {
-    //        let x = xx[[i, j]];
-    //        let y = yy[[i, j]];
-    //        //println!("x: {:?}", x);
-    //        //println!("y: {:?}", y);
-    //        //println!("###########3");
-
-    //        for k in 0..3 {
-    //            //output[[i, j, k]] = image_data[[y as usize, x as usize, k]];
-    //            output[[i, j, k]] = bilinear_interpolation(image.clone(), x, y, k) as u8;
-    //        }
-    //    }
-    //}
 
     // TODO: benchmark this
     // stack the x and y coordinates into a single array of shape (height, width, 2)
     let xy = stack![ndarray::Axis(2), xx, yy];
+
+    // iterate over the output image and interpolate the pixel values
 
     Zip::from(xy.rows())
         .and(output.rows_mut())
@@ -130,7 +172,6 @@ pub fn resize(image: &Image, new_size: ImageSize, optional_args: ResizeOptions) 
                 InterpolationMode::NearestNeighbor => {
                     nearest_neighbor_interpolation(&image.data, u, v, k)
                 }
-                _ => panic!("Interpolation mode not implemented"),
             });
 
             // write the pixel values to the output image
@@ -177,5 +218,18 @@ mod tests {
         assert_eq!(image_resized.num_channels(), 1);
         assert_eq!(image_resized.image_size().width, 2);
         assert_eq!(image_resized.image_size().height, 3);
+    }
+
+    #[test]
+    fn meshgrid() {
+        let x = ndarray::Array::linspace(0., 4., 5).insert_axis(ndarray::Axis(0));
+        let y = ndarray::Array::linspace(0., 3., 4).insert_axis(ndarray::Axis(0));
+        let (xx, yy) = super::meshgrid(&x, &y);
+        assert_eq!(xx.shape(), &[4, 5]);
+        assert_eq!(yy.shape(), &[4, 5]);
+        assert_eq!(xx[[0, 0]], 0.);
+        assert_eq!(xx[[0, 4]], 4.);
+        assert_eq!(yy[[0, 0]], 0.);
+        assert_eq!(yy[[3, 0]], 3.);
     }
 }
