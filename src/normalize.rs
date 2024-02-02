@@ -16,9 +16,18 @@ pub fn normalize_mean_std(image: &Image<f32>, mean: &[f32; 3], std: &[f32; 3]) -
 }
 
 // TODO: implement this with generics
-pub fn find_min_max(image: &Image) -> (u8, u8) {
-    let mut min = &u8::MAX;
-    let mut max = &u8::MIN;
+pub fn find_min_max<T: PartialOrd>(image: &Image<T>) -> (T, T)
+where
+    T: Copy,
+{
+    // TODO: not sure if this is the best way to handle this
+    match image.data.len() {
+        0 => panic!("The image is empty"),
+        _ => (),
+    }
+
+    let mut min = &image.data[[0, 0, 0]];
+    let mut max = &image.data[[0, 0, 0]];
 
     for x in image.data.iter() {
         if x < min {
@@ -35,10 +44,7 @@ pub fn find_min_max(image: &Image) -> (u8, u8) {
 pub fn normalize_min_max(image: &Image<f32>, min: f32, max: f32) -> Image<f32> {
     let mut output = ndarray::Array3::<f32>::zeros(image.data.dim());
 
-    let (min_val, max_val) = find_min_max(&image.cast());
-
-    let min_val = min_val as f32;
-    let max_val = max_val as f32;
+    let (min_val, max_val) = find_min_max(&image);
 
     ndarray::Zip::from(output.rows_mut())
         .and(image.data.rows())
