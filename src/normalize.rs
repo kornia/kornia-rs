@@ -21,13 +21,14 @@ where
     T: Copy,
 {
     // TODO: not sure if this is the best way to handle this
-    match image.data.len() {
-        0 => panic!("The image is empty"),
-        _ => (),
-    }
 
-    let mut min = &image.data[[0, 0, 0]];
-    let mut max = &image.data[[0, 0, 0]];
+    let first_element = match image.data.iter().next() {
+        Some(x) => x,
+        None => panic!("The image is empty"),
+    };
+
+    let mut min = first_element;
+    let mut max = first_element;
 
     for x in image.data.iter() {
         if x < min {
