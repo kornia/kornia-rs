@@ -77,6 +77,14 @@ impl<T> Image<T> {
         }
     }
 
+    pub fn width(&self) -> usize {
+        self.data.shape()[1]
+    }
+
+    pub fn height(&self) -> usize {
+        self.data.shape()[0]
+    }
+
     pub fn num_channels(&self) -> usize {
         self.data.shape()[2]
     }
