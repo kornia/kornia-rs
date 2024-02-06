@@ -138,11 +138,18 @@ impl Default for ResizeOptions {
 /// # Returns
 ///
 /// The resized image.
-pub fn resize(image: &Image, new_size: ImageSize, optional_args: ResizeOptions) -> Image {
+pub fn resize<T, const CHANNELS: usize>(
+    image: &Image<T, CHANNELS>,
+    new_size: ImageSize,
+    optional_args: ResizeOptions,
+) -> Image<T, CHANNELS>
+where
+    T: num_traits::FromPrimitive + std::fmt::Debug + Send + Sync + Copy,
+{
     let image_size = image.image_size();
 
     // create the output image
-    let mut output = Array3::<u8>::zeros((new_size.height, new_size.width, image.num_channels()));
+    let mut output = ndarray::Array3::<T>::zeros((new_size.height, new_size.width, CHANNELS));
 
     // create a grid of x and y coordinates for the output image
     // and interpolate the values from the input image.
@@ -169,9 +176,9 @@ pub fn resize(image: &Image, new_size: ImageSize, optional_args: ResizeOptions) 
             // compute the pixel values for each channel
             let pixels = (0..image.num_channels()).map(|k| match optional_args.interpolation {
                 InterpolationMode::Bilinear => bilinear_interpolation(&image.data, u, v, k),
-                InterpolationMode::NearestNeighbor => {
-                    nearest_neighbor_interpolation(&image.data, u, v, k)
-                }
+                //InterpolationMode::NearestNeighbor => {
+                //    nearest_neighbor_interpolation(&image.data, u, v, k)
+                //}
             });
 
             // write the pixel values to the output image

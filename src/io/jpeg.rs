@@ -52,7 +52,7 @@ impl ImageEncoder {
     /// # Returns
     ///
     /// The encoded data as `Vec<u8>`.
-    pub fn encode(&mut self, image: Image) -> Vec<u8> {
+    pub fn encode(&mut self, image: Image<u8, 3>) -> Vec<u8> {
         // get the image data
         let image_data = match image.data.as_slice() {
             Some(d) => d,
@@ -81,7 +81,9 @@ impl ImageEncoder {
     ///
     /// * `quality` - The quality to set.
     pub fn set_quality(&mut self, quality: i32) {
-        self.compressor.set_quality(quality)
+        self.compressor
+            .set_quality(quality)
+            .expect("Error setting quality")
     }
 }
 
@@ -134,7 +136,7 @@ impl ImageDecoder {
     /// # Returns
     ///
     /// The decoded data as Tensor.
-    pub fn decode(&mut self, jpeg_data: &[u8]) -> Image {
+    pub fn decode(&mut self, jpeg_data: &[u8]) -> Image<u8, 3> {
         // get the image size to allocate th data storage
         let image_size: ImageSize = self.read_header(jpeg_data);
 
@@ -156,7 +158,7 @@ impl ImageDecoder {
             Err(e) => panic!("Error decompressing image: {}", e),
         };
 
-        Image::new(image_size, pixels)
+        Image::new(image_size, pixels).unwrap()
     }
 }
 

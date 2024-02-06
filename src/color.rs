@@ -1,5 +1,6 @@
 use crate::image::Image;
 use ndarray::{Array3, Zip};
+use num_traits::{Num, NumCast};
 
 // TODO: ideally we want something like this:
 // let rgb: Image<u8, RGB> = load_image("image.jpg");
@@ -20,9 +21,9 @@ use ndarray::{Array3, Zip};
 /// The grayscale image.
 ///
 /// Precondition: the input image must have 3 channels.
-pub fn gray_from_rgb<T>(image: &Image<T, 3>) -> Result<Image<T, 1>, String>
+pub fn gray_from_rgb<T>(image: &Image<T, 3>) -> Result<Image<T, 1>, std::io::Error>
 where
-    T: Clone + Default + Send + Sync + num_traits::NumCast + std::fmt::Debug + 'static,
+    T: Copy + Clone + Default + Send + Sync + num_traits::NumCast + std::fmt::Debug + 'static,
 {
     assert_eq!(image.num_channels(), 3);
 
@@ -36,15 +37,15 @@ where
         .and(image.data.rows())
         .par_for_each(|mut out, inp| {
             assert_eq!(inp.len(), 3);
-            //let r = inp[0] as f32;
-            //let g = inp[1] as f32;
-            //let b = inp[2] as f32;
-            //let gray = (76. * r + 150. * g + 29. * b) / 255.;
+            let r = NumCast::from(inp[0]).unwrap_or(0.0);
+            let g = NumCast::from(inp[1]).unwrap_or(0.0);
+            let b = NumCast::from(inp[2]).unwrap_or(0.0);
+            let gray = (76. * r + 150. * g + 29. * b) / 255.;
 
-            //out[0] = gray as u8;
+            out[0] = NumCast::from(gray).unwrap_or(T::default());
         });
 
-    Ok(Image { data: output });
+    Ok(output)
 }
 
 #[cfg(test)]

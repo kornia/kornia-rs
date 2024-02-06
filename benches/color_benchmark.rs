@@ -2,7 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 
 use kornia_rs::color as F;
 use kornia_rs::image::{Image, ImageSize};
-use ndarray::{s, stack, Axis};
+use ndarray::s;
 
 #[cfg(feature = "candle")]
 use candle_core::{DType, Device, Storage, Tensor};
@@ -11,27 +11,24 @@ use candle_core::{DType, Device, Storage, Tensor};
 use std::ops::Deref;
 
 // vanilla version
-fn gray_iter(image: Image) -> Image {
-    let height = image.image_size().height;
-    let width = image.image_size().width;
-    let mut gray_image = Image::new(ImageSize { width, height }, vec![0; width * height * 3]);
-    for y in 0..height {
-        for x in 0..width {
+fn gray_iter(image: &Image<u8, 3>) -> Image<u8, 1> {
+    let data = vec![0u8; image.image_size().width * image.image_size().height];
+    let mut gray_image = Image::new(image.image_size(), data).unwrap();
+    for y in 0..image.height() {
+        for x in 0..image.width() {
             let r = image.data[[y, x, 0]];
             let g = image.data[[y, x, 1]];
             let b = image.data[[y, x, 2]];
             let gray_pixel = (76. * r as f32 + 150. * g as f32 + 29. * b as f32) / 255.;
             gray_image.data[[y, x, 0]] = gray_pixel as u8;
-            gray_image.data[[y, x, 1]] = gray_pixel as u8;
-            gray_image.data[[y, x, 2]] = gray_pixel as u8;
         }
     }
     gray_image
 }
 
-fn gray_vec(image: Image) -> Image {
+fn gray_vec(image: &Image<u8, 3>) -> Image<u8, 1> {
     // convert to f32
-    let mut image_f32 = image.data.mapv(|x| x as f32);
+    let mut image_f32 = image.data_ref().mapv(|x| x as f32);
 
     // get channels
     let mut binding = image_f32.view_mut();
@@ -42,14 +39,7 @@ fn gray_vec(image: Image) -> Image {
     let gray_f32 = (&r * 76.0 + &g * 150.0 + &b * 29.0) / 255.0;
     let gray_u8 = gray_f32.mapv(|x| x as u8);
 
-    // TODO: ideally we stack the channels. Not working yet.
-    let gray_stacked = match stack(Axis(2), &[gray_u8.view(), gray_u8.view(), gray_u8.view()]) {
-        Ok(gray_stacked) => gray_stacked,
-        Err(err) => {
-            panic!("Error stacking channels: {}", err);
-        }
-    };
-    Image { data: gray_stacked }
+    Image::new(image.image_size(), gray_u8.into_raw_vec()).unwrap()
 }
 
 #[cfg(feature = "candle")]
@@ -92,7 +82,7 @@ fn gray_candle(image: Image) -> Image {
     Image::from_shape_vec([shape.0, shape.1, shape.2], data)
 }
 
-fn gray_image_crate(image: Image) -> Image {
+fn gray_image_crate(image: &Image<u8, 3>) -> Image<u8, 1> {
     let image_data = image.data.as_slice().unwrap();
     let rgb = image::RgbImage::from_raw(
         image.image_size().width as u32,
@@ -104,10 +94,7 @@ fn gray_image_crate(image: Image) -> Image {
 
     let image_gray = image_crate.grayscale();
 
-    Image::from_shape_vec(
-        [image_gray.height() as usize, image_gray.width() as usize, 1],
-        image_gray.into_bytes(),
-    )
+    Image::new(image.image_size(), image_gray.into_bytes()).unwrap()
 }
 
 fn bench_grayscale(c: &mut Criterion) {
@@ -117,18 +104,18 @@ fn bench_grayscale(c: &mut Criterion) {
     for (width, height) in image_sizes {
         let id = format!("{}x{}", width, height);
         let image_data = vec![0u8; width * height * 3];
-        let image = Image::from_shape_vec([height, width, 3], image_data);
+        let image = Image::new(ImageSize { width, height }, image_data).unwrap();
         group.bench_with_input(BenchmarkId::new("zip", &id), &image, |b, i| {
             b.iter(|| F::gray_from_rgb(black_box(i)))
         });
         group.bench_with_input(BenchmarkId::new("iter", &id), &image, |b, i| {
-            b.iter(|| gray_iter(black_box(i.clone())))
+            b.iter(|| gray_iter(black_box(&i.clone())))
         });
         group.bench_with_input(BenchmarkId::new("vec", &id), &image, |b, i| {
-            b.iter(|| gray_vec(black_box(i.clone())))
+            b.iter(|| gray_vec(black_box(&i.clone())))
         });
         group.bench_with_input(BenchmarkId::new("image_crate", &id), &image, |b, i| {
-            b.iter(|| gray_image_crate(black_box(i.clone())))
+            b.iter(|| gray_image_crate(black_box(&i.clone())))
         });
         #[cfg(feature = "candle")]
         group.bench_with_input(BenchmarkId::new("candle", &id), &image, |b, i| {

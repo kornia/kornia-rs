@@ -11,7 +11,7 @@ license-file = "LICENSE"
 [dependencies]
 num-traits = "0.2.17"
 image = { version = "0.24.5" }
-turbojpeg = {version = "0.5.2"}
+turbojpeg = {version = "1.0.0"}
 ndarray = { version = "0.15.6", features = ["rayon"] }
 # this is experimental and only used for benchmarking, so it's optional
 # consider removing it in the future.
@@ -29,6 +29,6 @@ candle = ["candle-core"]
 name = "color_benchmark"
 harness = false
 
-[[bench]]
-name = "resize_benchmark"
-harness = false
+#[[bench]]
+#name = "resize_benchmark"
+#harness = false

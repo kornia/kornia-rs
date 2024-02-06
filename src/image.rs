@@ -45,48 +45,53 @@ pub struct Image<T, const CHANNELS: usize> {
 
 // provisionally, we will use the following types:
 impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
-    pub fn new(shape: ImageSize, data: Vec<T>) -> Result<Self, String> {
+    pub fn new(shape: ImageSize, data: Vec<T>) -> Result<Self, std::io::Error> {
         // check if the data length matches the image size
         if data.len() != shape.width * shape.height * CHANNELS {
-            return Err(format!(
-                "Data length ({}) does not match the image size ({})",
-                data.len(),
-                shape.width * shape.height * CHANNELS
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "Data length ({}) does not match the image size ({})",
+                    data.len(),
+                    shape.width * shape.height * CHANNELS
+                ),
             ));
         }
 
         // allocate the image data
         let data =
             ndarray::Array::<T, _>::from_shape_vec((shape.height, shape.width, CHANNELS), data)
-                .map_err(|e| e.to_string())?;
+                .expect("Failed to create image data");
 
         Ok(Image { data })
     }
 
-    pub fn from_shape(shape: ImageSize) -> Result<Self, String>
+    pub fn from_shape(shape: ImageSize) -> Result<Self, std::io::Error>
     where
         T: Clone + Default,
     {
         let data = vec![T::default(); shape.width * shape.height * CHANNELS];
-        Ok(Image::new(shape, data)?)
+        let image = Image::new(shape, data)?;
+
+        Ok(image)
     }
 
-    pub fn cast<U>(&self) -> Image<U, CHANNELS>
+    pub fn cast<U>(self) -> Result<Image<U, CHANNELS>, std::io::Error>
     where
         U: Clone + Default + num_traits::NumCast + std::fmt::Debug,
         T: Copy + num_traits::NumCast + std::fmt::Debug,
     {
         let casted_data = self
             .data
-            .map(|x| U::from(*x).expect("Failed to cast data type"));
+            .map(|&x| U::from(x).expect("Failed to cast image data"));
 
-        Image { data: casted_data }
+        Ok(Image { data: casted_data })
     }
 
     pub fn image_size(&self) -> ImageSize {
         ImageSize {
-            width: self.data.shape()[1],
-            height: self.data.shape()[0],
+            width: self.width(),
+            height: self.height(),
         }
     }
 
@@ -101,6 +106,14 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     pub fn num_channels(&self) -> usize {
         //self.data.shape()[2]
         CHANNELS
+    }
+
+    pub fn data(self) -> ndarray::Array<T, ndarray::Dim<[ndarray::Ix; 3]>> {
+        self.data
+    }
+
+    pub fn data_ref(&self) -> &ndarray::Array<T, ndarray::Dim<[ndarray::Ix; 3]>> {
+        &self.data
     }
 
     //pub fn from_shape_vec(shape: [usize; 2], data: Vec<T>) -> Image<T> {
@@ -167,12 +180,12 @@ mod tests {
     #[test]
     fn image_from_vec() {
         use crate::image::Image;
-        let image = Image::<f32, 3>::new(
+        let image: Image<f32, 3> = Image::new(
             ImageSize {
                 height: 3,
                 width: 2,
             },
-            vec![0f32; 3 * 2 * 3],
+            vec![0.0; 3 * 2 * 3],
         )
         .unwrap();
         assert_eq!(image.image_size().width, 2);
@@ -194,10 +207,10 @@ mod tests {
         .unwrap();
         assert_eq!(image_f64.data.get((1, 0, 2)).unwrap(), &5.0f64);
 
-        let image_u8 = image_f64.cast::<u8>();
+        let image_u8 = image_f64.cast::<u8>().unwrap();
         assert_eq!(image_u8.data.get((1, 0, 2)).unwrap(), &5u8);
 
-        let image_i32: Image<i32, 3> = image_u8.cast();
+        let image_i32: Image<i32, 3> = image_u8.cast().unwrap();
         assert_eq!(image_i32.data.get((1, 0, 2)).unwrap(), &5i32);
     }
 
