@@ -88,6 +88,24 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Ok(Image { data: casted_data })
     }
 
+    pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, CHANNELS>, std::io::Error>
+    where
+        U: Copy
+            + Clone
+            + Default
+            + num_traits::NumCast
+            + std::fmt::Debug
+            + std::ops::Mul<Output = U>,
+        T: Copy + num_traits::NumCast + std::fmt::Debug,
+    {
+        let casted_data = self.data.map(|&x| {
+            let xu = U::from(x).expect("Failed to cast image data");
+            xu * scale
+        });
+
+        Ok(Image { data: casted_data })
+    }
+
     pub fn image_size(&self) -> ImageSize {
         ImageSize {
             width: self.width(),

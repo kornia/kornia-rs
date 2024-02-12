@@ -23,7 +23,14 @@ use num_traits::{Num, NumCast};
 /// Precondition: the input image must have 3 channels.
 pub fn gray_from_rgb<T>(image: &Image<T, 3>) -> Result<Image<T, 1>, std::io::Error>
 where
-    T: Copy + Clone + Default + Send + Sync + num_traits::NumCast + std::fmt::Debug + 'static,
+    T: Default
+        + Copy
+        + Clone
+        + Send
+        + Sync
+        + num_traits::NumCast
+        + num_traits::Float
+        + std::fmt::Debug,
 {
     assert_eq!(image.num_channels(), 3);
 
@@ -31,18 +38,22 @@ where
     // let image_f32 = image.cast::<f32>();
     //let mut output = Array3::<u8>::zeros(image.data.dim());
     //let mut output = Array3::<u8>::zeros((image.image_size().height, image.image_size().width, 1));
+    let rw = T::from(0.299).unwrap_or_else(|| T::from(0.0).unwrap());
+    let gw = T::from(0.587).unwrap_or_else(|| T::from(0.0).unwrap());
+    let bw = T::from(0.114).unwrap_or_else(|| T::from(0.0).unwrap());
+
     let mut output = Image::<T, 1>::from_shape(image.image_size())?;
 
     Zip::from(output.data.rows_mut())
         .and(image.data.rows())
         .par_for_each(|mut out, inp| {
             assert_eq!(inp.len(), 3);
-            let r = NumCast::from(inp[0]).unwrap_or(0.0);
-            let g = NumCast::from(inp[1]).unwrap_or(0.0);
-            let b = NumCast::from(inp[2]).unwrap_or(0.0);
-            let gray = (76. * r + 150. * g + 29. * b) / 255.;
+            let r = NumCast::from(inp[0]).unwrap_or_else(|| T::from(0.0).unwrap());
+            let g = NumCast::from(inp[1]).unwrap_or_else(|| T::from(0.0).unwrap());
+            let b = NumCast::from(inp[2]).unwrap_or_else(|| T::from(0.0).unwrap());
+            let gray = rw * r + gw * g + bw * b;
 
-            out[0] = NumCast::from(gray).unwrap_or(T::default());
+            out[0] = NumCast::from(gray).unwrap_or_else(|| T::from(0.0).unwrap());
         });
 
     Ok(output)
@@ -50,15 +61,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    //use crate::io::functions as F;
+    use crate::io::functions as F;
 
     #[test]
     fn gray_from_rgb() {
-        //let image_path = std::path::Path::new("tests/data/dog.jpeg");
-        //let image = F::read_image_jpeg(image_path);
-        //let gray = super::gray_from_rgb(&image);
-        //assert_eq!(gray.num_channels(), 1);
-        //assert_eq!(gray.image_size().width, 258);
-        //assert_eq!(gray.image_size().height, 195);
+        let image_path = std::path::Path::new("tests/data/dog.jpeg");
+        let image = F::read_image_jpeg(image_path).unwrap();
+        let image_norm = image.cast_and_scale::<f32>(1. / 255.0).unwrap();
+        let gray = super::gray_from_rgb(&image_norm).unwrap();
+        assert_eq!(gray.num_channels(), 1);
+        assert_eq!(gray.image_size().width, 258);
+        assert_eq!(gray.image_size().height, 195);
     }
 }
