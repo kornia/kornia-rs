@@ -1,5 +1,5 @@
 //use crate::io;
-use std::path::Path;
+use anyhow::Result;
 
 /// Image size in pixels
 ///
@@ -45,17 +45,22 @@ pub struct Image<T, const CHANNELS: usize> {
 
 // provisionally, we will use the following types:
 impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
-    pub fn new(shape: ImageSize, data: Vec<T>) -> Result<Self, std::io::Error> {
+    pub fn new(shape: ImageSize, data: Vec<T>) -> Result<Self> {
         // check if the data length matches the image size
         if data.len() != shape.width * shape.height * CHANNELS {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "Data length ({}) does not match the image size ({})",
-                    data.len(),
-                    shape.width * shape.height * CHANNELS
-                ),
+            return Err(anyhow::anyhow!(
+                "Data length ({}) does not match the image size ({})",
+                data.len(),
+                shape.width * shape.height * CHANNELS
             ));
+            //return Err(Error::new(
+            //    std::io::ErrorKind::InvalidData,
+            //    format!(
+            //        "Data length ({}) does not match the image size ({})",
+            //        data.len(),
+            //        shape.width * shape.height * CHANNELS
+            //    ),
+            //));
         }
 
         // allocate the image data
@@ -66,7 +71,7 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Ok(Image { data })
     }
 
-    pub fn from_shape(shape: ImageSize) -> Result<Self, std::io::Error>
+    pub fn from_shape(shape: ImageSize) -> Result<Self>
     where
         T: Clone + Default,
     {
@@ -76,7 +81,18 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Ok(image)
     }
 
-    pub fn cast<U>(self) -> Result<Image<U, CHANNELS>, std::io::Error>
+    pub fn empty_like(&self) -> Result<Self>
+    where
+        T: Clone + Default,
+    {
+        let shape = self.image_size();
+        let data = vec![T::default(); shape.width * shape.height * CHANNELS];
+        let image = Image::new(shape, data)?;
+
+        Ok(image)
+    }
+
+    pub fn cast<U>(self) -> Result<Image<U, CHANNELS>>
     where
         U: Clone + Default + num_traits::NumCast + std::fmt::Debug,
         T: Copy + num_traits::NumCast + std::fmt::Debug,
@@ -88,7 +104,7 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Ok(Image { data: casted_data })
     }
 
-    pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, CHANNELS>, std::io::Error>
+    pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, CHANNELS>>
     where
         U: Copy
             + Clone

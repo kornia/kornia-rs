@@ -1,3 +1,4 @@
+use anyhow::Result;
 use std::path::Path;
 
 use crate::image::{Image, ImageSize};
@@ -13,13 +14,10 @@ use super::jpeg::{ImageDecoder, ImageEncoder};
 /// # Returns
 ///
 /// A tensor containing the JPEG image data.
-pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>, std::io::Error> {
+pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>> {
     // verify the file exists and is a JPEG
     if !file_path.exists() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("File does not exist: {}", file_path.to_str().unwrap()),
-        ));
+        return Err(anyhow::anyhow!("File does not exist: {}", file_path.to_str().unwrap()).into());
     }
 
     let file_path = match file_path.extension() {
@@ -27,17 +25,17 @@ pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>, std::io::Error>
             if ext == "jpg" || ext == "jpeg" {
                 file_path
             } else {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("File is not a JPEG: {}", file_path.to_str().unwrap()),
+                return Err(anyhow::anyhow!(
+                    "File is not a JPEG: {}",
+                    file_path.to_str().unwrap()
                 ));
             }
         }
         None => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("File has no extension: {}", file_path.to_str().unwrap()),
-            ))
+            return Err(anyhow::anyhow!(
+                "File has no extension: {}",
+                file_path.to_str().unwrap()
+            ));
         }
     };
 
@@ -59,7 +57,7 @@ pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>, std::io::Error>
 ///
 /// * `file_path` - The path to the JPEG image.
 /// * `image` - The tensor containing the JPEG image data.
-pub fn write_image_jpeg(file_path: &Path, image: Image<u8, 3>) -> Result<(), std::io::Error> {
+pub fn write_image_jpeg(file_path: &Path, image: Image<u8, 3>) -> Result<()> {
     // compress the image
     let jpeg_data = ImageEncoder::new().encode(image);
 
@@ -78,7 +76,7 @@ pub fn write_image_jpeg(file_path: &Path, image: Image<u8, 3>) -> Result<(), std
 /// * `file_path` - The path to the image.
 ///
 // TODO: return sophus::TensorView
-pub fn read_image_any(file_path: &Path) -> Result<Image<u8, 3>, std::io::Error> {
+pub fn read_image_any(file_path: &Path) -> Result<Image<u8, 3>> {
     // verify the file exists
     if !file_path.exists() {
         panic!("File does not exist: {}", file_path.to_str().unwrap());

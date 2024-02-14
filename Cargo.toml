@@ -9,6 +9,7 @@ categories = ["image-processing", "computer-vision", "machine-learning"]
 license-file = "LICENSE"
 
 [dependencies]
+anyhow = "1.0.79"
 num-traits = "0.2.17"
 image = { version = "0.24.5" }
 turbojpeg = {version = "1.0.0"}
@@ -19,7 +20,7 @@ candle-core = { version = "0.3.2", optional = true }
 
 [dev-dependencies]
 tempfile = "3.9.0"
-rerun = "0.12.1"
+rerun = "0.13.0"
 criterion = { version = "0.5.1", features = ["html_reports"] }
 
 [features]

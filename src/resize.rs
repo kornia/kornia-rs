@@ -1,4 +1,5 @@
 use crate::image::{Image, ImageSize};
+use anyhow::Result;
 use ndarray::{stack, Array2, Array3, Zip};
 
 /// Create a meshgrid of x and y coordinates
@@ -49,26 +50,26 @@ pub fn meshgrid(x: &Array2<f32>, y: &Array2<f32>) -> (Array2<f32>, Array2<f32>) 
 ///
 /// The interpolated pixel value.
 // TODO: add support for other data types. Maybe use a trait? or template?
-fn bilinear_interpolation(image: &Array3<u8>, u: f32, v: f32, c: usize) -> f32 {
+fn bilinear_interpolation(image: &Array3<f32>, u: f32, v: f32, c: usize) -> f32 {
     let (height, width, _) = image.dim();
     let iu = u.trunc() as usize;
     let iv = v.trunc() as usize;
 
     let frac_u = u.fract();
     let frac_v = v.fract();
-    let val00 = image[[iv, iu, c]] as f32;
+    let val00 = image[[iv, iu, c]];
     let val01 = if iu + 1 < width {
-        image[[iv, iu + 1, c]] as f32
+        image[[iv, iu + 1, c]]
     } else {
         val00
     };
     let val10 = if iv + 1 < height {
-        image[[iv + 1, iu, c]] as f32
+        image[[iv + 1, iu, c]]
     } else {
         val00
     };
     let val11 = if iu + 1 < width && iv + 1 < height {
-        image[[iv + 1, iu + 1, c]] as f32
+        image[[iv + 1, iu + 1, c]]
     } else {
         val00
     };
@@ -94,7 +95,7 @@ fn bilinear_interpolation(image: &Array3<u8>, u: f32, v: f32, c: usize) -> f32 {
 /// # Returns
 ///
 /// The interpolated pixel value.
-fn nearest_neighbor_interpolation(image: &Array3<u8>, u: f32, v: f32, c: usize) -> f32 {
+fn nearest_neighbor_interpolation(image: &Array3<f32>, u: f32, v: f32, c: usize) -> f32 {
     let (height, width, _) = image.dim();
 
     let iu = u.round() as usize;
@@ -103,7 +104,7 @@ fn nearest_neighbor_interpolation(image: &Array3<u8>, u: f32, v: f32, c: usize) 
     let iu = iu.clamp(0, width - 1);
     let iv = iv.clamp(0, height - 1);
 
-    image[[iv, iu, c]] as f32
+    image[[iv, iu, c]]
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -138,24 +139,19 @@ impl Default for ResizeOptions {
 /// # Returns
 ///
 /// The resized image.
-pub fn resize<T, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
+pub fn resize<const CHANNELS: usize>(
+    image: &Image<f32, CHANNELS>,
     new_size: ImageSize,
     optional_args: ResizeOptions,
-) -> Image<T, CHANNELS>
-where
-    T: num_traits::FromPrimitive + std::fmt::Debug + Send + Sync + Copy,
-{
-    let image_size = image.image_size();
-
+) -> Result<Image<f32, CHANNELS>> {
     // create the output image
-    let mut output = ndarray::Array3::<T>::zeros((new_size.height, new_size.width, CHANNELS));
+    let mut output = Image::from_shape(new_size.clone())?;
 
     // create a grid of x and y coordinates for the output image
     // and interpolate the values from the input image.
-    let x = ndarray::Array::linspace(0., (image_size.width - 1) as f32, new_size.width)
+    let x = ndarray::Array::linspace(0., (image.width() - 1) as f32, new_size.width)
         .insert_axis(ndarray::Axis(0));
-    let y = ndarray::Array::linspace(0., (image_size.height - 1) as f32, new_size.height)
+    let y = ndarray::Array::linspace(0., (image.height() - 1) as f32, new_size.height)
         .insert_axis(ndarray::Axis(0));
 
     // create the meshgrid of x and y coordinates, arranged in a 2D grid of shape (height, width)
@@ -168,7 +164,7 @@ where
     // iterate over the output image and interpolate the pixel values
 
     Zip::from(xy.rows())
-        .and(output.rows_mut())
+        .and(output.data.rows_mut())
         .par_for_each(|uv, mut out| {
             assert_eq!(uv.len(), 2);
             let (u, v) = (uv[0], uv[1]);
@@ -176,18 +172,18 @@ where
             // compute the pixel values for each channel
             let pixels = (0..image.num_channels()).map(|k| match optional_args.interpolation {
                 InterpolationMode::Bilinear => bilinear_interpolation(&image.data, u, v, k),
-                //InterpolationMode::NearestNeighbor => {
-                //    nearest_neighbor_interpolation(&image.data, u, v, k)
-                //}
+                InterpolationMode::NearestNeighbor => {
+                    nearest_neighbor_interpolation(&image.data, u, v, k)
+                }
             });
 
             // write the pixel values to the output image
             for (k, pixel) in pixels.enumerate() {
-                out[k] = pixel as u8;
+                out[k] = num_traits::FromPrimitive::from_f32(pixel).unwrap();
             }
         });
 
-    Image { data: output }
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -196,7 +192,14 @@ mod tests {
     #[test]
     fn resize_smoke_ch3() {
         use crate::image::{Image, ImageSize};
-        let image = Image::from_shape_vec([4, 5, 3], vec![0; 4 * 5 * 3]);
+        let image = Image::<_, 3>::new(
+            ImageSize {
+                width: 4,
+                height: 5,
+            },
+            vec![0f32; 4 * 5 * 3],
+        )
+        .unwrap();
         let image_resized = super::resize(
             &image,
             ImageSize {
@@ -204,7 +207,8 @@ mod tests {
                 height: 3,
             },
             super::ResizeOptions::default(),
-        );
+        )
+        .unwrap();
         assert_eq!(image_resized.num_channels(), 3);
         assert_eq!(image_resized.image_size().width, 2);
         assert_eq!(image_resized.image_size().height, 3);
@@ -213,7 +217,14 @@ mod tests {
     #[test]
     fn resize_smoke_ch1() {
         use crate::image::{Image, ImageSize};
-        let image = Image::from_shape_vec([4, 5, 1], vec![0; 4 * 5 * 1]);
+        let image = Image::<_, 1>::new(
+            ImageSize {
+                width: 4,
+                height: 5,
+            },
+            vec![0f32; 4 * 5 * 1],
+        )
+        .unwrap();
         let image_resized = super::resize(
             &image,
             ImageSize {
@@ -221,7 +232,8 @@ mod tests {
                 height: 3,
             },
             super::ResizeOptions::default(),
-        );
+        )
+        .unwrap();
         assert_eq!(image_resized.num_channels(), 1);
         assert_eq!(image_resized.image_size().width, 2);
         assert_eq!(image_resized.image_size().height, 3);

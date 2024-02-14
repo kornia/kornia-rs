@@ -1,10 +1,11 @@
 use crate::image::Image;
+use anyhow::Result;
 
 pub fn threshold_binary<T, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
     threshold: T,
     max_value: T,
-) -> Result<Image<T, CHANNELS>, std::io::Error>
+) -> Result<Image<T, CHANNELS>>
 where
     T: Copy + Clone + Default + Send + Sync + num_traits::NumCast + std::fmt::Debug + PartialOrd,
 {
