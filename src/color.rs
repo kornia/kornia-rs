@@ -41,7 +41,7 @@ where
     let gw = T::from(0.587).unwrap();
     let bw = T::from(0.114).unwrap();
 
-    let mut output = Image::<T, 1>::from_shape(image.image_size())?;
+    let mut output = Image::<T, 1>::from_size(image.image_size())?;
 
     ndarray::Zip::from(output.data.rows_mut())
         .and(image.data.rows())

@@ -45,49 +45,30 @@ pub struct Image<T, const CHANNELS: usize> {
 
 // provisionally, we will use the following types:
 impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
-    pub fn new(shape: ImageSize, data: Vec<T>) -> Result<Self> {
+    pub fn new(size: ImageSize, data: Vec<T>) -> Result<Self> {
         // check if the data length matches the image size
-        if data.len() != shape.width * shape.height * CHANNELS {
+        if data.len() != size.width * size.height * CHANNELS {
             return Err(anyhow::anyhow!(
                 "Data length ({}) does not match the image size ({})",
                 data.len(),
-                shape.width * shape.height * CHANNELS
+                size.width * size.height * CHANNELS
             ));
-            //return Err(Error::new(
-            //    std::io::ErrorKind::InvalidData,
-            //    format!(
-            //        "Data length ({}) does not match the image size ({})",
-            //        data.len(),
-            //        shape.width * shape.height * CHANNELS
-            //    ),
-            //));
         }
 
         // allocate the image data
         let data =
-            ndarray::Array::<T, _>::from_shape_vec((shape.height, shape.width, CHANNELS), data)
+            ndarray::Array::<T, _>::from_shape_vec((size.height, size.width, CHANNELS), data)
                 .expect("Failed to create image data");
 
         Ok(Image { data })
     }
 
-    pub fn from_shape(shape: ImageSize) -> Result<Self>
+    pub fn from_size(size: ImageSize) -> Result<Self>
     where
         T: Clone + Default,
     {
-        let data = vec![T::default(); shape.width * shape.height * CHANNELS];
-        let image = Image::new(shape, data)?;
-
-        Ok(image)
-    }
-
-    pub fn zeros_like(&self) -> Result<Self>
-    where
-        T: Clone + Default,
-    {
-        let shape = self.image_size();
-        let data = vec![T::default(); shape.width * shape.height * CHANNELS];
-        let image = Image::new(shape, data)?;
+        let data = vec![T::default(); size.width * size.height * CHANNELS];
+        let image = Image::new(size, data)?;
 
         Ok(image)
     }
@@ -158,16 +139,6 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     pub fn num_channels(&self) -> usize {
         CHANNELS
     }
-
-    //pub fn from_shape_vec(shape: [usize; 2], data: Vec<T>) -> Image<T> {
-    //    let image = match ndarray::Array::<T, _>::from_shape_vec(shape, data) {
-    //        Ok(image) => image,
-    //        Err(err) => {
-    //            panic!("Error converting image: {}", err);
-    //        }
-    //    };
-    //    Image { data: image }
-    //}
 
     //pub fn from_file(image_path: &Path) -> Image<u8, 3> {
     //    match image_path.extension().and_then(|ext| ext.to_str()) {

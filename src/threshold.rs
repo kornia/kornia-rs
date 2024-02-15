@@ -9,7 +9,7 @@ pub fn threshold_binary<T, const CHANNELS: usize>(
 where
     T: Copy + Clone + Default + Send + Sync + num_traits::NumCast + std::fmt::Debug + PartialOrd,
 {
-    let mut output = Image::<T, CHANNELS>::from_shape(image.image_size())?;
+    let mut output = Image::<T, CHANNELS>::from_size(image.image_size())?;
 
     ndarray::Zip::from(&mut output.data)
         .and(&image.data)
