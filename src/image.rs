@@ -43,8 +43,39 @@ pub struct Image<T, const CHANNELS: usize> {
     pub data: ndarray::Array<T, ndarray::Dim<[ndarray::Ix; 3]>>,
 }
 
-// provisionally, we will use the following types:
 impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
+    /// Create a new image from pixel data.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The size of the image in pixels.
+    /// * `data` - The pixel data of the image.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the given pixel data.
+    ///
+    /// # Errors
+    ///
+    /// If the length of the pixel data does not match the image size, an error is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kornia_rs::image::{Image, ImageSize};
+    ///
+    /// let image = Image::<u8, 3>::new(
+    ///    ImageSize {
+    ///       width: 10,
+    ///      height: 20,
+    ///  },
+    /// vec![0u8; 10 * 20 * 3],
+    /// ).unwrap();
+    ///
+    /// assert_eq!(image.image_size().width, 10);
+    /// assert_eq!(image.image_size().height, 20);
+    /// assert_eq!(image.num_channels(), 3);
+    /// ```
     pub fn new(size: ImageSize, data: Vec<T>) -> Result<Self> {
         // check if the data length matches the image size
         if data.len() != size.width * size.height * CHANNELS {
@@ -57,12 +88,41 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
 
         // allocate the image data
         let data =
-            ndarray::Array::<T, _>::from_shape_vec((size.height, size.width, CHANNELS), data)
-                .expect("Failed to create image data");
+            ndarray::Array::<T, _>::from_shape_vec((size.height, size.width, CHANNELS), data)?;
 
         Ok(Image { data })
     }
 
+    /// Create a new image with the given size.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The size of the image in pixels.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the given size and default pixel data.
+    ///
+    /// # Errors
+    ///
+    /// If the length of the pixel data does not match the image size, an error is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kornia_rs::image::{Image, ImageSize};
+    ///
+    /// let image = Image::<u8, 3>::from_size(
+    ///   ImageSize {
+    ///     width: 10,
+    ///    height: 20,
+    /// },
+    /// ).unwrap();
+    ///
+    /// assert_eq!(image.image_size().width, 10);
+    /// assert_eq!(image.image_size().height, 20);
+    /// assert_eq!(image.num_channels(), 3);
+    /// ```
     pub fn from_size(size: ImageSize) -> Result<Self>
     where
         T: Clone + Default,
@@ -73,6 +133,45 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Ok(image)
     }
 
+    /// Cast the pixel data to a different type.
+    ///
+    /// # Arguments
+    ///
+    /// * `scale` - The scale to multiply the pixel data with.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the pixel data cast to the new type.
+    ///
+    /// # Errors
+    ///
+    /// If the pixel data cannot be cast to the new type, an error is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kornia_rs::image::{Image, ImageSize};
+    ///
+    /// let data = vec![0., 1., 2., 3., 4., 5.];
+    ///
+    /// let image_f64 = Image::<f64, 3>::new(
+    ///  ImageSize {
+    ///   height: 2,
+    ///  width: 1,
+    /// },
+    /// data,
+    /// ).unwrap();
+    ///
+    /// assert_eq!(image_f64.data.get((1, 0, 2)).unwrap(), &5.0f64);
+    ///
+    /// let image_u8 = image_f64.cast::<u8>().unwrap();
+    ///
+    /// assert_eq!(image_u8.data.get((1, 0, 2)).unwrap(), &5u8);
+    ///
+    /// let image_i32: Image<i32, 3> = image_u8.cast().unwrap();
+    ///
+    /// assert_eq!(image_i32.data.get((1, 0, 2)).unwrap(), &5i32);
+    /// ```
     pub fn cast<U>(self) -> Result<Image<U, CHANNELS>>
     where
         U: Clone + Default + num_traits::NumCast + std::fmt::Debug,
@@ -85,6 +184,39 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Ok(Image { data: casted_data })
     }
 
+    /// Cast the pixel data to a different type and scale it.
+    ///
+    /// # Arguments
+    ///
+    /// * `scale` - The scale to multiply the pixel data with.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the pixel data cast to the new type and scaled.
+    ///
+    /// # Errors
+    ///
+    /// If the pixel data cannot be cast to the new type, an error is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kornia_rs::image::{Image, ImageSize};
+    ///
+    /// let data = vec![0u8, 0, 255, 0, 0, 255];
+    ///
+    /// let image_u8 = Image::<u8, 3>::new(
+    /// ImageSize {
+    ///   height: 2,
+    ///   width: 1,
+    /// },
+    /// data,
+    /// ).unwrap();
+    ///
+    /// let image_f32 = image_u8.cast_and_scale::<f32>(1. / 255.0).unwrap();
+    ///
+    /// assert_eq!(image_f32.data.get((1, 0, 2)).unwrap(), &1.0f32);
+    /// ```
     pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, CHANNELS>>
     where
         U: Copy
@@ -121,6 +253,7 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Image { data: scaled_data }
     }
 
+    /// Get the size of the image in pixels.
     pub fn image_size(&self) -> ImageSize {
         ImageSize {
             width: self.width(),
@@ -128,14 +261,17 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         }
     }
 
+    /// Get the width of the image in pixels.
     pub fn width(&self) -> usize {
         self.data.shape()[1]
     }
 
+    /// Get the height of the image in pixels.
     pub fn height(&self) -> usize {
         self.data.shape()[0]
     }
 
+    /// Get the number of channels in the image.
     pub fn num_channels(&self) -> usize {
         CHANNELS
     }
