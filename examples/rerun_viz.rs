@@ -1,9 +1,10 @@
+use kornia_rs::image::Image;
 use kornia_rs::io::functions as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
     let image_path = std::path::Path::new("tests/data/dog.jpeg");
-    let image = F::read_image_jpeg(image_path)?;
+    let image: Image<u8, 3> = F::read_image_jpeg(image_path)?;
 
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").connect()?;

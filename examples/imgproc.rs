@@ -1,17 +1,18 @@
+use kornia_rs::image::Image;
 use kornia_rs::io::functions as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
     let image_path = std::path::Path::new("tests/data/dog.jpeg");
-    let image = F::read_image_jpeg(image_path)?;
+    let image: Image<u8, 3> = F::read_image_jpeg(image_path)?;
     let image_viz = image.clone();
 
-    let image_f32 = image.cast_and_scale::<f32>(1.0 / 255.0)?;
+    let image_f32: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
 
     // convert the image to grayscale
-    let gray = kornia_rs::color::gray_from_rgb(&image_f32)?;
+    let gray: Image<f32, 1> = kornia_rs::color::gray_from_rgb(&image_f32)?;
 
-    let gray_resize = kornia_rs::resize::resize(
+    let gray_resize: Image<f32, 1> = kornia_rs::resize::resize(
         &gray,
         kornia_rs::image::ImageSize {
             width: 128,
