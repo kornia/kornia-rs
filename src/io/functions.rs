@@ -17,7 +17,10 @@ use super::jpeg::{ImageDecoder, ImageEncoder};
 pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>> {
     // verify the file exists and is a JPEG
     if !file_path.exists() {
-        return Err(anyhow::anyhow!("File does not exist: {}", file_path.to_str().unwrap()).into());
+        return Err(anyhow::anyhow!(
+            "File does not exist: {}",
+            file_path.to_str().unwrap()
+        ));
     }
 
     let file_path = match file_path.extension() {

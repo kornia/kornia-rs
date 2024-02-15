@@ -1,5 +1,4 @@
 use kornia_rs::io::functions as F;
-use rerun;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image

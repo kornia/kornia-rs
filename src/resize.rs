@@ -222,7 +222,7 @@ mod tests {
                 width: 4,
                 height: 5,
             },
-            vec![0f32; 4 * 5 * 1],
+            vec![0f32; 4 * 5],
         )
         .unwrap();
         let image_resized = super::resize(

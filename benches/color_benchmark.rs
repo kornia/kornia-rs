@@ -19,7 +19,7 @@ fn gray_iter(image: &Image<f32, 3>) -> Image<u8, 1> {
             let r = image.data[[y, x, 0]];
             let g = image.data[[y, x, 1]];
             let b = image.data[[y, x, 2]];
-            let gray_pixel = (76. * r as f32 + 150. * g as f32 + 29. * b as f32) / 255.;
+            let gray_pixel = (76. * r + 150. * g + 29. * b) / 255.;
             gray_image.data[[y, x, 0]] = gray_pixel as u8;
         }
     }
@@ -27,8 +27,7 @@ fn gray_iter(image: &Image<f32, 3>) -> Image<u8, 1> {
 }
 
 fn gray_vec(image: &Image<f32, 3>) -> Image<u8, 1> {
-    // convert to f32
-    let mut image_f32 = image.data.mapv(|x| x as f32);
+    let mut image_f32 = image.data.mapv(|x| x);
 
     // get channels
     let mut binding = image_f32.view_mut();
@@ -43,7 +42,7 @@ fn gray_vec(image: &Image<f32, 3>) -> Image<u8, 1> {
 }
 
 #[cfg(feature = "candle")]
-fn gray_candle(image: Image) -> Image {
+fn gray_candle(image: Image<f32, 3>) -> Image<u8, 3> {
     let image_data = image.data.as_slice().unwrap();
     let shape = (image.image_size().height, image.image_size().width, 3);
 
@@ -79,7 +78,7 @@ fn gray_candle(image: Image) -> Image {
         }
     };
 
-    Image::from_shape_vec([shape.0, shape.1, shape.2], data)
+    Image::new(image.image_size(), data).unwrap()
 }
 
 fn gray_image_crate(image: &Image<u8, 3>) -> Image<u8, 1> {
