@@ -1,7 +1,5 @@
 use crate::image::Image;
 use anyhow::Result;
-use ndarray::{Array3, Zip};
-use num_traits::{Num, NumCast};
 
 // TODO: ideally we want something like this:
 // let rgb: Image<u8, RGB> = load_image("image.jpg");
@@ -45,16 +43,16 @@ where
 
     let mut output = Image::<T, 1>::from_shape(image.image_size())?;
 
-    Zip::from(output.data.rows_mut())
+    ndarray::Zip::from(output.data.rows_mut())
         .and(image.data.rows())
         .par_for_each(|mut out, inp| {
             assert_eq!(inp.len(), 3);
-            let r = NumCast::from(inp[0]).unwrap();
-            let g = NumCast::from(inp[1]).unwrap();
-            let b = NumCast::from(inp[2]).unwrap();
+            let r = num_traits::NumCast::from(inp[0]).unwrap();
+            let g = num_traits::NumCast::from(inp[1]).unwrap();
+            let b = num_traits::NumCast::from(inp[2]).unwrap();
             let gray = rw * r + gw * g + bw * b;
 
-            out[0] = NumCast::from(gray).unwrap();
+            out[0] = num_traits::NumCast::from(gray).unwrap();
         });
 
     Ok(output)

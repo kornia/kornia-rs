@@ -11,7 +11,7 @@ use candle_core::{DType, Device, Storage, Tensor};
 use std::ops::Deref;
 
 // vanilla version
-fn gray_iter(image: &Image<u8, 3>) -> Image<u8, 1> {
+fn gray_iter(image: &Image<f32, 3>) -> Image<u8, 1> {
     let data = vec![0u8; image.image_size().width * image.image_size().height];
     let mut gray_image = Image::new(image.image_size(), data).unwrap();
     for y in 0..image.height() {
@@ -26,9 +26,9 @@ fn gray_iter(image: &Image<u8, 3>) -> Image<u8, 1> {
     gray_image
 }
 
-fn gray_vec(image: &Image<u8, 3>) -> Image<u8, 1> {
+fn gray_vec(image: &Image<f32, 3>) -> Image<u8, 1> {
     // convert to f32
-    let mut image_f32 = image.data_ref().mapv(|x| x as f32);
+    let mut image_f32 = image.data.mapv(|x| x as f32);
 
     // get channels
     let mut binding = image_f32.view_mut();
@@ -105,20 +105,21 @@ fn bench_grayscale(c: &mut Criterion) {
         let id = format!("{}x{}", width, height);
         let image_data = vec![0u8; width * height * 3];
         let image = Image::new(ImageSize { width, height }, image_data).unwrap();
-        group.bench_with_input(BenchmarkId::new("zip", &id), &image, |b, i| {
+        let image_f32 = image.clone().cast::<f32>().unwrap();
+        group.bench_with_input(BenchmarkId::new("zip", &id), &image_f32, |b, i| {
             b.iter(|| F::gray_from_rgb(black_box(i)))
         });
-        group.bench_with_input(BenchmarkId::new("iter", &id), &image, |b, i| {
+        group.bench_with_input(BenchmarkId::new("iter", &id), &image_f32, |b, i| {
             b.iter(|| gray_iter(black_box(&i.clone())))
         });
-        group.bench_with_input(BenchmarkId::new("vec", &id), &image, |b, i| {
+        group.bench_with_input(BenchmarkId::new("vec", &id), &image_f32, |b, i| {
             b.iter(|| gray_vec(black_box(&i.clone())))
         });
         group.bench_with_input(BenchmarkId::new("image_crate", &id), &image, |b, i| {
             b.iter(|| gray_image_crate(black_box(&i.clone())))
         });
         #[cfg(feature = "candle")]
-        group.bench_with_input(BenchmarkId::new("candle", &id), &image, |b, i| {
+        group.bench_with_input(BenchmarkId::new("candle", &id), &image_f32, |b, i| {
             b.iter(|| gray_candle(black_box(i.clone())))
         });
     }

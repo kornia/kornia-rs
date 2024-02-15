@@ -81,7 +81,7 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Ok(image)
     }
 
-    pub fn empty_like(&self) -> Result<Self>
+    pub fn zeros_like(&self) -> Result<Self>
     where
         T: Clone + Default,
     {
@@ -122,6 +122,24 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Ok(Image { data: casted_data })
     }
 
+    // TODO: optimize this
+    pub fn mul(&self, scale: T) -> Self
+    where
+        T: Copy + std::ops::Mul<Output = T>,
+    {
+        let scaled_data = self.data.map(|&x| x * scale);
+        Image { data: scaled_data }
+    }
+
+    // TODO: optimize this
+    pub fn div(&self, scale: T) -> Self
+    where
+        T: Copy + std::ops::Div<Output = T>,
+    {
+        let scaled_data = self.data.map(|&x| x / scale);
+        Image { data: scaled_data }
+    }
+
     pub fn image_size(&self) -> ImageSize {
         ImageSize {
             width: self.width(),
@@ -138,16 +156,7 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     }
 
     pub fn num_channels(&self) -> usize {
-        //self.data.shape()[2]
         CHANNELS
-    }
-
-    pub fn data(self) -> ndarray::Array<T, ndarray::Dim<[ndarray::Ix; 3]>> {
-        self.data
-    }
-
-    pub fn data_ref(&self) -> &ndarray::Array<T, ndarray::Dim<[ndarray::Ix; 3]>> {
-        &self.data
     }
 
     //pub fn from_shape_vec(shape: [usize; 2], data: Vec<T>) -> Image<T> {
@@ -211,7 +220,6 @@ mod tests {
     //    assert_eq!(image.image_size().height, 195);
     //    assert_eq!(image.num_channels(), 3);
     //}
-    #[test]
     fn image_from_vec() {
         use crate::image::Image;
         let image: Image<f32, 3> = Image::new(

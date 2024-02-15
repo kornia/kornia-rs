@@ -30,6 +30,6 @@ candle = ["candle-core"]
 name = "color_benchmark"
 harness = false
 
-#[[bench]]
-#name = "resize_benchmark"
-#harness = false
+[[bench]]
+name = "resize_benchmark"
+harness = false

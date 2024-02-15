@@ -1,6 +1,6 @@
 use crate::image::{Image, ImageSize};
 use anyhow::Result;
-use ndarray::{stack, Array2, Array3, Zip};
+use ndarray::{stack, Array2, Array3};
 
 /// Create a meshgrid of x and y coordinates
 ///
@@ -163,7 +163,7 @@ pub fn resize<const CHANNELS: usize>(
 
     // iterate over the output image and interpolate the pixel values
 
-    Zip::from(xy.rows())
+    ndarray::Zip::from(xy.rows())
         .and(output.data.rows_mut())
         .par_for_each(|uv, mut out| {
             assert_eq!(uv.len(), 2);

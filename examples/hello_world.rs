@@ -5,6 +5,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image_path = std::path::Path::new("tests/data/dog.jpeg");
     let image = F::read_image_jpeg(image_path)?;
 
-    println!("Image size: {:?}", image.image_size());
+    println!("Hello, world!");
+    println!("Loaded Image size: {:?}", image.image_size());
+    println!("\nGoodbyte!");
+
     Ok(())
 }

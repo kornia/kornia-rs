@@ -4,7 +4,7 @@ use kornia_rs::image::{Image, ImageSize};
 use kornia_rs::resize as F;
 use kornia_rs::resize::{InterpolationMode, ResizeOptions};
 
-fn resize_image_crate(image: Image, new_size: ImageSize) -> Image {
+fn resize_image_crate(image: Image<u8, 3>, new_size: ImageSize) -> Image<u8, 3> {
     let image_data = image.data.as_slice().unwrap();
     let rgb = image::RgbImage::from_raw(
         image.image_size().width as u32,
@@ -20,7 +20,7 @@ fn resize_image_crate(image: Image, new_size: ImageSize) -> Image {
         image::imageops::FilterType::Gaussian,
     );
     let data = image_resized.into_rgb8().into_raw();
-    Image::from_shape_vec([new_size.height as usize, new_size.width as usize, 3], data)
+    Image::new(new_size, data).unwrap()
 }
 
 fn bench_resize(c: &mut Criterion) {
@@ -30,12 +30,13 @@ fn bench_resize(c: &mut Criterion) {
     for (width, height) in image_sizes {
         let image_size = ImageSize { width, height };
         let id = format!("{}x{}", width, height);
-        let image = Image::new(image_size.clone(), vec![0; width * height * 3]);
+        let image = Image::<u8, 3>::new(image_size.clone(), vec![0u8; width * height * 3]).unwrap();
+        let image_f32 = image.clone().cast::<f32>().unwrap();
         let new_size = ImageSize {
             width: width / 2,
             height: height / 2,
         };
-        group.bench_with_input(BenchmarkId::new("zip", &id), &image, |b, i| {
+        group.bench_with_input(BenchmarkId::new("zip", &id), &image_f32, |b, i| {
             b.iter(|| {
                 F::resize(
                     black_box(i),
