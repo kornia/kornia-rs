@@ -25,7 +25,6 @@ where
 {
     assert_eq!(image.num_channels(), 3);
 
-    // TODO: use a macro to define these constants
     let rw = T::from(RW).ok_or(anyhow::anyhow!("Failed to convert RW"))?;
     let gw = T::from(GW).ok_or(anyhow::anyhow!("Failed to convert GW"))?;
     let bw = T::from(BW).ok_or(anyhow::anyhow!("Failed to convert BW"))?;

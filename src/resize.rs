@@ -113,25 +113,32 @@ pub enum InterpolationMode {
     NearestNeighbor,
 }
 
-// TODO: implement builder pattern
+/// Options for the resize operation
+///
+/// The options include the interpolation mode to use for the resize operation.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResizeOptions {
     pub interpolation: InterpolationMode,
 }
 
 impl ResizeOptions {
+    /// Create a new instance of the resize options
     pub fn new() -> Self {
         ResizeOptions {
             interpolation: InterpolationMode::Bilinear,
         }
     }
 
+    /// Set the interpolation mode for the resize operation
     pub fn with_interpolation(mut self, interpolation: InterpolationMode) -> Self {
         self.interpolation = interpolation;
         self
     }
 }
 
+/// Default implementation for the resize options
 impl Default for ResizeOptions {
+    /// Create a new instance of the resize options with the default values
     fn default() -> Self {
         ResizeOptions {
             interpolation: InterpolationMode::Bilinear,
@@ -192,7 +199,7 @@ pub fn resize<const CHANNELS: usize>(
 
             // write the pixel values to the output image
             for (k, pixel) in pixels.enumerate() {
-                out[k] = num_traits::FromPrimitive::from_f32(pixel).unwrap();
+                out[k] = pixel;
             }
         });
 
