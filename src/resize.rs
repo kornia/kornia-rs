@@ -158,7 +158,7 @@ pub fn resize<const CHANNELS: usize>(
     options: ResizeOptions,
 ) -> Result<Image<f32, CHANNELS>> {
     // create the output image
-    let mut output = Image::from_size(new_size.clone())?;
+    let mut output = Image::from_size_val(new_size.clone(), 0.0)?;
 
     // create a grid of x and y coordinates for the output image
     // and interpolate the values from the input image.

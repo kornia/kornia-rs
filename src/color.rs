@@ -1,11 +1,10 @@
 use crate::image::Image;
 use anyhow::Result;
 
-// TODO: ideally we want something like this:
-// let rgb: Image<u8, RGB> = load_image("image.jpg");
-// let gray: Image<u8, GRAY> = image.map(|x| (76. * x[0] + 150. * x[1] + 29. * x[2]) / 255.);
-// or automatically:
-// let gray = Image<u8, 1>::try_from(rgb);
+/// Define the RGB weights for the grayscale conversion.
+const RW: f64 = 0.299;
+const GW: f64 = 0.587;
+const BW: f64 = 0.114;
 
 /// Convert an RGB image to grayscale using the formula:
 ///
@@ -22,37 +21,25 @@ use anyhow::Result;
 /// Precondition: the input image must have 3 channels.
 pub fn gray_from_rgb<T>(image: &Image<T, 3>) -> Result<Image<T, 1>>
 where
-    T: Default
-        + Copy
-        + Clone
-        + Send
-        + Sync
-        + num_traits::NumCast
-        + num_traits::Float
-        + std::fmt::Debug,
+    T: Default + Copy + Clone + Send + Sync + num_traits::Float,
 {
     assert_eq!(image.num_channels(), 3);
 
-    // TODO: implement this using a map or cast
-    // let image_f32 = image.cast::<f32>();
-    //let mut output = Array3::<u8>::zeros(image.data.dim());
-    //let mut output = Array3::<u8>::zeros((image.image_size().height, image.image_size().width, 1));
-    let rw = T::from(0.299).unwrap();
-    let gw = T::from(0.587).unwrap();
-    let bw = T::from(0.114).unwrap();
+    // TODO: use a macro to define these constants
+    let rw = T::from(RW).ok_or(anyhow::anyhow!("Failed to convert RW"))?;
+    let gw = T::from(GW).ok_or(anyhow::anyhow!("Failed to convert GW"))?;
+    let bw = T::from(BW).ok_or(anyhow::anyhow!("Failed to convert BW"))?;
 
-    let mut output = Image::<T, 1>::from_size(image.image_size())?;
+    let mut output = Image::<T, 1>::from_size_val(image.image_size(), T::default())?;
 
     ndarray::Zip::from(output.data.rows_mut())
         .and(image.data.rows())
         .par_for_each(|mut out, inp| {
             assert_eq!(inp.len(), 3);
-            let r = num_traits::NumCast::from(inp[0]).unwrap();
-            let g = num_traits::NumCast::from(inp[1]).unwrap();
-            let b = num_traits::NumCast::from(inp[2]).unwrap();
-            let gray = rw * r + gw * g + bw * b;
-
-            out[0] = num_traits::NumCast::from(gray).unwrap();
+            let r = inp[0];
+            let g = inp[1];
+            let b = inp[2];
+            out[0] = rw * r + gw * g + bw * b;
         });
 
     Ok(output)

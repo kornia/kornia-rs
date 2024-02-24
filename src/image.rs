@@ -93,11 +93,12 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Ok(Image { data })
     }
 
-    /// Create a new image with the given size.
+    /// Create a new image with the given size and default pixel data.
     ///
     /// # Arguments
     ///
     /// * `size` - The size of the image in pixels.
+    /// * `val` - The default value of the pixel data.
     ///
     /// # Returns
     ///
@@ -112,22 +113,21 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// ```
     /// use kornia_rs::image::{Image, ImageSize};
     ///
-    /// let image = Image::<u8, 3>::from_size(
+    /// let image = Image::<u8, 3>::from_size_val(
     ///   ImageSize {
     ///     width: 10,
     ///    height: 20,
-    /// },
-    /// ).unwrap();
+    /// }, 0u8).unwrap();
     ///
     /// assert_eq!(image.image_size().width, 10);
     /// assert_eq!(image.image_size().height, 20);
     /// assert_eq!(image.num_channels(), 3);
     /// ```
-    pub fn from_size(size: ImageSize) -> Result<Self>
+    pub fn from_size_val(size: ImageSize, val: T) -> Result<Self>
     where
         T: Clone + Default,
     {
-        let data = vec![T::default(); size.width * size.height * CHANNELS];
+        let data = vec![val; size.width * size.height * CHANNELS];
         let image = Image::new(size, data)?;
 
         Ok(image)
