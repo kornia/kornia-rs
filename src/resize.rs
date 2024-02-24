@@ -107,7 +107,7 @@ fn nearest_neighbor_interpolation(image: &Array3<f32>, u: f32, v: f32, c: usize)
     image[[iv, iu, c]]
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InterpolationMode {
     Bilinear,
     NearestNeighbor,
@@ -116,6 +116,19 @@ pub enum InterpolationMode {
 // TODO: implement builder pattern
 pub struct ResizeOptions {
     pub interpolation: InterpolationMode,
+}
+
+impl ResizeOptions {
+    pub fn new() -> Self {
+        ResizeOptions {
+            interpolation: InterpolationMode::Bilinear,
+        }
+    }
+
+    pub fn with_interpolation(mut self, interpolation: InterpolationMode) -> Self {
+        self.interpolation = interpolation;
+        self
+    }
 }
 
 impl Default for ResizeOptions {
@@ -142,7 +155,7 @@ impl Default for ResizeOptions {
 pub fn resize<const CHANNELS: usize>(
     image: &Image<f32, CHANNELS>,
     new_size: ImageSize,
-    optional_args: ResizeOptions,
+    options: ResizeOptions,
 ) -> Result<Image<f32, CHANNELS>> {
     // create the output image
     let mut output = Image::from_size(new_size.clone())?;
@@ -170,7 +183,7 @@ pub fn resize<const CHANNELS: usize>(
             let (u, v) = (uv[0], uv[1]);
 
             // compute the pixel values for each channel
-            let pixels = (0..image.num_channels()).map(|k| match optional_args.interpolation {
+            let pixels = (0..image.num_channels()).map(|k| match options.interpolation {
                 InterpolationMode::Bilinear => bilinear_interpolation(&image.data, u, v, k),
                 InterpolationMode::NearestNeighbor => {
                     nearest_neighbor_interpolation(&image.data, u, v, k)
@@ -250,5 +263,21 @@ mod tests {
         assert_eq!(xx[[0, 4]], 4.);
         assert_eq!(yy[[0, 0]], 0.);
         assert_eq!(yy[[3, 0]], 3.);
+    }
+
+    #[test]
+    fn resize_options() {
+        let options = super::ResizeOptions::default();
+        assert_eq!(options.interpolation, super::InterpolationMode::Bilinear);
+
+        let options = super::ResizeOptions::new();
+        assert_eq!(options.interpolation, super::InterpolationMode::Bilinear);
+
+        let options = super::ResizeOptions::new()
+            .with_interpolation(super::InterpolationMode::NearestNeighbor);
+        assert_eq!(
+            options.interpolation,
+            super::InterpolationMode::NearestNeighbor
+        );
     }
 }

@@ -18,9 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             width: 128,
             height: 128,
         },
-        kornia_rs::resize::ResizeOptions {
-            interpolation: kornia_rs::resize::InterpolationMode::Bilinear,
-        },
+        kornia_rs::resize::ResizeOptions::default(),
     )?;
 
     println!("gray_resize: {:?}", gray_resize.image_size());
