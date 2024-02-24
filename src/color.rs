@@ -19,6 +19,25 @@ const BW: f64 = 0.114;
 /// The grayscale image.
 ///
 /// Precondition: the input image must have 3 channels.
+///
+/// # Example
+///
+/// ```
+/// use kornia_rs::image::{Image, ImageSize};
+///
+/// let image = Image::<f32, 3>::new(
+///     ImageSize {
+///         width: 4,
+///         height: 5,
+///     },
+///     vec![0f32; 4 * 5 * 3],
+/// )
+/// .unwrap();
+/// let gray: Image<f32, 1> = kornia_rs::color::gray_from_rgb(&image).unwrap();
+/// assert_eq!(gray.num_channels(), 1);
+/// assert_eq!(gray.image_size().width, 4);
+/// assert_eq!(gray.image_size().height, 5);
+/// ```
 pub fn gray_from_rgb<T>(image: &Image<T, 3>) -> Result<Image<T, 1>>
 where
     T: Default + Copy + Clone + Send + Sync + num_traits::Float,
@@ -46,7 +65,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::io::functions as F;
+    use crate::io::functional as F;
 
     #[test]
     fn gray_from_rgb() {

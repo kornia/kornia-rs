@@ -158,7 +158,33 @@ impl Default for ResizeOptions {
 ///
 /// # Returns
 ///
-/// The resized image.
+/// The resized image with the new size.
+///
+/// # Example
+///
+/// ```
+/// use kornia_rs::image::{Image, ImageSize};
+/// let image = Image::<_, 3>::new(
+///     ImageSize {
+///         width: 4,
+///         height: 5,
+///     },
+///     vec![0f32; 4 * 5 * 3],
+/// )
+/// .unwrap();
+/// let image_resized: Image<f32, 3> = kornia_rs::resize::resize(
+///     &image,
+///     ImageSize {
+///         width: 2,
+///         height: 3,
+///     },
+///     kornia_rs::resize::ResizeOptions::default(),
+/// )
+/// .unwrap();
+/// assert_eq!(image_resized.num_channels(), 3);
+/// assert_eq!(image_resized.image_size().width, 2);
+/// assert_eq!(image_resized.image_size().height, 3);
+/// ```
 pub fn resize<const CHANNELS: usize>(
     image: &Image<f32, CHANNELS>,
     new_size: ImageSize,

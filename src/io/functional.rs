@@ -14,6 +14,19 @@ use super::jpeg::{ImageDecoder, ImageEncoder};
 /// # Returns
 ///
 /// A tensor containing the JPEG image data.
+///
+/// # Example
+///
+/// ```
+/// use kornia_rs::image::Image;
+/// use kornia_rs::io::functional as F;
+///
+/// let image_path = std::path::Path::new("tests/data/dog.jpeg");
+/// let image: Image<u8, 3> = F::read_image_jpeg(image_path).unwrap();
+/// assert_eq!(image.image_size().width, 258);
+/// assert_eq!(image.image_size().height, 195);
+/// assert_eq!(image.num_channels(), 3);
+/// ```
 pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>> {
     // verify the file exists and is a JPEG
     if !file_path.exists() {
@@ -78,7 +91,22 @@ pub fn write_image_jpeg(file_path: &Path, image: Image<u8, 3>) -> Result<()> {
 ///
 /// * `file_path` - The path to the image.
 ///
-// TODO: return sophus::TensorView
+/// # Returns
+///
+/// A tensor containing the image data.
+///
+/// # Example
+///
+/// ```
+/// use kornia_rs::image::Image;
+/// use kornia_rs::io::functional as F;
+///
+/// let image_path = std::path::Path::new("tests/data/dog.jpeg");
+/// let image: Image<u8, 3> = F::read_image_any(image_path).unwrap();
+/// assert_eq!(image.image_size().width, 258);
+/// assert_eq!(image.image_size().height, 195);
+/// assert_eq!(image.num_channels(), 3);
+/// ```
 pub fn read_image_any(file_path: &Path) -> Result<Image<u8, 3>> {
     // verify the file exists
     if !file_path.exists() {
@@ -110,7 +138,7 @@ mod tests {
     use std::path::Path;
     use tempfile::tempdir;
 
-    use crate::io::functions::{read_image_any, read_image_jpeg, write_image_jpeg};
+    use crate::io::functional::{read_image_any, read_image_jpeg, write_image_jpeg};
 
     #[test]
     fn read_jpeg() {
