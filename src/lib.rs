@@ -1,4 +1,6 @@
 pub mod color;
+pub mod distance_transform;
+pub mod flip;
 pub mod image;
 pub mod io;
 pub mod normalize;
