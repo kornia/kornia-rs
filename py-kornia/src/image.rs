@@ -1,3 +1,5 @@
+use numpy::{PyArray3, ToPyArray};
+
 use kornia_rs::image::{Image, ImageSize};
 use pyo3::prelude::*;
 
@@ -43,30 +45,39 @@ impl PyImageSize {
 #[pyclass(name = "Image")]
 #[derive(Clone)]
 pub struct PyImage {
-    pub inner: Image,
+    pub inner: Image<u8, 3>,
 }
 
 #[pymethods]
 impl PyImage {
-    #[new]
-    pub fn new(image_size: PyImageSize, data: Vec<u8>) -> PyResult<PyImage> {
-        let image = Image::new(image_size.inner, data);
-        Ok(image.into())
+    #[getter]
+    pub fn shape(&self) -> PyResult<(usize, usize, usize)> {
+        Ok((
+            self.inner.image_size().height,
+            self.inner.image_size().width,
+            self.inner.num_channels(),
+        ))
     }
 
-    #[getter]
-    pub fn image_size(&self) -> PyImageSize {
+    pub fn size(&self) -> PyImageSize {
         self.inner.image_size().into()
     }
 
-    #[getter]
+    pub fn wdith(&self) -> usize {
+        self.inner.image_size().width
+    }
+
+    pub fn height(&self) -> usize {
+        self.inner.image_size().height
+    }
+
     pub fn num_channels(&self) -> usize {
         self.inner.num_channels()
     }
 
     fn __str__(&self) -> PyResult<String> {
         Ok(format!(
-            "Image(height: {}, width: {}, num_channels: {})",
+            "Image(height: {}, width: {}, num_channels: {}, dtype: u8)",
             self.inner.image_size().height,
             self.inner.image_size().width,
             self.inner.num_channels()
@@ -75,11 +86,15 @@ impl PyImage {
 
     fn __repr__(&self) -> PyResult<String> {
         Ok(format!(
-            "Image(height: {}, width: {}, num_channels: {})",
+            "Image(height: {}, width: {}, num_channels: {}, dtype: u8)",
             self.inner.image_size().height,
             self.inner.image_size().width,
             self.inner.num_channels()
         ))
+    }
+
+    fn numpy(&self, py: Python) -> PyResult<Py<PyArray3<u8>>> {
+        Ok(self.inner.data.to_pyarray(py).to_owned())
     }
 }
 
@@ -89,8 +104,8 @@ impl From<ImageSize> for PyImageSize {
     }
 }
 
-impl From<Image> for PyImage {
-    fn from(image: Image) -> Self {
+impl From<Image<u8, 3>> for PyImage {
+    fn from(image: Image<u8, 3>) -> Self {
         PyImage { inner: image }
     }
 }
@@ -101,7 +116,7 @@ impl From<PyImageSize> for ImageSize {
     }
 }
 
-impl From<PyImage> for Image {
+impl From<PyImage> for Image<u8, 3> {
     fn from(image: PyImage) -> Self {
         image.inner
     }

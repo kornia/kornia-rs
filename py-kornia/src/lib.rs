@@ -4,7 +4,7 @@ mod io;
 mod tensor;
 
 use crate::image::PyImageSize;
-use crate::io::functions::{read_image_any, read_image_jpeg, write_image_jpeg};
+use crate::io::functional::{read_image_any, read_image_jpeg, write_image_jpeg};
 use crate::io::jpeg::{PyImageDecoder, PyImageEncoder};
 use crate::tensor::PyTensor;
 use pyo3::prelude::*;

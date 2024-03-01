@@ -1,2 +1,2 @@
-pub mod functions;
+pub mod functional;
 pub mod jpeg;

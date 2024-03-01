@@ -1,7 +1,7 @@
 use kornia_rs::io::jpeg::{ImageDecoder, ImageEncoder};
 use pyo3::prelude::*;
 
-use crate::image::{PyImageSize, PyImage};
+use crate::image::{PyImage, PyImageSize};
 
 #[pyclass(name = "ImageDecoder")]
 pub struct PyImageDecoder {
