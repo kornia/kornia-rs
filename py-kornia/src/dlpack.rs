@@ -1,3 +1,7 @@
+//! This module provides utilities to convert between PyTorch and DLPack tensors.
+//!
+//! NOTE: this is deprecated and will be removed in the future.
+//!
 use dlpack_rs as dlpack;
 use kornia_rs::tensor::Tensor;
 

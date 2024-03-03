@@ -59,8 +59,8 @@ pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>> {
 
     let image = match std::fs::read(file_path) {
         Ok(data) => {
-            let mut decoder = ImageDecoder::new();
-            decoder.decode(&data)
+            let mut decoder = ImageDecoder::new()?;
+            decoder.decode(&data)?
         }
         Err(e) => panic!("Error reading file: {}", e),
     };
@@ -75,7 +75,7 @@ pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>> {
 /// * `image` - The tensor containing the JPEG image data.
 pub fn write_image_jpeg(file_path: &Path, image: Image<u8, 3>) -> Result<()> {
     // compress the image
-    let jpeg_data = ImageEncoder::new().encode(image);
+    let jpeg_data = ImageEncoder::new()?.encode(image)?;
 
     // write the data directly to a file
     std::fs::write(file_path, jpeg_data)?;

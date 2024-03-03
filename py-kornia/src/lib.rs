@@ -1,12 +1,9 @@
-mod dlpack;
 mod image;
 mod io;
-mod tensor;
 
 use crate::image::PyImageSize;
 use crate::io::functional::{read_image_any, read_image_jpeg, write_image_jpeg};
 use crate::io::jpeg::{PyImageDecoder, PyImageEncoder};
-use crate::tensor::PyTensor;
 use pyo3::prelude::*;
 
 pub fn get_version() -> String {
@@ -25,7 +22,6 @@ pub fn kornia_rs(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(write_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_any, m)?)?;
-    m.add_class::<PyTensor>()?;
     m.add_class::<PyImageSize>()?;
     m.add_class::<PyImageDecoder>()?;
     m.add_class::<PyImageEncoder>()?;

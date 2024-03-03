@@ -1,7 +1,44 @@
+use anyhow::Result;
 use numpy::{PyArray3, ToPyArray};
 
 use kornia_rs::image::{Image, ImageSize};
 use pyo3::prelude::*;
+
+// type alias for a 3D numpy array of u8
+pub type PyImage = Py<PyArray3<u8>>;
+
+/// Trait to convert an image to a PyImage (3D numpy array of u8)
+pub trait ToPyImage {
+    fn to_pyimage(&self) -> PyImage;
+}
+
+impl<const CHANNELS: usize> ToPyImage for kornia_rs::image::Image<u8, CHANNELS> {
+    fn to_pyimage(&self) -> PyImage {
+        Python::with_gil(|py| self.data.to_pyarray(py).to_owned())
+    }
+}
+
+/// Trait to convert a PyImage (3D numpy array of u8) to an image
+pub trait FromPyImage<const CHANNELS: usize> {
+    fn from_pyimage(image: PyImage) -> Result<Image<u8, CHANNELS>>;
+}
+
+impl<const CHANNELS: usize> FromPyImage<CHANNELS> for kornia_rs::image::Image<u8, CHANNELS> {
+    fn from_pyimage(image: PyImage) -> Result<Image<u8, CHANNELS>> {
+        Python::with_gil(|py| {
+            let array = image.as_ref(py).to_owned_array();
+            let data = match array.as_slice() {
+                Some(d) => d.to_vec(),
+                None => return Err(anyhow::anyhow!("Image data is not contiguous")),
+            };
+            let size = ImageSize {
+                width: array.shape()[1],
+                height: array.shape()[0],
+            };
+            Ok(Image::new(size, data)?)
+        })
+    }
+}
 
 #[pyclass(name = "ImageSize")]
 #[derive(Clone)]
@@ -42,82 +79,14 @@ impl PyImageSize {
     }
 }
 
-#[pyclass(name = "Image")]
-#[derive(Clone)]
-pub struct PyImage {
-    pub inner: Image<u8, 3>,
-}
-
-#[pymethods]
-impl PyImage {
-    #[getter]
-    pub fn shape(&self) -> PyResult<(usize, usize, usize)> {
-        Ok((
-            self.inner.image_size().height,
-            self.inner.image_size().width,
-            self.inner.num_channels(),
-        ))
-    }
-
-    pub fn size(&self) -> PyImageSize {
-        self.inner.image_size().into()
-    }
-
-    pub fn wdith(&self) -> usize {
-        self.inner.image_size().width
-    }
-
-    pub fn height(&self) -> usize {
-        self.inner.image_size().height
-    }
-
-    pub fn num_channels(&self) -> usize {
-        self.inner.num_channels()
-    }
-
-    fn __str__(&self) -> PyResult<String> {
-        Ok(format!(
-            "Image(height: {}, width: {}, num_channels: {}, dtype: u8)",
-            self.inner.image_size().height,
-            self.inner.image_size().width,
-            self.inner.num_channels()
-        ))
-    }
-
-    fn __repr__(&self) -> PyResult<String> {
-        Ok(format!(
-            "Image(height: {}, width: {}, num_channels: {}, dtype: u8)",
-            self.inner.image_size().height,
-            self.inner.image_size().width,
-            self.inner.num_channels()
-        ))
-    }
-
-    fn numpy(&self, py: Python) -> PyResult<Py<PyArray3<u8>>> {
-        Ok(self.inner.data.to_pyarray(py).to_owned())
-    }
-}
-
 impl From<ImageSize> for PyImageSize {
     fn from(image_size: ImageSize) -> Self {
         PyImageSize { inner: image_size }
     }
 }
 
-impl From<Image<u8, 3>> for PyImage {
-    fn from(image: Image<u8, 3>) -> Self {
-        PyImage { inner: image }
-    }
-}
-
 impl From<PyImageSize> for ImageSize {
     fn from(image_size: PyImageSize) -> Self {
         image_size.inner
-    }
-}
-
-impl From<PyImage> for Image<u8, 3> {
-    fn from(image: PyImage) -> Self {
-        image.inner
     }
 }

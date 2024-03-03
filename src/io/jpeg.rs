@@ -1,3 +1,4 @@
+use anyhow::Result;
 use turbojpeg;
 
 use crate::image::{Image, ImageSize};
@@ -14,13 +15,13 @@ pub struct ImageEncoder {
 
 impl Default for ImageDecoder {
     fn default() -> Self {
-        Self::new()
+        Self::new().unwrap()
     }
 }
 
 impl Default for ImageEncoder {
     fn default() -> Self {
-        Self::new()
+        Self::new().unwrap()
     }
 }
 
@@ -35,12 +36,9 @@ impl ImageEncoder {
     /// # Panics
     ///
     /// Panics if the compressor cannot be created.
-    pub fn new() -> ImageEncoder {
-        let compressor = match turbojpeg::Compressor::new() {
-            Ok(c) => c,
-            Err(e) => panic!("Error creating compressor: {}", e),
-        };
-        ImageEncoder { compressor }
+    pub fn new() -> Result<Self> {
+        let compressor = turbojpeg::Compressor::new()?;
+        Ok(Self { compressor })
     }
 
     /// Encodes the given data into a JPEG image.
@@ -52,15 +50,15 @@ impl ImageEncoder {
     /// # Returns
     ///
     /// The encoded data as `Vec<u8>`.
-    pub fn encode(&mut self, image: Image<u8, 3>) -> Vec<u8> {
+    pub fn encode(&mut self, image: Image<u8, 3>) -> Result<Vec<u8>> {
         // get the image data
         let image_data = match image.data.as_slice() {
             Some(d) => d,
-            None => panic!("Image data is not contiguous"),
+            None => Err(anyhow::anyhow!("Image data is not contiguous"))?,
         };
 
         // create a turbojpeg image
-        let _image = turbojpeg::Image {
+        let buf = turbojpeg::Image {
             pixels: image_data,
             width: image.image_size().width,
             pitch: 3 * image.image_size().width,
@@ -69,10 +67,7 @@ impl ImageEncoder {
         };
 
         // encode the image
-        match self.compressor.compress_to_vec(_image) {
-            Ok(d) => d,
-            Err(e) => panic!("Error compressing image: {}", e),
-        }
+        Ok(self.compressor.compress_to_vec(buf)?)
     }
 
     /// Sets the quality of the encoder.
@@ -80,10 +75,8 @@ impl ImageEncoder {
     /// # Arguments
     ///
     /// * `quality` - The quality to set.
-    pub fn set_quality(&mut self, quality: i32) {
-        self.compressor
-            .set_quality(quality)
-            .expect("Error setting quality")
+    pub fn set_quality(&mut self, quality: i32) -> Result<()> {
+        Ok(self.compressor.set_quality(quality)?)
     }
 }
 
@@ -94,12 +87,9 @@ impl ImageDecoder {
     /// # Returns
     ///
     /// A new `ImageDecoder` instance.
-    pub fn new() -> ImageDecoder {
-        let decompressor = match turbojpeg::Decompressor::new() {
-            Ok(d) => d,
-            Err(e) => panic!("Error creating decompressor: {}", e),
-        };
-        ImageDecoder { decompressor }
+    pub fn new() -> Result<Self> {
+        let decompressor = turbojpeg::Decompressor::new()?;
+        Ok(ImageDecoder { decompressor })
     }
 
     /// Reads the header of a JPEG image.
@@ -115,16 +105,13 @@ impl ImageDecoder {
     /// # Panics
     ///
     /// Panics if the header cannot be read.
-    pub fn read_header(&mut self, jpeg_data: &[u8]) -> ImageSize {
+    pub fn read_header(&mut self, jpeg_data: &[u8]) -> Result<ImageSize> {
         // read the JPEG header with image size
-        let header = match self.decompressor.read_header(jpeg_data) {
-            Ok(h) => h,
-            Err(e) => panic!("Error reading header: {}", e),
-        };
-        ImageSize {
+        let header = self.decompressor.read_header(jpeg_data)?;
+        Ok(ImageSize {
             width: header.width,
             height: header.height,
-        }
+        })
     }
 
     /// Decodes the given JPEG data.
@@ -136,15 +123,15 @@ impl ImageDecoder {
     /// # Returns
     ///
     /// The decoded data as Tensor.
-    pub fn decode(&mut self, jpeg_data: &[u8]) -> Image<u8, 3> {
+    pub fn decode(&mut self, jpeg_data: &[u8]) -> Result<Image<u8, 3>> {
         // get the image size to allocate th data storage
-        let image_size: ImageSize = self.read_header(jpeg_data);
+        let image_size: ImageSize = self.read_header(jpeg_data)?;
 
         // prepare a storage for the raw pixel data
-        let mut pixels = vec![0; image_size.height * image_size.width * 3];
+        let mut pixels = vec![0u8; image_size.height * image_size.width * 3];
 
         // allocate image container
-        let image = turbojpeg::Image {
+        let buf = turbojpeg::Image {
             pixels: pixels.as_mut_slice(),
             width: image_size.width,
             pitch: 3 * image_size.width, // we use no padding between rows
@@ -153,41 +140,41 @@ impl ImageDecoder {
         };
 
         // decompress the JPEG data
-        match self.decompressor.decompress(jpeg_data, image) {
-            Ok(_) => {}
-            Err(e) => panic!("Error decompressing image: {}", e),
-        };
+        self.decompressor.decompress(jpeg_data, buf)?;
 
-        Image::new(image_size, pixels).unwrap()
+        Ok(Image::new(image_size, pixels)?)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::io::jpeg::{ImageDecoder, ImageEncoder};
+    use anyhow::Result;
 
     #[test]
-    fn image_decoder() {
+    fn image_decoder() -> Result<()> {
         let jpeg_data = std::fs::read("tests/data/dog.jpeg").unwrap();
         // read the header
-        let image_size = ImageDecoder::new().read_header(&jpeg_data);
+        let image_size = ImageDecoder::new()?.read_header(&jpeg_data)?;
         assert_eq!(image_size.width, 258);
         assert_eq!(image_size.height, 195);
         // load the image as file and decode it
-        let image = ImageDecoder::new().decode(&jpeg_data);
+        let image = ImageDecoder::new()?.decode(&jpeg_data)?;
         assert_eq!(image.image_size().width, 258);
         assert_eq!(image.image_size().height, 195);
         assert_eq!(image.num_channels(), 3);
+        Ok(())
     }
 
     #[test]
-    fn image_encoder() {
-        let jpeg_data_fs = std::fs::read("tests/data/dog.jpeg").unwrap();
-        let image = ImageDecoder::new().decode(&jpeg_data_fs);
-        let jpeg_data = ImageEncoder::new().encode(image);
-        let image_back = ImageDecoder::new().decode(&jpeg_data);
+    fn image_encoder() -> Result<()> {
+        let jpeg_data_fs = std::fs::read("tests/data/dog.jpeg")?;
+        let image = ImageDecoder::new()?.decode(&jpeg_data_fs)?;
+        let jpeg_data = ImageEncoder::new()?.encode(image)?;
+        let image_back = ImageDecoder::new()?.decode(&jpeg_data)?;
         assert_eq!(image_back.image_size().width, 258);
         assert_eq!(image_back.image_size().height, 195);
         assert_eq!(image_back.num_channels(), 3);
+        Ok(())
     }
 }
