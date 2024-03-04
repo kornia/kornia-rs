@@ -10,9 +10,6 @@ else
 	VENV_BIN=$(VENV)/bin
 endif
 
-# Define command to filter pip warnings when running maturin
-FILTER_PIP_WARNINGS=| grep -v "don't match your environment"; test $${PIPESTATUS[0]} -eq 0
-
 .venv:  ## Set up Python virtual environment and install requirements
 	python3 -m venv $(VENV)
 	$(MAKE) requirements
@@ -26,20 +23,17 @@ requirements: .venv  ## Install/refresh Python project requirements
 build-python: .venv  ## Compile and install Python Polars for development
 	@unset CONDA_PREFIX && source $(VENV_BIN)/activate \
 	&& maturin develop -m py-kornia/Cargo.toml \
-	$(FILTER_PIP_WARNINGS)
 
 .PHONY: build-python-release
 build-python-release: .venv  ## Compile and install a faster Python Polars binary with full optimizations
 	@unset CONDA_PREFIX && source $(VENV_BIN)/activate \
 	&& maturin develop -m py-kornia/Cargo.toml --release \
-	$(FILTER_PIP_WARNINGS)
 
 .PHONY: test-python
 test-python: .venv  ## Run Python tests
 	@unset CONDA_PREFIX && source $(VENV_BIN)/activate \
 	&& maturin develop -m py-kornia/Cargo.toml \
 	&& $(VENV_BIN)/pytest py-kornia/tests
-	$(FILTER_PIP_WARNINGS)
 
 .PHONY: clippy
 clippy:  ## Run clippy with all features
