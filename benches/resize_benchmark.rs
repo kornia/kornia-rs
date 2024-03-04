@@ -30,7 +30,7 @@ fn bench_resize(c: &mut Criterion) {
     for (width, height) in image_sizes {
         let image_size = ImageSize { width, height };
         let id = format!("{}x{}", width, height);
-        let image = Image::<u8, 3>::new(image_size.clone(), vec![0u8; width * height * 3]).unwrap();
+        let image = Image::<u8, 3>::new(image_size, vec![0u8; width * height * 3]).unwrap();
         let image_f32 = image.clone().cast::<f32>().unwrap();
         let new_size = ImageSize {
             width: width / 2,
@@ -40,7 +40,7 @@ fn bench_resize(c: &mut Criterion) {
             b.iter(|| {
                 F::resize(
                     black_box(i),
-                    new_size.clone(),
+                    new_size,
                     ResizeOptions {
                         interpolation: InterpolationMode::Bilinear,
                     },
@@ -48,7 +48,7 @@ fn bench_resize(c: &mut Criterion) {
             })
         });
         group.bench_with_input(BenchmarkId::new("image_crate", &id), &image, |b, i| {
-            b.iter(|| resize_image_crate(black_box(i.clone()), new_size.clone()))
+            b.iter(|| resize_image_crate(black_box(i.clone()), new_size))
         });
     }
     group.finish();

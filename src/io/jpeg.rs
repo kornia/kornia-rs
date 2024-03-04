@@ -142,7 +142,7 @@ impl ImageDecoder {
         // decompress the JPEG data
         self.decompressor.decompress(jpeg_data, buf)?;
 
-        Ok(Image::new(image_size, pixels)?)
+        Image::new(image_size, pixels)
     }
 }
 
