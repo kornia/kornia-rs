@@ -1,6 +1,6 @@
 [package]
 name = "kornia-rs"
-version = "0.0.2"
+version = "0.1.0"
 edition = "2021"
 description = "Low-level computer vision library in Rust"
 homepage = "http://kornia.org"
@@ -14,17 +14,14 @@ num-traits = "0.2.17"
 image = { version = "0.24.5" }
 turbojpeg = {version = "1.0.0"}
 ndarray = { version = "0.15.6", features = ["rayon"] }
-# this is experimental and only used for benchmarking, so it's optional
-# consider removing it in the future.
-candle-core = { version = "0.3.2", optional = true }
 
 [dev-dependencies]
 tempfile = "3.9.0"
-rerun = "0.13.0"
+rerun = "0.14.1"
 criterion = { version = "0.5.1", features = ["html_reports"] }
-
-[features]
-candle = ["candle-core"]
+# this is experimental and only used for benchmarking, so it's optional
+# consider removing it in the future.
+candle-core = "0.3.2"
 
 [[bench]]
 name = "color_benchmark"
