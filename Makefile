@@ -20,12 +20,12 @@ requirements: .venv  ## Install/refresh Python project requirements
 	$(VENV_BIN)/python -m pip install -r py-kornia/requirements-dev.txt
 
 .PHONY: build-python
-build-python: .venv  ## Compile and install Python Polars for development
+build-python: .venv  ## Compile and install Python for development
 	@unset CONDA_PREFIX && source $(VENV_BIN)/activate \
 	&& maturin develop -m py-kornia/Cargo.toml \
 
 .PHONY: build-python-release
-build-python-release: .venv  ## Compile and install a faster Python Polars binary with full optimizations
+build-python-release: .venv  ## Compile and install a faster Python binary with full optimizations
 	@unset CONDA_PREFIX && source $(VENV_BIN)/activate \
 	&& maturin develop -m py-kornia/Cargo.toml --release \
 
