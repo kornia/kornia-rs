@@ -17,9 +17,6 @@ jobs:
       matrix:
         python-version: ["3.7", "3.8", "3.9", "3.10", "3.11"]
         target: [x86_64, aarch64]
-    defaults:
-      run:
-        working-directory: ./py-kornia
 
     steps:
       - uses: actions/checkout@v3
@@ -38,7 +35,7 @@ jobs:
           container: ghcr.io/kornia/kornia-rs/release-${{ matrix.target }}:latest
           target: ${{ matrix.target }}
           manylinux: auto
-          args: --release --out dist -i python${{ matrix.python-version }}
+          args: --release --out dist -i python${{ matrix.python-version }} -m py-kornia/Cargo.toml
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
@@ -68,7 +65,7 @@ jobs:
         with:
           maturin-version: latest
           command: build
-          args: --target ${{ matrix.target }}-apple-darwin --release --out dist -i python${{ matrix.python-version }}
+          args: --target ${{ matrix.target }}-apple-darwin --release --out dist -i python${{ matrix.python-version }} -m py-kornia/Cargo.toml
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
@@ -97,7 +94,7 @@ jobs:
         with:
           maturin-version: latest
           command: build
-          args: --release --out dist -i python${{ matrix.python-version }}
+          args: --release --out dist -i python${{ matrix.python-version }} -m py-kornia/Cargo.toml
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
