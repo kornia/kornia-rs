@@ -1,4 +1,4 @@
-name: Release
+name: Python Release
 
 on:
   release:
@@ -16,6 +16,10 @@ jobs:
       matrix:
         python-version: ["3.7", "3.8", "3.9", "3.10", "3.11"]
         target: [x86_64, aarch64]
+    defaults:
+      run:
+        working-directory: ./py-kornia
+
     steps:
       - uses: actions/checkout@v3
       - name: Set up QEMU
