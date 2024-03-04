@@ -1,3 +1,6 @@
 # build
 
 maturin[patchelf]
+pytest
+torch
+numpy
