@@ -1,0 +1,33 @@
+name: Python Test
+
+on:
+  pull_request:
+    paths:
+      - Cargo.lock
+      - py-kornia/**
+      - .github/workflows/test-python.yml
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.lock
+      - py-kornia/**
+      - .github/workflows/test-python.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.8
+      - name: Install dependencies
+        run: sudo apt-get install -y cmake nasm
+      - name: Build and test
+        run: make test-python
