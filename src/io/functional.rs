@@ -73,7 +73,7 @@ pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>> {
 ///
 /// * `file_path` - The path to the JPEG image.
 /// * `image` - The tensor containing the JPEG image data.
-pub fn write_image_jpeg(file_path: &Path, image: Image<u8, 3>) -> Result<()> {
+pub fn write_image_jpeg(file_path: &Path, image: &Image<u8, 3>) -> Result<()> {
     // compress the image
     let jpeg_data = ImageEncoder::new()?.encode(image)?;
 
@@ -163,7 +163,7 @@ mod tests {
         fs::create_dir_all(tmp_dir.path()).unwrap();
         let file_path = tmp_dir.path().join("dog.jpeg");
         let image_data = read_image_jpeg(image_path_read).unwrap();
-        write_image_jpeg(&file_path, image_data).unwrap();
+        write_image_jpeg(&file_path, &image_data).unwrap();
         let image_data_back = read_image_jpeg(&file_path).unwrap();
         assert!(file_path.exists(), "File does not exist: {:?}", file_path);
         assert_eq!(image_data_back.image_size().width, 258);

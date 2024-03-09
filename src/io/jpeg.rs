@@ -50,7 +50,7 @@ impl ImageEncoder {
     /// # Returns
     ///
     /// The encoded data as `Vec<u8>`.
-    pub fn encode(&mut self, image: Image<u8, 3>) -> Result<Vec<u8>> {
+    pub fn encode(&mut self, image: &Image<u8, 3>) -> Result<Vec<u8>> {
         // get the image data
         let image_data = match image.data.as_slice() {
             Some(d) => d,

@@ -56,7 +56,7 @@ impl PyImageEncoder {
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
         let jpeg_data = self
             .inner
-            .encode(image)
+            .encode(&image)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
         Ok(jpeg_data)
     }
