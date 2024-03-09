@@ -170,7 +170,7 @@ mod tests {
     fn image_encoder() -> Result<()> {
         let jpeg_data_fs = std::fs::read("tests/data/dog.jpeg")?;
         let image = ImageDecoder::new()?.decode(&jpeg_data_fs)?;
-        let jpeg_data = ImageEncoder::new()?.encode(image)?;
+        let jpeg_data = ImageEncoder::new()?.encode(&image)?;
         let image_back = ImageDecoder::new()?.decode(&jpeg_data)?;
         assert_eq!(image_back.image_size().width, 258);
         assert_eq!(image_back.image_size().height, 195);
