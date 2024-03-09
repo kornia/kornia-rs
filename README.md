@@ -6,7 +6,9 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENCE)
 [![Slack](https://img.shields.io/badge/Slack-4A154B?logo=slack&logoColor=white)](https://join.slack.com/t/kornia/shared_invite/zt-csobk21g-CnydWe5fmvkcktIeRFGCEQ)
 
-The `kornia-rs` crate is a low level library for Computer Vision written in [Rust](https://www.rust-lang.org/). Use the library to perform image I/O, visualisation and other low level operations in your machine learning and data-science projects in a thread-safe and efficient way.
+The `kornia-rs` crate is a low level library for Computer Vision written in [Rust](https://www.rust-lang.org/) 🦀
+
+Use the library to perform image I/O, visualisation and other low level operations in your machine learning and data-science projects in a thread-safe and efficient way.
 
 ## Getting Started
 
