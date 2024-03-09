@@ -33,3 +33,4 @@ jobs:
         with:
           command: publish
           args: --verbose --target ${{ matrix.target }}
+          use-cross: true
