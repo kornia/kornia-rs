@@ -1,5 +1,9 @@
-use crate::tensor::cv;
+//! This module provides utilities to convert between PyTorch and DLPack tensors.
+//!
+//! NOTE: this is deprecated and will be removed in the future.
+//!
 use dlpack_rs as dlpack;
+use kornia_rs::tensor::Tensor;
 
 use pyo3::prelude::*;
 use std::ffi::{c_void, CStr, CString};
@@ -52,7 +56,7 @@ unsafe extern "C" fn dlpack_deleter(_x: *mut dlpack::DLManagedTensor) {
     //x.drop_in_place();
 }
 
-pub fn cvtensor_to_dltensor(x: &cv::Tensor) -> dlpack::DLTensor {
+pub fn cvtensor_to_dltensor(x: &Tensor) -> dlpack::DLTensor {
     dlpack::DLTensor {
         data: x.data.as_ptr() as *mut c_void,
         device: dlpack::DLDevice {
@@ -71,7 +75,7 @@ pub fn cvtensor_to_dltensor(x: &cv::Tensor) -> dlpack::DLTensor {
     }
 }
 
-fn cvtensor_to_dlmtensor(x: &cv::Tensor) -> dlpack::DLManagedTensor {
+fn cvtensor_to_dlmtensor(x: &Tensor) -> dlpack::DLManagedTensor {
     // create dl tensor
 
     let dl_tensor_bx = Box::new(x);
@@ -86,7 +90,7 @@ fn cvtensor_to_dlmtensor(x: &cv::Tensor) -> dlpack::DLManagedTensor {
     }
 }
 
-pub fn cvtensor_to_dlpack(x: &cv::Tensor, py: Python) -> PyResult<PyObject> {
+pub fn cvtensor_to_dlpack(x: &Tensor, py: Python) -> PyResult<PyObject> {
     // create the managed tensor
     let dlm_tensor: dlpack::DLManagedTensor = cvtensor_to_dlmtensor(x);
     let dlm_tensor_bx = Box::new(dlm_tensor);

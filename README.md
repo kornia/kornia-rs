@@ -1,141 +1,233 @@
-# kornia-rs: Low level implementations for Computer Vision in Rust.
+# kornia-rs: low level computer vision library in Rust
 
-[![Continuous integration](https://github.com/kornia/kornia-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/kornia/kornia-rs/actions/workflows/ci.yml)
+![Crates.io Version](https://img.shields.io/crates/v/kornia-rs)
 [![PyPI version](https://badge.fury.io/py/kornia-rs.svg)](https://badge.fury.io/py/kornia-rs)
+[![Documentation](https://img.shields.io/badge/docs.rs-kornia_rs-orange)](https://docs.rs/kornia-rs)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENCE)
 [![Slack](https://img.shields.io/badge/Slack-4A154B?logo=slack&logoColor=white)](https://join.slack.com/t/kornia/shared_invite/zt-csobk21g-CnydWe5fmvkcktIeRFGCEQ)
 
-This project provides low level functionality for Computer Vision written in [Rust](https://www.rust-lang.org/) to be consumed by machine learning and data-science frameworks, specially those working with images. We mainly aim to provide I/O functionality for images (future: video, cameras), and visualisation in future.
+The `kornia-rs` crate is a low level library for Computer Vision written in [Rust](https://www.rust-lang.org/) 🦀
 
-- The library is written in [Rust](https://www.rust-lang.org/).
-- Python bindings are created with [PyO3/Maturin](https://github.com/PyO3/maturin).
-- We package with support for Linux [amd64/arm64], Macos and WIndows.
+Use the library to perform image I/O, visualisation and other low level operations in your machine learning and data-science projects in a thread-safe and efficient way.
+
+## Getting Started
+
+`cargo run --example hello_world`
+
+```rust
+use kornia_rs::image::Image;
+use kornia_rs::io::functional as F;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // read the image
+    let image_path = std::path::Path::new("tests/data/dog.jpeg");
+    let image: Image<u8, 3> = F::read_image_jpeg(image_path)?;
+
+    println!("Hello, world!");
+    println!("Loaded Image size: {:?}", image.image_size());
+    println!("\nGoodbyte!");
+
+    Ok(())
+}
+```
+
+```bash
+Hello, world!
+Loaded Image size: ImageSize { width: 258, height: 195 }
+
+Goodbyte!
+```
+
+## Features
+
+- 🦀The library is primarly written in [Rust](https://www.rust-lang.org/).
+- 🚀 Multi-threaded and efficient image I/O, image processing and advanced computer vision operators.
+- 🔢 The n-dimensional backend is based on the [`ndarray`](https://crates.io/crates/ndarray) crate.
+- 🐍 Pthon bindings are created with [PyO3/Maturin](https://github.com/PyO3/maturin).
+- 📦 We package with support for Linux [amd64/arm64], Macos and WIndows.
 - Supported Python versions are 3.7/3.8/3.9/3.10/3.11
 
-## Installation
+### Supported image formats
 
-From pip:
+- Read images from AVIF, BMP, DDS, Farbeld, GIF, HDR, ICO, JPEG (libjpeg-turbo), OpenEXR, PNG, PNM, TGA, TIFF, WebP.
+
+### Image processing
+
+- Convert images to grayscale, resize, crop, rotate, flip, pad, normalize, denormalize, and other image processing operations.
+
+## 🛠️ Installation
+
+### >_ System dependencies
+
+You need to install the following dependencies in your system:
+
+```bash
+sudo apt-get install nasm
+```
+
+### 🦀 Rust
+
+Add the following to your `Cargo.toml`:
+
+```toml
+[dependencies]
+kornia-rs = "0.1.0"
+```
+
+Alternatively, you can use the `cargo` command to add the dependency:
+
+```bash
+cargo add kornia-rs
+```
+
+### 🐍 Python
 
 ```bash
 pip install kornia-rs
 ```
 
-From source:
+## Examples: Image processing
 
-```bash
-pip install maturin
-maturin build --release --out dist -i $(which python3)
-pip install dist/*.whl
+The following example shows how to read an image, convert it to grayscale and resize it. The image is then logged to a [`rerun`](https://github.com/rerun-io/rerun) recording stream.
+
+Checkout all the examples in the [`examples`](https://github.com/kornia/kornia-rs/tree/main/examples) directory to see more use cases.
+
+```rust
+use kornia_rs::image::Image;
+use kornia_rs::io::functional as F;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // read the image
+    let image_path = std::path::Path::new("tests/data/dog.jpeg");
+    let image: Image<u8, 3> = F::read_image_jpeg(image_path)?;
+    let image_viz = image.clone();
+
+    let image_f32: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
+
+    // convert the image to grayscale
+    let gray: Image<f32, 1> = kornia_rs::color::gray_from_rgb(&image_f32)?;
+
+    let gray_resize: Image<f32, 1> = kornia_rs::resize::resize(
+        &gray,
+        kornia_rs::image::ImageSize {
+            width: 128,
+            height: 128,
+        },
+        kornia_rs::resize::ResizeOptions::default(),
+    )?;
+
+    println!("gray_resize: {:?}", gray_resize.image_size());
+
+    // create a Rerun recording stream
+    let rec = rerun::RecordingStreamBuilder::new("Kornia App").connect()?;
+
+    // log the images
+    let _ = rec.log("image", &rerun::Image::try_from(image_viz.data)?);
+    let _ = rec.log("gray", &rerun::Image::try_from(gray.data)?);
+    let _ = rec.log("gray_resize", &rerun::Image::try_from(gray_resize.data)?);
+
+    Ok(())
+}
 ```
+![Screenshot from 2024-03-09 14-31-41](https://github.com/kornia/kornia-rs/assets/5157099/afdc11e6-eb36-4fcc-a6a1-e2240318958d)
 
-## Basic Usage
+## Python usage
 
-Load an image, that is converted to `cv::Tensor` wich is a centric structure to the DLPack protocol to share tensor data across frameworks with a zero-copy cost.
+Load an image, that is converted directly to a numpy array to ease the integration with other libraries.
 
 ```python
     import kornia_rs as K
-    from kornia_rs import Tensor as cvTensor
+    import numpy as np
 
-    # load an image with Rust `image-rs` as backend library
-    cv_tensor: cvTensor = K.read_image_rs("dog.jpeg")
-    assert cv_tensor.shape == [195, 258, 3]
+    # load an image with using libjpeg-turbo
+    img: np.ndarray = K.read_image_jpeg("dog.jpeg")
+
+    # alternatively, load other formats
+    # img: np.ndarray = K.read_image_any("dog.png")
+
+    assert img.shape == (195, 258, 3)
 
     # convert to dlpack to import to torch
-    th_tensor = torch.utils.dlpack.from_dlpack(cv_tensor)
-    assert th_tensor.shape == (195, 258, 3)
-    assert np_tensor.shape == (195, 258, 3)
-
-    # or to numpy with same interface
-    np_tensor = np.from_dlpack(cv_tensor)
+    img_t = torch.from_dlpack(img)
+    assert img_t.shape == (195, 258, 3)
 ```
 
-## Advanced usage
-
-Encode or decoda image streams using the `turbojpeg` backend
+Write an image to disk
 
 ```python
-# load image using turbojpeg
-cv_tensor = K.read_image_jpeg("dog.jpeg")
-image: np.ndarray = np.from_dlpack(cv_tensor)  # HxWx3
+    import kornia_rs as K
+    import numpy as np
+
+    # load an image with using libjpeg-turbo
+    img: np.ndarray = K.read_image_jpeg("dog.jpeg")
+
+    # write the image to disk
+    K.write_image_jpeg("dog_copy.jpeg", img)
+```
+
+Encode or decode image streams using the `turbojpeg` backend
+
+```python
+import kornia_rs as K
+
+# load image with kornia-rs
+img = K.read_image_jpeg("dog.jpeg")
 
 # encode the image with jpeg
 image_encoder = K.ImageEncoder()
 image_encoder.set_quality(95)  # set the encoding quality
 
 # get the encoded stream
-image_encoded: List[int] = image_encoder.encode(image.tobytes(), image.shape)
-
-# write to disk the encoded stream
-K.write_image_jpeg("dog_encoded.jpeg", image_encoded)
+img_encoded: list[int] = image_encoder.encode(img)
 
 # decode back the image
 image_decoder = K.ImageDecoder()
 
-decoded_tensor = image_decoder.decode(bytes(image_encoded))
-decoded_image: np.ndarray = np.from_dlpack(decoded_tensor)  # HxWx3
+decoded_img: np.ndarray = image_decoder.decode(bytes(image_encoded))
 ```
 
-## TODO: short/mid-terrm
+## 🧑‍💻 Development
 
-- [x] [infra] Automate packaging for manywheels.
-- [x] [kornia] integrate with the new `Image` API
-- [x] [dlpack] move dlpack implementation to dlpack-rs.
-- [x] [dlpack] implement test for torch and numpy.
-- [ ] [dlpack] update dlpack version >=0.8
-- [ ] [dlpack] implement `DLPack` to `cv::Tensor`.
+Pre-requisites: install `rust` and `python3` in your system.
 
-## TODO: not priority for now
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
 
-- [ ] [io] Implement image encoding and explore video.
-- [ ] [viz] Fix minor issues and implement a full `VizManager` to work on the browser.
-- [ ] [tensor] implement basic functionality to test: add, sub, mul, etc.
-- [ ] [tensor] explore xnnpack and openvino integration.
-
-## Development
-
-To test the project in lyour local machine use the following instructions:
-
-1. Clone the repository in your local directory
+Clone the repository in your local directory
 
 ```bash
 git clone https://github.com/kornia/kornia-rs.git
 ```
 
-2.1 (optional) Build the `devel.Dockerfile`
+### 🦀 Rust
 
-Let's prepare the development environment with Docker.
-Make sure you have docker in your system: https://docs.docker.com/engine/install/ubuntu/
-
-```bash
-cd ./docker && ./build_devel.sh
-KORNIA_RS_DEVEL_IMAGE="kornia_rs/devel:local" ./devel.sh
-```
-
-2.2 Enter to the `devel` docker container.
+Compile the project and run the tests
 
 ```bash
-./devel.sh
+cargo test
 ```
 
-3. Build the project
-
-(you should now be inside the docker container)
+For specific tests, you can run the following command:
 
 ```bash
-# maturin needs you to be a `venv`
-python3 -m venv .venv
-source .venv/bin/activate
-
-# build and generate linked wheels
-maturin develop --extras dev
+cargo test image
 ```
 
-4. Run the tests
+### 🐍 Python
+
+To build the Python wheels, we use the `maturin` package. Use the following command to build the wheels:
 
 ```bash
-pytest test/
+make build-python
 ```
 
-## Contributing
+To run the tests, use the following command:
+
+```bash
+make test-python
+```
+
+## 💜 Contributing
 
 This is a child project of [Kornia](https://github.com/kornia/kornia). Join the community to get in touch with us, or just sponsor the project: https://opencollective.com/kornia

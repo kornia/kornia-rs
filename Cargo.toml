@@ -1,28 +1,36 @@
 [package]
-name = "kornia_rs"
-version = "0.0.8"
+name = "kornia-rs"
+version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-[lib]
-name = "kornia_rs"
-crate-type = ["cdylib"]
+description = "Low-level computer vision library in Rust"
+homepage = "http://kornia.org"
+repository = "https://github.com/kornia/kornia-rs"
+categories = ["image-processing", "computer-vision", "machine-learning"]
+license-file = "LICENSE"
 
 [dependencies]
-pyo3 = { version = "0.17.3", features = ["extension-module"] }
+anyhow = "1.0.80"
+num-traits = "0.2.17"
 image = { version = "0.24.5" }
-dlpack-rs = {version = "^0.1.1"}
-vviz = {version = "0.3.0", optional = true}
-turbojpeg = {version = "0.5.2"}
+turbojpeg = {version = "1.0.0"}
+ndarray = { version = "0.15.6", features = ["rayon"] }
+# this is experimental and only used for benchmarking, so it's optional
+# consider removing it in the future.
+candle-core = { version = "0.3.2", optional = true }
 
 [dev-dependencies]
-criterion = "0.3"
-pprof = { version = "0.3", features = ["flamegraph"] }
-
-[[bench]]
-name = "my_benchmark"
-harness = false
+tempfile = "3.9.0"
+rerun = "0.14.1"
+criterion = { version = "0.5.1", features = ["html_reports"] }
 
 [features]
-default = []
-viz = ["dep:vviz"]
+candle = ["candle-core"]
+
+
+[[bench]]
+name = "color_benchmark"
+harness = false
+
+[[bench]]
+name = "resize_benchmark"
+harness = false
