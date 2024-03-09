@@ -55,9 +55,9 @@ Goodbyte!
 
 - Convert images to grayscale, resize, crop, rotate, flip, pad, normalize, denormalize, and other image processing operations.
 
-## Installation
+## 🛠️ Installation
 
-### System dependencies
+### >_ System dependencies
 
 You need to install the following dependencies in your system:
 
