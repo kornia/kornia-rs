@@ -12,7 +12,6 @@ Use the library to perform image I/O, visualisation and other low level operatio
 
 ## Getting Started
 
-
 `cargo run --example hello_world`
 
 ```rust
@@ -66,7 +65,7 @@ You need to install the following dependencies in your system:
 sudo apt-get install nasm
 ```
 
-### Rust
+### 🦀 Rust
 
 Add the following to your `Cargo.toml`:
 
@@ -81,9 +80,7 @@ Alternatively, you can use the `cargo` command to add the dependency:
 cargo add kornia-rs
 ```
 
-### Python
-
-From pip
+### 🐍 Python
 
 ```bash
 pip install kornia-rs
@@ -189,7 +186,7 @@ image_decoder = K.ImageDecoder()
 decoded_img: np.ndarray = image_decoder.decode(bytes(image_encoded))
 ```
 
-## Development
+## 🧑‍💻 Development
 
 Pre-requisites: install `rust` and `python3` in your system.
 
@@ -203,7 +200,7 @@ Clone the repository in your local directory
 git clone https://github.com/kornia/kornia-rs.git
 ```
 
-### Rust
+### 🦀 Rust
 
 Compile the project and run the tests
 
@@ -217,7 +214,7 @@ For specific tests, you can run the following command:
 cargo test image
 ```
 
-### Python
+### 🐍 Python
 
 To build the Python wheels, we use the `maturin` package. Use the following command to build the wheels:
 
@@ -231,6 +228,6 @@ To run the tests, use the following command:
 make test-python
 ```
 
-## Contributing
+## 💜 Contributing
 
 This is a child project of [Kornia](https://github.com/kornia/kornia). Join the community to get in touch with us, or just sponsor the project: https://opencollective.com/kornia
