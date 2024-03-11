@@ -7,13 +7,15 @@ use super::jpeg::{ImageDecoder, ImageEncoder};
 
 /// Reads a JPEG image from the given file path.
 ///
+/// The method reads the JPEG image data directly from a file leveraging the libjpeg-turbo library.
+///
 /// # Arguments
 ///
 /// * `image_path` - The path to the JPEG image.
 ///
 /// # Returns
 ///
-/// A tensor containing the JPEG image data.
+/// An in image containing the JPEG image data.
 ///
 /// # Example
 ///
@@ -36,34 +38,25 @@ pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>> {
         ));
     }
 
-    let file_path = match file_path.extension() {
-        Some(ext) => {
-            if ext == "jpg" || ext == "jpeg" {
-                file_path
-            } else {
-                return Err(anyhow::anyhow!(
-                    "File is not a JPEG: {}",
-                    file_path.to_str().unwrap()
-                ));
-            }
-        }
-        None => {
-            return Err(anyhow::anyhow!(
-                "File has no extension: {}",
-                file_path.to_str().unwrap()
-            ));
-        }
+    if file_path.extension().map_or(true, |ext| {
+        ext.to_ascii_lowercase() != "jpg" && ext.to_ascii_lowercase() != "jpeg"
+    }) {
+        return Err(anyhow::anyhow!(
+            "File is not a JPEG: {}",
+            file_path.to_str().unwrap()
+        ));
+    }
+
+    // open the file and map it to memory
+    let file = std::fs::File::open(file_path)?;
+    let mmap = unsafe { memmap2::Mmap::map(&file)? };
+
+    // decode the data directly from memory
+    let image: Image<u8, 3> = {
+        let mut decoder = ImageDecoder::new()?;
+        decoder.decode(&mmap)?
     };
 
-    // decode the data directly from a file
-
-    let image = match std::fs::read(file_path) {
-        Ok(data) => {
-            let mut decoder = ImageDecoder::new()?;
-            decoder.decode(&data)?
-        }
-        Err(e) => panic!("Error reading file: {}", e),
-    };
     Ok(image)
 }
 
@@ -110,14 +103,20 @@ pub fn write_image_jpeg(file_path: &Path, image: &Image<u8, 3>) -> Result<()> {
 pub fn read_image_any(file_path: &Path) -> Result<Image<u8, 3>> {
     // verify the file exists
     if !file_path.exists() {
-        panic!("File does not exist: {}", file_path.to_str().unwrap());
+        return Err(anyhow::anyhow!(
+            "File does not exist: {}",
+            file_path.to_str().unwrap()
+        ));
     }
 
-    // read the image
-    let img: image::DynamicImage = match image::open(file_path) {
-        Ok(img) => img,
-        Err(e) => panic!("Error reading image: {}", e),
-    };
+    // open the file and map it to memory
+    let file = std::fs::File::open(file_path)?;
+    let mmap = unsafe { memmap2::Mmap::map(&file)? };
+
+    // decode the data directly from memory
+    let img = image::io::Reader::new(std::io::Cursor::new(&mmap))
+        .with_guessed_format()?
+        .decode()?;
 
     // return the image data
     let data = img.to_rgb8().to_vec();
