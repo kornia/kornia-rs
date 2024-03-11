@@ -11,8 +11,9 @@ license-file = "LICENSE"
 [dependencies]
 anyhow = "1.0.80"
 num-traits = "0.2.17"
-image = { version = "0.24.5" }
+image = { version = "0.25.0" }
 turbojpeg = {version = "1.0.0"}
+memmap2 = "0.9.4"
 ndarray = { version = "0.15.6", features = ["rayon"] }
 # this is experimental and only used for benchmarking, so it's optional
 # consider removing it in the future.
