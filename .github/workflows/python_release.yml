@@ -30,8 +30,8 @@ jobs:
           command: build
           args: --release --out dist -i python${{ matrix.python-version }} -m py-kornia/Cargo.toml --sdist
           before-script-linux: |
-            sudo apt-get update
-            sudo apt-get install -y cmake gcc nasm
+            apt-get update
+            apt-get install -y cmake gcc nasm
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
