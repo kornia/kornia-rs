@@ -35,15 +35,14 @@ classifiers = [
 ]
 
 [project.urls]
-homepage = "https://www.kornia.org"
+homepage = "http://www.kornia.org"
 documentation = "https://kornia.readthedocs.io"
 repository = "https://github.com/kornia/kornia-rs"
 
 [project.optional-dependencies]
 dev = [
   "pytest",
-  "pytest-asyncio",
-  "kornia>=0.6.3",
+  "kornia>=0.7.2
   "numpy==1.23.0",
   "jax[cpu]",
 ]
