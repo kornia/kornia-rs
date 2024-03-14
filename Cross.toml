@@ -6,3 +6,6 @@ dockerfile = "devel-x86_64.Dockerfile"
 
 [target.aarch64-unknown-linux-gnu]
 dockerfile = "devel-aarch64.Dockerfile"
+
+[target.i686-unknown-linux-gnu]
+dockerfile = "devel-i686.Dockerfile"
