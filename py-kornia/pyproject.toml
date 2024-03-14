@@ -42,7 +42,7 @@ repository = "https://github.com/kornia/kornia-rs"
 [project.optional-dependencies]
 dev = [
   "pytest",
-  "kornia>=0.7.2
+  "kornia>=0.7.2",
   "numpy==1.23.0",
   "jax[cpu]",
 ]
