@@ -13,14 +13,9 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12"]
-        #target: [x86_64, aarch64]
-        target: [i686]
+        target: [x86_64, aarch64]
 
     steps:
-      - name: Setup GCC
-        uses: Dup4/actions-setup-gcc@v1
-        with:
-          version: latest
       - uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v4
       - uses: messense/maturin-action@v1
@@ -29,80 +24,75 @@ jobs:
           manylinux: auto
           command: build
           args: --release --out dist -i python${{ matrix.python-version }} -m py-kornia/Cargo.toml --sdist
-          before-script-linux: |
-            apt-get update
-            apt-get install -y cmake gcc nasm
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
           name: wheels
           path: dist
 
-  #macos:
-  #  runs-on: macos-latest
-  #  strategy:
-  #    matrix:
-  #      python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12"]
-  #      target: [x86_64, aarch64]
-  #      target: [universal2]
-  #  steps:
-  #    - uses: ilammy/setup-nasm@v1
-  #    - uses: actions/checkout@v4
-  #    - uses: actions/setup-python@v5
-  #      with:
-  #        python-version: ${{ matrix.python-version }}
-  #        architecture: x64
-  #    - uses: actions-rs/toolchain@v1
-  #      with:
-  #        profile: minimal
-  #        toolchain: stable
-  #        target: ${{ matrix.target }}-apple-darwin
-  #        override: true
-  #    - uses: messense/maturin-action@v1
-  #      with:
-  #        command: build
-  #        maturin-version: latest
-  #        args: --release --target ${{ matrix.target }}-apple-darwin --out dist -i python${{ matrix.python-version }} -m py-kornia/Cargo.toml --sdist
-  #    - name: Upload wheels
-  #      uses: actions/upload-artifact@v2
-  #      with:
-  #        name: wheels
-  #        path: dist
+  macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12"]
+        target: [x86_64, aarch64, universal2]
+    steps:
+      - uses: ilammy/setup-nasm@v1
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          architecture: x64
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: ${{ matrix.target }}-apple-darwin
+          override: true
+      - uses: messense/maturin-action@v1
+        with:
+          command: build
+          maturin-version: latest
+          args: --release --target ${{ matrix.target }}-apple-darwin --out dist -i python${{ matrix.python-version }} -m py-kornia/Cargo.toml --sdist
+      - name: Upload wheels
+        uses: actions/upload-artifact@v2
+        with:
+          name: wheels
+          path: dist
 
-  #windows:
-  #  runs-on: windows-latest
-  #  strategy:
-  #    matrix:
-  #      python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12"]
-  #      target: [x64, x86]
-  #  steps:
-  #    - uses: ilammy/setup-nasm@v1
-  #    - uses: actions/checkout@v4
-  #    - uses: actions/setup-python@v5
-  #      with:
-  #        python-version: ${{ matrix.python-version }}
-  #        architecture: ${{ matrix.target }}
-  #    - uses: actions-rs/toolchain@v1
-  #      with:
-  #        profile: minimal
-  #        toolchain: stable
-  #        override: true
-  #    - uses: messense/maturin-action@v1
-  #      with:
-  #        command: build
-  #        maturin-version: latest
-  #        args: --release --out dist -i python${{ matrix.python-version }} -m py-kornia/Cargo.toml --sdist
-  #    - name: Upload wheels
-  #      uses: actions/upload-artifact@v2
-  #      with:
-  #        name: wheels
-  #        path: dist
+  windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12"]
+        target: [x64, x86]
+    steps:
+      - uses: ilammy/setup-nasm@v1
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          architecture: ${{ matrix.target }}
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+      - uses: messense/maturin-action@v1
+        with:
+          command: build
+          maturin-version: latest
+          args: --release --out dist -i python${{ matrix.python-version }} -m py-kornia/Cargo.toml --sdist
+      - name: Upload wheels
+        uses: actions/upload-artifact@v2
+        with:
+          name: wheels
+          path: dist
 
   release:
     name: Release
     runs-on: ubuntu-latest
-    #needs: [macos, windows, linux]
-    needs: [linux]
+    needs: [macos, windows, linux]
     steps:
       - uses: actions/download-artifact@v2
         with:
