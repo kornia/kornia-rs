@@ -17,6 +17,7 @@ jobs:
         #target: [x86_64, aarch64]
 
     steps:
+      - uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v4
       #- name: Set up QEMU
       #  uses: docker/setup-qemu-action@v1
