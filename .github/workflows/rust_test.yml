@@ -8,16 +8,13 @@ on:
     branches:
       - main
 
-env:
-  # https://github.com/huggingface/candle/issues/1516
-  CUDA_COMPUTE_CAP: 75
-
 jobs:
   build_and_test:
     name: Test Suite - ${{ matrix.target }}
     strategy:
       matrix:
         target:
+          - i686-unknown-linux-gnu
           - x86_64-unknown-linux-gnu
           - aarch64-unknown-linux-gnu
 
