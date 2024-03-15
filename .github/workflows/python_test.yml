@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test-linux:
+  test-python-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,7 +31,7 @@ jobs:
         run: sudo apt-get install -y cmake nasm
       - name: Build and test
         run: make test-python
-  test-macos:
+  test-python-macos:
     runs-on: macos-latest
     steps:
       - uses: ilammy/setup-nasm@v1
@@ -45,13 +45,13 @@ jobs:
         with:
           profile: minimal
           toolchain: stable
-          target: aarch64-apple-darwin
+          target: x86_64-apple-darwin
           override: true
       - uses: messense/maturin-action@v1
         with:
           command: build
           maturin-version: latest
-          args: --target aarch64-apple-darwin --out dist -m py-kornia/Cargo.toml
+          args: --target x86_64-apple-darwin --out dist -m py-kornia/Cargo.toml
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip |
