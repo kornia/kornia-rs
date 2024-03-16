@@ -60,9 +60,9 @@ impl ImageEncoder {
         // create a turbojpeg image
         let buf = turbojpeg::Image {
             pixels: image_data,
-            width: image.image_size().width,
-            pitch: 3 * image.image_size().width,
-            height: image.image_size().height,
+            width: image.width(),
+            pitch: 3 * image.width(),
+            height: image.height(),
             format: turbojpeg::PixelFormat::RGB,
         };
 
@@ -160,8 +160,8 @@ mod tests {
         assert_eq!(image_size.height, 195);
         // load the image as file and decode it
         let image = ImageDecoder::new()?.decode(&jpeg_data)?;
-        assert_eq!(image.image_size().width, 258);
-        assert_eq!(image.image_size().height, 195);
+        assert_eq!(image.size().width, 258);
+        assert_eq!(image.size().height, 195);
         assert_eq!(image.num_channels(), 3);
         Ok(())
     }
@@ -172,8 +172,8 @@ mod tests {
         let image = ImageDecoder::new()?.decode(&jpeg_data_fs)?;
         let jpeg_data = ImageEncoder::new()?.encode(&image)?;
         let image_back = ImageDecoder::new()?.decode(&jpeg_data)?;
-        assert_eq!(image_back.image_size().width, 258);
-        assert_eq!(image_back.image_size().height, 195);
+        assert_eq!(image_back.size().width, 258);
+        assert_eq!(image_back.size().height, 195);
         assert_eq!(image_back.num_channels(), 3);
         Ok(())
     }

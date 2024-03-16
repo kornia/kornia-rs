@@ -1,5 +1,6 @@
 pub mod color;
-pub mod distance_transform;
+// NOTE: not ready yet
+// pub mod distance_transform;
 pub mod flip;
 pub mod image;
 pub mod io;
