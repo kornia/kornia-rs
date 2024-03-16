@@ -27,11 +27,14 @@ criterion = { version = "0.5.1", features = ["html_reports"] }
 [features]
 candle = ["candle-core"]
 
-
 [[bench]]
 name = "color_benchmark"
 harness = false
 
 [[bench]]
 name = "resize_benchmark"
+harness = false
+
+[[bench]]
+name = "metrics_benchmark"
 harness = false

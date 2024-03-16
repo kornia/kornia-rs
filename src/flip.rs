@@ -34,13 +34,20 @@ pub fn horizontal_flip<T, const CHANNELS: usize>(
 where
     T: Copy,
 {
-    // NOTE: verify that this is efficient
     let mut img = image.clone();
 
     img.data
         .axis_iter_mut(ndarray::Axis(0))
         .for_each(|mut row| {
-            row.as_slice_mut().unwrap().reverse();
+            let mut i = 0;
+            let mut j = image.width() - 1;
+            while i < j {
+                for c in 0..CHANNELS {
+                    row.swap((i, c), (j, c));
+                }
+                i += 1;
+                j -= 1;
+            }
         });
 
     Ok(img)
