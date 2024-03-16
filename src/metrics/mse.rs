@@ -56,63 +56,6 @@ pub fn mse<const CHANNELS: usize>(
     diff.mapv(|x| x.powi(2)).sum() / (image1.data.len() as f32)
 }
 
-/// Compute the mean squared error (MSE) map between two images.
-///
-/// The MSE map is defined as:
-///
-/// $ MSE_{map} = (I_1 - I_2)^2 $
-///
-/// where `I_1` and `I_2` are the two images.
-///
-/// # Arguments
-///
-/// * `image1` - The first input image with shape (H, W, C).
-/// * `image2` - The second input image with shape (H, W, C).
-///
-/// # Returns
-///
-/// The mean squared error map between the two images.
-///
-/// # Example
-///
-/// ```
-/// use kornia_rs::image::{Image, ImageSize};
-///
-/// let image1 = Image::<f32, 1>::new(
-///   ImageSize {
-///     width: 2,
-///    height: 2,
-/// },
-/// vec![0f32, 1f32, 2f32, 3f32],
-/// )
-/// .unwrap();
-///
-/// let image2 = Image::<f32, 1>::new(
-///   ImageSize {
-///    width: 2,
-///  height: 2,
-/// },
-/// vec![0f32, 3f32, 2f32, 3f32],
-/// )
-/// .unwrap();
-///
-/// let mse_map = kornia_rs::metrics::mse_map(&image1, &image2);
-/// assert_eq!(mse_map.size(), image1.size());
-/// ```
-///
-/// # Panics
-///
-/// Panics if the two images have different shapes.
-pub fn mse_map<const CHANNELS: usize>(
-    image1: &Image<f32, CHANNELS>,
-    image2: &Image<f32, CHANNELS>,
-) -> Image<f32, CHANNELS> {
-    assert_eq!(image1.size(), image2.size());
-    let diff = &image1.data - &image2.data;
-    let mse_map = diff.map(|x| x.powi(2));
-    Image { data: mse_map }
-}
-
 /// Compute the peak signal-to-noise ratio (PSNR) between two images.
 ///
 /// The PSNR is defined as:
@@ -227,28 +170,6 @@ mod tests {
         .unwrap();
         let mse = crate::metrics::mse(&image1, &image2);
         assert_eq!(mse, 1.0);
-    }
-
-    #[test]
-    fn test_mse_map() {
-        let image1 = Image::<_, 1>::new(
-            ImageSize {
-                width: 2,
-                height: 2,
-            },
-            vec![0f32, 1f32, 2f32, 3f32],
-        )
-        .unwrap();
-        let image2 = Image::<_, 1>::new(
-            ImageSize {
-                width: 2,
-                height: 2,
-            },
-            vec![0f32, 3f32, 2f32, 3f32],
-        )
-        .unwrap();
-        let mse_map = crate::metrics::mse_map(&image1, &image2);
-        assert_eq!(mse_map.size(), image1.size());
     }
 
     #[test]

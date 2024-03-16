@@ -283,6 +283,14 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         self.data.fold(T::zero(), |acc, &x| acc + x) / T::from(self.data.len()).unwrap()
     }
 
+    pub fn abs(&self) -> Self
+    where
+        T: Copy + Float,
+    {
+        let abs_data = self.data.map(|&x| x.abs());
+        Image { data: abs_data }
+    }
+
     /// Get the size of the image in pixels.
     #[deprecated(since = "0.1.2", note = "Use `image.size()` instead")]
     pub fn image_size(&self) -> ImageSize {

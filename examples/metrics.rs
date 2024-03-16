@@ -20,11 +20,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("MSE error: {:?}", mse);
     println!("PSNR error: {:?}", psnr);
 
-    // compute the mse map
-    let mse_map = kornia_rs::metrics::mse_map(&image, &image_dirty);
-
     // or, alternatively, compute the mse using the built-in functions
-    // let mse_map_ii = image.sub(&image_dirty).powi(2);
+    let mse_map = image.sub(&image_dirty).powi(2);
     // let mse_ii = mse_map_ii.mean();
 
     // create a Rerun recording stream
