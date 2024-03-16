@@ -7,7 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image: Image<u8, 3> = F::read_image_jpeg(image_path)?;
 
     println!("Hello, world!");
-    println!("Loaded Image size: {:?}", image.image_size());
+    println!("Loaded Image size: {:?}", image.size());
     println!("\nGoodbyte!");
 
     Ok(())

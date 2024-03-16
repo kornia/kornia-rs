@@ -42,8 +42,8 @@ use anyhow::Result;
 /// )
 /// .unwrap();
 /// assert_eq!(image_normalized.num_channels(), 3);
-/// assert_eq!(image_normalized.image_size().width, 2);
-/// assert_eq!(image_normalized.image_size().height, 2);
+/// assert_eq!(image_normalized.size().width, 2);
+/// assert_eq!(image_normalized.size().height, 2);
 /// ```
 pub fn normalize_mean_std<T, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
@@ -160,8 +160,8 @@ where
 /// .unwrap();
 /// let image_normalized = kornia_rs::normalize::normalize_min_max(&image, 0.0, 1.0).unwrap();
 /// assert_eq!(image_normalized.num_channels(), 3);
-/// assert_eq!(image_normalized.image_size().width, 2);
-/// assert_eq!(image_normalized.image_size().height, 2);
+/// assert_eq!(image_normalized.size().width, 2);
+/// assert_eq!(image_normalized.size().height, 2);
 /// ```
 pub fn normalize_min_max<T, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
@@ -177,7 +177,7 @@ where
         + Copy
         + Default,
 {
-    let mut output = Image::<T, CHANNELS>::from_size_val(image.image_size(), T::default())?;
+    let mut output = Image::<T, CHANNELS>::from_size_val(image.size(), T::default())?;
 
     let (min_val, max_val) = find_min_max(image)?;
 
@@ -218,8 +218,8 @@ mod tests {
         let normalized = super::normalize_mean_std(&image, &mean, &std).unwrap();
 
         assert_eq!(normalized.num_channels(), 3);
-        assert_eq!(normalized.image_size().width, 2);
-        assert_eq!(normalized.image_size().height, 2);
+        assert_eq!(normalized.size().width, 2);
+        assert_eq!(normalized.size().height, 2);
 
         normalized
             .data
@@ -269,8 +269,8 @@ mod tests {
         let normalized = super::normalize_min_max(&image, 0.0, 1.0).unwrap();
 
         assert_eq!(normalized.num_channels(), 3);
-        assert_eq!(normalized.image_size().width, 2);
-        assert_eq!(normalized.image_size().height, 2);
+        assert_eq!(normalized.size().width, 2);
+        assert_eq!(normalized.size().height, 2);
 
         normalized
             .data

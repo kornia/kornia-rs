@@ -182,8 +182,8 @@ impl Default for ResizeOptions {
 /// )
 /// .unwrap();
 /// assert_eq!(image_resized.num_channels(), 3);
-/// assert_eq!(image_resized.image_size().width, 2);
-/// assert_eq!(image_resized.image_size().height, 3);
+/// assert_eq!(image_resized.size().width, 2);
+/// assert_eq!(image_resized.size().height, 3);
 /// ```
 pub fn resize<const CHANNELS: usize>(
     image: &Image<f32, CHANNELS>,
@@ -256,8 +256,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(image_resized.num_channels(), 3);
-        assert_eq!(image_resized.image_size().width, 2);
-        assert_eq!(image_resized.image_size().height, 3);
+        assert_eq!(image_resized.size().width, 2);
+        assert_eq!(image_resized.size().height, 3);
     }
 
     #[test]
@@ -281,8 +281,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(image_resized.num_channels(), 1);
-        assert_eq!(image_resized.image_size().width, 2);
-        assert_eq!(image_resized.image_size().height, 3);
+        assert_eq!(image_resized.size().width, 2);
+        assert_eq!(image_resized.size().height, 3);
     }
 
     #[test]
