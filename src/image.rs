@@ -1,5 +1,6 @@
 //use crate::io;
 use anyhow::Result;
+use num_traits::Float;
 
 /// Image size in pixels
 ///
@@ -17,7 +18,7 @@ use anyhow::Result;
 /// assert_eq!(image_size.width, 10);
 /// assert_eq!(image_size.height, 20);
 /// ```
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImageSize {
     /// Width of the image in pixels
     pub width: usize,
@@ -37,6 +38,9 @@ impl std::fmt::Display for ImageSize {
 
 #[derive(Clone)]
 /// Represents an image with pixel data.
+///
+/// The image is represented as a 3D array with shape (H, W, C), where H is the height of the image,
+/// The ownership of the pixel data is mutable so that we can manipulate the image from the outside.
 pub struct Image<T, const CHANNELS: usize> {
     /// The pixel data of the image. Is mutable so that we can manipulate the image
     /// from the outside.
@@ -251,6 +255,22 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     {
         let scaled_data = self.data.map(|&x| x / scale);
         Image { data: scaled_data }
+    }
+
+    pub fn sub(&self, other: &Self) -> Self
+    where
+        T: Copy + std::ops::Sub<Output = T>,
+    {
+        let diff = &self.data - &other.data;
+        Image { data: diff }
+    }
+
+    pub fn powi(&self, n: i32) -> Self
+    where
+        T: Copy + Float,
+    {
+        let powered_data = self.data.map(|&x| x.powi(n));
+        Image { data: powered_data }
     }
 
     /// Get the size of the image in pixels.

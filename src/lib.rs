@@ -4,6 +4,7 @@ pub mod color;
 pub mod flip;
 pub mod image;
 pub mod io;
+pub mod metrics;
 pub mod normalize;
 pub mod resize;
 pub mod tensor;
