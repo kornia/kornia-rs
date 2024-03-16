@@ -5,7 +5,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
     let image_path = std::path::Path::new("tests/data/dog.jpeg");
     let image: Image<u8, 3> = F::read_image_jpeg(image_path)?;
-    let image_viz = image.clone();
 
     // convert the image to f32 and scale it
     let image: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
@@ -24,11 +23,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // compute the mse map
     let mse_map = kornia_rs::metrics::mse_map(&image, &image_dirty);
 
+    // or, alternatively, compute the mse using the built-in functions
+    // let mse_map_ii = image.sub(&image_dirty).powi(2);
+    // let mse_ii = mse_map_ii.mean();
+
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").connect()?;
 
     // log the images
-    let _ = rec.log("image", &rerun::Image::try_from(image_viz.data)?);
+    let _ = rec.log("image", &rerun::Image::try_from(image.data)?);
     let _ = rec.log("flip", &rerun::Image::try_from(image_dirty.data)?);
     let _ = rec.log("mse_map", &rerun::Image::try_from(mse_map.data)?);
 

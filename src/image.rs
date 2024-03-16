@@ -257,6 +257,7 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Image { data: scaled_data }
     }
 
+    // TODO: optimize this
     pub fn sub(&self, other: &Self) -> Self
     where
         T: Copy + std::ops::Sub<Output = T>,
@@ -265,12 +266,22 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Image { data: diff }
     }
 
+    // TODO: optimize this
     pub fn powi(&self, n: i32) -> Self
     where
         T: Copy + Float,
     {
         let powered_data = self.data.map(|&x| x.powi(n));
         Image { data: powered_data }
+    }
+
+    // TODO: optimize this
+    pub fn mean(&self) -> T
+    where
+        T: Copy + Float,
+    {
+        let mean = self.data.fold(T::zero(), |acc, &x| acc + x) / T::from(self.data.len()).unwrap();
+        mean
     }
 
     /// Get the size of the image in pixels.
