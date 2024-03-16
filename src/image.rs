@@ -280,8 +280,7 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     where
         T: Copy + Float,
     {
-        let mean = self.data.fold(T::zero(), |acc, &x| acc + x) / T::from(self.data.len()).unwrap();
-        mean
+        self.data.fold(T::zero(), |acc, &x| acc + x) / T::from(self.data.len()).unwrap()
     }
 
     /// Get the size of the image in pixels.
