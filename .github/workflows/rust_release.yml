@@ -2,8 +2,6 @@ name: Rust Release
 
 on:
   workflow_dispatch:
-  release:
-    types: [published]
 
 jobs:
   release:

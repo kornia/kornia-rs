@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         kornia_rs::resize::ResizeOptions::default(),
     )?;
 
-    println!("gray_resize: {:?}", gray_resize.image_size());
+    println!("gray_resize: {:?}", gray_resize.size());
 
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").connect()?;

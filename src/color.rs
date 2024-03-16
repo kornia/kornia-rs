@@ -35,8 +35,8 @@ const BW: f64 = 0.114;
 /// .unwrap();
 /// let gray: Image<f32, 1> = kornia_rs::color::gray_from_rgb(&image).unwrap();
 /// assert_eq!(gray.num_channels(), 1);
-/// assert_eq!(gray.image_size().width, 4);
-/// assert_eq!(gray.image_size().height, 5);
+/// assert_eq!(gray.size().width, 4);
+/// assert_eq!(gray.size().height, 5);
 /// ```
 pub fn gray_from_rgb<T>(image: &Image<T, 3>) -> Result<Image<T, 1>>
 where
@@ -48,7 +48,7 @@ where
     let gw = T::from(GW).ok_or(anyhow::anyhow!("Failed to convert GW"))?;
     let bw = T::from(BW).ok_or(anyhow::anyhow!("Failed to convert BW"))?;
 
-    let mut output = Image::<T, 1>::from_size_val(image.image_size(), T::default())?;
+    let mut output = Image::<T, 1>::from_size_val(image.size(), T::default())?;
 
     ndarray::Zip::from(output.data.rows_mut())
         .and(image.data.rows())
@@ -74,7 +74,7 @@ mod tests {
         let image_norm = image.cast_and_scale::<f32>(1. / 255.0).unwrap();
         let gray = super::gray_from_rgb(&image_norm.cast::<f64>().unwrap()).unwrap();
         assert_eq!(gray.num_channels(), 1);
-        assert_eq!(gray.image_size().width, 258);
-        assert_eq!(gray.image_size().height, 195);
+        assert_eq!(gray.size().width, 258);
+        assert_eq!(gray.size().height, 195);
     }
 }

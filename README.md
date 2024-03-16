@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image: Image<u8, 3> = F::read_image_jpeg(image_path)?;
 
     println!("Hello, world!");
-    println!("Loaded Image size: {:?}", image.image_size());
+    println!("Loaded Image size: {:?}", image.size());
     println!("\nGoodbyte!");
 
     Ok(())
@@ -116,7 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         kornia_rs::resize::ResizeOptions::default(),
     )?;
 
-    println!("gray_resize: {:?}", gray_resize.image_size());
+    println!("gray_resize: {:?}", gray_resize.size());
 
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").connect()?;

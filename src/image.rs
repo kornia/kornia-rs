@@ -72,8 +72,8 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// vec![0u8; 10 * 20 * 3],
     /// ).unwrap();
     ///
-    /// assert_eq!(image.image_size().width, 10);
-    /// assert_eq!(image.image_size().height, 20);
+    /// assert_eq!(image.size().width, 10);
+    /// assert_eq!(image.size().height, 20);
     /// assert_eq!(image.num_channels(), 3);
     /// ```
     pub fn new(size: ImageSize, data: Vec<T>) -> Result<Self> {
@@ -119,8 +119,8 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     ///    height: 20,
     /// }, 0u8).unwrap();
     ///
-    /// assert_eq!(image.image_size().width, 10);
-    /// assert_eq!(image.image_size().height, 20);
+    /// assert_eq!(image.size().width, 10);
+    /// assert_eq!(image.size().height, 20);
     /// assert_eq!(image.num_channels(), 3);
     /// ```
     pub fn from_size_val(size: ImageSize, val: T) -> Result<Self>
@@ -254,7 +254,16 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     }
 
     /// Get the size of the image in pixels.
+    #[deprecated(since = "0.1.2", note = "Use `image.size()` instead")]
     pub fn image_size(&self) -> ImageSize {
+        ImageSize {
+            width: self.width(),
+            height: self.height(),
+        }
+    }
+
+    /// Get the size of the image in pixels.
+    pub fn size(&self) -> ImageSize {
         ImageSize {
             width: self.width(),
             height: self.height(),
@@ -313,8 +322,8 @@ mod tests {
             vec![0u8; 10 * 20 * 3],
         )
         .unwrap();
-        assert_eq!(image.image_size().width, 10);
-        assert_eq!(image.image_size().height, 20);
+        assert_eq!(image.size().width, 10);
+        assert_eq!(image.size().height, 20);
         assert_eq!(image.num_channels(), 3);
     }
 
@@ -323,8 +332,8 @@ mod tests {
     //    use crate::image::Image;
     //    let image_path = std::path::Path::new("tests/data/dog.jpeg");
     //    let image = Image::<u8, 3>::from_file(image_path);
-    //    assert_eq!(image.image_size().width, 258);
-    //    assert_eq!(image.image_size().height, 195);
+    //    assert_eq!(image.size().width, 258);
+    //    assert_eq!(image.size().height, 195);
     //    assert_eq!(image.num_channels(), 3);
     //}
     fn image_from_vec() {
@@ -337,8 +346,8 @@ mod tests {
             vec![0.0; 3 * 2 * 3],
         )
         .unwrap();
-        assert_eq!(image.image_size().width, 2);
-        assert_eq!(image.image_size().height, 3);
+        assert_eq!(image.size().width, 2);
+        assert_eq!(image.size().height, 3);
         assert_eq!(image.num_channels(), 3);
     }
 
@@ -374,8 +383,8 @@ mod tests {
             vec![0f32; 2 * 3 * 4],
         )
         .unwrap();
-        assert_eq!(image.image_size().width, 3);
-        assert_eq!(image.image_size().height, 2);
+        assert_eq!(image.size().width, 3);
+        assert_eq!(image.size().height, 2);
         assert_eq!(image.num_channels(), 4);
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "kornia-py"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [lib]
@@ -10,6 +10,5 @@ crate-type = ["cdylib"]
 [dependencies]
 anyhow = "1.0.80"
 kornia-rs = { path = ".." }
-dlpack-rs = {version = "^0.1.1"}
 pyo3 = { version = "0.20", features = ["extension-module"] }
 numpy = { version = "0.20.0" }
