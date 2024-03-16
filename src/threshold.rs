@@ -24,8 +24,8 @@ use anyhow::Result;
 ///
 /// let thresholded = threshold_binary(&image, 100, 255).unwrap();
 /// assert_eq!(thresholded.num_channels(), 1);
-/// assert_eq!(thresholded.image_size().width, 2);
-/// assert_eq!(thresholded.image_size().height, 3);
+/// assert_eq!(thresholded.size().width, 2);
+/// assert_eq!(thresholded.size().height, 3);
 /// ```
 pub fn threshold_binary<T, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
@@ -35,7 +35,7 @@ pub fn threshold_binary<T, const CHANNELS: usize>(
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
-    let mut output = Image::<T, CHANNELS>::from_size_val(image.image_size(), T::default())?;
+    let mut output = Image::<T, CHANNELS>::from_size_val(image.size(), T::default())?;
 
     ndarray::Zip::from(&mut output.data)
         .and(&image.data)
@@ -73,8 +73,8 @@ where
 ///
 /// let thresholded = threshold_binary_inverse(&image, 100, 255).unwrap();
 /// assert_eq!(thresholded.num_channels(), 1);
-/// assert_eq!(thresholded.image_size().width, 2);
-/// assert_eq!(thresholded.image_size().height, 3);
+/// assert_eq!(thresholded.size().width, 2);
+/// assert_eq!(thresholded.size().height, 3);
 /// ```
 pub fn threshold_binary_inverse<T, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
@@ -84,7 +84,7 @@ pub fn threshold_binary_inverse<T, const CHANNELS: usize>(
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
-    let mut output = Image::<T, CHANNELS>::from_size_val(image.image_size(), T::default())?;
+    let mut output = Image::<T, CHANNELS>::from_size_val(image.size(), T::default())?;
 
     ndarray::Zip::from(&mut output.data)
         .and(&image.data)
@@ -121,8 +121,8 @@ where
 ///
 /// let thresholded = threshold_truncate(&image, 150).unwrap();
 /// assert_eq!(thresholded.num_channels(), 1);
-/// assert_eq!(thresholded.image_size().width, 2);
-/// assert_eq!(thresholded.image_size().height, 3);
+/// assert_eq!(thresholded.size().width, 2);
+/// assert_eq!(thresholded.size().height, 3);
 /// ```
 pub fn threshold_truncate<T, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
@@ -131,7 +131,7 @@ pub fn threshold_truncate<T, const CHANNELS: usize>(
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
-    let mut output = Image::<T, CHANNELS>::from_size_val(image.image_size(), T::default()).unwrap();
+    let mut output = Image::<T, CHANNELS>::from_size_val(image.size(), T::default()).unwrap();
 
     ndarray::Zip::from(&mut output.data)
         .and(&image.data)
@@ -164,8 +164,8 @@ where
 ///
 /// let thresholded = threshold_to_zero(&image, 150).unwrap();
 /// assert_eq!(thresholded.num_channels(), 3);
-/// assert_eq!(thresholded.image_size().width, 2);
-/// assert_eq!(thresholded.image_size().height, 1);
+/// assert_eq!(thresholded.size().width, 2);
+/// assert_eq!(thresholded.size().height, 1);
 /// ```
 pub fn threshold_to_zero<T, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
@@ -174,7 +174,7 @@ pub fn threshold_to_zero<T, const CHANNELS: usize>(
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
-    let mut output = Image::<T, CHANNELS>::from_size_val(image.image_size(), T::default()).unwrap();
+    let mut output = Image::<T, CHANNELS>::from_size_val(image.size(), T::default()).unwrap();
 
     ndarray::Zip::from(&mut output.data)
         .and(&image.data)
@@ -207,8 +207,8 @@ where
 ///
 /// let thresholded = threshold_to_zero_inverse(&image, 150).unwrap();
 /// assert_eq!(thresholded.num_channels(), 3);
-/// assert_eq!(thresholded.image_size().width, 2);
-/// assert_eq!(thresholded.image_size().height, 1);
+/// assert_eq!(thresholded.size().width, 2);
+/// assert_eq!(thresholded.size().height, 1);
 /// ```
 pub fn threshold_to_zero_inverse<T, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
@@ -217,7 +217,7 @@ pub fn threshold_to_zero_inverse<T, const CHANNELS: usize>(
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
-    let mut output = Image::<T, CHANNELS>::from_size_val(image.image_size(), T::default()).unwrap();
+    let mut output = Image::<T, CHANNELS>::from_size_val(image.size(), T::default()).unwrap();
 
     ndarray::Zip::from(&mut output.data)
         .and(&image.data)
@@ -249,8 +249,8 @@ mod tests {
 
         let thresholded = super::threshold_binary(&image, 100, 255).unwrap();
         assert_eq!(thresholded.num_channels(), 1);
-        assert_eq!(thresholded.image_size().width, 2);
-        assert_eq!(thresholded.image_size().height, 3);
+        assert_eq!(thresholded.size().width, 2);
+        assert_eq!(thresholded.size().height, 3);
 
         thresholded
             .data
@@ -276,8 +276,8 @@ mod tests {
 
         let thresholded = super::threshold_binary_inverse(&image, 100, 255).unwrap();
         assert_eq!(thresholded.num_channels(), 1);
-        assert_eq!(thresholded.image_size().width, 2);
-        assert_eq!(thresholded.image_size().height, 3);
+        assert_eq!(thresholded.size().width, 2);
+        assert_eq!(thresholded.size().height, 3);
 
         thresholded
             .data
@@ -303,8 +303,8 @@ mod tests {
 
         let thresholded = super::threshold_truncate(&image, 150).unwrap();
         assert_eq!(thresholded.num_channels(), 1);
-        assert_eq!(thresholded.image_size().width, 2);
-        assert_eq!(thresholded.image_size().height, 3);
+        assert_eq!(thresholded.size().width, 2);
+        assert_eq!(thresholded.size().height, 3);
 
         thresholded
             .data
@@ -330,8 +330,8 @@ mod tests {
 
         let thresholded = super::threshold_to_zero(&image, 150).unwrap();
         assert_eq!(thresholded.num_channels(), 3);
-        assert_eq!(thresholded.image_size().width, 2);
-        assert_eq!(thresholded.image_size().height, 1);
+        assert_eq!(thresholded.size().width, 2);
+        assert_eq!(thresholded.size().height, 1);
 
         thresholded
             .data
@@ -357,8 +357,8 @@ mod tests {
 
         let thresholded = super::threshold_to_zero_inverse(&image, 150).unwrap();
         assert_eq!(thresholded.num_channels(), 3);
-        assert_eq!(thresholded.image_size().width, 2);
-        assert_eq!(thresholded.image_size().height, 1);
+        assert_eq!(thresholded.size().width, 2);
+        assert_eq!(thresholded.size().height, 1);
 
         thresholded
             .data

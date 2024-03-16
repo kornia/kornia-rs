@@ -12,8 +12,8 @@ use std::ops::Deref;
 
 // vanilla version
 fn gray_iter(image: &Image<f32, 3>) -> Image<u8, 1> {
-    let data = vec![0u8; image.image_size().width * image.image_size().height];
-    let mut gray_image = Image::new(image.image_size(), data).unwrap();
+    let data = vec![0u8; image.size().width * image.size().height];
+    let mut gray_image = Image::new(image.size(), data).unwrap();
     for y in 0..image.height() {
         for x in 0..image.width() {
             let r = image.data[[y, x, 0]];
@@ -38,13 +38,13 @@ fn gray_vec(image: &Image<f32, 3>) -> Image<u8, 1> {
     let gray_f32 = (&r * 76.0 + &g * 150.0 + &b * 29.0) / 255.0;
     let gray_u8 = gray_f32.mapv(|x| x as u8);
 
-    Image::new(image.image_size(), gray_u8.into_raw_vec()).unwrap()
+    Image::new(image.size(), gray_u8.into_raw_vec()).unwrap()
 }
 
 #[cfg(feature = "candle")]
 fn gray_candle(image: Image<f32, 3>) -> Image<u8, 3> {
     let image_data = image.data.as_slice().unwrap();
-    let shape = (image.image_size().height, image.image_size().width, 3);
+    let shape = (image.size().height, image.size().width, 3);
 
     let device = Device::Cpu;
     let image_u8 = Tensor::from_vec(image_data.to_vec(), shape, &device).unwrap();
@@ -78,14 +78,14 @@ fn gray_candle(image: Image<f32, 3>) -> Image<u8, 3> {
         }
     };
 
-    Image::new(image.image_size(), data).unwrap()
+    Image::new(image.size(), data).unwrap()
 }
 
 fn gray_image_crate(image: &Image<u8, 3>) -> Image<u8, 1> {
     let image_data = image.data.as_slice().unwrap();
     let rgb = image::RgbImage::from_raw(
-        image.image_size().width as u32,
-        image.image_size().height as u32,
+        image.size().width as u32,
+        image.size().height as u32,
         image_data.to_vec(),
     )
     .unwrap();
@@ -93,7 +93,7 @@ fn gray_image_crate(image: &Image<u8, 3>) -> Image<u8, 1> {
 
     let image_gray = image_crate.grayscale();
 
-    Image::new(image.image_size(), image_gray.into_bytes()).unwrap()
+    Image::new(image.size(), image_gray.into_bytes()).unwrap()
 }
 
 fn bench_grayscale(c: &mut Criterion) {

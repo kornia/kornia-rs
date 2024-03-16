@@ -25,8 +25,8 @@ use anyhow::Result;
 /// )
 /// .unwrap();
 /// let flipped: Image<f32, 3> = kornia_rs::flip::horizontal_flip(&image).unwrap();
-/// assert_eq!(flipped.image_size().width, 2);
-/// assert_eq!(flipped.image_size().height, 3);
+/// assert_eq!(flipped.size().width, 2);
+/// assert_eq!(flipped.size().height, 3);
 /// ```
 pub fn horizontal_flip<T, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
@@ -70,8 +70,8 @@ where
 /// )
 /// .unwrap();
 /// let flipped: Image<f32, 3> = kornia_rs::flip::vertical_flip(&image).unwrap();
-/// assert_eq!(flipped.image_size().width, 2);
-/// assert_eq!(flipped.image_size().height, 3);
+/// assert_eq!(flipped.size().width, 2);
+/// assert_eq!(flipped.size().height, 3);
 /// ```
 pub fn vertical_flip<T, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
