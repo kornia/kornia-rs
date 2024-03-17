@@ -1,5 +1,4 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use rerun::external::arrow2::ffi::mmap;
 
 struct JpegReader {
     decoder: kornia_rs::io::jpeg::ImageDecoder,
