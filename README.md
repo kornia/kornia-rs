@@ -107,13 +107,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // convert the image to grayscale
     let gray: Image<f32, 1> = kornia_rs::color::gray_from_rgb(&image_f32)?;
 
-    let gray_resize: Image<f32, 1> = kornia_rs::resize::resize(
+    let gray_resize: Image<f32, 1> = kornia_rs::resize::resize_native(
         &gray,
         kornia_rs::image::ImageSize {
             width: 128,
             height: 128,
         },
-        kornia_rs::resize::ResizeOptions::default(),
+        kornia_rs::resize::Interpolation::Bilinear,
     )?;
 
     println!("gray_resize: {:?}", gray_resize.size());
@@ -184,6 +184,20 @@ img_encoded: list[int] = image_encoder.encode(img)
 image_decoder = K.ImageDecoder()
 
 decoded_img: np.ndarray = image_decoder.decode(bytes(image_encoded))
+```
+
+Resize an image using the `kornia-rs` backend with SIMD acceleration
+
+```python
+import kornia_rs as K
+
+# load image with kornia-rs
+img = K.read_image_jpeg("dog.jpeg")
+
+# resize the image
+resized_img = K.resize(img, (128, 128), interpolation="bilinear")
+
+assert resized_img.shape == (128, 128, 3)
 ```
 
 ## 🧑‍💻 Development

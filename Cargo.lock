@@ -2014,6 +2014,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fast_image_resize"
+version = "3.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9d450fac8a334ad72825596173f0f7767ff04dd6e3d59c49c894c4bc2957e8b"
+dependencies = [
+ "cfg-if",
+ "num-traits",
+ "thiserror",
+]
+
+[[package]]
 name = "fastrand"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3000,6 +3011,7 @@ dependencies = [
  "anyhow",
  "candle-core",
  "criterion",
+ "fast_image_resize",
  "image 0.25.0",
  "memmap2 0.9.4",
  "ndarray",

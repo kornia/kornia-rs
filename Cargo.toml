@@ -15,6 +15,7 @@ image = { version = "0.25.0" }
 turbojpeg = {version = "1.0.0"}
 memmap2 = "0.9.4"
 ndarray = { version = "0.15.6", features = ["rayon"] }
+fast_image_resize = "3.0.4"
 # this is experimental and only used for benchmarking, so it's optional
 # consider removing it in the future.
 candle-core = { version = "0.3.2", optional = true }
