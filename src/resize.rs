@@ -1,6 +1,8 @@
 use crate::image::{Image, ImageSize};
 use anyhow::Result;
+use fast_image_resize as fr;
 use ndarray::{stack, Array2, Array3};
+use std::num::NonZeroU32;
 
 /// Create a meshgrid of x and y coordinates
 ///
@@ -107,48 +109,17 @@ fn nearest_neighbor_interpolation(image: &Array3<f32>, u: f32, v: f32, c: usize)
     image[[iv, iu, c]]
 }
 
+/// Interpolation mode for the resize operation
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InterpolationMode {
     Bilinear,
-    NearestNeighbor,
+    Nearest,
 }
 
-/// Options for the resize operation
-///
-/// The options include the interpolation mode to use for the resize operation.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ResizeOptions {
-    pub interpolation: InterpolationMode,
-}
-
-impl ResizeOptions {
-    /// Create a new instance of the resize options
-    pub fn new() -> Self {
-        ResizeOptions {
-            interpolation: InterpolationMode::Bilinear,
-        }
-    }
-
-    /// Set the interpolation mode for the resize operation
-    pub fn with_interpolation(mut self, interpolation: InterpolationMode) -> Self {
-        self.interpolation = interpolation;
-        self
-    }
-}
-
-/// Default implementation for the resize options
-impl Default for ResizeOptions {
-    /// Create a new instance of the resize options with the default values
-    fn default() -> Self {
-        ResizeOptions {
-            interpolation: InterpolationMode::Bilinear,
-        }
-    }
-}
-
-/// Resize an image to a new size
+/// Resize an image to a new size.
 ///
 /// The function resizes an image to a new size using the specified interpolation mode.
+/// It supports any number of channels and data types.
 ///
 /// # Arguments
 ///
@@ -172,23 +143,23 @@ impl Default for ResizeOptions {
 ///     vec![0f32; 4 * 5 * 3],
 /// )
 /// .unwrap();
-/// let image_resized: Image<f32, 3> = kornia_rs::resize::resize(
+/// let image_resized: Image<f32, 3> = kornia_rs::resize::resize_native(
 ///     &image,
 ///     ImageSize {
 ///         width: 2,
 ///         height: 3,
 ///     },
-///     kornia_rs::resize::ResizeOptions::default(),
+///     kornia_rs::resize::InterpolationMode::Nearest,
 /// )
 /// .unwrap();
 /// assert_eq!(image_resized.num_channels(), 3);
 /// assert_eq!(image_resized.size().width, 2);
 /// assert_eq!(image_resized.size().height, 3);
 /// ```
-pub fn resize<const CHANNELS: usize>(
+pub fn resize_native<const CHANNELS: usize>(
     image: &Image<f32, CHANNELS>,
     new_size: ImageSize,
-    options: ResizeOptions,
+    interpolation: InterpolationMode,
 ) -> Result<Image<f32, CHANNELS>> {
     // create the output image
     let mut output = Image::from_size_val(new_size, 0.0)?;
@@ -216,11 +187,9 @@ pub fn resize<const CHANNELS: usize>(
             let (u, v) = (uv[0], uv[1]);
 
             // compute the pixel values for each channel
-            let pixels = (0..image.num_channels()).map(|k| match options.interpolation {
+            let pixels = (0..image.num_channels()).map(|k| match interpolation {
                 InterpolationMode::Bilinear => bilinear_interpolation(&image.data, u, v, k),
-                InterpolationMode::NearestNeighbor => {
-                    nearest_neighbor_interpolation(&image.data, u, v, k)
-                }
+                InterpolationMode::Nearest => nearest_neighbor_interpolation(&image.data, u, v, k),
             });
 
             // write the pixel values to the output image
@@ -230,6 +199,86 @@ pub fn resize<const CHANNELS: usize>(
         });
 
     Ok(output)
+}
+
+/// Resize an image to a new size using the [fast_image_resize](https://crates.io/crates/fast_image_resize) crate.
+///
+/// The function resizes an image to a new size using the specified interpolation mode.
+/// It supports only 3-channel images and u8 data type.
+///
+/// # Arguments
+///
+/// * `image` - The input image container with 3 channels.
+/// * `new_size` - The new size of the image.
+/// * `interpolation` - The interpolation mode to use.
+///
+/// # Returns
+///
+/// The resized image with the new size.
+///
+/// # Example
+///
+/// ```
+/// use kornia_rs::image::{Image, ImageSize};
+/// let image = Image::<_, 3>::new(
+///    ImageSize {
+///       width: 4,
+///      height: 5,
+/// },
+/// vec![0u8; 4 * 5 * 3],
+/// )
+/// .unwrap();
+/// let image_resized: Image<u8, 3> = kornia_rs::resize::resize_fast(
+///   &image,
+///  ImageSize {
+///    width: 2,
+///   height: 3,
+/// },
+/// kornia_rs::resize::InterpolationMode::Nearest,
+/// )
+/// .unwrap();
+/// assert_eq!(image_resized.num_channels(), 3);
+/// assert_eq!(image_resized.size().width, 2);
+/// assert_eq!(image_resized.size().height, 3);
+/// ```
+///
+/// # Errors
+///
+/// The function returns an error if the image cannot be resized.
+pub fn resize_fast(
+    image: &Image<u8, 3>,
+    new_size: ImageSize,
+    interpolation: InterpolationMode,
+) -> Result<Image<u8, 3>> {
+    let src_width = NonZeroU32::new(image.width() as u32).unwrap();
+    let src_height = NonZeroU32::new(image.height() as u32).unwrap();
+
+    // TODO: pass as slice
+    let src_image = fr::Image::from_vec_u8(
+        src_width,
+        src_height,
+        image.data.as_slice().unwrap().to_vec(),
+        fr::PixelType::U8x3,
+    )?;
+
+    let dst_width = NonZeroU32::new(new_size.width as u32).unwrap();
+    let dst_height = NonZeroU32::new(new_size.height as u32).unwrap();
+
+    let mut dst_image = fr::Image::new(dst_width, dst_height, src_image.pixel_type());
+    let mut dst_view = dst_image.view_mut();
+
+    let mut resizer = {
+        match interpolation {
+            InterpolationMode::Bilinear => {
+                fr::Resizer::new(fr::ResizeAlg::Convolution(fr::FilterType::Bilinear))
+            }
+            InterpolationMode::Nearest => fr::Resizer::new(fr::ResizeAlg::Nearest),
+        }
+    };
+    resizer.resize(&src_image.view(), &mut dst_view)?;
+
+    // TODO: create a new image from the buffer directly from a slice
+    Image::new(new_size, dst_image.buffer().to_vec())
 }
 
 #[cfg(test)]
@@ -246,13 +295,13 @@ mod tests {
             vec![0f32; 4 * 5 * 3],
         )
         .unwrap();
-        let image_resized = super::resize(
+        let image_resized = super::resize_native(
             &image,
             ImageSize {
                 width: 2,
                 height: 3,
             },
-            super::ResizeOptions::default(),
+            super::InterpolationMode::Bilinear,
         )
         .unwrap();
         assert_eq!(image_resized.num_channels(), 3);
@@ -271,13 +320,13 @@ mod tests {
             vec![0f32; 4 * 5],
         )
         .unwrap();
-        let image_resized = super::resize(
+        let image_resized = super::resize_native(
             &image,
             ImageSize {
                 width: 2,
                 height: 3,
             },
-            super::ResizeOptions::default(),
+            super::InterpolationMode::Nearest,
         )
         .unwrap();
         assert_eq!(image_resized.num_channels(), 1);
@@ -299,18 +348,27 @@ mod tests {
     }
 
     #[test]
-    fn resize_options() {
-        let options = super::ResizeOptions::default();
-        assert_eq!(options.interpolation, super::InterpolationMode::Bilinear);
-
-        let options = super::ResizeOptions::new();
-        assert_eq!(options.interpolation, super::InterpolationMode::Bilinear);
-
-        let options = super::ResizeOptions::new()
-            .with_interpolation(super::InterpolationMode::NearestNeighbor);
-        assert_eq!(
-            options.interpolation,
-            super::InterpolationMode::NearestNeighbor
-        );
+    fn resize_fast() {
+        use crate::image::{Image, ImageSize};
+        let image = Image::<_, 3>::new(
+            ImageSize {
+                width: 4,
+                height: 5,
+            },
+            vec![0u8; 4 * 5 * 3],
+        )
+        .unwrap();
+        let image_resized = super::resize_fast(
+            &image,
+            ImageSize {
+                width: 2,
+                height: 3,
+            },
+            super::InterpolationMode::Nearest,
+        )
+        .unwrap();
+        assert_eq!(image_resized.num_channels(), 3);
+        assert_eq!(image_resized.size().width, 2);
+        assert_eq!(image_resized.size().height, 3);
     }
 }
