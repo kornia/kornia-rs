@@ -2,7 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 
 use kornia_rs::image::{Image, ImageSize};
 use kornia_rs::resize as F;
-use kornia_rs::resize::{InterpolationMode, ResizeOptions};
+use kornia_rs::resize::InterpolationMode;
 
 fn resize_image_crate(image: Image<u8, 3>, new_size: ImageSize) -> Image<u8, 3> {
     let image_data = image.data.as_slice().unwrap();
@@ -17,14 +17,14 @@ fn resize_image_crate(image: Image<u8, 3>, new_size: ImageSize) -> Image<u8, 3> 
     let image_resized = image_crate.resize_exact(
         new_size.width as u32,
         new_size.height as u32,
-        image::imageops::FilterType::Gaussian,
+        image::imageops::FilterType::Nearest,
     );
     let data = image_resized.into_rgb8().into_raw();
     Image::new(new_size, data).unwrap()
 }
 
 fn bench_resize(c: &mut Criterion) {
-    let mut group = c.benchmark_group("Resize");
+    let mut group = c.benchmark_group("resize");
     let image_sizes = vec![(256, 224), (512, 448), (1024, 896)];
 
     for (width, height) in image_sizes {
@@ -36,19 +36,14 @@ fn bench_resize(c: &mut Criterion) {
             width: width / 2,
             height: height / 2,
         };
-        group.bench_with_input(BenchmarkId::new("zip", &id), &image_f32, |b, i| {
-            b.iter(|| {
-                F::resize(
-                    black_box(i),
-                    new_size,
-                    ResizeOptions {
-                        interpolation: InterpolationMode::Bilinear,
-                    },
-                )
-            })
+        group.bench_with_input(BenchmarkId::new("native", &id), &image_f32, |b, i| {
+            b.iter(|| F::resize_native(black_box(i), new_size, InterpolationMode::Nearest))
         });
-        group.bench_with_input(BenchmarkId::new("image_crate", &id), &image, |b, i| {
+        group.bench_with_input(BenchmarkId::new("image_rs", &id), &image, |b, i| {
             b.iter(|| resize_image_crate(black_box(i.clone()), new_size))
+        });
+        group.bench_with_input(BenchmarkId::new("fast", &id), &image, |b, i| {
+            b.iter(|| F::resize_fast(black_box(i), new_size, InterpolationMode::Nearest))
         });
     }
     group.finish();
