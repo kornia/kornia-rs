@@ -113,7 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             width: 128,
             height: 128,
         },
-        kornia_rs::resize::Interpolation::Bilinear,
+        kornia_rs::resize::InterpolationMode::Bilinear,
     )?;
 
     println!("gray_resize: {:?}", gray_resize.size());
