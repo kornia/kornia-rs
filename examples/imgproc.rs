@@ -11,13 +11,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // convert the image to grayscale
     let gray: Image<f32, 1> = kornia_rs::color::gray_from_rgb(&image_f32)?;
 
-    let gray_resize: Image<f32, 1> = kornia_rs::resize::resize(
+    let gray_resize: Image<f32, 1> = kornia_rs::resize::resize_native(
         &gray,
         kornia_rs::image::ImageSize {
             width: 128,
             height: 128,
         },
-        kornia_rs::resize::ResizeOptions::default(),
+        kornia_rs::resize::InterpolationMode::Bilinear,
     )?;
 
     println!("gray_resize: {:?}", gray_resize.size());

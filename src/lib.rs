@@ -7,5 +7,6 @@ pub mod io;
 pub mod metrics;
 pub mod normalize;
 pub mod resize;
-pub mod tensor;
+// NOTE: not ready yet
+// pub mod tensor;
 pub mod threshold;

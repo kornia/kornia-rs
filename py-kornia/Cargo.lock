@@ -261,6 +261,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fast_image_resize"
+version = "3.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9d450fac8a334ad72825596173f0f7767ff04dd6e3d59c49c894c4bc2957e8b"
+dependencies = [
+ "cfg-if",
+ "num-traits",
+ "thiserror",
+]
+
+[[package]]
 name = "fdeflate"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -491,6 +502,7 @@ name = "kornia-rs"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "fast_image_resize",
  "image",
  "memmap2",
  "ndarray",
