@@ -132,7 +132,13 @@ impl Drop for WebcamCapture {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut webcam = WebcamCapture::new()?;
-    let rec = rerun::RecordingStreamBuilder::new("Kornia App").connect()?;
+    let rec = rerun::RecordingStreamBuilder::new("Kornia App")
+        .batcher_config(rerun::log::DataTableBatcherConfig {
+            flush_num_bytes: 10,
+            ..Default::default()
+        })
+        .spawn()?;
+    //.connect()?;
 
     webcam
         .run(|(frame_number, img)| {
@@ -145,8 +151,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let img = img.cast_and_scale::<f32>(1. / 255.).unwrap();
 
             let gray = kornia_rs::color::gray_from_rgb(&img).unwrap();
-            //let _ = rec.log("gray", &rerun::Image::try_from(gray.data).unwrap());
-            let _ = rec.log_timeless("image", &rerun::Image::try_from(gray.data).unwrap());
+            let gray = kornia_rs::threshold::threshold_binary(&gray, 0.5, 1.0).unwrap();
+            let _ = rec.log("gray", &rerun::Image::try_from(gray.data).unwrap());
+            //let _ = rec.log_timeless("image", &rerun::Image::try_from(gray.data).unwrap());
         })
         .await?;
 
