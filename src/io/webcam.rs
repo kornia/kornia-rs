@@ -179,10 +179,9 @@ impl WebcamCapture {
     /// * `f` - A function that takes an image frame
     pub fn run<F>(&self, f: F) -> Result<()>
     where
-        F: Fn(Image<u8, 3>),
+        F: Fn(&Image<u8, 3>),
     {
-        let receiver = &self.receiver;
-        while let Ok(img) = receiver.recv() {
+        while let Ok(img) = &self.receiver.recv() {
             f(img);
         }
 
