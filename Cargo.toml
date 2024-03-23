@@ -1,6 +1,6 @@
 [package]
 name = "kornia-rs"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Low-level computer vision library in Rust"
 homepage = "http://kornia.org"
@@ -19,6 +19,7 @@ memmap2 = "0.9.4"
 ndarray = { version = "0.15.6", features = ["rayon"] }
 num-traits = "0.2.17"
 tokio = { version="1.36.0", features = ["full"] }
+fast_image_resize = "3.0.4"
 # this is experimental and only used for benchmarking, so it's optional
 # consider removing it in the future.
 candle-core = { version = "0.3.2", optional = true }
@@ -32,11 +33,18 @@ criterion = { version = "0.5.1", features = ["html_reports"] }
 [features]
 candle = ["candle-core"]
 
-
 [[bench]]
-name = "color_benchmark"
+name = "bench_color"
 harness = false
 
 [[bench]]
-name = "resize_benchmark"
+name = "bench_resize"
+harness = false
+
+[[bench]]
+name = "bench_metrics"
+harness = false
+
+[[bench]]
+name = "bench_io"
 harness = false
