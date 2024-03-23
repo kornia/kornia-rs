@@ -29,8 +29,8 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - name: Install system dependencies
-        run: sudo apt-get install -y cmake nasm libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      #- name: Install system dependencies
+      #  run: sudo apt-get install -y cmake nasm libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
         with:
@@ -43,6 +43,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           args: --all-features
           name: Clippy Output
+          use-cross: true
 
   check:
     name: Check
