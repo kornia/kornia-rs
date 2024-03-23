@@ -66,7 +66,7 @@ Goodbyte!
 You need to install the following dependencies in your system:
 
 ```bash
-sudo apt-get install nasm libgstreamer1.0*
+sudo apt-get install nasm libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
 ```
 
 ** Check the gstreamr installation guide: <https://docs.rs/gstreamer/latest/gstreamer/#installation>
