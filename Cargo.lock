@@ -2710,37 +2710,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gstreamer-video"
-version = "0.22.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ab3f4045ddb92bf2b469f5db8825d4f5eb46e4beff661fc97f50bb4e2b2c626"
-dependencies = [
- "cfg-if",
- "futures-channel",
- "glib",
- "gstreamer",
- "gstreamer-base",
- "gstreamer-video-sys",
- "libc",
- "once_cell",
- "thiserror",
-]
-
-[[package]]
-name = "gstreamer-video-sys"
-version = "0.22.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1ea7996ba44fbbf563aeeda96e24259efc9f06b407854d837ee58e260d7ba78"
-dependencies = [
- "glib-sys",
- "gobject-sys",
- "gstreamer-base-sys",
- "gstreamer-sys",
- "libc",
- "system-deps",
-]
-
-[[package]]
 name = "h2"
 version = "0.3.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3189,7 +3158,6 @@ dependencies = [
  "fast_image_resize",
  "gstreamer",
  "gstreamer-app",
- "gstreamer-video",
  "image 0.25.0",
  "memmap2",
  "ndarray",

@@ -12,7 +12,6 @@ license-file = "LICENSE"
 anyhow = "1.0.80"
 gst = { version = "0.22.2", package = "gstreamer" }
 gst-app = { version = "0.22.0", package = "gstreamer-app" }
-gst-video = { version = "0.22.1", package = "gstreamer-video" }
 image = { version = "0.25.0" }
 turbojpeg = {version = "1.0.0"}
 memmap2 = "0.9.4"
@@ -28,7 +27,6 @@ candle-core = { version = "0.3.2", optional = true }
 tempfile = "3.9.0"
 rerun = "0.14.1"
 criterion = { version = "0.5.1", features = ["html_reports"] }
-#show-image = "0.13.1"
 
 [features]
 candle = ["candle-core"]
