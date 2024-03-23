@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Install system dependencies
-        run: sudo apt-get install -y cmake nasm
+        run: sudo apt-get install -y cmake nasm libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
         with:
