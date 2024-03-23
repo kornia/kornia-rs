@@ -5,5 +5,7 @@ RUN apt-get update && \
     cmake \
     gcc \
     nasm \
+    libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
     && \
     apt-get clean
