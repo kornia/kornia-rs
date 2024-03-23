@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     webcam.run(|img| {
         // lets resize the image to 256x256
         let img = kornia_rs::resize::resize_fast(
-            &img,
+            img,
             kornia_rs::image::ImageSize {
                 width: 256,
                 height: 256,

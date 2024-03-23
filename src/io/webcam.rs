@@ -118,21 +118,18 @@ impl WebcamCapture {
 
         appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
-                .new_sample(move |sink| {
-                    let frame = Self::extract_image_frame(sink);
-                    match frame {
-                        Ok(frame) => {
-                            if let Err(e) = tx.send(frame) {
-                                println!("Error sending frame: {}", e);
-                                Err(gst::FlowError::Error)
-                            } else {
-                                Ok(gst::FlowSuccess::Ok)
-                            }
-                        }
-                        Err(e) => {
-                            println!("Error extracting image frame: {}", e);
+                .new_sample(move |sink| match Self::extract_image_frame(sink) {
+                    Ok(frame) => {
+                        if let Err(e) = tx.send(frame) {
+                            println!("Error sending frame: {}", e);
                             Err(gst::FlowError::Error)
+                        } else {
+                            Ok(gst::FlowSuccess::Ok)
                         }
+                    }
+                    Err(e) => {
+                        println!("Error extracting image frame: {}", e);
+                        Err(gst::FlowError::Error)
                     }
                 })
                 .build(),
