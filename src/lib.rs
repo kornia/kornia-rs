@@ -2,6 +2,7 @@ pub mod color;
 // NOTE: not ready yet
 // pub mod distance_transform;
 pub mod flip;
+pub mod histogram;
 pub mod image;
 pub mod io;
 pub mod metrics;
