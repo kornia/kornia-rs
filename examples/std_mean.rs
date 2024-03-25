@@ -1,9 +1,12 @@
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::Result;
 use clap::Parser;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use kornia_rs::io::functional as F;
 
@@ -52,39 +55,57 @@ fn main() -> Result<()> {
     // Create a progress bar
     let pb = indicatif::ProgressBar::new(images_paths.len() as u64);
     pb.set_style(ProgressStyle::default_bar().template(
-        "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {msg} {per_sec} img/sec",
+        "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} ({eta}) {msg} {per_sec}",
     )?.progress_chars("##>-"));
 
     // compute the std and mean of the images
-    let (total_std, total_mean) = images_paths
-        .par_iter()
-        .progress_with(pb)
-        .map(|image_path| {
-            // read the image
-            let image = F::read_image_jpeg(image_path).expect("Failed to read image");
-            // compute the std and mean
-            kornia_rs::core::std_mean(&image)
-        })
-        .reduce(
-            || (vec![0.0; 3], vec![0.0; 3]),
-            |(mut total_std, mut total_mean), (std, mean)| {
-                total_std
-                    .iter_mut()
-                    .zip(std.iter())
-                    .for_each(|(t, s)| *t += s);
-                total_mean
-                    .iter_mut()
-                    .zip(mean.iter())
-                    .for_each(|(t, m)| *t += m);
 
-                (total_std, total_mean)
-            },
-        );
+    let total_std = Arc::new(Mutex::new(vec![0.0; 3]));
+    let total_mean = Arc::new(Mutex::new(vec![0.0; 3]));
+
+    let num_samples = images_paths.len() as f64;
+
+    images_paths
+        .into_par_iter()
+        .progress_with(pb)
+        .for_each(|image_path| {
+            // read the image
+            let image = F::read_image_jpeg(&image_path).expect("Failed to read image");
+
+            // compute the std and mean
+            let (std, mean) = kornia_rs::core::std_mean(&image);
+
+            // update the total std and mean
+            //let mut total_std = total_std.lock().unwrap();
+            //let mut total_mean = total_mean.lock().unwrap();
+
+            total_std
+                .lock()
+                .unwrap()
+                .iter_mut()
+                .zip(std.iter())
+                .for_each(|(t, s)| *t += s);
+            total_mean
+                .lock()
+                .unwrap()
+                .iter_mut()
+                .zip(mean.iter())
+                .for_each(|(t, m)| *t += m);
+        });
 
     // average the measurements
-    let n = images_paths.len() as f64;
-    let total_std = total_std.iter().map(|&s| s / n).collect::<Vec<_>>();
-    let total_mean = total_mean.iter().map(|&m| m / n).collect::<Vec<_>>();
+    let total_std = total_std
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|&s| s / num_samples)
+        .collect::<Vec<_>>();
+    let total_mean = total_mean
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|&m| m / num_samples)
+        .collect::<Vec<_>>();
 
     println!("🔥Total std: {:?}", total_std);
     println!("🔥Total mean: {:?}", total_mean);
