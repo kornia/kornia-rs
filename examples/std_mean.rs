@@ -76,8 +76,6 @@ fn main() -> Result<()> {
             let (std, mean) = kornia_rs::core::std_mean(&image);
 
             // update the total std and mean
-            //let mut total_std = total_std.lock().unwrap();
-            //let mut total_mean = total_mean.lock().unwrap();
 
             total_std
                 .lock()
@@ -85,6 +83,7 @@ fn main() -> Result<()> {
                 .iter_mut()
                 .zip(std.iter())
                 .for_each(|(t, s)| *t += s);
+
             total_mean
                 .lock()
                 .unwrap()
