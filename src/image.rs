@@ -239,6 +239,70 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Ok(Image { data: casted_data })
     }
 
+    /// Get a channel of the image.
+    /// # Arguments
+    ///
+    /// * `channel` - The channel to get.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the given channel.
+    ///
+    /// # Errors
+    ///
+    /// If the channel index is out of bounds, an error is returned.
+    pub fn channel(&self, channel: usize) -> Result<Image<T, 1>>
+    where
+        T: Clone,
+    {
+        if channel >= CHANNELS {
+            return Err(anyhow::anyhow!(
+                "Channel index ({}) out of bounds ({}).",
+                channel,
+                CHANNELS
+            ));
+        }
+
+        let channel_data = self.data.slice(ndarray::s![.., .., channel..channel + 1]);
+
+        Ok(Image {
+            data: channel_data.to_owned(),
+        })
+    }
+
+    /// Split the image into its channels.
+    ///
+    /// # Returns
+    ///
+    /// A vector of images, each containing one channel of the original image.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kornia_rs::image::{Image, ImageSize};
+    ///
+    /// let image = Image::<f32, 2>::from_size_val(
+    ///   ImageSize {
+    ///    width: 10,
+    ///   height: 20,
+    /// },
+    /// 0.0f32).unwrap();
+    ///
+    /// let channels = image.split_channels().unwrap();
+    /// assert_eq!(channels.len(), 2);
+    /// ```
+    pub fn split_channels(&self) -> Result<Vec<Image<T, 1>>>
+    where
+        T: Clone,
+    {
+        let mut channels = Vec::with_capacity(CHANNELS);
+        for i in 0..CHANNELS {
+            channels.push(self.channel(i)?);
+        }
+
+        Ok(channels)
+    }
+
     // TODO: optimize this
     pub fn mul(&self, scale: T) -> Self
     where
@@ -336,11 +400,11 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
 
 #[cfg(test)]
 mod tests {
-    use crate::image::ImageSize;
+    use crate::image::{Image, ImageSize};
+    use anyhow::Result;
 
     #[test]
     fn image_size() {
-        use crate::image::ImageSize;
         let image_size = ImageSize {
             width: 10,
             height: 20,
@@ -350,48 +414,39 @@ mod tests {
     }
 
     #[test]
-    fn image_smoke() {
-        use crate::image::{Image, ImageSize};
+    fn image_smoke() -> Result<()> {
         let image = Image::<u8, 3>::new(
             ImageSize {
                 width: 10,
                 height: 20,
             },
             vec![0u8; 10 * 20 * 3],
-        )
-        .unwrap();
+        )?;
         assert_eq!(image.size().width, 10);
         assert_eq!(image.size().height, 20);
         assert_eq!(image.num_channels(), 3);
+
+        Ok(())
     }
 
     #[test]
-    //fn image_from_file() {
-    //    use crate::image::Image;
-    //    let image_path = std::path::Path::new("tests/data/dog.jpeg");
-    //    let image = Image::<u8, 3>::from_file(image_path);
-    //    assert_eq!(image.size().width, 258);
-    //    assert_eq!(image.size().height, 195);
-    //    assert_eq!(image.num_channels(), 3);
-    //}
-    fn image_from_vec() {
-        use crate::image::Image;
+    fn image_from_vec() -> Result<()> {
         let image: Image<f32, 3> = Image::new(
             ImageSize {
                 height: 3,
                 width: 2,
             },
             vec![0.0; 3 * 2 * 3],
-        )
-        .unwrap();
+        )?;
         assert_eq!(image.size().width, 2);
         assert_eq!(image.size().height, 3);
         assert_eq!(image.num_channels(), 3);
+
+        Ok(())
     }
 
     #[test]
-    fn image_cast() {
-        use crate::image::Image;
+    fn image_cast() -> Result<()> {
         let data = vec![0., 1., 2., 3., 4., 5.];
         let image_f64 = Image::<f64, 3>::new(
             ImageSize {
@@ -399,30 +454,66 @@ mod tests {
                 width: 1,
             },
             data,
-        )
-        .unwrap();
+        )?;
         assert_eq!(image_f64.data.get((1, 0, 2)).unwrap(), &5.0f64);
 
-        let image_u8 = image_f64.cast::<u8>().unwrap();
+        let image_u8 = image_f64.cast::<u8>()?;
         assert_eq!(image_u8.data.get((1, 0, 2)).unwrap(), &5u8);
 
-        let image_i32: Image<i32, 3> = image_u8.cast().unwrap();
+        let image_i32: Image<i32, 3> = image_u8.cast()?;
         assert_eq!(image_i32.data.get((1, 0, 2)).unwrap(), &5i32);
+
+        Ok(())
     }
 
     #[test]
-    fn image_rgbd() {
-        use crate::image::Image;
+    fn image_rgbd() -> Result<()> {
         let image = Image::<f32, 4>::new(
             ImageSize {
                 height: 2,
                 width: 3,
             },
             vec![0f32; 2 * 3 * 4],
-        )
-        .unwrap();
+        )?;
         assert_eq!(image.size().width, 3);
         assert_eq!(image.size().height, 2);
         assert_eq!(image.num_channels(), 4);
+
+        Ok(())
+    }
+
+    #[test]
+    fn image_channel() -> Result<()> {
+        let image = Image::<f32, 3>::new(
+            ImageSize {
+                height: 2,
+                width: 1,
+            },
+            vec![0., 1., 2., 3., 4., 5.],
+        )?;
+
+        let channel = image.channel(2)?;
+        assert_eq!(channel.data.get((1, 0, 0)).unwrap(), &5.0f32);
+
+        Ok(())
+    }
+
+    #[test]
+    fn image_split_channels() -> Result<()> {
+        let image = Image::<f32, 3>::new(
+            ImageSize {
+                height: 2,
+                width: 1,
+            },
+            vec![0., 1., 2., 3., 4., 5.],
+        )
+        .unwrap();
+        let channels = image.split_channels()?;
+        assert_eq!(channels.len(), 3);
+        assert_eq!(channels[0].data.get((1, 0, 0)).unwrap(), &3.0f32);
+        assert_eq!(channels[1].data.get((1, 0, 0)).unwrap(), &4.0f32);
+        assert_eq!(channels[2].data.get((1, 0, 0)).unwrap(), &5.0f32);
+
+        Ok(())
     }
 }
