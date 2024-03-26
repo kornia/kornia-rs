@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::image::Image;
 
-/// Compute the histogram of an image.
+/// Compute the pixel intensity histogram of an image.
 ///
 /// NOTE: this is limited to 8-bit 1-channel images.
 ///
