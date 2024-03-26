@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // log the image and the histogram
     rec.set_time_sequence("step", 0);
-    rec.log("image", &rerun::Image::try_from(image.clone().data)?)?;
+    rec.log("image", &rerun::Image::try_from(image.clone().data())?)?;
 
     // show the image and the histogram
     rec.log_timeless(

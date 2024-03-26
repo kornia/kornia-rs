@@ -22,9 +22,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").connect()?;
 
-    let _ = rec.log("image", &rerun::Image::try_from(image_f32.data)?);
-    let _ = rec.log("gray", &rerun::Image::try_from(gray_f32.data)?);
-    let _ = rec.log("gray_bin", &rerun::Image::try_from(gray_bin.data)?);
+    let _ = rec.log("image", &rerun::Image::try_from(image_f32.data())?);
+    let _ = rec.log("gray", &rerun::Image::try_from(gray_f32.data())?);
+    let _ = rec.log("gray_bin", &rerun::Image::try_from(gray_bin.data())?);
 
     Ok(())
 }
