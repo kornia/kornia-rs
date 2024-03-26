@@ -23,7 +23,7 @@ jobs:
           target: ${{ matrix.target }}
           manylinux: auto
           command: build
-          args: --release --out dist -i python${{ matrix.python-version }} -m py-kornia/Cargo.toml --sdist
+          args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
@@ -53,7 +53,7 @@ jobs:
         with:
           command: build
           maturin-version: latest
-          args: --release --target ${{ matrix.target }}-apple-darwin --out dist -i python${{ matrix.python-version }} -m py-kornia/Cargo.toml --sdist
+          args: --release --target ${{ matrix.target }}-apple-darwin --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
@@ -82,7 +82,7 @@ jobs:
         with:
           command: build
           maturin-version: latest
-          args: --release --out dist -i python${{ matrix.python-version }} -m py-kornia/Cargo.toml --sdist
+          args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
       - name: Upload wheels
         uses: actions/upload-artifact@v2
         with:
