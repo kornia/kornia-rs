@@ -2,17 +2,10 @@ name: Python Test
 
 on:
   pull_request:
-    paths:
-      - Cargo.lock
-      - kornia-py/**
-      - .github/workflows/test-python.yml
+    - main
   push:
     branches:
       - main
-    paths:
-      - Cargo.lock
-      - kornia-py/**
-      - .github/workflows/test-python.yml
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
