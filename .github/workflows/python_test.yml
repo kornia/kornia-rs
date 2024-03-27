@@ -2,7 +2,8 @@ name: Python Test
 
 on:
   pull_request:
-    - main
+    branches:
+      - main
   push:
     branches:
       - main
