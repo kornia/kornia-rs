@@ -387,15 +387,79 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         CHANNELS
     }
 
-    //pub fn from_file(image_path: &Path) -> Image<u8, 3> {
-    //    match image_path.extension().and_then(|ext| ext.to_str()) {
-    //        Some("jpeg") | Some("jpg") => io::functions::read_image_jpeg(image_path),
-    //        _ => io::functions::read_image_any(image_path),
-    //    }
-    //}
+    /// Get the pixel data of the image as a 4D tensor in NCHW format.
+    ///
+    /// Internally, the image is stored in HWC format, and the function gives
+    /// away ownership of the pixel data.
+    pub fn to_tensor_nchw(self) -> ndarray::Array4<T> {
+        // add batch axis 1xHxWxC
+        let data = self.data.insert_axis(ndarray::Axis(0));
 
-    // TODO: implement from bytes
-    // pub fn from_bytes(bytes: &[u8]) -> Image {
+        // permute axes to NHWC -> NCHW
+        data.permuted_axes([0, 3, 1, 2])
+    }
+
+    /// Get the pixel data of the image as a 4D tensor in NHWC format.
+    ///
+    /// Internally, the image is stored in HWC format, and the function gives
+    /// away ownership of the pixel data.
+    pub fn to_tensor_nhwc(self) -> ndarray::Array4<T> {
+        self.data.insert_axis(ndarray::Axis(0))
+    }
+
+    // NOTE: experimental api
+    pub fn set_pixel(&mut self, x: usize, y: usize, ch: usize, val: T) -> Result<()>
+    where
+        T: Copy,
+    {
+        if x >= self.width() || y >= self.height() {
+            return Err(anyhow::anyhow!(
+                "Pixel coordinates ({}, {}) out of bounds ({}, {}).",
+                x,
+                y,
+                self.width(),
+                self.height()
+            ));
+        }
+
+        if ch >= CHANNELS {
+            return Err(anyhow::anyhow!(
+                "Channel index ({}) out of bounds ({}).",
+                ch,
+                CHANNELS
+            ));
+        }
+
+        self.data[[y, x, ch]] = val;
+
+        Ok(())
+    }
+
+    // NOTE: experimental api
+    pub fn get_pixel(&self, x: usize, y: usize, ch: usize) -> Result<T>
+    where
+        T: Copy,
+    {
+        if x >= self.width() || y >= self.height() {
+            return Err(anyhow::anyhow!(
+                "Pixel coordinates ({}, {}) out of bounds ({}, {}).",
+                x,
+                y,
+                self.width(),
+                self.height()
+            ));
+        }
+
+        if ch >= CHANNELS {
+            return Err(anyhow::anyhow!(
+                "Channel index ({}) out of bounds ({}).",
+                ch,
+                CHANNELS
+            ));
+        }
+
+        Ok(self.data[[y, x, ch]])
+    }
 }
 
 #[cfg(test)]
@@ -513,6 +577,27 @@ mod tests {
         assert_eq!(channels[0].data.get((1, 0, 0)).unwrap(), &3.0f32);
         assert_eq!(channels[1].data.get((1, 0, 0)).unwrap(), &4.0f32);
         assert_eq!(channels[2].data.get((1, 0, 0)).unwrap(), &5.0f32);
+
+        Ok(())
+    }
+
+    #[test]
+    fn convert_to_tensor() -> Result<()> {
+        let image = Image::<f32, 3>::new(
+            ImageSize {
+                height: 2,
+                width: 1,
+            },
+            vec![0., 1., 2., 3., 4., 5.],
+        )?;
+
+        let tensor_nchw = image.clone().to_tensor_nchw();
+        assert_eq!(tensor_nchw.shape(), &[1, 3, 2, 1]);
+        assert_eq!(tensor_nchw[[0, 2, 1, 0]], 5.0f32);
+
+        let tensor_nhwc = image.to_tensor_nhwc();
+        assert_eq!(tensor_nhwc.shape(), &[1, 2, 1, 3]);
+        assert_eq!(tensor_nhwc[[0, 1, 0, 2]], 5.0f32);
 
         Ok(())
     }
