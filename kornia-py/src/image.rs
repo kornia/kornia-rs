@@ -14,7 +14,7 @@ pub trait ToPyImage {
 
 impl<const CHANNELS: usize> ToPyImage for kornia_rs::image::Image<u8, CHANNELS> {
     fn to_pyimage(self) -> PyImage {
-        Python::with_gil(|py| self.data().to_pyarray(py).to_owned())
+        Python::with_gil(|py| self.data.to_pyarray(py).to_owned())
     }
 }
 

@@ -44,7 +44,7 @@ impl std::fmt::Display for ImageSize {
 pub struct Image<T, const CHANNELS: usize> {
     /// The pixel data of the image. Is mutable so that we can manipulate the image
     /// from the outside.
-    pub(crate) data: ndarray::Array<T, ndarray::Dim<[ndarray::Ix; 3]>>,
+    pub data: ndarray::Array<T, ndarray::Dim<[ndarray::Ix; 3]>>,
 }
 
 impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
@@ -166,15 +166,15 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// data,
     /// ).unwrap();
     ///
-    /// assert_eq!(image_f64.clone().data().get((1, 0, 2)).unwrap(), &5.0f64);
+    /// assert_eq!(image_f64.data.get((1, 0, 2)).unwrap(), &5.0f64);
     ///
     /// let image_u8 = image_f64.cast::<u8>().unwrap();
     ///
-    /// assert_eq!(image_u8.clone().data().get((1, 0, 2)).unwrap(), &5u8);
+    /// assert_eq!(image_u8.data.get((1, 0, 2)).unwrap(), &5u8);
     ///
     /// let image_i32: Image<i32, 3> = image_u8.cast().unwrap();
     ///
-    /// assert_eq!(image_i32.data().get((1, 0, 2)).unwrap(), &5i32);
+    /// assert_eq!(image_i32.data.get((1, 0, 2)).unwrap(), &5i32);
     /// ```
     pub fn cast<U>(self) -> Result<Image<U, CHANNELS>>
     where
@@ -219,7 +219,7 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     ///
     /// let image_f32 = image_u8.cast_and_scale::<f32>(1. / 255.0).unwrap();
     ///
-    /// assert_eq!(image_f32.data().get((1, 0, 2)).unwrap(), &1.0f32);
+    /// assert_eq!(image_f32.data.get((1, 0, 2)).unwrap(), &1.0f32);
     /// ```
     pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, CHANNELS>>
     where
@@ -404,17 +404,61 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// Internally, the image is stored in HWC format, and the function gives
     /// away ownership of the pixel data.
     pub fn to_tensor_nhwc(self) -> ndarray::Array4<T> {
-        // add batch axis 1xHxWxC
-        let data = self.data.insert_axis(ndarray::Axis(0));
-
-        data
+        self.data.insert_axis(ndarray::Axis(0))
     }
 
-    /// Get the pixel data of the image.
-    ///
-    /// The function gives away ownership of the pixel data.
-    pub fn data(self) -> ndarray::Array3<T> {
-        self.data
+    // NOTE: experimental api
+    pub fn set_pixel(&mut self, x: usize, y: usize, ch: usize, val: T) -> Result<()>
+    where
+        T: Copy,
+    {
+        if x >= self.width() || y >= self.height() {
+            return Err(anyhow::anyhow!(
+                "Pixel coordinates ({}, {}) out of bounds ({}, {}).",
+                x,
+                y,
+                self.width(),
+                self.height()
+            ));
+        }
+
+        if ch >= CHANNELS {
+            return Err(anyhow::anyhow!(
+                "Channel index ({}) out of bounds ({}).",
+                ch,
+                CHANNELS
+            ));
+        }
+
+        self.data[[y, x, ch]] = val;
+
+        Ok(())
+    }
+
+    // NOTE: experimental api
+    pub fn get_pixel(&self, x: usize, y: usize, ch: usize) -> Result<T>
+    where
+        T: Copy,
+    {
+        if x >= self.width() || y >= self.height() {
+            return Err(anyhow::anyhow!(
+                "Pixel coordinates ({}, {}) out of bounds ({}, {}).",
+                x,
+                y,
+                self.width(),
+                self.height()
+            ));
+        }
+
+        if ch >= CHANNELS {
+            return Err(anyhow::anyhow!(
+                "Channel index ({}) out of bounds ({}).",
+                ch,
+                CHANNELS
+            ));
+        }
+
+        Ok(self.data[[y, x, ch]])
     }
 }
 

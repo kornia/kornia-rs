@@ -28,9 +28,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;
 
     // log the images
-    rec.log("image", &rerun::Image::try_from(image.data())?)?;
-    rec.log("flip", &rerun::Image::try_from(image_dirty.data())?)?;
-    rec.log("mse_map", &rerun::Image::try_from(mse_map.data())?)?;
+    rec.log("image", &rerun::Image::try_from(image.data)?)?;
+    rec.log("flip", &rerun::Image::try_from(image_dirty.data)?)?;
+    rec.log("mse_map", &rerun::Image::try_from(mse_map.data)?)?;
 
     Ok(())
 }
