@@ -9,11 +9,11 @@ pub type PyImage = Py<PyArray3<u8>>;
 
 /// Trait to convert an image to a PyImage (3D numpy array of u8)
 pub trait ToPyImage {
-    fn to_pyimage(&self) -> PyImage;
+    fn to_pyimage(self) -> PyImage;
 }
 
 impl<const CHANNELS: usize> ToPyImage for kornia_rs::image::Image<u8, CHANNELS> {
-    fn to_pyimage(&self) -> PyImage {
+    fn to_pyimage(self) -> PyImage {
         Python::with_gil(|py| self.data.to_pyarray(py).to_owned())
     }
 }
