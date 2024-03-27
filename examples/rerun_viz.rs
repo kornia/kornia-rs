@@ -10,7 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;
 
     // log the image
-    let _ = rec.log("image", &rerun::Image::try_from(image.data())?);
+    rec.log("image", &rerun::Image::try_from(image.data())?)?;
 
     Ok(())
 }
