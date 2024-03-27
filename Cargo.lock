@@ -3044,6 +3044,7 @@ dependencies = [
  "tempfile",
  "turbojpeg",
  "walkdir",
+ "zune-jpeg",
 ]
 
 [[package]]

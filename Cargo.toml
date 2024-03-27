@@ -29,6 +29,7 @@ tempfile = "3.9.0"
 rayon = "1.10.0"
 rerun = "0.14.1"
 walkdir = "2.5.0"
+zune-jpeg = "0.4.11"
 
 
 [features]
