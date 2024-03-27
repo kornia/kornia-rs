@@ -23,9 +23,14 @@ turbojpeg = {version = "1.0.0"}
 candle-core = { version = "0.3.2", optional = true }
 
 [dev-dependencies]
-tempfile = "3.9.0"
-rerun = "0.14.1"
+clap = { version = "4.5.3", features = ["derive"] }
 criterion = { version = "0.5.1", features = ["html_reports"] }
+indicatif = { version = "0.17.8", features = ["rayon"] }
+tempfile = "3.9.0"
+rayon = "1.10.0"
+rerun = "0.14.1"
+walkdir = "2.5.0"
+
 
 [features]
 candle = ["candle-core"]

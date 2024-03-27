@@ -2,17 +2,11 @@ name: Python Test
 
 on:
   pull_request:
-    paths:
-      - Cargo.lock
-      - py-kornia/**
-      - .github/workflows/test-python.yml
+    branches:
+      - main
   push:
     branches:
       - main
-    paths:
-      - Cargo.lock
-      - py-kornia/**
-      - .github/workflows/test-python.yml
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -51,11 +45,11 @@ jobs:
         with:
           command: build
           maturin-version: latest
-          args: --target x86_64-apple-darwin --out dist -m py-kornia/Cargo.toml
+          args: --target x86_64-apple-darwin --out dist -m kornia-py/Cargo.toml
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip |
           python -m pip install dist/*.whl |
           python -m pip install pytest torch numpy
       - name: Build and test
-        run: pytest py-kornia/tests
+        run: pytest kornia-py/tests

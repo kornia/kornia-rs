@@ -17,23 +17,23 @@ endif
 .PHONY: requirements
 requirements: .venv  ## Install/refresh Python project requirements
 	$(VENV_BIN)/python -m pip install --upgrade pip
-	$(VENV_BIN)/python -m pip install -r py-kornia/requirements-dev.txt
+	$(VENV_BIN)/python -m pip install -r kornia-py/requirements-dev.txt
 
 .PHONY: build-python
 build-python: .venv  ## Compile and install Python for development
 	@unset CONDA_PREFIX && source $(VENV_BIN)/activate \
-	&& maturin develop -m py-kornia/Cargo.toml \
+	&& maturin develop -m kornia-py/Cargo.toml \
 
 .PHONY: build-python-release
 build-python-release: .venv  ## Compile and install a faster Python binary with full optimizations
 	@unset CONDA_PREFIX && source $(VENV_BIN)/activate \
-	&& maturin develop -m py-kornia/Cargo.toml --release \
+	&& maturin develop -m kornia-py/Cargo.toml --release \
 
 .PHONY: test-python
 test-python: .venv  ## Run Python tests
 	@unset CONDA_PREFIX && source $(VENV_BIN)/activate \
-	&& maturin develop -m py-kornia/Cargo.toml \
-	&& $(VENV_BIN)/pytest py-kornia/tests
+	&& maturin develop -m kornia-py/Cargo.toml \
+	&& $(VENV_BIN)/pytest kornia-py/tests
 
 .PHONY: clippy
 clippy:  ## Run clippy with all features
@@ -53,7 +53,7 @@ clean:  ## Clean up caches and build artifacts
 	@rm -rf target/
 	@rm -f Cargo.lock
 	@cargo clean
-	@$(MAKE) -s -C py-kornia/ $@
+	@$(MAKE) -s -C kornia-py/ $@
 
 .PHONY: help
 help:  ## Display this help screen

@@ -21,6 +21,7 @@ def read_image_pillow(image_path: str) -> None:
 def read_image_kornia(image_path: str) -> None:
     return kornia_rs.read_image_jpeg(image_path)
 
+
 def read_image_tensorflow(image_path: str) -> None:
     return tf.keras.utils.load_img(image_path)
 

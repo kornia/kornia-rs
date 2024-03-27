@@ -1,6 +1,10 @@
 use crate::image::{Image, ImageSize};
 use anyhow::Result;
 use gst::prelude::*;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 /// A builder for creating a WebcamCapture object
 pub struct WebcamCaptureBuilder {
@@ -135,37 +139,11 @@ impl WebcamCapture {
                 .build(),
         );
 
-        pipeline.set_state(gst::State::Playing)?;
-
-        // Event loop or processing here
-        // Set pipeline state to Null when done
-
-        let bus = pipeline
-            .bus()
-            .ok_or_else(|| anyhow::anyhow!("Failed to get bus"))?;
-
-        let handle = std::thread::spawn(move || {
-            for msg in bus.iter_timed(gst::ClockTime::NONE) {
-                use gst::MessageView;
-                match msg.view() {
-                    MessageView::Eos(..) => break,
-                    MessageView::Error(err) => {
-                        eprintln!(
-                            "Error from {:?}: {}",
-                            msg.src().map(|s| s.path_string()),
-                            err.error(),
-                            //err.error_code()
-                        );
-                        break;
-                    }
-                    _ => (),
-                }
-            }
-        });
         Ok(Self {
             pipeline,
             receiver: rx,
-            handle: Some(handle),
+            handle: None,
+            //handle: Some(handle),
         })
     }
 
@@ -174,14 +152,55 @@ impl WebcamCapture {
     /// # Arguments
     ///
     /// * `f` - A function that takes an image frame
-    pub fn run<F>(&self, f: F) -> Result<()>
+    pub fn run<F>(&mut self, cancel: Arc<AtomicBool>, f: F) -> Result<()>
     where
-        F: Fn(Image<u8, 3>),
+        F: Fn(Image<u8, 3>) -> Result<()>,
     {
-        let receiver = &self.receiver;
-        while let Ok(img) = receiver.recv() {
-            f(img);
+        // start the pipeline
+        let pipeline = &self.pipeline;
+        pipeline.set_state(gst::State::Playing)?;
+
+        let bus = pipeline
+            .bus()
+            .ok_or_else(|| anyhow::anyhow!("Failed to get bus"))?;
+
+        // start a thread to handle the messages from the bus
+        let _handle = std::thread::spawn(move || {
+            for msg in bus.iter_timed(gst::ClockTime::NONE) {
+                use gst::MessageView;
+                match msg.view() {
+                    MessageView::Eos(..) => break,
+                    MessageView::Error(err) => {
+                        eprintln!(
+                            "Error from {:?}: {} ({:?})",
+                            msg.src().map(|s| s.path_string()),
+                            err.error(),
+                            err.debug()
+                        );
+                        break;
+                    }
+                    _ => (),
+                }
+            }
+        });
+        // self.handle = Some(handle);
+
+        // start grabbing frames from the camera
+        while let Ok(img) = self.receiver.recv() {
+            f(img)?;
+
+            if cancel.load(Ordering::SeqCst) {
+                // send an EOS message to the pipeline
+                break;
+            }
         }
+
+        // send an EOS message to the pipeline and set the state to Null
+        pipeline.send_event(gst::event::Eos::new());
+        pipeline.set_state(gst::State::Null)?;
+
+        // reset the cancel token in case we want to run the pipeline again later
+        cancel.store(true, Ordering::SeqCst);
 
         Ok(())
     }
@@ -198,13 +217,16 @@ impl WebcamCapture {
     /// A GStreamer pipeline string
     fn gst_pipeline_string(camera_id: usize, size: Option<ImageSize>) -> String {
         let video_resize = if let Some(size) = size {
-            format!(" ! video/x-raw,width={},height={}", size.width, size.height)
+            format!(
+                " ! video/x-raw,width={},height={},framerate=30/1",
+                size.width, size.height
+            )
         } else {
             "".to_string()
         };
 
         format!(
-            "v4l2src device=/dev/video{} {}! videoconvert ! videoscale ! video/x-raw,format=RGB ! appsink name=sink emit-signals=true",
+            "v4l2src device=/dev/video{} {}! videoconvert ! videoscale ! video/x-raw,format=RGB ! appsink name=sink",
             camera_id, video_resize
         )
     }
@@ -240,8 +262,7 @@ impl WebcamCapture {
 impl Drop for WebcamCapture {
     fn drop(&mut self) {
         println!("Dropping WebcamCapture");
-        self.pipeline.set_state(gst::State::Null).unwrap();
-        self.handle.take().map(|t| t.join());
-        println!("Dropped WebcamCapture");
+        // NOTE: this is hanging
+        // self.handle.take().map(|h| h.join());
     }
 }
