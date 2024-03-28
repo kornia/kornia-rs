@@ -17,6 +17,10 @@ image = { version = "0.25.0" }
 memmap2 = "0.9.4"
 ndarray = { version = "0.15.6", features = ["rayon"] }
 num-traits = "0.2.17"
+futures = "0.3.30"
+thiserror = "1.0.58"
+tokio = { version = "1.36.0", features = ["full"] }
+tokio-util = "0.7.10"
 turbojpeg = {version = "1.0.0"}
 # this is experimental and only used for benchmarking, so it's optional
 # consider removing it in the future.
@@ -29,6 +33,7 @@ indicatif = { version = "0.17.8", features = ["rayon"] }
 tempfile = "3.9.0"
 rayon = "1.10.0"
 rerun = "0.14.1"
+tokio = { version = "1.36.0", features = ["full"] }
 walkdir = "2.5.0"
 
 

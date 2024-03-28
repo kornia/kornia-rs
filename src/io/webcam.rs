@@ -1,10 +1,6 @@
 use crate::image::{Image, ImageSize};
 use anyhow::Result;
 use gst::prelude::*;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
 
 /// A builder for creating a WebcamCapture object
 pub struct WebcamCaptureBuilder {
@@ -88,8 +84,9 @@ impl Default for WebcamCaptureBuilder {
 /// ```
 pub struct WebcamCapture {
     pipeline: gst::Pipeline,
-    receiver: std::sync::mpsc::Receiver<Image<u8, 3>>,
-    handle: Option<std::thread::JoinHandle<()>>,
+    receiver: tokio::sync::mpsc::Receiver<Image<u8, 3>>,
+    //handle: Vec<std::thread::JoinHandle<()>>,
+    handle: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl WebcamCapture {
@@ -118,23 +115,19 @@ impl WebcamCapture {
             .dynamic_cast::<gst_app::AppSink>()
             .map_err(|_| anyhow::anyhow!("Failed to cast to AppSink"))?;
 
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = tokio::sync::mpsc::channel(50);
 
         appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
                 .new_sample(move |sink| match Self::extract_image_frame(sink) {
                     Ok(frame) => {
-                        if let Err(e) = tx.send(frame) {
-                            println!("Error sending frame: {}", e);
+                        if let Err(_) = tx.blocking_send(frame) {
                             Err(gst::FlowError::Error)
                         } else {
                             Ok(gst::FlowSuccess::Ok)
                         }
                     }
-                    Err(e) => {
-                        println!("Error extracting image frame: {}", e);
-                        Err(gst::FlowError::Error)
-                    }
+                    Err(_) => Err(gst::FlowError::Error),
                 })
                 .build(),
         );
@@ -142,8 +135,7 @@ impl WebcamCapture {
         Ok(Self {
             pipeline,
             receiver: rx,
-            handle: None,
-            //handle: Some(handle),
+            handle: vec![],
         })
     }
 
@@ -152,7 +144,7 @@ impl WebcamCapture {
     /// # Arguments
     ///
     /// * `f` - A function that takes an image frame
-    pub fn run<F>(&mut self, cancel: Arc<AtomicBool>, f: F) -> Result<()>
+    pub async fn run<F>(&mut self, f: F) -> Result<()>
     where
         F: Fn(Image<u8, 3>) -> Result<()>,
     {
@@ -165,7 +157,8 @@ impl WebcamCapture {
             .ok_or_else(|| anyhow::anyhow!("Failed to get bus"))?;
 
         // start a thread to handle the messages from the bus
-        let _handle = std::thread::spawn(move || {
+        //let handle = std::thread::spawn(move || {
+        let handle = tokio::task::spawn(async move {
             for msg in bus.iter_timed(gst::ClockTime::NONE) {
                 use gst::MessageView;
                 match msg.view() {
@@ -183,25 +176,22 @@ impl WebcamCapture {
                 }
             }
         });
-        // self.handle = Some(handle);
+        self.handle.push(handle);
 
         // start grabbing frames from the camera
-        while let Ok(img) = self.receiver.recv() {
+        while let Some(img) = self.receiver.recv().await {
             f(img)?;
-
-            if cancel.load(Ordering::SeqCst) {
-                // send an EOS message to the pipeline
-                break;
-            }
         }
 
-        // send an EOS message to the pipeline and set the state to Null
-        pipeline.send_event(gst::event::Eos::new());
-        pipeline.set_state(gst::State::Null)?;
+        Ok(())
+    }
 
-        // reset the cancel token in case we want to run the pipeline again later
-        cancel.store(true, Ordering::SeqCst);
-
+    pub async fn close(&mut self) -> Result<()> {
+        self.pipeline.send_event(gst::event::Eos::new());
+        while let Some(h) = self.handle.pop() {
+            h.await?;
+        }
+        self.pipeline.set_state(gst::State::Null)?;
         Ok(())
     }
 
@@ -256,13 +246,5 @@ impl WebcamCapture {
             .ok_or_else(|| anyhow::anyhow!("Failed to get buffer from sample"))?;
         let map = buffer.map_readable()?;
         Image::<u8, 3>::new(ImageSize { width, height }, map.as_slice().to_vec())
-    }
-}
-
-impl Drop for WebcamCapture {
-    fn drop(&mut self) {
-        println!("Dropping WebcamCapture");
-        // NOTE: this is hanging
-        // self.handle.take().map(|h| h.join());
     }
 }

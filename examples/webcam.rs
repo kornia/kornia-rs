@@ -1,9 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
-};
+use std::sync::{Arc, Mutex};
 
 use kornia_rs::io::fps_counter::FpsCounter;
 use kornia_rs::{image::ImageSize, io::webcam::WebcamCaptureBuilder};
@@ -14,10 +11,12 @@ struct Args {
     camera_id: usize,
 
     #[arg(short, long)]
-    sleep_sec: Option<u64>,
+    duration: Option<u64>,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    //async fn main() -> Result<()> {
     let args = Args::parse();
 
     // start the recording stream
@@ -33,52 +32,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .build()?;
 
-    // create a cancel token to stop the webcam capture
-    let cancel_token = Arc::new(AtomicBool::new(false));
-
-    // create a thread to stop the webcam capture
-    let timer_thread = {
-        let cancel_token = cancel_token.clone();
-        std::thread::spawn(move || {
-            if let Some(args) = args.sleep_sec {
-                std::thread::sleep(std::time::Duration::from_secs(args));
-                cancel_token.store(true, Ordering::SeqCst);
-            }
-        })
-    };
-
     // start grabbing frames from the camera
     let fps_counter = Arc::new(Mutex::new(FpsCounter::new()));
 
-    webcam.run(cancel_token, |img| {
-        // lets resize the image to 256x256
-        let img = kornia_rs::resize::resize_fast(
-            &img,
-            kornia_rs::image::ImageSize {
-                width: 256,
-                height: 256,
-            },
-            kornia_rs::resize::InterpolationMode::Bilinear,
-        )?;
+    webcam
+        .run(|img| {
+            // lets resize the image to 256x256
+            let img = kornia_rs::resize::resize_fast(
+                &img,
+                kornia_rs::image::ImageSize {
+                    width: 256,
+                    height: 256,
+                },
+                kornia_rs::resize::InterpolationMode::Bilinear,
+            )?;
 
-        // convert the image to f32 and normalize before processing
-        let img = img.cast_and_scale::<f32>(1. / 255.)?;
+            // convert the image to f32 and normalize before processing
+            let img = img.cast_and_scale::<f32>(1. / 255.)?;
 
-        // convert the image to grayscale and binarize
-        let gray = kornia_rs::color::gray_from_rgb(&img)?;
-        let bin = kornia_rs::threshold::threshold_binary(&gray, 0.5, 1.0)?;
+            // convert the image to grayscale and binarize
+            let gray = kornia_rs::color::gray_from_rgb(&img)?;
+            let bin = kornia_rs::threshold::threshold_binary(&gray, 0.5, 1.0)?;
 
-        // update the fps counter
-        fps_counter.lock().unwrap().new_frame();
+            // update the fps counter
+            fps_counter
+                .lock()
+                .expect("Failed to lock fps counter")
+                .new_frame();
 
-        // log the image
-        rec.log("binary", &rerun::Image::try_from(bin.data)?)?;
+            // log the image
+            rec.log("binary", &rerun::Image::try_from(bin.data)?)?;
 
-        Ok(())
-    })?;
-
-    // wait for the threads to finish
-    timer_thread.join().expect("timer thread panicked");
+            Ok(())
+        })
+        .await?;
 
     println!("Finished recording");
 
