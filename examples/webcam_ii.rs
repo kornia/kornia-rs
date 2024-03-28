@@ -1,4 +1,3 @@
-use anyhow::Result;
 use clap::Parser;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
