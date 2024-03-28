@@ -121,7 +121,7 @@ impl WebcamCapture {
             gst_app::AppSinkCallbacks::builder()
                 .new_sample(move |sink| match Self::extract_image_frame(sink) {
                     Ok(frame) => {
-                        if let Err(_) = tx.blocking_send(frame) {
+                        if tx.blocking_send(frame).is_err() {
                             Err(gst::FlowError::Error)
                         } else {
                             Ok(gst::FlowSuccess::Ok)
