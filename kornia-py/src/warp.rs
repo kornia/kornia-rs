@@ -16,8 +16,8 @@ pub fn warp_affine(
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
     let new_size = kornia_rs::image::ImageSize {
-        height: new_size.0,
-        width: new_size.1,
+        width: new_size.0,
+        height: new_size.1,
     };
 
     let interpolation = match interpolation.to_lowercase().as_str() {
