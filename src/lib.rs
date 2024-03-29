@@ -11,5 +11,5 @@ pub mod normalize;
 pub mod resize;
 // NOTE: not ready yet
 // pub mod tensor;
-pub mod geometry;
 pub mod threshold;
+pub mod warp;

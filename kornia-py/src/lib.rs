@@ -1,8 +1,8 @@
-mod geometry;
 mod histogram;
 mod image;
 mod io;
 mod resize;
+mod warp;
 
 use crate::image::PyImageSize;
 use crate::io::functional::{read_image_any, read_image_jpeg, write_image_jpeg};
@@ -26,7 +26,7 @@ pub fn kornia_rs(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(write_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_any, m)?)?;
     m.add_function(wrap_pyfunction!(resize::resize, m)?)?;
-    m.add_function(wrap_pyfunction!(geometry::transform::warp_affine, m)?)?;
+    m.add_function(wrap_pyfunction!(warp::warp_affine, m)?)?;
     m.add_function(wrap_pyfunction!(histogram::compute_histogram, m)?)?;
     m.add_class::<PyImageSize>()?;
     m.add_class::<PyImageDecoder>()?;
