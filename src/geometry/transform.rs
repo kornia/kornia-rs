@@ -62,6 +62,14 @@ pub fn warp_affine<const CHANNELS: usize>(
             let u_src = m_inv.0 * u + m_inv.1 * v + m_inv.2;
             let v_src = m_inv.3 * u + m_inv.4 * v + m_inv.5;
 
+            if u_src < 0.0
+                || u_src > (src.width() - 1) as f32
+                || v_src < 0.0
+                || v_src > (src.height() - 1) as f32
+            {
+                return;
+            }
+
             // compute the pixel values for each channel
             let pixels = (0..src.num_channels())
                 .map(|k| interpolate(&src.data, u_src, v_src, k, interpolation));
@@ -175,6 +183,9 @@ mod tests {
             super::InterpolationMode::Nearest,
         )
         .unwrap();
-        assert_eq!(image_transformed.data, ndarray::array![[[1.0f32], [3.0f32]], [[0.0f32], [2.0f32]]]);
+        assert_eq!(
+            image_transformed.data,
+            ndarray::array![[[1.0f32], [3.0f32]], [[0.0f32], [2.0f32]]]
+        );
     }
 }
