@@ -190,8 +190,8 @@ pub fn resize_native<const CHANNELS: usize>(
             let (u, v) = (uv[0], uv[1]);
 
             // compute the pixel values for each channel
-            let pixels =
-                (0..image.num_channels()).map(|k| interpolate_pixel(&image.data, u, v, k, interpolation));
+            let pixels = (0..image.num_channels())
+                .map(|k| interpolate_pixel(&image.data, u, v, k, interpolation));
 
             // write the pixel values to the output image
             for (k, pixel) in pixels.enumerate() {
