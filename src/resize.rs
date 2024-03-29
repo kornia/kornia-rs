@@ -39,7 +39,8 @@ pub fn meshgrid(x: &Array2<f32>, y: &Array2<f32>) -> (Array2<f32>, Array2<f32>) 
     (xx, yy)
 }
 
-trait ImageDtype {
+// Send and Sync is required for ndarray::Zip::par_for_each
+pub trait ImageDtype: Copy + Default + Send + Sync {
     fn to_f32(&self) -> f32;
     fn from_f32(x: f32) -> Self;
 }
@@ -181,13 +182,13 @@ pub enum InterpolationMode {
 /// assert_eq!(image_resized.size().width, 2);
 /// assert_eq!(image_resized.size().height, 3);
 /// ```
-pub fn resize_native<const CHANNELS: usize>(
-    image: &Image<f32, CHANNELS>,
+pub fn resize_native<T: ImageDtype, const CHANNELS: usize>(
+    image: &Image<T, CHANNELS>,
     new_size: ImageSize,
     interpolation: InterpolationMode,
-) -> Result<Image<f32, CHANNELS>> {
+) -> Result<Image<T, CHANNELS>> {
     // create the output image
-    let mut output = Image::from_size_val(new_size, 0.0)?;
+    let mut output = Image::from_size_val(new_size, T::default())?;
 
     // create a grid of x and y coordinates for the output image
     // and interpolate the values from the input image.
