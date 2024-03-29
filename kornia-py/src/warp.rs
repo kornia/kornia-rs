@@ -32,7 +32,7 @@ pub fn warp_affine(
 
     // we need to cast to f32 for now since kornia-rs interpolation function only works with f32
     let image = image.cast::<f32>().unwrap();
-    let image = kornia_rs::geometry::transform::warp_affine(&image, m, new_size, interpolation)
+    let image = kornia_rs::warp::warp_affine(&image, m, new_size, interpolation)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
     // NOTE: for bicubic interpolation (not implemented yet), f32 may overshoot 255
