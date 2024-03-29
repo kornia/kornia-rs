@@ -54,28 +54,18 @@ pub fn meshgrid(x: &Array2<f32>, y: &Array2<f32>) -> (Array2<f32>, Array2<f32>) 
 // TODO: add support for other data types. Maybe use a trait? or template?
 fn bilinear_interpolation(image: &Array3<f32>, u: f32, v: f32, c: usize) -> f32 {
     let (height, width, _) = image.dim();
-    let iu = u.trunc() as usize;
-    let iv = v.trunc() as usize;
+    let iu0 = (u.floor() as usize).clamp(0, width - 1);
+    let iv0 = (v.floor() as usize).clamp(0, height - 1);
+    let iu1 = (u.ceil() as usize).clamp(0, width - 1);
+    let iv1 = (v.ceil() as usize).clamp(0, height - 1);
 
-    let frac_u = u.fract();
-    let frac_v = v.fract();
-    let val00 = image[[iv, iu, c]];
-    let val01 = if iu + 1 < width {
-        image[[iv, iu + 1, c]]
-    } else {
-        val00
-    };
-    let val10 = if iv + 1 < height {
-        image[[iv + 1, iu, c]]
-    } else {
-        val00
-    };
-    let val11 = if iu + 1 < width && iv + 1 < height {
-        image[[iv + 1, iu + 1, c]]
-    } else {
-        val00
-    };
+    let val00 = image[[iv0, iu0, c]];
+    let val01 = image[[iv0, iu1, c]];
+    let val10 = image[[iv1, iu0, c]];
+    let val11 = image[[iv1, iu1, c]];
 
+    let frac_u = u - u.floor();
+    let frac_v = v - v.floor();
     let frac_uu = 1. - frac_u;
     let frac_vv = 1. - frac_v;
 
