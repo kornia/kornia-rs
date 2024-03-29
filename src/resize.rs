@@ -40,26 +40,19 @@ pub fn meshgrid(x: &Array2<f32>, y: &Array2<f32>) -> (Array2<f32>, Array2<f32>) 
 }
 
 // Send and Sync is required for ndarray::Zip::par_for_each
-pub trait ImageDtype: Copy + Default + Send + Sync {
-    fn to_f32(&self) -> f32;
+pub trait ImageDtype: Copy + Default + Into<f32> + Send + Sync {
     fn from_f32(x: f32) -> Self;
 }
 
 impl ImageDtype for f32 {
-    fn to_f32(&self) -> f32 {
-        *self
-    }
     fn from_f32(x: f32) -> Self {
         x
     }
 }
 
 impl ImageDtype for u8 {
-    fn to_f32(&self) -> f32 {
-        *self as f32
-    }
     fn from_f32(x: f32) -> Self {
-        x.clamp(0.0, 255.0) as u8
+        x.round().clamp(0.0, 255.0) as u8
     }
 }
 
@@ -83,19 +76,19 @@ fn bilinear_interpolation<T: ImageDtype>(image: &Array3<T>, u: f32, v: f32, c: u
 
     let frac_u = u.fract();
     let frac_v = v.fract();
-    let val00 = image[[iv, iu, c]].to_f32();
-    let val01 = if iu + 1 < width {
-        image[[iv, iu + 1, c]].to_f32()
+    let val00: f32 = image[[iv, iu, c]].into();
+    let val01: f32 = if iu + 1 < width {
+        image[[iv, iu + 1, c]].into()
     } else {
         val00
     };
-    let val10 = if iv + 1 < height {
-        image[[iv + 1, iu, c]].to_f32()
+    let val10: f32 = if iv + 1 < height {
+        image[[iv + 1, iu, c]].into()
     } else {
         val00
     };
-    let val11 = if iu + 1 < width && iv + 1 < height {
-        image[[iv + 1, iu + 1, c]].to_f32()
+    let val11: f32 = if iu + 1 < width && iv + 1 < height {
+        image[[iv + 1, iu + 1, c]].into()
     } else {
         val00
     };
