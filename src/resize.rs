@@ -116,6 +116,19 @@ pub enum InterpolationMode {
     Nearest,
 }
 
+pub(crate) fn interpolate(
+    image: &Array3<f32>,
+    u: f32,
+    v: f32,
+    c: usize,
+    interpolation: InterpolationMode,
+) -> f32 {
+    match interpolation {
+        InterpolationMode::Bilinear => bilinear_interpolation(image, u, v, c),
+        InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v, c),
+    }
+}
+
 /// Resize an image to a new size.
 ///
 /// The function resizes an image to a new size using the specified interpolation mode.
@@ -187,10 +200,8 @@ pub fn resize_native<const CHANNELS: usize>(
             let (u, v) = (uv[0], uv[1]);
 
             // compute the pixel values for each channel
-            let pixels = (0..image.num_channels()).map(|k| match interpolation {
-                InterpolationMode::Bilinear => bilinear_interpolation(&image.data, u, v, k),
-                InterpolationMode::Nearest => nearest_neighbor_interpolation(&image.data, u, v, k),
-            });
+            let pixels =
+                (0..image.num_channels()).map(|k| interpolate(&image.data, u, v, k, interpolation));
 
             // write the pixel values to the output image
             for (k, pixel) in pixels.enumerate() {
