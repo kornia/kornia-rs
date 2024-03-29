@@ -1,3 +1,5 @@
+use std::f32::consts::PI;
+
 use crate::image::{Image, ImageSize};
 use crate::resize::{interpolate_pixel, meshgrid, InterpolationMode};
 use anyhow::Result;
@@ -25,6 +27,16 @@ fn invert_affine_transform(m: AffineMatrix) -> AffineMatrix {
     let new_f = -(new_d * c + new_e * f);
 
     (new_a, new_b, new_c, new_d, new_e, new_f)
+}
+
+pub fn get_rotation_matrix2d(center: (f32, f32), angle: f32, scale: f32) -> AffineMatrix {
+    let angle = angle * PI / 180.0f32;
+    let alpha = scale * angle.cos();
+    let beta = scale * angle.sin();
+
+    let tx = (1.0 - alpha) * center.0 - beta * center.1;
+    let ty = beta * center.0 + (1.0 - alpha) * center.1;
+    (alpha, beta, tx, -beta, alpha, ty)
 }
 
 pub fn warp_affine<const CHANNELS: usize>(
@@ -176,7 +188,7 @@ mod tests {
         .unwrap();
         let image_transformed = super::warp_affine(
             &image,
-            (0.0, 1.0, 0.0, -1.0, 0.0, 1.0),
+            super::get_rotation_matrix2d((0.5, 0.5), 90.0, 1.0),
             ImageSize {
                 width: 2,
                 height: 2,
