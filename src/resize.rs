@@ -123,7 +123,7 @@ fn bilinear_interpolation<T: ImageDtype>(image: &Array3<T>, u: f32, v: f32, c: u
 /// # Returns
 ///
 /// The interpolated pixel value.
-fn nearest_neighbor_interpolation<T: Copy>(image: &Array3<T>, u: f32, v: f32, c: usize) -> T {
+fn nearest_neighbor_interpolation<T: ImageDtype>(image: &Array3<T>, u: f32, v: f32, c: usize) -> T {
     let (height, width, _) = image.dim();
 
     let iu = u.round() as usize;
