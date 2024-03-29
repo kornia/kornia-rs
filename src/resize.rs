@@ -106,7 +106,7 @@ pub enum InterpolationMode {
     Nearest,
 }
 
-pub(crate) fn interpolate(
+pub(crate) fn interpolate_pixel(
     image: &Array3<f32>,
     u: f32,
     v: f32,
@@ -191,7 +191,7 @@ pub fn resize_native<const CHANNELS: usize>(
 
             // compute the pixel values for each channel
             let pixels =
-                (0..image.num_channels()).map(|k| interpolate(&image.data, u, v, k, interpolation));
+                (0..image.num_channels()).map(|k| interpolate_pixel(&image.data, u, v, k, interpolation));
 
             // write the pixel values to the output image
             for (k, pixel) in pixels.enumerate() {

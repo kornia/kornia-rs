@@ -1,5 +1,5 @@
 use crate::image::{Image, ImageSize};
-use crate::resize::{interpolate, meshgrid, InterpolationMode};
+use crate::resize::{interpolate_pixel, meshgrid, InterpolationMode};
 use anyhow::Result;
 use ndarray::stack;
 
@@ -40,6 +40,7 @@ pub fn warp_affine<const CHANNELS: usize>(
     let mut output = Image::from_size_val(new_size, 0.0)?;
 
     // create a grid of x and y coordinates for the output image
+    // TODO: make this re-useable
     let x = ndarray::Array::range(0.0, new_size.width as f32, 1.0).insert_axis(ndarray::Axis(0));
     let y = ndarray::Array::range(0.0, new_size.height as f32, 1.0).insert_axis(ndarray::Axis(0));
 
@@ -72,7 +73,7 @@ pub fn warp_affine<const CHANNELS: usize>(
 
             // compute the pixel values for each channel
             let pixels = (0..src.num_channels())
-                .map(|k| interpolate(&src.data, u_src, v_src, k, interpolation));
+                .map(|k| interpolate_pixel(&src.data, u_src, v_src, k, interpolation));
 
             // write the pixel values to the output image
             for (k, pixel) in pixels.enumerate() {
