@@ -39,6 +39,29 @@ pub fn meshgrid(x: &Array2<f32>, y: &Array2<f32>) -> (Array2<f32>, Array2<f32>) 
     (xx, yy)
 }
 
+trait ImageDtype {
+    fn to_f32(&self) -> f32;
+    fn from_f32(x: f32) -> Self;
+}
+
+impl ImageDtype for f32 {
+    fn to_f32(&self) -> f32 {
+        *self
+    }
+    fn from_f32(x: f32) -> Self {
+        x
+    }
+}
+
+impl ImageDtype for u8 {
+    fn to_f32(&self) -> f32 {
+        *self as f32
+    }
+    fn from_f32(x: f32) -> Self {
+        x.clamp(0.0, 255.0) as u8
+    }
+}
+
 /// Kernel for bilinear interpolation
 ///
 /// # Arguments
@@ -52,26 +75,26 @@ pub fn meshgrid(x: &Array2<f32>, y: &Array2<f32>) -> (Array2<f32>, Array2<f32>) 
 ///
 /// The interpolated pixel value.
 // TODO: add support for other data types. Maybe use a trait? or template?
-fn bilinear_interpolation(image: &Array3<f32>, u: f32, v: f32, c: usize) -> f32 {
+fn bilinear_interpolation<T: ImageDtype>(image: &Array3<T>, u: f32, v: f32, c: usize) -> T {
     let (height, width, _) = image.dim();
     let iu = u.trunc() as usize;
     let iv = v.trunc() as usize;
 
     let frac_u = u.fract();
     let frac_v = v.fract();
-    let val00 = image[[iv, iu, c]];
+    let val00 = image[[iv, iu, c]].to_f32();
     let val01 = if iu + 1 < width {
-        image[[iv, iu + 1, c]]
+        image[[iv, iu + 1, c]].to_f32()
     } else {
         val00
     };
     let val10 = if iv + 1 < height {
-        image[[iv + 1, iu, c]]
+        image[[iv + 1, iu, c]].to_f32()
     } else {
         val00
     };
     let val11 = if iu + 1 < width && iv + 1 < height {
-        image[[iv + 1, iu + 1, c]]
+        image[[iv + 1, iu + 1, c]].to_f32()
     } else {
         val00
     };
@@ -79,10 +102,12 @@ fn bilinear_interpolation(image: &Array3<f32>, u: f32, v: f32, c: usize) -> f32 
     let frac_uu = 1. - frac_u;
     let frac_vv = 1. - frac_v;
 
-    val00 * frac_uu * frac_vv
-        + val01 * frac_u * frac_vv
-        + val10 * frac_uu * frac_v
-        + val11 * frac_u * frac_v
+    T::from_f32(
+        val00 * frac_uu * frac_vv
+            + val01 * frac_u * frac_vv
+            + val10 * frac_uu * frac_v
+            + val11 * frac_u * frac_v,
+    )
 }
 
 /// Kernel for nearest neighbor interpolation
@@ -97,7 +122,7 @@ fn bilinear_interpolation(image: &Array3<f32>, u: f32, v: f32, c: usize) -> f32 
 /// # Returns
 ///
 /// The interpolated pixel value.
-fn nearest_neighbor_interpolation(image: &Array3<f32>, u: f32, v: f32, c: usize) -> f32 {
+fn nearest_neighbor_interpolation<T: Copy>(image: &Array3<T>, u: f32, v: f32, c: usize) -> T {
     let (height, width, _) = image.dim();
 
     let iu = u.round() as usize;
