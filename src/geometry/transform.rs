@@ -167,7 +167,7 @@ mod tests {
         .unwrap();
         let image_transformed = super::warp_affine(
             &image,
-            (0.0, -1.0, 0.5, 1.0, 0.0, 0.5),
+            (0.0, 1.0, 0.5, -1.0, 0.0, 0.5),
             ImageSize {
                 width: 2,
                 height: 2,
