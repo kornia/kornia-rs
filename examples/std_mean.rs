@@ -3,7 +3,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::Result;
 use clap::Parser;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -19,7 +18,7 @@ struct Args {
     num_threads: usize,
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     rayon::ThreadPoolBuilder::new()
@@ -79,14 +78,14 @@ fn main() -> Result<()> {
 
             total_std
                 .lock()
-                .unwrap()
+                .expect("Failed to lock total std")
                 .iter_mut()
                 .zip(std.iter())
                 .for_each(|(t, s)| *t += s);
 
             total_mean
                 .lock()
-                .unwrap()
+                .expect("Failed to lock total mean")
                 .iter_mut()
                 .zip(mean.iter())
                 .for_each(|(t, m)| *t += m);
@@ -95,13 +94,13 @@ fn main() -> Result<()> {
     // average the measurements
     let total_std = total_std
         .lock()
-        .unwrap()
+        .expect("Failed to lock total std")
         .iter()
         .map(|&s| s / num_samples)
         .collect::<Vec<_>>();
     let total_mean = total_mean
         .lock()
-        .unwrap()
+        .expect("Failed to lock total mean")
         .iter()
         .map(|&m| m / num_samples)
         .collect::<Vec<_>>();

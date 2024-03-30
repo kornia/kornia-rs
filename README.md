@@ -55,15 +55,29 @@ Goodbyte!
 
 - Convert images to grayscale, resize, crop, rotate, flip, pad, normalize, denormalize, and other image processing operations.
 
+### Video processing
+
+- Capture video frames from a camera.
+
 ## 🛠️ Installation
 
 ### >_ System dependencies
 
-You need to install the following dependencies in your system:
+Dependeing on the features you want to use, you might need to install the following dependencies in your system:
+
+#### turbojpeg
 
 ```bash
 sudo apt-get install nasm
 ```
+
+#### gstreamer
+
+```bash
+sudo apt-get install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+```
+
+** Check the gstreamr installation guide: <https://docs.rs/gstreamer/latest/gstreamer/#installation>
 
 ### 🦀 Rust
 
@@ -71,7 +85,7 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-kornia-rs = "0.1.0"
+kornia-rs = { version = "0.1.2", features = ["gstreamer"] }
 ```
 
 Alternatively, you can use the `cargo` command to add the dependency:
@@ -129,6 +143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
 ![Screenshot from 2024-03-09 14-31-41](https://github.com/kornia/kornia-rs/assets/5157099/afdc11e6-eb36-4fcc-a6a1-e2240318958d)
 
 ## Python usage
@@ -244,4 +259,4 @@ make test-python
 
 ## 💜 Contributing
 
-This is a child project of [Kornia](https://github.com/kornia/kornia). Join the community to get in touch with us, or just sponsor the project: https://opencollective.com/kornia
+This is a child project of [Kornia](https://github.com/kornia/kornia). Join the community to get in touch with us, or just sponsor the project: <https://opencollective.com/kornia>

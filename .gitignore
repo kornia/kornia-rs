@@ -2,3 +2,4 @@
 **venv/
 target/
 docker/
+examples/*/Cargo.lock
