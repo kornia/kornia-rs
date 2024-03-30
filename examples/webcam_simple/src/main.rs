@@ -8,14 +8,10 @@ use kornia_rs::{image::ImageSize, io::webcam::WebcamCaptureBuilder};
 struct Args {
     #[arg(short, long, default_value = "0")]
     camera_id: usize,
-
-    #[arg(short, long)]
-    duration: Option<u64>,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    //async fn main() -> Result<()> {
     let args = Args::parse();
 
     // start the recording stream
@@ -46,13 +42,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 kornia_rs::resize::InterpolationMode::Bilinear,
             )?;
 
-            // convert the image to f32 and normalize before processing
-            let img = img.cast_and_scale::<f32>(1. / 255.)?;
-
-            // convert the image to grayscale and binarize
-            let gray = kornia_rs::color::gray_from_rgb(&img)?;
-            let bin = kornia_rs::threshold::threshold_binary(&gray, 0.5, 1.0)?;
-
             // update the fps counter
             fps_counter
                 .lock()
@@ -60,13 +49,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .new_frame();
 
             // log the image
-            rec.log("binary", &rerun::Image::try_from(bin.data)?)?;
+            rec.log("image", &rerun::Image::try_from(img.data)?)?;
 
             Ok(())
         })
         .await?;
-
-    println!("Finished recording");
 
     // TODO: close rerun::RecordingStream
     // rec.close()?;

@@ -22,7 +22,6 @@ pub enum CancelledError {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    //async fn main() -> Result<()> {
     let args = Args::parse();
 
     // start the recording stream
@@ -62,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     // convert the image to grayscale and binarize
                     let gray = kornia_rs::color::gray_from_rgb(&img)?;
-                    let bin = kornia_rs::threshold::threshold_binary(&gray, 0.5, 1.0)?;
+                    let bin = kornia_rs::threshold::threshold_binary(&gray, 0.35, 0.65)?;
 
                     // update the fps counter
                     fps_counter
@@ -71,6 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .new_frame();
 
                     // log the image
+                    rec.log("image", &rerun::Image::try_from(img.data)?)?;
                     rec.log("binary", &rerun::Image::try_from(bin.data)?)?;
 
                     Ok(())
