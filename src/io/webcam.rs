@@ -87,7 +87,6 @@ impl Default for WebcamCaptureBuilder {
 pub struct WebcamCapture {
     pipeline: gst::Pipeline,
     receiver: tokio::sync::mpsc::Receiver<Image<u8, 3>>,
-    //handle: Vec<std::thread::JoinHandle<()>>,
     handle: Vec<tokio::task::JoinHandle<()>>,
 }
 
