@@ -63,10 +63,11 @@ impl Default for WebcamCaptureBuilder {
 /// ```no_run
 /// use kornia_rs::{image::ImageSize, io::webcam::WebcamCaptureBuilder};
 ///
-/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///   // create a webcam capture object with camera id 0
 ///   // and force the image size to 640x480
-///   let webcam = WebcamCaptureBuilder::new()
+///   let mut webcam = WebcamCaptureBuilder::new()
 ///     .camera_id(0)
 ///     .with_size(ImageSize {
 ///       width: 640,
@@ -77,7 +78,8 @@ impl Default for WebcamCaptureBuilder {
 ///   // start grabbing frames from the camera
 ///   webcam.run(|img| {
 ///     println!("Image: {:?}", img.size());
-///   })?;
+///     Ok(())
+///   }).await?;
 ///
 ///   Ok(())
 /// }

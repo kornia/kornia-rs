@@ -11,8 +11,8 @@ license-file = "LICENSE"
 [dependencies]
 anyhow = "1.0.80"
 fast_image_resize = "3.0.4"
-gst = { version = "0.22.2", package = "gstreamer" }
-gst-app = { version = "0.22.0", package = "gstreamer-app" }
+gst = { version = "0.22.2", package = "gstreamer", optional = true }
+gst-app = { version = "0.22.0", package = "gstreamer-app", optional = true }
 image = { version = "0.25.0" }
 memmap2 = "0.9.4"
 ndarray = { version = "0.15.6", features = ["rayon"] }
@@ -39,6 +39,7 @@ walkdir = "2.5.0"
 
 [features]
 candle = ["candle-core"]
+gstreamer = ["gst", "gst-app"]
 
 [[bench]]
 name = "bench_color"
