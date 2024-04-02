@@ -71,6 +71,7 @@ impl ImageDtype for u8 {
 // TODO: add support for other data types. Maybe use a trait? or template?
 fn bilinear_interpolation<T: ImageDtype>(image: &Array3<T>, u: f32, v: f32, c: usize) -> T {
     let (height, width, _) = image.dim();
+
     let iu = u.trunc() as usize;
     let iv = v.trunc() as usize;
 
@@ -133,6 +134,19 @@ fn nearest_neighbor_interpolation<T: ImageDtype>(image: &Array3<T>, u: f32, v: f
 pub enum InterpolationMode {
     Bilinear,
     Nearest,
+}
+
+pub(crate) fn interpolate_pixel<T: ImageDtype>(
+    image: &Array3<T>,
+    u: f32,
+    v: f32,
+    c: usize,
+    interpolation: InterpolationMode,
+) -> T {
+    match interpolation {
+        InterpolationMode::Bilinear => bilinear_interpolation(image, u, v, c),
+        InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v, c),
+    }
 }
 
 /// Resize an image to a new size.
@@ -206,10 +220,8 @@ pub fn resize_native<T: ImageDtype, const CHANNELS: usize>(
             let (u, v) = (uv[0], uv[1]);
 
             // compute the pixel values for each channel
-            let pixels = (0..image.num_channels()).map(|k| match interpolation {
-                InterpolationMode::Bilinear => bilinear_interpolation(&image.data, u, v, k),
-                InterpolationMode::Nearest => nearest_neighbor_interpolation(&image.data, u, v, k),
-            });
+            let pixels = (0..image.num_channels())
+                .map(|k| interpolate_pixel(&image.data, u, v, k, interpolation));
 
             // write the pixel values to the output image
             for (k, pixel) in pixels.enumerate() {
