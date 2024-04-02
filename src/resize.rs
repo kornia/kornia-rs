@@ -302,9 +302,10 @@ pub fn resize_fast(
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Result;
 
     #[test]
-    fn resize_smoke_ch3() {
+    fn resize_smoke_ch3() -> Result<()> {
         use crate::image::{Image, ImageSize};
         let image = Image::<_, 3>::new(
             ImageSize {
@@ -312,8 +313,7 @@ mod tests {
                 height: 5,
             },
             vec![0f32; 4 * 5 * 3],
-        )
-        .unwrap();
+        )?;
         let image_resized = super::resize_native(
             &image,
             ImageSize {
@@ -321,24 +321,24 @@ mod tests {
                 height: 3,
             },
             super::InterpolationMode::Bilinear,
-        )
-        .unwrap();
+        )?;
+
         assert_eq!(image_resized.num_channels(), 3);
         assert_eq!(image_resized.size().width, 2);
         assert_eq!(image_resized.size().height, 3);
+        Ok(())
     }
 
     #[test]
-    fn resize_smoke_ch1() {
+    fn resize_smoke_ch1() -> Result<()> {
         use crate::image::{Image, ImageSize};
         let image = Image::<_, 1>::new(
             ImageSize {
                 width: 4,
                 height: 5,
             },
-            vec![0f32; 4 * 5],
-        )
-        .unwrap();
+            vec![0; 4 * 5],
+        )?;
         let image_resized = super::resize_native(
             &image,
             ImageSize {
@@ -346,11 +346,11 @@ mod tests {
                 height: 3,
             },
             super::InterpolationMode::Nearest,
-        )
-        .unwrap();
+        )?;
         assert_eq!(image_resized.num_channels(), 1);
         assert_eq!(image_resized.size().width, 2);
         assert_eq!(image_resized.size().height, 3);
+        Ok(())
     }
 
     #[test]
@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn resize_fast() {
+    fn resize_fast() -> Result<()> {
         use crate::image::{Image, ImageSize};
         let image = Image::<_, 3>::new(
             ImageSize {
@@ -375,8 +375,7 @@ mod tests {
                 height: 5,
             },
             vec![0u8; 4 * 5 * 3],
-        )
-        .unwrap();
+        )?;
         let image_resized = super::resize_fast(
             &image,
             ImageSize {
@@ -384,10 +383,10 @@ mod tests {
                 height: 3,
             },
             super::InterpolationMode::Nearest,
-        )
-        .unwrap();
+        )?;
         assert_eq!(image_resized.num_channels(), 3);
         assert_eq!(image_resized.size().width, 2);
         assert_eq!(image_resized.size().height, 3);
+        Ok(())
     }
 }
