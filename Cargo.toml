@@ -52,3 +52,7 @@ harness = false
 [[bench]]
 name = "bench_io"
 harness = false
+
+[[bench]]
+name = "bench_warp"
+harness = false
