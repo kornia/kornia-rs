@@ -1,7 +1,6 @@
 from pathlib import Path
 import kornia_rs as K
 
-import torch
 import numpy as np
 
 # TODO: inject this from elsewhere
@@ -18,5 +17,7 @@ def test_warp_affine():
 
     affine_matrix = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
 
-    img_transformed: np.ndarray = K.warp_affine(img, affine_matrix, img.shape[:2], "bilinear")
+    img_transformed: np.ndarray = K.warp_affine(
+        img, affine_matrix, img.shape[:2], "bilinear"
+    )
     assert (img_transformed == img).all()
