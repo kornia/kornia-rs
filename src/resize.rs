@@ -269,19 +269,31 @@ pub fn resize_fast(
     new_size: ImageSize,
     interpolation: InterpolationMode,
 ) -> Result<Image<u8, 3>> {
-    let src_width = NonZeroU32::new(image.width() as u32).unwrap();
-    let src_height = NonZeroU32::new(image.height() as u32).unwrap();
+    let src_width = NonZeroU32::new(image.width() as u32).ok_or(anyhow::anyhow!(
+        "The width of the input image must be greater than zero."
+    ))?;
+    let src_height = NonZeroU32::new(image.height() as u32).ok_or(anyhow::anyhow!(
+        "The height of the input image must be greater than zero."
+    ))?;
 
-    // TODO: pass as slice
+    // get the image data as a contiguous slice
+    let image_data = image.data.as_slice().ok_or(anyhow::anyhow!(
+        "The image data must be contiguous and not empty."
+    ))?;
+
     let src_image = fr::Image::from_vec_u8(
         src_width,
         src_height,
-        image.data.as_slice().unwrap().to_vec(),
+        image_data.to_vec(),
         fr::PixelType::U8x3,
     )?;
 
-    let dst_width = NonZeroU32::new(new_size.width as u32).unwrap();
-    let dst_height = NonZeroU32::new(new_size.height as u32).unwrap();
+    let dst_width = NonZeroU32::new(new_size.width as u32).ok_or(anyhow::anyhow!(
+        "The width of the output image must be greater than zero."
+    ))?;
+    let dst_height = NonZeroU32::new(new_size.height as u32).ok_or(anyhow::anyhow!(
+        "The height of the output image must be greater than zero."
+    ))?;
 
     let mut dst_image = fr::Image::new(dst_width, dst_height, src_image.pixel_type());
     let mut dst_view = dst_image.view_mut();
