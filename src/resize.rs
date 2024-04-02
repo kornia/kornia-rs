@@ -39,6 +39,23 @@ pub fn meshgrid(x: &Array2<f32>, y: &Array2<f32>) -> (Array2<f32>, Array2<f32>) 
     (xx, yy)
 }
 
+// Send and Sync is required for ndarray::Zip::par_for_each
+pub trait ImageDtype: Copy + Default + Into<f32> + Send + Sync {
+    fn from_f32(x: f32) -> Self;
+}
+
+impl ImageDtype for f32 {
+    fn from_f32(x: f32) -> Self {
+        x
+    }
+}
+
+impl ImageDtype for u8 {
+    fn from_f32(x: f32) -> Self {
+        x.round().clamp(0.0, 255.0) as u8
+    }
+}
+
 /// Kernel for bilinear interpolation
 ///
 /// # Arguments
@@ -52,26 +69,26 @@ pub fn meshgrid(x: &Array2<f32>, y: &Array2<f32>) -> (Array2<f32>, Array2<f32>) 
 ///
 /// The interpolated pixel value.
 // TODO: add support for other data types. Maybe use a trait? or template?
-fn bilinear_interpolation(image: &Array3<f32>, u: f32, v: f32, c: usize) -> f32 {
+fn bilinear_interpolation<T: ImageDtype>(image: &Array3<T>, u: f32, v: f32, c: usize) -> T {
     let (height, width, _) = image.dim();
     let iu = u.trunc() as usize;
     let iv = v.trunc() as usize;
 
     let frac_u = u.fract();
     let frac_v = v.fract();
-    let val00 = image[[iv, iu, c]];
-    let val01 = if iu + 1 < width {
-        image[[iv, iu + 1, c]]
+    let val00: f32 = image[[iv, iu, c]].into();
+    let val01: f32 = if iu + 1 < width {
+        image[[iv, iu + 1, c]].into()
     } else {
         val00
     };
-    let val10 = if iv + 1 < height {
-        image[[iv + 1, iu, c]]
+    let val10: f32 = if iv + 1 < height {
+        image[[iv + 1, iu, c]].into()
     } else {
         val00
     };
-    let val11 = if iu + 1 < width && iv + 1 < height {
-        image[[iv + 1, iu + 1, c]]
+    let val11: f32 = if iu + 1 < width && iv + 1 < height {
+        image[[iv + 1, iu + 1, c]].into()
     } else {
         val00
     };
@@ -79,10 +96,12 @@ fn bilinear_interpolation(image: &Array3<f32>, u: f32, v: f32, c: usize) -> f32 
     let frac_uu = 1. - frac_u;
     let frac_vv = 1. - frac_v;
 
-    val00 * frac_uu * frac_vv
-        + val01 * frac_u * frac_vv
-        + val10 * frac_uu * frac_v
-        + val11 * frac_u * frac_v
+    T::from_f32(
+        val00 * frac_uu * frac_vv
+            + val01 * frac_u * frac_vv
+            + val10 * frac_uu * frac_v
+            + val11 * frac_u * frac_v,
+    )
 }
 
 /// Kernel for nearest neighbor interpolation
@@ -97,7 +116,7 @@ fn bilinear_interpolation(image: &Array3<f32>, u: f32, v: f32, c: usize) -> f32 
 /// # Returns
 ///
 /// The interpolated pixel value.
-fn nearest_neighbor_interpolation(image: &Array3<f32>, u: f32, v: f32, c: usize) -> f32 {
+fn nearest_neighbor_interpolation<T: ImageDtype>(image: &Array3<T>, u: f32, v: f32, c: usize) -> T {
     let (height, width, _) = image.dim();
 
     let iu = u.round() as usize;
@@ -156,13 +175,13 @@ pub enum InterpolationMode {
 /// assert_eq!(image_resized.size().width, 2);
 /// assert_eq!(image_resized.size().height, 3);
 /// ```
-pub fn resize_native<const CHANNELS: usize>(
-    image: &Image<f32, CHANNELS>,
+pub fn resize_native<T: ImageDtype, const CHANNELS: usize>(
+    image: &Image<T, CHANNELS>,
     new_size: ImageSize,
     interpolation: InterpolationMode,
-) -> Result<Image<f32, CHANNELS>> {
+) -> Result<Image<T, CHANNELS>> {
     // create the output image
-    let mut output = Image::from_size_val(new_size, 0.0)?;
+    let mut output = Image::from_size_val(new_size, T::default())?;
 
     // create a grid of x and y coordinates for the output image
     // and interpolate the values from the input image.
@@ -250,19 +269,31 @@ pub fn resize_fast(
     new_size: ImageSize,
     interpolation: InterpolationMode,
 ) -> Result<Image<u8, 3>> {
-    let src_width = NonZeroU32::new(image.width() as u32).unwrap();
-    let src_height = NonZeroU32::new(image.height() as u32).unwrap();
+    let src_width = NonZeroU32::new(image.width() as u32).ok_or(anyhow::anyhow!(
+        "The width of the input image must be greater than zero."
+    ))?;
+    let src_height = NonZeroU32::new(image.height() as u32).ok_or(anyhow::anyhow!(
+        "The height of the input image must be greater than zero."
+    ))?;
 
-    // TODO: pass as slice
+    // get the image data as a contiguous slice
+    let image_data = image.data.as_slice().ok_or(anyhow::anyhow!(
+        "The image data must be contiguous and not empty."
+    ))?;
+
     let src_image = fr::Image::from_vec_u8(
         src_width,
         src_height,
-        image.data.as_slice().unwrap().to_vec(),
+        image_data.to_vec(),
         fr::PixelType::U8x3,
     )?;
 
-    let dst_width = NonZeroU32::new(new_size.width as u32).unwrap();
-    let dst_height = NonZeroU32::new(new_size.height as u32).unwrap();
+    let dst_width = NonZeroU32::new(new_size.width as u32).ok_or(anyhow::anyhow!(
+        "The width of the output image must be greater than zero."
+    ))?;
+    let dst_height = NonZeroU32::new(new_size.height as u32).ok_or(anyhow::anyhow!(
+        "The height of the output image must be greater than zero."
+    ))?;
 
     let mut dst_image = fr::Image::new(dst_width, dst_height, src_image.pixel_type());
     let mut dst_view = dst_image.view_mut();
@@ -283,9 +314,10 @@ pub fn resize_fast(
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Result;
 
     #[test]
-    fn resize_smoke_ch3() {
+    fn resize_smoke_ch3() -> Result<()> {
         use crate::image::{Image, ImageSize};
         let image = Image::<_, 3>::new(
             ImageSize {
@@ -293,8 +325,7 @@ mod tests {
                 height: 5,
             },
             vec![0f32; 4 * 5 * 3],
-        )
-        .unwrap();
+        )?;
         let image_resized = super::resize_native(
             &image,
             ImageSize {
@@ -302,24 +333,24 @@ mod tests {
                 height: 3,
             },
             super::InterpolationMode::Bilinear,
-        )
-        .unwrap();
+        )?;
+
         assert_eq!(image_resized.num_channels(), 3);
         assert_eq!(image_resized.size().width, 2);
         assert_eq!(image_resized.size().height, 3);
+        Ok(())
     }
 
     #[test]
-    fn resize_smoke_ch1() {
+    fn resize_smoke_ch1() -> Result<()> {
         use crate::image::{Image, ImageSize};
         let image = Image::<_, 1>::new(
             ImageSize {
                 width: 4,
                 height: 5,
             },
-            vec![0f32; 4 * 5],
-        )
-        .unwrap();
+            vec![0; 4 * 5],
+        )?;
         let image_resized = super::resize_native(
             &image,
             ImageSize {
@@ -327,11 +358,11 @@ mod tests {
                 height: 3,
             },
             super::InterpolationMode::Nearest,
-        )
-        .unwrap();
+        )?;
         assert_eq!(image_resized.num_channels(), 1);
         assert_eq!(image_resized.size().width, 2);
         assert_eq!(image_resized.size().height, 3);
+        Ok(())
     }
 
     #[test]
@@ -348,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn resize_fast() {
+    fn resize_fast() -> Result<()> {
         use crate::image::{Image, ImageSize};
         let image = Image::<_, 3>::new(
             ImageSize {
@@ -356,8 +387,7 @@ mod tests {
                 height: 5,
             },
             vec![0u8; 4 * 5 * 3],
-        )
-        .unwrap();
+        )?;
         let image_resized = super::resize_fast(
             &image,
             ImageSize {
@@ -365,10 +395,10 @@ mod tests {
                 height: 3,
             },
             super::InterpolationMode::Nearest,
-        )
-        .unwrap();
+        )?;
         assert_eq!(image_resized.num_channels(), 3);
         assert_eq!(image_resized.size().width, 2);
         assert_eq!(image_resized.size().height, 3);
+        Ok(())
     }
 }
