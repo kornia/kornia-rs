@@ -136,13 +136,13 @@ pub enum InterpolationMode {
     Nearest,
 }
 
-pub(crate) fn interpolate_pixel(
-    image: &Array3<f32>,
+pub(crate) fn interpolate_pixel<T: ImageDtype>(
+    image: &Array3<T>,
     u: f32,
     v: f32,
     c: usize,
     interpolation: InterpolationMode,
-) -> f32 {
+) -> T {
     match interpolation {
         InterpolationMode::Bilinear => bilinear_interpolation(image, u, v, c),
         InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v, c),
