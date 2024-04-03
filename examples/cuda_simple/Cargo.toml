@@ -1,0 +1,15 @@
+
+[package]
+name = "cuda_simple"
+version = "0.1.0"
+authors = ["Edgar Riba <edgar.riba@gmail.com>"]
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+anyhow = "1.0.81"
+clap = { version = "4.5.4", features = ["derive"] }
+kornia-rs = { path = "../../"}
+rerun = "0.14.1"
+cudarc = "0.10.0"
