@@ -1,5 +1,7 @@
 pub mod color;
 pub mod core;
+#[cfg(feature = "cuda")]
+pub mod cuda;
 // NOTE: not ready yet
 // pub mod distance_transform;
 pub mod flip;

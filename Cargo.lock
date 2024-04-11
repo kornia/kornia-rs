@@ -1404,6 +1404,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "cudarc"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9395df0cab995685664e79cc35ad6302bf08fb9c5d82301875a183affe1278b1"
+
+[[package]]
 name = "cursor-icon"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3171,6 +3177,7 @@ dependencies = [
  "candle-core",
  "clap",
  "criterion",
+ "cudarc",
  "fast_image_resize",
  "gstreamer",
  "gstreamer-app",

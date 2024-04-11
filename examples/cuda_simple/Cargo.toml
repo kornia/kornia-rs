@@ -10,6 +10,6 @@ publish = false
 [dependencies]
 anyhow = "1.0.81"
 clap = { version = "4.5.4", features = ["derive"] }
-kornia-rs = { path = "../../"}
+kornia-rs = { path = "../../", features = ["cuda"] }
 rerun = "0.14.1"
 cudarc = "0.10.0"
