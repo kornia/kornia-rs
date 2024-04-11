@@ -31,7 +31,6 @@ tempfile = "3.9.0"
 rayon = "1.10.0"
 rerun = "0.14.1"
 walkdir = "2.5.0"
-packed_simd = "0.3.9"
 
 
 [features]
