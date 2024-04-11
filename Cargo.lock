@@ -3179,7 +3179,6 @@ dependencies = [
  "memmap2",
  "ndarray",
  "num-traits",
- "packed_simd",
  "rayon",
  "rerun",
  "tempfile",
@@ -3912,16 +3911,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4586edfe4c648c71797a74c84bacb32b52b212eff5dfe2bb9f2c599844023e7"
 dependencies = [
  "ttf-parser",
-]
-
-[[package]]
-name = "packed_simd"
-version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f9f08af0c877571712e2e3e686ad79efad9657dbf0f7c3c8ba943ff6c38932d"
-dependencies = [
- "cfg-if",
- "num-traits",
 ]
 
 [[package]]
