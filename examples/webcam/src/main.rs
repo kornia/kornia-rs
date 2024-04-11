@@ -10,6 +10,9 @@ struct Args {
     #[arg(short, long, default_value = "0")]
     camera_id: usize,
 
+    #[arg(short, long, default_value = "30")]
+    fps: u32,
+
     #[arg(short, long)]
     duration: Option<u64>,
 }
@@ -31,6 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // and force the image size to 640x480
     let mut webcam = WebcamCaptureBuilder::new()
         .camera_id(args.camera_id)
+        .with_fps(args.fps)
         .with_size(ImageSize {
             width: 640,
             height: 480,
@@ -42,6 +46,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let child_token = cancel_token.child_token();
 
     let fps_counter = Arc::new(Mutex::new(FpsCounter::new()));
+
+    ctrlc::set_handler({
+        let cancel_token = cancel_token.clone();
+        move || {
+            println!("Received Ctrl-C signal. Sending cancel signal !!");
+            cancel_token.cancel();
+        }
+    })?;
 
     let join_handle = tokio::spawn(async move {
         tokio::select! {
@@ -77,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }) => { Ok(()) }
             _ = child_token.cancelled() => {
                 println!("Received cancel signal. Closing webcam.");
-                webcam.close().await.expect("Failed to close webcam");
+                std::mem::drop(webcam);
                 Err(CancelledError::Cancelled)
             }
         }

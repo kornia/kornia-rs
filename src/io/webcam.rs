@@ -6,6 +6,7 @@ use gst::prelude::*;
 pub struct WebcamCaptureBuilder {
     camera_id: usize,
     size: Option<ImageSize>,
+    fps: u32,
 }
 
 impl WebcamCaptureBuilder {
@@ -20,6 +21,7 @@ impl WebcamCaptureBuilder {
         Self {
             camera_id: 0,
             size: None,
+            fps: 30,
         }
     }
 
@@ -43,9 +45,19 @@ impl WebcamCaptureBuilder {
         self
     }
 
+    /// Sets the frames per second for the WebcamCaptureBuilder.
+    ///
+    /// # Arguments
+    ///
+    /// * `fps` - The desired frames per second
+    pub fn with_fps(mut self, fps: u32) -> Self {
+        self.fps = fps;
+        self
+    }
+
     /// Create a new [`WebcamCapture`] object.
     pub fn build(self) -> Result<WebcamCapture> {
-        WebcamCapture::new(self.camera_id, self.size)
+        WebcamCapture::new(self.camera_id, self.size, self.fps)
     }
 }
 
@@ -69,6 +81,7 @@ impl Default for WebcamCaptureBuilder {
 ///   // and force the image size to 640x480
 ///   let mut webcam = WebcamCaptureBuilder::new()
 ///     .camera_id(0)
+///     .with_fps(30)
 ///     .with_size(ImageSize {
 ///       width: 640,
 ///       height: 480,
@@ -87,7 +100,7 @@ impl Default for WebcamCaptureBuilder {
 pub struct WebcamCapture {
     pipeline: gst::Pipeline,
     receiver: tokio::sync::mpsc::Receiver<Image<u8, 3>>,
-    handle: Vec<tokio::task::JoinHandle<()>>,
+    handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl WebcamCapture {
@@ -101,11 +114,11 @@ impl WebcamCapture {
     /// # Returns
     ///
     /// A WebcamCapture object
-    fn new(camera_id: usize, size: Option<ImageSize>) -> Result<Self> {
+    fn new(camera_id: usize, size: Option<ImageSize>, fps: u32) -> Result<Self> {
         gst::init()?;
 
         // create a pipeline specified by the camera id and size
-        let pipeline_str = Self::gst_pipeline_string(camera_id, size);
+        let pipeline_str = Self::gst_pipeline_string(camera_id, size, fps);
         let pipeline = gst::parse::launch(&pipeline_str)?
             .downcast::<gst::Pipeline>()
             .map_err(|_| anyhow::anyhow!("Failed to downcast pipeline"))?;
@@ -136,7 +149,7 @@ impl WebcamCapture {
         Ok(Self {
             pipeline,
             receiver: rx,
-            handle: vec![],
+            handle: None,
         })
     }
 
@@ -158,8 +171,7 @@ impl WebcamCapture {
             .ok_or_else(|| anyhow::anyhow!("Failed to get bus"))?;
 
         // start a thread to handle the messages from the bus
-        //let handle = std::thread::spawn(move || {
-        let handle = tokio::task::spawn(async move {
+        let handle = std::thread::spawn(move || {
             for msg in bus.iter_timed(gst::ClockTime::NONE) {
                 use gst::MessageView;
                 match msg.view() {
@@ -177,7 +189,7 @@ impl WebcamCapture {
                 }
             }
         });
-        self.handle.push(handle);
+        self.handle = Some(handle);
 
         // start grabbing frames from the camera
         while let Some(img) = self.receiver.recv().await {
@@ -187,11 +199,10 @@ impl WebcamCapture {
         Ok(())
     }
 
-    pub async fn close(&mut self) -> Result<()> {
+    /// Closes the webcam capture object
+    pub fn close(&mut self) -> Result<()> {
         self.pipeline.send_event(gst::event::Eos::new());
-        while let Some(h) = self.handle.pop() {
-            h.await?;
-        }
+        self.handle.take().map(|h| h.join());
         self.pipeline.set_state(gst::State::Null)?;
         Ok(())
     }
@@ -201,24 +212,22 @@ impl WebcamCapture {
     /// # Arguments
     ///
     /// * `camera_id` - The camera id
-    /// * `size` - The image size
+    /// * `size` - The image size to capture
+    /// * `fps` - The desired frames per second
     ///
     /// # Returns
     ///
     /// A GStreamer pipeline string
-    fn gst_pipeline_string(camera_id: usize, size: Option<ImageSize>) -> String {
+    fn gst_pipeline_string(camera_id: usize, size: Option<ImageSize>, fps: u32) -> String {
         let video_resize = if let Some(size) = size {
-            format!(
-                " ! video/x-raw,width={},height={},framerate=30/1",
-                size.width, size.height
-            )
+            format!("! video/x-raw,width={},height={} ", size.width, size.height)
         } else {
             "".to_string()
         };
 
         format!(
-            "v4l2src device=/dev/video{} {}! videoconvert ! videoscale ! video/x-raw,format=RGB ! appsink name=sink",
-            camera_id, video_resize
+            "v4l2src device=/dev/video{} {}! videorate ! video/x-raw,framerate={}/1 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
+            camera_id, video_resize, fps
         )
     }
 
@@ -247,5 +256,11 @@ impl WebcamCapture {
             .ok_or_else(|| anyhow::anyhow!("Failed to get buffer from sample"))?;
         let map = buffer.map_readable()?;
         Image::<u8, 3>::new(ImageSize { width, height }, map.as_slice().to_vec())
+    }
+}
+
+impl Drop for WebcamCapture {
+    fn drop(&mut self) {
+        self.close().expect("Failed to close webcam");
     }
 }
