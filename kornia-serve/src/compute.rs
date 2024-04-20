@@ -7,14 +7,20 @@ use rayon::prelude::*;
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 
+// Query parameters for the mean and std computation
 #[derive(Debug, Deserialize)]
 pub struct MeanStdQuery {
+    // The directory containing the images
     images_dir: String,
+    // The number of threads to use
     num_threads: Option<usize>,
 }
 
 pub async fn compute_mean_std(query: Query<MeanStdQuery>) -> impl IntoResponse {
+    // Set the number of threads to use, default to 1
     let num_threads = query.num_threads.unwrap_or(1);
+
+    // Create a local thread pool
     rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
         .build()
@@ -36,13 +42,13 @@ pub async fn compute_mean_std(query: Query<MeanStdQuery>) -> impl IntoResponse {
         .collect::<Vec<_>>();
 
     if images_paths.is_empty() {
-        println!("No images found in the directory");
+        log::debug!("No images found in the directory");
         return Json(serde_json::json!({
             "error": "No images found in the directory"
         }));
     }
 
-    println!(
+    log::debug!(
         "🚀 Found {} images. Starting to compute the std and mean !!!",
         images_paths.len()
     );
@@ -104,8 +110,8 @@ pub async fn compute_mean_std(query: Query<MeanStdQuery>) -> impl IntoResponse {
         .map(|&m| m / num_samples)
         .collect::<Vec<_>>();
 
-    println!("🔥Total std: {:?}", total_std);
-    println!("🔥Total mean: {:?}", total_mean);
+    log::debug!("🔥Total std: {:?}", total_std);
+    log::debug!("🔥Total mean: {:?}", total_mean);
 
     Json(serde_json::json!({
         "mean": total_mean,
