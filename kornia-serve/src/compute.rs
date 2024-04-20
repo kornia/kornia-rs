@@ -17,7 +17,7 @@ pub async fn compute_mean_std(query: Query<MeanStdQuery>) -> impl IntoResponse {
     let num_threads = query.num_threads.unwrap_or(1);
     rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
-        .build_global()
+        .build()
         .expect("Failed to build thread pool");
 
     // Walk through the images directory and collect the paths of the images
