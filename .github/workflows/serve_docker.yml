@@ -26,3 +26,4 @@ jobs:
         file: ./kornia-serve/Dockerfile
         push: false
         tags: kornia/serve:latest
+        target: builder
