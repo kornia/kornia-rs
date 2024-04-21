@@ -1,7 +1,4 @@
-use axum::{
-    extract::Query,
-    response::{IntoResponse, Json},
-};
+use axum::response::{IntoResponse, Json};
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -16,9 +13,9 @@ pub struct MeanStdQuery {
     num_threads: Option<usize>,
 }
 
-pub async fn compute_mean_std(query: Query<MeanStdQuery>) -> impl IntoResponse {
-    // Set the number of threads to use, default to 1
-    let num_threads = query.num_threads.unwrap_or(1);
+pub async fn compute_mean_std(query: Json<MeanStdQuery>) -> impl IntoResponse {
+    // Set the number of threads to use, default to 4
+    let num_threads = query.num_threads.unwrap_or(4);
 
     // Create a local thread pool
     rayon::ThreadPoolBuilder::new()
