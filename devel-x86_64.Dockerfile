@@ -1,4 +1,6 @@
-FROM rust:latest
+FROM rust:1.77
+
+RUN rustup update stable
 
 RUN apt-get update --fix-missing && \
     apt-get install -y --no-install-recommends \
