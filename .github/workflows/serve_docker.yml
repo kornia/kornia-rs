@@ -17,4 +17,4 @@ jobs:
       uses: actions/checkout@v2
 
     - name: Build Docker image
-      run: docker build -t kornia-serve .
+      run: docker build -t kornia-serve -f kornia-serve/Dockerfile .
