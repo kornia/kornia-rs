@@ -1,5 +1,10 @@
 #!/bin/bash
 
+if [ "$#" -ne 1 ]; then
+    echo "Usage: $0 <mount-volume>"
+    exit 1
+fi
+
 # Get the mount volume from the first argument
 MOUNT_VOLUME=$1
 
