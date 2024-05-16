@@ -68,17 +68,17 @@ pub fn l1_loss<const CHANNELS: usize>(
 #[cfg(test)]
 mod tests {
     use crate::image::{Image, ImageSize};
+    use anyhow::Result;
 
     #[test]
-    fn test_l1_loss() {
+    fn test_l1_loss() -> Result<()> {
         let image1 = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
                 height: 3,
             },
             vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
-        )
-        .unwrap();
+        )?;
 
         let image2 = Image::<_, 1>::new(
             ImageSize {
@@ -86,10 +86,11 @@ mod tests {
                 height: 3,
             },
             vec![5f32, 4f32, 3f32, 2f32, 1f32, 0f32],
-        )
-        .unwrap();
+        )?;
 
         let l1_loss = crate::metrics::l1_loss(&image1, &image2);
         assert_eq!(l1_loss, 3.0);
+
+        Ok(())
     }
 }

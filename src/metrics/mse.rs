@@ -127,70 +127,71 @@ pub fn psnr<const CHANNELS: usize>(
 #[cfg(test)]
 mod tests {
     use crate::image::{Image, ImageSize};
+    use anyhow::Result;
 
     #[test]
-    fn test_equal() {
+    fn test_equal() -> Result<()> {
         let image1 = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
                 height: 3,
             },
             vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
-        )
-        .unwrap();
+        )?;
         let image2 = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
                 height: 3,
             },
             vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
-        )
-        .unwrap();
+        )?;
         let mse = crate::metrics::mse(&image1, &image2);
         assert_eq!(mse, 0f32);
+
+        Ok(())
     }
 
     #[test]
-    fn test_not_equal() {
+    fn test_not_equal() -> Result<()> {
         let image1 = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             vec![0f32, 1f32, 2f32, 3f32],
-        )
-        .unwrap();
+        )?;
         let image2 = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             vec![0f32, 3f32, 2f32, 3f32],
-        )
-        .unwrap();
+        )?;
         let mse = crate::metrics::mse(&image1, &image2);
         assert_eq!(mse, 1.0);
+
+        Ok(())
     }
 
     #[test]
-    fn test_psnr() {
+    fn test_psnr() -> Result<()> {
         let image1 = Image::<_, 3>::new(
             ImageSize {
                 width: 1,
                 height: 2,
             },
             vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
-        )
-        .unwrap();
+        )?;
         let image2 = Image::<_, 3>::new(
             ImageSize {
                 width: 1,
                 height: 2,
             },
             vec![1f32, 3f32, 2f32, 4f32, 5f32, 6f32],
-        )
-        .unwrap();
+        )?;
         let psnr = crate::metrics::psnr(&image1, &image2, 1.0);
         assert_eq!(psnr, 320.15698);
+
+        Ok(())
     }
 }
