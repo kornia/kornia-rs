@@ -195,9 +195,10 @@ where
 #[cfg(test)]
 mod tests {
     use crate::image::{Image, ImageSize};
+    use anyhow::Result;
 
     #[test]
-    fn normalize_mean_std() {
+    fn normalize_mean_std() -> Result<()> {
         let image_data = vec![
             0.0f32, 1.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 1.0, 2.0, 3.0,
         ];
@@ -210,12 +211,11 @@ mod tests {
                 height: 2,
             },
             image_data,
-        )
-        .unwrap();
+        )?;
         let mean = [0.5, 1.0, 0.5];
         let std = [1.0, 1.0, 1.0];
 
-        let normalized = super::normalize_mean_std(&image, &mean, &std).unwrap();
+        let normalized = super::normalize_mean_std(&image, &mean, &std)?;
 
         assert_eq!(normalized.num_channels(), 3);
         assert_eq!(normalized.size().width, 2);
@@ -228,10 +228,12 @@ mod tests {
             .for_each(|(a, b)| {
                 assert!((a - b).abs() < 1e-6);
             });
+
+        Ok(())
     }
 
     #[test]
-    fn find_min_max() {
+    fn find_min_max() -> Result<()> {
         let image_data = vec![0u8, 1, 0, 1, 2, 3, 0, 1, 0, 1, 2, 3];
         let image = Image::<u8, 3>::new(
             ImageSize {
@@ -239,17 +241,18 @@ mod tests {
                 height: 2,
             },
             image_data,
-        )
-        .unwrap();
+        )?;
 
-        let (min, max) = super::find_min_max(&image).unwrap();
+        let (min, max) = super::find_min_max(&image)?;
 
         assert_eq!(min, 0);
         assert_eq!(max, 3);
+
+        Ok(())
     }
 
     #[test]
-    fn normalize_min_max() {
+    fn normalize_min_max() -> Result<()> {
         let image_data = vec![
             0.0f32, 1.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 1.0, 2.0, 3.0,
         ];
@@ -263,10 +266,9 @@ mod tests {
                 height: 2,
             },
             image_data,
-        )
-        .unwrap();
+        )?;
 
-        let normalized = super::normalize_min_max(&image, 0.0, 1.0).unwrap();
+        let normalized = super::normalize_min_max(&image, 0.0, 1.0)?;
 
         assert_eq!(normalized.num_channels(), 3);
         assert_eq!(normalized.size().width, 2);
@@ -279,5 +281,7 @@ mod tests {
             .for_each(|(a, b)| {
                 assert!((a - b).abs() < 1e-6);
             });
+
+        Ok(())
     }
 }

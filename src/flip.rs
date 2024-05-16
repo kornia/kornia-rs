@@ -107,36 +107,42 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::image::{Image, ImageSize};
+    use anyhow::Result;
 
     #[test]
-    fn test_hflip() {
+    fn test_hflip() -> Result<()> {
         let image = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
                 height: 3,
             },
             vec![0u8, 1, 2, 3, 4, 5],
-        )
-        .unwrap();
+        )?;
         let data_expected = vec![1u8, 0, 3, 2, 5, 4];
-        let flipped = horizontal_flip(&image).unwrap();
-        assert_eq!(flipped.data.as_slice().unwrap(), &data_expected);
+        let flipped = super::horizontal_flip(&image)?;
+        assert_eq!(
+            flipped.data.as_slice().expect("could not convert to slice"),
+            &data_expected
+        );
+        Ok(())
     }
 
     #[test]
-    fn test_vflip() {
+    fn test_vflip() -> Result<()> {
         let image = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
                 height: 3,
             },
             vec![0u8, 1, 2, 3, 4, 5],
-        )
-        .unwrap();
+        )?;
         let data_expected = vec![4u8, 5, 2, 3, 0, 1];
-        let flipped = vertical_flip(&image).unwrap();
-        assert_eq!(flipped.data.as_slice().unwrap(), &data_expected);
+        let flipped = super::vertical_flip(&image)?;
+        assert_eq!(
+            flipped.data.as_slice().expect("could not convert to slice"),
+            &data_expected
+        );
+        Ok(())
     }
 }

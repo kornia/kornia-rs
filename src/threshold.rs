@@ -233,9 +233,10 @@ where
 #[cfg(test)]
 mod tests {
     use crate::image::{Image, ImageSize};
+    use anyhow::Result;
 
     #[test]
-    fn threshold_binary() {
+    fn threshold_binary() -> Result<()> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
         let data_expected = [0u8, 255, 0, 255, 255, 255];
         let image = Image::<_, 1>::new(
@@ -244,10 +245,9 @@ mod tests {
                 height: 3,
             },
             data,
-        )
-        .unwrap();
+        )?;
 
-        let thresholded = super::threshold_binary(&image, 100, 255).unwrap();
+        let thresholded = super::threshold_binary(&image, 100, 255)?;
         assert_eq!(thresholded.num_channels(), 1);
         assert_eq!(thresholded.size().width, 2);
         assert_eq!(thresholded.size().height, 3);
@@ -259,10 +259,12 @@ mod tests {
             .for_each(|(x, y)| {
                 assert_eq!(x, y);
             });
+
+        Ok(())
     }
 
     #[test]
-    fn threshold_binary_inverse() {
+    fn threshold_binary_inverse() -> Result<()> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
         let data_expected = [255u8, 0, 255, 0, 0, 0];
         let image = Image::<_, 1>::new(
@@ -271,10 +273,9 @@ mod tests {
                 height: 3,
             },
             data,
-        )
-        .unwrap();
+        )?;
 
-        let thresholded = super::threshold_binary_inverse(&image, 100, 255).unwrap();
+        let thresholded = super::threshold_binary_inverse(&image, 100, 255)?;
         assert_eq!(thresholded.num_channels(), 1);
         assert_eq!(thresholded.size().width, 2);
         assert_eq!(thresholded.size().height, 3);
@@ -286,10 +287,12 @@ mod tests {
             .for_each(|(x, y)| {
                 assert_eq!(x, y);
             });
+
+        Ok(())
     }
 
     #[test]
-    fn threshold_truncate() {
+    fn threshold_truncate() -> Result<()> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
         let data_expected = [100u8, 150, 50, 150, 150, 150];
         let image = Image::<_, 1>::new(
@@ -298,10 +301,9 @@ mod tests {
                 height: 3,
             },
             data,
-        )
-        .unwrap();
+        )?;
 
-        let thresholded = super::threshold_truncate(&image, 150).unwrap();
+        let thresholded = super::threshold_truncate(&image, 150)?;
         assert_eq!(thresholded.num_channels(), 1);
         assert_eq!(thresholded.size().width, 2);
         assert_eq!(thresholded.size().height, 3);
@@ -313,10 +315,12 @@ mod tests {
             .for_each(|(x, y)| {
                 assert_eq!(x, y);
             });
+
+        Ok(())
     }
 
     #[test]
-    fn threshold_to_zero() {
+    fn threshold_to_zero() -> Result<()> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
         let data_expected = [0u8, 200, 0, 0, 200, 250];
         let image = Image::<_, 3>::new(
@@ -325,10 +329,9 @@ mod tests {
                 height: 1,
             },
             data,
-        )
-        .unwrap();
+        )?;
 
-        let thresholded = super::threshold_to_zero(&image, 150).unwrap();
+        let thresholded = super::threshold_to_zero(&image, 150)?;
         assert_eq!(thresholded.num_channels(), 3);
         assert_eq!(thresholded.size().width, 2);
         assert_eq!(thresholded.size().height, 1);
@@ -340,10 +343,12 @@ mod tests {
             .for_each(|(x, y)| {
                 assert_eq!(x, y);
             });
+
+        Ok(())
     }
 
     #[test]
-    fn threshold_to_zero_inverse() {
+    fn threshold_to_zero_inverse() -> Result<()> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
         let data_expected = [100u8, 0, 50, 150, 0, 0];
         let image = Image::<_, 3>::new(
@@ -352,10 +357,9 @@ mod tests {
                 height: 1,
             },
             data,
-        )
-        .unwrap();
+        )?;
 
-        let thresholded = super::threshold_to_zero_inverse(&image, 150).unwrap();
+        let thresholded = super::threshold_to_zero_inverse(&image, 150)?;
         assert_eq!(thresholded.num_channels(), 3);
         assert_eq!(thresholded.size().width, 2);
         assert_eq!(thresholded.size().height, 1);
@@ -367,5 +371,7 @@ mod tests {
             .for_each(|(x, y)| {
                 assert_eq!(x, y);
             });
+
+        Ok(())
     }
 }

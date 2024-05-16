@@ -66,15 +66,17 @@ where
 #[cfg(test)]
 mod tests {
     use crate::io::functional as F;
+    use anyhow::Result;
 
     #[test]
-    fn gray_from_rgb() {
+    fn gray_from_rgb() -> Result<()> {
         let image_path = std::path::Path::new("tests/data/dog.jpeg");
-        let image = F::read_image_jpeg(image_path).unwrap();
-        let image_norm = image.cast_and_scale::<f32>(1. / 255.0).unwrap();
-        let gray = super::gray_from_rgb(&image_norm.cast::<f64>().unwrap()).unwrap();
+        let image = F::read_image_jpeg(image_path)?;
+        let image_norm = image.cast_and_scale::<f32>(1. / 255.0)?;
+        let gray = super::gray_from_rgb(&image_norm.cast::<f64>()?)?;
         assert_eq!(gray.num_channels(), 1);
         assert_eq!(gray.size().width, 258);
         assert_eq!(gray.size().height, 195);
+        Ok(())
     }
 }

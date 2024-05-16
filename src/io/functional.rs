@@ -133,6 +133,7 @@ pub fn read_image_any(file_path: &Path) -> Result<Image<u8, 3>> {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Result;
     use std::fs;
     use std::path::Path;
     use tempfile::tempdir;
@@ -140,33 +141,39 @@ mod tests {
     use crate::io::functional::{read_image_any, read_image_jpeg, write_image_jpeg};
 
     #[test]
-    fn read_jpeg() {
+    fn read_jpeg() -> Result<()> {
         let image_path = Path::new("tests/data/dog.jpeg");
-        let image = read_image_jpeg(image_path).unwrap();
+        let image = read_image_jpeg(image_path)?;
         assert_eq!(image.size().width, 258);
         assert_eq!(image.size().height, 195);
+
+        Ok(())
     }
 
     #[test]
-    fn read_any() {
+    fn read_any() -> Result<()> {
         let image_path = Path::new("tests/data/dog.jpeg");
-        let image = read_image_any(image_path).unwrap();
+        let image = read_image_any(image_path)?;
         assert_eq!(image.size().width, 258);
         assert_eq!(image.size().height, 195);
+
+        Ok(())
     }
 
     #[test]
-    fn read_write_jpeg() {
+    fn read_write_jpeg() -> Result<()> {
         let image_path_read = Path::new("tests/data/dog.jpeg");
-        let tmp_dir = tempdir().unwrap();
-        fs::create_dir_all(tmp_dir.path()).unwrap();
+        let tmp_dir = tempdir()?;
+        fs::create_dir_all(tmp_dir.path())?;
         let file_path = tmp_dir.path().join("dog.jpeg");
-        let image_data = read_image_jpeg(image_path_read).unwrap();
-        write_image_jpeg(&file_path, &image_data).unwrap();
-        let image_data_back = read_image_jpeg(&file_path).unwrap();
+        let image_data = read_image_jpeg(image_path_read)?;
+        write_image_jpeg(&file_path, &image_data)?;
+        let image_data_back = read_image_jpeg(&file_path)?;
         assert!(file_path.exists(), "File does not exist: {:?}", file_path);
         assert_eq!(image_data_back.size().width, 258);
         assert_eq!(image_data_back.size().height, 195);
         assert_eq!(image_data_back.num_channels(), 3);
+
+        Ok(())
     }
 }
