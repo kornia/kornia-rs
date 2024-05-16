@@ -35,3 +35,15 @@ impl Default for FpsCounter {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn test_fps_counter() {
+        let mut fps_counter = super::FpsCounter::new();
+        fps_counter.new_frame();
+        fps_counter.new_frame();
+        fps_counter.new_frame();
+    }
+}

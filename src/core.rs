@@ -58,7 +58,7 @@ pub fn std_mean(image: &Image<u8, 3>) -> (Vec<f64>, Vec<f64>) {
 #[cfg(test)]
 mod tests {
     use crate::image::{Image, ImageSize};
-    use anyhow::{Ok, Result};
+    use anyhow::Result;
 
     #[test]
     fn test_std_mean() -> Result<()> {

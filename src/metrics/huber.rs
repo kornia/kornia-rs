@@ -77,26 +77,27 @@ pub fn huber<const CHANNELS: usize>(
 #[cfg(test)]
 mod tests {
     use crate::image::{Image, ImageSize};
+    use anyhow::Result;
 
     #[test]
-    fn test_huber() {
+    fn test_huber() -> Result<()> {
         let image1 = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
                 height: 3,
             },
             vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
-        )
-        .unwrap();
+        )?;
         let image2 = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
                 height: 3,
             },
             vec![5f32, 4f32, 3f32, 2f32, 1f32, 0f32],
-        )
-        .unwrap();
+        )?;
         let huber = super::huber(&image1, &image2, 1.0);
         assert_eq!(huber, 2.5);
+
+        Ok(())
     }
 }
