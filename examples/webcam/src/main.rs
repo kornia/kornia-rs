@@ -82,8 +82,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .new_frame();
 
                     // log the image
-                    rec.log("image", &rerun::Image::try_from(img.data)?)?;
-                    rec.log("binary", &rerun::Image::try_from(bin.data)?)?;
+                    rec.log_static("image", &rerun::Image::try_from(img.data)?)?;
+                    rec.log_static("binary", &rerun::Image::try_from(bin.data)?)?;
 
                     Ok(())
                 }) => { Ok(()) }
