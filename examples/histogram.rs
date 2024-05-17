@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     rec.log("image", &rerun::Image::try_from(image.clone().data)?)?;
 
     // show the image and the histogram
-    rec.log_timeless(
+    rec.log_static(
         "histogram/red",
         &rerun::SeriesLine::new()
             .with_color([255, 0, 0])
@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_width(2.0),
     )?;
 
-    rec.log_timeless(
+    rec.log_static(
         "histogram/green",
         &rerun::SeriesLine::new()
             .with_color([0, 255, 0])
@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_width(2.0),
     )?;
 
-    rec.log_timeless(
+    rec.log_static(
         "histogram/blue",
         &rerun::SeriesLine::new()
             .with_color([0, 0, 255])
