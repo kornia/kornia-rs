@@ -7,7 +7,7 @@ use ndarray::stack;
 
 type AffineMatrix = (f32, f32, f32, f32, f32, f32);
 
-fn invert_affine_transform(m: AffineMatrix) -> AffineMatrix {
+pub fn invert_affine_transform(m: AffineMatrix) -> AffineMatrix {
     let (a, b, c, d, e, f) = m;
 
     // follow OpenCV: check for determinant == 0
