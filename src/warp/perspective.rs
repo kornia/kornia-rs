@@ -6,7 +6,7 @@ use anyhow::Result;
 use ndarray::stack;
 
 // flat representation of a 3x3 matrix
-type PerspectiveMatrix = [f32; 9];
+pub type PerspectiveMatrix = [f32; 9];
 
 #[rustfmt::skip]
 fn determinant3x3(m: &PerspectiveMatrix) -> f32 {
