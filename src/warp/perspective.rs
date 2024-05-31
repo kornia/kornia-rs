@@ -93,18 +93,18 @@ fn transform_point(x: f32, y: f32, m: PerspectiveMatrix) -> (f32, f32) {
 /// assert_eq!(dst.size().width, 2);
 /// assert_eq!(dst.size().height, 3);
 /// ```
-pub fn warp_perspective(
-    src: &Image<f32, 1>,
+pub fn warp_perspective<const CHANNELS: usize>(
+    src: &Image<f32, CHANNELS>,
     m: PerspectiveMatrix,
     new_size: ImageSize,
     interpolation: InterpolationMode,
-) -> Result<Image<f32, 1>> {
+) -> Result<Image<f32, CHANNELS>> {
     // inverse perspective matrix
     // TODO: allow later to skip the inverse calculation if user provides it
     let inv_m = inverse_perspective_matrix(m)?;
 
     // allocate the output image
-    let mut dst = Image::<f32, 1>::new(new_size, vec![0f32; new_size.width * new_size.height])?;
+    let mut dst = Image::from_size_val(new_size, 0.0)?;
 
     // create a grid of x and y coordinates for the output image
     // TODO: make this re-useable
@@ -130,8 +130,12 @@ pub fn warp_perspective(
 
             // TODO: allow for multi-channel images
             // interpolate the pixel value
-            let pixel = interpolate_pixel(&src.data, u_src, v_src, 0, interpolation);
-            out[0] = pixel;
+            let pixels = (0..src.num_channels())
+                .map(|c| interpolate_pixel(&src.data, u_src, v_src, c, interpolation));
+
+            for (c, pixel) in pixels.enumerate() {
+                out[c] = pixel;
+            }
         });
 
     Ok(dst)
@@ -162,12 +166,12 @@ mod tests {
     #[test]
     fn warp_perspective_identity() -> Result<()> {
         use crate::image::{Image, ImageSize};
-        let image = Image::<_, 1>::new(
+        let image: Image<f32, 3> = Image::from_size_val(
             ImageSize {
                 width: 4,
                 height: 5,
             },
-            vec![0f32; 4 * 5],
+            0.0f32,
         )?;
 
         // identity matrix
@@ -183,7 +187,7 @@ mod tests {
             super::InterpolationMode::Bilinear,
         )?;
 
-        assert_eq!(image_transformed.num_channels(), 1);
+        assert_eq!(image_transformed.num_channels(), 3);
         assert_eq!(image_transformed.size().width, 2);
         assert_eq!(image_transformed.size().height, 3);
 
