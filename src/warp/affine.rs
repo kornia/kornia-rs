@@ -7,7 +7,7 @@ use ndarray::stack;
 
 type AffineMatrix = (f32, f32, f32, f32, f32, f32);
 
-fn invert_affine_transform(m: AffineMatrix) -> AffineMatrix {
+pub fn invert_affine_transform(m: AffineMatrix) -> AffineMatrix {
     let (a, b, c, d, e, f) = m;
 
     // follow OpenCV: check for determinant == 0
@@ -142,6 +142,7 @@ pub fn warp_affine<const CHANNELS: usize>(
             let u_src = m_inv.0 * u + m_inv.1 * v + m_inv.2;
             let v_src = m_inv.3 * u + m_inv.4 * v + m_inv.5;
 
+            // TODO: remove -- this is already done in interpolate_pixel
             if u_src < 0.0
                 || u_src > (src.width() - 1) as f32
                 || v_src < 0.0
