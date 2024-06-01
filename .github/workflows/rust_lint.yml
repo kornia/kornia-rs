@@ -32,13 +32,10 @@ jobs:
       #- name: Install system dependencies
       #  run: sudo apt-get install -y cmake nasm libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - uses: actions/checkout@v4
-      - id: component
-        uses: actions-rs/components-nightly@v1
-        with:
-          component: clippy
       - uses: actions-rs/toolchain@v1
         with:
-            toolchain: ${{ steps.component.outputs.toolchain }}
+            toolchain: nightly
+            components: clippy
             override: true
       - uses: actions-rs/clippy-check@v1
         with:
