@@ -40,6 +40,7 @@ jobs:
       - uses: clechasseur/rs-clippy-check@v3
         with:
           args: --all-features
+          use-cross: true
 
   check:
     name: Check
