@@ -2000,12 +2000,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "examples"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f73a39643d27b2050f53782853471ec697142eb69edd874025192e6f8c94d41"
-
-[[package]]
 name = "exr"
 version = "1.72.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3131,7 +3125,6 @@ dependencies = [
  "candle-core",
  "clap",
  "criterion",
- "examples",
  "fast_image_resize",
  "gstreamer",
  "gstreamer-app",
