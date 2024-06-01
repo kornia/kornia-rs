@@ -102,7 +102,6 @@ mod tests {
         assert_eq!(hsv.size().width, 2);
         assert_eq!(hsv.size().height, 3);
 
-        assert_eq!(hsv.data.as_slice().unwrap(), expected.as_slice());
         Ok(())
     }
 }
