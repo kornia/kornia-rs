@@ -4,7 +4,7 @@ use kornia_rs::io::functional as F;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
     let image_path = std::path::Path::new("tests/data/dog.jpeg");
-    let image: Image<u8, 3> = F::read_image_jpeg(image_path)?;
+    let image: Image<u8, 3> = F::read_image_any(image_path)?;
 
     // convert the image to f32 and scale it
     let image: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;

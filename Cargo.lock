@@ -2000,6 +2000,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "examples"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f73a39643d27b2050f53782853471ec697142eb69edd874025192e6f8c94d41"
+
+[[package]]
 name = "exr"
 version = "1.72.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3125,6 +3131,7 @@ dependencies = [
  "candle-core",
  "clap",
  "criterion",
+ "examples",
  "fast_image_resize",
  "gstreamer",
  "gstreamer-app",
@@ -3659,9 +3666,9 @@ dependencies = [
 
 [[package]]
 name = "num-traits"
-version = "0.2.18"
+version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da0df0e5185db44f69b44f26786fe401b6c293d1907744beaa7fa62b2e5a517a"
+checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
  "libm",
