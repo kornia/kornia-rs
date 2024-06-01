@@ -69,7 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .progress_with(pb)
         .for_each(|image_path| {
             // read the image
-            let image = F::read_image_jpeg(&image_path).expect("Failed to read image");
+            let image = F::read_image_any(&image_path).expect("Failed to read image");
 
             // compute the std and mean
             let (std, mean) = kornia_rs::core::std_mean(&image);
