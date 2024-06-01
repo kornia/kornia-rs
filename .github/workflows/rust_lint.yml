@@ -32,15 +32,13 @@ jobs:
       #- name: Install system dependencies
       #  run: sudo apt-get install -y cmake nasm libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-            toolchain: nightly
-            components: clippy
-            override: true
-      - uses: clechasseur/rs-clippy-check@v3
+          components: clippy
+      - uses: giraffate/clippy-action@v1
         with:
-          args: --all-features
-          use-cross: true
+          reporter: 'github-pr-review'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
   check:
     name: Check
