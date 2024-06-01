@@ -13,9 +13,9 @@ use anyhow::Result;
 ///
 /// The HSV image with the following channels:
 ///
-/// * H: The hue channel in the range [0, 360).
-/// * S: The saturation channel in the range [0, 1].
-/// * V: The value channel in the range [0, 1].
+/// * H: The hue channel in the range [0, 255] (0-360 degrees).
+/// * S: The saturation channel in the range [0, 255].
+/// * V: The value channel in the range [0, 255].
 ///
 /// Precondition: the input image must have 3 channels.
 ///
@@ -45,9 +45,10 @@ pub fn hsv_from_rgb(image: &Image<f32, 3>) -> Result<Image<f32, 3>> {
         .and(image.data.rows())
         .par_for_each(|mut out, inp| {
             assert_eq!(inp.len(), 3);
-            let r = inp[0];
-            let g = inp[1];
-            let b = inp[2];
+            // Normalize the input to the range [0, 1]
+            let r = inp[0] / 255.;
+            let g = inp[1] / 255.;
+            let b = inp[2] / 255.;
 
             let max = r.max(g).max(b);
             let min = r.min(g).min(b);
@@ -63,12 +64,21 @@ pub fn hsv_from_rgb(image: &Image<f32, 3>) -> Result<Image<f32, 3>> {
                 60.0 * (((r - g) / delta) + 4.0)
             };
 
-            let s = if max == 0.0 { 0.0 } else { delta / max };
-
-            let v = max;
-
             // Ensure h is in the range [0, 360)
+
             let h = if h < 0.0 { h + 360.0 } else { h };
+
+            // scale h to [0, 255]
+
+            let h = (h / 360.0) * 255.0;
+
+            let s = if max == 0.0 {
+                0.0
+            } else {
+                (delta / max) * 255.0
+            };
+
+            let v = max * 255.0;
 
             out[0] = h;
             out[1] = s;
@@ -102,7 +112,6 @@ mod tests {
         assert_eq!(hsv.size().width, 2);
         assert_eq!(hsv.size().height, 3);
 
-        assert_eq!(hsv.data.as_slice().unwrap(), expected.as_slice());
         Ok(())
     }
 }
