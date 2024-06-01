@@ -5,7 +5,7 @@ use anyhow::Result;
 ///
 /// # Arguments
 ///
-/// * `image` - The input image of an arbitrary number of channels and type.
+/// * `src` - The input image of an arbitrary number of channels and type.
 /// * `threshold` - The threshold value. Must be the same type as the image.
 /// * `max_value` - The maximum value to use when the input value is greater than the threshold.
 ///
@@ -28,17 +28,17 @@ use anyhow::Result;
 /// assert_eq!(thresholded.size().height, 3);
 /// ```
 pub fn threshold_binary<T, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
+    src: &Image<T, CHANNELS>,
     threshold: T,
     max_value: T,
 ) -> Result<Image<T, CHANNELS>>
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
-    let mut output = Image::<T, CHANNELS>::from_size_val(image.size(), T::default())?;
+    let mut dst = Image::<T, CHANNELS>::from_size_val(src.size(), T::default())?;
 
-    ndarray::Zip::from(&mut output.data)
-        .and(&image.data)
+    ndarray::Zip::from(&mut dst.data)
+        .and(&src.data)
         .par_for_each(|out, &inp| {
             *out = if inp > threshold {
                 max_value
@@ -47,14 +47,14 @@ where
             };
         });
 
-    Ok(output)
+    Ok(dst)
 }
 
 /// Apply an inverse binary threshold to an image.
 ///
 /// # Arguments
 ///
-/// * `image` - The input image of an arbitrary number of channels and type.
+/// * `src` - The input image of an arbitrary number of channels and type.
 /// * `threshold` - The threshold value. Must be the same type as the image.
 /// * `max_value` - The maximum value to use when the input value is less than the threshold.
 ///
@@ -77,17 +77,17 @@ where
 /// assert_eq!(thresholded.size().height, 3);
 /// ```
 pub fn threshold_binary_inverse<T, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
+    src: &Image<T, CHANNELS>,
     threshold: T,
     max_value: T,
 ) -> Result<Image<T, CHANNELS>>
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
-    let mut output = Image::<T, CHANNELS>::from_size_val(image.size(), T::default())?;
+    let mut dst = Image::<T, CHANNELS>::from_size_val(src.size(), T::default())?;
 
-    ndarray::Zip::from(&mut output.data)
-        .and(&image.data)
+    ndarray::Zip::from(&mut dst.data)
+        .and(&src.data)
         .par_for_each(|out, &inp| {
             *out = if inp > threshold {
                 T::default()
@@ -96,14 +96,14 @@ where
             };
         });
 
-    Ok(output)
+    Ok(dst)
 }
 
 /// Apply a truncated threshold to an image.
 ///
 /// # Arguments
 ///
-/// * `image` - The input image of an arbitrary number of channels and type.
+/// * `src` - The input image of an arbitrary number of channels and type.
 /// * `threshold` - The threshold value. Must be the same type as the image.
 ///
 /// # Returns
@@ -125,28 +125,28 @@ where
 /// assert_eq!(thresholded.size().height, 3);
 /// ```
 pub fn threshold_truncate<T, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
+    src: &Image<T, CHANNELS>,
     threshold: T,
 ) -> Result<Image<T, CHANNELS>>
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
-    let mut output = Image::<T, CHANNELS>::from_size_val(image.size(), T::default()).unwrap();
+    let mut dst = Image::<T, CHANNELS>::from_size_val(src.size(), T::default())?;
 
-    ndarray::Zip::from(&mut output.data)
-        .and(&image.data)
+    ndarray::Zip::from(&mut dst.data)
+        .and(&src.data)
         .par_for_each(|out, &inp| {
             *out = if inp > threshold { threshold } else { inp };
         });
 
-    Ok(output)
+    Ok(dst)
 }
 
 /// Apply a threshold to an image, setting values below the threshold to zero.
 ///
 /// # Arguments
 ///
-/// * `image` - The input image of an arbitrary number of channels and type.
+/// * `src` - The input image of an arbitrary number of channels and type.
 /// * `threshold` - The threshold value. Must be the same type as the image.
 ///
 /// # Returns
@@ -168,28 +168,28 @@ where
 /// assert_eq!(thresholded.size().height, 1);
 /// ```
 pub fn threshold_to_zero<T, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
+    src: &Image<T, CHANNELS>,
     threshold: T,
 ) -> Result<Image<T, CHANNELS>>
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
-    let mut output = Image::<T, CHANNELS>::from_size_val(image.size(), T::default()).unwrap();
+    let mut dst = Image::<T, CHANNELS>::from_size_val(src.size(), T::default())?;
 
-    ndarray::Zip::from(&mut output.data)
-        .and(&image.data)
+    ndarray::Zip::from(&mut dst.data)
+        .and(&src.data)
         .par_for_each(|out, &inp| {
             *out = if inp > threshold { inp } else { T::default() };
         });
 
-    Ok(output)
+    Ok(dst)
 }
 
 /// Apply a threshold to an image, setting values above the threshold to zero.
 ///
 /// # Arguments
 ///
-/// * `image` - The input image of an arbitrary number of channels and type.
+/// * `src` - The input image of an arbitrary number of channels and type.
 /// * `threshold` - The threshold value. Must be the same type as the image.
 ///
 /// # Returns
@@ -232,7 +232,7 @@ where
 ///
 /// # Arguments
 ///
-/// * `image` - The input image of an arbitrary number of channels and type.
+/// * `src` - The input image of an arbitrary number of channels and type.
 /// * `lower_bound` - The lower bound for each channel.
 /// * `upper_bound` - The upper bound for each channel.
 ///
@@ -268,17 +268,17 @@ where
 /// assert_eq!(thresholded.get_pixel(1, 0, 0).unwrap(), 0);
 /// ```
 pub fn in_range<T, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
+    src: &Image<T, CHANNELS>,
     lower_bound: &[T; CHANNELS],
     upper_bound: &[T; CHANNELS],
 ) -> Result<Image<u8, 1>>
 where
     T: Sync + std::cmp::PartialOrd,
 {
-    let mut output = Image::from_size_val(image.size(), 0)?;
+    let mut dst = Image::from_size_val(src.size(), 0)?;
 
-    ndarray::Zip::from(output.data.rows_mut())
-        .and(image.data.rows())
+    ndarray::Zip::from(dst.data.rows_mut())
+        .and(src.data.rows())
         .par_for_each(|mut out, inp| {
             let mut is_in_range = true;
             let mut i = 0;
@@ -289,7 +289,7 @@ where
             out[0] = if is_in_range { 255 } else { 0 };
         });
 
-    Ok(output)
+    Ok(dst)
 }
 
 // TODO: outsu, triangle
