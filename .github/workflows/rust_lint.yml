@@ -29,8 +29,6 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      #- name: Install system dependencies
-      #  run: sudo apt-get install -y cmake nasm libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -39,6 +37,7 @@ jobs:
         with:
           reporter: 'github-pr-review'
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          clippy_flags: -- -D warnings
 
   check:
     name: Check

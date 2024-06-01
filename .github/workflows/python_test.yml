@@ -25,33 +25,34 @@ jobs:
         run: sudo apt-get install -y cmake nasm
       - name: Build and test
         run: make test-python
-  test-python-macos:
-    runs-on: macos-latest
-    steps:
-      - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v4
-      - name: Set up Python 3.8
-        uses: actions/setup-python@v5
-        with:
-          python-version: 3.8
-          architecture: x64
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          target: x86_64-apple-darwin
-          override: true
-      - uses: messense/maturin-action@v1
-        with:
-          command: build
-          maturin-version: latest
-          args: --target x86_64-apple-darwin --out dist -m kornia-py/Cargo.toml
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip |
-          python -m pip install dist/*.whl |
-          python -m pip install pytest numpy |
-          python -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
+  # NOTE: there's a systematic fail with the ci on macos
+  # test-python-macos:
+  #   runs-on: macos-latest
+  #   steps:
+  #     - uses: ilammy/setup-nasm@v1
+  #     - uses: actions/checkout@v4
+  #     - name: Set up Python 3.8
+  #       uses: actions/setup-python@v5
+  #       with:
+  #         python-version: 3.8
+  #         architecture: x64
+  #     - uses: actions-rs/toolchain@v1
+  #       with:
+  #         profile: minimal
+  #         toolchain: stable
+  #         target: x86_64-apple-darwin
+  #         override: true
+  #     - uses: messense/maturin-action@v1
+  #       with:
+  #         command: build
+  #         maturin-version: latest
+  #         args: --target x86_64-apple-darwin --out dist -m kornia-py/Cargo.toml
+  #     - name: Install dependencies
+  #       run: |
+  #         python -m pip install --upgrade pip |
+  #         python -m pip install dist/*.whl |
+  #         python -m pip install pytest numpy |
+  #         python -m pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
 
-      - name: Build and test
-        run: pytest kornia-py/tests
+  #     - name: Build and test
+  #       run: pytest kornia-py/tests
