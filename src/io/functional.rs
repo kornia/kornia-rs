@@ -3,8 +3,10 @@ use std::path::Path;
 
 use crate::image::{Image, ImageSize};
 
+#[cfg(feature = "jpegturbo")]
 use super::jpeg::{ImageDecoder, ImageEncoder};
 
+#[cfg(feature = "jpegturbo")]
 /// Reads a JPEG image from the given file path.
 ///
 /// The method reads the JPEG image data directly from a file leveraging the libjpeg-turbo library.
@@ -60,6 +62,7 @@ pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>> {
     Ok(image)
 }
 
+#[cfg(feature = "jpegturbo")]
 /// Writes the given JPEG data to the given file path.
 ///
 /// # Arguments
@@ -134,21 +137,12 @@ pub fn read_image_any(file_path: &Path) -> Result<Image<u8, 3>> {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use std::fs;
     use std::path::Path;
-    use tempfile::tempdir;
 
-    use crate::io::functional::{read_image_any, read_image_jpeg, write_image_jpeg};
+    use crate::io::functional::read_image_any;
 
-    #[test]
-    fn read_jpeg() -> Result<()> {
-        let image_path = Path::new("tests/data/dog.jpeg");
-        let image = read_image_jpeg(image_path)?;
-        assert_eq!(image.size().width, 258);
-        assert_eq!(image.size().height, 195);
-
-        Ok(())
-    }
+    #[cfg(feature = "jpegturbo")]
+    use crate::io::functional::{read_image_jpeg, write_image_jpeg};
 
     #[test]
     fn read_any() -> Result<()> {
@@ -161,10 +155,22 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "jpegturbo")]
+    fn read_jpeg() -> Result<()> {
+        let image_path = Path::new("tests/data/dog.jpeg");
+        let image = read_image_jpeg(image_path)?;
+        assert_eq!(image.size().width, 258);
+        assert_eq!(image.size().height, 195);
+
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "jpegturbo")]
     fn read_write_jpeg() -> Result<()> {
         let image_path_read = Path::new("tests/data/dog.jpeg");
-        let tmp_dir = tempdir()?;
-        fs::create_dir_all(tmp_dir.path())?;
+        let tmp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(tmp_dir.path())?;
         let file_path = tmp_dir.path().join("dog.jpeg");
         let image_data = read_image_jpeg(image_path_read)?;
         write_image_jpeg(&file_path, &image_data)?;

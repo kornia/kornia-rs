@@ -5,6 +5,7 @@ pub mod core;
 pub mod flip;
 pub mod histogram;
 pub mod image;
+pub mod interpolation;
 pub mod io;
 pub mod metrics;
 pub mod normalize;

@@ -5,7 +5,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
     let image_path = std::path::Path::new("tests/data/dog.jpeg");
 
-    let image: Image<u8, 3> = F::read_image_jpeg(image_path)?;
+    let image: Image<u8, 3> = F::read_image_any(image_path)?;
     let image = image.cast::<f32>()?;
 
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;
@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &image,
             rotation_matrix,
             image.size(),
-            kornia_rs::resize::InterpolationMode::Bilinear,
+            kornia_rs::interpolation::InterpolationMode::Bilinear,
         )?;
 
         let output = kornia_rs::normalize::normalize_min_max(&output, 0.0, 255.0)?;

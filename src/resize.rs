@@ -1,7 +1,8 @@
-use crate::image::{Image, ImageSize};
+use crate::image::{Image, ImageDtype, ImageSize};
+use crate::interpolation::{interpolate_pixel, InterpolationMode};
 use anyhow::Result;
 use fast_image_resize as fr;
-use ndarray::{stack, Array2, Array3};
+use ndarray::{stack, Array2};
 use std::num::NonZeroU32;
 
 /// Create a meshgrid of x and y coordinates
@@ -39,116 +40,6 @@ pub fn meshgrid(x: &Array2<f32>, y: &Array2<f32>) -> (Array2<f32>, Array2<f32>) 
     (xx, yy)
 }
 
-// Send and Sync is required for ndarray::Zip::par_for_each
-pub trait ImageDtype: Copy + Default + Into<f32> + Send + Sync {
-    fn from_f32(x: f32) -> Self;
-}
-
-impl ImageDtype for f32 {
-    fn from_f32(x: f32) -> Self {
-        x
-    }
-}
-
-impl ImageDtype for u8 {
-    fn from_f32(x: f32) -> Self {
-        x.round().clamp(0.0, 255.0) as u8
-    }
-}
-
-/// Kernel for bilinear interpolation
-///
-/// # Arguments
-///
-/// * `image` - The input image container.
-/// * `u` - The x coordinate of the pixel to interpolate.
-/// * `v` - The y coordinate of the pixel to interpolate.
-/// * `c` - The channel of the pixel to interpolate.
-///
-/// # Returns
-///
-/// The interpolated pixel value.
-// TODO: add support for other data types. Maybe use a trait? or template?
-fn bilinear_interpolation<T: ImageDtype>(image: &Array3<T>, u: f32, v: f32, c: usize) -> T {
-    let (height, width, _) = image.dim();
-
-    let iu = u.trunc() as usize;
-    let iv = v.trunc() as usize;
-
-    let frac_u = u.fract();
-    let frac_v = v.fract();
-    let val00: f32 = image[[iv, iu, c]].into();
-    let val01: f32 = if iu + 1 < width {
-        image[[iv, iu + 1, c]].into()
-    } else {
-        val00
-    };
-    let val10: f32 = if iv + 1 < height {
-        image[[iv + 1, iu, c]].into()
-    } else {
-        val00
-    };
-    let val11: f32 = if iu + 1 < width && iv + 1 < height {
-        image[[iv + 1, iu + 1, c]].into()
-    } else {
-        val00
-    };
-
-    let frac_uu = 1. - frac_u;
-    let frac_vv = 1. - frac_v;
-
-    T::from_f32(
-        val00 * frac_uu * frac_vv
-            + val01 * frac_u * frac_vv
-            + val10 * frac_uu * frac_v
-            + val11 * frac_u * frac_v,
-    )
-}
-
-/// Kernel for nearest neighbor interpolation
-///
-/// # Arguments
-///
-/// * `image` - The input image container.
-/// * `u` - The x coordinate of the pixel to interpolate.
-/// * `v` - The y coordinate of the pixel to interpolate.
-/// * `c` - The channel of the pixel to interpolate.
-///
-/// # Returns
-///
-/// The interpolated pixel value.
-fn nearest_neighbor_interpolation<T: ImageDtype>(image: &Array3<T>, u: f32, v: f32, c: usize) -> T {
-    let (height, width, _) = image.dim();
-
-    let iu = u.round() as usize;
-    let iv = v.round() as usize;
-
-    let iu = iu.clamp(0, width - 1);
-    let iv = iv.clamp(0, height - 1);
-
-    image[[iv, iu, c]]
-}
-
-/// Interpolation mode for the resize operation
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum InterpolationMode {
-    Bilinear,
-    Nearest,
-}
-
-pub(crate) fn interpolate_pixel<T: ImageDtype>(
-    image: &Array3<T>,
-    u: f32,
-    v: f32,
-    c: usize,
-    interpolation: InterpolationMode,
-) -> T {
-    match interpolation {
-        InterpolationMode::Bilinear => bilinear_interpolation(image, u, v, c),
-        InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v, c),
-    }
-}
-
 /// Resize an image to a new size.
 ///
 /// The function resizes an image to a new size using the specified interpolation mode.
@@ -182,7 +73,7 @@ pub(crate) fn interpolate_pixel<T: ImageDtype>(
 ///         width: 2,
 ///         height: 3,
 ///     },
-///     kornia_rs::resize::InterpolationMode::Nearest,
+///     kornia_rs::interpolation::InterpolationMode::Nearest,
 /// )
 /// .unwrap();
 /// assert_eq!(image_resized.num_channels(), 3);
@@ -265,7 +156,7 @@ pub fn resize_native<T: ImageDtype, const CHANNELS: usize>(
 ///    width: 2,
 ///   height: 3,
 /// },
-/// kornia_rs::resize::InterpolationMode::Nearest,
+/// kornia_rs::interpolation::InterpolationMode::Nearest,
 /// )
 /// .unwrap();
 /// assert_eq!(image_resized.num_channels(), 3);

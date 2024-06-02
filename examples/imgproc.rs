@@ -4,7 +4,7 @@ use kornia_rs::io::functional as F;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
     let image_path = std::path::Path::new("tests/data/dog.jpeg");
-    let image: Image<u8, 3> = F::read_image_jpeg(image_path)?;
+    let image: Image<u8, 3> = F::read_image_any(image_path)?;
 
     let image_f32: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
 
@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             width: 128,
             height: 128,
         },
-        kornia_rs::resize::InterpolationMode::Bilinear,
+        kornia_rs::interpolation::InterpolationMode::Bilinear,
     )?;
 
     println!("gray_resize: {:?}", gray_resize.size());
