@@ -21,8 +21,8 @@ pub fn warp_affine(
     };
 
     let interpolation = match interpolation.to_lowercase().as_str() {
-        "nearest" => kornia_rs::resize::InterpolationMode::Nearest,
-        "bilinear" => kornia_rs::resize::InterpolationMode::Bilinear,
+        "nearest" => kornia_rs::interpolation::InterpolationMode::Nearest,
+        "bilinear" => kornia_rs::interpolation::InterpolationMode::Bilinear,
         _ => {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                 "Invalid interpolation mode",
