@@ -1,12 +1,22 @@
 use std::f32::consts::PI;
 
 use crate::image::{Image, ImageSize};
-use crate::resize::{interpolate_pixel, meshgrid, InterpolationMode};
+use crate::interpolation::{interpolate_pixel, InterpolationMode};
+use crate::resize::meshgrid;
 use anyhow::Result;
 use ndarray::stack;
 
 type AffineMatrix = (f32, f32, f32, f32, f32, f32);
 
+/// Inverts a 2x3 affine transformation matrix.
+///
+/// Arguments:
+///
+/// * `m` - The 2x3 affine transformation matrix.
+///
+/// Returns:
+///
+/// The inverted 2x3 affine transformation matrix.
 pub fn invert_affine_transform(m: AffineMatrix) -> AffineMatrix {
     let (a, b, c, d, e, f) = m;
 
@@ -101,7 +111,7 @@ pub fn get_rotation_matrix2d(center: (f32, f32), angle: f32, scale: f32) -> Affi
 ///   height: 5,
 /// };
 ///
-/// let output = warp_affine(&src, m, new_size, kornia_rs::resize::InterpolationMode::Nearest).unwrap();
+/// let output = warp_affine(&src, m, new_size, kornia_rs::interpolation::InterpolationMode::Nearest).unwrap();
 ///
 /// assert_eq!(output.size().width, 4);
 /// assert_eq!(output.size().height, 5);

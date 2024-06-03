@@ -1,8 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_rs::image::{Image, ImageSize};
+use kornia_rs::interpolation::InterpolationMode;
 use kornia_rs::resize as F;
-use kornia_rs::resize::InterpolationMode;
 
 fn resize_image_crate(image: Image<u8, 3>, new_size: ImageSize) -> Image<u8, 3> {
     let image_data = image.data.as_slice().unwrap();
