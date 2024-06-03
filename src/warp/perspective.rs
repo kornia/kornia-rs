@@ -1,6 +1,7 @@
+use crate::interpolation::{interpolate_pixel, InterpolationMode};
 use crate::{
     image::{Image, ImageSize},
-    resize::{interpolate_pixel, meshgrid, InterpolationMode},
+    resize::meshgrid,
 };
 use anyhow::Result;
 use ndarray::stack;
@@ -87,7 +88,7 @@ fn transform_point(x: f32, y: f32, m: PerspectiveMatrix) -> (f32, f32) {
 ///     width: 2,
 ///     height: 3,
 ///   },
-///   kornia_rs::resize::InterpolationMode::Bilinear
+///   kornia_rs::interpolation::InterpolationMode::Bilinear
 /// ).unwrap();
 ///
 /// assert_eq!(dst.size().width, 2);
