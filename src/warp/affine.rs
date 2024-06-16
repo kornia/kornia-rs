@@ -1,8 +1,8 @@
 use std::f32::consts::PI;
 
 use crate::image::{Image, ImageSize};
+use crate::interpolation::meshgrid;
 use crate::interpolation::{interpolate_pixel, InterpolationMode};
-use crate::resize::meshgrid;
 use anyhow::Result;
 use ndarray::stack;
 
