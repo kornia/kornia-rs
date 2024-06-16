@@ -390,6 +390,14 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         }
     }
 
+    pub fn cols(&self) -> usize {
+        self.width()
+    }
+
+    pub fn rows(&self) -> usize {
+        self.height()
+    }
+
     /// Get the width of the image in pixels.
     pub fn width(&self) -> usize {
         self.data.shape()[1]
