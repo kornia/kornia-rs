@@ -4,6 +4,18 @@ use crate::{
     interpolation::meshgrid,
 };
 
+/// Represents the polynomial distortion parameters of a camera
+///
+/// # Fields
+///
+/// * `k1` - The first radial distortion coefficient
+/// * `k2` - The second radial distortion coefficient
+/// * `k3` - The third radial distortion coefficient
+/// * `k4` - The fourth radial distortion coefficient
+/// * `k5` - The fifth radial distortion coefficient
+/// * `k6` - The sixth radial distortion coefficient
+/// * `p1` - The first tangential distortion coefficient
+/// * `p2` - The second tangential distortion coefficient
 pub struct PolynomialDistortion {
     pub k1: f64,
     pub k2: f64,
@@ -15,6 +27,19 @@ pub struct PolynomialDistortion {
     pub p2: f64,
 }
 
+/// Distort a point using polynomial distortion
+///
+/// # Arguments
+///
+/// * `x` - The x coordinate of the point
+/// * `y` - The y coordinate of the point
+/// * `intrinsic` - The intrinsic parameters of the camera
+/// * `distortion` - The distortion parameters of the camera
+///
+/// # Returns
+///
+/// * `x` - The x coordinate of the distorted point
+/// * `y` - The y coordinate of the distorted point
 pub fn distort_point_polynomial(
     x: f64,
     y: f64,
@@ -56,6 +81,20 @@ pub fn distort_point_polynomial(
     (xdst, ydst)
 }
 
+/// Generate a map for undistorting and rectifying an image using polynomial distortion
+///
+/// # Arguments
+///
+/// * `intrinsic` - The intrinsic parameters of the camera
+/// * `extrinsic` - The extrinsic parameters of the camera
+/// * `new_intrinsic` - The new intrinsic parameters of the camera
+/// * `distortion` - The distortion parameters of the camera
+/// * `size` - The size of the image
+///
+/// # Returns
+///
+/// * `map_x` - The x map for undistorting and rectifying the image
+/// * `map_y` - The y map for undistorting and rectifying the image
 pub fn undistort_rectify_map_polynomial(
     intrinsic: &CameraIntrinsic,
     _extrinsic: &CameraExtrinsic,
@@ -90,4 +129,80 @@ pub fn undistort_rectify_map_polynomial(
     let map_y = Image { data: map_y };
 
     (map_x, map_y)
+}
+
+#[cfg(test)]
+
+mod tests {
+    use super::*;
+    use crate::image::ImageSize;
+
+    #[test]
+    fn test_distort_point_polynomial() {
+        let intrinsic = CameraIntrinsic {
+            fx: 577.48583984375,
+            fy: 652.8748779296875,
+            cx: 577.48583984375,
+            cy: 386.1428833007813,
+        };
+
+        let distortion = PolynomialDistortion {
+            k1: 1.7547749280929563,
+            k2: 0.0097926277667284,
+            k3: -0.027250492945313457,
+            k4: 2.1092164516448975,
+            k5: 0.462927520275116,
+            k6: -0.08215277642011642,
+            p1: -5.457743463921361e-05,
+            p2: 3.006766564794816e-05,
+        };
+
+        let (x, y) = (100.0, 20.0);
+        let (x, y) = distort_point_polynomial(x, y, &intrinsic, &distortion);
+
+        assert_ne!(x, 194.24656721843076);
+        assert_eq!(y, 98.83006704526377);
+    }
+
+    #[test]
+    fn test_undistort_rectify_map_polynomial() {
+        let intrinsic = CameraIntrinsic {
+            fx: 577.48583984375,
+            fy: 652.8748779296875,
+            cx: 577.48583984375,
+            cy: 386.1428833007813,
+        };
+
+        let distortion = PolynomialDistortion {
+            k1: 1.7547749280929563,
+            k2: 0.0097926277667284,
+            k3: -0.027250492945313457,
+            k4: 2.1092164516448975,
+            k5: 0.462927520275116,
+            k6: -0.08215277642011642,
+            p1: -5.457743463921361e-05,
+            p2: 3.006766564794816e-05,
+        };
+
+        let size = ImageSize {
+            width: 8,
+            height: 4,
+        };
+
+        let (map_x, map_y) = undistort_rectify_map_polynomial(
+            &intrinsic,
+            &CameraExtrinsic {
+                rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                translation: [0.0, 0.0, 0.0],
+            },
+            &intrinsic,
+            &distortion,
+            &size,
+        );
+
+        assert_eq!(map_x.cols(), 8);
+        assert_eq!(map_x.rows(), 4);
+        assert_eq!(map_y.cols(), 8);
+        assert_eq!(map_y.rows(), 4);
+    }
 }

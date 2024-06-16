@@ -20,6 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
     let img = kornia_rs::io::functional::read_image_any(&args.image_path)?;
 
+    // the intrinsic parameters of an Oak-D camera
     let intrinsic = CameraIntrinsic {
         fx: 577.48583984375,
         fy: 652.8748779296875,
@@ -27,6 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cy: 386.1428833007813,
     };
 
+    // the distortion parameters of an Oak-D camera
     let distortion = PolynomialDistortion {
         k1: 1.7547749280929563,
         k2: 0.0097926277667284,
