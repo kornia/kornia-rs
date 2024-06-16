@@ -81,7 +81,7 @@ pub fn distort_point_polynomial(
     (xdst, ydst)
 }
 
-/// Generate a map for undistorting and rectifying an image using polynomial distortion
+/// Generate the undistort and rectify map for a polynomial distortion model
 ///
 /// # Arguments
 ///
@@ -95,7 +95,7 @@ pub fn distort_point_polynomial(
 ///
 /// * `map_x` - The x map for undistorting and rectifying the image
 /// * `map_y` - The y map for undistorting and rectifying the image
-pub fn undistort_rectify_map_polynomial(
+pub fn generate_correction_map_polynomial(
     intrinsic: &CameraIntrinsic,
     _extrinsic: &CameraExtrinsic,
     _new_intrinsic: &CameraIntrinsic,
@@ -189,7 +189,7 @@ mod tests {
             height: 4,
         };
 
-        let (map_x, map_y) = undistort_rectify_map_polynomial(
+        let (map_x, map_y) = generate_correction_map_polynomial(
             &intrinsic,
             &CameraExtrinsic {
                 rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],

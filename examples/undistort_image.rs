@@ -1,7 +1,7 @@
 use clap::Parser;
 use kornia_rs::{
     calibration::{
-        distortion::{undistort_rectify_map_polynomial, PolynomialDistortion},
+        distortion::{generate_correction_map_polynomial, PolynomialDistortion},
         {CameraExtrinsic, CameraIntrinsic},
     },
     image::ImageSize,
@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // create a base grid
 
-    let (map_x, map_y) = undistort_rectify_map_polynomial(
+    let (map_x, map_y) = generate_correction_map_polynomial(
         &intrinsic,
         &extrinsic,
         &intrinsic,
