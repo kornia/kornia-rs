@@ -1,7 +1,7 @@
 use crate::interpolation::{interpolate_pixel, InterpolationMode};
 use crate::{
     image::{Image, ImageSize},
-    resize::meshgrid,
+    interpolation::meshgrid,
 };
 use anyhow::Result;
 use ndarray::stack;

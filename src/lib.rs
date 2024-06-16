@@ -1,3 +1,4 @@
+pub mod calibration;
 pub mod color;
 pub mod core;
 // NOTE: not ready yet
