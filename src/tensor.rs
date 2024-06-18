@@ -1,3 +1,5 @@
+use std::ops::Add;
+
 /// Compute the strides from the shape of a tensor.
 ///
 /// # Arguments
@@ -7,16 +9,13 @@
 /// # Returns
 ///
 /// * `strides` - The strides of the tensor.
-fn get_strides_from_shape(shape: &[i64]) -> Vec<i64> {
-    let mut strides = vec![0i64; shape.len()];
-
-    let mut c = 1;
-    strides[shape.len() - 1] = c;
-    for i in (1..shape.len()).rev() {
-        c *= shape[i];
-        strides[i - 1] = c;
+fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
+    let mut strides: [usize; N] = [0; N];
+    let mut stride = 1;
+    for i in (0..shape.len()).rev() {
+        strides[i] = stride;
+        stride *= shape[i];
     }
-
     strides
 }
 
@@ -37,15 +36,14 @@ fn get_strides_from_shape(shape: &[i64]) -> Vec<i64> {
 /// let data: Vec<u8> = vec![1, 2, 3, 4];
 /// let t = Tensor::new(shape, data);
 /// assert_eq!(t.shape, vec![1, 1, 2, 2]);
-#[derive(Clone)]
-pub struct Tensor {
-    pub shape: Vec<i64>,
-    pub data: Vec<u8>,
-    pub strides: Vec<i64>,
+pub struct Tensor<T, const N: usize> {
+    pub data: Vec<T>,
+    pub shape: [usize; N],
+    pub strides: [usize; N],
 }
 
 /// Implementation of the Tensor struct.
-impl Tensor {
+impl<T, const N: usize> Tensor<T, N> {
     /// Creates a new `Tensor` with the given shape and data.
     ///
     /// # Arguments
@@ -56,49 +54,175 @@ impl Tensor {
     /// # Returns
     ///
     /// A new `Tensor` instance.
-    pub fn new(shape: Vec<i64>, data: Vec<u8>) -> Self {
-        let strides = get_strides_from_shape(&shape);
+    pub fn new(shape: [usize; N], data: Vec<T>) -> Self {
+        let numel = shape.iter().product::<usize>();
+        if numel != data.len() {
+            panic!("The number of elements in the data does not match the shape of the tensor.");
+        }
+        let strides = get_strides_from_shape(shape);
         Tensor {
             shape,
             data,
             strides,
         }
     }
+
+    pub fn numel(&self) -> usize {
+        self.data.len()
+    }
+
+    pub fn get(&self, index: [usize; N]) -> &T {
+        let mut offset = 0;
+        for i in 0..N {
+            offset += index[i] * self.strides[i];
+        }
+        &self.data[offset]
+    }
+
+    pub fn reshape<const M: usize>(self, shape: [usize; M]) -> Tensor<T, M> {
+        let numel = shape.iter().product::<usize>();
+        if numel != self.data.len() {
+            panic!("The number of elements in the data does not match the shape of the tensor.");
+        }
+        let strides = get_strides_from_shape(shape);
+        Tensor {
+            shape,
+            data: self.data,
+            strides,
+        }
+    }
+
+    pub fn add(&self, other: &Tensor<T, N>) -> Tensor<T, N>
+    where
+        T: Add<Output = T> + Copy,
+    {
+        let data: Vec<T> = self
+            .data
+            .iter()
+            .zip(other.data.iter())
+            .map(|(a, b)| *a + *b)
+            .collect();
+        Tensor::new(self.shape, data)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::tensor::get_strides_from_shape;
     use crate::tensor::Tensor;
 
     #[test]
-    fn constructor_default() {
-        let shape: Vec<usize> = vec![1, 1, 2, 2];
-        let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor {
-            shape: shape.iter().map(|x| *x as i64).collect(),
-            data,
-            strides: vec![0, 0, 0, 0],
-        };
-        assert_eq!(t.shape, vec![1, 1, 2, 2]);
-        assert_eq!(t.data, vec![1, 2, 3, 4]);
-        assert_eq!(t.strides, vec![0, 0, 0, 0]);
+    fn constructor_1d() {
+        let data: Vec<u8> = vec![1];
+        let t = Tensor::<u8, 1>::new([1], data);
+        assert_eq!(t.shape, [1]);
+        assert_eq!(t.data, vec![1]);
+        assert_eq!(t.strides, [1]);
+        assert_eq!(t.numel(), 1);
     }
 
     #[test]
-    fn constructor_new() {
-        let shape: Vec<i64> = vec![1, 1, 2, 2];
-        let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::new(shape, data);
-        assert_eq!(t.shape, vec![1, 1, 2, 2]);
-        assert_eq!(t.data, vec![1, 2, 3, 4]);
-        assert_eq!(t.strides, vec![4, 4, 2, 1]);
+    fn constructor_2d() {
+        let data: Vec<u8> = vec![1, 2];
+        let t = Tensor::<u8, 2>::new([1, 2], data);
+        assert_eq!(t.shape, [1, 2]);
+        assert_eq!(t.data, vec![1, 2]);
+        assert_eq!(t.strides, [2, 1]);
+        assert_eq!(t.numel(), 2);
     }
 
     #[test]
-    fn strides_from_shape() {
-        let shape: Vec<i64> = vec![1, 1, 2, 2];
-        let strides = get_strides_from_shape(&shape);
-        assert_eq!(strides, vec![4, 4, 2, 1]);
+    fn get_1d() {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 1>::new([4], data);
+        assert_eq!(*t.get([0]), 1);
+        assert_eq!(*t.get([1]), 2);
+        assert_eq!(*t.get([2]), 3);
+        assert_eq!(*t.get([3]), 4);
+    }
+
+    #[test]
+    fn get_2d() {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 2>::new([2, 2], data);
+        assert_eq!(*t.get([0, 0]), 1);
+        assert_eq!(*t.get([0, 1]), 2);
+        assert_eq!(*t.get([1, 0]), 3);
+        assert_eq!(*t.get([1, 1]), 4);
+    }
+
+    #[test]
+    fn get_3d() {
+        let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
+        let t = Tensor::<u8, 3>::new([2, 1, 3], data);
+        assert_eq!(*t.get([0, 0, 0]), 1);
+        assert_eq!(*t.get([0, 0, 1]), 2);
+        assert_eq!(*t.get([0, 0, 2]), 3);
+        assert_eq!(*t.get([1, 0, 0]), 4);
+        assert_eq!(*t.get([1, 0, 1]), 5);
+        assert_eq!(*t.get([1, 0, 2]), 6);
+    }
+
+    #[test]
+    fn add_1d() {
+        let data1: Vec<u8> = vec![1, 2, 3, 4];
+        let t1 = Tensor::<u8, 1>::new([4], data1);
+        let data2: Vec<u8> = vec![1, 2, 3, 4];
+        let t2 = Tensor::<u8, 1>::new([4], data2);
+        let t3 = t1.add(&t2);
+        assert_eq!(t3.data, vec![2, 4, 6, 8]);
+    }
+
+    #[test]
+    fn add_2d() {
+        let data1: Vec<u8> = vec![1, 2, 3, 4];
+        let t1 = Tensor::<u8, 2>::new([2, 2], data1);
+        let data2: Vec<u8> = vec![1, 2, 3, 4];
+        let t2 = Tensor::<u8, 2>::new([2, 2], data2);
+        let t3 = t1.add(&t2);
+        assert_eq!(t3.data, vec![2, 4, 6, 8]);
+    }
+
+    #[test]
+    fn add_3d() {
+        let data1: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
+        let t1 = Tensor::<u8, 3>::new([2, 1, 3], data1);
+        let data2: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
+        let t2 = Tensor::<u8, 3>::new([2, 1, 3], data2);
+        let t3 = t1.add(&t2);
+        assert_eq!(t3.data, vec![2, 4, 6, 8, 10, 12]);
+    }
+
+    #[test]
+    fn reshape_1d() {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 1>::new([4], data);
+        let t2 = t.reshape([2, 2]);
+        assert_eq!(t2.shape, [2, 2]);
+        assert_eq!(t2.data, vec![1, 2, 3, 4]);
+        assert_eq!(t2.strides, [2, 1]);
+        assert_eq!(t2.numel(), 4);
+    }
+
+    #[test]
+    fn reshape_2d() {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 2>::new([2, 2], data);
+        let t2 = t.reshape([4]);
+        assert_eq!(t2.shape, [4]);
+        assert_eq!(t2.data, vec![1, 2, 3, 4]);
+        assert_eq!(t2.strides, [1]);
+        assert_eq!(t2.numel(), 4);
+    }
+
+    #[test]
+    fn reshape_get_1d() {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 1>::new([4], data);
+        let t2 = t.reshape([2, 2]);
+        assert_eq!(*t2.get([0, 0]), 1);
+        assert_eq!(*t2.get([0, 1]), 2);
+        assert_eq!(*t2.get([1, 0]), 3);
+        assert_eq!(*t2.get([1, 1]), 4);
+        assert_eq!(t2.numel(), 4);
     }
 }
