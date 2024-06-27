@@ -1,5 +1,3 @@
-use std::usize;
-
 use crate::image::Image;
 use anyhow::Result;
 
@@ -99,11 +97,9 @@ where
 /// assert_eq!(min, 0);
 /// assert_eq!(max, 3);
 /// ```
-pub fn find_min_max<T: PartialOrd, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
-) -> Result<(T, T)>
+pub fn find_min_max<T, const CHANNELS: usize>(image: &Image<T, CHANNELS>) -> Result<(T, T)>
 where
-    T: Copy,
+    T: PartialOrd + Copy,
 {
     // get the first element in the image
     let first_element = match image.data.iter().next() {

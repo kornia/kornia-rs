@@ -19,23 +19,22 @@ fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
     strides
 }
 
-/// A data structure to represent a tensor.
+/// A data structure to represent a multi-dimensional tensor.
 ///
 /// # Attributes
 ///
 /// * `shape` - The shape of the tensor.
 /// * `data` - The data of the tensor.
-/// * `strides` - The strides of the tensor.
+/// * `strides` - The strides of the tensor data in memory.
 ///
 /// # Example
 ///
 /// ```
 /// use kornia_rs::tensor::Tensor;
 ///
-/// let shape: Vec<i64> = vec![1, 1, 2, 2];
 /// let data: Vec<u8> = vec![1, 2, 3, 4];
-/// let t = Tensor::new(shape, data);
-/// assert_eq!(t.shape, vec![1, 1, 2, 2]);
+/// let t = Tensor::<u8, 2>::new([2, 2], data);
+/// assert_eq!(t.shape, [2, 2]);
 pub struct Tensor<T, const N: usize> {
     pub data: Vec<T>,
     pub shape: [usize; N],
@@ -48,7 +47,7 @@ impl<T, const N: usize> Tensor<T, N> {
     ///
     /// # Arguments
     ///
-    /// * `shape` - A vector representing the shape of the tensor.
+    /// * `shape` - An array containing the shape of the tensor.
     /// * `data` - A vector containing the data of the tensor.
     ///
     /// # Returns
@@ -73,8 +72,12 @@ impl<T, const N: usize> Tensor<T, N> {
 
     pub fn get(&self, index: [usize; N]) -> &T {
         let mut offset = 0;
-        for i in 0..N {
-            offset += index[i] * self.strides[i];
+        for (i, &idx) in index.iter().enumerate() {
+            // TODO: return RandomAccessError or implement the get_unchecked method.
+            // if idx >= self.shape[i] {
+            //     panic!("Index out of bounds.");
+            // }
+            offset += idx * self.strides[i];
         }
         &self.data[offset]
     }
