@@ -3136,6 +3136,7 @@ dependencies = [
  "rayon",
  "rerun",
  "tempfile",
+ "thiserror",
  "tokio",
  "turbojpeg",
  "walkdir",
