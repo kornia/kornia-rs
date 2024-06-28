@@ -5,7 +5,7 @@ edition = "2021"
 description = "Low-level computer vision library in Rust"
 homepage = "http://kornia.org"
 repository = "https://github.com/kornia/kornia-rs"
-categories = ["image-processing", "computer-vision", "machine-learning"]
+categories = ["computer-vision", "science::robotics"]
 license-file = "LICENSE"
 
 [dependencies]
