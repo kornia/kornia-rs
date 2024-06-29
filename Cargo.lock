@@ -3140,6 +3140,7 @@ dependencies = [
  "tokio",
  "turbojpeg",
  "walkdir",
+ "zune-jpeg",
 ]
 
 [[package]]
