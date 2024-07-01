@@ -75,6 +75,45 @@ impl<T, const N: usize> Tensor<T, N> {
         })
     }
 
+    /// Creates a new `Tensor` with the given shape and a default value.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - An array containing the shape of the tensor.
+    /// * `value` - The default value to fill the tensor with.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` instance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_rs::tensor::Tensor;
+    ///
+    /// let t = Tensor::<u8, 1>::from_shape_val([4], 0);
+    /// assert_eq!(t.data, vec![0, 0, 0, 0]);
+    ///
+    /// let t = Tensor::<u8, 2>::from_shape_val([2, 2], 1);
+    /// assert_eq!(t.data, vec![1, 1, 1, 1]);
+    ///
+    /// let t = Tensor::<u8, 3>::from_shape_val([2, 1, 3], 2);
+    /// assert_eq!(t.data, vec![2, 2, 2, 2, 2, 2]);
+    /// ```
+    pub fn from_shape_val(shape: [usize; N], value: T) -> Self
+    where
+        T: Copy,
+    {
+        let numel = shape.iter().product::<usize>();
+        let data = vec![value; numel];
+        let strides = get_strides_from_shape(shape);
+        Tensor {
+            shape,
+            data,
+            strides,
+        }
+    }
+
     /// Returns the number of elements in the tensor.
     pub fn numel(&self) -> usize {
         self.data.len()
@@ -409,6 +448,68 @@ impl<T, const N: usize> Tensor<T, N> {
             strides: get_strides_from_shape(shape),
         }
     }
+
+    /// Apply a function to each element of the tensor.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - The function to apply to each element.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` instance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_rs::tensor::Tensor;
+    ///
+    /// let data: Vec<u8> = vec![1, 2, 3, 4];
+    /// let t = Tensor::<u8, 1>::new([4], data).unwrap();
+    ///
+    /// let t2 = t.map(|x| *x + 1);
+    /// assert_eq!(t2.data, vec![2, 3, 4, 5]);
+    /// ```
+    pub fn map<F>(&self, f: F) -> Tensor<T, N>
+    where
+        F: Fn(&T) -> T,
+    {
+        let data: Vec<T> = self.data.iter().map(f).collect();
+        Tensor {
+            shape: self.shape,
+            data,
+            strides: self.strides,
+        }
+    }
+
+    /// Cast the tensor to a new type.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` instance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_rs::tensor::Tensor;
+    ///
+    /// let data: Vec<u8> = vec![1, 2, 3, 4];
+    /// let t = Tensor::<u8, 1>::new([4], data).unwrap();
+    ///
+    /// let t2 = t.cast::<f32>();
+    /// assert_eq!(t2.data, vec![1.0, 2.0, 3.0, 4.0]);
+    /// ```
+    pub fn cast<U>(&self) -> Tensor<U, N>
+    where
+        T: Copy + Into<U>,
+    {
+        let data: Vec<U> = self.data.iter().map(|x| (*x).into()).collect();
+        Tensor {
+            shape: self.shape,
+            data,
+            strides: self.strides,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -645,5 +746,57 @@ mod tests {
         let t = Tensor::<u8, 2>::zeros([2, 2]);
         assert_eq!(t.data, vec![0, 0, 0, 0]);
         Ok(())
+    }
+
+    #[test]
+    fn map_1d() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 1>::new([4], data)?;
+        let t2 = t.map(|x| *x + 1);
+        assert_eq!(t2.data, vec![2, 3, 4, 5]);
+        Ok(())
+    }
+
+    #[test]
+    fn map_2d() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 2>::new([2, 2], data)?;
+        let t2 = t.map(|x| *x + 1);
+        assert_eq!(t2.data, vec![2, 3, 4, 5]);
+        Ok(())
+    }
+
+    #[test]
+    fn from_shape_val_1d() {
+        let t = Tensor::<u8, 1>::from_shape_val([4], 0);
+        assert_eq!(t.data, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn from_shape_val_2d() {
+        let t = Tensor::<u8, 2>::from_shape_val([2, 2], 1);
+        assert_eq!(t.data, vec![1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn from_shape_val_3d() {
+        let t = Tensor::<u8, 3>::from_shape_val([2, 1, 3], 2);
+        assert_eq!(t.data, vec![2, 2, 2, 2, 2, 2]);
+    }
+
+    #[test]
+    fn cast_1d() {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 1>::new([4], data).unwrap();
+        let t2 = t.cast::<u16>();
+        assert_eq!(t2.data, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn cast_2d() {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 2>::new([2, 2], data).unwrap();
+        let t2 = t.cast::<u16>();
+        assert_eq!(t2.data, vec![1, 2, 3, 4]);
     }
 }
