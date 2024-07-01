@@ -853,4 +853,19 @@ mod tests {
         let t = Tensor::from_shape_fn([3, 3], |[i, j]| (1 + i) * (1 + j));
         assert_eq!(t.data, vec![1, 2, 3, 2, 4, 6, 3, 6, 9]);
     }
+
+    #[test]
+    fn from_shape_fn_2d() {
+        let t = Tensor::from_shape_fn([3, 3], |[i, j]| (1 + i) * (1 + j));
+        assert_eq!(t.data, vec![1, 2, 3, 2, 4, 6, 3, 6, 9]);
+    }
+
+    #[test]
+    fn from_shape_fn_3d() {
+        let t = Tensor::from_shape_fn([2, 3, 3], |[x, y, c]| (1 + x) * (1 + y) * (1 + c));
+        assert_eq!(
+            t.data,
+            vec![1, 2, 3, 2, 4, 6, 3, 6, 9, 2, 4, 6, 4, 8, 12, 6, 12, 18]
+        );
+    }
 }
