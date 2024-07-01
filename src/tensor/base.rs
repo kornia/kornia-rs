@@ -75,12 +75,108 @@ impl<T, const N: usize> Tensor<T, N> {
         })
     }
 
+    /// Creates a new `Tensor` with the given shape and a default value.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - An array containing the shape of the tensor.
+    /// * `value` - The default value to fill the tensor with.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` instance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_rs::tensor::Tensor;
+    ///
+    /// let t = Tensor::<u8, 1>::from_shape_val([4], 0);
+    /// assert_eq!(t.data, vec![0, 0, 0, 0]);
+    ///
+    /// let t = Tensor::<u8, 2>::from_shape_val([2, 2], 1);
+    /// assert_eq!(t.data, vec![1, 1, 1, 1]);
+    ///
+    /// let t = Tensor::<u8, 3>::from_shape_val([2, 1, 3], 2);
+    /// assert_eq!(t.data, vec![2, 2, 2, 2, 2, 2]);
+    /// ```
+    pub fn from_shape_val(shape: [usize; N], value: T) -> Self
+    where
+        T: Copy,
+    {
+        let numel = shape.iter().product::<usize>();
+        let data = vec![value; numel];
+        let strides = get_strides_from_shape(shape);
+        Tensor {
+            shape,
+            data,
+            strides,
+        }
+    }
+
+    /// Create a new `Tensor` with the given shape and a function to generate the data.
+    ///
+    /// F is called with the index of the element to generate.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - An array containing the shape of the tensor.
+    /// * `f` - The function to generate the data.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` instance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_rs::tensor::Tensor;
+    ///
+    /// let t = Tensor::<u8, 1>::from_shape_fn([4], |[i]| i as u8);
+    /// assert_eq!(t.data, vec![0, 1, 2, 3]);
+    ///
+    /// let t = Tensor::<u8, 2>::from_shape_fn([2, 2], |[i, j]| (i * 2 + j) as u8);
+    /// assert_eq!(t.data, vec![0, 1, 2, 3]);
+    /// ```
+    pub fn from_shape_fn<F>(shape: [usize; N], f: F) -> Self
+    where
+        F: Fn([usize; N]) -> T,
+    {
+        let numel = shape.iter().product::<usize>();
+        let data: Vec<T> = (0..numel)
+            .map(|i| {
+                let mut index = [0; N];
+                let mut j = i;
+                for k in (0..N).rev() {
+                    index[k] = j % shape[k];
+                    j /= shape[k];
+                }
+                f(index)
+            })
+            .collect();
+        let strides = get_strides_from_shape(shape);
+        Tensor {
+            shape,
+            data,
+            strides,
+        }
+    }
+
     /// Returns the number of elements in the tensor.
     pub fn numel(&self) -> usize {
         self.data.len()
     }
 
-    /// Get the element at the given index.
+    // TODO: find a better name
+    pub fn get_iter_offset(&self, index: [usize; N]) -> usize {
+        let mut offset = 0;
+        for (i, &idx) in index.iter().enumerate() {
+            offset += idx * self.strides[i];
+        }
+        offset
+    }
+
+    /// Get the element at the given index without checking if the index is out of bounds.
     ///
     /// # Arguments
     ///
@@ -98,16 +194,13 @@ impl<T, const N: usize> Tensor<T, N> {
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
     ///
     /// let t = Tensor::<u8, 2>::new([2, 2], data).unwrap();
-    /// assert_eq!(*t.get([0, 0]), 1);
-    /// assert_eq!(*t.get([0, 1]), 2);
-    /// assert_eq!(*t.get([1, 0]), 3);
-    /// assert_eq!(*t.get([1, 1]), 4);
+    /// assert_eq!(*t.get_unchecked([0, 0]), 1);
+    /// assert_eq!(*t.get_unchecked([0, 1]), 2);
+    /// assert_eq!(*t.get_unchecked([1, 0]), 3);
+    /// assert_eq!(*t.get_unchecked([1, 1]), 4);
     /// ```
-    pub fn get(&self, index: [usize; N]) -> &T {
-        let mut offset = 0;
-        for (i, &idx) in index.iter().enumerate() {
-            offset += idx * self.strides[i];
-        }
+    pub fn get_unchecked(&self, index: [usize; N]) -> &T {
+        let offset = self.get_iter_offset(index);
         &self.data[offset]
     }
 
@@ -134,14 +227,14 @@ impl<T, const N: usize> Tensor<T, N> {
     ///
     /// let t = Tensor::<u8, 2>::new([2, 2], data).unwrap();
     ///
-    /// assert_eq!(*t.get_checked([0, 0]).unwrap(), 1);
-    /// assert_eq!(*t.get_checked([0, 1]).unwrap(), 2);
-    /// assert_eq!(*t.get_checked([1, 0]).unwrap(), 3);
-    /// assert_eq!(*t.get_checked([1, 1]).unwrap(), 4);
+    /// assert_eq!(*t.get([0, 0]).unwrap(), 1);
+    /// assert_eq!(*t.get([0, 1]).unwrap(), 2);
+    /// assert_eq!(*t.get([1, 0]).unwrap(), 3);
+    /// assert_eq!(*t.get([1, 1]).unwrap(), 4);
     ///
-    /// assert!(t.get_checked([0, 2]).is_err());
+    /// assert!(t.get([0, 2]).is_err());
     /// ```
-    pub fn get_checked(&self, index: [usize; N]) -> Result<&T, TensorError> {
+    pub fn get(&self, index: [usize; N]) -> Result<&T, TensorError> {
         let mut offset = 0;
         for (i, &idx) in index.iter().enumerate() {
             if idx >= self.shape[i] {
@@ -370,6 +463,101 @@ impl<T, const N: usize> Tensor<T, N> {
     {
         self.element_wise_op(other, |a, b| *a / *b)
     }
+
+    /// Create a new `Tensor` filled with zeros.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - The shape of the tensor.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` instance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_rs::tensor::Tensor;
+    ///
+    /// let t = Tensor::<u8, 1>::zeros([4]);
+    /// assert_eq!(t.data, vec![0, 0, 0, 0]);
+    ///
+    /// let t = Tensor::<u8, 2>::zeros([2, 2]);
+    /// assert_eq!(t.data, vec![0, 0, 0, 0]);
+    /// ```
+    pub fn zeros(shape: [usize; N]) -> Self
+    where
+        T: Default + Copy,
+    {
+        let data = vec![T::default(); shape.iter().product::<usize>()];
+        Tensor {
+            shape,
+            data,
+            strides: get_strides_from_shape(shape),
+        }
+    }
+
+    /// Apply a function to each element of the tensor.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - The function to apply to each element.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` instance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_rs::tensor::Tensor;
+    ///
+    /// let data: Vec<u8> = vec![1, 2, 3, 4];
+    /// let t = Tensor::<u8, 1>::new([4], data).unwrap();
+    ///
+    /// let t2 = t.map(|x| *x + 1);
+    /// assert_eq!(t2.data, vec![2, 3, 4, 5]);
+    /// ```
+    pub fn map<F>(&self, f: F) -> Tensor<T, N>
+    where
+        F: Fn(&T) -> T,
+    {
+        let data: Vec<T> = self.data.iter().map(f).collect();
+        Tensor {
+            shape: self.shape,
+            data,
+            strides: self.strides,
+        }
+    }
+
+    /// Cast the tensor to a new type.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` instance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_rs::tensor::Tensor;
+    ///
+    /// let data: Vec<u8> = vec![1, 2, 3, 4];
+    /// let t = Tensor::<u8, 1>::new([4], data).unwrap();
+    ///
+    /// let t2 = t.cast::<f32>();
+    /// assert_eq!(t2.data, vec![1.0, 2.0, 3.0, 4.0]);
+    /// ```
+    pub fn cast<U>(&self) -> Tensor<U, N>
+    where
+        T: Copy + Into<U>,
+    {
+        let data: Vec<U> = self.data.iter().map(|x| (*x).into()).collect();
+        Tensor {
+            shape: self.shape,
+            data,
+            strides: self.strides,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -402,10 +590,11 @@ mod tests {
     fn get_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 1>::new([4], data)?;
-        assert_eq!(*t.get([0]), 1);
-        assert_eq!(*t.get([1]), 2);
-        assert_eq!(*t.get([2]), 3);
-        assert_eq!(*t.get([3]), 4);
+        assert_eq!(*t.get([0])?, 1);
+        assert_eq!(*t.get([1])?, 2);
+        assert_eq!(*t.get([2])?, 3);
+        assert_eq!(*t.get([3])?, 4);
+        assert!(t.get([4]).is_err());
         Ok(())
     }
 
@@ -413,10 +602,11 @@ mod tests {
     fn get_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 2>::new([2, 2], data)?;
-        assert_eq!(*t.get([0, 0]), 1);
-        assert_eq!(*t.get([0, 1]), 2);
-        assert_eq!(*t.get([1, 0]), 3);
-        assert_eq!(*t.get([1, 1]), 4);
+        assert_eq!(*t.get([0, 0])?, 1);
+        assert_eq!(*t.get([0, 1])?, 2);
+        assert_eq!(*t.get([1, 0])?, 3);
+        assert_eq!(*t.get([1, 1])?, 4);
+        assert!(t.get([2, 0]).is_err());
         Ok(())
     }
 
@@ -424,12 +614,13 @@ mod tests {
     fn get_3d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
         let t = Tensor::<u8, 3>::new([2, 1, 3], data)?;
-        assert_eq!(*t.get([0, 0, 0]), 1);
-        assert_eq!(*t.get([0, 0, 1]), 2);
-        assert_eq!(*t.get([0, 0, 2]), 3);
-        assert_eq!(*t.get([1, 0, 0]), 4);
-        assert_eq!(*t.get([1, 0, 1]), 5);
-        assert_eq!(*t.get([1, 0, 2]), 6);
+        assert_eq!(*t.get([0, 0, 0])?, 1);
+        assert_eq!(*t.get([0, 0, 1])?, 2);
+        assert_eq!(*t.get([0, 0, 2])?, 3);
+        assert_eq!(*t.get([1, 0, 0])?, 4);
+        assert_eq!(*t.get([1, 0, 1])?, 5);
+        assert_eq!(*t.get([1, 0, 2])?, 6);
+        assert!(t.get([2, 0, 0]).is_err());
         Ok(())
     }
 
@@ -437,11 +628,10 @@ mod tests {
     fn get_checked_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 1>::new([4], data)?;
-        assert_eq!(*t.get_checked([0])?, 1);
-        assert_eq!(*t.get_checked([1])?, 2);
-        assert_eq!(*t.get_checked([2])?, 3);
-        assert_eq!(*t.get_checked([3])?, 4);
-        assert!(t.get_checked([4]).is_err());
+        assert_eq!(*t.get_unchecked([0]), 1);
+        assert_eq!(*t.get_unchecked([1]), 2);
+        assert_eq!(*t.get_unchecked([2]), 3);
+        assert_eq!(*t.get_unchecked([3]), 4);
         Ok(())
     }
 
@@ -449,11 +639,10 @@ mod tests {
     fn get_checked_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 2>::new([2, 2], data)?;
-        assert_eq!(*t.get_checked([0, 0])?, 1);
-        assert_eq!(*t.get_checked([0, 1])?, 2);
-        assert_eq!(*t.get_checked([1, 0])?, 3);
-        assert_eq!(*t.get_checked([1, 1])?, 4);
-        assert!(t.get_checked([2, 0]).is_err());
+        assert_eq!(*t.get_unchecked([0, 0]), 1);
+        assert_eq!(*t.get_unchecked([0, 1]), 2);
+        assert_eq!(*t.get_unchecked([1, 0]), 3);
+        assert_eq!(*t.get_unchecked([1, 1]), 4);
         Ok(())
     }
 
@@ -585,11 +774,98 @@ mod tests {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 1>::new([4], data)?;
         let t2 = t.reshape([2, 2])?;
-        assert_eq!(*t2.get([0, 0]), 1);
-        assert_eq!(*t2.get([0, 1]), 2);
-        assert_eq!(*t2.get([1, 0]), 3);
-        assert_eq!(*t2.get([1, 1]), 4);
+        assert_eq!(*t2.get([0, 0])?, 1);
+        assert_eq!(*t2.get([0, 1])?, 2);
+        assert_eq!(*t2.get([1, 0])?, 3);
+        assert_eq!(*t2.get([1, 1])?, 4);
         assert_eq!(t2.numel(), 4);
         Ok(())
+    }
+
+    #[test]
+    fn zeros_1d() -> Result<(), TensorError> {
+        let t = Tensor::<u8, 1>::zeros([4]);
+        assert_eq!(t.data, vec![0, 0, 0, 0]);
+        Ok(())
+    }
+
+    #[test]
+    fn zeros_2d() -> Result<(), TensorError> {
+        let t = Tensor::<u8, 2>::zeros([2, 2]);
+        assert_eq!(t.data, vec![0, 0, 0, 0]);
+        Ok(())
+    }
+
+    #[test]
+    fn map_1d() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 1>::new([4], data)?;
+        let t2 = t.map(|x| *x + 1);
+        assert_eq!(t2.data, vec![2, 3, 4, 5]);
+        Ok(())
+    }
+
+    #[test]
+    fn map_2d() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 2>::new([2, 2], data)?;
+        let t2 = t.map(|x| *x + 1);
+        assert_eq!(t2.data, vec![2, 3, 4, 5]);
+        Ok(())
+    }
+
+    #[test]
+    fn from_shape_val_1d() {
+        let t = Tensor::<u8, 1>::from_shape_val([4], 0);
+        assert_eq!(t.data, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn from_shape_val_2d() {
+        let t = Tensor::<u8, 2>::from_shape_val([2, 2], 1);
+        assert_eq!(t.data, vec![1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn from_shape_val_3d() {
+        let t = Tensor::<u8, 3>::from_shape_val([2, 1, 3], 2);
+        assert_eq!(t.data, vec![2, 2, 2, 2, 2, 2]);
+    }
+
+    #[test]
+    fn cast_1d() {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 1>::new([4], data).unwrap();
+        let t2 = t.cast::<u16>();
+        assert_eq!(t2.data, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn cast_2d() {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 2>::new([2, 2], data).unwrap();
+        let t2 = t.cast::<u16>();
+        assert_eq!(t2.data, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn from_shape_fn_1d() {
+        let t = Tensor::from_shape_fn([3, 3], |[i, j]| (1 + i) * (1 + j));
+        assert_eq!(t.data, vec![1, 2, 3, 2, 4, 6, 3, 6, 9]);
+    }
+
+    #[test]
+    fn from_shape_fn_2d() {
+        let t = Tensor::from_shape_fn([3, 3], |[i, j]| (1 + i) * (1 + j));
+        assert_eq!(t.data, vec![1, 2, 3, 2, 4, 6, 3, 6, 9]);
+    }
+
+    #[test]
+    fn from_shape_fn_3d() {
+        let t = Tensor::from_shape_fn([2, 3, 3], |[x, y, c]| (1 + x) * (1 + y) * (1 + c));
+        assert_eq!(
+            t.data,
+            vec![1, 2, 3, 2, 4, 6, 3, 6, 9, 2, 4, 6, 4, 8, 12, 6, 12, 18]
+        );
     }
 }
