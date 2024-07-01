@@ -1,6 +1,6 @@
-mod tensor;
+mod base;
 
-pub use tensor::{Tensor, TensorError};
+pub use base::{Tensor, TensorError};
 
 // aliases
 pub type Tensor1<T> = Tensor<T, 1>;
