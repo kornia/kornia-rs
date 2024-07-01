@@ -31,11 +31,16 @@ jobs:
           path: dist
 
   macos:
-    runs-on: macos-latest
+    runs-on: ${{ matrix.runs-on }}
     strategy:
       matrix:
-        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12"]
-        target: [x86_64, aarch64]
+        include:
+          - runs-on: macos-13
+            python-version: ["3.7", "3.8", "3.9", "3.10"]
+            target: [x86_64, aarch64]
+          - runs-on: macos-14
+            python-version: ["3.11", "3.12"]
+            target: [x86_64, aarch64]
     steps:
       - uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v4
