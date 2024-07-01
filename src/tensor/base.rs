@@ -114,6 +114,54 @@ impl<T, const N: usize> Tensor<T, N> {
         }
     }
 
+    /// Create a new `Tensor` with the given shape and a function to generate the data.
+    ///
+    /// F is called with the index of the element to generate.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - An array containing the shape of the tensor.
+    /// * `f` - The function to generate the data.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` instance.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_rs::tensor::Tensor;
+    ///
+    /// let t = Tensor::<u8, 1>::from_shape_fn([4], |[i]| i as u8);
+    /// assert_eq!(t.data, vec![0, 1, 2, 3]);
+    ///
+    /// let t = Tensor::<u8, 2>::from_shape_fn([2, 2], |[i, j]| (i * 2 + j) as u8);
+    /// assert_eq!(t.data, vec![0, 1, 2, 3]);
+    /// ```
+    pub fn from_shape_fn<F>(shape: [usize; N], f: F) -> Self
+    where
+        F: Fn([usize; N]) -> T,
+    {
+        let numel = shape.iter().product::<usize>();
+        let data: Vec<T> = (0..numel)
+            .map(|i| {
+                let mut index = [0; N];
+                let mut j = i;
+                for k in (0..N).rev() {
+                    index[k] = j % shape[k];
+                    j /= shape[k];
+                }
+                f(index)
+            })
+            .collect();
+        let strides = get_strides_from_shape(shape);
+        Tensor {
+            shape,
+            data,
+            strides,
+        }
+    }
+
     /// Returns the number of elements in the tensor.
     pub fn numel(&self) -> usize {
         self.data.len()
@@ -798,5 +846,11 @@ mod tests {
         let t = Tensor::<u8, 2>::new([2, 2], data).unwrap();
         let t2 = t.cast::<u16>();
         assert_eq!(t2.data, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn from_shape_fn_1d() {
+        let t = Tensor::from_shape_fn([3, 3], |[i, j]| (1 + i) * (1 + j));
+        assert_eq!(t.data, vec![1, 2, 3, 2, 4, 6, 3, 6, 9]);
     }
 }
