@@ -47,10 +47,10 @@ fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
 /// # Example
 ///
 /// ```
-/// use kornia_rs::tensor::Tensor;
+/// use kornia_rs::tensor::{Tensor, CpuAllocator};
 ///
 /// let data: Vec<u8> = vec![1, 2, 3, 4];
-/// let t = Tensor::<u8, 2>::new([2, 2], data).unwrap();
+/// let t = Tensor::<u8, 2>::new_uninitialized([2, 2], CpuAllocator).unwrap();
 /// assert_eq!(t.shape, [2, 2]);
 pub struct Tensor<T, const N: usize, A: TensorAllocator = CpuAllocator> {
     //pub data: Vec<T>,
@@ -128,7 +128,7 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_rs::tensor::Tensor;
+    /// use kornia_rs::tensor::{Tensor, CpuAllocator};
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
     /// let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
@@ -162,29 +162,29 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_rs::tensor::Tensor;
+    /// use kornia_rs::tensor::{Tensor, CpuAllocator};
     ///
-    /// let t = Tensor::<u8, 1>::from_shape_val([4], 0);
-    /// assert_eq!(t.data, vec![0, 0, 0, 0]);
+    /// let t = Tensor::<u8, 1>::from_shape_val([4], 0, CpuAllocator).unwrap();
+    /// assert_eq!(t.data(), vec![0, 0, 0, 0]);
     ///
-    /// let t = Tensor::<u8, 2>::from_shape_val([2, 2], 1);
-    /// assert_eq!(t.data, vec![1, 1, 1, 1]);
+    /// let t = Tensor::<u8, 2>::from_shape_val([2, 2], 1, CpuAllocator).unwrap();
+    /// assert_eq!(t.data(), vec![1, 1, 1, 1]);
     ///
-    /// let t = Tensor::<u8, 3>::from_shape_val([2, 1, 3], 2);
-    /// assert_eq!(t.data, vec![2, 2, 2, 2, 2, 2]);
+    /// let t = Tensor::<u8, 3>::from_shape_val([2, 1, 3], 2, CpuAllocator).unwrap();
+    /// assert_eq!(t.data(), vec![2, 2, 2, 2, 2, 2]);
     /// ```
-    pub fn from_shape_val(shape: [usize; N], value: T, alloc: A) -> Self
+    pub fn from_shape_val(shape: [usize; N], value: T, alloc: A) -> Result<Self, TensorError>
     where
         T: Copy,
     {
         let numel = shape.iter().product::<usize>();
-        let storage = TensorStorage::from_val(numel, value, alloc).unwrap();
+        let storage = TensorStorage::from_val(numel, value, alloc)?;
         let strides = get_strides_from_shape(shape);
-        Tensor {
+        Ok(Tensor {
             storage,
             shape,
             strides,
-        }
+        })
     }
 
     /// Create a new `Tensor` with the given shape and a function to generate the data.
@@ -203,13 +203,13 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_rs::tensor::Tensor;
+    /// use kornia_rs::tensor::{Tensor, CpuAllocator};
     ///
-    /// let t = Tensor::<u8, 1>::from_shape_fn([4], |[i]| i as u8);
-    /// assert_eq!(t.data, vec![0, 1, 2, 3]);
+    /// let t = Tensor::<u8, 1>::from_shape_fn([4], |[i]| i as u8, CpuAllocator);
+    /// assert_eq!(t.data(), vec![0, 1, 2, 3]);
     ///
-    /// let t = Tensor::<u8, 2>::from_shape_fn([2, 2], |[i, j]| (i * 2 + j) as u8);
-    /// assert_eq!(t.data, vec![0, 1, 2, 3]);
+    /// let t = Tensor::<u8, 2>::from_shape_fn([2, 2], |[i, j]| (i * 2 + j) as u8, CpuAllocator);
+    /// assert_eq!(t.data(), vec![0, 1, 2, 3]);
     /// ```
     pub fn from_shape_fn<F>(shape: [usize; N], f: F, alloc: A) -> Self
     where
@@ -263,11 +263,11 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_rs::tensor::Tensor;
+    /// use kornia_rs::tensor::{Tensor, CpuAllocator};
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
     ///
-    /// let t = Tensor::<u8, 2>::new([2, 2], data).unwrap();
+    /// let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
     /// assert_eq!(*t.get_unchecked([0, 0]), 1);
     /// assert_eq!(*t.get_unchecked([0, 1]), 2);
     /// assert_eq!(*t.get_unchecked([1, 0]), 3);
@@ -295,11 +295,11 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_rs::tensor::Tensor;
+    /// use kornia_rs::tensor::{Tensor, CpuAllocator};
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
     ///
-    /// let t = Tensor::<u8, 2>::new([2, 2], data).unwrap();
+    /// let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
     ///
     /// assert_eq!(*t.get([0, 0]).unwrap(), 1);
     /// assert_eq!(*t.get([0, 1]).unwrap(), 2);
@@ -336,14 +336,14 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_rs::tensor::Tensor;
+    /// use kornia_rs::tensor::{Tensor, CpuAllocator};
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
     ///
-    /// let t = Tensor::<u8, 1>::new([4], data).unwrap();
+    /// let t = Tensor::<u8, 1>::from_shape_vec([4], data, CpuAllocator).unwrap();
     /// let t2 = t.reshape([2, 2]).unwrap();
     /// assert_eq!(t2.shape, [2, 2]);
-    /// assert_eq!(t2.data, vec![1, 2, 3, 4]);
+    /// assert_eq!(t2.data(), vec![1, 2, 3, 4]);
     /// assert_eq!(t2.strides, [2, 1]);
     /// assert_eq!(t2.numel(), 4);
     /// ```
@@ -379,25 +379,25 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_rs::tensor::Tensor;
+    /// use kornia_rs::tensor::{Tensor, CpuAllocator};
     ///
     /// let data1: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t1 = Tensor::<u8, 1>::new([4], data1).unwrap();
+    /// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1, CpuAllocator).unwrap();
     ///
     /// let data2: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t2 = Tensor::<u8, 1>::new([4], data2).unwrap();
+    /// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2, CpuAllocator).unwrap();
     ///
     /// let t3 = t1.element_wise_op(&t2, |a, b| *a + *b);
-    /// assert_eq!(t3.data, vec![2, 4, 6, 8]);
+    /// assert_eq!(t3.data(), vec![2, 4, 6, 8]);
     ///
     /// let t4 = t1.element_wise_op(&t2, |a, b| *a - *b);
-    /// assert_eq!(t4.data, vec![0, 0, 0, 0]);
+    /// assert_eq!(t4.data(), vec![0, 0, 0, 0]);
     ///
     /// let t5 = t1.element_wise_op(&t2, |a, b| *a * *b);
-    /// assert_eq!(t5.data, vec![1, 4, 9, 16]);
+    /// assert_eq!(t5.data(), vec![1, 4, 9, 16]);
     ///
     /// let t6 = t1.element_wise_op(&t2, |a, b| *a / *b);
-    /// assert_eq!(t6.data, vec![1, 1, 1, 1]);
+    /// assert_eq!(t6.data(), vec![1, 1, 1, 1]);
     /// ```
     pub fn element_wise_op<F>(&self, other: &Tensor<T, N>, op: F) -> Tensor<T, N>
     where
@@ -432,16 +432,16 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_rs::tensor::Tensor;
+    /// use kornia_rs::tensor::{Tensor, CpuAllocator};
     ///
     /// let data1: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t1 = Tensor::<u8, 1>::new([4], data1).unwrap();
+    /// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1, CpuAllocator).unwrap();
     ///
     /// let data2: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t2 = Tensor::<u8, 1>::new([4], data2).unwrap();
+    /// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2, CpuAllocator).unwrap();
     ///
     /// let t3 = t1.add(&t2);
-    /// assert_eq!(t3.data, vec![2, 4, 6, 8]);
+    /// assert_eq!(t3.data(), vec![2, 4, 6, 8]);
     /// ```
     pub fn add(&self, other: &Tensor<T, N>) -> Tensor<T, N>
     where
@@ -463,16 +463,16 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_rs::tensor::Tensor;
+    /// use kornia_rs::tensor::{Tensor, CpuAllocator};
     ///
     /// let data1: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t1 = Tensor::<u8, 1>::new([4], data1).unwrap();
+    /// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1, CpuAllocator).unwrap();
     ///
     /// let data2: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t2 = Tensor::<u8, 1>::new([4], data2).unwrap();
+    /// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2, CpuAllocator).unwrap();
     ///
     /// let t3 = t1.sub(&t2);
-    /// assert_eq!(t3.data, vec![0, 0, 0, 0]);
+    /// assert_eq!(t3.data(), vec![0, 0, 0, 0]);
     /// ```
     pub fn sub(&self, other: &Tensor<T, N>) -> Tensor<T, N>
     where
@@ -494,16 +494,16 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_rs::tensor::Tensor;
+    /// use kornia_rs::tensor::{Tensor, CpuAllocator};
     ///
     /// let data1: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t1 = Tensor::<u8, 1>::new([4], data1).unwrap();
+    /// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1, CpuAllocator).unwrap();
     ///
     /// let data2: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t2 = Tensor::<u8, 1>::new([4], data2).unwrap();
+    /// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2, CpuAllocator).unwrap();
     ///
     /// let t3 = t1.mul(&t2);
-    /// assert_eq!(t3.data, vec![1, 4, 9, 16]);
+    /// assert_eq!(t3.data(), vec![1, 4, 9, 16]);
     /// ```
     pub fn mul(&self, other: &Tensor<T, N>) -> Tensor<T, N>
     where
@@ -525,16 +525,16 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_rs::tensor::Tensor;
+    /// use kornia_rs::tensor::{Tensor, CpuAllocator};
     ///
     /// let data1: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t1 = Tensor::<u8, 1>::new([4], data1).unwrap();
+    /// let t1 = Tensor::<u8, 1>::from_shape_vec([4], data1, CpuAllocator).unwrap();
     ///
     /// let data2: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t2 = Tensor::<u8, 1>::new([4], data2).unwrap();
+    /// let t2 = Tensor::<u8, 1>::from_shape_vec([4], data2, CpuAllocator).unwrap();
     ///
     /// let t3 = t1.div(&t2);
-    /// assert_eq!(t3.data, vec![1, 1, 1, 1]);
+    /// assert_eq!(t3.data(), vec![1, 1, 1, 1]);
     /// ```
     pub fn div(&self, other: &Tensor<T, N>) -> Tensor<T, N>
     where
@@ -556,13 +556,13 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_rs::tensor::Tensor;
+    /// use kornia_rs::tensor::{Tensor, CpuAllocator};
     ///
-    /// let t = Tensor::<u8, 1>::zeros([4]);
-    /// assert_eq!(t.data, vec![0, 0, 0, 0]);
+    /// let t = Tensor::<u8, 1>::zeros([4], CpuAllocator);
+    /// assert_eq!(t.data(), vec![0, 0, 0, 0]);
     ///
-    /// let t = Tensor::<u8, 2>::zeros([2, 2]);
-    /// assert_eq!(t.data, vec![0, 0, 0, 0]);
+    /// let t = Tensor::<u8, 2>::zeros([2, 2], CpuAllocator);
+    /// assert_eq!(t.data(), vec![0, 0, 0, 0]);
     /// ```
     pub fn zeros(shape: [usize; N], alloc: A) -> Tensor<T, N, A>
     where
@@ -590,13 +590,13 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_rs::tensor::Tensor;
+    /// use kornia_rs::tensor::{Tensor, CpuAllocator};
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t = Tensor::<u8, 1>::new([4], data).unwrap();
+    /// let t = Tensor::<u8, 1>::from_shape_vec([4], data, CpuAllocator).unwrap();
     ///
     /// let t2 = t.map(|x| *x + 1);
-    /// assert_eq!(t2.data, vec![2, 3, 4, 5]);
+    /// assert_eq!(t2.data(), vec![2, 3, 4, 5]);
     /// ```
     pub fn map<F>(&self, f: F) -> Tensor<T, N>
     where
@@ -620,13 +620,13 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Example
     ///
     /// ```
-    /// use kornia_rs::tensor::Tensor;
+    /// use kornia_rs::tensor::{Tensor, CpuAllocator};
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t = Tensor::<u8, 1>::new([4], data).unwrap();
+    /// let t = Tensor::<u8, 1>::from_shape_vec([4], data, CpuAllocator).unwrap();
     ///
     /// let t2 = t.cast::<f32>();
-    /// assert_eq!(t2.data, vec![1.0, 2.0, 3.0, 4.0]);
+    /// assert_eq!(t2.data(), vec![1.0, 2.0, 3.0, 4.0]);
     /// ```
     pub fn cast<U>(&self) -> Tensor<U, N>
     where
@@ -898,21 +898,24 @@ mod tests {
     }
 
     #[test]
-    fn from_shape_val_1d() {
-        let t = Tensor::<u8, 1>::from_shape_val([4], 0, CpuAllocator);
+    fn from_shape_val_1d() -> Result<(), TensorError> {
+        let t = Tensor::<u8, 1>::from_shape_val([4], 0, CpuAllocator)?;
         assert_eq!(t.as_slice(), vec![0, 0, 0, 0]);
+        Ok(())
     }
 
     #[test]
-    fn from_shape_val_2d() {
-        let t = Tensor::<u8, 2>::from_shape_val([2, 2], 1, CpuAllocator);
+    fn from_shape_val_2d() -> Result<(), TensorError> {
+        let t = Tensor::<u8, 2>::from_shape_val([2, 2], 1, CpuAllocator)?;
         assert_eq!(t.as_slice(), vec![1, 1, 1, 1]);
+        Ok(())
     }
 
     #[test]
-    fn from_shape_val_3d() {
-        let t = Tensor::<u8, 3>::from_shape_val([2, 1, 3], 2, CpuAllocator);
+    fn from_shape_val_3d() -> Result<(), TensorError> {
+        let t = Tensor::<u8, 3>::from_shape_val([2, 1, 3], 2, CpuAllocator)?;
         assert_eq!(t.as_slice(), vec![2, 2, 2, 2, 2, 2]);
+        Ok(())
     }
 
     #[test]
