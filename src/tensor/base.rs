@@ -13,8 +13,8 @@ pub enum TensorError {
     #[error("Index out of bounds. The index {0} is out of bounds.")]
     IndexOutOfBounds(usize),
 
-    #[error("Invalid tensor layout {0}")]
-    LayoutError(#[from] TensorAllocatorError),
+    #[error("Error with the tensor storage: {0}")]
+    StorageError(#[from] TensorAllocatorError),
 }
 
 /// Compute the strides from the shape of a tensor.
@@ -139,15 +139,36 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     ///
     /// A slice containing the data of the tensor.
     pub fn as_slice(&self) -> Result<&[T], TensorError> {
-        // TODO: handle error
-        Ok(unsafe { core::slice::from_raw_parts(self.storage.ptr().as_ptr(), self.storage.len()) })
+        // Pre-unsafe check to avoid null pointer dereference
+        if self.storage.len() == 0 {
+            Err(TensorError::StorageError(TensorAllocatorError::ZeroLength))?;
+        }
+
+        unsafe {
+            Ok(core::slice::from_raw_parts(
+                self.storage.ptr().as_ptr(),
+                self.storage.len(),
+            ))
+        }
     }
 
+    /// Get the data of the tensor as a mutable slice.
+    ///
+    /// # Returns
+    ///
+    /// A mutable slice containing the data of the tensor.
     pub fn as_slice_mut(&mut self) -> Result<&mut [T], TensorError> {
-        // TODO: handle error
-        Ok(unsafe {
-            core::slice::from_raw_parts_mut(self.storage.ptr().as_ptr(), self.storage.len())
-        })
+        // Pre-unsafe check to avoid null pointer dereference
+        if self.storage.len() == 0 {
+            Err(TensorError::StorageError(TensorAllocatorError::ZeroLength))?;
+        }
+
+        unsafe {
+            Ok(core::slice::from_raw_parts_mut(
+                self.storage.ptr().as_ptr(),
+                self.storage.len(),
+            ))
+        }
     }
 
     /// Creates a new `Tensor` with the given shape and data.

@@ -10,8 +10,11 @@ pub enum TensorAllocatorError {
     #[error("Invalid tensor layout {0}")]
     LayoutError(core::alloc::LayoutError),
 
-    #[error("Invalid pointer")]
-    InvalidPointer,
+    #[error("Null pointer")]
+    NullPointer,
+
+    #[error("Zero length tensor")]
+    ZeroLength,
 }
 
 /// A trait for allocating and deallocating memory for tensors.
@@ -54,7 +57,7 @@ impl TensorAllocator for CpuAllocator {
     fn alloc(&self, layout: Layout) -> Result<NonNull<u8>, TensorAllocatorError> {
         let ptr = unsafe { System.alloc(layout) };
         if ptr.is_null() {
-            Err(TensorAllocatorError::InvalidPointer)
+            Err(TensorAllocatorError::NullPointer)
         } else {
             Ok(NonNull::new(ptr).unwrap())
         }

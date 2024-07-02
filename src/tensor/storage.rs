@@ -58,7 +58,11 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     /// The vector must have the correct length and alignment.
     pub fn from_vec(mut vec: Vec<T>, alloc: A) -> Result<Self, TensorAllocatorError> {
         let len = vec.len();
-        let ptr = NonNull::new(vec.as_mut_ptr()).ok_or(TensorAllocatorError::InvalidPointer)?;
+        if len == 0 {
+            Err(TensorAllocatorError::ZeroLength)?;
+        }
+
+        let ptr = NonNull::new(vec.as_mut_ptr()).ok_or(TensorAllocatorError::NullPointer)?;
         std::mem::forget(vec); // Prevent the vector from being deallocated.
 
         let storage = Self {
