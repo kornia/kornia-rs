@@ -1,5 +1,9 @@
+pub mod allocator;
 mod base;
+// TODO: mod ops;
+mod storage;
 
+pub use allocator::{CpuAllocator, TensorAllocator};
 pub use base::{Tensor, TensorError};
 
 // aliases
