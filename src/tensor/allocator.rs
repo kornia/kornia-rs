@@ -24,13 +24,21 @@ pub enum TensorAllocatorError {
 ///
 /// * `alloc` - Allocates memory for a tensor with the given layout.
 /// * `dealloc` - Deallocates memory for a tensor with the given layout.
-pub trait TensorAllocator {
+pub trait TensorAllocator: Clone {
     fn alloc(&self, layout: Layout) -> Result<NonNull<u8>, TensorAllocatorError>;
     fn dealloc(&self, ptr: NonNull<u8>, layout: Layout);
 }
 
+#[derive(Clone)]
 /// A tensor allocator that uses the system allocator.
 pub struct CpuAllocator;
+
+/// Implement the `Default` trait for the `CpuAllocator` struct.
+impl Default for CpuAllocator {
+    fn default() -> Self {
+        Self
+    }
+}
 
 /// Implement the `TensorAllocator` trait for the `CpuAllocator` struct.
 impl TensorAllocator for CpuAllocator {

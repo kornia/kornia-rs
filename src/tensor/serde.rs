@@ -14,7 +14,7 @@ where
         S: serde::Serializer,
     {
         let mut state = serializer.serialize_struct("Tensor", 3)?;
-        state.serialize_field("data", self.as_slice())?;
+        state.serialize_field("data", self.as_slice().map_err(serde::ser::Error::custom)?)?;
         state.serialize_field("shape", &self.shape.to_vec())?;
         state.serialize_field("strides", &self.strides.to_vec())?;
         state.end()
