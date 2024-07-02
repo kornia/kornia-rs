@@ -3135,6 +3135,7 @@ dependencies = [
  "num-traits",
  "rayon",
  "rerun",
+ "serde",
  "tempfile",
  "thiserror",
  "tokio",
