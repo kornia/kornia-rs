@@ -61,20 +61,20 @@ pub struct Tensor<T, const N: usize, A: TensorAllocator = CpuAllocator> {
 
 /// Implementation of the Tensor struct.
 impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
-    /// Creates a new `Tensor` with the given shape and data.
+    /// Create a new `Tensor` with uninitialized data.
     ///
     /// # Arguments
     ///
     /// * `shape` - An array containing the shape of the tensor.
-    /// * `data` - A vector containing the data of the tensor.
+    /// * `alloc` - The allocator to use.
     ///
     /// # Returns
     ///
-    /// A new `Tensor` instance.
-    pub fn new(shape: [usize; N], alloc: A) -> Result<Self, TensorError> {
+    /// A new `Tensor` instance with uninitialized data.
+    pub fn new_uninitialized(shape: [usize; N], alloc: A) -> Result<Self, TensorError> {
         let numel = shape.iter().product::<usize>();
-        let storage = TensorStorage::new(numel, alloc)?;
         let strides = get_strides_from_shape(shape);
+        let storage = TensorStorage::new(numel, alloc)?;
         Ok(Tensor {
             storage,
             shape,
@@ -238,7 +238,6 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
 
     /// Returns the number of elements in the tensor.
     pub fn numel(&self) -> usize {
-        // TODO: test this
         self.storage.len()
     }
 

@@ -1,5 +1,5 @@
 use super::allocator::{TensorAllocator, TensorAllocatorError};
-use core::ptr;
+use core::{ops, ptr};
 use std::{alloc::Layout, ptr::NonNull};
 
 /// A contiguous block of memory for a tensor.
@@ -107,6 +107,35 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     /// Returns the allocator used to allocate the tensor storage.
     pub fn alloc(&self) -> &A {
         &self.alloc
+    }
+}
+
+/// Implement the `Deref` and `DerefMut` traits for the `TensorStorage` struct.
+impl<T, A: TensorAllocator> ops::Deref for TensorStorage<T, A> {
+    type Target = [T];
+
+    /// Returns a slice of the tensor storage.
+    fn deref(&self) -> &[T] {
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+}
+
+/// Implement the `DerefMut` trait for the `TensorStorage` struct.
+impl<T, A: TensorAllocator> ops::DerefMut for TensorStorage<T, A> {
+    /// Returns a mutable slice of the tensor storage.
+    fn deref_mut(&mut self) -> &mut [T] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+    }
+}
+
+impl<T, A: TensorAllocator> Drop for TensorStorage<T, A> {
+    fn drop(&mut self) {
+        self.alloc.dealloc(
+            self.ptr.cast(),
+            Layout::array::<T>(self.len)
+                .map_err(|err| TensorAllocatorError::LayoutError(err))
+                .unwrap(),
+        );
     }
 }
 
