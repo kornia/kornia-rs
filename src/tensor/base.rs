@@ -54,7 +54,7 @@ fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
 /// assert_eq!(t.shape, [2, 2]);
 pub struct Tensor<T, const N: usize, A: TensorAllocator = CpuAllocator> {
     //pub data: Vec<T>,
-    storage: TensorStorage<T, A>,
+    pub storage: TensorStorage<T, A>,
     pub shape: [usize; N],
     pub strides: [usize; N],
 }
