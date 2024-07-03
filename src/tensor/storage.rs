@@ -4,7 +4,9 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::{alloc::Layout, ptr::NonNull};
 
-/// A contiguous block of memory for a tensor.
+/// represents a contiguous memory region that can be shared with other buffers and across thread boundaries.
+///
+/// NOTE: https://docs.rs/arrow/latest/arrow/buffer/struct.Buffer.html
 ///
 /// # Safety
 ///

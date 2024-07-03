@@ -38,6 +38,9 @@ fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
 
 /// A data structure to represent a multi-dimensional tensor.
 ///
+/// NOTE: internally the data is stored as an arrow::Buffer which represents a contiguous memory
+/// region that can be shared with other buffers and across thread boundaries.
+///
 /// # Attributes
 ///
 /// * `storage` - The storage of the tensor.
