@@ -24,19 +24,22 @@ use anyhow::Result;
 ///
 /// # Panics
 ///
-/// This function will panic if the sizes of `src1` and `src2` do not match. This is
-/// checked using `assert_eq!(src1.size(), src2.size())`.
+/// This function will panic if the sizes of `src1` and `src2` do not match.
 pub fn add_weighted<T, const CHANNELS: usize>(
     src1: &Image<T, CHANNELS>,
-    alpha: &T,
+    alpha: T,
     src2: &Image<T, CHANNELS>,
-    beta: &T,
-    gamma: &T,
+    beta: T,
+    gamma: T,
 ) -> Result<Image<T, CHANNELS>>
 where
     T: num_traits::Float + num_traits::FromPrimitive + std::fmt::Debug + Send + Sync + Copy,
 {
-    assert_eq!(src1.size(), src2.size());
+    if src1.size() != src2.size() {
+        return Err(anyhow::anyhow!(
+            "The shape of `src1` and `src2` should be identical"
+        ));
+    }
 
     let mut dst = ndarray::Array3::<T>::zeros(src1.data.dim());
 
@@ -45,7 +48,7 @@ where
         .and(src2.data.rows())
         .for_each(|mut dst_pixel, src1_pixels, src2_pixels| {
             for i in 0..CHANNELS {
-                dst_pixel[i] = (src1_pixels[i] * *alpha) + (src2_pixels[i] * *beta) + *gamma;
+                dst_pixel[i] = (src1_pixels[i] * alpha) + (src2_pixels[i] * beta) + gamma;
             }
         });
 
@@ -80,7 +83,7 @@ mod tests {
         let gamma = 1.0f32;
         let expected = [11.0, 15.0, 19.0, 23.0];
 
-        let weighted = super::add_weighted(&src1, &alpha, &src2, &beta, &gamma)?;
+        let weighted = super::add_weighted(&src1, alpha, &src2, beta, gamma)?;
 
         weighted
             .data
