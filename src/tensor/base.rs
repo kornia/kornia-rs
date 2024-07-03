@@ -40,8 +40,8 @@ fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
 ///
 /// # Attributes
 ///
+/// * `storage` - The storage of the tensor.
 /// * `shape` - The shape of the tensor.
-/// * `data` - The data of the tensor.
 /// * `strides` - The strides of the tensor data in memory.
 ///
 /// # Example
@@ -88,14 +88,6 @@ where
         })
     }
 
-    /// Get the data of the tensor as a vector.
-    pub fn into_raw_vec(&self) -> Vec<T>
-    where
-        T: Copy,
-    {
-        self.storage.data.clone().into_vec().unwrap()
-    }
-
     /// Get the data of the tensor as a slice.
     ///
     /// # Returns
@@ -112,8 +104,10 @@ where
     ///
     /// A mutable slice containing the data of the tensor.
     pub fn as_slice_mut(&mut self) -> &mut [T] {
+        // convert the data to a typed slice
         let slice = self.storage.data.typed_data::<T>();
 
+        // TODO: verify if there is a better way to do this
         unsafe { std::slice::from_raw_parts_mut(slice.as_ptr() as *mut T, slice.len()) }
     }
 
