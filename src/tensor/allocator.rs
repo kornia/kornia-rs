@@ -1,7 +1,4 @@
-use std::{
-    alloc::{GlobalAlloc, Layout, System},
-    ptr::NonNull,
-};
+use std::alloc::{GlobalAlloc, Layout, System};
 
 use thiserror::Error;
 
@@ -12,9 +9,6 @@ pub enum TensorAllocatorError {
 
     #[error("Null pointer")]
     NullPointer,
-
-    #[error("Zero length tensor")]
-    ZeroLength,
 }
 
 /// A trait for allocating and deallocating memory for tensors.
@@ -28,8 +22,8 @@ pub enum TensorAllocatorError {
 /// * `alloc` - Allocates memory for a tensor with the given layout.
 /// * `dealloc` - Deallocates memory for a tensor with the given layout.
 pub trait TensorAllocator: Clone {
-    fn alloc(&self, layout: Layout) -> Result<NonNull<u8>, TensorAllocatorError>;
-    fn dealloc(&self, ptr: NonNull<u8>, layout: Layout);
+    fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError>;
+    fn dealloc(&self, ptr: *mut u8, layout: Layout);
 }
 
 #[derive(Clone)]
@@ -54,13 +48,12 @@ impl TensorAllocator for CpuAllocator {
     /// # Returns
     ///
     /// A non-null pointer to the allocated memory if successful, otherwise an error.
-    fn alloc(&self, layout: Layout) -> Result<NonNull<u8>, TensorAllocatorError> {
+    fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError> {
         let ptr = unsafe { System.alloc(layout) };
         if ptr.is_null() {
-            Err(TensorAllocatorError::NullPointer)
-        } else {
-            Ok(NonNull::new(ptr).unwrap())
+            Err(TensorAllocatorError::NullPointer)?
         }
+        Ok(ptr)
     }
 
     /// Deallocates memory for a tensor with the given layout.
@@ -73,8 +66,9 @@ impl TensorAllocator for CpuAllocator {
     /// # Safety
     ///
     /// The pointer must be non-null and the layout must be correct.
-    fn dealloc(&self, ptr: NonNull<u8>, layout: Layout) {
-        unsafe { System.dealloc(ptr.as_ptr() as *mut u8, layout) }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
     }
 }
 
