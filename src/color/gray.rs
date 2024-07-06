@@ -1,5 +1,10 @@
-use crate::image::Image;
-use anyhow::Result;
+use crate::{
+    image::Image,
+    tensor::{Tensor3, TensorError},
+};
+use anyhow::{Ok, Result};
+use arrow_buffer::{Buffer, MutableBuffer};
+use rayon::prelude::*;
 
 /// Define the RGB weights for the grayscale conversion.
 const RW: f64 = 0.299;
@@ -63,9 +68,54 @@ where
     Ok(output)
 }
 
+/// Convert an RGB image to grayscale using the formula:
+///
+/// Y = 77 * R + 150 * G + 29 * B / 256
+///
+/// # Arguments
+///
+/// * `src` - The input RGB image assumed to have 3 channels.
+/// * `dst` - The output grayscale image.
+///
+/// # Returns
+///
+/// A result indicating success or failure.
+///
+/// Precondition: the input image must have 3 channels.
+/// Precondition: the output image must have 1 channel.
+pub fn gray_from_rgb_new(
+    src: &Tensor3<u8>,
+    dst: &mut Tensor3<u8>,
+) -> std::result::Result<(), TensorError> {
+    if src.shape[0] != dst.shape[0] || src.shape[1] != dst.shape[1] {
+        Err(TensorError::ShapeMismatch)?
+    }
+
+    if src.shape[2] != 3 {
+        Err(TensorError::InvalidNumDimensions(src.shape[2]))?
+    }
+
+    if dst.shape[2] != 1 {
+        Err(TensorError::InvalidNumDimensions(dst.shape[2]))?
+    }
+
+    src.as_slice()
+        .par_chunks_exact(3)
+        .zip(dst.as_slice_mut().par_iter_mut())
+        .for_each(|(pixel, out)| {
+            let r = pixel[0] as u32;
+            let g = pixel[1] as u32;
+            let b = pixel[2] as u32;
+            *out = ((77 * r + 150 * g + 29 * b) / 256) as u8;
+        });
+
+    std::result::Result::Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use crate::io::functional as F;
+    use crate::tensor::{CpuAllocator, Tensor3};
     use anyhow::Result;
 
     #[test]
@@ -77,6 +127,27 @@ mod tests {
         assert_eq!(gray.num_channels(), 1);
         assert_eq!(gray.size().width, 258);
         assert_eq!(gray.size().height, 195);
+        Ok(())
+    }
+
+    #[test]
+    fn gray_from_rgb_new() -> Result<()> {
+        let image_path = std::path::Path::new("tests/data/dog.jpeg");
+        let image = F::read_image_any(image_path)?;
+
+        let rbg = Tensor3::<u8>::from_shape_vec(
+            [image.rows(), image.cols(), 3],
+            image.data.as_slice().unwrap().to_vec(),
+            CpuAllocator,
+        )?;
+
+        let mut gray = Tensor3::<u8>::new_uninitialized(
+            [image.rows(), image.cols(), 1],
+            rbg.storage.alloc().clone(),
+        )?;
+
+        super::gray_from_rgb_new(&rbg, &mut gray)?;
+
         Ok(())
     }
 }
