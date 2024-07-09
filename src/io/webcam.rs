@@ -1,5 +1,4 @@
 use crate::image::{Image, ImageSize};
-use anyhow::Result;
 use gst::prelude::*;
 use thiserror::Error;
 
