@@ -53,7 +53,7 @@ harness = false
 name = "bench_metrics"
 harness = false
 
-#[[bench]]
+[[bench]]
 name = "bench_io"
 harness = false
 
