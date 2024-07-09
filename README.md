@@ -43,7 +43,7 @@ Goodbyte!
 - 🦀The library is primarly written in [Rust](https://www.rust-lang.org/).
 - 🚀 Multi-threaded and efficient image I/O, image processing and advanced computer vision operators.
 - 🔢 The n-dimensional backend is based on the [`ndarray`](https://crates.io/crates/ndarray) crate.
-- 🐍 Pthon bindings are created with [PyO3/Maturin](https://github.com/PyO3/maturin).
+- 🐍 Python bindings are created with [PyO3/Maturin](https://github.com/PyO3/maturin).
 - 📦 We package with support for Linux [amd64/arm64], Macos and WIndows.
 - Supported Python versions are 3.7/3.8/3.9/3.10/3.11
 
