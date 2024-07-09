@@ -54,8 +54,8 @@ name = "bench_metrics"
 harness = false
 
 #[[bench]]
-#name = "bench_io"
-#harness = false
+name = "bench_io"
+harness = false
 
 [[bench]]
 name = "bench_warp"
