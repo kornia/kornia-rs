@@ -1,9 +1,16 @@
 use clap::Parser;
-use std::sync::{Arc, Mutex};
-use tokio_util::sync::CancellationToken;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    {Arc, Mutex},
+};
 
-use kornia_rs::io::fps_counter::FpsCounter;
-use kornia_rs::{image::ImageSize, io::webcam::WebcamCaptureBuilder};
+use kornia_rs::{
+    image::ImageSize,
+    io::{
+        fps_counter::FpsCounter,
+        webcam::{StreamCaptureError, WebcamCaptureBuilder},
+    },
+};
 
 #[derive(Parser)]
 struct Args {
@@ -15,12 +22,6 @@ struct Args {
 
     #[arg(short, long)]
     duration: Option<u64>,
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum CancelledError {
-    #[error("Cancelled")]
-    Cancelled,
 }
 
 #[tokio::main]
@@ -42,74 +43,74 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     // create a cancel token to stop the webcam capture
-    let cancel_token = CancellationToken::new();
-    let child_token = cancel_token.child_token();
+    let cancel_token = Arc::new(AtomicBool::new(false));
 
+    // create a shared fps counter
     let fps_counter = Arc::new(Mutex::new(FpsCounter::new()));
 
     ctrlc::set_handler({
         let cancel_token = cancel_token.clone();
         move || {
             println!("Received Ctrl-C signal. Sending cancel signal !!");
-            cancel_token.cancel();
+            cancel_token.store(true, Ordering::SeqCst);
         }
     })?;
 
-    let join_handle = tokio::spawn(async move {
-        tokio::select! {
-            _ = webcam.run(|img| {
-                    // lets resize the image to 256x256
-                    let img = kornia_rs::resize::resize_fast(
-                        &img,
-                        kornia_rs::image::ImageSize {
-                            width: 256,
-                            height: 256,
-                        },
-                        kornia_rs::resize::InterpolationMode::Bilinear,
-                    )?;
-
-                    // convert the image to f32 and normalize before processing
-                    let img = img.cast_and_scale::<f32>(1. / 255.)?;
-
-                    // convert the image to grayscale and binarize
-                    let gray = kornia_rs::color::gray_from_rgb(&img)?;
-                    let bin = kornia_rs::threshold::threshold_binary(&gray, 0.35, 0.65)?;
-
-                    // update the fps counter
-                    fps_counter
-                        .lock()
-                        .expect("Failed to lock fps counter")
-                        .new_frame();
-
-                    // log the image
-                    rec.log_static("image", &rerun::Image::try_from(img.data)?)?;
-                    rec.log_static("binary", &rerun::Image::try_from(bin.data)?)?;
-
-                    Ok(())
-                }) => { Ok(()) }
-            _ = child_token.cancelled() => {
-                println!("Received cancel signal. Closing webcam.");
-                std::mem::drop(webcam);
-                Err(CancelledError::Cancelled)
+    // we launch a timer to cancel the token after a certain duration
+    tokio::spawn({
+        let cancel_token = cancel_token.clone();
+        async move {
+            if let Some(duration_secs) = args.duration {
+                tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)).await;
+                println!("Sending timer cancel signal !!");
+                cancel_token.store(true, Ordering::SeqCst);
             }
         }
     });
 
-    // we launch a timer to cancel the token after a certain duration
-    tokio::spawn(async move {
-        if let Some(duration_secs) = args.duration {
-            tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)).await;
-            println!("Sending cancel signal !!");
-            cancel_token.cancel();
-        }
-    });
+    // start grabbing frames from the camera
+    webcam
+        .run(|img| {
+            // check if the cancel token is set, if so we return an error to stop the pipeline
+            if cancel_token.load(Ordering::SeqCst) {
+                return Err(StreamCaptureError::PipelineCancelled.into());
+            }
 
-    join_handle.await??;
+            // lets resize the image to 256x256
+            let img = kornia_rs::resize::resize_fast(
+                &img,
+                kornia_rs::image::ImageSize {
+                    width: 256,
+                    height: 256,
+                },
+                kornia_rs::interpolation::InterpolationMode::Bilinear,
+            )?;
+
+            // convert the image to f32 and normalize before processing
+            let img = img.cast_and_scale::<f32>(1. / 255.)?;
+
+            // convert the image to grayscale and binarize
+            let gray = kornia_rs::color::gray_from_rgb(&img)?;
+            let bin = kornia_rs::threshold::threshold_binary(&gray, 0.35, 0.65)?;
+
+            // update the fps counter
+            fps_counter
+                .lock()
+                .expect("Failed to lock fps counter")
+                .new_frame();
+
+            // log the image
+            rec.log_static("image", &rerun::Image::try_from(img.data)?)?;
+            rec.log_static("binary", &rerun::Image::try_from(bin.data)?)?;
+
+            Ok(())
+        })
+        .await?;
+
+    // NOTE: this is important to close the webcam properly, otherwise the app will hang
+    webcam.close()?;
 
     println!("Finished recording. Closing app.");
-
-    // TODO: close rerun::RecordingStream
-    // rec.close()?;
 
     Ok(())
 }

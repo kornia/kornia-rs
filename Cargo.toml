@@ -36,7 +36,6 @@ rayon = "1.10.0"
 rerun = "0.16.0"
 walkdir = "2.5.0"
 
-
 [features]
 candle = ["candle-core"]
 gstreamer = ["gst", "gst-app", "tokio"]
