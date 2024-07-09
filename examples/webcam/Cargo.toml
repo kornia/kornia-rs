@@ -12,5 +12,3 @@ ctrlc = "3.4.4"
 kornia-rs = { path = "../../", features = ["gstreamer"] }
 rerun = "0.16.0"
 tokio = { version = "1" }
-tokio-util = { version = "0.7" }
-thiserror = "1.0.58"
