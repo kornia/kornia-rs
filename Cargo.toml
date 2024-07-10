@@ -1,6 +1,6 @@
 [package]
 name = "kornia-rs"
-version = "0.1.5"
+version = "0.1.6-dev"
 edition = "2021"
 description = "Low-level computer vision library in Rust"
 homepage = "http://kornia.org"
