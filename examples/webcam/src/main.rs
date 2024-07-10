@@ -8,7 +8,7 @@ use kornia_rs::{
     image::ImageSize,
     io::{
         fps_counter::FpsCounter,
-        webcam::{StreamCaptureError, WebcamCaptureBuilder},
+        stream::{CameraCapture, StreamCaptureError},
     },
 };
 
@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // create a webcam capture object with camera id 0
     // and force the image size to 640x480
-    let mut webcam = WebcamCaptureBuilder::new()
+    let mut webcam = CameraCapture::builder()
         .camera_id(args.camera_id)
         .with_fps(args.fps)
         .with_size(ImageSize {
