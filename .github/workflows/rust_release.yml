@@ -28,5 +28,5 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: publish
-          args: --verbose --target ${{ matrix.target }}
+          args: --verbose --target ${{ matrix.target }} --features "gstreamer,jpegturbo"
           use-cross: true
