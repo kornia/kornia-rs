@@ -73,7 +73,7 @@ impl Default for CameraCaptureBuilder {
 /// # Example
 ///
 /// ```no_run
-/// use kornia_rs::{image::ImageSize, io::webcam::CameraCaptureBuilder};
+/// use kornia_rs::{image::ImageSize, io::stream::CameraCaptureBuilder};
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
