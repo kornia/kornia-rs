@@ -15,6 +15,15 @@ pub enum TensorError {
 
     #[error("Error with the tensor storage: {0}")]
     StorageError(#[from] TensorAllocatorError),
+
+    #[error("Invalid axis: {0}")]
+    InvalidAxis(usize),
+
+    #[error("Shape mismatch")]
+    ShapeMismatch,
+
+    #[error("Invalid number of dimensions: {0}")]
+    InvalidNumDimensions(usize),
 }
 
 /// Compute the strides from the shape of a tensor.

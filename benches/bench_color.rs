@@ -2,6 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 
 use kornia_rs::color as F;
 use kornia_rs::image::{Image, ImageSize};
+use kornia_rs::tensor::{CpuAllocator, Tensor3};
 use ndarray::s;
 
 #[cfg(feature = "candle")]
@@ -117,6 +118,25 @@ fn bench_grayscale(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("image_crate", &id), &image, |b, i| {
             b.iter(|| gray_image_crate(black_box(&i.clone())))
         });
+        {
+            let img_t = image_f32.clone().cast::<u8>().unwrap();
+            let rgb = Tensor3::<u8>::from_shape_vec(
+                [height, width, 3],
+                img_t.data.as_slice().unwrap().to_vec(),
+                CpuAllocator,
+            )
+            .unwrap();
+
+            let mut gray = Tensor3::<u8>::new_uninitialized(
+                [image.size().height, image.size().width, 1],
+                rgb.storage.alloc().clone(),
+            )
+            .unwrap();
+
+            group.bench_with_input(BenchmarkId::new("tensor", &id), &image_f32, |b, i| {
+                b.iter(|| kornia_rs::color::gray_from_rgb_new(black_box(&rgb), &mut gray))
+            });
+        }
         #[cfg(feature = "candle")]
         group.bench_with_input(BenchmarkId::new("candle", &id), &image_f32, |b, i| {
             b.iter(|| gray_candle(black_box(i.clone())))

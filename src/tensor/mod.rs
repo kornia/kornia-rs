@@ -1,11 +1,11 @@
-pub mod allocator;
+mod allocator;
+pub use allocator::{CpuAllocator, TensorAllocator};
+
 mod base;
-// TODO: mod ops;
+pub use base::{Tensor, TensorError};
+
 mod serde;
 mod storage;
-
-pub use allocator::{CpuAllocator, TensorAllocator};
-pub use base::{Tensor, TensorError};
 
 // aliases
 pub type Tensor1<T> = Tensor<T, 1>;
