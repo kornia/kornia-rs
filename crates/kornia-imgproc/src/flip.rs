@@ -14,7 +14,7 @@ use kornia_image::Image;
 /// # Example
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize};
+/// use kornia_rs::image::{Image, ImageSize};
 /// use kornia_imgproc::flip::horizontal_flip;
 ///
 /// let image = Image::<f32, 3>::new(
@@ -69,7 +69,7 @@ where
 /// # Example
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize};
+/// use kornia_rs::image::{Image, ImageSize};
 /// use kornia_imgproc::flip::vertical_flip;
 ///
 /// let image = Image::<f32, 3>::new(

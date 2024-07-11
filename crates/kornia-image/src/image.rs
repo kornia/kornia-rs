@@ -8,12 +8,13 @@ use num_traits::Float;
 /// # Examples
 ///
 /// ```
-/// use kornia_image::ImageSize;
+/// use kornia_rs::image::ImageSize;
 ///
 /// let image_size = ImageSize {
-///    width: 10,
+///   width: 10,
 ///   height: 20,
 /// };
+///
 /// assert_eq!(image_size.width, 10);
 /// assert_eq!(image_size.height, 20);
 /// ```
@@ -83,7 +84,7 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// # Examples
     ///
     /// ```
-    /// use kornia_image::{Image, ImageSize};
+    /// use kornia_rs::image::{Image, ImageSize};
     ///
     /// let image = Image::<u8, 3>::new(
     ///    ImageSize {
@@ -132,7 +133,7 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// # Examples
     ///
     /// ```
-    /// use kornia_image::{Image, ImageSize};
+    /// use kornia_rs::image::{Image, ImageSize};
     ///
     /// let image = Image::<u8, 3>::from_size_val(
     ///   ImageSize {
@@ -171,7 +172,7 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// # Examples
     ///
     /// ```
-    /// use kornia_image::{Image, ImageSize};
+    /// use kornia_rs::image::{Image, ImageSize};
     ///
     /// let data = vec![0., 1., 2., 3., 4., 5.];
     ///
@@ -222,7 +223,7 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// # Examples
     ///
     /// ```
-    /// use kornia_image::{Image, ImageSize};
+    /// use kornia_rs::image::{Image, ImageSize};
     ///
     /// let data = vec![0u8, 0, 255, 0, 0, 255];
     ///
@@ -296,7 +297,7 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// # Examples
     ///
     /// ```
-    /// use kornia_image::{Image, ImageSize};
+    /// use kornia_rs::image::{Image, ImageSize};
     ///
     /// let image = Image::<f32, 2>::from_size_val(
     ///   ImageSize {

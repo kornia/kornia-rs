@@ -22,7 +22,7 @@ use kornia_image::Image;
 /// # Example
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize};
+/// use kornia_rs::image::{Image, ImageSize};
 /// use kornia_imgproc::color::hsv_from_rgb;
 ///
 /// let image = Image::<f32, 3>::new(

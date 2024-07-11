@@ -23,7 +23,7 @@ const BW: f64 = 0.114;
 /// # Example
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize};
+/// use kornia_rs::image::{Image, ImageSize};
 ///
 /// let image = Image::<f32, 3>::new(
 ///     ImageSize {

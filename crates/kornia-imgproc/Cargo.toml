@@ -24,3 +24,4 @@ thiserror = "1"
 
 [dev-dependencies]
 kornia-io.workspace = true
+kornia-rs.workspace = true

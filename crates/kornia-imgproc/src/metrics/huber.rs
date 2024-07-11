@@ -23,7 +23,7 @@ use kornia_image::Image;
 /// # Example
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize};
+/// use kornia_rs::image::{Image, ImageSize};
 ///
 /// let image1 = Image::<f32, 1>::new(
 ///    ImageSize {

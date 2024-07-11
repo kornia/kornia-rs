@@ -95,7 +95,7 @@ pub fn get_rotation_matrix2d(center: (f32, f32), angle: f32, scale: f32) -> Affi
 /// # Example
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize};
+/// use kornia_rs::image::{Image, ImageSize};
 /// use kornia_imgproc::interpolation::InterpolationMode;
 /// use kornia_imgproc::warp::warp_affine;
 ///

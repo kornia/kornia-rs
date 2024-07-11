@@ -69,7 +69,7 @@ fn transform_point(x: f32, y: f32, m: PerspectiveMatrix) -> (f32, f32) {
 /// # Example
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize};
+/// use kornia_rs::image::{Image, ImageSize};
 /// use kornia_imgproc::interpolation::InterpolationMode;
 /// use kornia_imgproc::warp::warp_perspective;
 ///

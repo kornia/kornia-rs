@@ -21,7 +21,7 @@ use kornia_image::Image;
 /// # Example
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize};
+/// use kornia_rs::image::{Image, ImageSize};
 /// use kornia_imgproc::histogram::compute_histogram;
 ///
 /// let image = Image::<u8, 1>::new(

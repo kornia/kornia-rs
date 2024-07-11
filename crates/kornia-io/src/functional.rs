@@ -22,8 +22,8 @@ use super::jpeg::{ImageDecoder, ImageEncoder};
 /// # Example
 ///
 /// ```
-/// use kornia_image::Image;
-/// use kornia_io::functional as F;
+/// use kornia_rs::image::Image;
+/// use kornia_rs::io::functional as F;
 ///
 /// let image_path = std::path::Path::new("../../tests/data/dog.jpeg");
 /// let image: Image<u8, 3> = F::read_image_jpeg(image_path).unwrap();
@@ -94,8 +94,8 @@ pub fn write_image_jpeg(file_path: &Path, image: &Image<u8, 3>) -> Result<()> {
 /// # Example
 ///
 /// ```
-/// use kornia_image::Image;
-/// use kornia_io::functional as F;
+/// use kornia_rs::image::Image;
+/// use kornia_rs::io::functional as F;
 ///
 /// let image_path = std::path::Path::new("../../tests/data/dog.jpeg");
 /// let image: Image<u8, 3> = F::read_image_any(image_path).unwrap();

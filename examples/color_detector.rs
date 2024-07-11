@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // read the image
-    let rgb = kornia_io::functional::read_image_any(&args.image_path)?;
+    let rgb = kornia_rs::io::functional::read_image_any(&args.image_path)?;
 
     // binarize the image as u8
     let hsv = kornia_rs::color::hsv_from_rgb(&rgb.clone().cast()?)?; // convert to u8 (0-255)

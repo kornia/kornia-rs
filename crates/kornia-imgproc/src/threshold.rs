@@ -16,7 +16,7 @@ use kornia_image::Image;
 /// # Examples
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize};
+/// use kornia_rs::image::{Image, ImageSize};
 /// use kornia_imgproc::threshold::threshold_binary;
 ///
 /// let data = vec![100u8, 200, 50, 150, 200, 250];
@@ -65,7 +65,7 @@ where
 /// # Examples
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize};
+/// use kornia_rs::image::{Image, ImageSize};
 /// use kornia_imgproc::threshold::threshold_binary_inverse;
 ///
 /// let data = vec![100u8, 200, 50, 150, 200, 250];
@@ -113,7 +113,7 @@ where
 /// # Examples
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize};
+/// use kornia_rs::image::{Image, ImageSize};
 /// use kornia_imgproc::threshold::threshold_truncate;
 ///
 /// let data = vec![100u8, 200, 50, 150, 200, 250];
@@ -156,7 +156,7 @@ where
 /// # Examples
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize};
+/// use kornia_rs::image::{Image, ImageSize};
 /// use kornia_imgproc::threshold::threshold_to_zero;
 ///
 /// let data = vec![100u8, 200, 50, 150, 200, 250];
@@ -199,7 +199,7 @@ where
 /// # Examples
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize};
+/// use kornia_rs::image::{Image, ImageSize};
 /// use kornia_imgproc::threshold::threshold_to_zero_inverse;
 ///
 /// let data = vec![100u8, 200, 50, 150, 200, 250];
@@ -246,7 +246,7 @@ where
 /// # Examples
 ///
 /// ```
-/// use kornia_image::{Image, ImageSize};
+/// use kornia_rs::image::{Image, ImageSize};
 /// use kornia_imgproc::threshold::in_range;
 ///
 /// let data = vec![100u8, 200, 50, 150, 200, 250];

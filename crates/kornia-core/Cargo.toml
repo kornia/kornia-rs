@@ -16,3 +16,7 @@ version.workspace = true
 arrow-buffer = "52.0.0"
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
+
+
+[dev-dependencies]
+kornia-rs.workspace = true
