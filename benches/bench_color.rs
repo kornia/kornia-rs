@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
+use kornia_image::{Image, ImageSize};
 use kornia_rs::color as F;
-use kornia_rs::image::{Image, ImageSize};
 use ndarray::s;
 
 #[cfg(feature = "candle")]

@@ -3,7 +3,7 @@
 //! NOTE: this is deprecated and will be removed in the future.
 //!
 use dlpack_rs as dlpack;
-use kornia_rs::tensor::Tensor;
+use kornia_tensor::Tensor;
 
 use pyo3::prelude::*;
 use std::ffi::{c_void, CStr, CString};

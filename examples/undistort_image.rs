@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // read the image
-    let img = kornia_rs::io::functional::read_image_any(&args.image_path)?;
+    let img = kornia_io::functional::read_image_any(&args.image_path)?;
 
     // the intrinsic parameters of an Oak-D camera
     let intrinsic = CameraIntrinsic {

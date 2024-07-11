@@ -1,5 +1,5 @@
-use kornia_rs::image::Image;
-use kornia_rs::io::functional as F;
+use kornia_image::Image;
+use kornia_io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let gray_resize: Image<f32, 1> = kornia_rs::resize::resize_native(
         &gray,
-        kornia_rs::image::ImageSize {
+        kornia_image::ImageSize {
             width: 128,
             height: 128,
         },

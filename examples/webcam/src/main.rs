@@ -6,6 +6,7 @@ use std::sync::{
 
 use kornia_rs::{
     image::ImageSize,
+    imgproc,
     io::{
         fps_counter::FpsCounter,
         stream::{CameraCapture, StreamCaptureError},
@@ -77,21 +78,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // lets resize the image to 256x256
-            let img = kornia_rs::resize::resize_fast(
+            let img = imgproc::resize::resize_fast(
                 &img,
-                kornia_rs::image::ImageSize {
+                ImageSize {
                     width: 256,
                     height: 256,
                 },
-                kornia_rs::interpolation::InterpolationMode::Bilinear,
+                imgproc::interpolation::InterpolationMode::Bilinear,
             )?;
 
             // convert the image to f32 and normalize before processing
             let img = img.cast_and_scale::<f32>(1. / 255.)?;
 
             // convert the image to grayscale and binarize
-            let gray = kornia_rs::color::gray_from_rgb(&img)?;
-            let bin = kornia_rs::threshold::threshold_binary(&gray, 0.35, 0.65)?;
+            let gray = imgproc::color::gray_from_rgb(&img)?;
+            let bin = imgproc::threshold::threshold_binary(&gray, 0.35, 0.65)?;
 
             // update the fps counter
             fps_counter

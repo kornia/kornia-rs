@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use kornia_rs::image::{Image, ImageSize};
+use kornia_image::{Image, ImageSize};
 
 // TODO: figure how to auto select a function backend based on the input size
 fn mse_zip(image1: &Image<f32, 3>, image2: &Image<f32, 3>) -> f32 {

@@ -1,0 +1,26 @@
+[package]
+name = "kornia-imgproc"
+version = "0.1.0"
+edition = "2021"
+#authors.workspace = true
+#description = "Image processing library in Rust"
+#edition.workspace = true
+#homepage.workspace = true
+#include.workspace = true
+#license.workspace = true
+#publish = true
+#readme = "README.md"
+#repository.workspace = true
+#rust-version.workspace = true
+#version.workspace = true
+
+[dependencies]
+anyhow = "1"
+fast_image_resize = "3.0.4"
+ndarray = { version = "0.15", features = ["rayon"] }
+num-traits = "0.2"
+thiserror = "1"
+kornia-image = { workspace = true }
+
+[dev-dependencies]
+kornia-io = { workspace = true }

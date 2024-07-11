@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use kornia_rs::image::{Image, ImageSize};
+use kornia_image::{Image, ImageSize};
 use kornia_rs::interpolation::InterpolationMode;
 use kornia_rs::warp::{get_rotation_matrix2d, warp_affine};
 

@@ -15,7 +15,7 @@ Use the library to perform image I/O, visualisation and other low level operatio
 `cargo run --example hello_world`
 
 ```rust
-use kornia_rs::image::Image;
+use kornia_image::Image;
 use kornia_rs::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -107,7 +107,7 @@ The following example shows how to read an image, convert it to grayscale and re
 Checkout all the examples in the [`examples`](https://github.com/kornia/kornia-rs/tree/main/examples) directory to see more use cases.
 
 ```rust
-use kornia_rs::image::Image;
+use kornia_image::Image;
 use kornia_rs::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -123,7 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let gray_resize: Image<f32, 1> = kornia_rs::resize::resize_native(
         &gray,
-        kornia_rs::image::ImageSize {
+        kornia_image::ImageSize {
             width: 128,
             height: 128,
         },

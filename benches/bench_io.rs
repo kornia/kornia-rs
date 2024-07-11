@@ -1,26 +1,26 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 struct JpegReader {
-    decoder: kornia_rs::io::jpeg::ImageDecoder,
+    decoder: kornia_io::jpeg::ImageDecoder,
 }
 
 impl JpegReader {
     fn new() -> Self {
         Self {
-            decoder: kornia_rs::io::jpeg::ImageDecoder::new().unwrap(),
+            decoder: kornia_io::jpeg::ImageDecoder::new().unwrap(),
         }
     }
 
-    fn read(&mut self, file_path: &std::path::Path) -> kornia_rs::image::Image<u8, 3> {
+    fn read(&mut self, file_path: &std::path::Path) -> kornia_image::Image<u8, 3> {
         let file = std::fs::File::open(file_path).unwrap();
         let mmap = unsafe { memmap2::Mmap::map(&file).unwrap() };
         self.decoder.decode(&mmap).unwrap()
     }
 }
 
-fn read_no_mmap(file_path: &std::path::Path) -> kornia_rs::image::Image<u8, 3> {
+fn read_no_mmap(file_path: &std::path::Path) -> kornia_image::Image<u8, 3> {
     let file = std::fs::read(file_path).unwrap();
-    kornia_rs::io::jpeg::ImageDecoder::new()
+    kornia_io::jpeg::ImageDecoder::new()
         .unwrap()
         .decode(&file)
         .unwrap()
@@ -33,11 +33,11 @@ fn bench_read_jpeg(c: &mut Criterion) {
 
     // NOTE: this is the fastest method
     group.bench_function("jpegturbo", |b| {
-        b.iter(|| kornia_rs::io::functional::read_image_jpeg(black_box(img_path)).unwrap())
+        b.iter(|| kornia_io::functional::read_image_jpeg(black_box(img_path)).unwrap())
     });
 
     group.bench_function("image", |b| {
-        b.iter(|| kornia_rs::io::functional::read_image_any(black_box(img_path)).unwrap())
+        b.iter(|| kornia_io::functional::read_image_any(black_box(img_path)).unwrap())
     });
 
     // NOTE: similar to the functional::read_image_jpeg

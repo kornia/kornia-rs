@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 
-use crate::image::{FromPyImage, PyImage, ToPyImage};
-use kornia_rs::image::Image;
+use kornia_image::Image;
+use kornia_image::{FromPyImage, PyImage, ToPyImage};
 
 #[pyfunction]
 pub fn warp_affine(
@@ -15,7 +15,7 @@ pub fn warp_affine(
     let image: Image<u8, 3> = Image::from_pyimage(image)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
-    let new_size = kornia_rs::image::ImageSize {
+    let new_size = kornia_image::ImageSize {
         height: new_size.0,
         width: new_size.1,
     };
