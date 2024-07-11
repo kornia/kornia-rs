@@ -8,6 +8,7 @@ members = [
     "crates/kornia-rs",
     "examples/webcam",
     "kornia-py",
+    "kornia-serve",
 ]
 
 [workspace.package]

@@ -10,7 +10,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = "1.0.80"
-#kornia-rs = { path = "../", features = ["jpegturbo"] }
 kornia-rs = { workspace = true }
 pyo3 = { version = "0.20", features = ["extension-module"] }
 numpy = { version = "0.20" }
