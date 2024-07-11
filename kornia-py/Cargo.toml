@@ -1,14 +1,15 @@
 [package]
 name = "kornia-py"
-authors.workspace = true
+categories = ["computer-vision", "science::robotics"]
 description = "Python bindings for Kornia Rust library"
-edition.workspace = true
-homepage.workspace = true
-license.workspace = true
-publish = false
-repository.workspace = true
-rust-version.workspace = true
-version.workspace = true
+edition = "2021"
+homepage = "http://kornia.org"
+include = ["Cargo.toml"]
+license = "Apache-2.0"
+license-file = "LICENSE"
+repository = "https://github.com/kornia/kornia-rs"
+rust-version = "1.76"
+version = "0.1.6+dev"
 
 [lib]
 name = "kornia_rs"
@@ -17,7 +18,10 @@ crate-type = ["cdylib"]
 [dependencies]
 
 # kornia
-kornia-rs = { workspace = true }
+kornia-rs = { path = "../crates/kornia-rs", features = [
+    "gstreamer",
+    "jpegturbo",
+] }
 
 # external
 anyhow = "1.0.80"

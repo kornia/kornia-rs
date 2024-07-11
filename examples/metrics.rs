@@ -1,4 +1,4 @@
-use kornia_image::Image;
+use kornia_rs::image::Image;
 use kornia_rs::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

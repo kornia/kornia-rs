@@ -1,19 +1,23 @@
 [package]
 name = "kornia-serve"
-authors.workspace = true
+categories = ["computer-vision", "science::robotics"]
 description = "Kornia serving library for computer vision and deep learning"
-edition.workspace = true
-homepage.workspace = true
-license.workspace = true
-publish = false
-repository.workspace = true
-rust-version.workspace = true
-version.workspace = true
+edition = "2021"
+homepage = "http://kornia.org"
+include = ["Cargo.toml"]
+license = "Apache-2.0"
+license-file = "LICENSE"
+repository = "https://github.com/kornia/kornia-rs"
+rust-version = "1.76"
+version = "0.1.6+dev"
 
 [dependencies]
 
 # kornia
-kornia-rs.workspace = true
+kornia-rs = { path = "../crates/kornia-rs", features = [
+    "gstreamer",
+    "jpegturbo",
+] }
 
 # external
 axum = "0.7.5"
