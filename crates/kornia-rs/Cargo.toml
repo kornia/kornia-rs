@@ -15,14 +15,7 @@ gstreamer = ["kornia-io/gstreamer"]
 jpegturbo = ["kornia-io/jpegturbo"]
 
 [dependencies]
-# kornia
 kornia-core.workspace = true
 kornia-image.workspace = true
 kornia-imgproc.workspace = true
 kornia-io = { workspace = true, features = [] }
-
-# external
-gst = { version = "0.22.2", package = "gstreamer", optional = true }
-gst-app = { version = "0.22.0", package = "gstreamer-app", optional = true }
-turbojpeg = { version = "1.0.0", optional = true }
-tokio = { version = "1", features = ["full"], optional = true }
