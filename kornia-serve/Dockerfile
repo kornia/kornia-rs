@@ -1,5 +1,5 @@
 # Use an official Rust runtime as a parent image
-FROM rust:1.77-buster as builder
+FROM rust:1.79-bullseye as builder
 
 # Set the working directory in the image to /app
 WORKDIR /app

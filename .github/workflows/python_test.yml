@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: 3.8
       - name: Install dependencies
-        run: sudo apt-get install -y cmake nasm
+        run: sudo apt-get install -y cmake nasm libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - name: Build and test
         run: make test-python
   # NOTE: there's a systematic fail with the ci on macos
