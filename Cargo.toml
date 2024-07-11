@@ -1,6 +1,15 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "examples/webcam", "kornia-py", "kornia-serve"]
+members = [
+    "crates/kornia-core",
+    "crates/kornia-image",
+    "crates/kornia-io",
+    "crates/kornia-imgproc",
+    "crates/kornia-rs",
+    "examples/webcam",
+    #"kornia-py",
+    #"kornia-serve",
+]
 exclude = ["kornia-py", "kornia-serve"]
 
 [workspace.package]
