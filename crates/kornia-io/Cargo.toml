@@ -1,24 +1,27 @@
 [package]
 name = "kornia-io"
-version = "0.1.0"
-edition = "2021"
-#authors.workspace = true
-#description = "Image and Video IO library in Rust for computer vision"
-#edition.workspace = true
-#homepage.workspace = true
-#include.workspace = true
-#license.workspace = true
-#publish = true
-#readme = "README.md"
-#repository.workspace = true
-#rust-version.workspace = true
-#version.workspace = true
+authors.workspace = true
+description = "Image and Video IO library in Rust for computer vision"
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+publish = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
+
+# kornia
+kornia-image.workspace = true
+
+# external
 anyhow = "1"
 image = { version = "0.25" }
 thiserror = "1"
-kornia-image = { workspace = true }
 
 # optional dependencies
 gst = { version = "0.22.2", package = "gstreamer", optional = true }

@@ -1,13 +1,24 @@
 [package]
 name = "kornia-serve"
-version = "0.1.0"
-edition = "2021"
+authors.workspace = true
+description = "Kornia serving library for computer vision and deep learning"
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
 
 [dependencies]
+
+# kornia
+kornia-rs.workspace = true
+
+# external
 axum = "0.7.5"
 env_logger = "0.11.3"
-kornia-rs = { workspace = true }
-indicatif = { version = "0.17.8", features=["rayon"] }
+indicatif = { version = "0.17.8", features = ["rayon"] }
 log = "0.4"
 rayon = "1.10"
 serde = { version = "1.0", features = ["derive"] }

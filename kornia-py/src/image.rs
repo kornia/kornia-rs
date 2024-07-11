@@ -35,7 +35,7 @@ impl<const CHANNELS: usize> FromPyImage<CHANNELS> for Image<u8, CHANNELS> {
                 width: array.shape()[1],
                 height: array.shape()[0],
             };
-            Ok(Image::new(size, data)?)
+            Image::new(size, data)
         })
     }
 }

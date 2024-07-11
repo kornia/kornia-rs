@@ -1,25 +1,19 @@
 [workspace]
 resolver = "2"
-members = [
-    "crates/kornia-core",
-    "crates/kornia-image",
-    "crates/kornia-io",
-    "crates/kornia-imgproc",
-    "crates/kornia-rs",
-    "examples/webcam",
-    "kornia-py",
-    "kornia-serve",
-]
+members = ["crates/*", "examples/webcam", "kornia-py", "kornia-serve"]
 
 [workspace.package]
-#name = "kornia-rs"
-version = "0.1.6-dev"
-edition = "2021"
-description = "Low-level computer vision library in Rust"
-homepage = "http://kornia.org"
-repository = "https://github.com/kornia/kornia-rs"
+authors = ["kornia.org <edgar@kornia.org>"]
 categories = ["computer-vision", "science::robotics"]
+description = "Low-level computer vision library in Rust"
+edition = "2021"
+homepage = "http://kornia.org"
+include = ["Cargo.toml"]
+license = "Apache-2.0"
 license-file = "LICENSE"
+repository = "https://github.com/kornia/kornia-rs"
+rust-version = "1.76"
+version = "0.1.6+dev"
 
 [workspace.dependencies]
 kornia-core = { path = "crates/kornia-core" }

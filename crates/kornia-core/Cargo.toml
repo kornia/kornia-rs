@@ -1,20 +1,18 @@
 [package]
 name = "kornia-core"
-version = "0.1.0"
-edition = "2021"
-#authors.workspace = true
-#description = "Lightweight tensor library in Rust for computer vision"
-#edition.workspace = true
-#homepage.workspace = true
-#include.workspace = true
-#license.workspace = true
-#publish = true
-#readme = "README.md"
-#repository.workspace = true
-#rust-version.workspace = true
-#version.workspace = true
+authors.workspace = true
+description = "Lightweight tensor library in Rust for computer vision"
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+publish = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
 
 [dependencies]
+
+# external
 arrow-buffer = "52.0.0"
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"

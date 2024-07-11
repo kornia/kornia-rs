@@ -1,20 +1,18 @@
 [package]
 name = "kornia-image"
-version = "0.1.0"
-edition = "2021"
-#authors.workspace = true
-#description = "Image processing library in Rust"
-#edition.workspace = true
-#homepage.workspace = true
-#include.workspace = true
-#license.workspace = true
-#publish = true
-#readme = "README.md"
-#repository.workspace = true
-#rust-version.workspace = true
-#version.workspace = true
+authors.workspace = true
+description = "Image types and traits for generating and manipulating images"
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+publish = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
 
 [dependencies]
+
+# external
 anyhow = "1"
 ndarray = { version = "0.15", features = ["rayon"] }
 num-traits = "0.2"
