@@ -2,6 +2,7 @@
 name = "kornia-py"
 version = "0.1.6-dev"
 edition = "2021"
+publish = false
 
 [lib]
 name = "kornia_rs"
@@ -9,6 +10,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = "1.0.80"
-kornia-rs = { path = "../", features = ["jpegturbo"] }
+#kornia-rs = { path = "../", features = ["jpegturbo"] }
+kornia-rs = { workspace = true }
 pyo3 = { version = "0.20", features = ["extension-module"] }
 numpy = { version = "0.20" }
