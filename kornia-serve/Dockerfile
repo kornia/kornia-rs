@@ -10,6 +10,8 @@ COPY . /app
 # Install the required dependencies
 RUN apt-get update && apt-get install -y \
     cmake \
+    libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
     nasm
 
 # Build the application in release mode
