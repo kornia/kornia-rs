@@ -7,6 +7,7 @@ use clap::Parser;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
+use kornia_rs::imgproc;
 use kornia_rs::io::functional as F;
 
 #[derive(Parser, Debug)]
@@ -72,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let image = F::read_image_any(&image_path).expect("Failed to read image");
 
             // compute the std and mean
-            let (std, mean) = kornia_rs::core::std_mean(&image);
+            let (std, mean) = imgproc::core::std_mean(&image);
 
             // update the total std and mean
 

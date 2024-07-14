@@ -1,0 +1,18 @@
+[package]
+name = "color_detector"
+authors.workspace = true
+categories.workspace = true
+description.workspace = true
+edition.workspace = true
+homepage.workspace = true
+include.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+clap = { version = "4.5.9", features = ["derive"] }
+kornia-rs.workspace = true
+rerun = "0.16.0"

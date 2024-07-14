@@ -1,12 +1,15 @@
 use clap::Parser;
+use std::path::PathBuf;
+
 use kornia_rs::{
-    calibration::{
+    image::ImageSize,
+    imgproc,
+    imgproc::calibration::{
         distortion::{generate_correction_map_polynomial, PolynomialDistortion},
         {CameraExtrinsic, CameraIntrinsic},
     },
-    image::ImageSize,
+    io::functional as F,
 };
-use std::path::PathBuf;
 
 #[derive(Parser)]
 struct Args {
@@ -18,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // read the image
-    let img = kornia_rs::io::functional::read_image_any(&args.image_path)?;
+    let img = F::read_image_any(&args.image_path)?;
 
     // the intrinsic parameters of an Oak-D camera
     let intrinsic = CameraIntrinsic {
@@ -59,11 +62,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // apply the remap
-    let img_undistorted = kornia_rs::interpolation::remap(
+    let img_undistorted = imgproc::interpolation::remap(
         &img.clone().cast()?,
         &map_x,
         &map_y,
-        kornia_rs::interpolation::InterpolationMode::Bilinear,
+        imgproc::interpolation::InterpolationMode::Bilinear,
     )?;
 
     // create a Rerun recording stream

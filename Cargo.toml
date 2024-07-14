@@ -6,11 +6,8 @@ members = [
     "crates/kornia-io",
     "crates/kornia-imgproc",
     "crates/kornia-rs",
-    "examples/webcam",
-    #"kornia-py",
-    #"kornia-serve",
+    "examples/*",
 ]
-exclude = ["kornia-py", "kornia-serve"]
 
 [workspace.package]
 authors = ["kornia.org <edgar@kornia.org>"]
@@ -31,7 +28,6 @@ kornia-image = { path = "crates/kornia-image" }
 kornia-io = { path = "crates/kornia-io" }
 kornia-imgproc = { path = "crates/kornia-imgproc" }
 kornia-rs = { path = "crates/kornia-rs" }
-
 
 #[[bench]]
 #name = "bench_color"
