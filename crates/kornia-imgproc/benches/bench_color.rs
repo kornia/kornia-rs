@@ -1,14 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_image::{Image, ImageSize};
-use kornia_rs::color as F;
+use kornia_rs::imgproc::color::gray_from_rgb;
 use ndarray::s;
-
-#[cfg(feature = "candle")]
-use candle_core::{DType, Device, Storage, Tensor};
-
-#[cfg(feature = "candle")]
-use std::ops::Deref;
 
 // vanilla version
 fn gray_iter(image: &Image<f32, 3>) -> Image<u8, 1> {
@@ -41,46 +35,6 @@ fn gray_vec(image: &Image<f32, 3>) -> Image<u8, 1> {
     Image::new(image.size(), gray_u8.into_raw_vec()).unwrap()
 }
 
-#[cfg(feature = "candle")]
-fn gray_candle(image: Image<f32, 3>) -> Image<u8, 3> {
-    let image_data = image.data.as_slice().unwrap();
-    let shape = (image.size().height, image.size().width, 3);
-
-    let device = Device::Cpu;
-    let image_u8 = Tensor::from_vec(image_data.to_vec(), shape, &device).unwrap();
-    //println!("image_t: {:?}", image_u8.shape());
-
-    let image_f32 = image_u8.to_dtype(DType::F32).unwrap();
-
-    let weight = Tensor::from_vec(vec![76.0f32, 150.0, 29.0], (1, 1, 3), &device).unwrap();
-
-    let gray_f32 = image_f32.broadcast_mul(&weight).unwrap();
-    let gray_f32 = gray_f32.sum_keepdim(2).unwrap();
-    let gray_f32 = (gray_f32 / 255.0).unwrap();
-    let gray_f32 = gray_f32.repeat((1, 1, 3)).unwrap();
-    //println!("gray_f32: {:?}", gray_f32.shape());
-
-    let gray_u8 = gray_f32.to_dtype(DType::U8).unwrap();
-
-    // https://github.com/huggingface/candle/issues/973
-    let (storage, _layout) = gray_u8.storage_and_layout();
-
-    let data = match storage.deref() {
-        Storage::Cpu(storage) => {
-            let data = storage.as_slice().unwrap();
-            data.to_vec()
-        }
-        Storage::Cuda(_) => {
-            panic!("Cuda not implemented yet");
-        }
-        Storage::Metal(_) => {
-            panic!("Metal not implemented yet");
-        }
-    };
-
-    Image::new(image.size(), data).unwrap()
-}
-
 fn gray_image_crate(image: &Image<u8, 3>) -> Image<u8, 1> {
     let image_data = image.data.as_slice().unwrap();
     let rgb = image::RgbImage::from_raw(
@@ -106,7 +60,7 @@ fn bench_grayscale(c: &mut Criterion) {
         let image = Image::new(ImageSize { width, height }, image_data).unwrap();
         let image_f32 = image.clone().cast::<f32>().unwrap();
         group.bench_with_input(BenchmarkId::new("zip", &id), &image_f32, |b, i| {
-            b.iter(|| F::gray_from_rgb(black_box(i)))
+            b.iter(|| gray_from_rgb(black_box(i)))
         });
         group.bench_with_input(BenchmarkId::new("iter", &id), &image_f32, |b, i| {
             b.iter(|| gray_iter(black_box(&i.clone())))

@@ -25,3 +25,23 @@ thiserror = "1"
 [dev-dependencies]
 kornia-io.workspace = true
 kornia-rs.workspace = true
+
+criterion = "0.5"
+image = "0.25.1"
+ndarray = { version = "0.15", features = ["rayon"] }
+
+[[bench]]
+name = "bench_color"
+harness = false
+
+[[bench]]
+name = "bench_resize"
+harness = false
+
+[[bench]]
+name = "bench_metrics"
+harness = false
+
+[[bench]]
+name = "bench_warp"
+harness = false

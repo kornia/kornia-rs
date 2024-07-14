@@ -1,8 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use kornia_image::{Image, ImageSize};
-use kornia_rs::interpolation::InterpolationMode;
-use kornia_rs::resize as F;
+use kornia_rs::image::{Image, ImageSize};
+use kornia_rs::imgproc::{interpolation::InterpolationMode, resize};
 
 fn resize_image_crate(image: Image<u8, 3>, new_size: ImageSize) -> Image<u8, 3> {
     let image_data = image.data.as_slice().unwrap();
@@ -37,13 +36,13 @@ fn bench_resize(c: &mut Criterion) {
             height: height / 2,
         };
         group.bench_with_input(BenchmarkId::new("native", &id), &image_f32, |b, i| {
-            b.iter(|| F::resize_native(black_box(i), new_size, InterpolationMode::Nearest))
+            b.iter(|| resize::resize_native(black_box(i), new_size, InterpolationMode::Nearest))
         });
         group.bench_with_input(BenchmarkId::new("image_rs", &id), &image, |b, i| {
             b.iter(|| resize_image_crate(black_box(i.clone()), new_size))
         });
         group.bench_with_input(BenchmarkId::new("fast", &id), &image, |b, i| {
-            b.iter(|| F::resize_fast(black_box(i), new_size, InterpolationMode::Nearest))
+            b.iter(|| resize::resize_fast(black_box(i), new_size, InterpolationMode::Nearest))
         });
     }
     group.finish();

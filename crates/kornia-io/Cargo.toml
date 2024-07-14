@@ -31,9 +31,14 @@ tokio = { version = "1", features = ["full"], optional = true }
 turbojpeg = { version = "1.0.0", optional = true }
 
 [dev-dependencies]
+criterion = "0.5"
 tempfile = "3.10"
-kornia-rs.workspace = true
+kornia-rs = { workspace = true, features = ["jpeg"] }
 
 [features]
 gstreamer = ["gst", "gst-app", "tokio"]
 jpegturbo = ["turbojpeg"]
+
+[[bench]]
+name = "bench_io"
+harness = false
