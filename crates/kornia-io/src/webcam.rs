@@ -5,6 +5,7 @@ use super::stream::{CameraCapture, CameraCaptureBuilder};
     note = "This module is deprecated and will be removed in the next release. \
     Please use the `StreamCaptureError` type from the `stream` module"
 )]
+#[allow(missing_docs)]
 pub type StreamCaptureError = super::stream::StreamCaptureError;
 
 #[deprecated(
@@ -12,6 +13,7 @@ pub type StreamCaptureError = super::stream::StreamCaptureError;
     note = "This module is deprecated and will be removed in the next release. \
     Please use the `CameraCaptureBuilder` struct from the `stream` module"
 )]
+#[allow(missing_docs)]
 pub type WebcamCaptureBuilder = CameraCaptureBuilder;
 
 #[deprecated(
@@ -19,4 +21,5 @@ pub type WebcamCaptureBuilder = CameraCaptureBuilder;
     note = "This module is deprecated and will be removed in the next release. \
     Please use the `CameraCapture` struct from the `stream` module"
 )]
+#[allow(missing_docs)]
 pub type WebcamCapture = CameraCapture;

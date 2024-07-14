@@ -6,7 +6,9 @@ use ndarray::Array3;
 /// Interpolation mode for the resize operation
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InterpolationMode {
+    /// Bilinear interpolation
     Bilinear,
+    /// Nearest neighbor interpolation
     Nearest,
 }
 

@@ -1,11 +1,25 @@
 use std::time::{Duration, Instant};
 
+/// A simple frame per second (FPS) counter.
+///
+/// # Examples
+///
+/// ```
+/// use kornia_io::fps_counter::FpsCounter;
+///
+/// let mut fps_counter = FpsCounter::new();
+///
+/// for _ in 0..100 {
+///    fps_counter.new_frame();
+/// }
+/// ```
 pub struct FpsCounter {
     last_time: Instant,
     frame_count: u32,
 }
 
 impl FpsCounter {
+    /// Creates a new `FpsCounter`.
     pub fn new() -> Self {
         Self {
             last_time: Instant::now(),
@@ -13,6 +27,7 @@ impl FpsCounter {
         }
     }
 
+    /// Updates the frame count and calculates the FPS.
     pub fn new_frame(&mut self) {
         self.frame_count += 1;
 

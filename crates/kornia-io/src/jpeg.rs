@@ -5,11 +5,13 @@ use kornia_image::{Image, ImageSize};
 
 /// A JPEG decoder using the turbojpeg library.
 pub struct ImageDecoder {
+    /// The turbojpeg decompressor.
     pub decompressor: turbojpeg::Decompressor,
 }
 
 /// A JPEG encoder using the turbojpeg library.
 pub struct ImageEncoder {
+    /// The turbojpeg compressor.
     pub compressor: turbojpeg::Compressor,
 }
 

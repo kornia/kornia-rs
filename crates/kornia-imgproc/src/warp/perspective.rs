@@ -4,7 +4,7 @@ use anyhow::Result;
 use kornia_image::{Image, ImageSize};
 use ndarray::stack;
 
-// flat representation of a 3x3 matrix
+/// flat representation of a 3x3 matrix
 pub type PerspectiveMatrix = [f32; 9];
 
 #[rustfmt::skip]

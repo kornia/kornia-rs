@@ -15,13 +15,21 @@ use kornia_image::{Image, ImageSize};
 /// * `p1` - The first tangential distortion coefficient
 /// * `p2` - The second tangential distortion coefficient
 pub struct PolynomialDistortion {
+    /// The first radial distortion coefficient
     pub k1: f64,
+    /// The second radial distortion coefficient
     pub k2: f64,
+    /// The third radial distortion coefficient
     pub k3: f64,
+    /// The fourth radial distortion coefficient
     pub k4: f64,
+    /// The fifth radial distortion coefficient
     pub k5: f64,
+    /// The sixth radial distortion coefficient
     pub k6: f64,
+    /// The first tangential distortion coefficient
     pub p1: f64,
+    /// The second tangential distortion coefficient
     pub p2: f64,
 }
 
