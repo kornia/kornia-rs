@@ -4,3 +4,4 @@ target/
 docker/
 examples/*/Cargo.lock
 Cargo.lock
+*.code-workspace
