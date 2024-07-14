@@ -25,5 +25,5 @@ kornia-rs = { path = "../crates/kornia-rs", features = [
 
 # external
 anyhow = "1.0.80"
-pyo3 = { version = "0.20", features = ["extension-module"] }
-numpy = { version = "0.20" }
+pyo3 = { version = "0.21.0", features = ["extension-module"] }
+numpy = { version = "0.21.0" }
