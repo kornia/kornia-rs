@@ -5,14 +5,18 @@ use super::{
     storage::TensorStorage,
 };
 
+/// An error type for tensor operations.
 #[derive(Error, Debug)]
 pub enum TensorError {
+    /// The number of elements in the data does not match the shape of the tensor.
     #[error("The number of elements in the data does not match the shape of the tensor: {0}")]
     InvalidShape(usize),
 
+    /// Index out of bounds.
     #[error("Index out of bounds. The index {0} is out of bounds.")]
     IndexOutOfBounds(usize),
 
+    /// Error with the tensor storage.
     #[error("Error with the tensor storage: {0}")]
     StorageError(#[from] TensorAllocatorError),
 }
@@ -59,8 +63,11 @@ pub struct Tensor<T, const N: usize, A: TensorAllocator = CpuAllocator>
 where
     T: arrow_buffer::ArrowNativeType,
 {
+    /// The storage of the tensor.
     pub storage: TensorStorage<T, A>,
+    /// The shape of the tensor.
     pub shape: [usize; N],
+    /// The strides of the tensor data in memory.
     pub strides: [usize; N],
 }
 
@@ -246,7 +253,15 @@ where
         self.storage.data.len()
     }
 
-    // TODO: find a better name
+    /// Get the offset of the element at the given index.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The list of indices to get the element from.
+    ///
+    /// # Returns
+    ///
+    /// The offset of the element at the given index.
     pub fn get_iter_offset(&self, index: [usize; N]) -> usize {
         let mut offset = 0;
         for (i, &idx) in index.iter().enumerate() {

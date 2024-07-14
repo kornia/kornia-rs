@@ -2,11 +2,14 @@ use std::alloc::{GlobalAlloc, Layout, System};
 
 use thiserror::Error;
 
+/// An error type for tensor allocator operations.
 #[derive(Debug, Error)]
 pub enum TensorAllocatorError {
+    /// An error occurred during memory allocation.
     #[error("Invalid tensor layout {0}")]
     LayoutError(core::alloc::LayoutError),
 
+    /// An error occurred during memory allocation.
     #[error("Null pointer")]
     NullPointer,
 }
@@ -22,7 +25,10 @@ pub enum TensorAllocatorError {
 /// * `alloc` - Allocates memory for a tensor with the given layout.
 /// * `dealloc` - Deallocates memory for a tensor with the given layout.
 pub trait TensorAllocator: Clone {
+    /// Allocates memory for a tensor with the given layout.
     fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError>;
+
+    /// Deallocates memory for a tensor with the given layout.
     fn dealloc(&self, ptr: *mut u8, layout: Layout);
 }
 

@@ -19,6 +19,7 @@ homepage = "http://kornia.org"
 include = ["Cargo.toml"]
 license = "Apache-2.0"
 license-file = "LICENSE"
+readme = "README.md"
 repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
 version = "0.1.6+dev"
@@ -29,24 +30,3 @@ kornia-image = { path = "crates/kornia-image" }
 kornia-io = { path = "crates/kornia-io" }
 kornia-imgproc = { path = "crates/kornia-imgproc" }
 kornia-rs = { path = "crates/kornia-rs" }
-
-#[[bench]]
-#name = "bench_color"
-#harness = false
-#
-#[[bench]]
-#name = "bench_resize"
-#harness = false
-#
-#[[bench]]
-#name = "bench_metrics"
-#harness = false
-#
-#[[bench]]
-#name = "bench_io"
-#harness = false
-#
-#[[bench]]
-#name = "bench_warp"
-#harness = false
-#

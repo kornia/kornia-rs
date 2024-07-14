@@ -1,15 +1,11 @@
-pub mod core {
-    pub use kornia_core::*;
-}
+#[doc(inline)]
+pub use kornia_core as core;
 
-pub mod image {
-    pub use kornia_image::*;
-}
+#[doc(inline)]
+pub use kornia_image as image;
 
-pub mod imgproc {
-    pub use kornia_imgproc::*;
-}
+#[doc(inline)]
+pub use kornia_imgproc as imgproc;
 
-pub mod io {
-    pub use kornia_io::*;
-}
+#[doc(inline)]
+pub use kornia_io as io;

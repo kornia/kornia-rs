@@ -37,8 +37,10 @@ impl std::fmt::Display for ImageSize {
 }
 
 /// Trait for image data types.
-// Send and Sync is required for ndarray::Zip::par_for_each
+///
+/// Send and Sync is required for ndarray::Zip::par_for_each
 pub trait ImageDtype: Copy + Default + Into<f32> + Send + Sync {
+    /// Convert a f32 value to the image data type.
     fn from_f32(x: f32) -> Self;
 }
 
@@ -321,7 +323,15 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Ok(channels)
     }
 
-    // TODO: optimize this
+    /// Multiply the pixel data with a scalar.
+    ///
+    /// # Arguments
+    ///
+    /// * `scale` - The scalar to multiply the pixel data with.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the pixel data multiplied by the scalar.
     pub fn mul(&self, scale: T) -> Self
     where
         T: Copy + std::ops::Mul<Output = T>,
@@ -330,7 +340,15 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Image { data: scaled_data }
     }
 
-    // TODO: optimize this
+    /// Divide the pixel data by a scalar.
+    ///
+    /// # Arguments
+    ///
+    /// * `scale` - The scalar to divide the pixel data by.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the pixel data divided by the scalar.
     pub fn div(&self, scale: T) -> Self
     where
         T: Copy + std::ops::Div<Output = T>,
@@ -339,7 +357,15 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Image { data: scaled_data }
     }
 
-    // TODO: optimize this
+    /// Subtract two images.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The other image to add.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the pixel data added.
     pub fn sub(&self, other: &Self) -> Self
     where
         T: Copy + std::ops::Sub<Output = T>,
@@ -348,7 +374,15 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Image { data: diff }
     }
 
-    // TODO: optimize this
+    /// Apply the power function to the pixel data.
+    ///
+    /// # Arguments
+    ///
+    /// * `n` - The power to raise the pixel data to.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the pixel data raised to the power.
     pub fn powi(&self, n: i32) -> Self
     where
         T: Copy + Float,
@@ -357,7 +391,11 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Image { data: powered_data }
     }
 
-    // TODO: optimize this
+    /// Compute the mean of the pixel data.
+    ///
+    /// # Returns
+    ///
+    /// The mean of the pixel data.
     pub fn mean(&self) -> T
     where
         T: Copy + Float,
@@ -365,6 +403,11 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         self.data.fold(T::zero(), |acc, &x| acc + x) / T::from(self.data.len()).unwrap()
     }
 
+    /// Compute absolute value of the pixel data.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the pixel data absolute value.
     pub fn abs(&self) -> Self
     where
         T: Copy + Float,
@@ -390,10 +433,12 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         }
     }
 
+    /// Get the number of columns of the image.
     pub fn cols(&self) -> usize {
         self.width()
     }
 
+    /// Get the number of rows of the image.
     pub fn rows(&self) -> usize {
         self.height()
     }
@@ -433,7 +478,16 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         self.data.insert_axis(ndarray::Axis(0))
     }
 
-    // NOTE: experimental api
+    /// Set the pixel data of the image.
+    ///
+    /// NOTE: this is an experimental api
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - The x-coordinate of the pixel.
+    /// * `y` - The y-coordinate of the pixel.
+    /// * `ch` - The channel index of the pixel.
+    /// * `val` - The value to set the pixel to.
     pub fn set_pixel(&mut self, x: usize, y: usize, ch: usize, val: T) -> Result<()>
     where
         T: Copy,
@@ -461,7 +515,19 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Ok(())
     }
 
-    // NOTE: experimental api
+    /// Get the pixel data of the image.
+    ///
+    /// NOTE: experimental api
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - The x-coordinate of the pixel.
+    /// * `y` - The y-coordinate of the pixel.
+    /// * `ch` - The channel index of the pixel.
+    ///
+    /// # Returns
+    ///
+    /// The pixel value at the given coordinates.
     pub fn get_pixel(&self, x: usize, y: usize, ch: usize) -> Result<T>
     where
         T: Copy,

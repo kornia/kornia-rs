@@ -18,6 +18,7 @@ use std::{alloc::Layout, ptr::NonNull};
 /// * `alloc` - The allocator used to allocate the tensor storage.
 /// * `marker` - The marker type for the tensor storage.
 pub struct TensorStorage<T: ArrowNativeType, A: TensorAllocator> {
+    /// The buffer containing the tensor storage.
     pub data: Buffer,
     alloc: A,
     marker: PhantomData<T>,
