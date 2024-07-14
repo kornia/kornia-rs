@@ -1,4 +1,15 @@
-pub use kornia_core as core;
-pub use kornia_image as image;
-pub use kornia_imgproc as imgproc;
-pub use kornia_io as io;
+pub mod core {
+    pub use kornia_core::*;
+}
+
+pub mod image {
+    pub use kornia_image::*;
+}
+
+pub mod imgproc {
+    pub use kornia_imgproc::*;
+}
+
+pub mod io {
+    pub use kornia_io::*;
+}
