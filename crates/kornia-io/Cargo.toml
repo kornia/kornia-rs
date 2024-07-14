@@ -24,8 +24,8 @@ image = { version = "0.25" }
 thiserror = "1"
 
 # optional dependencies
-gst = { version = "0.22.2", package = "gstreamer", optional = true }
-gst-app = { version = "0.22.0", package = "gstreamer-app", optional = true }
+gst = { version = "0.23.0", package = "gstreamer", optional = true }
+gst-app = { version = "0.23.0", package = "gstreamer-app", optional = true }
 memmap2 = "0.9.4"
 tokio = { version = "1", features = ["full"], optional = true }
 turbojpeg = { version = "1.0.0", optional = true }
@@ -33,7 +33,7 @@ turbojpeg = { version = "1.0.0", optional = true }
 [dev-dependencies]
 criterion = "0.5"
 tempfile = "3.10"
-kornia-rs = { workspace = true, features = ["jpeg"] }
+kornia-rs = { workspace = true, features = ["jpegturbo"] }
 
 [features]
 gstreamer = ["gst", "gst-app", "tokio"]
