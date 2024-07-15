@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 
 use crate::image::{FromPyImage, PyImage, ToPyImage};
-use kornia_rs::{
+use kornia::{
     image::{Image, ImageSize},
     imgproc::{interpolation::InterpolationMode, resize::resize_fast},
 };

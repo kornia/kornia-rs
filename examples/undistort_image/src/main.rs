@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use kornia_rs::{
+use kornia::{
     image::ImageSize,
     imgproc,
     imgproc::calibration::{

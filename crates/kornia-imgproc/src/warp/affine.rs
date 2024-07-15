@@ -62,7 +62,7 @@ pub fn invert_affine_transform(m: AffineMatrix) -> AffineMatrix {
 /// # Example
 ///
 /// ```
-/// use kornia_rs::imgproc::warp::get_rotation_matrix2d;
+/// use kornia::imgproc::warp::get_rotation_matrix2d;
 ///
 /// let center = (0.0, 0.0);
 /// let angle = 90.0;
@@ -95,9 +95,9 @@ pub fn get_rotation_matrix2d(center: (f32, f32), angle: f32, scale: f32) -> Affi
 /// # Example
 ///
 /// ```
-/// use kornia_rs::image::{Image, ImageSize};
-/// use kornia_rs::imgproc::interpolation::InterpolationMode;
-/// use kornia_rs::imgproc::warp::warp_affine;
+/// use kornia::image::{Image, ImageSize};
+/// use kornia::imgproc::interpolation::InterpolationMode;
+/// use kornia::imgproc::warp::warp_affine;
 ///
 /// let src = Image::<_, 3>::from_size_val(
 ///    ImageSize {

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use numpy::{PyArray3, ToPyArray};
 
-use kornia_rs::image::{Image, ImageSize};
+use kornia::image::{Image, ImageSize};
 use pyo3::prelude::*;
 
 // type alias for a 3D numpy array of u8

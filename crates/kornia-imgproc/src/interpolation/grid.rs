@@ -14,7 +14,7 @@ use ndarray::Array2;
 /// # Example
 ///
 /// ```
-/// use kornia_rs::imgproc::interpolation::meshgrid;
+/// use kornia::imgproc::interpolation::meshgrid;
 ///
 /// let x = ndarray::Array::linspace(0., 4., 5).insert_axis(ndarray::Axis(0));
 /// let y = ndarray::Array::linspace(0., 3., 4).insert_axis(ndarray::Axis(0));

@@ -5,7 +5,7 @@ members = [
     "crates/kornia-image",
     "crates/kornia-io",
     "crates/kornia-imgproc",
-    "crates/kornia-rs",
+    "crates/kornia",
     "examples/*",
 ]
 exclude = ["kornia-py", "kornia-serve"]
@@ -29,4 +29,4 @@ kornia-core = { path = "crates/kornia-core" }
 kornia-image = { path = "crates/kornia-image" }
 kornia-io = { path = "crates/kornia-io" }
 kornia-imgproc = { path = "crates/kornia-imgproc" }
-kornia-rs = { path = "crates/kornia-rs" }
+kornia = { path = "crates/kornia" }

@@ -18,10 +18,7 @@ crate-type = ["cdylib"]
 [dependencies]
 
 # kornia
-kornia-rs = { path = "../crates/kornia-rs", features = [
-    "gstreamer",
-    "jpegturbo",
-] }
+kornia = { path = "../crates/kornia", features = ["gstreamer", "jpegturbo"] }
 
 # external
 anyhow = "1.0.80"

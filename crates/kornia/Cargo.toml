@@ -1,5 +1,5 @@
 [package]
-name = "kornia-rs"
+name = "kornia"
 authors.workspace = true
 description = "Kornia top-level crate"
 edition.workspace = true

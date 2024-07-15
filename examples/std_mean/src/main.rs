@@ -7,8 +7,8 @@ use clap::Parser;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use kornia_rs::imgproc;
-use kornia_rs::io::functional as F;
+use kornia::imgproc;
+use kornia::io::functional as F;
 
 #[derive(Parser, Debug)]
 struct Args {

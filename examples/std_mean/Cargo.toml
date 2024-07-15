@@ -14,7 +14,7 @@ publish = false
 
 [dependencies]
 clap = { version = "4.5.9", features = ["derive"] }
-kornia-rs.workspace = true
+kornia.workspace = true
 indicatif = { version = "0.17", features = ["rayon"] }
 rayon = "1"
 walkdir = "2"

@@ -23,9 +23,9 @@ use std::num::NonZeroU32;
 /// # Example
 ///
 /// ```
-/// use kornia_rs::image::{Image, ImageSize};
-/// use kornia_rs::imgproc::resize::resize_native;
-/// use kornia_rs::imgproc::interpolation::InterpolationMode;
+/// use kornia::image::{Image, ImageSize};
+/// use kornia::imgproc::resize::resize_native;
+/// use kornia::imgproc::interpolation::InterpolationMode;
 ///
 /// let image = Image::<_, 3>::new(
 ///     ImageSize {
@@ -111,9 +111,9 @@ pub fn resize_native<T: ImageDtype, const CHANNELS: usize>(
 /// # Example
 ///
 /// ```
-/// use kornia_rs::image::{Image, ImageSize};
-/// use kornia_rs::imgproc::resize::resize_fast;
-/// use kornia_rs::imgproc::interpolation::InterpolationMode;
+/// use kornia::image::{Image, ImageSize};
+/// use kornia::imgproc::resize::resize_fast;
+/// use kornia::imgproc::interpolation::InterpolationMode;
 ///
 /// let image = Image::<_, 3>::new(
 ///    ImageSize {

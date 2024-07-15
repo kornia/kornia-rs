@@ -24,7 +24,7 @@ thiserror = "1"
 
 [dev-dependencies]
 kornia-io.workspace = true
-kornia-rs.workspace = true
+kornia.workspace = true
 
 criterion = "0.5"
 image = "0.25.1"

@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 
 use crate::image::{FromPyImage, PyImage};
-use kornia_rs::{image::Image, imgproc};
+use kornia::{image::Image, imgproc};
 
 /// Compute the pixel-wise histogram of an image.
 /// --

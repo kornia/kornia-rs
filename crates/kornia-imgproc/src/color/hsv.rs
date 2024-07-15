@@ -22,8 +22,8 @@ use kornia_image::Image;
 /// # Example
 ///
 /// ```
-/// use kornia_rs::image::{Image, ImageSize};
-/// use kornia_rs::imgproc::color::hsv_from_rgb;
+/// use kornia::image::{Image, ImageSize};
+/// use kornia::imgproc::color::hsv_from_rgb;
 ///
 /// let image = Image::<f32, 3>::new(
 ///     ImageSize {

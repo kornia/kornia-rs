@@ -14,8 +14,8 @@ use kornia_image::Image;
 /// # Example
 ///
 /// ```
-/// use kornia_rs::image::{Image, ImageSize};
-/// use kornia_rs::imgproc::flip::horizontal_flip;
+/// use kornia::image::{Image, ImageSize};
+/// use kornia::imgproc::flip::horizontal_flip;
 ///
 /// let image = Image::<f32, 3>::new(
 ///     ImageSize {
@@ -69,8 +69,8 @@ where
 /// # Example
 ///
 /// ```
-/// use kornia_rs::image::{Image, ImageSize};
-/// use kornia_rs::imgproc::flip::vertical_flip;
+/// use kornia::image::{Image, ImageSize};
+/// use kornia::imgproc::flip::vertical_flip;
 ///
 /// let image = Image::<f32, 3>::new(
 ///     ImageSize {

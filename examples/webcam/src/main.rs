@@ -4,7 +4,7 @@ use std::sync::{
     {Arc, Mutex},
 };
 
-use kornia_rs::{
+use kornia::{
     image::ImageSize,
     imgproc,
     io::{

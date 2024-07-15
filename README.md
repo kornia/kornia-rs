@@ -15,8 +15,8 @@ Use the library to perform image I/O, visualisation and other low level operatio
 `cargo run --example hello_world`
 
 ```rust
-use kornia_rs::image::Image;
-use kornia_rs::io::functional as F;
+use kornia::image::Image;
+use kornia::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
@@ -85,13 +85,13 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-kornia-rs = { version = "0.1.6", features = ["gstreamer"] }
+kornia = { version = "0.1.6", features = ["gstreamer"] }
 ```
 
 Alternatively, you can use the `cargo` command to add the dependency:
 
 ```bash
-cargo add kornia-rs
+cargo add kornia
 ```
 
 ### 🐍 Python
@@ -107,8 +107,8 @@ The following example shows how to read an image, convert it to grayscale and re
 Checkout all the examples in the [`examples`](https://github.com/kornia/kornia-rs/tree/main/examples) directory to see more use cases.
 
 ```rust
-use kornia_rs::{image::{Image, ImageSize}, imgproc};
-use kornia_rs::io::functional as F;
+use kornia::{image::{Image, ImageSize}, imgproc};
+use kornia::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image

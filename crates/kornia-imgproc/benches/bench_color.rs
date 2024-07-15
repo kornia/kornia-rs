@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
+use kornia::imgproc::color::gray_from_rgb;
 use kornia_image::{Image, ImageSize};
-use kornia_rs::imgproc::color::gray_from_rgb;
 use ndarray::s;
 
 // vanilla version

@@ -14,10 +14,7 @@ version = "0.1.6+dev"
 [dependencies]
 
 # kornia
-kornia-rs = { path = "../crates/kornia-rs", features = [
-    "gstreamer",
-    "jpegturbo",
-] }
+kornia = { path = "../crates/kornia", features = ["gstreamer", "jpegturbo"] }
 
 # external
 axum = "0.7.5"

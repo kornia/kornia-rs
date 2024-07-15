@@ -1,4 +1,4 @@
-use kornia_rs::{
+use kornia::{
     image::Image,
     io::jpeg::{ImageDecoder, ImageEncoder},
 };

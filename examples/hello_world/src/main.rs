@@ -1,8 +1,8 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use kornia_rs::image::Image;
-use kornia_rs::io::functional as F;
+use kornia::image::Image;
+use kornia::io::functional as F;
 
 #[derive(Parser)]
 struct Args {

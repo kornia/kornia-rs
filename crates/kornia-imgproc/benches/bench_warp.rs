@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use kornia_rs::{
+use kornia::{
     image::{Image, ImageSize},
     imgproc::{
         interpolation::InterpolationMode,

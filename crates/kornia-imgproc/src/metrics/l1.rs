@@ -22,8 +22,8 @@ use kornia_image::Image;
 /// # Example
 ///
 /// ```
-/// use kornia_rs::image::{Image, ImageSize};
-/// use kornia_rs::imgproc::metrics::l1_loss;
+/// use kornia::image::{Image, ImageSize};
+/// use kornia::imgproc::metrics::l1_loss;
 ///
 /// let image1 = Image::<f32, 1>::new(
 ///   ImageSize {
