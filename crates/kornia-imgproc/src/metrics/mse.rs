@@ -21,7 +21,7 @@ use kornia_image::Image;
 ///
 /// ```
 /// use kornia_rs::image::{Image, ImageSize};
-/// use kornia_imgproc::metrics::mse;
+/// use kornia_rs::imgproc::metrics::mse;
 ///
 /// let image1 = Image::<f32, 1>::new(
 ///    ImageSize {
@@ -78,7 +78,7 @@ pub fn mse<const CHANNELS: usize>(
 /// # Example
 /// ```
 /// use kornia_rs::image::{Image, ImageSize};
-/// use kornia_imgproc::metrics::psnr;
+/// use kornia_rs::imgproc::metrics::psnr;
 ///
 /// let image1 = Image::<f32, 3>::new(
 ///   ImageSize {

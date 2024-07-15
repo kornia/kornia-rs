@@ -21,7 +21,7 @@ use kornia_image::Image;
 ///
 /// ```
 /// use kornia_rs::image::{Image, ImageSize};
-/// use kornia_imgproc::core::std_mean;
+/// use kornia_rs::imgproc::core::std_mean;
 ///
 /// let image = Image::<u8, 3>::new(
 ///    ImageSize {
@@ -77,7 +77,7 @@ pub fn std_mean(image: &Image<u8, 3>) -> (Vec<f64>, Vec<f64>) {
 ///
 /// ```
 /// use kornia_rs::image::{Image, ImageSize};
-/// use kornia_imgproc::core::bitwise_and;
+/// use kornia_rs::imgproc::core::bitwise_and;
 ///
 /// let image = Image::<u8, 3>::new(
 ///    ImageSize {

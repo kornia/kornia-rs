@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 ```bash
-Hello, world!
+Hello, world! 🦀
 Loaded Image size: ImageSize { width: 258, height: 195 }
 
 Goodbyte!
@@ -107,7 +107,7 @@ The following example shows how to read an image, convert it to grayscale and re
 Checkout all the examples in the [`examples`](https://github.com/kornia/kornia-rs/tree/main/examples) directory to see more use cases.
 
 ```rust
-use kornia_rs::image::Image;
+use kornia_rs::{image::{Image, ImageSize}, imgproc};
 use kornia_rs::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -119,15 +119,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image_f32: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
 
     // convert the image to grayscale
-    let gray: Image<f32, 1> = kornia_rs::color::gray_from_rgb(&image_f32)?;
+    let gray: Image<f32, 1> = imgproc::color::gray_from_rgb(&image_f32)?;
 
-    let gray_resize: Image<f32, 1> = kornia_rs::resize::resize_native(
+    let gray_resize: Image<f32, 1> = imgproc::resize::resize_native(
         &gray,
-        kornia_image::ImageSize {
+        ImageSize {
             width: 128,
             height: 128,
         },
-        kornia_rs::resize::InterpolationMode::Bilinear,
+        imgproc::resize::InterpolationMode::Bilinear,
     )?;
 
     println!("gray_resize: {:?}", gray_resize.size());

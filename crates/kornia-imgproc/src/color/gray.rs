@@ -33,7 +33,7 @@ const BW: f64 = 0.114;
 ///     vec![0f32; 4 * 5 * 3],
 /// )
 /// .unwrap();
-/// let gray: Image<f32, 1> = kornia_imgproc::color::gray_from_rgb(&image).unwrap();
+/// let gray: Image<f32, 1> = kornia_rs::imgproc::color::gray_from_rgb(&image).unwrap();
 /// assert_eq!(gray.num_channels(), 1);
 /// assert_eq!(gray.size().width, 4);
 /// assert_eq!(gray.size().height, 5);

@@ -23,7 +23,7 @@ use kornia_image::Image;
 ///
 /// ```
 /// use kornia_rs::image::{Image, ImageSize};
-/// use kornia_imgproc::normalize::normalize_mean_std;
+/// use kornia_rs::imgproc::normalize::normalize_mean_std;
 ///
 /// let image_data = vec![0f32, 1.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 1.0, 2.0, 3.0];
 /// let image = Image::<f32, 3>::new(
@@ -85,7 +85,7 @@ where
 ///
 /// ```
 /// use kornia_rs::image::{Image, ImageSize};
-/// use kornia_imgproc::normalize::find_min_max;
+/// use kornia_rs::imgproc::normalize::find_min_max;
 ///
 /// let image_data = vec![0u8, 1, 0, 1, 2, 3, 0, 1, 0, 1, 2, 3];
 /// let image = Image::<u8, 3>::new(
@@ -148,7 +148,7 @@ where
 ///
 /// ```
 /// use kornia_rs::image::{Image, ImageSize};
-/// use kornia_imgproc::normalize::normalize_min_max;
+/// use kornia_rs::imgproc::normalize::normalize_min_max;
 ///
 /// let image_data = vec![0.0f32, 1.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 1.0, 2.0, 3.0];
 /// let image = Image::<f32, 3>::new(

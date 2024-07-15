@@ -43,7 +43,7 @@ use kornia_image::Image;
 /// )
 /// .unwrap();
 ///
-/// let huber = kornia_imgproc::metrics::huber(&image1, &image2, 1.0);
+/// let huber = kornia_rs::imgproc::metrics::huber(&image1, &image2, 1.0);
 /// assert_eq!(huber, 2.5);
 /// ```
 ///
