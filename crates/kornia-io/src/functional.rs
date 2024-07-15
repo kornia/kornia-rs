@@ -1,10 +1,11 @@
-use anyhow::Result;
 use std::path::Path;
 
 use kornia_image::{Image, ImageSize};
 
 #[cfg(feature = "jpegturbo")]
 use super::jpeg::{ImageDecoder, ImageEncoder};
+
+use crate::error::IoError;
 
 #[cfg(feature = "jpegturbo")]
 /// Reads a JPEG image from the given file path.
@@ -31,22 +32,16 @@ use super::jpeg::{ImageDecoder, ImageEncoder};
 /// assert_eq!(image.size().height, 195);
 /// assert_eq!(image.num_channels(), 3);
 /// ```
-pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>> {
+pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>, IoError> {
     // verify the file exists and is a JPEG
     if !file_path.exists() {
-        return Err(anyhow::anyhow!(
-            "File does not exist: {}",
-            file_path.to_str().unwrap()
-        ));
+        IoError::FileDoesNotExist(file_path.to_str().unwrap().to_string());
     }
 
     if file_path.extension().map_or(true, |ext| {
         ext.to_ascii_lowercase() != "jpg" && ext.to_ascii_lowercase() != "jpeg"
     }) {
-        return Err(anyhow::anyhow!(
-            "File is not a JPEG: {}",
-            file_path.to_str().unwrap()
-        ));
+        IoError::InvalidFileExtension(file_path.to_str().unwrap().to_string());
     }
 
     // open the file and map it to memory
@@ -55,8 +50,8 @@ pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>> {
 
     // decode the data directly from memory
     let image: Image<u8, 3> = {
-        let mut decoder = ImageDecoder::new()?;
-        decoder.decode(&mmap)?
+        let mut decoder = ImageDecoder::new().expect("Failed to create decoder");
+        decoder.decode(&mmap).expect("Failed to decode image")
     };
 
     Ok(image)
@@ -69,9 +64,12 @@ pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>> {
 ///
 /// * `file_path` - The path to the JPEG image.
 /// * `image` - The tensor containing the JPEG image data.
-pub fn write_image_jpeg(file_path: &Path, image: &Image<u8, 3>) -> Result<()> {
+pub fn write_image_jpeg(file_path: &Path, image: &Image<u8, 3>) -> Result<(), IoError> {
     // compress the image
-    let jpeg_data = ImageEncoder::new()?.encode(image)?;
+    let jpeg_data = ImageEncoder::new()
+        .expect("Failed to create encoder")
+        .encode(image)
+        .expect("Failed to encode image");
 
     // write the data directly to a file
     std::fs::write(file_path, jpeg_data)?;
@@ -103,13 +101,10 @@ pub fn write_image_jpeg(file_path: &Path, image: &Image<u8, 3>) -> Result<()> {
 /// assert_eq!(image.size().height, 195);
 /// assert_eq!(image.num_channels(), 3);
 /// ```
-pub fn read_image_any(file_path: &Path) -> Result<Image<u8, 3>> {
+pub fn read_image_any(file_path: &Path) -> Result<Image<u8, 3>, IoError> {
     // verify the file exists
     if !file_path.exists() {
-        return Err(anyhow::anyhow!(
-            "File does not exist: {}",
-            file_path.to_str().unwrap()
-        ));
+        IoError::FileDoesNotExist(file_path.to_str().unwrap().to_string());
     }
 
     // open the file and map it to memory
@@ -119,7 +114,8 @@ pub fn read_image_any(file_path: &Path) -> Result<Image<u8, 3>> {
     // decode the data directly from memory
     let img = image::io::Reader::new(std::io::Cursor::new(&mmap))
         .with_guessed_format()?
-        .decode()?;
+        .decode()
+        .expect("Failed to decode image");
 
     // return the image data
     let data = img.to_rgb8().to_vec();

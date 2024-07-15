@@ -1,7 +1,7 @@
 use crate::interpolation::{interpolate_pixel, meshgrid, InterpolationMode};
 use anyhow::Result;
 use fast_image_resize as fr;
-use kornia_image::{Image, ImageDtype, ImageSize};
+use kornia_image::{Image, ImageDtype, ImageError, ImageSize};
 use ndarray::stack;
 use std::num::NonZeroU32;
 
@@ -187,7 +187,7 @@ pub fn resize_fast(
     resizer.resize(&src_image.view(), &mut dst_view)?;
 
     // TODO: create a new image from the buffer directly from a slice
-    Image::new(new_size, dst_image.buffer().to_vec())
+    Ok(Image::new(new_size, dst_image.buffer().to_vec()).expect("Failed to create image"))
 }
 
 #[cfg(test)]

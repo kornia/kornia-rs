@@ -1,6 +1,8 @@
 use anyhow::Result;
 use num_traits::Float;
 
+use crate::error::ImageError;
+
 /// Image size in pixels
 ///
 /// A struct to represent the size of an image in pixels.
@@ -100,13 +102,12 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// assert_eq!(image.size().height, 20);
     /// assert_eq!(image.num_channels(), 3);
     /// ```
-    pub fn new(size: ImageSize, data: Vec<T>) -> Result<Self> {
+    pub fn new(size: ImageSize, data: Vec<T>) -> Result<Self, ImageError> {
         // check if the data length matches the image size
         if data.len() != size.width * size.height * CHANNELS {
-            return Err(anyhow::anyhow!(
-                "Data length ({}) does not match the image size ({})",
+            return Err(ImageError::InvalidChannelShape(
                 data.len(),
-                size.width * size.height * CHANNELS
+                size.width * size.height * CHANNELS,
             ));
         }
 
