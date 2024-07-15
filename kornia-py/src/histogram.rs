@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 
 use crate::image::{FromPyImage, PyImage};
-use kornia_rs::image::Image;
+use kornia::{image::Image, imgproc};
 
 /// Compute the pixel-wise histogram of an image.
 /// --
@@ -21,7 +21,7 @@ pub fn compute_histogram(image: PyImage, num_bins: usize) -> PyResult<Vec<usize>
     let image = Image::from_pyimage(image)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
-    let histogram = kornia_rs::histogram::compute_histogram(&image, num_bins)
+    let histogram = imgproc::histogram::compute_histogram(&image, num_bins)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
     Ok(histogram)

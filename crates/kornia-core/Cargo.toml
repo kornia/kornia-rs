@@ -1,0 +1,22 @@
+[package]
+name = "kornia-core"
+authors.workspace = true
+description = "Lightweight tensor library in Rust for computer vision"
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+publish = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+
+# external
+arrow-buffer = "52.0.0"
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+
+
+[dev-dependencies]
+kornia.workspace = true

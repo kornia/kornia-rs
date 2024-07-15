@@ -15,8 +15,8 @@ Use the library to perform image I/O, visualisation and other low level operatio
 `cargo run --example hello_world`
 
 ```rust
-use kornia_rs::image::Image;
-use kornia_rs::io::functional as F;
+use kornia::image::Image;
+use kornia::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 ```bash
-Hello, world!
+Hello, world! 🦀
 Loaded Image size: ImageSize { width: 258, height: 195 }
 
 Goodbyte!
@@ -85,13 +85,13 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-kornia-rs = { version = "0.1.2", features = ["gstreamer"] }
+kornia = { version = "0.1.6", features = ["gstreamer"] }
 ```
 
 Alternatively, you can use the `cargo` command to add the dependency:
 
 ```bash
-cargo add kornia-rs
+cargo add kornia
 ```
 
 ### 🐍 Python
@@ -107,8 +107,8 @@ The following example shows how to read an image, convert it to grayscale and re
 Checkout all the examples in the [`examples`](https://github.com/kornia/kornia-rs/tree/main/examples) directory to see more use cases.
 
 ```rust
-use kornia_rs::image::Image;
-use kornia_rs::io::functional as F;
+use kornia::{image::{Image, ImageSize}, imgproc};
+use kornia::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
@@ -119,15 +119,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image_f32: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
 
     // convert the image to grayscale
-    let gray: Image<f32, 1> = kornia_rs::color::gray_from_rgb(&image_f32)?;
+    let gray: Image<f32, 1> = imgproc::color::gray_from_rgb(&image_f32)?;
 
-    let gray_resize: Image<f32, 1> = kornia_rs::resize::resize_native(
+    let gray_resize: Image<f32, 1> = imgproc::resize::resize_native(
         &gray,
-        kornia_rs::image::ImageSize {
+        ImageSize {
             width: 128,
             height: 128,
         },
-        kornia_rs::resize::InterpolationMode::Bilinear,
+        imgproc::resize::InterpolationMode::Bilinear,
     )?;
 
     println!("gray_resize: {:?}", gray_resize.size());
