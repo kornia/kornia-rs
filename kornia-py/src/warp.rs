@@ -1,7 +1,9 @@
 use pyo3::prelude::*;
 
 use crate::image::{FromPyImage, PyImage, ToPyImage};
-use kornia_rs::image::Image;
+use kornia::image::{Image, ImageSize};
+use kornia::imgproc::interpolation::InterpolationMode;
+use kornia::imgproc::warp;
 
 #[pyfunction]
 pub fn warp_affine(
@@ -15,14 +17,14 @@ pub fn warp_affine(
     let image: Image<u8, 3> = Image::from_pyimage(image)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
-    let new_size = kornia_rs::image::ImageSize {
+    let new_size = ImageSize {
         height: new_size.0,
         width: new_size.1,
     };
 
     let interpolation = match interpolation.to_lowercase().as_str() {
-        "nearest" => kornia_rs::interpolation::InterpolationMode::Nearest,
-        "bilinear" => kornia_rs::interpolation::InterpolationMode::Bilinear,
+        "nearest" => InterpolationMode::Nearest,
+        "bilinear" => InterpolationMode::Bilinear,
         _ => {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                 "Invalid interpolation mode",
@@ -35,7 +37,7 @@ pub fn warp_affine(
         .cast::<f32>()
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
-    let image = kornia_rs::warp::warp_affine(&image, m, new_size, interpolation)
+    let image = warp::warp_affine(&image, m, new_size, interpolation)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
     // NOTE: for bicubic interpolation (not implemented yet), f32 may overshoot 255

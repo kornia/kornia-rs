@@ -1,0 +1,22 @@
+[package]
+name = "kornia"
+authors.workspace = true
+description = "Kornia top-level crate"
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+publish = true
+readme.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[features]
+gstreamer = ["kornia-io/gstreamer"]
+jpegturbo = ["kornia-io/jpegturbo"]
+
+[dependencies]
+kornia-core.workspace = true
+kornia-image.workspace = true
+kornia-imgproc.workspace = true
+kornia-io = { workspace = true, features = [] }

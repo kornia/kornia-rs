@@ -1,7 +1,7 @@
 use anyhow::Result;
 use numpy::{PyArray3, ToPyArray};
 
-use kornia_rs::image::{Image, ImageSize};
+use kornia::image::{Image, ImageSize};
 use pyo3::prelude::*;
 
 // type alias for a 3D numpy array of u8
@@ -12,7 +12,7 @@ pub trait ToPyImage {
     fn to_pyimage(self) -> PyImage;
 }
 
-impl<const CHANNELS: usize> ToPyImage for kornia_rs::image::Image<u8, CHANNELS> {
+impl<const CHANNELS: usize> ToPyImage for Image<u8, CHANNELS> {
     fn to_pyimage(self) -> PyImage {
         Python::with_gil(|py| self.data.to_pyarray(py).to_owned())
     }
@@ -23,7 +23,7 @@ pub trait FromPyImage<const CHANNELS: usize> {
     fn from_pyimage(image: PyImage) -> Result<Image<u8, CHANNELS>>;
 }
 
-impl<const CHANNELS: usize> FromPyImage<CHANNELS> for kornia_rs::image::Image<u8, CHANNELS> {
+impl<const CHANNELS: usize> FromPyImage<CHANNELS> for Image<u8, CHANNELS> {
     fn from_pyimage(image: PyImage) -> Result<Image<u8, CHANNELS>> {
         Python::with_gil(|py| {
             let array = image.as_ref(py).to_owned_array();
@@ -35,7 +35,7 @@ impl<const CHANNELS: usize> FromPyImage<CHANNELS> for kornia_rs::image::Image<u8
                 width: array.shape()[1],
                 height: array.shape()[0],
             };
-            Ok(Image::new(size, data)?)
+            Image::new(size, data)
         })
     }
 }
