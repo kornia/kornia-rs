@@ -1,3 +1,7 @@
+# Image histogram
+
+## Usage
+
 Example showing to compute the histogram of an image using the Kornia Rust image processing library.
 
 ```bash
@@ -8,12 +12,12 @@ Options:
   -h, --help                     Print help
 ```
 
-Example:
+## Example
 
 ```bash
 cargo run -p histogram -- --image-path path/to/image.jpg
 ```
 
-Output:
+## Output
 
 TODO: add image output
