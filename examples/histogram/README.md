@@ -20,4 +20,4 @@ cargo run -p histogram -- --image-path path/to/image.jpg
 
 ## Output
 
-TODO: add image output
+![green_black_histogram](https://github.com/user-attachments/assets/010a15db-3721-4217-bbca-79711011ebb5)
