@@ -16,15 +16,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
     let image: Image<u8, 3> = F::read_image_any(&args.image_path)?;
 
-    // create a Rerun recording stream
-    let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;
-
     // compute the histogram per channel
     let histogram = image
         .split_channels()?
         .iter()
         .map(|ch| imgproc::histogram::compute_histogram(ch, 256))
         .collect::<Result<Vec<_>, _>>()?;
+
+    // create a Rerun recording stream
+    let rec = rerun::RecordingStreamBuilder::new("Kornia Histogram App").spawn()?;
 
     // log the image and the histogram
     rec.set_time_sequence("step", 0);
