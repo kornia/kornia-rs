@@ -13,7 +13,6 @@ version.workspace = true
 [dependencies]
 
 # external
-anyhow = "1"
 ndarray = { version = "0.15", features = ["rayon"] }
 num-traits = "0.2"
 thiserror = "1"

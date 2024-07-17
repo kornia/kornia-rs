@@ -1,7 +1,6 @@
 use super::interpolate::interpolate_pixel;
 use super::InterpolationMode;
-use anyhow::Result;
-use kornia_image::Image;
+use kornia_image::{Image, ImageError};
 
 /// Applyu generic geometric transformation to an image.
 ///
@@ -24,9 +23,14 @@ pub fn remap<const CHANNELS: usize>(
     map_x: &Image<f32, 1>,
     map_y: &Image<f32, 1>,
     interpolation: InterpolationMode,
-) -> Result<Image<f32, CHANNELS>> {
+) -> Result<Image<f32, CHANNELS>, ImageError> {
     if map_x.size() != map_y.size() {
-        return Err(anyhow::anyhow!("map_x and map_y must have the same size"));
+        return Err(ImageError::InvalidImageSize(
+            map_x.height(),
+            map_y.height(),
+            map_x.width(),
+            map_y.width(),
+        ));
     }
 
     let mut dst = Image::<_, CHANNELS>::from_size_val(map_x.size(), 0.0)?;
@@ -46,11 +50,10 @@ pub fn remap<const CHANNELS: usize>(
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
+    use kornia_image::{Image, ImageError, ImageSize};
 
     #[test]
-    fn remap_smoke() -> Result<()> {
-        use kornia_image::{Image, ImageSize};
+    fn remap_smoke() -> Result<(), ImageError> {
         let image = Image::<_, 1>::new(
             ImageSize {
                 width: 3,

@@ -1,7 +1,6 @@
-use anyhow::Result;
 use numpy::{PyArray3, ToPyArray};
 
-use kornia::image::{Image, ImageSize};
+use kornia::image::{Image, ImageError, ImageSize};
 use pyo3::prelude::*;
 
 // type alias for a 3D numpy array of u8
@@ -20,16 +19,16 @@ impl<const CHANNELS: usize> ToPyImage for Image<u8, CHANNELS> {
 
 /// Trait to convert a PyImage (3D numpy array of u8) to an image
 pub trait FromPyImage<const CHANNELS: usize> {
-    fn from_pyimage(image: PyImage) -> Result<Image<u8, CHANNELS>>;
+    fn from_pyimage(image: PyImage) -> Result<Image<u8, CHANNELS>, ImageError>;
 }
 
 impl<const CHANNELS: usize> FromPyImage<CHANNELS> for Image<u8, CHANNELS> {
-    fn from_pyimage(image: PyImage) -> Result<Image<u8, CHANNELS>> {
+    fn from_pyimage(image: PyImage) -> Result<Image<u8, CHANNELS>, ImageError> {
         Python::with_gil(|py| {
             let array = image.as_ref(py).to_owned_array();
             let data = match array.as_slice() {
                 Some(d) => d.to_vec(),
-                None => return Err(anyhow::anyhow!("Image data is not contiguous")),
+                None => return Err(ImageError::ImageDataNotContiguous),
             };
             let size = ImageSize {
                 width: array.shape()[1],

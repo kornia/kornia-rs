@@ -1,5 +1,4 @@
-use anyhow::Result;
-use kornia_image::Image;
+use kornia_image::{Image, ImageError};
 
 /// Apply a binary threshold to an image.
 ///
@@ -31,7 +30,7 @@ pub fn threshold_binary<T, const CHANNELS: usize>(
     src: &Image<T, CHANNELS>,
     threshold: T,
     max_value: T,
-) -> Result<Image<T, CHANNELS>>
+) -> Result<Image<T, CHANNELS>, ImageError>
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
@@ -80,7 +79,7 @@ pub fn threshold_binary_inverse<T, const CHANNELS: usize>(
     src: &Image<T, CHANNELS>,
     threshold: T,
     max_value: T,
-) -> Result<Image<T, CHANNELS>>
+) -> Result<Image<T, CHANNELS>, ImageError>
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
@@ -127,7 +126,7 @@ where
 pub fn threshold_truncate<T, const CHANNELS: usize>(
     src: &Image<T, CHANNELS>,
     threshold: T,
-) -> Result<Image<T, CHANNELS>>
+) -> Result<Image<T, CHANNELS>, ImageError>
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
@@ -170,7 +169,7 @@ where
 pub fn threshold_to_zero<T, const CHANNELS: usize>(
     src: &Image<T, CHANNELS>,
     threshold: T,
-) -> Result<Image<T, CHANNELS>>
+) -> Result<Image<T, CHANNELS>, ImageError>
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
@@ -213,7 +212,7 @@ where
 pub fn threshold_to_zero_inverse<T, const CHANNELS: usize>(
     src: &Image<T, CHANNELS>,
     threshold: T,
-) -> Result<Image<T, CHANNELS>>
+) -> Result<Image<T, CHANNELS>, ImageError>
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
@@ -271,7 +270,7 @@ pub fn in_range<T, const CHANNELS: usize>(
     src: &Image<T, CHANNELS>,
     lower_bound: &[T; CHANNELS],
     upper_bound: &[T; CHANNELS],
-) -> Result<Image<u8, 1>>
+) -> Result<Image<u8, 1>, ImageError>
 where
     T: Sync + std::cmp::PartialOrd,
 {
@@ -296,11 +295,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
-    use kornia_image::{Image, ImageSize};
+    use kornia_image::{Image, ImageError, ImageSize};
 
     #[test]
-    fn threshold_binary() -> Result<()> {
+    fn threshold_binary() -> Result<(), ImageError> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
         let data_expected = [0u8, 255, 0, 255, 255, 255];
         let image = Image::<_, 1>::new(
@@ -328,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn threshold_binary_inverse() -> Result<()> {
+    fn threshold_binary_inverse() -> Result<(), ImageError> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
         let data_expected = [255u8, 0, 255, 0, 0, 0];
         let image = Image::<_, 1>::new(
@@ -356,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn threshold_truncate() -> Result<()> {
+    fn threshold_truncate() -> Result<(), ImageError> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
         let data_expected = [100u8, 150, 50, 150, 150, 150];
         let image = Image::<_, 1>::new(
@@ -384,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn threshold_to_zero() -> Result<()> {
+    fn threshold_to_zero() -> Result<(), ImageError> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
         let data_expected = [0u8, 200, 0, 0, 200, 250];
         let image = Image::<_, 3>::new(
@@ -412,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn threshold_to_zero_inverse() -> Result<()> {
+    fn threshold_to_zero_inverse() -> Result<(), ImageError> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
         let data_expected = [100u8, 0, 50, 150, 0, 0];
         let image = Image::<_, 3>::new(
@@ -440,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn test_in_range() -> Result<()> {
+    fn test_in_range() -> Result<(), ImageError> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
         let image = Image::<_, 3>::new(
             ImageSize {

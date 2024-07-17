@@ -1,5 +1,4 @@
-use anyhow::Result;
-use kornia_image::Image;
+use kornia_image::{Image, ImageError};
 
 /// Performs weighted addition of two images `src1` and `src2` with weights `alpha`
 /// and `beta`, and an optional scalar `gamma`. The formula used is:
@@ -31,13 +30,16 @@ pub fn add_weighted<T, const CHANNELS: usize>(
     src2: &Image<T, CHANNELS>,
     beta: T,
     gamma: T,
-) -> Result<Image<T, CHANNELS>>
+) -> Result<Image<T, CHANNELS>, ImageError>
 where
     T: num_traits::Float + num_traits::FromPrimitive + std::fmt::Debug + Send + Sync + Copy,
 {
     if src1.size() != src2.size() {
-        return Err(anyhow::anyhow!(
-            "The shape of `src1` and `src2` should be identical"
+        return Err(ImageError::InvalidImageSize(
+            src1.width(),
+            src1.height(),
+            src2.width(),
+            src2.height(),
         ));
     }
 
@@ -57,11 +59,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
-    use kornia_image::{Image, ImageSize};
+    use kornia_image::{Image, ImageError, ImageSize};
 
     #[test]
-    fn test_add_weighted() -> Result<()> {
+    fn test_add_weighted() -> Result<(), ImageError> {
         let src1_data = vec![1.0f32, 2.0, 3.0, 4.0];
         let src1 = Image::<f32, 1>::new(
             ImageSize {

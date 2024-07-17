@@ -19,7 +19,6 @@ all-features = true
 kornia-image.workspace = true
 
 # external
-anyhow = "1"
 image = { version = "0.25" }
 thiserror = "1"
 

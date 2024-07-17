@@ -1,5 +1,4 @@
 use crate::interpolation::{interpolate_pixel, meshgrid, InterpolationMode};
-use anyhow::Result;
 use fast_image_resize as fr;
 use kornia_image::{Image, ImageDtype, ImageError, ImageSize};
 use ndarray::stack;
@@ -54,7 +53,7 @@ pub fn resize_native<T: ImageDtype, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
     new_size: ImageSize,
     interpolation: InterpolationMode,
-) -> Result<Image<T, CHANNELS>> {
+) -> Result<Image<T, CHANNELS>, ImageError> {
     // create the output image
     let mut output = Image::from_size_val(new_size, T::default())?;
 
@@ -146,32 +145,21 @@ pub fn resize_fast(
     image: &Image<u8, 3>,
     new_size: ImageSize,
     interpolation: InterpolationMode,
-) -> Result<Image<u8, 3>> {
-    let src_width = NonZeroU32::new(image.width() as u32).ok_or(anyhow::anyhow!(
-        "The width of the input image must be greater than zero."
-    ))?;
-    let src_height = NonZeroU32::new(image.height() as u32).ok_or(anyhow::anyhow!(
-        "The height of the input image must be greater than zero."
-    ))?;
+) -> Result<Image<u8, 3>, ImageError> {
+    // cast the image dimensions to u32
+    let src_width = NonZeroU32::new(image.width() as u32).ok_or(ImageError::CastError)?;
+    let src_height = NonZeroU32::new(image.height() as u32).ok_or(ImageError::CastError)?;
 
-    // get the image data as a contiguous slice
-    let image_data = image.data.as_slice().ok_or(anyhow::anyhow!(
-        "The image data must be contiguous and not empty."
-    ))?;
+    let image_data = image.data.to_owned().into_raw_vec();
+    let image_data_len = image_data.len();
 
-    let src_image = fr::Image::from_vec_u8(
-        src_width,
-        src_height,
-        image_data.to_vec(),
-        fr::PixelType::U8x3,
-    )?;
+    let src_image = fr::Image::from_vec_u8(src_width, src_height, image_data, fr::PixelType::U8x3)
+        .map_err(|_| {
+            ImageError::InvalidChannelShape(image_data_len, image.width() * image.height() * 3)
+        })?;
 
-    let dst_width = NonZeroU32::new(new_size.width as u32).ok_or(anyhow::anyhow!(
-        "The width of the output image must be greater than zero."
-    ))?;
-    let dst_height = NonZeroU32::new(new_size.height as u32).ok_or(anyhow::anyhow!(
-        "The height of the output image must be greater than zero."
-    ))?;
+    let dst_width = NonZeroU32::new(new_size.width as u32).ok_or(ImageError::CastError)?;
+    let dst_height = NonZeroU32::new(new_size.height as u32).ok_or(ImageError::CastError)?;
 
     let mut dst_image = fr::Image::new(dst_width, dst_height, src_image.pixel_type());
     let mut dst_view = dst_image.view_mut();
@@ -184,7 +172,10 @@ pub fn resize_fast(
             InterpolationMode::Nearest => fr::Resizer::new(fr::ResizeAlg::Nearest),
         }
     };
-    resizer.resize(&src_image.view(), &mut dst_view)?;
+
+    resizer
+        .resize(&src_image.view(), &mut dst_view)
+        .map_err(|_| ImageError::IncompatiblePixelTypes)?;
 
     // TODO: create a new image from the buffer directly from a slice
     Ok(Image::new(new_size, dst_image.buffer().to_vec()).expect("Failed to create image"))
@@ -192,11 +183,10 @@ pub fn resize_fast(
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
+    use kornia_image::{Image, ImageError, ImageSize};
 
     #[test]
-    fn resize_smoke_ch3() -> Result<()> {
-        use kornia_image::{Image, ImageSize};
+    fn resize_smoke_ch3() -> Result<(), ImageError> {
         let image = Image::<_, 3>::new(
             ImageSize {
                 width: 4,
@@ -220,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn resize_smoke_ch1() -> Result<()> {
+    fn resize_smoke_ch1() -> Result<(), ImageError> {
         use kornia_image::{Image, ImageSize};
         let image = Image::<_, 1>::new(
             ImageSize {
@@ -257,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn resize_fast() -> Result<()> {
+    fn resize_fast() -> Result<(), ImageError> {
         use kornia_image::{Image, ImageSize};
         let image = Image::<_, 3>::new(
             ImageSize {

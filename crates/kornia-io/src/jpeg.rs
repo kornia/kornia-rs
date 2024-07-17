@@ -32,13 +32,19 @@ pub struct ImageEncoder {
 
 impl Default for ImageDecoder {
     fn default() -> Self {
-        Self::new().unwrap()
+        match Self::new() {
+            Ok(decoder) => decoder,
+            Err(e) => panic!("Failed to create ImageDecoder: {}", e),
+        }
     }
 }
 
 impl Default for ImageEncoder {
     fn default() -> Self {
-        Self::new().unwrap()
+        match Self::new() {
+            Ok(encoder) => encoder,
+            Err(e) => panic!("Failed to create ImageEncoder: {}", e),
+        }
     }
 }
 
@@ -125,6 +131,7 @@ impl ImageDecoder {
     pub fn read_header(&mut self, jpeg_data: &[u8]) -> Result<ImageSize, JpegError> {
         // read the JPEG header with image size
         let header = self.decompressor.read_header(jpeg_data)?;
+
         Ok(ImageSize {
             width: header.width,
             height: header.height,
@@ -142,7 +149,7 @@ impl ImageDecoder {
     /// The decoded data as Tensor.
     pub fn decode(&mut self, jpeg_data: &[u8]) -> Result<Image<u8, 3>, JpegError> {
         // get the image size to allocate th data storage
-        let image_size: ImageSize = self.read_header(jpeg_data)?;
+        let image_size = self.read_header(jpeg_data)?;
 
         // prepare a storage for the raw pixel data
         let mut pixels = vec![0u8; image_size.height * image_size.width * 3];
