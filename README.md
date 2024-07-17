@@ -12,7 +12,7 @@ Use the library to perform image I/O, visualisation and other low level operatio
 
 ## Getting Started
 
-`cargo run --example hello_world`
+`cargo run --bin hello_world`
 
 ```rust
 use kornia::image::Image;
@@ -21,9 +21,9 @@ use kornia::io::functional as F;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
     let image_path = std::path::Path::new("tests/data/dog.jpeg");
-    let image: Image<u8, 3> = F::read_image_jpeg(image_path)?;
+    let image: Image<u8, 3> = F::read_image_any(image_path)?;
 
-    println!("Hello, world!");
+    println!("Hello, world! 🦀");
     println!("Loaded Image size: {:?}", image.size());
     println!("\nGoodbyte!");
 
@@ -85,13 +85,17 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-kornia = { version = "0.1.6", features = ["gstreamer"] }
+kornia = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.6-rc1" }
 ```
 
-Alternatively, you can use the `cargo` command to add the dependency:
+Alternatively, you can use each sub-crate separately:
 
-```bash
-cargo add kornia
+```toml
+[dependencies]
+kornia-core = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.6-rc1" }
+kornia-io = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.6-rc1" }
+kornia-image = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.6-rc1" }
+kornia-imgproc = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.6-rc1" }
 ```
 
 ### 🐍 Python
@@ -113,7 +117,7 @@ use kornia::io::functional as F;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
     let image_path = std::path::Path::new("tests/data/dog.jpeg");
-    let image: Image<u8, 3> = F::read_image_jpeg(image_path)?;
+    let image: Image<u8, 3> = F::read_image_any(image_path)?;
     let image_viz = image.clone();
 
     let image_f32: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
