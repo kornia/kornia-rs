@@ -25,8 +25,8 @@ rust-version = "1.76"
 version = "0.1.6+dev"
 
 [workspace.dependencies]
-kornia-core = { path = "crates/kornia-core" }
-kornia-image = { path = "crates/kornia-image" }
-kornia-io = { path = "crates/kornia-io" }
-kornia-imgproc = { path = "crates/kornia-imgproc" }
-kornia = { path = "crates/kornia" }
+kornia-core = { path = "crates/kornia-core", version = "0.1.6+dev" }
+kornia-image = { path = "crates/kornia-image", version = "0.1.6+dev" }
+kornia-io = { path = "crates/kornia-io", version = "0.1.6+dev" }
+kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.6+dev" }
+kornia = { path = "crates/kornia", version = "0.1.6+dev" }

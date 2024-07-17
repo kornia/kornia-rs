@@ -85,13 +85,17 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-kornia = { version = "0.1.6", features = ["gstreamer"] }
+kornia = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.6-rc1" }
 ```
 
-Alternatively, you can use the `cargo` command to add the dependency:
+Alternatively, you can use each sub-crate separately:
 
-```bash
-cargo add kornia
+```toml
+[dependencies]
+kornia-core = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.6-rc1" }
+kornia-io = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.6-rc1" }
+kornia-image = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.6-rc1" }
+kornia-imgproc = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.6-rc1" }
 ```
 
 ### 🐍 Python
