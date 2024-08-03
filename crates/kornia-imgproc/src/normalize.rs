@@ -1,5 +1,4 @@
-use anyhow::Result;
-use kornia_image::Image;
+use kornia_image::{Image, ImageError};
 
 /// Normalize an image using the mean and standard deviation.
 ///
@@ -50,7 +49,7 @@ pub fn normalize_mean_std<T, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
     mean: &[T; CHANNELS],
     std: &[T; CHANNELS],
-) -> Result<Image<T, CHANNELS>, std::io::Error>
+) -> Result<Image<T, CHANNELS>, ImageError>
 where
     T: num_traits::Float + num_traits::FromPrimitive + std::fmt::Debug + Send + Sync + Copy,
 {
@@ -101,14 +100,16 @@ where
 /// assert_eq!(min, 0);
 /// assert_eq!(max, 3);
 /// ```
-pub fn find_min_max<T, const CHANNELS: usize>(image: &Image<T, CHANNELS>) -> Result<(T, T)>
+pub fn find_min_max<T, const CHANNELS: usize>(
+    image: &Image<T, CHANNELS>,
+) -> Result<(T, T), ImageError>
 where
     T: PartialOrd + Copy,
 {
     // get the first element in the image
     let first_element = match image.data.iter().next() {
         Some(x) => x,
-        None => return Err(anyhow::anyhow!("Empty image")),
+        None => return Err(ImageError::ImageDataNotInitialized),
     };
 
     let mut min = first_element;
@@ -170,7 +171,7 @@ pub fn normalize_min_max<T, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
     min: T,
     max: T,
-) -> Result<Image<T, CHANNELS>>
+) -> Result<Image<T, CHANNELS>, ImageError>
 where
     T: num_traits::Float
         + num_traits::FromPrimitive
@@ -197,11 +198,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
-    use kornia_image::{Image, ImageSize};
+    use kornia_image::{Image, ImageError, ImageSize};
 
     #[test]
-    fn normalize_mean_std() -> Result<()> {
+    fn normalize_mean_std() -> Result<(), ImageError> {
         let image_data = vec![
             0.0f32, 1.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 1.0, 2.0, 3.0,
         ];
@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn find_min_max() -> Result<()> {
+    fn find_min_max() -> Result<(), ImageError> {
         let image_data = vec![0u8, 1, 0, 1, 2, 3, 0, 1, 0, 1, 2, 3];
         let image = Image::<u8, 3>::new(
             ImageSize {
@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_min_max() -> Result<()> {
+    fn normalize_min_max() -> Result<(), ImageError> {
         let image_data = vec![
             0.0f32, 1.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 1.0, 2.0, 3.0,
         ];

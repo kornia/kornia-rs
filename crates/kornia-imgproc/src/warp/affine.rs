@@ -2,8 +2,7 @@ use std::f32::consts::PI;
 
 use crate::interpolation::meshgrid;
 use crate::interpolation::{interpolate_pixel, InterpolationMode};
-use anyhow::Result;
-use kornia_image::{Image, ImageSize};
+use kornia_image::{Image, ImageError, ImageSize};
 use ndarray::stack;
 
 type AffineMatrix = (f32, f32, f32, f32, f32, f32);
@@ -123,7 +122,7 @@ pub fn warp_affine<const CHANNELS: usize>(
     m: AffineMatrix,
     new_size: ImageSize,
     interpolation: InterpolationMode,
-) -> Result<Image<f32, CHANNELS>> {
+) -> Result<Image<f32, CHANNELS>, ImageError> {
     // invert affine transform matrix to find corresponding positions in src from dst
     let m_inv = invert_affine_transform(m);
 
@@ -178,11 +177,10 @@ pub fn warp_affine<const CHANNELS: usize>(
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
 
+    use kornia_image::{Image, ImageError, ImageSize};
     #[test]
-    fn warp_affine_smoke_ch3() -> Result<()> {
-        use kornia_image::{Image, ImageSize};
+    fn warp_affine_smoke_ch3() -> Result<(), ImageError> {
         let image = Image::<_, 3>::new(
             ImageSize {
                 width: 4,
@@ -206,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn warp_affine_smoke_ch1() -> Result<()> {
+    fn warp_affine_smoke_ch1() -> Result<(), ImageError> {
         use kornia_image::{Image, ImageSize};
         let image = Image::<_, 1>::new(
             ImageSize {
@@ -231,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn warp_affine_correctness_identity() -> Result<()> {
+    fn warp_affine_correctness_identity() -> Result<(), ImageError> {
         use kornia_image::{Image, ImageSize};
         let image = Image::<_, 1>::new(
             ImageSize {
@@ -255,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn warp_affine_correctness_rot90() -> Result<()> {
+    fn warp_affine_correctness_rot90() -> Result<(), ImageError> {
         use kornia_image::{Image, ImageSize};
         let image = Image::<_, 1>::new(
             ImageSize {

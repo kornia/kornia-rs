@@ -1,7 +1,8 @@
-use anyhow::Result;
 use std::path::Path;
 
 use kornia_image::{Image, ImageSize};
+
+use crate::error::IoError;
 
 #[cfg(feature = "jpegturbo")]
 use super::jpeg::{ImageDecoder, ImageEncoder};
@@ -27,26 +28,21 @@ use super::jpeg::{ImageDecoder, ImageEncoder};
 ///
 /// let image_path = std::path::Path::new("../../tests/data/dog.jpeg");
 /// let image: Image<u8, 3> = F::read_image_jpeg(image_path).unwrap();
+///
 /// assert_eq!(image.size().width, 258);
 /// assert_eq!(image.size().height, 195);
 /// assert_eq!(image.num_channels(), 3);
 /// ```
-pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>> {
+pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>, IoError> {
     // verify the file exists and is a JPEG
     if !file_path.exists() {
-        return Err(anyhow::anyhow!(
-            "File does not exist: {}",
-            file_path.to_str().unwrap()
-        ));
+        return Err(IoError::FileDoesNotExist(file_path.to_path_buf()));
     }
 
     if file_path.extension().map_or(true, |ext| {
         ext.to_ascii_lowercase() != "jpg" && ext.to_ascii_lowercase() != "jpeg"
     }) {
-        return Err(anyhow::anyhow!(
-            "File is not a JPEG: {}",
-            file_path.to_str().unwrap()
-        ));
+        return Err(IoError::InvalidFileExtension(file_path.to_path_buf()));
     }
 
     // open the file and map it to memory
@@ -69,7 +65,7 @@ pub fn read_image_jpeg(file_path: &Path) -> Result<Image<u8, 3>> {
 ///
 /// * `file_path` - The path to the JPEG image.
 /// * `image` - The tensor containing the JPEG image data.
-pub fn write_image_jpeg(file_path: &Path, image: &Image<u8, 3>) -> Result<()> {
+pub fn write_image_jpeg(file_path: &Path, image: &Image<u8, 3>) -> Result<(), IoError> {
     // compress the image
     let jpeg_data = ImageEncoder::new()?.encode(image)?;
 
@@ -99,17 +95,15 @@ pub fn write_image_jpeg(file_path: &Path, image: &Image<u8, 3>) -> Result<()> {
 ///
 /// let image_path = std::path::Path::new("../../tests/data/dog.jpeg");
 /// let image: Image<u8, 3> = F::read_image_any(image_path).unwrap();
+///
 /// assert_eq!(image.size().width, 258);
 /// assert_eq!(image.size().height, 195);
 /// assert_eq!(image.num_channels(), 3);
 /// ```
-pub fn read_image_any(file_path: &Path) -> Result<Image<u8, 3>> {
+pub fn read_image_any(file_path: &Path) -> Result<Image<u8, 3>, IoError> {
     // verify the file exists
     if !file_path.exists() {
-        return Err(anyhow::anyhow!(
-            "File does not exist: {}",
-            file_path.to_str().unwrap()
-        ));
+        return Err(IoError::FileDoesNotExist(file_path.to_path_buf()));
     }
 
     // open the file and map it to memory
@@ -121,14 +115,14 @@ pub fn read_image_any(file_path: &Path) -> Result<Image<u8, 3>> {
         .with_guessed_format()?
         .decode()?;
 
+    // TODO: handle more image formats
     // return the image data
-    let data = img.to_rgb8().to_vec();
     let image = Image::new(
         ImageSize {
             width: img.width() as usize,
             height: img.height() as usize,
         },
-        data,
+        img.to_rgb8().to_vec(),
     )?;
 
     Ok(image)
@@ -136,46 +130,47 @@ pub fn read_image_any(file_path: &Path) -> Result<Image<u8, 3>> {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
     use std::path::Path;
 
+    use crate::error::IoError;
     use crate::functional::read_image_any;
 
     #[cfg(feature = "jpegturbo")]
     use crate::functional::{read_image_jpeg, write_image_jpeg};
 
     #[test]
-    fn read_any() -> Result<()> {
+    fn read_any() -> Result<(), IoError> {
         let image_path = Path::new("../../tests/data/dog.jpeg");
         let image = read_image_any(image_path)?;
         assert_eq!(image.size().width, 258);
         assert_eq!(image.size().height, 195);
-
         Ok(())
     }
 
     #[test]
     #[cfg(feature = "jpegturbo")]
-    fn read_jpeg() -> Result<()> {
+    fn read_jpeg() -> Result<(), IoError> {
         let image_path = Path::new("../../tests/data/dog.jpeg");
         let image = read_image_jpeg(image_path)?;
         assert_eq!(image.size().width, 258);
         assert_eq!(image.size().height, 195);
-
         Ok(())
     }
 
     #[test]
     #[cfg(feature = "jpegturbo")]
-    fn read_write_jpeg() -> Result<()> {
+    fn read_write_jpeg() -> Result<(), IoError> {
         let image_path_read = Path::new("../../tests/data/dog.jpeg");
         let tmp_dir = tempfile::tempdir()?;
         std::fs::create_dir_all(tmp_dir.path())?;
+
         let file_path = tmp_dir.path().join("dog.jpeg");
         let image_data = read_image_jpeg(image_path_read)?;
         write_image_jpeg(&file_path, &image_data)?;
+
         let image_data_back = read_image_jpeg(&file_path)?;
         assert!(file_path.exists(), "File does not exist: {:?}", file_path);
+
         assert_eq!(image_data_back.size().width, 258);
         assert_eq!(image_data_back.size().height, 195);
         assert_eq!(image_data_back.num_channels(), 3);

@@ -1,5 +1,4 @@
-use anyhow::Result;
-use kornia_image::Image;
+use kornia_image::{Image, ImageError};
 
 /// Compute the pixel intensity histogram of an image.
 ///
@@ -35,11 +34,9 @@ use kornia_image::Image;
 /// let histogram = compute_histogram(&image, 3).unwrap();
 /// assert_eq!(histogram, vec![3, 3, 3]);
 /// ```
-pub fn compute_histogram(image: &Image<u8, 1>, num_bins: usize) -> Result<Vec<usize>> {
+pub fn compute_histogram(image: &Image<u8, 1>, num_bins: usize) -> Result<Vec<usize>, ImageError> {
     if num_bins == 0 || num_bins > 256 {
-        return Err(anyhow::anyhow!(
-            "Invalid number of bins. Must be in the range [1, 256]."
-        ));
+        return Err(ImageError::InvalidHistogramBins(num_bins));
     }
 
     // we assume 8-bit images for now and range [0, 255]
@@ -58,11 +55,10 @@ pub fn compute_histogram(image: &Image<u8, 1>, num_bins: usize) -> Result<Vec<us
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
-    use kornia_image::{Image, ImageSize};
+    use kornia_image::{Image, ImageError, ImageSize};
 
     #[test]
-    fn test_compute_histogram() -> Result<()> {
+    fn test_compute_histogram() -> Result<(), ImageError> {
         let image = Image::new(
             ImageSize {
                 width: 3,
