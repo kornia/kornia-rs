@@ -1,5 +1,4 @@
-use anyhow::Result;
-use kornia_image::Image;
+use kornia_image::{Image, ImageError};
 
 /// Convert an RGB image to an HSV image.
 ///
@@ -40,7 +39,7 @@ use kornia_image::Image;
 /// assert_eq!(hsv.size().width, 4);
 /// assert_eq!(hsv.size().height, 5);
 /// ```
-pub fn hsv_from_rgb(image: &Image<f32, 3>) -> Result<Image<f32, 3>> {
+pub fn hsv_from_rgb(image: &Image<f32, 3>) -> Result<Image<f32, 3>, ImageError> {
     let mut output = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
 
     ndarray::Zip::from(output.data.rows_mut())
@@ -92,12 +91,10 @@ pub fn hsv_from_rgb(image: &Image<f32, 3>) -> Result<Image<f32, 3>> {
 
 #[cfg(test)]
 mod tests {
-
-    use anyhow::Result;
-    use kornia_image::{Image, ImageSize};
+    use kornia_image::{Image, ImageError, ImageSize};
 
     #[test]
-    fn hsv_from_rgb() -> Result<()> {
+    fn hsv_from_rgb() -> Result<(), ImageError> {
         let image = Image::<f32, 3>::new(
             ImageSize {
                 width: 2,

@@ -1,5 +1,4 @@
-use anyhow::Result;
-use kornia_image::Image;
+use kornia_image::{Image, ImageError};
 
 /// Define the RGB weights for the grayscale conversion.
 const RW: f64 = 0.299;
@@ -38,15 +37,15 @@ const BW: f64 = 0.114;
 /// assert_eq!(gray.size().width, 4);
 /// assert_eq!(gray.size().height, 5);
 /// ```
-pub fn gray_from_rgb<T>(image: &Image<T, 3>) -> Result<Image<T, 1>>
+pub fn gray_from_rgb<T>(image: &Image<T, 3>) -> Result<Image<T, 1>, ImageError>
 where
     T: Default + Copy + Clone + Send + Sync + num_traits::Float,
 {
     assert_eq!(image.num_channels(), 3);
 
-    let rw = T::from(RW).ok_or(anyhow::anyhow!("Failed to convert RW"))?;
-    let gw = T::from(GW).ok_or(anyhow::anyhow!("Failed to convert GW"))?;
-    let bw = T::from(BW).ok_or(anyhow::anyhow!("Failed to convert BW"))?;
+    let rw = T::from(RW).ok_or(ImageError::CastError)?;
+    let gw = T::from(GW).ok_or(ImageError::CastError)?;
+    let bw = T::from(BW).ok_or(ImageError::CastError)?;
 
     let mut output = Image::<T, 1>::from_size_val(image.size(), T::default())?;
 
@@ -65,11 +64,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
     use kornia_io::functional as F;
 
     #[test]
-    fn gray_from_rgb() -> Result<()> {
+    fn gray_from_rgb() -> Result<(), Box<dyn std::error::Error>> {
         let image_path = std::path::Path::new("../../tests/data/dog.jpeg");
         let image = F::read_image_any(image_path)?;
         let image_norm = image.cast_and_scale::<f32>(1. / 255.0)?;

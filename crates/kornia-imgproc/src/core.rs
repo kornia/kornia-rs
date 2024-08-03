@@ -1,6 +1,5 @@
 // reference: https://www.strchr.com/standard_deviation_in_one_pass
-use anyhow::Result;
-use kornia_image::Image;
+use kornia_image::{Image, ImageError};
 
 /// Compute the mean and standard deviation of an image.
 ///
@@ -106,15 +105,24 @@ pub fn bitwise_and<const CHANNELS: usize>(
     src1: &Image<u8, CHANNELS>,
     src2: &Image<u8, CHANNELS>,
     mask: &Image<u8, 1>,
-) -> Result<Image<u8, CHANNELS>> {
-    assert!(
-        src1.size() == src2.size(),
-        "The input images must have the same size",
-    );
-    assert!(
-        src1.size() == mask.size(),
-        "The input images and the mask must have the same size"
-    );
+) -> Result<Image<u8, CHANNELS>, ImageError> {
+    if src1.size() != src2.size() {
+        return Err(ImageError::InvalidImageSize(
+            src1.width(),
+            src1.height(),
+            src2.width(),
+            src2.height(),
+        ));
+    }
+
+    if src1.size() != mask.size() {
+        return Err(ImageError::InvalidImageSize(
+            src1.width(),
+            src1.height(),
+            mask.width(),
+            mask.height(),
+        ));
+    }
 
     // prepare the output image
 
@@ -137,11 +145,10 @@ pub fn bitwise_and<const CHANNELS: usize>(
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
-    use kornia_image::{Image, ImageSize};
+    use kornia_image::{Image, ImageError, ImageSize};
 
     #[test]
-    fn test_std_mean() -> Result<()> {
+    fn test_std_mean() -> Result<(), ImageError> {
         let image = Image::<u8, 3>::new(
             ImageSize {
                 width: 2,
@@ -157,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bitwise_and() -> Result<()> {
+    fn test_bitwise_and() -> Result<(), ImageError> {
         let image = Image::<u8, 3>::new(
             ImageSize {
                 width: 2,
@@ -181,8 +188,8 @@ mod tests {
         assert_eq!(output.num_channels(), 3);
 
         assert_eq!(
-            output.data.as_slice().unwrap(),
-            &vec![0, 1, 2, 0, 0, 0, 128, 129, 130, 0, 0, 0]
+            output.data.into_raw_vec(),
+            vec![0, 1, 2, 0, 0, 0, 128, 129, 130, 0, 0, 0]
         );
         Ok(())
     }

@@ -1,5 +1,6 @@
-use anyhow::Result;
 use num_traits::Float;
+
+use crate::error::ImageError;
 
 /// Image size in pixels
 ///
@@ -100,13 +101,12 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// assert_eq!(image.size().height, 20);
     /// assert_eq!(image.num_channels(), 3);
     /// ```
-    pub fn new(size: ImageSize, data: Vec<T>) -> Result<Self> {
+    pub fn new(size: ImageSize, data: Vec<T>) -> Result<Self, ImageError> {
         // check if the data length matches the image size
         if data.len() != size.width * size.height * CHANNELS {
-            return Err(anyhow::anyhow!(
-                "Data length ({}) does not match the image size ({})",
+            return Err(ImageError::InvalidChannelShape(
                 data.len(),
-                size.width * size.height * CHANNELS
+                size.width * size.height * CHANNELS,
             ));
         }
 
@@ -147,7 +147,7 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// assert_eq!(image.size().height, 20);
     /// assert_eq!(image.num_channels(), 3);
     /// ```
-    pub fn from_size_val(size: ImageSize, val: T) -> Result<Self>
+    pub fn from_size_val(size: ImageSize, val: T) -> Result<Self, ImageError>
     where
         T: Clone + Default,
     {
@@ -196,16 +196,18 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     ///
     /// assert_eq!(image_i32.data.get((1, 0, 2)).unwrap(), &5i32);
     /// ```
-    pub fn cast<U>(self) -> Result<Image<U, CHANNELS>>
+    pub fn cast<U>(self) -> Result<Image<U, CHANNELS>, ImageError>
     where
         U: Clone + Default + num_traits::NumCast + std::fmt::Debug,
         T: Copy + num_traits::NumCast + std::fmt::Debug,
     {
         let casted_data = self
             .data
-            .map(|&x| U::from(x).expect("Failed to cast image data"));
+            .iter()
+            .map(|&x| U::from(x).ok_or(ImageError::CastError))
+            .collect::<Result<Vec<U>, ImageError>>()?;
 
-        Ok(Image { data: casted_data })
+        Image::new(self.size(), casted_data)
     }
 
     /// Cast the pixel data to a different type and scale it.
@@ -241,7 +243,7 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     ///
     /// assert_eq!(image_f32.data.get((1, 0, 2)).unwrap(), &1.0f32);
     /// ```
-    pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, CHANNELS>>
+    pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, CHANNELS>, ImageError>
     where
         U: Copy
             + Clone
@@ -251,12 +253,16 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
             + std::ops::Mul<Output = U>,
         T: Copy + num_traits::NumCast + std::fmt::Debug,
     {
-        let casted_data = self.data.map(|&x| {
-            let xu = U::from(x).expect("Failed to cast image data");
-            xu * scale
-        });
+        let casted_data = self
+            .data
+            .iter()
+            .map(|&x| {
+                let xu = U::from(x).ok_or(ImageError::CastError)?;
+                Ok(xu * scale)
+            })
+            .collect::<Result<Vec<U>, ImageError>>()?;
 
-        Ok(Image { data: casted_data })
+        Image::new(self.size(), casted_data)
     }
 
     /// Get a channel of the image.
@@ -271,16 +277,12 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// # Errors
     ///
     /// If the channel index is out of bounds, an error is returned.
-    pub fn channel(&self, channel: usize) -> Result<Image<T, 1>>
+    pub fn channel(&self, channel: usize) -> Result<Image<T, 1>, ImageError>
     where
         T: Clone,
     {
         if channel >= CHANNELS {
-            return Err(anyhow::anyhow!(
-                "Channel index ({}) out of bounds ({}).",
-                channel,
-                CHANNELS
-            ));
+            return Err(ImageError::ChannelIndexOutOfBounds(channel, CHANNELS));
         }
 
         let channel_data = self.data.slice(ndarray::s![.., .., channel..channel + 1]);
@@ -311,11 +313,12 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// let channels = image.split_channels().unwrap();
     /// assert_eq!(channels.len(), 2);
     /// ```
-    pub fn split_channels(&self) -> Result<Vec<Image<T, 1>>>
+    pub fn split_channels(&self) -> Result<Vec<Image<T, 1>>, ImageError>
     where
         T: Clone,
     {
         let mut channels = Vec::with_capacity(CHANNELS);
+
         for i in 0..CHANNELS {
             channels.push(self.channel(i)?);
         }
@@ -396,11 +399,14 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// # Returns
     ///
     /// The mean of the pixel data.
-    pub fn mean(&self) -> T
+    pub fn mean(&self) -> Result<T, ImageError>
     where
         T: Copy + Float,
     {
-        self.data.fold(T::zero(), |acc, &x| acc + x) / T::from(self.data.len()).unwrap()
+        let data_acc = self.data.fold(T::zero(), |acc, &x| acc + x);
+        let mean = data_acc / T::from(self.data.len()).ok_or(ImageError::CastError)?;
+
+        Ok(mean)
     }
 
     /// Compute absolute value of the pixel data.
@@ -488,26 +494,21 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// * `y` - The y-coordinate of the pixel.
     /// * `ch` - The channel index of the pixel.
     /// * `val` - The value to set the pixel to.
-    pub fn set_pixel(&mut self, x: usize, y: usize, ch: usize, val: T) -> Result<()>
+    pub fn set_pixel(&mut self, x: usize, y: usize, ch: usize, val: T) -> Result<(), ImageError>
     where
         T: Copy,
     {
         if x >= self.width() || y >= self.height() {
-            return Err(anyhow::anyhow!(
-                "Pixel coordinates ({}, {}) out of bounds ({}, {}).",
+            return Err(ImageError::PixelIndexOutOfBounds(
                 x,
                 y,
                 self.width(),
-                self.height()
+                self.height(),
             ));
         }
 
         if ch >= CHANNELS {
-            return Err(anyhow::anyhow!(
-                "Channel index ({}) out of bounds ({}).",
-                ch,
-                CHANNELS
-            ));
+            return Err(ImageError::ChannelIndexOutOfBounds(ch, CHANNELS));
         }
 
         self.data[[y, x, ch]] = val;
@@ -528,26 +529,21 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// # Returns
     ///
     /// The pixel value at the given coordinates.
-    pub fn get_pixel(&self, x: usize, y: usize, ch: usize) -> Result<T>
+    pub fn get_pixel(&self, x: usize, y: usize, ch: usize) -> Result<T, ImageError>
     where
         T: Copy,
     {
         if x >= self.width() || y >= self.height() {
-            return Err(anyhow::anyhow!(
-                "Pixel coordinates ({}, {}) out of bounds ({}, {}).",
+            return Err(ImageError::PixelIndexOutOfBounds(
                 x,
                 y,
                 self.width(),
-                self.height()
+                self.height(),
             ));
         }
 
         if ch >= CHANNELS {
-            return Err(anyhow::anyhow!(
-                "Channel index ({}) out of bounds ({}).",
-                ch,
-                CHANNELS
-            ));
+            return Err(ImageError::ChannelIndexOutOfBounds(ch, CHANNELS));
         }
 
         Ok(self.data[[y, x, ch]])
@@ -556,8 +552,7 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
 
 #[cfg(test)]
 mod tests {
-    use crate::image::{Image, ImageSize};
-    use anyhow::Result;
+    use crate::image::{Image, ImageError, ImageSize};
 
     #[test]
     fn image_size() {
@@ -570,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn image_smoke() -> Result<()> {
+    fn image_smoke() -> Result<(), ImageError> {
         let image = Image::<u8, 3>::new(
             ImageSize {
                 width: 10,
@@ -586,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn image_from_vec() -> Result<()> {
+    fn image_from_vec() -> Result<(), ImageError> {
         let image: Image<f32, 3> = Image::new(
             ImageSize {
                 height: 3,
@@ -602,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn image_cast() -> Result<()> {
+    fn image_cast() -> Result<(), ImageError> {
         let data = vec![0., 1., 2., 3., 4., 5.];
         let image_f64 = Image::<f64, 3>::new(
             ImageSize {
@@ -623,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn image_rgbd() -> Result<()> {
+    fn image_rgbd() -> Result<(), ImageError> {
         let image = Image::<f32, 4>::new(
             ImageSize {
                 height: 2,
@@ -639,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn image_channel() -> Result<()> {
+    fn image_channel() -> Result<(), ImageError> {
         let image = Image::<f32, 3>::new(
             ImageSize {
                 height: 2,
@@ -655,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn image_split_channels() -> Result<()> {
+    fn image_split_channels() -> Result<(), ImageError> {
         let image = Image::<f32, 3>::new(
             ImageSize {
                 height: 2,
@@ -674,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn convert_to_tensor() -> Result<()> {
+    fn convert_to_tensor() -> Result<(), ImageError> {
         let image = Image::<f32, 3>::new(
             ImageSize {
                 height: 2,

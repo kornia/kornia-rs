@@ -1,4 +1,4 @@
-use kornia_image::Image;
+use kornia_image::{Image, ImageError};
 
 /// Compute the L1 loss between two images.
 ///
@@ -43,7 +43,7 @@ use kornia_image::Image;
 /// )
 /// .unwrap();
 ///
-/// let l1_loss = l1_loss(&image1, &image2);
+/// let l1_loss = l1_loss(&image1, &image2).unwrap();
 /// assert_eq!(l1_loss, 3.0);
 /// ```
 ///
@@ -57,22 +57,28 @@ use kornia_image::Image;
 pub fn l1_loss<const CHANNELS: usize>(
     image1: &Image<f32, CHANNELS>,
     image2: &Image<f32, CHANNELS>,
-) -> f32 {
-    assert_eq!(image1.size(), image2.size());
+) -> Result<f32, ImageError> {
+    if image1.size() != image2.size() {
+        return Err(ImageError::InvalidImageSize(
+            image1.height(),
+            image1.width(),
+            image2.height(),
+            image2.width(),
+        ));
+    }
 
-    ndarray::Zip::from(&image1.data)
+    Ok(ndarray::Zip::from(&image1.data)
         .and(&image2.data)
         .fold(0f32, |acc, &a, &b| acc + (a - b).abs())
-        / (image1.data.len() as f32)
+        / (image1.data.len() as f32))
 }
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
-    use kornia_image::{Image, ImageSize};
+    use kornia_image::{Image, ImageError, ImageSize};
 
     #[test]
-    fn test_l1_loss() -> Result<()> {
+    fn test_l1_loss() -> Result<(), ImageError> {
         let image1 = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
@@ -89,7 +95,7 @@ mod tests {
             vec![5f32, 4f32, 3f32, 2f32, 1f32, 0f32],
         )?;
 
-        let l1_loss = crate::metrics::l1_loss(&image1, &image2);
+        let l1_loss = crate::metrics::l1_loss(&image1, &image2)?;
         assert_eq!(l1_loss, 3.0);
 
         Ok(())

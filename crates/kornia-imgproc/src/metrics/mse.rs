@@ -1,4 +1,4 @@
-use kornia_image::Image;
+use kornia_image::{Image, ImageError};
 
 /// Compute the mean squared error (MSE) between two images.
 ///
@@ -41,7 +41,7 @@ use kornia_image::Image;
 /// )
 /// .unwrap();
 ///
-/// let mse = mse(&image1, &image2);
+/// let mse = mse(&image1, &image2).unwrap();
 /// assert_eq!(mse, 0f32);
 /// ```
 ///
@@ -51,10 +51,17 @@ use kornia_image::Image;
 pub fn mse<const CHANNELS: usize>(
     image1: &Image<f32, CHANNELS>,
     image2: &Image<f32, CHANNELS>,
-) -> f32 {
-    assert_eq!(image1.size(), image2.size());
+) -> Result<f32, ImageError> {
+    if image1.size() != image2.size() {
+        return Err(ImageError::InvalidImageSize(
+            image1.height(),
+            image1.width(),
+            image2.height(),
+            image2.width(),
+        ));
+    }
     let diff = &image1.data - &image2.data;
-    diff.mapv(|x| x.powi(2)).sum() / (image1.data.len() as f32)
+    Ok(diff.mapv(|x| x.powi(2)).sum() / (image1.data.len() as f32))
 }
 
 /// Compute the peak signal-to-noise ratio (PSNR) between two images.
@@ -98,7 +105,7 @@ pub fn mse<const CHANNELS: usize>(
 /// )
 /// .unwrap();
 ///
-/// let psnr = psnr(&image1, &image2, 1.0);
+/// let psnr = psnr(&image1, &image2, 1.0).unwrap();
 ///
 /// assert_eq!(psnr, 320.15698);
 /// ```
@@ -118,22 +125,31 @@ pub fn psnr<const CHANNELS: usize>(
     image1: &Image<f32, CHANNELS>,
     image2: &Image<f32, CHANNELS>,
     max_value: f32,
-) -> f32 {
-    assert_eq!(image1.size(), image2.size());
-    let mse = mse(image1, image2);
-    if mse == 0f32 {
-        return f32::INFINITY;
+) -> Result<f32, ImageError> {
+    if image1.size() != image2.size() {
+        return Err(ImageError::InvalidImageSize(
+            image1.height(),
+            image1.width(),
+            image2.height(),
+            image2.width(),
+        ));
     }
-    20f32 * (max_value / mse.sqrt().log10())
+
+    let mse = mse(image1, image2)?;
+
+    if mse == 0f32 {
+        return Ok(f32::INFINITY);
+    }
+
+    Ok(20f32 * (max_value / mse.sqrt().log10()))
 }
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
-    use kornia_image::{Image, ImageSize};
+    use kornia_image::{Image, ImageError, ImageSize};
 
     #[test]
-    fn test_equal() -> Result<()> {
+    fn test_equal() -> Result<(), ImageError> {
         let image1 = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
@@ -148,14 +164,14 @@ mod tests {
             },
             vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
         )?;
-        let mse = crate::metrics::mse(&image1, &image2);
+        let mse = crate::metrics::mse(&image1, &image2)?;
         assert_eq!(mse, 0f32);
 
         Ok(())
     }
 
     #[test]
-    fn test_not_equal() -> Result<()> {
+    fn test_not_equal() -> Result<(), ImageError> {
         let image1 = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
@@ -170,14 +186,14 @@ mod tests {
             },
             vec![0f32, 3f32, 2f32, 3f32],
         )?;
-        let mse = crate::metrics::mse(&image1, &image2);
+        let mse = crate::metrics::mse(&image1, &image2)?;
         assert_eq!(mse, 1.0);
 
         Ok(())
     }
 
     #[test]
-    fn test_psnr() -> Result<()> {
+    fn test_psnr() -> Result<(), ImageError> {
         let image1 = Image::<_, 3>::new(
             ImageSize {
                 width: 1,
@@ -192,7 +208,7 @@ mod tests {
             },
             vec![1f32, 3f32, 2f32, 4f32, 5f32, 6f32],
         )?;
-        let psnr = crate::metrics::psnr(&image1, &image2, 1.0);
+        let psnr = crate::metrics::psnr(&image1, &image2, 1.0)?;
         assert_eq!(psnr, 320.15698);
 
         Ok(())

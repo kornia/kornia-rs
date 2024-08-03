@@ -1,4 +1,4 @@
-use kornia_image::Image;
+use kornia_image::{Image, ImageError};
 
 /// Compute the Huber loss between two images.
 ///
@@ -43,7 +43,7 @@ use kornia_image::Image;
 /// )
 /// .unwrap();
 ///
-/// let huber = kornia::imgproc::metrics::huber(&image1, &image2, 1.0);
+/// let huber = kornia::imgproc::metrics::huber(&image1, &image2, 1.0).unwrap();
 /// assert_eq!(huber, 2.5);
 /// ```
 ///
@@ -58,10 +58,17 @@ pub fn huber<const CHANNELS: usize>(
     image1: &Image<f32, CHANNELS>,
     image2: &Image<f32, CHANNELS>,
     delta: f32,
-) -> f32 {
-    assert_eq!(image1.size(), image2.size());
+) -> Result<f32, ImageError> {
+    if image1.size() != image2.size() {
+        return Err(ImageError::InvalidImageSize(
+            image1.height(),
+            image1.width(),
+            image2.height(),
+            image2.width(),
+        ));
+    }
 
-    ndarray::Zip::from(&image1.data)
+    Ok(ndarray::Zip::from(&image1.data)
         .and(&image2.data)
         .fold(0f32, |acc, &a, &b| {
             let diff = a - b;
@@ -71,16 +78,15 @@ pub fn huber<const CHANNELS: usize>(
                 acc + delta * (diff.abs() - 0.5 * delta)
             }
         })
-        / (image1.data.len() as f32)
+        / (image1.data.len() as f32))
 }
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
-    use kornia_image::{Image, ImageSize};
+    use kornia_image::{Image, ImageError, ImageSize};
 
     #[test]
-    fn test_huber() -> Result<()> {
+    fn test_huber() -> Result<(), ImageError> {
         let image1 = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
@@ -88,6 +94,7 @@ mod tests {
             },
             vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
         )?;
+
         let image2 = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
@@ -95,7 +102,8 @@ mod tests {
             },
             vec![5f32, 4f32, 3f32, 2f32, 1f32, 0f32],
         )?;
-        let huber = super::huber(&image1, &image2, 1.0);
+
+        let huber = super::huber(&image1, &image2, 1.0)?;
         assert_eq!(huber, 2.5);
 
         Ok(())

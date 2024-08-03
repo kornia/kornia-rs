@@ -1,7 +1,6 @@
 use crate::interpolation::{interpolate_pixel, meshgrid, InterpolationMode};
 
-use anyhow::Result;
-use kornia_image::{Image, ImageSize};
+use kornia_image::{Image, ImageError, ImageSize};
 use ndarray::stack;
 
 /// flat representation of a 3x3 matrix
@@ -29,11 +28,12 @@ fn adjugate3x3(m: &PerspectiveMatrix) -> PerspectiveMatrix {
     ]
 }
 
-fn inverse_perspective_matrix(m: PerspectiveMatrix) -> Result<PerspectiveMatrix> {
+// TODO: use TensorError
+fn inverse_perspective_matrix(m: PerspectiveMatrix) -> Result<PerspectiveMatrix, ImageError> {
     let det = determinant3x3(&m);
 
     if det == 0.0 {
-        return Err(anyhow::anyhow!("Matrix is singular and cannot be inverted"));
+        return Err(ImageError::CannotComputeDeterminant);
     }
 
     let adj = adjugate3x3(&m);
@@ -98,7 +98,7 @@ pub fn warp_perspective<const CHANNELS: usize>(
     m: PerspectiveMatrix,
     new_size: ImageSize,
     interpolation: InterpolationMode,
-) -> Result<Image<f32, CHANNELS>> {
+) -> Result<Image<f32, CHANNELS>, ImageError> {
     // inverse perspective matrix
     // TODO: allow later to skip the inverse calculation if user provides it
     let inv_m = inverse_perspective_matrix(m)?;
@@ -143,10 +143,10 @@ pub fn warp_perspective<const CHANNELS: usize>(
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
+    use kornia_image::{Image, ImageError, ImageSize};
 
     #[test]
-    fn inverse_perspective_matrix() -> Result<()> {
+    fn inverse_perspective_matrix() -> Result<(), ImageError> {
         let m = [1.0, 0.0, -1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0];
         let expected = [1.0, 0.0, 1.0, 0.0, 1.0, -1.0, 0.0, 0.0, 1.0];
         let inv_m = super::inverse_perspective_matrix(m)?;
@@ -164,8 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn warp_perspective_identity() -> Result<()> {
-        use kornia_image::{Image, ImageSize};
+    fn warp_perspective_identity() -> Result<(), ImageError> {
         let image: Image<f32, 3> = Image::from_size_val(
             ImageSize {
                 width: 4,
@@ -195,8 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn warp_perspective_hflip() -> Result<()> {
-        use kornia_image::{Image, ImageSize};
+    fn warp_perspective_hflip() -> Result<(), ImageError> {
         let image = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
@@ -230,8 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn test_warp_perspective_resize() -> Result<()> {
-        use kornia_image::{Image, ImageSize};
+    fn test_warp_perspective_resize() -> Result<(), ImageError> {
         let image = Image::<_, 1>::new(
             ImageSize {
                 width: 4,
@@ -271,10 +268,13 @@ mod tests {
         assert_eq!(image_transformed.size().width, 2);
         assert_eq!(image_transformed.size().height, 2);
 
-        assert_eq!(image_transformed.data.as_slice().expect(""), image_expected);
         assert_eq!(
-            image_transformed.data.as_slice().expect(""),
-            image_resized.data.as_slice().expect("")
+            image_transformed.data.clone().into_raw_vec(),
+            image_expected
+        );
+        assert_eq!(
+            image_transformed.data.into_raw_vec(),
+            image_resized.data.into_raw_vec()
         );
 
         Ok(())

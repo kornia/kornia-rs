@@ -1,7 +1,22 @@
-use anyhow::Result;
 use turbojpeg;
 
-use kornia_image::{Image, ImageSize};
+use kornia_image::{Image, ImageError, ImageSize};
+
+/// Error types for the JPEG module.
+#[derive(thiserror::Error, Debug)]
+pub enum JpegError {
+    /// Error when the JPEG compressor cannot be created.
+    #[error("Something went wrong with the JPEG compressor")]
+    TurboJpegError(#[from] turbojpeg::Error),
+
+    /// Error when the image data is not contiguous.
+    #[error("Image data is not contiguous")]
+    ImageDataNotContiguous,
+
+    /// Error to create the image.
+    #[error("Failed to create image")]
+    ImageCreationError(#[from] ImageError),
+}
 
 /// A JPEG decoder using the turbojpeg library.
 pub struct ImageDecoder {
@@ -17,13 +32,19 @@ pub struct ImageEncoder {
 
 impl Default for ImageDecoder {
     fn default() -> Self {
-        Self::new().unwrap()
+        match Self::new() {
+            Ok(decoder) => decoder,
+            Err(e) => panic!("Failed to create ImageDecoder: {}", e),
+        }
     }
 }
 
 impl Default for ImageEncoder {
     fn default() -> Self {
-        Self::new().unwrap()
+        match Self::new() {
+            Ok(encoder) => encoder,
+            Err(e) => panic!("Failed to create ImageEncoder: {}", e),
+        }
     }
 }
 
@@ -38,7 +59,7 @@ impl ImageEncoder {
     /// # Panics
     ///
     /// Panics if the compressor cannot be created.
-    pub fn new() -> Result<Self> {
+    pub fn new() -> Result<Self, JpegError> {
         let compressor = turbojpeg::Compressor::new()?;
         Ok(Self { compressor })
     }
@@ -52,12 +73,12 @@ impl ImageEncoder {
     /// # Returns
     ///
     /// The encoded data as `Vec<u8>`.
-    pub fn encode(&mut self, image: &Image<u8, 3>) -> Result<Vec<u8>> {
+    pub fn encode(&mut self, image: &Image<u8, 3>) -> Result<Vec<u8>, JpegError> {
         // get the image data
-        let image_data = match image.data.as_slice() {
-            Some(d) => d,
-            None => Err(anyhow::anyhow!("Image data is not contiguous"))?,
-        };
+        let image_data = image
+            .data
+            .as_slice()
+            .ok_or(JpegError::ImageDataNotContiguous)?;
 
         // create a turbojpeg image
         let buf = turbojpeg::Image {
@@ -77,7 +98,7 @@ impl ImageEncoder {
     /// # Arguments
     ///
     /// * `quality` - The quality to set.
-    pub fn set_quality(&mut self, quality: i32) -> Result<()> {
+    pub fn set_quality(&mut self, quality: i32) -> Result<(), JpegError> {
         Ok(self.compressor.set_quality(quality)?)
     }
 }
@@ -89,7 +110,7 @@ impl ImageDecoder {
     /// # Returns
     ///
     /// A new `ImageDecoder` instance.
-    pub fn new() -> Result<Self> {
+    pub fn new() -> Result<Self, JpegError> {
         let decompressor = turbojpeg::Decompressor::new()?;
         Ok(ImageDecoder { decompressor })
     }
@@ -107,9 +128,10 @@ impl ImageDecoder {
     /// # Panics
     ///
     /// Panics if the header cannot be read.
-    pub fn read_header(&mut self, jpeg_data: &[u8]) -> Result<ImageSize> {
+    pub fn read_header(&mut self, jpeg_data: &[u8]) -> Result<ImageSize, JpegError> {
         // read the JPEG header with image size
         let header = self.decompressor.read_header(jpeg_data)?;
+
         Ok(ImageSize {
             width: header.width,
             height: header.height,
@@ -125,9 +147,9 @@ impl ImageDecoder {
     /// # Returns
     ///
     /// The decoded data as Tensor.
-    pub fn decode(&mut self, jpeg_data: &[u8]) -> Result<Image<u8, 3>> {
+    pub fn decode(&mut self, jpeg_data: &[u8]) -> Result<Image<u8, 3>, JpegError> {
         // get the image size to allocate th data storage
-        let image_size: ImageSize = self.read_header(jpeg_data)?;
+        let image_size = self.read_header(jpeg_data)?;
 
         // prepare a storage for the raw pixel data
         let mut pixels = vec![0u8; image_size.height * image_size.width * 3];
@@ -144,17 +166,16 @@ impl ImageDecoder {
         // decompress the JPEG data
         self.decompressor.decompress(jpeg_data, buf)?;
 
-        Image::new(image_size, pixels)
+        Ok(Image::new(image_size, pixels)?)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::jpeg::{ImageDecoder, ImageEncoder};
-    use anyhow::Result;
+    use crate::jpeg::{ImageDecoder, ImageEncoder, JpegError};
 
     #[test]
-    fn image_decoder() -> Result<()> {
+    fn image_decoder() -> Result<(), JpegError> {
         let jpeg_data = std::fs::read("../../tests/data/dog.jpeg").unwrap();
         // read the header
         let image_size = ImageDecoder::new()?.read_header(&jpeg_data)?;
@@ -169,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn image_encoder() -> Result<()> {
+    fn image_encoder() -> Result<(), Box<dyn std::error::Error>> {
         let jpeg_data_fs = std::fs::read("../../tests/data/dog.jpeg")?;
         let image = ImageDecoder::new()?.decode(&jpeg_data_fs)?;
         let jpeg_data = ImageEncoder::new()?.encode(&image)?;

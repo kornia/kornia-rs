@@ -1,4 +1,4 @@
-use super::StreamCaptureError;
+use crate::stream::error::StreamCaptureError;
 use gst::prelude::*;
 use kornia_image::{Image, ImageSize};
 

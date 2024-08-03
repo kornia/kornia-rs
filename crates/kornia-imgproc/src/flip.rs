@@ -1,5 +1,4 @@
-use anyhow::Result;
-use kornia_image::Image;
+use kornia_image::{Image, ImageError};
 
 /// Flip the input image horizontally.
 ///
@@ -33,7 +32,7 @@ use kornia_image::Image;
 /// ```
 pub fn horizontal_flip<T, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
-) -> Result<Image<T, CHANNELS>>
+) -> Result<Image<T, CHANNELS>, ImageError>
 where
     T: Copy,
 {
@@ -88,7 +87,7 @@ where
 /// ```
 pub fn vertical_flip<T, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
-) -> Result<Image<T, CHANNELS>>
+) -> Result<Image<T, CHANNELS>, ImageError>
 where
     T: Copy,
 {
@@ -113,11 +112,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
-    use kornia_image::{Image, ImageSize};
+    use kornia_image::{Image, ImageError, ImageSize};
 
     #[test]
-    fn test_hflip() -> Result<()> {
+    fn test_hflip() -> Result<(), ImageError> {
         let image = Image::<_, 1>::new(
             ImageSize {
                 width: 2,
@@ -135,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn test_vflip() -> Result<()> {
+    fn test_vflip() -> Result<(), ImageError> {
         let image = Image::<_, 1>::new(
             ImageSize {
                 width: 2,

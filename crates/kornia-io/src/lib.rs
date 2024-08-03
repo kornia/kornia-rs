@@ -1,6 +1,9 @@
 //! I/O utilities for real-time image and video processing.
 #![deny(missing_docs)]
 
+/// Module to handle the error types for the io module.
+pub mod error;
+
 /// Module to handle the camera frame rate.
 pub mod fps_counter;
 
@@ -18,3 +21,5 @@ pub mod stream;
 /// Webcam video module for real-time video processing.
 #[cfg(feature = "gstreamer")]
 pub mod webcam;
+
+pub use crate::error::IoError;

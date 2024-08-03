@@ -707,6 +707,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f5d4a7da358eff58addd2877a45865158f0d78c911d43a5784ceb7bbf52833b0"
 
 [[package]]
+name = "kornia"
+version = "0.1.6+dev"
+dependencies = [
+ "kornia-core",
+ "kornia-image",
+ "kornia-imgproc",
+ "kornia-io",
+]
+
+[[package]]
 name = "kornia-core"
 version = "0.1.6+dev"
 dependencies = [
@@ -719,7 +729,6 @@ dependencies = [
 name = "kornia-image"
 version = "0.1.6+dev"
 dependencies = [
- "anyhow",
  "ndarray",
  "num-traits",
  "thiserror",
@@ -729,7 +738,6 @@ dependencies = [
 name = "kornia-imgproc"
 version = "0.1.6+dev"
 dependencies = [
- "anyhow",
  "fast_image_resize",
  "kornia-image",
  "ndarray",
@@ -741,7 +749,6 @@ dependencies = [
 name = "kornia-io"
 version = "0.1.6+dev"
 dependencies = [
- "anyhow",
  "gstreamer",
  "gstreamer-app",
  "image",
@@ -756,20 +763,9 @@ dependencies = [
 name = "kornia-py"
 version = "0.1.6+dev"
 dependencies = [
- "anyhow",
- "kornia-rs",
+ "kornia",
  "numpy",
  "pyo3",
-]
-
-[[package]]
-name = "kornia-rs"
-version = "0.1.6+dev"
-dependencies = [
- "kornia-core",
- "kornia-image",
- "kornia-imgproc",
- "kornia-io",
 ]
 
 [[package]]
