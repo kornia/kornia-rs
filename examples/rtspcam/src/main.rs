@@ -17,10 +17,10 @@ struct Args {
     #[arg(short, long)]
     password: String,
 
-    #[arg(short, long)]
+    #[arg(long)]
     camera_ip: String,
 
-    #[arg(short, long)]
+    #[arg(long)]
     camera_port: u32,
 
     #[arg(short, long, default_value = "1")]
