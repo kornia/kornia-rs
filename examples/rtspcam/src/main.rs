@@ -4,22 +4,27 @@ use std::sync::{
     {Arc, Mutex},
 };
 
-use kornia::{
-    image::ImageSize,
-    imgproc,
-    io::{
-        fps_counter::FpsCounter,
-        stream::{StreamCapture, StreamCaptureError},
-    },
+use kornia::io::{
+    fps_counter::FpsCounter,
+    stream::{StreamCapture, StreamCaptureError},
 };
 
 #[derive(Parser)]
 struct Args {
-    #[arg(short, long, default_value = "0")]
-    camera_id: usize,
+    #[arg(short, long)]
+    username: String,
 
-    #[arg(short, long, default_value = "30")]
-    fps: u32,
+    #[arg(short, long)]
+    password: String,
+
+    #[arg(short, long)]
+    camera_ip: String,
+
+    #[arg(short, long)]
+    camera_port: u32,
+
+    #[arg(short, long, default_value = "1")]
+    mode: u8,
 
     #[arg(short, long)]
     duration: Option<u64>,
@@ -32,12 +37,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // start the recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia Stream Capture App").spawn()?;
 
-    // create a webcam capture object with camera id 0
-    // and force the image size to 640x480
-    let mut capture = StreamCapture::new(
-        //"v4l2src device=/dev/video0 ! videoconvert ! video/x-raw,format=RGB,width=640,height=480 ! appsink name=sink",
-        "souphttpsrc location=http://192.168.1.139:81/stream ! jpegparse ! jpegdec ! appsink name=sink",
-    )?;
+    // create a pipeline description for rtsp camera
+    let pipeline_desc = format!(
+        "rtspsrc location=rtsp://{}:{}@{}:{}/stream{} ! rtph264depay ! decodebin ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
+        args.username, args.password, args.camera_ip, args.camera_port, args.mode
+    );
+
+    // create a stream capture object
+    let mut capture = StreamCapture::new(&pipeline_desc)?;
 
     // create a cancel token to stop the webcam capture
     let cancel_token = Arc::new(AtomicBool::new(false));
@@ -79,8 +86,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("Failed to lock fps counter")
                 .new_frame();
 
+            let gray = kornia::imgproc::color::gray_from_rgb(
+                &img.clone().cast_and_scale::<f32>(1.0 / 255.0)?,
+            )?;
+
             // log the image
             rec.log_static("image", &rerun::Image::try_from(img.data)?)?;
+            rec.log_static("gray", &rerun::Image::try_from(gray.data)?)?;
 
             Ok(())
         })
