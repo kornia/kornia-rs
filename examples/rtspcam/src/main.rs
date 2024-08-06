@@ -6,7 +6,7 @@ use std::sync::{
 
 use kornia::io::{
     fps_counter::FpsCounter,
-    stream::{StreamCapture, StreamCaptureError},
+    stream::{RtspCameraCaptureBuilder, StreamCaptureError},
 };
 
 #[derive(Parser)]
@@ -23,8 +23,8 @@ struct Args {
     #[arg(long)]
     camera_port: u32,
 
-    #[arg(short, long, default_value = "1")]
-    mode: u8,
+    #[arg(short, long)]
+    stream: String,
 
     #[arg(short, long)]
     duration: Option<u64>,
@@ -35,16 +35,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // start the recording stream
-    let rec = rerun::RecordingStreamBuilder::new("Kornia Stream Capture App").spawn()?;
+    let rec = rerun::RecordingStreamBuilder::new("Kornia Rtsp Stream Capture App").spawn()?;
 
-    // create a pipeline description for rtsp camera
-    let pipeline_desc = format!(
-        "rtspsrc location=rtsp://{}:{}@{}:{}/stream{} ! rtph264depay ! decodebin ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
-        args.username, args.password, args.camera_ip, args.camera_port, args.mode
-    );
-
-    // create a stream capture object
-    let mut capture = StreamCapture::new(&pipeline_desc)?;
+    //// create a stream capture object
+    let mut capture = RtspCameraCaptureBuilder::new()
+        .with_username(&args.username)
+        .with_password(&args.password)
+        .with_ip(&args.camera_ip)
+        .with_port(args.camera_port)
+        .with_stream(&args.stream)
+        .build()?;
 
     // create a cancel token to stop the webcam capture
     let cancel_token = Arc::new(AtomicBool::new(false));

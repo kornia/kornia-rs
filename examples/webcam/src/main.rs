@@ -9,7 +9,7 @@ use kornia::{
     imgproc,
     io::{
         fps_counter::FpsCounter,
-        stream::{CameraCapture, StreamCaptureError},
+        stream::{CameraCaptureBuilder, StreamCaptureError},
     },
 };
 
@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // create a webcam capture object with camera id 0
     // and force the image size to 640x480
-    let mut webcam = CameraCapture::builder()
+    let mut webcam = CameraCaptureBuilder::new()
         .camera_id(args.camera_id)
         .with_fps(args.fps)
         .with_size(ImageSize {

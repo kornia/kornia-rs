@@ -146,7 +146,9 @@ impl StreamCapture {
         if !res {
             return Err(StreamCaptureError::SendEosError);
         }
-        self.handle.take().map(|h| h.abort());
+        if let Some(handle) = self.handle.take() {
+            handle.abort()
+        }
         self.pipeline.set_state(gst::State::Null)?;
         Ok(())
     }
