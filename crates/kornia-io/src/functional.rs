@@ -111,7 +111,9 @@ pub fn read_image_any(file_path: &Path) -> Result<Image<u8, 3>, IoError> {
     let mmap = unsafe { memmap2::Mmap::map(&file)? };
 
     // decode the data directly from memory
-    let img = image::ImageReader::new(std::io::Cursor::new(&mmap))
+    // TODO: update the image crate
+    #[allow(deprecated)]
+    let img = image::io::Reader::new(std::io::Cursor::new(&mmap))
         .with_guessed_format()?
         .decode()?;
 

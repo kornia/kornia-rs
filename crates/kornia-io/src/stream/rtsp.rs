@@ -27,6 +27,32 @@ fn rtsp_camera_pipeline_description(
 }
 
 /// A builder for creating a RtspCameraCapture object
+///
+/// # Example
+///
+/// ```no_run
+/// use kornia::io::stream::RtspCameraCaptureBuilder;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///   // create a capture object to grab frames from a camera
+///   let mut capture = RtspCameraCaptureBuilder::new()
+///     .with_username("admin")
+///     .with_password("admin")
+///     .with_ip("127.0.0.1")
+///     .with_port(554)
+///     .with_stream("stream1")
+///     .build()?;
+///
+///   // start grabbing frames from the camera
+///   capture.run(|img: Image<u8, 3>| {
+///     println!("Image: {:?}", img.size());
+///     Ok(())
+///   }).await?;
+///
+///   Ok(())
+/// }
+/// ```
 pub struct RtspCameraCaptureBuilder {
     username: String,
     password: String,

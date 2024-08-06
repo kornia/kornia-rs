@@ -1,4 +1,4 @@
-/// A module for capturing video streams from different sources.
+/// A module for capturing video streams from v4l2 cameras.
 pub mod camera;
 
 /// A module for capturing video streams from different sources.

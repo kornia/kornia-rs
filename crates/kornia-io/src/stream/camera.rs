@@ -26,6 +26,31 @@ fn v4l2_camera_pipeline_description(camera_id: usize, size: Option<ImageSize>, f
 }
 
 /// A builder for creating a CameraCapture object
+///
+/// # Example
+///
+/// ```no_run
+///
+/// use kornia::io::stream::CameraCaptureBuilder;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///   // create a capture object to grab frames from a camera
+///   let mut capture = CameraCaptureBuilder::new()
+///     .camera_id(0)
+///     .with_size(ImageSize { width: 640, height: 480 })
+///     .with_fps(30)
+///     .build()?;
+///
+///   // start grabbing frames from the camera
+///   capture.run(|img: Image<u8, 3>| {
+///     println!("Image: {:?}", img.size());
+///     Ok(())
+///   }).await?;
+///
+///   Ok(())
+/// }
+/// ```
 pub struct CameraCaptureBuilder {
     camera_id: usize,
     size: Option<ImageSize>,
@@ -78,7 +103,7 @@ impl CameraCaptureBuilder {
         self
     }
 
-    /// Create a new [`CameraCapture`] object.
+    /// Create a new [`StreamCapture`] object.
     pub fn build(self) -> Result<StreamCapture, StreamCaptureError> {
         // create a pipeline specified by the camera id and size
         StreamCapture::new(&v4l2_camera_pipeline_description(

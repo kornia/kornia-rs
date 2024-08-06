@@ -3,30 +3,21 @@ use futures::prelude::*;
 use gst::prelude::*;
 use kornia_image::{Image, ImageSize};
 
-/// A webcam capture object that grabs frames from the camera
-/// using GStreamer.
+/// A camera capture object that grabs frames from a GStreamer pipeline.
 ///
 /// # Example
 ///
 /// ```no_run
-/// use kornia::image::ImageSize;use futures_util::stream::stream::StreamExt;
-/// use kornia::io::stream::CameraCapture;
+/// use kornia::io::stream::StreamCapture;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///   // create a webcam capture object with camera id 0
-///   // and force the image size to 640x480
-///   let mut webcam = CameraCapture::builder()
-///     .camera_id(0)
-///     .with_fps(30)
-///     .with_size(ImageSize {
-///       width: 640,
-///       height: 480,
-///   })
-///   .build()?;
+///   // create a capture object to grab frames from a camera
+///   let mut capture = StreamCapture::new(
+///     "v4l2src device=/dev/video0 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink")?;
 ///
 ///   // start grabbing frames from the camera
-///   webcam.run(|img| {
+///   capture.run(|img: Image<u8, 3>| {
 ///     println!("Image: {:?}", img.size());
 ///     Ok(())
 ///   }).await?;
@@ -41,16 +32,17 @@ pub struct StreamCapture {
 }
 
 impl StreamCapture {
-    /// Creates a new CameraCapture object.
+    /// Creates a new StreamCapture object
+    ///
+    /// NOTE: The pipeline description should contain an appsink element with the name "sink".
     ///
     /// # Arguments
     ///
-    /// * `camera_id` - The camera id used for capturing images
-    /// * `size` - The image size used for resizing directly from the camera
+    /// * `pipeline_desc` - The GStreamer pipeline description.
     ///
     /// # Returns
     ///
-    /// A CameraCapture object
+    /// A StreamCapture object
     pub fn new(pipeline_desc: &str) -> Result<Self, StreamCaptureError> {
         // initialize GStreamer
         gst::init()?;
@@ -90,7 +82,7 @@ impl StreamCapture {
         })
     }
 
-    /// Runs the webcam capture object and grabs frames from the camera
+    /// Runs the capture object and grabs frames from the source
     ///
     /// # Arguments
     ///
@@ -132,7 +124,7 @@ impl StreamCapture {
 
         self.handle = Some(handle);
 
-        //// start grabbing frames from the camera
+        //// start grabbing frames from the source
         while let Some(img) = self.receiver.recv().await {
             f(img)?;
         }
@@ -140,7 +132,7 @@ impl StreamCapture {
         Ok(())
     }
 
-    /// Closes the webcam capture object
+    /// Closes the capture object
     pub fn close(&mut self) -> Result<(), StreamCaptureError> {
         let res = self.pipeline.send_event(gst::event::Eos::new());
         if !res {
