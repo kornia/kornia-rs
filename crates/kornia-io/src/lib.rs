@@ -18,8 +18,4 @@ pub mod jpeg;
 #[cfg(feature = "gstreamer")]
 pub mod stream;
 
-/// Webcam video module for real-time video processing.
-#[cfg(feature = "gstreamer")]
-pub mod webcam;
-
 pub use crate::error::IoError;
