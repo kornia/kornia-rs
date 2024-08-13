@@ -16,4 +16,4 @@ cargo run -p rotate -- --image-path path/to/image.jpg
 
 Output:
 
-TODO: add image output
+https://github.com/user-attachments/assets/16ac3873-765d-45e0-b1aa-f74297c19ce1
