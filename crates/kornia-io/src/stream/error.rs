@@ -65,6 +65,6 @@ pub enum StreamCaptureError {
     PipelineCancelled,
 
     /// An error for an invalid configuration.
-    #[error("Invalid configuration")]
-    InvalidConfig,
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
 }
