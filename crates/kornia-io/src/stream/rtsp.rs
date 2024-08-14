@@ -1,143 +1,106 @@
-use crate::stream::{error::StreamCaptureError, StreamCapture};
+use std::any::Any;
+
+use crate::stream::{
+    camera::{CameraCapture, CameraCaptureConfig},
+    error::StreamCaptureError,
+};
+
+/// A configuration object for capturing frames from a Rtsp camera.
+pub struct RTSPCameraConfig {
+    /// The url for the Rtsp stream
+    pub url: String,
+    /// The latency for the Rtsp stream
+    pub latency: u32,
+}
+
+impl CameraCaptureConfig for RTSPCameraConfig {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl RTSPCameraConfig {
+    /// Creates a new RTSPCameraConfig object with default values.
+    ///
+    /// # Returns
+    ///
+    /// A RTSPCameraConfig object
+    pub fn new() -> Self {
+        Self {
+            url: String::new(),
+            latency: 0,
+        }
+    }
+
+    /// Sets the url for the RTSPCameraConfig.
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - The url for the Rtsp stream
+    pub fn with_url(mut self, url: &str) -> Self {
+        self.url = url.to_string();
+        self
+    }
+
+    /// Sets the latency for the RTSPCameraConfig.
+    ///
+    /// # Arguments
+    ///
+    /// * `latency` - The latency for the Rtsp stream
+    pub fn with_latency(mut self, latency: u32) -> Self {
+        self.latency = latency;
+        self
+    }
+
+    /// Sets the settings for the RTSPCameraConfig.
+    ///
+    /// # Arguments
+    ///
+    /// * `username` - The username for the Rtsp stream
+    /// * `password` - The password for the Rtsp stream
+    /// * `ip` - The ip address for the Rtsp stream
+    /// * `port` - The port for the Rtsp stream
+    /// * `stream` - The name of stream
+    pub fn with_settings(
+        mut self,
+        username: &str,
+        password: &str,
+        ip: &str,
+        port: u32,
+        stream: &str,
+    ) -> Self {
+        self.url = format!(
+            "rtsp://{}:{}@{}:{}/{}",
+            username, password, ip, port, stream
+        );
+        self
+    }
+
+    /// Create a new [`CameraCapture`] object.
+    pub fn build(self) -> Result<CameraCapture, StreamCaptureError> {
+        CameraCapture::new(&self)
+    }
+}
+
+impl Default for RTSPCameraConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Returns a GStreamer pipeline description for capturing frames from a Rtsp camera.
 ///
 /// # Arguments
 ///
-/// * `username` - The username for the Rtsp stream
-/// * `password` - The password for the Rtsp stream
-/// * `ip` - The ip address for the Rtsp stream
-/// * `port` - The port for the Rtsp stream
-/// * `stream` - The name of stream
+/// * `url` - The url for the Rtsp stream
+/// * `latency` - The latency for the Rtsp stream
 ///
 /// # Returns
 ///
 /// A GStreamer pipeline description
-fn rtsp_camera_pipeline_description(
-    username: &str,
-    password: &str,
-    ip: &str,
-    port: &u32,
-    stream: &str,
-) -> String {
+pub fn rtsp_camera_pipeline_description(url: &str, latency: u32) -> String {
     format!(
-        "rtspsrc location=rtsp://{}:{}@{}:{}/{} ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
-        username, password, ip, port, stream
+        "rtspsrc location={} latency={} ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
+        url, latency,
     )
-}
-
-/// A builder for creating a RtspCameraCapture object
-///
-/// # Example
-///
-/// ```no_run
-/// use kornia::io::stream::RtspCameraCaptureBuilder;
-///
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///   // create a capture object to grab frames from a camera
-///   let mut capture = RtspCameraCaptureBuilder::new()
-///     .with_username("admin")
-///     .with_password("admin")
-///     .with_ip("127.0.0.1")
-///     .with_port(554)
-///     .with_stream("stream1")
-///     .build()?;
-///
-///   // start grabbing frames from the camera
-///   capture.run(|img: Image<u8, 3>| {
-///     println!("Image: {:?}", img.size());
-///     Ok(())
-///   }).await?;
-///
-///   Ok(())
-/// }
-/// ```
-pub struct RtspCameraCaptureBuilder {
-    username: String,
-    password: String,
-    ip: String,
-    port: u32,
-    stream: String,
-}
-
-impl RtspCameraCaptureBuilder {
-    /// Creates a new CameraCaptureBuilder object with default values.
-    pub fn new() -> Self {
-        Self {
-            username: "".to_string(),
-            password: "".to_string(),
-            ip: "".to_string(),
-            port: 0,
-            stream: "".to_string(),
-        }
-    }
-
-    /// Sets the username for the Rtsp stream.
-    ///
-    /// # Arguments
-    ///
-    /// * `username` - The username for the Rtsp stream
-    pub fn with_username(mut self, username: &str) -> Self {
-        self.username = username.to_string();
-        self
-    }
-
-    /// Sets the password for the Rtsp stream.
-    ///
-    /// # Arguments
-    ///
-    /// * `password` - The password for the Rtsp stream
-    pub fn with_password(mut self, password: &str) -> Self {
-        self.password = password.to_string();
-        self
-    }
-
-    /// Sets the ip address for the Rtsp stream.
-    ///
-    /// # Arguments
-    ///
-    /// * `ip` - The ip address for the Rtsp stream
-    pub fn with_ip(mut self, ip: &str) -> Self {
-        self.ip = ip.to_string();
-        self
-    }
-
-    /// Sets the port for the Rtsp stream.
-    ///
-    /// # Arguments
-    ///
-    /// * `port` - The port for the Rtsp stream
-    pub fn with_port(mut self, port: u32) -> Self {
-        self.port = port;
-        self
-    }
-
-    /// Sets the stream for the Rtsp stream.
-    ///
-    /// # Arguments
-    ///
-    /// * `stream` - The name of stream
-    pub fn with_stream(mut self, stream: &str) -> Self {
-        self.stream = stream.to_string();
-        self
-    }
-
-    /// Create a new [`StreamCapture`] object.
-    pub fn build(self) -> Result<StreamCapture, StreamCaptureError> {
-        // create a pipeline specified by the camera id and size
-        StreamCapture::new(&rtsp_camera_pipeline_description(
-            &self.username,
-            &self.password,
-            &self.ip,
-            &self.port,
-            &self.stream,
-        ))
-    }
-}
-
-impl Default for RtspCameraCaptureBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
 }

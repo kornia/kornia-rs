@@ -10,7 +10,11 @@ pub mod error;
 /// A module for capturing video streams from rtsp sources.
 pub mod rtsp;
 
-pub use crate::stream::camera::CameraCaptureBuilder;
+/// A module for capturing video streams from v4l2 cameras.
+pub mod v4l2;
+
+pub use crate::stream::camera::{CameraCapture, CameraCaptureConfig};
 pub use crate::stream::capture::StreamCapture;
 pub use crate::stream::error::StreamCaptureError;
-pub use crate::stream::rtsp::RtspCameraCaptureBuilder;
+pub use crate::stream::rtsp::RTSPCameraConfig;
+pub use crate::stream::v4l2::V4L2CameraConfig;

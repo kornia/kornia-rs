@@ -1,121 +1,85 @@
-use crate::stream::{error::StreamCaptureError, StreamCapture};
-use kornia_image::ImageSize;
+use std::any::Any;
 
-/// Returns a GStreamer pipeline string for capturing frames from a V4L2 camera.
-///
-/// # Arguments
-///
-/// * `camera_id` - The camera id
-/// * `size` - The image size to capture
-/// * `fps` - The desired frames per second
-///
-/// # Returns
-///
-/// A GStreamer pipeline string
-fn v4l2_camera_pipeline_description(camera_id: usize, size: Option<ImageSize>, fps: u32) -> String {
-    let video_resize = if let Some(size) = size {
-        format!("! video/x-raw,width={},height={} ", size.width, size.height)
-    } else {
-        "".to_string()
-    };
+use crate::stream::{
+    error::StreamCaptureError,
+    rtsp::{rtsp_camera_pipeline_description, RTSPCameraConfig},
+    v4l2::{v4l2_camera_pipeline_description, V4L2CameraConfig},
+    StreamCapture,
+};
 
-    format!(
-            "v4l2src device=/dev/video{} {}! videorate ! video/x-raw,framerate={}/1 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
-            camera_id, video_resize, fps
-        )
+/// A trait for camera capture configuration.
+pub trait CameraCaptureConfig: Any {
+    /// Returns the configuration as a trait object.
+    fn as_any(&self) -> &dyn Any;
+}
+
+/// A camera capture object that grabs frames from a camera.
+pub struct CameraCapture {
+    stream: StreamCapture,
 }
 
 /// A builder for creating a CameraCapture object
-///
-/// # Example
-///
-/// ```no_run
-///
-/// use kornia::io::stream::CameraCaptureBuilder;
-///
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///   // create a capture object to grab frames from a camera
-///   let mut capture = CameraCaptureBuilder::new()
-///     .camera_id(0)
-///     .with_size(ImageSize { width: 640, height: 480 })
-///     .with_fps(30)
-///     .build()?;
-///
-///   // start grabbing frames from the camera
-///   capture.run(|img: Image<u8, 3>| {
-///     println!("Image: {:?}", img.size());
-///     Ok(())
-///   }).await?;
-///
-///   Ok(())
-/// }
-/// ```
-pub struct CameraCaptureBuilder {
-    camera_id: usize,
-    size: Option<ImageSize>,
-    fps: u32,
-}
-
-impl CameraCaptureBuilder {
-    /// Creates a new CameraCaptureBuilder object with default values.
+impl CameraCapture {
+    /// Creates a new CameraCapture object
     ///
-    /// Note: The default camera id is 0 and the default image size is None
+    /// # Arguments
+    ///
+    /// * `config` - The camera capture configuration
     ///
     /// # Returns
     ///
-    /// A CameraCaptureBuilder object
-    pub fn new() -> Self {
-        Self {
-            camera_id: 0,
-            size: None,
-            fps: 30,
-        }
+    /// A CameraCapture object
+    pub fn new(config: &dyn CameraCaptureConfig) -> Result<Self, StreamCaptureError> {
+        let pipeline = if let Some(config) = config.as_any().downcast_ref::<V4L2CameraConfig>() {
+            // check that the device is not empty
+            if config.device.is_empty() {
+                return Err(StreamCaptureError::InvalidConfig);
+            }
+            v4l2_camera_pipeline_description(&config.device, config.size, config.fps)
+        } else if let Some(config) = config.as_any().downcast_ref::<RTSPCameraConfig>() {
+            // check that the url is not empty
+            if config.url.is_empty() {
+                return Err(StreamCaptureError::InvalidConfig);
+            }
+            rtsp_camera_pipeline_description(&config.url, config.latency)
+        } else {
+            return Err(StreamCaptureError::InvalidConfig);
+        };
+
+        Ok(Self {
+            stream: StreamCapture::new(&pipeline)?,
+        })
     }
 
-    /// Sets the camera id for the CameraCaptureBuilder.
+    /// Starts grabbing frames from the camera.
     ///
     /// # Arguments
     ///
-    /// * `camera_id` - The desired camera id
-    pub fn camera_id(mut self, camera_id: usize) -> Self {
-        self.camera_id = camera_id;
-        self
+    /// * `f` - A function that processes the image frames
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the image processing function fails.
+    pub async fn run<F>(&mut self, f: F) -> Result<(), StreamCaptureError>
+    where
+        F: Fn(kornia_image::Image<u8, 3>) -> Result<(), Box<dyn std::error::Error>>,
+    {
+        self.stream
+            .run(|img| {
+                f(img)?;
+                Ok(())
+            })
+            .await
     }
 
-    /// Sets the image size for the CameraCaptureBuilder.
+    /// Stops the camera capture object.
     ///
-    /// # Arguments
+    /// This function should be called when the camera capture object is no longer needed.
     ///
-    /// * `size` - The desired image size
-    pub fn with_size(mut self, size: ImageSize) -> Self {
-        self.size = Some(size);
-        self
-    }
-
-    /// Sets the frames per second for the CameraCaptureBuilder.
+    /// # Returns
     ///
-    /// # Arguments
-    ///
-    /// * `fps` - The desired frames per second
-    pub fn with_fps(mut self, fps: u32) -> Self {
-        self.fps = fps;
-        self
-    }
-
-    /// Create a new [`StreamCapture`] object.
-    pub fn build(self) -> Result<StreamCapture, StreamCaptureError> {
-        // create a pipeline specified by the camera id and size
-        StreamCapture::new(&v4l2_camera_pipeline_description(
-            self.camera_id,
-            self.size,
-            self.fps,
-        ))
-    }
-}
-
-impl Default for CameraCaptureBuilder {
-    fn default() -> Self {
-        Self::new()
+    /// A Result object with a success message if the camera capture object is stopped successfully.
+    pub fn close(&mut self) -> Result<(), StreamCaptureError> {
+        self.stream.close()
     }
 }

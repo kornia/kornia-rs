@@ -6,7 +6,7 @@ use std::sync::{
 
 use kornia::io::{
     fps_counter::FpsCounter,
-    stream::{RtspCameraCaptureBuilder, StreamCaptureError},
+    stream::{RTSPCameraConfig, StreamCaptureError},
 };
 
 #[derive(Parser)]
@@ -38,12 +38,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rec = rerun::RecordingStreamBuilder::new("Kornia Rtsp Stream Capture App").spawn()?;
 
     //// create a stream capture object
-    let mut capture = RtspCameraCaptureBuilder::new()
-        .with_username(&args.username)
-        .with_password(&args.password)
-        .with_ip(&args.camera_ip)
-        .with_port(args.camera_port)
-        .with_stream(&args.stream)
+    let mut capture = RTSPCameraConfig::new()
+        .with_settings(
+            &args.username,
+            &args.password,
+            &args.camera_ip,
+            args.camera_port,
+            &args.stream,
+        )
         .build()?;
 
     // create a cancel token to stop the webcam capture

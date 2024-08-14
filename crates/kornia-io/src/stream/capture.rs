@@ -8,6 +8,7 @@ use kornia_image::{Image, ImageSize};
 /// # Example
 ///
 /// ```no_run
+/// use kornia::image::Image;
 /// use kornia::io::stream::StreamCapture;
 ///
 /// #[tokio::main]
@@ -27,6 +28,7 @@ use kornia_image::{Image, ImageSize};
 /// ```
 pub struct StreamCapture {
     pipeline: gst::Pipeline,
+    // TODO: pass Image<u8, 3> as a generic type
     receiver: tokio::sync::mpsc::Receiver<Image<u8, 3>>,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
