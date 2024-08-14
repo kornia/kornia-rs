@@ -63,4 +63,8 @@ pub enum StreamCaptureError {
     /// An error occurred during GStreamer to send flush start event.
     #[error("Pipeline cancelled by the user")]
     PipelineCancelled,
+
+    /// An error for an invalid configuration.
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
 }

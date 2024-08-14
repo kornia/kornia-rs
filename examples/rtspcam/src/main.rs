@@ -4,22 +4,27 @@ use std::sync::{
     {Arc, Mutex},
 };
 
-use kornia::{
-    image::ImageSize,
-    imgproc,
-    io::{
-        fps_counter::FpsCounter,
-        stream::{StreamCaptureError, V4L2CameraConfig},
-    },
+use kornia::io::{
+    fps_counter::FpsCounter,
+    stream::{RTSPCameraConfig, StreamCaptureError},
 };
 
 #[derive(Parser)]
 struct Args {
-    #[arg(short, long, default_value = "0")]
-    camera_id: u32,
+    #[arg(short, long)]
+    username: String,
 
-    #[arg(short, long, default_value = "30")]
-    fps: u32,
+    #[arg(short, long)]
+    password: String,
+
+    #[arg(long)]
+    camera_ip: String,
+
+    #[arg(long)]
+    camera_port: u32,
+
+    #[arg(short, long)]
+    stream: String,
 
     #[arg(short, long)]
     duration: Option<u64>,
@@ -30,17 +35,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // start the recording stream
-    let rec = rerun::RecordingStreamBuilder::new("Kornia Webcapture App").spawn()?;
+    let rec = rerun::RecordingStreamBuilder::new("Kornia Rtsp Stream Capture App").spawn()?;
 
-    // create a webcam capture object with camera id 0
-    // and force the image size to 640x480
-    let mut webcam = V4L2CameraConfig::new()
-        .with_camera_id(args.camera_id)
-        .with_fps(args.fps)
-        .with_size(ImageSize {
-            width: 640,
-            height: 480,
-        })
+    //// create a stream capture object
+    let mut capture = RTSPCameraConfig::new()
+        .with_settings(
+            &args.username,
+            &args.password,
+            &args.camera_ip,
+            args.camera_port,
+            &args.stream,
+        )
         .build()?;
 
     // create a cancel token to stop the webcam capture
@@ -70,29 +75,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // start grabbing frames from the camera
-    webcam
+    capture
         .run(|img| {
             // check if the cancel token is set, if so we return an error to stop the pipeline
             if cancel_token.load(Ordering::SeqCst) {
                 return Err(StreamCaptureError::PipelineCancelled.into());
             }
-
-            // lets resize the image to 256x256
-            let img = imgproc::resize::resize_fast(
-                &img,
-                ImageSize {
-                    width: 256,
-                    height: 256,
-                },
-                imgproc::interpolation::InterpolationMode::Bilinear,
-            )?;
-
-            // convert the image to f32 and normalize before processing
-            let img = img.cast_and_scale::<f32>(1. / 255.)?;
-
-            // convert the image to grayscale and binarize
-            let gray = imgproc::color::gray_from_rgb(&img)?;
-            let bin = imgproc::threshold::threshold_binary(&gray, 0.35, 0.65)?;
 
             // update the fps counter
             fps_counter
@@ -100,16 +88,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("Failed to lock fps counter")
                 .new_frame();
 
+            let gray = kornia::imgproc::color::gray_from_rgb(
+                &img.clone().cast_and_scale::<f32>(1.0 / 255.0)?,
+            )?;
+
             // log the image
             rec.log_static("image", &rerun::Image::try_from(img.data)?)?;
-            rec.log_static("binary", &rerun::Image::try_from(bin.data)?)?;
+            rec.log_static("gray", &rerun::Image::try_from(gray.data)?)?;
 
             Ok(())
         })
         .await?;
 
     // NOTE: this is important to close the webcam properly, otherwise the app will hang
-    webcam.close()?;
+    capture.close()?;
 
     println!("Finished recording. Closing app.");
 
