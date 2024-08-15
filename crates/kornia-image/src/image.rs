@@ -37,6 +37,15 @@ impl std::fmt::Display for ImageSize {
     }
 }
 
+impl From<(usize, usize)> for ImageSize {
+    fn from(size: (usize, usize)) -> Self {
+        ImageSize {
+            width: size.0,
+            height: size.1,
+        }
+    }
+}
+
 /// Trait for image data types.
 ///
 /// Send and Sync is required for ndarray::Zip::par_for_each

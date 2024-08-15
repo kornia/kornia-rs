@@ -66,9 +66,9 @@ impl CameraCapture {
     /// # Errors
     ///
     /// Returns an error if the image processing function fails.
-    pub async fn run<F>(&mut self, f: F) -> Result<(), StreamCaptureError>
+    pub async fn run<F>(&mut self, mut f: F) -> Result<(), StreamCaptureError>
     where
-        F: Fn(kornia_image::Image<u8, 3>) -> Result<(), Box<dyn std::error::Error>>,
+        F: FnMut(kornia_image::Image<u8, 3>) -> Result<(), Box<dyn std::error::Error>>,
     {
         self.stream
             .run(|img| {

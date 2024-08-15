@@ -20,8 +20,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image_f32: Image<f32, 3> = image.clone().cast::<f32>()?;
 
     // normalize the image between 0 and 255
-    let _image_f32_norm: Image<f32, 3> = imgproc::normalize::normalize_mean_std(
+    let mut image_f32_norm: Image<f32, 3> = Image::from_size_val(image_f32.size(), 0.0)?;
+    imgproc::normalize::normalize_mean_std(
         &image_f32,
+        &mut image_f32_norm,
         &[127.5, 127.5, 127.5],
         &[127.5, 127.5, 127.5],
     )?;

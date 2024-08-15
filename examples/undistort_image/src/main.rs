@@ -2,7 +2,7 @@ use clap::Parser;
 use std::path::PathBuf;
 
 use kornia::{
-    image::ImageSize,
+    image::{Image, ImageSize},
     imgproc,
     imgproc::calibration::{
         distortion::{generate_correction_map_polynomial, PolynomialDistortion},
@@ -62,8 +62,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // apply the remap
-    let img_undistorted = imgproc::interpolation::remap(
+    let mut img_undistorted = Image::from_size_val(img.size(), 0.0)?;
+    imgproc::interpolation::remap(
         &img.clone().cast()?,
+        &mut img_undistorted,
         &map_x,
         &map_y,
         imgproc::interpolation::InterpolationMode::Bilinear,

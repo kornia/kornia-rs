@@ -21,7 +21,9 @@ pub fn compute_histogram(image: PyImage, num_bins: usize) -> PyResult<Vec<usize>
     let image = Image::from_pyimage(image)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
-    let histogram = imgproc::histogram::compute_histogram(&image, num_bins)
+    let mut histogram = vec![0; num_bins];
+
+    imgproc::histogram::compute_histogram(&image, &mut histogram, num_bins)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
     Ok(histogram)

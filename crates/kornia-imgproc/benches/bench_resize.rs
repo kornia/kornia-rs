@@ -29,20 +29,39 @@ fn bench_resize(c: &mut Criterion) {
     for (width, height) in image_sizes {
         let image_size = ImageSize { width, height };
         let id = format!("{}x{}", width, height);
+        // input image
         let image = Image::<u8, 3>::new(image_size, vec![0u8; width * height * 3]).unwrap();
         let image_f32 = image.clone().cast::<f32>().unwrap();
+        // output image
         let new_size = ImageSize {
             width: width / 2,
             height: height / 2,
         };
+        let mut out_f32 = Image::<f32, 3>::from_size_val(new_size, 0.0).unwrap();
+        let mut out_u8 = Image::<u8, 3>::from_size_val(new_size, 0).unwrap();
+
         group.bench_with_input(BenchmarkId::new("native", &id), &image_f32, |b, i| {
-            b.iter(|| resize::resize_native(black_box(i), new_size, InterpolationMode::Nearest))
+            b.iter(|| {
+                resize::resize_native(
+                    black_box(i),
+                    black_box(&mut out_f32),
+                    new_size,
+                    InterpolationMode::Nearest,
+                )
+            })
         });
         group.bench_with_input(BenchmarkId::new("image_rs", &id), &image, |b, i| {
             b.iter(|| resize_image_crate(black_box(i.clone()), new_size))
         });
         group.bench_with_input(BenchmarkId::new("fast", &id), &image, |b, i| {
-            b.iter(|| resize::resize_fast(black_box(i), new_size, InterpolationMode::Nearest))
+            b.iter(|| {
+                resize::resize_fast(
+                    black_box(i),
+                    black_box(&mut out_u8),
+                    new_size,
+                    InterpolationMode::Nearest,
+                )
+            })
         });
     }
     group.finish();

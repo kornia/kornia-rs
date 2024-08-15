@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 use kornia::{
-    image::ImageSize,
+    image::{Image, ImageSize},
     imgproc,
     io::{
         fps_counter::FpsCounter,
@@ -69,6 +69,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // allocate the image buffers
+    let new_size = ImageSize {
+        width: 256,
+        height: 256,
+    };
+
+    let mut img_resized = Image::from_size_val(new_size, 0u8)?;
+    let mut gray = Image::from_size_val(new_size, 0f32)?;
+    let mut bin = Image::from_size_val(new_size, 0f32)?;
+
     // start grabbing frames from the camera
     webcam
         .run(|img| {
@@ -78,21 +88,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // lets resize the image to 256x256
-            let img = imgproc::resize::resize_fast(
+            imgproc::resize::resize_fast(
                 &img,
-                ImageSize {
-                    width: 256,
-                    height: 256,
-                },
+                &mut img_resized,
+                new_size,
                 imgproc::interpolation::InterpolationMode::Bilinear,
             )?;
 
             // convert the image to f32 and normalize before processing
-            let img = img.cast_and_scale::<f32>(1. / 255.)?;
+            let img = img_resized.clone().cast_and_scale::<f32>(1. / 255.)?;
 
             // convert the image to grayscale and binarize
-            let gray = imgproc::color::gray_from_rgb(&img)?;
-            let bin = imgproc::threshold::threshold_binary(&gray, 0.35, 0.65)?;
+            imgproc::color::gray_from_rgb(&img, &mut gray)?;
+            imgproc::threshold::threshold_binary(&gray, &mut bin, 0.35, 0.65)?;
 
             // update the fps counter
             fps_counter
@@ -102,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // log the image
             rec.log_static("image", &rerun::Image::try_from(img.data)?)?;
-            rec.log_static("binary", &rerun::Image::try_from(bin.data)?)?;
+            rec.log_static("binary", &rerun::Image::try_from(bin.clone().data)?)?;
 
             Ok(())
         })
