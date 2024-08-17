@@ -6,7 +6,8 @@ use kornia_image::{Image, ImageError};
 ///
 /// # Arguments
 ///
-/// * `image` - The input RGB image assumed to have 3 channels.
+/// * `src` - The input RGB image assumed to have 3 channels.
+/// * `dst` - The output HSV image.
 ///
 /// # Returns
 ///
@@ -17,6 +18,8 @@ use kornia_image::{Image, ImageError};
 /// * V: The value channel in the range [0, 255].
 ///
 /// Precondition: the input image must have 3 channels.
+/// Precondition: the output image must have 3 channels.
+/// Precondition: the input and output images must have the same size.
 ///
 /// # Example
 ///
@@ -33,17 +36,34 @@ use kornia_image::{Image, ImageError};
 /// )
 /// .unwrap();
 ///
-/// let hsv: Image<f32, 3> = hsv_from_rgb(&image).unwrap();
+/// let mut hsv = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
+///
+/// hsv_from_rgb(&image, &mut hsv).unwrap();
 ///
 /// assert_eq!(hsv.num_channels(), 3);
 /// assert_eq!(hsv.size().width, 4);
 /// assert_eq!(hsv.size().height, 5);
 /// ```
-pub fn hsv_from_rgb(image: &Image<f32, 3>) -> Result<Image<f32, 3>, ImageError> {
-    let mut output = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+pub fn hsv_from_rgb(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.size().width,
+            src.size().height,
+            dst.size().width,
+            dst.size().height,
+        ));
+    }
 
-    ndarray::Zip::from(output.data.rows_mut())
-        .and(image.data.rows())
+    if src.num_channels() != 3 {
+        return Err(ImageError::ChannelIndexOutOfBounds(3, src.num_channels()));
+    }
+
+    if dst.num_channels() != 3 {
+        return Err(ImageError::ChannelIndexOutOfBounds(3, dst.num_channels()));
+    }
+
+    ndarray::Zip::from(dst.data.rows_mut())
+        .and(src.data.rows())
         .par_for_each(|mut out, inp| {
             assert_eq!(inp.len(), 3);
             // Normalize the input to the range [0, 1]
@@ -86,7 +106,7 @@ pub fn hsv_from_rgb(image: &Image<f32, 3>) -> Result<Image<f32, 3>, ImageError> 
             out[2] = v;
         });
 
-    Ok(output)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -106,7 +126,10 @@ mod tests {
             ],
         )?;
 
-        let hsv = super::hsv_from_rgb(&image)?;
+        let mut hsv = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+
+        super::hsv_from_rgb(&image, &mut hsv)?;
+
         assert_eq!(hsv.num_channels(), 3);
         assert_eq!(hsv.size().width, 2);
         assert_eq!(hsv.size().height, 3);

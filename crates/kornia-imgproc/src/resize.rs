@@ -11,7 +11,8 @@ use std::num::NonZeroU32;
 ///
 /// # Arguments
 ///
-/// * `image` - The input image container.
+/// * `src` - The input image container.
+/// * `dst` - The output image container.
 /// * `new_size` - The new size of the image.
 /// * `optional_args` - Optional arguments for the resize operation.
 ///
@@ -35,12 +36,17 @@ use std::num::NonZeroU32;
 /// )
 /// .unwrap();
 ///
-/// let image_resized: Image<f32, 3> = resize_native(
+/// let new_size = ImageSize {
+///     width: 2,
+///     height: 3,
+/// };
+///
+/// let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0.0).unwrap();
+///
+/// resize_native(
 ///     &image,
-///     ImageSize {
-///         width: 2,
-///         height: 3,
-///     },
+///     &mut image_resized,
+///     new_size,
 ///     InterpolationMode::Nearest,
 /// )
 /// .unwrap();
@@ -50,18 +56,25 @@ use std::num::NonZeroU32;
 /// assert_eq!(image_resized.size().height, 3);
 /// ```
 pub fn resize_native<T: ImageDtype, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
+    src: &Image<T, CHANNELS>,
+    dst: &mut Image<T, CHANNELS>,
     new_size: ImageSize,
     interpolation: InterpolationMode,
-) -> Result<Image<T, CHANNELS>, ImageError> {
-    // create the output image
-    let mut output = Image::from_size_val(new_size, T::default())?;
+) -> Result<(), ImageError> {
+    if dst.size() != new_size {
+        return Err(ImageError::InvalidImageSize(
+            src.size().width,
+            src.size().height,
+            dst.size().width,
+            dst.size().height,
+        ));
+    }
 
     // create a grid of x and y coordinates for the output image
     // and interpolate the values from the input image.
-    let x = ndarray::Array::linspace(0., (image.width() - 1) as f32, new_size.width)
+    let x = ndarray::Array::linspace(0., (src.width() - 1) as f32, new_size.width)
         .insert_axis(ndarray::Axis(0));
-    let y = ndarray::Array::linspace(0., (image.height() - 1) as f32, new_size.height)
+    let y = ndarray::Array::linspace(0., (src.height() - 1) as f32, new_size.height)
         .insert_axis(ndarray::Axis(0));
 
     // create the meshgrid of x and y coordinates, arranged in a 2D grid of shape (height, width)
@@ -74,14 +87,14 @@ pub fn resize_native<T: ImageDtype, const CHANNELS: usize>(
     // iterate over the output image and interpolate the pixel values
 
     ndarray::Zip::from(xy.rows())
-        .and(output.data.rows_mut())
+        .and(dst.data.rows_mut())
         .par_for_each(|uv, mut out| {
             assert_eq!(uv.len(), 2);
             let (u, v) = (uv[0], uv[1]);
 
             // compute the pixel values for each channel
-            let pixels = (0..image.num_channels())
-                .map(|k| interpolate_pixel(&image.data, u, v, k, interpolation));
+            let pixels =
+                (0..CHANNELS).map(|k| interpolate_pixel(&src.data, u, v, k, interpolation));
 
             // write the pixel values to the output image
             for (k, pixel) in pixels.enumerate() {
@@ -89,7 +102,7 @@ pub fn resize_native<T: ImageDtype, const CHANNELS: usize>(
             }
         });
 
-    Ok(output)
+    Ok(())
 }
 
 /// Resize an image to a new size using the [fast_image_resize](https://crates.io/crates/fast_image_resize) crate.
@@ -123,12 +136,17 @@ pub fn resize_native<T: ImageDtype, const CHANNELS: usize>(
 /// )
 /// .unwrap();
 ///
-/// let image_resized: Image<u8, 3> = resize_fast(
+/// let new_size = ImageSize {
+///   width: 2,
+///   height: 3,
+/// };
+///
+/// let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0).unwrap();
+///
+/// resize_fast(
 ///   &image,
-///   ImageSize {
-///     width: 2,
-///     height: 3,
-///   },
+///   &mut image_resized,
+///   new_size,
 ///   InterpolationMode::Nearest,
 /// )
 /// .unwrap();
@@ -142,27 +160,47 @@ pub fn resize_native<T: ImageDtype, const CHANNELS: usize>(
 ///
 /// The function returns an error if the image cannot be resized.
 pub fn resize_fast(
-    image: &Image<u8, 3>,
+    src: &Image<u8, 3>,
+    dst: &mut Image<u8, 3>,
     new_size: ImageSize,
     interpolation: InterpolationMode,
-) -> Result<Image<u8, 3>, ImageError> {
-    // cast the image dimensions to u32
-    let src_width = NonZeroU32::new(image.width() as u32).ok_or(ImageError::CastError)?;
-    let src_height = NonZeroU32::new(image.height() as u32).ok_or(ImageError::CastError)?;
+) -> Result<(), ImageError> {
+    if dst.size() != new_size {
+        return Err(ImageError::InvalidImageSize(
+            src.size().width,
+            src.size().height,
+            dst.size().width,
+            dst.size().height,
+        ));
+    }
 
-    let image_data = image.data.to_owned().into_raw_vec();
-    let image_data_len = image_data.len();
+    // prepare the input image for the fast_image_resize crate
+    let src_width = NonZeroU32::new(src.width() as u32).ok_or(ImageError::CastError)?;
+    let src_height = NonZeroU32::new(src.height() as u32).ok_or(ImageError::CastError)?;
 
-    let src_image = fr::Image::from_vec_u8(src_width, src_height, image_data, fr::PixelType::U8x3)
-        .map_err(|_| {
-            ImageError::InvalidChannelShape(image_data_len, image.width() * image.height() * 3)
-        })?;
+    let src_image_data = src.data.to_owned().into_raw_vec();
 
+    let src_image =
+        fr::Image::from_vec_u8(src_width, src_height, src_image_data, fr::PixelType::U8x3)
+            .map_err(|_| {
+                ImageError::InvalidChannelShape(src.data.len(), src.width() * src.height() * 3)
+            })?;
+
+    // prepare the output image for the fast_image_resize crate
     let dst_width = NonZeroU32::new(new_size.width as u32).ok_or(ImageError::CastError)?;
     let dst_height = NonZeroU32::new(new_size.height as u32).ok_or(ImageError::CastError)?;
 
-    let mut dst_image = fr::Image::new(dst_width, dst_height, src_image.pixel_type());
-    let mut dst_view = dst_image.view_mut();
+    let dst_data_len = dst_width.get() as usize * dst_height.get() as usize * 3;
+
+    let mut dst_image = fr::Image::from_slice_u8(
+        dst_width,
+        dst_height,
+        dst.data.as_slice_mut().expect("Failed to get image data"),
+        fr::PixelType::U8x3,
+    )
+    .map_err(|_| {
+        ImageError::InvalidChannelShape(dst_data_len, new_size.width * new_size.height * 3)
+    })?;
 
     let mut resizer = {
         match interpolation {
@@ -174,11 +212,10 @@ pub fn resize_fast(
     };
 
     resizer
-        .resize(&src_image.view(), &mut dst_view)
+        .resize(&src_image.view(), &mut dst_image.view_mut())
         .map_err(|_| ImageError::IncompatiblePixelTypes)?;
 
-    // TODO: create a new image from the buffer directly from a slice
-    Ok(Image::new(new_size, dst_image.buffer().to_vec()).expect("Failed to create image"))
+    Ok(())
 }
 
 #[cfg(test)]
@@ -194,12 +231,18 @@ mod tests {
             },
             vec![0f32; 4 * 5 * 3],
         )?;
-        let image_resized = super::resize_native(
+
+        let new_size = ImageSize {
+            width: 2,
+            height: 3,
+        };
+
+        let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0.0)?;
+
+        super::resize_native(
             &image,
-            ImageSize {
-                width: 2,
-                height: 3,
-            },
+            &mut image_resized,
+            new_size,
             super::InterpolationMode::Bilinear,
         )?;
 
@@ -219,14 +262,21 @@ mod tests {
             },
             vec![0; 4 * 5],
         )?;
-        let image_resized = super::resize_native(
+
+        let new_size = ImageSize {
+            width: 2,
+            height: 3,
+        };
+
+        let mut image_resized = Image::<_, 1>::from_size_val(new_size, 0)?;
+
+        super::resize_native(
             &image,
-            ImageSize {
-                width: 2,
-                height: 3,
-            },
+            &mut image_resized,
+            new_size,
             super::InterpolationMode::Nearest,
         )?;
+
         assert_eq!(image_resized.num_channels(), 1);
         assert_eq!(image_resized.size().width, 2);
         assert_eq!(image_resized.size().height, 3);
@@ -256,14 +306,21 @@ mod tests {
             },
             vec![0u8; 4 * 5 * 3],
         )?;
-        let image_resized = super::resize_fast(
+
+        let new_size = ImageSize {
+            width: 2,
+            height: 3,
+        };
+
+        let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0)?;
+
+        super::resize_fast(
             &image,
-            ImageSize {
-                width: 2,
-                height: 3,
-            },
+            &mut image_resized,
+            new_size,
             super::InterpolationMode::Nearest,
         )?;
+
         assert_eq!(image_resized.num_channels(), 3);
         assert_eq!(image_resized.size().width, 2);
         assert_eq!(image_resized.size().height, 3);

@@ -20,17 +20,15 @@ use kornia_image::{Image, ImageError};
 /// # Errors
 ///
 /// Returns an error if the sizes of `src1` and `src2` do not match.
-///
-/// # Panics
-///
-/// This function will panic if the sizes of `src1` and `src2` do not match.
+/// Returns an error if the size of `dst` does not match the size of `src1` or `src2`.
 pub fn add_weighted<T, const CHANNELS: usize>(
     src1: &Image<T, CHANNELS>,
     alpha: T,
     src2: &Image<T, CHANNELS>,
+    dst: &mut Image<T, CHANNELS>,
     beta: T,
     gamma: T,
-) -> Result<Image<T, CHANNELS>, ImageError>
+) -> Result<(), ImageError>
 where
     T: num_traits::Float + num_traits::FromPrimitive + std::fmt::Debug + Send + Sync + Copy,
 {
@@ -43,9 +41,16 @@ where
         ));
     }
 
-    let mut dst = ndarray::Array3::<T>::zeros(src1.data.dim());
+    if src1.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src1.width(),
+            src1.height(),
+            dst.width(),
+            dst.height(),
+        ));
+    }
 
-    ndarray::Zip::from(dst.rows_mut())
+    ndarray::Zip::from(dst.data.rows_mut())
         .and(src1.data.rows())
         .and(src2.data.rows())
         .for_each(|mut dst_pixel, src1_pixels, src2_pixels| {
@@ -54,7 +59,7 @@ where
             }
         });
 
-    Ok(Image { data: dst })
+    Ok(())
 }
 
 #[cfg(test)]
@@ -84,7 +89,9 @@ mod tests {
         let gamma = 1.0f32;
         let expected = [11.0, 15.0, 19.0, 23.0];
 
-        let weighted = super::add_weighted(&src1, alpha, &src2, beta, gamma)?;
+        let mut weighted = Image::<f32, 1>::from_size_val(src1.size(), 0.0)?;
+
+        super::add_weighted(&src1, alpha, &src2, &mut weighted, beta, gamma)?;
 
         weighted
             .data

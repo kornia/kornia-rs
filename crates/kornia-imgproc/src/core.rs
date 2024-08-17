@@ -66,6 +66,7 @@ pub fn std_mean(image: &Image<u8, 3>) -> (Vec<f64>, Vec<f64>) {
 ///
 /// * `src1` - The first input image.
 /// * `src2` - The second input image.
+/// * `dst` - The output image.
 /// * `mask` - The binary mask to apply to the image.
 ///
 /// # Returns
@@ -94,7 +95,9 @@ pub fn std_mean(image: &Image<u8, 3>) -> (Vec<f64>, Vec<f64>) {
 ///    vec![255, 0, 255, 0],
 /// ).unwrap();
 ///
-/// let output = bitwise_and(&image, &image, &mask).unwrap();
+/// let mut output = Image::<u8, 3>::from_size_val(image.size(), 0).unwrap();
+///
+/// bitwise_and(&image, &image, &mut output, &mask).unwrap();
 ///
 /// assert_eq!(output.size().width, 2);
 /// assert_eq!(output.size().height, 2);
@@ -104,8 +107,9 @@ pub fn std_mean(image: &Image<u8, 3>) -> (Vec<f64>, Vec<f64>) {
 pub fn bitwise_and<const CHANNELS: usize>(
     src1: &Image<u8, CHANNELS>,
     src2: &Image<u8, CHANNELS>,
+    dst: &mut Image<u8, CHANNELS>,
     mask: &Image<u8, 1>,
-) -> Result<Image<u8, CHANNELS>, ImageError> {
+) -> Result<(), ImageError> {
     if src1.size() != src2.size() {
         return Err(ImageError::InvalidImageSize(
             src1.width(),
@@ -124,9 +128,14 @@ pub fn bitwise_and<const CHANNELS: usize>(
         ));
     }
 
-    // prepare the output image
-
-    let mut dst = Image::from_size_val(src1.size(), 0)?;
+    if src1.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src1.width(),
+            src1.height(),
+            dst.width(),
+            dst.height(),
+        ));
+    }
 
     // apply the mask to the image
 
@@ -140,7 +149,7 @@ pub fn bitwise_and<const CHANNELS: usize>(
             }
         });
 
-    Ok(dst)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -181,7 +190,9 @@ mod tests {
             vec![255, 0, 255, 0],
         )?;
 
-        let output = super::bitwise_and(&image, &image, &mask)?;
+        let mut output = Image::<u8, 3>::from_size_val(image.size(), 0)?;
+
+        super::bitwise_and(&image, &image, &mut output, &mask)?;
 
         assert_eq!(output.size().width, 2);
         assert_eq!(output.size().height, 2);

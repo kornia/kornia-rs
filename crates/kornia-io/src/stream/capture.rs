@@ -89,9 +89,9 @@ impl StreamCapture {
     /// # Arguments
     ///
     /// * `f` - A function that takes an image frame
-    pub async fn run<F>(&mut self, f: F) -> Result<(), StreamCaptureError>
+    pub async fn run<F>(&mut self, mut f: F) -> Result<(), StreamCaptureError>
     where
-        F: Fn(Image<u8, 3>) -> Result<(), Box<dyn std::error::Error>>,
+        F: FnMut(Image<u8, 3>) -> Result<(), Box<dyn std::error::Error>>,
     {
         // start the pipeline
         let pipeline = &self.pipeline;

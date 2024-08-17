@@ -6,7 +6,8 @@ use kornia_image::{Image, ImageError};
 ///
 /// # Arguments
 ///
-/// * `image` - The input image to compute the histogram.
+/// * `src` - The input image to compute the histogram.
+/// * `hist` - The output histogram.
 /// * `num_bins` - The number of bins to use for the histogram.
 ///
 /// # Returns
@@ -31,11 +32,21 @@ use kornia_image::{Image, ImageError};
 ///   vec![0, 2, 4, 128, 130, 132, 254, 255, 255],
 /// ).unwrap();
 ///
-/// let histogram = compute_histogram(&image, 3).unwrap();
+/// let mut histogram = vec![0; 3];
+///
+/// compute_histogram(&image, &mut histogram, 3).unwrap();
 /// assert_eq!(histogram, vec![3, 3, 3]);
 /// ```
-pub fn compute_histogram(image: &Image<u8, 1>, num_bins: usize) -> Result<Vec<usize>, ImageError> {
+pub fn compute_histogram(
+    src: &Image<u8, 1>,
+    hist: &mut Vec<usize>,
+    num_bins: usize,
+) -> Result<(), ImageError> {
     if num_bins == 0 || num_bins > 256 {
+        return Err(ImageError::InvalidHistogramBins(num_bins));
+    }
+
+    if hist.len() != num_bins {
         return Err(ImageError::InvalidHistogramBins(num_bins));
     }
 
@@ -43,14 +54,13 @@ pub fn compute_histogram(image: &Image<u8, 1>, num_bins: usize) -> Result<Vec<us
     let scale = 256.0 / num_bins as f32;
 
     // TODO: check if this can be done in parallel
-    let mut histogram = vec![0; num_bins];
-    image.data.fold(&mut histogram, |histogram, &pixel| {
+    src.data.fold(hist, |histogram, &pixel| {
         let bin_pos = (pixel as f32 / scale).floor();
         histogram[bin_pos as usize] += 1;
         histogram
     });
 
-    Ok(histogram)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -66,7 +76,10 @@ mod tests {
             },
             vec![0, 2, 4, 128, 130, 132, 254, 255, 255],
         )?;
-        let histogram = super::compute_histogram(&image, 3)?;
+
+        let mut histogram = vec![0; 3];
+
+        super::compute_histogram(&image, &mut histogram, 3)?;
         assert_eq!(histogram, vec![3, 3, 3]);
 
         Ok(())

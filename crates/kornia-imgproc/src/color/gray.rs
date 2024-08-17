@@ -11,18 +11,18 @@ const BW: f64 = 0.114;
 ///
 /// # Arguments
 ///
-/// * `image` - The input RGB image assumed to have 3 channels.
-///
-/// # Returns
-///
-/// The grayscale image.
+/// * `src` - The input RGB image.
+/// * `dst` - The output grayscale image.
 ///
 /// Precondition: the input image must have 3 channels.
+/// Precondition: the output image must have 1 channel.
+/// Precondition: the input and output images must have the same size.
 ///
 /// # Example
 ///
 /// ```
 /// use kornia::image::{Image, ImageSize};
+/// use kornia::imgproc::color::gray_from_rgb;
 ///
 /// let image = Image::<f32, 3>::new(
 ///     ImageSize {
@@ -32,25 +32,41 @@ const BW: f64 = 0.114;
 ///     vec![0f32; 4 * 5 * 3],
 /// )
 /// .unwrap();
-/// let gray: Image<f32, 1> = kornia::imgproc::color::gray_from_rgb(&image).unwrap();
+///
+/// let mut gray = Image::<f32, 1>::from_size_val(image.size(), 0.0).unwrap();
+///
+/// gray_from_rgb(&image, &mut gray).unwrap();
 /// assert_eq!(gray.num_channels(), 1);
 /// assert_eq!(gray.size().width, 4);
 /// assert_eq!(gray.size().height, 5);
 /// ```
-pub fn gray_from_rgb<T>(image: &Image<T, 3>) -> Result<Image<T, 1>, ImageError>
+pub fn gray_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 1>) -> Result<(), ImageError>
 where
     T: Default + Copy + Clone + Send + Sync + num_traits::Float,
 {
-    assert_eq!(image.num_channels(), 3);
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.size().width,
+            src.size().height,
+            dst.size().width,
+            dst.size().height,
+        ));
+    }
+
+    if src.num_channels() != 3 {
+        return Err(ImageError::ChannelIndexOutOfBounds(3, src.num_channels()));
+    }
+
+    if dst.num_channels() != 1 {
+        return Err(ImageError::ChannelIndexOutOfBounds(1, dst.num_channels()));
+    }
 
     let rw = T::from(RW).ok_or(ImageError::CastError)?;
     let gw = T::from(GW).ok_or(ImageError::CastError)?;
     let bw = T::from(BW).ok_or(ImageError::CastError)?;
 
-    let mut output = Image::<T, 1>::from_size_val(image.size(), T::default())?;
-
-    ndarray::Zip::from(output.data.rows_mut())
-        .and(image.data.rows())
+    ndarray::Zip::from(dst.data.rows_mut())
+        .and(src.data.rows())
         .par_for_each(|mut out, inp| {
             assert_eq!(inp.len(), 3);
             let r = inp[0];
@@ -59,11 +75,12 @@ where
             out[0] = rw * r + gw * g + bw * b;
         });
 
-    Ok(output)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use kornia_image::Image;
     use kornia_io::functional as F;
 
     #[test]
@@ -71,7 +88,10 @@ mod tests {
         let image_path = std::path::Path::new("../../tests/data/dog.jpeg");
         let image = F::read_image_any(image_path)?;
         let image_norm = image.cast_and_scale::<f32>(1. / 255.0)?;
-        let gray = super::gray_from_rgb(&image_norm.cast::<f64>()?)?;
+
+        let mut gray = Image::<f32, 1>::from_size_val(image_norm.size(), 0.0)?;
+        super::gray_from_rgb(&image_norm, &mut gray)?;
+
         assert_eq!(gray.num_channels(), 1);
         assert_eq!(gray.size().width, 258);
         assert_eq!(gray.size().height, 195);

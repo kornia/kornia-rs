@@ -29,14 +29,14 @@ fn adjugate3x3(m: &PerspectiveMatrix) -> PerspectiveMatrix {
 }
 
 // TODO: use TensorError
-fn inverse_perspective_matrix(m: PerspectiveMatrix) -> Result<PerspectiveMatrix, ImageError> {
-    let det = determinant3x3(&m);
+fn inverse_perspective_matrix(m: &PerspectiveMatrix) -> Result<PerspectiveMatrix, ImageError> {
+    let det = determinant3x3(m);
 
     if det == 0.0 {
         return Err(ImageError::CannotComputeDeterminant);
     }
 
-    let adj = adjugate3x3(&m);
+    let adj = adjugate3x3(m);
     let inv_det = 1.0 / det;
 
     let mut inv_m = [0.0; 9];
@@ -58,6 +58,7 @@ fn transform_point(x: f32, y: f32, m: PerspectiveMatrix) -> (f32, f32) {
 /// Applies a perspective transformation to an image.
 ///
 /// * `src` - The input image with shape (height, width, channels).
+/// * `dst` - The output image with shape (height, width, channels).
 /// * `m` - The 3x3 perspective transformation matrix src -> dst.
 /// * `new_size` - The size of the output image.
 /// * `interpolation` - The interpolation mode to use.
@@ -83,7 +84,15 @@ fn transform_point(x: f32, y: f32, m: PerspectiveMatrix) -> (f32, f32) {
 ///
 /// let m = [1.0, 0.0, -1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0];
 ///
-/// let dst = warp_perspective(&src, m, ImageSize {
+/// let mut dst = Image::<f32, 1>::from_size_val(
+///   ImageSize {
+///     width: 2,
+///     height: 3,
+///   },
+///   0.0
+/// ).unwrap();
+///
+/// warp_perspective(&src, &mut dst, &m, ImageSize {
 ///     width: 2,
 ///     height: 3,
 ///   },
@@ -95,16 +104,23 @@ fn transform_point(x: f32, y: f32, m: PerspectiveMatrix) -> (f32, f32) {
 /// ```
 pub fn warp_perspective<const CHANNELS: usize>(
     src: &Image<f32, CHANNELS>,
-    m: PerspectiveMatrix,
+    dst: &mut Image<f32, CHANNELS>,
+    m: &PerspectiveMatrix,
     new_size: ImageSize,
     interpolation: InterpolationMode,
-) -> Result<Image<f32, CHANNELS>, ImageError> {
+) -> Result<(), ImageError> {
+    if dst.size() != new_size {
+        return Err(ImageError::InvalidImageSize(
+            dst.size().width,
+            dst.size().height,
+            new_size.width,
+            new_size.height,
+        ));
+    }
+
     // inverse perspective matrix
     // TODO: allow later to skip the inverse calculation if user provides it
     let inv_m = inverse_perspective_matrix(m)?;
-
-    // allocate the output image
-    let mut dst = Image::from_size_val(new_size, 0.0)?;
 
     // create a grid of x and y coordinates for the output image
     // TODO: make this re-useable
@@ -138,7 +154,7 @@ pub fn warp_perspective<const CHANNELS: usize>(
             }
         });
 
-    Ok(dst)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -149,7 +165,7 @@ mod tests {
     fn inverse_perspective_matrix() -> Result<(), ImageError> {
         let m = [1.0, 0.0, -1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0];
         let expected = [1.0, 0.0, 1.0, 0.0, 1.0, -1.0, 0.0, 0.0, 1.0];
-        let inv_m = super::inverse_perspective_matrix(m)?;
+        let inv_m = super::inverse_perspective_matrix(&m)?;
         assert_eq!(inv_m, expected);
         Ok(())
     }
@@ -176,13 +192,18 @@ mod tests {
         // identity matrix
         let m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
-        let image_transformed = super::warp_perspective(
+        let new_size = ImageSize {
+            width: 2,
+            height: 3,
+        };
+
+        let mut image_transformed = Image::from_size_val(new_size, 0.0)?;
+
+        super::warp_perspective(
             &image,
-            m,
-            ImageSize {
-                width: 2,
-                height: 3,
-            },
+            &mut image_transformed,
+            &m,
+            new_size,
             super::InterpolationMode::Bilinear,
         )?;
 
@@ -208,13 +229,18 @@ mod tests {
         // flip matrix
         let m = [-1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
-        let image_transformed = super::warp_perspective(
+        let new_size = ImageSize {
+            width: 2,
+            height: 3,
+        };
+
+        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
+
+        super::warp_perspective(
             &image,
-            m,
-            ImageSize {
-                width: 2,
-                height: 3,
-            },
+            &mut image_transformed,
+            &m,
+            new_size,
             super::InterpolationMode::Bilinear,
         )?;
 
@@ -245,22 +271,27 @@ mod tests {
 
         let image_expected = vec![0.0, 3.0, 12.0, 15.0];
 
-        let image_transformed = super::warp_perspective(
+        let new_size = ImageSize {
+            width: 2,
+            height: 2,
+        };
+
+        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
+
+        super::warp_perspective(
             &image,
-            m,
-            ImageSize {
-                width: 2,
-                height: 2,
-            },
+            &mut image_transformed,
+            &m,
+            new_size,
             super::InterpolationMode::Bilinear,
         )?;
 
-        let image_resized = crate::resize::resize_native(
+        let mut image_resized = Image::<_, 1>::from_size_val(new_size, 0.0)?;
+
+        crate::resize::resize_native(
             &image,
-            ImageSize {
-                width: 2,
-                height: 2,
-            },
+            &mut image_resized,
+            new_size,
             super::InterpolationMode::Bilinear,
         )?;
 

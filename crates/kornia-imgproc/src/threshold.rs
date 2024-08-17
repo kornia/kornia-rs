@@ -5,6 +5,7 @@ use kornia_image::{Image, ImageError};
 /// # Arguments
 ///
 /// * `src` - The input image of an arbitrary number of channels and type.
+/// * `dst` - The output image of an arbitrary number of channels and type.
 /// * `threshold` - The threshold value. Must be the same type as the image.
 /// * `max_value` - The maximum value to use when the input value is greater than the threshold.
 ///
@@ -21,20 +22,30 @@ use kornia_image::{Image, ImageError};
 /// let data = vec![100u8, 200, 50, 150, 200, 250];
 /// let image = Image::<_, 1>::new(ImageSize { width: 2, height: 3 }, data).unwrap();
 ///
-/// let thresholded = threshold_binary(&image, 100, 255).unwrap();
+/// let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0).unwrap();
+///
+/// threshold_binary(&image, &mut thresholded, 100, 255).unwrap();
 /// assert_eq!(thresholded.num_channels(), 1);
 /// assert_eq!(thresholded.size().width, 2);
 /// assert_eq!(thresholded.size().height, 3);
 /// ```
 pub fn threshold_binary<T, const CHANNELS: usize>(
     src: &Image<T, CHANNELS>,
+    dst: &mut Image<T, CHANNELS>,
     threshold: T,
     max_value: T,
-) -> Result<Image<T, CHANNELS>, ImageError>
+) -> Result<(), ImageError>
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
-    let mut dst = Image::<T, CHANNELS>::from_size_val(src.size(), T::default())?;
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.size().width,
+            src.size().height,
+            dst.size().width,
+            dst.size().height,
+        ));
+    }
 
     ndarray::Zip::from(&mut dst.data)
         .and(&src.data)
@@ -46,7 +57,7 @@ where
             };
         });
 
-    Ok(dst)
+    Ok(())
 }
 
 /// Apply an inverse binary threshold to an image.
@@ -54,6 +65,7 @@ where
 /// # Arguments
 ///
 /// * `src` - The input image of an arbitrary number of channels and type.
+/// * `dst` - The output image of an arbitrary number of channels and type.///
 /// * `threshold` - The threshold value. Must be the same type as the image.
 /// * `max_value` - The maximum value to use when the input value is less than the threshold.
 ///
@@ -70,20 +82,30 @@ where
 /// let data = vec![100u8, 200, 50, 150, 200, 250];
 /// let image = Image::<_, 1>::new(ImageSize { width: 2, height: 3 }, data).unwrap();
 ///
-/// let thresholded = threshold_binary_inverse(&image, 100, 255).unwrap();
+/// let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0).unwrap();
+///
+/// threshold_binary_inverse(&image, &mut thresholded, 100, 255).unwrap();
 /// assert_eq!(thresholded.num_channels(), 1);
 /// assert_eq!(thresholded.size().width, 2);
 /// assert_eq!(thresholded.size().height, 3);
 /// ```
 pub fn threshold_binary_inverse<T, const CHANNELS: usize>(
     src: &Image<T, CHANNELS>,
+    dst: &mut Image<T, CHANNELS>,
     threshold: T,
     max_value: T,
-) -> Result<Image<T, CHANNELS>, ImageError>
+) -> Result<(), ImageError>
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
-    let mut dst = Image::<T, CHANNELS>::from_size_val(src.size(), T::default())?;
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.size().width,
+            src.size().height,
+            dst.size().width,
+            dst.size().height,
+        ));
+    }
 
     ndarray::Zip::from(&mut dst.data)
         .and(&src.data)
@@ -95,7 +117,7 @@ where
             };
         });
 
-    Ok(dst)
+    Ok(())
 }
 
 /// Apply a truncated threshold to an image.
@@ -118,19 +140,29 @@ where
 /// let data = vec![100u8, 200, 50, 150, 200, 250];
 /// let image = Image::<_, 1>::new(ImageSize { width: 2, height: 3 }, data).unwrap();
 ///
-/// let thresholded = threshold_truncate(&image, 150).unwrap();
+/// let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0).unwrap();
+///
+/// threshold_truncate(&image, &mut thresholded, 150).unwrap();
 /// assert_eq!(thresholded.num_channels(), 1);
 /// assert_eq!(thresholded.size().width, 2);
 /// assert_eq!(thresholded.size().height, 3);
 /// ```
 pub fn threshold_truncate<T, const CHANNELS: usize>(
     src: &Image<T, CHANNELS>,
+    dst: &mut Image<T, CHANNELS>,
     threshold: T,
-) -> Result<Image<T, CHANNELS>, ImageError>
+) -> Result<(), ImageError>
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
-    let mut dst = Image::<T, CHANNELS>::from_size_val(src.size(), T::default())?;
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.size().width,
+            src.size().height,
+            dst.size().width,
+            dst.size().height,
+        ));
+    }
 
     ndarray::Zip::from(&mut dst.data)
         .and(&src.data)
@@ -138,7 +170,7 @@ where
             *out = if inp > threshold { threshold } else { inp };
         });
 
-    Ok(dst)
+    Ok(())
 }
 
 /// Apply a threshold to an image, setting values below the threshold to zero.
@@ -161,19 +193,29 @@ where
 /// let data = vec![100u8, 200, 50, 150, 200, 250];
 /// let image = Image::<_, 3>::new(ImageSize { width: 2, height: 1 }, data).unwrap();
 ///
-/// let thresholded = threshold_to_zero(&image, 150).unwrap();
+/// let mut thresholded = Image::<_, 3>::from_size_val(image.size(), 0).unwrap();
+///
+/// threshold_to_zero(&image, &mut thresholded, 150).unwrap();
 /// assert_eq!(thresholded.num_channels(), 3);
 /// assert_eq!(thresholded.size().width, 2);
 /// assert_eq!(thresholded.size().height, 1);
 /// ```
 pub fn threshold_to_zero<T, const CHANNELS: usize>(
     src: &Image<T, CHANNELS>,
+    dst: &mut Image<T, CHANNELS>,
     threshold: T,
-) -> Result<Image<T, CHANNELS>, ImageError>
+) -> Result<(), ImageError>
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
-    let mut dst = Image::<T, CHANNELS>::from_size_val(src.size(), T::default())?;
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.size().width,
+            src.size().height,
+            dst.size().width,
+            dst.size().height,
+        ));
+    }
 
     ndarray::Zip::from(&mut dst.data)
         .and(&src.data)
@@ -181,7 +223,7 @@ where
             *out = if inp > threshold { inp } else { T::default() };
         });
 
-    Ok(dst)
+    Ok(())
 }
 
 /// Apply a threshold to an image, setting values above the threshold to zero.
@@ -204,19 +246,29 @@ where
 /// let data = vec![100u8, 200, 50, 150, 200, 250];
 /// let image = Image::<_, 3>::new(ImageSize { width: 2, height: 1 }, data).unwrap();
 ///
-/// let thresholded = threshold_to_zero_inverse(&image, 150).unwrap();
+/// let mut thresholded = Image::<_, 3>::from_size_val(image.size(), 0).unwrap();
+///
+/// threshold_to_zero_inverse(&image, &mut thresholded, 150).unwrap();
 /// assert_eq!(thresholded.num_channels(), 3);
 /// assert_eq!(thresholded.size().width, 2);
 /// assert_eq!(thresholded.size().height, 1);
 /// ```
 pub fn threshold_to_zero_inverse<T, const CHANNELS: usize>(
     src: &Image<T, CHANNELS>,
+    dst: &mut Image<T, CHANNELS>,
     threshold: T,
-) -> Result<Image<T, CHANNELS>, ImageError>
+) -> Result<(), ImageError>
 where
     T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
 {
-    let mut dst = Image::<T, CHANNELS>::from_size_val(src.size(), T::default())?;
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.size().width,
+            src.size().height,
+            dst.size().width,
+            dst.size().height,
+        ));
+    }
 
     ndarray::Zip::from(&mut dst.data)
         .and(&src.data)
@@ -224,7 +276,7 @@ where
             *out = if inp > threshold { T::default() } else { inp };
         });
 
-    Ok(dst)
+    Ok(())
 }
 
 /// Apply a range threshold to an image.
@@ -259,7 +311,9 @@ where
 /// )
 /// .unwrap();
 ///
-/// let thresholded = in_range(&image, &[100, 150, 0], &[200, 200, 200]).unwrap();
+/// let mut thresholded = Image::<u8, 1>::from_size_val(image.size(), 0).unwrap();
+///
+/// in_range(&image, &mut thresholded, &[100, 150, 0], &[200, 200, 200]).unwrap();
 /// assert_eq!(thresholded.num_channels(), 1);
 /// assert_eq!(thresholded.size().width, 2);
 ///
@@ -268,13 +322,21 @@ where
 /// ```
 pub fn in_range<T, const CHANNELS: usize>(
     src: &Image<T, CHANNELS>,
+    dst: &mut Image<u8, 1>,
     lower_bound: &[T; CHANNELS],
     upper_bound: &[T; CHANNELS],
-) -> Result<Image<u8, 1>, ImageError>
+) -> Result<(), ImageError>
 where
     T: Sync + std::cmp::PartialOrd,
 {
-    let mut dst = Image::from_size_val(src.size(), 0)?;
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.size().width,
+            src.size().height,
+            dst.size().width,
+            dst.size().height,
+        ));
+    }
 
     ndarray::Zip::from(dst.data.rows_mut())
         .and(src.data.rows())
@@ -288,7 +350,7 @@ where
             out[0] = if is_in_range { 255 } else { 0 };
         });
 
-    Ok(dst)
+    Ok(())
 }
 
 // TODO: outsu, triangle
@@ -309,7 +371,10 @@ mod tests {
             data,
         )?;
 
-        let thresholded = super::threshold_binary(&image, 100, 255)?;
+        let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0)?;
+
+        super::threshold_binary(&image, &mut thresholded, 100, 255)?;
+
         assert_eq!(thresholded.num_channels(), 1);
         assert_eq!(thresholded.size().width, 2);
         assert_eq!(thresholded.size().height, 3);
@@ -337,7 +402,10 @@ mod tests {
             data,
         )?;
 
-        let thresholded = super::threshold_binary_inverse(&image, 100, 255)?;
+        let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0)?;
+
+        super::threshold_binary_inverse(&image, &mut thresholded, 100, 255)?;
+
         assert_eq!(thresholded.num_channels(), 1);
         assert_eq!(thresholded.size().width, 2);
         assert_eq!(thresholded.size().height, 3);
@@ -365,7 +433,10 @@ mod tests {
             data,
         )?;
 
-        let thresholded = super::threshold_truncate(&image, 150)?;
+        let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0)?;
+
+        super::threshold_truncate(&image, &mut thresholded, 150)?;
+
         assert_eq!(thresholded.num_channels(), 1);
         assert_eq!(thresholded.size().width, 2);
         assert_eq!(thresholded.size().height, 3);
@@ -393,7 +464,10 @@ mod tests {
             data,
         )?;
 
-        let thresholded = super::threshold_to_zero(&image, 150)?;
+        let mut thresholded = Image::<_, 3>::from_size_val(image.size(), 0)?;
+
+        super::threshold_to_zero(&image, &mut thresholded, 150)?;
+
         assert_eq!(thresholded.num_channels(), 3);
         assert_eq!(thresholded.size().width, 2);
         assert_eq!(thresholded.size().height, 1);
@@ -421,7 +495,10 @@ mod tests {
             data,
         )?;
 
-        let thresholded = super::threshold_to_zero_inverse(&image, 150)?;
+        let mut thresholded = Image::<_, 3>::from_size_val(image.size(), 0)?;
+
+        super::threshold_to_zero_inverse(&image, &mut thresholded, 150)?;
+
         assert_eq!(thresholded.num_channels(), 3);
         assert_eq!(thresholded.size().width, 2);
         assert_eq!(thresholded.size().height, 1);
@@ -448,7 +525,10 @@ mod tests {
             data,
         )?;
 
-        let thresholded = super::in_range(&image, &[100, 150, 0], &[200, 200, 200])?;
+        let mut thresholded = Image::<u8, 1>::from_size_val(image.size(), 0)?;
+
+        super::in_range(&image, &mut thresholded, &[100, 150, 0], &[200, 200, 200])?;
+
         assert_eq!(thresholded.num_channels(), 1);
         assert_eq!(thresholded.size().width, 2);
         assert_eq!(thresholded.size().height, 1);

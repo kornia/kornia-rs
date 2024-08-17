@@ -20,21 +20,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image_f32: Image<f32, 3> = image.clone().cast_and_scale::<f32>(1.0 / 255.0)?;
 
     // convert to grayscale
-    let gray_f32: Image<f32, 1> = imgproc::color::gray_from_rgb(&image_f32)?;
+    let mut gray = Image::<f32, 1>::from_size_val(image_f32.size(), 0.0)?;
+    imgproc::color::gray_from_rgb(&image_f32, &mut gray)?;
 
     // normalize the image each channel
-    let _image_norm: Image<f32, 3> =
-        imgproc::normalize::normalize_mean_std(&image_f32, &[0.5, 0.5, 0.5], &[0.5, 0.5, 0.5])?;
+    let mut image_norm: Image<f32, 3> = Image::from_size_val(image_f32.size(), 0.0)?;
+    imgproc::normalize::normalize_mean_std(
+        &image_f32,
+        &mut image_norm,
+        &[0.5, 0.5, 0.5],
+        &[0.5, 0.5, 0.5],
+    )?;
 
     // normalize the grayscale image
-    let _gray_norm: Image<f32, 1> =
-        imgproc::normalize::normalize_mean_std(&gray_f32, &[0.5], &[0.5])?;
+    let mut gray_norm = Image::<f32, 1>::from_size_val(gray.size(), 0.0)?;
+    imgproc::normalize::normalize_mean_std(&gray, &mut gray_norm, &[0.5], &[0.5])?;
 
     // alternative way to normalize the image between 0 and 255
-    // let _gray_norm_min_max = imgproc::normalize::normalize_min_max(
-    //     &gray, 0.0, 255.0)?;
+    // let mut gray_norm_min_max = Image::<f32, 1>::from_size_val(gray.size(), 0.0)?;
+    // imgproc::normalize::normalize_min_max(&gray, &mut gray_norm_min_max, 0.0, 255.0)?;
 
-    let (min, max) = imgproc::normalize::find_min_max(&gray_f32)?;
+    let (min, max) = imgproc::normalize::find_min_max(&gray)?;
     println!("min: {:?}, max: {:?}", min, max);
 
     Ok(())
