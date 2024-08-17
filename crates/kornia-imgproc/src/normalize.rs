@@ -10,7 +10,8 @@ use kornia_image::{Image, ImageError};
 ///
 /// # Arguments
 ///
-/// * `image` - The input image of shape (height, width, channels).
+/// * `src` - The input image of shape (height, width, channels).
+/// * `dst` - The output image of shape (height, width, channels).
 /// * `mean` - The mean value for each channel.
 /// * `std` - The standard deviation for each channel.
 ///
@@ -34,8 +35,11 @@ use kornia_image::{Image, ImageError};
 /// )
 /// .unwrap();
 ///
-/// let image_normalized = normalize_mean_std(
+/// let mut image_normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
+///
+/// normalize_mean_std(
 ///     &image,
+///     &mut image_normalized,
 ///     &[0.5, 1.0, 0.5],
 ///     &[1.0, 1.0, 1.0],
 /// )
@@ -46,31 +50,40 @@ use kornia_image::{Image, ImageError};
 /// assert_eq!(image_normalized.size().height, 2);
 /// ```
 pub fn normalize_mean_std<T, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
+    src: &Image<T, CHANNELS>,
+    dst: &mut Image<T, CHANNELS>,
     mean: &[T; CHANNELS],
     std: &[T; CHANNELS],
-) -> Result<Image<T, CHANNELS>, ImageError>
+) -> Result<(), ImageError>
 where
     T: num_traits::Float + num_traits::FromPrimitive + std::fmt::Debug + Send + Sync + Copy,
 {
-    let mut output = ndarray::Array3::<T>::zeros(image.data.dim());
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.size().width,
+            src.size().height,
+            dst.size().width,
+            dst.size().height,
+        ));
+    }
 
-    ndarray::Zip::from(output.rows_mut())
-        .and(image.data.rows())
+    ndarray::Zip::from(dst.data.rows_mut())
+        .and(src.data.rows())
         .par_for_each(|mut out, inp| {
             for i in 0..CHANNELS {
                 out[i] = (inp[i] - mean[i]) / std[i];
             }
         });
 
-    Ok(Image { data: output })
+    Ok(())
 }
 
 /// Find the minimum and maximum values in an image.
 ///
 /// # Arguments
 ///
-/// * `image` - The input image of shape (height, width, channels).
+/// * `src` - The input image of shape (height, width, channels).
+/// * `dst` - The output image of shape (height, width, channels).
 ///
 /// # Returns
 ///
@@ -78,7 +91,7 @@ where
 ///
 /// # Errors
 ///
-/// If the image is empty, an error is returned.
+/// If the image data is not initialized, an error is returned.
 ///
 /// # Example
 ///
@@ -137,7 +150,8 @@ where
 ///
 /// # Arguments
 ///
-/// * `image` - The input image of shape (height, width, channels).
+/// * `src` - The input image of shape (height, width, channels).
+/// * `dst` - The output image of shape (height, width, channels).
 /// * `min` - The minimum value for each channel.
 /// * `max` - The maximum value for each channel.
 ///
@@ -161,17 +175,20 @@ where
 /// )
 /// .unwrap();
 ///
-/// let image_normalized = normalize_min_max(&image, 0.0, 1.0).unwrap();
+/// let mut image_normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
+///
+/// normalize_min_max(&image, &mut image_normalized, 0.0, 1.0).unwrap();
 ///
 /// assert_eq!(image_normalized.num_channels(), 3);
 /// assert_eq!(image_normalized.size().width, 2);
 /// assert_eq!(image_normalized.size().height, 2);
 /// ```
 pub fn normalize_min_max<T, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
+    src: &Image<T, CHANNELS>,
+    dst: &mut Image<T, CHANNELS>,
     min: T,
     max: T,
-) -> Result<Image<T, CHANNELS>, ImageError>
+) -> Result<(), ImageError>
 where
     T: num_traits::Float
         + num_traits::FromPrimitive
@@ -181,19 +198,26 @@ where
         + Copy
         + Default,
 {
-    let mut output = Image::<T, CHANNELS>::from_size_val(image.size(), T::default())?;
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.size().width,
+            src.size().height,
+            dst.size().width,
+            dst.size().height,
+        ));
+    }
 
-    let (min_val, max_val) = find_min_max(image)?;
+    let (min_val, max_val) = find_min_max(src)?;
 
-    ndarray::Zip::from(output.data.rows_mut())
-        .and(image.data.rows())
+    ndarray::Zip::from(dst.data.rows_mut())
+        .and(src.data.rows())
         .par_for_each(|mut out, inp| {
-            for i in 0..image.num_channels() {
+            for i in 0..CHANNELS {
                 out[i] = (inp[i] - min_val) * (max - min) / (max_val - min_val) + min;
             }
         });
 
-    Ok(output)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -205,9 +229,11 @@ mod tests {
         let image_data = vec![
             0.0f32, 1.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 1.0, 2.0, 3.0,
         ];
+
         let image_expected = [
             -0.5f32, 0.0, -0.5, 0.5, 1.0, 2.5, -0.5, 0.0, -0.5, 0.5, 1.0, 2.5,
         ];
+
         let image = Image::<f32, 3>::new(
             ImageSize {
                 width: 2,
@@ -215,10 +241,13 @@ mod tests {
             },
             image_data,
         )?;
+
         let mean = [0.5, 1.0, 0.5];
         let std = [1.0, 1.0, 1.0];
 
-        let normalized = super::normalize_mean_std(&image, &mean, &std)?;
+        let mut normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+
+        super::normalize_mean_std(&image, &mut normalized, &mean, &std)?;
 
         assert_eq!(normalized.num_channels(), 3);
         assert_eq!(normalized.size().width, 2);
@@ -259,10 +288,12 @@ mod tests {
         let image_data = vec![
             0.0f32, 1.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 1.0, 2.0, 3.0,
         ];
+
         let image_expected = [
             0.0f32, 0.33333334, 0.0, 0.33333334, 0.6666667, 1.0, 0.0, 0.33333334, 0.0, 0.33333334,
             0.6666667, 1.0,
         ];
+
         let image = Image::<f32, 3>::new(
             ImageSize {
                 width: 2,
@@ -271,7 +302,9 @@ mod tests {
             image_data,
         )?;
 
-        let normalized = super::normalize_min_max(&image, 0.0, 1.0)?;
+        let mut normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+
+        super::normalize_min_max(&image, &mut normalized, 0.0, 1.0)?;
 
         assert_eq!(normalized.num_channels(), 3);
         assert_eq!(normalized.size().width, 2);

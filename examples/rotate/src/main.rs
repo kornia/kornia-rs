@@ -31,16 +31,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let scale = i as f32 / 360.0;
         let rotation_matrix = imgproc::warp::get_rotation_matrix2d(center, angle, scale);
 
-        let output = imgproc::warp::warp_affine(
+        let mut output = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+        let mut output_norm = output.clone();
+
+        imgproc::warp::warp_affine(
             &image,
-            rotation_matrix,
+            &mut output,
+            &rotation_matrix,
             image.size(),
             imgproc::interpolation::InterpolationMode::Bilinear,
         )?;
 
-        let output = imgproc::normalize::normalize_min_max(&output, 0.0, 255.0)?;
+        imgproc::normalize::normalize_min_max(&output, &mut output_norm, 0.0, 255.0)?;
 
-        rec.log("image", &rerun::Image::try_from(output.data)?)?;
+        rec.log("image", &rerun::Image::try_from(output_norm.clone().data)?)?;
     }
 
     Ok(())

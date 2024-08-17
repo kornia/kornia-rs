@@ -2,7 +2,10 @@ use clap::Parser;
 use std::path::PathBuf;
 
 use kornia::io::functional as F;
-use kornia::{image::Image, imgproc};
+use kornia::{
+    image::{Image, ImageError},
+    imgproc,
+};
 
 #[derive(Parser)]
 struct Args {
@@ -17,11 +20,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image: Image<u8, 3> = F::read_image_any(&args.image_path)?;
 
     // compute the histogram per channel
-    let histogram = image
+    let histograms = image
         .split_channels()?
         .iter()
-        .map(|ch| imgproc::histogram::compute_histogram(ch, 256))
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|ch| {
+            let mut hist = vec![0; 256];
+            imgproc::histogram::compute_histogram(ch, &mut hist, 256)?;
+            Ok(hist)
+        })
+        .collect::<Result<Vec<Vec<_>>, ImageError>>()?;
 
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia Histogram App").spawn()?;
@@ -56,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // TODO: not sure how to log the histogram properly
-    for (i, hist) in histogram.iter().enumerate() {
+    for (i, hist) in histograms.iter().enumerate() {
         for (j, val) in hist.iter().enumerate() {
             rec.set_time_sequence("step", j as i64);
             match i {

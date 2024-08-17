@@ -37,13 +37,16 @@ pub fn warp_affine(
         .cast::<f32>()
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
-    let image = warp::warp_affine(&image, m, new_size, interpolation)
+    let mut image_warped = Image::from_size_val(new_size, 0f32)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+
+    warp::warp_affine(&image, &mut image_warped, &m, new_size, interpolation)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
     // NOTE: for bicubic interpolation (not implemented yet), f32 may overshoot 255
-    let image = image
+    let image_warped = image_warped
         .cast::<u8>()
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
-    Ok(image.to_pyimage())
+    Ok(image_warped.to_pyimage())
 }

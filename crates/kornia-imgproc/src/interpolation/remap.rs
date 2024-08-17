@@ -2,28 +2,27 @@ use super::interpolate::interpolate_pixel;
 use super::InterpolationMode;
 use kornia_image::{Image, ImageError};
 
-/// Applyu generic geometric transformation to an image.
+/// Apply generic geometric transformation to an image.
 ///
 /// # Arguments
 ///
 /// * `src` - The input image container with shape (height, width, channels).
+/// * `dst` - The output image container with shape (height, width, channels).
 /// * `map_x` - The x coordinates of the pixels to interpolate.
 /// * `map_y` - The y coordinates of the pixels to interpolate.
 /// * `interpolation` - The interpolation mode to use.
 ///
-/// # Returns
-///
-/// The transformed image with shape (height, width, channels) and shape of the mapx and mapy.
-///
 /// # Errors
 ///
 /// * The mapx and mapy must have the same size.
+/// * The output image must have the same size as the mapx and mapy.
 pub fn remap<const CHANNELS: usize>(
     src: &Image<f32, CHANNELS>,
+    dst: &mut Image<f32, CHANNELS>,
     map_x: &Image<f32, 1>,
     map_y: &Image<f32, 1>,
     interpolation: InterpolationMode,
-) -> Result<Image<f32, CHANNELS>, ImageError> {
+) -> Result<(), ImageError> {
     if map_x.size() != map_y.size() {
         return Err(ImageError::InvalidImageSize(
             map_x.height(),
@@ -33,7 +32,14 @@ pub fn remap<const CHANNELS: usize>(
         ));
     }
 
-    let mut dst = Image::<_, CHANNELS>::from_size_val(map_x.size(), 0.0)?;
+    if dst.size() != map_x.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.size().width,
+            src.size().height,
+            dst.size().width,
+            dst.size().height,
+        ));
+    }
 
     ndarray::Zip::from(dst.data.rows_mut())
         .and(map_x.data.rows())
@@ -45,7 +51,7 @@ pub fn remap<const CHANNELS: usize>(
             }
         });
 
-    Ok(dst)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -84,8 +90,16 @@ mod tests {
             vec![0.0, 2.0, 6.0, 8.0],
         )?;
 
-        let image_transformed =
-            super::remap(&image, &map_x, &map_y, super::InterpolationMode::Bilinear)?;
+        let mut image_transformed = Image::<_, 1>::from_size_val(map_y.size(), 0.0)?;
+
+        super::remap(
+            &image,
+            &mut image_transformed,
+            &map_x,
+            &map_y,
+            super::InterpolationMode::Bilinear,
+        )?;
+
         assert_eq!(image_transformed.num_channels(), 1);
         assert_eq!(image_transformed.size().width, 2);
         assert_eq!(image_transformed.size().height, 2);

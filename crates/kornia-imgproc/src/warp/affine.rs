@@ -16,7 +16,7 @@ type AffineMatrix = (f32, f32, f32, f32, f32, f32);
 /// Returns:
 ///
 /// The inverted 2x3 affine transformation matrix.
-pub fn invert_affine_transform(m: AffineMatrix) -> AffineMatrix {
+pub fn invert_affine_transform(m: &AffineMatrix) -> AffineMatrix {
     let (a, b, c, d, e, f) = m;
 
     // follow OpenCV: check for determinant == 0
@@ -83,6 +83,7 @@ pub fn get_rotation_matrix2d(center: (f32, f32), angle: f32, scale: f32) -> Affi
 /// # Arguments
 ///
 /// * `src` - The input image with shape (height, width, channels).
+/// * `dst` - The output image with shape (height, width, channels).
 /// * `m` - The 2x3 affine transformation matrix.
 /// * `new_size` - The size of the output image.
 /// * `interpolation` - The interpolation mode to use.
@@ -112,22 +113,31 @@ pub fn get_rotation_matrix2d(center: (f32, f32), angle: f32, scale: f32) -> Affi
 ///   height: 5,
 /// };
 ///
-/// let output = warp_affine(&src, m, new_size, InterpolationMode::Nearest).unwrap();
+/// let mut dst = Image::<_, 3>::from_size_val(new_size, 0.0).unwrap();
 ///
-/// assert_eq!(output.size().width, 4);
-/// assert_eq!(output.size().height, 5);
+/// warp_affine(&src, &mut dst, &m, new_size, InterpolationMode::Nearest).unwrap();
+///
+/// assert_eq!(dst.size().width, 4);
+/// assert_eq!(dst.size().height, 5);
 /// ```
 pub fn warp_affine<const CHANNELS: usize>(
     src: &Image<f32, CHANNELS>,
-    m: AffineMatrix,
+    dst: &mut Image<f32, CHANNELS>,
+    m: &AffineMatrix,
     new_size: ImageSize,
     interpolation: InterpolationMode,
-) -> Result<Image<f32, CHANNELS>, ImageError> {
+) -> Result<(), ImageError> {
+    if dst.size() != new_size {
+        return Err(ImageError::InvalidImageSize(
+            dst.size().width,
+            dst.size().height,
+            new_size.width,
+            new_size.height,
+        ));
+    }
+
     // invert affine transform matrix to find corresponding positions in src from dst
     let m_inv = invert_affine_transform(m);
-
-    // create the output image
-    let mut output = Image::from_size_val(new_size, 0.0)?;
 
     // create a grid of x and y coordinates for the output image
     // TODO: make this re-useable
@@ -144,7 +154,7 @@ pub fn warp_affine<const CHANNELS: usize>(
     // iterate over the output image and interpolate the pixel values
 
     ndarray::Zip::from(xy.rows())
-        .and(output.data.rows_mut())
+        .and(dst.data.rows_mut())
         .par_for_each(|uv, mut out| {
             assert_eq!(uv.len(), 2);
             let (u, v) = (uv[0], uv[1]);
@@ -172,7 +182,7 @@ pub fn warp_affine<const CHANNELS: usize>(
             }
         });
 
-    Ok(output)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -188,18 +198,26 @@ mod tests {
             },
             vec![0f32; 4 * 5 * 3],
         )?;
-        let image_transformed = super::warp_affine(
+
+        let new_size = ImageSize {
+            width: 2,
+            height: 3,
+        };
+
+        let mut image_transformed = Image::<_, 3>::from_size_val(new_size, 0.0)?;
+
+        super::warp_affine(
             &image,
-            (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-            ImageSize {
-                width: 2,
-                height: 3,
-            },
+            &mut image_transformed,
+            &(1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+            new_size,
             super::InterpolationMode::Bilinear,
         )?;
+
         assert_eq!(image_transformed.num_channels(), 3);
         assert_eq!(image_transformed.size().width, 2);
         assert_eq!(image_transformed.size().height, 3);
+
         Ok(())
     }
 
@@ -213,18 +231,26 @@ mod tests {
             },
             vec![0f32; 4 * 5],
         )?;
-        let image_transformed = super::warp_affine(
+
+        let new_size = ImageSize {
+            width: 2,
+            height: 3,
+        };
+
+        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
+
+        super::warp_affine(
             &image,
-            (1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
-            ImageSize {
-                width: 2,
-                height: 3,
-            },
+            &mut image_transformed,
+            &(1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+            new_size,
             super::InterpolationMode::Nearest,
         )?;
+
         assert_eq!(image_transformed.num_channels(), 1);
         assert_eq!(image_transformed.size().width, 2);
         assert_eq!(image_transformed.size().height, 3);
+
         Ok(())
     }
 
@@ -238,17 +264,25 @@ mod tests {
             },
             (0..20).map(|x| x as f32).collect(),
         )?;
-        let image_transformed = super::warp_affine(
+
+        let new_size = ImageSize {
+            width: 4,
+            height: 5,
+        };
+
+        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
+
+        super::warp_affine(
             &image,
-            (1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
-            ImageSize {
-                width: 4,
-                height: 5,
-            },
+            &mut image_transformed,
+            &(1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+            new_size,
             super::InterpolationMode::Nearest,
         )?;
+
         assert_eq!(image_transformed.data, image.data);
         assert_eq!(image_transformed.size(), image.size());
+
         Ok(())
     }
 
@@ -262,19 +296,27 @@ mod tests {
             },
             vec![0.0f32, 1.0f32, 2.0f32, 3.0f32],
         )?;
-        let image_transformed = super::warp_affine(
+
+        let new_size = ImageSize {
+            width: 2,
+            height: 2,
+        };
+
+        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
+
+        super::warp_affine(
             &image,
-            super::get_rotation_matrix2d((0.5, 0.5), 90.0, 1.0),
-            ImageSize {
-                width: 2,
-                height: 2,
-            },
+            &mut image_transformed,
+            &super::get_rotation_matrix2d((0.5, 0.5), 90.0, 1.0),
+            new_size,
             super::InterpolationMode::Nearest,
         )?;
+
         assert_eq!(
             image_transformed.data,
             ndarray::array![[[1.0f32], [3.0f32]], [[0.0f32], [2.0f32]]]
         );
+
         Ok(())
     }
 }

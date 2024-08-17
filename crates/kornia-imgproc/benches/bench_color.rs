@@ -56,11 +56,14 @@ fn bench_grayscale(c: &mut Criterion) {
 
     for (width, height) in image_sizes {
         let id = format!("{}x{}", width, height);
+        // input image
         let image_data = vec![0u8; width * height * 3];
         let image = Image::new(ImageSize { width, height }, image_data).unwrap();
         let image_f32 = image.clone().cast::<f32>().unwrap();
-        group.bench_with_input(BenchmarkId::new("zip", &id), &image_f32, |b, i| {
-            b.iter(|| gray_from_rgb(black_box(i)))
+        // output image
+        let mut gray = Image::from_size_val(image.size(), 0.0).unwrap();
+        group.bench_with_input(BenchmarkId::new("zip", &id), &image_f32, |b, _i| {
+            b.iter(|| gray_from_rgb(black_box(&image_f32), black_box(&mut gray)))
         });
         group.bench_with_input(BenchmarkId::new("iter", &id), &image_f32, |b, i| {
             b.iter(|| gray_iter(black_box(&i.clone())))
@@ -70,10 +73,6 @@ fn bench_grayscale(c: &mut Criterion) {
         });
         group.bench_with_input(BenchmarkId::new("image_crate", &id), &image, |b, i| {
             b.iter(|| gray_image_crate(black_box(&i.clone())))
-        });
-        #[cfg(feature = "candle")]
-        group.bench_with_input(BenchmarkId::new("candle", &id), &image_f32, |b, i| {
-            b.iter(|| gray_candle(black_box(i.clone())))
         });
     }
     group.finish();
