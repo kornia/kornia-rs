@@ -123,13 +123,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image_f32: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
 
     // convert the image to grayscale
+    let mut gray = Image::<f32, 1>::from_size_val(image_f32.size(), 0.0)?;
+    imgproc::color::gray_from_rgb(&image_f32, &mut gray)?;
+
+    // resize the image
     let new_size = ImageSize {
         width: 128,
         height: 128,
     };
-
-    let mut gray = Image::<f32, 1>::from_size_val(new_size, 0.0)?;
-    imgproc::color::gray_from_rgb(&image_f32, &mut gray)?;
 
     let mut gray_resized = Image::<f32, 1>::from_size_val(new_size, 0.0)?;
     imgproc::resize::resize_native(
