@@ -559,9 +559,63 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     }
 }
 
+/// Cast the pixel data of an image to a different type.
+///
+/// # Arguments
+///
+/// * `src` - The source image.
+/// * `dst` - The destination image.
+/// * `scale` - The scale to multiply the pixel data with.
+///
+/// Example:
+///
+/// ```
+/// use kornia::image::{Image, ImageSize};
+
+// TODO: in future move to kornia_core
+pub fn cast_and_scale<T, U, const CHANNELS: usize>(
+    src: &Image<T, CHANNELS>,
+    dst: &mut Image<U, CHANNELS>,
+    scale: U,
+) -> Result<(), ImageError>
+where
+    T: Copy + num_traits::NumCast,
+    U: Copy + num_traits::NumCast + std::ops::Mul<U, Output = U>,
+{
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.width(),
+            src.height(),
+            dst.width(),
+            dst.height(),
+        ));
+    }
+
+    let src_data = src
+        .data
+        .as_slice()
+        .ok_or(ImageError::ImageDataNotContiguous)?;
+
+    let dst_data = dst
+        .data
+        .as_slice_mut()
+        .ok_or(ImageError::ImageDataNotContiguous)?;
+
+    dst_data
+        .iter_mut()
+        .zip(src_data.iter())
+        .try_for_each(|(out, &inp)| {
+            let x = U::from(inp).ok_or(ImageError::CastError)?;
+            *out = x * scale;
+            Ok::<(), ImageError>(())
+        })?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::image::{Image, ImageError, ImageSize};
+    use crate::image::{self, Image, ImageError, ImageSize};
 
     #[test]
     fn image_size() {
@@ -694,6 +748,27 @@ mod tests {
         let tensor_nhwc = image.to_tensor_nhwc();
         assert_eq!(tensor_nhwc.shape(), &[1, 2, 1, 3]);
         assert_eq!(tensor_nhwc[[0, 1, 0, 2]], 5.0f32);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cast_and_scale() -> Result<(), ImageError> {
+        let image = Image::<u8, 3>::new(
+            ImageSize {
+                height: 2,
+                width: 1,
+            },
+            vec![0u8, 0, 255, 0, 0, 255],
+        )?;
+
+        let mut image_f64: Image<f64, 3> = Image::from_size_val(image.size(), 0.0)?;
+
+        image::cast_and_scale(&image, &mut image_f64, 1. / 255.0)?;
+
+        let expected = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
+
+        assert_eq!(image_f64.data.into_raw_vec(), expected);
 
         Ok(())
     }

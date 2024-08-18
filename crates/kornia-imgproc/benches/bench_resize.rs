@@ -45,7 +45,6 @@ fn bench_resize(c: &mut Criterion) {
                 resize::resize_native(
                     black_box(i),
                     black_box(&mut out_f32),
-                    new_size,
                     InterpolationMode::Nearest,
                 )
             })
@@ -58,7 +57,6 @@ fn bench_resize(c: &mut Criterion) {
                 resize::resize_fast(
                     black_box(i),
                     black_box(&mut out_u8),
-                    new_size,
                     InterpolationMode::Nearest,
                 )
             })
