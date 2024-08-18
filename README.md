@@ -123,18 +123,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image_f32: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
 
     // convert the image to grayscale
-    let gray: Image<f32, 1> = imgproc::color::gray_from_rgb(&image_f32)?;
+    let mut gray = Image::<f32, 1>::from_size_val(image_f32.size(), 0.0)?;
+    imgproc::color::gray_from_rgb(&image_f32, &mut gray)?;
 
-    let gray_resize: Image<f32, 1> = imgproc::resize::resize_native(
-        &gray,
-        ImageSize {
-            width: 128,
-            height: 128,
-        },
+    // resize the image
+    let new_size = ImageSize {
+        width: 128,
+        height: 128,
+    };
+
+    let mut gray_resized = Image::<f32, 1>::from_size_val(new_size, 0.0)?;
+    imgproc::resize::resize_native(
+        &gray, &mut gray_resized,
         imgproc::resize::InterpolationMode::Bilinear,
     )?;
 
-    println!("gray_resize: {:?}", gray_resize.size());
+    println!("gray_resize: {:?}", gray_resized.size());
 
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").connect()?;
@@ -142,7 +146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // log the images
     let _ = rec.log("image", &rerun::Image::try_from(image_viz.data)?);
     let _ = rec.log("gray", &rerun::Image::try_from(gray.data)?);
-    let _ = rec.log("gray_resize", &rerun::Image::try_from(gray_resize.data)?);
+    let _ = rec.log("gray_resize", &rerun::Image::try_from(gray_resized.data)?);
 
     Ok(())
 }

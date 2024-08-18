@@ -5,7 +5,8 @@ use std::sync::{
 };
 
 use kornia::{
-    image::Image,
+    image::{image, Image},
+    imgproc,
     io::{
         fps_counter::FpsCounter,
         stream::{RTSPCameraConfig, StreamCaptureError},
@@ -77,7 +78,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let mut gray = Image::<f32, 1>::from_size_val((640, 480).into(), 0.0)?;
+    let mut img_f32 = Image::<f32, 3>::from_size_val((640, 480).into(), 0.0)?;
+    let mut gray = Image::<f32, 1>::from_size_val(img_f32.size(), 0.0)?;
 
     // start grabbing frames from the camera
     capture
@@ -93,10 +95,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .expect("Failed to lock fps counter")
                 .new_frame();
 
-            kornia::imgproc::color::gray_from_rgb(
-                &img.clone().cast_and_scale::<f32>(1.0 / 255.0)?,
-                &mut gray,
-            )?;
+            // cast the image to floating point and convert to grayscale
+            image::cast_and_scale(&img, &mut img_f32, 1.0 / 255.0)?;
+            imgproc::color::gray_from_rgb(&img_f32, &mut gray)?;
 
             // log the image
             rec.log_static("image", &rerun::Image::try_from(img.data)?)?;

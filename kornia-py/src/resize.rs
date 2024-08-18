@@ -29,7 +29,7 @@ pub fn resize(image: PyImage, new_size: (usize, usize), interpolation: &str) -> 
     let mut image_resized = Image::from_size_val(new_size, 0u8)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
-    resize_fast(&image, &mut image_resized, new_size, interpolation)
+    resize_fast(&image, &mut image_resized, interpolation)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
     Ok(image_resized.to_pyimage())
