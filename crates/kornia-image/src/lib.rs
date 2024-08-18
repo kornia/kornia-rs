@@ -8,4 +8,5 @@ pub mod image;
 pub mod error;
 
 pub use crate::error::ImageError;
+pub use crate::image::cast_and_scale;
 pub use crate::image::{Image, ImageDtype, ImageSize};

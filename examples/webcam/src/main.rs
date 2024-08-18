@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 use kornia::{
-    image::{Image, ImageSize},
+    image::{image, Image, ImageSize},
     imgproc,
     io::{
         fps_counter::FpsCounter,
@@ -76,6 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut img_resized = Image::from_size_val(new_size, 0u8)?;
+    let mut img_f32 = Image::from_size_val(new_size, 0f32)?;
     let mut gray = Image::from_size_val(new_size, 0f32)?;
     let mut bin = Image::from_size_val(new_size, 0f32)?;
 
@@ -91,15 +92,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             imgproc::resize::resize_fast(
                 &img,
                 &mut img_resized,
-                new_size,
                 imgproc::interpolation::InterpolationMode::Bilinear,
             )?;
 
             // convert the image to f32 and normalize before processing
-            let img = img_resized.clone().cast_and_scale::<f32>(1. / 255.)?;
+            image::cast_and_scale(&img_resized, &mut img_f32, 1. / 255.)?;
 
             // convert the image to grayscale and binarize
-            imgproc::color::gray_from_rgb(&img, &mut gray)?;
+            imgproc::color::gray_from_rgb(&img_f32, &mut gray)?;
             imgproc::threshold::threshold_binary(&gray, &mut bin, 0.35, 0.65)?;
 
             // update the fps counter

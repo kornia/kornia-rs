@@ -291,7 +291,6 @@ mod tests {
         crate::resize::resize_native(
             &image,
             &mut image_resized,
-            new_size,
             super::InterpolationMode::Bilinear,
         )?;
 

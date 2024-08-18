@@ -1,6 +1,6 @@
 use crate::interpolation::{interpolate_pixel, meshgrid, InterpolationMode};
 use fast_image_resize as fr;
-use kornia_image::{Image, ImageDtype, ImageError, ImageSize};
+use kornia_image::{Image, ImageDtype, ImageError};
 use ndarray::stack;
 use std::num::NonZeroU32;
 
@@ -13,7 +13,6 @@ use std::num::NonZeroU32;
 ///
 /// * `src` - The input image container.
 /// * `dst` - The output image container.
-/// * `new_size` - The new size of the image.
 /// * `optional_args` - Optional arguments for the resize operation.
 ///
 /// # Returns
@@ -46,7 +45,6 @@ use std::num::NonZeroU32;
 /// resize_native(
 ///     &image,
 ///     &mut image_resized,
-///     new_size,
 ///     InterpolationMode::Nearest,
 /// )
 /// .unwrap();
@@ -58,10 +56,9 @@ use std::num::NonZeroU32;
 pub fn resize_native<T: ImageDtype, const CHANNELS: usize>(
     src: &Image<T, CHANNELS>,
     dst: &mut Image<T, CHANNELS>,
-    new_size: ImageSize,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
-    if dst.size() != new_size {
+    if dst.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
             src.size().width,
             src.size().height,
@@ -72,9 +69,9 @@ pub fn resize_native<T: ImageDtype, const CHANNELS: usize>(
 
     // create a grid of x and y coordinates for the output image
     // and interpolate the values from the input image.
-    let x = ndarray::Array::linspace(0., (src.width() - 1) as f32, new_size.width)
+    let x = ndarray::Array::linspace(0., (src.width() - 1) as f32, dst.width())
         .insert_axis(ndarray::Axis(0));
-    let y = ndarray::Array::linspace(0., (src.height() - 1) as f32, new_size.height)
+    let y = ndarray::Array::linspace(0., (src.height() - 1) as f32, dst.height())
         .insert_axis(ndarray::Axis(0));
 
     // create the meshgrid of x and y coordinates, arranged in a 2D grid of shape (height, width)
@@ -146,7 +143,6 @@ pub fn resize_native<T: ImageDtype, const CHANNELS: usize>(
 /// resize_fast(
 ///   &image,
 ///   &mut image_resized,
-///   new_size,
 ///   InterpolationMode::Nearest,
 /// )
 /// .unwrap();
@@ -162,10 +158,9 @@ pub fn resize_native<T: ImageDtype, const CHANNELS: usize>(
 pub fn resize_fast(
     src: &Image<u8, 3>,
     dst: &mut Image<u8, 3>,
-    new_size: ImageSize,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
-    if dst.size() != new_size {
+    if dst.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
             src.size().width,
             src.size().height,
@@ -187,8 +182,8 @@ pub fn resize_fast(
             })?;
 
     // prepare the output image for the fast_image_resize crate
-    let dst_width = NonZeroU32::new(new_size.width as u32).ok_or(ImageError::CastError)?;
-    let dst_height = NonZeroU32::new(new_size.height as u32).ok_or(ImageError::CastError)?;
+    let dst_width = NonZeroU32::new(dst.width() as u32).ok_or(ImageError::CastError)?;
+    let dst_height = NonZeroU32::new(dst.height() as u32).ok_or(ImageError::CastError)?;
 
     let dst_data_len = dst_width.get() as usize * dst_height.get() as usize * 3;
 
@@ -198,9 +193,7 @@ pub fn resize_fast(
         dst.data.as_slice_mut().expect("Failed to get image data"),
         fr::PixelType::U8x3,
     )
-    .map_err(|_| {
-        ImageError::InvalidChannelShape(dst_data_len, new_size.width * new_size.height * 3)
-    })?;
+    .map_err(|_| ImageError::InvalidChannelShape(dst_data_len, dst_data_len))?;
 
     let mut resizer = {
         match interpolation {
@@ -242,7 +235,6 @@ mod tests {
         super::resize_native(
             &image,
             &mut image_resized,
-            new_size,
             super::InterpolationMode::Bilinear,
         )?;
 
@@ -273,7 +265,6 @@ mod tests {
         super::resize_native(
             &image,
             &mut image_resized,
-            new_size,
             super::InterpolationMode::Nearest,
         )?;
 
@@ -317,7 +308,6 @@ mod tests {
         super::resize_fast(
             &image,
             &mut image_resized,
-            new_size,
             super::InterpolationMode::Nearest,
         )?;
 
