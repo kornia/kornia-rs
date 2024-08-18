@@ -571,6 +571,23 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
 ///
 /// ```
 /// use kornia::image::{Image, ImageSize};
+/// use kornia::image::cast_and_scale;
+///
+/// let image = Image::<u8, 1>::new(
+///  ImageSize {
+///   width: 2,
+///  height: 1,
+/// },
+/// vec![0u8, 255],
+/// ).unwrap();
+///
+/// let mut image_f32 = Image::from_size_val(image.size(), 0.0f32).unwrap();
+///
+/// cast_and_scale(&image, &mut image_f32, 1. / 255.0).unwrap();
+///
+/// assert_eq!(image_f32.get_pixel(0, 0, 0).unwrap(), 0.0f32);
+/// assert_eq!(image_f32.get_pixel(1, 0, 0).unwrap(), 1.0f32);
+/// ```
 
 // TODO: in future move to kornia_core
 pub fn cast_and_scale<T, U, const CHANNELS: usize>(
