@@ -385,6 +385,30 @@ where
         })
     }
 
+    /// Permute the dimensions of the tensor.
+    ///
+    /// The permutation is given as an array of indices, where the value at each index is the new index of the dimension.
+    /// The data is not moved, only the order of the dimensions is changed.
+    ///
+    /// # Arguments
+    ///
+    /// * `axes` - The new order of the dimensions.
+    /// TODO: this should return a View instead of a new tensor.
+    pub fn permute_axes(self, axes: [usize; N]) -> Tensor<T, N, A> {
+        let mut new_shape = [0; N];
+        let mut new_strides = [0; N];
+        for (i, &axis) in axes.iter().enumerate() {
+            new_shape[i] = self.shape[axis];
+            new_strides[i] = self.strides[axis];
+        }
+
+        Tensor {
+            storage: self.storage,
+            shape: new_shape,
+            strides: new_strides,
+        }
+    }
+
     /// Perform an element-wise operation on two tensors.
     ///
     /// # Arguments
@@ -904,6 +928,30 @@ mod tests {
         assert_eq!(*t2.get([1, 0])?, 3);
         assert_eq!(*t2.get([1, 1])?, 4);
         assert_eq!(t2.numel(), 4);
+        Ok(())
+    }
+
+    #[test]
+    fn permute_axes_1d() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 1>::from_shape_vec([4], data, CpuAllocator)?;
+        let t2 = t.permute_axes([0]);
+        assert_eq!(t2.shape, [4]);
+        assert_eq!(t2.as_slice(), vec![1, 2, 3, 4]);
+        assert_eq!(t2.strides, [1]);
+        Ok(())
+    }
+
+    #[test]
+    fn permute_axes_2d() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2];
+        let t = Tensor::<u8, 2>::from_shape_vec([2, 1], data, CpuAllocator)?;
+        let t2 = t.permute_axes([1, 0]);
+        assert_eq!(t2.shape, [1, 2]);
+        assert_eq!(*t2.get([0, 0])?, 1u8);
+        assert_eq!(*t2.get([0, 1])?, 2u8);
+        assert_eq!(t2.strides, [1, 1]);
+
         Ok(())
     }
 
