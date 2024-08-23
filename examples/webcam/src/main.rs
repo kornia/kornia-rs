@@ -109,8 +109,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .new_frame();
 
             // log the image
-            rec.log_static("image", &rerun::Image::try_from(img.data)?)?;
-            rec.log_static("binary", &rerun::Image::try_from(bin.clone().data)?)?;
+            rec.log_static(
+                "image",
+                &rerun::Image::from_elements(
+                    img.data.as_slice().expect("Failed to get image data"),
+                    img.size().into(),
+                    rerun::ColorModel::RGB,
+                ),
+            )?;
+
+            rec.log_static(
+                "binary",
+                &rerun::Image::from_elements(
+                    bin.data.as_slice().expect("Failed to get image data"),
+                    bin.size().into(),
+                    rerun::ColorModel::L,
+                ),
+            )?;
 
             Ok(())
         })

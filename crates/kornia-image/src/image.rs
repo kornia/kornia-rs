@@ -46,6 +46,21 @@ impl From<(usize, usize)> for ImageSize {
     }
 }
 
+impl From<[usize; 2]> for ImageSize {
+    fn from(size: [usize; 2]) -> Self {
+        ImageSize {
+            width: size[0],
+            height: size[1],
+        }
+    }
+}
+
+impl Into<[u32; 2]> for ImageSize {
+    fn into(self) -> [u32; 2] {
+        [self.width as u32, self.height as u32]
+    }
+}
+
 /// Trait for image data types.
 ///
 /// Send and Sync is required for ndarray::Zip::par_for_each

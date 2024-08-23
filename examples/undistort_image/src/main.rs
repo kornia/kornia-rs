@@ -74,10 +74,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;
 
-    rec.log("img", &rerun::Image::try_from(img.data)?)?;
+    rec.log(
+        "img",
+        &rerun::Image::from_elements(
+            img.data.as_slice().expect("Failed to get image data"),
+            img.size().into(),
+            rerun::ColorModel::RGB,
+        ),
+    )?;
+
     rec.log(
         "img_undistorted",
-        &rerun::Image::try_from(img_undistorted.cast::<u8>()?.data)?,
+        &rerun::Image::from_elements(
+            img_undistorted
+                .data
+                .as_slice()
+                .expect("Failed to get image data"),
+            img_undistorted.size().into(),
+            rerun::ColorModel::RGB,
+        ),
     )?;
 
     Ok(())
