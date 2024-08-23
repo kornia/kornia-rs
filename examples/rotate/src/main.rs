@@ -44,7 +44,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         imgproc::normalize::normalize_min_max(&output, &mut output_norm, 0.0, 255.0)?;
 
-        rec.log("image", &rerun::Image::try_from(output_norm.clone().data)?)?;
+        rec.log(
+            "image",
+            &rerun::Image::from_elements(
+                output_norm.data.as_slice().expect("Failed to get data"),
+                output_norm.size().into(),
+                rerun::ColorModel::RGB,
+            ),
+        )?;
     }
 
     Ok(())
