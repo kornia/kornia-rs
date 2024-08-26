@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use super::{
     allocator::{CpuAllocator, TensorAllocator, TensorAllocatorError},
-    storage::TensorStorage,
+    storage::{SafeTensorType, TensorStorage},
 };
 
 /// An error type for tensor operations.
@@ -42,7 +42,7 @@ fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
 
 /// A data structure to represent a multi-dimensional tensor.
 ///
-/// NOTE: internally the data is stored as an arrow::Buffer which represents a contiguous memory
+/// NOTE: internally the data is stored as an arrow::ScalarBuffer which represents a contiguous memory
 /// region that can be shared with other buffers and across thread boundaries.
 ///
 /// # Attributes
@@ -61,7 +61,7 @@ fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
 /// assert_eq!(t.shape, [2, 2]);
 pub struct Tensor<T, const N: usize, A: TensorAllocator = CpuAllocator>
 where
-    T: arrow_buffer::ArrowNativeType,
+    T: SafeTensorType,
 {
     /// The storage of the tensor.
     pub storage: TensorStorage<T, A>,
@@ -74,7 +74,7 @@ where
 /// Implementation of the Tensor struct.
 impl<T, const N: usize, A> Tensor<T, N, A>
 where
-    T: arrow_buffer::ArrowNativeType + std::panic::RefUnwindSafe,
+    T: SafeTensorType,
     A: TensorAllocator,
 {
     /// Create a new `Tensor` with uninitialized data.
@@ -104,8 +104,7 @@ where
     ///
     /// A slice containing the data of the tensor.
     pub fn as_slice(&self) -> &[T] {
-        let slice = self.storage.data.typed_data::<T>();
-        slice
+        self.storage.as_slice()
     }
 
     /// Get the data of the tensor as a mutable slice.
@@ -114,11 +113,7 @@ where
     ///
     /// A mutable slice containing the data of the tensor.
     pub fn as_slice_mut(&mut self) -> &mut [T] {
-        // convert the data to a typed slice
-        let slice = self.storage.data.typed_data::<T>();
-
-        // TODO: verify if there is a better way to do this
-        unsafe { std::slice::from_raw_parts_mut(slice.as_ptr() as *mut T, slice.len()) }
+        self.storage.as_mut_slice()
     }
 
     /// Creates a new `Tensor` with the given shape and data.
@@ -250,7 +245,7 @@ where
 
     /// Returns the number of elements in the tensor.
     pub fn numel(&self) -> usize {
-        self.storage.data.len()
+        self.storage.len()
     }
 
     /// Get the offset of the element at the given index.
@@ -372,7 +367,7 @@ where
         shape: [usize; M],
     ) -> Result<Tensor<T, M, A>, TensorError> {
         let numel = shape.iter().product::<usize>();
-        if numel != self.storage.data.len() {
+        if numel != self.storage.len() {
             Err(TensorError::InvalidShape(numel))?;
         }
 
@@ -673,7 +668,7 @@ where
     pub fn cast<U>(&self) -> Result<Tensor<U, N>, TensorError>
     where
         T: Copy + Into<U>,
-        U: arrow_buffer::ArrowNativeType + std::panic::RefUnwindSafe,
+        U: SafeTensorType,
     {
         let data: Vec<U> = self.as_slice().iter().map(|x| (*x).into()).collect();
         let storage = TensorStorage::from_vec(data, CpuAllocator)?;
@@ -687,7 +682,7 @@ where
 
 impl<T, const N: usize, A> Clone for Tensor<T, N, A>
 where
-    T: arrow_buffer::ArrowNativeType + std::panic::RefUnwindSafe,
+    T: SafeTensorType,
     A: TensorAllocator,
 {
     fn clone(&self) -> Self {

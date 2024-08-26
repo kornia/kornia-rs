@@ -37,12 +37,18 @@ impl std::fmt::Display for ImageSize {
     }
 }
 
-impl From<(usize, usize)> for ImageSize {
-    fn from(size: (usize, usize)) -> Self {
+impl From<[usize; 2]> for ImageSize {
+    fn from(size: [usize; 2]) -> Self {
         ImageSize {
-            width: size.0,
-            height: size.1,
+            width: size[0],
+            height: size[1],
         }
+    }
+}
+
+impl From<ImageSize> for [u32; 2] {
+    fn from(size: ImageSize) -> Self {
+        [size.width as u32, size.height as u32]
     }
 }
 

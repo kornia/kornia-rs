@@ -78,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let mut img_f32 = Image::<f32, 3>::from_size_val((640, 480).into(), 0.0)?;
+    let mut img_f32 = Image::<f32, 3>::from_size_val([640, 360].into(), 0.0)?;
     let mut gray = Image::<f32, 1>::from_size_val(img_f32.size(), 0.0)?;
 
     // start grabbing frames from the camera
@@ -100,8 +100,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             imgproc::color::gray_from_rgb(&img_f32, &mut gray)?;
 
             // log the image
-            rec.log_static("image", &rerun::Image::try_from(img.data)?)?;
-            rec.log_static("gray", &rerun::Image::try_from(gray.clone().data)?)?;
+            rec.log_static(
+                "image",
+                &rerun::Image::from_elements(
+                    img.data.as_slice().expect("Failed to get image data"),
+                    img.size().into(),
+                    rerun::ColorModel::RGB,
+                ),
+            )?;
+
+            // log the grayscale image
+            rec.log_static(
+                "gray",
+                &rerun::Image::from_elements(
+                    gray.data.as_slice().expect("Failed to get image data"),
+                    gray.size().into(),
+                    rerun::ColorModel::L,
+                ),
+            )?;
 
             Ok(())
         })

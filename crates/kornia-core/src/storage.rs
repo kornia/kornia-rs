@@ -1,12 +1,26 @@
 use super::allocator::{TensorAllocator, TensorAllocatorError};
-use arrow_buffer::{ArrowNativeType, Buffer};
-use std::marker::PhantomData;
+use arrow_buffer::{Buffer, ScalarBuffer};
 use std::sync::Arc;
 use std::{alloc::Layout, ptr::NonNull};
 
+/// A trait to define the types that can be used in a tensor.
+pub trait SafeTensorType: arrow_buffer::ArrowNativeType + std::panic::RefUnwindSafe {}
+
+/// Implement the `SafeTensorType` trait for the supported types.
+impl SafeTensorType for u8 {}
+impl SafeTensorType for u16 {}
+impl SafeTensorType for u32 {}
+impl SafeTensorType for u64 {}
+impl SafeTensorType for i8 {}
+impl SafeTensorType for i16 {}
+impl SafeTensorType for i32 {}
+impl SafeTensorType for i64 {}
+impl SafeTensorType for f32 {}
+impl SafeTensorType for f64 {}
+
 /// represents a contiguous memory region that can be shared with other buffers and across thread boundaries.
 ///
-/// NOTE: https://docs.rs/arrow/latest/arrow/buffer/struct.Buffer.html
+/// NOTE: https://docs.rs/arrow-buffer/latest/arrow_buffer/buffer/struct.ScalarBuffer.html
 ///
 /// # Safety
 ///
@@ -16,18 +30,19 @@ use std::{alloc::Layout, ptr::NonNull};
 ///
 /// * `data` - The buffer containing the tensor storage.
 /// * `alloc` - The allocator used to allocate the tensor storage.
-/// * `marker` - The marker type for the tensor storage.
-pub struct TensorStorage<T: ArrowNativeType, A: TensorAllocator> {
+pub struct TensorStorage<T, A: TensorAllocator>
+where
+    T: SafeTensorType,
+{
     /// The buffer containing the tensor storage.
-    pub data: Buffer,
+    data: ScalarBuffer<T>,
     alloc: A,
-    marker: PhantomData<T>,
 }
 
 /// Implement the `TensorStorage` struct.
 impl<T, A: TensorAllocator> TensorStorage<T, A>
 where
-    T: ArrowNativeType + std::panic::RefUnwindSafe,
+    T: SafeTensorType,
 {
     /// Creates a new tensor storage with the given length and allocator.
     ///
@@ -54,9 +69,8 @@ where
         };
 
         Ok(Self {
-            data: buffer,
+            data: buffer.into(),
             alloc,
-            marker: PhantomData,
         })
     }
 
@@ -82,9 +96,8 @@ where
 
         // create tensor storage
         let storage = Self {
-            data: buffer,
+            data: buffer.into(),
             alloc,
-            marker: PhantomData,
         };
 
         Ok(storage)
@@ -93,6 +106,26 @@ where
     /// Returns the allocator used to allocate the tensor storage.
     pub fn alloc(&self) -> &A {
         &self.alloc
+    }
+
+    /// Returns the length of the tensor storage.
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Returns whether the tensor storage is empty.
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    /// Return the data pointer as a slice.
+    pub fn as_slice(&self) -> &[T] {
+        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len()) }
+    }
+
+    /// Return the data pointer as a mutable slice.
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe { std::slice::from_raw_parts_mut(self.data.as_ptr() as *mut T, self.len()) }
     }
 }
 

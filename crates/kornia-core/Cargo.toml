@@ -13,7 +13,7 @@ version.workspace = true
 [dependencies]
 
 # external
-arrow-buffer = "52.0.0"
+arrow-buffer = "52.2.0"
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 

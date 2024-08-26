@@ -22,15 +22,7 @@ fn bench_warp_affine(c: &mut Criterion) {
         let mut output = Image::<f32, 3>::from_size_val(image_size, 0.0).unwrap();
         let m = get_rotation_matrix2d((width as f32 / 2.0, height as f32 / 2.0), 45.0, 1.0);
         group.bench_with_input(BenchmarkId::new("native", &id), &image_f32, |b, i| {
-            b.iter(|| {
-                warp_affine(
-                    black_box(i),
-                    &mut output,
-                    &m,
-                    image_size,
-                    InterpolationMode::Bilinear,
-                )
-            })
+            b.iter(|| warp_affine(black_box(i), &mut output, &m, InterpolationMode::Bilinear))
         });
     }
     group.finish();

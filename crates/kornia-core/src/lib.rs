@@ -17,6 +17,7 @@ pub mod storage;
 pub mod view;
 
 pub use crate::allocator::{CpuAllocator, TensorAllocator};
+pub use crate::storage::SafeTensorType;
 pub use crate::tensor::{Tensor, TensorError};
 
 /// Type alias for a 1-dimensional tensor.
