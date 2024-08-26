@@ -19,7 +19,7 @@ use std::{alloc::Layout, ptr::NonNull};
 /// * `marker` - The marker type for the tensor storage.
 pub struct TensorStorage<T: ArrowNativeType, A: TensorAllocator> {
     /// The buffer containing the tensor storage.
-    pub data: Buffer,
+    data: Buffer,
     alloc: A,
     marker: PhantomData<T>,
 }
@@ -93,6 +93,24 @@ where
     /// Returns the allocator used to allocate the tensor storage.
     pub fn alloc(&self) -> &A {
         &self.alloc
+    }
+
+    /// Returns the length of the tensor storage.
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Return the data pointer as a slice.
+    pub fn as_slice(&self) -> &[T] {
+        self.data.typed_data::<T>()
+    }
+
+    /// Return the data pointer as a mutable slice.
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        let slice = self.as_slice();
+
+        // SAFETY: the buffer is mutable
+        unsafe { std::slice::from_raw_parts_mut(slice.as_ptr() as *mut T, slice.len()) }
     }
 }
 

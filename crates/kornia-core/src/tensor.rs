@@ -21,6 +21,9 @@ pub enum TensorError {
     StorageError(#[from] TensorAllocatorError),
 }
 
+/// A trait to define the types that can be used in a tensor.
+pub trait SafeTensorType: arrow_buffer::ArrowNativeType + std::panic::RefUnwindSafe {}
+
 /// Compute the strides from the shape of a tensor.
 ///
 /// # Arguments
@@ -104,8 +107,7 @@ where
     ///
     /// A slice containing the data of the tensor.
     pub fn as_slice(&self) -> &[T] {
-        let slice = self.storage.data.typed_data::<T>();
-        slice
+        self.storage.as_slice()
     }
 
     /// Get the data of the tensor as a mutable slice.
@@ -114,11 +116,7 @@ where
     ///
     /// A mutable slice containing the data of the tensor.
     pub fn as_slice_mut(&mut self) -> &mut [T] {
-        // convert the data to a typed slice
-        let slice = self.storage.data.typed_data::<T>();
-
-        // TODO: verify if there is a better way to do this
-        unsafe { std::slice::from_raw_parts_mut(slice.as_ptr() as *mut T, slice.len()) }
+        self.storage.as_mut_slice()
     }
 
     /// Creates a new `Tensor` with the given shape and data.
@@ -250,7 +248,7 @@ where
 
     /// Returns the number of elements in the tensor.
     pub fn numel(&self) -> usize {
-        self.storage.data.len()
+        self.storage.len()
     }
 
     /// Get the offset of the element at the given index.
@@ -372,7 +370,7 @@ where
         shape: [usize; M],
     ) -> Result<Tensor<T, M, A>, TensorError> {
         let numel = shape.iter().product::<usize>();
-        if numel != self.storage.data.len() {
+        if numel != self.storage.len() {
             Err(TensorError::InvalidShape(numel))?;
         }
 
