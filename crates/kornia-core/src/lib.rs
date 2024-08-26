@@ -14,7 +14,8 @@ pub mod serde;
 pub mod storage;
 
 pub use crate::allocator::{CpuAllocator, TensorAllocator};
-pub use crate::tensor::{SafeTensorType, Tensor, TensorError};
+pub use crate::storage::SafeTensorType;
+pub use crate::tensor::{Tensor, TensorError};
 
 /// Type alias for a 1-dimensional tensor.
 pub type Tensor1<T> = Tensor<T, 1>;

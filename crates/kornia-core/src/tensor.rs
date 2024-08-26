@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use super::{
     allocator::{CpuAllocator, TensorAllocator, TensorAllocatorError},
-    storage::TensorStorage,
+    storage::{SafeTensorType, TensorStorage},
 };
 
 /// An error type for tensor operations.
@@ -20,9 +20,6 @@ pub enum TensorError {
     #[error("Error with the tensor storage: {0}")]
     StorageError(#[from] TensorAllocatorError),
 }
-
-/// A trait to define the types that can be used in a tensor.
-pub trait SafeTensorType: arrow_buffer::ArrowNativeType + std::panic::RefUnwindSafe {}
 
 /// Compute the strides from the shape of a tensor.
 ///
@@ -45,7 +42,7 @@ fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
 
 /// A data structure to represent a multi-dimensional tensor.
 ///
-/// NOTE: internally the data is stored as an arrow::Buffer which represents a contiguous memory
+/// NOTE: internally the data is stored as an arrow::ScalarBuffer which represents a contiguous memory
 /// region that can be shared with other buffers and across thread boundaries.
 ///
 /// # Attributes
@@ -64,7 +61,7 @@ fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
 /// assert_eq!(t.shape, [2, 2]);
 pub struct Tensor<T, const N: usize, A: TensorAllocator = CpuAllocator>
 where
-    T: arrow_buffer::ArrowNativeType,
+    T: SafeTensorType,
 {
     /// The storage of the tensor.
     pub storage: TensorStorage<T, A>,
@@ -77,7 +74,7 @@ where
 /// Implementation of the Tensor struct.
 impl<T, const N: usize, A> Tensor<T, N, A>
 where
-    T: arrow_buffer::ArrowNativeType + std::panic::RefUnwindSafe,
+    T: SafeTensorType,
     A: TensorAllocator,
 {
     /// Create a new `Tensor` with uninitialized data.
@@ -647,7 +644,7 @@ where
     pub fn cast<U>(&self) -> Result<Tensor<U, N>, TensorError>
     where
         T: Copy + Into<U>,
-        U: arrow_buffer::ArrowNativeType + std::panic::RefUnwindSafe,
+        U: SafeTensorType,
     {
         let data: Vec<U> = self.as_slice().iter().map(|x| (*x).into()).collect();
         let storage = TensorStorage::from_vec(data, CpuAllocator)?;
@@ -661,7 +658,7 @@ where
 
 impl<T, const N: usize, A> Clone for Tensor<T, N, A>
 where
-    T: arrow_buffer::ArrowNativeType + std::panic::RefUnwindSafe,
+    T: SafeTensorType,
     A: TensorAllocator,
 {
     fn clone(&self) -> Self {
