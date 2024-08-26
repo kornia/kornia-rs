@@ -104,18 +104,27 @@ where
     }
 
     /// Returns the allocator used to allocate the tensor storage.
+    #[inline]
     pub fn alloc(&self) -> &A {
         &self.alloc
     }
 
     /// Returns the length of the tensor storage.
+    #[inline]
     pub fn len(&self) -> usize {
         self.data.len()
     }
 
     /// Returns whether the tensor storage is empty.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
+    }
+
+    /// Returns the data pointer
+    #[inline]
+    pub fn as_ptr(&self) -> *const T {
+        self.data.as_ptr()
     }
 
     /// Return the data pointer as a slice.
