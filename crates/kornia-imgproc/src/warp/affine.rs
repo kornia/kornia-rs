@@ -2,7 +2,7 @@ use std::f32::consts::PI;
 
 use crate::interpolation::meshgrid;
 use crate::interpolation::{interpolate_pixel, InterpolationMode};
-use kornia_image::{Image, ImageError, ImageSize};
+use kornia_image::{Image, ImageError};
 use ndarray::stack;
 
 type AffineMatrix = (f32, f32, f32, f32, f32, f32);
@@ -85,7 +85,6 @@ pub fn get_rotation_matrix2d(center: (f32, f32), angle: f32, scale: f32) -> Affi
 /// * `src` - The input image with shape (height, width, channels).
 /// * `dst` - The output image with shape (height, width, channels).
 /// * `m` - The 2x3 affine transformation matrix.
-/// * `new_size` - The size of the output image.
 /// * `interpolation` - The interpolation mode to use.
 ///
 /// # Returns
@@ -115,7 +114,7 @@ pub fn get_rotation_matrix2d(center: (f32, f32), angle: f32, scale: f32) -> Affi
 ///
 /// let mut dst = Image::<_, 3>::from_size_val(new_size, 0.0).unwrap();
 ///
-/// warp_affine(&src, &mut dst, &m, new_size, InterpolationMode::Nearest).unwrap();
+/// warp_affine(&src, &mut dst, &m, InterpolationMode::Nearest).unwrap();
 ///
 /// assert_eq!(dst.size().width, 4);
 /// assert_eq!(dst.size().height, 5);
@@ -124,25 +123,15 @@ pub fn warp_affine<const CHANNELS: usize>(
     src: &Image<f32, CHANNELS>,
     dst: &mut Image<f32, CHANNELS>,
     m: &AffineMatrix,
-    new_size: ImageSize,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
-    if dst.size() != new_size {
-        return Err(ImageError::InvalidImageSize(
-            dst.size().width,
-            dst.size().height,
-            new_size.width,
-            new_size.height,
-        ));
-    }
-
     // invert affine transform matrix to find corresponding positions in src from dst
     let m_inv = invert_affine_transform(m);
 
     // create a grid of x and y coordinates for the output image
     // TODO: make this re-useable
-    let x = ndarray::Array::range(0.0, new_size.width as f32, 1.0).insert_axis(ndarray::Axis(0));
-    let y = ndarray::Array::range(0.0, new_size.height as f32, 1.0).insert_axis(ndarray::Axis(0));
+    let x = ndarray::Array::range(0.0, dst.width() as f32, 1.0).insert_axis(ndarray::Axis(0));
+    let y = ndarray::Array::range(0.0, dst.height() as f32, 1.0).insert_axis(ndarray::Axis(0));
 
     // create the meshgrid of x and y coordinates, arranged in a 2D grid of shape (height, width)
     let (xx, yy) = meshgrid(&x, &y);
@@ -210,7 +199,6 @@ mod tests {
             &image,
             &mut image_transformed,
             &(1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
-            new_size,
             super::InterpolationMode::Bilinear,
         )?;
 
@@ -243,7 +231,6 @@ mod tests {
             &image,
             &mut image_transformed,
             &(1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
-            new_size,
             super::InterpolationMode::Nearest,
         )?;
 
@@ -276,7 +263,6 @@ mod tests {
             &image,
             &mut image_transformed,
             &(1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
-            new_size,
             super::InterpolationMode::Nearest,
         )?;
 
@@ -308,7 +294,6 @@ mod tests {
             &image,
             &mut image_transformed,
             &super::get_rotation_matrix2d((0.5, 0.5), 90.0, 1.0),
-            new_size,
             super::InterpolationMode::Nearest,
         )?;
 
