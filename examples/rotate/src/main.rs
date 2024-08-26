@@ -38,7 +38,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &image,
             &mut output,
             &rotation_matrix,
-            image.size(),
             imgproc::interpolation::InterpolationMode::Bilinear,
         )?;
 
