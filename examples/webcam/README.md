@@ -15,7 +15,7 @@ Options:
 Example:
 
 ```bash
-cargo run --release -- --camera-id 0 --duration 5 --fps 30
+cargo run --bin webcam --release -- --camera-id 0 --duration 5 --fps 30
 ```
 
-TODO: add output
+![Screenshot from 2024-08-28 18-33-56](https://github.com/user-attachments/assets/783619e4-4867-48bc-b7d2-d32a133e4f5a)
