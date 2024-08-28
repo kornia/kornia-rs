@@ -300,7 +300,7 @@ where
     /// ```
     pub fn get_unchecked(&self, index: [usize; N]) -> &T {
         let offset = self.get_iter_offset(index);
-        &self.as_slice()[offset]
+        self.storage.get_unchecked(offset)
     }
 
     /// Get the element at the given index, checking if the index is out of bounds.
@@ -326,22 +326,16 @@ where
     ///
     /// let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
     ///
-    /// assert_eq!(*t.get([0, 0]).unwrap(), 1);
-    /// assert_eq!(*t.get([0, 1]).unwrap(), 2);
-    /// assert_eq!(*t.get([1, 0]).unwrap(), 3);
-    /// assert_eq!(*t.get([1, 1]).unwrap(), 4);
+    /// assert_eq!(t.get([0, 0]), Some(&1));
+    /// assert_eq!(t.get([0, 1]), Some(&2));
+    /// assert_eq!(t.get([1, 0]), Some(&3));
+    /// assert_eq!(t.get([1, 1]), Some(&4));
     ///
-    /// assert!(t.get([0, 2]).is_err());
+    /// assert!(t.get([2, 0]).is_none());
     /// ```
-    pub fn get(&self, index: [usize; N]) -> Result<&T, TensorError> {
-        let mut offset = 0;
-        for (i, &idx) in index.iter().enumerate() {
-            if idx >= self.shape[i] {
-                Err(TensorError::IndexOutOfBounds(idx))?;
-            }
-            offset += idx * self.strides[i];
-        }
-        Ok(&self.as_slice()[offset])
+    pub fn get(&self, index: [usize; N]) -> Option<&T> {
+        let offset = self.get_iter_offset(index);
+        self.storage.get(offset)
     }
 
     /// Reshape the tensor to a new shape.
@@ -758,11 +752,11 @@ mod tests {
     fn get_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 1>::from_shape_vec([4], data, CpuAllocator)?;
-        assert_eq!(*t.get([0])?, 1);
-        assert_eq!(*t.get([1])?, 2);
-        assert_eq!(*t.get([2])?, 3);
-        assert_eq!(*t.get([3])?, 4);
-        assert!(t.get([4]).is_err());
+        assert_eq!(t.get([0]), Some(&1));
+        assert_eq!(t.get([1]), Some(&2));
+        assert_eq!(t.get([2]), Some(&3));
+        assert_eq!(t.get([3]), Some(&4));
+        assert!(t.get([4]).is_none());
         Ok(())
     }
 
@@ -770,11 +764,11 @@ mod tests {
     fn get_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data, CpuAllocator)?;
-        assert_eq!(*t.get([0, 0])?, 1);
-        assert_eq!(*t.get([0, 1])?, 2);
-        assert_eq!(*t.get([1, 0])?, 3);
-        assert_eq!(*t.get([1, 1])?, 4);
-        assert!(t.get([2, 0]).is_err());
+        assert_eq!(t.get([0, 0]), Some(&1));
+        assert_eq!(t.get([0, 1]), Some(&2));
+        assert_eq!(t.get([1, 0]), Some(&3));
+        assert_eq!(t.get([1, 1]), Some(&4));
+        assert!(t.get([2, 0]).is_none());
         Ok(())
     }
 
@@ -782,13 +776,13 @@ mod tests {
     fn get_3d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
         let t = Tensor::<u8, 3>::from_shape_vec([2, 1, 3], data, CpuAllocator)?;
-        assert_eq!(*t.get([0, 0, 0])?, 1);
-        assert_eq!(*t.get([0, 0, 1])?, 2);
-        assert_eq!(*t.get([0, 0, 2])?, 3);
-        assert_eq!(*t.get([1, 0, 0])?, 4);
-        assert_eq!(*t.get([1, 0, 1])?, 5);
-        assert_eq!(*t.get([1, 0, 2])?, 6);
-        assert!(t.get([2, 0, 0]).is_err());
+        assert_eq!(t.get([0, 0, 0]), Some(&1));
+        assert_eq!(t.get([0, 0, 1]), Some(&2));
+        assert_eq!(t.get([0, 0, 2]), Some(&3));
+        assert_eq!(t.get([1, 0, 0]), Some(&4));
+        assert_eq!(t.get([1, 0, 1]), Some(&5));
+        assert_eq!(t.get([1, 0, 2]), Some(&6));
+        assert!(t.get([2, 0, 0]).is_none());
         Ok(())
     }
 

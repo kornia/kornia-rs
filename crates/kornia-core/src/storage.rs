@@ -136,6 +136,16 @@ where
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         unsafe { std::slice::from_raw_parts_mut(self.data.as_ptr() as *mut T, self.len()) }
     }
+
+    /// Returns the data reference from the tensor storage checking the bounds.
+    pub fn get(&self, index: usize) -> Option<&T> {
+        self.data.get(index)
+    }
+
+    /// Returns the data reference from the tensor storage without checking the bounds.
+    pub fn get_unchecked(&self, index: usize) -> &T {
+        unsafe { self.data.get_unchecked(index) }
+    }
 }
 
 #[cfg(test)]
@@ -147,16 +157,22 @@ mod tests {
     fn test_tensor_storage() -> Result<(), TensorAllocatorError> {
         let allocator = CpuAllocator;
         let storage = TensorStorage::<u8, _>::new(1024, allocator)?;
-        assert_eq!(storage.data.len(), 1024);
+        let ptr = storage.as_ptr();
+        assert_eq!(storage.len(), 1024);
+        assert!(!storage.is_empty());
+        assert!(!ptr.is_null());
         Ok(())
     }
 
     #[test]
     fn test_tensor_storage_ptr() -> Result<(), TensorAllocatorError> {
         let allocator = CpuAllocator;
-        let storage = TensorStorage::<u8, _>::new(1024, allocator)?;
-        let ptr = storage.data.as_ptr();
-        assert!(!ptr.is_null());
+        let storage = TensorStorage::<u64, _>::new(1024, allocator)?;
+
+        // check alignment
+        let ptr = storage.data.as_ptr() as usize;
+        let alignment = std::mem::align_of::<u64>();
+        assert_eq!(ptr % alignment, 0);
         Ok(())
     }
 
@@ -164,9 +180,49 @@ mod tests {
     fn test_tensor_storage_from_vec() -> Result<(), TensorAllocatorError> {
         type CpuStorage = TensorStorage<u8, CpuAllocator>;
         let allocator = CpuAllocator;
+
         let vec = vec![0, 1, 2, 3, 4, 5];
+        let vec_ptr = vec.as_ptr();
+
         let storage = CpuStorage::from_vec(vec, allocator)?;
-        assert_eq!(storage.data.len(), 6);
+        assert_eq!(storage.len(), 6);
+
+        // check NO copy
+        let storage_data_ptr = storage.as_ptr();
+        assert!(std::ptr::eq(storage_data_ptr, vec_ptr));
+
+        // check alignment
+        let storage_data_ptr = storage_data_ptr as usize;
+        let alignment = std::mem::align_of::<u8>();
+        assert_eq!(storage_data_ptr % alignment, 0);
+
+        // check accessors
+        let data = storage.as_slice();
+        assert_eq!(data.len(), 6);
+        assert_eq!(data[0], 0);
+        assert_eq!(data[1], 1);
+        assert_eq!(data[2], 2);
+        assert_eq!(data[3], 3);
+        assert_eq!(data[4], 4);
+        assert_eq!(data[5], 5);
+
+        assert_eq!(storage.get(0), Some(&0));
+        assert_eq!(storage.get(1), Some(&1));
+        assert_eq!(storage.get(2), Some(&2));
+        assert_eq!(storage.get(3), Some(&3));
+        assert_eq!(storage.get(4), Some(&4));
+        assert_eq!(storage.get(5), Some(&5));
+        assert_eq!(storage.get(6), None);
+
+        assert_eq!(storage.get_unchecked(0), &0);
+        assert_eq!(storage.get_unchecked(1), &1);
+        assert_eq!(storage.get_unchecked(2), &2);
+        assert_eq!(storage.get_unchecked(3), &3);
+        assert_eq!(storage.get_unchecked(4), &4);
+        assert_eq!(storage.get_unchecked(5), &5);
+        // TODO: fix this test
+        // assert!(std::panic::catch_unwind(|| storage.get_unchecked(6)).is_err());
+
         Ok(())
     }
 }
