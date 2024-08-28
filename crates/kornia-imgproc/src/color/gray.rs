@@ -85,8 +85,7 @@ mod tests {
 
     #[test]
     fn gray_from_rgb() -> Result<(), Box<dyn std::error::Error>> {
-        let image_path = std::path::Path::new("../../tests/data/dog.jpeg");
-        let image = F::read_image_any(image_path)?;
+        let image = F::read_image_any("../../tests/data/dog.jpeg")?;
         let image_norm = image.cast_and_scale::<f32>(1. / 255.0)?;
 
         let mut gray = Image::<f32, 1>::from_size_val(image_norm.size(), 0.0)?;
