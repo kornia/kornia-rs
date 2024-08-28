@@ -16,7 +16,6 @@ version.workspace = true
 arrow-buffer = "52.2.0"
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
-ndarray = "0.15.4"
 
 
 [dev-dependencies]
