@@ -20,8 +20,7 @@ use kornia::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
-    let image_path = std::path::Path::new("tests/data/dog.jpeg");
-    let image: Image<u8, 3> = F::read_image_any(image_path)?;
+    let image: Image<u8, 3> = F::read_image_any("tests/data/dog.jpeg")?;
 
     println!("Hello, world! 🦀");
     println!("Loaded Image size: {:?}", image.size());
@@ -116,8 +115,7 @@ use kornia::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
-    let image_path = std::path::Path::new("tests/data/dog.jpeg");
-    let image: Image<u8, 3> = F::read_image_any(image_path)?;
+    let image: Image<u8, 3> = F::read_image_any("tests/data/dog.jpeg")?;
     let image_viz = image.clone();
 
     let image_f32: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
