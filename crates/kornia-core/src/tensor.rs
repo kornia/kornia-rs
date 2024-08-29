@@ -3,6 +3,7 @@ use thiserror::Error;
 use super::{
     allocator::{CpuAllocator, TensorAllocator, TensorAllocatorError},
     storage::{SafeTensorType, TensorStorage},
+    view::TensorView,
 };
 
 /// An error type for tensor operations.
@@ -114,6 +115,15 @@ where
     /// A mutable slice containing the data of the tensor.
     pub fn as_slice_mut(&mut self) -> &mut [T] {
         self.storage.as_mut_slice()
+    }
+
+    /// Get the data of the tensor as a pointer.
+    ///
+    /// # Returns
+    ///
+    /// A pointer to the data of the tensor.
+    pub fn as_ptr(&self) -> *const T {
+        self.storage.as_ptr()
     }
 
     /// Creates a new `Tensor` with the given shape and data.
@@ -290,7 +300,7 @@ where
     /// ```
     pub fn get_unchecked(&self, index: [usize; N]) -> &T {
         let offset = self.get_iter_offset(index);
-        &self.as_slice()[offset]
+        self.storage.get_unchecked(offset)
     }
 
     /// Get the element at the given index, checking if the index is out of bounds.
@@ -316,22 +326,16 @@ where
     ///
     /// let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
     ///
-    /// assert_eq!(*t.get([0, 0]).unwrap(), 1);
-    /// assert_eq!(*t.get([0, 1]).unwrap(), 2);
-    /// assert_eq!(*t.get([1, 0]).unwrap(), 3);
-    /// assert_eq!(*t.get([1, 1]).unwrap(), 4);
+    /// assert_eq!(t.get([0, 0]), Some(&1));
+    /// assert_eq!(t.get([0, 1]), Some(&2));
+    /// assert_eq!(t.get([1, 0]), Some(&3));
+    /// assert_eq!(t.get([1, 1]), Some(&4));
     ///
-    /// assert!(t.get([0, 2]).is_err());
+    /// assert!(t.get([2, 0]).is_none());
     /// ```
-    pub fn get(&self, index: [usize; N]) -> Result<&T, TensorError> {
-        let mut offset = 0;
-        for (i, &idx) in index.iter().enumerate() {
-            if idx >= self.shape[i] {
-                Err(TensorError::IndexOutOfBounds(idx))?;
-            }
-            offset += idx * self.strides[i];
-        }
-        Ok(&self.as_slice()[offset])
+    pub fn get(&self, index: [usize; N]) -> Option<&T> {
+        let offset = self.get_iter_offset(index);
+        self.storage.get(offset)
     }
 
     /// Reshape the tensor to a new shape.
@@ -363,9 +367,9 @@ where
     /// assert_eq!(t2.numel(), 4);
     /// ```
     pub fn reshape<const M: usize>(
-        self,
+        &self,
         shape: [usize; M],
-    ) -> Result<Tensor<T, M, A>, TensorError> {
+    ) -> Result<TensorView<T, M, A>, TensorError> {
         let numel = shape.iter().product::<usize>();
         if numel != self.storage.len() {
             Err(TensorError::InvalidShape(numel))?;
@@ -373,11 +377,49 @@ where
 
         let strides = get_strides_from_shape(shape);
 
-        Ok(Tensor {
-            storage: self.storage,
+        Ok(TensorView {
+            storage: &self.storage,
             shape,
             strides,
         })
+    }
+
+    /// Permute the dimensions of the tensor.
+    ///
+    /// The permutation is given as an array of indices, where the value at each index is the new index of the dimension.
+    /// The data is not moved, only the order of the dimensions is changed.
+    ///
+    /// # Arguments
+    ///
+    /// * `axes` - The new order of the dimensions.
+    ///
+    /// # Returns
+    ///
+    /// A view of the tensor with the dimensions permuted.
+    pub fn permute_axes(&self, axes: [usize; N]) -> TensorView<T, N, A> {
+        let mut new_shape = [0; N];
+        let mut new_strides = [0; N];
+        for (i, &axis) in axes.iter().enumerate() {
+            new_shape[i] = self.shape[axis];
+            new_strides[i] = self.strides[axis];
+        }
+
+        TensorView {
+            storage: &self.storage,
+            shape: new_shape,
+            strides: new_strides,
+        }
+    }
+
+    /// Return a view of the tensor.
+    ///
+    /// The view is a reference to the tensor storage with a different shape and strides.
+    pub fn view(&self) -> TensorView<T, N, A> {
+        TensorView {
+            storage: &self.storage,
+            shape: self.shape,
+            strides: self.strides,
+        }
     }
 
     /// Perform an element-wise operation on two tensors.
@@ -710,11 +752,11 @@ mod tests {
     fn get_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 1>::from_shape_vec([4], data, CpuAllocator)?;
-        assert_eq!(*t.get([0])?, 1);
-        assert_eq!(*t.get([1])?, 2);
-        assert_eq!(*t.get([2])?, 3);
-        assert_eq!(*t.get([3])?, 4);
-        assert!(t.get([4]).is_err());
+        assert_eq!(t.get([0]), Some(&1));
+        assert_eq!(t.get([1]), Some(&2));
+        assert_eq!(t.get([2]), Some(&3));
+        assert_eq!(t.get([3]), Some(&4));
+        assert!(t.get([4]).is_none());
         Ok(())
     }
 
@@ -722,11 +764,11 @@ mod tests {
     fn get_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data, CpuAllocator)?;
-        assert_eq!(*t.get([0, 0])?, 1);
-        assert_eq!(*t.get([0, 1])?, 2);
-        assert_eq!(*t.get([1, 0])?, 3);
-        assert_eq!(*t.get([1, 1])?, 4);
-        assert!(t.get([2, 0]).is_err());
+        assert_eq!(t.get([0, 0]), Some(&1));
+        assert_eq!(t.get([0, 1]), Some(&2));
+        assert_eq!(t.get([1, 0]), Some(&3));
+        assert_eq!(t.get([1, 1]), Some(&4));
+        assert!(t.get([2, 0]).is_none());
         Ok(())
     }
 
@@ -734,13 +776,13 @@ mod tests {
     fn get_3d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
         let t = Tensor::<u8, 3>::from_shape_vec([2, 1, 3], data, CpuAllocator)?;
-        assert_eq!(*t.get([0, 0, 0])?, 1);
-        assert_eq!(*t.get([0, 0, 1])?, 2);
-        assert_eq!(*t.get([0, 0, 2])?, 3);
-        assert_eq!(*t.get([1, 0, 0])?, 4);
-        assert_eq!(*t.get([1, 0, 1])?, 5);
-        assert_eq!(*t.get([1, 0, 2])?, 6);
-        assert!(t.get([2, 0, 0]).is_err());
+        assert_eq!(t.get([0, 0, 0]), Some(&1));
+        assert_eq!(t.get([0, 0, 1]), Some(&2));
+        assert_eq!(t.get([0, 0, 2]), Some(&3));
+        assert_eq!(t.get([1, 0, 0]), Some(&4));
+        assert_eq!(t.get([1, 0, 1]), Some(&5));
+        assert_eq!(t.get([1, 0, 2]), Some(&6));
+        assert!(t.get([2, 0, 0]).is_none());
         Ok(())
     }
 
@@ -869,11 +911,11 @@ mod tests {
     fn reshape_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 1>::from_shape_vec([4], data, CpuAllocator)?;
-        let t2 = t.reshape([2, 2])?;
-        assert_eq!(t2.shape, [2, 2]);
-        assert_eq!(t2.as_slice(), vec![1, 2, 3, 4]);
-        assert_eq!(t2.strides, [2, 1]);
-        assert_eq!(t2.numel(), 4);
+        let view = t.reshape([2, 2])?;
+        assert_eq!(view.shape, [2, 2]);
+        assert_eq!(view.as_slice(), vec![1, 2, 3, 4]);
+        assert_eq!(view.strides, [2, 1]);
+        assert_eq!(view.numel(), 4);
         Ok(())
     }
 
@@ -893,12 +935,48 @@ mod tests {
     fn reshape_get_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 1>::from_shape_vec([4], data, CpuAllocator)?;
-        let t2 = t.reshape([2, 2])?;
-        assert_eq!(*t2.get([0, 0])?, 1);
-        assert_eq!(*t2.get([0, 1])?, 2);
-        assert_eq!(*t2.get([1, 0])?, 3);
-        assert_eq!(*t2.get([1, 1])?, 4);
-        assert_eq!(t2.numel(), 4);
+        let view = t.reshape([2, 2])?;
+        assert_eq!(*view.get_unchecked([0, 0]), 1);
+        assert_eq!(*view.get_unchecked([0, 1]), 2);
+        assert_eq!(*view.get_unchecked([1, 0]), 3);
+        assert_eq!(*view.get_unchecked([1, 1]), 4);
+        assert_eq!(view.numel(), 4);
+        Ok(())
+    }
+
+    #[test]
+    fn permute_axes_1d() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 1>::from_shape_vec([4], data, CpuAllocator)?;
+        let t2 = t.permute_axes([0]);
+        assert_eq!(t2.shape, [4]);
+        assert_eq!(t2.as_slice(), vec![1, 2, 3, 4]);
+        assert_eq!(t2.strides, [1]);
+        Ok(())
+    }
+
+    #[test]
+    fn permute_axes_2d() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2];
+        let t = Tensor::<u8, 2>::from_shape_vec([2, 1], data, CpuAllocator)?;
+        let view = t.permute_axes([1, 0]);
+        assert_eq!(view.shape, [1, 2]);
+        assert_eq!(*view.get_unchecked([0, 0]), 1u8);
+        assert_eq!(*view.get_unchecked([0, 1]), 2u8);
+        assert_eq!(view.strides, [1, 1]);
+        Ok(())
+    }
+
+    #[test]
+    fn transpose_matrix() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 3>::from_shape_vec([1, 2, 2], data, CpuAllocator)?;
+        let t2 = t.permute_axes([0, 2, 1]);
+        assert_eq!(t2.shape, [1, 2, 2]);
+        assert_eq!(*t2.get_unchecked([0, 0, 0]), 1);
+        assert_eq!(*t2.get_unchecked([0, 1, 0]), 2);
+        assert_eq!(*t2.get_unchecked([0, 0, 1]), 3);
+        assert_eq!(*t2.get_unchecked([0, 1, 1]), 4);
         Ok(())
     }
 
@@ -1001,6 +1079,21 @@ mod tests {
             t.as_slice(),
             vec![1, 2, 3, 2, 4, 6, 3, 6, 9, 2, 4, 6, 4, 8, 12, 6, 12, 18]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn view_1d() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 1>::from_shape_vec([4], data, CpuAllocator)?;
+        let view = t.view();
+
+        // check that the view has the same data
+        assert_eq!(view.as_slice(), t.as_slice());
+
+        // check that the data pointer is the same
+        assert!(std::ptr::eq(view.as_ptr(), t.as_ptr()));
+
         Ok(())
     }
 }
