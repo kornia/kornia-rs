@@ -118,9 +118,32 @@ pub fn warp_perspective<const CHANNELS: usize>(
     let xy = stack![ndarray::Axis(2), xx, yy];
 
     // iterate over the output image and find the corresponding position in the input image
+    let src_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (
+                src.height() as usize,
+                src.width() as usize,
+                src.num_channels(),
+            ),
+            src.as_ptr() as *const f32,
+        )
+    };
+
+    let dst_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (
+                dst.height() as usize,
+                dst.width() as usize,
+                dst.num_channels(),
+            ),
+            dst.as_ptr() as *const f32,
+        )
+    };
+    // NOTE: might copy
+    let mut dst_data = dst_data.to_owned();
 
     ndarray::Zip::from(xy.rows())
-        .and(dst.data.rows_mut())
+        .and(dst_data.rows_mut())
         .par_for_each(|uv, mut out| {
             assert_eq!(uv.len(), 2);
             let (u, v) = (uv[0], uv[1]);
@@ -131,7 +154,7 @@ pub fn warp_perspective<const CHANNELS: usize>(
             // TODO: allow for multi-channel images
             // interpolate the pixel value
             let pixels = (0..src.num_channels())
-                .map(|c| interpolate_pixel(&src.data, u_src, v_src, c, interpolation));
+                .map(|c| interpolate_pixel(&src_data, u_src, v_src, c, interpolation));
 
             for (c, pixel) in pixels.enumerate() {
                 out[c] = pixel;
@@ -230,7 +253,7 @@ mod tests {
         assert_eq!(image_transformed.size().width, 2);
         assert_eq!(image_transformed.size().height, 3);
 
-        assert_eq!(image_transformed.data.as_slice().expect(""), image_expected);
+        assert_eq!(image_transformed.as_slice(), image_expected);
 
         Ok(())
     }
@@ -279,14 +302,8 @@ mod tests {
         assert_eq!(image_transformed.size().width, 2);
         assert_eq!(image_transformed.size().height, 2);
 
-        assert_eq!(
-            image_transformed.data.clone().into_raw_vec(),
-            image_expected
-        );
-        assert_eq!(
-            image_transformed.data.into_raw_vec(),
-            image_resized.data.into_raw_vec()
-        );
+        assert_eq!(image_transformed.as_slice(), image_expected);
+        assert_eq!(image_transformed.as_slice(), image_resized.as_slice());
 
         Ok(())
     }

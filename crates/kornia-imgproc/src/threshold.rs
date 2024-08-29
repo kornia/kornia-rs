@@ -1,3 +1,4 @@
+use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
 
 /// Apply a binary threshold to an image.
@@ -36,7 +37,7 @@ pub fn threshold_binary<T, const CHANNELS: usize>(
     max_value: T,
 ) -> Result<(), ImageError>
 where
-    T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
+    T: SafeTensorType,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -47,9 +48,11 @@ where
         ));
     }
 
-    ndarray::Zip::from(&mut dst.data)
-        .and(&src.data)
-        .par_for_each(|out, &inp| {
+    // TODO: parallelize again
+    dst.as_slice_mut()
+        .iter_mut()
+        .zip(src.as_slice())
+        .for_each(|(out, &inp)| {
             *out = if inp > threshold {
                 max_value
             } else {
@@ -96,7 +99,7 @@ pub fn threshold_binary_inverse<T, const CHANNELS: usize>(
     max_value: T,
 ) -> Result<(), ImageError>
 where
-    T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
+    T: SafeTensorType,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -107,9 +110,10 @@ where
         ));
     }
 
-    ndarray::Zip::from(&mut dst.data)
-        .and(&src.data)
-        .par_for_each(|out, &inp| {
+    dst.as_slice_mut()
+        .iter_mut()
+        .zip(src.as_slice())
+        .for_each(|(out, &inp)| {
             *out = if inp > threshold {
                 T::default()
             } else {
@@ -153,7 +157,7 @@ pub fn threshold_truncate<T, const CHANNELS: usize>(
     threshold: T,
 ) -> Result<(), ImageError>
 where
-    T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
+    T: SafeTensorType,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -164,10 +168,12 @@ where
         ));
     }
 
-    ndarray::Zip::from(&mut dst.data)
-        .and(&src.data)
-        .par_for_each(|out, &inp| {
-            *out = if inp > threshold { threshold } else { inp };
+    // TODO: parallelize again
+    dst.as_slice_mut()
+        .iter_mut()
+        .zip(src.as_slice())
+        .for_each(|(out, inp)| {
+            *out = if *inp > threshold { threshold } else { *inp };
         });
 
     Ok(())
@@ -206,7 +212,7 @@ pub fn threshold_to_zero<T, const CHANNELS: usize>(
     threshold: T,
 ) -> Result<(), ImageError>
 where
-    T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
+    T: SafeTensorType,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -217,9 +223,11 @@ where
         ));
     }
 
-    ndarray::Zip::from(&mut dst.data)
-        .and(&src.data)
-        .par_for_each(|out, &inp| {
+    // TODO: parallelize again
+    dst.as_slice_mut()
+        .iter_mut()
+        .zip(src.as_slice())
+        .for_each(|(out, &inp)| {
             *out = if inp > threshold { inp } else { T::default() };
         });
 
@@ -259,7 +267,7 @@ pub fn threshold_to_zero_inverse<T, const CHANNELS: usize>(
     threshold: T,
 ) -> Result<(), ImageError>
 where
-    T: Copy + Clone + Default + Send + Sync + std::cmp::PartialOrd,
+    T: SafeTensorType,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -270,9 +278,11 @@ where
         ));
     }
 
-    ndarray::Zip::from(&mut dst.data)
-        .and(&src.data)
-        .par_for_each(|out, &inp| {
+    // TODO: parallelize again
+    dst.as_slice_mut()
+        .iter_mut()
+        .zip(src.as_slice())
+        .for_each(|(out, &inp)| {
             *out = if inp > threshold { T::default() } else { inp };
         });
 
@@ -327,7 +337,7 @@ pub fn in_range<T, const CHANNELS: usize>(
     upper_bound: &[T; CHANNELS],
 ) -> Result<(), ImageError>
 where
-    T: Sync + std::cmp::PartialOrd,
+    T: SafeTensorType,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -338,8 +348,23 @@ where
         ));
     }
 
-    ndarray::Zip::from(dst.data.rows_mut())
-        .and(src.data.rows())
+    let src_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (src.size().height, src.size().width, CHANNELS),
+            src.as_ptr() as *const T,
+        )
+    };
+
+    let dst_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (dst.size().height, dst.size().width, 1),
+            dst.as_ptr() as *const T,
+        )
+    };
+    let mut dst_data = dst_data.into_owned();
+
+    ndarray::Zip::from(dst_data.rows_mut())
+        .and(src_data.rows())
         .par_for_each(|mut out, inp| {
             let mut is_in_range = true;
             let mut i = 0;
@@ -347,7 +372,11 @@ where
                 is_in_range &= inp[i] >= lower_bound[i] && inp[i] <= upper_bound[i];
                 i += 1;
             }
-            out[0] = if is_in_range { 255 } else { 0 };
+            out[0] = if is_in_range {
+                T::from_usize(255).unwrap()
+            } else {
+                T::default()
+            };
         });
 
     Ok(())
@@ -380,7 +409,7 @@ mod tests {
         assert_eq!(thresholded.size().height, 3);
 
         thresholded
-            .data
+            .as_slice()
             .iter()
             .zip(data_expected.iter())
             .for_each(|(x, y)| {
@@ -411,7 +440,7 @@ mod tests {
         assert_eq!(thresholded.size().height, 3);
 
         thresholded
-            .data
+            .as_slice()
             .iter()
             .zip(data_expected.iter())
             .for_each(|(x, y)| {
@@ -442,7 +471,7 @@ mod tests {
         assert_eq!(thresholded.size().height, 3);
 
         thresholded
-            .data
+            .as_slice()
             .iter()
             .zip(data_expected.iter())
             .for_each(|(x, y)| {
@@ -473,7 +502,7 @@ mod tests {
         assert_eq!(thresholded.size().height, 1);
 
         thresholded
-            .data
+            .as_slice()
             .iter()
             .zip(data_expected.iter())
             .for_each(|(x, y)| {
@@ -504,7 +533,7 @@ mod tests {
         assert_eq!(thresholded.size().height, 1);
 
         thresholded
-            .data
+            .as_slice()
             .iter()
             .zip(data_expected.iter())
             .for_each(|(x, y)| {
@@ -533,8 +562,8 @@ mod tests {
         assert_eq!(thresholded.size().width, 2);
         assert_eq!(thresholded.size().height, 1);
 
-        assert_eq!(thresholded.get_pixel(0, 0, 0)?, 255);
-        assert_eq!(thresholded.get_pixel(1, 0, 0)?, 0);
+        assert_eq!(thresholded.get([0, 0, 0]), Some(&255));
+        assert_eq!(thresholded.get([1, 0, 0]), Some(&0));
 
         Ok(())
     }

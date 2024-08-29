@@ -1,5 +1,5 @@
 use kornia_image::ImageDtype;
-use ndarray::Array3;
+use ndarray::ArrayView3;
 
 /// Kernel for bilinear interpolation
 ///
@@ -15,7 +15,7 @@ use ndarray::Array3;
 /// The interpolated pixel value.
 // TODO: add support for other data types. Maybe use a trait? or template?
 pub(crate) fn bilinear_interpolation<T: ImageDtype>(
-    image: &Array3<T>,
+    image: &ArrayView3<T>,
     u: f32,
     v: f32,
     c: usize,

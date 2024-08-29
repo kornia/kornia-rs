@@ -1,3 +1,4 @@
+use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
 
 /// Flip the input image horizontally.
@@ -34,11 +35,19 @@ pub fn horizontal_flip<T, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
 ) -> Result<Image<T, CHANNELS>, ImageError>
 where
-    T: Copy,
+    T: SafeTensorType,
 {
-    let mut img = image.clone();
+    let img = image.clone();
 
-    img.data
+    let img_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (image.height() as usize, image.width() as usize, CHANNELS),
+            img.as_ptr() as *const T,
+        )
+    };
+    let mut img_data = img_data.to_owned();
+
+    img_data
         .axis_iter_mut(ndarray::Axis(0))
         .for_each(|mut row| {
             let mut i = 0;
@@ -89,11 +98,19 @@ pub fn vertical_flip<T, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
 ) -> Result<Image<T, CHANNELS>, ImageError>
 where
-    T: Copy,
+    T: SafeTensorType,
 {
-    let mut img = image.clone();
+    let img = image.clone();
 
-    img.data
+    let img_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (image.height() as usize, image.width() as usize, CHANNELS),
+            img.as_ptr() as *const T,
+        )
+    };
+    let mut img_data = img_data.to_owned();
+
+    img_data
         .axis_iter_mut(ndarray::Axis(1))
         .for_each(|mut col| {
             let mut i = 0;
@@ -125,10 +142,7 @@ mod tests {
         )?;
         let data_expected = vec![1u8, 0, 3, 2, 5, 4];
         let flipped = super::horizontal_flip(&image)?;
-        assert_eq!(
-            flipped.data.as_slice().expect("could not convert to slice"),
-            &data_expected
-        );
+        assert_eq!(flipped.as_slice(), &data_expected);
         Ok(())
     }
 
@@ -143,10 +157,7 @@ mod tests {
         )?;
         let data_expected = vec![4u8, 5, 2, 3, 0, 1];
         let flipped = super::vertical_flip(&image)?;
-        assert_eq!(
-            flipped.data.as_slice().expect("could not convert to slice"),
-            &data_expected
-        );
+        assert_eq!(flipped.as_slice(), &data_expected);
         Ok(())
     }
 }

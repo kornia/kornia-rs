@@ -36,7 +36,18 @@ use kornia_image::{Image, ImageError};
 /// assert_eq!(mean, [111.25, 112.25, 113.25]);
 /// ```
 pub fn std_mean(image: &Image<u8, 3>) -> (Vec<f64>, Vec<f64>) {
-    let (sum, sq_sum) = image.data.indexed_iter().fold(
+    let image_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (
+                image.height() as usize,
+                image.width() as usize,
+                image.num_channels(),
+            ),
+            image.as_ptr() as *const u8,
+        )
+    };
+
+    let (sum, sq_sum) = image_data.indexed_iter().fold(
         ([0f64; 3], [0f64; 3]),
         |(mut sum, mut sq_sum), ((_, _, c), val)| {
             sum[c] += *val as f64;
@@ -139,10 +150,55 @@ pub fn bitwise_and<const CHANNELS: usize>(
 
     // apply the mask to the image
 
-    ndarray::Zip::from(dst.data.rows_mut())
-        .and(src1.data.rows())
-        .and(src2.data.rows())
-        .and(mask.data.rows())
+    let src1_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (
+                src1.height() as usize,
+                src1.width() as usize,
+                src1.num_channels(),
+            ),
+            src1.as_ptr() as *const u8,
+        )
+    };
+
+    let src2_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (
+                src2.height() as usize,
+                src2.width() as usize,
+                src2.num_channels(),
+            ),
+            src2.as_ptr() as *const u8,
+        )
+    };
+
+    let dst_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (
+                dst.height() as usize,
+                dst.width() as usize,
+                dst.num_channels(),
+            ),
+            dst.as_ptr() as *mut u8,
+        )
+    };
+    let mut dst_data = dst_data.to_owned();
+
+    let mask_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (
+                mask.height() as usize,
+                mask.width() as usize,
+                mask.num_channels(),
+            ),
+            mask.as_ptr() as *const u8,
+        )
+    };
+
+    ndarray::Zip::from(dst_data.rows_mut())
+        .and(src1_data.rows())
+        .and(src2_data.rows())
+        .and(mask_data.rows())
         .par_for_each(|mut out, inp1, inp2, msk| {
             for c in 0..CHANNELS {
                 out[c] = if msk[0] != 0 { inp1[c] & inp2[c] } else { 0 };
@@ -199,7 +255,7 @@ mod tests {
         assert_eq!(output.num_channels(), 3);
 
         assert_eq!(
-            output.data.into_raw_vec(),
+            output.as_slice(),
             vec![0, 1, 2, 0, 0, 0, 128, 129, 130, 0, 0, 0]
         );
         Ok(())

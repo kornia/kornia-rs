@@ -60,8 +60,16 @@ pub fn mse<const CHANNELS: usize>(
             image2.width(),
         ));
     }
-    let diff = &image1.data - &image2.data;
-    Ok(diff.mapv(|x| x.powi(2)).sum() / (image1.data.len() as f32))
+
+    let mse = image1
+        .as_slice()
+        .iter()
+        .zip(image2.as_slice().iter())
+        .map(|(a, b)| (a - b).powi(2))
+        .into_iter()
+        .sum::<f32>();
+
+    Ok(mse / (image1.numel() as f32))
 }
 
 /// Compute the peak signal-to-noise ratio (PSNR) between two images.

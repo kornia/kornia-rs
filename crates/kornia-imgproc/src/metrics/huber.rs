@@ -68,17 +68,21 @@ pub fn huber<const CHANNELS: usize>(
         ));
     }
 
-    Ok(ndarray::Zip::from(&image1.data)
-        .and(&image2.data)
-        .fold(0f32, |acc, &a, &b| {
-            let diff = a - b;
-            if diff.abs() <= delta {
-                acc + 0.5 * diff.powi(2)
-            } else {
-                acc + delta * (diff.abs() - 0.5 * delta)
-            }
-        })
-        / (image1.data.len() as f32))
+    let huber =
+        image1
+            .as_slice()
+            .iter()
+            .zip(image2.as_slice().iter())
+            .fold(0f32, |acc, (&a, &b)| {
+                let diff = a - b;
+                if diff.abs() <= delta {
+                    acc + 0.5 * diff.powi(2)
+                } else {
+                    acc + delta * (diff.abs() - 0.5 * delta)
+                }
+            });
+
+    Ok(huber / (image1.numel() as f32))
 }
 
 #[cfg(test)]

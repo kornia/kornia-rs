@@ -62,8 +62,23 @@ pub fn hsv_from_rgb(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), 
         return Err(ImageError::ChannelIndexOutOfBounds(3, dst.num_channels()));
     }
 
-    ndarray::Zip::from(dst.data.rows_mut())
-        .and(src.data.rows())
+    let src_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (src.size().height as usize, src.size().width as usize, 3),
+            src.as_ptr(),
+        )
+    };
+
+    let dst_data = unsafe {
+        ndarray::ArrayViewMut3::from_shape_ptr(
+            (dst.size().height as usize, dst.size().width as usize, 3),
+            dst.as_ptr() as *mut f32,
+        )
+    };
+    let mut dst_data = dst_data.to_owned();
+
+    ndarray::Zip::from(dst_data.rows_mut())
+        .and(src_data.rows())
         .par_for_each(|mut out, inp| {
             assert_eq!(inp.len(), 3);
             // Normalize the input to the range [0, 1]
