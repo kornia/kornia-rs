@@ -66,7 +66,6 @@ pub fn mse<const CHANNELS: usize>(
         .iter()
         .zip(image2.as_slice().iter())
         .map(|(a, b)| (a - b).powi(2))
-        .into_iter()
         .sum::<f32>();
 
     Ok(mse / (image1.numel() as f32))

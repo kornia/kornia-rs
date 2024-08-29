@@ -351,15 +351,12 @@ where
     let src_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
             (src.size().height, src.size().width, CHANNELS),
-            src.as_ptr() as *const T,
+            src.as_ptr(),
         )
     };
 
     let dst_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr(
-            (dst.size().height, dst.size().width, 1),
-            dst.as_ptr() as *const T,
-        )
+        ndarray::ArrayView3::from_shape_ptr((dst.size().height, dst.size().width, 1), dst.as_ptr())
     };
     let mut dst_data = dst_data.into_owned();
 
@@ -372,12 +369,12 @@ where
                 is_in_range &= inp[i] >= lower_bound[i] && inp[i] <= upper_bound[i];
                 i += 1;
             }
-            out[0] = if is_in_range {
-                T::from_usize(255).unwrap()
-            } else {
-                T::default()
-            };
+            out[0] = if is_in_range { 255 } else { 0 };
         });
+
+    // copy the data back to the destination image
+    dst.as_slice_mut()
+        .copy_from_slice(dst_data.as_slice().unwrap());
 
     Ok(())
 }
@@ -563,7 +560,7 @@ mod tests {
         assert_eq!(thresholded.size().height, 1);
 
         assert_eq!(thresholded.get([0, 0, 0]), Some(&255));
-        assert_eq!(thresholded.get([1, 0, 0]), Some(&0));
+        assert_eq!(thresholded.get([0, 1, 0]), Some(&0));
 
         Ok(())
     }

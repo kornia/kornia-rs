@@ -120,23 +120,15 @@ pub fn warp_perspective<const CHANNELS: usize>(
     // iterate over the output image and find the corresponding position in the input image
     let src_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                src.height() as usize,
-                src.width() as usize,
-                src.num_channels(),
-            ),
-            src.as_ptr() as *const f32,
+            (src.height(), src.width(), src.num_channels()),
+            src.as_ptr(),
         )
     };
 
     let dst_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                dst.height() as usize,
-                dst.width() as usize,
-                dst.num_channels(),
-            ),
-            dst.as_ptr() as *const f32,
+            (dst.height(), dst.width(), dst.num_channels()),
+            dst.as_ptr(),
         )
     };
     // NOTE: might copy
@@ -160,6 +152,10 @@ pub fn warp_perspective<const CHANNELS: usize>(
                 out[c] = pixel;
             }
         });
+
+    // copy the data back to the dst image
+    dst.as_slice_mut()
+        .copy_from_slice(dst_data.as_slice().unwrap());
 
     Ok(())
 }

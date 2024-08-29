@@ -131,8 +131,8 @@ pub fn generate_correction_map_polynomial(
             yarr[0] = ydst as f32;
         });
 
-    let map_x = Image::new(size.clone(), map_x.into_raw_vec()).unwrap();
-    let map_y = Image::new(size.clone(), map_y.into_raw_vec()).unwrap();
+    let map_x = Image::new(*size, map_x.into_raw_vec()).unwrap();
+    let map_y = Image::new(*size, map_y.into_raw_vec()).unwrap();
 
     (map_x, map_y)
 }

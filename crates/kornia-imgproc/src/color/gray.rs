@@ -67,17 +67,11 @@ where
     let bw = T::from(BW).ok_or(ImageError::CastError)?;
 
     let src_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr(
-            (src.size().height as usize, src.size().width as usize, 3),
-            src.as_ptr() as *const T,
-        )
+        ndarray::ArrayView3::from_shape_ptr((src.height(), src.width(), 3), src.as_ptr())
     };
 
     let dst_data = unsafe {
-        ndarray::ArrayViewMut3::from_shape_ptr(
-            (dst.size().height as usize, dst.size().width as usize, 3),
-            dst.as_ptr() as *mut T,
-        )
+        ndarray::ArrayView3::from_shape_ptr((dst.height(), dst.width(), 1), dst.as_ptr())
     };
     let mut dst_data = dst_data.to_owned();
 
@@ -91,12 +85,16 @@ where
             out[0] = rw * r + gw * g + bw * b;
         });
 
+    // copy the data from the temporary array to the output image
+    dst.as_slice_mut()
+        .copy_from_slice(dst_data.as_slice().unwrap());
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use kornia_image::{image, Image};
+    use kornia_image::{ops, Image};
     use kornia_io::functional as F;
 
     #[test]
@@ -104,7 +102,7 @@ mod tests {
         let image = F::read_image_any("../../tests/data/dog.jpeg")?;
 
         let mut image_norm = Image::from_size_val(image.size(), 0.0)?;
-        image::cast_and_scale(&image, &mut image_norm, 1. / 255.0)?;
+        ops::cast_and_scale(&image, &mut image_norm, 1. / 255.0)?;
 
         let mut gray = Image::<f32, 1>::from_size_val(image_norm.size(), 0.0)?;
         super::gray_from_rgb(&image_norm, &mut gray)?;

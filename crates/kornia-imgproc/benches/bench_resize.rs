@@ -4,7 +4,7 @@ use kornia::image::{Image, ImageSize};
 use kornia::imgproc::{interpolation::InterpolationMode, resize};
 
 fn resize_image_crate(image: Image<u8, 3>, new_size: ImageSize) -> Image<u8, 3> {
-    let image_data = image.data.as_slice().unwrap();
+    let image_data = image.as_slice();
     let rgb = image::RgbImage::from_raw(
         image.size().width as u32,
         image.size().height as u32,
@@ -31,7 +31,7 @@ fn bench_resize(c: &mut Criterion) {
         let id = format!("{}x{}", width, height);
         // input image
         let image = Image::<u8, 3>::new(image_size, vec![0u8; width * height * 3]).unwrap();
-        let image_f32 = image.clone().cast::<f32>().unwrap();
+        let image_f32 = image.clone().cast::<f32>();
         // output image
         let new_size = ImageSize {
             width: width / 2,

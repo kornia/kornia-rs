@@ -1,7 +1,5 @@
 use std::ops;
 
-use num_traits::Float;
-
 use kornia_core::{CpuAllocator, SafeTensorType, Tensor3};
 
 use crate::error::ImageError;
@@ -249,7 +247,7 @@ where
             }
         }
 
-        Ok(Image::new(self.size(), channel_data)?)
+        Image::new(self.size(), channel_data)
     }
 
     /// Split the image into its channels.
@@ -286,49 +284,6 @@ where
         Ok(channels)
     }
 
-    /// Apply the power function to the pixel data.
-    ///
-    /// # Arguments
-    ///
-    /// * `n` - The power to raise the pixel data to.
-    ///
-    /// # Returns
-    ///
-    /// A new image with the pixel data raised to the power.
-    pub fn powi(&self, n: i32) -> Self
-    where
-        T: Float,
-    {
-        Self(self.map(|x| x.powi(n)))
-    }
-
-    /// Compute the mean of the pixel data.
-    ///
-    /// # Returns
-    ///
-    /// The mean of the pixel data.
-    pub fn mean(&self) -> Result<T, ImageError>
-    where
-        T: Float,
-    {
-        let data_acc = self.as_slice().iter().fold(T::zero(), |acc, &x| acc + x);
-        let mean = data_acc / T::from(self.as_slice().len()).ok_or(ImageError::CastError)?;
-
-        Ok(mean)
-    }
-
-    /// Compute absolute value of the pixel data.
-    ///
-    /// # Returns
-    ///
-    /// A new image with the pixel data absolute value.
-    pub fn abs(&self) -> Self
-    where
-        T: Float,
-    {
-        Self(self.map(|x| x.abs()))
-    }
-
     /// Get the size of the image in pixels.
     pub fn size(&self) -> ImageSize {
         ImageSize {
@@ -360,6 +315,62 @@ where
     /// Get the number of channels in the image.
     pub fn num_channels(&self) -> usize {
         CHANNELS
+    }
+
+    /// Cast the pixel data to a different type and scale it.
+    ///
+    /// # Arguments
+    ///
+    /// * `scale` - The scale to multiply the pixel data with.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the pixel data cast to the new type and scaled.
+    ///
+    /// # Errors
+    ///
+    /// If the pixel data cannot be cast to the new type, an error is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kornia::image::{Image, ImageSize};
+    ///
+    /// let data = vec![0u8, 0, 255, 0, 0, 255];
+    ///
+    /// let image_u8 = Image::<u8, 3>::new(
+    /// ImageSize {
+    ///   height: 2,
+    ///   width: 1,
+    /// },
+    /// data,
+    /// ).unwrap();
+    ///
+    /// let image_f32 = image_u8.cast_and_scale::<f32>(1. / 255.0).unwrap();
+    ///
+    /// assert_eq!(image_f32.get([1, 0, 2]), Some(&1.0f32));
+    /// ```
+    pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, CHANNELS>, ImageError>
+    where
+        U: Copy
+            + Clone
+            + Default
+            + num_traits::NumCast
+            + std::fmt::Debug
+            + std::ops::Mul<Output = U>
+            + SafeTensorType,
+        T: Copy + num_traits::NumCast + std::fmt::Debug,
+    {
+        let casted_data = self
+            .as_slice()
+            .iter()
+            .map(|&x| {
+                let xu = U::from(x).ok_or(ImageError::CastError)?;
+                Ok(xu * scale)
+            })
+            .collect::<Result<Vec<U>, ImageError>>()?;
+
+        Image::new(self.size(), casted_data)
     }
 
     /// Get the pixel data of the image.
@@ -402,70 +413,9 @@ where
     }
 }
 
-/// Cast the pixel data of an image to a different type.
-///
-/// # Arguments
-///
-/// * `src` - The source image.
-/// * `dst` - The destination image.
-/// * `scale` - The scale to multiply the pixel data with.
-///
-/// Example:
-///
-/// ```
-/// use kornia::image::{Image, ImageSize};
-/// use kornia::image::cast_and_scale;
-///
-/// let image = Image::<u8, 1>::new(
-///  ImageSize {
-///   width: 2,
-///  height: 1,
-/// },
-/// vec![0u8, 255],
-/// ).unwrap();
-///
-/// let mut image_f32 = Image::from_size_val(image.size(), 0.0f32).unwrap();
-///
-/// cast_and_scale(&image, &mut image_f32, 1. / 255.0).unwrap();
-///
-/// assert_eq!(image_f32.get_pixel(0, 0, 0).unwrap(), 0.0f32);
-/// assert_eq!(image_f32.get_pixel(1, 0, 0).unwrap(), 1.0f32);
-/// ```
-
-// TODO: in future move to kornia_core
-pub fn cast_and_scale<T, U, const CHANNELS: usize>(
-    src: &Image<T, CHANNELS>,
-    dst: &mut Image<U, CHANNELS>,
-    scale: U,
-) -> Result<(), ImageError>
-where
-    T: Copy + num_traits::NumCast + SafeTensorType,
-    U: Copy + num_traits::NumCast + std::ops::Mul<U, Output = U> + SafeTensorType,
-{
-    if src.size() != dst.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.width(),
-            src.height(),
-            dst.width(),
-            dst.height(),
-        ));
-    }
-
-    dst.as_slice_mut()
-        .iter_mut()
-        .zip(src.as_slice().iter())
-        .try_for_each(|(out, &inp)| {
-            let x = U::from(inp).ok_or(ImageError::CastError)?;
-            *out = x * scale;
-            Ok::<(), ImageError>(())
-        })?;
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::image::{self, Image, ImageError, ImageSize};
+    use crate::image::{Image, ImageError, ImageSize};
 
     #[test]
     fn image_size() {
@@ -574,27 +524,6 @@ mod tests {
         assert_eq!(channels[0].get([1, 0, 0]), Some(&3.0f32));
         assert_eq!(channels[1].get([1, 0, 0]), Some(&4.0f32));
         assert_eq!(channels[2].get([1, 0, 0]), Some(&5.0f32));
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_cast_and_scale() -> Result<(), ImageError> {
-        let image = Image::<u8, 3>::new(
-            ImageSize {
-                height: 2,
-                width: 1,
-            },
-            vec![0u8, 0, 255, 0, 0, 255],
-        )?;
-
-        let mut image_f64: Image<f64, 3> = Image::from_size_val(image.size(), 0.0)?;
-
-        image::cast_and_scale(&image, &mut image_f64, 1. / 255.0)?;
-
-        let expected = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
-
-        assert_eq!(image_f64.as_slice(), expected);
 
         Ok(())
     }

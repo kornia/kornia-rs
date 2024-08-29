@@ -144,14 +144,14 @@ pub fn warp_affine<const CHANNELS: usize>(
     let src_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
             (src.height(), src.width(), src.num_channels()),
-            src.as_ptr() as *const f32,
+            src.as_ptr(),
         )
     };
 
     let dst_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
             (dst.height(), dst.width(), dst.num_channels()),
-            dst.as_ptr() as *const f32,
+            dst.as_ptr(),
         )
     };
     let mut dst_data = dst_data.to_owned();
@@ -184,6 +184,10 @@ pub fn warp_affine<const CHANNELS: usize>(
                 out[k] = pixel;
             }
         });
+
+    // copy the data back to the dst image
+    dst.as_slice_mut()
+        .copy_from_slice(dst_data.as_slice().unwrap());
 
     Ok(())
 }
@@ -313,7 +317,7 @@ mod tests {
 
         assert_eq!(
             image_transformed.as_slice(),
-            &[2.0f32, 0.0f32, 3.0f32, 1.0f32] //ndarray::array![[[1.0f32], [3.0f32]], [[0.0f32], [2.0f32]]]
+            &[1.0f32, 3.0f32, 0.0f32, 2.0f32]
         );
 
         Ok(())

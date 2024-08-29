@@ -76,23 +76,15 @@ where
 
     let src_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                src.height() as usize,
-                src.width() as usize,
-                src.num_channels(),
-            ),
-            src.as_ptr() as *const T,
+            (src.height(), src.width(), src.num_channels()),
+            src.as_ptr(),
         )
     };
 
     let dst_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                dst.height() as usize,
-                dst.width() as usize,
-                dst.num_channels(),
-            ),
-            dst.as_ptr() as *const T,
+            (dst.height(), dst.width(), dst.num_channels()),
+            dst.as_ptr(),
         )
     };
     // NOTE: might copy
@@ -105,6 +97,10 @@ where
                 out[i] = (inp[i] - mean[i]) / std[i];
             }
         });
+
+    // copy the data back to the dst image
+    dst.as_slice_mut()
+        .copy_from_slice(dst_data.as_slice().unwrap());
 
     Ok(())
 }
@@ -244,23 +240,15 @@ where
 
     let src_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                src.height() as usize,
-                src.width() as usize,
-                src.num_channels(),
-            ),
-            src.as_ptr() as *const T,
+            (src.height(), src.width(), src.num_channels()),
+            src.as_ptr(),
         )
     };
 
     let dst_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                dst.height() as usize,
-                dst.width() as usize,
-                dst.num_channels(),
-            ),
-            dst.as_ptr() as *const T,
+            (dst.height(), dst.width(), dst.num_channels()),
+            dst.as_ptr(),
         )
     };
     // NOTE: might copy
@@ -273,6 +261,10 @@ where
                 out[i] = (inp[i] - min_val) * (max - min) / (max_val - min_val) + min;
             }
         });
+
+    // copy the data back to the dst image
+    dst.as_slice_mut()
+        .copy_from_slice(dst_data.as_slice().unwrap());
 
     Ok(())
 }

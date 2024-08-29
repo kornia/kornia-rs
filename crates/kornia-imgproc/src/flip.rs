@@ -40,10 +40,7 @@ where
     let mut dst = Image::from_size_val(src.size(), T::default())?;
 
     let src_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr(
-            (src.height() as usize, src.width() as usize, CHANNELS),
-            src.as_ptr() as *const T,
-        )
+        ndarray::ArrayView3::from_shape_ptr((src.height(), src.width(), CHANNELS), src.as_ptr())
     };
     let mut src_data = src_data.to_owned();
 
@@ -111,10 +108,7 @@ where
     let mut dst = Image::from_size_val(src.size(), T::default())?;
 
     let src_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr(
-            (src.height() as usize, src.width() as usize, CHANNELS),
-            src.as_ptr() as *const T,
-        )
+        ndarray::ArrayView3::from_shape_ptr((src.height(), src.width(), CHANNELS), src.as_ptr())
     };
     let mut src_data = src_data.to_owned();
 

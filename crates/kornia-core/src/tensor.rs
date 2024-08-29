@@ -1,3 +1,4 @@
+use num_traits::Float;
 use thiserror::Error;
 
 use super::{
@@ -9,6 +10,10 @@ use super::{
 /// An error type for tensor operations.
 #[derive(Error, Debug)]
 pub enum TensorError {
+    /// Error when the cast operation fails.
+    #[error("Failed to cast image data")]
+    CastError,
+
     /// The number of elements in the data does not match the shape of the tensor.
     #[error("The number of elements in the data does not match the shape of the tensor: {0}")]
     InvalidShape(usize),
@@ -662,6 +667,49 @@ where
         }
     }
 
+    /// Apply the power function to the pixel data.
+    ///
+    /// # Arguments
+    ///
+    /// * `n` - The power to raise the pixel data to.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the pixel data raised to the power.
+    pub fn powi(&self, n: i32) -> Tensor<T, N>
+    where
+        T: Float,
+    {
+        self.map(|x| x.powi(n))
+    }
+
+    /// Compute absolute value of the pixel data.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the pixel data absolute value.
+    pub fn abs(&self) -> Tensor<T, N>
+    where
+        T: Float,
+    {
+        self.map(|x| x.abs())
+    }
+
+    /// Compute the mean of the pixel data.
+    ///
+    /// # Returns
+    ///
+    /// The mean of the pixel data.
+    pub fn mean(&self) -> Result<T, TensorError>
+    where
+        T: Float,
+    {
+        let data_acc = self.as_slice().iter().fold(T::zero(), |acc, &x| acc + x);
+        let mean = data_acc / T::from(self.as_slice().len()).ok_or(TensorError::CastError)?;
+
+        Ok(mean)
+    }
+
     /// Cast the tensor to a new type.
     ///
     /// # Returns
@@ -691,6 +739,36 @@ where
             shape: self.shape,
             strides: self.strides,
         }
+    }
+
+    /// Cast the tensor to a new type and scale the pixel data.
+    ///
+    /// # Arguments
+    ///
+    /// * `scale` - The scale factor to apply to the pixel data.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` instance with the data scaled.
+    pub fn cast_and_scale<U>(&self, scale: U) -> Result<Tensor<U, N>, TensorError>
+    where
+        T: num_traits::NumCast + SafeTensorType,
+        U: num_traits::NumCast + std::ops::Mul<U, Output = U> + SafeTensorType,
+    {
+        let data: Vec<U> = self
+            .as_slice()
+            .iter()
+            .map(|x| {
+                let xu = U::from(*x).ok_or(TensorError::CastError)?;
+                Ok(xu * scale)
+            })
+            .collect::<Result<Vec<U>, TensorError>>()?;
+        let storage = TensorStorage::from_vec(data, CpuAllocator);
+        Ok(Tensor {
+            storage,
+            shape: self.shape,
+            strides: self.strides,
+        })
     }
 }
 

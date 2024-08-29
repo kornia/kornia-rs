@@ -59,34 +59,22 @@ where
 
     let src1_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                src1.height() as usize,
-                src1.width() as usize,
-                src1.num_channels(),
-            ),
-            src1.as_ptr() as *const T,
+            (src1.height(), src1.width(), src1.num_channels()),
+            src1.as_ptr(),
         )
     };
 
     let src2_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                src2.height() as usize,
-                src2.width() as usize,
-                src2.num_channels(),
-            ),
-            src2.as_ptr() as *const T,
+            (src2.height(), src2.width(), src2.num_channels()),
+            src2.as_ptr(),
         )
     };
 
     let dst_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                dst.height() as usize,
-                dst.width() as usize,
-                dst.num_channels(),
-            ),
-            dst.as_ptr() as *mut T,
+            (dst.height(), dst.width(), dst.num_channels()),
+            dst.as_ptr(),
         )
     };
     let mut dst_data = dst_data.to_owned();
@@ -99,6 +87,9 @@ where
                 dst_pixel[i] = (src1_pixels[i] * alpha) + (src2_pixels[i] * beta) + gamma;
             }
         });
+
+    dst.as_slice_mut()
+        .copy_from_slice(dst_data.as_slice().unwrap());
 
     Ok(())
 }

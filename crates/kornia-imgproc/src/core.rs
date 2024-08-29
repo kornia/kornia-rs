@@ -38,12 +38,8 @@ use kornia_image::{Image, ImageError};
 pub fn std_mean(image: &Image<u8, 3>) -> (Vec<f64>, Vec<f64>) {
     let image_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                image.height() as usize,
-                image.width() as usize,
-                image.num_channels(),
-            ),
-            image.as_ptr() as *const u8,
+            (image.height(), image.width(), image.num_channels()),
+            image.as_ptr(),
         )
     };
 
@@ -113,7 +109,7 @@ pub fn std_mean(image: &Image<u8, 3>) -> (Vec<f64>, Vec<f64>) {
 /// assert_eq!(output.size().width, 2);
 /// assert_eq!(output.size().height, 2);
 ///
-/// assert_eq!(output.data.as_slice().unwrap(), &vec![0, 1, 2, 0, 0, 0, 128, 129, 130, 0, 0, 0]);
+/// assert_eq!(output.as_slice(), &vec![0, 1, 2, 0, 0, 0, 128, 129, 130, 0, 0, 0]);
 /// ```
 pub fn bitwise_and<const CHANNELS: usize>(
     src1: &Image<u8, CHANNELS>,
@@ -152,46 +148,30 @@ pub fn bitwise_and<const CHANNELS: usize>(
 
     let src1_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                src1.height() as usize,
-                src1.width() as usize,
-                src1.num_channels(),
-            ),
-            src1.as_ptr() as *const u8,
+            (src1.height(), src1.width(), src1.num_channels()),
+            src1.as_ptr(),
         )
     };
 
     let src2_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                src2.height() as usize,
-                src2.width() as usize,
-                src2.num_channels(),
-            ),
-            src2.as_ptr() as *const u8,
+            (src2.height(), src2.width(), src2.num_channels()),
+            src2.as_ptr(),
         )
     };
 
     let dst_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                dst.height() as usize,
-                dst.width() as usize,
-                dst.num_channels(),
-            ),
-            dst.as_ptr() as *mut u8,
+            (dst.height(), dst.width(), dst.num_channels()),
+            dst.as_ptr(),
         )
     };
     let mut dst_data = dst_data.to_owned();
 
     let mask_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                mask.height() as usize,
-                mask.width() as usize,
-                mask.num_channels(),
-            ),
-            mask.as_ptr() as *const u8,
+            (mask.height(), mask.width(), mask.num_channels()),
+            mask.as_ptr(),
         )
     };
 
@@ -204,6 +184,10 @@ pub fn bitwise_and<const CHANNELS: usize>(
                 out[c] = if msk[0] != 0 { inp1[c] & inp2[c] } else { 0 };
             }
         });
+
+    // copy the data back to the output image
+    dst.as_slice_mut()
+        .copy_from_slice(dst_data.as_slice().unwrap());
 
     Ok(())
 }

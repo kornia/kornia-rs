@@ -43,45 +43,29 @@ pub fn remap<const CHANNELS: usize>(
 
     let mapx_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                map_x.height() as usize,
-                map_x.width() as usize,
-                map_x.num_channels(),
-            ),
-            map_x.as_ptr() as *const f32,
+            (map_x.height(), map_x.width(), map_x.num_channels()),
+            map_x.as_ptr(),
         )
     };
 
     let mapy_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                map_y.height() as usize,
-                map_y.width() as usize,
-                map_y.num_channels(),
-            ),
-            map_y.as_ptr() as *const f32,
+            (map_y.height(), map_y.width(), map_y.num_channels()),
+            map_y.as_ptr(),
         )
     };
 
     let src_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                src.height() as usize,
-                src.width() as usize,
-                src.num_channels(),
-            ),
-            src.as_ptr() as *const f32,
+            (src.height(), src.width(), src.num_channels()),
+            src.as_ptr(),
         )
     };
 
     let dst_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (
-                dst.height() as usize,
-                dst.width() as usize,
-                dst.num_channels(),
-            ),
-            dst.as_ptr() as *const f32,
+            (dst.height(), dst.width(), dst.num_channels()),
+            dst.as_ptr(),
         )
     };
     // NOTE: might copy
@@ -96,6 +80,10 @@ pub fn remap<const CHANNELS: usize>(
                 out[c] = interpolate_pixel(&src_data, u, v, c, interpolation);
             }
         });
+
+    // copy the data back to the output image
+    dst.as_slice_mut()
+        .copy_from_slice(dst_data.as_slice().unwrap());
 
     Ok(())
 }
