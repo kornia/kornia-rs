@@ -131,6 +131,15 @@ where
         self.storage.as_ptr()
     }
 
+    /// Get the data of the tensor as a mutable pointer.
+    ///
+    /// # Returns
+    ///
+    /// A mutable pointer to the data of the tensor.
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        self.storage.as_mut_ptr()
+    }
+
     /// Creates a new `Tensor` with the given shape and data.
     ///
     /// # Arguments

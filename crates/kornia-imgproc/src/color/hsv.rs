@@ -66,10 +66,9 @@ pub fn hsv_from_rgb(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), 
         ndarray::ArrayView3::from_shape_ptr((src.height(), src.width(), 3), src.as_ptr())
     };
 
-    let dst_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr((dst.height(), dst.width(), 3), dst.as_ptr())
+    let mut dst_data = unsafe {
+        ndarray::ArrayViewMut3::from_shape_ptr((dst.height(), dst.width(), 3), dst.as_mut_ptr())
     };
-    let mut dst_data = dst_data.to_owned();
 
     ndarray::Zip::from(dst_data.rows_mut())
         .and(src_data.rows())
@@ -114,10 +113,6 @@ pub fn hsv_from_rgb(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), 
             out[1] = s;
             out[2] = v;
         });
-
-    // copy the data back to the output image
-    dst.as_slice_mut()
-        .copy_from_slice(dst_data.as_slice().unwrap());
 
     Ok(())
 }

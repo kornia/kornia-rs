@@ -37,14 +37,16 @@ pub fn horizontal_flip<T, const CHANNELS: usize>(
 where
     T: SafeTensorType,
 {
-    let mut dst = Image::from_size_val(src.size(), T::default())?;
+    let mut dst = src.clone();
 
-    let src_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr((src.height(), src.width(), CHANNELS), src.as_ptr())
+    let mut dst_data = unsafe {
+        ndarray::ArrayViewMut3::from_shape_ptr(
+            (src.height(), src.width(), CHANNELS),
+            dst.as_mut_ptr(),
+        )
     };
-    let mut src_data = src_data.to_owned();
 
-    src_data
+    dst_data
         .axis_iter_mut(ndarray::Axis(0))
         .for_each(|mut row| {
             let mut i = 0;
@@ -57,14 +59,6 @@ where
                 j -= 1;
             }
         });
-
-    // Copy the data back to the image
-    src_data
-        .as_slice()
-        .expect("Failed to get slice")
-        .iter()
-        .zip(dst.as_slice_mut())
-        .for_each(|(src, dst)| *dst = *src);
 
     Ok(dst)
 }
@@ -105,14 +99,16 @@ pub fn vertical_flip<T, const CHANNELS: usize>(
 where
     T: SafeTensorType,
 {
-    let mut dst = Image::from_size_val(src.size(), T::default())?;
+    let mut dst = src.clone();
 
-    let src_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr((src.height(), src.width(), CHANNELS), src.as_ptr())
+    let mut dst_data = unsafe {
+        ndarray::ArrayViewMut3::from_shape_ptr(
+            (src.height(), src.width(), CHANNELS),
+            dst.as_mut_ptr(),
+        )
     };
-    let mut src_data = src_data.to_owned();
 
-    src_data
+    dst_data
         .axis_iter_mut(ndarray::Axis(1))
         .for_each(|mut col| {
             let mut i = 0;
@@ -125,14 +121,6 @@ where
                 j -= 1;
             }
         });
-
-    // put the data back into the image
-    src_data
-        .as_slice()
-        .expect("Failed to get slice")
-        .iter()
-        .zip(dst.as_slice_mut())
-        .for_each(|(src, dst)| *dst = *src);
 
     Ok(dst)
 }

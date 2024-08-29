@@ -77,17 +77,12 @@ impl ImageDtype for u8 {
 #[derive(Clone)]
 /// Represents an image with pixel data.
 ///
-/// The image is represented as a 3D array with shape (H, W, C), where H is the height of the image,
-/// The ownership of the pixel data is mutable so that we can manipulate the image from the outside.
-//pub struct Image<T, const CHANNELS: usize> {
-//    /// The pixel data of the image. Is mutable so that we can manipulate the image
-//    /// from the outside.
-//    pub data: ndarray::Array<T, ndarray::Dim<[ndarray::Ix; 3]>>,
-//}
+/// The image is represented as a 3D Tensor with shape (H, W, C), where H is the height of the image,
 pub struct Image<T, const CHANNELS: usize>(pub Tensor3<T>)
 where
     T: SafeTensorType;
 
+/// helper to deference the inner tensor
 impl<T, const CHANNELS: usize> ops::Deref for Image<T, CHANNELS>
 where
     T: SafeTensorType,
@@ -100,6 +95,7 @@ where
     }
 }
 
+/// helper to deference the inner tensor
 impl<T, const CHANNELS: usize> ops::DerefMut for Image<T, CHANNELS>
 where
     T: SafeTensorType,

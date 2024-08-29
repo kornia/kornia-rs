@@ -160,18 +160,17 @@ pub fn bitwise_and<const CHANNELS: usize>(
         )
     };
 
-    let dst_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr(
-            (dst.height(), dst.width(), dst.num_channels()),
-            dst.as_ptr(),
-        )
-    };
-    let mut dst_data = dst_data.to_owned();
-
     let mask_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
             (mask.height(), mask.width(), mask.num_channels()),
             mask.as_ptr(),
+        )
+    };
+
+    let mut dst_data = unsafe {
+        ndarray::ArrayViewMut3::from_shape_ptr(
+            (dst.height(), dst.width(), dst.num_channels()),
+            dst.as_mut_ptr(),
         )
     };
 
@@ -184,10 +183,6 @@ pub fn bitwise_and<const CHANNELS: usize>(
                 out[c] = if msk[0] != 0 { inp1[c] & inp2[c] } else { 0 };
             }
         });
-
-    // copy the data back to the output image
-    dst.as_slice_mut()
-        .copy_from_slice(dst_data.as_slice().unwrap());
 
     Ok(())
 }

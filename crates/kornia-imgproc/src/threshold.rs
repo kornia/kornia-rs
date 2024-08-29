@@ -355,10 +355,12 @@ where
         )
     };
 
-    let dst_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr((dst.size().height, dst.size().width, 1), dst.as_ptr())
+    let mut dst_data = unsafe {
+        ndarray::ArrayViewMut3::from_shape_ptr(
+            (dst.size().height, dst.size().width, 1),
+            dst.as_mut_ptr(),
+        )
     };
-    let mut dst_data = dst_data.into_owned();
 
     ndarray::Zip::from(dst_data.rows_mut())
         .and(src_data.rows())
@@ -371,10 +373,6 @@ where
             }
             out[0] = if is_in_range { 255 } else { 0 };
         });
-
-    // copy the data back to the destination image
-    dst.as_slice_mut()
-        .copy_from_slice(dst_data.as_slice().unwrap());
 
     Ok(())
 }

@@ -125,6 +125,12 @@ where
         self.data.as_ptr()
     }
 
+    /// Returns the data pointer as a mutable pointer.
+    #[inline]
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        self.as_mut_slice().as_mut_ptr()
+    }
+
     /// Return the data pointer as a slice.
     pub fn as_slice(&self) -> &[T] {
         unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len()) }

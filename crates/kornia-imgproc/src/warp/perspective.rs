@@ -125,14 +125,12 @@ pub fn warp_perspective<const CHANNELS: usize>(
         )
     };
 
-    let dst_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr(
+    let mut dst_data = unsafe {
+        ndarray::ArrayViewMut3::from_shape_ptr(
             (dst.height(), dst.width(), dst.num_channels()),
-            dst.as_ptr(),
+            dst.as_mut_ptr(),
         )
     };
-    // NOTE: might copy
-    let mut dst_data = dst_data.to_owned();
 
     ndarray::Zip::from(xy.rows())
         .and(dst_data.rows_mut())
@@ -152,10 +150,6 @@ pub fn warp_perspective<const CHANNELS: usize>(
                 out[c] = pixel;
             }
         });
-
-    // copy the data back to the dst image
-    dst.as_slice_mut()
-        .copy_from_slice(dst_data.as_slice().unwrap());
 
     Ok(())
 }
