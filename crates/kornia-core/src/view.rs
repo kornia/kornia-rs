@@ -76,7 +76,7 @@ mod tests {
     fn test_tensor_view_from_vec() -> Result<(), TensorAllocatorError> {
         let vec = vec![1, 2, 3, 4, 5, 6, 7, 8];
         let allocator = CpuAllocator;
-        let storage = TensorStorage::<u8, _>::from_vec(vec, allocator)?;
+        let storage = TensorStorage::<u8, _>::from_vec(vec, allocator);
 
         let view = TensorView::<u8, 1, _> {
             storage: &storage,

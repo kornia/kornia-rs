@@ -84,7 +84,7 @@ where
     /// # Safety
     ///
     /// The vector must have the correct length and alignment.
-    pub fn from_vec(vec: Vec<T>, alloc: A) -> Result<Self, TensorAllocatorError> {
+    pub fn from_vec(vec: Vec<T>, alloc: A) -> Self {
         // create immutable buffer from vec
         let buffer = unsafe {
             Buffer::from_custom_allocation(
@@ -95,12 +95,10 @@ where
         };
 
         // create tensor storage
-        let storage = Self {
+        Self {
             data: buffer.into(),
             alloc,
-        };
-
-        Ok(storage)
+        }
     }
 
     /// Returns the allocator used to allocate the tensor storage.
@@ -184,7 +182,7 @@ mod tests {
         let vec = vec![0, 1, 2, 3, 4, 5];
         let vec_ptr = vec.as_ptr();
 
-        let storage = CpuStorage::from_vec(vec, allocator)?;
+        let storage = CpuStorage::from_vec(vec, allocator);
         assert_eq!(storage.len(), 6);
 
         // check NO copy

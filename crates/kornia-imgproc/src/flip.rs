@@ -5,7 +5,7 @@ use kornia_image::{Image, ImageError};
 ///
 /// # Arguments
 ///
-/// * `image` - The input image with shape (H, W, C).
+/// * `src` - The input image with shape (H, W, C).
 ///
 /// # Returns
 ///
@@ -32,26 +32,26 @@ use kornia_image::{Image, ImageError};
 /// assert_eq!(flipped.size().height, 3);
 /// ```
 pub fn horizontal_flip<T, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
+    src: &Image<T, CHANNELS>,
 ) -> Result<Image<T, CHANNELS>, ImageError>
 where
     T: SafeTensorType,
 {
-    let img = image.clone();
+    let mut dst = Image::from_size_val(src.size(), T::default())?;
 
-    let img_data = unsafe {
+    let src_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (image.height() as usize, image.width() as usize, CHANNELS),
-            img.as_ptr() as *const T,
+            (src.height() as usize, src.width() as usize, CHANNELS),
+            src.as_ptr() as *const T,
         )
     };
-    let mut img_data = img_data.to_owned();
+    let mut src_data = src_data.to_owned();
 
-    img_data
+    src_data
         .axis_iter_mut(ndarray::Axis(0))
         .for_each(|mut row| {
             let mut i = 0;
-            let mut j = image.width() - 1;
+            let mut j = src.width() - 1;
             while i < j {
                 for c in 0..CHANNELS {
                     row.swap((i, c), (j, c));
@@ -61,14 +61,22 @@ where
             }
         });
 
-    Ok(img)
+    // Copy the data back to the image
+    src_data
+        .as_slice()
+        .expect("Failed to get slice")
+        .iter()
+        .zip(dst.as_slice_mut())
+        .for_each(|(src, dst)| *dst = *src);
+
+    Ok(dst)
 }
 
 /// Flip the input image vertically.
 ///
 /// # Arguments
 ///
-/// * `image` - The input image with shape (H, W, C).
+/// * `src` - The input image with shape (H, W, C).
 ///
 /// # Returns
 ///
@@ -95,26 +103,26 @@ where
 /// assert_eq!(flipped.size().height, 3);
 /// ```
 pub fn vertical_flip<T, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
+    src: &Image<T, CHANNELS>,
 ) -> Result<Image<T, CHANNELS>, ImageError>
 where
     T: SafeTensorType,
 {
-    let img = image.clone();
+    let mut dst = Image::from_size_val(src.size(), T::default())?;
 
-    let img_data = unsafe {
+    let src_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
-            (image.height() as usize, image.width() as usize, CHANNELS),
-            img.as_ptr() as *const T,
+            (src.height() as usize, src.width() as usize, CHANNELS),
+            src.as_ptr() as *const T,
         )
     };
-    let mut img_data = img_data.to_owned();
+    let mut src_data = src_data.to_owned();
 
-    img_data
+    src_data
         .axis_iter_mut(ndarray::Axis(1))
         .for_each(|mut col| {
             let mut i = 0;
-            let mut j = image.height() - 1;
+            let mut j = src.height() - 1;
             while i < j {
                 for c in 0..CHANNELS {
                     col.swap((i, c), (j, c));
@@ -124,7 +132,15 @@ where
             }
         });
 
-    Ok(img)
+    // put the data back into the image
+    src_data
+        .as_slice()
+        .expect("Failed to get slice")
+        .iter()
+        .zip(dst.as_slice_mut())
+        .for_each(|(src, dst)| *dst = *src);
+
+    Ok(dst)
 }
 
 #[cfg(test)]

@@ -45,8 +45,7 @@ where
             strides,
         } = TensorData::deserialize(deserializer)?;
 
-        let storage_array = TensorStorage::from_vec(data, A::default())
-            .map_err(|_| serde::de::Error::custom("Invalid storage"))?;
+        let storage_array = TensorStorage::from_vec(data, A::default());
 
         let shape_array: [usize; N] = shape
             .try_into()

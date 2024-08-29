@@ -1,4 +1,8 @@
+use std::ops;
+
 use num_traits::Float;
+
+use kornia_core::{CpuAllocator, SafeTensorType, Tensor3};
 
 use crate::error::ImageError;
 
@@ -77,13 +81,41 @@ impl ImageDtype for u8 {
 ///
 /// The image is represented as a 3D array with shape (H, W, C), where H is the height of the image,
 /// The ownership of the pixel data is mutable so that we can manipulate the image from the outside.
-pub struct Image<T, const CHANNELS: usize> {
-    /// The pixel data of the image. Is mutable so that we can manipulate the image
-    /// from the outside.
-    pub data: ndarray::Array<T, ndarray::Dim<[ndarray::Ix; 3]>>,
+//pub struct Image<T, const CHANNELS: usize> {
+//    /// The pixel data of the image. Is mutable so that we can manipulate the image
+//    /// from the outside.
+//    pub data: ndarray::Array<T, ndarray::Dim<[ndarray::Ix; 3]>>,
+//}
+pub struct Image<T, const CHANNELS: usize>(pub Tensor3<T>)
+where
+    T: SafeTensorType;
+
+impl<T, const CHANNELS: usize> ops::Deref for Image<T, CHANNELS>
+where
+    T: SafeTensorType,
+{
+    type Target = Tensor3<T>;
+
+    // Define the deref method to return a reference to the inner Tensor3<T>.
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
-impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
+impl<T, const CHANNELS: usize> ops::DerefMut for Image<T, CHANNELS>
+where
+    T: SafeTensorType,
+{
+    // Define the deref_mut method to return a mutable reference to the inner Tensor3<T>.
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T, const CHANNELS: usize> Image<T, CHANNELS>
+where
+    T: SafeTensorType,
+{
     /// Create a new image from pixel data.
     ///
     /// # Arguments
@@ -126,10 +158,11 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         }
 
         // allocate the image data
-        let data =
-            ndarray::Array::<T, _>::from_shape_vec((size.height, size.width, CHANNELS), data)?;
-
-        Ok(Image { data })
+        Ok(Self(Tensor3::from_shape_vec(
+            [size.height, size.width, CHANNELS],
+            data,
+            CpuAllocator,
+        )?))
     }
 
     /// Create a new image with the given size and default pixel data.
@@ -172,112 +205,20 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Ok(image)
     }
 
-    /// Cast the pixel data to a different type.
-    ///
-    /// # Arguments
-    ///
-    /// * `scale` - The scale to multiply the pixel data with.
+    /// Cast the pixel data of the image to a different type.
     ///
     /// # Returns
     ///
-    /// A new image with the pixel data cast to the new type.
-    ///
-    /// # Errors
-    ///
-    /// If the pixel data cannot be cast to the new type, an error is returned.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use kornia::image::{Image, ImageSize};
-    ///
-    /// let data = vec![0., 1., 2., 3., 4., 5.];
-    ///
-    /// let image_f64 = Image::<f64, 3>::new(
-    ///  ImageSize {
-    ///   height: 2,
-    ///  width: 1,
-    /// },
-    /// data,
-    /// ).unwrap();
-    ///
-    /// assert_eq!(image_f64.data.get((1, 0, 2)).unwrap(), &5.0f64);
-    ///
-    /// let image_u8 = image_f64.cast::<u8>().unwrap();
-    ///
-    /// assert_eq!(image_u8.data.get((1, 0, 2)).unwrap(), &5u8);
-    ///
-    /// let image_i32: Image<i32, 3> = image_u8.cast().unwrap();
-    ///
-    /// assert_eq!(image_i32.data.get((1, 0, 2)).unwrap(), &5i32);
-    /// ```
-    pub fn cast<U>(self) -> Result<Image<U, CHANNELS>, ImageError>
+    /// A new image with the pixel data cast to the given type.
+    pub fn cast<U>(&self) -> Image<U, CHANNELS>
     where
-        U: Clone + Default + num_traits::NumCast + std::fmt::Debug,
-        T: Copy + num_traits::NumCast + std::fmt::Debug,
+        T: Into<U> + SafeTensorType,
+        U: SafeTensorType,
     {
-        let casted_data = self
-            .data
-            .iter()
-            .map(|&x| U::from(x).ok_or(ImageError::CastError))
-            .collect::<Result<Vec<U>, ImageError>>()?;
-
-        Image::new(self.size(), casted_data)
-    }
-
-    /// Cast the pixel data to a different type and scale it.
-    ///
-    /// # Arguments
-    ///
-    /// * `scale` - The scale to multiply the pixel data with.
-    ///
-    /// # Returns
-    ///
-    /// A new image with the pixel data cast to the new type and scaled.
-    ///
-    /// # Errors
-    ///
-    /// If the pixel data cannot be cast to the new type, an error is returned.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use kornia::image::{Image, ImageSize};
-    ///
-    /// let data = vec![0u8, 0, 255, 0, 0, 255];
-    ///
-    /// let image_u8 = Image::<u8, 3>::new(
-    /// ImageSize {
-    ///   height: 2,
-    ///   width: 1,
-    /// },
-    /// data,
-    /// ).unwrap();
-    ///
-    /// let image_f32 = image_u8.cast_and_scale::<f32>(1. / 255.0).unwrap();
-    ///
-    /// assert_eq!(image_f32.data.get((1, 0, 2)).unwrap(), &1.0f32);
-    /// ```
-    pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, CHANNELS>, ImageError>
-    where
-        U: Copy
-            + Clone
-            + Default
-            + num_traits::NumCast
-            + std::fmt::Debug
-            + std::ops::Mul<Output = U>,
-        T: Copy + num_traits::NumCast + std::fmt::Debug,
-    {
-        let casted_data = self
-            .data
-            .iter()
-            .map(|&x| {
-                let xu = U::from(x).ok_or(ImageError::CastError)?;
-                Ok(xu * scale)
-            })
-            .collect::<Result<Vec<U>, ImageError>>()?;
-
-        Image::new(self.size(), casted_data)
+        // TODO: this needs to be optimized and reuse Tensor::cast
+        // something wrong with the deref function to return the inner tensor
+        let data = self.as_slice().iter().map(|x| (*x).into()).collect();
+        Image::new(self.size(), data).unwrap()
     }
 
     /// Get a channel of the image.
@@ -300,11 +241,15 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
             return Err(ImageError::ChannelIndexOutOfBounds(channel, CHANNELS));
         }
 
-        let channel_data = self.data.slice(ndarray::s![.., .., channel..channel + 1]);
+        let mut channel_data = vec![];
 
-        Ok(Image {
-            data: channel_data.to_owned(),
-        })
+        for y in 0..self.height() {
+            for x in 0..self.width() {
+                channel_data.push(*self.get_unchecked([y, x, channel]));
+            }
+        }
+
+        Ok(Image::new(self.size(), channel_data)?)
     }
 
     /// Split the image into its channels.
@@ -341,57 +286,6 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
         Ok(channels)
     }
 
-    /// Multiply the pixel data with a scalar.
-    ///
-    /// # Arguments
-    ///
-    /// * `scale` - The scalar to multiply the pixel data with.
-    ///
-    /// # Returns
-    ///
-    /// A new image with the pixel data multiplied by the scalar.
-    pub fn mul(&self, scale: T) -> Self
-    where
-        T: Copy + std::ops::Mul<Output = T>,
-    {
-        let scaled_data = self.data.map(|&x| x * scale);
-        Image { data: scaled_data }
-    }
-
-    /// Divide the pixel data by a scalar.
-    ///
-    /// # Arguments
-    ///
-    /// * `scale` - The scalar to divide the pixel data by.
-    ///
-    /// # Returns
-    ///
-    /// A new image with the pixel data divided by the scalar.
-    pub fn div(&self, scale: T) -> Self
-    where
-        T: Copy + std::ops::Div<Output = T>,
-    {
-        let scaled_data = self.data.map(|&x| x / scale);
-        Image { data: scaled_data }
-    }
-
-    /// Subtract two images.
-    ///
-    /// # Arguments
-    ///
-    /// * `other` - The other image to add.
-    ///
-    /// # Returns
-    ///
-    /// A new image with the pixel data added.
-    pub fn sub(&self, other: &Self) -> Self
-    where
-        T: Copy + std::ops::Sub<Output = T>,
-    {
-        let diff = &self.data - &other.data;
-        Image { data: diff }
-    }
-
     /// Apply the power function to the pixel data.
     ///
     /// # Arguments
@@ -403,10 +297,9 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// A new image with the pixel data raised to the power.
     pub fn powi(&self, n: i32) -> Self
     where
-        T: Copy + Float,
+        T: Float,
     {
-        let powered_data = self.data.map(|&x| x.powi(n));
-        Image { data: powered_data }
+        Self(self.map(|x| x.powi(n)))
     }
 
     /// Compute the mean of the pixel data.
@@ -416,10 +309,10 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// The mean of the pixel data.
     pub fn mean(&self) -> Result<T, ImageError>
     where
-        T: Copy + Float,
+        T: Float,
     {
-        let data_acc = self.data.fold(T::zero(), |acc, &x| acc + x);
-        let mean = data_acc / T::from(self.data.len()).ok_or(ImageError::CastError)?;
+        let data_acc = self.as_slice().iter().fold(T::zero(), |acc, &x| acc + x);
+        let mean = data_acc / T::from(self.as_slice().len()).ok_or(ImageError::CastError)?;
 
         Ok(mean)
     }
@@ -431,26 +324,16 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// A new image with the pixel data absolute value.
     pub fn abs(&self) -> Self
     where
-        T: Copy + Float,
+        T: Float,
     {
-        let abs_data = self.data.map(|&x| x.abs());
-        Image { data: abs_data }
-    }
-
-    /// Get the size of the image in pixels.
-    #[deprecated(since = "0.1.2", note = "Use `image.size()` instead")]
-    pub fn image_size(&self) -> ImageSize {
-        ImageSize {
-            width: self.width(),
-            height: self.height(),
-        }
+        Self(self.map(|x| x.abs()))
     }
 
     /// Get the size of the image in pixels.
     pub fn size(&self) -> ImageSize {
         ImageSize {
-            width: self.width(),
-            height: self.height(),
+            width: self.shape[1],
+            height: self.shape[0],
         }
     }
 
@@ -466,69 +349,17 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
 
     /// Get the width of the image in pixels.
     pub fn width(&self) -> usize {
-        self.data.shape()[1]
+        self.shape[1]
     }
 
     /// Get the height of the image in pixels.
     pub fn height(&self) -> usize {
-        self.data.shape()[0]
+        self.shape[0]
     }
 
     /// Get the number of channels in the image.
     pub fn num_channels(&self) -> usize {
         CHANNELS
-    }
-
-    /// Get the pixel data of the image as a 4D tensor in NCHW format.
-    ///
-    /// Internally, the image is stored in HWC format, and the function gives
-    /// away ownership of the pixel data.
-    pub fn to_tensor_nchw(self) -> ndarray::Array4<T> {
-        // add batch axis 1xHxWxC
-        let data = self.data.insert_axis(ndarray::Axis(0));
-
-        // permute axes to NHWC -> NCHW
-        data.permuted_axes([0, 3, 1, 2])
-    }
-
-    /// Get the pixel data of the image as a 4D tensor in NHWC format.
-    ///
-    /// Internally, the image is stored in HWC format, and the function gives
-    /// away ownership of the pixel data.
-    pub fn to_tensor_nhwc(self) -> ndarray::Array4<T> {
-        self.data.insert_axis(ndarray::Axis(0))
-    }
-
-    /// Set the pixel data of the image.
-    ///
-    /// NOTE: this is an experimental api
-    ///
-    /// # Arguments
-    ///
-    /// * `x` - The x-coordinate of the pixel.
-    /// * `y` - The y-coordinate of the pixel.
-    /// * `ch` - The channel index of the pixel.
-    /// * `val` - The value to set the pixel to.
-    pub fn set_pixel(&mut self, x: usize, y: usize, ch: usize, val: T) -> Result<(), ImageError>
-    where
-        T: Copy,
-    {
-        if x >= self.width() || y >= self.height() {
-            return Err(ImageError::PixelIndexOutOfBounds(
-                x,
-                y,
-                self.width(),
-                self.height(),
-            ));
-        }
-
-        if ch >= CHANNELS {
-            return Err(ImageError::ChannelIndexOutOfBounds(ch, CHANNELS));
-        }
-
-        self.data[[y, x, ch]] = val;
-
-        Ok(())
     }
 
     /// Get the pixel data of the image.
@@ -544,6 +375,7 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
     /// # Returns
     ///
     /// The pixel value at the given coordinates.
+    #[deprecated(since = "0.1.6", note = "Please use the `get` method instead.")]
     pub fn get_pixel(&self, x: usize, y: usize, ch: usize) -> Result<T, ImageError>
     where
         T: Copy,
@@ -561,7 +393,12 @@ impl<T, const CHANNELS: usize> Image<T, CHANNELS> {
             return Err(ImageError::ChannelIndexOutOfBounds(ch, CHANNELS));
         }
 
-        Ok(self.data[[y, x, ch]])
+        let val = match self.get([y, x, ch]) {
+            Some(v) => v,
+            None => return Err(ImageError::ImageDataNotContiguous),
+        };
+
+        Ok(*val)
     }
 }
 
@@ -602,8 +439,8 @@ pub fn cast_and_scale<T, U, const CHANNELS: usize>(
     scale: U,
 ) -> Result<(), ImageError>
 where
-    T: Copy + num_traits::NumCast,
-    U: Copy + num_traits::NumCast + std::ops::Mul<U, Output = U>,
+    T: Copy + num_traits::NumCast + SafeTensorType,
+    U: Copy + num_traits::NumCast + std::ops::Mul<U, Output = U> + SafeTensorType,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -614,19 +451,9 @@ where
         ));
     }
 
-    let src_data = src
-        .data
-        .as_slice()
-        .ok_or(ImageError::ImageDataNotContiguous)?;
-
-    let dst_data = dst
-        .data
-        .as_slice_mut()
-        .ok_or(ImageError::ImageDataNotContiguous)?;
-
-    dst_data
+    dst.as_slice_mut()
         .iter_mut()
-        .zip(src_data.iter())
+        .zip(src.as_slice().iter())
         .try_for_each(|(out, &inp)| {
             let x = U::from(inp).ok_or(ImageError::CastError)?;
             *out = x * scale;
@@ -684,21 +511,18 @@ mod tests {
 
     #[test]
     fn image_cast() -> Result<(), ImageError> {
-        let data = vec![0., 1., 2., 3., 4., 5.];
-        let image_f64 = Image::<f64, 3>::new(
+        let data = vec![0, 1, 2, 3, 4, 5];
+        let image_u8 = Image::<_, 3>::new(
             ImageSize {
                 height: 2,
                 width: 1,
             },
             data,
         )?;
-        assert_eq!(image_f64.data.get((1, 0, 2)).unwrap(), &5.0f64);
+        assert_eq!(image_u8.get([1, 0, 2]), Some(&5u8));
 
-        let image_u8 = image_f64.cast::<u8>()?;
-        assert_eq!(image_u8.data.get((1, 0, 2)).unwrap(), &5u8);
-
-        let image_i32: Image<i32, 3> = image_u8.cast()?;
-        assert_eq!(image_i32.data.get((1, 0, 2)).unwrap(), &5i32);
+        let image_i32: Image<i32, 3> = image_u8.cast();
+        assert_eq!(image_i32.get([1, 0, 2]), Some(&5i32));
 
         Ok(())
     }
@@ -730,7 +554,7 @@ mod tests {
         )?;
 
         let channel = image.channel(2)?;
-        assert_eq!(channel.data.get((1, 0, 0)).unwrap(), &5.0f32);
+        assert_eq!(channel.get([1, 0, 0]), Some(&5.0f32));
 
         Ok(())
     }
@@ -747,30 +571,9 @@ mod tests {
         .unwrap();
         let channels = image.split_channels()?;
         assert_eq!(channels.len(), 3);
-        assert_eq!(channels[0].data.get((1, 0, 0)).unwrap(), &3.0f32);
-        assert_eq!(channels[1].data.get((1, 0, 0)).unwrap(), &4.0f32);
-        assert_eq!(channels[2].data.get((1, 0, 0)).unwrap(), &5.0f32);
-
-        Ok(())
-    }
-
-    #[test]
-    fn convert_to_tensor() -> Result<(), ImageError> {
-        let image = Image::<f32, 3>::new(
-            ImageSize {
-                height: 2,
-                width: 1,
-            },
-            vec![0., 1., 2., 3., 4., 5.],
-        )?;
-
-        let tensor_nchw = image.clone().to_tensor_nchw();
-        assert_eq!(tensor_nchw.shape(), &[1, 3, 2, 1]);
-        assert_eq!(tensor_nchw[[0, 2, 1, 0]], 5.0f32);
-
-        let tensor_nhwc = image.to_tensor_nhwc();
-        assert_eq!(tensor_nhwc.shape(), &[1, 2, 1, 3]);
-        assert_eq!(tensor_nhwc[[0, 1, 0, 2]], 5.0f32);
+        assert_eq!(channels[0].get([1, 0, 0]), Some(&3.0f32));
+        assert_eq!(channels[1].get([1, 0, 0]), Some(&4.0f32));
+        assert_eq!(channels[2].get([1, 0, 0]), Some(&5.0f32));
 
         Ok(())
     }
@@ -791,7 +594,7 @@ mod tests {
 
         let expected = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
 
-        assert_eq!(image_f64.data.into_raw_vec(), expected);
+        assert_eq!(image_f64.as_slice(), expected);
 
         Ok(())
     }

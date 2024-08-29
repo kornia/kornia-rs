@@ -65,7 +65,7 @@ pub fn hsv_from_rgb(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), 
     let src_data = unsafe {
         ndarray::ArrayView3::from_shape_ptr(
             (src.size().height as usize, src.size().width as usize, 3),
-            src.as_ptr(),
+            src.as_ptr() as *const f32,
         )
     };
 
