@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // read the image
-    let img = F::read_image_any(&args.image_path)?;
+    let img = F::read_image_any(args.image_path)?;
 
     // the intrinsic parameters of an Oak-D camera
     let intrinsic = CameraIntrinsic {
@@ -64,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // apply the remap
     let mut img_undistorted = Image::from_size_val(img.size(), 0.0)?;
     imgproc::interpolation::remap(
-        &img.clone().cast()?,
+        &img.clone().cast_and_scale(1.0 / 255.0)?,
         &mut img_undistorted,
         &map_x,
         &map_y,
@@ -76,20 +76,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     rec.log(
         "img",
-        &rerun::Image::from_elements(
-            img.data.as_slice().expect("Failed to get image data"),
-            img.size().into(),
-            rerun::ColorModel::RGB,
-        ),
+        &rerun::Image::from_elements(img.as_slice(), img.size().into(), rerun::ColorModel::RGB),
     )?;
 
     rec.log(
         "img_undistorted",
         &rerun::Image::from_elements(
-            img_undistorted
-                .data
-                .as_slice()
-                .expect("Failed to get image data"),
+            img_undistorted.as_slice(),
             img_undistorted.size().into(),
             rerun::ColorModel::RGB,
         ),

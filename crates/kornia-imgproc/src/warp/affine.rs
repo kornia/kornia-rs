@@ -141,9 +141,22 @@ pub fn warp_affine<const CHANNELS: usize>(
     let xy = stack![ndarray::Axis(2), xx, yy];
 
     // iterate over the output image and interpolate the pixel values
+    let src_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (src.height(), src.width(), src.num_channels()),
+            src.as_ptr(),
+        )
+    };
+
+    let mut dst_data = unsafe {
+        ndarray::ArrayViewMut3::from_shape_ptr(
+            (dst.height(), dst.width(), dst.num_channels()),
+            dst.as_mut_ptr(),
+        )
+    };
 
     ndarray::Zip::from(xy.rows())
-        .and(dst.data.rows_mut())
+        .and(dst_data.rows_mut())
         .par_for_each(|uv, mut out| {
             assert_eq!(uv.len(), 2);
             let (u, v) = (uv[0], uv[1]);
@@ -163,7 +176,7 @@ pub fn warp_affine<const CHANNELS: usize>(
 
             // compute the pixel values for each channel
             let pixels = (0..src.num_channels())
-                .map(|k| interpolate_pixel(&src.data, u_src, v_src, k, interpolation));
+                .map(|k| interpolate_pixel(&src_data, u_src, v_src, k, interpolation));
 
             // write the pixel values to the output image
             for (k, pixel) in pixels.enumerate() {
@@ -266,7 +279,7 @@ mod tests {
             super::InterpolationMode::Nearest,
         )?;
 
-        assert_eq!(image_transformed.data, image.data);
+        assert_eq!(image_transformed.as_slice(), image.as_slice());
         assert_eq!(image_transformed.size(), image.size());
 
         Ok(())
@@ -298,8 +311,8 @@ mod tests {
         )?;
 
         assert_eq!(
-            image_transformed.data,
-            ndarray::array![[[1.0f32], [3.0f32]], [[0.0f32], [2.0f32]]]
+            image_transformed.as_slice(),
+            &[1.0f32, 3.0f32, 0.0f32, 2.0f32]
         );
 
         Ok(())

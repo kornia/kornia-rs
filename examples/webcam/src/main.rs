@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 use kornia::{
-    image::{image, Image, ImageSize},
+    image::{ops, Image, ImageSize},
     imgproc,
     io::{
         fps_counter::FpsCounter,
@@ -96,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
 
             // convert the image to f32 and normalize before processing
-            image::cast_and_scale(&img_resized, &mut img_f32, 1. / 255.)?;
+            ops::cast_and_scale(&img_resized, &mut img_f32, 1. / 255.)?;
 
             // convert the image to grayscale and binarize
             imgproc::color::gray_from_rgb(&img_f32, &mut gray)?;
@@ -112,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             rec.log_static(
                 "image",
                 &rerun::Image::from_elements(
-                    img.data.as_slice().expect("Failed to get image data"),
+                    img.as_slice(),
                     img.size().into(),
                     rerun::ColorModel::RGB,
                 ),
@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             rec.log_static(
                 "binary",
                 &rerun::Image::from_elements(
-                    bin.data.as_slice().expect("Failed to get image data"),
+                    bin.as_slice(),
                     bin.size().into(),
                     rerun::ColorModel::L,
                 ),

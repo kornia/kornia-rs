@@ -11,6 +11,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+kornia-core.workspace = true
 
 # external
 ndarray = { version = "0.15", features = ["rayon"] }

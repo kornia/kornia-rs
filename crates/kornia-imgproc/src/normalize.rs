@@ -1,3 +1,4 @@
+use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
 
 /// Normalize an image using the mean and standard deviation.
@@ -56,7 +57,13 @@ pub fn normalize_mean_std<T, const CHANNELS: usize>(
     std: &[T; CHANNELS],
 ) -> Result<(), ImageError>
 where
-    T: num_traits::Float + num_traits::FromPrimitive + std::fmt::Debug + Send + Sync + Copy,
+    T: num_traits::Float
+        + num_traits::FromPrimitive
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + Copy
+        + SafeTensorType,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -67,8 +74,22 @@ where
         ));
     }
 
-    ndarray::Zip::from(dst.data.rows_mut())
-        .and(src.data.rows())
+    let src_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (src.height(), src.width(), src.num_channels()),
+            src.as_ptr(),
+        )
+    };
+
+    let mut dst_data = unsafe {
+        ndarray::ArrayViewMut3::from_shape_ptr(
+            (dst.height(), dst.width(), dst.num_channels()),
+            dst.as_mut_ptr(),
+        )
+    };
+
+    ndarray::Zip::from(dst_data.rows_mut())
+        .and(src_data.rows())
         .par_for_each(|mut out, inp| {
             for i in 0..CHANNELS {
                 out[i] = (inp[i] - mean[i]) / std[i];
@@ -117,10 +138,11 @@ pub fn find_min_max<T, const CHANNELS: usize>(
     image: &Image<T, CHANNELS>,
 ) -> Result<(T, T), ImageError>
 where
-    T: PartialOrd + Copy,
+    T: SafeTensorType,
+    //T: PartialOrd + Copy,
 {
     // get the first element in the image
-    let first_element = match image.data.iter().next() {
+    let first_element = match image.as_slice().iter().next() {
         Some(x) => x,
         None => return Err(ImageError::ImageDataNotInitialized),
     };
@@ -128,7 +150,7 @@ where
     let mut min = first_element;
     let mut max = first_element;
 
-    for x in image.data.iter() {
+    for x in image.as_slice().iter() {
         if x < min {
             min = x;
         }
@@ -196,7 +218,8 @@ where
         + Send
         + Sync
         + Copy
-        + Default,
+        + Default
+        + SafeTensorType,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -209,8 +232,22 @@ where
 
     let (min_val, max_val) = find_min_max(src)?;
 
-    ndarray::Zip::from(dst.data.rows_mut())
-        .and(src.data.rows())
+    let src_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (src.height(), src.width(), src.num_channels()),
+            src.as_ptr(),
+        )
+    };
+
+    let mut dst_data = unsafe {
+        ndarray::ArrayViewMut3::from_shape_ptr(
+            (dst.height(), dst.width(), dst.num_channels()),
+            dst.as_mut_ptr(),
+        )
+    };
+
+    ndarray::Zip::from(dst_data.rows_mut())
+        .and(src_data.rows())
         .par_for_each(|mut out, inp| {
             for i in 0..CHANNELS {
                 out[i] = (inp[i] - min_val) * (max - min) / (max_val - min_val) + min;
@@ -254,7 +291,7 @@ mod tests {
         assert_eq!(normalized.size().height, 2);
 
         normalized
-            .data
+            .as_slice()
             .iter()
             .zip(image_expected.iter())
             .for_each(|(a, b)| {
@@ -311,7 +348,7 @@ mod tests {
         assert_eq!(normalized.size().height, 2);
 
         normalized
-            .data
+            .as_slice()
             .iter()
             .zip(image_expected.iter())
             .for_each(|(a, b)| {

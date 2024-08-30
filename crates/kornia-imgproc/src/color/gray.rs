@@ -1,3 +1,4 @@
+use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
 
 /// Define the RGB weights for the grayscale conversion.
@@ -42,7 +43,7 @@ const BW: f64 = 0.114;
 /// ```
 pub fn gray_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 1>) -> Result<(), ImageError>
 where
-    T: Default + Copy + Clone + Send + Sync + num_traits::Float,
+    T: Default + Copy + Clone + Send + Sync + num_traits::Float + SafeTensorType,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -65,8 +66,16 @@ where
     let gw = T::from(GW).ok_or(ImageError::CastError)?;
     let bw = T::from(BW).ok_or(ImageError::CastError)?;
 
-    ndarray::Zip::from(dst.data.rows_mut())
-        .and(src.data.rows())
+    let src_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr((src.height(), src.width(), 3), src.as_ptr())
+    };
+
+    let mut dst_data = unsafe {
+        ndarray::ArrayViewMut3::from_shape_ptr((dst.height(), dst.width(), 1), dst.as_mut_ptr())
+    };
+
+    ndarray::Zip::from(dst_data.rows_mut())
+        .and(src_data.rows())
         .par_for_each(|mut out, inp| {
             assert_eq!(inp.len(), 3);
             let r = inp[0];
@@ -80,13 +89,15 @@ where
 
 #[cfg(test)]
 mod tests {
-    use kornia_image::Image;
+    use kornia_image::{ops, Image};
     use kornia_io::functional as F;
 
     #[test]
     fn gray_from_rgb() -> Result<(), Box<dyn std::error::Error>> {
         let image = F::read_image_any("../../tests/data/dog.jpeg")?;
-        let image_norm = image.cast_and_scale::<f32>(1. / 255.0)?;
+
+        let mut image_norm = Image::from_size_val(image.size(), 0.0)?;
+        ops::cast_and_scale(&image, &mut image_norm, 1. / 255.0)?;
 
         let mut gray = Image::<f32, 1>::from_size_val(image_norm.size(), 0.0)?;
         super::gray_from_rgb(&image_norm, &mut gray)?;

@@ -1,3 +1,4 @@
+use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
 
 /// Performs weighted addition of two images `src1` and `src2` with weights `alpha`
@@ -30,7 +31,13 @@ pub fn add_weighted<T, const CHANNELS: usize>(
     gamma: T,
 ) -> Result<(), ImageError>
 where
-    T: num_traits::Float + num_traits::FromPrimitive + std::fmt::Debug + Send + Sync + Copy,
+    T: num_traits::Float
+        + num_traits::FromPrimitive
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + Copy
+        + SafeTensorType,
 {
     if src1.size() != src2.size() {
         return Err(ImageError::InvalidImageSize(
@@ -50,9 +57,30 @@ where
         ));
     }
 
-    ndarray::Zip::from(dst.data.rows_mut())
-        .and(src1.data.rows())
-        .and(src2.data.rows())
+    let src1_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (src1.height(), src1.width(), src1.num_channels()),
+            src1.as_ptr(),
+        )
+    };
+
+    let src2_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (src2.height(), src2.width(), src2.num_channels()),
+            src2.as_ptr(),
+        )
+    };
+
+    let mut dst_data = unsafe {
+        ndarray::ArrayViewMut3::from_shape_ptr(
+            (dst.height(), dst.width(), dst.num_channels()),
+            dst.as_mut_ptr(),
+        )
+    };
+
+    ndarray::Zip::from(dst_data.rows_mut())
+        .and(src1_data.rows())
+        .and(src2_data.rows())
         .for_each(|mut dst_pixel, src1_pixels, src2_pixels| {
             for i in 0..CHANNELS {
                 dst_pixel[i] = (src1_pixels[i] * alpha) + (src2_pixels[i] * beta) + gamma;
@@ -94,7 +122,7 @@ mod tests {
         super::add_weighted(&src1, alpha, &src2, &mut weighted, beta, gamma)?;
 
         weighted
-            .data
+            .as_slice()
             .iter()
             .zip(expected.iter())
             .for_each(|(a, b)| {

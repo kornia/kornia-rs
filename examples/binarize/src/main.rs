@@ -14,14 +14,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // read the image
-    let image: Image<u8, 3> = F::read_image_any(&args.image_path)?;
+    let image: Image<u8, 3> = F::read_image_any(args.image_path)?;
 
     // binarize the image as u8
     let mut bin = Image::<u8, 3>::from_size_val(image.size(), 0)?;
     imgproc::threshold::threshold_binary(&image, &mut bin, 127, 255)?;
 
     // normalize the image between 0 and 1
-    let image_f32: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
+    let image_f32 = image.cast_and_scale::<f32>(1.0 / 255.0)?;
 
     // convert to grayscale as floating point
     let mut gray = Image::<f32, 1>::from_size_val(image_f32.size(), 0.0)?;
@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     rec.log(
         "image",
         &rerun::Image::from_elements(
-            image_f32.data.as_slice().expect("Failed to get data"),
+            image_f32.as_slice(),
             image_f32.size().into(),
             rerun::ColorModel::RGB,
         ),
@@ -45,17 +45,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     rec.log(
         "gray",
-        &rerun::Image::from_elements(
-            gray.data.as_slice().expect("Failed to get data"),
-            gray.size().into(),
-            rerun::ColorModel::L,
-        ),
+        &rerun::Image::from_elements(gray.as_slice(), gray.size().into(), rerun::ColorModel::L),
     )?;
 
     rec.log(
         "gray_bin",
         &rerun::Image::from_elements(
-            gray_bin.data.as_slice().expect("Failed to get data"),
+            gray_bin.as_slice(),
             gray_bin.size().into(),
             rerun::ColorModel::L,
         ),

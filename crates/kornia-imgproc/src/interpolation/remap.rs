@@ -41,13 +41,41 @@ pub fn remap<const CHANNELS: usize>(
         ));
     }
 
-    ndarray::Zip::from(dst.data.rows_mut())
-        .and(map_x.data.rows())
-        .and(map_y.data.rows())
+    let mapx_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (map_x.height(), map_x.width(), map_x.num_channels()),
+            map_x.as_ptr(),
+        )
+    };
+
+    let mapy_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (map_y.height(), map_y.width(), map_y.num_channels()),
+            map_y.as_ptr(),
+        )
+    };
+
+    let src_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (src.height(), src.width(), src.num_channels()),
+            src.as_ptr(),
+        )
+    };
+
+    let mut dst_data = unsafe {
+        ndarray::ArrayViewMut3::from_shape_ptr(
+            (dst.height(), dst.width(), dst.num_channels()),
+            dst.as_mut_ptr(),
+        )
+    };
+
+    ndarray::Zip::from(dst_data.rows_mut())
+        .and(mapx_data.rows())
+        .and(mapy_data.rows())
         .par_for_each(|mut out, u, v| {
             let (u, v) = (u[0], v[0]);
             for c in 0..CHANNELS {
-                out[c] = interpolate_pixel(&src.data, u, v, c, interpolation);
+                out[c] = interpolate_pixel(&src_data, u, v, c, interpolation);
             }
         });
 
@@ -104,7 +132,11 @@ mod tests {
         assert_eq!(image_transformed.size().width, 2);
         assert_eq!(image_transformed.size().height, 2);
 
-        for (a, b) in image_transformed.data.iter().zip(expected.data.iter()) {
+        for (a, b) in image_transformed
+            .as_slice()
+            .iter()
+            .zip(expected.as_slice().iter())
+        {
             assert!((a - b).abs() < 1e-6);
         }
 

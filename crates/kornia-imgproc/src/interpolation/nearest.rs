@@ -1,5 +1,5 @@
 use kornia_image::ImageDtype;
-use ndarray::Array3;
+use ndarray::ArrayView3;
 
 /// Kernel for nearest neighbor interpolation
 ///
@@ -14,7 +14,7 @@ use ndarray::Array3;
 ///
 /// The interpolated pixel value.
 pub(crate) fn nearest_neighbor_interpolation<T: ImageDtype>(
-    image: &Array3<T>,
+    image: &ArrayView3<T>,
     u: f32,
     v: f32,
     c: usize,
