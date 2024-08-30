@@ -31,7 +31,7 @@ fn bench_resize(c: &mut Criterion) {
         let id = format!("{}x{}", width, height);
         // input image
         let image = Image::<u8, 3>::new(image_size, vec![0u8; width * height * 3]).unwrap();
-        let image_f32 = image.clone().cast::<f32>();
+        let image_f32 = image.clone().cast::<f32>().unwrap();
         // output image
         let new_size = ImageSize {
             width: width / 2,

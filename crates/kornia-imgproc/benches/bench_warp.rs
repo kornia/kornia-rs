@@ -17,7 +17,7 @@ fn bench_warp_affine(c: &mut Criterion) {
         let id = format!("{}x{}", width, height);
         // input image
         let image = Image::<u8, 3>::new(image_size, vec![0u8; width * height * 3]).unwrap();
-        let image_f32 = image.clone().cast::<f32>();
+        let image_f32 = image.clone().cast::<f32>().unwrap();
         // output image
         let mut output = Image::<f32, 3>::from_size_val(image_size, 0.0).unwrap();
         let m = get_rotation_matrix2d((width as f32 / 2.0, height as f32 / 2.0), 45.0, 1.0);

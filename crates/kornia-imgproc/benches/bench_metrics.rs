@@ -13,7 +13,7 @@ fn bench_mse(c: &mut Criterion) {
         let image_size = ImageSize { width, height };
         let id = format!("{}x{}", width, height);
         let image = Image::<u8, 3>::new(image_size, vec![0u8; width * height * 3]).unwrap();
-        let image_f32 = image.cast::<f32>();
+        let image_f32 = image.cast::<f32>().unwrap();
         group.bench_with_input(BenchmarkId::new("mapv", &id), &image_f32, |b, i| {
             b.iter(|| metrics::mse(black_box(i), black_box(i)))
         });

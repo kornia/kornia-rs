@@ -220,7 +220,7 @@ where
             })
             .collect::<Result<Vec<U>, ImageError>>()?;
 
-        Ok(Image::new(self.size(), casted_data)?)
+        Image::new(self.size(), casted_data)
     }
 
     /// Get a channel of the image.

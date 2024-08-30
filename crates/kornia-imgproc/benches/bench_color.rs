@@ -43,7 +43,7 @@ fn bench_grayscale(c: &mut Criterion) {
         // input image
         let image_data = vec![0u8; width * height * 3];
         let image = Image::new(ImageSize { width, height }, image_data).unwrap();
-        let image_f32 = image.clone().cast::<f32>();
+        let image_f32 = image.clone().cast::<f32>().unwrap();
         // output image
         let mut gray = Image::from_size_val(image.size(), 0.0).unwrap();
         group.bench_with_input(BenchmarkId::new("zip", &id), &image_f32, |b, _i| {
