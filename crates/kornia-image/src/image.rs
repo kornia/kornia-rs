@@ -57,6 +57,7 @@ impl From<ImageSize> for [u32; 2] {
 /// Trait for image data types.
 ///
 /// Send and Sync is required for ndarray::Zip::par_for_each
+// TODO: replace this with ConverTo once we have a better solution
 pub trait ImageDtype: Copy + Default + Into<f32> + Send + Sync {
     /// Convert a f32 value to the image data type.
     fn from_f32(x: f32) -> Self;
@@ -204,15 +205,22 @@ where
     /// # Returns
     ///
     /// A new image with the pixel data cast to the given type.
-    pub fn cast<U>(&self) -> Image<U, CHANNELS>
+    pub fn cast<U>(&self) -> Result<Image<U, CHANNELS>, ImageError>
     where
-        T: Into<U> + SafeTensorType,
-        U: SafeTensorType,
+        U: num_traits::NumCast + SafeTensorType,
+        T: num_traits::NumCast,
     {
         // TODO: this needs to be optimized and reuse Tensor::cast
-        // something wrong with the deref function to return the inner tensor
-        let data = self.as_slice().iter().map(|x| (*x).into()).collect();
-        Image::new(self.size(), data).unwrap()
+        let casted_data = self
+            .as_slice()
+            .iter()
+            .map(|&x| {
+                let xu = U::from(x).ok_or(ImageError::CastError)?;
+                Ok(xu)
+            })
+            .collect::<Result<Vec<U>, ImageError>>()?;
+
+        Ok(Image::new(self.size(), casted_data)?)
     }
 
     /// Get a channel of the image.
@@ -348,14 +356,8 @@ where
     /// ```
     pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, CHANNELS>, ImageError>
     where
-        U: Copy
-            + Clone
-            + Default
-            + num_traits::NumCast
-            + std::fmt::Debug
-            + std::ops::Mul<Output = U>
-            + SafeTensorType,
-        T: Copy + num_traits::NumCast + std::fmt::Debug,
+        U: num_traits::NumCast + std::ops::Mul<Output = U> + SafeTensorType,
+        T: num_traits::NumCast,
     {
         let casted_data = self
             .as_slice()
@@ -467,7 +469,7 @@ mod tests {
         )?;
         assert_eq!(image_u8.get([1, 0, 2]), Some(&5u8));
 
-        let image_i32: Image<i32, 3> = image_u8.cast();
+        let image_i32: Image<i32, 3> = image_u8.cast()?;
         assert_eq!(image_i32.get([1, 0, 2]), Some(&5i32));
 
         Ok(())

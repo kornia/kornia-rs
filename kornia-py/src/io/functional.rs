@@ -1,5 +1,4 @@
 use pyo3::prelude::*;
-use std::path::Path;
 
 use crate::image::{FromPyImage, PyImage, ToPyImage};
 use kornia::{image::Image, io::functional as F};

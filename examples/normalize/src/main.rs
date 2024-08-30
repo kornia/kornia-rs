@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image: Image<u8, 3> = F::read_image_any(args.image_path)?;
 
     // cast the image to floating point
-    let image_f32 = image.clone().cast::<f32>();
+    let image_f32 = image.clone().cast::<f32>()?;
 
     // normalize the image between 0 and 255
     let mut image_f32_norm = Image::from_size_val(image_f32.size(), 0.0)?;

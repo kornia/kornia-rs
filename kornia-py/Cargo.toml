@@ -21,5 +21,6 @@ crate-type = ["cdylib"]
 kornia = { path = "../crates/kornia", features = ["gstreamer", "jpegturbo"] }
 
 # external
-pyo3 = { version = "0.21.0", features = ["extension-module"] }
+# pyo3 = { version = "0.21.0", features = ["extension-module"] }
+pyo3 = { version = "0.21.2", features = ["extension-module"] }
 numpy = { version = "0.21.0" }
