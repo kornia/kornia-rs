@@ -1,10 +1,11 @@
+use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
 
 /// Flip the input image horizontally.
 ///
 /// # Arguments
 ///
-/// * `image` - The input image with shape (H, W, C).
+/// * `src` - The input image with shape (H, W, C).
 ///
 /// # Returns
 ///
@@ -31,18 +32,25 @@ use kornia_image::{Image, ImageError};
 /// assert_eq!(flipped.size().height, 3);
 /// ```
 pub fn horizontal_flip<T, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
+    src: &Image<T, CHANNELS>,
 ) -> Result<Image<T, CHANNELS>, ImageError>
 where
-    T: Copy,
+    T: SafeTensorType,
 {
-    let mut img = image.clone();
+    let mut dst = src.clone();
 
-    img.data
+    let mut dst_data = unsafe {
+        ndarray::ArrayViewMut3::from_shape_ptr(
+            (src.height(), src.width(), CHANNELS),
+            dst.as_mut_ptr(),
+        )
+    };
+
+    dst_data
         .axis_iter_mut(ndarray::Axis(0))
         .for_each(|mut row| {
             let mut i = 0;
-            let mut j = image.width() - 1;
+            let mut j = src.width() - 1;
             while i < j {
                 for c in 0..CHANNELS {
                     row.swap((i, c), (j, c));
@@ -52,14 +60,14 @@ where
             }
         });
 
-    Ok(img)
+    Ok(dst)
 }
 
 /// Flip the input image vertically.
 ///
 /// # Arguments
 ///
-/// * `image` - The input image with shape (H, W, C).
+/// * `src` - The input image with shape (H, W, C).
 ///
 /// # Returns
 ///
@@ -86,18 +94,25 @@ where
 /// assert_eq!(flipped.size().height, 3);
 /// ```
 pub fn vertical_flip<T, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
+    src: &Image<T, CHANNELS>,
 ) -> Result<Image<T, CHANNELS>, ImageError>
 where
-    T: Copy,
+    T: SafeTensorType,
 {
-    let mut img = image.clone();
+    let mut dst = src.clone();
 
-    img.data
+    let mut dst_data = unsafe {
+        ndarray::ArrayViewMut3::from_shape_ptr(
+            (src.height(), src.width(), CHANNELS),
+            dst.as_mut_ptr(),
+        )
+    };
+
+    dst_data
         .axis_iter_mut(ndarray::Axis(1))
         .for_each(|mut col| {
             let mut i = 0;
-            let mut j = image.height() - 1;
+            let mut j = src.height() - 1;
             while i < j {
                 for c in 0..CHANNELS {
                     col.swap((i, c), (j, c));
@@ -107,7 +122,7 @@ where
             }
         });
 
-    Ok(img)
+    Ok(dst)
 }
 
 #[cfg(test)]
@@ -125,10 +140,7 @@ mod tests {
         )?;
         let data_expected = vec![1u8, 0, 3, 2, 5, 4];
         let flipped = super::horizontal_flip(&image)?;
-        assert_eq!(
-            flipped.data.as_slice().expect("could not convert to slice"),
-            &data_expected
-        );
+        assert_eq!(flipped.as_slice(), &data_expected);
         Ok(())
     }
 
@@ -143,10 +155,7 @@ mod tests {
         )?;
         let data_expected = vec![4u8, 5, 2, 3, 0, 1];
         let flipped = super::vertical_flip(&image)?;
-        assert_eq!(
-            flipped.data.as_slice().expect("could not convert to slice"),
-            &data_expected
-        );
+        assert_eq!(flipped.as_slice(), &data_expected);
         Ok(())
     }
 }

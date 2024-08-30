@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // read the image
-    let image: Image<u8, 3> = F::read_image_any(&args.image_path)?;
+    let image: Image<u8, 3> = F::read_image_any(args.image_path)?;
 
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;
@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     rec.log(
         "image",
         &rerun::Image::from_elements(
-            image.data.as_slice().expect("Failed to get data"),
+            image.as_slice(),
             image.size().into(),
             rerun::ColorModel::RGB,
         ),

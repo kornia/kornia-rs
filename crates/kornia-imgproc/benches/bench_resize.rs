@@ -4,7 +4,7 @@ use kornia::image::{Image, ImageSize};
 use kornia::imgproc::{interpolation::InterpolationMode, resize};
 
 fn resize_image_crate(image: Image<u8, 3>, new_size: ImageSize) -> Image<u8, 3> {
-    let image_data = image.data.as_slice().unwrap();
+    let image_data = image.as_slice();
     let rgb = image::RgbImage::from_raw(
         image.size().width as u32,
         image.size().height as u32,

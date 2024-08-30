@@ -1,5 +1,6 @@
 use crate::interpolation::{interpolate_pixel, meshgrid, InterpolationMode};
 use fast_image_resize as fr;
+use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageDtype, ImageError};
 use ndarray::stack;
 use std::num::NonZeroU32;
@@ -53,11 +54,14 @@ use std::num::NonZeroU32;
 /// assert_eq!(image_resized.size().width, 2);
 /// assert_eq!(image_resized.size().height, 3);
 /// ```
-pub fn resize_native<T: ImageDtype, const CHANNELS: usize>(
+pub fn resize_native<T, const CHANNELS: usize>(
     src: &Image<T, CHANNELS>,
     dst: &mut Image<T, CHANNELS>,
     interpolation: InterpolationMode,
-) -> Result<(), ImageError> {
+) -> Result<(), ImageError>
+where
+    T: SafeTensorType + ImageDtype,
+{
     if dst.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
             src.size().width,
@@ -82,16 +86,29 @@ pub fn resize_native<T: ImageDtype, const CHANNELS: usize>(
     let xy = stack![ndarray::Axis(2), xx, yy];
 
     // iterate over the output image and interpolate the pixel values
+    let src_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr(
+            (src.height(), src.width(), src.num_channels()),
+            src.as_ptr(),
+        )
+    };
+
+    let mut dst_data = unsafe {
+        ndarray::ArrayViewMut3::from_shape_ptr(
+            (dst.height(), dst.width(), dst.num_channels()),
+            dst.as_mut_ptr(),
+        )
+    };
 
     ndarray::Zip::from(xy.rows())
-        .and(dst.data.rows_mut())
+        .and(dst_data.rows_mut())
         .par_for_each(|uv, mut out| {
             assert_eq!(uv.len(), 2);
             let (u, v) = (uv[0], uv[1]);
 
             // compute the pixel values for each channel
             let pixels =
-                (0..CHANNELS).map(|k| interpolate_pixel(&src.data, u, v, k, interpolation));
+                (0..CHANNELS).map(|k| interpolate_pixel(&src_data, u, v, k, interpolation));
 
             // write the pixel values to the output image
             for (k, pixel) in pixels.enumerate() {
@@ -173,13 +190,14 @@ pub fn resize_fast(
     let src_width = NonZeroU32::new(src.width() as u32).ok_or(ImageError::CastError)?;
     let src_height = NonZeroU32::new(src.height() as u32).ok_or(ImageError::CastError)?;
 
-    let src_image_data = src.data.to_owned().into_raw_vec();
+    let src_data_len = src_width.get() as usize * src_height.get() as usize * 3;
 
-    let src_image =
-        fr::Image::from_vec_u8(src_width, src_height, src_image_data, fr::PixelType::U8x3)
-            .map_err(|_| {
-                ImageError::InvalidChannelShape(src.data.len(), src.width() * src.height() * 3)
-            })?;
+    let src_image = fr::ImageView::<fast_image_resize::pixels::U8x3>::from_buffer(
+        src_width,
+        src_height,
+        src.as_slice(),
+    )
+    .map_err(|_| ImageError::InvalidChannelShape(src_data_len, src.width() * src.height() * 3))?;
 
     // prepare the output image for the fast_image_resize crate
     let dst_width = NonZeroU32::new(dst.width() as u32).ok_or(ImageError::CastError)?;
@@ -190,7 +208,7 @@ pub fn resize_fast(
     let mut dst_image = fr::Image::from_slice_u8(
         dst_width,
         dst_height,
-        dst.data.as_slice_mut().expect("Failed to get image data"),
+        dst.as_slice_mut(),
         fr::PixelType::U8x3,
     )
     .map_err(|_| ImageError::InvalidChannelShape(dst_data_len, dst_data_len))?;
@@ -205,7 +223,7 @@ pub fn resize_fast(
     };
 
     resizer
-        .resize(&src_image.view(), &mut dst_image.view_mut())
+        .resize(&src_image.into(), &mut dst_image.view_mut())
         .map_err(|_| ImageError::IncompatiblePixelTypes)?;
 
     Ok(())

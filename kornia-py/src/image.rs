@@ -1,10 +1,11 @@
-use numpy::{PyArray3, ToPyArray};
+use numpy::{PyArray, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
 
 use kornia::image::{Image, ImageError, ImageSize};
 use pyo3::prelude::*;
 
 // type alias for a 3D numpy array of u8
 pub type PyImage = Py<PyArray3<u8>>;
+//pub type PyImage<'a> = Bound<'a, PyArray3<u8>>;
 
 /// Trait to convert an image to a PyImage (3D numpy array of u8)
 pub trait ToPyImage {
@@ -13,7 +14,13 @@ pub trait ToPyImage {
 
 impl<const CHANNELS: usize> ToPyImage for Image<u8, CHANNELS> {
     fn to_pyimage(self) -> PyImage {
-        Python::with_gil(|py| self.data.to_pyarray(py).to_owned())
+        Python::with_gil(|py| unsafe {
+            let array =
+                PyArray::<u8, _>::new_bound(py, [self.height(), self.width(), CHANNELS], false);
+            // TODO: verify that the data is contiguous, otherwise iterate over the image and copy
+            std::ptr::copy_nonoverlapping(self.as_ptr(), array.data(), self.numel());
+            array.unbind()
+        })
     }
 }
 
@@ -25,15 +32,24 @@ pub trait FromPyImage<const CHANNELS: usize> {
 impl<const CHANNELS: usize> FromPyImage<CHANNELS> for Image<u8, CHANNELS> {
     fn from_pyimage(image: PyImage) -> Result<Image<u8, CHANNELS>, ImageError> {
         Python::with_gil(|py| {
-            let array = image.as_ref(py).to_owned_array();
-            let data = match array.as_slice() {
-                Some(d) => d.to_vec(),
-                None => return Err(ImageError::ImageDataNotContiguous),
+            let pyarray = image.bind(py);
+
+            // TODO: we should find a way to avoid copying the data
+            // Possible solutions:
+            // - Use a custom ndarray wrapper that does not copy the data
+            // - Return direectly pyarray and use it in the Rust code
+            let data = unsafe {
+                match pyarray.as_slice() {
+                    Ok(d) => d.to_vec(),
+                    Err(_) => return Err(ImageError::ImageDataNotContiguous),
+                }
             };
+
             let size = ImageSize {
-                width: array.shape()[1],
-                height: array.shape()[0],
+                width: pyarray.shape()[1],
+                height: pyarray.shape()[0],
             };
+
             Image::new(size, data)
         })
     }

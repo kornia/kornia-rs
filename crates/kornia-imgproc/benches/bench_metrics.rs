@@ -5,14 +5,6 @@ use kornia::{
     imgproc::metrics,
 };
 
-// TODO: figure how to auto select a function backend based on the input size
-fn mse_zip(image1: &Image<f32, 3>, image2: &Image<f32, 3>) -> f32 {
-    ndarray::Zip::from(&image1.data)
-        .and(&image2.data)
-        .fold(0f32, |acc, &a, &b| acc + (a - b).powi(2))
-        / (image1.data.len() as f32)
-}
-
 fn bench_mse(c: &mut Criterion) {
     let mut group = c.benchmark_group("mse");
     let image_sizes = vec![(256, 224), (512, 448), (1024, 896)];
@@ -24,9 +16,6 @@ fn bench_mse(c: &mut Criterion) {
         let image_f32 = image.cast::<f32>().unwrap();
         group.bench_with_input(BenchmarkId::new("mapv", &id), &image_f32, |b, i| {
             b.iter(|| metrics::mse(black_box(i), black_box(i)))
-        });
-        group.bench_with_input(BenchmarkId::new("zip", &id), &image_f32, |b, i| {
-            b.iter(|| mse_zip(black_box(i), black_box(i)))
         });
     }
     group.finish();
