@@ -125,8 +125,6 @@ where
         self.data.as_ptr()
     }
 
-    // TODO: remove this method once we don't need it anymore because of
-    // ndarray::ArrayViewMut in kornia-imgproc
     /// Returns the data pointer as a mutable pointer.
     #[inline]
     pub fn as_mut_ptr(&mut self) -> *mut T {
@@ -151,6 +149,11 @@ where
     /// Returns the data reference from the tensor storage without checking the bounds.
     pub fn get_unchecked(&self, index: usize) -> &T {
         unsafe { self.data.get_unchecked(index) }
+    }
+
+    /// Returns an iterator overt the chunks of the tensor storage.
+    pub fn chunks_exact(&self, chunk_size: usize) -> std::slice::ChunksExact<T> {
+        self.data.chunks_exact(chunk_size)
     }
 }
 

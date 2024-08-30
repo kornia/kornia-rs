@@ -1,5 +1,6 @@
 use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
+use rayon::prelude::*;
 
 /// Define the RGB weights for the grayscale conversion.
 const RW: f64 = 0.299;
@@ -66,22 +67,59 @@ where
     let gw = T::from(GW).ok_or(ImageError::CastError)?;
     let bw = T::from(BW).ok_or(ImageError::CastError)?;
 
-    let src_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr((src.height(), src.width(), 3), src.as_ptr())
-    };
+    //let src_data = unsafe {
+    //    ndarray::ArrayView3::from_shape_ptr((src.height(), src.width(), 3), src.as_ptr())
+    //};
 
-    let mut dst_data = unsafe {
-        ndarray::ArrayViewMut3::from_shape_ptr((dst.height(), dst.width(), 1), dst.as_mut_ptr())
-    };
+    //let mut dst_data = unsafe {
+    //    ndarray::ArrayViewMut3::from_shape_ptr((dst.height(), dst.width(), 1), dst.as_mut_ptr())
+    //};
 
-    ndarray::Zip::from(dst_data.rows_mut())
-        .and(src_data.rows())
-        .par_for_each(|mut out, inp| {
-            assert_eq!(inp.len(), 3);
-            let r = inp[0];
-            let g = inp[1];
-            let b = inp[2];
-            out[0] = rw * r + gw * g + bw * b;
+    //ndarray::Zip::from(dst_data.rows_mut())
+    //    .and(src_data.rows())
+    //    .par_for_each(|mut out, inp| {
+    //        assert_eq!(inp.len(), 3);
+    //        let r = inp[0];
+    //        let g = inp[1];
+    //        let b = inp[2];
+    //        out[0] = rw * r + gw * g + bw * b;
+    //    });
+
+    //src.storage
+    //    .chunks_exact(3)
+    //    .zip(dst.as_slice_mut().chunks_exact_mut(1))
+    //    .for_each(|(src_chunk, dst_chunk)| {
+    //        let r = src_chunk[0];
+    //        let g = src_chunk[1];
+    //        let b = src_chunk[2];
+    //        dst_chunk[0] = rw * r + gw * g + bw * b;
+    //    });
+
+    //src.as_slice()
+    //    .par_chunks_exact(3)
+    //    .zip(dst.as_slice_mut().par_chunks_exact_mut(1))
+    //    .for_each(|(src_chunk, dst_chunk)| {
+    //        let r = src_chunk[0];
+    //        let g = src_chunk[1];
+    //        let b = src_chunk[2];
+    //        dst_chunk[0] = rw * r + gw * g + bw * b;
+    //    });
+
+    let width = src.width();
+
+    src.as_slice()
+        .par_chunks_exact(3 * width)
+        .zip(dst.as_slice_mut().par_chunks_exact_mut(width))
+        .for_each(|(src_chunk, dst_chunk)| {
+            src_chunk
+                .chunks_exact(3)
+                .zip(dst_chunk.chunks_exact_mut(1))
+                .for_each(|(src_pixel, dst_pixel)| {
+                    let r = src_pixel[0];
+                    let g = src_pixel[1];
+                    let b = src_pixel[2];
+                    dst_pixel[0] = rw * r + gw * g + bw * b;
+                });
         });
 
     Ok(())
@@ -89,7 +127,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use kornia_image::{ops, Image};
+    use kornia_image::{ops, Image, ImageSize};
     use kornia_io::functional as F;
 
     #[test]
@@ -105,6 +143,39 @@ mod tests {
         assert_eq!(gray.num_channels(), 1);
         assert_eq!(gray.size().width, 258);
         assert_eq!(gray.size().height, 195);
+
+        Ok(())
+    }
+
+    #[test]
+    fn gray_from_rgb_regression() -> Result<(), Box<dyn std::error::Error>> {
+        let image = Image::new(
+            ImageSize {
+                width: 2,
+                height: 3,
+            },
+            vec![
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0,
+            ],
+        )?;
+
+        let mut gray = Image::<f32, 1>::from_size_val(image.size(), 0.0)?;
+
+        super::gray_from_rgb(&image, &mut gray)?;
+
+        let expected: Image<f32, 1> = Image::new(
+            ImageSize {
+                width: 2,
+                height: 3,
+            },
+            vec![0.299, 0.587, 0.114, 0.0, 0.0, 0.0],
+        )?;
+
+        for (a, b) in gray.as_slice().iter().zip(expected.as_slice().iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
+
         Ok(())
     }
 }
