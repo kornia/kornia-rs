@@ -3,23 +3,23 @@ use kornia_image::{Image, ImageError};
 
 /// Convert an RGB image to an HSV image.
 ///
-/// The input image is assumed to have 3 channels in the order R, G, B.
+/// The input image is assumed to have 3 C in the order R, G, B.
 ///
 /// # Arguments
 ///
-/// * `src` - The input RGB image assumed to have 3 channels.
+/// * `src` - The input RGB image assumed to have 3 C.
 /// * `dst` - The output HSV image.
 ///
 /// # Returns
 ///
-/// The HSV image with the following channels:
+/// The HSV image with the following C:
 ///
 /// * H: The hue channel in the range [0, 255] (0-360 degrees).
 /// * S: The saturation channel in the range [0, 255].
 /// * V: The value channel in the range [0, 255].
 ///
-/// Precondition: the input image must have 3 channels.
-/// Precondition: the output image must have 3 channels.
+/// Precondition: the input image must have 3 C.
+/// Precondition: the output image must have 3 C.
 /// Precondition: the input and output images must have the same size.
 ///
 /// # Example

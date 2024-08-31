@@ -7,14 +7,14 @@ use crate::parallel;
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of an arbitrary number of channels and type.
-/// * `dst` - The output image of an arbitrary number of channels and type.
+/// * `src` - The input image of an arbitrary number of C and type.
+/// * `dst` - The output image of an arbitrary number of C and type.
 /// * `threshold` - The threshold value. Must be the same type as the image.
 /// * `max_value` - The maximum value to use when the input value is greater than the threshold.
 ///
 /// # Returns
 ///
-/// The thresholded image with the same number of channels as the input image.
+/// The thresholded image with the same number of C as the input image.
 ///
 /// # Examples
 ///
@@ -32,9 +32,9 @@ use crate::parallel;
 /// assert_eq!(thresholded.size().width, 2);
 /// assert_eq!(thresholded.size().height, 3);
 /// ```
-pub fn threshold_binary<T, const CHANNELS: usize>(
-    src: &Image<T, CHANNELS>,
-    dst: &mut Image<T, CHANNELS>,
+pub fn threshold_binary<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     threshold: T,
     max_value: T,
 ) -> Result<(), ImageError>
@@ -66,14 +66,14 @@ where
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of an arbitrary number of channels and type.
-/// * `dst` - The output image of an arbitrary number of channels and type.///
+/// * `src` - The input image of an arbitrary number of C and type.
+/// * `dst` - The output image of an arbitrary number of C and type.///
 /// * `threshold` - The threshold value. Must be the same type as the image.
 /// * `max_value` - The maximum value to use when the input value is less than the threshold.
 ///
 /// # Returns
 ///
-/// The thresholded image with the same number of channels as the input image.
+/// The thresholded image with the same number of C as the input image.
 ///
 /// # Examples
 ///
@@ -91,9 +91,9 @@ where
 /// assert_eq!(thresholded.size().width, 2);
 /// assert_eq!(thresholded.size().height, 3);
 /// ```
-pub fn threshold_binary_inverse<T, const CHANNELS: usize>(
-    src: &Image<T, CHANNELS>,
-    dst: &mut Image<T, CHANNELS>,
+pub fn threshold_binary_inverse<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     threshold: T,
     max_value: T,
 ) -> Result<(), ImageError>
@@ -125,12 +125,12 @@ where
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of an arbitrary number of channels and type.
+/// * `src` - The input image of an arbitrary number of C and type.
 /// * `threshold` - The threshold value. Must be the same type as the image.
 ///
 /// # Returns
 ///
-/// The thresholded image with the same number of channels as the input image.
+/// The thresholded image with the same number of C as the input image.
 ///
 /// # Examples
 ///
@@ -148,9 +148,9 @@ where
 /// assert_eq!(thresholded.size().width, 2);
 /// assert_eq!(thresholded.size().height, 3);
 /// ```
-pub fn threshold_truncate<T, const CHANNELS: usize>(
-    src: &Image<T, CHANNELS>,
-    dst: &mut Image<T, CHANNELS>,
+pub fn threshold_truncate<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     threshold: T,
 ) -> Result<(), ImageError>
 where
@@ -181,12 +181,12 @@ where
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of an arbitrary number of channels and type.
+/// * `src` - The input image of an arbitrary number of C and type.
 /// * `threshold` - The threshold value. Must be the same type as the image.
 ///
 /// # Returns
 ///
-/// The thresholded image with the same number of channels as the input image.
+/// The thresholded image with the same number of C as the input image.
 ///
 /// # Examples
 ///
@@ -204,9 +204,9 @@ where
 /// assert_eq!(thresholded.size().width, 2);
 /// assert_eq!(thresholded.size().height, 1);
 /// ```
-pub fn threshold_to_zero<T, const CHANNELS: usize>(
-    src: &Image<T, CHANNELS>,
-    dst: &mut Image<T, CHANNELS>,
+pub fn threshold_to_zero<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     threshold: T,
 ) -> Result<(), ImageError>
 where
@@ -237,12 +237,12 @@ where
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of an arbitrary number of channels and type.
+/// * `src` - The input image of an arbitrary number of C and type.
 /// * `threshold` - The threshold value. Must be the same type as the image.
 ///
 /// # Returns
 ///
-/// The thresholded image with the same number of channels as the input image.
+/// The thresholded image with the same number of C as the input image.
 ///
 /// # Examples
 ///
@@ -260,9 +260,9 @@ where
 /// assert_eq!(thresholded.size().width, 2);
 /// assert_eq!(thresholded.size().height, 1);
 /// ```
-pub fn threshold_to_zero_inverse<T, const CHANNELS: usize>(
-    src: &Image<T, CHANNELS>,
-    dst: &mut Image<T, CHANNELS>,
+pub fn threshold_to_zero_inverse<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     threshold: T,
 ) -> Result<(), ImageError>
 where
@@ -293,7 +293,7 @@ where
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of an arbitrary number of channels and type.
+/// * `src` - The input image of an arbitrary number of C and type.
 /// * `lower_bound` - The lower bound for each channel.
 /// * `upper_bound` - The upper bound for each channel.
 ///
@@ -301,7 +301,7 @@ where
 ///
 /// The thresholded image with a single channel as byte values.
 ///
-/// Precondition: the input image must have the same number of channels as the bounds.
+/// Precondition: the input image must have the same number of C as the bounds.
 /// Precondition: the input image range must be 0-255.
 ///
 /// # Examples
@@ -330,11 +330,11 @@ where
 /// assert_eq!(thresholded.get_pixel(0, 0, 0).unwrap(), 255);
 /// assert_eq!(thresholded.get_pixel(1, 0, 0).unwrap(), 0);
 /// ```
-pub fn in_range<T, const CHANNELS: usize>(
-    src: &Image<T, CHANNELS>,
+pub fn in_range<T, const C: usize>(
+    src: &Image<T, C>,
     dst: &mut Image<u8, 1>,
-    lower_bound: &[T; CHANNELS],
-    upper_bound: &[T; CHANNELS],
+    lower_bound: &[T; C],
+    upper_bound: &[T; C],
 ) -> Result<(), ImageError>
 where
     T: SafeTensorType,

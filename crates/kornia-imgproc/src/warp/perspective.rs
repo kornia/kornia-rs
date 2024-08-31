@@ -56,14 +56,14 @@ fn transform_point(x: &f32, y: &f32, m: &[f32; 9]) -> (f32, f32) {
 
 /// Applies a perspective transformation to an image.
 ///
-/// * `src` - The input image with shape (height, width, channels).
-/// * `dst` - The output image with shape (height, width, channels).
+/// * `src` - The input image with shape (height, width, C).
+/// * `dst` - The output image with shape (height, width, C).
 /// * `m` - The 3x3 perspective transformation matrix src -> dst.
 /// * `interpolation` - The interpolation mode to use.
 ///
 /// # Returns
 ///
-/// The output image with shape (new_height, new_width, channels).
+/// The output image with shape (new_height, new_width, C).
 ///
 /// # Example
 ///
@@ -95,9 +95,9 @@ fn transform_point(x: &f32, y: &f32, m: &[f32; 9]) -> (f32, f32) {
 /// assert_eq!(dst.size().width, 2);
 /// assert_eq!(dst.size().height, 3);
 /// ```
-pub fn warp_perspective<const CHANNELS: usize>(
-    src: &Image<f32, CHANNELS>,
-    dst: &mut Image<f32, CHANNELS>,
+pub fn warp_perspective<const C: usize>(
+    src: &Image<f32, C>,
+    dst: &mut Image<f32, C>,
     m: &[f32; 9],
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {

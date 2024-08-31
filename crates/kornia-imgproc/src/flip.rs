@@ -32,21 +32,19 @@ use rayon::{iter::ParallelIterator, slice::ParallelSliceMut};
 /// assert_eq!(flipped.size().width, 2);
 /// assert_eq!(flipped.size().height, 3);
 /// ```
-pub fn horizontal_flip<T, const CHANNELS: usize>(
-    src: &Image<T, CHANNELS>,
-) -> Result<Image<T, CHANNELS>, ImageError>
+pub fn horizontal_flip<T, const C: usize>(src: &Image<T, C>) -> Result<Image<T, C>, ImageError>
 where
     T: SafeTensorType,
 {
     let mut dst = src.clone();
 
     dst.as_slice_mut()
-        .par_chunks_exact_mut(src.cols() * CHANNELS)
+        .par_chunks_exact_mut(src.cols() * C)
         .for_each(|row| {
             let mut i = 0;
             let mut j = src.cols() - 1;
             while i < j {
-                let (slice_i, slice_j) = row.split_at_mut((i + 1) * CHANNELS);
+                let (slice_i, slice_j) = row.split_at_mut((i + 1) * C);
                 slice_i.swap_with_slice(slice_j);
                 i += 1;
                 j -= 1;
@@ -86,9 +84,7 @@ where
 /// assert_eq!(flipped.size().width, 2);
 /// assert_eq!(flipped.size().height, 3);
 /// ```
-pub fn vertical_flip<T, const CHANNELS: usize>(
-    src: &Image<T, CHANNELS>,
-) -> Result<Image<T, CHANNELS>, ImageError>
+pub fn vertical_flip<T, const C: usize>(src: &Image<T, C>) -> Result<Image<T, C>, ImageError>
 where
     T: SafeTensorType,
 {
@@ -98,9 +94,9 @@ where
     for i in 0..src.cols() {
         let mut j = src.rows() - 1;
         for k in 0..src.rows() / 2 {
-            for c in 0..CHANNELS {
-                let idx_i = i * CHANNELS + c + k * src.cols() * CHANNELS;
-                let idx_j = i * CHANNELS + c + j * src.cols() * CHANNELS;
+            for c in 0..C {
+                let idx_i = i * C + c + k * src.cols() * C;
+                let idx_j = i * C + c + j * src.cols() * C;
                 dst.as_slice_mut().swap(idx_i, idx_j);
             }
             j -= 1;

@@ -88,14 +88,14 @@ fn transform_point(x: &f32, y: &f32, m: &[f32; 6]) -> (f32, f32) {
 ///
 /// # Arguments
 ///
-/// * `src` - The input image with shape (height, width, channels).
-/// * `dst` - The output image with shape (height, width, channels).
+/// * `src` - The input image with shape (height, width, C).
+/// * `dst` - The output image with shape (height, width, C).
 /// * `m` - The 2x3 affine transformation matrix.
 /// * `interpolation` - The interpolation mode to use.
 ///
 /// # Returns
 ///
-/// The output image with shape (new_height, new_width, channels).
+/// The output image with shape (new_height, new_width, C).
 ///
 /// # Example
 ///
@@ -125,9 +125,9 @@ fn transform_point(x: &f32, y: &f32, m: &[f32; 6]) -> (f32, f32) {
 /// assert_eq!(dst.size().width, 4);
 /// assert_eq!(dst.size().height, 5);
 /// ```
-pub fn warp_affine<const CHANNELS: usize>(
-    src: &Image<f32, CHANNELS>,
-    dst: &mut Image<f32, CHANNELS>,
+pub fn warp_affine<const C: usize>(
+    src: &Image<f32, C>,
+    dst: &mut Image<f32, C>,
     m: &[f32; 6],
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {

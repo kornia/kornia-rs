@@ -1,5 +1,3 @@
-use std::ops;
-
 use kornia_core::{CpuAllocator, SafeTensorType, Tensor3};
 
 use crate::error::ImageError;
@@ -58,12 +56,12 @@ impl From<ImageSize> for [u32; 2] {
 /// Represents an image with pixel data.
 ///
 /// The image is represented as a 3D Tensor with shape (H, W, C), where H is the height of the image,
-pub struct Image<T, const CHANNELS: usize>(pub Tensor3<T>)
+pub struct Image<T, const C: usize>(pub Tensor3<T>)
 where
     T: SafeTensorType;
 
 /// helper to deference the inner tensor
-impl<T, const CHANNELS: usize> ops::Deref for Image<T, CHANNELS>
+impl<T, const C: usize> std::ops::Deref for Image<T, C>
 where
     T: SafeTensorType,
 {
@@ -76,7 +74,7 @@ where
 }
 
 /// helper to deference the inner tensor
-impl<T, const CHANNELS: usize> ops::DerefMut for Image<T, CHANNELS>
+impl<T, const C: usize> std::ops::DerefMut for Image<T, C>
 where
     T: SafeTensorType,
 {
@@ -86,7 +84,7 @@ where
     }
 }
 
-impl<T, const CHANNELS: usize> Image<T, CHANNELS>
+impl<T, const C: usize> Image<T, C>
 where
     T: SafeTensorType,
 {
@@ -124,16 +122,16 @@ where
     /// ```
     pub fn new(size: ImageSize, data: Vec<T>) -> Result<Self, ImageError> {
         // check if the data length matches the image size
-        if data.len() != size.width * size.height * CHANNELS {
-            return Err(ImageError::InvalidChannelShape(
+        if data.len() != size.width * size.height * C {
+            return Err(ImageError::InvalidChape(
                 data.len(),
-                size.width * size.height * CHANNELS,
+                size.width * size.height * C,
             ));
         }
 
         // allocate the image data
         Ok(Self(Tensor3::from_shape_vec(
-            [size.height, size.width, CHANNELS],
+            [size.height, size.width, C],
             data,
             CpuAllocator,
         )?))
@@ -173,7 +171,7 @@ where
     where
         T: Clone + Default,
     {
-        let data = vec![val; size.width * size.height * CHANNELS];
+        let data = vec![val; size.width * size.height * C];
         let image = Image::new(size, data)?;
 
         Ok(image)
@@ -184,7 +182,7 @@ where
     /// # Returns
     ///
     /// A new image with the pixel data cast to the given type.
-    pub fn cast<U>(&self) -> Result<Image<U, CHANNELS>, ImageError>
+    pub fn cast<U>(&self) -> Result<Image<U, C>, ImageError>
     where
         U: num_traits::NumCast + SafeTensorType,
         T: num_traits::NumCast,
@@ -218,8 +216,8 @@ where
     where
         T: Clone,
     {
-        if channel >= CHANNELS {
-            return Err(ImageError::ChannelIndexOutOfBounds(channel, CHANNELS));
+        if channel >= C {
+            return Err(ImageError::ChannelIndexOutOfBounds(channel, C));
         }
 
         let mut channel_data = vec![];
@@ -258,9 +256,9 @@ where
     where
         T: Clone,
     {
-        let mut channels = Vec::with_capacity(CHANNELS);
+        let mut channels = Vec::with_capacity(C);
 
-        for i in 0..CHANNELS {
+        for i in 0..C {
             channels.push(self.channel(i)?);
         }
 
@@ -295,9 +293,9 @@ where
         self.rows()
     }
 
-    /// Get the number of channels in the image.
+    /// Get the number of C in the image.
     pub fn num_channels(&self) -> usize {
-        CHANNELS
+        C
     }
 
     /// Cast the pixel data to a different type and scale it.
@@ -333,7 +331,7 @@ where
     ///
     /// assert_eq!(image_f32.get([1, 0, 2]), Some(&1.0f32));
     /// ```
-    pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, CHANNELS>, ImageError>
+    pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, C>, ImageError>
     where
         U: num_traits::NumCast + std::ops::Mul<Output = U> + SafeTensorType,
         T: num_traits::NumCast,
@@ -377,8 +375,8 @@ where
             ));
         }
 
-        if ch >= CHANNELS {
-            return Err(ImageError::ChannelIndexOutOfBounds(ch, CHANNELS));
+        if ch >= C {
+            return Err(ImageError::ChannelIndexOutOfBounds(ch, C));
         }
 
         let val = match self.get([y, x, ch]) {

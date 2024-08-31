@@ -9,8 +9,8 @@ use kornia_image::{Image, ImageError};
 ///
 /// # Arguments
 ///
-/// * `src` - The input image container with shape (height, width, channels).
-/// * `dst` - The output image container with shape (height, width, channels).
+/// * `src` - The input image container with shape (height, width, C).
+/// * `dst` - The output image container with shape (height, width, C).
 /// * `map_x` - The x coordinates of the pixels to interpolate.
 /// * `map_y` - The y coordinates of the pixels to interpolate.
 /// * `interpolation` - The interpolation mode to use.

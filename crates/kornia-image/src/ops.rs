@@ -31,9 +31,9 @@ use crate::{Image, ImageError};
 /// assert_eq!(image_f32.get_pixel(0, 0, 0).unwrap(), 0.0f32);
 /// assert_eq!(image_f32.get_pixel(1, 0, 0).unwrap(), 1.0f32);
 /// ```
-pub fn cast_and_scale<T, U, const CHANNELS: usize>(
-    src: &Image<T, CHANNELS>,
-    dst: &mut Image<U, CHANNELS>,
+pub fn cast_and_scale<T, U, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<U, C>,
     scale: U,
 ) -> Result<(), ImageError>
 where

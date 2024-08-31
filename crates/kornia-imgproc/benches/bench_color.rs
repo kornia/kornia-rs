@@ -91,10 +91,10 @@ fn gray_slice_chunks_rows(
     src: &Image<f32, 3>,
     dst: &mut Image<f32, 1>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let num_cols = src.cols();
+    let num_channelsols = src.cols();
     src.as_slice()
-        .chunks_exact(3 * num_cols)
-        .zip(dst.storage.as_mut_slice().chunks_exact_mut(num_cols))
+        .chunks_exact(3 * num_channelsols)
+        .zip(dst.storage.as_mut_slice().chunks_exact_mut(num_channelsols))
         .for_each(|(src_chunk, dst_chunk)| {
             src_chunk
                 .chunks_exact(3)

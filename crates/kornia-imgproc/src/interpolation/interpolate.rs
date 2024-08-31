@@ -15,7 +15,7 @@ pub enum InterpolationMode {
 ///
 /// # Arguments
 ///
-/// * `image` - The input image container with shape (height, width, channels).
+/// * `image` - The input image container with shape (height, width, C).
 /// * `u` - The x coordinate of the pixel to interpolate.
 /// * `v` - The y coordinate of the pixel to interpolate.
 /// * `c` - The channel of the pixel to interpolate.
@@ -24,9 +24,9 @@ pub enum InterpolationMode {
 /// # Returns
 ///
 /// The interpolated pixel value.
-pub(crate) fn interpolate_pixel<const CHANNELS: usize>(
+pub(crate) fn interpolate_pixel<const C: usize>(
     //image: &ArrayView3<T>,
-    image: &Image<f32, CHANNELS>,
+    image: &Image<f32, C>,
     u: f32,
     v: f32,
     c: usize,

@@ -24,11 +24,11 @@ use crate::parallel;
 ///
 /// Returns an error if the sizes of `src1` and `src2` do not match.
 /// Returns an error if the size of `dst` does not match the size of `src1` or `src2`.
-pub fn add_weighted<T, const CHANNELS: usize>(
-    src1: &Image<T, CHANNELS>,
+pub fn add_weighted<T, const C: usize>(
+    src1: &Image<T, C>,
     alpha: T,
-    src2: &Image<T, CHANNELS>,
-    dst: &mut Image<T, CHANNELS>,
+    src2: &Image<T, C>,
+    dst: &mut Image<T, C>,
     beta: T,
     gamma: T,
 ) -> Result<(), ImageError>

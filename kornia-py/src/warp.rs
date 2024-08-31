@@ -8,12 +8,12 @@ use kornia::imgproc::warp;
 #[pyfunction]
 pub fn warp_affine(
     image: PyImage,
-    m: (f32, f32, f32, f32, f32, f32),
+    m: [f32; 6],
     new_size: (usize, usize),
     interpolation: &str,
 ) -> PyResult<PyImage> {
     // have to add annotation Image<u8, 3>, otherwise the compiler will complain
-    // NOTE: do we support images with channels != 3?
+    // NOTE: do we support images with C != 3?
     let image: Image<u8, 3> = Image::from_pyimage(image)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 

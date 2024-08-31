@@ -109,10 +109,10 @@ pub fn std_mean(image: &Image<u8, 3>) -> (Vec<f64>, Vec<f64>) {
 ///
 /// assert_eq!(output.as_slice(), &vec![0, 1, 2, 0, 0, 0, 128, 129, 130, 0, 0, 0]);
 /// ```
-pub fn bitwise_and<const CHANNELS: usize>(
-    src1: &Image<u8, CHANNELS>,
-    src2: &Image<u8, CHANNELS>,
-    dst: &mut Image<u8, CHANNELS>,
+pub fn bitwise_and<const C: usize>(
+    src1: &Image<u8, C>,
+    src2: &Image<u8, C>,
+    dst: &mut Image<u8, C>,
     mask: &Image<u8, 1>,
 ) -> Result<(), ImageError> {
     if src1.size() != src2.size() {
@@ -145,9 +145,9 @@ pub fn bitwise_and<const CHANNELS: usize>(
     // apply the mask to the image
 
     dst.as_slice_mut()
-        .chunks_exact_mut(CHANNELS)
-        .zip(src1.as_slice().chunks_exact(CHANNELS))
-        .zip(src2.as_slice().chunks_exact(CHANNELS))
+        .chunks_exact_mut(C)
+        .zip(src1.as_slice().chunks_exact(C))
+        .zip(src2.as_slice().chunks_exact(C))
         .zip(mask.as_slice().iter())
         .for_each(|(((dst_chunk, src1_chunk), src2_chunk), &mask_chunk)| {
             dst_chunk

@@ -27,7 +27,7 @@ pub enum ImageError {
 
     /// Error when channel and shape are not valid.
     #[error("Data length ({0}) does not match the image size ({1})")]
-    InvalidChannelShape(usize, usize),
+    InvalidChape(usize, usize),
 
     /// Error when the cast operation fails.
     #[error("Failed to cast image data")]

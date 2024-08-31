@@ -13,14 +13,14 @@ use crate::parallel;
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of shape (height, width, channels).
-/// * `dst` - The output image of shape (height, width, channels).
+/// * `src` - The input image of shape (height, width, C).
+/// * `dst` - The output image of shape (height, width, C).
 /// * `mean` - The mean value for each channel.
 /// * `std` - The standard deviation for each channel.
 ///
 /// # Returns
 ///
-/// The normalized image of shape (height, width, channels).
+/// The normalized image of shape (height, width, C).
 ///
 /// # Example
 ///
@@ -52,11 +52,11 @@ use crate::parallel;
 /// assert_eq!(image_normalized.size().width, 2);
 /// assert_eq!(image_normalized.size().height, 2);
 /// ```
-pub fn normalize_mean_std<T, const CHANNELS: usize>(
-    src: &Image<T, CHANNELS>,
-    dst: &mut Image<T, CHANNELS>,
-    mean: &[T; CHANNELS],
-    std: &[T; CHANNELS],
+pub fn normalize_mean_std<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
+    mean: &[T; C],
+    std: &[T; C],
 ) -> Result<(), ImageError>
 where
     T: SafeTensorType + num_traits::Float,
@@ -88,8 +88,8 @@ where
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of shape (height, width, channels).
-/// * `dst` - The output image of shape (height, width, channels).
+/// * `src` - The input image of shape (height, width, C).
+/// * `dst` - The output image of shape (height, width, C).
 ///
 /// # Returns
 ///
@@ -119,9 +119,7 @@ where
 /// assert_eq!(min, 0);
 /// assert_eq!(max, 3);
 /// ```
-pub fn find_min_max<T, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
-) -> Result<(T, T), ImageError>
+pub fn find_min_max<T, const C: usize>(image: &Image<T, C>) -> Result<(T, T), ImageError>
 where
     T: SafeTensorType,
     //T: PartialOrd + Copy,
@@ -157,14 +155,14 @@ where
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of shape (height, width, channels).
-/// * `dst` - The output image of shape (height, width, channels).
+/// * `src` - The input image of shape (height, width, C).
+/// * `dst` - The output image of shape (height, width, C).
 /// * `min` - The minimum value for each channel.
 /// * `max` - The maximum value for each channel.
 ///
 /// # Returns
 ///
-/// The normalized image of shape (height, width, channels).
+/// The normalized image of shape (height, width, C).
 ///
 /// # Example
 ///
@@ -190,9 +188,9 @@ where
 /// assert_eq!(image_normalized.size().width, 2);
 /// assert_eq!(image_normalized.size().height, 2);
 /// ```
-pub fn normalize_min_max<T, const CHANNELS: usize>(
-    src: &Image<T, CHANNELS>,
-    dst: &mut Image<T, CHANNELS>,
+pub fn normalize_min_max<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     min: T,
     max: T,
 ) -> Result<(), ImageError>

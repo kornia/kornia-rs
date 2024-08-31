@@ -9,7 +9,7 @@ use std::num::NonZeroU32;
 /// Resize an image to a new size.
 ///
 /// The function resizes an image to a new size using the specified interpolation mode.
-/// It supports any number of channels and data types.
+/// It supports any number of C and data types.
 ///
 /// # Arguments
 ///
@@ -92,7 +92,7 @@ where
 ///
 /// # Arguments
 ///
-/// * `image` - The input image container with 3 channels.
+/// * `image` - The input image container with 3 C.
 /// * `new_size` - The new size of the image.
 /// * `interpolation` - The interpolation mode to use.
 ///
@@ -163,7 +163,7 @@ pub fn resize_fast(
         src_height,
         src.as_slice(),
     )
-    .map_err(|_| ImageError::InvalidChannelShape(src_data_len, src.width() * src.height() * 3))?;
+    .map_err(|_| ImageError::InvalidChape(src_data_len, src.width() * src.height() * 3))?;
 
     // prepare the output image for the fast_image_resize crate
     let dst_width = NonZeroU32::new(dst.width() as u32).ok_or(ImageError::CastError)?;
@@ -177,7 +177,7 @@ pub fn resize_fast(
         dst.as_slice_mut(),
         fr::PixelType::U8x3,
     )
-    .map_err(|_| ImageError::InvalidChannelShape(dst_data_len, dst_data_len))?;
+    .map_err(|_| ImageError::InvalidChape(dst_data_len, dst_data_len))?;
 
     let mut resizer = {
         match interpolation {

@@ -13,8 +13,8 @@ use kornia_image::Image;
 ///
 /// The interpolated pixel value.
 // TODO: add support for other data types. Maybe use a trait? or template?
-pub(crate) fn bilinear_interpolation<const CHANNELS: usize>(
-    image: &Image<f32, CHANNELS>,
+pub(crate) fn bilinear_interpolation<const C: usize>(
+    image: &Image<f32, C>,
     u: f32,
     v: f32,
     c: usize,

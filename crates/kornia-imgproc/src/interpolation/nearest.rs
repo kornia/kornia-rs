@@ -12,9 +12,9 @@ use kornia_image::Image;
 /// # Returns
 ///
 /// The interpolated pixel value.
-pub(crate) fn nearest_neighbor_interpolation<const CHANNELS: usize>(
+pub(crate) fn nearest_neighbor_interpolation<const C: usize>(
     //image: &ArrayView3<T>,
-    image: &Image<f32, CHANNELS>,
+    image: &Image<f32, C>,
     u: f32,
     v: f32,
     c: usize,
