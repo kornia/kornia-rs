@@ -44,8 +44,9 @@ where
             let mut i = 0;
             let mut j = src.cols() - 1;
             while i < j {
-                let (slice_i, slice_j) = row.split_at_mut((i + 1) * C);
-                slice_i.swap_with_slice(slice_j);
+                for c in 0..C {
+                    row.swap(i * C + c, j * C + c);
+                }
                 i += 1;
                 j -= 1;
             }

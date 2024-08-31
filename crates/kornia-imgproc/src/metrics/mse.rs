@@ -54,10 +54,10 @@ pub fn mse<const C: usize>(
 ) -> Result<f32, ImageError> {
     if image1.size() != image2.size() {
         return Err(ImageError::InvalidImageSize(
-            image1.height(),
-            image1.width(),
-            image2.height(),
-            image2.width(),
+            image1.rows(),
+            image1.cols(),
+            image2.rows(),
+            image2.cols(),
         ));
     }
 
