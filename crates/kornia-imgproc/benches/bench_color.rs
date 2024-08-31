@@ -24,6 +24,35 @@ fn gray_vanilla_get_unchecked(
     Ok(())
 }
 
+fn gray_ndarray_zip_par(
+    src: &Image<f32, 3>,
+    dst: &mut Image<f32, 1>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    const RW: f32 = 76. / 255.;
+    const GW: f32 = 150. / 255.;
+    const BW: f32 = 29. / 255.;
+
+    let src_data = unsafe {
+        ndarray::ArrayView3::from_shape_ptr((src.height(), src.width(), 3), src.as_ptr())
+    };
+
+    let mut dst_data = unsafe {
+        ndarray::ArrayViewMut3::from_shape_ptr((dst.height(), dst.width(), 1), dst.as_mut_ptr())
+    };
+
+    ndarray::Zip::from(dst_data.rows_mut())
+        .and(src_data.rows())
+        .par_for_each(|mut out, inp| {
+            assert_eq!(inp.len(), 3);
+            let r = inp[0];
+            let g = inp[1];
+            let b = inp[2];
+            out[0] = RW * r + GW * g + BW * b;
+        });
+
+    Ok(())
+}
+
 fn gray_slice_chunks_pixels(
     src: &Image<f32, 3>,
     dst: &mut Image<f32, 1>,
@@ -66,28 +95,6 @@ fn gray_slice_chunks_rows(
     src.as_slice()
         .chunks_exact(3 * num_cols)
         .zip(dst.storage.as_mut_slice().chunks_exact_mut(num_cols))
-        .for_each(|(src_chunk, dst_chunk)| {
-            src_chunk
-                .chunks_exact(3)
-                .zip(dst_chunk.chunks_exact_mut(1))
-                .for_each(|(src_pixel, dst_pixel)| {
-                    let r = src_pixel[0];
-                    let g = src_pixel[1];
-                    let b = src_pixel[2];
-                    dst_pixel[0] = (76. * r + 150. * g + 29. * b) / 255.;
-                });
-        });
-
-    Ok(())
-}
-fn gray_slice_chunks_rows_parallel(
-    src: &Image<f32, 3>,
-    dst: &mut Image<f32, 1>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let width = src.width();
-    src.as_slice()
-        .par_chunks_exact(3 * width)
-        .zip(dst.as_slice_mut().par_chunks_exact_mut(width))
         .for_each(|(src_chunk, dst_chunk)| {
             src_chunk
                 .chunks_exact(3)
@@ -156,7 +163,7 @@ fn bench_grayscale(c: &mut Criterion) {
             &(&image_f32, &gray),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| black_box(gray_from_rgb(src, &mut dst)))
+                b.iter(|| black_box(gray_ndarray_zip_par(src, &mut dst)))
             },
         );
 
@@ -192,7 +199,7 @@ fn bench_grayscale(c: &mut Criterion) {
             &(&image_f32, &gray),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| black_box(gray_slice_chunks_rows_parallel(src, &mut dst)))
+                b.iter(|| black_box(gray_from_rgb(src, &mut dst)))
             },
         );
     }

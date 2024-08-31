@@ -4,7 +4,7 @@ pub(crate) mod interpolate;
 mod nearest;
 mod remap;
 
-pub use grid::meshgrid;
+pub use grid::{meshgrid, meshgrid_image};
 pub use interpolate::InterpolationMode;
 pub use remap::remap;
 

@@ -1,6 +1,8 @@
 use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
 
+use crate::parallel;
+
 /// Apply a binary threshold to an image.
 ///
 /// # Arguments
@@ -41,24 +43,21 @@ where
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
-            src.size().width,
-            src.size().height,
-            dst.size().width,
-            dst.size().height,
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
         ));
     }
 
-    // TODO: parallelize again
-    dst.as_slice_mut()
-        .iter_mut()
-        .zip(src.as_slice())
-        .for_each(|(out, &inp)| {
-            *out = if inp > threshold {
-                max_value
-            } else {
-                T::default()
-            };
-        });
+    // run the thresholding operation in parallel
+    parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
+        *dst_pixel = if *src_pixel > threshold {
+            max_value
+        } else {
+            T::default()
+        };
+    });
 
     Ok(())
 }
@@ -103,23 +102,21 @@ where
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
-            src.size().width,
-            src.size().height,
-            dst.size().width,
-            dst.size().height,
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
         ));
     }
 
-    dst.as_slice_mut()
-        .iter_mut()
-        .zip(src.as_slice())
-        .for_each(|(out, &inp)| {
-            *out = if inp > threshold {
-                T::default()
-            } else {
-                max_value
-            };
-        });
+    // run the thresholding operation in parallel
+    parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
+        *dst_pixel = if *src_pixel > threshold {
+            T::default()
+        } else {
+            max_value
+        };
+    });
 
     Ok(())
 }
@@ -161,20 +158,21 @@ where
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
-            src.size().width,
-            src.size().height,
-            dst.size().width,
-            dst.size().height,
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
         ));
     }
 
-    // TODO: parallelize again
-    dst.as_slice_mut()
-        .iter_mut()
-        .zip(src.as_slice())
-        .for_each(|(out, inp)| {
-            *out = if *inp > threshold { threshold } else { *inp };
-        });
+    // run the thresholding operation in parallel
+    parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
+        *dst_pixel = if *src_pixel > threshold {
+            threshold
+        } else {
+            *src_pixel
+        };
+    });
 
     Ok(())
 }
@@ -216,20 +214,21 @@ where
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
-            src.size().width,
-            src.size().height,
-            dst.size().width,
-            dst.size().height,
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
         ));
     }
 
-    // TODO: parallelize again
-    dst.as_slice_mut()
-        .iter_mut()
-        .zip(src.as_slice())
-        .for_each(|(out, &inp)| {
-            *out = if inp > threshold { inp } else { T::default() };
-        });
+    // run the thresholding operation in parallel
+    parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
+        *dst_pixel = if *src_pixel > threshold {
+            *src_pixel
+        } else {
+            T::default()
+        };
+    });
 
     Ok(())
 }
@@ -271,20 +270,21 @@ where
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
-            src.size().width,
-            src.size().height,
-            dst.size().width,
-            dst.size().height,
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
         ));
     }
 
-    // TODO: parallelize again
-    dst.as_slice_mut()
-        .iter_mut()
-        .zip(src.as_slice())
-        .for_each(|(out, &inp)| {
-            *out = if inp > threshold { T::default() } else { inp };
-        });
+    // run the thresholding operation in parallel
+    parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
+        *dst_pixel = if *src_pixel > threshold {
+            T::default()
+        } else {
+            *src_pixel
+        };
+    });
 
     Ok(())
 }
@@ -341,25 +341,24 @@ where
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
-            src.size().width,
-            src.size().height,
-            dst.size().width,
-            dst.size().height,
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
         ));
     }
 
-    src.as_slice()
-        .chunks_exact(CHANNELS)
-        .zip(dst.storage.as_mut_slice())
-        .for_each(|(inp, out)| {
-            let mut is_in_range = true;
-            let mut i = 0;
-            while is_in_range && i < CHANNELS {
-                is_in_range &= inp[i] >= lower_bound[i] && inp[i] <= upper_bound[i];
-                i += 1;
-            }
-            *out = if is_in_range { 255 } else { 0 };
-        });
+    // parallelize the operation by rows
+    parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
+        let mut is_in_range = true;
+        src_pixel
+            .iter()
+            .zip(lower_bound.iter().zip(upper_bound.iter()))
+            .for_each(|(src_val, (lower, upper))| {
+                is_in_range &= src_val >= lower && src_val <= upper;
+            });
+        dst_pixel[0] = if is_in_range { 255 } else { 0 };
+    });
 
     Ok(())
 }
@@ -390,13 +389,7 @@ mod tests {
         assert_eq!(thresholded.size().width, 2);
         assert_eq!(thresholded.size().height, 3);
 
-        thresholded
-            .as_slice()
-            .iter()
-            .zip(data_expected.iter())
-            .for_each(|(x, y)| {
-                assert_eq!(x, y);
-            });
+        assert_eq!(thresholded.as_slice(), data_expected);
 
         Ok(())
     }
@@ -421,13 +414,7 @@ mod tests {
         assert_eq!(thresholded.size().width, 2);
         assert_eq!(thresholded.size().height, 3);
 
-        thresholded
-            .as_slice()
-            .iter()
-            .zip(data_expected.iter())
-            .for_each(|(x, y)| {
-                assert_eq!(x, y);
-            });
+        assert_eq!(thresholded.as_slice(), data_expected);
 
         Ok(())
     }
@@ -452,13 +439,7 @@ mod tests {
         assert_eq!(thresholded.size().width, 2);
         assert_eq!(thresholded.size().height, 3);
 
-        thresholded
-            .as_slice()
-            .iter()
-            .zip(data_expected.iter())
-            .for_each(|(x, y)| {
-                assert_eq!(x, y);
-            });
+        assert_eq!(thresholded.as_slice(), data_expected);
 
         Ok(())
     }
@@ -483,13 +464,7 @@ mod tests {
         assert_eq!(thresholded.size().width, 2);
         assert_eq!(thresholded.size().height, 1);
 
-        thresholded
-            .as_slice()
-            .iter()
-            .zip(data_expected.iter())
-            .for_each(|(x, y)| {
-                assert_eq!(x, y);
-            });
+        assert_eq!(thresholded.as_slice(), data_expected);
 
         Ok(())
     }
@@ -514,13 +489,7 @@ mod tests {
         assert_eq!(thresholded.size().width, 2);
         assert_eq!(thresholded.size().height, 1);
 
-        thresholded
-            .as_slice()
-            .iter()
-            .zip(data_expected.iter())
-            .for_each(|(x, y)| {
-                assert_eq!(x, y);
-            });
+        assert_eq!(thresholded.as_slice(), data_expected);
 
         Ok(())
     }

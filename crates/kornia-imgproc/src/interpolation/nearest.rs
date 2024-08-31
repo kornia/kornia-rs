@@ -1,5 +1,4 @@
-use kornia_image::ImageDtype;
-use ndarray::ArrayView3;
+use kornia_image::Image;
 
 /// Kernel for nearest neighbor interpolation
 ///
@@ -13,13 +12,15 @@ use ndarray::ArrayView3;
 /// # Returns
 ///
 /// The interpolated pixel value.
-pub(crate) fn nearest_neighbor_interpolation<T: ImageDtype>(
-    image: &ArrayView3<T>,
+pub(crate) fn nearest_neighbor_interpolation<const CHANNELS: usize>(
+    //image: &ArrayView3<T>,
+    image: &Image<f32, CHANNELS>,
     u: f32,
     v: f32,
     c: usize,
-) -> T {
-    let (height, width, _) = image.dim();
+) -> f32 {
+    //let (height, width, _) = image.dim();
+    let (height, width) = (image.height(), image.width());
 
     let iu = u.round() as usize;
     let iv = v.round() as usize;
@@ -27,5 +28,6 @@ pub(crate) fn nearest_neighbor_interpolation<T: ImageDtype>(
     let iu = iu.clamp(0, width - 1);
     let iv = iv.clamp(0, height - 1);
 
-    image[[iv, iu, c]]
+    //image[[iv, iu, c]]
+    *image.get_unchecked([iv, iu, c])
 }

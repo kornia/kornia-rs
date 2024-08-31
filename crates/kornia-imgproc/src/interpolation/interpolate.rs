@@ -1,7 +1,6 @@
 use super::bilinear::bilinear_interpolation;
 use super::nearest::nearest_neighbor_interpolation;
-use kornia_image::ImageDtype;
-use ndarray::ArrayView3;
+use kornia_image::Image;
 
 /// Interpolation mode for the resize operation
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -25,13 +24,14 @@ pub enum InterpolationMode {
 /// # Returns
 ///
 /// The interpolated pixel value.
-pub(crate) fn interpolate_pixel<T: ImageDtype>(
-    image: &ArrayView3<T>,
+pub(crate) fn interpolate_pixel<const CHANNELS: usize>(
+    //image: &ArrayView3<T>,
+    image: &Image<f32, CHANNELS>,
     u: f32,
     v: f32,
     c: usize,
     interpolation: InterpolationMode,
-) -> T {
+) -> f32 {
     match interpolation {
         InterpolationMode::Bilinear => bilinear_interpolation(image, u, v, c),
         InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v, c),

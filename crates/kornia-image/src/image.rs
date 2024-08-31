@@ -54,27 +54,6 @@ impl From<ImageSize> for [u32; 2] {
     }
 }
 
-/// Trait for image data types.
-///
-/// Send and Sync is required for ndarray::Zip::par_for_each
-// TODO: replace this with ConverTo once we have a better solution
-pub trait ImageDtype: Copy + Default + Into<f32> + Send + Sync {
-    /// Convert a f32 value to the image data type.
-    fn from_f32(x: f32) -> Self;
-}
-
-impl ImageDtype for f32 {
-    fn from_f32(x: f32) -> Self {
-        x
-    }
-}
-
-impl ImageDtype for u8 {
-    fn from_f32(x: f32) -> Self {
-        x.round().clamp(0.0, 255.0) as u8
-    }
-}
-
 #[derive(Clone)]
 /// Represents an image with pixel data.
 ///

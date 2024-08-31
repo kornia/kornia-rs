@@ -1,6 +1,8 @@
 use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
 
+use crate::parallel;
+
 /// Performs weighted addition of two images `src1` and `src2` with weights `alpha`
 /// and `beta`, and an optional scalar `gamma`. The formula used is:
 ///
@@ -41,10 +43,10 @@ where
 {
     if src1.size() != src2.size() {
         return Err(ImageError::InvalidImageSize(
-            src1.width(),
-            src1.height(),
-            src2.width(),
-            src2.height(),
+            src1.cols(),
+            src1.rows(),
+            src2.cols(),
+            src2.rows(),
         ));
     }
 
@@ -57,35 +59,10 @@ where
         ));
     }
 
-    let src1_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr(
-            (src1.height(), src1.width(), src1.num_channels()),
-            src1.as_ptr(),
-        )
-    };
-
-    let src2_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr(
-            (src2.height(), src2.width(), src2.num_channels()),
-            src2.as_ptr(),
-        )
-    };
-
-    let mut dst_data = unsafe {
-        ndarray::ArrayViewMut3::from_shape_ptr(
-            (dst.height(), dst.width(), dst.num_channels()),
-            dst.as_mut_ptr(),
-        )
-    };
-
-    ndarray::Zip::from(dst_data.rows_mut())
-        .and(src1_data.rows())
-        .and(src2_data.rows())
-        .for_each(|mut dst_pixel, src1_pixels, src2_pixels| {
-            for i in 0..CHANNELS {
-                dst_pixel[i] = (src1_pixels[i] * alpha) + (src2_pixels[i] * beta) + gamma;
-            }
-        });
+    // compute the weighted sum
+    parallel::par_iter_rows_val_two(src1, src2, dst, |&src1_pixel, &src2_pixel, dst_pixel| {
+        *dst_pixel = (src1_pixel * alpha) + (src2_pixel * beta) + gamma;
+    });
 
     Ok(())
 }

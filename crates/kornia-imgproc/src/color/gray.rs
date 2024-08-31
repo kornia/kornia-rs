@@ -1,3 +1,4 @@
+use crate::parallel;
 use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
 
@@ -43,46 +44,28 @@ const BW: f64 = 0.114;
 /// ```
 pub fn gray_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 1>) -> Result<(), ImageError>
 where
-    T: Default + Copy + Clone + Send + Sync + num_traits::Float + SafeTensorType,
+    T: SafeTensorType + num_traits::Float,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
-            src.size().width,
-            src.size().height,
-            dst.size().width,
-            dst.size().height,
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
         ));
-    }
-
-    if src.num_channels() != 3 {
-        return Err(ImageError::ChannelIndexOutOfBounds(3, src.num_channels()));
-    }
-
-    if dst.num_channels() != 1 {
-        return Err(ImageError::ChannelIndexOutOfBounds(1, dst.num_channels()));
     }
 
     let rw = T::from(RW).ok_or(ImageError::CastError)?;
     let gw = T::from(GW).ok_or(ImageError::CastError)?;
     let bw = T::from(BW).ok_or(ImageError::CastError)?;
 
-    let src_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr((src.height(), src.width(), 3), src.as_ptr())
-    };
-
-    let mut dst_data = unsafe {
-        ndarray::ArrayViewMut3::from_shape_ptr((dst.height(), dst.width(), 1), dst.as_mut_ptr())
-    };
-
-    ndarray::Zip::from(dst_data.rows_mut())
-        .and(src_data.rows())
-        .par_for_each(|mut out, inp| {
-            assert_eq!(inp.len(), 3);
-            let r = inp[0];
-            let g = inp[1];
-            let b = inp[2];
-            out[0] = rw * r + gw * g + bw * b;
-        });
+    // parallelize the grayscale conversion by rows
+    parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
+        let r = src_pixel[0];
+        let g = src_pixel[1];
+        let b = src_pixel[2];
+        dst_pixel[0] = rw * r + gw * g + bw * b;
+    });
 
     Ok(())
 }

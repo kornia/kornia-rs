@@ -1,5 +1,6 @@
 use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
+use rayon::{iter::ParallelIterator, slice::ParallelSliceMut};
 
 /// Flip the input image horizontally.
 ///
@@ -39,22 +40,14 @@ where
 {
     let mut dst = src.clone();
 
-    let mut dst_data = unsafe {
-        ndarray::ArrayViewMut3::from_shape_ptr(
-            (src.height(), src.width(), CHANNELS),
-            dst.as_mut_ptr(),
-        )
-    };
-
-    dst_data
-        .axis_iter_mut(ndarray::Axis(0))
-        .for_each(|mut row| {
+    dst.as_slice_mut()
+        .par_chunks_exact_mut(src.cols() * CHANNELS)
+        .for_each(|row| {
             let mut i = 0;
-            let mut j = src.width() - 1;
+            let mut j = src.cols() - 1;
             while i < j {
-                for c in 0..CHANNELS {
-                    row.swap((i, c), (j, c));
-                }
+                let (slice_i, slice_j) = row.split_at_mut((i + 1) * CHANNELS);
+                slice_i.swap_with_slice(slice_j);
                 i += 1;
                 j -= 1;
             }
@@ -101,26 +94,18 @@ where
 {
     let mut dst = src.clone();
 
-    let mut dst_data = unsafe {
-        ndarray::ArrayViewMut3::from_shape_ptr(
-            (src.height(), src.width(), CHANNELS),
-            dst.as_mut_ptr(),
-        )
-    };
-
-    dst_data
-        .axis_iter_mut(ndarray::Axis(1))
-        .for_each(|mut col| {
-            let mut i = 0;
-            let mut j = src.height() - 1;
-            while i < j {
-                for c in 0..CHANNELS {
-                    col.swap((i, c), (j, c));
-                }
-                i += 1;
-                j -= 1;
+    // TODO: improve this implementation
+    for i in 0..src.cols() {
+        let mut j = src.rows() - 1;
+        for k in 0..src.rows() / 2 {
+            for c in 0..CHANNELS {
+                let idx_i = i * CHANNELS + c + k * src.cols() * CHANNELS;
+                let idx_j = i * CHANNELS + c + j * src.cols() * CHANNELS;
+                dst.as_slice_mut().swap(idx_i, idx_j);
             }
-        });
+            j -= 1;
+        }
+    }
 
     Ok(dst)
 }
