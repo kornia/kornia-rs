@@ -89,7 +89,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use kornia_image::{ops, Image};
+    use kornia_image::{ops, Image, ImageSize};
     use kornia_io::functional as F;
 
     #[test]
@@ -105,6 +105,39 @@ mod tests {
         assert_eq!(gray.num_channels(), 1);
         assert_eq!(gray.size().width, 258);
         assert_eq!(gray.size().height, 195);
+
+        Ok(())
+    }
+
+    #[test]
+    fn gray_from_rgb_regression() -> Result<(), Box<dyn std::error::Error>> {
+        let image = Image::new(
+            ImageSize {
+                width: 2,
+                height: 3,
+            },
+            vec![
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0,
+            ],
+        )?;
+
+        let mut gray = Image::<f32, 1>::from_size_val(image.size(), 0.0)?;
+
+        super::gray_from_rgb(&image, &mut gray)?;
+
+        let expected: Image<f32, 1> = Image::new(
+            ImageSize {
+                width: 2,
+                height: 3,
+            },
+            vec![0.299, 0.587, 0.114, 0.0, 0.0, 0.0],
+        )?;
+
+        for (a, b) in gray.as_slice().iter().zip(expected.as_slice().iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
+
         Ok(())
     }
 }

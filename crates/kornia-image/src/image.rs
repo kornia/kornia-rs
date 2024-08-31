@@ -298,22 +298,22 @@ where
 
     /// Get the number of columns of the image.
     pub fn cols(&self) -> usize {
-        self.width()
+        self.shape[1]
     }
 
     /// Get the number of rows of the image.
     pub fn rows(&self) -> usize {
-        self.height()
+        self.shape[0]
     }
 
     /// Get the width of the image in pixels.
     pub fn width(&self) -> usize {
-        self.shape[1]
+        self.cols()
     }
 
     /// Get the height of the image in pixels.
     pub fn height(&self) -> usize {
-        self.shape[0]
+        self.rows()
     }
 
     /// Get the number of channels in the image.

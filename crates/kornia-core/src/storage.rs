@@ -125,8 +125,6 @@ where
         self.data.as_ptr()
     }
 
-    // TODO: remove this method once we don't need it anymore because of
-    // ndarray::ArrayViewMut in kornia-imgproc
     /// Returns the data pointer as a mutable pointer.
     #[inline]
     pub fn as_mut_ptr(&mut self) -> *mut T {
