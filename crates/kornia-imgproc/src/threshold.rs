@@ -1,6 +1,5 @@
 use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
-use rayon::prelude::*;
 
 /// Apply a binary threshold to an image.
 ///
@@ -361,19 +360,6 @@ where
             }
             *out = if is_in_range { 255 } else { 0 };
         });
-
-    //src.as_slice()
-    //    .par_chunks_exact(CHANNELS)
-    //    .zip(dst.as_slice_mut().par_iter_mut())
-    //    .for_each(|(inp, out)| {
-    //        let mut is_in_range = true;
-    //        let mut i = 0;
-    //        while is_in_range && i < CHANNELS {
-    //            is_in_range &= inp[i] >= lower_bound[i] && inp[i] <= upper_bound[i];
-    //            i += 1;
-    //        }
-    //        *out = if is_in_range { 255 } else { 0 };
-    //    });
 
     Ok(())
 }
