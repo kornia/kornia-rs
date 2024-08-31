@@ -28,7 +28,7 @@ fn gray_slice_chunks_pixels(
     src: &Image<f32, 3>,
     dst: &mut Image<f32, 1>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    src.storage
+    src.as_slice()
         .chunks_exact(3)
         .zip(dst.storage.as_mut_slice().chunks_exact_mut(1))
         .for_each(|(src_chunk, dst_chunk)| {
@@ -63,7 +63,7 @@ fn gray_slice_chunks_rows(
     dst: &mut Image<f32, 1>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let num_cols = src.cols();
-    src.storage
+    src.as_slice()
         .chunks_exact(3 * num_cols)
         .zip(dst.storage.as_mut_slice().chunks_exact_mut(num_cols))
         .for_each(|(src_chunk, dst_chunk)| {
@@ -80,7 +80,6 @@ fn gray_slice_chunks_rows(
 
     Ok(())
 }
-
 fn gray_slice_chunks_rows_parallel(
     src: &Image<f32, 3>,
     dst: &mut Image<f32, 1>,

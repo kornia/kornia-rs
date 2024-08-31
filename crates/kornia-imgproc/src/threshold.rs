@@ -348,7 +348,7 @@ where
         ));
     }
 
-    src.storage
+    src.as_slice()
         .chunks_exact(CHANNELS)
         .zip(dst.storage.as_mut_slice())
         .for_each(|(inp, out)| {
