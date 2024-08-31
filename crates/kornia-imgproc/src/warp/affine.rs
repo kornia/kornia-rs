@@ -88,14 +88,14 @@ fn transform_point(x: &f32, y: &f32, m: &[f32; 6]) -> (f32, f32) {
 ///
 /// # Arguments
 ///
-/// * `src` - The input image with shape (height, width, C).
-/// * `dst` - The output image with shape (height, width, C).
+/// * `src` - The input image with shape (height, width, channels).
+/// * `dst` - The output image with shape (height, width, channels).
 /// * `m` - The 2x3 affine transformation matrix.
 /// * `interpolation` - The interpolation mode to use.
 ///
 /// # Returns
 ///
-/// The output image with shape (new_height, new_width, C).
+/// The output image with shape (new_height, new_width, channels).
 ///
 /// # Example
 ///

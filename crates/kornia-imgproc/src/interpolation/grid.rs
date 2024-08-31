@@ -10,7 +10,10 @@ use kornia_core::{CpuAllocator, Tensor2, TensorError};
 /// # Returns
 ///
 /// A tuple of 2D arrays of shape (rows, cols) containing the x and y coordinates
-pub fn meshgrid(rows: usize, cols: usize) -> Result<(Tensor2<f32>, Tensor2<f32>), TensorError> {
+pub(crate) fn meshgrid(
+    rows: usize,
+    cols: usize,
+) -> Result<(Tensor2<f32>, Tensor2<f32>), TensorError> {
     let mut map_x = vec![];
     for _ in 0..rows {
         for c in 0..cols {
@@ -32,12 +35,13 @@ pub fn meshgrid(rows: usize, cols: usize) -> Result<(Tensor2<f32>, Tensor2<f32>)
 }
 
 /// Create a meshgrid of x and y coordinates
-pub fn meshgrid_image(
+pub(crate) fn meshgrid_image(
     rows: usize,
     max_rows: usize,
     cols: usize,
     max_cols: usize,
 ) -> Result<(Tensor2<f32>, Tensor2<f32>), TensorError> {
+    // TODO: review the implementation
     let mut map_x = vec![];
     let step_x = (max_cols - 1) as f32 / (cols - 1) as f32;
     for _ in 0..rows {

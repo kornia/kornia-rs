@@ -19,29 +19,25 @@ pub(crate) fn bilinear_interpolation<const C: usize>(
     v: f32,
     c: usize,
 ) -> f32 {
-    let (height, width) = (image.height(), image.width());
+    let (rows, cols) = (image.rows(), image.cols());
 
     let iu = u.trunc() as usize;
     let iv = v.trunc() as usize;
 
     let frac_u = u.fract();
     let frac_v = v.fract();
-    //let val00: f32 = image[[iv, iu, c]].into();
     let val00 = *image.get_unchecked([iv, iu, c]);
-    let val01 = if iu + 1 < width {
-        //image[[iv, iu + 1, c]].into()
+    let val01 = if iu + 1 < cols {
         *image.get_unchecked([iv, iu + 1, c])
     } else {
         val00
     };
-    let val10 = if iv + 1 < height {
-        //image[[iv + 1, iu, c]].into()
+    let val10 = if iv + 1 < rows {
         *image.get_unchecked([iv + 1, iu, c])
     } else {
         val00
     };
-    let val11 = if iu + 1 < width && iv + 1 < height {
-        //image[[iv + 1, iu + 1, c]].into()
+    let val11 = if iu + 1 < cols && iv + 1 < rows {
         *image.get_unchecked([iv + 1, iu + 1, c])
     } else {
         val00

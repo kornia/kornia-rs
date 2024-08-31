@@ -7,14 +7,14 @@ use crate::parallel;
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of an arbitrary number of C and type.
-/// * `dst` - The output image of an arbitrary number of C and type.
+/// * `src` - The input image of an arbitrary number of channels and type.
+/// * `dst` - The output image of an arbitrary number of channels and type.
 /// * `threshold` - The threshold value. Must be the same type as the image.
 /// * `max_value` - The maximum value to use when the input value is greater than the threshold.
 ///
 /// # Returns
 ///
-/// The thresholded image with the same number of C as the input image.
+/// The thresholded image with the same number of channels as the input image.
 ///
 /// # Examples
 ///
@@ -66,14 +66,14 @@ where
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of an arbitrary number of C and type.
-/// * `dst` - The output image of an arbitrary number of C and type.///
+/// * `src` - The input image of an arbitrary number of channels and type.
+/// * `dst` - The output image of an arbitrary number of channels and type.
 /// * `threshold` - The threshold value. Must be the same type as the image.
 /// * `max_value` - The maximum value to use when the input value is less than the threshold.
 ///
 /// # Returns
 ///
-/// The thresholded image with the same number of C as the input image.
+/// The thresholded image with the same number of channels as the input image.
 ///
 /// # Examples
 ///
@@ -125,12 +125,12 @@ where
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of an arbitrary number of C and type.
+/// * `src` - The input image of an arbitrary number of channels and type.
 /// * `threshold` - The threshold value. Must be the same type as the image.
 ///
 /// # Returns
 ///
-/// The thresholded image with the same number of C as the input image.
+/// The thresholded image with the same number of channels as the input image.
 ///
 /// # Examples
 ///
@@ -181,12 +181,12 @@ where
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of an arbitrary number of C and type.
+/// * `src` - The input image of an arbitrary number of channels and type.
 /// * `threshold` - The threshold value. Must be the same type as the image.
 ///
 /// # Returns
 ///
-/// The thresholded image with the same number of C as the input image.
+/// The thresholded image with the same number of channels as the input image.
 ///
 /// # Examples
 ///
@@ -237,12 +237,12 @@ where
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of an arbitrary number of C and type.
+/// * `src` - The input image of an arbitrary number of channels and type.
 /// * `threshold` - The threshold value. Must be the same type as the image.
 ///
 /// # Returns
 ///
-/// The thresholded image with the same number of C as the input image.
+/// The thresholded image with the same number of channels as the input image.
 ///
 /// # Examples
 ///
@@ -293,7 +293,7 @@ where
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of an arbitrary number of C and type.
+/// * `src` - The input image of an arbitrary number of channels and type.
 /// * `lower_bound` - The lower bound for each channel.
 /// * `upper_bound` - The upper bound for each channel.
 ///
@@ -301,7 +301,7 @@ where
 ///
 /// The thresholded image with a single channel as byte values.
 ///
-/// Precondition: the input image must have the same number of C as the bounds.
+/// Precondition: the input image must have the same number of channels as the lower and upper bounds.
 /// Precondition: the input image range must be 0-255.
 ///
 /// # Examples

@@ -123,7 +123,7 @@ where
     pub fn new(size: ImageSize, data: Vec<T>) -> Result<Self, ImageError> {
         // check if the data length matches the image size
         if data.len() != size.width * size.height * C {
-            return Err(ImageError::InvalidChape(
+            return Err(ImageError::InvalidChannelShape(
                 data.len(),
                 size.width * size.height * C,
             ));

@@ -13,7 +13,7 @@ pub fn warp_affine(
     interpolation: &str,
 ) -> PyResult<PyImage> {
     // have to add annotation Image<u8, 3>, otherwise the compiler will complain
-    // NOTE: do we support images with C != 3?
+    // NOTE: do we support images with channels != 3?
     let image: Image<u8, 3> = Image::from_pyimage(image)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 

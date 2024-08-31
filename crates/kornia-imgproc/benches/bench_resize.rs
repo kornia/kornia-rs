@@ -51,7 +51,7 @@ fn bench_resize(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("ndarray_zip_par", &parameter_string),
+            BenchmarkId::new("kornia_par", &parameter_string),
             &(&image_f32, &out_f32),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());

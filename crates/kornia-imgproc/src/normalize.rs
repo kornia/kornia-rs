@@ -13,14 +13,14 @@ use crate::parallel;
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of shape (height, width, C).
-/// * `dst` - The output image of shape (height, width, C).
+/// * `src` - The input image of shape (height, width, channels).
+/// * `dst` - The output image of shape (height, width, channels).
 /// * `mean` - The mean value for each channel.
 /// * `std` - The standard deviation for each channel.
 ///
 /// # Returns
 ///
-/// The normalized image of shape (height, width, C).
+/// The normalized image of shape (height, width, channels).
 ///
 /// # Example
 ///
@@ -88,8 +88,8 @@ where
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of shape (height, width, C).
-/// * `dst` - The output image of shape (height, width, C).
+/// * `src` - The input image of shape (height, width, channels).
+/// * `dst` - The output image of shape (height, width, channels).
 ///
 /// # Returns
 ///
@@ -155,8 +155,8 @@ where
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of shape (height, width, C).
-/// * `dst` - The output image of shape (height, width, C).
+/// * `src` - The input image of shape (height, width, channels).
+/// * `dst` - The output image of shape (height, width, channels).
 /// * `min` - The minimum value for each channel.
 /// * `max` - The maximum value for each channel.
 ///

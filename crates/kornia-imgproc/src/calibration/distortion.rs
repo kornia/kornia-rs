@@ -132,32 +132,6 @@ pub fn generate_correction_map_polynomial(
             });
         });
 
-    // generate the meshgrid with coordinates
-    //let x = ndarray::Array::linspace(0., size.width as f32 - 1., size.width)
-    //    .insert_axis(ndarray::Axis(0));
-
-    //let y = ndarray::Array::linspace(0., size.height as f32 - 1., size.height)
-    //    .insert_axis(ndarray::Axis(0));
-
-    //// combine the x and y coordinates to create a meshgrid
-    //let (map_x, map_y) = meshgrid(&x, &y);
-    //let (mut map_x, mut map_y) = (
-    //    map_x.insert_axis(ndarray::Axis(2)),
-    //    map_y.insert_axis(ndarray::Axis(2)),
-    //); // add a channel axis  (HxWx1, HxWx1)
-
-    //ndarray::Zip::from(map_x.rows_mut())
-    //    .and(map_y.rows_mut())
-    //    .par_for_each(|mut xarr, mut yarr| {
-    //        let (x, y) = (xarr[0], yarr[0]);
-    //        let (xdst, ydst) = distort_point_polynomial(x as f64, y as f64, intrinsic, distortion);
-    //        xarr[0] = xdst as f32;
-    //        yarr[0] = ydst as f32;
-    //    });
-
-    //let map_x = Image::new(*size, map_x.into_raw_vec()).unwrap();
-    //let map_y = Image::new(*size, map_y.into_raw_vec()).unwrap();
-
     Ok((map_x, map_y))
 }
 

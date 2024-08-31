@@ -56,14 +56,14 @@ fn transform_point(x: &f32, y: &f32, m: &[f32; 9]) -> (f32, f32) {
 
 /// Applies a perspective transformation to an image.
 ///
-/// * `src` - The input image with shape (height, width, C).
-/// * `dst` - The output image with shape (height, width, C).
+/// * `src` - The input image with shape (height, width, channels).
+/// * `dst` - The output image with shape (height, width, channels).
 /// * `m` - The 3x3 perspective transformation matrix src -> dst.
 /// * `interpolation` - The interpolation mode to use.
 ///
 /// # Returns
 ///
-/// The output image with shape (new_height, new_width, C).
+/// The output image with shape (new_height, new_width, channels).
 ///
 /// # Example
 ///
@@ -256,9 +256,6 @@ mod tests {
             &mut image_resized,
             super::InterpolationMode::Bilinear,
         )?;
-
-        println!("{:?}", image_transformed.as_slice());
-        println!("{:?}", image_resized.as_slice());
 
         assert_eq!(image_transformed.num_channels(), 1);
         assert_eq!(image_transformed.size().width, 2);

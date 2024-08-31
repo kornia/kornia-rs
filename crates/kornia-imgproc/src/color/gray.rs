@@ -16,7 +16,7 @@ const BW: f64 = 0.114;
 /// * `src` - The input RGB image.
 /// * `dst` - The output grayscale image.
 ///
-/// Precondition: the input image must have 3 C.
+/// Precondition: the input image must have 3 channels.
 /// Precondition: the output image must have 1 channel.
 /// Precondition: the input and output images must have the same size.
 ///
