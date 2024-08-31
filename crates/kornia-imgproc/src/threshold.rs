@@ -348,30 +348,17 @@ where
         ));
     }
 
-    let src_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr(
-            (src.size().height, src.size().width, CHANNELS),
-            src.as_ptr(),
-        )
-    };
-
-    let mut dst_data = unsafe {
-        ndarray::ArrayViewMut3::from_shape_ptr(
-            (dst.size().height, dst.size().width, 1),
-            dst.as_mut_ptr(),
-        )
-    };
-
-    ndarray::Zip::from(dst_data.rows_mut())
-        .and(src_data.rows())
-        .par_for_each(|mut out, inp| {
+    src.as_slice()
+        .chunks_exact(CHANNELS)
+        .zip(dst.storage.as_mut_slice())
+        .for_each(|(inp, out)| {
             let mut is_in_range = true;
             let mut i = 0;
             while is_in_range && i < CHANNELS {
                 is_in_range &= inp[i] >= lower_bound[i] && inp[i] <= upper_bound[i];
                 i += 1;
             }
-            out[0] = if is_in_range { 255 } else { 0 };
+            *out = if is_in_range { 255 } else { 0 };
         });
 
     Ok(())

@@ -29,6 +29,7 @@ kornia.workspace = true
 criterion = "0.5"
 image = "0.25.1"
 ndarray = { version = "0.15", features = ["rayon"] }
+rayon = "1.10"
 
 [[bench]]
 name = "bench_color"
