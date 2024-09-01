@@ -42,7 +42,7 @@ where
 /// Implement the `TensorStorage` struct.
 impl<T, A: TensorAllocator> TensorStorage<T, A>
 where
-    T: SafeTensorType,
+    T: SafeTensorType + Clone,
 {
     /// Creates a new tensor storage with the given length and allocator.
     ///
@@ -149,6 +149,40 @@ where
     /// Returns the data reference from the tensor storage without checking the bounds.
     pub fn get_unchecked(&self, index: usize) -> &T {
         unsafe { self.data.get_unchecked(index) }
+    }
+
+    /// Creates a new `TensorStorage` from a slice of data.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - A slice containing the data to be stored.
+    /// * `alloc` - The allocator to use for creating the storage.
+    ///
+    /// # Returns
+    ///
+    /// A new `TensorStorage` instance containing a copy of the input data.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `TensorAllocatorError` if the allocation fails.
+    pub fn from_slice(data: &[T], alloc: A) -> Result<Self, TensorAllocatorError> {
+        let mut storage = Self::new(data.len(), alloc)?;
+        storage.as_mut_slice().copy_from_slice(data);
+        Ok(storage)
+    }
+}
+
+/// A new `TensorStorage` instance with cloned data if successful, otherwise an error.
+impl<T, A> Clone for TensorStorage<T, A>
+where
+    T: SafeTensorType + Clone,
+    A: TensorAllocator + Clone,
+{
+    fn clone(&self) -> Self {
+        let mut new_storage = Self::new(self.len(), self.alloc.clone())
+            .expect("Failed to allocate memory for cloned TensorStorage");
+        new_storage.as_mut_slice().clone_from_slice(self.as_slice());
+        new_storage
     }
 }
 

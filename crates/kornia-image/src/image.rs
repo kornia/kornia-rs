@@ -293,7 +293,7 @@ where
         self.rows()
     }
 
-    /// Get the number of C in the image.
+    /// Get the number of channels in the image.
     pub fn num_channels(&self) -> usize {
         C
     }
