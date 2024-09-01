@@ -18,31 +18,26 @@ impl SafeTensorType for i64 {}
 impl SafeTensorType for f32 {}
 impl SafeTensorType for f64 {}
 
-/// represents a contiguous memory region that can be shared with other buffers and across thread boundaries.
+/// Represents a contiguous memory region that can be shared with other buffers and across thread boundaries.
 ///
-/// NOTE: https://docs.rs/arrow-buffer/latest/arrow_buffer/buffer/struct.ScalarBuffer.html
+/// This struct provides methods to create, access, and manage tensor storage using a custom allocator.
 ///
 /// # Safety
 ///
 /// The tensor storage must be properly aligned and have the correct size.
-///
-/// # Fields
-///
-/// * `data` - The buffer containing the tensor storage.
-/// * `alloc` - The allocator used to allocate the tensor storage.
 pub struct TensorStorage<T, A: TensorAllocator>
 where
     T: SafeTensorType,
 {
     /// The buffer containing the tensor storage.
     data: ScalarBuffer<T>,
+    /// The allocator used to allocate the tensor storage.
     alloc: A,
 }
 
-/// Implement the `TensorStorage` struct.
 impl<T, A: TensorAllocator> TensorStorage<T, A>
 where
-    T: SafeTensorType,
+    T: SafeTensorType + Clone,
 {
     /// Creates a new tensor storage with the given length and allocator.
     ///
@@ -61,6 +56,7 @@ where
 
         // create the buffer
         let buffer = unsafe {
+            // SAFETY: `ptr` is non-null and properly aligned, and `len` is the correct size.
             Buffer::from_custom_allocation(
                 NonNull::new_unchecked(ptr),
                 len * std::mem::size_of::<T>(),
@@ -78,7 +74,7 @@ where
     ///
     /// # Arguments
     ///
-    /// * `vec` - The vector to copy to the tensor storage.
+    /// * `vec` - The vector to use for the tensor storage.
     /// * `alloc` - The allocator used to allocate the tensor storage.
     ///
     /// # Safety
@@ -87,6 +83,7 @@ where
     pub fn from_vec(vec: Vec<T>, alloc: A) -> Self {
         // create immutable buffer from vec
         let buffer = unsafe {
+            // SAFETY: `vec` is properly aligned and has the correct length.
             Buffer::from_custom_allocation(
                 NonNull::new_unchecked(vec.as_ptr() as *mut u8),
                 vec.len() * std::mem::size_of::<T>(),
@@ -119,7 +116,7 @@ where
         self.data.is_empty()
     }
 
-    /// Returns the data pointer
+    /// Returns the data pointer.
     #[inline]
     pub fn as_ptr(&self) -> *const T {
         self.data.as_ptr()
@@ -131,24 +128,88 @@ where
         self.as_mut_slice().as_mut_ptr()
     }
 
-    /// Return the data pointer as a slice.
+    /// Returns the data pointer as a slice.
     pub fn as_slice(&self) -> &[T] {
         unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len()) }
     }
 
-    /// Return the data pointer as a mutable slice.
+    /// Returns the data pointer as a mutable slice.
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         unsafe { std::slice::from_raw_parts_mut(self.data.as_ptr() as *mut T, self.len()) }
     }
 
-    /// Returns the data reference from the tensor storage checking the bounds.
+    /// Returns a reference to the data at the specified index, if it is within bounds.
     pub fn get(&self, index: usize) -> Option<&T> {
         self.data.get(index)
     }
 
-    /// Returns the data reference from the tensor storage without checking the bounds.
+    /// Returns a reference to the data at the specified index without bounds checking.
+    ///
+    /// # Safety
+    ///
+    /// Calling this method with an out-of-bounds index is undefined behavior.
     pub fn get_unchecked(&self, index: usize) -> &T {
         unsafe { self.data.get_unchecked(index) }
+    }
+
+    /// Creates a new `TensorStorage` from a slice of data.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - A slice containing the data to be stored.
+    /// * `alloc` - The allocator to use for creating the storage.
+    ///
+    /// # Returns
+    ///
+    /// A new `TensorStorage` instance containing a copy of the input data.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `TensorAllocatorError` if the allocation fails.
+    pub fn from_slice(data: &[T], alloc: A) -> Result<Self, TensorAllocatorError> {
+        let mut storage = Self::new(data.len(), alloc)?;
+        storage.as_mut_slice().copy_from_slice(data);
+        Ok(storage)
+    }
+
+    /// Creates a new tensor storage from an existing raw pointer with the given allocator.
+    ///
+    /// # Arguments
+    ///
+    /// * `ptr` - The existing raw pointer to the tensor data.
+    /// * `len` - The number of elements in the tensor storage.
+    /// * `alloc` - A reference to the allocator used to allocate the tensor storage.
+    ///
+    /// # Safety
+    ///
+    /// The pointer must be properly aligned and have the correct length.
+    pub unsafe fn from_ptr(ptr: *mut T, len: usize, alloc: &A) -> Self {
+        // create the buffer
+        let buffer = Buffer::from_custom_allocation(
+            NonNull::new_unchecked(ptr as *mut u8),
+            len * std::mem::size_of::<T>(),
+            Arc::new(Vec::<T>::with_capacity(len)),
+        );
+
+        // create tensor storage
+        Self {
+            data: buffer.into(),
+            alloc: alloc.clone(),
+        }
+    }
+}
+
+/// A new `TensorStorage` instance with cloned data if successful, otherwise an error.
+impl<T, A> Clone for TensorStorage<T, A>
+where
+    T: SafeTensorType + Clone,
+    A: TensorAllocator + Clone,
+{
+    fn clone(&self) -> Self {
+        let mut new_storage = Self::new(self.len(), self.alloc.clone())
+            .expect("Failed to allocate memory for cloned TensorStorage");
+        new_storage.as_mut_slice().clone_from_slice(self.as_slice());
+        new_storage
     }
 }
 
@@ -156,6 +217,7 @@ where
 mod tests {
     use super::*;
     use crate::allocator::CpuAllocator;
+    use std::alloc::Layout;
 
     #[test]
     fn test_tensor_storage() -> Result<(), TensorAllocatorError> {
@@ -226,6 +288,28 @@ mod tests {
         assert_eq!(storage.get_unchecked(5), &5);
         // TODO: fix this test
         // assert!(std::panic::catch_unwind(|| storage.get_unchecked(6)).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_tensor_storage_from_cpu_ptr() -> Result<(), TensorAllocatorError> {
+        let len = 1024;
+        let layout = Layout::array::<u8>(len).unwrap();
+        let allocator = CpuAllocator;
+
+        // Allocate CPU memory
+        let ptr = allocator.alloc(layout)?;
+
+        // Wrap the existing CPU pointer in a `TensorStorage`
+        let storage = unsafe { TensorStorage::from_ptr(ptr as *mut u8, len, &allocator) };
+
+        // Use the `TensorStorage` as needed
+        assert_eq!(storage.len(), len);
+        assert!(!storage.is_empty());
+
+        // Deallocate CPU memory
+        allocator.dealloc(ptr, layout);
 
         Ok(())
     }

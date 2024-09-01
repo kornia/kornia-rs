@@ -1,5 +1,6 @@
 use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
+use rayon::{iter::ParallelIterator, slice::ParallelSliceMut};
 
 /// Flip the input image horizontally.
 ///
@@ -31,29 +32,20 @@ use kornia_image::{Image, ImageError};
 /// assert_eq!(flipped.size().width, 2);
 /// assert_eq!(flipped.size().height, 3);
 /// ```
-pub fn horizontal_flip<T, const CHANNELS: usize>(
-    src: &Image<T, CHANNELS>,
-) -> Result<Image<T, CHANNELS>, ImageError>
+pub fn horizontal_flip<T, const C: usize>(src: &Image<T, C>) -> Result<Image<T, C>, ImageError>
 where
     T: SafeTensorType,
 {
     let mut dst = src.clone();
 
-    let mut dst_data = unsafe {
-        ndarray::ArrayViewMut3::from_shape_ptr(
-            (src.height(), src.width(), CHANNELS),
-            dst.as_mut_ptr(),
-        )
-    };
-
-    dst_data
-        .axis_iter_mut(ndarray::Axis(0))
-        .for_each(|mut row| {
+    dst.as_slice_mut()
+        .par_chunks_exact_mut(src.cols() * C)
+        .for_each(|row| {
             let mut i = 0;
-            let mut j = src.width() - 1;
+            let mut j = src.cols() - 1;
             while i < j {
-                for c in 0..CHANNELS {
-                    row.swap((i, c), (j, c));
+                for c in 0..C {
+                    row.swap(i * C + c, j * C + c);
                 }
                 i += 1;
                 j -= 1;
@@ -93,34 +85,24 @@ where
 /// assert_eq!(flipped.size().width, 2);
 /// assert_eq!(flipped.size().height, 3);
 /// ```
-pub fn vertical_flip<T, const CHANNELS: usize>(
-    src: &Image<T, CHANNELS>,
-) -> Result<Image<T, CHANNELS>, ImageError>
+pub fn vertical_flip<T, const C: usize>(src: &Image<T, C>) -> Result<Image<T, C>, ImageError>
 where
     T: SafeTensorType,
 {
     let mut dst = src.clone();
 
-    let mut dst_data = unsafe {
-        ndarray::ArrayViewMut3::from_shape_ptr(
-            (src.height(), src.width(), CHANNELS),
-            dst.as_mut_ptr(),
-        )
-    };
-
-    dst_data
-        .axis_iter_mut(ndarray::Axis(1))
-        .for_each(|mut col| {
-            let mut i = 0;
-            let mut j = src.height() - 1;
-            while i < j {
-                for c in 0..CHANNELS {
-                    col.swap((i, c), (j, c));
-                }
-                i += 1;
-                j -= 1;
+    // TODO: improve this implementation
+    for i in 0..src.cols() {
+        let mut j = src.rows() - 1;
+        for k in 0..src.rows() / 2 {
+            for c in 0..C {
+                let idx_i = i * C + c + k * src.cols() * C;
+                let idx_j = i * C + c + j * src.cols() * C;
+                dst.as_slice_mut().swap(idx_i, idx_j);
             }
-        });
+            j -= 1;
+        }
+    }
 
     Ok(dst)
 }

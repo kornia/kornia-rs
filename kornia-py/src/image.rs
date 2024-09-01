@@ -12,11 +12,10 @@ pub trait ToPyImage {
     fn to_pyimage(self) -> PyImage;
 }
 
-impl<const CHANNELS: usize> ToPyImage for Image<u8, CHANNELS> {
+impl<const C: usize> ToPyImage for Image<u8, C> {
     fn to_pyimage(self) -> PyImage {
         Python::with_gil(|py| unsafe {
-            let array =
-                PyArray::<u8, _>::new_bound(py, [self.height(), self.width(), CHANNELS], false);
+            let array = PyArray::<u8, _>::new_bound(py, [self.height(), self.width(), C], false);
             // TODO: verify that the data is contiguous, otherwise iterate over the image and copy
             std::ptr::copy_nonoverlapping(self.as_ptr(), array.data(), self.numel());
             array.unbind()
@@ -25,12 +24,12 @@ impl<const CHANNELS: usize> ToPyImage for Image<u8, CHANNELS> {
 }
 
 /// Trait to convert a PyImage (3D numpy array of u8) to an image
-pub trait FromPyImage<const CHANNELS: usize> {
-    fn from_pyimage(image: PyImage) -> Result<Image<u8, CHANNELS>, ImageError>;
+pub trait FromPyImage<const C: usize> {
+    fn from_pyimage(image: PyImage) -> Result<Image<u8, C>, ImageError>;
 }
 
-impl<const CHANNELS: usize> FromPyImage<CHANNELS> for Image<u8, CHANNELS> {
-    fn from_pyimage(image: PyImage) -> Result<Image<u8, CHANNELS>, ImageError> {
+impl<const C: usize> FromPyImage<C> for Image<u8, C> {
+    fn from_pyimage(image: PyImage) -> Result<Image<u8, C>, ImageError> {
         Python::with_gil(|py| {
             let pyarray = image.bind(py);
 

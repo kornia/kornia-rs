@@ -18,8 +18,8 @@ kornia-image.workspace = true
 
 # external
 fast_image_resize = "3.0.4"
-ndarray = { version = "0.15", features = ["rayon"] }
 num-traits = "0.2"
+rayon = "1.10"
 thiserror = "1"
 
 [dev-dependencies]

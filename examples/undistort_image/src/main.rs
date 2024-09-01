@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             width: img.cols(),
             height: img.rows(),
         },
-    );
+    )?;
 
     // apply the remap
     let mut img_undistorted = Image::from_size_val(img.size(), 0.0)?;

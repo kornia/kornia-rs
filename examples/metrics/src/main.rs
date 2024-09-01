@@ -64,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "mse_map",
         &rerun::Image::from_elements(
             mse_map.as_slice(),
-            [mse_map.shape[0] as u32, mse_map.shape[1] as u32],
+            [mse_map.shape[1] as u32, mse_map.shape[0] as u32],
             rerun::ColorModel::RGB,
         ),
     )?;

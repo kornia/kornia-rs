@@ -8,7 +8,7 @@ use kornia::imgproc::warp;
 #[pyfunction]
 pub fn warp_affine(
     image: PyImage,
-    m: (f32, f32, f32, f32, f32, f32),
+    m: [f32; 6],
     new_size: (usize, usize),
     interpolation: &str,
 ) -> PyResult<PyImage> {

@@ -54,9 +54,9 @@ use kornia_image::{Image, ImageError};
 /// # References
 ///
 /// [Wikipedia - Huber loss](https://en.wikipedia.org/wiki/Huber_loss)
-pub fn huber<const CHANNELS: usize>(
-    image1: &Image<f32, CHANNELS>,
-    image2: &Image<f32, CHANNELS>,
+pub fn huber<const C: usize>(
+    image1: &Image<f32, C>,
+    image2: &Image<f32, C>,
     delta: f32,
 ) -> Result<f32, ImageError> {
     if image1.size() != image2.size() {

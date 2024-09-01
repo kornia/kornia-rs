@@ -1,8 +1,9 @@
-use crate::interpolation::{interpolate_pixel, meshgrid, InterpolationMode};
-use fast_image_resize as fr;
-use kornia_core::SafeTensorType;
-use kornia_image::{Image, ImageDtype, ImageError};
-use ndarray::stack;
+use crate::{
+    interpolation::{interpolate_pixel, meshgrid_image, InterpolationMode},
+    parallel,
+};
+use fast_image_resize::{self as fr};
+use kornia_image::{Image, ImageError};
 use std::num::NonZeroU32;
 
 /// Resize an image to a new size.
@@ -54,67 +55,32 @@ use std::num::NonZeroU32;
 /// assert_eq!(image_resized.size().width, 2);
 /// assert_eq!(image_resized.size().height, 3);
 /// ```
-pub fn resize_native<T, const CHANNELS: usize>(
-    src: &Image<T, CHANNELS>,
-    dst: &mut Image<T, CHANNELS>,
+pub fn resize_native<const C: usize>(
+    src: &Image<f32, C>,
+    dst: &mut Image<f32, C>,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError>
 where
-    T: SafeTensorType + ImageDtype,
 {
-    if dst.size() != dst.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.size().width,
-            src.size().height,
-            dst.size().width,
-            dst.size().height,
-        ));
+    // check if the input and output images have the same size
+    // and copy the input image to the output image if they have the same size
+    if src.size() == dst.size() {
+        dst.as_slice_mut().copy_from_slice(src.as_slice());
+        return Ok(());
     }
 
-    // create a grid of x and y coordinates for the output image
-    // and interpolate the values from the input image.
-    let x = ndarray::Array::linspace(0., (src.width() - 1) as f32, dst.width())
-        .insert_axis(ndarray::Axis(0));
-    let y = ndarray::Array::linspace(0., (src.height() - 1) as f32, dst.height())
-        .insert_axis(ndarray::Axis(0));
-
-    // create the meshgrid of x and y coordinates, arranged in a 2D grid of shape (height, width)
-    let (xx, yy) = meshgrid(&x, &y);
-
-    // TODO: benchmark this
-    // stack the x and y coordinates into a single array of shape (height, width, 2)
-    let xy = stack![ndarray::Axis(2), xx, yy];
+    //// create a grid of x and y coordinates for the output image
+    //// and interpolate the values from the input image.
+    let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
+    let (map_x, map_y) = meshgrid_image(dst_rows, src.rows(), dst_cols, src.cols())?;
 
     // iterate over the output image and interpolate the pixel values
-    let src_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr(
-            (src.height(), src.width(), src.num_channels()),
-            src.as_ptr(),
-        )
-    };
-
-    let mut dst_data = unsafe {
-        ndarray::ArrayViewMut3::from_shape_ptr(
-            (dst.height(), dst.width(), dst.num_channels()),
-            dst.as_mut_ptr(),
-        )
-    };
-
-    ndarray::Zip::from(xy.rows())
-        .and(dst_data.rows_mut())
-        .par_for_each(|uv, mut out| {
-            assert_eq!(uv.len(), 2);
-            let (u, v) = (uv[0], uv[1]);
-
-            // compute the pixel values for each channel
-            let pixels =
-                (0..CHANNELS).map(|k| interpolate_pixel(&src_data, u, v, k, interpolation));
-
-            // write the pixel values to the output image
-            for (k, pixel) in pixels.enumerate() {
-                out[k] = pixel;
-            }
+    parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {
+        // interpolate the pixel values for each channel
+        dst_pixel.iter_mut().enumerate().for_each(|(k, pixel)| {
+            *pixel = interpolate_pixel(src, x, y, k, interpolation);
         });
+    });
 
     Ok(())
 }
@@ -231,16 +197,17 @@ pub fn resize_fast(
 
 #[cfg(test)]
 mod tests {
+    use kornia_core::TensorError;
     use kornia_image::{Image, ImageError, ImageSize};
 
     #[test]
     fn resize_smoke_ch3() -> Result<(), ImageError> {
         let image = Image::<_, 3>::new(
             ImageSize {
-                width: 4,
-                height: 5,
+                width: 3,
+                height: 4,
             },
-            vec![0f32; 4 * 5 * 3],
+            (0..3 * 4 * 3).map(|x| x as f32).collect::<Vec<f32>>(),
         )?;
 
         let new_size = ImageSize {
@@ -259,6 +226,15 @@ mod tests {
         assert_eq!(image_resized.num_channels(), 3);
         assert_eq!(image_resized.size().width, 2);
         assert_eq!(image_resized.size().height, 3);
+
+        assert_eq!(
+            image_resized.as_slice(),
+            [
+                0.0, 1.0, 2.0, 6.0, 7.0, 8.0, 13.5, 14.5, 15.5, 19.5, 20.5, 21.5, 27.0, 28.0, 29.0,
+                33.0, 34.0, 35.0
+            ]
+        );
+
         Ok(())
     }
 
@@ -267,10 +243,10 @@ mod tests {
         use kornia_image::{Image, ImageSize};
         let image = Image::<_, 1>::new(
             ImageSize {
-                width: 4,
-                height: 5,
+                width: 2,
+                height: 3,
             },
-            vec![0; 4 * 5],
+            vec![0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0],
         )?;
 
         let new_size = ImageSize {
@@ -278,7 +254,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_resized = Image::<_, 1>::from_size_val(new_size, 0)?;
+        let mut image_resized = Image::<_, 1>::from_size_val(new_size, 0.0f32)?;
 
         super::resize_native(
             &image,
@@ -289,20 +265,24 @@ mod tests {
         assert_eq!(image_resized.num_channels(), 1);
         assert_eq!(image_resized.size().width, 2);
         assert_eq!(image_resized.size().height, 3);
+
+        assert_eq!(image_resized.as_slice(), image_resized.as_slice());
+
         Ok(())
     }
 
     #[test]
-    fn meshgrid() {
-        let x = ndarray::Array::linspace(0., 4., 5).insert_axis(ndarray::Axis(0));
-        let y = ndarray::Array::linspace(0., 3., 4).insert_axis(ndarray::Axis(0));
-        let (xx, yy) = super::meshgrid(&x, &y);
-        assert_eq!(xx.shape(), &[4, 5]);
-        assert_eq!(yy.shape(), &[4, 5]);
-        assert_eq!(xx[[0, 0]], 0.);
-        assert_eq!(xx[[0, 4]], 4.);
-        assert_eq!(yy[[0, 0]], 0.);
-        assert_eq!(yy[[3, 0]], 3.);
+    fn meshgrid() -> Result<(), TensorError> {
+        let (map_x, map_y) = crate::interpolation::meshgrid(3, 2)?;
+
+        assert_eq!(map_x.shape, [3, 2]);
+        assert_eq!(map_y.shape, [3, 2]);
+        assert_eq!(map_x.get([0, 0]), Some(&0.0));
+        assert_eq!(map_x.get([0, 1]), Some(&1.0));
+        assert_eq!(map_y.get([0, 0]), Some(&0.0));
+        assert_eq!(map_y.get([2, 0]), Some(&2.0));
+
+        Ok(())
     }
 
     #[test]
