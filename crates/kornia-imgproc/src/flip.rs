@@ -1,16 +1,22 @@
 use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
-use rayon::{iter::ParallelIterator, slice::ParallelSliceMut};
+use rayon::{
+    iter::{IndexedParallelIterator, ParallelIterator},
+    slice::{ParallelSlice, ParallelSliceMut},
+};
 
 /// Flip the input image horizontally.
 ///
 /// # Arguments
 ///
 /// * `src` - The input image with shape (H, W, C).
+/// * `dst` - The output image with shape (H, W, C).
 ///
-/// # Returns
+/// Precondition: the input and output images must have the same size.
 ///
-/// The flipped image.
+/// # Errors
+///
+/// Returns an error if the sizes of `src` and `dst` do not match.
 ///
 /// # Example
 ///
@@ -27,32 +33,46 @@ use rayon::{iter::ParallelIterator, slice::ParallelSliceMut};
 /// )
 /// .unwrap();
 ///
-/// let flipped: Image<f32, 3> = horizontal_flip(&image).unwrap();
+/// let mut flipped = Image::<f32, 3>::from_size_val(
+///     ImageSize {
+///         width: 2,
+///         height: 3,
+///     },
+///     0.0
+/// )
+/// .unwrap();
 ///
-/// assert_eq!(flipped.size().width, 2);
-/// assert_eq!(flipped.size().height, 3);
+/// horizontal_flip(&image, &mut flipped).unwrap();
 /// ```
-pub fn horizontal_flip<T, const C: usize>(src: &Image<T, C>) -> Result<Image<T, C>, ImageError>
+pub fn horizontal_flip<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
+) -> Result<(), ImageError>
 where
     T: SafeTensorType,
 {
-    let mut dst = src.clone();
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
 
     dst.as_slice_mut()
         .par_chunks_exact_mut(src.cols() * C)
-        .for_each(|row| {
-            let mut i = 0;
-            let mut j = src.cols() - 1;
-            while i < j {
+        .zip_eq(src.as_slice().par_chunks_exact(src.cols() * C))
+        .for_each(|(dst_row, src_row)| {
+            let n = src.cols() - 1;
+            for i in 0..=n {
                 for c in 0..C {
-                    row.swap(i * C + c, j * C + c);
+                    dst_row[i * C + c] = src_row[(n - i) * C + c];
                 }
-                i += 1;
-                j -= 1;
             }
         });
 
-    Ok(dst)
+    Ok(())
 }
 
 /// Flip the input image vertically.
@@ -113,15 +133,14 @@ mod tests {
 
     #[test]
     fn test_hflip() -> Result<(), ImageError> {
-        let image = Image::<_, 1>::new(
-            ImageSize {
-                width: 2,
-                height: 3,
-            },
-            vec![0u8, 1, 2, 3, 4, 5],
-        )?;
+        let image_size = ImageSize {
+            width: 2,
+            height: 3,
+        };
+        let image = Image::<_, 1>::new(image_size, vec![0u8, 1, 2, 3, 4, 5])?;
         let data_expected = vec![1u8, 0, 3, 2, 5, 4];
-        let flipped = super::horizontal_flip(&image)?;
+        let mut flipped = Image::<_, 1>::from_size_val(image_size, 0u8)?;
+        super::horizontal_flip(&image, &mut flipped)?;
         assert_eq!(flipped.as_slice(), &data_expected);
         Ok(())
     }
