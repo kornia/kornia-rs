@@ -48,16 +48,16 @@ use kornia_image::{Image, ImageError};
 /// # Panics
 ///
 /// Panics if the two images have different shapes.
-pub fn mse<const CHANNELS: usize>(
-    image1: &Image<f32, CHANNELS>,
-    image2: &Image<f32, CHANNELS>,
+pub fn mse<const C: usize>(
+    image1: &Image<f32, C>,
+    image2: &Image<f32, C>,
 ) -> Result<f32, ImageError> {
     if image1.size() != image2.size() {
         return Err(ImageError::InvalidImageSize(
-            image1.height(),
-            image1.width(),
-            image2.height(),
-            image2.width(),
+            image1.rows(),
+            image1.cols(),
+            image2.rows(),
+            image2.cols(),
         ));
     }
 
@@ -128,9 +128,9 @@ pub fn mse<const CHANNELS: usize>(
 /// The PSNR is used to measure the quality of a reconstructed image. The higher the PSNR, the better the quality of the reconstructed image.
 /// The PSNR is widely used in image and video compression.
 /// Underneath, the PSNR is based on the mean squared error [mse].
-pub fn psnr<const CHANNELS: usize>(
-    image1: &Image<f32, CHANNELS>,
-    image2: &Image<f32, CHANNELS>,
+pub fn psnr<const C: usize>(
+    image1: &Image<f32, C>,
+    image2: &Image<f32, C>,
     max_value: f32,
 ) -> Result<f32, ImageError> {
     if image1.size() != image2.size() {

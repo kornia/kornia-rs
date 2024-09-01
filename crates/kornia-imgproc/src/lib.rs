@@ -24,6 +24,9 @@ pub mod histogram;
 /// utilities for interpolation.
 pub mod interpolation;
 
+/// module containing parallization utilities.
+pub mod parallel;
+
 /// image processing metrics module.
 pub mod metrics;
 

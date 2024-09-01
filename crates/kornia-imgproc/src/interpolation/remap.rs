@@ -1,13 +1,16 @@
+use crate::parallel;
+
 use super::interpolate::interpolate_pixel;
 use super::InterpolationMode;
+use kornia_core::Tensor2;
 use kornia_image::{Image, ImageError};
 
 /// Apply generic geometric transformation to an image.
 ///
 /// # Arguments
 ///
-/// * `src` - The input image container with shape (height, width, channels).
-/// * `dst` - The output image container with shape (height, width, channels).
+/// * `src` - The input image container with shape (height, width, C).
+/// * `dst` - The output image container with shape (height, width, C).
 /// * `map_x` - The x coordinates of the pixels to interpolate.
 /// * `map_y` - The y coordinates of the pixels to interpolate.
 /// * `interpolation` - The interpolation mode to use.
@@ -16,74 +19,45 @@ use kornia_image::{Image, ImageError};
 ///
 /// * The mapx and mapy must have the same size.
 /// * The output image must have the same size as the mapx and mapy.
-pub fn remap<const CHANNELS: usize>(
-    src: &Image<f32, CHANNELS>,
-    dst: &mut Image<f32, CHANNELS>,
-    map_x: &Image<f32, 1>,
-    map_y: &Image<f32, 1>,
+pub fn remap<const C: usize>(
+    src: &Image<f32, C>,
+    dst: &mut Image<f32, C>,
+    map_x: &Tensor2<f32>,
+    map_y: &Tensor2<f32>,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
-    if map_x.size() != map_y.size() {
+    if map_x.shape != map_y.shape {
         return Err(ImageError::InvalidImageSize(
-            map_x.height(),
-            map_y.height(),
-            map_x.width(),
-            map_y.width(),
+            map_x.shape[0],
+            map_x.shape[1],
+            map_y.shape[0],
+            map_y.shape[1],
         ));
     }
 
-    if dst.size() != map_x.size() {
+    if dst.shape[0..2] != map_x.shape {
         return Err(ImageError::InvalidImageSize(
-            src.size().width,
-            src.size().height,
-            dst.size().width,
-            dst.size().height,
+            src.shape[0],
+            src.shape[1],
+            dst.shape[0],
+            dst.shape[1],
         ));
     }
 
-    let mapx_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr(
-            (map_x.height(), map_x.width(), map_x.num_channels()),
-            map_x.as_ptr(),
-        )
-    };
-
-    let mapy_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr(
-            (map_y.height(), map_y.width(), map_y.num_channels()),
-            map_y.as_ptr(),
-        )
-    };
-
-    let src_data = unsafe {
-        ndarray::ArrayView3::from_shape_ptr(
-            (src.height(), src.width(), src.num_channels()),
-            src.as_ptr(),
-        )
-    };
-
-    let mut dst_data = unsafe {
-        ndarray::ArrayViewMut3::from_shape_ptr(
-            (dst.height(), dst.width(), dst.num_channels()),
-            dst.as_mut_ptr(),
-        )
-    };
-
-    ndarray::Zip::from(dst_data.rows_mut())
-        .and(mapx_data.rows())
-        .and(mapy_data.rows())
-        .par_for_each(|mut out, u, v| {
-            let (u, v) = (u[0], v[0]);
-            for c in 0..CHANNELS {
-                out[c] = interpolate_pixel(&src_data, u, v, c, interpolation);
-            }
+    // parallelize the remap operation by rows
+    parallel::par_iter_rows_resample(dst, map_x, map_y, |&x, &y, dst_pixel| {
+        // interpolate the pixel value
+        dst_pixel.iter_mut().enumerate().for_each(|(c, pixel)| {
+            *pixel = interpolate_pixel(src, x, y, c, interpolation);
         });
+    });
 
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use kornia_core::{CpuAllocator, Tensor2};
     use kornia_image::{Image, ImageError, ImageSize};
 
     #[test]
@@ -95,20 +69,11 @@ mod tests {
             },
             vec![0f32, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
         )?;
-        let map_x = Image::<_, 1>::new(
-            ImageSize {
-                width: 2,
-                height: 2,
-            },
-            vec![0f32, 2.0, 0.0, 2.0],
-        )?;
-        let map_y = Image::<_, 1>::new(
-            ImageSize {
-                width: 2,
-                height: 2,
-            },
-            vec![0f32, 0.0, 2.0, 2.0],
-        )?;
+
+        let new_size = [2, 2];
+
+        let map_x = Tensor2::from_shape_vec(new_size, vec![0.0, 2.0, 0.0, 2.0], CpuAllocator)?;
+        let map_y = Tensor2::from_shape_vec(new_size, vec![0.0, 0.0, 2.0, 2.0], CpuAllocator)?;
 
         let expected = Image::<_, 1>::new(
             ImageSize {
@@ -118,7 +83,7 @@ mod tests {
             vec![0.0, 2.0, 6.0, 8.0],
         )?;
 
-        let mut image_transformed = Image::<_, 1>::from_size_val(map_y.size(), 0.0)?;
+        let mut image_transformed = Image::<_, 1>::from_size_val(new_size.into(), 0.0)?;
 
         super::remap(
             &image,

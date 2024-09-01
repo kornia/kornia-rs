@@ -11,4 +11,4 @@ pub mod error;
 pub mod ops;
 
 pub use crate::error::ImageError;
-pub use crate::image::{Image, ImageDtype, ImageSize};
+pub use crate::image::{Image, ImageSize};

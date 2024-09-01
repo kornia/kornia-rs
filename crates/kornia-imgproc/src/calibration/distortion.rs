@@ -1,6 +1,11 @@
 use super::{CameraExtrinsic, CameraIntrinsic};
-use crate::interpolation::meshgrid;
-use kornia_image::{Image, ImageSize};
+use crate::interpolation::meshgrid_image;
+use kornia_core::{Tensor2, TensorError};
+use kornia_image::ImageSize;
+use rayon::{
+    iter::{IndexedParallelIterator, ParallelIterator},
+    slice::ParallelSliceMut,
+};
 
 /// Represents the polynomial distortion parameters of a camera
 ///
@@ -107,34 +112,27 @@ pub fn generate_correction_map_polynomial(
     _new_intrinsic: &CameraIntrinsic,
     distortion: &PolynomialDistortion,
     size: &ImageSize,
-) -> (Image<f32, 1>, Image<f32, 1>) {
-    // generate the meshgrid with coordinates
-    let x = ndarray::Array::linspace(0., size.width as f32 - 1., size.width)
-        .insert_axis(ndarray::Axis(0));
+) -> Result<(Tensor2<f32>, Tensor2<f32>), TensorError> {
+    //// create a grid of x and y coordinates for the output image
+    //// and interpolate the values from the input image.
+    let (dst_rows, dst_cols) = (size.height, size.width);
+    let (mut map_x, mut map_y) = meshgrid_image(dst_rows, dst_rows, dst_cols, dst_cols)?;
 
-    let y = ndarray::Array::linspace(0., size.height as f32 - 1., size.height)
-        .insert_axis(ndarray::Axis(0));
-
-    // combine the x and y coordinates to create a meshgrid
-    let (map_x, map_y) = meshgrid(&x, &y);
-    let (mut map_x, mut map_y) = (
-        map_x.insert_axis(ndarray::Axis(2)),
-        map_y.insert_axis(ndarray::Axis(2)),
-    ); // add a channel axis  (HxWx1, HxWx1)
-
-    ndarray::Zip::from(map_x.rows_mut())
-        .and(map_y.rows_mut())
-        .par_for_each(|mut xarr, mut yarr| {
-            let (x, y) = (xarr[0], yarr[0]);
-            let (xdst, ydst) = distort_point_polynomial(x as f64, y as f64, intrinsic, distortion);
-            xarr[0] = xdst as f32;
-            yarr[0] = ydst as f32;
+    // create a grid of x and y coordinates for the output image
+    map_x
+        .as_slice_mut()
+        .par_chunks_exact_mut(dst_cols)
+        .zip(map_y.as_slice_mut().par_chunks_exact_mut(dst_cols))
+        .for_each(|(xarr, yarr)| {
+            xarr.iter_mut().zip(yarr.iter_mut()).for_each(|(x, y)| {
+                let (xdst, ydst) =
+                    distort_point_polynomial(*x as f64, *y as f64, intrinsic, distortion);
+                *x = xdst as f32;
+                *y = ydst as f32;
+            });
         });
 
-    let map_x = Image::new(*size, map_x.into_raw_vec()).unwrap();
-    let map_y = Image::new(*size, map_y.into_raw_vec()).unwrap();
-
-    (map_x, map_y)
+    Ok((map_x, map_y))
 }
 
 #[cfg(test)]
@@ -171,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn test_undistort_rectify_map_polynomial() {
+    fn test_undistort_rectify_map_polynomial() -> Result<(), TensorError> {
         let intrinsic = CameraIntrinsic {
             fx: 577.48583984375,
             fy: 652.8748779296875,
@@ -204,11 +202,13 @@ mod tests {
             &intrinsic,
             &distortion,
             &size,
-        );
+        )?;
 
-        assert_eq!(map_x.cols(), 8);
-        assert_eq!(map_x.rows(), 4);
-        assert_eq!(map_y.cols(), 8);
-        assert_eq!(map_y.rows(), 4);
+        assert_eq!(map_x.shape[0], 4);
+        assert_eq!(map_x.shape[1], 8);
+        assert_eq!(map_y.shape[0], 4);
+        assert_eq!(map_y.shape[1], 8);
+
+        Ok(())
     }
 }
