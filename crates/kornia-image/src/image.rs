@@ -348,6 +348,32 @@ where
         Image::new(self.size(), casted_data)
     }
 
+    /// Cast the pixel data to a different type and scale it.
+    ///
+    /// # Arguments
+    ///
+    /// * `scale` - The scale to multiply the pixel data with.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the pixel data cast to the new type and scaled.
+    pub fn scale_and_cast<U>(&self, scale: T) -> Result<Image<U, C>, ImageError>
+    where
+        U: num_traits::NumCast + SafeTensorType,
+        T: num_traits::NumCast + std::ops::Mul<Output = T>,
+    {
+        let casted_data = self
+            .as_slice()
+            .iter()
+            .map(|&x| {
+                let xu = U::from(x * scale).ok_or(ImageError::CastError)?;
+                Ok(xu)
+            })
+            .collect::<Result<Vec<U>, ImageError>>()?;
+
+        Image::new(self.size(), casted_data)
+    }
+
     /// Get the pixel data of the image.
     ///
     /// NOTE: experimental api
@@ -499,6 +525,38 @@ mod tests {
         assert_eq!(channels[0].get([1, 0, 0]), Some(&3.0f32));
         assert_eq!(channels[1].get([1, 0, 0]), Some(&4.0f32));
         assert_eq!(channels[2].get([1, 0, 0]), Some(&5.0f32));
+
+        Ok(())
+    }
+
+    #[test]
+    fn scale_and_cast() -> Result<(), ImageError> {
+        let data = vec![0u8, 0, 255, 0, 0, 255];
+        let image_u8 = Image::<u8, 3>::new(
+            ImageSize {
+                height: 2,
+                width: 1,
+            },
+            data,
+        )?;
+        let image_f32 = image_u8.cast_and_scale::<f32>(1. / 255.0)?;
+        assert_eq!(image_f32.get([1, 0, 2]), Some(&1.0f32));
+
+        Ok(())
+    }
+
+    #[test]
+    fn cast_and_scale() -> Result<(), ImageError> {
+        let data = vec![0u8, 0, 255, 0, 0, 255];
+        let image_u8 = Image::<u8, 3>::new(
+            ImageSize {
+                height: 2,
+                width: 1,
+            },
+            data,
+        )?;
+        let image_f32 = image_u8.cast_and_scale::<f32>(1. / 255.0)?;
+        assert_eq!(image_f32.get([1, 0, 2]), Some(&1.0f32));
 
         Ok(())
     }
