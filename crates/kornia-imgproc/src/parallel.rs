@@ -87,15 +87,18 @@ pub fn par_iter_rows_resample<const C: usize>(
     f: impl Fn(&f32, &f32, &mut [f32]) + Send + Sync,
 ) {
     let cols = dst.cols();
-    map_x
-        .as_slice()
-        .par_chunks_exact(cols)
-        .zip(map_y.as_slice().par_chunks_exact(cols))
-        .zip(dst.as_slice_mut().par_chunks_exact_mut(C * cols))
-        .for_each(|((x_chunk, y_chunk), dst_chunk)| {
+    let dst_slice = dst.as_slice_mut();
+    let map_x_slice = map_x.as_slice();
+    let map_y_slice = map_y.as_slice();
+
+    dst_slice
+        .par_chunks_exact_mut(C * cols)
+        .zip(map_x_slice.par_chunks_exact(cols))
+        .zip(map_y_slice.par_chunks_exact(cols))
+        .for_each(|((dst_chunk, map_x_chunk), map_y_chunk)| {
             dst_chunk
                 .chunks_exact_mut(C)
-                .zip(x_chunk.iter().zip(y_chunk.iter()))
+                .zip(map_x_chunk.iter().zip(map_y_chunk.iter()))
                 .for_each(|(dst_pixel, (x, y))| {
                     f(x, y, dst_pixel);
                 });

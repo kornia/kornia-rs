@@ -24,7 +24,7 @@ pub enum InterpolationMode {
 /// # Returns
 ///
 /// The interpolated pixel value.
-pub(crate) fn interpolate_pixel<const C: usize>(
+pub fn interpolate_pixel<const C: usize>(
     //image: &ArrayView3<T>,
     image: &Image<f32, C>,
     u: f32,
