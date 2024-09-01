@@ -156,9 +156,16 @@ mod tests {
             width: 2,
             height: 3,
         };
-        let image = Image::<_, 1>::new(image_size, vec![0u8, 1, 2, 3, 4, 5])?;
-        let data_expected = vec![1u8, 0, 3, 2, 5, 4];
-        let mut flipped = Image::<_, 1>::from_size_val(image_size, 0u8)?;
+        let image = Image::<_, 3>::new(
+            image_size,
+            vec![
+                0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+            ],
+        )?;
+        let data_expected = vec![
+            3u8, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8, 15, 16, 17, 12, 13, 14,
+        ];
+        let mut flipped = Image::<_, 3>::from_size_val(image_size, 0u8)?;
         super::horizontal_flip(&image, &mut flipped)?;
         assert_eq!(flipped.as_slice(), &data_expected);
         Ok(())
@@ -170,9 +177,16 @@ mod tests {
             width: 2,
             height: 3,
         };
-        let image = Image::<_, 1>::new(image_size, vec![0u8, 1, 2, 3, 4, 5])?;
-        let data_expected = vec![4u8, 5, 2, 3, 0, 1];
-        let mut flipped = Image::<_, 1>::from_size_val(image_size, 0u8)?;
+        let image = Image::<_, 3>::new(
+            image_size,
+            vec![
+                0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+            ],
+        )?;
+        let data_expected = vec![
+            12u8, 13, 14, 15, 16, 17, 6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5,
+        ];
+        let mut flipped = Image::<_, 3>::from_size_val(image_size, 0u8)?;
         super::vertical_flip(&image, &mut flipped)?;
         assert_eq!(flipped.as_slice(), &data_expected);
         Ok(())
