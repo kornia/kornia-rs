@@ -33,14 +33,7 @@ use rayon::{
 /// )
 /// .unwrap();
 ///
-/// let mut flipped = Image::<f32, 3>::from_size_val(
-///     ImageSize {
-///         width: 2,
-///         height: 3,
-///     },
-///     0.0
-/// )
-/// .unwrap();
+/// let mut flipped = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
 ///
 /// horizontal_flip(&image, &mut flipped).unwrap();
 /// ```
@@ -103,14 +96,7 @@ where
 /// )
 /// .unwrap();
 ///
-/// let mut flipped = Image::<f32, 3>::from_size_val(
-///     ImageSize {
-///         width: 2,
-///         height: 3,
-///     },
-///     0.0
-/// )
-/// .unwrap();
+/// let mut flipped = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
 ///
 /// vertical_flip(&image, &mut flipped).unwrap();
 ///
