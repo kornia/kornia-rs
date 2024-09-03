@@ -8,28 +8,43 @@ use crate::stream::{
 };
 
 /// A trait for camera capture configuration.
+///
+/// This trait allows for different types of camera configurations to be used
+/// with the `CameraCapture` struct.
 pub trait CameraCaptureConfig: Any {
     /// Returns the configuration as a trait object.
+    ///
+    /// This method is used for runtime type checking and downcasting.
     fn as_any(&self) -> &dyn Any;
 }
 
 /// A camera capture object that grabs frames from a camera.
-//pub struct CameraCapture {
-//    stream: StreamCapture,
-//}
+///
+/// This struct wraps a `StreamCapture` and provides a convenient interface
+/// for capturing frames from various types of cameras.
 pub struct CameraCapture(pub StreamCapture);
 
-/// A builder for creating a CameraCapture object
 impl CameraCapture {
-    /// Creates a new CameraCapture object
+    /// Creates a new CameraCapture object.
+    ///
+    /// This method constructs a new `CameraCapture` based on the provided configuration.
+    /// It supports different types of camera configurations, such as V4L2 and RTSP.
     ///
     /// # Arguments
     ///
-    /// * `config` - The camera capture configuration
+    /// * `config` - A trait object implementing `CameraCaptureConfig` that specifies
+    ///              the camera configuration.
     ///
     /// # Returns
     ///
-    /// A CameraCapture object
+    /// A `Result` containing either a new `CameraCapture` instance or a `StreamCaptureError`.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if:
+    /// - The configuration is invalid (e.g., empty device or URL)
+    /// - The configuration type is unknown
+    /// - The `StreamCapture` creation fails
     pub fn new(config: &dyn CameraCaptureConfig) -> Result<Self, StreamCaptureError> {
         let pipeline = if let Some(config) = config.as_any().downcast_ref::<V4L2CameraConfig>() {
             // check that the device is not empty
@@ -57,6 +72,10 @@ impl CameraCapture {
     }
 }
 
+/// Allows `CameraCapture` to be dereferenced to `StreamCapture`.
+///
+/// This implementation enables direct access to `StreamCapture` methods
+/// on a `CameraCapture` instance.
 impl std::ops::Deref for CameraCapture {
     type Target = StreamCapture;
 
