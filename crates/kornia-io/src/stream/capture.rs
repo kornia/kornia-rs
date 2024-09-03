@@ -29,7 +29,7 @@ use kornia_image::{Image, ImageSize};
 pub struct StreamCapture {
     pipeline: gst::Pipeline,
     // TODO: pass Image<u8, 3> as a generic type
-    receiver: tokio::sync::mpsc::Receiver<Image<u8, 3>>,
+    //receiver: tokio::sync::mpsc::Receiver<Image<u8, 3>>,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -53,14 +53,59 @@ impl StreamCapture {
             .dynamic_cast::<gst::Pipeline>()
             .map_err(StreamCaptureError::DowncastPipelineError)?;
 
-        let appsink = pipeline
+        // TODO: this block can be defined in the run method so that we can pass to the sender and receiver
+        // a generic type.
+
+        //let appsink = pipeline
+        //    .by_name("sink")
+        //    .ok_or_else(|| StreamCaptureError::DowncastAppSinkError)?
+        //    .dynamic_cast::<gst_app::AppSink>()
+        //    .map_err(StreamCaptureError::DowncastPipelineError)?;
+
+        //// the sender and receiver for the image frames
+        //let (tx, rx) = tokio::sync::mpsc::channel(10);
+
+        //appsink.set_callbacks(
+        //    gst_app::AppSinkCallbacks::builder()
+        //        .new_sample(move |sink| match Self::extract_image_frame(sink) {
+        //            Ok(frame) => {
+        //                if tx.blocking_send(frame).is_err() {
+        //                    Err(gst::FlowError::Error)
+        //                } else {
+        //                    Ok(gst::FlowSuccess::Ok)
+        //                }
+        //            }
+        //            Err(_) => Err(gst::FlowError::Error),
+        //        })
+        //        .build(),
+        //);
+
+        Ok(Self {
+            pipeline,
+            //receiver: rx,
+            handle: None,
+        })
+    }
+
+    /// Runs the capture object and grabs frames from the source
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - A function that takes an image frame
+    // TODO: implement run_with_shutdown to pass a shutdown signal to the capture object
+    pub async fn run<F>(&mut self, mut f: F) -> Result<(), StreamCaptureError>
+    where
+        F: FnMut(Image<u8, 3>) -> Result<(), Box<dyn std::error::Error>>,
+    {
+        // the sender and receiver for the image frames
+        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+
+        let appsink = self
+            .pipeline
             .by_name("sink")
             .ok_or_else(|| StreamCaptureError::DowncastAppSinkError)?
             .dynamic_cast::<gst_app::AppSink>()
             .map_err(StreamCaptureError::DowncastPipelineError)?;
-
-        // the sender and receiver for the image frames
-        let (tx, rx) = tokio::sync::mpsc::channel(10);
 
         appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
@@ -77,30 +122,19 @@ impl StreamCapture {
                 .build(),
         );
 
-        Ok(Self {
-            pipeline,
-            receiver: rx,
-            handle: None,
-        })
-    }
-
-    /// Runs the capture object and grabs frames from the source
-    ///
-    /// # Arguments
-    ///
-    /// * `f` - A function that takes an image frame
-    pub async fn run<F>(&mut self, mut f: F) -> Result<(), StreamCaptureError>
-    where
-        F: FnMut(Image<u8, 3>) -> Result<(), Box<dyn std::error::Error>>,
-    {
         // start the pipeline
-        let pipeline = &self.pipeline;
-        pipeline.set_state(gst::State::Playing)?;
+        self.pipeline.set_state(gst::State::Playing)?;
 
-        let bus = pipeline.bus().ok_or_else(|| StreamCaptureError::BusError)?;
+        let bus = self
+            .pipeline
+            .bus()
+            .ok_or_else(|| StreamCaptureError::BusError)?;
 
         //// start a thread to handle the messages from the bus
         let mut messages = bus.stream();
+
+        //let (err_tx, mut err_rx) = tokio::sync::mpsc::channel(1);
+        let (signal_tx, mut signal_rx) = tokio::sync::watch::channel(());
 
         let handle = tokio::spawn(async move {
             while let Some(msg) = messages.next().await {
@@ -117,6 +151,9 @@ impl StreamCapture {
                             err.error(),
                             err.debug()
                         );
+
+                        let _ = signal_tx.send(());
+
                         break;
                     }
                     _ => (),
@@ -124,11 +161,22 @@ impl StreamCapture {
             }
         });
 
+        // NOTE: no clear that we need to keep the handle to avoid the stream capture to be killed by signal
         self.handle = Some(handle);
 
-        //// start grabbing frames from the source
-        while let Some(img) = self.receiver.recv().await {
-            f(img)?;
+        //// start grabbing frames from the source and close the capture object if an error occurs
+
+        loop {
+            tokio::select! {
+                Some(img) = rx.recv() => {
+                    f(img)?;
+                }
+                _ = signal_rx.changed() => {
+                    self.close()?;
+                    return Err(StreamCaptureError::PipelineCancelled);
+                }
+                else => break,
+            }
         }
 
         Ok(())

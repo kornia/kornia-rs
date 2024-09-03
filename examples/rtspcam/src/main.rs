@@ -25,7 +25,7 @@ struct Args {
     camera_ip: String,
 
     #[arg(long)]
-    camera_port: u32,
+    camera_port: u16,
 
     #[arg(short, long)]
     stream: String,
@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &args.username,
             &args.password,
             &args.camera_ip,
-            args.camera_port,
+            &args.camera_port,
             &args.stream,
         )
         .build()?;
