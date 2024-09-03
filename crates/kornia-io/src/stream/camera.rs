@@ -14,9 +14,10 @@ pub trait CameraCaptureConfig: Any {
 }
 
 /// A camera capture object that grabs frames from a camera.
-pub struct CameraCapture {
-    stream: StreamCapture,
-}
+//pub struct CameraCapture {
+//    stream: StreamCapture,
+//}
+pub struct CameraCapture(pub StreamCapture);
 
 /// A builder for creating a CameraCapture object
 impl CameraCapture {
@@ -52,40 +53,14 @@ impl CameraCapture {
             ));
         };
 
-        Ok(Self {
-            stream: StreamCapture::new(&pipeline)?,
-        })
+        Ok(Self(StreamCapture::new(&pipeline)?))
     }
+}
 
-    /// Starts grabbing frames from the camera.
-    ///
-    /// # Arguments
-    ///
-    /// * `f` - A function that processes the image frames
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the image processing function fails.
-    pub async fn run<F>(&mut self, mut f: F) -> Result<(), StreamCaptureError>
-    where
-        F: FnMut(kornia_image::Image<u8, 3>) -> Result<(), Box<dyn std::error::Error>>,
-    {
-        self.stream
-            .run(|img| {
-                f(img)?;
-                Ok(())
-            })
-            .await
-    }
+impl std::ops::Deref for CameraCapture {
+    type Target = StreamCapture;
 
-    /// Stops the camera capture object.
-    ///
-    /// This function should be called when the camera capture object is no longer needed.
-    ///
-    /// # Returns
-    ///
-    /// A Result object with a success message if the camera capture object is stopped successfully.
-    pub fn close(&mut self) -> Result<(), StreamCaptureError> {
-        self.stream.close()
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
