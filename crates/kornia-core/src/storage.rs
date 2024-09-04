@@ -107,12 +107,16 @@ where
     /// # Safety
     ///
     pub fn into_vec(self) -> Vec<T> {
-        // borrow of partially moved value: `self`
-        // partial move occurs because `self.data` has type `ScalarBuffer<T>`, which does not implement the `Copy` trait
         // match self.data.into_inner().into_vec() {
-        match self.clone().data.into_inner().into_vec() {
+        match self.data.into_inner().into_vec() {
             Ok(vec) => vec,
-            Err(_) => self.as_slice().to_vec(),
+            Err(buf) => unsafe {
+                std::slice::from_raw_parts(
+                    buf.as_ptr() as *const T,
+                    buf.len() / std::mem::size_of::<T>(),
+                )
+                .to_vec()
+            },
         }
     }
 
