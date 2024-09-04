@@ -20,7 +20,7 @@ pub fn get_version() -> String {
 }
 
 #[pymodule]
-pub fn kornia_rs(_py: Python, m: &PyModule) -> PyResult<()> {
+pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", get_version())?;
     m.add_function(wrap_pyfunction!(read_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(write_image_jpeg, m)?)?;

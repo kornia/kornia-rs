@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 use kornia::{
-    image::{Image, ImageSize},
+    image::{ops, Image, ImageSize},
     imgproc,
     io::{
         fps_counter::FpsCounter,
@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // create a webcam capture object with camera id 0
     // and force the image size to 640x480
-    let mut webcam = V4L2CameraConfig::new()
+    let webcam = V4L2CameraConfig::new()
         .with_camera_id(args.camera_id)
         .with_fps(args.fps)
         .with_size(ImageSize {
@@ -76,6 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut img_resized = Image::from_size_val(new_size, 0u8)?;
+    let mut img_f32 = Image::from_size_val(new_size, 0f32)?;
     let mut gray = Image::from_size_val(new_size, 0f32)?;
     let mut bin = Image::from_size_val(new_size, 0f32)?;
 
@@ -91,15 +92,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             imgproc::resize::resize_fast(
                 &img,
                 &mut img_resized,
-                new_size,
                 imgproc::interpolation::InterpolationMode::Bilinear,
             )?;
 
             // convert the image to f32 and normalize before processing
-            let img = img_resized.clone().cast_and_scale::<f32>(1. / 255.)?;
+            ops::cast_and_scale(&img_resized, &mut img_f32, 1. / 255.)?;
 
             // convert the image to grayscale and binarize
-            imgproc::color::gray_from_rgb(&img, &mut gray)?;
+            imgproc::color::gray_from_rgb(&img_f32, &mut gray)?;
             imgproc::threshold::threshold_binary(&gray, &mut bin, 0.35, 0.65)?;
 
             // update the fps counter
@@ -109,8 +109,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .new_frame();
 
             // log the image
-            rec.log_static("image", &rerun::Image::try_from(img.data)?)?;
-            rec.log_static("binary", &rerun::Image::try_from(bin.clone().data)?)?;
+            rec.log_static(
+                "image",
+                &rerun::Image::from_elements(
+                    img.as_slice(),
+                    img.size().into(),
+                    rerun::ColorModel::RGB,
+                ),
+            )?;
+
+            rec.log_static(
+                "binary",
+                &rerun::Image::from_elements(
+                    bin.as_slice(),
+                    bin.size().into(),
+                    rerun::ColorModel::L,
+                ),
+            )?;
 
             Ok(())
         })

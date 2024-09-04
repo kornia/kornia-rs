@@ -1,3 +1,5 @@
+use crate::parallel;
+use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
 
 /// Define the RGB weights for the grayscale conversion.
@@ -42,52 +44,43 @@ const BW: f64 = 0.114;
 /// ```
 pub fn gray_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 1>) -> Result<(), ImageError>
 where
-    T: Default + Copy + Clone + Send + Sync + num_traits::Float,
+    T: SafeTensorType + num_traits::Float,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
-            src.size().width,
-            src.size().height,
-            dst.size().width,
-            dst.size().height,
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
         ));
-    }
-
-    if src.num_channels() != 3 {
-        return Err(ImageError::ChannelIndexOutOfBounds(3, src.num_channels()));
-    }
-
-    if dst.num_channels() != 1 {
-        return Err(ImageError::ChannelIndexOutOfBounds(1, dst.num_channels()));
     }
 
     let rw = T::from(RW).ok_or(ImageError::CastError)?;
     let gw = T::from(GW).ok_or(ImageError::CastError)?;
     let bw = T::from(BW).ok_or(ImageError::CastError)?;
 
-    ndarray::Zip::from(dst.data.rows_mut())
-        .and(src.data.rows())
-        .par_for_each(|mut out, inp| {
-            assert_eq!(inp.len(), 3);
-            let r = inp[0];
-            let g = inp[1];
-            let b = inp[2];
-            out[0] = rw * r + gw * g + bw * b;
-        });
+    // parallelize the grayscale conversion by rows
+    parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
+        let r = src_pixel[0];
+        let g = src_pixel[1];
+        let b = src_pixel[2];
+        dst_pixel[0] = rw * r + gw * g + bw * b;
+    });
 
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use kornia_image::Image;
+    use kornia_image::{ops, Image, ImageSize};
     use kornia_io::functional as F;
 
     #[test]
     fn gray_from_rgb() -> Result<(), Box<dyn std::error::Error>> {
-        let image_path = std::path::Path::new("../../tests/data/dog.jpeg");
-        let image = F::read_image_any(image_path)?;
-        let image_norm = image.cast_and_scale::<f32>(1. / 255.0)?;
+        let image = F::read_image_any("../../tests/data/dog.jpeg")?;
+
+        let mut image_norm = Image::from_size_val(image.size(), 0.0)?;
+        ops::cast_and_scale(&image, &mut image_norm, 1. / 255.0)?;
 
         let mut gray = Image::<f32, 1>::from_size_val(image_norm.size(), 0.0)?;
         super::gray_from_rgb(&image_norm, &mut gray)?;
@@ -95,6 +88,39 @@ mod tests {
         assert_eq!(gray.num_channels(), 1);
         assert_eq!(gray.size().width, 258);
         assert_eq!(gray.size().height, 195);
+
+        Ok(())
+    }
+
+    #[test]
+    fn gray_from_rgb_regression() -> Result<(), Box<dyn std::error::Error>> {
+        let image = Image::new(
+            ImageSize {
+                width: 2,
+                height: 3,
+            },
+            vec![
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0,
+            ],
+        )?;
+
+        let mut gray = Image::<f32, 1>::from_size_val(image.size(), 0.0)?;
+
+        super::gray_from_rgb(&image, &mut gray)?;
+
+        let expected: Image<f32, 1> = Image::new(
+            ImageSize {
+                width: 2,
+                height: 3,
+            },
+            vec![0.299, 0.587, 0.114, 0.0, 0.0, 0.0],
+        )?;
+
+        for (a, b) in gray.as_slice().iter().zip(expected.as_slice().iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
+
         Ok(())
     }
 }

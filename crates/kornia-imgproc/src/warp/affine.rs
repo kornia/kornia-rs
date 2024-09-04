@@ -1,11 +1,9 @@
 use std::f32::consts::PI;
 
-use crate::interpolation::meshgrid;
-use crate::interpolation::{interpolate_pixel, InterpolationMode};
-use kornia_image::{Image, ImageError, ImageSize};
-use ndarray::stack;
+use kornia_image::{Image, ImageError};
 
-type AffineMatrix = (f32, f32, f32, f32, f32, f32);
+use crate::interpolation::{interpolate_pixel, meshgrid, InterpolationMode};
+use crate::parallel;
 
 /// Inverts a 2x3 affine transformation matrix.
 ///
@@ -16,8 +14,8 @@ type AffineMatrix = (f32, f32, f32, f32, f32, f32);
 /// Returns:
 ///
 /// The inverted 2x3 affine transformation matrix.
-pub fn invert_affine_transform(m: &AffineMatrix) -> AffineMatrix {
-    let (a, b, c, d, e, f) = m;
+pub fn invert_affine_transform(m: &[f32; 6]) -> [f32; 6] {
+    let (a, b, c, d, e, f) = (m[0], m[1], m[2], m[3], m[4], m[5]);
 
     // follow OpenCV: check for determinant == 0
     // https://github.com/opencv/opencv/blob/4.9.0/modules/imgproc/src/imgwarp.cpp#L2765
@@ -35,7 +33,7 @@ pub fn invert_affine_transform(m: &AffineMatrix) -> AffineMatrix {
     let new_c = -(new_a * c + new_b * f);
     let new_f = -(new_d * c + new_e * f);
 
-    (new_a, new_b, new_c, new_d, new_e, new_f)
+    [new_a, new_b, new_c, new_d, new_e, new_f]
 }
 
 /// Returns a 2x3 rotation matrix for a 2D rotation around a center point.
@@ -68,14 +66,22 @@ pub fn invert_affine_transform(m: &AffineMatrix) -> AffineMatrix {
 /// let scale = 1.0;
 /// let rotation_matrix = get_rotation_matrix2d(center, angle, scale);
 /// ```
-pub fn get_rotation_matrix2d(center: (f32, f32), angle: f32, scale: f32) -> AffineMatrix {
+pub fn get_rotation_matrix2d(center: (f32, f32), angle: f32, scale: f32) -> [f32; 6] {
     let angle = angle * PI / 180.0f32;
     let alpha = scale * angle.cos();
     let beta = scale * angle.sin();
 
     let tx = (1.0 - alpha) * center.0 - beta * center.1;
     let ty = beta * center.0 + (1.0 - alpha) * center.1;
-    (alpha, beta, tx, -beta, alpha, ty)
+
+    [alpha, beta, tx, -beta, alpha, ty]
+}
+
+/// Applies an affine transformation to a point.
+fn transform_point(x: &f32, y: &f32, m: &[f32; 6]) -> (f32, f32) {
+    let u = m[0] * x + m[1] * y + m[2];
+    let v = m[3] * x + m[4] * y + m[5];
+    (u, v)
 }
 
 /// Applies an affine transformation to an image.
@@ -85,7 +91,6 @@ pub fn get_rotation_matrix2d(center: (f32, f32), angle: f32, scale: f32) -> Affi
 /// * `src` - The input image with shape (height, width, channels).
 /// * `dst` - The output image with shape (height, width, channels).
 /// * `m` - The 2x3 affine transformation matrix.
-/// * `new_size` - The size of the output image.
 /// * `interpolation` - The interpolation mode to use.
 ///
 /// # Returns
@@ -107,7 +112,7 @@ pub fn get_rotation_matrix2d(center: (f32, f32), angle: f32, scale: f32) -> Affi
 ///  1f32,
 /// ).unwrap();
 ///
-/// let m = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0);
+/// let m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
 /// let new_size = ImageSize {
 ///    width: 4,
 ///   height: 5,
@@ -115,72 +120,37 @@ pub fn get_rotation_matrix2d(center: (f32, f32), angle: f32, scale: f32) -> Affi
 ///
 /// let mut dst = Image::<_, 3>::from_size_val(new_size, 0.0).unwrap();
 ///
-/// warp_affine(&src, &mut dst, &m, new_size, InterpolationMode::Nearest).unwrap();
+/// warp_affine(&src, &mut dst, &m, InterpolationMode::Nearest).unwrap();
 ///
 /// assert_eq!(dst.size().width, 4);
 /// assert_eq!(dst.size().height, 5);
 /// ```
-pub fn warp_affine<const CHANNELS: usize>(
-    src: &Image<f32, CHANNELS>,
-    dst: &mut Image<f32, CHANNELS>,
-    m: &AffineMatrix,
-    new_size: ImageSize,
+pub fn warp_affine<const C: usize>(
+    src: &Image<f32, C>,
+    dst: &mut Image<f32, C>,
+    m: &[f32; 6],
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
-    if dst.size() != new_size {
-        return Err(ImageError::InvalidImageSize(
-            dst.size().width,
-            dst.size().height,
-            new_size.width,
-            new_size.height,
-        ));
-    }
-
     // invert affine transform matrix to find corresponding positions in src from dst
     let m_inv = invert_affine_transform(m);
 
-    // create a grid of x and y coordinates for the output image
-    // TODO: make this re-useable
-    let x = ndarray::Array::range(0.0, new_size.width as f32, 1.0).insert_axis(ndarray::Axis(0));
-    let y = ndarray::Array::range(0.0, new_size.height as f32, 1.0).insert_axis(ndarray::Axis(0));
+    // create meshgrid to find corresponding positions in dst from src
+    let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
+    let (map_x, map_y) = meshgrid(dst_rows, dst_cols)?;
 
-    // create the meshgrid of x and y coordinates, arranged in a 2D grid of shape (height, width)
-    let (xx, yy) = meshgrid(&x, &y);
+    // apply affine transformation
+    parallel::par_iter_rows_resample(dst, &map_x, &map_y, |x, y, dst_pixel| {
+        // find corresponding position in src image
+        let (u_src, v_src) = transform_point(x, y, &m_inv);
 
-    // TODO: benchmark this
-    // stack the x and y coordinates into a single array of shape (height, width, 2)
-    let xy = stack![ndarray::Axis(2), xx, yy];
-
-    // iterate over the output image and interpolate the pixel values
-
-    ndarray::Zip::from(xy.rows())
-        .and(dst.data.rows_mut())
-        .par_for_each(|uv, mut out| {
-            assert_eq!(uv.len(), 2);
-            let (u, v) = (uv[0], uv[1]);
-
-            // find corresponding position in src image
-            let u_src = m_inv.0 * u + m_inv.1 * v + m_inv.2;
-            let v_src = m_inv.3 * u + m_inv.4 * v + m_inv.5;
-
-            // TODO: remove -- this is already done in interpolate_pixel
-            if u_src < 0.0
-                || u_src > (src.width() - 1) as f32
-                || v_src < 0.0
-                || v_src > (src.height() - 1) as f32
-            {
-                return;
-            }
-
-            // compute the pixel values for each channel
-            let pixels = (0..src.num_channels())
-                .map(|k| interpolate_pixel(&src.data, u_src, v_src, k, interpolation));
-
-            // write the pixel values to the output image
-            for (k, pixel) in pixels.enumerate() {
-                out[k] = pixel;
-            }
-        });
+        // check if the position is within the bounds of the src image
+        if u_src >= 0.0 && u_src < src.cols() as f32 && v_src >= 0.0 && v_src < src.rows() as f32 {
+            // interpolate the pixel value for each channel
+            dst_pixel.iter_mut().enumerate().for_each(|(k, pixel)| {
+                *pixel = interpolate_pixel(src, u_src, v_src, k, interpolation)
+            });
+        }
+    });
 
     Ok(())
 }
@@ -209,8 +179,7 @@ mod tests {
         super::warp_affine(
             &image,
             &mut image_transformed,
-            &(1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
-            new_size,
+            &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             super::InterpolationMode::Bilinear,
         )?;
 
@@ -242,8 +211,7 @@ mod tests {
         super::warp_affine(
             &image,
             &mut image_transformed,
-            &(1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
-            new_size,
+            &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             super::InterpolationMode::Nearest,
         )?;
 
@@ -275,12 +243,11 @@ mod tests {
         super::warp_affine(
             &image,
             &mut image_transformed,
-            &(1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
-            new_size,
+            &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
             super::InterpolationMode::Nearest,
         )?;
 
-        assert_eq!(image_transformed.data, image.data);
+        assert_eq!(image_transformed.as_slice(), image.as_slice());
         assert_eq!(image_transformed.size(), image.size());
 
         Ok(())
@@ -308,13 +275,12 @@ mod tests {
             &image,
             &mut image_transformed,
             &super::get_rotation_matrix2d((0.5, 0.5), 90.0, 1.0),
-            new_size,
             super::InterpolationMode::Nearest,
         )?;
 
         assert_eq!(
-            image_transformed.data,
-            ndarray::array![[[1.0f32], [3.0f32]], [[0.0f32], [2.0f32]]]
+            image_transformed.as_slice(),
+            &[1.0f32, 3.0f32, 0.0f32, 2.0f32]
         );
 
         Ok(())

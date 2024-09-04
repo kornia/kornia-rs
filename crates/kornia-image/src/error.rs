@@ -17,6 +17,10 @@ pub enum ImageError {
     #[error("Invalid shape")]
     InvalidShape(#[from] ndarray::ShapeError),
 
+    /// Error when the image shape is not valid.
+    #[error("Invalid image shape")]
+    InvalidImageShape(#[from] kornia_core::TensorError),
+
     /// Error when the image size is not valid.
     #[error("Invalid image size ({0}, {1}) mismatch ({2}, {3})")]
     InvalidImageSize(usize, usize, usize, usize),

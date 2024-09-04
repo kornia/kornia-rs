@@ -36,11 +36,16 @@ use kornia_image::{Image, ImageError};
 /// assert_eq!(mean, [111.25, 112.25, 113.25]);
 /// ```
 pub fn std_mean(image: &Image<u8, 3>) -> (Vec<f64>, Vec<f64>) {
-    let (sum, sq_sum) = image.data.indexed_iter().fold(
+    let (sum, sq_sum) = image.as_slice().chunks_exact(3).fold(
         ([0f64; 3], [0f64; 3]),
-        |(mut sum, mut sq_sum), ((_, _, c), val)| {
-            sum[c] += *val as f64;
-            sq_sum[c] += (*val as f64).powi(2);
+        |(mut sum, mut sq_sum), pixel| {
+            sum.iter_mut()
+                .zip(pixel.iter())
+                .for_each(|(s, &p)| *s += p as f64);
+            sq_sum
+                .iter_mut()
+                .zip(pixel.iter())
+                .for_each(|(s, &p)| *s += (p as f64).powi(2));
             (sum, sq_sum)
         },
     );
@@ -102,51 +107,59 @@ pub fn std_mean(image: &Image<u8, 3>) -> (Vec<f64>, Vec<f64>) {
 /// assert_eq!(output.size().width, 2);
 /// assert_eq!(output.size().height, 2);
 ///
-/// assert_eq!(output.data.as_slice().unwrap(), &vec![0, 1, 2, 0, 0, 0, 128, 129, 130, 0, 0, 0]);
+/// assert_eq!(output.as_slice(), &vec![0, 1, 2, 0, 0, 0, 128, 129, 130, 0, 0, 0]);
 /// ```
-pub fn bitwise_and<const CHANNELS: usize>(
-    src1: &Image<u8, CHANNELS>,
-    src2: &Image<u8, CHANNELS>,
-    dst: &mut Image<u8, CHANNELS>,
+pub fn bitwise_and<const C: usize>(
+    src1: &Image<u8, C>,
+    src2: &Image<u8, C>,
+    dst: &mut Image<u8, C>,
     mask: &Image<u8, 1>,
 ) -> Result<(), ImageError> {
     if src1.size() != src2.size() {
         return Err(ImageError::InvalidImageSize(
-            src1.width(),
-            src1.height(),
-            src2.width(),
-            src2.height(),
+            src1.cols(),
+            src1.rows(),
+            src2.cols(),
+            src2.rows(),
         ));
     }
 
     if src1.size() != mask.size() {
         return Err(ImageError::InvalidImageSize(
-            src1.width(),
-            src1.height(),
-            mask.width(),
-            mask.height(),
+            src1.cols(),
+            src1.rows(),
+            mask.cols(),
+            mask.rows(),
         ));
     }
 
     if src1.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
-            src1.width(),
-            src1.height(),
-            dst.width(),
-            dst.height(),
+            src1.cols(),
+            src1.rows(),
+            dst.cols(),
+            dst.rows(),
         ));
     }
 
     // apply the mask to the image
 
-    ndarray::Zip::from(dst.data.rows_mut())
-        .and(src1.data.rows())
-        .and(src2.data.rows())
-        .and(mask.data.rows())
-        .par_for_each(|mut out, inp1, inp2, msk| {
-            for c in 0..CHANNELS {
-                out[c] = if msk[0] != 0 { inp1[c] & inp2[c] } else { 0 };
-            }
+    dst.as_slice_mut()
+        .chunks_exact_mut(C)
+        .zip(src1.as_slice().chunks_exact(C))
+        .zip(src2.as_slice().chunks_exact(C))
+        .zip(mask.as_slice().iter())
+        .for_each(|(((dst_chunk, src1_chunk), src2_chunk), &mask_chunk)| {
+            dst_chunk
+                .iter_mut()
+                .zip(src1_chunk.iter().zip(src2_chunk.iter()))
+                .for_each(|(dst_pixel, (src1_pixel, src2_pixel))| {
+                    *dst_pixel = if mask_chunk != 0 {
+                        src1_pixel & src2_pixel
+                    } else {
+                        0
+                    };
+                });
         });
 
     Ok(())
@@ -199,7 +212,7 @@ mod tests {
         assert_eq!(output.num_channels(), 3);
 
         assert_eq!(
-            output.data.into_raw_vec(),
+            output.as_slice(),
             vec![0, 1, 2, 0, 0, 0, 128, 129, 130, 0, 0, 0]
         );
         Ok(())

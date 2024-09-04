@@ -1,10 +1,12 @@
+use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
+use rayon::{iter::ParallelIterator, slice::ParallelSliceMut};
 
 /// Flip the input image horizontally.
 ///
 /// # Arguments
 ///
-/// * `image` - The input image with shape (H, W, C).
+/// * `src` - The input image with shape (H, W, C).
 ///
 /// # Returns
 ///
@@ -30,36 +32,34 @@ use kornia_image::{Image, ImageError};
 /// assert_eq!(flipped.size().width, 2);
 /// assert_eq!(flipped.size().height, 3);
 /// ```
-pub fn horizontal_flip<T, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
-) -> Result<Image<T, CHANNELS>, ImageError>
+pub fn horizontal_flip<T, const C: usize>(src: &Image<T, C>) -> Result<Image<T, C>, ImageError>
 where
-    T: Copy,
+    T: SafeTensorType,
 {
-    let mut img = image.clone();
+    let mut dst = src.clone();
 
-    img.data
-        .axis_iter_mut(ndarray::Axis(0))
-        .for_each(|mut row| {
+    dst.as_slice_mut()
+        .par_chunks_exact_mut(src.cols() * C)
+        .for_each(|row| {
             let mut i = 0;
-            let mut j = image.width() - 1;
+            let mut j = src.cols() - 1;
             while i < j {
-                for c in 0..CHANNELS {
-                    row.swap((i, c), (j, c));
+                for c in 0..C {
+                    row.swap(i * C + c, j * C + c);
                 }
                 i += 1;
                 j -= 1;
             }
         });
 
-    Ok(img)
+    Ok(dst)
 }
 
 /// Flip the input image vertically.
 ///
 /// # Arguments
 ///
-/// * `image` - The input image with shape (H, W, C).
+/// * `src` - The input image with shape (H, W, C).
 ///
 /// # Returns
 ///
@@ -85,29 +85,26 @@ where
 /// assert_eq!(flipped.size().width, 2);
 /// assert_eq!(flipped.size().height, 3);
 /// ```
-pub fn vertical_flip<T, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
-) -> Result<Image<T, CHANNELS>, ImageError>
+pub fn vertical_flip<T, const C: usize>(src: &Image<T, C>) -> Result<Image<T, C>, ImageError>
 where
-    T: Copy,
+    T: SafeTensorType,
 {
-    let mut img = image.clone();
+    let mut dst = src.clone();
 
-    img.data
-        .axis_iter_mut(ndarray::Axis(1))
-        .for_each(|mut col| {
-            let mut i = 0;
-            let mut j = image.height() - 1;
-            while i < j {
-                for c in 0..CHANNELS {
-                    col.swap((i, c), (j, c));
-                }
-                i += 1;
-                j -= 1;
+    // TODO: improve this implementation
+    for i in 0..src.cols() {
+        let mut j = src.rows() - 1;
+        for k in 0..src.rows() / 2 {
+            for c in 0..C {
+                let idx_i = i * C + c + k * src.cols() * C;
+                let idx_j = i * C + c + j * src.cols() * C;
+                dst.as_slice_mut().swap(idx_i, idx_j);
             }
-        });
+            j -= 1;
+        }
+    }
 
-    Ok(img)
+    Ok(dst)
 }
 
 #[cfg(test)]
@@ -125,10 +122,7 @@ mod tests {
         )?;
         let data_expected = vec![1u8, 0, 3, 2, 5, 4];
         let flipped = super::horizontal_flip(&image)?;
-        assert_eq!(
-            flipped.data.as_slice().expect("could not convert to slice"),
-            &data_expected
-        );
+        assert_eq!(flipped.as_slice(), &data_expected);
         Ok(())
     }
 
@@ -143,10 +137,7 @@ mod tests {
         )?;
         let data_expected = vec![4u8, 5, 2, 3, 0, 1];
         let flipped = super::vertical_flip(&image)?;
-        assert_eq!(
-            flipped.data.as_slice().expect("could not convert to slice"),
-            &data_expected
-        );
+        assert_eq!(flipped.as_slice(), &data_expected);
         Ok(())
     }
 }

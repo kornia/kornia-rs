@@ -54,7 +54,7 @@ pub fn compute_histogram(
     let scale = 256.0 / num_bins as f32;
 
     // TODO: check if this can be done in parallel
-    src.data.fold(hist, |histogram, &pixel| {
+    src.as_slice().iter().fold(hist, |histogram, &pixel| {
         let bin_pos = (pixel as f32 / scale).floor();
         histogram[bin_pos as usize] += 1;
         histogram

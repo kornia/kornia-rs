@@ -75,10 +75,7 @@ impl ImageEncoder {
     /// The encoded data as `Vec<u8>`.
     pub fn encode(&mut self, image: &Image<u8, 3>) -> Result<Vec<u8>, JpegError> {
         // get the image data
-        let image_data = image
-            .data
-            .as_slice()
-            .ok_or(JpegError::ImageDataNotContiguous)?;
+        let image_data = image.as_slice();
 
         // create a turbojpeg image
         let buf = turbojpeg::Image {

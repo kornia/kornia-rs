@@ -54,9 +54,9 @@ use kornia_image::{Image, ImageError};
 /// # References
 ///
 /// [Wikipedia - L1 loss](https://en.wikipedia.org/wiki/Huber_loss)
-pub fn l1_loss<const CHANNELS: usize>(
-    image1: &Image<f32, CHANNELS>,
-    image2: &Image<f32, CHANNELS>,
+pub fn l1_loss<const C: usize>(
+    image1: &Image<f32, C>,
+    image2: &Image<f32, C>,
 ) -> Result<f32, ImageError> {
     if image1.size() != image2.size() {
         return Err(ImageError::InvalidImageSize(
@@ -67,10 +67,13 @@ pub fn l1_loss<const CHANNELS: usize>(
         ));
     }
 
-    Ok(ndarray::Zip::from(&image1.data)
-        .and(&image2.data)
-        .fold(0f32, |acc, &a, &b| acc + (a - b).abs())
-        / (image1.data.len() as f32))
+    let l1 = image1
+        .as_slice()
+        .iter()
+        .zip(image2.as_slice().iter())
+        .fold(0f32, |acc, (&a, &b)| acc + (a - b).abs());
+
+    Ok(l1 / (image1.numel() as f32))
 }
 
 #[cfg(test)]

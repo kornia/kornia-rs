@@ -14,14 +14,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // read the image
-    let image: Image<u8, 3> = F::read_image_any(&args.image_path)?;
+    let image: Image<u8, 3> = F::read_image_any(args.image_path)?;
 
     // binarize the image as u8
     let mut bin = Image::<u8, 3>::from_size_val(image.size(), 0)?;
     imgproc::threshold::threshold_binary(&image, &mut bin, 127, 255)?;
 
     // normalize the image between 0 and 1
-    let image_f32: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
+    let image_f32 = image.cast_and_scale::<f32>(1.0 / 255.0)?;
 
     // convert to grayscale as floating point
     let mut gray = Image::<f32, 1>::from_size_val(image_f32.size(), 0.0)?;
@@ -34,9 +34,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;
 
-    rec.log("image", &rerun::Image::try_from(image_f32.data)?)?;
-    rec.log("gray", &rerun::Image::try_from(gray.data)?)?;
-    rec.log("gray_bin", &rerun::Image::try_from(gray_bin.data)?)?;
+    rec.log(
+        "image",
+        &rerun::Image::from_elements(
+            image_f32.as_slice(),
+            image_f32.size().into(),
+            rerun::ColorModel::RGB,
+        ),
+    )?;
+
+    rec.log(
+        "gray",
+        &rerun::Image::from_elements(gray.as_slice(), gray.size().into(), rerun::ColorModel::L),
+    )?;
+
+    rec.log(
+        "gray_bin",
+        &rerun::Image::from_elements(
+            gray_bin.as_slice(),
+            gray_bin.size().into(),
+            rerun::ColorModel::L,
+        ),
+    )?;
 
     Ok(())
 }

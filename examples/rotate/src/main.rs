@@ -14,8 +14,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // read the image
-    let image: Image<u8, 3> = F::read_image_any(&args.image_path)?;
-    let image: Image<f32, 3> = image.cast::<f32>()?;
+    let image: Image<u8, 3> = F::read_image_any(args.image_path)?;
+    let image: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
 
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;
 
@@ -38,13 +38,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &image,
             &mut output,
             &rotation_matrix,
-            image.size(),
             imgproc::interpolation::InterpolationMode::Bilinear,
         )?;
 
         imgproc::normalize::normalize_min_max(&output, &mut output_norm, 0.0, 255.0)?;
 
-        rec.log("image", &rerun::Image::try_from(output_norm.clone().data)?)?;
+        rec.log(
+            "image",
+            &rerun::Image::from_elements(
+                output_norm.as_slice(),
+                output_norm.size().into(),
+                rerun::ColorModel::RGB,
+            ),
+        )?;
     }
 
     Ok(())

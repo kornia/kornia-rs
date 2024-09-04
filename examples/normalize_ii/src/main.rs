@@ -14,10 +14,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // read the image
-    let image: Image<u8, 3> = F::read_image_any(&args.image_path)?;
+    let image: Image<u8, 3> = F::read_image_any(args.image_path)?;
 
     // cast the image to floating point
-    let image_f32: Image<f32, 3> = image.clone().cast_and_scale::<f32>(1.0 / 255.0)?;
+    let image_f32: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
 
     // convert to grayscale
     let mut gray = Image::<f32, 1>::from_size_val(image_f32.size(), 0.0)?;

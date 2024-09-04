@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // read the image
-    let image: Image<u8, 3> = F::read_image_any(&args.image_path)?;
+    let image: Image<u8, 3> = F::read_image_any(args.image_path)?;
 
     // compute the histogram per channel
     let histograms = image
@@ -35,7 +35,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // log the image and the histogram
     rec.set_time_sequence("step", 0);
-    rec.log("image", &rerun::Image::try_from(image.clone().data)?)?;
+    rec.log(
+        "image",
+        &rerun::Image::from_elements(
+            image.as_slice(),
+            image.size().into(),
+            rerun::ColorModel::RGB,
+        ),
+    )?;
 
     // show the image and the histogram
     rec.log_static(

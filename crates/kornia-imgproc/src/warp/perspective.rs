@@ -1,20 +1,19 @@
-use crate::interpolation::{interpolate_pixel, meshgrid, InterpolationMode};
+use crate::{
+    interpolation::{interpolate_pixel, meshgrid, InterpolationMode},
+    parallel,
+};
 
-use kornia_image::{Image, ImageError, ImageSize};
-use ndarray::stack;
-
-/// flat representation of a 3x3 matrix
-pub type PerspectiveMatrix = [f32; 9];
+use kornia_image::{Image, ImageError};
 
 #[rustfmt::skip]
-fn determinant3x3(m: &PerspectiveMatrix) -> f32 {
+fn determinant3x3(m: &[f32; 9]) -> f32 {
     m[0] * (m[4] * m[8] - m[5] * m[7]) -
     m[1] * (m[3] * m[8] - m[5] * m[6]) +
     m[2] * (m[3] * m[7] - m[4] * m[6])
 }
 
 #[rustfmt::skip]
-fn adjugate3x3(m: &PerspectiveMatrix) -> PerspectiveMatrix {
+fn adjugate3x3(m: &[f32; 9]) -> [f32; 9] {
     [
         m[4] * m[8] - m[5] * m[7],  // [0, 0]
         m[2] * m[7] - m[1] * m[8],  // [0, 1]
@@ -29,7 +28,7 @@ fn adjugate3x3(m: &PerspectiveMatrix) -> PerspectiveMatrix {
 }
 
 // TODO: use TensorError
-fn inverse_perspective_matrix(m: &PerspectiveMatrix) -> Result<PerspectiveMatrix, ImageError> {
+fn inverse_perspective_matrix(m: &[f32; 9]) -> Result<[f32; 9], ImageError> {
     let det = determinant3x3(m);
 
     if det == 0.0 {
@@ -48,7 +47,7 @@ fn inverse_perspective_matrix(m: &PerspectiveMatrix) -> Result<PerspectiveMatrix
 }
 
 // implement later as batched operation
-fn transform_point(x: f32, y: f32, m: PerspectiveMatrix) -> (f32, f32) {
+fn transform_point(x: &f32, y: &f32, m: &[f32; 9]) -> (f32, f32) {
     let w = m[6] * x + m[7] * y + m[8];
     let x = (m[0] * x + m[1] * y + m[2]) / w;
     let y = (m[3] * x + m[4] * y + m[5]) / w;
@@ -60,7 +59,6 @@ fn transform_point(x: f32, y: f32, m: PerspectiveMatrix) -> (f32, f32) {
 /// * `src` - The input image with shape (height, width, channels).
 /// * `dst` - The output image with shape (height, width, channels).
 /// * `m` - The 3x3 perspective transformation matrix src -> dst.
-/// * `new_size` - The size of the output image.
 /// * `interpolation` - The interpolation mode to use.
 ///
 /// # Returns
@@ -92,67 +90,35 @@ fn transform_point(x: f32, y: f32, m: PerspectiveMatrix) -> (f32, f32) {
 ///   0.0
 /// ).unwrap();
 ///
-/// warp_perspective(&src, &mut dst, &m, ImageSize {
-///     width: 2,
-///     height: 3,
-///   },
-///   InterpolationMode::Bilinear
-/// ).unwrap();
+/// warp_perspective(&src, &mut dst, &m, InterpolationMode::Bilinear).unwrap();
 ///
 /// assert_eq!(dst.size().width, 2);
 /// assert_eq!(dst.size().height, 3);
 /// ```
-pub fn warp_perspective<const CHANNELS: usize>(
-    src: &Image<f32, CHANNELS>,
-    dst: &mut Image<f32, CHANNELS>,
-    m: &PerspectiveMatrix,
-    new_size: ImageSize,
+pub fn warp_perspective<const C: usize>(
+    src: &Image<f32, C>,
+    dst: &mut Image<f32, C>,
+    m: &[f32; 9],
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
-    if dst.size() != new_size {
-        return Err(ImageError::InvalidImageSize(
-            dst.size().width,
-            dst.size().height,
-            new_size.width,
-            new_size.height,
-        ));
-    }
-
     // inverse perspective matrix
     // TODO: allow later to skip the inverse calculation if user provides it
     let inv_m = inverse_perspective_matrix(m)?;
 
-    // create a grid of x and y coordinates for the output image
-    // TODO: make this re-useable
-    let x = ndarray::Array::range(0.0, new_size.width as f32, 1.0).insert_axis(ndarray::Axis(0));
-    let y = ndarray::Array::range(0.0, new_size.height as f32, 1.0).insert_axis(ndarray::Axis(0));
+    // create meshgrid to find corresponding positions in dst from src
+    let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
+    let (map_x, map_y) = meshgrid(dst_rows, dst_cols)?;
 
-    // create the meshgrid of x and y coordinates, arranged in a 2D grid of shape (height, width)
-    let (xx, yy) = meshgrid(&x, &y);
+    // apply affine transformation
+    parallel::par_iter_rows_resample(dst, &map_x, &map_y, |x, y, dst_pixel| {
+        // find corresponding position in src image
+        let (u_src, v_src) = transform_point(x, y, &inv_m);
 
-    // stack the x and y coordinates into a single array of shape (height, width, 2)
-    let xy = stack![ndarray::Axis(2), xx, yy];
-
-    // iterate over the output image and find the corresponding position in the input image
-
-    ndarray::Zip::from(xy.rows())
-        .and(dst.data.rows_mut())
-        .par_for_each(|uv, mut out| {
-            assert_eq!(uv.len(), 2);
-            let (u, v) = (uv[0], uv[1]);
-
-            // find corresponding position in src image
-            let (u_src, v_src) = transform_point(u, v, inv_m);
-
-            // TODO: allow for multi-channel images
-            // interpolate the pixel value
-            let pixels = (0..src.num_channels())
-                .map(|c| interpolate_pixel(&src.data, u_src, v_src, c, interpolation));
-
-            for (c, pixel) in pixels.enumerate() {
-                out[c] = pixel;
-            }
-        });
+        dst_pixel
+            .iter_mut()
+            .enumerate()
+            .for_each(|(k, pixel)| *pixel = interpolate_pixel(src, u_src, v_src, k, interpolation));
+    });
 
     Ok(())
 }
@@ -173,7 +139,7 @@ mod tests {
     #[test]
     fn transform_point() {
         let m = [1.0, 0.0, -1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0];
-        let (x, y) = super::transform_point(1.0, 1.0, m);
+        let (x, y) = super::transform_point(&1.0, &1.0, &m);
         let (x_expected, y_expected) = (0.0, 2.0);
         assert_eq!(x, x_expected);
         assert_eq!(y, y_expected);
@@ -203,7 +169,6 @@ mod tests {
             &image,
             &mut image_transformed,
             &m,
-            new_size,
             super::InterpolationMode::Bilinear,
         )?;
 
@@ -240,7 +205,6 @@ mod tests {
             &image,
             &mut image_transformed,
             &m,
-            new_size,
             super::InterpolationMode::Bilinear,
         )?;
 
@@ -248,7 +212,7 @@ mod tests {
         assert_eq!(image_transformed.size().width, 2);
         assert_eq!(image_transformed.size().height, 3);
 
-        assert_eq!(image_transformed.data.as_slice().expect(""), image_expected);
+        assert_eq!(image_transformed.as_slice(), image_expected);
 
         Ok(())
     }
@@ -282,7 +246,6 @@ mod tests {
             &image,
             &mut image_transformed,
             &m,
-            new_size,
             super::InterpolationMode::Bilinear,
         )?;
 
@@ -291,7 +254,6 @@ mod tests {
         crate::resize::resize_native(
             &image,
             &mut image_resized,
-            new_size,
             super::InterpolationMode::Bilinear,
         )?;
 
@@ -299,14 +261,8 @@ mod tests {
         assert_eq!(image_transformed.size().width, 2);
         assert_eq!(image_transformed.size().height, 2);
 
-        assert_eq!(
-            image_transformed.data.clone().into_raw_vec(),
-            image_expected
-        );
-        assert_eq!(
-            image_transformed.data.into_raw_vec(),
-            image_resized.data.into_raw_vec()
-        );
+        assert_eq!(image_transformed.as_slice(), image_expected);
+        assert_eq!(image_transformed.as_slice(), image_resized.as_slice());
 
         Ok(())
     }

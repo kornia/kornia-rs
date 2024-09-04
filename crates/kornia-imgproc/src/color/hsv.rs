@@ -1,3 +1,4 @@
+use crate::parallel;
 use kornia_image::{Image, ImageError};
 
 /// Convert an RGB image to an HSV image.
@@ -47,64 +48,54 @@ use kornia_image::{Image, ImageError};
 pub fn hsv_from_rgb(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), ImageError> {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
-            src.size().width,
-            src.size().height,
-            dst.size().width,
-            dst.size().height,
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
         ));
     }
 
-    if src.num_channels() != 3 {
-        return Err(ImageError::ChannelIndexOutOfBounds(3, src.num_channels()));
-    }
+    // compute the HSV values
+    parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
+        // Normalize the input to the range [0, 1]
+        let r = src_pixel[0] / 255.;
+        let g = src_pixel[1] / 255.;
+        let b = src_pixel[2] / 255.;
 
-    if dst.num_channels() != 3 {
-        return Err(ImageError::ChannelIndexOutOfBounds(3, dst.num_channels()));
-    }
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let delta = max - min;
 
-    ndarray::Zip::from(dst.data.rows_mut())
-        .and(src.data.rows())
-        .par_for_each(|mut out, inp| {
-            assert_eq!(inp.len(), 3);
-            // Normalize the input to the range [0, 1]
-            let r = inp[0] / 255.;
-            let g = inp[1] / 255.;
-            let b = inp[2] / 255.;
+        let h = if delta == 0.0 {
+            0.0
+        } else if max == r {
+            60.0 * (((g - b) / delta) % 6.0)
+        } else if max == g {
+            60.0 * (((b - r) / delta) + 2.0)
+        } else {
+            60.0 * (((r - g) / delta) + 4.0)
+        };
 
-            let max = r.max(g).max(b);
-            let min = r.min(g).min(b);
-            let delta = max - min;
+        // Ensure h is in the range [0, 360)
 
-            let h = if delta == 0.0 {
-                0.0
-            } else if max == r {
-                60.0 * (((g - b) / delta) % 6.0)
-            } else if max == g {
-                60.0 * (((b - r) / delta) + 2.0)
-            } else {
-                60.0 * (((r - g) / delta) + 4.0)
-            };
+        let h = if h < 0.0 { h + 360.0 } else { h };
 
-            // Ensure h is in the range [0, 360)
+        // scale h to [0, 255]
 
-            let h = if h < 0.0 { h + 360.0 } else { h };
+        let h = (h / 360.0) * 255.0;
 
-            // scale h to [0, 255]
+        let s = if max == 0.0 {
+            0.0
+        } else {
+            (delta / max) * 255.0
+        };
 
-            let h = (h / 360.0) * 255.0;
+        let v = max * 255.0;
 
-            let s = if max == 0.0 {
-                0.0
-            } else {
-                (delta / max) * 255.0
-            };
-
-            let v = max * 255.0;
-
-            out[0] = h;
-            out[1] = s;
-            out[2] = v;
-        });
+        dst_pixel[0] = h;
+        dst_pixel[1] = s;
+        dst_pixel[2] = v;
+    });
 
     Ok(())
 }
@@ -112,6 +103,7 @@ pub fn hsv_from_rgb(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
+    use num_traits::Pow;
 
     #[test]
     fn hsv_from_rgb() -> Result<(), ImageError> {
@@ -126,6 +118,11 @@ mod tests {
             ],
         )?;
 
+        let expected = [
+            148.66667, 255.0, 255.0, 21.333334, 255.0, 255.0, 63.666668, 255.0, 255.0, 233.66667,
+            255.0, 255.0, 148.66667, 255.0, 255.0, 21.333334, 255.0, 255.0,
+        ];
+
         let mut hsv = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
 
         super::hsv_from_rgb(&image, &mut hsv)?;
@@ -133,6 +130,10 @@ mod tests {
         assert_eq!(hsv.num_channels(), 3);
         assert_eq!(hsv.size().width, 2);
         assert_eq!(hsv.size().height, 3);
+
+        for (a, b) in hsv.as_slice().iter().zip(expected.iter()) {
+            assert!((a - b).pow(2) < 1e-6f32);
+        }
 
         Ok(())
     }

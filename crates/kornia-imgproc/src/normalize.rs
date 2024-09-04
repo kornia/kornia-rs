@@ -1,4 +1,7 @@
+use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
+
+use crate::parallel;
 
 /// Normalize an image using the mean and standard deviation.
 ///
@@ -49,31 +52,34 @@ use kornia_image::{Image, ImageError};
 /// assert_eq!(image_normalized.size().width, 2);
 /// assert_eq!(image_normalized.size().height, 2);
 /// ```
-pub fn normalize_mean_std<T, const CHANNELS: usize>(
-    src: &Image<T, CHANNELS>,
-    dst: &mut Image<T, CHANNELS>,
-    mean: &[T; CHANNELS],
-    std: &[T; CHANNELS],
+pub fn normalize_mean_std<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
+    mean: &[T; C],
+    std: &[T; C],
 ) -> Result<(), ImageError>
 where
-    T: num_traits::Float + num_traits::FromPrimitive + std::fmt::Debug + Send + Sync + Copy,
+    T: SafeTensorType + num_traits::Float,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
-            src.size().width,
-            src.size().height,
-            dst.size().width,
-            dst.size().height,
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
         ));
     }
 
-    ndarray::Zip::from(dst.data.rows_mut())
-        .and(src.data.rows())
-        .par_for_each(|mut out, inp| {
-            for i in 0..CHANNELS {
-                out[i] = (inp[i] - mean[i]) / std[i];
-            }
-        });
+    parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
+        src_pixel
+            .iter()
+            .zip(dst_pixel.iter_mut())
+            .zip(mean.iter())
+            .zip(std.iter())
+            .for_each(|(((&src_val, dst_val), &mean_val), &std_val)| {
+                *dst_val = (src_val - mean_val) / std_val;
+            });
+    });
 
     Ok(())
 }
@@ -113,14 +119,13 @@ where
 /// assert_eq!(min, 0);
 /// assert_eq!(max, 3);
 /// ```
-pub fn find_min_max<T, const CHANNELS: usize>(
-    image: &Image<T, CHANNELS>,
-) -> Result<(T, T), ImageError>
+pub fn find_min_max<T, const C: usize>(image: &Image<T, C>) -> Result<(T, T), ImageError>
 where
-    T: PartialOrd + Copy,
+    T: SafeTensorType,
+    //T: PartialOrd + Copy,
 {
     // get the first element in the image
-    let first_element = match image.data.iter().next() {
+    let first_element = match image.as_slice().iter().next() {
         Some(x) => x,
         None => return Err(ImageError::ImageDataNotInitialized),
     };
@@ -128,7 +133,7 @@ where
     let mut min = first_element;
     let mut max = first_element;
 
-    for x in image.data.iter() {
+    for x in image.as_slice().iter() {
         if x < min {
             min = x;
         }
@@ -157,7 +162,7 @@ where
 ///
 /// # Returns
 ///
-/// The normalized image of shape (height, width, channels).
+/// The normalized image of shape (height, width, C).
 ///
 /// # Example
 ///
@@ -183,39 +188,34 @@ where
 /// assert_eq!(image_normalized.size().width, 2);
 /// assert_eq!(image_normalized.size().height, 2);
 /// ```
-pub fn normalize_min_max<T, const CHANNELS: usize>(
-    src: &Image<T, CHANNELS>,
-    dst: &mut Image<T, CHANNELS>,
+pub fn normalize_min_max<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     min: T,
     max: T,
 ) -> Result<(), ImageError>
 where
-    T: num_traits::Float
-        + num_traits::FromPrimitive
-        + std::fmt::Debug
-        + Send
-        + Sync
-        + Copy
-        + Default,
+    T: SafeTensorType + num_traits::Float,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
-            src.size().width,
-            src.size().height,
-            dst.size().width,
-            dst.size().height,
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
         ));
     }
 
     let (min_val, max_val) = find_min_max(src)?;
 
-    ndarray::Zip::from(dst.data.rows_mut())
-        .and(src.data.rows())
-        .par_for_each(|mut out, inp| {
-            for i in 0..CHANNELS {
-                out[i] = (inp[i] - min_val) * (max - min) / (max_val - min_val) + min;
-            }
-        });
+    parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
+        src_pixel
+            .iter()
+            .zip(dst_pixel.iter_mut())
+            .for_each(|(&src_val, dst_val)| {
+                *dst_val = (src_val - min_val) * (max - min) / (max_val - min_val) + min;
+            });
+    });
 
     Ok(())
 }
@@ -254,7 +254,7 @@ mod tests {
         assert_eq!(normalized.size().height, 2);
 
         normalized
-            .data
+            .as_slice()
             .iter()
             .zip(image_expected.iter())
             .for_each(|(a, b)| {
@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(normalized.size().height, 2);
 
         normalized
-            .data
+            .as_slice()
             .iter()
             .zip(image_expected.iter())
             .for_each(|(a, b)| {

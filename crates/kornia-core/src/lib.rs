@@ -13,7 +13,11 @@ pub mod serde;
 /// storage module containing the storage implementations.
 pub mod storage;
 
+/// view module containing the view implementations.
+pub mod view;
+
 pub use crate::allocator::{CpuAllocator, TensorAllocator};
+pub use crate::storage::SafeTensorType;
 pub use crate::tensor::{Tensor, TensorError};
 
 /// Type alias for a 1-dimensional tensor.

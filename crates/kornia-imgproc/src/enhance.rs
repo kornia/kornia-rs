@@ -1,4 +1,7 @@
+use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
+
+use crate::parallel;
 
 /// Performs weighted addition of two images `src1` and `src2` with weights `alpha`
 /// and `beta`, and an optional scalar `gamma`. The formula used is:
@@ -21,23 +24,29 @@ use kornia_image::{Image, ImageError};
 ///
 /// Returns an error if the sizes of `src1` and `src2` do not match.
 /// Returns an error if the size of `dst` does not match the size of `src1` or `src2`.
-pub fn add_weighted<T, const CHANNELS: usize>(
-    src1: &Image<T, CHANNELS>,
+pub fn add_weighted<T, const C: usize>(
+    src1: &Image<T, C>,
     alpha: T,
-    src2: &Image<T, CHANNELS>,
-    dst: &mut Image<T, CHANNELS>,
+    src2: &Image<T, C>,
+    dst: &mut Image<T, C>,
     beta: T,
     gamma: T,
 ) -> Result<(), ImageError>
 where
-    T: num_traits::Float + num_traits::FromPrimitive + std::fmt::Debug + Send + Sync + Copy,
+    T: num_traits::Float
+        + num_traits::FromPrimitive
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + Copy
+        + SafeTensorType,
 {
     if src1.size() != src2.size() {
         return Err(ImageError::InvalidImageSize(
-            src1.width(),
-            src1.height(),
-            src2.width(),
-            src2.height(),
+            src1.cols(),
+            src1.rows(),
+            src2.cols(),
+            src2.rows(),
         ));
     }
 
@@ -50,14 +59,10 @@ where
         ));
     }
 
-    ndarray::Zip::from(dst.data.rows_mut())
-        .and(src1.data.rows())
-        .and(src2.data.rows())
-        .for_each(|mut dst_pixel, src1_pixels, src2_pixels| {
-            for i in 0..CHANNELS {
-                dst_pixel[i] = (src1_pixels[i] * alpha) + (src2_pixels[i] * beta) + gamma;
-            }
-        });
+    // compute the weighted sum
+    parallel::par_iter_rows_val_two(src1, src2, dst, |&src1_pixel, &src2_pixel, dst_pixel| {
+        *dst_pixel = (src1_pixel * alpha) + (src2_pixel * beta) + gamma;
+    });
 
     Ok(())
 }
@@ -94,7 +99,7 @@ mod tests {
         super::add_weighted(&src1, alpha, &src2, &mut weighted, beta, gamma)?;
 
         weighted
-            .data
+            .as_slice()
             .iter()
             .zip(expected.iter())
             .for_each(|(a, b)| {
