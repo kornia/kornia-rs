@@ -18,7 +18,7 @@ fn bench_mse(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("mse_map", &parameter_string),
             &image_f32,
-            |b, i| b.iter(|| black_box(metrics::mse(i, i))),
+            |b, i| b.iter(|| metrics::mse(black_box(i), black_box(i))),
         );
     }
     group.finish();

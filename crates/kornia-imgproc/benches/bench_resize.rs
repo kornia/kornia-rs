@@ -61,7 +61,7 @@ fn resize_ndarray_zip(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) {
             // compute the pixel values for each channel
             let pixels = (0..dst.num_channels()).map(|k| {
                 kornia_imgproc::interpolation::interpolate_pixel(
-                    &src,
+                    src,
                     u,
                     v,
                     k,
@@ -101,7 +101,7 @@ fn bench_resize(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("image_rs", &parameter_string),
             &image,
-            |b, i| b.iter(|| black_box(resize_image_crate(i.clone(), new_size))),
+            |b, i| b.iter(|| resize_image_crate(black_box(i.clone()), black_box(new_size))),
         );
 
         group.bench_with_input(
@@ -109,7 +109,7 @@ fn bench_resize(c: &mut Criterion) {
             &(&image_f32, &out_f32),
             |b, i| {
                 let (src, mut dst) = (i.0.clone(), i.1.clone());
-                b.iter(|| black_box(resize_ndarray_zip(&src, &mut dst)))
+                b.iter(|| resize_ndarray_zip(black_box(&src), black_box(&mut dst)))
             },
         );
 
@@ -119,11 +119,11 @@ fn bench_resize(c: &mut Criterion) {
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
                 b.iter(|| {
-                    black_box(resize::resize_native(
-                        src,
-                        &mut dst,
-                        InterpolationMode::Nearest,
-                    ))
+                    resize::resize_native(
+                        black_box(src),
+                        black_box(&mut dst),
+                        black_box(InterpolationMode::Nearest),
+                    )
                 })
             },
         );
@@ -134,11 +134,11 @@ fn bench_resize(c: &mut Criterion) {
             |b, i| {
                 let (src, mut dst) = (i.0.clone(), i.1.clone());
                 b.iter(|| {
-                    black_box(resize::resize_fast(
-                        &src,
-                        &mut dst,
-                        InterpolationMode::Nearest,
-                    ))
+                    resize::resize_fast(
+                        black_box(&src),
+                        black_box(&mut dst),
+                        black_box(InterpolationMode::Nearest),
+                    )
                 })
             },
         );

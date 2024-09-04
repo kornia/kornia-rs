@@ -30,8 +30,15 @@ fn bench_warp_affine(c: &mut Criterion) {
             BenchmarkId::new("ndarray_zip_par", &parameter_string),
             &(&image_f32, &output, m),
             |b, i| {
-                let (src, mut dst, m) = (i.0, i.1.clone(), i.2);
-                b.iter(|| black_box(warp_affine(src, &mut dst, &m, InterpolationMode::Bilinear)))
+                let (src, mut dst, m) = (i.0.clone(), i.1.clone(), i.2);
+                b.iter(|| {
+                    warp_affine(
+                        black_box(&src),
+                        black_box(&mut dst),
+                        black_box(&m),
+                        black_box(InterpolationMode::Bilinear),
+                    )
+                })
             },
         );
     }
@@ -59,14 +66,14 @@ fn bench_warp_perspective(c: &mut Criterion) {
             BenchmarkId::new("ndarray_zip_par", &parameter_string),
             &(&image_f32, &output, m),
             |b, i| {
-                let (src, mut dst, m) = (i.0, i.1.clone(), i.2);
+                let (src, mut dst, m) = (i.0.clone(), i.1.clone(), i.2);
                 b.iter(|| {
-                    black_box(warp_perspective(
-                        src,
-                        &mut dst,
-                        &m,
-                        InterpolationMode::Bilinear,
-                    ))
+                    warp_perspective(
+                        black_box(&src),
+                        black_box(&mut dst),
+                        black_box(&m),
+                        black_box(InterpolationMode::Bilinear),
+                    )
                 })
             },
         );

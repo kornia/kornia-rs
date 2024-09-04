@@ -302,7 +302,7 @@ mod tests {
         let ptr = allocator.alloc(layout)?;
 
         // Wrap the existing CPU pointer in a `TensorStorage`
-        let storage = unsafe { TensorStorage::from_ptr(ptr as *mut u8, len, &allocator) };
+        let storage = unsafe { TensorStorage::from_ptr(ptr, len, &allocator) };
 
         // Use the `TensorStorage` as needed
         assert_eq!(storage.len(), len);
