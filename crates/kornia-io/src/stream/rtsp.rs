@@ -34,6 +34,8 @@ impl RTSPCameraConfig {
 
     /// Sets the url for the RTSPCameraConfig.
     ///
+    /// NOTE: usually the url is in the format of `rtsp://username:password@ip:port/stream`
+    ///
     /// # Arguments
     ///
     /// * `url` - The url for the Rtsp stream
@@ -66,7 +68,7 @@ impl RTSPCameraConfig {
         username: &str,
         password: &str,
         ip: &str,
-        port: u32,
+        port: &u16,
         stream: &str,
     ) -> Self {
         self.url = format!(
