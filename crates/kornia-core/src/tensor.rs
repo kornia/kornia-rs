@@ -153,6 +153,15 @@ where
         self.storage.as_mut_ptr()
     }
 
+    /// Convert the tensor to a vector.
+    ///
+    /// # Returns
+    ///
+    /// A vector containing the data of the tensor.
+    pub fn into_vec(self) -> Vec<T> {
+        self.storage.into_vec()
+    }
+
     /// Creates a new `Tensor` with the given shape and data.
     ///
     /// # Arguments

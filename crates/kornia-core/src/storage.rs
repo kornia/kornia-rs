@@ -98,6 +98,24 @@ where
         }
     }
 
+    /// Converts the tensor storage into a `Vec<T>`.
+    ///
+    /// This method attempts to convert the internal buffer of the tensor storage into a `Vec<T>`.
+    /// If the conversion fails (e.g., due to reference counting issues), it constructs a new `Vec<T>`
+    /// from the raw pointer and length of the buffer.
+    ///
+    /// # Safety
+    ///
+    pub fn into_vec(self) -> Vec<T> {
+        // borrow of partially moved value: `self`
+        // partial move occurs because `self.data` has type `ScalarBuffer<T>`, which does not implement the `Copy` trait
+        // match self.data.into_inner().into_vec() {
+        match self.clone().data.into_inner().into_vec() {
+            Ok(vec) => vec,
+            Err(_) => self.as_slice().to_vec(),
+        }
+    }
+
     /// Returns the allocator used to allocate the tensor storage.
     #[inline]
     pub fn alloc(&self) -> &A {

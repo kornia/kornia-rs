@@ -16,4 +16,6 @@ version.workspace = true
 [dependencies]
 clap = { version = "4.5.9", features = ["derive"] }
 kornia.workspace = true
-ort = { version = "2.0.0-rc.4", features = ["load-dynamic"] }
+ort = { version = "2.0.0-rc.4", features = [
+    "load-dynamic",
+], default-features = false }
