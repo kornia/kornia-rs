@@ -153,11 +153,11 @@ where
         self.storage.as_mut_ptr()
     }
 
-    /// Convert the tensor to a vector.
+    /// Consumes the tensor and returns the underlying vector.
     ///
-    /// # Returns
+    /// This method destroys the tensor and returns ownership of the underlying data.
+    /// The returned vector will have a length equal to the total number of elements in the tensor.
     ///
-    /// A vector containing the data of the tensor.
     pub fn into_vec(self) -> Vec<T> {
         self.storage.into_vec()
     }
