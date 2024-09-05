@@ -81,20 +81,55 @@ where
     ///
     /// The vector must have the correct length and alignment.
     pub fn from_vec(vec: Vec<T>, alloc: A) -> Self {
+        // NOTE: this is a temporary solution until we have a custom allocator for the buffer
         // create immutable buffer from vec
-        let buffer = unsafe {
-            // SAFETY: `vec` is properly aligned and has the correct length.
-            Buffer::from_custom_allocation(
-                NonNull::new_unchecked(vec.as_ptr() as *mut u8),
-                vec.len() * std::mem::size_of::<T>(),
-                Arc::new(vec),
-            )
-        };
+        // let _buffer = unsafe {
+        //     // SAFETY: `vec` is properly aligned and has the correct length.
+        //     Buffer::from_custom_allocation(
+        //         NonNull::new_unchecked(vec.as_ptr() as *mut u8),
+        //         vec.len() * std::mem::size_of::<T>(),
+        //         Arc::new(vec),
+        //     )
+        // };
+
+        // create immutable buffer from vec
+        // NOTE: this is a temporary solution until we have a custom allocator for the buffer
+        let buffer = Buffer::from_vec(vec);
 
         // create tensor storage
         Self {
             data: buffer.into(),
             alloc,
+        }
+    }
+
+    /// Converts the tensor storage into a `Vec<T>`.
+    ///
+    /// NOTE: useful for safe zero copies.
+    ///
+    /// This method attempts to convert the internal buffer of the tensor storage into a `Vec<T>`.
+    /// If the conversion fails (e.g., due to reference counting issues), it constructs a new `Vec<T>`
+    /// by copying the data from the raw pointer.
+    ///
+    /// # Safety
+    ///
+    /// This method is safe to call, but it may involve unsafe operations internally when
+    /// constructing a new Vec from raw parts if the initial conversion fails.
+    ///
+    /// # Performance
+    ///
+    /// In the best case, this operation is O(1) when the internal buffer can be directly converted.
+    /// In the worst case, it's O(n) where n is the number of elements, as it may need to copy all data.
+    pub fn into_vec(self) -> Vec<T> {
+        match self.data.into_inner().into_vec() {
+            Ok(vec) => vec,
+            Err(buf) => unsafe {
+                std::slice::from_raw_parts(
+                    buf.as_ptr() as *const T,
+                    buf.len() / std::mem::size_of::<T>(),
+                )
+                .to_vec()
+            },
         }
     }
 
@@ -312,5 +347,22 @@ mod tests {
         allocator.dealloc(ptr, layout);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_tensor_storage_into_vec() {
+        let allocator = CpuAllocator;
+        let original_vec = vec![1, 2, 3, 4, 5];
+        let original_vec_ptr = original_vec.as_ptr();
+        let original_vec_capacity = original_vec.capacity();
+
+        let storage = TensorStorage::<i32, _>::from_vec(original_vec, allocator);
+
+        // Convert the storage back to a vector
+        let result_vec = storage.into_vec();
+
+        // check NO copy
+        assert_eq!(result_vec.capacity(), original_vec_capacity);
+        assert!(std::ptr::eq(result_vec.as_ptr(), original_vec_ptr));
     }
 }
