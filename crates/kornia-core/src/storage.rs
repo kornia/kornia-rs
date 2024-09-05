@@ -83,14 +83,14 @@ where
     pub fn from_vec(vec: Vec<T>, alloc: A) -> Self {
         // NOTE: this is a temporary solution until we have a custom allocator for the buffer
         // create immutable buffer from vec
-        //let buffer = unsafe {
-        //    // SAFETY: `vec` is properly aligned and has the correct length.
-        //    Buffer::from_custom_allocation(
-        //        NonNull::new_unchecked(vec.as_ptr() as *mut u8),
-        //        vec.len() * std::mem::size_of::<T>(),
-        //        Arc::new(vec),
-        //    )
-        //};
+        // let _buffer = unsafe {
+        //     // SAFETY: `vec` is properly aligned and has the correct length.
+        //     Buffer::from_custom_allocation(
+        //         NonNull::new_unchecked(vec.as_ptr() as *mut u8),
+        //         vec.len() * std::mem::size_of::<T>(),
+        //         Arc::new(vec),
+        //     )
+        // };
 
         // create immutable buffer from vec
         // NOTE: this is a temporary solution until we have a custom allocator for the buffer
