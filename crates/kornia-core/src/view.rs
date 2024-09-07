@@ -55,16 +55,12 @@ impl<'a, T: SafeTensorType, const N: usize, A: TensorAllocator> TensorView<'a, T
     /// # Returns
     ///
     /// A new `Tensor` instance with contiguous memory.
-    pub fn as_contiguous(&self) -> Tensor<T, N, A>
-    where
-        T: Clone,
-        A: Clone,
-    {
+    pub fn as_contiguous(&self) -> Tensor<T, N, A> {
         let mut data = Vec::with_capacity(self.numel());
         let mut index = [0; N];
 
         loop {
-            data.push(self.get_unchecked(index).clone());
+            data.push(*self.get_unchecked(index));
 
             // Increment index
             let mut i = N - 1;
