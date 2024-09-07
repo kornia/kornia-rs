@@ -44,7 +44,7 @@ pub enum TensorError {
 /// # Returns
 ///
 /// * `strides` - The strides of the tensor.
-fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
+pub(crate) fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
     let mut strides: [usize; N] = [0; N];
     let mut stride = 1;
     for i in (0..shape.len()).rev() {
@@ -122,6 +122,7 @@ where
     /// # Returns
     ///
     /// A slice containing the data of the tensor.
+    #[inline]
     pub fn as_slice(&self) -> &[T] {
         self.storage.as_slice()
     }
@@ -131,6 +132,7 @@ where
     /// # Returns
     ///
     /// A mutable slice containing the data of the tensor.
+    #[inline]
     pub fn as_slice_mut(&mut self) -> &mut [T] {
         self.storage.as_mut_slice()
     }
@@ -140,6 +142,7 @@ where
     /// # Returns
     ///
     /// A pointer to the data of the tensor.
+    #[inline]
     pub fn as_ptr(&self) -> *const T {
         self.storage.as_ptr()
     }
@@ -149,6 +152,7 @@ where
     /// # Returns
     ///
     /// A mutable pointer to the data of the tensor.
+    #[inline]
     pub fn as_mut_ptr(&mut self) -> *mut T {
         self.storage.as_mut_ptr()
     }
@@ -158,6 +162,7 @@ where
     /// This method destroys the tensor and returns ownership of the underlying data.
     /// The returned vector will have a length equal to the total number of elements in the tensor.
     ///
+    #[inline]
     pub fn into_vec(self) -> Vec<T> {
         self.storage.into_vec()
     }
@@ -334,6 +339,7 @@ where
     /// # Returns
     ///
     /// The number of elements in the tensor.
+    #[inline]
     pub fn numel(&self) -> usize {
         self.storage.len()
     }
@@ -1048,11 +1054,14 @@ mod tests {
     fn reshape_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 1>::from_shape_vec([4], data, CpuAllocator)?;
+
         let view = t.reshape([2, 2])?;
+
         assert_eq!(view.shape, [2, 2]);
         assert_eq!(view.as_slice(), vec![1, 2, 3, 4]);
         assert_eq!(view.strides, [2, 1]);
         assert_eq!(view.numel(), 4);
+        assert_eq!(view.as_contiguous().as_slice(), vec![1, 2, 3, 4]);
         Ok(())
     }
 
@@ -1061,10 +1070,12 @@ mod tests {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data, CpuAllocator)?;
         let t2 = t.reshape([4])?;
+
         assert_eq!(t2.shape, [4]);
         assert_eq!(t2.as_slice(), vec![1, 2, 3, 4]);
         assert_eq!(t2.strides, [1]);
         assert_eq!(t2.numel(), 4);
+        assert_eq!(t2.as_contiguous().as_slice(), vec![1, 2, 3, 4]);
         Ok(())
     }
 
@@ -1078,6 +1089,7 @@ mod tests {
         assert_eq!(*view.get_unchecked([1, 0]), 3);
         assert_eq!(*view.get_unchecked([1, 1]), 4);
         assert_eq!(view.numel(), 4);
+        assert_eq!(view.as_contiguous().as_slice(), vec![1, 2, 3, 4]);
         Ok(())
     }
 
@@ -1089,6 +1101,7 @@ mod tests {
         assert_eq!(t2.shape, [4]);
         assert_eq!(t2.as_slice(), vec![1, 2, 3, 4]);
         assert_eq!(t2.strides, [1]);
+        assert_eq!(t2.as_contiguous().as_slice(), vec![1, 2, 3, 4]);
         Ok(())
     }
 
@@ -1103,6 +1116,23 @@ mod tests {
         assert_eq!(*view.get_unchecked([0, 1]), 3u8);
         assert_eq!(*view.get_unchecked([1, 1]), 4u8);
         assert_eq!(view.strides, [1, 2]);
+        assert_eq!(view.as_contiguous().as_slice(), vec![1, 3, 2, 4]);
+        Ok(())
+    }
+
+    #[test]
+    fn contiguous_2d() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
+        let t = Tensor::<u8, 2>::from_shape_vec([2, 3], data, CpuAllocator)?;
+
+        let view = t.permute_axes([1, 0]);
+
+        let contiguous = view.as_contiguous();
+
+        assert_eq!(contiguous.shape, [3, 2]);
+        assert_eq!(contiguous.strides, [2, 1]);
+        assert_eq!(contiguous.as_slice(), vec![1, 4, 2, 5, 3, 6]);
+
         Ok(())
     }
 

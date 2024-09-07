@@ -1,6 +1,7 @@
 use clap::Parser;
 use kornia::core::{CpuAllocator, Tensor};
 use kornia::imgproc::interpolation::InterpolationMode;
+use rerun::external::re_types::image;
 use std::path::PathBuf;
 
 use kornia::image::{Image, ImageSize};
@@ -36,15 +37,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_intra_threads(4)?
         .commit_from_file(&args.onnx_model_path)?;
 
-    let new_size = [640, 640].into();
+    //let new_size = [640, 640].into();
 
-    // resize the image
-    let mut image_resized = Image::from_size_val(new_size, 0)?;
-    kornia::imgproc::resize::resize_fast(&image, &mut image_resized, InterpolationMode::Bilinear)?;
+    //// resize the image
+    //let mut image_resized = Image::from_size_val(new_size, 0)?;
+    //kornia::imgproc::resize::resize_fast(&image, &mut image_resized, InterpolationMode::Bilinear)?;
 
-    // cast and scale the image to f32
-    let mut image_f32 = Image::from_size_val(image_resized.size(), 0.0)?;
-    kornia::image::ops::cast_and_scale(&image_resized, &mut image_f32, 1. / 255.)?;
+    //// cast and scale the image to f32
+    //let mut image_f32 = Image::from_size_val(image_resized.size(), 0.0)?;
+    //kornia::image::ops::cast_and_scale(&image_resized, &mut image_f32, 1. / 255.)?;
 
     // NOTE: this is the old way to do it and seems to work the rest nope
     //let img_t = ndarray::Array3::from_shape_vec((640, 640, 3), image_f32.as_slice().to_vec())?;
@@ -55,33 +56,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //let shape = binding.shape();
     //let ort_tensor: ort::Tensor<f32> = ort::Tensor::from_array((shape, img_t.into_raw_vec()))?;
 
-    // create a CHW view
-    let image_chw_view = image_f32.permute_axes([2, 0, 1]);
+    let image_hwc_f32 = image.cast::<f32>()?;
 
-    // make it contiguous
-    let mut image_chw_data = Vec::<f32>::with_capacity(3 * new_size.width * new_size.height);
+    //// create a CHW view
+    let image_chw_view = image_hwc_f32.permute_axes([2, 0, 1]);
 
-    // TODO: implement Tensor::contiguous in kornia-core
-    // Convert the image to contiguous format from HWC to CHW
-    for c in 0..image_resized.num_channels() {
-        for i in 0..image_resized.rows() {
-            for j in 0..image_resized.cols() {
-                let value = image_chw_view.get_unchecked([i, j, c]);
-                image_chw_data.push(*value);
-            }
-        }
-    }
+    let image_chw_contiguous = image_chw_view.as_contiguous();
+
+    //// make it contiguous
+    //let mut image_chw_data = Vec::<f32>::with_capacity(3 * image_f32.cols() * image_f32.rows());
+
+    //// TODO: implement Tensor::contiguous in kornia-core
+    //// Convert the image to contiguous format from HWC to CHW
+    //for c in 0..image_f32.num_channels() {
+    //    for i in 0..image_f32.rows() {
+    //        for j in 0..image_f32.cols() {
+    //            let value = image_chw_view.get_unchecked([i, j, c]);
+    //            image_chw_data.push(*value);
+    //        }
+    //    }
+    //}
 
     // make the rank 4 tensor
-    let image_nchw = Tensor::from_shape_vec(
-        [1, 3, new_size.height, new_size.width],
-        image_chw_data,
-        CpuAllocator,
-    )?;
+    //let image_nchw = Tensor::from_shape_vec(
+    //    [1, 3, image_f32.rows(), image_f32.cols()],
+    //    image_chw_data,
+    //    CpuAllocator,
+    //)?;
 
     // make the ort tensor
-    let ort_tensor: ort::Value<ort::TensorValueType<_>> =
-        ort::Tensor::from_array((image_nchw.shape, image_nchw.into_vec()))?;
+    let ort_tensor =
+        ort::Tensor::from_array((image_chw_contiguous.shape, image_chw_contiguous.into_vec()))?;
 
     //println!("ort_tensor: {:?}", ort_tensor.shape());
 
@@ -116,29 +121,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (out1_shape, out1_ort) = outputs["output"].try_extract_raw_tensor::<f32>()?;
     println!("out1_shape: {:?}", out1_shape);
 
-    let shape = out1_shape.iter().map(|x| *x as usize).collect::<Vec<_>>();
-    let shape: [usize; 3] = shape.try_into().expect("Shape is too big");
-    let logits = Tensor::from_shape_slice(shape, out1_ort, CpuAllocator)?;
+    //let shape = out1_shape.iter().map(|x| *x as usize).collect::<Vec<_>>();
+    //let shape: [usize; 3] = shape.try_into().expect("Shape is too big");
+    //let logits = Tensor::from_shape_slice(shape, out1_ort, CpuAllocator)?;
 
-    let shape = out2_shape.iter().map(|x| *x as usize).collect::<Vec<_>>();
-    let shape: [usize; 3] = shape.try_into().expect("Shape is too big");
-    let boxes = Tensor::from_shape_slice(shape, out2_ort, CpuAllocator)?;
+    //let shape = out2_shape.iter().map(|x| *x as usize).collect::<Vec<_>>();
+    //let shape: [usize; 3] = shape.try_into().expect("Shape is too big");
+    //let boxes = Tensor::from_shape_slice(shape, out2_ort, CpuAllocator)?;
 
-    let detections = post_process(&logits, &boxes, image_resized.size());
+    //let detections = post_process(&logits, &boxes, image_resized.size());
 
-    let detections = detections
-        .iter()
-        .filter(|d| d.score > 0.8)
-        .collect::<Vec<_>>();
+    //let detections = detections
+    //    .iter()
+    //    .filter(|d| d.score > 0.8)
+    //    .collect::<Vec<_>>();
 
-    println!("detections: {:?}", detections);
+    //println!("detections: {:?}", detections);
 
-    let mut boxes_mins = Vec::new();
-    let mut boxes_sizes = Vec::new();
-    for detection in detections {
-        boxes_mins.push((detection.x, detection.y));
-        boxes_sizes.push((detection.w, detection.h));
-    }
+    //let mut boxes_mins = Vec::new();
+    //let mut boxes_sizes = Vec::new();
+    //for detection in detections {
+    //    boxes_mins.push((detection.x, detection.y));
+    //    boxes_sizes.push((detection.w, detection.h));
+    //}
 
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;
@@ -146,16 +151,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     rec.log(
         "output",
         &rerun::Image::from_elements(
-            image_resized.as_slice(),
-            image_resized.size().into(),
+            image.as_slice(),
+            image.size().into(),
             rerun::ColorModel::RGB,
         ),
     )?;
 
-    rec.log(
-        "boxes",
-        &rerun::Boxes2D::from_mins_and_sizes(boxes_mins, boxes_sizes),
-    )?;
+    //rec.log(
+    //    "boxes",
+    //    &rerun::Boxes2D::from_mins_and_sizes(boxes_mins, boxes_sizes),
+    //)?;
 
     Ok(())
 }
