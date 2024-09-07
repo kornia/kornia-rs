@@ -1,4 +1,6 @@
-use crate::{storage::TensorStorage, SafeTensorType, TensorAllocator};
+use crate::{
+    get_strides_from_shape, storage::TensorStorage, SafeTensorType, Tensor, TensorAllocator,
+};
 
 /// A view into a tensor.
 pub struct TensorView<'a, T: SafeTensorType, const N: usize, A: TensorAllocator> {
@@ -46,6 +48,39 @@ impl<'a, T: SafeTensorType, const N: usize, A: TensorAllocator> TensorView<'a, T
             .zip(self.strides.iter())
             .fold(0, |acc, (i, s)| acc + i * s);
         self.storage.get_unchecked(offset)
+    }
+
+    /// Convert the view an owned tensor with contiguous memory.
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` instance with contiguous memory.
+    pub fn as_contiguous(&self) -> Tensor<T, N, A> {
+        let mut data = Vec::with_capacity(self.numel());
+        let mut index = [0; N];
+
+        loop {
+            data.push(*self.get_unchecked(index));
+
+            // Increment index
+            let mut i = N - 1;
+            while i > 0 && index[i] == self.shape[i] - 1 {
+                index[i] = 0;
+                i -= 1;
+            }
+            if i == 0 && index[0] == self.shape[0] - 1 {
+                break;
+            }
+            index[i] += 1;
+        }
+
+        let strides = get_strides_from_shape(self.shape);
+
+        Tensor {
+            storage: TensorStorage::from_vec(data, self.storage.alloc().clone()),
+            shape: self.shape,
+            strides,
+        }
     }
 }
 
