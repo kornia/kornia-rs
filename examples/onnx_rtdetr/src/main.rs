@@ -1,19 +1,25 @@
 use clap::Parser;
 use kornia::core::{CpuAllocator, Tensor};
-use ort::CUDAExecutionProvider;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use kornia::image::Image;
+use kornia::image::{image, Image};
 use kornia::io::functional as F;
 
+/// Represents a detected object in an image.
 #[derive(Debug)]
 pub struct Detection {
+    /// The class label of the detected object.
     pub label: u32,
+    /// The confidence score of the detection (typically between 0 and 1).
     pub score: f32,
+    /// The x-coordinate of the top-left corner of the bounding box.
     pub x: f32,
+    /// The y-coordinate of the top-left corner of the bounding box.
     pub y: f32,
+    /// The width of the bounding box.
     pub w: f32,
+    /// The height of the bounding box.
     pub h: f32,
 }
 
@@ -45,8 +51,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model = Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
         .with_intra_threads(4)?
-        // TODO: find a way to auto set the cudnn path in LD_LIBRARY_PATH
-        //.with_execution_providers([CUDAExecutionProvider::default().build().error_on_failure()])?
         .commit_from_file(&args.onnx_model_path)?;
 
     // cast and scale the image to f32
@@ -136,7 +140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // filter out detections with low confidence
     let detections = detections
         .into_iter()
-        .filter(|d| d.score > 0.5)
+        .filter(|d| d.score > 0.75)
         .collect::<Vec<_>>();
 
     // let's log the detections
