@@ -26,9 +26,6 @@ struct Args {
     #[arg(short, long)]
     model_path: PathBuf,
 
-    #[arg(short, long)]
-    ort_dylib_path: PathBuf,
-
     #[arg(short, long, default_value = "8")]
     num_threads: usize,
 
@@ -51,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_fps(args.fps)
         .build()?;
 
-    let detector = RTDETRDetectorBuilder::new(args.model_path, args.ort_dylib_path)?
+    let detector = RTDETRDetectorBuilder::new(args.model_path)?
         .with_num_threads(args.num_threads)
         .build()?;
 

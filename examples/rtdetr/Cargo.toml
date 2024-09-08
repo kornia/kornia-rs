@@ -9,6 +9,10 @@ publish = false
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }
 ctrlc = "3.4.4"
-kornia = { workspace = true, features = ["gstreamer"] }
+kornia = { workspace = true, features = [
+    "gstreamer",
+    "ort-load-dynamic",
+    "ort-cuda",
+] }
 rerun = "0.18"
 tokio = { version = "1" }

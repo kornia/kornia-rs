@@ -1,6 +1,9 @@
 #[derive(thiserror::Error, Debug)]
 pub enum DnnError {
-    #[error("Failed to load model")]
+    #[error("Please set the ORT_DYLIB_PATH environment variable to the path of the ORT dylib. Error: {0}")]
+    OrtDylibError(String),
+
+    #[error("Failed to create ORT session")]
     OrtError(#[from] ort::Error),
 
     #[error("Image error")]

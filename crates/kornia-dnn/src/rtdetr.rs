@@ -4,13 +4,13 @@
 //!
 //! The RT-DETR model is a state-of-the-art object detection model.
 
-use std::path::PathBuf;
+use std::{env::current_exe, path::PathBuf};
 
 use crate::error::DnnError;
 use crate::Detection;
 use kornia_core::{CpuAllocator, Tensor};
 use kornia_image::Image;
-use ort::{GraphOptimizationLevel, Session};
+use ort::{CUDAExecutionProvider, GraphOptimizationLevel, Session};
 
 /// Builder for the RT-DETR detector.
 ///
@@ -18,8 +18,6 @@ use ort::{GraphOptimizationLevel, Session};
 pub struct RTDETRDetectorBuilder {
     /// Path to the RT-DETR model file.
     pub model_path: PathBuf,
-    /// Path to the ONNX Runtime dynamic library.
-    pub ort_dylib_path: PathBuf,
     /// Number of threads to use for inference.
     pub num_threads: usize,
 }
@@ -30,15 +28,13 @@ impl RTDETRDetectorBuilder {
     /// # Arguments
     ///
     /// * `model_path` - Path to the RT-DETR model file.
-    /// * `ort_dylib_path` - Path to the ONNX Runtime dynamic library.
     ///
     /// # Returns
     ///
     /// A `Result` containing the `RTDETRDetectorBuilder` if successful, or a `DnnError` if an error occurred.
-    pub fn new(model_path: PathBuf, ort_dylib_path: PathBuf) -> Result<Self, DnnError> {
+    pub fn new(model_path: PathBuf) -> Result<Self, DnnError> {
         Ok(Self {
             model_path,
-            ort_dylib_path,
             num_threads: 4,
         })
     }
@@ -63,7 +59,7 @@ impl RTDETRDetectorBuilder {
     ///
     /// A `Result` containing the `RTDETRDetector` if successful, or a `DnnError` if an error occurred.
     pub fn build(self) -> Result<RTDETRDetector, DnnError> {
-        RTDETRDetector::new(self.model_path, self.ort_dylib_path, self.num_threads)
+        RTDETRDetector::new(self.model_path, self.num_threads)
     }
 }
 
@@ -81,19 +77,21 @@ impl RTDETRDetector {
     /// # Arguments
     ///
     /// * `model_path` - Path to the RT-DETR model file.
-    /// * `ort_dylib_path` - Path to the ONNX Runtime dynamic library.
     /// * `num_threads` - Number of threads to use for inference.
     ///
     /// # Returns
     ///
     /// A `Result` containing the `RTDETRDetector` if successful, or a `DnnError` if an error occurred.
-    pub fn new(
-        model_path: PathBuf,
-        ort_dylib_path: PathBuf,
-        num_threads: usize,
-    ) -> Result<Self, DnnError> {
+    ///
+    /// Pre-requisites:
+    /// - ORT_DYLIB_PATH environment variable must be set to the path of the ORT dylib.
+    pub fn new(model_path: PathBuf, num_threads: usize) -> Result<Self, DnnError> {
+        // get the ort dylib path from the environment variable
+        let dylib_path =
+            std::env::var("ORT_DYLIB_PATH").map_err(|e| DnnError::OrtDylibError(e.to_string()))?;
+
         // set the ort dylib path
-        std::env::set_var("ORT_DYLIB_PATH", ort_dylib_path);
+        ort::init_from(dylib_path).commit()?;
 
         // create the ort session
         let session = Session::builder()?
