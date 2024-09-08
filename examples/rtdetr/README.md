@@ -9,13 +9,12 @@ Maily you need to download onnxruntime from: <https://github.com/microsoft/onnxr
 ## Usage
 
 ```bash
-Usage: rtdetr [OPTIONS] --model-path <MODEL_PATH> --ort-dylib-path <ORT_DYLIB_PATH>
+Usage: rtdetr [OPTIONS] --model-path <MODEL_PATH>
 
 Options:
   -c, --camera-id <CAMERA_ID>              [default: 0]
   -f, --fps <FPS>                          [default: 5]
   -m, --model-path <MODEL_PATH>
-  -o, --ort-dylib-path <ORT_DYLIB_PATH>
   -n, --num-threads <NUM_THREADS>          [default: 8]
   -s, --score-threshold <SCORE_THRESHOLD>  [default: 0.75]
   -h, --help                               Print help
@@ -24,5 +23,5 @@ Options:
 Example:
 
 ```bash
-cargo run --bin rtdetr --release -- --camera-id 0 --model-path rtdetr.onnx --ort-dylib-path /path/to/libonnxruntime.so --num-threads 8 --score-threshold 0.75
+ORT_DYLIB_PATH=/path/to/libonnxruntime.so cargo run --bin rtdetr --release -- --camera-id 0 --model-path rtdetr.onnx --num-threads 8 --score-threshold 0.75
 ```
