@@ -26,7 +26,7 @@ struct Args {
     #[arg(short, long)]
     model_path: PathBuf,
 
-    #[arg(long)]
+    #[arg(short, long)]
     ort_dylib_path: PathBuf,
 
     #[arg(short, long, default_value = "8")]
