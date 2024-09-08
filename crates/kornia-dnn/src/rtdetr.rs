@@ -4,13 +4,12 @@
 //!
 //! The RT-DETR model is a state-of-the-art object detection model.
 
-use std::{env::current_exe, path::PathBuf};
+use std::{path::PathBuf, sync::Arc};
 
-use crate::error::DnnError;
-use crate::Detection;
+use crate::{error::DnnError, CPUExecutionProvider, Detection};
 use kornia_core::{CpuAllocator, Tensor};
 use kornia_image::Image;
-use ort::{CUDAExecutionProvider, GraphOptimizationLevel, Session};
+use ort::{ExecutionProviderDispatch, GraphOptimizationLevel, Session};
 
 /// Builder for the RT-DETR detector.
 ///
@@ -20,6 +19,8 @@ pub struct RTDETRDetectorBuilder {
     pub model_path: PathBuf,
     /// Number of threads to use for inference.
     pub num_threads: usize,
+    /// Execution providers to use for inference.
+    pub execution_providers: Vec<ExecutionProviderDispatch>,
 }
 
 impl RTDETRDetectorBuilder {
@@ -36,6 +37,7 @@ impl RTDETRDetectorBuilder {
         Ok(Self {
             model_path,
             num_threads: 4,
+            execution_providers: vec![CPUExecutionProvider::default().build()],
         })
     }
 
@@ -53,13 +55,30 @@ impl RTDETRDetectorBuilder {
         self
     }
 
+    /// Sets the execution providers to use for inference.
+    ///
+    /// # Arguments
+    ///
+    /// * `execution_providers` - The execution providers to use.
+    ///
+    /// # Returns
+    ///
+    /// The updated `RTDETRDetectorBuilder` instance.
+    pub fn with_execution_providers(
+        mut self,
+        execution_providers: Vec<ExecutionProviderDispatch>,
+    ) -> Self {
+        self.execution_providers = execution_providers;
+        self
+    }
+
     /// Builds and returns an `RTDETRDetector` instance.
     ///
     /// # Returns
     ///
     /// A `Result` containing the `RTDETRDetector` if successful, or a `DnnError` if an error occurred.
     pub fn build(self) -> Result<RTDETRDetector, DnnError> {
-        RTDETRDetector::new(self.model_path, self.num_threads)
+        RTDETRDetector::new(self.model_path, self.num_threads, self.execution_providers)
     }
 }
 
@@ -67,7 +86,7 @@ impl RTDETRDetectorBuilder {
 ///
 /// This struct represents an instance of the RT-DETR object detection model.
 pub struct RTDETRDetector {
-    session: Session,
+    session: Arc<Session>,
 }
 
 impl RTDETRDetector {
@@ -85,7 +104,11 @@ impl RTDETRDetector {
     ///
     /// Pre-requisites:
     /// - ORT_DYLIB_PATH environment variable must be set to the path of the ORT dylib.
-    pub fn new(model_path: PathBuf, num_threads: usize) -> Result<Self, DnnError> {
+    pub fn new(
+        model_path: PathBuf,
+        num_threads: usize,
+        execution_providers: Vec<ExecutionProviderDispatch>,
+    ) -> Result<Self, DnnError> {
         // get the ort dylib path from the environment variable
         let dylib_path =
             std::env::var("ORT_DYLIB_PATH").map_err(|e| DnnError::OrtDylibError(e.to_string()))?;
@@ -97,7 +120,18 @@ impl RTDETRDetector {
         let session = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_intra_threads(num_threads)?
+            .with_execution_providers(execution_providers)?
             .commit_from_file(model_path)?;
+
+        let session = Arc::new(session);
+        // TODO: perform a dummy run to warm up the model
+        // let session_clone = session.clone();
+        // std::thread::spawn(move || -> Result<(), DnnError> {
+        //     let dummy_input =
+        //         ort::Tensor::from_array(([480, 640 * 3], vec![0.0f32; 480 * 640 * 3]))?;
+        //     session_clone.run(ort::inputs!["input" => dummy_input]?)?;
+        //     Ok(())
+        // });
 
         Ok(Self { session })
     }

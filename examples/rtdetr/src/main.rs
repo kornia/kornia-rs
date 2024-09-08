@@ -8,7 +8,10 @@ use std::{
 };
 
 use kornia::{
-    dnn::rtdetr::RTDETRDetectorBuilder,
+    dnn::{
+        rtdetr::RTDETRDetectorBuilder,
+        {CPUExecutionProvider, CUDAExecutionProvider},
+    },
     io::{
         fps_counter::FpsCounter,
         stream::{StreamCaptureError, V4L2CameraConfig},
@@ -31,6 +34,9 @@ struct Args {
 
     #[arg(short, long, default_value = "0.75")]
     score_threshold: f32,
+
+    #[arg(short, long)]
+    use_cuda: bool,
 }
 
 #[tokio::main]
@@ -48,8 +54,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_fps(args.fps)
         .build()?;
 
+    let mut execution_providers = vec![CPUExecutionProvider::default().build()];
+    if args.use_cuda {
+        execution_providers.push(CUDAExecutionProvider::default().build());
+    }
+
     let detector = RTDETRDetectorBuilder::new(args.model_path)?
         .with_num_threads(args.num_threads)
+        .with_execution_providers(execution_providers)
         .build()?;
 
     // create a cancel token to stop the webcam capture

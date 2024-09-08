@@ -8,6 +8,9 @@ pub mod error;
 /// This module contains the RT-DETR model.
 pub mod rtdetr;
 
+// re-export ort::ExecutionProvider
+pub use ort::{CPUExecutionProvider, CUDAExecutionProvider, TensorRTExecutionProvider};
+
 // TODO: put this in to some sort of structs pool module
 /// Represents a detected object in an image.
 #[derive(Debug)]
