@@ -1,5 +1,5 @@
 [package]
-name = "onnx-rtdetr"
+name = "onnx"
 authors.workspace = true
 categories.workspace = true
 description.workspace = true

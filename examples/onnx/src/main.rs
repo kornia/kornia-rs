@@ -3,7 +3,7 @@ use kornia::core::{CpuAllocator, Tensor};
 use std::path::PathBuf;
 use std::time::Instant;
 
-use kornia::image::{image, Image};
+use kornia::image::Image;
 use kornia::io::functional as F;
 
 /// Represents a detected object in an image.
