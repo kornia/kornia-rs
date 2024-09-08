@@ -2,11 +2,13 @@
 resolver = "2"
 members = [
     "crates/kornia-core",
+    "crates/kornia-dnn",
     "crates/kornia-image",
     "crates/kornia-io",
     "crates/kornia-imgproc",
     "crates/kornia",
     "examples/*",
+    "crates/kornia-dnn",
 ]
 exclude = ["kornia-py", "kornia-serve"]
 
@@ -26,6 +28,7 @@ version = "0.1.6+dev"
 
 [workspace.dependencies]
 kornia-core = { path = "crates/kornia-core", version = "0.1.6+dev" }
+kornia-dnn = { path = "crates/kornia-dnn", version = "0.1.6+dev" }
 kornia-image = { path = "crates/kornia-image", version = "0.1.6+dev" }
 kornia-io = { path = "crates/kornia-io", version = "0.1.6+dev" }
 kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.6+dev" }
