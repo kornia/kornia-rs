@@ -3,18 +3,20 @@ use crate::interpolation::grid::meshgrid_from_fn;
 use kornia_core::{Tensor2, TensorError};
 use kornia_image::ImageSize;
 
-/// Represents the polynomial distortion parameters of a camera
+/// Represents the polynomial distortion parameters of a camera using the Brown-Conrady model.
+///
+/// This struct encapsulates both radial (k1-k6) and tangential (p1-p2) distortion coefficients.
+/// These parameters are used to model lens distortion in camera calibration and image correction.
 ///
 /// # Fields
 ///
-/// * `k1` - The first radial distortion coefficient
-/// * `k2` - The second radial distortion coefficient
-/// * `k3` - The third radial distortion coefficient
-/// * `k4` - The fourth radial distortion coefficient
-/// * `k5` - The fifth radial distortion coefficient
-/// * `k6` - The sixth radial distortion coefficient
-/// * `p1` - The first tangential distortion coefficient
-/// * `p2` - The second tangential distortion coefficient
+/// * `k1`, `k2`, `k3` - First, second, and third radial distortion coefficients
+/// * `k4`, `k5`, `k6` - Fourth, fifth, and sixth radial distortion coefficients
+/// * `p1`, `p2` - First and second tangential distortion coefficients
+///
+/// # Note
+///
+/// Higher-order coefficients (k4-k6) are often set to zero for simpler models.
 pub struct PolynomialDistortion {
     /// The first radial distortion coefficient
     pub k1: f64,
@@ -34,19 +36,32 @@ pub struct PolynomialDistortion {
     pub p2: f64,
 }
 
-/// Distort a point using polynomial distortion
+/// Applies polynomial distortion to a point using the Brown-Conrady model
+///
+/// This function takes an undistorted point (x, y) and applies both radial and tangential
+/// distortion based on the provided camera intrinsics and distortion parameters.
 ///
 /// # Arguments
 ///
-/// * `x` - The x coordinate of the point
-/// * `y` - The y coordinate of the point
+/// * `x` - The x coordinate of the undistorted point
+/// * `y` - The y coordinate of the undistorted point
 /// * `intrinsic` - The intrinsic parameters of the camera
 /// * `distortion` - The distortion parameters of the camera
 ///
 /// # Returns
 ///
-/// * `x` - The x coordinate of the distorted point
-/// * `y` - The y coordinate of the distorted point
+/// A tuple `(x', y')` containing the coordinates of the distorted point
+///
+/// # Example
+///
+/// ```
+/// use kornia_imgproc::calibration::{CameraIntrinsic, distortion::{PolynomialDistortion, distort_point_polynomial}};
+///
+/// let intrinsic = CameraIntrinsic { fx: 500.0, fy: 500.0, cx: 320.0, cy: 240.0 };
+/// let distortion = PolynomialDistortion { k1: 0.1, k2: 0.01, k3: 0.001, k4: 0.0, k5: 0.0, k6: 0.0, p1: 0.0005, p2: 0.0005 };
+///
+/// let (x_distorted, y_distorted) = distort_point_polynomial(100.0, 100.0, &intrinsic, &distortion);
+/// ```
 pub fn distort_point_polynomial(
     x: f64,
     y: f64,
@@ -72,36 +87,48 @@ pub fn distort_point_polynomial(
 
     // calculate the radial distance
     let r2 = x * x + y * y;
+    let r4 = r2 * r2;
+    let r6 = r4 * r2;
 
     // radial distortion
-    let kr = (1.0 + k1 * r2 + k2 * r2 * r2 + k3 * r2 * r2 * r2)
-        / (1.0 + k4 * r2 + k5 * r2 * r2 + k6 * r2 * r2 * r2);
+    let kr = (1.0 + k1 * r2 + k2 * r4 + k3 * r6) / (1.0 + k4 * r2 + k5 * r4 + k6 * r6);
 
     // tangential distortion
-    let xd = x * kr + 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x);
-    let yd = y * kr + p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y;
+    let x_2 = 2.0 * x;
+    let y_2 = 2.0 * y;
+    let xy_2 = x_2 * y;
+    let xd = x * kr + xy_2 * p1 + p2 * (r2 + x_2 * x);
+    let yd = y * kr + p1 * (r2 + y_2 * y) + xy_2 * p2;
 
     // denormalize the coordinates
-    let xdst = fx * xd + cx;
-    let ydst = fy * yd + cy;
-
-    (xdst, ydst)
+    (fx * xd + cx, fy * yd + cy)
 }
 
-/// Generate the undistort and rectify map for a polynomial distortion model
+/// Generate the undistort and rectify map for a polynomial distortion model (Brown-Conrady)
+///
+/// This function creates a mapping that can be used to correct for lens distortion in an image.
+/// It generates two maps (map_x and map_y) that describe how each pixel in the distorted image
+/// should be remapped to create an undistorted image.
 ///
 /// # Arguments
 ///
-/// * `intrinsic` - The intrinsic parameters of the camera
-/// * `extrinsic` - The extrinsic parameters of the camera
-/// * `new_intrinsic` - The new intrinsic parameters of the camera
-/// * `distortion` - The distortion parameters of the camera
-/// * `size` - The size of the image
+/// * `intrinsic` - The intrinsic parameters of the camera (focal length, principal point)
+/// * `extrinsic` - The extrinsic parameters of the camera (rotation, translation) - currently unused
+/// * `new_intrinsic` - The new intrinsic parameters for the output image - currently unused
+/// * `distortion` - The distortion parameters of the camera (radial and tangential coefficients)
+/// * `size` - The size of the image to be corrected
 ///
 /// # Returns
 ///
-/// * `map_x` - The x map for undistorting and rectifying the image
-/// * `map_y` - The y map for undistorting and rectifying the image
+/// A tuple containing:
+/// * `map_x` - A 2D tensor representing the x-coordinates for remapping
+/// * `map_y` - A 2D tensor representing the y-coordinates for remapping
+///
+/// Both maps have the same dimensions as the input image.
+///
+/// # Errors
+///
+/// Returns a `TensorError` if there's an issue creating the meshgrid or performing calculations.
 pub fn generate_correction_map_polynomial(
     intrinsic: &CameraIntrinsic,
     _extrinsic: &CameraExtrinsic,
