@@ -11,7 +11,7 @@ use super::{
 #[derive(Error, Debug)]
 pub enum TensorError {
     /// Error when the cast operation fails.
-    #[error("Failed to cast image data")]
+    #[error("Failed to cast data")]
     CastError,
 
     /// The number of elements in the data does not match the shape of the tensor.
@@ -551,13 +551,15 @@ where
     /// let t2 = t.map(|x| *x + 1);
     /// assert_eq!(t2.as_slice(), vec![2, 3, 4, 5]);
     /// ```
-    pub fn map<F>(&self, f: F) -> Tensor<T, N, A>
+    pub fn map<F, U>(&self, f: F) -> Tensor<U, N, A>
     where
-        F: Fn(&T) -> T,
+        F: Fn(&T) -> U,
+        U: SafeTensorType,
         A: Clone,
     {
-        let mut new_storage = TensorStorage::new(self.numel(), self.storage.alloc().clone())
-            .expect("Failed to allocate new storage");
+        let mut new_storage =
+            TensorStorage::<U, A>::new(self.numel(), self.storage.alloc().clone())
+                .expect("Failed to allocate new storage");
 
         new_storage
             .as_mut_slice()
@@ -636,13 +638,13 @@ where
     /// ```
     pub fn cast<U>(&self) -> Tensor<U, N>
     where
-        T: Copy + Into<U>,
-        U: SafeTensorType,
+        T: SafeTensorType,
+        U: SafeTensorType + From<T>,
     {
-        let src_slice = self.as_slice();
-        let mut data: Vec<U> = Vec::with_capacity(src_slice.len());
-        data.extend(src_slice.iter().map(|x| (*x).into()));
-
+        let mut data: Vec<U> = Vec::with_capacity(self.storage.len());
+        self.as_slice().iter().for_each(|&x| {
+            data.push(U::from(x));
+        });
         let storage = TensorStorage::from_vec(data, CpuAllocator);
         Tensor {
             storage,
