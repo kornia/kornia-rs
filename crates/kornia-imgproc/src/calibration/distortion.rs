@@ -116,21 +116,6 @@ pub fn generate_correction_map_polynomial(
         let (xdst, ydst) = distort_point_polynomial(x as f64, y as f64, intrinsic, distortion);
         Ok((xdst as f32, ydst as f32))
     })?;
-    //let (mut map_x, mut map_y) = meshgrid_image(dst_rows, dst_rows, dst_cols, dst_cols)?;
-
-    //// create a grid of x and y coordinates for the output image
-    //map_x
-    //    .as_slice_mut()
-    //    .par_chunks_exact_mut(dst_cols)
-    //    .zip(map_y.as_slice_mut().par_chunks_exact_mut(dst_cols))
-    //    .for_each(|(xarr, yarr)| {
-    //        xarr.iter_mut().zip(yarr.iter_mut()).for_each(|(x, y)| {
-    //            let (xdst, ydst) =
-    //                distort_point_polynomial(*x as f64, *y as f64, intrinsic, distortion);
-    //            *x = xdst as f32;
-    //            *y = ydst as f32;
-    //        });
-    //    });
 
     Ok((map_x, map_y))
 }
