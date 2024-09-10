@@ -1,65 +1,104 @@
-use kornia_core::{CpuAllocator, Tensor2, TensorError};
+use kornia_core::{CpuAllocator, SafeTensorType, Tensor2, TensorError};
+use num_traits::Float;
+use rayon::iter::ParallelIterator;
+use rayon::{iter::IndexedParallelIterator, slice::ParallelSliceMut};
 
-/// Create a meshgrid of x and y coordinates
+/// Create a meshgrid of x and y coordinates using a custom function
 ///
 /// # Arguments
 ///
-/// * `rows` - The number of rows indicating the height of the grid
-/// * `cols` - The number of columns indicating the width of the grid
+/// * `cols` - The number of columns (width) of the grid
+/// * `rows` - The number of rows (height) of the grid
+/// * `f` - A function that takes column and row indices (u, v) and returns (x, y) coordinates
 ///
 /// # Returns
 ///
-/// A tuple of 2D arrays of shape (rows, cols) containing the x and y coordinates
-pub(crate) fn meshgrid(
-    rows: usize,
+/// A tuple of two 2D tensors of shape (rows, cols) containing the x and y coordinates
+///
+/// # Errors
+///
+/// Returns a `TensorError` if tensor allocation fails or if the provided function `f` returns an error
+///
+/// # Example
+///
+/// ```
+/// use kornia_imgproc::interpolation::grid::meshgrid_from_fn;
+///
+/// let (map_x, map_y) = meshgrid_from_fn(3, 2, |u, v| {
+///     Ok((u as f32 * 0.5, v as f32 * 2.0))
+/// }).unwrap();
+///
+/// assert_eq!(map_x.shape, [2, 3]);
+/// assert_eq!(map_y.shape, [2, 3]);
+/// ```
+pub fn meshgrid_from_fn<T>(
     cols: usize,
-) -> Result<(Tensor2<f32>, Tensor2<f32>), TensorError> {
-    let mut map_x = vec![];
-    for _ in 0..rows {
-        for c in 0..cols {
-            map_x.push(c as f32);
-        }
-    }
+    rows: usize,
+    f: impl Fn(usize, usize) -> Result<(T, T), Box<dyn std::error::Error + Send + Sync>> + Send + Sync,
+) -> Result<(Tensor2<T>, Tensor2<T>), TensorError>
+where
+    T: SafeTensorType + Float + Send + Sync,
+{
+    // allocate the output tensors
+    let mut map_x = Tensor2::<T>::new_uninitialized([rows, cols], CpuAllocator)?;
+    let mut map_y = Tensor2::<T>::new_uninitialized([rows, cols], CpuAllocator)?;
 
-    let mut map_y = vec![];
-    for r in 0..rows {
-        for _ in 0..cols {
-            map_y.push(r as f32);
-        }
-    }
+    // fill the output tensors
+    map_x
+        .as_slice_mut()
+        .par_chunks_exact_mut(cols)
+        .zip_eq(map_y.as_slice_mut().par_chunks_exact_mut(cols))
+        .enumerate()
+        .try_for_each(|(v, (row_x, row_y))| {
+            for (u, (x, y)) in row_x.iter_mut().zip(row_y.iter_mut()).enumerate() {
+                // apply the function to the indices
+                let (x_out, y_out) =
+                    f(u, v).map_err(|e| TensorError::UnsupportedOperation(e.to_string()))?;
 
-    let map_x = Tensor2::from_shape_vec([rows, cols], map_x, CpuAllocator)?;
-    let map_y = Tensor2::from_shape_vec([rows, cols], map_y, CpuAllocator)?;
+                // assign the output to the tensors
+                *x = x_out;
+                *y = y_out;
+            }
+            Ok::<(), TensorError>(())
+        })?;
 
     Ok((map_x, map_y))
 }
 
-/// Create a meshgrid of x and y coordinates
-pub(crate) fn meshgrid_image(
-    rows: usize,
-    max_rows: usize,
-    cols: usize,
-    max_cols: usize,
-) -> Result<(Tensor2<f32>, Tensor2<f32>), TensorError> {
-    // TODO: review the implementation
-    let mut map_x = vec![];
-    let step_x = (max_cols - 1) as f32 / (cols - 1) as f32;
-    for _ in 0..rows {
-        for c in 0..cols {
-            map_x.push((c as f32) * step_x);
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_meshgrid_from_fn_identity() -> Result<(), TensorError> {
+        let (map_x, map_y) = meshgrid_from_fn(3, 2, |u, v| Ok((u as f64, v as f64)))?;
+
+        assert_eq!(map_x.shape, [2, 3]);
+        assert_eq!(map_y.shape, [2, 3]);
+
+        let expected_x = [0.0f64, 1.0, 2.0, 0.0, 1.0, 2.0];
+        let expected_y = [0.0f64, 0.0, 0.0, 1.0, 1.0, 1.0];
+
+        assert_eq!(map_x.as_slice(), expected_x.as_slice());
+        assert_eq!(map_y.as_slice(), expected_y.as_slice());
+
+        Ok(())
     }
 
-    let mut map_y = vec![];
-    let step_y = (max_rows - 1) as f32 / (rows - 1) as f32;
-    for r in 0..rows {
-        for _ in 0..cols {
-            map_y.push((r as f32) * step_y);
-        }
+    #[test]
+    fn test_meshgrid_from_fn_scaled() -> Result<(), TensorError> {
+        let (map_x, map_y) =
+            meshgrid_from_fn(3, 2, |u, v| Ok((u as f32 * 0.5, v as f32 * 2.0))).unwrap();
+
+        assert_eq!(map_x.shape, [2, 3]);
+        assert_eq!(map_y.shape, [2, 3]);
+
+        let expected_x = [0.0, 0.5, 1.0, 0.0, 0.5, 1.0];
+        let expected_y = [0.0, 0.0, 0.0, 2.0, 2.0, 2.0];
+
+        assert_eq!(map_x.as_slice(), expected_x.as_slice());
+        assert_eq!(map_y.as_slice(), expected_y.as_slice());
+
+        Ok(())
     }
-
-    let map_x = Tensor2::from_shape_vec([rows, cols], map_x, CpuAllocator).unwrap();
-    let map_y = Tensor2::from_shape_vec([rows, cols], map_y, CpuAllocator).unwrap();
-
-    Ok((map_x, map_y))
 }

@@ -1,5 +1,5 @@
 use crate::{
-    interpolation::{interpolate_pixel, meshgrid_image, InterpolationMode},
+    interpolation::{grid::meshgrid_from_fn, interpolate_pixel, InterpolationMode},
     parallel,
 };
 use fast_image_resize::{self as fr};
@@ -69,10 +69,14 @@ where
         return Ok(());
     }
 
-    //// create a grid of x and y coordinates for the output image
-    //// and interpolate the values from the input image.
+    // create a grid of x and y coordinates for the output image
+    // and interpolate the values from the input image.
     let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
-    let (map_x, map_y) = meshgrid_image(dst_rows, src.rows(), dst_cols, src.cols())?;
+    let step_x = (src.cols() - 1) as f32 / (dst.cols() - 1) as f32;
+    let step_y = (src.rows() - 1) as f32 / (dst.rows() - 1) as f32;
+    let (map_x, map_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| {
+        Ok((x as f32 * step_x, y as f32 * step_y))
+    })?;
 
     // iterate over the output image and interpolate the pixel values
     parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {
@@ -273,7 +277,8 @@ mod tests {
 
     #[test]
     fn meshgrid() -> Result<(), TensorError> {
-        let (map_x, map_y) = crate::interpolation::meshgrid(3, 2)?;
+        let (map_x, map_y) =
+            crate::interpolation::grid::meshgrid_from_fn(2, 3, |x, y| Ok((x as f32, y as f32)))?;
 
         assert_eq!(map_x.shape, [3, 2]);
         assert_eq!(map_y.shape, [3, 2]);
