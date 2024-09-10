@@ -2,7 +2,7 @@ use std::f32::consts::PI;
 
 use kornia_image::{Image, ImageError};
 
-use crate::interpolation::{interpolate_pixel, meshgrid, InterpolationMode};
+use crate::interpolation::{grid::meshgrid_from_fn, interpolate_pixel, InterpolationMode};
 use crate::parallel;
 
 /// Inverts a 2x3 affine transformation matrix.
@@ -78,7 +78,7 @@ pub fn get_rotation_matrix2d(center: (f32, f32), angle: f32, scale: f32) -> [f32
 }
 
 /// Applies an affine transformation to a point.
-fn transform_point(x: &f32, y: &f32, m: &[f32; 6]) -> (f32, f32) {
+fn transform_point(x: f32, y: f32, m: &[f32; 6]) -> (f32, f32) {
     let u = m[0] * x + m[1] * y + m[2];
     let v = m[3] * x + m[4] * y + m[5];
     (u, v)
@@ -136,19 +136,20 @@ pub fn warp_affine<const C: usize>(
 
     // create meshgrid to find corresponding positions in dst from src
     let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
-    let (map_x, map_y) = meshgrid(dst_rows, dst_cols)?;
+    let (map_x, map_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| {
+        let (u_src, v_src) = transform_point(x as f32, y as f32, &m_inv);
+        Ok((u_src, v_src))
+    })?;
 
     // apply affine transformation
-    parallel::par_iter_rows_resample(dst, &map_x, &map_y, |x, y, dst_pixel| {
-        // find corresponding position in src image
-        let (u_src, v_src) = transform_point(x, y, &m_inv);
-
+    parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {
         // check if the position is within the bounds of the src image
-        if u_src >= 0.0 && u_src < src.cols() as f32 && v_src >= 0.0 && v_src < src.rows() as f32 {
+        if x >= 0.0f32 && x < src.cols() as f32 && y >= 0.0f32 && y < src.rows() as f32 {
             // interpolate the pixel value for each channel
-            dst_pixel.iter_mut().enumerate().for_each(|(k, pixel)| {
-                *pixel = interpolate_pixel(src, u_src, v_src, k, interpolation)
-            });
+            dst_pixel
+                .iter_mut()
+                .enumerate()
+                .for_each(|(k, pixel)| *pixel = interpolate_pixel(src, x, y, k, interpolation));
         }
     });
 

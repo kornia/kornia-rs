@@ -1,5 +1,5 @@
 use crate::{
-    interpolation::{interpolate_pixel, meshgrid, InterpolationMode},
+    interpolation::{grid::meshgrid_from_fn, interpolate_pixel, InterpolationMode},
     parallel,
 };
 
@@ -47,7 +47,7 @@ fn inverse_perspective_matrix(m: &[f32; 9]) -> Result<[f32; 9], ImageError> {
 }
 
 // implement later as batched operation
-fn transform_point(x: &f32, y: &f32, m: &[f32; 9]) -> (f32, f32) {
+fn transform_point(x: f32, y: f32, m: &[f32; 9]) -> (f32, f32) {
     let w = m[6] * x + m[7] * y + m[8];
     let x = (m[0] * x + m[1] * y + m[2]) / w;
     let y = (m[3] * x + m[4] * y + m[5]) / w;
@@ -107,17 +107,17 @@ pub fn warp_perspective<const C: usize>(
 
     // create meshgrid to find corresponding positions in dst from src
     let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
-    let (map_x, map_y) = meshgrid(dst_rows, dst_cols)?;
+    let (map_x, map_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| {
+        let (xdst, ydst) = transform_point(x as f32, y as f32, &inv_m);
+        Ok((xdst, ydst))
+    })?;
 
     // apply affine transformation
-    parallel::par_iter_rows_resample(dst, &map_x, &map_y, |x, y, dst_pixel| {
-        // find corresponding position in src image
-        let (u_src, v_src) = transform_point(x, y, &inv_m);
-
+    parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {
         dst_pixel
             .iter_mut()
             .enumerate()
-            .for_each(|(k, pixel)| *pixel = interpolate_pixel(src, u_src, v_src, k, interpolation));
+            .for_each(|(k, pixel)| *pixel = interpolate_pixel(src, x, y, k, interpolation));
     });
 
     Ok(())
@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn transform_point() {
         let m = [1.0, 0.0, -1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0];
-        let (x, y) = super::transform_point(&1.0, &1.0, &m);
+        let (x, y) = super::transform_point(1.0, 1.0, &m);
         let (x_expected, y_expected) = (0.0, 2.0);
         assert_eq!(x, x_expected);
         assert_eq!(y, y_expected);
