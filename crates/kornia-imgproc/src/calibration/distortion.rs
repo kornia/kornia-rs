@@ -90,15 +90,16 @@ pub fn distort_point_polynomial(
     let r4 = r2 * r2;
     let r6 = r4 * r2;
 
+    let a1 = 2.0 * x * y;
+    let a2 = r2 + 2.0 * x * x;
+    let a3 = r2 + 2.0 * y * y;
+
     // radial distortion
     let kr = (1.0 + k1 * r2 + k2 * r4 + k3 * r6) / (1.0 + k4 * r2 + k5 * r4 + k6 * r6);
 
     // tangential distortion
-    let x_2 = 2.0 * x;
-    let y_2 = 2.0 * y;
-    let xy_2 = x_2 * y;
-    let xd = x * kr + xy_2 * p1 + p2 * (r2 + x_2 * x);
-    let yd = y * kr + p1 * (r2 + y_2 * y) + xy_2 * p2;
+    let xd = x * kr + p1 * a1 + p2 * a2;
+    let yd = y * kr + p1 * a3 + p2 * a1;
 
     // denormalize the coordinates
     (fx * xd + cx, fy * yd + cy)
