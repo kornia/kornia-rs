@@ -24,7 +24,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ops::cast_and_scale(&image, &mut image_f32, 1.0 / 255.0)?;
 
     // modify the image to see the changes
-    let image_dirty = imgproc::flip::horizontal_flip(&image_f32)?;
+    let mut image_dirty = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+    imgproc::flip::horizontal_flip(&image_f32, &mut image_dirty)?;
 
     // compute the mean squared error (mse) between the original and the modified image
     let mse = imgproc::metrics::mse(&image_f32, &image_dirty)?;
