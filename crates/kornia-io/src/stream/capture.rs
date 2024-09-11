@@ -39,12 +39,15 @@ impl StreamCapture {
     /// # Returns
     ///
     /// A Result indicating success or a StreamCaptureError.
-    pub async fn run<F>(&self, f: F) -> Result<(), StreamCaptureError>
+    pub async fn run<F>(&self, mut f: F) -> Result<(), StreamCaptureError>
     where
         F: FnMut(Image<u8, 3>) -> Result<(), Box<dyn std::error::Error>>,
     {
-        self.run_internal(f, None::<futures::future::Ready<()>>)
-            .await
+        self.run_internal(
+            |img| futures::future::ready(f(img)),
+            None::<futures::future::Ready<()>>,
+        )
+        .await
     }
 
     /// Runs the stream capture pipeline with a termination signal and processes each frame.
@@ -57,13 +60,15 @@ impl StreamCapture {
     /// # Returns
     ///
     /// A Result indicating success or a StreamCaptureError.
-    pub async fn run_with_termination<F, S: Future<Output = ()>>(
+    pub async fn run_with_termination<F, Fut, S>(
         &self,
         f: F,
         signal: S,
     ) -> Result<(), StreamCaptureError>
     where
-        F: FnMut(Image<u8, 3>) -> Result<(), Box<dyn std::error::Error>>,
+        F: FnMut(Image<u8, 3>) -> Fut,
+        Fut: Future<Output = Result<(), Box<dyn std::error::Error>>>,
+        S: Future<Output = ()>,
     {
         self.run_internal(f, Some(signal)).await
     }
@@ -78,13 +83,14 @@ impl StreamCapture {
     /// # Returns
     ///
     /// A Result indicating success or a StreamCaptureError.
-    async fn run_internal<F, S>(
+    async fn run_internal<F, Fut, S>(
         &self,
         mut f: F,
         signal: Option<S>,
     ) -> Result<(), StreamCaptureError>
     where
-        F: FnMut(Image<u8, 3>) -> Result<(), Box<dyn std::error::Error>>,
+        F: FnMut(Image<u8, 3>) -> Fut,
+        Fut: Future<Output = Result<(), Box<dyn std::error::Error>>>,
         S: Future<Output = ()>,
     {
         let (tx, mut rx) = tokio::sync::mpsc::channel(10);
@@ -109,7 +115,7 @@ impl StreamCapture {
             tokio::select! {
                 img = rx.recv() => {
                     if let Some(img) = img {
-                        f(img)?;
+                        f(img).await?;
                     } else {
                         break;
                     }

@@ -47,44 +47,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fps_counter = Arc::new(Mutex::new(FpsCounter::new()));
 
     // preallocate images
-    let mut img_f32 = Image::<f32, 3>::from_size_val([640, 360].into(), 0.0)?;
-    let mut gray = Image::<f32, 1>::from_size_val(img_f32.size(), 0.0)?;
+    let img_f32 = Image::<f32, 3>::from_size_val([640, 360].into(), 0.0)?;
+    let gray = Image::<f32, 1>::from_size_val(img_f32.size(), 0.0)?;
+
+    let img_f32 = Arc::new(Mutex::new(img_f32));
+    let gray = Arc::new(Mutex::new(gray));
 
     // start grabbing frames from the camera
     capture
         .run_with_termination(
             |img| {
-                // update the fps counter
-                fps_counter
-                    .lock()
-                    .expect("Failed to lock fps counter")
-                    .new_frame();
+                let rec = rec.clone();
+                let fps_counter = fps_counter.clone();
 
-                // cast the image to floating point and convert to grayscale
-                ops::cast_and_scale(&img, &mut img_f32, 1.0 / 255.0)?;
-                imgproc::color::gray_from_rgb(&img_f32, &mut gray)?;
+                let img_f32 = img_f32.clone();
+                let gray = gray.clone();
 
-                // log the image
-                rec.log_static(
-                    "image",
-                    &rerun::Image::from_elements(
-                        img.as_slice(),
-                        img.size().into(),
-                        rerun::ColorModel::RGB,
-                    ),
-                )?;
+                async move {
+                    // update the fps counter
+                    fps_counter.lock().unwrap().new_frame();
 
-                // log the grayscale image
-                rec.log_static(
-                    "gray",
-                    &rerun::Image::from_elements(
-                        gray.as_slice(),
-                        gray.size().into(),
-                        rerun::ColorModel::L,
-                    ),
-                )?;
+                    // cast the image to floating point and convert to grayscale
+                    let mut img_f32 = img_f32.lock().expect("Failed to lock img_f32");
+                    ops::cast_and_scale(&img, &mut img_f32, 1.0 / 255.0)?;
 
-                Ok(())
+                    let mut gray = gray.lock().expect("Failed to lock gray");
+                    imgproc::color::gray_from_rgb(&img_f32, &mut gray)?;
+
+                    // log the image
+                    rec.log_static(
+                        "image",
+                        &rerun::Image::from_elements(
+                            img.as_slice(),
+                            img.size().into(),
+                            rerun::ColorModel::RGB,
+                        ),
+                    )?;
+
+                    // log the grayscale image
+                    rec.log_static(
+                        "gray",
+                        &rerun::Image::from_elements(
+                            gray.as_slice(),
+                            gray.size().into(),
+                            rerun::ColorModel::L,
+                        ),
+                    )?;
+
+                    Ok(())
+                }
             },
             async {
                 signal::ctrl_c().await.expect("Failed to listen for Ctrl+C");
