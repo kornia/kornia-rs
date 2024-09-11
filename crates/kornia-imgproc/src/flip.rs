@@ -57,12 +57,12 @@ where
         .par_chunks_exact_mut(src.cols() * C)
         .zip_eq(src.as_slice().par_chunks_exact(src.cols() * C))
         .for_each(|(dst_row, src_row)| {
-            let n = src.cols() - 1;
-            for i in 0..=n {
-                for c in 0..C {
-                    dst_row[i * C + c] = src_row[(n - i) * C + c];
-                }
-            }
+            dst_row
+                .chunks_exact_mut(C)
+                .zip(src_row.chunks_exact(C).rev())
+                .for_each(|(dst_pixel, src_pixel)| {
+                    dst_pixel.copy_from_slice(src_pixel);
+                })
         });
 
     Ok(())
@@ -117,16 +117,16 @@ where
         ));
     }
 
-    // TODO: improve this implementation
     dst.as_slice_mut()
         .par_chunks_exact_mut(src.cols() * C)
         .zip_eq(src.as_slice().par_chunks_exact(src.cols() * C).rev())
         .for_each(|(dst_row, src_row)| {
-            for i in 0..src.cols() {
-                for c in 0..C {
-                    dst_row[i * C + c] = src_row[i * C + c];
-                }
-            }
+            dst_row
+                .chunks_exact_mut(C)
+                .zip(src_row.chunks_exact(C))
+                .for_each(|(dst_pixel, src_pixel)| {
+                    dst_pixel.copy_from_slice(src_pixel);
+                })
         });
 
     Ok(())
