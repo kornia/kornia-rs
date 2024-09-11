@@ -1,16 +1,22 @@
 use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
-use rayon::{iter::ParallelIterator, slice::ParallelSliceMut};
+use rayon::{
+    iter::{IndexedParallelIterator, ParallelIterator},
+    slice::{ParallelSlice, ParallelSliceMut},
+};
 
 /// Flip the input image horizontally.
 ///
 /// # Arguments
 ///
 /// * `src` - The input image with shape (H, W, C).
+/// * `dst` - The output image with shape (H, W, C).
 ///
-/// # Returns
+/// Precondition: the input and output images must have the same size.
 ///
-/// The flipped image.
+/// # Errors
+///
+/// Returns an error if the sizes of `src` and `dst` do not match.
 ///
 /// # Example
 ///
@@ -27,32 +33,39 @@ use rayon::{iter::ParallelIterator, slice::ParallelSliceMut};
 /// )
 /// .unwrap();
 ///
-/// let flipped: Image<f32, 3> = horizontal_flip(&image).unwrap();
+/// let mut flipped = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
 ///
-/// assert_eq!(flipped.size().width, 2);
-/// assert_eq!(flipped.size().height, 3);
+/// horizontal_flip(&image, &mut flipped).unwrap();
 /// ```
-pub fn horizontal_flip<T, const C: usize>(src: &Image<T, C>) -> Result<Image<T, C>, ImageError>
+pub fn horizontal_flip<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
+) -> Result<(), ImageError>
 where
     T: SafeTensorType,
 {
-    let mut dst = src.clone();
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
 
     dst.as_slice_mut()
         .par_chunks_exact_mut(src.cols() * C)
-        .for_each(|row| {
-            let mut i = 0;
-            let mut j = src.cols() - 1;
-            while i < j {
-                for c in 0..C {
-                    row.swap(i * C + c, j * C + c);
-                }
-                i += 1;
-                j -= 1;
-            }
+        .zip_eq(src.as_slice().par_chunks_exact(src.cols() * C))
+        .for_each(|(dst_row, src_row)| {
+            dst_row
+                .chunks_exact_mut(C)
+                .zip(src_row.chunks_exact(C).rev())
+                .for_each(|(dst_pixel, src_pixel)| {
+                    dst_pixel.copy_from_slice(src_pixel);
+                })
         });
 
-    Ok(dst)
+    Ok(())
 }
 
 /// Flip the input image vertically.
@@ -60,10 +73,13 @@ where
 /// # Arguments
 ///
 /// * `src` - The input image with shape (H, W, C).
+/// * `dst` - The output image with shape (H, W, C).
 ///
-/// # Returns
+/// Precondition: the input and output images must have the same size.
 ///
-/// The flipped image.
+/// # Errors
+///
+/// Returns an error if the sizes of `src` and `dst` do not match.
 ///
 /// # Example
 ///
@@ -80,31 +96,40 @@ where
 /// )
 /// .unwrap();
 ///
-/// let flipped: Image<f32, 3> = vertical_flip(&image).unwrap();
+/// let mut flipped = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
 ///
-/// assert_eq!(flipped.size().width, 2);
-/// assert_eq!(flipped.size().height, 3);
+/// vertical_flip(&image, &mut flipped).unwrap();
+///
 /// ```
-pub fn vertical_flip<T, const C: usize>(src: &Image<T, C>) -> Result<Image<T, C>, ImageError>
+pub fn vertical_flip<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
+) -> Result<(), ImageError>
 where
     T: SafeTensorType,
 {
-    let mut dst = src.clone();
-
-    // TODO: improve this implementation
-    for i in 0..src.cols() {
-        let mut j = src.rows() - 1;
-        for k in 0..src.rows() / 2 {
-            for c in 0..C {
-                let idx_i = i * C + c + k * src.cols() * C;
-                let idx_j = i * C + c + j * src.cols() * C;
-                dst.as_slice_mut().swap(idx_i, idx_j);
-            }
-            j -= 1;
-        }
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
     }
 
-    Ok(dst)
+    dst.as_slice_mut()
+        .par_chunks_exact_mut(src.cols() * C)
+        .zip_eq(src.as_slice().par_chunks_exact(src.cols() * C).rev())
+        .for_each(|(dst_row, src_row)| {
+            dst_row
+                .chunks_exact_mut(C)
+                .zip(src_row.chunks_exact(C))
+                .for_each(|(dst_pixel, src_pixel)| {
+                    dst_pixel.copy_from_slice(src_pixel);
+                })
+        });
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -113,30 +138,42 @@ mod tests {
 
     #[test]
     fn test_hflip() -> Result<(), ImageError> {
-        let image = Image::<_, 1>::new(
-            ImageSize {
-                width: 2,
-                height: 3,
-            },
-            vec![0u8, 1, 2, 3, 4, 5],
+        let image_size = ImageSize {
+            width: 2,
+            height: 3,
+        };
+        let image = Image::<_, 3>::new(
+            image_size,
+            vec![
+                0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+            ],
         )?;
-        let data_expected = vec![1u8, 0, 3, 2, 5, 4];
-        let flipped = super::horizontal_flip(&image)?;
+        let data_expected = vec![
+            3u8, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8, 15, 16, 17, 12, 13, 14,
+        ];
+        let mut flipped = Image::<_, 3>::from_size_val(image_size, 0u8)?;
+        super::horizontal_flip(&image, &mut flipped)?;
         assert_eq!(flipped.as_slice(), &data_expected);
         Ok(())
     }
 
     #[test]
     fn test_vflip() -> Result<(), ImageError> {
-        let image = Image::<_, 1>::new(
-            ImageSize {
-                width: 2,
-                height: 3,
-            },
-            vec![0u8, 1, 2, 3, 4, 5],
+        let image_size = ImageSize {
+            width: 2,
+            height: 3,
+        };
+        let image = Image::<_, 3>::new(
+            image_size,
+            vec![
+                0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+            ],
         )?;
-        let data_expected = vec![4u8, 5, 2, 3, 0, 1];
-        let flipped = super::vertical_flip(&image)?;
+        let data_expected = vec![
+            12u8, 13, 14, 15, 16, 17, 6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5,
+        ];
+        let mut flipped = Image::<_, 3>::from_size_val(image_size, 0u8)?;
+        super::vertical_flip(&image, &mut flipped)?;
         assert_eq!(flipped.as_slice(), &data_expected);
         Ok(())
     }

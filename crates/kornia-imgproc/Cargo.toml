@@ -46,3 +46,7 @@ harness = false
 [[bench]]
 name = "bench_warp"
 harness = false
+
+[[bench]]
+name = "bench_flip"
+harness = false
