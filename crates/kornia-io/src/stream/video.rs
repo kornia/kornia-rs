@@ -1,0 +1,162 @@
+use std::{path::Path, sync::Arc};
+
+use futures::prelude::*;
+use gst::{buffer, prelude::*};
+
+use kornia_image::{Image, ImageSize};
+use tokio::sync::Mutex;
+
+use super::StreamCaptureError;
+
+/// A struct for writing video files.
+pub struct VideoWriter {
+    pipeline: gst::Pipeline,
+    appsrc: gst_app::AppSrc,
+    fps: f32,
+    counter: u64,
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl VideoWriter {
+    /// Create a new VideoWriter.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path to save the video file.
+    /// * `fps` - The frames per second of the video.
+    /// * `size` - The size of the video.
+    pub fn new(path: &Path, fps: f32, size: ImageSize) -> Result<Self, StreamCaptureError> {
+        gst::init()?;
+
+        let pipeline_str = format!(
+            "appsrc name=src ! \
+            videoconvert ! video/x-raw,format=I420 ! \
+            x264enc ! \
+            video/x-h264,profile=main ! \
+            h264parse ! \
+            mp4mux ! \
+            filesink location={}",
+            path.to_string_lossy()
+        );
+
+        println!("Pipeline: {}", pipeline_str);
+
+        let pipeline = gst::parse::launch(&pipeline_str)?
+            .dynamic_cast::<gst::Pipeline>()
+            .map_err(StreamCaptureError::DowncastPipelineError)?;
+
+        let appsrc = pipeline
+            .by_name("src")
+            .unwrap()
+            .dynamic_cast::<gst_app::AppSrc>()
+            .unwrap();
+
+        appsrc.set_format(gst::Format::Time);
+
+        let caps = gst::Caps::builder("video/x-raw")
+            .field("format", "RGB")
+            .field("width", size.width as i32)
+            .field("height", size.height as i32)
+            .field("framerate", gst::Fraction::new(fps as i32, 1))
+            .build();
+
+        appsrc.set_caps(Some(&caps));
+
+        appsrc.set_is_live(true);
+        appsrc.set_property("block", false);
+
+        Ok(Self {
+            pipeline,
+            appsrc,
+            fps,
+            counter: 0,
+            handle: None,
+        })
+    }
+
+    /// Start the video writer
+    pub fn start(&mut self) -> Result<(), StreamCaptureError> {
+        self.pipeline.set_state(gst::State::Playing)?;
+
+        let bus = self.pipeline.bus().ok_or(StreamCaptureError::BusError)?;
+        let mut messages = bus.stream();
+
+        let handle = tokio::spawn(async move {
+            while let Some(msg) = messages.next().await {
+                match msg.view() {
+                    gst::MessageView::Eos(..) => {
+                        println!("EOS");
+                        break;
+                    }
+                    gst::MessageView::Error(err) => {
+                        eprintln!(
+                            "Error from {:?}: {} ({:?})",
+                            msg.src().map(|s| s.path_string()),
+                            err.error(),
+                            err.debug()
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        self.handle = Some(handle);
+
+        Ok(())
+    }
+
+    /// Stop the video writer
+    pub fn stop(&mut self) -> Result<(), StreamCaptureError> {
+        // Send end of stream to the appsrc
+        self.appsrc
+            .end_of_stream()
+            .expect("Failed to send end of stream");
+
+        // Take the handle and await it
+        // TODO: This is a blocking call, we need to make it non-blocking
+        if let Some(handle) = self.handle.take() {
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    if let Err(e) = handle.await {
+                        eprintln!("Error waiting for handle: {:?}", e);
+                    }
+                });
+            });
+        }
+
+        // Set the pipeline to null
+        self.pipeline.set_state(gst::State::Null)?;
+
+        Ok(())
+    }
+
+    /// Write an image to the video file.
+    ///
+    /// # Arguments
+    ///
+    /// * `img` - The image to write to the video file.
+    pub fn write(&mut self, img: Image<u8, 3>) -> Result<(), StreamCaptureError> {
+        let mut buffer = gst::Buffer::with_size(img.storage.len())?;
+
+        let pts = gst::ClockTime::from_nseconds(self.counter * 1_000_000_000 / self.fps as u64);
+        let duration = gst::ClockTime::from_nseconds(1_000_000_000 / self.fps as u64);
+
+        {
+            let buffer_ref = buffer.get_mut().expect("Failed to get buffer");
+            buffer_ref.set_pts(Some(pts));
+            buffer_ref.set_duration(Some(duration));
+
+            let mut map = buffer_ref.map_writable()?;
+            map.copy_from_slice(img.as_slice());
+        }
+
+        self.counter += 1;
+
+        if let Err(err) = self.appsrc.push_buffer(buffer) {
+            return Err(StreamCaptureError::InvalidConfig(err.to_string()));
+        }
+
+        Ok(())
+    }
+}
