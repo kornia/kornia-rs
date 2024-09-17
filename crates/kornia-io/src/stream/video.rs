@@ -1,18 +1,23 @@
-use std::{path::Path, sync::Arc};
+use std::path::Path;
 
 use futures::prelude::*;
-use gst::{buffer, prelude::*};
+use gst::prelude::*;
 
 use kornia_image::{Image, ImageSize};
-use tokio::sync::Mutex;
 
 use super::StreamCaptureError;
+
+/// The codec to use for the video writer.
+pub enum VideoWriterCodec {
+    /// H.264 codec.
+    H264,
+}
 
 /// A struct for writing video files.
 pub struct VideoWriter {
     pipeline: gst::Pipeline,
     appsrc: gst_app::AppSrc,
-    fps: f32,
+    fps: i32,
     counter: u64,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -23,10 +28,27 @@ impl VideoWriter {
     /// # Arguments
     ///
     /// * `path` - The path to save the video file.
+    /// * `codec` - The codec to use for the video writer.
     /// * `fps` - The frames per second of the video.
     /// * `size` - The size of the video.
-    pub fn new(path: &Path, fps: f32, size: ImageSize) -> Result<Self, StreamCaptureError> {
+    pub fn new(
+        path: &Path,
+        codec: VideoWriterCodec,
+        fps: i32,
+        size: ImageSize,
+    ) -> Result<Self, StreamCaptureError> {
         gst::init()?;
+
+        // TODO: Add support for other codecs
+        #[allow(unreachable_patterns)]
+        let _codec = match codec {
+            VideoWriterCodec::H264 => "x264enc",
+            _ => {
+                return Err(StreamCaptureError::InvalidConfig(
+                    "Unsupported codec".to_string(),
+                ))
+            }
+        };
 
         let pipeline_str = format!(
             "appsrc name=src ! \
@@ -39,8 +61,6 @@ impl VideoWriter {
             path.to_string_lossy()
         );
 
-        println!("Pipeline: {}", pipeline_str);
-
         let pipeline = gst::parse::launch(&pipeline_str)?
             .dynamic_cast::<gst::Pipeline>()
             .map_err(StreamCaptureError::DowncastPipelineError)?;
@@ -49,7 +69,7 @@ impl VideoWriter {
             .by_name("src")
             .unwrap()
             .dynamic_cast::<gst_app::AppSrc>()
-            .unwrap();
+            .map_err(StreamCaptureError::DowncastPipelineError)?;
 
         appsrc.set_format(gst::Format::Time);
 
@@ -57,7 +77,7 @@ impl VideoWriter {
             .field("format", "RGB")
             .field("width", size.width as i32)
             .field("height", size.height as i32)
-            .field("framerate", gst::Fraction::new(fps as i32, 1))
+            .field("framerate", gst::Fraction::new(fps, 1))
             .build();
 
         appsrc.set_caps(Some(&caps));
@@ -136,7 +156,8 @@ impl VideoWriter {
     /// # Arguments
     ///
     /// * `img` - The image to write to the video file.
-    pub fn write(&mut self, img: Image<u8, 3>) -> Result<(), StreamCaptureError> {
+    // TODO: support write_async
+    pub fn write(&mut self, img: &Image<u8, 3>) -> Result<(), StreamCaptureError> {
         let mut buffer = gst::Buffer::with_size(img.storage.len())?;
 
         let pts = gst::ClockTime::from_nseconds(self.counter * 1_000_000_000 / self.fps as u64);
@@ -158,5 +179,11 @@ impl VideoWriter {
         }
 
         Ok(())
+    }
+}
+
+impl Drop for VideoWriter {
+    fn drop(&mut self) {
+        self.stop().unwrap();
     }
 }
