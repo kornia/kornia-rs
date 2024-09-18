@@ -10,8 +10,8 @@ pub enum StreamCaptureError {
     DowncastPipelineError(gst::Element),
 
     /// An error occurred during GStreamer downcast of appsink.
-    #[error("Failed to downcast appsink")]
-    DowncastAppSinkError,
+    #[error("Failed to get an element by name")]
+    GetElementByNameError,
 
     /// An error occurred during GStreamer to get the bus.
     #[error("Failed to get the bus")]
@@ -67,4 +67,8 @@ pub enum StreamCaptureError {
     /// An error for an invalid configuration.
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
+
+    /// An error occurred during GStreamer to send end of stream event.
+    #[error("Error ocurred in the gstreamer flow")]
+    GstreamerFlowError(#[from] gst::FlowError),
 }

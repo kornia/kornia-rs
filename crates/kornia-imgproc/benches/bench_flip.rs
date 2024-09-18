@@ -86,8 +86,11 @@ fn bench_flip(c: &mut Criterion) {
             BenchmarkId::new("par_par_slicecopy", &parameter_string),
             &(&image_f32, &output),
             |b, i| {
-                let (src, mut dst) = (i.0.clone(), i.1.clone());
-                b.iter(|| black_box(par_par_slicecopy(&src, &mut dst)))
+                let (src, mut dst) = (i.0, i.1.clone());
+                b.iter(|| {
+                    par_par_slicecopy(black_box(src), black_box(&mut dst));
+                    black_box(())
+                })
             },
         );
 
@@ -95,8 +98,11 @@ fn bench_flip(c: &mut Criterion) {
             BenchmarkId::new("par_loop_loop", &parameter_string),
             &(&image_f32, &output),
             |b, i| {
-                let (src, mut dst) = (i.0.clone(), i.1.clone());
-                b.iter(|| black_box(par_loop_loop(&src, &mut dst)))
+                let (src, mut dst) = (i.0, i.1.clone());
+                b.iter(|| {
+                    par_loop_loop(black_box(src), black_box(&mut dst));
+                    black_box(())
+                })
             },
         );
 
@@ -104,8 +110,11 @@ fn bench_flip(c: &mut Criterion) {
             BenchmarkId::new("par_loop_slicecopy", &parameter_string),
             &(&image_f32, &output),
             |b, i| {
-                let (src, mut dst) = (i.0.clone(), i.1.clone());
-                b.iter(|| black_box(par_loop_slicecopy(&src, &mut dst)))
+                let (src, mut dst) = (i.0, i.1.clone());
+                b.iter(|| {
+                    par_loop_slicecopy(black_box(src), black_box(&mut dst));
+                    black_box(())
+                })
             },
         );
 
@@ -113,8 +122,11 @@ fn bench_flip(c: &mut Criterion) {
             BenchmarkId::new("par_seq_slicecopy", &parameter_string),
             &(&image_f32, &output),
             |b, i| {
-                let (src, mut dst) = (i.0.clone(), i.1.clone());
-                b.iter(|| black_box(par_seq_slicecopy(&src, &mut dst)))
+                let (src, mut dst) = (i.0, i.1.clone());
+                b.iter(|| {
+                    par_seq_slicecopy(black_box(src), black_box(&mut dst));
+                    black_box(())
+                })
             },
         );
 
@@ -123,7 +135,7 @@ fn bench_flip(c: &mut Criterion) {
             &(&image_f32, &output),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| black_box(flip::horizontal_flip(src, &mut dst)))
+                b.iter(|| flip::horizontal_flip(black_box(src), black_box(&mut dst)))
             },
         );
     }
