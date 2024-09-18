@@ -17,5 +17,3 @@ Example:
 ```bash
 cargo run --bin video_write --release -- --output ~/output.mp4
 ```
-
-![Screenshot from 2024-08-28 18-33-56](https://github.com/user-attachments/assets/783619e4-4867-48bc-b7d2-d32a133e4f5a)
