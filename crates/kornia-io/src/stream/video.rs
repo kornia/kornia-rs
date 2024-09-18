@@ -185,3 +185,33 @@ impl Drop for VideoWriter {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{VideoWriter, VideoWriterCodec};
+    use kornia_image::{Image, ImageSize};
+
+    #[test]
+    #[ignore = "TODO: fix this test as there's a race condition in the gstreamer flow"]
+    fn video_writer() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(tmp_dir.path())?;
+
+        let file_path = tmp_dir.path().join("test.mp4");
+
+        let size = ImageSize {
+            width: 6,
+            height: 4,
+        };
+        let mut writer = VideoWriter::new(&file_path, VideoWriterCodec::H264, 30, size)?;
+        writer.start()?;
+
+        let img = Image::new(size, vec![0; size.width * size.height * 3])?;
+        writer.write(&img)?;
+        writer.stop()?;
+
+        assert!(file_path.exists(), "File does not exist: {:?}", file_path);
+
+        Ok(())
+    }
+}
