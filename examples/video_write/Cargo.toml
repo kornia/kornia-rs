@@ -1,0 +1,14 @@
+[package]
+name = "video_write"
+version = "0.1.0"
+authors = ["Edgar Riba <edgar.riba@gmail.com>"]
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+clap = { version = "4.5.4", features = ["derive"] }
+ctrlc = "3.4.4"
+kornia = { workspace = true, features = ["gstreamer"] }
+rerun = "0.18"
+tokio = { version = "1" }
