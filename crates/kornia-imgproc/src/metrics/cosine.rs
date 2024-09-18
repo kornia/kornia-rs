@@ -21,7 +21,7 @@ use kornia_image::{Image, ImageError};
 ///
 /// ```
 /// use kornia::image::{Image, ImageSize};
-/// use kornia::imgproc::metrics::cosine;
+/// use kornia::imgproc::metrics::cosine_dist;
 ///
 /// let image1 = Image::<f32, 1>::new(
 ///    ImageSize {
@@ -48,6 +48,10 @@ use kornia_image::{Image, ImageError};
 /// # Panics
 ///
 /// Panics if the two images have different shapes.
+///
+/// # References
+///
+/// [LinkedIn post ](https://www.linkedin.com/posts/ashvardanian_100x-10000x-numerical-error-reduction-activity-7242002088803663872-kVsx?utm_source=share&utm_medium=member_desktop)
 pub fn cosine_dist<const C: usize>(
     image1: &Image<f32, C>,
     image2: &Image<f32, C>,
