@@ -161,7 +161,7 @@ impl StreamCapture {
     fn get_appsink(&self) -> Result<gst_app::AppSink, StreamCaptureError> {
         self.pipeline
             .by_name("sink")
-            .ok_or_else(|| StreamCaptureError::DowncastAppSinkError)?
+            .ok_or_else(|| StreamCaptureError::GetElementByNameError)?
             .dynamic_cast::<gst_app::AppSink>()
             .map_err(StreamCaptureError::DowncastPipelineError)
     }

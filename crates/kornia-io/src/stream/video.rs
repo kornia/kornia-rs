@@ -67,7 +67,7 @@ impl VideoWriter {
 
         let appsrc = pipeline
             .by_name("src")
-            .unwrap()
+            .ok_or_else(|| StreamCaptureError::GetElementByNameError)?
             .dynamic_cast::<gst_app::AppSrc>()
             .map_err(StreamCaptureError::DowncastPipelineError)?;
 
@@ -131,7 +131,7 @@ impl VideoWriter {
         // Send end of stream to the appsrc
         self.appsrc
             .end_of_stream()
-            .expect("Failed to send end of stream");
+            .map_err(StreamCaptureError::GstreamerFlowError)?;
 
         // Take the handle and await it
         // TODO: This is a blocking call, we need to make it non-blocking
@@ -158,19 +158,15 @@ impl VideoWriter {
     /// * `img` - The image to write to the video file.
     // TODO: support write_async
     pub fn write(&mut self, img: &Image<u8, 3>) -> Result<(), StreamCaptureError> {
-        let mut buffer = gst::Buffer::with_size(img.storage.len())?;
+        // TODO: verify is there is a cheaper way to copy the buffer
+        let mut buffer = gst::Buffer::from_mut_slice(img.as_slice().to_vec());
 
         let pts = gst::ClockTime::from_nseconds(self.counter * 1_000_000_000 / self.fps as u64);
         let duration = gst::ClockTime::from_nseconds(1_000_000_000 / self.fps as u64);
 
-        {
-            let buffer_ref = buffer.get_mut().expect("Failed to get buffer");
-            buffer_ref.set_pts(Some(pts));
-            buffer_ref.set_duration(Some(duration));
-
-            let mut map = buffer_ref.map_writable()?;
-            map.copy_from_slice(img.as_slice());
-        }
+        let buffer_ref = buffer.get_mut().expect("Failed to get buffer");
+        buffer_ref.set_pts(Some(pts));
+        buffer_ref.set_duration(Some(duration));
 
         self.counter += 1;
 
@@ -184,6 +180,8 @@ impl VideoWriter {
 
 impl Drop for VideoWriter {
     fn drop(&mut self) {
-        self.stop().unwrap();
+        self.stop().unwrap_or_else(|e| {
+            eprintln!("Error stopping video writer: {:?}", e);
+        });
     }
 }
