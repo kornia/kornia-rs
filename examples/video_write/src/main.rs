@@ -1,5 +1,5 @@
 use clap::Parser;
-use std::{path::Path, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 use tokio::signal;
 use tokio::sync::Mutex;
 
@@ -10,19 +10,24 @@ use kornia::{
 
 #[derive(Parser)]
 struct Args {
+    #[arg(short, long)]
+    output: PathBuf,
+
     #[arg(short, long, default_value = "0")]
     camera_id: u32,
 
     #[arg(short, long, default_value = "30")]
     fps: i32,
-
-    #[arg(short, long)]
-    duration: Option<u64>,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+
+    // Ensure the output path ends with .mp4
+    if args.output.extension().and_then(|ext| ext.to_str()) != Some("mp4") {
+        return Err("Output file must have a .mp4 extension".into());
+    }
 
     // start the recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia Video Write App").spawn()?;
@@ -42,12 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     // start the video writer
-    let video_writer = VideoWriter::new(
-        Path::new("output.mp4"),
-        VideoWriterCodec::H264,
-        args.fps,
-        frame_size,
-    )?;
+    let video_writer = VideoWriter::new(args.output, VideoWriterCodec::H264, args.fps, frame_size)?;
     let video_writer = Arc::new(Mutex::new(video_writer));
     video_writer.lock().await.start()?;
 

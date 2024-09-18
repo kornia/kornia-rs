@@ -32,7 +32,7 @@ impl VideoWriter {
     /// * `fps` - The frames per second of the video.
     /// * `size` - The size of the video.
     pub fn new(
-        path: &Path,
+        path: impl AsRef<Path>,
         codec: VideoWriterCodec,
         fps: i32,
         size: ImageSize,
@@ -49,6 +49,8 @@ impl VideoWriter {
                 ))
             }
         };
+
+        let path = path.as_ref().to_owned();
 
         let pipeline_str = format!(
             "appsrc name=src ! \
