@@ -30,9 +30,28 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake nasm libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev pkg-config libssl-dev
       - name: Publish packages into crates.io
-        run: |
-          publish -p kornia-core --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
-          publish -p kornia-image --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
-          publish -p kornia-io --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features --dry-run
-          publish -p kornia-imgproc --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
-          publish -p kornia --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features --dry-run
+        uses: actions-rs/cargo@v1
+        with:
+          command: publish
+          args: -p kornia-core --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
+          use-cross: true
+      - uses: actions-rs/cargo@v1
+        with:
+          command: publish
+          args: -p kornia-image --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
+          use-cross: true
+      - uses: actions-rs/cargo@v1
+        with:
+          command: publish
+          args: -p kornia-io --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features --dry-run
+          use-cross: true
+      - uses: actions-rs/cargo@v1
+        with:
+          command: publish
+          args: -p kornia-imgproc --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
+          use-cross: true
+      - uses: actions-rs/cargo@v1
+        with:
+          command: publish
+          args: -p kornia --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features --dry-run
+          use-cross: true
