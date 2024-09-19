@@ -26,8 +26,8 @@ jobs:
           args: ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }}
       - name: Publish packages into crates.io
         run: |
-          cargo publish -p kornia-core --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }}
-          cargo publish -p kornia-image --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }}
-          cargo publish -p kornia-io --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features
-          cargo publish -p kornia-imgproc --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }}
-          cargo publish -p kornia --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features
+          cargo publish -p kornia-core --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
+          cargo publish -p kornia-image --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
+          cargo publish -p kornia-io --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features --dry-run
+          cargo publish -p kornia-imgproc --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
+          cargo publish -p kornia --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features --dry-run
