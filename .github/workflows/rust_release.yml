@@ -12,7 +12,7 @@ jobs:
           - x86_64-unknown-linux-gnu
     runs-on: ubuntu-latest
     steps:
-      - uses: ilammy/setup-nasm@v1
+      #- uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
         with:
@@ -25,15 +25,14 @@ jobs:
           command: login
           args: ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }}
           use-cross: true
-      - uses: actions-rs/cargo@v1
-        with:
-          command: release
-          args: publish --workspace --all-features
-          use-cross: true
-      #- name: Publish packages into crates.io
-      #  run: |
-      #    cross publish -p kornia-core --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
-      #    cargo publish -p kornia-image --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
-      #    cargo publish -p kornia-io --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features --dry-run
-      #    cargo publish -p kornia-imgproc --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
-      #    cargo publish -p kornia --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features --dry-run
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake nasm libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev pkg-config libssl-dev
+      - name: Publish packages into crates.io
+        run: |
+          publish -p kornia-core --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
+          publish -p kornia-image --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
+          publish -p kornia-io --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features --dry-run
+          publish -p kornia-imgproc --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
+          publish -p kornia --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features --dry-run
