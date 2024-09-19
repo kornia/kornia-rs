@@ -1,10 +1,8 @@
 use pyo3::prelude::*;
 
 use crate::image::{FromPyImage, PyImage, ToPyImage};
-use kornia::{
-    image::{Image, ImageSize},
-    imgproc::{interpolation::InterpolationMode, resize::resize_fast},
-};
+use kornia_image::{Image, ImageSize};
+use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast};
 
 #[pyfunction]
 pub fn resize(image: PyImage, new_size: (usize, usize), interpolation: &str) -> PyResult<PyImage> {

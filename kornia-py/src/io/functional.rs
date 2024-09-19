@@ -1,7 +1,8 @@
 use pyo3::prelude::*;
 
 use crate::image::{FromPyImage, PyImage, ToPyImage};
-use kornia::{image::Image, io::functional as F};
+use kornia_image::Image;
+use kornia_io::functional as F;
 
 #[pyfunction]
 pub fn read_image_jpeg(file_path: &str) -> PyResult<PyImage> {

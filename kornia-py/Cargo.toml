@@ -18,7 +18,12 @@ crate-type = ["cdylib"]
 [dependencies]
 
 # kornia
-kornia = { path = "../crates/kornia", features = ["gstreamer", "jpegturbo"] }
+kornia-image = { path = "../crates/kornia-image" }
+kornia-imgproc = { path = "../crates/kornia-imgproc" }
+kornia-io = { path = "../crates/kornia-io", features = [
+    "gstreamer",
+    "jpegturbo",
+] }
 
 # external
 pyo3 = { version = "0.21.2", features = ["extension-module"] }
