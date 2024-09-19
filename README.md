@@ -15,8 +15,8 @@ Use the library to perform image I/O, visualisation and other low level operatio
 `cargo run --bin hello_world`
 
 ```rust
-use kornia::image::Image;
-use kornia::io::functional as F;
+use kornia_image::Image;
+use kornia_io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
@@ -111,7 +111,7 @@ Checkout all the examples in the [`examples`](https://github.com/kornia/kornia-r
 
 ```rust
 use kornia::{image::{Image, ImageSize}, imgproc};
-use kornia::io::functional as F;
+use kornia_io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image

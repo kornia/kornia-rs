@@ -1,4 +1,4 @@
-An example showing how to write a video file using the `kornia::io` module along with the webcam capture example. Visualizes the webcam feed in a [`rerun`](https://github.com/rerun-io/rerun) window.
+An example showing how to write a video file using the `kornia_io` module along with the webcam capture example. Visualizes the webcam feed in a [`rerun`](https://github.com/rerun-io/rerun) window.
 
 NOTE: This example requires the gstremer backend to be enabled. To enable the gstreamer backend, use the `gstreamer` feature flag when building the `kornia` crate and its dependencies.
 

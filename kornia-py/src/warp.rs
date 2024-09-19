@@ -1,9 +1,9 @@
 use pyo3::prelude::*;
 
 use crate::image::{FromPyImage, PyImage, ToPyImage};
-use kornia::image::{Image, ImageSize};
-use kornia::imgproc::interpolation::InterpolationMode;
-use kornia::imgproc::warp;
+use kornia_image::{Image, ImageSize};
+use kornia_imgproc::interpolation::InterpolationMode;
+use kornia_imgproc::warp;
 
 #[pyfunction]
 pub fn warp_affine(
