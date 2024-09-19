@@ -22,11 +22,11 @@ license-file = "LICENSE"
 readme = "README.md"
 repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
-version = "0.1.6+dev"
+version = "0.1.6-rc.4"
 
 [workspace.dependencies]
-kornia-core = { path = "crates/kornia-core", version = "0.1.6+dev" }
-kornia-image = { path = "crates/kornia-image", version = "0.1.6+dev" }
-kornia-io = { path = "crates/kornia-io", version = "0.1.6+dev" }
-kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.6+dev" }
-kornia = { path = "crates/kornia", version = "0.1.6+dev" }
+kornia-core = { path = "crates/kornia-core", version = "0.1.6-rc.4" }
+kornia-image = { path = "crates/kornia-image", version = "0.1.6-rc.4" }
+kornia-io = { path = "crates/kornia-io", version = "0.1.6-rc.4" }
+kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.6-rc.4" }
+kornia = { path = "crates/kornia", version = "0.1.6-rc.4" }

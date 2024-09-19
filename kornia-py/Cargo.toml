@@ -9,7 +9,7 @@ license = "Apache-2.0"
 license-file = "LICENSE"
 repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
-version = "0.1.6+dev"
+version = "0.1.6-rc.4"
 
 [lib]
 name = "kornia_rs"
