@@ -24,30 +24,12 @@ jobs:
         with:
           command: login
           args: ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }}
-          use-cross: true
+      - name: Install cross
+        run: cargo install cross
       - name: Publish packages into crates.io
-        uses: actions-rs/cargo@v1
-        with:
-          command: publish
-          args: -p kornia-core --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
-          use-cross: true
-      - uses: actions-rs/cargo@v1
-        with:
-          command: publish
-          args: -p kornia-image --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
-          use-cross: true
-      - uses: actions-rs/cargo@v1
-        with:
-          command: publish
-          args: -p kornia-io --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features --dry-run
-          use-cross: true
-      - uses: actions-rs/cargo@v1
-        with:
-          command: publish
-          args: -p kornia-imgproc --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
-          use-cross: true
-      - uses: actions-rs/cargo@v1
-        with:
-          command: publish
-          args: -p kornia --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features --dry-run
-          use-cross: true
+        run: |
+          cross publish -p kornia-core --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
+          cross publish -p kornia-image --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
+          cross publish -p kornia-io --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features --dry-run
+          cross publish -p kornia-imgproc --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
+          cross publish -p kornia --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features --dry-run
