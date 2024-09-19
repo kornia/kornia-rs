@@ -114,10 +114,12 @@ pub fn warp_perspective<const C: usize>(
 
     // apply affine transformation
     parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {
-        dst_pixel
-            .iter_mut()
-            .enumerate()
-            .for_each(|(k, pixel)| *pixel = interpolate_pixel(src, x, y, k, interpolation));
+        if x >= 0.0f32 && x < src.cols() as f32 && y >= 0.0f32 && y < src.rows() as f32 {
+            dst_pixel
+                .iter_mut()
+                .enumerate()
+                .for_each(|(k, pixel)| *pixel = interpolate_pixel(src, x, y, k, interpolation));
+        }
     });
 
     Ok(())
@@ -263,6 +265,50 @@ mod tests {
 
         assert_eq!(image_transformed.as_slice(), image_expected);
         assert_eq!(image_transformed.as_slice(), image_resized.as_slice());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_warp_perspective_shift() -> Result<(), ImageError> {
+        let image = Image::<_, 1>::new(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            vec![
+                0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
+                15.0,
+            ],
+        )?;
+
+        // shift left by 1 pixel
+        let shift_right = -1;
+        let m = [1.0, 0.0, shift_right as f32, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+
+        let image_expected = vec![
+            1.0f32, 2.0, 3.0, 0.0, 5.0, 6.0, 7.0, 0.0, 9.0, 10.0, 11.0, 0.0, 13.0, 14.0, 15.0, 0.0,
+        ];
+
+        let new_size = ImageSize {
+            width: image.rows(),
+            height: image.cols(),
+        };
+
+        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
+
+        super::warp_perspective(
+            &image,
+            &mut image_transformed,
+            &m,
+            super::InterpolationMode::Bilinear,
+        )?;
+
+        assert_eq!(image_transformed.num_channels(), 1);
+        assert_eq!(image_transformed.size().width, 4);
+        assert_eq!(image_transformed.size().height, 4);
+
+        assert_eq!(image_transformed.as_slice(), image_expected);
 
         Ok(())
     }
