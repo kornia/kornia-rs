@@ -12,7 +12,6 @@ jobs:
           - x86_64-unknown-linux-gnu
     runs-on: ubuntu-latest
     steps:
-      #- uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
         with:
@@ -24,12 +23,10 @@ jobs:
         with:
           command: login
           args: ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }}
-      - name: Install cross
-        run: cargo install cross
       - name: Publish packages into crates.io
         run: |
-          cross publish -p kornia-core --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
-          cross publish -p kornia-image --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
-          cross publish -p kornia-io --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features --dry-run
-          cross publish -p kornia-imgproc --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --dry-run
-          cross publish -p kornia --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features --dry-run
+          cargo publish -p kornia-core --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }}
+          cargo publish -p kornia-image --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }}
+          cargo publish -p kornia-io --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features
+          cargo publish -p kornia-imgproc --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }}
+          cargo publish -p kornia --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features
