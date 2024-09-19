@@ -1,13 +1,10 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use kornia::{
-    image::Image,
-    imgproc::{
-        interpolation::InterpolationMode,
-        warp::{get_rotation_matrix2d, warp_affine},
-    },
+use kornia_image::Image;
+use kornia_imgproc::{
+    interpolation::InterpolationMode,
+    warp::{get_rotation_matrix2d, warp_affine, warp_perspective},
 };
-use kornia_imgproc::warp::warp_perspective;
 
 fn bench_warp_affine(c: &mut Criterion) {
     let mut group = c.benchmark_group("WarpAffine");

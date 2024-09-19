@@ -20,8 +20,8 @@ use kornia_image::{Image, ImageError};
 /// # Example
 ///
 /// ```
-/// use kornia::image::{Image, ImageSize};
-/// use kornia::imgproc::metrics::mse;
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::metrics::mse;
 ///
 /// let image1 = Image::<f32, 1>::new(
 ///    ImageSize {
@@ -91,8 +91,8 @@ pub fn mse<const C: usize>(
 ///
 /// # Example
 /// ```
-/// use kornia::image::{Image, ImageSize};
-/// use kornia::imgproc::metrics::psnr;
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::metrics::psnr;
 ///
 /// let image1 = Image::<f32, 3>::new(
 ///   ImageSize {

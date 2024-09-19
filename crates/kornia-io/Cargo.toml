@@ -33,7 +33,7 @@ turbojpeg = { version = "1.0.0", optional = true }
 [dev-dependencies]
 criterion = "0.5"
 tempfile = "3.10"
-kornia = { workspace = true, features = ["jpegturbo"] }
+kornia-io = { workspace = true, features = ["jpegturbo"] }
 
 [features]
 gstreamer = ["futures", "gst", "gst-app", "tokio"]

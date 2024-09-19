@@ -21,8 +21,8 @@ use rayon::{
 /// # Example
 ///
 /// ```
-/// use kornia::image::{Image, ImageSize};
-/// use kornia::imgproc::flip::horizontal_flip;
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::flip::horizontal_flip;
 ///
 /// let image = Image::<f32, 3>::new(
 ///     ImageSize {
@@ -84,8 +84,8 @@ where
 /// # Example
 ///
 /// ```
-/// use kornia::image::{Image, ImageSize};
-/// use kornia::imgproc::flip::vertical_flip;
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::flip::vertical_flip;
 ///
 /// let image = Image::<f32, 3>::new(
 ///     ImageSize {

@@ -68,9 +68,9 @@ fn transform_point(x: f32, y: f32, m: &[f32; 9]) -> (f32, f32) {
 /// # Example
 ///
 /// ```
-/// use kornia::image::{Image, ImageSize};
-/// use kornia::imgproc::interpolation::InterpolationMode;
-/// use kornia::imgproc::warp::warp_perspective;
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::interpolation::InterpolationMode;
+/// use kornia_imgproc::warp::warp_perspective;
 ///
 /// let src = Image::<f32, 1>::new(
 ///   ImageSize {
