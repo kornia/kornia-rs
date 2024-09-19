@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use kornia::image::Image;
-use kornia::imgproc::flip;
+use kornia_image::Image;
+use kornia_imgproc::flip;
 
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},

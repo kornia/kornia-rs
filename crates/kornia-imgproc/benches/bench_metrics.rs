@@ -1,6 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use kornia::{image::Image, imgproc::metrics};
+use kornia_image::Image;
+use kornia_imgproc::metrics;
 
 fn bench_mse(c: &mut Criterion) {
     let mut group = c.benchmark_group("mse");

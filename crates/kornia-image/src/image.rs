@@ -9,7 +9,7 @@ use crate::error::ImageError;
 /// # Examples
 ///
 /// ```
-/// use kornia::image::ImageSize;
+/// use kornia_image::ImageSize;
 ///
 /// let image_size = ImageSize {
 ///   width: 10,
@@ -106,7 +106,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use kornia::image::{Image, ImageSize};
+    /// use kornia_image::{Image, ImageSize};
     ///
     /// let image = Image::<u8, 3>::new(
     ///    ImageSize {
@@ -155,7 +155,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use kornia::image::{Image, ImageSize};
+    /// use kornia_image::{Image, ImageSize};
     ///
     /// let image = Image::<u8, 3>::from_size_val(
     ///   ImageSize {
@@ -240,7 +240,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use kornia::image::{Image, ImageSize};
+    /// use kornia_image::{Image, ImageSize};
     ///
     /// let image = Image::<f32, 2>::from_size_val(
     ///   ImageSize {
@@ -315,7 +315,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use kornia::image::{Image, ImageSize};
+    /// use kornia_image::{Image, ImageSize};
     ///
     /// let data = vec![0u8, 0, 255, 0, 0, 255];
     ///

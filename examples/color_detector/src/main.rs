@@ -1,7 +1,7 @@
 use clap::Parser;
-use kornia::image::{ops, Image};
 use std::path::PathBuf;
 
+use kornia::image::{ops, Image};
 use kornia::imgproc;
 use kornia::io::functional as F;
 

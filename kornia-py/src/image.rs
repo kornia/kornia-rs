@@ -1,6 +1,6 @@
 use numpy::{PyArray, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
 
-use kornia::image::{Image, ImageError, ImageSize};
+use kornia_image::{Image, ImageError, ImageSize};
 use pyo3::prelude::*;
 
 // type alias for a 3D numpy array of u8

@@ -13,10 +13,6 @@ pub enum ImageError {
     #[error("Image data is not contiguous")]
     ImageDataNotContiguous,
 
-    /// Error when shape is not valid.
-    #[error("Invalid shape")]
-    InvalidShape(#[from] ndarray::ShapeError),
-
     /// Error when the image shape is not valid.
     #[error("Invalid image shape")]
     InvalidImageShape(#[from] kornia_core::TensorError),

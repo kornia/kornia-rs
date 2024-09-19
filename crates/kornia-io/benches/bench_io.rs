@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
-use kornia::io::functional::{read_image_any, read_image_jpeg};
+use kornia_io::functional::{read_image_any, read_image_jpeg};
 
 fn bench_read_jpeg(c: &mut Criterion) {
     let mut group = c.benchmark_group("JpegReader");

@@ -23,7 +23,7 @@ use kornia_image::{Image, ImageError};
 /// # Example
 ///
 /// ```
-/// use kornia::image::{Image, ImageSize};
+/// use kornia_image::{Image, ImageSize};
 ///
 /// let image1 = Image::<f32, 1>::new(
 ///    ImageSize {
@@ -43,7 +43,7 @@ use kornia_image::{Image, ImageError};
 /// )
 /// .unwrap();
 ///
-/// let huber = kornia::imgproc::metrics::huber(&image1, &image2, 1.0).unwrap();
+/// let huber = kornia_imgproc::metrics::huber(&image1, &image2, 1.0).unwrap();
 /// assert_eq!(huber, 2.5);
 /// ```
 ///
