@@ -1,7 +1,5 @@
-use kornia::{
-    image::Image,
-    io::jpeg::{ImageDecoder, ImageEncoder},
-};
+use kornia_image::Image;
+use kornia_io::jpeg::{ImageDecoder, ImageEncoder};
 use pyo3::prelude::*;
 
 use crate::image::{FromPyImage, PyImage, PyImageSize, ToPyImage};

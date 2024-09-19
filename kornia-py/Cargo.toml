@@ -9,7 +9,7 @@ license = "Apache-2.0"
 license-file = "LICENSE"
 repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
-version = "0.1.6+dev"
+version = "0.1.6-rc.5"
 
 [lib]
 name = "kornia_rs"
@@ -18,7 +18,12 @@ crate-type = ["cdylib"]
 [dependencies]
 
 # kornia
-kornia = { path = "../crates/kornia", features = ["gstreamer", "jpegturbo"] }
+kornia-image = { path = "../crates/kornia-image" }
+kornia-imgproc = { path = "../crates/kornia-imgproc" }
+kornia-io = { path = "../crates/kornia-io", features = [
+    "gstreamer",
+    "jpegturbo",
+] }
 
 # external
 pyo3 = { version = "0.21.2", features = ["extension-module"] }

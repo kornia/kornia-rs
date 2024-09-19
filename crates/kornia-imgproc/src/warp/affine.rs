@@ -59,7 +59,7 @@ pub fn invert_affine_transform(m: &[f32; 6]) -> [f32; 6] {
 /// # Example
 ///
 /// ```
-/// use kornia::imgproc::warp::get_rotation_matrix2d;
+/// use kornia_imgproc::warp::get_rotation_matrix2d;
 ///
 /// let center = (0.0, 0.0);
 /// let angle = 90.0;
@@ -100,9 +100,9 @@ fn transform_point(x: f32, y: f32, m: &[f32; 6]) -> (f32, f32) {
 /// # Example
 ///
 /// ```
-/// use kornia::image::{Image, ImageSize};
-/// use kornia::imgproc::interpolation::InterpolationMode;
-/// use kornia::imgproc::warp::warp_affine;
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::interpolation::InterpolationMode;
+/// use kornia_imgproc::warp::warp_affine;
 ///
 /// let src = Image::<_, 3>::from_size_val(
 ///    ImageSize {

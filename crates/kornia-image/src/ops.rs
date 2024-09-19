@@ -13,8 +13,8 @@ use crate::{Image, ImageError};
 /// Example:
 ///
 /// ```
-/// use kornia::image::{Image, ImageSize};
-/// use kornia::image::ops::cast_and_scale;
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_image::ops::cast_and_scale;
 ///
 /// let image = Image::<u8, 1>::new(
 ///  ImageSize {
