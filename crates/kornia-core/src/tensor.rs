@@ -866,10 +866,46 @@ where
     }
 }
 
+/// Compute the cosine similarity between `input1` and `input2` along dimension `dim`.
+///
+/// todo: add latex
+///
+/// # Arguments
+///
+/// * `tensor1` - todo.
+/// * `tensor2` - todo.
+/// * `dim` - todo.
+///
+/// # Returns
+///
+/// A new `Tensor` instance of the cosine similarities.
+///
+/// # Example
+///
+/// ```
+/// todo
+/// ```
+pub fn cosine_similarity<T, const N: usize, A>(
+    tensor1: &Tensor<T, N, A>,
+    tensor2: &Tensor<T, N, A>,
+    dim: usize,
+) -> Tensor<T, N, A>
+where
+    T: SafeTensorType,
+    A: TensorAllocator,
+{
+    if tensor1.shape[dim] != tensor2.shape[dim] {
+        panic!("shape mismatch")
+    }
+    todo!()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::allocator::CpuAllocator;
     use crate::{Tensor, TensorError};
+
+    use super::cosine_similarity;
 
     #[test]
     fn constructor_1d() -> Result<(), TensorError> {
@@ -1279,6 +1315,16 @@ mod tests {
         assert_eq!(t.shape, [2, 2]);
         assert_eq!(t.as_slice(), &[1, 2, 3, 4]);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_cosine_similarity() -> Result<(), TensorError> {
+        let data1: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
+        let t1 = Tensor::<u8, 2>::from_shape_vec([2, 3], data1, CpuAllocator)?;
+        let data2: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
+        let t2 = Tensor::<u8, 2>::from_shape_vec([2, 3], data2, CpuAllocator)?;
+        let sim = cosine_similarity(&t1, &t2, 1);
         Ok(())
     }
 }
