@@ -16,3 +16,5 @@ version.workspace = true
 kornia-core.workspace = true
 
 # external
+num-traits = "0.2"
+thiserror = "1"
