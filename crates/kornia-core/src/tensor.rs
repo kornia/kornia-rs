@@ -353,10 +353,30 @@ where
     /// # Returns
     ///
     /// The offset of the element at the given index.
-    pub fn get_iter_offset(&self, index: [usize; N]) -> usize {
+    pub fn get_iter_offset(&self, index: [usize; N]) -> Option<usize> {
         let mut offset = 0;
-        for (i, &idx) in index.iter().enumerate() {
-            offset += idx * self.strides[i];
+        for ((&idx, dim_size), stride) in index.iter().zip(self.shape).zip(self.strides) {
+            if idx >= dim_size {
+                return None;
+            }
+            offset += idx * stride;
+        }
+        Some(offset)
+    }
+
+    /// Get the offset of the element at the given index without checking dim sizes.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The list of indices to get the element from.
+    ///
+    /// # Returns
+    ///
+    /// The offset of the element at the given index.
+    pub fn get_iter_offset_unchecked(&self, index: [usize; N]) -> usize {
+        let mut offset = 0;
+        for (&idx, stride) in index.iter().zip(self.strides) {
+            offset += idx * stride;
         }
         offset
     }
@@ -385,7 +405,7 @@ where
     /// assert_eq!(*t.get_unchecked([1, 1]), 4);
     /// ```
     pub fn get_unchecked(&self, index: [usize; N]) -> &T {
-        let offset = self.get_iter_offset(index);
+        let offset = self.get_iter_offset_unchecked(index);
         self.storage.get_unchecked(offset)
     }
 
@@ -420,8 +440,8 @@ where
     /// assert!(t.get([2, 0]).is_none());
     /// ```
     pub fn get(&self, index: [usize; N]) -> Option<&T> {
-        let offset = self.get_iter_offset(index);
-        self.storage.get(offset)
+        self.get_iter_offset(index)
+            .and_then(|i| self.storage.get(i))
     }
 
     /// Reshape the tensor to a new shape.
@@ -914,6 +934,7 @@ mod tests {
         assert_eq!(t.get([1, 0]), Some(&3));
         assert_eq!(t.get([1, 1]), Some(&4));
         assert!(t.get([2, 0]).is_none());
+        assert!(t.get([0, 2]).is_none());
         Ok(())
     }
 
@@ -928,6 +949,8 @@ mod tests {
         assert_eq!(t.get([1, 0, 1]), Some(&5));
         assert_eq!(t.get([1, 0, 2]), Some(&6));
         assert!(t.get([2, 0, 0]).is_none());
+        assert!(t.get([0, 1, 0]).is_none());
+        assert!(t.get([0, 0, 3]).is_none());
         Ok(())
     }
 
