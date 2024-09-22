@@ -364,6 +364,23 @@ where
         Some(offset)
     }
 
+    /// Get the offset of the element at the given index without checking dim sizes.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The list of indices to get the element from.
+    ///
+    /// # Returns
+    ///
+    /// The offset of the element at the given index.
+    pub fn get_iter_offset_unchecked(&self, index: [usize; N]) -> usize {
+        let mut offset = 0;
+        for (&idx, stride) in index.iter().zip(self.strides) {
+            offset += idx * stride;
+        }
+        offset
+    }
+
     /// Get the element at the given index without checking if the index is out of bounds.
     ///
     /// # Arguments
@@ -388,7 +405,7 @@ where
     /// assert_eq!(*t.get_unchecked([1, 1]), 4);
     /// ```
     pub fn get_unchecked(&self, index: [usize; N]) -> &T {
-        let offset = self.get_iter_offset(index);
+        let offset = self.get_iter_offset_unchecked(index);
         self.storage.get_unchecked(offset)
     }
 
@@ -423,8 +440,8 @@ where
     /// assert!(t.get([2, 0]).is_none());
     /// ```
     pub fn get(&self, index: [usize; N]) -> Option<&T> {
-        let offset = self.get_iter_offset(index);
-        self.storage.get(offset)
+        self.get_iter_offset(index)
+            .and_then(|i| self.storage.get(i))
     }
 
     /// Reshape the tensor to a new shape.
