@@ -353,12 +353,15 @@ where
     /// # Returns
     ///
     /// The offset of the element at the given index.
-    pub fn get_iter_offset(&self, index: [usize; N]) -> usize {
+    pub fn get_iter_offset(&self, index: [usize; N]) -> Option<usize> {
         let mut offset = 0;
-        for (i, &idx) in index.iter().enumerate() {
-            offset += idx * self.strides[i];
+        for ((&idx, dim_size), stride) in index.iter().zip(self.shape).zip(self.strides) {
+            if idx >= dim_size {
+                return None;
+            }
+            offset += idx * stride;
         }
-        offset
+        Some(offset)
     }
 
     /// Get the element at the given index without checking if the index is out of bounds.
