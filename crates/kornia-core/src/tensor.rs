@@ -914,6 +914,7 @@ mod tests {
         assert_eq!(t.get([1, 0]), Some(&3));
         assert_eq!(t.get([1, 1]), Some(&4));
         assert!(t.get([2, 0]).is_none());
+        assert!(t.get([0, 2]).is_none());
         Ok(())
     }
 
@@ -928,6 +929,8 @@ mod tests {
         assert_eq!(t.get([1, 0, 1]), Some(&5));
         assert_eq!(t.get([1, 0, 2]), Some(&6));
         assert!(t.get([2, 0, 0]).is_none());
+        assert!(t.get([0, 1, 0]).is_none());
+        assert!(t.get([0, 0, 3]).is_none());
         Ok(())
     }
 
