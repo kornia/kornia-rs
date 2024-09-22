@@ -147,7 +147,6 @@ mod tests {
         assert_eq!(agg.as_slice(), [4; 6]);
         assert_eq!(sum_elements(&t_f32, 2)?.as_slice(), [4.; 6]);
         assert_eq!(sum_elements(&t_i32, 2)?.as_slice(), [4; 6]);
-
         Ok(())
     }
 }
