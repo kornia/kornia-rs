@@ -18,6 +18,30 @@ impl SafeTensorType for i64 {}
 impl SafeTensorType for f32 {}
 impl SafeTensorType for f64 {}
 
+/// Represents the owner of custom Arrow Buffer memory allocations.
+///
+/// This struct is used to facilitate the automatic deallocation of the memory it owns,
+/// using the `Drop` trait.
+pub struct TensorCustomAllocationOwner<A: TensorAllocator> {
+    /// The allocator used to allocate the tensor storage.
+    alloc: A,
+    /// The layout used for the allocation.
+    layout: Layout,
+    /// The pointer to the allocated memory
+    ptr: *const u8,
+}
+
+// SAFETY: TensorCustomAllocationOwner is never modifed from multiple threads.
+impl<A: TensorAllocator> std::panic::RefUnwindSafe for TensorCustomAllocationOwner<A> {}
+unsafe impl<A: TensorAllocator> Sync for TensorCustomAllocationOwner<A> {}
+unsafe impl<A: TensorAllocator> Send for TensorCustomAllocationOwner<A> {}
+
+impl<A: TensorAllocator> Drop for TensorCustomAllocationOwner<A> {
+    fn drop(&mut self) {
+        self.alloc.dealloc(self.ptr as *mut u8, self.layout);
+    }
+}
+
 /// Represents a contiguous memory region that can be shared with other buffers and across thread boundaries.
 ///
 /// This struct provides methods to create, access, and manage tensor storage using a custom allocator.
@@ -35,9 +59,10 @@ where
     alloc: A,
 }
 
-impl<T, A: TensorAllocator> TensorStorage<T, A>
+impl<T, A> TensorStorage<T, A>
 where
     T: SafeTensorType + Clone,
+    A: TensorAllocator + 'static,
 {
     /// Creates a new tensor storage with the given length and allocator.
     ///
@@ -51,8 +76,13 @@ where
     /// A new tensor storage if successful, otherwise an error.
     pub fn new(len: usize, alloc: A) -> Result<Self, TensorAllocatorError> {
         // allocate memory for tensor storage
-        let ptr =
-            alloc.alloc(Layout::array::<T>(len).map_err(TensorAllocatorError::LayoutError)?)?;
+        let layout = Layout::array::<T>(len).map_err(TensorAllocatorError::LayoutError)?;
+        let ptr = alloc.alloc(layout)?;
+        let owner = TensorCustomAllocationOwner {
+            alloc: alloc.clone(),
+            layout,
+            ptr,
+        };
 
         // create the buffer
         let buffer = unsafe {
@@ -60,7 +90,7 @@ where
             Buffer::from_custom_allocation(
                 NonNull::new_unchecked(ptr),
                 len * std::mem::size_of::<T>(),
-                Arc::new(Vec::<T>::with_capacity(len)),
+                Arc::new(owner),
             )
         };
 
@@ -223,7 +253,7 @@ where
         let buffer = Buffer::from_custom_allocation(
             NonNull::new_unchecked(ptr as *mut u8),
             len * std::mem::size_of::<T>(),
-            Arc::new(Vec::<T>::with_capacity(len)),
+            Arc::new(()),
         );
 
         // create tensor storage
@@ -238,7 +268,7 @@ where
 impl<T, A> Clone for TensorStorage<T, A>
 where
     T: SafeTensorType + Clone,
-    A: TensorAllocator + Clone,
+    A: TensorAllocator + Clone + 'static,
 {
     fn clone(&self) -> Self {
         let mut new_storage = Self::new(self.len(), self.alloc.clone())
