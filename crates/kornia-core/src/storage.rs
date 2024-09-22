@@ -253,6 +253,8 @@ mod tests {
     use super::*;
     use crate::allocator::CpuAllocator;
     use std::alloc::Layout;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     #[test]
     fn test_tensor_storage() -> Result<(), TensorAllocatorError> {
@@ -364,5 +366,77 @@ mod tests {
         // check NO copy
         assert_eq!(result_vec.capacity(), original_vec_capacity);
         assert!(std::ptr::eq(result_vec.as_ptr(), original_vec_ptr));
+    }
+
+    #[test]
+    fn test_tensor_storage_allocator() {
+        // A test TensorAllocator that keeps a count of the bytes that are allocated but not yet
+        // deallocated via the allocator.
+        #[derive(Clone)]
+        struct TestAllocator {
+            bytes_allocated: Rc<RefCell<i32>>,
+        }
+        impl TensorAllocator for TestAllocator {
+            fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError> {
+                *self.bytes_allocated.borrow_mut() += layout.size() as i32;
+                CpuAllocator.alloc(layout)
+            }
+            fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+                *self.bytes_allocated.borrow_mut() -= layout.size() as i32;
+                CpuAllocator.dealloc(ptr, layout)
+            }
+        }
+
+        let allocator = TestAllocator {
+            bytes_allocated: Rc::new(RefCell::new(0)),
+        };
+        let len = 1024;
+
+        // TensorStorage::new()
+        // Deallocation should happen when `storage` goes out of scope.
+        {
+            let _storage = TensorStorage::<u8, _>::new(len, allocator.clone()).unwrap();
+            assert_eq!(*allocator.bytes_allocated.borrow(), len as i32);
+        }
+        assert_eq!(*allocator.bytes_allocated.borrow(), 0);
+
+        // TensorStorage::new() -> TensorStorage::into_vec()
+        // TensorStorage::into_vec() consumes the storage and creates a copy (in this case).
+        // This should cause deallocation of the original memory.
+        {
+            let storage = TensorStorage::<u8, _>::new(len, allocator.clone()).unwrap();
+            assert_eq!(*allocator.bytes_allocated.borrow(), len as i32);
+
+            let _vec = storage.into_vec();
+            assert_eq!(*allocator.bytes_allocated.borrow(), 0);
+        }
+        assert_eq!(*allocator.bytes_allocated.borrow(), 0);
+
+        // TensorStorage::from_vec()  -> TensorStorage::into_vec()
+        // TensorStorage::from_vec() currently does not use the custom allocator, so the
+        // bytes_allocated value should not change.
+        {
+            let vec = Vec::<u8>::with_capacity(len);
+            let storage = TensorStorage::<u8, _>::from_vec(vec, allocator.clone());
+            assert_eq!(*allocator.bytes_allocated.borrow(), 0);
+
+            let _vec = storage.into_vec();
+            assert_eq!(*allocator.bytes_allocated.borrow(), 0);
+        }
+        assert_eq!(*allocator.bytes_allocated.borrow(), 0);
+
+        // TensorStorage::from_ptr()
+        // TensorStorage::from_ptr() does not take ownership of buffer. So the memory should not be
+        // deallocated when the TensorStorage goes out of scope.
+        // In this case, the memory will be deallocated when the vector goes out of scope.
+        {
+            let mut vec = Vec::<u8>::with_capacity(len);
+            {
+                let _storage =
+                    unsafe { TensorStorage::<u8, _>::from_ptr(vec.as_mut_ptr(), len, &allocator) };
+                assert_eq!(*allocator.bytes_allocated.borrow(), 0);
+            }
+            assert_eq!(*allocator.bytes_allocated.borrow(), 0);
+        }
     }
 }
