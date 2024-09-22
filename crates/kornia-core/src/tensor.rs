@@ -381,6 +381,26 @@ where
         offset
     }
 
+    /// Get the index of the element at the given offset. The reverse of `Self::get_iter_offset`.
+    ///
+    /// # Arguments
+    ///
+    /// * `offset` - The offset of the element at the given index.
+    ///
+    /// # Returns
+    ///
+    /// The list of indices to get the element from.
+    pub fn get_index(&self, offset: usize) -> [usize; N] {
+        let mut idx = [0; N];
+        let mut rem = offset;
+        for (dim_i, s) in self.strides.iter().enumerate() {
+            idx[dim_i] = rem / s;
+            rem = offset % s;
+        }
+
+        idx
+    }
+
     /// Get the element at the given index without checking if the index is out of bounds.
     ///
     /// # Arguments
@@ -1018,7 +1038,6 @@ mod tests {
     fn get_3d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
         let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
-        dbg!(t.strides);
         assert_eq!(t.get([0, 0, 0]), Some(&1));
         assert_eq!(t.get([0, 0, 1]), Some(&2));
         assert_eq!(t.get([0, 0, 2]), Some(&3));
@@ -1418,7 +1437,6 @@ mod tests {
          " [[ 7, 8],",
          "  [ 9,10],",
          "  [11,12]]]"]);
-
         Ok(())
     }
 
@@ -1484,6 +1502,47 @@ mod tests {
          "  [0,0,0,...,0],",
          "  ...",
          "  [0,0,0,...,0]]]"]);
+        Ok(())
+    }
+
+    #[test]
+    fn get_index_1d() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 1>::from_shape_vec([4], data, CpuAllocator)?;
+        assert_eq!(t.get_index(0), [0]);
+        assert_eq!(t.get_index(1), [1]);
+        assert_eq!(t.get_index(2), [2]);
+        assert_eq!(t.get_index(3), [3]);
+        Ok(())
+    }
+
+    #[test]
+    fn get_index_2d() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data, CpuAllocator)?;
+        assert_eq!(t.get_index(0), [0, 0]);
+        assert_eq!(t.get_index(1), [0, 1]);
+        assert_eq!(t.get_index(2), [1, 0]);
+        assert_eq!(t.get_index(3), [1, 1]);
+        Ok(())
+    }
+
+    #[test]
+    fn get_index_3d() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
+        assert_eq!(t.get_index(0), [0, 0, 0]);
+        assert_eq!(t.get_index(1), [0, 0, 1]);
+        assert_eq!(t.get_index(2), [0, 0, 2]);
+        assert_eq!(t.get_index(3), [0, 1, 0]);
+        assert_eq!(t.get_index(4), [0, 1, 1]);
+        assert_eq!(t.get_index(5), [0, 1, 2]);
+        assert_eq!(t.get_index(6), [1, 0, 0]);
+        assert_eq!(t.get_index(7), [1, 0, 1]);
+        assert_eq!(t.get_index(8), [1, 0, 2]);
+        assert_eq!(t.get_index(9), [1, 1, 0]);
+        assert_eq!(t.get_index(10), [1, 1, 1]);
+        assert_eq!(t.get_index(11), [1, 1, 2]);
         Ok(())
     }
 }
