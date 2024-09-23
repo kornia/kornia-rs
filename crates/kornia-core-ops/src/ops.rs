@@ -28,7 +28,7 @@ where
     }
 
     let numel: usize = out_shape.iter().product();
-    let mut buffer = vec![T::default(); numel];
+    let mut data = vec![T::default(); numel];
 
     for (i, v) in tensor.as_slice().iter().enumerate() {
         let mut out_index = tensor.get_index(i);
@@ -37,11 +37,11 @@ where
             .iter()
             .zip(out_strides.iter())
             .fold(0, |acc, (&idx, &stride)| acc + idx * stride);
-        let agg = unsafe { buffer.get_unchecked_mut(out_offset) };
+        let agg = unsafe { data.get_unchecked_mut(out_offset) };
         *agg = *agg + *v;
     }
 
-    let storage = TensorStorage::from_vec(buffer, tensor.storage.alloc().clone());
+    let storage = TensorStorage::from_vec(data, tensor.storage.alloc().clone());
 
     Ok(Tensor {
         storage,
