@@ -4,7 +4,7 @@ use crate::error::TensorOpsError;
 
 /// Compute the sum of the elements in the tensor along dimension `dim`
 ///
-pub fn sum<T, const N: usize, A>(
+pub fn sum_elements<T, const N: usize, A>(
     tensor: &Tensor<T, N, A>,
     dim: usize,
 ) -> Result<Tensor<T, N, A>, TensorOpsError>
@@ -59,7 +59,7 @@ mod tests {
     fn test_sum_dim_oob() -> Result<(), TensorError> {
         let data: [u8; 4] = [2, 2, 2, 2];
         let t = Tensor::<u8, 2>::from_shape_slice([2, 2], &data, CpuAllocator)?;
-        let res = sum(&t, 2);
+        let res = sum_elements(&t, 2);
         assert!(res.is_err_and(|e| e == TensorOpsError::DimOutOfBounds(2, 1)));
         Ok(())
     }
@@ -68,7 +68,7 @@ mod tests {
     fn test_sum_1d() -> Result<(), TensorError> {
         let data: [u8; 4] = [1, 1, 1, 1];
         let t = Tensor::<u8, 1>::from_shape_slice([4], &data, CpuAllocator)?;
-        let res = sum(&t, 0);
+        let res = sum_elements(&t, 0);
 
         assert!(res.is_ok_and(|v| v.as_slice() == [4]));
         Ok(())
@@ -79,11 +79,11 @@ mod tests {
         let data: [u8; 6] = [1, 1, 1, 1, 1, 1];
         let t = Tensor::<u8, 2>::from_shape_slice([2, 3], &data, CpuAllocator)?;
 
-        let agg = sum(&t, 1).unwrap();
+        let agg = sum_elements(&t, 1).unwrap();
         assert_eq!(agg.as_slice(), [3, 3]);
         assert_eq!(agg.shape, [2, 1]);
 
-        let agg = sum(&t, 0).unwrap();
+        let agg = sum_elements(&t, 0).unwrap();
         assert_eq!(agg.as_slice(), [2, 2, 2]);
         assert_eq!(agg.shape, [1, 3]);
         Ok(())
@@ -94,15 +94,15 @@ mod tests {
         let data: [u8; 24] = [1; 24];
         let t = Tensor::<u8, 3>::from_shape_slice([2, 3, 4], &data, CpuAllocator)?;
 
-        let agg = sum(&t, 0).unwrap();
+        let agg = sum_elements(&t, 0).unwrap();
         assert_eq!(agg.as_slice(), [2; 12]);
         assert_eq!(agg.shape, [1, 3, 4]);
 
-        let agg = sum(&t, 1).unwrap();
+        let agg = sum_elements(&t, 1).unwrap();
         assert_eq!(agg.as_slice(), [3; 8]);
         assert_eq!(agg.shape, [2, 1, 4]);
 
-        let agg = sum(&t, 2).unwrap();
+        let agg = sum_elements(&t, 2).unwrap();
         assert_eq!(agg.as_slice(), [4; 6]);
         assert_eq!(agg.shape, [2, 3, 1]);
 
