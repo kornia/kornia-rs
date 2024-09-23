@@ -21,9 +21,10 @@ where
 
     let mut out_strides = tensor.strides;
     if dim > 0 {
-        for i in 0..dim {
-            out_strides[i] /= tensor.shape[dim];
-        }
+        out_strides
+            .iter_mut()
+            .take(dim)
+            .for_each(|s| *s /= tensor.shape[dim]);
     }
 
     let numel: usize = out_shape.iter().product();
