@@ -1,5 +1,3 @@
-use std::cmp::Ordering;
-
 use num_traits::Float;
 use thiserror::Error;
 
@@ -905,102 +903,60 @@ where
 
         let should_mask: [bool; N] = self.shape.map(|s| s > 8);
         let mut skip_until = 0;
-        dbg!(self.strides);
-        let sizes: Vec<_> = self
-            .shape
-            .iter()
-            .rev()
-            .scan(1, |state, &x| {
-                *state *= x;
-                Some(*state)
-            })
-            .collect();
 
-        write!(f, "{}", "[".repeat(N))?;
         for (i, v) in self.as_slice().iter().enumerate() {
             if i < skip_until {
                 continue;
             }
-            let mut idx = [0; N];
-            let mut rem = i;
-            for (dim_i, s) in self.strides.iter().enumerate() {
-                idx[dim_i] = rem / s;
-                rem = i % s;
-            }
-            let mut skip = false;
-            // for (dim, (((&dim_i, maskable), size), stride)) in idx
-            //     .iter()
-            //     .zip(should_mask)
-            //     .zip(self.shape)
-            //     .zip(self.strides)
-            //     .enumerate()
-            // {
-            //     if maskable && dim_i == 3 {
-            //         write!(f, "...,")?;
-            //         skip_until = i + (size - 3 - 1) * stride;
-            //         dbg!(skip_until);
-            //         skip = true;
-            //         break;
-            //     }
-            // }
+            let mut value = String::new();
             let mut prefix = String::new();
             let mut suffix = String::new();
             let mut separator = ",".to_string();
             let mut last_size = 1;
-            for (dim, &size) in self.shape.iter().enumerate().rev() {
+            for (dim, (&size, maskable)) in self.shape.iter().zip(should_mask).enumerate().rev() {
                 let prod = size * last_size;
-                if i % prod == 0 {
+                if i % prod == (3 * last_size) && maskable {
+                    let pad = if dim == (N - 1) { 0 } else { dim + 1 };
+                    value = format!("{}...", " ".repeat(pad));
+                    skip_until = i + (size - 4) * last_size;
+                    prefix = "".to_string();
+                    if dim != (N - 1) {
+                        separator = "\n".repeat(N - 1 - dim);
+                    }
+                    break;
+                } else if i % prod == 0 {
                     prefix.push('[');
-                    println!("{i} is start of dim {dim}")
                 } else if (i + 1) % prod == 0 {
                     suffix.push(']');
                     separator.push('\n');
-                    println!("{i} is end of dim {dim}")
+                    if dim == 0 {
+                        separator = "".to_string();
+                    }
                 } else {
                     break;
                 }
                 last_size = prod;
             }
+            if !prefix.is_empty() {
+                prefix = format!("{prefix:>N$}");
+            }
 
-            if skip {
-                continue;
-            }
-            if scientific {
-                let num = format!("{v:.4e}");
-                let (before, after) = num.split_once('e').unwrap();
-                let after = if let Some(stripped) = after.strip_prefix('-') {
-                    format!("-{:0>2}", &stripped)
+            if value.is_empty() {
+                value = if scientific {
+                    let num = format!("{v:.4e}");
+                    let (before, after) = num.split_once('e').unwrap();
+                    let after = if let Some(stripped) = after.strip_prefix('-') {
+                        format!("-{:0>2}", &stripped)
+                    } else {
+                        format!("+{:0>2}", &after)
+                    };
+                    format!("{before}e{after}")
                 } else {
-                    format!("+{:0>2}", &after)
-                };
-                write!(f, "{before}e{after}")?;
-            } else {
-                let rounded = format!("{v:.4}");
-                write!(f, "{rounded:>width$}")?;
-            }
-            if (i + 1) == self.numel() {
-                write!(f, "{}", "]".repeat(N))?;
-                return Ok(());
-            }
-            let mut dim_ends = 0;
-            for s in self.strides.iter().take(N - 1).rev() {
-                if ((i + 1) % s) == 0 {
-                    dim_ends += 1;
-                } else {
-                    break;
+                    let rounded = format!("{v:.4}");
+                    format!("{rounded:>width$}")
                 }
-            }
-            if dim_ends > 0 {
-                write!(
-                    f,
-                    "{},{}{:>N$}",
-                    "]".repeat(dim_ends),
-                    "\n".repeat(dim_ends),
-                    "[".repeat(dim_ends)
-                )?;
-            } else {
-                write!(f, ",",)?;
-            }
+            };
+            write!(f, "{prefix}{value}{suffix}{separator}",)?;
         }
         Ok(())
     }
@@ -1496,8 +1452,31 @@ mod tests {
 
         #[rustfmt::skip]
         assert_eq!(lines.as_slice(),
-        ["[[1.0000e+03,1.0001e+00],",
-         " [9.9991e-01,9.9999e-01]]"]);
+        ["[[[0,0,0,...,0],",
+         "  [0,0,0,...,0],",
+         "  [0,0,0,...,0],",
+         "  ...",
+         "  [0,0,0,...,0]],",
+         "",
+         " [[0,0,0,...,0],",
+         "  [0,0,0,...,0],",
+         "  [0,0,0,...,0],",
+         "  ...",
+         "  [0,0,0,...,0]],",
+         "",
+         " [[0,0,0,...,0],",
+         "  [0,0,0,...,0],",
+         "  [0,0,0,...,0],",
+         "  ...",
+         "  [0,0,0,...,0]],",
+         "",
+         " ...",
+         "",
+         " [[0,0,0,...,0],",
+         "  [0,0,0,...,0],",
+         "  [0,0,0,...,0],",
+         "  ...",
+         "  [0,0,0,...,0]]]"]);
         Ok(())
     }
 }
