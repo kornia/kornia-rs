@@ -28,7 +28,7 @@ pub struct TensorCustomAllocationOwner<A: TensorAllocator> {
     /// The layout used for the allocation.
     layout: Layout,
     /// The pointer to the allocated memory
-    ptr: *const u8,
+    ptr: NonNull<u8>,
 }
 
 // SAFETY: TensorCustomAllocationOwner is never modifed from multiple threads.
@@ -38,7 +38,7 @@ unsafe impl<A: TensorAllocator> Send for TensorCustomAllocationOwner<A> {}
 
 impl<A: TensorAllocator> Drop for TensorCustomAllocationOwner<A> {
     fn drop(&mut self) {
-        self.alloc.dealloc(self.ptr as *mut u8, self.layout);
+        self.alloc.dealloc(self.ptr.as_ptr(), self.layout);
     }
 }
 
@@ -77,7 +77,7 @@ where
     pub fn new(len: usize, alloc: A) -> Result<Self, TensorAllocatorError> {
         // allocate memory for tensor storage
         let layout = Layout::array::<T>(len).map_err(TensorAllocatorError::LayoutError)?;
-        let ptr = alloc.alloc(layout)?;
+        let ptr = NonNull::new(alloc.alloc(layout)?).ok_or(TensorAllocatorError::NullPointer)?;
         let owner = TensorCustomAllocationOwner {
             alloc: alloc.clone(),
             layout,
@@ -87,11 +87,7 @@ where
         // create the buffer
         let buffer = unsafe {
             // SAFETY: `ptr` is non-null and properly aligned, and `len` is the correct size.
-            Buffer::from_custom_allocation(
-                NonNull::new_unchecked(ptr),
-                len * std::mem::size_of::<T>(),
-                Arc::new(owner),
-            )
+            Buffer::from_custom_allocation(ptr, len * std::mem::size_of::<T>(), Arc::new(owner))
         };
 
         Ok(Self {
