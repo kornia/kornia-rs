@@ -3,7 +3,8 @@ use std::path::Path;
 use futures::prelude::*;
 use gst::prelude::*;
 
-use kornia_image::{Image, ImageSize};
+use async_std::task;
+use kornia_image::{Image, ImageFormat, ImageSize};
 
 use super::StreamCaptureError;
 
@@ -19,7 +20,6 @@ pub struct VideoWriter {
     appsrc: gst_app::AppSrc,
     fps: i32,
     counter: u64,
-    handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl VideoWriter {
@@ -34,6 +34,7 @@ impl VideoWriter {
     pub fn new(
         path: impl AsRef<Path>,
         codec: VideoWriterCodec,
+        format: ImageFormat,
         fps: i32,
         size: ImageSize,
     ) -> Result<Self, StreamCaptureError> {
@@ -48,6 +49,12 @@ impl VideoWriter {
                     "Unsupported codec".to_string(),
                 ))
             }
+        };
+
+        // TODO: Add support for other formats
+        let format = match format {
+            ImageFormat::Mono8U => "GRAY8",
+            ImageFormat::Rgb8U => "RGB",
         };
 
         let path = path.as_ref().to_owned();
@@ -76,7 +83,7 @@ impl VideoWriter {
         appsrc.set_format(gst::Format::Time);
 
         let caps = gst::Caps::builder("video/x-raw")
-            .field("format", "RGB")
+            .field("format", format)
             .field("width", size.width as i32)
             .field("height", size.height as i32)
             .field("framerate", gst::Fraction::new(fps, 1))
@@ -92,38 +99,40 @@ impl VideoWriter {
             appsrc,
             fps,
             counter: 0,
-            handle: None,
         })
     }
 
     /// Start the video writer
-    pub fn start(&mut self) -> Result<(), StreamCaptureError> {
+    pub fn start(&self) -> Result<(), StreamCaptureError> {
         self.pipeline.set_state(gst::State::Playing)?;
 
         let bus = self.pipeline.bus().ok_or(StreamCaptureError::BusError)?;
         let mut messages = bus.stream();
 
-        let handle = tokio::spawn(async move {
-            while let Some(msg) = messages.next().await {
-                match msg.view() {
-                    gst::MessageView::Eos(..) => {
-                        println!("EOS");
-                        break;
+        // launch a task to handle the bus messages, exit when EOS is received and set the pipeline to null
+        task::spawn({
+            let pipeline = self.pipeline.clone();
+            async move {
+                while let Some(msg) = messages.next().await {
+                    match msg.view() {
+                        gst::MessageView::Eos(..) => {
+                            println!("EOS");
+                            break;
+                        }
+                        gst::MessageView::Error(err) => {
+                            eprintln!(
+                                "Error from {:?}: {} ({:?})",
+                                msg.src().map(|s| s.path_string()),
+                                err.error(),
+                                err.debug()
+                            );
+                        }
+                        _ => {}
                     }
-                    gst::MessageView::Error(err) => {
-                        eprintln!(
-                            "Error from {:?}: {} ({:?})",
-                            msg.src().map(|s| s.path_string()),
-                            err.error(),
-                            err.debug()
-                        );
-                    }
-                    _ => {}
                 }
+                pipeline.set_state(gst::State::Null).unwrap();
             }
         });
-
-        self.handle = Some(handle);
 
         Ok(())
     }
@@ -135,21 +144,6 @@ impl VideoWriter {
             .end_of_stream()
             .map_err(StreamCaptureError::GstreamerFlowError)?;
 
-        // Take the handle and await it
-        // TODO: This is a blocking call, we need to make it non-blocking
-        if let Some(handle) = self.handle.take() {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    if let Err(e) = handle.await {
-                        eprintln!("Error waiting for handle: {:?}", e);
-                    }
-                });
-            });
-        }
-
-        // Set the pipeline to null
-        self.pipeline.set_state(gst::State::Null)?;
-
         Ok(())
     }
 
@@ -159,7 +153,14 @@ impl VideoWriter {
     ///
     /// * `img` - The image to write to the video file.
     // TODO: support write_async
-    pub fn write(&mut self, img: &Image<u8, 3>) -> Result<(), StreamCaptureError> {
+    pub fn write<const C: usize>(&mut self, img: &Image<u8, C>) -> Result<(), StreamCaptureError> {
+        // check if the image channels are correct
+        if C != 1 && C != 3 {
+            return Err(StreamCaptureError::InvalidConfig(
+                "Invalid number of channels".to_string(),
+            ));
+        }
+
         // TODO: verify is there is a cheaper way to copy the buffer
         let mut buffer = gst::Buffer::from_mut_slice(img.as_slice().to_vec());
 
@@ -190,7 +191,7 @@ impl Drop for VideoWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::{VideoWriter, VideoWriterCodec};
+    use super::{ImageFormat, VideoWriter, VideoWriterCodec};
     use kornia_image::{Image, ImageSize};
 
     #[test]
@@ -205,7 +206,13 @@ mod tests {
             width: 6,
             height: 4,
         };
-        let mut writer = VideoWriter::new(&file_path, VideoWriterCodec::H264, 30, size)?;
+        let mut writer = VideoWriter::new(
+            &file_path,
+            VideoWriterCodec::H264,
+            ImageFormat::RGB8U,
+            30,
+            size,
+        )?;
         writer.start()?;
 
         let img = Image::new(size, vec![0; size.width * size.height * 3])?;

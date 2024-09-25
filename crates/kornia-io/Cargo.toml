@@ -23,6 +23,7 @@ image = { version = "0.25" }
 thiserror = "1"
 
 # optional dependencies
+async-std = { version = "1.13.0" }
 futures = { version = "0.3.1", optional = true }
 gst = { version = "0.23.0", package = "gstreamer", optional = true }
 gst-app = { version = "0.23.0", package = "gstreamer-app", optional = true }

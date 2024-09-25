@@ -72,3 +72,7 @@ pub enum StreamCaptureError {
     #[error("Error ocurred in the gstreamer flow")]
     GstreamerFlowError(#[from] gst::FlowError),
 }
+
+// ensure that can be sent over threads
+unsafe impl Send for StreamCaptureError {}
+unsafe impl Sync for StreamCaptureError {}

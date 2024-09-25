@@ -52,6 +52,14 @@ impl From<ImageSize> for [u32; 2] {
     }
 }
 
+/// The format of the image to write to the video file.
+pub enum ImageFormat {
+    /// MONO 8-bit unsigned integer format.
+    Mono8U,
+    /// RGB 8-bit unsigned integer format.
+    Rgb8U,
+}
+
 #[derive(Clone)]
 /// Represents an image with pixel data.
 ///
