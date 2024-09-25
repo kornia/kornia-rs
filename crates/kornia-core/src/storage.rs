@@ -395,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tensor_storage_allocator() {
+    fn test_tensor_storage_allocator() -> Result<(), TensorAllocatorError> {
         // A test TensorAllocator that keeps a count of the bytes that are allocated but not yet
         // deallocated via the allocator.
         #[derive(Clone)]
@@ -421,7 +421,7 @@ mod tests {
         // TensorStorage::new()
         // Deallocation should happen when `storage` goes out of scope.
         {
-            let _storage = TensorStorage::<u8, _>::new(len, allocator.clone()).unwrap();
+            let _storage = TensorStorage::<u8, _>::new(len, allocator.clone())?;
             assert_eq!(*allocator.bytes_allocated.borrow(), len as i32);
         }
         assert_eq!(*allocator.bytes_allocated.borrow(), 0);
@@ -430,7 +430,7 @@ mod tests {
         // TensorStorage::into_vec() consumes the storage and creates a copy (in this case).
         // This should cause deallocation of the original memory.
         {
-            let storage = TensorStorage::<u8, _>::new(len, allocator.clone()).unwrap();
+            let storage = TensorStorage::<u8, _>::new(len, allocator.clone())?;
             assert_eq!(*allocator.bytes_allocated.borrow(), len as i32);
 
             let _vec = storage.into_vec();
@@ -464,5 +464,7 @@ mod tests {
             }
             assert_eq!(*allocator.bytes_allocated.borrow(), 0);
         }
+
+        Ok(())
     }
 }
