@@ -442,12 +442,18 @@ mod tests {
         // TensorStorage::from_vec() currently does not use the custom allocator, so the
         // bytes_allocated value should not change.
         {
-            let vec = Vec::<u8>::with_capacity(len);
-            let storage = TensorStorage::<u8, _>::from_vec(vec, allocator.clone());
+            let original_vec = Vec::<u8>::with_capacity(len);
+            let original_vec_ptr = original_vec.as_ptr();
+            let original_vec_capacity = original_vec.capacity();
+
+            let storage = TensorStorage::<u8, _>::from_vec(original_vec, allocator.clone());
             assert_eq!(*allocator.bytes_allocated.borrow(), 0);
 
-            let _vec = storage.into_vec();
+            let result_vec = storage.into_vec();
             assert_eq!(*allocator.bytes_allocated.borrow(), 0);
+
+            assert_eq!(result_vec.capacity(), original_vec_capacity);
+            assert!(std::ptr::eq(result_vec.as_ptr(), original_vec_ptr));
         }
         assert_eq!(*allocator.bytes_allocated.borrow(), 0);
 
@@ -456,11 +462,15 @@ mod tests {
         // deallocated when the TensorStorage goes out of scope.
         // In this case, the memory will be deallocated when the vector goes out of scope.
         {
-            let mut vec = Vec::<u8>::with_capacity(len);
+            let mut original_vec = Vec::<u8>::with_capacity(len);
+            let original_ptr = original_vec.as_ptr();
             {
-                let _storage =
-                    unsafe { TensorStorage::<u8, _>::from_ptr(vec.as_mut_ptr(), len, &allocator) };
+                let storage = unsafe {
+                    TensorStorage::<u8, _>::from_ptr(original_vec.as_mut_ptr(), len, &allocator)
+                };
                 assert_eq!(*allocator.bytes_allocated.borrow(), 0);
+
+                assert_eq!(storage.as_ptr(), original_ptr);
             }
             assert_eq!(*allocator.bytes_allocated.borrow(), 0);
         }
