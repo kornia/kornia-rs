@@ -206,16 +206,17 @@ mod tests {
             width: 6,
             height: 4,
         };
+
         let mut writer = VideoWriter::new(
             &file_path,
             VideoWriterCodec::H264,
-            ImageFormat::RGB8U,
+            ImageFormat::Rgb8U,
             30,
             size,
         )?;
         writer.start()?;
 
-        let img = Image::new(size, vec![0; size.width * size.height * 3])?;
+        let img = Image::<u8, 3>::new(size, vec![0; size.width * size.height * 3])?;
         writer.write(&img)?;
         writer.stop()?;
 
