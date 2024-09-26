@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::stream::error::StreamCaptureError;
+use futures::future::FutureExt;
 use futures::prelude::*;
 use gst::prelude::*;
 use kornia_image::{Image, ImageSize};
@@ -43,11 +44,8 @@ impl StreamCapture {
     where
         F: FnMut(Image<u8, 3>) -> Result<(), Box<dyn std::error::Error>>,
     {
-        self.run_internal(
-            |img| futures::future::ready(f(img)),
-            None::<futures::future::Ready<()>>,
-        )
-        .await
+        self.run_internal(|img| futures::future::ready(f(img)), future::pending())
+            .await
     }
 
     /// Runs the stream capture pipeline with a termination signal and processes each frame.
@@ -70,7 +68,7 @@ impl StreamCapture {
         Fut: Future<Output = Result<(), Box<dyn std::error::Error>>>,
         S: Future<Output = ()>,
     {
-        self.run_internal(f, Some(signal)).await
+        self.run_internal(f, signal).await
     }
 
     /// Internal method to run the stream capture pipeline.
@@ -83,18 +81,17 @@ impl StreamCapture {
     /// # Returns
     ///
     /// A Result indicating success or a StreamCaptureError.
-    async fn run_internal<F, Fut, S>(
-        &self,
-        mut f: F,
-        signal: Option<S>,
-    ) -> Result<(), StreamCaptureError>
+    async fn run_internal<F, Fut, S>(&self, mut f: F, signal: S) -> Result<(), StreamCaptureError>
     where
         F: FnMut(Image<u8, 3>) -> Fut,
         Fut: Future<Output = Result<(), Box<dyn std::error::Error>>>,
         S: Future<Output = ()>,
     {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-        let (signal_tx, mut signal_rx) = tokio::sync::watch::channel(());
+        //let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+        //let (signal_tx, mut signal_rx) = tokio::sync::watch::channel(());
+        //let signal_tx = Arc::new(signal_tx);
+        let (tx, rx) = async_std::channel::bounded(10);
+        let (signal_tx, signal_rx) = async_std::channel::bounded(1);
         let signal_tx = Arc::new(signal_tx);
 
         self.setup_pipeline(&tx)?;
@@ -109,26 +106,44 @@ impl StreamCapture {
             .ok_or_else(|| StreamCaptureError::BusError)?;
         self.spawn_bus_handler(bus, signal_tx.clone());
 
-        let mut sig = signal.map(|s| Box::pin(s.fuse()));
+        let mut sig = Box::pin(signal.fuse());
 
         loop {
-            tokio::select! {
-                img = rx.recv() => {
-                    if let Some(img) = img {
+            //tokio::select! {
+            //    img = rx.recv() => {
+            //        if let Some(img) = img {
+            //            f(img).await?;
+            //        } else {
+            //            break;
+            //        }
+            //    }
+            //    _ = signal_rx.changed() => {
+            //        self.close()?;
+            //        return Err(StreamCaptureError::PipelineCancelled);
+            //    }
+            //    _ = async { if let Some(ref mut s) = sig { s.as_mut().await } }, if sig.is_some() => {
+            //        self.close()?;
+            //        break;
+            //    }
+            //    else => break,
+            //}
+
+            futures::select! {
+                _ = rx.recv().fuse() => {
+                    if let Ok(img) = rx.recv().fuse().await {
                         f(img).await?;
                     } else {
                         break;
                     }
-                }
-                _ = signal_rx.changed() => {
+                },
+                _ = signal_rx.recv().fuse() => {
                     self.close()?;
-                    return Err(StreamCaptureError::PipelineCancelled);
-                }
-                _ = async { if let Some(ref mut s) = sig { s.as_mut().await } }, if sig.is_some() => {
+                    break;
+                },
+                _ = sig.as_mut().fuse() => {
                     self.close()?;
                     break;
                 }
-                else => break,
             }
         }
 
@@ -146,7 +161,7 @@ impl StreamCapture {
     /// A Result indicating success or a StreamCaptureError.
     fn setup_pipeline(
         &self,
-        tx: &tokio::sync::mpsc::Sender<Image<u8, 3>>,
+        tx: &async_std::channel::Sender<Image<u8, 3>>,
     ) -> Result<(), StreamCaptureError> {
         let appsink = self.get_appsink()?;
         self.set_appsink_callbacks(appsink, tx.clone());
@@ -175,13 +190,13 @@ impl StreamCapture {
     fn set_appsink_callbacks(
         &self,
         appsink: gst_app::AppSink,
-        tx: tokio::sync::mpsc::Sender<Image<u8, 3>>,
+        tx: async_std::channel::Sender<Image<u8, 3>>,
     ) {
         appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
                 .new_sample(move |sink| match Self::extract_image_frame(sink) {
                     Ok(frame) => {
-                        if tx.blocking_send(frame).is_err() {
+                        if tx.send_blocking(frame).is_err() {
                             Err(gst::FlowError::Error)
                         } else {
                             Ok(gst::FlowSuccess::Ok)
@@ -207,9 +222,9 @@ impl StreamCapture {
     ///
     /// This method spawns a Tokio task that runs until an EOS or Error message is received,
     /// or until the bus is closed.
-    fn spawn_bus_handler(&self, bus: gst::Bus, signal_tx: Arc<tokio::sync::watch::Sender<()>>) {
+    fn spawn_bus_handler(&self, bus: gst::Bus, signal_tx: Arc<async_std::channel::Sender<()>>) {
         let mut messages = bus.stream();
-        tokio::spawn(async move {
+        async_std::task::spawn(async move {
             while let Some(msg) = messages.next().await {
                 use gst::MessageView;
                 match msg.view() {
@@ -227,7 +242,7 @@ impl StreamCapture {
                         let _ = signal_tx.send(());
                         break;
                     }
-                    _ => (),
+                    _ => {}
                 }
             }
         });

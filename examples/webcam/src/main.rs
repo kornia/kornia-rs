@@ -1,7 +1,10 @@
 use clap::Parser;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    {Arc, Mutex},
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
 };
 
 use kornia::{
@@ -25,7 +28,8 @@ struct Args {
     duration: Option<u64>,
 }
 
-#[tokio::main]
+//#[tokio::main]
+#[async_std::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
@@ -58,11 +62,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     // we launch a timer to cancel the token after a certain duration
-    tokio::spawn({
+    async_std::task::spawn({
         let cancel_token = cancel_token.clone();
         async move {
             if let Some(duration_secs) = args.duration {
-                tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)).await;
+                async_std::task::sleep(Duration::from_secs(duration_secs)).await;
                 println!("Sending timer cancel signal !!");
                 cancel_token.store(true, Ordering::SeqCst);
             }
