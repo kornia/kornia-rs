@@ -1,4 +1,5 @@
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc;
+use std::alloc::Layout;
 
 use thiserror::Error;
 
@@ -55,7 +56,7 @@ impl TensorAllocator for CpuAllocator {
     ///
     /// A non-null pointer to the allocated memory if successful, otherwise an error.
     fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError> {
-        let ptr = unsafe { System.alloc(layout) };
+        let ptr = unsafe { alloc::alloc(layout) };
         if ptr.is_null() {
             Err(TensorAllocatorError::NullPointer)?
         }
@@ -74,7 +75,7 @@ impl TensorAllocator for CpuAllocator {
     /// The pointer must be non-null and the layout must be correct.
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
+        unsafe { alloc::dealloc(ptr, layout) }
     }
 }
 
