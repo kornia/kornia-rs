@@ -24,7 +24,7 @@ impl SafeTensorType for f64 {}
 /// using the `Drop` trait.
 pub struct TensorCustomAllocationOwner<A: TensorAllocator> {
     /// The allocator used to allocate the tensor storage.
-    alloc: A,
+    alloc: Arc<A>,
     /// The layout used for the allocation.
     layout: Layout,
     /// The pointer to the allocated memory
@@ -56,7 +56,7 @@ where
     /// The buffer containing the tensor storage.
     data: ScalarBuffer<T>,
     /// The allocator used to allocate the tensor storage.
-    alloc: A,
+    alloc: Arc<A>,
 }
 
 impl<T, A> TensorStorage<T, A>
@@ -78,6 +78,7 @@ where
         // allocate memory for tensor storage
         let layout = Layout::array::<T>(len).map_err(TensorAllocatorError::LayoutError)?;
         let ptr = NonNull::new(alloc.alloc(layout)?).ok_or(TensorAllocatorError::NullPointer)?;
+        let alloc = Arc::new(alloc);
         let owner = TensorCustomAllocationOwner {
             alloc: alloc.clone(),
             layout,
@@ -125,7 +126,7 @@ where
         // create tensor storage
         Self {
             data: buffer.into(),
-            alloc,
+            alloc: Arc::new(alloc),
         }
     }
 
@@ -255,7 +256,7 @@ where
         // create tensor storage
         Self {
             data: buffer.into(),
-            alloc: alloc.clone(),
+            alloc: Arc::new(alloc.clone()),
         }
     }
 }
@@ -267,7 +268,7 @@ where
     A: TensorAllocator + Clone + 'static,
 {
     fn clone(&self) -> Self {
-        let mut new_storage = Self::new(self.len(), self.alloc.clone())
+        let mut new_storage = Self::new(self.len(), (*self.alloc).clone())
             .expect("Failed to allocate memory for cloned TensorStorage");
         new_storage.as_mut_slice().clone_from_slice(self.as_slice());
         new_storage
