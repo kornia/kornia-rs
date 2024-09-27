@@ -1,9 +1,7 @@
 use std::path::Path;
 
-use futures::prelude::*;
 use gst::prelude::*;
 
-use async_std::task;
 use kornia_image::{Image, ImageFormat, ImageSize};
 
 use super::StreamCaptureError;
@@ -20,6 +18,7 @@ pub struct VideoWriter {
     appsrc: gst_app::AppSrc,
     fps: i32,
     counter: u64,
+    handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl VideoWriter {
@@ -29,6 +28,7 @@ impl VideoWriter {
     ///
     /// * `path` - The path to save the video file.
     /// * `codec` - The codec to use for the video writer.
+    /// * `format` - The expected image format.
     /// * `fps` - The frames per second of the video.
     /// * `size` - The size of the video.
     pub fn new(
@@ -94,59 +94,70 @@ impl VideoWriter {
         appsrc.set_is_live(true);
         appsrc.set_property("block", false);
 
+        // start the pipeline and the message handling thread
+        //let handle = Self::start_pipeline(&pipeline)?;
+
         Ok(Self {
             pipeline,
             appsrc,
             fps,
             counter: 0,
+            handle: None,
         })
     }
 
-    /// Start the video writer
-    pub fn start(&self) -> Result<(), StreamCaptureError> {
+    /// Start the video writer.
+    ///
+    /// Set the pipeline to playing and launch a task to handle the bus messages.
+    pub fn start(&mut self) -> Result<(), StreamCaptureError> {
+        // set the pipeline to playing
         self.pipeline.set_state(gst::State::Playing)?;
 
         let bus = self.pipeline.bus().ok_or(StreamCaptureError::BusError)?;
-        let mut messages = bus.stream();
 
         // launch a task to handle the bus messages, exit when EOS is received and set the pipeline to null
-        task::spawn({
-            let pipeline = self.pipeline.clone();
-            async move {
-                while let Some(msg) = messages.next().await {
-                    match msg.view() {
-                        gst::MessageView::Eos(..) => {
-                            println!("EOS");
-                            break;
-                        }
-                        gst::MessageView::Error(err) => {
-                            eprintln!(
-                                "Error from {:?}: {} ({:?})",
-                                msg.src().map(|s| s.path_string()),
-                                err.error(),
-                                err.debug()
-                            );
-                        }
-                        _ => {}
+        let handle = std::thread::spawn(move || {
+            for msg in bus.iter_timed(gst::ClockTime::NONE) {
+                match msg.view() {
+                    gst::MessageView::Eos(..) => {
+                        log::debug!("gstreamer received EOS");
+                        break;
                     }
+                    gst::MessageView::Error(err) => {
+                        log::error!(
+                            "Error from {:?}: {} ({:?})",
+                            msg.src().map(|s| s.path_string()),
+                            err.error(),
+                            err.debug()
+                        );
+                        break;
+                    }
+                    _ => {}
                 }
-                pipeline.set_state(gst::State::Null).unwrap();
             }
         });
 
+        self.handle = Some(handle);
+
         Ok(())
     }
 
-    /// Stop the video writer
+    /// Stop the video writer.
+    ///
+    /// Set the pipeline to null and join the thread.
+    ///
     pub fn stop(&mut self) -> Result<(), StreamCaptureError> {
-        // Send end of stream to the appsrc
-        self.appsrc
-            .end_of_stream()
-            .map_err(StreamCaptureError::GstreamerFlowError)?;
+        // send end of stream to the appsrc
+        self.appsrc.end_of_stream()?;
+
+        if let Some(handle) = self.handle.take() {
+            handle.join().expect("Failed to join thread");
+        }
+
+        self.pipeline.set_state(gst::State::Null)?;
 
         Ok(())
     }
-
     /// Write an image to the video file.
     ///
     /// # Arguments
@@ -183,9 +194,9 @@ impl VideoWriter {
 
 impl Drop for VideoWriter {
     fn drop(&mut self) {
-        self.stop().unwrap_or_else(|e| {
-            eprintln!("Error stopping video writer: {:?}", e);
-        });
+        if self.handle.is_some() {
+            self.stop().expect("Failed to stop video writer");
+        }
     }
 }
 

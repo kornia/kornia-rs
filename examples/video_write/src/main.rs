@@ -22,6 +22,9 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // setup logging
+    let _ = env_logger::builder().is_test(true).try_init();
+
     let args = Args::parse();
 
     // Ensure the output path ends with .mp4
@@ -86,11 +89,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-    video_writer
-        .lock()
-        .await
-        .stop()
-        .expect("Failed to stop video writer");
+    // stop the video writer
+    //video_writer.lock().await.stop()?;
 
     Ok(())
 }
