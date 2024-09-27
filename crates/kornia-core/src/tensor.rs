@@ -886,6 +886,82 @@ where
     }
 }
 
+impl<T, const N: usize, A> std::fmt::Display for Tensor<T, N, A>
+where
+    T: SafeTensorType + std::fmt::Display + std::fmt::LowerExp,
+    A: TensorAllocator + 'static,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let width = self
+            .as_slice()
+            .iter()
+            .map(|v| format!("{v:.4}").len())
+            .max()
+            .unwrap();
+
+        let scientific = width > 8;
+
+        let should_mask: [bool; N] = self.shape.map(|s| s > 8);
+        let mut skip_until = 0;
+
+        for (i, v) in self.as_slice().iter().enumerate() {
+            if i < skip_until {
+                continue;
+            }
+            let mut value = String::new();
+            let mut prefix = String::new();
+            let mut suffix = String::new();
+            let mut separator = ",".to_string();
+            let mut last_size = 1;
+            for (dim, (&size, maskable)) in self.shape.iter().zip(should_mask).enumerate().rev() {
+                let prod = size * last_size;
+                if i % prod == (3 * last_size) && maskable {
+                    let pad = if dim == (N - 1) { 0 } else { dim + 1 };
+                    value = format!("{}...", " ".repeat(pad));
+                    skip_until = i + (size - 4) * last_size;
+                    prefix = "".to_string();
+                    if dim != (N - 1) {
+                        separator = "\n".repeat(N - 1 - dim);
+                    }
+                    break;
+                } else if i % prod == 0 {
+                    prefix.push('[');
+                } else if (i + 1) % prod == 0 {
+                    suffix.push(']');
+                    separator.push('\n');
+                    if dim == 0 {
+                        separator = "".to_string();
+                    }
+                } else {
+                    break;
+                }
+                last_size = prod;
+            }
+            if !prefix.is_empty() {
+                prefix = format!("{prefix:>N$}");
+            }
+
+            if value.is_empty() {
+                value = if scientific {
+                    let num = format!("{v:.4e}");
+                    let (before, after) = num.split_once('e').unwrap();
+                    let after = if let Some(stripped) = after.strip_prefix('-') {
+                        format!("-{:0>2}", &stripped)
+                    } else {
+                        format!("+{:0>2}", &after)
+                    };
+                    format!("{before}e{after}")
+                } else {
+                    let rounded = format!("{v:.4}");
+                    format!("{rounded:>width$}")
+                }
+            };
+            write!(f, "{prefix}{value}{suffix}{separator}",)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::allocator::CpuAllocator;
@@ -1302,6 +1378,105 @@ mod tests {
         assert_eq!(t.shape, [2, 2]);
         assert_eq!(t.as_slice(), &[1, 2, 3, 4]);
 
+        Ok(())
+    }
+
+    #[test]
+    fn display_2d() -> Result<(), TensorError> {
+        let data: [u8; 4] = [1, 2, 3, 4];
+        let t = Tensor::<u8, 2>::from_shape_slice([2, 2], &data, CpuAllocator)?;
+        let disp = t.to_string();
+        let lines = disp.lines().collect::<Vec<_>>();
+
+        #[rustfmt::skip]
+        assert_eq!(lines.as_slice(),
+        ["[[1,2],",
+         " [3,4]]"]);
+        Ok(())
+    }
+
+    #[test]
+    fn display_3d() -> Result<(), TensorError> {
+        let data: [u8; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let t = Tensor::<u8, 3>::from_shape_slice([2, 3, 2], &data, CpuAllocator)?;
+        let disp = t.to_string();
+        let lines = disp.lines().collect::<Vec<_>>();
+
+        #[rustfmt::skip]
+        assert_eq!(lines.as_slice(),
+        ["[[[ 1, 2],",
+         "  [ 3, 4],",
+         "  [ 5, 6]],",
+         "",
+         " [[ 7, 8],",
+         "  [ 9,10],",
+         "  [11,12]]]"]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn display_float() -> Result<(), TensorError> {
+        let data: [f32; 4] = [1.00001, 1.00009, 0.99991, 0.99999];
+        let t = Tensor::<f32, 2>::from_shape_slice([2, 2], &data, CpuAllocator)?;
+        let disp = t.to_string();
+        let lines = disp.lines().collect::<Vec<_>>();
+
+        #[rustfmt::skip]
+        assert_eq!(lines.as_slice(),
+        ["[[1.0000,1.0001],",
+         " [0.9999,1.0000]]"]);
+        Ok(())
+    }
+
+    #[test]
+    fn display_big_float() -> Result<(), TensorError> {
+        let data: [f32; 4] = [1000.00001, 1.00009, 0.99991, 0.99999];
+        let t = Tensor::<f32, 2>::from_shape_slice([2, 2], &data, CpuAllocator)?;
+        let disp = t.to_string();
+        let lines = disp.lines().collect::<Vec<_>>();
+
+        #[rustfmt::skip]
+        assert_eq!(lines.as_slice(),
+        ["[[1.0000e+03,1.0001e+00],",
+         " [9.9991e-01,9.9999e-01]]"]);
+        Ok(())
+    }
+
+    #[test]
+    fn display_big_tensor() -> Result<(), TensorError> {
+        let data: [u8; 1000] = [0; 1000];
+        let t = Tensor::<u8, 3>::from_shape_slice([10, 10, 10], &data, CpuAllocator)?;
+        let disp = t.to_string();
+        let lines = disp.lines().collect::<Vec<_>>();
+
+        #[rustfmt::skip]
+        assert_eq!(lines.as_slice(),
+        ["[[[0,0,0,...,0],",
+         "  [0,0,0,...,0],",
+         "  [0,0,0,...,0],",
+         "  ...",
+         "  [0,0,0,...,0]],",
+         "",
+         " [[0,0,0,...,0],",
+         "  [0,0,0,...,0],",
+         "  [0,0,0,...,0],",
+         "  ...",
+         "  [0,0,0,...,0]],",
+         "",
+         " [[0,0,0,...,0],",
+         "  [0,0,0,...,0],",
+         "  [0,0,0,...,0],",
+         "  ...",
+         "  [0,0,0,...,0]],",
+         "",
+         " ...",
+         "",
+         " [[0,0,0,...,0],",
+         "  [0,0,0,...,0],",
+         "  [0,0,0,...,0],",
+         "  ...",
+         "  [0,0,0,...,0]]]"]);
         Ok(())
     }
 }
