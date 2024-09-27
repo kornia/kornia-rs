@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let video_writer = VideoWriter::new(
         args.output,
         VideoWriterCodec::H264,
-        ImageFormat::Rgb8U,
+        ImageFormat::Rgb8,
         args.fps,
         frame_size,
     )?;

@@ -53,8 +53,8 @@ impl VideoWriter {
 
         // TODO: Add support for other formats
         let format = match format {
-            ImageFormat::Mono8U => "GRAY8",
-            ImageFormat::Rgb8U => "RGB",
+            ImageFormat::Mono8 => "GRAY8",
+            ImageFormat::Rgb8 => "RGB",
         };
 
         let path = path.as_ref().to_owned();
@@ -218,7 +218,7 @@ mod tests {
         let mut writer = VideoWriter::new(
             &file_path,
             VideoWriterCodec::H264,
-            ImageFormat::Rgb8U,
+            ImageFormat::Rgb8,
             30,
             size,
         )?;
@@ -249,7 +249,7 @@ mod tests {
         let mut writer = VideoWriter::new(
             &file_path,
             VideoWriterCodec::H264,
-            ImageFormat::Mono8U,
+            ImageFormat::Mono8,
             30,
             size,
         )?;
