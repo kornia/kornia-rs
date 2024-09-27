@@ -90,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     // stop the video writer
-    //video_writer.lock().await.stop()?;
+    video_writer.lock().await.stop()?;
 
     Ok(())
 }

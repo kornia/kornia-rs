@@ -202,6 +202,7 @@ mod tests {
     use super::{ImageFormat, VideoWriter, VideoWriterCodec};
     use kornia_image::{Image, ImageSize};
 
+    #[ignore = "need gstreamer in CI"]
     #[test]
     fn video_writer_rgb8u() -> Result<(), Box<dyn std::error::Error>> {
         let tmp_dir = tempfile::tempdir()?;
@@ -232,6 +233,7 @@ mod tests {
         Ok(())
     }
 
+    #[ignore = "need gstreamer in CI"]
     #[test]
     fn video_writer_mono8u() -> Result<(), Box<dyn std::error::Error>> {
         let tmp_dir = tempfile::tempdir()?;
