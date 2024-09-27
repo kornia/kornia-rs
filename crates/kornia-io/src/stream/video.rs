@@ -94,9 +94,6 @@ impl VideoWriter {
         appsrc.set_is_live(true);
         appsrc.set_property("block", false);
 
-        // start the pipeline and the message handling thread
-        //let handle = Self::start_pipeline(&pipeline)?;
-
         Ok(Self {
             pipeline,
             appsrc,
