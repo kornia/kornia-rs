@@ -194,4 +194,33 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_sum_3d_dyn() -> Result<(), TensorError> {
+        let data: [u8; 24] = [1; 24];
+        let t = Tensor::<u8, 3>::from_shape_slice([2, 3, 4], &data, CpuAllocator)?;
+
+        let agg_full: Tensor<_, 3, _> = t.sum(0).unwrap();
+        let agg_reduced: Tensor<_, 2, _> = t.sum(0).unwrap();
+        assert_eq!(agg_full.shape, [1, 3, 4]);
+        assert_eq!(agg_full.as_slice(), [2; 12]);
+        assert_eq!(agg_reduced.shape, [3, 4]);
+        assert_eq!(agg_reduced.as_slice(), [2; 12]);
+
+        let agg_full: Tensor<_, 3, _> = t.sum(1).unwrap();
+        let agg_reduced: Tensor<_, 2, _> = t.sum(1).unwrap();
+        assert_eq!(agg_full.shape, [2, 1, 4]);
+        assert_eq!(agg_full.as_slice(), [3; 8]);
+        assert_eq!(agg_reduced.shape, [2, 4]);
+        assert_eq!(agg_reduced.as_slice(), [3; 8]);
+
+        let agg_full: Tensor<_, 3, _> = t.sum(2).unwrap();
+        let agg_reduced: Tensor<_, 2, _> = t.sum(2).unwrap();
+        assert_eq!(agg_full.shape, [2, 3, 1]);
+        assert_eq!(agg_full.as_slice(), [4; 6]);
+        assert_eq!(agg_reduced.shape, [2, 3]);
+        assert_eq!(agg_reduced.as_slice(), [4; 6]);
+
+        Ok(())
+    }
 }
