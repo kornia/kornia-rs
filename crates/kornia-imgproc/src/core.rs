@@ -1,5 +1,9 @@
 // reference: https://www.strchr.com/standard_deviation_in_one_pass
 use kornia_image::{Image, ImageError};
+use rayon::{
+    iter::{IndexedParallelIterator, ParallelIterator},
+    slice::{ParallelSlice, ParallelSliceMut},
+};
 
 /// Compute the mean and standard deviation of an image.
 ///
@@ -165,6 +169,91 @@ pub fn bitwise_and<const C: usize>(
     Ok(())
 }
 
+/// Concatenate images horizontally from a vector of images into a destination image
+///
+/// # Arguments
+///
+/// * `src` - The vector of images to concatenate.
+/// * `dst` - The destination image.
+///
+/// Precondition: all images must have the same height
+/// Precondition: the output image must have enough space to store the concatenated images
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::core::hconcat;
+///
+/// let image1 = Image::<u8, 3>::new(
+///     ImageSize {
+///         width: 2,
+///         height: 2,
+///     },
+///     vec![0, 1, 2, 253, 254, 255, 128, 129, 130, 64, 65, 66],
+/// ).unwrap();
+///
+/// let image2 = Image::<u8, 3>::new(
+///     ImageSize {
+///         width: 2,
+///         height: 2,
+///     },
+///     vec![128, 129, 130, 64, 65, 66, 253, 254, 255, 0, 1, 2],
+/// ).unwrap();
+///
+/// let mut output = Image::<u8, 3>::from_size_val(
+///     ImageSize {
+///         width: 4,
+///         height: 2,
+///     },
+///     0,
+/// ).unwrap();
+///
+/// hconcat(vec![&image1, &image2], &mut output).unwrap();
+/// ```
+pub fn hconcat<const C: usize>(
+    src: Vec<&Image<u8, C>>,
+    dst: &mut Image<u8, C>,
+) -> Result<(), ImageError> {
+    // check that all images have the same height
+    let mut count_cols = 0;
+    for img in src.iter() {
+        if img.rows() != dst.rows() {
+            return Err(ImageError::InvalidImageSize(
+                img.cols(),
+                img.rows(),
+                dst.cols(),
+                dst.rows(),
+            ));
+        }
+        count_cols += img.cols();
+    }
+
+    if count_cols > dst.cols() {
+        return Err(ImageError::InvalidImageSize(
+            count_cols,
+            dst.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    let dst_cols = dst.cols() * C;
+
+    // Copy each source image into the destination image
+    for (i, img) in src.iter().enumerate() {
+        let img_cols = img.cols() * C;
+        dst.as_slice_mut()
+            .par_chunks_exact_mut(dst_cols)
+            .zip_eq(img.as_slice().par_chunks_exact(img_cols))
+            .for_each(|(dst_row, src_row)| {
+                dst_row[i * img_cols..(i + 1) * img_cols].copy_from_slice(src_row);
+            });
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
@@ -215,6 +304,62 @@ mod tests {
             output.as_slice(),
             vec![0, 1, 2, 0, 0, 0, 128, 129, 130, 0, 0, 0]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_hconcat() -> Result<(), ImageError> {
+        #[rustfmt::skip]
+        let image1 = Image::<u8, 3>::new(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            vec![
+                0, 1, 2,
+                253, 254, 255,
+                128, 129, 130,
+                64, 65, 66,
+            ],
+        )?;
+
+        #[rustfmt::skip]
+        let image2 = Image::<u8, 3>::new(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            vec![
+                128, 129, 130,
+                64, 65, 66,
+                253, 254, 255,
+                0, 1, 2,
+            ],
+        )?;
+
+        #[rustfmt::skip]
+        let expected = vec![
+            0, 1, 2, 253, 254, 255,
+            128, 129, 130, 64, 65, 66,
+            128, 129, 130, 64, 65, 66,
+            253, 254, 255, 0, 1, 2,
+        ];
+
+        let mut output = Image::<u8, 3>::from_size_val(
+            ImageSize {
+                width: 4,
+                height: 2,
+            },
+            0,
+        )?;
+
+        super::hconcat(vec![&image1, &image2], &mut output)?;
+
+        assert_eq!(output.size().width, 4);
+        assert_eq!(output.size().height, 2);
+        assert_eq!(output.num_channels(), 3);
+
+        assert_eq!(output.as_slice(), expected);
         Ok(())
     }
 }
