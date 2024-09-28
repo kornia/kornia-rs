@@ -5,7 +5,10 @@ use tokio::sync::Mutex;
 
 use kornia::{
     image::{Image, ImageSize},
-    io::stream::{video::VideoWriterCodec, V4L2CameraConfig, VideoWriter},
+    io::stream::{
+        video::{ImageFormat, VideoCodec},
+        V4L2CameraConfig, VideoWriter,
+    },
 };
 
 #[derive(Parser)]
@@ -50,7 +53,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     // start the video writer
-    let video_writer = VideoWriter::new(args.output, VideoWriterCodec::H264, args.fps, frame_size)?;
+    let video_writer = VideoWriter::new(
+        args.output,
+        VideoCodec::H264,
+        ImageFormat::Rgb8,
+        args.fps,
+        frame_size,
+    )?;
     let video_writer = Arc::new(Mutex::new(video_writer));
     video_writer.lock().await.start()?;
 
