@@ -50,3 +50,45 @@ pub fn warp_affine(
 
     Ok(image_warped.to_pyimage())
 }
+
+#[pyfunction]
+pub fn warp_perspective(
+    image: PyImage,
+    m: [f32; 9],
+    new_size: (usize, usize),
+    interpolation: &str,
+) -> PyResult<PyImage> {
+    let image: Image<u8, 3> = Image::from_pyimage(image)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+
+    let new_size = ImageSize {
+        height: new_size.0,
+        width: new_size.1,
+    };
+
+    let interpolation = match interpolation.to_lowercase().as_str() {
+        "nearest" => InterpolationMode::Nearest,
+        "bilinear" => InterpolationMode::Bilinear,
+        _ => {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Invalid interpolation mode",
+            ))
+        }
+    };
+
+    let image = image
+        .cast::<f32>()
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+
+    let mut image_warped = Image::from_size_val(new_size, 0f32)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+
+    warp::warp_perspective(&image, &mut image_warped, &m, interpolation)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+
+    let image_warped = image_warped
+        .cast::<u8>()
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+
+    Ok(image_warped.to_pyimage())
+}

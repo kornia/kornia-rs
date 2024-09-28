@@ -6,7 +6,6 @@ edition = "2021"
 homepage = "http://kornia.org"
 include = ["Cargo.toml"]
 license = "Apache-2.0"
-license-file = "LICENSE"
 repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
 version = "0.1.6-rc.5"
