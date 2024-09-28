@@ -90,7 +90,7 @@ where
 impl<T, const N: usize, A> Tensor<T, N, A>
 where
     T: SafeTensorType,
-    A: TensorAllocator,
+    A: TensorAllocator + 'static,
 {
     /// Create a new `Tensor` with uninitialized data.
     ///
@@ -875,7 +875,7 @@ where
 impl<T, const N: usize, A> Clone for Tensor<T, N, A>
 where
     T: SafeTensorType + Clone,
-    A: TensorAllocator + Clone,
+    A: TensorAllocator + Clone + 'static,
 {
     fn clone(&self) -> Self {
         Self {
@@ -889,7 +889,7 @@ where
 impl<T, const N: usize, A> std::fmt::Display for Tensor<T, N, A>
 where
     T: SafeTensorType + std::fmt::Display + std::fmt::LowerExp,
-    A: TensorAllocator,
+    A: TensorAllocator + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let width = self

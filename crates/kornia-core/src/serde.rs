@@ -7,9 +7,10 @@ use crate::{
 use serde::ser::SerializeStruct;
 use serde::Deserialize;
 
-impl<T, const N: usize, A: TensorAllocator> serde::Serialize for Tensor<T, N, A>
+impl<T, const N: usize, A> serde::Serialize for Tensor<T, N, A>
 where
     T: serde::Serialize + SafeTensorType,
+    A: TensorAllocator + 'static,
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -23,7 +24,7 @@ where
     }
 }
 
-impl<'de, T, const N: usize, A: TensorAllocator + Default> serde::Deserialize<'de>
+impl<'de, T, const N: usize, A: TensorAllocator + Default + 'static> serde::Deserialize<'de>
     for Tensor<T, N, A>
 where
     T: serde::Deserialize<'de> + SafeTensorType,
