@@ -1,4 +1,5 @@
 mod color;
+mod enhance;
 mod histogram;
 mod image;
 mod io;
@@ -26,6 +27,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(color::rgb_from_gray, m)?)?;
     m.add_function(wrap_pyfunction!(color::bgr_from_rgb, m)?)?;
     m.add_function(wrap_pyfunction!(color::gray_from_rgb, m)?)?;
+    m.add_function(wrap_pyfunction!(enhance::add_weighted, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(write_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_any, m)?)?;
