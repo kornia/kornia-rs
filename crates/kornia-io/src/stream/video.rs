@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use futures::prelude::*;
 use gst::prelude::*;
 
 use kornia_image::{Image, ImageSize};
@@ -8,9 +7,19 @@ use kornia_image::{Image, ImageSize};
 use super::StreamCaptureError;
 
 /// The codec to use for the video writer.
-pub enum VideoWriterCodec {
+pub enum VideoCodec {
     /// H.264 codec.
     H264,
+}
+
+/// The format of the image to write to the video file.
+///
+/// Usually will be the combination of the image format and the pixel type.
+pub enum ImageFormat {
+    /// 8-bit RGB format.
+    Rgb8,
+    /// 8-bit mono format.
+    Mono8,
 }
 
 /// A struct for writing video files.
@@ -18,8 +27,9 @@ pub struct VideoWriter {
     pipeline: gst::Pipeline,
     appsrc: gst_app::AppSrc,
     fps: i32,
+    format: ImageFormat,
     counter: u64,
-    handle: Option<tokio::task::JoinHandle<()>>,
+    handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl VideoWriter {
@@ -29,11 +39,13 @@ impl VideoWriter {
     ///
     /// * `path` - The path to save the video file.
     /// * `codec` - The codec to use for the video writer.
+    /// * `format` - The expected image format.
     /// * `fps` - The frames per second of the video.
     /// * `size` - The size of the video.
     pub fn new(
         path: impl AsRef<Path>,
-        codec: VideoWriterCodec,
+        codec: VideoCodec,
+        format: ImageFormat,
         fps: i32,
         size: ImageSize,
     ) -> Result<Self, StreamCaptureError> {
@@ -42,12 +54,18 @@ impl VideoWriter {
         // TODO: Add support for other codecs
         #[allow(unreachable_patterns)]
         let _codec = match codec {
-            VideoWriterCodec::H264 => "x264enc",
+            VideoCodec::H264 => "x264enc",
             _ => {
                 return Err(StreamCaptureError::InvalidConfig(
                     "Unsupported codec".to_string(),
                 ))
             }
+        };
+
+        // TODO: Add support for other formats
+        let format_str = match format {
+            ImageFormat::Mono8 => "GRAY8",
+            ImageFormat::Rgb8 => "RGB",
         };
 
         let path = path.as_ref().to_owned();
@@ -76,7 +94,7 @@ impl VideoWriter {
         appsrc.set_format(gst::Format::Time);
 
         let caps = gst::Caps::builder("video/x-raw")
-            .field("format", "RGB")
+            .field("format", format_str)
             .field("width", size.width as i32)
             .field("height", size.height as i32)
             .field("framerate", gst::Fraction::new(fps, 1))
@@ -91,32 +109,37 @@ impl VideoWriter {
             pipeline,
             appsrc,
             fps,
+            format,
             counter: 0,
             handle: None,
         })
     }
 
-    /// Start the video writer
+    /// Start the video writer.
+    ///
+    /// Set the pipeline to playing and launch a task to handle the bus messages.
     pub fn start(&mut self) -> Result<(), StreamCaptureError> {
+        // set the pipeline to playing
         self.pipeline.set_state(gst::State::Playing)?;
 
         let bus = self.pipeline.bus().ok_or(StreamCaptureError::BusError)?;
-        let mut messages = bus.stream();
 
-        let handle = tokio::spawn(async move {
-            while let Some(msg) = messages.next().await {
+        // launch a task to handle the bus messages, exit when EOS is received and set the pipeline to null
+        let handle = std::thread::spawn(move || {
+            for msg in bus.iter_timed(gst::ClockTime::NONE) {
                 match msg.view() {
                     gst::MessageView::Eos(..) => {
-                        println!("EOS");
+                        log::debug!("gstreamer received EOS");
                         break;
                     }
                     gst::MessageView::Error(err) => {
-                        eprintln!(
+                        log::error!(
                             "Error from {:?}: {} ({:?})",
                             msg.src().map(|s| s.path_string()),
                             err.error(),
                             err.debug()
                         );
+                        break;
                     }
                     _ => {}
                 }
@@ -128,38 +151,49 @@ impl VideoWriter {
         Ok(())
     }
 
-    /// Stop the video writer
+    /// Stop the video writer.
+    ///
+    /// Set the pipeline to null and join the thread.
+    ///
     pub fn stop(&mut self) -> Result<(), StreamCaptureError> {
-        // Send end of stream to the appsrc
-        self.appsrc
-            .end_of_stream()
-            .map_err(StreamCaptureError::GstreamerFlowError)?;
+        // send end of stream to the appsrc
+        self.appsrc.end_of_stream()?;
 
-        // Take the handle and await it
-        // TODO: This is a blocking call, we need to make it non-blocking
         if let Some(handle) = self.handle.take() {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    if let Err(e) = handle.await {
-                        eprintln!("Error waiting for handle: {:?}", e);
-                    }
-                });
-            });
+            handle.join().expect("Failed to join thread");
         }
 
-        // Set the pipeline to null
         self.pipeline.set_state(gst::State::Null)?;
 
         Ok(())
     }
-
     /// Write an image to the video file.
     ///
     /// # Arguments
     ///
     /// * `img` - The image to write to the video file.
-    // TODO: support write_async
-    pub fn write(&mut self, img: &Image<u8, 3>) -> Result<(), StreamCaptureError> {
+    // TODO: explore supporting write_async
+    pub fn write<const C: usize>(&mut self, img: &Image<u8, C>) -> Result<(), StreamCaptureError> {
+        // check if the image channels are correct
+        match self.format {
+            ImageFormat::Mono8 => {
+                if C != 1 {
+                    return Err(StreamCaptureError::InvalidImageFormat(format!(
+                        "Invalid number of channels: expected 1, got {}",
+                        C
+                    )));
+                }
+            }
+            ImageFormat::Rgb8 => {
+                if C != 3 {
+                    return Err(StreamCaptureError::InvalidImageFormat(format!(
+                        "Invalid number of channels: expected 3, got {}",
+                        C
+                    )));
+                }
+            }
+        }
+
         // TODO: verify is there is a cheaper way to copy the buffer
         let mut buffer = gst::Buffer::from_mut_slice(img.as_slice().to_vec());
 
@@ -182,20 +216,20 @@ impl VideoWriter {
 
 impl Drop for VideoWriter {
     fn drop(&mut self) {
-        self.stop().unwrap_or_else(|e| {
-            eprintln!("Error stopping video writer: {:?}", e);
-        });
+        if self.handle.is_some() {
+            self.stop().expect("Failed to stop video writer");
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{VideoWriter, VideoWriterCodec};
+    use super::{ImageFormat, VideoCodec, VideoWriter};
     use kornia_image::{Image, ImageSize};
 
+    #[ignore = "need gstreamer in CI"]
     #[test]
-    #[ignore = "TODO: fix this test as there's a race condition in the gstreamer flow"]
-    fn video_writer() -> Result<(), Box<dyn std::error::Error>> {
+    fn video_writer_rgb8u() -> Result<(), Box<dyn std::error::Error>> {
         let tmp_dir = tempfile::tempdir()?;
         std::fs::create_dir_all(tmp_dir.path())?;
 
@@ -205,10 +239,38 @@ mod tests {
             width: 6,
             height: 4,
         };
-        let mut writer = VideoWriter::new(&file_path, VideoWriterCodec::H264, 30, size)?;
+
+        let mut writer =
+            VideoWriter::new(&file_path, VideoCodec::H264, ImageFormat::Rgb8, 30, size)?;
         writer.start()?;
 
-        let img = Image::new(size, vec![0; size.width * size.height * 3])?;
+        let img = Image::<u8, 3>::new(size, vec![0; size.width * size.height * 3])?;
+        writer.write(&img)?;
+        writer.stop()?;
+
+        assert!(file_path.exists(), "File does not exist: {:?}", file_path);
+
+        Ok(())
+    }
+
+    #[ignore = "need gstreamer in CI"]
+    #[test]
+    fn video_writer_mono8u() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(tmp_dir.path())?;
+
+        let file_path = tmp_dir.path().join("test.mp4");
+
+        let size = ImageSize {
+            width: 6,
+            height: 4,
+        };
+
+        let mut writer =
+            VideoWriter::new(&file_path, VideoCodec::H264, ImageFormat::Mono8, 30, size)?;
+        writer.start()?;
+
+        let img = Image::<u8, 1>::new(size, vec![0; size.width * size.height])?;
         writer.write(&img)?;
         writer.stop()?;
 

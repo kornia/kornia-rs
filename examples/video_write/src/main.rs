@@ -5,7 +5,10 @@ use tokio::sync::Mutex;
 
 use kornia::{
     image::ImageSize,
-    io::stream::{video::VideoWriterCodec, V4L2CameraConfig, VideoWriter},
+    io::stream::{
+        video::{ImageFormat, VideoCodec},
+        V4L2CameraConfig, VideoWriter,
+    },
 };
 
 #[derive(Parser)]
@@ -22,6 +25,9 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // setup logging
+    let _ = env_logger::builder().is_test(true).try_init();
+
     let args = Args::parse();
 
     // Ensure the output path ends with .mp4
@@ -47,7 +53,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     // start the video writer
-    let video_writer = VideoWriter::new(args.output, VideoWriterCodec::H264, args.fps, frame_size)?;
+    let video_writer = VideoWriter::new(
+        args.output,
+        VideoCodec::H264,
+        ImageFormat::Rgb8,
+        args.fps,
+        frame_size,
+    )?;
     let video_writer = Arc::new(Mutex::new(video_writer));
     video_writer.lock().await.start()?;
 
@@ -80,11 +92,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-    video_writer
-        .lock()
-        .await
-        .stop()
-        .expect("Failed to stop video writer");
+    // stop the video writer
+    video_writer.lock().await.stop()?;
 
     Ok(())
 }

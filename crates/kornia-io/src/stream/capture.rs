@@ -122,7 +122,7 @@ impl StreamCapture {
                 }
                 _ = signal_rx.changed() => {
                     self.close()?;
-                    return Err(StreamCaptureError::PipelineCancelled);
+                    break;
                 }
                 _ = async { if let Some(ref mut s) = sig { s.as_mut().await } }, if sig.is_some() => {
                     self.close()?;
