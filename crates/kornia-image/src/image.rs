@@ -1,4 +1,4 @@
-use kornia_core::{CpuAllocator, SafeTensorType, Tensor3};
+use kornia_core::{CpuAllocator, SafeTensorType, Tensor, Tensor2, Tensor3};
 
 use crate::error::ImageError;
 
@@ -175,6 +175,27 @@ where
         let image = Image::new(size, data)?;
 
         Ok(image)
+    }
+
+    /// Create a new image from a slice of pixel data.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The size of the image in pixels.
+    /// * `data` - A slice containing the pixel data.
+    ///
+    /// # Returns
+    ///
+    /// A new image created from the given size and pixel data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the length of the data slice doesn't match the image dimensions,
+    /// or if there's an issue creating the tensor or image.
+    pub fn from_size_slice(size: ImageSize, data: &[T]) -> Result<Self, ImageError> {
+        let tensor: Tensor3<T> =
+            Tensor::from_shape_slice([size.height, size.width, C], data, CpuAllocator)?;
+        Image::try_from(tensor)
     }
 
     /// Cast the pixel data of the image to a different type.
@@ -414,9 +435,54 @@ where
     }
 }
 
+/// helper to convert an single channel tensor to a kornia image with try into
+impl<T> TryFrom<Tensor2<T>> for Image<T, 1>
+where
+    T: SafeTensorType,
+{
+    type Error = ImageError;
+
+    fn try_from(value: Tensor2<T>) -> Result<Self, Self::Error> {
+        Self::from_size_slice(
+            ImageSize {
+                width: value.shape[1],
+                height: value.shape[0],
+            },
+            value.as_slice(),
+        )
+    }
+}
+
+/// helper to convert an multi channel tensor to a kornia image with try into
+impl<T, const C: usize> TryFrom<Tensor3<T>> for Image<T, C>
+where
+    T: SafeTensorType,
+{
+    type Error = ImageError;
+
+    fn try_from(value: Tensor3<T>) -> Result<Self, Self::Error> {
+        if value.shape[2] != C {
+            return Err(ImageError::InvalidChannelShape(value.shape[2], C));
+        }
+        Ok(Self(value))
+    }
+}
+
+impl<T, const C: usize> TryInto<Tensor3<T>> for Image<T, C>
+where
+    T: SafeTensorType,
+{
+    type Error = ImageError;
+
+    fn try_into(self) -> Result<Tensor3<T>, Self::Error> {
+        Ok(self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::image::{Image, ImageError, ImageSize};
+    use kornia_core::{CpuAllocator, Tensor};
 
     #[test]
     fn image_size() {
@@ -557,6 +623,45 @@ mod tests {
         )?;
         let image_f32 = image_u8.cast_and_scale::<f32>(1. / 255.0)?;
         assert_eq!(image_f32.get([1, 0, 2]), Some(&1.0f32));
+
+        Ok(())
+    }
+
+    #[test]
+    fn image_from_tensor() -> Result<(), ImageError> {
+        let tensor =
+            Tensor::<u8, 2, CpuAllocator>::from_shape_vec([2, 3], vec![0u8; 2 * 3], CpuAllocator)?;
+
+        let image = Image::<u8, 1>::try_from(tensor.clone())?;
+        assert_eq!(image.size().width, 3);
+        assert_eq!(image.size().height, 2);
+        assert_eq!(image.num_channels(), 1);
+
+        let image_2: Image<u8, 1> = tensor.try_into()?;
+        assert_eq!(image_2.size().width, 3);
+        assert_eq!(image_2.size().height, 2);
+        assert_eq!(image_2.num_channels(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn image_from_tensor_3d() -> Result<(), ImageError> {
+        let tensor = Tensor::<u8, 3, CpuAllocator>::from_shape_vec(
+            [2, 3, 4],
+            vec![0u8; 2 * 3 * 4],
+            CpuAllocator,
+        )?;
+
+        let image = Image::<u8, 4>::try_from(tensor.clone())?;
+        assert_eq!(image.size().width, 3);
+        assert_eq!(image.size().height, 2);
+        assert_eq!(image.num_channels(), 4);
+
+        let image_2: Image<u8, 4> = tensor.try_into()?;
+        assert_eq!(image_2.size().width, 3);
+        assert_eq!(image_2.size().height, 2);
+        assert_eq!(image_2.num_channels(), 4);
 
         Ok(())
     }

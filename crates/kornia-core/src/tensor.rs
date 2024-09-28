@@ -237,7 +237,7 @@ where
         if numel != data.len() {
             return Err(TensorError::InvalidShape(numel));
         }
-        let storage = TensorStorage::from_slice(data, alloc)?;
+        let storage = TensorStorage::from_slice(data, alloc);
         let strides = get_strides_from_shape(shape);
         Ok(Self {
             storage,
