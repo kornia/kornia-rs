@@ -2,14 +2,24 @@ use std::path::Path;
 
 use gst::prelude::*;
 
-use kornia_image::{Image, ImageFormat, ImageSize};
+use kornia_image::{Image, ImageSize};
 
 use super::StreamCaptureError;
 
 /// The codec to use for the video writer.
-pub enum VideoWriterCodec {
+pub enum VideoCodec {
     /// H.264 codec.
     H264,
+}
+
+/// The format of the image to write to the video file.
+///
+/// Usually will be the combination of the image format and the pixel type.
+pub enum ImageFormat {
+    /// 8-bit RGB format.
+    Rgb8,
+    /// 8-bit mono format.
+    Mono8,
 }
 
 /// A struct for writing video files.
@@ -17,6 +27,7 @@ pub struct VideoWriter {
     pipeline: gst::Pipeline,
     appsrc: gst_app::AppSrc,
     fps: i32,
+    format: ImageFormat,
     counter: u64,
     handle: Option<std::thread::JoinHandle<()>>,
 }
@@ -33,7 +44,7 @@ impl VideoWriter {
     /// * `size` - The size of the video.
     pub fn new(
         path: impl AsRef<Path>,
-        codec: VideoWriterCodec,
+        codec: VideoCodec,
         format: ImageFormat,
         fps: i32,
         size: ImageSize,
@@ -43,7 +54,7 @@ impl VideoWriter {
         // TODO: Add support for other codecs
         #[allow(unreachable_patterns)]
         let _codec = match codec {
-            VideoWriterCodec::H264 => "x264enc",
+            VideoCodec::H264 => "x264enc",
             _ => {
                 return Err(StreamCaptureError::InvalidConfig(
                     "Unsupported codec".to_string(),
@@ -52,7 +63,7 @@ impl VideoWriter {
         };
 
         // TODO: Add support for other formats
-        let format = match format {
+        let format_str = match format {
             ImageFormat::Mono8 => "GRAY8",
             ImageFormat::Rgb8 => "RGB",
         };
@@ -83,7 +94,7 @@ impl VideoWriter {
         appsrc.set_format(gst::Format::Time);
 
         let caps = gst::Caps::builder("video/x-raw")
-            .field("format", format)
+            .field("format", format_str)
             .field("width", size.width as i32)
             .field("height", size.height as i32)
             .field("framerate", gst::Fraction::new(fps, 1))
@@ -98,6 +109,7 @@ impl VideoWriter {
             pipeline,
             appsrc,
             fps,
+            format,
             counter: 0,
             handle: None,
         })
@@ -160,13 +172,26 @@ impl VideoWriter {
     /// # Arguments
     ///
     /// * `img` - The image to write to the video file.
-    // TODO: support write_async
+    // TODO: explore supporting write_async
     pub fn write<const C: usize>(&mut self, img: &Image<u8, C>) -> Result<(), StreamCaptureError> {
         // check if the image channels are correct
-        if C != 1 && C != 3 {
-            return Err(StreamCaptureError::InvalidConfig(
-                "Invalid number of channels".to_string(),
-            ));
+        match self.format {
+            ImageFormat::Mono8 => {
+                if C != 1 {
+                    return Err(StreamCaptureError::InvalidImageFormat(format!(
+                        "Invalid number of channels: expected 1, got {}",
+                        C
+                    )));
+                }
+            }
+            ImageFormat::Rgb8 => {
+                if C != 3 {
+                    return Err(StreamCaptureError::InvalidImageFormat(format!(
+                        "Invalid number of channels: expected 3, got {}",
+                        C
+                    )));
+                }
+            }
         }
 
         // TODO: verify is there is a cheaper way to copy the buffer
@@ -199,7 +224,7 @@ impl Drop for VideoWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::{ImageFormat, VideoWriter, VideoWriterCodec};
+    use super::{ImageFormat, VideoCodec, VideoWriter};
     use kornia_image::{Image, ImageSize};
 
     #[ignore = "need gstreamer in CI"]
@@ -215,13 +240,8 @@ mod tests {
             height: 4,
         };
 
-        let mut writer = VideoWriter::new(
-            &file_path,
-            VideoWriterCodec::H264,
-            ImageFormat::Rgb8,
-            30,
-            size,
-        )?;
+        let mut writer =
+            VideoWriter::new(&file_path, VideoCodec::H264, ImageFormat::Rgb8, 30, size)?;
         writer.start()?;
 
         let img = Image::<u8, 3>::new(size, vec![0; size.width * size.height * 3])?;
@@ -246,13 +266,8 @@ mod tests {
             height: 4,
         };
 
-        let mut writer = VideoWriter::new(
-            &file_path,
-            VideoWriterCodec::H264,
-            ImageFormat::Mono8,
-            30,
-            size,
-        )?;
+        let mut writer =
+            VideoWriter::new(&file_path, VideoCodec::H264, ImageFormat::Mono8, 30, size)?;
         writer.start()?;
 
         let img = Image::<u8, 1>::new(size, vec![0; size.width * size.height])?;

@@ -71,6 +71,10 @@ pub enum StreamCaptureError {
     /// An error occurred during GStreamer to send end of stream event.
     #[error("Error ocurred in the gstreamer flow")]
     GstreamerFlowError(#[from] gst::FlowError),
+
+    /// An error occurred during checking the image format.
+    #[error("Invalid image format: {0}")]
+    InvalidImageFormat(String),
 }
 
 // ensure that can be sent over threads
