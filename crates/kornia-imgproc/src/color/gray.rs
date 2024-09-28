@@ -85,7 +85,7 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_imgproc::color::rgb_from_grayscale;
+/// use kornia_imgproc::color::rgb_from_gray;
 ///
 /// let image = Image::<f32, 1>::new(
 ///     ImageSize {
