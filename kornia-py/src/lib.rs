@@ -1,3 +1,5 @@
+mod color;
+mod enhance;
 mod histogram;
 mod image;
 mod io;
@@ -22,11 +24,16 @@ pub fn get_version() -> String {
 #[pymodule]
 pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", get_version())?;
+    m.add_function(wrap_pyfunction!(color::rgb_from_gray, m)?)?;
+    m.add_function(wrap_pyfunction!(color::bgr_from_rgb, m)?)?;
+    m.add_function(wrap_pyfunction!(color::gray_from_rgb, m)?)?;
+    m.add_function(wrap_pyfunction!(enhance::add_weighted, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(write_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_any, m)?)?;
     m.add_function(wrap_pyfunction!(resize::resize, m)?)?;
     m.add_function(wrap_pyfunction!(warp::warp_affine, m)?)?;
+    m.add_function(wrap_pyfunction!(warp::warp_perspective, m)?)?;
     m.add_function(wrap_pyfunction!(histogram::compute_histogram, m)?)?;
     m.add_class::<PyImageSize>()?;
     m.add_class::<PyImageDecoder>()?;

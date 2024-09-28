@@ -70,6 +70,93 @@ where
     Ok(())
 }
 
+/// Convert a grayscale image to an RGB image by replicating the grayscale value across all three channels.
+///
+/// # Arguments
+///
+/// * `src` - The input grayscale image.
+/// * `dst` - The output RGB image.
+///
+/// Precondition: the input image must have 1 channel.
+/// Precondition: the output image must have 3 channels.
+/// Precondition: the input and output images must have the same size.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::color::rgb_from_gray;
+///
+/// let image = Image::<f32, 1>::new(
+///     ImageSize {
+///         width: 4,
+///         height: 5,
+///     },
+///     vec![0f32; 4 * 5 * 1],
+/// )
+/// .unwrap();
+///
+/// let mut rgb = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
+///
+/// rgb_from_gray(&image, &mut rgb).unwrap();
+/// ```
+pub fn rgb_from_gray<T>(src: &Image<T, 1>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
+where
+    T: SafeTensorType,
+{
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    // parallelize the grayscale conversion by rows
+    parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
+        let gray = src_pixel[0];
+        dst_pixel.iter_mut().for_each(|dst_pixel| {
+            *dst_pixel = gray;
+        });
+    });
+
+    Ok(())
+}
+
+/// Convert an RGB image to BGR by swapping the red and blue channels.
+///
+/// # Arguments
+///
+/// * `src` - The input RGB image.
+/// * `dst` - The output BGR image.
+///
+/// Precondition: the input and output images must have the same size.
+pub fn bgr_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
+where
+    T: SafeTensorType,
+{
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
+        dst_pixel
+            .iter_mut()
+            .zip(src_pixel.iter().rev())
+            .for_each(|(d, s)| {
+                *d = *s;
+            });
+    });
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use kornia_image::{ops, Image, ImageSize};
@@ -94,14 +181,19 @@ mod tests {
 
     #[test]
     fn gray_from_rgb_regression() -> Result<(), Box<dyn std::error::Error>> {
+        #[rustfmt::skip]
         let image = Image::new(
             ImageSize {
                 width: 2,
                 height: 3,
             },
             vec![
-                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                0.0, 0.0,
+                1.0, 0.0, 0.0,
+                0.0, 1.0, 0.0,
+                0.0, 0.0, 1.0,
+                0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0,
             ],
         )?;
 
@@ -120,6 +212,78 @@ mod tests {
         for (a, b) in gray.as_slice().iter().zip(expected.as_slice().iter()) {
             assert!((a - b).abs() < 1e-6);
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn rgb_from_grayscale() -> Result<(), Box<dyn std::error::Error>> {
+        let image = Image::new(
+            ImageSize {
+                width: 2,
+                height: 3,
+            },
+            vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+        )?;
+
+        let mut rgb = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+
+        super::rgb_from_gray(&image, &mut rgb)?;
+
+        #[rustfmt::skip]
+        let expected: Image<f32, 3> = Image::new(
+            ImageSize {
+                width: 2,
+                height: 3,
+            },
+            vec![
+                0.0, 0.0, 0.0,
+                1.0, 1.0, 1.0,
+                2.0, 2.0, 2.0,
+                3.0, 3.0, 3.0,
+                4.0, 4.0, 4.0,
+                5.0, 5.0, 5.0,
+            ],
+        )?;
+
+        assert_eq!(rgb.as_slice(), expected.as_slice());
+
+        Ok(())
+    }
+
+    #[test]
+    fn bgr_from_rgb() -> Result<(), Box<dyn std::error::Error>> {
+        #[rustfmt::skip]
+        let image = Image::new(
+            ImageSize {
+                width: 1,
+                height: 3,
+            },
+            vec![
+                0.0, 1.0, 2.0,
+                3.0, 4.0, 5.0,
+                6.0, 7.0, 8.0,
+            ],
+        )?;
+
+        let mut bgr = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+
+        super::bgr_from_rgb(&image, &mut bgr)?;
+
+        #[rustfmt::skip]
+        let expected: Image<f32, 3> = Image::new(
+            ImageSize {
+                width: 1,
+                height: 3,
+            },
+            vec![
+                2.0, 1.0, 0.0,
+                5.0, 4.0, 3.0,
+                8.0, 7.0, 6.0,
+            ],
+        )?;
+
+        assert_eq!(bgr.as_slice(), expected.as_slice());
 
         Ok(())
     }
