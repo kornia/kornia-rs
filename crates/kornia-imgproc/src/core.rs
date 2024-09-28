@@ -209,7 +209,7 @@ pub fn bitwise_and<const C: usize>(
 ///     0,
 /// ).unwrap();
 ///
-/// hconcat(&vec![&image1, &image2], &mut output).unwrap();
+/// hconcat(vec![&image1, &image2], &mut output).unwrap();
 /// ```
 pub fn hconcat<const C: usize>(
     src: Vec<&Image<u8, C>>,
