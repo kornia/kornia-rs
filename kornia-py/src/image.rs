@@ -5,7 +5,6 @@ use pyo3::prelude::*;
 
 // type alias for a 3D numpy array of u8
 pub type PyImage = Py<PyArray3<u8>>;
-//pub type PyImage<'a> = Bound<'a, PyArray3<u8>>;
 
 /// Trait to convert an image to a PyImage (3D numpy array of u8)
 pub trait ToPyImage {
@@ -36,12 +35,10 @@ impl<const C: usize> FromPyImage<C> for Image<u8, C> {
             // TODO: we should find a way to avoid copying the data
             // Possible solutions:
             // - Use a custom ndarray wrapper that does not copy the data
-            // - Return direectly pyarray and use it in the Rust code
-            let data = unsafe {
-                match pyarray.as_slice() {
-                    Ok(d) => d.to_vec(),
-                    Err(_) => return Err(ImageError::ImageDataNotContiguous),
-                }
+            // - Return directly pyarray and use it in the Rust code
+            let data = match pyarray.to_vec() {
+                Ok(d) => d,
+                Err(_) => return Err(ImageError::ImageDataNotContiguous),
             };
 
             let size = ImageSize {

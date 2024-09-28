@@ -28,9 +28,9 @@ pub fn add_weighted<T, const C: usize>(
     src1: &Image<T, C>,
     alpha: T,
     src2: &Image<T, C>,
-    dst: &mut Image<T, C>,
     beta: T,
     gamma: T,
+    dst: &mut Image<T, C>,
 ) -> Result<(), ImageError>
 where
     T: num_traits::Float
@@ -96,7 +96,7 @@ mod tests {
 
         let mut weighted = Image::<f32, 1>::from_size_val(src1.size(), 0.0)?;
 
-        super::add_weighted(&src1, alpha, &src2, &mut weighted, beta, gamma)?;
+        super::add_weighted(&src1, alpha, &src2, beta, gamma, &mut weighted)?;
 
         weighted
             .as_slice()
