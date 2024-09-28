@@ -160,6 +160,54 @@ where
         }
     }
 
+    /// Creates a new `TensorStorage` from a slice of data.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - A slice containing the data to be stored.
+    /// * `alloc` - The allocator to use for creating the storage.
+    ///
+    /// # Returns
+    ///
+    /// A new `TensorStorage` instance containing a copy of the input data.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `TensorAllocatorError` if the allocation fails.
+    pub fn from_slice(data: &[T], alloc: A) -> Self {
+        let buffer = Buffer::from_slice_ref(data);
+        Self {
+            data: buffer.into(),
+            alloc: Arc::new(alloc),
+        }
+    }
+
+    /// Creates a new tensor storage from an existing raw pointer with the given allocator.
+    ///
+    /// # Arguments
+    ///
+    /// * `ptr` - The existing raw pointer to the tensor data.
+    /// * `len` - The number of elements in the tensor storage.
+    /// * `alloc` - A reference to the allocator used to allocate the tensor storage.
+    ///
+    /// # Safety
+    ///
+    /// The pointer must be properly aligned and have the correct length.
+    pub unsafe fn from_ptr(ptr: *mut T, len: usize, alloc: &A) -> Self {
+        // create the buffer
+        let buffer = Buffer::from_custom_allocation(
+            NonNull::new_unchecked(ptr as *mut u8),
+            len * std::mem::size_of::<T>(),
+            Arc::new(()),
+        );
+
+        // create tensor storage
+        Self {
+            data: buffer.into(),
+            alloc: Arc::new(alloc.clone()),
+        }
+    }
+
     /// Returns the allocator used to allocate the tensor storage.
     #[inline]
     pub fn alloc(&self) -> &A {
@@ -212,52 +260,6 @@ where
     /// Calling this method with an out-of-bounds index is undefined behavior.
     pub fn get_unchecked(&self, index: usize) -> &T {
         unsafe { self.data.get_unchecked(index) }
-    }
-
-    /// Creates a new `TensorStorage` from a slice of data.
-    ///
-    /// # Arguments
-    ///
-    /// * `data` - A slice containing the data to be stored.
-    /// * `alloc` - The allocator to use for creating the storage.
-    ///
-    /// # Returns
-    ///
-    /// A new `TensorStorage` instance containing a copy of the input data.
-    ///
-    /// # Errors
-    ///
-    /// Returns a `TensorAllocatorError` if the allocation fails.
-    pub fn from_slice(data: &[T], alloc: A) -> Result<Self, TensorAllocatorError> {
-        let mut storage = Self::new(data.len(), alloc)?;
-        storage.as_mut_slice().copy_from_slice(data);
-        Ok(storage)
-    }
-
-    /// Creates a new tensor storage from an existing raw pointer with the given allocator.
-    ///
-    /// # Arguments
-    ///
-    /// * `ptr` - The existing raw pointer to the tensor data.
-    /// * `len` - The number of elements in the tensor storage.
-    /// * `alloc` - A reference to the allocator used to allocate the tensor storage.
-    ///
-    /// # Safety
-    ///
-    /// The pointer must be properly aligned and have the correct length.
-    pub unsafe fn from_ptr(ptr: *mut T, len: usize, alloc: &A) -> Self {
-        // create the buffer
-        let buffer = Buffer::from_custom_allocation(
-            NonNull::new_unchecked(ptr as *mut u8),
-            len * std::mem::size_of::<T>(),
-            Arc::new(()),
-        );
-
-        // create tensor storage
-        Self {
-            data: buffer.into(),
-            alloc: Arc::new(alloc.clone()),
-        }
     }
 }
 
