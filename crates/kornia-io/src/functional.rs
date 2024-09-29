@@ -163,10 +163,10 @@ where
 
     let image = match img.color() {
         image::ColorType::L8 => {
-            GenericImage::L8(Image::<u8, 1>::new(size, img.into_luma8().to_vec())?)
+            GenericImage::L8(Image::<u8, 1>::new(size, img.into_luma8().into_vec())?)
         }
         image::ColorType::Rgb8 => {
-            GenericImage::Rgb8(Image::<u8, 3>::new(size, img.into_rgb8().to_vec())?)
+            GenericImage::Rgb8(Image::<u8, 3>::new(size, img.into_rgb8().into_vec())?)
         }
         _ => return Err(IoError::UnsupportedImageFormat),
     };
