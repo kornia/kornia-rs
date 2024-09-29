@@ -1,6 +1,6 @@
-use std::path::Path;
+use std::{ops::Deref, path::Path};
 
-use kornia_image::{Image, ImageSize};
+use kornia_image::{Image, ImageSize, SafeTensorType};
 
 use crate::error::IoError;
 
@@ -77,17 +77,45 @@ pub fn write_image_jpeg(file_path: impl AsRef<Path>, image: &Image<u8, 3>) -> Re
     Ok(())
 }
 
+/// A generic image type that can be any of the supported image formats.
+pub enum GenericImage {
+    /// 8-bit grayscale image
+    L8(Image<u8, 1>),
+    /// 8-bit grayscale image with alpha channel
+    La8(Image<u8, 2>),
+    /// 8-bit RGB image
+    Rgb8(Image<u8, 3>),
+    /// 8-bit RGB image with alpha channel
+    Rgba8(Image<u8, 4>),
+    /// 16-bit grayscale image
+    L16(Image<u16, 1>),
+    /// 16-bit grayscale image with alpha channel
+    La16(Image<u16, 2>),
+    /// 16-bit RGB image
+    Rgb16(Image<u16, 3>),
+    /// 16-bit RGB image with alpha channel
+    Rgba16(Image<u16, 4>),
+    /// 32-bit float RGB image
+    Rgb32F(Image<f32, 3>),
+    /// 32-bit float RGB image with alpha channel
+    Rgba32F(Image<f32, 4>),
+}
+
+// NOTE: another option is to use define types for each of the image formats and then implement
+// type Mono8 = Image<u8, 1>;
+// type Rgb8 = Image<u8, 3>;
+
 /// Reads an image from the given file path.
 ///
 /// The method tries to read from any image format supported by the image crate.
 ///
 /// # Arguments
 ///
-/// * `file_path` - The path to the image.
+/// * `file_path` - The path to a valid image file.
 ///
 /// # Returns
 ///
-/// A tensor containing the image data.
+/// An image containing the image data.
 ///
 /// # Example
 ///
@@ -101,7 +129,13 @@ pub fn write_image_jpeg(file_path: impl AsRef<Path>, image: &Image<u8, 3>) -> Re
 /// assert_eq!(image.size().height, 195);
 /// assert_eq!(image.num_channels(), 3);
 /// ```
-pub fn read_image_any(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, IoError> {
+pub fn read_image_any<T, const C: usize>(
+    file_path: impl AsRef<Path>,
+) -> Result<GenericImage, IoError>
+where
+    T: SafeTensorType,
+{
+    // resolve the file path correctly
     let file_path = file_path.as_ref().to_owned();
 
     // verify the file exists
@@ -110,25 +144,32 @@ pub fn read_image_any(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, IoErr
     }
 
     // open the file and map it to memory
+    // TODO: explore whether we can use a more efficient memory mapping approach
     let file = std::fs::File::open(file_path)?;
     let mmap = unsafe { memmap2::Mmap::map(&file)? };
 
     // decode the data directly from memory
     // TODO: update the image crate
+    // TODO: explore supporting directly the decoders
     #[allow(deprecated)]
     let img = image::io::Reader::new(std::io::Cursor::new(&mmap))
         .with_guessed_format()?
         .decode()?;
 
-    // TODO: handle more image formats
-    // return the image data
-    let image = Image::new(
-        ImageSize {
-            width: img.width() as usize,
-            height: img.height() as usize,
-        },
-        img.to_rgb8().to_vec(),
-    )?;
+    let size = ImageSize {
+        width: img.width() as usize,
+        height: img.height() as usize,
+    };
+
+    let image = match img.color() {
+        image::ColorType::L8 => {
+            GenericImage::L8(Image::<u8, 1>::new(size, img.into_luma8().to_vec())?)
+        }
+        image::ColorType::Rgb8 => {
+            GenericImage::Rgb8(Image::<u8, 3>::new(size, img.into_rgb8().to_vec())?)
+        }
+        _ => return Err(IoError::UnsupportedImageFormat),
+    };
 
     Ok(image)
 }
@@ -137,13 +178,16 @@ pub fn read_image_any(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, IoErr
 mod tests {
     use crate::error::IoError;
     use crate::functional::read_image_any;
+    use kornia_image::Image;
 
     #[cfg(feature = "jpegturbo")]
     use crate::functional::{read_image_jpeg, write_image_jpeg};
 
     #[test]
     fn read_any() -> Result<(), IoError> {
-        let image = read_image_any("../../tests/data/dog.jpeg")?;
+        // let image: Image<u8, 3> = read_image_any("../../tests/data/dog.jpeg")?;
+        let image: super::GenericImage = read_image_any("../../tests/data/dog.jpeg")?;
+        // NOTE: then how to access the size? we need to reimplment the methods ??
         assert_eq!(image.size().width, 258);
         assert_eq!(image.size().height, 195);
         Ok(())

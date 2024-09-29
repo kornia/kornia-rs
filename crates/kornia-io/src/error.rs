@@ -25,4 +25,8 @@ pub enum IoError {
     /// Error to decode the image.
     #[error("Failed to decode the image")]
     ImageDecodeError(#[from] image::ImageError),
+
+    /// Error to decode the image.
+    #[error("Unsupported image format")]
+    UnsupportedImageFormat,
 }
