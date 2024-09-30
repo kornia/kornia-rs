@@ -9,6 +9,10 @@ pub mod color;
 
 /// image basic operations module.
 pub mod core;
+
+/// image cropping module.
+pub mod crop;
+
 // NOTE: not ready yet
 // pub mod distance_transform;
 
