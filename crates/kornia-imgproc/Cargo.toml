@@ -49,3 +49,7 @@ harness = false
 [[bench]]
 name = "bench_flip"
 harness = false
+
+[[bench]]
+name = "bench_crop"
+harness = false
