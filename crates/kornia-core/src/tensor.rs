@@ -389,7 +389,7 @@ where
     ///
     /// # Returns
     ///
-    /// The list of indices to get the element from.
+    /// The array of indices to get the element from.
     pub fn get_index_unchecked(&self, offset: usize) -> [usize; N] {
         let mut idx = [0; N];
         let mut rem = offset;
@@ -399,6 +399,28 @@ where
         }
 
         idx
+    }
+
+    /// Get the index of the element at the given offset. The reverse of `Self::get_iter_offset`.
+    ///
+    /// # Arguments
+    ///
+    /// * `offset` - The offset of the element at the given index.
+    ///
+    /// # Returns
+    ///
+    /// The array of indices to get the element from.
+    ///
+    /// # Errors
+    ///
+    /// If the offset is out of bounds (>= numel), an error is returned.
+    pub fn get_index(&self, offset: usize) -> Result<[usize; N], TensorError> {
+        if offset >= self.numel() {
+            return Err(TensorError::IndexOutOfBounds(offset));
+        }
+        let idx = self.get_index_unchecked(offset);
+
+        Ok(idx)
     }
 
     /// Get the element at the given index without checking if the index is out of bounds.
@@ -1500,7 +1522,7 @@ mod tests {
     }
 
     #[test]
-    fn get_index_1d() -> Result<(), TensorError> {
+    fn get_index_unchecked_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 1>::from_shape_vec([4], data, CpuAllocator)?;
         assert_eq!(t.get_index_unchecked(0), [0]);
@@ -1511,7 +1533,7 @@ mod tests {
     }
 
     #[test]
-    fn get_index_2d() -> Result<(), TensorError> {
+    fn get_index_unchecked_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data, CpuAllocator)?;
         assert_eq!(t.get_index_unchecked(0), [0, 0]);
@@ -1522,7 +1544,7 @@ mod tests {
     }
 
     #[test]
-    fn get_index_3d() -> Result<(), TensorError> {
+    fn get_index_unchecked_3d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
         let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
         assert_eq!(t.get_index_unchecked(0), [0, 0, 0]);
@@ -1537,6 +1559,75 @@ mod tests {
         assert_eq!(t.get_index_unchecked(9), [1, 1, 0]);
         assert_eq!(t.get_index_unchecked(10), [1, 1, 1]);
         assert_eq!(t.get_index_unchecked(11), [1, 1, 2]);
+        Ok(())
+    }
+
+    #[test]
+    fn get_index_to_offset_and_back() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
+        for offset in 0..12 {
+            assert_eq!(
+                t.get_iter_offset_unchecked(t.get_index_unchecked(offset)),
+                offset
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn get_offset_to_index_and_back() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
+        for ind in [
+            [0, 0, 0],
+            [0, 0, 1],
+            [0, 0, 2],
+            [0, 1, 0],
+            [0, 1, 1],
+            [0, 1, 2],
+            [1, 0, 0],
+            [1, 0, 1],
+            [1, 0, 2],
+            [1, 1, 0],
+            [1, 1, 1],
+            [1, 1, 2],
+        ] {
+            assert_eq!(t.get_index_unchecked(t.get_iter_offset_unchecked(ind)), ind);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn get_index_1d() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 1>::from_shape_vec([4], data, CpuAllocator)?;
+        assert_eq!(t.get_index(3), Ok([3]));
+        assert!(t
+            .get_index(4)
+            .is_err_and(|x| x == TensorError::IndexOutOfBounds(4)));
+        Ok(())
+    }
+
+    #[test]
+    fn get_index_2d() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data, CpuAllocator)?;
+        assert_eq!(t.get_index_unchecked(3), [1, 1]);
+        assert!(t
+            .get_index(4)
+            .is_err_and(|x| x == TensorError::IndexOutOfBounds(4)));
+        Ok(())
+    }
+
+    #[test]
+    fn get_index_3d() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
+        assert_eq!(t.get_index_unchecked(11), [1, 1, 2]);
+        assert!(t
+            .get_index(12)
+            .is_err_and(|x| x == TensorError::IndexOutOfBounds(12)));
         Ok(())
     }
 }
