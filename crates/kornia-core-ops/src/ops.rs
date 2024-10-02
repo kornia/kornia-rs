@@ -55,7 +55,7 @@ where
     let mut data = vec![T::default(); numel];
 
     for (i, v) in tensor.as_slice().iter().enumerate() {
-        let mut out_index = tensor.get_index(i);
+        let mut out_index = tensor.get_index_unchecked(i);
         out_index[dim] = 0;
         let out_offset = out_index
             .iter()
