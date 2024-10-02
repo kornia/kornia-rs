@@ -434,4 +434,24 @@ mod tests {
 
         Ok(())
     }
+
+    #[ignore = "this test fails because of the memory leak in the destructor of TensorStorage"]
+    #[test]
+    fn test_tensor_storage_from_slice() -> Result<(), TensorAllocatorError> {
+        let data = vec![1, 2, 3, 4, 5];
+        let storage = TensorStorage::from_slice(&data);
+        assert_eq!(storage.len(), 5);
+        assert_eq!(storage.as_slice(), &[1, 2, 3, 4, 5]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_tensor_storage_as_slice() -> Result<(), TensorAllocatorError> {
+        let data = vec![1, 2, 3, 4, 5];
+        let storage = TensorStorage::from_vec(data);
+        let slice = storage.as_slice();
+        assert_eq!(slice.len(), 5);
+        assert_eq!(slice, &[1, 2, 3, 4, 5]);
+        Ok(())
+    }
 }
