@@ -3,7 +3,8 @@ use thiserror::Error;
 
 use super::{
     allocator::{CpuAllocator, TensorAllocator, TensorAllocatorError},
-    storage::{SafeTensorType, TensorStorage},
+    //storage::{SafeTensorType, TensorStorage},
+    storage::TensorStorage,
     view::TensorView,
 };
 
@@ -75,8 +76,8 @@ pub(crate) fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usiz
 /// assert_eq!(t.shape, [2, 2]);
 /// ```
 pub struct Tensor<T, const N: usize, A: TensorAllocator = CpuAllocator>
-where
-    T: SafeTensorType,
+//where
+//    T: SafeTensorType,
 {
     /// The storage of the tensor.
     pub storage: TensorStorage<T, A>,
@@ -89,7 +90,7 @@ where
 /// Implementation of the Tensor struct.
 impl<T, const N: usize, A> Tensor<T, N, A>
 where
-    T: SafeTensorType,
+    //T: SafeTensorType,
     A: TensorAllocator + 'static,
 {
     /// Create a new `Tensor` with uninitialized data.
@@ -272,7 +273,10 @@ where
     /// let t = Tensor::<u8, 3>::from_shape_val([2, 1, 3], 2, CpuAllocator);
     /// assert_eq!(t.as_slice(), vec![2, 2, 2, 2, 2, 2]);
     /// ```
-    pub fn from_shape_val(shape: [usize; N], value: T, alloc: A) -> Self {
+    pub fn from_shape_val(shape: [usize; N], value: T, alloc: A) -> Self
+    where
+        T: Clone,
+    {
         let numel = shape.iter().product::<usize>();
         let data = vec![value; numel];
         let storage = TensorStorage::from_vec(data, alloc);
@@ -545,9 +549,9 @@ where
     /// # Returns
     pub fn zeros(shape: [usize; N], alloc: A) -> Tensor<T, N, A>
     where
-        T: Default + Copy,
+        T: Clone + num_traits::Zero,
     {
-        Self::from_shape_val(shape, T::default(), alloc)
+        Self::from_shape_val(shape, T::zero(), alloc)
     }
 
     /// Apply a function to each element of the tensor.
@@ -571,10 +575,9 @@ where
     /// let t2 = t.map(|x| *x + 1);
     /// assert_eq!(t2.as_slice(), vec![2, 3, 4, 5]);
     /// ```
-    pub fn map<F, U>(&self, f: F) -> Tensor<U, N, A>
+    pub fn map<U, F>(&self, f: F) -> Tensor<U, N, A>
     where
         F: Fn(&T) -> U,
-        U: SafeTensorType,
         A: Clone,
     {
         let mut new_storage =
@@ -658,12 +661,14 @@ where
     /// ```
     pub fn cast<U>(&self) -> Tensor<U, N>
     where
-        T: SafeTensorType,
-        U: SafeTensorType + From<T>,
+        //T: SafeTensorType,
+        //U: SafeTensorType + From<T>,
+        U: From<T>,
+        T: Clone,
     {
         let mut data: Vec<U> = Vec::with_capacity(self.storage.len());
-        self.as_slice().iter().for_each(|&x| {
-            data.push(U::from(x));
+        self.as_slice().iter().for_each(|x| {
+            data.push(U::from(x.clone()));
         });
         let storage = TensorStorage::from_vec(data, CpuAllocator);
         Tensor {
@@ -765,10 +770,10 @@ where
     /// ```
     pub fn add(&self, other: &Tensor<T, N, A>) -> Tensor<T, N, A>
     where
-        T: std::ops::Add<Output = T>,
+        T: std::ops::Add<Output = T> + Clone,
         A: TensorAllocator,
     {
-        self.element_wise_op(other, |a, b| *a + *b)
+        self.element_wise_op(other, |a, b| a.clone() + b.clone())
             .expect("Tensor dimension mismatch")
     }
 
@@ -798,10 +803,10 @@ where
     /// ```
     pub fn sub(&self, other: &Tensor<T, N, A>) -> Tensor<T, N, A>
     where
-        T: std::ops::Sub<Output = T>,
+        T: std::ops::Sub<Output = T> + Clone,
         A: TensorAllocator,
     {
-        self.element_wise_op(other, |a, b| *a - *b)
+        self.element_wise_op(other, |a, b| a.clone() - b.clone())
             .expect("Tensor dimension mismatch")
     }
 
@@ -831,10 +836,10 @@ where
     /// ```
     pub fn mul(&self, other: &Tensor<T, N, A>) -> Tensor<T, N, A>
     where
-        T: std::ops::Mul<Output = T>,
+        T: std::ops::Mul<Output = T> + Clone,
         A: TensorAllocator,
     {
-        self.element_wise_op(other, |a, b| *a * *b)
+        self.element_wise_op(other, |a, b| a.clone() * b.clone())
             .expect("Tensor dimension mismatch")
     }
 
@@ -864,17 +869,18 @@ where
     /// ```
     pub fn div(&self, other: &Tensor<T, N, A>) -> Tensor<T, N, A>
     where
-        T: std::ops::Div<Output = T>,
+        T: std::ops::Div<Output = T> + Clone,
         A: TensorAllocator,
     {
-        self.element_wise_op(other, |a, b| *a / *b)
+        self.element_wise_op(other, |a, b| a.clone() / b.clone())
             .expect("Tensor dimension mismatch")
     }
 }
 
 impl<T, const N: usize, A> Clone for Tensor<T, N, A>
 where
-    T: SafeTensorType + Clone,
+    //T: SafeTensorType + Clone,
+    T: Clone,
     A: TensorAllocator + Clone + 'static,
 {
     fn clone(&self) -> Self {
@@ -888,7 +894,8 @@ where
 
 impl<T, const N: usize, A> std::fmt::Display for Tensor<T, N, A>
 where
-    T: SafeTensorType + std::fmt::Display + std::fmt::LowerExp,
+    //T: SafeTensorType + std::fmt::Display + std::fmt::LowerExp,
+    T: std::fmt::Display + std::fmt::LowerExp,
     A: TensorAllocator + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

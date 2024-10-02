@@ -1,22 +1,23 @@
 use super::allocator::{TensorAllocator, TensorAllocatorError};
-use arrow_buffer::{Buffer, ScalarBuffer};
+use arrow_buffer::{buffer, Buffer, ScalarBuffer};
 use std::sync::Arc;
 use std::{alloc::Layout, ptr::NonNull};
+use std::{marker::PhantomData, ops::Deref};
 
 /// A trait to define the types that can be used in a tensor.
-pub trait SafeTensorType: arrow_buffer::ArrowNativeType + std::panic::RefUnwindSafe {}
-
-/// Implement the `SafeTensorType` trait for the supported types.
-impl SafeTensorType for u8 {}
-impl SafeTensorType for u16 {}
-impl SafeTensorType for u32 {}
-impl SafeTensorType for u64 {}
-impl SafeTensorType for i8 {}
-impl SafeTensorType for i16 {}
-impl SafeTensorType for i32 {}
-impl SafeTensorType for i64 {}
-impl SafeTensorType for f32 {}
-impl SafeTensorType for f64 {}
+//pub trait SafeTensorType: arrow_buffer::ArrowNativeType + std::panic::RefUnwindSafe {}
+//
+///// Implement the `SafeTensorType` trait for the supported types.
+//impl SafeTensorType for u8 {}
+//impl SafeTensorType for u16 {}
+//impl SafeTensorType for u32 {}
+//impl SafeTensorType for u64 {}
+//impl SafeTensorType for i8 {}
+//impl SafeTensorType for i16 {}
+//impl SafeTensorType for i32 {}
+//impl SafeTensorType for i64 {}
+//impl SafeTensorType for f32 {}
+//impl SafeTensorType for f64 {}
 
 /// Represents the owner of custom Arrow Buffer memory allocations.
 ///
@@ -42,6 +43,18 @@ impl<A: TensorAllocator> Drop for TensorCustomAllocationOwner<A> {
     }
 }
 
+type TensorBuffer<A> = TensorCustomAllocationOwner<A>;
+
+impl<A: TensorAllocator> Clone for TensorBuffer<A> {
+    fn clone(&self) -> Self {
+        Self {
+            alloc: self.alloc.clone(),
+            layout: self.layout,
+            ptr: self.ptr.clone(),
+        }
+    }
+}
+
 /// Represents a contiguous memory region that can be shared with other buffers and across thread boundaries.
 ///
 /// This struct provides methods to create, access, and manage tensor storage using a custom allocator.
@@ -49,19 +62,18 @@ impl<A: TensorAllocator> Drop for TensorCustomAllocationOwner<A> {
 /// # Safety
 ///
 /// The tensor storage must be properly aligned and have the correct size.
-pub struct TensorStorage<T, A: TensorAllocator>
-where
-    T: SafeTensorType,
-{
+pub struct TensorStorage<T, A: TensorAllocator> {
     /// The buffer containing the tensor storage.
-    data: ScalarBuffer<T>,
+    //data: Buffer,
+    buffer: TensorBuffer<A>,
     /// The allocator used to allocate the tensor storage.
     alloc: Arc<A>,
+    /// The marker to hold the tensor type.
+    marker: PhantomData<T>,
 }
 
 impl<T, A> TensorStorage<T, A>
 where
-    T: SafeTensorType + Clone,
     A: TensorAllocator + 'static,
 {
     /// Creates a new tensor storage with the given length and allocator.
@@ -79,21 +91,22 @@ where
         let layout = Layout::array::<T>(len).map_err(TensorAllocatorError::LayoutError)?;
         let ptr = NonNull::new(alloc.alloc(layout)?).ok_or(TensorAllocatorError::NullPointer)?;
         let alloc = Arc::new(alloc);
-        let owner = TensorCustomAllocationOwner {
+        let buffer = TensorBuffer {
             alloc: alloc.clone(),
             layout,
             ptr,
         };
 
         // create the buffer
-        let buffer = unsafe {
-            // SAFETY: `ptr` is non-null and properly aligned, and `len` is the correct size.
-            Buffer::from_custom_allocation(ptr, len * std::mem::size_of::<T>(), Arc::new(owner))
-        };
+        //let buffer = unsafe {
+        //    // SAFETY: `ptr` is non-null and properly aligned, and `len` is the correct size.
+        //    Buffer::from_custom_allocation(ptr, len * std::mem::size_of::<T>(), Arc::new(owner))
+        //};
 
         Ok(Self {
-            data: buffer.into(),
+            buffer,
             alloc,
+            marker: PhantomData,
         })
     }
 
@@ -121,12 +134,23 @@ where
 
         // create immutable buffer from vec
         // NOTE: this is a temporary solution until we have a custom allocator for the buffer
-        let buffer = Buffer::from_vec(vec);
+        let layout = Layout::array::<T>(vec.len()).unwrap();
+        let ptr = unsafe { NonNull::new_unchecked(vec.as_ptr() as *mut u8) };
+        std::mem::forget(vec);
+
+        let alloc = Arc::new(alloc);
+
+        let buffer = TensorBuffer {
+            alloc: alloc.clone(),
+            layout,
+            ptr,
+        };
 
         // create tensor storage
         Self {
-            data: buffer.into(),
-            alloc: Arc::new(alloc),
+            buffer,
+            alloc: alloc.clone(), // NOTE: redundant
+            marker: PhantomData,
         }
     }
 
@@ -148,16 +172,25 @@ where
     /// In the best case, this operation is O(1) when the internal buffer can be directly converted.
     /// In the worst case, it's O(n) where n is the number of elements, as it may need to copy all data.
     pub fn into_vec(self) -> Vec<T> {
-        match self.data.into_inner().into_vec() {
-            Ok(vec) => vec,
-            Err(buf) => unsafe {
-                std::slice::from_raw_parts(
-                    buf.as_ptr() as *const T,
-                    buf.len() / std::mem::size_of::<T>(),
-                )
-                .to_vec()
-            },
-        }
+        // TODO: pass the allocator to the Vec::from_raw_parts
+        let len = self.buffer.layout.size();
+        let capacity = len / std::mem::size_of::<T>();
+        let ptr = self.buffer.ptr.as_ptr() as *mut T;
+        std::mem::forget(self.buffer);
+
+        let vec = unsafe { Vec::from_raw_parts(ptr, len, capacity) };
+        vec
+
+        //match self.data.into_vec() {
+        //    Ok(vec) => vec,
+        //    Err(buf) => unsafe {
+        //        std::slice::from_raw_parts(
+        //            buf.as_ptr() as *const T,
+        //            buf.len() / std::mem::size_of::<T>(),
+        //        )
+        //        .to_vec()
+        //    },
+        //}
     }
 
     /// Creates a new `TensorStorage` from a slice of data.
@@ -175,10 +208,20 @@ where
     ///
     /// Returns a `TensorAllocatorError` if the allocation fails.
     pub fn from_slice(data: &[T], alloc: A) -> Self {
-        let buffer = Buffer::from_slice_ref(data);
+        let ptr = unsafe { NonNull::new_unchecked(data.as_ptr() as *mut u8) };
+        let layout = Layout::array::<T>(data.len()).unwrap();
+        let alloc = Arc::new(alloc);
+
+        let buffer = TensorBuffer {
+            alloc: alloc.clone(),
+            layout,
+            ptr,
+        };
+
         Self {
-            data: buffer.into(),
-            alloc: Arc::new(alloc),
+            buffer,
+            alloc: alloc.clone(), // NOTE: redundant
+            marker: PhantomData,
         }
     }
 
@@ -193,20 +236,34 @@ where
     /// # Safety
     ///
     /// The pointer must be properly aligned and have the correct length.
-    pub unsafe fn from_ptr(ptr: *mut T, len: usize, alloc: &A) -> Self {
-        // create the buffer
-        let buffer = Buffer::from_custom_allocation(
-            NonNull::new_unchecked(ptr as *mut u8),
-            len * std::mem::size_of::<T>(),
-            Arc::new(()),
-        );
+    //pub unsafe fn from_ptr(ptr: *mut T, len: usize, alloc: &A) -> Self {
+    //    // create the buffer
+    //    //let buffer = Buffer::from_custom_allocation(
+    //    //    NonNull::new_unchecked(ptr as *mut u8),
+    //    //    len * std::mem::size_of::<T>(),
+    //    //    Arc::new(()),
+    //    //);
 
-        // create tensor storage
-        Self {
-            data: buffer.into(),
-            alloc: Arc::new(alloc.clone()),
-        }
-    }
+    //    //// create tensor storage
+    //    //Self {
+    //    //    data: buffer.into(),
+    //    //    alloc: Arc::new(alloc.clone()),
+    //    //    marker: PhantomData,
+    //    //}
+    //    let ptr = unsafe { NonNull::new_unchecked(ptr as *mut u8) };
+    //    let layout = Layout::array::<T>(len).unwrap();
+    //    let alloc = Arc::new(alloc);
+    //    let buffer = TensorBuffer {
+    //        alloc: alloc.clone(),
+    //        layout,
+    //        ptr,
+    //    };
+    //    Self {
+    //        buffer,
+    //        alloc: alloc.clone(), // NOTE: redundant
+    //        marker: PhantomData,
+    //    }
+    //}
 
     /// Returns the allocator used to allocate the tensor storage.
     #[inline]
@@ -217,40 +274,44 @@ where
     /// Returns the length of the tensor storage.
     #[inline]
     pub fn len(&self) -> usize {
-        self.data.len()
+        //self.data.len()
+        self.buffer.layout.size()
     }
 
     /// Returns whether the tensor storage is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        //self.data.is_empty()
+        self.buffer.layout.size() == 0
     }
 
     /// Returns the data pointer.
     #[inline]
     pub fn as_ptr(&self) -> *const T {
-        self.data.as_ptr()
+        //self.data.as_ptr() as *const T
+        self.buffer.ptr.as_ptr() as *const T
     }
 
     /// Returns the data pointer as a mutable pointer.
     #[inline]
     pub fn as_mut_ptr(&mut self) -> *mut T {
-        self.as_mut_slice().as_mut_ptr()
+        //self.as_mut_slice().as_mut_ptr()
+        self.buffer.ptr.as_ptr() as *mut T
     }
 
     /// Returns the data pointer as a slice.
     pub fn as_slice(&self) -> &[T] {
-        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len()) }
+        unsafe { std::slice::from_raw_parts(self.as_ptr() as *const T, self.len()) }
     }
 
     /// Returns the data pointer as a mutable slice.
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        unsafe { std::slice::from_raw_parts_mut(self.data.as_ptr() as *mut T, self.len()) }
+        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr() as *mut T, self.len()) }
     }
 
     /// Returns a reference to the data at the specified index, if it is within bounds.
     pub fn get(&self, index: usize) -> Option<&T> {
-        self.data.get(index)
+        self.as_slice().get(index)
     }
 
     /// Returns a reference to the data at the specified index without bounds checking.
@@ -259,21 +320,27 @@ where
     ///
     /// Calling this method with an out-of-bounds index is undefined behavior.
     pub fn get_unchecked(&self, index: usize) -> &T {
-        unsafe { self.data.get_unchecked(index) }
+        unsafe { self.as_slice().get_unchecked(index) }
+        //unsafe { self.data.get_unchecked(index) }
     }
 }
 
 /// A new `TensorStorage` instance with cloned data if successful, otherwise an error.
 impl<T, A> Clone for TensorStorage<T, A>
 where
-    T: SafeTensorType + Clone,
+    //T: SafeTensorType + Clone,
     A: TensorAllocator + Clone + 'static,
 {
     fn clone(&self) -> Self {
-        let mut new_storage = Self::new(self.len(), (*self.alloc).clone())
-            .expect("Failed to allocate memory for cloned TensorStorage");
-        new_storage.as_mut_slice().clone_from_slice(self.as_slice());
-        new_storage
+        //let mut new_storage = Self::new(self.len(), (*self.alloc).clone())
+        //    .expect("Failed to allocate memory for cloned TensorStorage");
+        //new_storage.as_mut_slice().clone_from_slice(self.as_slice());
+        //new_storage
+        Self {
+            buffer: self.buffer.clone(),
+            alloc: self.alloc.clone(),
+            marker: PhantomData,
+        }
     }
 }
 
@@ -302,7 +369,7 @@ mod tests {
         let storage = TensorStorage::<u64, _>::new(1024, allocator)?;
 
         // check alignment
-        let ptr = storage.data.as_ptr() as usize;
+        let ptr = storage.as_ptr() as usize;
         let alignment = std::mem::align_of::<u64>();
         assert_eq!(ptr % alignment, 0);
         Ok(())
@@ -358,27 +425,27 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_tensor_storage_from_cpu_ptr() -> Result<(), TensorAllocatorError> {
-        let len = 1024;
-        let layout = Layout::array::<u8>(len).unwrap();
-        let allocator = CpuAllocator;
+    //#[test]
+    //fn test_tensor_storage_from_cpu_ptr() -> Result<(), TensorAllocatorError> {
+    //    let len = 1024;
+    //    let layout = Layout::array::<u8>(len).unwrap();
+    //    let allocator = CpuAllocator;
 
-        // Allocate CPU memory
-        let ptr = allocator.alloc(layout)?;
+    //    // Allocate CPU memory
+    //    let ptr = allocator.alloc(layout)?;
 
-        // Wrap the existing CPU pointer in a `TensorStorage`
-        let storage = unsafe { TensorStorage::from_ptr(ptr, len, &allocator) };
+    //    // Wrap the existing CPU pointer in a `TensorStorage`
+    //    let storage = unsafe { TensorStorage::from_ptr(ptr, len, &allocator) };
 
-        // Use the `TensorStorage` as needed
-        assert_eq!(storage.len(), len);
-        assert!(!storage.is_empty());
+    //    // Use the `TensorStorage` as needed
+    //    assert_eq!(storage.len(), len);
+    //    assert!(!storage.is_empty());
 
-        // Deallocate CPU memory
-        allocator.dealloc(ptr, layout);
+    //    // Deallocate CPU memory
+    //    allocator.dealloc(ptr, layout);
 
-        Ok(())
-    }
+    //    Ok(())
+    //}
 
     #[test]
     fn test_tensor_storage_into_vec() {
@@ -464,19 +531,19 @@ mod tests {
         // TensorStorage::from_ptr() does not take ownership of buffer. So the memory should not be
         // deallocated when the TensorStorage goes out of scope.
         // In this case, the memory will be deallocated when the vector goes out of scope.
-        {
-            let mut original_vec = Vec::<u8>::with_capacity(len);
-            let original_ptr = original_vec.as_ptr();
-            {
-                let storage = unsafe {
-                    TensorStorage::<u8, _>::from_ptr(original_vec.as_mut_ptr(), len, &allocator)
-                };
-                assert_eq!(*allocator.bytes_allocated.borrow(), 0);
+        //{
+        //    let mut original_vec = Vec::<u8>::with_capacity(len);
+        //    let original_ptr = original_vec.as_ptr();
+        //    {
+        //        let storage = unsafe {
+        //            TensorStorage::<u8, _>::from_ptr(original_vec.as_mut_ptr(), len, &allocator)
+        //        };
+        //        assert_eq!(*allocator.bytes_allocated.borrow(), 0);
 
-                assert_eq!(storage.as_ptr(), original_ptr);
-            }
-            assert_eq!(*allocator.bytes_allocated.borrow(), 0);
-        }
+        //        assert_eq!(storage.as_ptr(), original_ptr);
+        //    }
+        //    assert_eq!(*allocator.bytes_allocated.borrow(), 0);
+        //}
 
         Ok(())
     }
