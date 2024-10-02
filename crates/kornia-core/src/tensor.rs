@@ -87,11 +87,9 @@ pub struct Tensor<T, const N: usize, A: TensorAllocator = CpuAllocator>
     pub strides: [usize; N],
 }
 
-/// Implementation of the Tensor struct.
-impl<T, const N: usize, A> Tensor<T, N, A>
+impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A>
 where
-    //T: SafeTensorType,
-    A: TensorAllocator + 'static,
+    A: 'static,
 {
     /// Create a new `Tensor` with uninitialized data.
     ///
@@ -117,7 +115,14 @@ where
             strides,
         })
     }
+}
 
+/// Implementation of the Tensor struct.
+impl<T, const N: usize> Tensor<T, N, CpuAllocator>
+where
+    //T: SafeTensorType,
+    A: TensorAllocator + 'static,
+{
     /// Get the data of the tensor as a slice.
     ///
     /// # Returns
@@ -193,12 +198,12 @@ where
     /// let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
     /// assert_eq!(t.shape, [2, 2]);
     /// ```
-    pub fn from_shape_vec(shape: [usize; N], data: Vec<T>, alloc: A) -> Result<Self, TensorError> {
+    pub fn from_shape_vec(shape: [usize; N], data: Vec<T>) -> Result<Self, TensorError> {
         let numel = shape.iter().product::<usize>();
         if numel != data.len() {
             return Err(TensorError::InvalidShape(numel));
         }
-        let storage = TensorStorage::from_vec(data, alloc);
+        let storage = TensorStorage::from_vec(data);
         let strides = get_strides_from_shape(shape);
         Ok(Self {
             storage,
@@ -213,7 +218,6 @@ where
     ///
     /// * `shape` - An array containing the shape of the tensor.
     /// * `data` - A slice containing the data of the tensor.
-    /// * `alloc` - The allocator to use.
     ///
     /// # Returns
     ///
@@ -233,12 +237,12 @@ where
     /// assert_eq!(t.shape, [2, 2]);
     /// assert_eq!(t.as_slice(), &[1, 2, 3, 4]);
     /// ```
-    pub fn from_shape_slice(shape: [usize; N], data: &[T], alloc: A) -> Result<Self, TensorError> {
+    pub fn from_shape_slice(shape: [usize; N], data: &[T]) -> Result<Self, TensorError> {
         let numel = shape.iter().product::<usize>();
         if numel != data.len() {
             return Err(TensorError::InvalidShape(numel));
         }
-        let storage = TensorStorage::from_slice(data, alloc);
+        let storage = TensorStorage::from_slice(data);
         let strides = get_strides_from_shape(shape);
         Ok(Self {
             storage,
@@ -253,7 +257,6 @@ where
     ///
     /// * `shape` - An array containing the shape of the tensor.
     /// * `value` - The default value to fill the tensor with.
-    /// * `alloc` - The allocator to use.
     ///
     /// # Returns
     ///
@@ -273,13 +276,13 @@ where
     /// let t = Tensor::<u8, 3>::from_shape_val([2, 1, 3], 2, CpuAllocator);
     /// assert_eq!(t.as_slice(), vec![2, 2, 2, 2, 2, 2]);
     /// ```
-    pub fn from_shape_val(shape: [usize; N], value: T, alloc: A) -> Self
+    pub fn from_shape_val(shape: [usize; N], value: T) -> Self
     where
         T: Clone,
     {
         let numel = shape.iter().product::<usize>();
         let data = vec![value; numel];
-        let storage = TensorStorage::from_vec(data, alloc);
+        let storage = TensorStorage::from_vec(data);
         let strides = get_strides_from_shape(shape);
         Self {
             storage,
@@ -296,7 +299,6 @@ where
     ///
     /// * `shape` - An array containing the shape of the tensor.
     /// * `f` - The function to generate the data.
-    /// * `alloc` - The allocator to use.
     ///
     /// # Returns
     ///
@@ -313,7 +315,7 @@ where
     /// let t = Tensor::<u8, 2>::from_shape_fn([2, 2], |[i, j]| (i * 2 + j) as u8, CpuAllocator);
     /// assert_eq!(t.as_slice(), vec![0, 1, 2, 3]);
     /// ```
-    pub fn from_shape_fn<F>(shape: [usize; N], f: F, alloc: A) -> Self
+    pub fn from_shape_fn<F>(shape: [usize; N], f: F) -> Self
     where
         F: Fn([usize; N]) -> T,
     {
@@ -329,7 +331,7 @@ where
                 f(index)
             })
             .collect();
-        let storage = TensorStorage::from_vec(data, alloc);
+        let storage = TensorStorage::from_vec(data);
         let strides = get_strides_from_shape(shape);
         Self {
             storage,
@@ -580,9 +582,8 @@ where
         F: Fn(&T) -> U,
         A: Clone,
     {
-        let mut new_storage =
-            TensorStorage::<U, A>::new(self.numel(), self.storage.alloc().clone())
-                .expect("Failed to allocate new storage");
+        let mut new_storage = TensorStorage::<U, A>::new(self.numel(), self.storage.alloc())
+            .expect("Failed to allocate new storage");
 
         new_storage
             .as_mut_slice()
