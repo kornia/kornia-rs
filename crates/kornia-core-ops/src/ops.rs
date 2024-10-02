@@ -4,6 +4,30 @@ use crate::error::TensorOpsError;
 
 /// Compute the sum of the elements in the tensor along dimension `dim`
 ///
+/// # Arguments
+///
+/// * `tensor` - The tensor to sum the elements of.
+/// * `dim` - The index of the dimension/axis to perform the sum operation over.
+///
+/// # Returns
+///
+/// A new `Tensor` containing the element sums.
+///
+/// # Errors
+///
+/// If the requested dimension is greater than the number of axes of the tensor, an error is returned.
+///
+/// # Example
+///
+/// ```
+/// use kornia_core::{Tensor, CpuAllocator};
+///
+/// let data: [u8; 6] = [1, 1, 1, 1, 1, 1];
+/// let t = Tensor::<u8, 2>::from_shape_slice([2, 3], &data, CpuAllocator)?;
+/// let agg = sum_elements(&t, 1)?;
+/// assert_eq!(agg.shape, [2, 1]);
+/// assert_eq!(agg.as_slice(), [3, 3]);
+/// ```
 pub fn sum_elements<T, const N: usize, A>(
     tensor: &Tensor<T, N, A>,
     dim: usize,
