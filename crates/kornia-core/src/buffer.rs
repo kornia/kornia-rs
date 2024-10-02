@@ -75,6 +75,12 @@ impl<T, A: TensorAllocator> TensorBuffer<T, A> {
         self.ptr.as_ptr() as *mut T
     }
 
+    /// Returns the maximum number of elements that can be stored in this `TensorBuffer`.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.len / std::mem::size_of::<T>()
+    }
+
     /// Returns the number of bytes contained in this `TensorBuffer`.
     #[inline]
     pub fn len(&self) -> usize {
@@ -161,7 +167,7 @@ mod tests {
 
         assert_eq!(buffer.ptr.as_ptr(), ptr.as_ptr());
         assert_eq!(buffer.layout, layout);
-        assert_eq!(buffer.layout.size(), size * std::mem::size_of::<u8>());
+        assert_eq!(buffer.capacity(), size);
 
         Ok(())
     }
@@ -183,7 +189,7 @@ mod tests {
 
         assert_eq!(buffer.as_ptr(), ptr.as_ptr() as *const f32);
         assert_eq!(buffer.layout, layout);
-        assert_eq!(buffer.layout.size(), size * std::mem::size_of::<f32>());
+        assert_eq!(buffer.capacity(), size);
         assert!(buffer.alloc.is_some());
 
         Ok(())

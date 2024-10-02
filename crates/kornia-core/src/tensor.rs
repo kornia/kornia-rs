@@ -346,7 +346,7 @@ where
     /// The number of elements in the tensor.
     #[inline]
     pub fn numel(&self) -> usize {
-        self.storage.len()
+        self.storage.capacity()
     }
 
     /// Get the offset of the element at the given index.

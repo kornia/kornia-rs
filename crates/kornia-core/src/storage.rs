@@ -64,16 +64,12 @@ impl<T> TensorStorage<T, CpuAllocator> {
     /// # Errors
     ///
     /// Returns a `TensorAllocatorError` if the allocation fails.
-    pub fn from_slice(data: &[T]) -> Self {
-        let ptr = unsafe { NonNull::new_unchecked(data.as_ptr() as *mut T) };
-        let layout = Layout::array::<T>(data.len()).unwrap();
-
-        let buffer = TensorBuffer {
-            ptr,
-            len: data.len(),
-            alloc: Some(CpuAllocator),
-            layout,
-        };
+    pub fn from_slice(data: &[T]) -> Self
+    where
+        T: Clone,
+    {
+        // TODO: how to zero copy?
+        let buffer = TensorBuffer::from_vec(data.to_vec());
 
         Self { buffer }
     }
@@ -152,6 +148,12 @@ where
     //    }
     //}
 
+    /// Returns the capacity of the tensor storage.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.buffer.capacity()
+    }
+
     /// Returns the length of the tensor storage.
     #[inline]
     pub fn len(&self) -> usize {
@@ -178,12 +180,12 @@ where
 
     /// Returns the data pointer as a slice.
     pub fn as_slice(&self) -> &[T] {
-        unsafe { std::slice::from_raw_parts(self.as_ptr() as *const T, self.len()) }
+        unsafe { std::slice::from_raw_parts(self.as_ptr() as *const T, self.capacity()) }
     }
 
     /// Returns the data pointer as a mutable slice.
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr() as *mut T, self.len()) }
+        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr() as *mut T, self.capacity()) }
     }
 
     /// Returns a reference to the data at the specified index, if it is within bounds.

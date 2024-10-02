@@ -1,5 +1,3 @@
-use kornia_core::SafeTensorType;
-
 use crate::{Image, ImageError};
 
 /// Cast the pixel data of an image to a different type.
@@ -37,8 +35,8 @@ pub fn cast_and_scale<T, U, const C: usize>(
     scale: U,
 ) -> Result<(), ImageError>
 where
-    T: Copy + num_traits::NumCast + SafeTensorType,
-    U: Copy + num_traits::NumCast + std::ops::Mul<U, Output = U> + SafeTensorType,
+    T: Copy + num_traits::NumCast,
+    U: Copy + num_traits::NumCast + std::ops::Mul<U, Output = U>,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
