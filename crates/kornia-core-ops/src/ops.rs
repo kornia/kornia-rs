@@ -76,52 +76,52 @@ mod tests {
     }
 
     #[test]
-    fn test_sum_2d() -> Result<(), TensorError> {
+    fn test_sum_2d() -> Result<(), TensorOpsError> {
         let data: [u8; 6] = [1, 1, 1, 1, 1, 1];
         let t = Tensor::<u8, 2>::from_shape_slice([2, 3], &data, CpuAllocator)?;
         let t_f32 = t.cast::<f32>();
         let t_i32 = t.cast::<i32>();
 
-        let agg = sum_elements(&t, 1).unwrap();
+        let agg = sum_elements(&t, 1)?;
         assert_eq!(agg.shape, [2, 1]);
         assert_eq!(agg.as_slice(), [3, 3]);
 
-        assert_eq!(sum_elements(&t_f32, 1).unwrap().as_slice(), [3., 3.]);
-        assert_eq!(sum_elements(&t_i32, 1).unwrap().as_slice(), [3, 3]);
+        assert_eq!(sum_elements(&t_f32, 1)?.as_slice(), [3., 3.]);
+        assert_eq!(sum_elements(&t_i32, 1)?.as_slice(), [3, 3]);
 
-        let agg = sum_elements(&t, 0).unwrap();
+        let agg = sum_elements(&t, 0)?;
         assert_eq!(agg.shape, [1, 3]);
         assert_eq!(agg.as_slice(), [2, 2, 2]);
 
-        assert_eq!(sum_elements(&t_f32, 0).unwrap().as_slice(), [2., 2., 2.]);
-        assert_eq!(sum_elements(&t_i32, 0).unwrap().as_slice(), [2, 2, 2]);
+        assert_eq!(sum_elements(&t_f32, 0)?.as_slice(), [2., 2., 2.]);
+        assert_eq!(sum_elements(&t_i32, 0)?.as_slice(), [2, 2, 2]);
         Ok(())
     }
 
     #[test]
-    fn test_sum_3d() -> Result<(), TensorError> {
+    fn test_sum_3d() -> Result<(), TensorOpsError> {
         let data: [u8; 24] = [1; 24];
         let t = Tensor::<u8, 3>::from_shape_slice([2, 3, 4], &data, CpuAllocator)?;
         let t_f32 = t.cast::<f32>();
         let t_i32 = t.cast::<i32>();
 
-        let agg = sum_elements(&t, 0).unwrap();
+        let agg = sum_elements(&t, 0)?;
         assert_eq!(agg.shape, [1, 3, 4]);
         assert_eq!(agg.as_slice(), [2; 12]);
-        assert_eq!(sum_elements(&t_f32, 0).unwrap().as_slice(), [2.; 12]);
-        assert_eq!(sum_elements(&t_i32, 0).unwrap().as_slice(), [2; 12]);
+        assert_eq!(sum_elements(&t_f32, 0)?.as_slice(), [2.; 12]);
+        assert_eq!(sum_elements(&t_i32, 0)?.as_slice(), [2; 12]);
 
-        let agg = sum_elements(&t, 1).unwrap();
+        let agg = sum_elements(&t, 1)?;
         assert_eq!(agg.shape, [2, 1, 4]);
         assert_eq!(agg.as_slice(), [3; 8]);
-        assert_eq!(sum_elements(&t_f32, 1).unwrap().as_slice(), [3.; 8]);
-        assert_eq!(sum_elements(&t_i32, 1).unwrap().as_slice(), [3; 8]);
+        assert_eq!(sum_elements(&t_f32, 1)?.as_slice(), [3.; 8]);
+        assert_eq!(sum_elements(&t_i32, 1)?.as_slice(), [3; 8]);
 
-        let agg = sum_elements(&t, 2).unwrap();
+        let agg = sum_elements(&t, 2)?;
         assert_eq!(agg.shape, [2, 3, 1]);
         assert_eq!(agg.as_slice(), [4; 6]);
-        assert_eq!(sum_elements(&t_f32, 2).unwrap().as_slice(), [4.; 6]);
-        assert_eq!(sum_elements(&t_i32, 2).unwrap().as_slice(), [4; 6]);
+        assert_eq!(sum_elements(&t_f32, 2)?.as_slice(), [4.; 6]);
+        assert_eq!(sum_elements(&t_i32, 2)?.as_slice(), [4; 6]);
 
         Ok(())
     }

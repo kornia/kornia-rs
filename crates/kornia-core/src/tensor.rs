@@ -8,7 +8,7 @@ use super::{
 };
 
 /// An error type for tensor operations.
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq)]
 pub enum TensorError {
     /// Error when the cast operation fails.
     #[error("Failed to cast data")]
