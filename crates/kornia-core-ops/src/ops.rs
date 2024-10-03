@@ -21,10 +21,11 @@ use crate::error::TensorOpsError;
 ///
 /// ```
 /// use kornia_core::{Tensor, CpuAllocator};
+/// use kornia_core_ops::ops::sum_elements;
 ///
 /// let data: [u8; 6] = [1, 1, 1, 1, 1, 1];
-/// let t = Tensor::<u8, 2>::from_shape_slice([2, 3], &data, CpuAllocator)?;
-/// let agg = sum_elements(&t, 1)?;
+/// let t = Tensor::<u8, 2>::from_shape_slice([2, 3], &data, CpuAllocator).unwrap();
+/// let agg = sum_elements(&t, 1).unwrap();
 /// assert_eq!(agg.shape, [2, 1]);
 /// assert_eq!(agg.as_slice(), [3, 3]);
 /// ```
@@ -101,24 +102,24 @@ mod tests {
 
     #[test]
     fn test_sum_2d() -> Result<(), TensorOpsError> {
-        let data: [u8; 6] = [1, 1, 1, 1, 1, 1];
+        let data: [u8; 6] = [1, 2, 3, 4, 5, 6];
         let t = Tensor::<u8, 2>::from_shape_slice([2, 3], &data, CpuAllocator)?;
         let t_f32 = t.cast::<f32>();
         let t_i32 = t.cast::<i32>();
 
         let agg = sum_elements(&t, 1)?;
         assert_eq!(agg.shape, [2, 1]);
-        assert_eq!(agg.as_slice(), [3, 3]);
+        assert_eq!(agg.as_slice(), [6, 15]);
 
-        assert_eq!(sum_elements(&t_f32, 1)?.as_slice(), [3., 3.]);
-        assert_eq!(sum_elements(&t_i32, 1)?.as_slice(), [3, 3]);
+        assert_eq!(sum_elements(&t_f32, 1)?.as_slice(), [6., 15.]);
+        assert_eq!(sum_elements(&t_i32, 1)?.as_slice(), [6, 15]);
 
         let agg = sum_elements(&t, 0)?;
         assert_eq!(agg.shape, [1, 3]);
-        assert_eq!(agg.as_slice(), [2, 2, 2]);
+        assert_eq!(agg.as_slice(), [5, 7, 9]);
 
-        assert_eq!(sum_elements(&t_f32, 0)?.as_slice(), [2., 2., 2.]);
-        assert_eq!(sum_elements(&t_i32, 0)?.as_slice(), [2, 2, 2]);
+        assert_eq!(sum_elements(&t_f32, 0)?.as_slice(), [5., 7., 9.]);
+        assert_eq!(sum_elements(&t_i32, 0)?.as_slice(), [5, 7, 9]);
         Ok(())
     }
 
