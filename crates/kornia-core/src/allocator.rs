@@ -4,7 +4,7 @@ use std::alloc::Layout;
 use thiserror::Error;
 
 /// An error type for tensor allocator operations.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq)]
 pub enum TensorAllocatorError {
     /// An error occurred during memory allocation.
     #[error("Invalid tensor layout {0}")]

@@ -17,6 +17,7 @@ jpegturbo = ["kornia-io/jpegturbo"]
 
 [dependencies]
 kornia-core.workspace = true
+kornia-core-ops.workspace = true
 kornia-image.workspace = true
 kornia-imgproc.workspace = true
 kornia-io = { workspace = true, features = [] }
