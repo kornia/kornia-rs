@@ -35,7 +35,7 @@ pub fn sum_elements<T, const N: usize, A>(
 ) -> Result<Tensor<T, N, A>, TensorOpsError>
 where
     T: SafeTensorType + std::ops::Add<Output = T>,
-    A: TensorAllocator + Clone,
+    A: TensorAllocator + Clone + 'static,
 {
     if dim >= N {
         return Err(TensorOpsError::DimOutOfBounds(dim, N - 1));
