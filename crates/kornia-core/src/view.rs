@@ -1,9 +1,14 @@
 use crate::{
-    get_strides_from_shape, storage::TensorStorage, SafeTensorType, Tensor, TensorAllocator,
+    //get_strides_from_shape, storage::TensorStorage, SafeTensorType, Tensor, TensorAllocator,
+    get_strides_from_shape,
+    storage::TensorStorage,
+    CpuAllocator,
+    Tensor,
+    TensorAllocator,
 };
 
 /// A view into a tensor.
-pub struct TensorView<'a, T: SafeTensorType, const N: usize, A: TensorAllocator> {
+pub struct TensorView<'a, T, const N: usize, A: TensorAllocator> {
     /// Reference to the storage held by the another tensor.
     pub storage: &'a TensorStorage<T, A>,
 
@@ -14,7 +19,7 @@ pub struct TensorView<'a, T: SafeTensorType, const N: usize, A: TensorAllocator>
     pub strides: [usize; N],
 }
 
-impl<'a, T: SafeTensorType, const N: usize, A: TensorAllocator + 'static> TensorView<'a, T, N, A> {
+impl<'a, T, const N: usize, A: TensorAllocator + 'static> TensorView<'a, T, N, A> {
     /// Returns the data slice of the tensor.
     #[inline]
     pub fn as_slice(&self) -> &[T] {
@@ -55,12 +60,16 @@ impl<'a, T: SafeTensorType, const N: usize, A: TensorAllocator + 'static> Tensor
     /// # Returns
     ///
     /// A new `Tensor` instance with contiguous memory.
-    pub fn as_contiguous(&self) -> Tensor<T, N, A> {
-        let mut data = Vec::with_capacity(self.numel());
+    pub fn as_contiguous(&self) -> Tensor<T, N, CpuAllocator>
+    where
+        T: Clone,
+    {
+        let mut data = Vec::<T>::with_capacity(self.numel());
         let mut index = [0; N];
 
         loop {
-            data.push(*self.get_unchecked(index));
+            let val = self.get_unchecked(index);
+            data.push(val.clone());
 
             // Increment index
             let mut i = N - 1;
@@ -77,7 +86,7 @@ impl<'a, T: SafeTensorType, const N: usize, A: TensorAllocator + 'static> Tensor
         let strides = get_strides_from_shape(self.shape);
 
         Tensor {
-            storage: TensorStorage::from_vec(data, self.storage.alloc().clone()),
+            storage: TensorStorage::from_vec(data),
             shape: self.shape,
             strides,
         }
@@ -110,8 +119,7 @@ mod tests {
     #[test]
     fn test_tensor_view_from_vec() -> Result<(), TensorAllocatorError> {
         let vec = vec![1, 2, 3, 4, 5, 6, 7, 8];
-        let allocator = CpuAllocator;
-        let storage = TensorStorage::<u8, _>::from_vec(vec, allocator);
+        let storage = TensorStorage::<u8, _>::from_vec(vec);
 
         let view = TensorView::<u8, 1, _> {
             storage: &storage,

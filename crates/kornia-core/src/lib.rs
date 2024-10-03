@@ -4,11 +4,14 @@
 /// allocator module containing the memory management utilities.
 pub mod allocator;
 
+/// buffer module containing the buffer and memory management utilities.
+pub mod buffer;
+
 /// tensor module containing the tensor and storage implementations.
 pub mod tensor;
 
 /// serde module containing the serialization and deserialization utilities.
-pub mod serde;
+//pub mod serde;
 
 /// storage module containing the storage implementations.
 pub mod storage;
@@ -17,7 +20,6 @@ pub mod storage;
 pub mod view;
 
 pub use crate::allocator::{CpuAllocator, TensorAllocator};
-pub use crate::storage::SafeTensorType;
 pub(crate) use crate::tensor::get_strides_from_shape;
 pub use crate::tensor::{Tensor, TensorError};
 
