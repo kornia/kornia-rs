@@ -76,6 +76,20 @@ where
     })
 }
 
+///
+pub fn pnorm<T, const N: usize, A>(
+    tensor: &Tensor<T, N, A>,
+    p: i32,
+    dim: usize,
+) -> Result<Tensor<T, N, A>, TensorOpsError>
+where
+    T: SafeTensorType + std::ops::Add<Output = T>,
+    A: TensorAllocator + Clone + 'static,
+{
+    tensor.powi()
+    todo!()
+}
+
 #[cfg(test)]
 mod tests {
     use kornia_core::{CpuAllocator, TensorError};
