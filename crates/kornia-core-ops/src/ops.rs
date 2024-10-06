@@ -1,4 +1,5 @@
 use kornia_core::{storage::TensorStorage, SafeTensorType, Tensor, TensorAllocator};
+use num_traits::Float;
 
 use crate::error::TensorOpsError;
 
@@ -76,18 +77,45 @@ where
     })
 }
 
+/// Compute the p-norm of the tensor along some dimension.
 ///
+/// # Arguments
+///
+/// * `tensor` - The tensor to calculate the p-norm from.
+/// * `p` - The order of the norm.
+/// * `dim` - The index of the dimension/axis to use as vectors for the p-born calculation.
+///
+/// # Returns
+///
+/// A new `Tensor` containing the p-norm values at all the locations of the vectors.
+///
+/// # Errors
+///
+/// If the requested dimension is greater than the number of axes of the tensor, an error is returned.
+///
+/// # Example
+///
+/// ```
+/// use kornia_core::{Tensor, CpuAllocator};
+/// use kornia_core_ops::ops::pnorm;
+///
+/// let data: [f32; 5] = [3., 3., 2., 1., 1.];
+/// let t = Tensor::<f32, 1>::from_shape_slice([5], &data, CpuAllocator).unwrap();
+/// let norm = pnorm(&t, 3., 0).unwrap();
+/// assert_eq!(norm.shape, [1]);
+/// assert_eq!(norm.as_slice(), [4.]);
+/// ```
 pub fn pnorm<T, const N: usize, A>(
     tensor: &Tensor<T, N, A>,
-    p: i32,
+    p: T,
     dim: usize,
 ) -> Result<Tensor<T, N, A>, TensorOpsError>
 where
-    T: SafeTensorType + std::ops::Add<Output = T>,
+    T: SafeTensorType + std::ops::Add<Output = T> + Float,
     A: TensorAllocator + Clone + 'static,
 {
-    tensor.powi()
-    todo!()
+    let p_inv = T::one() / p;
+    Ok(sum_elements(&tensor.powf(p), dim)?.powf(p_inv))
 }
 
 #[cfg(test)]
@@ -163,6 +191,16 @@ mod tests {
         assert_eq!(agg.as_slice(), [4; 6]);
         assert_eq!(sum_elements(&t_f32, 2)?.as_slice(), [4.; 6]);
         assert_eq!(sum_elements(&t_i32, 2)?.as_slice(), [4; 6]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_pnorm_1d() -> Result<(), TensorOpsError> {
+        let data: [f32; 5] = [3., 3., 2., 1., 1.];
+        let t = Tensor::<f32, 1>::from_shape_slice([5], &data, CpuAllocator).unwrap();
+        let norm = pnorm(&t, 3., 0).unwrap();
+        assert_eq!(norm.shape, [1]);
+        assert_eq!(norm.as_slice(), [4.]);
         Ok(())
     }
 }
