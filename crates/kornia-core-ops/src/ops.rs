@@ -58,7 +58,6 @@ where
 
     for (i, v) in tensor.as_slice().iter().enumerate() {
         let mut out_index = tensor.get_index_unchecked(i);
-
         out_index[dim] = 0;
         let out_offset = out_index
             .iter()
@@ -201,7 +200,6 @@ mod tests {
 
         assert_eq!(sum_elements(&t_f32, 0)?.as_slice(), [5., 7., 9.]);
         assert_eq!(sum_elements(&t_i32, 0)?.as_slice(), [5, 7, 9]);
-
         Ok(())
     }
 
