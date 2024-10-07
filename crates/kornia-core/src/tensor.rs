@@ -653,36 +653,6 @@ where
         self.map(|x| x.powi(n))
     }
 
-    /// Apply the power function to the tensor data.
-    ///
-    /// # Arguments
-    ///
-    /// * `n` - The power to raise the tensor data to.
-    ///
-    /// # Returns
-    ///
-    /// A new tensor with the data raised to the power.
-    pub fn powf(&self, n: T) -> Tensor<T, N, A>
-    where
-        T: Float,
-        A: Clone,
-    {
-        self.map(|x| x.powf(n))
-    }
-
-    /// Apply the square root function to the tensor elements.
-    ///
-    /// # Returns
-    ///
-    /// A new tensor with the square root values.
-    pub fn sqrt(&self) -> Tensor<T, N, A>
-    where
-        T: Float,
-        A: Clone,
-    {
-        self.map(|x| x.sqrt())
-    }
-
     /// Compute absolute value of the pixel data.
     ///
     /// # Returns
