@@ -83,11 +83,11 @@ where
 ///
 /// * `tensor` - The tensor to calculate the p-norm from.
 /// * `p` - The order of the norm.
-/// * `dim` - The index of the dimension/axis to use as vectors for the p-born calculation.
+/// * `dim` - The index of the dimension/axis to use as vectors for the p-norm calculation.
 ///
 /// # Returns
 ///
-/// A new `Tensor` containing the p-norm values at all the locations of the vectors.
+/// A new `Tensor` containing the p-norm values at all the vector locations.
 ///
 /// # Errors
 ///
@@ -116,6 +116,44 @@ where
 {
     let p_inv = T::one() / p;
     Ok(sum_elements(&tensor.powf(p), dim)?.powf(p_inv))
+}
+
+/// Compute the euclidean norm of a tensor along some dimension.
+///
+/// # Arguments
+///
+/// * `tensor` - The tensor to calculate the euclidean norm from.
+/// * `dim` - The index of the dimension/axis to use as vectors for the norm calculation.
+///
+/// # Returns
+///
+/// A new `Tensor` containing the norm values at all the vector locations.
+///
+/// # Errors
+///
+/// If the requested dimension is greater than the number of axes of the tensor, an error is returned.
+///
+/// # Example
+///
+/// ```
+/// use kornia_core::{Tensor, CpuAllocator};
+/// use kornia_core_ops::ops::euclidean_norm;
+///
+/// let data: [f32; 5] = [3., 2., 1., 1., 1.];
+/// let t = Tensor::<f32, 1>::from_shape_slice([5], &data, CpuAllocator).unwrap();
+/// let norm = euclidean_norm(&t, 0).unwrap();
+/// assert_eq!(norm.shape, [1]);
+/// assert_eq!(norm.as_slice(), [4.]);
+/// ```
+pub fn euclidean_norm<T, const N: usize, A>(
+    tensor: &Tensor<T, N, A>,
+    dim: usize,
+) -> Result<Tensor<T, N, A>, TensorOpsError>
+where
+    T: SafeTensorType + std::ops::Add<Output = T> + Float,
+    A: TensorAllocator + Clone + 'static,
+{
+    Ok(sum_elements(&tensor.powi(2), dim)?.sqrt())
 }
 
 #[cfg(test)]
@@ -198,7 +236,17 @@ mod tests {
     fn test_pnorm_1d() -> Result<(), TensorOpsError> {
         let data: [f32; 5] = [3., 3., 2., 1., 1.];
         let t = Tensor::<f32, 1>::from_shape_slice([5], &data, CpuAllocator).unwrap();
-        let norm = pnorm(&t, 3., 0).unwrap();
+        let norm = pnorm(&t, 3., 0)?;
+        assert_eq!(norm.shape, [1]);
+        assert_eq!(norm.as_slice(), [4.]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_euclidean_norm_1d() -> Result<(), TensorOpsError> {
+        let data: [f32; 5] = [3., 2., 1., 1., 1.];
+        let t = Tensor::<f32, 1>::from_shape_slice([5], &data, CpuAllocator).unwrap();
+        let norm = euclidean_norm(&t, 0)?;
         assert_eq!(norm.shape, [1]);
         assert_eq!(norm.as_slice(), [4.]);
         Ok(())
