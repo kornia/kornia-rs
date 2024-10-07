@@ -670,6 +670,19 @@ where
         self.map(|x| x.powf(n))
     }
 
+    /// Apply the square root function to the tensor elements.
+    ///
+    /// # Returns
+    ///
+    /// A new tensor with the square root values.
+    pub fn sqrt(&self) -> Tensor<T, N, A>
+    where
+        T: Float,
+        A: Clone,
+    {
+        self.map(|x| x.sqrt())
+    }
+
     /// Compute absolute value of the pixel data.
     ///
     /// # Returns
