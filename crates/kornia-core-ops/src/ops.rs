@@ -49,7 +49,7 @@ where
     ///
     /// ```
     /// use kornia_core::{Tensor, CpuAllocator};
-    /// use kornia_core_ops::ops::TensorOps;
+    /// use kornia_core_ops::TensorOps;
     ///
     /// let data: [u8; 6] = [1, 1, 1, 1, 1, 1];
     /// let t = Tensor::<u8, 2>::from_shape_slice([2, 3], &data, CpuAllocator).unwrap();
@@ -80,7 +80,7 @@ where
     ///
     /// ```
     /// use kornia_core::{Tensor, CpuAllocator};
-    /// use kornia_core_ops::ops::TensorOps;
+    /// use kornia_core_ops::TensorOps;
     ///
     /// let data: [f32; 5] = [3., 3., 2., 1., 1.];
     /// let t = Tensor::<f32, 1>::from_shape_slice([5], &data, CpuAllocator).unwrap();
@@ -110,7 +110,7 @@ where
     ///
     /// ```
     /// use kornia_core::{Tensor, CpuAllocator};
-    /// use kornia_core_ops::ops::TensorOps;
+    /// use kornia_core_ops::TensorOps;
     ///
     /// let data: [f32; 5] = [3., 2., 1., 1., 1.];
     /// let t = Tensor::<f32, 1>::from_shape_slice([5], &data, CpuAllocator).unwrap();
