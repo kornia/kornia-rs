@@ -1500,7 +1500,7 @@ mod tests {
     #[test]
     fn get_index_unchecked_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 1>::from_shape_vec([4], data, CpuAllocator)?;
+        let t = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data, CpuAllocator)?;
         assert_eq!(t.get_index_unchecked(0), [0]);
         assert_eq!(t.get_index_unchecked(1), [1]);
         assert_eq!(t.get_index_unchecked(2), [2]);
@@ -1511,7 +1511,7 @@ mod tests {
     #[test]
     fn get_index_unchecked_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data, CpuAllocator)?;
+        let t = Tensor::<u8, 2, CpuAllocator>::from_shape_vec([2, 2], data, CpuAllocator)?;
         assert_eq!(t.get_index_unchecked(0), [0, 0]);
         assert_eq!(t.get_index_unchecked(1), [0, 1]);
         assert_eq!(t.get_index_unchecked(2), [1, 0]);
@@ -1522,7 +1522,7 @@ mod tests {
     #[test]
     fn get_index_unchecked_3d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
+        let t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
         assert_eq!(t.get_index_unchecked(0), [0, 0, 0]);
         assert_eq!(t.get_index_unchecked(1), [0, 0, 1]);
         assert_eq!(t.get_index_unchecked(2), [0, 0, 2]);
@@ -1541,7 +1541,7 @@ mod tests {
     #[test]
     fn get_index_to_offset_and_back() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
+        let t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
         for offset in 0..12 {
             assert_eq!(
                 t.get_iter_offset_unchecked(t.get_index_unchecked(offset)),
@@ -1554,7 +1554,7 @@ mod tests {
     #[test]
     fn get_offset_to_index_and_back() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
+        let t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
         for ind in [
             [0, 0, 0],
             [0, 0, 1],
@@ -1577,7 +1577,7 @@ mod tests {
     #[test]
     fn get_index_1d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 1>::from_shape_vec([4], data, CpuAllocator)?;
+        let t = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data, CpuAllocator)?;
         assert_eq!(t.get_index(3), Ok([3]));
         assert!(t
             .get_index(4)
@@ -1588,7 +1588,7 @@ mod tests {
     #[test]
     fn get_index_2d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data, CpuAllocator)?;
+        let t = Tensor::<u8, 2, CpuAllocator>::from_shape_vec([2, 2], data, CpuAllocator)?;
         assert_eq!(t.get_index_unchecked(3), [1, 1]);
         assert!(t
             .get_index(4)
@@ -1599,7 +1599,7 @@ mod tests {
     #[test]
     fn get_index_3d() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let t = Tensor::<u8, 3>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
+        let t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
         assert_eq!(t.get_index_unchecked(11), [1, 1, 2]);
         assert!(t
             .get_index(12)
