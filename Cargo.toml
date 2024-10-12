@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/kornia-core",
+    "crates/kornia-core-ops",
     "crates/kornia-image",
     "crates/kornia-io",
     "crates/kornia-imgproc",
@@ -28,6 +29,7 @@ version = "0.1.6-rc.5"
 [workspace.dependencies]
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
 kornia-core = { path = "crates/kornia-core", version = "0.1.6-rc.5" }
+kornia-core-ops = { path = "crates/kornia-core-ops", version = "0.1.6-rc.5" }
 kornia-image = { path = "crates/kornia-image", version = "0.1.6-rc.5" }
 kornia-io = { path = "crates/kornia-io", version = "0.1.6-rc.5" }
 kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.6-rc.5" }

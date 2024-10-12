@@ -1,0 +1,20 @@
+[package]
+name = "kornia-core-ops"
+authors.workspace = true
+description = "Tensor operations library in Rust for computer vision"
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+publish = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+
+# kornia
+kornia-core.workspace = true
+
+# external
+num-traits = "0.2"
+thiserror = "1"
