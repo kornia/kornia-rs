@@ -194,7 +194,7 @@ where
     /// use kornia_core::{Tensor, CpuAllocator};
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
-    /// let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
+    /// let t = Tensor::<u8, 2>::from_shape_vec([2, 2], data).unwrap();
     /// assert_eq!(t.shape, [2, 2]);
     /// ```
     pub fn from_shape_vec(shape: [usize; N], data: Vec<T>) -> Result<Self, TensorError> {

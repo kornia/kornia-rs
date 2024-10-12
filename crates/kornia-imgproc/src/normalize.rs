@@ -1,4 +1,5 @@
-use kornia_core::SafeTensorType;
+use num_traits::Float;
+
 use kornia_image::{Image, ImageError};
 
 use crate::parallel;
@@ -59,7 +60,7 @@ pub fn normalize_mean_std<T, const C: usize>(
     std: &[T; C],
 ) -> Result<(), ImageError>
 where
-    T: SafeTensorType + num_traits::Float,
+    T: Send + Sync + Float,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -121,8 +122,7 @@ where
 /// ```
 pub fn find_min_max<T, const C: usize>(image: &Image<T, C>) -> Result<(T, T), ImageError>
 where
-    T: SafeTensorType,
-    //T: PartialOrd + Copy,
+    T: Clone + Copy + PartialOrd,
 {
     // get the first element in the image
     let first_element = match image.as_slice().iter().next() {
@@ -195,7 +195,7 @@ pub fn normalize_min_max<T, const C: usize>(
     max: T,
 ) -> Result<(), ImageError>
 where
-    T: SafeTensorType + num_traits::Float,
+    T: Send + Sync + Float,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(

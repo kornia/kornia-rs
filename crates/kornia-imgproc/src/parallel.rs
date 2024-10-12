@@ -1,6 +1,6 @@
 use rayon::prelude::*;
 
-use kornia_core::{SafeTensorType, Tensor2};
+use kornia_core::Tensor2;
 use kornia_image::Image;
 
 /// Apply a function to each pixel in the image in parallel.
@@ -15,8 +15,8 @@ pub fn par_iter_rows<T1, const C1: usize, T2, const C2: usize>(
     dst: &mut Image<T2, C2>,
     f: impl Fn(&[T1], &mut [T2]) + Send + Sync,
 ) where
-    T1: SafeTensorType + Send + Sync,
-    T2: SafeTensorType + Send + Sync,
+    T1: Clone + Send + Sync,
+    T2: Clone + Send + Sync,
 {
     src.as_slice()
         .par_chunks_exact(C1 * src.cols())
@@ -37,8 +37,8 @@ pub fn par_iter_rows_val<T1, const C1: usize, T2, const C2: usize>(
     dst: &mut Image<T2, C2>,
     f: impl Fn(&T1, &mut T2) + Send + Sync,
 ) where
-    T1: SafeTensorType + Send + Sync,
-    T2: SafeTensorType + Send + Sync,
+    T1: Clone + Send + Sync,
+    T2: Clone + Send + Sync,
 {
     src.as_slice()
         .par_chunks_exact(C1 * src.cols())
@@ -60,9 +60,9 @@ pub fn par_iter_rows_val_two<T1, const C1: usize, T2, const C2: usize, T3, const
     dst: &mut Image<T3, C3>,
     f: impl Fn(&T1, &T2, &mut T3) + Send + Sync,
 ) where
-    T1: SafeTensorType + Send + Sync,
-    T2: SafeTensorType + Send + Sync,
-    T3: SafeTensorType + Send + Sync,
+    T1: Clone + Send + Sync,
+    T2: Clone + Send + Sync,
+    T3: Clone + Send + Sync,
 {
     src1.as_slice()
         .par_chunks_exact(C1 * src1.cols())

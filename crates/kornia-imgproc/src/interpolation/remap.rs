@@ -57,7 +57,7 @@ pub fn remap<const C: usize>(
 
 #[cfg(test)]
 mod tests {
-    use kornia_core::{CpuAllocator, Tensor2};
+    use kornia_core::Tensor2;
     use kornia_image::{Image, ImageError, ImageSize};
 
     #[test]
@@ -72,8 +72,8 @@ mod tests {
 
         let new_size = [2, 2];
 
-        let map_x = Tensor2::from_shape_vec(new_size, vec![0.0, 2.0, 0.0, 2.0], CpuAllocator)?;
-        let map_y = Tensor2::from_shape_vec(new_size, vec![0.0, 0.0, 2.0, 2.0], CpuAllocator)?;
+        let map_x = Tensor2::from_shape_vec(new_size, vec![0.0, 2.0, 0.0, 2.0])?;
+        let map_y = Tensor2::from_shape_vec(new_size, vec![0.0, 0.0, 2.0, 2.0])?;
 
         let expected = Image::<_, 1>::new(
             ImageSize {

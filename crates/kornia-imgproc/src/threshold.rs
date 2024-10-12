@@ -1,4 +1,6 @@
-use kornia_core::SafeTensorType;
+use num_traits::Zero;
+use std::cmp::PartialOrd;
+
 use kornia_image::{Image, ImageError};
 
 use crate::parallel;
@@ -39,7 +41,7 @@ pub fn threshold_binary<T, const C: usize>(
     max_value: T,
 ) -> Result<(), ImageError>
 where
-    T: SafeTensorType,
+    T: Copy + Send + Sync + PartialOrd + Zero,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -55,7 +57,7 @@ where
         *dst_pixel = if *src_pixel > threshold {
             max_value
         } else {
-            T::default()
+            T::zero()
         };
     });
 
@@ -98,7 +100,7 @@ pub fn threshold_binary_inverse<T, const C: usize>(
     max_value: T,
 ) -> Result<(), ImageError>
 where
-    T: SafeTensorType,
+    T: Copy + Send + Sync + PartialOrd + Zero,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -112,7 +114,7 @@ where
     // run the thresholding operation in parallel
     parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
         *dst_pixel = if *src_pixel > threshold {
-            T::default()
+            T::zero()
         } else {
             max_value
         };
@@ -154,7 +156,7 @@ pub fn threshold_truncate<T, const C: usize>(
     threshold: T,
 ) -> Result<(), ImageError>
 where
-    T: SafeTensorType,
+    T: Copy + Send + Sync + PartialOrd + Zero,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -210,7 +212,7 @@ pub fn threshold_to_zero<T, const C: usize>(
     threshold: T,
 ) -> Result<(), ImageError>
 where
-    T: SafeTensorType,
+    T: Copy + Send + Sync + PartialOrd + Zero,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -226,7 +228,7 @@ where
         *dst_pixel = if *src_pixel > threshold {
             *src_pixel
         } else {
-            T::default()
+            T::zero()
         };
     });
 
@@ -266,7 +268,7 @@ pub fn threshold_to_zero_inverse<T, const C: usize>(
     threshold: T,
 ) -> Result<(), ImageError>
 where
-    T: SafeTensorType,
+    T: Copy + Send + Sync + PartialOrd + Zero,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -280,7 +282,7 @@ where
     // run the thresholding operation in parallel
     parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
         *dst_pixel = if *src_pixel > threshold {
-            T::default()
+            T::zero()
         } else {
             *src_pixel
         };
@@ -337,7 +339,7 @@ pub fn in_range<T, const C: usize>(
     upper_bound: &[T; C],
 ) -> Result<(), ImageError>
 where
-    T: SafeTensorType,
+    T: Clone + Send + Sync + PartialOrd + Zero,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(

@@ -1,5 +1,4 @@
 use crate::parallel;
-use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
 
 /// Define the RGB weights for the grayscale conversion.
@@ -44,7 +43,7 @@ const BW: f64 = 0.114;
 /// ```
 pub fn gray_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 1>) -> Result<(), ImageError>
 where
-    T: SafeTensorType + num_traits::Float,
+    T: Send + Sync + num_traits::Float,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -102,7 +101,7 @@ where
 /// ```
 pub fn rgb_from_gray<T>(src: &Image<T, 1>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
 where
-    T: SafeTensorType,
+    T: Copy + Send + Sync,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -115,10 +114,9 @@ where
 
     // parallelize the grayscale conversion by rows
     parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
-        let gray = src_pixel[0];
-        dst_pixel.iter_mut().for_each(|dst_pixel| {
-            *dst_pixel = gray;
-        });
+        dst_pixel[0] = src_pixel[0];
+        dst_pixel[1] = src_pixel[0];
+        dst_pixel[2] = src_pixel[0];
     });
 
     Ok(())
@@ -134,7 +132,7 @@ where
 /// Precondition: the input and output images must have the same size.
 pub fn bgr_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
 where
-    T: SafeTensorType,
+    T: Copy + Send + Sync,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
