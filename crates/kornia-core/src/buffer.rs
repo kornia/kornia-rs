@@ -1,17 +1,17 @@
 use std::{alloc::Layout, ptr::NonNull};
 
-use crate::allocator::{CpuAllocator, TensorAllocator};
+use crate::allocator::TensorAllocator;
 
 /// Definition of the buffer for a tensor.
 pub struct TensorBuffer<T, A: TensorAllocator> {
-    /// The pointer to the tensor memory.
+    /// The pointer to the tensor memory which must be non null.
     pub(crate) ptr: NonNull<T>,
-    /// The length of the tensor memory.
+    /// The length of the tensor memory in bytes.
     pub(crate) len: usize,
     /// The layout of the tensor memory.
     pub(crate) layout: Layout,
     /// The allocator used to allocate/deallocate the tensor memory.
-    pub(crate) alloc: Option<A>,
+    pub(crate) alloc: A,
 }
 
 // Safety:
@@ -21,26 +21,27 @@ unsafe impl<T, A: TensorAllocator> Sync for TensorBuffer<T, A> {}
 
 impl<T, A: TensorAllocator> Drop for TensorBuffer<T, A> {
     fn drop(&mut self) {
-        if let Some(alloc) = self.alloc.take() {
-            alloc.dealloc(self.ptr.as_ptr() as *mut u8, self.layout);
-        }
+        self.alloc
+            .dealloc(self.ptr.as_ptr() as *mut u8, self.layout);
     }
 }
 
 impl<T, A: TensorAllocator> Clone for TensorBuffer<T, A> {
     fn clone(&self) -> Self {
         Self {
-            ptr: self.ptr.clone(),
-            len: self.len.clone(),
-            layout: self.layout.clone(),
+            ptr: self.ptr,
+            len: self.len,
+            layout: self.layout,
             alloc: self.alloc.clone(),
         }
     }
 }
 
 // TODO: pass the allocator to constructor
-// TODO: move this to the storage module to keep the buffer module clean
-impl<T> From<Vec<T>> for TensorBuffer<T, CpuAllocator> {
+impl<T, A: TensorAllocator> From<Vec<T>> for TensorBuffer<T, A>
+where
+    A: Default,
+{
     /// Creates a new tensor buffer from a vector.
     fn from(value: Vec<T>) -> Self {
         // Safety
@@ -57,7 +58,7 @@ impl<T> From<Vec<T>> for TensorBuffer<T, CpuAllocator> {
             ptr,
             len,
             layout,
-            alloc: Some(CpuAllocator),
+            alloc: A::default(),
         }
     }
 }
@@ -66,13 +67,13 @@ impl<T, A: TensorAllocator> TensorBuffer<T, A> {
     /// Returns the pointer to the tensor memory.
     #[inline]
     pub fn as_ptr(&self) -> *const T {
-        self.ptr.as_ptr() as *const T
+        self.ptr.as_ptr()
     }
 
     /// Returns the pointer to the tensor memory.
     #[inline]
     pub fn as_mut_ptr(&mut self) -> *mut T {
-        self.ptr.as_ptr() as *mut T
+        self.ptr.as_ptr()
     }
 
     /// Returns the maximum number of elements that can be stored in this `TensorBuffer`.
@@ -101,17 +102,29 @@ impl<T, A: TensorAllocator> TensorBuffer<T, A> {
 
     /// Returns the allocator of the tensor buffer.
     #[inline]
-    pub fn alloc(&self) -> Option<&A> {
-        self.alloc.as_ref()
+    pub fn alloc(&self) -> &A {
+        &self.alloc
     }
-}
 
-// TODO: move this to the storage module to keep the buffer module clean
-impl<T> TensorBuffer<T, CpuAllocator> {
+    // TODO: use the allocator somehow
     /// Creates a new tensor buffer from a vector.
-    pub fn from_vec(value: Vec<T>) -> Self {
-        let buffer = Self::from(value);
-        buffer
+    pub fn from_vec(value: Vec<T>, alloc: A) -> Self {
+        // Safety
+        // Vec::as_ptr guaranteed to not be null
+        let ptr = unsafe { NonNull::new_unchecked(value.as_ptr() as *mut T) };
+        let len = value.len() * std::mem::size_of::<T>();
+        // Safety
+        // Vec guaranteed to have a valid layout matching that of `Layout::array`
+        // This is based on `RawVec::current_memory`
+        let layout = unsafe { Layout::array::<T>(value.capacity()).unwrap_unchecked() };
+        std::mem::forget(value);
+
+        Self {
+            ptr,
+            len,
+            layout,
+            alloc,
+        }
     }
 
     /// Converts the `TensorBuffer` into a `Vec<T>`.
@@ -133,9 +146,7 @@ impl<T> TensorBuffer<T, CpuAllocator> {
 
         // Safety
         std::mem::forget(self);
-        let vec = unsafe { Vec::from_raw_parts(ptr.as_ptr() as *mut T, vec_len, vec_capacity) };
-
-        vec
+        unsafe { Vec::from_raw_parts(ptr.as_ptr(), vec_len, vec_capacity) }
     }
 }
 
@@ -153,13 +164,13 @@ mod tests {
     #[test]
     fn test_tensor_buffer_create() -> Result<(), TensorAllocatorError> {
         let size = 8;
-        let allocator = CpuAllocator::default();
+        let allocator = CpuAllocator;
         let layout = Layout::array::<u8>(size).map_err(TensorAllocatorError::LayoutError)?;
         let ptr =
             NonNull::new(allocator.alloc(layout)?).ok_or(TensorAllocatorError::NullPointer)?;
 
         let buffer = TensorBuffer {
-            alloc: Some(allocator),
+            alloc: allocator,
             len: size * std::mem::size_of::<u8>(),
             layout,
             ptr,
@@ -175,13 +186,13 @@ mod tests {
     #[test]
     fn test_tensor_buffer_create_f32() -> Result<(), TensorAllocatorError> {
         let size = 8;
-        let allocator = CpuAllocator::default();
+        let allocator = CpuAllocator;
         let layout = Layout::array::<f32>(size).map_err(TensorAllocatorError::LayoutError)?;
         let ptr =
             NonNull::new(allocator.alloc(layout)?).ok_or(TensorAllocatorError::NullPointer)?;
 
         let buffer = TensorBuffer {
-            alloc: Some(allocator),
+            alloc: allocator,
             len: size * std::mem::size_of::<f32>(),
             layout,
             ptr: ptr.cast::<f32>(),
@@ -190,7 +201,6 @@ mod tests {
         assert_eq!(buffer.as_ptr(), ptr.as_ptr() as *const f32);
         assert_eq!(buffer.layout, layout);
         assert_eq!(buffer.capacity(), size);
-        assert!(buffer.alloc.is_some());
 
         Ok(())
     }
@@ -229,7 +239,7 @@ mod tests {
                 NonNull::new(allocator.alloc(layout)?).ok_or(TensorAllocatorError::NullPointer)?;
 
             let _buffer = TensorBuffer {
-                alloc: Some(allocator.clone()),
+                alloc: allocator.clone(),
                 len: size * std::mem::size_of::<u8>(),
                 layout,
                 ptr,
@@ -248,13 +258,12 @@ mod tests {
         let vec_ptr = vec.as_ptr();
         let vec_len = vec.len();
         let vec_cap = vec.capacity();
-        let buffer = TensorBuffer::from_vec(vec);
+        let buffer = TensorBuffer::<_, CpuAllocator>::from_vec(vec, CpuAllocator);
 
         assert!(!buffer.is_empty());
         assert_eq!(buffer.as_ptr(), vec_ptr);
         assert_eq!(buffer.len(), vec_len * std::mem::size_of::<i32>());
         assert_eq!(buffer.layout, Layout::array::<i32>(vec_cap).unwrap());
-        assert!(buffer.alloc.is_some());
 
         let vec2 = buffer.into_vec();
         assert_eq!(vec2.as_slice(), &[1, 2, 3, 4, 5]);
@@ -267,7 +276,7 @@ mod tests {
     #[test]
     fn test_tensor_mutability() -> Result<(), TensorAllocatorError> {
         let vec: Vec<i32> = vec![1, 2, 3, 4, 5];
-        let mut buffer = TensorBuffer::from_vec(vec);
+        let mut buffer = TensorBuffer::<_, CpuAllocator>::from_vec(vec, CpuAllocator);
         let ptr_mut = buffer.as_mut_ptr();
         unsafe {
             *ptr_mut.add(0) = 10;

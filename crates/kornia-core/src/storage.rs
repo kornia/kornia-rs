@@ -1,4 +1,4 @@
-use crate::allocator::{CpuAllocator, TensorAllocator, TensorAllocatorError};
+use crate::allocator::{TensorAllocator, TensorAllocatorError};
 use crate::buffer::TensorBuffer;
 use std::{alloc::Layout, ptr::NonNull};
 
@@ -12,67 +12,6 @@ use std::{alloc::Layout, ptr::NonNull};
 pub struct TensorStorage<T, A: TensorAllocator> {
     /// The buffer containing the tensor storage.
     buffer: TensorBuffer<T, A>,
-}
-
-impl<T> TensorStorage<T, CpuAllocator> {
-    /// Creates a new tensor storage from a vector with the given allocator without copying the data.
-    ///
-    /// # Arguments
-    ///
-    /// * `vec` - The vector to use for the tensor storage.
-    ///
-    /// # Safety
-    ///
-    /// The vector must have the correct length and alignment.
-    pub fn from_vec(vec: Vec<T>) -> Self {
-        let buffer = TensorBuffer::from_vec(vec);
-        Self { buffer }
-    }
-
-    /// Converts the tensor storage into a `Vec<T>`.
-    ///
-    /// NOTE: useful for safe zero copies.
-    ///
-    /// This method attempts to convert the internal buffer of the tensor storage into a `Vec<T>`.
-    /// If the conversion fails (e.g., due to reference counting issues), it constructs a new `Vec<T>`
-    /// by copying the data from the raw pointer.
-    ///
-    /// # Safety
-    ///
-    /// This method is safe to call, but it may involve unsafe operations internally when
-    /// constructing a new Vec from raw parts if the initial conversion fails.
-    ///
-    /// # Performance
-    ///
-    /// In the best case, this operation is O(1) when the internal buffer can be directly converted.
-    /// In the worst case, it's O(n) where n is the number of elements, as it may need to copy all data.
-    pub fn into_vec(self) -> Vec<T> {
-        self.buffer.into_vec()
-    }
-
-    /// Creates a new `TensorStorage` from a slice of data.
-    ///
-    /// # Arguments
-    ///
-    /// * `data` - A slice containing the data to be stored.
-    /// * `alloc` - The allocator to use for creating the storage.
-    ///
-    /// # Returns
-    ///
-    /// A new `TensorStorage` instance containing a copy of the input data.
-    ///
-    /// # Errors
-    ///
-    /// Returns a `TensorAllocatorError` if the allocation fails.
-    pub fn from_slice(data: &[T]) -> Self
-    where
-        T: Clone,
-    {
-        // TODO: how to zero copy?
-        let buffer = TensorBuffer::from_vec(data.to_vec());
-
-        Self { buffer }
-    }
 }
 
 impl<T, A> TensorStorage<T, A>
@@ -102,10 +41,45 @@ where
             ptr: ptr.cast(),
             len,
             layout,
-            alloc: Some(alloc),
+            alloc,
         };
 
         Ok(Self { buffer })
+    }
+
+    /// Creates a new tensor storage from a vector with the given allocator without copying the data.
+    ///
+    /// # Arguments
+    ///
+    /// * `vec` - The vector to use for the tensor storage.
+    ///
+    /// # Safety
+    ///
+    /// The vector must have the correct length and alignment.
+    pub fn from_vec(vec: Vec<T>, alloc: A) -> Self {
+        let buffer = TensorBuffer::from_vec(vec, alloc);
+        Self { buffer }
+    }
+
+    /// Converts the tensor storage into a `Vec<T>`.
+    ///
+    /// NOTE: useful for safe zero copies.
+    ///
+    /// This method attempts to convert the internal buffer of the tensor storage into a `Vec<T>`.
+    /// If the conversion fails (e.g., due to reference counting issues), it constructs a new `Vec<T>`
+    /// by copying the data from the raw pointer.
+    ///
+    /// # Safety
+    ///
+    /// This method is safe to call, but it may involve unsafe operations internally when
+    /// constructing a new Vec from raw parts if the initial conversion fails.
+    ///
+    /// # Performance
+    ///
+    /// In the best case, this operation is O(1) when the internal buffer can be directly converted.
+    /// In the worst case, it's O(n) where n is the number of elements, as it may need to copy all data.
+    pub fn into_vec(self) -> Vec<T> {
+        self.buffer.into_vec()
     }
 
     /// Creates a new tensor storage from an existing raw pointer with the given allocator.
@@ -169,23 +143,23 @@ where
     /// Returns the data pointer.
     #[inline]
     pub fn as_ptr(&self) -> *const T {
-        self.buffer.ptr.as_ptr() as *const T
+        self.buffer.ptr.as_ptr()
     }
 
     /// Returns the data pointer as a mutable pointer.
     #[inline]
     pub fn as_mut_ptr(&mut self) -> *mut T {
-        self.buffer.ptr.as_ptr() as *mut T
+        self.buffer.ptr.as_ptr()
     }
 
     /// Returns the data pointer as a slice.
     pub fn as_slice(&self) -> &[T] {
-        unsafe { std::slice::from_raw_parts(self.as_ptr() as *const T, self.capacity()) }
+        unsafe { std::slice::from_raw_parts(self.as_ptr(), self.capacity()) }
     }
 
     /// Returns the data pointer as a mutable slice.
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr() as *mut T, self.capacity()) }
+        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.capacity()) }
     }
 
     /// Returns a reference to the data at the specified index, if it is within bounds.
@@ -209,7 +183,7 @@ where
     /// The allocator must be valid.
     #[inline]
     pub fn alloc(&self) -> &A {
-        self.buffer.alloc.as_ref().expect("Allocator not found")
+        &self.buffer.alloc
     }
 
     /// Converts the tensor storage into a `Vec<T>`.
@@ -225,12 +199,18 @@ where
 /// A new `TensorStorage` instance with cloned data if successful, otherwise an error.
 impl<T, A> Clone for TensorStorage<T, A>
 where
-    A: TensorAllocator + Clone + 'static,
+    T: Clone,
+    A: TensorAllocator + 'static,
 {
     fn clone(&self) -> Self {
-        Self {
-            buffer: self.buffer.clone(),
+        // TODO: use zero copy
+        let mut new_storage =
+            Self::new(self.len(), self.alloc().clone()).expect("Failed to clone TensorStorage");
+
+        for (d, s) in new_storage.as_mut_slice().iter_mut().zip(self.as_slice()) {
+            *d = s.clone();
         }
+        new_storage
     }
 }
 
@@ -272,7 +252,7 @@ mod tests {
         let vec = vec![0, 1, 2, 3, 4, 5];
         let vec_ptr = vec.as_ptr();
 
-        let storage = CpuStorage::from_vec(vec);
+        let storage = CpuStorage::from_vec(vec, CpuAllocator);
         assert_eq!(storage.len(), 6);
 
         // check NO copy
@@ -342,7 +322,7 @@ mod tests {
         let original_vec_ptr = original_vec.as_ptr();
         let original_vec_capacity = original_vec.capacity();
 
-        let storage = TensorStorage::<i32, _>::from_vec(original_vec);
+        let storage = TensorStorage::from_vec(original_vec, CpuAllocator);
 
         // Convert the storage back to a vector
         let result_vec = storage.into_vec();
@@ -405,7 +385,7 @@ mod tests {
             let original_vec_ptr = original_vec.as_ptr();
             let original_vec_capacity = original_vec.capacity();
 
-            let storage = TensorStorage::<u8, _>::from_vec(original_vec);
+            let storage = TensorStorage::from_vec(original_vec, allocator.clone());
             assert_eq!(*allocator.bytes_allocated.borrow(), 0);
 
             let result_vec = storage.into_vec();
@@ -437,20 +417,10 @@ mod tests {
         Ok(())
     }
 
-    #[ignore = "this test fails because of the memory leak in the destructor of TensorStorage"]
-    #[test]
-    fn test_tensor_storage_from_slice() -> Result<(), TensorAllocatorError> {
-        let data = vec![1, 2, 3, 4, 5];
-        let storage = TensorStorage::from_slice(&data);
-        assert_eq!(storage.len(), 5);
-        assert_eq!(storage.as_slice(), &[1, 2, 3, 4, 5]);
-        Ok(())
-    }
-
     #[test]
     fn test_tensor_storage_as_slice() -> Result<(), TensorAllocatorError> {
         let data = vec![1, 2, 3, 4, 5];
-        let storage = TensorStorage::from_vec(data);
+        let storage = TensorStorage::from_vec(data, CpuAllocator);
         let slice = storage.as_slice();
         assert_eq!(slice.len(), 5);
         assert_eq!(slice, &[1, 2, 3, 4, 5]);

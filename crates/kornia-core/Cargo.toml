@@ -11,10 +11,6 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-
-# external
-arrow-buffer = "53.0.0"
 num-traits = "0.2"
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
-bytes = "1"

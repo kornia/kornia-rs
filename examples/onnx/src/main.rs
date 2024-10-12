@@ -1,5 +1,5 @@
 use clap::Parser;
-use kornia::core::Tensor;
+use kornia::core::{CpuAllocator, Tensor};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -69,6 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             image_chw.shape[2],
         ],
         image_chw.into_vec(),
+        CpuAllocator,
     )?;
 
     // make the ort tensor
@@ -108,13 +109,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (out_shape, out_ort) = outputs["output"].try_extract_raw_tensor::<f32>()?;
     println!("out_shape: {:?}", out_shape);
 
-    let out_tensor = Tensor::<f32, 3>::from_shape_vec(
+    let out_tensor = Tensor::<f32, 3, CpuAllocator>::from_shape_vec(
         [
             out_shape[0] as usize,
             out_shape[1] as usize,
             out_shape[2] as usize,
         ],
         out_ort.to_vec(),
+        CpuAllocator,
     )?;
 
     println!("out_tensor: {:?}", out_tensor.shape);

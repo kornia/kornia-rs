@@ -1,6 +1,6 @@
 use rayon::prelude::*;
 
-use kornia_core::Tensor2;
+use kornia_core::{CpuAllocator, Tensor2};
 use kornia_image::Image;
 
 /// Apply a function to each pixel in the image in parallel.
@@ -82,8 +82,8 @@ pub fn par_iter_rows_val_two<T1, const C1: usize, T2, const C2: usize, T3, const
 /// Apply a function to each pixel for grid sampling in parallel.
 pub fn par_iter_rows_resample<const C: usize>(
     dst: &mut Image<f32, C>,
-    map_x: &Tensor2<f32>,
-    map_y: &Tensor2<f32>,
+    map_x: &Tensor2<f32, CpuAllocator>,
+    map_y: &Tensor2<f32, CpuAllocator>,
     f: impl Fn(&f32, &f32, &mut [f32]) + Send + Sync,
 ) {
     let cols = dst.cols();

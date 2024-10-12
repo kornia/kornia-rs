@@ -1,4 +1,4 @@
-use kornia_core::{CpuAllocator, Tensor2, TensorError};
+use kornia_core::{CpuAllocator, CpuTensor2, TensorError};
 use num_traits::Float;
 use rayon::iter::ParallelIterator;
 use rayon::{iter::IndexedParallelIterator, slice::ParallelSliceMut};
@@ -35,13 +35,13 @@ pub fn meshgrid_from_fn<T>(
     cols: usize,
     rows: usize,
     f: impl Fn(usize, usize) -> Result<(T, T), Box<dyn std::error::Error + Send + Sync>> + Send + Sync,
-) -> Result<(Tensor2<T>, Tensor2<T>), TensorError>
+) -> Result<(CpuTensor2<T>, CpuTensor2<T>), TensorError>
 where
     T: Float + Send + Sync,
 {
     // allocate the output tensors
-    let mut map_x = Tensor2::<T>::new_uninitialized([rows, cols], CpuAllocator)?;
-    let mut map_y = Tensor2::<T>::new_uninitialized([rows, cols], CpuAllocator)?;
+    let mut map_x = CpuTensor2::<T>::new_uninitialized([rows, cols], CpuAllocator)?;
+    let mut map_y = CpuTensor2::<T>::new_uninitialized([rows, cols], CpuAllocator)?;
 
     // fill the output tensors
     map_x
