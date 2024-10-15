@@ -1,4 +1,3 @@
-use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
 
 use crate::parallel;
@@ -33,13 +32,7 @@ pub fn add_weighted<T, const C: usize>(
     dst: &mut Image<T, C>,
 ) -> Result<(), ImageError>
 where
-    T: num_traits::Float
-        + num_traits::FromPrimitive
-        + std::fmt::Debug
-        + Send
-        + Sync
-        + Copy
-        + SafeTensorType,
+    T: num_traits::Float + num_traits::FromPrimitive + std::fmt::Debug + Send + Sync + Copy,
 {
     if src1.size() != src2.size() {
         return Err(ImageError::InvalidImageSize(

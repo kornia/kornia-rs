@@ -1,6 +1,6 @@
 use super::{CameraExtrinsic, CameraIntrinsic};
 use crate::interpolation::grid::meshgrid_from_fn;
-use kornia_core::{Tensor2, TensorError};
+use kornia_core::{CpuTensor2, TensorError};
 use kornia_image::ImageSize;
 
 /// Represents the polynomial distortion parameters of a camera using the Brown-Conrady model.
@@ -135,7 +135,7 @@ pub fn generate_correction_map_polynomial(
     _new_intrinsic: &CameraIntrinsic,
     distortion: &PolynomialDistortion,
     size: &ImageSize,
-) -> Result<(Tensor2<f32>, Tensor2<f32>), TensorError> {
+) -> Result<(CpuTensor2<f32>, CpuTensor2<f32>), TensorError> {
     //// create a grid of x and y coordinates for the output image
     //// and interpolate the values from the input image.
     let (dst_rows, dst_cols) = (size.height, size.width);

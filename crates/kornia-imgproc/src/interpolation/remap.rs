@@ -2,7 +2,7 @@ use crate::parallel;
 
 use super::interpolate::interpolate_pixel;
 use super::InterpolationMode;
-use kornia_core::Tensor2;
+use kornia_core::{CpuAllocator, Tensor2};
 use kornia_image::{Image, ImageError};
 
 /// Apply generic geometric transformation to an image.
@@ -22,8 +22,8 @@ use kornia_image::{Image, ImageError};
 pub fn remap<const C: usize>(
     src: &Image<f32, C>,
     dst: &mut Image<f32, C>,
-    map_x: &Tensor2<f32>,
-    map_y: &Tensor2<f32>,
+    map_x: &Tensor2<f32, CpuAllocator>,
+    map_y: &Tensor2<f32, CpuAllocator>,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
     if map_x.shape != map_y.shape {

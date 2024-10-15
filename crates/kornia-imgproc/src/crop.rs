@@ -1,4 +1,3 @@
-use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
@@ -40,7 +39,7 @@ pub fn crop_image<T, const C: usize>(
     y: usize,
 ) -> Result<(), ImageError>
 where
-    T: SafeTensorType,
+    T: Copy + Send + Sync,
 {
     let dst_cols = dst.cols();
 

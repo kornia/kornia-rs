@@ -1,4 +1,3 @@
-use kornia_core::SafeTensorType;
 use kornia_image::{Image, ImageError};
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
@@ -42,7 +41,7 @@ pub fn horizontal_flip<T, const C: usize>(
     dst: &mut Image<T, C>,
 ) -> Result<(), ImageError>
 where
-    T: SafeTensorType,
+    T: Copy + Send + Sync,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -106,7 +105,7 @@ pub fn vertical_flip<T, const C: usize>(
     dst: &mut Image<T, C>,
 ) -> Result<(), ImageError>
 where
-    T: SafeTensorType,
+    T: Copy + Send + Sync,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
