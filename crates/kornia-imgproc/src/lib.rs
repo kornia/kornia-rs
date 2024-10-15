@@ -16,6 +16,9 @@ pub mod crop;
 // NOTE: not ready yet
 // pub mod distance_transform;
 
+/// utilities to draw on images.
+pub mod draw;
+
 /// image enhancement module.
 pub mod enhance;
 
