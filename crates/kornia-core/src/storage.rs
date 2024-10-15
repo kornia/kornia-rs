@@ -82,46 +82,6 @@ where
         self.buffer.into_vec()
     }
 
-    /// Creates a new tensor storage from an existing raw pointer with the given allocator.
-    ///
-    /// # Arguments
-    ///
-    /// * `ptr` - The existing raw pointer to the tensor data.
-    /// * `len` - The number of elements in the tensor storage.
-    /// * `alloc` - A reference to the allocator used to allocate the tensor storage.
-    ///
-    /// # Safety
-    ///
-    /// The pointer must be properly aligned and have the correct length.
-    //pub unsafe fn from_ptr(ptr: *mut T, len: usize, alloc: &A) -> Self {
-    //    // create the buffer
-    //    //let buffer = Buffer::from_custom_allocation(
-    //    //    NonNull::new_unchecked(ptr as *mut u8),
-    //    //    len * std::mem::size_of::<T>(),
-    //    //    Arc::new(()),
-    //    //);
-
-    //    //// create tensor storage
-    //    //Self {
-    //    //    data: buffer.into(),
-    //    //    alloc: Arc::new(alloc.clone()),
-    //    //    marker: PhantomData,
-    //    //}
-    //    let ptr = unsafe { NonNull::new_unchecked(ptr as *mut u8) };
-    //    let layout = Layout::array::<T>(len).unwrap();
-    //    let alloc = Arc::new(alloc);
-    //    let buffer = TensorBuffer {
-    //        alloc: alloc.clone(),
-    //        layout,
-    //        ptr,
-    //    };
-    //    Self {
-    //        buffer,
-    //        alloc: alloc.clone(), // NOTE: redundant
-    //        marker: PhantomData,
-    //    }
-    //}
-
     /// Returns the capacity of the tensor storage.
     #[inline]
     pub fn capacity(&self) -> usize {
@@ -294,28 +254,6 @@ mod tests {
         Ok(())
     }
 
-    //#[test]
-    //fn test_tensor_storage_from_cpu_ptr() -> Result<(), TensorAllocatorError> {
-    //    let len = 1024;
-    //    let layout = Layout::array::<u8>(len).unwrap();
-    //    let allocator = CpuAllocator;
-
-    //    // Allocate CPU memory
-    //    let ptr = allocator.alloc(layout)?;
-
-    //    // Wrap the existing CPU pointer in a `TensorStorage`
-    //    let storage = unsafe { TensorStorage::from_ptr(ptr, len, &allocator) };
-
-    //    // Use the `TensorStorage` as needed
-    //    assert_eq!(storage.len(), len);
-    //    assert!(!storage.is_empty());
-
-    //    // Deallocate CPU memory
-    //    allocator.dealloc(ptr, layout);
-
-    //    Ok(())
-    //}
-
     #[test]
     fn test_tensor_storage_into_vec() {
         let original_vec = vec![1, 2, 3, 4, 5];
@@ -395,24 +333,6 @@ mod tests {
             assert!(std::ptr::eq(result_vec.as_ptr(), original_vec_ptr));
         }
         assert_eq!(*allocator.bytes_allocated.borrow(), 0);
-
-        // TensorStorage::from_ptr()
-        // TensorStorage::from_ptr() does not take ownership of buffer. So the memory should not be
-        // deallocated when the TensorStorage goes out of scope.
-        // In this case, the memory will be deallocated when the vector goes out of scope.
-        //{
-        //    let mut original_vec = Vec::<u8>::with_capacity(len);
-        //    let original_ptr = original_vec.as_ptr();
-        //    {
-        //        let storage = unsafe {
-        //            TensorStorage::<u8, _>::from_ptr(original_vec.as_mut_ptr(), len, &allocator)
-        //        };
-        //        assert_eq!(*allocator.bytes_allocated.borrow(), 0);
-
-        //        assert_eq!(storage.as_ptr(), original_ptr);
-        //    }
-        //    assert_eq!(*allocator.bytes_allocated.borrow(), 0);
-        //}
 
         Ok(())
     }
