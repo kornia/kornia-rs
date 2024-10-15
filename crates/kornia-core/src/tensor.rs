@@ -104,7 +104,7 @@ where
     pub fn new_uninitialized(shape: [usize; N], alloc: A) -> Result<Self, TensorError> {
         let numel = shape.iter().product::<usize>();
         let strides = get_strides_from_shape(shape);
-        let storage = TensorStorage::new(numel, alloc)?;
+        let storage = TensorStorage::new_uninitialized(numel, alloc)?;
         Ok(Self {
             storage,
             shape,
@@ -436,7 +436,7 @@ where
     /// ```
     pub fn get_unchecked(&self, index: [usize; N]) -> &T {
         let offset = self.get_iter_offset_unchecked(index);
-        self.storage.get_unchecked(offset)
+        unsafe { self.storage.as_slice().get_unchecked(offset) }
     }
 
     /// Get the element at the given index, checking if the index is out of bounds.
@@ -471,7 +471,7 @@ where
     /// ```
     pub fn get(&self, index: [usize; N]) -> Option<&T> {
         self.get_iter_offset(index)
-            .and_then(|i| self.storage.get(i))
+            .and_then(|i| self.storage.as_slice().get(i))
     }
 
     /// Reshape the tensor to a new shape.

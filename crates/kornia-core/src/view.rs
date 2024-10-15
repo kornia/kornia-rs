@@ -30,7 +30,7 @@ impl<'a, T, const N: usize, A: TensorAllocator + 'static> TensorView<'a, T, N, A
     /// Returns the length of the tensor.
     #[inline]
     pub fn numel(&self) -> usize {
-        self.storage.len()
+        self.storage.len() / std::mem::size_of::<T>()
     }
 
     /// Get the element at the given index.
@@ -47,7 +47,7 @@ impl<'a, T, const N: usize, A: TensorAllocator + 'static> TensorView<'a, T, N, A
             .iter()
             .zip(self.strides.iter())
             .fold(0, |acc, (i, s)| acc + i * s);
-        self.storage.get_unchecked(offset)
+        unsafe { self.storage.as_slice().get_unchecked(offset) }
     }
 
     /// Convert the view an owned tensor with contiguous memory.
@@ -96,7 +96,7 @@ mod tests {
     #[test]
     fn test_tensor_view_storage() -> Result<(), TensorAllocatorError> {
         let allocator = CpuAllocator;
-        let storage = TensorStorage::<u8, _>::new(1024, allocator)?;
+        let storage = TensorStorage::<u8, _>::new_uninitialized(1024, allocator)?;
         let view = TensorView::<u8, 1, _> {
             storage: &storage,
             shape: [1024],
