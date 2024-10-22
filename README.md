@@ -12,7 +12,7 @@ Use the library to perform image I/O, visualisation and other low level operatio
 
 ## Getting Started
 
-`cargo run --bin hello_world`
+`cargo run --bin hello_world -- --image-path path/to/image.jpg`
 
 ```rust
 use kornia::image::Image;
