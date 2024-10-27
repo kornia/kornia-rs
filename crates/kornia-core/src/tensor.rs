@@ -71,7 +71,7 @@ pub(crate) fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usiz
 /// use kornia_core::{Tensor, CpuAllocator};
 ///
 /// let data: Vec<u8> = vec![1, 2, 3, 4];
-/// let t = Tensor::<u8, 2, CpuAllocator>::new_uninitialized([2, 2], CpuAllocator).unwrap();
+/// let t = Tensor::<u8, 2, CpuAllocator>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
 /// assert_eq!(t.shape, [2, 2]);
 /// ```
 pub struct Tensor<T, const N: usize, A: TensorAllocator> {
@@ -101,16 +101,16 @@ where
     /// # Errors
     ///
     /// If the allocation fails, an error is returned.
-    pub fn new_uninitialized(shape: [usize; N], alloc: A) -> Result<Self, TensorError> {
-        let numel = shape.iter().product::<usize>();
-        let strides = get_strides_from_shape(shape);
-        let storage = TensorStorage::new_uninitialized(numel, alloc)?;
-        Ok(Self {
-            storage,
-            shape,
-            strides,
-        })
-    }
+    //pub fn new_uninitialized(shape: [usize; N], alloc: A) -> Result<Self, TensorError> {
+    //    let numel = shape.iter().product::<usize>();
+    //    let strides = get_strides_from_shape(shape);
+    //    let storage = TensorStorage::new_uninitialized(numel, alloc)?;
+    //    Ok(Self {
+    //        storage,
+    //        shape,
+    //        strides,
+    //    })
+    //}
 
     /// Get the data of the tensor as a slice.
     ///

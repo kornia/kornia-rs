@@ -94,24 +94,6 @@ mod tests {
     use crate::allocator::{CpuAllocator, TensorAllocatorError};
 
     #[test]
-    fn test_tensor_view_storage() -> Result<(), TensorAllocatorError> {
-        let allocator = CpuAllocator;
-        let storage = TensorStorage::<u8, _>::new_uninitialized(1024, allocator)?;
-        let view = TensorView::<u8, 1, _> {
-            storage: &storage,
-            shape: [1024],
-            strides: [1],
-        };
-
-        assert!(view.shape == [1024]);
-        assert!(view.strides == [1]);
-        assert_eq!(view.numel(), 1024);
-        assert!(!view.as_ptr().is_null());
-
-        Ok(())
-    }
-
-    #[test]
     fn test_tensor_view_from_vec() -> Result<(), TensorAllocatorError> {
         let vec = vec![1, 2, 3, 4, 5, 6, 7, 8];
         let storage = TensorStorage::from_vec(vec, CpuAllocator);

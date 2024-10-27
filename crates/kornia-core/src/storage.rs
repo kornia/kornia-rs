@@ -1,6 +1,6 @@
 use std::{alloc::Layout, ptr::NonNull};
 
-use crate::allocator::{TensorAllocator, TensorAllocatorError};
+use crate::allocator::TensorAllocator;
 
 /// Definition of the buffer for a tensor.
 pub struct TensorStorage<T, A: TensorAllocator> {
@@ -15,33 +15,6 @@ pub struct TensorStorage<T, A: TensorAllocator> {
 }
 
 impl<T, A: TensorAllocator> TensorStorage<T, A> {
-    /// Creates a new tensor buffer from a pointer, length, layout and allocator.
-    ///
-    /// # Arguments
-    ///
-    /// * `size` - The number of elements in the tensor buffer.
-    /// * `alloc` - The allocator used to allocate the tensor buffer.
-    ///
-    /// # Returns
-    ///
-    /// A new tensor buffer if successful, otherwise an error.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that the pointer is valid and that the length and layout are correct.
-    pub fn new_uninitialized(size: usize, alloc: A) -> Result<Self, TensorAllocatorError> {
-        // allocate memory for tensor storage
-        let layout = Layout::array::<T>(size).map_err(TensorAllocatorError::LayoutError)?;
-        let ptr = NonNull::new(alloc.alloc(layout)?).ok_or(TensorAllocatorError::NullPointer)?;
-
-        Ok(Self {
-            ptr: ptr.cast(),
-            len: 0,
-            layout,
-            alloc,
-        })
-    }
-
     /// Returns the pointer to the tensor memory.
     #[inline]
     pub fn as_ptr(&self) -> *const T {
@@ -184,13 +157,13 @@ where
     A: TensorAllocator + 'static,
 {
     fn clone(&self) -> Self {
-        let mut new_buffer = Self::new_uninitialized(self.len(), self.alloc.clone())
-            .expect("Failed to clone TensorStorage");
+        let mut new_vec = Vec::<T>::with_capacity(self.len());
 
-        for (d, s) in new_buffer.as_mut_slice().iter_mut().zip(self.as_slice()) {
+        for (d, s) in new_vec.as_mut_slice().iter_mut().zip(self.as_slice()) {
             *d = s.clone();
         }
-        new_buffer
+
+        Self::from_vec(new_vec, self.alloc.clone())
     }
 }
 
@@ -227,21 +200,6 @@ mod tests {
         assert_eq!(buffer.len(), size);
         assert!(!buffer.is_empty());
         assert_eq!(buffer.len(), size * std::mem::size_of::<u8>());
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_tensor_buffer_create_new_uninitialized() -> Result<(), TensorAllocatorError> {
-        let size = 1024;
-        let allocator = CpuAllocator;
-        let buffer = TensorStorage::<u8, _>::new_uninitialized(size, allocator)?;
-        let ptr = buffer.as_ptr();
-
-        assert_eq!(buffer.len(), 0);
-        assert_eq!(buffer.capacity(), size);
-        assert!(buffer.is_empty());
-        assert!(!ptr.is_null());
 
         Ok(())
     }
@@ -309,26 +267,6 @@ mod tests {
         assert_eq!(*allocator.bytes_allocated.borrow(), 0);
 
         let size = 1024;
-
-        // Create a new buffer by allocating memory.
-        // Deallocation should happen when `buffer` goes out of scope.
-        {
-            let _buffer = TensorStorage::<i32, _>::new_uninitialized(size, allocator.clone())?;
-            assert_eq!(*allocator.bytes_allocated.borrow(), size as i32);
-        }
-        assert_eq!(*allocator.bytes_allocated.borrow(), 0);
-
-        // TensorStorage::new_uninitialized() -> TensorStorage::into_vec()
-        // TensorStorage::into_vec() consumes the buffer and creates a copy (in this case).
-        // This should cause deallocation of the original memory.
-        {
-            let buffer = TensorStorage::new_uninitialized(size, allocator.clone())?;
-            assert_eq!(*allocator.bytes_allocated.borrow(), size as i32);
-
-            let _vec: Vec<i32> = buffer.into_vec();
-            assert_eq!(*allocator.bytes_allocated.borrow(), 0);
-        }
-        assert_eq!(*allocator.bytes_allocated.borrow(), 0);
 
         // TensorStorage::from_vec() -> TensorStorage::into_vec()
         // TensorStorage::from_vec() currently does not use the custom allocator, so the

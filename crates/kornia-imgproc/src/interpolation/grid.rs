@@ -40,8 +40,8 @@ where
     T: Float + Send + Sync,
 {
     // allocate the output tensors
-    let mut map_x = CpuTensor2::<T>::new_uninitialized([rows, cols], CpuAllocator)?;
-    let mut map_y = CpuTensor2::<T>::new_uninitialized([rows, cols], CpuAllocator)?;
+    let mut map_x = CpuTensor2::<T>::zeros([rows, cols], CpuAllocator);
+    let mut map_y = CpuTensor2::<T>::zeros([rows, cols], CpuAllocator);
 
     // fill the output tensors
     map_x
