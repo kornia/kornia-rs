@@ -75,6 +75,10 @@ pub enum StreamCaptureError {
     /// An error occurred during checking the image format.
     #[error("Invalid image format: {0}")]
     InvalidImageFormat(String),
+
+    /// An error occurred when the pipeline is not running.
+    #[error("Pipeline is not running")]
+    PipelineNotRunning,
 }
 
 // ensure that can be sent over threads

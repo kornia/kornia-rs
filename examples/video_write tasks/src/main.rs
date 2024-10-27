@@ -1,10 +1,16 @@
 use clap::Parser;
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 use tokio::signal;
 use tokio::sync::Mutex;
 
 use kornia::{
-    image::{Image, ImageSize},
+    image::ImageSize,
     io::stream::{
         video::{ImageFormat, VideoCodec},
         V4L2CameraConfig, VideoWriter,
@@ -21,9 +27,6 @@ struct Args {
 
     #[arg(short, long, default_value = "30")]
     fps: i32,
-
-    #[arg(short, long)]
-    duration: Option<u64>,
 }
 
 #[tokio::main]
@@ -46,53 +49,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // create a webcam capture object with camera id 0
     // and force the image size to 640x480
-    let webcam = V4L2CameraConfig::new()
-        .with_camera_id(args.camera_id)
-        .with_fps(args.fps as u32)
-        .with_size(frame_size)
-        .build()?;
+    let webcam = Arc::new(Mutex::new(
+        V4L2CameraConfig::new()
+            .with_camera_id(args.camera_id)
+            .with_fps(args.fps as u32)
+            .with_size(frame_size)
+            .build()?,
+    ));
+
+    // start the webcam capture
+    webcam.lock().await.start()?;
 
     // start the video writer
-    let video_writer = VideoWriter::new(
+    let video_writer = Arc::new(Mutex::new(VideoWriter::new(
         args.output,
         VideoCodec::H264,
         ImageFormat::Rgb8,
         args.fps,
         frame_size,
-    )?;
-    let video_writer = Arc::new(Mutex::new(video_writer));
+    )?));
+
+    // start the video writer
     video_writer.lock().await.start()?;
 
+    // token to cancel the tasks
+    let cancel_token = Arc::new(AtomicBool::new(false));
+
+    ctrlc::set_handler({
+        let cancel_token = cancel_token.clone();
+        move || {
+            println!("Received Ctrl-C signal. Sending cancel signal !!");
+            cancel_token.store(true, Ordering::SeqCst);
+        }
+    })?;
+
     // Create a channel to send frames to the video writer
-    let (tx, rx) = tokio::sync::mpsc::channel::<Arc<Mutex<Image<u8, 3>>>>(32);
+    let (tx, rx) = tokio::sync::mpsc::channel(50);
     let rx = Arc::new(Mutex::new(rx));
 
-    // Spawn a task to read frames from the camera and send them to the video writer
-    let video_writer_task = tokio::spawn({
-        let rx = rx.clone();
+    // Worker to read frames from the camera and send them to the video writer
+    let write_task = tokio::spawn({
         let video_writer = video_writer.clone();
+        let rx = rx.clone();
         async move {
             while let Some(img) = rx.lock().await.recv().await {
                 // lock the image and write it to the video writer
-                let img = img.lock().await;
-                video_writer
-                    .lock()
-                    .await
-                    .write(&img)
-                    .expect("Failed to write image to video writer");
+                video_writer.lock().await.write(&img)?;
             }
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
         }
     });
 
-    // Visualization thread
+    // Worker to visualize the frames
     let visualization_task = tokio::spawn({
-        let rec = rec.clone();
         let rx = rx.clone();
         async move {
             while let Some(img) = rx.lock().await.recv().await {
-                // lock the image and log it
-                let img = img.lock().await;
+                // lock the image and visualize it with rerun
                 rec.log_static(
                     "image",
                     &rerun::Image::from_elements(
@@ -106,34 +119,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // start grabbing frames from the camera
-    let capture = webcam.run_with_termination(
-        |img| {
-            let tx = tx.clone();
-            async move {
-                // send the image to the video writer and the visualization
-                tx.send(Arc::new(Mutex::new(img))).await?;
-                Ok(())
+    // Worker to grab frames from the camera and send them to the video writer
+    let capture_task = tokio::spawn({
+        let webcam = webcam.clone();
+        async move {
+            while !cancel_token.load(Ordering::SeqCst) {
+                // read the image from the camera
+                if let Some(img) = webcam.lock().await.grab()? {
+                    // send the image to broadcast channel
+                    if let Err(e) = tx.send(img).await {
+                        println!("Error sending image to channel: {:?}", e.to_string());
+                    }
+                }
             }
-        },
-        async {
-            signal::ctrl_c().await.expect("Failed to listen for Ctrl+C");
-            println!("👋 Finished recording. Closing app.");
-        },
-    );
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        }
+    });
 
     tokio::select! {
-        _ = capture => (),
-        _ = video_writer_task => (),
+        _ = write_task => {
+            video_writer.lock().await.close()?;
+        }
+        _ = capture_task => {
+            webcam.lock().await.close()?;
+        }
         _ = visualization_task => (),
         _ = signal::ctrl_c() => (),
     }
-
-    video_writer
-        .lock()
-        .await
-        .stop()
-        .expect("Failed to stop video writer");
 
     Ok(())
 }

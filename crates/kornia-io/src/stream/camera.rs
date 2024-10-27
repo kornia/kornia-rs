@@ -83,3 +83,13 @@ impl std::ops::Deref for CameraCapture {
         &self.0
     }
 }
+
+/// Allows `CameraCapture` to be dereferenced to `StreamCapture`.
+///
+/// This implementation enables direct access to `StreamCapture` methods
+/// on a `CameraCapture` instance.
+impl std::ops::DerefMut for CameraCapture {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
