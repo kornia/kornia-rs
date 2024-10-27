@@ -109,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (out_shape, out_ort) = outputs["output"].try_extract_raw_tensor::<f32>()?;
     println!("out_shape: {:?}", out_shape);
 
-    let out_tensor = Tensor::<f32, 3>::from_shape_vec(
+    let out_tensor = Tensor::<f32, 3, CpuAllocator>::from_shape_vec(
         [
             out_shape[0] as usize,
             out_shape[1] as usize,

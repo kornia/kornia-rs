@@ -1,15 +1,11 @@
-use crate::{
-    allocator::TensorAllocator,
-    storage::{SafeTensorType, TensorStorage},
-    Tensor,
-};
+use crate::{allocator::TensorAllocator, storage::TensorStorage, Tensor};
 
 use serde::ser::SerializeStruct;
 use serde::Deserialize;
 
 impl<T, const N: usize, A> serde::Serialize for Tensor<T, N, A>
 where
-    T: serde::Serialize + SafeTensorType,
+    T: serde::Serialize,
     A: TensorAllocator + 'static,
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -27,7 +23,7 @@ where
 impl<'de, T, const N: usize, A: TensorAllocator + Default + 'static> serde::Deserialize<'de>
     for Tensor<T, N, A>
 where
-    T: serde::Deserialize<'de> + SafeTensorType,
+    T: serde::Deserialize<'de>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
