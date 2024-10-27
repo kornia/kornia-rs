@@ -1,4 +1,4 @@
-use kornia_core::{CpuAllocator, SafeTensorType, Tensor, Tensor2, Tensor3};
+use kornia_core::{CpuAllocator, Tensor, Tensor2, Tensor3};
 
 use crate::error::ImageError;
 
@@ -56,16 +56,11 @@ impl From<ImageSize> for [u32; 2] {
 /// Represents an image with pixel data.
 ///
 /// The image is represented as a 3D Tensor with shape (H, W, C), where H is the height of the image,
-pub struct Image<T, const C: usize>(pub Tensor3<T>)
-where
-    T: SafeTensorType;
+pub struct Image<T, const C: usize>(pub Tensor3<T, CpuAllocator>);
 
 /// helper to deference the inner tensor
-impl<T, const C: usize> std::ops::Deref for Image<T, C>
-where
-    T: SafeTensorType,
-{
-    type Target = Tensor3<T>;
+impl<T, const C: usize> std::ops::Deref for Image<T, C> {
+    type Target = Tensor3<T, CpuAllocator>;
 
     // Define the deref method to return a reference to the inner Tensor3<T>.
     fn deref(&self) -> &Self::Target {
@@ -74,20 +69,14 @@ where
 }
 
 /// helper to deference the inner tensor
-impl<T, const C: usize> std::ops::DerefMut for Image<T, C>
-where
-    T: SafeTensorType,
-{
+impl<T, const C: usize> std::ops::DerefMut for Image<T, C> {
     // Define the deref_mut method to return a mutable reference to the inner Tensor3<T>.
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl<T, const C: usize> Image<T, C>
-where
-    T: SafeTensorType,
-{
+impl<T, const C: usize> Image<T, C> {
     /// Create a new image from pixel data.
     ///
     /// # Arguments
@@ -120,7 +109,10 @@ where
     /// assert_eq!(image.size().height, 20);
     /// assert_eq!(image.num_channels(), 3);
     /// ```
-    pub fn new(size: ImageSize, data: Vec<T>) -> Result<Self, ImageError> {
+    pub fn new(size: ImageSize, data: Vec<T>) -> Result<Self, ImageError>
+    where
+        T: Clone, // TODO: remove this bound
+    {
         // check if the data length matches the image size
         if data.len() != size.width * size.height * C {
             return Err(ImageError::InvalidChannelShape(
@@ -192,8 +184,11 @@ where
     ///
     /// Returns an error if the length of the data slice doesn't match the image dimensions,
     /// or if there's an issue creating the tensor or image.
-    pub fn from_size_slice(size: ImageSize, data: &[T]) -> Result<Self, ImageError> {
-        let tensor: Tensor3<T> =
+    pub fn from_size_slice(size: ImageSize, data: &[T]) -> Result<Self, ImageError>
+    where
+        T: Clone,
+    {
+        let tensor: Tensor3<T, CpuAllocator> =
             Tensor::from_shape_slice([size.height, size.width, C], data, CpuAllocator)?;
         Image::try_from(tensor)
     }
@@ -205,8 +200,8 @@ where
     /// A new image with the pixel data cast to the given type.
     pub fn cast<U>(&self) -> Result<Image<U, C>, ImageError>
     where
-        U: num_traits::NumCast + SafeTensorType,
-        T: num_traits::NumCast,
+        U: num_traits::NumCast + Clone + Copy, // TODO: remove this bound
+        T: num_traits::NumCast + Clone + Copy, // TODO: remove this bound
     {
         // TODO: this needs to be optimized and reuse Tensor::cast
         let casted_data = self
@@ -241,13 +236,13 @@ where
             return Err(ImageError::ChannelIndexOutOfBounds(channel, C));
         }
 
-        let mut channel_data = vec![];
-
-        for y in 0..self.height() {
-            for x in 0..self.width() {
-                channel_data.push(*self.get_unchecked([y, x, channel]));
-            }
-        }
+        let channel_data = self
+            .as_slice()
+            .iter()
+            .skip(channel)
+            .step_by(C)
+            .cloned()
+            .collect();
 
         Image::new(self.size(), channel_data)
     }
@@ -275,7 +270,7 @@ where
     /// ```
     pub fn split_channels(&self) -> Result<Vec<Image<T, 1>>, ImageError>
     where
-        T: Clone,
+        T: Clone + Copy, // TODO: remove this bound
     {
         let mut channels = Vec::with_capacity(C);
 
@@ -354,8 +349,8 @@ where
     /// ```
     pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, C>, ImageError>
     where
-        U: num_traits::NumCast + std::ops::Mul<Output = U> + SafeTensorType,
-        T: num_traits::NumCast,
+        U: num_traits::NumCast + std::ops::Mul<Output = U> + Clone + Copy,
+        T: num_traits::NumCast + Clone + Copy,
     {
         let casted_data = self
             .as_slice()
@@ -380,8 +375,8 @@ where
     /// A new image with the pixel data cast to the new type and scaled.
     pub fn scale_and_cast<U>(&self, scale: T) -> Result<Image<U, C>, ImageError>
     where
-        U: num_traits::NumCast + SafeTensorType,
-        T: num_traits::NumCast + std::ops::Mul<Output = T>,
+        U: num_traits::NumCast + Clone + Copy,
+        T: num_traits::NumCast + std::ops::Mul<Output = T> + Clone + Copy,
     {
         let casted_data = self
             .as_slice()
@@ -436,13 +431,13 @@ where
 }
 
 /// helper to convert an single channel tensor to a kornia image with try into
-impl<T> TryFrom<Tensor2<T>> for Image<T, 1>
+impl<T> TryFrom<Tensor2<T, CpuAllocator>> for Image<T, 1>
 where
-    T: SafeTensorType,
+    T: Clone,
 {
     type Error = ImageError;
 
-    fn try_from(value: Tensor2<T>) -> Result<Self, Self::Error> {
+    fn try_from(value: Tensor2<T, CpuAllocator>) -> Result<Self, Self::Error> {
         Self::from_size_slice(
             ImageSize {
                 width: value.shape[1],
@@ -454,13 +449,10 @@ where
 }
 
 /// helper to convert an multi channel tensor to a kornia image with try into
-impl<T, const C: usize> TryFrom<Tensor3<T>> for Image<T, C>
-where
-    T: SafeTensorType,
-{
+impl<T, const C: usize> TryFrom<Tensor3<T, CpuAllocator>> for Image<T, C> {
     type Error = ImageError;
 
-    fn try_from(value: Tensor3<T>) -> Result<Self, Self::Error> {
+    fn try_from(value: Tensor3<T, CpuAllocator>) -> Result<Self, Self::Error> {
         if value.shape[2] != C {
             return Err(ImageError::InvalidChannelShape(value.shape[2], C));
         }
@@ -468,13 +460,10 @@ where
     }
 }
 
-impl<T, const C: usize> TryInto<Tensor3<T>> for Image<T, C>
-where
-    T: SafeTensorType,
-{
+impl<T, const C: usize> TryInto<Tensor3<T, CpuAllocator>> for Image<T, C> {
     type Error = ImageError;
 
-    fn try_into(self) -> Result<Tensor3<T>, Self::Error> {
+    fn try_into(self) -> Result<Tensor3<T, CpuAllocator>, Self::Error> {
         Ok(self.0)
     }
 }
@@ -629,8 +618,8 @@ mod tests {
 
     #[test]
     fn image_from_tensor() -> Result<(), ImageError> {
-        let tensor =
-            Tensor::<u8, 2, CpuAllocator>::from_shape_vec([2, 3], vec![0u8; 2 * 3], CpuAllocator)?;
+        let data = vec![0u8, 1, 2, 3, 4, 5];
+        let tensor = Tensor::<u8, 2, _>::from_shape_vec([2, 3], data, CpuAllocator)?;
 
         let image = Image::<u8, 1>::try_from(tensor.clone())?;
         assert_eq!(image.size().width, 3);
