@@ -41,7 +41,7 @@ impl StreamCapture {
     /// A Result indicating success or a StreamCaptureError.
     pub async fn run<F>(&self, mut f: F) -> Result<(), StreamCaptureError>
     where
-        F: FnMut(Image<u8, 3>) -> Result<(), Box<dyn std::error::Error>>,
+        F: FnMut(Image<u8, 3>) -> Result<(), Box<dyn std::error::Error + Send + Sync>>,
     {
         self.run_internal(
             |img| futures::future::ready(f(img)),
@@ -67,7 +67,7 @@ impl StreamCapture {
     ) -> Result<(), StreamCaptureError>
     where
         F: FnMut(Image<u8, 3>) -> Fut,
-        Fut: Future<Output = Result<(), Box<dyn std::error::Error>>>,
+        Fut: Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>,
         S: Future<Output = ()>,
     {
         self.run_internal(f, Some(signal)).await
@@ -90,7 +90,7 @@ impl StreamCapture {
     ) -> Result<(), StreamCaptureError>
     where
         F: FnMut(Image<u8, 3>) -> Fut,
-        Fut: Future<Output = Result<(), Box<dyn std::error::Error>>>,
+        Fut: Future<Output = Result<(), Box<dyn std::error::Error + Send + Sync>>>,
         S: Future<Output = ()>,
     {
         let (tx, mut rx) = tokio::sync::mpsc::channel(10);
