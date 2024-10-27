@@ -1,16 +1,13 @@
 use clap::Parser;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    {Arc, Mutex},
+    Arc,
 };
 
 use kornia::{
     image::{ops, Image, ImageSize},
     imgproc,
-    io::{
-        fps_counter::FpsCounter,
-        stream::{StreamCaptureError, V4L2CameraConfig},
-    },
+    io::{fps_counter::FpsCounter, stream::V4L2CameraConfig},
 };
 
 #[derive(Parser)]
@@ -25,8 +22,7 @@ struct Args {
     duration: Option<u64>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // start the recording stream
@@ -34,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // create a webcam capture object with camera id 0
     // and force the image size to 640x480
-    let webcam = V4L2CameraConfig::new()
+    let mut webcam = V4L2CameraConfig::new()
         .with_camera_id(args.camera_id)
         .with_fps(args.fps)
         .with_size(ImageSize {
@@ -43,11 +39,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .build()?;
 
+    // start the background pipeline
+    webcam.start()?;
+
     // create a cancel token to stop the webcam capture
     let cancel_token = Arc::new(AtomicBool::new(false));
 
     // create a shared fps counter
-    let fps_counter = Arc::new(Mutex::new(FpsCounter::new()));
+    let mut fps_counter = FpsCounter::new();
 
     ctrlc::set_handler({
         let cancel_token = cancel_token.clone();
@@ -58,11 +57,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     // we launch a timer to cancel the token after a certain duration
-    tokio::spawn({
+    std::thread::spawn({
         let cancel_token = cancel_token.clone();
-        async move {
+        move || {
             if let Some(duration_secs) = args.duration {
-                tokio::time::sleep(tokio::time::Duration::from_secs(duration_secs)).await;
+                std::thread::sleep(std::time::Duration::from_secs(duration_secs));
                 println!("Sending timer cancel signal !!");
                 cancel_token.store(true, Ordering::SeqCst);
             }
@@ -75,61 +74,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         height: 256,
     };
 
+    // preallocate images
     let mut img_resized = Image::from_size_val(new_size, 0u8)?;
     let mut img_f32 = Image::from_size_val(new_size, 0f32)?;
     let mut gray = Image::from_size_val(new_size, 0f32)?;
     let mut bin = Image::from_size_val(new_size, 0f32)?;
 
     // start grabbing frames from the camera
-    webcam
-        .run(|img| {
-            // check if the cancel token is set, if so we return an error to stop the pipeline
-            if cancel_token.load(Ordering::SeqCst) {
-                return Err(StreamCaptureError::PipelineCancelled.into());
-            }
+    while !cancel_token.load(Ordering::SeqCst) {
+        let Some(img) = webcam.grab()? else {
+            continue;
+        };
 
-            // lets resize the image to 256x256
-            imgproc::resize::resize_fast(
-                &img,
-                &mut img_resized,
-                imgproc::interpolation::InterpolationMode::Bilinear,
-            )?;
+        // lets resize the image to 256x256
+        imgproc::resize::resize_fast(
+            &img,
+            &mut img_resized,
+            imgproc::interpolation::InterpolationMode::Bilinear,
+        )?;
 
-            // convert the image to f32 and normalize before processing
-            ops::cast_and_scale(&img_resized, &mut img_f32, 1. / 255.)?;
+        // convert the image to f32 and normalize before processing
+        ops::cast_and_scale(&img_resized, &mut img_f32, 1. / 255.)?;
 
-            // convert the image to grayscale and binarize
-            imgproc::color::gray_from_rgb(&img_f32, &mut gray)?;
-            imgproc::threshold::threshold_binary(&gray, &mut bin, 0.35, 0.65)?;
+        // convert the image to grayscale and binarize
+        imgproc::color::gray_from_rgb(&img_f32, &mut gray)?;
+        imgproc::threshold::threshold_binary(&gray, &mut bin, 0.35, 0.65)?;
 
-            // update the fps counter
-            fps_counter
-                .lock()
-                .expect("Failed to lock fps counter")
-                .new_frame();
+        // update the fps counter
+        fps_counter.new_frame();
 
-            // log the image
-            rec.log_static(
-                "image",
-                &rerun::Image::from_elements(
-                    img.as_slice(),
-                    img.size().into(),
-                    rerun::ColorModel::RGB,
-                ),
-            )?;
+        // log the image
+        rec.log_static(
+            "image",
+            &rerun::Image::from_elements(img.as_slice(), img.size().into(), rerun::ColorModel::RGB),
+        )?;
 
-            rec.log_static(
-                "binary",
-                &rerun::Image::from_elements(
-                    bin.as_slice(),
-                    bin.size().into(),
-                    rerun::ColorModel::L,
-                ),
-            )?;
-
-            Ok(())
-        })
-        .await?;
+        // log the binary image
+        rec.log_static(
+            "binary",
+            &rerun::Image::from_elements(bin.as_slice(), bin.size().into(), rerun::ColorModel::L),
+        )?;
+    }
 
     // NOTE: this is important to close the webcam properly, otherwise the app will hang
     webcam.close()?;

@@ -1,7 +1,11 @@
 use clap::Parser;
-use std::{path::PathBuf, sync::Arc};
-use tokio::signal;
-use tokio::sync::Mutex;
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 
 use kornia::{
     image::ImageSize,
@@ -23,11 +27,7 @@ struct Args {
     fps: i32,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // setup logging
-    let _ = env_logger::builder().is_test(true).try_init();
-
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // Ensure the output path ends with .mp4
@@ -46,54 +46,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // create a webcam capture object with camera id 0
     // and force the image size to 640x480
-    let webcam = V4L2CameraConfig::new()
+    let mut webcam = V4L2CameraConfig::new()
         .with_camera_id(args.camera_id)
         .with_fps(args.fps as u32)
         .with_size(frame_size)
         .build()?;
 
+    // start the webcam capture
+    webcam.start()?;
+
     // start the video writer
-    let video_writer = VideoWriter::new(
+    let mut video_writer = VideoWriter::new(
         args.output,
         VideoCodec::H264,
         ImageFormat::Rgb8,
         args.fps,
         frame_size,
     )?;
-    let video_writer = Arc::new(Mutex::new(video_writer));
-    video_writer.lock().await.start()?;
 
-    // start grabbing frames from the camera
-    webcam
-        .run_with_termination(
-            |img| {
-                let rec = rec.clone();
-                let video_writer = video_writer.clone();
-                async move {
-                    // write the image to the video writer
-                    video_writer.lock().await.write(&img)?;
+    // open the pipeline to start writing the video
+    video_writer.start()?;
 
-                    // log the image
-                    rec.log_static(
-                        "image",
-                        &rerun::Image::from_elements(
-                            img.as_slice(),
-                            img.size().into(),
-                            rerun::ColorModel::RGB,
-                        ),
-                    )?;
-                    Ok(())
-                }
-            },
-            async {
-                signal::ctrl_c().await.expect("Failed to listen for Ctrl+C");
-                println!("👋 Finished recording. Closing app.");
-            },
-        )
-        .await?;
+    // create a cancel token to stop the webcam capture
+    let cancel_token = Arc::new(AtomicBool::new(false));
+
+    ctrlc::set_handler({
+        let cancel_token = cancel_token.clone();
+        move || {
+            println!("Received Ctrl-C signal. Sending cancel signal !!");
+            cancel_token.store(true, Ordering::SeqCst);
+        }
+    })?;
+
+    while !cancel_token.load(Ordering::SeqCst) {
+        // start grabbing frames from the webcam
+        if let Some(img) = webcam.grab()? {
+            // write the image to the video writer
+            video_writer.write(&img)?;
+
+            // log the image
+            rec.log_static(
+                "image",
+                &rerun::Image::from_elements(
+                    img.as_slice(),
+                    img.size().into(),
+                    rerun::ColorModel::RGB,
+                ),
+            )?;
+        }
+    }
 
     // stop the video writer
-    video_writer.lock().await.stop()?;
+    video_writer.close()?;
 
     Ok(())
 }
