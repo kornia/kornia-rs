@@ -349,8 +349,8 @@ impl<T, const C: usize> Image<T, C> {
     /// ```
     pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, C>, ImageError>
     where
-        U: num_traits::NumCast + std::ops::Mul<Output = U> + Clone + Copy, // TODO: remove this bound
-        T: num_traits::NumCast + Clone + Copy, // TODO: remove this bound
+        U: num_traits::NumCast + std::ops::Mul<Output = U> + Clone + Copy,
+        T: num_traits::NumCast + Clone + Copy,
     {
         let casted_data = self
             .as_slice()
@@ -375,8 +375,8 @@ impl<T, const C: usize> Image<T, C> {
     /// A new image with the pixel data cast to the new type and scaled.
     pub fn scale_and_cast<U>(&self, scale: T) -> Result<Image<U, C>, ImageError>
     where
-        U: num_traits::NumCast + Clone + Copy, // TODO: remove this bound
-        T: num_traits::NumCast + std::ops::Mul<Output = T> + Clone + Copy, // TODO: remove this bound
+        U: num_traits::NumCast + Clone + Copy,
+        T: num_traits::NumCast + std::ops::Mul<Output = T> + Clone + Copy,
     {
         let casted_data = self
             .as_slice()

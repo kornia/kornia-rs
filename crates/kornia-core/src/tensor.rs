@@ -87,31 +87,6 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A>
 where
     A: 'static,
 {
-    /// Create a new `Tensor` with uninitialized data.
-    ///
-    /// # Arguments
-    ///
-    /// * `shape` - An array containing the shape of the tensor.
-    /// * `alloc` - The allocator to use.
-    ///
-    /// # Returns
-    ///
-    /// A new `Tensor` instance with uninitialized data.
-    ///
-    /// # Errors
-    ///
-    /// If the allocation fails, an error is returned.
-    //pub fn new_uninitialized(shape: [usize; N], alloc: A) -> Result<Self, TensorError> {
-    //    let numel = shape.iter().product::<usize>();
-    //    let strides = get_strides_from_shape(shape);
-    //    let storage = TensorStorage::new_uninitialized(numel, alloc)?;
-    //    Ok(Self {
-    //        storage,
-    //        shape,
-    //        strides,
-    //    })
-    //}
-
     /// Get the data of the tensor as a slice.
     ///
     /// # Returns
