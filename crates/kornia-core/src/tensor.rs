@@ -329,7 +329,7 @@ where
     /// The number of elements in the tensor.
     #[inline]
     pub fn numel(&self) -> usize {
-        self.storage.capacity()
+        self.storage.len() / std::mem::size_of::<T>()
     }
 
     /// Get the offset of the element at the given index.

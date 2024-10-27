@@ -433,7 +433,7 @@ impl<T, const C: usize> Image<T, C> {
 /// helper to convert an single channel tensor to a kornia image with try into
 impl<T> TryFrom<Tensor2<T, CpuAllocator>> for Image<T, 1>
 where
-    T: Clone, // TODO: remove this bound
+    T: Clone,
 {
     type Error = ImageError;
 
@@ -618,7 +618,8 @@ mod tests {
 
     #[test]
     fn image_from_tensor() -> Result<(), ImageError> {
-        let tensor = Tensor::<u8, 2, _>::from_shape_vec([2, 3], vec![0u8; 2 * 3], CpuAllocator)?;
+        let data = vec![0u8, 1, 2, 3, 4, 5];
+        let tensor = Tensor::<u8, 2, _>::from_shape_vec([2, 3], data, CpuAllocator)?;
 
         let image = Image::<u8, 1>::try_from(tensor.clone())?;
         assert_eq!(image.size().width, 3);

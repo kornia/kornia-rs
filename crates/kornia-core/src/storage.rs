@@ -39,12 +39,6 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
         }
     }
 
-    /// Returns the maximum number of elements that can be stored in this `TensorStorage`.
-    #[inline]
-    pub fn capacity(&self) -> usize {
-        self.layout.size()
-    }
-
     /// Returns the number of bytes contained in this `TensorStorage`.
     #[inline]
     pub fn len(&self) -> usize {
@@ -159,8 +153,8 @@ where
     fn clone(&self) -> Self {
         let mut new_vec = Vec::<T>::with_capacity(self.len());
 
-        for (d, s) in new_vec.as_mut_slice().iter_mut().zip(self.as_slice()) {
-            *d = s.clone();
+        for i in self.as_slice() {
+            new_vec.push(i.clone());
         }
 
         Self::from_vec(new_vec, self.alloc.clone())
@@ -316,7 +310,7 @@ mod tests {
         assert_eq!(data[3], 4);
         assert_eq!(data[4], 5);
 
-        assert_eq!(data.get(0), Some(&1));
+        assert_eq!(data.first(), Some(&1));
         assert_eq!(data.get(1), Some(&2));
         assert_eq!(data.get(2), Some(&3));
         assert_eq!(data.get(3), Some(&4));
