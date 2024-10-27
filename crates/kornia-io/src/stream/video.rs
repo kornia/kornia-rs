@@ -151,11 +151,11 @@ impl VideoWriter {
         Ok(())
     }
 
-    /// Stop the video writer.
+    ///  Close the video writer.
     ///
     /// Set the pipeline to null and join the thread.
     ///
-    pub fn stop(&mut self) -> Result<(), StreamCaptureError> {
+    pub fn close(&mut self) -> Result<(), StreamCaptureError> {
         // send end of stream to the appsrc
         self.appsrc.end_of_stream()?;
 
@@ -217,7 +217,7 @@ impl VideoWriter {
 impl Drop for VideoWriter {
     fn drop(&mut self) {
         if self.handle.is_some() {
-            self.stop().expect("Failed to stop video writer");
+            self.close().expect("Failed to close video writer");
         }
     }
 }
@@ -246,7 +246,7 @@ mod tests {
 
         let img = Image::<u8, 3>::new(size, vec![0; size.width * size.height * 3])?;
         writer.write(&img)?;
-        writer.stop()?;
+        writer.close()?;
 
         assert!(file_path.exists(), "File does not exist: {:?}", file_path);
 
@@ -272,7 +272,7 @@ mod tests {
 
         let img = Image::<u8, 1>::new(size, vec![0; size.width * size.height])?;
         writer.write(&img)?;
-        writer.stop()?;
+        writer.close()?;
 
         assert!(file_path.exists(), "File does not exist: {:?}", file_path);
 
