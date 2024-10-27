@@ -54,7 +54,7 @@ pub enum StreamCaptureError {
     // TODO: support later on ImageError
     /// An error occurred during processing the image frame.
     #[error("Failed processing the image frame")]
-    ProcessImageFrameError(#[from] Box<dyn std::error::Error>),
+    ProcessImageFrameError(#[from] Box<dyn std::error::Error + Send + Sync>),
 
     /// An error occurred during GStreamer to send eos event.
     #[error("Failed to send eos event")]
