@@ -24,13 +24,13 @@ license-file = "LICENSE"
 readme = "README.md"
 repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
-version = "0.1.6-rc.5"
+version = "0.1.6"
 
 [workspace.dependencies]
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
-kornia-core = { path = "crates/kornia-core", version = "0.1.6-rc.5" }
-kornia-core-ops = { path = "crates/kornia-core-ops", version = "0.1.6-rc.5" }
-kornia-image = { path = "crates/kornia-image", version = "0.1.6-rc.5" }
-kornia-io = { path = "crates/kornia-io", version = "0.1.6-rc.5" }
-kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.6-rc.5" }
-kornia = { path = "crates/kornia", version = "0.1.6-rc.5" }
+kornia-core = { path = "crates/kornia-core", version = "0.1.6" }
+kornia-core-ops = { path = "crates/kornia-core-ops", version = "0.1.6" }
+kornia-image = { path = "crates/kornia-image", version = "0.1.6" }
+kornia-io = { path = "crates/kornia-io", version = "0.1.6" }
+kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.6" }
+kornia = { path = "crates/kornia", version = "0.1.6" }
