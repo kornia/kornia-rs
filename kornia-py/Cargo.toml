@@ -20,7 +20,6 @@ crate-type = ["cdylib"]
 kornia-image = { path = "../crates/kornia-image" }
 kornia-imgproc = { path = "../crates/kornia-imgproc" }
 kornia-io = { path = "../crates/kornia-io", features = [
-    "gstreamer",
     "jpegturbo",
 ] }
 
