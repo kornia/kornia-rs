@@ -8,7 +8,7 @@ include = ["Cargo.toml"]
 license = "Apache-2.0"
 repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
-version = "0.1.7"
+version = "0.1.8-rc.1"
 
 [lib]
 name = "kornia_rs"
@@ -19,9 +19,7 @@ crate-type = ["cdylib"]
 # kornia
 kornia-image = { path = "../crates/kornia-image" }
 kornia-imgproc = { path = "../crates/kornia-imgproc" }
-kornia-io = { path = "../crates/kornia-io", features = [
-    "jpegturbo",
-] }
+kornia-io = { path = "../crates/kornia-io", features = ["jpegturbo"] }
 
 # external
 pyo3 = { version = "0.21.2", features = ["extension-module"] }
