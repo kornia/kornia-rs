@@ -25,11 +25,10 @@ jobs:
           command: build
           args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist 
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: wheels
           path: dist
-          overwrite: true
 
   macos:
     runs-on: ${{ matrix.runs-on }}
@@ -91,11 +90,10 @@ jobs:
           maturin-version: latest
           args: --release --target ${{ matrix.target }}-apple-darwin --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: wheels
           path: dist
-          overwrite: true
 
   windows:
     runs-on: windows-latest
@@ -121,11 +119,10 @@ jobs:
           maturin-version: latest
           args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: wheels
           path: dist
-          overwrite: true
 
   release:
     name: Release
