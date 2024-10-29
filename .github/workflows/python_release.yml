@@ -23,9 +23,9 @@ jobs:
           target: ${{ matrix.target }}
           manylinux: auto
           command: build
-          args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
+          args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist 
       - name: Upload wheels
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: wheels
           path: dist
@@ -90,7 +90,7 @@ jobs:
           maturin-version: latest
           args: --release --target ${{ matrix.target }}-apple-darwin --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
       - name: Upload wheels
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: wheels
           path: dist
@@ -119,7 +119,7 @@ jobs:
           maturin-version: latest
           args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
       - name: Upload wheels
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: wheels
           path: dist
@@ -129,7 +129,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [macos, windows, linux]
     steps:
-      - uses: actions/download-artifact@v2
+      - uses: actions/download-artifact@v3
         with:
           name: wheels
       - uses: actions/setup-python@v2
