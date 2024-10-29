@@ -1,12 +1,12 @@
 # kornia-rs: low level computer vision library in Rust
 
-![Crates.io Version](https://img.shields.io/crates/v/kornia-rs)
+![Crates.io Version](https://img.shields.io/crates/v/kornia)
 [![PyPI version](https://badge.fury.io/py/kornia-rs.svg)](https://badge.fury.io/py/kornia-rs)
-[![Documentation](https://img.shields.io/badge/docs.rs-kornia_rs-orange)](https://docs.rs/kornia-rs)
+[![Documentation](https://img.shields.io/badge/docs.rs-kornia-orange)](https://docs.rs/kornia)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENCE)
 [![Slack](https://img.shields.io/badge/Slack-4A154B?logo=slack&logoColor=white)](https://join.slack.com/t/kornia/shared_invite/zt-csobk21g-CnydWe5fmvkcktIeRFGCEQ)
 
-The `kornia-rs` crate is a low level library for Computer Vision written in [Rust](https://www.rust-lang.org/) 🦀
+The `kornia` crate is a low level library for Computer Vision written in [Rust](https://www.rust-lang.org/) 🦀
 
 Use the library to perform image I/O, visualisation and other low level operations in your machine learning and data-science projects in a thread-safe and efficient way.
 
@@ -41,7 +41,7 @@ Goodbyte!
 
 - 🦀The library is primarly written in [Rust](https://www.rust-lang.org/).
 - 🚀 Multi-threaded and efficient image I/O, image processing and advanced computer vision operators.
-- 🔢 The n-dimensional backend is based on the [`ndarray`](https://crates.io/crates/ndarray) crate.
+- 🔢 Efficient Tensor and Image API for deep learning and scientific computing.
 - 🐍 Python bindings are created with [PyO3/Maturin](https://github.com/PyO3/maturin).
 - 📦 We package with support for Linux [amd64/arm64], Macos and WIndows.
 - Supported Python versions are 3.7/3.8/3.9/3.10/3.11
@@ -56,7 +56,7 @@ Goodbyte!
 
 ### Video processing
 
-- Capture video frames from a camera.
+- Capture video frames from a camera and video writers.
 
 ## 🛠️ Installation
 
@@ -84,17 +84,17 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-kornia = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.6-rc1" }
+kornia = "v0.1.7"
 ```
 
 Alternatively, you can use each sub-crate separately:
 
 ```toml
 [dependencies]
-kornia-core = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.6-rc1" }
-kornia-io = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.6-rc1" }
-kornia-image = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.6-rc1" }
-kornia-imgproc = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.6-rc1" }
+kornia-core = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.7" }
+kornia-io = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.7" }
+kornia-image = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.7" }
+kornia-imgproc = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.7" }
 ```
 
 ### 🐍 Python
