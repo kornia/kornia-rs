@@ -27,8 +27,9 @@ jobs:
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{inputs.context}}-${{inputs.job-index}}
+          name: wheels
           path: dist
+          overwrite: true
 
   macos:
     runs-on: ${{ matrix.runs-on }}
@@ -92,8 +93,9 @@ jobs:
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{inputs.context}}-${{inputs.job-index}}
+          name: wheels
           path: dist
+          overwrite: true
 
   windows:
     runs-on: windows-latest
@@ -121,8 +123,9 @@ jobs:
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{inputs.context}}-${{inputs.job-index}}
+          name: wheels
           path: dist
+          overwrite: true
 
   release:
     name: Release
