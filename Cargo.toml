@@ -7,7 +7,7 @@ members = [
     "crates/kornia-io",
     "crates/kornia-imgproc",
     "crates/kornia",
-    "examples/*",
+    "examples/*", "crates/kornia-icp",
     # "kornia-py",
 ]
 exclude = ["kornia-py", "kornia-serve"]
