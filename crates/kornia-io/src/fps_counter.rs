@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
+
+/// The smoothing factor for the FPS calculation.
+const SMOOTHING: f32 = 0.95;
 
 /// A simple frame per second (FPS) counter.
 ///
@@ -10,12 +13,13 @@ use std::time::{Duration, Instant};
 /// let mut fps_counter = FpsCounter::new();
 ///
 /// for _ in 0..100 {
-///    fps_counter.new_frame();
+///    fps_counter.update();
 /// }
 /// ```
 pub struct FpsCounter {
     last_time: Instant,
     frame_count: u32,
+    fps: f32,
 }
 
 impl FpsCounter {
@@ -24,24 +28,31 @@ impl FpsCounter {
         Self {
             last_time: Instant::now(),
             frame_count: 0,
+            fps: 0.0,
         }
     }
 
+    /// Returns the current FPS.
+    #[inline]
+    pub fn fps(&self) -> f32 {
+        self.fps
+    }
+
     /// Updates the frame count and calculates the FPS.
-    pub fn new_frame(&mut self) {
+    pub fn update(&mut self) {
         self.frame_count += 1;
 
         let now = Instant::now();
         let duration = now.duration_since(self.last_time);
 
-        if duration >= Duration::new(1, 0) {
-            let fps = self.frame_count as f32 / duration.as_secs_f32();
-            println!("FPS: {:.2}", fps);
-
-            // Reset for the next calculation
-            self.frame_count = 0;
-            self.last_time = now;
-        }
+        // update fps
+        let instant_fps = 1.0 / duration.as_secs_f32();
+        self.fps = if self.fps == 0.0 {
+            instant_fps
+        } else {
+            self.fps * SMOOTHING + instant_fps * (1.0 - SMOOTHING)
+        };
+        self.last_time = now;
     }
 }
 
@@ -57,8 +68,8 @@ mod tests {
     #[test]
     fn test_fps_counter() {
         let mut fps_counter = super::FpsCounter::new();
-        fps_counter.new_frame();
-        fps_counter.new_frame();
-        fps_counter.new_frame();
+        fps_counter.update();
+        fps_counter.update();
+        fps_counter.update();
     }
 }

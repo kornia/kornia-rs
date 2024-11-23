@@ -101,7 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         imgproc::threshold::threshold_binary(&gray, &mut bin, 0.35, 0.65)?;
 
         // update the fps counter
-        fps_counter.new_frame();
+        fps_counter.update();
 
         // log the image
         rec.log_static(
