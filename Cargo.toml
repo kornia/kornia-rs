@@ -9,6 +9,7 @@ members = [
     "crates/kornia",
     "examples/*",
     # "kornia-py",
+    "kornia-viz",
 ]
 exclude = ["kornia-py", "kornia-serve"]
 
@@ -34,3 +35,6 @@ kornia-image = { path = "crates/kornia-image", version = "0.1.8-rc.1" }
 kornia-io = { path = "crates/kornia-io", version = "0.1.8-rc.1" }
 kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.8-rc.1" }
 kornia = { path = "crates/kornia", version = "0.1.8-rc.1" }
+
+# dev dependencies for workspace
+rerun = "^0.20"
