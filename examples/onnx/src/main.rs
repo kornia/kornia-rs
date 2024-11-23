@@ -6,6 +6,9 @@ use std::time::Instant;
 use kornia::image::Image;
 use kornia::io::functional as F;
 
+use ort::session::builder::GraphOptimizationLevel;
+use ort::session::Session;
+
 /// Represents a detected object in an image.
 #[derive(Debug)]
 pub struct Detection {
@@ -46,8 +49,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // read the onnx model
 
-    use ort::{GraphOptimizationLevel, Session};
-
     let model = Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
         .with_intra_threads(4)?
@@ -73,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // make the ort tensor
-    let ort_tensor = ort::Tensor::from_array((image_nchw.shape, image_nchw.into_vec()))?;
+    let ort_tensor = ort::value::Tensor::from_array((image_nchw.shape, image_nchw.into_vec()))?;
 
     println!("ort_tensor: {:?}", ort_tensor.shape());
 
