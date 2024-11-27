@@ -18,4 +18,4 @@ NOTE: Get the `banana.ply` file from [here](https://drive.google.com/file/d/12lm
 
 Output:
 
-TODO: add image output
+![rerun_banana](https://github.com/user-attachments/assets/e6c926b0-77bd-4073-acdd-508f39da0cf6)
