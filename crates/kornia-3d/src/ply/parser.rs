@@ -1,7 +1,7 @@
 use std::io::{BufRead, Read};
 use std::path::Path;
 
-use crate::ply::properties::OpenSplatProperty;
+use crate::ply::properties::{OpenSplatProperty, PlyProperty};
 use crate::pointcloud::{PointCloud, Vec3};
 
 #[derive(Debug, thiserror::Error)]
@@ -11,6 +11,9 @@ pub enum PlyError {
 
     #[error("Failed to deserialize PLY file")]
     Deserialize(#[from] bincode::Error),
+
+    #[error("Unsupported PLY property")]
+    UnsupportedProperty,
 }
 
 /// Read a PLY file in binary format.
@@ -23,7 +26,14 @@ pub enum PlyError {
 ///
 /// Returns:
 ///     A `PointCloud` struct containing the points, colors, and normals.
-pub fn read_ply_binary(path: impl AsRef<Path>) -> Result<PointCloud, PlyError> {
+pub fn read_ply_binary(
+    path: impl AsRef<Path>,
+    property: PlyProperty,
+) -> Result<PointCloud, PlyError> {
+    if property != PlyProperty::OpenSplat {
+        return Err(PlyError::UnsupportedProperty);
+    }
+
     // open the file
     let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::new(file);
@@ -41,7 +51,7 @@ pub fn read_ply_binary(path: impl AsRef<Path>) -> Result<PointCloud, PlyError> {
     }
 
     // create a buffer for the points
-    let mut buffer = vec![0u8; std::mem::size_of::<OpenSplatProperty>()];
+    let mut buffer = vec![0u8; property.size_of()];
 
     // read the points and store them in a vector
     let mut points = Vec::new();
@@ -49,22 +59,26 @@ pub fn read_ply_binary(path: impl AsRef<Path>) -> Result<PointCloud, PlyError> {
     let mut normals = Vec::new();
 
     while reader.read_exact(&mut buffer).is_ok() {
-        let property: OpenSplatProperty = bincode::deserialize(&buffer)?;
-        points.push(Vec3 {
-            x: property.x,
-            y: property.y,
-            z: property.z,
-        });
-        colors.push(Vec3 {
-            x: property.f_dc_0,
-            y: property.f_dc_1,
-            z: property.f_dc_2,
-        });
-        normals.push(Vec3 {
-            x: property.nx,
-            y: property.ny,
-            z: property.nz,
-        });
+        match property {
+            PlyProperty::OpenSplat => {
+                let property: OpenSplatProperty = bincode::deserialize(&buffer)?;
+                points.push(Vec3 {
+                    x: property.x,
+                    y: property.y,
+                    z: property.z,
+                });
+                colors.push(Vec3 {
+                    x: property.f_dc_0,
+                    y: property.f_dc_1,
+                    z: property.f_dc_2,
+                });
+                normals.push(Vec3 {
+                    x: property.nx,
+                    y: property.ny,
+                    z: property.nz,
+                });
+            }
+        }
     }
 
     Ok(PointCloud::new(points, Some(colors), Some(normals)))

@@ -1,5 +1,20 @@
 use serde::Deserialize;
 
+/// Supported PLY properties.
+#[derive(Debug, PartialEq)]
+pub enum PlyProperty {
+    OpenSplat,
+}
+
+impl PlyProperty {
+    /// Get the size of the property in bytes.
+    pub fn size_of(&self) -> usize {
+        match self {
+            PlyProperty::OpenSplat => std::mem::size_of::<OpenSplatProperty>(),
+        }
+    }
+}
+
 /// Header of the OpenSplat PLY file format.
 /// REF: https://github.com/pierotofy/OpenSplat
 #[derive(Debug, Deserialize)]
