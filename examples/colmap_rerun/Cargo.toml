@@ -1,5 +1,5 @@
 [package]
-name = "ply_rerun"
+name = "colmap_rerun"
 authors.workspace = true
 categories.workspace = true
 description.workspace = true

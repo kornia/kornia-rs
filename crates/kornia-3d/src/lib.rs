@@ -1,2 +1,2 @@
-pub mod ply;
+pub mod io;
 pub mod pointcloud;
