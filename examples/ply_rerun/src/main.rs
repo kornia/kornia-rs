@@ -15,7 +15,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
 
     // read the image
-    let pointcloud = k3d::ply::read_ply_binary(args.ply_path, k3d::ply::PlyProperty::OpenSplat)?;
+    let pointcloud =
+        k3d::io::ply::read_ply_binary(args.ply_path, k3d::io::ply::PlyProperty::OpenSplat)?;
     println!("Read #{} points", pointcloud.len());
 
     // create a Rerun recording stream

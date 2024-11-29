@@ -1,7 +1,7 @@
 use std::io::{BufRead, Read};
 use std::path::Path;
 
-use crate::ply::properties::{OpenSplatProperty, PlyProperty};
+use super::properties::{OpenSplatProperty, PlyProperty};
 use crate::pointcloud::{PointCloud, Vec3};
 
 #[derive(Debug, thiserror::Error)]
