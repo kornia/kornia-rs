@@ -17,3 +17,5 @@ cargo run -p colmap-rerun -- --colmap-path path/to/colmap/dataset/sparse
 NOTE: The COLMAP dataset can be downloaded from [here](https://colmap.github.io/datasets.html).
 
 Output:
+
+![Screenshot from 2024-11-29 15-07-37](https://github.com/user-attachments/assets/e780a631-1537-4b16-93e1-3d3680b33316)
