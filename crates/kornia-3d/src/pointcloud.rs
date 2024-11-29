@@ -1,5 +1,5 @@
 /// Simple 3D vector with x, y, and z coordinates.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Vec3 {
     pub x: f32,
     pub y: f32,
@@ -7,6 +7,7 @@ pub struct Vec3 {
 }
 
 /// A point cloud with points, colors, and normals.
+#[derive(Debug, Clone)]
 pub struct PointCloud {
     // The points in the point cloud.
     points: Vec<Vec3>,

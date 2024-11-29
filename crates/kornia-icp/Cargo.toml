@@ -7,7 +7,6 @@ edition.workspace = true
 homepage.workspace = true
 include.workspace = true
 license.workspace = true
-license-file.workspace = true
 readme.workspace = true
 repository.workspace = true
 rust-version.workspace = true
@@ -15,5 +14,6 @@ version.workspace = true
 
 [dependencies]
 kornia-core = { workspace = true }
+kornia-3d = { workspace = true }
 faer = "0.19.4"
 thiserror = "1.0"
