@@ -15,9 +15,9 @@ version.workspace = true
 [dependencies]
 clap = { version = "4.5.9", features = ["derive"] }
 kornia.workspace = true
-ort-sys = { version = "2.0.0-rc.8" }
-ort = { version = "2.0.0-rc.8", features = [
+ort-sys = { version = "2.0.0-rc.9" }
+ort = { version = "2.0.0-rc.9", features = [
     "load-dynamic",
     "half",
 ], default-features = false }
-rerun = "0.18"
+rerun = { workspace = true }

@@ -13,5 +13,5 @@ version.workspace = true
 
 [dependencies]
 clap = { version = "4.5.9", features = ["derive"] }
-kornia.workspace = true
-rerun = "0.18"
+kornia = { workspace = true }
+rerun = { workspace = true }

@@ -12,3 +12,6 @@ pub use kornia_imgproc as imgproc;
 
 #[doc(inline)]
 pub use kornia_io as io;
+
+#[doc(inline)]
+pub use kornia_3d as k3d;

@@ -76,7 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         imgproc::color::gray_from_rgb(&img_f32, &mut gray)?;
 
         // update the fps counter
-        fps_counter.new_frame();
+        fps_counter.update();
 
         // log the image
         rec.log_static(
@@ -89,6 +89,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "gray",
             &rerun::Image::from_elements(gray.as_slice(), gray.size().into(), rerun::ColorModel::L),
         )?;
+
+        rec.log_static("fps", &rerun::Scalar::new(fps_counter.fps() as f64))?;
     }
 
     capture.close()?;
