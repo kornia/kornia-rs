@@ -23,7 +23,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rec = rerun::RecordingStreamBuilder::new("Ply Visualizer").spawn()?;
 
     // create a vector of points
-    let points = pointcloud.points().iter().map(|p| [p.x, p.y, p.z]);
+    let points = pointcloud
+        .points()
+        .iter()
+        .map(|p| rerun::Position3D::new(p.x as f32, p.y as f32, p.z as f32))
+        .collect::<Vec<_>>();
 
     // create a vector of colors
     let colors = pointcloud.colors().map_or(vec![], |colors| {

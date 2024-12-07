@@ -6,20 +6,31 @@ pub struct Vec3 {
     pub z: f32,
 }
 
+#[derive(Debug, Clone)]
+pub struct DVec3 {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
 /// A point cloud with points, colors, and normals.
 #[derive(Debug, Clone)]
 pub struct PointCloud {
     // The points in the point cloud.
-    points: Vec<Vec3>,
+    points: Vec<DVec3>,
     // The colors of the points.
-    colors: Option<Vec<Vec3>>,
+    colors: Option<Vec<DVec3>>,
     // The normals of the points.
-    normals: Option<Vec<Vec3>>,
+    normals: Option<Vec<DVec3>>,
 }
 
 impl PointCloud {
     /// Create a new point cloud from points, colors (optional), and normals (optional).
-    pub fn new(points: Vec<Vec3>, colors: Option<Vec<Vec3>>, normals: Option<Vec<Vec3>>) -> Self {
+    pub fn new(
+        points: Vec<DVec3>,
+        colors: Option<Vec<DVec3>>,
+        normals: Option<Vec<DVec3>>,
+    ) -> Self {
         Self {
             points,
             colors,
@@ -40,17 +51,17 @@ impl PointCloud {
     }
 
     /// Get as reference the points in the point cloud.
-    pub fn points(&self) -> &Vec<Vec3> {
+    pub fn points(&self) -> &Vec<DVec3> {
         &self.points
     }
 
     /// Get as reference the colors of the points in the point cloud.
-    pub fn colors(&self) -> Option<&Vec<Vec3>> {
+    pub fn colors(&self) -> Option<&Vec<DVec3>> {
         self.colors.as_ref()
     }
 
     /// Get as reference the normals of the points in the point cloud.
-    pub fn normals(&self) -> Option<&Vec<Vec3>> {
+    pub fn normals(&self) -> Option<&Vec<DVec3>> {
         self.normals.as_ref()
     }
 }
@@ -63,36 +74,36 @@ mod tests {
     fn test_pointcloud() {
         let pointcloud = PointCloud::new(
             vec![
-                Vec3 {
+                DVec3 {
                     x: 0.0,
                     y: 0.0,
                     z: 0.0,
                 },
-                Vec3 {
+                DVec3 {
                     x: 1.0,
                     y: 0.0,
                     z: 0.0,
                 },
             ],
             Some(vec![
-                Vec3 {
+                DVec3 {
                     x: 1.0,
                     y: 0.0,
                     z: 0.0,
                 },
-                Vec3 {
+                DVec3 {
                     x: 0.0,
                     y: 1.0,
                     z: 0.0,
                 },
             ]),
             Some(vec![
-                Vec3 {
+                DVec3 {
                     x: 0.0,
                     y: 1.0,
                     z: 0.0,
                 },
-                Vec3 {
+                DVec3 {
                     x: 1.0,
                     y: 0.0,
                     z: 0.0,

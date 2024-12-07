@@ -2,7 +2,7 @@ use std::io::{BufRead, Read};
 use std::path::Path;
 
 use super::properties::{OpenSplatProperty, PlyProperty};
-use crate::pointcloud::{PointCloud, Vec3};
+use crate::pointcloud::{DVec3, PointCloud};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlyError {
@@ -62,20 +62,20 @@ pub fn read_ply_binary(
         match property {
             PlyProperty::OpenSplat => {
                 let property: OpenSplatProperty = bincode::deserialize(&buffer)?;
-                points.push(Vec3 {
-                    x: property.x,
-                    y: property.y,
-                    z: property.z,
+                points.push(DVec3 {
+                    x: property.x as f64,
+                    y: property.y as f64,
+                    z: property.z as f64,
                 });
-                colors.push(Vec3 {
-                    x: property.f_dc_0,
-                    y: property.f_dc_1,
-                    z: property.f_dc_2,
+                colors.push(DVec3 {
+                    x: property.f_dc_0 as f64,
+                    y: property.f_dc_1 as f64,
+                    z: property.f_dc_2 as f64,
                 });
-                normals.push(Vec3 {
-                    x: property.nx,
-                    y: property.ny,
-                    z: property.nz,
+                normals.push(DVec3 {
+                    x: property.nx as f64,
+                    y: property.ny as f64,
+                    z: property.nz as f64,
                 });
             }
         }
