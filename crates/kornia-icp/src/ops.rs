@@ -1,4 +1,3 @@
-use kiddo::SquaredEuclidean;
 use kornia_3d::ops::euclidean_distance;
 use kornia_3d::utils::*;
 
@@ -110,7 +109,7 @@ pub(crate) fn find_correspondences(
     // find nearest neighbors for each point in source
     let nn_results = source
         .iter()
-        .map(|p| kdtree.nearest_one::<SquaredEuclidean>(p))
+        .map(|p| kdtree.nearest_one::<kiddo::SquaredEuclidean>(p))
         .collect::<Vec<_>>();
 
     // compute median distance
