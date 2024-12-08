@@ -14,15 +14,15 @@ use crate::utils;
 /// Example:
 ///
 /// ```no_run
-/// use kornia_3d::linalg::transform_points;
+/// use kornia_3d::linalg::transform_points3d;
 ///
 /// let src_points = vec![[2.0, 2.0, 2.0], [3.0, 4.0, 5.0]];
 /// let rotation = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 /// let translation = [0.0, 0.0, 0.0];
 /// let mut dst_points = vec![[0.0; 3]; src_points.len()];
-/// transform_points(&src_points, &rotation, &translation, &mut dst_points);
+/// transform_points3d(&src_points, &rotation, &translation, &mut dst_points);
 /// ```
-pub fn transform_points(
+pub fn transform_points3d(
     src_points: &[[f64; 3]],
     dst_r_src: &[[f64; 3]; 3],
     dst_t_src: &[f64; 3],
@@ -65,23 +65,10 @@ pub fn transform_points(
         faer::Parallelism::None,
     );
 
-    // SAFETY: dst_t_src is guaranteed to be length 3 by construction
-    let (tx, ty, tz) = unsafe {
-        (
-            dst_t_src_col.read_unchecked(0),
-            dst_t_src_col.read_unchecked(1),
-            dst_t_src_col.read_unchecked(2),
-        )
-    };
-
-    // SAFETY: points_in_dst is a 3xN matrix where each column represents a 3D point
-    // The unchecked reads/writes are within bounds as we're only accessing indices 0,1,2
-    for mut col in points_in_dst.col_iter_mut() {
-        unsafe {
-            col.write_unchecked(0, col.read_unchecked(0) + tx);
-            col.write_unchecked(1, col.read_unchecked(1) + ty);
-            col.write_unchecked(2, col.read_unchecked(2) + tz);
-        }
+    // apply translation to each point
+    for mut col_mut in points_in_dst.col_iter_mut() {
+        let sum = dst_t_src_col + col_mut.to_owned();
+        col_mut.copy_from(&sum);
     }
 }
 
@@ -95,7 +82,7 @@ mod tests {
         let rotation = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let translation = [0.0, 0.0, 0.0];
         let mut dst_points = vec![[0.0; 3]; src_points.len()];
-        transform_points(&src_points, &rotation, &translation, &mut dst_points);
+        transform_points3d(&src_points, &rotation, &translation, &mut dst_points);
 
         assert_eq!(dst_points, src_points);
     }
@@ -107,7 +94,7 @@ mod tests {
         let translation = [1.0, 2.0, 3.0];
 
         let mut dst_points = vec![[0.0; 3]; src_points.len()];
-        transform_points(&src_points, &rotation, &translation, &mut dst_points);
+        transform_points3d(&src_points, &rotation, &translation, &mut dst_points);
 
         // invert the transformation
         let dst_r_src = {
@@ -137,7 +124,7 @@ mod tests {
 
         // transform dst_points back to src_points
         let mut dst_points_src = vec![[0.0; 3]; dst_points.len()];
-        transform_points(
+        transform_points3d(
             &dst_points,
             &rotation_inv,
             &translation_inv,

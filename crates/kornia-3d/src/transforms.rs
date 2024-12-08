@@ -29,7 +29,7 @@ pub fn axis_angle_to_rotation_matrix(
     let axis_norm = {
         let magnitude = (axis[0].powi(2) + axis[1].powi(2) + axis[2].powi(2)).sqrt();
         match magnitude < 1e-10 {
-            true => return Err("axis is not a unit vector"),
+            true => return Err("cannot compute rotation matrix from a zero vector"),
             false => [
                 axis[0] / magnitude,
                 axis[1] / magnitude,

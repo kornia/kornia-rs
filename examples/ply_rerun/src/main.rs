@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let points = pointcloud
         .points()
         .iter()
-        .map(|p| rerun::Position3D::new(p.x as f32, p.y as f32, p.z as f32))
+        .map(|p| rerun::Position3D::new(p[0] as f32, p[1] as f32, p[2] as f32))
         .collect::<Vec<_>>();
 
     // create a vector of colors
@@ -35,9 +35,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .map(|c| {
                 rerun::Color::from_rgb(
-                    (c.x * 255.0) as u8,
-                    (c.y * 255.0) as u8,
-                    (c.z * 255.0) as u8,
+                    (c[0] * 255.0) as u8,
+                    (c[1] * 255.0) as u8,
+                    (c[2] * 255.0) as u8,
                 )
             })
             .collect()
