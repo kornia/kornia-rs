@@ -33,13 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let colors = pointcloud.colors().map_or(vec![], |colors| {
         colors
             .iter()
-            .map(|c| {
-                rerun::Color::from_rgb(
-                    (c[0] * 255.0) as u8,
-                    (c[1] * 255.0) as u8,
-                    (c[2] * 255.0) as u8,
-                )
-            })
+            .map(|c| rerun::Color::from_rgb(c[0], c[1], c[2]))
             .collect()
     });
 

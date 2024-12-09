@@ -1,5 +1,5 @@
 [package]
-name = "kornia-icp"
+name = "icp_registration"
 authors.workspace = true
 categories.workspace = true
 description.workspace = true
@@ -13,13 +13,8 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-faer = { workspace = true }
-kiddo = "5.0.0"
-kornia-core = { workspace = true }
-kornia-3d = { workspace = true }
-log = { workspace = true }
-thiserror = { workspace = true }
-
-[dev-dependencies]
-approx = { workspace = true }
-rand = { workspace = true }
+argh = { workspace = true }
+env_logger = { workspace = true }
+kornia = { workspace = true }
+kornia-icp = { workspace = true }
+rerun = { workspace = true }

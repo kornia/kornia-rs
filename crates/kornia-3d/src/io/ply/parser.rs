@@ -64,9 +64,9 @@ pub fn read_ply_binary(
                 let property: OpenSplatProperty = bincode::deserialize(&buffer)?;
                 points.push([property.x as f64, property.y as f64, property.z as f64]);
                 colors.push([
-                    property.f_dc_0 as f64,
-                    property.f_dc_1 as f64,
-                    property.f_dc_2 as f64,
+                    (property.f_dc_0 * 255.0) as u8,
+                    (property.f_dc_1 * 255.0) as u8,
+                    (property.f_dc_2 * 255.0) as u8,
                 ]);
                 normals.push([property.nx as f64, property.ny as f64, property.nz as f64]);
             }

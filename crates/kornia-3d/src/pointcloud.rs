@@ -4,7 +4,7 @@ pub struct PointCloud {
     // The points in the point cloud.
     points: Vec<[f64; 3]>,
     // The colors of the points.
-    colors: Option<Vec<[f64; 3]>>,
+    colors: Option<Vec<[u8; 3]>>,
     // The normals of the points.
     normals: Option<Vec<[f64; 3]>>,
 }
@@ -13,7 +13,7 @@ impl PointCloud {
     /// Create a new point cloud from points, colors (optional), and normals (optional).
     pub fn new(
         points: Vec<[f64; 3]>,
-        colors: Option<Vec<[f64; 3]>>,
+        colors: Option<Vec<[u8; 3]>>,
         normals: Option<Vec<[f64; 3]>>,
     ) -> Self {
         Self {
@@ -41,7 +41,7 @@ impl PointCloud {
     }
 
     /// Get as reference the colors of the points in the point cloud.
-    pub fn colors(&self) -> Option<&Vec<[f64; 3]>> {
+    pub fn colors(&self) -> Option<&Vec<[u8; 3]>> {
         self.colors.as_ref()
     }
 
@@ -59,7 +59,7 @@ mod tests {
     fn test_pointcloud() {
         let pointcloud = PointCloud::new(
             vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
-            Some(vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+            Some(vec![[255, 0, 0], [0, 255, 0]]),
             Some(vec![[0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]),
         );
 

@@ -101,10 +101,12 @@ pub(crate) fn compute_centroids(
     (centroid1, centroid2)
 }
 
+use kiddo::immutable::float::kdtree::ImmutableKdTree;
 pub(crate) fn find_correspondences(
     source: &[[f64; 3]],
     target: &[[f64; 3]],
-    kdtree: &kiddo::float::kdtree::KdTree<f64, usize, 3, 32, u16>,
+    kdtree: &ImmutableKdTree<f64, u32, 3, 32>,
+    //kdtree: &kiddo::float::kdtree::KdTree<f64, usize, 3, 32, u32>,
 ) -> (Vec<[f64; 3]>, Vec<[f64; 3]>, Vec<f64>) {
     // find nearest neighbors for each point in source
     let nn_results = source
@@ -130,7 +132,7 @@ pub(crate) fn find_correspondences(
         .iter()
         .enumerate()
         .filter(|(_, nn)| nn.distance <= median_dist + 3.0 * sigma_d)
-        .map(|(i, nn)| (source[i], target[nn.item], nn.distance))
+        .map(|(i, nn)| (source[i], target[nn.item as usize], nn.distance))
         .collect::<Vec<_>>();
 
     // unzip the results to separate points and distances

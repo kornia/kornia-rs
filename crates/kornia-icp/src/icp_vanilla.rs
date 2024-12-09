@@ -1,8 +1,6 @@
-use kiddo::float::kdtree::KdTree;
+use kiddo::{fixed::kdtree, float::kdtree::KdTree};
 
-use crate::ops::{
-    compute_point_to_point_error, find_correspondences, fit_transformation, update_transformation,
-};
+use crate::ops::{find_correspondences, fit_transformation, update_transformation};
 use kornia_3d::{linalg::transform_points3d, pointcloud::PointCloud};
 
 /// Result of the ICP algorithm.
@@ -36,15 +34,6 @@ pub fn icp_vanilla(
     max_iterations: usize,
     tolerance: f64,
 ) -> Result<IterativeClosestPointResult, Box<dyn std::error::Error>> {
-    // build kdtree for target points to speed up the nearest neighbor search
-    let mut kdtree: KdTree<f64, usize, 3, 32, u16> = KdTree::with_capacity(target.len());
-    target.points().iter().enumerate().for_each(|(i, p)| {
-        kdtree.add(p, i);
-    });
-
-    // initialize current source with the initial source point cloud
-    let mut current_source = source.points().clone();
-
     // initialize the result structure with identity rotation and translation
     let mut result = IterativeClosestPointResult {
         rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -53,8 +42,22 @@ pub fn icp_vanilla(
         last_error: 0.0,
     };
 
+    // build kdtree for target points to speed up the nearest neighbor search
+    //let mut kdtree: KdTree<f64, usize, 3, 32, u32> = KdTree::with_capacity(target.len());
+    //target.points().iter().enumerate().for_each(|(i, p)| {
+    //    kdtree.add(p, i);
+    //});
+    use kiddo::immutable::float::kdtree::ImmutableKdTree;
+    let kdtree: ImmutableKdTree<f64, u32, 3, 32> =
+        ImmutableKdTree::new_from_slice(&target.points());
+
+    // initialize current source with the initial source point cloud
+    let mut current_source = source.points().clone();
+
     // main icp loop
     for i in 0..max_iterations {
+        log::debug!("iteration: {}", i);
+
         // find closest points between current source and target
         let (current_source_match, current_target_match, distances) =
             find_correspondences(&current_source, target.points(), &kdtree);
@@ -103,6 +106,8 @@ pub fn icp_vanilla(
 
         // swap current source with transformed points for the next iteration
         current_source = transformed_points;
+
+        log::debug!("result: {:?}", result);
     }
 
     Ok(result)
