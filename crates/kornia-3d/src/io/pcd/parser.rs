@@ -67,7 +67,7 @@ pub fn read_pcd_binary(path: impl AsRef<Path>) -> Result<PointCloud, PcdError> {
         colors.push([
             ((rgb >> 16) & 0xFF) as u8,
             ((rgb >> 8) & 0xFF) as u8,
-            ((rgb >> 0) & 0xFF) as u8,
+            rgb as u8,
         ]);
         normals.push([property.nx as f64, property.ny as f64, property.nz as f64]);
     }

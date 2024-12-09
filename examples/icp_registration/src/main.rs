@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut transformed_source = vec![[0.0; 3]; source_cloud.len()];
     k3d::linalg::transform_points3d(
-        &source_cloud.points(),
+        source_cloud.points(),
         &result.rotation,
         &result.translation,
         &mut transformed_source,
@@ -69,7 +69,7 @@ fn log_pointcloud(
     let colors = pointcloud.colors().map_or(vec![], |colors| {
         colors
             .iter()
-            .map(|c| rerun::Color::from_rgb(c[0] as u8, c[1] as u8, c[2] as u8))
+            .map(|c| rerun::Color::from_rgb(c[0], c[1], c[2]))
             .collect()
     });
 

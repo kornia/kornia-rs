@@ -1,4 +1,3 @@
-use kornia_3d::ops::euclidean_distance;
 use kornia_3d::utils::*;
 
 /// Compute the transformation between two point clouds.
@@ -51,26 +50,6 @@ pub(crate) fn fit_transformation(
     dst_t_src[0] = t[0];
     dst_t_src[1] = t[1];
     dst_t_src[2] = t[2];
-}
-
-/// Compute the euclidean distance error between two sets of points.
-///
-/// # Arguments
-///
-/// * `source` - A set of points.
-/// * `target` - Another set of points.
-///
-/// # Returns
-///
-/// The euclidean distance error between the two sets of points.
-pub(crate) fn compute_point_to_point_error(source: &[[f64; 3]], target: &[[f64; 3]]) -> f64 {
-    assert_eq!(source.len(), target.len());
-    let error = source
-        .iter()
-        .zip(target.iter())
-        .map(|(a, b)| euclidean_distance(a, b))
-        .sum::<f64>();
-    error
 }
 
 /// Compute the centroids of two sets of points.
@@ -180,6 +159,7 @@ pub(crate) fn update_transformation(
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+    use kiddo::immutable::float::kdtree::ImmutableKdTree;
     use kornia_3d::{linalg::transform_points3d, transforms::axis_angle_to_rotation_matrix};
 
     fn create_random_points(num_points: usize) -> Vec<[f64; 3]> {
@@ -225,16 +205,6 @@ mod tests {
         assert_eq!(centroid2.read(0), 8.5);
         assert_eq!(centroid2.read(1), 9.5);
         assert_eq!(centroid2.read(2), 10.5);
-    }
-
-    #[test]
-    fn test_compute_point_to_point_error() {
-        let source = vec![[2.0, 2.0, 2.0], [3.0, 4.0, 5.0]];
-        let target = vec![[1.0, 4.0, 5.0], [2.0, 2.0, 2.0]];
-        assert_eq!(
-            compute_point_to_point_error(&source, &target),
-            2.0 * 14f64.sqrt()
-        );
     }
 
     #[test]
@@ -345,10 +315,7 @@ mod tests {
         ];
         let points_dst = vec![[1.0, 0.0, 0.0], [1.0, 1.0, 0.0]];
 
-        let mut kdtree = kiddo::float::kdtree::KdTree::<f64, usize, 3, 32, u16>::new();
-        for (i, p) in points_dst.iter().enumerate() {
-            kdtree.add(p, i);
-        }
+        let kdtree = ImmutableKdTree::new_from_slice(&points_dst);
 
         let (points_in_src, points_in_dst, distances) =
             find_correspondences(&points_src, &points_dst, &kdtree);

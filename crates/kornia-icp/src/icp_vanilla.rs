@@ -1,4 +1,4 @@
-use kiddo::{fixed::kdtree, float::kdtree::KdTree};
+use kiddo::immutable::float::kdtree::ImmutableKdTree;
 
 use crate::ops::{find_correspondences, fit_transformation, update_transformation};
 use kornia_3d::{linalg::transform_points3d, pointcloud::PointCloud};
@@ -43,13 +43,7 @@ pub fn icp_vanilla(
     };
 
     // build kdtree for target points to speed up the nearest neighbor search
-    //let mut kdtree: KdTree<f64, usize, 3, 32, u32> = KdTree::with_capacity(target.len());
-    //target.points().iter().enumerate().for_each(|(i, p)| {
-    //    kdtree.add(p, i);
-    //});
-    use kiddo::immutable::float::kdtree::ImmutableKdTree;
-    let kdtree: ImmutableKdTree<f64, u32, 3, 32> =
-        ImmutableKdTree::new_from_slice(&target.points());
+    let kdtree: ImmutableKdTree<f64, u32, 3, 32> = ImmutableKdTree::new_from_slice(target.points());
 
     // initialize current source with the initial source point cloud
     let mut current_source = source.points().clone();
@@ -117,7 +111,6 @@ pub fn icp_vanilla(
 mod tests {
 
     use super::icp_vanilla;
-    use approx::assert_relative_eq;
     use kornia_3d::{
         linalg::transform_points3d, pointcloud::PointCloud,
         transforms::axis_angle_to_rotation_matrix,
