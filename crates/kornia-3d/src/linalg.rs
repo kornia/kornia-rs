@@ -35,12 +35,12 @@ pub fn transform_points3d(
     let dst_t_src_col = utils::array3_to_faer_col(dst_t_src);
 
     // create view of the source points
-    let points_in_src = {
+    let points_in_src: faer::MatRef<'_, f64> = {
         let src_points_slice = unsafe {
             std::slice::from_raw_parts(src_points.as_ptr() as *const f64, src_points.len() * 3)
         };
         // SAFETY: src_points_slice is a 3xN matrix where each column represents a 3D point
-        faer::mat::from_row_major_slice(src_points_slice, src_points.len(), 3)
+        faer::mat::from_row_major_slice(src_points_slice, 3, src_points.len())
     };
 
     // create a mutable view of the destination points
@@ -59,10 +59,11 @@ pub fn transform_points3d(
     faer::linalg::matmul::matmul(
         &mut points_in_dst,
         dst_r_src_mat,
-        points_in_src.transpose(),
+        points_in_src,
         None,
         1.0,
-        faer::Parallelism::None,
+        //faer::Parallelism::None,
+        faer::Parallelism::Rayon(0),
     );
 
     // apply translation to each point

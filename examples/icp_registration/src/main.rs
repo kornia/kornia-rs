@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     log_pointcloud(&rec, "source", &source_cloud)?;
     log_pointcloud(&rec, "target", &target_cloud)?;
 
-    let result = kicp::icp_vanilla(&source_cloud, &target_cloud, 2000, 1e-6)?;
+    let result = kicp::icp_vanilla(&source_cloud, &target_cloud, 2000, 1e-5)?;
     println!("ICP registration result: {:?}", result);
 
     let mut transformed_source = vec![[0.0; 3]; source_cloud.len()];
