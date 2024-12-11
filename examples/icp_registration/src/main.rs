@@ -30,10 +30,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Ply Visualizer").spawn()?;
 
-    log_pointcloud(&rec, "source", &source_cloud)?;
-    log_pointcloud(&rec, "target", &target_cloud)?;
+    //log_pointcloud(&rec, "source", &source_cloud)?;
+    log_pointcloud(&rec, "target", &target_cloud, "marine")?;
 
-    let result = kicp::icp_vanilla(&source_cloud, &target_cloud, 2000, 1e-5)?;
+    // NOTE: ICP Vanilla needs a good initial guess for the transformation
+    let initial_rot = [
+        [0.862, 0.011, -0.507],
+        [-0.139, 0.967, -0.215],
+        [0.487, 0.255, 0.835],
+    ];
+    let initial_trans = [0.5, 0.7, -1.4];
+
+    let result = kicp::icp_vanilla(
+        &source_cloud,
+        &target_cloud,
+        2000,
+        1e-6,
+        initial_rot,
+        initial_trans,
+    )?;
     println!("ICP registration result: {:?}", result);
 
     let mut transformed_source = vec![[0.0; 3]; source_cloud.len()];
@@ -50,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None,
     );
 
-    log_pointcloud(&rec, "transformed_source", &transformed_source)?;
+    log_pointcloud(&rec, "transformed_source", &transformed_source, "gold")?;
 
     Ok(())
 }
@@ -59,6 +74,7 @@ fn log_pointcloud(
     rec: &rerun::RecordingStream,
     name: &str,
     pointcloud: &PointCloud,
+    color: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let points = pointcloud
         .points()
@@ -66,12 +82,12 @@ fn log_pointcloud(
         .map(|p| rerun::Position3D::new(p[0] as f32, p[1] as f32, p[2] as f32))
         .collect::<Vec<_>>();
 
-    let colors = pointcloud.colors().map_or(vec![], |colors| {
-        colors
-            .iter()
-            .map(|c| rerun::Color::from_rgb(c[0], c[1], c[2]))
-            .collect()
-    });
+    let color = match color {
+        "marine" => rerun::Color::from_rgb(90, 145, 199),
+        "gold" => rerun::Color::from_rgb(255, 215, 0),
+        _ => rerun::Color::from_rgb(255, 255, 255),
+    };
+    let colors = vec![color; points.len()];
 
     rec.log(name, &rerun::Points3D::new(points).with_colors(colors))?;
 

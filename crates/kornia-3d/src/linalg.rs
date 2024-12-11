@@ -1,5 +1,3 @@
-use crate::utils;
-
 /// Transform a set of points using a rotation and translation.
 ///
 /// # Arguments
@@ -28,11 +26,60 @@ pub fn transform_points3d(
     dst_t_src: &[f64; 3],
     dst_points: &mut [[f64; 3]],
 ) {
+    for (point_dst, point_src) in dst_points.iter_mut().zip(src_points.iter()) {
+        point_dst[0] = dot3_product(&dst_r_src[0], point_src) + dst_t_src[0];
+        point_dst[1] = dot3_product(&dst_r_src[1], point_src) + dst_t_src[1];
+        point_dst[2] = dot3_product(&dst_r_src[2], point_src) + dst_t_src[2];
+    }
+}
+
+pub fn dot3_product(a: &[f64; 3], b: &[f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+pub fn sub_vec3(a: &[f64; 3], b: &[f64; 3], out: &mut [f64; 3]) {
+    out[0] = a[0] - b[0];
+    out[1] = a[1] - b[1];
+    out[2] = a[2] - b[2];
+}
+
+// NOTE: not very performant
+fn transform_points3d_col(
+    src_points: &[[f64; 3]],
+    dst_r_src: &[[f64; 3]; 3],
+    dst_t_src: &[f64; 3],
+    dst_points: &mut [[f64; 3]],
+) {
     assert_eq!(src_points.len(), dst_points.len());
 
     // create views of the rotation and translation matrices
-    let dst_r_src_mat = utils::array33_to_faer_mat33(dst_r_src);
-    let dst_t_src_col = utils::array3_to_faer_col(dst_t_src);
+    let dst_r_src_mat = faer::Mat::<f64>::from_fn(3, 3, |i, j| dst_r_src[i][j]);
+    let dst_t_src_col = faer::col![dst_t_src[0], dst_t_src[1], dst_t_src[2]];
+
+    for (point_dst, point_src) in dst_points.iter_mut().zip(src_points.iter()) {
+        let point_src_col = faer::col![point_src[0], point_src[1], point_src[2]];
+        let point_dst_col = &dst_r_src_mat * point_src_col + &dst_t_src_col;
+        for i in 0..3 {
+            point_dst[i] = point_dst_col.read(i);
+        }
+    }
+}
+
+// NOTE: less performant than transform_points3d
+fn transform_points3d_matmul(
+    src_points: &[[f64; 3]],
+    dst_r_src: &[[f64; 3]; 3],
+    dst_t_src: &[f64; 3],
+    dst_points: &mut [[f64; 3]],
+) {
+    // create views of the rotation and translation matrices
+    let dst_r_src_mat = {
+        let dst_r_src_slice = unsafe {
+            std::slice::from_raw_parts(dst_r_src.as_ptr() as *const f64, dst_r_src.len() * 3)
+        };
+        faer::mat::from_row_major_slice(dst_r_src_slice, 3, 3)
+    };
+    let dst_t_src_col = faer::col![dst_t_src[0], dst_t_src[1], dst_t_src[2]];
 
     // create view of the source points
     let points_in_src: faer::MatRef<'_, f64> = {
@@ -62,13 +109,12 @@ pub fn transform_points3d(
         points_in_src,
         None,
         1.0,
-        //faer::Parallelism::None,
-        faer::Parallelism::Rayon(0),
+        faer::Parallelism::None,
     );
 
     // apply translation to each point
     for mut col_mut in points_in_dst.col_iter_mut() {
-        let sum = dst_t_src_col + col_mut.to_owned();
+        let sum = &dst_t_src_col + col_mut.to_owned();
         col_mut.copy_from(&sum);
     }
 }
@@ -133,5 +179,49 @@ mod tests {
         );
 
         assert_eq!(dst_points_src, src_points);
+    }
+
+    #[test]
+    fn test_transform_points_matmul_time() {
+        let src_points = vec![[0.0; 3]; 200000];
+        let rotation = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let translation = [0.0, 0.0, 0.0];
+        let mut dst_points = vec![[0.0; 3]; src_points.len()];
+
+        let num_tests = 10;
+
+        let mut times_matmul = Vec::with_capacity(num_tests);
+        let mut times_column = Vec::with_capacity(num_tests);
+        let mut times_native = Vec::with_capacity(num_tests);
+
+        for i in 0..num_tests {
+            println!("Running matmul test {}", i);
+            let now = std::time::Instant::now();
+            transform_points3d_matmul(&src_points, &rotation, &translation, &mut dst_points);
+            let elapsed = now.elapsed();
+            times_matmul.push(elapsed);
+        }
+        let avg_time_matmul = times_matmul.iter().sum::<std::time::Duration>() / num_tests as u32;
+        println!("Average time for matmul: {:?}", avg_time_matmul);
+
+        for i in 0..num_tests {
+            println!("Running column test {}", i);
+            let now = std::time::Instant::now();
+            transform_points3d_col(&src_points, &rotation, &translation, &mut dst_points);
+            let elapsed = now.elapsed();
+            times_column.push(elapsed);
+        }
+        let avg_time_column = times_column.iter().sum::<std::time::Duration>() / num_tests as u32;
+        println!("Average time for column: {:?}", avg_time_column);
+
+        for i in 0..num_tests {
+            println!("Running native test {}", i);
+            let now = std::time::Instant::now();
+            transform_points3d(&src_points, &rotation, &translation, &mut dst_points);
+            let elapsed = now.elapsed();
+            times_native.push(elapsed);
+        }
+        let avg_time_native = times_native.iter().sum::<std::time::Duration>() / num_tests as u32;
+        println!("Average time for native: {:?}", avg_time_native);
     }
 }

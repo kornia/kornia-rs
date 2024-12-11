@@ -1,3 +1,5 @@
+use core::f64;
+
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
 
 use crate::ops::{find_correspondences, fit_transformation, update_transformation};
@@ -33,28 +35,46 @@ pub fn icp_vanilla(
     target: &PointCloud,
     max_iterations: usize,
     tolerance: f64,
+    initial_rot: [[f64; 3]; 3],
+    initial_trans: [f64; 3],
 ) -> Result<IterativeClosestPointResult, Box<dyn std::error::Error>> {
-    // initialize the result structure with identity rotation and translation
+    // initialize the result structure with the initial transformation given by the user
     let mut result = IterativeClosestPointResult {
-        rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-        translation: [0.0, 0.0, 0.0],
+        rotation: initial_rot,
+        translation: initial_trans,
         num_iterations: 0,
-        last_error: 0.0,
+        last_error: f64::INFINITY,
     };
 
     // build kdtree for target points to speed up the nearest neighbor search
     let kdtree: ImmutableKdTree<f64, u32, 3, 32> = ImmutableKdTree::new_from_slice(target.points());
 
+    // perform transformation using the initial rotation and translation
+    let mut transformed_points = vec![[0.0; 3]; source.points().len()];
+    transform_points3d(
+        &source.points(),
+        &result.rotation,
+        &result.translation,
+        &mut transformed_points,
+    );
+
     // initialize current source with the initial source point cloud
-    let mut current_source = source.points().clone();
+    let mut current_source = transformed_points;
 
     // main icp loop
     for i in 0..max_iterations {
         log::debug!("iteration: {}", i);
+        let now = std::time::Instant::now();
 
         // find closest points between current source and target
         let (current_source_match, current_target_match, distances) =
             find_correspondences(&current_source, target.points(), &kdtree);
+
+        log::debug!(
+            "Num correspondences: {}-{}",
+            current_source_match.len(),
+            current_target_match.len()
+        );
 
         // compute transformation between current source and closest points
         let mut rr_delta = [[0.0; 3]; 3];
@@ -86,22 +106,29 @@ pub fn icp_vanilla(
         );
 
         // compute error between transformed source and target
-        let error = distances.iter().sum::<f64>() / distances.len() as f64;
+        let mean_error = distances.iter().sum::<f64>() / distances.len() as f64;
 
         // update iteration count
         result.num_iterations += 1;
-        result.last_error = error;
-
         // check convergence and exit if below tolerance
-        if error < tolerance {
-            log::info!("ICP converged in {} iterations with error {}", i, error);
+        if (result.last_error - mean_error).abs() < tolerance {
+            log::info!(
+                "ICP converged in {} iterations with error {}",
+                i,
+                mean_error
+            );
             break;
         }
+
+        result.last_error = mean_error;
 
         // swap current source with transformed points for the next iteration
         current_source = transformed_points;
 
         log::debug!("result: {:?}", result);
+
+        let elapsed = now.elapsed();
+        log::debug!("elapsed: {:?}", elapsed);
     }
 
     Ok(result)
@@ -138,7 +165,10 @@ mod tests {
         let src_pcl = PointCloud::new(points_src, None, None);
         let dst_pcl = PointCloud::new(points_dst, None, None);
 
-        let result = icp_vanilla(&src_pcl, &dst_pcl, 100, 1e-6)?;
+        let initial_rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let initial_trans = [0.0, 0.0, 0.0];
+
+        let result = icp_vanilla(&src_pcl, &dst_pcl, 100, 1e-6, initial_rot, initial_trans)?;
 
         println!("result: {:?}", result);
 

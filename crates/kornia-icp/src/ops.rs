@@ -1,4 +1,4 @@
-use kornia_3d::utils::*;
+use kiddo::immutable::float::kdtree::ImmutableKdTree;
 
 /// Compute the transformation between two point clouds.
 pub(crate) fn fit_transformation(
@@ -15,8 +15,8 @@ pub(crate) fn fit_transformation(
     // compute covariance matrix
     let mut hh = faer::Mat::<f64>::zeros(3, 3);
     for (p_in_src, p_in_dst) in points_in_src.iter().zip(points_in_dst.iter()) {
-        let p_src = array3_to_faer_col(p_in_src) - &src_centroid;
-        let p_dst = array3_to_faer_col(p_in_dst) - &dst_centroid;
+        let p_src = faer::col![p_in_src[0], p_in_src[1], p_in_src[2]] - &src_centroid;
+        let p_dst = faer::col![p_in_dst[0], p_in_dst[1], p_in_dst[2]] - &dst_centroid;
         hh += p_src * p_dst.transpose();
     }
 
@@ -24,13 +24,8 @@ pub(crate) fn fit_transformation(
     let svd = hh.svd();
     let (u_t, v) = (svd.u().transpose(), svd.v());
 
-    // compute rotation matrix R = V^T * U^T
-    let mut rr = {
-        let array_slice =
-            unsafe { std::slice::from_raw_parts_mut(dst_r_src.as_mut_ptr() as *mut f64, 9) };
-        faer::mat::from_row_major_slice_mut(array_slice, 3, 3)
-    };
-    faer::linalg::matmul::matmul(&mut rr, v, u_t, None, 1.0, faer::Parallelism::None);
+    // compute rotation matrix R = V * U^T
+    let rr = v * u_t;
 
     // fix the determinant of R in case it is negative as it's a reflection matrix
     if rr.determinant() < 0.0 {
@@ -40,16 +35,20 @@ pub(crate) fn fit_transformation(
             v_neg.col_mut(2).copy_from(-v.col(2));
             v_neg
         };
-        faer::linalg::matmul::matmul(&mut rr, &v_neg, u_t, None, 1.0, faer::Parallelism::None);
+        // TODO: fix this
+        //faer::linalg::matmul::matmul(&mut rr, &v_neg, u_t, None, 1.0, faer::Parallelism::None);
     }
 
     // compute translation vector t = C_dst - R * C_src
-    let t = dst_centroid - rr * src_centroid;
+    let t = dst_centroid - &rr * src_centroid;
 
     // copy results back to output
-    dst_t_src[0] = t[0];
-    dst_t_src[1] = t[1];
-    dst_t_src[2] = t[2];
+    for i in 0..3 {
+        for j in 0..3 {
+            dst_r_src[i][j] = rr.read(i, j);
+        }
+        dst_t_src[i] = t[i];
+    }
 }
 
 /// Compute the centroids of two sets of points.
@@ -70,8 +69,8 @@ pub(crate) fn compute_centroids(
     let mut centroid2 = faer::Col::zeros(3);
 
     for (p1, p2) in points1.iter().zip(points2.iter()) {
-        centroid1 += array3_to_faer_col(p1);
-        centroid2 += array3_to_faer_col(p2);
+        centroid1 += faer::col![p1[0], p1[1], p1[2]];
+        centroid2 += faer::col![p2[0], p2[1], p2[2]];
     }
 
     centroid1 /= points1.len() as f64;
@@ -80,17 +79,15 @@ pub(crate) fn compute_centroids(
     (centroid1, centroid2)
 }
 
-use kiddo::immutable::float::kdtree::ImmutableKdTree;
 pub(crate) fn find_correspondences(
     source: &[[f64; 3]],
     target: &[[f64; 3]],
     kdtree: &ImmutableKdTree<f64, u32, 3, 32>,
-    //kdtree: &kiddo::float::kdtree::KdTree<f64, usize, 3, 32, u32>,
 ) -> (Vec<[f64; 3]>, Vec<[f64; 3]>, Vec<f64>) {
     // find nearest neighbors for each point in source
     let nn_results = source
         .iter()
-        .map(|p| kdtree.nearest_one::<kiddo::SquaredEuclidean>(p))
+        .map(|p| kdtree.nearest_one::<kiddo::SquaredEuclidean>(&p))
         .collect::<Vec<_>>();
 
     // compute median distance
@@ -128,31 +125,19 @@ pub(crate) fn update_transformation(
     rr_delta: &[[f64; 3]; 3],
     tt_delta: &[f64; 3],
 ) {
-    // update the translation
-    tt[0] += tt_delta[0];
-    tt[1] += tt_delta[1];
-    tt[2] += tt_delta[2];
+    let rr_mat = faer::Mat::<f64>::from_fn(3, 3, |i, j| rr[i][j]);
+    let rr_delta_mat = faer::Mat::<f64>::from_fn(3, 3, |i, j| rr_delta[i][j]);
 
     // update the rotation R' = R * R_delta
-    let rr_mat_ref = {
-        let array_slice = unsafe { std::slice::from_raw_parts_mut(rr.as_mut_ptr() as *mut f64, 9) };
-        faer::mat::from_row_major_slice_mut(array_slice, 3, 3)
-    };
+    let rr_new = rr_mat * rr_delta_mat;
 
-    let rr_mat = rr_mat_ref.to_owned();
-    let rr_delta_mat = {
-        let array_slice = unsafe { std::slice::from_raw_parts(rr_delta.as_ptr() as *const f64, 9) };
-        faer::mat::from_row_major_slice(array_slice, 3, 3)
-    };
-
-    faer::linalg::matmul::matmul(
-        rr_mat_ref,
-        rr_mat,
-        rr_delta_mat,
-        None,
-        1.0,
-        faer::Parallelism::None,
-    );
+    for i in 0..3 {
+        for j in 0..3 {
+            rr[i][j] = rr_new.read(i, j);
+        }
+        // update the translation t' = t + t_delta
+        tt[i] += tt_delta[i];
+    }
 }
 
 #[cfg(test)]
