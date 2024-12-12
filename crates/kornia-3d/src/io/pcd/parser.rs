@@ -16,6 +16,7 @@ pub enum PcdError {
     UnsupportedProperty,
 }
 
+/// A property of a point in a PCD file.
 #[derive(Debug, Deserialize)]
 pub struct PcdPropertyXYZRGBNCurvature {
     pub x: f32,

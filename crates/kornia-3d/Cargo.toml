@@ -20,3 +20,8 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "bench_linalg"
+harness = false

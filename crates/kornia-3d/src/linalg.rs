@@ -1,17 +1,17 @@
-/// Transform a set of points using a rotation and translation.
+/// Transform a set of 3D points using a rotation and translation.
 ///
 /// # Arguments
 ///
-/// * `src_points` - A set of points to be transformed.
-/// * `rotation` - A rotation matrix.
-/// * `translation` - A translation vector.
-/// * `dst_points` - A pre-allocated vector to store the transformed points.
+/// * `src_points` - A set of 3D points to be transformed.
+/// * `rotation` - A 3x3 rotation matrix.
+/// * `translation` - A 3D translation vector.
+/// * `dst_points` - A pre-allocated vector to store the transformed 3D points.
 ///
 /// PRECONDITION: dst_points is a pre-allocated vector of the same size as source.
 ///
 /// Example:
 ///
-/// ```no_run
+/// ```
 /// use kornia_3d::linalg::transform_points3d;
 ///
 /// let src_points = vec![[2.0, 2.0, 2.0], [3.0, 4.0, 5.0]];
@@ -27,101 +27,169 @@ pub fn transform_points3d(
     dst_points: &mut [[f64; 3]],
 ) {
     for (point_dst, point_src) in dst_points.iter_mut().zip(src_points.iter()) {
-        point_dst[0] = dot3_product(&dst_r_src[0], point_src) + dst_t_src[0];
-        point_dst[1] = dot3_product(&dst_r_src[1], point_src) + dst_t_src[1];
-        point_dst[2] = dot3_product(&dst_r_src[2], point_src) + dst_t_src[2];
+        point_dst[0] = dot_product3(&dst_r_src[0], point_src) + dst_t_src[0];
+        point_dst[1] = dot_product3(&dst_r_src[1], point_src) + dst_t_src[1];
+        point_dst[2] = dot_product3(&dst_r_src[2], point_src) + dst_t_src[2];
     }
 }
 
-pub fn dot3_product(a: &[f64; 3], b: &[f64; 3]) -> f64 {
+/// Compute the dot product of two 3D vectors.
+///
+/// # Arguments
+///
+/// * `a` - The first 3D vector.
+/// * `b` - The second 3D vector.
+///
+/// # Returns
+///
+/// The dot product of the two vectors.
+///
+/// # Panics
+///
+/// Panics if the vectors are not of the same length or if the length is not 3.
+///
+/// # Example
+///
+/// ```
+/// use kornia_3d::linalg::dot_product3;
+///
+/// let a = [1.0, 2.0, 3.0];
+/// let b = [4.0, 5.0, 6.0];
+/// let result = dot_product3(&a, &b);
+/// assert_eq!(result, 32.0);
+/// ```
+pub fn dot_product3(a: &[f64; 3], b: &[f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-pub fn sub_vec3(a: &[f64; 3], b: &[f64; 3], out: &mut [f64; 3]) {
-    out[0] = a[0] - b[0];
-    out[1] = a[1] - b[1];
-    out[2] = a[2] - b[2];
+/// Multiply two 3x3 matrices.
+///
+/// # Arguments
+///
+/// * `a` - The left hand side 3x3 matrix.
+/// * `b` - The right hand side 3x3 matrix.
+/// * `m` - A pre-allocated 3x3 matrix to store the result.
+///
+/// PRECONDITION: m is a pre-allocated 3x3 matrix.
+///
+/// # Example
+///
+/// ```
+/// use kornia_3d::linalg::matmul33;
+///
+/// let a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+/// let b = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+/// let mut m = [[0.0; 3]; 3];
+/// matmul33(&a, &b, &mut m);
+/// ```
+pub fn matmul33(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3], m: &mut [[f64; 3]; 3]) {
+    m[0][0] = a[0][0] * b[0][0] + a[0][1] * b[1][0] + a[0][2] * b[2][0];
+    m[0][1] = a[0][0] * b[0][1] + a[0][1] * b[1][1] + a[0][2] * b[2][1];
+    m[0][2] = a[0][0] * b[0][2] + a[0][1] * b[1][2] + a[0][2] * b[2][2];
+
+    m[1][0] = a[1][0] * b[0][0] + a[1][1] * b[1][0] + a[1][2] * b[2][0];
+    m[1][1] = a[1][0] * b[0][1] + a[1][1] * b[1][1] + a[1][2] * b[2][1];
+    m[1][2] = a[1][0] * b[0][2] + a[1][1] * b[1][2] + a[1][2] * b[2][2];
+
+    m[2][0] = a[2][0] * b[0][0] + a[2][1] * b[1][0] + a[2][2] * b[2][0];
+    m[2][1] = a[2][0] * b[0][1] + a[2][1] * b[1][1] + a[2][2] * b[2][1];
+    m[2][2] = a[2][0] * b[0][2] + a[2][1] * b[1][2] + a[2][2] * b[2][2];
 }
 
-// NOTE: not very performant
-fn transform_points3d_col(
-    src_points: &[[f64; 3]],
-    dst_r_src: &[[f64; 3]; 3],
-    dst_t_src: &[f64; 3],
-    dst_points: &mut [[f64; 3]],
-) {
-    assert_eq!(src_points.len(), dst_points.len());
-
-    // create views of the rotation and translation matrices
-    let dst_r_src_mat = faer::Mat::<f64>::from_fn(3, 3, |i, j| dst_r_src[i][j]);
-    let dst_t_src_col = faer::col![dst_t_src[0], dst_t_src[1], dst_t_src[2]];
-
-    for (point_dst, point_src) in dst_points.iter_mut().zip(src_points.iter()) {
-        let point_src_col = faer::col![point_src[0], point_src[1], point_src[2]];
-        let point_dst_col = &dst_r_src_mat * point_src_col + &dst_t_src_col;
-        for i in 0..3 {
-            point_dst[i] = point_dst_col.read(i);
-        }
-    }
+/// Transpose a 3x3 matrix.
+///
+/// # Arguments
+///
+/// * `a` - The 3x3 matrix to transpose.
+/// * `m` - A pre-allocated 3x3 matrix to store the result.
+///
+/// PRECONDITION: m is a pre-allocated 3x3 matrix.
+///
+/// # Example
+///
+/// ```
+/// use kornia_3d::linalg::transpose33;
+///
+/// let a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+/// let mut m = [[0.0; 3]; 3];
+/// transpose33(&a, &mut m);
+/// ```
+pub fn transpose33(a: &[[f64; 3]; 3], m: &mut [[f64; 3]; 3]) {
+    m[0] = [a[0][0], a[1][0], a[2][0]]; // First column
+    m[1] = [a[0][1], a[1][1], a[2][1]]; // Second column
+    m[2] = [a[0][2], a[1][2], a[2][2]]; // Third column
 }
 
-// NOTE: less performant than transform_points3d
-fn transform_points3d_matmul(
-    src_points: &[[f64; 3]],
-    dst_r_src: &[[f64; 3]; 3],
-    dst_t_src: &[f64; 3],
-    dst_points: &mut [[f64; 3]],
-) {
-    // create views of the rotation and translation matrices
-    let dst_r_src_mat = {
-        let dst_r_src_slice = unsafe {
-            std::slice::from_raw_parts(dst_r_src.as_ptr() as *const f64, dst_r_src.len() * 3)
-        };
-        faer::mat::from_row_major_slice(dst_r_src_slice, 3, 3)
-    };
-    let dst_t_src_col = faer::col![dst_t_src[0], dst_t_src[1], dst_t_src[2]];
-
-    // create view of the source points
-    let points_in_src: faer::MatRef<'_, f64> = {
-        let src_points_slice = unsafe {
-            std::slice::from_raw_parts(src_points.as_ptr() as *const f64, src_points.len() * 3)
-        };
-        // SAFETY: src_points_slice is a 3xN matrix where each column represents a 3D point
-        faer::mat::from_row_major_slice(src_points_slice, 3, src_points.len())
-    };
-
-    // create a mutable view of the destination points
-    let mut points_in_dst = {
-        let dst_points_slice = unsafe {
-            std::slice::from_raw_parts_mut(
-                dst_points.as_mut_ptr() as *mut f64,
-                dst_points.len() * 3,
-            )
-        };
-        // SAFETY: dst_points_slice is a 3xN matrix where each column represents a 3D point
-        faer::mat::from_column_major_slice_mut(dst_points_slice, 3, dst_points.len())
-    };
-
-    // perform the matrix multiplication
-    faer::linalg::matmul::matmul(
-        &mut points_in_dst,
-        dst_r_src_mat,
-        points_in_src,
-        None,
-        1.0,
-        faer::Parallelism::None,
-    );
-
-    // apply translation to each point
-    for mut col_mut in points_in_dst.col_iter_mut() {
-        let sum = &dst_t_src_col + col_mut.to_owned();
-        col_mut.copy_from(&sum);
-    }
+/// Multiply a 3x3 matrix by a 3D vector.
+///
+/// # Arguments
+///
+/// * `a` - The 3x3 matrix.
+/// * `b` - The 3D vector.
+/// * `m` - A pre-allocated 3D vector to store the result.
+///
+/// PRECONDITION: m is a pre-allocated 3D vector.
+///
+/// # Example
+///
+/// ```
+/// use kornia_3d::linalg::mat_vec_mul33;
+///
+/// let a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+/// let b = [1.0, 2.0, 3.0];
+/// let mut m = [0.0; 3];
+/// mat_vec_mul33(&a, &b, &mut m);
+/// ```
+pub fn mat_vec_mul33(a: &[[f64; 3]; 3], b: &[f64; 3], m: &mut [f64; 3]) {
+    m[0] = dot_product3(&a[0], b);
+    m[1] = dot_product3(&a[1], b);
+    m[2] = dot_product3(&a[2], b);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_dot_product3() {
+        let a = [1.0, 2.0, 3.0];
+        let b = [4.0, 5.0, 6.0];
+        let result = dot_product3(&a, &b);
+        assert_eq!(result, 32.0);
+    }
+
+    #[test]
+    fn test_matmul33() {
+        let a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let b = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let mut m = [[0.0; 3]; 3];
+        matmul33(&a, &b, &mut m);
+        assert_eq!(
+            m,
+            [
+                [30.0, 36.0, 42.0],
+                [66.0, 81.0, 96.0],
+                [102.0, 126.0, 150.0]
+            ]
+        );
+    }
+
+    #[test]
+    fn test_transpose33() {
+        let a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let mut m = [[0.0; 3]; 3];
+        transpose33(&a, &mut m);
+        assert_eq!(m, [[1.0, 4.0, 7.0], [2.0, 5.0, 8.0], [3.0, 6.0, 9.0]]);
+    }
+
+    #[test]
+    fn test_mat_vec_mul33() {
+        let a = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let b = [1.0, 2.0, 3.0];
+        let mut m = [0.0; 3];
+        mat_vec_mul33(&a, &b, &mut m);
+        assert_eq!(m, [14.0, 32.0, 50.0]);
+    }
 
     #[test]
     fn test_transform_points_identity() {
@@ -179,49 +247,5 @@ mod tests {
         );
 
         assert_eq!(dst_points_src, src_points);
-    }
-
-    #[test]
-    fn test_transform_points_matmul_time() {
-        let src_points = vec![[0.0; 3]; 200000];
-        let rotation = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let translation = [0.0, 0.0, 0.0];
-        let mut dst_points = vec![[0.0; 3]; src_points.len()];
-
-        let num_tests = 10;
-
-        let mut times_matmul = Vec::with_capacity(num_tests);
-        let mut times_column = Vec::with_capacity(num_tests);
-        let mut times_native = Vec::with_capacity(num_tests);
-
-        for i in 0..num_tests {
-            println!("Running matmul test {}", i);
-            let now = std::time::Instant::now();
-            transform_points3d_matmul(&src_points, &rotation, &translation, &mut dst_points);
-            let elapsed = now.elapsed();
-            times_matmul.push(elapsed);
-        }
-        let avg_time_matmul = times_matmul.iter().sum::<std::time::Duration>() / num_tests as u32;
-        println!("Average time for matmul: {:?}", avg_time_matmul);
-
-        for i in 0..num_tests {
-            println!("Running column test {}", i);
-            let now = std::time::Instant::now();
-            transform_points3d_col(&src_points, &rotation, &translation, &mut dst_points);
-            let elapsed = now.elapsed();
-            times_column.push(elapsed);
-        }
-        let avg_time_column = times_column.iter().sum::<std::time::Duration>() / num_tests as u32;
-        println!("Average time for column: {:?}", avg_time_column);
-
-        for i in 0..num_tests {
-            println!("Running native test {}", i);
-            let now = std::time::Instant::now();
-            transform_points3d(&src_points, &rotation, &translation, &mut dst_points);
-            let elapsed = now.elapsed();
-            times_native.push(elapsed);
-        }
-        let avg_time_native = times_native.iter().sum::<std::time::Duration>() / num_tests as u32;
-        println!("Average time for native: {:?}", avg_time_native);
     }
 }

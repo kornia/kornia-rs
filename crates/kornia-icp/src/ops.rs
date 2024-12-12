@@ -25,7 +25,10 @@ pub(crate) fn fit_transformation(
     let (u_t, v) = (svd.u().transpose(), svd.v());
 
     // compute rotation matrix R = V * U^T
-    let rr = v * u_t;
+    let mut rr = v * u_t;
+    println!("V: {:?}", v);
+    println!("U^T: {:?}", u_t);
+    println!("RR: {:?}", rr);
 
     // fix the determinant of R in case it is negative as it's a reflection matrix
     if rr.determinant() < 0.0 {
@@ -35,8 +38,8 @@ pub(crate) fn fit_transformation(
             v_neg.col_mut(2).copy_from(-v.col(2));
             v_neg
         };
-        // TODO: fix this
-        //faer::linalg::matmul::matmul(&mut rr, &v_neg, u_t, None, 1.0, faer::Parallelism::None);
+        // TODO: improve performance by using matmul33
+        faer::linalg::matmul::matmul(&mut rr, &v_neg, u_t, None, 1.0, faer::Parallelism::None);
     }
 
     // compute translation vector t = C_dst - R * C_src
@@ -87,7 +90,7 @@ pub(crate) fn find_correspondences(
     // find nearest neighbors for each point in source
     let nn_results = source
         .iter()
-        .map(|p| kdtree.nearest_one::<kiddo::SquaredEuclidean>(&p))
+        .map(|p| kdtree.nearest_one::<kiddo::SquaredEuclidean>(p))
         .collect::<Vec<_>>();
 
     // compute median distance

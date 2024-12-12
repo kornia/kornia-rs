@@ -40,7 +40,7 @@ pub fn read_image_jpeg(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, IoEr
     }
 
     if file_path.extension().map_or(true, |ext| {
-        ext.to_ascii_lowercase() != "jpg" && ext.to_ascii_lowercase() != "jpeg"
+        !ext.eq_ignore_ascii_case("jpg") && !ext.eq_ignore_ascii_case("jpeg")
     }) {
         return Err(IoError::InvalidFileExtension(file_path.to_path_buf()));
     }

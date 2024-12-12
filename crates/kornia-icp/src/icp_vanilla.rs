@@ -6,16 +6,27 @@ use crate::ops::{find_correspondences, fit_transformation, update_transformation
 use kornia_3d::{linalg::transform_points3d, pointcloud::PointCloud};
 
 /// Result of the ICP algorithm.
-#[derive(Debug)]
-pub struct IterativeClosestPointResult {
-    /// Rotation matrix.
+///
+/// The transformation is from the source to the target frame.
+#[derive(Debug, Clone)]
+pub struct ICPResult {
+    /// Estimated rotation matrix.
     pub rotation: [[f64; 3]; 3],
-    /// Translation vector.
+    /// Estimated translation vector.
     pub translation: [f64; 3],
-    /// Number of iterations.
+    /// The total number of iterations performed until convergence.
     pub num_iterations: usize,
-    /// last computed error
-    pub last_error: f64,
+    /// last computed RMSE.
+    pub rmse: f64,
+}
+
+/// Structure to define the ICP parameters.
+#[derive(Debug)]
+pub struct ICPConvergenceCriteria {
+    /// Maximum number of iterations to perform.
+    pub max_iterations: usize,
+    /// Convergence tolerance as the difference in RMSE between two consecutive iterations.
+    pub tolerance: f64,
 }
 
 /// Iterative Closest Point (ICP) algorithm using point to point distance.
@@ -24,8 +35,9 @@ pub struct IterativeClosestPointResult {
 ///
 /// * `source` - Source point cloud.
 /// * `target` - Target point cloud.
-/// * `max_iterations` - Maximum number of iterations.
-/// * `tolerance` - Convergence tolerance.
+/// * `initial_rot` - Initial rotation matrix. This is the rotation from the source to the target frame.
+/// * `initial_trans` - Initial translation vector. This is the translation from the source to the target frame.
+/// * `criteria` - Convergence criteria.
 ///
 /// # Returns
 ///
@@ -33,17 +45,16 @@ pub struct IterativeClosestPointResult {
 pub fn icp_vanilla(
     source: &PointCloud,
     target: &PointCloud,
-    max_iterations: usize,
-    tolerance: f64,
     initial_rot: [[f64; 3]; 3],
     initial_trans: [f64; 3],
-) -> Result<IterativeClosestPointResult, Box<dyn std::error::Error>> {
+    criteria: ICPConvergenceCriteria,
+) -> Result<ICPResult, Box<dyn std::error::Error>> {
     // initialize the result structure with the initial transformation given by the user
-    let mut result = IterativeClosestPointResult {
+    let mut result = ICPResult {
         rotation: initial_rot,
         translation: initial_trans,
         num_iterations: 0,
-        last_error: f64::INFINITY,
+        rmse: f64::INFINITY,
     };
 
     // build kdtree for target points to speed up the nearest neighbor search
@@ -52,7 +63,7 @@ pub fn icp_vanilla(
     // perform transformation using the initial rotation and translation
     let mut transformed_points = vec![[0.0; 3]; source.points().len()];
     transform_points3d(
-        &source.points(),
+        source.points(),
         &result.rotation,
         &result.translation,
         &mut transformed_points,
@@ -62,8 +73,9 @@ pub fn icp_vanilla(
     let mut current_source = transformed_points;
 
     // main icp loop
-    for i in 0..max_iterations {
-        log::debug!("iteration: {}", i);
+    for i in 0..criteria.max_iterations {
+        // NOTE: for debugging purposes, we measure the time taken for each iteration
+        log::debug!("Iteration: {}", i);
         let now = std::time::Instant::now();
 
         // find closest points between current source and target
@@ -106,26 +118,23 @@ pub fn icp_vanilla(
         );
 
         // compute error between transformed source and target
-        let mean_error = distances.iter().sum::<f64>() / distances.len() as f64;
+        let rmse = (distances.iter().sum::<f64>() / distances.len() as f64).sqrt();
 
-        // update iteration count
+        // update the result structure
         result.num_iterations += 1;
+
         // check convergence and exit if below tolerance
-        if (result.last_error - mean_error).abs() < tolerance {
-            log::info!(
-                "ICP converged in {} iterations with error {}",
-                i,
-                mean_error
-            );
+        if (result.rmse - rmse).abs() < criteria.tolerance {
+            log::debug!("ICP converged in {} iterations with error {}", i, rmse);
+            result.rmse = rmse;
             break;
         }
 
-        result.last_error = mean_error;
+        // update the result structure
+        result.rmse = rmse;
 
         // swap current source with transformed points for the next iteration
         current_source = transformed_points;
-
-        log::debug!("result: {:?}", result);
 
         let elapsed = now.elapsed();
         log::debug!("elapsed: {:?}", elapsed);
@@ -137,7 +146,7 @@ pub fn icp_vanilla(
 #[cfg(test)]
 mod tests {
 
-    use super::icp_vanilla;
+    use super::{icp_vanilla, ICPConvergenceCriteria};
     use kornia_3d::{
         linalg::transform_points3d, pointcloud::PointCloud,
         transforms::axis_angle_to_rotation_matrix,
@@ -168,7 +177,16 @@ mod tests {
         let initial_rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let initial_trans = [0.0, 0.0, 0.0];
 
-        let result = icp_vanilla(&src_pcl, &dst_pcl, 100, 1e-6, initial_rot, initial_trans)?;
+        let result = icp_vanilla(
+            &src_pcl,
+            &dst_pcl,
+            initial_rot,
+            initial_trans,
+            ICPConvergenceCriteria {
+                max_iterations: 100,
+                tolerance: 1e-6,
+            },
+        )?;
 
         println!("result: {:?}", result);
 
