@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use kornia_3d::linalg::transform_points3d;
+use kornia_3d::linalg;
 
 // transform_points3d_col using faer with cols point by point
 fn transform_points3d_col(
@@ -96,7 +96,7 @@ fn bench_transform_points3d(c: &mut Criterion) {
             |b, i| {
                 let (src, rot, trans, mut dst) = (i.0, i.1, i.2, i.3.clone());
                 b.iter(|| {
-                    transform_points3d(src, rot, trans, &mut dst);
+                    linalg::transform_points3d(src, rot, trans, &mut dst);
                     black_box(());
                 });
             },
@@ -128,5 +128,49 @@ fn bench_transform_points3d(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench_transform_points3d);
+fn matmul33_dot(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3], m: &mut [[f64; 3]; 3]) {
+    let row0 = &a[0];
+    let row1 = &a[1];
+    let row2 = &a[2];
+
+    let col0 = &[b[0][0], b[1][0], b[2][0]];
+    let col1 = &[b[0][1], b[1][1], b[2][1]];
+    let col2 = &[b[0][2], b[1][2], b[2][2]];
+
+    m[0][0] = linalg::dot_product3(row0, col0);
+    m[0][1] = linalg::dot_product3(row0, col1);
+    m[0][2] = linalg::dot_product3(row0, col2);
+
+    m[1][0] = linalg::dot_product3(row1, col0);
+    m[1][1] = linalg::dot_product3(row1, col1);
+    m[1][2] = linalg::dot_product3(row1, col2);
+
+    m[2][0] = linalg::dot_product3(row2, col0);
+    m[2][1] = linalg::dot_product3(row2, col1);
+    m[2][2] = linalg::dot_product3(row2, col2);
+}
+
+fn bench_matmul33(c: &mut Criterion) {
+    let mut group = c.benchmark_group("matmul33");
+
+    let a_mat = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+    let b_mat = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+    let mut m_mat = [[0.0; 3]; 3];
+
+    group.bench_function(BenchmarkId::new("matmul33", ""), |b| {
+        b.iter(|| {
+            linalg::matmul33(&a_mat, &b_mat, &mut m_mat);
+            black_box(());
+        });
+    });
+
+    group.bench_function(BenchmarkId::new("matmul33_dot", ""), |b| {
+        b.iter(|| {
+            matmul33_dot(&a_mat, &b_mat, &mut m_mat);
+            black_box(());
+        });
+    });
+}
+
+criterion_group!(benches, bench_transform_points3d, bench_matmul33);
 criterion_main!(benches);
