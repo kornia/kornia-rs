@@ -1,4 +1,5 @@
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
+use kornia_3d::linalg;
 
 /// Compute the transformation between two point clouds.
 pub(crate) fn fit_transformation(
@@ -26,9 +27,6 @@ pub(crate) fn fit_transformation(
 
     // compute rotation matrix R = V * U^T
     let mut rr = v * u_t;
-    println!("V: {:?}", v);
-    println!("U^T: {:?}", u_t);
-    println!("RR: {:?}", rr);
 
     // fix the determinant of R in case it is negative as it's a reflection matrix
     if rr.determinant() < 0.0 {
@@ -128,19 +126,13 @@ pub(crate) fn update_transformation(
     rr_delta: &[[f64; 3]; 3],
     tt_delta: &[f64; 3],
 ) {
-    let rr_mat = faer::Mat::<f64>::from_fn(3, 3, |i, j| rr[i][j]);
-    let rr_delta_mat = faer::Mat::<f64>::from_fn(3, 3, |i, j| rr_delta[i][j]);
+    // Avoid cloning by passing a mutable reference directly
+    linalg::matmul33(&rr.clone(), rr_delta, rr);
 
-    // update the rotation R' = R * R_delta
-    let rr_new = rr_mat * rr_delta_mat;
-
-    for i in 0..3 {
-        for j in 0..3 {
-            rr[i][j] = rr_new.read(i, j);
-        }
-        // update the translation t' = t + t_delta
-        tt[i] += tt_delta[i];
-    }
+    // Update translation vector
+    tt[0] += tt_delta[0];
+    tt[1] += tt_delta[1];
+    tt[2] += tt_delta[2];
 }
 
 #[cfg(test)]
