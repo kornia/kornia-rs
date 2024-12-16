@@ -14,6 +14,9 @@ pub enum PcdError {
 
     #[error("Unsupported PCD property")]
     UnsupportedProperty,
+
+    #[error("Invalid PCD file extension. Got:{0}")]
+    InvalidFileExtension(String),
 }
 
 /// A property of a point in a PCD file.
@@ -37,6 +40,19 @@ pub struct PcdPropertyXYZRGBNCurvature {
 /// Returns:
 ///     A `PointCloud` struct containing the points, colors, and normals.
 pub fn read_pcd_binary(path: impl AsRef<Path>) -> Result<PointCloud, PcdError> {
+    let Some(file_ext) = path.as_ref().extension() else {
+        return Err(PcdError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "File extension is missing",
+        )));
+    };
+
+    if file_ext != "pcd" {
+        return Err(PcdError::InvalidFileExtension(
+            file_ext.to_string_lossy().to_string(),
+        ));
+    }
+
     // open the file
     let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::new(file);
