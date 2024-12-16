@@ -23,7 +23,7 @@ thiserror = { workspace = true }
 gst = { version = "0.23.0", package = "gstreamer", optional = true }
 gst-app = { version = "0.23.0", package = "gstreamer-app", optional = true }
 memmap2 = "0.9.4"
-turbojpeg = { version = "1.0.0", optional = true }
+turbojpeg = { version = "1.1.1", optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
