@@ -9,11 +9,11 @@ use kornia_icp as kicp;
 /// Example of ICP registration
 struct Args {
     /// path to the source point cloud
-    #[argh(option)]
+    #[argh(option, short = 's')]
     source_path: PathBuf,
 
     /// path to the target point cloud
-    #[argh(option)]
+    #[argh(option, short = 't')]
     target_path: PathBuf,
 }
 
