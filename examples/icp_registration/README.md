@@ -24,3 +24,6 @@ cargo run --bin icp_registration --release -- -s cloud_bin_0.pcd -t cloud_bin_1.
 NOTE: download the point clouds from [here](https://github.com/kornia/data/tree/main/pointcloud).
 
 ## Output
+
+https://github.com/user-attachments/assets/fb7d481e-2ffd-4fda-8aca-8dcdac06e65f
+
