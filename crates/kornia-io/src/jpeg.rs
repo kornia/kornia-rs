@@ -1,3 +1,4 @@
+use std::sync::{Arc, Mutex};
 use turbojpeg;
 
 use kornia_image::{Image, ImageError, ImageSize};
@@ -21,13 +22,13 @@ pub enum JpegError {
 /// A JPEG decoder using the turbojpeg library.
 pub struct ImageDecoder {
     /// The turbojpeg decompressor.
-    pub decompressor: turbojpeg::Decompressor,
+    pub decompressor: Arc<Mutex<turbojpeg::Decompressor>>,
 }
 
 /// A JPEG encoder using the turbojpeg library.
 pub struct ImageEncoder {
     /// The turbojpeg compressor.
-    pub compressor: turbojpeg::Compressor,
+    pub compressor: Arc<Mutex<turbojpeg::Compressor>>,
 }
 
 impl Default for ImageDecoder {
@@ -61,7 +62,9 @@ impl ImageEncoder {
     /// Panics if the compressor cannot be created.
     pub fn new() -> Result<Self, JpegError> {
         let compressor = turbojpeg::Compressor::new()?;
-        Ok(Self { compressor })
+        Ok(Self {
+            compressor: Arc::new(Mutex::new(compressor)),
+        })
     }
 
     /// Encodes the given data into a JPEG image.
@@ -87,7 +90,7 @@ impl ImageEncoder {
         };
 
         // encode the image
-        Ok(self.compressor.compress_to_vec(buf)?)
+        Ok(self.compressor.lock().unwrap().compress_to_vec(buf)?)
     }
 
     /// Sets the quality of the encoder.
@@ -96,7 +99,7 @@ impl ImageEncoder {
     ///
     /// * `quality` - The quality to set.
     pub fn set_quality(&mut self, quality: i32) -> Result<(), JpegError> {
-        Ok(self.compressor.set_quality(quality)?)
+        Ok(self.compressor.lock().unwrap().set_quality(quality)?)
     }
 }
 
@@ -109,7 +112,9 @@ impl ImageDecoder {
     /// A new `ImageDecoder` instance.
     pub fn new() -> Result<Self, JpegError> {
         let decompressor = turbojpeg::Decompressor::new()?;
-        Ok(ImageDecoder { decompressor })
+        Ok(ImageDecoder {
+            decompressor: Arc::new(Mutex::new(decompressor)),
+        })
     }
 
     /// Reads the header of a JPEG image.
@@ -127,7 +132,7 @@ impl ImageDecoder {
     /// Panics if the header cannot be read.
     pub fn read_header(&mut self, jpeg_data: &[u8]) -> Result<ImageSize, JpegError> {
         // read the JPEG header with image size
-        let header = self.decompressor.read_header(jpeg_data)?;
+        let header = self.decompressor.lock().unwrap().read_header(jpeg_data)?;
 
         Ok(ImageSize {
             width: header.width,
@@ -161,7 +166,10 @@ impl ImageDecoder {
         };
 
         // decompress the JPEG data
-        self.decompressor.decompress(jpeg_data, buf)?;
+        self.decompressor
+            .lock()
+            .unwrap()
+            .decompress(jpeg_data, buf)?;
 
         Ok(Image::new(image_size, pixels)?)
     }
