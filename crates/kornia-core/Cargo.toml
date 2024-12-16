@@ -11,6 +11,6 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-num-traits = "0.2"
-serde = { version = "1", features = ["derive"] }
-thiserror = "1"
+num-traits = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
