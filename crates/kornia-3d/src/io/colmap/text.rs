@@ -104,7 +104,6 @@ pub fn read_images_txt(path: impl AsRef<Path>) -> Result<Vec<ColmapImage>, Colma
 }
 
 /// Utility functions for parsing COLMAP text files
-
 fn parse_part<T: std::str::FromStr>(s: &str) -> Result<T, ColmapError>
 where
     T::Err: std::fmt::Display,

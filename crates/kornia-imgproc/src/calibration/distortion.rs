@@ -148,7 +148,6 @@ pub fn generate_correction_map_polynomial(
 }
 
 #[cfg(test)]
-
 mod tests {
     use super::*;
     use kornia_image::ImageSize;

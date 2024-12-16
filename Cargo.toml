@@ -8,6 +8,7 @@ members = [
     "crates/kornia-imgproc",
     "crates/kornia",
     "examples/*",
+    "crates/kornia-icp",
     # "kornia-py",
     "kornia-viz",
     "crates/kornia-3d",
@@ -32,6 +33,7 @@ version = "0.1.8-rc.1"
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
 kornia-core = { path = "crates/kornia-core", version = "0.1.8-rc.1" }
 kornia-core-ops = { path = "crates/kornia-core-ops", version = "0.1.8-rc.1" }
+kornia-icp = { path = "crates/kornia-icp", version = "0.1.8-rc.1" }
 kornia-image = { path = "crates/kornia-image", version = "0.1.8-rc.1" }
 kornia-io = { path = "crates/kornia-io", version = "0.1.8-rc.1" }
 kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.8-rc.1" }
@@ -40,4 +42,13 @@ kornia = { path = "crates/kornia", version = "0.1.8-rc.1" }
 
 # dev dependencies for workspace
 argh = "0.1.12"
+approx = "0.5.1"
+bincode = "1.3"
+criterion = "0.5.1"
+env_logger = "0.11.5"
+faer = { version = "0.19.4", features = ["rayon"] }
+log = "0.4.22"
+rand = "0.8.5"
 rerun = "^0.20"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"

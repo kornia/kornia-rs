@@ -1,5 +1,5 @@
 [package]
-name = "kornia-3d"
+name = "icp_registration"
 authors.workspace = true
 categories.workspace = true
 description.workspace = true
@@ -13,15 +13,8 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-bincode = { workspace = true }
-faer = { workspace = true }
-serde = { workspace = true }
-thiserror = { workspace = true }
-
-[dev-dependencies]
-approx = { workspace = true }
-criterion = { workspace = true }
-
-[[bench]]
-name = "bench_linalg"
-harness = false
+argh = { workspace = true }
+env_logger = { workspace = true }
+kornia = { workspace = true }
+kornia-icp = { workspace = true }
+rerun = { workspace = true }
