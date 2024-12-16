@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
         target: [x86_64, aarch64]
 
     steps:
@@ -23,7 +23,7 @@ jobs:
           target: ${{ matrix.target }}
           manylinux: auto
           command: build
-          args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist 
+          args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
       - name: Upload wheels
         uses: actions/upload-artifact@v3
         with:
@@ -71,6 +71,12 @@ jobs:
           - runs-on: macos-14
             python-version: "3.12"
             target: aarch64
+          - runs-on: macos-14
+            python-version: "3.13"
+            target: x86_64
+          - runs-on: macos-14
+            python-version: "3.13"
+            target: aarch64
     steps:
       - uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v4
@@ -99,7 +105,7 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
         target: [x64, x86]
     steps:
       - uses: ilammy/setup-nasm@v1
