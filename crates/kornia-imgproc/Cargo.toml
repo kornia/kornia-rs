@@ -11,24 +11,19 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-
-# kornia
-kornia-core.workspace = true
-kornia-image.workspace = true
-
-# external
 fast_image_resize = "3.0.4"
-num-traits = "0.2"
-rayon = "1.10"
-thiserror = "1"
+kornia-core = { workspace = true }
+kornia-image = { workspace = true }
+num-traits = { workspace = true }
+rayon = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
-kornia-io.workspace = true
-
-criterion = "0.5"
-image = "0.25.1"
+criterion = { workspace = true }
+kornia-io = { workspace = true }
+image = { workspace = true }
 ndarray = { version = "0.15", features = ["rayon"] }
-rayon = "1.10"
+rayon = { workspace = true }
 
 [[bench]]
 name = "bench_color"
