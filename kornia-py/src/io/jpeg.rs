@@ -9,6 +9,9 @@ pub struct PyImageDecoder {
     pub inner: ImageDecoder,
 }
 
+unsafe impl Send for PyImageDecoder {}
+unsafe impl Sync for PyImageDecoder {}
+
 #[pymethods]
 impl PyImageDecoder {
     #[new]
@@ -39,6 +42,9 @@ impl PyImageDecoder {
 pub struct PyImageEncoder {
     pub inner: ImageEncoder,
 }
+
+unsafe impl Send for PyImageEncoder {}
+unsafe impl Sync for PyImageEncoder {}
 
 #[pymethods]
 impl PyImageEncoder {
