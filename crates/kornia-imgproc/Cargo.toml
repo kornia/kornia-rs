@@ -20,6 +20,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+image = "0.25"
 kornia-io = { workspace = true }
 ndarray = { version = "0.15", features = ["rayon"] }
 
