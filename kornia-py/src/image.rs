@@ -14,7 +14,7 @@ pub trait ToPyImage {
 impl<const C: usize> ToPyImage for Image<u8, C> {
     fn to_pyimage(self) -> PyImage {
         Python::with_gil(|py| unsafe {
-            let array = PyArray::<u8, _>::new_bound(py, [self.height(), self.width(), C], false);
+            let array = PyArray::<u8, _>::new(py, [self.height(), self.width(), C], false);
             // TODO: verify that the data is contiguous, otherwise iterate over the image and copy
             std::ptr::copy_nonoverlapping(self.as_ptr(), array.data(), self.numel());
             array.unbind()
