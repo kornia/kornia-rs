@@ -113,7 +113,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          architecture: ${{ matrix.target }}
+          # x86 python needs to be available for the win32 wheel
+          architecture: ${{ ( matrix.os == 'windows-latest' && matrix.target == 'i686' ) && 'x86' || null }}
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
