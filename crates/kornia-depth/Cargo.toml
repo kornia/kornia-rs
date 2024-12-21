@@ -1,0 +1,24 @@
+[package]
+name = "kornia-depth"
+authors.workspace = true
+categories.workspace = true
+description.workspace = true
+edition.workspace = true
+homepage.workspace = true
+include.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+candle-core = { git = "https://github.com/huggingface/candle.git", branch = "main", features = ["cuda"] }
+candle-nn = { git = "https://github.com/huggingface/candle.git", branch = "main", features = ["cuda"] }
+candle-transformers = { git = "https://github.com/huggingface/candle.git", branch = "main", features = ["cuda"] }
+env_logger = { workspace = true }
+hf-hub = "0.3.2"
+log = { workspace = true }
+kornia-image = { workspace = true }
+kornia-imgproc = { workspace = true }
+thiserror = { workspace = true }

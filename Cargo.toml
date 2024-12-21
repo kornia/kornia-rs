@@ -11,14 +11,14 @@ members = [
     "crates/kornia-icp",
     # "kornia-py",
     "kornia-viz",
-    "crates/kornia-3d",
+    "crates/kornia-3d", "crates/kornia-depth",
 ]
 exclude = ["kornia-py", "kornia-serve"]
 
 [workspace.package]
 authors = ["kornia.org <edgar@kornia.org>"]
 categories = ["computer-vision", "science::robotics"]
-description = "Low-level computer vision library in Rust"
+description = "Low-level 3D computer vision library in Rust"
 edition = "2021"
 homepage = "http://kornia.org"
 include = ["Cargo.toml"]
@@ -33,6 +33,7 @@ version = "0.1.8-rc.1"
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
 kornia-core = { path = "crates/kornia-core", version = "0.1.8-rc.1" }
 kornia-core-ops = { path = "crates/kornia-core-ops", version = "0.1.8-rc.1" }
+kornia-depth = { path = "crates/kornia-depth", version = "0.1.8-rc.1" }
 kornia-icp = { path = "crates/kornia-icp", version = "0.1.8-rc.1" }
 kornia-image = { path = "crates/kornia-image", version = "0.1.8-rc.1" }
 kornia-io = { path = "crates/kornia-io", version = "0.1.8-rc.1" }
@@ -44,6 +45,7 @@ kornia = { path = "crates/kornia", version = "0.1.8-rc.1" }
 argh = "0.1"
 approx = "0.5"
 criterion = "0.5"
+ctrlc = "3.4"
 env_logger = "0.11"
 log = "0.4"
 num-traits = "0.2"
