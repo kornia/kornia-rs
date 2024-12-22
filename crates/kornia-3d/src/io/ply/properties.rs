@@ -24,6 +24,7 @@ pub trait PlyPropertyTrait {
 /// Header of the XYZRgbNormals PLY file format.
 ///
 /// Contains points, colors, and normals.
+#[repr(packed)]
 #[derive(Debug, Deserialize)]
 pub struct XYZRgbNormalsProperty {
     pub x: f32,
@@ -54,6 +55,7 @@ impl PlyPropertyTrait for XYZRgbNormalsProperty {
 
 ///// Header of the OpenSplat PLY file format.
 /// REF: https://github.com/pierotofy/OpenSplat
+#[repr(packed)]
 #[derive(Debug, Deserialize)]
 pub struct OpenSplatProperty {
     pub x: f32,
@@ -140,7 +142,7 @@ impl PlyPropertyTrait for OpenSplatProperty {
 
 /// Enum to represent the PLY property.
 pub enum PlyProperty {
-    OpenSplat(OpenSplatProperty),
+    OpenSplat(Box<OpenSplatProperty>),
     XYZRgbNormals(XYZRgbNormalsProperty),
 }
 
@@ -150,7 +152,7 @@ impl PlyType {
         match self {
             PlyType::OpenSplat => {
                 let property: OpenSplatProperty = bincode::deserialize(buffer)?;
-                Ok(PlyProperty::OpenSplat(property))
+                Ok(PlyProperty::OpenSplat(Box::new(property)))
             }
             PlyType::XYZRgbNormals => {
                 let property: XYZRgbNormalsProperty = bincode::deserialize(buffer)?;

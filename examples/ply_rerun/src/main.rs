@@ -10,7 +10,7 @@ struct Args {
     #[argh(option)]
     ply_path: PathBuf,
 
-    /// property to read
+    /// property type to read
     #[argh(option)]
     ply_type: String,
 }

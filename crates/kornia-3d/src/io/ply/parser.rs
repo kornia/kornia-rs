@@ -20,6 +20,7 @@ pub fn read_ply_binary(path: impl AsRef<Path>, property: PlyType) -> Result<Poin
     let mut reader = std::io::BufReader::new(file);
 
     // read the header
+    // TODO: parse automatically the header
     let mut header = String::new();
     loop {
         let mut line = String::new();
@@ -30,7 +31,6 @@ pub fn read_ply_binary(path: impl AsRef<Path>, property: PlyType) -> Result<Poin
         }
         header.push_str(&line);
     }
-    println!("{:?}", header);
 
     // create a buffer for the points
     let mut buffer = vec![0u8; property.size_of()];
