@@ -9,14 +9,23 @@ struct Args {
     /// path to the PLY file
     #[argh(option)]
     ply_path: PathBuf,
+
+    /// property type to read
+    #[argh(option)]
+    ply_type: String,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
 
+    let ply_type = match args.ply_type.to_lowercase().as_str() {
+        "default" => k3d::io::ply::PlyType::XYZRgbNormals,
+        "opensplat" => k3d::io::ply::PlyType::OpenSplat,
+        _ => return Err(format!("Unsupported property: {}", args.ply_type).into()),
+    };
+
     // read the image
-    let pointcloud =
-        k3d::io::ply::read_ply_binary(args.ply_path, k3d::io::ply::PlyProperty::OpenSplat)?;
+    let pointcloud = k3d::io::ply::read_ply_binary(args.ply_path, ply_type)?;
     println!("Read #{} points", pointcloud.len());
 
     // create a Rerun recording stream
