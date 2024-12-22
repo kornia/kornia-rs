@@ -40,7 +40,6 @@ pub struct XYZRgbNormalsProperty {
 
 impl PlyPropertyTrait for XYZRgbNormalsProperty {
     fn to_point(&self) -> [f64; 3] {
-        //println!("x: {}, y: {}, z: {}", self.x, self.y, self.z);
         [self.x as f64, self.y as f64, self.z as f64]
     }
 
@@ -53,7 +52,7 @@ impl PlyPropertyTrait for XYZRgbNormalsProperty {
     }
 }
 
-///// Header of the OpenSplat PLY file format.
+/// Header of the OpenSplat PLY file format.
 /// REF: https://github.com/pierotofy/OpenSplat
 #[repr(packed)]
 #[derive(Debug, Deserialize)]
