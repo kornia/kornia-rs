@@ -4,7 +4,6 @@ use crate::{
 };
 use fast_image_resize::{self as fr};
 use kornia_image::{Image, ImageError};
-use std::num::NonZeroU32;
 
 /// Resize an image to a new size.
 ///
@@ -157,43 +156,38 @@ pub fn resize_fast(
     }
 
     // prepare the input image for the fast_image_resize crate
-    let src_width = NonZeroU32::new(src.width() as u32).ok_or(ImageError::CastError)?;
-    let src_height = NonZeroU32::new(src.height() as u32).ok_or(ImageError::CastError)?;
+    let (src_cols, src_rows) = (src.cols(), src.rows());
+    let src_data_len = src.as_slice().len();
 
-    let src_data_len = src_width.get() as usize * src_height.get() as usize * 3;
-
-    let src_image = fr::ImageView::<fast_image_resize::pixels::U8x3>::from_buffer(
-        src_width,
-        src_height,
+    let src_image = fr::images::ImageRef::new(
+        src_cols as u32,
+        src_rows as u32,
         src.as_slice(),
+        fr::PixelType::U8x3,
     )
-    .map_err(|_| ImageError::InvalidChannelShape(src_data_len, src.width() * src.height() * 3))?;
+    .map_err(|_| ImageError::InvalidChannelShape(src_data_len, src_cols * src_rows * 3))?;
 
     // prepare the output image for the fast_image_resize crate
-    let dst_width = NonZeroU32::new(dst.width() as u32).ok_or(ImageError::CastError)?;
-    let dst_height = NonZeroU32::new(dst.height() as u32).ok_or(ImageError::CastError)?;
+    let (dst_cols, dst_rows) = (dst.cols(), dst.rows());
+    let dst_data_len = dst.as_slice_mut().len();
 
-    let dst_data_len = dst_width.get() as usize * dst_height.get() as usize * 3;
-
-    let mut dst_image = fr::Image::from_slice_u8(
-        dst_width,
-        dst_height,
+    let mut dst_image = fr::images::Image::from_slice_u8(
+        dst_cols as u32,
+        dst_rows as u32,
         dst.as_slice_mut(),
         fr::PixelType::U8x3,
     )
-    .map_err(|_| ImageError::InvalidChannelShape(dst_data_len, dst_data_len))?;
+    .map_err(|_| ImageError::InvalidChannelShape(dst_data_len, dst_cols * dst_rows * 3))?;
 
-    let mut resizer = {
-        match interpolation {
-            InterpolationMode::Bilinear => {
-                fr::Resizer::new(fr::ResizeAlg::Convolution(fr::FilterType::Bilinear))
-            }
-            InterpolationMode::Nearest => fr::Resizer::new(fr::ResizeAlg::Nearest),
-        }
+    let mut options = fr::ResizeOptions::new();
+    options.algorithm = match interpolation {
+        InterpolationMode::Bilinear => fr::ResizeAlg::Convolution(fr::FilterType::Bilinear),
+        InterpolationMode::Nearest => fr::ResizeAlg::Nearest,
     };
 
+    let mut resizer = fr::Resizer::new();
     resizer
-        .resize(&src_image.into(), &mut dst_image.view_mut())
+        .resize(&src_image, &mut dst_image, &options)
         .map_err(|_| ImageError::IncompatiblePixelTypes)?;
 
     Ok(())
