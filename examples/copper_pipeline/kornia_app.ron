@@ -1,0 +1,21 @@
+(
+    tasks: [
+        (
+            id: "cam",
+            type: "copper::tasks::webcam::Webcam",
+            config: {
+                "camera_id": 0,
+                "res_rows": 480,
+                "res_cols": 640,
+                "fps": 30,
+            },
+        ),
+        (
+            id: "rerun",
+            type: "copper::tasks::rerun_viz::RerunViz",
+        ),
+     ],
+    cnx: [
+        (src: "cam",  dst: "rerun",   msg: "copper::tasks::ImageRGBU8Msg"),
+    ],
+)
