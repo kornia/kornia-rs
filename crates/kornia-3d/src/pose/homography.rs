@@ -99,21 +99,22 @@ pub fn homography_4pt3d(
 
     let mut m_mat = faer::Mat::<f64>::zeros(8, 9);
     for i in 0..4 {
-        let (x1_i, x2_i) = (x1[i], x2[i]);
+        let (x1_0, x1_1, x1_2) = (x1[i][0], x1[i][1], x1[i][2]);
+        let (x2_0, x2_1, x2_2) = (x2[i][0], x2[i][1], x2[i][2]);
         unsafe {
-            m_mat.write_unchecked(2 * i, 0, x2_i[2] * x1_i[0]);
-            m_mat.write_unchecked(2 * i, 1, x2_i[2] * x1_i[1]);
-            m_mat.write_unchecked(2 * i, 2, x2_i[2] * x1_i[2]);
-            m_mat.write_unchecked(2 * i, 6, -x2_i[0] * x1_i[0]);
-            m_mat.write_unchecked(2 * i, 7, -x2_i[0] * x1_i[1]);
-            m_mat.write_unchecked(2 * i, 8, -x2_i[0] * x1_i[2]);
+            m_mat.write_unchecked(2 * i, 0, x2_2 * x1_0);
+            m_mat.write_unchecked(2 * i, 1, x2_2 * x1_1);
+            m_mat.write_unchecked(2 * i, 2, x2_2 * x1_2);
+            m_mat.write_unchecked(2 * i, 6, -x2_0 * x1_0);
+            m_mat.write_unchecked(2 * i, 7, -x2_0 * x1_1);
+            m_mat.write_unchecked(2 * i, 8, -x2_0 * x1_2);
 
-            m_mat.write_unchecked(2 * i + 1, 3, x2_i[2] * x1_i[0]);
-            m_mat.write_unchecked(2 * i + 1, 4, x2_i[2] * x1_i[1]);
-            m_mat.write_unchecked(2 * i + 1, 5, x2_i[2] * x1_i[2]);
-            m_mat.write_unchecked(2 * i + 1, 6, -x2_i[1] * x1_i[0]);
-            m_mat.write_unchecked(2 * i + 1, 7, -x2_i[1] * x1_i[1]);
-            m_mat.write_unchecked(2 * i + 1, 8, -x2_i[1] * x1_i[2]);
+            m_mat.write_unchecked(2 * i + 1, 3, x2_2 * x1_0);
+            m_mat.write_unchecked(2 * i + 1, 4, x2_2 * x1_1);
+            m_mat.write_unchecked(2 * i + 1, 5, x2_2 * x1_2);
+            m_mat.write_unchecked(2 * i + 1, 6, -x2_1 * x1_0);
+            m_mat.write_unchecked(2 * i + 1, 7, -x2_1 * x1_1);
+            m_mat.write_unchecked(2 * i + 1, 8, -x2_1 * x1_2);
         }
     }
 
