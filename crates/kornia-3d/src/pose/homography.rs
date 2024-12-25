@@ -1,4 +1,4 @@
-use faer::solvers::SpSolver;
+use faer::prelude::SpSolver;
 
 use crate::linalg;
 

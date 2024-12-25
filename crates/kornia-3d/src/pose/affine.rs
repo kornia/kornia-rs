@@ -1,4 +1,4 @@
-use faer::solvers::SpSolverLstsq;
+use faer::prelude::SpSolverLstsq;
 
 /// Computes the 2D affine transformation matrix from 4 point correspondences.
 ///
