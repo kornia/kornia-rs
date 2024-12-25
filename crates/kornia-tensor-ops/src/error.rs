@@ -1,4 +1,4 @@
-use kornia_core::TensorError;
+use kornia_tensor::TensorError;
 use thiserror::Error;
 
 /// An error type for tensor operations.

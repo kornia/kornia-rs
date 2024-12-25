@@ -1,7 +1,7 @@
 use rayon::prelude::*;
 
-use kornia_core::{CpuAllocator, Tensor2};
 use kornia_image::Image;
+use kornia_tensor::{CpuAllocator, Tensor2};
 
 /// Apply a function to each pixel in the image in parallel.
 ///

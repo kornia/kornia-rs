@@ -1,4 +1,4 @@
-use kornia_core::{storage::TensorStorage, Tensor, TensorAllocator};
+use kornia_tensor::{storage::TensorStorage, Tensor, TensorAllocator};
 use num_traits::Zero;
 
 use crate::error::TensorOpsError;
@@ -21,8 +21,8 @@ use crate::error::TensorOpsError;
 /// # Example
 ///
 /// ```
-/// use kornia_core::{Tensor, CpuAllocator};
-/// use kornia_core_ops::ops::sum_elements;
+/// use kornia_tensor::{Tensor, CpuAllocator};
+/// use kornia_tensor_ops::ops::sum_elements;
 ///
 /// let data: [u8; 6] = [1, 1, 1, 1, 1, 1];
 /// let t = Tensor::<u8, 2, CpuAllocator>::from_shape_slice([2, 3], &data, CpuAllocator).unwrap();
@@ -78,7 +78,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use kornia_core::{CpuAllocator, TensorError};
+    use kornia_tensor::{CpuAllocator, TensorError};
 
     use super::*;
 

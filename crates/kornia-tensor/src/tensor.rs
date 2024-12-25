@@ -68,7 +68,7 @@ pub(crate) fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usiz
 /// # Example
 ///
 /// ```
-/// use kornia_core::{Tensor, CpuAllocator};
+/// use kornia_tensor::{Tensor, CpuAllocator};
 ///
 /// let data: Vec<u8> = vec![1, 2, 3, 4];
 /// let t = Tensor::<u8, 2, CpuAllocator>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
@@ -156,7 +156,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use kornia_core::{Tensor, CpuAllocator};
+    /// use kornia_tensor::{Tensor, CpuAllocator};
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
     /// let t = Tensor::<u8, 2, CpuAllocator>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
@@ -222,7 +222,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use kornia_core::{Tensor, CpuAllocator};
+    /// use kornia_tensor::{Tensor, CpuAllocator};
     ///
     /// let t = Tensor::<u8, 1, CpuAllocator>::from_shape_val([4], 0, CpuAllocator);
     /// assert_eq!(t.as_slice(), vec![0, 0, 0, 0]);
@@ -264,7 +264,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use kornia_core::{Tensor, CpuAllocator};
+    /// use kornia_tensor::{Tensor, CpuAllocator};
     ///
     /// let t = Tensor::<u8, 1, CpuAllocator>::from_shape_fn([4], CpuAllocator, |[i]| i as u8);
     /// assert_eq!(t.as_slice(), vec![0, 1, 2, 3]);
@@ -399,7 +399,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use kornia_core::{Tensor, CpuAllocator};
+    /// use kornia_tensor::{Tensor, CpuAllocator};
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
     ///
@@ -431,7 +431,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use kornia_core::{Tensor, CpuAllocator};
+    /// use kornia_tensor::{Tensor, CpuAllocator};
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
     ///
@@ -466,7 +466,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use kornia_core::{Tensor, CpuAllocator};
+    /// use kornia_tensor::{Tensor, CpuAllocator};
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
     ///
@@ -569,7 +569,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use kornia_core::{Tensor, CpuAllocator};
+    /// use kornia_tensor::{Tensor, CpuAllocator};
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
     /// let t = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data, CpuAllocator).unwrap();
@@ -643,7 +643,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use kornia_core::{Tensor, CpuAllocator};
+    /// use kornia_tensor::{Tensor, CpuAllocator};
     ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4];
     /// let t = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data, CpuAllocator).unwrap();
@@ -682,7 +682,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use kornia_core::{Tensor, CpuAllocator};
+    /// use kornia_tensor::{Tensor, CpuAllocator};
     ///
     /// let data1: Vec<u8> = vec![1, 2, 3, 4];
     /// let t1 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data1, CpuAllocator).unwrap();
@@ -746,7 +746,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use kornia_core::{Tensor, CpuAllocator};
+    /// use kornia_tensor::{Tensor, CpuAllocator};
     ///
     /// let data1: Vec<u8> = vec![1, 2, 3, 4];
     /// let t1 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data1, CpuAllocator).unwrap();
@@ -778,7 +778,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use kornia_core::{Tensor, CpuAllocator};
+    /// use kornia_tensor::{Tensor, CpuAllocator};
     ///
     /// let data1: Vec<u8> = vec![1, 2, 3, 4];
     /// let t1 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data1, CpuAllocator).unwrap();
@@ -810,7 +810,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use kornia_core::{Tensor, CpuAllocator};
+    /// use kornia_tensor::{Tensor, CpuAllocator};
     ///
     /// let data1: Vec<u8> = vec![1, 2, 3, 4];
     /// let t1 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data1, CpuAllocator).unwrap();
@@ -842,7 +842,7 @@ where
     /// # Example
     ///
     /// ```
-    /// use kornia_core::{Tensor, CpuAllocator};
+    /// use kornia_tensor::{Tensor, CpuAllocator};
     ///
     /// let data1: Vec<u8> = vec![1, 2, 3, 4];
     /// let t1 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data1, CpuAllocator).unwrap();
