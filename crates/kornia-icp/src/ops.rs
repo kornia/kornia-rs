@@ -226,7 +226,7 @@ mod tests {
             &expected_rotation,
             &expected_translation,
             &mut points_dst,
-        );
+        )?;
 
         let mut rotation = [[0.0; 3]; 3];
         let mut translation = [0.0; 3];
@@ -266,7 +266,7 @@ mod tests {
                 &expected_rotation,
                 &expected_translation,
                 &mut points_dst,
-            );
+            )?;
 
             let mut rotation = [[0.0; 3]; 3];
             let mut translation = [0.0; 3];
@@ -274,7 +274,7 @@ mod tests {
             fit_transformation(&points_src, &points_dst, &mut rotation, &mut translation);
 
             let mut points_src_fit = vec![[0.0; 3]; num_points];
-            transform_points3d(&points_src, &rotation, &translation, &mut points_src_fit);
+            transform_points3d(&points_src, &rotation, &translation, &mut points_src_fit)?;
 
             for (res, exp) in points_src_fit.iter().zip(points_dst.iter()) {
                 for (r, e) in res.iter().zip(exp.iter()) {

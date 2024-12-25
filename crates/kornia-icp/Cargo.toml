@@ -13,7 +13,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-faer = "0.19.4"
+faer = { workspace = true }
 kiddo = "5.0.2"
 kornia-core = { workspace = true }
 kornia-3d = { workspace = true }
