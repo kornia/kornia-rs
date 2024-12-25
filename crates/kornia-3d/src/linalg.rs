@@ -25,14 +25,18 @@ pub fn transform_points3d(
     dst_r_src: &[[f64; 3]; 3],
     dst_t_src: &[f64; 3],
     dst_points: &mut [[f64; 3]],
-) {
-    // TODO: check size of dst_points is the same as src_points
+) -> Result<(), Box<dyn std::error::Error>> {
+    if dst_points.len() != src_points.len() {
+        return Err("dst_points must have the same length as src_points".into());
+    }
 
     for (point_dst, point_src) in dst_points.iter_mut().zip(src_points.iter()) {
         point_dst[0] = dot_product3(&dst_r_src[0], point_src) + dst_t_src[0];
         point_dst[1] = dot_product3(&dst_r_src[1], point_src) + dst_t_src[1];
         point_dst[2] = dot_product3(&dst_r_src[2], point_src) + dst_t_src[2];
     }
+
+    Ok(())
 }
 
 /// Compute the dot product of two 3D vectors.
@@ -384,24 +388,26 @@ mod tests {
     }
 
     #[test]
-    fn test_transform_points_identity() {
+    fn test_transform_points_identity() -> Result<(), Box<dyn std::error::Error>> {
         let src_points = vec![[2.0, 2.0, 2.0], [3.0, 4.0, 5.0]];
         let rotation = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         let translation = [0.0, 0.0, 0.0];
         let mut dst_points = vec![[0.0; 3]; src_points.len()];
-        transform_points3d(&src_points, &rotation, &translation, &mut dst_points);
+        transform_points3d(&src_points, &rotation, &translation, &mut dst_points)?;
 
         assert_eq!(dst_points, src_points);
+
+        Ok(())
     }
 
     #[test]
-    fn test_transform_points_roundtrip() {
+    fn test_transform_points_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
         let src_points = vec![[2.0, 2.0, 2.0], [3.0, 4.0, 5.0]];
         let rotation = [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]];
         let translation = [1.0, 2.0, 3.0];
 
         let mut dst_points = vec![[0.0; 3]; src_points.len()];
-        transform_points3d(&src_points, &rotation, &translation, &mut dst_points);
+        transform_points3d(&src_points, &rotation, &translation, &mut dst_points)?;
 
         // invert the transformation
         let dst_r_src = {
@@ -436,8 +442,10 @@ mod tests {
             &rotation_inv,
             &translation_inv,
             &mut dst_points_src,
-        );
+        )?;
 
         assert_eq!(dst_points_src, src_points);
+
+        Ok(())
     }
 }
