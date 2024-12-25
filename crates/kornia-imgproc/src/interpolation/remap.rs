@@ -2,8 +2,8 @@ use crate::parallel;
 
 use super::interpolate::interpolate_pixel;
 use super::InterpolationMode;
-use kornia_core::{CpuAllocator, Tensor2};
 use kornia_image::{Image, ImageError};
+use kornia_tensor::{CpuAllocator, Tensor2};
 
 /// Apply generic geometric transformation to an image.
 ///
@@ -57,8 +57,8 @@ pub fn remap<const C: usize>(
 
 #[cfg(test)]
 mod tests {
-    use kornia_core::{CpuAllocator, Tensor2};
     use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_tensor::{CpuAllocator, Tensor2};
 
     #[test]
     fn remap_smoke() -> Result<(), ImageError> {

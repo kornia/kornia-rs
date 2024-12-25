@@ -9,9 +9,10 @@ if [[ "$1" == "--no-dry-run" ]]; then
 fi
 
 # Publish crates
-cross publish -p kornia-core $DRY_RUN
-cross publish -p kornia-core-ops $DRY_RUN
+cross publish -p kornia-tensor $DRY_RUN
+cross publish -p kornia-tensor-ops $DRY_RUN
 cross publish -p kornia-image $DRY_RUN
+cross publish -p kornia-icp $DRY_RUN
 cross publish -p kornia-io --all-features $DRY_RUN
 cross publish -p kornia-imgproc $DRY_RUN
 cross publish -p kornia --all-features $DRY_RUN

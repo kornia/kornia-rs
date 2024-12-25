@@ -96,7 +96,7 @@ fn bench_transform_points3d(c: &mut Criterion) {
             |b, i| {
                 let (src, rot, trans, mut dst) = (i.0, i.1, i.2, i.3.clone());
                 b.iter(|| {
-                    linalg::transform_points3d(src, rot, trans, &mut dst);
+                    linalg::transform_points3d(src, rot, trans, &mut dst).unwrap();
                     black_box(());
                 });
             },

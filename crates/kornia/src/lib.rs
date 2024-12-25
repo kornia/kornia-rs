@@ -1,8 +1,8 @@
 #[doc(inline)]
-pub use kornia_core as core;
+pub use kornia_tensor as core;
 
 #[doc(inline)]
-pub use kornia_core_ops as core_ops;
+pub use kornia_tensor_ops as core_ops;
 
 #[doc(inline)]
 pub use kornia_image as image;

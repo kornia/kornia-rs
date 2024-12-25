@@ -1,17 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/kornia-core",
-    "crates/kornia-core-ops",
-    "crates/kornia-image",
-    "crates/kornia-io",
-    "crates/kornia-imgproc",
-    "crates/kornia",
+    "crates/*",
     "examples/*",
-    "crates/kornia-icp",
     # "kornia-py",
     "kornia-viz",
-    "crates/kornia-3d",
 ]
 exclude = ["kornia-py", "kornia-serve"]
 
@@ -31,8 +24,8 @@ version = "0.1.8-rc.1"
 
 [workspace.dependencies]
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
-kornia-core = { path = "crates/kornia-core", version = "0.1.8-rc.1" }
-kornia-core-ops = { path = "crates/kornia-core-ops", version = "0.1.8-rc.1" }
+kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.8-rc.1" }
+kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.8-rc.1" }
 kornia-icp = { path = "crates/kornia-icp", version = "0.1.8-rc.1" }
 kornia-image = { path = "crates/kornia-image", version = "0.1.8-rc.1" }
 kornia-io = { path = "crates/kornia-io", version = "0.1.8-rc.1" }
