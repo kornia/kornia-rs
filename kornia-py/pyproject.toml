@@ -10,6 +10,7 @@ authors = [{ email = "edgar@kornia.org", name = "Edgar Riba" }]
 maintainers = [{ email = "edgar@kornia.org", name = "Edgar Riba" }]
 license = { file = "LICENSE" }
 requires-python = ">=3.8"
+dynamic = ["version"]
 
 keywords = ["computer vision", "rust"]
 classifiers = [
