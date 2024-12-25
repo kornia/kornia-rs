@@ -67,7 +67,7 @@ pub fn icp_vanilla(
         &result.rotation,
         &result.translation,
         &mut transformed_points,
-    );
+    )?;
 
     // initialize current source with the initial source point cloud
     let mut current_source = transformed_points;
@@ -105,7 +105,7 @@ pub fn icp_vanilla(
             &rr_delta,
             &tt_delta,
             &mut transformed_points,
-        );
+        )?;
 
         // update the output transformation as
         // R_new = R_old * R_delta
@@ -169,7 +169,7 @@ mod tests {
         let dst_t_src = [0.1, 0.1, 0.1];
 
         let mut points_dst = vec![[0.0; 3]; points_src.len()];
-        transform_points3d(&points_src, &dst_r_src, &dst_t_src, &mut points_dst);
+        transform_points3d(&points_src, &dst_r_src, &dst_t_src, &mut points_dst)?;
 
         let src_pcl = PointCloud::new(points_src, None, None);
         let dst_pcl = PointCloud::new(points_dst, None, None);

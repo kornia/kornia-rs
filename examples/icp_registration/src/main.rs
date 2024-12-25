@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &result.rotation,
         &result.translation,
         &mut transformed_source,
-    );
+    )?;
 
     let source_cloud_transformed = PointCloud::new(
         transformed_source,
