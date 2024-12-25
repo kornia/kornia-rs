@@ -15,7 +15,7 @@ pub enum ImageError {
 
     /// Error when the image shape is not valid.
     #[error("Invalid image shape")]
-    InvalidImageShape(#[from] kornia_core::TensorError),
+    InvalidImageShape(#[from] kornia_tensor::TensorError),
 
     /// Error when the image size is not valid.
     #[error("Invalid image size ({0}, {1}) mismatch ({2}, {3})")]

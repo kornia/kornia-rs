@@ -1,7 +1,7 @@
 use super::{CameraExtrinsic, CameraIntrinsic};
 use crate::interpolation::grid::meshgrid_from_fn;
-use kornia_core::{CpuTensor2, TensorError};
 use kornia_image::ImageSize;
+use kornia_tensor::{CpuTensor2, TensorError};
 
 /// Represents the polynomial distortion parameters of a camera using the Brown-Conrady model.
 ///

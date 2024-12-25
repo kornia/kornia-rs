@@ -1,4 +1,4 @@
-use kornia_core::{CpuAllocator, Tensor, Tensor2, Tensor3};
+use kornia_tensor::{CpuAllocator, Tensor, Tensor2, Tensor3};
 
 use crate::error::ImageError;
 
@@ -471,7 +471,7 @@ impl<T, const C: usize> TryInto<Tensor3<T, CpuAllocator>> for Image<T, C> {
 #[cfg(test)]
 mod tests {
     use crate::image::{Image, ImageError, ImageSize};
-    use kornia_core::{CpuAllocator, Tensor};
+    use kornia_tensor::{CpuAllocator, Tensor};
 
     #[test]
     fn image_size() {

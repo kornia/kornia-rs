@@ -195,8 +195,8 @@ pub fn resize_fast(
 
 #[cfg(test)]
 mod tests {
-    use kornia_core::TensorError;
     use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_tensor::TensorError;
 
     #[test]
     fn resize_smoke_ch3() -> Result<(), ImageError> {

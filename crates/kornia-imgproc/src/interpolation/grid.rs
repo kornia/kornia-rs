@@ -1,4 +1,4 @@
-use kornia_core::{CpuAllocator, CpuTensor2, TensorError};
+use kornia_tensor::{CpuAllocator, CpuTensor2, TensorError};
 use num_traits::Float;
 use rayon::iter::ParallelIterator;
 use rayon::{iter::IndexedParallelIterator, slice::ParallelSliceMut};

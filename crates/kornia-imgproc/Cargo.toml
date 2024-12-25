@@ -12,7 +12,7 @@ version.workspace = true
 
 [dependencies]
 fast_image_resize = "5.1.0"
-kornia-core = { workspace = true }
+kornia-tensor = { workspace = true }
 kornia-image = { workspace = true }
 num-traits = { workspace = true }
 rayon = "1.10"
