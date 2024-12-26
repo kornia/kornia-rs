@@ -7,23 +7,38 @@ pub fn separable_filter(
     kernel_x: &[f32],
     kernel_y: &[f32],
 ) -> Result<(), ImageError> {
-    let mut temp = vec![0.0; src.num_channels() * src.width() * src.height()];
+    if kernel_x.len() != kernel_y.len() {
+        return Err(ImageError::MismatchedKernelLength(
+            kernel_x.len(),
+            kernel_y.len(),
+        ));
+    }
 
     let norm_x = kernel_x.iter().sum::<f32>();
     let norm_y = kernel_y.iter().sum::<f32>();
 
+    let half_kernel_x = kernel_x.len() / 2;
+    let half_kernel_y = kernel_y.len() / 2;
+
+    let src_data = src.as_slice();
+    let dst_data = dst.as_slice_mut();
+
+    // preallocate the temporary buffer for intermediate results
+    let mut temp = vec![0.0; src_data.len()];
+
     // apply the horizontal filter
-    for y in 0..src.height() {
-        for x in 0..src.width() {
+    for y in 0..src.rows() {
+        let row_offset = y * src.cols();
+        for x in 0..src.cols() {
+            let col_offset = row_offset + x;
             for c in 0..src.num_channels() {
-                let temp_idx = (y * src.width() + x) * src.num_channels() + c;
+                let temp_idx = col_offset * src.num_channels() + c;
                 let mut sum = 0.0;
-                let half_kernel = kernel_x.len() / 2;
-                for k in 0..kernel_x.len() {
-                    let x_pos = x + k - half_kernel;
-                    if x_pos > 0 && x_pos < src.width() {
-                        let src_idx = (y * src.width() + x_pos) * src.num_channels() + c;
-                        sum += src.as_slice()[src_idx] * kernel_x[k];
+                for (kx_idx, kx) in kernel_x.iter().enumerate() {
+                    let x_pos = x + kx_idx - half_kernel_x;
+                    if x_pos > 0 && x_pos < src.cols() {
+                        let src_idx = (row_offset + x_pos) * src.num_channels() + c;
+                        sum += src_data[src_idx] * kx;
                     }
                 }
                 temp[temp_idx] = sum / norm_x;
@@ -32,22 +47,23 @@ pub fn separable_filter(
     }
 
     // apply the vertical filter
-    for x in 0..src.width() {
-        for y in 0..src.height() {
+    for x in 0..src.cols() {
+        for y in 0..src.rows() {
+            let row_offset = y * src.cols();
             for c in 0..src.num_channels() {
-                let dst_idx = (y * src.width() + x) * src.num_channels() + c;
+                let dst_idx = (row_offset + x) * src.num_channels() + c;
                 let mut sum = 0.0;
-                let half_kernel = kernel_y.len() / 2;
-                for k in 0..kernel_y.len() {
-                    let y_pos = y + k - half_kernel;
-                    if y_pos > 0 && y_pos < src.height() {
-                        let temp_idx = (y_pos * src.width() + x) * src.num_channels() + c;
-                        sum += temp[temp_idx] * kernel_y[k];
+                for (ky_idx, ky) in kernel_y.iter().enumerate() {
+                    let y_pos = y + ky_idx - half_kernel_y;
+                    if y_pos > 0 && y_pos < src.rows() {
+                        let temp_idx = (y_pos * src.cols() + x) * src.num_channels() + c;
+                        sum += temp[temp_idx] * ky;
                     }
                 }
-                dst.as_slice_mut()[dst_idx] = sum / norm_y;
+                dst_data[dst_idx] = sum / norm_y;
             }
         }
     }
+
     Ok(())
 }

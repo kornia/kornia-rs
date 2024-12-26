@@ -44,4 +44,8 @@ pub enum ImageError {
     /// Error when the cannot compute the determinant.
     #[error("Cannot compute the determinant: matrix is singular")]
     CannotComputeDeterminant,
+
+    /// Error when the kernel length is invalid.
+    #[error("Mismatched kernel length {0} and {1}")]
+    MismatchedKernelLength(usize, usize),
 }
