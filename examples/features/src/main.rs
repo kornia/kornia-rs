@@ -38,6 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut img_f32 = Image::from_size_val(size, 0f32)?;
     let mut gray = Image::from_size_val(size, 0f32)?;
     let mut hessian = Image::from_size_val(size, 0f32)?;
+    let mut corners = Image::from_size_val(size, 0f32)?;
 
     // start grabbing frames from the camera
     while !cancel_token.load(Ordering::SeqCst) {
@@ -52,18 +53,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // compute the hessian response
         imgproc::features::hessian_response(&gray, &mut hessian)?;
 
+        // compute the corners
+        imgproc::threshold::threshold_binary(&hessian, &mut corners, 0.01, 1.0)?;
+
         // log the image
         rec.log_static(
             "image",
             &rerun::Image::from_elements(img.as_slice(), img.size().into(), rerun::ColorModel::RGB),
         )?;
 
-        // log the hessian response
+        // log the corners
         rec.log_static(
-            "hessian",
+            "corners",
             &rerun::Image::from_elements(
-                hessian.as_slice(),
-                hessian.size().into(),
+                corners.as_slice(),
+                corners.size().into(),
                 rerun::ColorModel::L,
             ),
         )?;

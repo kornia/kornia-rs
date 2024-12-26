@@ -3,6 +3,12 @@ use kornia_image::{Image, ImageError};
 use rayon::prelude::*;
 
 /// Compute the Hessian response of an image.
+///
+/// The Hessian response is computed as the absolute value of the determinant of the Hessian matrix.
+///
+/// Args:
+///     src: The source image with shape (H, W).
+///     dst: The destination image with shape (H, W).
 pub fn hessian_response(src: &Image<f32, 1>, dst: &mut Image<f32, 1>) -> Result<(), ImageError> {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -60,4 +66,40 @@ pub fn hessian_response(src: &Image<f32, 1>, dst: &mut Image<f32, 1>) -> Result<
         });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hessian_response() -> Result<(), ImageError> {
+        #[rustfmt::skip]
+        let src = Image::from_size_slice(
+            [5, 5].into(),
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 1.0, 1.0, 0.0,
+                0.0, 1.0, 0.0, 1.0, 0.0,
+                0.0, 1.0, 1.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+        )?;
+
+        let mut dst = Image::from_size_val([5, 5].into(), 0.0)?;
+        hessian_response(&src, &mut dst)?;
+
+        #[rustfmt::skip]
+        assert_eq!(
+            dst.as_slice(),
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 4.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+            ]
+        );
+        Ok(())
+    }
 }
