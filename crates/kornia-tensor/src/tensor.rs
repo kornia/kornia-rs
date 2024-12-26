@@ -200,19 +200,7 @@ where
             return Err(TensorError::InvalidShape(numel));
         }
 
-        let data_slice =
-            unsafe { std::slice::from_raw_parts(data.as_ptr() as *const T, data.len()) };
-
-        let data_vec = unsafe {
-            Vec::from_raw_parts(
-                data_slice.as_ptr() as *mut T,
-                data_slice.len(),
-                data_slice.len(),
-            )
-        };
-
-        //let storage = TensorStorage::from_vec(data.to_vec(), alloc);
-        let storage = TensorStorage::from_vec(data_vec, alloc);
+        let storage = TensorStorage::from_vec(data.to_vec(), alloc);
 
         let strides = get_strides_from_shape(shape);
         Ok(Self {
@@ -220,6 +208,27 @@ where
             shape,
             strides,
         })
+    }
+
+    /// Creates a new `Tensor` with the given shape and raw parts.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - An array containing the shape of the tensor.
+    /// * `data` - A pointer to the data of the tensor.
+    /// * `len` - The length of the data.
+    /// * `alloc` - The allocator to use.
+    pub fn from_raw_parts(
+        shape: [usize; N],
+        data: *const T,
+        len: usize,
+        alloc: A,
+    ) -> Result<Self, TensorError>
+    where
+        T: Clone,
+    {
+        let data_vec = unsafe { Vec::from_raw_parts(data as *mut T, len, len) };
+        Self::from_shape_vec(shape, data_vec, alloc)
     }
 
     /// Creates a new `Tensor` with the given shape and a default value.
@@ -1385,6 +1394,15 @@ mod tests {
         assert_eq!(t.shape, [2, 2]);
         assert_eq!(t.as_slice(), &[1, 2, 3, 4]);
 
+        Ok(())
+    }
+
+    #[test]
+    fn from_raw_parts() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::from_raw_parts([2, 2], data.as_ptr(), data.len(), CpuAllocator)?;
+        assert_eq!(t.shape, [2, 2]);
+        assert_eq!(t.as_slice(), &[1, 2, 3, 4]);
         Ok(())
     }
 

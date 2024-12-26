@@ -85,22 +85,6 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
         }
     }
 
-    /// Creates a new tensor buffer from a slice.
-    pub fn from_slice(value: &[T], alloc: A) -> Self {
-        let boxed_slice = Box::new(value);
-        let ptr = unsafe { NonNull::new_unchecked(value.as_ptr() as *mut T) };
-        let len = value.len() * std::mem::size_of::<T>();
-        let layout = unsafe { Layout::array::<T>(value.len()).unwrap_unchecked() };
-        //std::mem::forget(value);
-
-        Self {
-            ptr,
-            len,
-            layout,
-            alloc,
-        }
-    }
-
     /// Converts the `TensorStorage` into a `Vec<T>`.
     ///
     /// Returns `Err(self)` if the buffer does not have the same layout as the destination Vec.
@@ -340,18 +324,6 @@ mod tests {
             assert_eq!(data.get_unchecked(3), &4);
             assert_eq!(data.get_unchecked(4), &5);
         }
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_tensor_buffer_from_slice() -> Result<(), TensorAllocatorError> {
-        let data = vec![1, 2, 3, 4, 5];
-        let data_slice = data.as_slice();
-        let slice_ptr = data_slice.as_ptr();
-        let slice_len = data_slice.len();
-
-        let buffer = TensorStorage::<_, CpuAllocator>::from_slice(data_slice, CpuAllocator);
 
         Ok(())
     }

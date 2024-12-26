@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::stream::error::StreamCaptureError;
 use gst::prelude::*;
-use kornia_image::{Image, ImageSize};
+use kornia_image::Image;
 
 /// Represents a stream capture pipeline using GStreamer.
 pub struct StreamCapture {
@@ -160,8 +160,10 @@ impl StreamCapture {
             .ok_or_else(|| StreamCaptureError::GetBufferError)?
             .map_readable()?;
 
-        Image::<u8, 3>::new(ImageSize { width, height }, buffer.as_slice().to_vec())
-            .map_err(|_| StreamCaptureError::CreateImageFrameError)
+        let image = Image::from_raw_parts([width, height].into(), buffer.as_ptr(), buffer.len())
+            .map_err(|_| StreamCaptureError::CreateImageFrameError)?;
+
+        Ok(image)
     }
 }
 
