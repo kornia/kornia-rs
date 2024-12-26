@@ -1,0 +1,12 @@
+[package]
+name = "features"
+version = "0.1.0"
+authors = ["Edgar Riba <edgar.riba@gmail.com>"]
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+ctrlc = "3.4.4"
+kornia = { workspace = true, features = ["gstreamer"] }
+rerun = { workspace = true }
