@@ -14,10 +14,11 @@ Options:
 Example:
 
 ```bash
-cargo run -p ply_rerun -- --ply-path banana.ply --ply-type default
+cargo run -p ply_rerun -- --ply-path room-bin.ply --ply-type default
 ```
 
 Output:
 
 https://github.com/user-attachments/assets/ead3b767-4b57-4e3f-8bcf-0f93fe6ab962
 
+NOTE: download the data from https://github.com/kornia/data/raw/refs/heads/main/pointcloud/room_bin.ply
