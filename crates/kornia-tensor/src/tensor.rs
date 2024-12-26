@@ -199,7 +199,21 @@ where
         if numel != data.len() {
             return Err(TensorError::InvalidShape(numel));
         }
-        let storage = TensorStorage::from_vec(data.to_vec(), alloc);
+
+        let data_slice =
+            unsafe { std::slice::from_raw_parts(data.as_ptr() as *const T, data.len()) };
+
+        let data_vec = unsafe {
+            Vec::from_raw_parts(
+                data_slice.as_ptr() as *mut T,
+                data_slice.len(),
+                data_slice.len(),
+            )
+        };
+
+        //let storage = TensorStorage::from_vec(data.to_vec(), alloc);
+        let storage = TensorStorage::from_vec(data_vec, alloc);
+
         let strides = get_strides_from_shape(shape);
         Ok(Self {
             storage,
