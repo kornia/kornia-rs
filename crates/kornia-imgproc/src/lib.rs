@@ -22,6 +22,9 @@ pub mod draw;
 /// image enhancement module.
 pub mod enhance;
 
+/// feature detection module.
+pub mod features;
+
 /// image flipping module.
 pub mod flip;
 
