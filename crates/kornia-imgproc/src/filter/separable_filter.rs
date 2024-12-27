@@ -43,19 +43,21 @@ pub fn separable_filter<const C: usize>(
     for r in 0..src.rows() {
         let row_offset = r * src.cols();
         for c in 0..src.cols() {
-            let col_offset = (row_offset + c) * C;
             for ch in 0..C {
-                let pix_offset = col_offset + ch;
                 let mut row_acc = 0.0;
                 for (k_idx, k_val) in kernel_x.iter().enumerate() {
-                    let k_offset = k_idx - half_kernel_x;
-                    let x_pos = c + k_offset;
-                    if x_pos > 0 && x_pos < src.cols() {
+                    let x_pos = match (c + k_idx).checked_sub(half_kernel_x) {
+                        Some(pos) => pos,
+                        None => {
+                            continue;
+                        }
+                    };
+                    if x_pos < src.cols() - 1 {
                         let neighbor_idx = (row_offset + x_pos) * C + ch;
                         row_acc += src_data[neighbor_idx] * k_val;
                     }
                 }
-                temp[pix_offset] = row_acc;
+                temp[(row_offset + c) * C + ch] = row_acc;
             }
         }
     }
@@ -64,19 +66,21 @@ pub fn separable_filter<const C: usize>(
     for r in 0..src.rows() {
         let row_offset = r * src.cols();
         for c in 0..src.cols() {
-            let col_offset = (row_offset + c) * C;
             for ch in 0..C {
-                let pix_offset = col_offset + ch;
                 let mut col_acc = 0.0;
                 for (k_idx, k_val) in kernel_y.iter().enumerate() {
-                    let k_offset = k_idx - half_kernel_y;
-                    let y_pos = r + k_offset;
-                    if y_pos > 0 && y_pos < src.rows() {
+                    let y_pos = match (r + k_idx).checked_sub(half_kernel_y) {
+                        Some(pos) => pos,
+                        None => {
+                            continue;
+                        }
+                    };
+                    if y_pos < src.rows() - 1 {
                         let neighbor_idx = (y_pos * src.cols() + c) * C + ch;
                         col_acc += temp[neighbor_idx] * k_val;
                     }
                 }
-                dst_data[pix_offset] = col_acc;
+                dst_data[(row_offset + c) * C + ch] = col_acc;
             }
         }
     }
@@ -95,25 +99,38 @@ mod tests {
             width: 5,
             height: 5,
         };
+
+        #[rustfmt::skip]
         let img = Image::new(
             size,
             vec![
-                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
-                16.0, 17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0, 25.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
             ],
         )?;
 
         let mut dst = Image::<_, 1>::from_size_val(img.size(), 0f32)?;
-        let kernel_x = vec![1.0];
-        let kernel_y = vec![1.0];
+        let kernel_x = vec![1.0, 1.0, 1.0];
+        let kernel_y = vec![1.0, 1.0, 1.0];
         separable_filter(&img, &mut dst, &kernel_x, &kernel_y)?;
+
+        #[rustfmt::skip]
         assert_eq!(
             dst.as_slice(),
             &[
-                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 7.0, 8.0, 9.0, 10.0, 0.0, 12.0, 13.0, 14.0, 15.0,
-                0.0, 17.0, 18.0, 19.0, 20.0, 0.0, 22.0, 23.0, 24.0, 25.0
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 1.0, 1.0, 0.0,
+                0.0, 1.0, 1.0, 1.0, 0.0,
+                0.0, 1.0, 1.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
             ]
         );
+
+        let xsum = dst.as_slice().iter().sum::<f32>();
+        assert_eq!(xsum, 9.0);
 
         Ok(())
     }

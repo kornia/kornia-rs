@@ -6,11 +6,6 @@ use kornia_imgproc::filter::gaussian_blur;
 use image::RgbImage;
 use imageproc::filter::gaussian_blur_f32;
 
-fn gaussian_blur_imageproc(image: &RgbImage, sigma: f32) -> RgbImage {
-    let filtered = gaussian_blur_f32(image, sigma);
-    filtered
-}
-
 fn bench_filters(c: &mut Criterion) {
     let mut group = c.benchmark_group("Gaussian Blur");
 
@@ -51,9 +46,9 @@ fn bench_filters(c: &mut Criterion) {
                 BenchmarkId::new("gaussian_blur_imageproc", &parameter_string),
                 &image,
                 |b, i| {
-                    let rgb_image = RgbImage::new(i.size().width as u32, i.size().height as u32);
+                    let rgb_image = RgbImage::new(i.cols() as u32, i.rows() as u32);
                     let sigma = (*kernel_size as f32) / 2.0;
-                    b.iter(|| black_box(gaussian_blur_imageproc(&rgb_image, sigma)))
+                    b.iter(|| black_box(gaussian_blur_f32(&rgb_image, sigma)))
                 },
             );
         }

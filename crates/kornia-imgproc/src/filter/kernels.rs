@@ -80,7 +80,7 @@ mod tests {
     fn test_gaussian_kernel_1d() {
         let kernel = gaussian_kernel_1d(5, 0.5);
 
-        let expected = vec![
+        let expected = [
             0.00026386508,
             0.10645077,
             0.78657067,
