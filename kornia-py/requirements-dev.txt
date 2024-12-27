@@ -1,7 +1,10 @@
 # build
-
 maturin[patchelf]
+
+# tests
+pre-commit
 pytest
+numpy
+
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
-numpy
