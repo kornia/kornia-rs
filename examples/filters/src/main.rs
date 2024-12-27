@@ -1,3 +1,4 @@
+use argh::FromArgs;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -9,7 +10,33 @@ use kornia::{
     io::stream::V4L2CameraConfig,
 };
 
+#[derive(FromArgs)]
+/// Apply a separable filter to an image
+struct Args {
+    /// the filter to apply
+    #[argh(option)]
+    filter: String,
+
+    /// the kernel size for the horizontal filter
+    #[argh(option)]
+    kx: usize,
+
+    /// the kernel size for the vertical filter
+    #[argh(option)]
+    ky: usize,
+
+    /// the sigma for the gaussian filter
+    #[argh(option)]
+    sigma_x: Option<f32>,
+
+    /// the sigma for the gaussian filter
+    #[argh(option)]
+    sigma_y: Option<f32>,
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Args = argh::from_env();
+
     // start the recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia Webcapture App").spawn()?;
 
@@ -36,8 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // preallocate images
     let mut img_f32 = Image::from_size_val(size, 0f32)?;
-    let mut img_f32_blur = Image::from_size_val(size, 0f32)?;
-
+    let mut img_f32_filtered = Image::from_size_val(size, 0f32)?;
     // start grabbing frames from the camera
     while !cancel_token.load(Ordering::SeqCst) {
         let Some(img) = webcam.grab()? else {
@@ -47,11 +73,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // convert to grayscale
         ops::cast_and_scale(&img, &mut img_f32, 1. / 255.)?;
 
-        // apply a separable gaussian blur
-        let kernel_x = [1.0, 1.0, 1.0, 1.0, 1.0];
-        let kernel_y = [1.0, 1.0, 1.0, 1.0, 1.0];
+        match args.filter.to_lowercase().as_str() {
+            "box" => {
+                imgproc::filter::box_blur(&img_f32, &mut img_f32_filtered, (args.kx, args.ky))?;
+            }
+            "gaussian" => {
+                let sigma_x = args.sigma_x.unwrap_or(0.5);
+                let sigma_y = args.sigma_y.unwrap_or(0.5);
+                imgproc::filter::gaussian_blur(
+                    &img_f32,
+                    &mut img_f32_filtered,
+                    (args.kx, args.ky),
+                    (sigma_x, sigma_y),
+                )?;
+            }
+            "sobel" => {
+                let mut img_f32_filtered_sobel = Image::from_size_val(size, 0f32)?;
+                imgproc::filter::sobel(&img_f32, &mut img_f32_filtered_sobel, args.kx)?;
 
-        imgproc::filter::separable_filter(&img_f32, &mut img_f32_blur, &kernel_x, &kernel_y)?;
+                // we need to normalize the sobel filter to 0-1
+                imgproc::normalize::normalize_min_max(
+                    &img_f32_filtered_sobel,
+                    &mut img_f32_filtered,
+                    0.0,
+                    1.0,
+                )?;
+            }
+            _ => {
+                return Err(format!("Invalid filter: {}", args.filter).into());
+            }
+        }
 
         // log the image
         rec.log_static(
@@ -61,10 +112,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // log the blurred image
         rec.log_static(
-            "blurred",
+            "filtered",
             &rerun::Image::from_elements(
-                img_f32_blur.as_slice(),
-                img_f32_blur.size().into(),
+                img_f32_filtered.as_slice(),
+                img_f32_filtered.size().into(),
                 rerun::ColorModel::RGB,
             ),
         )?;

@@ -46,6 +46,6 @@ pub enum ImageError {
     CannotComputeDeterminant,
 
     /// Error when the kernel length is invalid.
-    #[error("Mismatched kernel length {0} and {1}")]
-    MismatchedKernelLength(usize, usize),
+    #[error("Invalid kernel length {0} and {1}")]
+    InvalidKernelLength(usize, usize),
 }
