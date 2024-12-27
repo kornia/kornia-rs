@@ -25,6 +25,9 @@ pub mod enhance;
 /// feature detection module.
 pub mod features;
 
+/// image filtering module.
+pub mod filter;
+
 /// image flipping module.
 pub mod flip;
 
