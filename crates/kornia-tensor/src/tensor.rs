@@ -1401,6 +1401,7 @@ mod tests {
     fn from_raw_parts() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
         let t = Tensor::from_raw_parts([2, 2], data.as_ptr(), data.len(), CpuAllocator)?;
+        std::mem::forget(data);
         assert_eq!(t.shape, [2, 2]);
         assert_eq!(t.as_slice(), &[1, 2, 3, 4]);
         Ok(())
