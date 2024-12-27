@@ -43,7 +43,9 @@ pub fn separable_filter<const C: usize>(
     for r in 0..src.rows() {
         let row_offset = r * src.cols();
         for c in 0..src.cols() {
+            let col_offset = (row_offset + c) * C;
             for ch in 0..C {
+                let pix_offset = col_offset + ch;
                 let mut row_acc = 0.0;
                 for (k_idx, k_val) in kernel_x.iter().enumerate() {
                     let x_pos = match (c + k_idx).checked_sub(half_kernel_x) {
@@ -53,11 +55,12 @@ pub fn separable_filter<const C: usize>(
                         }
                     };
                     if x_pos < src.cols() - 1 {
+                        // TODO: find better way to access the pixel to reuse previous offsets
                         let neighbor_idx = (row_offset + x_pos) * C + ch;
                         row_acc += src_data[neighbor_idx] * k_val;
                     }
                 }
-                temp[(row_offset + c) * C + ch] = row_acc;
+                temp[pix_offset] = row_acc;
             }
         }
     }
@@ -66,7 +69,9 @@ pub fn separable_filter<const C: usize>(
     for r in 0..src.rows() {
         let row_offset = r * src.cols();
         for c in 0..src.cols() {
+            let col_offset = (row_offset + c) * C;
             for ch in 0..C {
+                let pix_offset = col_offset + ch;
                 let mut col_acc = 0.0;
                 for (k_idx, k_val) in kernel_y.iter().enumerate() {
                     let y_pos = match (r + k_idx).checked_sub(half_kernel_y) {
@@ -76,11 +81,12 @@ pub fn separable_filter<const C: usize>(
                         }
                     };
                     if y_pos < src.rows() - 1 {
+                        // TODO: find better way to access the pixel to reuse previous offsets
                         let neighbor_idx = (y_pos * src.cols() + c) * C + ch;
                         col_acc += temp[neighbor_idx] * k_val;
                     }
                 }
-                dst_data[(row_offset + c) * C + ch] = col_acc;
+                dst_data[pix_offset] = col_acc;
             }
         }
     }
