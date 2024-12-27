@@ -21,6 +21,7 @@ thiserror = { workspace = true }
 [dev-dependencies]
 criterion = { workspace = true }
 image = "0.25"
+imageproc = "0.25"
 kornia-io = { workspace = true }
 ndarray = { version = "0.15", features = ["rayon"] }
 
@@ -46,4 +47,8 @@ harness = false
 
 [[bench]]
 name = "bench_crop"
+harness = false
+
+[[bench]]
+name = "bench_filters"
 harness = false
