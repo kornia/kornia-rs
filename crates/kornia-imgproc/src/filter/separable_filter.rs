@@ -37,6 +37,7 @@ pub fn separable_filter<const C: usize>(
     let dst_data = dst.as_slice_mut();
 
     // preallocate the temporary buffer for intermediate results
+    // TODO: use a better buffer allocation strategy
     let mut temp = vec![0.0; src_data.len()];
 
     // Row-wise filtering
@@ -48,19 +49,16 @@ pub fn separable_filter<const C: usize>(
                 let pix_offset = col_offset + ch;
                 let mut row_acc = 0.0;
                 for (k_idx, k_val) in kernel_x.iter().enumerate() {
-                    let x_pos = match (c + k_idx).checked_sub(half_kernel_x) {
-                        Some(pos) => pos,
-                        None => {
-                            continue;
-                        }
-                    };
-                    if x_pos < src.cols() - 1 {
-                        // TODO: find better way to access the pixel to reuse previous offsets
-                        let neighbor_idx = (row_offset + x_pos) * C + ch;
-                        row_acc += src_data[neighbor_idx] * k_val;
+                    let x_pos = c as isize + k_idx as isize - half_kernel_x as isize;
+                    if x_pos >= 0 && x_pos < src.cols() as isize {
+                        let neighbor_idx = (row_offset + x_pos as usize) * C + ch;
+                        row_acc += unsafe { src_data.get_unchecked(neighbor_idx) } * k_val;
                     }
                 }
-                temp[pix_offset] = row_acc;
+
+                unsafe {
+                    *temp.get_unchecked_mut(pix_offset) = row_acc;
+                }
             }
         }
     }
@@ -74,19 +72,15 @@ pub fn separable_filter<const C: usize>(
                 let pix_offset = col_offset + ch;
                 let mut col_acc = 0.0;
                 for (k_idx, k_val) in kernel_y.iter().enumerate() {
-                    let y_pos = match (r + k_idx).checked_sub(half_kernel_y) {
-                        Some(pos) => pos,
-                        None => {
-                            continue;
-                        }
-                    };
-                    if y_pos < src.rows() - 1 {
-                        // TODO: find better way to access the pixel to reuse previous offsets
-                        let neighbor_idx = (y_pos * src.cols() + c) * C + ch;
-                        col_acc += temp[neighbor_idx] * k_val;
+                    let y_pos = r as isize + k_idx as isize - half_kernel_y as isize;
+                    if y_pos >= 0 && y_pos < src.rows() as isize {
+                        let neighbor_idx = (y_pos as usize * src.cols() + c) * C + ch;
+                        col_acc += unsafe { temp.get_unchecked(neighbor_idx) } * k_val;
                     }
                 }
-                dst_data[pix_offset] = col_acc;
+                unsafe {
+                    *dst_data.get_unchecked_mut(pix_offset) = col_acc;
+                }
             }
         }
     }
