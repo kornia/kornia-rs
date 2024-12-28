@@ -22,6 +22,8 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - uses: extractions/setup-just@v2
+
     - name: Set up Python ${{ matrix.python-version }}
       uses: astral-sh/setup-uv@v5
       with:
@@ -35,10 +37,10 @@ jobs:
       run: sudo apt-get install -y cmake nasm libunwind-dev
 
     - name: Setup project environment
-      run: cd kornia-py/ && make install PYTHON_VERSION=${{ matrix.python-version }}
+      run: cd kornia-py/ && just install ${{ matrix.python-version }}
 
     - name: Run tests
-      run: cd kornia-py/ && make test
+      run: cd kornia-py/ && just test
 
   # NOTE: there's a systematic fail with the ci on macos
   # test-python-macos:
