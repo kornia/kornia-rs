@@ -218,7 +218,7 @@ where
     /// * `data` - A pointer to the data of the tensor.
     /// * `len` - The length of the data.
     /// * `alloc` - The allocator to use.
-    pub fn from_raw_parts(
+    pub unsafe fn from_raw_parts(
         shape: [usize; N],
         data: *const T,
         len: usize,
@@ -227,8 +227,13 @@ where
     where
         T: Clone,
     {
-        let data_vec = unsafe { Vec::from_raw_parts(data as *mut T, len, len) };
-        Self::from_shape_vec(shape, data_vec, alloc)
+        let storage = TensorStorage::from_raw_parts(data, len, alloc);
+        let strides = get_strides_from_shape(shape);
+        Ok(Self {
+            storage,
+            shape,
+            strides,
+        })
     }
 
     /// Creates a new `Tensor` with the given shape and a default value.
@@ -1400,7 +1405,7 @@ mod tests {
     #[test]
     fn from_raw_parts() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4];
-        let t = Tensor::from_raw_parts([2, 2], data.as_ptr(), data.len(), CpuAllocator)?;
+        let t = unsafe { Tensor::from_raw_parts([2, 2], data.as_ptr(), data.len(), CpuAllocator)? };
         std::mem::forget(data);
         assert_eq!(t.shape, [2, 2]);
         assert_eq!(t.as_slice(), &[1, 2, 3, 4]);

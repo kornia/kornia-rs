@@ -160,8 +160,10 @@ impl StreamCapture {
             .ok_or_else(|| StreamCaptureError::GetBufferError)?
             .map_readable()?;
 
-        let image = Image::from_raw_parts([width, height].into(), buffer.as_ptr(), buffer.len())
-            .map_err(|_| StreamCaptureError::CreateImageFrameError)?;
+        let image = unsafe {
+            Image::from_raw_parts([width, height].into(), buffer.as_ptr(), buffer.len())
+                .map_err(|_| StreamCaptureError::CreateImageFrameError)?
+        };
 
         Ok(image)
     }

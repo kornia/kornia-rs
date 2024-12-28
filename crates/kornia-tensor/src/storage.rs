@@ -12,6 +12,8 @@ pub struct TensorStorage<T, A: TensorAllocator> {
     pub(crate) layout: Layout,
     /// The allocator used to allocate/deallocate the tensor memory.
     pub(crate) alloc: A,
+    /// Whether the tensor memory is managed by the external allocator.
+    managed_by_external: bool,
 }
 
 impl<T, A: TensorAllocator> TensorStorage<T, A> {
@@ -82,6 +84,20 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
             len,
             layout,
             alloc,
+            managed_by_external: false,
+        }
+    }
+
+    /// Creates a new tensor buffer from a raw pointer.
+    pub unsafe fn from_raw_parts(data: *const T, len: usize, alloc: A) -> Self {
+        let ptr = NonNull::new_unchecked(data as _);
+        let layout = Layout::from_size_align_unchecked(len, std::mem::size_of::<T>());
+        Self {
+            ptr,
+            len,
+            layout,
+            alloc,
+            managed_by_external: true,
         }
     }
 
@@ -108,31 +124,6 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     }
 }
 
-// TODO: pass the allocator to constructor
-impl<T, A: TensorAllocator> From<Vec<T>> for TensorStorage<T, A>
-where
-    A: Default,
-{
-    /// Creates a new tensor buffer from a vector.
-    fn from(value: Vec<T>) -> Self {
-        // Safety
-        // Vec::as_ptr guaranteed to not be null
-        let ptr = unsafe { NonNull::new_unchecked(value.as_ptr() as *mut T) };
-        let len = value.len() * std::mem::size_of::<T>();
-        // Safety
-        // Vec guaranteed to have a valid layout matching that of `Layout::array`
-        // This is based on `RawVec::current_memory`
-        let layout = unsafe { Layout::array::<T>(value.capacity()).unwrap_unchecked() };
-        std::mem::forget(value);
-
-        Self {
-            ptr,
-            len,
-            layout,
-            alloc: A::default(),
-        }
-    }
-}
 // Safety:
 // TensorStorage is thread safe if the allocator is thread safe.
 unsafe impl<T, A: TensorAllocator> Send for TensorStorage<T, A> {}
@@ -140,8 +131,10 @@ unsafe impl<T, A: TensorAllocator> Sync for TensorStorage<T, A> {}
 
 impl<T, A: TensorAllocator> Drop for TensorStorage<T, A> {
     fn drop(&mut self) {
-        self.alloc
-            .dealloc(self.ptr.as_ptr() as *mut u8, self.layout);
+        if !self.managed_by_external {
+            self.alloc
+                .dealloc(self.ptr.as_ptr() as *mut u8, self.layout);
+        }
     }
 }
 /// A new `TensorStorage` instance with cloned data if successful, otherwise an error.
@@ -186,6 +179,7 @@ mod tests {
             len: size * std::mem::size_of::<u8>(),
             layout,
             ptr,
+            managed_by_external: false,
         };
 
         assert_eq!(buffer.ptr.as_ptr(), ptr_raw);
@@ -227,6 +221,7 @@ mod tests {
             len: size,
             layout,
             ptr: ptr.cast::<f32>(),
+            managed_by_external: false,
         };
 
         assert_eq!(buffer.as_ptr(), ptr.as_ptr() as *const f32);

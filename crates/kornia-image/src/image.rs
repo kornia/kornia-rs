@@ -204,7 +204,11 @@ impl<T, const C: usize> Image<T, C> {
     /// # Returns
     ///
     /// A new image created from the given size and pixel data.
-    pub fn from_raw_parts(size: ImageSize, data: *const T, len: usize) -> Result<Self, ImageError>
+    pub unsafe fn from_raw_parts(
+        size: ImageSize,
+        data: *const T,
+        len: usize,
+    ) -> Result<Self, ImageError>
     where
         T: Clone,
     {
