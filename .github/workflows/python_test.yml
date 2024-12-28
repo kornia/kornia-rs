@@ -14,17 +14,34 @@ concurrency:
 
 jobs:
   test-python-linux:
+    name: py${{ matrix.python-version }}-linux
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python 3.8
-        uses: actions/setup-python@v5
-        with:
-          python-version: 3.8
-      - name: Install dependencies
-        run: sudo apt-get install -y cmake nasm libunwind-dev
-      - name: Build and test
-        run: make test-python
+    - uses: actions/checkout@v4
+
+    - uses: extractions/setup-just@v2
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: astral-sh/setup-uv@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+
+    - name: Install system dependencies
+      run: sudo apt-get install -y cmake nasm libunwind-dev
+
+    - name: Setup project environment
+      run: cd kornia-py/ && just install ${{ matrix.python-version }}
+
+    - name: Run tests
+      run: cd kornia-py/ && just test
+
   # NOTE: there's a systematic fail with the ci on macos
   # test-python-macos:
   #   runs-on: macos-latest

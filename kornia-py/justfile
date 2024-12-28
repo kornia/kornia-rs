@@ -1,0 +1,20 @@
+@_default:
+  just --list
+
+# Check if the binaries required to create the python environment
+check-environment:
+  @echo "UV version." && uv --version
+  @echo "Rust version." && cargo --version
+
+# Install the virtual environment and install the pre-commit hooks
+install py_version='3.9':
+  @just check-environment
+  @echo "🚀 Creating virtual environment using uv"
+  uv venv -p {{ py_version }}
+  uv pip install -r requirements-dev.txt -e .
+  uv run pre-commit install
+
+# Test the code with pytest
+test:
+  @echo "🚀 Testing code: Running pytest"
+  @uv run python -m pytest
