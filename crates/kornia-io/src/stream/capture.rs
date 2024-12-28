@@ -14,12 +14,10 @@ pub struct GStreamerAllocator;
 
 impl TensorAllocator for GStreamerAllocator {
     fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError> {
-        println!("[gstreamer] allocating memory");
         Ok(unsafe { std::alloc::alloc(layout) })
     }
 
     fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
-        println!("[gstreamer] deallocating memory");
         // do nothing as gstreamer manages the memory
     }
 }
@@ -182,15 +180,7 @@ impl StreamCapture {
             .ok_or_else(|| StreamCaptureError::GetBufferError)?
             .map_readable()?;
 
-        //let image = unsafe {
-        //    Image::from_raw_parts(
-        //        [width, height].into(),
-        //        buffer.as_ptr(),
-        //        buffer.len(),
-        //        GStreamerAllocator,
-        //    )
-        //    .map_err(|_| StreamCaptureError::CreateImageFrameError)?
-        //};
+        // zero copy tensor from gstreamer buffer
         let tensor = unsafe {
             Tensor::from_raw_parts(
                 [width, height, 3],
@@ -201,8 +191,9 @@ impl StreamCapture {
             .map_err(|_| StreamCaptureError::CreateImageFrameError)?
         };
 
-        let image =
-            Image::try_from(tensor).map_err(|_| StreamCaptureError::CreateImageFrameError)?;
+        // convert the tensor to an image
+        let image = Image::new([width, height].into(), tensor.into_vec())
+            .map_err(|_| StreamCaptureError::CreateImageFrameError)?;
 
         Ok(image)
     }
