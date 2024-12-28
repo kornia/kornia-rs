@@ -1,4 +1,4 @@
-use kornia_image::{Image, ImageError};
+use kornia_image::{Image, ImageError, TensorAllocator};
 
 /// Compute the Huber loss between two images.
 ///
@@ -54,9 +54,9 @@ use kornia_image::{Image, ImageError};
 /// # References
 ///
 /// [Wikipedia - Huber loss](https://en.wikipedia.org/wiki/Huber_loss)
-pub fn huber<const C: usize>(
-    image1: &Image<f32, C>,
-    image2: &Image<f32, C>,
+pub fn huber<const C: usize, A: TensorAllocator>(
+    image1: &Image<f32, C, A>,
+    image2: &Image<f32, C, A>,
     delta: f32,
 ) -> Result<f32, ImageError> {
     if image1.size() != image2.size() {
@@ -87,11 +87,11 @@ pub fn huber<const C: usize>(
 
 #[cfg(test)]
 mod tests {
-    use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_image::{CpuAllocator, Image, ImageError, ImageSize};
 
     #[test]
     fn test_huber() -> Result<(), ImageError> {
-        let image1 = Image::<_, 1>::new(
+        let image1 = Image::<_, 1, CpuAllocator>::new(
             ImageSize {
                 width: 2,
                 height: 3,
@@ -99,7 +99,7 @@ mod tests {
             vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
         )?;
 
-        let image2 = Image::<_, 1>::new(
+        let image2 = Image::<_, 1, CpuAllocator>::new(
             ImageSize {
                 width: 2,
                 height: 3,

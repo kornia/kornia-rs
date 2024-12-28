@@ -1,5 +1,4 @@
-use kornia_image::{Image, ImageError};
-
+use kornia_image::{Image, ImageError, TensorAllocator};
 use rayon::prelude::*;
 
 /// Compute the Hessian response of an image.
@@ -9,7 +8,10 @@ use rayon::prelude::*;
 /// Args:
 ///     src: The source image with shape (H, W).
 ///     dst: The destination image with shape (H, W).
-pub fn hessian_response(src: &Image<f32, 1>, dst: &mut Image<f32, 1>) -> Result<(), ImageError> {
+pub fn hessian_response<A: TensorAllocator>(
+    src: &Image<f32, 1, A>,
+    dst: &mut Image<f32, 1, A>,
+) -> Result<(), ImageError> {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
             src.cols(),
@@ -71,11 +73,12 @@ pub fn hessian_response(src: &Image<f32, 1>, dst: &mut Image<f32, 1>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kornia_image::{CpuAllocator, Image};
 
     #[test]
     fn test_hessian_response() -> Result<(), ImageError> {
         #[rustfmt::skip]
-        let src = Image::from_size_slice(
+        let src = Image::<f32, 1, CpuAllocator>::from_size_slice(
             [5, 5].into(),
             &[
                 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -86,7 +89,7 @@ mod tests {
             ],
         )?;
 
-        let mut dst = Image::from_size_val([5, 5].into(), 0.0)?;
+        let mut dst = Image::<_, 1, CpuAllocator>::from_size_val([5, 5].into(), 0.0)?;
         hessian_response(&src, &mut dst)?;
 
         #[rustfmt::skip]

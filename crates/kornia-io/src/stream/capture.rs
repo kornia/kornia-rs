@@ -1,13 +1,33 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    alloc::Layout,
+    sync::{Arc, Mutex},
+};
 
 use crate::stream::error::StreamCaptureError;
 use gst::prelude::*;
 use kornia_image::Image;
+use kornia_tensor::{allocator::TensorAllocatorError, Tensor, TensorAllocator};
+
+/// An allocator for GStreamer images.
+#[derive(Clone, Default)]
+pub struct GStreamerAllocator;
+
+impl TensorAllocator for GStreamerAllocator {
+    fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError> {
+        println!("[gstreamer] allocating memory");
+        Ok(unsafe { std::alloc::alloc(layout) })
+    }
+
+    fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+        println!("[gstreamer] deallocating memory");
+        // do nothing as gstreamer manages the memory
+    }
+}
 
 /// Represents a stream capture pipeline using GStreamer.
 pub struct StreamCapture {
     pipeline: gst::Pipeline,
-    last_frame: Arc<Mutex<Option<Image<u8, 3>>>>,
+    last_frame: Arc<Mutex<Option<Image<u8, 3, GStreamerAllocator>>>>,
     running: bool,
     handle: Option<std::thread::JoinHandle<()>>,
 }
@@ -102,7 +122,7 @@ impl StreamCapture {
     /// # Returns
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
-    pub fn grab(&self) -> Result<Option<Image<u8, 3>>, StreamCaptureError> {
+    pub fn grab(&self) -> Result<Option<Image<u8, 3, GStreamerAllocator>>, StreamCaptureError> {
         if !self.running {
             return Err(StreamCaptureError::PipelineNotRunning);
         }
@@ -136,7 +156,9 @@ impl StreamCapture {
     /// # Returns
     ///
     /// A Result containing the extracted Image or a StreamCaptureError.
-    fn extract_image_frame(appsink: &gst_app::AppSink) -> Result<Image<u8, 3>, StreamCaptureError> {
+    fn extract_image_frame(
+        appsink: &gst_app::AppSink,
+    ) -> Result<Image<u8, 3, GStreamerAllocator>, StreamCaptureError> {
         let sample = appsink.pull_sample()?;
 
         let caps = sample
@@ -160,10 +182,27 @@ impl StreamCapture {
             .ok_or_else(|| StreamCaptureError::GetBufferError)?
             .map_readable()?;
 
-        let image = unsafe {
-            Image::from_raw_parts([width, height].into(), buffer.as_ptr(), buffer.len())
-                .map_err(|_| StreamCaptureError::CreateImageFrameError)?
+        //let image = unsafe {
+        //    Image::from_raw_parts(
+        //        [width, height].into(),
+        //        buffer.as_ptr(),
+        //        buffer.len(),
+        //        GStreamerAllocator,
+        //    )
+        //    .map_err(|_| StreamCaptureError::CreateImageFrameError)?
+        //};
+        let tensor = unsafe {
+            Tensor::from_raw_parts(
+                [width, height, 3],
+                buffer.as_ptr(),
+                buffer.len(),
+                GStreamerAllocator,
+            )
+            .map_err(|_| StreamCaptureError::CreateImageFrameError)?
         };
+
+        let image =
+            Image::try_from(tensor).map_err(|_| StreamCaptureError::CreateImageFrameError)?;
 
         Ok(image)
     }

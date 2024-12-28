@@ -1,4 +1,5 @@
-use kornia_tensor::{CpuAllocator, CpuTensor2, TensorError};
+use kornia_image::TensorAllocator;
+use kornia_tensor::{Tensor2, TensorError};
 use num_traits::Float;
 use rayon::iter::ParallelIterator;
 use rayon::{iter::IndexedParallelIterator, slice::ParallelSliceMut};
@@ -31,17 +32,17 @@ use rayon::{iter::IndexedParallelIterator, slice::ParallelSliceMut};
 /// assert_eq!(map_x.shape, [2, 3]);
 /// assert_eq!(map_y.shape, [2, 3]);
 /// ```
-pub fn meshgrid_from_fn<T>(
+pub fn meshgrid_from_fn<T, A: TensorAllocator + 'static>(
     cols: usize,
     rows: usize,
     f: impl Fn(usize, usize) -> Result<(T, T), Box<dyn std::error::Error + Send + Sync>> + Send + Sync,
-) -> Result<(CpuTensor2<T>, CpuTensor2<T>), TensorError>
+) -> Result<(Tensor2<T, A>, Tensor2<T, A>), TensorError>
 where
     T: Float + Send + Sync,
 {
     // allocate the output tensors
-    let mut map_x = CpuTensor2::<T>::zeros([rows, cols], CpuAllocator);
-    let mut map_y = CpuTensor2::<T>::zeros([rows, cols], CpuAllocator);
+    let mut map_x = Tensor2::<T, A>::zeros([rows, cols], A::default());
+    let mut map_y = Tensor2::<T, A>::zeros([rows, cols], A::default());
 
     // fill the output tensors
     map_x
@@ -67,11 +68,14 @@ where
 
 #[cfg(test)]
 mod tests {
+    use kornia_image::CpuAllocator;
+
     use super::*;
 
     #[test]
     fn test_meshgrid_from_fn_identity() -> Result<(), TensorError> {
-        let (map_x, map_y) = meshgrid_from_fn(3, 2, |u, v| Ok((u as f64, v as f64)))?;
+        let (map_x, map_y) =
+            meshgrid_from_fn::<_, CpuAllocator>(3, 2, |u, v| Ok((u as f64, v as f64)))?;
 
         assert_eq!(map_x.shape, [2, 3]);
         assert_eq!(map_y.shape, [2, 3]);
@@ -88,7 +92,7 @@ mod tests {
     #[test]
     fn test_meshgrid_from_fn_scaled() -> Result<(), TensorError> {
         let (map_x, map_y) =
-            meshgrid_from_fn(3, 2, |u, v| Ok((u as f32 * 0.5, v as f32 * 2.0))).unwrap();
+            meshgrid_from_fn::<_, CpuAllocator>(3, 2, |u, v| Ok((u as f32 * 0.5, v as f32 * 2.0)))?;
 
         assert_eq!(map_x.shape, [2, 3]);
         assert_eq!(map_y.shape, [2, 3]);

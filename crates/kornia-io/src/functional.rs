@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use kornia_image::{Image, ImageSize};
+use kornia_image::{CpuAllocator, Image, ImageSize};
 
 use crate::error::IoError;
 
@@ -101,7 +101,7 @@ pub fn write_image_jpeg(file_path: impl AsRef<Path>, image: &Image<u8, 3>) -> Re
 /// assert_eq!(image.size().height, 195);
 /// assert_eq!(image.num_channels(), 3);
 /// ```
-pub fn read_image_any(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, IoError> {
+pub fn read_image_any(file_path: impl AsRef<Path>) -> Result<Image<u8, 3, CpuAllocator>, IoError> {
     let file_path = file_path.as_ref().to_owned();
 
     // verify the file exists

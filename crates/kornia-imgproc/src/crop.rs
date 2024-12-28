@@ -1,4 +1,4 @@
-use kornia_image::{Image, ImageError};
+use kornia_image::{Image, ImageError, TensorAllocator};
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
     slice::ParallelSliceMut,
@@ -32,9 +32,9 @@ use rayon::{
 ///
 /// assert_eq!(cropped.as_slice(), &[5u8, 6, 9, 10]);
 /// ```
-pub fn crop_image<T, const C: usize>(
-    src: &Image<T, C>,
-    dst: &mut Image<T, C>,
+pub fn crop_image<T, const C: usize, A: TensorAllocator>(
+    src: &Image<T, C, A>,
+    dst: &mut Image<T, C, A>,
     x: usize,
     y: usize,
 ) -> Result<(), ImageError>
@@ -60,7 +60,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_image::{CpuAllocator, Image, ImageError, ImageSize};
 
     #[test]
     fn test_crop() -> Result<(), ImageError> {
@@ -70,7 +70,7 @@ mod tests {
         };
 
         #[rustfmt::skip]
-        let image = Image::<_, 3>::new(
+        let image = Image::<_, 3, CpuAllocator>::new(
             image_size,
             vec![
                 0u8, 1, 2, 3, 4, 5,
@@ -86,7 +86,7 @@ mod tests {
             height: 2,
         };
 
-        let mut cropped = Image::<_, 3>::from_size_val(crop_size, 0u8)?;
+        let mut cropped = Image::<_, 3, _>::from_size_val(crop_size, 0u8)?;
 
         super::crop_image(&image, &mut cropped, 1, 1)?;
 

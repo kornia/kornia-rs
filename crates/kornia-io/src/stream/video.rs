@@ -2,7 +2,7 @@ use std::path::Path;
 
 use gst::prelude::*;
 
-use kornia_image::{Image, ImageSize};
+use kornia_image::{Image, ImageSize, TensorAllocator};
 
 use super::StreamCaptureError;
 
@@ -173,7 +173,10 @@ impl VideoWriter {
     ///
     /// * `img` - The image to write to the video file.
     // TODO: explore supporting write_async
-    pub fn write<const C: usize>(&mut self, img: &Image<u8, C>) -> Result<(), StreamCaptureError> {
+    pub fn write<const C: usize, A: TensorAllocator>(
+        &mut self,
+        img: &Image<u8, C, A>,
+    ) -> Result<(), StreamCaptureError> {
         // check if the image channels are correct
         match self.format {
             ImageFormat::Mono8 => {
@@ -225,7 +228,7 @@ impl Drop for VideoWriter {
 #[cfg(test)]
 mod tests {
     use super::{ImageFormat, VideoCodec, VideoWriter};
-    use kornia_image::{Image, ImageSize};
+    use kornia_image::{CpuAllocator, Image, ImageSize};
 
     #[ignore = "need gstreamer in CI"]
     #[test]
@@ -244,7 +247,7 @@ mod tests {
             VideoWriter::new(&file_path, VideoCodec::H264, ImageFormat::Rgb8, 30, size)?;
         writer.start()?;
 
-        let img = Image::<u8, 3>::new(size, vec![0; size.width * size.height * 3])?;
+        let img = Image::<u8, 3, CpuAllocator>::new(size, vec![0; size.width * size.height * 3])?;
         writer.write(&img)?;
         writer.close()?;
 
@@ -270,7 +273,7 @@ mod tests {
             VideoWriter::new(&file_path, VideoCodec::H264, ImageFormat::Mono8, 30, size)?;
         writer.start()?;
 
-        let img = Image::<u8, 1>::new(size, vec![0; size.width * size.height])?;
+        let img = Image::<u8, 1, CpuAllocator>::new(size, vec![0; size.width * size.height])?;
         writer.write(&img)?;
         writer.close()?;
 

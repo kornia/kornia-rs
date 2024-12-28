@@ -1,4 +1,4 @@
-use kornia_tensor::{CpuAllocator, Tensor, Tensor2, Tensor3};
+use kornia_tensor::{CpuAllocator, Tensor, Tensor2, Tensor3, TensorAllocator};
 
 use crate::error::ImageError;
 
@@ -56,11 +56,11 @@ impl From<ImageSize> for [u32; 2] {
 /// Represents an image with pixel data.
 ///
 /// The image is represented as a 3D Tensor with shape (H, W, C), where H is the height of the image,
-pub struct Image<T, const C: usize>(pub Tensor3<T, CpuAllocator>);
+pub struct Image<T, const C: usize, A: TensorAllocator + 'static>(pub Tensor3<T, A>);
 
 /// helper to deference the inner tensor
-impl<T, const C: usize> std::ops::Deref for Image<T, C> {
-    type Target = Tensor3<T, CpuAllocator>;
+impl<T, const C: usize, A: TensorAllocator> std::ops::Deref for Image<T, C, A> {
+    type Target = Tensor3<T, A>;
 
     // Define the deref method to return a reference to the inner Tensor3<T>.
     fn deref(&self) -> &Self::Target {
@@ -69,14 +69,14 @@ impl<T, const C: usize> std::ops::Deref for Image<T, C> {
 }
 
 /// helper to deference the inner tensor
-impl<T, const C: usize> std::ops::DerefMut for Image<T, C> {
+impl<T, const C: usize, A: TensorAllocator + 'static> std::ops::DerefMut for Image<T, C, A> {
     // Define the deref_mut method to return a mutable reference to the inner Tensor3<T>.
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl<T, const C: usize> Image<T, C> {
+impl<T, const C: usize, A: TensorAllocator> Image<T, C, A> {
     /// Create a new image from pixel data.
     ///
     /// # Arguments
@@ -125,7 +125,7 @@ impl<T, const C: usize> Image<T, C> {
         Ok(Self(Tensor3::from_shape_vec(
             [size.height, size.width, C],
             data,
-            CpuAllocator,
+            A::default(),
         )?))
     }
 
@@ -188,8 +188,8 @@ impl<T, const C: usize> Image<T, C> {
     where
         T: Clone,
     {
-        let tensor: Tensor3<T, CpuAllocator> =
-            Tensor::from_shape_slice([size.height, size.width, C], data, CpuAllocator)?;
+        let tensor: Tensor3<T, A> =
+            Tensor::from_shape_slice([size.height, size.width, C], data, A::default())?;
         Image::try_from(tensor)
     }
 
@@ -208,11 +208,12 @@ impl<T, const C: usize> Image<T, C> {
         size: ImageSize,
         data: *const T,
         len: usize,
+        alloc: A,
     ) -> Result<Self, ImageError>
     where
         T: Clone,
     {
-        let tensor = Tensor::from_raw_parts([size.height, size.width, C], data, len, CpuAllocator)?;
+        let tensor = Tensor::from_raw_parts([size.height, size.width, C], data, len, alloc)?;
         Image::try_from(tensor)
     }
 
@@ -221,7 +222,7 @@ impl<T, const C: usize> Image<T, C> {
     /// # Returns
     ///
     /// A new image with the pixel data cast to the given type.
-    pub fn cast<U>(&self) -> Result<Image<U, C>, ImageError>
+    pub fn cast<U>(&self) -> Result<Image<U, C, A>, ImageError>
     where
         U: num_traits::NumCast + Clone + Copy, // TODO: remove this bound
         T: num_traits::NumCast + Clone + Copy, // TODO: remove this bound
@@ -251,7 +252,7 @@ impl<T, const C: usize> Image<T, C> {
     /// # Errors
     ///
     /// If the channel index is out of bounds, an error is returned.
-    pub fn channel(&self, channel: usize) -> Result<Image<T, 1>, ImageError>
+    pub fn channel(&self, channel: usize) -> Result<Image<T, 1, A>, ImageError>
     where
         T: Clone,
     {
@@ -291,7 +292,7 @@ impl<T, const C: usize> Image<T, C> {
     /// let channels = image.split_channels().unwrap();
     /// assert_eq!(channels.len(), 2);
     /// ```
-    pub fn split_channels(&self) -> Result<Vec<Image<T, 1>>, ImageError>
+    pub fn split_channels(&self) -> Result<Vec<Image<T, 1, A>>, ImageError>
     where
         T: Clone + Copy, // TODO: remove this bound
     {
@@ -370,7 +371,7 @@ impl<T, const C: usize> Image<T, C> {
     ///
     /// assert_eq!(image_f32.get([1, 0, 2]), Some(&1.0f32));
     /// ```
-    pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, C>, ImageError>
+    pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, C, A>, ImageError>
     where
         U: num_traits::NumCast + std::ops::Mul<Output = U> + Clone + Copy,
         T: num_traits::NumCast + Clone + Copy,
@@ -396,7 +397,7 @@ impl<T, const C: usize> Image<T, C> {
     /// # Returns
     ///
     /// A new image with the pixel data cast to the new type and scaled.
-    pub fn scale_and_cast<U>(&self, scale: T) -> Result<Image<U, C>, ImageError>
+    pub fn scale_and_cast<U>(&self, scale: T) -> Result<Image<U, C, A>, ImageError>
     where
         U: num_traits::NumCast + Clone + Copy,
         T: num_traits::NumCast + std::ops::Mul<Output = T> + Clone + Copy,
@@ -454,13 +455,13 @@ impl<T, const C: usize> Image<T, C> {
 }
 
 /// helper to convert an single channel tensor to a kornia image with try into
-impl<T> TryFrom<Tensor2<T, CpuAllocator>> for Image<T, 1>
+impl<T, A: TensorAllocator> TryFrom<Tensor2<T, A>> for Image<T, 1, A>
 where
     T: Clone,
 {
     type Error = ImageError;
 
-    fn try_from(value: Tensor2<T, CpuAllocator>) -> Result<Self, Self::Error> {
+    fn try_from(value: Tensor2<T, A>) -> Result<Self, Self::Error> {
         Self::from_size_slice(
             ImageSize {
                 width: value.shape[1],
@@ -472,10 +473,10 @@ where
 }
 
 /// helper to convert an multi channel tensor to a kornia image with try into
-impl<T, const C: usize> TryFrom<Tensor3<T, CpuAllocator>> for Image<T, C> {
+impl<T, const C: usize, A: TensorAllocator> TryFrom<Tensor3<T, A>> for Image<T, C, A> {
     type Error = ImageError;
 
-    fn try_from(value: Tensor3<T, CpuAllocator>) -> Result<Self, Self::Error> {
+    fn try_from(value: Tensor3<T, A>) -> Result<Self, Self::Error> {
         if value.shape[2] != C {
             return Err(ImageError::InvalidChannelShape(value.shape[2], C));
         }
@@ -483,10 +484,10 @@ impl<T, const C: usize> TryFrom<Tensor3<T, CpuAllocator>> for Image<T, C> {
     }
 }
 
-impl<T, const C: usize> TryInto<Tensor3<T, CpuAllocator>> for Image<T, C> {
+impl<T, const C: usize, A: TensorAllocator> TryInto<Tensor3<T, A>> for Image<T, C, A> {
     type Error = ImageError;
 
-    fn try_into(self) -> Result<Tensor3<T, CpuAllocator>, Self::Error> {
+    fn try_into(self) -> Result<Tensor3<T, A>, Self::Error> {
         Ok(self.0)
     }
 }
@@ -508,7 +509,7 @@ mod tests {
 
     #[test]
     fn image_smoke() -> Result<(), ImageError> {
-        let image = Image::<u8, 3>::new(
+        let image = Image::<u8, 3, CpuAllocator>::new(
             ImageSize {
                 width: 10,
                 height: 20,
@@ -524,7 +525,7 @@ mod tests {
 
     #[test]
     fn image_from_vec() -> Result<(), ImageError> {
-        let image: Image<f32, 3> = Image::new(
+        let image: Image<f32, 3, CpuAllocator> = Image::new(
             ImageSize {
                 height: 3,
                 width: 2,
@@ -541,7 +542,7 @@ mod tests {
     #[test]
     fn image_cast() -> Result<(), ImageError> {
         let data = vec![0, 1, 2, 3, 4, 5];
-        let image_u8 = Image::<_, 3>::new(
+        let image_u8 = Image::<_, 3, CpuAllocator>::new(
             ImageSize {
                 height: 2,
                 width: 1,
@@ -550,7 +551,7 @@ mod tests {
         )?;
         assert_eq!(image_u8.get([1, 0, 2]), Some(&5u8));
 
-        let image_i32: Image<i32, 3> = image_u8.cast()?;
+        let image_i32: Image<i32, 3, CpuAllocator> = image_u8.cast()?;
         assert_eq!(image_i32.get([1, 0, 2]), Some(&5i32));
 
         Ok(())
@@ -558,7 +559,7 @@ mod tests {
 
     #[test]
     fn image_rgbd() -> Result<(), ImageError> {
-        let image = Image::<f32, 4>::new(
+        let image = Image::<f32, 4, CpuAllocator>::new(
             ImageSize {
                 height: 2,
                 width: 3,
@@ -574,7 +575,7 @@ mod tests {
 
     #[test]
     fn image_channel() -> Result<(), ImageError> {
-        let image = Image::<f32, 3>::new(
+        let image = Image::<f32, 3, CpuAllocator>::new(
             ImageSize {
                 height: 2,
                 width: 1,
@@ -590,7 +591,7 @@ mod tests {
 
     #[test]
     fn image_split_channels() -> Result<(), ImageError> {
-        let image = Image::<f32, 3>::new(
+        let image = Image::<f32, 3, CpuAllocator>::new(
             ImageSize {
                 height: 2,
                 width: 1,
@@ -610,7 +611,7 @@ mod tests {
     #[test]
     fn scale_and_cast() -> Result<(), ImageError> {
         let data = vec![0u8, 0, 255, 0, 0, 255];
-        let image_u8 = Image::<u8, 3>::new(
+        let image_u8 = Image::<u8, 3, CpuAllocator>::new(
             ImageSize {
                 height: 2,
                 width: 1,
@@ -626,7 +627,7 @@ mod tests {
     #[test]
     fn cast_and_scale() -> Result<(), ImageError> {
         let data = vec![0u8, 0, 255, 0, 0, 255];
-        let image_u8 = Image::<u8, 3>::new(
+        let image_u8 = Image::<u8, 3, CpuAllocator>::new(
             ImageSize {
                 height: 2,
                 width: 1,
@@ -644,12 +645,12 @@ mod tests {
         let data = vec![0u8, 1, 2, 3, 4, 5];
         let tensor = Tensor::<u8, 2, _>::from_shape_vec([2, 3], data, CpuAllocator)?;
 
-        let image = Image::<u8, 1>::try_from(tensor.clone())?;
+        let image = Image::<u8, 1, CpuAllocator>::try_from(tensor.clone())?;
         assert_eq!(image.size().width, 3);
         assert_eq!(image.size().height, 2);
         assert_eq!(image.num_channels(), 1);
 
-        let image_2: Image<u8, 1> = tensor.try_into()?;
+        let image_2: Image<u8, 1, CpuAllocator> = tensor.try_into()?;
         assert_eq!(image_2.size().width, 3);
         assert_eq!(image_2.size().height, 2);
         assert_eq!(image_2.num_channels(), 1);
@@ -665,12 +666,12 @@ mod tests {
             CpuAllocator,
         )?;
 
-        let image = Image::<u8, 4>::try_from(tensor.clone())?;
+        let image = Image::<u8, 4, CpuAllocator>::try_from(tensor.clone())?;
         assert_eq!(image.size().width, 3);
         assert_eq!(image.size().height, 2);
         assert_eq!(image.num_channels(), 4);
 
-        let image_2: Image<u8, 4> = tensor.try_into()?;
+        let image_2: Image<u8, 4, CpuAllocator> = tensor.try_into()?;
         assert_eq!(image_2.size().width, 3);
         assert_eq!(image_2.size().height, 2);
         assert_eq!(image_2.num_channels(), 4);

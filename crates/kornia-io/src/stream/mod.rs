@@ -17,7 +17,7 @@ pub mod v4l2;
 pub mod video;
 
 pub use crate::stream::camera::{CameraCapture, CameraCaptureConfig};
-pub use crate::stream::capture::StreamCapture;
+pub use crate::stream::capture::{GStreamerAllocator, StreamCapture};
 pub use crate::stream::error::StreamCaptureError;
 pub use crate::stream::rtsp::RTSPCameraConfig;
 pub use crate::stream::v4l2::V4L2CameraConfig;

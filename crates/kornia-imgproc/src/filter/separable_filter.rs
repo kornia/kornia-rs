@@ -1,4 +1,4 @@
-use kornia_image::{Image, ImageError};
+use kornia_image::{Image, ImageError, TensorAllocator};
 
 /// Apply a separable filter to an image.
 ///
@@ -8,9 +8,9 @@ use kornia_image::{Image, ImageError};
 /// * `dst` - The destination image with shape (H, W, C).
 /// * `kernel_x` - The horizontal kernel.
 /// * `kernel_y` - The vertical kernel.
-pub fn separable_filter<const C: usize>(
-    src: &Image<f32, C>,
-    dst: &mut Image<f32, C>,
+pub fn separable_filter<const C: usize, A: TensorAllocator>(
+    src: &Image<f32, C, A>,
+    dst: &mut Image<f32, C, A>,
     kernel_x: &[f32],
     kernel_y: &[f32],
 ) -> Result<(), ImageError> {
@@ -97,7 +97,7 @@ pub fn separable_filter<const C: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kornia_image::ImageSize;
+    use kornia_image::{CpuAllocator, Image, ImageSize};
 
     #[test]
     fn test_separable_filter() -> Result<(), ImageError> {
@@ -118,7 +118,7 @@ mod tests {
             ],
         )?;
 
-        let mut dst = Image::<_, 1>::from_size_val(img.size(), 0f32)?;
+        let mut dst = Image::<_, 1, CpuAllocator>::from_size_val(img.size(), 0f32)?;
         let kernel_x = vec![1.0, 1.0, 1.0];
         let kernel_y = vec![1.0, 1.0, 1.0];
         separable_filter(&img, &mut dst, &kernel_x, &kernel_y)?;

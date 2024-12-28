@@ -2,8 +2,8 @@ use crate::parallel;
 
 use super::interpolate::interpolate_pixel;
 use super::InterpolationMode;
-use kornia_image::{Image, ImageError};
-use kornia_tensor::{CpuAllocator, Tensor2};
+use kornia_image::{Image, ImageError, TensorAllocator};
+use kornia_tensor::Tensor2;
 
 /// Apply generic geometric transformation to an image.
 ///
@@ -19,11 +19,11 @@ use kornia_tensor::{CpuAllocator, Tensor2};
 ///
 /// * The mapx and mapy must have the same size.
 /// * The output image must have the same size as the mapx and mapy.
-pub fn remap<const C: usize>(
-    src: &Image<f32, C>,
-    dst: &mut Image<f32, C>,
-    map_x: &Tensor2<f32, CpuAllocator>,
-    map_y: &Tensor2<f32, CpuAllocator>,
+pub fn remap<const C: usize, A: TensorAllocator>(
+    src: &Image<f32, C, A>,
+    dst: &mut Image<f32, C, A>,
+    map_x: &Tensor2<f32, A>,
+    map_y: &Tensor2<f32, A>,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
     if map_x.shape != map_y.shape {
@@ -62,7 +62,7 @@ mod tests {
 
     #[test]
     fn remap_smoke() -> Result<(), ImageError> {
-        let image = Image::<_, 1>::new(
+        let image = Image::<_, 1, CpuAllocator>::new(
             ImageSize {
                 width: 3,
                 height: 3,
@@ -75,7 +75,7 @@ mod tests {
         let map_x = Tensor2::from_shape_vec(new_size, vec![0.0, 2.0, 0.0, 2.0], CpuAllocator)?;
         let map_y = Tensor2::from_shape_vec(new_size, vec![0.0, 0.0, 2.0, 2.0], CpuAllocator)?;
 
-        let expected = Image::<_, 1>::new(
+        let expected = Image::<_, 1, CpuAllocator>::new(
             ImageSize {
                 width: 2,
                 height: 2,
@@ -83,7 +83,8 @@ mod tests {
             vec![0.0, 2.0, 6.0, 8.0],
         )?;
 
-        let mut image_transformed = Image::<_, 1>::from_size_val(new_size.into(), 0.0)?;
+        let mut image_transformed =
+            Image::<_, 1, CpuAllocator>::from_size_val(new_size.into(), 0.0)?;
 
         super::remap(
             &image,

@@ -25,7 +25,7 @@ pub enum TensorAllocatorError {
 ///
 /// * `alloc` - Allocates memory for a tensor with the given layout.
 /// * `dealloc` - Deallocates memory for a tensor with the given layout.
-pub trait TensorAllocator: Clone {
+pub trait TensorAllocator: Default + Clone {
     /// Allocates memory for a tensor with the given layout.
     fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError>;
 

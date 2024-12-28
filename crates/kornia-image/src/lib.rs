@@ -12,3 +12,6 @@ pub mod ops;
 
 pub use crate::error::ImageError;
 pub use crate::image::{Image, ImageSize};
+
+// re-export the allocator
+pub use kornia_tensor::{CpuAllocator, TensorAllocator};

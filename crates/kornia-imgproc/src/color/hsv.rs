@@ -1,5 +1,5 @@
 use crate::parallel;
-use kornia_image::{Image, ImageError};
+use kornia_image::{Image, ImageError, TensorAllocator};
 
 /// Convert an RGB image to an HSV image.
 ///
@@ -45,7 +45,10 @@ use kornia_image::{Image, ImageError};
 /// assert_eq!(hsv.size().width, 4);
 /// assert_eq!(hsv.size().height, 5);
 /// ```
-pub fn hsv_from_rgb(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), ImageError> {
+pub fn hsv_from_rgb<A: TensorAllocator>(
+    src: &Image<f32, 3, A>,
+    dst: &mut Image<f32, 3, A>,
+) -> Result<(), ImageError> {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
             src.cols(),
@@ -102,12 +105,12 @@ pub fn hsv_from_rgb(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_image::{CpuAllocator, Image, ImageError, ImageSize};
     use num_traits::Pow;
 
     #[test]
     fn hsv_from_rgb() -> Result<(), ImageError> {
-        let image = Image::<f32, 3>::new(
+        let image = Image::<f32, 3, CpuAllocator>::new(
             ImageSize {
                 width: 2,
                 height: 3,
@@ -123,7 +126,7 @@ mod tests {
             255.0, 255.0, 148.66667, 255.0, 255.0, 21.333334, 255.0, 255.0,
         ];
 
-        let mut hsv = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+        let mut hsv = Image::<f32, 3, CpuAllocator>::from_size_val(image.size(), 0.0)?;
 
         super::hsv_from_rgb(&image, &mut hsv)?;
 

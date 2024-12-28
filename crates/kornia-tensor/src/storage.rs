@@ -12,8 +12,6 @@ pub struct TensorStorage<T, A: TensorAllocator> {
     pub(crate) layout: Layout,
     /// The allocator used to allocate/deallocate the tensor memory.
     pub(crate) alloc: A,
-    /// Whether the tensor memory is managed by the external allocator.
-    managed_by_external: bool,
 }
 
 impl<T, A: TensorAllocator> TensorStorage<T, A> {
@@ -84,7 +82,6 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
             len,
             layout,
             alloc,
-            managed_by_external: false,
         }
     }
 
@@ -97,7 +94,6 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
             len,
             layout,
             alloc,
-            managed_by_external: true,
         }
     }
 
@@ -131,10 +127,8 @@ unsafe impl<T, A: TensorAllocator> Sync for TensorStorage<T, A> {}
 
 impl<T, A: TensorAllocator> Drop for TensorStorage<T, A> {
     fn drop(&mut self) {
-        if !self.managed_by_external {
-            self.alloc
-                .dealloc(self.ptr.as_ptr() as *mut u8, self.layout);
-        }
+        self.alloc
+            .dealloc(self.ptr.as_ptr() as *mut u8, self.layout);
     }
 }
 /// A new `TensorStorage` instance with cloned data if successful, otherwise an error.
@@ -179,7 +173,6 @@ mod tests {
             len: size * std::mem::size_of::<u8>(),
             layout,
             ptr,
-            managed_by_external: false,
         };
 
         assert_eq!(buffer.ptr.as_ptr(), ptr_raw);
@@ -221,7 +214,6 @@ mod tests {
             len: size,
             layout,
             ptr: ptr.cast::<f32>(),
-            managed_by_external: false,
         };
 
         assert_eq!(buffer.as_ptr(), ptr.as_ptr() as *const f32);
@@ -234,7 +226,7 @@ mod tests {
     #[test]
     fn test_tensor_buffer_lifecycle() -> Result<(), TensorAllocatorError> {
         /// A simple allocator that counts the number of bytes allocated and deallocated.
-        #[derive(Clone)]
+        #[derive(Clone, Default)]
         struct TestAllocator {
             bytes_allocated: Rc<RefCell<i32>>,
         }

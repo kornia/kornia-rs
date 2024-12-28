@@ -1,3 +1,5 @@
+use kornia_tensor::TensorAllocator;
+
 use crate::{Image, ImageError};
 
 /// Cast the pixel data of an image to a different type.
@@ -29,9 +31,9 @@ use crate::{Image, ImageError};
 /// assert_eq!(image_f32.get_pixel(0, 0, 0).unwrap(), 0.0f32);
 /// assert_eq!(image_f32.get_pixel(1, 0, 0).unwrap(), 1.0f32);
 /// ```
-pub fn cast_and_scale<T, U, const C: usize>(
-    src: &Image<T, C>,
-    dst: &mut Image<U, C>,
+pub fn cast_and_scale<T, U, const C: usize, A: TensorAllocator>(
+    src: &Image<T, C, A>,
+    dst: &mut Image<U, C, A>,
     scale: U,
 ) -> Result<(), ImageError>
 where
@@ -63,10 +65,10 @@ where
 mod tests {
     use super::*;
     use crate::image::ImageSize;
-
+    use kornia_tensor::CpuAllocator;
     #[test]
     fn test_cast_and_scale() -> Result<(), ImageError> {
-        let image = Image::<u8, 3>::new(
+        let image = Image::<u8, 3, CpuAllocator>::new(
             ImageSize {
                 height: 2,
                 width: 1,
@@ -74,7 +76,7 @@ mod tests {
             vec![0u8, 0, 255, 0, 0, 255],
         )?;
 
-        let mut image_f64: Image<f64, 3> = Image::from_size_val(image.size(), 0.0)?;
+        let mut image_f64: Image<f64, 3, CpuAllocator> = Image::from_size_val(image.size(), 0.0)?;
 
         super::cast_and_scale(&image, &mut image_f64, 1. / 255.0)?;
 

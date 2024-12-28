@@ -1,4 +1,4 @@
-use kornia_image::{Image, ImageError};
+use kornia_image::{Image, ImageError, TensorAllocator};
 
 use super::{kernels, separable_filter};
 
@@ -11,9 +11,9 @@ use super::{kernels, separable_filter};
 /// * `kernel_size` - The size of the kernel (kernel_x, kernel_y).
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
-pub fn box_blur<const C: usize>(
-    src: &Image<f32, C>,
-    dst: &mut Image<f32, C>,
+pub fn box_blur<const C: usize, A: TensorAllocator>(
+    src: &Image<f32, C, A>,
+    dst: &mut Image<f32, C, A>,
     kernel_size: (usize, usize),
 ) -> Result<(), ImageError> {
     let kernel_x = kernels::box_blur_kernel_1d(kernel_size.0);
@@ -32,9 +32,9 @@ pub fn box_blur<const C: usize>(
 /// * `sigma` - The sigma of the gaussian kernel.
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
-pub fn gaussian_blur<const C: usize>(
-    src: &Image<f32, C>,
-    dst: &mut Image<f32, C>,
+pub fn gaussian_blur<const C: usize, A: TensorAllocator>(
+    src: &Image<f32, C, A>,
+    dst: &mut Image<f32, C, A>,
     kernel_size: (usize, usize),
     sigma: (f32, f32),
 ) -> Result<(), ImageError> {
@@ -53,19 +53,19 @@ pub fn gaussian_blur<const C: usize>(
 /// * `kernel_size` - The size of the kernel (kernel_x, kernel_y).
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
-pub fn sobel<const C: usize>(
-    src: &Image<f32, C>,
-    dst: &mut Image<f32, C>,
+pub fn sobel<const C: usize, A: TensorAllocator>(
+    src: &Image<f32, C, A>,
+    dst: &mut Image<f32, C, A>,
     kernel_size: usize,
 ) -> Result<(), ImageError> {
     // get the sobel kernels
     let (kernel_x, kernel_y) = kernels::sobel_kernel_1d(kernel_size);
 
     // apply the sobel filter using separable filter
-    let mut gx = Image::<f32, C>::from_size_val(src.size(), 0.0)?;
+    let mut gx = Image::<f32, C, A>::from_size_val(src.size(), 0.0)?;
     separable_filter(src, &mut gx, &kernel_x, &kernel_y)?;
 
-    let mut gy = Image::<f32, C>::from_size_val(src.size(), 0.0)?;
+    let mut gy = Image::<f32, C, A>::from_size_val(src.size(), 0.0)?;
     separable_filter(src, &mut gy, &kernel_y, &kernel_x)?;
 
     // compute the magnitude in parallel by rows

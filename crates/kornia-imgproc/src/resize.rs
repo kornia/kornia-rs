@@ -3,7 +3,7 @@ use crate::{
     parallel,
 };
 use fast_image_resize::{self as fr};
-use kornia_image::{Image, ImageError};
+use kornia_image::{Image, ImageError, TensorAllocator};
 
 /// Resize an image to a new size.
 ///
@@ -54,9 +54,9 @@ use kornia_image::{Image, ImageError};
 /// assert_eq!(image_resized.size().width, 2);
 /// assert_eq!(image_resized.size().height, 3);
 /// ```
-pub fn resize_native<const C: usize>(
-    src: &Image<f32, C>,
-    dst: &mut Image<f32, C>,
+pub fn resize_native<const C: usize, A: TensorAllocator>(
+    src: &Image<f32, C, A>,
+    dst: &mut Image<f32, C, A>,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError>
 where
@@ -141,9 +141,9 @@ where
 /// # Errors
 ///
 /// The function returns an error if the image cannot be resized.
-pub fn resize_fast(
-    src: &Image<u8, 3>,
-    dst: &mut Image<u8, 3>,
+pub fn resize_fast<A: TensorAllocator>(
+    src: &Image<u8, 3, A>,
+    dst: &mut Image<u8, 3, A>,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
     if dst.size() != dst.size() {
@@ -195,12 +195,12 @@ pub fn resize_fast(
 
 #[cfg(test)]
 mod tests {
-    use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_image::{CpuAllocator, Image, ImageError, ImageSize};
     use kornia_tensor::TensorError;
 
     #[test]
     fn resize_smoke_ch3() -> Result<(), ImageError> {
-        let image = Image::<_, 3>::new(
+        let image = Image::<_, 3, CpuAllocator>::new(
             ImageSize {
                 width: 3,
                 height: 4,
@@ -213,7 +213,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0.0)?;
+        let mut image_resized = Image::<_, 3, CpuAllocator>::from_size_val(new_size, 0.0)?;
 
         super::resize_native(
             &image,
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn resize_smoke_ch1() -> Result<(), ImageError> {
         use kornia_image::{Image, ImageSize};
-        let image = Image::<_, 1>::new(
+        let image = Image::<_, 1, CpuAllocator>::new(
             ImageSize {
                 width: 2,
                 height: 3,
@@ -252,7 +252,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_resized = Image::<_, 1>::from_size_val(new_size, 0.0f32)?;
+        let mut image_resized = Image::<_, 1, CpuAllocator>::from_size_val(new_size, 0.0f32)?;
 
         super::resize_native(
             &image,
@@ -272,7 +272,9 @@ mod tests {
     #[test]
     fn meshgrid() -> Result<(), TensorError> {
         let (map_x, map_y) =
-            crate::interpolation::grid::meshgrid_from_fn(2, 3, |x, y| Ok((x as f32, y as f32)))?;
+            crate::interpolation::grid::meshgrid_from_fn::<_, CpuAllocator>(2, 3, |x, y| {
+                Ok((x as f32, y as f32))
+            })?;
 
         assert_eq!(map_x.shape, [3, 2]);
         assert_eq!(map_y.shape, [3, 2]);
@@ -286,8 +288,8 @@ mod tests {
 
     #[test]
     fn resize_fast() -> Result<(), ImageError> {
-        use kornia_image::{Image, ImageSize};
-        let image = Image::<_, 3>::new(
+        use kornia_image::{CpuAllocator, Image, ImageSize};
+        let image = Image::<_, 3, CpuAllocator>::new(
             ImageSize {
                 width: 4,
                 height: 5,
@@ -300,7 +302,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0)?;
+        let mut image_resized = Image::<_, 3, CpuAllocator>::from_size_val(new_size, 0)?;
 
         super::resize_fast(
             &image,

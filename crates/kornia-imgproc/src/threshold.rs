@@ -1,7 +1,7 @@
 use num_traits::Zero;
 use std::cmp::PartialOrd;
 
-use kornia_image::{Image, ImageError};
+use kornia_image::{Image, ImageError, TensorAllocator};
 
 use crate::parallel;
 
@@ -34,9 +34,9 @@ use crate::parallel;
 /// assert_eq!(thresholded.size().width, 2);
 /// assert_eq!(thresholded.size().height, 3);
 /// ```
-pub fn threshold_binary<T, const C: usize>(
-    src: &Image<T, C>,
-    dst: &mut Image<T, C>,
+pub fn threshold_binary<T, const C: usize, A: TensorAllocator>(
+    src: &Image<T, C, A>,
+    dst: &mut Image<T, C, A>,
     threshold: T,
     max_value: T,
 ) -> Result<(), ImageError>
@@ -93,9 +93,9 @@ where
 /// assert_eq!(thresholded.size().width, 2);
 /// assert_eq!(thresholded.size().height, 3);
 /// ```
-pub fn threshold_binary_inverse<T, const C: usize>(
-    src: &Image<T, C>,
-    dst: &mut Image<T, C>,
+pub fn threshold_binary_inverse<T, const C: usize, A: TensorAllocator>(
+    src: &Image<T, C, A>,
+    dst: &mut Image<T, C, A>,
     threshold: T,
     max_value: T,
 ) -> Result<(), ImageError>
@@ -150,9 +150,9 @@ where
 /// assert_eq!(thresholded.size().width, 2);
 /// assert_eq!(thresholded.size().height, 3);
 /// ```
-pub fn threshold_truncate<T, const C: usize>(
-    src: &Image<T, C>,
-    dst: &mut Image<T, C>,
+pub fn threshold_truncate<T, const C: usize, A: TensorAllocator>(
+    src: &Image<T, C, A>,
+    dst: &mut Image<T, C, A>,
     threshold: T,
 ) -> Result<(), ImageError>
 where
@@ -206,9 +206,9 @@ where
 /// assert_eq!(thresholded.size().width, 2);
 /// assert_eq!(thresholded.size().height, 1);
 /// ```
-pub fn threshold_to_zero<T, const C: usize>(
-    src: &Image<T, C>,
-    dst: &mut Image<T, C>,
+pub fn threshold_to_zero<T, const C: usize, A: TensorAllocator>(
+    src: &Image<T, C, A>,
+    dst: &mut Image<T, C, A>,
     threshold: T,
 ) -> Result<(), ImageError>
 where
@@ -262,9 +262,9 @@ where
 /// assert_eq!(thresholded.size().width, 2);
 /// assert_eq!(thresholded.size().height, 1);
 /// ```
-pub fn threshold_to_zero_inverse<T, const C: usize>(
-    src: &Image<T, C>,
-    dst: &mut Image<T, C>,
+pub fn threshold_to_zero_inverse<T, const C: usize, A: TensorAllocator>(
+    src: &Image<T, C, A>,
+    dst: &mut Image<T, C, A>,
     threshold: T,
 ) -> Result<(), ImageError>
 where
@@ -332,9 +332,9 @@ where
 /// assert_eq!(thresholded.get_pixel(0, 0, 0).unwrap(), 255);
 /// assert_eq!(thresholded.get_pixel(1, 0, 0).unwrap(), 0);
 /// ```
-pub fn in_range<T, const C: usize>(
-    src: &Image<T, C>,
-    dst: &mut Image<u8, 1>,
+pub fn in_range<T, const C: usize, A: TensorAllocator>(
+    src: &Image<T, C, A>,
+    dst: &mut Image<u8, 1, A>,
     lower_bound: &[T; C],
     upper_bound: &[T; C],
 ) -> Result<(), ImageError>
@@ -369,13 +369,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_image::{CpuAllocator, Image, ImageError, ImageSize};
 
     #[test]
     fn threshold_binary() -> Result<(), ImageError> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
         let data_expected = [0u8, 255, 0, 255, 255, 255];
-        let image = Image::<_, 1>::new(
+        let image = Image::<_, 1, CpuAllocator>::new(
             ImageSize {
                 width: 2,
                 height: 3,
@@ -383,7 +383,7 @@ mod tests {
             data,
         )?;
 
-        let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0)?;
+        let mut thresholded = Image::<_, 1, CpuAllocator>::from_size_val(image.size(), 0)?;
 
         super::threshold_binary(&image, &mut thresholded, 100, 255)?;
 
@@ -400,7 +400,7 @@ mod tests {
     fn threshold_binary_inverse() -> Result<(), ImageError> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
         let data_expected = [255u8, 0, 255, 0, 0, 0];
-        let image = Image::<_, 1>::new(
+        let image = Image::<_, 1, CpuAllocator>::new(
             ImageSize {
                 width: 2,
                 height: 3,
@@ -408,7 +408,7 @@ mod tests {
             data,
         )?;
 
-        let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0)?;
+        let mut thresholded = Image::<_, 1, CpuAllocator>::from_size_val(image.size(), 0)?;
 
         super::threshold_binary_inverse(&image, &mut thresholded, 100, 255)?;
 
@@ -425,7 +425,7 @@ mod tests {
     fn threshold_truncate() -> Result<(), ImageError> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
         let data_expected = [100u8, 150, 50, 150, 150, 150];
-        let image = Image::<_, 1>::new(
+        let image = Image::<_, 1, CpuAllocator>::new(
             ImageSize {
                 width: 2,
                 height: 3,
@@ -433,7 +433,7 @@ mod tests {
             data,
         )?;
 
-        let mut thresholded = Image::<_, 1>::from_size_val(image.size(), 0)?;
+        let mut thresholded = Image::<_, 1, CpuAllocator>::from_size_val(image.size(), 0)?;
 
         super::threshold_truncate(&image, &mut thresholded, 150)?;
 
@@ -450,7 +450,7 @@ mod tests {
     fn threshold_to_zero() -> Result<(), ImageError> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
         let data_expected = [0u8, 200, 0, 0, 200, 250];
-        let image = Image::<_, 3>::new(
+        let image = Image::<_, 3, CpuAllocator>::new(
             ImageSize {
                 width: 2,
                 height: 1,
@@ -458,7 +458,7 @@ mod tests {
             data,
         )?;
 
-        let mut thresholded = Image::<_, 3>::from_size_val(image.size(), 0)?;
+        let mut thresholded = Image::<_, 3, CpuAllocator>::from_size_val(image.size(), 0)?;
 
         super::threshold_to_zero(&image, &mut thresholded, 150)?;
 
@@ -475,7 +475,7 @@ mod tests {
     fn threshold_to_zero_inverse() -> Result<(), ImageError> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
         let data_expected = [100u8, 0, 50, 150, 0, 0];
-        let image = Image::<_, 3>::new(
+        let image = Image::<_, 3, CpuAllocator>::new(
             ImageSize {
                 width: 2,
                 height: 1,
@@ -483,7 +483,7 @@ mod tests {
             data,
         )?;
 
-        let mut thresholded = Image::<_, 3>::from_size_val(image.size(), 0)?;
+        let mut thresholded = Image::<_, 3, CpuAllocator>::from_size_val(image.size(), 0)?;
 
         super::threshold_to_zero_inverse(&image, &mut thresholded, 150)?;
 
@@ -499,7 +499,7 @@ mod tests {
     #[test]
     fn test_in_range() -> Result<(), ImageError> {
         let data = vec![100u8, 200, 50, 150, 200, 250];
-        let image = Image::<_, 3>::new(
+        let image = Image::<_, 3, CpuAllocator>::new(
             ImageSize {
                 width: 2,
                 height: 1,
@@ -507,7 +507,7 @@ mod tests {
             data,
         )?;
 
-        let mut thresholded = Image::<u8, 1>::from_size_val(image.size(), 0)?;
+        let mut thresholded = Image::<u8, 1, CpuAllocator>::from_size_val(image.size(), 0)?;
 
         super::in_range(&image, &mut thresholded, &[100, 150, 0], &[200, 200, 200])?;
 
