@@ -71,10 +71,10 @@ pub async fn compute_mean_std(query: Json<MeanStdQuery>) -> impl IntoResponse {
         .for_each(|image_path| {
             // read the image
             let image =
-                kornia_io::functional::read_image_jpeg(&image_path).expect("Failed to read image");
+                kornia::io::functional::read_image_jpeg(&image_path).expect("Failed to read image");
 
             // compute the std and mean
-            let (std, mean) = kornia_imgproc::core::std_mean(&image);
+            let (std, mean) = kornia::imgproc::core::std_mean(&image);
 
             // update the total std and mean
 
