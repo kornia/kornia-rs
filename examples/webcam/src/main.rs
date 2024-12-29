@@ -86,6 +86,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         };
 
+        //println!("[main] {:?} successfully grabbed frame", img.as_ptr());
+
         // lets resize the image to 256x256
         imgproc::resize::resize_fast(
             &img,
@@ -114,6 +116,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "binary",
             &rerun::Image::from_elements(bin.as_slice(), bin.size().into(), rerun::ColorModel::L),
         )?;
+
+        //println!("[main] {:?} successfully logged frame", img.as_ptr());
     }
 
     // NOTE: this is important to close the webcam properly, otherwise the app will hang
