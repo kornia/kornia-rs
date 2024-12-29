@@ -1,0 +1,27 @@
+[package]
+name = "nodo_pipeline"
+authors.workspace = true
+categories.workspace = true
+description.workspace = true
+edition.workspace = true
+homepage.workspace = true
+include.workspace = true
+license.workspace = true
+license-file.workspace = true
+readme.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+argh = { workspace = true }
+env_logger = { workspace = true }
+eyre = "0.6.12"
+kornia = { workspace = true, features = ["gstreamer", "jpegturbo"] }
+
+nodo = { git = "https://github.com/Danvil/nodo", tag = "0.8" }
+nodo_core = { git = "https://github.com/Danvil/nodo", tag = "0.8" }
+nodo_derive = { git = "https://github.com/Danvil/nodo", tag = "0.8" }
+nodo_nng = { git = "https://github.com/Danvil/nodo", tag = "0.8" }
+nodo_runtime = { git = "https://github.com/Danvil/nodo", tag = "0.8" }
+nodo_std = { git = "https://github.com/Danvil/nodo", tag = "0.8" }
