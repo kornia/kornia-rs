@@ -1,0 +1,21 @@
+{
+    "name": "Rust",
+    "image": "mcr.microsoft.com/devcontainers/rust:1-1",
+
+    // Set customizations for the container.
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "rust-lang.rust-analyzer",
+                "streetsidesoftware.code-spell-checker",
+                "charliermarsh.ruff",
+                "Gruntfuggly.todo-tree",
+                "nefrob.vscode-just-syntax"
+            ]
+        }
+    },
+    // Use 'postCreateCommand' to run commands after the container is created.
+    "postCreateCommand": "bash ./.devcontainer/postCreateCommand.sh",
+    // Define the user to use.
+    "remoteUser": "root"
+}
