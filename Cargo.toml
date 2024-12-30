@@ -6,7 +6,7 @@ members = [
     # "kornia-py",
     "kornia-viz",
 ]
-exclude = ["kornia-py", "kornia-serve"]
+exclude = ["kornia-py"]
 
 [workspace.package]
 authors = ["kornia.org <edgar@kornia.org>"]
