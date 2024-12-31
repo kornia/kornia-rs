@@ -261,6 +261,21 @@ Available recipes:
     py-test                           # Test the kornia-py code with pytest
     test name=''                      # Test the code or a specific test
 ```
+### 🐳 Devcontainer
+
+This project includes a development container to provide a consistent development environment.
+
+The devcontainer is configured to include all necessary dependencies and tools required for building and testing the `kornia-rs` project. It ensures that the development environment is consistent across different machines and setups.
+
+**How to use**
+
+1. **Install Remote - Containers extension**: In Visual Studio Code, install the `Remote - Containers` extension from the Extensions view (`Ctrl+Shift+X`).
+
+2. **Open the project in the container**:
+    - Open the `kornia-rs` project folder in Visual Studio Code.
+    - Press `F1` and select `Remote-Containers: Reopen in Container`.
+
+Visual Studio Code will build the container and open the project inside it. You can now develop, build, and test the project within the containerized environment.
 
 ### 🦀 Rust
 
