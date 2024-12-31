@@ -225,14 +225,41 @@ assert resized_img.shape == (128, 128, 3)
 
 Pre-requisites: install `rust` and `python3` in your system.
 
+Install rustup in your system
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-Clone the repository in your local directory
+Install [`uv`](https://docs.astral.sh/uv/) to manage python dependencies
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
 
+Install the [`just`](https://github.com/casey/just) command runner. This tool is used to manage the development tasks.
+```bash
+cargo install just
+```
+
+Clone the repository in your local directory
 ```bash
 git clone https://github.com/kornia/kornia-rs.git
+```
+
+You can check the available commands by running `just` in the root directory of the project.
+
+```bash
+$ just
+Available recipes:
+    check-environment                 # Check if the required binaries for the project are installed
+    clean                             # Clean up caches and build artifacts
+    clippy                            # Run clippy with all features
+    clippy-default                    # Run clippy with default features
+    fmt                               # Run autoformatting and linting
+    py-build py_version='3.9'         # Create virtual environment, and build kornia-py
+    py-build-release py_version='3.9' # Create virtual environment, and build kornia-py for release
+    py-install py_version='3.9'       # Create virtual environment, and install dev requirements
+    py-test                           # Test the kornia-py code with pytest
+    test name=''                      # Test the code or a specific test
 ```
 
 ### 🦀 Rust
@@ -240,13 +267,13 @@ git clone https://github.com/kornia/kornia-rs.git
 Compile the project and run the tests
 
 ```bash
-cargo test
+just test
 ```
 
 For specific tests, you can run the following command:
 
 ```bash
-cargo test image
+just test image
 ```
 
 ### 🐍 Python
@@ -254,13 +281,13 @@ cargo test image
 To build the Python wheels, we use the `maturin` package. Use the following command to build the wheels:
 
 ```bash
-make build-python
+just py-build
 ```
 
 To run the tests, use the following command:
 
 ```bash
-make test-python
+just py-test
 ```
 
 ## 💜 Contributing

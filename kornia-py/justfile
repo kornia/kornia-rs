@@ -6,15 +6,32 @@ check-environment:
   @echo "UV version." && uv --version
   @echo "Rust version." && cargo --version
 
-# Install the virtual environment and install the pre-commit hooks
-install py_version='3.9':
-  @just check-environment
+# Setup the Python virtual environment
+venv py_version='3.9':
   @echo "🚀 Creating virtual environment using uv"
-  uv venv -p {{ py_version }}
-  uv pip install -r requirements-dev.txt -e .
-  uv run pre-commit install
+  [ -d .venv ] || uv venv -p {{ py_version }}
+
+
+# Create virtual environment, and install dev requirements
+install-dev py_version='3.9':
+  @just check-environment
+  @just venv {{ py_version }}
+  @echo "🚀 Installing requirements (for devs)"
+  uv pip install -r requirements-dev.txt pip
+
+# Create virtual environment, install dev requirements, and install kornia-py (--editable)
+install py_version='3.9':
+  @just install-dev {{ py_version }}
+  uv pip install -e .
+
 
 # Test the code with pytest
 test:
   @echo "🚀 Testing code: Running pytest"
   @uv run python -m pytest
+
+# Compile and install kornia-py for development (run maturin develop)
+build py_version='3.9' flags='':
+  @just install-dev {{ py_version }}
+  @echo "🚀 Building kornia-py"
+  uv run maturin develop -m Cargo.toml {{ flags }}
