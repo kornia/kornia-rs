@@ -44,7 +44,7 @@ Goodbyte!
 - 🔢 Efficient Tensor and Image API for deep learning and scientific computing.
 - 🐍 Python bindings are created with [PyO3/Maturin](https://github.com/PyO3/maturin).
 - 📦 We package with support for Linux [amd64/arm64], Macos and WIndows.
-- Supported Python versions are 3.7/3.8/3.9/3.10/3.11
+- Supported Python versions are 3.7/3.8/3.9/3.10/3.11/3.12/3.13
 
 ### Supported image formats
 
