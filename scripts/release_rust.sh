@@ -12,6 +12,7 @@ fi
 cross publish -p kornia-tensor --all-features $DRY_RUN
 cross publish -p kornia-tensor-ops $DRY_RUN
 cross publish -p kornia-image $DRY_RUN
+cross publish -p kornia-3d $DRY_RUsN
 cross publish -p kornia-icp $DRY_RUN
 cross publish -p kornia-io --all-features $DRY_RUN
 cross publish -p kornia-imgproc $DRY_RUN
