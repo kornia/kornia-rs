@@ -20,7 +20,7 @@ license-file = "LICENSE"
 readme = "README.md"
 repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
-version = "0.1.8-rc.1"
+version = "0.1.8"
 
 [workspace.dependencies]
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
