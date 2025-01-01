@@ -85,6 +85,18 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
         }
     }
 
+    /// Creates a new tensor buffer from a raw pointer.
+    pub unsafe fn from_raw_parts(data: *const T, len: usize, alloc: A) -> Self {
+        let ptr = NonNull::new_unchecked(data as _);
+        let layout = Layout::from_size_align_unchecked(len, std::mem::size_of::<T>());
+        Self {
+            ptr,
+            len,
+            layout,
+            alloc,
+        }
+    }
+
     /// Converts the `TensorStorage` into a `Vec<T>`.
     ///
     /// Returns `Err(self)` if the buffer does not have the same layout as the destination Vec.
@@ -108,31 +120,6 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     }
 }
 
-// TODO: pass the allocator to constructor
-impl<T, A: TensorAllocator> From<Vec<T>> for TensorStorage<T, A>
-where
-    A: Default,
-{
-    /// Creates a new tensor buffer from a vector.
-    fn from(value: Vec<T>) -> Self {
-        // Safety
-        // Vec::as_ptr guaranteed to not be null
-        let ptr = unsafe { NonNull::new_unchecked(value.as_ptr() as *mut T) };
-        let len = value.len() * std::mem::size_of::<T>();
-        // Safety
-        // Vec guaranteed to have a valid layout matching that of `Layout::array`
-        // This is based on `RawVec::current_memory`
-        let layout = unsafe { Layout::array::<T>(value.capacity()).unwrap_unchecked() };
-        std::mem::forget(value);
-
-        Self {
-            ptr,
-            len,
-            layout,
-            alloc: A::default(),
-        }
-    }
-}
 // Safety:
 // TensorStorage is thread safe if the allocator is thread safe.
 unsafe impl<T, A: TensorAllocator> Send for TensorStorage<T, A> {}

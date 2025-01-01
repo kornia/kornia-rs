@@ -75,7 +75,13 @@ impl TensorAllocator for CpuAllocator {
     /// The pointer must be non-null and the layout must be correct.
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { alloc::dealloc(ptr, layout) }
+        //println!("[allocator] {:?} attempting to deallocate pointer", ptr);
+
+        // Check for null pointer
+        if !ptr.is_null() {
+            //unsafe { alloc::dealloc(ptr, layout) }
+            //println!("[allocator] {:?} successfully deallocated pointer", ptr);
+        }
     }
 }
 
