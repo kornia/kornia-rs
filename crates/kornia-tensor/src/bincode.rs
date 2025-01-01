@@ -12,8 +12,8 @@ where
         &self,
         encoder: &mut E,
     ) -> Result<(), bincode::error::EncodeError> {
-        bincode::Encode::encode(&self.shape.to_vec(), encoder)?;
-        bincode::Encode::encode(&self.strides.to_vec(), encoder)?;
+        bincode::Encode::encode(&self.shape, encoder)?;
+        bincode::Encode::encode(&self.strides, encoder)?;
         bincode::Encode::encode(&self.storage.as_slice(), encoder)?;
         Ok(())
     }
@@ -26,12 +26,12 @@ where
     fn decode<D: bincode::de::Decoder>(
         decoder: &mut D,
     ) -> Result<Self, bincode::error::DecodeError> {
-        let shape: Vec<usize> = bincode::Decode::decode(decoder)?;
-        let strides: Vec<usize> = bincode::Decode::decode(decoder)?;
-        let data: Vec<T> = bincode::Decode::decode(decoder)?;
+        let shape = bincode::Decode::decode(decoder)?;
+        let strides = bincode::Decode::decode(decoder)?;
+        let data = bincode::Decode::decode(decoder)?;
         Ok(Self {
-            shape: shape.try_into().expect("shape is not valid"),
-            strides: strides.try_into().expect("strides is not valid"),
+            shape,
+            strides,
             storage: TensorStorage::from_vec(data, CpuAllocator),
         })
     }
