@@ -11,6 +11,7 @@ readme.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
+publish = true
 
 [dependencies]
 bincode = "1.3"
