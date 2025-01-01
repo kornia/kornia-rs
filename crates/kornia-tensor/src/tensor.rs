@@ -216,6 +216,10 @@ where
     /// * `data` - A pointer to the data of the tensor.
     /// * `len` - The length of the data.
     /// * `alloc` - The allocator to use.
+    ///
+    /// # Safety
+    ///
+    /// The pointer must be non-null and the length must be valid.
     pub unsafe fn from_raw_parts(
         shape: [usize; N],
         data: *const T,

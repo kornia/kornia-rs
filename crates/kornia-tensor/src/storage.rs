@@ -86,6 +86,10 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     }
 
     /// Creates a new tensor buffer from a raw pointer.
+    ///
+    /// # Safety
+    ///
+    /// The pointer must be non-null and the length must be valid.
     pub unsafe fn from_raw_parts(data: *const T, len: usize, alloc: A) -> Self {
         let ptr = NonNull::new_unchecked(data as _);
         let layout = Layout::from_size_align_unchecked(len, std::mem::size_of::<T>());

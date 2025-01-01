@@ -180,6 +180,10 @@ impl<T, const C: usize> Image<T, C> {
     /// # Returns
     ///
     /// A new image created from the given size and pixel data.
+    ///
+    /// # Safety
+    ///
+    /// The pointer must be non-null and the length must be valid.
     pub unsafe fn from_raw_parts(
         size: ImageSize,
         data: *const T,
@@ -188,8 +192,7 @@ impl<T, const C: usize> Image<T, C> {
     where
         T: Clone,
     {
-        let tensor = Tensor::from_raw_parts([size.height, size.width, C], data, len, CpuAllocator)?;
-        Image::try_from(tensor)
+        Tensor::from_raw_parts([size.height, size.width, C], data, len, CpuAllocator)?.try_into()
     }
 
     /// Create a new image from a slice of pixel data.
@@ -675,6 +678,18 @@ mod tests {
         assert_eq!(image_2.size().height, 2);
         assert_eq!(image_2.num_channels(), 4);
 
+        Ok(())
+    }
+
+    #[test]
+    fn image_from_raw_parts() -> Result<(), ImageError> {
+        let data = vec![0u8, 1, 2, 3, 4, 5];
+        let image =
+            unsafe { Image::<_, 1>::from_raw_parts([2, 3].into(), data.as_ptr(), data.len())? };
+        std::mem::forget(data);
+        assert_eq!(image.size().width, 2);
+        assert_eq!(image.size().height, 3);
+        assert_eq!(image.num_channels(), 1);
         Ok(())
     }
 }
