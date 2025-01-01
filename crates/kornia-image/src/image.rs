@@ -169,6 +169,29 @@ impl<T, const C: usize> Image<T, C> {
         Ok(image)
     }
 
+    /// Create a new image from raw parts.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The size of the image in pixels.
+    /// * `data` - A pointer to the pixel data.
+    /// * `len` - The length of the pixel data.
+    ///
+    /// # Returns
+    ///
+    /// A new image created from the given size and pixel data.
+    pub unsafe fn from_raw_parts(
+        size: ImageSize,
+        data: *const T,
+        len: usize,
+    ) -> Result<Self, ImageError>
+    where
+        T: Clone,
+    {
+        let tensor = Tensor::from_raw_parts([size.height, size.width, C], data, len, CpuAllocator)?;
+        Image::try_from(tensor)
+    }
+
     /// Create a new image from a slice of pixel data.
     ///
     /// # Arguments
