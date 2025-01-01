@@ -34,6 +34,11 @@ clean:
 test name='':
   @cargo test {{ name }}
 
+# Test the code with all features
+test-all:
+  @cargo test --all-features
+
+
 # ------------------------------------------------------------------------------
 # Recipes for the kornia-py project
 # ------------------------------------------------------------------------------

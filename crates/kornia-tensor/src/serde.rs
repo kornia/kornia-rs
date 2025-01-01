@@ -59,3 +59,19 @@ where
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::allocator::CpuAllocator;
+
+    #[test]
+    fn test_serde() -> Result<(), Box<dyn std::error::Error>> {
+        let data = vec![1, 2, 3, 4, 5, 6];
+        let tensor = Tensor::<u8, 2, CpuAllocator>::from_shape_vec([2, 3], data, CpuAllocator)?;
+        let serialized = serde_json::to_string(&tensor)?;
+        let deserialized: Tensor<u8, 2, CpuAllocator> = serde_json::from_str(&serialized)?;
+        assert_eq!(tensor.as_slice(), deserialized.as_slice());
+        Ok(())
+    }
+}
