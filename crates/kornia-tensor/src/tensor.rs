@@ -208,6 +208,37 @@ where
         })
     }
 
+    /// Creates a new `Tensor` with the given shape and raw parts.
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - An array containing the shape of the tensor.
+    /// * `data` - A pointer to the data of the tensor.
+    /// * `len` - The length of the data.
+    /// * `alloc` - The allocator to use.
+    ///
+    /// # Safety
+    ///
+    /// The pointer must be non-null and the length must be valid.
+    pub unsafe fn from_raw_parts(
+        shape: [usize; N],
+        data: *const T,
+        len: usize,
+        alloc: A,
+    ) -> Result<Self, TensorError>
+    where
+        T: Clone,
+    {
+        let storage = TensorStorage::from_raw_parts(data, len, alloc);
+        let strides = get_strides_from_shape(shape);
+        Ok(Self {
+            storage,
+            shape,
+            strides,
+        })
+    }
+
+    /// Creates a new `Tensor` with the given shape and a default value.
     /// Creates a new `Tensor` with the given shape and a default value.
     ///
     /// # Arguments
@@ -1579,6 +1610,16 @@ mod tests {
         assert!(t
             .get_index(12)
             .is_err_and(|x| x == TensorError::IndexOutOfBounds(12)));
+        Ok(())
+    }
+
+    #[test]
+    fn from_raw_parts() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = unsafe { Tensor::from_raw_parts([2, 2], data.as_ptr(), data.len(), CpuAllocator)? };
+        std::mem::forget(data);
+        assert_eq!(t.shape, [2, 2]);
+        assert_eq!(t.as_slice(), &[1, 2, 3, 4]);
         Ok(())
     }
 }
