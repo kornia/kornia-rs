@@ -12,5 +12,13 @@ version.workspace = true
 
 [dependencies]
 num-traits = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, optional = true }
+bincode = { workspace = true, optional = true }
 thiserror = { workspace = true }
+
+[features]
+serde = ["dep:serde"]
+bincode = ["dep:bincode"]
+
+[dev-dependencies]
+serde_json = "1"

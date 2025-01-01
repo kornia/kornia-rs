@@ -4,10 +4,15 @@
 /// allocator module containing the memory management utilities.
 pub mod allocator;
 
+/// bincode module containing the serialization and deserialization utilities.
+#[cfg(feature = "bincode")]
+pub mod bincode;
+
 /// tensor module containing the tensor and storage implementations.
 pub mod tensor;
 
 /// serde module containing the serialization and deserialization utilities.
+#[cfg(feature = "serde")]
 pub mod serde;
 
 /// storage module containing the storage implementations.
