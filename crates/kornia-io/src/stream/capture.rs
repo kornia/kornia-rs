@@ -35,7 +35,7 @@ impl StreamCapture {
     }
 
     /// Starts the stream capture pipeline and processes messages on the bus.
-    pub fn start(&mut self) -> Result<(), StreamCaptureError> {
+    pub fn start(&self) -> Result<(), StreamCaptureError> {
         self.pipeline.set_state(gst::State::Playing)?;
 
         let bus = self
@@ -63,7 +63,7 @@ impl StreamCapture {
     }
 
     /// Closes the stream capture pipeline.
-    pub fn close(&mut self) -> Result<(), StreamCaptureError> {
+    pub fn close(&self) -> Result<(), StreamCaptureError> {
         let res = self.pipeline.send_event(gst::event::Eos::new());
         if !res {
             return Err(StreamCaptureError::SendEosError);

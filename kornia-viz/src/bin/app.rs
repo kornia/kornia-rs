@@ -27,7 +27,7 @@ struct KorniaApp {
 
 impl Default for KorniaApp {
     fn default() -> Self {
-        let mut capture = kornia::io::stream::V4L2CameraConfig::new()
+        let capture = kornia::io::stream::V4L2CameraConfig::new()
             .with_camera_id(0)
             .build()
             .unwrap();
