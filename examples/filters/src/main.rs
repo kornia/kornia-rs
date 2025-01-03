@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // create a webcam capture object with camera id 0
     // and force the image size to 640x480
-    let mut webcam = V4L2CameraConfig::new().with_size(size).build()?;
+    let webcam = V4L2CameraConfig::new().with_size(size).build()?;
 
     // start the background pipeline
     webcam.start()?;
