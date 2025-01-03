@@ -55,9 +55,8 @@ impl StreamCapture {
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
     pub fn grab(&self) -> Result<Option<Image<u8, 3>>, StreamCaptureError> {
-        // NOTE: this is a blocking call with a timeout of 1ns, so it should not block the thread at all
         self.appsink
-            .try_pull_sample(gst::ClockTime::from_nseconds(1))
+            .try_pull_sample(gst::ClockTime::ZERO)
             .map(Self::extract_image_frame)
             .transpose()
     }
