@@ -101,7 +101,12 @@ pub fn write_image_jpeg(file_path: impl AsRef<Path>, image: &Image<u8, 3>) -> Re
 /// assert_eq!(image.size().height, 195);
 /// assert_eq!(image.num_channels(), 3);
 /// ```
-pub fn read_image_any(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, IoError> {
+pub fn read_image_any<T, const C: usize>(
+    file_path: impl AsRef<Path>,
+) -> Result<Image<T, C>, IoError>
+where
+    T: Clone,
+{
     let file_path = file_path.as_ref().to_owned();
 
     // verify the file exists
@@ -120,15 +125,42 @@ pub fn read_image_any(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, IoErr
         .with_guessed_format()?
         .decode()?;
 
-    // TODO: handle more image formats
-    // return the image data
-    let image = Image::new(
-        ImageSize {
-            width: img.width() as usize,
-            height: img.height() as usize,
-        },
-        img.to_rgb8().to_vec(),
-    )?;
+    let size = ImageSize {
+        width: img.width() as usize,
+        height: img.height() as usize,
+    };
+
+    let image = match img.color() {
+        image::ColorType::L8 => {
+            let data = img.to_luma8().into_vec();
+            let img_len = data.len();
+            let img_box = Box::leak(data.into_boxed_slice());
+            let img_ptr = img_box.as_ptr() as *const T;
+            unsafe { Image::<T, C>::from_raw_parts(size, img_ptr, img_len) }?
+        }
+        image::ColorType::Rgb8 => {
+            let data = img.to_rgb8().into_vec();
+            let img_len = data.len();
+            let img_box = Box::leak(data.into_boxed_slice());
+            let img_ptr = img_box.as_ptr() as *const T;
+            unsafe { Image::<T, C>::from_raw_parts(size, img_ptr, img_len) }?
+        }
+        image::ColorType::Rgba8 => {
+            let data = img.to_rgba8().into_vec();
+            let img_len = data.len();
+            let img_box = Box::leak(data.into_boxed_slice());
+            let img_ptr = img_box.as_ptr() as *const T;
+            unsafe { Image::<T, C>::from_raw_parts(size, img_ptr, img_len) }?
+        }
+        image::ColorType::Rgb16 => {
+            let data = img.to_rgb16().into_vec();
+            let img_len = data.len();
+            let img_box = Box::leak(data.into_boxed_slice());
+            let img_ptr = img_box.as_ptr() as *const T;
+            unsafe { Image::<T, C>::from_raw_parts(size, img_ptr, img_len) }?
+        }
+        _ => unreachable!(),
+    };
 
     Ok(image)
 }
@@ -137,13 +169,14 @@ pub fn read_image_any(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, IoErr
 mod tests {
     use crate::error::IoError;
     use crate::functional::read_image_any;
+    use kornia_image::Image;
 
     #[cfg(feature = "jpegturbo")]
     use crate::functional::{read_image_jpeg, write_image_jpeg};
 
     #[test]
     fn read_any() -> Result<(), IoError> {
-        let image = read_image_any("../../tests/data/dog.jpeg")?;
+        let image: Image<u8, 1> = read_image_any("../../tests/data/dog.jpeg")?;
         assert_eq!(image.size().width, 258);
         assert_eq!(image.size().height, 195);
         Ok(())
