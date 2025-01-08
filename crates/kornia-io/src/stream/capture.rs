@@ -1,11 +1,20 @@
+use std::sync::{Arc, Mutex};
+
 use crate::stream::error::StreamCaptureError;
 use gst::prelude::*;
 use kornia_image::Image;
 
+// utility struct to store the frame buffer
+struct FrameBuffer {
+    buffer: gst::MappedBuffer<gst::buffer::Readable>,
+    width: usize,
+    height: usize,
+}
+
 /// Represents a stream capture pipeline using GStreamer.
 pub struct StreamCapture {
     pipeline: gst::Pipeline,
-    appsink: gst_app::AppSink,
+    last_frame: Arc<Mutex<Option<FrameBuffer>>>,
 }
 
 impl StreamCapture {
@@ -31,7 +40,33 @@ impl StreamCapture {
             .dynamic_cast::<gst_app::AppSink>()
             .map_err(StreamCaptureError::DowncastPipelineError)?;
 
-        Ok(Self { pipeline, appsink })
+        let last_frame = Arc::new(Mutex::new(None));
+
+        appsink.set_callbacks(
+            gst_app::AppSinkCallbacks::builder()
+                .new_sample({
+                    let last_frame = last_frame.clone();
+                    move |sink| {
+                        last_frame
+                            .lock()
+                            .map_err(|_| gst::FlowError::Error)
+                            .and_then(|mut guard| {
+                                Self::extract_frame_buffer(sink)
+                                    .map(|frame_buffer| {
+                                        guard.replace(frame_buffer);
+                                        gst::FlowSuccess::Ok
+                                    })
+                                    .map_err(|_| gst::FlowError::Error)
+                            })
+                    }
+                })
+                .build(),
+        );
+
+        Ok(Self {
+            pipeline,
+            last_frame,
+        })
     }
 
     /// Starts the stream capture pipeline and processes messages on the bus.
@@ -54,11 +89,21 @@ impl StreamCapture {
     /// # Returns
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
-    pub fn grab(&self) -> Result<Option<Image<u8, 3>>, StreamCaptureError> {
-        self.appsink
-            .try_pull_sample(gst::ClockTime::ZERO)
-            .map(Self::extract_image_frame)
-            .transpose()
+    pub fn grab(&mut self) -> Result<Option<Image<u8, 3>>, StreamCaptureError> {
+        let mut last_frame = self
+            .last_frame
+            .lock()
+            .map_err(|_| StreamCaptureError::LockError)?;
+
+        last_frame.take().map_or(Ok(None), |frame_buffer| {
+            let img = Image::<u8, 3>::new(
+                [frame_buffer.width, frame_buffer.height].into(),
+                frame_buffer.buffer.to_owned(),
+            )
+            .map_err(|_| StreamCaptureError::CreateImageFrameError)?;
+
+            Ok(Some(img))
+        })
     }
 
     /// Closes the stream capture pipeline.
@@ -73,16 +118,18 @@ impl StreamCapture {
         Ok(())
     }
 
-    /// Extracts an image frame from the AppSink.
+    /// Extracts a frame buffer from the AppSink.
     ///
     /// # Arguments
     ///
-    /// * `sample` - The sample to extract the frame from.
+    /// * `appsink` - The AppSink to extract the frame buffer from.
     ///
     /// # Returns
     ///
-    /// A Result containing the extracted Image or a StreamCaptureError.
-    fn extract_image_frame(sample: gst::Sample) -> Result<Image<u8, 3>, StreamCaptureError> {
+    /// A Result containing the extracted FrameBuffer or a StreamCaptureError.
+    fn extract_frame_buffer(appsink: &gst_app::AppSink) -> Result<FrameBuffer, StreamCaptureError> {
+        let sample = appsink.pull_sample()?;
+
         let caps = sample
             .caps()
             .ok_or_else(|| StreamCaptureError::GetCapsError)?;
@@ -100,12 +147,21 @@ impl StreamCapture {
             .map_err(|_| StreamCaptureError::GetWidthError)? as usize;
 
         let buffer = sample
-            .buffer()
+            .buffer_owned()
             .ok_or_else(|| StreamCaptureError::GetBufferError)?
-            .map_readable()?;
+            .into_mapped_buffer_readable()
+            .map_err(|_| StreamCaptureError::GetBufferError)?;
 
-        Image::<u8, 3>::new([width, height].into(), buffer.to_owned())
-            .map_err(|_| StreamCaptureError::CreateImageFrameError)
+        let frame_buffer = FrameBuffer {
+            buffer,
+            width,
+            height,
+        };
+
+        Ok(frame_buffer)
+
+        //Image::<u8, 3>::new([width, height].into(), buffer.to_owned())
+        //    .map_err(|_| StreamCaptureError::CreateImageFrameError)
     }
 }
 
