@@ -139,12 +139,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("gray_resize: {:?}", gray_resized.size());
 
     // create a Rerun recording stream
-    let rec = rerun::RecordingStreamBuilder::new("Kornia App").connect()?;
+    let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;
 
-    // log the images
-    let _ = rec.log("image", &rerun::Image::try_from(image_viz.data)?);
-    let _ = rec.log("gray", &rerun::Image::try_from(gray.data)?);
-    let _ = rec.log("gray_resize", &rerun::Image::try_from(gray_resized.data)?);
+    rec.log(
+        "image",
+        &rerun::Image::from_elements(
+            image_viz.as_slice(),
+            image_viz.size().into(),
+            rerun::ColorModel::RGB,
+        ),
+    )?;
+
+    rec.log(
+        "gray",
+        &rerun::Image::from_elements(gray.as_slice(), gray.size().into(), rerun::ColorModel::L),
+    )?;
+
+    rec.log(
+        "gray_resize",
+        &rerun::Image::from_elements(
+            gray_resized.as_slice(),
+            gray_resized.size().into(),
+            rerun::ColorModel::L,
+        ),
+    )?;
 
     Ok(())
 }
