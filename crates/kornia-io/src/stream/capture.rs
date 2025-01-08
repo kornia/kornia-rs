@@ -96,6 +96,8 @@ impl StreamCapture {
             .map_err(|_| StreamCaptureError::LockError)?;
 
         last_frame.take().map_or(Ok(None), |frame_buffer| {
+            // TODO: solve the zero copy issue
+            // https://discourse.gstreamer.org/t/zero-copy-video-frames/3856/2
             let img = Image::<u8, 3>::new(
                 [frame_buffer.width, frame_buffer.height].into(),
                 frame_buffer.buffer.to_owned(),
