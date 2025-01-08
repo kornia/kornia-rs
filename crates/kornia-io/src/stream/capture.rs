@@ -159,9 +159,6 @@ impl StreamCapture {
         };
 
         Ok(frame_buffer)
-
-        //Image::<u8, 3>::new([width, height].into(), buffer.to_owned())
-        //    .map_err(|_| StreamCaptureError::CreateImageFrameError)
     }
 }
 
