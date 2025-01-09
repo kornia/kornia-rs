@@ -14,16 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-          components: rustfmt
-      - uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check
+      - run: rustup toolchain install stable --component rustfmt
+      - run: cargo fmt --all -- --check
 
   clippy:
     name: Clippy
@@ -44,13 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-      - uses: actions-rs/cargo@v1
-        with:
-          command: check
-          args: --all --all-features
-          use-cross: true
+      - run: rustup toolchain install stable
+      - name: Install cross
+        run: cargo install cross
+      - run: cross check --all --all-features
