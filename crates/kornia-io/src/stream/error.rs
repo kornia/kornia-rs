@@ -79,6 +79,10 @@ pub enum StreamCaptureError {
     /// An error occurred when the pipeline is not running.
     #[error("Pipeline is not running")]
     PipelineNotRunning,
+
+    /// An error occurred when the allocator is not found.
+    #[error("Cannot lock the last frame")]
+    LockError,
 }
 
 // ensure that can be sent over threads
