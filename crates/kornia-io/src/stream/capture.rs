@@ -44,7 +44,19 @@ impl StreamCapture {
             .ok_or_else(|| StreamCaptureError::BusError)?;
 
         // handle bus messages
-        bus.set_sync_handler(|_bus, _msg| gst::BusSyncReply::Pass);
+        bus.set_sync_handler(|_bus, msg| {
+            println!("msg_type: {:?}", msg.view());
+            match msg.view() {
+                gst::MessageView::Eos(eos) => {
+                    eprintln!("eos message: {:?}", eos);
+                }
+                gst::MessageView::Error(e) => {
+                    eprintln!("error message: {:?}", e);
+                }
+                _ => (),
+            }
+            gst::BusSyncReply::Pass
+        });
 
         Ok(())
     }
