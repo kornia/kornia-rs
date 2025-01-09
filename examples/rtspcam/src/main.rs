@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rec = rerun::RecordingStreamBuilder::new("Kornia Rtsp Stream Capture App").spawn()?;
 
     //// create a stream capture object
-    let capture = RTSPCameraConfig::new()
+    let mut capture = RTSPCameraConfig::new()
         .with_settings(
             &args.username,
             &args.password,
