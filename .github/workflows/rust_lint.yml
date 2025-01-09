@@ -23,7 +23,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable --component clippy
-      - run: cargo clippy --all-features -- -D warnings
+      - name: Install cross
+        run: cargo install cross
+      - run: cross clippy --all-features -- -D warnings
 
   check:
     name: Check
@@ -31,4 +33,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable
-      - run: cargo check --all --all-features
+      - name: Install cross
+        run: cargo install cross
+      - run: cross check --all --all-features
