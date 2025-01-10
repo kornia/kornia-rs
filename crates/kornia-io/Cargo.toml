@@ -16,6 +16,7 @@ all-features = true
 [dependencies]
 image = "0.25"
 kornia-image = { workspace = true }
+png = "0.17"
 log = { workspace = true }
 thiserror = { workspace = true }
 
