@@ -47,6 +47,27 @@ pub fn read_image_png_rgba8(file_path: impl AsRef<Path>) -> Result<Image<u8, 4>,
     Ok(Image::new(size.into(), buf)?)
 }
 
+/// Read a PNG image with a single channel (mono16).
+///
+/// # Arguments
+///
+/// * `file_path` - The path to the PNG file.
+///
+/// # Returns
+///
+/// A grayscale image with a single channel (mono16).
+pub fn read_image_png_mono16(file_path: impl AsRef<Path>) -> Result<Image<u16, 1>, IoError> {
+    let (buf, size) = read_png_impl(file_path)?;
+
+    // convert the buffer to u16
+    let mut buf_u16 = Vec::with_capacity(buf.len() / 2);
+    for chunk in buf.chunks_exact(2) {
+        buf_u16.push(u16::from_be_bytes([chunk[0], chunk[1]]));
+    }
+
+    Ok(Image::new(size.into(), buf_u16)?)
+}
+
 // utility function to read the png file
 fn read_png_impl(file_path: impl AsRef<Path>) -> Result<(Vec<u8>, [usize; 2]), IoError> {
     // verify the file exists
