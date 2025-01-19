@@ -28,7 +28,7 @@ install py_version='3.9':
 # Test the code with pytest
 test:
   @echo "🚀 Testing code: Running pytest"
-  @uv run python -m pytest
+  @uv run pytest
 
 # Compile and install kornia-py for development (run maturin develop)
 build py_version='3.9' flags='':
