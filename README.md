@@ -4,7 +4,7 @@
 [![PyPI version](https://badge.fury.io/py/kornia-rs.svg)](https://badge.fury.io/py/kornia-rs)
 [![Documentation](https://img.shields.io/badge/docs.rs-kornia-orange)](https://docs.rs/kornia)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENCE)
-[![Slack](https://img.shields.io/badge/Slack-4A154B?logo=slack&logoColor=white)](https://join.slack.com/t/kornia/shared_invite/zt-csobk21g-CnydWe5fmvkcktIeRFGCEQ)
+[![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/HfnywwpBnD)
 
 The `kornia` crate is a low level library for Computer Vision written in [Rust](https://www.rust-lang.org/) 🦀
 
