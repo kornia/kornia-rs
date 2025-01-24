@@ -63,11 +63,13 @@ pub fn sobel_kernel_1d(kernel_size: usize) -> (Vec<f32>, Vec<f32>) {
 
 
 /// Create list of optimized box blur kernels based on gaussian sigma
+///
 /// https://www.peterkovesi.com/papers/FastGaussianSmoothing.pdf
 /// # Arguments
 ///
 /// * `sigma` = The sigma of the gaussian kernel
 /// * `kernels` = The number of times the box blur kernels would be applied, ideally from 3-5
+///
 /// # Returns
 ///
 /// A kernels-sized vector of the kernels.
