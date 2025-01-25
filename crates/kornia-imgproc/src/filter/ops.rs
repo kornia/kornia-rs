@@ -1,6 +1,6 @@
 use kornia_image::{Image, ImageError, ImageSize};
 
-use super::{kernels, separable_filter, fast_horizontal_filter};
+use super::{fast_horizontal_filter, kernels, separable_filter};
 
 /// Blur an image using a box blur filter
 ///
@@ -80,8 +80,6 @@ pub fn sobel<const C: usize>(
     Ok(())
 }
 
-
-
 /// Blur an image using a box blur filter multiple times to achieve a near gaussian blur
 ///
 /// # Arguments
@@ -106,18 +104,19 @@ pub fn box_blur_fast<const C: usize>(
     };
 
     let mut input_img = src.clone();
-    for (half_kernel_x_size, half_kernel_y_size) in half_kernel_x_sizes.iter().zip(half_kernel_y_sizes.iter()) {
+    for (half_kernel_x_size, half_kernel_y_size) in
+        half_kernel_x_sizes.iter().zip(half_kernel_y_sizes.iter())
+    {
         let mut transposed = Image::<f32, C>::from_size_val(transposed_size, 0.0)?;
-        
+
         fast_horizontal_filter(&input_img, &mut transposed, *half_kernel_x_size)?;
-        fast_horizontal_filter(&transposed, dst,  *half_kernel_y_size)?;
-        
+        fast_horizontal_filter(&transposed, dst, *half_kernel_y_size)?;
+
         input_img = dst.clone();
     }
 
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -139,6 +138,7 @@ mod tests {
 
         box_blur_fast(&img, &mut dst, (0.5, 0.5))?;
 
+        #[rustfmt::skip]
         assert_eq!(
             dst.as_slice(),
             &[
@@ -169,7 +169,8 @@ mod tests {
         let mut dst = Image::<_, 1>::from_size_val(size, 0.0)?;
 
         gaussian_blur(&img, &mut dst, (3, 3), (0.5, 0.5))?;
-        
+
+        #[rustfmt::skip]
         assert_eq!(
             dst.as_slice(),
             &[
