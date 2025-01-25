@@ -127,8 +127,12 @@ mod tests {
 
     #[test]
     fn test_box_blur_fast_kernels_1d() {
-        let kernel_sizes = box_blur_fast_kernels_1d(0.5, 3);
 
-        assert_eq!(kernel_sizes, vec![1, 1, 1]);
+        assert_eq!(box_blur_fast_kernels_1d(0.5, 3), vec![1, 1, 1]);
+        assert_eq!(box_blur_fast_kernels_1d(0.5, 4), vec![1, 1, 1, 1]);
+        assert_eq!(box_blur_fast_kernels_1d(0.5, 5), vec![1, 1, 1, 1, 1]);
+        
+        assert_eq!(box_blur_fast_kernels_1d(1.0, 3), vec![1, 1, 3]);
+        assert_eq!(box_blur_fast_kernels_1d(1.0, 5), vec![1, 1, 1, 1, 3]);
     }
 }
