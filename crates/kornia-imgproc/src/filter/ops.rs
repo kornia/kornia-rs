@@ -89,7 +89,7 @@ pub fn sobel<const C: usize>(
 /// * `src` - The source image with shape (H, W, C).
 /// * `dst` - The destination image with shape (H, W, C).
 /// * `kernel_size` - The size of the kernel (kernel_x, kernel_y).
-/// * `sigma` - The sigma of the gaussian kernel.
+/// * `sigma` - The sigma of the gaussian kernel, xy-ordered.
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
 pub fn box_blur_fast<const C: usize>(

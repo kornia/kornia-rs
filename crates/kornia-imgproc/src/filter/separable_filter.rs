@@ -90,20 +90,20 @@ pub fn separable_filter<const C: usize>(
 
 
 /// Apply a fast filter horizontally, take advantage of property where all
-/// weights are equal to filter an image at O(n) speed
+/// weights are equal to filter an image at O(n) time
 /// 
 /// # Arguments
 ///
 /// * `src` - The source image with shape (H, W, C).
-/// * `dst_transposed` - The destination image with shape (W, H, C).
+/// * `dst` - The destination image with transposed shape (W, H, C).
 /// * `half_kernel_x_size` - Half of the kernel at weight 1. The total size would be 2*this+1
-pub fn fast_horizontal_filter<const C: usize>(
+pub(crate) fn fast_horizontal_filter<const C: usize>(
     src: &Image<f32, C>,
-    dst_transposed: &mut Image<f32, C>,
+    dst: &mut Image<f32, C>,
     half_kernel_x_size: usize,
 ) -> Result<(), ImageError> {
     let src_data = src.as_slice();
-    let dst_transposed_data = dst_transposed.as_slice_mut();
+    let dst_data = dst.as_slice_mut();
     let mut row_acc = [0.0; C];
     
     let mut leftmost_pixel = [0.0; C];
@@ -147,7 +147,7 @@ pub fn fast_horizontal_filter<const C: usize>(
             };
 
         }
-        dst_transposed_data[transposed_pix_offset] = row_acc[ch] / (half_kernel_x_size*2+1) as f32;
+        dst_data[transposed_pix_offset] = row_acc[ch] / (half_kernel_x_size*2+1) as f32;
     }
 
     Ok(())
