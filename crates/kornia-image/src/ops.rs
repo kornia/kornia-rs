@@ -26,8 +26,8 @@ use crate::{Image, ImageError};
 ///
 /// cast_and_scale(&image, &mut image_f32, 1. / 255.0).unwrap();
 ///
-/// assert_eq!(image_f32.get_pixel(0, 0, 0).unwrap(), 0.0f32);
-/// assert_eq!(image_f32.get_pixel(1, 0, 0).unwrap(), 1.0f32);
+/// assert_eq!(image_f32.get_pixel(0, 0, 0).unwrap(), &0.0f32);
+/// assert_eq!(image_f32.get_pixel(1, 0, 0).unwrap(), &1.0f32);
 /// ```
 pub fn cast_and_scale<T, U, const C: usize>(
     src: &Image<T, C>,
