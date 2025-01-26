@@ -419,7 +419,7 @@ impl<T, const C: usize> Image<T, C> {
     /// Get the pixel data of the image.
     ///
     /// NOTE: this is method is for convenience and not optimized for performance.
-    /// We recommend using the `get` method instead.
+    /// We recommend using iterators over the data slice.
     ///
     /// # Arguments
     ///
