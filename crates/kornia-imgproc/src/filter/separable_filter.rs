@@ -88,6 +88,70 @@ pub fn separable_filter<const C: usize>(
     Ok(())
 }
 
+/// Apply a fast filter horizontally using cumulative kernel
+///
+/// # Arguments
+///
+/// * `src` - The source image with shape (H, W, C).
+/// * `dst` - The destination image with transposed shape (W, H, C).
+/// * `half_kernel_x_size` - Half of the kernel at weight 1. The total size would be 2*this+1
+pub(crate) fn fast_horizontal_filter<const C: usize>(
+    src: &Image<f32, C>,
+    dst: &mut Image<f32, C>,
+    half_kernel_x_size: usize,
+) -> Result<(), ImageError> {
+    let src_data = src.as_slice();
+    let dst_data = dst.as_slice_mut();
+    let mut row_acc = [0.0; C];
+
+    let mut leftmost_pixel = [0.0; C];
+    let mut rightmost_pixel = [0.0; C];
+
+    let pixels_between_first_last_cols = (src.cols() - 1) * C;
+    let kernel_pix_offset_diffs: Vec<usize> =
+        (0..half_kernel_x_size).map(|p| (p + 1) * C).collect();
+    for (pix_offset, source_pixel) in src_data.iter().enumerate() {
+        let ch = pix_offset % C;
+        let rc = pix_offset / C;
+        let c = rc % src.cols();
+        let r = rc / src.cols();
+
+        let transposed_r = c;
+        let transposed_c = r;
+        let transposed_pix_offset = transposed_r * src.rows() * C + transposed_c * C + ch;
+
+        if c == 0 {
+            row_acc[ch] = *source_pixel * (half_kernel_x_size + 1) as f32;
+            for pix_diff in &kernel_pix_offset_diffs {
+                row_acc[ch] += src_data[pix_offset + pix_diff]
+            }
+            leftmost_pixel[ch] = *source_pixel;
+            rightmost_pixel[ch] = src_data[pix_offset + pixels_between_first_last_cols];
+        } else {
+            row_acc[ch] -= match c.checked_sub(half_kernel_x_size + 1) {
+                Some(_) => {
+                    let prv_leftmost_pix_offset = pix_offset - C * (half_kernel_x_size + 1);
+                    src_data[prv_leftmost_pix_offset]
+                }
+                None => leftmost_pixel[ch],
+            };
+
+            let rightmost_x = c + half_kernel_x_size;
+
+            row_acc[ch] += match rightmost_x {
+                x if x < src.cols() => {
+                    let rightmost_pix_offset = pix_offset + C * half_kernel_x_size;
+                    src_data[rightmost_pix_offset]
+                }
+                _ => rightmost_pixel[ch],
+            };
+        }
+        dst_data[transposed_pix_offset] = row_acc[ch] / (half_kernel_x_size * 2 + 1) as f32;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +193,62 @@ mod tests {
             ]
         );
 
+        let xsum = dst.as_slice().iter().sum::<f32>();
+        assert_eq!(xsum, 9.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fast_horizontal_filter() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 5,
+            height: 5,
+        };
+
+        #[rustfmt::skip]
+        let img = Image::new(
+            size,
+            vec![
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 9.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+        )?;
+
+        let mut transposed = Image::<_, 1>::from_size_val(size, 0.0)?;
+
+        fast_horizontal_filter(&img, &mut transposed, 1)?;
+
+        #[rustfmt::skip]
+        assert_eq!(
+            transposed.as_slice(),
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 3.0, 0.0, 0.0,
+                0.0, 0.0, 3.0, 0.0, 0.0,
+                0.0, 0.0, 3.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+            ]
+        );
+
+        let mut dst = Image::<_, 1>::from_size_val(size, 0.0)?;
+
+        fast_horizontal_filter(&transposed, &mut dst, 1)?;
+
+        #[rustfmt::skip]
+        assert_eq!(
+            dst.as_slice(),
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 1.0, 1.0, 0.0,
+                0.0, 1.0, 1.0, 1.0, 0.0,
+                0.0, 1.0, 1.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+            ]
+        );
         let xsum = dst.as_slice().iter().sum::<f32>();
         assert_eq!(xsum, 9.0);
 
