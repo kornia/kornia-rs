@@ -88,8 +88,7 @@ pub fn separable_filter<const C: usize>(
     Ok(())
 }
 
-/// Apply a fast filter horizontally, take advantage of property where all
-/// weights are equal to filter an image at O(n) time
+/// Apply a fast filter horizontally using cumulative kernel
 ///
 /// # Arguments
 ///
