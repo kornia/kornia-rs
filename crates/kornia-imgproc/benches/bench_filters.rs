@@ -57,13 +57,7 @@ fn bench_filters(c: &mut Criterion) {
                 &(&image, &output),
                 |b, i| {
                     let (src, mut dst) = (i.0, i.1.clone());
-                    b.iter(|| {
-                        black_box(box_blur_fast(
-                            src,
-                            &mut dst,
-                            (1.5, 1.5),
-                        ))
-                    })
+                    b.iter(|| black_box(box_blur_fast(src, &mut dst, (1.5, 1.5))))
                 },
             );
         }

@@ -105,11 +105,10 @@ pub fn box_blur_fast<const C: usize>(
 
     let mut input_img = src.clone();
     let mut transposed = Image::<f32, C>::from_size_val(transposed_size, 0.0)?;
-    
+
     for (half_kernel_x_size, half_kernel_y_size) in
         half_kernel_x_sizes.iter().zip(half_kernel_y_sizes.iter())
     {
-
         fast_horizontal_filter(&input_img, &mut transposed, *half_kernel_x_size)?;
         fast_horizontal_filter(&transposed, dst, *half_kernel_y_size)?;
 
