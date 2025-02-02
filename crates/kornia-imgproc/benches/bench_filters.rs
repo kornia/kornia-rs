@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_image::Image;
-use kornia_imgproc::filter::gaussian_blur;
+use kornia_imgproc::filter::{box_blur_fast, gaussian_blur};
 
 use image::RgbImage;
 use imageproc::filter::gaussian_blur_f32;
@@ -49,6 +49,21 @@ fn bench_filters(c: &mut Criterion) {
                     let rgb_image = RgbImage::new(i.cols() as u32, i.rows() as u32);
                     let sigma = (*kernel_size as f32) / 2.0;
                     b.iter(|| black_box(gaussian_blur_f32(&rgb_image, sigma)))
+                },
+            );
+
+            group.bench_with_input(
+                BenchmarkId::new("box_blur_fast", &parameter_string),
+                &(&image, &output),
+                |b, i| {
+                    let (src, mut dst) = (i.0, i.1.clone());
+                    b.iter(|| {
+                        black_box(box_blur_fast(
+                            src,
+                            &mut dst,
+                            (1.5, 1.5),
+                        ))
+                    })
                 },
             );
         }
