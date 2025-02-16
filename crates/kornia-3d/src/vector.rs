@@ -1,8 +1,11 @@
 /// Simple 3D vector with x, y, and z coordinates as single precision floats.
 #[derive(Debug, Clone)]
 pub struct Vec3 {
+    /// x coordinate
     pub x: f32,
+    /// y coordinate
     pub y: f32,
+    /// z coordinate
     pub z: f32,
 }
 
@@ -20,8 +23,11 @@ impl Vec3 {
 /// Simple 3D vector with x, y, and z coordinates as double precision floats.
 #[derive(Debug, Clone)]
 pub struct DVec3 {
+    /// x coordinate
     pub x: f64,
+    /// y coordinate
     pub y: f64,
+    /// z coordinate
     pub z: f64,
 }
 

@@ -7,7 +7,7 @@ use crate::pointcloud::PointCloud;
 /// Read a PLY file in binary format.
 ///
 /// NOTE: This function only supports the OpenSplat and XYZRgbNormals PLY file format for now.
-/// REF: https://github.com/pierotofy/OpenSplat
+/// REF: <https://github.com/pierotofy/OpenSplat>
 ///
 /// Args:
 ///     path: The path to the PLY file.
