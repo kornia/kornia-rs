@@ -1,8 +1,9 @@
 [package]
 name = "kornia-3d"
+description = "3d point cloud processing library"
+
 authors.workspace = true
 categories.workspace = true
-description.workspace = true
 edition.workspace = true
 homepage.workspace = true
 license.workspace = true

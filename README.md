@@ -96,6 +96,7 @@ kornia-io = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
 kornia-image = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
 kornia-imgproc = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
 kornia-3d = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
+kornia-icp = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
 ```
 
 ### 🐍 Python

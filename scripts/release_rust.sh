@@ -1,5 +1,8 @@
 #!/bin/bash -e
 
+set -x # echo on
+set -e # exit on error
+
 # Set dry-run as default
 DRY_RUN="--dry-run"
 

@@ -6,14 +6,18 @@ use std::{
 
 use super::{CameraModelId, ColmapCamera, ColmapImage, ColmapPoint3d};
 
+/// Error types for the COLMAP module.
 #[derive(Debug, thiserror::Error)]
 pub enum ColmapError {
+    /// Error reading or writing file
     #[error("error reading or writing file")]
     IoError(#[from] std::io::Error),
 
+    /// Invalid number of camera parameters
     #[error("Invalid number of camera parameters")]
     InvalidNumCameraParams(usize),
 
+    /// Parse error
     #[error("Parse error {0}")]
     ParseError(String),
 }
