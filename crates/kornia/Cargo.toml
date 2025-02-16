@@ -13,7 +13,7 @@ version.workspace = true
 
 [features]
 gstreamer = ["kornia-io/gstreamer"]
-jpegturbo = ["kornia-io/jpegturbo"]
+turbojpeg = ["kornia-io/turbojpeg"]
 
 [dependencies]
 kornia-tensor.workspace = true

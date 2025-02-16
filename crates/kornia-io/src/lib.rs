@@ -11,8 +11,8 @@ pub mod fps_counter;
 pub mod functional;
 
 /// TurboJPEG image encoding and decoding.
-#[cfg(feature = "jpegturbo")]
-pub mod jpeg;
+#[cfg(feature = "turbojpeg")]
+pub mod jpegturbo;
 
 /// PNG image encoding and decoding.
 pub mod png;

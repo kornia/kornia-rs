@@ -19,7 +19,7 @@ crate-type = ["cdylib"]
 # kornia
 kornia-image = { path = "../crates/kornia-image" }
 kornia-imgproc = { path = "../crates/kornia-imgproc" }
-kornia-io = { path = "../crates/kornia-io", features = ["jpegturbo"] }
+kornia-io = { path = "../crates/kornia-io", features = ["turbojpeg"] }
 
 # external
 pyo3 = { version = "0.23.0", features = ["extension-module"] }

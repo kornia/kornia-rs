@@ -20,7 +20,7 @@ use kornia::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
-    let image: Image<u8, 3> = F::read_image_any("tests/data/dog.jpeg")?;
+    let image: Image<u8, 3> = F::read_image_any_rgb8("tests/data/dog.jpeg")?;
 
     println!("Hello, world! 🦀");
     println!("Loaded Image size: {:?}", image.size());
@@ -84,17 +84,18 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-kornia = "v0.1.7"
+kornia = "v0.1.8"
 ```
 
 Alternatively, you can use each sub-crate separately:
 
 ```toml
 [dependencies]
-kornia-core = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.7" }
-kornia-io = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.7" }
-kornia-image = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.7" }
-kornia-imgproc = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.7" }
+kornia-tensor = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
+kornia-io = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
+kornia-image = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
+kornia-imgproc = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
+kornia-3d = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
 ```
 
 ### 🐍 Python
@@ -115,7 +116,7 @@ use kornia::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
-    let image: Image<u8, 3> = F::read_image_any("tests/data/dog.jpeg")?;
+    let image: Image<u8, 3> = F::read_image_any_rgb8("tests/data/dog.jpeg")?;
     let image_viz = image.clone();
 
     let image_f32: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
