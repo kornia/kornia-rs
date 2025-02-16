@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_var("ORT_DYLIB_PATH", &args.ort_dylib_path);
 
     // read the image
-    let image: Image<u8, 3> = F::read_image_any(&args.image_path)?;
+    let image: Image<u8, 3> = F::read_image_any_rgb8(&args.image_path)?;
 
     // read the onnx model
 

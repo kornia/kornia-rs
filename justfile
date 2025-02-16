@@ -38,11 +38,9 @@ test name='':
 test-all:
   @cargo test --all-features
 
-
 # ------------------------------------------------------------------------------
 # Recipes for the kornia-py project
 # ------------------------------------------------------------------------------
-
 
 # Create virtual environment, and install dev requirements
 py-install py_version='3.9':

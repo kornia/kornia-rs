@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn gray_from_rgb() -> Result<(), Box<dyn std::error::Error>> {
-        let image = F::read_image_any("../../tests/data/dog.jpeg")?;
+        let image = F::read_image_any_rgb8("../../tests/data/dog.jpeg")?;
 
         let mut image_norm = Image::from_size_val(image.size(), 0.0)?;
         ops::cast_and_scale(&image, &mut image_norm, 1. / 255.0)?;
@@ -171,8 +171,8 @@ mod tests {
         super::gray_from_rgb(&image_norm, &mut gray)?;
 
         assert_eq!(gray.num_channels(), 1);
-        assert_eq!(gray.size().width, 258);
-        assert_eq!(gray.size().height, 195);
+        assert_eq!(gray.cols(), 258);
+        assert_eq!(gray.rows(), 195);
 
         Ok(())
     }

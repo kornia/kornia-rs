@@ -3,8 +3,8 @@ resolver = "2"
 members = [
     "crates/*",
     "examples/*",
-    # "kornia-py",
     "kornia-viz",
+    # "kornia-py",
 ]
 exclude = ["kornia-py"]
 

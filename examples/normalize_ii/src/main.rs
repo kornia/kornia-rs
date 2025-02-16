@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // read the image
-    let image: Image<u8, 3> = F::read_image_any(args.image_path)?;
+    let image: Image<u8, 3> = F::read_image_any_rgb8(args.image_path)?;
 
     // cast the image to floating point
     let image_f32: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;

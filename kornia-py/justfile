@@ -24,10 +24,10 @@ install py_version='3.9':
   @just install-dev {{ py_version }}
   uv pip install -e .
 
-
 # Test the code with pytest
-test:
+test py_version='3.9' flags='':
   @echo "🚀 Testing code: Running pytest"
+  @just build {{ py_version }} {{ flags }}
   @uv run pytest
 
 # Compile and install kornia-py for development (run maturin develop)

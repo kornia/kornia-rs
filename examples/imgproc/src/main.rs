@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // read the image
-    let image: Image<u8, 3> = F::read_image_any(args.image_path)?;
+    let image: Image<u8, 3> = F::read_image_any_rgb8(args.image_path)?;
 
     // convert the image to f32 and scale it
     let mut image_f32 = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
