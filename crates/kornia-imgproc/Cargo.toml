@@ -18,6 +18,8 @@ kornia-image = { workspace = true }
 num-traits = { workspace = true }
 rayon = "1.10"
 thiserror = { workspace = true }
+cubecl = { version = "0.4.0", features = ["wgpu"] }
+serde = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
