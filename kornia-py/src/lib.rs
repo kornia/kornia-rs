@@ -1,11 +1,14 @@
 mod color;
 mod enhance;
 mod histogram;
+mod icp;
 mod image;
 mod io;
+mod pointcloud;
 mod resize;
 mod warp;
 
+use crate::icp::{PyICPConvergenceCriteria, PyICPResult};
 use crate::image::PyImageSize;
 use crate::io::functional::{read_image_any, read_image_jpeg, write_image_jpeg};
 use crate::io::jpeg::{PyImageDecoder, PyImageEncoder};
@@ -28,6 +31,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(color::bgr_from_rgb, m)?)?;
     m.add_function(wrap_pyfunction!(color::gray_from_rgb, m)?)?;
     m.add_function(wrap_pyfunction!(enhance::add_weighted, m)?)?;
+    m.add_function(wrap_pyfunction!(icp::icp_vanilla, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(write_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_any, m)?)?;
@@ -38,5 +42,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyImageSize>()?;
     m.add_class::<PyImageDecoder>()?;
     m.add_class::<PyImageEncoder>()?;
+    m.add_class::<PyICPConvergenceCriteria>()?;
+    m.add_class::<PyICPResult>()?;
     Ok(())
 }

@@ -21,7 +21,7 @@ pub struct ICPResult {
 }
 
 /// Structure to define the ICP parameters.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ICPConvergenceCriteria {
     /// Maximum number of iterations to perform.
     pub max_iterations: usize,
