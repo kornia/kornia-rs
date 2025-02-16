@@ -1,19 +1,19 @@
 use kornia_image::Image;
-use kornia_io::jpeg::{ImageDecoder, ImageEncoder};
+use kornia_io::jpegturbo::{JpegTurboDecoder, JpegTurboEncoder};
 use pyo3::prelude::*;
 
 use crate::image::{FromPyImage, PyImage, PyImageSize, ToPyImage};
 
 #[pyclass(name = "ImageDecoder")]
 pub struct PyImageDecoder {
-    pub inner: ImageDecoder,
+    pub inner: JpegTurboDecoder,
 }
 
 #[pymethods]
 impl PyImageDecoder {
     #[new]
     pub fn new() -> PyResult<PyImageDecoder> {
-        let inner = ImageDecoder::new()
+        let inner = JpegTurboDecoder::new()
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
         Ok(PyImageDecoder { inner })
     }
@@ -29,7 +29,7 @@ impl PyImageDecoder {
     pub fn decode(&mut self, jpeg_data: &[u8]) -> PyResult<PyImage> {
         let image = self
             .inner
-            .decode(jpeg_data)
+            .decode_rgb8(jpeg_data)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
         Ok(image.to_pyimage())
     }
@@ -37,14 +37,14 @@ impl PyImageDecoder {
 
 #[pyclass(name = "ImageEncoder")]
 pub struct PyImageEncoder {
-    pub inner: ImageEncoder,
+    pub inner: JpegTurboEncoder,
 }
 
 #[pymethods]
 impl PyImageEncoder {
     #[new]
     pub fn new() -> PyResult<PyImageEncoder> {
-        let inner = ImageEncoder::new()
+        let inner = JpegTurboEncoder::new()
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
         Ok(PyImageEncoder { inner })
     }
@@ -54,7 +54,7 @@ impl PyImageEncoder {
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
         let jpeg_data = self
             .inner
-            .encode(&image)
+            .encode_rgb8(&image)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
         Ok(jpeg_data)
     }

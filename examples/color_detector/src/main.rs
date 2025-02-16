@@ -15,7 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // read the image
-    let rgb = F::read_image_any(args.image_path)?;
+    let rgb = F::read_image_any_rgb8(args.image_path)?;
 
     // cast the image to f32
     let mut rgb_f32 = Image::<f32, 3>::from_size_val(rgb.size(), 0.0)?;

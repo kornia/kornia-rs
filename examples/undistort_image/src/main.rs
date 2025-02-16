@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // read the image
-    let img = F::read_image_any(args.image_path)?;
+    let img = F::read_image_any_rgb8(args.image_path)?;
 
     // the intrinsic parameters of an Oak-D camera
     let intrinsic = CameraIntrinsic {
