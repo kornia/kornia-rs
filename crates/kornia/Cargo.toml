@@ -24,3 +24,6 @@ kornia-imgproc.workspace = true
 kornia-io = { workspace = true, features = [] }
 kornia-3d = { workspace = true }
 kornia-icp = { workspace = true }
+
+[lib]
+doctest = false
