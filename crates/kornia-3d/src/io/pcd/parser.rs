@@ -4,17 +4,22 @@ use std::path::Path;
 
 use crate::pointcloud::PointCloud;
 
+/// Error types for the PCD module.
 #[derive(Debug, thiserror::Error)]
 pub enum PcdError {
+    /// Failed to read PCD file
     #[error("Failed to read PCD file")]
     Io(#[from] std::io::Error),
 
+    /// Failed to deserialize PCD file
     #[error("Failed to deserialize PCD file")]
     Deserialize(#[from] bincode::Error),
 
+    /// Unsupported PCD property
     #[error("Unsupported PCD property")]
     UnsupportedProperty,
 
+    /// Invalid PCD file extension
     #[error("Invalid PCD file extension. Got:{0}")]
     InvalidFileExtension(String),
 }
@@ -22,13 +27,21 @@ pub enum PcdError {
 /// A property of a point in a PCD file.
 #[derive(Debug, Deserialize)]
 pub struct PcdPropertyXYZRGBNCurvature {
+    /// x coordinate
     pub x: f32,
+    /// y coordinate
     pub y: f32,
+    /// z coordinate
     pub z: f32,
+    /// rgb color
     pub rgb: u32,
+    /// normal x coordinate
     pub nx: f32,
+    /// normal y coordinate
     pub ny: f32,
+    /// normal z coordinate
     pub nz: f32,
+    /// curvature
     pub curvature: f32,
 }
 

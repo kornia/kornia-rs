@@ -1,5 +1,5 @@
-//! I/O utilities for real-time image and video processing.
 #![deny(missing_docs)]
+#![doc = env!("CARGO_PKG_DESCRIPTION")]
 
 /// Module to handle the error types for the io module.
 pub mod error;

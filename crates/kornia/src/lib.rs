@@ -1,14 +1,11 @@
 #![doc = include_str!(concat!("../", env!("CARGO_PKG_README")))]
 
-/// Core tensor library.
 #[doc(inline)]
 pub use kornia_tensor as tensor;
 
-/// Core tensor operations.
 #[doc(inline)]
 pub use kornia_tensor_ops as tensor_ops;
 
-/// Image processing.
 #[doc(inline)]
 pub use kornia_image as image;
 
