@@ -1,7 +1,8 @@
 [package]
 name = "kornia-imgproc"
-authors.workspace = true
 description = "Image processing operations in Rust"
+
+authors.workspace = true
 edition.workspace = true
 homepage.workspace = true
 license.workspace = true

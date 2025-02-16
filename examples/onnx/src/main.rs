@@ -1,5 +1,5 @@
 use clap::Parser;
-use kornia::core::{CpuAllocator, Tensor};
+use kornia_tensor::{CpuAllocator, Tensor};
 use std::path::PathBuf;
 use std::time::Instant;
 

@@ -10,8 +10,8 @@ exclude = ["kornia-py"]
 
 [workspace.package]
 authors = ["kornia.org <edgar@kornia.org>"]
-categories = ["computer-vision", "science::robotics"]
-description = "Low-level computer vision library in Rust"
+categories = ["computer-vision", "robotics"]
+description = "Low-level 3D computer vision library in Rust"
 edition = "2021"
 homepage = "http://kornia.org"
 include = ["Cargo.toml"]

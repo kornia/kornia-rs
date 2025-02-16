@@ -53,7 +53,7 @@ impl PlyPropertyTrait for XYZRgbNormalsProperty {
 }
 
 /// Header of the OpenSplat PLY file format.
-/// REF: https://github.com/pierotofy/OpenSplat
+/// REF: <https://github.com/pierotofy/OpenSplat>
 #[repr(packed)]
 #[derive(Debug, Deserialize)]
 pub struct OpenSplatProperty {

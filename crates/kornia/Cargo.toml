@@ -1,12 +1,13 @@
 [package]
 name = "kornia"
+description = "kornia - low-level 3D computer vision library in Rust"
+readme = "../../README.md"
+
 authors.workspace = true
-description = "Kornia top-level crate"
 edition.workspace = true
 homepage.workspace = true
 license.workspace = true
 publish = true
-readme.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
@@ -22,3 +23,4 @@ kornia-image.workspace = true
 kornia-imgproc.workspace = true
 kornia-io = { workspace = true, features = [] }
 kornia-3d = { workspace = true }
+kornia-icp = { workspace = true }
