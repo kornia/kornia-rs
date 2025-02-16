@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Ply Visualizer").spawn()?;
 
-    rec.log("/", &rerun::ViewCoordinates::RIGHT_HAND_Y_DOWN)?;
+    rec.log("/", &rerun::ViewCoordinates::RIGHT_HAND_Y_DOWN())?;
 
     let (points, colors) = colmap_points3d
         .iter()
@@ -56,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_relation(rerun::TransformRelation::ChildFromParent),
         )?;
 
-        rec.log(format!("camera_{}", i), &rerun::ViewCoordinates::RDF)?;
+        rec.log(format!("camera_{}", i), &rerun::ViewCoordinates::RDF())?;
 
         let camera = cameras
             .iter()
