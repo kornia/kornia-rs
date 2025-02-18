@@ -54,5 +54,5 @@ pub mod threshold;
 /// image geometric transformations module.
 pub mod warp;
 
-/// GPU operations module.
-pub mod gpu;
+/// CubeCL operations module.
+pub mod cubecl;

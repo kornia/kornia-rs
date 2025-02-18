@@ -2,7 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 
 use kornia_image::Image;
 use kornia_imgproc::color::{gray_from_rgb, gray_from_rgb_u8};
-use kornia_imgproc::gpu::gray_from_rgb_gpu;
+use kornia_imgproc::cubecl::gray_from_rgb_cubecl;
 
 // vanilla version
 fn gray_vanilla_get_unchecked(
@@ -71,8 +71,8 @@ fn gray_image_crate(image: &Image<u8, 3>) -> Image<u8, 1> {
 fn bench_grayscale(c: &mut Criterion) {
     let mut group = c.benchmark_group("Grayscale");
 
-    //for (width, height) in [(256, 224), (512, 448), (1024, 896)].iter() {
-    for (width, height) in [(256, 224), (512, 448)].iter() {
+    for (width, height) in [(256, 224), (512, 448), (1024, 896)].iter() {
+        //for (width, height) in [(512, 448)].iter() {
         group.throughput(criterion::Throughput::Elements((*width * *height) as u64));
 
         let parameter_string = format!("{}x{}", width, height);
@@ -131,11 +131,11 @@ fn bench_grayscale(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("gray_from_rgb_gpu", &parameter_string),
+            BenchmarkId::new("gray_from_rgb_cubecl", &parameter_string),
             &(&image_u8, &gray_u8),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| black_box(gray_from_rgb_gpu(&src, &mut dst)))
+                b.iter(|| black_box(gray_from_rgb_cubecl(&src, &mut dst)))
             },
         );
     }

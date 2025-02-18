@@ -1,3 +1,4 @@
+use cubecl::calculate_cube_count_elemwise;
 use cubecl::prelude::*;
 use cubecl::Runtime;
 use kornia_image::Image;
@@ -10,11 +11,7 @@ struct GrayFromRgbArgs {
 }
 
 #[cube(launch_unchecked)]
-fn gray_from_rgb_cubecl_kernel<F: Float>(
-    src: &Array<F>,
-    dst: &mut Array<F>,
-    args: GrayFromRgbArgs,
-) {
+fn gray_from_rgb_kernel<F: Float>(src: &Array<F>, dst: &mut Array<F>, args: GrayFromRgbArgs) {
     let x = CUBE_POS_X * CUBE_DIM_X + UNIT_POS_X;
     let y = CUBE_POS_Y * CUBE_DIM_Y + UNIT_POS_Y;
 
@@ -27,14 +24,16 @@ fn gray_from_rgb_cubecl_kernel<F: Float>(
         let g = src[3 * idx + 1];
         let b = src[3 * idx + 2];
 
-        let gray = r * F::new(0.299) + g * F::new(0.587) + b * F::new(0.114);
+        let gray = r * comptime! {F::new(0.299)}
+            + g * comptime! {F::new(0.587)}
+            + b * comptime! {F::new(0.114)};
 
         dst[idx] = gray;
     }
 }
 
 /// Convert a RGB image to a grayscale image on the GPU.
-pub fn gray_from_rgb_gpu(src: &Image<u8, 3>, dst: &mut Image<u8, 1>) {
+pub fn gray_from_rgb_cubecl(src: &Image<u8, 3>, dst: &mut Image<u8, 1>) {
     let cols = src.cols() as u32;
     let rows = src.rows() as u32;
 
@@ -50,21 +49,23 @@ pub fn gray_from_rgb_gpu(src: &Image<u8, 3>, dst: &mut Image<u8, 1>) {
         .map(|x| (*x as f32) / 255.0)
         .collect::<Vec<_>>();
 
-    let device = cubecl::wgpu::WgpuDevice::DiscreteGpu(0);
+    type R = cubecl::wgpu::WgpuRuntime;
+    let device = cubecl::wgpu::WgpuDevice::DefaultDevice;
     //let device = cubecl::wgpu::WgpuDevice::Cpu;
 
-    type R = cubecl::wgpu::WgpuRuntime;
+    //type R = cubecl::cuda::CudaRuntime;
+    //let device = cubecl::cuda::CudaDevice::new(0);
+
     let client = R::client(&device);
 
     let input_handle = client.create(f32::as_bytes(&src_vec));
     let output_handle = client.create(f32::as_bytes(&dst_vec));
 
-    let dim = 16;
-    let cube_count = CubeCount::new_2d(dim, dim);
-    let cube_dim = CubeDim::new_2d((cols + dim - 1) / dim, (rows + dim - 1) / dim);
+    let cube_dim = CubeDim::default();
+    let cube_count = calculate_cube_count_elemwise(dst.numel(), cube_dim);
 
     unsafe {
-        gray_from_rgb_cubecl_kernel::launch_unchecked::<f32, R>(
+        gray_from_rgb_kernel::launch_unchecked::<f32, R>(
             &client,
             cube_count,
             cube_dim,
@@ -89,13 +90,23 @@ mod tests {
     use kornia_image::Image;
 
     #[test]
-    fn test_gpu() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_cubecl_small() -> Result<(), Box<dyn std::error::Error>> {
         let src = Image::new([2, 1].into(), vec![0, 128, 255, 128, 0, 128])?;
         let mut dst = Image::from_size_val([2, 1].into(), 0)?;
 
-        gray_from_rgb_gpu(&src, &mut dst);
+        gray_from_rgb_cubecl(&src, &mut dst);
 
         assert_eq!(dst.as_slice(), &[104, 52]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cubecl_large() -> Result<(), Box<dyn std::error::Error>> {
+        let src = Image::new([1024, 1024].into(), vec![0; 1024 * 1024 * 3])?;
+        let mut dst = Image::from_size_val([1024, 1024].into(), 0)?;
+
+        gray_from_rgb_cubecl(&src, &mut dst);
 
         Ok(())
     }
