@@ -2,7 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 
 use kornia_image::Image;
 use kornia_imgproc::color::{gray_from_rgb, gray_from_rgb_u8};
-use kornia_imgproc::cubecl::gray_from_rgb_cubecl;
+use kornia_imgproc::cubecl::{gray_from_rgb_float_cl_cuda, gray_from_rgb_float_cl_wgpu};
 
 // vanilla version
 fn gray_vanilla_get_unchecked(
@@ -131,11 +131,24 @@ fn bench_grayscale(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("gray_from_rgb_cubecl", &parameter_string),
+            BenchmarkId::new("gray_from_rgb_cubecl_wgpu", &parameter_string),
             &(&image_u8, &gray_u8),
             |b, i| {
-                let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| black_box(gray_from_rgb_cubecl(&src, &mut dst)))
+                let (src, dst) = (i.0, i.1.clone());
+                let src_f32 = src.cast::<f32>().unwrap();
+                let mut dst_f32 = dst.cast::<f32>().unwrap();
+                b.iter(|| black_box(gray_from_rgb_float_cl_wgpu(&src_f32, &mut dst_f32)))
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("gray_from_rgb_cubecl_cuda", &parameter_string),
+            &(&image_u8, &gray_u8),
+            |b, i| {
+                let (src, dst) = (i.0, i.1.clone());
+                let src_f32 = src.cast::<f32>().unwrap();
+                let mut dst_f32 = dst.cast::<f32>().unwrap();
+                b.iter(|| black_box(gray_from_rgb_float_cl_cuda(&src_f32, &mut dst_f32)))
             },
         );
     }

@@ -11,7 +11,11 @@ struct GrayFromRgbArgs {
 }
 
 #[cube(launch_unchecked)]
-fn gray_from_rgb_kernel<F: Float>(src: &Array<F>, dst: &mut Array<F>, args: GrayFromRgbArgs) {
+fn gray_from_rgb_float_cl_kernel<F: Float>(
+    src: &Array<Line<F>>,
+    dst: &mut Array<Line<F>>,
+    args: GrayFromRgbArgs,
+) {
     let x = CUBE_POS_X * CUBE_DIM_X + UNIT_POS_X;
     let y = CUBE_POS_Y * CUBE_DIM_Y + UNIT_POS_Y;
 
@@ -20,57 +24,37 @@ fn gray_from_rgb_kernel<F: Float>(src: &Array<F>, dst: &mut Array<F>, args: Gray
 
     if x < cols && y < rows {
         let idx = y * cols + x;
-        let r = src[3 * idx];
-        let g = src[3 * idx + 1];
-        let b = src[3 * idx + 2];
-
-        let gray = r * comptime! {F::new(0.299)}
-            + g * comptime! {F::new(0.587)}
-            + b * comptime! {F::new(0.114)};
-
-        dst[idx] = gray;
+        let r = src[3 * idx] / 255.0;
+        let g = src[3 * idx + 1] / 255.0;
+        let b = src[3 * idx + 2] / 255.0;
+        let gray = r * 0.299 + g * 0.587 + b * 0.114;
+        dst[idx] = gray * 255.0;
     }
 }
 
 /// Convert a RGB image to a grayscale image on the GPU.
-pub fn gray_from_rgb_cubecl(src: &Image<u8, 3>, dst: &mut Image<u8, 1>) {
-    let cols = src.cols() as u32;
-    let rows = src.rows() as u32;
-
-    let src_vec = src
-        .as_slice()
-        .iter()
-        .map(|x| (*x as f32) / 255.0)
-        .collect::<Vec<_>>();
-
-    let dst_vec = dst
-        .as_slice()
-        .iter()
-        .map(|x| (*x as f32) / 255.0)
-        .collect::<Vec<_>>();
-
-    type R = cubecl::wgpu::WgpuRuntime;
-    let device = cubecl::wgpu::WgpuDevice::DefaultDevice;
-    //let device = cubecl::wgpu::WgpuDevice::Cpu;
-
-    //type R = cubecl::cuda::CudaRuntime;
-    //let device = cubecl::cuda::CudaDevice::new(0);
-
+fn gray_from_rgb_float_cl_impl<R: Runtime>(
+    src: &[f32],
+    dst: &mut [f32],
+    cols: u32,
+    rows: u32,
+    device: &R::Device,
+) {
     let client = R::client(&device);
 
-    let input_handle = client.create(f32::as_bytes(&src_vec));
-    let output_handle = client.create(f32::as_bytes(&dst_vec));
+    let input_handle = client.create(f32::as_bytes(&src));
+    let output_handle = client.create(f32::as_bytes(&dst));
 
     let cube_dim = CubeDim::default();
-    let cube_count = calculate_cube_count_elemwise(dst.numel(), cube_dim);
+    let cube_count = calculate_cube_count_elemwise(dst.len(), cube_dim);
 
     unsafe {
-        gray_from_rgb_kernel::launch_unchecked::<f32, R>(
+        gray_from_rgb_float_cl_kernel::launch_unchecked::<f32, R>(
             &client,
             cube_count,
             cube_dim,
-            ArrayArg::from_raw_parts::<f32>(&input_handle, src.numel(), 1),
-            ArrayArg::from_raw_parts::<f32>(&output_handle, dst.numel(), 1),
+            ArrayArg::from_raw_parts::<f32>(&input_handle, src.len(), 1),
+            ArrayArg::from_raw_parts::<f32>(&output_handle, dst.len(), 1),
             GrayFromRgbArgsLaunch::new(ScalarArg::new(cols), ScalarArg::new(rows)),
         );
     }
@@ -78,9 +62,50 @@ pub fn gray_from_rgb_cubecl(src: &Image<u8, 3>, dst: &mut Image<u8, 1>) {
     // put the result back to the dst
     let out_bytes = client.read_one(output_handle.binding());
     let out_dst = f32::from_bytes(&out_bytes);
+    dst.copy_from_slice(&out_dst);
+}
 
-    for (out_i, out_dst_i) in dst.as_slice_mut().iter_mut().zip(out_dst.iter()) {
-        *out_i = (*out_dst_i * 255.0) as u8;
+/// Convert a RGB image to a grayscale image on the GPU using cubecl with wgpu.
+pub fn gray_from_rgb_float_cl_wgpu(src: &Image<f32, 3>, dst: &mut Image<f32, 1>) {
+    let (cols, rows) = (dst.cols() as u32, dst.rows() as u32);
+    let device = cubecl::wgpu::WgpuDevice::DefaultDevice;
+    gray_from_rgb_float_cl_impl::<cubecl::wgpu::WgpuRuntime>(
+        src.as_slice(),
+        dst.as_slice_mut(),
+        cols,
+        rows,
+        &device,
+    );
+}
+
+/// Convert a RGB image to a grayscale image on the GPU using cubecl with cuda.
+pub fn gray_from_rgb_float_cl_cuda(src: &Image<f32, 3>, dst: &mut Image<f32, 1>) {
+    let (cols, rows) = (dst.cols() as u32, dst.rows() as u32);
+    let device = cubecl::cuda::CudaDevice::new(0);
+    gray_from_rgb_float_cl_impl::<cubecl::cuda::CudaRuntime>(
+        src.as_slice(),
+        dst.as_slice_mut(),
+        cols,
+        rows,
+        &device,
+    );
+}
+
+/// Convert a RGB8 image to a grayscale image on the GPU using cubecl with cuda.
+pub fn gray_from_rgb_u8_cl_cuda(src: &Image<u8, 3>, dst: &mut Image<u8, 1>) {
+    let (cols, rows) = (dst.cols() as u32, dst.rows() as u32);
+    let device = cubecl::cuda::CudaDevice::new(0);
+    let src_f32 = src.cast::<f32>().unwrap();
+    let mut dst_f32 = dst.cast::<f32>().unwrap();
+    gray_from_rgb_float_cl_impl::<cubecl::cuda::CudaRuntime>(
+        src_f32.as_slice(),
+        dst_f32.as_slice_mut(),
+        cols,
+        rows,
+        &device,
+    );
+    for (dst, out) in dst_f32.as_slice().into_iter().zip(dst.as_slice_mut()) {
+        *out = dst.round() as u8;
     }
 }
 
@@ -90,23 +115,35 @@ mod tests {
     use kornia_image::Image;
 
     #[test]
-    fn test_cubecl_small() -> Result<(), Box<dyn std::error::Error>> {
-        let src = Image::new([2, 1].into(), vec![0, 128, 255, 128, 0, 128])?;
+    fn test_cubecl_float_small() -> Result<(), Box<dyn std::error::Error>> {
+        let src = Image::new([2, 1].into(), vec![0.0, 128.0, 255.0, 128.0, 0.0, 128.0])?;
+        let mut dst = Image::from_size_val([2, 1].into(), 1.0)?;
+
+        gray_from_rgb_float_cl_wgpu(&src, &mut dst);
+
+        assert_eq!(dst.as_slice(), &[104.206, 52.864002]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cubecl_numeric_small() -> Result<(), Box<dyn std::error::Error>> {
+        let src = Image::new([2, 1].into(), vec![0u8, 128, 255, 128, 0, 128])?;
         let mut dst = Image::from_size_val([2, 1].into(), 0)?;
 
-        gray_from_rgb_cubecl(&src, &mut dst);
+        gray_from_rgb_u8_cl_cuda(&src, &mut dst);
 
-        assert_eq!(dst.as_slice(), &[104, 52]);
+        assert_eq!(dst.as_slice(), &[104, 53]);
 
         Ok(())
     }
 
     #[test]
     fn test_cubecl_large() -> Result<(), Box<dyn std::error::Error>> {
-        let src = Image::new([1024, 1024].into(), vec![0; 1024 * 1024 * 3])?;
-        let mut dst = Image::from_size_val([1024, 1024].into(), 0)?;
+        let src = Image::new([1024, 1024].into(), vec![0.0; 1024 * 1024 * 3])?;
+        let mut dst = Image::from_size_val([1024, 1024].into(), 0.0)?;
 
-        gray_from_rgb_cubecl(&src, &mut dst);
+        gray_from_rgb_float_cl_cuda(&src, &mut dst);
 
         Ok(())
     }
