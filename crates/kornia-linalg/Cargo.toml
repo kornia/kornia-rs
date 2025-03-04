@@ -13,4 +13,11 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[features]
+default = ["std"]
+
+std = ["glam/std"]
+libm = ["glam/libm"]
+
 [dependencies]
+glam = { version = "0.30.0", default-features = false }
