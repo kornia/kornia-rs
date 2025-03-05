@@ -2,7 +2,7 @@ use std::ops::{Index, IndexMut};
 
 use glam::{Mat3, Quat, Vec3};
 
-const GEMMA: f32 = 5.828427124;
+const GAMMA: f32 = 5.828427124;
 const CSTAR: f32 = 0.923879532;
 const SSTAR: f32 = 0.3826834323;
 const SVD_EPSILON: f32 = 1e-6;
@@ -10,13 +10,13 @@ const JACOBI_STEPS: u32 = 12;
 const RSQRT_STEPS: u32 = 4;
 const RSQRT1_STEPS: u32 = 6;
 
-/// Calculates the result of x / y. Required as the accurate square root function otherwise uses a reciprocal approximation when using optimizations on a GPU which can lead to slightly different results. If non exact matching results are acceptable a simple division can be used.
-pub fn fdiv(x: f32, y: f32) -> f32 {
+/// Standard CPU division.
+fn fdiv(x: f32, y: f32) -> f32 {
     return x / y;
 }
 
 /// Calculates the reciprocal square root of x using a fast approximation.
-pub fn rsqrt(x: f32) -> f32 {
+fn rsqrt(x: f32) -> f32 {
     let xhalf = -0.5 * x;
     let mut i = x.to_bits() as i32; // Convert float to raw bits
     i = 0x5f375a82 - (i >> 1); // Magic constant and bit manipulation
@@ -30,7 +30,7 @@ pub fn rsqrt(x: f32) -> f32 {
 }
 
 /// See rsqrt. Uses RSQRT1_STEPS to offer a higher precision alternative
-pub fn rsqrt1(mut x: f32) -> f32 {
+fn rsqrt1(mut x: f32) -> f32 {
     let xhalf = -0.5 * x;
     let mut i = x.to_bits() as i32;
     i = 0x5f37599e - (i >> 1);
@@ -44,7 +44,7 @@ pub fn rsqrt1(mut x: f32) -> f32 {
 }
 
 /// Calculates the square root of x using 1.f/rsqrt1(x) to give a square root with controllable and consistent precision.
-pub fn accurate_sqrt(x: f32) -> f32 {
+fn accurate_sqrt(x: f32) -> f32 {
     return fdiv(1.0, rsqrt(x));
 }
 
@@ -63,33 +63,6 @@ fn cond_neg_swap(c: bool, x: &mut f32, y: &mut f32) {
     if c {
         *x = *y;
         *y = z;
-    }
-}
-
-/// Helper function used to convert quaternion to matrix
-pub fn quaternion_to_matrix(q: &IndexedQuat) -> Mat3 {
-    let w = q[3];
-    let x = q[0];
-    let y = q[1];
-    let z = q[2];
-
-    // Return a Mat3 constructed with the proper rows
-    Mat3 {
-        x_axis: Vec3::new(
-            1.0 - 2.0 * (y * y + z * z),
-            2.0 * (x * y - w * z),
-            2.0 * (x * z + w * y),
-        ),
-        y_axis: Vec3::new(
-            2.0 * (x * y + w * z),
-            1.0 - 2.0 * (x * x + z * z),
-            2.0 * (y * z - w * x),
-        ),
-        z_axis: Vec3::new(
-            2.0 * (x * z - w * y),
-            2.0 * (y * z + w * x),
-            1.0 - 2.0 * (x * x + y * y),
-        ),
     }
 }
 
@@ -189,21 +162,21 @@ pub struct SVDSet {
     pub V: Mat3,
 }
 
-/// Calculates the squared norm of the vector [x y z] using a standard scalar product d = x * x + y *y + z * z
-pub fn dist2(x: f32, y: f32, z: f32) -> f32 {
-    x * x + (y * y + z * z)
+/// Calculates the squared norm of the vector [x y z] using a standard scalar product d = x * x + y * y + z * z
+fn dist2(x: f32, y: f32, z: f32) -> f32 {
+    x * x + y * y + z * z
 }
 
 /// For an explanation of the math see http://pages.cs.wisc.edu/~sifakis/papers/SVD_TR1690.pdf
 /// Computing the Singular Value Decomposition of 3 x 3 matrices with minimal branching and elementary floating point operations
 /// See Algorithm 2 in reference. Given a matrix A this function returns the givens quaternion (x and w component, y and z are 0)
-pub fn approximate_givens_quaternion(A: &Symmetric3x3) -> Givens {
+fn approximate_givens_quaternion(A: &Symmetric3x3) -> Givens {
     let g = Givens {
         ch: 2.0 * (A.m_00 - A.m_11),
         sh: A.m_10,
     };
 
-    let mut b = GEMMA * g.sh * g.sh < g.ch * g.ch;
+    let mut b = GAMMA * g.sh * g.sh < g.ch * g.ch;
     let w = rsqrt(g.ch * g.ch + g.sh * g.sh);
 
     if w != w {
@@ -228,6 +201,10 @@ pub struct IndexedQuat(Quat);
 impl IndexedQuat {
     fn new(q: Quat) -> Self {
         IndexedQuat(q)
+    }
+
+    fn to_quat(&self) -> Quat {
+        self.0
     }
 }
 
@@ -258,7 +235,7 @@ impl IndexMut<usize> for IndexedQuat {
 }
 
 /// Function used to apply a givens rotation S. Calculates the weights and updates the quaternion to contain the cumultative rotation
-pub fn jacobi_conjugation(x: usize, y: usize, z: usize, S: &mut Symmetric3x3, q: &mut IndexedQuat) {
+fn jacobi_conjugation(x: usize, y: usize, z: usize, S: &mut Symmetric3x3, q: &mut IndexedQuat) {
     // Compute the Givens rotation (approximated)
     let mut g = approximate_givens_quaternion(S);
     // Scale and calculate intermediate values
@@ -308,18 +285,19 @@ pub fn jacobi_conjugation(x: usize, y: usize, z: usize, S: &mut Symmetric3x3, q:
 
 /// Function used to contain the givens permutations and the loop of the jacobi steps controlled by JACOBI_STEPS
 /// Returns the quaternion q containing the cumultative result used to reconstruct S
-pub fn jacobi_eigenanalysis(mut S: Symmetric3x3) -> Mat3 {
+fn jacobi_eigenanalysis(mut S: Symmetric3x3) -> Mat3 {
     let mut q = IndexedQuat::new(Quat::from_xyzw(0.0, 0.0, 0.0, 1.0));
     for _i in 0..JACOBI_STEPS {
         jacobi_conjugation(0, 1, 2, &mut S, &mut q);
         jacobi_conjugation(1, 2, 0, &mut S, &mut q);
         jacobi_conjugation(2, 0, 1, &mut S, &mut q);
     }
-    return quaternion_to_matrix(&q);
+
+    return Mat3::from_quat(q.to_quat());
 }
 
 /// Implementation of Algorithm 3
-pub fn sort_singular_values(B: &mut Mat3, V: &mut Mat3) {
+fn sort_singular_values(B: &mut Mat3, V: &mut Mat3) {
     let mut rho1 = dist2(B.x_axis.x, B.y_axis.x, B.z_axis.x);
     let mut rho2 = dist2(B.x_axis.y, B.y_axis.y, B.z_axis.y);
     let mut rho3 = dist2(B.x_axis.z, B.y_axis.z, B.z_axis.z);
@@ -352,7 +330,7 @@ pub fn sort_singular_values(B: &mut Mat3, V: &mut Mat3) {
 }
 
 /// Implementation of Algorithm 4
-pub fn qr_givens_quaternion(a1: f32, a2: f32) -> Givens {
+fn qr_givens_quaternion(a1: f32, a2: f32) -> Givens {
     // a1 = pivot point on diagonal
     // a2 = lower triangular entry we want to annihilate
     let epsilon = SVD_EPSILON; // Assuming _SVD_EPSILON is defined elsewhere
@@ -374,7 +352,7 @@ pub fn qr_givens_quaternion(a1: f32, a2: f32) -> Givens {
 }
 
 /// Implements a QR decomposition of a Matrix
-pub fn qr_decomposition(B: &mut Mat3) -> QR {
+fn qr_decomposition(B: &mut Mat3) -> QR {
     let mut Q = Mat3::ZERO;
     let mut R = Mat3::ZERO;
 
@@ -448,7 +426,7 @@ pub fn qr_decomposition(B: &mut Mat3) -> QR {
 }
 
 /// Wrapping function used to contain all of the required sub calls
-pub fn svd(A: Mat3) -> SVDSet {
+pub fn svd3(A: Mat3) -> SVDSet {
     // Compute the eigenvectors of A^T * A, which is V in SVD (Singular Vectors)
     let V = jacobi_eigenanalysis(Symmetric3x3::from_mat3x3(&(A.transpose().mul_mat3(&A))));
 
@@ -478,7 +456,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_svd() {
+    fn test_svd3() {
         // Define a simple 3x3 matrix A
         let A = Mat3 {
             x_axis: Vec3::new(1.0, 0.0, 0.0),
@@ -487,12 +465,13 @@ mod tests {
         };
 
         // Perform SVD on matrix A
-        let svd_result = svd(A);
+        let A_clone = A.clone();
+        let svd_result = svd3(A_clone);
         // Check matrix V
         assert!(
             A == svd_result
                 .U
-                .mul_mat3(&(svd_result.S.mul_mat3(&svd_result.V))),
+                .mul_mat3(&(svd_result.S.mul_mat3(&svd_result.V.transpose()))),
             "The calculated SVD is wrong"
         );
 
