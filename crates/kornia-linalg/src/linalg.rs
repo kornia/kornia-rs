@@ -1,14 +1,13 @@
-use std::ops::{Index, IndexMut};
-
+// Reference: https://github.com/wi-re/tbtSVD/blob/master/source/SVD.h
 use glam::{Mat3, Quat, Vec3};
-
+use std::ops::{Index, IndexMut};
 const GAMMA: f32 = 5.828427124;
 const CSTAR: f32 = 0.923879532;
 const SSTAR: f32 = 0.3826834323;
 const SVD_EPSILON: f32 = 1e-6;
-const JACOBI_STEPS: u32 = 12;
-const RSQRT_STEPS: u32 = 4;
-const RSQRT1_STEPS: u32 = 6;
+const JACOBI_STEPS: u8 = 12;
+const RSQRT_STEPS: u8 = 4;
+const rsqrt_mut_STEPS: u8 = 6;
 
 /// Standard CPU division.
 fn fdiv(x: f32, y: f32) -> f32 {
@@ -29,21 +28,21 @@ fn rsqrt(x: f32) -> f32 {
     x
 }
 
-/// See rsqrt. Uses RSQRT1_STEPS to offer a higher precision alternative
-fn rsqrt1(mut x: f32) -> f32 {
+/// See rsqrt. Uses rsqrt_mut_STEPS to offer a higher precision alternative
+fn rsqrt_mut(mut x: f32) -> f32 {
     let xhalf = -0.5 * x;
     let mut i = x.to_bits() as i32;
     i = 0x5f37599e - (i >> 1);
     x = f32::from_bits(i as u32);
 
-    for _ in 0..RSQRT1_STEPS {
+    for _ in 0..rsqrt_mut_STEPS {
         x = x * (x * x * xhalf + 1.5);
     }
 
     return x;
 }
 
-/// Calculates the square root of x using 1.f/rsqrt1(x) to give a square root with controllable and consistent precision.
+/// Calculates the square root of x using 1.f/rsqrt_mut(x) to give a square root with controllable and consistent precision.
 fn accurate_sqrt(x: f32) -> f32 {
     return fdiv(1.0, rsqrt(x));
 }
@@ -66,31 +65,31 @@ fn cond_neg_swap(c: bool, x: &mut f32, y: &mut f32) {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 /// A simple symmetric 3x3 Matrix class (contains no storage for (0, 1) (0, 2) and (1, 2)
-pub struct Symmetric3x3 {
+struct Symmetric3x3 {
     /// The element at row 0, column 0 of the matrix, typically the first diagonal element.
-    pub m_00: f32,
+    m_00: f32,
 
     /// The element at row 1, column 0 of the matrix. Since this is a symmetric matrix, it is equivalent to `m_01`.
-    pub m_10: f32,
+    m_10: f32,
 
     /// The element at row 1, column 1 of the matrix, the second diagonal element.
-    pub m_11: f32,
+    m_11: f32,
 
     /// The element at row 2, column 0 of the matrix. Since this is a symmetric matrix, it is equivalent to `m_02`.
-    pub m_20: f32,
+    m_20: f32,
 
     /// The element at row 2, column 1 of the matrix. Since this is a symmetric matrix, it is equivalent to `m_12`.
-    pub m_21: f32,
+    m_21: f32,
 
     /// The element at row 2, column 2 of the matrix, the third diagonal element.
-    pub m_22: f32,
+    m_22: f32,
 }
 
 impl Symmetric3x3 {
     /// Constructor to initialize the symmetric matrix with given values
-    pub fn new(a11: f32, a21: f32, a22: f32, a31: f32, a32: f32, a33: f32) -> Self {
+    fn new(a11: f32, a21: f32, a22: f32, a31: f32, a32: f32, a33: f32) -> Self {
         Symmetric3x3 {
             m_00: a11,
             m_10: a21,
@@ -102,7 +101,7 @@ impl Symmetric3x3 {
     }
 
     /// Constructor from a regular Mat3x3 (assuming Mat3x3 exists)
-    pub fn from_mat3x3(mat: &Mat3) -> Self {
+    fn from_mat3x3(mat: &Mat3) -> Self {
         Symmetric3x3 {
             m_00: mat.x_axis.x,
             m_10: mat.x_axis.y,
@@ -114,24 +113,24 @@ impl Symmetric3x3 {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 /// Helper struct to store 2 floats to avoid OUT parameters on functions
-pub struct Givens {
+struct Givens {
     /// The cosine of the angle in the Givens rotation.
-    pub ch: f32,
+    ch: f32,
 
     /// The sine of the angle in the Givens rotation.
-    pub sh: f32,
+    sh: f32,
 }
 
 impl Givens {
     /// Constructor with default values for ch and sh
-    pub fn new(ch: f32, sh: f32) -> Self {
+    fn new(ch: f32, sh: f32) -> Self {
         Givens { ch, sh }
     }
 
     /// Constructor with default CSTAR and SSTAR values
-    pub fn default() -> Self {
+    fn default() -> Self {
         Givens {
             ch: CSTAR,
             sh: SSTAR,
@@ -139,27 +138,27 @@ impl Givens {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 /// Helper struct to store 2 Matrices to avoid OUT parameters on functions
-pub struct QR {
+struct QR3 {
     /// The orthogonal matrix Q from the QR decomposition.
-    pub Q: Mat3,
+    Q: Mat3,
 
     /// The upper triangular matrix R from the QR decomposition.
-    pub R: Mat3,
+    R: Mat3,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 /// Helper struct to store 3 Matrices to avoid OUT parameters on functions
-pub struct SVDSet {
+pub struct SVD3Set {
     /// The matrix of left singular vectors.
-    pub U: Mat3,
+    U: Mat3,
 
     /// The diagonal matrix of singular values.
-    pub S: Mat3,
+    S: Mat3,
 
     /// The matrix of right singular vectors.
-    pub V: Mat3,
+    V: Mat3,
 }
 
 /// Calculates the squared norm of the vector [x y z] using a standard scalar product d = x * x + y * y + z * z
@@ -196,7 +195,7 @@ fn approximate_givens_quaternion(A: &Symmetric3x3) -> Givens {
 /// This struct provides custom indexing behavior for quaternion components (`x`, `y`, `z`, and `w`),
 /// enabling access and mutation using an index (e.g., `q[0]`, `q[1]`, etc.). It implements both
 /// the `Index` and `IndexMut` traits to allow for immutable and mutable access to the quaternion's components.
-pub struct IndexedQuat(Quat);
+struct IndexedQuat(Quat);
 
 impl IndexedQuat {
     fn new(q: Quat) -> Self {
@@ -217,7 +216,7 @@ impl Index<usize> for IndexedQuat {
             1 => &self.0.y,
             2 => &self.0.z,
             3 => &self.0.w,
-            _ => panic!("Index out of bounds for Quaternion"),
+            _ => panic!("Index out of bounds for Quaternion: {}", index),
         }
     }
 }
@@ -229,7 +228,7 @@ impl IndexMut<usize> for IndexedQuat {
             1 => &mut self.0.y,
             2 => &mut self.0.z,
             3 => &mut self.0.w,
-            _ => panic!("Index out of bounds for Quaternion"),
+            _ => panic!("Index out of bounds for Quaternion: {}", index),
         }
     }
 }
@@ -352,7 +351,7 @@ fn qr_givens_quaternion(a1: f32, a2: f32) -> Givens {
 }
 
 /// Implements a QR decomposition of a Matrix
-fn qr_decomposition(B: &mut Mat3) -> QR {
+fn qr_decomposition(B: &mut Mat3) -> QR3 {
     let mut Q = Mat3::ZERO;
     let mut R = Mat3::ZERO;
 
@@ -422,11 +421,11 @@ fn qr_decomposition(B: &mut Mat3) -> QR {
     Q.z_axis.y = -2.0 * g3.ch * sh22 * g3.sh;
     Q.z_axis.z = sh22 * sh32;
 
-    QR { Q, R }
+    QR3 { Q, R }
 }
 
 /// Wrapping function used to contain all of the required sub calls
-pub fn svd3(A: Mat3) -> SVDSet {
+pub fn svd3(A: Mat3) -> SVD3Set {
     // Compute the eigenvectors of A^T * A, which is V in SVD (Singular Vectors)
     let V = jacobi_eigenanalysis(Symmetric3x3::from_mat3x3(&(A.transpose().mul_mat3(&A))));
 
@@ -442,7 +441,7 @@ pub fn svd3(A: Mat3) -> SVDSet {
     // Reset MXCSR register (if needed)
 
     // Return the SVD result, which includes Q (as U), R (as S), and V
-    SVDSet {
+    SVD3Set {
         U: qr.Q,
         S: qr.R,
         V,
@@ -451,9 +450,9 @@ pub fn svd3(A: Mat3) -> SVDSet {
 
 #[cfg(test)]
 mod tests {
-    use glam::{Mat3, Vec3};
-
     use super::*;
+    use approx::assert_relative_eq;
+    use glam::{Mat3, Vec3};
 
     #[test]
     fn test_svd3() {
@@ -468,11 +467,11 @@ mod tests {
         let A_clone = A.clone();
         let svd_result = svd3(A_clone);
         // Check matrix V
-        assert!(
-            A == svd_result
+        assert_eq!(
+            A,
+            svd_result
                 .U
-                .mul_mat3(&(svd_result.S.mul_mat3(&svd_result.V.transpose()))),
-            "The calculated SVD is wrong"
+                .mul_mat3(&(svd_result.S.mul_mat3(&svd_result.V.transpose())))
         );
 
         let singular_values = vec![

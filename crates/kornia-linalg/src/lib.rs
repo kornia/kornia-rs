@@ -1,5 +1,5 @@
 #![deny(missing_docs)]
 #![doc = env!("CARGO_PKG_DESCRIPTION")]
 
-/// image representation for computer vision purposes.
+/// Module to calculate SVD of a 3x3 matrix
 pub mod linalg;

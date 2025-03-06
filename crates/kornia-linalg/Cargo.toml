@@ -20,4 +20,14 @@ std = ["glam/std"]
 libm = ["glam/libm"]
 
 [dependencies]
+faer = { workspace = true }
 glam = { version = "0.30.0", default-features = false }
+
+
+[dev-dependencies]
+approx = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "bench_linalg"
+harness = false
