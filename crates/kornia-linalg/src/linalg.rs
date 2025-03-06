@@ -16,16 +16,10 @@ fn fdiv(x: f32, y: f32) -> f32 {
 
 /// Calculates the reciprocal square root of x using a fast approximation.
 fn rsqrt(x: f32) -> f32 {
-    let xhalf = -0.5 * x;
-    let mut i = x.to_bits() as i32; // Convert float to raw bits
-    i = 0x5f375a82 - (i >> 1); // Magic constant and bit manipulation
-    let mut x = f32::from_bits(i as u32); // Convert bits back to float
-
-    for _ in 0..RSQRT_STEPS {
-        x = x * (x * x * xhalf + 1.5);
-    }
-
-    x
+    let mut i: i32 = x.to_bits() as i32;
+    i = 0x5F375A86_i32.wrapping_sub(i >> 1);
+    let y = f32::from_bits(i as u32);
+    y * (1.5 - (x * 0.5 * y * y))
 }
 
 /// See rsqrt. Uses rsqrt_mut_STEPS to offer a higher precision alternative
@@ -121,21 +115,6 @@ struct Givens {
 
     /// The sine of the angle in the Givens rotation.
     sh: f32,
-}
-
-impl Givens {
-    /// Constructor with default values for ch and sh
-    fn new(ch: f32, sh: f32) -> Self {
-        Givens { ch, sh }
-    }
-
-    /// Constructor with default CSTAR and SSTAR values
-    fn default() -> Self {
-        Givens {
-            ch: CSTAR,
-            sh: SSTAR,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -425,7 +404,7 @@ fn qr_decomposition(B: &mut Mat3) -> QR3 {
 }
 
 /// Wrapping function used to contain all of the required sub calls
-pub fn svd3(A: Mat3) -> SVD3Set {
+pub fn svd3(A: &Mat3) -> SVD3Set {
     // Compute the eigenvectors of A^T * A, which is V in SVD (Singular Vectors)
     let V = jacobi_eigenanalysis(Symmetric3x3::from_mat3x3(&(A.transpose().mul_mat3(&A))));
 
@@ -465,7 +444,7 @@ mod tests {
 
         // Perform SVD on matrix A
         let A_clone = A.clone();
-        let svd_result = svd3(A_clone);
+        let svd_result = svd3(&A_clone);
         // Check matrix V
         assert_eq!(
             A,

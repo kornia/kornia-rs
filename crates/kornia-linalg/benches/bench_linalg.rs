@@ -15,7 +15,7 @@ fn bench_svd3(c: &mut Criterion) {
 
     group.bench_function(BenchmarkId::new("svd3", ""), |b| {
         b.iter(|| {
-            linalg::svd3(A1);
+            linalg::svd3(&A1);
             black_box(());
         })
     });
