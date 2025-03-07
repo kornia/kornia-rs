@@ -5,7 +5,7 @@ const GAMMA: f32 = 5.828427124;
 const CSTAR: f32 = 0.923879532;
 const SSTAR: f32 = 0.3826834323;
 const SVD_EPSILON: f32 = 1e-6;
-const JACOBI_STEPS: u8 = 12;
+const JACOBI_STEPS: u8 = 6;
 const RSQRT_STEPS: u8 = 4;
 const rsqrt_mut_STEPS: u8 = 6;
 
@@ -153,9 +153,10 @@ fn approximate_givens_quaternion(A: &Symmetric3x3) -> Givens {
         ch: 2.0 * (A.m_00 - A.m_11),
         sh: A.m_10,
     };
-
-    let mut b = GAMMA * g.sh * g.sh < g.ch * g.ch;
-    let w = rsqrt(g.ch * g.ch + g.sh * g.sh);
+    let ch2 = g.ch * g.ch;
+    let sh2 = g.sh * g.sh;
+    let mut b = GAMMA * sh2 < ch2;
+    let w = rsqrt(ch2 + sh2);
 
     if w != w {
         // Checking for NaN
@@ -217,8 +218,10 @@ fn jacobi_conjugation(x: usize, y: usize, z: usize, S: &mut Symmetric3x3, q: &mu
     // Compute the Givens rotation (approximated)
     let mut g = approximate_givens_quaternion(S);
     // Scale and calculate intermediate values
-    let scale = 1.0 / (g.ch * g.ch + g.sh * g.sh);
-    let a = (g.ch * g.ch - g.sh * g.sh) * scale;
+    let ch2 = g.ch * g.ch;
+    let sh2 = g.sh * g.sh;
+    let scale = 1.0 / (ch2 + sh2);
+    let a = (ch2 - sh2) * scale;
     let b = 2.0 * g.sh * g.ch * scale;
 
     // Create a copy of the matrix to avoid modifying the original during calculations
