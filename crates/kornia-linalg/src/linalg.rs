@@ -433,16 +433,108 @@ pub fn svd3(A: &Mat3) -> SVD3Set {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use approx::assert_relative_eq;
     use glam::{Mat3, Vec3};
 
     #[test]
-    fn test_svd3() {
+    fn test_svd3_1() {
         // Define a simple 3x3 matrix A
         let A = Mat3 {
             x_axis: Vec3::new(1.0, 0.0, 0.0),
             y_axis: Vec3::new(0.0, 2.0, 0.0),
             z_axis: Vec3::new(0.0, 0.0, 3.0),
+        };
+
+        // Perform SVD on matrix A
+        let A_clone = A.clone();
+        let svd_result = svd3(&A_clone);
+        // Check matrix V
+        assert_eq!(
+            A,
+            svd_result
+                .U
+                .mul_mat3(&(svd_result.S.mul_mat3(&svd_result.V.transpose())))
+        );
+
+        let singular_values = vec![
+            svd_result.S.x_axis.x,
+            svd_result.S.y_axis.y,
+            svd_result.S.z_axis.z,
+        ];
+        assert!(
+            singular_values[0] >= singular_values[1] && singular_values[1] >= singular_values[2],
+            "Singular values are not sorted properly"
+        );
+    }
+
+    #[test]
+    fn test_svd3_2() {
+        // Define a Zero Matrix 3x3 matrix A
+        let A = Mat3 {
+            x_axis: Vec3::new(0.0, 0.0, 0.0),
+            y_axis: Vec3::new(0.0, 0.0, 0.0),
+            z_axis: Vec3::new(0.0, 0.0, 0.0),
+        };
+
+        // Perform SVD on matrix A
+        let A_clone = A.clone();
+        let svd_result = svd3(&A_clone);
+        // Check matrix V
+        assert_eq!(
+            A,
+            svd_result
+                .U
+                .mul_mat3(&(svd_result.S.mul_mat3(&svd_result.V.transpose())))
+        );
+
+        let singular_values = vec![
+            svd_result.S.x_axis.x,
+            svd_result.S.y_axis.y,
+            svd_result.S.z_axis.z,
+        ];
+        assert!(
+            singular_values[0] >= singular_values[1] && singular_values[1] >= singular_values[2],
+            "Singular values are not sorted properly"
+        );
+    }
+
+    #[test]
+    fn test_svd3_3() {
+        // Define a Identity Matrix 3x3 matrix A
+        let A = Mat3 {
+            x_axis: Vec3::new(1.0, 0.0, 0.0),
+            y_axis: Vec3::new(0.0, 1.0, 0.0),
+            z_axis: Vec3::new(0.0, 0.0, 1.0),
+        };
+
+        // Perform SVD on matrix A
+        let A_clone = A.clone();
+        let svd_result = svd3(&A_clone);
+        // Check matrix V
+        assert_eq!(
+            A,
+            svd_result
+                .U
+                .mul_mat3(&(svd_result.S.mul_mat3(&svd_result.V.transpose())))
+        );
+
+        let singular_values = vec![
+            svd_result.S.x_axis.x,
+            svd_result.S.y_axis.y,
+            svd_result.S.z_axis.z,
+        ];
+        assert!(
+            singular_values[0] >= singular_values[1] && singular_values[1] >= singular_values[2],
+            "Singular values are not sorted properly"
+        );
+    }
+
+    #[test]
+    fn test_svd3_4() {
+        // Define a Singular Matrix 3x3 matrix A
+        let A = Mat3 {
+            x_axis: Vec3::new(1.0, 2.0, 3.0),
+            y_axis: Vec3::new(2.0, 4.0, 6.0),
+            z_axis: Vec3::new(3.0, 6.0, 9.0),
         };
 
         // Perform SVD on matrix A
