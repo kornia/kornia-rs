@@ -12,6 +12,12 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+criterion.workspace = true
 kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
+rand.workspace = true
 thiserror = { workspace = true }
+
+[[bench]]
+name = "bench_cosine_similarity"
+harness = false
