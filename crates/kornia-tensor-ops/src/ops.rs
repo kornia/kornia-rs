@@ -76,7 +76,7 @@ where
     })
 }
 
-/// Compute the dot product between two tensors
+/// Compute the dot product between two 1D tensors
 ///
 /// # Arguments
 ///
@@ -102,10 +102,7 @@ where
 /// let result = dot_product_1d(&a, &b).unwrap();
 /// assert_eq!(result, 32); // 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
 /// ```
-pub fn dot_product_1d<T, const N: usize, A>(
-    a: &Tensor<T, N, A>,
-    b: &Tensor<T, N, A>,
-) -> Result<T, TensorOpsError>
+pub fn dot_product_1d<T, A>(a: &Tensor<T, 1, A>, b: &Tensor<T, 1, A>) -> Result<T, TensorOpsError>
 where
     T: Zero + Clone + std::ops::Add<Output = T> + std::ops::Mul<Output = T>,
     A: TensorAllocator + Clone + 'static,
@@ -125,125 +122,6 @@ where
     Ok(result)
 }
 
-/// Compute the cosine similarity between two tensors
-///
-/// # Arguments
-///
-/// * `a` - First tensor
-/// * `b` - Second tensor
-///
-/// # Returns
-///
-/// A scalar value representing the cosine similarity between the two tensors.
-/// The value ranges from -1 to 1, where:
-/// - 1 means the tensors are identical in direction (maximum similarity)
-/// - 0 means the tensors are orthogonal (no similarity)
-/// - -1 means the tensors are opposite in direction (maximum dissimilarity)
-///
-/// # Errors
-///
-/// If the shapes of the tensors don't match, an error is returned.
-///
-/// # Example
-///
-/// ```
-/// use kornia_tensor::{Tensor, CpuAllocator};
-/// use kornia_tensor_ops::ops::cosine_similarity;
-///
-/// let a = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 0.0, 0.0], CpuAllocator).unwrap();
-/// let b = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[0.0, 1.0, 0.0], CpuAllocator).unwrap();
-/// let result = cosine_similarity(&a, &b).unwrap();
-/// assert_eq!(result, 0.0); // Orthogonal vectors have cosine similarity of 0
-/// ```
-pub fn cosine_similarity<T, const N: usize, A>(
-    a: &Tensor<T, N, A>,
-    b: &Tensor<T, N, A>,
-) -> Result<T, TensorOpsError>
-where
-    T: Zero
-        + Clone
-        + std::ops::Add<Output = T>
-        + std::ops::Mul<Output = T>
-        + std::ops::Sub<Output = T>
-        + std::ops::Div<Output = T>
-        + num_traits::Float,
-    A: TensorAllocator + Clone + 'static,
-{
-    if a.shape != b.shape {
-        return Err(TensorOpsError::ShapeMismatch(
-            a.shape.to_vec(),
-            b.shape.to_vec(),
-        ));
-    }
-
-    // Calculate dot product
-    let ab = dot_product_1d(a, b)?;
-
-    // Calculate squared L2 norms using dot product with self
-    let a2 = dot_product_1d(a, a)?;
-    let b2 = dot_product_1d(b, b)?;
-
-    // Handle edge cases
-    if ab == T::zero() {
-        return Ok(T::zero());
-    }
-    if a2 == T::zero() || b2 == T::zero() {
-        return Ok(T::zero());
-    }
-
-    // Calculate cosine similarity: ab/(sqrt(a2)*sqrt(b2))
-    let denominator = a2.sqrt() * b2.sqrt();
-    Ok(ab / denominator)
-}
-
-/// Compute the cosine distance between two tensors
-///
-/// # Arguments
-///
-/// * `a` - First tensor
-/// * `b` - Second tensor
-///
-/// # Returns
-///
-/// A scalar value representing the cosine distance between the two tensors.
-/// The value ranges from 0 to 2, where:
-/// - 0 means the tensors are identical in direction (maximum similarity)
-/// - 1 means the tensors are orthogonal (no similarity)
-/// - 2 means the tensors are opposite in direction (maximum dissimilarity)
-///
-/// # Errors
-///
-/// If the shapes of the tensors don't match, an error is returned.
-///
-/// # Example
-///
-/// ```
-/// use kornia_tensor::{Tensor, CpuAllocator};
-/// use kornia_tensor_ops::ops::cosine_distance;
-///
-/// let a = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 2.0, 3.0], CpuAllocator).unwrap();
-/// let b = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 2.0, 3.0], CpuAllocator).unwrap();
-/// let result = cosine_distance(&a, &b).unwrap();
-/// assert!(result < 1e-6); // Same vectors have cosine distance of 0
-/// ```
-pub fn cosine_distance<T, const N: usize, A>(
-    a: &Tensor<T, N, A>,
-    b: &Tensor<T, N, A>,
-) -> Result<T, TensorOpsError>
-where
-    T: Zero
-        + Clone
-        + std::ops::Add<Output = T>
-        + std::ops::Mul<Output = T>
-        + std::ops::Sub<Output = T>
-        + num_traits::Float,
-    A: TensorAllocator + Clone + 'static,
-{
-    let similarity = cosine_similarity(a, b)?;
-    Ok(T::one() - similarity)
-}
-
-
 /// Compute the cosine similarity between two tensors with optimized computation
 ///
 /// This version computes the dot product and magnitudes in a single pass through the data.
@@ -260,18 +138,23 @@ where
 /// # Errors
 ///
 /// If the shapes of the tensors don't match, an error is returned.
-pub fn cosine_similarity_optimized<T, const N: usize, A>(
+///
+/// Example:
+/// ```
+/// use kornia_tensor::{Tensor, CpuAllocator};
+/// use kornia_tensor_ops::ops::cosine_similarity;
+///
+/// let a = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 2.0, 3.0], CpuAllocator).unwrap();
+/// let b = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[2.0, 4.0, 6.0], CpuAllocator).unwrap();
+/// let result = cosine_similarity(&a, &b).unwrap();
+/// assert!((result - 1.0).abs() < 1e-6);
+/// ```
+pub fn cosine_similarity<T, const N: usize, A>(
     a: &Tensor<T, N, A>,
     b: &Tensor<T, N, A>,
 ) -> Result<T, TensorOpsError>
 where
-    T: Zero
-        + Clone
-        + std::ops::Add<Output = T>
-        + std::ops::Mul<Output = T>
-        + std::ops::Sub<Output = T>
-        + std::ops::Div<Output = T>
-        + num_traits::Float,
+    T: num_traits::Float,
     A: TensorAllocator + Clone + 'static,
 {
     if a.shape != b.shape {
@@ -289,7 +172,7 @@ where
     for (a_val, b_val) in a.as_slice().iter().zip(b.as_slice().iter()) {
         let a_clone = a_val.clone();
         let b_clone = b_val.clone();
-        
+
         dot_product = dot_product + a_clone.clone() * b_clone.clone();
         magnitude_a = magnitude_a + a_clone * a_clone;
         magnitude_b = magnitude_b + b_clone * b_clone;
@@ -321,24 +204,26 @@ where
 /// # Errors
 ///
 /// If the shapes of the tensors don't match, an error is returned.
-pub fn cosine_distance_optimized<T, const N: usize, A>(
-    a: &Tensor<T, N, A>,
-    b: &Tensor<T, N, A>,
-) -> Result<T, TensorOpsError>
+///
+/// # Example
+///
+/// ```
+/// use kornia_tensor::{Tensor, CpuAllocator};
+/// use kornia_tensor_ops::ops::cosine_distance;
+///
+/// let a = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 2.0, 3.0], CpuAllocator).unwrap();
+/// let b = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[2.0, 4.0, 6.0], CpuAllocator).unwrap();
+/// let result = cosine_distance(&a, &b).unwrap();
+/// assert!(result.abs() < 1e-6);
+/// ```
+pub fn cosine_distance<T, A>(a: &Tensor<T, 1, A>, b: &Tensor<T, 1, A>) -> Result<T, TensorOpsError>
 where
-    T: Zero
-        + Clone
-        + std::ops::Add<Output = T>
-        + std::ops::Mul<Output = T>
-        + std::ops::Sub<Output = T>
-        + num_traits::Float,
+    T: num_traits::Float,
     A: TensorAllocator + Clone + 'static,
 {
-    let similarity = cosine_similarity_optimized(a, b)?;
+    let similarity = cosine_similarity(a, b)?;
     Ok(T::one() - similarity)
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -459,24 +344,6 @@ mod tests {
     }
 
     #[test]
-    fn test_dot_product_3d() -> Result<(), TensorOpsError> {
-        let a = Tensor::<i32, 3, CpuAllocator>::from_shape_slice(
-            [2, 2, 2],
-            &[1, 2, 3, 4, 5, 6, 7, 8],
-            CpuAllocator,
-        )?;
-        let b = Tensor::<i32, 3, CpuAllocator>::from_shape_slice(
-            [2, 2, 2],
-            &[8, 7, 6, 5, 4, 3, 2, 1],
-            CpuAllocator,
-        )?;
-        let result = dot_product_1d(&a, &b)?;
-        // (1*8 + 2*7 + 3*6 + 4*5 + 5*4 + 6*3 + 7*2 + 8*1) = 8 + 14 + 18 + 20 + 20 + 18 + 14 + 8 = 120
-        assert_eq!(result, 120);
-        Ok(())
-    }
-
-    #[test]
     fn test_cosine_similarity_orthogonal_vectors() -> Result<(), TensorOpsError> {
         // Orthogonal vectors (90 degrees) should have cosine similarity of 0
         let a =
@@ -587,38 +454,6 @@ mod tests {
         let result = cosine_distance(&e, &f)?;
         assert!((result - 2.0).abs() < 1e-6);
 
-        Ok(())
-    }
-
-    #[test]
-    fn test_cosine_similarity_optimized() -> Result<(), TensorOpsError> {
-        // Test with parallel vectors (should have similarity of 1)
-        let a = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 2.0, 3.0], CpuAllocator)?;
-        let b = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[2.0, 4.0, 6.0], CpuAllocator)?;
-        
-        let result = cosine_similarity_optimized(&a, &b)?;
-        assert!((result - 1.0).abs() < 1e-6);
-        
-        // Compare with original implementation
-        let original_result = cosine_similarity(&a, &b)?;
-        assert!((result - original_result).abs() < 1e-6);
-        
-        Ok(())
-    }
-
-    #[test]
-    fn test_cosine_distance_optimized() -> Result<(), TensorOpsError> {
-        // Test with orthogonal vectors (should have distance of 1)
-        let a = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 0.0, 0.0], CpuAllocator)?;
-        let b = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[0.0, 1.0, 0.0], CpuAllocator)?;
-        
-        let result = cosine_distance_optimized(&a, &b)?;
-        assert!((result - 1.0).abs() < 1e-6);
-        
-        // Compare with original implementation
-        let original_result = cosine_distance(&a, &b)?;
-        assert!((result - original_result).abs() < 1e-6);
-        
         Ok(())
     }
 }
