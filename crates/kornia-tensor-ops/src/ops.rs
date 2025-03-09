@@ -1,3 +1,4 @@
+use kernels::ops::{cosine_similarity_float_kernel, dot_product1_kernel};
 use kornia_tensor::{storage::TensorStorage, Tensor, TensorAllocator};
 use num_traits::Zero;
 
@@ -104,7 +105,7 @@ where
 /// ```
 pub fn dot_product1<T, A>(a: &Tensor<T, 1, A>, b: &Tensor<T, 1, A>) -> Result<T, TensorOpsError>
 where
-    T: Zero + Clone + std::ops::Add<Output = T> + std::ops::Mul<Output = T>,
+    T: Zero + Clone + std::ops::Add<Output = T> + std::ops::Mul<Output = T> + Copy,
     A: TensorAllocator + Clone + 'static,
 {
     if a.shape != b.shape {
@@ -114,12 +115,7 @@ where
         ));
     }
 
-    let mut result = T::zero();
-    for (a_val, b_val) in a.as_slice().iter().zip(b.as_slice().iter()) {
-        result = result + a_val.clone() * b_val.clone();
-    }
-
-    Ok(result)
+    dot_product1_kernel(a.as_slice(), b.as_slice()).map_err(|e| e.into())
 }
 
 /// Compute the cosine similarity between two tensors with optimized computation
@@ -164,26 +160,7 @@ where
         ));
     }
 
-    let mut dot_product = T::zero();
-    let mut magnitude_a = T::zero();
-    let mut magnitude_b = T::zero();
-
-    for (a_val, b_val) in a.as_slice().iter().zip(b.as_slice().iter()) {
-        let a_clone = a_val.clone();
-        let b_clone = b_val.clone();
-
-        dot_product = dot_product + a_clone.clone() * b_clone.clone();
-        magnitude_a = magnitude_a + a_clone * a_clone;
-        magnitude_b = magnitude_b + b_clone * b_clone;
-    }
-
-    // Handle edge cases
-    if magnitude_a == T::zero() || magnitude_b == T::zero() {
-        return Ok(T::zero());
-    }
-
-    let denominator = magnitude_a.sqrt() * magnitude_b.sqrt();
-    Ok(dot_product / denominator)
+    cosine_similarity_float_kernel(a.as_slice(), b.as_slice()).map_err(|e| e.into())
 }
 
 /// Compute the cosine distance between two tensors with optimized computation

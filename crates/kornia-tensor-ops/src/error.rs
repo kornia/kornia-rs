@@ -1,3 +1,4 @@
+use kernels::error::KernelError;
 use kornia_tensor::TensorError;
 use thiserror::Error;
 
@@ -11,6 +12,10 @@ pub enum TensorOpsError {
     /// Tensor error
     #[error("Error with the tensor: {0}")]
     TensorError(#[from] TensorError),
+
+    /// Tensor error
+    #[error("Error with the kernel: {0}")]
+    KernelError(#[from] KernelError),
 
     /// Shape mismatch
     #[error("Shape mismatch: {0:?} != {1:?}")]

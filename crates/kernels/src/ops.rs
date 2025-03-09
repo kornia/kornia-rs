@@ -102,42 +102,6 @@ where
     Ok(dot_product / denominator)
 }
 
-/// Computes the cosine distance between two vectors.
-///
-/// Cosine distance is the complement of cosine similarity, measuring the angle between two vectors.
-/// It ranges from 0 to 2, where 0 indicates identical vectors and 2 indicates diametrically opposed vectors.
-///
-/// # Arguments
-///
-/// * `a` - First vector as a slice
-/// * `b` - Second vector as a slice
-///
-/// # Returns
-///
-/// The cosine distance between the two vectors or an error.
-///
-/// # Errors
-///
-/// * If the vectors have different lengths, a `LengthMismatch` error is returned.
-/// * If either vector has zero magnitude, a `ZeroMagnitudeVector` error is returned.
-///
-/// Example:
-/// ```
-/// use kernels::ops::cosine_distance_float_kernel;
-///
-/// let a = [1.0, 2.0, 3.0];
-/// let b = [2.0, 4.0, 6.0];
-/// let result = cosine_distance_float_kernel(&a, &b).unwrap();
-/// assert!(result < 1e-6);
-/// ```
-pub fn cosine_distance_float_kernel<T>(a: &[T], b: &[T]) -> Result<T, KernelError>
-where
-    T: num_traits::Float,
-{
-    let similarity = cosine_similarity_float_kernel(a, b)?;
-    Ok(T::one() - similarity)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,13 +177,5 @@ mod tests {
         let b = [4.0, 5.0];
         let result = cosine_similarity_float_kernel(&a, &b);
         assert!(matches!(result, Err(KernelError::LengthMismatch(3, 2))));
-    }
-
-    #[test]
-    fn test_cosine_distance_float_kernel() {
-        let a = [1.0, 2.0, 3.0];
-        let b = [2.0, 4.0, 6.0];
-        let result = cosine_distance_float_kernel(&a, &b).unwrap();
-        assert_eq!(result, 0.0);
     }
 }
