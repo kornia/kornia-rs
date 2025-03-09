@@ -1,2 +1,2 @@
 [workspace]
-members = ["v4l2-camera", "camera-sink"]
+members = ["video-capture", "video-sink", "imgproc"]

@@ -3,8 +3,9 @@ resolver = "2"
 members = [
     "crates/*",
     "examples/*",
-    "examples/dora/v4l2-camera",
-    "examples/dora/camera-sink",
+    "examples/dora/video-capture",
+    "examples/dora/imgproc",
+    "examples/dora/video-sink",
     "kornia-viz",
     # "kornia-py",
 ]

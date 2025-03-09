@@ -1,5 +1,5 @@
 [package]
-name = "camera-sink"
+name = "dora-video-capture"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,3 +7,4 @@ edition = "2021"
 dora-node-api = { version = "0.3", features = ["tracing"] }
 eyre = "0.6"
 rand = "0.9"
+kornia = { version = "0.1.8", features = ["gstreamer"] }

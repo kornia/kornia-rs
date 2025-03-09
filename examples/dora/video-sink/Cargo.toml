@@ -1,0 +1,11 @@
+[package]
+name = "dora-video-sink"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dora-node-api = { version = "0.3", features = ["tracing"] }
+eyre = "0.6"
+rand = "0.9"
+kornia = { version = "0.1.8"}
+rerun = "0.22"
