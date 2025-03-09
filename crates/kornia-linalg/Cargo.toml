@@ -20,11 +20,11 @@ std = ["glam/std"]
 libm = ["glam/libm"]
 
 [dependencies]
-faer = { workspace = true }
 glam = { version = "0.30.0", default-features = false }
 
 
 [dev-dependencies]
+faer = { workspace = true }
 approx = { workspace = true }
 criterion = { workspace = true }
 

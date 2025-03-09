@@ -5,24 +5,24 @@ use kornia_linalg::linalg;
 
 fn bench_svd3(c: &mut Criterion) {
     let mut group = c.benchmark_group("svd3");
-    let A1 = Mat3 {
+    let a1 = Mat3 {
         x_axis: Vec3::new(1.0, 0.0, 0.0),
         y_axis: Vec3::new(0.0, 2.0, 0.0),
         z_axis: Vec3::new(0.0, 0.0, 3.0),
     };
 
-    let A2 = mat![[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]];
+    let a2 = mat![[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]];
 
     group.bench_function(BenchmarkId::new("svd3", ""), |b| {
         b.iter(|| {
-            linalg::svd3(&A1);
+            linalg::svd3(&a1);
             black_box(());
         })
     });
 
     group.bench_function(BenchmarkId::new("svd3_faer", ""), |b| {
         b.iter(|| {
-            A2.svd();
+            a2.svd();
             black_box(());
         })
     });
