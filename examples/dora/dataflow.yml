@@ -1,0 +1,13 @@
+nodes:
+  - id: v4l2-camera
+    build: cargo build -p v4l2-camera
+    path: ./target/debug/v4l2-camera
+    inputs:
+      tick: dora/timer/millis/10
+    outputs:
+      - frame
+  - id: camera-sink
+    build: cargo build -p camera-sink
+    path: ./target/debug/camera-sink
+    inputs:
+      frame: v4l2-camera/frame

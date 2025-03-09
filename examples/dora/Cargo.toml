@@ -1,0 +1,2 @@
+[workspace]
+members = ["v4l2-camera", "camera-sink"]

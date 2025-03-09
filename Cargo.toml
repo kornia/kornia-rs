@@ -3,10 +3,12 @@ resolver = "2"
 members = [
     "crates/*",
     "examples/*",
+    "examples/dora/v4l2-camera",
+    "examples/dora/camera-sink",
     "kornia-viz",
     # "kornia-py",
 ]
-exclude = ["kornia-py"]
+exclude = ["kornia-py", "examples/dora"]
 
 [workspace.package]
 authors = ["kornia.org <edgar@kornia.org>"]
