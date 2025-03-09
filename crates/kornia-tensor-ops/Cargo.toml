@@ -11,11 +11,13 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[dev-dependencies]
+criterion = { workspace = true }
+rand = { workspace = true }
+
 [dependencies]
-criterion.workspace = true
 kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
-rand.workspace = true
 thiserror = { workspace = true }
 
 [[bench]]
