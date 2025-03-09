@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 dora-node-api = { version = "0.3", features = ["tracing"] }
+dora-image-utils = { path = "../image-utils" }
 eyre = "0.6"
 rand = "0.9"
 kornia = { version = "0.1.8"}

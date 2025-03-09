@@ -1,5 +1,6 @@
-use dora_node_api::{ArrowData, DoraNode, Event, Metadata, Parameter};
-use kornia::image::{Image, ImageSize};
+use dora_image_utils::arrow_to_image;
+use dora_node_api::{DoraNode, Event};
+use kornia::image::Image;
 
 fn main() -> eyre::Result<()> {
     let (mut _node, mut events) = DoraNode::init_from_env()?;
@@ -10,17 +11,13 @@ fn main() -> eyre::Result<()> {
         match event {
             Event::Input { id, metadata, data } => match id.as_str() {
                 "web-camera/frame" => {
-                    log_image(&rr, "web-camera/frame", &deserialize_frame(data, metadata)?)?;
+                    log_image(&rr, "web-camera/frame", &arrow_to_image(data, metadata)?)?;
                 }
                 "rtsp-camera/frame" => {
-                    log_image(
-                        &rr,
-                        "rtsp-camera/frame",
-                        &deserialize_frame(data, metadata)?,
-                    )?;
+                    log_image(&rr, "rtsp-camera/frame", &arrow_to_image(data, metadata)?)?;
                 }
                 "imgproc/output" => {
-                    log_image(&rr, "imgproc/output", &deserialize_frame(data, metadata)?)?;
+                    log_image(&rr, "imgproc/output", &arrow_to_image(data, metadata)?)?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
@@ -44,30 +41,4 @@ fn log_image(rr: &rerun::RecordingStream, name: &str, img: &Image<u8, 3>) -> eyr
     )?;
 
     Ok(())
-}
-
-fn deserialize_frame(data: ArrowData, metadata: Metadata) -> eyre::Result<Image<u8, 3>> {
-    // SAFETY: we know that the metadata has the "cols" parameter
-    let img_cols = metadata.parameters.get("cols").unwrap();
-    let img_cols: i64 = match img_cols {
-        Parameter::Integer(i) => *i,
-        _ => return Err(eyre::eyre!("cols is not an integer")),
-    };
-
-    // SAFETY: we know that the metadata has the "rows" parameter
-    let img_rows = metadata.parameters.get("rows").unwrap();
-    let img_rows: i64 = match img_rows {
-        Parameter::Integer(i) => *i,
-        _ => return Err(eyre::eyre!("rows is not an integer")),
-    };
-
-    let img_data: Vec<u8> = TryFrom::try_from(&data)?;
-
-    Ok(Image::new(
-        ImageSize {
-            width: img_cols as usize,
-            height: img_rows as usize,
-        },
-        img_data,
-    )?)
 }

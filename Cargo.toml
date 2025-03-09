@@ -6,6 +6,7 @@ members = [
     "examples/dora/video-capture",
     "examples/dora/imgproc",
     "examples/dora/video-sink",
+    "examples/dora/image-utils",
     "kornia-viz",
     # "kornia-py",
 ]
