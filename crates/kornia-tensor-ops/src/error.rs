@@ -11,6 +11,7 @@ pub enum TensorOpsError {
     /// Tensor error
     #[error("Error with the tensor: {0}")]
     TensorError(#[from] TensorError),
+
     /// Shape mismatch
     #[error("Shape mismatch: {0:?} != {1:?}")]
     ShapeMismatch(Vec<usize>, Vec<usize>),
