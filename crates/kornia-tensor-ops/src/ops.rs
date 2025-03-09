@@ -95,14 +95,14 @@ where
 ///
 /// ```
 /// use kornia_tensor::{Tensor, CpuAllocator};
-/// use kornia_tensor_ops::ops::dot_product_1d;
+/// use kornia_tensor_ops::ops::dot_product1;
 ///
 /// let a = Tensor::<i32, 1, CpuAllocator>::from_shape_slice([3], &[1, 2, 3], CpuAllocator).unwrap();
 /// let b = Tensor::<i32, 1, CpuAllocator>::from_shape_slice([3], &[4, 5, 6], CpuAllocator).unwrap();
-/// let result = dot_product_1d(&a, &b).unwrap();
+/// let result = dot_product1(&a, &b).unwrap();
 /// assert_eq!(result, 32); // 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
 /// ```
-pub fn dot_product_1d<T, A>(a: &Tensor<T, 1, A>, b: &Tensor<T, 1, A>) -> Result<T, TensorOpsError>
+pub fn dot_product1<T, A>(a: &Tensor<T, 1, A>, b: &Tensor<T, 1, A>) -> Result<T, TensorOpsError>
 where
     T: Zero + Clone + std::ops::Add<Output = T> + std::ops::Mul<Output = T>,
     A: TensorAllocator + Clone + 'static,
@@ -246,7 +246,7 @@ mod tests {
             .unwrap();
         let b = Tensor::<i32, 1, CpuAllocator>::from_shape_slice([4], &[4, 5, 6, 7], CpuAllocator)
             .unwrap();
-        let result = dot_product_1d(&a, &b);
+        let result = dot_product1(&a, &b);
         assert!(result.is_err());
 
         if let Err(TensorOpsError::ShapeMismatch(shape_a, shape_b)) = &result {
@@ -319,11 +319,11 @@ mod tests {
     }
 
     #[test]
-    fn test_dot_product_1d() -> Result<(), TensorOpsError> {
+    fn test_dot_product1() -> Result<(), TensorOpsError> {
         // Test with i32 tensors
         let a = Tensor::<i32, 1, CpuAllocator>::from_shape_slice([3], &[1, 2, 3], CpuAllocator)?;
         let b = Tensor::<i32, 1, CpuAllocator>::from_shape_slice([3], &[4, 5, 6], CpuAllocator)?;
-        let result = dot_product_1d(&a, &b)?;
+        let result = dot_product1(&a, &b)?;
         assert_eq!(result, 32); // 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
 
         // Test with f32 tensors
@@ -331,13 +331,13 @@ mod tests {
             Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 2.0, 3.0], CpuAllocator)?;
         let b_f32 =
             Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[4.0, 5.0, 6.0], CpuAllocator)?;
-        let result_f32 = dot_product_1d(&a_f32, &b_f32)?;
+        let result_f32 = dot_product1(&a_f32, &b_f32)?;
         assert_eq!(result_f32, 32.0);
 
         // Test with u8 tensors
         let a_u8 = Tensor::<u8, 1, CpuAllocator>::from_shape_slice([3], &[1, 2, 3], CpuAllocator)?;
         let b_u8 = Tensor::<u8, 1, CpuAllocator>::from_shape_slice([3], &[4, 5, 6], CpuAllocator)?;
-        let result_u8 = dot_product_1d(&a_u8, &b_u8)?;
+        let result_u8 = dot_product1(&a_u8, &b_u8)?;
         assert_eq!(result_u8, 32);
 
         Ok(())
