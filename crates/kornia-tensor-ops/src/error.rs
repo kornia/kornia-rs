@@ -13,8 +13,8 @@ pub enum TensorOpsError {
     #[error("Error with the tensor: {0}")]
     TensorError(#[from] TensorError),
 
-    /// Tensor error
-    #[error("Error with the kernel: {0}")]
+    /// Kernel error
+    #[error(transparent)]
     KernelError(#[from] KernelError),
 
     /// Shape mismatch

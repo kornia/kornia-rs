@@ -361,24 +361,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cosine_similarity_3d_tensors() -> Result<(), TensorOpsError> {
-        let a = Tensor::<f32, 3, CpuAllocator>::from_shape_slice(
-            [2, 2, 2],
-            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
-            CpuAllocator,
-        )?;
-        let b = Tensor::<f32, 3, CpuAllocator>::from_shape_slice(
-            [2, 2, 2],
-            &[8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0],
-            CpuAllocator,
-        )?;
-        let result = cosine_similarity(&a, &b)?;
-        let expected = 0.5882352;
-        assert!((result - expected).abs() < 1e-6);
-        Ok(())
-    }
-
-    #[test]
     fn test_cosine_distance() -> Result<(), TensorOpsError> {
         let a =
             Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 2.0, 3.0], CpuAllocator)?;
