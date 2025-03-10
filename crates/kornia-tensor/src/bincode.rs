@@ -6,7 +6,7 @@ use crate::{
 
 impl<T, const N: usize, A: TensorAllocator + 'static> bincode::enc::Encode for Tensor<T, N, A>
 where
-    T: bincode::enc::Encode + 'static,
+    T: bincode::enc::Encode,
 {
     fn encode<E: bincode::enc::Encoder>(
         &self,
@@ -19,11 +19,11 @@ where
     }
 }
 
-impl<T, const N: usize> bincode::de::Decode for Tensor<T, N, CpuAllocator>
+impl<T, const N: usize, C> bincode::de::Decode<C> for Tensor<T, N, CpuAllocator>
 where
-    T: bincode::de::Decode + 'static,
+    T: bincode::de::Decode<C>,
 {
-    fn decode<D: bincode::de::Decoder>(
+    fn decode<D: bincode::de::Decoder<Context = C>>(
         decoder: &mut D,
     ) -> Result<Self, bincode::error::DecodeError> {
         let shape = bincode::Decode::decode(decoder)?;
