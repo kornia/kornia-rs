@@ -54,7 +54,7 @@ pub fn homography_4pt2d(
 
 /// Compute the homography matrix from four 3d point correspondences.
 ///
-/// Inspired by: https://github.com/PoseLib/PoseLib/blob/56d158f744d3561b0b70174e6d8ca9a7fc9bd9c1/PoseLib/solvers/homography_4pt.cc#L73C4-L76C20
+/// Inspired by: <https://github.com/PoseLib/PoseLib/blob/56d158f744d3561b0b70174e6d8ca9a7fc9bd9c1/PoseLib/solvers/homography_4pt.cc#L73C4-L76C20>
 ///
 /// The homography matrix is computed by solving the linear system of equations.
 ///

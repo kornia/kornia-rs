@@ -4,7 +4,7 @@
 [![PyPI version](https://badge.fury.io/py/kornia-rs.svg)](https://badge.fury.io/py/kornia-rs)
 [![Documentation](https://img.shields.io/badge/docs.rs-kornia-orange)](https://docs.rs/kornia)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENCE)
-[![Slack](https://img.shields.io/badge/Slack-4A154B?logo=slack&logoColor=white)](https://join.slack.com/t/kornia/shared_invite/zt-csobk21g-CnydWe5fmvkcktIeRFGCEQ)
+[![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/HfnywwpBnD)
 
 The `kornia` crate is a low level library for Computer Vision written in [Rust](https://www.rust-lang.org/) 🦀
 
@@ -20,7 +20,7 @@ use kornia::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
-    let image: Image<u8, 3> = F::read_image_any("tests/data/dog.jpeg")?;
+    let image: Image<u8, 3> = F::read_image_any_rgb8("tests/data/dog.jpeg")?;
 
     println!("Hello, world! 🦀");
     println!("Loaded Image size: {:?}", image.size());
@@ -84,17 +84,19 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-kornia = "v0.1.7"
+kornia = "v0.1.8"
 ```
 
 Alternatively, you can use each sub-crate separately:
 
 ```toml
 [dependencies]
-kornia-core = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.7" }
-kornia-io = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.7" }
-kornia-image = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.7" }
-kornia-imgproc = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.7" }
+kornia-tensor = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
+kornia-io = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
+kornia-image = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
+kornia-imgproc = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
+kornia-3d = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
+kornia-icp = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
 ```
 
 ### 🐍 Python
@@ -115,7 +117,7 @@ use kornia::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
-    let image: Image<u8, 3> = F::read_image_any("tests/data/dog.jpeg")?;
+    let image: Image<u8, 3> = F::read_image_any_rgb8("tests/data/dog.jpeg")?;
     let image_viz = image.clone();
 
     let image_f32: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
@@ -133,18 +135,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut gray_resized = Image::<f32, 1>::from_size_val(new_size, 0.0)?;
     imgproc::resize::resize_native(
         &gray, &mut gray_resized,
-        imgproc::resize::InterpolationMode::Bilinear,
+        imgproc::interpolation::InterpolationMode::Bilinear,
     )?;
 
     println!("gray_resize: {:?}", gray_resized.size());
 
     // create a Rerun recording stream
-    let rec = rerun::RecordingStreamBuilder::new("Kornia App").connect()?;
+    let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;
 
-    // log the images
-    let _ = rec.log("image", &rerun::Image::try_from(image_viz.data)?);
-    let _ = rec.log("gray", &rerun::Image::try_from(gray.data)?);
-    let _ = rec.log("gray_resize", &rerun::Image::try_from(gray_resized.data)?);
+    rec.log(
+        "image",
+        &rerun::Image::from_elements(
+            image_viz.as_slice(),
+            image_viz.size().into(),
+            rerun::ColorModel::RGB,
+        ),
+    )?;
+
+    rec.log(
+        "gray",
+        &rerun::Image::from_elements(gray.as_slice(), gray.size().into(), rerun::ColorModel::L),
+    )?;
+
+    rec.log(
+        "gray_resize",
+        &rerun::Image::from_elements(
+            gray_resized.as_slice(),
+            gray_resized.size().into(),
+            rerun::ColorModel::L,
+        ),
+    )?;
 
     Ok(())
 }

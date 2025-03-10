@@ -1,5 +1,5 @@
 #![deny(missing_docs)]
-//! Image types and traits for generating and manipulating images
+#![doc = env!("CARGO_PKG_DESCRIPTION")]
 
 /// image representation for computer vision purposes.
 pub mod image;

@@ -69,6 +69,38 @@ where
     Ok(())
 }
 
+/// Convert an RGB8 image to grayscale using the formula:
+///
+/// Y = 77 * R + 150 * G + 29 * B
+///
+/// # Arguments
+///
+/// * `src` - The input RGB8 image.
+/// * `dst` - The output grayscale image.
+///
+/// Precondition: the input image must have 3 channels.
+/// Precondition: the output image must have 1 channel.
+/// Precondition: the input and output images must have the same size.
+pub fn gray_from_rgb_u8(src: &Image<u8, 3>, dst: &mut Image<u8, 1>) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
+        let r = src_pixel[0] as u16;
+        let g = src_pixel[1] as u16;
+        let b = src_pixel[2] as u16;
+        dst_pixel[0] = ((r * 77 + g * 150 + b * 29) >> 8) as u8;
+    });
+
+    Ok(())
+}
+
 /// Convert a grayscale image to an RGB image by replicating the grayscale value across all three channels.
 ///
 /// # Arguments
@@ -162,7 +194,7 @@ mod tests {
 
     #[test]
     fn gray_from_rgb() -> Result<(), Box<dyn std::error::Error>> {
-        let image = F::read_image_any("../../tests/data/dog.jpeg")?;
+        let image = F::read_image_any_rgb8("../../tests/data/dog.jpeg")?;
 
         let mut image_norm = Image::from_size_val(image.size(), 0.0)?;
         ops::cast_and_scale(&image, &mut image_norm, 1. / 255.0)?;
@@ -171,8 +203,8 @@ mod tests {
         super::gray_from_rgb(&image_norm, &mut gray)?;
 
         assert_eq!(gray.num_channels(), 1);
-        assert_eq!(gray.size().width, 258);
-        assert_eq!(gray.size().height, 195);
+        assert_eq!(gray.cols(), 258);
+        assert_eq!(gray.rows(), 195);
 
         Ok(())
     }
@@ -282,6 +314,25 @@ mod tests {
         )?;
 
         assert_eq!(bgr.as_slice(), expected.as_slice());
+
+        Ok(())
+    }
+
+    #[test]
+    fn gray_from_rgb_u8() -> Result<(), Box<dyn std::error::Error>> {
+        let image = Image::new(
+            ImageSize {
+                width: 1,
+                height: 2,
+            },
+            vec![0, 128, 255, 128, 0, 128],
+        )?;
+
+        let mut gray = Image::<u8, 1>::from_size_val(image.size(), 0)?;
+
+        super::gray_from_rgb_u8(&image, &mut gray)?;
+
+        assert_eq!(gray.as_slice(), &[103, 53]);
 
         Ok(())
     }

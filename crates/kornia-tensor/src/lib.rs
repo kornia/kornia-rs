@@ -1,5 +1,5 @@
 #![deny(missing_docs)]
-//! Core module containing the tensor and storage implementations.
+#![doc = env!("CARGO_PKG_DESCRIPTION")]
 
 /// allocator module containing the memory management utilities.
 pub mod allocator;

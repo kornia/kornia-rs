@@ -5,7 +5,7 @@ use kornia_image::{Image, ImageError, ImageSize};
 
 /// Error types for the JPEG module.
 #[derive(thiserror::Error, Debug)]
-pub enum JpegError {
+pub enum JpegTurboError {
     /// Error when the JPEG compressor cannot be created.
     #[error("Something went wrong with the JPEG compressor")]
     TurboJpegError(#[from] turbojpeg::Error),
@@ -20,18 +20,18 @@ pub enum JpegError {
 }
 
 /// A JPEG decoder using the turbojpeg library.
-pub struct ImageDecoder {
+pub struct JpegTurboDecoder {
     /// The turbojpeg decompressor.
     pub decompressor: Arc<Mutex<turbojpeg::Decompressor>>,
 }
 
 /// A JPEG encoder using the turbojpeg library.
-pub struct ImageEncoder {
+pub struct JpegTurboEncoder {
     /// The turbojpeg compressor.
     pub compressor: Arc<Mutex<turbojpeg::Compressor>>,
 }
 
-impl Default for ImageDecoder {
+impl Default for JpegTurboDecoder {
     fn default() -> Self {
         match Self::new() {
             Ok(decoder) => decoder,
@@ -40,7 +40,7 @@ impl Default for ImageDecoder {
     }
 }
 
-impl Default for ImageEncoder {
+impl Default for JpegTurboEncoder {
     fn default() -> Self {
         match Self::new() {
             Ok(encoder) => encoder,
@@ -50,7 +50,7 @@ impl Default for ImageEncoder {
 }
 
 /// Implementation of the ImageEncoder struct.
-impl ImageEncoder {
+impl JpegTurboEncoder {
     /// Creates a new `ImageEncoder`.
     ///
     /// # Returns
@@ -60,14 +60,14 @@ impl ImageEncoder {
     /// # Panics
     ///
     /// Panics if the compressor cannot be created.
-    pub fn new() -> Result<Self, JpegError> {
+    pub fn new() -> Result<Self, JpegTurboError> {
         let compressor = turbojpeg::Compressor::new()?;
         Ok(Self {
             compressor: Arc::new(Mutex::new(compressor)),
         })
     }
 
-    /// Encodes the given data into a JPEG image.
+    /// Encodes the given RGB8 image into a JPEG image.
     ///
     /// # Arguments
     ///
@@ -76,7 +76,7 @@ impl ImageEncoder {
     /// # Returns
     ///
     /// The encoded data as `Vec<u8>`.
-    pub fn encode(&mut self, image: &Image<u8, 3>) -> Result<Vec<u8>, JpegError> {
+    pub fn encode_rgb8(&mut self, image: &Image<u8, 3>) -> Result<Vec<u8>, JpegTurboError> {
         // get the image data
         let image_data = image.as_slice();
 
@@ -90,7 +90,11 @@ impl ImageEncoder {
         };
 
         // encode the image
-        Ok(self.compressor.lock().unwrap().compress_to_vec(buf)?)
+        Ok(self
+            .compressor
+            .lock()
+            .expect("Failed to lock the compressor")
+            .compress_to_vec(buf)?)
     }
 
     /// Sets the quality of the encoder.
@@ -98,21 +102,25 @@ impl ImageEncoder {
     /// # Arguments
     ///
     /// * `quality` - The quality to set.
-    pub fn set_quality(&mut self, quality: i32) -> Result<(), JpegError> {
-        Ok(self.compressor.lock().unwrap().set_quality(quality)?)
+    pub fn set_quality(&mut self, quality: i32) -> Result<(), JpegTurboError> {
+        Ok(self
+            .compressor
+            .lock()
+            .expect("Failed to lock the compressor")
+            .set_quality(quality)?)
     }
 }
 
 /// Implementation of the ImageDecoder struct.
-impl ImageDecoder {
+impl JpegTurboDecoder {
     /// Creates a new `ImageDecoder`.
     ///
     /// # Returns
     ///
     /// A new `ImageDecoder` instance.
-    pub fn new() -> Result<Self, JpegError> {
+    pub fn new() -> Result<Self, JpegTurboError> {
         let decompressor = turbojpeg::Decompressor::new()?;
-        Ok(ImageDecoder {
+        Ok(JpegTurboDecoder {
             decompressor: Arc::new(Mutex::new(decompressor)),
         })
     }
@@ -130,9 +138,13 @@ impl ImageDecoder {
     /// # Panics
     ///
     /// Panics if the header cannot be read.
-    pub fn read_header(&mut self, jpeg_data: &[u8]) -> Result<ImageSize, JpegError> {
+    pub fn read_header(&mut self, jpeg_data: &[u8]) -> Result<ImageSize, JpegTurboError> {
         // read the JPEG header with image size
-        let header = self.decompressor.lock().unwrap().read_header(jpeg_data)?;
+        let header = self
+            .decompressor
+            .lock()
+            .expect("Failed to lock the decompressor")
+            .read_header(jpeg_data)?;
 
         Ok(ImageSize {
             width: header.width,
@@ -140,7 +152,7 @@ impl ImageDecoder {
         })
     }
 
-    /// Decodes the given JPEG data.
+    /// Decodes the given JPEG data as RGB8 image.
     ///
     /// # Arguments
     ///
@@ -148,8 +160,8 @@ impl ImageDecoder {
     ///
     /// # Returns
     ///
-    /// The decoded data as Tensor.
-    pub fn decode(&mut self, jpeg_data: &[u8]) -> Result<Image<u8, 3>, JpegError> {
+    /// The decoded data as Image<u8, 3>.
+    pub fn decode_rgb8(&mut self, jpeg_data: &[u8]) -> Result<Image<u8, 3>, JpegTurboError> {
         // get the image size to allocate th data storage
         let image_size = self.read_header(jpeg_data)?;
 
@@ -168,7 +180,7 @@ impl ImageDecoder {
         // decompress the JPEG data
         self.decompressor
             .lock()
-            .unwrap()
+            .expect("Failed to lock the decompressor")
             .decompress(jpeg_data, buf)?;
 
         Ok(Image::new(image_size, pixels)?)
@@ -177,19 +189,19 @@ impl ImageDecoder {
 
 #[cfg(test)]
 mod tests {
-    use crate::jpeg::{ImageDecoder, ImageEncoder, JpegError};
+    use crate::jpegturbo::{JpegTurboDecoder, JpegTurboEncoder, JpegTurboError};
 
     #[test]
-    fn image_decoder() -> Result<(), JpegError> {
+    fn image_decoder() -> Result<(), JpegTurboError> {
         let jpeg_data = std::fs::read("../../tests/data/dog.jpeg").unwrap();
         // read the header
-        let image_size = ImageDecoder::new()?.read_header(&jpeg_data)?;
+        let image_size = JpegTurboDecoder::new()?.read_header(&jpeg_data)?;
         assert_eq!(image_size.width, 258);
         assert_eq!(image_size.height, 195);
         // load the image as file and decode it
-        let image = ImageDecoder::new()?.decode(&jpeg_data)?;
-        assert_eq!(image.size().width, 258);
-        assert_eq!(image.size().height, 195);
+        let image = JpegTurboDecoder::new()?.decode_rgb8(&jpeg_data)?;
+        assert_eq!(image.cols(), 258);
+        assert_eq!(image.rows(), 195);
         assert_eq!(image.num_channels(), 3);
         Ok(())
     }
@@ -197,11 +209,11 @@ mod tests {
     #[test]
     fn image_encoder() -> Result<(), Box<dyn std::error::Error>> {
         let jpeg_data_fs = std::fs::read("../../tests/data/dog.jpeg")?;
-        let image = ImageDecoder::new()?.decode(&jpeg_data_fs)?;
-        let jpeg_data = ImageEncoder::new()?.encode(&image)?;
-        let image_back = ImageDecoder::new()?.decode(&jpeg_data)?;
-        assert_eq!(image_back.size().width, 258);
-        assert_eq!(image_back.size().height, 195);
+        let image = JpegTurboDecoder::new()?.decode_rgb8(&jpeg_data_fs)?;
+        let jpeg_data = JpegTurboEncoder::new()?.encode_rgb8(&image)?;
+        let image_back = JpegTurboDecoder::new()?.decode_rgb8(&jpeg_data)?;
+        assert_eq!(image_back.cols(), 258);
+        assert_eq!(image_back.rows(), 195);
         assert_eq!(image_back.num_channels(), 3);
         Ok(())
     }

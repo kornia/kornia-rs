@@ -329,8 +329,8 @@ where
 /// assert_eq!(thresholded.num_channels(), 1);
 /// assert_eq!(thresholded.size().width, 2);
 ///
-/// assert_eq!(thresholded.get_pixel(0, 0, 0).unwrap(), 255);
-/// assert_eq!(thresholded.get_pixel(1, 0, 0).unwrap(), 0);
+/// assert_eq!(thresholded.get_pixel(0, 0, 0).unwrap(), &255);
+/// assert_eq!(thresholded.get_pixel(1, 0, 0).unwrap(), &0);
 /// ```
 pub fn in_range<T, const C: usize>(
     src: &Image<T, C>,

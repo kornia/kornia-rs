@@ -1,7 +1,8 @@
 [package]
 name = "kornia-image"
-authors.workspace = true
 description = "Image types and traits for generating and manipulating images"
+
+authors.workspace = true
 edition.workspace = true
 homepage.workspace = true
 license.workspace = true

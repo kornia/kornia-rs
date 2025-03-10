@@ -1,5 +1,5 @@
-//! I/O utilities for real-time image and video processing.
 #![deny(missing_docs)]
+#![doc = env!("CARGO_PKG_DESCRIPTION")]
 
 /// Module to handle the error types for the io module.
 pub mod error;
@@ -11,8 +11,11 @@ pub mod fps_counter;
 pub mod functional;
 
 /// TurboJPEG image encoding and decoding.
-#[cfg(feature = "jpegturbo")]
-pub mod jpeg;
+#[cfg(feature = "turbojpeg")]
+pub mod jpegturbo;
+
+/// PNG image encoding and decoding.
+pub mod png;
 
 /// GStreamer video module for real-time video processing.
 #[cfg(feature = "gstreamer")]

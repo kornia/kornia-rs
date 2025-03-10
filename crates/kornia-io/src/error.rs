@@ -14,9 +14,9 @@ pub enum IoError {
     FileError(#[from] std::io::Error),
 
     /// Error to map the file to memory.
-    #[cfg(feature = "jpegturbo")]
+    #[cfg(feature = "turbojpeg")]
     #[error("Error with Jpeg encoding/decoding")]
-    JpegError(#[from] crate::jpeg::JpegError),
+    JpegTurboError(#[from] crate::jpegturbo::JpegTurboError),
 
     /// Error to create the image.
     #[error("Failed to create image")]
@@ -25,4 +25,8 @@ pub enum IoError {
     /// Error to decode the image.
     #[error("Failed to decode the image")]
     ImageDecodeError(#[from] image::ImageError),
+
+    /// Error to decode the PNG image.
+    #[error("Failed to decode the image")]
+    PngDecodeError(String),
 }
