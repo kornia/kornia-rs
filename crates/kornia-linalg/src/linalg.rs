@@ -4,7 +4,7 @@ use std::ops::{Index, IndexMut};
 const GAMMA: f32 = 5.828427124;
 const CSTAR: f32 = 0.923879532;
 const SSTAR: f32 = 0.3826834323;
-const SVD_EPSILON: f32 = 1e-6;
+const SVD3_EPSILON: f32 = 1e-6;
 const JACOBI_STEPS: u8 = 6;
 const RSQRT1_STEPS: u8 = 6;
 
@@ -299,7 +299,7 @@ fn sort_singular_values(b: &mut Mat3, v: &mut Mat3) {
 
 /// Implementation of Algorithm 4
 fn qr_givens_quaternion(a1: f32, a2: f32) -> Givens {
-    let epsilon = SVD_EPSILON;
+    let epsilon = SVD3_EPSILON;
     let rho = accurate_sqrt(a1 * a1 + a2 * a2);
 
     let mut g = Givens {
@@ -434,7 +434,7 @@ mod tests {
             svd_result
                 .u
                 .mul_mat3(&(svd_result.s.mul_mat3(&svd_result.v.transpose()))),
-            SVD_EPSILON,
+            SVD3_EPSILON,
         );
     }
 
@@ -454,7 +454,7 @@ mod tests {
             svd_result
                 .u
                 .mul_mat3(&(svd_result.s.mul_mat3(&svd_result.v.transpose()))),
-            SVD_EPSILON,
+            SVD3_EPSILON,
         );
     }
 
@@ -474,7 +474,7 @@ mod tests {
             svd_result
                 .u
                 .mul_mat3(&(svd_result.s.mul_mat3(&svd_result.v.transpose()))),
-            SVD_EPSILON,
+            SVD3_EPSILON,
         );
     }
 
@@ -494,7 +494,7 @@ mod tests {
             svd_result
                 .u
                 .mul_mat3(&(svd_result.s.mul_mat3(&svd_result.v.transpose()))),
-            SVD_EPSILON,
+            SVD3_EPSILON,
         );
     }
 }
