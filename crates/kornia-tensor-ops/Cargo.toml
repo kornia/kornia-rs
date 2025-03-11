@@ -11,7 +11,16 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[dev-dependencies]
+criterion = { workspace = true }
+rand = { workspace = true }
+
 [dependencies]
+kernels = { workspace = true }
 kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
 thiserror = { workspace = true }
+
+[[bench]]
+name = "bench_ops"
+harness = false
