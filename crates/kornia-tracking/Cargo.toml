@@ -17,4 +17,5 @@ version.workspace = true
 glam = "0.30.0"
 image = "0.25.0"
 imageproc = "0.25.0"
+log = "0.4.22"
 rayon = "1.10"

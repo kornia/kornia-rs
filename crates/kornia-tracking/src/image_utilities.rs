@@ -1,7 +1,12 @@
+//! Image utilities used by the kornia-tracking modules.
+//! This module contains functions to compute image gradients, check bounds,
+//! perform the SE(2) exponential map, and detect keypoints.
+
 use image::{GenericImageView, GrayImage};
 use imageproc::corners::{corners_fast9, Corner};
 use glam::{Mat3, Vec3};
 
+/// Computes image gradients at (x, y).
 pub fn image_grad(grayscale_image: &GrayImage, x: f32, y: f32) -> Vec3 {
     let ix = x.floor() as u32;
     let iy = y.floor() as u32;
@@ -37,6 +42,7 @@ pub fn image_grad(grayscale_image: &GrayImage, x: f32, y: f32) -> Vec3 {
     Vec3::new(res0, res1, res2)
 }
 
+/// Checks if a keypoint is within the acceptable boundaries of the image.
 pub fn point_in_bound(keypoint: &Corner, height: u32, width: u32, radius: u32) -> bool {
     keypoint.x >= radius
         && keypoint.x <= width - radius
@@ -44,12 +50,14 @@ pub fn point_in_bound(keypoint: &Corner, height: u32, width: u32, radius: u32) -
         && keypoint.y <= height - radius
 }
 
+/// Checks if a coordinate (x, y) is within image bounds, considering a radius.
 pub fn inbound(image: &GrayImage, x: f32, y: f32, radius: u32) -> bool {
     let x = x.round() as u32;
     let y = y.round() as u32;
     x >= radius && y >= radius && x < image.width() - radius && y < image.height() - radius
 }
 
+/// Computes the SE(2) exponential map based on a Vec3 input.
 pub fn se2_exp_matrix(a: &Vec3) -> Mat3 {
     let theta = a.z;
     let (sin_theta_by_theta, one_minus_cos_theta_by_theta) = if theta.abs() < f32::EPSILON {
@@ -69,6 +77,7 @@ pub fn se2_exp_matrix(a: &Vec3) -> Mat3 {
     ])
 }
 
+/// Detects keypoints on the image using grid constraints and FAST corner detection.
 pub fn detect_key_points(
     image: &GrayImage,
     grid_size: u32,
