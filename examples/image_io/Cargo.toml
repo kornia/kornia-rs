@@ -1,0 +1,10 @@
+[package]
+name = "image_io"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kornia-image = { path = "../../crates/kornia-image" }
+kornia-io = { path = "../../crates/kornia-io" }
+anyhow = "1.0.77"
+clap = { version = "4.4.11", features = ["derive"] }

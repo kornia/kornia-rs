@@ -132,6 +132,212 @@ pub fn read_image_any_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, 
     Ok(image)
 }
 
+/// Write a grayscale image (gray8) to a PNG file.
+///
+/// # Arguments
+///
+/// * `file_path` - The path to save the PNG file.
+/// * `image` - The grayscale image to save.
+///
+/// # Returns
+///
+/// `Ok(())` if the image was successfully written, or an error otherwise.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_io::functional as F;
+///
+/// let image = Image::<u8, 1>::new(
+///     ImageSize {
+///         width: 2,
+///         height: 1,
+///     },
+///     vec![0, 255],
+/// ).unwrap();
+///
+/// F::write_image_png_gray8("output.png", &image).unwrap();
+/// ```
+pub fn write_image_png_gray8(
+    file_path: impl AsRef<Path>,
+    image: &Image<u8, 1>,
+) -> Result<(), IoError> {
+    crate::png::write_image_png_gray8(file_path, image.clone())
+}
+
+/// Write an RGB image (rgb8) to a PNG file.
+///
+/// # Arguments
+///
+/// * `file_path` - The path to save the PNG file.
+/// * `image` - The RGB image to save.
+///
+/// # Returns
+///
+/// `Ok(())` if the image was successfully written, or an error otherwise.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_io::functional as F;
+///
+/// let image = Image::<u8, 3>::new(
+///     ImageSize {
+///         width: 2,
+///         height: 1,
+///     },
+///     vec![255, 0, 0, 0, 255, 0],
+/// ).unwrap();
+///
+/// F::write_image_png_rgb8("output.png", &image).unwrap();
+/// ```
+pub fn write_image_png_rgb8(
+    file_path: impl AsRef<Path>,
+    image: &Image<u8, 3>,
+) -> Result<(), IoError> {
+    crate::png::write_image_png_rgb8(file_path, image.clone())
+}
+
+/// Write an RGBA image (rgba8) to a PNG file.
+///
+/// # Arguments
+///
+/// * `file_path` - The path to save the PNG file.
+/// * `image` - The RGBA image to save.
+///
+/// # Returns
+///
+/// `Ok(())` if the image was successfully written, or an error otherwise.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_io::functional as F;
+///
+/// let image = Image::<u8, 4>::new(
+///     ImageSize {
+///         width: 2,
+///         height: 1,
+///     },
+///     vec![255, 0, 0, 255, 0, 255, 0, 128],
+/// ).unwrap();
+///
+/// F::write_image_png_rgba8("output.png", &image).unwrap();
+/// ```
+pub fn write_image_png_rgba8(
+    file_path: impl AsRef<Path>,
+    image: &Image<u8, 4>,
+) -> Result<(), IoError> {
+    crate::png::write_image_png_rgba8(file_path, image.clone())
+}
+
+/// Write a grayscale 16-bit image (gray16) to a PNG file.
+///
+/// # Arguments
+///
+/// * `file_path` - The path to save the PNG file.
+/// * `image` - The grayscale 16-bit image to save.
+///
+/// # Returns
+///
+/// `Ok(())` if the image was successfully written, or an error otherwise.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_io::functional as F;
+///
+/// let image = Image::<u16, 1>::new(
+///     ImageSize {
+///         width: 2,
+///         height: 1,
+///     },
+///     vec![0, 65535],
+/// ).unwrap();
+///
+/// F::write_image_png_gray16("output.png", &image).unwrap();
+/// ```
+pub fn write_image_png_gray16(
+    file_path: impl AsRef<Path>,
+    image: &Image<u16, 1>,
+) -> Result<(), IoError> {
+    crate::png::write_image_png_gray16(file_path, image.clone())
+}
+
+/// Reads a grayscale (gray8) image from a JPEG file using TurboJPEG.
+///
+/// # Arguments
+///
+/// * `file_path` - The path to the JPEG image.
+///
+/// # Returns
+///
+/// A tensor image containing the image data in grayscale format with shape (H, W, 1).
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::Image;
+/// use kornia_io::functional as F;
+///
+/// let image: Image<u8, 1> = F::read_image_jpegturbo_gray8("../../tests/data/dog.jpeg").unwrap();
+/// ```
+#[cfg(feature = "turbojpeg")]
+pub fn read_image_jpegturbo_gray8(file_path: impl AsRef<Path>) -> Result<Image<u8, 1>, IoError> {
+    // load the file into a buffer
+    let file_path = file_path.as_ref();
+    let buf = std::fs::read(file_path)?;
+
+    // create an image decoder
+    let mut decoder = JpegTurboDecoder::new()?;
+
+    // read the image data
+    decoder.decode_gray8(&buf).map_err(Into::into)
+}
+
+/// Writes a grayscale (gray8) image to a JPEG file using TurboJPEG.
+///
+/// # Arguments
+///
+/// * `file_path` - The path to the JPEG image.
+/// * `image` - The tensor containing the grayscale image data.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_io::functional as F;
+///
+/// let image = Image::<u8, 1>::new(
+///     ImageSize {
+///         width: 2,
+///         height: 1,
+///     },
+///     vec![0, 255],
+/// ).unwrap();
+///
+/// F::write_image_jpegturbo_gray8("output.jpeg", &image).unwrap();
+/// ```
+#[cfg(feature = "turbojpeg")]
+pub fn write_image_jpegturbo_gray8(
+    file_path: impl AsRef<Path>,
+    image: &Image<u8, 1>,
+) -> Result<(), IoError> {
+    let file_path = file_path.as_ref().to_owned();
+
+    // compress the image
+    let jpeg_data = JpegTurboEncoder::new()?.encode_gray8(image)?;
+
+    // write the data directly to a file
+    std::fs::write(file_path, jpeg_data)?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use crate::error::IoError;
@@ -174,6 +380,88 @@ mod tests {
         assert_eq!(image_data_back.rows(), 195);
         assert_eq!(image_data_back.num_channels(), 3);
 
+        Ok(())
+    }
+
+    #[test]
+    fn write_read_png_gray8() -> Result<(), IoError> {
+        use kornia_image::{Image, ImageSize};
+        use std::path::PathBuf;
+        use tempfile::tempdir;
+        
+        // Create a temporary directory for our test file
+        let temp_dir = tempdir()?;
+        let file_path = temp_dir.path().join("test_gray8.png");
+        
+        // Create a test image
+        let image = Image::<u8, 1>::new(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            vec![0, 255, 128, 64],
+        )?;
+        
+        // Write the image to a file using the functional API
+        super::write_image_png_gray8(&file_path, &image)?;
+        
+        // Read the image back (we'll use the png module directly for reading)
+        let read_image = crate::png::read_image_png_mono8(&file_path)?;
+        
+        // Check that the images match
+        assert_eq!(read_image.size(), image.size());
+        assert_eq!(read_image.as_slice(), image.as_slice());
+        
+        Ok(())
+    }
+
+    #[test]
+    fn read_write_jpeg_gray() -> Result<(), IoError> {
+        use kornia_image::{Image, ImageSize};
+        use std::path::PathBuf;
+        use tempfile::tempdir;
+        
+        // First, read an RGB image
+        let image_rgb = super::read_image_jpegturbo_rgb8("../../tests/data/dog.jpeg")?;
+        
+        // Convert to grayscale (simple average for testing)
+        let width = image_rgb.width();
+        let height = image_rgb.height();
+        let mut gray_data = Vec::with_capacity(width * height);
+        
+        for y in 0..height {
+            for x in 0..width {
+                let r = *image_rgb.get_pixel(x, y, 0).unwrap();
+                let g = *image_rgb.get_pixel(x, y, 1).unwrap();
+                let b = *image_rgb.get_pixel(x, y, 2).unwrap();
+                let gray = (r as u32 + g as u32 + b as u32) / 3;
+                gray_data.push(gray as u8);
+            }
+        }
+        
+        let image_gray = Image::<u8, 1>::new(
+            ImageSize {
+                width,
+                height,
+            },
+            gray_data,
+        )?;
+        
+        // Create a temporary directory for our test file
+        let temp_dir = tempdir()?;
+        let file_path = temp_dir.path().join("test_gray.jpeg");
+        
+        // Write the grayscale JPEG
+        super::write_image_jpegturbo_gray8(&file_path, &image_gray)?;
+        
+        // Read it back
+        let image_gray_back = super::read_image_jpegturbo_gray8(&file_path)?;
+        
+        // Check that dimensions match
+        assert_eq!(image_gray_back.width(), width);
+        assert_eq!(image_gray_back.height(), height);
+        assert_eq!(image_gray_back.num_channels(), 1);
+        
         Ok(())
     }
 }

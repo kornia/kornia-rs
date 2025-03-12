@@ -97,6 +97,36 @@ impl JpegTurboEncoder {
             .compress_to_vec(buf)?)
     }
 
+    /// Encodes the given grayscale (Gray8) image into a JPEG image.
+    ///
+    /// # Arguments
+    ///
+    /// * `image` - The grayscale image to encode.
+    ///
+    /// # Returns
+    ///
+    /// The encoded data as `Vec<u8>`.
+    pub fn encode_gray8(&mut self, image: &Image<u8, 1>) -> Result<Vec<u8>, JpegTurboError> {
+        // get the image data
+        let image_data = image.as_slice();
+
+        // create a turbojpeg image
+        let buf = turbojpeg::Image {
+            pixels: image_data,
+            width: image.width(),
+            pitch: image.width(), // 1 byte per pixel for grayscale
+            height: image.height(),
+            format: turbojpeg::PixelFormat::Gray,
+        };
+
+        // encode the image
+        Ok(self
+            .compressor
+            .lock()
+            .expect("Failed to lock the compressor")
+            .compress_to_vec(buf)?)
+    }
+
     /// Sets the quality of the encoder.
     ///
     /// # Arguments
@@ -185,11 +215,46 @@ impl JpegTurboDecoder {
 
         Ok(Image::new(image_size, pixels)?)
     }
+
+    /// Decodes the given JPEG data as grayscale (Gray8) image.
+    ///
+    /// # Arguments
+    ///
+    /// * `jpeg_data` - The JPEG data to decode.
+    ///
+    /// # Returns
+    ///
+    /// The decoded data as Image<u8, 1>.
+    pub fn decode_gray8(&mut self, jpeg_data: &[u8]) -> Result<Image<u8, 1>, JpegTurboError> {
+        // get the image size to allocate th data storage
+        let image_size = self.read_header(jpeg_data)?;
+
+        // prepare a storage for the raw pixel data
+        let mut pixels = vec![0u8; image_size.height * image_size.width * 1]; // 1 byte per pixel
+
+        // allocate image container
+        let buf = turbojpeg::Image {
+            pixels: pixels.as_mut_slice(),
+            width: image_size.width,
+            pitch: image_size.width, // 1 byte per pixel, no padding
+            height: image_size.height,
+            format: turbojpeg::PixelFormat::Gray,
+        };
+
+        // decompress the JPEG data
+        self.decompressor
+            .lock()
+            .expect("Failed to lock the decompressor")
+            .decompress(jpeg_data, buf)?;
+
+        Ok(Image::new(image_size, pixels)?)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::jpegturbo::{JpegTurboDecoder, JpegTurboEncoder, JpegTurboError};
+    use kornia_image::{Image, ImageSize};
 
     #[test]
     fn image_decoder() -> Result<(), JpegTurboError> {
@@ -215,6 +280,40 @@ mod tests {
         assert_eq!(image_back.cols(), 258);
         assert_eq!(image_back.rows(), 195);
         assert_eq!(image_back.num_channels(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn image_encoder_decoder_gray() -> Result<(), Box<dyn std::error::Error>> {
+        // Create a simple grayscale test image
+        let image_size = ImageSize {
+            width: 4,
+            height: 4,
+        };
+        
+        // Create a gradient pattern (0, 85, 170, 255) repeated for each row
+        let pixel_data = vec![
+            0, 85, 170, 255,
+            0, 85, 170, 255,
+            0, 85, 170, 255,
+            0, 85, 170, 255,
+        ];
+        
+        let image = Image::<u8, 1>::new(image_size, pixel_data)?;
+        
+        // Encode to JPEG
+        let jpeg_data = JpegTurboEncoder::new()?.encode_gray8(&image)?;
+        
+        // Decode back and verify
+        let image_back = JpegTurboDecoder::new()?.decode_gray8(&jpeg_data)?;
+        
+        assert_eq!(image_back.cols(), 4);
+        assert_eq!(image_back.rows(), 4);
+        assert_eq!(image_back.num_channels(), 1);
+        
+        // Note: We don't check exact pixel values because JPEG is lossy
+        // But we can check dimensions and general structure
+        
         Ok(())
     }
 }
