@@ -91,7 +91,7 @@ pub fn hessian_response(src: &Image<f32, 1>, dst: &mut Image<f32, 1>) -> Result<
 ///     dst: The destination image with shape (H, W).
 ///     sigma1: The sigma of the first Gaussian kernel.
 ///     sigma2: The sigma of the second Gaussian kernel.
-pub fn dog_response_single(
+pub fn dog_response(
     src: &Image<f32, 1>,
     dst: &mut Image<f32, 1>,
     sigma1: f32,
