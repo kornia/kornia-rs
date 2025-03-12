@@ -1,3 +1,4 @@
+use crate::parallel;
 use kornia_image::{Image, ImageError};
 use rayon::prelude::*;
 
@@ -114,15 +115,14 @@ pub fn dog_response(
     gaussian_blur(src, &mut gauss1, (ks1, ks1), (sigma1, sigma1))?;
     gaussian_blur(src, &mut gauss2, (ks2, ks2), (sigma2, sigma2))?;
 
-    let gauss1_data = gauss1.as_slice();
-    let gauss2_data = gauss2.as_slice();
-
-    dst.as_slice_mut()
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(idx, dst_pixel)| {
-            *dst_pixel = gauss2_data[idx] - gauss1_data[idx];
-        });
+    parallel::par_iter_rows_val_two(
+        &gauss2,
+        &gauss1,
+        dst,
+        |gauss2_pixel, gauss1_pixel, dst_pixel| {
+            *dst_pixel = gauss2_pixel - gauss1_pixel;
+        },
+    );
 
     Ok(())
 }
@@ -181,7 +181,7 @@ mod tests {
         let sigma1 = 0.5;
         let sigma2 = 1.0;
 
-        dog_response_single(&src, &mut dst, sigma1, sigma2)?;
+        dog_response(&src, &mut dst, sigma1, sigma2)?;
 
         let center_value = dst.as_slice()[2 * 5 + 2];
         let expected_center_value = -0.2195;
