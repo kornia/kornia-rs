@@ -187,7 +187,7 @@ pub fn spatial_gradient_float<const C: usize>(
 ///
 /// # NOTICE
 ///
-/// This only used for benmark beacuse
+/// This only used for benchmark beacuse
 /// `spatial_gradient` require replicate padding, but `separable_filter` use zero padding.
 ///
 /// # Arguments
