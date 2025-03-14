@@ -32,6 +32,7 @@ pub fn box_blur<const C: usize>(
 /// * `sigma` - The sigma of the gaussian kernel.
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
+/// NOTE: This function uses a constant border type.
 pub fn gaussian_blur<const C: usize>(
     src: &Image<f32, C>,
     dst: &mut Image<f32, C>,

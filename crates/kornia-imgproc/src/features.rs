@@ -1,6 +1,21 @@
+use crate::parallel;
 use kornia_image::{Image, ImageError};
-
 use rayon::prelude::*;
+
+use crate::filter::gaussian_blur;
+
+fn _get_kernel_size(sigma: f32) -> usize {
+    let mut ksize = (2.0 * 4.0 * sigma + 1.0) as usize;
+
+    // matches OpenCV, but may cause padding problem for small images
+    // PyTorch does not allow to pad more than original size.
+    // Therefore there is a hack in forward function
+    if ksize % 2 == 0 {
+        ksize += 1;
+    }
+
+    ksize
+}
 
 /// Compute the Hessian response of an image.
 ///
@@ -68,6 +83,141 @@ pub fn hessian_response(src: &Image<f32, 1>, dst: &mut Image<f32, 1>) -> Result<
     Ok(())
 }
 
+/// Compute the DoG response of an image.
+///
+/// The DoG response is computed as the difference of the Gaussian responses of two images.
+///
+/// Args:
+///     src: The source image with shape (H, W).
+///     dst: The destination image with shape (H, W).
+///     sigma1: The sigma of the first Gaussian kernel.
+///     sigma2: The sigma of the second Gaussian kernel.
+pub fn dog_response_row_parallel(
+    src: &Image<f32, 1>,
+    dst: &mut Image<f32, 1>,
+    sigma1: f32,
+    sigma2: f32,
+) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    let mut gauss1 = Image::from_size_val(src.size(), 0.0)?;
+    let mut gauss2 = Image::from_size_val(src.size(), 0.0)?;
+    let ks1 = _get_kernel_size(sigma1);
+    let ks2 = _get_kernel_size(sigma2);
+
+    gaussian_blur(src, &mut gauss1, (ks1, ks1), (sigma1, sigma1))?;
+    gaussian_blur(src, &mut gauss2, (ks2, ks2), (sigma2, sigma2))?;
+
+    parallel::par_iter_rows_val_two(
+        &gauss2,
+        &gauss1,
+        dst,
+        |gauss2_pixel, gauss1_pixel, dst_pixel| {
+            *dst_pixel = gauss2_pixel - gauss1_pixel;
+        },
+    );
+
+    Ok(())
+}
+
+/// Compute the DoG response of an image (serial version).
+///
+/// The DoG response is computed as the difference of the Gaussian responses of two images.
+/// This is a serial implementation that doesn't use parallelism.
+///
+/// Args:
+///     src: The source image with shape (H, W).
+///     dst: The destination image with shape (H, W).
+///     sigma1: The sigma of the first Gaussian kernel.
+///     sigma2: The sigma of the second Gaussian kernel.
+pub fn dog_response_serial(
+    src: &Image<f32, 1>,
+    dst: &mut Image<f32, 1>,
+    sigma1: f32,
+    sigma2: f32,
+) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    let mut gauss1 = Image::from_size_val(src.size(), 0.0)?;
+    let mut gauss2 = Image::from_size_val(src.size(), 0.0)?;
+    let ks1 = _get_kernel_size(sigma1);
+    let ks2 = _get_kernel_size(sigma2);
+
+    gaussian_blur(src, &mut gauss1, (ks1, ks1), (sigma1, sigma1))?;
+    gaussian_blur(src, &mut gauss2, (ks2, ks2), (sigma2, sigma2))?;
+
+    let gauss1_data = gauss1.as_slice();
+    let gauss2_data = gauss2.as_slice();
+    let dst_data = dst.as_slice_mut();
+
+    for i in 0..dst_data.len() {
+        dst_data[i] = gauss2_data[i] - gauss1_data[i];
+    }
+
+    Ok(())
+}
+
+/// Compute the DoG response of an image (serial version).
+///
+/// The DoG response is computed as the difference of the Gaussian responses of two images.
+/// This is a serial implementation that doesn't use parallelism.
+///
+/// Args:
+///     src: The source image with shape (H, W).
+///     dst: The destination image with shape (H, W).
+///     sigma1: The sigma of the first Gaussian kernel.
+///     sigma2: The sigma of the second Gaussian kernel.
+pub fn dog_response_rayon(
+    src: &Image<f32, 1>,
+    dst: &mut Image<f32, 1>,
+    sigma1: f32,
+    sigma2: f32,
+) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    let mut gauss1 = Image::from_size_val(src.size(), 0.0)?;
+    let mut gauss2 = Image::from_size_val(src.size(), 0.0)?;
+    let ks1 = _get_kernel_size(sigma1);
+    let ks2 = _get_kernel_size(sigma2);
+
+    gaussian_blur(src, &mut gauss1, (ks1, ks1), (sigma1, sigma1))?;
+    gaussian_blur(src, &mut gauss2, (ks2, ks2), (sigma2, sigma2))?;
+
+    let gauss1_data = gauss1.as_slice();
+    let gauss2_data = gauss2.as_slice();
+    let dst_data = dst.as_slice_mut();
+
+    dst_data
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(i, dst_pixel)| {
+            *dst_pixel = gauss2_data[i] - gauss1_data[i];
+        });
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,6 +250,106 @@ mod tests {
                 0.0, 0.0, 0.0, 0.0, 0.0,
             ]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_dog_response_single() -> Result<(), ImageError> {
+        #[rustfmt::skip]
+        let src = Image::from_size_slice(
+            [5, 5].into(),
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 1.0, 1.0, 0.0,
+                0.0, 1.0, 1.0, 1.0, 0.0,
+                0.0, 1.0, 1.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+        )?;
+
+        let mut dst = Image::from_size_val([5, 5].into(), 0.0)?;
+
+        let sigma1 = 0.5;
+        let sigma2 = 1.0;
+
+        dog_response_row_parallel(&src, &mut dst, sigma1, sigma2)?;
+
+        let center_value = dst.as_slice()[2 * 5 + 2];
+        let expected_center_value = -0.2195;
+        assert!(
+            (center_value - expected_center_value).abs() < 1e-4,
+            "Center value should be close to expected value"
+        );
+
+        let sum: f32 = dst.as_slice().iter().sum();
+        let expected_sum = -0.7399;
+        assert!(
+            (sum - expected_sum).abs() < 1e-4,
+            "Sum of DoG response should be close to expected value"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_dog_response_serial() -> Result<(), ImageError> {
+        #[rustfmt::skip]
+        let src = Image::from_size_slice(
+            [5, 5].into(),
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 1.0, 1.0, 0.0,
+                0.0, 1.0, 1.0, 1.0, 0.0,
+                0.0, 1.0, 1.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+        )?;
+
+        let mut dst_serial = Image::from_size_val([5, 5].into(), 0.0)?;
+        let mut dst_parallel = Image::from_size_val([5, 5].into(), 0.0)?;
+
+        let sigma1 = 0.5;
+        let sigma2 = 1.0;
+
+        dog_response_serial(&src, &mut dst_serial, sigma1, sigma2)?;
+        dog_response_row_parallel(&src, &mut dst_parallel, sigma1, sigma2)?;
+
+        // Check that serial and parallel implementations produce the same results
+        for (serial_val, parallel_val) in dst_serial
+            .as_slice()
+            .iter()
+            .zip(dst_parallel.as_slice().iter())
+        {
+            assert!(
+                (serial_val - parallel_val).abs() < 1e-6,
+                "Serial and parallel implementations should produce the same results"
+            );
+        }
+
+        // Verify expected values
+        let center_value = dst_serial.as_slice()[2 * 5 + 2];
+        let expected_center_value = -0.2195;
+        assert!(
+            (center_value - expected_center_value).abs() < 1e-4,
+            "Center value should be close to expected value"
+        );
+
+        let sum: f32 = dst_serial.as_slice().iter().sum();
+        let expected_sum = -0.7399;
+        assert!(
+            (sum - expected_sum).abs() < 1e-4,
+            "Sum of DoG response should be close to expected value"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_dog_response_rayon() -> Result<(), ImageError> {
+        let src = Image::from_size_val([5, 5].into(), 0.0)?;
+        let mut dst = Image::from_size_val([5, 5].into(), 0.0)?;
+
+        dog_response_rayon(&src, &mut dst, 0.5, 1.0)?;
         Ok(())
     }
 }
