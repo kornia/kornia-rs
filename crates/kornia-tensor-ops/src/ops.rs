@@ -1,7 +1,6 @@
+use kernels::ops::{cosine_similarity_float_kernel, dot_product1_kernel};
 use kornia_tensor::{storage::TensorStorage, CpuAllocator, Tensor, TensorAllocator};
 use num_traits::{Float, Zero};
-use kernels::ops::{cosine_similarity_float_kernel, dot_product1_kernel};
-
 
 use crate::error::TensorOpsError;
 
@@ -79,62 +78,58 @@ where
 }
 
 /// Multiply the pixel data by a scalar.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `n` - The scalar to multiply the pixel data by.
-    ///     
-    /// # Returns
-    /// 
-    /// A new image with the pixel data multiplied by the scalar.
-    pub fn mul_scalar<T, const N: usize, A>(
-        tensor:&Tensor<T, N, A>, 
-        n: T
-    ) -> Tensor<T, N, A>
-    where
-        T: Float + Clone,
-        A: TensorAllocator + Clone + 'static,
-    {
-        tensor.map(|&x| x * n)
-    }
+///
+/// # Arguments
+///
+/// * `n` - The scalar to multiply the pixel data by.
+///     
+/// # Returns
+///
+/// A new image with the pixel data multiplied by the scalar.
+pub fn mul_scalar<T, const N: usize, A>(tensor: &Tensor<T, N, A>, n: T) -> Tensor<T, N, A>
+where
+    T: Float + Clone,
+    A: TensorAllocator + Clone + 'static,
+{
+    tensor.map(|&x| x * n)
+}
 
-
-    /// Raise the pixel data to the power of a float.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `n` - The power to raise the pixel data to.
-    /// 
-    /// # Returns
-    /// 
-    /// A new image with the pixel data raised to the power.
-    pub fn powf<T, const N: usize, A>(
-        tensor:&Tensor<T, N, A>, 
-        n: T
-    ) -> Tensor<T, N, A>
-    where
-        T: Float + Clone,
-        A: TensorAllocator + Clone + 'static,
-    {
-        tensor.map(|x| x.powf(n))
-    }
-    /// Perform an element-wise minimum operation on two tensors.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `other` - The other tensor to compare.
-    /// 
-    /// # Returns
-    /// 
-    /// A new `Tensor` instance.
-    pub fn min<T, const N: usize, A>(tensor:&Tensor<T, N, CpuAllocator>,other:&Tensor<T, N, CpuAllocator>) -> Tensor<T, N, CpuAllocator>
-    where
-        T: PartialOrd + Clone,
-        A: TensorAllocator + Clone + 'static,
-    {
-        tensor.element_wise_op(other, |a, b| if a < b { a.clone() } else { b.clone() })
-            .expect("Tensor dimension mismatch")
-    }
+/// Raise the pixel data to the power of a float.
+///
+/// # Arguments
+///
+/// * `n` - The power to raise the pixel data to.
+///
+/// # Returns
+///
+/// A new image with the pixel data raised to the power.
+pub fn powf<T, const N: usize, A>(tensor: &Tensor<T, N, A>, n: T) -> Tensor<T, N, A>
+where
+    T: Float + Clone,
+    A: TensorAllocator + Clone + 'static,
+{
+    tensor.map(|x| x.powf(n))
+}
+/// Perform an element-wise minimum operation on two tensors.
+///
+/// # Arguments
+///
+/// * `other` - The other tensor to compare.
+///
+/// # Returns
+///
+/// A new `Tensor` instance.
+pub fn min<T, const N: usize>(
+    tensor: &Tensor<T, N, CpuAllocator>,
+    other: &Tensor<T, N, CpuAllocator>,
+) -> Tensor<T, N, CpuAllocator>
+where
+    T: PartialOrd + Clone,
+{
+    tensor
+        .element_wise_op(other, |a, b| if a < b { a.clone() } else { b.clone() })
+        .expect("Tensor dimension mismatch")
+}
 
 /// Compute the dot product between two 1D tensors
 ///
@@ -259,7 +254,6 @@ where
     Ok(T::one() - similarity)
 }
 
-
 #[cfg(test)]
 mod tests {
     use kornia_tensor::{CpuAllocator, TensorError};
@@ -353,6 +347,38 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn test_mul_scalar_f32() -> Result<(), TensorError> {
+        let data: [f32; 5] = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let t = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([5], &data, CpuAllocator)?;
+        let result = mul_scalar(&t, 2.0);
+        assert_eq!(result.as_slice(), &[2.0, 4.0, 6.0, 8.0, 10.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_powf_f32() -> Result<(), TensorError> {
+        let data: [f32; 5] = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let t = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([5], &data, CpuAllocator)?;
+        let result = powf(&t, 2.0);
+        let expected: Vec<f32> = data.iter().map(|&x| x * x).collect();
+        assert_eq!(result.as_slice(), expected.as_slice());
+        Ok(())
+    }
+
+    #[test]
+    fn test_min_i32() -> Result<(), TensorError> {
+        let data_a: [i32; 5] = [3, 1, 4, 1, 5];
+        let data_b: [i32; 5] = [2, 7, 1, 8, 2];
+        let tensor_a =
+            Tensor::<i32, 1, CpuAllocator>::from_shape_slice([5], &data_a, CpuAllocator)?;
+        let tensor_b =
+            Tensor::<i32, 1, CpuAllocator>::from_shape_slice([5], &data_b, CpuAllocator)?;
+        let result = min(&tensor_a, &tensor_b);
+        let expected = vec![2, 1, 1, 1, 2];
+        assert_eq!(result.as_slice(), expected.as_slice());
+        Ok(())
+    }
     #[test]
     fn test_dot_product1_f32() -> Result<(), TensorOpsError> {
         let a_f32 =
