@@ -1,8 +1,7 @@
-use core::f32;
-use std::alloc::GlobalAlloc;
-
 use kornia_tensor::{storage::TensorStorage, CpuAllocator, Tensor, TensorAllocator};
 use num_traits::{Float, Zero};
+use kernels::ops::{cosine_similarity_float_kernel, dot_product1_kernel};
+
 
 use crate::error::TensorOpsError;
 
@@ -137,6 +136,130 @@ where
             .expect("Tensor dimension mismatch")
     }
 
+/// Compute the dot product between two 1D tensors
+///
+/// # Arguments
+///
+/// * `a` - First tensor
+/// * `b` - Second tensor
+///
+/// # Returns
+///
+/// A scalar value representing the dot product of the two tensors.
+///
+/// # Errors
+///
+/// If the shapes of the tensors don't match, an error is returned.
+///
+/// # Example
+///
+/// ```
+/// use kornia_tensor::{Tensor, CpuAllocator};
+/// use kornia_tensor_ops::ops::dot_product1;
+///
+/// let a = Tensor::<i32, 1, CpuAllocator>::from_shape_slice([3], &[1, 2, 3], CpuAllocator).unwrap();
+/// let b = Tensor::<i32, 1, CpuAllocator>::from_shape_slice([3], &[4, 5, 6], CpuAllocator).unwrap();
+/// let result = dot_product1(&a, &b).unwrap();
+/// assert_eq!(result, 32); // 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
+/// ```
+pub fn dot_product1<T, A>(a: &Tensor<T, 1, A>, b: &Tensor<T, 1, A>) -> Result<T, TensorOpsError>
+where
+    T: Zero + Clone + std::ops::Add<Output = T> + std::ops::Mul<Output = T> + Copy,
+    A: TensorAllocator + Clone + 'static,
+{
+    if a.shape != b.shape {
+        return Err(TensorOpsError::ShapeMismatch(
+            a.shape.to_vec(),
+            b.shape.to_vec(),
+        ));
+    }
+
+    dot_product1_kernel(a.as_slice(), b.as_slice()).map_err(|e| e.into())
+}
+
+/// Compute the cosine similarity between two tensors with optimized computation
+///
+/// This version computes the dot product and magnitudes in a single pass through the data.
+///
+/// # Arguments
+///
+/// * `a` - First tensor
+/// * `b` - Second tensor
+///
+/// # Returns
+///
+/// A scalar value representing the cosine similarity between the two tensors.
+///
+/// # Errors
+///
+/// If the shapes of the tensors don't match, an error is returned.
+///
+/// Example:
+/// ```
+/// use kornia_tensor::{Tensor, CpuAllocator};
+/// use kornia_tensor_ops::ops::cosine_similarity;
+///
+/// let a = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 2.0, 3.0], CpuAllocator).unwrap();
+/// let b = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[2.0, 4.0, 6.0], CpuAllocator).unwrap();
+/// let result = cosine_similarity(&a, &b).unwrap();
+/// assert!((result - 1.0).abs() < 1e-6);
+/// ```
+pub fn cosine_similarity<T, const N: usize, A>(
+    a: &Tensor<T, N, A>,
+    b: &Tensor<T, N, A>,
+) -> Result<T, TensorOpsError>
+where
+    T: num_traits::Float,
+    A: TensorAllocator + Clone + 'static,
+{
+    if a.shape != b.shape {
+        return Err(TensorOpsError::ShapeMismatch(
+            a.shape.to_vec(),
+            b.shape.to_vec(),
+        ));
+    }
+
+    cosine_similarity_float_kernel(a.as_slice(), b.as_slice()).map_err(|e| e.into())
+}
+
+/// Compute the cosine distance between two tensors with optimized computation
+///
+/// This version computes the dot product and magnitudes in a single pass through the data.
+///
+/// # Arguments
+///
+/// * `a` - First tensor
+/// * `b` - Second tensor
+///
+/// # Returns
+///
+/// A scalar value representing the cosine distance between the two tensors.
+///
+/// # Errors
+///
+/// If the shapes of the tensors don't match, an error is returned.
+///
+/// # Example
+///
+/// ```
+/// use kornia_tensor::{Tensor, CpuAllocator};
+/// use kornia_tensor_ops::ops::cosine_distance;
+///
+/// let a = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 2.0, 3.0], CpuAllocator).unwrap();
+/// let b = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[2.0, 4.0, 6.0], CpuAllocator).unwrap();
+/// let result = cosine_distance(&a, &b).unwrap();
+/// assert!(result.abs() < 1e-6);
+/// ```
+pub fn cosine_distance<T, A>(a: &Tensor<T, 1, A>, b: &Tensor<T, 1, A>) -> Result<T, TensorOpsError>
+where
+    T: num_traits::Float,
+    A: TensorAllocator + Clone + 'static,
+{
+    let similarity = cosine_similarity(a, b)?;
+    Ok(T::one() - similarity)
+}
+
+
 #[cfg(test)]
 mod tests {
     use kornia_tensor::{CpuAllocator, TensorError};
@@ -150,6 +273,23 @@ mod tests {
         let res = sum_elements(&t, 2);
         assert!(res.is_err_and(|e| e == TensorOpsError::DimOutOfBounds(2, 1)));
         Ok(())
+    }
+
+    #[test]
+    fn test_dot_product_shape_mismatch() {
+        let a = Tensor::<i32, 1, CpuAllocator>::from_shape_slice([3], &[1, 2, 3], CpuAllocator)
+            .unwrap();
+        let b = Tensor::<i32, 1, CpuAllocator>::from_shape_slice([4], &[4, 5, 6, 7], CpuAllocator)
+            .unwrap();
+        let result = dot_product1(&a, &b);
+        assert!(result.is_err());
+
+        if let Err(TensorOpsError::ShapeMismatch(shape_a, shape_b)) = &result {
+            assert_eq!(shape_a, &vec![3]);
+            assert_eq!(shape_b, &vec![4]);
+        } else {
+            panic!("Expected ShapeMismatch error");
+        }
     }
 
     #[test]
@@ -209,6 +349,102 @@ mod tests {
         assert_eq!(agg.as_slice(), [4; 6]);
         assert_eq!(sum_elements(&t_f32, 2)?.as_slice(), [4.; 6]);
         assert_eq!(sum_elements(&t_i32, 2)?.as_slice(), [4; 6]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_dot_product1_f32() -> Result<(), TensorOpsError> {
+        let a_f32 =
+            Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 2.0, 3.0], CpuAllocator)?;
+        let b_f32 =
+            Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[4.0, 5.0, 6.0], CpuAllocator)?;
+        let result = dot_product1(&a_f32, &b_f32)?;
+        assert_eq!(result, 32.0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_dot_product1_u8() -> Result<(), TensorOpsError> {
+        let a_u8 = Tensor::<u8, 1, CpuAllocator>::from_shape_slice([3], &[1, 2, 3], CpuAllocator)?;
+        let b_u8 = Tensor::<u8, 1, CpuAllocator>::from_shape_slice([3], &[4, 5, 6], CpuAllocator)?;
+        let result = dot_product1(&a_u8, &b_u8)?;
+        assert_eq!(result, 32);
+        Ok(())
+    }
+
+    #[test]
+    fn test_cosine_similarity_orthogonal_vectors() -> Result<(), TensorOpsError> {
+        let a =
+            Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 0.0, 0.0], CpuAllocator)?;
+        let b =
+            Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[0.0, 1.0, 0.0], CpuAllocator)?;
+        let result = cosine_similarity(&a, &b)?;
+        assert_eq!(result, 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_cosine_similarity_opposite_vectors() -> Result<(), TensorOpsError> {
+        let e =
+            Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 2.0, 3.0], CpuAllocator)?;
+        let f = Tensor::<f32, 1, CpuAllocator>::from_shape_slice(
+            [3],
+            &[-1.0, -2.0, -3.0],
+            CpuAllocator,
+        )?;
+        let result = cosine_similarity(&e, &f)?;
+        assert!((result - -1.0).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn test_cosine_similarity_zero_vector() -> Result<(), TensorOpsError> {
+        let zero =
+            Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[0.0, 0.0, 0.0], CpuAllocator)?;
+        let g =
+            Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 2.0, 3.0], CpuAllocator)?;
+        let result = cosine_similarity(&zero, &g)?;
+        assert_eq!(result, 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_cosine_similarity_zero_dot_product() -> Result<(), TensorOpsError> {
+        let h =
+            Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 1.0, 0.0], CpuAllocator)?;
+        let i =
+            Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[-1.0, 1.0, 0.0], CpuAllocator)?;
+        let result = cosine_similarity(&h, &i)?;
+        assert!(result.abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn test_cosine_distance() -> Result<(), TensorOpsError> {
+        let a =
+            Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 2.0, 3.0], CpuAllocator)?;
+        let b =
+            Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 2.0, 3.0], CpuAllocator)?;
+        let result = cosine_distance(&a, &b)?;
+        assert!(result.abs() < 1e-6);
+
+        let c =
+            Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 0.0, 0.0], CpuAllocator)?;
+        let d =
+            Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[0.0, 1.0, 0.0], CpuAllocator)?;
+        let result = cosine_distance(&c, &d)?;
+        assert!((result - 1.0).abs() < 1e-6);
+
+        let e =
+            Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 2.0, 3.0], CpuAllocator)?;
+        let f = Tensor::<f32, 1, CpuAllocator>::from_shape_slice(
+            [3],
+            &[-1.0, -2.0, -3.0],
+            CpuAllocator,
+        )?;
+        let result = cosine_distance(&e, &f)?;
+        assert!((result - 2.0).abs() < 1e-6);
 
         Ok(())
     }
