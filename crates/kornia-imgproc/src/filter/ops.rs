@@ -182,6 +182,119 @@ pub fn spatial_gradient_float<const C: usize>(
     Ok(())
 }
 
+/// Compute the first order image derivative in both x and y using a Sobel operator.
+/// Implement within [separable_filter]
+///
+/// # NOTICE
+///
+/// This only used for benmark beacuse
+/// `spatial_gradient` require replicate padding, but `separable_filter` use zero padding.
+///
+/// # Arguments
+///
+/// * `src` - The source image with shape (H, W).
+/// * `dst` - The destination image with shape (H, W, 2).
+pub fn spatial_gradient_float_by_separable_filter<const C: usize>(
+    src: &Image<f32, C>,
+    dx: &mut Image<f32, C>,
+    dy: &mut Image<f32, C>,
+) -> Result<(), ImageError> {
+    if src.size() != dx.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dx.cols(),
+            dx.rows(),
+        ));
+    }
+
+    if src.size() != dy.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dy.cols(),
+            dy.rows(),
+        ));
+    }
+
+    let dx_kernel_y = [0.35355339059, 0.70710678118, 0.35355339059]; // 1/sqrt(8), 2/sqrt(8), 1/sqrt(8)
+    let dx_kernel_x = [-0.35355339059, 0.0, 0.35355339059]; // -1/sqrt(8), 0, 1/sqrt(8)
+
+    let dy_kernel_y = [-0.35355339059, 0.0, 0.35355339059]; // -1/sqrt(8), 0, 1/sqrt(8)
+    let dy_kernel_x = [0.35355339059, 0.70710678118, 0.35355339059]; // 1/sqrt(8), 2/sqrt(8), 1/sqrt(8)
+
+    separable_filter(src, dx, &dx_kernel_x, &dx_kernel_y)?;
+    separable_filter(src, dy, &dy_kernel_x, &dy_kernel_y)?;
+
+    Ok(())
+}
+
+/// Compute the first order image derivative in both x and y using a Sobel operator.
+///
+/// # Arguments
+///
+/// * `src` - The source image with shape (H, W).
+/// * `dst` - The destination image with shape (H, W, 2).
+pub fn spatial_gradient_float_parallel<const C: usize>(
+    src: &Image<f32, C>,
+    dx: &mut Image<f32, C>,
+    dy: &mut Image<f32, C>,
+) -> Result<(), ImageError> {
+    if src.size() != dx.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dx.cols(),
+            dx.rows(),
+        ));
+    }
+
+    if src.size() != dy.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dy.cols(),
+            dy.rows(),
+        ));
+    }
+
+    let (sobel_x, sobel_y) = kernels::normalized_sobel_kernel3();
+    let cols = src.cols();
+
+    let src_data = src.as_slice();
+
+    dx.as_slice_mut()
+        .chunks_mut(cols * C)
+        .zip(dy.as_slice_mut().chunks_mut(cols * C))
+        .enumerate()
+        .for_each(|(r, (dx_row, dy_row))| {
+            dx_row
+                .chunks_mut(C)
+                .zip(dy_row.chunks_mut(C))
+                .enumerate()
+                .for_each(|(c, (dx_c, dy_c))| {
+                    for ch in 0..C {
+                        let mut sum_x = 0.0;
+                        let mut sum_y = 0.0;
+                        for dy in 0..3 {
+                            for dx in 0..3 {
+                                let row = (r + dy).min(src.rows()).max(1) - 1;
+                                let col = (c + dx).min(src.cols()).max(1) - 1;
+                                let src_pix_offset = (row * src.cols() + col) * C + ch;
+                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
+                                sum_x += val * sobel_x[dy][dx];
+                                sum_y += val * sobel_y[dy][dx];
+                            }
+                        }
+                        dx_c[ch] = sum_x;
+                        dy_c[ch] = sum_y;
+                    }
+                });
+        });
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +378,75 @@ mod tests {
         let mut dy = Image::<_, 2>::from_size_val(size, 0.0)?;
 
         spatial_gradient_float(&img, &mut dx, &mut dy)?;
+
+        #[rustfmt::skip]
+        assert_eq!(
+            dx.channel(0)?.as_slice(),
+            &[
+                0.5000, 1.0000, 1.0000, 1.0000, 0.5000,
+                0.5000, 1.0000, 1.0000, 1.0000, 0.5000,
+                0.5000, 1.0000, 1.0000, 1.0000, 0.5000,
+                0.5000, 1.0000, 1.0000, 1.0000, 0.5000,
+                0.5000, 1.0000, 1.0000, 1.0000, 0.5000
+            ]
+        );
+
+        #[rustfmt::skip]
+        assert_eq!(
+            dx.channel(1)?.as_slice(),
+            &[
+                0.5000, 1.0000, 1.0000, 1.0000, 0.5000,
+                0.5000, 1.0000, 1.0000, 1.0000, 0.5000,
+                0.5000, 1.0000, 1.0000, 1.0000, 0.5000,
+                0.5000, 1.0000, 1.0000, 1.0000, 0.5000,
+                0.5000, 1.0000, 1.0000, 1.0000, 0.5000
+            ]
+        );
+
+        #[rustfmt::skip]
+        assert_eq!(
+            dy.channel(0)?.as_slice(),
+            &[
+                2.5000, 2.5000, 2.5000, 2.5000, 2.5000,
+                5.0000, 5.0000, 5.0000, 5.0000, 5.0000,
+                5.0000, 5.0000, 5.0000, 5.0000, 5.0000,
+                5.0000, 5.0000, 5.0000, 5.0000, 5.0000,
+                2.5000, 2.5000, 2.5000, 2.5000, 2.5000
+            ]
+        );
+
+        #[rustfmt::skip]
+        assert_eq!(
+            dy.channel(1)?.as_slice(),
+            &[
+                2.5000, 2.5000, 2.5000, 2.5000, 2.5000,
+                5.0000, 5.0000, 5.0000, 5.0000, 5.0000,
+                5.0000, 5.0000, 5.0000, 5.0000, 5.0000,
+                5.0000, 5.0000, 5.0000, 5.0000, 5.0000,
+                2.5000, 2.5000, 2.5000, 2.5000, 2.5000
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_spatial_gradient_parallel() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 5,
+            height: 5,
+        };
+
+        #[rustfmt::skip]
+        let img = Image::<f32, 2>::new(
+            size,
+            (0..25).into_iter().flat_map(|x| [x as f32, x as f32 + 25.0]).collect(),
+        )?;
+
+        let mut dx = Image::<_, 2>::from_size_val(size, 0.0)?;
+        let mut dy = Image::<_, 2>::from_size_val(size, 0.0)?;
+
+        spatial_gradient_float_parallel(&img, &mut dx, &mut dy)?;
 
         #[rustfmt::skip]
         assert_eq!(

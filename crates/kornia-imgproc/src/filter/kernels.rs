@@ -69,7 +69,7 @@ pub fn sobel_kernel_1d(kernel_size: usize) -> (Vec<f32>, Vec<f32>) {
 ///
 /// # Returns
 ///
-/// A vector of the kernel.
+/// A tuple of two array of the kernel. (dx_kernel, dy_kernel)
 pub fn normalized_sobel_kernel3() -> ([[f32; 3]; 3], [[f32; 3]; 3]) {
     (
         [
