@@ -124,39 +124,57 @@ pub fn box_blur_fast<const C: usize>(
 ///
 /// * `src` - The source image with shape (H, W).
 /// * `dst` - The destination image with shape (H, W, 2).
-pub fn spatial_gradient(src: &Image<f32, 1>, dst: &mut Image<f32, 2>) -> Result<(), ImageError> {
-    let (sobel_x, sobel_y) = kernels::normalized_sobel_kernel_2d(3);
+pub fn spatial_gradient_float<const C: usize>(
+    src: &Image<f32, C>,
+    dx: &mut Image<f32, C>,
+    dy: &mut Image<f32, C>,
+) -> Result<(), ImageError> {
+    if src.size() != dx.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dx.cols(),
+            dx.rows(),
+        ));
+    }
+
+    if src.size() != dy.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dy.cols(),
+            dy.rows(),
+        ));
+    }
+
+    let (sobel_x, sobel_y) = kernels::normalized_sobel_kernel3();
 
     let src_data = src.as_slice();
-    let dst_data = dst.as_slice_mut();
+    let dx_data = dx.as_slice_mut();
+    let dy_data = dy.as_slice_mut();
 
     for r in 0..src.rows() {
         let row_offset = r * src.cols();
         for c in 0..src.cols() {
-            let col_offset = (row_offset + c) * 2;
-            let mut sum_x = 0.0;
-            let mut sum_y = 0.0;
-            for dy in 0..3 {
-                for dx in 0..3 {
-                    let row = if r + dy < 1 {
-                        0
-                    } else {
-                        (r + dy - 1).min(src.rows() - 1)
-                    };
-                    let col = if c + dx < 1 {
-                        0
-                    } else {
-                        (c + dx - 1).min(src.cols() - 1)
-                    };
-                    let pix_offset = row * src.cols() + col;
-                    let val = unsafe { src_data.get_unchecked(pix_offset) };
-                    sum_x += val * sobel_x[dy][dx];
-                    sum_y += val * sobel_y[dy][dx];
+            let col_offset = (row_offset + c) * C;
+            for ch in 0..C {
+                let pix_offset = col_offset + ch;
+                let mut sum_x = 0.0;
+                let mut sum_y = 0.0;
+                for dy in 0..3 {
+                    for dx in 0..3 {
+                        let row = (r + dy).min(src.rows()).max(1) - 1;
+                        let col = (c + dx).min(src.cols()).max(1) - 1;
+                        let src_pix_offset = (row * src.cols() + col) * C + ch;
+                        let val = unsafe { src_data.get_unchecked(src_pix_offset) };
+                        sum_x += val * sobel_x[dy][dx];
+                        sum_y += val * sobel_y[dy][dx];
+                    }
                 }
-            }
-            unsafe {
-                *dst_data.get_unchecked_mut(col_offset) = sum_x;
-                *dst_data.get_unchecked_mut(col_offset + 1) = sum_y;
+                unsafe {
+                    *dx_data.get_unchecked_mut(pix_offset) = sum_x;
+                    *dy_data.get_unchecked_mut(pix_offset) = sum_y;
+                }
             }
         }
     }
@@ -238,18 +256,19 @@ mod tests {
         };
 
         #[rustfmt::skip]
-        let img = Image::new(
+        let img = Image::<f32, 2>::new(
             size,
-            (0..25).map(|x| x as f32).collect(),
+            (0..25).into_iter().flat_map(|x| [x as f32, x as f32 + 25.0]).collect(),
         )?;
 
-        let mut dst = Image::<_, 2>::from_size_val(size, 0.0)?;
+        let mut dx = Image::<_, 2>::from_size_val(size, 0.0)?;
+        let mut dy = Image::<_, 2>::from_size_val(size, 0.0)?;
 
-        spatial_gradient(&img, &mut dst)?;
+        spatial_gradient_float(&img, &mut dx, &mut dy)?;
 
         #[rustfmt::skip]
         assert_eq!(
-            dst.channel(0)?.as_slice(),
+            dx.channel(0)?.as_slice(),
             &[
                 0.5000, 1.0000, 1.0000, 1.0000, 0.5000,
                 0.5000, 1.0000, 1.0000, 1.0000, 0.5000,
@@ -261,7 +280,31 @@ mod tests {
 
         #[rustfmt::skip]
         assert_eq!(
-            dst.channel(1)?.as_slice(),
+            dx.channel(1)?.as_slice(),
+            &[
+                0.5000, 1.0000, 1.0000, 1.0000, 0.5000,
+                0.5000, 1.0000, 1.0000, 1.0000, 0.5000,
+                0.5000, 1.0000, 1.0000, 1.0000, 0.5000,
+                0.5000, 1.0000, 1.0000, 1.0000, 0.5000,
+                0.5000, 1.0000, 1.0000, 1.0000, 0.5000
+            ]
+        );
+
+        #[rustfmt::skip]
+        assert_eq!(
+            dy.channel(0)?.as_slice(),
+            &[
+                2.5000, 2.5000, 2.5000, 2.5000, 2.5000,
+                5.0000, 5.0000, 5.0000, 5.0000, 5.0000,
+                5.0000, 5.0000, 5.0000, 5.0000, 5.0000,
+                5.0000, 5.0000, 5.0000, 5.0000, 5.0000,
+                2.5000, 2.5000, 2.5000, 2.5000, 2.5000
+            ]
+        );
+
+        #[rustfmt::skip]
+        assert_eq!(
+            dy.channel(1)?.as_slice(),
             &[
                 2.5000, 2.5000, 2.5000, 2.5000, 2.5000,
                 5.0000, 5.0000, 5.0000, 5.0000, 5.0000,

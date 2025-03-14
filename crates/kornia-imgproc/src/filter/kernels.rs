@@ -70,23 +70,19 @@ pub fn sobel_kernel_1d(kernel_size: usize) -> (Vec<f32>, Vec<f32>) {
 /// # Returns
 ///
 /// A vector of the kernel.
-pub fn normalized_sobel_kernel_2d(kernel_size: usize) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
-    let (kernel_x, kernel_y) = match kernel_size {
-        3 => (
-            vec![
-                vec![-0.125, 0.0, 0.125],
-                vec![-0.25,  0.0, 0.25],
-                vec![-0.125, 0.0, 0.125],
-            ],
-            vec![
-                vec![-0.125, -0.25, -0.125],
-                vec![ 0.0,    0.0,   0.0],
-                vec![ 0.125,  0.25,  0.125],
-            ],
-        ),
-        _ => panic!("Invalid kernel size for sobel kernel"),
-    };
-    (kernel_x, kernel_y)
+pub fn normalized_sobel_kernel3() -> ([[f32; 3]; 3], [[f32; 3]; 3]) {
+    (
+        [
+            [-0.125, 0.0, 0.125],
+            [-0.25, 0.0, 0.25],
+            [-0.125, 0.0, 0.125],
+        ],
+        [
+            [-0.125, -0.25, -0.125],
+            [0.0, 0.0, 0.0],
+            [0.125, 0.25, 0.125],
+        ],
+    )
 }
 
 /// Create list of optimized box blur kernels based on gaussian sigma
