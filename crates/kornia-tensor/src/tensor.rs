@@ -638,39 +638,6 @@ where
         self.map(|x| x.powi(n))
     }
 
-    /// Multiply the pixel data by a scalar.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `n` - The scalar to multiply the pixel data by.
-    ///     
-    /// # Returns
-    /// 
-    /// A new image with the pixel data multiplied by the scalar.
-    pub fn mul_scalar(&self, n: T) -> Tensor<T, N, A>
-    where
-        T: Float,
-    {
-        self.map(|&x| x * n)
-    }
-
-
-    /// Raise the pixel data to the power of a float.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `n` - The power to raise the pixel data to.
-    /// 
-    /// # Returns
-    /// 
-    /// A new image with the pixel data raised to the power.
-    pub fn powf(&self, n: T) -> Tensor<T, N, A>
-    where
-        T: Float,
-    {
-        self.map(|x| x.powf(n))
-    }
-
     /// Compute absolute value of the pixel data.
     ///
     /// # Returns
@@ -922,23 +889,6 @@ where
         T: std::ops::Div<Output = T> + Clone,
     {
         self.element_wise_op(other, |a, b| a.clone() / b.clone())
-            .expect("Tensor dimension mismatch")
-    }
-
-    /// Perform an element-wise minimum operation on two tensors.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `other` - The other tensor to compare.
-    /// 
-    /// # Returns
-    /// 
-    /// A new `Tensor` instance.
-    pub fn min(&self, other: &Tensor<T, N, CpuAllocator>) -> Tensor<T, N, CpuAllocator>
-    where
-        T: PartialOrd + Clone,
-    {
-        self.element_wise_op(other, |a, b| if a < b { a.clone() } else { b.clone() })
             .expect("Tensor dimension mismatch")
     }
 }
