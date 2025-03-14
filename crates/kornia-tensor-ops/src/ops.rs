@@ -122,13 +122,13 @@ where
 pub fn min<T, const N: usize>(
     tensor: &Tensor<T, N, CpuAllocator>,
     other: &Tensor<T, N, CpuAllocator>,
-) -> Tensor<T, N, CpuAllocator>
+) -> Result<Tensor<T, N, CpuAllocator>, TensorOpsError>
 where
     T: PartialOrd + Clone,
 {
     tensor
         .element_wise_op(other, |a, b| if a < b { a.clone() } else { b.clone() })
-        .expect("Tensor dimension mismatch")
+        .map_err(|_| TensorOpsError::ShapeMismatch(tensor.shape.to_vec(), other.shape.to_vec()))
 }
 
 /// Compute the dot product between two 1D tensors
@@ -367,15 +367,15 @@ mod tests {
     }
 
     #[test]
-    fn test_min_i32() -> Result<(), TensorError> {
-        let data_a: [i32; 5] = [3, 1, 4, 1, 5];
-        let data_b: [i32; 5] = [2, 7, 1, 8, 2];
+    fn test_min_f32() -> Result<(), TensorError> {
+        let data_a: [f32; 5] = [3.0, 1.0, 4.0, 1.0, 5.0];
+        let data_b: [f32; 5] = [2.0, 7.0, 1.0, 8.0, 2.0];
         let tensor_a =
-            Tensor::<i32, 1, CpuAllocator>::from_shape_slice([5], &data_a, CpuAllocator)?;
+            Tensor::<f32, 1, CpuAllocator>::from_shape_slice([5], &data_a, CpuAllocator)?;
         let tensor_b =
-            Tensor::<i32, 1, CpuAllocator>::from_shape_slice([5], &data_b, CpuAllocator)?;
-        let result = min(&tensor_a, &tensor_b);
-        let expected = vec![2, 1, 1, 1, 2];
+            Tensor::<f32, 1, CpuAllocator>::from_shape_slice([5], &data_b, CpuAllocator)?;
+        let result = min(&tensor_a, &tensor_b).unwrap();
+        let expected = vec![2.0, 1.0, 1.0, 1.0, 2.0];
         assert_eq!(result.as_slice(), expected.as_slice());
         Ok(())
     }
