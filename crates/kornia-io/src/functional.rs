@@ -419,6 +419,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "turbojpeg")]
     fn read_write_jpeg_gray() -> Result<(), IoError> {
         use kornia_image::{Image, ImageSize};
         use kornia_imgproc::color::gray_from_rgb_u8;
@@ -427,7 +428,11 @@ mod tests {
         
         // First, read an RGB image
         let image_rgb = super::read_image_jpegturbo_rgb8("../../tests/data/dog.jpeg")?;
-
+        
+        // Convert to grayscale using the proper function
+        let mut image_gray = Image::<u8, 1>::from_size_val(image_rgb.size(), 0)?;
+        gray_from_rgb_u8(&image_rgb, &mut image_gray)?;
+        
         // Create a temporary directory for our test file
         let temp_dir = tempdir()?;
         let file_path = temp_dir.path().join("test_gray.jpeg");
