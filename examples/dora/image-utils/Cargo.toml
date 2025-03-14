@@ -1,0 +1,10 @@
+[package]
+name = "dora-image-utils"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arrow = "54.2.1"
+dora-node-api = { version = "0.3", features = ["tracing"] }
+eyre = "0.6"
+kornia = { version = "0.1.8"}
