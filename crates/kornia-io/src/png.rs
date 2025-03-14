@@ -95,7 +95,7 @@ pub fn read_image_png_mono16(file_path: impl AsRef<Path>) -> Result<Image<u16, 1
 ///
 /// write_image_png_gray8("output.png", image).unwrap();
 /// ```
-pub fn write_image_png_gray8(file_path: impl AsRef<Path>, src: Image<u8, 1>) -> Result<(), IoError> {
+pub fn write_image_png_gray8(file_path: impl AsRef<Path>, src: &Image<u8, 1>) -> Result<(), IoError> {
     let file_path = file_path.as_ref();
     
     // Create the output file
