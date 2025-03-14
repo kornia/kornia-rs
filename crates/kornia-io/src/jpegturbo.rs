@@ -313,7 +313,29 @@ mod tests {
         
         // Note: We don't check exact pixel values because JPEG is lossy
         // But we can check dimensions and general structure
+         for row in 0..4 {
+            let row_start = row * 4;
+            let row_data = &image_back.as_slice()[row_start..row_start + 4];
+            
+            // Check that values increase from left to right (with some tolerance for JPEG artifacts)
+            assert!(row_data[0] < row_data[1], "Row {}: Left-to-right pattern broken at pos 0-1: {:?}", row, row_data);
+            assert!(row_data[1] < row_data[2], "Row {}: Left-to-right pattern broken at pos 1-2: {:?}", row, row_data);
+            assert!(row_data[2] < row_data[3], "Row {}: Left-to-right pattern broken at pos 2-3: {:?}", row, row_data);
+            
+            // Check the range - first pixel should be relatively dark, last pixel relatively bright
+            assert!(row_data[0] < 50, "First pixel should be dark, got: {}", row_data[0]);
+            assert!(row_data[3] > 200, "Last pixel should be bright, got: {}", row_data[3]);
+        }
         
+        // Check overall brightness is preserved
+        let original_sum: u32 = image.as_slice().iter().map(|&p| p as u32).sum();
+        let decoded_sum: u32 = image_back.as_slice().iter().map(|&p| p as u32).sum();
+        
+        // Allow for up to 10% difference in overall brightness
+        let ratio = (decoded_sum as f64) / (original_sum as f64);
+        assert!(ratio > 0.9 && ratio < 1.1, 
+                "Brightness differs too much: original sum={}, decoded sum={}, ratio={:.2}", 
+                original_sum, decoded_sum, ratio);
         Ok(())
     }
 }
