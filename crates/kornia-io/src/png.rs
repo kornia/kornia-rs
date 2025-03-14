@@ -146,7 +146,7 @@ pub fn write_image_png_gray8(file_path: impl AsRef<Path>, src: &Image<u8, 1>) ->
 ///
 /// write_image_png_rgb8("output.png", image).unwrap();
 /// ```
-pub fn write_image_png_rgb8(file_path: impl AsRef<Path>, src: Image<u8, 3>) -> Result<(), IoError> {
+pub fn write_image_png_rgb8(file_path: impl AsRef<Path>, src: &Image<u8, 3>) -> Result<(), IoError> {
     let file_path = file_path.as_ref();
     
     // Create the output file
@@ -197,7 +197,7 @@ pub fn write_image_png_rgb8(file_path: impl AsRef<Path>, src: Image<u8, 3>) -> R
 ///
 /// write_image_png_rgba8("output.png", image).unwrap();
 /// ```
-pub fn write_image_png_rgba8(file_path: impl AsRef<Path>, src: Image<u8, 4>) -> Result<(), IoError> {
+pub fn write_image_png_rgba8(file_path: impl AsRef<Path>, src: &Image<u8, 4>) -> Result<(), IoError> {
     let file_path = file_path.as_ref();
     
     // Create the output file
@@ -248,7 +248,7 @@ pub fn write_image_png_rgba8(file_path: impl AsRef<Path>, src: Image<u8, 4>) -> 
 ///
 /// write_image_png_gray16("output.png", image).unwrap();
 /// ```
-pub fn write_image_png_gray16(file_path: impl AsRef<Path>, src: Image<u16, 1>) -> Result<(), IoError> {
+pub fn write_image_png_gray16(file_path: impl AsRef<Path>, src: &Image<u16, 1>) -> Result<(), IoError> {
     let file_path = file_path.as_ref();
     
     // Create the output file
