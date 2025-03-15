@@ -338,6 +338,179 @@ pub fn write_image_jpegturbo_gray8(
     Ok(())
 }
 
+#[cfg(feature = "turbojpeg")]
+/// Decodes a JPEG image in `RGB8` format directly from bytes.
+///
+/// The method decodes the JPEG image data from the provided byte array leveraging the libjpeg-turbo library.
+///
+/// # Arguments
+///
+/// * `jpeg_data` - The raw JPEG data as a byte array.
+///
+/// # Returns
+///
+/// An image containing the decoded JPEG image data.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::Image;
+/// use kornia_io::functional as F;
+/// use std::fs;
+///
+/// let jpeg_data = fs::read("../../tests/data/dog.jpeg").unwrap();
+/// let image: Image<u8, 3> = F::decode_image_jpegturbo_rgb8(&jpeg_data).unwrap();
+///
+/// assert_eq!(image.cols(), 258);
+/// assert_eq!(image.rows(), 195);
+/// assert_eq!(image.num_channels(), 3);
+/// ```
+pub fn decode_image_jpegturbo_rgb8(jpeg_data: &[u8]) -> Result<Image<u8, 3>, IoError> {
+    // decode the data directly from memory
+    let image: Image<u8, 3> = {
+        let mut decoder = JpegTurboDecoder::new()?;
+        decoder.decode_rgb8(jpeg_data)?
+    };
+
+    Ok(image)
+}
+
+/// Decodes an image in `RGB8` format directly from bytes.
+///
+/// The method tries to decode image data from any format supported by the image crate.
+///
+/// # Arguments
+///
+/// * `image_data` - The raw image data as a byte array.
+/// * `format_hint` - Optional string hint about the image format (e.g., "png", "jpeg", etc.).
+///                  This helps the decoder determine the image format if it's ambiguous.
+///
+/// # Returns
+///
+/// An image containing the decoded image data in RGB8 format.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::Image;
+/// use kornia_io::functional as F;
+/// use std::fs;
+///
+/// let image_data = fs::read("../../tests/data/dog.jpeg").unwrap();
+/// let image: Image<u8, 3> = F::decode_image_bytes_rgb8(&image_data, Some("jpeg")).unwrap();
+///
+/// assert_eq!(image.cols(), 258);
+/// assert_eq!(image.rows(), 195);
+/// assert_eq!(image.num_channels(), 3);
+/// ```
+pub fn decode_image_bytes_rgb8(image_data: &[u8], format_hint: Option<&str>) -> Result<Image<u8, 3>, IoError> {
+    // For JPEG data, use turbojpeg if the feature is enabled
+    #[cfg(feature = "turbojpeg")]
+    if format_hint.map_or(false, |fmt| fmt.eq_ignore_ascii_case("jpg") || fmt.eq_ignore_ascii_case("jpeg")) 
+        || image::guess_format(image_data).map_or(false, |fmt| fmt == image::ImageFormat::Jpeg) {
+        return decode_image_jpegturbo_rgb8(image_data);
+    }
+
+    // Use the image crate for other formats
+    let image_reader = image::load_from_memory(image_data)
+        .map_err(|e| IoError::ImageDecodingError(e.to_string()))?;
+    
+    let rgb_image = image_reader.to_rgb8();
+
+    let (width, height) = rgb_image.dimensions();
+    let size = ImageSize {
+        width: width as usize,
+        height: height as usize,
+    };
+
+    let image = Image::new(size, rgb_image.into_raw())?;
+
+    Ok(image)
+}
+
+#[cfg(feature = "turbojpeg")]
+/// Decodes a JPEG image in `GRAY8` format directly from bytes.
+///
+/// The method decodes the JPEG image data from the provided byte array leveraging the libjpeg-turbo library.
+///
+/// # Arguments
+///
+/// * `jpeg_data` - The raw JPEG data as a byte array.
+///
+/// # Returns
+///
+/// An image containing the decoded JPEG image data in grayscale.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::Image;
+/// use kornia_io::functional as F;
+/// use std::fs;
+///
+/// let jpeg_data = fs::read("../../tests/data/dog.jpeg").unwrap();
+/// let image: Image<u8, 1> = F::decode_image_jpegturbo_gray8(&jpeg_data).unwrap();
+/// ```
+pub fn decode_image_jpegturbo_gray8(jpeg_data: &[u8]) -> Result<Image<u8, 1>, IoError> {
+    // decode the data directly from memory
+    let image: Image<u8, 1> = {
+        let mut decoder = JpegTurboDecoder::new()?;
+        decoder.decode_gray8(jpeg_data)?
+    };
+
+    Ok(image)
+}
+
+/// Decodes an image in `GRAY8` format directly from bytes.
+///
+/// The method tries to decode image data from any format supported by the image crate
+/// and converts it to grayscale.
+///
+/// # Arguments
+///
+/// * `image_data` - The raw image data as a byte array.
+/// * `format_hint` - Optional string hint about the image format (e.g., "png", "jpeg", etc.).
+///                  This helps the decoder determine the image format if it's ambiguous.
+///
+/// # Returns
+///
+/// An image containing the decoded image data in GRAY8 format.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::Image;
+/// use kornia_io::functional as F;
+/// use std::fs;
+///
+/// let image_data = fs::read("../../tests/data/dog.jpeg").unwrap();
+/// let image: Image<u8, 1> = F::decode_image_bytes_gray8(&image_data, Some("jpeg")).unwrap();
+/// ```
+pub fn decode_image_bytes_gray8(image_data: &[u8], format_hint: Option<&str>) -> Result<Image<u8, 1>, IoError> {
+    // For JPEG data, use turbojpeg if the feature is enabled
+    #[cfg(feature = "turbojpeg")]
+    if format_hint.map_or(false, |fmt| fmt.eq_ignore_ascii_case("jpg") || fmt.eq_ignore_ascii_case("jpeg")) 
+        || image::guess_format(image_data).map_or(false, |fmt| fmt == image::ImageFormat::Jpeg) {
+        return decode_image_jpegturbo_gray8(image_data);
+    }
+
+    // Use the image crate for other formats
+    let image_reader = image::load_from_memory(image_data)
+        .map_err(|e| IoError::ImageDecodingError(e.to_string()))?;
+    
+    let gray_image = image_reader.to_luma8();
+
+    let (width, height) = gray_image.dimensions();
+    let size = ImageSize {
+        width: width as usize,
+        height: height as usize,
+    };
+
+    let image = Image::new(size, gray_image.into_raw())?;
+
+    Ok(image)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::error::IoError;
@@ -345,6 +518,8 @@ mod tests {
 
     #[cfg(feature = "turbojpeg")]
     use crate::functional::{read_image_jpegturbo_rgb8, write_image_jpegturbo_rgb8};
+
+    use std::fs;
 
     #[test]
     fn read_any() -> Result<(), IoError> {
@@ -447,6 +622,67 @@ mod tests {
         assert_eq!(image_gray_back.width(), image_rgb.width());
         assert_eq!(image_gray_back.height(), image_rgb.height());
         assert_eq!(image_gray_back.num_channels(), 1);
+        
+        Ok(())
+    }
+
+    #[test]
+    fn decode_bytes_rgb8() -> Result<(), IoError> {
+        // Read the image file as bytes
+        let jpeg_data = fs::read("../../tests/data/dog.jpeg")?;
+        
+        // Test decoding JPEG with format hint
+        let image = decode_image_bytes_rgb8(&jpeg_data, Some("jpeg"))?;
+        assert_eq!(image.width(), 258);
+        assert_eq!(image.height(), 195);
+        assert_eq!(image.channels(), 3);
+        
+        // Test decoding without format hint (should auto-detect)
+        let image = decode_image_bytes_rgb8(&jpeg_data, None)?;
+        assert_eq!(image.width(), 258);
+        assert_eq!(image.height(), 195);
+        assert_eq!(image.channels(), 3);
+        
+        Ok(())
+    }
+
+    #[test]
+    fn decode_bytes_gray8() -> Result<(), IoError> {
+        // Read the image file as bytes
+        let jpeg_data = fs::read("../../tests/data/dog.jpeg")?;
+        
+        // Test decoding JPEG with format hint
+        let image = decode_image_bytes_gray8(&jpeg_data, Some("jpeg"))?;
+        assert_eq!(image.width(), 258);
+        assert_eq!(image.height(), 195);
+        assert_eq!(image.channels(), 1);
+        
+        // Test decoding without format hint (should auto-detect)
+        let image = decode_image_bytes_gray8(&jpeg_data, None)?;
+        assert_eq!(image.width(), 258);
+        assert_eq!(image.height(), 195);
+        assert_eq!(image.channels(), 1);
+        
+        Ok(())
+    }
+
+    #[cfg(feature = "turbojpeg")]
+    #[test]
+    fn decode_jpegturbo_bytes() -> Result<(), IoError> {
+        // Read the image file as bytes
+        let jpeg_data = fs::read("../../tests/data/dog.jpeg")?;
+        
+        // Test decoding JPEG with turbojpeg
+        let image = decode_image_jpegturbo_rgb8(&jpeg_data)?;
+        assert_eq!(image.width(), 258);
+        assert_eq!(image.height(), 195);
+        assert_eq!(image.channels(), 3);
+        
+        // Test decoding grayscale JPEG with turbojpeg
+        let image = decode_image_jpegturbo_gray8(&jpeg_data)?;
+        assert_eq!(image.width(), 258);
+        assert_eq!(image.height(), 195);
+        assert_eq!(image.channels(), 1);
         
         Ok(())
     }

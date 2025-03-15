@@ -26,3 +26,31 @@ pub fn read_image_any(file_path: &str) -> PyResult<PyImage> {
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyFileExistsError, _>(format!("{}", e)))?;
     Ok(image.to_pyimage())
 }
+
+#[pyfunction]
+pub fn decode_image_bytes(image_data: &[u8], format_hint: Option<&str> = None) -> PyResult<PyImage> {
+    let image = F::decode_image_bytes_rgb8(image_data, format_hint)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+    Ok(image.to_pyimage())
+}
+
+#[pyfunction]
+pub fn decode_image_bytes_gray(image_data: &[u8], format_hint: Option<&str> = None) -> PyResult<PyImage> {
+    let image = F::decode_image_bytes_gray8(image_data, format_hint)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+    Ok(image.to_pyimage())
+}
+
+#[pyfunction]
+pub fn decode_jpeg_bytes(jpeg_data: &[u8]) -> PyResult<PyImage> {
+    let image = F::decode_image_jpegturbo_rgb8(jpeg_data)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+    Ok(image.to_pyimage())
+}
+
+#[pyfunction]
+pub fn decode_jpeg_bytes_gray(jpeg_data: &[u8]) -> PyResult<PyImage> {
+    let image = F::decode_image_jpegturbo_gray8(jpeg_data)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+    Ok(image.to_pyimage())
+}

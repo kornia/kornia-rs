@@ -10,7 +10,10 @@ mod warp;
 
 use crate::icp::{PyICPConvergenceCriteria, PyICPResult};
 use crate::image::PyImageSize;
-use crate::io::functional::{read_image_any, read_image_jpeg, write_image_jpeg};
+use crate::io::functional::{
+    read_image_any, read_image_jpeg, write_image_jpeg,
+    decode_image_bytes, decode_image_bytes_gray, decode_jpeg_bytes, decode_jpeg_bytes_gray
+};
 use crate::io::jpeg::{PyImageDecoder, PyImageEncoder};
 use pyo3::prelude::*;
 
@@ -35,6 +38,10 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(write_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_any, m)?)?;
+    m.add_function(wrap_pyfunction!(decode_image_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(decode_image_bytes_gray, m)?)?;
+    m.add_function(wrap_pyfunction!(decode_jpeg_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(decode_jpeg_bytes_gray, m)?)?;
     m.add_function(wrap_pyfunction!(resize::resize, m)?)?;
     m.add_function(wrap_pyfunction!(warp::warp_affine, m)?)?;
     m.add_function(wrap_pyfunction!(warp::warp_perspective, m)?)?;
