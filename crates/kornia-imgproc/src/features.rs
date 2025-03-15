@@ -6,14 +6,14 @@ use crate::filter::gaussian_blur;
 /// Method to calculate gradient for feature response
 pub enum GradsMode {
     /// Sobel operators
-    SOBEL,
+    Sobel,
     /// Finite difference
-    DIFF,
+    Diff,
 }
 
 impl Default for GradsMode {
     fn default() -> Self {
-        GradsMode::SOBEL
+        GradsMode::Sobel
     }
 }
 
