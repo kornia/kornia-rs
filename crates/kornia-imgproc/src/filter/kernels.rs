@@ -61,6 +61,30 @@ pub fn sobel_kernel_1d(kernel_size: usize) -> (Vec<f32>, Vec<f32>) {
     (kernel_x, kernel_y)
 }
 
+/// Create a normalized 2d sobel kernel.
+///
+/// # Arguments
+///
+/// * `kernel_size` - The size of the kernel.
+///
+/// # Returns
+///
+/// A tuple of two array of the kernel. (dx_kernel, dy_kernel)
+pub fn normalized_sobel_kernel3() -> ([[f32; 3]; 3], [[f32; 3]; 3]) {
+    (
+        [
+            [-0.125, 0.0, 0.125],
+            [-0.25, 0.0, 0.25],
+            [-0.125, 0.0, 0.125],
+        ],
+        [
+            [-0.125, -0.25, -0.125],
+            [0.0, 0.0, 0.0],
+            [0.125, 0.25, 0.125],
+        ],
+    )
+}
+
 /// Create list of optimized box blur kernels based on gaussian sigma
 ///
 /// <https://www.peterkovesi.com/papers/FastGaussianSmoothing.pdf>
