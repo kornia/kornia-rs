@@ -2,6 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 
 use kornia_image::Image;
 use kornia_imgproc::color::{gray_from_rgb, gray_from_rgb_u8};
+use kornia_imgproc::cubecl::{gray_from_rgb_u8_cl, ImageCl, Shape2};
 
 // vanilla version
 fn gray_vanilla_get_unchecked(
@@ -127,7 +128,35 @@ fn bench_grayscale(c: &mut Criterion) {
                 b.iter(|| black_box(gray_from_rgb_u8(src, &mut dst)))
             },
         );
+
+        group.bench_with_input(
+            BenchmarkId::new("gray_from_rgb_cubecl_cuda", &parameter_string),
+            &(&image_u8, &gray_u8),
+            |b, i| {
+                let (src, dst) = (i.0, i.1.clone());
+                let device = cubecl::cuda::CudaDevice::new(0);
+                let src_cl = ImageCl::from_slice(
+                    Shape2 {
+                        cols: src.cols(),
+                        rows: src.rows(),
+                    },
+                    src.as_slice(),
+                    device.clone(),
+                );
+                let mut dst_cl = ImageCl::empty(
+                    Shape2 {
+                        cols: dst.cols(),
+                        rows: dst.rows(),
+                    },
+                    device.clone(),
+                );
+                b.iter(|| {
+                    gray_from_rgb_u8_cl::<cubecl::cuda::CudaRuntime>(&src_cl, &mut dst_cl);
+                })
+            },
+        );
     }
+
     group.finish();
 }
 

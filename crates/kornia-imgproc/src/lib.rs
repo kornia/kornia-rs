@@ -53,3 +53,6 @@ pub mod threshold;
 
 /// image geometric transformations module.
 pub mod warp;
+
+/// CubeCL operations module.
+pub mod cubecl;
