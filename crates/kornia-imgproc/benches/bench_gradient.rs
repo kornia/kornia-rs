@@ -115,13 +115,51 @@ pub fn spatial_gradient_float_rayon_row_parallel<const C: usize>(
         .zip(dy.as_slice_mut().par_chunks_mut(cols * C))
         .enumerate()
         .for_each(|(r, (dx_row, dy_row))| {
-            for c in 0..cols {
+            {
+                let c = 0;
                 let mut sum_x = [0.0; C];
                 let mut sum_y = [0.0; C];
                 for dy in 0..3 {
                     for dx in 0..3 {
                         let row = (r + dy).min(src.rows()).max(1) - 1;
-                        let col = (c + dx).min(src.cols()).max(1) - 1;
+                        let col = (c + dx).max(1) - 1;
+                        for ch in 0..C {
+                            let src_pix_offset = (row * src.cols() + col) * C + ch;
+                            let val = unsafe { src_data.get_unchecked(src_pix_offset) };
+                            sum_x[ch] += val * sobel_x[dy][dx];
+                            sum_y[ch] += val * sobel_y[dy][dx];
+                        }
+                    }
+                }
+                dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
+                dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
+            }
+            for c in 1..cols - 1 {
+                let mut sum_x = [0.0; C];
+                let mut sum_y = [0.0; C];
+                for dy in 0..3 {
+                    for dx in 0..3 {
+                        let row = (r + dy).min(src.rows()).max(1) - 1;
+                        let col = (c + dx) - 1;
+                        for ch in 0..C {
+                            let src_pix_offset = (row * src.cols() + col) * C + ch;
+                            let val = unsafe { src_data.get_unchecked(src_pix_offset) };
+                            sum_x[ch] += val * sobel_x[dy][dx];
+                            sum_y[ch] += val * sobel_y[dy][dx];
+                        }
+                    }
+                }
+                dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
+                dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
+            }
+            {
+                let c = src.cols() - 1;
+                let mut sum_x = [0.0; C];
+                let mut sum_y = [0.0; C];
+                for dy in 0..3 {
+                    for dx in 0..3 {
+                        let row = (r + dy).min(src.rows()).max(1) - 1;
+                        let col = (c + dx).min(src.cols()) - 1;
                         for ch in 0..C {
                             let src_pix_offset = (row * src.cols() + col) * C + ch;
                             let val = unsafe { src_data.get_unchecked(src_pix_offset) };
@@ -176,13 +214,51 @@ pub fn spatial_gradient_float_row_parallel<const C: usize>(
         .zip(dy.as_slice_mut().chunks_mut(cols * C))
         .enumerate()
         .for_each(|(r, (dx_row, dy_row))| {
-            for c in 0..cols {
+            {
+                let c = 0;
                 let mut sum_x = [0.0; C];
                 let mut sum_y = [0.0; C];
                 for dy in 0..3 {
                     for dx in 0..3 {
                         let row = (r + dy).min(src.rows()).max(1) - 1;
-                        let col = (c + dx).min(src.cols()).max(1) - 1;
+                        let col = (c + dx).max(1) - 1;
+                        for ch in 0..C {
+                            let src_pix_offset = (row * src.cols() + col) * C + ch;
+                            let val = unsafe { src_data.get_unchecked(src_pix_offset) };
+                            sum_x[ch] += val * sobel_x[dy][dx];
+                            sum_y[ch] += val * sobel_y[dy][dx];
+                        }
+                    }
+                }
+                dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
+                dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
+            }
+            for c in 1..cols - 1 {
+                let mut sum_x = [0.0; C];
+                let mut sum_y = [0.0; C];
+                for dy in 0..3 {
+                    for dx in 0..3 {
+                        let row = (r + dy).min(src.rows()).max(1) - 1;
+                        let col = (c + dx) - 1;
+                        for ch in 0..C {
+                            let src_pix_offset = (row * src.cols() + col) * C + ch;
+                            let val = unsafe { src_data.get_unchecked(src_pix_offset) };
+                            sum_x[ch] += val * sobel_x[dy][dx];
+                            sum_y[ch] += val * sobel_y[dy][dx];
+                        }
+                    }
+                }
+                dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
+                dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
+            }
+            {
+                let c = src.cols() - 1;
+                let mut sum_x = [0.0; C];
+                let mut sum_y = [0.0; C];
+                for dy in 0..3 {
+                    for dx in 0..3 {
+                        let row = (r + dy).min(src.rows()).max(1) - 1;
+                        let col = (c + dx).min(src.cols()) - 1;
                         for ch in 0..C {
                             let src_pix_offset = (row * src.cols() + col) * C + ch;
                             let val = unsafe { src_data.get_unchecked(src_pix_offset) };
