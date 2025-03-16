@@ -17,6 +17,7 @@ gstreamer = ["kornia-io/gstreamer"]
 turbojpeg = ["kornia-io/turbojpeg"]
 
 [dependencies]
+kornia-tracking.workspace = true
 kornia-tensor.workspace = true
 kornia-tensor-ops.workspace = true
 kornia-image.workspace = true
