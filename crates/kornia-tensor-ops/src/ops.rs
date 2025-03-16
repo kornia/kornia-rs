@@ -680,7 +680,7 @@ mod tests {
         assert_eq!(t3.as_slice(), vec![1, 4, 9, 16]);
         Ok(())
     }
-  
+
     #[test]
     fn test_dot_product1_f32() -> Result<(), TensorOpsError> {
         let a_f32 =
