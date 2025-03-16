@@ -164,9 +164,12 @@ pub fn dog_response_serial(
     let gauss2_data = gauss2.as_slice();
     let dst_data = dst.as_slice_mut();
 
-    for i in 0..dst_data.len() {
-        dst_data[i] = gauss2_data[i] - gauss1_data[i];
-    }
+    dst_data
+        .iter_mut()
+        .zip(gauss2_data.iter().zip(gauss1_data.iter()))
+        .for_each(|(dst_pixel, (gauss2_pixel, gauss1_pixel))| {
+            *dst_pixel = gauss2_pixel - gauss1_pixel;
+        });
 
     Ok(())
 }

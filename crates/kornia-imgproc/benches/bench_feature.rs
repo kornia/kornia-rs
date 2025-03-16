@@ -28,11 +28,13 @@ fn extern_dog_response_serial<I: GenericImageView>(
 
     // Get mutable access to destination buffer
     let dst_data = dst.as_mut();
-
     // Directly write the difference to the destination buffer
-    for (i, (&a, &b)) in gauss1_data.iter().zip(gauss2_data.iter()).enumerate() {
-        dst_data[i] = a - b;
-    }
+    dst_data
+        .iter_mut()
+        .zip(gauss1_data.iter().zip(gauss2_data.iter()))
+        .for_each(|(dst, (&a, &b))| {
+            *dst = a - b;
+        });
 }
 
 fn bench_dog_response(c: &mut Criterion) {
