@@ -1,11 +1,11 @@
 //! This module implements the Pattern52 patch structure for keypoint tracking.
 //! It provides functions to compute the Jacobian, mean intensity, and residuals of a patch.
 
-use image::imageops;
-use image::GrayImage;
+use kornia_imgproc::interpolation::{interpolate_pixel,InterpolationMode};
+use kornia_image::Image;
 use crate::image_utilities;
 use glam::{Mat3, Vec2, Vec3};
-
+type GrayImage = Image<f32, 1>;
 /// The size of the 52-element pattern.
 pub const PATTERN52_SIZE: usize = 52;
 
@@ -246,16 +246,16 @@ impl Pattern52 {
                 transformed_pattern[1][i],
                 2,
             ) {
-                let p = imageops::interpolate_bilinear(
+                let p = interpolate_pixel(
                     greyscale_image,
                     transformed_pattern[0][i],
                     transformed_pattern[1][i],
+                    0,
+                    InterpolationMode::Bilinear,
                 );
-                if let Some(px) = p { 
-                    residual[i] = px.0[0] as f32;
-                    sum += residual[i];
-                    num_valid_points += 1;
-                }
+                residual[i] = p;
+                sum += residual[i];
+                num_valid_points += 1;
             } else {
                 residual[i] = -1.0;
             }
