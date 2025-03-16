@@ -1,5 +1,5 @@
 use kernels::ops::{cosine_similarity_float_kernel, dot_product1_kernel};
-use kornia_tensor::{storage::TensorStorage, CpuAllocator, Tensor, TensorAllocator};
+use kornia_tensor::{storage::TensorStorage, CpuAllocator, Tensor, TensorAllocator,TensorError};
 use num_traits::{Float, Zero};
 
 use crate::error::TensorOpsError;
@@ -129,6 +129,179 @@ where
     tensor
         .element_wise_op(other, |a, b| if a < b { a.clone() } else { b.clone() })
         .map_err(|_| TensorOpsError::ShapeMismatch(tensor.shape.to_vec(), other.shape.to_vec()))
+}
+
+/// Apply the power function to the pixel data.
+///
+/// # Arguments
+///
+/// * `n` - The power to raise the pixel data to.
+///
+/// # Returns
+///
+/// A new image with the pixel data raised to the power.
+pub fn powi<T, const N: usize, A>(tensor: &Tensor<T, N, A>, n: i32) -> Tensor<T, N, A>
+where
+    T: Float + Clone,
+    A: TensorAllocator + Clone + 'static,
+{
+    tensor.map(|x| x.powi(n))
+}
+
+/// Compute absolute value of the pixel data.
+///
+/// # Returns
+///
+/// A new image with the pixel data absolute value.
+pub fn abs<T, const N: usize, A>(tensor: &Tensor<T, N, A>) -> Tensor<T, N, A>
+where
+    T: Float + Clone,
+    A: TensorAllocator + Clone + 'static,
+{
+    tensor.map(|x| x.abs())
+}
+
+/// Compute the mean of the pixel data.
+///
+/// # Returns
+///
+/// The mean of the pixel data.
+pub fn mean<T, const N: usize, A>(tensor: &Tensor<T, N, A>) -> Result<T, TensorError>
+where
+    T: Float + Clone,
+    A: TensorAllocator + Clone + 'static,
+{
+    let data_acc = tensor.as_slice().iter().fold(T::zero(), |acc, &x| acc + x);
+    let mean = data_acc / T::from(tensor.as_slice().len()).ok_or(TensorError::CastError)?;
+
+    Ok(mean)
+}
+/// Perform an element-wise addition on two tensors.
+///
+/// # Arguments
+///
+/// * `other` - The other tensor to add.
+///
+/// # Returns
+///
+/// A new `Tensor` instance.
+///
+/// # Example
+///
+/// ```
+/// use kornia_tensor::{Tensor, CpuAllocator};
+///
+/// let data1: Vec<u8> = vec![1, 2, 3, 4];
+/// let t1 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data1, CpuAllocator).unwrap();
+///
+/// let data2: Vec<u8> = vec![1, 2, 3, 4];
+/// let t2 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data2, CpuAllocator).unwrap();
+///
+/// let t3 = t1.add(&t2);
+/// assert_eq!(t3.as_slice(), vec![2, 4, 6, 8]);
+/// ```
+pub fn add<T, const N: usize>(tensor: &Tensor<T, N, CpuAllocator>, other: &Tensor<T, N, CpuAllocator>) -> Tensor<T, N, CpuAllocator>
+where
+    T: std::ops::Add<Output = T> + Clone,
+{
+    tensor.element_wise_op(other, |a, b| a.clone() + b.clone())
+        .expect("Tensor dimension mismatch")
+}
+
+/// Perform an element-wise subtraction on two tensors.
+///
+/// # Arguments
+///
+/// * `other` - The other tensor to subtract.
+///
+/// # Returns
+///
+/// A new `Tensor` instance.
+///
+/// # Example
+///
+/// ```
+/// use kornia_tensor::{Tensor, CpuAllocator};
+///
+/// let data1: Vec<u8> = vec![1, 2, 3, 4];
+/// let t1 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data1, CpuAllocator).unwrap();
+///
+/// let data2: Vec<u8> = vec![1, 2, 3, 4];
+/// let t2 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data2, CpuAllocator).unwrap();
+///
+/// let t3 = t1.sub(&t2);
+/// assert_eq!(t3.as_slice(), vec![0, 0, 0, 0]);
+/// ```
+pub fn sub<T, const N: usize>(tensor: &Tensor<T, N, CpuAllocator>, other: &Tensor<T, N, CpuAllocator>) -> Tensor<T, N, CpuAllocator>
+where
+    T: std::ops::Sub<Output = T> + Clone,
+{
+    tensor.element_wise_op(other, |a, b| a.clone() - b.clone())
+        .expect("Tensor dimension mismatch")
+}
+
+/// Perform an element-wise multiplication on two tensors.
+///
+/// # Arguments
+///
+/// * `other` - The other tensor to multiply.
+///
+/// # Returns
+///
+/// A new `Tensor` instance.
+///
+/// # Example
+///
+/// ```
+/// use kornia_tensor::{Tensor, CpuAllocator};
+///
+/// let data1: Vec<u8> = vec![1, 2, 3, 4];
+/// let t1 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data1, CpuAllocator).unwrap();
+///
+/// let data2: Vec<u8> = vec![1, 2, 3, 4];
+/// let t2 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data2, CpuAllocator).unwrap();
+///
+/// let t3 = t1.mul(&t2);
+/// assert_eq!(t3.as_slice(), vec![1, 4, 9, 16]);
+/// ```
+pub fn mul<T, const N: usize>(tensor:&Tensor<T, N, CpuAllocator>, other: &Tensor<T, N, CpuAllocator>) -> Tensor<T, N, CpuAllocator>
+where
+    T: std::ops::Mul<Output = T> + Clone,
+{
+    tensor.element_wise_op(other, |a, b| a.clone() * b.clone())
+        .expect("Tensor dimension mismatch")
+}
+
+/// Perform an element-wise division on two tensors.
+///
+/// # Arguments
+///
+/// * `other` - The other tensor to divide.
+///
+/// # Returns
+///
+/// A new `Tensor` instance.
+///
+/// # Example
+///
+/// ```
+/// use kornia_tensor::{Tensor, CpuAllocator};
+///
+/// let data1: Vec<u8> = vec![1, 2, 3, 4];
+/// let t1 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data1, CpuAllocator).unwrap();
+///
+/// let data2: Vec<u8> = vec![1, 2, 3, 4];
+/// let t2 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data2, CpuAllocator).unwrap();
+///
+/// let t3 = t1.div(&t2);
+/// assert_eq!(t3.as_slice(), vec![1, 1, 1, 1]);
+/// ```
+pub fn div<T, const N: usize>(tensor: &Tensor<T, N, CpuAllocator>, other: &Tensor<T, N, CpuAllocator>) -> Tensor<T, N, CpuAllocator>
+where
+    T: std::ops::Div<Output = T> + Clone,
+{
+    tensor.element_wise_op(other, |a, b| a.clone() / b.clone())
+        .expect("Tensor dimension mismatch")
 }
 
 /// Compute the dot product between two 1D tensors
@@ -379,6 +552,120 @@ mod tests {
         assert_eq!(result.as_slice(), expected.as_slice());
         Ok(())
     }
+
+    #[test]
+    fn powi_and_abs() -> Result<(), TensorError> {
+        let data: Vec<f32> = vec![-1.0, 2.0, -3.0, 4.0];
+        let t = Tensor::<f32, 1, _>::from_shape_vec([4], data, CpuAllocator)?;
+
+        let t_powi = powi(&t,2);
+        assert_eq!(t_powi.as_slice(), &[1.0, 4.0, 9.0, 16.0]);
+
+        let t_abs = abs(&t);
+        assert_eq!(t_abs.as_slice(), &[1.0, 2.0, 3.0, 4.0]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn add_1d() -> Result<(), TensorError> {
+        let data1: Vec<u8> = vec![1, 2, 3, 4];
+        let t1 = Tensor::<u8, 1, _>::from_shape_vec([4], data1, CpuAllocator)?;
+        let data2: Vec<u8> = vec![1, 2, 3, 4];
+        let t2 = Tensor::<u8, 1, _>::from_shape_vec([4], data2, CpuAllocator)?;
+        let t3 = add(&t1,&t2);
+        assert_eq!(t3.as_slice(), vec![2, 4, 6, 8]);
+        Ok(())
+    }
+
+    #[test]
+    fn add_2d() -> Result<(), TensorError> {
+        let data1: Vec<u8> = vec![1, 2, 3, 4];
+        let t1 = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data1, CpuAllocator)?;
+        let data2: Vec<u8> = vec![1, 2, 3, 4];
+        let t2 = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data2, CpuAllocator)?;
+        let t3 = add(&t1,&t2);
+        assert_eq!(t3.as_slice(), vec![2, 4, 6, 8]);
+        Ok(())
+    }
+
+    #[test]
+    fn add_3d() -> Result<(), TensorError> {
+        let data1: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
+        let t1 = Tensor::<u8, 3, _>::from_shape_vec([2, 1, 3], data1, CpuAllocator)?;
+        let data2: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
+        let t2 = Tensor::<u8, 3, _>::from_shape_vec([2, 1, 3], data2, CpuAllocator)?;
+        let t3 = add(&t1,&t2);
+        assert_eq!(t3.as_slice(), vec![2, 4, 6, 8, 10, 12]);
+        Ok(())
+    }
+
+    #[test]
+    fn sub_1d() -> Result<(), TensorError> {
+        let data1: Vec<u8> = vec![1, 2, 3, 4];
+        let t1 = Tensor::<u8, 1, _>::from_shape_vec([4], data1, CpuAllocator)?;
+        let data2: Vec<u8> = vec![1, 2, 3, 4];
+        let t2 = Tensor::<u8, 1, _>::from_shape_vec([4], data2, CpuAllocator)?;
+        let t3 = sub(&t1,&t2);
+        assert_eq!(t3.as_slice(), vec![0, 0, 0, 0]);
+        Ok(())
+    }
+
+    #[test]
+    fn sub_2d() -> Result<(), TensorError> {
+        let data1: Vec<u8> = vec![1, 2, 3, 4];
+        let t1 = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data1, CpuAllocator)?;
+        let data2: Vec<u8> = vec![1, 2, 3, 4];
+        let t2 = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data2, CpuAllocator)?;
+        let t3 = sub(&t1,&t2);
+        assert_eq!(t3.as_slice(), vec![0, 0, 0, 0]);
+        Ok(())
+    }
+
+    #[test]
+    fn div_1d() -> Result<(), TensorError> {
+        let data1: Vec<u8> = vec![1, 2, 3, 4];
+        let t1 = Tensor::<u8, 1, _>::from_shape_vec([4], data1, CpuAllocator)?;
+        let data2: Vec<u8> = vec![1, 2, 3, 4];
+        let t2 = Tensor::<u8, 1, _>::from_shape_vec([4], data2, CpuAllocator)?;
+        let t3 = div(&t1,&t2);
+        assert_eq!(t3.as_slice(), vec![1, 1, 1, 1]);
+        Ok(())
+    }
+
+    #[test]
+    fn div_2d() -> Result<(), TensorError> {
+        let data1: Vec<u8> = vec![1, 2, 3, 4];
+        let t1 = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data1, CpuAllocator)?;
+        let data2: Vec<u8> = vec![1, 2, 3, 4];
+        let t2 = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data2, CpuAllocator)?;
+        let t3 = div(&t1,&t2);
+        assert_eq!(t3.as_slice(), vec![1, 1, 1, 1]);
+        Ok(())
+    }
+
+    #[test]
+    fn mul_1d() -> Result<(), TensorError> {
+        let data1: Vec<u8> = vec![1, 2, 3, 4];
+        let t1 = Tensor::<u8, 1, _>::from_shape_vec([4], data1, CpuAllocator)?;
+        let data2: Vec<u8> = vec![1, 2, 3, 4];
+        let t2 = Tensor::<u8, 1, _>::from_shape_vec([4], data2, CpuAllocator)?;
+        let t3 = mul(&t1,&t2);
+        assert_eq!(t3.as_slice(), vec![1, 4, 9, 16]);
+        Ok(())
+    }
+
+    #[test]
+    fn mul_2d() -> Result<(), TensorError> {
+        let data1: Vec<u8> = vec![1, 2, 3, 4];
+        let t1 = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data1, CpuAllocator)?;
+        let data2: Vec<u8> = vec![1, 2, 3, 4];
+        let t2 = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data2, CpuAllocator)?;
+        let t3 = mul(&t1,&t2);
+        assert_eq!(t3.as_slice(), vec![1, 4, 9, 16]);
+        Ok(())
+    }
+
     #[test]
     fn test_dot_product1_f32() -> Result<(), TensorOpsError> {
         let a_f32 =
