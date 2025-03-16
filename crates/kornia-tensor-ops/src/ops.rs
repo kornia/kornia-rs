@@ -319,7 +319,6 @@ where
         .element_wise_op(other, |a, b| a.clone() / b.clone())
         .expect("Tensor dimension mismatch")
 }
-
 /// Compute the dot product between two 1D tensors
 ///
 /// # Arguments
@@ -681,7 +680,7 @@ mod tests {
         assert_eq!(t3.as_slice(), vec![1, 4, 9, 16]);
         Ok(())
     }
-
+  
     #[test]
     fn test_dot_product1_f32() -> Result<(), TensorOpsError> {
         let a_f32 =

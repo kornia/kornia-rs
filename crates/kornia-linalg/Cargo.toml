@@ -1,0 +1,33 @@
+[package]
+name = "kornia-linalg"
+authors.workspace = true
+categories.workspace = true
+description.workspace = true
+edition.workspace = true
+homepage.workspace = true
+include.workspace = true
+license.workspace = true
+license-file.workspace = true
+readme.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[features]
+default = ["std"]
+
+std = ["glam/std"]
+libm = ["glam/libm"]
+
+[dependencies]
+glam = { version = "0.30.0", default-features = false }
+
+
+[dev-dependencies]
+faer = { workspace = true }
+approx = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "bench_linalg"
+harness = false
