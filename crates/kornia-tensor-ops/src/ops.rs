@@ -1,5 +1,5 @@
 use kernels::ops::{cosine_similarity_float_kernel, dot_product1_kernel};
-use kornia_tensor::{storage::TensorStorage, CpuAllocator, Tensor, TensorAllocator,TensorError};
+use kornia_tensor::{storage::TensorStorage, CpuAllocator, Tensor, TensorAllocator, TensorError};
 use num_traits::{Float, Zero};
 
 use crate::error::TensorOpsError;
@@ -200,11 +200,15 @@ where
 /// let t3 = t1.add(&t2);
 /// assert_eq!(t3.as_slice(), vec![2, 4, 6, 8]);
 /// ```
-pub fn add<T, const N: usize>(tensor: &Tensor<T, N, CpuAllocator>, other: &Tensor<T, N, CpuAllocator>) -> Tensor<T, N, CpuAllocator>
+pub fn add<T, const N: usize>(
+    tensor: &Tensor<T, N, CpuAllocator>,
+    other: &Tensor<T, N, CpuAllocator>,
+) -> Tensor<T, N, CpuAllocator>
 where
     T: std::ops::Add<Output = T> + Clone,
 {
-    tensor.element_wise_op(other, |a, b| a.clone() + b.clone())
+    tensor
+        .element_wise_op(other, |a, b| a.clone() + b.clone())
         .expect("Tensor dimension mismatch")
 }
 
@@ -232,11 +236,15 @@ where
 /// let t3 = t1.sub(&t2);
 /// assert_eq!(t3.as_slice(), vec![0, 0, 0, 0]);
 /// ```
-pub fn sub<T, const N: usize>(tensor: &Tensor<T, N, CpuAllocator>, other: &Tensor<T, N, CpuAllocator>) -> Tensor<T, N, CpuAllocator>
+pub fn sub<T, const N: usize>(
+    tensor: &Tensor<T, N, CpuAllocator>,
+    other: &Tensor<T, N, CpuAllocator>,
+) -> Tensor<T, N, CpuAllocator>
 where
     T: std::ops::Sub<Output = T> + Clone,
 {
-    tensor.element_wise_op(other, |a, b| a.clone() - b.clone())
+    tensor
+        .element_wise_op(other, |a, b| a.clone() - b.clone())
         .expect("Tensor dimension mismatch")
 }
 
@@ -264,11 +272,15 @@ where
 /// let t3 = t1.mul(&t2);
 /// assert_eq!(t3.as_slice(), vec![1, 4, 9, 16]);
 /// ```
-pub fn mul<T, const N: usize>(tensor:&Tensor<T, N, CpuAllocator>, other: &Tensor<T, N, CpuAllocator>) -> Tensor<T, N, CpuAllocator>
+pub fn mul<T, const N: usize>(
+    tensor: &Tensor<T, N, CpuAllocator>,
+    other: &Tensor<T, N, CpuAllocator>,
+) -> Tensor<T, N, CpuAllocator>
 where
     T: std::ops::Mul<Output = T> + Clone,
 {
-    tensor.element_wise_op(other, |a, b| a.clone() * b.clone())
+    tensor
+        .element_wise_op(other, |a, b| a.clone() * b.clone())
         .expect("Tensor dimension mismatch")
 }
 
@@ -296,11 +308,15 @@ where
 /// let t3 = t1.div(&t2);
 /// assert_eq!(t3.as_slice(), vec![1, 1, 1, 1]);
 /// ```
-pub fn div<T, const N: usize>(tensor: &Tensor<T, N, CpuAllocator>, other: &Tensor<T, N, CpuAllocator>) -> Tensor<T, N, CpuAllocator>
+pub fn div<T, const N: usize>(
+    tensor: &Tensor<T, N, CpuAllocator>,
+    other: &Tensor<T, N, CpuAllocator>,
+) -> Tensor<T, N, CpuAllocator>
 where
     T: std::ops::Div<Output = T> + Clone,
 {
-    tensor.element_wise_op(other, |a, b| a.clone() / b.clone())
+    tensor
+        .element_wise_op(other, |a, b| a.clone() / b.clone())
         .expect("Tensor dimension mismatch")
 }
 
@@ -558,7 +574,7 @@ mod tests {
         let data: Vec<f32> = vec![-1.0, 2.0, -3.0, 4.0];
         let t = Tensor::<f32, 1, _>::from_shape_vec([4], data, CpuAllocator)?;
 
-        let t_powi = powi(&t,2);
+        let t_powi = powi(&t, 2);
         assert_eq!(t_powi.as_slice(), &[1.0, 4.0, 9.0, 16.0]);
 
         let t_abs = abs(&t);
@@ -573,7 +589,7 @@ mod tests {
         let t1 = Tensor::<u8, 1, _>::from_shape_vec([4], data1, CpuAllocator)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4];
         let t2 = Tensor::<u8, 1, _>::from_shape_vec([4], data2, CpuAllocator)?;
-        let t3 = add(&t1,&t2);
+        let t3 = add(&t1, &t2);
         assert_eq!(t3.as_slice(), vec![2, 4, 6, 8]);
         Ok(())
     }
@@ -584,7 +600,7 @@ mod tests {
         let t1 = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data1, CpuAllocator)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4];
         let t2 = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data2, CpuAllocator)?;
-        let t3 = add(&t1,&t2);
+        let t3 = add(&t1, &t2);
         assert_eq!(t3.as_slice(), vec![2, 4, 6, 8]);
         Ok(())
     }
@@ -595,7 +611,7 @@ mod tests {
         let t1 = Tensor::<u8, 3, _>::from_shape_vec([2, 1, 3], data1, CpuAllocator)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
         let t2 = Tensor::<u8, 3, _>::from_shape_vec([2, 1, 3], data2, CpuAllocator)?;
-        let t3 = add(&t1,&t2);
+        let t3 = add(&t1, &t2);
         assert_eq!(t3.as_slice(), vec![2, 4, 6, 8, 10, 12]);
         Ok(())
     }
@@ -606,7 +622,7 @@ mod tests {
         let t1 = Tensor::<u8, 1, _>::from_shape_vec([4], data1, CpuAllocator)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4];
         let t2 = Tensor::<u8, 1, _>::from_shape_vec([4], data2, CpuAllocator)?;
-        let t3 = sub(&t1,&t2);
+        let t3 = sub(&t1, &t2);
         assert_eq!(t3.as_slice(), vec![0, 0, 0, 0]);
         Ok(())
     }
@@ -617,7 +633,7 @@ mod tests {
         let t1 = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data1, CpuAllocator)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4];
         let t2 = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data2, CpuAllocator)?;
-        let t3 = sub(&t1,&t2);
+        let t3 = sub(&t1, &t2);
         assert_eq!(t3.as_slice(), vec![0, 0, 0, 0]);
         Ok(())
     }
@@ -628,7 +644,7 @@ mod tests {
         let t1 = Tensor::<u8, 1, _>::from_shape_vec([4], data1, CpuAllocator)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4];
         let t2 = Tensor::<u8, 1, _>::from_shape_vec([4], data2, CpuAllocator)?;
-        let t3 = div(&t1,&t2);
+        let t3 = div(&t1, &t2);
         assert_eq!(t3.as_slice(), vec![1, 1, 1, 1]);
         Ok(())
     }
@@ -639,7 +655,7 @@ mod tests {
         let t1 = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data1, CpuAllocator)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4];
         let t2 = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data2, CpuAllocator)?;
-        let t3 = div(&t1,&t2);
+        let t3 = div(&t1, &t2);
         assert_eq!(t3.as_slice(), vec![1, 1, 1, 1]);
         Ok(())
     }
@@ -650,7 +666,7 @@ mod tests {
         let t1 = Tensor::<u8, 1, _>::from_shape_vec([4], data1, CpuAllocator)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4];
         let t2 = Tensor::<u8, 1, _>::from_shape_vec([4], data2, CpuAllocator)?;
-        let t3 = mul(&t1,&t2);
+        let t3 = mul(&t1, &t2);
         assert_eq!(t3.as_slice(), vec![1, 4, 9, 16]);
         Ok(())
     }
@@ -661,7 +677,7 @@ mod tests {
         let t1 = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data1, CpuAllocator)?;
         let data2: Vec<u8> = vec![1, 2, 3, 4];
         let t2 = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data2, CpuAllocator)?;
-        let t3 = mul(&t1,&t2);
+        let t3 = mul(&t1, &t2);
         assert_eq!(t3.as_slice(), vec![1, 4, 9, 16]);
         Ok(())
     }
