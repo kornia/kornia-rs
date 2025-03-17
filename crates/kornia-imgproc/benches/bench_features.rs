@@ -29,7 +29,7 @@ fn bench_features(c: &mut Criterion) {
             &(&image_f32, &response_f32),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| (harris_response(src, &mut dst, None, Default::default(), None)))
+                b.iter(|| black_box(harris_response(src, &mut dst, None, Default::default(), None)))
             },
         );
     }
