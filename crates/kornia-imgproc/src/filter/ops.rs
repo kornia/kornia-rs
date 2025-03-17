@@ -122,6 +122,123 @@ pub fn box_blur_fast<const C: usize>(
     Ok(())
 }
 
+/// Compute one pixel data with 3x3 kernel
+///
+/// # Argument
+///
+/// * `src_data` - The source image with full data
+/// * `src_cols` - Cols of source image
+/// * `kernel_x` - 3x3 kernel for compute dx_dst
+/// * `kernel_y` - 3x3 kernel for compute dy_dst
+/// * `dx_dst` - The slice for the current pixel; in dx output, length should be C
+/// * `dy_dst` - The slice for the current pixel; in dy output, length should be C
+/// * `row` - current row idx in source image
+/// * `row_pos_bias` - A function for input row index and kernel y index and output a real row index for access source image data
+/// * `col` - current col idx in source image
+/// * `col_pos_bias` - A function for input col index and kernel x index and output a real col index for access source image data
+fn filter_kernel3_pix_calc<
+    const C: usize,
+    FR: Fn(usize, usize) -> usize,
+    FC: Fn(usize, usize) -> usize,
+>(
+    src_data: &[f32],
+    src_cols: usize,
+    kernel_x: &[[f32; 3]; 3],
+    kernel_y: &[[f32; 3]; 3],
+    dx_dst: &mut [f32],
+    dy_dst: &mut [f32],
+    row: usize,
+    col: usize,
+    row_pos_bias: FR,
+    col_pos_bias: FC,
+) {
+    let mut sum_x = [0.0; C];
+    let mut sum_y = [0.0; C];
+    for dy in 0..3 {
+        for dx in 0..3 {
+            let row = row_pos_bias(row, dy);
+            let col = col_pos_bias(col, dx);
+            for ch in 0..C {
+                let src_pix_offset = (row * src_cols + col) * C + ch;
+                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
+                sum_x[ch] += val * kernel_x[dy][dx];
+                sum_y[ch] += val * kernel_y[dy][dx];
+            }
+        }
+    }
+    unsafe { &mut *(dx_dst.as_mut_ptr() as *mut [f32; C]) }.copy_from_slice(&sum_x);
+    unsafe { &mut *(dy_dst.as_mut_ptr() as *mut [f32; C]) }.copy_from_slice(&sum_y);
+}
+
+/// Compute one row data with 3x3 kernel
+///
+/// # Argument
+///
+/// * `src_data` - The source image with full data
+/// * `src_cols` - Cols of source image
+/// * `kernel_x` - 3x3 kernel for compute dx_dst
+/// * `kernel_y` - 3x3 kernel for compute dy_dst
+/// * `dx_dst` - The slice for the current row in dx output, length should be src_cols * C
+/// * `dy_dst` - The slice for the current row in dy output, length should be src_cols * C
+/// * `row` - current row idx in source image
+/// * `row_pos_bias` - A function for input row index and kernel index and output a real row index for access source image data
+fn filter_kernel3_row_calc<const C: usize, FR: ?Sized + Fn(usize, usize) -> usize>(
+    src_data: &[f32],
+    src_cols: usize,
+    kernel_x: &[[f32; 3]; 3],
+    kernel_y: &[[f32; 3]; 3],
+    dx_dst: &mut [f32],
+    dy_dst: &mut [f32],
+    row: usize,
+    row_pos_bias: &FR,
+) {
+    {
+        filter_kernel3_pix_calc::<C, _, _>(
+            src_data,
+            src_cols,
+            kernel_x,
+            kernel_y,
+            &mut dx_dst[0..C],
+            &mut dy_dst[0..C],
+            row,
+            0,
+            row_pos_bias,
+            |_, dx| dx.max(1) - 1,
+        );
+    }
+    for c in 1..src_cols - 1 {
+        let col_offset = c * C;
+        filter_kernel3_pix_calc::<C, _, _>(
+            src_data,
+            src_cols,
+            kernel_x,
+            kernel_y,
+            &mut dx_dst[col_offset..col_offset + C],
+            &mut dy_dst[col_offset..col_offset + C],
+            row,
+            c,
+            row_pos_bias,
+            |c, dx| (c + dx) - 1,
+        );
+    }
+    {
+        let c = src_cols - 1;
+        let col_offset = c * C;
+        filter_kernel3_pix_calc::<C, _, _>(
+            src_data,
+            src_cols,
+            kernel_x,
+            kernel_y,
+            &mut dx_dst[col_offset..col_offset + C],
+            &mut dy_dst[col_offset..col_offset + C],
+            row,
+            c,
+            row_pos_bias,
+            |c, dx| (c + dx).min(src_cols) - 1,
+        );
+    }
+}
+
 /// Compute the first order image derivative in both x and y using a Sobel operator.
 ///
 /// # Arguments
@@ -156,194 +273,46 @@ pub fn spatial_gradient_float<const C: usize>(
     let src_data = src.as_slice();
     let dx_data = dx.as_slice_mut();
     let dy_data = dy.as_slice_mut();
+    let full_len = src.rows() * src.cols() * C;
+    let row_len = src.cols() * C;
 
     {
-        let r = 0;
-        let row_offset = r * src.cols();
-        {
-            let c = 0;
-            let col_offset = (row_offset + c) * C;
-            let mut sum_x = [0.0; C];
-            let mut sum_y = [0.0; C];
-            for dy in 0..3 {
-                for dx in 0..3 {
-                    let row = (r + dy).max(1) - 1;
-                    let col = (c + dx).max(1) - 1;
-                    for ch in 0..C {
-                        let src_pix_offset = (row * src.cols() + col) * C + ch;
-                        let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                        sum_x[ch] += val * sobel_x[dy][dx];
-                        sum_y[ch] += val * sobel_y[dy][dx];
-                    }
-                }
-                dx_data[col_offset..col_offset + C].copy_from_slice(&sum_x);
-                dy_data[col_offset..col_offset + C].copy_from_slice(&sum_y);
-            }
-        }
-        for c in 1..src.cols() - 1 {
-            let col_offset = (row_offset + c) * C;
-            let mut sum_x = [0.0; C];
-            let mut sum_y = [0.0; C];
-            for dy in 0..3 {
-                for dx in 0..3 {
-                    let row = (r + dy).max(1) - 1;
-                    let col = (c + dx) - 1; // .min(src.cols()).max(1) - 1;
-                    for ch in 0..C {
-                        let src_pix_offset = (row * src.cols() + col) * C + ch;
-                        let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                        sum_x[ch] += val * sobel_x[dy][dx];
-                        sum_y[ch] += val * sobel_y[dy][dx];
-                    }
-                }
-                dx_data[col_offset..col_offset + C].copy_from_slice(&sum_x);
-                dy_data[col_offset..col_offset + C].copy_from_slice(&sum_y);
-            }
-        }
-        {
-            let c = src.cols() - 1;
-            let col_offset = (row_offset + c) * C;
-            let mut sum_x = [0.0; C];
-            let mut sum_y = [0.0; C];
-            for dy in 0..3 {
-                for dx in 0..3 {
-                    let row = (r + dy).max(1) - 1;
-                    let col = (c + dx).min(src.cols()) - 1;
-                    for ch in 0..C {
-                        let src_pix_offset = (row * src.cols() + col) * C + ch;
-                        let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                        sum_x[ch] += val * sobel_x[dy][dx];
-                        sum_y[ch] += val * sobel_y[dy][dx];
-                    }
-                }
-                dx_data[col_offset..col_offset + C].copy_from_slice(&sum_x);
-                dy_data[col_offset..col_offset + C].copy_from_slice(&sum_y);
-            }
-        }
+        filter_kernel3_row_calc::<C, _>(
+            src_data,
+            src.cols(),
+            &sobel_x,
+            &sobel_y,
+            &mut dx_data[0..row_len],
+            &mut dy_data[0..row_len],
+            0,
+            &|_, dy| dy.max(1) - 1,
+        );
     }
     for r in 1..src.rows() - 1 {
-        let row_offset = r * src.cols();
-        {
-            let c = 0;
-            let col_offset = (row_offset + c) * C;
-            let mut sum_x = [0.0; C];
-            let mut sum_y = [0.0; C];
-            for dy in 0..3 {
-                for dx in 0..3 {
-                    let row = (r + dy) - 1; // .min(src.rows()).max(1) - 1;
-                    let col = (c + dx).max(1) - 1;
-                    for ch in 0..C {
-                        let src_pix_offset = (row * src.cols() + col) * C + ch;
-                        let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                        sum_x[ch] += val * sobel_x[dy][dx];
-                        sum_y[ch] += val * sobel_y[dy][dx];
-                    }
-                }
-                dx_data[col_offset..col_offset + C].copy_from_slice(&sum_x);
-                dy_data[col_offset..col_offset + C].copy_from_slice(&sum_y);
-            }
-        }
-        for c in 1..src.cols() - 1 {
-            let col_offset = (row_offset + c) * C;
-            let mut sum_x = [0.0; C];
-            let mut sum_y = [0.0; C];
-            for dy in 0..3 {
-                for dx in 0..3 {
-                    let row = (r + dy) - 1; // .min(src.rows()).max(1) - 1;
-                    let col = (c + dx) - 1; // .min(src.cols()).max(1) - 1;
-                    for ch in 0..C {
-                        let src_pix_offset = (row * src.cols() + col) * C + ch;
-                        let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                        sum_x[ch] += val * sobel_x[dy][dx];
-                        sum_y[ch] += val * sobel_y[dy][dx];
-                    }
-                }
-                dx_data[col_offset..col_offset + C].copy_from_slice(&sum_x);
-                dy_data[col_offset..col_offset + C].copy_from_slice(&sum_y);
-            }
-        }
-        {
-            let c = src.cols() - 1;
-            let col_offset = (row_offset + c) * C;
-            let mut sum_x = [0.0; C];
-            let mut sum_y = [0.0; C];
-            for dy in 0..3 {
-                for dx in 0..3 {
-                    let row = (r + dy) - 1; // .min(src.rows()).max(1) - 1;
-                    let col = (c + dx).min(src.cols()) - 1;
-                    for ch in 0..C {
-                        let src_pix_offset = (row * src.cols() + col) * C + ch;
-                        let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                        sum_x[ch] += val * sobel_x[dy][dx];
-                        sum_y[ch] += val * sobel_y[dy][dx];
-                    }
-                }
-                dx_data[col_offset..col_offset + C].copy_from_slice(&sum_x);
-                dy_data[col_offset..col_offset + C].copy_from_slice(&sum_y);
-            }
-        }
+        let row_offset = r * row_len;
+        filter_kernel3_row_calc::<C, _>(
+            src_data,
+            src.cols(),
+            &sobel_x,
+            &sobel_y,
+            &mut dx_data[row_offset..row_offset + row_len],
+            &mut dy_data[row_offset..row_offset + row_len],
+            r,
+            &|r, dy| r + dy - 1,
+        );
     }
     {
         let r = src.rows() - 1;
-        let row_offset = r * src.cols();
-        {
-            let c = 0;
-            let col_offset = (row_offset + c) * C;
-            let mut sum_x = [0.0; C];
-            let mut sum_y = [0.0; C];
-            for dy in 0..3 {
-                for dx in 0..3 {
-                    let row = (r + dy).min(src.rows()) - 1;
-                    let col = (c + dx).max(1) - 1;
-                    for ch in 0..C {
-                        let src_pix_offset = (row * src.cols() + col) * C + ch;
-                        let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                        sum_x[ch] += val * sobel_x[dy][dx];
-                        sum_y[ch] += val * sobel_y[dy][dx];
-                    }
-                }
-                dx_data[col_offset..col_offset + C].copy_from_slice(&sum_x);
-                dy_data[col_offset..col_offset + C].copy_from_slice(&sum_y);
-            }
-        }
-        for c in 1..src.cols() - 1 {
-            let col_offset = (row_offset + c) * C;
-            let mut sum_x = [0.0; C];
-            let mut sum_y = [0.0; C];
-            for dy in 0..3 {
-                for dx in 0..3 {
-                    let row = (r + dy).min(src.rows()) - 1;
-                    let col = (c + dx) - 1; // .min(src.cols()).max(1) - 1;
-                    for ch in 0..C {
-                        let src_pix_offset = (row * src.cols() + col) * C + ch;
-                        let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                        sum_x[ch] += val * sobel_x[dy][dx];
-                        sum_y[ch] += val * sobel_y[dy][dx];
-                    }
-                }
-                dx_data[col_offset..col_offset + C].copy_from_slice(&sum_x);
-                dy_data[col_offset..col_offset + C].copy_from_slice(&sum_y);
-            }
-        }
-        {
-            let c = src.cols() - 1;
-            let col_offset = (row_offset + c) * C;
-            let mut sum_x = [0.0; C];
-            let mut sum_y = [0.0; C];
-            for dy in 0..3 {
-                for dx in 0..3 {
-                    let row = (r + dy).min(src.rows()) - 1;
-                    let col = (c + dx).min(src.cols()) - 1;
-                    for ch in 0..C {
-                        let src_pix_offset = (row * src.cols() + col) * C + ch;
-                        let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                        sum_x[ch] += val * sobel_x[dy][dx];
-                        sum_y[ch] += val * sobel_y[dy][dx];
-                    }
-                }
-                dx_data[col_offset..col_offset + C].copy_from_slice(&sum_x);
-                dy_data[col_offset..col_offset + C].copy_from_slice(&sum_y);
-            }
-        }
+        filter_kernel3_row_calc::<C, _>(
+            src_data,
+            src.cols(),
+            &sobel_x,
+            &sobel_y,
+            &mut dx_data[full_len - row_len..full_len],
+            &mut dy_data[full_len - row_len..full_len],
+            r,
+            &|r, dy| (r + dy).min(src.rows()) - 1,
+        );
     }
 
     Ok(())
@@ -568,176 +537,38 @@ pub fn spatial_gradient_float_rayon_row_parallel<const C: usize>(
         .enumerate()
         .for_each(|(r, (dx_row, dy_row))| {
             if r == 0 {
-                {
-                    let c = 0;
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy).max(1) - 1;
-                            let col = (c + dx).max(1) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
-                for c in 1..cols - 1 {
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy).max(1) - 1;
-                            let col = (c + dx) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
-                {
-                    let c = src.cols() - 1;
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy).max(1) - 1;
-                            let col = (c + dx).min(src.cols()) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
+                filter_kernel3_row_calc::<C, _>(
+                    src_data,
+                    src.cols(),
+                    &sobel_x,
+                    &sobel_y,
+                    dx_row,
+                    dy_row,
+                    0,
+                    &|_, dy| dy.max(1) - 1,
+                );
             } else if r == src.rows() - 1 {
-                {
-                    let c = 0;
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy).min(src.rows()) - 1;
-                            let col = (c + dx).max(1) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
-                for c in 1..cols - 1 {
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy).min(src.rows()) - 1;
-                            let col = (c + dx) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
-                {
-                    let c = src.cols() - 1;
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy).min(src.rows()) - 1;
-                            let col = (c + dx).min(src.cols()) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
+                filter_kernel3_row_calc::<C, _>(
+                    src_data,
+                    src.cols(),
+                    &sobel_x,
+                    &sobel_y,
+                    dx_row,
+                    dy_row,
+                    r,
+                    &|r, dy| (r + dy).min(src.rows()) - 1,
+                );
             } else {
-                {
-                    let c = 0;
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy) - 1;
-                            let col = (c + dx).max(1) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
-                for c in 1..cols - 1 {
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy) - 1;
-                            let col = (c + dx) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
-                {
-                    let c = src.cols() - 1;
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy) - 1;
-                            let col = (c + dx).min(src.cols()) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
+                filter_kernel3_row_calc::<C, _>(
+                    src_data,
+                    src.cols(),
+                    &sobel_x,
+                    &sobel_y,
+                    dx_row,
+                    dy_row,
+                    r,
+                    &|r, dy| r + dy - 1,
+                );
             }
         });
     Ok(())
@@ -783,176 +614,38 @@ pub fn spatial_gradient_float_row_parallel<const C: usize>(
         .enumerate()
         .for_each(|(r, (dx_row, dy_row))| {
             if r == 0 {
-                {
-                    let c = 0;
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy).max(1) - 1;
-                            let col = (c + dx).max(1) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
-                for c in 1..cols - 1 {
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy).max(1) - 1;
-                            let col = (c + dx) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
-                {
-                    let c = src.cols() - 1;
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy).max(1) - 1;
-                            let col = (c + dx).min(src.cols()) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
+                filter_kernel3_row_calc::<C, _>(
+                    src_data,
+                    src.cols(),
+                    &sobel_x,
+                    &sobel_y,
+                    dx_row,
+                    dy_row,
+                    0,
+                    &|_, dy| dy.max(1) - 1,
+                );
             } else if r == src.rows() - 1 {
-                {
-                    let c = 0;
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy).min(src.rows()) - 1;
-                            let col = (c + dx).max(1) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
-                for c in 1..cols - 1 {
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy).min(src.rows()) - 1;
-                            let col = (c + dx) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
-                {
-                    let c = src.cols() - 1;
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy).min(src.rows()) - 1;
-                            let col = (c + dx).min(src.cols()) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
+                filter_kernel3_row_calc::<C, _>(
+                    src_data,
+                    src.cols(),
+                    &sobel_x,
+                    &sobel_y,
+                    dx_row,
+                    dy_row,
+                    r,
+                    &|r, dy| (r + dy).min(src.rows()) - 1,
+                );
             } else {
-                {
-                    let c = 0;
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy) - 1;
-                            let col = (c + dx).max(1) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
-                for c in 1..cols - 1 {
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy) - 1;
-                            let col = (c + dx) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
-                {
-                    let c = src.cols() - 1;
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy) - 1;
-                            let col = (c + dx).min(src.cols()) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
-                        }
-                    }
-                    dx_row[c * C..(c + 1) * C].copy_from_slice(&sum_x);
-                    dy_row[c * C..(c + 1) * C].copy_from_slice(&sum_y);
-                }
+                filter_kernel3_row_calc::<C, _>(
+                    src_data,
+                    src.cols(),
+                    &sobel_x,
+                    &sobel_y,
+                    dx_row,
+                    dy_row,
+                    r,
+                    &|r, dy| r + dy - 1,
+                );
             }
         });
     Ok(())
