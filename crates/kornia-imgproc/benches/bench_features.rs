@@ -29,12 +29,16 @@ fn bench_features(c: &mut Criterion) {
             &(&image_f32, &response_f32),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| black_box(harris_response(src, &mut dst, None, Default::default(), None)))
+                b.iter(|| (harris_response(src, &mut dst, None, Default::default(), None)))
             },
         );
     }
     group.finish();
 }
 
-criterion_group!(benches, bench_features);
+criterion_group!(
+    name = benches;
+    config = Criterion::default().warm_up_time(std::time::Duration::new(10, 0));
+    targets = bench_features
+);
 criterion_main!(benches);

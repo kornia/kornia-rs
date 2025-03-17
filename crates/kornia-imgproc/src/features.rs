@@ -86,16 +86,13 @@ pub fn hessian_response(src: &Image<f32, 1>, dst: &mut Image<f32, 1>) -> Result<
 }
 
 /// Computes the harris response
-pub fn harris_response( //<T>(
+pub fn harris_response(
     src: &Image<f32, 1>,
     dst: &mut Image<f32, 1>,
     k: Option<f32>,
     _grads_mode: GradsMode,
     _sigmas: Option<f32>
-) -> Result<(), ImageError>
-// where
-//     T: AsPrimitive<f32> + NumCast + Send
-{
+) -> Result<(), ImageError> {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
             src.cols(),
@@ -105,13 +102,13 @@ pub fn harris_response( //<T>(
         ));
     }
 
-    let src_data = src.as_slice(); //.iter().map(|x| x.as_()).collect::<Vec<_>>();
+    let src_data = src.as_slice();
     let mut dx2_data = vec![0.0; src_data.len()];
     let mut dy2_data = vec![0.0; src_data.len()];
     let mut dxy_data = vec![0.0; src_data.len()];
-    let mut dx2_blurred: Image<f32, 1> = Image::from_size_val(src.size(), 0.0f32)?;
-    let mut dy2_blurred: Image<f32, 1> = Image::from_size_val(src.size(), 0.0f32)?;
-    let mut dxy_blurred: Image<f32, 1> = Image::from_size_val(src.size(), 0.0f32)?;
+    // let mut dx2_blurred: Image<f32, 1> = Image::from_size_val(src.size(), 0.0f32)?;
+    // let mut dy2_blurred: Image<f32, 1> = Image::from_size_val(src.size(), 0.0f32)?;
+    // let mut dxy_blurred: Image<f32, 1> = Image::from_size_val(src.size(), 0.0f32)?;
 
     dx2_data.as_mut_slice().par_chunks_exact_mut(src.cols())
         .zip(dy2_data.as_mut_slice().par_chunks_exact_mut(src.cols()))
@@ -169,11 +166,11 @@ pub fn harris_response( //<T>(
     //               (7,7), (1.0,1.0))?;
 
     dst.as_slice_mut().par_chunks_exact_mut(src.cols())
-        .zip(dx2_data.as_slice().par_chunks_exact(src.cols()))
-        .zip(dx2_data.as_slice().par_chunks_exact(src.cols()))
-        .zip(dx2_data.as_slice().par_chunks_exact(src.cols()))
+        // .zip(dx2_data.as_slice().par_chunks_exact(src.cols()))
+        // .zip(dx2_data.as_slice().par_chunks_exact(src.cols()))
+        // .zip(dx2_data.as_slice().par_chunks_exact(src.cols()))
         .enumerate()
-        .for_each(|(row_idx, (((dst_chunk, dx2_chunk), dy2_chunk), dxy_chunk))| {
+        .for_each(|(row_idx, dst_chunk)| {
             if row_idx == 0 || row_idx == src.rows() - 1 {
                 // skip the first and last row
                 return;
@@ -207,27 +204,17 @@ pub fn harris_response( //<T>(
                         m22 += dy2_data[idx];
                         m12 += dxy_data[idx];
                     }
-                    // let v11 = src_data[prev_row_idx - 1];
-                    // let v12 = src_data[prev_row_idx];
-                    // let v13 = src_data[prev_row_idx + 1];
-                    // let v21 = src_data[current_idx - 1];
-                    // let v22 = src_data[current_idx];
-                    // let v23 = src_data[current_idx + 1];
-                    // let v31 = src_data[next_row_idx - 1];
-                    // let v32 = src_data[next_row_idx];
-                    // let v33 = src_data[next_row_idx + 1];
 
                     // println!("{:?}", (dx2_pixel, dy2_pixel, dxy_pixel));
 
-                    let det = m11*m22 - m12*m12;  // dx2_pixel*dy2_pixel - dxy_pixel*dxy_pixel;
-                    let trace = m11 + m22; // dx2_pixel + dy2_pixel;
+                    let det = m11*m22 - m12*m12;
+                    let trace = m11 + m22;
                     let response = det-k.unwrap_or(0.04)*trace*trace;
-                    // let s_response = det/(255.0*255.0*255.0*255.0)-k.unwrap_or(0.04)*trace*trace/(255.0*255.0);
 
                     // println!(">> {:?} {:?} {:?}", dx2_pixel, dy2_pixel, dxy_pixel);
                     // println!("## {:?} {:?} {:?}", det, trace, response);
 
-                    *dst_pixel = f32::max(0.0, response); // T::from(response.clamp(0.0, 255.0)).unwrap();
+                    *dst_pixel = f32::max(0.0, response);
                 });
         });
 
