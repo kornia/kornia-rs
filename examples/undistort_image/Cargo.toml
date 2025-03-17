@@ -12,6 +12,6 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-clap = { version = "4.5.9", features = ["derive"] }
+args = "1.0"
 kornia = { workspace = true }
 rerun = { workspace = true }

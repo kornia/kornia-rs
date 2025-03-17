@@ -3,24 +3,27 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use clap::Parser;
+use args::{Args, FromArgs};
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use kornia::imgproc;
 use kornia::io::functional as F;
 
-#[derive(Parser, Debug)]
-struct Args {
-    #[arg(short, long)]
+#[derive(FromArgs, Debug)]
+/// Arguments for the program
+struct ProgramArgs {
+    /// Directory containing images
+    #[argh(option, short = 'i', long = "images_dir")]
     images_dir: PathBuf,
 
-    #[arg(short, long, default_value = "8")]
+    /// Number of threads to use
+    #[argh(option, short = 'n', long = "num_threads", default = "8")]
     num_threads: usize,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args: ProgramArgs = argh::from_env();
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.num_threads)

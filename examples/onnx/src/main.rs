@@ -1,4 +1,4 @@
-use clap::Parser;
+use argh::FromArgs;
 use kornia_tensor::{CpuAllocator, Tensor};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -12,34 +12,32 @@ use ort::session::Session;
 /// Represents a detected object in an image.
 #[derive(Debug)]
 pub struct Detection {
-    /// The class label of the detected object.
     pub label: u32,
-    /// The confidence score of the detection (typically between 0 and 1).
     pub score: f32,
-    /// The x-coordinate of the top-left corner of the bounding box.
     pub x: f32,
-    /// The y-coordinate of the top-left corner of the bounding box.
     pub y: f32,
-    /// The width of the bounding box.
     pub w: f32,
-    /// The height of the bounding box.
     pub h: f32,
 }
 
-#[derive(Parser)]
+#[derive(FromArgs)]
+/// Arguments for the application.
 struct Args {
-    #[arg(short, long)]
+    #[argh(option, short = 'i', long = "image_path")]
+    /// path to the image file
     image_path: PathBuf,
 
-    #[arg(short, long)]
+    #[argh(option, short = 'm', long = "onnx_model_path")]
+    /// path to the ONNX model file
     onnx_model_path: PathBuf,
 
-    #[arg(long)]
+    #[argh(option, long = "ort_dylib_path")]
+    /// path to the ORT dynamic library
     ort_dylib_path: PathBuf,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args: Args = argh::from_env();
 
     // set the ort dylib path
     std::env::set_var("ORT_DYLIB_PATH", &args.ort_dylib_path);
@@ -48,7 +46,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image: Image<u8, 3> = F::read_image_any_rgb8(&args.image_path)?;
 
     // read the onnx model
-
     let model = Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
         .with_intra_threads(4)?
@@ -106,7 +103,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("time ms: {:?}", time.elapsed().as_secs_f32() * 1000.0);
 
     // get the outputs
-
     let (out_shape, out_ort) = outputs["output"].try_extract_raw_tensor::<f32>()?;
     println!("out_shape: {:?}", out_shape);
 
@@ -123,8 +119,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("out_tensor: {:?}", out_tensor.shape);
 
     // parse the output tensor
-    // we expect the output tensor to be a tensor of shape [1, 300, 6]
-    // where each element is a detection [label, score, x, y, w, h]
     let detections = out_tensor
         .as_slice()
         .chunks_exact(6)

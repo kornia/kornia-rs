@@ -1,4 +1,3 @@
-use clap::Parser;
 use std::{
     path::PathBuf,
     sync::{
@@ -15,23 +14,19 @@ use kornia::{
     },
 };
 
-#[derive(Parser)]
-struct Args {
-    #[arg(short, long)]
-    output: PathBuf,
-
-    #[arg(short, long, default_value = "0")]
-    camera_id: u32,
-
-    #[arg(short, long, default_value = "30")]
-    fps: i32,
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.len() < 2 {
+        return Err("Usage: video_write --output <output_path> [--camera_id <camera_id>] [--fps <fps>]".into());
+    }
+
+    let output = PathBuf::from(args[1].clone());
+    let camera_id = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let fps = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(30);
 
     // Ensure the output path ends with .mp4
-    if args.output.extension().and_then(|ext| ext.to_str()) != Some("mp4") {
+    if output.extension().and_then(|ext| ext.to_str()) != Some("mp4") {
         return Err("Output file must have a .mp4 extension".into());
     }
 
@@ -47,8 +42,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // create a webcam capture object with camera id 0
     // and force the image size to 640x480
     let mut webcam = V4L2CameraConfig::new()
-        .with_camera_id(args.camera_id)
-        .with_fps(args.fps as u32)
+        .with_camera_id(camera_id)
+        .with_fps(fps as u32)
         .with_size(frame_size)
         .build()?;
 
@@ -57,10 +52,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // start the video writer
     let mut video_writer = VideoWriter::new(
-        args.output,
+        output,
         VideoCodec::H264,
         ImageFormat::Rgb8,
-        args.fps,
+        fps,
         frame_size,
     )?;
 

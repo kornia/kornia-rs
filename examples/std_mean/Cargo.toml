@@ -13,7 +13,7 @@ version.workspace = true
 publish = false
 
 [dependencies]
-clap = { version = "4.5.9", features = ["derive"] }
+args = "1.0"  # Replace with the appropriate version for args
 kornia = { workspace = true }
 indicatif = { version = "0.17", features = ["rayon"] }
 rayon = "1"

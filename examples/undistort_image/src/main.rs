@@ -1,4 +1,4 @@
-use clap::Parser;
+use std::env;
 use std::path::PathBuf;
 
 use kornia::{
@@ -11,17 +11,16 @@ use kornia::{
     io::functional as F,
 };
 
-#[derive(Parser)]
-struct Args {
-    #[arg(short, long)]
-    image_path: PathBuf,
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 2 {
+        eprintln!("Usage: {} <image_path>", args[0]);
+        std::process::exit(1);
+    }
+    let image_path = PathBuf::from(&args[1]);
 
     // read the image
-    let img = F::read_image_any_rgb8(args.image_path)?;
+    let img = F::read_image_any_rgb8(image_path)?;
 
     // the intrinsic parameters of an Oak-D camera
     let intrinsic = CameraIntrinsic {

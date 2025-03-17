@@ -1,26 +1,24 @@
-use clap::Parser;
 use std::path::PathBuf;
-
+use args::Args;
 use kornia::io::functional as F;
 use kornia::{image::Image, imgproc};
 
-#[derive(Parser)]
-struct Args {
+#[derive(Args)]
+struct CliArgs {
     #[arg(short, long)]
     image_path: PathBuf,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args = CliArgs::parse();
 
     // read the image
-    let image: Image<u8, 3> = F::read_image_any_rgb8(args.image_path)?;
+    let image: Image<u8, 3> = F::read_image_any_rgb8(&args.image_path)?;
     let image: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
 
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;
 
     // rotate the image
-
     let center = (
         image.size().width as f32 / 2.0,
         image.size().height as f32 / 2.0,

@@ -1,18 +1,20 @@
-use clap::Parser;
+use argh::FromArgs;
 use std::path::PathBuf;
 
 use kornia::image::{ops, Image};
 use kornia::imgproc;
 use kornia::io::functional as F;
 
-#[derive(Parser)]
+#[derive(FromArgs)]
+/// Color detector application
 struct Args {
-    #[arg(short, long)]
+    /// path to the image
+    #[argh(option)]
     image_path: PathBuf,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args: Args = argh::from_env();
 
     // read the image
     let rgb = F::read_image_any_rgb8(args.image_path)?;

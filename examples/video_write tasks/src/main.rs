@@ -1,4 +1,3 @@
-use clap::Parser;
 use std::{
     path::PathBuf,
     sync::{
@@ -16,22 +15,27 @@ use kornia::{
         V4L2CameraConfig, VideoWriter,
     },
 };
+use args::{Args, FromArgs};
 
-#[derive(Parser)]
+#[derive(FromArgs)]
+/// Kornia Video Write App
 struct Args {
-    #[arg(short, long)]
+    /// Output file path
+    #[argh(option)]
     output: PathBuf,
 
-    #[arg(short, long, default_value = "0")]
+    /// Camera ID
+    #[argh(option, default = "0")]
     camera_id: u32,
 
-    #[arg(short, long, default_value = "30")]
+    /// Frames per second
+    #[argh(option, default = "30")]
     fps: i32,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args: Args = args::from_env();
 
     // Ensure the output path ends with .mp4
     if args.output.extension().and_then(|ext| ext.to_str()) != Some("mp4") {
