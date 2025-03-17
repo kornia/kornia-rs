@@ -5,7 +5,7 @@ use kornia_io::{
     read_image_any_rgb8,
     write_image_png_gray8, write_image_png_rgb8, write_image_png_rgba8,
 };
-
+use std::path::PathBuf;
 #[cfg(feature = "turbojpeg")]
 use kornia_io::{
     write_image_jpegturbo_gray8, write_image_jpegturbo_rgb8,
@@ -17,11 +17,11 @@ use kornia_io::{
 struct Args {
     /// Path to the input image file
     #[argh(short, long)]
-    input_path: String,
+    input_path: PathBuf,
 
     /// Path where the output image will be saved
     #[argh(short, long)]
-    output_path: String,
+    output_path: PathBuf,
 
     /// Output format (png or jpeg)
     #[argh(short, long, default_value = "png")]
@@ -52,7 +52,7 @@ fn main() -> Result<()> {
     }
 
     // Read the input image
-    println!("Reading image from: {}", args.input_path);
+    println!("Reading image from: {}", args.input_path.display());
     let input_image = read_image_any_rgb8(&args.input_path)?;
     println!("Image dimensions: {}x{}, channels: {}", input_image.rows(), input_image.cols(), input_image.num_channels());
 
@@ -90,7 +90,7 @@ fn main() -> Result<()> {
         _ => unreachable!(), // Already validated above
     }
 
-    println!("Image written to: {}", args.output_path);
+    println!("Image written to: {}", args.output_path.display());
     Ok(())
 }
 
