@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::Parser;
+use argh::FromArgs;
 use kornia_image::Image;
 use kornia_io::{
     read_image_any_rgb8,
@@ -12,29 +12,29 @@ use kornia_io::{
 };
 
 /// Command line arguments for the image_io example
-#[derive(Parser, Debug)]
+#[derive(FromArgs, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Path to the input image file
-    #[arg(short, long)]
+    #[argh(short, long)]
     input_path: String,
 
     /// Path where the output image will be saved
-    #[arg(short, long)]
+    #[argh(short, long)]
     output_path: String,
 
     /// Output format (png or jpeg)
-    #[arg(short, long, default_value = "png")]
+    #[argh(short, long, default_value = "png")]
     format: String,
 
     /// Number of channels for the output image (1 for grayscale, 3 for RGB, 4 for RGBA - PNG only)
-    #[arg(short, long, default_value_t = 3)]
+    #[argh(short, long, default_value_t = 3)]
     channels: usize,
 }
 
 fn main() -> Result<()> {
     // Parse command line arguments
-    let args = Args::parse();
+    let args: Args = argh::from_env();
 
     // Validate input format
     if !["png", "jpeg"].contains(&args.format.as_str()) {
