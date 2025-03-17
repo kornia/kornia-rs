@@ -198,7 +198,7 @@ where
 /// let data2: Vec<u8> = vec![1, 2, 3, 4];
 /// let t2 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data2, CpuAllocator).unwrap();
 ///
-/// let t3 = add(&t1,&t2);
+/// let t3 = add(&t1,&t2).unwrap();
 /// assert_eq!(t3.as_slice(), vec![2, 4, 6, 8]);
 /// ```
 pub fn add<T, const N: usize>(
@@ -235,7 +235,7 @@ where
 /// let data2: Vec<u8> = vec![1, 2, 3, 4];
 /// let t2 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data2, CpuAllocator).unwrap();
 ///
-/// let t3 = sub(&t1, &t2);
+/// let t3 = sub(&t1, &t2).unwrap();
 /// assert_eq!(t3.as_slice(), vec![0, 0, 0, 0]);
 /// ```
 pub fn sub<T, const N: usize>(
@@ -272,7 +272,7 @@ where
 /// let data2: Vec<u8> = vec![1, 2, 3, 4];
 /// let t2 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data2, CpuAllocator).unwrap();
 ///
-/// let t3 = mul(&t1,&t2);
+/// let t3 = mul(&t1,&t2).unwrap();
 /// assert_eq!(t3.as_slice(), vec![1, 4, 9, 16]);
 /// ```
 pub fn mul<T, const N: usize>(
@@ -309,7 +309,7 @@ where
 /// let data2: Vec<u8> = vec![1, 2, 3, 4];
 /// let t2 = Tensor::<u8, 1, CpuAllocator>::from_shape_vec([4], data2, CpuAllocator).unwrap();
 ///
-/// let t3 = div(&t1,&t2);
+/// let t3 = div(&t1,&t2).unwrap();
 /// assert_eq!(t3.as_slice(), vec![1, 1, 1, 1]);
 /// ```
 pub fn div<T, const N: usize>(
