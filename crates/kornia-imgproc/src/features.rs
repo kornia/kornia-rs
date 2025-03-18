@@ -1,4 +1,3 @@
-use crate::parallel;
 use kornia_image::{Image, ImageError};
 use rayon::prelude::*;
 
