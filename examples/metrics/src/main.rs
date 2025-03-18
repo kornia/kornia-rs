@@ -2,7 +2,6 @@ use clap::Parser;
 use std::path::PathBuf;
 
 use kornia::io::functional as F;
-use kornia::tensor::Tensor;
 use kornia::tensor_ops::TensorOps;
 use kornia::{
     image::{ops, Image},
@@ -38,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("PSNR error: {:?}", psnr);
 
     // or, alternatively, compute the mse using the built-in functions
-    let mse_map = Tensor::powi(&Tensor::sub(&image_f32, &image_dirty)?, 2);
+    let mse_map = image_f32.sub(&image_dirty)?.powi(2);
     // let mse_ii = mse_map_ii.mean();
 
     // create a Rerun recording stream
