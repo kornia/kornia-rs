@@ -82,7 +82,7 @@ where
 /// # Arguments
 ///
 /// * `n` - The scalar to multiply the pixel data by.
-///     
+///
 /// # Returns
 ///
 /// A new image with the pixel data multiplied by the scalar.
@@ -592,14 +592,14 @@ impl<T, const N: usize> TensorOps<T, N> for Tensor<T, N, CpuAllocator> {
     where
         T: Float + Clone,
     {
-        mul_scalar(&self, n)
+        mul_scalar(self, n)
     }
 
     fn powf(&self, n: T) -> Tensor<T, N, CpuAllocator>
     where
         T: Float + Clone,
     {
-        powf(&self, n)
+        powf(self, n)
     }
 
     fn min(
@@ -609,28 +609,28 @@ impl<T, const N: usize> TensorOps<T, N> for Tensor<T, N, CpuAllocator> {
     where
         T: PartialOrd + Clone,
     {
-        min(&self, other)
+        min(self, other)
     }
 
     fn powi(&self, n: i32) -> Tensor<T, N, CpuAllocator>
     where
         T: Float + Clone,
     {
-        powi(&self, n)
+        powi(self, n)
     }
 
     fn abs(&self) -> Tensor<T, N, CpuAllocator>
     where
         T: Float + Clone,
     {
-        abs(&self)
+        abs(self)
     }
 
     fn mean(&self) -> Result<T, TensorError>
     where
         T: Float + Clone,
     {
-        mean(&self)
+        mean(self)
     }
 
     fn add(
@@ -640,7 +640,7 @@ impl<T, const N: usize> TensorOps<T, N> for Tensor<T, N, CpuAllocator> {
     where
         T: std::ops::Add<Output = T> + Clone,
     {
-        add(&self, other)
+        add(self, other)
     }
 
     fn sub(
@@ -650,7 +650,7 @@ impl<T, const N: usize> TensorOps<T, N> for Tensor<T, N, CpuAllocator> {
     where
         T: std::ops::Sub<Output = T> + Clone,
     {
-        sub(&self, other)
+        sub(self, other)
     }
 
     fn div(
@@ -660,7 +660,7 @@ impl<T, const N: usize> TensorOps<T, N> for Tensor<T, N, CpuAllocator> {
     where
         T: std::ops::Div<Output = T> + Clone,
     {
-        div(&self, other)
+        div(self, other)
     }
 
     fn mul(
@@ -670,7 +670,7 @@ impl<T, const N: usize> TensorOps<T, N> for Tensor<T, N, CpuAllocator> {
     where
         T: std::ops::Mul<Output = T> + Clone,
     {
-        mul(&self, other)
+        mul(self, other)
     }
 
     fn dot_product1(
