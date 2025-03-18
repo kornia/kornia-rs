@@ -1,47 +1,37 @@
-use image::{GrayImage, Luma};
-use nalgebra::{DMatrix, Vector2};
+use glam::{Vec2, Mat2};
+use kornia::filters::sobel;
+use kornia::tensor::Tensor;
+use tch::{Device, Kind};
 
-/// Compute optical flow using Lucas-Kanade method.
-pub fn lucas_kanade_optical_flow(
-    img1: &GrayImage, img2: &GrayImage, window_size: usize,
-) -> Vec<(Vector2<f32>, Vector2<f32>)> {
-    let mut flow_vectors = Vec::new();
-    let half_window = (window_size / 2) as i32;
+/// Implements Lucas-Kanade Optical Flow using glam-rs
+pub fn lucas_kanade(
+    prev_img: &Tensor,
+    next_img: &Tensor,
+    points: &[(f32, f32)],
+    win_size: usize,
+) -> Vec<(f32, f32)> {
+    let mut flow = Vec::new();
 
-    for y in half_window..(img1.height() as i32 - half_window) {
-        for x in half_window..(img1.width() as i32 - half_window) {
-            let mut i_xx = 0.0;
-            let mut i_xy = 0.0;
-            let mut i_yy = 0.0;
-            let mut i_xt = 0.0;
-            let mut i_yt = 0.0;
+    for &(x, y) in points {
+        let mut sum_dx = Vec2::ZERO;
+        let mut sum_dy = Vec2::ZERO;
 
-            for wy in -half_window..=half_window {
-                for wx in -half_window..=half_window {
-                    let x_pos = (x + wx) as u32;
-                    let y_pos = (y + wy) as u32;
+        for i in 0..win_size {
+            for j in 0..win_size {
+                // Calculate gradients using Kornia's Sobel filter
+                let dx = sobel(prev_img, "x", true);
+                let dy = sobel(prev_img, "y", true);
 
-                    let i_x = (img2.get_pixel(x_pos + 1, y_pos)[0] as f32 - img1.get_pixel(x_pos - 1, y_pos)[0] as f32) / 2.0;
-                    let i_y = (img2.get_pixel(x_pos, y_pos + 1)[0] as f32 - img1.get_pixel(x_pos, y_pos - 1)[0] as f32) / 2.0;
-                    let i_t = img2.get_pixel(x_pos, y_pos)[0] as f32 - img1.get_pixel(x_pos, y_pos)[0] as f32;
-
-                    i_xx += i_x * i_x;
-                    i_xy += i_x * i_y;
-                    i_yy += i_y * i_y;
-                    i_xt += i_x * i_t;
-                    i_yt += i_y * i_t;
-                }
-            }
-
-            let A = DMatrix::from_row_slice(2, 2, &[i_xx, i_xy, i_xy, i_yy]);
-            let b = Vector2::new(-i_xt, -i_yt);
-
-            if let Some(v) = A.try_inverse() {
-                let flow = v * b;
-                flow_vectors.push((Vector2::new(x as f32, y as f32), flow));
+                let vel = Vec2::new(dx.double_value(&[i as i64, j as i64]) as f32, dy.double_value(&[i as i64, j as i64]) as f32);
+                sum_dx += vel;
+                sum_dy += vel;
             }
         }
+
+        // Average the flow over the window
+        let avg_flow = Vec2::new(sum_dx.x / win_size as f32, sum_dy.y / win_size as f32);
+        flow.push((x + avg_flow.x, y + avg_flow.y));
     }
 
-    flow_vectors
+    flow
 }

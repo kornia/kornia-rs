@@ -1,20 +1,18 @@
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use image::{GrayImage, Luma};
+use kornia::tensor::Tensor;
+use tch::{Device, Kind};
+use crate::pyramid::build_pyramid;
+use crate::tracking::lucas_kanade;
 
-    #[test]
-    fn test_gaussian_pyramid() {
-        let img = GrayImage::new(100, 100);
-        let pyramid = build_gaussian_pyramid(&img, 3, 1.5);
-        assert_eq!(pyramid.len(), 3);
-    }
+#[test]
+fn test_optical_flow() {
+    let prev_img = Tensor::randn(&[128, 128], (Kind::Float, Device::Cpu));
+    let next_img = Tensor::randn(&[128, 128], (Kind::Float, Device::Cpu));
 
-    #[test]
-    fn test_lucas_kanade() {
-        let img1 = GrayImage::new(100, 100);
-        let img2 = GrayImage::new(100, 100);
-        let flow = lucas_kanade_optical_flow(&img1, &img2, 5);
-        assert!(flow.len() > 0);
-    }
+    let points = vec![(32.0, 32.0), (64.0, 64.0)];
+    
+    let pyramid = build_pyramid(&prev_img, 3);
+    assert_eq!(pyramid.len(), 3);
+
+    let flow = lucas_kanade(&prev_img, &next_img, &points, 5);
+    assert_eq!(flow.len(), points.len());
 }

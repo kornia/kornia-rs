@@ -1,24 +1,21 @@
-use image::{GrayImage, Luma};
-use imageproc::filter::gaussian_blur_f32;
+use kornia::filters::gaussian_blur;
+use kornia::geometry::transform::{resize, scale};
+use kornia::tensor::Tensor;
+use tch::{Device, Kind};
 
-/// Build a Gaussian pyramid with multiple image scales.
-pub fn build_gaussian_pyramid(image: &GrayImage, levels: usize, sigma: f32) -> Vec<GrayImage> {
-    let mut pyramid = Vec::new();
-    let mut current_img = image.clone();
+/// Builds a Gaussian pyramid using Kornia operators
+pub fn build_pyramid(image: &Tensor, levels: usize) -> Vec<Tensor> {
+    let mut pyramid = vec![image.clone()];
 
-    for _ in 0..levels {
+    for _ in 1..levels {
         // Apply Gaussian blur
-        let blurred = gaussian_blur_f32(&current_img, sigma);
+        let blurred = gaussian_blur(&pyramid.last().unwrap(), &[3, 3], &[1.0, 1.0]);
 
-        // Downsample (reduce resolution)
-        let width = blurred.width() / 2;
-        let height = blurred.height() / 2;
-        let downsampled = image::imageops::resize(
-            &blurred, width, height, image::imageops::FilterType::Triangle,
-        );
-
-        pyramid.push(downsampled.clone());
-        current_img = downsampled;
+        // Downsample using Kornia's resize
+        let (height, width) = blurred.size2().unwrap();
+        let downsampled = resize(&blurred, &[height / 2, width / 2], None, None);
+        
+        pyramid.push(downsampled);
     }
 
     pyramid
