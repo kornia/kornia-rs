@@ -2,7 +2,7 @@ use anyhow::Result;
 use argh::FromArgs;
 use kornia_image::Image;
 use kornia_io::{
-    read_image_any_rgb8,
+     read_image_any, read_image_any_gray8, read_image_any_rgb8, read_image_any_rgba8,
     write_image_png_gray8, write_image_png_rgb8, write_image_png_rgba8,
 };
 use std::path::PathBuf;
@@ -16,20 +16,25 @@ use kornia_io::{
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Path to the input image file
-    #[argh(short, long)]
+    #[argh(option, short = 'i')]
     input_path: PathBuf,
 
     /// Path where the output image will be saved
-    #[argh(short, long)]
+   #[argh(option, short = 'o')]
     output_path: PathBuf,
 
     /// Output format (png or jpeg)
-    #[argh(short, long, default_value = "png")]
+    #[argh(option, short = 'f', default = "String::from(\"png\")")]
     format: String,
 
     /// Number of channels for the output image (1 for grayscale, 3 for RGB, 4 for RGBA - PNG only)
-    #[argh(short, long, default_value_t = 3)]
+    #[argh(option, short = 'c', default = "3")]
     channels: usize,
+    
+    /// Input reading mode (auto, gray, rgb, rgba)
+    #[argh(option, short = 'm', default = "String::from(\"auto\")")]
+    input_mode: String,
+    
 }
 
 fn main() -> Result<()> {
@@ -51,77 +56,157 @@ fn main() -> Result<()> {
         anyhow::bail!("RGBA (4 channels) is not supported for JPEG format.");
     }
 
+    // Validate input mode
+    if !["auto", "gray", "rgb", "rgba"].contains(&args.input_mode.as_str()) {
+        anyhow::bail!("Unsupported input mode: {}. Only 'auto', 'gray', 'rgb', or 'rgba' are supported.", args.input_mode);
+    }
+    
     // Read the input image
     println!("Reading image from: {}", args.input_path.display());
-    let input_image = read_image_any_rgb8(&args.input_path)?;
-    println!("Image dimensions: {}x{}, channels: {}", input_image.rows(), input_image.cols(), input_image.num_channels());
+    // Read the input image based on the specified mode
+    let result = match args.input_mode.as_str() {
+        "auto" => {
+            // Auto-detect format and read accordingly
+            let image = read_image_any(&args.input_path)?;
+            println!("Auto-detected image with {} channels", image.num_channels());
+            process_image(image, &args)
+        },
+        "gray" => {
+            let gray_image = read_image_any_gray8(&args.input_path)?;
+            println!("Read as grayscale: {}x{}, 1 channel", gray_image.rows(), gray_image.cols());
+            process_grayscale_image(gray_image, &args)
+        },
+        "rgb" => {
+            let rgb_image = read_image_any_rgb8(&args.input_path)?;
+            println!("Read as RGB: {}x{}, 3 channels", rgb_image.rows(), rgb_image.cols());
+            process_rgb_image(rgb_image, &args)
+        },
+        "rgba" => {
+            let rgba_image = read_image_any_rgba8(&args.input_path)?;
+            println!("Read as RGBA: {}x{}, 4 channels", rgba_image.rows(), rgba_image.cols());
+            process_rgba_image(rgba_image, &args)
+        },
+        _ => unreachable!(),
+    };
 
-    // Process and write the output image based on format and channels
+    match result {
+        Ok(_) => {
+            println!("Image successfully written to: {}", args.output_path.display());
+            Ok(())
+        },
+        Err(e) => Err(e),
+    }
+}
+
+// Process image of any type
+fn process_image(image: Image<u8>, args: &Args) -> Result<()> {
+    match image.num_channels() {
+        1 => process_grayscale_image(image.into_typed::<1>(), args),
+        3 => process_rgb_image(image.into_typed::<3>(), args),
+        4 => process_rgba_image(image.into_typed::<4>(), args),
+        n => anyhow::bail!("Unsupported number of channels in input image: {}", n),
+    }
+}
+
+// Process grayscale image
+fn process_grayscale_image(gray_image: Image<u8, 1>, args: &Args) -> Result<()> {
     match (args.format.as_str(), args.channels) {
         ("png", 1) => {
-            // Convert to grayscale and write as PNG
-            let gray_image = to_grayscale(&input_image);
             write_image_png_gray8(&args.output_path, &gray_image)?;
         },
         ("png", 3) => {
-            // Write as RGB PNG
-            write_image_png_rgb8(&args.output_path, &input_image)?;
+            let rgb_image = to_rgb_from_gray(&gray_image);
+            write_image_png_rgb8(&args.output_path, &rgb_image)?;
         },
         ("png", 4) => {
-            // Convert to RGBA and write as PNG
-            let rgba_image = to_rgba(&input_image);
+            let rgba_image = to_rgba_from_gray(&gray_image);
             write_image_png_rgba8(&args.output_path, &rgba_image)?;
         },
         #[cfg(feature = "turbojpeg")]
         ("jpeg", 1) => {
-            // Convert to grayscale and write as JPEG
-            let gray_image = to_grayscale(&input_image);
             write_image_jpegturbo_gray8(&args.output_path, &gray_image)?;
         },
         #[cfg(feature = "turbojpeg")]
         ("jpeg", 3) => {
-            // Write as RGB JPEG
-            write_image_jpegturbo_rgb8(&args.output_path, &input_image)?;
+            let rgb_image = to_rgb_from_gray(&gray_image);
+            write_image_jpegturbo_rgb8(&args.output_path, &rgb_image)?;
         },
         #[cfg(not(feature = "turbojpeg"))]
         ("jpeg", _) => {
             anyhow::bail!("JPEG writing is not supported because the 'turbojpeg' feature is not enabled.");
         },
-        _ => unreachable!(), // Already validated above
+        _ => unreachable!(),
     }
-
-    println!("Image written to: {}", args.output_path.display());
     Ok(())
 }
 
-/// Convert an RGB image to grayscale
-fn to_grayscale(rgb_image: &Image<u8, 3>) -> Image<u8, 1> {
-    let (rows, cols) = (rgb_image.rows(), rgb_image.cols());
-    let mut gray_image = Image::<u8, 1>::new(rows, cols);
-    
-    for r in 0..rows {
-        for c in 0..cols {
-            // Standard RGB to grayscale conversion formula: 0.299*R + 0.587*G + 0.114*B
-            let pixel = rgb_image.pixel(r, c);
-            let gray_value = (0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32) as u8;
-            gray_image.set_pixel(r, c, [gray_value]);
-        }
+// Process RGB image
+fn process_rgb_image(rgb_image: Image<u8, 3>, args: &Args) -> Result<()> {
+    match (args.format.as_str(), args.channels) {
+        ("png", 1) => {
+            // Use the kornia_imgproc function to convert RGB to grayscale
+            let gray_image = gray_from_rgb_u8(&rgb_image);
+            write_image_png_gray8(&args.output_path, &gray_image)?;
+        },
+        ("png", 3) => {
+            write_image_png_rgb8(&args.output_path, &rgb_image)?;
+        },
+        ("png", 4) => {
+            let rgba_image = to_rgba(&rgb_image);
+            write_image_png_rgba8(&args.output_path, &rgba_image)?;
+        },
+        #[cfg(feature = "turbojpeg")]
+        ("jpeg", 1) => {
+            // Use the kornia_imgproc function to convert RGB to grayscale
+            let gray_image = gray_from_rgb_u8(&rgb_image);
+            write_image_jpegturbo_gray8(&args.output_path, &gray_image)?;
+        },
+        #[cfg(feature = "turbojpeg")]
+        ("jpeg", 3) => {
+            write_image_jpegturbo_rgb8(&args.output_path, &rgb_image)?;
+        },
+        #[cfg(not(feature = "turbojpeg"))]
+        ("jpeg", _) => {
+            anyhow::bail!("JPEG writing is not supported because the 'turbojpeg' feature is not enabled.");
+        },
+        _ => unreachable!(),
     }
-    
-    gray_image
+    Ok(())
 }
 
-/// Convert an RGB image to RGBA (with alpha = 255)
-fn to_rgba(rgb_image: &Image<u8, 3>) -> Image<u8, 4> {
-    let (rows, cols) = (rgb_image.rows(), rgb_image.cols());
-    let mut rgba_image = Image::<u8, 4>::new(rows, cols);
-    
-    for r in 0..rows {
-        for c in 0..cols {
-            let pixel = rgb_image.pixel(r, c);
-            rgba_image.set_pixel(r, c, [pixel[0], pixel[1], pixel[2], 255]);
-        }
+// Process RGBA image
+fn process_rgba_image(rgba_image: Image<u8, 4>, args: &Args) -> Result<()> {
+    match (args.format.as_str(), args.channels) {
+        ("png", 1) => {
+            // First convert RGBA to RGB, then use kornia_imgproc for RGB to grayscale
+            let rgb_image = to_rgb_from_rgba(&rgba_image);
+            let gray_image = gray_from_rgb_u8(&rgb_image);
+            write_image_png_gray8(&args.output_path, &gray_image)?;
+        },
+        ("png", 3) => {
+            let rgb_image = to_rgb_from_rgba(&rgba_image);
+            write_image_png_rgb8(&args.output_path, &rgb_image)?;
+        },
+        ("png", 4) => {
+            write_image_png_rgba8(&args.output_path, &rgba_image)?;
+        },
+        #[cfg(feature = "turbojpeg")]
+        ("jpeg", 1) => {
+            // First convert RGBA to RGB, then use kornia_imgproc for RGB to grayscale
+            let rgb_image = to_rgb_from_rgba(&rgba_image);
+            let gray_image = gray_from_rgb_u8(&rgb_image);
+            write_image_jpegturbo_gray8(&args.output_path, &gray_image)?;
+        },
+        #[cfg(feature = "turbojpeg")]
+        ("jpeg", 3) => {
+            let rgb_image = to_rgb_from_rgba(&rgba_image);
+            write_image_jpegturbo_rgb8(&args.output_path, &rgb_image)?;
+        },
+        #[cfg(not(feature = "turbojpeg"))]
+        ("jpeg", _) => {
+            anyhow::bail!("JPEG writing is not supported because the 'turbojpeg' feature is not enabled.");
+        },
+        _ => unreachable!(),
     }
-    
-    rgba_image
-} 
+    Ok(())
+}
