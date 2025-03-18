@@ -434,7 +434,7 @@ where
 ///
 /// let a = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[1.0, 2.0, 3.0], CpuAllocator).unwrap();
 /// let b = Tensor::<f32, 1, CpuAllocator>::from_shape_slice([3], &[2.0, 4.0, 6.0], CpuAllocator).unwrap();
-/// let result = Tensor::cosine_distance(&a, &b).unwrap();
+/// let result = Tensor::<f32,1,CpuAllocator>::cosine_distance(&a, &b).unwrap();
 /// assert!(result.abs() < 1e-6);
 /// ```
 fn cosine_distance<T, A>(a: &Tensor<T, 1, A>, b: &Tensor<T, 1, A>) -> Result<T, TensorOpsError>
