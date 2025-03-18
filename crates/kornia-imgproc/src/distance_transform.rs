@@ -30,19 +30,25 @@ pub fn distance_transform_vanilla(image: &Image<f32, 1>) -> Image<f32, 1> {
     Image { data: output }
 }
 
-// TODO: not fully working
 //pub fn distance_transform(image: &Image<f32>) -> Image<f32> {
 pub fn distance_transform(image: &Image<f32, 1>) -> Result<Image<f32, 1>> {
     //let mut distance = ndarray::Array3::<f32>::zeros(image.data.dim());
-    let mut distance = Image::from_size_val(image.size(), 0.0f32).unwrap();
+    let mut distance = Image::from_size_val(image.size(), f32::INFINITY).unwrap();
+
+    // initializing distances
+    for i in 0..image.height() {
+        for j in 0..image.width() {
+            if image.data[[i, j, 0]] > 0.0 {
+                distance.data[[i, j, 0]] = 0.0;
+            }
+        }
+    }
 
     // forwards pass
 
     for i in 0..image.height() {
         for j in 0..image.width() {
-            if image.data[[i, j, 0]] > 0.0 {
-                distance.data[[i, j, 0]] = 0.0;
-            } else {
+            if image.data[[i, j, 0]] == 0.0 {
                 if i > 0 {
                     distance.data[[i, j, 0]] =
                         distance.data[[i, j, 0]].min(distance.data[[i - 1, j, 0]] + 1.0)
@@ -86,6 +92,7 @@ pub fn distance_transform(image: &Image<f32, 1>) -> Result<Image<f32, 1>> {
 
 #[cfg(test)]
 mod tests {
+    use crate::distance_transform::distance_transform;
     use crate::distance_transform::distance_transform_vanilla;
     use kornia_image::Image;
 
@@ -102,6 +109,22 @@ mod tests {
         )
         .unwrap();
         let output = distance_transform_vanilla(&image);
+        println!("{:?}", output.data);
+    }
+
+    #[test]
+    fn distance_transform_smoke() {
+        let image = Image::<f32, 1>::new(
+            kornia_image::ImageSize {
+                width: 4,
+                height: 3,
+            },
+            vec![
+                0.0f32, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+            ],
+        )
+        .unwrap();
+        let output = distance_transform(&image);
         println!("{:?}", output.data);
     }
 }
