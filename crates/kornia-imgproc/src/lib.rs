@@ -53,3 +53,6 @@ pub mod threshold;
 
 /// image geometric transformations module.
 pub mod warp;
+
+/// corners detection module.
+pub mod corners;
