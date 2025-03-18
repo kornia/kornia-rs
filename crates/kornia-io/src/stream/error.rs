@@ -83,6 +83,10 @@ pub enum StreamCaptureError {
     /// An error occurred when the allocator is not found.
     #[error("Cannot lock the last frame")]
     LockError,
+
+    /// Error occurred when trying to get the format from GStreamer pipeline.
+    #[error("Failed to get correct format")]
+    GetFormatError,
 }
 
 // ensure that can be sent over threads

@@ -7,6 +7,8 @@ use crate::stream::{
     StreamCapture,
 };
 
+use crate::stream::nvcamera::{nv_camera_pipeline_description, NVCameraConfig};
+
 /// A trait for camera capture configuration.
 ///
 /// This trait allows for different types of camera configurations to be used
@@ -62,10 +64,18 @@ impl CameraCapture {
                 ));
             }
             rtsp_camera_pipeline_description(&config.url, config.latency)
+        } else if let Some(config) = config.as_any().downcast_ref::<NVCameraConfig>() {
+            // check that the device is not empty
+            if config.device.is_empty() {
+                return Err(StreamCaptureError::InvalidConfig(
+                    "device is empty".to_string(),
+                ));
+            }
+            nv_camera_pipeline_description(&config.device, config.size, config.fps, config.use_nv12)
         } else {
-            return Err(StreamCaptureError::InvalidConfig(
-                "unknown config type".to_string(),
-            ));
+                return Err(StreamCaptureError::InvalidConfig(
+                    "unknown config type".to_string(),
+                ));
         };
 
         Ok(Self(StreamCapture::new(&pipeline)?))

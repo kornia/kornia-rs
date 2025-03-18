@@ -27,7 +27,8 @@ struct KorniaApp {
 
 impl Default for KorniaApp {
     fn default() -> Self {
-        let capture = kornia::io::stream::V4L2CameraConfig::new()
+        // Use NVCameraConfig instead of V4L2CameraConfig for GPU acceleration
+        let capture = kornia::io::stream::NVCameraConfig::new()
             .with_camera_id(0)
             .build()
             .unwrap();
