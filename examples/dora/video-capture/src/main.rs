@@ -4,23 +4,30 @@ use kornia::io::stream::{RTSPCameraConfig, V4L2CameraConfig};
 
 fn main() -> eyre::Result<()> {
     // parse env variables
-    let source_type = std::env::var("SOURCE_TYPE")?;
+    let source_type =
+        std::env::var("SOURCE_TYPE").map_err(|e| eyre::eyre!("SOURCE_TYPE error: {}", e))?;
+    let source_uri =
+        std::env::var("SOURCE_URI").map_err(|e| eyre::eyre!("SOURCE_URI error: {}", e))?;
 
     // create the camera source
     let mut camera = match source_type.as_str() {
         "webcam" => {
-            let image_cols = std::env::var("IMAGE_COLS")?.parse::<usize>()?;
-            let image_rows = std::env::var("IMAGE_ROWS")?.parse::<usize>()?;
-            let source_fps = std::env::var("SOURCE_FPS")?.parse::<u32>()?;
+            let image_cols = std::env::var("IMAGE_COLS")
+                .map_err(|e| eyre::eyre!("IMAGE_COLS error: {}", e))?
+                .parse::<usize>()?;
+            let image_rows = std::env::var("IMAGE_ROWS")
+                .map_err(|e| eyre::eyre!("IMAGE_ROWS error: {}", e))?
+                .parse::<usize>()?;
+            let source_fps = std::env::var("SOURCE_FPS")
+                .map_err(|e| eyre::eyre!("SOURCE_FPS error: {}", e))?
+                .parse::<u32>()?;
             V4L2CameraConfig::new()
                 .with_size([image_cols, image_rows].into())
                 .with_fps(source_fps)
+                .with_device(&source_uri)
                 .build()?
         }
-        "rtsp" => {
-            let source_uri = std::env::var("SOURCE_URI")?;
-            RTSPCameraConfig::new().with_url(&source_uri).build()?
-        }
+        "rtsp" => RTSPCameraConfig::new().with_url(&source_uri).build()?,
         _ => return Err(eyre::eyre!("Invalid source type: {}", source_type)),
     };
 

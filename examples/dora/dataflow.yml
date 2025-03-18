@@ -8,6 +8,7 @@ nodes:
       - frame
     env:
       SOURCE_TYPE: "webcam"
+      SOURCE_URI: "/dev/video0"
       SOURCE_FPS: 30
       IMAGE_COLS: 640
       IMAGE_ROWS: 480
@@ -35,3 +36,6 @@ nodes:
       web-camera/frame: web-camera/frame
       rtsp-camera/frame: rtsp-camera/frame
       imgproc/output: imgproc/output
+    env:
+      RERUN_HOST: 127.0.0.1
+      RERUN_PORT: 9876

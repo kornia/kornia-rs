@@ -1,24 +1,27 @@
-Hello world example for the Kornia Rust library.
+Example using kornia-rs and dora-rs to build a simple pipeline to process images from multiple sources.
+
+Instructions:
+
+1. Install dependencies:
 
 ```bash
-Usage: hello_world --image-path <IMAGE_PATH>
-
-Options:
-  -i, --image-path <IMAGE_PATH>
-  -h, --help                     Print help
+cargo install dora-cli
 ```
 
-Example:
+2. Build the pipeline:
 
 ```bash
-cargo run -p hello_world -- --image-path path/to/image.jpg
+cargo build dataflow.yml
 ```
 
-Output:
+3. Run the pipeline:
 
 ```bash
-Hello, world! 🦀
-Loaded Image size: ImageSize { width: 258, height: 195 }
+cargo run dataflow.yml
+```
 
-Goodbyte!
+4. Open the rerun viewer:
+
+```bash
+rerun --bind 127.0.0.1 --port 9876
 ```
