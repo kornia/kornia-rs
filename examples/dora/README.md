@@ -11,13 +11,13 @@ cargo install dora-cli
 2. Build the pipeline:
 
 ```bash
-cargo build dataflow.yml
+dora build dataflow.yml
 ```
 
 3. Run the pipeline:
 
 ```bash
-cargo run dataflow.yml
+dora run dataflow.yml
 ```
 
 4. Open the rerun viewer:
