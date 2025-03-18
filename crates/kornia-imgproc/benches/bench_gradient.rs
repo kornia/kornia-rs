@@ -2,13 +2,11 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 
 use kornia_image::Image;
 use kornia_imgproc::filter::{
-    spatial_gradient_float, spatial_gradient_float_by_separable_filter,
-    spatial_gradient_float_parallel, spatial_gradient_float_rayon_parallel,
-    spatial_gradient_float_rayon_row_parallel, spatial_gradient_float_row_parallel,
+    spatial_gradient_float, spatial_gradient_float_parallel, spatial_gradient_float_parallel_row,
 };
 
 fn bench_gradient(c: &mut Criterion) {
-    let mut group = c.benchmark_group("Spatial Gradient");
+    let mut group = c.benchmark_group("Spatial Gradient Float");
 
     for (width, height) in [(512, 512), (1024, 1024), (2048, 2048)].iter() {
         group.throughput(criterion::Throughput::Elements((*width * *height) as u64));
@@ -35,18 +33,11 @@ fn bench_gradient(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new(
-                "spatial_gradient_float_by_separable_filter",
-                &parameter_string,
-            ),
+            BenchmarkId::new("spatial_gradient_float_parallel_row", &parameter_string),
             &(&image, &output_dx, &output_dy),
             |b, i| {
                 let (src, mut dx, mut dy) = (i.0, i.1.clone(), i.2.clone());
-                b.iter(|| {
-                    black_box(spatial_gradient_float_by_separable_filter(
-                        src, &mut dx, &mut dy,
-                    ))
-                })
+                b.iter(|| black_box(spatial_gradient_float_parallel_row(src, &mut dx, &mut dy)))
             },
         );
 
@@ -56,40 +47,6 @@ fn bench_gradient(c: &mut Criterion) {
             |b, i| {
                 let (src, mut dx, mut dy) = (i.0, i.1.clone(), i.2.clone());
                 b.iter(|| black_box(spatial_gradient_float_parallel(src, &mut dx, &mut dy)))
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("spatial_gradient_float_rayon_parallel", &parameter_string),
-            &(&image, &output_dx, &output_dy),
-            |b, i| {
-                let (src, mut dx, mut dy) = (i.0, i.1.clone(), i.2.clone());
-                b.iter(|| black_box(spatial_gradient_float_rayon_parallel(src, &mut dx, &mut dy)))
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new(
-                "spatial_gradient_float_rayon_row_parallel",
-                &parameter_string,
-            ),
-            &(&image, &output_dx, &output_dy),
-            |b, i| {
-                let (src, mut dx, mut dy) = (i.0, i.1.clone(), i.2.clone());
-                b.iter(|| {
-                    black_box(spatial_gradient_float_rayon_row_parallel(
-                        src, &mut dx, &mut dy,
-                    ))
-                })
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("spatial_gradient_float_row_parallel", &parameter_string),
-            &(&image, &output_dx, &output_dy),
-            |b, i| {
-                let (src, mut dx, mut dy) = (i.0, i.1.clone(), i.2.clone());
-                b.iter(|| black_box(spatial_gradient_float_row_parallel(src, &mut dx, &mut dy)))
             },
         );
     }

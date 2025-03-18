@@ -123,123 +123,6 @@ pub fn box_blur_fast<const C: usize>(
     Ok(())
 }
 
-/// Compute one pixel data with 3x3 kernel
-///
-/// # Argument
-///
-/// * `src_data` - The source image with full data
-/// * `src_cols` - Cols of source image
-/// * `kernel_x` - 3x3 kernel for compute dx_dst
-/// * `kernel_y` - 3x3 kernel for compute dy_dst
-/// * `dx_dst` - The slice for the current pixel; in dx output, length should be C
-/// * `dy_dst` - The slice for the current pixel; in dy output, length should be C
-/// * `row` - current row idx in source image
-/// * `row_pos_bias` - A function for input row index and kernel y index and output a real row index for access source image data
-/// * `col` - current col idx in source image
-/// * `col_pos_bias` - A function for input col index and kernel x index and output a real col index for access source image data
-fn filter_kernel3_pix_calc<
-    const C: usize,
-    FR: Fn(usize, usize) -> usize,
-    FC: Fn(usize, usize) -> usize,
->(
-    src_data: &[f32],
-    src_cols: usize,
-    kernel_x: &[[f32; 3]; 3],
-    kernel_y: &[[f32; 3]; 3],
-    dx_dst: &mut [f32],
-    dy_dst: &mut [f32],
-    row: usize,
-    col: usize,
-    row_pos_bias: FR,
-    col_pos_bias: FC,
-) {
-    let mut sum_x = [0.0; C];
-    let mut sum_y = [0.0; C];
-    for dy in 0..3 {
-        for dx in 0..3 {
-            let row = row_pos_bias(row, dy);
-            let col = col_pos_bias(col, dx);
-            for ch in 0..C {
-                let src_pix_offset = (row * src_cols + col) * C + ch;
-                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                sum_x[ch] += val * kernel_x[dy][dx];
-                sum_y[ch] += val * kernel_y[dy][dx];
-            }
-        }
-    }
-    unsafe { &mut *(dx_dst.as_mut_ptr() as *mut [f32; C]) }.copy_from_slice(&sum_x);
-    unsafe { &mut *(dy_dst.as_mut_ptr() as *mut [f32; C]) }.copy_from_slice(&sum_y);
-}
-
-/// Compute one row data with 3x3 kernel
-///
-/// # Argument
-///
-/// * `src_data` - The source image with full data
-/// * `src_cols` - Cols of source image
-/// * `kernel_x` - 3x3 kernel for compute dx_dst
-/// * `kernel_y` - 3x3 kernel for compute dy_dst
-/// * `dx_dst` - The slice for the current row in dx output, length should be src_cols * C
-/// * `dy_dst` - The slice for the current row in dy output, length should be src_cols * C
-/// * `row` - current row idx in source image
-/// * `row_pos_bias` - A function for input row index and kernel index and output a real row index for access source image data
-fn filter_kernel3_row_calc<const C: usize, FR: ?Sized + Fn(usize, usize) -> usize>(
-    src_data: &[f32],
-    src_cols: usize,
-    kernel_x: &[[f32; 3]; 3],
-    kernel_y: &[[f32; 3]; 3],
-    dx_dst: &mut [f32],
-    dy_dst: &mut [f32],
-    row: usize,
-    row_pos_bias: &FR,
-) {
-    {
-        filter_kernel3_pix_calc::<C, _, _>(
-            src_data,
-            src_cols,
-            kernel_x,
-            kernel_y,
-            &mut dx_dst[0..C],
-            &mut dy_dst[0..C],
-            row,
-            0,
-            row_pos_bias,
-            |_, dx| dx.max(1) - 1,
-        );
-    }
-    for c in 1..src_cols - 1 {
-        let col_offset = c * C;
-        filter_kernel3_pix_calc::<C, _, _>(
-            src_data,
-            src_cols,
-            kernel_x,
-            kernel_y,
-            &mut dx_dst[col_offset..col_offset + C],
-            &mut dy_dst[col_offset..col_offset + C],
-            row,
-            c,
-            row_pos_bias,
-            |c, dx| (c + dx) - 1,
-        );
-    }
-    {
-        let c = src_cols - 1;
-        let col_offset = c * C;
-        filter_kernel3_pix_calc::<C, _, _>(
-            src_data,
-            src_cols,
-            kernel_x,
-            kernel_y,
-            &mut dx_dst[col_offset..col_offset + C],
-            &mut dy_dst[col_offset..col_offset + C],
-            row,
-            c,
-            row_pos_bias,
-            |c, dx| (c + dx).min(src_cols) - 1,
-        );
-    }
-}
-
 /// Compute the first order image derivative in both x and y using a Sobel operator.
 ///
 /// # Arguments
@@ -247,132 +130,6 @@ fn filter_kernel3_row_calc<const C: usize, FR: ?Sized + Fn(usize, usize) -> usiz
 /// * `src` - The source image with shape (H, W).
 /// * `dst` - The destination image with shape (H, W, 2).
 pub fn spatial_gradient_float<const C: usize>(
-    src: &Image<f32, C>,
-    dx: &mut Image<f32, C>,
-    dy: &mut Image<f32, C>,
-) -> Result<(), ImageError> {
-    if src.size() != dx.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dx.cols(),
-            dx.rows(),
-        ));
-    }
-
-    if src.size() != dy.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dy.cols(),
-            dy.rows(),
-        ));
-    }
-
-    let (sobel_x, sobel_y) = kernels::normalized_sobel_kernel3();
-
-    let src_data = src.as_slice();
-    let dx_data = dx.as_slice_mut();
-    let dy_data = dy.as_slice_mut();
-    let full_len = src.rows() * src.cols() * C;
-    let row_len = src.cols() * C;
-
-    {
-        filter_kernel3_row_calc::<C, _>(
-            src_data,
-            src.cols(),
-            &sobel_x,
-            &sobel_y,
-            &mut dx_data[0..row_len],
-            &mut dy_data[0..row_len],
-            0,
-            &|_, dy| dy.max(1) - 1,
-        );
-    }
-    for r in 1..src.rows() - 1 {
-        let row_offset = r * row_len;
-        filter_kernel3_row_calc::<C, _>(
-            src_data,
-            src.cols(),
-            &sobel_x,
-            &sobel_y,
-            &mut dx_data[row_offset..row_offset + row_len],
-            &mut dy_data[row_offset..row_offset + row_len],
-            r,
-            &|r, dy| r + dy - 1,
-        );
-    }
-    {
-        let r = src.rows() - 1;
-        filter_kernel3_row_calc::<C, _>(
-            src_data,
-            src.cols(),
-            &sobel_x,
-            &sobel_y,
-            &mut dx_data[full_len - row_len..full_len],
-            &mut dy_data[full_len - row_len..full_len],
-            r,
-            &|r, dy| (r + dy).min(src.rows()) - 1,
-        );
-    }
-
-    Ok(())
-}
-
-/// Compute the first order image derivative in both x and y using a Sobel operator.
-/// Implement within [separable_filter]
-///
-/// # NOTICE
-///
-/// This only used for benchmark beacuse
-/// `spatial_gradient` require replicate padding, but `separable_filter` use zero padding.
-///
-/// # Arguments
-///
-/// * `src` - The source image with shape (H, W).
-/// * `dst` - The destination image with shape (H, W, 2).
-pub fn spatial_gradient_float_by_separable_filter<const C: usize>(
-    src: &Image<f32, C>,
-    dx: &mut Image<f32, C>,
-    dy: &mut Image<f32, C>,
-) -> Result<(), ImageError> {
-    if src.size() != dx.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dx.cols(),
-            dx.rows(),
-        ));
-    }
-
-    if src.size() != dy.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dy.cols(),
-            dy.rows(),
-        ));
-    }
-
-    let dx_kernel_y = [0.35355339059, 0.70710678118, 0.35355339059]; // 1/sqrt(8), 2/sqrt(8), 1/sqrt(8)
-    let dx_kernel_x = [-0.35355339059, 0.0, 0.35355339059]; // -1/sqrt(8), 0, 1/sqrt(8)
-
-    let dy_kernel_y = [-0.35355339059, 0.0, 0.35355339059]; // -1/sqrt(8), 0, 1/sqrt(8)
-    let dy_kernel_x = [0.35355339059, 0.70710678118, 0.35355339059]; // 1/sqrt(8), 2/sqrt(8), 1/sqrt(8)
-
-    separable_filter(src, dx, &dx_kernel_x, &dx_kernel_y)?;
-    separable_filter(src, dy, &dy_kernel_x, &dy_kernel_y)?;
-
-    Ok(())
-}
-
-/// Compute the first order image derivative in both x and y using a Sobel operator.
-///
-/// # Arguments
-///
-/// * `src` - The source image with shape (H, W).
-/// * `dst` - The destination image with shape (H, W, 2).
-pub fn spatial_gradient_float_parallel<const C: usize>(
     src: &Image<f32, C>,
     dx: &mut Image<f32, C>,
     dy: &mut Image<f32, C>,
@@ -433,12 +190,80 @@ pub fn spatial_gradient_float_parallel<const C: usize>(
 }
 
 /// Compute the first order image derivative in both x and y using a Sobel operator.
+/// Parallel by row.
 ///
 /// # Arguments
 ///
 /// * `src` - The source image with shape (H, W).
 /// * `dst` - The destination image with shape (H, W, 2).
-pub fn spatial_gradient_float_rayon_parallel<const C: usize>(
+pub fn spatial_gradient_float_parallel_row<const C: usize>(
+    src: &Image<f32, C>,
+    dx: &mut Image<f32, C>,
+    dy: &mut Image<f32, C>,
+) -> Result<(), ImageError> {
+    if src.size() != dx.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dx.cols(),
+            dx.rows(),
+        ));
+    }
+
+    if src.size() != dy.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dy.cols(),
+            dy.rows(),
+        ));
+    }
+
+    let (sobel_x, sobel_y) = kernels::normalized_sobel_kernel3();
+    let cols = src.cols();
+
+    let src_data = src.as_slice();
+
+    dx.as_slice_mut()
+        .par_chunks_mut(cols * C)
+        .zip(dy.as_slice_mut().par_chunks_mut(cols * C))
+        .enumerate()
+        .for_each(|(r, (dx_row, dy_row))| {
+            dx_row
+                .chunks_mut(C)
+                .zip(dy_row.chunks_mut(C))
+                .enumerate()
+                .for_each(|(c, (dx_c, dy_c))| {
+                    let mut sum_x = [0.0; C];
+                    let mut sum_y = [0.0; C];
+                    for dy in 0..3 {
+                        for dx in 0..3 {
+                            let row = (r + dy).min(src.rows()).max(1) - 1;
+                            let col = (c + dx).min(src.cols()).max(1) - 1;
+                            for ch in 0..C {
+                                let src_pix_offset = (row * src.cols() + col) * C + ch;
+                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
+                                sum_x[ch] += val * sobel_x[dy][dx];
+                                sum_y[ch] += val * sobel_y[dy][dx];
+                            }
+                        }
+                    }
+                    dx_c.copy_from_slice(&sum_x);
+                    dy_c.copy_from_slice(&sum_y);
+                });
+        });
+
+    Ok(())
+}
+
+/// Compute the first order image derivative in both x and y using a Sobel operator.
+/// Parallel both by row and col.
+///
+/// # Arguments
+///
+/// * `src` - The source image with shape (H, W).
+/// * `dst` - The destination image with shape (H, W, 2).
+pub fn spatial_gradient_float_parallel<const C: usize>(
     src: &Image<f32, C>,
     dx: &mut Image<f32, C>,
     dy: &mut Image<f32, C>,
@@ -476,179 +301,25 @@ pub fn spatial_gradient_float_rayon_parallel<const C: usize>(
                 .zip(dy_row.par_chunks_mut(C))
                 .enumerate()
                 .for_each(|(c, (dx_c, dy_c))| {
-                    for ch in 0..C {
-                        let mut sum_x = 0.0;
-                        let mut sum_y = 0.0;
-                        for dy in 0..3 {
-                            for dx in 0..3 {
-                                let row = (r + dy).min(src.rows()).max(1) - 1;
-                                let col = (c + dx).min(src.cols()).max(1) - 1;
+                    let mut sum_x = [0.0; C];
+                    let mut sum_y = [0.0; C];
+                    for dy in 0..3 {
+                        for dx in 0..3 {
+                            let row = (r + dy).min(src.rows()).max(1) - 1;
+                            let col = (c + dx).min(src.cols()).max(1) - 1;
+                            for ch in 0..C {
                                 let src_pix_offset = (row * src.cols() + col) * C + ch;
                                 let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x += val * sobel_x[dy][dx];
-                                sum_y += val * sobel_y[dy][dx];
+                                sum_x[ch] += val * sobel_x[dy][dx];
+                                sum_y[ch] += val * sobel_y[dy][dx];
                             }
                         }
-                        dx_c[ch] = sum_x;
-                        dy_c[ch] = sum_y;
                     }
+                    dx_c.copy_from_slice(&sum_x);
+                    dy_c.copy_from_slice(&sum_y);
                 });
         });
 
-    Ok(())
-}
-
-/// Compute the first order image derivative in both x and y using a Sobel operator.
-///
-/// # Arguments
-///
-/// * `src` - The source image with shape (H, W).
-/// * `dst` - The destination image with shape (H, W, 2).
-pub fn spatial_gradient_float_rayon_row_parallel<const C: usize>(
-    src: &Image<f32, C>,
-    dx: &mut Image<f32, C>,
-    dy: &mut Image<f32, C>,
-) -> Result<(), ImageError> {
-    if src.size() != dx.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dx.cols(),
-            dx.rows(),
-        ));
-    }
-
-    if src.size() != dy.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dy.cols(),
-            dy.rows(),
-        ));
-    }
-
-    let (sobel_x, sobel_y) = kernels::normalized_sobel_kernel3();
-    let cols = src.cols();
-
-    let src_data = src.as_slice();
-
-    dx.as_slice_mut()
-        .par_chunks_mut(cols * C)
-        .zip(dy.as_slice_mut().par_chunks_mut(cols * C))
-        .enumerate()
-        .for_each(|(r, (dx_row, dy_row))| {
-            if r == 0 {
-                filter_kernel3_row_calc::<C, _>(
-                    src_data,
-                    src.cols(),
-                    &sobel_x,
-                    &sobel_y,
-                    dx_row,
-                    dy_row,
-                    0,
-                    &|_, dy| dy.max(1) - 1,
-                );
-            } else if r == src.rows() - 1 {
-                filter_kernel3_row_calc::<C, _>(
-                    src_data,
-                    src.cols(),
-                    &sobel_x,
-                    &sobel_y,
-                    dx_row,
-                    dy_row,
-                    r,
-                    &|r, dy| (r + dy).min(src.rows()) - 1,
-                );
-            } else {
-                filter_kernel3_row_calc::<C, _>(
-                    src_data,
-                    src.cols(),
-                    &sobel_x,
-                    &sobel_y,
-                    dx_row,
-                    dy_row,
-                    r,
-                    &|r, dy| r + dy - 1,
-                );
-            }
-        });
-    Ok(())
-}
-
-/// Compute the first order image derivative in both x and y using a Sobel operator.
-///
-/// # Arguments
-///
-/// * `src` - The source image with shape (H, W).
-/// * `dst` - The destination image with shape (H, W, 2).
-pub fn spatial_gradient_float_row_parallel<const C: usize>(
-    src: &Image<f32, C>,
-    dx: &mut Image<f32, C>,
-    dy: &mut Image<f32, C>,
-) -> Result<(), ImageError> {
-    if src.size() != dx.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dx.cols(),
-            dx.rows(),
-        ));
-    }
-
-    if src.size() != dy.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            dy.cols(),
-            dy.rows(),
-        ));
-    }
-
-    let (sobel_x, sobel_y) = kernels::normalized_sobel_kernel3();
-    let cols = src.cols();
-
-    let src_data = src.as_slice();
-
-    dx.as_slice_mut()
-        .chunks_mut(cols * C)
-        .zip(dy.as_slice_mut().chunks_mut(cols * C))
-        .enumerate()
-        .for_each(|(r, (dx_row, dy_row))| {
-            if r == 0 {
-                filter_kernel3_row_calc::<C, _>(
-                    src_data,
-                    src.cols(),
-                    &sobel_x,
-                    &sobel_y,
-                    dx_row,
-                    dy_row,
-                    0,
-                    &|_, dy| dy.max(1) - 1,
-                );
-            } else if r == src.rows() - 1 {
-                filter_kernel3_row_calc::<C, _>(
-                    src_data,
-                    src.cols(),
-                    &sobel_x,
-                    &sobel_y,
-                    dx_row,
-                    dy_row,
-                    r,
-                    &|r, dy| (r + dy).min(src.rows()) - 1,
-                );
-            } else {
-                filter_kernel3_row_calc::<C, _>(
-                    src_data,
-                    src.cols(),
-                    &sobel_x,
-                    &sobel_y,
-                    dx_row,
-                    dy_row,
-                    r,
-                    &|r, dy| r + dy - 1,
-                );
-            }
-        });
     Ok(())
 }
 
@@ -736,20 +407,12 @@ mod tests {
         )] = &[
             (spatial_gradient_float, "spatial_gradient_float"),
             (
-                spatial_gradient_float_row_parallel,
-                "spatial_gradient_float_row_parallel",
+                spatial_gradient_float_parallel_row,
+                "spatial_gradient_float_parallel_row",
             ),
             (
                 spatial_gradient_float_parallel,
                 "spatial_gradient_float_parallel",
-            ),
-            (
-                spatial_gradient_float_rayon_parallel,
-                "spatial_gradient_float_rayon_parallel",
-            ),
-            (
-                spatial_gradient_float_rayon_row_parallel,
-                "spatial_gradient_float_rayon_row_parallel",
             ),
         ];
         for (test_fn, fn_name) in TEST_FUNCTIONS {
