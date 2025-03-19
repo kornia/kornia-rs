@@ -116,7 +116,7 @@ impl JpegTurboEncoder {
             width: image.width(),
             pitch: image.width(), // 1 byte per pixel for grayscale
             height: image.height(),
-            format: turbojpeg::PixelFormat::Gray,
+            format: turbojpeg::PixelFormat::GRAY,
         };
 
         // encode the image
@@ -238,7 +238,7 @@ impl JpegTurboDecoder {
             width: image_size.width,
             pitch: image_size.width, // 1 byte per pixel, no padding
             height: image_size.height,
-            format: turbojpeg::PixelFormat::Gray,
+            format: turbojpeg::PixelFormat::GRAY,
         };
 
         // decompress the JPEG data
