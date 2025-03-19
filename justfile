@@ -5,6 +5,10 @@
 # Recipes for the kornia rust project
 # ------------------------------------------------------------------------------
 
+# Check if the code is linting and formatted
+check:
+  @cargo check --workspace --all-targets --all-features --locked
+
 # Check if the required binaries for the project are installed
 check-environment:
   @echo "Rust version." && cargo --version
@@ -20,7 +24,7 @@ clippy-default:
   cargo clippy --all-targets --locked -- -D warnings
 
 # Run autoformatting and linting
-fmt:
+format:
   cargo fmt --all
 
 # Clean up caches and build artifacts

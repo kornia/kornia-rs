@@ -1,14 +1,12 @@
 [package]
 name = "kornia-linalg"
+description = "Linear algebra operations for kornia"
+
 authors.workspace = true
-categories.workspace = true
-description.workspace = true
 edition.workspace = true
 homepage.workspace = true
-include.workspace = true
 license.workspace = true
-license-file.workspace = true
-readme.workspace = true
+publish = true
 repository.workspace = true
 rust-version.workspace = true
 version.workspace = true

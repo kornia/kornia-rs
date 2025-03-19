@@ -1,16 +1,16 @@
 // Reference: https://github.com/wi-re/tbtSVD/blob/master/source/SVD.h
 use glam::{Mat3, Quat};
 use std::ops::{Index, IndexMut};
-const GAMMA: f32 = 5.828427124;
-const CSTAR: f32 = 0.923879532;
-const SSTAR: f32 = 0.3826834323;
+const GAMMA: f32 = 5.828_427_3;
+const CSTAR: f32 = 0.923_879_5;
+const SSTAR: f32 = 0.382_683_43;
 const SVD3_EPSILON: f32 = 1e-6;
 const JACOBI_STEPS: u8 = 6;
 const RSQRT1_STEPS: u8 = 6;
 
 /// Standard CPU division.
 fn fdiv(x: f32, y: f32) -> f32 {
-    return x / y;
+    x / y
 }
 
 /// Calculates the reciprocal square root of x using a fast approximation.
@@ -37,7 +37,7 @@ fn rsqrt1(x: f32) -> f32 {
 
 /// Calculates the square root of x using 1.f/rsqrt1(x)to give a square root with controllable and consistent precision.
 fn accurate_sqrt(x: f32) -> f32 {
-    return fdiv(1.0, rsqrt1(x));
+    fdiv(1.0, rsqrt1(x))
 }
 
 /// Helper function used to swap X with Y and Y with  X if c == true
@@ -127,6 +127,26 @@ pub struct SVD3Set {
     v: Mat3,
 }
 
+impl SVD3Set {
+    /// Get the left singular vectors matrix.
+    #[inline]
+    pub fn u(&self) -> &Mat3 {
+        &self.u
+    }
+
+    /// Get the diagonal matrix of singular values.
+    #[inline]
+    pub fn s(&self) -> &Mat3 {
+        &self.s
+    }
+
+    /// Get the right singular vectors matrix.
+    #[inline]
+    pub fn v(&self) -> &Mat3 {
+        &self.v
+    }
+}
+
 /// Calculates the squared norm of the vector [x y z] using a standard scalar product d = x * x + y * y + z * z
 fn dist2(x: f32, y: f32, z: f32) -> f32 {
     x * x + y * y + z * z
@@ -145,7 +165,7 @@ fn approximate_givens_quaternion(a: &Symmetric3x3) -> Givens {
     let mut b = GAMMA * sh2 < ch2;
     let w = rsqrt(ch2 + sh2);
 
-    if w != w {
+    if w.is_nan() {
         // Checking for NaN
         b = false;
     }
@@ -261,7 +281,7 @@ fn jacobi_eigenanalysis(mut s: Symmetric3x3) -> Mat3 {
         jacobi_conjugation(2, 0, 1, &mut s, &mut q);
     }
 
-    return Mat3::from_quat(q.to_quat());
+    Mat3::from_quat(q.to_quat())
 }
 
 /// Implementation of Algorithm 3
@@ -313,8 +333,7 @@ fn qr_givens_quaternion(a1: f32, a2: f32) -> Givens {
     let w = rsqrt(g.ch * g.ch + g.sh * g.sh);
     g.ch *= w;
     g.sh *= w;
-
-    return g;
+    g
 }
 
 /// Implements a QR decomposition of a Matrix
@@ -394,7 +413,7 @@ fn qr_decomposition(b_mat: &mut Mat3) -> QR3 {
 /// Wrapping function used to contain all of the required sub calls
 pub fn svd3(a: &Mat3) -> SVD3Set {
     // Compute the eigenvectors of A^T * A, which is V in SVD (Singular Vectors)
-    let v = jacobi_eigenanalysis(Symmetric3x3::from_mat3x3(&(a.transpose().mul_mat3(&a))));
+    let v = jacobi_eigenanalysis(Symmetric3x3::from_mat3x3(&(a.transpose().mul_mat3(a))));
     // Compute B = A * V
     let mut b = a.mul_mat3(&v);
 
@@ -428,8 +447,7 @@ mod tests {
         };
 
         // Perform SVD on matrix A
-        let a_clone = a.clone();
-        let svd_result = svd3(&a_clone);
+        let svd_result = svd3(&a);
         let _ = a.abs_diff_eq(
             svd_result
                 .u
@@ -448,8 +466,7 @@ mod tests {
         };
 
         // Perform SVD on matrix A
-        let a_clone = a.clone();
-        let svd_result = svd3(&a_clone);
+        let svd_result = svd3(&a);
         let _ = a.abs_diff_eq(
             svd_result
                 .u
@@ -468,8 +485,7 @@ mod tests {
         };
 
         // Perform SVD on matrix A
-        let a_clone = a.clone();
-        let svd_result = svd3(&a_clone);
+        let svd_result = svd3(&a);
         let _ = a.abs_diff_eq(
             svd_result
                 .u
@@ -488,8 +504,7 @@ mod tests {
         };
 
         // Perform SVD on matrix A
-        let a_clone = a.clone();
-        let svd_result = svd3(&a_clone);
+        let svd_result = svd3(&a);
         let _ = a.abs_diff_eq(
             svd_result
                 .u

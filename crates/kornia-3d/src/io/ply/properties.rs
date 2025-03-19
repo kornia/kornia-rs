@@ -26,7 +26,7 @@ pub trait PlyPropertyTrait {
 /// Header of the XYZRgbNormals PLY file format.
 ///
 /// Contains points, colors, and normals.
-#[repr(packed)]
+#[repr(C, packed)]
 #[derive(Debug, Deserialize)]
 pub struct XYZRgbNormalsProperty {
     /// x coordinate
@@ -65,7 +65,7 @@ impl PlyPropertyTrait for XYZRgbNormalsProperty {
 
 /// Header of the OpenSplat PLY file format.
 /// REF: <https://github.com/pierotofy/OpenSplat>
-#[repr(packed)]
+#[repr(C, packed)]
 #[derive(Debug, Deserialize)]
 pub struct OpenSplatProperty {
     /// x coordinate
