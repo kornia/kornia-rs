@@ -23,7 +23,7 @@ fn bench_harris_response(c: &mut Criterion) {
 
         // output image
         let response_f32: Image<f32, 1> = Image::from_size_val(image_size, 0.0).unwrap();
-        let harris_response = HarrisResponse::new();
+        let mut harris_response = HarrisResponse::new();
 
         group.bench_with_input(
             BenchmarkId::new("harris", &parameter_string),
