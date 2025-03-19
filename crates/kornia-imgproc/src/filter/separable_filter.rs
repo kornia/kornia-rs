@@ -242,6 +242,29 @@ mod tests {
     }
 
     #[test]
+    fn test_separable_filter_u8_overflow() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 5,
+            height: 5,
+        };
+
+        let kernel_x = vec![1, 1, 1];
+        let kernel_y = vec![1, 1, 1];
+
+        let mut img = Image::<u8, 1>::from_size_val(size, 0)?;
+        img.as_slice_mut()[0] = 255;
+        img.as_slice_mut()[1] = 255;
+        img.as_slice_mut()[2] = 255;
+        img.as_slice_mut()[3] = 255;
+        img.as_slice_mut()[4] = 255;
+
+        let mut dst = Image::<u8, 1>::from_size_val(size, 0)?;
+        separable_filter(&img, &mut dst, &kernel_x, &kernel_y)?;
+
+        Ok(())
+    }
+
+    #[test]
     fn test_fast_horizontal_filter() -> Result<(), ImageError> {
         let size = ImageSize {
             width: 5,
