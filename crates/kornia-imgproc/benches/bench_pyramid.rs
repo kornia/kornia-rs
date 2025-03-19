@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_image::Image;
-use kornia_imgproc::pyramid::{pyrup, pyrup_fast};
+use kornia_imgproc::pyramid::pyrup;
 
 fn bench_pyramid(c: &mut Criterion) {
     let mut group = c.benchmark_group("Pyramid Operations");
@@ -12,9 +12,7 @@ fn bench_pyramid(c: &mut Criterion) {
         let parameter_string = format!("{}x{}", width, height);
 
         let small_image_size = [*width / 2, *height / 2].into();
-        let small_image_data = (0..((*width / 2) * (*height / 2)))
-            .map(|x| x as f32)
-            .collect();
+        let small_image_data = (0..((*width / 2) * (*height / 2))).map(|x| x as f32).collect();
         let small_image = Image::<f32, 1>::new(small_image_size, small_image_data).unwrap();
 
         let image_size = [*width, *height].into();
@@ -33,9 +31,7 @@ fn bench_pyramid(c: &mut Criterion) {
         );
 
         // For multi-channel images
-        let small_image_data_3c = (0..((*width / 2) * (*height / 2) * 3))
-            .map(|x| x as f32)
-            .collect();
+        let small_image_data_3c = (0..((*width / 2) * (*height / 2) * 3)).map(|x| x as f32).collect();
         let small_image_3c = Image::<f32, 3>::new(small_image_size, small_image_data_3c).unwrap();
         let up_image_3c = Image::<f32, 3>::from_size_val(image_size, 0.0).unwrap();
 
@@ -49,27 +45,9 @@ fn bench_pyramid(c: &mut Criterion) {
                 })
             },
         );
-
-        // For fast variant (u8, 3 channels)
-        let small_image_data_u8 = (0..((*width / 2) * (*height / 2) * 3))
-            .map(|x| (x % 256) as u8)
-            .collect();
-        let small_image_u8 = Image::<u8, 3>::new(small_image_size, small_image_data_u8).unwrap();
-        let up_image_u8 = Image::<u8, 3>::from_size_val(image_size, 0).unwrap();
-
-        group.bench_with_input(
-            BenchmarkId::new("pyrup_fast", &parameter_string),
-            &(&small_image_u8, &up_image_u8),
-            |b, i| {
-                let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| {
-                    black_box(pyrup_fast(src, &mut dst)).unwrap();
-                })
-            },
-        );
     }
     group.finish();
 }
 
 criterion_group!(benches, bench_pyramid);
-criterion_main!(benches);
+criterion_main!(benches); 
