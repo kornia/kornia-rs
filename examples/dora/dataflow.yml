@@ -1,0 +1,41 @@
+nodes:
+  - id: web-camera
+    build: cargo build -p dora-video-capture
+    path: ./target/debug/dora-video-capture
+    inputs:
+      tick: dora/timer/millis/10
+    outputs:
+      - frame
+    env:
+      SOURCE_TYPE: "webcam"
+      SOURCE_URI: "/dev/video0"
+      SOURCE_FPS: 30
+      IMAGE_COLS: 640
+      IMAGE_ROWS: 480
+  - id: rtsp-camera
+    build: cargo build -p dora-video-capture
+    path: ./target/debug/dora-video-capture
+    inputs:
+      tick: dora/timer/millis/10
+    outputs:
+      - frame
+    env:
+      SOURCE_TYPE: "rtsp"
+      SOURCE_URI: "rtsp://tapo_entrance:123456789@192.168.1.141:554/stream2"
+  - id: imgproc
+    build: cargo build -p dora-imgproc
+    path: ./target/debug/dora-imgproc
+    inputs:
+      frame: web-camera/frame
+    outputs:
+      - output
+  - id: video-sink
+    build: cargo build -p dora-video-sink
+    path: ./target/debug/dora-video-sink
+    inputs:
+      web-camera/frame: web-camera/frame
+      rtsp-camera/frame: rtsp-camera/frame
+      imgproc/output: imgproc/output
+    env:
+      RERUN_HOST: 127.0.0.1
+      RERUN_PORT: 9876

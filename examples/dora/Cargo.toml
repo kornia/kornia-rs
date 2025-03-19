@@ -1,0 +1,3 @@
+[workspace]
+members = ["video-capture", "video-sink", "imgproc", "image-utils"]
+resolver = "2"

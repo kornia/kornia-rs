@@ -1,6 +1,5 @@
 use num_traits::{AsPrimitive, NumCast};
 use kornia_image::{Image, ImageError};
-
 use rayon::prelude::*;
 use crate::filter::{gaussian_blur, kernels, separable_filter};
 
@@ -15,6 +14,19 @@ pub enum GradsMode {
     Diff,
 }
 
+
+fn _get_kernel_size(sigma: f32) -> usize {
+    let mut ksize = (2.0 * 4.0 * sigma + 1.0) as usize;
+
+    // matches OpenCV, but may cause padding problem for small images
+    // PyTorch does not allow to pad more than original size.
+    // Therefore there is a hack in forward function
+    if ksize % 2 == 0 {
+        ksize += 1;
+    }
+
+    ksize
+}
 
 /// Compute the Hessian response of an image.
 ///
@@ -82,7 +94,6 @@ pub fn hessian_response(src: &Image<f32, 1>, dst: &mut Image<f32, 1>) -> Result<
     Ok(())
 }
 
-
 /// A builder object to initialize Harris response
 pub struct HarrisResponse {
     k: f32,
@@ -101,7 +112,7 @@ impl HarrisResponse {
     }
 
     /// Sets the `k` value (usually between 0.04 to 0.06)
-    pub fn with_k(self, k: f32 ) -> Self {
+    pub fn with_k(self, k: f32) -> Self {
         Self { k, ..self }
     }
 
@@ -133,8 +144,8 @@ impl HarrisResponse {
         }
 
         let src_data = src.as_slice();
-        let col_slice = src.cols()..src_data.len()-src.cols();
-        let row_slice = 1..src.rows()-1;
+        let col_slice = src.cols()..src_data.len() - src.cols();
+        let row_slice = 1..src.rows() - 1;
         let mut dx2_data = vec![0.0; src_data.len()];
         let mut dy2_data = vec![0.0; src_data.len()];
         let mut dxy_data = vec![0.0; src_data.len()];
@@ -152,19 +163,19 @@ impl HarrisResponse {
         // separable_filter(src, &mut gy, &kernel_y, &kernel_x)?;
         // let gy_data = gy.as_slice();
 
-        dx2_data.as_mut_slice()[col_slice.clone()].par_chunks_exact_mut(src.cols())//.skip(1).take(src.rows()-2)
-            .zip(dy2_data.as_mut_slice()[col_slice.clone()].par_chunks_exact_mut(src.cols()))//.skip(1).take(src.rows()-2))
-            .zip(dxy_data.as_mut_slice()[col_slice.clone()].par_chunks_exact_mut(src.cols()))//.skip(1).take(src.rows()-2))
+        dx2_data.as_mut_slice()[col_slice.clone()].par_chunks_exact_mut(src.cols()) //.skip(1).take(src.rows()-2)
+            .zip(dy2_data.as_mut_slice()[col_slice.clone()].par_chunks_exact_mut(src.cols())) //.skip(1).take(src.rows()-2))
+            .zip(dxy_data.as_mut_slice()[col_slice.clone()].par_chunks_exact_mut(src.cols())) //.skip(1).take(src.rows()-2))
             .enumerate()
             .for_each(|(row_idx, ((dx2_chunk, dy2_chunk), dxy_chunk))| {
-                let row_offset = (row_idx+1) * src.cols();
+                let row_offset = (row_idx + 1) * src.cols();
 
                 dx2_chunk[row_slice.clone()].iter_mut()
                     .zip(dy2_chunk[row_slice.clone()].iter_mut())
                     .zip(dxy_chunk[row_slice.clone()].iter_mut())
                     .enumerate()
                     .for_each(|(col_idx, ((dx2_pixel, dy2_pixel), dxy_pixel))| {
-                        let current_idx = row_offset + col_idx+1;
+                        let current_idx = row_offset + col_idx + 1;
                         let prev_row_idx = current_idx - src.cols();
                         let next_row_idx = current_idx + src.cols();
 
@@ -178,13 +189,13 @@ impl HarrisResponse {
                         let v33 = unsafe { src_data.get_unchecked(next_row_idx + 1) };
 
                         // I_x,I_y via 3x3 sobel operator and convolved
-                        let dx = (-v33+v31 -2.0*v23+2.0*v21 - v13+v11)*0.125;
-                        let dy = (-v33-2.0*v32-v31 + v13+2.0*v12+v11)*0.125;
+                        let dx = (-v33 + v31 - 2.0 * v23 + 2.0 * v21 - v13 + v11) * 0.125;
+                        let dy = (-v33 - 2.0 * v32 - v31 + v13 + 2.0 * v12 + v11) * 0.125;
 
                         // filter normalization
-                        *dx2_pixel = dx*dx;
-                        *dy2_pixel = dy*dy;
-                        *dxy_pixel = dx*dy;
+                        *dx2_pixel = dx * dx;
+                        *dy2_pixel = dy * dy;
+                        *dxy_pixel = dx * dy;
                     });
             });
 
@@ -198,12 +209,12 @@ impl HarrisResponse {
         dst.as_slice_mut()[col_slice.clone()].par_chunks_exact_mut(src.cols())
             .enumerate()
             .for_each(|(row_idx, dst_chunk)| {
-                let row_offset = (row_idx+1) * src.cols();
+                let row_offset = (row_idx + 1) * src.cols();
 
                 dst_chunk[row_slice.clone()].iter_mut()
                     .enumerate()
                     .for_each(|(col_idx, dst_pixel)| {
-                        let current_idx = row_offset + col_idx+1;
+                        let current_idx = row_offset + col_idx + 1;
                         let prev_row_idx = current_idx - src.cols();
                         let next_row_idx = current_idx + src.cols();
 
@@ -232,6 +243,53 @@ impl HarrisResponse {
 
         Ok(())
     }
+}
+
+
+/// Compute the DoG response of an image.
+///
+/// The DoG response is computed as the difference of the Gaussian responses of two images.
+///
+/// Args:
+///     src: The source image with shape (H, W).
+///     dst: The destination image with shape (H, W).
+///     sigma1: The sigma of the first Gaussian kernel.
+///     sigma2: The sigma of the second Gaussian kernel.
+pub fn dog_response(
+    src: &Image<f32, 1>,
+    dst: &mut Image<f32, 1>,
+    sigma1: f32,
+    sigma2: f32,
+) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    let mut gauss1 = Image::from_size_val(src.size(), 0.0)?;
+    let mut gauss2 = Image::from_size_val(src.size(), 0.0)?;
+    let ks1 = _get_kernel_size(sigma1);
+    let ks2 = _get_kernel_size(sigma2);
+
+    gaussian_blur(src, &mut gauss1, (ks1, ks1), (sigma1, sigma1))?;
+    gaussian_blur(src, &mut gauss2, (ks2, ks2), (sigma2, sigma2))?;
+
+    let gauss1_data = gauss1.as_slice();
+    let gauss2_data = gauss2.as_slice();
+    let dst_data = dst.as_slice_mut();
+
+    dst_data
+        .iter_mut()
+        .zip(gauss2_data.iter().zip(gauss1_data.iter()))
+        .for_each(|(dst_pixel, (gauss2_pixel, gauss1_pixel))| {
+            *dst_pixel = gauss2_pixel - gauss1_pixel;
+        });
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -303,6 +361,43 @@ mod tests {
             0.0, 0.01953125, 0.14078125, 0.08238281, 0.0, 0.08238281, 0.14078125, 0.01953125, 0.0,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         ]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_dog_response() -> Result<(), ImageError> {
+        #[rustfmt::skip]
+        let src = Image::from_size_slice(
+            [5, 5].into(),
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 1.0, 1.0, 0.0,
+                0.0, 1.0, 1.0, 1.0, 0.0,
+                0.0, 1.0, 1.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+        )?;
+
+        let mut dst = Image::from_size_val([5, 5].into(), 0.0)?;
+
+        let sigma1 = 0.5;
+        let sigma2 = 1.0;
+
+        dog_response(&src, &mut dst, sigma1, sigma2)?;
+
+        let center_value = dst.as_slice()[2 * 5 + 2];
+        let expected_center_value = -0.2195;
+        assert!(
+            (center_value - expected_center_value).abs() < 1e-4,
+            "Center value should be close to expected value"
+        );
+
+        let sum: f32 = dst.as_slice().iter().sum();
+        let expected_sum = -0.7399;
+        assert!(
+            (sum - expected_sum).abs() < 1e-4,
+            "Sum of DoG response should be close to expected value"
+        );
 
         Ok(())
     }

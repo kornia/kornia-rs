@@ -58,3 +58,15 @@ harness = false
 [[bench]]
 name = "bench_features"
 harness = false
+
+[[bench]]
+name = "bench_pyramid"
+harness = false
+
+[[bench]]
+name = "bench_feature"
+harness = false
+
+[[bench]]
+name = "bench_gradient"
+harness = false
