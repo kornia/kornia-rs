@@ -230,11 +230,9 @@ impl<T, const C: usize> Image<T, C> {
     /// A new image with the pixel data mapped to the new type.
     pub fn map<U>(&self, f: impl Fn(&T) -> U) -> Result<Image<U, C>, ImageError>
     where
-        T: Clone + Copy,
-        U: Clone + Copy,
+        U: Clone,
     {
         let data = self.as_slice().iter().map(|x| f(x)).collect::<Vec<U>>();
-
         Ok(Image::<U, C>::new(self.size(), data)?)
     }
 
