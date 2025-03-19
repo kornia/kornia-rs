@@ -1,4 +1,4 @@
-use clap::Parser;
+use argh::FromArgs;
 use std::{
     path::PathBuf,
     sync::{
@@ -17,21 +17,25 @@ use kornia::{
     },
 };
 
-#[derive(Parser)]
+#[derive(FromArgs)]
+/// video write tasks example.
 struct Args {
-    #[arg(short, long)]
+    #[argh(option, short = 'o')]
+    /// output video path
     output: PathBuf,
 
-    #[arg(short, long, default_value = "0")]
+    #[argh(option, short = 'c', default = "0")]
+    /// camera id
     camera_id: u32,
 
-    #[arg(short, long, default_value = "30")]
+    #[argh(option, short = 'f', default = "30")]
+    /// frames per second
     fps: i32,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args:Args = argh::from_env();
 
     // Ensure the output path ends with .mp4
     if args.output.extension().and_then(|ext| ext.to_str()) != Some("mp4") {

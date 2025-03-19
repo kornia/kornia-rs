@@ -7,7 +7,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-clap = { version = "4.5.4", features = ["derive"] }
+argh = { workspace = true }
 ctrlc = "3.4.4"
 kornia = { workspace = true, features = ["gstreamer"] }
 rerun = { workspace = true }

@@ -1,4 +1,4 @@
-use clap::Parser;
+use argh::FromArgs;
 use kornia::{
     image::{ops, Image},
     imgproc,
@@ -9,26 +9,32 @@ use std::sync::{
     Arc,
 };
 
-#[derive(Parser)]
+#[derive(FromArgs)]
+/// RTSP camera stream capture example.
 struct Args {
-    #[arg(short, long)]
+    #[argh(option, short = 'u')]
+    /// username
     username: String,
 
-    #[arg(short, long)]
+    #[argh(option, short = 'p')]
+    /// password
     password: String,
 
-    #[arg(long)]
+    #[argh(option)]
+    /// camera ip
     camera_ip: String,
 
-    #[arg(long)]
+    #[argh(option)]
+    /// camera port
     camera_port: u16,
 
-    #[arg(short, long)]
+    #[argh(option, short = 's')]
+    /// stream
     stream: String,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args:Args = argh::from_env();
 
     // start the recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia Rtsp Stream Capture App").spawn()?;

@@ -1,4 +1,4 @@
-use clap::Parser;
+use argh::FromArgs;
 use kornia_tensor::{CpuAllocator, Tensor};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -26,20 +26,24 @@ pub struct Detection {
     pub h: f32,
 }
 
-#[derive(Parser)]
+#[derive(FromArgs)]
+/// object detection example.
 struct Args {
-    #[arg(short, long)]
+    #[argh(option, short = 'i')]
+    /// input image path
     image_path: PathBuf,
 
-    #[arg(short, long)]
+    #[argh(option, short = 'o')]
+    /// onnx model path
     onnx_model_path: PathBuf,
 
-    #[arg(long)]
+    #[argh(option)]
+    /// onnx runtime dylib path
     ort_dylib_path: PathBuf,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args:Args = argh::from_env();
 
     // set the ort dylib path
     std::env::set_var("ORT_DYLIB_PATH", &args.ort_dylib_path);

@@ -1,4 +1,4 @@
-use clap::Parser;
+use argh::FromArgs;
 use std::path::PathBuf;
 
 use kornia::{
@@ -11,14 +11,16 @@ use kornia::{
     io::functional as F,
 };
 
-#[derive(Parser)]
+#[derive(FromArgs)]
+/// undistort an image.
 struct Args {
-    #[arg(short, long)]
+    #[argh(option, short = 'i')]
+    /// input image path
     image_path: PathBuf,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args:Args = argh::from_env();
 
     // read the image
     let img = F::read_image_any_rgb8(args.image_path)?;
