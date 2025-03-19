@@ -163,9 +163,9 @@ impl HarrisResponse {
         // separable_filter(src, &mut gy, &kernel_y, &kernel_x)?;
         // let gy_data = gy.as_slice();
 
-        dx2_data.as_mut_slice()[col_slice.clone()].par_chunks_exact_mut(src.cols()) //.skip(1).take(src.rows()-2)
-            .zip(dy2_data.as_mut_slice()[col_slice.clone()].par_chunks_exact_mut(src.cols())) //.skip(1).take(src.rows()-2))
-            .zip(dxy_data.as_mut_slice()[col_slice.clone()].par_chunks_exact_mut(src.cols())) //.skip(1).take(src.rows()-2))
+        dx2_data.as_mut_slice()[col_slice.clone()].par_chunks_exact_mut(src.cols())
+            .zip(dy2_data.as_mut_slice()[col_slice.clone()].par_chunks_exact_mut(src.cols()))
+            .zip(dxy_data.as_mut_slice()[col_slice.clone()].par_chunks_exact_mut(src.cols()))
             .enumerate()
             .for_each(|(row_idx, ((dx2_chunk, dy2_chunk), dxy_chunk))| {
                 let row_offset = (row_idx + 1) * src.cols();
