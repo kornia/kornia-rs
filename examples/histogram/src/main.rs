@@ -10,13 +10,13 @@ use kornia::{
 #[derive(FromArgs)]
 /// compute the histogram of an image.
 struct Args {
-    #[argh(option,short = 'i')]
+    #[argh(option, short = 'i')]
     /// input image path
     image_path: PathBuf,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args:Args = argh::from_env();
+    let args: Args = argh::from_env();
 
     // read the image
     let image: Image<u8, 3> = F::read_image_any_rgb8(args.image_path)?;

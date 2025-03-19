@@ -43,7 +43,7 @@ struct Args {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args:Args = argh::from_env();
+    let args: Args = argh::from_env();
 
     // set the ort dylib path
     std::env::set_var("ORT_DYLIB_PATH", &args.ort_dylib_path);

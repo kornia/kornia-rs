@@ -20,7 +20,7 @@ struct Args {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args:Args = argh::from_env();
+    let args: Args = argh::from_env();
 
     // read the image
     let img = F::read_image_any_rgb8(args.image_path)?;

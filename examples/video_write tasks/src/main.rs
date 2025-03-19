@@ -35,7 +35,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args:Args = argh::from_env();
+    let args: Args = argh::from_env();
 
     // Ensure the output path ends with .mp4
     if args.output.extension().and_then(|ext| ext.to_str()) != Some("mp4") {

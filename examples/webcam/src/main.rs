@@ -27,7 +27,7 @@ struct Args {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args:Args = argh::from_env();
+    let args: Args = argh::from_env();
 
     // start the recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia Webcapture App").spawn()?;

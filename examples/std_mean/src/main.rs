@@ -23,7 +23,7 @@ struct Args {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args:Args = argh::from_env();
+    let args: Args = argh::from_env();
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.num_threads)
