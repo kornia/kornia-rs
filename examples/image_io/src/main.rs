@@ -168,7 +168,7 @@ fn process_rgb_image(rgb_image: Image<u8, 3>, args: &Args) -> Result<()> {
         #[cfg(not(feature = "turbojpeg"))]
         ("jpeg", _) => {
             anyhow::bail!("JPEG writing is not supported because the 'turbojpeg' feature is not enabled.");
-        },
+
         _ => unreachable!(),
     }
     Ok(())
