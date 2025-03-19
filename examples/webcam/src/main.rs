@@ -1,4 +1,4 @@
-use clap::Parser;
+use argh::FromArgs;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -10,20 +10,24 @@ use kornia::{
     io::{fps_counter::FpsCounter, stream::V4L2CameraConfig},
 };
 
-#[derive(Parser)]
+#[derive(FromArgs)]
+/// Capture frames from a webcam and log to Rerun
 struct Args {
-    #[arg(short, long, default_value = "0")]
+    /// the camera id to use
+    #[argh(option, short = 'c', default = "0")]
     camera_id: u32,
 
-    #[arg(short, long, default_value = "30")]
+    /// the frames per second to record
+    #[argh(option, short = 'f', default = "30")]
     fps: u32,
 
-    #[arg(short, long)]
+    /// the duration in seconds to run the app
+    #[argh(option, short = 'd')]
     duration: Option<u64>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args: Args = argh::from_env();
 
     // start the recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia Webcapture App").spawn()?;

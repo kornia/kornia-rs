@@ -1,4 +1,4 @@
-use clap::Parser;
+use argh::FromArgs;
 use std::{
     path::PathBuf,
     sync::{
@@ -15,20 +15,24 @@ use kornia::{
     },
 };
 
-#[derive(Parser)]
+#[derive(FromArgs)]
+/// Record video from a webcam
 struct Args {
-    #[arg(short, long)]
+    /// path to the output video file
+    #[argh(option, short = 'o')]
     output: PathBuf,
 
-    #[arg(short, long, default_value = "0")]
+    /// the camera id to use
+    #[argh(option, short = 'c', default = "0")]
     camera_id: u32,
 
-    #[arg(short, long, default_value = "30")]
+    /// the frames per second to record
+    #[argh(option, short = 'f', default = "30")]
     fps: i32,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args: Args = argh::from_env();
 
     // Ensure the output path ends with .mp4
     if args.output.extension().and_then(|ext| ext.to_str()) != Some("mp4") {
