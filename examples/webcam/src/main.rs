@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // and force the image size to 640x480
     let mut webcam = V4L2CameraConfig::new()
         .with_camera_id(args.camera_id)
-        .with_fps(args.fps)
+        .with_fps(args.fps as u32)
         .with_size(ImageSize {
             width: 640,
             height: 480,
