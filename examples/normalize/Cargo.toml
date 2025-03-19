@@ -13,5 +13,5 @@ version.workspace = true
 publish = false
 
 [dependencies]
-clap = { version = "4.5.9", features = ["derive"] }
+argh = { workspace = true }
 kornia = { workspace = true }
