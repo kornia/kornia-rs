@@ -2,9 +2,7 @@ use num_traits::{AsPrimitive, NumCast};
 use kornia_image::{Image, ImageError};
 
 use rayon::prelude::*;
-use wide::{f32x4, f32x8};
 use crate::filter::{gaussian_blur, kernels, separable_filter};
-// use std::arch::x86_64::*;
 
 
 /// Method to calculate gradient for feature response
@@ -251,11 +249,6 @@ mod tests {
 
     #[test]
     fn test_harris_response() -> Result<(), ImageError> {
-        println!("{:?}", std::env::consts::ARCH);
-
-        // 7x7 actual matrix with 6x6 padding (manually added)
-        // this test uses the python version, which includes padded, reflected
-        //      gaussian blurring
         #[rustfmt::skip]
         let src = Image::from_size_slice(
             [9, 9].into(),
