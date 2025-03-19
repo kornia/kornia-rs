@@ -7,4 +7,7 @@ edition = "2021"
 kornia-image = { path = "../../crates/kornia-image" }
 kornia-io = { path = "../../crates/kornia-io", features = ["turbojpeg"] }
 anyhow = "1.0.77"
-clap = { version = "4.4.11", features = ["derive"] }
+argh = "0.1"  # Replace clap with argh since your code uses argh
+
+[features]
+turbojpeg = []  # Define the turbojpeg feature to fix the warnings
