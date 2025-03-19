@@ -55,5 +55,9 @@ name = "bench_filters"
 harness = false
 
 [[bench]]
+name = "bench_pyramid"
+harness = false
+
+[[bench]]
 name = "bench_feature"
 harness = false
