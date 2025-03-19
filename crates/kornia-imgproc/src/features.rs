@@ -1,4 +1,4 @@
-use kornia_image::{Image, ImageError};
+use kornia_image::{Image, ImageError, ImageSize};
 use rayon::prelude::*;
 use crate::filter::{gaussian_blur, kernels, separable_filter};
 
@@ -95,6 +95,7 @@ pub fn hessian_response(src: &Image<f32, 1>, dst: &mut Image<f32, 1>) -> Result<
 
 /// A builder object to initialize Harris response
 pub struct HarrisResponse {
+    image_size: ImageSize,
     k: f32,
     grads_mode: GradsMode,  // TODO
     sigmas: f32,  // TODO
@@ -105,14 +106,15 @@ pub struct HarrisResponse {
 
 impl HarrisResponse {
     /// Creates a Harris response object with default values
-    pub fn new() -> Self {
+    pub fn new(image_size: ImageSize) -> Self {
         Self {
+            image_size,
             k: 0.04,
             grads_mode: GradsMode::default(),
             sigmas: 0.0,
-            dx2_data: Vec::new(),
-            dy2_data: Vec::new(),
-            dxy_data: Vec::new(),
+            dx2_data: vec![0.0; image_size.width*image_size.height],
+            dy2_data: vec![0.0; image_size.width*image_size.height],
+            dxy_data: vec![0.0; image_size.width*image_size.height],
         }
     }
 
@@ -139,21 +141,29 @@ impl HarrisResponse {
     ///     src: The source image with shape (H, W).
     ///     dst: The destination image with shape (H, W).
     pub fn compute(&mut self, src: &Image<f32, 1>, dst: &mut Image<f32, 1>) -> Result<(), ImageError> {
-        if src.size() != dst.size() {
+        if src.size() != self.image_size {
             return Err(ImageError::InvalidImageSize(
-                src.cols(),
-                src.rows(),
-                dst.cols(),
-                dst.rows(),
+                src.size().width,
+                src.size().height,
+                self.image_size.width,
+                self.image_size.height,
+            ));
+        }
+        if dst.size() != self.image_size {
+            return Err(ImageError::InvalidImageSize(
+                dst.size().width,
+                dst.size().height,
+                self.image_size.width,
+                self.image_size.height,
             ));
         }
 
         let src_data = src.as_slice();
         let col_slice = src.cols()..src_data.len() - src.cols();
         let row_slice = 1..src.rows() - 1;
-        self.dx2_data.resize(src_data.len(), 0.0);
-        self.dy2_data.resize(src_data.len(), 0.0);
-        self.dxy_data.resize(src_data.len(), 0.0);
+        // self.dx2_data.resize(src_data.len(), 0.0);
+        // self.dy2_data.resize(src_data.len(), 0.0);
+        // self.dxy_data.resize(src_data.len(), 0.0);
         // let mut dx2_blurred: Image<f32, 1> = Image::from_size_val(src.size(), 0.0f32)?;
         // let mut dy2_blurred: Image<f32, 1> = Image::from_size_val(src.size(), 0.0f32)?;
         // let mut dxy_blurred: Image<f32, 1> = Image::from_size_val(src.size(), 0.0f32)?;
@@ -356,7 +366,7 @@ mod tests {
         )?;
 
         let mut dst = Image::from_size_val([9, 9].into(), 0.0)?;
-        HarrisResponse::new().compute(&src, &mut dst)?;
+        HarrisResponse::new(dst.size()).compute(&src, &mut dst)?;
 
         #[rustfmt::skip]
         assert_eq!(dst.as_slice(), &[
