@@ -14,7 +14,7 @@ jobs:
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
-      SCCACHE_CACHE_SIZE: 2G
+      SCCACHE_CACHE_SIZE: 6G
       SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
       SCCACHE_LOG: info
     steps:
