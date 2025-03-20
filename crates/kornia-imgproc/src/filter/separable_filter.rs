@@ -1,5 +1,59 @@
 use kornia_image::{Image, ImageError};
-use num_traits::Zero;
+//use num_traits::Zero;
+
+/// Trait for element-wise operations.
+pub trait ElementOp {
+    /// The type of the element.
+    type ElementType: Clone;
+    /// Return the zero element.
+    fn zero() -> Self::ElementType;
+    /// Multiply two elements.
+    fn mul(a: Self, b: Self) -> Self::ElementType;
+    /// Multiply an element with another element.
+    fn mul_elem(a: Self::ElementType, b: Self) -> Self::ElementType;
+    /// Add an element to another element in place.
+    fn add_assign(a: &mut Self::ElementType, b: Self::ElementType);
+    /// Convert an element to another type.
+    fn from_elem(a: Self::ElementType) -> Self;
+}
+
+impl ElementOp for f32 {
+    type ElementType = f32;
+    fn mul(a: Self, b: Self) -> Self::ElementType {
+        a * b
+    }
+    fn mul_elem(a: Self::ElementType, b: Self) -> Self::ElementType {
+        a * b
+    }
+    fn add_assign(a: &mut Self::ElementType, b: Self::ElementType) {
+        *a += b;
+    }
+    fn zero() -> Self::ElementType {
+        0.0
+    }
+    fn from_elem(a: Self::ElementType) -> Self {
+        a
+    }
+}
+
+impl ElementOp for u8 {
+    type ElementType = u32;
+    fn mul(a: Self, b: Self) -> Self::ElementType {
+        a as u32 * b as u32
+    }
+    fn mul_elem(a: Self::ElementType, b: Self) -> Self::ElementType {
+        a * b as u32
+    }
+    fn add_assign(a: &mut Self::ElementType, b: Self::ElementType) {
+        *a += b;
+    }
+    fn zero() -> Self::ElementType {
+        0
+    }
+    fn from_elem(a: Self::ElementType) -> Self {
+        a as u8
+    }
+}
 
 /// Apply a separable filter to an image.
 ///
@@ -16,7 +70,8 @@ pub fn separable_filter<T, const C: usize>(
     kernel_y: &[T],
 ) -> Result<(), ImageError>
 where
-    T: Zero + std::ops::Mul<Output = T> + std::ops::AddAssign + Copy,
+    //T: Zero + std::ops::Mul<Output = T> + std::ops::AddAssign + Copy,
+    T: ElementOp + Copy + Clone,
 {
     if kernel_x.is_empty() || kernel_y.is_empty() {
         return Err(ImageError::InvalidKernelLength(
@@ -56,7 +111,9 @@ where
                     let x_pos = c as isize + k_idx as isize - half_kernel_x as isize;
                     if x_pos >= 0 && x_pos < src.cols() as isize {
                         let neighbor_idx = (row_offset + x_pos as usize) * C + ch;
-                        row_acc += unsafe { *src_data.get_unchecked(neighbor_idx) } * *k_val;
+                        let neighbor_val = unsafe { src_data.get_unchecked(neighbor_idx) };
+                        //row_acc += unsafe { *src_data.get_unchecked(neighbor_idx) } * *k_val;
+                        T::add_assign(&mut row_acc, T::mul(*neighbor_val, *k_val));
                     }
                 }
 
@@ -79,11 +136,13 @@ where
                     let y_pos = r as isize + k_idx as isize - half_kernel_y as isize;
                     if y_pos >= 0 && y_pos < src.rows() as isize {
                         let neighbor_idx = (y_pos as usize * src.cols() + c) * C + ch;
-                        col_acc += unsafe { *temp.get_unchecked(neighbor_idx) } * *k_val;
+                        //col_acc += unsafe { *temp.get_unchecked(neighbor_idx) } * *k_val;
+                        let neighbor_val = unsafe { temp.get_unchecked(neighbor_idx) };
+                        T::add_assign(&mut col_acc, T::mul_elem(neighbor_val.clone(), *k_val));
                     }
                 }
                 unsafe {
-                    *dst_data.get_unchecked_mut(pix_offset) = col_acc;
+                    *dst_data.get_unchecked_mut(pix_offset) = T::from_elem(col_acc);
                 }
             }
         }
@@ -242,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn test_separable_filter_u8_overflow() -> Result<(), ImageError> {
+    fn test_separable_filter_u8_max_val() -> Result<(), ImageError> {
         let size = ImageSize {
             width: 5,
             height: 5,
@@ -252,15 +311,21 @@ mod tests {
         let kernel_y = vec![1, 1, 1];
 
         let mut img = Image::<u8, 1>::from_size_val(size, 0)?;
-        img.as_slice_mut()[0] = 255;
-        img.as_slice_mut()[1] = 255;
-        img.as_slice_mut()[2] = 255;
-        img.as_slice_mut()[3] = 255;
-        img.as_slice_mut()[4] = 255;
+        img.as_slice_mut()[12] = 255;
 
         let mut dst = Image::<u8, 1>::from_size_val(size, 0)?;
         separable_filter(&img, &mut dst, &kernel_x, &kernel_y)?;
 
+        #[rustfmt::skip]
+        assert_eq!(
+            dst.as_slice(),
+            &[0, 0, 0, 0, 0,
+            0, 255, 255, 255, 0,
+            0, 255, 255, 255, 0,
+            0, 255, 255, 255, 0,
+            0, 0, 0, 0, 0,
+            ]
+        );
         Ok(())
     }
 
