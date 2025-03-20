@@ -14,9 +14,10 @@ version.workspace = true
 
 
 [dependencies]
-faer = { workspace = true }
 kiddo = "5.0.2"
 kornia-3d = { workspace = true }
+kornia-linalg = { workspace = true }
+glam = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
 
