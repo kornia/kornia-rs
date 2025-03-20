@@ -1,6 +1,5 @@
 use crate::distance_transform::distance_transform;
-use anyhow::Result;
-use kornia_image::{Image, ImageError};
+use kornia_image::Image;
 
 /// Performs morphological dilation on a grayscale image.
 ///
@@ -19,12 +18,14 @@ use kornia_image::{Image, ImageError};
 /// * A new dilated image, where pixels within `k` distance from the foreground
 ///   are set to `255.0`, and others remain `0.0`.
 ///
-pub fn dilate(src: &Image<f32, 1>, k: u8) -> Result<Image<f32, 1>> {
-    let mut transformed = distance_transform(&src)?;
-    for p in transformed.data.iter_mut() {
+pub fn dilate(src: &Image<f32, 1>, k: u8) -> Image<f32, 1> {
+    let mut transformed = distance_transform(&src);
+    let storage = transformed.storage.as_mut_slice();
+
+    for p in storage.iter_mut() {
         *p = if *p <= k as f32 { 255.0 } else { 0.0 };
     }
-    Ok(transformed)
+    transformed
 }
 
 #[cfg(test)]
@@ -46,9 +47,9 @@ mod tests {
         )
         .unwrap();
 
-        let result = dilate(&image, 1).unwrap();
+        let result = dilate(&image, 1);
 
-        println!("{:?}", result.data);
+        println!("{:?}", result.storage.as_slice());
 
         // checking if the pixels near the original are activated.
         let expected = vec![
@@ -56,6 +57,6 @@ mod tests {
             255.0, 0.0, 255.0, 255.0, 255.0, 0.0, 0.0, 0.0, 255.0, 0.0, 0.0,
         ];
 
-        assert_eq!(result.data.as_slice().unwrap(), expected.as_slice());
+        assert_eq!(result.storage.as_slice(), expected.as_slice());
     }
 }

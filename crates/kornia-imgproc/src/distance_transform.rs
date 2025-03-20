@@ -1,4 +1,3 @@
-use anyhow::Result;
 use kornia_image::Image;
 
 pub(crate) fn euclidean_distance(x1: Vec<f32>, x2: Vec<f32>) -> f32 {
@@ -6,94 +5,109 @@ pub(crate) fn euclidean_distance(x1: Vec<f32>, x2: Vec<f32>) -> f32 {
 }
 
 // NOTE: only for testing, extremely slow
+/// Finds the distance transform of the input image using a O(N^4) vanilla method.
+///
+/// # Arguements
+///
+/// * `image`: The input image whose distance transform you want to find.
+///
+/// # Returns
+///
+/// An image whose distance transform is found.
+///
 pub fn distance_transform_vanilla(image: &Image<f32, 1>) -> Image<f32, 1> {
-    let mut output = ndarray::Array3::<f32>::zeros(image.data.dim());
-    for y in 0..image.height() - 1 {
-        for x in 0..image.width() - 1 {
-            let mut min_distance = std::f32::MAX;
-            for j in 0..image.height() - 1 {
-                for i in 0..image.width() - 1 {
-                    //println!("{:?} {:?}", i, j);
-                    if image.data[[j, i, 0]] > 0.0 {
-                        // TODO: pass as array or reference
-                        let distance =
+    let mut output = Image::from_size_val(image.size(), f32::INFINITY).unwrap();
+    let width = image.width();
+
+    for y in 0..image.height() {
+        for x in 0..width {
+            let mut min_distance = f32::INFINITY;
+            for j in 0..image.height() {
+                for i in 0..width {
+                    let idx = j * width + i;
+                    if image.storage.as_slice()[idx] > 0.0 {
+                        let d =
                             euclidean_distance(vec![x as f32, y as f32], vec![i as f32, j as f32]);
-                        if distance < min_distance {
-                            min_distance = distance;
-                        }
+                        min_distance = min_distance.min(d);
                     }
                 }
             }
-            output[[y, x, 0]] = min_distance;
+            let idx = y * width + x;
+            output.storage.as_mut_slice()[idx] = min_distance;
         }
     }
-    Image { data: output }
+    output
 }
 
-//pub fn distance_transform(image: &Image<f32>) -> Image<f32> {
-pub fn distance_transform(image: &Image<f32, 1>) -> Result<Image<f32, 1>> {
-    //let mut distance = ndarray::Array3::<f32>::zeros(image.data.dim());
+/// Finds the distance transform using the algorithm described by Huttenlocher and Felzenszwaib.
+/// This method is relatively quite fast as it computes the transform in O(N^2).
+///
+/// # Arguements
+///
+/// * `image`: The input image whose distance transform you want to find.
+///
+/// # Returns
+///
+/// An image whose distance transform is found.
+///
+pub fn distance_transform(image: &Image<f32, 1>) -> Image<f32, 1> {
     let mut distance = Image::from_size_val(image.size(), f32::INFINITY).unwrap();
+    let width = image.width();
 
-    // initializing distances
+    // Initialize distances
     for i in 0..image.height() {
-        for j in 0..image.width() {
-            if image.data[[i, j, 0]] > 0.0 {
-                distance.data[[i, j, 0]] = 0.0;
+        for j in 0..width {
+            let idx = i * width + j;
+            if image.storage.as_slice()[idx] > 0.0 {
+                distance.storage.as_mut_slice()[idx] = 0.0;
             }
         }
     }
 
-    // forwards pass
-
+    // Forward pass
     for i in 0..image.height() {
-        for j in 0..image.width() {
-            if image.data[[i, j, 0]] == 0.0 {
-                if i > 0 {
-                    distance.data[[i, j, 0]] =
-                        distance.data[[i, j, 0]].min(distance.data[[i - 1, j, 0]] + 1.0)
-                }
-                if j > 0 {
-                    distance.data[[i, j, 0]] =
-                        distance.data[[i, j, 0]].min(distance.data[[i, j - 1, 0]] + 1.0)
-                }
+        for j in 0..width {
+            let idx = i * width + j;
+            // If already a foreground pixel, skip.
+            if distance.storage.as_slice()[idx] == 0.0 {
+                continue;
+            }
+            if i > 0 {
+                let idx_up = (i - 1) * width + j;
+                distance.storage.as_mut_slice()[idx] =
+                    distance.storage.as_slice()[idx].min(distance.storage.as_slice()[idx_up] + 1.0);
+            }
+            if j > 0 {
+                let idx_left = i * width + (j - 1);
+                distance.storage.as_mut_slice()[idx] = distance.storage.as_slice()[idx]
+                    .min(distance.storage.as_slice()[idx_left] + 1.0);
             }
         }
     }
 
-    // backwards pass
-
+    // Backward pass
     for i in (0..image.height()).rev() {
-        for j in (0..image.width()).rev() {
+        for j in (0..width).rev() {
+            let idx = i * width + j;
             if i < image.height() - 1 {
-                distance.data[[i, j, 0]] =
-                    distance.data[[i, j, 0]].min(distance.data[[i + 1, j, 0]] + 1.0)
+                let idx_down = (i + 1) * width + j;
+                distance.storage.as_mut_slice()[idx] = distance.storage.as_slice()[idx]
+                    .min(distance.storage.as_slice()[idx_down] + 1.0);
             }
-            if j < image.width() - 1 {
-                distance.data[[i, j, 0]] =
-                    distance.data[[i, j, 0]].min(distance.data[[i, j + 1, 0]] + 1.0)
+            if j < width - 1 {
+                let idx_right = i * width + (j + 1);
+                distance.storage.as_mut_slice()[idx] = distance.storage.as_slice()[idx]
+                    .min(distance.storage.as_slice()[idx_right] + 1.0);
             }
         }
     }
 
-    //for i in (0..image.width()).rev() {
-    //    for j in (0..image.height()).rev() {
-    //        if i < image.width() - 1 {
-    //            distance[[j, i, 0]] = distance[[j, i, 0]].min(distance[[j, i + 1, 0]] + 1.0)
-    //        }
-    //        if j < image.height() - 1 {
-    //            distance[[j, i, 0]] = distance[[j, i, 0]].min(distance[[j + 1, i, 0]] + 1.0)
-    //        }
-    //    }
-    //}
-
-    Ok(distance)
+    distance
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::distance_transform::distance_transform;
-    use crate::distance_transform::distance_transform_vanilla;
+    use crate::distance_transform::{distance_transform, distance_transform_vanilla};
     use kornia_image::Image;
 
     #[test]
@@ -103,13 +117,11 @@ mod tests {
                 width: 3,
                 height: 4,
             },
-            vec![
-                0.0f32, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
-            ],
+            vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         )
         .unwrap();
         let output = distance_transform_vanilla(&image);
-        println!("{:?}", output.data);
+        println!("{:?}", output.storage.as_slice());
     }
 
     #[test]
@@ -119,12 +131,10 @@ mod tests {
                 width: 4,
                 height: 3,
             },
-            vec![
-                0.0f32, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
-            ],
+            vec![0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         )
         .unwrap();
         let output = distance_transform(&image);
-        println!("{:?}", output.data);
+        println!("{:?}", output.storage.as_slice());
     }
 }

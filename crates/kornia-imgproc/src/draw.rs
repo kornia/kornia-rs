@@ -70,6 +70,31 @@ pub fn draw_line<const C: usize>(
     }
 }
 
+/// Draws a polygon on an image inplace.
+///
+/// # Arguments
+///
+/// * `img` - The image to draw on.
+/// * `points` - A slice of points representing the vertices of the polygon in order.
+/// * `color` - The color of the polygon lines as an array of `C` elements.
+/// * `thickness` - The thickness of the polygon lines.
+pub fn draw_polygon<const C: usize>(
+    img: &mut Image<u8, C>,
+    points: &[(i64, i64)],
+    color: [u8; C],
+    thickness: usize,
+) {
+    if points.is_empty() {
+        return;
+    }
+    let num_points = points.len();
+    for i in 0..num_points {
+        let start = points[i];
+        let end = points[(i + 1) % num_points]; // to make the polygon closed
+        draw_line(img, start, end, color, thickness);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::draw_line;
