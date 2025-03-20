@@ -262,7 +262,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::draw::draw_polygon;
+    use crate::draw::draw_filled_polygon;
     use kornia_image::{Image, ImageError, ImageSize};
 
     fn create_test_image() -> Result<Image<u8, 1>, ImageError> {
@@ -274,23 +274,13 @@ mod tests {
             vec![0; 10 * 10],
         )?;
 
-        // draw polygon
-        let poly = vec![
-            (2.0 as i64, 2.0 as i64),
-            (7.0 as i64, 2.0 as i64),
-            (7.0 as i64, 7.0 as i64),
-            (2.0 as i64, 7.0 as i64),
-        ];
-        draw_polygon(&mut img, &poly, [255], 1);
+        // Draw filled polygon
+        let poly = vec![(2, 2), (7, 2), (7, 7), (2, 7)];
 
-        // draw hole
-        let hole = vec![
-            (4.0 as i64, 4.0 as i64),
-            (5.0 as i64, 4.0 as i64),
-            (5.0 as i64, 5.0 as i64),
-            (4.0 as i64, 5.0 as i64),
-        ];
-        draw_polygon(&mut img, &hole, [255], 1);
+        // Define the hole as a vector of tuples, wrapped in a vector
+        let hole = vec![vec![(4, 4), (5, 4), (5, 5), (4, 5)]];
+
+        draw_filled_polygon(&mut img, &poly, &hole, [255]);
 
         Ok(img)
     }
@@ -329,7 +319,7 @@ mod tests {
             },
             vec![0; 5 * 5],
         )?;
-        img.set_pixel(2, 2, 0, 1).unwrap();
+        img.set_pixel(2, 2, 0, 255).unwrap();
 
         let contours = find_contours::<i32>(&img, 0.5);
         assert_eq!(contours.len(), 1);
@@ -350,43 +340,17 @@ mod tests {
             vec![0; 20 * 20],
         )?;
 
-        // Outer border
-        draw_polygon(
-            &mut img,
-            &[
-                (2.0 as i64, 2.0 as i64),
-                (17.0 as i64, 2.0 as i64),
-                (17.0 as i64, 17.0 as i64),
-                (2.0 as i64, 17.0 as i64),
-            ],
-            [255],
-            1,
-        );
+        // Outer filled border with a hole
+        let poly1 = vec![(2, 2), (17, 2), (17, 17), (2, 17)];
+        let hole = vec![(5, 5), (14, 5), (14, 14), (5, 14)];
+        draw_filled_polygon(&mut img, &poly1, &vec![hole], [255]);
 
-        // Middle hole
-        draw_polygon(
+        // Inner filled border
+        draw_filled_polygon(
             &mut img,
-            &[
-                (5.0 as i64, 5.0 as i64),
-                (14.0 as i64, 5.0 as i64),
-                (14.0 as i64, 14.0 as i64),
-                (5.0 as i64, 14.0 as i64),
-            ],
+            &[(8, 8), (11, 8), (11, 11), (8, 11)],
+            &vec![],
             [255],
-            1,
-        );
-
-        // Inner border
-        draw_polygon(
-            &mut img,
-            &[
-                (8.0 as i64, 8.0 as i64),
-                (11.0 as i64, 8.0 as i64),
-                (11.0 as i64, 11.0 as i64),
-                (8.0 as i64, 11.0 as i64),
-            ],
-            [255],
-            1,
         );
 
         let contours = find_contours::<i32>(&img, 0.5);

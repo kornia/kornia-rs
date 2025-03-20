@@ -78,13 +78,14 @@ pub fn draw_line<const C: usize>(
 /// * `points` - A slice of points representing the vertices of the polygon in order.
 /// * `color` - The color of the polygon lines as an array of `C` elements.
 /// * `thickness` - The thickness of the polygon lines.
+///
 pub fn draw_polygon<const C: usize>(
     img: &mut Image<u8, C>,
     points: &[(i64, i64)],
     color: [u8; C],
     thickness: usize,
 ) {
-    if points.is_empty() {
+    if points.len() < 3 {
         return;
     }
     let num_points = points.len();
@@ -92,6 +93,87 @@ pub fn draw_polygon<const C: usize>(
         let start = points[i];
         let end = points[(i + 1) % num_points]; // to make the polygon closed
         draw_line(img, start, end, color, thickness);
+    }
+}
+
+/// Draws a filled polygon on an image, handling holes inside it.
+///
+/// # Arguments
+/// * `img` - The image to draw on.
+/// * `outer_polygon` - The vertices of the outer boundary.
+/// * `holes` - A list of polygons representing holes.
+/// * `color` - The fill color.
+///
+pub fn draw_filled_polygon<const C: usize>(
+    img: &mut Image<u8, C>,
+    outer_polygon: &[(i64, i64)],
+    holes: &[Vec<(i64, i64)>],
+    color: [u8; C],
+) {
+    let y_min = outer_polygon
+        .iter()
+        .chain(holes.iter().flatten())
+        .map(|&(_, y)| y)
+        .min()
+        .unwrap();
+    let y_max = outer_polygon
+        .iter()
+        .chain(holes.iter().flatten())
+        .map(|&(_, y)| y)
+        .max()
+        .unwrap();
+
+    for y in y_min..=y_max {
+        let mut intersections = vec![];
+
+        // intersections with outer polygons
+        for i in 0..outer_polygon.len() {
+            let (x1, y1) = outer_polygon[i];
+            let (x2, y2) = outer_polygon[(i + 1) % outer_polygon.len()];
+
+            if (y1 <= y && y2 > y) || (y2 <= y && y1 > y) {
+                let x_intersect = x1 + ((y - y1) * (x2 - x1)) / (y2 - y1);
+                intersections.push((x_intersect, true)); // True → Outer polygon
+            }
+        }
+
+        // intersections with holes
+        for hole in holes {
+            for i in 0..hole.len() {
+                let (x1, y1) = hole[i];
+                let (x2, y2) = hole[(i + 1) % hole.len()];
+
+                if (y1 <= y && y2 > y) || (y2 <= y && y1 > y) {
+                    let x_intersect = x1 + ((y - y1) * (x2 - x1)) / (y2 - y1);
+                    intersections.push((x_intersect, false)); // False → Hole
+                }
+            }
+        }
+
+        // sort intersections by x-value
+        intersections.sort_by_key(|&(x, _)| x);
+
+        // fill the outer polygons, but not the holes.
+        let mut fill = false;
+        for i in 0..intersections.len() {
+            let (x, is_outer) = intersections[i];
+
+            if fill {
+                let x_end = intersections[i].0;
+                for x_fill in x..=x_end {
+                    if x_fill >= 0 && x_fill < img.cols() as i64 && y >= 0 && y < img.rows() as i64
+                    {
+                        let pixel_index = (y * img.cols() as i64 + x_fill) * C as i64;
+                        for (c, &color_channel) in color.iter().enumerate() {
+                            img.as_slice_mut()[pixel_index as usize + c] = color_channel;
+                        }
+                    }
+                }
+            }
+
+            // Toggle fill status based on whether it's an outer boundary or hole boundary
+            fill ^= is_outer;
+        }
     }
 }
 
