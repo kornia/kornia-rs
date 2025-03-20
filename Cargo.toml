@@ -38,6 +38,7 @@ kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.9-rc.2" }
 kornia-3d = { path = "crates/kornia-3d", version = "0.1.9-rc.2" }
 kornia = { path = "crates/kornia", version = "0.1.9-rc.2" }
 kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.9-rc.2" }
+kornia-liealg = { path = "crates/kornia-liealg", version = "0.1.9-rc.2" }
 kernels = { path = "crates/kernels", version = "0.1.9-rc.2" }
 
 # dev dependencies for workspace
