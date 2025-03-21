@@ -160,23 +160,7 @@ impl HarrisResponse {
 
         let src_data = src.as_slice();
         let col_slice = src.cols()..src_data.len() - src.cols();
-        let row_slice = 1..src.rows() - 1;
-        // self.dx2_data.resize(src_data.len(), 0.0);
-        // self.dy2_data.resize(src_data.len(), 0.0);
-        // self.dxy_data.resize(src_data.len(), 0.0);
-        // let mut dx2_blurred: Image<f32, 1> = Image::from_size_val(src.size(), 0.0f32)?;
-        // let mut dy2_blurred: Image<f32, 1> = Image::from_size_val(src.size(), 0.0f32)?;
-        // let mut dxy_blurred: Image<f32, 1> = Image::from_size_val(src.size(), 0.0f32)?;
-
-        // let (kernel_x, kernel_y) = kernels::sobel_kernel_1d(3);
-        //
-        // let mut gx = Image::<f32, 1>::from_size_val(src.size(), 0.0)?;
-        // separable_filter(src, &mut gx, &kernel_x, &kernel_y)?;
-        // let gx_data = gx.as_slice();
-        //
-        // let mut gy = Image::<f32, 1>::from_size_val(src.size(), 0.0)?;
-        // separable_filter(src, &mut gy, &kernel_y, &kernel_x)?;
-        // let gy_data = gy.as_slice();
+        let row_slice = 1..src.cols() - 1;
 
         unsafe {
             self.dx2_data.as_mut_slice().get_unchecked_mut(col_slice.clone()).par_chunks_exact_mut(src.cols())
@@ -215,14 +199,6 @@ impl HarrisResponse {
                         });
                 });
         }
-
-
-        // gaussian_blur(&Image::from_size_slice(src.size(), &dx2_data)?, &mut dx2_blurred,
-        //               (7,7), (1.0,1.0))?;
-        // gaussian_blur(&Image::from_size_slice(src.size(), &dy2_data)?, &mut dy2_blurred,
-        //               (7,7), (1.0,1.0))?;
-        // gaussian_blur(&Image::from_size_slice(src.size(), &dxy_data)?, &mut dxy_blurred,
-        //               (7,7), (1.0,1.0))?;
 
         unsafe {
             dst.as_slice_mut().get_unchecked_mut(col_slice.clone()).par_chunks_exact_mut(src.cols())
@@ -380,6 +356,94 @@ mod tests {
             0.0, 0.01953125, 0.14078125, 0.08238281, 0.0, 0.08238281, 0.14078125, 0.01953125, 0.0,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         ]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_harris_rectangle() -> Result<(), ImageError> {
+        #[rustfmt::skip]
+        let src = Image::from_size_slice(
+            ImageSize {width: 9, height: 12},
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ]
+        )?;
+
+        let mut dst = Image::from_size_val(src.size(), 0.0)?;
+        HarrisResponse::new(src.size())
+            .with_k(0.01)
+            .with_sigmas(10.0)  // TODO: Does nothing
+            .with_grads_mode(GradsMode::Diff)  // TODO: Does nothing
+            .compute(&src, &mut dst)?;
+
+        #[rustfmt::skip]
+        assert_eq!(dst.as_slice(), &[
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.03125, 0.17875001, 0.144375, 0.0, 0.144375, 0.17875001, 0.03125, 0.0,
+            0.0, 0.17875001, 0.57125, 0.456875, 0.0, 0.456875, 0.57125, 0.17875001, 0.0,
+            0.0, 0.144375, 0.456875, 0.374209, 0.0, 0.374209, 0.456875, 0.144375, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.144375, 0.456875, 0.374209, 0.0, 0.374209, 0.456875, 0.144375, 0.0,
+            0.0, 0.17875001, 0.57125, 0.456875, 0.0, 0.456875, 0.57125, 0.17875001, 0.0,
+            0.0, 0.03125, 0.17875001, 0.144375, 0.0, 0.144375, 0.17875001, 0.03125, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        ]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_harris_builder_pattern() -> Result<(), ImageError> {
+        #[rustfmt::skip]
+        let src = Image::from_size_slice(
+            [9, 9].into(),
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ]
+        )?;
+
+        let mut dst = Image::from_size_val([9, 9].into(), 0.0)?;
+        HarrisResponse::new(dst.size())
+            .with_k(0.01)
+            .with_sigmas(10.0)  // TODO: Does nothing
+            .with_grads_mode(GradsMode::Diff)  // TODO: Does nothing
+            .compute(&src, &mut dst)?;
+
+        #[rustfmt::skip]
+        assert_eq!(dst.as_slice(), &[
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.03125, 0.17875001, 0.144375, 0.0, 0.144375, 0.17875001, 0.03125, 0.0,
+            0.0, 0.17875001, 0.57125, 0.456875, 0.0, 0.456875, 0.57125, 0.17875001, 0.0,
+            0.0, 0.144375, 0.456875, 0.374209, 0.0, 0.374209, 0.456875, 0.144375, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.144375, 0.456875, 0.374209, 0.0, 0.374209, 0.456875, 0.144375, 0.0,
+            0.0, 0.17875001, 0.57125, 0.456875, 0.0, 0.456875, 0.57125, 0.17875001, 0.0,
+            0.0, 0.03125, 0.17875001, 0.144375, 0.0, 0.144375, 0.17875001, 0.03125, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        ]);
+
         Ok(())
     }
 
