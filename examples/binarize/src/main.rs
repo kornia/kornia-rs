@@ -1,17 +1,19 @@
-use clap::Parser;
+use argh::FromArgs;
 use std::path::PathBuf;
 
 use kornia::io::functional as F;
 use kornia::{image::Image, imgproc};
 
-#[derive(Parser)]
+#[derive(FromArgs)]
+/// Binary threshold an image and log it to Rerun
 struct Args {
-    #[arg(short, long)]
+    /// path to an input image
+    #[argh(option, short = 'i')]
     image_path: PathBuf,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args: Args = argh::from_env();
 
     // read the image
     let image: Image<u8, 3> = F::read_image_any_rgb8(args.image_path)?;

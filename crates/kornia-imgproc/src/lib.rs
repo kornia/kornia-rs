@@ -54,5 +54,9 @@ pub mod threshold;
 /// image geometric transformations module.
 pub mod warp;
 
-/// distance transformation module.
+
 pub mod distance_transform;
+
+/// Pyramid operations
+pub mod pyramid;
+

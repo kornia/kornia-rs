@@ -1,5 +1,5 @@
 [package]
-name = "onnx"
+name = "copper"
 authors.workspace = true
 categories.workspace = true
 description.workspace = true
@@ -13,12 +13,9 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-argh = { workspace = true }
-kornia-tensor.workspace = true
-kornia.workspace = true
-ort-sys = { version = "2.0.0-rc.9" }
-ort = { version = "2.0.0-rc.9", features = [
-    "load-dynamic",
-    "half",
-], default-features = false }
+bincode = { workspace = true }
+cu29 = "0.7.0"
+cu29-helpers = "0.7.0"
+kornia = { workspace = true, features = ["gstreamer"] }
 rerun = { workspace = true }
+tempfile = "3.19"
