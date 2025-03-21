@@ -1,3 +1,6 @@
+/// contour finding module
+pub mod find_contours;
+
 /// image distortion module.
 pub mod distortion;
 
