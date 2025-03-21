@@ -203,7 +203,7 @@ where
 
                         let pos4 = directions
                             .iter()
-                            .rev() // counter-clockwise
+                            .rev()
                             .find_map(|diff| {
                                 get_position_if_non_zero_pixel(
                                     &image_values,
@@ -237,7 +237,6 @@ where
                         if pos4 == curr && pos3 == pos1 {
                             break;
                         }
-
                         pos2 = pos3;
                         pos3 = pos4;
                     }
@@ -245,6 +244,11 @@ where
                     // Single pixel contour.
                     contour_points.push(Point::new(num::cast(x).unwrap(), num::cast(y).unwrap()));
                     image_values[at(x, y)] = -nbd;
+                }
+
+                // if hole border, reverse points to make counter clockwise.
+                if border_type == BorderType::Hole {
+                    contour_points.reverse();
                 }
 
                 contours.push(Contour::new(contour_points, border_type, parent));
@@ -255,7 +259,6 @@ where
             }
         }
     }
-
     contours
 }
 
@@ -273,14 +276,12 @@ mod tests {
             vec![0; 10 * 10],
         )?;
 
-        // Outer rectangle defined by vertices: (2,2), (7,2), (7,7), (2,7)
         for y in 2..=7 {
             for x in 2..=7 {
                 img.set_pixel(x, y, 0, 255).unwrap();
             }
         }
 
-        // Hole defined by vertices: (4,4), (5,4), (5,5), (4,5)
         for y in 4..=5 {
             for x in 4..=5 {
                 img.set_pixel(x, y, 0, 0).unwrap();
@@ -299,21 +300,18 @@ mod tests {
             vec![0; 20 * 20],
         )?;
 
-        // Outer border defined by vertices: (2,2), (17,2), (17,17), (2,17)
         for y in 2..=17 {
             for x in 2..=17 {
                 img.set_pixel(x, y, 0, 255).unwrap();
             }
         }
 
-        // Hole defined by vertices: (5,5), (14,5), (14,14), (5,14)
         for y in 5..=14 {
             for x in 5..=14 {
                 img.set_pixel(x, y, 0, 0).unwrap();
             }
         }
 
-        // Inner rectangle defined by vertices: (8,8), (11,8), (11,11), (8,11)
         for y in 8..=11 {
             for x in 8..=11 {
                 img.set_pixel(x, y, 0, 255).unwrap();
@@ -328,8 +326,6 @@ mod tests {
         let img = create_test_image_basic().unwrap();
         let contours = find_contours::<i32>(&img, 0.5);
 
-        // Expecting two contours: the outer border of the rectangle
-        // and the inner border of the hole.
         assert_eq!(contours.len(), 2);
 
         // Outer contour
@@ -344,11 +340,10 @@ mod tests {
         let hole = &contours[1];
         assert_eq!(hole.border_type, BorderType::Hole);
         assert_eq!(hole.parent, Some(0));
-        println!("hole points contains {:?}", hole.points);
-        assert!(hole.points.contains(&Point::new(4, 4)));
-        assert!(hole.points.contains(&Point::new(5, 4)));
-        assert!(hole.points.contains(&Point::new(5, 5)));
-        assert!(hole.points.contains(&Point::new(4, 5)));
+        assert!(hole.points.contains(&Point::new(3, 4)));
+        assert!(hole.points.contains(&Point::new(6, 4)));
+        assert!(hole.points.contains(&Point::new(5, 6)));
+        assert!(hole.points.contains(&Point::new(5, 3)));
     }
 
     #[test]
@@ -376,10 +371,6 @@ mod tests {
         let img = create_test_image_nested().unwrap();
 
         let contours = find_contours::<i32>(&img, 0.5);
-        // There should be three contours:
-        // - The outer border of the big rectangle.
-        // - The inner border of the hole in the outer rectangle.
-        // - The border of the inner rectangle.
         assert_eq!(contours.len(), 3);
 
         // Checking if hierarchy holds.
@@ -391,7 +382,6 @@ mod tests {
         // Inner contour
         assert_eq!(contours[2].border_type, BorderType::Outer);
         assert_eq!(contours[2].parent, Some(1));
-
         Ok(())
     }
 }
