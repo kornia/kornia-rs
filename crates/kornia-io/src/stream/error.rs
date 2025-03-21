@@ -92,3 +92,10 @@ pub enum StreamCaptureError {
 // ensure that can be sent over threads
 unsafe impl Send for StreamCaptureError {}
 unsafe impl Sync for StreamCaptureError {}
+// From trait for Automatic Error Conversion
+impl From<kornia_image::ImageError> for StreamCaptureError {
+    fn from(_err: kornia_image::ImageError) -> Self {
+        // We can map different ImageError variants to different StreamCaptureError variants if needed for now we map all ImageError variants to CreateImageFrameError
+        StreamCaptureError::CreateImageFrameError
+    }
+}

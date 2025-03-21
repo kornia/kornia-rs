@@ -66,12 +66,12 @@ impl CameraCapture {
             rtsp_camera_pipeline_description(&config.url, config.latency)
         } else if let Some(config) = config.as_any().downcast_ref::<NVCameraConfig>() {
             // check that the device is not empty
-            if config.device.is_empty() {
+            if config.base_config.device.is_empty() {
                 return Err(StreamCaptureError::InvalidConfig(
                     "device is empty".to_string(),
                 ));
             }
-            nv_camera_pipeline_description(&config.device, config.size, config.fps, config.use_nv12)
+            nv_camera_pipeline_description(&config.base_config.device,config.base_config.size,config.base_config.fps,config.format,config.enable_max_performance)
         } else {
                 return Err(StreamCaptureError::InvalidConfig(
                     "unknown config type".to_string(),

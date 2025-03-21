@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use crate::stream::error::StreamCaptureError;
 use gst::prelude::*;
 use kornia_image::Image;
+use kornia_imgproc::color::nv12_to_rgb;
 
 // utility struct to store the frame buffer
 struct FrameBuffer {
@@ -106,12 +107,12 @@ impl StreamCapture {
                 .map_err(|_| StreamCaptureError::GetFormatError)?;
             
             let img = if format == "NV12" {
-                // Convert NV12 to RGB - note the Self:: prefix
-                Self::nv12_to_rgb(
-                    &frame_buffer.buffer,
+                // Convert NV12 to RGB 
+                nv12_to_rgb::<StreamCaptureError>(
+                    frame_buffer.buffer.as_slice(),
                     frame_buffer.width,
                     frame_buffer.height,
-                )?
+                ).map_err(|_| StreamCaptureError::CreateImageFrameError)?
             } else {
                 // Assume RGB format
                 Image::<u8, 3>::new(
@@ -180,53 +181,6 @@ impl StreamCapture {
         Ok(frame_buffer)
     }
 
-    // Helper function to convert NV12 to RGB
-    fn nv12_to_rgb(
-        buffer: &[u8],
-        width: usize,
-        height: usize,
-    ) -> Result<Image<u8, 3>, StreamCaptureError> {
-        // Allocate memory for RGB output
-        let mut rgb_data = vec![0u8; width * height * 3];
-        
-        // Implement NV12 to RGB conversion
-        // NV12 format: Y plane followed by interleaved U and V planes
-        let y_plane_size = width * height;
-        let uv_plane_offset = y_plane_size;
-        
-        for y in 0..height {
-            for x in 0..width {
-                let y_index = y * width + x;
-                let y_value = buffer[y_index] as f32;
-                
-                // UV values are subsampled (one U,V pair per 2x2 Y values)
-                let uv_index = uv_plane_offset + (y / 2) * width + (x / 2) * 2;
-                let u_value = buffer[uv_index] as f32 - 128.0;
-                let v_value = buffer[uv_index + 1] as f32 - 128.0;
-                
-                // Standard YUV to RGB conversion
-                let r = y_value + 1.402 * v_value;
-                let g = y_value - 0.344136 * u_value - 0.714136 * v_value;
-                let b = y_value + 1.772 * u_value;
-                
-                // Clamp values to 0-255 range
-                let r = r.max(0.0).min(255.0) as u8;
-                let g = g.max(0.0).min(255.0) as u8;
-                let b = b.max(0.0).min(255.0) as u8;
-                
-                // Write to output buffer
-                let rgb_index = y_index * 3;
-                rgb_data[rgb_index] = r;
-                rgb_data[rgb_index + 1] = g;
-                rgb_data[rgb_index + 2] = b;
-            }
-        }
-        
-        Image::<u8, 3>::new(
-            [width, height].into(),
-            rgb_data,
-        ).map_err(|_| StreamCaptureError::CreateImageFrameError)
-    }
 }
 
 impl Drop for StreamCapture {
