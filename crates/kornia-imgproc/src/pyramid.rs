@@ -1,6 +1,4 @@
 use crate::filter::separable_filter;
-use crate::interpolation::InterpolationMode;
-use crate::resize::resize_native;
 use kornia_image::{Image, ImageError};
 
 fn get_pyramid_gaussian_kernel() -> (Vec<f32>, Vec<f32>) {
@@ -25,10 +23,13 @@ fn get_pyramid_gaussian_kernel() -> (Vec<f32>, Vec<f32>) {
     (kernel_x, kernel_y)
 }
 
-/// Upsample an image and then blur it.
+/// Upsamples an image and then blurs it.
 ///
-/// This function doubles the size of the input image using bilinear interpolation
-/// and then applies a Gaussian blur to smooth the result.
+/// This function performs the upsampling step of the Gaussian pyramid construction.
+/// First, it upsamples the source image by injecting even zero rows and columns,
+/// and then convolves the result with the kernel defined multiplied by 4.
+///
+/// By default, the size of the output image is computed as (src.width*2, src.height*2).
 ///
 /// # Arguments
 ///
@@ -69,7 +70,6 @@ pub fn pyrup<const C: usize>(
 ) -> Result<(), ImageError> {
     let expected_width = src.width() * 2;
     let expected_height = src.height() * 2;
-
     if dst.width() != expected_width || dst.height() != expected_height {
         return Err(ImageError::InvalidImageSize(
             expected_width,
@@ -81,24 +81,42 @@ pub fn pyrup<const C: usize>(
 
     let mut upsampled = Image::<f32, C>::from_size_val(dst.size(), 0.0)?;
 
-    resize_native(src, &mut upsampled, InterpolationMode::Bilinear)?;
+    for y in 0..src.height() {
+        for x in 0..src.width() {
+            for c in 0..C {
+                let src_val = *src.get_pixel(x, y, c)?;
+                upsampled.set_pixel(x * 2, y * 2, c, src_val)?;
+            }
+        }
+    }
 
     let (kernel_x, kernel_y) = get_pyramid_gaussian_kernel();
-    separable_filter(&upsampled, dst, &kernel_x, &kernel_y)?;
+    let kernel_x_scaled: Vec<f32> = kernel_x.iter().map(|&x| x * 4.0).collect();
+    let kernel_y_scaled: Vec<f32> = kernel_y.iter().map(|&y| y * 4.0).collect();
+
+    separable_filter(&upsampled, dst, &kernel_x_scaled, &kernel_y_scaled)?;
 
     Ok(())
 }
 
 /// Blur an image and then downsample it.
 ///
-/// This function applies a Gaussian blur to the input image and then
-/// downsamples it by a factor of 2 (or a custom factor) using bilinear interpolation.
+/// This function performs the downsampling step of the Gaussian pyramid construction.
+/// It first convolves the source image with a 5x5 Gaussian kernel:
+/// [[1, 4, 6, 4, 1],
+///  [4, 16, 24, 16, 4],
+///  [6, 24, 36, 24, 6],
+///  [4, 16, 24, 16, 4],
+///  [1, 4, 6, 4, 1]] / 256
+///
+/// Then, it downsamples the image by rejecting even rows and columns.
+///
+/// By default, the size of the output image is computed as ((src.width() + 1) / 2, (src.height() + 1) / 2).
 ///
 /// # Arguments
 ///
 /// * `src` - The source image to be downsampled.
 /// * `dst` - The destination image to store the result.
-/// * `factor` - The downsampling factor (default: 2.0).
 ///
 /// # Returns
 ///
@@ -128,15 +146,14 @@ pub fn pyrup<const C: usize>(
 ///     0.0,
 /// ).unwrap();
 ///
-/// pyrdown(&image, &mut downsampled, 2.0).unwrap();
+/// pyrdown(&image, &mut downsampled).unwrap();
 /// ```
 pub fn pyrdown<const C: usize>(
     src: &Image<f32, C>,
     dst: &mut Image<f32, C>,
-    factor: f32,
 ) -> Result<(), ImageError> {
-    let expected_width = (src.width() as f32 / factor).round() as usize;
-    let expected_height = (src.height() as f32 / factor).round() as usize;
+    let expected_width = ((src.width() + 1) / 2) as usize;
+    let expected_height = ((src.height() + 1) / 2) as usize;
 
     if dst.width() != expected_width || dst.height() != expected_height {
         return Err(ImageError::InvalidImageSize(
@@ -152,7 +169,19 @@ pub fn pyrdown<const C: usize>(
     let (kernel_x, kernel_y) = get_pyramid_gaussian_kernel();
     separable_filter(src, &mut blurred, &kernel_x, &kernel_y)?;
 
-    resize_native(&blurred, dst, InterpolationMode::Bilinear)?;
+    for y in 0..dst.height() {
+        for x in 0..dst.width() {
+            for c in 0..C {
+                let src_x = 2 * x;
+                let src_y = 2 * y;
+
+                if src_x < blurred.width() && src_y < blurred.height() {
+                    let src_val = *blurred.get_pixel(src_x, src_y, c)?;
+                    dst.set_pixel(x, y, c, src_val)?;
+                }
+            }
+        }
+    }
 
     Ok(())
 }
@@ -189,6 +218,18 @@ mod tests {
             assert!(!val.is_nan());
         }
 
+        // Check that corner pixels are influenced by the original corner values
+        let top_left = *dst.get_pixel(0, 0, 0)?;
+        let top_right = *dst.get_pixel(3, 0, 0)?;
+        let bottom_left = *dst.get_pixel(0, 3, 0)?;
+        let bottom_right = *dst.get_pixel(3, 3, 0)?;
+
+        // Check that original source pixels have the strongest influence at their positions
+        assert!(top_left > 0.0); // Influenced by src[0,0] which is 0.0
+        assert!(top_right > top_left); // Influenced by src[1,0] which is 1.0
+        assert!(bottom_left > top_left); // Influenced by src[0,1] which is 2.0
+        assert!(bottom_right > top_right); // Influenced by src[1,1] which is 3.0
+
         Ok(())
     }
 
@@ -210,7 +251,7 @@ mod tests {
             0.0,
         )?;
 
-        pyrdown(&src, &mut dst, 2.0)?;
+        pyrdown(&src, &mut dst)?;
 
         assert_eq!(dst.width(), 2);
         assert_eq!(dst.height(), 2);
