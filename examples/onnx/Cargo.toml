@@ -13,7 +13,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-clap = { version = "4.5.9", features = ["derive"] }
+argh = { workspace = true }
 kornia-tensor.workspace = true
 kornia.workspace = true
 ort-sys = { version = "2.0.0-rc.9" }

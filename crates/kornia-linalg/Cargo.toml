@@ -1,0 +1,31 @@
+[package]
+name = "kornia-linalg"
+description = "Linear algebra operations for kornia"
+
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+publish = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[features]
+default = ["std"]
+
+std = ["glam/std"]
+libm = ["glam/libm"]
+
+[dependencies]
+glam = { version = "0.30.0", default-features = false }
+
+
+[dev-dependencies]
+faer = { workspace = true }
+approx = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "bench_linalg"
+harness = false

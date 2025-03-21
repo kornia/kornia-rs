@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 use kornia_tensor::{CpuAllocator, Tensor};
-use kornia_tensor_ops::ops::{cosine_similarity, dot_product1};
+use kornia_tensor_ops::TensorOps;
 use rand::Rng;
 
 fn bench_dot_product1(c: &mut Criterion) {
@@ -18,8 +18,12 @@ fn bench_dot_product1(c: &mut Criterion) {
         let b_tensor =
             Tensor::<f32, 1, CpuAllocator>::from_shape_slice([size], &b, CpuAllocator).unwrap();
 
-        group.bench_function(&format!("f32_size_{}", size), |bencher| {
-            bencher.iter(|| black_box(dot_product1(&a_tensor, &b_tensor).unwrap()))
+        group.bench_function(format!("f32_size_{}", size), |bencher| {
+            bencher.iter(|| {
+                black_box(
+                    Tensor::<f32, 1, CpuAllocator>::dot_product1(&a_tensor, &b_tensor).unwrap(),
+                )
+            })
         });
     }
 
@@ -31,8 +35,12 @@ fn bench_dot_product1(c: &mut Criterion) {
         let b_tensor =
             Tensor::<i8, 1, CpuAllocator>::from_shape_slice([size], &b, CpuAllocator).unwrap();
 
-        group.bench_function(&format!("i8_size_{}", size), |bencher| {
-            bencher.iter(|| black_box(dot_product1(&a_tensor, &b_tensor).unwrap()))
+        group.bench_function(format!("i8_size_{}", size), |bencher| {
+            bencher.iter(|| {
+                black_box(
+                    Tensor::<i8, 1, CpuAllocator>::dot_product1(&a_tensor, &b_tensor).unwrap(),
+                )
+            })
         });
     }
 
@@ -53,8 +61,8 @@ fn bench_cosine_similarity(c: &mut Criterion) {
         let b_tensor =
             Tensor::<f32, 1, CpuAllocator>::from_shape_slice([size], &b, CpuAllocator).unwrap();
 
-        group.bench_function(&format!("f32_size_{}", size), |bencher| {
-            bencher.iter(|| black_box(cosine_similarity(&a_tensor, &b_tensor).unwrap()))
+        group.bench_function(format!("f32_size_{}", size), |bencher| {
+            bencher.iter(|| black_box(Tensor::cosine_similarity(&a_tensor, &b_tensor).unwrap()))
         });
     }
 

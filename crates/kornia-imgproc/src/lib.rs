@@ -56,3 +56,6 @@ pub mod warp;
 
 /// distance transformation module.
 pub mod distance_transform;
+
+/// Pyramid operations
+pub mod pyramid;

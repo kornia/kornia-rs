@@ -1,4 +1,5 @@
 use kornia_image::{Image, ImageError};
+use num_traits::Zero;
 
 /// Apply a separable filter to an image.
 ///
@@ -8,12 +9,15 @@ use kornia_image::{Image, ImageError};
 /// * `dst` - The destination image with shape (H, W, C).
 /// * `kernel_x` - The horizontal kernel.
 /// * `kernel_y` - The vertical kernel.
-pub fn separable_filter<const C: usize>(
-    src: &Image<f32, C>,
-    dst: &mut Image<f32, C>,
-    kernel_x: &[f32],
-    kernel_y: &[f32],
-) -> Result<(), ImageError> {
+pub fn separable_filter<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
+    kernel_x: &[T],
+    kernel_y: &[T],
+) -> Result<(), ImageError>
+where
+    T: Zero + std::ops::Mul<Output = T> + std::ops::AddAssign + Copy,
+{
     if kernel_x.is_empty() || kernel_y.is_empty() {
         return Err(ImageError::InvalidKernelLength(
             kernel_x.len(),
@@ -38,7 +42,7 @@ pub fn separable_filter<const C: usize>(
 
     // preallocate the temporary buffer for intermediate results
     // TODO: use a better buffer allocation strategy
-    let mut temp = vec![0.0; src_data.len()];
+    let mut temp = vec![T::zero(); src_data.len()];
 
     // Row-wise filtering
     for r in 0..src.rows() {
@@ -47,12 +51,12 @@ pub fn separable_filter<const C: usize>(
             let col_offset = (row_offset + c) * C;
             for ch in 0..C {
                 let pix_offset = col_offset + ch;
-                let mut row_acc = 0.0;
+                let mut row_acc = T::zero();
                 for (k_idx, k_val) in kernel_x.iter().enumerate() {
                     let x_pos = c as isize + k_idx as isize - half_kernel_x as isize;
                     if x_pos >= 0 && x_pos < src.cols() as isize {
                         let neighbor_idx = (row_offset + x_pos as usize) * C + ch;
-                        row_acc += unsafe { src_data.get_unchecked(neighbor_idx) } * k_val;
+                        row_acc += unsafe { *src_data.get_unchecked(neighbor_idx) } * *k_val;
                     }
                 }
 
@@ -70,12 +74,12 @@ pub fn separable_filter<const C: usize>(
             let col_offset = (row_offset + c) * C;
             for ch in 0..C {
                 let pix_offset = col_offset + ch;
-                let mut col_acc = 0.0;
+                let mut col_acc = T::zero();
                 for (k_idx, k_val) in kernel_y.iter().enumerate() {
                     let y_pos = r as isize + k_idx as isize - half_kernel_y as isize;
                     if y_pos >= 0 && y_pos < src.rows() as isize {
                         let neighbor_idx = (y_pos as usize * src.cols() + c) * C + ch;
-                        col_acc += unsafe { temp.get_unchecked(neighbor_idx) } * k_val;
+                        col_acc += unsafe { *temp.get_unchecked(neighbor_idx) } * *k_val;
                     }
                 }
                 unsafe {
@@ -158,7 +162,7 @@ mod tests {
     use kornia_image::ImageSize;
 
     #[test]
-    fn test_separable_filter() -> Result<(), ImageError> {
+    fn test_separable_filter_f32() -> Result<(), ImageError> {
         let size = ImageSize {
             width: 5,
             height: 5,
@@ -196,6 +200,44 @@ mod tests {
         let xsum = dst.as_slice().iter().sum::<f32>();
         assert_eq!(xsum, 9.0);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_separable_filter_u8() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 5,
+            height: 5,
+        };
+
+        #[rustfmt::skip]
+        let img = Image::new(
+            size,
+            vec![
+                0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0,
+                0, 0, 1, 0, 0,
+                0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0,
+            ],
+        )?;
+
+        let mut dst = Image::<u8, 1>::from_size_val(img.size(), 0)?;
+        let kernel_x = vec![1, 1, 1];
+        let kernel_y = vec![1, 1, 1];
+        separable_filter(&img, &mut dst, &kernel_x, &kernel_y)?;
+
+        #[rustfmt::skip]
+        assert_eq!(
+            dst.as_slice(),
+            &[
+                0, 0, 0, 0, 0,
+                0, 1, 1, 1, 0,
+                0, 1, 1, 1, 0,
+                0, 1, 1, 1, 0,
+                0, 0, 0, 0, 0,
+            ]
+        );
         Ok(())
     }
 
