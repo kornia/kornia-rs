@@ -141,23 +141,23 @@ where
             }
 
             // Determine border type and parent.
-            let maybe_border = if image_values[at(x, y)] == 1
-                && x > 0
-                && image_values[at(x - 1, y)] == 0
-            {
-                Some((Point::new(x - 1, y), BorderType::Outer))
-            } else if image_values[at(x, y)] > 1 && x + 1 < width && image_values[at(x + 1, y)] == 0
-            {
-                lnbd = image_values[at(x, y)];
-                Some((Point::new(x + 1, y), BorderType::Hole))
-            } else {
-                None
-            };
+            let maybe_border =
+                if image_values[at(x, y)] == 1 && x > 0 && image_values[at(x - 1, y)] == 0 {
+                    Some((Point::new(x - 1, y), BorderType::Outer))
+                } else if image_values[at(x, y)] == 1
+                    && x + 1 < width
+                    && image_values[at(x + 1, y)] == 0
+                {
+                    lnbd = nbd;
+                    Some((Point::new(x + 1, y), BorderType::Hole))
+                } else {
+                    None
+                };
 
             if let Some((adj, border_type)) = maybe_border {
                 nbd += 1;
 
-                let parent = if lnbd > 1 {
+                let parent = if lnbd.abs() >= 2 {
                     let parent_index = (lnbd.abs() - 2) as usize;
                     let parent_contour = &contours[parent_index];
                     if (border_type == BorderType::Outer)
@@ -251,7 +251,7 @@ where
             }
 
             if image_values[at(x, y)] != 1 {
-                lnbd = image_values[at(x, y)].abs();
+                lnbd = nbd.abs();
             }
         }
     }
@@ -262,10 +262,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::draw::draw_filled_polygon;
     use kornia_image::{Image, ImageError, ImageSize};
 
-    fn create_test_image() -> Result<Image<u8, 1>, ImageError> {
+    fn create_test_image_basic() -> Result<Image<u8, 1>, ImageError> {
         let mut img = Image::new(
             ImageSize {
                 width: 10,
@@ -274,22 +273,63 @@ mod tests {
             vec![0; 10 * 10],
         )?;
 
-        // Draw filled polygon
-        let poly = vec![(2, 2), (7, 2), (7, 7), (2, 7)];
+        // Outer rectangle defined by vertices: (2,2), (7,2), (7,7), (2,7)
+        for y in 2..=7 {
+            for x in 2..=7 {
+                img.set_pixel(x, y, 0, 255).unwrap();
+            }
+        }
 
-        // Define the hole as a vector of tuples, wrapped in a vector
-        let hole = vec![vec![(4, 4), (5, 4), (5, 5), (4, 5)]];
+        // Hole defined by vertices: (4,4), (5,4), (5,5), (4,5)
+        for y in 4..=5 {
+            for x in 4..=5 {
+                img.set_pixel(x, y, 0, 0).unwrap();
+            }
+        }
 
-        draw_filled_polygon(&mut img, &poly, &hole, [255]);
+        Ok(img)
+    }
+
+    fn create_test_image_nested() -> Result<Image<u8, 1>, ImageError> {
+        let mut img = Image::new(
+            ImageSize {
+                width: 20,
+                height: 20,
+            },
+            vec![0; 20 * 20],
+        )?;
+
+        // Outer border defined by vertices: (2,2), (17,2), (17,17), (2,17)
+        for y in 2..=17 {
+            for x in 2..=17 {
+                img.set_pixel(x, y, 0, 255).unwrap();
+            }
+        }
+
+        // Hole defined by vertices: (5,5), (14,5), (14,14), (5,14)
+        for y in 5..=14 {
+            for x in 5..=14 {
+                img.set_pixel(x, y, 0, 0).unwrap();
+            }
+        }
+
+        // Inner rectangle defined by vertices: (8,8), (11,8), (11,11), (8,11)
+        for y in 8..=11 {
+            for x in 8..=11 {
+                img.set_pixel(x, y, 0, 255).unwrap();
+            }
+        }
 
         Ok(img)
     }
 
     #[test]
     fn test_basic_contours() {
-        let img = create_test_image().unwrap();
+        let img = create_test_image_basic().unwrap();
         let contours = find_contours::<i32>(&img, 0.5);
 
+        // Expecting two contours: the outer border of the rectangle
+        // and the inner border of the hole.
         assert_eq!(contours.len(), 2);
 
         // Outer contour
@@ -304,6 +344,7 @@ mod tests {
         let hole = &contours[1];
         assert_eq!(hole.border_type, BorderType::Hole);
         assert_eq!(hole.parent, Some(0));
+        println!("hole points contains {:?}", hole.points);
         assert!(hole.points.contains(&Point::new(4, 4)));
         assert!(hole.points.contains(&Point::new(5, 4)));
         assert!(hole.points.contains(&Point::new(5, 5)));
@@ -332,35 +373,23 @@ mod tests {
 
     #[test]
     fn test_nested_contours() -> Result<(), ImageError> {
-        let mut img = Image::new(
-            ImageSize {
-                width: 20,
-                height: 20,
-            },
-            vec![0; 20 * 20],
-        )?;
-
-        // Outer filled border with a hole
-        let poly1 = vec![(2, 2), (17, 2), (17, 17), (2, 17)];
-        let hole = vec![(5, 5), (14, 5), (14, 14), (5, 14)];
-        draw_filled_polygon(&mut img, &poly1, &vec![hole], [255]);
-
-        // Inner filled border
-        draw_filled_polygon(
-            &mut img,
-            &[(8, 8), (11, 8), (11, 11), (8, 11)],
-            &vec![],
-            [255],
-        );
+        let img = create_test_image_nested().unwrap();
 
         let contours = find_contours::<i32>(&img, 0.5);
+        // There should be three contours:
+        // - The outer border of the big rectangle.
+        // - The inner border of the hole in the outer rectangle.
+        // - The border of the inner rectangle.
         assert_eq!(contours.len(), 3);
 
-        // Checking if hierarchy holds
-        assert_eq!(contours[0].border_type, BorderType::Outer); // Outer
-        assert_eq!(contours[1].border_type, BorderType::Hole); // Middle
+        // Checking if hierarchy holds.
+        // Outer contour
+        assert_eq!(contours[0].border_type, BorderType::Outer);
+        // Middle contour (hole)
+        assert_eq!(contours[1].border_type, BorderType::Hole);
         assert_eq!(contours[1].parent, Some(0));
-        assert_eq!(contours[2].border_type, BorderType::Outer); // Inner
+        // Inner contour
+        assert_eq!(contours[2].border_type, BorderType::Outer);
         assert_eq!(contours[2].parent, Some(1));
 
         Ok(())
