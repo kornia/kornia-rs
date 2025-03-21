@@ -18,8 +18,8 @@ fn bench_pyramid(c: &mut Criterion) {
 
         // Output image for pyrdown
         let down_size = ImageSize {
-            width: width / 2,
-            height: height / 2,
+            width: (*width + 1) / 2,
+            height: (*height + 1) / 2,
         };
         let down_image = Image::<f32, 1>::from_size_val(down_size, 0.0).unwrap();
 
@@ -40,7 +40,7 @@ fn bench_pyramid(c: &mut Criterion) {
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
                 b.iter(|| {
-                    black_box(pyrdown(src, &mut dst, 2.0)).unwrap();
+                    black_box(pyrdown(src, &mut dst)).unwrap();
                 })
             },
         );
@@ -75,7 +75,7 @@ fn bench_pyramid(c: &mut Criterion) {
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
                 b.iter(|| {
-                    black_box(pyrdown(src, &mut dst, 2.0)).unwrap();
+                    black_box(pyrdown(src, &mut dst)).unwrap();
                 })
             },
         );
