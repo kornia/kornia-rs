@@ -16,7 +16,7 @@ pub fn separable_filter<T, const C: usize>(
     kernel_y: &[T],
 ) -> Result<(), ImageError>
 where
-    T: Zero + std::ops::Mul<Output = T> + std::ops::AddAssign + Copy,
+    T: Zero + std::ops::Mul<Output = T> + std::ops::AddAssign + Copy + Into<u16> + From<u16>,
 {
     if kernel_x.is_empty() || kernel_y.is_empty() {
         return Err(ImageError::InvalidKernelLength(
@@ -41,7 +41,6 @@ where
     let dst_data = dst.as_slice_mut();
 
     // preallocate the temporary buffer for intermediate results
-    // TODO: use a better buffer allocation strategy
     let mut temp = vec![T::zero(); src_data.len()];
 
     // Row-wise filtering
@@ -82,8 +81,13 @@ where
                         col_acc += unsafe { *temp.get_unchecked(neighbor_idx) } * *k_val;
                     }
                 }
+
+                // Convert to u16 for intermediate calculation to avoid overflow
+                let col_acc_u16: u16 = col_acc.into();
+                // Clamp the result to u8 range
+                let result = if col_acc_u16 > 255 { 255 } else { col_acc_u16 };
                 unsafe {
-                    *dst_data.get_unchecked_mut(pix_offset) = col_acc;
+                    *dst_data.get_unchecked_mut(pix_offset) = T::from(result);
                 }
             }
         }
@@ -294,6 +298,45 @@ mod tests {
         let xsum = dst.as_slice().iter().sum::<f32>();
         assert_eq!(xsum, 9.0);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_separable_filter_u8_overflow() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 3,
+            height: 3,
+        };
+
+        // Create an image with max u8 values (255)
+        #[rustfmt::skip]
+        let img = Image::new(
+            size,
+            vec![
+                255, 255, 255,
+                255, 255, 255,
+                255, 255, 255,
+            ],
+        )?;
+
+        let mut dst = Image::<u8, 1>::from_size_val(img.size(), 0)?;
+        
+        // Use a kernel that will cause overflow if not handled properly
+        let kernel_x = vec![1, 1, 1];
+        let kernel_y = vec![1, 1, 1];
+        
+        separable_filter(&img, &mut dst, &kernel_x, &kernel_y)?;
+
+        // The result should be 255 for all pixels since we're using a normalized kernel
+        #[rustfmt::skip]
+        assert_eq!(
+            dst.as_slice(),
+            &[
+                255, 255, 255,
+                255, 255, 255,
+                255, 255, 255,
+            ]
+        );
         Ok(())
     }
 }
