@@ -38,33 +38,19 @@ impl<'cl> CuTask<'cl> for Sobel {
 
         let img = src
             .channel(0)
-            .map_err(|e| CuError::new_with_cause("Failed to get channel", e))?;
+            .map_err(|e| CuError::new_with_cause("Failed to get channel", e))?
+            .map(|&x| x as f32)
+            .map_err(|e| CuError::new_with_cause("Failed to cast image to f32", e))?;
 
-        // TODO: simplify this in kornia
-        let img_f32 = {
-            let data = img
-                .as_slice()
-                .iter()
-                .map(|&x| x as f32)
-                .collect::<Vec<f32>>();
-            Image::<_, 1>::new(img.size(), data).expect("Failed to create image")
-        };
-
-        let mut img_sobel = Image::from_size_val(img_f32.size(), 0.0f32)
+        let mut img_sobel = Image::from_size_val(img.size(), 0.0f32)
             .map_err(|e| CuError::new_with_cause("Failed to create image", e))?;
 
-        imgproc::filter::sobel(&img_f32, &mut img_sobel, 3)
+        imgproc::filter::sobel(&img, &mut img_sobel, 3)
             .map_err(|e| CuError::new_with_cause("Failed to apply sobel", e))?;
 
-        // TODO: simplify this in kornia
-        let dst = {
-            let data = img_sobel
-                .as_slice()
-                .iter()
-                .map(|&x| x as u8)
-                .collect::<Vec<u8>>();
-            Image::new(img_sobel.size(), data).expect("Failed to create image")
-        };
+        let dst = img_sobel
+            .map(|&x| x as u8)
+            .map_err(|e| CuError::new_with_cause("Failed to cast image to u8", e))?;
 
         output.set_payload(ImageGray8Msg(dst));
 
