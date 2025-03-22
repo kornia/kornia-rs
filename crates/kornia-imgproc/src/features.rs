@@ -1,7 +1,16 @@
-use kornia_image::{Image, ImageError};
+use crate::filter::gaussian_blur;
+use kornia_image::{Image, ImageError, ImageSize};
 use rayon::prelude::*;
 
-use crate::filter::gaussian_blur;
+/// Method to calculate gradient for feature response
+#[derive(Default)]
+pub enum GradsMode {
+    /// Sobel operators
+    #[default]
+    Sobel,
+    /// Finite difference
+    Diff,
+}
 
 fn _get_kernel_size(sigma: f32) -> usize {
     let mut ksize = (2.0 * 4.0 * sigma + 1.0) as usize;
@@ -82,6 +91,183 @@ pub fn hessian_response(src: &Image<f32, 1>, dst: &mut Image<f32, 1>) -> Result<
     Ok(())
 }
 
+/// A builder object to initialize Harris response
+pub struct HarrisResponse {
+    image_size: ImageSize,
+    k: f32,
+    grads_mode: GradsMode, // TODO
+    sigmas: f32,           // TODO
+    dx2_data: Vec<f32>,
+    dy2_data: Vec<f32>,
+    dxy_data: Vec<f32>,
+}
+
+impl HarrisResponse {
+    /// Creates a Harris response object with default values
+    pub fn new(image_size: ImageSize) -> Self {
+        Self {
+            image_size,
+            k: 0.04,
+            grads_mode: GradsMode::default(),
+            sigmas: 0.0,
+            dx2_data: vec![0.0; image_size.width * image_size.height],
+            dy2_data: vec![0.0; image_size.width * image_size.height],
+            dxy_data: vec![0.0; image_size.width * image_size.height],
+        }
+    }
+
+    /// Sets the `k` value (usually between 0.04 to 0.06)
+    pub fn with_k(self, k: f32) -> Self {
+        Self { k, ..self }
+    }
+
+    /// Sets the gradient mode
+    pub fn with_grads_mode(self, grads_mode: GradsMode) -> Self {
+        Self { grads_mode, ..self }
+    }
+
+    /// Sets the sigma
+    pub fn with_sigmas(self, sigmas: f32) -> Self {
+        Self { sigmas, ..self }
+    }
+
+    /// Computes the harris response of an image.
+    ///
+    /// The Harris response is computed by the determinant minus the trace squared.
+    ///
+    /// Args:
+    ///     src: The source image with shape (H, W).
+    ///     dst: The destination image with shape (H, W).
+    pub fn compute(
+        &mut self,
+        src: &Image<f32, 1>,
+        dst: &mut Image<f32, 1>,
+    ) -> Result<(), ImageError> {
+        if src.size() != self.image_size {
+            return Err(ImageError::InvalidImageSize(
+                src.size().width,
+                src.size().height,
+                self.image_size.width,
+                self.image_size.height,
+            ));
+        }
+        if dst.size() != self.image_size {
+            return Err(ImageError::InvalidImageSize(
+                dst.size().width,
+                dst.size().height,
+                self.image_size.width,
+                self.image_size.height,
+            ));
+        }
+
+        let src_data = src.as_slice();
+        let col_slice = src.cols()..src_data.len() - src.cols();
+        let row_slice = 1..src.cols() - 1;
+
+        unsafe {
+            self.dx2_data
+                .as_mut_slice()
+                .get_unchecked_mut(col_slice.clone())
+                .par_chunks_exact_mut(src.cols())
+                .zip(
+                    self.dy2_data
+                        .as_mut_slice()
+                        .get_unchecked_mut(col_slice.clone())
+                        .par_chunks_exact_mut(src.cols()),
+                )
+                .zip(
+                    self.dxy_data
+                        .as_mut_slice()
+                        .get_unchecked_mut(col_slice.clone())
+                        .par_chunks_exact_mut(src.cols()),
+                )
+                .enumerate()
+                .for_each(|(row_idx, ((dx2_chunk, dy2_chunk), dxy_chunk))| {
+                    let row_offset = (row_idx + 1) * src.cols();
+
+                    dx2_chunk
+                        .get_unchecked_mut(row_slice.clone())
+                        .iter_mut()
+                        .zip(dy2_chunk.get_unchecked_mut(row_slice.clone()).iter_mut())
+                        .zip(dxy_chunk.get_unchecked_mut(row_slice.clone()).iter_mut())
+                        .enumerate()
+                        .for_each(|(col_idx, ((dx2_pixel, dy2_pixel), dxy_pixel))| {
+                            let current_idx = row_offset + col_idx + 1;
+                            let prev_row_idx = current_idx - src.cols();
+                            let next_row_idx = current_idx + src.cols();
+
+                            let v11 = src_data.get_unchecked(prev_row_idx - 1);
+                            let v12 = src_data.get_unchecked(prev_row_idx);
+                            let v13 = src_data.get_unchecked(prev_row_idx + 1);
+                            let v21 = src_data.get_unchecked(current_idx - 1);
+                            let v23 = src_data.get_unchecked(current_idx + 1);
+                            let v31 = src_data.get_unchecked(next_row_idx - 1);
+                            let v32 = src_data.get_unchecked(next_row_idx);
+                            let v33 = src_data.get_unchecked(next_row_idx + 1);
+
+                            // I_x,I_y via 3x3 sobel operator and convolved
+                            let dx = (-v33 + v31 - 2.0 * v23 + 2.0 * v21 - v13 + v11) * 0.125;
+                            let dy = (-v33 - 2.0 * v32 - v31 + v13 + 2.0 * v12 + v11) * 0.125;
+
+                            // filter normalization
+                            *dx2_pixel = dx * dx;
+                            *dy2_pixel = dy * dy;
+                            *dxy_pixel = dx * dy;
+                        });
+                });
+        }
+
+        unsafe {
+            dst.as_slice_mut()
+                .get_unchecked_mut(col_slice.clone())
+                .par_chunks_exact_mut(src.cols())
+                .enumerate()
+                .for_each(|(row_idx, dst_chunk)| {
+                    let row_offset = (row_idx + 1) * src.cols();
+
+                    dst_chunk
+                        .get_unchecked_mut(row_slice.clone())
+                        .iter_mut()
+                        .enumerate()
+                        .for_each(|(col_idx, dst_pixel)| {
+                            let current_idx = row_offset + col_idx + 1;
+                            let prev_row_idx = current_idx - src.cols();
+                            let next_row_idx = current_idx + src.cols();
+
+                            let mut m11 = 0.0;
+                            let mut m22 = 0.0;
+                            let mut m12 = 0.0;
+
+                            let idxs = [
+                                prev_row_idx - 1,
+                                prev_row_idx,
+                                prev_row_idx + 1,
+                                current_idx - 1,
+                                current_idx,
+                                current_idx + 1,
+                                next_row_idx - 1,
+                                next_row_idx,
+                                next_row_idx + 1,
+                            ];
+                            for idx in idxs {
+                                m11 += self.dx2_data.get_unchecked(idx);
+                                m22 += self.dy2_data.get_unchecked(idx);
+                                m12 += self.dxy_data.get_unchecked(idx);
+                            }
+
+                            let det = m11 * m22 - m12 * m12;
+                            let trace = m11 + m22;
+                            let response = det - self.k * trace * trace;
+
+                            *dst_pixel = f32::max(0.0, response);
+                        });
+                });
+        }
+
+        Ok(())
+    }
+}
+
 /// Compute the DoG response of an image.
 ///
 /// The DoG response is computed as the difference of the Gaussian responses of two images.
@@ -160,6 +346,130 @@ mod tests {
                 0.0, 0.0, 0.0, 0.0, 0.0,
             ]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_harris_response() -> Result<(), ImageError> {
+        #[rustfmt::skip]
+        let src = Image::from_size_slice(
+            [9, 9].into(),
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ]
+        )?;
+
+        let mut dst = Image::from_size_val([9, 9].into(), 0.0)?;
+        HarrisResponse::new(dst.size()).compute(&src, &mut dst)?;
+
+        #[rustfmt::skip]
+        assert_eq!(dst.as_slice(), &[
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.01953125, 0.14078125, 0.08238281, 0.0, 0.08238281, 0.14078125, 0.01953125, 0.0,
+            0.0, 0.14078125, 0.49203125, 0.37144533, 0.0, 0.37144533, 0.49203125, 0.14078125, 0.0,
+            0.0, 0.08238281, 0.37144533, 0.32496095, 0.0, 0.32496095, 0.37144533, 0.08238281, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.08238281, 0.37144533, 0.32496095, 0.0, 0.32496095, 0.37144533, 0.08238281, 0.0,
+            0.0, 0.14078125, 0.49203125, 0.37144533, 0.0, 0.37144533, 0.49203125, 0.14078125, 0.0,
+            0.0, 0.01953125, 0.14078125, 0.08238281, 0.0, 0.08238281, 0.14078125, 0.01953125, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        ]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_harris_rectangle() -> Result<(), ImageError> {
+        #[rustfmt::skip]
+        let src = Image::from_size_slice(
+            ImageSize {width: 9, height: 12},
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ]
+        )?;
+
+        let mut dst = Image::from_size_val(src.size(), 0.0)?;
+        HarrisResponse::new(src.size())
+            .with_k(0.01)
+            .with_sigmas(10.0) // TODO: Does nothing
+            .with_grads_mode(GradsMode::Diff) // TODO: Does nothing
+            .compute(&src, &mut dst)?;
+
+        #[rustfmt::skip]
+        assert_eq!(dst.as_slice(), &[
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.03125, 0.17875001, 0.144375, 0.0, 0.144375, 0.17875001, 0.03125, 0.0,
+            0.0, 0.17875001, 0.57125, 0.456875, 0.0, 0.456875, 0.57125, 0.17875001, 0.0,
+            0.0, 0.144375, 0.456875, 0.374209, 0.0, 0.374209, 0.456875, 0.144375, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.144375, 0.456875, 0.374209, 0.0, 0.374209, 0.456875, 0.144375, 0.0,
+            0.0, 0.17875001, 0.57125, 0.456875, 0.0, 0.456875, 0.57125, 0.17875001, 0.0,
+            0.0, 0.03125, 0.17875001, 0.144375, 0.0, 0.144375, 0.17875001, 0.03125, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        ]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_harris_builder_pattern() -> Result<(), ImageError> {
+        #[rustfmt::skip]
+        let src = Image::from_size_slice(
+            [9, 9].into(),
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ]
+        )?;
+
+        let mut dst = Image::from_size_val([9, 9].into(), 0.0)?;
+        HarrisResponse::new(dst.size())
+            .with_k(0.01)
+            .with_sigmas(10.0) // TODO: Does nothing
+            .with_grads_mode(GradsMode::Diff) // TODO: Does nothing
+            .compute(&src, &mut dst)?;
+
+        #[rustfmt::skip]
+        assert_eq!(dst.as_slice(), &[
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.03125, 0.17875001, 0.144375, 0.0, 0.144375, 0.17875001, 0.03125, 0.0,
+            0.0, 0.17875001, 0.57125, 0.456875, 0.0, 0.456875, 0.57125, 0.17875001, 0.0,
+            0.0, 0.144375, 0.456875, 0.374209, 0.0, 0.374209, 0.456875, 0.144375, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.144375, 0.456875, 0.374209, 0.0, 0.374209, 0.456875, 0.144375, 0.0,
+            0.0, 0.17875001, 0.57125, 0.456875, 0.0, 0.456875, 0.57125, 0.17875001, 0.0,
+            0.0, 0.03125, 0.17875001, 0.144375, 0.0, 0.144375, 0.17875001, 0.03125, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        ]);
+
         Ok(())
     }
 
