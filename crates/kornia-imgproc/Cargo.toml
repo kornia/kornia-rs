@@ -25,6 +25,8 @@ image = "0.25"
 imageproc = "0.25"
 kornia-io = { workspace = true }
 ndarray = { version = "0.15", features = ["rayon"] }
+yuvutils-rs = "0.8"
+
 
 [[bench]]
 name = "bench_color"
