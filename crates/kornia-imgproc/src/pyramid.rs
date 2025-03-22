@@ -13,11 +13,11 @@ fn get_pyramid_gaussian_kernel() -> (Vec<f32>, Vec<f32>) {
     //   [1.0, 4.0, 6.0, 4.0, 1.0],
     // ] / 256.0
 
-    let kernel_x = vec![1.0, 4.0, 6.0, 4.0, 1.0]
+    let kernel_x = [1.0, 4.0, 6.0, 4.0, 1.0]
         .iter()
         .map(|&x| x / 16.0)
         .collect();
-    let kernel_y = vec![1.0, 4.0, 6.0, 4.0, 1.0]
+    let kernel_y = [1.0, 4.0, 6.0, 4.0, 1.0]
         .iter()
         .map(|&x| x / 16.0)
         .collect();
