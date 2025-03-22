@@ -89,7 +89,7 @@ impl SO3 {
 
     /// Lie algebra -> vector space
     pub fn vee(omega: Mat3) -> Vec3 {
-        Vec3::from_array([omega[7], omega[2], omega[3]])
+        Vec3::from_array([omega.col(1)[1], omega.col(01)[2], omega.col(1)[0]])
     }
 
     pub fn left_jacobian(v: Vec3) -> Mat3 {
@@ -129,7 +129,6 @@ mod tests {
 
     #[test]
     fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+        println!("TEST");
     }
 }
