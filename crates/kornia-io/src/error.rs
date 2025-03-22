@@ -29,4 +29,8 @@ pub enum IoError {
     /// Error to decode the PNG image.
     #[error("Failed to decode the image")]
     PngDecodeError(String),
+
+    /// Error getting the format
+    #[error("Failed to get correct format")]
+    GetFormatError,
 }

@@ -91,6 +91,29 @@ impl Default for V4L2CameraConfig {
     }
 }
 
+/// Returns a base GStreamer pipeline string for capturing frames from a V4L2 camera.
+/// This function provides the common initial part of the pipeline without the sink elements.
+/// # Arguments
+///
+/// * `device` - The camera device path
+/// * `size` - The image size to capture
+/// * `fps` - The desired frames per second
+///
+/// # Returns
+///
+/// A base GStreamer pipeline string
+pub fn v4l2_camera_pipeline_base_description(device: &str, size: Option<ImageSize>, fps: u32) -> String {
+    let video_resize = if let Some(size) = size {
+        format!("! video/x-raw,width={},height={} ", size.width, size.height)
+    } else {
+        "".to_string()
+    };
+
+    format!(
+            "v4l2src device={} {}! videorate ! video/x-raw,framerate={}/1 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
+            device, video_resize, fps
+        )
+}
 /// Returns a GStreamer pipeline string for capturing frames from a V4L2 camera.
 ///
 /// # Arguments
@@ -103,14 +126,6 @@ impl Default for V4L2CameraConfig {
 ///
 /// A GStreamer pipeline string
 pub fn v4l2_camera_pipeline_description(device: &str, size: Option<ImageSize>, fps: u32) -> String {
-    let video_resize = if let Some(size) = size {
-        format!("! video/x-raw,width={},height={} ", size.width, size.height)
-    } else {
-        "".to_string()
-    };
-
-    format!(
-            "v4l2src device={} {}! videorate ! video/x-raw,framerate={}/1 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
-            device, video_resize, fps
-        )
+    format!("{} ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink", 
+        v4l2_camera_pipeline_base_description(device, size, fps))
 }
