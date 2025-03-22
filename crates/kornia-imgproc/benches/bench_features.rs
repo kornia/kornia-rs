@@ -1,8 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use rand::Rng;
 use kornia_image::Image;
 use kornia_imgproc::features::{dog_response, HarrisResponse};
-
+use rand::Rng;
 
 fn bench_harris_response(c: &mut Criterion) {
     let mut group = c.benchmark_group("Features");
@@ -60,7 +59,7 @@ fn bench_dog_response(c: &mut Criterion) {
                         black_box(0.5),
                         black_box(1.0),
                     )
-                        .unwrap()
+                    .unwrap()
                 })
             },
         );
@@ -75,7 +74,6 @@ criterion_group!(
     targets = bench_harris_response, bench_dog_response
 );
 criterion_main!(benches);
-
 
 #[cfg(test)]
 mod tests {

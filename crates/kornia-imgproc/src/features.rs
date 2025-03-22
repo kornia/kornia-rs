@@ -1,7 +1,6 @@
+use crate::filter::gaussian_blur;
 use kornia_image::{Image, ImageError, ImageSize};
 use rayon::prelude::*;
-use crate::filter::{gaussian_blur, kernels, separable_filter};
-
 
 /// Method to calculate gradient for feature response
 #[derive(Default)]
@@ -12,7 +11,6 @@ pub enum GradsMode {
     /// Finite difference
     Diff,
 }
-
 
 fn _get_kernel_size(sigma: f32) -> usize {
     let mut ksize = (2.0 * 4.0 * sigma + 1.0) as usize;
@@ -97,8 +95,8 @@ pub fn hessian_response(src: &Image<f32, 1>, dst: &mut Image<f32, 1>) -> Result<
 pub struct HarrisResponse {
     image_size: ImageSize,
     k: f32,
-    grads_mode: GradsMode,  // TODO
-    sigmas: f32,  // TODO
+    grads_mode: GradsMode, // TODO
+    sigmas: f32,           // TODO
     dx2_data: Vec<f32>,
     dy2_data: Vec<f32>,
     dxy_data: Vec<f32>,
@@ -112,9 +110,9 @@ impl HarrisResponse {
             k: 0.04,
             grads_mode: GradsMode::default(),
             sigmas: 0.0,
-            dx2_data: vec![0.0; image_size.width*image_size.height],
-            dy2_data: vec![0.0; image_size.width*image_size.height],
-            dxy_data: vec![0.0; image_size.width*image_size.height],
+            dx2_data: vec![0.0; image_size.width * image_size.height],
+            dy2_data: vec![0.0; image_size.width * image_size.height],
+            dxy_data: vec![0.0; image_size.width * image_size.height],
         }
     }
 
@@ -140,7 +138,11 @@ impl HarrisResponse {
     /// Args:
     ///     src: The source image with shape (H, W).
     ///     dst: The destination image with shape (H, W).
-    pub fn compute(&mut self, src: &Image<f32, 1>, dst: &mut Image<f32, 1>) -> Result<(), ImageError> {
+    pub fn compute(
+        &mut self,
+        src: &Image<f32, 1>,
+        dst: &mut Image<f32, 1>,
+    ) -> Result<(), ImageError> {
         if src.size() != self.image_size {
             return Err(ImageError::InvalidImageSize(
                 src.size().width,
@@ -163,14 +165,29 @@ impl HarrisResponse {
         let row_slice = 1..src.cols() - 1;
 
         unsafe {
-            self.dx2_data.as_mut_slice().get_unchecked_mut(col_slice.clone()).par_chunks_exact_mut(src.cols())
-                .zip(self.dy2_data.as_mut_slice().get_unchecked_mut(col_slice.clone()).par_chunks_exact_mut(src.cols()))
-                .zip(self.dxy_data.as_mut_slice().get_unchecked_mut(col_slice.clone()).par_chunks_exact_mut(src.cols()))
+            self.dx2_data
+                .as_mut_slice()
+                .get_unchecked_mut(col_slice.clone())
+                .par_chunks_exact_mut(src.cols())
+                .zip(
+                    self.dy2_data
+                        .as_mut_slice()
+                        .get_unchecked_mut(col_slice.clone())
+                        .par_chunks_exact_mut(src.cols()),
+                )
+                .zip(
+                    self.dxy_data
+                        .as_mut_slice()
+                        .get_unchecked_mut(col_slice.clone())
+                        .par_chunks_exact_mut(src.cols()),
+                )
                 .enumerate()
                 .for_each(|(row_idx, ((dx2_chunk, dy2_chunk), dxy_chunk))| {
                     let row_offset = (row_idx + 1) * src.cols();
 
-                    dx2_chunk.get_unchecked_mut(row_slice.clone()).iter_mut()
+                    dx2_chunk
+                        .get_unchecked_mut(row_slice.clone())
+                        .iter_mut()
                         .zip(dy2_chunk.get_unchecked_mut(row_slice.clone()).iter_mut())
                         .zip(dxy_chunk.get_unchecked_mut(row_slice.clone()).iter_mut())
                         .enumerate()
@@ -201,12 +218,16 @@ impl HarrisResponse {
         }
 
         unsafe {
-            dst.as_slice_mut().get_unchecked_mut(col_slice.clone()).par_chunks_exact_mut(src.cols())
+            dst.as_slice_mut()
+                .get_unchecked_mut(col_slice.clone())
+                .par_chunks_exact_mut(src.cols())
                 .enumerate()
                 .for_each(|(row_idx, dst_chunk)| {
                     let row_offset = (row_idx + 1) * src.cols();
 
-                    dst_chunk.get_unchecked_mut(row_slice.clone()).iter_mut()
+                    dst_chunk
+                        .get_unchecked_mut(row_slice.clone())
+                        .iter_mut()
                         .enumerate()
                         .for_each(|(col_idx, dst_pixel)| {
                             let current_idx = row_offset + col_idx + 1;
@@ -218,9 +239,15 @@ impl HarrisResponse {
                             let mut m12 = 0.0;
 
                             let idxs = [
-                                prev_row_idx - 1, prev_row_idx, prev_row_idx + 1,
-                                current_idx - 1, current_idx, current_idx + 1,
-                                next_row_idx - 1, next_row_idx, next_row_idx + 1,
+                                prev_row_idx - 1,
+                                prev_row_idx,
+                                prev_row_idx + 1,
+                                current_idx - 1,
+                                current_idx,
+                                current_idx + 1,
+                                next_row_idx - 1,
+                                next_row_idx,
+                                next_row_idx + 1,
                             ];
                             for idx in idxs {
                                 m11 += self.dx2_data.get_unchecked(idx);
@@ -240,7 +267,6 @@ impl HarrisResponse {
         Ok(())
     }
 }
-
 
 /// Compute the DoG response of an image.
 ///
@@ -383,8 +409,8 @@ mod tests {
         let mut dst = Image::from_size_val(src.size(), 0.0)?;
         HarrisResponse::new(src.size())
             .with_k(0.01)
-            .with_sigmas(10.0)  // TODO: Does nothing
-            .with_grads_mode(GradsMode::Diff)  // TODO: Does nothing
+            .with_sigmas(10.0) // TODO: Does nothing
+            .with_grads_mode(GradsMode::Diff) // TODO: Does nothing
             .compute(&src, &mut dst)?;
 
         #[rustfmt::skip]
@@ -427,8 +453,8 @@ mod tests {
         let mut dst = Image::from_size_val([9, 9].into(), 0.0)?;
         HarrisResponse::new(dst.size())
             .with_k(0.01)
-            .with_sigmas(10.0)  // TODO: Does nothing
-            .with_grads_mode(GradsMode::Diff)  // TODO: Does nothing
+            .with_sigmas(10.0) // TODO: Does nothing
+            .with_grads_mode(GradsMode::Diff) // TODO: Does nothing
             .compute(&src, &mut dst)?;
 
         #[rustfmt::skip]
