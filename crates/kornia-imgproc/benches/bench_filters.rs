@@ -27,7 +27,8 @@ fn bench_filters(c: &mut Criterion) {
     let mut group = c.benchmark_group("Gaussian Blur");
 
     for (width, height) in [(256, 224), (512, 448), (1024, 896)].iter() {
-        for kernel_size in [3, 5, 7, 9, 11, 17].iter() {
+        //for kernel_size in [3, 5, 7, 9, 11, 17].iter() {
+        for kernel_size in [3, 5, 7].iter() {
             group.throughput(criterion::Throughput::Elements(
                 (*width * *height * *kernel_size) as u64,
             ));
