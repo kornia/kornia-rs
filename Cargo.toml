@@ -40,6 +40,11 @@ kornia = { path = "crates/kornia", version = "0.1.9-rc.2" }
 kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.9-rc.2" }
 kernels = { path = "crates/kernels", version = "0.1.9-rc.2" }
 
+# Add chrono dependencies and version limits
+chrono = "=0.4.39"
+# Add arrow-arith dependencies and version limits
+arrow-arith = "=53.3.0"
+
 # dev dependencies for workspace
 argh = "0.1"
 approx = "0.5"
