@@ -95,8 +95,6 @@ pub fn hessian_response(src: &Image<f32, 1>, dst: &mut Image<f32, 1>) -> Result<
 pub struct HarrisResponse {
     image_size: ImageSize,
     k: f32,
-    grads_mode: GradsMode, // TODO
-    sigmas: f32,           // TODO
     dx2_data: Vec<f32>,
     dy2_data: Vec<f32>,
     dxy_data: Vec<f32>,
@@ -108,8 +106,6 @@ impl HarrisResponse {
         Self {
             image_size,
             k: 0.04,
-            grads_mode: GradsMode::default(),
-            sigmas: 0.0,
             dx2_data: vec![0.0; image_size.width * image_size.height],
             dy2_data: vec![0.0; image_size.width * image_size.height],
             dxy_data: vec![0.0; image_size.width * image_size.height],
@@ -119,16 +115,6 @@ impl HarrisResponse {
     /// Sets the `k` value (usually between 0.04 to 0.06)
     pub fn with_k(self, k: f32) -> Self {
         Self { k, ..self }
-    }
-
-    /// Sets the gradient mode
-    pub fn with_grads_mode(self, grads_mode: GradsMode) -> Self {
-        Self { grads_mode, ..self }
-    }
-
-    /// Sets the sigma
-    pub fn with_sigmas(self, sigmas: f32) -> Self {
-        Self { sigmas, ..self }
     }
 
     /// Computes the harris response of an image.
@@ -409,8 +395,6 @@ mod tests {
         let mut dst = Image::from_size_val(src.size(), 0.0)?;
         HarrisResponse::new(src.size())
             .with_k(0.01)
-            .with_sigmas(10.0) // TODO: Does nothing
-            .with_grads_mode(GradsMode::Diff) // TODO: Does nothing
             .compute(&src, &mut dst)?;
 
         #[rustfmt::skip]
@@ -453,8 +437,6 @@ mod tests {
         let mut dst = Image::from_size_val([9, 9].into(), 0.0)?;
         HarrisResponse::new(dst.size())
             .with_k(0.01)
-            .with_sigmas(10.0) // TODO: Does nothing
-            .with_grads_mode(GradsMode::Diff) // TODO: Does nothing
             .compute(&src, &mut dst)?;
 
         #[rustfmt::skip]
