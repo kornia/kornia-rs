@@ -14,6 +14,7 @@ version.workspace = true
 
 [dependencies]
 argh = { workspace = true }
+arrow-arith = { workspace = true }
 chrono = {workspace = true }
 kornia = { workspace = true }
 rerun = { workspace = true }
