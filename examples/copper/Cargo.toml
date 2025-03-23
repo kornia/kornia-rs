@@ -14,9 +14,9 @@ version.workspace = true
 
 [dependencies]
 bincode = { workspace = true }
+chrono = { workspace = true }
 cu29 = "0.7.0"
 cu29-helpers = "0.7.0"
-chrono = { workspace = true }
 kornia = { workspace = true, features = ["gstreamer"] }
 rerun = { workspace = true }
 tempfile = "3.19"

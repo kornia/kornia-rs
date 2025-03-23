@@ -51,7 +51,7 @@ faer = "0.20.1"
 log = "0.4"
 num-traits = "0.2"
 rand = "0.9"
-rerun = "0.22.1"
+rerun = "~0.22"
 serde = { version = "1", features = ["derive"] }
 tempfile = "3.10"
 thiserror = "2"
