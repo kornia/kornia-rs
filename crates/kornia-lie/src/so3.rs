@@ -13,6 +13,10 @@ impl SO3 {
         Self { quaternion: Quat::IDENTITY }
     }
 
+    pub fn from_quaternion(quat: &Quat) -> Self {
+        Self { quaternion: Quat::from_array([quat.x, quat.y, quat.z, quat.w]) }
+    }
+
     pub fn from_matrix(mat: &Mat4) -> Self {
         Self { quaternion: Quat::from_mat4(mat)}
     }
@@ -128,7 +132,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_works() {
-        println!("TEST");
+    fn test_identity() {
+        todo!();
+    }
+
+    #[test]
+    fn test_from_quaternion() {
+        todo!();
+    }
+
+    #[test]
+    fn test_from_matrix() {
+        todo!();
+    }
+
+    #[test]
+    fn test_random() {
+        todo!();
+    }
+
+    #[test]
+    fn test_log() {
+        todo!();
+    }
+
+    #[test]
+    fn test_exp() {
+        todo!();
+    }
+
+    #[test]
+    fn test_hat() {
+        todo!();
+    }
+
+    #[test]
+    fn test_vee() {
+        todo!();
+    }
+
+    #[test]
+    fn test_adjoint() {
+        todo!();
+    }
+
+    #[test]
+    fn test_inverse() {
+        todo!();
+    }
+
+    #[test]
+    fn test_left_jacobian() {
+        todo!();
+    }
+
+    #[test]
+    fn test_right_jacobian() {
+        todo!();
     }
 }
