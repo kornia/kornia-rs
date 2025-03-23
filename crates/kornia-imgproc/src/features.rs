@@ -164,105 +164,127 @@ impl HarrisResponse {
         let col_slice = src.cols()..src_data.len() - src.cols();
         let row_slice = 1..src.cols() - 1;
 
-        unsafe {
-            self.dx2_data
-                .as_mut_slice()
-                .get_unchecked_mut(col_slice.clone())
-                .par_chunks_exact_mut(src.cols())
-                .zip(
-                    self.dy2_data
-                        .as_mut_slice()
-                        .get_unchecked_mut(col_slice.clone())
-                        .par_chunks_exact_mut(src.cols()),
-                )
-                .zip(
-                    self.dxy_data
-                        .as_mut_slice()
-                        .get_unchecked_mut(col_slice.clone())
-                        .par_chunks_exact_mut(src.cols()),
-                )
-                .enumerate()
-                .for_each(|(row_idx, ((dx2_chunk, dy2_chunk), dxy_chunk))| {
-                    let row_offset = (row_idx + 1) * src.cols();
+        self.dx2_data
+            .as_mut_slice()
+            .get_mut(col_slice.clone())
+            // SAFETY: we ranges is valid
+            .unwrap()
+            .par_chunks_exact_mut(src.cols())
+            .zip(
+                self.dy2_data
+                    .as_mut_slice()
+                    .get_mut(col_slice.clone())
+                    // SAFETY: we ranges is valid
+                    .unwrap()
+                    .par_chunks_exact_mut(src.cols()),
+            )
+            .zip(
+                self.dxy_data
+                    .as_mut_slice()
+                    .get_mut(col_slice.clone())
+                    // SAFETY: we ranges is valid
+                    .unwrap()
+                    .par_chunks_exact_mut(src.cols()),
+            )
+            .enumerate()
+            .for_each(|(row_idx, ((dx2_chunk, dy2_chunk), dxy_chunk))| {
+                let row_offset = (row_idx + 1) * src.cols();
 
-                    dx2_chunk
-                        .get_unchecked_mut(row_slice.clone())
-                        .iter_mut()
-                        .zip(dy2_chunk.get_unchecked_mut(row_slice.clone()).iter_mut())
-                        .zip(dxy_chunk.get_unchecked_mut(row_slice.clone()).iter_mut())
-                        .enumerate()
-                        .for_each(|(col_idx, ((dx2_pixel, dy2_pixel), dxy_pixel))| {
-                            let current_idx = row_offset + col_idx + 1;
-                            let prev_row_idx = current_idx - src.cols();
-                            let next_row_idx = current_idx + src.cols();
+                dx2_chunk
+                    .get_mut(row_slice.clone())
+                    // SAFETY: we ranges is valid
+                    .unwrap()
+                    .iter_mut()
+                    .zip(
+                        dy2_chunk
+                            .get_mut(row_slice.clone())
+                            // SAFETY: we ranges is valid
+                            .unwrap()
+                            .iter_mut(),
+                    )
+                    .zip(dxy_chunk.get_mut(row_slice.clone()).unwrap().iter_mut())
+                    .enumerate()
+                    .for_each(|(col_idx, ((dx2_pixel, dy2_pixel), dxy_pixel))| {
+                        let current_idx = row_offset + col_idx + 1;
+                        let prev_row_idx = current_idx - src.cols();
+                        let next_row_idx = current_idx + src.cols();
 
-                            let v11 = src_data.get_unchecked(prev_row_idx - 1);
-                            let v12 = src_data.get_unchecked(prev_row_idx);
-                            let v13 = src_data.get_unchecked(prev_row_idx + 1);
-                            let v21 = src_data.get_unchecked(current_idx - 1);
-                            let v23 = src_data.get_unchecked(current_idx + 1);
-                            let v31 = src_data.get_unchecked(next_row_idx - 1);
-                            let v32 = src_data.get_unchecked(next_row_idx);
-                            let v33 = src_data.get_unchecked(next_row_idx + 1);
+                        let (v11, v12, v13, v21, v23, v31, v32, v33) = unsafe {
+                            // SAFETY: we ranges is valid
+                            (
+                                src_data.get_unchecked(prev_row_idx - 1),
+                                src_data.get_unchecked(prev_row_idx),
+                                src_data.get_unchecked(prev_row_idx + 1),
+                                src_data.get_unchecked(current_idx - 1),
+                                src_data.get_unchecked(current_idx + 1),
+                                src_data.get_unchecked(next_row_idx - 1),
+                                src_data.get_unchecked(next_row_idx),
+                                src_data.get_unchecked(next_row_idx + 1),
+                            )
+                        };
 
-                            // I_x,I_y via 3x3 sobel operator and convolved
-                            let dx = (-v33 + v31 - 2.0 * v23 + 2.0 * v21 - v13 + v11) * 0.125;
-                            let dy = (-v33 - 2.0 * v32 - v31 + v13 + 2.0 * v12 + v11) * 0.125;
+                        // I_x,I_y via 3x3 sobel operator and convolved
+                        let dx = (-v33 + v31 - 2.0 * v23 + 2.0 * v21 - v13 + v11) * 0.125;
+                        let dy = (-v33 - 2.0 * v32 - v31 + v13 + 2.0 * v12 + v11) * 0.125;
 
-                            // filter normalization
-                            *dx2_pixel = dx * dx;
-                            *dy2_pixel = dy * dy;
-                            *dxy_pixel = dx * dy;
-                        });
-                });
-        }
+                        // filter normalization
+                        *dx2_pixel = dx * dx;
+                        *dy2_pixel = dy * dy;
+                        *dxy_pixel = dx * dy;
+                    });
+            });
 
-        unsafe {
-            dst.as_slice_mut()
-                .get_unchecked_mut(col_slice.clone())
-                .par_chunks_exact_mut(src.cols())
-                .enumerate()
-                .for_each(|(row_idx, dst_chunk)| {
-                    let row_offset = (row_idx + 1) * src.cols();
+        dst.as_slice_mut()
+            .get_mut(col_slice.clone())
+            // SAFETY: we ranges is valid
+            .unwrap()
+            .par_chunks_exact_mut(src.cols())
+            .enumerate()
+            .for_each(|(row_idx, dst_chunk)| {
+                let row_offset = (row_idx + 1) * src.cols();
 
-                    dst_chunk
-                        .get_unchecked_mut(row_slice.clone())
-                        .iter_mut()
-                        .enumerate()
-                        .for_each(|(col_idx, dst_pixel)| {
-                            let current_idx = row_offset + col_idx + 1;
-                            let prev_row_idx = current_idx - src.cols();
-                            let next_row_idx = current_idx + src.cols();
+                dst_chunk
+                    .get_mut(row_slice.clone())
+                    // SAFETY: we ranges is valid
+                    .unwrap()
+                    .iter_mut()
+                    .enumerate()
+                    .for_each(|(col_idx, dst_pixel)| {
+                        let current_idx = row_offset + col_idx + 1;
+                        let prev_row_idx = current_idx - src.cols();
+                        let next_row_idx = current_idx + src.cols();
 
-                            let mut m11 = 0.0;
-                            let mut m22 = 0.0;
-                            let mut m12 = 0.0;
+                        let mut m11 = 0.0;
+                        let mut m22 = 0.0;
+                        let mut m12 = 0.0;
 
-                            let idxs = [
-                                prev_row_idx - 1,
-                                prev_row_idx,
-                                prev_row_idx + 1,
-                                current_idx - 1,
-                                current_idx,
-                                current_idx + 1,
-                                next_row_idx - 1,
-                                next_row_idx,
-                                next_row_idx + 1,
-                            ];
-                            for idx in idxs {
+                        let idxs = [
+                            prev_row_idx - 1,
+                            prev_row_idx,
+                            prev_row_idx + 1,
+                            current_idx - 1,
+                            current_idx,
+                            current_idx + 1,
+                            next_row_idx - 1,
+                            next_row_idx,
+                            next_row_idx + 1,
+                        ];
+                        for idx in idxs {
+                            // SAFETY: we ranges is valid
+                            unsafe {
                                 m11 += self.dx2_data.get_unchecked(idx);
                                 m22 += self.dy2_data.get_unchecked(idx);
                                 m12 += self.dxy_data.get_unchecked(idx);
                             }
+                        }
 
-                            let det = m11 * m22 - m12 * m12;
-                            let trace = m11 + m22;
-                            let response = det - self.k * trace * trace;
+                        let det = m11 * m22 - m12 * m12;
+                        let trace = m11 + m22;
+                        let response = det - self.k * trace * trace;
 
-                            *dst_pixel = f32::max(0.0, response);
-                        });
-                });
-        }
+                        *dst_pixel = f32::max(0.0, response);
+                    });
+            });
 
         Ok(())
     }
