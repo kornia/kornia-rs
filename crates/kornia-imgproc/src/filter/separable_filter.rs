@@ -1,57 +1,42 @@
 use kornia_image::{Image, ImageError};
-//use num_traits::Zero;
+use num_traits::Zero;
 
-/// Trait for element-wise operations.
-pub trait ElementOp {
-    /// The type of the element.
-    type ElementType: Clone;
-    /// Return the zero element.
-    fn zero() -> Self::ElementType;
-    /// Multiply two elements.
-    fn mul(a: Self, b: Self) -> Self::ElementType;
-    /// Multiply an element with another element.
-    fn mul_elem(a: Self::ElementType, b: Self) -> Self::ElementType;
-    /// Add an element to another element in place.
-    fn add_assign(a: &mut Self::ElementType, b: Self::ElementType);
-    /// Convert an element to another type.
-    fn from_elem(a: Self::ElementType) -> Self;
+/// Trait for floatting point casting
+
+pub trait FloatCasting {
+    /// Convert the type to f32
+    fn to_f32(&self) -> f32;
+    /// Convert the type from f32
+    fn from_f32(val: f32) -> Self;
 }
 
-impl ElementOp for f32 {
-    type ElementType = f32;
-    fn mul(a: Self, b: Self) -> Self::ElementType {
-        a * b
+impl FloatCasting for f32 {
+    fn to_f32(&self) -> f32 {
+        *self
     }
-    fn mul_elem(a: Self::ElementType, b: Self) -> Self::ElementType {
-        a * b
-    }
-    fn add_assign(a: &mut Self::ElementType, b: Self::ElementType) {
-        *a += b;
-    }
-    fn zero() -> Self::ElementType {
-        0.0
-    }
-    fn from_elem(a: Self::ElementType) -> Self {
-        a
+
+    fn from_f32(val: f32) -> Self {
+        val
     }
 }
 
-impl ElementOp for u8 {
-    type ElementType = u32;
-    fn mul(a: Self, b: Self) -> Self::ElementType {
-        a as u32 * b as u32
+impl FloatCasting for f64 {
+    fn to_f32(&self) -> f32 {
+        *self as f32
     }
-    fn mul_elem(a: Self::ElementType, b: Self) -> Self::ElementType {
-        a * b as u32
+
+    fn from_f32(val: f32) -> Self {
+        val as f64
     }
-    fn add_assign(a: &mut Self::ElementType, b: Self::ElementType) {
-        *a += b;
+}
+
+impl FloatCasting for u8 {
+    fn to_f32(&self) -> f32 {
+        *self as f32
     }
-    fn zero() -> Self::ElementType {
-        0
-    }
-    fn from_elem(a: Self::ElementType) -> Self {
-        a as u8
+
+    fn from_f32(val: f32) -> Self {
+        val.clamp(0.0, 255.0) as u8
     }
 }
 
@@ -66,12 +51,11 @@ impl ElementOp for u8 {
 pub fn separable_filter<T, const C: usize>(
     src: &Image<T, C>,
     dst: &mut Image<T, C>,
-    kernel_x: &[T],
-    kernel_y: &[T],
+    kernel_x: &[f32],
+    kernel_y: &[f32],
 ) -> Result<(), ImageError>
 where
-    //T: Zero + std::ops::Mul<Output = T> + std::ops::AddAssign + Copy,
-    T: ElementOp + Copy + Clone,
+    T: FloatCasting + Clone + Zero + std::ops::Mul<Output = T> + std::ops::AddAssign,
 {
     if kernel_x.is_empty() || kernel_y.is_empty() {
         return Err(ImageError::InvalidKernelLength(
@@ -96,8 +80,7 @@ where
     let dst_data = dst.as_slice_mut();
 
     // preallocate the temporary buffer for intermediate results
-    // TODO: use a better buffer allocation strategy
-    let mut temp = vec![T::zero(); src_data.len()];
+    let mut temp = vec![0.0f32; src_data.len()];
 
     // Row-wise filtering
     for r in 0..src.rows() {
@@ -106,14 +89,13 @@ where
             let col_offset = (row_offset + c) * C;
             for ch in 0..C {
                 let pix_offset = col_offset + ch;
-                let mut row_acc = T::zero();
+                let mut row_acc = 0.0f32;
                 for (k_idx, k_val) in kernel_x.iter().enumerate() {
                     let x_pos = c as isize + k_idx as isize - half_kernel_x as isize;
                     if x_pos >= 0 && x_pos < src.cols() as isize {
                         let neighbor_idx = (row_offset + x_pos as usize) * C + ch;
                         let neighbor_val = unsafe { src_data.get_unchecked(neighbor_idx) };
-                        //row_acc += unsafe { *src_data.get_unchecked(neighbor_idx) } * *k_val;
-                        T::add_assign(&mut row_acc, T::mul(*neighbor_val, *k_val));
+                        row_acc += neighbor_val.to_f32() * k_val;
                     }
                 }
 
@@ -131,18 +113,17 @@ where
             let col_offset = (row_offset + c) * C;
             for ch in 0..C {
                 let pix_offset = col_offset + ch;
-                let mut col_acc = T::zero();
+                let mut col_acc = 0.0f32;
                 for (k_idx, k_val) in kernel_y.iter().enumerate() {
                     let y_pos = r as isize + k_idx as isize - half_kernel_y as isize;
                     if y_pos >= 0 && y_pos < src.rows() as isize {
                         let neighbor_idx = (y_pos as usize * src.cols() + c) * C + ch;
-                        //col_acc += unsafe { *temp.get_unchecked(neighbor_idx) } * *k_val;
                         let neighbor_val = unsafe { temp.get_unchecked(neighbor_idx) };
-                        T::add_assign(&mut col_acc, T::mul_elem(neighbor_val.clone(), *k_val));
+                        col_acc += neighbor_val * k_val;
                     }
                 }
                 unsafe {
-                    *dst_data.get_unchecked_mut(pix_offset) = T::from_elem(col_acc);
+                    *dst_data.get_unchecked_mut(pix_offset) = T::from_f32(col_acc);
                 }
             }
         }
@@ -275,15 +256,15 @@ mod tests {
             vec![
                 0, 0, 0, 0, 0,
                 0, 0, 0, 0, 0,
-                0, 0, 1, 0, 0,
+                0, 0, 255, 0, 0,
                 0, 0, 0, 0, 0,
                 0, 0, 0, 0, 0,
             ],
         )?;
 
         let mut dst = Image::<u8, 1>::from_size_val(img.size(), 0)?;
-        let kernel_x = vec![1, 1, 1];
-        let kernel_y = vec![1, 1, 1];
+        let kernel_x = vec![1.0, 1.0, 1.0];
+        let kernel_y = vec![1.0, 1.0, 1.0];
         separable_filter(&img, &mut dst, &kernel_x, &kernel_y)?;
 
         #[rustfmt::skip]
@@ -291,9 +272,9 @@ mod tests {
             dst.as_slice(),
             &[
                 0, 0, 0, 0, 0,
-                0, 1, 1, 1, 0,
-                0, 1, 1, 1, 0,
-                0, 1, 1, 1, 0,
+                0, 255, 255, 255, 0,
+                0, 255, 255, 255, 0,
+                0, 255, 255, 255, 0,
                 0, 0, 0, 0, 0,
             ]
         );
@@ -307,8 +288,8 @@ mod tests {
             height: 5,
         };
 
-        let kernel_x = vec![1, 1, 1];
-        let kernel_y = vec![1, 1, 1];
+        let kernel_x = vec![1.0, 1.0, 1.0];
+        let kernel_y = vec![1.0, 1.0, 1.0];
 
         let mut img = Image::<u8, 1>::from_size_val(size, 0)?;
         img.as_slice_mut()[12] = 255;
