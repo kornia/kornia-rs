@@ -45,12 +45,16 @@ argh = "0.1"
 approx = "0.5"
 bincode = { version = "2.0.0", features = ["derive"] }
 criterion = "0.5"
+ctrlc = "3.4"
 env_logger = "0.11"
 faer = "0.20.1"
 log = "0.4"
 num-traits = "0.2"
 rand = "0.9"
-rerun = "^0.22"
+rerun = "0.22.1"
 serde = { version = "1", features = ["derive"] }
 tempfile = "3.10"
 thiserror = "2"
+
+# fixes: https://github.com/rerun-io/rerun/issues/9159
+chrono = "0.4.39"

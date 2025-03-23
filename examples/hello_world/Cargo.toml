@@ -15,4 +15,3 @@ publish = false
 [dependencies]
 argh = { workspace = true }
 kornia = { workspace = true }
-rerun = { workspace = true }

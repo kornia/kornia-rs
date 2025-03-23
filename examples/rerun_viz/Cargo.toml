@@ -13,5 +13,6 @@ version.workspace = true
 
 [dependencies]
 argh = { workspace = true }
+chrono = {workspace = true }
 kornia = { workspace = true }
 rerun = { workspace = true }
