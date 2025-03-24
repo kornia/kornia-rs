@@ -6,20 +6,18 @@ use rand::Rng;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SO3 {
-    pub quaternion: Quat,
+    pub q: Quat,
 }
 
 impl SO3 {
-    pub fn identity() -> Self {
-        Self { quaternion: Quat::IDENTITY }
-    }
+    pub const IDENTITY: Self = Self { q: Quat::IDENTITY };
 
     pub fn from_quaternion(quat: &Quat) -> Self {
-        Self { quaternion: Quat::from_array([quat.x, quat.y, quat.z, quat.w]) }
+        Self { q: Quat::from_array([quat.x, quat.y, quat.z, quat.w]) }
     }
 
     pub fn from_matrix(mat: &Mat4) -> Self {
-        Self { quaternion: Quat::from_mat4(mat)}
+        Self { q: Quat::from_mat4(mat)}
     }
 
     pub fn from_random() -> Self {
@@ -35,12 +33,12 @@ impl SO3 {
         let z = r1.sqrt() * (2.0 * std::f32::consts::PI * r3).cos();
 
         Self {
-            quaternion: Quat::from_xyzw(x, y, z, w)
+            q: Quat::from_xyzw(x, y, z, w)
         }
     }
 
     pub fn to_matrix(&self) -> Mat3A {
-        Affine3A::from_quat(self.quaternion).matrix3
+        Affine3A::from_quat(self.q).matrix3
     }
 
     pub fn adjoint(&self) -> Mat3A {
@@ -48,7 +46,7 @@ impl SO3 {
     }
 
     pub fn inverse(&self) -> Self {
-        Self { quaternion: self.quaternion.inverse() }
+        Self { q: self.q.inverse() }
     }
 
     /// Lie algebra -> Lie group
@@ -64,14 +62,14 @@ impl SO3 {
         let xyz = b*v;
 
         Self {
-            quaternion: Quat::from_xyzw(xyz.x, xyz.y, xyz.z, w),
+            q: Quat::from_xyzw(xyz.x, xyz.y, xyz.z, w),
         }
     }
 
     /// Lie group -> Lie algebra
     pub fn log(&self) -> Vec3 {
-        let real = self.quaternion.w;
-        let vec = Vec3::new(self.quaternion.x, self.quaternion.y, self.quaternion.z);
+        let real = self.q.w;
+        let vec = Vec3::new(self.q.x, self.q.y, self.q.z);
 
         let theta = vec.dot(vec).sqrt();
         let omega = if theta != 0.0 {
@@ -136,7 +134,7 @@ mod tests {
     fn test_from_quaternion() {
         let q = Quat::from_xyzw(4.0, -2.0, 1.0, 3.5);
         let s = SO3::from_quaternion(&q);
-        assert_eq!(s.quaternion, q);
+        assert_eq!(s.q, q);
     }
 
     #[test]
@@ -148,7 +146,7 @@ mod tests {
             0.0, 0.0, 0.0, 1.0,
         ]);
         let s = SO3::from_matrix(&mat);
-        assert!((s.quaternion - Quat::from_xyzw(0.5, 0.0, 0.0, 1.0).normalize()).length() < 1e-5);
+        assert!((s.q - Quat::from_xyzw(0.5, 0.0, 0.0, 1.0).normalize()).length() < 1e-5);
     }
 
     #[test]
@@ -170,7 +168,7 @@ mod tests {
     fn test_exp() {
         let v = Vec3::from_array([0.0, 0.0, 0.0]);
         let s = SO3::exp(v);
-        assert_eq!(s.quaternion, Quat::from_xyzw(0.0, 0.0, 0.0, 1.0));
+        assert_eq!(s.q, Quat::from_xyzw(0.0, 0.0, 0.0, 1.0));
     }
 
     #[test]

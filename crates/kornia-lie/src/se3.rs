@@ -4,37 +4,56 @@ use crate::so3::SO3;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SE3 {
-    rotation: SO3,
-    translation: DVec3,
+    pub r: SO3,
+    pub t: DVec3,
 }
 
 impl SE3 {
+    pub const IDENTITY: Self = Self { r: SO3::IDENTITY, t: DVec3::from_array([0.0, 0.0, 0.0]) };
+
     pub fn new(rotation: SO3, translation: DVec3) -> Self {
-        Self { rotation, translation }
+        Self { r: rotation, t: translation }
     }
 
-    pub fn from_axis_angle(axis: DVec3, angle: f64, translation: DVec3) -> Self {
-        let rotation = DQuat::from_axis_angle(axis.normalize(), angle);
-        Self { rotation, translation }
+    pub fn from_matrix(m: DMat4) -> Self {
+
+    }
+
+    pub fn from_random() -> Self {
+
     }
 
     pub fn inverse(&self) -> Self {
-        let inv_rot = self.rotation.inverse();
-        let inv_trans = -(inv_rot * self.translation);
-        Self { rotation: inv_rot, translation: inv_trans }
-    }
-
-    pub fn compose(&self, other: &SE3) -> Self {
-        let new_rotation = self.rotation * other.rotation;
-        let new_translation = self.translation + (self.rotation * other.translation);
-        Self { rotation: new_rotation, translation: new_translation }
+        let inv_rot = self.r.inverse();
+        let inv_trans = -(inv_rot * self.t);
+        Self { r: inv_rot, t: inv_trans }
     }
 
     pub fn as_matrix(&self) -> DMat4 {
-        let rotation_matrix = self.rotation.to_mat4();
+        let rotation_matrix = self.r.to_mat4();
         let mut matrix = rotation_matrix;
-        matrix.w_axis = glam::DVec4::new(self.translation.x, self.translation.y, self.translation.z, 1.0);
+        matrix.w_axis = glam::DVec4::new(self.t.x, self.t.y, self.t.z, 1.0);
         matrix
+    }
+
+    pub fn adjoint() -> ! {
+        todo!("Python impl returns a 6x6 matrix")
+    }
+
+    pub fn exp() -> ! {
+        todo!("Takes in vector of shape 6")
+    }
+
+    pub fn log() -> ! {
+        todo!("Takes in vector of shape 6")
+    }
+
+    pub fn hat() -> ! {
+        todo!("Takes in vector of shape 6")
+    }
+
+    pub fn vee() -> ! {
+        todo!("Takes in vector of shape 6")
     }
 }
 
