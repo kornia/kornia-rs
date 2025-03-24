@@ -74,9 +74,9 @@ impl SO3 {
 
         let theta = vec.dot(vec).sqrt();
         let omega = if theta != 0.0 {
-            vec*2.8*real.acos() / theta
+            vec*2.0 * real.acos() / theta
         } else {
-            vec*2.0 /real
+            vec*2.0 / real
         };
 
         omega
@@ -93,7 +93,7 @@ impl SO3 {
 
     /// Lie algebra -> vector space
     pub fn vee(omega: Mat3) -> Vec3 {
-        Vec3::from_array([omega.col(1)[1], omega.col(01)[2], omega.col(1)[0]])
+        Vec3::from_array([omega.col(2)[1], omega.col(0)[2], omega.col(1)[0]])
     }
 
     pub fn left_jacobian(v: Vec3) -> Mat3 {
@@ -133,61 +133,101 @@ mod tests {
 
     #[test]
     fn test_identity() {
-        todo!();
+        let s = SO3::identity();
+        assert_eq!(s.quaternion, Quat::from_xyzw(0.0, 0.0, 0.0, 1.0));
     }
 
     #[test]
     fn test_from_quaternion() {
-        todo!();
+        let q = Quat::from_xyzw(4.0, -2.0, 1.0, 3.5);
+        let s = SO3::from_quaternion(&q);
+        assert_eq!(s.quaternion, q);
     }
 
     #[test]
     fn test_from_matrix() {
-        todo!();
-    }
-
-    #[test]
-    fn test_random() {
-        todo!();
+        let mat = Mat4::from_cols_array(&[
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 0.6, 0.8, 0.0,
+            0.0,-0.8, 0.6, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ]);
+        let s = SO3::from_matrix(&mat);
+        assert!((s.quaternion - Quat::from_xyzw(0.5, 0.0, 0.0, 1.0).normalize()).length() < 1e-5);
     }
 
     #[test]
     fn test_log() {
-        todo!();
+        {
+            let so3 = SO3::from_quaternion(&Quat::from_xyzw(1.0, 1.0, 1.0, 1.0));
+            let log = so3.log();
+            assert!((log - Vec3::new(0.0, 0.0, 0.0)).length() < 1e-5);
+        }
+
+        {
+            let so3 = SO3::exp(Vec3::new(1.0, 0.0, 0.0));
+            let log = so3.log();
+            assert!((log - Vec3::new(1.0, 0.0, 0.0)).length() < 1e-5);
+        }
     }
 
     #[test]
     fn test_exp() {
-        todo!();
+        let v = Vec3::from_array([0.0, 0.0, 0.0]);
+        let s = SO3::exp(v);
+        assert_eq!(s.quaternion, Quat::from_xyzw(0.0, 0.0, 0.0, 1.0));
     }
 
     #[test]
     fn test_hat() {
-        todo!();
+        let v = Vec3::new(1.0, 2.0, 3.0);
+        let hat_v = SO3::hat(v);
+        assert_eq!(hat_v.x_axis.y, -3.0);
+        assert_eq!(hat_v.x_axis.z, 2.0);
+        assert_eq!(hat_v.y_axis.x, 3.0);
+        assert_eq!(hat_v.y_axis.z, -1.0);
+        assert_eq!(hat_v.z_axis.x, -2.0);
+        assert_eq!(hat_v.z_axis.y, 1.0);
     }
 
     #[test]
     fn test_vee() {
-        todo!();
+        {
+            let omega = SO3::hat(Vec3::new(1.0, 2.0, 3.0));
+            let v = SO3::vee(omega);
+            assert!((v - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-5);
+        }
     }
 
     #[test]
     fn test_adjoint() {
-        todo!();
+        let so3 = SO3::exp(Vec3::new(0.1, 0.2, 0.3));
+        let adjoint = so3.adjoint();
+        assert!(adjoint.is_finite());
     }
 
     #[test]
     fn test_inverse() {
-        todo!();
+        let so3 = SO3::exp(Vec3::new(0.5, -0.2, 0.1));
+        let inv = so3.inverse();
+        let identity = so3.to_matrix() * inv.to_matrix();
+        
+        let max_diff = (identity-Mat3A::IDENTITY).to_cols_array().iter().map(|&x| x.abs()).fold(0.0, f32::max);
+
+        assert!(max_diff < 1e-5);
     }
 
     #[test]
     fn test_left_jacobian() {
-        todo!();
+        let v = Vec3::new(0.1, 0.2, 0.3);
+        let left_jacobian = SO3::left_jacobian(v);
+        assert!(left_jacobian.is_finite());
     }
 
     #[test]
     fn test_right_jacobian() {
-        todo!();
+        let v = Vec3::new(-0.1, 0.3, 0.2);
+        let right_jacobian = SO3::right_jacobian(v);
+        assert!(right_jacobian.is_finite());
     }
 }
