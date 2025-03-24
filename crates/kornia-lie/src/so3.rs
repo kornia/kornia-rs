@@ -4,6 +4,7 @@ use glam::{Affine3A, Mat3, Mat3A, Mat4, Quat, Vec3};
 use rand::Rng;
 
 
+#[derive(Debug, Clone, Copy)]
 pub struct SO3 {
     pub quaternion: Quat,
 }
@@ -117,12 +118,6 @@ impl Mul for SO3 {
     type Output = SO3;
 
     fn mul(self, rhs: Self) -> Self::Output {
-        todo!()
-    }
-}
-
-impl Debug for SO3 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         todo!()
     }
 }
