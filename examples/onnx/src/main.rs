@@ -3,13 +3,11 @@ use kornia_tensor::{CpuAllocator, Tensor};
 use std::path::PathBuf;
 use std::time::Instant;
 
-use kornia::image::{Image, ImageSize};
+use kornia::image::Image;
 use kornia::io::functional as F;
-use kornia::imgproc;
 
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
-use ort::value::ValueType;
 
 /// Represents a detected object in an image.
 #[derive(Debug)]
@@ -54,38 +52,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image: Image<u8, 3> = F::read_image_any_rgb8(&args.image_path)?;
 
     // read the onnx model
+
     let model = Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
         .with_intra_threads(4)?
         .commit_from_file(&args.onnx_model_path)?;
 
-    // get the model input dimensions, assumes (B, C, H, W) format
-    let mut width = 0;
-    let mut height = 0;
-    if let ValueType::Tensor{dimensions,..} = &model.inputs[0].input_type {
-        println!("model input dimensions: {:?}", dimensions);
-        width = dimensions[2];
-        height = dimensions[3];
-    }
-
     // cast and scale the image to f32
     let mut image_hwc_f32 = Image::from_size_val(image.size(), 0.0f32)?;
     kornia::image::ops::cast_and_scale(&image, &mut image_hwc_f32, 1.0 / 255.0)?;
 
-    // resize the image to model input dimensions
-    let new_size = ImageSize {
-        width: width as usize,
-        height: height as usize,
-    };
-
-    let mut image_resized = Image::<f32, 3>::from_size_val(new_size, 0.0)?;
-    imgproc::resize::resize_native(
-        &image_hwc_f32, &mut image_resized,
-        imgproc::interpolation::InterpolationMode::Bilinear,
-    )?;
-
     // convert to HWC -> CHW
-    let image_chw = image_resized.permute_axes([2, 0, 1]).as_contiguous();
+    let image_chw = image_hwc_f32.permute_axes([2, 0, 1]).as_contiguous();
 
     // TODO: create a Tensor::insert_axis in kornia-rs
     let image_nchw = Tensor::from_shape_vec(
