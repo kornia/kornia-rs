@@ -1,8 +1,8 @@
 Example showing how to use ONNX models with OnnxRuntime for RTDETR.
 
-Download the onnxruntime dylib from the [onnxruntime releases page](https://github.com/microsoft/onnxruntime/releases) and extract it.
+Download the onnxruntime dylib from the [onnxruntime releases page](https://github.com/microsoft/onnxruntime/releases) and extract it. Then, download a model from [the Kornia ONNX repo](https://huggingface.co/kornia/ONNX_models).
 
-Export first the path to the onnxruntime dylib:
+Export the path to the onnxruntime dylib. For OS X systems, this file is "libonnxruntime.so". For Windows systems, the file is "onnxruntime.dll":
 
 ```bash
 export ORT_DYLIB_PATH=/path/to/onnxruntime/build/Linux/RelWithDebInfo/libonnxruntime.so
