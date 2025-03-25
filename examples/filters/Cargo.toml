@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 argh = { workspace = true }
-arrow-arith = { workspace = true }
+arrow = { workspace = true }
 chrono = { workspace = true }
 ctrlc = { workspace = true }
 kornia = { workspace = true, features = ["gstreamer"] }

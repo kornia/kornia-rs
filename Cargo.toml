@@ -56,6 +56,8 @@ serde = { version = "1", features = ["derive"] }
 tempfile = "3.10"
 thiserror = "2"
 
-# fixes: https://github.com/rerun-io/rerun/issues/9159
+# temporary fixes:
+# https://github.com/rerun-io/rerun/issues/9159
+# https://github.com/apache/arrow-rs/issues/7201#issuecomment-2685998489
 chrono = "0.4.39"
-arrow-arith ="53.3.0"
+arrow ="54.2.0"
