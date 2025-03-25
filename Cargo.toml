@@ -60,4 +60,3 @@ thiserror = "2"
 # https://github.com/rerun-io/rerun/issues/9159
 # https://github.com/apache/arrow-rs/issues/7201#issuecomment-2685998489
 chrono = "0.4.39"
-arrow ="54.2.0"
