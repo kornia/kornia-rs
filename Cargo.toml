@@ -8,7 +8,7 @@ members = [
     "examples/dora/imgproc",
     "examples/dora/video-sink",
     "examples/dora/image-utils",
-    "kornia-viz",
+    # "kornia-viz",
     # "kornia-py",
 ]
 exclude = ["kornia-py", "examples/dora"]
@@ -50,7 +50,11 @@ faer = "0.20.1"
 log = "0.4"
 num-traits = "0.2"
 rand = "0.9"
-rerun = "^0.22"
+# NOTE: temporary downgrade rerun to 0.21.0 as it fixes the build issue
+# with arrow-arith and chrono. Switch to a stable release after the next rerun release 0.23.0.
+# See: https://github.com/rerun-io/rerun/issues/9159
+#rerun = { git = "https://github.com/rerun-io/rerun", rev = "e208a2557e7bf50f92d00af68083d8fce62afb9b" }
+rerun = "0.21.0"
 serde = { version = "1", features = ["derive"] }
 tempfile = "3.10"
 thiserror = "2"

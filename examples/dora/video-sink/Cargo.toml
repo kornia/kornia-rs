@@ -8,4 +8,7 @@ dora-node-api = { version = "0.3", features = ["tracing"] }
 dora-image-utils = { path = "../image-utils" }
 eyre = "0.6"
 kornia = { version = "0.1.8"}
-rerun = "0.22"
+# NOTE: temporary downgrade rerun to 0.21.0 as it fixes the build issue
+# with arrow-arith and chrono. Switch to a stable release after the next rerun release 0.23.0.
+# See: https://github.com/rerun-io/rerun/issues/9159
+rerun = "0.21.0"
