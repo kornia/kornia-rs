@@ -168,6 +168,7 @@ mod tests {
     ];
     const WIDTH: usize = 2;
     const HEIGHT: usize = 3;
+
     #[test]
     fn yuv_from_rgb() -> Result<(), ImageError> {
         let image = Image::<f32, 3>::new(
@@ -179,7 +180,7 @@ mod tests {
         )?;
         let expected = YUV_TEST_DATA;
 
-        let mut yuv = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+        let mut yuv = Image::from_size_val(image.size(), 0.0)?;
 
         super::yuv_from_rgb(&image, &mut yuv)?;
 
@@ -187,11 +188,11 @@ mod tests {
         assert_eq!(yuv.size(), image.size());
 
         for (a, b) in yuv.as_slice().iter().zip(expected.iter()) {
-            println!("{:?} {:?}", a, b);
             assert!((a - b).pow(2) < 1e-6f32);
         }
         Ok(())
     }
+
     #[test]
     fn rgb_from_yuv() -> Result<(), ImageError> {
         let image = Image::<f32, 3>::new(
@@ -211,11 +212,11 @@ mod tests {
         assert_eq!(rgb.size(), image.size());
 
         for (a, b) in rgb.as_slice().iter().zip(expected.iter()) {
-            println!("{:?} {:?}", a, b);
             assert!((a - b).pow(2) < 1e-6f32);
         }
         Ok(())
     }
+
     #[test]
     fn yuv_inverse_relation_test() -> Result<(), ImageError> {
         let image = Image::<f32, 3>::new(
@@ -233,11 +234,11 @@ mod tests {
         super::rgb_from_yuv(&yuv, &mut rgb)?;
 
         for (a, b) in rgb.as_slice().iter().zip(image.as_slice().iter()) {
-            println!("{:?} {:?}", a, b);
             assert!((a - b).pow(2) < 1e-1f32);
         }
         Ok(())
     }
+
     #[test]
     fn yuv_utils_rs_comparison() -> Result<(), ImageError> {
         use yuvutils_rs::{
@@ -284,10 +285,8 @@ mod tests {
             .flat_map(|((y, u), v)| vec![*y, *u, *v])
             .collect::<Vec<u8>>();
         for (&a, &b) in yuv.as_slice().iter().zip(yuv_utils_rs_data.iter()) {
-            let a = a.round();
             let b = b as f32;
-            println!("{:?} {:?}", a, b);
-            assert!((a - b).abs() <= 1.0);
+            assert!((a - b).pow(2) <= 4e-1f32);
         }
         Ok(())
     }
