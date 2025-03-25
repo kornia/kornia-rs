@@ -1,4 +1,4 @@
-use glam::{DMat3, DVec2};
+use glam::{DMat2, DMat3, DVec2};
 
 use crate::so2::SO2;
 
@@ -15,10 +15,12 @@ impl SE2 {
 
     pub fn from_matrix() -> Self {
 
+        todo!()
     }
 
     pub fn from_random() -> Self {
 
+        todo!()
     }
 
     pub fn as_matrix(&self) -> DMat3 {
@@ -31,13 +33,15 @@ impl SE2 {
     }
 
     pub fn inverse(&self) -> Self {
-        let inv_rot = self.r.inverse();
-        let inv_trans = -(inv_rot.rotation * self.t);
-        Self { r: inv_rot, t: inv_trans }
+        // let inv_rot = self.r.inverse();
+        // let inv_trans = -(inv_rot.rotation * self.t);
+        // Self { r: inv_rot, t: inv_trans }
+    
+        todo!()
     }
 
     pub fn adjoint(&self) -> DMat2 {
-        
+        todo!()
     }
 
     pub fn exp() -> ! {
