@@ -21,18 +21,6 @@ impl SE2 {
 
     }
 
-    pub fn inverse(&self) -> Self {
-        let inv_rot = self.r.inverse();
-        let inv_trans = -(inv_rot.rotation * self.t);
-        Self { r: inv_rot, t: inv_trans }
-    }
-
-    pub fn compose(&self, other: &SE2) -> Self {
-        let new_rotation = self.r.compose(&other.r);
-        let new_translation = self.t + (self.r.rotation * other.t);
-        Self { r: new_rotation, t: new_translation }
-    }
-
     pub fn as_matrix(&self) -> DMat3 {
         let r = self.r.as_matrix();
         DMat3::from_cols_array(&[
@@ -40,6 +28,12 @@ impl SE2 {
             r.x_axis.y, r.y_axis.y, self.t.y,
             0.0, 0.0, 1.0,
         ])
+    }
+
+    pub fn inverse(&self) -> Self {
+        let inv_rot = self.r.inverse();
+        let inv_trans = -(inv_rot.rotation * self.t);
+        Self { r: inv_rot, t: inv_trans }
     }
 
     pub fn adjoint(&self) -> DMat2 {

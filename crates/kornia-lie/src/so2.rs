@@ -27,15 +27,15 @@ impl SO2 {
         Self { z: DVec2 { x: r1, y: r2 }}
     }
 
-    pub fn inverse(&self) -> Self {
-        Self { z: DVec2 { x: 1.0, y: 1.0 }/self.z }
-    }
-
     pub fn as_matrix(&self) -> DMat2 {
         DMat2::from_cols_array(&[
              self.z[0],-self.z[1],
              self.z[1], self.z[0],
         ])
+    }
+
+    pub fn inverse(&self) -> Self {
+        Self { z: DVec2 { x: 1.0, y: 1.0 }/self.z }
     }
 
     pub fn adjoint(&self) -> DMat2 {

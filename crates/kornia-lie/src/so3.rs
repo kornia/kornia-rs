@@ -126,8 +126,8 @@ mod tests {
 
     #[test]
     fn test_identity() {
-        let s = SO3::identity();
-        assert_eq!(s.quaternion, Quat::from_xyzw(0.0, 0.0, 0.0, 1.0));
+        let s = SO3::IDENTITY;
+        assert_eq!(s.q, Quat::from_xyzw(0.0, 0.0, 0.0, 1.0));
     }
 
     #[test]
