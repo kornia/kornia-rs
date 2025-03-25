@@ -8,7 +8,6 @@ members = [
     "examples/dora/imgproc",
     "examples/dora/video-sink",
     "examples/dora/image-utils",
-    "kornia-viz",
     # "kornia-py",
 ]
 exclude = ["kornia-py", "examples/dora"]
