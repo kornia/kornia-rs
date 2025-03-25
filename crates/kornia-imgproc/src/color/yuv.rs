@@ -37,7 +37,7 @@ use kornia_image::{Image, ImageError};
 /// )
 /// .unwrap();
 ///
-/// let mut yuv = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
+/// let mut yuv = Image::from_size_val(image.size(), 0.0).unwrap();
 ///
 /// yuv_from_rgb(&image, &mut yuv).unwrap();
 ///
@@ -111,7 +111,7 @@ pub fn yuv_from_rgb(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) -> Result<(), 
 /// )
 /// .unwrap();
 ///
-/// let mut rgb = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
+/// let mut rgb = Image::from_size_val(image.size(), 0.0).unwrap();
 ///
 /// rgb_from_yuv(&image, &mut rgb).unwrap();
 ///
@@ -204,7 +204,7 @@ mod tests {
         )?;
         let expected = RGB_FROM_YUV_DATA;
 
-        let mut rgb = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+        let mut rgb = Image::from_size_val(image.size(), 0.0)?;
 
         super::rgb_from_yuv(&image, &mut rgb)?;
 
@@ -227,8 +227,8 @@ mod tests {
             RGB_TEST_DATA.to_vec(),
         )?;
 
-        let mut yuv = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
-        let mut rgb = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+        let mut yuv = Image::from_size_val(image.size(), 0.0)?;
+        let mut rgb = Image::from_size_val(image.size(), 0.0)?;
 
         super::yuv_from_rgb(&image, &mut yuv)?;
         super::rgb_from_yuv(&yuv, &mut rgb)?;
@@ -252,7 +252,7 @@ mod tests {
             },
             RGB_TEST_DATA.to_vec(),
         )?;
-        let mut yuv = Image::<f32, 3>::from_size_val(rgb_image.size(), 0.0)?;
+        let mut yuv = Image::from_size_val(rgb_image.size(), 0.0)?;
         super::yuv_from_rgb(&rgb_image, &mut yuv)?;
         super::parallel::par_iter_rows(&yuv.clone(), &mut yuv, |src_p, dst_p| {
             dst_p[0] = src_p[0] * 255.0;
