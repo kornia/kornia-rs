@@ -19,3 +19,10 @@ cu29-helpers = "0.7.0"
 kornia = { workspace = true, features = ["gstreamer"] }
 rerun = { workspace = true }
 tempfile = "3.19"
+
+# temporary fixes:
+# https://github.com/rerun-io/rerun/issues/9159
+# https://github.com/apache/arrow-rs/issues/7201#issuecomment-2685998489
+arrow = { workspace = true }
+arrow-arith = { workspace = true }
+chrono = { workspace = true }
