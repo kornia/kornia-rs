@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 use std::ops::Mul;
-use glam::{Affine3A, Mat3, Mat3A, Mat4, Quat, Vec3};
+use glam::{Affine3A, Mat3, Mat3A, Mat4, Quat, Vec3, Vec3A};
 use rand::Rng;
 
 
@@ -16,7 +16,11 @@ impl SO3 {
         Self { q: Quat::from_array([quat.x, quat.y, quat.z, quat.w]) }
     }
 
-    pub fn from_matrix(mat: &Mat4) -> Self {
+    pub fn from_matrix(mat: &Mat3A) -> Self {
+        Self { q: Quat::from_mat3a(mat)}
+    }
+
+    pub fn from_matrix4(mat: &Mat4) -> Self {
         Self { q: Quat::from_mat4(mat)}
     }
 
@@ -37,12 +41,12 @@ impl SO3 {
         }
     }
 
-    pub fn to_matrix(&self) -> Mat3A {
+    pub fn matrix(&self) -> Mat3A {
         Affine3A::from_quat(self.q).matrix3
     }
 
     pub fn adjoint(&self) -> Mat3A {
-        self.to_matrix()
+        self.matrix()
     }
 
     pub fn inverse(&self) -> Self {
@@ -50,7 +54,7 @@ impl SO3 {
     }
 
     /// Lie algebra -> Lie group
-    pub fn exp(v: Vec3) -> Self {
+    pub fn exp(v: Vec3A) -> Self {
         let theta = v.dot(v).sqrt();
         let theta_half = theta / 2.0;
 
@@ -67,9 +71,9 @@ impl SO3 {
     }
 
     /// Lie group -> Lie algebra
-    pub fn log(&self) -> Vec3 {
+    pub fn log(&self) -> Vec3A {
         let real = self.q.w;
-        let vec = Vec3::new(self.q.x, self.q.y, self.q.z);
+        let vec = Vec3A::new(self.q.x, self.q.y, self.q.z);
 
         let theta = vec.dot(vec).sqrt();
         let omega = if theta != 0.0 {
@@ -82,8 +86,8 @@ impl SO3 {
     }
 
     /// Vector space -> Lie algebra
-    pub fn hat(v: Vec3) -> Mat3 {
-        Mat3::from_cols_array(&[
+    pub fn hat(v: Vec3A) -> Mat3A {
+        Mat3A::from_cols_array(&[
              0.0, -v.z, v.y,
              v.z,  0.0,-v.x,
             -v.y,  v.x, 0.0,
@@ -91,22 +95,25 @@ impl SO3 {
     }
 
     /// Lie algebra -> vector space
-    pub fn vee(omega: Mat3) -> Vec3 {
-        Vec3::from_array([omega.col(2)[1], omega.col(0)[2], omega.col(1)[0]])
+    pub fn vee(omega: Mat3A) -> Vec3A {
+        Vec3A::from_array([omega.col(2)[1], omega.col(0)[2], omega.col(1)[0]])
+    }
+    pub fn vee4(omega: Mat4) -> Vec3A {
+        Vec3A::from_array([omega.col(2)[1], omega.col(0)[2], omega.col(1)[0]])
     }
 
-    pub fn left_jacobian(v: Vec3) -> Mat3 {
+    pub fn left_jacobian(v: Vec3A) -> Mat3A {
         let skew = Self::hat(v);
         let theta = v.dot(v).sqrt();
-        let ident = Mat3::IDENTITY;
+        let ident = Mat3A::IDENTITY;
 
         ident+((1.0-theta.cos())/theta.powi(2))*skew + ((theta-theta.sin()) / theta.powi(3)) * (skew*skew)
     }
 
-    pub fn right_jacobian(v: Vec3) -> Mat3 {
+    pub fn right_jacobian(v: Vec3A) -> Mat3A {
         let skew = Self::hat(v);
         let theta = v.dot(v).sqrt();
-        let ident = Mat3::IDENTITY;
+        let ident = Mat3A::IDENTITY;
 
         ident-((1.0-theta.cos())/theta.powi(2))*skew + ((theta-theta.sin()) / theta.powi(3)) * (skew*skew)
     }
@@ -139,11 +146,10 @@ mod tests {
 
     #[test]
     fn test_from_matrix() {
-        let mat = Mat4::from_cols_array(&[
-            1.0, 0.0, 0.0, 0.0,
-            0.0, 0.6, 0.8, 0.0,
-            0.0,-0.8, 0.6, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+        let mat = Mat3A::from_cols_array(&[
+            1.0, 0.0, 0.0,
+            0.0, 0.6, 0.8,
+            0.0,-0.8, 0.6,
         ]);
         let s = SO3::from_matrix(&mat);
         assert!((s.q - Quat::from_xyzw(0.5, 0.0, 0.0, 1.0).normalize()).length() < 1e-5);
@@ -154,26 +160,26 @@ mod tests {
         {
             let so3 = SO3::from_quaternion(&Quat::from_xyzw(1.0, 1.0, 1.0, 1.0));
             let log = so3.log();
-            assert!((log - Vec3::new(0.0, 0.0, 0.0)).length() < 1e-5);
+            assert!((log - Vec3A::new(0.0, 0.0, 0.0)).length() < 1e-5);
         }
 
         {
-            let so3 = SO3::exp(Vec3::new(1.0, 0.0, 0.0));
+            let so3 = SO3::exp(Vec3A::new(1.0, 0.0, 0.0));
             let log = so3.log();
-            assert!((log - Vec3::new(1.0, 0.0, 0.0)).length() < 1e-5);
+            assert!((log - Vec3A::new(1.0, 0.0, 0.0)).length() < 1e-5);
         }
     }
 
     #[test]
     fn test_exp() {
-        let v = Vec3::from_array([0.0, 0.0, 0.0]);
+        let v = Vec3A::from_array([0.0, 0.0, 0.0]);
         let s = SO3::exp(v);
         assert_eq!(s.q, Quat::from_xyzw(0.0, 0.0, 0.0, 1.0));
     }
 
     #[test]
     fn test_hat() {
-        let v = Vec3::new(1.0, 2.0, 3.0);
+        let v = Vec3A::new(1.0, 2.0, 3.0);
         let hat_v = SO3::hat(v);
         assert_eq!(hat_v.x_axis.y, -3.0);
         assert_eq!(hat_v.x_axis.z, 2.0);
@@ -186,24 +192,24 @@ mod tests {
     #[test]
     fn test_vee() {
         {
-            let omega = SO3::hat(Vec3::new(1.0, 2.0, 3.0));
+            let omega = SO3::hat(Vec3A::new(1.0, 2.0, 3.0));
             let v = SO3::vee(omega);
-            assert!((v - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-5);
+            assert!((v - Vec3A::new(1.0, 2.0, 3.0)).length() < 1e-5);
         }
     }
 
     #[test]
     fn test_adjoint() {
-        let so3 = SO3::exp(Vec3::new(0.1, 0.2, 0.3));
+        let so3 = SO3::exp(Vec3A::new(0.1, 0.2, 0.3));
         let adjoint = so3.adjoint();
         assert!(adjoint.is_finite());
     }
 
     #[test]
     fn test_inverse() {
-        let so3 = SO3::exp(Vec3::new(0.5, -0.2, 0.1));
+        let so3 = SO3::exp(Vec3A::new(0.5, -0.2, 0.1));
         let inv = so3.inverse();
-        let identity = so3.to_matrix() * inv.to_matrix();
+        let identity = so3.matrix() * inv.matrix();
         
         let max_diff = (identity-Mat3A::IDENTITY).to_cols_array().iter().map(|&x| x.abs()).fold(0.0, f32::max);
 
@@ -212,14 +218,14 @@ mod tests {
 
     #[test]
     fn test_left_jacobian() {
-        let v = Vec3::new(0.1, 0.2, 0.3);
+        let v = Vec3A::new(0.1, 0.2, 0.3);
         let left_jacobian = SO3::left_jacobian(v);
         assert!(left_jacobian.is_finite());
     }
 
     #[test]
     fn test_right_jacobian() {
-        let v = Vec3::new(-0.1, 0.3, 0.2);
+        let v = Vec3A::new(-0.1, 0.3, 0.2);
         let right_jacobian = SO3::right_jacobian(v);
         assert!(right_jacobian.is_finite());
     }
