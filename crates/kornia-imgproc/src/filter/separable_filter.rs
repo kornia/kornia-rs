@@ -2,14 +2,14 @@ use kornia_image::{Image, ImageError};
 use num_traits::Zero;
 
 /// Trait for floating point casting
-pub trait FloatCasting {
+pub trait FloatConversion {
     /// Convert the type to f32
     fn to_f32(&self) -> f32;
     /// Convert the type from f32
     fn from_f32(val: f32) -> Self;
 }
 
-impl FloatCasting for f32 {
+impl FloatConversion for f32 {
     fn to_f32(&self) -> f32 {
         *self
     }
@@ -19,7 +19,7 @@ impl FloatCasting for f32 {
     }
 }
 
-impl FloatCasting for f64 {
+impl FloatConversion for f64 {
     fn to_f32(&self) -> f32 {
         *self as f32
     }
@@ -29,7 +29,7 @@ impl FloatCasting for f64 {
     }
 }
 
-impl FloatCasting for u8 {
+impl FloatConversion for u8 {
     fn to_f32(&self) -> f32 {
         *self as f32
     }
@@ -54,7 +54,7 @@ pub fn separable_filter<T, const C: usize>(
     kernel_y: &[f32],
 ) -> Result<(), ImageError>
 where
-    T: FloatCasting + Clone + Zero + std::ops::Mul<Output = T> + std::ops::AddAssign,
+    T: FloatConversion + Clone + Zero + std::ops::Mul<Output = T> + std::ops::AddAssign,
 {
     if kernel_x.is_empty() || kernel_y.is_empty() {
         return Err(ImageError::InvalidKernelLength(
