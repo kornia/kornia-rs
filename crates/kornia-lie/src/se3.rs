@@ -1,27 +1,31 @@
-use glam::{DMat4, DQuat, DVec3};
+use glam::{DMat4, DQuat, DVec3, Mat3A, Mat4, Quat, Vec3A};
 
 use crate::so3::SO3;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SE3 {
     pub r: SO3,
-    pub t: DVec3,
+    pub t: Vec3A,
 }
 
 impl SE3 {
-    pub const IDENTITY: Self = Self { r: SO3::IDENTITY, t: DVec3::from_array([0.0, 0.0, 0.0]) };
+    pub const IDENTITY: Self = Self { r: SO3::IDENTITY, t: Vec3A::from_array([0.0, 0.0, 0.0]) };
 
-    pub fn new(rotation: SO3, translation: DVec3) -> Self {
+    pub fn new(rotation: SO3, translation: Vec3A) -> Self {
         Self { r: rotation, t: translation }
     }
 
-    pub fn from_matrix(m: DMat4) -> Self {
+    pub fn from_matrix(mat: Mat4) -> Self {
 
         todo!()
     }
 
     pub fn from_random() -> Self {
 
+        todo!()
+    }
+
+    pub fn from_quaternion(quat: &Quat) -> Self {
         todo!()
     }
 
@@ -33,7 +37,7 @@ impl SE3 {
         todo!()
     }
 
-    pub fn as_matrix(&self) -> DMat4 {
+    pub fn as_matrix(&self) -> Mat4 {
         // let rotation_matrix = self.r.to_mat4();
         // let mut matrix = rotation_matrix;
         // matrix.w_axis = glam::DVec4::new(self.t.x, self.t.y, self.t.z, 1.0);
@@ -41,23 +45,23 @@ impl SE3 {
         todo!()
     }
 
-    pub fn adjoint() -> ! {
+    pub fn adjoint() -> (Mat3A, Mat3A) {
         todo!("Python impl returns a 6x6 matrix")
     }
 
-    pub fn exp() -> ! {
+    pub fn exp(upsilon: Vec3A, omega: Vec3A) -> Self {
         todo!("Takes in vector of shape 6")
     }
 
-    pub fn log() -> ! {
+    pub fn log(&self) -> (Vec3A, Vec3A) {
         todo!("Takes in vector of shape 6")
     }
 
-    pub fn hat() -> ! {
+    pub fn hat(upsilon: Vec3A, omega: Vec3A) -> Mat4 {
         todo!("Takes in vector of shape 6")
     }
 
-    pub fn vee() -> ! {
+    pub fn vee(omega: Mat4) -> ! {
         todo!("Takes in vector of shape 6")
     }
 }
