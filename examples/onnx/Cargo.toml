@@ -25,6 +25,4 @@ rerun = { workspace = true }
 
 # NOTE: temporary fixes:
 # https://github.com/apache/arrow-rs/issues/7201#issuecomment-2685998489
-arrow = { workspace = true }
-arrow-arith = { workspace = true }
 chrono = { workspace = true }
