@@ -59,6 +59,6 @@ thiserror = "2"
 # temporary fixes:
 # https://github.com/rerun-io/rerun/issues/9159
 # https://github.com/apache/arrow-rs/issues/7201#issuecomment-2685998489
-arrow = "=54.2.0"
-arrow-arith = "=54.2.0"
-chrono = "=0.4.39"
+arrow = "54.2.1"
+arrow-arith = "54.2.1"
+chrono = "0.4.39"
