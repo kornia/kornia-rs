@@ -12,10 +12,3 @@ ctrlc = { workspace = true }
 kornia = { workspace = true, features = ["gstreamer"] }
 rerun = { workspace = true }
 tokio = { version = "1", features = ["full", "signal"] }
-
-# temporary fixes:
-# https://github.com/rerun-io/rerun/issues/9159
-# https://github.com/apache/arrow-rs/issues/7201#issuecomment-2685998489
-arrow = { workspace = true }
-arrow-arith = { workspace = true }
-chrono = { workspace = true }
