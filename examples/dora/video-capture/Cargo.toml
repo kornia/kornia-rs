@@ -10,4 +10,5 @@ eyre = "0.6"
 kornia = { version = "0.1.8", features = ["gstreamer"] }
 
 arrow = "54.2.1"
+arrow-arith = "54.2.1"
 chrono = "0.4.39"
