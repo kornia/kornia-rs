@@ -18,7 +18,3 @@ env_logger = { workspace = true }
 kornia = { workspace = true }
 kornia-icp = { workspace = true }
 rerun = { workspace = true }
-
-# NOTE: temporary fixes:
-# https://github.com/apache/arrow-rs/issues/7201#issuecomment-2685998489
-chrono = { workspace = true }
