@@ -1,8 +1,7 @@
 use kornia_image::{Image, ImageError};
 use num_traits::Zero;
 
-/// Trait for floatting point casting
-
+/// Trait for floating point casting
 pub trait FloatCasting {
     /// Convert the type to f32
     fn to_f32(&self) -> f32;
