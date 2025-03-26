@@ -8,6 +8,6 @@ dora-node-api = { version = "0.3.10", features = ["tracing"] }
 eyre = "0.6"
 kornia = { version = "0.1.8" }
 
-arrow = "=54.2.1"
-arrow-arith = "=54.2.1"
-chrono = "=0.4.39"
+#arrow = "=54.2.1"
+#arrow-arith = "=54.2.1"
+#chrono = "=0.4.39"
