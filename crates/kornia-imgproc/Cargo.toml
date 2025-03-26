@@ -25,6 +25,7 @@ image = "0.25"
 imageproc = "0.25"
 kornia-io = { workspace = true }
 ndarray = { version = "0.15", features = ["rayon"] }
+rand = "0.8.5"
 
 [[bench]]
 name = "bench_color"
@@ -55,11 +56,11 @@ name = "bench_filters"
 harness = false
 
 [[bench]]
-name = "bench_pyramid"
+name = "bench_features"
 harness = false
 
 [[bench]]
-name = "bench_feature"
+name = "bench_pyramid"
 harness = false
 
 [[bench]]
