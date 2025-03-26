@@ -9,6 +9,9 @@ dora-image-utils = { path = "../image-utils" }
 eyre = "0.6"
 kornia = { version = "0.1.8", features = ["gstreamer"] }
 
-#arrow = "=54.2.1"
-#arrow-arith = "=54.2.1"
-#chrono = "=0.4.39"
+# temporary fixes:
+# https://github.com/rerun-io/rerun/issues/9159
+# https://github.com/apache/arrow-rs/issues/7201#issuecomment-2685998489
+arrow = "=54.2.1"
+arrow-arith = "=54.2.1"
+chrono = "=0.4.39"
