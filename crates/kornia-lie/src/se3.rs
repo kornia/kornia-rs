@@ -133,9 +133,61 @@ impl SE3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    
     #[test]
-    fn test_identity() {
+    fn test_new() {
+        let rotation = SO3::from_quaternion(&Quat::IDENTITY);
+        let translation = Vec3A::new(1.0, 2.0, 3.0);
+        let se3 = SE3::new(rotation, translation);
+        assert_eq!(se3.t, translation);
+        assert_eq!(se3.r.q, rotation.q);
+    }
+    
+    #[test]
+    fn test_from_matrix() {
+        let mat = Mat4::IDENTITY;
+        let se3 = SE3::from_matrix(mat);
+        assert_eq!(se3.t, Vec3A::new(0.0, 0.0, 0.0));
+        assert_eq!(se3.r.matrix(), SO3::IDENTITY.matrix());
+    }
+    
+    #[test]
+    fn test_inverse() {
+        let se3 = SE3::new(SO3::from_quaternion(&Quat::IDENTITY), Vec3A::new(1.0, 2.0, 3.0));
+        let inv = se3.inverse();
+        assert_eq!(inv.t, Vec3A::new(-1.0, -2.0, -3.0));
+        assert_eq!(inv.r.q, se3.r.inverse().q);
+    }
+    
+    #[test]
+    fn test_matrix() {
+        let se3 = SE3::new(SO3::IDENTITY, Vec3A::new(1.0, 2.0, 3.0));
+        assert_eq!(se3.matrix(), Mat4::from_cols_array(&[
+            1.0, 0.0, 0.0, 1.0,
+            0.0, 1.0, 0.0, 2.0,
+            0.0, 0.0, 1.0, 3.0,
+            0.0, 0.0, 0.0, 1.0,
+        ]));
+    }
+    
+    #[test]
+    fn test_exp_log() {
+        let upsilon = Vec3A::new(0.5, -0.5, 1.0);
+        let omega = Vec3A::new(0.1, 0.2, -0.3);
+        let se3 = SE3::exp(upsilon, omega);
+        let (log_t, log_omega) = se3.log();
+        assert!((log_t - upsilon).length() < 1e-5);
+        assert!((log_omega - omega).length() < 1e-5);
+    }
+    
+    #[test]
+    fn test_hat_vee() {
+        let upsilon = Vec3A::new(1.0, 2.0, 3.0);
+        let omega = Vec3A::new(0.1, -0.2, 0.3);
+        let hat_matrix = SE3::hat(upsilon, omega);
+        let (vee_t, vee_omega) = SE3::vee(hat_matrix);
+        assert!((vee_t - upsilon).length() < 1e-5);
+        assert!((vee_omega - omega).length() < 1e-5);
     }
 }
 
