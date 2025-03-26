@@ -1,20 +1,18 @@
 use std::collections::BTreeMap;
 
-use arrow::array::PrimitiveArray;
-use arrow::datatypes::UInt8Type;
-use dora_node_api::{ArrowData, IntoArrow, Metadata, Parameter};
+use dora_node_api::{ArrowData, Metadata, Parameter};
 use kornia::image::{Image, ImageSize};
 
 pub fn image_to_arrow(
     image: Image<u8, 3>,
     metadata: Metadata,
-) -> eyre::Result<(BTreeMap<String, Parameter>, PrimitiveArray<UInt8Type>)> {
+) -> eyre::Result<(BTreeMap<String, Parameter>, Vec<u8>)> {
     let mut meta_parameters = metadata.parameters;
     meta_parameters.insert("cols".to_string(), Parameter::Integer(image.cols() as i64));
     meta_parameters.insert("rows".to_string(), Parameter::Integer(image.rows() as i64));
 
     // TODO: avoid to_vec copy
-    let data = image.as_slice().to_vec().into_arrow();
+    let data = image.as_slice().to_vec();
 
     Ok((meta_parameters, data))
 }
