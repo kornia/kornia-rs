@@ -1,3 +1,6 @@
+/// image dilating module
+pub mod dilate;
+
 /// image distortion module.
 pub mod distortion;
 
