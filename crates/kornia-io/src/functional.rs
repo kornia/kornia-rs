@@ -138,6 +138,7 @@ pub use crate::png::{
     write_image_png_rgba8, 
     write_image_png_gray16
 };
+
 /// Reads a grayscale (gray8) image from a JPEG file using TurboJPEG.
 ///
 /// # Arguments
@@ -292,7 +293,6 @@ mod tests {
     #[cfg(feature = "turbojpeg")]
     fn read_write_jpeg_gray() -> Result<(), IoError> {
         use kornia_image::{Image, ImageSize};
-        use kornia_imgproc::color::gray_from_rgb_u8;
         use std::path::PathBuf;
         use tempfile::tempdir;
         
