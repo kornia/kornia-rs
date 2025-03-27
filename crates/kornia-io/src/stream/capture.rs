@@ -3,10 +3,12 @@ use std::sync::{Arc, Mutex};
 use crate::stream::error::StreamCaptureError;
 use gst::prelude::*;
 use kornia_image::Image;
+use kornia_imgproc::color::nv12_to_rgb;
 
 // utility struct to store the frame buffer
 struct FrameBuffer {
     buffer: gst::MappedBuffer<gst::buffer::Readable>,
+    sample: gst::Sample,
     width: usize,
     height: usize,
 }
@@ -94,16 +96,31 @@ impl StreamCapture {
             .last_frame
             .lock()
             .map_err(|_| StreamCaptureError::LockError)?;
-
+    
         last_frame.take().map_or(Ok(None), |frame_buffer| {
-            // TODO: solve the zero copy issue
-            // https://discourse.gstreamer.org/t/zero-copy-video-frames/3856/2
-            let img = Image::<u8, 3>::new(
-                [frame_buffer.width, frame_buffer.height].into(),
-                frame_buffer.buffer.to_owned(),
-            )
-            .map_err(|_| StreamCaptureError::CreateImageFrameError)?;
-
+            // Get the format from the caps
+            let caps = frame_buffer.sample.caps().ok_or_else(|| StreamCaptureError::GetCapsError)?;
+            let structure = caps.structure(0).ok_or_else(|| StreamCaptureError::GetStructureError)?;
+            
+            // Check if the format is NV12 or RGB
+            let format = structure.get::<String>("format")
+                .map_err(|_| StreamCaptureError::GetFormatError)?;
+            
+            let img = if format == "NV12" {
+                // Convert NV12 to RGB 
+                nv12_to_rgb::<StreamCaptureError>(
+                    frame_buffer.buffer.as_slice(),
+                    frame_buffer.width,
+                    frame_buffer.height,
+                ).map_err(|_| StreamCaptureError::CreateImageFrameError)?
+            } else {
+                // Assume RGB format
+                Image::<u8, 3>::new(
+                    [frame_buffer.width, frame_buffer.height].into(),
+                    frame_buffer.buffer.to_owned(),
+                ).map_err(|_| StreamCaptureError::CreateImageFrameError)?
+            };
+    
             Ok(Some(img))
         })
     }
@@ -156,12 +173,14 @@ impl StreamCapture {
 
         let frame_buffer = FrameBuffer {
             buffer,
+            sample: sample.clone(),
             width,
             height,
         };
 
         Ok(frame_buffer)
     }
+
 }
 
 impl Drop for StreamCapture {
