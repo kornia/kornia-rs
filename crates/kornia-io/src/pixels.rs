@@ -47,33 +47,3 @@ impl PixelType for f32 {
         .map_err(|e| IoError::ImageConversionError(format!("{}", e)))
     }
 }
-
-// Implementation for 16-bit pixels.
-impl PixelType for u16 {
-    fn from_dynamic_image(img: DynamicImage) -> Result<Image<u16, 3>, IoError> {
-        // If the image is already in 16-bit RGB, use it directly.
-        // Otherwise, convert to RGB8 and then upconvert each pixel.
-        match img {
-            DynamicImage::ImageRgb16(rgb) => Image::new(
-                ImageSize {
-                    width: rgb.width() as usize,
-                    height: rgb.height() as usize,
-                },
-                rgb.to_vec(),
-            )
-            .map_err(|e| IoError::ImageConversionError(format!("{}", e))),
-            other => {
-                let rgb8 = other.into_rgb8();
-                let data: Vec<u16> = rgb8.to_vec().iter().map(|&x| x as u16).collect();
-                Image::new(
-                    ImageSize {
-                        width: rgb8.width() as usize,
-                        height: rgb8.height() as usize,
-                    },
-                    data,
-                )
-                .map_err(|e| IoError::ImageConversionError(format!("{}", e)))
-            }
-        }
-    }
-}
