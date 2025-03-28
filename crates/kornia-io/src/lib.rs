@@ -14,6 +14,9 @@ pub mod functional;
 #[cfg(feature = "turbojpeg")]
 pub mod jpegturbo;
 
+/// Module to handle the image pixels.
+pub mod pixels;
+
 /// PNG image encoding and decoding.
 pub mod png;
 
