@@ -84,7 +84,3 @@ pub enum StreamCaptureError {
     #[error("Cannot lock the last frame")]
     LockError,
 }
-
-// ensure that can be sent over threads
-unsafe impl Send for StreamCaptureError {}
-unsafe impl Sync for StreamCaptureError {}
