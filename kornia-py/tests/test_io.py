@@ -1,4 +1,6 @@
+import tempfile
 from pathlib import Path
+
 import kornia_rs as K
 
 import torch
@@ -73,7 +75,7 @@ def test_compress_decompress():
     assert (decoded_img - img).sum() == 3
 
 
-def test_write_read_jpeg(tmpdir):
+def test_write_read_jpeg():
     img = np.array([
         [0, 0, 0, 0, 0],
         [0, 127, 255, 127, 0],
@@ -83,11 +85,12 @@ def test_write_read_jpeg(tmpdir):
     img = np.repeat(img[..., None], 3, axis=-1)
 
     # write the image to a file
-    img_path = tmpdir / "test_write_read_jpeg.jpg"
-    K.write_image_jpeg(str(img_path), img)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        img_path = Path(tmpdir) / "test_write_read_jpeg.jpg"
+        K.write_image_jpeg(str(img_path), img)
 
-    # read the image back
-    img_read = K.read_image_jpeg(str(img_path))
+        # read the image back
+        img_read = K.read_image_jpeg(str(img_path))
 
     # check the image properties
     assert img_read.shape == (4, 5, 3)
