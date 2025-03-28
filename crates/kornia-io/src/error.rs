@@ -29,4 +29,9 @@ pub enum IoError {
     /// Error to decode the PNG image.
     #[error("Failed to decode the image")]
     PngDecodeError(String),
+
+    /// Error to convert the image.
+    #[error("Failed to convert the image")]
+    ImageConversionError(String),
+
 }
