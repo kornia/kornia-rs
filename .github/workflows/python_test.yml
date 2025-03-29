@@ -73,7 +73,7 @@ jobs:
         cd kornia-py/
         source .venv/bin/activate
         maturin develop -m Cargo.toml
-        pytest
+        pytest --parallel-threads=8 --iterations=50
 
   # NOTE: there's a systematic fail with the ci on macos
   # test-python-macos:
