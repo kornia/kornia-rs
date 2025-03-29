@@ -21,3 +21,12 @@ pub mod transforms;
 
 /// 3D vector traits.
 pub mod vector;
+
+/// Camera models and intrinsics.
+pub mod camera;
+
+/// RGB-D image types.
+pub mod rgbd;
+
+/// TSDF volume types.
+pub mod tsdf;

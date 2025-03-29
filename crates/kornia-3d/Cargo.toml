@@ -17,6 +17,8 @@ bincode = "1.3"
 faer = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+ndarray = "0.15"
+rand = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
