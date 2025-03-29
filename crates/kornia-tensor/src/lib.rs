@@ -25,9 +25,9 @@ pub mod view;
 pub mod ops;
 
 pub use crate::allocator::{CpuAllocator, TensorAllocator};
+pub use crate::ops::*;
 pub(crate) use crate::tensor::get_strides_from_shape;
 pub use crate::tensor::{Tensor, TensorError};
-pub use crate::ops::*;
 
 /// Type alias for a 1-dimensional tensor.
 pub type Tensor1<T, A> = Tensor<T, 1, A>;

@@ -280,17 +280,18 @@ impl<T: Clone, const C: usize> Image<T, C> {
     /// A new image with the pixel data cast to the given type and scaled.
     pub fn cast_and_scale<U>(&self, scale: U) -> Result<Image<U, C>, ImageError>
     where
-        U: num_traits::NumCast + Clone + Copy + std::ops::Mul<Output = U>, 
+        U: num_traits::NumCast + Clone + Copy + std::ops::Mul<Output = U>,
         T: num_traits::NumCast + Clone + Copy,
     {
         let image = self.cast::<U>()?;
-        
+
         // Scale the pixel values
-        let scaled_data = image.as_slice()
+        let scaled_data = image
+            .as_slice()
             .iter()
             .map(|&val| val * scale)
             .collect::<Vec<U>>();
-        
+
         Image::<U, C>::new(self.size(), scaled_data)
     }
 

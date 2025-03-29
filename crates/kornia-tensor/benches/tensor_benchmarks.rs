@@ -2,12 +2,8 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use kornia_tensor::{CpuAllocator, Tensor};
 
 fn benchmark_tensor_clone(c: &mut Criterion) {
-    let tensor = Tensor::<f32, 2, _>::from_shape_vec(
-        [100, 100],
-        vec![1.0; 10000],
-        CpuAllocator,
-    )
-    .unwrap();
+    let tensor =
+        Tensor::<f32, 2, _>::from_shape_vec([100, 100], vec![1.0; 10000], CpuAllocator).unwrap();
 
     c.bench_function("tensor clone", |b| {
         b.iter(|| {
@@ -17,18 +13,10 @@ fn benchmark_tensor_clone(c: &mut Criterion) {
 }
 
 fn benchmark_element_wise_op(c: &mut Criterion) {
-    let tensor1 = Tensor::<f32, 2, _>::from_shape_vec(
-        [100, 100],
-        vec![1.0; 10000],
-        CpuAllocator,
-    )
-    .unwrap();
-    let tensor2 = Tensor::<f32, 2, _>::from_shape_vec(
-        [100, 100],
-        vec![2.0; 10000],
-        CpuAllocator,
-    )
-    .unwrap();
+    let tensor1 =
+        Tensor::<f32, 2, _>::from_shape_vec([100, 100], vec![1.0; 10000], CpuAllocator).unwrap();
+    let tensor2 =
+        Tensor::<f32, 2, _>::from_shape_vec([100, 100], vec![2.0; 10000], CpuAllocator).unwrap();
 
     c.bench_function("element_wise_op", |b| {
         b.iter(|| {
@@ -40,40 +28,25 @@ fn benchmark_element_wise_op(c: &mut Criterion) {
 }
 
 fn benchmark_element_wise_op_inplace(c: &mut Criterion) {
-    let tensor1 = Tensor::<f32, 2, _>::from_shape_vec(
-        [100, 100],
-        vec![1.0; 10000],
-        CpuAllocator,
-    )
-    .unwrap();
-    let tensor2 = Tensor::<f32, 2, _>::from_shape_vec(
-        [100, 100],
-        vec![2.0; 10000],
-        CpuAllocator,
-    )
-    .unwrap();
+    let tensor1 =
+        Tensor::<f32, 2, _>::from_shape_vec([100, 100], vec![1.0; 10000], CpuAllocator).unwrap();
+    let tensor2 =
+        Tensor::<f32, 2, _>::from_shape_vec([100, 100], vec![2.0; 10000], CpuAllocator).unwrap();
 
     c.bench_function("element_wise_op_inplace", |b| {
         b.iter(|| {
             let mut t = black_box(&tensor1).clone();
-            t.element_wise_op_inplace(black_box(&tensor2), |a, b| *a += *b).unwrap();
+            t.element_wise_op_inplace(black_box(&tensor2), |a, b| *a += *b)
+                .unwrap();
         })
     });
 }
 
 fn benchmark_add(c: &mut Criterion) {
-    let tensor1 = Tensor::<f32, 2, _>::from_shape_vec(
-        [100, 100],
-        vec![1.0; 10000],
-        CpuAllocator,
-    )
-    .unwrap();
-    let tensor2 = Tensor::<f32, 2, _>::from_shape_vec(
-        [100, 100],
-        vec![2.0; 10000],
-        CpuAllocator,
-    )
-    .unwrap();
+    let tensor1 =
+        Tensor::<f32, 2, _>::from_shape_vec([100, 100], vec![1.0; 10000], CpuAllocator).unwrap();
+    let tensor2 =
+        Tensor::<f32, 2, _>::from_shape_vec([100, 100], vec![2.0; 10000], CpuAllocator).unwrap();
 
     c.bench_function("add", |b| {
         b.iter(|| {
@@ -83,18 +56,10 @@ fn benchmark_add(c: &mut Criterion) {
 }
 
 fn benchmark_add_inplace(c: &mut Criterion) {
-    let tensor1 = Tensor::<f32, 2, _>::from_shape_vec(
-        [100, 100],
-        vec![1.0; 10000],
-        CpuAllocator,
-    )
-    .unwrap();
-    let tensor2 = Tensor::<f32, 2, _>::from_shape_vec(
-        [100, 100],
-        vec![2.0; 10000],
-        CpuAllocator,
-    )
-    .unwrap();
+    let tensor1 =
+        Tensor::<f32, 2, _>::from_shape_vec([100, 100], vec![1.0; 10000], CpuAllocator).unwrap();
+    let tensor2 =
+        Tensor::<f32, 2, _>::from_shape_vec([100, 100], vec![2.0; 10000], CpuAllocator).unwrap();
 
     c.bench_function("add_inplace", |b| {
         b.iter(|| {
@@ -105,53 +70,35 @@ fn benchmark_add_inplace(c: &mut Criterion) {
 }
 
 fn benchmark_chain_ops(c: &mut Criterion) {
-    let tensor1 = Tensor::<f32, 2, _>::from_shape_vec(
-        [100, 100],
-        vec![1.0; 10000],
-        CpuAllocator,
-    )
-    .unwrap();
-    let tensor2 = Tensor::<f32, 2, _>::from_shape_vec(
-        [100, 100],
-        vec![2.0; 10000],
-        CpuAllocator,
-    )
-    .unwrap();
-    let tensor3 = Tensor::<f32, 2, _>::from_shape_vec(
-        [100, 100],
-        vec![3.0; 10000],
-        CpuAllocator,
-    )
-    .unwrap();
+    let tensor1 =
+        Tensor::<f32, 2, _>::from_shape_vec([100, 100], vec![1.0; 10000], CpuAllocator).unwrap();
+    let tensor2 =
+        Tensor::<f32, 2, _>::from_shape_vec([100, 100], vec![2.0; 10000], CpuAllocator).unwrap();
+    let tensor3 =
+        Tensor::<f32, 2, _>::from_shape_vec([100, 100], vec![3.0; 10000], CpuAllocator).unwrap();
 
     c.bench_function("chain_ops", |b| {
         b.iter(|| {
-            let t1 = black_box(&tensor1).element_wise_op(black_box(&tensor2), |a, b| *a + *b).unwrap();
-            let t2 = t1.element_wise_op(black_box(&tensor3), |a, b| *a * *b).unwrap();
-            let _t3 = t2.element_wise_op(black_box(&tensor1), |a, b| *a - *b).unwrap();
+            let t1 = black_box(&tensor1)
+                .element_wise_op(black_box(&tensor2), |a, b| *a + *b)
+                .unwrap();
+            let t2 = t1
+                .element_wise_op(black_box(&tensor3), |a, b| *a * *b)
+                .unwrap();
+            let _t3 = t2
+                .element_wise_op(black_box(&tensor1), |a, b| *a - *b)
+                .unwrap();
         })
     });
 }
 
 fn benchmark_chain_ops_inplace(c: &mut Criterion) {
-    let tensor1 = Tensor::<f32, 2, _>::from_shape_vec(
-        [100, 100],
-        vec![1.0; 10000],
-        CpuAllocator,
-    )
-    .unwrap();
-    let tensor2 = Tensor::<f32, 2, _>::from_shape_vec(
-        [100, 100],
-        vec![2.0; 10000],
-        CpuAllocator,
-    )
-    .unwrap();
-    let tensor3 = Tensor::<f32, 2, _>::from_shape_vec(
-        [100, 100],
-        vec![3.0; 10000],
-        CpuAllocator,
-    )
-    .unwrap();
+    let tensor1 =
+        Tensor::<f32, 2, _>::from_shape_vec([100, 100], vec![1.0; 10000], CpuAllocator).unwrap();
+    let tensor2 =
+        Tensor::<f32, 2, _>::from_shape_vec([100, 100], vec![2.0; 10000], CpuAllocator).unwrap();
+    let tensor3 =
+        Tensor::<f32, 2, _>::from_shape_vec([100, 100], vec![3.0; 10000], CpuAllocator).unwrap();
 
     c.bench_function("chain_ops_inplace", |b| {
         b.iter(|| {
@@ -173,4 +120,4 @@ criterion_group!(
     benchmark_chain_ops,
     benchmark_chain_ops_inplace
 );
-criterion_main!(benches); 
+criterion_main!(benches);

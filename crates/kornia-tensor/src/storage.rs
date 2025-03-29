@@ -33,16 +33,16 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     }
 
     /// Returns the data pointer as a mutable slice.
-    pub fn as_mut_slice(&mut self) -> &mut [T] 
-    where 
-        T: Clone
+    pub fn as_mut_slice(&mut self) -> &mut [T]
+    where
+        T: Clone,
     {
         // If there are other references to the data, clone it first
         if Arc::strong_count(&self.data) > 1 {
             let cloned_data = self.data.to_vec();
             self.data = Arc::new(cloned_data);
         }
-        
+
         // Now we can safely get a mutable reference to the unique data
         // This is safe because we know we're the only owner of the Arc
         unsafe {
@@ -90,13 +90,16 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     /// # Safety
     ///
     /// The pointer must be non-null and the length must be valid.
-    pub unsafe fn from_raw_parts(data: *const T, len: usize, alloc: A) -> Self 
-    where 
-        T: Clone
+    pub unsafe fn from_raw_parts(data: *const T, len: usize, alloc: A) -> Self
+    where
+        T: Clone,
     {
         let slice = std::slice::from_raw_parts(data, len);
         let vec = slice.to_vec();
-        let layout = Layout::from_size_align_unchecked(len * std::mem::size_of::<T>(), std::mem::align_of::<T>());
+        let layout = Layout::from_size_align_unchecked(
+            len * std::mem::size_of::<T>(),
+            std::mem::align_of::<T>(),
+        );
         Self {
             data: Arc::new(vec),
             layout,
@@ -108,15 +111,15 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     ///
     /// If this is the only reference to the data, it will be returned directly.
     /// Otherwise, a clone of the data will be created.
-    pub fn into_vec(self) -> Vec<T> 
-    where 
-        T: Clone
+    pub fn into_vec(self) -> Vec<T>
+    where
+        T: Clone,
     {
         // If there are other references to the data, clone it and return the clone
         if Arc::strong_count(&self.data) > 1 {
             return self.data.to_vec();
         }
-        
+
         // Try to unwrap the Arc, falling back to cloning if there are other references
         match Arc::try_unwrap(self.data.clone()) {
             Ok(vec) => vec,
@@ -163,10 +166,10 @@ mod tests {
         let allocator = CpuAllocator;
         let vec = vec![0u8; size];
         let vec_ptr = vec.as_ptr();
-        
+
         // Create buffer from vec
         let buffer = TensorStorage::from_vec(vec, allocator);
-        
+
         assert_eq!(buffer.as_ptr(), vec_ptr);
         assert!(!vec_ptr.is_null());
         assert_eq!(buffer.len(), size * std::mem::size_of::<u8>());
@@ -180,10 +183,10 @@ mod tests {
         let size = 8;
         let allocator = CpuAllocator;
         let vec = vec![0u8; size];
-        
+
         // Create buffer from vec
         let buffer = TensorStorage::from_vec(vec, allocator);
-        
+
         // check alignment
         let ptr_raw = buffer.as_ptr() as usize;
         let alignment = std::mem::align_of::<u8>();
@@ -198,10 +201,10 @@ mod tests {
         let allocator = CpuAllocator;
         let vec = vec![0.0f32; size];
         let vec_ptr = vec.as_ptr();
-        
+
         // Create buffer from vec
         let buffer = TensorStorage::from_vec(vec, allocator);
-        
+
         assert_eq!(buffer.as_ptr(), vec_ptr);
         assert_eq!(buffer.len(), size * std::mem::size_of::<f32>());
 
@@ -213,21 +216,21 @@ mod tests {
         // Create a simple buffer
         let vec = vec![0u8; 1024];
         let buffer = TensorStorage::<_, CpuAllocator>::from_vec(vec, CpuAllocator);
-        
+
         // Clone the buffer (this should just clone the Arc, not the data)
         let buffer2 = buffer.clone();
-        
+
         // Verify both buffers point to the same memory
         assert_eq!(buffer.as_ptr(), buffer2.as_ptr());
-        
+
         // Convert buffer to vec (should clone since buffer2 still has a reference)
         let vec1 = buffer.into_vec();
         assert_eq!(vec1.len(), 1024);
-        
+
         // Convert buffer2 to vec (should be able to reclaim without cloning)
         let vec2 = buffer2.into_vec();
         assert_eq!(vec2.len(), 1024);
-        
+
         Ok(())
     }
 
@@ -239,7 +242,7 @@ mod tests {
 
         let buffer = TensorStorage::<_, CpuAllocator>::from_vec(vec, CpuAllocator);
 
-        // check NO copy 
+        // check NO copy
         let buffer_ptr = buffer.as_ptr();
         assert!(std::ptr::eq(buffer_ptr, vec_ptr));
 
@@ -299,29 +302,29 @@ mod tests {
     fn test_tensor_mutability() -> Result<(), TensorAllocatorError> {
         let vec: Vec<i32> = vec![1, 2, 3, 4, 5];
         let mut buffer = TensorStorage::<_, CpuAllocator>::from_vec(vec, CpuAllocator);
-        
+
         // Modify the data through as_mut_slice
         {
             let slice = buffer.as_mut_slice();
             slice[0] = 10;
         }
-        
+
         assert_eq!(buffer.as_slice()[0], 10);
-        
+
         Ok(())
     }
-    
+
     #[test]
     fn test_tensor_buffer_clone() -> Result<(), TensorAllocatorError> {
         let vec: Vec<i32> = vec![1, 2, 3, 4, 5];
         let buffer = TensorStorage::<_, CpuAllocator>::from_vec(vec, CpuAllocator);
-        
+
         // Clone the buffer - should share the same data
         let buffer_clone = buffer.clone();
-        
+
         // Check that they point to the same memory
         assert_eq!(buffer.as_ptr(), buffer_clone.as_ptr());
-        
+
         // Check that cloned buffer has the correct data
         let data = buffer_clone.as_slice();
         assert_eq!(data[0], 1);
@@ -329,33 +332,33 @@ mod tests {
         assert_eq!(data[2], 3);
         assert_eq!(data[3], 4);
         assert_eq!(data[4], 5);
-        
+
         Ok(())
     }
-    
+
     #[test]
     fn test_tensor_buffer_clone_modify() -> Result<(), TensorAllocatorError> {
         let vec: Vec<i32> = vec![1, 2, 3, 4, 5];
         let buffer = TensorStorage::<_, CpuAllocator>::from_vec(vec, CpuAllocator);
-        
+
         // Clone the buffer - should share the same data
         let mut buffer_clone = buffer.clone();
-        
+
         // Modify the cloned buffer - should copy-on-write
         {
             let slice = buffer_clone.as_mut_slice();
             slice[0] = 10;
         }
-        
+
         // Original buffer should be unchanged
         assert_eq!(buffer.as_slice()[0], 1);
-        
+
         // Cloned buffer should have the new value
         assert_eq!(buffer_clone.as_slice()[0], 10);
-        
+
         // Pointers should now be different
         assert_ne!(buffer.as_ptr(), buffer_clone.as_ptr());
-        
+
         Ok(())
     }
 }

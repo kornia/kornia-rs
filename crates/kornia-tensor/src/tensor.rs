@@ -1560,7 +1560,8 @@ mod tests {
 
     #[test]
     fn sub_inplace() -> Result<(), TensorError> {
-        let mut a = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![10, 12, 14, 16], CpuAllocator)?;
+        let mut a =
+            Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![10, 12, 14, 16], CpuAllocator)?;
         let b = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator)?;
 
         a.sub_inplace(&b)?;
@@ -1582,7 +1583,8 @@ mod tests {
 
     #[test]
     fn div_inplace() -> Result<(), TensorError> {
-        let mut a = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![10, 12, 14, 16], CpuAllocator)?;
+        let mut a =
+            Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![10, 12, 14, 16], CpuAllocator)?;
         let b = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator)?;
 
         a.div_inplace(&b)?;
@@ -1599,7 +1601,6 @@ mod tests {
         assert_eq!(t.as_slice(), &[2, 4, 6, 8]);
         Ok(())
     }
-
 
     #[test]
     fn test_ops_add() -> Result<(), TensorError> {
