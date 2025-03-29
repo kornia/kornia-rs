@@ -1,0 +1,10 @@
+[package]
+name = "point_cloud_transform"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+kornia-icp = { path = "../../crates/kornia-icp" }
+kornia-linalg = { path = "../../crates/kornia-linalg" }
+glam = "0.30.0" 
