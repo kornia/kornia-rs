@@ -52,14 +52,20 @@ impl From<ImageSize> for [u32; 2] {
     }
 }
 
-#[derive(Clone)]
-/// Represents an image with pixel data.
+/// A representation of an image with pixel data.
 ///
-/// The image is represented as a 3D Tensor with shape (H, W, C), where H is the height of the image,
-pub struct Image<T, const C: usize>(pub Tensor3<T, CpuAllocator>);
+/// The image is stored as a three-dimensional tensor with the shape
+/// `[height, width, channels]`.
+pub struct Image<T: Clone, const C: usize>(pub Tensor3<T, CpuAllocator>);
+
+impl<T: Clone, const C: usize> Clone for Image<T, C> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 /// helper to deference the inner tensor
-impl<T, const C: usize> std::ops::Deref for Image<T, C> {
+impl<T: Clone, const C: usize> std::ops::Deref for Image<T, C> {
     type Target = Tensor3<T, CpuAllocator>;
 
     // Define the deref method to return a reference to the inner Tensor3<T>.
@@ -69,14 +75,14 @@ impl<T, const C: usize> std::ops::Deref for Image<T, C> {
 }
 
 /// helper to deference the inner tensor
-impl<T, const C: usize> std::ops::DerefMut for Image<T, C> {
+impl<T: Clone, const C: usize> std::ops::DerefMut for Image<T, C> {
     // Define the deref_mut method to return a mutable reference to the inner Tensor3<T>.
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl<T, const C: usize> Image<T, C> {
+impl<T: Clone, const C: usize> Image<T, C> {
     /// Create a new image from pixel data.
     ///
     /// # Arguments
@@ -238,9 +244,13 @@ impl<T, const C: usize> Image<T, C> {
 
     /// Cast the pixel data of the image to a different type.
     ///
+    /// # Arguments
+    ///
+    /// * `f` - A function that takes a pixel value and returns a new pixel value.
+    ///
     /// # Returns
     ///
-    /// A new image with the pixel data cast to the given type.
+    /// A new image with the pixel data cast to the new type.
     pub fn cast<U>(&self) -> Result<Image<U, C>, ImageError>
     where
         U: num_traits::NumCast + Clone + Copy, // TODO: remove this bound
@@ -257,6 +267,31 @@ impl<T, const C: usize> Image<T, C> {
             .collect::<Result<Vec<U>, ImageError>>()?;
 
         Image::new(self.size(), casted_data)
+    }
+
+    /// Cast the pixel data of the image to a different type and scale it.
+    ///
+    /// # Arguments
+    ///
+    /// * `scale` - The scale factor to apply after casting.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the pixel data cast to the given type and scaled.
+    pub fn cast_and_scale<U>(&self, scale: U) -> Result<Image<U, C>, ImageError>
+    where
+        U: num_traits::NumCast + Clone + Copy + std::ops::Mul<Output = U>, 
+        T: num_traits::NumCast + Clone + Copy,
+    {
+        let image = self.cast::<U>()?;
+        
+        // Scale the pixel values
+        let scaled_data = image.as_slice()
+            .iter()
+            .map(|&val| val * scale)
+            .collect::<Vec<U>>();
+        
+        Image::<U, C>::new(self.size(), scaled_data)
     }
 
     /// Get a channel of the image.
@@ -355,56 +390,6 @@ impl<T, const C: usize> Image<T, C> {
     /// Get the number of channels in the image.
     pub fn num_channels(&self) -> usize {
         C
-    }
-
-    /// Cast the pixel data to a different type and scale it.
-    ///
-    /// # Arguments
-    ///
-    /// * `scale` - The scale to multiply the pixel data with.
-    ///
-    /// # Returns
-    ///
-    /// A new image with the pixel data cast to the new type and scaled.
-    ///
-    /// # Errors
-    ///
-    /// If the pixel data cannot be cast to the new type, an error is returned.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use kornia_image::{Image, ImageSize};
-    ///
-    /// let data = vec![0u8, 0, 255, 0, 0, 255];
-    ///
-    /// let image_u8 = Image::<u8, 3>::new(
-    /// ImageSize {
-    ///   height: 2,
-    ///   width: 1,
-    /// },
-    /// data,
-    /// ).unwrap();
-    ///
-    /// let image_f32 = image_u8.cast_and_scale::<f32>(1. / 255.0).unwrap();
-    ///
-    /// assert_eq!(image_f32.get([1, 0, 2]), Some(&1.0f32));
-    /// ```
-    pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, C>, ImageError>
-    where
-        U: num_traits::NumCast + std::ops::Mul<Output = U> + Clone + Copy,
-        T: num_traits::NumCast + Clone + Copy,
-    {
-        let casted_data = self
-            .as_slice()
-            .iter()
-            .map(|&x| {
-                let xu = U::from(x).ok_or(ImageError::CastError)?;
-                Ok(xu * scale)
-            })
-            .collect::<Result<Vec<U>, ImageError>>()?;
-
-        Image::new(self.size(), casted_data)
     }
 
     /// Cast the pixel data to a different type and scale it.
@@ -524,7 +509,7 @@ where
 }
 
 /// helper to convert an multi channel tensor to a kornia image with try into
-impl<T, const C: usize> TryFrom<Tensor3<T, CpuAllocator>> for Image<T, C> {
+impl<T: Clone, const C: usize> TryFrom<Tensor3<T, CpuAllocator>> for Image<T, C> {
     type Error = ImageError;
 
     fn try_from(value: Tensor3<T, CpuAllocator>) -> Result<Self, Self::Error> {
@@ -535,7 +520,7 @@ impl<T, const C: usize> TryFrom<Tensor3<T, CpuAllocator>> for Image<T, C> {
     }
 }
 
-impl<T, const C: usize> TryInto<Tensor3<T, CpuAllocator>> for Image<T, C> {
+impl<T: Clone, const C: usize> TryInto<Tensor3<T, CpuAllocator>> for Image<T, C> {
     type Error = ImageError;
 
     fn try_into(self) -> Result<Tensor3<T, CpuAllocator>, Self::Error> {

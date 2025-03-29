@@ -20,6 +20,12 @@ thiserror = { workspace = true }
 [features]
 serde = ["dep:serde"]
 bincode = ["dep:bincode"]
+bench = []
 
 [dev-dependencies]
 serde_json = "1"
+criterion = "0.5"
+
+[[bench]]
+name = "tensor_benchmarks"
+harness = false

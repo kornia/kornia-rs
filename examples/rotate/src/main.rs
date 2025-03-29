@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let rotation_matrix = imgproc::warp::get_rotation_matrix2d(center, angle, scale);
 
         let mut output = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
-        let mut output_norm = output.clone();
+        let mut output_norm = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
 
         imgproc::warp::warp_affine(
             &image,
