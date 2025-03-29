@@ -1,10 +1,10 @@
-use glam::{Vec3, Mat3};
+use glam::{Mat3, Vec3};
 use kornia_icp::fit_transformation;
 
 fn main() {
     println!("Point Cloud Transformation Example");
     println!("=================================\n");
-    
+
     // Create a point cloud with a known pattern
     let points_src = vec![
         Vec3::new(0.0, 0.0, 0.0), // Origin
@@ -31,7 +31,10 @@ fn main() {
     // Print source and destination points
     println!("\nSource and destination points:");
     for i in 0..points_src.len() {
-        println!("Point {}: src={:?} -> dst={:?}", i, points_src[i], points_dst[i]);
+        println!(
+            "Point {}: src={:?} -> dst={:?}",
+            i, points_src[i], points_dst[i]
+        );
     }
 
     // Compute transformation using our SVD algorithm
@@ -58,7 +61,9 @@ fn main() {
     for i in 0..points_src.len() {
         let transformed = est_rotation * points_src[i] + est_translation;
         let error = (transformed - points_dst[i]).length();
-        println!("Point {}: transformed={:?}, dst={:?}, error={:e}", 
-                 i, transformed, points_dst[i], error);
+        println!(
+            "Point {}: transformed={:?}, dst={:?}, error={:e}",
+            i, transformed, points_dst[i], error
+        );
     }
-} 
+}

@@ -1,6 +1,6 @@
+use glam::{Mat3, Vec3};
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
 use kornia_3d::linalg;
-use glam::{Vec3, Mat3};
 use kornia_linalg::linalg::svd3;
 
 /// Compute the transformation between two point clouds.
@@ -11,17 +11,28 @@ pub(crate) fn fit_transformation(
     dst_t_src: &mut [f64; 3],
 ) {
     assert_eq!(points_in_src.len(), points_in_dst.len());
-    assert!(points_in_src.len() >= 3, "Need at least 3 points for transformation estimation");
+    assert!(
+        points_in_src.len() >= 3,
+        "Need at least 3 points for transformation estimation"
+    );
 
     // Identity transformation is a special case
     if points_in_src == points_in_dst {
         // Set identity rotation matrix
-        dst_r_src[0][0] = 1.0; dst_r_src[0][1] = 0.0; dst_r_src[0][2] = 0.0;
-        dst_r_src[1][0] = 0.0; dst_r_src[1][1] = 1.0; dst_r_src[1][2] = 0.0;
-        dst_r_src[2][0] = 0.0; dst_r_src[2][1] = 0.0; dst_r_src[2][2] = 1.0;
-        
+        dst_r_src[0][0] = 1.0;
+        dst_r_src[0][1] = 0.0;
+        dst_r_src[0][2] = 0.0;
+        dst_r_src[1][0] = 0.0;
+        dst_r_src[1][1] = 1.0;
+        dst_r_src[1][2] = 0.0;
+        dst_r_src[2][0] = 0.0;
+        dst_r_src[2][1] = 0.0;
+        dst_r_src[2][2] = 1.0;
+
         // Set zero translation
-        dst_t_src[0] = 0.0; dst_t_src[1] = 0.0; dst_t_src[2] = 0.0;
+        dst_t_src[0] = 0.0;
+        dst_t_src[1] = 0.0;
+        dst_t_src[2] = 0.0;
         return;
     }
 
@@ -47,39 +58,56 @@ pub(crate) fn fit_transformation(
     if points_in_src.len() >= 4 {
         let mut src_pts = Mat3::ZERO;
         let mut dst_pts = Mat3::ZERO;
-        
+
         // Use the first 3 non-origin points to form a basis
         let mut idx = 0;
         for i in 0..points_in_src.len() {
             if idx >= 3 {
                 break;
             }
-            
-            let src_pt = Vec3::new(points_in_src[i][0] as f32, points_in_src[i][1] as f32, points_in_src[i][2] as f32);
-            let dst_pt = Vec3::new(points_in_dst[i][0] as f32, points_in_dst[i][1] as f32, points_in_dst[i][2] as f32);
-            
+
+            let src_pt = Vec3::new(
+                points_in_src[i][0] as f32,
+                points_in_src[i][1] as f32,
+                points_in_src[i][2] as f32,
+            );
+            let dst_pt = Vec3::new(
+                points_in_dst[i][0] as f32,
+                points_in_dst[i][1] as f32,
+                points_in_dst[i][2] as f32,
+            );
+
             let src_centered = src_pt - src_centroid;
             let dst_centered = dst_pt - dst_centroid;
-            
+
             // Skip points too close to centroid
             if src_centered.length_squared() < 1e-10 {
                 continue;
             }
-            
+
             match idx {
-                0 => { src_pts.x_axis = src_centered; dst_pts.x_axis = dst_centered; }
-                1 => { src_pts.y_axis = src_centered; dst_pts.y_axis = dst_centered; }
-                2 => { src_pts.z_axis = src_centered; dst_pts.z_axis = dst_centered; }
+                0 => {
+                    src_pts.x_axis = src_centered;
+                    dst_pts.x_axis = dst_centered;
+                }
+                1 => {
+                    src_pts.y_axis = src_centered;
+                    dst_pts.y_axis = dst_centered;
+                }
+                2 => {
+                    src_pts.z_axis = src_centered;
+                    dst_pts.z_axis = dst_centered;
+                }
                 _ => {}
             }
             idx += 1;
         }
-        
+
         // If src_pts is invertible, use direct computation
         let det = src_pts.determinant();
         if det.abs() > 1e-6 {
             let r_direct = dst_pts * src_pts.inverse();
-            
+
             // Only use direct computation if it's a valid rotation matrix
             if (r_direct.determinant() - 1.0).abs() < 0.1 {
                 // Copy results back to output
@@ -88,13 +116,13 @@ pub(crate) fn fit_transformation(
                         dst_r_src[i][j] = r_direct.col(j)[i] as f64;
                     }
                 }
-                
+
                 // Compute translation
                 let t = dst_centroid - r_direct * src_centroid;
                 dst_t_src[0] = t.x as f64;
                 dst_t_src[1] = t.y as f64;
                 dst_t_src[2] = t.z as f64;
-                
+
                 return;
             }
         }
@@ -112,11 +140,7 @@ pub(crate) fn fit_transformation(
     // Handle reflection case to ensure proper rotation matrix
     if r.determinant() < 0.0 {
         // Create a modified V matrix with the z-axis negated
-        let v_corrected = Mat3::from_cols(
-            v.x_axis,
-            v.y_axis,
-            -v.z_axis
-        );
+        let v_corrected = Mat3::from_cols(v.x_axis, v.y_axis, -v.z_axis);
         r = v_corrected * u.transpose();
     }
 
@@ -142,10 +166,7 @@ pub(crate) fn fit_transformation(
 /// # Returns
 ///
 /// The centroids of the two sets of points.
-pub(crate) fn compute_centroids(
-    points1: &[[f64; 3]],
-    points2: &[[f64; 3]],
-) -> (Vec3, Vec3) {
+pub(crate) fn compute_centroids(points1: &[[f64; 3]], points2: &[[f64; 3]]) -> (Vec3, Vec3) {
     let mut centroid1 = Vec3::ZERO;
     let mut centroid2 = Vec3::ZERO;
 
@@ -358,7 +379,7 @@ mod tests {
 
             // Use a slightly higher epsilon for numerical stability in random tests
             let epsilon = 1e-5;
-            
+
             for (res, exp) in points_src_fit.iter().zip(points_dst.iter()) {
                 for (r, e) in res.iter().zip(exp.iter()) {
                     assert_relative_eq!(r, e, epsilon = epsilon);
