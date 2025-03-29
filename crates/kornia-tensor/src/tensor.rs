@@ -102,7 +102,10 @@ where
     ///
     /// A mutable slice containing the data of the tensor.
     #[inline]
-    pub fn as_slice_mut(&mut self) -> &mut [T] {
+    pub fn as_slice_mut(&mut self) -> &mut [T]
+    where
+        T: Clone,
+    {
         self.storage.as_mut_slice()
     }
 
@@ -132,7 +135,10 @@ where
     /// The returned vector will have a length equal to the total number of elements in the tensor.
     ///
     #[inline]
-    pub fn into_vec(self) -> Vec<T> {
+    pub fn into_vec(self) -> Vec<T>
+    where
+        T: Clone,
+    {
         self.storage.into_vec()
     }
 
@@ -655,6 +661,200 @@ where
         }
     }
 
+    /// Performs an in-place element-wise operation with another tensor.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - Another tensor with the same shape.
+    /// * `op` - A function that takes a mutable reference to an element of this tensor and a reference to an element of the other tensor.
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) if the operation was successful, or an error if the shapes don't match.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kornia_tensor::{Tensor, CpuAllocator};
+    ///
+    /// let mut a = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![1, 2, 3, 4], CpuAllocator).unwrap();
+    /// let b = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator).unwrap();
+    ///
+    /// a.element_wise_op_inplace(&b, |a, b| *a += *b).unwrap();
+    ///
+    /// assert_eq!(a.as_slice(), &[6, 8, 10, 12]);
+    /// ```
+    pub fn element_wise_op_inplace<F>(
+        &mut self,
+        other: &Tensor<T, N, A>,
+        op: F,
+    ) -> Result<(), TensorError>
+    where
+        F: Fn(&mut T, &T),
+        T: Clone,
+    {
+        if self.shape != other.shape {
+            return Err(TensorError::DimensionMismatch(format!(
+                "Cannot perform operation on tensors with different shapes: {:?} and {:?}",
+                self.shape, other.shape
+            )));
+        }
+
+        // Get mutable slice to our data
+        let self_data = self.as_slice_mut();
+        let other_data = other.as_slice();
+
+        // Apply the operation
+        for (a, b) in self_data.iter_mut().zip(other_data.iter()) {
+            op(a, b);
+        }
+
+        Ok(())
+    }
+
+    /// Adds another tensor to this tensor in-place.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - Another tensor with the same shape.
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) if the operation was successful, or an error if the shapes don't match.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kornia_tensor::{Tensor, CpuAllocator};
+    ///
+    /// let mut a = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![1, 2, 3, 4], CpuAllocator).unwrap();
+    /// let b = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator).unwrap();
+    ///
+    /// a.add_inplace(&b).unwrap();
+    ///
+    /// assert_eq!(a.as_slice(), &[6, 8, 10, 12]);
+    /// ```
+    pub fn add_inplace(&mut self, other: &Tensor<T, N, A>) -> Result<(), TensorError>
+    where
+        T: std::ops::AddAssign<T> + Clone,
+    {
+        self.element_wise_op_inplace(other, |a, b| *a += b.clone())
+    }
+
+    /// Subtracts another tensor from this tensor in-place.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - Another tensor with the same shape.
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) if the operation was successful, or an error if the shapes don't match.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kornia_tensor::{Tensor, CpuAllocator};
+    ///
+    /// let mut a = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![10, 12, 14, 16], CpuAllocator).unwrap();
+    /// let b = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator).unwrap();
+    ///
+    /// a.sub_inplace(&b).unwrap();
+    ///
+    /// assert_eq!(a.as_slice(), &[5, 6, 7, 8]);
+    /// ```
+    pub fn sub_inplace(&mut self, other: &Tensor<T, N, A>) -> Result<(), TensorError>
+    where
+        T: std::ops::SubAssign<T> + Clone,
+    {
+        self.element_wise_op_inplace(other, |a, b| *a -= b.clone())
+    }
+
+    /// Multiplies this tensor by another tensor in-place (element-wise).
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - Another tensor with the same shape.
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) if the operation was successful, or an error if the shapes don't match.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kornia_tensor::{Tensor, CpuAllocator};
+    ///
+    /// let mut a = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![1, 2, 3, 4], CpuAllocator).unwrap();
+    /// let b = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator).unwrap();
+    ///
+    /// a.mul_inplace(&b).unwrap();
+    ///
+    /// assert_eq!(a.as_slice(), &[5, 12, 21, 32]);
+    /// ```
+    pub fn mul_inplace(&mut self, other: &Tensor<T, N, A>) -> Result<(), TensorError>
+    where
+        T: std::ops::MulAssign<T> + Clone,
+    {
+        self.element_wise_op_inplace(other, |a, b| *a *= b.clone())
+    }
+
+    /// Divides this tensor by another tensor in-place (element-wise).
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - Another tensor with the same shape.
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) if the operation was successful, or an error if the shapes don't match.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kornia_tensor::{Tensor, CpuAllocator};
+    ///
+    /// let mut a = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![10, 12, 14, 16], CpuAllocator).unwrap();
+    /// let b = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator).unwrap();
+    ///
+    /// a.div_inplace(&b).unwrap();
+    ///
+    /// assert_eq!(a.as_slice(), &[2, 2, 2, 2]);
+    /// ```
+    pub fn div_inplace(&mut self, other: &Tensor<T, N, A>) -> Result<(), TensorError>
+    where
+        T: std::ops::DivAssign<T> + Clone,
+    {
+        self.element_wise_op_inplace(other, |a, b| *a /= b.clone())
+    }
+
+    /// Maps a function over the elements of the tensor in-place.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - A function to apply to each element.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kornia_tensor::{Tensor, CpuAllocator};
+    ///
+    /// let mut t = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![1, 2, 3, 4], CpuAllocator).unwrap();
+    /// t.map_inplace(|x| *x *= 2);
+    ///
+    /// assert_eq!(t.as_slice(), &[2, 4, 6, 8]);
+    /// ```
+    pub fn map_inplace<F>(&mut self, f: F)
+    where
+        F: Fn(&mut T),
+        T: Clone,
+    {
+        let data = self.as_slice_mut();
+        for x in data.iter_mut() {
+            f(x);
+        }
+    }
+
     /// Perform an element-wise operation on two tensors.
     ///
     /// # Arguments
@@ -689,13 +889,14 @@ where
     /// let t6 = t1.element_wise_op(&t2, |a, b| *a / *b).unwrap();
     /// assert_eq!(t6.as_slice(), vec![1, 1, 1, 1]);
     /// ```
-    pub fn element_wise_op<F>(
+    pub fn element_wise_op<F, R>(
         &self,
-        other: &Tensor<T, N, CpuAllocator>,
+        other: &Tensor<T, N, A>,
         op: F,
-    ) -> Result<Tensor<T, N, CpuAllocator>, TensorError>
+    ) -> Result<Tensor<R, N, A>, TensorError>
     where
-        F: Fn(&T, &T) -> T,
+        F: Fn(&T, &T) -> R,
+        R: Clone,
     {
         if self.shape != other.shape {
             return Err(TensorError::DimensionMismatch(format!(
@@ -711,7 +912,7 @@ where
             .map(|(a, b)| op(a, b))
             .collect();
 
-        let storage = TensorStorage::from_vec(data, CpuAllocator);
+        let storage = TensorStorage::from_vec(data, self.storage.alloc().clone());
 
         Ok(Tensor {
             storage,
@@ -1334,4 +1535,263 @@ mod tests {
         assert_eq!(t.as_slice(), &[1, 2, 3, 4]);
         Ok(())
     }
+
+    #[test]
+    fn element_wise_op_inplace() -> Result<(), TensorError> {
+        let mut a = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![1, 2, 3, 4], CpuAllocator)?;
+        let b = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator)?;
+
+        a.element_wise_op_inplace(&b, |a, b| *a += *b)?;
+
+        assert_eq!(a.as_slice(), &[6, 8, 10, 12]);
+        Ok(())
+    }
+
+    #[test]
+    fn add_inplace() -> Result<(), TensorError> {
+        let mut a = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![1, 2, 3, 4], CpuAllocator)?;
+        let b = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator)?;
+
+        a.add_inplace(&b)?;
+
+        assert_eq!(a.as_slice(), &[6, 8, 10, 12]);
+        Ok(())
+    }
+
+    #[test]
+    fn sub_inplace() -> Result<(), TensorError> {
+        let mut a = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![10, 12, 14, 16], CpuAllocator)?;
+        let b = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator)?;
+
+        a.sub_inplace(&b)?;
+
+        assert_eq!(a.as_slice(), &[5, 6, 7, 8]);
+        Ok(())
+    }
+
+    #[test]
+    fn mul_inplace() -> Result<(), TensorError> {
+        let mut a = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![1, 2, 3, 4], CpuAllocator)?;
+        let b = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator)?;
+
+        a.mul_inplace(&b)?;
+
+        assert_eq!(a.as_slice(), &[5, 12, 21, 32]);
+        Ok(())
+    }
+
+    #[test]
+    fn div_inplace() -> Result<(), TensorError> {
+        let mut a = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![10, 12, 14, 16], CpuAllocator)?;
+        let b = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator)?;
+
+        a.div_inplace(&b)?;
+
+        assert_eq!(a.as_slice(), &[2, 2, 2, 2]);
+        Ok(())
+    }
+
+    #[test]
+    fn map_inplace() -> Result<(), TensorError> {
+        let mut t = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![1, 2, 3, 4], CpuAllocator)?;
+        t.map_inplace(|x| *x *= 2);
+
+        assert_eq!(t.as_slice(), &[2, 4, 6, 8]);
+        Ok(())
+    }
+
+
+    #[test]
+    fn test_ops_add() -> Result<(), TensorError> {
+        use crate::tensor::ops;
+
+        let a = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![1, 2, 3, 4], CpuAllocator)?;
+        let b = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator)?;
+
+        let c = ops::add(&a, &b)?;
+
+        assert_eq!(c.as_slice(), &[6, 8, 10, 12]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_ops_sub() -> Result<(), TensorError> {
+        use crate::tensor::ops;
+
+        let a = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![10, 12, 14, 16], CpuAllocator)?;
+        let b = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator)?;
+
+        let c = ops::sub(&a, &b)?;
+
+        assert_eq!(c.as_slice(), &[5, 6, 7, 8]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_ops_mul() -> Result<(), TensorError> {
+        use crate::tensor::ops;
+
+        let a = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![1, 2, 3, 4], CpuAllocator)?;
+        let b = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator)?;
+
+        let c = ops::mul(&a, &b)?;
+
+        assert_eq!(c.as_slice(), &[5, 12, 21, 32]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_ops_div() -> Result<(), TensorError> {
+        use crate::tensor::ops;
+
+        let a = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![10, 12, 14, 16], CpuAllocator)?;
+        let b = Tensor::<i32, 2, _>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator)?;
+
+        let c = ops::div(&a, &b)?;
+
+        assert_eq!(c.as_slice(), &[2, 2, 2, 2]);
+        Ok(())
+    }
+}
+
+/// Add two tensors without cloning the data.
+///
+/// # Arguments
+///
+/// * `lhs` - Left-hand side tensor.
+/// * `rhs` - Right-hand side tensor.
+///
+/// # Returns
+///
+/// A new `Tensor` instance with the sum of the two tensors.
+///
+/// # Examples
+///
+/// ```
+/// use kornia_tensor::{Tensor, CpuAllocator, ops};
+///
+/// let a = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![1, 2, 3, 4], CpuAllocator).unwrap();
+/// let b = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator).unwrap();
+///
+/// let c = ops::add(&a, &b).unwrap();
+///
+/// assert_eq!(c.as_slice(), &[6, 8, 10, 12]);
+/// ```
+pub fn add<T, const N: usize, A: TensorAllocator>(
+    lhs: &Tensor<T, N, A>,
+    rhs: &Tensor<T, N, A>,
+) -> Result<Tensor<T, N, A>, TensorError>
+where
+    T: std::ops::Add<Output = T> + Clone,
+    A: Clone + 'static,
+{
+    lhs.element_wise_op(rhs, |a, b| a.clone() + b.clone())
+}
+
+/// Subtract two tensors without cloning the data.
+///
+/// # Arguments
+///
+/// * `lhs` - Left-hand side tensor.
+/// * `rhs` - Right-hand side tensor.
+///
+/// # Returns
+///
+/// A new `Tensor` instance with the difference of the two tensors.
+///
+/// # Examples
+///
+/// ```
+/// use kornia_tensor::{Tensor, CpuAllocator, ops};
+///
+/// let a = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![10, 12, 14, 16], CpuAllocator).unwrap();
+/// let b = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator).unwrap();
+///
+/// let c = ops::sub(&a, &b).unwrap();
+///
+/// assert_eq!(c.as_slice(), &[5, 6, 7, 8]);
+/// ```
+pub fn sub<T, const N: usize, A: TensorAllocator>(
+    lhs: &Tensor<T, N, A>,
+    rhs: &Tensor<T, N, A>,
+) -> Result<Tensor<T, N, A>, TensorError>
+where
+    T: std::ops::Sub<Output = T> + Clone,
+    A: Clone + 'static,
+{
+    lhs.element_wise_op(rhs, |a, b| a.clone() - b.clone())
+}
+
+/// Multiply two tensors without cloning the data.
+///
+/// # Arguments
+///
+/// * `lhs` - Left-hand side tensor.
+/// * `rhs` - Right-hand side tensor.
+///
+/// # Returns
+///
+/// A new `Tensor` instance with the product of the two tensors.
+///
+/// # Examples
+///
+/// ```
+/// use kornia_tensor::{Tensor, CpuAllocator, ops};
+///
+/// let a = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![1, 2, 3, 4], CpuAllocator).unwrap();
+/// let b = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator).unwrap();
+///
+/// let c = ops::mul(&a, &b).unwrap();
+///
+/// assert_eq!(c.as_slice(), &[5, 12, 21, 32]);
+/// ```
+pub fn mul<T, const N: usize, A: TensorAllocator>(
+    lhs: &Tensor<T, N, A>,
+    rhs: &Tensor<T, N, A>,
+) -> Result<Tensor<T, N, A>, TensorError>
+where
+    T: std::ops::Mul<Output = T> + Clone,
+    A: Clone + 'static,
+{
+    lhs.element_wise_op(rhs, |a, b| a.clone() * b.clone())
+}
+
+/// Divide two tensors without cloning the data.
+///
+/// # Arguments
+///
+/// * `lhs` - Left-hand side tensor.
+/// * `rhs` - Right-hand side tensor.
+///
+/// # Returns
+///
+/// A new `Tensor` instance with the quotient of the two tensors.
+///
+/// # Examples
+///
+/// ```
+/// use kornia_tensor::{Tensor, CpuAllocator, ops};
+///
+/// let a = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![10, 12, 14, 16], CpuAllocator).unwrap();
+/// let b = Tensor::<i32, 2, CpuAllocator>::from_shape_vec([2, 2], vec![5, 6, 7, 8], CpuAllocator).unwrap();
+///
+/// let c = ops::div(&a, &b).unwrap();
+///
+/// assert_eq!(c.as_slice(), &[2, 2, 2, 2]);
+/// ```
+pub fn div<T, const N: usize, A: TensorAllocator>(
+    lhs: &Tensor<T, N, A>,
+    rhs: &Tensor<T, N, A>,
+) -> Result<Tensor<T, N, A>, TensorError>
+where
+    T: std::ops::Div<Output = T> + Clone,
+    A: Clone + 'static,
+{
+    lhs.element_wise_op(rhs, |a, b| a.clone() / b.clone())
+}
+
+/// Create a module for the tensor operations.
+pub mod ops {
+    // Re-export the operations
+    pub use super::{add, div, mul, sub};
 }

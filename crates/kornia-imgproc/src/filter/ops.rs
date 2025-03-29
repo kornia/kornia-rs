@@ -108,17 +108,52 @@ pub fn box_blur_fast<const C: usize>(
         height: src.size().width,
     };
 
-    let mut input_img = src.clone();
-    let mut transposed = Image::<f32, C>::from_size_val(transposed_size, 0.0)?;
-
-    for (half_kernel_x_size, half_kernel_y_size) in
-        half_kernel_x_sizes.iter().zip(half_kernel_y_sizes.iter())
-    {
-        fast_horizontal_filter(&input_img, &mut transposed, *half_kernel_x_size)?;
-        fast_horizontal_filter(&transposed, dst, *half_kernel_y_size)?;
-
-        input_img = dst.clone();
+    // Just one pass needed
+    if half_kernel_x_sizes.len() == 1 {
+        let half_kernel_x_size = half_kernel_x_sizes[0];
+        let half_kernel_y_size = half_kernel_y_sizes[0];
+        
+        let mut transposed = Image::<f32, C>::from_size_val(transposed_size, 0.0)?;
+        
+        fast_horizontal_filter(src, &mut transposed, half_kernel_x_size)?;
+        fast_horizontal_filter(&transposed, dst, half_kernel_y_size)?;
+        
+        return Ok(());
     }
+    
+    // Multiple passes needed - allocate temporary buffers
+    let mut temp1 = Image::<f32, C>::from_size_val(src.size(), 0.0)?;
+    let mut temp2 = Image::<f32, C>::from_size_val(src.size(), 0.0)?;
+    let mut transposed = Image::<f32, C>::from_size_val(transposed_size, 0.0)?;
+    
+    // First pass - from src to temp1
+    fast_horizontal_filter(src, &mut transposed, half_kernel_x_sizes[0])?;
+    fast_horizontal_filter(&transposed, &mut temp1, half_kernel_y_sizes[0])?;
+    
+    // Middle passes
+    let mut using_temp1_as_input = true;
+    
+    for i in 1..(half_kernel_x_sizes.len()-1) {
+        if using_temp1_as_input {
+            fast_horizontal_filter(&temp1, &mut transposed, half_kernel_x_sizes[i])?;
+            fast_horizontal_filter(&transposed, &mut temp2, half_kernel_y_sizes[i])?;
+        } else {
+            fast_horizontal_filter(&temp2, &mut transposed, half_kernel_x_sizes[i])?;
+            fast_horizontal_filter(&transposed, &mut temp1, half_kernel_y_sizes[i])?;
+        }
+        
+        // Toggle which buffer is used as input for next iteration
+        using_temp1_as_input = !using_temp1_as_input;
+    }
+    
+    // Final pass - from last buffer to dst
+    let last_index = half_kernel_x_sizes.len() - 1;
+    if using_temp1_as_input {
+        fast_horizontal_filter(&temp1, &mut transposed, half_kernel_x_sizes[last_index])?;
+    } else {
+        fast_horizontal_filter(&temp2, &mut transposed, half_kernel_x_sizes[last_index])?;
+    }
+    fast_horizontal_filter(&transposed, dst, half_kernel_y_sizes[last_index])?;
 
     Ok(())
 }
