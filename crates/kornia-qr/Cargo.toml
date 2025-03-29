@@ -1,0 +1,25 @@
+[package]
+name = "kornia-qr"
+description = "QR code detection and decoding for kornia"
+version = "0.1.9-rc.2"
+edition = "2021"
+authors.workspace = true
+homepage.workspace = true
+license.workspace = true
+publish = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+kornia-tensor = { workspace = true }
+kornia-image = { workspace = true }
+kornia-imgproc = { workspace = true }
+image = "0.24"
+rqrr = "0.9"
+anyhow = "1.0"
+thiserror = { workspace = true }
+num-traits = { workspace = true }
+
+[dev-dependencies]
+kornia-io = { workspace = true }
+criterion = { workspace = true } 
