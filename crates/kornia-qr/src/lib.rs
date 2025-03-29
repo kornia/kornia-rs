@@ -69,20 +69,22 @@ impl QrDetector {
     /// # Errors
     ///
     /// Returns an error if conversion, detection, or decoding fails.
-    pub fn detect_and_decode(image: &Tensor<u8, 3, CpuAllocator>) -> Result<Vec<QrDetection>, QrError> {
+    pub fn detect_and_decode(
+        image: &Tensor<u8, 3, CpuAllocator>,
+    ) -> Result<Vec<QrDetection>, QrError> {
         // Convert the tensor to an image format that rqrr can process
         let grayscale = Self::tensor_to_grayscale(image)?;
-        
+
         // Prepare the image for QR detection
         let mut prepared = PreparedImage::prepare(grayscale.clone());
-        
+
         // Detect QR codes
         let grids = prepared.detect_grids();
-        
+
         if grids.is_empty() {
             return Err(QrError::NoQrCodesFound);
         }
-        
+
         // Process detected grids
         let mut detections = Vec::with_capacity(grids.len());
         for grid in grids {
@@ -94,13 +96,13 @@ impl QrDetector {
                 [bounds[2].x as f32, bounds[2].y as f32],
                 [bounds[3].x as f32, bounds[3].y as f32],
             ];
-            
+
             // Decode QR content
             let (meta, content) = match grid.decode() {
                 Ok(result) => result,
                 Err(e) => return Err(QrError::DecodingError(e.to_string())),
             };
-            
+
             // Create detection result
             detections.push(QrDetection {
                 content,
@@ -111,7 +113,7 @@ impl QrDetector {
                 version: 1, // Default to version 1
             });
         }
-        
+
         Ok(detections)
     }
 
@@ -130,40 +132,46 @@ impl QrDetector {
     /// Returns an error if the conversion fails.
     fn tensor_to_grayscale(tensor: &Tensor<u8, 3, CpuAllocator>) -> Result<GrayImage, QrError> {
         let (height, width, channels) = (tensor.shape[0], tensor.shape[1], tensor.shape[2]);
-        
+
         // If the image is already grayscale, just convert directly
         if channels == 1 {
             let data = tensor.as_slice().to_vec();
-            return Ok(ImageBuffer::from_raw(width as u32, height as u32, data)
-                .ok_or_else(|| QrError::ImageProcessingError("Failed to create image buffer".to_string()))?);
+            return Ok(
+                ImageBuffer::from_raw(width as u32, height as u32, data).ok_or_else(|| {
+                    QrError::ImageProcessingError("Failed to create image buffer".to_string())
+                })?,
+            );
         }
-        
+
         // For RGB or RGBA images, convert to grayscale
         let mut gray_data = Vec::with_capacity(height * width);
         let data = tensor.as_slice();
-        
+
         for y in 0..height {
             for x in 0..width {
                 let offset = (y * width + x) * channels;
-                
+
                 // Simple RGB to grayscale conversion (average method)
                 let mut sum = 0;
                 let mut count = 0;
-                
+
                 // Sum up available channels (typically R, G, B)
                 for c in 0..std::cmp::min(3, channels) {
                     sum += data[offset + c] as u32;
                     count += 1;
                 }
-                
+
                 // Calculate average and add to grayscale data
                 let gray_value = if count > 0 { (sum / count) as u8 } else { 0 };
                 gray_data.push(gray_value);
             }
         }
-        
-        Ok(ImageBuffer::from_raw(width as u32, height as u32, gray_data)
-            .ok_or_else(|| QrError::ImageProcessingError("Failed to create grayscale image buffer".to_string()))?)
+
+        Ok(
+            ImageBuffer::from_raw(width as u32, height as u32, gray_data).ok_or_else(|| {
+                QrError::ImageProcessingError("Failed to create grayscale image buffer".to_string())
+            })?,
+        )
     }
 
     /// Extracts a straightened image of the QR code region.
@@ -183,7 +191,7 @@ impl QrDetector {
     fn extract_qr_image(_image: &GrayImage, _corners: &QrCorners) -> GrayImage {
         // This is a simplified placeholder implementation
         // In a complete implementation, use kornia's warp_perspective or similar function
-        
+
         // For now, we just create a small empty image
         // In real implementation, this would contain the warped QR code region
         let size = 100; // Fixed size for placeholder
@@ -217,23 +225,23 @@ impl QrDetectionExt<u8, 1> for Image<u8, 1> {
         // where all 3 channels have the same grayscale value
         let (height, width) = (self.shape[0], self.shape[1]);
         let mut rgb_data = Vec::with_capacity(height * width * 3);
-        
+
         for pixel in self.as_slice() {
             rgb_data.push(*pixel);
             rgb_data.push(*pixel);
             rgb_data.push(*pixel);
         }
-        
+
         let rgb_tensor = Tensor::<u8, 3, CpuAllocator>::from_shape_vec(
             [height, width, 3],
             rgb_data,
             CpuAllocator,
         )?;
-        
+
         QrDetector::detect_and_decode(&rgb_tensor)
     }
 }
 
 // Include the tests module
 #[cfg(test)]
-mod tests; 
+mod tests;
