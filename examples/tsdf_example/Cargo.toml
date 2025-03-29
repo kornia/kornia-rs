@@ -1,0 +1,12 @@
+[package]
+name = "tsdf_example"
+version = "0.1.0"
+description = "Example of using the TSDF volume integration from kornia-3d"
+edition = "2021"
+
+[dependencies]
+kornia = { path = "../../crates/kornia" }
+kornia-3d = { path = "../../crates/kornia-3d" }
+kornia-io = { path = "../../crates/kornia-io" }
+kornia-image = { path = "../../crates/kornia-image" }
+argh = "0.1" 

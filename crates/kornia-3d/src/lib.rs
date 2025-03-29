@@ -21,3 +21,9 @@ pub mod transforms;
 
 /// 3D vector traits.
 pub mod vector;
+
+/// Marching Cubes lookup tables for TSDF
+mod tsdf_tables;
+
+/// Truncated Signed Distance Function (TSDF) volume integration
+pub mod tsdf;
