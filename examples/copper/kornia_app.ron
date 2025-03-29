@@ -1,0 +1,41 @@
+(
+    tasks: [
+        (
+            id: "cam0",
+            type: "copper::tasks::video_capture::VideoCapture",
+            config: {
+                "source_type": "v4l2",
+                "source_uri": "/dev/video0",
+                "source_fps": 30,
+                "image_cols": 640,
+                "image_rows": 480,
+            },
+        ),
+        (
+            id: "cam1",
+            type: "copper::tasks::video_capture::VideoCapture",
+            config: {
+                "source_type": "rtsp",
+                "source_uri": "rtsp://tapo_entrance:123456789@192.168.1.141:554/stream2",
+            },
+        ),
+        (
+            id: "rerun",
+            type: "copper::tasks::rerun_viz::RerunViz",
+        ),
+        (
+            id: "sobel",
+            type: "copper::tasks::sobel::Sobel",
+        ),
+    ],
+    cnx: [
+        (src: "cam0", dst: "rerun", msg: "copper::tasks::ImageRgb8Msg"),
+        (src: "cam0", dst: "sobel", msg: "copper::tasks::ImageRgb8Msg"),
+        (src: "cam1", dst: "rerun", msg: "copper::tasks::ImageRgb8Msg"),
+        (src: "sobel", dst: "rerun", msg: "copper::tasks::ImageGray8Msg"),
+    ],
+    logging: (
+        slab_size_mib: 1024, // Preallocates 1GiB of memory map file at a time
+        section_size_mib: 100, // Preallocates 100MiB of memory map per section for the main logger.
+    ),
+)

@@ -3,24 +3,28 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use clap::Parser;
+use argh::FromArgs;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use kornia::imgproc;
 use kornia::io::functional as F;
 
-#[derive(Parser, Debug)]
+// #[derive(Parser, Debug)]
+#[derive(FromArgs, Debug)]
+/// Compute the std and mean of a set of images.
 struct Args {
-    #[arg(short, long)]
+    /// path to the directory containing the images
+    #[argh(option, short = 'i')]
     images_dir: PathBuf,
 
-    #[arg(short, long, default_value = "8")]
+    /// number of threads to use
+    #[argh(option, short = 'n', default = "8")]
     num_threads: usize,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args: Args = argh::from_env();
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.num_threads)

@@ -51,20 +51,26 @@ jobs:
     - name: Run tests
       run: cd kornia-py/ && just test
 
+
     - name: Show sccache stats
       run: sccache --show-stats
+
+
 
   # TODO: integrate with linux tests once uv bug is fixed
   # https://github.com/astral-sh/uv/issues/12445
   test-python-linux-free-threaded:
     name: py3.13t-linux
     runs-on: ubuntu-latest
+
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
       SCCACHE_CACHE_SIZE: 6G
       SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
       SCCACHE_LOG: info
+
+
     steps:
     - uses: actions/checkout@v4
 
@@ -77,8 +83,11 @@ jobs:
         toolchain: stable
         profile: minimal
 
+
     - name: Install sccache
       uses: mozilla-actions/sccache-action@v0.0.3
+
+
 
     - name: Install system dependencies
       run: sudo apt-get install -y cmake nasm libunwind-dev
@@ -95,9 +104,13 @@ jobs:
         source .venv/bin/activate
         maturin develop -m Cargo.toml
         pytest
+
         
     - name: Show sccache stats
       run: sccache --show-stats
+
+
+
   # NOTE: there's a systematic fail with the ci on macos
   # test-python-macos:
   #   runs-on: macos-latest

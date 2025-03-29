@@ -1,4 +1,4 @@
-use clap::Parser;
+use argh::FromArgs;
 use kornia_tensor::{CpuAllocator, Tensor};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -26,20 +26,24 @@ pub struct Detection {
     pub h: f32,
 }
 
-#[derive(Parser)]
+#[derive(FromArgs)]
+/// Perform object detection using ONNX Runtime and log it to Rerun
 struct Args {
-    #[arg(short, long)]
+    /// path to an input image
+    #[argh(option, short = 'i')]
     image_path: PathBuf,
 
-    #[arg(short, long)]
+    /// path to an ONNX model
+    #[argh(option, short = 'm', long = "model-path")]
     onnx_model_path: PathBuf,
 
-    #[arg(long)]
+    /// path to the ORT dylib
+    #[argh(option)]
     ort_dylib_path: PathBuf,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args: Args = argh::from_env();
 
     // set the ort dylib path
     std::env::set_var("ORT_DYLIB_PATH", &args.ort_dylib_path);
