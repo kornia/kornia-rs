@@ -42,6 +42,39 @@ jobs:
     - name: Run tests
       run: cd kornia-py/ && just test
 
+  # TODO: integrate with linux tests once uv bug is fixed
+  # https://github.com/astral-sh/uv/issues/12445
+  test-python-linux-free-threaded:
+    name: py3.13t-linux
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: extractions/setup-just@v2
+
+    - uses: astral-sh/setup-uv@v5
+
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+
+    - name: Install system dependencies
+      run: sudo apt-get install -y cmake nasm libunwind-dev
+
+    - name: Setup project environment
+      run: cd kornia-py/ && just install-dev 3.13t
+
+    - name: Run tests
+      env:
+        # TODO: unset when the module declares support
+        PYTHON_GIL: '0'
+      run: |
+        cd kornia-py/
+        source .venv/bin/activate
+        maturin develop -m Cargo.toml
+        pytest --parallel-threads=8 --iterations=50
+
   # NOTE: there's a systematic fail with the ci on macos
   # test-python-macos:
   #   runs-on: macos-latest

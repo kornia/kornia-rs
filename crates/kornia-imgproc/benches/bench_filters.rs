@@ -12,14 +12,8 @@ fn gaussian_blur_u8<const C: usize>(
     kernel_size: usize,
     sigma: f32,
 ) -> Result<(), ImageError> {
-    let kernel_x = kernels::gaussian_kernel_1d(kernel_size, sigma)
-        .iter()
-        .map(|x| *x as u8)
-        .collect::<Vec<_>>();
-    let kernel_y = kernels::gaussian_kernel_1d(kernel_size, sigma)
-        .iter()
-        .map(|x| *x as u8)
-        .collect::<Vec<_>>();
+    let kernel_x = kernels::gaussian_kernel_1d(kernel_size, sigma);
+    let kernel_y = kernels::gaussian_kernel_1d(kernel_size, sigma);
     separable_filter(src, dst, &kernel_x, &kernel_y)
 }
 
