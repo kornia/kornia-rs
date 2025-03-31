@@ -39,10 +39,16 @@ impl PyVoxelGrid {
             .iter()
             .flat_map(|p| p.iter().cloned())
             .collect::<Vec<f64>>();
+            
+        if downsampled_points.len() % 3 != 0 {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Point cloud data is corrupted: number of coordinates is not divisible by 3"
+            ));
+        }
 
         let array = PyArray2::from_vec(py, downsampled_points)
             .reshape((downsampled.len(), 3))
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("{}", e)))?;
 
         Ok(array.into_py(py))
     }
