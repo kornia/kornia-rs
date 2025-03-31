@@ -219,6 +219,23 @@ impl<T, const C: usize> Image<T, C> {
         Image::try_from(tensor)
     }
 
+    /// Map the pixel data of the image to a different type.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - A function that takes a pixel value and returns a new pixel value.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the pixel data mapped to the new type.
+    pub fn map<U>(&self, f: impl Fn(&T) -> U) -> Result<Image<U, C>, ImageError>
+    where
+        U: Clone,
+    {
+        let data = self.as_slice().iter().map(f).collect::<Vec<U>>();
+        Image::<U, C>::new(self.size(), data)
+    }
+
     /// Cast the pixel data of the image to a different type.
     ///
     /// # Returns
@@ -758,6 +775,27 @@ mod tests {
 
         assert_eq!(image.get_pixel(0, 0, 0)?, &128);
         assert_eq!(image.get_pixel(0, 1, 1)?, &25);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_image_map() -> Result<(), ImageError> {
+        let image_u8 = Image::<u8, 1>::new(
+            ImageSize {
+                height: 2,
+                width: 1,
+            },
+            vec![0, 128],
+        )?;
+
+        let image_f32 = image_u8.map(|x| (x + 2) as f32)?;
+
+        assert_eq!(image_f32.size().width, 1);
+        assert_eq!(image_f32.size().height, 2);
+        assert_eq!(image_f32.num_channels(), 1);
+        assert_eq!(image_f32.get([0, 0, 0]), Some(&2.0f32));
+        assert_eq!(image_f32.get([1, 0, 0]), Some(&130.0f32));
 
         Ok(())
     }

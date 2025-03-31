@@ -3,10 +3,14 @@ resolver = "2"
 members = [
     "crates/*",
     "examples/*",
-    "kornia-viz",
+    # NOTE: need to add dora examples to make rust analyzer to work
+    "examples/dora/video-capture",
+    "examples/dora/imgproc",
+    "examples/dora/video-sink",
+    "examples/dora/image-utils",
     # "kornia-py",
 ]
-exclude = ["kornia-py"]
+exclude = ["kornia-py", "examples/dora"]
 
 [workspace.package]
 authors = ["kornia.org <edgar@kornia.org>"]
@@ -32,12 +36,15 @@ kornia-io = { path = "crates/kornia-io", version = "0.1.9-rc.2" }
 kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.9-rc.2" }
 kornia-3d = { path = "crates/kornia-3d", version = "0.1.9-rc.2" }
 kornia = { path = "crates/kornia", version = "0.1.9-rc.2" }
+kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.9-rc.2" }
+kernels = { path = "crates/kernels", version = "0.1.9-rc.2" }
 
 # dev dependencies for workspace
 argh = "0.1"
 approx = "0.5"
-bincode = { version = "2.0.0-rc.3", features = ["serde"] }
+bincode = { version = "2.0.0", features = ["derive"] }
 criterion = "0.5"
+ctrlc = "3.4"
 env_logger = "0.11"
 faer = "0.20.1"
 log = "0.4"
@@ -47,3 +54,10 @@ rerun = "^0.22"
 serde = { version = "1", features = ["derive"] }
 tempfile = "3.10"
 thiserror = "2"
+
+# temporary fixes:
+# https://github.com/rerun-io/rerun/issues/9159
+# https://github.com/apache/arrow-rs/issues/7201#issuecomment-2685998489
+arrow = "=54.2.1"
+arrow-arith = "=54.2.1"
+chrono = "=0.4.39"

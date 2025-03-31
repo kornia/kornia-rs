@@ -7,8 +7,8 @@ edition = "2021"
 publish = false
 
 [dependencies]
-clap = { version = "4.5.4", features = ["derive"] }
-ctrlc = "3.4.4"
+argh = { workspace = true }
+ctrlc = { workspace = true }
 kornia = { workspace = true, features = ["gstreamer"] }
 rerun = { workspace = true }
 tokio = { version = "1", features = ["full", "signal"] }
