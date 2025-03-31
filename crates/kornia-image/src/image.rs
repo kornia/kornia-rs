@@ -232,8 +232,8 @@ impl<T, const C: usize> Image<T, C> {
     where
         U: Clone,
     {
-        let data = self.as_slice().iter().map(|x| f(x)).collect::<Vec<U>>();
-        Ok(Image::<U, C>::new(self.size(), data)?)
+        let data = self.as_slice().iter().map(f).collect::<Vec<U>>();
+        Image::<U, C>::new(self.size(), data)
     }
 
     /// Cast the pixel data of the image to a different type.
