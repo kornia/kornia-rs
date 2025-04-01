@@ -67,6 +67,6 @@ pub enum StreamCaptureError {
     PipelineNotRunning,
 
     /// An error occurred when the allocator is not found.
-    #[error("Cannot lock the last frame")]
-    LockError,
+    #[error("Could not lock the mutex")]
+    MutexPoisonError,
 }

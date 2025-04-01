@@ -51,8 +51,13 @@ impl StreamCapture {
                     move |sink| {
                         let frame_buffer = Self::extract_frame_buffer(sink)
                             .map_err(|_| gstreamer::FlowError::Eos)?;
-                        circular_buffer.lock().unwrap().push_back(frame_buffer);
-                        Ok(gstreamer::FlowSuccess::Ok)
+                        match circular_buffer.lock() {
+                            Ok(mut circular_buffer) => {
+                                circular_buffer.push_back(frame_buffer);
+                                Ok(gstreamer::FlowSuccess::Ok)
+                            }
+                            Err(_) => Err(gstreamer::FlowError::Error),
+                        }
                     }
                 })
                 .build(),
@@ -77,7 +82,10 @@ impl StreamCapture {
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
     pub fn grab(&mut self) -> Result<Option<Image<u8, 3>>, StreamCaptureError> {
-        let mut circular_buffer = self.circular_buffer.lock().unwrap();
+        let mut circular_buffer = self
+            .circular_buffer
+            .lock()
+            .map_err(|_| StreamCaptureError::MutexPoisonError)?;
         if let Some(frame_buffer) = circular_buffer.pop_front() {
             // TODO: solve the zero copy issue
             // https://discourse.gstreamer.org/t/zero-copy-video-frames/3856/2
