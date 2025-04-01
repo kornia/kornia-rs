@@ -1,6 +1,7 @@
 use crate::error::IoError;
-use image::codecs::jpeg::{JpegDecoder, JpegEncoder};
-use image::{ColorType, ExtendedColorType, ImageDecoder, ImageEncoder};
+use image::codecs::jpeg::JpegEncoder;
+use image::{ExtendedColorType, ImageEncoder};
+use jpeg_decoder::PixelFormat;
 use kornia_image::{Image, ImageSize};
 use std::fs::File;
 use std::path::Path;
@@ -16,19 +17,6 @@ pub fn write_image_jpeg_rgb8(
     image: &Image<u8, 3>,
 ) -> Result<(), IoError> {
     write_image_jpeg_internal(file_path, image, ExtendedColorType::Rgb8)
-}
-
-/// Writes the given JPEG _(rgba8)_ data to the given file path.
-///
-/// # Arguments
-///
-/// - `file_path` - The path to the JPEG image.
-/// - `image` - The tensor containing the JPEG image data
-pub fn write_image_jpeg_rgba8(
-    file_path: impl AsRef<Path>,
-    image: &Image<u8, 3>,
-) -> Result<(), IoError> {
-    write_image_jpeg_internal(file_path, image, ExtendedColorType::Rgba8)
 }
 
 /// Writes the given JPEG _(grayscale)_ data to the given file path.
@@ -71,20 +59,7 @@ fn write_image_jpeg_internal<const N: usize>(
 ///
 /// A RGB image with four channels _(rgb8)_.
 pub fn read_image_jpeg_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, IoError> {
-    read_image_jpeg_internal(file_path, ColorType::Rgb8)
-}
-
-/// Read a JPEG image with a three channel _(rgba8)_.
-///
-/// # Arguments
-///
-/// - `file_path` - The path to the JPEG file.
-///
-/// # Returns
-///
-/// A RGB image with three channels _(rgba8)_.
-pub fn read_image_jpeg_rgba8(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, IoError> {
-    read_image_jpeg_internal(file_path, ColorType::Rgba8)
+    read_image_jpeg_internal(file_path, PixelFormat::RGB24)
 }
 
 /// Reads a JPEG file with a single channel _(mono8)_
@@ -97,7 +72,7 @@ pub fn read_image_jpeg_rgba8(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>
 ///
 /// A grayscale image with a single channel _(mono8)_.
 pub fn read_image_mono8(file_path: impl AsRef<Path>) -> Result<Image<u8, 1>, IoError> {
-    read_image_jpeg_internal(file_path, ColorType::L8)
+    read_image_jpeg_internal(file_path, PixelFormat::L8)
 }
 
 /// Reads a JPEG file with a single channel _(mono16)_.
@@ -110,7 +85,7 @@ pub fn read_image_mono8(file_path: impl AsRef<Path>) -> Result<Image<u8, 1>, IoE
 ///
 /// A grayscale image with a single channel _(mono16)_.
 pub fn read_image_mono16(file_path: impl AsRef<Path>) -> Result<Image<u16, 1>, IoError> {
-    let image: Image<u8, 1> = read_image_jpeg_internal(file_path, ColorType::L16)?;
+    let image: Image<u8, 1> = read_image_jpeg_internal(file_path, PixelFormat::L16)?;
     let image_size = image.size();
     let image_buf = image.as_slice();
 
@@ -124,7 +99,7 @@ pub fn read_image_mono16(file_path: impl AsRef<Path>) -> Result<Image<u16, 1>, I
 
 fn read_image_jpeg_internal<const N: usize>(
     file_path: impl AsRef<Path>,
-    color_type: ColorType,
+    color_type: PixelFormat,
 ) -> Result<Image<u8, N>, IoError> {
     let file_path = file_path.as_ref().to_owned();
     if !file_path.exists() {
@@ -138,34 +113,58 @@ fn read_image_jpeg_internal<const N: usize>(
     }
 
     let jpeg_data = File::open(file_path)?;
-    let decoder = JpegDecoder::new(std::io::BufReader::new(jpeg_data))?;
-    let (width, height) = decoder.dimensions();
-    let decoder_color_type = decoder.color_type();
+    let mut decoder = jpeg_decoder::Decoder::new(jpeg_data);
+    decoder.read_info().map_err(|e| IoError::JpegError(e))?;
+
+    let image_info = decoder.info().ok_or_else(|| {
+        IoError::JpegError(jpeg_decoder::Error::Format(String::from(
+            "Failed to found Image Info from it's metadata",
+        )))
+    })?;
+
+    let pixel_format = image_info.pixel_format;
 
     let image_size = ImageSize {
-        width: width as usize,
-        height: height as usize,
+        width: image_info.width as usize,
+        height: image_info.height as usize,
     };
 
-    let mut image_data = vec![0; (width * height * color_type.bytes_per_pixel() as u32) as usize];
-    decoder.read_image(&mut image_data)?;
+    let img_data = decoder.decode()?;
 
     // Convert the image color type, if necessary
-    if color_type != decoder_color_type {
+    if color_type != pixel_format {
         let mut new_image_data =
-            vec![0; (width * height * color_type.bytes_per_pixel() as u32) as usize];
+            vec![
+                0;
+                image_info.width as usize * image_info.height as usize * color_type.pixel_bytes()
+            ];
         let mut encoder = JpegEncoder::new(&mut new_image_data);
         encoder.encode(
-            image_data.as_slice(),
-            width,
-            height,
-            decoder_color_type.into(),
+            img_data.as_slice(),
+            image_info.width as u32,
+            image_info.height as u32,
+            pixel_format.into_extended_color_type(),
         )?;
 
         return Ok(Image::new(image_size, new_image_data)?);
     }
 
-    Ok(Image::new(image_size, image_data)?)
+    Ok(Image::new(image_size, img_data)?)
+}
+
+trait PixelFormatExt {
+    fn into_extended_color_type(self) -> ExtendedColorType;
+}
+
+impl PixelFormatExt for PixelFormat {
+    fn into_extended_color_type(self) -> ExtendedColorType {
+        match self {
+            PixelFormat::L16 => ExtendedColorType::L16,
+            PixelFormat::L8 => ExtendedColorType::L8,
+            PixelFormat::RGB24 => ExtendedColorType::Rgb8,
+            PixelFormat::CMYK32 => ExtendedColorType::Cmyk8,
+        }
+    }
 }
 
 #[cfg(test)]
