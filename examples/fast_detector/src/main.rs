@@ -1,22 +1,26 @@
-use clap::Parser;
+use argh::FromArgs;
 use std::path::PathBuf;
 
 use kornia::{image::Image, imgproc, io::functional as F};
 
-#[derive(Parser)]
+/// Detect FAST features on an image.
+#[derive(FromArgs)]
 struct Args {
-    #[arg(short, long)]
+    /// path to the image to detect FAST features on
+    #[argh(option)]
     image_path: PathBuf,
 
-    #[arg(short, long, default_value_t = 10)]
+    /// threshold for the FAST detector
+    #[argh(option, default = "10")]
     threshold: u8,
 
-    #[arg(short, long, default_value_t = 5)]
+    /// arc length for the FAST detector
+    #[argh(option, default = "5")]
     arc_length: u8,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args: Args = argh::from_env();
 
     // start the recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia Fast Detector App").spawn()?;

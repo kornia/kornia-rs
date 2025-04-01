@@ -21,22 +21,22 @@ pub fn fast_feature_detector(
 
     // Precompute the offsets for the Bresenham circle
     let offsets = [
-        -3 * rows,     // 1
-        -3 * rows + 1, // 2
-        -2 * rows + 2, // 3
-        -rows + 3,     // 4
-        rows + 3,      // 5
-        rows + 3,      // 6
-        2 * rows + 2,  // 7
-        3 * rows + 1,  // 8
-        3 * rows,      // 9
-        3 * rows - 1,  // 10
-        2 * rows - 2,  // 11
-        rows - 3,      // 12
-        -rows - 3,     // 13
-        -2 * rows - 2, // 14
-        -3 * rows - 1, // 15
-        -3 * rows,     // 16
+        -3 * cols,     // 1
+        -3 * cols + 1, // 2
+        -2 * cols + 2, // 3
+        -cols + 3,     // 4
+        cols + 3,      // 5
+        cols + 3,      // 6
+        2 * cols + 2,  // 7
+        3 * cols + 1,  // 8
+        3 * cols,      // 9
+        3 * cols - 1,  // 10
+        2 * cols - 2,  // 11
+        cols - 3,      // 12
+        -cols - 3,     // 13
+        -2 * cols - 2, // 14
+        -3 * cols - 1, // 15
+        -3 * cols,     // 16
     ];
 
     // Process rows in parallel
