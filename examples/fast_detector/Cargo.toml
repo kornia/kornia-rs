@@ -1,0 +1,13 @@
+[package]
+name = "fast_detector"
+version = "0.1.0"
+authors = ["Edgar Riba <edgar.riba@gmail.com>"]
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+argh = { workspace = true }
+ctrlc = { workspace = true }
+kornia = { workspace = true, features = ["gstreamer"] }
+rerun = { workspace = true }
