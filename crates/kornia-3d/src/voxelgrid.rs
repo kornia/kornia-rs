@@ -1,14 +1,16 @@
+use glam::Vec3;
+
 /// A voxel grid for organizing and downsampling point clouds.
 pub struct VoxelGrid {
-    leaf_size: [f64; 3],
-    min_bounds: [f64; 3],
-    max_bounds: [f64; 3],
-    grid: std::collections::HashMap<[i64; 3], Vec<[f64; 3]>>,
+    leaf_size: Vec3,
+    min_bounds: Vec3,
+    max_bounds: Vec3,
+    grid: std::collections::HashMap<[i64; 3], Vec<Vec3>>,
 }
 
 impl VoxelGrid {
     /// Create a new VoxelGrid with the specified leaf size and bounds.
-    pub fn new(leaf_size: [f64; 3], min_bounds: [f64; 3], max_bounds: [f64; 3]) -> Self {
+    pub fn new(leaf_size: Vec3, min_bounds: Vec3, max_bounds: Vec3) -> Self {
         Self {
             leaf_size,
             min_bounds,
@@ -20,27 +22,25 @@ impl VoxelGrid {
     /// Add points from a point cloud to the voxel grid.
     pub fn add_points(&mut self, pointcloud: &PointCloud) {
         for point in pointcloud.points() {
-            if self.is_within_bounds(point) {
-                let voxel_index = self.compute_voxel_index(point);
+            let point_vec = Vec3::from(*point);
+            if self.is_within_bounds(&point_vec) {
+                let voxel_index = self.compute_voxel_index(&point_vec);
                 self.grid
                     .entry(voxel_index)
                     .or_insert_with(Vec::new)
-                    .push(*point);
+                    .push(point_vec);
             }
         }
     }
 
     /// Compute the voxel index for a given point.
-    fn compute_voxel_index(&self, point: &[f64; 3]) -> [i64; 3] {
-        [
-            ((point[0] - self.min_bounds[0]) / self.leaf_size[0]).floor() as i64,
-            ((point[1] - self.min_bounds[1]) / self.leaf_size[1]).floor() as i64,
-            ((point[2] - self.min_bounds[2]) / self.leaf_size[2]).floor() as i64,
-        ]
+    fn compute_voxel_index(&self, point: &Vec3) -> [i64; 3] {
+        let index = (*point - self.min_bounds) / self.leaf_size;
+        [index.x.floor() as i64, index.y.floor() as i64, index.z.floor() as i64]
     }
 
     /// Check if a point is within the bounds of the voxel grid.
-    fn is_within_bounds(&self, point: &[f64; 3]) -> bool {
+    fn is_within_bounds(&self, point: &Vec3) -> bool {
         (0..3).all(|i| point[i] >= self.min_bounds[i] && point[i] <= self.max_bounds[i])
     }
 
@@ -49,18 +49,9 @@ impl VoxelGrid {
         let mut downsampled_points = Vec::new();
 
         for points in self.grid.values() {
-            let centroid = points.iter().fold([0.0; 3], |mut acc, p| {
-                acc[0] += p[0];
-                acc[1] += p[1];
-                acc[2] += p[2];
-                acc
-            });
-            let num_points = points.len() as f64;
-            downsampled_points.push([
-                centroid[0] / num_points,
-                centroid[1] / num_points,
-                centroid[2] / num_points,
-            ]);
+            let centroid = points.iter().fold(Vec3::ZERO, |acc, p| acc + *p);
+            let num_points = points.len() as f32;
+            downsampled_points.push((centroid / num_points).into());
         }
 
         PointCloud::new(downsampled_points, None, None)
@@ -81,7 +72,7 @@ fn test_voxel_grid() {
         None,
     );
 
-    let mut voxel_grid = VoxelGrid::new([1.0, 1.0, 1.0], [0.0, 0.0, 0.0], [2.0, 2.0, 2.0]);
+    let mut voxel_grid = VoxelGrid::new(Vec3::ONE, Vec3::ZERO, Vec3::ONE * 2.0);
     voxel_grid.add_points(&pointcloud);
     let downsampled = voxel_grid.downsample();
 
