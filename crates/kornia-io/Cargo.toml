@@ -21,8 +21,8 @@ log = { workspace = true }
 thiserror = { workspace = true }
 
 # optional dependencies
-gst = { version = "0.23.4", package = "gstreamer", optional = true }
-gst-app = { version = "0.23.4", package = "gstreamer-app", optional = true }
+gstreamer = { version = "0.23.5", optional = true }
+gstreamer-app = { version = "0.23.5", optional = true }
 turbojpeg = { version = "1.2", optional = true }
 
 [dev-dependencies]
@@ -30,7 +30,7 @@ criterion = { workspace = true }
 tempfile = { workspace = true }
 
 [features]
-gstreamer = ["gst", "gst-app"]
+gstreamer = ["dep:gstreamer", "dep:gstreamer-app"]
 turbojpeg = ["dep:turbojpeg"]
 
 [[bench]]

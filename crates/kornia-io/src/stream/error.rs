@@ -3,11 +3,11 @@
 pub enum StreamCaptureError {
     /// An error occurred during GStreamer initialization.
     #[error("Failed to initialize GStreamer")]
-    GStreamerError(#[from] gst::glib::Error),
+    GStreamerError(#[from] gstreamer::glib::Error),
 
     /// An error occurred during GStreamer downcast of pipeline element.
     #[error("Failed to downcast pipeline")]
-    DowncastPipelineError(gst::Element),
+    DowncastPipelineError(gstreamer::Element),
 
     /// An error occurred during GStreamer downcast of appsink.
     #[error("Failed to get an element by name")]
@@ -19,11 +19,11 @@ pub enum StreamCaptureError {
 
     /// An error occurred during GStreamer to set the pipeline state.
     #[error("Failed to set the pipeline state")]
-    SetPipelineStateError(#[from] gst::StateChangeError),
+    SetPipelineStateError(#[from] gstreamer::StateChangeError),
 
     /// An error occurred during GStreamer to pull sample from appsink.
     #[error("Failed to pull sample from appsink")]
-    PullSampleError(#[from] gst::glib::BoolError),
+    PullSampleError(#[from] gstreamer::glib::BoolError),
 
     /// An error occurred during GStreamer to get the caps from the sample.
     #[error("Failed to get the caps from the sample")]
@@ -70,7 +70,7 @@ pub enum StreamCaptureError {
 
     /// An error occurred during GStreamer to send end of stream event.
     #[error("Error ocurred in the gstreamer flow")]
-    GstreamerFlowError(#[from] gst::FlowError),
+    GstreamerFlowError(#[from] gstreamer::FlowError),
 
     /// An error occurred during checking the image format.
     #[error("Invalid image format: {0}")]
