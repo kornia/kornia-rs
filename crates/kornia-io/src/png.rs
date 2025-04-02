@@ -1,6 +1,6 @@
 use std::{fs::File, path::Path};
 
-use kornia_image::Image;
+use kornia_image::{Image, ImageSize};
 use png::{BitDepth, ColorType, Decoder, Encoder};
 
 use crate::error::IoError;
@@ -150,7 +150,13 @@ pub fn write_image_png_rgb8(
     file_path: impl AsRef<Path>,
     image: &Image<u8, 3>,
 ) -> Result<(), IoError> {
-    write_png_impl(file_path, image, BitDepth::Eight, ColorType::Rgb)
+    write_png_impl(
+        file_path,
+        image.as_slice(),
+        image.size(),
+        BitDepth::Eight,
+        ColorType::Rgb,
+    )
 }
 
 /// Writes the given PNG _(rgba8)_ data to the given file path.
@@ -163,7 +169,13 @@ pub fn write_image_png_rgba8(
     file_path: impl AsRef<Path>,
     image: &Image<u8, 4>,
 ) -> Result<(), IoError> {
-    write_png_impl(file_path, image, BitDepth::Eight, ColorType::Rgba)
+    write_png_impl(
+        file_path,
+        image.as_slice(),
+        image.size(),
+        BitDepth::Eight,
+        ColorType::Rgba,
+    )
 }
 
 /// Writes the given PNG _(grayscale 8-bit)_ data to the given file path.
@@ -176,7 +188,13 @@ pub fn write_image_png_gray8(
     file_path: impl AsRef<Path>,
     image: &Image<u8, 1>,
 ) -> Result<(), IoError> {
-    write_png_impl(file_path, image, BitDepth::Eight, ColorType::Grayscale)
+    write_png_impl(
+        file_path,
+        image.as_slice(),
+        image.size(),
+        BitDepth::Eight,
+        ColorType::Grayscale,
+    )
 }
 
 /// Writes the given PNG _(rgb16)_ data to the given file path.
@@ -197,9 +215,13 @@ pub fn write_image_png_rgb16(
         image_buf.extend_from_slice(&be_bytes);
     }
 
-    let new_image: Image<u8, 3> = Image::new(image_size, image_buf)?;
-
-    write_png_impl(file_path, &new_image, BitDepth::Sixteen, ColorType::Rgb)
+    write_png_impl(
+        file_path,
+        &image_buf,
+        image_size,
+        BitDepth::Sixteen,
+        ColorType::Rgb,
+    )
 }
 
 /// Writes the given PNG _(rgba16)_ data to the given file path.
@@ -220,9 +242,13 @@ pub fn write_image_png_rgba16(
         image_buf.extend_from_slice(&be_bytes);
     }
 
-    let new_image: Image<u8, 3> = Image::new(image_size, image_buf)?;
-
-    write_png_impl(file_path, &new_image, BitDepth::Sixteen, ColorType::Rgba)
+    write_png_impl(
+        file_path,
+        &image_buf,
+        image_size,
+        BitDepth::Sixteen,
+        ColorType::Rgba,
+    )
 }
 
 /// Writes the given PNG _(grayscale 16-bit)_ data to the given file path.
@@ -243,24 +269,23 @@ pub fn write_image_png_gray16(
         image_buf.extend_from_slice(&bug_be);
     }
 
-    let new_image: Image<u8, 1> = Image::new(image_size, image_buf)?;
-
     write_png_impl(
         file_path,
-        &new_image,
+        &image_buf,
+        image_size,
         BitDepth::Sixteen,
         ColorType::Grayscale,
     )
 }
 
-fn write_png_impl<const N: usize>(
+fn write_png_impl(
     file_path: impl AsRef<Path>,
-    image: &Image<u8, N>,
+    image_data: &[u8],
+    image_size: ImageSize,
     // Make sure you set `depth` correctly
     depth: BitDepth,
     color_type: ColorType,
 ) -> Result<(), IoError> {
-    let image_size = image.size();
     let file = File::create(file_path)?;
 
     let mut encoder = Encoder::new(file, image_size.width as u32, image_size.height as u32);
@@ -271,7 +296,7 @@ fn write_png_impl<const N: usize>(
         .write_header()
         .map_err(|e| IoError::PngEncodingError(e.to_string()))?;
     writer
-        .write_image_data(image.as_slice())
+        .write_image_data(image_data)
         .map_err(|e| IoError::PngEncodingError(e.to_string()))?;
     Ok(())
 }
@@ -291,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn read_write_png8() -> Result<(), IoError> {
+    fn read_write_png_rgb8() -> Result<(), IoError> {
         let tmp_dir = tempfile::tempdir()?;
         create_dir_all(tmp_dir.path())?;
 
@@ -304,6 +329,25 @@ mod tests {
 
         assert_eq!(image_data_back.cols(), 258);
         assert_eq!(image_data_back.rows(), 195);
+        assert_eq!(image_data_back.num_channels(), 3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn read_write_png_rgb16() -> Result<(), IoError> {
+        let tmp_dir = tempfile::tempdir()?;
+        create_dir_all(tmp_dir.path())?;
+
+        let file_path = tmp_dir.path().join("rgb16.png");
+        let image_data = read_image_png_rgb16("../../tests/data/rgb16.png")?;
+        write_image_png_rgb16(&file_path, &image_data)?;
+
+        let image_data_back = read_image_png_rgb16(&file_path)?;
+        assert!(file_path.exists(), "File does not exist: {:?}", file_path);
+
+        assert_eq!(image_data_back.cols(), 32);
+        assert_eq!(image_data_back.rows(), 32);
         assert_eq!(image_data_back.num_channels(), 3);
 
         Ok(())
