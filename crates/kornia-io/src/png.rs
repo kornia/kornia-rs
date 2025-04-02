@@ -55,7 +55,7 @@ pub fn read_image_png_rgba8(file_path: impl AsRef<Path>) -> Result<Image<u8, 4>,
 ///
 /// # Returns
 ///
-/// A RGB image with three channels (rgb8).
+/// A RGB image with three channels (rgb16).
 pub fn read_image_png_rgb16(file_path: impl AsRef<Path>) -> Result<Image<u16, 3>, IoError> {
     let (buf, size) = read_png_impl(file_path)?;
 
@@ -76,7 +76,7 @@ pub fn read_image_png_rgb16(file_path: impl AsRef<Path>) -> Result<Image<u16, 3>
 ///
 /// # Returns
 ///
-/// A RGB image with three channels (rgb8).
+/// A RGB image with four channels (rgb16).
 pub fn read_image_png_rgba16(file_path: impl AsRef<Path>) -> Result<Image<u16, 4>, IoError> {
     let (buf, size) = read_png_impl(file_path)?;
 
