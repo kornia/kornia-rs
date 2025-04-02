@@ -1,20 +1,20 @@
-use std::sync::{Arc, Mutex};
-
 use crate::stream::error::StreamCaptureError;
-use gst::prelude::*;
-use kornia_image::Image;
+use circular_buffer::CircularBuffer;
+use gstreamer::prelude::*;
+use kornia_image::{Image, ImageSize};
+use std::sync::{Arc, Mutex};
 
 // utility struct to store the frame buffer
 struct FrameBuffer {
-    buffer: gst::MappedBuffer<gst::buffer::Readable>,
-    width: usize,
-    height: usize,
+    buffer: gstreamer::Buffer,
+    width: i32,
+    height: i32,
 }
 
 /// Represents a stream capture pipeline using GStreamer.
 pub struct StreamCapture {
-    pipeline: gst::Pipeline,
-    last_frame: Arc<Mutex<Option<FrameBuffer>>>,
+    pipeline: gstreamer::Pipeline,
+    circular_buffer: Arc<Mutex<CircularBuffer<5, FrameBuffer>>>,
 }
 
 impl StreamCapture {
@@ -28,35 +28,35 @@ impl StreamCapture {
     ///
     /// A Result containing the StreamCapture instance or a StreamCaptureError.
     pub fn new(pipeline_desc: &str) -> Result<Self, StreamCaptureError> {
-        gst::init()?;
+        if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+            gstreamer::init()?;
+        }
 
-        let pipeline = gst::parse::launch(pipeline_desc)?
-            .dynamic_cast::<gst::Pipeline>()
+        let pipeline = gstreamer::parse::launch(pipeline_desc)?
+            .dynamic_cast::<gstreamer::Pipeline>()
             .map_err(StreamCaptureError::DowncastPipelineError)?;
 
         let appsink = pipeline
             .by_name("sink")
             .ok_or_else(|| StreamCaptureError::GetElementByNameError)?
-            .dynamic_cast::<gst_app::AppSink>()
+            .dynamic_cast::<gstreamer_app::AppSink>()
             .map_err(StreamCaptureError::DowncastPipelineError)?;
 
-        let last_frame = Arc::new(Mutex::new(None));
+        let circular_buffer = Arc::new(Mutex::new(CircularBuffer::new()));
 
         appsink.set_callbacks(
-            gst_app::AppSinkCallbacks::builder()
+            gstreamer_app::AppSinkCallbacks::builder()
                 .new_sample({
-                    let last_frame = last_frame.clone();
+                    let circular_buffer = circular_buffer.clone();
                     move |sink| {
-                        last_frame
-                            .lock()
-                            .map_err(|_| gst::FlowError::Error)
-                            .and_then(|mut guard| {
-                                Self::extract_frame_buffer(sink)
-                                    .map(|frame_buffer| {
-                                        guard.replace(frame_buffer);
-                                        gst::FlowSuccess::Ok
-                                    })
-                                    .map_err(|_| gst::FlowError::Error)
+                        Self::extract_frame_buffer(sink)
+                            .map_err(|_| gstreamer::FlowError::Eos)
+                            .and_then(|frame_buffer| {
+                                let mut guard = circular_buffer
+                                    .lock()
+                                    .map_err(|_| gstreamer::FlowError::Error)?;
+                                guard.push_back(frame_buffer);
+                                Ok(gstreamer::FlowSuccess::Ok)
                             })
                     }
                 })
@@ -65,22 +65,17 @@ impl StreamCapture {
 
         Ok(Self {
             pipeline,
-            last_frame,
+            circular_buffer,
         })
     }
 
     /// Starts the stream capture pipeline and processes messages on the bus.
     pub fn start(&self) -> Result<(), StreamCaptureError> {
-        self.pipeline.set_state(gst::State::Playing)?;
-
-        let bus = self
-            .pipeline
-            .bus()
-            .ok_or_else(|| StreamCaptureError::BusError)?;
-
-        // handle bus messages
-        bus.set_sync_handler(|_bus, _msg| gst::BusSyncReply::Pass);
-
+        self.circular_buffer
+            .lock()
+            .map_err(|_| StreamCaptureError::MutexPoisonError)?
+            .clear();
+        self.pipeline.set_state(gstreamer::State::Playing)?;
         Ok(())
     }
 
@@ -90,33 +85,41 @@ impl StreamCapture {
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
     pub fn grab(&mut self) -> Result<Option<Image<u8, 3>>, StreamCaptureError> {
-        let mut last_frame = self
-            .last_frame
+        let mut circular_buffer = self
+            .circular_buffer
             .lock()
-            .map_err(|_| StreamCaptureError::LockError)?;
-
-        last_frame.take().map_or(Ok(None), |frame_buffer| {
+            .map_err(|_| StreamCaptureError::MutexPoisonError)?;
+        if let Some(frame_buffer) = circular_buffer.pop_front() {
             // TODO: solve the zero copy issue
             // https://discourse.gstreamer.org/t/zero-copy-video-frames/3856/2
+            let buffer = frame_buffer
+                .buffer
+                .map_readable()
+                .map_err(|_| StreamCaptureError::GetBufferError)?;
             let img = Image::<u8, 3>::new(
-                [frame_buffer.width, frame_buffer.height].into(),
-                frame_buffer.buffer.to_owned(),
+                ImageSize {
+                    width: frame_buffer.width as usize,
+                    height: frame_buffer.height as usize,
+                },
+                buffer.to_owned(),
             )
             .map_err(|_| StreamCaptureError::CreateImageFrameError)?;
-
-            Ok(Some(img))
-        })
+            return Ok(Some(img));
+        }
+        Ok(None)
     }
 
     /// Closes the stream capture pipeline.
     pub fn close(&self) -> Result<(), StreamCaptureError> {
-        let res = self.pipeline.send_event(gst::event::Eos::new());
+        let res = self.pipeline.send_event(gstreamer::event::Eos::new());
         if !res {
             return Err(StreamCaptureError::SendEosError);
         }
-
-        self.pipeline.set_state(gst::State::Null)?;
-
+        self.pipeline.set_state(gstreamer::State::Null)?;
+        self.circular_buffer
+            .lock()
+            .map_err(|_| StreamCaptureError::MutexPoisonError)?
+            .clear();
         Ok(())
     }
 
@@ -129,30 +132,30 @@ impl StreamCapture {
     /// # Returns
     ///
     /// A Result containing the extracted FrameBuffer or a StreamCaptureError.
-    fn extract_frame_buffer(appsink: &gst_app::AppSink) -> Result<FrameBuffer, StreamCaptureError> {
+    fn extract_frame_buffer(
+        appsink: &gstreamer_app::AppSink,
+    ) -> Result<FrameBuffer, StreamCaptureError> {
         let sample = appsink.pull_sample()?;
 
-        let caps = sample
-            .caps()
-            .ok_or_else(|| StreamCaptureError::GetCapsError)?;
+        let caps = sample.caps().ok_or_else(|| {
+            StreamCaptureError::GetCapsError("Failed to get the caps".to_string())
+        })?;
 
-        let structure = caps
-            .structure(0)
-            .ok_or_else(|| StreamCaptureError::GetStructureError)?;
+        let structure = caps.structure(0).ok_or_else(|| {
+            StreamCaptureError::GetCapsError("Failed to get the structure".to_string())
+        })?;
 
         let height = structure
             .get::<i32>("height")
-            .map_err(|_| StreamCaptureError::GetHeightError)? as usize;
+            .map_err(|e| StreamCaptureError::GetCapsError(e.to_string()))?;
 
         let width = structure
             .get::<i32>("width")
-            .map_err(|_| StreamCaptureError::GetWidthError)? as usize;
+            .map_err(|e| StreamCaptureError::GetCapsError(e.to_string()))?;
 
         let buffer = sample
             .buffer_owned()
-            .ok_or_else(|| StreamCaptureError::GetBufferError)?
-            .into_mapped_buffer_readable()
-            .map_err(|_| StreamCaptureError::GetBufferError)?;
+            .ok_or_else(|| StreamCaptureError::GetBufferError)?;
 
         let frame_buffer = FrameBuffer {
             buffer,
