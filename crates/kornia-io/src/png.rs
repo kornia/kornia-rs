@@ -267,8 +267,12 @@ fn write_png_impl<const N: usize>(
     encoder.set_color(color_type);
     encoder.set_depth(depth);
 
-    let mut writer = encoder.write_header()?;
-    writer.write_image_data(image.as_slice())?;
+    let mut writer = encoder
+        .write_header()
+        .map_err(|e| IoError::PngEncodingError(e.to_string()))?;
+    writer
+        .write_image_data(image.as_slice())
+        .map_err(|e| IoError::PngEncodingError(e.to_string()))?;
     Ok(())
 }
 
