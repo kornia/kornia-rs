@@ -1,0 +1,13 @@
+[package]
+name = "image_io"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kornia-image = { path = "../../crates/kornia-image" }
+kornia-io = { path = "../../crates/kornia-io", features = ["turbojpeg"] }
+anyhow = "1.0.77"
+argh = "0.1"  # Replace clap with argh since your code uses argh
+
+[features]
+turbojpeg = []  # Define the turbojpeg feature to fix the warnings
