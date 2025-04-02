@@ -3,6 +3,8 @@ use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use kornia_3d::voxelgrid::VoxelGrid;
 use kornia_3d::pointcloud::PointCloud;
+use glam::Vec3;
+use std::collections::HashMap;
 
 #[pyclass]
 pub struct PyVoxelGrid {
@@ -13,27 +15,26 @@ pub struct PyVoxelGrid {
 impl PyVoxelGrid {
     #[new]
     pub fn new(
-        leaf_size: (f64, f64, f64),
-        min_bounds: (f64, f64, f64),
-        max_bounds: (f64, f64, f64),
+        voxel_size: f32,
+        origin: (f32, f32, f32),
     ) -> Self {
         Self {
             voxel_grid: VoxelGrid::new(
-                [leaf_size.0, leaf_size.1, leaf_size.2],
-                [min_bounds.0, min_bounds.1, min_bounds.2],
-                [max_bounds.0, max_bounds.1, max_bounds.2],
+                voxel_size,
+                Vec3::new(origin.0, origin.1, origin.2),
             ),
         }
     }
 
     pub fn add_points(&mut self, py: Python, pointcloud: Py<PyArray2<f64>>) -> PyResult<()> {
         let rust_pointcloud = PointCloud::from_pypointcloud(pointcloud)?;
-        self.voxel_grid.add_points(&rust_pointcloud);
+        self.voxel_grid = VoxelGrid::create_from_pointcloud(&rust_pointcloud, self.voxel_grid.voxel_size);
         Ok(())
     }
 
-    pub fn downsample(&self, py: Python) -> PyResult<Py<PyArray2<f64>>> {
-        let downsampled = self.voxel_grid.downsample();
+    pub fn downsample(&self, py: Python, pointcloud: Py<PyArray2<f64>>) -> PyResult<Py<PyArray2<f64>>> {
+        let rust_pointcloud = PointCloud::from_pypointcloud(pointcloud)?;
+        let downsampled = self.voxel_grid.downsample(&rust_pointcloud);
         let downsampled_points = downsampled
             .points()
             .iter()
