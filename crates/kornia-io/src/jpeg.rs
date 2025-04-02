@@ -68,30 +68,8 @@ pub fn read_image_jpeg_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>,
 /// # Returns
 ///
 /// A grayscale image with a single channel _(mono8)_.
-pub fn read_image_mono8(file_path: impl AsRef<Path>) -> Result<Image<u8, 1>, IoError> {
+pub fn read_image_jpeg_mono8(file_path: impl AsRef<Path>) -> Result<Image<u8, 1>, IoError> {
     read_image_jpeg_internal(file_path)
-}
-
-/// Reads a JPEG file with a single channel _(mono16)_.
-///
-/// # Arguments
-///
-/// - `file_path` - The path to the JPEG file.
-///
-/// # Returns
-///
-/// A grayscale image with a single channel _(mono16)_.
-pub fn read_image_mono16(file_path: impl AsRef<Path>) -> Result<Image<u16, 1>, IoError> {
-    let image: Image<u8, 1> = read_image_jpeg_internal(file_path)?;
-    let image_size = image.size();
-    let image_buf = image.as_slice();
-
-    let mut buf = Vec::with_capacity(image_buf.len() / 2);
-    for img in image_buf {
-        buf.push(*img as u16);
-    }
-
-    Ok(Image::new(image_size, buf)?)
 }
 
 fn read_image_jpeg_internal<const N: usize>(
