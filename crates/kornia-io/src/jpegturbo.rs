@@ -162,6 +162,27 @@ impl JpegTurboDecoder {
     ///
     /// The decoded data as Image<u8, 3>.
     pub fn decode_rgb8(&mut self, jpeg_data: &[u8]) -> Result<Image<u8, 3>, JpegTurboError> {
+        self.decode(jpeg_data, turbojpeg::PixelFormat::RGB)
+    }
+
+    /// Decodes the given JPEG data as Gray/Mono8 image.
+    ///
+    /// # Arguments
+    ///
+    /// * `jpeg_data` - The JPEG data to decode.
+    ///
+    /// # Returns
+    ///
+    /// The decoded data as Image<u8, 1>.
+    pub fn decode_gray8(&mut self, jpeg_data: &[u8]) -> Result<Image<u8, 1>, JpegTurboError> {
+        self.decode(jpeg_data, turbojpeg::PixelFormat::GRAY)
+    }
+
+    fn decode<const N: usize>(
+        &mut self,
+        jpeg_data: &[u8],
+        format: turbojpeg::PixelFormat,
+    ) -> Result<Image<u8, N>, JpegTurboError> {
         // get the image size to allocate th data storage
         let image_size = self.read_header(jpeg_data)?;
 
@@ -174,7 +195,7 @@ impl JpegTurboDecoder {
             width: image_size.width,
             pitch: 3 * image_size.width, // we use no padding between rows
             height: image_size.height,
-            format: turbojpeg::PixelFormat::RGB,
+            format,
         };
 
         // decompress the JPEG data

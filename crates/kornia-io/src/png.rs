@@ -346,7 +346,7 @@ fn write_png_impl(
 mod tests {
     use super::*;
     use crate::error::IoError;
-    use std::fs::create_dir_all;
+    use std::fs::{create_dir_all, read};
 
     #[test]
     fn read_png_mono8() -> Result<(), IoError> {
@@ -390,6 +390,18 @@ mod tests {
         assert_eq!(image_data_back.cols(), 32);
         assert_eq!(image_data_back.rows(), 32);
         assert_eq!(image_data_back.num_channels(), 3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn decode_png() -> Result<(), IoError> {
+        let bytes = read("../../tests/data/dog-rgb8.png")?;
+        let image_data = decode_image_png_rgb8(&bytes)?;
+
+        assert_eq!(image_data.cols(), 258);
+        assert_eq!(image_data.rows(), 195);
+        assert_eq!(image_data.num_channels(), 3);
 
         Ok(())
     }

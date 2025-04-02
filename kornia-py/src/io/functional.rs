@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 use crate::image::{FromPyImage, PyImage, ToPyImage};
 use kornia_image::Image;
 use kornia_io::functional as F;
+use kornia_io::jpegturbo::JpegTurboDecoder;
 
 #[pyfunction]
 pub fn read_image_jpeg(file_path: &str) -> PyResult<PyImage> {
@@ -25,4 +26,33 @@ pub fn read_image_any(file_path: &str) -> PyResult<PyImage> {
     let image = F::read_image_any_rgb8(file_path)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyFileExistsError, _>(format!("{}", e)))?;
     Ok(image.to_pyimage())
+}
+
+#[pyfunction]
+pub fn decode_image_jpeg(jpeg_data: &[u8], mode: &str) -> PyResult<PyImage> {
+    let image = match mode {
+        "rgb" => JpegTurboDecoder::new()
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?
+            .decode_rgb8(jpeg_data)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?
+            .to_pyimage(),
+        "mono" => JpegTurboDecoder::new()
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?
+            .decode_gray8(jpeg_data)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?
+            .to_pyimage(),
+        _ => {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                String::from(
+                    r#"\
+        The following are the supported values of mode:
+        1) "rgb" -> 8-bit RGB
+        2) "mono" -> 8-bit Monochrome
+        "#,
+                ),
+            ))
+        }
+    };
+
+    Ok(image)
 }

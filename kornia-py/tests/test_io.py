@@ -21,12 +21,25 @@ def test_read_image_jpeg():
     img_t = torch.from_numpy(img)
     assert img_t.shape == (195, 258, 3)
 
+def test_decode_image_jpeg_gray():
+    # load an image with libjpeg-turbo
+    img_path: Path = DATA_DIR / "dog.jpeg"
+    with open(img_path, "rb") as f:
+        img_data = f.read()
+    img: np.ndarray = K.decode_image_jpeg(bytes(img_data), "rgb")
+
+    # check the image properties
+    assert img.shape == (195, 258, 3)
+
+    img_t = torch.from_numpy(img)
+    assert img_t.shape == (195, 258, 3)
+
 def test_decode_image_png_gray8():
     # load an image with libjpeg-turbo
     img_path: Path = DATA_DIR / "dog.png"
     with open(img_path, "rb") as f:
         img_data = f.read()
-    img: np.ndarray = K.decode_image_png_mono8(bytes(img_data))
+    img: np.ndarray = K.decode_image_png(bytes(img_data), "mono8")
 
     # check the image properties
     assert img.shape == (195, 258, 1)
