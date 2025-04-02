@@ -34,7 +34,11 @@ pub enum IoError {
     #[error("Failed to decode the image")]
     ImageDecodeError(#[from] image::ImageError),
 
+    /// Error to encode the PNG image.
+    #[error("Failed to encode the png image")]
+    PngEncodingError(String),
+
     /// Error to decode the PNG image.
-    #[error("Failed to decode the image")]
+    #[error("Failed to decode the png image")]
     PngDecodeError(String),
 }
