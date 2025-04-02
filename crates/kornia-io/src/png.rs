@@ -144,8 +144,8 @@ fn read_png_impl(file_path: impl AsRef<Path>) -> Result<(Vec<u8>, [usize; 2]), I
 ///
 /// # Arguments
 ///
-/// - `file_path` - The path to the JPEG image.
-/// - `image` - The tensor containing the JPEG image data.
+/// - `file_path` - The path to the PNG image.
+/// - `image` - The tensor containing the PNG image data.
 pub fn write_image_png_rgb8(
     file_path: impl AsRef<Path>,
     image: &Image<u8, 3>,
@@ -157,8 +157,8 @@ pub fn write_image_png_rgb8(
 ///
 /// # Arguments
 ///
-/// - `file_path` - The path to the JPEG image.
-/// - `image` - The tensor containing the JPEG image data.
+/// - `file_path` - The path to the PNG image.
+/// - `image` - The tensor containing the PNG image data.
 pub fn write_image_png_rgba8(
     file_path: impl AsRef<Path>,
     image: &Image<u8, 4>,
@@ -170,21 +170,21 @@ pub fn write_image_png_rgba8(
 ///
 /// # Arguments
 ///
-/// - `file_path` - The path to the JPEG image.
-/// - `image` - The tensor containing the JPEG image data.
+/// - `file_path` - The path to the PNG image.
+/// - `image` - The tensor containing the PNG image data.
 pub fn write_image_png_gray8(
     file_path: impl AsRef<Path>,
     image: &Image<u8, 1>,
 ) -> Result<(), IoError> {
-    write_png_impl(file_path, image, BitDepth::Eight, ColorType::Rgb)
+    write_png_impl(file_path, image, BitDepth::Eight, ColorType::Grayscale)
 }
 
 /// Writes the given PNG _(rgb16)_ data to the given file path.
 ///
 /// # Arguments
 ///
-/// - `file_path` - The path to the JPEG image.
-/// - `image` - The tensor containing the JPEG image data.
+/// - `file_path` - The path to the PNG image.
+/// - `image` - The tensor containing the PNG image data.
 pub fn write_image_png_rgb16(
     file_path: impl AsRef<Path>,
     image: &Image<u16, 3>,
@@ -193,8 +193,8 @@ pub fn write_image_png_rgb16(
     let mut image_buf: Vec<u8> = Vec::with_capacity(image_size.width * image_size.height * 2);
 
     for buf in image.as_slice() {
-        let bug_be = buf.to_be_bytes();
-        image_buf.extend_from_slice(&bug_be);
+        let be_bytes = buf.to_be_bytes();
+        image_buf.extend_from_slice(&be_bytes);
     }
 
     let new_image: Image<u8, 3> = Image::new(image_size, image_buf)?;
@@ -206,18 +206,18 @@ pub fn write_image_png_rgb16(
 ///
 /// # Arguments
 ///
-/// - `file_path` - The path to the JPEG image.
-/// - `image` - The tensor containing the JPEG image data.
+/// - `file_path` - The path to the PNG image.
+/// - `image` - The tensor containing the PNG image data.
 pub fn write_image_png_rgba16(
     file_path: impl AsRef<Path>,
-    image: &Image<u16, 3>,
+    image: &Image<u16, 4>,
 ) -> Result<(), IoError> {
     let image_size = image.size();
     let mut image_buf: Vec<u8> = Vec::with_capacity(image_size.width * image_size.height * 2);
 
     for buf in image.as_slice() {
-        let bug_be = buf.to_be_bytes();
-        image_buf.extend_from_slice(&bug_be);
+        let be_bytes = buf.to_be_bytes();
+        image_buf.extend_from_slice(&be_bytes);
     }
 
     let new_image: Image<u8, 3> = Image::new(image_size, image_buf)?;
@@ -229,8 +229,8 @@ pub fn write_image_png_rgba16(
 ///
 /// # Arguments
 ///
-/// - `file_path` - The path to the JPEG image.
-/// - `image` - The tensor containing the JPEG image data.
+/// - `file_path` - The path to the PNG image.
+/// - `image` - The tensor containing the PNG image data.
 pub fn write_image_png_gray16(
     file_path: impl AsRef<Path>,
     image: &Image<u16, 1>,
