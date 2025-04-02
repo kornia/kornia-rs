@@ -34,7 +34,7 @@ jobs:
         profile: minimal
 
     - name: Install system dependencies
-      run: sudo apt-get install -y cmake nasm libunwind-dev
+      run: sudo apt-get install -y nasm libunwind-dev
 
     - name: Setup project environment
       run: cd kornia-py/ && just install ${{ matrix.python-version }}
@@ -60,7 +60,7 @@ jobs:
         profile: minimal
 
     - name: Install system dependencies
-      run: sudo apt-get install -y cmake nasm libunwind-dev
+      run: sudo apt-get install -y nasm libunwind-dev
 
     - name: Setup project environment
       run: cd kornia-py/ && just install-dev 3.13t

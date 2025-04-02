@@ -1,5 +1,6 @@
 # build
 maturin[patchelf]
+cmake
 
 # tests
 pre-commit
