@@ -18,6 +18,14 @@ pub enum IoError {
     #[error("Error with Jpeg encoding/decoding")]
     JpegTurboError(#[from] crate::jpegturbo::JpegTurboError),
 
+    /// Error to decode the JPEG image.
+    #[error("Error with Jpeg decoding")]
+    JpegDecodingError(#[from] jpeg_decoder::Error),
+
+    /// Error to encode the JPEG image.
+    #[error("Error with Jpeg encoding")]
+    JpegEncodingError(#[from] jpeg_encoder::EncodingError),
+
     /// Error to create the image.
     #[error("Failed to create image")]
     ImageCreationError(#[from] kornia_image::ImageError),

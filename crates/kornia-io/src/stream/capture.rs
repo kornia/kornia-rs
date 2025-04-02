@@ -49,15 +49,15 @@ impl StreamCapture {
                 .new_sample({
                     let circular_buffer = circular_buffer.clone();
                     move |sink| {
-                        let frame_buffer = Self::extract_frame_buffer(sink)
-                            .map_err(|_| gstreamer::FlowError::Eos)?;
-                        match circular_buffer.lock() {
-                            Ok(mut circular_buffer) => {
-                                circular_buffer.push_back(frame_buffer);
+                        Self::extract_frame_buffer(sink)
+                            .map_err(|_| gstreamer::FlowError::Eos)
+                            .and_then(|frame_buffer| {
+                                let mut guard = circular_buffer
+                                    .lock()
+                                    .map_err(|_| gstreamer::FlowError::Error)?;
+                                guard.push_back(frame_buffer);
                                 Ok(gstreamer::FlowSuccess::Ok)
-                            }
-                            Err(_) => Err(gstreamer::FlowError::Error),
-                        }
+                            })
                     }
                 })
                 .build(),
@@ -71,7 +71,10 @@ impl StreamCapture {
 
     /// Starts the stream capture pipeline and processes messages on the bus.
     pub fn start(&self) -> Result<(), StreamCaptureError> {
-        self.circular_buffer.lock().unwrap().clear();
+        self.circular_buffer
+            .lock()
+            .map_err(|_| StreamCaptureError::MutexPoisonError)?
+            .clear();
         self.pipeline.set_state(gstreamer::State::Playing)?;
         Ok(())
     }
@@ -107,7 +110,10 @@ impl StreamCapture {
             return Err(StreamCaptureError::SendEosError);
         }
         self.pipeline.set_state(gstreamer::State::Null)?;
-        self.circular_buffer.lock().unwrap().clear();
+        self.circular_buffer
+            .lock()
+            .map_err(|_| StreamCaptureError::MutexPoisonError)?
+            .clear();
         Ok(())
     }
 
