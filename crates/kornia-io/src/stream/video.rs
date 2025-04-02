@@ -1,10 +1,7 @@
-use std::path::Path;
-
-use gst::prelude::*;
-
-use kornia_image::{Image, ImageSize};
-
 use super::StreamCaptureError;
+use gstreamer::prelude::*;
+use kornia_image::{Image, ImageSize};
+use std::path::Path;
 
 /// The codec to use for the video writer.
 pub enum VideoCodec {
@@ -24,8 +21,8 @@ pub enum ImageFormat {
 
 /// A struct for writing video files.
 pub struct VideoWriter {
-    pipeline: gst::Pipeline,
-    appsrc: gst_app::AppSrc,
+    pipeline: gstreamer::Pipeline,
+    appsrc: gstreamer_app::AppSrc,
     fps: i32,
     format: ImageFormat,
     counter: u64,
@@ -49,7 +46,10 @@ impl VideoWriter {
         fps: i32,
         size: ImageSize,
     ) -> Result<Self, StreamCaptureError> {
-        gst::init()?;
+        // make sure that we do not initialize gstreamer several times
+        if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+            gstreamer::init()?;
+        }
 
         // TODO: Add support for other codecs
         #[allow(unreachable_patterns)]
@@ -81,23 +81,23 @@ impl VideoWriter {
             path.to_string_lossy()
         );
 
-        let pipeline = gst::parse::launch(&pipeline_str)?
-            .dynamic_cast::<gst::Pipeline>()
+        let pipeline = gstreamer::parse::launch(&pipeline_str)?
+            .dynamic_cast::<gstreamer::Pipeline>()
             .map_err(StreamCaptureError::DowncastPipelineError)?;
 
         let appsrc = pipeline
             .by_name("src")
             .ok_or_else(|| StreamCaptureError::GetElementByNameError)?
-            .dynamic_cast::<gst_app::AppSrc>()
+            .dynamic_cast::<gstreamer_app::AppSrc>()
             .map_err(StreamCaptureError::DowncastPipelineError)?;
 
-        appsrc.set_format(gst::Format::Time);
+        appsrc.set_format(gstreamer::Format::Time);
 
-        let caps = gst::Caps::builder("video/x-raw")
+        let caps = gstreamer::Caps::builder("video/x-raw")
             .field("format", format_str)
             .field("width", size.width as i32)
             .field("height", size.height as i32)
-            .field("framerate", gst::Fraction::new(fps, 1))
+            .field("framerate", gstreamer::Fraction::new(fps, 1))
             .build();
 
         appsrc.set_caps(Some(&caps));
@@ -120,19 +120,19 @@ impl VideoWriter {
     /// Set the pipeline to playing and launch a task to handle the bus messages.
     pub fn start(&mut self) -> Result<(), StreamCaptureError> {
         // set the pipeline to playing
-        self.pipeline.set_state(gst::State::Playing)?;
+        self.pipeline.set_state(gstreamer::State::Playing)?;
 
         let bus = self.pipeline.bus().ok_or(StreamCaptureError::BusError)?;
 
         // launch a task to handle the bus messages, exit when EOS is received and set the pipeline to null
         let handle = std::thread::spawn(move || {
-            for msg in bus.iter_timed(gst::ClockTime::NONE) {
+            for msg in bus.iter_timed(gstreamer::ClockTime::NONE) {
                 match msg.view() {
-                    gst::MessageView::Eos(..) => {
+                    gstreamer::MessageView::Eos(..) => {
                         log::debug!("gstreamer received EOS");
                         break;
                     }
-                    gst::MessageView::Error(err) => {
+                    gstreamer::MessageView::Error(err) => {
                         log::error!(
                             "Error from {:?}: {} ({:?})",
                             msg.src().map(|s| s.path_string()),
@@ -163,7 +163,7 @@ impl VideoWriter {
             handle.join().expect("Failed to join thread");
         }
 
-        self.pipeline.set_state(gst::State::Null)?;
+        self.pipeline.set_state(gstreamer::State::Null)?;
 
         Ok(())
     }
@@ -195,10 +195,11 @@ impl VideoWriter {
         }
 
         // TODO: verify is there is a cheaper way to copy the buffer
-        let mut buffer = gst::Buffer::from_mut_slice(img.as_slice().to_vec());
+        let mut buffer = gstreamer::Buffer::from_mut_slice(img.as_slice().to_vec());
 
-        let pts = gst::ClockTime::from_nseconds(self.counter * 1_000_000_000 / self.fps as u64);
-        let duration = gst::ClockTime::from_nseconds(1_000_000_000 / self.fps as u64);
+        let pts =
+            gstreamer::ClockTime::from_nseconds(self.counter * 1_000_000_000 / self.fps as u64);
+        let duration = gstreamer::ClockTime::from_nseconds(1_000_000_000 / self.fps as u64);
 
         let buffer_ref = buffer.get_mut().expect("Failed to get buffer");
         buffer_ref.set_pts(Some(pts));
