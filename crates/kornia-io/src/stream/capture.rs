@@ -1,14 +1,14 @@
 use crate::stream::error::StreamCaptureError;
 use circular_buffer::CircularBuffer;
 use gstreamer::prelude::*;
-use kornia_image::Image;
+use kornia_image::{Image, ImageSize};
 use std::sync::{Arc, Mutex};
 
 // utility struct to store the frame buffer
 struct FrameBuffer {
-    buffer: gstreamer::MappedBuffer<gstreamer::buffer::Readable>,
-    width: usize,
-    height: usize,
+    buffer: gstreamer::Buffer,
+    width: i32,
+    height: i32,
 }
 
 /// Represents a stream capture pipeline using GStreamer.
@@ -92,12 +92,18 @@ impl StreamCapture {
         if let Some(frame_buffer) = circular_buffer.pop_front() {
             // TODO: solve the zero copy issue
             // https://discourse.gstreamer.org/t/zero-copy-video-frames/3856/2
+            let buffer = frame_buffer
+                .buffer
+                .map_readable()
+                .map_err(|_| StreamCaptureError::GetBufferError)?;
             let img = Image::<u8, 3>::new(
-                [frame_buffer.width, frame_buffer.height].into(),
-                frame_buffer.buffer.to_owned(),
+                ImageSize {
+                    width: frame_buffer.width as usize,
+                    height: frame_buffer.height as usize,
+                },
+                buffer.to_owned(),
             )
             .map_err(|_| StreamCaptureError::CreateImageFrameError)?;
-
             return Ok(Some(img));
         }
         Ok(None)
@@ -141,19 +147,15 @@ impl StreamCapture {
 
         let height = structure
             .get::<i32>("height")
-            .map_err(|e| StreamCaptureError::GetCapsError(e.to_string()))?
-            as usize;
+            .map_err(|e| StreamCaptureError::GetCapsError(e.to_string()))?;
 
         let width = structure
             .get::<i32>("width")
-            .map_err(|e| StreamCaptureError::GetCapsError(e.to_string()))?
-            as usize;
+            .map_err(|e| StreamCaptureError::GetCapsError(e.to_string()))?;
 
         let buffer = sample
             .buffer_owned()
-            .ok_or_else(|| StreamCaptureError::GetBufferError)?
-            .into_mapped_buffer_readable()
-            .map_err(|_| StreamCaptureError::GetBufferError)?;
+            .ok_or_else(|| StreamCaptureError::GetBufferError)?;
 
         let frame_buffer = FrameBuffer {
             buffer,
