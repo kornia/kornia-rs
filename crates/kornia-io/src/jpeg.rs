@@ -114,7 +114,7 @@ fn read_image_jpeg_internal<const N: usize>(
 
     let image_info = decoder.info().ok_or_else(|| {
         IoError::JpegDecodingError(jpeg_decoder::Error::Format(String::from(
-            "Failed to found Image Info from it's metadata",
+            "Failed to find image info from its metadata",
         )))
     })?;
 
