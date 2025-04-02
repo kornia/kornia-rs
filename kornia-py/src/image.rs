@@ -22,6 +22,28 @@ impl<const C: usize> ToPyImage for Image<u8, C> {
     }
 }
 
+impl<const C: usize> ToPyImage for Image<u16, C> {
+    fn to_pyimage(self) -> PyImage {
+        let buf = self.as_slice();
+        let mut buf_u8: Vec<u8> = Vec::with_capacity(buf.len() * 2);
+
+        for byte in buf {
+            let be_bytes = byte.to_be_bytes();
+            buf_u8.extend_from_slice(&be_bytes);
+        }
+
+        let new_image: Image<u8, C> = Image::new(self.size(), buf_u8).unwrap();
+
+        Python::with_gil(|py| unsafe {
+            let array =
+                PyArray::<u8, _>::new(py, [new_image.height(), new_image.width(), C], false);
+            // TODO: verify that the data is contiguous, otherwise iterate over the image and copy
+            std::ptr::copy_nonoverlapping(new_image.as_ptr(), array.data(), self.numel());
+            array.unbind()
+        })
+    }
+}
+
 /// Trait to convert a PyImage (3D numpy array of u8) to an image
 pub trait FromPyImage<const C: usize> {
     fn from_pyimage(image: PyImage) -> Result<Image<u8, C>, ImageError>;
