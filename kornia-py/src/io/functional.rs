@@ -29,6 +29,17 @@ pub fn read_image_any(file_path: &str) -> PyResult<PyImage> {
 }
 
 #[pyfunction]
+/// Decodes the JPEG Image from raw bytes.
+///
+/// The following modes are supported:
+/// 1. "rgb" -> 8-bit RGB
+/// 2. "mono" -> 8-bit Monochrome
+///
+/// ```py
+/// import kornia_rs as K
+///
+/// img = K.decode_image_jpeg(bytes(img_data), "rgb")
+/// ```
 pub fn decode_image_jpeg(jpeg_data: &[u8], mode: &str) -> PyResult<PyImage> {
     let image = match mode {
         "rgb" => JpegTurboDecoder::new()

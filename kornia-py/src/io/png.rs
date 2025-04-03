@@ -40,6 +40,21 @@ pub fn decode_image_png_rgba16(png_data: &[u8]) -> PyResult<PyImage> {
 }
 
 #[pyfunction]
+/// Decodes the PNG Image from raw bytes.
+///
+/// The following modes are supported:
+/// 1. "rgb8" -> 8-bit RGB
+/// 2. "rgba8" -> 8-bit RGBA
+/// 3. "mono8" -> 8-bit Monochrome
+/// 4. "rgb16" -> 16-bit RGB
+/// 5. "rgba16" -> 16-bit RGBA
+/// 6. "mono16" -> 16-bit Monochrome
+///
+/// ```py
+/// import kornia_rs as K
+///
+/// img = K.decode_image_jpeg(bytes(img_data), "rgb8")
+/// ```
 pub fn decode_image_png(png_data: &[u8], mode: &str) -> PyResult<PyImage> {
     match mode {
         "rgb8" => decode_image_png_rgb8(png_data),
