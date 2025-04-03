@@ -33,6 +33,7 @@ turbojpeg = { version = "1.2", optional = true }
 [dev-dependencies]
 criterion = { workspace = true }
 tempfile = { workspace = true }
+reqwest = { version = "0.12", features = ["blocking"] }
 
 [features]
 gstreamer = ["dep:gstreamer", "dep:gstreamer-app"]
@@ -41,3 +42,9 @@ turbojpeg = ["dep:turbojpeg"]
 [[bench]]
 name = "bench_io"
 harness = false
+required-features = ["turbojpeg"]
+
+[[bench]]
+name = "gstreamer"
+harness = false
+required-features = ["gstreamer"]
