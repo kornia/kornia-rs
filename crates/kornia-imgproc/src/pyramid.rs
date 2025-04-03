@@ -152,13 +152,13 @@ pub fn pyrdown<const C: usize>(
     src: &Image<f32, C>,
     dst: &mut Image<f32, C>,
 ) -> Result<(), ImageError> {
-    let expected_width = ((src.width() + 1) / 2) as usize;
-    let expected_height = ((src.height() + 1) / 2) as usize;
+    let expected_width = (src.width() + 1) / 2;
+    let expected_height = (src.height() + 1) / 2;
 
     if dst.width() != expected_width || dst.height() != expected_height {
         return Err(ImageError::InvalidImageSize(
-            expected_width,
-            expected_height,
+            expected_width as usize,
+            expected_height as usize,
             dst.width(),
             dst.height(),
         ));
@@ -169,19 +169,23 @@ pub fn pyrdown<const C: usize>(
     let (kernel_x, kernel_y) = get_pyramid_gaussian_kernel();
     separable_filter(src, &mut blurred, &kernel_x, &kernel_y)?;
 
-    for y in 0..dst.height() {
-        for x in 0..dst.width() {
-            for c in 0..C {
-                let src_x = 2 * x;
-                let src_y = 2 * y;
+    let src_rows_offset = blurred.width() * C;
+    let dst_rows_offset = dst.width() * C;
 
-                if src_x < blurred.width() && src_y < blurred.height() {
-                    let src_val = *blurred.get_pixel(src_x, src_y, c)?;
-                    dst.set_pixel(x, y, c, src_val)?;
-                }
-            }
-        }
-    }
+    blurred
+        .as_slice()
+        .chunks_exact(src_rows_offset)
+        .step_by(2) // Skip every second row
+        .zip(dst.as_slice_mut().chunks_exact_mut(dst_rows_offset))
+        .for_each(|(src_row, dst_row)| {
+            src_row
+                .chunks_exact(C)
+                .step_by(2) // Skip every second column
+                .zip(dst_row.chunks_exact_mut(C))
+                .for_each(|(src_pixel, dst_pixel)| {
+                    dst_pixel.copy_from_slice(src_pixel); // Copy all channels at once
+                });
+        });
 
     Ok(())
 }
@@ -235,12 +239,18 @@ mod tests {
 
     #[test]
     fn test_pyrdown() -> Result<(), ImageError> {
+        let input = vec![
+            0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+        ]; // 4x4 image (single-channel)
+
+        let expected_output = vec![1.2890625, 2.609375, 5.1640625, 8.203125]; // Expected 2x2 downsampled image
+
         let src = Image::<f32, 1>::new(
             ImageSize {
                 width: 4,
                 height: 4,
             },
-            (0..16).map(|x| x as f32).collect(),
+            input.clone(),
         )?;
 
         let mut dst = Image::<f32, 1>::from_size_val(
@@ -253,13 +263,7 @@ mod tests {
 
         pyrdown(&src, &mut dst)?;
 
-        assert_eq!(dst.width(), 2);
-        assert_eq!(dst.height(), 2);
-
-        for val in dst.as_slice() {
-            assert!(!val.is_nan());
-        }
-
+        assert_eq!(dst.as_slice(), &expected_output); 
         Ok(())
     }
 }
