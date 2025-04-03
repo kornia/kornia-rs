@@ -1,7 +1,8 @@
 use crate::stream::error::StreamCaptureError;
 use circular_buffer::CircularBuffer;
 use gstreamer::prelude::*;
-use kornia_image::{Image, ImageSize};
+use kornia_image::Image;
+use kornia_tensor::{CpuAllocator, Tensor};
 use std::sync::{Arc, Mutex};
 
 // utility struct to store the frame buffer
@@ -90,20 +91,19 @@ impl StreamCapture {
             .lock()
             .map_err(|_| StreamCaptureError::MutexPoisonError)?;
         if let Some(frame_buffer) = circular_buffer.pop_front() {
-            // TODO: solve the zero copy issue
-            // https://discourse.gstreamer.org/t/zero-copy-video-frames/3856/2
             let buffer = frame_buffer
                 .buffer
                 .map_readable()
                 .map_err(|_| StreamCaptureError::GetBufferError)?;
-            let img = Image::<u8, 3>::new(
-                ImageSize {
-                    width: frame_buffer.width as usize,
-                    height: frame_buffer.height as usize,
-                },
-                buffer.to_owned(),
+
+            let tensor = Tensor::from_shape_slice(
+                [frame_buffer.width as usize, frame_buffer.height as usize, 3],
+                buffer.as_slice(),
+                CpuAllocator,
             )
             .map_err(|_| StreamCaptureError::CreateImageFrameError)?;
+
+            let img = Image::<u8, 3>(tensor);
             return Ok(Some(img));
         }
         Ok(None)
