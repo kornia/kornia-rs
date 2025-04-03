@@ -263,7 +263,7 @@ mod tests {
 
         pyrdown(&src, &mut dst)?;
 
-        assert_eq!(dst.as_slice(), &expected_output); 
+        assert_eq!(dst.as_slice(), &expected_output);
         Ok(())
     }
 }
