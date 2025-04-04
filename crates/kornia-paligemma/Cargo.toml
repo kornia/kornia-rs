@@ -11,10 +11,10 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-candle-core = { version = "0.8.4", features = [] }
-candle-transformers = { version = "0.8.4", features = [] }
+candle-core = { version = "0.8.4" }
+candle-transformers = { version = "0.8.4" }
 candle-examples = "0.8.4"
-candle-nn = { version = "0.8.4", features = [] }
+candle-nn = { version = "0.8.4" }
 hf-hub = "0.4.2"
 kornia-imgproc = { workspace = true }
 kornia-image = { workspace = true }
