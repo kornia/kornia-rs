@@ -178,16 +178,16 @@ impl JpegTurboDecoder {
         self.decode(jpeg_data, turbojpeg::PixelFormat::GRAY)
     }
 
-    fn decode<const N: usize>(
+    fn decode<const C: usize>(
         &mut self,
         jpeg_data: &[u8],
         format: turbojpeg::PixelFormat,
-    ) -> Result<Image<u8, N>, JpegTurboError> {
+    ) -> Result<Image<u8, C>, JpegTurboError> {
         // get the image size to allocate th data storage
         let image_size = self.read_header(jpeg_data)?;
 
         // prepare a storage for the raw pixel data
-        let mut pixels = vec![0u8; image_size.height * image_size.width * 3];
+        let mut pixels = vec![0u8; image_size.height * image_size.width * C];
 
         // allocate image container
         let buf = turbojpeg::Image {

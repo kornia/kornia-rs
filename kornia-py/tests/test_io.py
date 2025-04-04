@@ -21,7 +21,7 @@ def test_read_image_jpeg():
     img_t = torch.from_numpy(img)
     assert img_t.shape == (195, 258, 3)
 
-def test_decode_image_jpeg_gray():
+def test_decode_image_jpeg():
     # load an image with libjpeg-turbo
     img_path: Path = DATA_DIR / "dog.jpeg"
     with open(img_path, "rb") as f:
@@ -34,7 +34,7 @@ def test_decode_image_jpeg_gray():
     img_t = torch.from_numpy(img)
     assert img_t.shape == (195, 258, 3)
 
-def test_decode_image_png_gray8():
+def test_decode_image_png():
     # load an image with libjpeg-turbo
     img_path: Path = DATA_DIR / "dog.png"
     with open(img_path, "rb") as f:
