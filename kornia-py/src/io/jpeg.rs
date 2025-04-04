@@ -3,7 +3,7 @@ use kornia_image::Image;
 use kornia_io::jpegturbo::{JpegTurboDecoder, JpegTurboEncoder};
 use pyo3::prelude::*;
 
-#[pyclass(name = "ImageDecoder")]
+#[pyclass(name = "ImageDecoder", frozen)]
 pub struct PyImageDecoder(JpegTurboDecoder);
 
 #[pymethods]
@@ -15,7 +15,7 @@ impl PyImageDecoder {
         Ok(PyImageDecoder(decoder))
     }
 
-    pub fn read_header(&mut self, jpeg_data: &[u8]) -> PyResult<PyImageSize> {
+    pub fn read_header(&self, jpeg_data: &[u8]) -> PyResult<PyImageSize> {
         let image_size = self
             .0
             .read_header(jpeg_data)
@@ -23,7 +23,7 @@ impl PyImageDecoder {
         Ok(image_size.into())
     }
 
-    pub fn decode(&mut self, jpeg_data: &[u8]) -> PyResult<PyImage> {
+    pub fn decode(&self, jpeg_data: &[u8]) -> PyResult<PyImage> {
         let image = self
             .0
             .decode_rgb8(jpeg_data)
@@ -32,7 +32,7 @@ impl PyImageDecoder {
     }
 }
 
-#[pyclass(name = "ImageEncoder")]
+#[pyclass(name = "ImageEncoder", frozen)]
 pub struct PyImageEncoder(JpegTurboEncoder);
 
 #[pymethods]
@@ -44,7 +44,7 @@ impl PyImageEncoder {
         Ok(PyImageEncoder(encoder))
     }
 
-    pub fn encode(&mut self, image: PyImage) -> PyResult<Vec<u8>> {
+    pub fn encode(&self, image: PyImage) -> PyResult<Vec<u8>> {
         let image = Image::from_pyimage(image)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
         let jpeg_data = self
@@ -54,7 +54,7 @@ impl PyImageEncoder {
         Ok(jpeg_data)
     }
 
-    pub fn set_quality(&mut self, quality: i32) -> PyResult<()> {
+    pub fn set_quality(&self, quality: i32) -> PyResult<()> {
         self.0
             .set_quality(quality)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
