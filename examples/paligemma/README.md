@@ -21,5 +21,5 @@ or with cuda pass the flag `--features cuda`
 
 ```bash
 caption. A cartoon of two men sitting under a red umbrella. One man wears sunglasses and has a gray beard, while the other man wears a black jacket and has a bald head. The man in the purple hoodie is smiling and holding a pen. The man in the black jacket has his hand on his leg and is looking at the camera. A green tree is in the distance.
-77 tokens generated (18.58 token/s
+77 tokens generated (18.58 token/s)
 ```

@@ -28,11 +28,10 @@ impl TextGeneration {
         device: Device,
         config: TextGenerationConfig,
     ) -> Self {
-        let logits_processor = LogitsProcessor::new(config.seed, config.temp, config.top_p);
         Self {
             model,
             tokenizer: TokenOutputStream::new(tokenizer),
-            logits_processor,
+            logits_processor: LogitsProcessor::new(config.seed, config.temp, config.top_p),
             config,
             device,
         }
@@ -119,7 +118,11 @@ impl TextGeneration {
         );
 
         // postprocess the response by removing the prompt
-        let response = response[prompt.len()..].to_string();
+        let response = if response.starts_with(prompt) {
+            response[prompt.len()..].to_string()
+        } else {
+            response
+        };
 
         Ok(response)
     }

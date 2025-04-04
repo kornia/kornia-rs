@@ -25,6 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // read the image
     let image = F::read_image_any_rgb8(args.image_path)?;
+
     // create the paligemma model
     let mut paligemma = Paligemma::new(PaligemmaConfig::default())?;
 
