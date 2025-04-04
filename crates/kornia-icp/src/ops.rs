@@ -1,5 +1,8 @@
+use faer::{col, Col, Mat};
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
 use kornia_3d::linalg;
+#[allow(unused_imports)]
+use kornia_linalg;
 
 /// Compute the transformation between two point clouds.
 pub(crate) fn fit_transformation(
@@ -14,10 +17,10 @@ pub(crate) fn fit_transformation(
     let (src_centroid, dst_centroid) = compute_centroids(points_in_src, points_in_dst);
 
     // compute covariance matrix
-    let mut hh = faer::Mat::<f64>::zeros(3, 3);
+    let mut hh = Mat::<f64>::zeros(3, 3);
     for (p_in_src, p_in_dst) in points_in_src.iter().zip(points_in_dst.iter()) {
-        let p_src = faer::col![p_in_src[0], p_in_src[1], p_in_src[2]] - &src_centroid;
-        let p_dst = faer::col![p_in_dst[0], p_in_dst[1], p_in_dst[2]] - &dst_centroid;
+        let p_src = col![p_in_src[0], p_in_src[1], p_in_src[2]] - &src_centroid;
+        let p_dst = col![p_in_dst[0], p_in_dst[1], p_in_dst[2]] - &dst_centroid;
         hh += p_src * p_dst.transpose();
     }
 
@@ -26,18 +29,31 @@ pub(crate) fn fit_transformation(
     let (u_t, v) = (svd.u().transpose(), svd.v());
 
     // compute rotation matrix R = V * U^T
-    let mut rr = v * u_t;
+    let mut rr = Mat::<f64>::zeros(3, 3);
+    faer::linalg::matmul::matmul(
+        &mut rr,
+        &v,
+        u_t,
+        None,
+        1.0,
+        faer::Parallelism::None,
+    );
 
     // fix the determinant of R in case it is negative as it's a reflection matrix
     if rr.determinant() < 0.0 {
         log::warn!("WARNING: det(R) < 0.0, fixing it...");
-        let v_neg = {
-            let mut v_neg = v.to_owned();
-            v_neg.col_mut(2).copy_from(-v.col(2));
-            v_neg
-        };
-        // TODO: improve performance by using matmul33
-        faer::linalg::matmul::matmul(&mut rr, &v_neg, u_t, None, 1.0, faer::Parallelism::None);
+        let mut v_neg = v.to_owned();
+        for i in 0..3 {
+            v_neg.write(i, 2, -v.read(i, 2));
+        }
+        faer::linalg::matmul::matmul(
+            &mut rr,
+            &v_neg,
+            u_t,
+            None,
+            1.0,
+            faer::Parallelism::None,
+        );
     }
 
     // compute translation vector t = C_dst - R * C_src
@@ -65,13 +81,13 @@ pub(crate) fn fit_transformation(
 pub(crate) fn compute_centroids(
     points1: &[[f64; 3]],
     points2: &[[f64; 3]],
-) -> (faer::Col<f64>, faer::Col<f64>) {
-    let mut centroid1 = faer::Col::zeros(3);
-    let mut centroid2 = faer::Col::zeros(3);
+) -> (Col<f64>, Col<f64>) {
+    let mut centroid1 = Col::zeros(3);
+    let mut centroid2 = Col::zeros(3);
 
     for (p1, p2) in points1.iter().zip(points2.iter()) {
-        centroid1 += faer::col![p1[0], p1[1], p1[2]];
-        centroid2 += faer::col![p2[0], p2[1], p2[2]];
+        centroid1 += col![p1[0], p1[1], p1[2]];
+        centroid2 += col![p2[0], p2[1], p2[2]];
     }
 
     centroid1 /= points1.len() as f64;
@@ -179,12 +195,12 @@ mod tests {
         let points1 = vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
         let points2 = vec![[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]];
         let (centroid1, centroid2) = compute_centroids(&points1, &points2);
-        assert_eq!(centroid1.read(0), 2.5);
-        assert_eq!(centroid1.read(1), 3.5);
-        assert_eq!(centroid1.read(2), 4.5);
-        assert_eq!(centroid2.read(0), 8.5);
-        assert_eq!(centroid2.read(1), 9.5);
-        assert_eq!(centroid2.read(2), 10.5);
+        assert_eq!(centroid1[0], 2.5);
+        assert_eq!(centroid1[1], 3.5);
+        assert_eq!(centroid1[2], 4.5);
+        assert_eq!(centroid2[0], 8.5);
+        assert_eq!(centroid2[1], 9.5);
+        assert_eq!(centroid2[2], 10.5);
     }
 
     #[test]
