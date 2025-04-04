@@ -1,7 +1,8 @@
-use std::sync::{Arc, Mutex};
-use turbojpeg;
+use std::sync::Mutex;
 
 use kornia_image::{Image, ImageError, ImageSize};
+
+use turbojpeg;
 
 /// Error types for the JPEG module.
 #[derive(thiserror::Error, Debug)]
@@ -20,16 +21,10 @@ pub enum JpegTurboError {
 }
 
 /// A JPEG decoder using the turbojpeg library.
-pub struct JpegTurboDecoder {
-    /// The turbojpeg decompressor.
-    pub decompressor: Arc<Mutex<turbojpeg::Decompressor>>,
-}
+pub struct JpegTurboDecoder(Mutex<turbojpeg::Decompressor>);
 
 /// A JPEG encoder using the turbojpeg library.
-pub struct JpegTurboEncoder {
-    /// The turbojpeg compressor.
-    pub compressor: Arc<Mutex<turbojpeg::Compressor>>,
-}
+pub struct JpegTurboEncoder(Mutex<turbojpeg::Compressor>);
 
 impl Default for JpegTurboDecoder {
     fn default() -> Self {
@@ -62,9 +57,7 @@ impl JpegTurboEncoder {
     /// Panics if the compressor cannot be created.
     pub fn new() -> Result<Self, JpegTurboError> {
         let compressor = turbojpeg::Compressor::new()?;
-        Ok(Self {
-            compressor: Arc::new(Mutex::new(compressor)),
-        })
+        Ok(Self(Mutex::new(compressor)))
     }
 
     /// Encodes the given RGB8 image into a JPEG image.
@@ -76,7 +69,7 @@ impl JpegTurboEncoder {
     /// # Returns
     ///
     /// The encoded data as `Vec<u8>`.
-    pub fn encode_rgb8(&mut self, image: &Image<u8, 3>) -> Result<Vec<u8>, JpegTurboError> {
+    pub fn encode_rgb8(&self, image: &Image<u8, 3>) -> Result<Vec<u8>, JpegTurboError> {
         // get the image data
         let image_data = image.as_slice();
 
@@ -91,7 +84,7 @@ impl JpegTurboEncoder {
 
         // encode the image
         Ok(self
-            .compressor
+            .0
             .lock()
             .expect("Failed to lock the compressor")
             .compress_to_vec(buf)?)
@@ -102,9 +95,9 @@ impl JpegTurboEncoder {
     /// # Arguments
     ///
     /// * `quality` - The quality to set.
-    pub fn set_quality(&mut self, quality: i32) -> Result<(), JpegTurboError> {
+    pub fn set_quality(&self, quality: i32) -> Result<(), JpegTurboError> {
         Ok(self
-            .compressor
+            .0
             .lock()
             .expect("Failed to lock the compressor")
             .set_quality(quality)?)
@@ -120,9 +113,7 @@ impl JpegTurboDecoder {
     /// A new `ImageDecoder` instance.
     pub fn new() -> Result<Self, JpegTurboError> {
         let decompressor = turbojpeg::Decompressor::new()?;
-        Ok(JpegTurboDecoder {
-            decompressor: Arc::new(Mutex::new(decompressor)),
-        })
+        Ok(JpegTurboDecoder(Mutex::new(decompressor)))
     }
 
     /// Reads the header of a JPEG image.
@@ -138,10 +129,10 @@ impl JpegTurboDecoder {
     /// # Panics
     ///
     /// Panics if the header cannot be read.
-    pub fn read_header(&mut self, jpeg_data: &[u8]) -> Result<ImageSize, JpegTurboError> {
+    pub fn read_header(&self, jpeg_data: &[u8]) -> Result<ImageSize, JpegTurboError> {
         // read the JPEG header with image size
         let header = self
-            .decompressor
+            .0
             .lock()
             .expect("Failed to lock the decompressor")
             .read_header(jpeg_data)?;
@@ -161,7 +152,7 @@ impl JpegTurboDecoder {
     /// # Returns
     ///
     /// The decoded data as Image<u8, 3>.
-    pub fn decode_rgb8(&mut self, jpeg_data: &[u8]) -> Result<Image<u8, 3>, JpegTurboError> {
+    pub fn decode_rgb8(&self, jpeg_data: &[u8]) -> Result<Image<u8, 3>, JpegTurboError> {
         // get the image size to allocate th data storage
         let image_size = self.read_header(jpeg_data)?;
 
@@ -178,7 +169,7 @@ impl JpegTurboDecoder {
         };
 
         // decompress the JPEG data
-        self.decompressor
+        self.0
             .lock()
             .expect("Failed to lock the decompressor")
             .decompress(jpeg_data, buf)?;
