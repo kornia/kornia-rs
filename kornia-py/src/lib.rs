@@ -24,7 +24,7 @@ pub fn get_version() -> String {
     version.replace("-alpha", "a").replace("-beta", "b")
 }
 
-#[pymodule]
+#[pymodule(gil_used = false)]
 pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", get_version())?;
     m.add_function(wrap_pyfunction!(color::rgb_from_gray, m)?)?;
