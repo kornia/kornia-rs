@@ -69,7 +69,7 @@ impl JpegTurboEncoder {
     /// # Returns
     ///
     /// The encoded data as `Vec<u8>`.
-    pub fn encode_rgb8(&mut self, image: &Image<u8, 3>) -> Result<Vec<u8>, JpegTurboError> {
+    pub fn encode_rgb8(&self, image: &Image<u8, 3>) -> Result<Vec<u8>, JpegTurboError> {
         // get the image data
         let image_data = image.as_slice();
 
@@ -95,7 +95,7 @@ impl JpegTurboEncoder {
     /// # Arguments
     ///
     /// * `quality` - The quality to set.
-    pub fn set_quality(&mut self, quality: i32) -> Result<(), JpegTurboError> {
+    pub fn set_quality(&self, quality: i32) -> Result<(), JpegTurboError> {
         Ok(self
             .0
             .lock()
@@ -129,7 +129,7 @@ impl JpegTurboDecoder {
     /// # Panics
     ///
     /// Panics if the header cannot be read.
-    pub fn read_header(&mut self, jpeg_data: &[u8]) -> Result<ImageSize, JpegTurboError> {
+    pub fn read_header(&self, jpeg_data: &[u8]) -> Result<ImageSize, JpegTurboError> {
         // read the JPEG header with image size
         let header = self
             .0
@@ -152,7 +152,7 @@ impl JpegTurboDecoder {
     /// # Returns
     ///
     /// The decoded data as Image<u8, 3>.
-    pub fn decode_rgb8(&mut self, jpeg_data: &[u8]) -> Result<Image<u8, 3>, JpegTurboError> {
+    pub fn decode_rgb8(&self, jpeg_data: &[u8]) -> Result<Image<u8, 3>, JpegTurboError> {
         // get the image size to allocate th data storage
         let image_size = self.read_header(jpeg_data)?;
 
