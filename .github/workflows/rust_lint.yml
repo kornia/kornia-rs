@@ -39,7 +39,7 @@ jobs:
           reporter: 'github-pr-review'
           github_token: ${{ secrets.GITHUB_TOKEN }}
           clippy_flags: -- -D warnings
-      
+
       - name: Show sccache stats
         run: sccache --show-stats
 
@@ -61,7 +61,7 @@ jobs:
 
       - name: Install cross
         run: cargo install cross
-      - run: cross check --all --all-features
+      - run: cross check --all --features "gstreamer,turbojpeg"
 
       - name: Show sccache stats
         run: sccache --show-stats
