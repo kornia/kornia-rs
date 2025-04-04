@@ -96,9 +96,6 @@ jobs:
       run: cd kornia-py/ && just install-dev 3.13t
 
     - name: Run tests
-      env:
-        # TODO: unset when the module declares support
-        PYTHON_GIL: '0'
       run: |
         cd kornia-py/
         source .venv/bin/activate
