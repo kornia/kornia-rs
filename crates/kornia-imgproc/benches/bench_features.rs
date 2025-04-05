@@ -26,7 +26,7 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
         |b, i| {
             let src = i.clone();
             b.iter(|| {
-                let _res = black_box(fast_feature_detector(&src, 60, 9)).unwrap();
+                let _res = black_box(fast_feature_detector(&src, 60, 9));
             })
         },
     );
@@ -52,7 +52,7 @@ fn bench_fast_corner_nms_detect(c: &mut Criterion) {
         |b, i| {
             let src = i.clone();
             b.iter(|| {
-                let _res = black_box(fast_feature_nms_detector(&src, 60, 9, true)).unwrap();
+                let _res = black_box(fast_feature_nms_detector(&src, 60, 9, true));
             })
         },
     );
@@ -78,7 +78,7 @@ fn bench_fast_corner_no_nms_detect(c: &mut Criterion) {
         |b, i| {
             let src = i.clone();
             b.iter(|| {
-                let _res = black_box(fast_feature_nms_detector(&src, 60, 9, false)).unwrap();
+                let _res = black_box(fast_feature_nms_detector(&src, 60, 9, false));
             })
         },
     );

@@ -158,7 +158,8 @@ fn is_fast_corner(
 /// Calculate the FAST corner score for a pixel using Sum of Absolute Differences (SAD).
 /// Based on https://www.edwardrosten.com/work/rosten_2006_machine.pdf.
 /// Returns a tuple of (is_corner: bool, score: i32)
-fn get_fast_corner_score(
+#[inline(always)]
+fn get_fast_corner_score_inner(
     src: &[u8],
     pixel_idx: i32,
     offsets: [i32; 16],
@@ -208,56 +209,34 @@ fn get_fast_corner_score(
     let p16 = get_pixel_from_offset(15);
     let pixels = [
         p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15, p16,
-        p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13, p14, p15, p16 
     ]; // Values are repeated to handle circular indexing
     
-    let mut consecutive_brighter = 0u8;
-    let mut consecutive_darker = 0u8;
+    // Use a bitmask of size N, and shift it.
+    let mut bright_bitmask = 0u16;
+    let mut dark_bitmask = 0u16;
+    for (i, &val) in pixels.iter().enumerate() {
+        if val > upper_threshold {
+            bright_bitmask |= 1 << i;
+        }
 
+        if val < lower_threshold {
+            dark_bitmask |= 1 << i;
+        }
+    }
+
+    let window_mask = (1u16 << arc_length) - 1; // Create a bitmask of length arc_length
+
+    // Now we can use the bitmask to determine valid segment
     let mut is_corner = false;
-    let mut start_idx = 0;
-    let mut end_idx = 0;
+    let mut shift_amount: usize = 0;
+    for shift in 0..16 {
+        let curr_window_mask = window_mask.rotate_left(shift);
+        let bright_window_bits = bright_bitmask & curr_window_mask;
+        let dark_window_bits = dark_bitmask & curr_window_mask;
 
-    let mut most_consecutive = 0u8;
-    let update_indices = |consecutive: &u8, idx: &usize, start_idx: &mut usize, end_idx: &mut usize, most_consecutive: &mut u8| {
-        if consecutive > most_consecutive {
-            *end_idx = (idx+1).rem_euclid(16);
-            *most_consecutive = *consecutive;
-            *start_idx = ((*end_idx + 16) - *most_consecutive as usize).rem_euclid(16);
-        }
-    };
-    
-    for (idx, &pixel) in pixels.iter().enumerate() {
-        // Iterate through all pixels. Only update start and end idx when consecutive count increases.
-        if pixel > upper_threshold {
-            consecutive_brighter += 1;
-            consecutive_darker = 0;
-            
-            // If we were counting brighter pixels...
-            update_indices(&consecutive_brighter, &idx, &mut start_idx, &mut end_idx, &mut most_consecutive);
-        } else if pixel < lower_threshold {
-            consecutive_darker += 1;
-            consecutive_brighter = 0;
-            
-            // If we were counting darker pixels...
-            update_indices(&consecutive_darker, &idx, &mut start_idx, &mut end_idx, &mut most_consecutive);
-        } else {
-            update_indices(&consecutive_brighter, &idx, &mut start_idx, &mut end_idx, &mut most_consecutive);
-            update_indices(&consecutive_darker, &idx, &mut start_idx, &mut end_idx, &mut most_consecutive);
-
-            consecutive_brighter = 0;
-            consecutive_darker = 0;
-        }
-
-        if consecutive_brighter >= arc_length || consecutive_darker >= arc_length {
+        if bright_window_bits.count_ones() >= arc_length as u32 || dark_window_bits.count_ones() >= arc_length as u32{
             is_corner = true;
-        }
-
-        if consecutive_brighter >= 16 {
-            update_indices(&consecutive_brighter, &idx, &mut start_idx, &mut end_idx, &mut most_consecutive);
-            break;
-        } else if consecutive_darker >= 16 {
-            update_indices(&consecutive_darker, &idx, &mut start_idx, &mut end_idx, &mut most_consecutive);
+            shift_amount = shift as usize;
             break;
         }
     }
@@ -268,12 +247,38 @@ fn get_fast_corner_score(
 
     // Sum of absolute differences for the corner score. 
     let mut score = 0i32;
-    for offset in start_idx..start_idx + most_consecutive as usize {
+    for offset in shift_amount..shift_amount + arc_length as usize {
         let curr_idx = offset.rem_euclid(16); 
         score += (center_pixel.abs_diff(*pixels[curr_idx]) - threshold) as i32;
     }
 
     (true, score)
+}
+
+#[target_feature(enable = "avx2")]
+unsafe fn get_fast_corner_score_avx2(
+    src: &[u8],
+    pixel_idx: i32,
+    offsets: [i32; 16],
+    threshold: u8,
+    arc_length: u8,
+) -> (bool, i32) {
+    get_fast_corner_score_inner(src, pixel_idx, offsets, threshold, arc_length)
+}
+
+/// Wrapper function for FAST corner score calculation.
+pub fn get_fast_corner_score(
+    src: &[u8],
+    pixel_idx: i32,
+    offsets: [i32; 16],
+    threshold: u8,
+    arc_length: u8,
+) -> (bool, i32) {
+    if is_x86_feature_detected!("avx2") {
+        unsafe { get_fast_corner_score_avx2(src, pixel_idx, offsets, threshold, arc_length) }
+    } else {
+        get_fast_corner_score_inner(src, pixel_idx, offsets, threshold, arc_length)
+    }
 }
 
 /// Fast feature detector with Non-Maximum Suppression (NMS)
@@ -288,12 +293,13 @@ fn get_fast_corner_score(
 /// # Returns
 ///
 /// A vector containing the coordinates of the detected keypoints.
-pub fn fast_feature_nms_detector(
+#[inline(always)]
+pub fn fast_feature_nms_detector_inner(
     src: &Image<u8, 1>,
     threshold: u8,
     arc_length: u8,
     nms: bool
-) -> Result<Vec<[i32; 2]>, ImageError> {
+) -> Vec<[i32; 2]> {
     let (cols, rows) = (src.cols() as i32, src.rows() as i32);
 
     // Precompute the offsets for the Bresenham circle
@@ -345,7 +351,7 @@ pub fn fast_feature_nms_detector(
 
     // Exit early if NMS disabled
     if !nms {
-        return Ok(kp1);
+        return kp1;
     }
     
     let mut heap = BinaryHeap::with_capacity(kp1.len());
@@ -382,7 +388,31 @@ pub fn fast_feature_nms_detector(
         }
     }
     
-    Ok(kp2)
+    kp2
+}
+
+#[target_feature(enable = "avx2")]
+unsafe fn fast_feature_nms_detector_avx2(
+    src: &Image<u8, 1>,
+    threshold: u8,
+    arc_length: u8,
+    nms: bool
+) -> Vec<[i32; 2]> {
+    fast_feature_nms_detector_inner(src, threshold, arc_length, nms)
+}
+
+/// Wrapper for FAST feature detector with Non-Maximum Suppression (NMS). 
+pub fn fast_feature_nms_detector(
+    src: &Image<u8, 1>,
+    threshold: u8,
+    arc_length: u8,
+    nms: bool
+) -> Vec<[i32; 2]> {
+    if is_x86_feature_detected!("avx2") {
+        unsafe { fast_feature_nms_detector_avx2(src, threshold, arc_length, nms) }
+    } else {
+        fast_feature_nms_detector_inner(src, threshold, arc_length, nms)
+    }
 }
 
 #[cfg(test)]
@@ -428,7 +458,7 @@ mod tests {
             ],
         )?;
         let expected_keypoints = vec![[3, 3]];
-        let keypoints = fast_feature_nms_detector(&img, 100, 9, true)?;
+        let keypoints = fast_feature_nms_detector(&img, 100, 9, true);
         assert_eq!(keypoints.len(), expected_keypoints.len());
         assert_eq!(keypoints, expected_keypoints);
         
@@ -451,7 +481,7 @@ mod tests {
             ],
         )?;
         let expected_keypoints = vec![[3, 3]];
-        let keypoints = fast_feature_nms_detector(&img, 100, 9, true)?;
+        let keypoints = fast_feature_nms_detector(&img, 100, 9, true);
         assert_eq!(keypoints.len(), expected_keypoints.len());
         assert_eq!(keypoints, expected_keypoints);
         
@@ -474,7 +504,7 @@ mod tests {
             ],
         )?;
         let expected_keypoints = vec![[3, 3]];
-        let keypoints = fast_feature_nms_detector(&img, 100, 9, true)?;
+        let keypoints = fast_feature_nms_detector(&img, 100, 9, true);
         assert_eq!(keypoints.len(), expected_keypoints.len());
         assert_eq!(keypoints, expected_keypoints);
         
@@ -497,7 +527,7 @@ mod tests {
             ],
         )?;
         let expected_keypoints = vec![[3, 3]];
-        let keypoints = fast_feature_nms_detector(&img, 100, 9, true)?;
+        let keypoints = fast_feature_nms_detector(&img, 100, 9, true);
         assert_eq!(keypoints.len(), expected_keypoints.len());
         assert_eq!(keypoints, expected_keypoints);
         
