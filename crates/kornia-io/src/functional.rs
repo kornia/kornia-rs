@@ -50,7 +50,7 @@ pub fn read_image_jpegturbo_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8
 
     // decode the data directly from memory
     let image: Image<u8, 3> = {
-        let mut decoder = JpegTurboDecoder::new()?;
+        let decoder = JpegTurboDecoder::new()?;
         decoder.decode_rgb8(&jpeg_data)?
     };
 

@@ -1,8 +1,7 @@
-use pyo3::prelude::*;
-
 use crate::image::{FromPyImage, PyImage, ToPyImage};
 use kornia_image::Image;
 use kornia_io::functional as F;
+use pyo3::prelude::*;
 use kornia_io::jpegturbo::JpegTurboDecoder;
 
 #[pyfunction]
