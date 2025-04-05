@@ -79,8 +79,8 @@ pub fn read_image_jpeg_mono8(file_path: impl AsRef<Path>) -> Result<Image<u8, 1>
 ///
 /// - `image` - A mutable reference to your `Image`
 /// - `bytes` - Raw bytes of the jpeg file
-pub fn decode_image_jpeg_rgb8(image: &mut Image<u8, 3>, bytes: &[u8]) -> Result<(), IoError> {
-    decode_jpeg_impl(image, bytes)
+pub fn decode_image_jpeg_rgb8(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), IoError> {
+    decode_jpeg_impl(src, dst)
 }
 
 /// Decodes a JPEG image with single channel (mono8) from Raw Bytes.
@@ -89,8 +89,8 @@ pub fn decode_image_jpeg_rgb8(image: &mut Image<u8, 3>, bytes: &[u8]) -> Result<
 ///
 /// - `image` - A mutable reference to your `Image`
 /// - `bytes` - Raw bytes of the jpeg file
-pub fn decode_image_jpeg_mono8(image: &mut Image<u8, 1>, bytes: &[u8]) -> Result<(), IoError> {
-    decode_jpeg_impl(image, bytes)
+pub fn decode_image_jpeg_mono8(src: &[u8], dst: &mut Image<u8, 1>) -> Result<(), IoError> {
+    decode_jpeg_impl(src, dst)
 }
 
 fn read_image_jpeg_impl<const N: usize>(
@@ -127,8 +127,8 @@ fn read_image_jpeg_impl<const N: usize>(
     Ok(Image::new(image_size, img_data)?)
 }
 
-fn decode_jpeg_impl<const C: usize>(image: &mut Image<u8, C>, bytes: &[u8]) -> Result<(), IoError> {
-    let mut decoder = zune_jpeg::JpegDecoder::new(bytes);
+fn decode_jpeg_impl<const C: usize>(src: &[u8], dst: &mut Image<u8, C>) -> Result<(), IoError> {
+    let mut decoder = zune_jpeg::JpegDecoder::new(src);
     decoder
         .decode_headers()
         .map_err(IoError::JpegDecodingError)?;
@@ -140,11 +140,11 @@ fn decode_jpeg_impl<const C: usize>(image: &mut Image<u8, C>, bytes: &[u8]) -> R
     })?;
 
     let image_size = [image_info.height as usize, image_info.width as usize, C];
-    decoder.decode_into(image.as_slice_mut())?;
+    decoder.decode_into(dst.as_slice_mut())?;
 
     // Update the tensor shape and stride
-    image.0.shape = image_size;
-    image.0.strides = get_strides_from_shape(image_size);
+    dst.0.shape = image_size;
+    dst.0.strides = get_strides_from_shape(image_size);
     Ok(())
 }
 
@@ -188,7 +188,7 @@ mod tests {
 
         let bytes = read("../../tests/data/dog.jpeg")?;
         let mut image: Image<u8, 3> = Image::new([258, 195].into(), vec![0; BUFFER_SIZE])?;
-        decode_image_jpeg_rgb8(&mut image, &bytes)?;
+        decode_image_jpeg_rgb8(&bytes, &mut image)?;
 
         assert_eq!(image.cols(), 258);
         assert_eq!(image.rows(), 195);

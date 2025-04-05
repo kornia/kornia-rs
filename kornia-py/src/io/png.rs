@@ -20,31 +20,31 @@ use kornia_io::png as P;
 ///
 /// img = K.decode_image_png(bytes(img_data), "rgb8")
 /// ```
-pub fn decode_image_png(image: &mut PyImage, png_data: &[u8], mode: &str) -> PyResult<()> {
+pub fn decode_image_png(src: &[u8], dst: &mut PyImage, mode: &str) -> PyResult<()> {
     match mode {
         "rgb8" => {
             let mut image: Image<u8, 3> = Image::from_pyimage(image);
-            P::decode_image_png_rgb8(&mut image, png_data)
+            P::decode_image_png_rgb8(src, &mut dst)
         }
         "rgba8" => {
             let mut image: Image<u8, 4> = Image::from_pyimage(image);
-            P::decode_image_png_rgba8(&mut image, png_data)
+            P::decode_image_png_rgba8(src, &mut dst)
         }
         "mono8" => {
             let mut image: Image<u8, 1> = Image::from_pyimage(image);
-            P::decode_image_png_mono8(&mut image, png_data)
+            P::decode_image_png_mono8(src, &mut dst)
         }
         "rgb16" => {
             let mut image: Image<u16, 3> = Image::from_pyimage(image);
-            P::decode_image_png_rgb16(&mut image, png_data)
+            P::decode_image_png_rgb16(src, &mut dst)
         }
         "rgba16" => {
             let mut image: Image<u16, 4> = Image::from_pyimage(image);
-            P::decode_image_png_rgba16(&mut image, png_data)
+            P::decode_image_png_rgba16(src, &mut dst)
         }
         "mono16" => {
             let mut image: Image<u16, 1> = Image::from_pyimage(image);
-            P::decode_image_png_mono16(&mut image, png_data)
+            P::decode_image_png_mono16(src, &mut dst)
         }
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
             String::from(

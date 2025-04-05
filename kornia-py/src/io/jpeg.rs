@@ -15,15 +15,15 @@ use pyo3::prelude::*;
 ///
 /// img = K.decode_image_raw_jpeg(bytes(img_data), "rgb")
 /// ```
-pub fn decode_image_raw_jpeg(image: &mut PyImage, jpeg_data: &[u8], mode: &str) -> PyResult<()> {
+pub fn decode_image_raw_jpeg(src: &[u8], dst: &mut PyImage, mode: &str) -> PyResult<()> {
     match mode {
         "rgb" => {
             let mut image = Image::from_pyimage(image);
-            J::decode_image_jpeg_rgb8(image, bytes)
+            J::decode_image_jpeg_rgb8(src, dst)
         }
         "mono" => {
             let mut image = Image::from_pyimage(image);
-            J::decode_image_jpeg_mono8(image, bytes)
+            J::decode_image_jpeg_mono8(src, dst)
         }
         _ => {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
