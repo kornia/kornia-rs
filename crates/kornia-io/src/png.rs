@@ -218,7 +218,7 @@ fn decode_png_impl<const C: usize>(image: &mut Image<u8, C>, bytes: &[u8]) -> Re
     }
 
     let info = reader
-        .next_frame(&mut buf)
+        .next_frame(buf)
         .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
 
     // Update the size and stride of tensor
