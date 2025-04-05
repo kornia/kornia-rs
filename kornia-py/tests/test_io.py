@@ -21,6 +21,45 @@ def test_read_image_jpeg():
     img_t = torch.from_numpy(img)
     assert img_t.shape == (195, 258, 3)
 
+def test_decode_image_jpeg():
+    # load an image with libjpeg-turbo
+    img_path: Path = DATA_DIR / "dog.jpeg"
+    with open(img_path, "rb") as f:
+        img_data = f.read()
+    img: np.ndarray = K.decode_image_jpeg(bytes(img_data), "rgb")
+
+    # check the image properties
+    assert img.shape == (195, 258, 3)
+
+    img_t = torch.from_numpy(img)
+    assert img_t.shape == (195, 258, 3)
+
+def test_decode_image_raw_jpeg():
+    # load an image with libjpeg-turbo
+    img_path: Path = DATA_DIR / "dog.jpeg"
+    with open(img_path, "rb") as f:
+        img_data = f.read()
+    img: np.ndarray = K.decode_image_raw_jpeg(bytes(img_data), "rgb")
+
+    # check the image properties
+    assert img.shape == (195, 258, 3)
+
+    img_t = torch.from_numpy(img)
+    assert img_t.shape == (195, 258, 3)
+
+def test_decode_image_png():
+    # load an image with libjpeg-turbo
+    img_path: Path = DATA_DIR / "rgb16.png"
+    with open(img_path, "rb") as f:
+        img_data = f.read()
+    img: np.ndarray = K.decode_image_png(bytes(img_data), "rgb16")
+
+    # check the image properties
+    assert img.shape == (32, 32, 3)
+
+    img_t = torch.from_numpy(img)
+    assert img_t.shape == (32, 32, 3)
+
 # TODO: load other types of images
 def test_read_image_any():
     # load an image with image-rs
