@@ -11,8 +11,9 @@ mod warp;
 use crate::icp::{PyICPConvergenceCriteria, PyICPResult};
 use crate::image::PyImageSize;
 use crate::io::functional::{decode_image_jpeg, read_image_any, read_image_jpeg, write_image_jpeg};
-use crate::io::jpeg::{PyImageDecoder, PyImageEncoder};
+use crate::io::jpeg::decode_image_raw_jpeg;
 use crate::io::png::decode_image_png;
+use crate::io::turbojpeg::{PyImageDecoder, PyImageEncoder};
 use pyo3::prelude::*;
 
 pub fn get_version() -> String {
@@ -42,6 +43,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(histogram::compute_histogram, m)?)?;
     m.add_function(wrap_pyfunction!(decode_image_png, m)?)?;
     m.add_function(wrap_pyfunction!(decode_image_jpeg, m)?)?;
+    m.add_function(wrap_pyfunction!(decode_image_raw_jpeg, m)?)?;
     m.add_class::<PyImageSize>()?;
     m.add_class::<PyImageDecoder>()?;
     m.add_class::<PyImageEncoder>()?;

@@ -20,7 +20,7 @@ pub enum IoError {
 
     /// Error to decode the JPEG image.
     #[error("Error with Jpeg decoding")]
-    JpegDecodingError(#[from] jpeg_decoder::Error),
+    JpegDecodingError(#[from] zune_jpeg::errors::DecodeErrors),
 
     /// Error to encode the JPEG image.
     #[error("Error with Jpeg encoding")]

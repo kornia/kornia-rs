@@ -53,4 +53,3 @@ pub(crate) fn convert_buf_u16_u8(buf: &[u16]) -> Vec<u8> {
 
     buf_u8
 }
-
