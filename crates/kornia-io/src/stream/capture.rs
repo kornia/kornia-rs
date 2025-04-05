@@ -1,9 +1,12 @@
+use super::{FrameImage, GstAllocator};
 use crate::stream::error::StreamCaptureError;
 use circular_buffer::CircularBuffer;
 use gstreamer::prelude::*;
-use kornia_image::Image;
-use kornia_tensor::{CpuAllocator, Tensor};
-use std::sync::{Arc, Mutex};
+use kornia_tensor::{storage::TensorStorage, tensor::get_strides_from_shape, Tensor};
+use std::{
+    alloc::Layout,
+    sync::{Arc, Mutex},
+};
 
 // utility struct to store the frame buffer
 struct FrameBuffer {
@@ -85,26 +88,39 @@ impl StreamCapture {
     /// # Returns
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
-    pub fn grab(&mut self) -> Result<Option<Image<u8, 3>>, StreamCaptureError> {
+    pub fn grab(&mut self) -> Result<Option<FrameImage>, StreamCaptureError> {
         let mut circular_buffer = self
             .circular_buffer
             .lock()
             .map_err(|_| StreamCaptureError::MutexPoisonError)?;
         if let Some(frame_buffer) = circular_buffer.pop_front() {
-            let buffer = frame_buffer
-                .buffer
+            let buffer = frame_buffer.buffer;
+            let buffer_map = buffer
                 .map_readable()
                 .map_err(|_| StreamCaptureError::GetBufferError)?;
 
-            let tensor = Tensor::from_shape_slice(
-                [frame_buffer.width as usize, frame_buffer.height as usize, 3],
-                buffer.as_slice(),
-                CpuAllocator,
-            )
-            .map_err(|_| StreamCaptureError::CreateImageFrameError)?;
+            let frame_data_slice = buffer_map.as_slice();
+            let frame_data_ptr = frame_data_slice.as_ptr();
 
-            let img = Image::<u8, 3>(tensor);
-            return Ok(Some(img));
+            let layout = unsafe { Layout::array::<u8>(frame_data_slice.len()).unwrap_unchecked() };
+            let tensor_storage = unsafe {
+                TensorStorage::new(frame_data_ptr, frame_data_slice.len(), layout, GstAllocator)
+            };
+
+            let shape = [frame_buffer.height as usize, frame_buffer.width as usize, 3];
+            let strides = get_strides_from_shape(shape);
+            let tensor = Tensor {
+                shape,
+                strides,
+                storage: tensor_storage,
+            };
+
+            // buffer_map is the reference to buffer, dropping it allows
+            // the ownership of buffer to be transfered to FrameImage
+            drop(buffer_map);
+
+            let frame_image = FrameImage(tensor, buffer);
+            return Ok(Some(frame_image));
         }
         Ok(None)
     }
