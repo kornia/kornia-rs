@@ -9,7 +9,7 @@ use rand::Rng;
 fn bench_fast_corner_detect(c: &mut Criterion) {
     let mut group = c.benchmark_group("FastCornerDetect");
 
-    let img_rgb8 = io::read_image_any_rgb8("/home/edgar/Downloads/kodim08_grayscale.png").unwrap();
+    let img_rgb8 = io::read_image_any_rgb8("../../tests/data/houses.png").unwrap();
 
     let new_size = [1920, 1080].into();
     let mut img_resized = Image::from_size_val(new_size, 0).unwrap();
@@ -35,7 +35,7 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
 fn bench_fast_corner_nms_detect(c: &mut Criterion) {
     let mut group = c.benchmark_group("FastCornerDetectNMS");
 
-    let img_rgb8 = io::read_image_any_rgb8("D:/NEW_PC_FILES/images/houses.png").unwrap();
+    let img_rgb8 = io::read_image_any_rgb8("../../tests/data/houses.png").unwrap();
 
     let new_size = [1920, 1080].into();
     let mut img_resized = Image::from_size_val(new_size, 0).unwrap();
@@ -61,7 +61,7 @@ fn bench_fast_corner_nms_detect(c: &mut Criterion) {
 fn bench_fast_corner_no_nms_detect(c: &mut Criterion) {
     let mut group = c.benchmark_group("FastCornerDetectFix");
 
-    let img_rgb8 = io::read_image_any_rgb8("D:/NEW_PC_FILES/images/houses.png").unwrap();
+    let img_rgb8 = io::read_image_any_rgb8("../../tests/data/houses.png").unwrap();
 
     let new_size = [1920, 1080].into();
     let mut img_resized = Image::from_size_val(new_size, 0).unwrap();
