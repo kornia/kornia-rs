@@ -3,7 +3,6 @@ use kornia_image::{Image, ImageError, ImageSize};
 use kornia_tensor_ops::TensorOps;
 use rayon::prelude::*;
 
-use crate::filter::gaussian_blur;
 use crate::filter::spatial_gradient_float;
 
 /// Method to calculate gradient for feature response
@@ -44,16 +43,17 @@ pub fn gftt_response(src: &Image<f32, 1>, dst: &mut Image<f32, 1>) -> Result<(),
             dst.rows(),
         ));
     }
-    let mut dx = Image::from_size_val(src.size(), 0.0)?;
-    let mut dy = Image::from_size_val(src.size(), 0.0)?;
+    let img_size = src.size();
+    let mut dx = Image::from_size_val(img_size, 0.0)?;
+    let mut dy = Image::from_size_val(img_size, 0.0)?;
     let _ = spatial_gradient_float(src, &mut dx, &mut dy);
     let dx2: Image<f32, 1> = Image(dx.mul(&dx).unwrap());
     let dy2: Image<f32, 1> = Image(dy.mul(&dy).unwrap());
     let dxy: Image<f32, 1> = Image(dx.mul(&dy).unwrap());
 
-    let mut dx2_g = Image::from_size_val(src.size(), 0.0)?;
-    let mut dy2_g = Image::from_size_val(src.size(), 0.0)?;
-    let mut dxy_g = Image::from_size_val(src.size(), 0.0)?;
+    let mut dx2_g = Image::from_size_val(img_size, 0.0)?;
+    let mut dy2_g = Image::from_size_val(img_size, 0.0)?;
+    let mut dxy_g = Image::from_size_val(img_size, 0.0)?;
     let _ = gaussian_blur(&dx2, &mut dx2_g, (7usize, 7usize), (1.0, 1.0));
     let _ = gaussian_blur(&dy2, &mut dy2_g, (7usize, 7usize), (1.0, 1.0));
     let _ = gaussian_blur(&dxy, &mut dxy_g, (7usize, 7usize), (1.0, 1.0));
