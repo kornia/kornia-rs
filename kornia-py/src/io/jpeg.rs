@@ -4,6 +4,17 @@ use kornia_io::jpeg as J;
 use pyo3::prelude::*;
 
 #[pyfunction]
+/// Decodes the JPEG Image from raw bytes.
+///
+/// The following modes are supported:
+/// 1. "rgb" -> 8-bit RGB
+/// 2. "mono" -> 8-bit Monochrome
+///
+/// ```py
+/// import kornia_rs as K
+///
+/// img = K.decode_image_raw_jpeg(bytes(img_data), "rgb")
+/// ```
 pub fn decode_image_raw_jpeg(image: &mut PyImage, jpeg_data: &[u8], mode: &str) -> PyResult<()> {
     match mode {
         "rgb" => {
