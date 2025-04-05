@@ -16,6 +16,12 @@ jobs:
   test-python-linux:
     name: py${{ matrix.python-version }}-linux
     runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_CACHE_SIZE: 6G
+      SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
+      SCCACHE_LOG: info
     strategy:
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
@@ -33,14 +39,74 @@ jobs:
         toolchain: stable
         profile: minimal
 
+    - name: Install sccache
+      uses: mozilla-actions/sccache-action@v0.0.3
+
     - name: Install system dependencies
-      run: sudo apt-get install -y cmake nasm libunwind-dev
+      run: sudo apt-get install -y nasm libunwind-dev
 
     - name: Setup project environment
       run: cd kornia-py/ && just install ${{ matrix.python-version }}
 
     - name: Run tests
       run: cd kornia-py/ && just test
+
+
+    - name: Show sccache stats
+      run: sccache --show-stats
+
+
+
+  # TODO: integrate with linux tests once uv bug is fixed
+  # https://github.com/astral-sh/uv/issues/12445
+  test-python-linux-free-threaded:
+    name: py3.13t-linux
+    runs-on: ubuntu-latest
+
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_CACHE_SIZE: 6G
+      SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
+      SCCACHE_LOG: info
+
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: extractions/setup-just@v2
+
+    - uses: astral-sh/setup-uv@v5
+
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+
+
+    - name: Install sccache
+      uses: mozilla-actions/sccache-action@v0.0.3
+
+
+
+    - name: Install system dependencies
+      run: sudo apt-get install -y nasm libunwind-dev
+
+    - name: Setup project environment
+      run: cd kornia-py/ && just install-dev 3.13t
+
+    - name: Run tests
+      run: |
+        cd kornia-py/
+        source .venv/bin/activate
+        maturin develop -m Cargo.toml
+        pytest --parallel-threads=8 --iterations=50
+
+        
+    - name: Show sccache stats
+      run: sccache --show-stats
+
+
 
   # NOTE: there's a systematic fail with the ci on macos
   # test-python-macos:

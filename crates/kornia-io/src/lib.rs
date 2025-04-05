@@ -17,6 +17,9 @@ pub mod jpegturbo;
 /// PNG image encoding and decoding.
 pub mod png;
 
+/// JPEG image encoding and decoding.
+pub mod jpeg;
+
 /// GStreamer video module for real-time video processing.
 #[cfg(feature = "gstreamer")]
 pub mod stream;

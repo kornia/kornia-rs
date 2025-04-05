@@ -7,6 +7,6 @@ edition = "2021"
 publish = false
 
 [dependencies]
-ctrlc = "3.4.4"
+ctrlc = { workspace = true }
 kornia = { workspace = true, features = ["gstreamer"] }
 rerun = { workspace = true }

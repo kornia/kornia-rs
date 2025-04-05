@@ -391,21 +391,15 @@ mod tests {
 
     #[test]
     fn test_spatial_gradient() -> Result<(), ImageError> {
-        let size = ImageSize {
-            width: 5,
-            height: 5,
-        };
+        // First, define a type alias for the function signature
+        type FilterFunction =
+            fn(&Image<f32, 2>, &mut Image<f32, 2>, &mut Image<f32, 2>) -> Result<(), ImageError>;
 
-        #[rustfmt::skip]
-        let img = Image::<f32, 2>::new(
-            size,
-            (0..25).flat_map(|x| [x as f32, x as f32 + 25.0]).collect(),
-        )?;
-        #[allow(clippy::type_complexity)]
-        static TEST_FUNCTIONS: &[(
-            fn(&Image<f32, 2>, &mut Image<f32, 2>, &mut Image<f32, 2>) -> Result<(), ImageError>,
-            &str,
-        )] = &[
+        // Then, define a type for the test tuple
+        type TestCase = (FilterFunction, &'static str);
+
+        // Now use these types in the static array
+        static TEST_FUNCTIONS: &[TestCase] = &[
             (spatial_gradient_float, "spatial_gradient_float"),
             (
                 spatial_gradient_float_parallel_row,
@@ -416,6 +410,17 @@ mod tests {
                 "spatial_gradient_float_parallel",
             ),
         ];
+
+        let size = ImageSize {
+            width: 5,
+            height: 5,
+        };
+
+        #[rustfmt::skip]
+        let img = Image::<f32, 2>::new(
+            size,
+            (0..25).flat_map(|x| [x as f32, x as f32 + 25.0]).collect(),
+        )?;
         for (test_fn, fn_name) in TEST_FUNCTIONS {
             let mut dx = Image::<_, 2>::from_size_val(size, 0.0)?;
             let mut dy = Image::<_, 2>::from_size_val(size, 0.0)?;
@@ -432,7 +437,7 @@ mod tests {
                     0.5000, 1.0000, 1.0000, 1.0000, 0.5000,
                     0.5000, 1.0000, 1.0000, 1.0000, 0.5000
                 ],
-                "{} dx channel(0)", 
+                "{} dx channel(0)",
                 fn_name
             );
 
@@ -446,7 +451,7 @@ mod tests {
                     0.5000, 1.0000, 1.0000, 1.0000, 0.5000,
                     0.5000, 1.0000, 1.0000, 1.0000, 0.5000
                 ],
-                "{} dx channel(1)", 
+                "{} dx channel(1)",
                 fn_name
             );
 
@@ -460,7 +465,7 @@ mod tests {
                     5.0000, 5.0000, 5.0000, 5.0000, 5.0000,
                     2.5000, 2.5000, 2.5000, 2.5000, 2.5000
                 ],
-                "{} dy channel(0)", 
+                "{} dy channel(0)",
                 fn_name
             );
 
@@ -474,7 +479,7 @@ mod tests {
                     5.0000, 5.0000, 5.0000, 5.0000, 5.0000,
                     2.5000, 2.5000, 2.5000, 2.5000, 2.5000
                 ],
-                "{} dy channel(1)", 
+                "{} dy channel(1)",
                 fn_name
             );
         }
