@@ -1,9 +1,12 @@
 use std::{fs, fs::File, path::Path};
 
 use kornia_image::{Image, ImageSize};
+use kornia_tensor::tensor::get_strides_from_shape;
 use png::{BitDepth, ColorType, Decoder, Encoder};
 
-use crate::{convert_buf_u16_u8, convert_buf_u8_u16, error::IoError};
+use crate::{
+    convert_buf_u16_u8, convert_buf_u8_u16, convert_buf_u8_u16_into_slice, error::IoError,
+};
 
 /// Read a PNG image with a single channel (mono8).
 ///
@@ -99,66 +102,72 @@ pub fn read_image_png_mono16(file_path: impl AsRef<Path>) -> Result<Image<u16, 1
 ///
 /// # Arguments
 ///
+/// - `image` - A mutable reference to your `Image`
 /// - `bytes` - Raw bytes of the png file
-pub fn decode_image_png_mono8(bytes: &[u8]) -> Result<Image<u8, 1>, IoError> {
-    let (buf, size) = decode_png_imp(bytes)?;
-    Ok(Image::new(size.into(), buf)?)
+pub fn decode_image_png_mono8(image: &mut Image<u8, 1>, bytes: &[u8]) -> Result<(), IoError> {
+    decode_png_impl(image, bytes)
 }
 
 /// Decodes a PNG image with a three channel (rgb8) from Raw Bytes.
 ///
 /// # Arguments
 ///
+/// - `image` - A mutable reference to your `Image`
 /// - `bytes` - Raw bytes of the png file
-pub fn decode_image_png_rgb8(bytes: &[u8]) -> Result<Image<u8, 3>, IoError> {
-    let (buf, size) = decode_png_imp(bytes)?;
-    Ok(Image::new(size.into(), buf)?)
+pub fn decode_image_png_rgb8(image: &mut Image<u8, 3>, bytes: &[u8]) -> Result<(), IoError> {
+    decode_png_impl(image, bytes)
 }
 
 /// Decodes a PNG image with a four channel (rgba8) from Raw Bytes.
 ///
 /// # Arguments
 ///
+/// - `image` - A mutable reference to your `Image`
 /// - `bytes` - Raw bytes of the png file
-pub fn decode_image_png_rgba8(bytes: &[u8]) -> Result<Image<u8, 4>, IoError> {
-    let (buf, size) = decode_png_imp(bytes)?;
-    Ok(Image::new(size.into(), buf)?)
+pub fn decode_image_png_rgba8(image: &mut Image<u8, 4>, bytes: &[u8]) -> Result<(), IoError> {
+    decode_png_impl(image, bytes)
 }
 
 /// Decodes a PNG (16 Bit) image with a single channel (mono16) from Raw Bytes.
 ///
 /// # Arguments
 ///
+/// - `image` - A mutable reference to your `Image`
 /// - `bytes` - Raw bytes of the png file
-pub fn decode_image_png_mono16(bytes: &[u8]) -> Result<Image<u16, 1>, IoError> {
-    let (buf, size) = decode_png_imp(bytes)?;
-    let buf_u16 = convert_buf_u8_u16(buf);
-
-    Ok(Image::new(size.into(), buf_u16)?)
+pub fn decode_image_png_mono16(image: &mut Image<u16, 1>, bytes: &[u8]) -> Result<(), IoError> {
+    let image_u8 = convert_buf_u16_u8(image.as_slice());
+    let mut image_u8: Image<u8, 1> = Image::new(image.size(), image_u8)?;
+    decode_png_impl(&mut image_u8, bytes)?;
+    convert_buf_u8_u16_into_slice(image_u8.as_slice(), image.as_slice_mut());
+    Ok(())
 }
 
 /// Decodes a PNG (16 Bit) image with a three channel (rgb16) from Raw Bytes.
 ///
 /// # Arguments
 ///
+/// - `image` - A mutable reference to your `Image`
 /// - `bytes` - Raw bytes of the png file
-pub fn decode_image_png_rgb16(bytes: &[u8]) -> Result<Image<u16, 3>, IoError> {
-    let (buf, size) = decode_png_imp(bytes)?;
-    let buf_u16 = convert_buf_u8_u16(buf);
-
-    Ok(Image::new(size.into(), buf_u16)?)
+pub fn decode_image_png_rgb16(image: &mut Image<u16, 3>, bytes: &[u8]) -> Result<(), IoError> {
+    let image_u8 = convert_buf_u16_u8(image.as_slice());
+    let mut image_u8: Image<u8, 3> = Image::new(image.size(), image_u8)?;
+    decode_png_impl(&mut image_u8, bytes)?;
+    convert_buf_u8_u16_into_slice(image_u8.as_slice(), image.as_slice_mut());
+    Ok(())
 }
 
 /// Decodes a PNG (16 Bit) image with a four channel (rgba16) from Raw Bytes.
 ///
 /// # Arguments
 ///
+/// - `image` - A mutable reference to your `Image`
 /// - `bytes` - Raw bytes of the png file
-pub fn decode_image_png_rgba16(bytes: &[u8]) -> Result<Image<u16, 4>, IoError> {
-    let (buf, size) = decode_png_imp(bytes)?;
-    let buf_u16 = convert_buf_u8_u16(buf);
-
-    Ok(Image::new(size.into(), buf_u16)?)
+pub fn decode_image_png_rgba16(image: &mut Image<u16, 4>, bytes: &[u8]) -> Result<(), IoError> {
+    let image_u8 = convert_buf_u16_u8(image.as_slice());
+    let mut image_u8: Image<u8, 4> = Image::new(image.size(), image_u8)?;
+    decode_png_impl(&mut image_u8, bytes)?;
+    convert_buf_u8_u16_into_slice(image_u8.as_slice(), image.as_slice_mut());
+    Ok(())
 }
 
 // utility function to read the png file
@@ -178,13 +187,8 @@ fn read_png_impl(file_path: impl AsRef<Path>) -> Result<(Vec<u8>, [usize; 2]), I
         return Err(IoError::InvalidFileExtension(file_path.to_path_buf()));
     }
 
-    let file = fs::read(file_path)?;
-    decode_png_imp(file.as_slice())
-}
-
-// Utility function to decode png files from raw bytes
-fn decode_png_imp(bytes: &[u8]) -> Result<(Vec<u8>, [usize; 2]), IoError> {
-    let mut reader = Decoder::new(bytes)
+    let file = fs::File::open(file_path)?;
+    let mut reader = Decoder::new(file)
         .read_info()
         .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
 
@@ -194,6 +198,34 @@ fn decode_png_imp(bytes: &[u8]) -> Result<(Vec<u8>, [usize; 2]), IoError> {
         .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
 
     Ok((buf, [info.width as usize, info.height as usize]))
+}
+
+// Utility function to decode png files from raw bytes
+fn decode_png_impl<const C: usize>(image: &mut Image<u8, C>, bytes: &[u8]) -> Result<(), IoError> {
+    let mut reader = Decoder::new(bytes)
+        .read_info()
+        .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
+
+    let mut buf = image.as_slice_mut();
+
+    if buf.len() < reader.output_buffer_size() {
+        return Err(IoError::PngDecodeError(format!(
+            "The provided image doesn't have enough capacity to \
+            accomodate the image. Provided {}, required: {}",
+            buf.len(),
+            reader.output_buffer_size()
+        )));
+    }
+
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
+
+    // Update the size and stride of tensor
+    image.0.shape = [info.height as usize, info.width as usize, C];
+    image.0.strides = get_strides_from_shape(image.0.shape);
+
+    Ok(())
 }
 
 /// Writes the given PNG _(rgb8)_ data to the given file path.
@@ -396,12 +428,17 @@ mod tests {
 
     #[test]
     fn decode_png() -> Result<(), IoError> {
-        let bytes = read("../../tests/data/dog-rgb8.png")?;
-        let image_data = decode_image_png_rgb8(&bytes)?;
+        // This is the size of buffer and must be known before hand
+        // for the sake of testing, we are keeping it a constant
+        const BUFFER_SIZE: usize = 150930;
 
-        assert_eq!(image_data.cols(), 258);
-        assert_eq!(image_data.rows(), 195);
-        assert_eq!(image_data.num_channels(), 3);
+        let bytes = read("../../tests/data/dog-rgb8.png")?;
+        let mut image: Image<u8, 3> = Image::new([258, 195].into(), vec![0; BUFFER_SIZE])?;
+        decode_image_png_rgb8(&mut image, &bytes)?;
+
+        assert_eq!(image.cols(), 258);
+        assert_eq!(image.rows(), 195);
+        assert_eq!(image.num_channels(), 3);
 
         Ok(())
     }

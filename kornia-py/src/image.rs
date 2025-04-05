@@ -73,6 +73,39 @@ impl<const C: usize> FromPyImage<C> for Image<u8, C> {
     }
 }
 
+impl<const C: usize> FromPyImage<C> for Image<u16, C> {
+    fn from_pyimage(image: PyImage) -> Result<Image<u16, C>, ImageError> {
+        Python::with_gil(|py| {
+            let pyarray = image.bind(py);
+
+            // Get the raw u8 data from the numpy array
+            let data = match pyarray.to_vec() {
+                Ok(d) => d,
+                Err(_) => return Err(ImageError::ImageDataNotContiguous),
+            };
+
+            // Convert the u8 buffer to u16
+            let data_u16 = convert_buf_u8_u16(data);
+
+            let size = ImageSize {
+                width: pyarray.shape()[1],
+                height: pyarray.shape()[0],
+            };
+
+            Image::new(size, data_u16)
+        })
+    }
+}
+
+fn convert_buf_u8_u16(buf: Vec<u8>) -> Vec<u16> {
+    let mut buf_u16 = Vec::with_capacity(buf.len() / 2);
+    for chunk in buf.chunks_exact(2) {
+        buf_u16.push(u16::from_be_bytes([chunk[0], chunk[1]]));
+    }
+
+    buf_u16
+}
+
 #[pyclass(name = "ImageSize")]
 #[derive(Clone)]
 pub struct PyImageSize {

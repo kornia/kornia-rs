@@ -172,7 +172,7 @@ impl JpegTurboDecoder {
     fn decode<const C: usize>(
         &self,
         jpeg_data: &[u8],
-        format: turbojpeg::PixelFormat
+        format: turbojpeg::PixelFormat,
     ) -> Result<Image<u8, C>, JpegTurboError> {
         // get the image size to allocate th data storage
         let image_size = self.read_header(jpeg_data)?;

@@ -36,6 +36,13 @@ pub(crate) fn convert_buf_u8_u16(buf: Vec<u8>) -> Vec<u16> {
     buf_u16
 }
 
+// This function expects the size of output to be input.len() / 2;
+pub(crate) fn convert_buf_u8_u16_into_slice(input: &[u8], output: &mut [u16]) {
+    for (i, chunk) in input.chunks_exact(2).enumerate() {
+        output[i] = u16::from_be_bytes([chunk[0], chunk[1]]);
+    }
+}
+
 pub(crate) fn convert_buf_u16_u8(buf: &[u16]) -> Vec<u8> {
     let mut buf_u8: Vec<u8> = Vec::with_capacity(buf.len() * 2);
 
@@ -46,3 +53,4 @@ pub(crate) fn convert_buf_u16_u8(buf: &[u16]) -> Vec<u8> {
 
     buf_u8
 }
+
