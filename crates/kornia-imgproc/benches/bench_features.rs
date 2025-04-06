@@ -36,7 +36,7 @@ fn bench_gftt_response(c: &mut Criterion) {
     let mut group = c.benchmark_group("Features");
     let mut rng = rand::thread_rng();
 
-    for (width, height) in [(224, 224), (1920, 1080)].iter() {
+    for (width, height) in [(224, 224), (512, 512), (1920, 1080)].iter() {
         group.throughput(criterion::Throughput::Elements((*width * *height) as u64));
 
         let parameter_string = format!("{}x{}", width, height);

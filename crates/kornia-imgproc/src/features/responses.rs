@@ -1,9 +1,7 @@
-use crate::filter::gaussian_blur;
+use crate::filter::{gaussian_blur, spatial_gradient_float_parallel_row};
 use kornia_image::{Image, ImageError, ImageSize};
 use kornia_tensor_ops::TensorOps;
 use rayon::prelude::*;
-
-use crate::filter::spatial_gradient_float;
 
 /// Method to calculate gradient for feature response
 #[derive(Default)]
@@ -43,60 +41,46 @@ pub fn gftt_response(src: &Image<f32, 1>, dst: &mut Image<f32, 1>) -> Result<(),
             dst.rows(),
         ));
     }
-    let img_size = src.size();
-    let mut dx = Image::from_size_val(img_size, 0.0)?;
-    let mut dy = Image::from_size_val(img_size, 0.0)?;
-    let _ = spatial_gradient_float(src, &mut dx, &mut dy);
-    let dx2: Image<f32, 1> = Image(dx.mul(&dx).unwrap());
-    let dy2: Image<f32, 1> = Image(dy.mul(&dy).unwrap());
-    let dxy: Image<f32, 1> = Image(dx.mul(&dy).unwrap());
+    let size = src.size();
+    let mut dx = Image::from_size_val(size, 0.0)?;
+    let mut dy = Image::from_size_val(size, 0.0)?;
 
-    let mut dx2_g = Image::from_size_val(img_size, 0.0)?;
-    let mut dy2_g = Image::from_size_val(img_size, 0.0)?;
-    let mut dxy_g = Image::from_size_val(img_size, 0.0)?;
-    let _ = gaussian_blur(&dx2, &mut dx2_g, (7usize, 7usize), (1.0, 1.0));
-    let _ = gaussian_blur(&dy2, &mut dy2_g, (7usize, 7usize), (1.0, 1.0));
-    let _ = gaussian_blur(&dxy, &mut dxy_g, (7usize, 7usize), (1.0, 1.0));
+    let mut dx2_g: Image<f32, 1> = Image::from_size_val(size, 0.0)?;
+    let mut dy2_g: Image<f32, 1> = Image::from_size_val(size, 0.0)?;
+    let mut dxy_g: Image<f32, 1> = Image::from_size_val(size, 0.0)?;
+    spatial_gradient_float_parallel_row(src, &mut dx, &mut dy)?;
 
-    let det_m = dx2_g
-        .mul(&dy2_g)
-        .unwrap()
-        .sub(&dxy_g.mul(&dxy_g).unwrap())
-        .unwrap();
-    let trace_m = dx2_g.add(&dy2_g).unwrap();
+    let dx2 = Image(dx.mul(&dx).unwrap());
+    let dy2 = Image(dy.mul(&dy).unwrap());
+    let dxy = Image(dx.mul(&dy).unwrap());
 
-    let e1 = trace_m
-        .add(
-            &(trace_m
-                .mul(&trace_m)
-                .unwrap()
-                .sub(&det_m.mul_scalar(4.0))
-                .unwrap()
-                .abs())
-            .powf(0.5),
-        )
-        .unwrap()
-        .mul_scalar(0.5);
-    let e2 = trace_m
-        .sub(
-            &(trace_m
-                .mul(&trace_m)
-                .unwrap()
-                .sub(&det_m.mul_scalar(4.0))
-                .unwrap()
-                .abs())
-            .powf(0.5),
-        )
-        .unwrap()
-        .mul_scalar(0.5);
+    gaussian_blur(&dx2, &mut dx2_g, (7, 7), (1.0, 1.0))?;
+    gaussian_blur(&dy2, &mut dy2_g, (7, 7), (1.0, 1.0))?;
+    gaussian_blur(&dxy, &mut dxy_g, (7, 7), (1.0, 1.0))?;
+    unsafe {
+        let det = dx2_g
+            .mul(&dy2_g)
+            .unwrap_unchecked()
+            .sub(&dxy_g.mul(&dxy_g).unwrap_unchecked())
+            .unwrap_unchecked();
+        let trace = dx2_g.add(&dy2_g).unwrap_unchecked();
 
-    let score = e1.min(&e2).unwrap();
-    dst.as_slice_mut()
-        .iter_mut()
-        .zip(score.as_slice().iter())
-        .for_each(|(dst_pixel, score_pixel)| {
-            *dst_pixel = *score_pixel;
-        });
+        let trace_sq = trace.mul(&trace).unwrap_unchecked();
+        let four_det = det.mul_scalar(4.0);
+        let discr = trace_sq.sub(&four_det).unwrap_unchecked().abs().powf(0.5);
+        let half = 0.5;
+        let e1 = trace.add(&discr).unwrap_unchecked().mul_scalar(half);
+        let e2 = trace.sub(&discr).unwrap_unchecked().mul_scalar(half);
+
+        let score = e1.min(&e2).unwrap_unchecked();
+
+        let sd = score.as_slice();
+        let dd = dst.as_slice_mut();
+        for i in 0..sd.len() {
+            dd[i] = sd[i];
+        }
+    }
+
     Ok(())
 }
 

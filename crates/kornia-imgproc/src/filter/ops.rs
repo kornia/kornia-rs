@@ -220,37 +220,38 @@ pub fn spatial_gradient_float_parallel_row<const C: usize>(
     }
 
     let (sobel_x, sobel_y) = kernels::normalized_sobel_kernel3();
+    let rows = src.rows();
     let cols = src.cols();
 
     let src_data = src.as_slice();
 
-    dx.as_slice_mut()
+    let dx_data = dx.as_slice_mut();
+    let dy_data = dy.as_slice_mut();
+
+    dx_data
         .par_chunks_mut(cols * C)
-        .zip(dy.as_slice_mut().par_chunks_mut(cols * C))
+        .zip(dy_data.par_chunks_mut(cols * C))
         .enumerate()
         .for_each(|(r, (dx_row, dy_row))| {
-            dx_row
-                .chunks_mut(C)
-                .zip(dy_row.chunks_mut(C))
-                .enumerate()
-                .for_each(|(c, (dx_c, dy_c))| {
-                    let mut sum_x = [0.0; C];
-                    let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy).min(src.rows()).max(1) - 1;
-                            let col = (c + dx).min(src.cols()).max(1) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
-                            }
+            for c in 0..cols {
+                let mut sum_x = [0.0f32; C];
+                let mut sum_y = [0.0f32; C];
+                for ky in 0..3 {
+                    let y = (r + ky).saturating_sub(1).min(rows - 1);
+                    for kx in 0..3 {
+                        let x = (c + kx).saturating_sub(1).min(cols - 1);
+                        let src_idx = (y * cols + x) * C;
+                        for ch in 0..C {
+                            let val = unsafe { *src_data.get_unchecked(src_idx + ch) };
+                            sum_x[ch] += val * sobel_x[ky][kx];
+                            sum_y[ch] += val * sobel_y[ky][kx];
                         }
                     }
-                    dx_c.copy_from_slice(&sum_x);
-                    dy_c.copy_from_slice(&sum_y);
-                });
+                }
+                let out_idx = c * C;
+                dx_row[out_idx..out_idx + C].copy_from_slice(&sum_x);
+                dy_row[out_idx..out_idx + C].copy_from_slice(&sum_y);
+            }
         });
 
     Ok(())

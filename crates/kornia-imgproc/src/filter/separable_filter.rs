@@ -1,5 +1,6 @@
 use kornia_image::{Image, ImageError};
 use num_traits::Zero;
+use rayon::prelude::*;
 
 /// Trait for floating point casting
 pub trait FloatConversion {
@@ -54,82 +55,172 @@ pub fn separable_filter<T, const C: usize>(
     kernel_y: &[f32],
 ) -> Result<(), ImageError>
 where
-    T: FloatConversion + Clone + Zero + std::ops::Mul<Output = T> + std::ops::AddAssign,
+    T: FloatConversion
+        + Clone
+        + Zero
+        + std::ops::Mul<Output = T>
+        + std::ops::AddAssign
+        + Sync
+        + Send,
 {
+    let rows = src.rows();
+    let cols = src.cols();
     if kernel_x.is_empty() || kernel_y.is_empty() {
         return Err(ImageError::InvalidKernelLength(
             kernel_x.len(),
             kernel_y.len(),
         ));
     }
-
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
+            cols,
+            rows,
             dst.cols(),
             dst.rows(),
         ));
     }
 
-    let half_kernel_x = kernel_x.len() / 2;
-    let half_kernel_y = kernel_y.len() / 2;
+    let half_kx = (kernel_x.len() / 2) as isize;
+    let half_ky = (kernel_y.len() / 2) as isize;
 
     let src_data = src.as_slice();
     let dst_data = dst.as_slice_mut();
 
-    // preallocate the temporary buffer for intermediate results
+    // Preallocate temp
     let mut temp = vec![0.0f32; src_data.len()];
 
-    // Row-wise filtering
-    for r in 0..src.rows() {
-        let row_offset = r * src.cols();
-        for c in 0..src.cols() {
-            let col_offset = (row_offset + c) * C;
-            for ch in 0..C {
-                let pix_offset = col_offset + ch;
-                let mut row_acc = 0.0f32;
-                for (k_idx, k_val) in kernel_x.iter().enumerate() {
-                    let x_pos = c as isize + k_idx as isize - half_kernel_x as isize;
-                    if x_pos >= 0 && x_pos < src.cols() as isize {
-                        let neighbor_idx = (row_offset + x_pos as usize) * C + ch;
-                        let neighbor_val = unsafe { src_data.get_unchecked(neighbor_idx) };
-                        row_acc += neighbor_val.to_f32() * k_val;
-                    }
-                }
+    let row_stride = cols * C;
 
-                unsafe {
-                    *temp.get_unchecked_mut(pix_offset) = row_acc;
+    // Row‐wise filter
+    temp.par_chunks_mut(row_stride)
+        .enumerate()
+        .for_each(|(r, temp_row)| {
+            let row_start = r * cols;
+            for c in 0..cols {
+                for ch in 0..C {
+                    let mut acc = 0.0f32;
+                    // X convolution
+                    for (kx, &kv) in kernel_x.iter().enumerate() {
+                        let x = c as isize + kx as isize - half_kx;
+                        if (0..cols as isize).contains(&x) {
+                            let idx = ((row_start + x as usize) * C) + ch;
+                            let v = src_data[idx].to_f32();
+                            acc += v * kv;
+                        }
+                    }
+                    temp_row[c * C + ch] = acc;
                 }
             }
-        }
-    }
+        });
 
-    // Column-wise filtering
-    for r in 0..src.rows() {
-        let row_offset = r * src.cols();
-        for c in 0..src.cols() {
-            let col_offset = (row_offset + c) * C;
-            for ch in 0..C {
-                let pix_offset = col_offset + ch;
-                let mut col_acc = 0.0f32;
-                for (k_idx, k_val) in kernel_y.iter().enumerate() {
-                    let y_pos = r as isize + k_idx as isize - half_kernel_y as isize;
-                    if y_pos >= 0 && y_pos < src.rows() as isize {
-                        let neighbor_idx = (y_pos as usize * src.cols() + c) * C + ch;
-                        let neighbor_val = unsafe { temp.get_unchecked(neighbor_idx) };
-                        col_acc += neighbor_val * k_val;
+    // Column‐wise filter
+    dst_data
+        .par_chunks_mut(row_stride)
+        .enumerate()
+        .for_each(|(r, dst_row)| {
+            for c in 0..cols {
+                for ch in 0..C {
+                    let mut acc = 0.0f32;
+                    // Y convolution
+                    for (ky, &kv) in kernel_y.iter().enumerate() {
+                        let y = r as isize + ky as isize - half_ky;
+                        if (0..rows as isize).contains(&y) {
+                            let idx = ((y as usize * cols) + c) * C + ch;
+                            let v = temp[idx];
+                            acc += v * kv;
+                        }
                     }
-                }
-                unsafe {
-                    *dst_data.get_unchecked_mut(pix_offset) = T::from_f32(col_acc);
+                    dst_row[c * C + ch] = T::from_f32(acc);
                 }
             }
-        }
-    }
+        });
 
     Ok(())
 }
+
+// pub fn separable_filter<T, const C: usize>(
+//     src: &Image<T, C>,
+//     dst: &mut Image<T, C>,
+//     kernel_x: &[f32],
+//     kernel_y: &[f32],
+// ) -> Result<(), ImageError>
+// where
+//     T: FloatConversion + Clone + Zero + std::ops::Mul<Output = T> + std::ops::AddAssign,
+// {
+//     if kernel_x.is_empty() || kernel_y.is_empty() {
+//         return Err(ImageError::InvalidKernelLength(
+//             kernel_x.len(),
+//             kernel_y.len(),
+//         ));
+//     }
+
+//     if src.size() != dst.size() {
+//         return Err(ImageError::InvalidImageSize(
+//             src.cols(),
+//             src.rows(),
+//             dst.cols(),
+//             dst.rows(),
+//         ));
+//     }
+
+//     let half_kernel_x = kernel_x.len() / 2;
+//     let half_kernel_y = kernel_y.len() / 2;
+
+//     let src_data = src.as_slice();
+//     let dst_data = dst.as_slice_mut();
+
+//     // preallocate the temporary buffer for intermediate results
+//     let mut temp = vec![0.0f32; src_data.len()];
+
+//     // Row-wise filtering
+//     for r in 0..src.rows() {
+//         let row_offset = r * src.cols();
+//         for c in 0..src.cols() {
+//             let col_offset = (row_offset + c) * C;
+//             for ch in 0..C {
+//                 let pix_offset = col_offset + ch;
+//                 let mut row_acc = 0.0f32;
+//                 for (k_idx, k_val) in kernel_x.iter().enumerate() {
+//                     let x_pos = c as isize + k_idx as isize - half_kernel_x as isize;
+//                     if x_pos >= 0 && x_pos < src.cols() as isize {
+//                         let neighbor_idx = (row_offset + x_pos as usize) * C + ch;
+//                         let neighbor_val = unsafe { src_data.get_unchecked(neighbor_idx) };
+//                         row_acc += neighbor_val.to_f32() * k_val;
+//                     }
+//                 }
+
+//                 unsafe {
+//                     *temp.get_unchecked_mut(pix_offset) = row_acc;
+//                 }
+//             }
+//         }
+//     }
+
+//     // Column-wise filtering
+//     for r in 0..src.rows() {
+//         let row_offset = r * src.cols();
+//         for c in 0..src.cols() {
+//             let col_offset = (row_offset + c) * C;
+//             for ch in 0..C {
+//                 let pix_offset = col_offset + ch;
+//                 let mut col_acc = 0.0f32;
+//                 for (k_idx, k_val) in kernel_y.iter().enumerate() {
+//                     let y_pos = r as isize + k_idx as isize - half_kernel_y as isize;
+//                     if y_pos >= 0 && y_pos < src.rows() as isize {
+//                         let neighbor_idx = (y_pos as usize * src.cols() + c) * C + ch;
+//                         let neighbor_val = unsafe { temp.get_unchecked(neighbor_idx) };
+//                         col_acc += neighbor_val * k_val;
+//                     }
+//                 }
+//                 unsafe {
+//                     *dst_data.get_unchecked_mut(pix_offset) = T::from_f32(col_acc);
+//                 }
+//             }
+//         }
+//     }
+
+//     Ok(())
+// }
 
 /// Apply a fast filter horizontally using cumulative kernel
 ///
