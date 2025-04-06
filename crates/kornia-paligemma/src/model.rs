@@ -3,6 +3,7 @@ use candle_core::{DType, Device, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::paligemma::Model;
+use std::io::Write;
 use tokenizers::Tokenizer;
 
 pub struct TextGenerationConfig {
@@ -47,8 +48,8 @@ impl TextGeneration {
         image: &Tensor,
         prompt: &str,
         sample_len: usize,
+        stdout_debug: bool,
     ) -> Result<String, PaligemmaError> {
-        use std::io::Write;
         self.tokenizer.clear();
         let mut tokens = self
             .tokenizer
@@ -60,11 +61,16 @@ impl TextGeneration {
         let mut response = String::new();
         for &t in tokens.iter() {
             if let Some(t) = self.tokenizer.next_token(t)? {
-                print!("{t}");
+                // print!("{t}");
                 response.push_str(&t);
+                if stdout_debug {
+                    print!("{t}");
+                }
             }
         }
-        std::io::stdout().flush()?;
+        if stdout_debug {
+            std::io::stdout().flush()?;
+        }
 
         let mut generated_tokens = 0usize;
         let eos_token = match self.tokenizer.get_token("<eos>") {
@@ -101,25 +107,31 @@ impl TextGeneration {
                 break;
             }
             if let Some(t) = self.tokenizer.next_token(next_token)? {
-                print!("{t}");
-                std::io::stdout().flush()?;
                 response.push_str(&t);
+                if stdout_debug {
+                    print!("{t}");
+                    std::io::stdout().flush()?;
+                }
             }
         }
         let dt = start_gen.elapsed();
         if let Some(rest) = self.tokenizer.decode_rest()? {
-            print!("{rest}");
             response.push_str(&rest);
+            if stdout_debug {
+                print!("{rest}");
+            }
         }
-        std::io::stdout().flush()?;
-        println!(
-            "\n{generated_tokens} tokens generated ({:.2} token/s)",
-            generated_tokens as f64 / dt.as_secs_f64(),
-        );
+        if stdout_debug {
+            std::io::stdout().flush()?;
+            println!(
+                "\n{generated_tokens} tokens generated ({:.2} token/s)",
+                generated_tokens as f64 / dt.as_secs_f64(),
+            );
+        }
 
         // postprocess the response by removing the prompt
-        let response = if response.starts_with(prompt) {
-            response[prompt.len()..].to_string()
+        let response = if let Some(response) = response.strip_prefix(prompt) {
+            response.to_string()
         } else {
             response
         };

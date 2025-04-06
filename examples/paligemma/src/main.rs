@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut paligemma = Paligemma::new(PaligemmaConfig::default())?;
 
     // generate a caption of the image
-    let _caption = paligemma.inference(&image, &args.text_prompt, args.sample_length)?;
+    let _caption = paligemma.inference(&image, &args.text_prompt, args.sample_length, true)?;
 
     Ok(())
 }

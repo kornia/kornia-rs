@@ -115,7 +115,7 @@ impl Paligemma {
     /// * `image` - The rgb8    image to generate a caption for with shape [H, W, 3]
     /// * `prompt` - The prompt to generate a caption for
     /// * `sample_len` - The length of the generated caption
-    ///
+    /// * `stdout_debug` - Whether to print the debug information to the stdout
     /// # Returns
     ///
     /// * `caption` - The generated caption
@@ -124,6 +124,7 @@ impl Paligemma {
         image: &Image<u8, 3>,
         prompt: &str,
         sample_len: usize,
+        stdout_debug: bool,
     ) -> Result<String, PaligemmaError> {
         // resize image to 224x224
         kornia_imgproc::resize::resize_fast(
@@ -146,7 +147,7 @@ impl Paligemma {
 
         let response = self
             .pipeline
-            .run(&image_t, prompt, sample_len)
+            .run(&image_t, prompt, sample_len, stdout_debug)
             .expect("Failed to generate text");
 
         Ok(response)
