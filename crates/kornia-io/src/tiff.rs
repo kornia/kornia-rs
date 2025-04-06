@@ -7,6 +7,7 @@ use tiff::encoder::{
     TiffEncoder,
     TiffValue,
 };
+use tiff::TiffResult;
 use std::fs::File;
 use std::path::Path;
 use std::io::BufWriter;
@@ -68,9 +69,21 @@ where
     Ok(())
 
 }
+// Extract the number of channels from the color type.
+//
+fn extract_channels_decoder(color_type: tiff::ColorType) -> usize {
+    match color_type {
+        tiff::ColorType::Gray(_)   => 1,
+        tiff::ColorType::RGB(_)    => 3,
+        tiff::ColorType::Palette(_) => 1,
+        tiff::ColorType::GrayA(_)  => 2,
+        tiff::ColorType::RGBA(_)   => 4,
+        tiff::ColorType::CMYK(_)   => 4,
+    }
+}
 
-/// Read a TIFF image with a single channel (rgb8).
-/// 
+// Read a TIFF image with a single channel (rgb8).
+//
 fn read_image_tiff_internal<const N: usize>(
     file_path: impl AsRef<Path>,
 ) -> Result<(), IoError> {
@@ -89,10 +102,44 @@ fn read_image_tiff_internal<const N: usize>(
     let file = File::open(&file_path)?;
     let mut decoder = Decoder::new(file).map_err(IoError::TiffError)?;
     let (width, height) = decoder.dimensions().map_err(IoError::TiffError)?;
-    println!("width: {}, height: {}", width, height);
     // read the image data
+    let decoding_result = decoder.read_image().map_err(IoError::TiffError)?;
 
-    Ok(())
+    let colortype = decoder.colortype().map_err(IoError::TiffError)?;
+    let channels = extract_channels_decoder(colortype);
+    if channels != N {
+        return Err(IoError::TiffEncodingError(format!(
+            "Image has {} channels, but expected {}",
+            channels, N
+        )));
+    }
+
+    // Create a new image with the decoded data
+    let decoding_result = decoder.read_image().map_err(IoError::TiffError)?;
+    match decoding_result {
+        tiff::decoder::DecodingResult::U8(data) => {
+            let image = Image::<u8,3>::new(
+                kornia_image::ImageSize {
+                    width: width as usize,
+                    height: height as usize,
+                },
+                data.to_vec(),
+            )
+            .map_err(IoError::ImageCreationError)?;
+        }
+        tiff::decoder::DecodingResult::F32(data) => {
+            let image = Image::<f32,3>::new(
+                kornia_image::ImageSize {
+                    width: width as usize,
+                    height: height as usize,
+                },
+                data.to_vec(),
+            )
+            .map_err(IoError::ImageCreationError)?;
+        }
+        _ => return Err(IoError::TiffEncodingError("Unsupported color type".to_string())),
+    }
+    Ok((image))
 }
 
 
@@ -104,7 +151,7 @@ mod tests {
     use kornia_image::ImageSize;
     #[test]
     fn test_write_image_tiff_rgb8() {
-        let image = Image::new(ImageSize { width: 100, height: 100 }, vec![0; 10000]).unwrap();
+        let image = Image::new(ImageSize { width: 100, height: 100 }, vec![0; 30000]).unwrap();
         let file_path = PathBuf::from("test_rgb8.tiff");
         assert!(write_image_tiff_rgb8(&file_path, &image).is_ok());
         fs::remove_file(file_path).unwrap();
@@ -120,7 +167,7 @@ mod tests {
 
     #[test]
     fn test_read_image_tiff_rgb8() {
-        let image_tp = Image::new(ImageSize { width: 100, height: 100 }, vec![0; 10000]).unwrap();
+        let image_tp = Image::new(ImageSize { width: 100, height: 100 }, vec![0; 30000]).unwrap();
         let file_path = PathBuf::from("test_gray8.tiff");
         assert!(write_image_tiff_rgb8(&file_path, &image_tp).is_ok());
 
