@@ -129,9 +129,7 @@ fn read_image_jpeg_impl<const N: usize>(
 
 fn decode_jpeg_impl<const C: usize>(src: &[u8], dst: &mut Image<u8, C>) -> Result<(), IoError> {
     let mut decoder = zune_jpeg::JpegDecoder::new(src);
-    decoder
-        .decode_headers()
-        .map_err(IoError::JpegDecodingError)?;
+    decoder.decode_headers()?;
 
     let image_info = decoder.info().ok_or_else(|| {
         IoError::JpegDecodingError(zune_jpeg::errors::DecodeErrors::Format(String::from(
@@ -139,12 +137,17 @@ fn decode_jpeg_impl<const C: usize>(src: &[u8], dst: &mut Image<u8, C>) -> Resul
         )))
     })?;
 
-    let image_size = [image_info.height as usize, image_info.width as usize, C];
-    decoder.decode_into(dst.as_slice_mut())?;
+    if [image_info.height as usize, image_info.width as usize] != [dst.height(), dst.width()] {
+        return Err(IoError::PngDecodeError(format!(
+            "The Image shape didn't matched. Expected H: {}, W: {}, but found H: {}, W: {}",
+            image_info.height,
+            image_info.width,
+            dst.height(),
+            dst.width()
+        )));
+    }
 
-    // Update the tensor shape and stride
-    dst.0.shape = image_size;
-    dst.0.strides = get_strides_from_shape(image_size);
+    decoder.decode_into(dst.as_slice_mut())?;
     Ok(())
 }
 

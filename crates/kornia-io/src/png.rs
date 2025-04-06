@@ -206,6 +206,17 @@ fn decode_png_impl<const C: usize>(src: &[u8], dst: &mut Image<u8, C>) -> Result
         .read_info()
         .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
 
+    let image_info = reader.info();
+    if image_info.size() != (dst.width() as u32, dst.height() as u32) {
+        return Err(IoError::PngDecodeError(format!(
+            "The Image shape didn't matched. Expected H: {}, W: {}, but found H: {}, W: {}",
+            image_info.height,
+            image_info.width,
+            dst.height(),
+            dst.width()
+        )));
+    }
+
     let buf = dst.as_slice_mut();
 
     if buf.len() < reader.output_buffer_size() {
@@ -220,10 +231,6 @@ fn decode_png_impl<const C: usize>(src: &[u8], dst: &mut Image<u8, C>) -> Result
     let info = reader
         .next_frame(buf)
         .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
-
-    // Update the size and stride of tensor
-    dst.0.shape = [info.height as usize, info.width as usize, C];
-    dst.0.strides = get_strides_from_shape(dst.0.shape);
 
     Ok(())
 }
