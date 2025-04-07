@@ -31,9 +31,9 @@ impl PyImageDecoder {
         Ok(image.to_pyimage())
     }
 
-    pub fn decode_gray8(&mut self, jpeg_data: &[u8]) -> PyResult<PyImage> {
+    pub fn decode_gray8(&self, jpeg_data: &[u8]) -> PyResult<PyImage> {
         let image = self
-            .inner
+            .0
             .decode_gray8(jpeg_data)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
         Ok(image.to_pyimage())

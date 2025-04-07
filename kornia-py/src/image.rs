@@ -32,24 +32,21 @@ impl<const C: usize> ToPyImage for Image<u16, C> {
             buf_u8.extend_from_slice(&be_bytes);
         }
 
-        let new_image: Image<u8, C> = Image::new(self.size(), buf_u8).unwrap();
-
         Python::with_gil(|py| unsafe {
-            let array =
-                PyArray::<u8, _>::new(py, [new_image.height(), new_image.width(), C], false);
+            let array = PyArray::<u8, _>::new(py, [self.height(), self.width(), C], false);
             // TODO: verify that the data is contiguous, otherwise iterate over the image and copy
-            std::ptr::copy_nonoverlapping(new_image.as_ptr(), array.data(), self.numel());
+            std::ptr::copy_nonoverlapping(buf_u8.as_ptr(), array.data(), self.numel());
             array.unbind()
         })
     }
 }
 
 /// Trait to convert a PyImage (3D numpy array of u8) to an image
-pub trait FromPyImage<const C: usize> {
-    fn from_pyimage(image: PyImage) -> Result<Image<u8, C>, ImageError>;
+pub trait FromPyImage<I, T, const C: usize> {
+    fn from_pyimage(image: I) -> Result<Image<T, C>, ImageError>;
 }
 
-impl<const C: usize> FromPyImage<C> for Image<u8, C> {
+impl<const C: usize> FromPyImage<PyImage, u8, C> for Image<u8, C> {
     fn from_pyimage(image: PyImage) -> Result<Image<u8, C>, ImageError> {
         Python::with_gil(|py| {
             let pyarray = image.bind(py);
@@ -73,7 +70,7 @@ impl<const C: usize> FromPyImage<C> for Image<u8, C> {
     }
 }
 
-impl<const C: usize> FromPyImage<C> for Image<u16, C> {
+impl<const C: usize> FromPyImage<PyImage, u16, C> for Image<u16, C> {
     fn from_pyimage(image: PyImage) -> Result<Image<u16, C>, ImageError> {
         Python::with_gil(|py| {
             let pyarray = image.bind(py);

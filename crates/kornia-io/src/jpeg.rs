@@ -1,7 +1,6 @@
 use crate::error::IoError;
 use jpeg_encoder::{ColorType, Encoder};
 use kornia_image::{Image, ImageSize};
-use kornia_tensor::tensor::get_strides_from_shape;
 use std::fs;
 use std::path::Path;
 
@@ -138,13 +137,15 @@ fn decode_jpeg_impl<const C: usize>(src: &[u8], dst: &mut Image<u8, C>) -> Resul
     })?;
 
     if [image_info.height as usize, image_info.width as usize] != [dst.height(), dst.width()] {
-        return Err(IoError::PngDecodeError(format!(
-            "The Image shape didn't matched. Expected H: {}, W: {}, but found H: {}, W: {}",
-            image_info.height,
-            image_info.width,
-            dst.height(),
-            dst.width()
-        )));
+        return Err(IoError::JpegDecodingError(
+            zune_jpeg::errors::DecodeErrors::Format(format!(
+                "The Image shape didn't matched. Expected H: {}, W: {}, but found H: {}, W: {}",
+                image_info.height,
+                image_info.width,
+                dst.height(),
+                dst.width()
+            )),
+        ));
     }
 
     decoder.decode_into(dst.as_slice_mut())?;
