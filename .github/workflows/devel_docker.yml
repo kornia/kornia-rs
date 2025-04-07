@@ -11,6 +11,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - run: sudo apt-get update
       -
         name: Checkout the repository
         uses: actions/checkout@v2

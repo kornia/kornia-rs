@@ -27,6 +27,7 @@ jobs:
       SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
       SCCACHE_LOG: info
     steps:
+      - run: sudo apt-get update
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -53,6 +54,7 @@ jobs:
       SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
       SCCACHE_LOG: info
     steps:
+      - run: sudo apt-get update
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable
 
