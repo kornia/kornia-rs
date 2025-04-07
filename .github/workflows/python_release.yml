@@ -30,7 +30,7 @@ jobs:
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels
+          name: linux-${{ matrix.target }}-${{ matrix.python-version }}-wheels
           path: dist
 
   macos:
@@ -99,8 +99,6 @@ jobs:
           toolchain: stable
           target: ${{ matrix.target }}-apple-darwin
           override: true
-      - run: |
-          pip install cmake<4
       - uses: messense/maturin-action@v1
         with:
           command: build
@@ -109,7 +107,7 @@ jobs:
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels
+          name: macos-${{ matrix.target }}-${{ matrix.python-version }}-wheels
           path: dist
 
   windows:
@@ -141,7 +139,7 @@ jobs:
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels
+          name: windows-${{ matrix.target }}-${{ matrix.python-version }}-wheels
           path: dist
 
   release:
@@ -150,10 +148,8 @@ jobs:
     needs: [macos, windows, linux]
     steps:
       - run: sudo apt-get update
-      - uses: actions/download-artifact@v3
-        with:
-          name: wheels
-      - uses: actions/setup-python@v2
+      - uses: actions/download-artifact@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: 3.9
       - name: Publish to PyPi
