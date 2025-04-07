@@ -27,6 +27,7 @@ jobs:
       SCCACHE_LOG: info
 
     steps:
+      - run: sudo apt-get update
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
@@ -58,6 +59,7 @@ jobs:
       SCCACHE_LOG: info
 
     steps:
+      - run: sudo apt-get update
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
