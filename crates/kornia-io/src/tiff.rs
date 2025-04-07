@@ -1,13 +1,12 @@
 use crate::error::IoError;
 
 use kornia_image::{Image, ImageSize};
-use tiff::decoder::Decoder;
+use tiff::decoder::{Decoder,DecodingResult};
 use tiff::encoder::{
     colortype::{ColorType,RGB8,Gray8}, 
     TiffEncoder,
     TiffValue,
 };
-use tiff::TiffResult;
 use std::fs::File;
 use std::path::Path;
 use std::io::BufWriter;
@@ -77,7 +76,7 @@ where
 pub fn read_image_tiff_rgb8(
     file_path: impl AsRef<Path>,
 ) -> Result<Image<u8, 3>, IoError> {
-    read_image_tiff_internal::<3>(file_path)
+    read_image_tiff_internal::<u8, 3>(file_path)
 }
 
 /// Reads a TIFF image with a single channel (gray8).
@@ -86,15 +85,38 @@ pub fn read_image_tiff_rgb8(
 pub fn read_image_tiff_gray8(
     file_path: impl AsRef<Path>,
 ) -> Result<Image<u8, 1>, IoError> {
-    read_image_tiff_internal::<1>(file_path)
+    read_image_tiff_internal::<u8,1>(file_path)
 }
 
+/// A trait to convert TIFF values to a specific type.
+/// 
+/// This trait is used to convert TIFF values (u8 or f32) to a specific type (e.g., u8 or f32).
+/// It provides two methods:
+pub trait FromTiffValue: Sized {
+    /// * `from_u8`: Converts a u8 value to the specific type.
+    fn from_u8(value: u8) -> Self;
+    /// * `from_f32`: Converts a f32 value to the specific type.
+    fn from_f32(value: f32) -> Self;
+}
+
+impl FromTiffValue for u8 {
+    fn from_u8(value: u8) -> Self { value }
+    fn from_f32(value: f32) -> Self { (value * 255.0) as u8 }
+}
+
+impl FromTiffValue for f32 {
+    fn from_u8(value: u8) -> Self { (value as f32) / 255.0 }
+    fn from_f32(value: f32) -> Self { value }
+}
 
 // Read a TIFF image with a single channel (rgb8).
 //
-fn read_image_tiff_internal<const N: usize>(
+fn read_image_tiff_internal<P:Clone,const N: usize>(
     file_path: impl AsRef<Path>,
-) -> Result<Image<u8,N>, IoError> {
+) -> Result<Image<P,N>, IoError> 
+    where 
+        P: FromTiffValue,
+{
     let file_path = file_path.as_ref().to_owned();
 
     if !file_path.exists() {
@@ -111,12 +133,26 @@ fn read_image_tiff_internal<const N: usize>(
     let mut decoder = Decoder::new(file).map_err(IoError::TiffError)?;
     // read the image data
     let decoding_result = decoder.read_image().map_err(IoError::TiffError)?;
-    let vec_data: Vec<u8> = match decoding_result {
-        tiff::decoder::DecodingResult::U8(data) => data,
+    let vec_data:Vec<P> = match decoding_result {
+        DecodingResult::U8(data) => data.iter().map(|&x| P::from_u8(x)).collect(),
+        DecodingResult::F32(data) => data.iter().map(|&x| P::from_f32(x)).collect(),
         _ => return Err(IoError::TiffEncodingError("Unsupported data type".to_string())),
     };
     let (width, height) = decoder.dimensions()?;
-    println!("width: {}, height: {}", width, height);
+    // check the number of channels
+    let color_type = decoder.colortype()?;
+    let num_channels = match color_type {
+        tiff::ColorType::Gray(_) => 1,
+        tiff::ColorType::RGB(_) => 3,
+        tiff::ColorType::RGBA(_) => 4,
+        _ => return Err(IoError::TiffEncodingError("Unsupported color type".to_string())),
+    };
+    if num_channels != N {
+        return Err(IoError::TiffEncodingError(format!(
+            "Image has {} channels, but expected {}",
+            num_channels, N
+        )));
+    }
     let image = Image::new(
         ImageSize {
             width: width as usize,
@@ -155,7 +191,7 @@ mod tests {
     #[test]
     fn test_read_image_tiff_rgb8() {
         let file_path = PathBuf::from("../../tests/data/example.tiff");
-        let image = read_image_tiff_internal::<3>(&file_path).unwrap();
+        let image = read_image_tiff_internal::<u8,4>(&file_path).unwrap();
         assert_eq!(image.width(), 1400);
         assert_eq!(image.height(), 934);
     }   
