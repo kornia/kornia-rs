@@ -103,7 +103,7 @@ jobs:
         with:
           command: build
           maturin-version: latest
-          args: --release --target ${{ matrix.target }}-apple-darwin --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
+          args: --release --target ${{ matrix.target }}-apple-darwin --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -135,7 +135,7 @@ jobs:
         with:
           command: build
           maturin-version: latest
-          args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
+          args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -158,4 +158,4 @@ jobs:
         uses: messense/maturin-action@v1
         with:
           command: upload
-          args: --skip-existing *
+          args: --skip-existing *-wheels/*
