@@ -18,6 +18,7 @@ jobs:
           - arch: arm64
             label: aarch64
     steps:
+      - run: sudo apt-get update
       -
         name: Checkout the repository
         uses: actions/checkout@v3

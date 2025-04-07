@@ -26,6 +26,7 @@ jobs:
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
+    - run: sudo apt-get update
     - uses: actions/checkout@v4
 
     - uses: extractions/setup-just@v2
@@ -72,6 +73,7 @@ jobs:
 
 
     steps:
+    - run: sudo apt-get update
     - uses: actions/checkout@v4
 
     - uses: extractions/setup-just@v2

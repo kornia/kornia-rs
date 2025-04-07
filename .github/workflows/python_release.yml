@@ -136,6 +136,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [macos, windows, linux]
     steps:
+      - run: sudo apt-get update
       - uses: actions/download-artifact@v3
         with:
           name: wheels
