@@ -88,23 +88,32 @@ pub fn read_image_tiff_gray8(
     read_image_tiff_internal::<u8,1>(file_path)
 }
 
+/// Reads a TIFF image with RGBA8 channels
+/// #Arguments
+/// file_path - The path to the TIFF file.
+pub fn read_image_tiff_rgba8(
+    file_path: impl AsRef<Path>,
+) -> Result<Image<u8, 4>, IoError> {
+    read_image_tiff_internal::<u8,4>(file_path)
+}
+
 /// A trait to convert TIFF values to a specific type.
 /// 
 /// This trait is used to convert TIFF values (u8 or f32) to a specific type (e.g., u8 or f32).
 /// It provides two methods:
-pub trait FromTiffValue: Sized {
+pub trait TiffValueConverter: Sized {
     /// * `from_u8`: Converts a u8 value to the specific type.
     fn from_u8(value: u8) -> Self;
     /// * `from_f32`: Converts a f32 value to the specific type.
     fn from_f32(value: f32) -> Self;
 }
 
-impl FromTiffValue for u8 {
+impl TiffValueConverter for u8 {
     fn from_u8(value: u8) -> Self { value }
     fn from_f32(value: f32) -> Self { (value * 255.0) as u8 }
 }
 
-impl FromTiffValue for f32 {
+impl TiffValueConverter for f32 {
     fn from_u8(value: u8) -> Self { (value as f32) / 255.0 }
     fn from_f32(value: f32) -> Self { value }
 }
@@ -115,7 +124,7 @@ fn read_image_tiff_internal<P:Clone,const N: usize>(
     file_path: impl AsRef<Path>,
 ) -> Result<Image<P,N>, IoError> 
     where 
-        P: FromTiffValue,
+        P: TiffValueConverter,
 {
     let file_path = file_path.as_ref().to_owned();
 
@@ -191,7 +200,7 @@ mod tests {
     #[test]
     fn test_read_image_tiff_rgb8() {
         let file_path = PathBuf::from("../../tests/data/example.tiff");
-        let image = read_image_tiff_internal::<u8,4>(&file_path).unwrap();
+        let image = read_image_tiff_rgba8(&file_path).unwrap();
         assert_eq!(image.width(), 1400);
         assert_eq!(image.height(), 934);
     }   
