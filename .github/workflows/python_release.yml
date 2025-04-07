@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t"]
         target: [x86_64, aarch64]
 
     steps:
@@ -23,11 +23,14 @@ jobs:
           target: ${{ matrix.target }}
           manylinux: auto
           command: build
+          before-script-linux: |
+            if command -v dnf &> /dev/null; then dnf install cmake3 -y; elif command -v yum &> /dev/null; then yum install cmake3 -y; elif command -v apt-get &> /dev/null; then apt-get update && apt-get install cmake -y; else echo "None of dnf, yum, or apt found."; fi
+            if command -v cmake3 &> /dev/null; then export CMAKE=cmake3; fi
           args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
       - name: Upload wheels
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: wheels
+          name: linux-${{ matrix.target }}-${{ matrix.python-version }}-wheels
           path: dist
 
   macos:
@@ -77,6 +80,12 @@ jobs:
           - runs-on: macos-14
             python-version: "3.13"
             target: aarch64
+          - runs-on: macos-14
+            python-version: "3.13t"
+            target: x86_64
+          - runs-on: macos-14
+            python-version: "3.13t"
+            target: aarch64
     steps:
       - uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v4
@@ -94,18 +103,18 @@ jobs:
         with:
           command: build
           maturin-version: latest
-          args: --release --target ${{ matrix.target }}-apple-darwin --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
+          args: --release --target ${{ matrix.target }}-apple-darwin --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml
       - name: Upload wheels
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: wheels
+          name: macos-${{ matrix.target }}-${{ matrix.python-version }}-wheels
           path: dist
 
   windows:
     runs-on: windows-latest
     strategy:
       matrix:
-        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t"]
         target: [x64, x86]
     steps:
       - uses: ilammy/setup-nasm@v1
@@ -120,15 +129,17 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
+      - run: |
+          pip install cmake<4
       - uses: messense/maturin-action@v1
         with:
           command: build
           maturin-version: latest
-          args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
+          args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml
       - name: Upload wheels
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: wheels
+          name: windows-${{ matrix.target }}-${{ matrix.python-version }}-wheels
           path: dist
 
   release:
@@ -137,10 +148,8 @@ jobs:
     needs: [macos, windows, linux]
     steps:
       - run: sudo apt-get update
-      - uses: actions/download-artifact@v3
-        with:
-          name: wheels
-      - uses: actions/setup-python@v2
+      - uses: actions/download-artifact@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: 3.9
       - name: Publish to PyPi
@@ -149,4 +158,4 @@ jobs:
         uses: messense/maturin-action@v1
         with:
           command: upload
-          args: --skip-existing *
+          args: --skip-existing *-wheels/*
