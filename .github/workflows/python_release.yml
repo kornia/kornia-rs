@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t"]
         target: [x86_64, aarch64]
 
     steps:
@@ -77,6 +77,12 @@ jobs:
           - runs-on: macos-14
             python-version: "3.13"
             target: aarch64
+          - runs-on: macos-14
+            python-version: "3.13t"
+            target: x86_64
+          - runs-on: macos-14
+            python-version: "3.13t"
+            target: aarch64
     steps:
       - uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v4
@@ -105,7 +111,7 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.13t"]
         target: [x64, x86]
     steps:
       - uses: ilammy/setup-nasm@v1
