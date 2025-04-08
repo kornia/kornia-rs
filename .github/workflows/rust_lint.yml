@@ -33,14 +33,14 @@ jobs:
         with:
           components: clippy
       - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.3
+        uses: mozilla-actions/sccache-action@v0.0.8
 
       - uses: giraffate/clippy-action@v1
         with:
-          reporter: 'github-pr-review'
+          reporter: "github-pr-review"
           github_token: ${{ secrets.GITHUB_TOKEN }}
           clippy_flags: -- -D warnings
-      
+
       - name: Show sccache stats
         run: sccache --show-stats
 
@@ -59,7 +59,7 @@ jobs:
       - run: rustup toolchain install stable
 
       - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.3
+        uses: mozilla-actions/sccache-action@v0.0.8
 
       - name: Install cross
         run: cargo install cross
