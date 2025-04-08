@@ -211,19 +211,19 @@ fn decode_png_impl<const C: usize>(
 
     let image_info = reader.info();
     if image_info.size() != (image_size.width as u32, image_size.height as u32) {
-        return Err(IoError::PngDecodeError(format!(
-            "The Image shape didn't matched. Expected H: {}, W: {}, but found H: {}, W: {}",
-            image_info.height, image_info.width, image_size.height, image_size.width
-        )));
+        return Err(IoError::DecodeMismatchResolution(
+            image_info.height as usize,
+            image_info.width as usize,
+            image_size.height,
+            image_size.width,
+        ));
     }
 
     if dst.len() < reader.output_buffer_size() {
-        return Err(IoError::PngDecodeError(format!(
-            "The provided image doesn't have enough capacity to \
-            accomodate the image. Provided {}, required: {}",
+        return Err(IoError::InvalidBufferSize(
             dst.len(),
-            reader.output_buffer_size()
-        )));
+            reader.output_buffer_size(),
+        ));
     }
 
     let _ = reader
@@ -433,12 +433,8 @@ mod tests {
 
     #[test]
     fn decode_png() -> Result<(), IoError> {
-        // This is the size of buffer and must be known before hand
-        // for the sake of testing, we are keeping it a constant
-        const BUFFER_SIZE: usize = 150930;
-
         let bytes = read("../../tests/data/dog-rgb8.png")?;
-        let mut image: Image<u8, 3> = Image::new([258, 195].into(), vec![0; BUFFER_SIZE])?;
+        let mut image: Image<u8, 3> = Image::from_size_val([258, 195].into(), 0)?;
         decode_image_png_rgb8(&bytes, &mut image)?;
 
         assert_eq!(image.cols(), 258);

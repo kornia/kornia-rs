@@ -137,14 +137,11 @@ fn decode_jpeg_impl<const C: usize>(src: &[u8], dst: &mut Image<u8, C>) -> Resul
     })?;
 
     if [image_info.height as usize, image_info.width as usize] != [dst.height(), dst.width()] {
-        return Err(IoError::JpegDecodingError(
-            zune_jpeg::errors::DecodeErrors::Format(format!(
-                "The Image shape didn't matched. Expected H: {}, W: {}, but found H: {}, W: {}",
-                image_info.height,
-                image_info.width,
-                dst.height(),
-                dst.width()
-            )),
+        return Err(IoError::DecodeMismatchResolution(
+            image_info.height as usize,
+            image_info.width as usize,
+            dst.height(),
+            dst.width(),
         ));
     }
 

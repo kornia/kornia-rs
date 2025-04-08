@@ -13,6 +13,16 @@ pub enum IoError {
     #[error(transparent)]
     FileError(#[from] std::io::Error),
 
+    /// Error to validate image resolution.
+    #[error(
+        "The Image Resolution didn't matched. Expected H: {0}, W: {1}, but found H: {2}, W: {3}"
+    )]
+    DecodeMismatchResolution(usize, usize, usize, usize),
+
+    /// Error when invalid buffer size slice is provided.
+    #[error("Expected buffer size to be {1}, but found {0}")]
+    InvalidBufferSize(usize, usize),
+
     /// Error to map the file to memory.
     #[cfg(feature = "turbojpeg")]
     #[error(transparent)]
