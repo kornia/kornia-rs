@@ -10,28 +10,28 @@ pub enum IoError {
     InvalidFileExtension(std::path::PathBuf),
 
     /// Error to open the file.
-    #[error("Failed to manipulate the file. {0}")]
+    #[error(transparent)]
     FileError(#[from] std::io::Error),
 
     /// Error to map the file to memory.
     #[cfg(feature = "turbojpeg")]
-    #[error("Error with Jpeg encoding/decoding. {0}")]
+    #[error(transparent)]
     JpegTurboError(#[from] crate::jpegturbo::JpegTurboError),
 
     /// Error to decode the JPEG image.
-    #[error("Error with Jpeg decoding. {0}")]
+    #[error(transparent)]
     JpegDecodingError(#[from] zune_jpeg::errors::DecodeErrors),
 
     /// Error to encode the JPEG image.
-    #[error("Error with Jpeg encoding. {0}")]
+    #[error(transparent)]
     JpegEncodingError(#[from] jpeg_encoder::EncodingError),
 
     /// Error to create the image.
-    #[error("Failed to create image. {0}")]
+    #[error(transparent)]
     ImageCreationError(#[from] kornia_image::ImageError),
 
     /// Error to decode the image.
-    #[error("Failed to decode the image. {0}")]
+    #[error(transparent)]
     ImageDecodeError(#[from] image::ImageError),
 
     /// Error to encode the PNG image.

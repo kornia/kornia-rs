@@ -186,12 +186,8 @@ mod tests {
 
     #[test]
     fn decode_jpeg() -> Result<(), IoError> {
-        // This is the size of buffer and must be known before hand
-        // for the sake of testing, we are keeping it a constant
-        const BUFFER_SIZE: usize = 150930;
-
         let bytes = read("../../tests/data/dog.jpeg")?;
-        let mut image: Image<u8, 3> = Image::new([258, 195].into(), vec![0; BUFFER_SIZE])?;
+        let mut image: Image<u8, 3> = Image::from_size_val([258, 195].into(), 0)?;
         decode_image_jpeg_rgb8(&bytes, &mut image)?;
 
         assert_eq!(image.cols(), 258);
