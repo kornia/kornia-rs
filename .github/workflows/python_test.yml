@@ -41,7 +41,7 @@ jobs:
         profile: minimal
 
     - name: Install sccache
-      uses: mozilla-actions/sccache-action@v0.0.3
+      uses: mozilla-actions/sccache-action@v0.0.8
 
     - name: Install system dependencies
       run: sudo apt-get install -y nasm libunwind-dev
@@ -87,7 +87,7 @@ jobs:
 
 
     - name: Install sccache
-      uses: mozilla-actions/sccache-action@v0.0.3
+      uses: mozilla-actions/sccache-action@v0.0.8
 
 
 
@@ -104,7 +104,7 @@ jobs:
         maturin develop -m Cargo.toml
         pytest --parallel-threads=8 --iterations=50
 
-        
+
     - name: Show sccache stats
       run: sccache --show-stats
 
