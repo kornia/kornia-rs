@@ -1,0 +1,37 @@
+{
+  "vocab": {
+    "<s>": 1,
+    "</s>": 2,
+    "<pad>": 0,
+    "<unk>": 3,
+    "a": 4,
+    "b": 5,
+    "c": 6,
+    "the": 7,
+    "is": 8,
+    "photo": 9,
+    "image": 10,
+    "shows": 11,
+    "picture": 12,
+    "this": 13,
+    "person": 14,
+    "in": 15,
+    "on": 16,
+    "with": 17,
+    "and": 18,
+    "dog": 19,
+    "cat": 20,
+    "car": 21,
+    "house": 22,
+    "tree": 23,
+    "sky": 24,
+    "water": 25
+  },
+  "special_tokens": {
+    "bos_token": "<s>",
+    "eos_token": "</s>",
+    "pad_token": "<pad>",
+    "unk_token": "<unk>"
+  },
+  "merges": []
+}

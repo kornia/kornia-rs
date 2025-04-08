@@ -20,3 +20,6 @@ pub use kornia_3d as k3d;
 
 #[doc(inline)]
 pub use kornia_icp as icp;
+
+#[doc(inline)]
+pub use kornia_models as models;

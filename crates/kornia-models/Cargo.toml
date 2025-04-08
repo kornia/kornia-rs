@@ -1,0 +1,52 @@
+[package]
+name = "kornia-models"
+description = "Computer vision model library in Rust"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+authors.workspace = true
+readme.workspace = true
+categories.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+kornia-tensor = { workspace = true, features = ["serde"] }
+kornia-io = { workspace = true, default-features = false }
+
+thiserror.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json = "1.0"
+itertools = "0.12"
+tempfile.workspace = true
+
+# Linear algebra
+nalgebra = { version = "0.32", features = ["rand", "serde"] }
+
+# Image processing
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "bmp", "pnm"] }
+
+# SMOLVLM dependencies
+tokenizers = { version = "0.15", optional = true }
+candle-core = { version = "0.4", optional = true }
+candle-nn = { version = "0.4", optional = true }
+safetensors = { version = "0.4", optional = true }
+half = { workspace = true, optional = true }
+ort = { package = "ort", version = "2.0.0-rc.0", optional = true }
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["html_reports"] }
+rand.workspace = true
+
+[features]
+default = []
+
+# Model backends
+candle = ["dep:candle-core", "dep:candle-nn", "dep:safetensors", "dep:half", "dep:tokenizers"]
+onnx = ["dep:ort", "dep:tokenizers"]
+
+[package.metadata.docs.rs]
+features = ["all"]
+all-features = true
