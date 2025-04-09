@@ -37,12 +37,17 @@ pub fn box_blur<const C: usize>(
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
 /// NOTE: This function uses a constant border type.
-pub fn gaussian_blur<const C: usize>(
-    src: &Image<f32, C>,
-    dst: &mut Image<f32, C>,
+use num_traits::Float;
+
+pub fn gaussian_blur<T, const C: usize>(
+    src: &Image<T, C>,
+    dst: &mut Image<T, C>,
     kernel_size: (usize, usize),
-    sigma: (f32, f32),
-) -> Result<(), ImageError> {
+    sigma: (T, T),
+) -> Result<(), ImageError>
+where
+    T: Float, // ensures T is a floating-point type
+{
     let kernel_x = kernels::gaussian_kernel_1d(kernel_size.0, sigma.0);
     let kernel_y = kernels::gaussian_kernel_1d(kernel_size.1, sigma.1);
     separable_filter(src, dst, &kernel_x, &kernel_y)?;
