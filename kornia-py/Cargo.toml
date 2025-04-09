@@ -16,6 +16,10 @@ crate-type = ["cdylib"]
 
 [dependencies]
 
+kornia = "0.9"         # Kornia operators
+glam = "0.24.0"         # Use glam instead of nalgebra
+
+
 # kornia
 kornia-image = { path = "../crates/kornia-image" }
 kornia-imgproc = { path = "../crates/kornia-imgproc" }
