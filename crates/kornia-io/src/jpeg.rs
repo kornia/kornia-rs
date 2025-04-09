@@ -1,7 +1,7 @@
 use crate::error::IoError;
 use jpeg_encoder::{ColorType, Encoder};
 use kornia_image::{Image, ImageSize};
-use std::fs::File;
+use std::fs;
 use std::path::Path;
 
 /// Writes the given JPEG _(rgb8)_ data to the given file path.
@@ -14,7 +14,7 @@ pub fn write_image_jpeg_rgb8(
     file_path: impl AsRef<Path>,
     image: &Image<u8, 3>,
 ) -> Result<(), IoError> {
-    write_image_jpeg_internal(file_path, image, ColorType::Rgb)
+    write_image_jpeg_imp(file_path, image, ColorType::Rgb)
 }
 
 /// Writes the given JPEG _(grayscale)_ data to the given file path.
@@ -27,10 +27,10 @@ pub fn write_image_jpeg_gray8(
     file_path: impl AsRef<Path>,
     image: &Image<u8, 1>,
 ) -> Result<(), IoError> {
-    write_image_jpeg_internal(file_path, image, ColorType::Luma)
+    write_image_jpeg_imp(file_path, image, ColorType::Luma)
 }
 
-fn write_image_jpeg_internal<const N: usize>(
+fn write_image_jpeg_imp<const N: usize>(
     file_path: impl AsRef<Path>,
     image: &Image<u8, N>,
     color_type: ColorType,
@@ -56,7 +56,7 @@ fn write_image_jpeg_internal<const N: usize>(
 ///
 /// A RGB image with four channels _(rgb8)_.
 pub fn read_image_jpeg_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, IoError> {
-    read_image_jpeg_internal(file_path)
+    read_image_jpeg_impl(file_path)
 }
 
 /// Reads a JPEG file with a single channel _(mono8)_
@@ -69,10 +69,30 @@ pub fn read_image_jpeg_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>,
 ///
 /// A grayscale image with a single channel _(mono8)_.
 pub fn read_image_jpeg_mono8(file_path: impl AsRef<Path>) -> Result<Image<u8, 1>, IoError> {
-    read_image_jpeg_internal(file_path)
+    read_image_jpeg_impl(file_path)
 }
 
-fn read_image_jpeg_internal<const N: usize>(
+/// Decodes a JPEG image with three channel (rgb8) from Raw Bytes.
+///
+/// # Arguments
+///
+/// - `image` - A mutable reference to your `Image`
+/// - `bytes` - Raw bytes of the jpeg file
+pub fn decode_image_jpeg_rgb8(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), IoError> {
+    decode_jpeg_impl(src, dst)
+}
+
+/// Decodes a JPEG image with single channel (mono8) from Raw Bytes.
+///
+/// # Arguments
+///
+/// - `image` - A mutable reference to your `Image`
+/// - `bytes` - Raw bytes of the jpeg file
+pub fn decode_image_jpeg_mono8(src: &[u8], dst: &mut Image<u8, 1>) -> Result<(), IoError> {
+    decode_jpeg_impl(src, dst)
+}
+
+fn read_image_jpeg_impl<const N: usize>(
     file_path: impl AsRef<Path>,
 ) -> Result<Image<u8, N>, IoError> {
     let file_path = file_path.as_ref().to_owned();
@@ -86,12 +106,12 @@ fn read_image_jpeg_internal<const N: usize>(
         return Err(IoError::InvalidFileExtension(file_path.to_path_buf()));
     }
 
-    let jpeg_data = File::open(file_path)?;
-    let mut decoder = jpeg_decoder::Decoder::new(jpeg_data);
-    decoder.read_info().map_err(IoError::JpegDecodingError)?;
+    let jpeg_data = fs::read(file_path)?;
+    let mut decoder = zune_jpeg::JpegDecoder::new(jpeg_data);
+    decoder.decode_headers()?;
 
     let image_info = decoder.info().ok_or_else(|| {
-        IoError::JpegDecodingError(jpeg_decoder::Error::Format(String::from(
+        IoError::JpegDecodingError(zune_jpeg::errors::DecodeErrors::Format(String::from(
             "Failed to find image info from its metadata",
         )))
     })?;
@@ -106,10 +126,33 @@ fn read_image_jpeg_internal<const N: usize>(
     Ok(Image::new(image_size, img_data)?)
 }
 
+fn decode_jpeg_impl<const C: usize>(src: &[u8], dst: &mut Image<u8, C>) -> Result<(), IoError> {
+    let mut decoder = zune_jpeg::JpegDecoder::new(src);
+    decoder.decode_headers()?;
+
+    let image_info = decoder.info().ok_or_else(|| {
+        IoError::JpegDecodingError(zune_jpeg::errors::DecodeErrors::Format(String::from(
+            "Failed to find image info from its metadata",
+        )))
+    })?;
+
+    if [image_info.height as usize, image_info.width as usize] != [dst.height(), dst.width()] {
+        return Err(IoError::DecodeMismatchResolution(
+            image_info.height as usize,
+            image_info.width as usize,
+            dst.height(),
+            dst.width(),
+        ));
+    }
+
+    decoder.decode_into(dst.as_slice_mut())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::create_dir_all;
+    use std::fs::{create_dir_all, read};
 
     #[test]
     fn read_jpeg() -> Result<(), IoError> {
@@ -134,6 +177,19 @@ mod tests {
         assert_eq!(image_data_back.cols(), 258);
         assert_eq!(image_data_back.rows(), 195);
         assert_eq!(image_data_back.num_channels(), 3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn decode_jpeg() -> Result<(), IoError> {
+        let bytes = read("../../tests/data/dog.jpeg")?;
+        let mut image: Image<u8, 3> = Image::from_size_val([258, 195].into(), 0)?;
+        decode_image_jpeg_rgb8(&bytes, &mut image)?;
+
+        assert_eq!(image.cols(), 258);
+        assert_eq!(image.rows(), 195);
+        assert_eq!(image.num_channels(), 3);
 
         Ok(())
     }

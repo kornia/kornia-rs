@@ -14,7 +14,7 @@ pub enum ImageError {
     ImageDataNotContiguous,
 
     /// Error when the image shape is not valid.
-    #[error("Invalid image shape")]
+    #[error(transparent)]
     InvalidImageShape(#[from] kornia_tensor::TensorError),
 
     /// Error when the image size is not valid.
