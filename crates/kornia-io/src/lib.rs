@@ -24,4 +24,6 @@ pub mod jpeg;
 #[cfg(feature = "gstreamer")]
 pub mod stream;
 
+/// Tiff image encoding and decoding.
+pub mod tiff;
 pub use crate::error::IoError;

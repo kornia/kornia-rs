@@ -26,6 +26,15 @@ pub enum IoError {
     #[error("Error with Jpeg encoding")]
     JpegEncodingError(#[from] jpeg_encoder::EncodingError),
 
+    
+    /// Error decoding the TIFF image.
+    #[error("Error with TIFF decoding")]
+    TiffError(#[from] tiff::TiffError),
+
+    /// Error to create the TIFF image.
+    #[error("Error with TIFF encoding")]
+    TiffEncodingError(String),
+
     /// Error to create the image.
     #[error("Failed to create image")]
     ImageCreationError(#[from] kornia_image::ImageError),
@@ -41,4 +50,5 @@ pub enum IoError {
     /// Error to decode the PNG image.
     #[error("Failed to decode the png image")]
     PngDecodeError(String),
+
 }

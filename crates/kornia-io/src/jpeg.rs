@@ -72,6 +72,8 @@ pub fn read_image_jpeg_mono8(file_path: impl AsRef<Path>) -> Result<Image<u8, 1>
     read_image_jpeg_internal(file_path)
 }
 
+
+
 fn read_image_jpeg_internal<const N: usize>(
     file_path: impl AsRef<Path>,
 ) -> Result<Image<u8, N>, IoError> {
@@ -114,6 +116,14 @@ mod tests {
     #[test]
     fn read_jpeg() -> Result<(), IoError> {
         let image = read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
+        assert_eq!(image.cols(), 258);
+        assert_eq!(image.rows(), 195);
+        Ok(())
+    }
+
+    #[test]
+    fn read_jpeg_f32() -> Result<(), IoError> {
+        let image = read_image_jpeg_mono8("../../tests/data/dog.jpeg")?;
         assert_eq!(image.cols(), 258);
         assert_eq!(image.rows(), 195);
         Ok(())
