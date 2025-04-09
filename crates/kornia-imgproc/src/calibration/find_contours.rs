@@ -20,11 +20,11 @@ pub enum BorderType {
 #[derive(Debug, Clone)]
 pub struct Contour {
     /// The (x,y) coordinates of each border pixel in tracing order.
-    pub points: Vec<(usize, usize)>,
+    points: Vec<(usize, usize)>,
     /// Whether this contour is an outer border or a hole.
-    pub border_type: BorderType,
+    border_type: BorderType,
     /// Index of the parent contour (if this is a hole inside another contour).
-    pub parent: Option<usize>,
+    parent: Option<usize>,
 }
 
 impl Contour {
@@ -48,6 +48,18 @@ impl Contour {
             parent,
         }
     }
+    /// Returns the ordered list of (x, y) coordinates along this contour’s border.
+    pub fn points(&self) -> &[(usize, usize)] {
+        &self.points
+    }
+    /// Returns the border type of this contour.
+    pub fn border_type(&self) -> BorderType {
+        self.border_type
+    }
+    /// Returns the parent of this contour (NOT implemented yet!)
+    pub fn parent(&self) -> Option<usize> {
+        self.parent
+    }
 }
 
 /// Find all contours in a grayscale image by thresholding and applying
@@ -64,19 +76,12 @@ impl Contour {
 pub fn find_contours(image: &Image<u8, 1>, threshold: u8) -> Vec<Contour> {
     let w = image.width() as usize;
     let h = image.height() as usize;
-    // binary mask: 1=fg, 0=bg
-    let mut bin = vec![0u8; w * h];
+    // binary mask: true=fg, false=bg
+    let bin: Vec<bool> = image.as_slice().iter().map(|&v| v > threshold).collect();
     // labels: 0=unvisited, >1=contour IDs
     let mut labels = vec![0i32; w * h];
     let idx = |x: usize, y: usize| y * w + x;
-
-    // converting to binary based on threshold
-    for y in 0..h {
-        for x in 0..w {
-            let v = *image.get_pixel(x, y, 0).unwrap();
-            bin[idx(x, y)] = if v > threshold { 1 } else { 0 };
-        }
-    }
+    let mut y_idx = vec![w * h; h];
 
     // 8‐connected neighbor offsets in clockwise order: E, SE, S, SW, W, NW, N, NE
     let nbrs: [(i32, i32); 8] = [
@@ -95,16 +100,17 @@ pub fn find_contours(image: &Image<u8, 1>, threshold: u8) -> Vec<Contour> {
 
     // raster scan
     for y in 0..h {
+        let row = y * w;
         for x in 0..w {
-            let i = idx(x, y);
-            // starts from unlabelled foregrounf.
-            if bin[i] == 1 && labels[i] == 0 {
+            let i = row + x;
+            // starts from unlabelled foreground.
+            if bin[i] && labels[i] == 0 {
                 // determine if this pixel sits on an outer or hole border
-                let left = if x > 0 { bin[idx(x - 1, y)] } else { 0 };
-                let right = if x + 1 < w { bin[idx(x + 1, y)] } else { 0 };
+                let left = if x > 0 { bin[idx(x - 1, y)] } else { false };
+                let right = if x + 1 < w { bin[idx(x + 1, y)] } else { false };
 
-                let is_outer = left == 0;
-                let is_hole = right == 0;
+                let is_outer = !left;
+                let is_hole = !right;
 
                 if is_outer || is_hole {
                     let b0 = if is_outer {
@@ -118,7 +124,10 @@ pub fn find_contours(image: &Image<u8, 1>, threshold: u8) -> Vec<Contour> {
 
                     // marked so as to not restart here again
                     for &(cx, cy) in &chain {
-                        labels[idx(cx, cy)] = nbd;
+                        if y_idx[cy] == w * h {
+                            y_idx[cy] = cy * w
+                        }
+                        labels[y_idx[cy] + cx] = nbd;
                     }
 
                     contours.push(Contour::new(
@@ -153,7 +162,7 @@ pub fn find_contours(image: &Image<u8, 1>, threshold: u8) -> Vec<Contour> {
 ///
 /// A `Vec<(usize, usize)>` of all border pixels in visit order.
 fn follow_border(
-    bin: &[u8],
+    bin: &[bool],
     nbrs: &[(i32, i32); 8],
     w: usize,
     h: usize,
@@ -190,7 +199,7 @@ fn follow_border(
 
             if nx >= 0 && nx < w as i32 && ny >= 0 && ny < h as i32 {
                 let ni = idx(nx as usize, ny as usize);
-                if bin[ni] != 0 {
+                if bin[ni] {
                     // found the next border pixel
                     next_p = (nx as usize, ny as usize);
                     // backtrack = neighbor at (d-1 mod 8) relative to p
@@ -226,6 +235,31 @@ mod tests {
     use super::*;
     use kornia_image::{Image, ImageError, ImageSize};
 
+    #[test]
+    fn simple_contour() -> Result<(), ImageError> {
+        let img = Image::new(
+            ImageSize {
+                width: 5,
+                height: 5,
+            },
+            vec![
+                0u8, 0, 0, 0, 0, 0u8, 255, 255, 255, 0, 0u8, 255, 255, 255, 0, 0u8, 255, 255, 255,
+                0, 0u8, 0, 0, 0, 0,
+            ],
+        )?;
+        let ct = find_contours(&img, 128);
+        assert_eq!(ct.len(), 1);
+
+        //border type
+        assert_eq!(ct[0].border_type, BorderType::Outer);
+
+        // border points
+        for &pt in &[(1, 1), (3, 1), (3, 3), (1, 3)] {
+            assert!(ct[0].points.contains(&pt), "missing {:?}", pt);
+        }
+        Ok(())
+    }
+
     fn make_basic() -> Result<Image<u8, 1>, ImageError> {
         let mut img = Image::new(
             ImageSize {
@@ -250,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn basic_contours() {
+    fn basic_contours() -> Result<(), ImageError> {
         let img = make_basic().unwrap();
         let ct = find_contours(&img, 128);
         assert_eq!(ct.len(), 2);
@@ -266,6 +300,7 @@ mod tests {
         for &pt in &[(3, 4), (6, 4), (6, 5), (3, 5)] {
             assert!(ct[1].points.contains(&pt), "missing hole pt {:?}", pt);
         }
+        Ok(())
     }
 
     #[test]
