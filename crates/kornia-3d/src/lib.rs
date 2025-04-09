@@ -21,3 +21,6 @@ pub mod transforms;
 
 /// 3D vector traits.
 pub mod vector;
+
+///KISS_ICP (Keep It Simple, Stupid - Iterative Closest Point)
+pub mod kiss_icp;
