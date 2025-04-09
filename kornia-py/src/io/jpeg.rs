@@ -1,63 +1,52 @@
-use crate::image::{FromPyImage, PyImage, PyImageSize, ToPyImage};
-use kornia_image::Image;
-use kornia_io::jpegturbo::{JpegTurboDecoder, JpegTurboEncoder};
+use crate::image::{PyImage, ToPyImage};
+use kornia_image::{Image, ImageSize};
+use kornia_io::jpeg as J;
 use pyo3::prelude::*;
 
-#[pyclass(name = "ImageDecoder", frozen)]
-pub struct PyImageDecoder(JpegTurboDecoder);
-
-#[pymethods]
-impl PyImageDecoder {
-    #[new]
-    pub fn new() -> PyResult<PyImageDecoder> {
-        let decoder = JpegTurboDecoder::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(PyImageDecoder(decoder))
+#[pyfunction]
+/// Decodes the JPEG Image from raw bytes.
+///
+/// The following modes are supported:
+/// 1. "rgb" -> 8-bit RGB
+/// 2. "mono" -> 8-bit Monochrome
+pub fn decode_image_raw_jpeg(src: &[u8], image_shape: Vec<usize>, mode: &str) -> PyResult<PyImage> {
+    if image_shape.len() != 2 {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            String::from("Missing width and height of image, pass [width, height]"),
+        ));
     }
+    let image_shape = ImageSize {
+        width: image_shape[1],
+        height: image_shape[0],
+    };
 
-    pub fn read_header(&self, jpeg_data: &[u8]) -> PyResult<PyImageSize> {
-        let image_size = self
-            .0
-            .read_header(jpeg_data)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(image_size.into())
-    }
+    let result = match mode {
+        "rgb" => {
+            let mut output_image = Image::<u8, 3>::from_size_val(image_shape, 0)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            J::decode_image_jpeg_rgb8(src, &mut output_image)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            output_image.to_pyimage()
+        }
+        "mono" => {
+            let mut output_image = Image::<u8, 1>::from_size_val(image_shape, 0)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            J::decode_image_jpeg_mono8(src, &mut output_image)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            output_image.to_pyimage()
+        }
+        _ => {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                String::from(
+                    r#"\
+        The following are the supported values of mode:
+        1) "rgb" -> 8-bit RGB
+        2) "mono" -> 8-bit Monochrome
+        "#,
+                ),
+            ))
+        }
+    };
 
-    pub fn decode(&self, jpeg_data: &[u8]) -> PyResult<PyImage> {
-        let image = self
-            .0
-            .decode_rgb8(jpeg_data)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(image.to_pyimage())
-    }
-}
-
-#[pyclass(name = "ImageEncoder", frozen)]
-pub struct PyImageEncoder(JpegTurboEncoder);
-
-#[pymethods]
-impl PyImageEncoder {
-    #[new]
-    pub fn new() -> PyResult<PyImageEncoder> {
-        let encoder = JpegTurboEncoder::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(PyImageEncoder(encoder))
-    }
-
-    pub fn encode(&self, image: PyImage) -> PyResult<Vec<u8>> {
-        let image = Image::from_pyimage(image)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        let jpeg_data = self
-            .0
-            .encode_rgb8(&image)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(jpeg_data)
-    }
-
-    pub fn set_quality(&self, quality: i32) -> PyResult<()> {
-        self.0
-            .set_quality(quality)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(())
-    }
+    Ok(result)
 }

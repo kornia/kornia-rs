@@ -36,7 +36,7 @@ pub fn bgr_from_rgb(image: PyImage) -> PyResult<PyImage> {
 
 #[pyfunction]
 pub fn gray_from_rgb(image: PyImage) -> PyResult<PyImage> {
-    let image_rgb = Image::from_pyimage(image)
+    let image_rgb: Image<u8, 3> = Image::from_pyimage(image)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("src image: {}", e)))?;
 
     let image_rgb = image_rgb.cast::<f32>().map_err(|e| {
