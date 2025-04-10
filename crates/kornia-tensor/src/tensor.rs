@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::ParentDeallocator;
+
 use super::{
     allocator::{CpuAllocator, TensorAllocator, TensorAllocatorError},
     storage::TensorStorage,
@@ -75,7 +77,7 @@ pub fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
 /// ```
 pub struct Tensor<T, const N: usize, A: TensorAllocator> {
     /// The storage of the tensor.
-    pub storage: TensorStorage<T, A>,
+    pub storage: TensorStorage<T, A, Box<dyn ParentDeallocator + 'static>>,
     /// The shape of the tensor.
     pub shape: [usize; N],
     /// The strides of the tensor data in memory.

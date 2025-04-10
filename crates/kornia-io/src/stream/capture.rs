@@ -1,8 +1,24 @@
 use crate::stream::error::StreamCaptureError;
 use circular_buffer::CircularBuffer;
 use gstreamer::prelude::*;
-use kornia_image::{Image, ImageSize};
-use std::sync::{Arc, Mutex};
+use kornia_image::Image;
+use kornia_tensor::{
+    storage::TensorStorage, tensor::get_strides_from_shape, ParentDeallocator, Tensor,
+};
+use std::{
+    alloc::Layout,
+    sync::{Arc, Mutex},
+};
+
+#[allow(dead_code)]
+pub(crate) struct GstParentDeallocator(gstreamer::Buffer);
+
+impl ParentDeallocator for GstParentDeallocator {
+    fn dealloc(&mut self) {
+        // When gstreamer::Buffer will be dropped, it will automatically
+        // reduce the reference count as this memory is managed by gstreamer
+    }
+}
 
 // utility struct to store the frame buffer
 struct FrameBuffer {
@@ -90,21 +106,44 @@ impl StreamCapture {
             .lock()
             .map_err(|_| StreamCaptureError::MutexPoisonError)?;
         if let Some(frame_buffer) = circular_buffer.pop_front() {
-            // TODO: solve the zero copy issue
-            // https://discourse.gstreamer.org/t/zero-copy-video-frames/3856/2
-            let buffer = frame_buffer
+            let width = frame_buffer.width as usize;
+            let height = frame_buffer.height as usize;
+
+            // Create a mapping of the buffer without moving it out of frame_buffer
+            let buffer_map = frame_buffer
                 .buffer
                 .map_readable()
                 .map_err(|_| StreamCaptureError::GetBufferError)?;
-            let img = Image::<u8, 3>::new(
-                ImageSize {
-                    width: frame_buffer.width as usize,
-                    height: frame_buffer.height as usize,
-                },
-                buffer.to_owned(),
-            )
-            .map_err(|_| StreamCaptureError::CreateImageFrameError)?;
-            return Ok(Some(img));
+
+            let frame_data_slice = buffer_map.as_slice();
+            let frame_data_ptr = frame_data_slice.as_ptr();
+
+            let layout = unsafe { Layout::array::<u8>(frame_data_slice.len()).unwrap_unchecked() };
+
+            let length = frame_data_slice.len();
+            let shape = [height, width, 3];
+            let strides = get_strides_from_shape(shape);
+
+            // Drop the buffer_map as it is a reference of Buffer
+            drop(buffer_map);
+
+            let gst_parent_deallocator = GstParentDeallocator(frame_buffer.buffer);
+
+            let tensor = unsafe {
+                Tensor {
+                    shape,
+                    strides,
+                    storage: TensorStorage::with_parent_relation(
+                        frame_data_ptr,
+                        Box::new(gst_parent_deallocator) as Box<dyn ParentDeallocator>,
+                        length,
+                        layout,
+                    ),
+                }
+            };
+
+            let image = Image(tensor);
+            return Ok(Some(image));
         }
         Ok(None)
     }

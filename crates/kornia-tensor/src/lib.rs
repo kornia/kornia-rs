@@ -21,9 +21,13 @@ pub mod storage;
 /// view module containing the view implementations.
 pub mod view;
 
+/// parent deallocator module for tensor
+pub mod parent_deallocator;
+
 pub use crate::allocator::{CpuAllocator, TensorAllocator};
 pub(crate) use crate::tensor::get_strides_from_shape;
 pub use crate::tensor::{Tensor, TensorError};
+pub use parent_deallocator::ParentDeallocator;
 
 /// Type alias for a 1-dimensional tensor.
 pub type Tensor1<T, A> = Tensor<T, 1, A>;

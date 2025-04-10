@@ -1,11 +1,12 @@
 use crate::{
-    get_strides_from_shape, storage::TensorStorage, CpuAllocator, Tensor, TensorAllocator,
+    get_strides_from_shape, storage::TensorStorage, CpuAllocator, ParentDeallocator, Tensor,
+    TensorAllocator,
 };
 
 /// A view into a tensor.
 pub struct TensorView<'a, T, const N: usize, A: TensorAllocator> {
     /// Reference to the storage held by the another tensor.
-    pub storage: &'a TensorStorage<T, A>,
+    pub storage: &'a TensorStorage<T, A, Box<dyn ParentDeallocator + 'static>>,
 
     /// The shape of the tensor.
     pub shape: [usize; N],
