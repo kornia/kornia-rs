@@ -28,11 +28,11 @@ pub enum IoError {
 
     
     /// Error decoding the TIFF image.
-    #[error("Error with TIFF decoding")]
+    #[error(transparent)]
     TiffError(#[from] tiff::TiffError),
 
     /// Error to create the TIFF image.
-    #[error("Error with TIFF encoding")]
+    #[error("Error with Tiff encoding")]
     TiffEncodingError(String),
 
     /// Error to create the image.
