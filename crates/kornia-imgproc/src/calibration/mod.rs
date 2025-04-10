@@ -1,3 +1,6 @@
+/// brightness adjusting module.
+pub mod adjust_brightness;
+
 /// image distortion module.
 pub mod distortion;
 
