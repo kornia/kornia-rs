@@ -6,7 +6,7 @@ use kornia_icp::{icp_vanilla as icp_vanilla_fn, ICPConvergenceCriteria, ICPResul
 
 use crate::pointcloud::{FromPyPointCloud, PyPointCloud};
 
-#[pyclass(name = "ICPConvergenceCriteria")]
+#[pyclass(name = "ICPConvergenceCriteria", frozen)]
 #[derive(Clone)]
 pub struct PyICPConvergenceCriteria(ICPConvergenceCriteria);
 
@@ -45,7 +45,7 @@ impl PyICPConvergenceCriteria {
     }
 }
 
-#[pyclass(name = "ICPResult")]
+#[pyclass(name = "ICPResult", frozen)]
 pub struct PyICPResult(ICPResult);
 
 #[pymethods]
