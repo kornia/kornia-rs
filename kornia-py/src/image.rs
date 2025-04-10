@@ -103,7 +103,7 @@ fn convert_buf_u8_u16(buf: Vec<u8>) -> Vec<u16> {
     buf_u16
 }
 
-#[pyclass(name = "ImageSize")]
+#[pyclass(name = "ImageSize", frozen)]
 #[derive(Clone)]
 pub struct PyImageSize {
     inner: ImageSize,
