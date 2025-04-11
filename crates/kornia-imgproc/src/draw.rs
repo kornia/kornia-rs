@@ -70,9 +70,36 @@ pub fn draw_line<const C: usize>(
     }
 }
 
+/// Draws a polygon on an image inplace.
+///
+/// # Arguments
+///
+/// * `img` - The image to draw on.
+/// * `points` - A slice of points representing the vertices of the polygon in order.
+/// * `color` - The color of the polygon lines as an array of `C` elements.
+/// * `thickness` - The thickness of the polygon lines.
+///
+pub fn draw_polygon<const C: usize>(
+    img: &mut Image<u8, C>,
+    points: &[(i64, i64)],
+    color: [u8; C],
+    thickness: usize,
+) {
+    if points.len() < 3 {
+        return;
+    }
+    let num_points = points.len();
+    for i in 0..num_points {
+        let start = points[i];
+        // mod to close the polygon
+        let end = points[(i + 1) % num_points];
+        draw_line(img, start, end, color, thickness);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::draw_line;
+    use super::{draw_line, draw_polygon};
     use kornia_image::{Image, ImageError, ImageSize};
 
     #[rustfmt::skip]
@@ -94,6 +121,28 @@ mod tests {
                 0, 255, 255, 0, 0,
                 0, 0, 255, 255, 0,
                 0, 0, 0, 255, 255
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_draw_polygon() -> Result<(), ImageError> {
+        let mut img = Image::new(
+            ImageSize {
+                width: 5,
+                height: 5,
+            },
+            vec![0; 25],
+        )?;
+        let points: [(i64, i64); 3] = [(0, 0), (0, 3), (4, 0)];
+        draw_polygon(&mut img, &points, [255], 1);
+        println!("{:?}", img.as_slice());
+        assert_eq!(
+            img.as_slice(),
+            vec![
+                255, 255, 255, 255, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 0, 0, 0,
+                0, 0, 0, 0, 0
             ]
         );
         Ok(())
