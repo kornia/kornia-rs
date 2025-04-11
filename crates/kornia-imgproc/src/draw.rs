@@ -97,9 +97,82 @@ pub fn draw_polygon<const C: usize>(
     }
 }
 
+/// Draws a colored polygon on an image inplace.
+/// Uses the scanline-fill algorithm.
+///
+/// # Arguments
+///
+/// * `img` - The image to draw on.
+/// * `points` - A slice of points representing the vertices of the polygon inn order.
+/// * `color` - The color filled in the polygon drawn.
+/// * `line_color` - The color of the pen used to draw the polygon.
+/// * `thickness` - The thickness of the polygon lines.
+///
+pub fn draw_filled_polygon<const C: usize>(
+    img: &mut Image<u8, C>,
+    points: &[(i64, i64)],
+    fill_color: [u8; C],
+    line_color: [u8; C],
+    thickness: usize,
+) {
+    let n = points.len();
+    if n < 3 {
+        return;
+    }
+
+    // drawing the polygon outline
+    draw_polygon(img, points, line_color, thickness);
+
+    // adding edges to edge list.
+    let mut edges = Vec::with_capacity(n);
+    for i in 0..n {
+        let (x0, y0) = points[i];
+        let (x1, y1) = points[(i + 1) % n];
+        edges.push((x0, y0, x1, y1));
+    }
+
+    // bounds for y to find range of scanlines
+    let min_y = points.iter().map(|&(_, y)| y).min().unwrap();
+    let max_y = points.iter().map(|&(_, y)| y).max().unwrap();
+
+    // for each scanline
+    for y in min_y..=max_y {
+        let mut x_intersections = Vec::new();
+
+        for &(x0, y0, x1, y1) in &edges {
+            // checking if the scanline intersects the edges.
+            if (y0 <= y && y1 > y) || (y1 <= y && y0 > y) {
+                // finding the intersection with linear interpolation
+                let x = x0 as f64
+                    + (y as f64 - y0 as f64) * (x1 as f64 - x0 as f64) / (y1 as f64 - y0 as f64);
+                x_intersections.push(x);
+            }
+        }
+
+        // sort the intersections by x coordinate
+        x_intersections.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        // filling the region between intersections with color
+        for pair in x_intersections.chunks(2) {
+            if let [x_start, x_end] = pair {
+                let xs = x_start.ceil() as i64;
+                let xe = x_end.floor() as i64;
+                for x in xs..=xe {
+                    if x >= 0 && x < img.cols() as i64 && y >= 0 && y < img.rows() as i64 {
+                        let base = (y * img.cols() as i64 + x) * C as i64;
+                        for c in 0..C {
+                            img.as_slice_mut()[base as usize + c] = fill_color[c];
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{draw_line, draw_polygon};
+    use super::{draw_filled_polygon, draw_line, draw_polygon};
     use kornia_image::{Image, ImageError, ImageSize};
 
     #[rustfmt::skip]
@@ -137,12 +210,33 @@ mod tests {
         )?;
         let points: [(i64, i64); 3] = [(0, 0), (0, 3), (4, 0)];
         draw_polygon(&mut img, &points, [255], 1);
-        println!("{:?}", img.as_slice());
         assert_eq!(
             img.as_slice(),
             vec![
                 255, 255, 255, 255, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 0, 0, 0,
                 0, 0, 0, 0, 0
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_draw_filled_polygon() -> Result<(), ImageError> {
+        let mut img = Image::new(
+            ImageSize {
+                width: 5,
+                height: 5,
+            },
+            vec![0; 25],
+        )?;
+        let points: [(i64, i64); 3] = [(0, 0), (0, 3), (4, 0)];
+        draw_filled_polygon(&mut img, &points, [150], [255], 1);
+        println!("{:?}", img.as_slice());
+        assert_eq!(
+            img.as_slice(),
+            vec![
+                255, 255, 255, 255, 255, 255, 150, 150, 255, 0, 255, 150, 255, 0, 0, 255, 255, 0,
+                0, 0, 0, 0, 0, 0, 0
             ]
         );
         Ok(())
