@@ -32,13 +32,14 @@ pub fn draw_line<const C: usize>(
     p1: (i64, i64),
     color: [u8; C],
     thickness: usize,
-) {
+) { 
+    // Create local variables for moving start point
     let (mut x0, mut y0) = p0;
     let (x1, y1) = p1;
 
     let dx = (x1 - x0).abs();
     let dy = (y1 - y0).abs();
-
+    // Get slopes
     let sx = if x0 < x1 { 1 } else { -1 };
     let sy = if y0 < y1 { 1 } else { -1 };
 
