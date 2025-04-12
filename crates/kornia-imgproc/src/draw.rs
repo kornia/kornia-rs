@@ -120,36 +120,35 @@ pub fn draw_filled_polygon<const C: usize>(
         return;
     }
 
-    // drawing the polygon outline
-    draw_polygon(img, points, line_color, thickness);
-
     // adding edges to edge list.
     let mut edges = Vec::with_capacity(n);
-    let mut min_y = i64::MAX;
-    let mut max_y = i64::MIN;
     for i in 0..n {
         let (x0, y0) = points[i];
         let (x1, y1) = points[(i + 1) % n];
         edges.push((x0, y0, x1, y1));
 
         // bounds for y to find range of scanlines
-        if y0 < min_y {
-            min_y = y0;
-        }
-        if y0 > max_y {
-            max_y = y0;
-        }
+        // if y0 < min_y {
+        //     min_y = y0;
+        // }
+        // if y0 > max_y {
+        //     max_y = y0;
+        // }
     }
 
-    if (min_y == max_y) {
-        // special case when polygon is just one pixel high.
-        continue;
-    }
+    let min_y = points.iter().map(|&(_, y)| y).min().unwrap();
+    let max_y = points.iter().map(|&(_, y)| y).max().unwrap();
 
-    let mut x_intersections = Vec::with_capacity(n);
+    // if (min_y == max_y) {
+    //     // special case when polygon is just one pixel high.
+    //     continue;
+    // }
+
+    // let mut x_intersections = Vec::with_capacity(n);
 
     // for each scanline
     for y in min_y..=max_y {
+        let mut x_intersections = Vec::new();
         for &(x0, y0, x1, y1) in &edges {
             // checking if the scanline intersects the edges.
             if (y0 <= y && y1 > y) || (y1 <= y && y0 > y) {
@@ -179,6 +178,8 @@ pub fn draw_filled_polygon<const C: usize>(
             }
         }
     }
+    // drawing the polygon outline
+    draw_polygon(img, points, line_color, thickness);
 }
 
 #[cfg(test)]
