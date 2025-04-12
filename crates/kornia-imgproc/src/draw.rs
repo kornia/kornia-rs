@@ -241,7 +241,6 @@ mod tests {
         )?;
         let points: [(i64, i64); 3] = [(0, 0), (0, 3), (4, 0)];
         draw_filled_polygon(&mut img, &points, [150], [255], 1);
-        println!("{:?}", img.as_slice());
         assert_eq!(
             img.as_slice(),
             vec![
@@ -250,6 +249,31 @@ mod tests {
                 255, 150, 255, 0, 0,
                 255, 255, 0, 0, 0,
                 0, 0, 0, 0, 0
+            ]
+        );
+        Ok(())
+    }
+
+    #[rustfmt::skip]
+    #[test]
+    fn test_draw_filled_single_pixel_width() -> Result<(), ImageError> {
+        let mut img = Image::new(
+            ImageSize {
+                width: 5,
+                height: 5,
+            },
+            vec![0; 25],
+        )?;
+        let points: [(i64, i64); 3] = [(0, 0), (0, 3), (0, 4)];
+        draw_filled_polygon(&mut img, &points, [150], [255], 1);
+        assert_eq!(
+            img.as_slice(),
+            vec![
+                255, 0, 0, 0, 0,
+                255, 0, 0, 0, 0,
+                255, 0, 0, 0, 0,
+                255, 0, 0, 0, 0,
+                255, 0, 0, 0, 0
             ]
         );
         Ok(())
