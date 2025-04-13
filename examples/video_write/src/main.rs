@@ -10,7 +10,7 @@ use std::{
 use kornia::{
     image::ImageSize,
     io::stream::{
-        video::{ImageFormat, VideoCodec},
+        video::{ImageFormat, VideoCodec, VideoContainer},
         V4L2CameraConfig, VideoWriter,
     },
 };
@@ -63,6 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut video_writer = VideoWriter::new(
         args.output,
         VideoCodec::H264,
+        VideoContainer::MP4,
         ImageFormat::Rgb8,
         args.fps,
         frame_size,
