@@ -16,7 +16,7 @@ use std::{
 };
 
 #[derive(FromArgs, Debug)]
-/// Read the video from given file
+/// Read the video recorded from webcam.
 struct Args {
     /// the camera id to use
     #[argh(option, short = 'c', default = "0")]
@@ -24,7 +24,7 @@ struct Args {
     /// duration of webcam stream to record
     #[argh(option, short = 'd', default = "30")]
     duration: u64,
-    /// path to the input video file
+    /// path to file where webcam recording will be saved
     #[argh(option, short = 'o')]
     output: PathBuf,
     /// width of the video
