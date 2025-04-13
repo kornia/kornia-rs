@@ -3,8 +3,29 @@ use numpy::{PyArray, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
 use kornia_image::{Image, ImageError, ImageSize};
 use pyo3::prelude::*;
 
+use arrow::array::{Array, UInt8Array};
+use arrow::pyarrow::{IntoPyArrow, PyArrowType};
+
+pub struct PyImageWrapper<const C: usize>(pub Image<u8, C>);
+
 // type alias for a 3D numpy array of u8
 pub type PyImage = Py<PyArray3<u8>>;
+
+impl<const C: usize> IntoPyArrow for PyImageWrapper<C> {
+    fn into_pyarrow(self, py: Python<'_>) -> PyResult<PyObject> {
+        let array = UInt8Array::from_iter(self.0.as_slice().iter().copied());
+        let data = array.into_data();
+        let pyarrow = PyArrowType(data);
+        let obj = pyarrow.into_pyobject(py)?;
+        Ok(obj.into())
+    }
+}
+
+impl<const C: usize> From<Image<u8, C>> for PyImageWrapper<C> {
+    fn from(image: Image<u8, C>) -> Self {
+        PyImageWrapper(image)
+    }
+}
 
 /// Trait to convert an image to a PyImage (3D numpy array of u8)
 pub trait ToPyImage {

@@ -7,6 +7,7 @@ pre-commit
 pytest
 pytest-run-parallel
 numpy
+pyarrow
 
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
