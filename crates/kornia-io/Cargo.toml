@@ -21,7 +21,7 @@ circular-buffer = "1.1.0"
 kornia-image = { workspace = true }
 png = "0.17"
 jpeg-encoder = "0.6"
-jpeg-decoder = "0.3"
+zune-jpeg = "0.4"
 log = { workspace = true }
 thiserror = { workspace = true }
 
@@ -41,3 +41,4 @@ turbojpeg = ["dep:turbojpeg"]
 [[bench]]
 name = "bench_io"
 harness = false
+required-features = ["turbojpeg"]

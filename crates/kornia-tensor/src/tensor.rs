@@ -43,7 +43,7 @@ pub enum TensorError {
 /// # Returns
 ///
 /// * `strides` - The strides of the tensor.
-pub(crate) fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
+pub fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
     let mut strides: [usize; N] = [0; N];
     let mut stride = 1;
     for i in (0..shape.len()).rev() {
