@@ -1,0 +1,18 @@
+[package]
+name = "read_video_visualize"
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "read_video_visualize"
+path = "src/main.rs"
+
+[dependencies]
+kornia-io = { path = "../../crates/kornia-io" }
+kornia-image = { path = "../../crates/kornia-image" }
+tempfile = { workspace = true }
+rerun = { workspace = true }
+log = "0.4"
+env_logger = "0.11"

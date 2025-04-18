@@ -12,11 +12,16 @@ version.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
+rustc-args = ["--cfg", "docsrs"]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 image = "0.25"
+circular-buffer = "1.1.0"
 kornia-image = { workspace = true }
 png = "0.17"
+jpeg-encoder = "0.6"
+zune-jpeg = "0.4"
 log = { workspace = true }
 thiserror = { workspace = true }
 
@@ -24,6 +29,7 @@ thiserror = { workspace = true }
 gst = { version = "0.23.4", package = "gstreamer", optional = true }
 gst-app = { version = "0.23.4", package = "gstreamer-app", optional = true }
 turbojpeg = { version = "1.2", optional = true }
+env_logger = "0.11.8"
 
 [dev-dependencies]
 criterion = { workspace = true }
@@ -36,3 +42,45 @@ turbojpeg = ["dep:turbojpeg"]
 [[bench]]
 name = "bench_io"
 harness = false
+required-features = ["turbojpeg"]
+
+
+#[package]
+#name = "kornia-io"
+#authors.workspace = true
+#description = "Image and Video IO library in Rust for computer vision"
+#edition.workspace = true
+#homepage.workspace = true
+#license.workspace = true
+#publish = true
+#repository.workspace = true
+#rust-version.workspace = true
+#version.workspace = true
+#
+#[package.metadata.docs.rs]
+#all-features = true
+#
+#[dependencies]
+#image = "0.25"
+#kornia-image = { workspace = true }
+#png = "0.17"
+#log = { workspace = true }
+#thiserror = { workspace = true }
+#
+## optional dependencies
+#gst = { version = "0.23.4", package = "gstreamer", optional = true }
+#gst-app = { version = "0.23.4", package = "gstreamer-app", optional = true }
+#turbojpeg = { version = "1.2", optional = true }
+#env_logger = "0.11.8"
+#
+#[dev-dependencies]
+#criterion = { workspace = true }
+#tempfile = { workspace = true }
+#
+#[features]
+#gstreamer = ["gst", "gst-app"]
+#turbojpeg = ["dep:turbojpeg"]
+#
+#[[bench]]
+#name = "bench_io"
+#harness = false

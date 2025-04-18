@@ -1,9 +1,15 @@
+use thiserror::Error;
+
 /// An error type for the stream module.
-#[derive(thiserror::Error, Debug)]
+#[derive(Error, Debug)]
 pub enum StreamCaptureError {
     /// An error occurred during GStreamer initialization.
-    #[error("Failed to initialize GStreamer")]
-    GStreamerError(#[from] gst::glib::Error),
+    #[error("GStreamer initialization error: {0}")]
+    GstInitError(#[from] gst::glib::Error),
+
+    // /// An error occurred during GStreamer initialization.
+    // #[error("Failed to initialize GStreamer")]
+    // GStreamerError(#[from] gst::glib::Error), // Keep #[from] if present
 
     /// An error occurred during GStreamer downcast of pipeline element.
     #[error("Failed to downcast pipeline")]
@@ -33,12 +39,10 @@ pub enum StreamCaptureError {
     #[error("Failed to get the structure")]
     GetStructureError,
 
-    // TODO: figure out the #[from] macro for this error
     /// An error occurred during GStreamer to get the height from the structure.
     #[error("Failed to get the height from the structure")]
     GetHeightError,
 
-    // TODO: figure out the #[from] macro for this error
     /// An error occurred during GStreamer to get the width from the structure.
     #[error("Failed to get the width from the structure")]
     GetWidthError,
@@ -51,7 +55,6 @@ pub enum StreamCaptureError {
     #[error("Failed to create an image frame")]
     CreateImageFrameError,
 
-    // TODO: support later on ImageError
     /// An error occurred during processing the image frame.
     #[error("Failed processing the image frame")]
     ProcessImageFrameError(#[from] Box<dyn std::error::Error + Send + Sync>),
@@ -69,12 +72,16 @@ pub enum StreamCaptureError {
     InvalidConfig(String),
 
     /// An error occurred during GStreamer to send end of stream event.
-    #[error("Error ocurred in the gstreamer flow")]
+    #[error("Error occurred in the gstreamer flow")]
     GstreamerFlowError(#[from] gst::FlowError),
 
     /// An error occurred during checking the image format.
     #[error("Invalid image format: {0}")]
     InvalidImageFormat(String),
+
+    /// The requested file was not found.
+    #[error("File not found: {0}")]
+    FileNotFound(String),
 
     /// An error occurred when the pipeline is not running.
     #[error("Pipeline is not running")]
