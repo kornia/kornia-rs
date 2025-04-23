@@ -259,7 +259,7 @@ impl VideoReader {
     ///
     /// # Arguments
     ///
-    /// * `path` - The path to save the video file.
+    /// * `path` - The path to the video file to be read.
     /// * `format` - The expected image format.
     /// * `fps` - The frames per second of the video.
     /// * `size` - The size of the video.
