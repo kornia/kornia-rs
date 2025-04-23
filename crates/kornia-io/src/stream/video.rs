@@ -19,6 +19,32 @@ pub enum ImageFormat {
     Mono8,
 }
 
+/// A enum representing the state of [VideoReader] pipeline.
+///
+/// For more info, refer to <https://gstreamer.freedesktop.org/documentation/additional/design/states.html?gi-language=c>
+pub enum State {
+    /// This is the initial state of a pipeline.
+    Null,
+    /// The element should be prepared to go to [State::Paused]
+    Ready,
+    /// The video is paused.
+    Paused,
+    /// The video is playing.
+    Playing,
+}
+
+impl From<gstreamer::State> for State {
+    fn from(value: gstreamer::State) -> Self {
+        match value {
+            gstreamer::State::VoidPending => State::Null,
+            gstreamer::State::Null => State::Null,
+            gstreamer::State::Ready => State::Ready,
+            gstreamer::State::Paused => State::Paused,
+            gstreamer::State::Playing => State::Playing,
+        }
+    }
+}
+
 /// A struct for writing video files.
 pub struct VideoWriter {
     pipeline: gstreamer::Pipeline,
@@ -265,6 +291,13 @@ impl VideoReader {
         self.0.start()
     }
 
+    /// Pauses the video reader pipeline
+    #[inline]
+    pub fn pause(&mut self) -> Result<(), StreamCaptureError> {
+        self.0.get_pipeline().set_state(gstreamer::State::Paused)?;
+        Ok(())
+    }
+
     /// Close the video reader pipeline
     #[inline]
     pub fn close(&self) -> Result<(), StreamCaptureError> {
@@ -281,6 +314,12 @@ impl VideoReader {
         self.0.grab()
     }
 
+    /// Gets the current state of the video pipeline
+    #[inline]
+    pub fn get_state(&self) -> State {
+        self.0.get_pipeline().current_state().into()
+    }
+
     /// Gets the current position in the video.
     ///
     /// # Returns
@@ -288,6 +327,22 @@ impl VideoReader {
     /// * `Some(Duration)` - The current position as a Duration from the start of the video
     /// * `None` - If the position could not be determined
     pub fn get_pos(&self) -> Option<Duration> {
+        let clock_time = self
+            .0
+            .get_pipeline()
+            .query_position::<gstreamer::format::ClockTime>()?;
+
+        let duration = Duration::from_nanos(clock_time.nseconds());
+        Some(duration)
+    }
+
+    /// Gets the total duration of the video.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(Duration)` - The total duration of the video
+    /// * `None` - If the video duration could not be determined
+    pub fn get_duration(&self) -> Option<Duration> {
         let clock_time = self
             .0
             .get_pipeline()
@@ -320,7 +375,7 @@ impl VideoReader {
     /// # Arguments
     ///
     /// * `speed` - The playback speed factor. 1.0 is normal speed, 0.5 is half speed, 2.0 is
-    /// double speed, etc.
+    ///   double speed, etc.
     ///
     /// # Returns
     ///
@@ -352,8 +407,12 @@ impl VideoReader {
     }
 
     /// Restart the video from the beginning
-    pub fn restart(&self) -> bool {
-        self.seek(gstreamer::SeekFlags::FLUSH, Duration::from_secs(0))
+    pub fn restart(&mut self) -> Result<(), StreamCaptureError> {
+        let pipeline = self.0.get_pipeline_mut();
+        pipeline.set_state(gstreamer::State::Null)?;
+        std::thread::sleep(Duration::from_micros(1));
+        self.start()?;
+        Ok(())
     }
 }
 
