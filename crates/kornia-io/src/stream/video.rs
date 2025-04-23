@@ -237,12 +237,7 @@ impl VideoReader {
     /// * `format` - The expected image format.
     /// * `fps` - The frames per second of the video.
     /// * `size` - The size of the video.
-    pub fn new(
-        path: impl AsRef<Path>,
-        format: ImageFormat,
-        fps: u32,
-        size: ImageSize,
-    ) -> Result<Self, StreamCaptureError> {
+    pub fn new(path: impl AsRef<Path>, format: ImageFormat) -> Result<Self, StreamCaptureError> {
         // TODO: Support more formats
         let video_format = match format {
             ImageFormat::Rgb8 => "RGB",
@@ -253,13 +248,10 @@ impl VideoReader {
             "filesrc location=\"{}\" ! \
             decodebin ! \
             videoconvert ! \
-            video/x-raw,format={},width={},height={},framerate={}/1 ! \
+            video/x-raw,format={} ! \
             appsink name=sink sync=true",
             path.as_ref().to_string_lossy(),
-            video_format,
-            size.width,
-            size.height,
-            fps,
+            video_format
         );
 
         let capture = StreamCapture::new(&pipeline)?;
