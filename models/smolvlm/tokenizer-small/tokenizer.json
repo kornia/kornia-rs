@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "model_type": "smolvlm",
+  "bos_token": "<bos>",
+  "eos_token": "<eos>",
+  "pad_token": "<pad>",
+  "unk_token": "<unk>",
+  "tokens": {
+    "<bos>": 1,
+    "<eos>": 2,
+    "<pad>": 0,
+    "<unk>": 3
+  }
+}
