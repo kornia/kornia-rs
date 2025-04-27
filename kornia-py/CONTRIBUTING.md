@@ -25,7 +25,7 @@
     This will check and try to install if not available: [rust](https://rustup.rs/) and [uv](https://docs.astral.sh/uv/).
     Then it will setup a `.venv` directory and install the kornia-py package
     ```sh
-    make install
+    just install
     ```
 
     Note:
@@ -34,7 +34,7 @@
 
 3. **Run tests to ensure everything is set up correctly:**
     ```sh
-    make test
+    just test
     ```
 
 You are now ready to start contributing to the Kornia-py package!
