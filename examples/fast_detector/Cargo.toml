@@ -1,5 +1,5 @@
 [package]
-name = "filters"
+name = "fast_detector"
 version = "0.1.0"
 authors = ["Edgar Riba <edgar.riba@gmail.com>"]
 license = "Apache-2.0"

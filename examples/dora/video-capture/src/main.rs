@@ -1,5 +1,5 @@
 use dora_image_utils::image_to_arrow;
-use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event};
+use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow};
 use kornia::io::stream::{RTSPCameraConfig, V4L2CameraConfig};
 
 fn main() -> eyre::Result<()> {
@@ -52,7 +52,7 @@ fn main() -> eyre::Result<()> {
 
                     let (meta_parameters, data) = image_to_arrow(frame, metadata)?;
 
-                    node.send_output(output.clone(), meta_parameters, data)?;
+                    node.send_output(output.clone(), meta_parameters, data.into_arrow())?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },

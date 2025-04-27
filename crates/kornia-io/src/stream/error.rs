@@ -2,12 +2,12 @@
 #[derive(thiserror::Error, Debug)]
 pub enum StreamCaptureError {
     /// An error occurred during GStreamer initialization.
-    #[error("Failed to initialize GStreamer")]
-    GStreamerError(#[from] gst::glib::Error),
+    #[error(transparent)]
+    GStreamerError(#[from] gstreamer::glib::Error),
 
     /// An error occurred during GStreamer downcast of pipeline element.
     #[error("Failed to downcast pipeline")]
-    DowncastPipelineError(gst::Element),
+    DowncastPipelineError(gstreamer::Element),
 
     /// An error occurred during GStreamer downcast of appsink.
     #[error("Failed to get an element by name")]
@@ -18,30 +18,16 @@ pub enum StreamCaptureError {
     BusError,
 
     /// An error occurred during GStreamer to set the pipeline state.
-    #[error("Failed to set the pipeline state")]
-    SetPipelineStateError(#[from] gst::StateChangeError),
+    #[error(transparent)]
+    SetPipelineStateError(#[from] gstreamer::StateChangeError),
 
     /// An error occurred during GStreamer to pull sample from appsink.
-    #[error("Failed to pull sample from appsink")]
-    PullSampleError(#[from] gst::glib::BoolError),
+    #[error(transparent)]
+    PullSampleError(#[from] gstreamer::glib::BoolError),
 
     /// An error occurred during GStreamer to get the caps from the sample.
-    #[error("Failed to get the caps from the sample")]
-    GetCapsError,
-
-    /// An error occurred during GStreamer to get the structure from the caps.
-    #[error("Failed to get the structure")]
-    GetStructureError,
-
-    // TODO: figure out the #[from] macro for this error
-    /// An error occurred during GStreamer to get the height from the structure.
-    #[error("Failed to get the height from the structure")]
-    GetHeightError,
-
-    // TODO: figure out the #[from] macro for this error
-    /// An error occurred during GStreamer to get the width from the structure.
-    #[error("Failed to get the width from the structure")]
-    GetWidthError,
+    #[error("Failed caps: {0}")]
+    GetCapsError(String),
 
     /// An error occurred during GStreamer to get the buffer from the sample.
     #[error("Failed to get the buffer from the sample")]
@@ -53,7 +39,7 @@ pub enum StreamCaptureError {
 
     // TODO: support later on ImageError
     /// An error occurred during processing the image frame.
-    #[error("Failed processing the image frame")]
+    #[error(transparent)]
     ProcessImageFrameError(#[from] Box<dyn std::error::Error + Send + Sync>),
 
     /// An error occurred during GStreamer to send eos event.
@@ -69,8 +55,8 @@ pub enum StreamCaptureError {
     InvalidConfig(String),
 
     /// An error occurred during GStreamer to send end of stream event.
-    #[error("Error ocurred in the gstreamer flow")]
-    GstreamerFlowError(#[from] gst::FlowError),
+    #[error(transparent)]
+    GstreamerFlowError(#[from] gstreamer::FlowError),
 
     /// An error occurred during checking the image format.
     #[error("Invalid image format: {0}")]
@@ -81,10 +67,6 @@ pub enum StreamCaptureError {
     PipelineNotRunning,
 
     /// An error occurred when the allocator is not found.
-    #[error("Cannot lock the last frame")]
-    LockError,
+    #[error("Could not lock the mutex")]
+    MutexPoisonError,
 }
-
-// ensure that can be sent over threads
-unsafe impl Send for StreamCaptureError {}
-unsafe impl Sync for StreamCaptureError {}
