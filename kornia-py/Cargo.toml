@@ -10,6 +10,8 @@ repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
 version = "0.1.9-rc.2"
 
+[workspace]
+
 [lib]
 name = "kornia_rs"
 crate-type = ["cdylib"]
@@ -26,3 +28,7 @@ kornia-3d = { path = "../crates/kornia-3d" }
 # external
 pyo3 = { version = "0.24.0", features = ["extension-module"] }
 numpy = { version = "0.24.0" }
+
+arrow = { version = "55.0.0", features = ["pyarrow"] }
+rand = { version = "0.9.0", features = ["std_rng"] }
+rand_distr = { version = "0.5.1" }

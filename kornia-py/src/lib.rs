@@ -14,6 +14,9 @@ use crate::io::functional::{decode_image_jpeg, read_image_any, read_image_jpeg, 
 use crate::io::jpeg::decode_image_raw_jpeg;
 use crate::io::png::decode_image_png;
 use crate::io::turbojpeg::{PyImageDecoder, PyImageEncoder};
+use arrow::pyarrow::IntoPyArrow;
+use image::PyImageWrapper;
+use kornia_image::Image;
 use pyo3::prelude::*;
 
 pub fn get_version() -> String {
@@ -24,6 +27,19 @@ pub fn get_version() -> String {
     // see https://peps.python.org/pep-0440/ for python spec
     // it seems the dot after "alpha/beta" e.g. "-alpha.1" is not necessary, hence why this works
     version.replace("-alpha", "a").replace("-beta", "b")
+}
+
+/// Generate a random boolean array from a Bernoulli distribution.
+use arrow::{array::ArrayData, pyarrow::PyArrowType};
+use pyo3::exceptions::PyValueError;
+
+#[pyfunction]
+fn image_to_pyarrow(py: Python<'_>) -> PyResult<PyArrowType<ArrayData>> {
+    let image = Image::<u8, 1>::new([1, 3].into(), vec![4u8, 5, 6])
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+    let data = PyImageWrapper::from(image);
+    let obj = data.into_pyarrow(py)?;
+    Ok(obj.extract::<PyArrowType<ArrayData>>(py)?)
 }
 
 #[pymodule(gil_used = false)]
@@ -49,5 +65,6 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyImageEncoder>()?;
     m.add_class::<PyICPConvergenceCriteria>()?;
     m.add_class::<PyICPResult>()?;
+    m.add_function(wrap_pyfunction!(image_to_pyarrow, m)?)?;
     Ok(())
 }
