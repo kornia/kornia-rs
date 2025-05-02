@@ -192,7 +192,6 @@ fn write_image_tiff_impl<C, T>(
 ) -> Result<(), IoError>
 where
     C: tiff::encoder::colortype::ColorType<Inner = T>,
-    T: tiff::encoder::TiffValue,
     [T]: tiff::encoder::TiffValue,
 {
     let file = fs::File::create(file_path)?;
