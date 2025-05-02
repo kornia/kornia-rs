@@ -50,7 +50,8 @@ faer = "0.20.1"
 log = "0.4"
 num-traits = "0.2"
 rand = "0.9"
-rerun = "^0.22"
+#rerun = "^0.22"
+rerun = "0.23.1"
 serde = { version = "1", features = ["derive"] }
 tempfile = "3.10"
 thiserror = "2"
@@ -58,6 +59,6 @@ thiserror = "2"
 # temporary fixes:
 # https://github.com/rerun-io/rerun/issues/9159
 # https://github.com/apache/arrow-rs/issues/7201#issuecomment-2685998489
-arrow = "=54.2.1"
-arrow-arith = "=54.2.1"
-chrono = "=0.4.39"
+#arrow = "=54.2.1"
+#arrow-arith = "=54.2.1"
+#chrono = "=0.4.39"

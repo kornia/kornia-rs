@@ -10,4 +10,5 @@ publish = false
 argh = { workspace = true }
 ctrlc = { workspace = true }
 kornia = { workspace = true, features = ["gstreamer"] }
-rerun = { workspace = true }
+#rerun = { workspace = true }
+rerun = "0.23.1"
