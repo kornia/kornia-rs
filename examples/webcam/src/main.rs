@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
 
     // start the recording stream
-    //let rec = rerun::RecordingStreamBuilder::new("Kornia Webcapture App").spawn()?;
+    let rec = rerun::RecordingStreamBuilder::new("Kornia Webcapture App").spawn()?;
 
     // create a webcam capture object with camera id 0
     // and force the image size to 640x480
@@ -49,8 +49,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //// start the background pipeline
     //webcam.start()?;
     let img_size = ImageSize {
-        width: 640,
-        height: 480,
+        width: 320,
+        height: 180,
     };
 
     let mut webcam = kornia_v4l::V4LVideoCapture::new(kornia_v4l::V4LCameraConfig {
@@ -119,14 +119,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("img_rgb8.buffer: {:?}", &img_rgb8.as_slice()[..100]);
         println!("########################");
 
-        //rec.log_static(
-        //    "image",
-        //    &rerun::Image::from_elements(
-        //        img_rgb8.as_slice(),
-        //        img_rgb8.size().into(),
-        //        rerun::ColorModel::RGB,
-        //    ),
-        //)?;
+        rec.log_static(
+            "image",
+            &rerun::Image::from_elements(
+                img_rgb8.as_slice(),
+                img_rgb8.size().into(),
+                rerun::ColorModel::RGB,
+            ),
+        )?;
 
         // lets resize the image to 256x256
         //imgproc::resize::resize_fast(
