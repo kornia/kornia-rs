@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use dora_image_utils::arrow_to_image;
 use dora_node_api::{DoraNode, Event};
 use kornia::image::Image;
@@ -15,9 +13,9 @@ fn main() -> eyre::Result<()> {
     let rr_port = std::env::var("RERUN_PORT")
         .unwrap_or_else(|_| RERUN_PORT.to_string())
         .parse::<u16>()?;
-    let rr_addr = std::net::SocketAddr::from_str(&format!("{}:{}", rr_host, rr_port))?;
 
-    let rr = rerun::RecordingStreamBuilder::new("Camera Sink").connect_tcp_opts(rr_addr, None)?;
+    let rr = rerun::RecordingStreamBuilder::new("Camera Sink")
+        .connect_grpc_opts(format!("rerun+http://{}:{}/proxy", rr_host, rr_port), None)?;
 
     while let Some(event) = events.recv() {
         match event {
@@ -57,7 +55,10 @@ fn log_image(
     timestamp_nanos: u64,
     img: &Image<u8, 3>,
 ) -> eyre::Result<()> {
-    rr.set_time_nanos(name, timestamp_nanos as i64);
+    rr.set_time(
+        "time",
+        rerun::TimeCell::from_duration_nanos(timestamp_nanos as i64),
+    );
     rr.log(
         name,
         &rerun::Image::from_elements(img.as_slice(), img.size().into(), rerun::ColorModel::RGB),
