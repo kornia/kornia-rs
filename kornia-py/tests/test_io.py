@@ -21,6 +21,7 @@ def test_read_image_jpeg():
     img_t = torch.from_numpy(img)
     assert img_t.shape == (195, 258, 3)
 
+
 def test_decode_image_jpeg():
     # load an image with libjpeg-turbo
     img_path: Path = DATA_DIR / "dog.jpeg"
@@ -34,11 +35,12 @@ def test_decode_image_jpeg():
     img_t = torch.from_numpy(img)
     assert img_t.shape == (195, 258, 3)
 
+
 def test_decode_image_raw_jpeg():
     img_path: Path = DATA_DIR / "dog.jpeg"
     with open(img_path, "rb") as f:
         img_data = f.read()
-    img: np.ndarray = K.decode_image_raw_jpeg(bytes(img_data), [195, 258], "rgb")
+    img: np.ndarray = K.decode_image_raw_jpeg(bytes(img_data), (195, 258), "rgb")
 
     # check the image properties
     assert img.shape == (195, 258, 3)
@@ -46,18 +48,20 @@ def test_decode_image_raw_jpeg():
     img_t = torch.from_numpy(img)
     assert img_t.shape == (195, 258, 3)
 
+
 def test_decode_image_png():
     img_path: Path = DATA_DIR / "rgb16.png"
     with open(img_path, "rb") as f:
         img_data = f.read()
     # img_size: np.ndarray = np.array([32, 32])
-    img: np.ndarray = K.decode_image_png(bytes(img_data), [32, 32], "rgb16")
+    img: np.ndarray = K.decode_image_png(bytes(img_data), (32, 32), "rgb16")
 
     # check the image properties
     assert img.shape == (32, 32, 3)
 
     img_t = torch.from_numpy(img)
     assert img_t.shape == (32, 32, 3)
+
 
 # TODO: load other types of images
 def test_read_image_any():
@@ -70,6 +74,7 @@ def test_read_image_any():
 
     img_t = torch.from_numpy(img)
     assert img_t.shape == (195, 258, 3)
+
 
 def test_decompress():
     # load an image with libjpeg-turbo
@@ -89,12 +94,15 @@ def test_decompress():
 
 
 def test_compress_decompress():
-    img = np.array([
-        [0, 0, 0, 0, 0],
-        [0, 127, 255, 127, 0],
-        [0, 127, 255, 127, 0],
-        [0, 127, 255, 127, 0],
-    ], dtype=np.uint8)
+    img = np.array(
+        [
+            [0, 0, 0, 0, 0],
+            [0, 127, 255, 127, 0],
+            [0, 127, 255, 127, 0],
+            [0, 127, 255, 127, 0],
+        ],
+        dtype=np.uint8,
+    )
     img = np.repeat(img[..., None], 3, axis=-1)
 
     image_encoder = K.ImageEncoder()
@@ -114,12 +122,15 @@ def test_compress_decompress():
 
 
 def test_write_read_jpeg():
-    img = np.array([
-        [0, 0, 0, 0, 0],
-        [0, 127, 255, 127, 0],
-        [0, 127, 255, 127, 0],
-        [0, 127, 255, 127, 0],
-    ], dtype=np.uint8)
+    img = np.array(
+        [
+            [0, 0, 0, 0, 0],
+            [0, 127, 255, 127, 0],
+            [0, 127, 255, 127, 0],
+            [0, 127, 255, 127, 0],
+        ],
+        dtype=np.uint8,
+    )
     img = np.repeat(img[..., None], 3, axis=-1)
 
     # write the image to a file

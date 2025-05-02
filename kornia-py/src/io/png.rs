@@ -17,19 +17,13 @@ use kornia_io::png as P;
 /// ```py
 /// import kornia_rs as K
 ///
-/// img = K.decode_image_png(bytes(img_data), [32, 32], "rgb8")
+/// img = K.decode_image_png(bytes(img_data), (32, 32), "rgb8")
 /// ```
 #[pyfunction]
-pub fn decode_image_png(src: &[u8], image_shape: Vec<usize>, mode: &str) -> PyResult<PyImage> {
-    if image_shape.len() != 2 {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            String::from("Missing width and height of image, pass [width, height]"),
-        ));
-    }
-
+pub fn decode_image_png(src: &[u8], image_shape: (usize, usize), mode: &str) -> PyResult<PyImage> {
     let image_shape = ImageSize {
-        width: image_shape[1],
-        height: image_shape[0],
+        width: image_shape.1,
+        height: image_shape.0,
     };
 
     let result = match mode {
