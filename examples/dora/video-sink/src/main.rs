@@ -14,7 +14,6 @@ fn main() -> eyre::Result<()> {
         .unwrap_or_else(|_| RERUN_PORT.to_string())
         .parse::<u16>()?;
 
-    //let rr = rerun::RecordingStreamBuilder::new("Camera Sink").connect_tcp_opts(rr_addr, None)?;
     let rr = rerun::RecordingStreamBuilder::new("Camera Sink")
         .connect_grpc_opts(format!("rerun+http://{}:{}/proxy", rr_host, rr_port), None)?;
 
