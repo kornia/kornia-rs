@@ -9,15 +9,21 @@ use pyo3::prelude::*;
 /// The following modes are supported:
 /// 1. "rgb" -> 8-bit RGB
 /// 2. "mono" -> 8-bit Monochrome
-pub fn decode_image_raw_jpeg(src: &[u8], image_shape: Vec<usize>, mode: &str) -> PyResult<PyImage> {
-    if image_shape.len() != 2 {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            String::from("Missing width and height of image, pass [width, height]"),
-        ));
-    }
+///
+/// ```py
+/// import kornia_rs as K
+///
+/// img = K.decode_image_raw_jpeg(bytes(img_data), (32, 32), "rgb")
+/// ```
+///
+pub fn decode_image_raw_jpeg(
+    src: &[u8],
+    image_shape: (usize, usize),
+    mode: &str,
+) -> PyResult<PyImage> {
     let image_shape = ImageSize {
-        width: image_shape[1],
-        height: image_shape[0],
+        width: image_shape.1,
+        height: image_shape.0,
     };
 
     let result = match mode {
