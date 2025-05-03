@@ -110,6 +110,58 @@ pub fn read_image_tiff_mono16(file_path: impl AsRef<Path>) -> Result<Image<u16, 
     Ok(Image::new(size.into(), data)?)
 }
 
+/// Read a TIFF image and return it as single precision floating point image with one channel.
+///
+/// # Arguments
+///
+/// * `file_path` - The path to the TIFF image.
+///
+/// # Returns
+///
+/// The floating point image as a `Image<f32, 1>`.
+pub fn read_image_tiff_mono32f(file_path: impl AsRef<Path>) -> Result<Image<f32, 1>, IoError> {
+    let (result, size) = read_image_tiff_impl(file_path)?;
+
+    let data = match result {
+        DecodingResult::F32(data) => data,
+        _ => {
+            return Err(IoError::TiffDecodingError(
+                tiff::TiffError::UnsupportedError(
+                    tiff::TiffUnsupportedError::UnknownInterpretation,
+                ),
+            ))
+        }
+    };
+
+    Ok(Image::new(size.into(), data)?)
+}
+
+/// Read a TIFF image and return it as single precision floating point image with three channels.
+///
+/// # Arguments
+///
+/// * `file_path` - The path to the TIFF image.
+///
+/// # Returns
+///
+/// The floating point image as a `Image<f32, 3>`.
+pub fn read_image_tiff_rgb32f(file_path: impl AsRef<Path>) -> Result<Image<f32, 3>, IoError> {
+    let (result, size) = read_image_tiff_impl(file_path)?;
+
+    let data = match result {
+        DecodingResult::F32(data) => data,
+        _ => {
+            return Err(IoError::TiffDecodingError(
+                tiff::TiffError::UnsupportedError(
+                    tiff::TiffUnsupportedError::UnknownInterpretation,
+                ),
+            ))
+        }
+    };
+
+    Ok(Image::new(size.into(), data)?)
+}
+
 fn read_image_tiff_impl(
     file_path: impl AsRef<Path>,
 ) -> Result<(DecodingResult, [usize; 2]), IoError> {
@@ -183,6 +235,32 @@ pub fn write_image_tiff_mono16(
     image: &Image<u16, 1>,
 ) -> Result<(), IoError> {
     write_image_tiff_impl::<colortype::Gray16, u16>(file_path, image.as_slice(), image.size())
+}
+
+/// Write a TIFF image with a single precision as one channel image.
+///
+/// # Arguments
+///
+/// * `file_path` - The path to the TIFF image.
+/// * `image` - The image to write.
+pub fn write_image_tiff_mono32f(
+    file_path: impl AsRef<Path>,
+    image: &Image<f32, 1>,
+) -> Result<(), IoError> {
+    write_image_tiff_impl::<colortype::Gray32Float, f32>(file_path, image.as_slice(), image.size())
+}
+
+/// Write a TIFF image with a single precision as three channel image.
+///
+/// # Arguments
+///
+/// * `file_path` - The path to the TIFF image.
+/// * `image` - The image to write.
+pub fn write_image_tiff_rgb32f(
+    file_path: impl AsRef<Path>,
+    image: &Image<f32, 3>,
+) -> Result<(), IoError> {
+    write_image_tiff_impl::<colortype::RGB32Float, f32>(file_path, image.as_slice(), image.size())
 }
 
 fn write_image_tiff_impl<C, T>(
@@ -320,6 +398,60 @@ mod tests {
 
         let img_mono16_back = read_image_tiff_mono16(&file_path)?;
         assert_eq!(img_mono16_back.as_slice(), img_mono16.as_slice());
+
+        Ok(())
+    }
+
+    #[test]
+    fn synthetic_write_tiff_monof32() -> Result<(), IoError> {
+        let tmp_dir = tempfile::tempdir()?;
+        create_dir_all(tmp_dir.path())?;
+
+        let width = 1;
+        let height = 2;
+
+        let data = vec![3.0, 2.0];
+
+        let img_mono32f = Image::<f32, 1>::new(
+            ImageSize {
+                width: width as usize,
+                height: height as usize,
+            },
+            data,
+        )?;
+
+        let file_path = tmp_dir.path().join("mono32f.tiff");
+        write_image_tiff_mono32f(&file_path, &img_mono32f)?;
+
+        let img_mono32f_back = read_image_tiff_mono32f(&file_path)?;
+        assert_eq!(img_mono32f_back.as_slice(), img_mono32f.as_slice());
+
+        Ok(())
+    }
+
+    #[test]
+    fn synthetic_write_tiff_rgbf32() -> Result<(), IoError> {
+        let tmp_dir = tempfile::tempdir()?;
+        create_dir_all(tmp_dir.path())?;
+
+        let width = 1;
+        let height = 2;
+
+        let data = vec![3.0, 2.0, 1.0, 0.0, 1.0, 2.0];
+
+        let img_rgb32f = Image::<f32, 3>::new(
+            ImageSize {
+                width: width as usize,
+                height: height as usize,
+            },
+            data,
+        )?;
+
+        let file_path = tmp_dir.path().join("rgb32f.tiff");
+        write_image_tiff_rgb32f(&file_path, &img_rgb32f)?;
+
+        let img_rgb32f_back = read_image_tiff_rgb32f(&file_path)?;
+        assert_eq!(img_rgb32f_back.as_slice(), img_rgb32f.as_slice());
 
         Ok(())
     }
