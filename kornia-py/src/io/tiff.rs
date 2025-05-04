@@ -7,11 +7,6 @@ use kornia_io::tiff as k_tiff;
 use pyo3::prelude::*;
 
 #[pyfunction]
-/// Decodes the JPEG Image from raw bytes.
-///
-/// The following modes are supported:
-/// 1. "rgb" -> 8-bit RGB
-/// 2. "mono" -> 8-bit Monochrome
 pub fn read_image_tiff_u8(file_path: &str, mode: &str) -> PyResult<PyImage> {
     let result = match mode {
         "rgb" => {
