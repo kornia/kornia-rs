@@ -40,7 +40,7 @@ def _test_write_read_impl(
 
     # check the image properties
     assert img_read.shape == (4, 5, channels)
-    np.allclose(img, img_read)
+    assert np.allclose(img, img_read)
 
 
 def test_read_image_jpeg():
