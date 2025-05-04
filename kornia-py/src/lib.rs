@@ -10,9 +10,6 @@ mod warp;
 
 use crate::icp::{PyICPConvergenceCriteria, PyICPResult};
 use crate::image::PyImageSize;
-use crate::io::functional::{decode_image_jpeg, read_image_any, read_image_jpeg, write_image_jpeg};
-use crate::io::jpeg::decode_image_raw_jpeg;
-use crate::io::png::decode_image_png;
 use crate::io::turbojpeg::{PyImageDecoder, PyImageEncoder};
 use pyo3::prelude::*;
 
@@ -34,16 +31,21 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(color::gray_from_rgb, m)?)?;
     m.add_function(wrap_pyfunction!(enhance::add_weighted, m)?)?;
     m.add_function(wrap_pyfunction!(icp::icp_vanilla, m)?)?;
-    m.add_function(wrap_pyfunction!(read_image_jpeg, m)?)?;
-    m.add_function(wrap_pyfunction!(write_image_jpeg, m)?)?;
-    m.add_function(wrap_pyfunction!(read_image_any, m)?)?;
     m.add_function(wrap_pyfunction!(resize::resize, m)?)?;
     m.add_function(wrap_pyfunction!(warp::warp_affine, m)?)?;
     m.add_function(wrap_pyfunction!(warp::warp_perspective, m)?)?;
     m.add_function(wrap_pyfunction!(histogram::compute_histogram, m)?)?;
-    m.add_function(wrap_pyfunction!(decode_image_png, m)?)?;
-    m.add_function(wrap_pyfunction!(decode_image_jpeg, m)?)?;
-    m.add_function(wrap_pyfunction!(decode_image_raw_jpeg, m)?)?;
+    m.add_function(wrap_pyfunction!(io::png::read_image_png_u8, m)?)?;
+    m.add_function(wrap_pyfunction!(io::png::read_image_png_u16, m)?)?;
+    m.add_function(wrap_pyfunction!(io::png::write_image_png_u8, m)?)?;
+    m.add_function(wrap_pyfunction!(io::png::write_image_png_u16, m)?)?;
+    m.add_function(wrap_pyfunction!(io::png::decode_image_png_u8, m)?)?;
+    m.add_function(wrap_pyfunction!(io::png::decode_image_png_u16, m)?)?;
+    m.add_function(wrap_pyfunction!(io::functional::read_image_jpeg, m)?)?;
+    m.add_function(wrap_pyfunction!(io::functional::write_image_jpeg, m)?)?;
+    m.add_function(wrap_pyfunction!(io::functional::read_image_any, m)?)?;
+    m.add_function(wrap_pyfunction!(io::functional::decode_image_jpeg, m)?)?;
+    m.add_function(wrap_pyfunction!(io::jpeg::decode_image_raw_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(io::tiff::read_image_tiff_u8, m)?)?;
     m.add_function(wrap_pyfunction!(io::tiff::read_image_tiff_u16, m)?)?;
     m.add_function(wrap_pyfunction!(io::tiff::write_image_tiff_u8, m)?)?;
