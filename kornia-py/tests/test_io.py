@@ -21,6 +21,7 @@ def test_read_image_jpeg():
     img_t = torch.from_numpy(img)
     assert img_t.shape == (195, 258, 3)
 
+
 def test_decode_image_jpeg():
     # load an image with libjpeg-turbo
     img_path: Path = DATA_DIR / "dog.jpeg"
@@ -34,6 +35,7 @@ def test_decode_image_jpeg():
     img_t = torch.from_numpy(img)
     assert img_t.shape == (195, 258, 3)
 
+
 def test_decode_image_raw_jpeg():
     img_path: Path = DATA_DIR / "dog.jpeg"
     with open(img_path, "rb") as f:
@@ -45,6 +47,7 @@ def test_decode_image_raw_jpeg():
 
     img_t = torch.from_numpy(img)
     assert img_t.shape == (195, 258, 3)
+
 
 def test_decode_image_png():
     img_path: Path = DATA_DIR / "rgb16.png"
@@ -59,6 +62,7 @@ def test_decode_image_png():
     img_t = torch.from_numpy(img)
     assert img_t.shape == (32, 32, 3)
 
+
 # TODO: load other types of images
 def test_read_image_any():
     # load an image with image-rs
@@ -70,6 +74,7 @@ def test_read_image_any():
 
     img_t = torch.from_numpy(img)
     assert img_t.shape == (195, 258, 3)
+
 
 def test_decompress():
     # load an image with libjpeg-turbo
@@ -89,12 +94,15 @@ def test_decompress():
 
 
 def test_compress_decompress():
-    img = np.array([
-        [0, 0, 0, 0, 0],
-        [0, 127, 255, 127, 0],
-        [0, 127, 255, 127, 0],
-        [0, 127, 255, 127, 0],
-    ], dtype=np.uint8)
+    img = np.array(
+        [
+            [0, 0, 0, 0, 0],
+            [0, 127, 255, 127, 0],
+            [0, 127, 255, 127, 0],
+            [0, 127, 255, 127, 0],
+        ],
+        dtype=np.uint8,
+    )
     img = np.repeat(img[..., None], 3, axis=-1)
 
     image_encoder = K.ImageEncoder()
@@ -114,12 +122,15 @@ def test_compress_decompress():
 
 
 def test_write_read_jpeg():
-    img = np.array([
-        [0, 0, 0, 0, 0],
-        [0, 127, 255, 127, 0],
-        [0, 127, 255, 127, 0],
-        [0, 127, 255, 127, 0],
-    ], dtype=np.uint8)
+    img = np.array(
+        [
+            [0, 0, 0, 0, 0],
+            [0, 127, 255, 127, 0],
+            [0, 127, 255, 127, 0],
+            [0, 127, 255, 127, 0],
+        ],
+        dtype=np.uint8,
+    )
     img = np.repeat(img[..., None], 3, axis=-1)
 
     # write the image to a file
@@ -132,4 +143,73 @@ def test_write_read_jpeg():
 
     # check the image properties
     assert img_read.shape == (4, 5, 3)
+    np.allclose(img, img_read)
+
+
+def test_write_read_tiff_rgb8():
+    img = np.array(
+        [
+            [1, 2, 3, 4, 5],
+            [6, 7, 8, 9, 10],
+            [11, 12, 13, 14, 15],
+            [16, 17, 18, 19, 20],
+        ],
+        dtype=np.uint8,
+    )
+    img = np.repeat(img[..., None], 3, axis=-1)
+
+    # write the image to a file
+    with tempfile.TemporaryDirectory() as tmpdir:
+        img_path = Path(tmpdir) / "test_write_read_tiff.tiff"
+        K.write_image_tiff_u8(str(img_path), img, "rgb")
+
+        # read the image back
+        img_read = K.read_image_tiff_u8(str(img_path), "rgb")
+
+    # check the image properties
+    assert img_read.shape == (4, 5, 3)
+    np.allclose(img, img_read)
+
+
+def test_write_read_tiff_rgb16():
+    img = np.array(
+        [
+            [1, 2, 3, 4, 5],
+        ],
+        dtype=np.uint16,
+    )
+    img = np.repeat(img[..., None], 3, axis=-1)
+
+    # write the image to a file
+    with tempfile.TemporaryDirectory() as tmpdir:
+        img_path = Path(tmpdir) / "test_write_read_tiff.tiff"
+        K.write_image_tiff_u16(str(img_path), img, "rgb")
+
+        # read the image back
+        img_read = K.read_image_tiff_u16(str(img_path), "rgb")
+
+    # check the image properties
+    assert img_read.shape == (1, 5, 3)
+    np.allclose(img, img_read)
+
+
+def test_write_read_tiff_f32():
+    img = np.array(
+        [
+            [1, 2, 3, 4, 5],
+        ],
+        dtype=np.float32,
+    )
+    img = np.repeat(img[..., None], 3, axis=-1)
+
+    # write the image to a file
+    with tempfile.TemporaryDirectory() as tmpdir:
+        img_path = Path(tmpdir) / "test_write_read_tiff.tiff"
+        K.write_image_tiff_f32(str(img_path), img, "rgb")
+
+        # read the image back
+        img_read = K.read_image_tiff_f32(str(img_path), "rgb")
+
+    # check the image properties
+    assert img_read.shape == (1, 5, 3)
     np.allclose(img, img_read)
