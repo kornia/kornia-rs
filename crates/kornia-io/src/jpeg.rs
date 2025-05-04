@@ -1,8 +1,7 @@
 use crate::error::IoError;
 use jpeg_encoder::{ColorType, Encoder};
 use kornia_image::{Image, ImageSize};
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
 /// Writes the given JPEG _(rgb8)_ data to the given file path.
 ///
