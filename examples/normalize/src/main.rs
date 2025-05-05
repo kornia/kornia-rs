@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image: Image<u8, 3> = F::read_image_any_rgb8(args.image_path)?;
 
     // cast the image to floating point
-    let image_f32 = image.clone().cast::<f32>()?;
+    let image_f32 = image.cast::<f32>()?;
 
     // normalize the image between 0 and 255
     let mut image_f32_norm = Image::from_size_val(image_f32.size(), 0.0)?;
@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // alternative way to normalize the image between 0 and 255
-    let _image_f32_norm = image.clone().cast_and_scale::<f32>(1.0 / 255.0)?;
+    let _image_f32_norm = image.cast_and_scale::<f32>(1.0 / 255.0)?;
     // Or: image.cast_and_scale::<f64>(1.0 / 255.0)?;
 
     let (min, max) = imgproc::normalize::find_min_max(&image_f32)?;
