@@ -9,7 +9,7 @@ use std::{fs, path::Path};
 ///
 /// - `file_path` - The path to the JPEG image.
 /// - `image` - The tensor containing the JPEG image data
-/// - `quality` - The quality of the JPEG image
+/// - `quality` - The quality of the JPEG encoding, range from 0 (lowest) to 100 (highest)
 pub fn write_image_jpeg_rgb8(
     file_path: impl AsRef<Path>,
     image: &Image<u8, 3>,
@@ -24,7 +24,7 @@ pub fn write_image_jpeg_rgb8(
 ///
 /// - `file_path` - The path to the JPEG image.
 /// - `image` - The tensor containing the JPEG image data
-/// - `quality` - The quality of the JPEG image
+/// - `quality` - The quality of the JPEG encoding, range from 0 (lowest) to 100 (highest)
 pub fn write_image_jpeg_gray8(
     file_path: impl AsRef<Path>,
     image: &Image<u8, 1>,

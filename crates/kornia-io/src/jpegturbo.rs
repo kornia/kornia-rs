@@ -239,7 +239,7 @@ pub fn read_image_jpegturbo_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8
     let jpeg_data = std::fs::read(file_path)?;
 
     // decode the data directly from memory
-    let image: Image<u8, 3> = {
+    let image = {
         let decoder = JpegTurboDecoder::new()?;
         decoder.decode_rgb8(&jpeg_data)?
     };
@@ -253,7 +253,7 @@ pub fn read_image_jpegturbo_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8
 ///
 /// * `file_path` - The path to the JPEG image.
 /// * `image` - The tensor containing the JPEG image data.
-/// * `quality` - The quality of the JPEG image
+/// * `quality` - The quality of the JPEG encoding, range from 0 (lowest) to 100 (highest)
 pub fn write_image_jpegturbo_rgb8(
     file_path: impl AsRef<Path>,
     image: &Image<u8, 3>,
@@ -276,10 +276,7 @@ pub fn write_image_jpegturbo_rgb8(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        //jpegturbo::{JpegTurboDecoder, JpegTurboEncoder, JpegTurboError},
-        IoError,
-    };
+    use crate::IoError;
 
     #[test]
     fn image_decoder() -> Result<(), JpegTurboError> {
