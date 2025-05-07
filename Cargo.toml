@@ -28,16 +28,15 @@ version = "0.1.9-rc.2"
 
 [workspace.dependencies]
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
-kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.9-rc.2" }
-kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.9-rc.2" }
+kornia-3d = { path = "crates/kornia-3d", version = "0.1.9-rc.2" }
 kornia-icp = { path = "crates/kornia-icp", version = "0.1.9-rc.2" }
 kornia-image = { path = "crates/kornia-image", version = "0.1.9-rc.2" }
-kornia-io = { path = "crates/kornia-io", version = "0.1.9-rc.2" }
 kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.9-rc.2" }
-kornia-3d = { path = "crates/kornia-3d", version = "0.1.9-rc.2" }
-kornia = { path = "crates/kornia", version = "0.1.9-rc.2" }
+kornia-io = { path = "crates/kornia-io", version = "0.1.9-rc.2" }
 kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.9-rc.2" }
-kernels = { path = "crates/kernels", version = "0.1.9-rc.2" }
+kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.9-rc.2" }
+kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.9-rc.2" }
+kornia = { path = "crates/kornia", version = "0.1.9-rc.2" }
 
 # dev dependencies for workspace
 argh = "0.1"
