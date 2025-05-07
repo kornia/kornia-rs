@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use kernels::ops::{cosine_similarity_float_kernel, dot_product1_kernel};
+use kornia_tensor_ops::kernels::{cosine_similarity_float_kernel, dot_product1_kernel};
 use rand::Rng;
 
 fn bench_product1_float_kernel(c: &mut Criterion) {
