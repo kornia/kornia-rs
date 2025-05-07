@@ -19,4 +19,5 @@ cross publish -p kornia-3d $DRY_RUN
 cross publish -p kornia-icp $DRY_RUN
 cross publish -p kornia-io --all-features $DRY_RUN
 cross publish -p kornia-imgproc $DRY_RUN
+cross publish -p kornia-linalg $DRY_RUN
 cross publish -p kornia --all-features $DRY_RUN
