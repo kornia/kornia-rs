@@ -4,6 +4,9 @@
 /// Error types for the core-ops module.
 pub mod error;
 
+/// module containing the kernels for the tensor operations.
+pub mod kernels;
+
 /// module containing ops implementations.
 pub mod ops;
 
