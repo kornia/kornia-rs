@@ -20,7 +20,6 @@ libm = ["glam/libm"]
 [dependencies]
 glam = { version = "0.30.0", default-features = false }
 
-
 [dev-dependencies]
 faer = { workspace = true }
 approx = { workspace = true }
