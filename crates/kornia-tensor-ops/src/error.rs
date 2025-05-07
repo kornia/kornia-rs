@@ -1,4 +1,3 @@
-use kernels::error::KernelError;
 use kornia_tensor::TensorError;
 use thiserror::Error;
 
@@ -9,15 +8,15 @@ pub enum TensorOpsError {
     #[error("Dimension out of bounds. The dimension {0} is out of bounds ({1}).")]
     DimOutOfBounds(usize, usize),
 
-    /// Tensor error
-    #[error("Error with the tensor: {0}")]
-    TensorError(#[from] TensorError),
-
-    /// Kernel error
-    #[error(transparent)]
-    KernelError(#[from] KernelError),
+    /// Length mismatch for vector operations
+    #[error("Length mismatch: expected equal length vectors, got {0} and {1}")]
+    LengthMismatch(usize, usize),
 
     /// Shape mismatch
     #[error("Shape mismatch: {0:?} != {1:?}")]
     ShapeMismatch(Vec<usize>, Vec<usize>),
+
+    /// Tensor error
+    #[error("Error with the tensor: {0}")]
+    TensorError(#[from] TensorError),
 }
