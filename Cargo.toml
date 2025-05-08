@@ -24,19 +24,19 @@ license-file = "LICENSE"
 readme = "README.md"
 repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
-version = "0.1.9"
+version = "0.1.10-rc.1"
 
 [workspace.dependencies]
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
-kornia-3d = { path = "crates/kornia-3d", version = "0.1.9" }
-kornia-icp = { path = "crates/kornia-icp", version = "0.1.9" }
-kornia-image = { path = "crates/kornia-image", version = "0.1.9" }
-kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.9" }
-kornia-io = { path = "crates/kornia-io", version = "0.1.9" }
-kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.9" }
-kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.9" }
-kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.9" }
-kornia = { path = "crates/kornia", version = "0.1.9" }
+kornia-3d = { path = "crates/kornia-3d", version = "0.1.10-rc.1" }
+kornia-icp = { path = "crates/kornia-icp", version = "0.1.10-rc.1" }
+kornia-image = { path = "crates/kornia-image", version = "0.1.10-rc.1" }
+kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.10-rc.1" }
+kornia-io = { path = "crates/kornia-io", version = "0.1.10-rc.1" }
+kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.10-rc.1" }
+kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.10-rc.1" }
+kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.10-rc.1" }
+kornia = { path = "crates/kornia", version = "0.1.10-rc.1" }
 
 # dev dependencies for workspace
 argh = "0.1"
