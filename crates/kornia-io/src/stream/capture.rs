@@ -18,6 +18,16 @@ pub struct StreamCapture {
 }
 
 impl StreamCapture {
+    /// Get the inner reference to the `Pipeline`
+    pub fn get_pipeline(&self) -> &gstreamer::Pipeline {
+        &self.pipeline
+    }
+
+    /// Get the inner mutable reference to the `Pipeline`
+    pub fn get_pipeline_mut(&mut self) -> &mut gstreamer::Pipeline {
+        &mut self.pipeline
+    }
+
     /// Creates a new StreamCapture instance with the given pipeline description.
     ///
     /// # Arguments

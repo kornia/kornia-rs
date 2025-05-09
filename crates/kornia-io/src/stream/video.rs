@@ -1,7 +1,7 @@
-use super::StreamCaptureError;
+use super::{StreamCapture, StreamCaptureError};
 use gstreamer::prelude::*;
 use kornia_image::{Image, ImageSize};
-use std::path::Path;
+use std::{path::Path, time::Duration};
 
 /// The codec to use for the video writer.
 pub enum VideoCodec {
@@ -17,6 +17,32 @@ pub enum ImageFormat {
     Rgb8,
     /// 8-bit mono format.
     Mono8,
+}
+
+/// A enum representing the state of [VideoReader] pipeline.
+///
+/// For more info, refer to <https://gstreamer.freedesktop.org/documentation/additional/design/states.html?gi-language=c>
+pub enum State {
+    /// This is the initial state of a pipeline.
+    Null,
+    /// The element should be prepared to go to [State::Paused]
+    Ready,
+    /// The video is paused.
+    Paused,
+    /// The video is playing.
+    Playing,
+}
+
+impl From<gstreamer::State> for State {
+    fn from(value: gstreamer::State) -> Self {
+        match value {
+            gstreamer::State::VoidPending => State::Null,
+            gstreamer::State::Null => State::Null,
+            gstreamer::State::Ready => State::Ready,
+            gstreamer::State::Paused => State::Paused,
+            gstreamer::State::Playing => State::Playing,
+        }
+    }
 }
 
 /// A struct for writing video files.
@@ -220,6 +246,173 @@ impl Drop for VideoWriter {
         if self.handle.is_some() {
             self.close().expect("Failed to close video writer");
         }
+    }
+}
+
+pub use gstreamer::SeekFlags;
+
+/// A struct for reading video files
+pub struct VideoReader(StreamCapture);
+
+impl VideoReader {
+    /// Creates a new `VideoReader`
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path to the video file to be read.
+    /// * `format` - The expected image format.
+    /// * `fps` - The frames per second of the video.
+    /// * `size` - The size of the video.
+    pub fn new(path: impl AsRef<Path>, format: ImageFormat) -> Result<Self, StreamCaptureError> {
+        // TODO: Support more formats
+        let video_format = match format {
+            ImageFormat::Rgb8 => "RGB",
+            ImageFormat::Mono8 => "GRAY8",
+        };
+
+        let pipeline = format!(
+            "filesrc location=\"{}\" ! \
+            decodebin ! \
+            videoconvert ! \
+            video/x-raw,format={} ! \
+            appsink name=sink sync=true",
+            path.as_ref().to_string_lossy(),
+            video_format
+        );
+
+        let capture = StreamCapture::new(&pipeline)?;
+
+        Ok(Self(capture))
+    }
+
+    /// Starts the video reader pipeline
+    #[inline]
+    pub fn start(&mut self) -> Result<(), StreamCaptureError> {
+        self.0.start()
+    }
+
+    /// Pauses the video reader pipeline
+    #[inline]
+    pub fn pause(&mut self) -> Result<(), StreamCaptureError> {
+        self.0.get_pipeline().set_state(gstreamer::State::Paused)?;
+        Ok(())
+    }
+
+    /// Close the video reader pipeline
+    #[inline]
+    pub fn close(&self) -> Result<(), StreamCaptureError> {
+        self.0.close()
+    }
+
+    /// Grabs the last captured image frame.
+    ///
+    /// # Returns
+    ///
+    /// An Option containing the last captured Image or None if no image has been captured yet.
+    #[inline]
+    pub fn grab(&mut self) -> Result<Option<Image<u8, 3>>, StreamCaptureError> {
+        self.0.grab()
+    }
+
+    /// Gets the current state of the video pipeline
+    #[inline]
+    pub fn get_state(&self) -> State {
+        self.0.get_pipeline().current_state().into()
+    }
+
+    /// Gets the current position in the video.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(Duration)` - The current position as a Duration from the start of the video
+    /// * `None` - If the position could not be determined
+    pub fn get_pos(&self) -> Option<Duration> {
+        let clock_time = self
+            .0
+            .get_pipeline()
+            .query_position::<gstreamer::format::ClockTime>()?;
+
+        let duration = Duration::from_nanos(clock_time.nseconds());
+        Some(duration)
+    }
+
+    /// Gets the total duration of the video.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(Duration)` - The total duration of the video
+    /// * `None` - If the video duration could not be determined
+    pub fn get_duration(&self) -> Option<Duration> {
+        let clock_time = self
+            .0
+            .get_pipeline()
+            .query_duration::<gstreamer::format::ClockTime>()?;
+
+        let duration = Duration::from_nanos(clock_time.nseconds());
+        Some(duration)
+    }
+
+    /// Seeks to a specific position in the video.
+    ///
+    /// # Arguments
+    ///
+    /// * `pos` - The position to seek to, as a Duration from the start of the video.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the seek operation was successful, `false` otherwise.
+    pub fn seek(&self, seek_flags: gstreamer::SeekFlags, pos: Duration) -> bool {
+        let pipeline = self.0.get_pipeline();
+
+        // Convert the Duration to ClockTime (nanoseconds)
+        let clock_time = gstreamer::ClockTime::from_nseconds(pos.as_nanos() as u64);
+
+        pipeline.seek_simple(seek_flags, clock_time).is_ok()
+    }
+
+    /// Sets the playback speed of the video.
+    ///
+    /// # Arguments
+    ///
+    /// * `speed` - The playback speed factor. 1.0 is normal speed, 0.5 is half speed, 2.0 is
+    ///   double speed, etc.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the speed change operation was successful, `false` otherwise.
+    pub fn set_playback_speed(&self, speed: f64) -> bool {
+        if speed <= 0.0 {
+            return false; // Speed must be positive
+        }
+
+        let pipeline = self.0.get_pipeline();
+
+        // Get current position to maintain the playback position
+        let position = match pipeline.query_position::<gstreamer::format::ClockTime>() {
+            Some(pos) => pos,
+            None => return false, // Can't determine current position
+        };
+
+        // Seek with the new rate
+        pipeline
+            .seek(
+                speed,
+                gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
+                gstreamer::SeekType::Set,
+                position,
+                gstreamer::SeekType::None,
+                gstreamer::ClockTime::NONE,
+            )
+            .is_ok()
+    }
+
+    /// Restart the video from the beginning
+    pub fn restart(&mut self) -> Result<(), StreamCaptureError> {
+        let pipeline = self.0.get_pipeline_mut();
+        pipeline.set_state(gstreamer::State::Null)?;
+        std::thread::sleep(Duration::from_micros(1));
+        self.start()?;
+        Ok(())
     }
 }
 
