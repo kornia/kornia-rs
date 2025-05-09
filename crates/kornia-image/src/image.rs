@@ -125,7 +125,7 @@ impl<T, const C: usize> Image<T, C> {
         Ok(Self(Tensor3::from_shape_vec(
             [size.height, size.width, C],
             data,
-            CpuAllocator,
+            CpuAllocator::default(),
         )?))
     }
 
@@ -192,7 +192,13 @@ impl<T, const C: usize> Image<T, C> {
     where
         T: Clone,
     {
-        Tensor::from_raw_parts([size.height, size.width, C], data, len, CpuAllocator)?.try_into()
+        Tensor::from_raw_parts(
+            [size.height, size.width, C],
+            data,
+            len,
+            CpuAllocator::default(),
+        )?
+        .try_into()
     }
 
     /// Create a new image from a slice of pixel data.
@@ -215,7 +221,7 @@ impl<T, const C: usize> Image<T, C> {
         T: Clone,
     {
         let tensor: Tensor3<T, CpuAllocator> =
-            Tensor::from_shape_slice([size.height, size.width, C], data, CpuAllocator)?;
+            Tensor::from_shape_slice([size.height, size.width, C], data, CpuAllocator::default())?;
         Image::try_from(tensor)
     }
 
@@ -694,7 +700,7 @@ mod tests {
     #[test]
     fn test_image_from_tensor() -> Result<(), ImageError> {
         let data = vec![0u8, 1, 2, 3, 4, 5];
-        let tensor = Tensor::<u8, 2, _>::from_shape_vec([2, 3], data, CpuAllocator)?;
+        let tensor = Tensor::<u8, 2, _>::from_shape_vec([2, 3], data, CpuAllocator::default())?;
 
         let image = Image::<u8, 1>::try_from(tensor.clone())?;
         assert_eq!(image.size().width, 3);
@@ -714,7 +720,7 @@ mod tests {
         let tensor = Tensor::<u8, 3, CpuAllocator>::from_shape_vec(
             [2, 3, 4],
             vec![0u8; 2 * 3 * 4],
-            CpuAllocator,
+            CpuAllocator::default(),
         )?;
 
         let image = Image::<u8, 4>::try_from(tensor.clone())?;

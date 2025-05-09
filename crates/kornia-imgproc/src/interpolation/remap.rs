@@ -72,8 +72,10 @@ mod tests {
 
         let new_size = [2, 2];
 
-        let map_x = Tensor2::from_shape_vec(new_size, vec![0.0, 2.0, 0.0, 2.0], CpuAllocator)?;
-        let map_y = Tensor2::from_shape_vec(new_size, vec![0.0, 0.0, 2.0, 2.0], CpuAllocator)?;
+        let map_x =
+            Tensor2::from_shape_vec(new_size, vec![0.0, 2.0, 0.0, 2.0], CpuAllocator::default())?;
+        let map_y =
+            Tensor2::from_shape_vec(new_size, vec![0.0, 0.0, 2.0, 2.0], CpuAllocator::default())?;
 
         let expected = Image::<_, 1>::new(
             ImageSize {

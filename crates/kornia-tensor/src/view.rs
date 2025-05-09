@@ -81,7 +81,7 @@ impl<T, const N: usize, A: TensorAllocator + 'static> TensorView<'_, T, N, A> {
         let strides = get_strides_from_shape(self.shape);
 
         Tensor {
-            storage: TensorStorage::from_vec(data, CpuAllocator),
+            storage: TensorStorage::from_vec(data, CpuAllocator::default()),
             shape: self.shape,
             strides,
         }
@@ -96,7 +96,7 @@ mod tests {
     #[test]
     fn test_tensor_view_from_vec() -> Result<(), TensorAllocatorError> {
         let vec = vec![1, 2, 3, 4, 5, 6, 7, 8];
-        let storage = TensorStorage::from_vec(vec, CpuAllocator);
+        let storage = TensorStorage::from_vec(vec, CpuAllocator::default());
 
         let view = TensorView::<u8, 1, _> {
             storage: &storage,
