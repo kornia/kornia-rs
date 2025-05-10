@@ -6,14 +6,12 @@ fn main() -> eframe::Result {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1280., 720.]),
+        // hardware_acceleration: eframe::HardwareAcceleration::Off,
         ..Default::default()
     };
     eframe::run_native(
         "Kornia-rs Simple Video Player",
         options,
-        Box::new(|cc| {
-            egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::<MyApp>::default())
-        }),
+        Box::new(|_| Ok(Box::<MyApp>::default())),
     )
 }

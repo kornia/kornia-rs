@@ -5,6 +5,7 @@ use kornia::image::{Image, ImageSize};
 use kornia::imgproc::resize::resize_fast;
 use kornia::io::stream::video::{ImageFormat, SeekFlags, State, VideoReader};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 const SLIDER_HEIGHT: f32 = 20.;
 
@@ -13,6 +14,11 @@ pub struct MyApp {
     video_reader: Option<VideoReader>,
     slider_pos: u64,
     playback_speed: u32,
+    fps: f64,
+    image: Option<Image<u8, 3>>,
+    texture_handle: Option<egui::TextureHandle>,
+    /// Instant at which last frame was loaded
+    instant: Instant,
 }
 
 impl Default for MyApp {
@@ -22,6 +28,10 @@ impl Default for MyApp {
             video_reader: None,
             slider_pos: 0,
             playback_speed: 1,
+            fps: 8.,
+            image: None,
+            texture_handle: None,
+            instant: Instant::now(),
         }
     }
 }
@@ -29,11 +39,14 @@ impl Default for MyApp {
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint();
+
         CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.add_enabled_ui(self.video_reader.is_some(), |ui| {
                     if ui.button("clear").clicked() {
                         self.video_reader = None;
+                        self.image = None;
+                        self.texture_handle = None;
                     }
                 });
 
@@ -60,6 +73,7 @@ impl eframe::App for MyApp {
                             }
                         };
                         self.video_reader = Some(video_reader);
+                        self.instant = Instant::now();
                     }
 
                     ui.add_sized(
@@ -70,13 +84,51 @@ impl eframe::App for MyApp {
             });
 
             if let Some(video_reader) = &mut self.video_reader {
-                if let Some(image_frame) = match video_reader.grab() {
+                if let Some(fps) = video_reader.get_fps() {
+                    self.fps = fps;
+                }
+
+                if let Some(duration) = video_reader.get_duration() {
+                    if let Some(current_pos) = video_reader.get_pos() {
+                        self.slider_pos = current_pos.as_secs();
+                    }
+
+                    if ui
+                        .add_sized(
+                            egui::Vec2::new(ui.available_width(), SLIDER_HEIGHT),
+                            egui::Slider::new(&mut self.slider_pos, 0..=duration.as_secs()),
+                        )
+                        .interact(egui::Sense::DRAG)
+                        .drag_stopped()
+                    {
+                        let seek_time = std::time::Duration::from_secs(self.slider_pos);
+                        video_reader.seek(SeekFlags::TRICKMODE, seek_time);
+                    }
+                }
+
+                if self.instant.elapsed()
+                    < Duration::from_millis(
+                        ((1000. / (self.fps * self.playback_speed as f64)) * 1.1) as u64,
+                    )
+                    && self.texture_handle.is_some()
+                {
+                    // Load the existing texture
+                    let texture_handle = self.texture_handle.as_ref().unwrap();
+                    let image = self.image.as_ref().unwrap();
+
+                    let sized_texture = egui::load::SizedTexture::new(
+                        texture_handle.id(),
+                        egui::Vec2::new(image.width() as f32, image.height() as f32),
+                    );
+                    ui.image(sized_texture);
+                } else if let Some(image_frame) = match video_reader.grab() {
                     Ok(f) => f,
                     Err(err) => {
                         log::error!("Failed to grab the image: {}", err);
                         return;
                     }
                 } {
+                    self.instant = Instant::now();
                     let (image_size, resized_image) = if image_frame.width() as f32
                         <= ui.available_width()
                         && image_frame.height() as f32 - SLIDER_HEIGHT <= ui.available_height()
@@ -124,36 +176,33 @@ impl eframe::App for MyApp {
                     // Render the frame
                     let color_image =
                         egui::ColorImage::from_rgb(image_size, resized_image.as_slice());
-                    let texture = ui.ctx().load_texture(
-                        "image_frame",
-                        color_image,
-                        egui::TextureOptions::default(),
-                    );
 
-                    let sized_texture =
-                        egui::load::SizedTexture::new(texture.id(), texture.size_vec2());
+                    let texture_id = if let Some(texture_handle) = self.texture_handle.as_mut() {
+                        texture_handle.set(color_image, egui::TextureOptions::default());
+                        texture_handle.id()
+                    } else {
+                        let texture = ui.ctx().load_texture(
+                            "video_frame",
+                            color_image,
+                            egui::TextureOptions::default(),
+                        );
+                        let texture_id = texture.id();
+                        self.texture_handle = Some(texture);
+                        texture_id
+                    };
+
+                    let sized_texture = egui::load::SizedTexture::new(
+                        texture_id,
+                        egui::Vec2::new(
+                            resized_image.width() as f32,
+                            resized_image.height() as f32,
+                        ),
+                    );
+                    self.image = Some(resized_image);
                     ui.image(sized_texture);
                 };
 
-                if let Some(duration) = video_reader.get_duration() {
-                    if let Some(current_pos) = video_reader.get_pos() {
-                        self.slider_pos = current_pos.as_secs();
-                    }
-
-                    if ui
-                        .add_sized(
-                            egui::Vec2::new(ui.available_width(), SLIDER_HEIGHT),
-                            egui::Slider::new(&mut self.slider_pos, 0..=duration.as_secs()),
-                        )
-                        .interact(egui::Sense::DRAG)
-                        .drag_stopped()
-                    {
-                        let seek_time = std::time::Duration::from_secs(self.slider_pos);
-                        video_reader.seek(SeekFlags::TRICKMODE, seek_time);
-                    }
-                }
                 // Control Window
-                ui.separator();
                 egui::Window::new("Control").show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         Grid::new("control_grid").show(ui, |ui| {
@@ -204,7 +253,6 @@ impl eframe::App for MyApp {
                     })
                 });
                 // Info Window
-                ui.separator();
                 egui::Window::new("Info").show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         Grid::new("info_grid").show(ui, |ui| {
@@ -217,6 +265,12 @@ impl eframe::App for MyApp {
                             if let Some(duration) = video_reader.get_duration() {
                                 ui.label("Duration:");
                                 ui.label(duration.human(Truncate::Second).to_string());
+                                ui.end_row();
+                            }
+
+                            if let Some(fps) = video_reader.get_fps() {
+                                ui.label("FPS:");
+                                ui.label(format!("{:.2}", fps));
                                 ui.end_row();
                             }
                         });

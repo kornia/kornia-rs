@@ -15,6 +15,7 @@ struct FrameBuffer {
 pub struct StreamCapture {
     pipeline: gstreamer::Pipeline,
     circular_buffer: Arc<Mutex<CircularBuffer<5, FrameBuffer>>>,
+    fps: Arc<Mutex<gstreamer::Fraction>>,
 }
 
 impl StreamCapture {
@@ -53,19 +54,26 @@ impl StreamCapture {
             .map_err(StreamCaptureError::DowncastPipelineError)?;
 
         let circular_buffer = Arc::new(Mutex::new(CircularBuffer::new()));
+        let fps = Arc::new(Mutex::new(gstreamer::Fraction::new(1, 1)));
 
         appsink.set_callbacks(
             gstreamer_app::AppSinkCallbacks::builder()
                 .new_sample({
                     let circular_buffer = circular_buffer.clone();
+                    let fps = fps.clone();
+
                     move |sink| {
                         Self::extract_frame_buffer(sink)
                             .map_err(|_| gstreamer::FlowError::Eos)
-                            .and_then(|frame_buffer| {
+                            .and_then(|(frame_buffer, fps_fraction)| {
                                 let mut guard = circular_buffer
                                     .lock()
                                     .map_err(|_| gstreamer::FlowError::Error)?;
                                 guard.push_back(frame_buffer);
+                                drop(guard); // Drop the Guard
+                                let mut guard =
+                                    fps.lock().map_err(|_| gstreamer::FlowError::Error)?;
+                                *guard = fps_fraction;
                                 Ok(gstreamer::FlowSuccess::Ok)
                             })
                     }
@@ -76,7 +84,16 @@ impl StreamCapture {
         Ok(Self {
             pipeline,
             circular_buffer,
+            fps,
         })
+    }
+
+    /// TODO
+    pub fn get_fps(&self) -> Option<f64> {
+        match self.fps.lock() {
+            Ok(fps) => Some(fps.numer() as f64 / fps.denom() as f64),
+            Err(_) => None,
+        }
     }
 
     /// Starts the stream capture pipeline and processes messages on the bus.
@@ -144,7 +161,7 @@ impl StreamCapture {
     /// A Result containing the extracted FrameBuffer or a StreamCaptureError.
     fn extract_frame_buffer(
         appsink: &gstreamer_app::AppSink,
-    ) -> Result<FrameBuffer, StreamCaptureError> {
+    ) -> Result<(FrameBuffer, gstreamer::Fraction), StreamCaptureError> {
         let sample = appsink.pull_sample()?;
 
         let caps = sample.caps().ok_or_else(|| {
@@ -163,6 +180,10 @@ impl StreamCapture {
             .get::<i32>("width")
             .map_err(|e| StreamCaptureError::GetCapsError(e.to_string()))?;
 
+        let fps = structure
+            .get::<gstreamer::Fraction>("framerate")
+            .map_err(|e| StreamCaptureError::GetCapsError(e.to_string()))?;
+
         let buffer = sample
             .buffer_owned()
             .ok_or_else(|| StreamCaptureError::GetBufferError)?;
@@ -173,7 +194,7 @@ impl StreamCapture {
             height,
         };
 
-        Ok(frame_buffer)
+        Ok((frame_buffer, fps))
     }
 }
 

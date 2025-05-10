@@ -304,6 +304,12 @@ impl VideoReader {
         self.0.close()
     }
 
+    /// Gets the current FPS of the video
+    #[inline]
+    pub fn get_fps(&self) -> Option<f64> {
+        self.0.get_fps()
+    }
+
     /// Grabs the last captured image frame.
     ///
     /// # Returns

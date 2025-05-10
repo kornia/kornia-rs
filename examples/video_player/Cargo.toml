@@ -16,7 +16,6 @@ version.workspace = true
 [dependencies]
 kornia = { workspace = true, features = ["gstreamer"] }
 eframe = "0.31"
-egui_extras = "0.31"
 env_logger = "0.11"
 log = "0.4"
 humanize-duration = "0.0"
