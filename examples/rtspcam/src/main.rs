@@ -96,7 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &rerun::Image::from_elements(gray.as_slice(), gray.size().into(), rerun::ColorModel::L),
         )?;
 
-        rec.log_static("fps", &rerun::Scalar::new(fps_counter.fps() as f64))?;
+        rec.log_static("fps", &rerun::Scalars::new([fps_counter.fps() as f64]))?;
     }
 
     capture.close()?;

@@ -1,4 +1,4 @@
-use crate::error::KernelError;
+use crate::error::TensorOpsError;
 use num_traits::Zero;
 
 /// Computes the dot product of two slices of floating-point values.
@@ -20,19 +20,19 @@ use num_traits::Zero;
 ///
 /// Example:
 /// ```
-/// use kernels::ops::dot_product1_kernel;
+/// use kornia_tensor_ops::kernels::dot_product1_kernel;
 ///
 /// let a = [1.0, 2.0, 3.0];
 /// let b = [4.0, 5.0, 6.0];
 /// let result = dot_product1_kernel(&a, &b).unwrap();
 /// assert_eq!(result, 32.0); // (1*4) + (2*5) + (3*6) = 32
 /// ```
-pub fn dot_product1_kernel<T>(a: &[T], b: &[T]) -> Result<T, KernelError>
+pub fn dot_product1_kernel<T>(a: &[T], b: &[T]) -> Result<T, TensorOpsError>
 where
     T: Zero + Copy + Clone + std::ops::Add<Output = T> + std::ops::Mul<Output = T>,
 {
     if a.len() != b.len() {
-        return Err(KernelError::LengthMismatch(a.len(), b.len()));
+        return Err(TensorOpsError::LengthMismatch(a.len(), b.len()));
     }
 
     let result = a
@@ -65,19 +65,19 @@ where
 ///
 /// Example:
 /// ```
-/// use kernels::ops::cosine_similarity_float_kernel;
+/// use kornia_tensor_ops::kernels::cosine_similarity_float_kernel;
 ///
 /// let a = [1.0, 2.0, 3.0];
 /// let b = [2.0, 4.0, 6.0];
 /// let result = cosine_similarity_float_kernel(&a, &b).unwrap();
 /// assert_eq!(result, 1.0);
 /// ```
-pub fn cosine_similarity_float_kernel<T>(a: &[T], b: &[T]) -> Result<T, KernelError>
+pub fn cosine_similarity_float_kernel<T>(a: &[T], b: &[T]) -> Result<T, TensorOpsError>
 where
     T: num_traits::Float,
 {
     if a.len() != b.len() {
-        return Err(KernelError::LengthMismatch(a.len(), b.len()));
+        return Err(TensorOpsError::LengthMismatch(a.len(), b.len()));
     }
 
     let (dot_product, magnitude_a, magnitude_b) = a.iter().zip(b.iter()).fold(
@@ -111,7 +111,7 @@ mod tests {
         let a = [1.0, 2.0, 3.0];
         let b = [4.0, 5.0];
         let result = dot_product1_kernel(&a, &b);
-        assert!(matches!(result, Err(KernelError::LengthMismatch(3, 2))));
+        assert!(matches!(result, Err(TensorOpsError::LengthMismatch(3, 2))));
     }
 
     #[test]
@@ -176,6 +176,6 @@ mod tests {
         let a = [1.0, 2.0, 3.0];
         let b = [4.0, 5.0];
         let result = cosine_similarity_float_kernel(&a, &b);
-        assert!(matches!(result, Err(KernelError::LengthMismatch(3, 2))));
+        assert!(matches!(result, Err(TensorOpsError::LengthMismatch(3, 2))));
     }
 }

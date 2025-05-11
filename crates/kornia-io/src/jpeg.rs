@@ -1,8 +1,7 @@
 use crate::error::IoError;
 use jpeg_encoder::{ColorType, Encoder};
 use kornia_image::{Image, ImageSize};
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
 /// Writes the given JPEG _(rgb8)_ data to the given file path.
 ///
@@ -10,11 +9,13 @@ use std::path::Path;
 ///
 /// - `file_path` - The path to the JPEG image.
 /// - `image` - The tensor containing the JPEG image data
+/// - `quality` - The quality of the JPEG encoding, range from 0 (lowest) to 100 (highest)
 pub fn write_image_jpeg_rgb8(
     file_path: impl AsRef<Path>,
     image: &Image<u8, 3>,
+    quality: u8,
 ) -> Result<(), IoError> {
-    write_image_jpeg_imp(file_path, image, ColorType::Rgb)
+    write_image_jpeg_imp(file_path, image, ColorType::Rgb, quality)
 }
 
 /// Writes the given JPEG _(grayscale)_ data to the given file path.
@@ -23,20 +24,23 @@ pub fn write_image_jpeg_rgb8(
 ///
 /// - `file_path` - The path to the JPEG image.
 /// - `image` - The tensor containing the JPEG image data
+/// - `quality` - The quality of the JPEG encoding, range from 0 (lowest) to 100 (highest)
 pub fn write_image_jpeg_gray8(
     file_path: impl AsRef<Path>,
     image: &Image<u8, 1>,
+    quality: u8,
 ) -> Result<(), IoError> {
-    write_image_jpeg_imp(file_path, image, ColorType::Luma)
+    write_image_jpeg_imp(file_path, image, ColorType::Luma, quality)
 }
 
 fn write_image_jpeg_imp<const N: usize>(
     file_path: impl AsRef<Path>,
     image: &Image<u8, N>,
     color_type: ColorType,
+    quality: u8,
 ) -> Result<(), IoError> {
     let image_size = image.size();
-    let encoder = Encoder::new_file(file_path, 100)?;
+    let encoder = Encoder::new_file(file_path, quality)?;
     encoder.encode(
         image.as_slice(),
         image_size.width as u16,
@@ -169,7 +173,7 @@ mod tests {
 
         let file_path = tmp_dir.path().join("dog.jpeg");
         let image_data = read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
-        write_image_jpeg_rgb8(&file_path, &image_data)?;
+        write_image_jpeg_rgb8(&file_path, &image_data, 100)?;
 
         let image_data_back = read_image_jpeg_rgb8(&file_path)?;
         assert!(file_path.exists(), "File does not exist: {:?}", file_path);

@@ -51,4 +51,8 @@ pub enum IoError {
     /// Error to decode the PNG image.
     #[error("Failed to decode the png image. {0}")]
     PngDecodeError(String),
+
+    /// Error to decode the TIFF image.
+    #[error(transparent)]
+    TiffDecodingError(#[from] tiff::TiffError),
 }

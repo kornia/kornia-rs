@@ -20,8 +20,8 @@ fn main() -> eyre::Result<()> {
 
                     // TODO: make this more efficient in kornia-image crate
                     let out_u8 = {
-                        let x = out.map(|x| *x as u8);
-                        Image::new(out.size(), x.into_vec())?
+                        let x = out.map(|x| *x as u8)?;
+                        Image::new(out.size(), x.0.into_vec())?
                     };
 
                     let (meta_parameters, data) = image_to_arrow(out_u8, metadata)?;

@@ -84,19 +84,21 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-kornia = "v0.1.8"
+kornia = "v0.1.9"
 ```
 
 Alternatively, you can use each sub-crate separately:
 
 ```toml
 [dependencies]
-kornia-tensor = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
-kornia-io = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
-kornia-image = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
-kornia-imgproc = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
-kornia-3d = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
-kornia-icp = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
+kornia-tensor = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.9" }
+kornia-tensor-ops = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.9" }
+kornia-io = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.9" }
+kornia-image = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.9" }
+kornia-imgproc = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.9" }
+kornia-icp = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.9" }
+kornia-linalg = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.9" }
+kornia-3d = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.9" }
 ```
 
 ### 🐍 Python

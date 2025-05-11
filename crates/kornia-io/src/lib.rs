@@ -24,6 +24,9 @@ pub mod jpeg;
 #[cfg(feature = "gstreamer")]
 pub mod stream;
 
+/// TIFF image encoding and decoding.
+pub mod tiff;
+
 pub use crate::error::IoError;
 
 /// Utility function to convert 16-bit `Vec<u8>` to `Vec<u16>`

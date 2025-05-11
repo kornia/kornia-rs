@@ -32,8 +32,7 @@ impl CameraCapture {
     ///
     /// # Arguments
     ///
-    /// * `config` - A trait object implementing `CameraCaptureConfig` that specifies
-    ///              the camera configuration.
+    /// * `config` - A trait object implementing `CameraCaptureConfig` that specifies the camera configuration.
     ///
     /// # Returns
     ///
