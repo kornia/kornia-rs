@@ -88,7 +88,7 @@ impl StreamCapture {
         })
     }
 
-    /// TODO
+    /// Gets the current fps of the stream
     pub fn get_fps(&self) -> Option<f64> {
         match self.fps.lock() {
             Ok(fps) => Some(fps.numer() as f64 / fps.denom() as f64),
