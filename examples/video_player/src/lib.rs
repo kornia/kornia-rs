@@ -47,6 +47,7 @@ impl eframe::App for MyApp {
                         self.video_reader = None;
                         self.image = None;
                         self.texture_handle = None;
+                        self.playback_speed = 1;
                     }
                 });
 
@@ -113,15 +114,16 @@ impl eframe::App for MyApp {
                     && self.texture_handle.is_some()
                 {
                     // Load the existing texture
-                    let texture_handle = self.texture_handle.as_ref().unwrap();
-                    let image = self.image.as_ref().unwrap();
+                    // SAFTEY: At this point, both texture_handle and image will exist
+                    let texture_handle = unsafe { self.texture_handle.as_ref().unwrap_unchecked() };
+                    let image = unsafe { self.image.as_ref().unwrap_unchecked() };
 
                     let sized_texture = egui::load::SizedTexture::new(
                         texture_handle.id(),
                         egui::Vec2::new(image.width() as f32, image.height() as f32),
                     );
                     ui.image(sized_texture);
-                } else if let Some(image_frame) = match video_reader.grab() {
+                } else if let Some(image_frame) = match video_reader.grab_rgb8() {
                     Ok(f) => f,
                     Err(err) => {
                         log::error!("Failed to grab the image: {}", err);
@@ -161,15 +163,12 @@ impl eframe::App for MyApp {
                             }
                         };
 
-                        if let Err(err) = resize_fast(
+                        resize_fast(
                             &image_frame,
                             &mut resize_image,
                             kornia::imgproc::interpolation::InterpolationMode::Nearest,
-                        ) {
-                            log::error!("Failed to resize video frame: {}", err);
-                            return;
-                        }
-
+                        )
+                        .unwrap();
                         ([new_width as usize, new_height as usize], resize_image)
                     };
 

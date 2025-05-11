@@ -8,3 +8,7 @@ Example:
 ```bash
 RUST_LOG=info cargo run -p video-player --release
 ```
+
+## Demo
+
+![Video Demo](https://github.com/user-attachments/assets/2663a6fe-3679-4a73-9e61-69b0113ee088)

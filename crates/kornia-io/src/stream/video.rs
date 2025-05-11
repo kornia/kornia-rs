@@ -316,7 +316,7 @@ impl VideoReader {
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
     #[inline]
-    pub fn grab(&mut self) -> Result<Option<Image<u8, 3>>, StreamCaptureError> {
+    pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3>>, StreamCaptureError> {
         self.0.grab()
     }
 
@@ -330,7 +330,7 @@ impl VideoReader {
     ///
     /// # Returns
     ///
-    /// * `Some(Duration)` - The current position as a Duration from the start of the video
+    /// * `Some(Duration)` - The current position as a Duration from the start of the video in nanoseconds
     /// * `None` - If the position could not be determined
     pub fn get_pos(&self) -> Option<Duration> {
         let clock_time = self

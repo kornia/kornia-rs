@@ -1,5 +1,5 @@
 [package]
-name = "video-player"
+name = "video_player"
 authors.workspace = true
 categories.workspace = true
 description.workspace = true
