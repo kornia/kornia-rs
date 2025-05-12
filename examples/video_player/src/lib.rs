@@ -131,11 +131,12 @@ impl eframe::App for MyApp {
                     }
                 } {
                     self.instant = Instant::now();
-                    let (image_size, resized_image) = if image_frame.width() as f32
-                        <= ui.available_width()
+                    let image_size = if image_frame.width() as f32 <= ui.available_width()
                         && image_frame.height() as f32 - SLIDER_HEIGHT <= ui.available_height()
                     {
-                        ([image_frame.width(), image_frame.height()], image_frame)
+                        let image_size = image_frame.size();
+                        self.image = Some(image_frame);
+                        [image_size.width, image_size.height]
                     } else {
                         // The image can't fit, resize it
                         let aspect_ratio = image_frame.width() as f32 / image_frame.height() as f32;
@@ -149,28 +150,32 @@ impl eframe::App for MyApp {
                             new_width = new_height * aspect_ratio;
                         }
 
-                        let mut resize_image = match Image::<u8, 3>::from_size_val(
-                            ImageSize {
-                                width: new_width as usize,
-                                height: new_height as usize,
-                            },
-                            0,
-                        ) {
-                            Ok(i) => i,
-                            Err(err) => {
-                                log::error!("Failed to create dst image: {}", err);
-                                return;
-                            }
+                        let new_image_size = ImageSize {
+                            width: new_width as usize,
+                            height: new_height as usize,
                         };
+
+                        if self
+                            .image
+                            .as_ref()
+                            .map_or(true, |image| image.size() != new_image_size)
+                        {
+                            log::info!("Reallocating Image");
+                            self.image = Image::<u8, 3>::from_size_val(new_image_size, 0).ok();
+                        }
+
+                        let resize_image = unsafe { self.image.as_mut().unwrap_unchecked() }; // SAFTEY: At this point, it is guaranteed for image to be not `None`
 
                         resize_fast(
                             &image_frame,
-                            &mut resize_image,
+                            resize_image,
                             kornia::imgproc::interpolation::InterpolationMode::Nearest,
                         )
                         .unwrap();
-                        ([new_width as usize, new_height as usize], resize_image)
+                        [new_width as usize, new_height as usize]
                     };
+
+                    let resized_image = unsafe { self.image.as_ref().unwrap_unchecked() }; // SAFTEY: At this point, it is guaranteed for image to be not `None`
 
                     // Render the frame
                     let color_image =
@@ -197,7 +202,6 @@ impl eframe::App for MyApp {
                             resized_image.height() as f32,
                         ),
                     );
-                    self.image = Some(resized_image);
                     ui.image(sized_texture);
                 };
 
