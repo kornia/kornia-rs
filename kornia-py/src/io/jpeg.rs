@@ -1,7 +1,66 @@
-use crate::image::{PyImage, ToPyImage};
+use crate::image::{FromPyImage, PyImage, ToPyImage};
 use kornia_image::{Image, ImageSize};
 use kornia_io::jpeg as J;
 use pyo3::prelude::*;
+
+#[pyfunction]
+pub fn read_image_jpeg(file_path: &str, mode: &str) -> PyResult<PyImage> {
+    let result = match mode {
+        "rgb" => {
+            let img = J::read_image_jpeg_rgb8(file_path)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            img.to_pyimage()
+        }
+        "mono" => {
+            let img = J::read_image_jpeg_mono8(file_path)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            img.to_pyimage()
+        }
+        _ => {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                String::from(
+                    r#"\
+        The following are the supported values of mode:
+        1) "rgb" -> 8-bit RGB
+        2) "mono" -> 8-bit Monochrome
+        "#,
+                ),
+            ))
+        }
+    };
+
+    Ok(result)
+}
+
+#[pyfunction]
+pub fn write_image_jpeg(file_path: &str, image: PyImage, mode: &str, quality: u8) -> PyResult<()> {
+    match mode {
+        "rgb" => {
+            let image = Image::<u8, 3>::from_pyimage(image)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            J::write_image_jpeg_rgb8(file_path, &image, quality)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+        }
+        "mono" => {
+            let image = Image::<u8, 1>::from_pyimage(image)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            J::write_image_jpeg_gray8(file_path, &image, quality)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+        }
+        _ => {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                String::from(
+                    r#"\
+        The following are the supported values of mode:
+        1) "rgb" -> 8-bit RGB
+        2) "mono" -> 8-bit Monochrome
+        "#,
+                ),
+            ))
+        }
+    }
+    Ok(())
+}
 
 #[pyfunction]
 /// Decodes the JPEG Image from raw bytes.
@@ -9,15 +68,17 @@ use pyo3::prelude::*;
 /// The following modes are supported:
 /// 1. "rgb" -> 8-bit RGB
 /// 2. "mono" -> 8-bit Monochrome
-pub fn decode_image_raw_jpeg(src: &[u8], image_shape: Vec<usize>, mode: &str) -> PyResult<PyImage> {
-    if image_shape.len() != 2 {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            String::from("Missing width and height of image, pass [width, height]"),
-        ));
-    }
+///
+/// ```py
+/// import kornia_rs as K
+///
+/// img = K.decode_image_jpeg(bytes(img_data), (32, 32), "rgb")
+/// ```
+///
+pub fn decode_image_jpeg(src: &[u8], image_shape: (usize, usize), mode: &str) -> PyResult<PyImage> {
     let image_shape = ImageSize {
-        width: image_shape[1],
-        height: image_shape[0],
+        width: image_shape.1,
+        height: image_shape.0,
     };
 
     let result = match mode {

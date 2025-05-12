@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use faer::mat;
 use glam::{Mat3, Vec3};
-use kornia_linalg::linalg;
+use kornia_linalg::svd;
 
 fn bench_svd3(c: &mut Criterion) {
     let mut group = c.benchmark_group("svd3");
@@ -15,7 +15,7 @@ fn bench_svd3(c: &mut Criterion) {
 
     group.bench_function(BenchmarkId::new("svd3", ""), |b| {
         b.iter(|| {
-            linalg::svd3(&a1);
+            svd::svd3(&a1);
             black_box(());
         })
     });

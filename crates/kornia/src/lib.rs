@@ -1,10 +1,10 @@
 #![doc = include_str!(concat!("../", env!("CARGO_PKG_README")))]
 
 #[doc(inline)]
-pub use kornia_tensor as tensor;
+pub use kornia_3d as k3d;
 
 #[doc(inline)]
-pub use kornia_tensor_ops as tensor_ops;
+pub use kornia_icp as icp;
 
 #[doc(inline)]
 pub use kornia_image as image;
@@ -16,7 +16,10 @@ pub use kornia_imgproc as imgproc;
 pub use kornia_io as io;
 
 #[doc(inline)]
-pub use kornia_3d as k3d;
+pub use kornia_linalg as linalg;
 
 #[doc(inline)]
-pub use kornia_icp as icp;
+pub use kornia_tensor as tensor;
+
+#[doc(inline)]
+pub use kornia_tensor_ops as tensor_ops;
