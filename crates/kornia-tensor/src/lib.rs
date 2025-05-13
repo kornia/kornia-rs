@@ -21,7 +21,11 @@ pub mod storage;
 /// view module containing the view implementations.
 pub mod view;
 
+/// operations module containing tensor operations.
+pub mod ops;
+
 pub use crate::allocator::{CpuAllocator, TensorAllocator};
+pub use crate::ops::*;
 pub(crate) use crate::tensor::get_strides_from_shape;
 pub use crate::tensor::{Tensor, TensorError};
 
