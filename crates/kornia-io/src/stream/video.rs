@@ -1,7 +1,9 @@
-use super::{StreamCapture, StreamCaptureError};
+use super::{error::VideoReaderError, StreamCapture, StreamCaptureError};
 use gstreamer::prelude::*;
 use kornia_image::{Image, ImageSize};
 use std::{path::Path, time::Duration};
+
+pub use gstreamer::SeekFlags;
 
 /// The codec to use for the video writer.
 pub enum VideoCodec {
@@ -249,8 +251,6 @@ impl Drop for VideoWriter {
     }
 }
 
-pub use gstreamer::SeekFlags;
-
 /// A struct for reading video files
 pub struct VideoReader(StreamCapture);
 
@@ -261,9 +261,7 @@ impl VideoReader {
     ///
     /// * `path` - The path to the video file to be read.
     /// * `format` - The expected image format.
-    /// * `fps` - The frames per second of the video.
-    /// * `size` - The size of the video.
-    pub fn new(path: impl AsRef<Path>, format: ImageFormat) -> Result<Self, StreamCaptureError> {
+    pub fn new(path: impl AsRef<Path>, format: ImageFormat) -> Result<Self, VideoReaderError> {
         // TODO: Support more formats
         let video_format = match format {
             ImageFormat::Rgb8 => "RGB",
@@ -287,21 +285,27 @@ impl VideoReader {
 
     /// Starts the video reader pipeline
     #[inline]
-    pub fn start(&mut self) -> Result<(), StreamCaptureError> {
-        self.0.start()
+    pub fn start(&mut self) -> Result<(), VideoReaderError> {
+        self.0
+            .start()
+            .map_err(|err| VideoReaderError::StreamCaptureError(err))
     }
 
     /// Pauses the video reader pipeline
     #[inline]
-    pub fn pause(&mut self) -> Result<(), StreamCaptureError> {
-        self.0.get_pipeline().set_state(gstreamer::State::Paused)?;
+    pub fn pause(&mut self) -> Result<(), VideoReaderError> {
+        self.0
+            .get_pipeline()
+            .set_state(gstreamer::State::Paused)
+            .map_err(|err| StreamCaptureError::from(err))?;
         Ok(())
     }
 
     /// Close the video reader pipeline
     #[inline]
-    pub fn close(&self) -> Result<(), StreamCaptureError> {
-        self.0.close()
+    pub fn close(&self) -> Result<(), VideoReaderError> {
+        self.0.close()?;
+        Ok(())
     }
 
     /// Gets the current FPS of the video
@@ -316,8 +320,10 @@ impl VideoReader {
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
     #[inline]
-    pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3>>, StreamCaptureError> {
-        self.0.grab()
+    pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3>>, VideoReaderError> {
+        self.0
+            .grab()
+            .map_err(|err| VideoReaderError::StreamCaptureError(err))
     }
 
     /// Gets the current state of the video pipeline
@@ -366,14 +372,21 @@ impl VideoReader {
     ///
     /// # Returns
     ///
-    /// `true` if the seek operation was successful, `false` otherwise.
-    pub fn seek(&self, seek_flags: gstreamer::SeekFlags, pos: Duration) -> bool {
+    /// * `Ok(())` - If the seek operation was successful.
+    /// * `Err(VideoReaderError)` - If the seek operation failed.
+    pub fn seek(
+        &self,
+        seek_flags: gstreamer::SeekFlags,
+        pos: Duration,
+    ) -> Result<(), VideoReaderError> {
         let pipeline = self.0.get_pipeline();
 
         // Convert the Duration to ClockTime (nanoseconds)
         let clock_time = gstreamer::ClockTime::from_nseconds(pos.as_nanos() as u64);
 
-        pipeline.seek_simple(seek_flags, clock_time).is_ok()
+        pipeline
+            .seek_simple(seek_flags, clock_time)
+            .map_err(|_| VideoReaderError::SeekError)
     }
 
     /// Sets the playback speed of the video.
@@ -386,9 +399,9 @@ impl VideoReader {
     /// # Returns
     ///
     /// `true` if the speed change operation was successful, `false` otherwise.
-    pub fn set_playback_speed(&self, speed: f64) -> bool {
+    pub fn set_playback_speed(&self, speed: f64) -> Result<(), VideoReaderError> {
         if speed <= 0.0 {
-            return false; // Speed must be positive
+            return Err(VideoReaderError::InvalidPlaybackSpeed); // Speed must be positive
         }
 
         let pipeline = self.0.get_pipeline();
@@ -396,7 +409,7 @@ impl VideoReader {
         // Get current position to maintain the playback position
         let position = match pipeline.query_position::<gstreamer::format::ClockTime>() {
             Some(pos) => pos,
-            None => return false, // Can't determine current position
+            None => return Err(VideoReaderError::CurrentPosError), // Can't determine current position
         };
 
         // Seek with the new rate
@@ -409,14 +422,16 @@ impl VideoReader {
                 gstreamer::SeekType::None,
                 gstreamer::ClockTime::NONE,
             )
-            .is_ok()
+            .map_err(|_| VideoReaderError::SeekError)
     }
 
     /// Restart the video from the beginning
-    pub fn restart(&mut self) -> Result<(), StreamCaptureError> {
+    pub fn restart(&mut self) -> Result<(), VideoReaderError> {
         let pipeline = self.0.get_pipeline_mut();
-        pipeline.set_state(gstreamer::State::Null)?;
-        std::thread::sleep(Duration::from_micros(1));
+        pipeline
+            .set_state(gstreamer::State::Null)
+            .map_err(|err| StreamCaptureError::from(err))?;
+        std::thread::sleep(Duration::from_micros(1)); // Add a little delay just to be safe
         self.start()?;
         Ok(())
     }

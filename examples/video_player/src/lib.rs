@@ -103,6 +103,8 @@ impl eframe::App for MyApp {
                         .drag_stopped()
                     {
                         let seek_time = std::time::Duration::from_secs(self.slider_pos);
+
+                        #[allow(unused_must_use)]
                         video_reader.seek(SeekFlags::TRICKMODE, seek_time);
                     }
                 }
@@ -247,7 +249,9 @@ impl eframe::App for MyApp {
                             if ui
                                 .add(egui::Slider::new(&mut self.playback_speed, 0..=8))
                                 .changed()
-                                && !video_reader.set_playback_speed(self.playback_speed as f64)
+                                && video_reader
+                                    .set_playback_speed(self.playback_speed as f64)
+                                    .is_err()
                             {
                                 log::error!("Failed to set playback speed");
                             };
