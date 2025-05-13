@@ -70,7 +70,6 @@ impl StreamCapture {
                                     .lock()
                                     .map_err(|_| gstreamer::FlowError::Error)?;
                                 guard.push_back(frame_buffer);
-                                drop(guard); // Drop the Guard
                                 let mut guard =
                                     fps.lock().map_err(|_| gstreamer::FlowError::Error)?;
                                 *guard = fps_fraction;
