@@ -34,8 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // detect the fast features
     let keypoints =
-        imgproc::features::fast_feature_detector(&img_gray8, args.threshold, args.arc_length)?;
-    println!("Found {} keypoints", keypoints.len());
+        imgproc::features::fast_feature_nms_detector(&img_gray8, args.threshold, args.arc_length, true)?;
 
     // log the image
     rec.log_static(
