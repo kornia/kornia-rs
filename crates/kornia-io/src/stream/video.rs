@@ -425,10 +425,17 @@ impl VideoReader {
     pub fn restart(&mut self) -> Result<(), VideoReaderError> {
         let pipeline = &mut self.0.pipeline;
         pipeline
-            .set_state(gstreamer::State::Null)
+            .set_state(gstreamer::State::Paused)
             .map_err(StreamCaptureError::from)?;
-        std::thread::sleep(Duration::from_micros(1)); // Add a little delay just to be safe
-        self.start()?;
+        pipeline
+            .seek_simple(
+                gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
+                gstreamer::ClockTime::ZERO,
+            )
+            .map_err(|_| VideoReaderError::SeekError)?;
+        pipeline
+            .set_state(gstreamer::State::Playing)
+            .map_err(StreamCaptureError::from)?;
         Ok(())
     }
 }

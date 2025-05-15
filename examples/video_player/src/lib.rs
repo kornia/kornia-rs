@@ -290,7 +290,7 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                     .expect("Failed to resize frame");
 
                     let color_image = egui::ColorImage::from_rgb(
-                        [new_image_size.width, new_image_size.height],
+                        [dst.width(), dst.height()],
                         dst.as_slice(),
                     );
 
@@ -324,7 +324,7 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                 }
             } else {
                 let color_image = egui::ColorImage::from_rgb(
-                    [new_image_size.width, new_image_size.height],
+                    [image_frame.width(), image_frame.height()],
                     image_frame.as_slice(),
                 );
 
