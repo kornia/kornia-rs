@@ -236,6 +236,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "need gstreamer in CI"]
     fn test_image_mutability() {
         let (video_path, _temp_dir) = download_video();
 
