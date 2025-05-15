@@ -286,9 +286,7 @@ impl VideoReader {
     /// Starts the video reader pipeline
     #[inline]
     pub fn start(&mut self) -> Result<(), VideoReaderError> {
-        self.0
-            .start()
-            .map_err(|err| VideoReaderError::StreamCaptureError(err))
+        self.0.start().map_err(VideoReaderError::StreamCaptureError)
     }
 
     /// Pauses the video reader pipeline
@@ -297,7 +295,7 @@ impl VideoReader {
         self.0
             .get_pipeline()
             .set_state(gstreamer::State::Paused)
-            .map_err(|err| StreamCaptureError::from(err))?;
+            .map_err(StreamCaptureError::from)?;
         Ok(())
     }
 
@@ -321,9 +319,7 @@ impl VideoReader {
     /// An Option containing the last captured Image or None if no image has been captured yet.
     #[inline]
     pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3>>, VideoReaderError> {
-        self.0
-            .grab()
-            .map_err(|err| VideoReaderError::StreamCaptureError(err))
+        self.0.grab().map_err(VideoReaderError::StreamCaptureError)
     }
 
     /// Gets the current state of the video pipeline
@@ -430,7 +426,7 @@ impl VideoReader {
         let pipeline = self.0.get_pipeline_mut();
         pipeline
             .set_state(gstreamer::State::Null)
-            .map_err(|err| StreamCaptureError::from(err))?;
+            .map_err(StreamCaptureError::from)?;
         std::thread::sleep(Duration::from_micros(1)); // Add a little delay just to be safe
         self.start()?;
         Ok(())
