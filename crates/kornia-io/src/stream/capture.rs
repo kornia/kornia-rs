@@ -13,22 +13,12 @@ struct FrameBuffer {
 
 /// Represents a stream capture pipeline using GStreamer.
 pub struct StreamCapture {
-    pipeline: gstreamer::Pipeline,
+    pub(crate) pipeline: gstreamer::Pipeline,
     circular_buffer: Arc<Mutex<CircularBuffer<5, FrameBuffer>>>,
     fps: Arc<Mutex<gstreamer::Fraction>>,
 }
 
 impl StreamCapture {
-    /// Get the inner reference to the `Pipeline`
-    pub fn get_pipeline(&self) -> &gstreamer::Pipeline {
-        &self.pipeline
-    }
-
-    /// Get the inner mutable reference to the `Pipeline`
-    pub fn get_pipeline_mut(&mut self) -> &mut gstreamer::Pipeline {
-        &mut self.pipeline
-    }
-
     /// Creates a new StreamCapture instance with the given pipeline description.
     ///
     /// # Arguments

@@ -293,7 +293,7 @@ impl VideoReader {
     #[inline]
     pub fn pause(&mut self) -> Result<(), VideoReaderError> {
         self.0
-            .get_pipeline()
+            .pipeline
             .set_state(gstreamer::State::Paused)
             .map_err(StreamCaptureError::from)?;
         Ok(())
@@ -325,7 +325,7 @@ impl VideoReader {
     /// Gets the current state of the video pipeline
     #[inline]
     pub fn get_state(&self) -> State {
-        self.0.get_pipeline().current_state().into()
+        self.0.pipeline.current_state().into()
     }
 
     /// Gets the current position in the video.
@@ -337,7 +337,7 @@ impl VideoReader {
     pub fn get_pos(&self) -> Option<Duration> {
         let clock_time = self
             .0
-            .get_pipeline()
+            .pipeline
             .query_position::<gstreamer::format::ClockTime>()?;
 
         let duration = Duration::from_nanos(clock_time.nseconds());
@@ -353,7 +353,7 @@ impl VideoReader {
     pub fn get_duration(&self) -> Option<Duration> {
         let clock_time = self
             .0
-            .get_pipeline()
+            .pipeline
             .query_duration::<gstreamer::format::ClockTime>()?;
 
         let duration = Duration::from_nanos(clock_time.nseconds());
@@ -375,7 +375,7 @@ impl VideoReader {
         seek_flags: gstreamer::SeekFlags,
         pos: Duration,
     ) -> Result<(), VideoReaderError> {
-        let pipeline = self.0.get_pipeline();
+        let pipeline = &self.0.pipeline;
 
         // Convert the Duration to ClockTime (nanoseconds)
         let clock_time = gstreamer::ClockTime::from_nseconds(pos.as_nanos() as u64);
@@ -400,7 +400,7 @@ impl VideoReader {
             return Err(VideoReaderError::InvalidPlaybackSpeed); // Speed must be positive
         }
 
-        let pipeline = self.0.get_pipeline();
+        let pipeline = &self.0.pipeline;
 
         // Get current position to maintain the playback position
         let position = match pipeline.query_position::<gstreamer::format::ClockTime>() {
@@ -423,7 +423,7 @@ impl VideoReader {
 
     /// Restart the video from the beginning
     pub fn restart(&mut self) -> Result<(), VideoReaderError> {
-        let pipeline = self.0.get_pipeline_mut();
+        let pipeline = &mut self.0.pipeline;
         pipeline
             .set_state(gstreamer::State::Null)
             .map_err(StreamCaptureError::from)?;
