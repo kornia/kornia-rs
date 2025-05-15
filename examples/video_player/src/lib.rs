@@ -289,10 +289,8 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                     )
                     .expect("Failed to resize frame");
 
-                    let color_image = egui::ColorImage::from_rgb(
-                        [dst.width(), dst.height()],
-                        dst.as_slice(),
-                    );
+                    let color_image =
+                        egui::ColorImage::from_rgb([dst.width(), dst.height()], dst.as_slice());
 
                     ts.texture_handle
                         .set(color_image, egui::TextureOptions::default());
