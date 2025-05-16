@@ -84,21 +84,21 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-kornia = "v0.1.9"
+kornia = "0.1.9"
 ```
 
 Alternatively, you can use each sub-crate separately:
 
 ```toml
 [dependencies]
-kornia-tensor = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.9" }
-kornia-tensor-ops = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.9" }
-kornia-io = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.9" }
-kornia-image = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.9" }
-kornia-imgproc = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.9" }
-kornia-icp = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.9" }
-kornia-linalg = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.9" }
-kornia-3d = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.9" }
+kornia-tensor = "0.1.9"
+kornia-tensor-ops = "0.1.9"
+kornia-io = "0.1.9"
+kornia-image = "0.1.9"
+kornia-imgproc = "0.1.9"
+kornia-icp = "0.1.9"
+kornia-linalg = "0.1.9"
+kornia-3d = "0.1.9"
 ```
 
 ### 🐍 Python
@@ -183,33 +183,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Load an image, that is converted directly to a numpy array to ease the integration with other libraries.
 
 ```python
-    import kornia_rs as K
-    import numpy as np
+import kornia_rs as K
+import numpy as np
 
-    # load an image with using libjpeg-turbo
-    img: np.ndarray = K.read_image_jpeg("dog.jpeg")
+# load an image with using libjpeg-turbo
+img: np.ndarray = K.read_image_jpeg("dog.jpeg")
 
-    # alternatively, load other formats
-    # img: np.ndarray = K.read_image_any("dog.png")
+# alternatively, load other formats
+# img: np.ndarray = K.read_image_any("dog.png")
 
-    assert img.shape == (195, 258, 3)
+assert img.shape == (195, 258, 3)
 
-    # convert to dlpack to import to torch
-    img_t = torch.from_dlpack(img)
-    assert img_t.shape == (195, 258, 3)
+# convert to dlpack to import to torch
+img_t = torch.from_dlpack(img)
+assert img_t.shape == (195, 258, 3)
 ```
 
 Write an image to disk
 
 ```python
-    import kornia_rs as K
-    import numpy as np
+import kornia_rs as K
+import numpy as np
 
-    # load an image with using libjpeg-turbo
-    img: np.ndarray = K.read_image_jpeg("dog.jpeg")
+# load an image with using libjpeg-turbo
+img: np.ndarray = K.read_image_jpeg("dog.jpeg")
 
-    # write the image to disk
-    K.write_image_jpeg("dog_copy.jpeg", img)
+# write the image to disk
+K.write_image_jpeg("dog_copy.jpeg", img)
 ```
 
 Encode or decode image streams using the `turbojpeg` backend
