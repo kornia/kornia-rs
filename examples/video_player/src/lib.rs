@@ -163,8 +163,8 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context, ui: &mut e
         ui.horizontal(|ui| {
             Grid::new("control_grid").show(ui, |ui| {
                 let button_text = match app.app_state {
-                    AppState::Playing(..) => "Stop",
-                    AppState::Paused(..) => "Play",
+                    AppState::Playing(..) => "Pause",
+                    AppState::Paused(..) => "Resume",
                     AppState::Finished(..) => "Restart",
                     _ => "Play",
                 };
@@ -183,7 +183,8 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context, ui: &mut e
                             app.app_state = AppState::Playing(video_reader, Instant::now(), None);
                         }
                         AppState::Finished(mut video_reader) => {
-                            video_reader.restart().expect("Failed to restart video");
+                            video_reader.reset().expect("Failed to reset video");
+                            video_reader.start().expect("Failed to start the video");
                             app.app_state = AppState::Playing(video_reader, Instant::now(), None);
                         }
                         _ => {

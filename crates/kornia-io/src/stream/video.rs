@@ -1,4 +1,4 @@
-use super::{error::VideoReaderError, StreamCapture, StreamCaptureError};
+use super::{capture::StreamerState, error::VideoReaderError, StreamCapture, StreamCaptureError};
 use gstreamer::prelude::*;
 use kornia_image::{Image, ImageSize};
 use std::{path::Path, time::Duration};
@@ -19,32 +19,6 @@ pub enum ImageFormat {
     Rgb8,
     /// 8-bit mono format.
     Mono8,
-}
-
-/// A enum representing the state of [VideoReader] pipeline.
-///
-/// For more info, refer to <https://gstreamer.freedesktop.org/documentation/additional/design/states.html?gi-language=c>
-pub enum State {
-    /// This is the initial state of a pipeline.
-    Null,
-    /// The element should be prepared to go to [State::Paused]
-    Ready,
-    /// The video is paused.
-    Paused,
-    /// The video is playing.
-    Playing,
-}
-
-impl From<gstreamer::State> for State {
-    fn from(value: gstreamer::State) -> Self {
-        match value {
-            gstreamer::State::VoidPending => State::Null,
-            gstreamer::State::Null => State::Null,
-            gstreamer::State::Ready => State::Ready,
-            gstreamer::State::Paused => State::Paused,
-            gstreamer::State::Playing => State::Playing,
-        }
-    }
 }
 
 /// A struct for writing video files.
@@ -324,8 +298,8 @@ impl VideoReader {
 
     /// Gets the current state of the video pipeline
     #[inline]
-    pub fn get_state(&self) -> State {
-        self.0.pipeline.current_state().into()
+    pub fn get_state(&self) -> StreamerState {
+        self.0.get_state()
     }
 
     /// Gets the current position in the video.
@@ -403,10 +377,9 @@ impl VideoReader {
         let pipeline = &self.0.pipeline;
 
         // Get current position to maintain the playback position
-        let position = match pipeline.query_position::<gstreamer::format::ClockTime>() {
-            Some(pos) => pos,
-            None => return Err(VideoReaderError::CurrentPosError), // Can't determine current position
-        };
+        let position = pipeline
+            .query_position::<gstreamer::format::ClockTime>()
+            .ok_or(VideoReaderError::CurrentPosError)?;
 
         // Seek with the new rate
         pipeline
@@ -421,21 +394,17 @@ impl VideoReader {
             .map_err(|_| VideoReaderError::SeekError)
     }
 
-    /// Restart the video from the beginning
-    pub fn restart(&mut self) -> Result<(), VideoReaderError> {
-        let pipeline = &mut self.0.pipeline;
-        pipeline
-            .set_state(gstreamer::State::Paused)
-            .map_err(StreamCaptureError::from)?;
+    /// Resets the video to the beginning without changing its state.
+    ///
+    /// This function seeks the video to the origin (start) but does not stop or start the pipeline.
+    pub fn reset(&self) -> Result<(), VideoReaderError> {
+        let pipeline = &self.0.pipeline;
         pipeline
             .seek_simple(
                 gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
                 gstreamer::ClockTime::ZERO,
             )
             .map_err(|_| VideoReaderError::SeekError)?;
-        pipeline
-            .set_state(gstreamer::State::Playing)
-            .map_err(StreamCaptureError::from)?;
         Ok(())
     }
 }

@@ -11,6 +11,32 @@ struct FrameBuffer {
     height: i32,
 }
 
+/// A enum representing the state of [VideoReader] pipeline.
+///
+/// For more info, refer to <https://gstreamer.freedesktop.org/documentation/additional/design/states.html?gi-language=c>
+pub enum StreamerState {
+    /// This is the initial state of a pipeline.
+    Null,
+    /// The element should be prepared to go to [State::Paused]
+    Ready,
+    /// The video is paused.
+    Paused,
+    /// The video is playing.
+    Playing,
+}
+
+impl From<gstreamer::State> for StreamerState {
+    fn from(value: gstreamer::State) -> Self {
+        match value {
+            gstreamer::State::VoidPending => StreamerState::Null,
+            gstreamer::State::Null => StreamerState::Null,
+            gstreamer::State::Ready => StreamerState::Ready,
+            gstreamer::State::Paused => StreamerState::Paused,
+            gstreamer::State::Playing => StreamerState::Playing,
+        }
+    }
+}
+
 /// Represents a stream capture pipeline using GStreamer.
 pub struct StreamCapture {
     pub(crate) pipeline: gstreamer::Pipeline,
@@ -79,10 +105,15 @@ impl StreamCapture {
 
     /// Gets the current fps of the stream
     pub fn get_fps(&self) -> Option<f64> {
-        match self.fps.lock() {
-            Ok(fps) => Some(fps.numer() as f64 / fps.denom() as f64),
-            Err(_) => None,
-        }
+        self.fps
+            .lock()
+            .ok()
+            .map(|fps| fps.numer() as f64 / fps.denom() as f64)
+    }
+
+    /// Gets the current state of the stream pipeline
+    pub fn get_state(&self) -> StreamerState {
+        self.pipeline.current_state().into()
     }
 
     /// Starts the stream capture pipeline and processes messages on the bus.
