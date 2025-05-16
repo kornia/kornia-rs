@@ -30,7 +30,7 @@ enum AppState {
     /// - `TextureStore`
     Playing(VideoReader, Instant, Option<TextureStore>),
     /// The video is paused
-    Paused(VideoReader),
+    Paused(VideoReader, Option<TextureStore>),
     /// The video has been finished
     Finished(VideoReader),
     /// The video is not loaded
@@ -42,7 +42,7 @@ impl AppState {
     fn inner(&mut self) -> Option<&mut VideoReader> {
         match self {
             AppState::Playing(reader, ..) => Some(reader),
-            AppState::Paused(reader) => Some(reader),
+            AppState::Paused(reader, ..) => Some(reader),
             AppState::Finished(reader) => Some(reader),
             AppState::Stopped => None,
         }
@@ -82,7 +82,7 @@ impl eframe::App for MyApp {
             render_navbar(self, ui);
 
             if self.app_state.inner().is_some() {
-                render_play_controls(self, ctx, ui);
+                render_play_controls(self, ctx);
                 render_image(self, ui);
             }
         });
@@ -119,10 +119,13 @@ fn render_navbar(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
 }
 
 // This function only runs if `VideoReader` is present
-fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context, ui: &mut eframe::egui::Ui) {
-    // Slider
+fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
+    let mut is_playing = false;
     let mut is_finished = false;
-    if let AppState::Playing(video_reader, ..) = &mut app.app_state {
+
+    if let AppState::Playing(video_reader, ..) = &app.app_state {
+        is_playing = true;
+
         if let Some(duration) = video_reader.get_duration() {
             if let Some(current_pos) = video_reader.get_pos() {
                 app.slider_pos = current_pos.as_secs();
@@ -131,20 +134,6 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context, ui: &mut e
                 if current_pos == duration {
                     is_finished = true;
                 }
-            }
-
-            if ui
-                .add_sized(
-                    egui::Vec2::new(ui.available_width(), SLIDER_HEIGHT),
-                    egui::Slider::new(&mut app.slider_pos, 0..=duration.as_secs()),
-                )
-                .interact(egui::Sense::DRAG)
-                .drag_stopped()
-            {
-                let seek_time = std::time::Duration::from_secs(app.slider_pos);
-
-                #[allow(unused_must_use)]
-                video_reader.seek(SeekFlags::TRICKMODE, seek_time);
             }
         }
     }
@@ -172,15 +161,16 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context, ui: &mut e
                 if ui.button(button_text).clicked() {
                     let app_state = std::mem::take(&mut app.app_state);
                     match app_state {
-                        AppState::Playing(mut video_reader, ..) => {
+                        AppState::Playing(mut video_reader, _, texture_store) => {
                             video_reader.pause().expect("Failed to pause video");
-                            app.app_state = AppState::Paused(video_reader);
+                            app.app_state = AppState::Paused(video_reader, texture_store);
                         }
-                        AppState::Paused(mut video_reader) => {
+                        AppState::Paused(mut video_reader, texture_store) => {
                             video_reader
                                 .start()
                                 .expect("Failed to start/resume the video");
-                            app.app_state = AppState::Playing(video_reader, Instant::now(), None);
+                            app.app_state =
+                                AppState::Playing(video_reader, Instant::now(), texture_store);
                         }
                         AppState::Finished(mut video_reader) => {
                             video_reader.reset().expect("Failed to reset video");
@@ -195,14 +185,36 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context, ui: &mut e
                 }
                 ui.end_row();
 
+                // Slider
+                // SAFTEY: This function only runs when video_reader is present
+                let video_reader = unsafe { app.app_state.inner().unwrap_unchecked() };
+                ui.label("Seek");
+
+                if let Some(duration) = video_reader.get_duration() {
+                    ui.add_enabled_ui(is_playing, |ui| {
+                        if ui
+                            .add_sized(
+                                egui::Vec2::new(ui.available_width(), SLIDER_HEIGHT),
+                                egui::Slider::new(&mut app.slider_pos, 0..=duration.as_secs()),
+                            )
+                            .interact(egui::Sense::DRAG)
+                            .drag_stopped()
+                        {
+                            let seek_time = std::time::Duration::from_secs(app.slider_pos);
+
+                            #[allow(unused_must_use)]
+                            video_reader.seek(SeekFlags::TRICKMODE, seek_time);
+                        }
+                    });
+                }
+
+                ui.end_row();
+
                 ui.label("Playback Speed");
                 if ui
-                    .add(egui::Slider::new(&mut app.playback_speed, 0..=8))
+                    .add(egui::Slider::new(&mut app.playback_speed, 1..=8))
                     .changed()
-                    && app
-                        .app_state
-                        .inner()
-                        .unwrap()
+                    && video_reader
                         .set_playback_speed(app.playback_speed as f64)
                         .is_err()
                 {
@@ -242,110 +254,125 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context, ui: &mut e
 }
 
 fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
-    if let AppState::Playing(video_reader, instant, texture_store) = &mut app.app_state {
-        if let Some(fps) = video_reader.get_fps() {
-            app.fps = fps;
-        }
+    match &mut app.app_state {
+        AppState::Playing(video_reader, instant, texture_store) => {
+            if let Some(fps) = video_reader.get_fps() {
+                app.fps = fps;
+            }
 
-        if instant.elapsed()
-            < Duration::from_millis(((1000. / (app.fps * app.playback_speed as f64)) * 1.1) as u64)
-            && texture_store.is_some()
-        {
-            // Don't grab the new image, load the previous one instead
-        } else if let Some(image_frame) =
-            video_reader.grab_rgb8().expect("Failed to grab the image")
-        {
-            *instant = Instant::now();
-
-            let mut resize_required = false;
-            let new_image_size = if image_frame.width() as f32 <= ui.available_width()
-                && image_frame.height() as f32 - SLIDER_HEIGHT <= ui.available_height()
+            if instant.elapsed()
+                < Duration::from_millis(
+                    ((1000. / (app.fps * app.playback_speed as f64)) * 1.1) as u64,
+                )
+                && texture_store.is_some()
             {
-                image_frame.size()
-            } else {
-                resize_required = true;
-                let aspect_ratio = image_frame.width() as f32 / image_frame.height() as f32;
-                // Try scaling by width
-                let mut new_width = ui.available_width();
-                let mut new_height = new_width / aspect_ratio;
+                // Don't grab the new image, load the previous one instead
+            } else if let Some(image_frame) =
+                video_reader.grab_rgb8().expect("Failed to grab the image")
+            {
+                *instant = Instant::now();
 
-                if new_height > ui.available_height() - SLIDER_HEIGHT {
-                    new_height = ui.available_height() - SLIDER_HEIGHT;
-                    new_width = new_height * aspect_ratio;
-                }
-
-                ImageSize {
-                    width: new_width as usize,
-                    height: new_height as usize,
-                }
-            };
-
-            if resize_required {
-                if let Some(ts) = texture_store {
-                    let dst = &mut ts.image;
-                    resize_fast(
-                        &image_frame,
-                        dst,
-                        kornia::imgproc::interpolation::InterpolationMode::Nearest,
-                    )
-                    .expect("Failed to resize frame");
-
-                    let color_image =
-                        egui::ColorImage::from_rgb([dst.width(), dst.height()], dst.as_slice());
-
-                    ts.texture_handle
-                        .set(color_image, egui::TextureOptions::default());
+                let mut resize_required = false;
+                let new_image_size = if image_frame.width() as f32 <= ui.available_width()
+                    && image_frame.height() as f32 - SLIDER_HEIGHT <= ui.available_height()
+                {
+                    image_frame.size()
                 } else {
-                    let mut dst: Image<u8, 3> =
-                        Image::from_size_val(new_image_size, 0).expect("Failed to create Image");
-                    resize_fast(
-                        &image_frame,
-                        &mut dst,
-                        kornia::imgproc::interpolation::InterpolationMode::Nearest,
-                    )
-                    .expect("Failed to resize frame");
+                    resize_required = true;
+                    let aspect_ratio = image_frame.width() as f32 / image_frame.height() as f32;
+                    // Try scaling by width
+                    let mut new_width = ui.available_width();
+                    let mut new_height = new_width / aspect_ratio;
 
+                    if new_height > ui.available_height() - SLIDER_HEIGHT {
+                        new_height = ui.available_height() - SLIDER_HEIGHT;
+                        new_width = new_height * aspect_ratio;
+                    }
+
+                    ImageSize {
+                        width: new_width as usize,
+                        height: new_height as usize,
+                    }
+                };
+
+                if resize_required {
+                    if let Some(ts) = texture_store {
+                        let dst = &mut ts.image;
+                        resize_fast(
+                            &image_frame,
+                            dst,
+                            kornia::imgproc::interpolation::InterpolationMode::Nearest,
+                        )
+                        .expect("Failed to resize frame");
+
+                        let color_image =
+                            egui::ColorImage::from_rgb([dst.width(), dst.height()], dst.as_slice());
+
+                        ts.texture_handle
+                            .set(color_image, egui::TextureOptions::default());
+                    } else {
+                        let mut dst: Image<u8, 3> = Image::from_size_val(new_image_size, 0)
+                            .expect("Failed to create Image");
+                        resize_fast(
+                            &image_frame,
+                            &mut dst,
+                            kornia::imgproc::interpolation::InterpolationMode::Nearest,
+                        )
+                        .expect("Failed to resize frame");
+
+                        let color_image = egui::ColorImage::from_rgb(
+                            [new_image_size.width, new_image_size.height],
+                            dst.as_slice(),
+                        );
+
+                        let texture_handle = ui.ctx().load_texture(
+                            "video_frame",
+                            color_image,
+                            egui::TextureOptions::default(),
+                        );
+
+                        *texture_store = Some(TextureStore {
+                            image: dst,
+                            texture_handle,
+                        });
+                    }
+                } else {
                     let color_image = egui::ColorImage::from_rgb(
-                        [new_image_size.width, new_image_size.height],
-                        dst.as_slice(),
+                        [image_frame.width(), image_frame.height()],
+                        image_frame.as_slice(),
                     );
 
-                    let texture_handle = ui.ctx().load_texture(
-                        "video_frame",
-                        color_image,
-                        egui::TextureOptions::default(),
-                    );
+                    if let Some(ts) = texture_store {
+                        ts.texture_handle
+                            .set(color_image, egui::TextureOptions::default());
+                    } else {
+                        let texture = ui.ctx().load_texture(
+                            "video_frame",
+                            color_image,
+                            egui::TextureOptions::default(),
+                        );
 
-                    *texture_store = Some(TextureStore {
-                        image: dst,
-                        texture_handle,
-                    });
+                        *texture_store = Some(TextureStore {
+                            image: image_frame,
+                            texture_handle: texture,
+                        });
+                    };
                 }
-            } else {
-                let color_image = egui::ColorImage::from_rgb(
-                    [image_frame.width(), image_frame.height()],
-                    image_frame.as_slice(),
+            }
+
+            if let Some(texture_store) = &texture_store {
+                let sized_texture = egui::load::SizedTexture::new(
+                    texture_store.texture_handle.id(),
+                    egui::Vec2::new(
+                        texture_store.image.width() as f32,
+                        texture_store.image.height() as f32,
+                    ),
                 );
 
-                if let Some(ts) = texture_store {
-                    ts.texture_handle
-                        .set(color_image, egui::TextureOptions::default());
-                } else {
-                    let texture = ui.ctx().load_texture(
-                        "video_frame",
-                        color_image,
-                        egui::TextureOptions::default(),
-                    );
-
-                    *texture_store = Some(TextureStore {
-                        image: image_frame,
-                        texture_handle: texture,
-                    });
-                };
+                ui.image(sized_texture);
             }
         }
-
-        if let Some(texture_store) = &texture_store {
+        AppState::Paused(_, Some(texture_store)) => {
             let sized_texture = egui::load::SizedTexture::new(
                 texture_store.texture_handle.id(),
                 egui::Vec2::new(
@@ -356,5 +383,6 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
 
             ui.image(sized_texture);
         }
+        _ => {}
     }
 }
