@@ -11,10 +11,37 @@ struct FrameBuffer {
     height: i32,
 }
 
+/// A enum representing the state of [VideoReader] pipeline.
+///
+/// For more info, refer to <https://gstreamer.freedesktop.org/documentation/additional/design/states.html?gi-language=c>
+pub enum StreamerState {
+    /// This is the initial state of a pipeline.
+    Null,
+    /// The element should be prepared to go to [State::Paused]
+    Ready,
+    /// The video is paused.
+    Paused,
+    /// The video is playing.
+    Playing,
+}
+
+impl From<gstreamer::State> for StreamerState {
+    fn from(value: gstreamer::State) -> Self {
+        match value {
+            gstreamer::State::VoidPending => StreamerState::Null,
+            gstreamer::State::Null => StreamerState::Null,
+            gstreamer::State::Ready => StreamerState::Ready,
+            gstreamer::State::Paused => StreamerState::Paused,
+            gstreamer::State::Playing => StreamerState::Playing,
+        }
+    }
+}
+
 /// Represents a stream capture pipeline using GStreamer.
 pub struct StreamCapture {
-    pipeline: gstreamer::Pipeline,
+    pub(crate) pipeline: gstreamer::Pipeline,
     circular_buffer: Arc<Mutex<CircularBuffer<5, FrameBuffer>>>,
+    fps: Arc<Mutex<gstreamer::Fraction>>,
 }
 
 impl StreamCapture {
@@ -43,19 +70,25 @@ impl StreamCapture {
             .map_err(StreamCaptureError::DowncastPipelineError)?;
 
         let circular_buffer = Arc::new(Mutex::new(CircularBuffer::new()));
+        let fps = Arc::new(Mutex::new(gstreamer::Fraction::new(1, 1)));
 
         appsink.set_callbacks(
             gstreamer_app::AppSinkCallbacks::builder()
                 .new_sample({
                     let circular_buffer = circular_buffer.clone();
+                    let fps = fps.clone();
+
                     move |sink| {
                         Self::extract_frame_buffer(sink)
                             .map_err(|_| gstreamer::FlowError::Eos)
-                            .and_then(|frame_buffer| {
+                            .and_then(|(frame_buffer, fps_fraction)| {
                                 let mut guard = circular_buffer
                                     .lock()
                                     .map_err(|_| gstreamer::FlowError::Error)?;
                                 guard.push_back(frame_buffer);
+                                let mut guard =
+                                    fps.lock().map_err(|_| gstreamer::FlowError::Error)?;
+                                *guard = fps_fraction;
                                 Ok(gstreamer::FlowSuccess::Ok)
                             })
                     }
@@ -66,7 +99,21 @@ impl StreamCapture {
         Ok(Self {
             pipeline,
             circular_buffer,
+            fps,
         })
+    }
+
+    /// Gets the current fps of the stream
+    pub fn get_fps(&self) -> Option<f64> {
+        self.fps
+            .lock()
+            .ok()
+            .map(|fps| fps.numer() as f64 / fps.denom() as f64)
+    }
+
+    /// Gets the current state of the stream pipeline
+    pub fn get_state(&self) -> StreamerState {
+        self.pipeline.current_state().into()
     }
 
     /// Starts the stream capture pipeline and processes messages on the bus.
@@ -134,7 +181,7 @@ impl StreamCapture {
     /// A Result containing the extracted FrameBuffer or a StreamCaptureError.
     fn extract_frame_buffer(
         appsink: &gstreamer_app::AppSink,
-    ) -> Result<FrameBuffer, StreamCaptureError> {
+    ) -> Result<(FrameBuffer, gstreamer::Fraction), StreamCaptureError> {
         let sample = appsink.pull_sample()?;
 
         let caps = sample.caps().ok_or_else(|| {
@@ -153,6 +200,10 @@ impl StreamCapture {
             .get::<i32>("width")
             .map_err(|e| StreamCaptureError::GetCapsError(e.to_string()))?;
 
+        let fps = structure
+            .get::<gstreamer::Fraction>("framerate")
+            .map_err(|e| StreamCaptureError::GetCapsError(e.to_string()))?;
+
         let buffer = sample
             .buffer_owned()
             .ok_or_else(|| StreamCaptureError::GetBufferError)?;
@@ -163,7 +214,7 @@ impl StreamCapture {
             height,
         };
 
-        Ok(frame_buffer)
+        Ok((frame_buffer, fps))
     }
 }
 
