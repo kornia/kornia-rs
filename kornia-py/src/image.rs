@@ -1,6 +1,6 @@
 use numpy::{PyArray, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
 
-use kornia_image::{Image, ImageError, ImageSize};
+use kornia_image::{allocator::CpuAllocator, Image, ImageError, ImageSize};
 use pyo3::prelude::*;
 
 // type alias for a 3D numpy array of u8
@@ -89,7 +89,7 @@ impl<const C: usize> FromPyImage<C> for Image<u8, C> {
                 height: pyarray.shape()[0],
             };
 
-            Image::new(size, data)
+            Image::new(size, data, CpuAllocator)
         })
     }
 }
@@ -108,7 +108,7 @@ impl<const C: usize> FromPyImageU16<C> for Image<u16, C> {
                 height: pyarray.shape()[0],
             };
 
-            Image::new(size, data)
+            Image::new(size, data, CpuAllocator)
         })
     }
 }
@@ -127,7 +127,7 @@ impl<const C: usize> FromPyImageF32<C> for Image<f32, C> {
                 height: pyarray.shape()[0],
             };
 
-            Image::new(size, data)
+            Image::new(size, data, CpuAllocator)
         })
     }
 }
