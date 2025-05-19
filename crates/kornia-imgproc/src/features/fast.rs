@@ -1,4 +1,4 @@
-use kornia_image::{Image, ImageError};
+use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use rayon::prelude::*;
 
 /// Fast feature detector
@@ -12,8 +12,8 @@ use rayon::prelude::*;
 /// # Returns
 ///
 /// A vector containing the coordinates of the detected keypoints.
-pub fn fast_feature_detector(
-    src: &Image<u8, 1>,
+pub fn fast_feature_detector<A: ImageAllocator>(
+    src: &Image<u8, 1, A>,
     threshold: u8,
     arc_length: u8,
 ) -> Result<Vec<[i32; 2]>, ImageError> {
@@ -137,6 +137,7 @@ fn is_fast_corner(
 mod tests {
     use super::*;
     use kornia_image::Image;
+    use kornia_tensor::CpuAllocator;
 
     #[test]
     fn test_fast_feature_detector() -> Result<(), ImageError> {
@@ -152,6 +153,7 @@ mod tests {
                 50,  50,  50,  50,  50,  50,  50,
                 50,  50,  50,  50,  50,  50,  50,
             ],
+            CpuAllocator
         )?;
         let expected_keypoints = vec![[3, 3]];
         let keypoints = fast_feature_detector(&img, 100, 9)?;

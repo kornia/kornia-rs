@@ -1,4 +1,4 @@
-use kornia_image::{Image, ImageError};
+use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
     slice::{ParallelSlice, ParallelSliceMut},
@@ -21,24 +21,26 @@ use rayon::{
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::flip::horizontal_flip;
 ///
-/// let image = Image::<f32, 3>::new(
+/// let image = Image::<f32, 3, _>::new(
 ///     ImageSize {
 ///         width: 2,
 ///         height: 3,
 ///     },
 ///     vec![0f32; 2 * 3 * 3],
+///     CpuAllocator
 /// )
 /// .unwrap();
 ///
-/// let mut flipped = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
+/// let mut flipped = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
 ///
 /// horizontal_flip(&image, &mut flipped).unwrap();
 /// ```
-pub fn horizontal_flip<T, const C: usize>(
-    src: &Image<T, C>,
-    dst: &mut Image<T, C>,
+pub fn horizontal_flip<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, C, A1>,
+    dst: &mut Image<T, C, A2>,
 ) -> Result<(), ImageError>
 where
     T: Copy + Send + Sync,
@@ -84,6 +86,7 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::flip::vertical_flip;
 ///
 /// let image = Image::<f32, 3>::new(
@@ -92,17 +95,18 @@ where
 ///         height: 3,
 ///     },
 ///     vec![0f32; 2 * 3 * 3],
+///     CpuAllocator,
 /// )
 /// .unwrap();
 ///
-/// let mut flipped = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
+/// let mut flipped = Image::<f32, 3>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
 ///
 /// vertical_flip(&image, &mut flipped).unwrap();
 ///
 /// ```
-pub fn vertical_flip<T, const C: usize>(
-    src: &Image<T, C>,
-    dst: &mut Image<T, C>,
+pub fn vertical_flip<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, C, A1>,
+    dst: &mut Image<T, C, A2>,
 ) -> Result<(), ImageError>
 where
     T: Copy + Send + Sync,
@@ -134,6 +138,7 @@ where
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_tensor::CpuAllocator;
 
     #[test]
     fn test_hflip() -> Result<(), ImageError> {
@@ -141,16 +146,17 @@ mod tests {
             width: 2,
             height: 3,
         };
-        let image = Image::<_, 3>::new(
+        let image = Image::<_, 3, _>::new(
             image_size,
             vec![
                 0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
             ],
+            CpuAllocator,
         )?;
         let data_expected = vec![
             3u8, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8, 15, 16, 17, 12, 13, 14,
         ];
-        let mut flipped = Image::<_, 3>::from_size_val(image_size, 0u8)?;
+        let mut flipped = Image::<_, 3, _>::from_size_val(image_size, 0u8, CpuAllocator)?;
         super::horizontal_flip(&image, &mut flipped)?;
         assert_eq!(flipped.as_slice(), &data_expected);
         Ok(())
@@ -162,16 +168,17 @@ mod tests {
             width: 2,
             height: 3,
         };
-        let image = Image::<_, 3>::new(
+        let image = Image::<_, 3, _>::new(
             image_size,
             vec![
                 0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
             ],
+            CpuAllocator,
         )?;
         let data_expected = vec![
             12u8, 13, 14, 15, 16, 17, 6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5,
         ];
-        let mut flipped = Image::<_, 3>::from_size_val(image_size, 0u8)?;
+        let mut flipped = Image::<_, 3, _>::from_size_val(image_size, 0u8, CpuAllocator)?;
         super::vertical_flip(&image, &mut flipped)?;
         assert_eq!(flipped.as_slice(), &data_expected);
         Ok(())
