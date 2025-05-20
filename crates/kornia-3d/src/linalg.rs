@@ -102,6 +102,45 @@ pub fn matmul33(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3], m: &mut [[f64; 3]; 3]) {
     m[2][2] = a[2][0] * b[0][2] + a[2][1] * b[1][2] + a[2][2] * b[2][2];
 }
 
+use faer::{Mat, MatRef};
+/// Multiply two 3x3 faer::Mat matrices
+/// 
+/// # Arguments
+/// 
+/// * `a` - The left hand side 3x3 faer::Mat matrix.
+/// * `b` - The right hand side 3x3 faer::Mat matrix.
+/// * `m` - A pre-allocated 3x3 matrix to store the faer::Mat result.
+/// 
+/// PRECONDITION: m is a pre-allocated 3x3 faer::Mat matrix
+/// 
+/// # Example
+/// 
+/// ```
+/// use kornia_3d::linalg::matmul33_faer_mat;
+///
+/// let a_array = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+/// let b_array = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+/// let m_array = [[0.0; 3]; 3];
+/// 
+/// let a = Mat::from_fn(3, 3, |i, j| a_array[i][j]);
+/// let b = Mat::from_fn(3, 3, |i, j| b_array[i][j]);
+/// let mut m = Mat::from_fn(3, 3, |i, j| m_array[i][j]);
+/// matmul33_faer_mat(&a, &b.as_ref(), &mut m);
+/// ```
+pub fn matmul33_faer_mat(a: &Mat<f64>, b: &MatRef<'_, f64>, m: &mut Mat<f64>) {
+    m.write(0, 0, a.read(0, 0) * b.read(0, 0) + a.read(0, 1) * b.read(1, 0) + a.read(0, 2) * b.read(2, 0));
+    m.write(0, 1, a.read(0, 0) * b.read(0, 1) + a.read(0, 1) * b.read(1, 1) + a.read(0, 2) * b.read(2, 1));
+    m.write(0, 2, a.read(0, 0) * b.read(0, 2) + a.read(0, 1) * b.read(1, 2) + a.read(0, 2) * b.read(2, 2));
+
+    m.write(1, 0, a.read(1, 0) * b.read(0, 0) + a.read(1, 1) * b.read(1, 0) + a.read(1, 2) * b.read(2, 0));
+    m.write(1, 1, a.read(1, 0) * b.read(0, 1) + a.read(1, 1) * b.read(1, 1) + a.read(1, 2) * b.read(2, 1));
+    m.write(1, 2, a.read(1, 0) * b.read(0, 2) + a.read(1, 1) * b.read(1, 2) + a.read(1, 2) * b.read(2, 2));
+
+    m.write(2, 0, a.read(2, 0) * b.read(0, 0) + a.read(2, 1) * b.read(1, 0) + a.read(2, 2) * b.read(2, 0));
+    m.write(2, 1, a.read(2, 0) * b.read(0, 1) + a.read(2, 1) * b.read(1, 1) + a.read(2, 2) * b.read(2, 1));
+    m.write(2, 2, a.read(2, 0) * b.read(0, 2) + a.read(2, 1) * b.read(1, 2) + a.read(2, 2) * b.read(2, 2));
+}
+
 /// Transpose a 3x3 matrix.
 ///
 /// # Arguments
@@ -294,6 +333,7 @@ pub fn normalize_mat33_inplace(m: &mut [[f64; 3]; 3]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use faer::Mat;
 
     #[test]
     fn test_dot_product3() {
@@ -317,6 +357,24 @@ mod tests {
                 [102.0, 126.0, 150.0]
             ]
         );
+    }
+
+    #[test]
+    fn test_matmul33_faer_mat() {
+        let a_array = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let b_array = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let m_array = [[0.0; 3]; 3];
+        let expected_m_array = [
+            [30.0, 36.0, 42.0],
+            [66.0, 81.0, 96.0],
+            [102.0, 126.0, 150.0]
+        ];
+        let a = Mat::from_fn(3, 3, |i, j| a_array[i][j]);
+        let b = Mat::from_fn(3, 3, |i, j| b_array[i][j]);
+        let mut m = Mat::from_fn(3, 3, |i, j| m_array[i][j]);
+        let expected_m = Mat::from_fn(3, 3, |i, j| expected_m_array[i][j]);
+        matmul33_faer_mat(&a, &b.as_ref(), &mut m);
+        assert_eq!(m, expected_m);
     }
 
     #[test]
