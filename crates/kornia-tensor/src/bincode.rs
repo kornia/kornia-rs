@@ -32,7 +32,7 @@ where
         Ok(Self {
             shape,
             strides,
-            storage: TensorStorage::from_vec(data, CpuAllocator),
+            storage: TensorStorage::from_vec(data, CpuAllocator::default()),
         })
     }
 }
@@ -46,7 +46,7 @@ mod tests {
         let tensor = Tensor::<u8, 2, CpuAllocator>::from_shape_vec(
             [2, 3],
             vec![1, 2, 3, 4, 5, 6],
-            CpuAllocator,
+            CpuAllocator::default(),
         )?;
         let mut serialized = vec![0u8; 100];
         let config = bincode::config::standard();

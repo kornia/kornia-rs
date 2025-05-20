@@ -74,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             image_chw.shape[2],
         ],
         image_chw.into_vec(),
-        CpuAllocator,
+        CpuAllocator::default(),
     )?;
 
     // make the ort tensor
@@ -121,7 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             out_shape[2] as usize,
         ],
         out_ort.to_vec(),
-        CpuAllocator,
+        CpuAllocator::default(),
     )?;
 
     println!("out_tensor: {:?}", out_tensor.shape);
