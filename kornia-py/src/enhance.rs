@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 
 use crate::image::{FromPyImage, PyImage, ToPyImage};
-use kornia_image::Image;
+use kornia_image::{allocator::CpuAllocator, Image};
 use kornia_imgproc::enhance;
 
 #[pyfunction]
@@ -29,7 +29,7 @@ pub fn add_weighted(
         PyErr::new::<pyo3::exceptions::PyException, _>(format!("src2 image: {}", e))
     })?;
 
-    let mut dst: Image<f32, 3> = Image::from_size_val(image1.size(), 0.0f32)
+    let mut dst: Image<f32, 3> = Image::from_size_val(image1.size(), 0.0f32, CpuAllocator)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("dst image: {}", e)))?;
 
     enhance::add_weighted(&image1, alpha, &image2, beta, gamma, &mut dst)

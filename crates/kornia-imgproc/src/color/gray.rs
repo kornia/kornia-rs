@@ -1,5 +1,5 @@
 use crate::parallel;
-use kornia_image::{Image, ImageError};
+use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
 /// Define the RGB weights for the grayscale conversion.
 const RW: f64 = 0.299;
@@ -23,25 +23,30 @@ const BW: f64 = 0.114;
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::color::gray_from_rgb;
 ///
-/// let image = Image::<f32, 3>::new(
+/// let image = Image::<f32, 3, _>::new(
 ///     ImageSize {
 ///         width: 4,
 ///         height: 5,
 ///     },
 ///     vec![0f32; 4 * 5 * 3],
+///     CpuAllocator
 /// )
 /// .unwrap();
 ///
-/// let mut gray = Image::<f32, 1>::from_size_val(image.size(), 0.0).unwrap();
+/// let mut gray = Image::<f32, 1, _>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
 ///
 /// gray_from_rgb(&image, &mut gray).unwrap();
 /// assert_eq!(gray.num_channels(), 1);
 /// assert_eq!(gray.size().width, 4);
 /// assert_eq!(gray.size().height, 5);
 /// ```
-pub fn gray_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 1>) -> Result<(), ImageError>
+pub fn gray_from_rgb<T, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, 3, A1>,
+    dst: &mut Image<T, 1, A2>,
+) -> Result<(), ImageError>
 where
     T: Send + Sync + num_traits::Float,
 {
@@ -81,7 +86,10 @@ where
 /// Precondition: the input image must have 3 channels.
 /// Precondition: the output image must have 1 channel.
 /// Precondition: the input and output images must have the same size.
-pub fn gray_from_rgb_u8(src: &Image<u8, 3>, dst: &mut Image<u8, 1>) -> Result<(), ImageError> {
+pub fn gray_from_rgb_u8<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, 3, A1>,
+    dst: &mut Image<u8, 1, A2>,
+) -> Result<(), ImageError> {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
             src.cols(),
@@ -116,22 +124,27 @@ pub fn gray_from_rgb_u8(src: &Image<u8, 3>, dst: &mut Image<u8, 1>) -> Result<()
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::color::rgb_from_gray;
 ///
-/// let image = Image::<f32, 1>::new(
+/// let image = Image::<f32, 1, _>::new(
 ///     ImageSize {
 ///         width: 4,
 ///         height: 5,
 ///     },
 ///     vec![0f32; 4 * 5 * 1],
+///     CpuAllocator
 /// )
 /// .unwrap();
 ///
-/// let mut rgb = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
+/// let mut rgb = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
 ///
 /// rgb_from_gray(&image, &mut rgb).unwrap();
 /// ```
-pub fn rgb_from_gray<T>(src: &Image<T, 1>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
+pub fn rgb_from_gray<T, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, 1, A1>,
+    dst: &mut Image<T, 3, A2>,
+) -> Result<(), ImageError>
 where
     T: Copy + Send + Sync,
 {
@@ -162,7 +175,10 @@ where
 /// * `dst` - The output BGR image.
 ///
 /// Precondition: the input and output images must have the same size.
-pub fn bgr_from_rgb<T>(src: &Image<T, 3>, dst: &mut Image<T, 3>) -> Result<(), ImageError>
+pub fn bgr_from_rgb<T, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, 3, A1>,
+    dst: &mut Image<T, 3, A2>,
+) -> Result<(), ImageError>
 where
     T: Copy + Send + Sync,
 {
@@ -191,15 +207,16 @@ where
 mod tests {
     use kornia_image::{ops, Image, ImageSize};
     use kornia_io::functional as F;
+    use kornia_tensor::CpuAllocator;
 
     #[test]
     fn gray_from_rgb() -> Result<(), Box<dyn std::error::Error>> {
         let image = F::read_image_any_rgb8("../../tests/data/dog.jpeg")?;
 
-        let mut image_norm = Image::from_size_val(image.size(), 0.0)?;
+        let mut image_norm = Image::from_size_val(image.size(), 0.0, CpuAllocator)?;
         ops::cast_and_scale(&image, &mut image_norm, 1. / 255.0)?;
 
-        let mut gray = Image::<f32, 1>::from_size_val(image_norm.size(), 0.0)?;
+        let mut gray = Image::<f32, 1, _>::from_size_val(image_norm.size(), 0.0, CpuAllocator)?;
         super::gray_from_rgb(&image_norm, &mut gray)?;
 
         assert_eq!(gray.num_channels(), 1);
@@ -225,18 +242,20 @@ mod tests {
                 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0,
             ],
+            CpuAllocator
         )?;
 
-        let mut gray = Image::<f32, 1>::from_size_val(image.size(), 0.0)?;
+        let mut gray = Image::<f32, 1, _>::from_size_val(image.size(), 0.0, CpuAllocator)?;
 
         super::gray_from_rgb(&image, &mut gray)?;
 
-        let expected: Image<f32, 1> = Image::new(
+        let expected: Image<f32, 1, _> = Image::new(
             ImageSize {
                 width: 2,
                 height: 3,
             },
             vec![0.299, 0.587, 0.114, 0.0, 0.0, 0.0],
+            CpuAllocator,
         )?;
 
         for (a, b) in gray.as_slice().iter().zip(expected.as_slice().iter()) {
@@ -254,14 +273,15 @@ mod tests {
                 height: 3,
             },
             vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            CpuAllocator,
         )?;
 
-        let mut rgb = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+        let mut rgb = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator)?;
 
         super::rgb_from_gray(&image, &mut rgb)?;
 
         #[rustfmt::skip]
-        let expected: Image<f32, 3> = Image::new(
+        let expected: Image<f32, 3, _> = Image::new(
             ImageSize {
                 width: 2,
                 height: 3,
@@ -274,6 +294,7 @@ mod tests {
                 4.0, 4.0, 4.0,
                 5.0, 5.0, 5.0,
             ],
+            CpuAllocator
         )?;
 
         assert_eq!(rgb.as_slice(), expected.as_slice());
@@ -294,14 +315,15 @@ mod tests {
                 3.0, 4.0, 5.0,
                 6.0, 7.0, 8.0,
             ],
+            CpuAllocator
         )?;
 
-        let mut bgr = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+        let mut bgr = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator)?;
 
         super::bgr_from_rgb(&image, &mut bgr)?;
 
         #[rustfmt::skip]
-        let expected: Image<f32, 3> = Image::new(
+        let expected: Image<f32, 3, _> = Image::new(
             ImageSize {
                 width: 1,
                 height: 3,
@@ -311,6 +333,7 @@ mod tests {
                 5.0, 4.0, 3.0,
                 8.0, 7.0, 6.0,
             ],
+            CpuAllocator
         )?;
 
         assert_eq!(bgr.as_slice(), expected.as_slice());
@@ -326,9 +349,10 @@ mod tests {
                 height: 2,
             },
             vec![0, 128, 255, 128, 0, 128],
+            CpuAllocator,
         )?;
 
-        let mut gray = Image::<u8, 1>::from_size_val(image.size(), 0)?;
+        let mut gray = Image::<u8, 1, _>::from_size_val(image.size(), 0, CpuAllocator)?;
 
         super::gray_from_rgb_u8(&image, &mut gray)?;
 

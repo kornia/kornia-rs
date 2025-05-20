@@ -1,4 +1,4 @@
-use kornia_image::{Image, ImageError};
+use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use num_traits::Zero;
 
 /// Trait for floating point casting
@@ -47,9 +47,9 @@ impl FloatConversion for u8 {
 /// * `dst` - The destination image with shape (H, W, C).
 /// * `kernel_x` - The horizontal kernel.
 /// * `kernel_y` - The vertical kernel.
-pub fn separable_filter<T, const C: usize>(
-    src: &Image<T, C>,
-    dst: &mut Image<T, C>,
+pub fn separable_filter<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, C, A1>,
+    dst: &mut Image<T, C, A2>,
     kernel_x: &[f32],
     kernel_y: &[f32],
 ) -> Result<(), ImageError>
@@ -138,9 +138,9 @@ where
 /// * `src` - The source image with shape (H, W, C).
 /// * `dst` - The destination image with transposed shape (W, H, C).
 /// * `half_kernel_x_size` - Half of the kernel at weight 1. The total size would be 2*this+1
-pub(crate) fn fast_horizontal_filter<const C: usize>(
-    src: &Image<f32, C>,
-    dst: &mut Image<f32, C>,
+pub(crate) fn fast_horizontal_filter<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, C, A1>,
+    dst: &mut Image<f32, C, A2>,
     half_kernel_x_size: usize,
 ) -> Result<(), ImageError> {
     let src_data = src.as_slice();
@@ -199,6 +199,7 @@ pub(crate) fn fast_horizontal_filter<const C: usize>(
 mod tests {
     use super::*;
     use kornia_image::ImageSize;
+    use kornia_tensor::CpuAllocator;
 
     #[test]
     fn test_separable_filter_f32() -> Result<(), ImageError> {
@@ -217,9 +218,10 @@ mod tests {
                 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0,
             ],
+            CpuAllocator
         )?;
 
-        let mut dst = Image::<_, 1>::from_size_val(img.size(), 0f32)?;
+        let mut dst = Image::<_, 1, _>::from_size_val(img.size(), 0f32, CpuAllocator)?;
         let kernel_x = vec![1.0, 1.0, 1.0];
         let kernel_y = vec![1.0, 1.0, 1.0];
         separable_filter(&img, &mut dst, &kernel_x, &kernel_y)?;
@@ -259,9 +261,10 @@ mod tests {
                 0, 0, 0, 0, 0,
                 0, 0, 0, 0, 0,
             ],
+            CpuAllocator
         )?;
 
-        let mut dst = Image::<u8, 1>::from_size_val(img.size(), 0)?;
+        let mut dst = Image::<u8, 1, _>::from_size_val(img.size(), 0, CpuAllocator)?;
         let kernel_x = vec![1.0, 1.0, 1.0];
         let kernel_y = vec![1.0, 1.0, 1.0];
         separable_filter(&img, &mut dst, &kernel_x, &kernel_y)?;
@@ -290,10 +293,10 @@ mod tests {
         let kernel_x = vec![1.0, 1.0, 1.0];
         let kernel_y = vec![1.0, 1.0, 1.0];
 
-        let mut img = Image::<u8, 1>::from_size_val(size, 0)?;
+        let mut img = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator)?;
         img.as_slice_mut()[12] = 255;
 
-        let mut dst = Image::<u8, 1>::from_size_val(size, 0)?;
+        let mut dst = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator)?;
         separable_filter(&img, &mut dst, &kernel_x, &kernel_y)?;
 
         #[rustfmt::skip]
@@ -325,9 +328,10 @@ mod tests {
                 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0,
             ],
+            CpuAllocator
         )?;
 
-        let mut transposed = Image::<_, 1>::from_size_val(size, 0.0)?;
+        let mut transposed = Image::<_, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
 
         fast_horizontal_filter(&img, &mut transposed, 1)?;
 
@@ -343,7 +347,7 @@ mod tests {
             ]
         );
 
-        let mut dst = Image::<_, 1>::from_size_val(size, 0.0)?;
+        let mut dst = Image::<_, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
 
         fast_horizontal_filter(&transposed, &mut dst, 1)?;
 

@@ -1,5 +1,6 @@
 use crate::filter::gaussian_blur;
-use kornia_image::{Image, ImageError, ImageSize};
+use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
+use kornia_tensor::CpuAllocator;
 use rayon::prelude::*;
 
 /// Method to calculate gradient for feature response
@@ -32,7 +33,10 @@ fn _get_kernel_size(sigma: f32) -> usize {
 /// Args:
 ///     src: The source image with shape (H, W).
 ///     dst: The destination image with shape (H, W).
-pub fn hessian_response(src: &Image<f32, 1>, dst: &mut Image<f32, 1>) -> Result<(), ImageError> {
+pub fn hessian_response<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, 1, A1>,
+    dst: &mut Image<f32, 1, A2>,
+) -> Result<(), ImageError> {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
             src.cols(),
@@ -124,10 +128,10 @@ impl HarrisResponse {
     /// Args:
     ///     src: The source image with shape (H, W).
     ///     dst: The destination image with shape (H, W).
-    pub fn compute(
+    pub fn compute<A1: ImageAllocator, A2: ImageAllocator>(
         &mut self,
-        src: &Image<f32, 1>,
-        dst: &mut Image<f32, 1>,
+        src: &Image<f32, 1, A1>,
+        dst: &mut Image<f32, 1, A2>,
     ) -> Result<(), ImageError> {
         if src.size() != self.image_size {
             return Err(ImageError::InvalidImageSize(
@@ -285,9 +289,9 @@ impl HarrisResponse {
 ///     dst: The destination image with shape (H, W).
 ///     sigma1: The sigma of the first Gaussian kernel.
 ///     sigma2: The sigma of the second Gaussian kernel.
-pub fn dog_response(
-    src: &Image<f32, 1>,
-    dst: &mut Image<f32, 1>,
+pub fn dog_response<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, 1, A1>,
+    dst: &mut Image<f32, 1, A2>,
     sigma1: f32,
     sigma2: f32,
 ) -> Result<(), ImageError> {
@@ -300,8 +304,8 @@ pub fn dog_response(
         ));
     }
 
-    let mut gauss1 = Image::from_size_val(src.size(), 0.0)?;
-    let mut gauss2 = Image::from_size_val(src.size(), 0.0)?;
+    let mut gauss1 = Image::from_size_val(src.size(), 0.0, CpuAllocator)?;
+    let mut gauss2 = Image::from_size_val(src.size(), 0.0, CpuAllocator)?;
     let ks1 = _get_kernel_size(sigma1);
     let ks2 = _get_kernel_size(sigma2);
 
@@ -338,9 +342,10 @@ mod tests {
                 0.0, 1.0, 1.0, 1.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0,
             ],
+            CpuAllocator
         )?;
 
-        let mut dst = Image::from_size_val([5, 5].into(), 0.0)?;
+        let mut dst = Image::from_size_val([5, 5].into(), 0.0, CpuAllocator)?;
         hessian_response(&src, &mut dst)?;
 
         #[rustfmt::skip]
@@ -372,10 +377,11 @@ mod tests {
                 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            ]
+            ],
+            CpuAllocator
         )?;
 
-        let mut dst = Image::from_size_val([9, 9].into(), 0.0)?;
+        let mut dst = Image::from_size_val([9, 9].into(), 0.0, CpuAllocator)?;
         HarrisResponse::new(dst.size()).compute(&src, &mut dst)?;
 
         #[rustfmt::skip]
@@ -411,10 +417,11 @@ mod tests {
                 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            ]
+            ],
+            CpuAllocator
         )?;
 
-        let mut dst = Image::from_size_val(src.size(), 0.0)?;
+        let mut dst = Image::from_size_val(src.size(), 0.0, CpuAllocator)?;
         HarrisResponse::new(src.size())
             .with_k(0.01)
             .compute(&src, &mut dst)?;
@@ -453,10 +460,11 @@ mod tests {
                 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            ]
+            ],
+            CpuAllocator
         )?;
 
-        let mut dst = Image::from_size_val([9, 9].into(), 0.0)?;
+        let mut dst = Image::from_size_val([9, 9].into(), 0.0, CpuAllocator)?;
         HarrisResponse::new(dst.size())
             .with_k(0.01)
             .compute(&src, &mut dst)?;
@@ -489,9 +497,10 @@ mod tests {
                 0.0, 1.0, 1.0, 1.0, 0.0,
                 0.0, 0.0, 0.0, 0.0, 0.0,
             ],
+            CpuAllocator
         )?;
 
-        let mut dst = Image::from_size_val([5, 5].into(), 0.0)?;
+        let mut dst = Image::from_size_val([5, 5].into(), 0.0, CpuAllocator)?;
 
         let sigma1 = 0.5;
         let sigma2 = 1.0;

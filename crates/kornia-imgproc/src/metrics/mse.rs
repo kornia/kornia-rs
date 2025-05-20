@@ -1,4 +1,4 @@
-use kornia_image::{Image, ImageError};
+use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
 /// Compute the mean squared error (MSE) between two images.
 ///
@@ -21,23 +21,26 @@ use kornia_image::{Image, ImageError};
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::metrics::mse;
 ///
-/// let image1 = Image::<f32, 1>::new(
+/// let image1 = Image::<f32, 1, _>::new(
 ///    ImageSize {
 ///      width: 2,
 ///      height: 3,
 ///    },
 ///    vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
+///    CpuAllocator
 /// )
 /// .unwrap();
 ///
-/// let image2 = Image::<f32, 1>::new(
+/// let image2 = Image::<f32, 1, _>::new(
 ///    ImageSize {
 ///      width: 2,
 ///      height: 3,
 ///    },
 ///    vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
+///    CpuAllocator
 /// )
 /// .unwrap();
 ///
@@ -48,9 +51,9 @@ use kornia_image::{Image, ImageError};
 /// # Panics
 ///
 /// Panics if the two images have different shapes.
-pub fn mse<const C: usize>(
-    image1: &Image<f32, C>,
-    image2: &Image<f32, C>,
+pub fn mse<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    image1: &Image<f32, C, A1>,
+    image2: &Image<f32, C, A2>,
 ) -> Result<f32, ImageError> {
     if image1.size() != image2.size() {
         return Err(ImageError::InvalidImageSize(
@@ -92,23 +95,26 @@ pub fn mse<const C: usize>(
 /// # Example
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::metrics::psnr;
 ///
-/// let image1 = Image::<f32, 3>::new(
+/// let image1 = Image::<f32, 3, _>::new(
 ///   ImageSize {
 ///     width: 1,
 ///     height: 2,
 ///   },
 ///   vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
+///   CpuAllocator
 /// )
 /// .unwrap();
 ///
-/// let image2 = Image::<f32, 3>::new(
+/// let image2 = Image::<f32, 3, _>::new(
 ///   ImageSize {
 ///     width: 1,
 ///     height: 2,
 ///   },
 ///   vec![1f32, 3f32, 2f32, 4f32, 5f32, 6f32],
+///   CpuAllocator
 /// )
 /// .unwrap();
 ///
@@ -128,9 +134,9 @@ pub fn mse<const C: usize>(
 /// The PSNR is used to measure the quality of a reconstructed image. The higher the PSNR, the better the quality of the reconstructed image.
 /// The PSNR is widely used in image and video compression.
 /// Underneath, the PSNR is based on the mean squared error [mse].
-pub fn psnr<const C: usize>(
-    image1: &Image<f32, C>,
-    image2: &Image<f32, C>,
+pub fn psnr<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    image1: &Image<f32, C, A1>,
+    image2: &Image<f32, C, A2>,
     max_value: f32,
 ) -> Result<f32, ImageError> {
     if image1.size() != image2.size() {
@@ -154,22 +160,25 @@ pub fn psnr<const C: usize>(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_tensor::CpuAllocator;
 
     #[test]
     fn test_equal() -> Result<(), ImageError> {
-        let image1 = Image::<_, 1>::new(
+        let image1 = Image::<_, 1, _>::new(
             ImageSize {
                 width: 2,
                 height: 3,
             },
             vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
+            CpuAllocator,
         )?;
-        let image2 = Image::<_, 1>::new(
+        let image2 = Image::<_, 1, _>::new(
             ImageSize {
                 width: 2,
                 height: 3,
             },
             vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
+            CpuAllocator,
         )?;
         let mse = crate::metrics::mse(&image1, &image2)?;
         assert_eq!(mse, 0f32);
@@ -179,19 +188,21 @@ mod tests {
 
     #[test]
     fn test_not_equal() -> Result<(), ImageError> {
-        let image1 = Image::<_, 1>::new(
+        let image1 = Image::<_, 1, _>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             vec![0f32, 1f32, 2f32, 3f32],
+            CpuAllocator,
         )?;
-        let image2 = Image::<_, 1>::new(
+        let image2 = Image::<_, 1, _>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             vec![0f32, 3f32, 2f32, 3f32],
+            CpuAllocator,
         )?;
         let mse = crate::metrics::mse(&image1, &image2)?;
         assert_eq!(mse, 1.0);
@@ -201,19 +212,21 @@ mod tests {
 
     #[test]
     fn test_psnr() -> Result<(), ImageError> {
-        let image1 = Image::<_, 3>::new(
+        let image1 = Image::<_, 3, _>::new(
             ImageSize {
                 width: 1,
                 height: 2,
             },
             vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
+            CpuAllocator,
         )?;
-        let image2 = Image::<_, 3>::new(
+        let image2 = Image::<_, 3, _>::new(
             ImageSize {
                 width: 1,
                 height: 2,
             },
             vec![1f32, 3f32, 2f32, 4f32, 5f32, 6f32],
+            CpuAllocator,
         )?;
         let psnr = crate::metrics::psnr(&image1, &image2, 1.0)?;
         assert_eq!(psnr, 320.15698);

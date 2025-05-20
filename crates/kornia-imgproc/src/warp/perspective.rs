@@ -3,7 +3,7 @@ use crate::{
     parallel,
 };
 
-use kornia_image::{Image, ImageError};
+use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
 #[rustfmt::skip]
 fn determinant3x3(m: &[f32; 9]) -> f32 {
@@ -69,25 +69,28 @@ fn transform_point(x: f32, y: f32, m: &[f32; 9]) -> (f32, f32) {
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::interpolation::InterpolationMode;
 /// use kornia_imgproc::warp::warp_perspective;
 ///
-/// let src = Image::<f32, 1>::new(
+/// let src = Image::<f32, 1, _>::new(
 ///   ImageSize {
 ///     width: 4,
 ///     height: 5,
 ///   },
-///   vec![0.0f32; 4 * 5]
+///   vec![0.0f32; 4 * 5],
+///   CpuAllocator
 /// ).unwrap();
 ///
 /// let m = [1.0, 0.0, -1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0];
 ///
-/// let mut dst = Image::<f32, 1>::from_size_val(
+/// let mut dst = Image::<f32, 1, _>::from_size_val(
 ///   ImageSize {
 ///     width: 2,
 ///     height: 3,
 ///   },
-///   0.0
+///   0.0,
+///   CpuAllocator
 /// ).unwrap();
 ///
 /// warp_perspective(&src, &mut dst, &m, InterpolationMode::Bilinear).unwrap();
@@ -95,9 +98,9 @@ fn transform_point(x: f32, y: f32, m: &[f32; 9]) -> (f32, f32) {
 /// assert_eq!(dst.size().width, 2);
 /// assert_eq!(dst.size().height, 3);
 /// ```
-pub fn warp_perspective<const C: usize>(
-    src: &Image<f32, C>,
-    dst: &mut Image<f32, C>,
+pub fn warp_perspective<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, C, A1>,
+    dst: &mut Image<f32, C, A2>,
     m: &[f32; 9],
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
@@ -128,6 +131,7 @@ pub fn warp_perspective<const C: usize>(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_tensor::CpuAllocator;
 
     #[test]
     fn inverse_perspective_matrix() -> Result<(), ImageError> {
@@ -149,12 +153,13 @@ mod tests {
 
     #[test]
     fn warp_perspective_identity() -> Result<(), ImageError> {
-        let image: Image<f32, 3> = Image::from_size_val(
+        let image: Image<f32, 3, _> = Image::from_size_val(
             ImageSize {
                 width: 4,
                 height: 5,
             },
             0.0f32,
+            CpuAllocator,
         )?;
 
         // identity matrix
@@ -165,7 +170,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_transformed = Image::from_size_val(new_size, 0.0)?;
+        let mut image_transformed = Image::from_size_val(new_size, 0.0, CpuAllocator)?;
 
         super::warp_perspective(
             &image,
@@ -183,12 +188,13 @@ mod tests {
 
     #[test]
     fn warp_perspective_hflip() -> Result<(), ImageError> {
-        let image = Image::<_, 1>::new(
+        let image = Image::<_, 1, _>::new(
             ImageSize {
                 width: 2,
                 height: 3,
             },
             vec![0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0],
+            CpuAllocator,
         )?;
 
         let image_expected = vec![1.0, 0.0, 3.0, 2.0, 5.0, 4.0];
@@ -201,7 +207,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
+        let mut image_transformed = Image::<_, 1, _>::from_size_val(new_size, 0.0, CpuAllocator)?;
 
         super::warp_perspective(
             &image,
@@ -221,7 +227,7 @@ mod tests {
 
     #[test]
     fn test_warp_perspective_resize() -> Result<(), ImageError> {
-        let image = Image::<_, 1>::new(
+        let image = Image::<_, 1, _>::new(
             ImageSize {
                 width: 4,
                 height: 4,
@@ -230,6 +236,7 @@ mod tests {
                 0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
                 15.0,
             ],
+            CpuAllocator,
         )?;
 
         // resize matrix (from get_perspective_transform)
@@ -242,7 +249,7 @@ mod tests {
             height: 2,
         };
 
-        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
+        let mut image_transformed = Image::<_, 1, _>::from_size_val(new_size, 0.0, CpuAllocator)?;
 
         super::warp_perspective(
             &image,
@@ -251,7 +258,7 @@ mod tests {
             super::InterpolationMode::Bilinear,
         )?;
 
-        let mut image_resized = Image::<_, 1>::from_size_val(new_size, 0.0)?;
+        let mut image_resized = Image::<_, 1, _>::from_size_val(new_size, 0.0, CpuAllocator)?;
 
         crate::resize::resize_native(
             &image,
@@ -271,7 +278,7 @@ mod tests {
 
     #[test]
     fn test_warp_perspective_shift() -> Result<(), ImageError> {
-        let image = Image::<_, 1>::new(
+        let image = Image::<_, 1, _>::new(
             ImageSize {
                 width: 4,
                 height: 4,
@@ -280,6 +287,7 @@ mod tests {
                 0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
                 15.0,
             ],
+            CpuAllocator,
         )?;
 
         // shift left by 1 pixel
@@ -295,7 +303,7 @@ mod tests {
             height: image.cols(),
         };
 
-        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
+        let mut image_transformed = Image::<_, 1, _>::from_size_val(new_size, 0.0, CpuAllocator)?;
 
         super::warp_perspective(
             &image,

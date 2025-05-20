@@ -1,6 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_image::{Image, ImageSize};
+use kornia_tensor::CpuAllocator;
 
 fn bench_resize(c: &mut Criterion) {
     let mut group = c.benchmark_group("Crop");
@@ -13,7 +14,7 @@ fn bench_resize(c: &mut Criterion) {
         // input image
         let image_size = [*width, *height].into();
         let data = vec![0u8; width * height * 3];
-        let image = Image::<u8, 3>::new(image_size, data).unwrap();
+        let image = Image::<u8, 3, _>::new(image_size, data, CpuAllocator).unwrap();
         let (x, y) = (13, 21);
 
         // output image
@@ -22,7 +23,7 @@ fn bench_resize(c: &mut Criterion) {
             height: height / 2,
         };
 
-        let out_u8 = Image::<u8, 3>::from_size_val(new_size, 0).unwrap();
+        let out_u8 = Image::<u8, 3, _>::from_size_val(new_size, 0, CpuAllocator).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("image_rs", &parameter_string),

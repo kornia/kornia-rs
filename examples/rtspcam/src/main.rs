@@ -3,6 +3,7 @@ use kornia::{
     image::{ops, Image},
     imgproc,
     io::{fps_counter::FpsCounter, stream::RTSPCameraConfig},
+    tensor::CpuAllocator,
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -68,8 +69,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     // preallocate images
-    let mut img_f32 = Image::<f32, 3>::from_size_val([640, 360].into(), 0.0)?;
-    let mut gray = Image::<f32, 1>::from_size_val(img_f32.size(), 0.0)?;
+    let mut img_f32 = Image::<f32, 3>::from_size_val([640, 360].into(), 0.0, CpuAllocator)?;
+    let mut gray = Image::<f32, 1>::from_size_val(img_f32.size(), 0.0, CpuAllocator)?;
 
     while !cancel_token.load(Ordering::SeqCst) {
         // start grabbing frames from the camera

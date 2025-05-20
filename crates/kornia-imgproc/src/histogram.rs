@@ -1,4 +1,4 @@
-use kornia_image::{Image, ImageError};
+use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
 /// Compute the pixel intensity histogram of an image.
 ///
@@ -22,14 +22,16 @@ use kornia_image::{Image, ImageError};
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::histogram::compute_histogram;
 ///
-/// let image = Image::<u8, 1>::new(
+/// let image = Image::<u8, 1, _>::new(
 ///   ImageSize {
 ///     width: 3,
 ///     height: 3,
 ///   },
 ///   vec![0, 2, 4, 128, 130, 132, 254, 255, 255],
+///   CpuAllocator
 /// ).unwrap();
 ///
 /// let mut histogram = vec![0; 3];
@@ -37,8 +39,8 @@ use kornia_image::{Image, ImageError};
 /// compute_histogram(&image, &mut histogram, 3).unwrap();
 /// assert_eq!(histogram, vec![3, 3, 3]);
 /// ```
-pub fn compute_histogram(
-    src: &Image<u8, 1>,
+pub fn compute_histogram<A: ImageAllocator>(
+    src: &Image<u8, 1, A>,
     hist: &mut Vec<usize>,
     num_bins: usize,
 ) -> Result<(), ImageError> {
@@ -66,6 +68,7 @@ pub fn compute_histogram(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_tensor::CpuAllocator;
 
     #[test]
     fn test_compute_histogram() -> Result<(), ImageError> {
@@ -75,6 +78,7 @@ mod tests {
                 height: 3,
             },
             vec![0, 2, 4, 128, 130, 132, 254, 255, 255],
+            CpuAllocator,
         )?;
 
         let mut histogram = vec![0; 3];

@@ -4,6 +4,7 @@ use humanize_duration::{prelude::*, Truncate};
 use kornia::image::{Image, ImageSize};
 use kornia::imgproc::resize::resize_fast;
 use kornia::io::stream::video::{ImageFormat, SeekFlags, VideoReader};
+use kornia::tensor::CpuAllocator;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -311,8 +312,9 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                         ts.texture_handle
                             .set(color_image, egui::TextureOptions::default());
                     } else {
-                        let mut dst: Image<u8, 3> = Image::from_size_val(new_image_size, 0)
-                            .expect("Failed to create Image");
+                        let mut dst: Image<u8, 3> =
+                            Image::from_size_val(new_image_size, 0, CpuAllocator)
+                                .expect("Failed to create Image");
                         resize_fast(
                             &image_frame,
                             &mut dst,

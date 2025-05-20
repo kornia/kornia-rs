@@ -1,4 +1,4 @@
-use kornia_image::Image;
+use kornia_image::{allocator::ImageAllocator, Image};
 
 /// Draws a line on an image inplace.
 ///
@@ -9,8 +9,8 @@ use kornia_image::Image;
 /// * `p1` - The end point of the line as a tuple of (x, y).
 /// * `color` - The color of the line as an array of `C` elements.
 /// * `thickness` - The thickness of the line.
-pub fn draw_line<const C: usize>(
-    img: &mut Image<u8, C>,
+pub fn draw_line<const C: usize, A: ImageAllocator>(
+    img: &mut Image<u8, C, A>,
     p0: (i64, i64),
     p1: (i64, i64),
     color: [u8; C],
@@ -74,6 +74,7 @@ pub fn draw_line<const C: usize>(
 mod tests {
     use super::draw_line;
     use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_tensor::CpuAllocator;
 
     #[rustfmt::skip]
     #[test]
@@ -84,6 +85,7 @@ mod tests {
                 height: 5,
             },
             vec![0; 25],
+            CpuAllocator
         )?;
         draw_line(&mut img, (0, 0), (4, 4), [255], 1);
         assert_eq!(

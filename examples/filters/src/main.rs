@@ -8,6 +8,7 @@ use kornia::{
     image::{ops, Image},
     imgproc,
     io::stream::V4L2CameraConfig,
+    tensor::CpuAllocator,
 };
 
 #[derive(FromArgs)]
@@ -62,8 +63,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     // preallocate images
-    let mut img_f32 = Image::from_size_val(size, 0f32)?;
-    let mut img_f32_filtered = Image::from_size_val(size, 0f32)?;
+    let mut img_f32 = Image::from_size_val(size, 0f32, CpuAllocator)?;
+    let mut img_f32_filtered = Image::from_size_val(size, 0f32, CpuAllocator)?;
     // start grabbing frames from the camera
     while !cancel_token.load(Ordering::SeqCst) {
         let Some(img) = webcam.grab()? else {
@@ -88,7 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )?;
             }
             "sobel" => {
-                let mut img_f32_filtered_sobel = Image::from_size_val(size, 0f32)?;
+                let mut img_f32_filtered_sobel = Image::from_size_val(size, 0f32, CpuAllocator)?;
                 imgproc::filter::sobel(&img_f32, &mut img_f32_filtered_sobel, args.kx)?;
 
                 // we need to normalize the sobel filter to 0-1

@@ -2,6 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 
 use kornia_image::Image;
 use kornia_imgproc::metrics;
+use kornia_tensor::CpuAllocator;
 
 fn bench_mse(c: &mut Criterion) {
     let mut group = c.benchmark_group("mse");
@@ -13,7 +14,8 @@ fn bench_mse(c: &mut Criterion) {
 
         // input image
         let image_size = [*width, *height].into();
-        let image = Image::<u8, 3>::new(image_size, vec![0u8; width * height * 3]).unwrap();
+        let image = Image::<u8, 3, _>::new(image_size, vec![0u8; width * height * 3], CpuAllocator)
+            .unwrap();
         let image_f32 = image.cast::<f32>().unwrap();
 
         group.bench_with_input(

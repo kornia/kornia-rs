@@ -1,5 +1,5 @@
 use crate::error::IoError;
-use kornia_image::{Image, ImageSize};
+use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 use std::path::Path;
 
 /// Reads a RGB8 image from the given file path.
@@ -26,7 +26,9 @@ use std::path::Path;
 /// assert_eq!(image.rows(), 195);
 /// assert_eq!(image.num_channels(), 3);
 /// ```
-pub fn read_image_any_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, IoError> {
+pub fn read_image_any_rgb8(
+    file_path: impl AsRef<Path>,
+) -> Result<Image<u8, 3, CpuAllocator>, IoError> {
     let file_path = file_path.as_ref().to_owned();
 
     // verify the file exists
@@ -50,6 +52,7 @@ pub fn read_image_any_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, 
             height: img.height() as usize,
         },
         img.to_rgb8().to_vec(),
+        CpuAllocator,
     )?;
 
     Ok(image)

@@ -1,6 +1,9 @@
 use super::{capture::StreamerState, error::VideoReaderError, StreamCapture, StreamCaptureError};
 use gstreamer::prelude::*;
-use kornia_image::{Image, ImageSize};
+use kornia_image::{
+    allocator::{CpuAllocator, ImageAllocator},
+    Image, ImageSize,
+};
 use std::{path::Path, time::Duration};
 
 pub use gstreamer::SeekFlags;
@@ -175,7 +178,10 @@ impl VideoWriter {
     ///
     /// * `img` - The image to write to the video file.
     // TODO: explore supporting write_async
-    pub fn write<const C: usize>(&mut self, img: &Image<u8, C>) -> Result<(), StreamCaptureError> {
+    pub fn write<const C: usize, A: ImageAllocator>(
+        &mut self,
+        img: &Image<u8, C, A>,
+    ) -> Result<(), StreamCaptureError> {
         // check if the image channels are correct
         match self.format {
             ImageFormat::Mono8 => {
@@ -292,7 +298,7 @@ impl VideoReader {
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
     #[inline]
-    pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3>>, VideoReaderError> {
+    pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3, CpuAllocator>>, VideoReaderError> {
         self.0.grab().map_err(VideoReaderError::StreamCaptureError)
     }
 
@@ -412,7 +418,7 @@ impl VideoReader {
 #[cfg(test)]
 mod tests {
     use super::{ImageFormat, VideoCodec, VideoWriter};
-    use kornia_image::{Image, ImageSize};
+    use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 
     #[ignore = "need gstreamer in CI"]
     #[test]
@@ -431,7 +437,8 @@ mod tests {
             VideoWriter::new(&file_path, VideoCodec::H264, ImageFormat::Rgb8, 30, size)?;
         writer.start()?;
 
-        let img = Image::<u8, 3>::new(size, vec![0; size.width * size.height * 3])?;
+        let img =
+            Image::<u8, 3, _>::new(size, vec![0; size.width * size.height * 3], CpuAllocator)?;
         writer.write(&img)?;
         writer.close()?;
 
@@ -457,7 +464,7 @@ mod tests {
             VideoWriter::new(&file_path, VideoCodec::H264, ImageFormat::Mono8, 30, size)?;
         writer.start()?;
 
-        let img = Image::<u8, 1>::new(size, vec![0; size.width * size.height])?;
+        let img = Image::<u8, 1, _>::new(size, vec![0; size.width * size.height], CpuAllocator)?;
         writer.write(&img)?;
         writer.close()?;
 

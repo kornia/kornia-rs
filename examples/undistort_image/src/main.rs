@@ -3,12 +3,15 @@ use std::path::PathBuf;
 
 use kornia::{
     image::{Image, ImageSize},
-    imgproc,
-    imgproc::calibration::{
-        distortion::{generate_correction_map_polynomial, PolynomialDistortion},
-        {CameraExtrinsic, CameraIntrinsic},
+    imgproc::{
+        self,
+        calibration::{
+            distortion::{generate_correction_map_polynomial, PolynomialDistortion},
+            CameraExtrinsic, CameraIntrinsic,
+        },
     },
     io::functional as F,
+    tensor::CpuAllocator,
 };
 
 #[derive(FromArgs)]
@@ -64,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // apply the remap
-    let mut img_undistorted = Image::from_size_val(img.size(), 0.0)?;
+    let mut img_undistorted = Image::from_size_val(img.size(), 0.0, CpuAllocator)?;
     imgproc::interpolation::remap(
         &img.clone().cast_and_scale(1.0 / 255.0)?,
         &mut img_undistorted,

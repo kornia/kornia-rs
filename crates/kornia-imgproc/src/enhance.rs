@@ -1,4 +1,4 @@
-use kornia_image::{Image, ImageError};
+use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
 use crate::parallel;
 
@@ -23,13 +23,13 @@ use crate::parallel;
 ///
 /// Returns an error if the sizes of `src1` and `src2` do not match.
 /// Returns an error if the size of `dst` does not match the size of `src1` or `src2`.
-pub fn add_weighted<T, const C: usize>(
-    src1: &Image<T, C>,
+pub fn add_weighted<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator, A3: ImageAllocator>(
+    src1: &Image<T, C, A1>,
     alpha: T,
-    src2: &Image<T, C>,
+    src2: &Image<T, C, A2>,
     beta: T,
     gamma: T,
-    dst: &mut Image<T, C>,
+    dst: &mut Image<T, C, A3>,
 ) -> Result<(), ImageError>
 where
     T: num_traits::Float + num_traits::FromPrimitive + std::fmt::Debug + Send + Sync + Copy,
@@ -63,31 +63,34 @@ where
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_tensor::CpuAllocator;
 
     #[test]
     fn test_add_weighted() -> Result<(), ImageError> {
         let src1_data = vec![1.0f32, 2.0, 3.0, 4.0];
-        let src1 = Image::<f32, 1>::new(
+        let src1 = Image::<f32, 1, _>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             src1_data,
+            CpuAllocator,
         )?;
         let src2_data = vec![4.0f32, 5.0, 6.0, 7.0];
-        let src2 = Image::<f32, 1>::new(
+        let src2 = Image::<f32, 1, _>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             src2_data,
+            CpuAllocator,
         )?;
         let alpha = 2.0f32;
         let beta = 2.0f32;
         let gamma = 1.0f32;
         let expected = [11.0, 15.0, 19.0, 23.0];
 
-        let mut weighted = Image::<f32, 1>::from_size_val(src1.size(), 0.0)?;
+        let mut weighted = Image::<f32, 1, _>::from_size_val(src1.size(), 0.0, CpuAllocator)?;
 
         super::add_weighted(&src1, alpha, &src2, beta, gamma, &mut weighted)?;
 

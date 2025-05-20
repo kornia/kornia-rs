@@ -1,5 +1,5 @@
 use crate::image::{FromPyImage, PyImage, ToPyImage};
-use kornia_image::{Image, ImageSize};
+use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 use kornia_io::jpeg as J;
 use pyo3::prelude::*;
 
@@ -83,14 +83,14 @@ pub fn decode_image_jpeg(src: &[u8], image_shape: (usize, usize), mode: &str) ->
 
     let result = match mode {
         "rgb" => {
-            let mut output_image = Image::<u8, 3>::from_size_val(image_shape, 0)
+            let mut output_image = Image::<u8, 3>::from_size_val(image_shape, 0, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             J::decode_image_jpeg_rgb8(src, &mut output_image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             output_image.to_pyimage()
         }
         "mono" => {
-            let mut output_image = Image::<u8, 1>::from_size_val(image_shape, 0)
+            let mut output_image = Image::<u8, 1>::from_size_val(image_shape, 0, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             J::decode_image_jpeg_mono8(src, &mut output_image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;

@@ -1,4 +1,4 @@
-use kornia_image::{Image, ImageError};
+use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
     slice::ParallelSliceMut,
@@ -17,24 +17,25 @@ use rayon::{
 ///
 /// ```rust
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::crop::crop_image;
 ///
-/// let image = Image::<_, 1>::new(ImageSize { width: 4, height: 4 }, vec![
+/// let image = Image::<_, 1, _>::new(ImageSize { width: 4, height: 4 }, vec![
 ///     0u8, 1, 2, 3,
 ///     4u8, 5, 6, 7,
 ///     8u8, 9, 10, 11,
 ///     12u8, 13, 14, 15
-/// ]).unwrap();
+/// ], CpuAllocator).unwrap();
 ///
-/// let mut cropped = Image::<_, 1>::from_size_val(ImageSize { width: 2, height: 2 }, 0u8).unwrap();
+/// let mut cropped = Image::<_, 1, _>::from_size_val(ImageSize { width: 2, height: 2 }, 0u8, CpuAllocator).unwrap();
 ///
 /// crop_image(&image, &mut cropped, 1, 1).unwrap();
 ///
 /// assert_eq!(cropped.as_slice(), &[5u8, 6, 9, 10]);
 /// ```
-pub fn crop_image<T, const C: usize>(
-    src: &Image<T, C>,
-    dst: &mut Image<T, C>,
+pub fn crop_image<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, C, A1>,
+    dst: &mut Image<T, C, A2>,
     x: usize,
     y: usize,
 ) -> Result<(), ImageError>
@@ -61,6 +62,7 @@ where
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_tensor::CpuAllocator;
 
     #[test]
     fn test_crop() -> Result<(), ImageError> {
@@ -70,13 +72,14 @@ mod tests {
         };
 
         #[rustfmt::skip]
-        let image = Image::<_, 3>::new(
+        let image = Image::<_, 3, _>::new(
             image_size,
             vec![
                 0u8, 1, 2, 3, 4, 5,
                 6u8, 7, 8, 9, 10, 11,
                 12u8, 13, 14, 15, 16, 17,
             ],
+            CpuAllocator
         )?;
 
         let data_expected = vec![9u8, 10, 11, 15, 16, 17];
@@ -86,7 +89,7 @@ mod tests {
             height: 2,
         };
 
-        let mut cropped = Image::<_, 3>::from_size_val(crop_size, 0u8)?;
+        let mut cropped = Image::<_, 3, _>::from_size_val(crop_size, 0u8, CpuAllocator)?;
 
         super::crop_image(&image, &mut cropped, 1, 1)?;
 

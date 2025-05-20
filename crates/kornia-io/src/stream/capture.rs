@@ -1,7 +1,7 @@
 use crate::stream::error::StreamCaptureError;
 use circular_buffer::CircularBuffer;
 use gstreamer::prelude::*;
-use kornia_image::{Image, ImageSize};
+use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 use std::sync::{Arc, Mutex};
 
 // utility struct to store the frame buffer
@@ -131,7 +131,7 @@ impl StreamCapture {
     /// # Returns
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
-    pub fn grab(&mut self) -> Result<Option<Image<u8, 3>>, StreamCaptureError> {
+    pub fn grab(&mut self) -> Result<Option<Image<u8, 3, CpuAllocator>>, StreamCaptureError> {
         let mut circular_buffer = self
             .circular_buffer
             .lock()
@@ -143,12 +143,13 @@ impl StreamCapture {
                 .buffer
                 .map_readable()
                 .map_err(|_| StreamCaptureError::GetBufferError)?;
-            let img = Image::<u8, 3>::new(
+            let img = Image::<u8, 3, _>::new(
                 ImageSize {
                     width: frame_buffer.width as usize,
                     height: frame_buffer.height as usize,
                 },
                 buffer.to_owned(),
+                CpuAllocator,
             )
             .map_err(|_| StreamCaptureError::CreateImageFrameError)?;
             return Ok(Some(img));

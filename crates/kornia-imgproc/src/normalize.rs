@@ -1,6 +1,6 @@
 use num_traits::Float;
 
-use kornia_image::{Image, ImageError};
+use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
 use crate::parallel;
 
@@ -27,19 +27,21 @@ use crate::parallel;
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::normalize::normalize_mean_std;
 ///
 /// let image_data = vec![0f32, 1.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 1.0, 2.0, 3.0];
-/// let image = Image::<f32, 3>::new(
+/// let image = Image::<f32, 3, _>::new(
 ///   ImageSize {
 ///     width: 2,
 ///     height: 2,
 ///   },
 ///   image_data,
+///   CpuAllocator
 /// )
 /// .unwrap();
 ///
-/// let mut image_normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
+/// let mut image_normalized = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
 ///
 /// normalize_mean_std(
 ///     &image,
@@ -53,9 +55,9 @@ use crate::parallel;
 /// assert_eq!(image_normalized.size().width, 2);
 /// assert_eq!(image_normalized.size().height, 2);
 /// ```
-pub fn normalize_mean_std<T, const C: usize>(
-    src: &Image<T, C>,
-    dst: &mut Image<T, C>,
+pub fn normalize_mean_std<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, C, A1>,
+    dst: &mut Image<T, C, A2>,
     mean: &[T; C],
     std: &[T; C],
 ) -> Result<(), ImageError>
@@ -104,15 +106,17 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::normalize::find_min_max;
 ///
 /// let image_data = vec![0u8, 1, 0, 1, 2, 3, 0, 1, 0, 1, 2, 3];
-/// let image = Image::<u8, 3>::new(
+/// let image = Image::<u8, 3, _>::new(
 ///   ImageSize {
 ///     width: 2,
 ///     height: 2,
 ///   },
 ///   image_data,
+///   CpuAllocator
 /// )
 /// .unwrap();
 ///
@@ -120,7 +124,9 @@ where
 /// assert_eq!(min, 0);
 /// assert_eq!(max, 3);
 /// ```
-pub fn find_min_max<T, const C: usize>(image: &Image<T, C>) -> Result<(T, T), ImageError>
+pub fn find_min_max<T, const C: usize, A: ImageAllocator>(
+    image: &Image<T, C, A>,
+) -> Result<(T, T), ImageError>
 where
     T: Clone + Copy + PartialOrd,
 {
@@ -168,19 +174,21 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::normalize::normalize_min_max;
 ///
 /// let image_data = vec![0.0f32, 1.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 1.0, 2.0, 3.0];
-/// let image = Image::<f32, 3>::new(
+/// let image = Image::<f32, 3, _>::new(
 ///   ImageSize {
 ///     width: 2,
 ///     height: 2,
 ///   },
 ///   image_data,
+///   CpuAllocator
 /// )
 /// .unwrap();
 ///
-/// let mut image_normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
+/// let mut image_normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
 ///
 /// normalize_min_max(&image, &mut image_normalized, 0.0, 1.0).unwrap();
 ///
@@ -188,9 +196,9 @@ where
 /// assert_eq!(image_normalized.size().width, 2);
 /// assert_eq!(image_normalized.size().height, 2);
 /// ```
-pub fn normalize_min_max<T, const C: usize>(
-    src: &Image<T, C>,
-    dst: &mut Image<T, C>,
+pub fn normalize_min_max<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, C, A1>,
+    dst: &mut Image<T, C, A2>,
     min: T,
     max: T,
 ) -> Result<(), ImageError>
@@ -223,6 +231,7 @@ where
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_tensor::CpuAllocator;
 
     #[test]
     fn normalize_mean_std() -> Result<(), ImageError> {
@@ -234,18 +243,19 @@ mod tests {
             -0.5f32, 0.0, -0.5, 0.5, 1.0, 2.5, -0.5, 0.0, -0.5, 0.5, 1.0, 2.5,
         ];
 
-        let image = Image::<f32, 3>::new(
+        let image = Image::<f32, 3, _>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             image_data,
+            CpuAllocator,
         )?;
 
         let mean = [0.5, 1.0, 0.5];
         let std = [1.0, 1.0, 1.0];
 
-        let mut normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+        let mut normalized = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator)?;
 
         super::normalize_mean_std(&image, &mut normalized, &mean, &std)?;
 
@@ -267,12 +277,13 @@ mod tests {
     #[test]
     fn find_min_max() -> Result<(), ImageError> {
         let image_data = vec![0u8, 1, 0, 1, 2, 3, 0, 1, 0, 1, 2, 3];
-        let image = Image::<u8, 3>::new(
+        let image = Image::<u8, 3, _>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             image_data,
+            CpuAllocator,
         )?;
 
         let (min, max) = super::find_min_max(&image)?;
@@ -294,15 +305,16 @@ mod tests {
             0.6666667, 1.0,
         ];
 
-        let image = Image::<f32, 3>::new(
+        let image = Image::<f32, 3, _>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             image_data,
+            CpuAllocator,
         )?;
 
-        let mut normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+        let mut normalized = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator)?;
 
         super::normalize_min_max(&image, &mut normalized, 0.0, 1.0)?;
 
