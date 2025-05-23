@@ -1,5 +1,5 @@
 [package]
-name = "kornia-viz"
+name = "video_player"
 authors.workspace = true
 categories.workspace = true
 description.workspace = true
@@ -13,7 +13,8 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-eframe = "0.29.1"
-env_logger = "0.11.5"
-log = "0.4.21"
-kornia = { path = "../crates/kornia", features = ["gstreamer"] }
+kornia = { workspace = true, features = ["gstreamer"] }
+eframe = "0.31"
+env_logger = "0.11"
+log = "0.4"
+humanize-duration = "0.0"

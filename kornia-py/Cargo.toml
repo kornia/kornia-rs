@@ -4,11 +4,10 @@ categories = ["computer-vision", "science::robotics"]
 description = "Python bindings for Kornia Rust library"
 edition = "2021"
 homepage = "http://kornia.org"
-include = ["Cargo.toml"]
 license = "Apache-2.0"
 repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
-version = "0.1.9-rc.2"
+version = "0.1.10-rc.1"
 
 [lib]
 name = "kornia_rs"
@@ -24,5 +23,5 @@ kornia-icp = { path = "../crates/kornia-icp" }
 kornia-3d = { path = "../crates/kornia-3d" }
 
 # external
-pyo3 = { version = "0.23.0", features = ["extension-module"] }
-numpy = { version = "0.23.0" }
+pyo3 = { version = "0.24.0", features = ["extension-module"] }
+numpy = { version = "0.24.0" }

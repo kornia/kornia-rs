@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-dora-node-api = { version = "0.3", features = ["tracing"] }
+dora-node-api = { version = "0.3.10", features = ["tracing"] }
 dora-image-utils = { path = "../image-utils" }
 eyre = "0.6"
-kornia = { version = "0.1.8"}
-rerun = "0.22"
+kornia = { version = "0.1.9" }
+rerun = "0.23.1"

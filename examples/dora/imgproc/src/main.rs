@@ -1,5 +1,5 @@
 use dora_image_utils::{arrow_to_image, image_to_arrow};
-use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event};
+use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow};
 use kornia::{image::Image, imgproc};
 
 fn main() -> eyre::Result<()> {
@@ -20,12 +20,12 @@ fn main() -> eyre::Result<()> {
 
                     // TODO: make this more efficient in kornia-image crate
                     let out_u8 = {
-                        let x = out.map(|x| *x as u8);
-                        Image::new(out.size(), x.into_vec())?
+                        let x = out.map(|x| *x as u8)?;
+                        Image::new(out.size(), x.0.into_vec())?
                     };
 
                     let (meta_parameters, data) = image_to_arrow(out_u8, metadata)?;
-                    node.send_output(output.clone(), meta_parameters, data)?;
+                    node.send_output(output.clone(), meta_parameters, data.into_arrow())?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },

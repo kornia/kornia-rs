@@ -11,7 +11,14 @@ jobs:
         target:
           - x86_64-unknown-linux-gnu
     runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_CACHE_SIZE: 6G
+      SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
+      SCCACHE_LOG: info
     steps:
+      - run: sudo apt-get update
       - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
         with:
@@ -19,6 +26,10 @@ jobs:
           toolchain: stable
           target: ${{ matrix.target }}
           override: true
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.8
+
       - uses: actions-rs/cargo@v1
         with:
           command: login
@@ -30,3 +41,6 @@ jobs:
           cargo publish -p kornia-io --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features
           cargo publish -p kornia-imgproc --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }}
           cargo publish -p kornia --token ${{ secrets.CARGO_REGISTRY_TOKEN_KORNIA }} --all-features
+
+      - name: Show sccache stats
+        run: sccache --show-stats

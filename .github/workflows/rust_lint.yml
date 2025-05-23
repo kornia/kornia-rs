@@ -20,23 +20,50 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_CACHE_SIZE: 6G
+      SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
+      SCCACHE_LOG: info
     steps:
+      - run: sudo apt-get update
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.8
+
       - uses: giraffate/clippy-action@v1
         with:
-          reporter: 'github-pr-review'
+          reporter: "github-pr-review"
           github_token: ${{ secrets.GITHUB_TOKEN }}
           clippy_flags: -- -D warnings
+
+      - name: Show sccache stats
+        run: sccache --show-stats
 
   check:
     name: Check
     runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_CACHE_SIZE: 6G
+      SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
+      SCCACHE_LOG: info
     steps:
+      - run: sudo apt-get update
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.8
+
       - name: Install cross
         run: cargo install cross
       - run: cross check --all --all-features
+
+      - name: Show sccache stats
+        run: sccache --show-stats

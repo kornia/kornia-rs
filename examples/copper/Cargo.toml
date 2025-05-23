@@ -1,0 +1,21 @@
+[package]
+name = "copper"
+authors.workspace = true
+categories.workspace = true
+description.workspace = true
+edition.workspace = true
+homepage.workspace = true
+include.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+bincode = { workspace = true }
+cu29 = "0.7.0"
+cu29-helpers = "0.7.0"
+kornia = { workspace = true, features = ["gstreamer"] }
+rerun = { workspace = true }
+tempfile = "3.19"

@@ -49,26 +49,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // show the image and the histogram
     rec.log_static(
         "histogram/red",
-        &rerun::SeriesLine::new()
-            .with_color([255, 0, 0])
-            .with_name("red")
-            .with_width(2.0),
+        &rerun::SeriesLines::new()
+            .with_colors([rerun::Color::from_rgb(255, 0, 0)])
+            .with_names(["red"])
+            .with_widths([2.0]),
     )?;
 
     rec.log_static(
         "histogram/green",
-        &rerun::SeriesLine::new()
-            .with_color([0, 255, 0])
-            .with_name("green")
-            .with_width(2.0),
+        &rerun::SeriesLines::new()
+            .with_colors([rerun::Color::from_rgb(0, 255, 0)])
+            .with_names(["green"])
+            .with_widths([2.0]),
     )?;
 
     rec.log_static(
         "histogram/blue",
-        &rerun::SeriesLine::new()
-            .with_color([0, 0, 255])
-            .with_name("blue")
-            .with_width(2.0),
+        &rerun::SeriesLines::new()
+            .with_colors([rerun::Color::from_rgb(0, 0, 255)])
+            .with_names(["blue"])
+            .with_widths([2.0]),
     )?;
 
     // TODO: not sure how to log the histogram properly
@@ -77,13 +77,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             rec.set_time_sequence("step", j as i64);
             match i {
                 0 => {
-                    let _ = rec.log("histogram/red", &rerun::Scalar::new(*val as f64));
+                    let _ = rec.log("histogram/red", &rerun::Scalars::new([*val as f64]));
                 }
                 1 => {
-                    let _ = rec.log("histogram/green", &rerun::Scalar::new(*val as f64));
+                    let _ = rec.log("histogram/green", &rerun::Scalars::new([*val as f64]));
                 }
                 2 => {
-                    let _ = rec.log("histogram/blue", &rerun::Scalar::new(*val as f64));
+                    let _ = rec.log("histogram/blue", &rerun::Scalars::new([*val as f64]));
                 }
                 _ => {}
             }

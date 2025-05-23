@@ -16,11 +16,14 @@ criterion = { workspace = true }
 rand = { workspace = true }
 
 [dependencies]
-kernels = { workspace = true }
 kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
 thiserror = { workspace = true }
 
 [[bench]]
 name = "bench_ops"
+harness = false
+
+[[bench]]
+name = "bench_kernels"
 harness = false

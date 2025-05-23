@@ -27,6 +27,12 @@ clippy-default:
 format:
   cargo fmt --all
 
+# Run all lints and checks
+lint:
+  @just format
+  @just clippy
+  @just check
+
 # Clean up caches and build artifacts
 clean:
   @rm -rf .venv/
