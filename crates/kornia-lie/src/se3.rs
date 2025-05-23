@@ -19,7 +19,7 @@ impl SE3 {
     pub fn from_matrix(mat: Mat4) -> Self {
         Self {
             r: SO3::from_matrix4(&mat),
-            t: Vec3A::from_array([mat.x_axis.z, mat.y_axis.z, mat.z_axis.z])
+            t: Vec3A::from_array([mat.x_axis.w, mat.y_axis.w, mat.z_axis.w])
         }
     }
 
@@ -36,7 +36,7 @@ impl SE3 {
         }
     }
 
-    pub fn from_qxyz(quat: &Quat, xyz: &Vec3A) -> Self {
+    pub fn from_qxyz(quat: Quat, xyz: &Vec3A) -> Self {
         Self {
             r: SO3::from_quaternion(quat),
             t: xyz.clone()
@@ -133,7 +133,7 @@ impl SE3 {
 
     pub fn vee(omega: Mat4) -> (Vec3A, Vec3A) {
         (
-            Vec3A::new(omega.x_axis.z, omega.y_axis.z, omega.z_axis.z),
+            Vec3A::new(omega.x_axis.w, omega.y_axis.w, omega.z_axis.w),
             SO3::vee4(omega)
         )
     }
@@ -147,7 +147,7 @@ mod tests {
     
     #[test]
     fn test_new() {
-        let rotation = SO3::from_quaternion(&Quat::IDENTITY);
+        let rotation = SO3::from_quaternion(Quat::IDENTITY);
         let translation = Vec3A::new(1.0, 2.0, 3.0);
         let se3 = SE3::new(rotation, translation);
         assert_eq!(se3.t, translation);
@@ -164,7 +164,7 @@ mod tests {
     
     #[test]
     fn test_inverse() {
-        let se3 = SE3::new(SO3::from_quaternion(&Quat::IDENTITY), Vec3A::new(1.0, 2.0, 3.0));
+        let se3 = SE3::new(SO3::from_quaternion(Quat::IDENTITY), Vec3A::new(1.0, 2.0, 3.0));
         let inv = se3.inverse();
         assert_eq!(inv.t, Vec3A::new(-1.0, -2.0, -3.0));
         assert_eq!(inv.r.q, se3.r.inverse().q);
