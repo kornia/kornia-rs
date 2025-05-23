@@ -1,6 +1,6 @@
 use std::ops::Mul;
 
-use glam::{DMat2, DVec2, Mat2, Mat3A, Vec2};
+use glam::{Mat2, Mat3A, Vec2};
 use rand::Rng;
 
 #[derive(Debug, Clone, Copy)]

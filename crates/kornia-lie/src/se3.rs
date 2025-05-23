@@ -1,7 +1,7 @@
 use glam::{Mat3A, Mat4, Quat, Vec3A};
 use rand::Rng;
 
-use crate::so3::SO3;
+use crate::{so2::SO2, so3::SO3};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SE3 {
@@ -64,8 +64,18 @@ impl SE3 {
         ])
     }
 
-    pub fn adjoint() -> (Mat3A, Mat3A) {
-        todo!("Python impl returns a 6x6 matrix")
+    pub fn adjoint(&self) -> [[f32; 6]; 6] {
+        let r = self.r.matrix();
+        let t = SO3::hat(self.t) * r;
+
+        [
+            [r.x_axis.x, r.y_axis.x, r.z_axis.x, 0.0, 0.0, 0.0],
+            [r.x_axis.y, r.y_axis.y, r.z_axis.y, 0.0, 0.0, 0.0],
+            [r.x_axis.z, r.y_axis.z, r.z_axis.z, 0.0, 0.0, 0.0],
+            [t.x_axis.x, t.y_axis.x, t.z_axis.x, r.x_axis.x, r.y_axis.x, r.z_axis.x],
+            [t.x_axis.y, t.y_axis.y, t.z_axis.y, r.x_axis.y, r.y_axis.y, r.z_axis.y],
+            [t.x_axis.z, t.y_axis.z, t.z_axis.z, r.x_axis.z, r.y_axis.z, r.z_axis.z],
+        ]
     }
 
     pub fn exp(upsilon: Vec3A, omega: Vec3A) -> Self {
@@ -133,6 +143,7 @@ impl SE3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_relative_eq;
     
     #[test]
     fn test_new() {
@@ -188,6 +199,34 @@ mod tests {
         let (vee_t, vee_omega) = SE3::vee(hat_matrix);
         assert!((vee_t - upsilon).length() < 1e-5);
         assert!((vee_omega - omega).length() < 1e-5);
+    }
+
+    #[test]
+    fn test_adjoint_identity() {
+        // Create an identity SE3 transform (R = I, t = 0)
+        let se3 = SE3::IDENTITY;
+
+        // Compute the adjoint
+        let adj = se3.adjoint();
+
+        // Expected 6x6 adjoint of identity:
+        // [ I | 0 ]
+        // [ 0 | I ] (where I is 3x3 identity, 0 is 3x3 zero)
+        let expected = [
+            [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        ];
+
+        // Compare element-wise (with tolerance for floating-point errors)
+        for i in 0..6 {
+            for j in 0..6 {
+                assert_relative_eq!(adj[i][j], expected[i][j], epsilon = 1e-6);
+            }
+        }
     }
 }
 
