@@ -17,7 +17,7 @@ impl SE2 {
     }
 
     pub fn from_matrix(mat: Mat3A) -> Self {
-        Self { r: SO2::from_matrix3a(mat), t: Vec2::new(mat.col(0)[2], mat.col(1)[2]) }
+        Self { r: SO2::from_matrix3a(mat), t: Vec2::new(mat.x_axis.z, mat.y_axis.z) }
     }
 
     pub fn from_random() -> Self {
@@ -39,13 +39,14 @@ impl SE2 {
     }
 
     pub fn inverse(&self) -> Self {
-        Self { r: self.r.inverse(), t: self.r.inverse() * (-self.t) }
+        let ri = self.r.inverse();
+        Self { r: ri, t: ri * (-self.t) }
     }
 
     pub fn adjoint(&self) -> Mat3A {
         let mut mat = self.matrix();
-        mat.col_mut(0)[2] = self.t[1];
-        mat.col_mut(1)[2] =-self.t[0];
+        mat.x_axis.z = self.t.y;
+        mat.y_axis.z =-self.t.x;
 
         mat
     }
@@ -57,11 +58,11 @@ impl SE2 {
             r: so2,
             t: {
                 let (a,b) = if theta != 0.0 {
-                    (so2.z[1]/theta, (1.0-so2.z[0])/theta)  
+                    (so2.z.y/theta, (1.0-so2.z.x)/theta)  
                 } else {
                     (0.0, 0.0)
                 };
-                Vec2::new(a*upsilon[0]-b*upsilon[1], b*upsilon[0]+a*upsilon[1])
+                Vec2::new(a*upsilon.x-b*upsilon.y, b*upsilon.x+a*upsilon.y)
             }
         }
     }
@@ -69,9 +70,9 @@ impl SE2 {
     pub fn log(&self) -> (Vec2, f32) {
         let theta = self.r.log();
         let half_theta = 0.5*theta;
-        let denom = self.r.z[0]-1.0;
+        let denom = self.r.z.x-1.0;
         let a = if denom != 0.0 {
-            -(half_theta*self.r.z[1]) / denom
+            -(half_theta*self.r.z.y) / denom
         } else {
             0.0
         };
@@ -88,8 +89,8 @@ impl SE2 {
         let hat_theta = SO2::hat(theta);
         
         let col0 = Mat3A::from_cols(
-            hat_theta.col(0).extend(upsilon.x).into(),
-            hat_theta.col(1).extend(upsilon.y).into(),
+            hat_theta.x_axis.extend(upsilon.x).into(),
+            hat_theta.y_axis.extend(upsilon.y).into(),
             Vec3A::ZERO, // Padding the last column with zeroes
         );
         
@@ -98,10 +99,10 @@ impl SE2 {
 
     pub fn vee(omega: Mat3A) -> (Vec2, f32) {
         (
-            Vec2::new(omega.col(0)[2], omega.col(1)[2]),  // TODO: why is the translation/upsilon at the bottom???
+            Vec2::new(omega.x_axis.z, omega.y_axis.z),  // TODO: why is the translation/upsilon at the bottom???
             SO2::vee(Mat2::from_cols_array(&[
-                omega.col(0)[0], omega.col(0)[1],
-                omega.col(1)[0], omega.col(1)[1],
+                omega.x_axis.x, omega.x_axis.y,
+                omega.y_axis.x, omega.y_axis.y,
             ]))
         )
     }
@@ -141,9 +142,9 @@ mod tests {
     fn test_matrix() {
         let se2 = SE2::new(SO2::exp(0.5), Vec2::new(1.0, 2.0));
         let mat = se2.matrix();
-        assert_eq!(mat.col(0)[2], 1.0);
-        assert_eq!(mat.col(1)[2], 2.0);
-        assert_eq!(mat.col(2)[2], 1.0);
+        assert_eq!(mat.x_axis.z, 1.0);
+        assert_eq!(mat.y_axis.z, 2.0);
+        assert_eq!(mat.z_axis.z, 1.0);
     }
     
     #[test]

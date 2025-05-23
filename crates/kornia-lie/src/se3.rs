@@ -19,7 +19,7 @@ impl SE3 {
     pub fn from_matrix(mat: Mat4) -> Self {
         Self {
             r: SO3::from_matrix4(&mat),
-            t: Vec3A::from_array([mat.col(0)[3], mat.col(1)[3], mat.col(2)[3]])
+            t: Vec3A::from_array([mat.x_axis.z, mat.y_axis.z, mat.z_axis.z])
         }
     }
 
@@ -57,9 +57,9 @@ impl SE3 {
         // matrix
         let r = self.r.matrix();
         Mat4::from_cols_array(&[
-            r.col(0)[0], r.col(0)[1], r.col(0)[2], self.t[0],
-            r.col(1)[0], r.col(1)[1], r.col(1)[2], self.t[1],
-            r.col(2)[0], r.col(2)[1], r.col(2)[2], self.t[2],
+            r.x_axis.x, r.x_axis.y, r.x_axis.z, self.t.x,
+            r.y_axis.x, r.y_axis.y, r.y_axis.z, self.t.y,
+            r.z_axis.x, r.z_axis.y, r.z_axis.z, self.t.z,
             0.0, 0.0, 0.0, 1.0
         ])
     }
@@ -124,16 +124,16 @@ impl SE3 {
         let h = SO3::hat(omega);
 
         Mat4::from_cols_array(&[
-            h.col(0)[0], h.col(0)[1], h.col(0)[2], upsilon.x,  // TODO: translation should be at the bottom (this is col-major)
-            h.col(1)[0], h.col(1)[1], h.col(1)[2], upsilon.y,
-            h.col(2)[0], h.col(2)[1], h.col(2)[2], upsilon.z,
-            0.0, 0.0, 0.0, 1.0,
+            h.x_axis.x, h.x_axis.y, h.x_axis.z, upsilon.x,
+            h.y_axis.x, h.y_axis.y, h.y_axis.z, upsilon.y,
+            h.z_axis.x, h.z_axis.y, h.z_axis.z, upsilon.z,
+            0.0, 0.0, 0.0, 1.0
         ])
     }
 
     pub fn vee(omega: Mat4) -> (Vec3A, Vec3A) {
         (
-            Vec3A::new(omega.col(0)[3], omega.col(1)[3], omega.col(2)[3]),
+            Vec3A::new(omega.x_axis.z, omega.y_axis.z, omega.z_axis.z),
             SO3::vee4(omega)
         )
     }

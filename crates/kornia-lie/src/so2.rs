@@ -17,11 +17,11 @@ impl SO2 {
     }
 
     pub fn from_matrix(mat: Mat2) -> Self {
-        Self { z: Vec2 { x: mat.col(0)[0], y: mat.col(1)[0] } }
+        Self { z: Vec2 { x: mat.x_axis.x, y: mat.y_axis.x } }
     }
 
     pub fn from_matrix3a(mat: Mat3A) -> Self {
-        Self { z: Vec2 { x: mat.col(0)[0], y: mat.col(1)[0] } }
+        Self { z: Vec2 { x: mat.x_axis.x, y: mat.y_axis.x } }
     }
 
     pub fn from_random() -> Self {
@@ -35,15 +35,15 @@ impl SO2 {
 
     pub fn matrix(&self) -> Mat2 {
         Mat2::from_cols_array(&[
-             self.z[0],-self.z[1],
-             self.z[1], self.z[0],
+             self.z.x,-self.z.y,
+             self.z.y, self.z.x,
         ])
     }
 
     /// inverting the complex number z (represented as a 2D vector)
     pub fn inverse(&self) -> Self {
         let c: f32 = self.z.dot(self.z);
-        Self { z: Vec2::new(self.z[0]/c, -self.z[1]/c) }
+        Self { z: Vec2::new(self.z.x/c, -self.z.y/c) }
     }
 
     pub fn adjoint(&self) -> Mat2 {
@@ -55,7 +55,7 @@ impl SO2 {
     }
 
     pub fn log(&self) -> f32 {
-        self.z[1].atan2(self.z[0])
+        self.z.y.atan2(self.z.x)
     }
 
     pub fn hat(theta: f32) -> Mat2 {
@@ -66,7 +66,7 @@ impl SO2 {
     }
 
     pub fn vee(omega: Mat2) -> f32 {
-        omega.col(0)[1]
+        omega.x_axis.y
     }
 }
 
@@ -75,7 +75,7 @@ impl Mul<Vec2> for SO2 {
     type Output = Vec2;
 
     fn mul(self, rhs: Vec2) -> Self::Output {
-        Vec2::new(self.z[0]*rhs.x - self.z[1]*rhs.y, self.z[1]*rhs.x + self.z[0]*rhs.y)
+        Vec2::new(self.z.x*rhs.x - self.z.y*rhs.y, self.z.y*rhs.x + self.z.x*rhs.y)
     }
 }
 

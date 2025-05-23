@@ -12,8 +12,8 @@ pub struct SO3 {
 impl SO3 {
     pub const IDENTITY: Self = Self { q: Quat::IDENTITY };
 
-    pub fn from_quaternion(quat: &Quat) -> Self {
-        Self { q: Quat::from_array([quat.x, quat.y, quat.z, quat.w]) }
+    pub fn from_quaternion(quat: Quat) -> Self {
+        Self { q: quat }
     }
 
     pub fn from_matrix(mat: &Mat3A) -> Self {
@@ -31,10 +31,12 @@ impl SO3 {
         let r2: f32 = rng.random();
         let r3: f32 = rng.random();
 
-        let w = (1.0 - r1).sqrt() * (2.0 * std::f32::consts::PI * r2).sin();
-        let x = (1.0 - r1).sqrt() * (2.0 * std::f32::consts::PI * r2).cos();
-        let y = r1.sqrt() * (2.0 * std::f32::consts::PI * r3).sin();
-        let z = r1.sqrt() * (2.0 * std::f32::consts::PI * r3).cos();
+        let one_minus_r1_sqrt = (1.0 - r1).sqrt();
+        let r1_sqrt = r1.sqrt();
+        let w = one_minus_r1_sqrt.sqrt() * (2.0 * std::f32::consts::PI * r2).sin();
+        let x = one_minus_r1_sqrt.sqrt() * (2.0 * std::f32::consts::PI * r2).cos();
+        let y = r1_sqrt * (2.0 * std::f32::consts::PI * r3).sin();
+        let z = r1_sqrt * (2.0 * std::f32::consts::PI * r3).cos();
 
         Self {
             q: Quat::from_xyzw(x, y, z, w)
@@ -96,10 +98,10 @@ impl SO3 {
 
     /// Lie algebra -> vector space
     pub fn vee(omega: Mat3A) -> Vec3A {
-        Vec3A::from_array([omega.col(2)[1], omega.col(0)[2], omega.col(1)[0]])
+        Vec3A::from_array([omega.z_axis.y, omega.x_axis.z, omega.y_axis.x])
     }
     pub fn vee4(omega: Mat4) -> Vec3A {
-        Vec3A::from_array([omega.col(2)[1], omega.col(0)[2], omega.col(1)[0]])
+        Vec3A::from_array([omega.z_axis.y, omega.x_axis.z, omega.y_axis.x])
     }
 
     pub fn left_jacobian(v: Vec3A) -> Mat3A {
@@ -140,7 +142,7 @@ mod tests {
     #[test]
     fn test_from_quaternion() {
         let q = Quat::from_xyzw(4.0, -2.0, 1.0, 3.5);
-        let s = SO3::from_quaternion(&q);
+        let s = SO3::from_quaternion(q);
         assert_eq!(s.q, q);
     }
 
@@ -158,7 +160,7 @@ mod tests {
     #[test]
     fn test_log() {
         {
-            let so3 = SO3::from_quaternion(&Quat::from_xyzw(1.0, 1.0, 1.0, 1.0));
+            let so3 = SO3::from_quaternion(Quat::from_xyzw(1.0, 1.0, 1.0, 1.0));
             let log = so3.log();
             assert!((log - Vec3A::new(0.0, 0.0, 0.0)).length() < 1e-5);
         }
