@@ -23,18 +23,19 @@ pub use crate::stream::rtsp::RTSPCameraConfig;
 pub use crate::stream::v4l2::V4L2CameraConfig;
 pub use crate::stream::video::VideoWriter;
 
-use kornia_tensor::Tensor;
+use kornia_image::allocator::ImageAllocator;
 use kornia_tensor::{allocator::TensorAllocatorError, TensorAllocator};
 
-/// Represents an image from gstreamer with pixel data.
-///
-/// The image is represented as a 3D Tensor with shape (H, W, C), where H is the height of the image
 #[allow(dead_code)]
-pub struct FrameImage(pub Tensor<u8, 3, GstAllocator>, gstreamer::Buffer);
-
 #[derive(Clone)]
 /// A [TensorAllocator] used for those images, whose memory is managed by gstreamer.
-pub struct GstAllocator;
+pub struct GstAllocator(gstreamer::Buffer);
+
+impl Default for GstAllocator {
+    fn default() -> Self {
+        GstAllocator(gstreamer::Buffer::default())
+    }
+}
 
 impl TensorAllocator for GstAllocator {
     fn alloc(
@@ -55,3 +56,5 @@ impl TensorAllocator for GstAllocator {
         // For more info, check https://github.com/kornia/kornia-rs/pull/338
     }
 }
+
+impl ImageAllocator for GstAllocator {}

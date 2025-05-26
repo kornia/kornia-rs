@@ -1,5 +1,5 @@
 use cu29::prelude::*;
-use kornia::{image::Image, imgproc, tensor::CpuAllocator};
+use kornia::{image::Image, imgproc, io::stream::GstAllocator};
 
 use super::cu_image::{ImageGray8Msg, ImageRgb8Msg};
 
@@ -42,7 +42,7 @@ impl<'cl> CuTask<'cl> for Sobel {
             .map(|&x| x as f32)
             .map_err(|e| CuError::new_with_cause("Failed to cast image to f32", e))?;
 
-        let mut img_sobel = Image::from_size_val(img.size(), 0.0f32, CpuAllocator)
+        let mut img_sobel = Image::from_size_val(img.size(), 0.0f32, GstAllocator::default())
             .map_err(|e| CuError::new_with_cause("Failed to create image", e))?;
 
         imgproc::filter::sobel(&img, &mut img_sobel, 3)
