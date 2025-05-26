@@ -157,8 +157,9 @@ impl StreamCapture {
 
             let layout = unsafe { Layout::array::<u8>(frame_data_slice.len()).unwrap_unchecked() };
 
-            // buffer_map is the reference to buffer, dropping it allows
-            // the ownership of buffer to be transfered to FrameImage
+            // buffer_map is the reference to buffer, dropping it allows the ownership of buffer to
+            // `tensor_storage`. Dropping this doesn't make the `frame_data_ptr` become dangling as the
+            // pointer will be valid until the `frame_buffer.buffer` is not dropped.
             drop(buffer_map);
 
             let tensor_storage = unsafe {
@@ -166,6 +167,10 @@ impl StreamCapture {
                     frame_data_ptr,
                     frame_data_len,
                     layout,
+                    // We are using custom `GstAllocator` and storing `gstreamer::Buffer`, as the buffer
+                    // is reference counted storage maintained by gstreamer and when it is dropped the
+                    // `frame_data_ptr` becomes dangling. To avoid this, we are keeping the `Buffer` with
+                    // `Image`.
                     GstAllocator(frame_buffer.buffer),
                 )
             };
