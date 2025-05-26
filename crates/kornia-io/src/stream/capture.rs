@@ -145,15 +145,15 @@ impl StreamCapture {
             let width = frame_buffer.width;
             let height = frame_buffer.height;
 
-            let buffer_map = frame_buffer
+            let mut buffer_map = frame_buffer
                 .buffer
                 .make_mut()
                 .map_writable()
                 .map_err(|_| StreamCaptureError::GetBufferError)?;
 
-            let frame_data_slice = buffer_map.as_slice();
+            let frame_data_slice = buffer_map.as_mut_slice();
             let frame_data_len = frame_data_slice.len();
-            let frame_data_ptr = frame_data_slice.as_ptr();
+            let frame_data_ptr = frame_data_slice.as_mut_ptr();
 
             let layout = unsafe { Layout::array::<u8>(frame_data_slice.len()).unwrap_unchecked() };
 
