@@ -25,7 +25,7 @@ pub trait ToPyImageF32 {
     fn to_pyimage_f32(self) -> PyImageF32;
 }
 
-impl<const C: usize> ToPyImage for Image<u8, C> {
+impl<const C: usize> ToPyImage for Image<u8, C, CpuAllocator> {
     fn to_pyimage(self) -> PyImage {
         Python::with_gil(|py| unsafe {
             let array = PyArray::<u8, _>::new(py, [self.height(), self.width(), C], false);
@@ -36,7 +36,7 @@ impl<const C: usize> ToPyImage for Image<u8, C> {
     }
 }
 
-impl<const C: usize> ToPyImageU16 for Image<u16, C> {
+impl<const C: usize> ToPyImageU16 for Image<u16, C, CpuAllocator> {
     fn to_pyimage_u16(self) -> PyImageU16 {
         Python::with_gil(|py| unsafe {
             let array = PyArray::<u16, _>::new(py, [self.height(), self.width(), C], false);
@@ -47,7 +47,7 @@ impl<const C: usize> ToPyImageU16 for Image<u16, C> {
     }
 }
 
-impl<const C: usize> ToPyImageF32 for Image<f32, C> {
+impl<const C: usize> ToPyImageF32 for Image<f32, C, CpuAllocator> {
     fn to_pyimage_f32(self) -> PyImageF32 {
         Python::with_gil(|py| unsafe {
             let array = PyArray::<f32, _>::new(py, [self.height(), self.width(), C], false);
@@ -59,19 +59,19 @@ impl<const C: usize> ToPyImageF32 for Image<f32, C> {
 }
 /// Trait to convert a PyImage (3D numpy array of u8) to an image
 pub trait FromPyImage<const C: usize> {
-    fn from_pyimage(image: PyImage) -> Result<Image<u8, C>, ImageError>;
+    fn from_pyimage(image: PyImage) -> Result<Image<u8, C, CpuAllocator>, ImageError>;
 }
 
 pub trait FromPyImageU16<const C: usize> {
-    fn from_pyimage_u16(image: PyImageU16) -> Result<Image<u16, C>, ImageError>;
+    fn from_pyimage_u16(image: PyImageU16) -> Result<Image<u16, C, CpuAllocator>, ImageError>;
 }
 
 pub trait FromPyImageF32<const C: usize> {
-    fn from_pyimage_f32(image: PyImageF32) -> Result<Image<f32, C>, ImageError>;
+    fn from_pyimage_f32(image: PyImageF32) -> Result<Image<f32, C, CpuAllocator>, ImageError>;
 }
 
-impl<const C: usize> FromPyImage<C> for Image<u8, C> {
-    fn from_pyimage(image: PyImage) -> Result<Image<u8, C>, ImageError> {
+impl<const C: usize> FromPyImage<C> for Image<u8, C, CpuAllocator> {
+    fn from_pyimage(image: PyImage) -> Result<Image<u8, C, CpuAllocator>, ImageError> {
         Python::with_gil(|py| {
             let pyarray = image.bind(py);
 
@@ -94,8 +94,8 @@ impl<const C: usize> FromPyImage<C> for Image<u8, C> {
     }
 }
 
-impl<const C: usize> FromPyImageU16<C> for Image<u16, C> {
-    fn from_pyimage_u16(image: PyImageU16) -> Result<Image<u16, C>, ImageError> {
+impl<const C: usize> FromPyImageU16<C> for Image<u16, C, CpuAllocator> {
+    fn from_pyimage_u16(image: PyImageU16) -> Result<Image<u16, C, CpuAllocator>, ImageError> {
         Python::with_gil(|py| {
             let pyarray = image.bind(py);
             let data = match pyarray.to_vec() {
@@ -113,8 +113,8 @@ impl<const C: usize> FromPyImageU16<C> for Image<u16, C> {
     }
 }
 
-impl<const C: usize> FromPyImageF32<C> for Image<f32, C> {
-    fn from_pyimage_f32(image: PyImageF32) -> Result<Image<f32, C>, ImageError> {
+impl<const C: usize> FromPyImageF32<C> for Image<f32, C, CpuAllocator> {
+    fn from_pyimage_f32(image: PyImageF32) -> Result<Image<f32, C, CpuAllocator>, ImageError> {
         Python::with_gil(|py| {
             let pyarray = image.bind(py);
             let data = match pyarray.to_vec() {

@@ -17,10 +17,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
 
     // read the image
-    let image: Image<u8, 3> = F::read_image_any_rgb8(args.image_path)?;
+    let image = F::read_image_any_rgb8(args.image_path)?;
 
     // binarize the image as u8
-    let mut bin = Image::<u8, 3>::from_size_val(image.size(), 0, CpuAllocator)?;
+    let mut bin = Image::<u8, 3, _>::from_size_val(image.size(), 0, CpuAllocator)?;
     imgproc::threshold::threshold_binary(&image, &mut bin, 127, 255)?;
 
     // normalize the image between 0 and 1

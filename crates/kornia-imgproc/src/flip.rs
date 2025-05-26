@@ -89,7 +89,7 @@ where
 /// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::flip::vertical_flip;
 ///
-/// let image = Image::<f32, 3>::new(
+/// let image = Image::<f32, 3, _>::new(
 ///     ImageSize {
 ///         width: 2,
 ///         height: 3,
@@ -99,7 +99,7 @@ where
 /// )
 /// .unwrap();
 ///
-/// let mut flipped = Image::<f32, 3>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
+/// let mut flipped = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
 ///
 /// vertical_flip(&image, &mut flipped).unwrap();
 ///

@@ -20,7 +20,7 @@ use kornia::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
-    let image: Image<u8, 3> = F::read_image_any_rgb8("tests/data/dog.jpeg")?;
+    let image: Image<u8, 3, _> = F::read_image_any_rgb8("tests/data/dog.jpeg")?;
 
     println!("Hello, world! 🦀");
     println!("Loaded Image size: {:?}", image.size());
@@ -123,13 +123,13 @@ use kornia::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
-    let image: Image<u8, 3> = F::read_image_any_rgb8("tests/data/dog.jpeg")?;
+    let image: Image<u8, 3, _> = F::read_image_any_rgb8("tests/data/dog.jpeg")?;
     let image_viz = image.clone();
 
-    let image_f32: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
+    let image_f32: Image<f32, 3, _> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
 
     // convert the image to grayscale
-    let mut gray = Image::<f32, 1>::from_size_val(image_f32.size(), 0.0)?;
+    let mut gray = Image::<f32, 1, _>::from_size_val(image_f32.size(), 0.0)?;
     imgproc::color::gray_from_rgb(&image_f32, &mut gray)?;
 
     // resize the image
@@ -138,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         height: 128,
     };
 
-    let mut gray_resized = Image::<f32, 1>::from_size_val(new_size, 0.0)?;
+    let mut gray_resized = Image::<f32, 1, _>::from_size_val(new_size, 0.0)?;
     imgproc::resize::resize_native(
         &gray, &mut gray_resized,
         imgproc::interpolation::InterpolationMode::Bilinear,

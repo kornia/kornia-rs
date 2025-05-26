@@ -8,15 +8,15 @@ pub mod allocator;
 #[cfg(feature = "bincode")]
 pub mod bincode;
 
-/// tensor module containing the tensor and storage implementations.
-pub mod tensor;
-
 /// serde module containing the serialization and deserialization utilities.
 #[cfg(feature = "serde")]
 pub mod serde;
 
 /// storage module containing the storage implementations.
 pub mod storage;
+
+/// tensor module containing the tensor and storage implementations.
+pub mod tensor;
 
 /// view module containing the view implementations.
 pub mod view;

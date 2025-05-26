@@ -15,7 +15,7 @@ pub fn warp_affine(
 ) -> PyResult<PyImage> {
     // have to add annotation Image<u8, 3>, otherwise the compiler will complain
     // NOTE: do we support images with channels != 3?
-    let image: Image<u8, 3> = Image::from_pyimage(image)
+    let image: Image<u8, 3, _> = Image::from_pyimage(image)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
     let new_size = ImageSize {
@@ -59,7 +59,7 @@ pub fn warp_perspective(
     new_size: (usize, usize),
     interpolation: &str,
 ) -> PyResult<PyImage> {
-    let image: Image<u8, 3> = Image::from_pyimage(image)
+    let image: Image<u8, 3, _> = Image::from_pyimage(image)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
     let new_size = ImageSize {
