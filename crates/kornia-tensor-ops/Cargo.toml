@@ -19,6 +19,7 @@ rand = { workspace = true }
 [dependencies]
 kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
+rayon = "1.10"
 thiserror = { workspace = true }
 
 [[bench]]
@@ -27,4 +28,8 @@ harness = false
 
 [[bench]]
 name = "bench_kernels"
+harness = false
+
+[[bench]]
+name = "bench_dnn"
 harness = false
