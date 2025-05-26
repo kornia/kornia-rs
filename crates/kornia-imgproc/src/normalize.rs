@@ -188,7 +188,7 @@ where
 /// )
 /// .unwrap();
 ///
-/// let mut image_normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
+/// let mut image_normalized = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
 ///
 /// normalize_min_max(&image, &mut image_normalized, 0.0, 1.0).unwrap();
 ///

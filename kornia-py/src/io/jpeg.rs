@@ -36,13 +36,13 @@ pub fn read_image_jpeg(file_path: &str, mode: &str) -> PyResult<PyImage> {
 pub fn write_image_jpeg(file_path: &str, image: PyImage, mode: &str, quality: u8) -> PyResult<()> {
     match mode {
         "rgb" => {
-            let image = Image::<u8, 3>::from_pyimage(image)
+            let image = Image::<u8, 3, _>::from_pyimage(image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             J::write_image_jpeg_rgb8(file_path, &image, quality)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
         }
         "mono" => {
-            let image = Image::<u8, 1>::from_pyimage(image)
+            let image = Image::<u8, 1, _>::from_pyimage(image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             J::write_image_jpeg_gray8(file_path, &image, quality)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
@@ -83,15 +83,17 @@ pub fn decode_image_jpeg(src: &[u8], image_shape: (usize, usize), mode: &str) ->
 
     let result = match mode {
         "rgb" => {
-            let mut output_image = Image::<u8, 3>::from_size_val(image_shape, 0, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            let mut output_image =
+                Image::<u8, 3, _>::from_size_val(image_shape, 0, CpuAllocator)
+                    .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             J::decode_image_jpeg_rgb8(src, &mut output_image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             output_image.to_pyimage()
         }
         "mono" => {
-            let mut output_image = Image::<u8, 1>::from_size_val(image_shape, 0, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            let mut output_image =
+                Image::<u8, 1, _>::from_size_val(image_shape, 0, CpuAllocator)
+                    .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             J::decode_image_jpeg_mono8(src, &mut output_image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             output_image.to_pyimage()

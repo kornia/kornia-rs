@@ -78,19 +78,19 @@ pub fn read_image_png_u16(file_path: &str, mode: &str) -> PyResult<PyImageU16> {
 pub fn write_image_png_u8(file_path: &str, image: PyImage, mode: &str) -> PyResult<()> {
     match mode {
         "rgb" => {
-            let image = Image::<u8, 3>::from_pyimage(image)
+            let image = Image::<u8, 3, _>::from_pyimage(image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
             P::write_image_png_rgb8(file_path, &image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
         }
         "rgba" => {
-            let image = Image::<u8, 4>::from_pyimage(image)
+            let image = Image::<u8, 4, _>::from_pyimage(image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
             P::write_image_png_rgba8(file_path, &image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
         }
         "mono" => {
-            let image = Image::<u8, 1>::from_pyimage(image)
+            let image = Image::<u8, 1, _>::from_pyimage(image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
             P::write_image_png_gray8(file_path, &image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
@@ -116,19 +116,19 @@ pub fn write_image_png_u8(file_path: &str, image: PyImage, mode: &str) -> PyResu
 pub fn write_image_png_u16(file_path: &str, image: PyImageU16, mode: &str) -> PyResult<()> {
     match mode {
         "rgb" => {
-            let image = Image::<u16, 3>::from_pyimage_u16(image)
+            let image = Image::<u16, 3, _>::from_pyimage_u16(image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
             P::write_image_png_rgb16(file_path, &image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
         }
         "rgba" => {
-            let image = Image::<u16, 4>::from_pyimage_u16(image)
+            let image = Image::<u16, 4, _>::from_pyimage_u16(image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
             P::write_image_png_rgba16(file_path, &image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
         }
         "mono" => {
-            let image = Image::<u16, 1>::from_pyimage_u16(image)
+            let image = Image::<u16, 1, _>::from_pyimage_u16(image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
             P::write_image_png_gray16(file_path, &image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
@@ -178,21 +178,21 @@ pub fn decode_image_png_u8(
 
     let result = match mode {
         "rgb" => {
-            let mut image: Image<u8, 3> = Image::from_size_val(image_shape, 0, CpuAllocator)
+            let mut image: Image<u8, 3, _> = Image::from_size_val(image_shape, 0, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             P::decode_image_png_rgb8(src, &mut image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             image.to_pyimage()
         }
         "rgba" => {
-            let mut image: Image<u8, 4> = Image::from_size_val(image_shape, 0, CpuAllocator)
+            let mut image: Image<u8, 4, _> = Image::from_size_val(image_shape, 0, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             P::decode_image_png_rgba8(src, &mut image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             image.to_pyimage()
         }
         "mono" => {
-            let mut image: Image<u8, 1> = Image::from_size_val(image_shape, 0, CpuAllocator)
+            let mut image: Image<u8, 1, _> = Image::from_size_val(image_shape, 0, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             P::decode_image_png_mono8(src, &mut image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
@@ -228,21 +228,21 @@ pub fn decode_image_png_u16(
 
     let result = match mode {
         "rgb" => {
-            let mut image: Image<u16, 3> = Image::from_size_val(image_shape, 0, CpuAllocator)
+            let mut image: Image<u16, 3, _> = Image::from_size_val(image_shape, 0, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             P::decode_image_png_rgb16(src, &mut image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             image.to_pyimage_u16()
         }
         "rgba" => {
-            let mut image: Image<u16, 4> = Image::from_size_val(image_shape, 0, CpuAllocator)
+            let mut image: Image<u16, 4, _> = Image::from_size_val(image_shape, 0, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             P::decode_image_png_rgba16(src, &mut image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             image.to_pyimage_u16()
         }
         "mono" => {
-            let mut image: Image<u16, 1> = Image::from_size_val(image_shape, 0, CpuAllocator)
+            let mut image: Image<u16, 1, _> = Image::from_size_val(image_shape, 0, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             P::decode_image_png_mono16(src, &mut image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
