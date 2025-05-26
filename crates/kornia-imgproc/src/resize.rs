@@ -3,7 +3,7 @@ use crate::{
     parallel,
 };
 use fast_image_resize::{self as fr};
-use kornia_image::{Image, ImageError};
+use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
 /// Resize an image to a new size.
 ///
@@ -24,15 +24,17 @@ use kornia_image::{Image, ImageError};
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::resize::resize_native;
 /// use kornia_imgproc::interpolation::InterpolationMode;
 ///
-/// let image = Image::<_, 3>::new(
+/// let image = Image::<_, 3, _>::new(
 ///     ImageSize {
 ///         width: 4,
 ///         height: 5,
 ///     },
 ///     vec![0f32; 4 * 5 * 3],
+///     CpuAllocator
 /// )
 /// .unwrap();
 ///
@@ -41,7 +43,7 @@ use kornia_image::{Image, ImageError};
 ///     height: 3,
 /// };
 ///
-/// let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0.0).unwrap();
+/// let mut image_resized = Image::<_, 3, _>::from_size_val(new_size, 0.0, CpuAllocator).unwrap();
 ///
 /// resize_native(
 ///     &image,
@@ -54,9 +56,9 @@ use kornia_image::{Image, ImageError};
 /// assert_eq!(image_resized.size().width, 2);
 /// assert_eq!(image_resized.size().height, 3);
 /// ```
-pub fn resize_native<const C: usize>(
-    src: &Image<f32, C>,
-    dst: &mut Image<f32, C>,
+pub fn resize_native<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, C, A1>,
+    dst: &mut Image<f32, C, A2>,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError>
 where
@@ -107,15 +109,17 @@ where
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::resize::resize_fast;
 /// use kornia_imgproc::interpolation::InterpolationMode;
 ///
-/// let image = Image::<_, 3>::new(
-///    ImageSize {
-///       width: 4,
-///      height: 5,
-/// },
-/// vec![0u8; 4 * 5 * 3],
+/// let image = Image::<_, 3, _>::new(
+///     ImageSize {
+///         width: 4,
+///         height: 5,
+///     },
+///     vec![0u8; 4 * 5 * 3],
+///     CpuAllocator
 /// )
 /// .unwrap();
 ///
@@ -124,7 +128,7 @@ where
 ///   height: 3,
 /// };
 ///
-/// let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0).unwrap();
+/// let mut image_resized = Image::<_, 3, _>::from_size_val(new_size, 0, CpuAllocator).unwrap();
 ///
 /// resize_fast(
 ///   &image,
@@ -141,9 +145,9 @@ where
 /// # Errors
 ///
 /// The function returns an error if the image cannot be resized.
-pub fn resize_fast(
-    src: &Image<u8, 3>,
-    dst: &mut Image<u8, 3>,
+pub fn resize_fast<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, 3, A1>,
+    dst: &mut Image<u8, 3, A2>,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
     if dst.size() != dst.size() {
@@ -196,16 +200,17 @@ pub fn resize_fast(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
-    use kornia_tensor::TensorError;
+    use kornia_tensor::{CpuAllocator, TensorError};
 
     #[test]
     fn resize_smoke_ch3() -> Result<(), ImageError> {
-        let image = Image::<_, 3>::new(
+        let image = Image::<_, 3, _>::new(
             ImageSize {
                 width: 3,
                 height: 4,
             },
             (0..3 * 4 * 3).map(|x| x as f32).collect::<Vec<f32>>(),
+            CpuAllocator,
         )?;
 
         let new_size = ImageSize {
@@ -213,7 +218,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0.0)?;
+        let mut image_resized = Image::<_, 3, _>::from_size_val(new_size, 0.0, CpuAllocator)?;
 
         super::resize_native(
             &image,
@@ -239,12 +244,13 @@ mod tests {
     #[test]
     fn resize_smoke_ch1() -> Result<(), ImageError> {
         use kornia_image::{Image, ImageSize};
-        let image = Image::<_, 1>::new(
+        let image = Image::<_, 1, _>::new(
             ImageSize {
                 width: 2,
                 height: 3,
             },
             vec![0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0],
+            CpuAllocator,
         )?;
 
         let new_size = ImageSize {
@@ -252,7 +258,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_resized = Image::<_, 1>::from_size_val(new_size, 0.0f32)?;
+        let mut image_resized = Image::<_, 1, _>::from_size_val(new_size, 0.0f32, CpuAllocator)?;
 
         super::resize_native(
             &image,
@@ -287,12 +293,13 @@ mod tests {
     #[test]
     fn resize_fast() -> Result<(), ImageError> {
         use kornia_image::{Image, ImageSize};
-        let image = Image::<_, 3>::new(
+        let image = Image::<_, 3, _>::new(
             ImageSize {
                 width: 4,
                 height: 5,
             },
             vec![0u8; 4 * 5 * 3],
+            CpuAllocator,
         )?;
 
         let new_size = ImageSize {
@@ -300,7 +307,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_resized = Image::<_, 3>::from_size_val(new_size, 0)?;
+        let mut image_resized = Image::<_, 3, _>::from_size_val(new_size, 0, CpuAllocator)?;
 
         super::resize_fast(
             &image,

@@ -26,6 +26,7 @@ jobs:
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
+    - run: sudo apt-get update
     - uses: actions/checkout@v4
 
     - uses: extractions/setup-just@v2
@@ -40,7 +41,7 @@ jobs:
         profile: minimal
 
     - name: Install sccache
-      uses: mozilla-actions/sccache-action@v0.0.3
+      uses: mozilla-actions/sccache-action@v0.0.8
 
     - name: Install system dependencies
       run: sudo apt-get install -y nasm libunwind-dev
@@ -72,6 +73,7 @@ jobs:
 
 
     steps:
+    - run: sudo apt-get update
     - uses: actions/checkout@v4
 
     - uses: extractions/setup-just@v2
@@ -85,7 +87,7 @@ jobs:
 
 
     - name: Install sccache
-      uses: mozilla-actions/sccache-action@v0.0.3
+      uses: mozilla-actions/sccache-action@v0.0.8
 
 
 
@@ -96,16 +98,13 @@ jobs:
       run: cd kornia-py/ && just install-dev 3.13t
 
     - name: Run tests
-      env:
-        # TODO: unset when the module declares support
-        PYTHON_GIL: '0'
       run: |
         cd kornia-py/
         source .venv/bin/activate
         maturin develop -m Cargo.toml
         pytest --parallel-threads=8 --iterations=50
 
-        
+
     - name: Show sccache stats
       run: sccache --show-stats
 

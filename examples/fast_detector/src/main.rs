@@ -1,7 +1,7 @@
 use argh::FromArgs;
 use std::path::PathBuf;
 
-use kornia::{image::Image, imgproc, io::functional as F};
+use kornia::{image::Image, imgproc, io::functional as F, tensor::CpuAllocator};
 
 /// Detect FAST features on an image.
 #[derive(FromArgs)]
@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let img_rgb8 = F::read_image_any_rgb8(args.image_path)?;
 
     // convert to grayscale
-    let mut img_gray8 = Image::from_size_val(img_rgb8.size(), 0u8)?;
+    let mut img_gray8 = Image::from_size_val(img_rgb8.size(), 0u8, CpuAllocator)?;
     imgproc::color::gray_from_rgb_u8(&img_rgb8, &mut img_gray8)?;
 
     // detect the fast features

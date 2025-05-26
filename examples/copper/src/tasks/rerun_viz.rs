@@ -1,6 +1,5 @@
 use super::cu_image::{ImageGray8Msg, ImageRgb8Msg};
 use cu29::prelude::*;
-use std::str::FromStr;
 
 const RERUN_HOST: &str = "127.0.0.1";
 const RERUN_PORT: u32 = 9876;
@@ -38,11 +37,7 @@ impl<'cl> CuSinkTask<'cl> for RerunViz {
         };
 
         let rec = rerun::RecordingStreamBuilder::new("kornia_app")
-            .connect_tcp_opts(
-                std::net::SocketAddr::from_str(&format!("{}:{}", host, port))
-                    .map_err(|e| CuError::new_with_cause("Failed to parse host and port", e))?,
-                None,
-            )
+            .connect_grpc_opts(format!("rerun+http://{}:{}/proxy", host, port), None)
             .map_err(|e| CuError::new_with_cause("Failed to spawn rerun stream", e))?;
 
         Ok(Self(rec))
@@ -74,7 +69,10 @@ fn log_image_rgb8(
     timestamp_ns: u64,
     img: &ImageRgb8Msg,
 ) -> Result<(), CuError> {
-    rec.set_time_nanos(name, timestamp_ns as i64);
+    rec.set_time(
+        name,
+        rerun::TimeCell::from_duration_nanos(timestamp_ns as i64),
+    );
     rec.log(
         name,
         &rerun::Image::from_elements(img.as_slice(), img.size().into(), rerun::ColorModel::RGB),
@@ -89,7 +87,10 @@ fn log_image_gray8(
     timestamp_ns: u64,
     img: &ImageGray8Msg,
 ) -> Result<(), CuError> {
-    rec.set_time_nanos(name, timestamp_ns as i64);
+    rec.set_time(
+        "time",
+        rerun::TimeCell::from_duration_nanos(timestamp_ns as i64),
+    );
     rec.log(
         name,
         &rerun::Image::from_elements(img.as_slice(), img.size().into(), rerun::ColorModel::L),

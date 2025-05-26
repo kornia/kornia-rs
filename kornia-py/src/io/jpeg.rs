@@ -1,68 +1,113 @@
-use kornia_image::Image;
-use kornia_io::jpegturbo::{JpegTurboDecoder, JpegTurboEncoder};
+use crate::image::{FromPyImage, PyImage, ToPyImage};
+use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use kornia_io::jpeg as J;
 use pyo3::prelude::*;
 
-use crate::image::{FromPyImage, PyImage, PyImageSize, ToPyImage};
+#[pyfunction]
+pub fn read_image_jpeg(file_path: &str, mode: &str) -> PyResult<PyImage> {
+    let result = match mode {
+        "rgb" => {
+            let img = J::read_image_jpeg_rgb8(file_path)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            img.to_pyimage()
+        }
+        "mono" => {
+            let img = J::read_image_jpeg_mono8(file_path)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            img.to_pyimage()
+        }
+        _ => {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                String::from(
+                    r#"\
+        The following are the supported values of mode:
+        1) "rgb" -> 8-bit RGB
+        2) "mono" -> 8-bit Monochrome
+        "#,
+                ),
+            ))
+        }
+    };
 
-#[pyclass(name = "ImageDecoder")]
-pub struct PyImageDecoder {
-    pub inner: JpegTurboDecoder,
+    Ok(result)
 }
 
-#[pymethods]
-impl PyImageDecoder {
-    #[new]
-    pub fn new() -> PyResult<PyImageDecoder> {
-        let inner = JpegTurboDecoder::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(PyImageDecoder { inner })
+#[pyfunction]
+pub fn write_image_jpeg(file_path: &str, image: PyImage, mode: &str, quality: u8) -> PyResult<()> {
+    match mode {
+        "rgb" => {
+            let image = Image::<u8, 3>::from_pyimage(image)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            J::write_image_jpeg_rgb8(file_path, &image, quality)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+        }
+        "mono" => {
+            let image = Image::<u8, 1>::from_pyimage(image)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            J::write_image_jpeg_gray8(file_path, &image, quality)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+        }
+        _ => {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                String::from(
+                    r#"\
+        The following are the supported values of mode:
+        1) "rgb" -> 8-bit RGB
+        2) "mono" -> 8-bit Monochrome
+        "#,
+                ),
+            ))
+        }
     }
-
-    pub fn read_header(&mut self, jpeg_data: &[u8]) -> PyResult<PyImageSize> {
-        let image_size = self
-            .inner
-            .read_header(jpeg_data)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(image_size.into())
-    }
-
-    pub fn decode(&mut self, jpeg_data: &[u8]) -> PyResult<PyImage> {
-        let image = self
-            .inner
-            .decode_rgb8(jpeg_data)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(image.to_pyimage())
-    }
+    Ok(())
 }
 
-#[pyclass(name = "ImageEncoder")]
-pub struct PyImageEncoder {
-    pub inner: JpegTurboEncoder,
-}
+#[pyfunction]
+/// Decodes the JPEG Image from raw bytes.
+///
+/// The following modes are supported:
+/// 1. "rgb" -> 8-bit RGB
+/// 2. "mono" -> 8-bit Monochrome
+///
+/// ```py
+/// import kornia_rs as K
+///
+/// img = K.decode_image_jpeg(bytes(img_data), (32, 32), "rgb")
+/// ```
+///
+pub fn decode_image_jpeg(src: &[u8], image_shape: (usize, usize), mode: &str) -> PyResult<PyImage> {
+    let image_shape = ImageSize {
+        width: image_shape.1,
+        height: image_shape.0,
+    };
 
-#[pymethods]
-impl PyImageEncoder {
-    #[new]
-    pub fn new() -> PyResult<PyImageEncoder> {
-        let inner = JpegTurboEncoder::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(PyImageEncoder { inner })
-    }
+    let result = match mode {
+        "rgb" => {
+            let mut output_image = Image::<u8, 3>::from_size_val(image_shape, 0, CpuAllocator)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            J::decode_image_jpeg_rgb8(src, &mut output_image)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            output_image.to_pyimage()
+        }
+        "mono" => {
+            let mut output_image = Image::<u8, 1>::from_size_val(image_shape, 0, CpuAllocator)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            J::decode_image_jpeg_mono8(src, &mut output_image)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            output_image.to_pyimage()
+        }
+        _ => {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                String::from(
+                    r#"\
+        The following are the supported values of mode:
+        1) "rgb" -> 8-bit RGB
+        2) "mono" -> 8-bit Monochrome
+        "#,
+                ),
+            ))
+        }
+    };
 
-    pub fn encode(&mut self, image: PyImage) -> PyResult<Vec<u8>> {
-        let image = Image::from_pyimage(image)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        let jpeg_data = self
-            .inner
-            .encode_rgb8(&image)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(jpeg_data)
-    }
-
-    pub fn set_quality(&mut self, quality: i32) -> PyResult<()> {
-        self.inner
-            .set_quality(quality)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(())
-    }
+    Ok(result)
 }

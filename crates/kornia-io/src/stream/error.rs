@@ -70,3 +70,23 @@ pub enum StreamCaptureError {
     #[error("Could not lock the mutex")]
     MutexPoisonError,
 }
+
+/// Error type for video reader
+#[derive(thiserror::Error, Debug)]
+pub enum VideoReaderError {
+    /// An error occurred while seeking within the video stream.
+    #[error("Failed to seek")]
+    SeekError,
+
+    /// An error occurred while attempting to retrieve the current position in the video stream.
+    #[error("Failed to get the current position in the video")]
+    CurrentPosError,
+
+    /// The specified playback speed is invalid. Playback speed must be greater than zero.
+    #[error("The playback speed is invalid i.e. either it's negative or zero")]
+    InvalidPlaybackSpeed,
+
+    /// An error occurred in the stream capture process.
+    #[error(transparent)]
+    StreamCaptureError(#[from] StreamCaptureError),
+}

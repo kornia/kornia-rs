@@ -1,4 +1,5 @@
 use argh::FromArgs;
+use kornia::tensor::CpuAllocator;
 use std::path::PathBuf;
 
 use kornia::io::functional as F;
@@ -22,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image_f32 = image.clone().cast::<f32>()?;
 
     // normalize the image between 0 and 255
-    let mut image_f32_norm = Image::from_size_val(image_f32.size(), 0.0)?;
+    let mut image_f32_norm = Image::from_size_val(image_f32.size(), 0.0, CpuAllocator)?;
     imgproc::normalize::normalize_mean_std(
         &image_f32,
         &mut image_f32_norm,

@@ -1,4 +1,5 @@
 use argh::FromArgs;
+use kornia::tensor::CpuAllocator;
 use std::path::PathBuf;
 
 use kornia::io::functional as F;
@@ -33,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let scale = i as f32 / 360.0;
         let rotation_matrix = imgproc::warp::get_rotation_matrix2d(center, angle, scale);
 
-        let mut output = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+        let mut output = Image::<f32, 3>::from_size_val(image.size(), 0.0, CpuAllocator)?;
         let mut output_norm = output.clone();
 
         imgproc::warp::warp_affine(

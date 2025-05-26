@@ -1,3 +1,4 @@
+use kornia_image::allocator::CpuAllocator;
 use pyo3::prelude::*;
 
 use crate::image::{FromPyImage, PyImage, ToPyImage};
@@ -37,7 +38,7 @@ pub fn warp_affine(
         .cast::<f32>()
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
-    let mut image_warped = Image::from_size_val(new_size, 0f32)
+    let mut image_warped = Image::from_size_val(new_size, 0f32, CpuAllocator)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
     warp::warp_affine(&image, &mut image_warped, &m, interpolation)
@@ -80,7 +81,7 @@ pub fn warp_perspective(
         .cast::<f32>()
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
-    let mut image_warped = Image::from_size_val(new_size, 0f32)
+    let mut image_warped = Image::from_size_val(new_size, 0f32, CpuAllocator)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
     warp::warp_perspective(&image, &mut image_warped, &m, interpolation)
