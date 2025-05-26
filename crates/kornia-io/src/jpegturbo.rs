@@ -228,7 +228,7 @@ impl JpegTurboDecoder {
 /// use kornia_image::Image;
 /// use kornia_io::jpegturbo as F;
 ///
-/// let image: Image<u8, 3> = F::read_image_jpegturbo_rgb8("../../tests/data/dog.jpeg").unwrap();
+/// let image: Image<u8, 3, _> = F::read_image_jpegturbo_rgb8("../../tests/data/dog.jpeg").unwrap();
 ///
 /// assert_eq!(image.cols(), 258);
 /// assert_eq!(image.rows(), 195);
