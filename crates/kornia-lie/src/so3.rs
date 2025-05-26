@@ -128,7 +128,7 @@ impl SO3 {
 impl Mul for SO3 {
     type Output = SO3;
 
-    fn mul(self, rhs: Self) -> Self::Output {
+    fn mul(self, _rhs: Self) -> Self::Output {
         todo!()
     }
 }

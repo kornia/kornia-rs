@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::Image;
 use kornia_imgproc::color::{gray_from_rgb, gray_from_rgb_u8};
 use kornia_tensor::CpuAllocator;
@@ -91,14 +91,14 @@ fn bench_grayscale(c: &mut Criterion) {
             &(&image_f32, &gray_f32),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| black_box(gray_vanilla_get_unchecked(src, &mut dst)))
+                b.iter(|| std::hint::black_box(gray_vanilla_get_unchecked(src, &mut dst)))
             },
         );
 
         group.bench_with_input(
             BenchmarkId::new("image_crate", &parameter_string),
             &image_u8,
-            |b, i| b.iter(|| black_box(gray_image_crate(i))),
+            |b, i| b.iter(|| std::hint::black_box(gray_image_crate(i))),
         );
 
         group.bench_with_input(
@@ -106,7 +106,7 @@ fn bench_grayscale(c: &mut Criterion) {
             &(&image_f32, &gray_f32),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| black_box(gray_ndarray_zip_par(src, &mut dst)))
+                b.iter(|| std::hint::black_box(gray_ndarray_zip_par(src, &mut dst)))
             },
         );
 
@@ -115,7 +115,7 @@ fn bench_grayscale(c: &mut Criterion) {
             &(&image_f32, &gray_f32),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| black_box(gray_from_rgb(src, &mut dst)))
+                b.iter(|| std::hint::black_box(gray_from_rgb(src, &mut dst)))
             },
         );
 
@@ -124,7 +124,7 @@ fn bench_grayscale(c: &mut Criterion) {
             &(&image_u8, &gray_u8),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| black_box(gray_from_rgb_u8(src, &mut dst)))
+                b.iter(|| std::hint::black_box(gray_from_rgb_u8(src, &mut dst)))
             },
         );
     }
