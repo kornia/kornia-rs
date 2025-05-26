@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::{interpolation::InterpolationMode, resize};
@@ -106,7 +106,14 @@ fn bench_resize(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("image_rs", &parameter_string),
             &image,
-            |b, i| b.iter(|| resize_image_crate(black_box(i.clone()), black_box(new_size))),
+            |b, i| {
+                b.iter(|| {
+                    resize_image_crate(
+                        std::hint::black_box(i.clone()),
+                        std::hint::black_box(new_size),
+                    )
+                })
+            },
         );
 
         group.bench_with_input(
@@ -114,7 +121,9 @@ fn bench_resize(c: &mut Criterion) {
             &(&image_f32, &out_f32),
             |b, i| {
                 let (src, mut dst) = (i.0.clone(), i.1.clone());
-                b.iter(|| resize_ndarray_zip(black_box(&src), black_box(&mut dst)))
+                b.iter(|| {
+                    resize_ndarray_zip(std::hint::black_box(&src), std::hint::black_box(&mut dst))
+                })
             },
         );
 
@@ -125,9 +134,9 @@ fn bench_resize(c: &mut Criterion) {
                 let (src, mut dst) = (i.0, i.1.clone());
                 b.iter(|| {
                     resize::resize_native(
-                        black_box(src),
-                        black_box(&mut dst),
-                        black_box(InterpolationMode::Nearest),
+                        std::hint::black_box(src),
+                        std::hint::black_box(&mut dst),
+                        std::hint::black_box(InterpolationMode::Nearest),
                     )
                 })
             },
@@ -140,9 +149,9 @@ fn bench_resize(c: &mut Criterion) {
                 let (src, mut dst) = (i.0.clone(), i.1.clone());
                 b.iter(|| {
                     resize::resize_fast(
-                        black_box(&src),
-                        black_box(&mut dst),
-                        black_box(InterpolationMode::Nearest),
+                        std::hint::black_box(&src),
+                        std::hint::black_box(&mut dst),
+                        std::hint::black_box(InterpolationMode::Nearest),
                     )
                 })
             },

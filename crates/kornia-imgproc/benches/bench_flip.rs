@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_image::Image;
 use kornia_imgproc::flip;
@@ -90,8 +90,8 @@ fn bench_flip(c: &mut Criterion) {
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
                 b.iter(|| {
-                    par_par_slicecopy(black_box(src), black_box(&mut dst));
-                    black_box(())
+                    par_par_slicecopy(std::hint::black_box(src), std::hint::black_box(&mut dst));
+                    std::hint::black_box(())
                 })
             },
         );
@@ -102,8 +102,8 @@ fn bench_flip(c: &mut Criterion) {
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
                 b.iter(|| {
-                    par_loop_loop(black_box(src), black_box(&mut dst));
-                    black_box(())
+                    par_loop_loop(std::hint::black_box(src), std::hint::black_box(&mut dst));
+                    std::hint::black_box(())
                 })
             },
         );
@@ -114,8 +114,8 @@ fn bench_flip(c: &mut Criterion) {
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
                 b.iter(|| {
-                    par_loop_slicecopy(black_box(src), black_box(&mut dst));
-                    black_box(())
+                    par_loop_slicecopy(std::hint::black_box(src), std::hint::black_box(&mut dst));
+                    std::hint::black_box(())
                 })
             },
         );
@@ -126,8 +126,8 @@ fn bench_flip(c: &mut Criterion) {
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
                 b.iter(|| {
-                    par_seq_slicecopy(black_box(src), black_box(&mut dst));
-                    black_box(())
+                    par_seq_slicecopy(std::hint::black_box(src), std::hint::black_box(&mut dst));
+                    std::hint::black_box(())
                 })
             },
         );
@@ -137,7 +137,9 @@ fn bench_flip(c: &mut Criterion) {
             &(&image_f32, &output),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| flip::horizontal_flip(black_box(src), black_box(&mut dst)))
+                b.iter(|| {
+                    flip::horizontal_flip(std::hint::black_box(src), std::hint::black_box(&mut dst))
+                })
             },
         );
     }
