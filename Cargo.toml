@@ -33,7 +33,7 @@ kornia-icp = { path = "crates/kornia-icp", version = "0.1.10-rc.1" }
 kornia-image = { path = "crates/kornia-image", version = "0.1.10-rc.1" }
 kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.10-rc.1" }
 kornia-io = { path = "crates/kornia-io", version = "0.1.10-rc.1" }
-kornia-lie = { path = "crates/kornia-lie", version = "0.1.9-rc.2" }
+kornia-lie = { path = "crates/kornia-lie", version = "0.1.10-rc.1" }
 kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.10-rc.1" }
 kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.10-rc.1" }
 kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.10-rc.1" }
