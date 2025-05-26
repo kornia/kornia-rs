@@ -12,6 +12,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dev-dependencies]
+approx = { workspace = true }
 criterion = { workspace = true }
 rand = { workspace = true }
 
