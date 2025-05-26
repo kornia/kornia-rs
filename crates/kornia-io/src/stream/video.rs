@@ -1,9 +1,9 @@
-use super::{capture::StreamerState, error::VideoReaderError, StreamCapture, StreamCaptureError};
-use gstreamer::prelude::*;
-use kornia_image::{
-    allocator::{CpuAllocator, ImageAllocator},
-    Image, ImageSize,
+use super::{
+    capture::StreamerState, error::VideoReaderError, GstAllocator, StreamCapture,
+    StreamCaptureError,
 };
+use gstreamer::prelude::*;
+use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 use std::{path::Path, time::Duration};
 
 pub use gstreamer::SeekFlags;
@@ -298,7 +298,7 @@ impl VideoReader {
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
     #[inline]
-    pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3, CpuAllocator>>, VideoReaderError> {
+    pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3, GstAllocator>>, VideoReaderError> {
         self.0.grab().map_err(VideoReaderError::StreamCaptureError)
     }
 
