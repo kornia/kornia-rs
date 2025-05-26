@@ -1,7 +1,7 @@
 use glam::{Mat3A, Mat4, Quat, Vec3A};
 use rand::Rng;
 
-use crate::{so2::SO2, so3::SO3};
+use crate::so3::SO3;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SE3 {

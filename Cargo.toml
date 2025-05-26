@@ -43,14 +43,14 @@ kornia = { path = "crates/kornia", version = "0.1.10-rc.1" }
 argh = "0.1"
 approx = "0.5"
 bincode = { version = "2.0.0", features = ["derive"] }
-criterion = "0.5"
+criterion = "0.6"
 ctrlc = "3.4"
 env_logger = "0.11"
 faer = "0.20.1"
 log = "0.4"
 num-traits = "0.2"
 rand = "0.9"
-rerun = "0.23.1"
+rerun = "0.23"
 serde = { version = "1", features = ["derive"] }
 tempfile = "3.10"
 thiserror = "2"

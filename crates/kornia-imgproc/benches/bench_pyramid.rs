@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_image::Image;
 use kornia_imgproc::pyramid::pyrup;
@@ -29,7 +29,7 @@ fn bench_pyramid(c: &mut Criterion) {
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
                 b.iter(|| {
-                    black_box(pyrup(src, &mut dst)).unwrap();
+                    std::hint::black_box(pyrup(src, &mut dst)).unwrap();
                 })
             },
         );
@@ -48,7 +48,7 @@ fn bench_pyramid(c: &mut Criterion) {
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
                 b.iter(|| {
-                    black_box(pyrup(src, &mut dst)).unwrap();
+                    std::hint::black_box(pyrup(src, &mut dst)).unwrap();
                 })
             },
         );

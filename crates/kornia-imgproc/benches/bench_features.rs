@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::Image;
 use kornia_imgproc::{
     color::gray_from_rgb_u8, features::*, interpolation::InterpolationMode, resize::resize_fast,
@@ -27,7 +27,7 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
         |b, i| {
             let src = i.clone();
             b.iter(|| {
-                let _res = black_box(fast_feature_detector(&src, 60, 9)).unwrap();
+                let _res = std::hint::black_box(fast_feature_detector(&src, 60, 9)).unwrap();
             })
         },
     );
@@ -60,7 +60,7 @@ fn bench_harris_response(c: &mut Criterion) {
             &(&image_f32, &response_f32),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| black_box(harris_response.compute(src, &mut dst)))
+                b.iter(|| std::hint::black_box(harris_response.compute(src, &mut dst)))
             },
         );
     }
@@ -87,10 +87,10 @@ fn bench_dog_response(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     dog_response(
-                        black_box(&src),
-                        black_box(&mut dst),
-                        black_box(0.5),
-                        black_box(1.0),
+                        std::hint::black_box(&src),
+                        std::hint::black_box(&mut dst),
+                        std::hint::black_box(0.5),
+                        std::hint::black_box(1.0),
                     )
                     .unwrap()
                 })
