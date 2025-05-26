@@ -141,10 +141,14 @@ impl StreamCapture {
             .circular_buffer
             .lock()
             .map_err(|_| StreamCaptureError::MutexPoisonError)?;
-        if let Some(frame_buffer) = circular_buffer.pop_front() {
-            let buffer = frame_buffer.buffer;
-            let buffer_map = buffer
-                .map_readable()
+        if let Some(mut frame_buffer) = circular_buffer.pop_front() {
+            let width = frame_buffer.width;
+            let height = frame_buffer.height;
+
+            let buffer_map = frame_buffer
+                .buffer
+                .make_mut()
+                .map_writable()
                 .map_err(|_| StreamCaptureError::GetBufferError)?;
 
             let frame_data_slice = buffer_map.as_slice();
@@ -158,10 +162,15 @@ impl StreamCapture {
             drop(buffer_map);
 
             let tensor_storage = unsafe {
-                TensorStorage::new(frame_data_ptr, frame_data_len, layout, GstAllocator(buffer))
+                TensorStorage::new(
+                    frame_data_ptr,
+                    frame_data_len,
+                    layout,
+                    GstAllocator(frame_buffer.buffer),
+                )
             };
 
-            let shape = [frame_buffer.height as usize, frame_buffer.width as usize, 3];
+            let shape = [height as usize, width as usize, 3];
             let strides = get_strides_from_shape(shape);
             let tensor = Tensor {
                 shape,
@@ -240,5 +249,81 @@ impl Drop for StreamCapture {
     /// Ensures that the StreamCapture is properly closed when dropped.
     fn drop(&mut self) {
         self.close().expect("Failed to close StreamCapture");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::blocking::get;
+    use std::{fs::File, path::PathBuf, time::Duration};
+    use tempfile::{tempdir, TempDir};
+
+    const FILE_NAME: &str = "video.mp4";
+    const VIDEO_LINK: &str =
+        "https://github.com/kornia/tutorials/raw/refs/heads/master/data/sharpening.mp4";
+
+    fn download_video<'a>() -> (PathBuf, TempDir) {
+        let response = get(VIDEO_LINK).expect("Failed to download video");
+        let temp_dir = tempdir().expect("Failed to create temp directory");
+        let temp_file_path = temp_dir.path().join(FILE_NAME);
+        let mut temp_file = File::create(&temp_file_path).expect("Failed to create temp file");
+
+        std::io::copy(
+            &mut response.bytes().expect("Failed to read response").as_ref(),
+            &mut temp_file,
+        )
+        .expect("Failed to write video to temp file");
+
+        println!("Video downloaded to: {:?}", temp_file_path);
+        (temp_file_path, temp_dir)
+    }
+
+    #[test]
+    #[ignore = "need gstreamer in CI"]
+    fn test_image_mutability() {
+        let (video_path, _temp_dir) = download_video();
+
+        // Mock pipeline description for testing
+        let pipeline_desc = format!(
+            "filesrc location=\"{}\" ! decodebin ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink sync=true",
+            video_path.to_str().unwrap()
+        );
+
+        // Create a new StreamCapture instance
+        let mut stream_capture =
+            StreamCapture::new(&pipeline_desc).expect("Failed to create StreamCapture");
+
+        // Start the stream capture
+        stream_capture
+            .start()
+            .expect("Failed to start StreamCapture");
+
+        std::thread::sleep(Duration::from_secs(1));
+
+        // Grab an image frame
+        let mut image = stream_capture
+            .grab()
+            .expect("Failed to grab image")
+            .expect("No image captured");
+
+        // Modify the image tensor data
+        let tensor = &mut image.0; // Access the tensor inside the Image
+        let data = tensor.as_slice_mut();
+
+        // Modify the first pixel's RGB values
+        data[0] = 255; // Red
+        data[1] = 0; // Green
+        data[2] = 0; // Blue
+
+        // Verify the modification
+        assert_eq!(data[0], 255);
+        assert_eq!(data[1], 0);
+        assert_eq!(data[2], 0);
+
+        // Close the stream capture
+        stream_capture
+            .close()
+            .expect("Failed to close StreamCapture");
     }
 }
