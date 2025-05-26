@@ -1,5 +1,5 @@
 // reference: https://www.strchr.com/standard_deviation_in_one_pass
-use kornia_image::{Image, ImageError};
+use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
     slice::{ParallelSlice, ParallelSliceMut},
@@ -24,6 +24,7 @@ use rayon::{
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::core::std_mean;
 ///
 /// let image = Image::<u8, 3>::new(
@@ -32,6 +33,7 @@ use rayon::{
 ///      height: 2,
 ///  },
 /// vec![0, 1, 2, 253, 254, 255, 128, 129, 130, 64, 65, 66],
+/// CpuAllocator
 /// ).unwrap();
 ///
 /// let (std, mean) = std_mean(&image);
@@ -39,7 +41,7 @@ use rayon::{
 /// assert_eq!(std, [93.5183805462862, 93.5183805462862, 93.5183805462862]);
 /// assert_eq!(mean, [111.25, 112.25, 113.25]);
 /// ```
-pub fn std_mean(image: &Image<u8, 3>) -> ([f64; 3], [f64; 3]) {
+pub fn std_mean<A: ImageAllocator>(image: &Image<u8, 3, A>) -> ([f64; 3], [f64; 3]) {
     let (sum, sq_sum) = image.as_slice().chunks_exact(3).fold(
         ([0f64; 3], [0f64; 3]),
         |(mut sum, mut sq_sum), pixel| {
@@ -86,25 +88,28 @@ pub fn std_mean(image: &Image<u8, 3>) -> ([f64; 3], [f64; 3]) {
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::core::bitwise_and;
 ///
-/// let image = Image::<u8, 3>::new(
+/// let image = Image::<u8, 3, _>::new(
 ///    ImageSize {
 ///        width: 2,
 ///        height: 2,
 ///    },
 ///    vec![0, 1, 2, 253, 254, 255, 128, 129, 130, 64, 65, 66],
+///    CpuAllocator
 /// ).unwrap();
 ///
-/// let mask = Image::<u8, 1>::new(
+/// let mask = Image::<u8, 1, _>::new(
 ///    ImageSize {
 ///        width: 2,
 ///        height: 2,
 ///    },
 ///    vec![255, 0, 255, 0],
+///    CpuAllocator
 /// ).unwrap();
 ///
-/// let mut output = Image::<u8, 3>::from_size_val(image.size(), 0).unwrap();
+/// let mut output = Image::<u8, 3, _>::from_size_val(image.size(), 0, CpuAllocator).unwrap();
 ///
 /// bitwise_and(&image, &image, &mut output, &mask).unwrap();
 ///
@@ -113,11 +118,17 @@ pub fn std_mean(image: &Image<u8, 3>) -> ([f64; 3], [f64; 3]) {
 ///
 /// assert_eq!(output.as_slice(), &vec![0, 1, 2, 0, 0, 0, 128, 129, 130, 0, 0, 0]);
 /// ```
-pub fn bitwise_and<const C: usize>(
-    src1: &Image<u8, C>,
-    src2: &Image<u8, C>,
-    dst: &mut Image<u8, C>,
-    mask: &Image<u8, 1>,
+pub fn bitwise_and<
+    const C: usize,
+    A1: ImageAllocator,
+    A2: ImageAllocator,
+    A3: ImageAllocator,
+    A4: ImageAllocator,
+>(
+    src1: &Image<u8, C, A1>,
+    src2: &Image<u8, C, A2>,
+    dst: &mut Image<u8, C, A3>,
+    mask: &Image<u8, 1, A4>,
 ) -> Result<(), ImageError> {
     if src1.size() != src2.size() {
         return Err(ImageError::InvalidImageSize(
@@ -183,37 +194,41 @@ pub fn bitwise_and<const C: usize>(
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::core::hconcat;
 ///
-/// let image1 = Image::<u8, 3>::new(
+/// let image1 = Image::<u8, 3, _>::new(
 ///     ImageSize {
 ///         width: 2,
 ///         height: 2,
 ///     },
 ///     vec![0, 1, 2, 253, 254, 255, 128, 129, 130, 64, 65, 66],
+///     CpuAllocator
 /// ).unwrap();
 ///
-/// let image2 = Image::<u8, 3>::new(
+/// let image2 = Image::<u8, 3, _>::new(
 ///     ImageSize {
 ///         width: 2,
 ///         height: 2,
 ///     },
 ///     vec![128, 129, 130, 64, 65, 66, 253, 254, 255, 0, 1, 2],
+///     CpuAllocator
 /// ).unwrap();
 ///
-/// let mut output = Image::<u8, 3>::from_size_val(
+/// let mut output = Image::<u8, 3, _>::from_size_val(
 ///     ImageSize {
 ///         width: 4,
 ///         height: 2,
 ///     },
 ///     0,
+///     CpuAllocator
 /// ).unwrap();
 ///
 /// hconcat(vec![&image1, &image2], &mut output).unwrap();
 /// ```
-pub fn hconcat<const C: usize>(
-    src: Vec<&Image<u8, C>>,
-    dst: &mut Image<u8, C>,
+pub fn hconcat<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: Vec<&Image<u8, C, A1>>,
+    dst: &mut Image<u8, C, A2>,
 ) -> Result<(), ImageError> {
     // check that all images have the same height
     let mut count_cols = 0;
@@ -257,15 +272,17 @@ pub fn hconcat<const C: usize>(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_tensor::CpuAllocator;
 
     #[test]
     fn test_std_mean() -> Result<(), ImageError> {
-        let image = Image::<u8, 3>::new(
+        let image = Image::<u8, 3, _>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             vec![0, 1, 2, 253, 254, 255, 128, 129, 130, 64, 65, 66],
+            CpuAllocator,
         )?;
 
         let std_expected = [93.5183805462862, 93.5183805462862, 93.5183805462862];
@@ -279,23 +296,25 @@ mod tests {
 
     #[test]
     fn test_bitwise_and() -> Result<(), ImageError> {
-        let image = Image::<u8, 3>::new(
+        let image = Image::<u8, 3, _>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             vec![0, 1, 2, 253, 254, 255, 128, 129, 130, 64, 65, 66],
+            CpuAllocator,
         )?;
 
-        let mask = Image::<u8, 1>::new(
+        let mask = Image::<u8, 1, _>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             vec![255, 0, 255, 0],
+            CpuAllocator,
         )?;
 
-        let mut output = Image::<u8, 3>::from_size_val(image.size(), 0)?;
+        let mut output = Image::<u8, 3, _>::from_size_val(image.size(), 0, CpuAllocator)?;
 
         super::bitwise_and(&image, &image, &mut output, &mask)?;
 
@@ -313,7 +332,7 @@ mod tests {
     #[test]
     fn test_hconcat() -> Result<(), ImageError> {
         #[rustfmt::skip]
-        let image1 = Image::<u8, 3>::new(
+        let image1 = Image::<u8, 3, _>::new(
             ImageSize {
                 width: 2,
                 height: 2,
@@ -324,10 +343,11 @@ mod tests {
                 128, 129, 130,
                 64, 65, 66,
             ],
+            CpuAllocator
         )?;
 
         #[rustfmt::skip]
-        let image2 = Image::<u8, 3>::new(
+        let image2 = Image::<u8, 3, _>::new(
             ImageSize {
                 width: 2,
                 height: 2,
@@ -338,6 +358,7 @@ mod tests {
                 253, 254, 255,
                 0, 1, 2,
             ],
+            CpuAllocator
         )?;
 
         #[rustfmt::skip]
@@ -348,12 +369,13 @@ mod tests {
             253, 254, 255, 0, 1, 2,
         ];
 
-        let mut output = Image::<u8, 3>::from_size_val(
+        let mut output = Image::<u8, 3, _>::from_size_val(
             ImageSize {
                 width: 4,
                 height: 2,
             },
             0,
+            CpuAllocator,
         )?;
 
         super::hconcat(vec![&image1, &image2], &mut output)?;

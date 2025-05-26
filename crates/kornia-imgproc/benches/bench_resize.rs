@@ -2,8 +2,12 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::{interpolation::InterpolationMode, resize};
+use kornia_tensor::CpuAllocator;
 
-fn resize_image_crate(image: Image<u8, 3>, new_size: ImageSize) -> Image<u8, 3> {
+fn resize_image_crate(
+    image: Image<u8, 3, CpuAllocator>,
+    new_size: ImageSize,
+) -> Image<u8, 3, CpuAllocator> {
     let image_data = image.as_slice();
     let rgb = image::RgbImage::from_raw(
         image.size().width as u32,
@@ -19,10 +23,10 @@ fn resize_image_crate(image: Image<u8, 3>, new_size: ImageSize) -> Image<u8, 3> 
         image::imageops::FilterType::Nearest,
     );
     let data = image_resized.into_rgb8().into_raw();
-    Image::new(new_size, data).unwrap()
+    Image::new(new_size, data, CpuAllocator).unwrap()
 }
 
-fn resize_ndarray_zip(src: &Image<f32, 3>, dst: &mut Image<f32, 3>) {
+fn resize_ndarray_zip(src: &Image<f32, 3, CpuAllocator>, dst: &mut Image<f32, 3, CpuAllocator>) {
     // create a grid of x and y coordinates for the output image
     // and interpolate the values from the input image.
     let x = ndarray::Array::linspace(0., (src.width() - 1) as f32, dst.width())
@@ -86,7 +90,8 @@ fn bench_resize(c: &mut Criterion) {
 
         // input image
         let image_size = [*width, *height].into();
-        let image = Image::<u8, 3>::new(image_size, vec![0u8; width * height * 3]).unwrap();
+        let image = Image::<u8, 3, _>::new(image_size, vec![0u8; width * height * 3], CpuAllocator)
+            .unwrap();
         let image_f32 = image.clone().cast::<f32>().unwrap();
 
         // output image
@@ -95,8 +100,8 @@ fn bench_resize(c: &mut Criterion) {
             height: height / 2,
         };
 
-        let out_f32 = Image::<f32, 3>::from_size_val(new_size, 0.0).unwrap();
-        let out_u8 = Image::<u8, 3>::from_size_val(new_size, 0).unwrap();
+        let out_f32 = Image::<f32, 3, _>::from_size_val(new_size, 0.0, CpuAllocator).unwrap();
+        let out_u8 = Image::<u8, 3, _>::from_size_val(new_size, 0, CpuAllocator).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("image_rs", &parameter_string),

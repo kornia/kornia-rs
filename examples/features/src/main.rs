@@ -7,6 +7,7 @@ use kornia::{
     image::{ops, Image},
     imgproc,
     io::stream::V4L2CameraConfig,
+    tensor::CpuAllocator,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -35,10 +36,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     // preallocate images
-    let mut img_f32 = Image::from_size_val(size, 0f32)?;
-    let mut gray = Image::from_size_val(size, 0f32)?;
-    let mut hessian = Image::from_size_val(size, 0f32)?;
-    let mut corners = Image::from_size_val(size, 0f32)?;
+    let mut img_f32 = Image::from_size_val(size, 0f32, CpuAllocator)?;
+    let mut gray = Image::from_size_val(size, 0f32, CpuAllocator)?;
+    let mut hessian = Image::from_size_val(size, 0f32, CpuAllocator)?;
+    let mut corners = Image::from_size_val(size, 0f32, CpuAllocator)?;
 
     // start grabbing frames from the camera
     while !cancel_token.load(Ordering::SeqCst) {

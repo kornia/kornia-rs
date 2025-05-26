@@ -1,5 +1,8 @@
 use crate::error::IoError;
-use kornia_image::{Image, ImageSize};
+use kornia_image::{
+    allocator::{CpuAllocator, ImageAllocator},
+    Image, ImageSize,
+};
 use std::{fs, path::Path};
 use tiff::{
     decoder::DecodingResult,
@@ -15,7 +18,9 @@ use tiff::{
 /// # Returns
 ///
 /// The rgb8 image as a `Image<u8, 3>`.
-pub fn read_image_tiff_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, IoError> {
+pub fn read_image_tiff_rgb8(
+    file_path: impl AsRef<Path>,
+) -> Result<Image<u8, 3, CpuAllocator>, IoError> {
     let (result, size) = read_image_tiff_impl(file_path)?;
 
     let data = match result {
@@ -29,7 +34,7 @@ pub fn read_image_tiff_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>,
         }
     };
 
-    Ok(Image::new(size.into(), data)?)
+    Ok(Image::new(size.into(), data, CpuAllocator)?)
 }
 
 /// Read a TIFF image and return it as a mono8 image.
@@ -41,7 +46,9 @@ pub fn read_image_tiff_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>,
 /// # Returns
 ///
 /// The mono8 image as a `Image<u8, 1>`.
-pub fn read_image_tiff_mono8(file_path: impl AsRef<Path>) -> Result<Image<u8, 1>, IoError> {
+pub fn read_image_tiff_mono8(
+    file_path: impl AsRef<Path>,
+) -> Result<Image<u8, 1, CpuAllocator>, IoError> {
     let (result, size) = read_image_tiff_impl(file_path)?;
 
     let data = match result {
@@ -55,7 +62,7 @@ pub fn read_image_tiff_mono8(file_path: impl AsRef<Path>) -> Result<Image<u8, 1>
         }
     };
 
-    Ok(Image::new(size.into(), data)?)
+    Ok(Image::new(size.into(), data, CpuAllocator)?)
 }
 
 /// Read a TIFF image and return it as a RGB16 image.
@@ -67,7 +74,9 @@ pub fn read_image_tiff_mono8(file_path: impl AsRef<Path>) -> Result<Image<u8, 1>
 /// # Returns
 ///
 /// The rgb16 image as a `Image<u16, 3>`.
-pub fn read_image_tiff_rgb16(file_path: impl AsRef<Path>) -> Result<Image<u16, 3>, IoError> {
+pub fn read_image_tiff_rgb16(
+    file_path: impl AsRef<Path>,
+) -> Result<Image<u16, 3, CpuAllocator>, IoError> {
     let (result, size) = read_image_tiff_impl(file_path)?;
 
     let data = match result {
@@ -81,7 +90,7 @@ pub fn read_image_tiff_rgb16(file_path: impl AsRef<Path>) -> Result<Image<u16, 3
         }
     };
 
-    Ok(Image::new(size.into(), data)?)
+    Ok(Image::new(size.into(), data, CpuAllocator)?)
 }
 
 /// Read a TIFF image and return it as a mono16 image.
@@ -93,7 +102,9 @@ pub fn read_image_tiff_rgb16(file_path: impl AsRef<Path>) -> Result<Image<u16, 3
 /// # Returns
 ///
 /// The mono16 image as a `Image<u16, 1>`.
-pub fn read_image_tiff_mono16(file_path: impl AsRef<Path>) -> Result<Image<u16, 1>, IoError> {
+pub fn read_image_tiff_mono16(
+    file_path: impl AsRef<Path>,
+) -> Result<Image<u16, 1, CpuAllocator>, IoError> {
     let (result, size) = read_image_tiff_impl(file_path)?;
 
     let data = match result {
@@ -107,7 +118,7 @@ pub fn read_image_tiff_mono16(file_path: impl AsRef<Path>) -> Result<Image<u16, 
         }
     };
 
-    Ok(Image::new(size.into(), data)?)
+    Ok(Image::new(size.into(), data, CpuAllocator)?)
 }
 
 /// Read a TIFF image and return it as single precision floating point image with one channel.
@@ -119,7 +130,9 @@ pub fn read_image_tiff_mono16(file_path: impl AsRef<Path>) -> Result<Image<u16, 
 /// # Returns
 ///
 /// The floating point image as a `Image<f32, 1>`.
-pub fn read_image_tiff_mono32f(file_path: impl AsRef<Path>) -> Result<Image<f32, 1>, IoError> {
+pub fn read_image_tiff_mono32f(
+    file_path: impl AsRef<Path>,
+) -> Result<Image<f32, 1, CpuAllocator>, IoError> {
     let (result, size) = read_image_tiff_impl(file_path)?;
 
     let data = match result {
@@ -133,7 +146,7 @@ pub fn read_image_tiff_mono32f(file_path: impl AsRef<Path>) -> Result<Image<f32,
         }
     };
 
-    Ok(Image::new(size.into(), data)?)
+    Ok(Image::new(size.into(), data, CpuAllocator)?)
 }
 
 /// Read a TIFF image and return it as single precision floating point image with three channels.
@@ -145,7 +158,9 @@ pub fn read_image_tiff_mono32f(file_path: impl AsRef<Path>) -> Result<Image<f32,
 /// # Returns
 ///
 /// The floating point image as a `Image<f32, 3>`.
-pub fn read_image_tiff_rgb32f(file_path: impl AsRef<Path>) -> Result<Image<f32, 3>, IoError> {
+pub fn read_image_tiff_rgb32f(
+    file_path: impl AsRef<Path>,
+) -> Result<Image<f32, 3, CpuAllocator>, IoError> {
     let (result, size) = read_image_tiff_impl(file_path)?;
 
     let data = match result {
@@ -159,7 +174,7 @@ pub fn read_image_tiff_rgb32f(file_path: impl AsRef<Path>) -> Result<Image<f32, 
         }
     };
 
-    Ok(Image::new(size.into(), data)?)
+    Ok(Image::new(size.into(), data, CpuAllocator)?)
 }
 
 fn read_image_tiff_impl(
@@ -191,9 +206,9 @@ fn read_image_tiff_impl(
 ///
 /// * `file_path` - The path to the TIFF image.
 /// * `image` - The image to write.
-pub fn write_image_tiff_rgb8(
+pub fn write_image_tiff_rgb8<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Image<u8, 3>,
+    image: &Image<u8, 3, A>,
 ) -> Result<(), IoError> {
     write_image_tiff_impl::<colortype::RGB8, u8>(file_path, image.as_slice(), image.size())
 }
@@ -204,9 +219,9 @@ pub fn write_image_tiff_rgb8(
 ///
 /// * `file_path` - The path to the TIFF image.
 /// * `image` - The image to write.
-pub fn write_image_tiff_mono8(
+pub fn write_image_tiff_mono8<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Image<u8, 1>,
+    image: &Image<u8, 1, A>,
 ) -> Result<(), IoError> {
     write_image_tiff_impl::<colortype::Gray8, u8>(file_path, image.as_slice(), image.size())
 }
@@ -217,9 +232,9 @@ pub fn write_image_tiff_mono8(
 ///
 /// * `file_path` - The path to the TIFF image.
 /// * `image` - The image to write.
-pub fn write_image_tiff_rgb16(
+pub fn write_image_tiff_rgb16<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Image<u16, 3>,
+    image: &Image<u16, 3, A>,
 ) -> Result<(), IoError> {
     write_image_tiff_impl::<colortype::RGB16, u16>(file_path, image.as_slice(), image.size())
 }
@@ -230,9 +245,9 @@ pub fn write_image_tiff_rgb16(
 ///
 /// * `file_path` - The path to the TIFF image.
 /// * `image` - The image to write.
-pub fn write_image_tiff_mono16(
+pub fn write_image_tiff_mono16<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Image<u16, 1>,
+    image: &Image<u16, 1, A>,
 ) -> Result<(), IoError> {
     write_image_tiff_impl::<colortype::Gray16, u16>(file_path, image.as_slice(), image.size())
 }
@@ -243,9 +258,9 @@ pub fn write_image_tiff_mono16(
 ///
 /// * `file_path` - The path to the TIFF image.
 /// * `image` - The image to write.
-pub fn write_image_tiff_mono32f(
+pub fn write_image_tiff_mono32f<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Image<f32, 1>,
+    image: &Image<f32, 1, A>,
 ) -> Result<(), IoError> {
     write_image_tiff_impl::<colortype::Gray32Float, f32>(file_path, image.as_slice(), image.size())
 }
@@ -256,9 +271,9 @@ pub fn write_image_tiff_mono32f(
 ///
 /// * `file_path` - The path to the TIFF image.
 /// * `image` - The image to write.
-pub fn write_image_tiff_rgb32f(
+pub fn write_image_tiff_rgb32f<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Image<f32, 3>,
+    image: &Image<f32, 3, A>,
 ) -> Result<(), IoError> {
     write_image_tiff_impl::<colortype::RGB32Float, f32>(file_path, image.as_slice(), image.size())
 }
@@ -301,12 +316,13 @@ mod tests {
 
         let data = (0..(width * height * channels)).collect::<Vec<_>>();
 
-        let img_rgb8 = Image::<u8, 3>::new(
+        let img_rgb8 = Image::<u8, 3, CpuAllocator>::new(
             ImageSize {
                 width: width as usize,
                 height: height as usize,
             },
             data,
+            CpuAllocator,
         )?;
 
         let file_path = tmp_dir.path().join("rgb8.tiff");
@@ -329,12 +345,13 @@ mod tests {
 
         let data = (0..(width * height * channels)).collect::<Vec<_>>();
 
-        let img_mono8 = Image::<u8, 1>::new(
+        let img_mono8 = Image::<u8, 1, CpuAllocator>::new(
             ImageSize {
                 width: width as usize,
                 height: height as usize,
             },
             data,
+            CpuAllocator,
         )?;
 
         let file_path = tmp_dir.path().join("mono8.tiff");
@@ -357,12 +374,13 @@ mod tests {
 
         let data = (0..(width * height * channels)).collect::<Vec<_>>();
 
-        let img_rgb16 = Image::<u16, 3>::new(
+        let img_rgb16 = Image::<u16, 3, CpuAllocator>::new(
             ImageSize {
                 width: width as usize,
                 height: height as usize,
             },
             data,
+            CpuAllocator,
         )?;
 
         let file_path = tmp_dir.path().join("rgb16.tiff");
@@ -385,12 +403,13 @@ mod tests {
 
         let data = (0..(width * height * channels)).collect::<Vec<_>>();
 
-        let img_mono16 = Image::<u16, 1>::new(
+        let img_mono16 = Image::<u16, 1, CpuAllocator>::new(
             ImageSize {
                 width: width as usize,
                 height: height as usize,
             },
             data,
+            CpuAllocator,
         )?;
 
         let file_path = tmp_dir.path().join("mono16.tiff");
@@ -412,12 +431,13 @@ mod tests {
 
         let data = vec![3.0, 2.0];
 
-        let img_mono32f = Image::<f32, 1>::new(
+        let img_mono32f = Image::<f32, 1, CpuAllocator>::new(
             ImageSize {
                 width: width as usize,
                 height: height as usize,
             },
             data,
+            CpuAllocator,
         )?;
 
         let file_path = tmp_dir.path().join("mono32f.tiff");
@@ -439,12 +459,13 @@ mod tests {
 
         let data = vec![3.0, 2.0, 1.0, 0.0, 1.0, 2.0];
 
-        let img_rgb32f = Image::<f32, 3>::new(
+        let img_rgb32f = Image::<f32, 3, CpuAllocator>::new(
             ImageSize {
                 width: width as usize,
                 height: height as usize,
             },
             data,
+            CpuAllocator,
         )?;
 
         let file_path = tmp_dir.path().join("rgb32f.tiff");

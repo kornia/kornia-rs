@@ -8,6 +8,7 @@ use kornia::{
     image::{ops, Image, ImageSize},
     imgproc,
     io::{fps_counter::FpsCounter, stream::V4L2CameraConfig},
+    tensor::CpuAllocator,
 };
 
 #[derive(FromArgs)]
@@ -79,10 +80,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // preallocate images
-    let mut img_resized = Image::from_size_val(new_size, 0u8)?;
-    let mut img_f32 = Image::from_size_val(new_size, 0f32)?;
-    let mut gray = Image::from_size_val(new_size, 0f32)?;
-    let mut bin = Image::from_size_val(new_size, 0f32)?;
+    let mut img_resized = Image::from_size_val(new_size, 0u8, CpuAllocator)?;
+    let mut img_f32 = Image::from_size_val(new_size, 0f32, CpuAllocator)?;
+    let mut gray = Image::from_size_val(new_size, 0f32, CpuAllocator)?;
+    let mut bin = Image::from_size_val(new_size, 0f32, CpuAllocator)?;
 
     // start grabbing frames from the camera
     while !cancel_token.load(Ordering::SeqCst) {
