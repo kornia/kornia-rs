@@ -5,10 +5,11 @@ use kornia_imgproc::filter::{box_blur_fast, gaussian_blur, kernels, separable_fi
 
 use image::RgbImage;
 use imageproc::filter::gaussian_blur_f32;
+use kornia_tensor::CpuAllocator;
 
 fn gaussian_blur_u8<const C: usize>(
-    src: &Image<u8, C>,
-    dst: &mut Image<u8, C>,
+    src: &Image<u8, C, CpuAllocator>,
+    dst: &mut Image<u8, C, CpuAllocator>,
     kernel_size: usize,
     sigma: f32,
 ) -> Result<(), ImageError> {
@@ -32,11 +33,12 @@ fn bench_filters(c: &mut Criterion) {
             let image_data = vec![0f32; width * height * 3];
             let image_size = [*width, *height].into();
 
-            let image_f32 = Image::<_, 3>::new(image_size, image_data).unwrap();
+            let image_f32 = Image::<_, 3, _>::new(image_size, image_data, CpuAllocator).unwrap();
             let image_u8 = image_f32.cast::<u8>().unwrap();
 
             // output image
-            let output_f32 = Image::<_, 3>::from_size_val(image_size, 0.0).unwrap();
+            let output_f32 =
+                Image::<_, 3, _>::from_size_val(image_size, 0.0, CpuAllocator).unwrap();
             let output_u8 = output_f32.cast::<u8>().unwrap();
 
             group.bench_with_input(

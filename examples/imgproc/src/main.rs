@@ -1,4 +1,5 @@
 use argh::FromArgs;
+use kornia::tensor::CpuAllocator;
 use std::path::PathBuf;
 
 use kornia::io::functional as F;
@@ -22,11 +23,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image: Image<u8, 3> = F::read_image_any_rgb8(args.image_path)?;
 
     // convert the image to grayscale
-    let mut gray = Image::<u8, 1>::from_size_val(image.size(), 0)?;
+    let mut gray = Image::<u8, 1>::from_size_val(image.size(), 0, CpuAllocator)?;
     imgproc::color::gray_from_rgb_u8(&image, &mut gray)?;
 
     // convert to float
-    let mut gray_f32 = Image::<f32, 1>::from_size_val(gray.size(), 0.0)?;
+    let mut gray_f32 = Image::<f32, 1>::from_size_val(gray.size(), 0.0, CpuAllocator)?;
     ops::cast_and_scale(&gray, &mut gray_f32, 1.0 / 255.0)?;
 
     let new_size = ImageSize {
@@ -34,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         height: 128,
     };
 
-    let mut gray_resize = Image::<f32, 1>::from_size_val(new_size, 0.0)?;
+    let mut gray_resize = Image::<f32, 1>::from_size_val(new_size, 0.0, CpuAllocator)?;
     imgproc::resize::resize_native(
         &gray_f32,
         &mut gray_resize,

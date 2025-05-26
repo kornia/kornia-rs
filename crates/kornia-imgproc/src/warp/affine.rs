@@ -1,5 +1,6 @@
 use std::f32::consts::PI;
 
+use kornia_image::allocator::ImageAllocator;
 use kornia_image::{Image, ImageError};
 
 use crate::interpolation::{grid::meshgrid_from_fn, interpolate_pixel, InterpolationMode};
@@ -101,15 +102,17 @@ fn transform_point(x: f32, y: f32, m: &[f32; 6]) -> (f32, f32) {
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::interpolation::InterpolationMode;
 /// use kornia_imgproc::warp::warp_affine;
 ///
-/// let src = Image::<_, 3>::from_size_val(
+/// let src = Image::<_, 3, _>::from_size_val(
 ///    ImageSize {
 ///       width: 4,
 ///      height: 5,
 ///  },
 ///  1f32,
+///  CpuAllocator
 /// ).unwrap();
 ///
 /// let m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
@@ -118,16 +121,16 @@ fn transform_point(x: f32, y: f32, m: &[f32; 6]) -> (f32, f32) {
 ///   height: 5,
 /// };
 ///
-/// let mut dst = Image::<_, 3>::from_size_val(new_size, 0.0).unwrap();
+/// let mut dst = Image::<_, 3, _>::from_size_val(new_size, 0.0, CpuAllocator).unwrap();
 ///
 /// warp_affine(&src, &mut dst, &m, InterpolationMode::Nearest).unwrap();
 ///
 /// assert_eq!(dst.size().width, 4);
 /// assert_eq!(dst.size().height, 5);
 /// ```
-pub fn warp_affine<const C: usize>(
-    src: &Image<f32, C>,
-    dst: &mut Image<f32, C>,
+pub fn warp_affine<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, C, A1>,
+    dst: &mut Image<f32, C, A2>,
     m: &[f32; 6],
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
@@ -160,14 +163,16 @@ pub fn warp_affine<const C: usize>(
 mod tests {
 
     use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_tensor::CpuAllocator;
     #[test]
     fn warp_affine_smoke_ch3() -> Result<(), ImageError> {
-        let image = Image::<_, 3>::new(
+        let image = Image::<_, 3, _>::new(
             ImageSize {
                 width: 4,
                 height: 5,
             },
             vec![0f32; 4 * 5 * 3],
+            CpuAllocator,
         )?;
 
         let new_size = ImageSize {
@@ -175,7 +180,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_transformed = Image::<_, 3>::from_size_val(new_size, 0.0)?;
+        let mut image_transformed = Image::<_, 3, _>::from_size_val(new_size, 0.0, CpuAllocator)?;
 
         super::warp_affine(
             &image,
@@ -194,12 +199,13 @@ mod tests {
     #[test]
     fn warp_affine_smoke_ch1() -> Result<(), ImageError> {
         use kornia_image::{Image, ImageSize};
-        let image = Image::<_, 1>::new(
+        let image = Image::<_, 1, _>::new(
             ImageSize {
                 width: 4,
                 height: 5,
             },
             vec![0f32; 4 * 5],
+            CpuAllocator,
         )?;
 
         let new_size = ImageSize {
@@ -207,7 +213,7 @@ mod tests {
             height: 3,
         };
 
-        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
+        let mut image_transformed = Image::<_, 1, _>::from_size_val(new_size, 0.0, CpuAllocator)?;
 
         super::warp_affine(
             &image,
@@ -226,12 +232,13 @@ mod tests {
     #[test]
     fn warp_affine_correctness_identity() -> Result<(), ImageError> {
         use kornia_image::{Image, ImageSize};
-        let image = Image::<_, 1>::new(
+        let image = Image::<_, 1, _>::new(
             ImageSize {
                 width: 4,
                 height: 5,
             },
             (0..20).map(|x| x as f32).collect(),
+            CpuAllocator,
         )?;
 
         let new_size = ImageSize {
@@ -239,7 +246,7 @@ mod tests {
             height: 5,
         };
 
-        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
+        let mut image_transformed = Image::<_, 1, _>::from_size_val(new_size, 0.0, CpuAllocator)?;
 
         super::warp_affine(
             &image,
@@ -257,12 +264,13 @@ mod tests {
     #[test]
     fn warp_affine_correctness_rot90() -> Result<(), ImageError> {
         use kornia_image::{Image, ImageSize};
-        let image = Image::<_, 1>::new(
+        let image = Image::<_, 1, _>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             vec![0.0f32, 1.0f32, 2.0f32, 3.0f32],
+            CpuAllocator,
         )?;
 
         let new_size = ImageSize {
@@ -270,7 +278,7 @@ mod tests {
             height: 2,
         };
 
-        let mut image_transformed = Image::<_, 1>::from_size_val(new_size, 0.0)?;
+        let mut image_transformed = Image::<_, 1, _>::from_size_val(new_size, 0.0, CpuAllocator)?;
 
         super::warp_affine(
             &image,

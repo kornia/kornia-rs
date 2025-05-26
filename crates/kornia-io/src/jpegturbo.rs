@@ -1,5 +1,8 @@
 use crate::IoError;
-use kornia_image::{Image, ImageError, ImageSize};
+use kornia_image::{
+    allocator::{CpuAllocator, ImageAllocator},
+    Image, ImageError, ImageSize,
+};
 use std::{path::Path, sync::Mutex};
 use turbojpeg;
 
@@ -68,7 +71,10 @@ impl JpegTurboEncoder {
     /// # Returns
     ///
     /// The encoded data as `Vec<u8>`.
-    pub fn encode_rgb8(&self, image: &Image<u8, 3>) -> Result<Vec<u8>, JpegTurboError> {
+    pub fn encode_rgb8<A: ImageAllocator>(
+        &self,
+        image: &Image<u8, 3, A>,
+    ) -> Result<Vec<u8>, JpegTurboError> {
         // get the image data
         let image_data = image.as_slice();
 
@@ -151,7 +157,10 @@ impl JpegTurboDecoder {
     /// # Returns
     ///
     /// The decoded data as Image<u8, 3>.
-    pub fn decode_rgb8(&self, jpeg_data: &[u8]) -> Result<Image<u8, 3>, JpegTurboError> {
+    pub fn decode_rgb8(
+        &self,
+        jpeg_data: &[u8],
+    ) -> Result<Image<u8, 3, CpuAllocator>, JpegTurboError> {
         self.decode(jpeg_data, turbojpeg::PixelFormat::RGB)
     }
 
@@ -164,7 +173,10 @@ impl JpegTurboDecoder {
     /// # Returns
     ///
     /// The decoded data as Image<u8, 1>.
-    pub fn decode_gray8(&self, jpeg_data: &[u8]) -> Result<Image<u8, 3>, JpegTurboError> {
+    pub fn decode_gray8(
+        &self,
+        jpeg_data: &[u8],
+    ) -> Result<Image<u8, 3, CpuAllocator>, JpegTurboError> {
         self.decode(jpeg_data, turbojpeg::PixelFormat::GRAY)
     }
 
@@ -172,7 +184,7 @@ impl JpegTurboDecoder {
         &self,
         jpeg_data: &[u8],
         format: turbojpeg::PixelFormat,
-    ) -> Result<Image<u8, C>, JpegTurboError> {
+    ) -> Result<Image<u8, C, CpuAllocator>, JpegTurboError> {
         // get the image size to allocate th data storage
         let image_size = self.read_header(jpeg_data)?;
 
@@ -194,7 +206,7 @@ impl JpegTurboDecoder {
             .expect("Failed to lock the decompressor")
             .decompress(jpeg_data, buf)?;
 
-        Ok(Image::new(image_size, pixels)?)
+        Ok(Image::new(image_size, pixels, CpuAllocator)?)
     }
 }
 
@@ -222,7 +234,9 @@ impl JpegTurboDecoder {
 /// assert_eq!(image.rows(), 195);
 /// assert_eq!(image.num_channels(), 3);
 /// ```
-pub fn read_image_jpegturbo_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, IoError> {
+pub fn read_image_jpegturbo_rgb8(
+    file_path: impl AsRef<Path>,
+) -> Result<Image<u8, 3, CpuAllocator>, IoError> {
     let file_path = file_path.as_ref().to_owned();
     // verify the file exists and is a JPEG
     if !file_path.exists() {
@@ -254,9 +268,9 @@ pub fn read_image_jpegturbo_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8
 /// * `file_path` - The path to the JPEG image.
 /// * `image` - The tensor containing the JPEG image data.
 /// * `quality` - The quality of the JPEG encoding, range from 0 (lowest) to 100 (highest)
-pub fn write_image_jpegturbo_rgb8(
+pub fn write_image_jpegturbo_rgb8<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Image<u8, 3>,
+    image: &Image<u8, 3, A>,
     quality: u8,
 ) -> Result<(), IoError> {
     let file_path = file_path.as_ref().to_owned();

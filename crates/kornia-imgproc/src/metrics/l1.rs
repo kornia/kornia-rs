@@ -1,4 +1,4 @@
-use kornia_image::{Image, ImageError};
+use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
 /// Compute the L1 loss between two images.
 ///
@@ -23,23 +23,26 @@ use kornia_image::{Image, ImageError};
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::metrics::l1_loss;
 ///
-/// let image1 = Image::<f32, 1>::new(
+/// let image1 = Image::<f32, 1, _>::new(
 ///   ImageSize {
 ///    width: 2,
 ///    height: 3,
 ///   },
 ///   vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
+///   CpuAllocator
 /// )
 /// .unwrap();
 ///
-/// let image2 = Image::<f32, 1>::new(
+/// let image2 = Image::<f32, 1, _>::new(
 ///   ImageSize {
 ///     width: 2,
 ///     height: 3,
 ///   },
 ///   vec![5f32, 4f32, 3f32, 2f32, 1f32, 0f32],
+///   CpuAllocator
 /// )
 /// .unwrap();
 ///
@@ -54,9 +57,9 @@ use kornia_image::{Image, ImageError};
 /// # References
 ///
 /// [Wikipedia - L1 loss](https://en.wikipedia.org/wiki/Huber_loss)
-pub fn l1_loss<const C: usize>(
-    image1: &Image<f32, C>,
-    image2: &Image<f32, C>,
+pub fn l1_loss<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    image1: &Image<f32, C, A1>,
+    image2: &Image<f32, C, A2>,
 ) -> Result<f32, ImageError> {
     if image1.size() != image2.size() {
         return Err(ImageError::InvalidImageSize(
@@ -79,23 +82,26 @@ pub fn l1_loss<const C: usize>(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_tensor::CpuAllocator;
 
     #[test]
     fn test_l1_loss() -> Result<(), ImageError> {
-        let image1 = Image::<_, 1>::new(
+        let image1 = Image::<_, 1, _>::new(
             ImageSize {
                 width: 2,
                 height: 3,
             },
             vec![0f32, 1f32, 2f32, 3f32, 4f32, 5f32],
+            CpuAllocator,
         )?;
 
-        let image2 = Image::<_, 1>::new(
+        let image2 = Image::<_, 1, _>::new(
             ImageSize {
                 width: 2,
                 height: 3,
             },
             vec![5f32, 4f32, 3f32, 2f32, 1f32, 0f32],
+            CpuAllocator,
         )?;
 
         let l1_loss = crate::metrics::l1_loss(&image1, &image2)?;

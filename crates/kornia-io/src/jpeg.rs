@@ -1,6 +1,9 @@
 use crate::error::IoError;
 use jpeg_encoder::{ColorType, Encoder};
-use kornia_image::{Image, ImageSize};
+use kornia_image::{
+    allocator::{CpuAllocator, ImageAllocator},
+    Image, ImageSize,
+};
 use std::{fs, path::Path};
 
 /// Writes the given JPEG _(rgb8)_ data to the given file path.
@@ -10,9 +13,9 @@ use std::{fs, path::Path};
 /// - `file_path` - The path to the JPEG image.
 /// - `image` - The tensor containing the JPEG image data
 /// - `quality` - The quality of the JPEG encoding, range from 0 (lowest) to 100 (highest)
-pub fn write_image_jpeg_rgb8(
+pub fn write_image_jpeg_rgb8<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Image<u8, 3>,
+    image: &Image<u8, 3, A>,
     quality: u8,
 ) -> Result<(), IoError> {
     write_image_jpeg_imp(file_path, image, ColorType::Rgb, quality)
@@ -25,17 +28,17 @@ pub fn write_image_jpeg_rgb8(
 /// - `file_path` - The path to the JPEG image.
 /// - `image` - The tensor containing the JPEG image data
 /// - `quality` - The quality of the JPEG encoding, range from 0 (lowest) to 100 (highest)
-pub fn write_image_jpeg_gray8(
+pub fn write_image_jpeg_gray8<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Image<u8, 1>,
+    image: &Image<u8, 1, A>,
     quality: u8,
 ) -> Result<(), IoError> {
     write_image_jpeg_imp(file_path, image, ColorType::Luma, quality)
 }
 
-fn write_image_jpeg_imp<const N: usize>(
+fn write_image_jpeg_imp<const N: usize, A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Image<u8, N>,
+    image: &Image<u8, N, A>,
     color_type: ColorType,
     quality: u8,
 ) -> Result<(), IoError> {
@@ -59,7 +62,9 @@ fn write_image_jpeg_imp<const N: usize>(
 /// # Returns
 ///
 /// A RGB image with four channels _(rgb8)_.
-pub fn read_image_jpeg_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>, IoError> {
+pub fn read_image_jpeg_rgb8(
+    file_path: impl AsRef<Path>,
+) -> Result<Image<u8, 3, CpuAllocator>, IoError> {
     read_image_jpeg_impl(file_path)
 }
 
@@ -72,7 +77,9 @@ pub fn read_image_jpeg_rgb8(file_path: impl AsRef<Path>) -> Result<Image<u8, 3>,
 /// # Returns
 ///
 /// A grayscale image with a single channel _(mono8)_.
-pub fn read_image_jpeg_mono8(file_path: impl AsRef<Path>) -> Result<Image<u8, 1>, IoError> {
+pub fn read_image_jpeg_mono8(
+    file_path: impl AsRef<Path>,
+) -> Result<Image<u8, 1, CpuAllocator>, IoError> {
     read_image_jpeg_impl(file_path)
 }
 
@@ -82,7 +89,10 @@ pub fn read_image_jpeg_mono8(file_path: impl AsRef<Path>) -> Result<Image<u8, 1>
 ///
 /// - `image` - A mutable reference to your `Image`
 /// - `bytes` - Raw bytes of the jpeg file
-pub fn decode_image_jpeg_rgb8(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), IoError> {
+pub fn decode_image_jpeg_rgb8<A: ImageAllocator>(
+    src: &[u8],
+    dst: &mut Image<u8, 3, A>,
+) -> Result<(), IoError> {
     decode_jpeg_impl(src, dst)
 }
 
@@ -92,13 +102,16 @@ pub fn decode_image_jpeg_rgb8(src: &[u8], dst: &mut Image<u8, 3>) -> Result<(), 
 ///
 /// - `image` - A mutable reference to your `Image`
 /// - `bytes` - Raw bytes of the jpeg file
-pub fn decode_image_jpeg_mono8(src: &[u8], dst: &mut Image<u8, 1>) -> Result<(), IoError> {
+pub fn decode_image_jpeg_mono8<A: ImageAllocator>(
+    src: &[u8],
+    dst: &mut Image<u8, 1, A>,
+) -> Result<(), IoError> {
     decode_jpeg_impl(src, dst)
 }
 
 fn read_image_jpeg_impl<const N: usize>(
     file_path: impl AsRef<Path>,
-) -> Result<Image<u8, N>, IoError> {
+) -> Result<Image<u8, N, CpuAllocator>, IoError> {
     let file_path = file_path.as_ref().to_owned();
     if !file_path.exists() {
         return Err(IoError::FileDoesNotExist(file_path.to_path_buf()));
@@ -127,10 +140,13 @@ fn read_image_jpeg_impl<const N: usize>(
 
     let img_data = decoder.decode()?;
 
-    Ok(Image::new(image_size, img_data)?)
+    Ok(Image::new(image_size, img_data, CpuAllocator)?)
 }
 
-fn decode_jpeg_impl<const C: usize>(src: &[u8], dst: &mut Image<u8, C>) -> Result<(), IoError> {
+fn decode_jpeg_impl<const C: usize, A: ImageAllocator>(
+    src: &[u8],
+    dst: &mut Image<u8, C, A>,
+) -> Result<(), IoError> {
     let mut decoder = zune_jpeg::JpegDecoder::new(src);
     decoder.decode_headers()?;
 
@@ -188,7 +204,7 @@ mod tests {
     #[test]
     fn decode_jpeg() -> Result<(), IoError> {
         let bytes = read("../../tests/data/dog.jpeg")?;
-        let mut image: Image<u8, 3> = Image::from_size_val([258, 195].into(), 0)?;
+        let mut image: Image<u8, 3, _> = Image::from_size_val([258, 195].into(), 0, CpuAllocator)?;
         decode_image_jpeg_rgb8(&bytes, &mut image)?;
 
         assert_eq!(image.cols(), 258);

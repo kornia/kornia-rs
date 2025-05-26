@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .commit_from_file(&args.onnx_model_path)?;
 
     // cast and scale the image to f32
-    let mut image_hwc_f32 = Image::from_size_val(image.size(), 0.0f32)?;
+    let mut image_hwc_f32 = Image::from_size_val(image.size(), 0.0f32, CpuAllocator)?;
     kornia::image::ops::cast_and_scale(&image, &mut image_hwc_f32, 1.0 / 255.0)?;
 
     // convert to HWC -> CHW

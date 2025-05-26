@@ -1,3 +1,5 @@
+use kornia::tensor::CpuAllocator;
+
 type ImageRgb8 = kornia::image::Image<u8, 3>;
 type ImageGray8 = kornia::image::Image<u8, 1>;
 
@@ -22,7 +24,7 @@ impl std::fmt::Debug for ImageRgb8Msg {
 // TODO: implement Image::empty()
 impl Default for ImageRgb8Msg {
     fn default() -> Self {
-        Self(ImageRgb8::new([0, 0].into(), vec![]).unwrap())
+        Self(ImageRgb8::new([0, 0].into(), vec![], CpuAllocator).unwrap())
     }
 }
 
@@ -47,7 +49,7 @@ impl<C> bincode::de::Decode<C> for ImageRgb8Msg {
         let rows = bincode::Decode::decode(decoder)?;
         let cols = bincode::Decode::decode(decoder)?;
         let data = bincode::Decode::decode(decoder)?;
-        let image = ImageRgb8::new([rows, cols].into(), data)
+        let image = ImageRgb8::new([rows, cols].into(), data, CpuAllocator)
             .map_err(|e| bincode::error::DecodeError::OtherString(e.to_string()))?;
         Ok(Self(image))
     }
@@ -72,7 +74,7 @@ impl std::fmt::Debug for ImageGray8Msg {
 
 impl Default for ImageGray8Msg {
     fn default() -> Self {
-        Self(ImageGray8::new([0, 0].into(), vec![]).unwrap())
+        Self(ImageGray8::new([0, 0].into(), vec![], CpuAllocator).unwrap())
     }
 }
 
@@ -95,7 +97,7 @@ impl<C> bincode::de::Decode<C> for ImageGray8Msg {
         let rows = bincode::Decode::decode(decoder)?;
         let cols = bincode::Decode::decode(decoder)?;
         let data = bincode::Decode::decode(decoder)?;
-        let image = ImageGray8::new([rows, cols].into(), data)
+        let image = ImageGray8::new([rows, cols].into(), data, CpuAllocator)
             .map_err(|e| bincode::error::DecodeError::OtherString(e.to_string()))?;
         Ok(Self(image))
     }
