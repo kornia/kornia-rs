@@ -1,7 +1,7 @@
 use kornia::tensor::CpuAllocator;
 
-type ImageRgb8 = kornia::image::Image<u8, 3>;
-type ImageGray8 = kornia::image::Image<u8, 1>;
+type ImageRgb8 = kornia::image::Image<u8, 3, CpuAllocator>;
+type ImageGray8 = kornia::image::Image<u8, 1, CpuAllocator>;
 
 #[derive(Clone)]
 pub struct ImageRgb8Msg(pub ImageRgb8);

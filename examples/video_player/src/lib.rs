@@ -1,12 +1,15 @@
-use eframe::egui::{self, Grid};
-use eframe::egui::{CentralPanel, TextEdit};
+use eframe::egui::{self, CentralPanel, Grid, TextEdit};
 use humanize_duration::{prelude::*, Truncate};
-use kornia::image::{Image, ImageSize};
-use kornia::imgproc::resize::resize_fast;
-use kornia::io::stream::video::{ImageFormat, SeekFlags, VideoReader};
-use kornia::tensor::CpuAllocator;
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use kornia::{
+    image::{Image, ImageSize},
+    imgproc::resize::resize_fast,
+    io::stream::video::{ImageFormat, SeekFlags, VideoReader},
+    tensor::CpuAllocator,
+};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 const SLIDER_HEIGHT: f32 = 20.;
 
@@ -19,7 +22,7 @@ pub struct MyApp {
 }
 
 struct TextureStore {
-    image: Image<u8, 3>,
+    image: Image<u8, 3, CpuAllocator>,
     texture_handle: egui::TextureHandle,
 }
 
@@ -312,7 +315,7 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                         ts.texture_handle
                             .set(color_image, egui::TextureOptions::default());
                     } else {
-                        let mut dst: Image<u8, 3> =
+                        let mut dst: Image<u8, 3, _> =
                             Image::from_size_val(new_image_size, 0, CpuAllocator)
                                 .expect("Failed to create Image");
                         resize_fast(

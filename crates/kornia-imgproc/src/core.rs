@@ -27,7 +27,7 @@ use rayon::{
 /// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::core::std_mean;
 ///
-/// let image = Image::<u8, 3>::new(
+/// let image = Image::<u8, 3, _>::new(
 ///    ImageSize {
 ///      width: 2,
 ///      height: 2,

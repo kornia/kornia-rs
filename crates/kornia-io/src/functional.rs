@@ -17,10 +17,10 @@ use std::path::Path;
 /// # Example
 ///
 /// ```
-/// use kornia_image::Image;
+/// use kornia_image::{Image, allocator::CpuAllocator};
 /// use kornia_io::functional as F;
 ///
-/// let image: Image<u8, 3> = F::read_image_any_rgb8("../../tests/data/dog.jpeg").unwrap();
+/// let image: Image<u8, 3, CpuAllocator> = F::read_image_any_rgb8("../../tests/data/dog.jpeg").unwrap();
 ///
 /// assert_eq!(image.cols(), 258);
 /// assert_eq!(image.rows(), 195);
