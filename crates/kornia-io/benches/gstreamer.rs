@@ -29,7 +29,7 @@ fn benchmark_get_buffer(c: &mut Criterion) {
     let (video_path, _temp_dir) = download_video();
 
     let pipeline_desc = format!(
-        "filesrc location={} ! decodebin ! videoconvert ! video/x-raw,format=RGB,width=1024,height=688,framerate=8/1 ! appsink name=sink sync=false",
+        "filesrc location={} ! decodebin ! videoconvert ! video/x-raw,format=RGB,width=1024,height=688,framerate=8/1 ! appsink name=sink sync=true",
         video_path.to_str().unwrap()
     );
 
