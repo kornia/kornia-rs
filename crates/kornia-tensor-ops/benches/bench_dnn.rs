@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use kornia_tensor_ops::dnn::{
     linear_layer_iter_output_flat, linear_layer_iter_output_flat_parallel,
-    linear_layer_sequential_flat,
+    linear_layer_parallel_simd, linear_layer_sequential_flat, linear_layer_simd,
 };
 use rand::random;
 
@@ -50,6 +50,22 @@ fn bench_linear_layer(c: &mut Criterion) {
     group.bench_function("linear_layer_sequential_flat", |bencher| {
         bencher.iter(|| {
             black_box(linear_layer_sequential_flat::<INPUT_DIM, OUTPUT_DIM>(
+                &src, &weight, &bias, &mut dst, BATCH_SIZE, SEQ_LEN,
+            ));
+        });
+    });
+
+    group.bench_function("linear_layer_simd", |bencher| {
+        bencher.iter(|| {
+            black_box(linear_layer_simd::<INPUT_DIM, OUTPUT_DIM>(
+                &src, &weight, &bias, &mut dst, BATCH_SIZE, SEQ_LEN,
+            ));
+        });
+    });
+
+    group.bench_function("linear_layer_parallel_simd", |bencher| {
+        bencher.iter(|| {
+            black_box(linear_layer_parallel_simd::<INPUT_DIM, OUTPUT_DIM>(
                 &src, &weight, &bias, &mut dst, BATCH_SIZE, SEQ_LEN,
             ));
         });

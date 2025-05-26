@@ -33,3 +33,7 @@ harness = false
 [[bench]]
 name = "bench_dnn"
 harness = false
+
+[features]
+default = []
+portable_simd = []

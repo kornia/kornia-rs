@@ -1,5 +1,6 @@
 #![deny(missing_docs)]
 #![doc = env!("CARGO_PKG_DESCRIPTION")]
+#![cfg_attr(feature = "portable_simd", feature(portable_simd))]
 
 /// Deep neural network kernels.
 pub mod dnn;
