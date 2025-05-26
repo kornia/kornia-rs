@@ -1,5 +1,3 @@
-use std::ops::Mul;
-
 use glam::{Mat2, Mat3A, Vec2};
 use rand::Rng;
 
@@ -52,10 +50,10 @@ impl SO2 {
     }
 
     /// inverting the complex number z (represented as a 2D vector)
+    /// assumes unit norm
     pub fn inverse(&self) -> Self {
-        let c: f32 = self.z.dot(self.z);
         Self {
-            z: Vec2::new(self.z.x / c, -self.z.y / c),
+            z: Vec2::new(self.z.x, -self.z.y),
         }
     }
 
@@ -85,7 +83,7 @@ impl SO2 {
     }
 }
 
-impl Mul<Vec2> for SO2 {
+impl std::ops::Mul<Vec2> for SO2 {
     type Output = Vec2;
 
     fn mul(self, rhs: Vec2) -> Self::Output {
@@ -96,9 +94,18 @@ impl Mul<Vec2> for SO2 {
     }
 }
 
+impl std::ops::Mul<SO2> for SO2 {
+    type Output = SO2;
+
+    fn mul(self, other: SO2) -> Self::Output {
+        SO2::new(self.z * other.z)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use approx::assert_relative_eq;
 
     #[test]
     fn test_identity() {
@@ -183,5 +190,33 @@ mod tests {
         let omega = Mat2::from_cols_array(&[0.0, 0.5, 0.5, 0.0]);
         let theta = SO2::vee(omega);
         assert_eq!(theta, 0.5);
+    }
+
+    #[test]
+    fn test_mul_so2() {
+        let s1 = SO2::IDENTITY;
+        let s2 = SO2::new(Vec2::new(0.9, 0.1));
+        let s1_pose_s2 = s1 * s2;
+        let s2_pose_s2 = s2 * s2.inverse();
+        assert_relative_eq!(s1_pose_s2.z.x, s2.z.x);
+        assert_relative_eq!(s1_pose_s2.z.y, s2.z.y);
+        assert_relative_eq!(s2_pose_s2.z.x, s1.z.x);
+        assert_relative_eq!(s2_pose_s2.z.y, s1.z.y);
+    }
+
+    #[test]
+    fn test_mul_vec2() {
+        let s1 = SO2::IDENTITY;
+        let s2 = SO2::new(Vec2::new(0.9, 0.1));
+        let t1 = Vec2::new(1.0, 2.0);
+        let t2 = Vec2::new(3.0, 4.0);
+
+        let t1_pose_s2 = s1 * t1;
+        assert_relative_eq!(t1_pose_s2.x, t1.x);
+        assert_relative_eq!(t1_pose_s2.y, t1.y);
+
+        let t2_pose_s2 = s2 * t2;
+        assert_relative_eq!(t2_pose_s2.x, t2.x);
+        assert_relative_eq!(t2_pose_s2.y, t2.y);
     }
 }

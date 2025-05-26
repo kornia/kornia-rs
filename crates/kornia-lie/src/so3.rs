@@ -1,7 +1,5 @@
 use glam::{Affine3A, Mat3A, Mat4, Quat, Vec3A};
 use rand::Rng;
-use std::fmt::Debug;
-use std::ops::Mul;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SO3 {
@@ -83,13 +81,12 @@ impl SO3 {
         let vec = Vec3A::new(self.q.x, self.q.y, self.q.z);
 
         let theta = vec.dot(vec).sqrt();
-        let omega = if theta != 0.0 {
+
+        if theta != 0.0 {
             vec * 2.0 * real.acos() / theta
         } else {
             vec * 2.0 / real
-        };
-
-        omega
+        }
     }
 
     /// Vector space -> Lie algebra
@@ -125,11 +122,21 @@ impl SO3 {
     }
 }
 
-impl Mul for SO3 {
+impl std::ops::Mul<SO3> for SO3 {
     type Output = SO3;
 
-    fn mul(self, _rhs: Self) -> Self::Output {
-        todo!()
+    fn mul(self, rhs: Self) -> Self::Output {
+        Self { q: self.q * rhs.q }
+    }
+}
+
+impl std::ops::Mul<Vec3A> for SO3 {
+    type Output = Vec3A;
+
+    fn mul(self, rhs: Vec3A) -> Self::Output {
+        let quat = Quat::from_xyzw(rhs.x, rhs.y, rhs.z, 0.0);
+        let out = self.q * quat * self.q.conjugate();
+        Vec3A::new(out.x, out.y, out.z)
     }
 }
 

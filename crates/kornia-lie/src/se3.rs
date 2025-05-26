@@ -1,7 +1,6 @@
+use crate::so3::SO3;
 use glam::{Mat3A, Mat4, Quat, Vec3A};
 use rand::Rng;
-
-use crate::so3::SO3;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SE3 {
@@ -42,10 +41,10 @@ impl SE3 {
         }
     }
 
-    pub fn from_qxyz(quat: Quat, xyz: &Vec3A) -> Self {
+    pub fn from_qxyz(quat: Quat, xyz: Vec3A) -> Self {
         Self {
             r: SO3::from_quaternion(quat),
-            t: xyz.clone(),
+            t: xyz,
         }
     }
 
@@ -145,6 +144,24 @@ impl SE3 {
             Vec3A::new(omega.x_axis.w, omega.y_axis.w, omega.z_axis.w),
             SO3::vee4(omega),
         )
+    }
+}
+
+impl std::ops::Mul<SE3> for SE3 {
+    type Output = SE3;
+
+    fn mul(self, rhs: SE3) -> Self::Output {
+        let r = self.r * rhs.r;
+        let t = self.t + self.r * rhs.t;
+        Self { r, t }
+    }
+}
+
+impl std::ops::Mul<Vec3A> for SE3 {
+    type Output = Vec3A;
+
+    fn mul(self, rhs: Vec3A) -> Self::Output {
+        self.r * rhs + self.t
     }
 }
 

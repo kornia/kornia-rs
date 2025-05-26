@@ -1,7 +1,6 @@
+use crate::so2::SO2;
 use glam::{Mat2, Mat3A, Vec2, Vec3A};
 use rand::Rng;
-
-use crate::so2::SO2;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SE2 {
@@ -94,14 +93,11 @@ impl SE2 {
 
     pub fn hat(upsilon: Vec2, theta: f32) -> Mat3A {
         let hat_theta = SO2::hat(theta);
-
-        let col0 = Mat3A::from_cols(
+        Mat3A::from_cols(
             hat_theta.x_axis.extend(upsilon.x).into(),
             hat_theta.y_axis.extend(upsilon.y).into(),
             Vec3A::ZERO, // Padding the last column with zeroes
-        );
-
-        col0
+        )
     }
 
     pub fn vee(omega: Mat3A) -> (Vec2, f32) {
@@ -114,6 +110,22 @@ impl SE2 {
                 omega.y_axis.y,
             ])),
         )
+    }
+}
+
+impl std::ops::Mul<SE2> for SE2 {
+    type Output = SE2;
+
+    fn mul(self, other: SE2) -> SE2 {
+        SE2::new(self.r * other.r, self.r * other.t + self.t)
+    }
+}
+
+impl std::ops::Mul<Vec2> for SE2 {
+    type Output = Vec2;
+
+    fn mul(self, rhs: Vec2) -> Self::Output {
+        self.r * rhs + self.t
     }
 }
 
@@ -162,8 +174,6 @@ mod tests {
 
         let se2 = SE2::exp(upsilon, theta);
 
-        println!("{:?}", se2);
-
         assert!((se2.r.z - Vec2::new(0.5403, 0.8415)).length() < 1e-3);
         assert!((se2.t - Vec2::new(0.3818, 1.3012)).length() < 1e-3);
     }
@@ -182,7 +192,7 @@ mod tests {
             assert!((log_theta - theta).abs() < 1e-3);
         }
         {
-            let upsilon = Vec2::new(0.5 / 0.7071067812, -0.5 / 0.7071067812);
+            let upsilon = Vec2::new(0.5 / 0.707_106_77, -0.5 / 0.707_106_77);
             let theta = 0.3;
 
             let se2 = SE2::exp(upsilon, theta);
@@ -196,15 +206,10 @@ mod tests {
 
     #[test]
     fn test_hat_vee() {
-        let upsilon = Vec2::new(1.0 / 2.236067977, 2. / 2.236067977);
+        let upsilon = Vec2::new(1.0 / 2.236_068, 2. / 2.236_068);
         let theta = 0.3;
         let hat_matrix = SE2::hat(upsilon, theta);
         let (vee_t, vee_theta) = SE2::vee(hat_matrix);
-
-        // println!("{:?}", upsilon);
-        // println!("{:?}", vee_t);
-        // println!("{:?}", theta);
-        // println!("{:?}", vee_theta);
 
         assert!((vee_t - upsilon).length() < 1e-5);
         assert!((vee_theta - theta).abs() < 1e-5);
