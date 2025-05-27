@@ -1,8 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use kornia_tensor_ops::dnn::{
-    linear_layer_iter_output_flat, linear_layer_iter_output_flat_parallel,
-    linear_layer_parallel_simd, linear_layer_sequential_flat, linear_layer_simd,
-};
+use kornia_tensor_ops::dnn::{linear_layer_iter_simd, linear_layer_sequential};
 use rand::random;
 
 fn bench_linear_layer(c: &mut Criterion) {
@@ -28,45 +25,18 @@ fn bench_linear_layer(c: &mut Criterion) {
 
     let mut dst: Vec<f32> = vec![0.0; BATCH_SIZE * SEQ_LEN * OUTPUT_DIM];
 
-    group.bench_function("linear_layer_iter_output_flat", |bencher| {
+    group.bench_function("linear_layer_iter_sequential", |bencher| {
         bencher.iter(|| {
-            black_box(linear_layer_iter_output_flat::<INPUT_DIM, OUTPUT_DIM>(
-                &src, &weight, &bias, &mut dst, BATCH_SIZE, SEQ_LEN,
+            black_box(linear_layer_sequential(
+                &src, &weight, &bias, &mut dst, BATCH_SIZE, SEQ_LEN, INPUT_DIM, OUTPUT_DIM,
             ));
         });
     });
 
-    group.bench_function("linear_layer_iter_output_flat_parallel", |bencher| {
+    group.bench_function("linear_layer_iter_simd", |bencher| {
         bencher.iter(|| {
-            black_box(linear_layer_iter_output_flat_parallel::<
-                INPUT_DIM,
-                OUTPUT_DIM,
-            >(
-                &src, &weight, &bias, &mut dst, BATCH_SIZE, SEQ_LEN
-            ));
-        });
-    });
-
-    group.bench_function("linear_layer_sequential_flat", |bencher| {
-        bencher.iter(|| {
-            black_box(linear_layer_sequential_flat::<INPUT_DIM, OUTPUT_DIM>(
-                &src, &weight, &bias, &mut dst, BATCH_SIZE, SEQ_LEN,
-            ));
-        });
-    });
-
-    group.bench_function("linear_layer_simd", |bencher| {
-        bencher.iter(|| {
-            black_box(linear_layer_simd::<INPUT_DIM, OUTPUT_DIM>(
-                &src, &weight, &bias, &mut dst, BATCH_SIZE, SEQ_LEN,
-            ));
-        });
-    });
-
-    group.bench_function("linear_layer_parallel_simd", |bencher| {
-        bencher.iter(|| {
-            black_box(linear_layer_parallel_simd::<INPUT_DIM, OUTPUT_DIM>(
-                &src, &weight, &bias, &mut dst, BATCH_SIZE, SEQ_LEN,
+            black_box(linear_layer_iter_simd(
+                &src, &weight, &bias, &mut dst, SEQ_LEN, INPUT_DIM, OUTPUT_DIM,
             ));
         });
     });

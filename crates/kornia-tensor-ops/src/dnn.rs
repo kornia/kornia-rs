@@ -1,215 +1,87 @@
-use rayon::prelude::*;
-
-#[cfg(feature = "portable_simd")]
-use std::simd::f32x8;
-#[cfg(feature = "portable_simd")]
-use std::simd::num::SimdFloat;
-
-/// Perform a linear layer operation.
-pub fn linear_layer_sequential<const D: usize, const N: usize, const B: usize, const T: usize>(
-    src: &[[[f32; D]; T]; B],
-    weight: &[[f32; N]; D],
-    bias: &[f32; N],
-    dst: &mut [[[f32; N]; T]; B],
-) {
-    for b in 0..B {
-        for t in 0..T {
-            for n in 0..N {
-                let mut sum = 0.0;
-                for d in 0..D {
-                    sum += src[b][t][d] * weight[d][n];
-                }
-                dst[b][t][n] = sum + bias[n];
-            }
-        }
-    }
-}
-
 /// Perform a linear layer operation on batched input in sequential manner.
 /// Input shape: [B, T, D] -> Output shape: [B, T, N]
 /// where B=batch_size, T=sequence_length, D=input_features, N=output_features
-pub fn linear_layer_sequential_flat<const D: usize, const N: usize>(
+pub fn linear_layer_sequential(
     src: &[f32],     // Shape: [B, T, D] flattened
     weight: &[f32],  // Shape: [N, D] flattened (transposed for efficiency)
     bias: &[f32],    // Shape: [N]
     dst: &mut [f32], // Shape: [B, T, N] flattened
     batch_size: usize,
     seq_len: usize,
+    input_dim: usize,
+    output_dim: usize,
 ) {
+    assert_eq!(
+        src.len(),
+        batch_size * seq_len * input_dim,
+        "Input size mismatch"
+    );
+    assert_eq!(
+        dst.len(),
+        batch_size * seq_len * output_dim,
+        "Output size mismatch"
+    );
+    assert_eq!(weight.len(), output_dim * input_dim, "Weight size mismatch");
+    assert_eq!(bias.len(), output_dim, "Bias size mismatch");
+
     for b in 0..batch_size {
         for t in 0..seq_len {
-            for n in 0..N {
+            for n in 0..output_dim {
                 let mut sum = 0.0;
-                for d in 0..D {
-                    sum += src[b * seq_len * D + t * D + d] * weight[d * N + n];
+                for d in 0..input_dim {
+                    sum += src[b * seq_len * input_dim + t * input_dim + d]
+                        * weight[d * output_dim + n];
                 }
-                dst[b * seq_len * N + t * N + n] = sum + bias[n];
+                dst[b * seq_len * output_dim + t * output_dim + n] = sum + bias[n];
             }
         }
     }
 }
 
-/// Perform a linear layer operation on batched input.
-/// Input shape: [B, T, D] -> Output shape: [B, T, N]
-/// where B=batch_size, T=sequence_length, D=input_features, N=output_features
-pub fn linear_layer_iter_output_flat<const D: usize, const N: usize>(
+/// SIMD-optimized linear layer using wide SIMD with iterator
+pub fn linear_layer_iter_simd(
     src: &[f32],     // Shape: [B, T, D] flattened
     weight: &[f32],  // Shape: [N, D] flattened (transposed for efficiency)
     bias: &[f32],    // Shape: [N]
     dst: &mut [f32], // Shape: [B, T, N] flattened
-    batch_size: usize,
     seq_len: usize,
-) {
-    // Validate input dimensions
-    assert_eq!(src.len(), batch_size * seq_len * D, "Input size mismatch");
-    assert_eq!(dst.len(), batch_size * seq_len * N, "Output size mismatch");
-    assert_eq!(weight.len(), N * D, "Weight size mismatch");
-    assert_eq!(bias.len(), N, "Bias size mismatch");
-
-    // Process each batch
-    dst.chunks_exact_mut(seq_len * N) // Each batch has seq_len * N outputs
-        .zip(src.chunks_exact(seq_len * D)) // Each batch has seq_len * D inputs
-        .for_each(|(dst_batch, src_batch)| {
-            // Process each timestep in the sequence
-            dst_batch
-                .chunks_exact_mut(N) // Each timestep has N outputs
-                .zip(src_batch.chunks_exact(D)) // Each timestep has D inputs
-                .for_each(|(dst_timestep, src_timestep)| {
-                    // Compute output for each feature
-                    dst_timestep
-                        .iter_mut()
-                        .zip(weight.chunks_exact(D))
-                        .zip(bias.iter())
-                        .for_each(|((dst_val, weight_row), bias_val)| {
-                            let mut sum = 0.0;
-                            for i in 0..D {
-                                sum += src_timestep[i] * weight_row[i];
-                            }
-                            *dst_val = sum + bias_val;
-                        });
-                });
-        });
-}
-
-/// Perform a linear layer operation on batched input in parallel.
-/// Input shape: [B, T, D] -> Output shape: [B, T, N]
-/// where B=batch_size, T=sequence_length, D=input_features, N=output_features
-pub fn linear_layer_iter_output_flat_parallel<const D: usize, const N: usize>(
-    src: &[f32],
-    weight: &[f32],
-    bias: &[f32],
-    dst: &mut [f32],
-    batch_size: usize,
-    seq_len: usize,
-) {
-    // Parallel over batches
-    dst.par_chunks_exact_mut(seq_len * N)
-        .zip(src.par_chunks_exact(seq_len * D))
-        .for_each(|(dst_batch, src_batch)| {
-            dst_batch
-                .par_chunks_exact_mut(N)
-                .zip(src_batch.par_chunks_exact(D))
-                .for_each(|(dst_timestep, src_timestep)| {
-                    dst_timestep
-                        .par_iter_mut()
-                        .zip(weight.par_chunks_exact(D))
-                        .zip(bias.par_iter())
-                        .for_each(|((dst_val, weight_row), bias_val)| {
-                            let mut sum = 0.0;
-                            for i in 0..D {
-                                sum += src_timestep[i] * weight_row[i];
-                            }
-                            *dst_val = sum + bias_val;
-                        });
-                });
-        });
-}
-
-/// SIMD-optimized linear layer using portable SIMD
-#[cfg(feature = "portable_simd")]
-pub fn linear_layer_simd<const D: usize, const N: usize>(
-    src: &[f32],
-    weight: &[f32],
-    bias: &[f32],
-    dst: &mut [f32],
-    batch_size: usize,
-    seq_len: usize,
+    input_dim: usize,
+    output_dim: usize,
 ) {
     const LANES: usize = 8;
 
-    for b in 0..batch_size {
-        for t in 0..seq_len {
-            for n in 0..N {
-                let mut sum_simd = f32x8::splat(0.0);
-                let mut scalar_sum = 0.0;
-
-                let src_base = b * seq_len * D + t * D;
-                let weight_base = n * D;
-
-                // Process 8 elements at a time
-                let simd_chunks = D / LANES;
-                for chunk in 0..simd_chunks {
-                    let offset = chunk * LANES;
-
-                    let src_vec = f32x8::from_slice(&src[src_base + offset..]);
-                    let weight_vec = f32x8::from_slice(&weight[weight_base + offset..]);
-
-                    sum_simd += src_vec * weight_vec;
-                }
-
-                // Handle remaining elements
-                for d in (simd_chunks * LANES)..D {
-                    scalar_sum += src[src_base + d] * weight[weight_base + d];
-                }
-
-                dst[b * seq_len * N + t * N + n] = sum_simd.reduce_sum() + scalar_sum + bias[n];
-            }
-        }
-    }
-}
-
-/// Parallel processing with SIMD optimization - FIXED
-#[cfg(feature = "portable_simd")]
-pub fn linear_layer_parallel_simd<const D: usize, const N: usize>(
-    src: &[f32],
-    weight: &[f32],
-    bias: &[f32],
-    dst: &mut [f32],
-    batch_size: usize,
-    seq_len: usize,
-) {
-    const LANES: usize = 8;
-
-    // Parallel over batches
-    dst.par_chunks_exact_mut(seq_len * N)
-        .zip(src.par_chunks_exact(seq_len * D))
+    dst.chunks_exact_mut(seq_len * output_dim)
+        .zip(src.chunks_exact(seq_len * input_dim))
         .for_each(|(dst_batch, src_batch)| {
-            // Sequential over timesteps within each batch
-            for t in 0..seq_len {
-                let src_timestep = &src_batch[t * D..(t + 1) * D];
-                let dst_timestep = &mut dst_batch[t * N..(t + 1) * N];
+            dst_batch
+                .chunks_exact_mut(output_dim)
+                .zip(src_batch.chunks_exact(input_dim))
+                .for_each(|(dst_timestep, src_timestep)| {
+                    for n in 0..output_dim {
+                        let weight_row = &weight[n * input_dim..(n + 1) * input_dim];
+                        let mut sum_simd = wide::f32x8::splat(0.0);
 
-                // Sequential over output features (or could be parallel if N is large)
-                for n in 0..N {
-                    let mut sum_simd = f32x8::splat(0.0);
-                    let weight_row = &weight[n * D..(n + 1) * D];
+                        src_timestep
+                            .chunks_exact(LANES)
+                            .zip(weight_row.chunks_exact(LANES))
+                            .for_each(|(src_chunk, weight_chunk)| {
+                                let src_vec = wide::f32x8::new(src_chunk.try_into().unwrap());
+                                let weight_vec = wide::f32x8::new(weight_chunk.try_into().unwrap());
+                                sum_simd = src_vec.mul_add(weight_vec, sum_simd);
+                            });
 
-                    let simd_chunks = D / LANES;
-                    for chunk in 0..simd_chunks {
-                        let offset = chunk * LANES;
-                        let src_vec = f32x8::from_slice(&src_timestep[offset..]);
-                        let weight_vec = f32x8::from_slice(&weight_row[offset..]);
-                        sum_simd += src_vec * weight_vec;
+                        // Handle remainder elements
+                        let scalar_sum = src_timestep
+                            .chunks_exact(LANES)
+                            .remainder()
+                            .iter()
+                            .zip(weight_row.chunks_exact(LANES).remainder().iter())
+                            .map(|(s, w)| s * w)
+                            .sum::<f32>();
+
+                        dst_timestep[n] = sum_simd.reduce_add() + scalar_sum + bias[n];
                     }
-
-                    let mut scalar_sum = 0.0;
-                    for d in (simd_chunks * LANES)..D {
-                        scalar_sum += src_timestep[d] * weight_row[d];
-                    }
-
-                    dst_timestep[n] = sum_simd.reduce_sum() + scalar_sum + bias[n];
-                }
-            }
+                });
         });
 }
 
@@ -219,22 +91,32 @@ mod tests {
     use approx::assert_relative_eq;
 
     #[test]
-    fn test_linear_layer_sequential() {
+    fn test_linear_layer_simd_wide() {
         // [1, 1, 3] - batch=1, seq_len=1, input_dim=3
         let src = [[[1.0, 2.0, 3.0]]];
-        // [3, 2] - 3 inputs, 2 outputs (transposed to match weight[n][d] indexing)
-        let weight = [[0.1, 0.4], [0.2, 0.5], [0.3, 0.6]];
+        // [2, 3] - 2 outputs, 3 inputs (correct format for weight[n][d] indexing)
+        let weight = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]];
         // [2] - 2 output features
         let bias = [0.1, 0.2];
 
         let mut dst = [[[0.0, 0.0]]];
-        linear_layer_sequential(&src, &weight, &bias, &mut dst);
 
+        linear_layer_iter_simd(
+            src.as_flattened().as_flattened(),
+            weight.as_flattened(),
+            &bias,
+            dst.as_flattened_mut().as_flattened_mut(),
+            1,
+            3,
+            2,
+        );
+
+        // from pytorch
         let expected = [[[1.5, 3.4]]];
         for (actual, expected) in dst.iter().zip(expected.iter()) {
             for (actual_seq, expected_seq) in actual.iter().zip(expected.iter()) {
                 for (a, e) in actual_seq.iter().zip(expected_seq.iter()) {
-                    assert_relative_eq!(a, e, epsilon = 1e-6);
+                    assert_relative_eq!(a, e);
                 }
             }
         }
@@ -259,16 +141,17 @@ mod tests {
             [[0.0, 0.0], [0.0, 0.0]],
         ];
 
-        linear_layer_iter_output_flat::<4, 2>(
+        linear_layer_iter_simd(
             src.as_flattened().as_flattened(),
             weight.as_flattened(),
             &bias,
             dst.as_flattened_mut().as_flattened_mut(),
-            3,
+            2,
+            4,
             2,
         );
 
-        // Calculate expected values manually for verification
+        // from pytorch
         let expected = [
             [[3.1, 7.2], [7.1, 17.6]],    // batch 0
             [[11.1, 28.0], [15.1, 38.4]], // batch 1
@@ -278,7 +161,7 @@ mod tests {
         for (actual_batch, expected_batch) in dst.iter().zip(expected.iter()) {
             for (actual_seq, expected_seq) in actual_batch.iter().zip(expected_batch.iter()) {
                 for (a, e) in actual_seq.iter().zip(expected_seq.iter()) {
-                    assert_relative_eq!(a, e, epsilon = 1e-6);
+                    assert_relative_eq!(a, e);
                 }
             }
         }

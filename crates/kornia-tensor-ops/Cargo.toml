@@ -20,6 +20,7 @@ rand = { workspace = true }
 kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
 rayon = "1.10"
+wide = "0.7.32"
 thiserror = { workspace = true }
 
 [[bench]]
