@@ -136,7 +136,6 @@ mod tests {
     use approx::assert_relative_eq;
 
     const EPSILON: f32 = 1e-6;
-    const LOW_TOLERANCE: f32 = 1e-4;
 
     fn make_random_se2() -> SE2 {
         SE2::from_random()
@@ -373,9 +372,9 @@ mod tests {
             let se2 = SE2::exp(upsilon, theta);
             let (log_upsilon, log_theta) = se2.log();
 
-            assert_relative_eq!(log_upsilon.x, upsilon.x, epsilon = LOW_TOLERANCE);
-            assert_relative_eq!(log_upsilon.y, upsilon.y, epsilon = LOW_TOLERANCE);
-            assert_relative_eq!(log_theta, theta, epsilon = LOW_TOLERANCE);
+            assert_relative_eq!(log_upsilon.x, upsilon.x, epsilon = 1e-4);
+            assert_relative_eq!(log_upsilon.y, upsilon.y, epsilon = 1e-4);
+            assert_relative_eq!(log_theta, theta, epsilon = 1e-4);
         }
 
         // Test specific values
@@ -390,9 +389,9 @@ mod tests {
             let se2 = SE2::exp(upsilon, theta);
             let (log_upsilon, log_theta) = se2.log();
 
-            assert_relative_eq!(log_upsilon.x, upsilon.x, epsilon = LOW_TOLERANCE);
-            assert_relative_eq!(log_upsilon.y, upsilon.y, epsilon = LOW_TOLERANCE);
-            assert_relative_eq!(log_theta, theta, epsilon = LOW_TOLERANCE);
+            assert_relative_eq!(log_upsilon.x, upsilon.x, epsilon = EPSILON);
+            assert_relative_eq!(log_upsilon.y, upsilon.y, epsilon = EPSILON);
+            assert_relative_eq!(log_theta, theta, epsilon = EPSILON);
         }
     }
 
