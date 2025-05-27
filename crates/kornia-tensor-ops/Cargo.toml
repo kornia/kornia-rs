@@ -12,6 +12,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dev-dependencies]
+approx = { workspace = true }
 criterion = { workspace = true }
 rand = { workspace = true }
 
@@ -19,6 +20,7 @@ rand = { workspace = true }
 kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
 thiserror = { workspace = true }
+wide = "0.7.32"
 
 [[bench]]
 name = "bench_ops"
@@ -26,4 +28,8 @@ harness = false
 
 [[bench]]
 name = "bench_kernels"
+harness = false
+
+[[bench]]
+name = "bench_dnn"
 harness = false
