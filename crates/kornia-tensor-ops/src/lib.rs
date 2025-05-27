@@ -1,6 +1,9 @@
 #![deny(missing_docs)]
 #![doc = env!("CARGO_PKG_DESCRIPTION")]
 
+/// Deep neural network kernels.
+pub mod dnn;
+
 /// Error types for the core-ops module.
 pub mod error;
 
