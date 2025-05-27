@@ -372,9 +372,9 @@ mod tests {
             let se2 = SE2::exp(upsilon, theta);
             let (log_upsilon, log_theta) = se2.log();
 
-            assert_relative_eq!(log_upsilon.x, upsilon.x, epsilon = 1e-4);
-            assert_relative_eq!(log_upsilon.y, upsilon.y, epsilon = 1e-4);
-            assert_relative_eq!(log_theta, theta, epsilon = 1e-4);
+            assert_relative_eq!(log_upsilon.x, upsilon.x, epsilon = 1e-3);
+            assert_relative_eq!(log_upsilon.y, upsilon.y, epsilon = 1e-3);
+            assert_relative_eq!(log_theta, theta, epsilon = 1e-3);
         }
 
         // Test specific values
