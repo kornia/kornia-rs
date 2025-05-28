@@ -36,8 +36,8 @@ pub(crate) fn fit_transformation(
             v_neg.col_mut(2).copy_from(-v.col(2));
             v_neg
         };
-        // TODO: improve performance by using matmul33
-        faer::linalg::matmul::matmul(&mut rr, &v_neg, u_t, None, 1.0, faer::Parallelism::None);
+        
+        linalg::matmul33_faer_mat(&v_neg, &u_t, &mut rr);
     }
 
     // compute translation vector t = C_dst - R * C_src
