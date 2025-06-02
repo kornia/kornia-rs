@@ -1,0 +1,16 @@
+[package]
+name = "kornia-apriltag"
+authors = ["Aditya Kumar <git@adityais.dev>", "kornia.org <edgar@kornia.org>"]
+description = "AprilTag marker detection and decoding in Rust"
+categories.workspace = true
+edition.workspace = true
+homepage.workspace = true
+include.workspace = true
+license.workspace = true
+license-file.workspace = true
+readme.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
