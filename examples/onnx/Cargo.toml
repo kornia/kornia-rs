@@ -16,8 +16,8 @@ version.workspace = true
 argh = { workspace = true }
 kornia-tensor.workspace = true
 kornia.workspace = true
-ort-sys = { version = "2.0.0-rc.9" }
-ort = { version = "2.0.0-rc.9", features = [
+ort-sys = { version = "2.0.0-rc.10" }
+ort = { version = "2.0.0-rc.10", features = [
     "load-dynamic",
     "half",
 ], default-features = false }
