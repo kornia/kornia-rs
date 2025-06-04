@@ -496,6 +496,7 @@ mod tests {
         let mut adj_product = [[0.0f32; 6]; 6];
         for i in 0..6 {
             for j in 0..6 {
+                #[allow(clippy::needless_range_loop)]
                 for k in 0..6 {
                     adj_product[i][j] += adj_1[i][k] * adj_2[k][j];
                 }

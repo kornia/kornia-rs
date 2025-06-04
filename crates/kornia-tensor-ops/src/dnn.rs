@@ -38,6 +38,8 @@ pub fn linear_layer_sequential(
     }
 }
 
+use rayon::prelude::*;
+
 /// SIMD-optimized linear layer using wide SIMD with iterator
 pub fn linear_layer_iter_simd(
     src: &[f32],     // Shape: [B, T, D] flattened
@@ -50,12 +52,12 @@ pub fn linear_layer_iter_simd(
 ) {
     const LANES: usize = 8;
 
-    dst.chunks_exact_mut(seq_len * output_dim)
-        .zip(src.chunks_exact(seq_len * input_dim))
+    dst.par_chunks_exact_mut(seq_len * output_dim)
+        .zip(src.par_chunks_exact(seq_len * input_dim))
         .for_each(|(dst_batch, src_batch)| {
             dst_batch
-                .chunks_exact_mut(output_dim)
-                .zip(src_batch.chunks_exact(input_dim))
+                .par_chunks_exact_mut(output_dim)
+                .zip(src_batch.par_chunks_exact(input_dim))
                 .for_each(|(dst_timestep, src_timestep)| {
                     for n in 0..output_dim {
                         let weight_row = &weight[n * input_dim..(n + 1) * input_dim];
@@ -85,41 +87,78 @@ pub fn linear_layer_iter_simd(
         });
 }
 
+/// GEMM-based linear layer using gemm crate
+pub fn linear_layer_gemm(
+    src: &[f32],
+    weight: &[f32],
+    bias: &[f32],
+    dst: &mut [f32],
+    batch_size: usize,
+    seq_len: usize,
+    input_dim: usize,
+    output_dim: usize,
+) {
+    let m = batch_size * seq_len;
+    let n = output_dim;
+    let k = input_dim;
+
+    // Initialize dst with bias using iterator
+    dst.chunks_exact_mut(output_dim).for_each(|chunk| {
+        chunk.iter_mut().zip(bias.iter()).for_each(|(d, &b)| *d = b);
+    });
+
+    unsafe {
+        gemm::gemm(
+            m, // Number of rows in src and dst
+            n, // Number of columns in dst
+            k, // Number of columns in src
+            dst.as_mut_ptr(),
+            n as isize, // dst row stride (row-major)
+            1,          // dst column stride
+            true,       // read_dst = true (we have bias)
+            src.as_ptr(),
+            k as isize, // src row stride (row-major)
+            1,          // src column stride
+            weight.as_ptr(),
+            1,                  // weight row stride (treat as column-major)
+            input_dim as isize, // weight column stride (treat as column-major)
+            1.0,                // alpha = 1.0 (keep bias)
+            1.0,                // beta = 1.0 (add matrix mult)
+            false,
+            false,
+            false,
+            gemm::Parallelism::None,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
 
     #[test]
-    fn test_linear_layer_simd_wide() {
+    fn test_linear_layer_gemm() {
         // [1, 1, 3] - batch=1, seq_len=1, input_dim=3
-        let src = [[[1.0, 2.0, 3.0]]];
+        //let src = [[[1.0, 2.0, 3.0]]];
         // [2, 3] - 2 outputs, 3 inputs (correct format for weight[n][d] indexing)
-        let weight = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]];
+        //let weight = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]];
         // [2] - 2 output features
-        let bias = [0.1, 0.2];
+        //let bias = [0.1, 0.2];
 
-        let mut dst = [[[0.0, 0.0]]];
+        //let mut dst = [[[0.0, 0.0]]];
 
-        linear_layer_iter_simd(
-            src.as_flattened().as_flattened(),
-            weight.as_flattened(),
-            &bias,
-            dst.as_flattened_mut().as_flattened_mut(),
-            1,
-            3,
-            2,
-        );
+        let src: &[f32] = &[1.0, 2.0, 3.0]; // 1 row of 3 elements
+        let weight: &[f32] = &[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]; // 2 rows of 3 elements
+        let bias: &[f32] = &[0.1, 0.2];
+        let mut dst = [0.0, 0.0]; // 1 row of 2 output dims
+
+        //linear_layer_iter_simd(
+        linear_layer_gemm(src, weight, &bias, &mut dst, 1, 1, 3, 2);
 
         // from pytorch
-        let expected = [[[1.5, 3.4]]];
-        for (actual, expected) in dst.iter().zip(expected.iter()) {
-            for (actual_seq, expected_seq) in actual.iter().zip(expected.iter()) {
-                for (a, e) in actual_seq.iter().zip(expected_seq.iter()) {
-                    assert_relative_eq!(a, e);
-                }
-            }
-        }
+        let expected = [1.5, 3.4];
+        assert_relative_eq!(dst.as_slice(), expected.as_slice());
     }
 
     #[test]

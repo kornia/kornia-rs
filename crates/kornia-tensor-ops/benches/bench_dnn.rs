@@ -1,6 +1,11 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use kornia_tensor_ops::dnn::{linear_layer_iter_simd, linear_layer_sequential};
+use candle_core::{Device, Module, Tensor};
+use candle_nn::Linear;
+use criterion::{criterion_group, criterion_main, Criterion};
+use kornia_tensor_ops::dnn::{linear_layer_gemm, linear_layer_iter_simd, linear_layer_sequential};
 use rand::random;
+
+#[cfg(feature = "mkl")]
+extern crate intel_mkl_src;
 
 fn bench_linear_layer(c: &mut Criterion) {
     let mut group = c.benchmark_group("linear_layer");
@@ -27,7 +32,7 @@ fn bench_linear_layer(c: &mut Criterion) {
 
     group.bench_function("linear_layer_iter_sequential", |bencher| {
         bencher.iter(|| {
-            black_box(linear_layer_sequential(
+            std::hint::black_box(linear_layer_sequential(
                 &src, &weight, &bias, &mut dst, BATCH_SIZE, SEQ_LEN, INPUT_DIM, OUTPUT_DIM,
             ));
         });
@@ -35,8 +40,36 @@ fn bench_linear_layer(c: &mut Criterion) {
 
     group.bench_function("linear_layer_iter_simd", |bencher| {
         bencher.iter(|| {
-            black_box(linear_layer_iter_simd(
+            std::hint::black_box(linear_layer_iter_simd(
                 &src, &weight, &bias, &mut dst, SEQ_LEN, INPUT_DIM, OUTPUT_DIM,
+            ));
+        });
+    });
+
+    // Add Candle linear layer benchmark
+    let device = Device::Cpu;
+
+    // Create input tensor
+    let src_tensor =
+        Tensor::from_vec(src.clone(), (BATCH_SIZE, SEQ_LEN, INPUT_DIM), &device).unwrap();
+
+    // Create weight and bias tensors for initialization
+    let weight_tensor = Tensor::from_vec(weight.clone(), (OUTPUT_DIM, INPUT_DIM), &device).unwrap();
+    let bias_tensor = Tensor::from_vec(bias.clone(), OUTPUT_DIM, &device).unwrap();
+
+    // Create linear layer with our weights and bias
+    let linear = Linear::new(weight_tensor, Some(bias_tensor));
+
+    group.bench_function("linear_layer_candle", |bencher| {
+        bencher.iter(|| {
+            std::hint::black_box(linear.forward(&src_tensor).unwrap());
+        });
+    });
+
+    group.bench_function("linear_layer_gemm", |bencher| {
+        bencher.iter(|| {
+            std::hint::black_box(linear_layer_gemm(
+                &src, &weight, &bias, &mut dst, BATCH_SIZE, SEQ_LEN, INPUT_DIM, OUTPUT_DIM,
             ));
         });
     });
