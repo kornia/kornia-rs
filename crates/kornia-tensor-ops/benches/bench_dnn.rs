@@ -1,6 +1,7 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use kornia_tensor_ops::dnn::{linear_layer_iter_simd, linear_layer_sequential};
 use rand::random;
+use std::hint::black_box;
 
 fn bench_linear_layer(c: &mut Criterion) {
     let mut group = c.benchmark_group("linear_layer");
