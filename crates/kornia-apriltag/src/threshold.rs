@@ -42,8 +42,17 @@ pub fn adaptive_threshold<
     let tiles_y_len = (src.height() as f32 / tile_size as f32).ceil() as usize; // number of vertical tiles
 
     // pixels available in the tiles at edge
-    let last_tile_x_px = src.width() % tile_size;
-    let last_tile_y_px = src.height() % tile_size;
+    let last_tile_x_px = if src.width() % tile_size == 0 {
+        tile_size
+    } else {
+        src.width() % tile_size
+    };
+
+    let last_tile_y_px = if src.height() % tile_size == 0 {
+        tile_size
+    } else {
+        src.height() % tile_size
+    };
 
     let mut tile_min: Vec<T> = Vec::with_capacity(tile_size * tile_size);
     let mut tile_max: Vec<T> = Vec::with_capacity(tile_size * tile_size);
