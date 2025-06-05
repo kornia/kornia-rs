@@ -38,7 +38,7 @@ kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.10-rc.1" }
 kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.10-rc.1" }
 kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.10-rc.1" }
 kornia = { path = "crates/kornia", version = "0.1.10-rc.1" }
-kornia-apriltag = { path = "crates/kornia", version = "0.1.10-rc.1" }
+kornia-apriltag = { path = "crates/kornia-apriltag", version = "0.1.10-rc.1" }
 
 # dev dependencies for workspace
 argh = "0.1"
