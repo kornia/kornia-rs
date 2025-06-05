@@ -6,3 +6,6 @@ pub mod errors;
 
 /// Utility functions for AprilTag detection.
 pub mod utils;
+
+/// Thresholding utilities for AprilTag detection.
+pub mod threshold;
