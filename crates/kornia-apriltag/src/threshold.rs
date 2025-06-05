@@ -1,6 +1,35 @@
 use crate::{errors::AprilTagError, utils::PixelTrait};
-use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 use std::ops::{Add, Div, Sub};
+
+/// Stores the minimum and maximum pixel values for each tile for [adaptive_threshold]
+pub struct TileBuffers<T> {
+    tile_min: Vec<T>,
+    tile_max: Vec<T>,
+}
+
+impl<T> TileBuffers<T> {
+    /// Creates a new `TileBuffers` with capacity based on the image size and tile size.
+    ///
+    /// # Parameters
+    ///
+    /// - `img_size`: The size of the image.
+    /// - `tile_size`: The size of each tile.
+    ///
+    /// # Returns
+    ///
+    /// A `TileBuffers` instance with preallocated capacity for tile minima and maxima.
+    pub fn from_image_size(img_size: ImageSize, tile_size: usize) -> Self {
+        let tiles_x_len = (img_size.width as f32 / tile_size as f32).ceil() as usize;
+        let tiles_y_len = (img_size.height as f32 / tile_size as f32).ceil() as usize;
+        let num_tiles = tiles_x_len * tiles_y_len;
+
+        Self {
+            tile_min: Vec::with_capacity(num_tiles),
+            tile_max: Vec::with_capacity(num_tiles),
+        }
+    }
+}
 
 /// Applies an adaptive thresholding algorithm to binarize an image.
 ///
@@ -12,6 +41,8 @@ use std::ops::{Add, Div, Sub};
 ///
 /// - `src`: The source grayscale image.
 /// - `dst`: The destination image where the binarized result will be stored. Must have the same size as `src`.
+/// - `tile_buffers`: A mutable reference to a [`TileBuffers`] struct used to store the minimum and maximum pixel values for
+///   each tile. This buffer is filled during processing and reused across calls to avoid repeated allocations.
 /// - `tile_size`: The size of the tiles used for local thresholding. Each tile is a square of `tile_size x tile_size` pixels.
 /// - `min_white_black_diff`: The minimum difference between the maximum and minimum pixel values in a tile
 ///   for it to be considered for thresholding. Tiles with lower contrast are skipped.
@@ -46,7 +77,7 @@ use std::ops::{Add, Div, Sub};
 ///
 /// ```
 /// use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
-/// use kornia_apriltag::threshold::adaptive_threshold;
+/// use kornia_apriltag::threshold::{adaptive_threshold, TileBuffers};
 ///
 /// let src = Image::new(
 ///     ImageSize {
@@ -59,7 +90,8 @@ use std::ops::{Add, Div, Sub};
 /// .unwrap();
 /// let mut dst = Image::from_size_val(src.size(), 0u8, CpuAllocator).unwrap();
 ///
-/// adaptive_threshold(&src, &mut dst, 2, 20).unwrap();
+/// let mut tile_buffers = TileBuffers::from_image_size(src.size(), 2);
+/// adaptive_threshold(&src, &mut dst, &mut tile_buffers, 2, 20).unwrap();
 /// assert_eq!(dst.as_slice(), &[0, 0, 0, 255, 255, 255]);
 /// ```
 // TODO: Add support for parallelism
@@ -76,6 +108,7 @@ pub fn adaptive_threshold<
 >(
     src: &Image<T, 1, A1>,
     dst: &mut Image<T, 1, A2>,
+    tile_buffers: &mut TileBuffers<T>,
     tile_size: usize,
     min_white_black_diff: T,
 ) -> Result<(), AprilTagError> {
@@ -103,9 +136,6 @@ pub fn adaptive_threshold<
     } else {
         src.height() % tile_size
     };
-
-    let mut tile_min: Vec<T> = Vec::with_capacity(tile_size * tile_size);
-    let mut tile_max: Vec<T> = Vec::with_capacity(tile_size * tile_size);
 
     // Calculate extrema (i.e. min & max grayscale value) of each tile
     for y in 0..tiles_y_len {
@@ -145,8 +175,8 @@ pub fn adaptive_threshold<
                 }
             }
 
-            tile_min.push(local_min);
-            tile_max.push(local_max);
+            tile_buffers.tile_min.push(local_min);
+            tile_buffers.tile_max.push(local_max);
         }
     }
 
@@ -169,8 +199,8 @@ pub fn adaptive_threshold<
 
             let tile_index = (y * tiles_x_len) + x;
 
-            let mut neighbor_min = tile_min[tile_index];
-            let mut neighbor_max = tile_max[tile_index];
+            let mut neighbor_min = tile_buffers.tile_min[tile_index];
+            let mut neighbor_max = tile_buffers.tile_max[tile_index];
 
             // Low constrast tile, Skip processing
             if neighbor_max - neighbor_min < min_white_black_diff {
@@ -190,24 +220,24 @@ pub fn adaptive_threshold<
             if x + 1 != tiles_x_len {
                 // Rightmost neigbor exists
 
-                if tile_min[tile_index + 1] < neighbor_min {
-                    neighbor_min = tile_min[tile_index + 1];
+                if tile_buffers.tile_min[tile_index + 1] < neighbor_min {
+                    neighbor_min = tile_buffers.tile_min[tile_index + 1];
                 }
 
-                if tile_max[tile_index + 1] > neighbor_max {
-                    neighbor_max = tile_max[tile_index + 1];
+                if tile_buffers.tile_max[tile_index + 1] > neighbor_max {
+                    neighbor_max = tile_buffers.tile_max[tile_index + 1];
                 }
             }
 
             if x != 0 {
                 // Leftmost neighbor exists
 
-                if tile_min[tile_index - 1] < neighbor_min {
-                    neighbor_min = tile_min[tile_index - 1];
+                if tile_buffers.tile_min[tile_index - 1] < neighbor_min {
+                    neighbor_min = tile_buffers.tile_min[tile_index - 1];
                 }
 
-                if tile_max[tile_index - 1] > neighbor_max {
-                    neighbor_max = tile_max[tile_index - 1];
+                if tile_buffers.tile_max[tile_index - 1] > neighbor_max {
+                    neighbor_max = tile_buffers.tile_max[tile_index - 1];
                 }
             }
 
@@ -215,12 +245,12 @@ pub fn adaptive_threshold<
                 // Bottom-most neighbor exists
                 let bottom_tile_index = tile_index + tiles_x_len;
 
-                if tile_min[bottom_tile_index] < neighbor_min {
-                    neighbor_min = tile_min[bottom_tile_index];
+                if tile_buffers.tile_min[bottom_tile_index] < neighbor_min {
+                    neighbor_min = tile_buffers.tile_min[bottom_tile_index];
                 }
 
-                if tile_max[bottom_tile_index] > neighbor_max {
-                    neighbor_max = tile_max[bottom_tile_index];
+                if tile_buffers.tile_max[bottom_tile_index] > neighbor_max {
+                    neighbor_max = tile_buffers.tile_max[bottom_tile_index];
                 }
             }
 
@@ -228,12 +258,12 @@ pub fn adaptive_threshold<
                 // Uppermost neighbor exists
                 let upper_tile_index = tile_index - tiles_x_len;
 
-                if tile_min[upper_tile_index] < neighbor_min {
-                    neighbor_min = tile_min[upper_tile_index];
+                if tile_buffers.tile_min[upper_tile_index] < neighbor_min {
+                    neighbor_min = tile_buffers.tile_min[upper_tile_index];
                 }
 
-                if tile_max[upper_tile_index] > neighbor_max {
-                    neighbor_max = tile_max[upper_tile_index];
+                if tile_buffers.tile_max[upper_tile_index] > neighbor_max {
+                    neighbor_max = tile_buffers.tile_max[upper_tile_index];
                 }
             }
 
@@ -276,7 +306,8 @@ mod tests {
         .unwrap();
         let mut dst = Image::from_size_val(src.size(), 0u8, CpuAllocator).unwrap();
 
-        adaptive_threshold(&src, &mut dst, 2, 20).unwrap();
+        let mut tile_buffers = TileBuffers::from_image_size(src.size(), 2);
+        adaptive_threshold(&src, &mut dst, &mut tile_buffers, 2, 20).unwrap();
         assert_eq!(dst.as_slice(), &[0, 0, 0, 255, 255, 255]);
     }
 
@@ -292,7 +323,9 @@ mod tests {
         )
         .unwrap();
         let mut dst = Image::from_size_val(src.size(), 0u8, CpuAllocator).unwrap();
-        adaptive_threshold(&src, &mut dst, 2, 20).unwrap();
+
+        let mut tile_buffers = TileBuffers::from_image_size(src.size(), 2);
+        adaptive_threshold(&src, &mut dst, &mut tile_buffers, 2, 20).unwrap();
         assert_eq!(dst.as_slice(), &[u8::SKIP_PROCESSING; 16]);
     }
 
@@ -306,7 +339,9 @@ mod tests {
         let mut bin = Image::from_size_val(src.size(), 0u8, CpuAllocator).unwrap();
 
         gray_from_rgb_u8(&src, &mut gray).unwrap();
-        adaptive_threshold(&gray, &mut bin, 4, 20).unwrap();
+
+        let mut tile_buffers = TileBuffers::from_image_size(gray.size(), 4);
+        adaptive_threshold(&gray, &mut bin, &mut tile_buffers, 4, 20).unwrap();
 
         assert_eq!(bin.as_slice(), expected.as_slice())
     }
