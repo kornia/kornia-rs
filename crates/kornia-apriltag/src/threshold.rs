@@ -2,9 +2,38 @@ use crate::{errors::AprilTagError, utils::PixelTrait};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use std::ops::{Add, Div, Sub};
 
-/// TODO
+/// Applies an adaptive thresholding algorithm to binarize an image.
 ///
-/// ## Recommended values for `min_white_black_diff`
+/// Adaptive thresholding divides the image into smaller tiles and computes a local threshold
+/// for each tile based on the minimum and maximum pixel values within the tile. This allows
+/// the algorithm to handle varying lighting conditions across the image.
+///
+/// # Parameters
+///
+/// - `src`: The source grayscale image.
+/// - `dst`: The destination image where the binarized result will be stored. Must have the same size as `src`.
+/// - `tile_size`: The size of the tiles used for local thresholding. Each tile is a square of `tile_size x tile_size` pixels.
+/// - `min_white_black_diff`: The minimum difference between the maximum and minimum pixel values in a tile
+///   for it to be considered for thresholding. Tiles with lower contrast are skipped.
+///
+/// # Returns
+///
+/// - `Ok(())` if the operation is successful.
+/// - `Err(AprilTagError)` if the source and destination images have different sizes.
+///
+/// # Behavior
+///
+/// 1. The image is divided into tiles of size `tile_size x tile_size`.
+/// 2. For each tile:
+///    - The minimum (`local_min`) and maximum (`local_max`) pixel values are computed.
+///    - If the difference between `local_max` and `local_min` is less than `min_white_black_diff`,
+///      the tile is skipped, and its pixels are marked as [T::SKIP_PROCESSING].
+///    - Otherwise, the threshold for the tile is computed as:
+///      `threshold = local_min + (local_max - local_min) / 2`.
+///    - Pixels in the tile are binarized based on whether they are above or below the threshold.
+/// 3. Neighboring tiles are considered to refine the threshold for each tile, ensuring smooth transitions.
+///
+/// # Recommended Values for `min_white_black_diff`
 ///
 /// | Image Type | `min_white_black_diff` |
 /// |------------|------------------------|
@@ -12,6 +41,27 @@ use std::ops::{Add, Div, Sub};
 /// | 16-bit     | 500-1000               |
 /// | 32-bit     | 100,000-1,000,000      |
 /// | float      | 0.05-0.1               |
+///
+/// # Examples
+///
+/// ```
+/// use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+/// use kornia_apriltag::adaptive_threshold;
+///
+/// let src = Image::new(
+///     ImageSize {
+///         width: 2,
+///         height: 3,
+///     },
+///     vec![0, 50, 100, 150, 200, 250],
+///     CpuAllocator,
+/// )
+/// .unwrap();
+/// let mut dst = Image::from_size_val(src.size(), 0u8, CpuAllocator).unwrap();
+///
+/// adaptive_threshold(&src, &mut dst, 2, 20).unwrap();
+/// assert_eq!(dst.as_slice(), &[0, 0, 0, 255, 255, 255]);
+/// ```
 // TODO: Add support for parallelism
 pub fn adaptive_threshold<
     T: PixelTrait
