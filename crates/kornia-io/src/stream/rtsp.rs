@@ -102,7 +102,7 @@ impl Default for RTSPCameraConfig {
 /// A GStreamer pipeline description
 pub fn rtsp_camera_pipeline_description(url: &str, latency: u32) -> String {
     format!(
-        "rtspsrc location={} latency={} ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
+        "rtspsrc location={} latency={} ! rtph264depay ! avdec_h264 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
         url, latency,
     )
 }
