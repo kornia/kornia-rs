@@ -120,8 +120,8 @@ pub fn adaptive_threshold<
                     let start_index = row + (x * tile_size);
                     let end_index = start_index + tile_x_px;
 
-                    for px_index in start_index..end_index {
-                        dst_data[px_index] = T::SKIP_PROCESSING;
+                    for px in dst_data.iter_mut().take(end_index).skip(start_index) {
+                        *px = T::SKIP_PROCESSING;
                     }
                 }
 
