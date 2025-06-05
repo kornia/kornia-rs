@@ -178,7 +178,7 @@ pub fn adaptive_threshold<
                 }
             }
 
-            let thresh = (neighbor_max / T::from(2u8)) + (neighbor_min / T::from(2u8));
+            let thresh = neighbor_min + (neighbor_max - neighbor_min) / T::from(2u8);
 
             for y_px in 0..tile_y_px {
                 let row = ((y * tile_size) + y_px) * src.width();
