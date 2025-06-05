@@ -1,17 +1,33 @@
 use crate::{errors::AprilTagError, utils::PixelTrait};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
-use std::ops::{Add, Div};
+use std::ops::{Add, Div, Sub};
 
 /// TODO
+///
+/// ## Recommended values for `min_white_black_diff`
+///
+/// | Image Type | `min_white_black_diff` |
+/// |------------|------------------------|
+/// | 8-bit      | 10-20                  |
+/// | 16-bit     | 500-1000               |
+/// | 32-bit     | 100,000-1,000,000      |
+/// | float      | 0.05-0.1               |
 // TODO: Add support for parallelism
 pub fn adaptive_threshold<
-    T: PixelTrait + PartialOrd + Copy + Add<T, Output = T> + Div<T, Output = T> + From<u8>,
+    T: PixelTrait
+        + PartialOrd
+        + Copy
+        + Add<T, Output = T>
+        + Sub<T, Output = T>
+        + Div<T, Output = T>
+        + From<u8>,
     A1: ImageAllocator,
     A2: ImageAllocator,
 >(
     src: &Image<T, 1, A1>,
     dst: &mut Image<T, 1, A2>,
     tile_size: usize,
+    min_white_black_diff: T,
 ) -> Result<(), AprilTagError> {
     if src.size() != dst.size() {
         return Err(
@@ -78,10 +94,39 @@ pub fn adaptive_threshold<
     // Binarize the image
     for y in 0..tiles_y_len {
         for x in 0..tiles_x_len {
+            // Number of Horizontal Pixels in the current tile
+            let tile_x_px = if x == tiles_x_len - 1 {
+                last_tile_x_px
+            } else {
+                tile_size
+            };
+
+            // Number of vertical Pixels in the current tile
+            let tile_y_px = if y == tiles_y_len - 1 {
+                last_tile_y_px
+            } else {
+                tile_size
+            };
+
             let tile_index = (y * tiles_x_len) + x;
 
             let mut neighbor_min = tile_min[tile_index];
             let mut neighbor_max = tile_max[tile_index];
+
+            // Low constrast tile, Skip processing
+            if neighbor_max - neighbor_min < min_white_black_diff {
+                for y_px in 0..tile_y_px {
+                    let row = ((y * tile_size) + y_px) * src.width();
+                    let start_index = row + (x * tile_size);
+                    let end_index = start_index + tile_x_px;
+
+                    for px_index in start_index..end_index {
+                        dst_data[px_index] = T::SKIP_PROCESSING;
+                    }
+                }
+
+                continue;
+            }
 
             if x + 1 != tiles_x_len {
                 // Rightmost neigbor exists
@@ -134,20 +179,6 @@ pub fn adaptive_threshold<
             }
 
             let thresh = (neighbor_max / T::from(2u8)) + (neighbor_min / T::from(2u8));
-
-            // Number of Horizontal Pixels in the current tile
-            let tile_x_px = if x == tiles_x_len - 1 {
-                last_tile_x_px
-            } else {
-                tile_size
-            };
-
-            // Number of vertical Pixels in the current tile
-            let tile_y_px = if y == tiles_y_len - 1 {
-                last_tile_y_px
-            } else {
-                tile_size
-            };
 
             for y_px in 0..tile_y_px {
                 let row = ((y * tile_size) + y_px) * src.width();

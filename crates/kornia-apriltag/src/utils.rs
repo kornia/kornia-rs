@@ -25,11 +25,11 @@ impl_pixel_trait!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize
 impl PixelTrait for f32 {
     const BLACK: Self = 0.;
     const WHITE: Self = 1.;
-    const SKIP_PROCESSING: Self = 0.127;
+    const SKIP_PROCESSING: Self = 0.5;
 }
 
 impl PixelTrait for f64 {
     const BLACK: Self = 0.;
     const WHITE: Self = 1.;
-    const SKIP_PROCESSING: Self = 0.127;
+    const SKIP_PROCESSING: Self = 0.5;
 }
