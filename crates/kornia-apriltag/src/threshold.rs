@@ -27,7 +27,7 @@ use std::ops::{Add, Div, Sub};
 /// 2. For each tile:
 ///    - The minimum (`local_min`) and maximum (`local_max`) pixel values are computed.
 ///    - If the difference between `local_max` and `local_min` is less than `min_white_black_diff`,
-///      the tile is skipped, and its pixels are marked as [T::SKIP_PROCESSING].
+///      the tile is skipped, and its pixels are marked as [PixelTrait::SKIP_PROCESSING].
 ///    - Otherwise, the threshold for the tile is computed as:
 ///      `threshold = local_min + (local_max - local_min) / 2`.
 ///    - Pixels in the tile are binarized based on whether they are above or below the threshold.
@@ -46,7 +46,7 @@ use std::ops::{Add, Div, Sub};
 ///
 /// ```
 /// use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
-/// use kornia_apriltag::adaptive_threshold;
+/// use kornia_apriltag::threshold::adaptive_threshold;
 ///
 /// let src = Image::new(
 ///     ImageSize {
