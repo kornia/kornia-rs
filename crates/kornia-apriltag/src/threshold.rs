@@ -168,55 +168,48 @@ pub fn adaptive_threshold<
             continue;
         }
 
-        if x + 1 != tiles_x_len {
-            // Rightmost neigbor exists
+        macro_rules! neighbor_min_max {
+            ($condition:expr, $index:expr) => {
+                if $condition {
+                    let tile_index = $index;
 
-            if tile_buffers.tile_min[tile_index + 1] < neighbor_min {
-                neighbor_min = tile_buffers.tile_min[tile_index + 1];
-            }
+                    if tile_buffers.tile_min[tile_index] < neighbor_min {
+                        neighbor_min = tile_buffers.tile_min[tile_index]
+                    }
 
-            if tile_buffers.tile_max[tile_index + 1] > neighbor_max {
-                neighbor_max = tile_buffers.tile_max[tile_index + 1];
-            }
+                    if tile_buffers.tile_max[tile_index] > neighbor_max {
+                        neighbor_max = tile_buffers.tile_max[tile_index];
+                    }
+                }
+            };
         }
 
-        if x != 0 {
-            // Leftmost neighbor exists
+        // Rightmost neighbor
+        neighbor_min_max!(x + 1 != tiles_x_len, tile_index + 1);
 
-            if tile_buffers.tile_min[tile_index - 1] < neighbor_min {
-                neighbor_min = tile_buffers.tile_min[tile_index - 1];
-            }
+        // Leftmost neighbor
+        neighbor_min_max!(x != 0, tile_index - 1);
 
-            if tile_buffers.tile_max[tile_index - 1] > neighbor_max {
-                neighbor_max = tile_buffers.tile_max[tile_index - 1];
-            }
-        }
+        // Bottom-most neighbor
+        neighbor_min_max!(y + 1 != tiles_y_len, tile_index + tiles_x_len);
 
-        if y + 1 != tiles_y_len {
-            // Bottom-most neighbor exists
-            let bottom_tile_index = tile_index + tiles_x_len;
+        // Uppermost neighbor exists
+        neighbor_min_max!(y != 0, tile_index - tiles_x_len);
 
-            if tile_buffers.tile_min[bottom_tile_index] < neighbor_min {
-                neighbor_min = tile_buffers.tile_min[bottom_tile_index];
-            }
+        // Top-right neighbor
+        neighbor_min_max!(x + 1 != tiles_x_len && y != 0, tile_index - tiles_x_len + 1);
 
-            if tile_buffers.tile_max[bottom_tile_index] > neighbor_max {
-                neighbor_max = tile_buffers.tile_max[bottom_tile_index];
-            }
-        }
+        // Top-left neighbor
+        neighbor_min_max!(x != 0 && y != 0, tile_index - tiles_x_len - 1);
 
-        if y != 0 {
-            // Uppermost neighbor exists
-            let upper_tile_index = tile_index - tiles_x_len;
+        // Bottom-right corner neighbor
+        neighbor_min_max!(
+            x + 1 != tiles_x_len && y + 1 != tiles_y_len,
+            tile_index + tiles_x_len + 1
+        );
 
-            if tile_buffers.tile_min[upper_tile_index] < neighbor_min {
-                neighbor_min = tile_buffers.tile_min[upper_tile_index];
-            }
-
-            if tile_buffers.tile_max[upper_tile_index] > neighbor_max {
-                neighbor_max = tile_buffers.tile_max[upper_tile_index];
-            }
-        }
+        // Bottom-left corner neighbor
+        neighbor_min_max!(x != 0 && y + 1 != tiles_y_len, tile_index + tiles_x_len - 1);
 
         let thresh = neighbor_min + (neighbor_max - neighbor_min) / T::from(2u8);
 
@@ -239,12 +232,19 @@ mod tests {
 
     #[test]
     fn test_adaptive_threshold_basic() {
+        #[rustfmt::skip]
         let src = Image::new(
             ImageSize {
-                width: 2,
-                height: 3,
+                width: 5,
+                height: 5,
             },
-            vec![0, 50, 100, 150, 200, 250],
+            vec![
+                0,   50,  100, 150, 200,
+                250, 0,   50,  100, 150,
+                200, 250, 0,   50,  100,
+                150, 200, 250, 0,   50,
+                100, 150, 200, 250, 0,
+            ],
             CpuAllocator,
         )
         .unwrap();
@@ -252,7 +252,17 @@ mod tests {
 
         let mut tile_buffers = TileBuffers::from_image_size(src.size(), 2);
         adaptive_threshold(&src, &mut dst, &mut tile_buffers, 2, 20).unwrap();
-        assert_eq!(dst.as_slice(), &[0, 0, 0, 255, 255, 255]);
+
+        #[rustfmt::skip]
+        let expected = vec![
+            0,   0,   0,   255, 255,
+            255, 0,   0,   0,   255,
+            255, 255, 0,   0,   0,
+            255, 255, 255, 0,   0,
+            0,   255, 255, 255, 127
+        ];
+
+        assert_eq!(dst.as_slice(), expected.as_slice());
     }
 
     #[test]
