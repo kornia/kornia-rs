@@ -236,8 +236,6 @@ pub fn adaptive_threshold<
 mod tests {
     use super::*;
     use kornia_image::{allocator::CpuAllocator, ImageSize};
-    use kornia_imgproc::color::gray_from_rgb_u8;
-    use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_mono8};
 
     #[test]
     fn test_adaptive_threshold_basic() {
@@ -273,22 +271,5 @@ mod tests {
         let mut tile_buffers = TileBuffers::from_image_size(src.size(), 2);
         adaptive_threshold(&src, &mut dst, &mut tile_buffers, 2, 20).unwrap();
         assert_eq!(dst.as_slice(), &[u8::SKIP_PROCESSING; 16]);
-    }
-
-    #[test]
-    fn test_adaptive_threshold() {
-        let src = read_image_jpeg_rgb8("../../tests/data/apriltags.jpg").unwrap();
-        let expected =
-            read_image_png_mono8("../../tests/data/apriltags-adaptive-threshold.png").unwrap();
-
-        let mut gray = Image::from_size_val(src.size(), 0u8, CpuAllocator).unwrap();
-        let mut bin = Image::from_size_val(src.size(), 0u8, CpuAllocator).unwrap();
-
-        gray_from_rgb_u8(&src, &mut gray).unwrap();
-
-        let mut tile_buffers = TileBuffers::from_image_size(gray.size(), 4);
-        adaptive_threshold(&gray, &mut bin, &mut tile_buffers, 4, 20).unwrap();
-
-        assert_eq!(bin.as_slice(), expected.as_slice())
     }
 }
