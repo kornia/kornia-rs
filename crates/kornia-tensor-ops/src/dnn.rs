@@ -85,6 +85,61 @@ pub fn linear_layer_iter_simd(
         });
 }
 
+/// Linear layer implemented using `matrixmultiply::sgemm`.
+pub fn linear_layer_gemm(
+    src: &[f32],     // Shape: [B, T, D] flattened
+    weight: &[f32],  // Shape: [N, D] flattened (transposed for efficiency)
+    bias: &[f32],    // Shape: [N]
+    dst: &mut [f32], // Shape: [B, T, N] flattened
+    batch_size: usize,
+    seq_len: usize,
+    input_dim: usize,
+    output_dim: usize,
+) {
+    assert_eq!(
+        src.len(),
+        batch_size * seq_len * input_dim,
+        "Input size mismatch",
+    );
+    assert_eq!(
+        dst.len(),
+        batch_size * seq_len * output_dim,
+        "Output size mismatch",
+    );
+    assert_eq!(weight.len(), output_dim * input_dim, "Weight size mismatch");
+    assert_eq!(bias.len(), output_dim, "Bias size mismatch");
+
+    let m = batch_size * seq_len;
+    let k = input_dim;
+    let n = output_dim;
+
+    unsafe {
+        matrixmultiply::sgemm(
+            m,
+            k,
+            n,
+            1.0,
+            src.as_ptr(),
+            input_dim as isize,
+            1,
+            weight.as_ptr(),
+            output_dim as isize,
+            1,
+            0.0,
+            dst.as_mut_ptr(),
+            output_dim as isize,
+            1,
+        );
+    }
+
+    // Add bias
+    dst.chunks_exact_mut(output_dim).for_each(|row| {
+        for (r, &b) in row.iter_mut().zip(bias.iter()) {
+            *r += b;
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,6 +217,44 @@ mod tests {
             for (actual_seq, expected_seq) in actual_batch.iter().zip(expected_batch.iter()) {
                 for (a, e) in actual_seq.iter().zip(expected_seq.iter()) {
                     assert_relative_eq!(a, e);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_linear_layer_gemm_matches_iter() {
+        let src = [[[1.0, 2.0, 3.0]]];
+        let weight = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]];
+        let bias = [0.1, 0.2];
+
+        let mut dst_simd = [[[0.0, 0.0]]];
+        linear_layer_iter_simd(
+            src.as_flattened().as_flattened(),
+            weight.as_flattened(),
+            &bias,
+            dst_simd.as_flattened_mut().as_flattened_mut(),
+            1,
+            3,
+            2,
+        );
+
+        let mut dst_gemm = [[[0.0, 0.0]]];
+        linear_layer_gemm(
+            src.as_flattened().as_flattened(),
+            weight.as_flattened(),
+            &bias,
+            dst_gemm.as_flattened_mut().as_flattened_mut(),
+            1,
+            1,
+            3,
+            2,
+        );
+
+        for (a_batch, g_batch) in dst_simd.iter().zip(dst_gemm.iter()) {
+            for (a_seq, g_seq) in a_batch.iter().zip(g_batch.iter()) {
+                for (a, g) in a_seq.iter().zip(g_seq.iter()) {
+                    assert_relative_eq!(a, g);
                 }
             }
         }

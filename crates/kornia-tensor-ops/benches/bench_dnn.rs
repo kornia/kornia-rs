@@ -1,5 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use kornia_tensor_ops::dnn::{linear_layer_iter_simd, linear_layer_sequential};
+use kornia_tensor_ops::dnn::{
+    linear_layer_gemm, linear_layer_iter_simd, linear_layer_sequential,
+};
 use rand::random;
 use std::hint::black_box;
 
@@ -38,6 +40,21 @@ fn bench_linear_layer(c: &mut Criterion) {
         bencher.iter(|| {
             black_box(linear_layer_iter_simd(
                 &src, &weight, &bias, &mut dst, SEQ_LEN, INPUT_DIM, OUTPUT_DIM,
+            ));
+        });
+    });
+
+    group.bench_function("linear_layer_gemm", |bencher| {
+        bencher.iter(|| {
+            black_box(linear_layer_gemm(
+                &src,
+                &weight,
+                &bias,
+                &mut dst,
+                BATCH_SIZE,
+                SEQ_LEN,
+                INPUT_DIM,
+                OUTPUT_DIM,
             ));
         });
     });
