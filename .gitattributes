@@ -1,0 +1,2 @@
+tests/data/apriltags.jpg -text
+tests/data/apriltags-adaptive-threshold.png -text
