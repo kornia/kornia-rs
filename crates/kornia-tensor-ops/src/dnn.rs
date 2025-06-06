@@ -1,6 +1,7 @@
 /// Perform a linear layer operation on batched input in sequential manner.
 /// Input shape: [B, T, D] -> Output shape: [B, T, N]
 /// where B=batch_size, T=sequence_length, D=input_features, N=output_features
+#[allow(clippy::too_many_arguments)]
 pub fn linear_layer_sequential(
     src: &[f32],     // Shape: [B, T, D] flattened
     weight: &[f32],  // Shape: [N, D] flattened (transposed for efficiency)
@@ -38,8 +39,9 @@ pub fn linear_layer_sequential(
     }
 }
 
-/// SIMD-optimized linear layer using wide SIMD with iterator
-pub fn linear_layer_iter_simd(
+/// SIMD-optimized linear layer using wide SIMD with sequential processing
+#[allow(clippy::too_many_arguments)]
+pub fn linear_layer_simd_sequential(
     src: &[f32],     // Shape: [B, T, D] flattened
     weight: &[f32],  // Shape: [N, D] flattened (transposed for efficiency)
     bias: &[f32],    // Shape: [N]
@@ -86,9 +88,10 @@ pub fn linear_layer_iter_simd(
 }
 
 /// Linear layer implemented using `matrixmultiply::sgemm`.
+#[allow(clippy::too_many_arguments)]
 pub fn linear_layer_gemm(
     src: &[f32],     // Shape: [B, T, D] flattened
-    weight: &[f32],  // Shape: [N, D] flattened (transposed for efficiency)
+    weight: &[f32],  // Shape: [N, D] flattened (row-major format)
     bias: &[f32],    // Shape: [N]
     dst: &mut [f32], // Shape: [B, T, N] flattened
     batch_size: usize,
@@ -109,10 +112,17 @@ pub fn linear_layer_gemm(
     assert_eq!(weight.len(), output_dim * input_dim, "Weight size mismatch");
     assert_eq!(bias.len(), output_dim, "Bias size mismatch");
 
-    let m = batch_size * seq_len;
+    let m = batch_size * seq_len; // total rows
     let k = input_dim;
     let n = output_dim;
 
+    // 1. Set bias for each output row
+    for output_row in dst.chunks_exact_mut(output_dim) {
+        output_row.copy_from_slice(bias);
+    }
+
+    // 2. Perform GEMM for the whole batch: dst = src * weight^T + bias
+    //    (beta = 1.0, so GEMM adds to the bias-initialized output)
     unsafe {
         matrixmultiply::sgemm(
             m,
@@ -120,24 +130,17 @@ pub fn linear_layer_gemm(
             n,
             1.0,
             src.as_ptr(),
-            input_dim as isize,
+            k as isize,
             1,
             weight.as_ptr(),
-            output_dim as isize,
             1,
-            0.0,
+            k as isize,
+            1.0,
             dst.as_mut_ptr(),
-            output_dim as isize,
+            n as isize,
             1,
         );
     }
-
-    // Add bias
-    dst.chunks_exact_mut(output_dim).for_each(|row| {
-        for (r, &b) in row.iter_mut().zip(bias.iter()) {
-            *r += b;
-        }
-    });
 }
 
 #[cfg(test)]
@@ -156,7 +159,7 @@ mod tests {
 
         let mut dst = [[[0.0, 0.0]]];
 
-        linear_layer_iter_simd(
+        linear_layer_simd_sequential(
             src.as_flattened().as_flattened(),
             weight.as_flattened(),
             &bias,
@@ -196,7 +199,7 @@ mod tests {
             [[0.0, 0.0], [0.0, 0.0]],
         ];
 
-        linear_layer_iter_simd(
+        linear_layer_simd_sequential(
             src.as_flattened().as_flattened(),
             weight.as_flattened(),
             &bias,
@@ -223,38 +226,29 @@ mod tests {
     }
 
     #[test]
-    fn test_linear_layer_gemm_matches_iter() {
-        let src = [[[1.0, 2.0, 3.0]]];
+    fn test_linear_layer_gemm_matches_batch_size_2() {
+        let src = [[[1.0, 2.0, 3.0]], [[4.0, 5.0, 6.0]]];
         let weight = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]];
         let bias = [0.1, 0.2];
 
-        let mut dst_simd = [[[0.0, 0.0]]];
-        linear_layer_iter_simd(
-            src.as_flattened().as_flattened(),
-            weight.as_flattened(),
-            &bias,
-            dst_simd.as_flattened_mut().as_flattened_mut(),
-            1,
-            3,
-            2,
-        );
-
-        let mut dst_gemm = [[[0.0, 0.0]]];
+        let mut dst_gemm = [[[0.0, 0.0], [0.0, 0.0]]];
         linear_layer_gemm(
             src.as_flattened().as_flattened(),
             weight.as_flattened(),
             &bias,
             dst_gemm.as_flattened_mut().as_flattened_mut(),
-            1,
+            2,
             1,
             3,
             2,
         );
 
-        for (a_batch, g_batch) in dst_simd.iter().zip(dst_gemm.iter()) {
-            for (a_seq, g_seq) in a_batch.iter().zip(g_batch.iter()) {
-                for (a, g) in a_seq.iter().zip(g_seq.iter()) {
-                    assert_relative_eq!(a, g);
+        // from pytorch
+        let expected = [[[1.5, 3.4], [3.3, 7.9]]];
+        for (actual, expected) in dst_gemm.iter().zip(expected.iter()) {
+            for (actual_seq, expected_seq) in actual.iter().zip(expected.iter()) {
+                for (a, e) in actual_seq.iter().zip(expected_seq.iter()) {
+                    assert_relative_eq!(a, e);
                 }
             }
         }

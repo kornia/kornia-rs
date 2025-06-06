@@ -15,6 +15,8 @@ version.workspace = true
 approx = { workspace = true }
 criterion = { workspace = true }
 rand = { workspace = true }
+# candle-nn = { version = "0.9.1", features = ["mkl"] }
+# candle-core = { version = "0.9.1", features = ["mkl"] }
 
 [dependencies]
 kornia-tensor = { workspace = true }
