@@ -20,7 +20,7 @@ impl<T: PixelTrait + Copy> TileBuffers<T> {
     /// # Returns
     ///
     /// A `TileBuffers` instance with preallocated capacity for tile minima and maxima.
-    pub fn from_image_size(img_size: ImageSize, tile_size: usize) -> Self {
+    pub fn new(img_size: ImageSize, tile_size: usize) -> Self {
         let tiles_x_len = (img_size.width as f32 / tile_size as f32).ceil() as usize;
         let tiles_y_len = (img_size.height as f32 / tile_size as f32).ceil() as usize;
         let num_tiles = tiles_x_len * tiles_y_len;
@@ -91,7 +91,7 @@ impl<T: PixelTrait + Copy> TileBuffers<T> {
 /// .unwrap();
 /// let mut dst = Image::from_size_val(src.size(), 0u8, CpuAllocator).unwrap();
 ///
-/// let mut tile_buffers = TileBuffers::from_image_size(src.size(), 2);
+/// let mut tile_buffers = TileBuffers::new(src.size(), 2);
 /// adaptive_threshold(&src, &mut dst, &mut tile_buffers, 2, 20).unwrap();
 /// assert_eq!(dst.as_slice(), &[0, 0, 0, 255, 255, 255]);
 /// ```
@@ -250,7 +250,7 @@ mod tests {
         .unwrap();
         let mut dst = Image::from_size_val(src.size(), 0u8, CpuAllocator).unwrap();
 
-        let mut tile_buffers = TileBuffers::from_image_size(src.size(), 2);
+        let mut tile_buffers = TileBuffers::new(src.size(), 2);
         adaptive_threshold(&src, &mut dst, &mut tile_buffers, 2, 20).unwrap();
 
         #[rustfmt::skip]
@@ -278,7 +278,7 @@ mod tests {
         .unwrap();
         let mut dst = Image::from_size_val(src.size(), 0u8, CpuAllocator).unwrap();
 
-        let mut tile_buffers = TileBuffers::from_image_size(src.size(), 2);
+        let mut tile_buffers = TileBuffers::new(src.size(), 2);
         adaptive_threshold(&src, &mut dst, &mut tile_buffers, 2, 20).unwrap();
         assert_eq!(dst.as_slice(), &[u8::SKIP_PROCESSING; 16]);
     }

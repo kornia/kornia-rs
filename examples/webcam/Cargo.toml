@@ -11,4 +11,3 @@ argh = { workspace = true }
 ctrlc = { workspace = true }
 kornia = { workspace = true, features = ["gstreamer"] }
 rerun = { workspace = true }
-kornia-apriltag = { workspace = true }
