@@ -119,10 +119,24 @@ pub fn adaptive_threshold<
         );
     }
 
+    let tile_iterator = TileIterator::from_image(src, tile_size);
+    let tiles_x_len = tile_iterator.tiles_x_len();
+    let tiles_y_len = tile_iterator.tiles_y_len();
+
+    let expected_tile_count = tiles_x_len * tiles_y_len;
+    if tile_buffers.tile_min.len() != expected_tile_count {
+        // It is guaranteed for tile_min and tile_max to have same length by design
+        // so, avoiding additional check for tile_max
+        return Err(AprilTagError::InvalidTileBufferSize(
+            tile_buffers.tile_min.len(),
+            expected_tile_count,
+        ));
+    }
+
     let dst_data = dst.as_slice_mut();
 
     // Calculate extrema (i.e. min & max grayscale value) of each tile
-    for (i, tile) in TileIterator::from_image(src, tile_size).enumerate() {
+    for (i, tile) in tile_iterator.enumerate() {
         let mut local_min = T::WHITE;
         let mut local_max = T::BLACK;
 
@@ -142,12 +156,8 @@ pub fn adaptive_threshold<
         tile_buffers.tile_max[i] = local_max;
     }
 
-    let tile_iterator = TileIterator::from_image(src, tile_size);
-    let tiles_x_len = tile_iterator.tiles_x_len();
-    let tiles_y_len = tile_iterator.tiles_y_len();
-
     // Binarize the image
-    for ((y, x), tile) in tile_iterator.tile_enumerator() {
+    for ((y, x), tile) in TileIterator::from_image(src, tile_size).tile_enumerator() {
         let tile_index = (y * tiles_x_len) + x;
 
         let mut neighbor_min = tile_buffers.tile_min[tile_index];
@@ -281,5 +291,40 @@ mod tests {
         let mut tile_buffers = TileBuffers::new(src.size(), 2);
         adaptive_threshold(&src, &mut dst, &mut tile_buffers, 2, 20).unwrap();
         assert_eq!(dst.as_slice(), &[u8::SKIP_PROCESSING; 16]);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "called `Result::unwrap()` on an `Err` value: InvalidTileBufferSize(2, 4)"
+    )]
+    fn invalid_buffer_size() {
+        let src = Image::new(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            vec![100u8; 16],
+            CpuAllocator,
+        )
+        .unwrap();
+
+        let mut dst = Image::from_size_val(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            0u8,
+            CpuAllocator,
+        )
+        .unwrap();
+
+        let mut tile_buffers = TileBuffers::new(
+            ImageSize {
+                width: 3,
+                height: 2,
+            },
+            2,
+        );
+        adaptive_threshold(&src, &mut dst, &mut tile_buffers, 2, 20).unwrap();
     }
 }
