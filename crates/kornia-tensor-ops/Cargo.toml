@@ -15,15 +15,11 @@ version.workspace = true
 approx = { workspace = true }
 criterion = { workspace = true }
 rand = { workspace = true }
-# candle-nn = { version = "0.9.1", features = ["mkl"] }
-# candle-core = { version = "0.9.1", features = ["mkl"] }
 
 [dependencies]
 kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
 thiserror = { workspace = true }
-wide = "0.7.32"
-matrixmultiply = "0.3"
 
 [[bench]]
 name = "bench_ops"
@@ -31,8 +27,4 @@ harness = false
 
 [[bench]]
 name = "bench_kernels"
-harness = false
-
-[[bench]]
-name = "bench_dnn"
 harness = false
