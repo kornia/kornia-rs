@@ -1,5 +1,4 @@
 use crate::errors::AprilTagError;
-use crate::iter::TileIterator;
 use crate::utils::Pixel;
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 
@@ -137,9 +136,8 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
         );
     }
 
-    let tile_iterator = TileIterator::from_image(src, tile_buffers.tile_size);
-    let tiles_x_len = tile_iterator.tiles_x_len();
-    let tiles_y_len = tile_iterator.tiles_y_len();
+    let tiles_x_len = (src.width() + tile_buffers.tile_size - 1) / tile_buffers.tile_size;
+    let tiles_y_len = (src.height() + tile_buffers.tile_size - 1) / tile_buffers.tile_size;
 
     let expected_tile_count = tiles_x_len * tiles_y_len;
     if tile_buffers.tile_min.len() != expected_tile_count {
@@ -151,146 +149,162 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
         ));
     }
 
+    let src_data = src.as_slice();
     let dst_data = dst.as_slice_mut();
 
     // Calculate extrema (i.e. min & max grayscale value) of each tile
-    for (i, tile) in tile_iterator.enumerate() {
-        let mut local_min = 255;
-        let mut local_max = 0;
+    src_data
+        .chunks(src.width())
+        .enumerate()
+        .for_each(|(y, y_chunk)| {
+            let tile_y = y / tile_buffers.tile_size;
 
-        for row in tile {
-            for px in row as &[u8] {
-                if px < &local_min {
-                    local_min = *px;
-                }
+            y_chunk
+                .chunks(tile_buffers.tile_size)
+                .enumerate()
+                .for_each(|(tile_x, pxs)| {
+                    let tile_index = tile_y * tiles_x_len + tile_x;
 
-                if px > &local_max {
-                    local_max = *px;
-                }
-            }
-        }
+                    if y % tile_buffers.tile_size == 0 {
+                        tile_buffers.tile_min[tile_index] = 255;
+                        tile_buffers.tile_max[tile_index] = 0;
+                    }
 
-        tile_buffers.tile_min[i] = local_min;
-        tile_buffers.tile_max[i] = local_max;
-    }
+                    pxs.iter().for_each(|px| {
+                        let local_min = &mut tile_buffers.tile_min[tile_index];
+                        let local_max = &mut tile_buffers.tile_max[tile_index];
+
+                        if px < local_min {
+                            *local_min = *px;
+                        }
+
+                        if px > local_max {
+                            *local_max = *px;
+                        }
+                    });
+                });
+        });
 
     // Binarize the image
-    for ((y, x), tile) in TileIterator::from_image(src, tile_buffers.tile_size).tile_enumerator() {
-        let tile_index = (y * tiles_x_len) + x;
+    src_data
+        .chunks(src.width())
+        .enumerate()
+        .for_each(|(y, y_chunks)| {
+            let tile_y = y / tile_buffers.tile_size;
+            let y_px_index = y * src.width();
 
-        let mut neighbor_min = tile_buffers.tile_min[tile_index];
-        let mut neighbor_max = tile_buffers.tile_max[tile_index];
+            y_chunks
+                .chunks(tile_buffers.tile_size)
+                .enumerate()
+                .for_each(|(tile_x, pxs)| {
+                    let tile_index = tile_y * tiles_x_len + tile_x;
+                    let start_tile_px_index = y_px_index + tile_x * tile_buffers.tile_size;
 
-        // Low constrast tile, Skip processing
-        if neighbor_max - neighbor_min < min_white_black_diff {
-            for y_px in 0..tile.len() {
-                let row = ((y * tile_buffers.tile_size) + y_px) * src.width();
-                let start_index = row + (x * tile_buffers.tile_size);
-                let end_index = start_index + tile[0].len();
+                    let mut neighbor_min = tile_buffers.tile_min[tile_index];
+                    let mut neighbor_max = tile_buffers.tile_max[tile_index];
 
-                for px in dst_data.iter_mut().take(end_index).skip(start_index) {
-                    *px = Pixel::Skip;
-                }
-            }
+                    // Low constrast tile, Skip processing
+                    if neighbor_max - neighbor_min < min_white_black_diff {
+                        for i in 0..pxs.len() {
+                            let px_index = start_tile_px_index + i;
+                            dst_data[px_index] = Pixel::Skip;
+                        }
 
-            continue;
-        }
+                        return;
+                    }
 
-        if x + 1 != tiles_x_len {
-            // Rightmost neighbor
-            tile_buffers.neighbor_mix_max(
-                &mut neighbor_min,
-                &mut neighbor_max,
-                (y, x + 1),
-                tiles_x_len,
-            );
+                    if tile_x + 1 != tiles_x_len {
+                        // Rightmost neighbor
+                        tile_buffers.neighbor_mix_max(
+                            &mut neighbor_min,
+                            &mut neighbor_max,
+                            (tile_y, tile_x + 1),
+                            tiles_x_len,
+                        );
 
-            if y != 0 {
-                // Top-right neighbor
-                tile_buffers.neighbor_mix_max(
-                    &mut neighbor_min,
-                    &mut neighbor_max,
-                    (y - 1, x + 1),
-                    tiles_x_len,
-                );
-            }
+                        if tile_y != 0 {
+                            // Top-right neighbor
+                            tile_buffers.neighbor_mix_max(
+                                &mut neighbor_min,
+                                &mut neighbor_max,
+                                (tile_y - 1, tile_x + 1),
+                                tiles_x_len,
+                            );
+                        }
 
-            if y + 1 != tiles_y_len {
-                // Bottom-right corner neighbor
-                tile_buffers.neighbor_mix_max(
-                    &mut neighbor_min,
-                    &mut neighbor_max,
-                    (y + 1, x + 1),
-                    tiles_x_len,
-                );
-            }
-        }
+                        if tile_y + 1 != tiles_y_len {
+                            // Bottom-right corner neighbor
+                            tile_buffers.neighbor_mix_max(
+                                &mut neighbor_min,
+                                &mut neighbor_max,
+                                (tile_y + 1, tile_x + 1),
+                                tiles_x_len,
+                            );
+                        }
+                    }
 
-        if x != 0 {
-            // Leftmost neighbor
-            tile_buffers.neighbor_mix_max(
-                &mut neighbor_min,
-                &mut neighbor_max,
-                (y, x - 1),
-                tiles_x_len,
-            );
+                    if tile_x != 0 {
+                        // Leftmost neighbor
+                        tile_buffers.neighbor_mix_max(
+                            &mut neighbor_min,
+                            &mut neighbor_max,
+                            (tile_y, tile_x - 1),
+                            tiles_x_len,
+                        );
 
-            if y != 0 {
-                // Top-left neighbor
-                tile_buffers.neighbor_mix_max(
-                    &mut neighbor_min,
-                    &mut neighbor_max,
-                    (y - 1, x - 1),
-                    tiles_x_len,
-                );
-            }
+                        if tile_y != 0 {
+                            // Top-left neighbor
+                            tile_buffers.neighbor_mix_max(
+                                &mut neighbor_min,
+                                &mut neighbor_max,
+                                (tile_y - 1, tile_x - 1),
+                                tiles_x_len,
+                            );
+                        }
 
-            if x != 0 && y + 1 != tiles_y_len {
-                // Bottom-left corner neighbor
-                tile_buffers.neighbor_mix_max(
-                    &mut neighbor_min,
-                    &mut neighbor_max,
-                    (y + 1, x - 1),
-                    tiles_x_len,
-                );
-            }
-        }
+                        if tile_x != 0 && tile_y + 1 != tiles_y_len {
+                            // Bottom-left corner neighbor
+                            tile_buffers.neighbor_mix_max(
+                                &mut neighbor_min,
+                                &mut neighbor_max,
+                                (tile_y + 1, tile_x - 1),
+                                tiles_x_len,
+                            );
+                        }
+                    }
 
-        if y + 1 != tiles_y_len {
-            // Bottom-most neighbor
-            tile_buffers.neighbor_mix_max(
-                &mut neighbor_min,
-                &mut neighbor_max,
-                (y + 1, x),
-                tiles_x_len,
-            );
-        }
+                    if tile_y + 1 != tiles_y_len {
+                        // Bottom-most neighbor
+                        tile_buffers.neighbor_mix_max(
+                            &mut neighbor_min,
+                            &mut neighbor_max,
+                            (tile_y + 1, tile_x),
+                            tiles_x_len,
+                        );
+                    }
 
-        if y != 0 {
-            // Uppermost neighbor exists
-            tile_buffers.neighbor_mix_max(
-                &mut neighbor_min,
-                &mut neighbor_max,
-                (y - 1, x),
-                tiles_x_len,
-            );
-        }
+                    if tile_y != 0 {
+                        // Uppermost neighbor exists
+                        tile_buffers.neighbor_mix_max(
+                            &mut neighbor_min,
+                            &mut neighbor_max,
+                            (tile_y - 1, tile_x),
+                            tiles_x_len,
+                        );
+                    }
 
-        let thresh = neighbor_min + (neighbor_max - neighbor_min) / 2;
+                    let thresh = neighbor_min + (neighbor_max - neighbor_min) / 2;
 
-        for (y_px, row) in tile.iter().enumerate() {
-            let row_index =
-                ((y * tile_buffers.tile_size) + y_px) * src.width() + x * tile_buffers.tile_size;
-
-            for (x_px, px) in (row as &[u8]).iter().enumerate() {
-                dst_data[row_index + x_px] = if px > &thresh {
-                    Pixel::White
-                } else {
-                    Pixel::Black
-                };
-            }
-        }
-    }
+                    pxs.iter().enumerate().for_each(|(i, px)| {
+                        let px_index = start_tile_px_index + i;
+                        dst_data[px_index] = if px > &thresh {
+                            Pixel::White
+                        } else {
+                            Pixel::Black
+                        };
+                    });
+                });
+        });
 
     Ok(())
 }
