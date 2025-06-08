@@ -128,6 +128,9 @@ impl StreamCapture {
 
     /// Grabs the last captured image frame.
     ///
+    /// NOTE: the image is grabbed as readable buffer, so you must be careful when modifying the
+    /// image data as would cause undefined behavior.
+    ///
     /// # Returns
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
