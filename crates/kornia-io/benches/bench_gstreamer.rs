@@ -1,8 +1,6 @@
-use criterion::{black_box, Criterion};
+use criterion::Criterion;
 use reqwest::blocking::get;
-use std::io::copy;
-use std::path::PathBuf;
-use std::{fs::File, time::Duration};
+use std::{fs::File, hint::black_box, io::copy, path::PathBuf, time::Duration};
 use tempfile::{tempdir, TempDir};
 
 const FILE_NAME: &str = "video.mp4";
