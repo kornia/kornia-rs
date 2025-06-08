@@ -12,6 +12,7 @@ version.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
+features = ["gstreamer/v1_28"]
 rustc-args = ["--cfg", "docsrs"]
 rustdoc-args = ["--cfg", "docsrs"]
 
