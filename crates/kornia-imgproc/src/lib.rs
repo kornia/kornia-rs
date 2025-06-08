@@ -56,6 +56,3 @@ pub mod warp;
 
 /// Pyramid operations
 pub mod pyramid;
-
-/// image iteration utilities module.
-pub mod iter;

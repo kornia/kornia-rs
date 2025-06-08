@@ -1,6 +1,6 @@
+use crate::iter::TileIterator;
 use crate::{errors::AprilTagError, utils::PixelTrait};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
-use kornia_imgproc::iter::TileIterator;
 use std::ops::{Add, Div, Sub};
 
 /// Stores the minimum and maximum pixel values for each tile for [adaptive_threshold]
