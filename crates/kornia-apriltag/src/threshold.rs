@@ -7,9 +7,10 @@ use std::ops::{Add, Div, Sub};
 pub struct TileBuffers<T> {
     tile_min: Vec<T>,
     tile_max: Vec<T>,
+    tile_size: usize,
 }
 
-impl<T: PixelTrait + Copy> TileBuffers<T> {
+impl<T: PixelTrait + PartialOrd + Copy> TileBuffers<T> {
     /// Creates a new `TileBuffers` with capacity based on the image size and tile size.
     ///
     /// # Parameters
@@ -28,6 +29,43 @@ impl<T: PixelTrait + Copy> TileBuffers<T> {
         Self {
             tile_min: vec![T::BLACK; num_tiles],
             tile_max: vec![T::BLACK; num_tiles],
+            tile_size,
+        }
+    }
+
+    /// Updates the provided `neighbor_min` and `neighbor_max` values with the minimum and maximum
+    /// values from the specified neighboring tile.
+    ///
+    /// # Parameters
+    ///
+    /// - `neighbor_min`: Mutable reference to the current minimum value among neighbors.
+    /// - `neighbor_max`: Mutable reference to the current maximum value among neighbors.
+    /// - `neighbor_tile`: Tuple `(y, x)` specifying the coordinates of the neighboring tile.
+    /// - `tiles_x_len`: The number of tiles along the x-axis (width) of the tile grid.
+    ///
+    /// This function compares the min and max values of the specified neighbor tile with the current
+    /// `neighbor_min` and `neighbor_max`, updating them if the neighbor's values are more extreme.
+    ///
+    /// # Safety
+    ///
+    /// This function assumes that `neighbor_tile` is a valid tile coordinate and that the computed
+    /// `neighbor_index` is within bounds of the `tile_min` and `tile_max` vectors. The caller must
+    /// ensure that the provided indices are valid, otherwise this may panic or cause undefined behavior.
+    fn neighbor_mix_max(
+        &self,
+        neighbor_min: &mut T,
+        neighbor_max: &mut T,
+        neighbor_tile: (usize, usize), // (y, x)
+        tiles_x_len: usize,            // (y, x)
+    ) {
+        let neighbor_index = neighbor_tile.0 * tiles_x_len + neighbor_tile.1;
+
+        if self.tile_min[neighbor_index] < *neighbor_min {
+            *neighbor_min = self.tile_min[neighbor_index]
+        }
+
+        if self.tile_max[neighbor_index] > *neighbor_max {
+            *neighbor_max = self.tile_max[neighbor_index];
         }
     }
 }
@@ -92,7 +130,7 @@ impl<T: PixelTrait + Copy> TileBuffers<T> {
 /// let mut dst = Image::from_size_val(src.size(), 0u8, CpuAllocator).unwrap();
 ///
 /// let mut tile_buffers = TileBuffers::new(src.size(), 2);
-/// adaptive_threshold(&src, &mut dst, &mut tile_buffers, 2, 20).unwrap();
+/// adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20).unwrap();
 /// assert_eq!(dst.as_slice(), &[0, 0, 0, 255, 255, 255]);
 /// ```
 // TODO: Add support for parallelism
@@ -110,7 +148,6 @@ pub fn adaptive_threshold<
     src: &Image<T, 1, A1>,
     dst: &mut Image<T, 1, A2>,
     tile_buffers: &mut TileBuffers<T>,
-    tile_size: usize,
     min_white_black_diff: T,
 ) -> Result<(), AprilTagError> {
     if src.size() != dst.size() {
@@ -119,7 +156,7 @@ pub fn adaptive_threshold<
         );
     }
 
-    let tile_iterator = TileIterator::from_image(src, tile_size);
+    let tile_iterator = TileIterator::from_image(src, tile_buffers.tile_size);
     let tiles_x_len = tile_iterator.tiles_x_len();
     let tiles_y_len = tile_iterator.tiles_y_len();
 
@@ -157,7 +194,7 @@ pub fn adaptive_threshold<
     }
 
     // Binarize the image
-    for ((y, x), tile) in TileIterator::from_image(src, tile_size).tile_enumerator() {
+    for ((y, x), tile) in TileIterator::from_image(src, tile_buffers.tile_size).tile_enumerator() {
         let tile_index = (y * tiles_x_len) + x;
 
         let mut neighbor_min = tile_buffers.tile_min[tile_index];
@@ -166,8 +203,8 @@ pub fn adaptive_threshold<
         // Low constrast tile, Skip processing
         if neighbor_max - neighbor_min < min_white_black_diff {
             for y_px in 0..tile.len() {
-                let row = ((y * tile_size) + y_px) * src.width();
-                let start_index = row + (x * tile_size);
+                let row = ((y * tile_buffers.tile_size) + y_px) * src.width();
+                let start_index = row + (x * tile_buffers.tile_size);
                 let end_index = start_index + tile[0].len();
 
                 for px in dst_data.iter_mut().take(end_index).skip(start_index) {
@@ -178,53 +215,91 @@ pub fn adaptive_threshold<
             continue;
         }
 
-        macro_rules! neighbor_min_max {
-            ($condition:expr, $index:expr) => {
-                if $condition {
-                    let tile_index = $index;
+        if x + 1 != tiles_x_len {
+            // Rightmost neighbor
+            tile_buffers.neighbor_mix_max(
+                &mut neighbor_min,
+                &mut neighbor_max,
+                (y, x + 1),
+                tiles_x_len,
+            );
 
-                    if tile_buffers.tile_min[tile_index] < neighbor_min {
-                        neighbor_min = tile_buffers.tile_min[tile_index]
-                    }
+            if y != 0 {
+                // Top-right neighbor
+                tile_buffers.neighbor_mix_max(
+                    &mut neighbor_min,
+                    &mut neighbor_max,
+                    (y - 1, x + 1),
+                    tiles_x_len,
+                );
+            }
 
-                    if tile_buffers.tile_max[tile_index] > neighbor_max {
-                        neighbor_max = tile_buffers.tile_max[tile_index];
-                    }
-                }
-            };
+            if y + 1 != tiles_y_len {
+                // Bottom-right corner neighbor
+                tile_buffers.neighbor_mix_max(
+                    &mut neighbor_min,
+                    &mut neighbor_max,
+                    (y + 1, x + 1),
+                    tiles_x_len,
+                );
+            }
         }
 
-        // Rightmost neighbor
-        neighbor_min_max!(x + 1 != tiles_x_len, tile_index + 1);
+        if x != 0 {
+            // Leftmost neighbor
+            tile_buffers.neighbor_mix_max(
+                &mut neighbor_min,
+                &mut neighbor_max,
+                (y, x - 1),
+                tiles_x_len,
+            );
 
-        // Leftmost neighbor
-        neighbor_min_max!(x != 0, tile_index - 1);
+            if y != 0 {
+                // Top-left neighbor
+                tile_buffers.neighbor_mix_max(
+                    &mut neighbor_min,
+                    &mut neighbor_max,
+                    (y - 1, x - 1),
+                    tiles_x_len,
+                );
+            }
 
-        // Bottom-most neighbor
-        neighbor_min_max!(y + 1 != tiles_y_len, tile_index + tiles_x_len);
+            if x != 0 && y + 1 != tiles_y_len {
+                // Bottom-left corner neighbor
+                tile_buffers.neighbor_mix_max(
+                    &mut neighbor_min,
+                    &mut neighbor_max,
+                    (y + 1, x - 1),
+                    tiles_x_len,
+                );
+            }
+        }
 
-        // Uppermost neighbor exists
-        neighbor_min_max!(y != 0, tile_index - tiles_x_len);
+        if y + 1 != tiles_y_len {
+            // Bottom-most neighbor
+            tile_buffers.neighbor_mix_max(
+                &mut neighbor_min,
+                &mut neighbor_max,
+                (y + 1, x),
+                tiles_x_len,
+            );
+        }
 
-        // Top-right neighbor
-        neighbor_min_max!(x + 1 != tiles_x_len && y != 0, tile_index - tiles_x_len + 1);
-
-        // Top-left neighbor
-        neighbor_min_max!(x != 0 && y != 0, tile_index - tiles_x_len - 1);
-
-        // Bottom-right corner neighbor
-        neighbor_min_max!(
-            x + 1 != tiles_x_len && y + 1 != tiles_y_len,
-            tile_index + tiles_x_len + 1
-        );
-
-        // Bottom-left corner neighbor
-        neighbor_min_max!(x != 0 && y + 1 != tiles_y_len, tile_index + tiles_x_len - 1);
+        if y != 0 {
+            // Uppermost neighbor exists
+            tile_buffers.neighbor_mix_max(
+                &mut neighbor_min,
+                &mut neighbor_max,
+                (y - 1, x),
+                tiles_x_len,
+            );
+        }
 
         let thresh = neighbor_min + (neighbor_max - neighbor_min) / T::from(2u8);
 
         for (y_px, row) in tile.iter().enumerate() {
-            let row_index = ((y * tile_size) + y_px) * src.width() + x * tile_size;
+            let row_index =
+                ((y * tile_buffers.tile_size) + y_px) * src.width() + x * tile_buffers.tile_size;
 
             for (x_px, px) in (row as &[T]).iter().enumerate() {
                 dst_data[row_index + x_px] = if px > &thresh { T::WHITE } else { T::BLACK };
@@ -239,6 +314,26 @@ pub fn adaptive_threshold<
 mod tests {
     use super::*;
     use kornia_image::{allocator::CpuAllocator, ImageSize};
+
+    #[test]
+    fn test_neighbor_min_max() {
+        let tile_buffers = TileBuffers {
+            tile_min: vec![10, 20, 30, 40],
+            tile_max: vec![50, 60, 70, 80],
+            tile_size: 2,
+        };
+
+        let mut neighbor_min = 25;
+        let mut neighbor_max = 65;
+
+        tile_buffers.neighbor_mix_max(&mut neighbor_min, &mut neighbor_max, (0, 1), 2);
+        assert_eq!(neighbor_min, 20);
+        assert_eq!(neighbor_max, 65);
+
+        tile_buffers.neighbor_mix_max(&mut neighbor_min, &mut neighbor_max, (1, 0), 2);
+        assert_eq!(neighbor_min, 20);
+        assert_eq!(neighbor_max, 70);
+    }
 
     #[test]
     fn test_adaptive_threshold_basic() {
@@ -261,7 +356,7 @@ mod tests {
         let mut dst = Image::from_size_val(src.size(), 0u8, CpuAllocator).unwrap();
 
         let mut tile_buffers = TileBuffers::new(src.size(), 2);
-        adaptive_threshold(&src, &mut dst, &mut tile_buffers, 2, 20).unwrap();
+        adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20).unwrap();
 
         #[rustfmt::skip]
         let expected = vec![
@@ -289,7 +384,7 @@ mod tests {
         let mut dst = Image::from_size_val(src.size(), 0u8, CpuAllocator).unwrap();
 
         let mut tile_buffers = TileBuffers::new(src.size(), 2);
-        adaptive_threshold(&src, &mut dst, &mut tile_buffers, 2, 20).unwrap();
+        adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20).unwrap();
         assert_eq!(dst.as_slice(), &[u8::SKIP_PROCESSING; 16]);
     }
 
@@ -325,6 +420,6 @@ mod tests {
             },
             2,
         );
-        adaptive_threshold(&src, &mut dst, &mut tile_buffers, 2, 20).unwrap();
+        adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20).unwrap();
     }
 }
