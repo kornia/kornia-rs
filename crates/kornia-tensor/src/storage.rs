@@ -15,23 +15,6 @@ pub struct TensorStorage<T, A: TensorAllocator> {
 }
 
 impl<T, A: TensorAllocator> TensorStorage<T, A> {
-    /// Creates a new TensorStorage
-    ///
-    /// # NOTE
-    /// You should not create the `TensorStorage` directly and should use [`Tensor`](super::Tensor)
-    /// instead.
-    ///
-    /// Only use this, if you know what you are doing.
-    pub unsafe fn new(ptr: *const T, len: usize, layout: Layout, alloc: A) -> Self {
-        let ptr = NonNull::new_unchecked(ptr as _);
-        Self {
-            ptr,
-            len,
-            layout,
-            alloc,
-        }
-    }
-
     /// Returns the pointer to the tensor memory.
     #[inline]
     pub fn as_ptr(&self) -> *const T {

@@ -50,6 +50,6 @@ harness = false
 required-features = ["turbojpeg"]
 
 [[bench]]
-name = "gstreamer"
+name = "bench_gstreamer"
 harness = false
 required-features = ["gstreamer"]

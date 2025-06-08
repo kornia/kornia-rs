@@ -33,7 +33,7 @@ pub struct GstAllocator(gstreamer::Buffer);
 
 impl Default for GstAllocator {
     fn default() -> Self {
-        GstAllocator(gstreamer::Buffer::default())
+        Self(gstreamer::Buffer::new())
     }
 }
 

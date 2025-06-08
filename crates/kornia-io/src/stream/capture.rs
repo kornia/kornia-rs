@@ -2,12 +2,8 @@ use super::GstAllocator;
 use crate::stream::error::StreamCaptureError;
 use circular_buffer::CircularBuffer;
 use gstreamer::prelude::*;
-use kornia_image::Image;
-use kornia_tensor::{storage::TensorStorage, tensor::get_strides_from_shape, Tensor};
-use std::{
-    alloc::Layout,
-    sync::{Arc, Mutex},
-};
+use kornia_image::{Image, ImageSize};
+use std::sync::{Arc, Mutex};
 
 // utility struct to store the frame buffer
 struct FrameBuffer {
@@ -141,51 +137,43 @@ impl StreamCapture {
             .circular_buffer
             .lock()
             .map_err(|_| StreamCaptureError::MutexPoisonError)?;
-        if let Some(mut frame_buffer) = circular_buffer.pop_front() {
-            let width = frame_buffer.width;
-            let height = frame_buffer.height;
 
-            let mut buffer_map = frame_buffer
-                .buffer
-                .make_mut()
-                .map_writable()
-                .map_err(|_| StreamCaptureError::GetBufferError)?;
+        let Some(frame_buffer) = circular_buffer.pop_front() else {
+            return Ok(None);
+        };
 
-            let frame_data_slice = buffer_map.as_mut_slice();
-            let frame_data_len = frame_data_slice.len();
-            let frame_data_ptr = frame_data_slice.as_mut_ptr();
+        // unpack the frame buffer
+        let width = frame_buffer.width;
+        let height = frame_buffer.height;
+        let buffer = frame_buffer.buffer;
 
-            let layout = unsafe { Layout::array::<u8>(frame_data_slice.len()).unwrap_unchecked() };
+        let mapped_buffer = buffer
+            .into_mapped_buffer_readable()
+            .map_err(|_| StreamCaptureError::GetBufferError)?;
 
-            // buffer_map is the reference to buffer, dropping it allows the ownership of buffer to
-            // `tensor_storage`. Dropping this doesn't make the `frame_data_ptr` become dangling as the
-            // pointer will be valid until the `frame_buffer.buffer` is not dropped.
-            drop(buffer_map);
+        let data_ptr = mapped_buffer.as_ptr();
+        let data_len = mapped_buffer.len();
 
-            let tensor_storage = unsafe {
-                TensorStorage::new(
-                    frame_data_ptr,
-                    frame_data_len,
-                    layout,
-                    // We are using custom `GstAllocator` and storing `gstreamer::Buffer`, as the buffer
-                    // is reference counted storage maintained by gstreamer and when it is dropped the
-                    // `frame_data_ptr` becomes dangling. To avoid this, we are keeping the `Buffer` with
-                    // `Image`.
-                    GstAllocator(frame_buffer.buffer),
-                )
-            };
+        // We are using custom `GstAllocator` and storing `gstreamer::MappedBuffer`, as the buffer
+        // is reference counted storage maintained by gstreamer and when it is dropped the
+        // `data_ptr` becomes dangling. To avoid this, we are keeping the `MappedBuffer` with
+        // `Image`.
+        let alloc = GstAllocator(mapped_buffer.into_buffer());
 
-            let shape = [height as usize, width as usize, 3];
-            let strides = get_strides_from_shape(shape);
-            let tensor = Tensor {
-                shape,
-                strides,
-                storage: tensor_storage,
-            };
+        let image = unsafe {
+            Image::from_raw_parts(
+                ImageSize {
+                    width: width as usize,
+                    height: height as usize,
+                },
+                data_ptr,
+                data_len,
+                alloc,
+            )
+            .map_err(StreamCaptureError::ImageError)
+        }?;
 
-            return Ok(Some(Image(tensor)));
-        }
-        Ok(None)
+        Ok(Some(image))
     }
 
     /// Closes the stream capture pipeline.
@@ -268,7 +256,7 @@ mod tests {
     const VIDEO_LINK: &str =
         "https://github.com/kornia/tutorials/raw/refs/heads/master/data/sharpening.mp4";
 
-    fn download_video<'a>() -> (PathBuf, TempDir) {
+    fn download_video() -> (PathBuf, TempDir) {
         let response = get(VIDEO_LINK).expect("Failed to download video");
         let temp_dir = tempdir().expect("Failed to create temp directory");
         let temp_file_path = temp_dir.path().join(FILE_NAME);

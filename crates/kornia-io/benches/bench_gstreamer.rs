@@ -9,7 +9,7 @@ const FILE_NAME: &str = "video.mp4";
 const VIDEO_LINK: &str =
     "https://github.com/kornia/tutorials/raw/refs/heads/master/data/sharpening.mp4";
 
-fn download_video<'a>() -> (PathBuf, TempDir) {
+fn download_video() -> (PathBuf, TempDir) {
     let response = get(VIDEO_LINK).expect("Failed to download video");
     let temp_dir = tempdir().expect("Failed to create temp directory");
     let temp_file_path = temp_dir.path().join(FILE_NAME);

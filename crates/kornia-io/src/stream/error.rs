@@ -69,6 +69,10 @@ pub enum StreamCaptureError {
     /// An error occurred when the allocator is not found.
     #[error("Could not lock the mutex")]
     MutexPoisonError,
+
+    /// An error occurred when the image is not valid.
+    #[error(transparent)]
+    ImageError(#[from] kornia_image::ImageError),
 }
 
 /// Error type for video reader
