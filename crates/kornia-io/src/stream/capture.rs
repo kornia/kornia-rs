@@ -83,13 +83,12 @@ impl StreamCapture {
                         Self::extract_frame_buffer(sink)
                             .map_err(|_| gstreamer::FlowError::Eos)
                             .and_then(|(frame_buffer, fps_fraction)| {
-                                let mut guard = circular_buffer
+                                circular_buffer
                                     .lock()
-                                    .map_err(|_| gstreamer::FlowError::Error)?;
-                                guard.push_back(frame_buffer);
-                                let mut guard =
-                                    fps.lock().map_err(|_| gstreamer::FlowError::Error)?;
-                                *guard = fps_fraction;
+                                    .map_err(|_| gstreamer::FlowError::Error)?
+                                    .push_back(frame_buffer);
+                                *fps.lock().map_err(|_| gstreamer::FlowError::Error)? =
+                                    fps_fraction;
                                 Ok(gstreamer::FlowSuccess::Ok)
                             })
                     }
