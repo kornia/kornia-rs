@@ -1,35 +1,29 @@
-/// Trait representing a pixel value
-pub trait PixelTrait {
-    /// The black pixel value.
-    const BLACK: Self;
-    /// The white pixel value.
-    const WHITE: Self;
-    /// The pixel value used to indicate skipping processing.
-    const SKIP_PROCESSING: Self;
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
+#[repr(u8)]
+/// Represents a pixel that can be white, black, or skipped.
+pub enum Pixel {
+    /// A white pixel.
+    White = 255,
+    /// A black pixel.
+    Black = 0,
+    /// A pixel to be skipped.
+    #[default]
+    Skip = 127,
 }
 
-macro_rules! impl_pixel_trait {
-    ($($t:ty),*) => {
-        $(
-            impl PixelTrait for $t {
-                const BLACK: Self = <$t>::MIN;
-                const WHITE: Self = <$t>::MAX;
-                const SKIP_PROCESSING: Self = 127;
-            }
-        )*
-    };
+impl Pixel {
+    /// Returns the numeric value of the pixel.
+    pub fn value(&self) -> u8 {
+        match self {
+            Pixel::White => 255,
+            Pixel::Black => 0,
+            Pixel::Skip => 127,
+        }
+    }
 }
 
-impl_pixel_trait!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize);
-
-impl PixelTrait for f32 {
-    const BLACK: Self = 0.;
-    const WHITE: Self = 1.;
-    const SKIP_PROCESSING: Self = 0.5;
-}
-
-impl PixelTrait for f64 {
-    const BLACK: Self = 0.;
-    const WHITE: Self = 1.;
-    const SKIP_PROCESSING: Self = 0.5;
+impl PartialEq<u8> for Pixel {
+    fn eq(&self, other: &u8) -> bool {
+        self.value() == *other
+    }
 }

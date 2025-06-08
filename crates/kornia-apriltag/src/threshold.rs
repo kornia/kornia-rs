@@ -1,7 +1,7 @@
+use crate::errors::AprilTagError;
 use crate::iter::TileIterator;
-use crate::{errors::AprilTagError, utils::PixelTrait};
+use crate::utils::Pixel;
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
-use std::ops::{Add, Div, Sub};
 
 /// Stores the minimum and maximum pixel values for each tile for [adaptive_threshold]
 pub struct TileBuffers<T> {
@@ -10,7 +10,7 @@ pub struct TileBuffers<T> {
     tile_size: usize,
 }
 
-impl<T: PixelTrait + PartialOrd + Copy> TileBuffers<T> {
+impl<T: Default + PartialOrd + Copy> TileBuffers<T> {
     /// Creates a new `TileBuffers` with capacity based on the image size and tile size.
     ///
     /// # Parameters
@@ -27,8 +27,8 @@ impl<T: PixelTrait + PartialOrd + Copy> TileBuffers<T> {
         let num_tiles = tiles_x_len * tiles_y_len;
 
         Self {
-            tile_min: vec![T::BLACK; num_tiles],
-            tile_max: vec![T::BLACK; num_tiles],
+            tile_min: vec![T::default(); num_tiles],
+            tile_max: vec![T::default(); num_tiles],
             tile_size,
         }
     }
@@ -82,7 +82,6 @@ impl<T: PixelTrait + PartialOrd + Copy> TileBuffers<T> {
 /// - `dst`: The destination image where the binarized result will be stored. Must have the same size as `src`.
 /// - `tile_buffers`: A mutable reference to a [`TileBuffers`] struct used to store the minimum and maximum pixel values for
 ///   each tile. This buffer is filled during processing and reused across calls to avoid repeated allocations.
-/// - `tile_size`: The size of the tiles used for local thresholding. Each tile is a square of `tile_size x tile_size` pixels.
 /// - `min_white_black_diff`: The minimum difference between the maximum and minimum pixel values in a tile
 ///   for it to be considered for thresholding. Tiles with lower contrast are skipped.
 ///
@@ -97,26 +96,18 @@ impl<T: PixelTrait + PartialOrd + Copy> TileBuffers<T> {
 /// 2. For each tile:
 ///    - The minimum (`local_min`) and maximum (`local_max`) pixel values are computed.
 ///    - If the difference between `local_max` and `local_min` is less than `min_white_black_diff`,
-///      the tile is skipped, and its pixels are marked as [PixelTrait::SKIP_PROCESSING].
+///      the tile is skipped, and its pixels are marked as [Pixel::Skip].
 ///    - Otherwise, the threshold for the tile is computed as:
 ///      `threshold = local_min + (local_max - local_min) / 2`.
 ///    - Pixels in the tile are binarized based on whether they are above or below the threshold.
 /// 3. Neighboring tiles are considered to refine the threshold for each tile, ensuring smooth transitions.
-///
-/// # Recommended Values for `min_white_black_diff`
-///
-/// | Image Type | `min_white_black_diff` |
-/// |------------|------------------------|
-/// | 8-bit      | 10-20                  |
-/// | 16-bit     | 500-1000               |
-/// | 32-bit     | 100,000-1,000,000      |
-/// | float      | 0.05-0.1               |
 ///
 /// # Examples
 ///
 /// ```
 /// use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 /// use kornia_apriltag::threshold::{adaptive_threshold, TileBuffers};
+/// use kornia_apriltag::utils::Pixel;
 ///
 /// let src = Image::new(
 ///     ImageSize {
@@ -127,28 +118,18 @@ impl<T: PixelTrait + PartialOrd + Copy> TileBuffers<T> {
 ///     CpuAllocator,
 /// )
 /// .unwrap();
-/// let mut dst = Image::from_size_val(src.size(), 0u8, CpuAllocator).unwrap();
+/// let mut dst = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator).unwrap();
 ///
 /// let mut tile_buffers = TileBuffers::new(src.size(), 2);
 /// adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20).unwrap();
 /// assert_eq!(dst.as_slice(), &[0, 0, 0, 255, 255, 255]);
 /// ```
 // TODO: Add support for parallelism
-pub fn adaptive_threshold<
-    T: PixelTrait
-        + PartialOrd
-        + Copy
-        + Add<T, Output = T>
-        + Sub<T, Output = T>
-        + Div<T, Output = T>
-        + From<u8>,
-    A1: ImageAllocator,
-    A2: ImageAllocator,
->(
-    src: &Image<T, 1, A1>,
-    dst: &mut Image<T, 1, A2>,
-    tile_buffers: &mut TileBuffers<T>,
-    min_white_black_diff: T,
+pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, 1, A1>,
+    dst: &mut Image<Pixel, 1, A2>,
+    tile_buffers: &mut TileBuffers<u8>,
+    min_white_black_diff: u8,
 ) -> Result<(), AprilTagError> {
     if src.size() != dst.size() {
         return Err(
@@ -174,11 +155,11 @@ pub fn adaptive_threshold<
 
     // Calculate extrema (i.e. min & max grayscale value) of each tile
     for (i, tile) in tile_iterator.enumerate() {
-        let mut local_min = T::WHITE;
-        let mut local_max = T::BLACK;
+        let mut local_min = 255;
+        let mut local_max = 0;
 
         for row in tile {
-            for px in row as &[T] {
+            for px in row as &[u8] {
                 if px < &local_min {
                     local_min = *px;
                 }
@@ -208,7 +189,7 @@ pub fn adaptive_threshold<
                 let end_index = start_index + tile[0].len();
 
                 for px in dst_data.iter_mut().take(end_index).skip(start_index) {
-                    *px = T::SKIP_PROCESSING;
+                    *px = Pixel::Skip;
                 }
             }
 
@@ -295,14 +276,18 @@ pub fn adaptive_threshold<
             );
         }
 
-        let thresh = neighbor_min + (neighbor_max - neighbor_min) / T::from(2u8);
+        let thresh = neighbor_min + (neighbor_max - neighbor_min) / 2;
 
         for (y_px, row) in tile.iter().enumerate() {
             let row_index =
                 ((y * tile_buffers.tile_size) + y_px) * src.width() + x * tile_buffers.tile_size;
 
-            for (x_px, px) in (row as &[T]).iter().enumerate() {
-                dst_data[row_index + x_px] = if px > &thresh { T::WHITE } else { T::BLACK };
+            for (x_px, px) in (row as &[u8]).iter().enumerate() {
+                dst_data[row_index + x_px] = if px > &thresh {
+                    Pixel::White
+                } else {
+                    Pixel::Black
+                };
             }
         }
     }
@@ -353,7 +338,7 @@ mod tests {
             CpuAllocator,
         )
         .unwrap();
-        let mut dst = Image::from_size_val(src.size(), 0u8, CpuAllocator).unwrap();
+        let mut dst = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator).unwrap();
 
         let mut tile_buffers = TileBuffers::new(src.size(), 2);
         adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20).unwrap();
@@ -381,11 +366,11 @@ mod tests {
             CpuAllocator,
         )
         .unwrap();
-        let mut dst = Image::from_size_val(src.size(), 0u8, CpuAllocator).unwrap();
+        let mut dst = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator).unwrap();
 
         let mut tile_buffers = TileBuffers::new(src.size(), 2);
         adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20).unwrap();
-        assert_eq!(dst.as_slice(), &[u8::SKIP_PROCESSING; 16]);
+        assert_eq!(dst.as_slice(), &[Pixel::Skip; 16]);
     }
 
     #[test]
@@ -405,7 +390,7 @@ mod tests {
                 width: 4,
                 height: 4,
             },
-            0u8,
+            Pixel::default(),
             CpuAllocator,
         )
         .unwrap();
