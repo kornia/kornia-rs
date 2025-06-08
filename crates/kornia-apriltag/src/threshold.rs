@@ -389,9 +389,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(
-        expected = "called `Result::unwrap()` on an `Err` value: InvalidTileBufferSize(2, 4)"
-    )]
     fn invalid_buffer_size() {
         let src = Image::new(
             ImageSize {
@@ -420,6 +417,11 @@ mod tests {
             },
             2,
         );
-        adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20).unwrap();
+        let result = adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20);
+
+        assert!(matches!(
+            result,
+            Err(AprilTagError::InvalidTileBufferSize(2, 4))
+        ));
     }
 }
