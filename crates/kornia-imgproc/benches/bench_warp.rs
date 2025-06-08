@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_image::Image;
 use kornia_imgproc::{
@@ -37,10 +37,10 @@ fn bench_warp_affine(c: &mut Criterion) {
                 let (src, mut dst, m) = (i.0.clone(), i.1.clone(), i.2);
                 b.iter(|| {
                     warp_affine(
-                        black_box(&src),
-                        black_box(&mut dst),
-                        black_box(&m),
-                        black_box(InterpolationMode::Bilinear),
+                        std::hint::black_box(&src),
+                        std::hint::black_box(&mut dst),
+                        std::hint::black_box(&m),
+                        std::hint::black_box(InterpolationMode::Bilinear),
                     )
                 })
             },
@@ -74,10 +74,10 @@ fn bench_warp_perspective(c: &mut Criterion) {
                 let (src, mut dst, m) = (i.0.clone(), i.1.clone(), i.2);
                 b.iter(|| {
                     warp_perspective(
-                        black_box(&src),
-                        black_box(&mut dst),
-                        black_box(&m),
-                        black_box(InterpolationMode::Bilinear),
+                        std::hint::black_box(&src),
+                        std::hint::black_box(&mut dst),
+                        std::hint::black_box(&m),
+                        std::hint::black_box(InterpolationMode::Bilinear),
                     )
                 })
             },

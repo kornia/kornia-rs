@@ -1,7 +1,5 @@
-use super::allocator::ImageAllocator;
-use kornia_tensor::{CpuAllocator, Tensor, Tensor2, Tensor3};
-
-use crate::error::ImageError;
+use crate::{allocator::ImageAllocator, error::ImageError};
+use kornia_tensor::{Tensor, Tensor2, Tensor3};
 
 /// Image size in pixels
 ///
@@ -57,7 +55,7 @@ impl From<ImageSize> for [u32; 2] {
 /// Represents an image with pixel data.
 ///
 /// The image is represented as a 3D Tensor with shape (H, W, C), where H is the height of the image,
-pub struct Image<T, const C: usize, A: ImageAllocator + 'static = CpuAllocator>(pub Tensor3<T, A>);
+pub struct Image<T, const C: usize, A: ImageAllocator>(pub Tensor3<T, A>);
 
 /// helper to deference the inner tensor
 impl<T, const C: usize, A: ImageAllocator> std::ops::Deref for Image<T, C, A> {
@@ -100,7 +98,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// use kornia_image::{Image, ImageSize};
     /// use kornia_image::allocator::CpuAllocator;
     ///
-    /// let image = Image::<u8, 3>::new(
+    /// let image = Image::<u8, 3, _>::new(
     ///    ImageSize {
     ///       width: 10,
     ///      height: 20,
@@ -155,7 +153,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// use kornia_image::{Image, ImageSize};
     /// use kornia_image::allocator::CpuAllocator;
     ///
-    /// let image = Image::<u8, 3>::from_size_val(
+    /// let image = Image::<u8, 3, _>::from_size_val(
     ///   ImageSize {
     ///     width: 10,
     ///    height: 20,
@@ -314,7 +312,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// use kornia_image::{Image, ImageSize};
     /// use kornia_image::allocator::CpuAllocator;
     ///
-    /// let image = Image::<f32, 2>::from_size_val(
+    /// let image = Image::<f32, 2, _>::from_size_val(
     ///   ImageSize {
     ///    width: 10,
     ///   height: 20,
@@ -393,7 +391,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     ///
     /// let data = vec![0u8, 0, 255, 0, 0, 255];
     ///
-    /// let image_u8 = Image::<u8, 3>::new(
+    /// let image_u8 = Image::<u8, 3, _>::new(
     /// ImageSize {
     ///   height: 2,
     ///   width: 1,

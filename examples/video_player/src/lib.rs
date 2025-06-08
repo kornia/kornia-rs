@@ -1,5 +1,4 @@
-use eframe::egui::{self, Grid};
-use eframe::egui::{CentralPanel, TextEdit};
+use eframe::egui::{self, CentralPanel, Grid, TextEdit};
 use humanize_duration::{prelude::*, Truncate};
 use kornia::image::{Image, ImageSize};
 use kornia::imgproc::resize::resize_fast;

@@ -139,16 +139,10 @@ impl<T, A: TensorAllocator> Drop for TensorStorage<T, A> {
 impl<T, A> Clone for TensorStorage<T, A>
 where
     T: Clone,
-    A: TensorAllocator + 'static,
+    A: TensorAllocator,
 {
     fn clone(&self) -> Self {
-        let mut new_vec = Vec::<T>::with_capacity(self.len());
-
-        for i in self.as_slice() {
-            new_vec.push(i.clone());
-        }
-
-        Self::from_vec(new_vec, self.alloc.clone())
+        Self::from_vec(self.as_slice().to_vec(), self.alloc.clone())
     }
 }
 

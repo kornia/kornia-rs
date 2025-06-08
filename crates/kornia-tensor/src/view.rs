@@ -14,7 +14,7 @@ pub struct TensorView<'a, T, const N: usize, A: TensorAllocator> {
     pub strides: [usize; N],
 }
 
-impl<T, const N: usize, A: TensorAllocator + 'static> TensorView<'_, T, N, A> {
+impl<T, const N: usize, A: TensorAllocator> TensorView<'_, T, N, A> {
     /// Returns the data slice of the tensor.
     #[inline]
     pub fn as_slice(&self) -> &[T] {

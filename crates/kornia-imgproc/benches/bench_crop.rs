@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_image::{Image, ImageSize};
 use kornia_tensor::CpuAllocator;
@@ -55,10 +55,10 @@ fn bench_resize(c: &mut Criterion) {
                 let (src, mut dst) = (i.0.clone(), i.1.clone());
                 b.iter(|| {
                     kornia_imgproc::crop::crop_image(
-                        black_box(&src),
-                        black_box(&mut dst),
-                        black_box(0),
-                        black_box(0),
+                        std::hint::black_box(&src),
+                        std::hint::black_box(&mut dst),
+                        std::hint::black_box(0),
+                        std::hint::black_box(0),
                     )
                 })
             },
