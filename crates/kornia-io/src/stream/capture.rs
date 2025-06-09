@@ -156,10 +156,10 @@ impl StreamCapture {
         let data_ptr = mapped_buffer.as_ptr();
         let data_len = mapped_buffer.len();
 
-        // We are using custom `GstAllocator` and storing `gstreamer::MappedBuffer`, as the buffer
+        // We are using custom `GstAllocator` and storing `gstreamer::Buffer`, as the buffer
         // is reference counted storage maintained by gstreamer and when it is dropped the
-        // `data_ptr` becomes dangling. To avoid this, we are keeping the `MappedBuffer` with
-        // `Image`.
+        // `data_ptr` becomes dangling. To avoid this, we are keeping the `Buffer` within
+        // the `GstAllocator` tied to the `Image`.
         let alloc = GstAllocator(mapped_buffer.into_buffer());
 
         let image = unsafe {
