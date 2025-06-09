@@ -45,12 +45,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rec = rerun::RecordingStreamBuilder::new("Kornia Rtsp Stream Capture App").spawn()?;
 
     // create a stream capture object
-    let capture = RTSPCameraConfig::new();
-
     let mut capture = if let Some(url) = &args.rtsp_url {
-        capture.with_url(url).build()?
+        RTSPCameraConfig::new().with_url(url).build()?
     } else {
-        capture
+        RTSPCameraConfig::new()
             .with_settings(
                 &args.username.as_ref().ok_or("Username required")?,
                 &args.password.as_ref().ok_or("Password required")?,
