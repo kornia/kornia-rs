@@ -373,7 +373,6 @@ mod tests {
             let se2_exp = SE2::exp(upsilon, theta);
             let (log_upsilon, log_theta) = se2_exp.log();
 
-            // TODO: the precision is not good enough for the test
             assert_relative_eq!(log_upsilon.x, upsilon.x, epsilon = EPSILON);
             assert_relative_eq!(log_upsilon.y, upsilon.y, epsilon = EPSILON);
             assert_relative_eq!(log_theta, theta, epsilon = EPSILON);
