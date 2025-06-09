@@ -38,6 +38,7 @@ tempfile = { workspace = true }
 reqwest = "0.12"
 
 [features]
+default = []
 gstreamer = ["dep:gstreamer", "dep:gstreamer-app"]
 turbojpeg = ["dep:turbojpeg"]
 
