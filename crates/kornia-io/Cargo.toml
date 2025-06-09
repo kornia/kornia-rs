@@ -46,7 +46,7 @@ name = "bench_io"
 harness = false
 required-features = ["turbojpeg"]
 
-#[[bench]]
-#name = "bench_gstreamer"
-#harness = false
-#required-features = ["gstreamer"]
+[[bench]]
+name = "bench_gstreamer"
+harness = false
+required-features = ["gstreamer"]
