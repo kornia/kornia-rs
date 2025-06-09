@@ -368,14 +368,15 @@ mod tests {
     fn test_exp_log_roundtrip() {
         // Test multiple random values
         for _ in 0..10 {
-            let (upsilon, theta) = make_random_vec3();
-            let se2 = SE2::exp(upsilon, theta);
-            let (log_upsilon, log_theta) = se2.log();
+            let se2 = make_random_se2();
+            let (upsilon, theta) = se2.log();
+            let se2_exp = SE2::exp(upsilon, theta);
+            let (log_upsilon, log_theta) = se2_exp.log();
 
             // TODO: the precision is not good enough for the test
-            assert_relative_eq!(log_upsilon.x, upsilon.x, epsilon = 1e-2);
-            assert_relative_eq!(log_upsilon.y, upsilon.y, epsilon = 1e-2);
-            assert_relative_eq!(log_theta, theta, epsilon = 1e-2);
+            assert_relative_eq!(log_upsilon.x, upsilon.x, epsilon = EPSILON);
+            assert_relative_eq!(log_upsilon.y, upsilon.y, epsilon = EPSILON);
+            assert_relative_eq!(log_theta, theta, epsilon = EPSILON);
         }
 
         // Test specific values
