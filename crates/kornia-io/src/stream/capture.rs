@@ -1,7 +1,8 @@
+use super::GstAllocator;
 use crate::stream::error::StreamCaptureError;
 use circular_buffer::CircularBuffer;
 use gstreamer::prelude::*;
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use kornia_image::{Image, ImageSize};
 use std::sync::{Arc, Mutex};
 
 // utility struct to store the frame buffer
@@ -82,13 +83,12 @@ impl StreamCapture {
                         Self::extract_frame_buffer(sink)
                             .map_err(|_| gstreamer::FlowError::Eos)
                             .and_then(|(frame_buffer, fps_fraction)| {
-                                let mut guard = circular_buffer
+                                circular_buffer
                                     .lock()
-                                    .map_err(|_| gstreamer::FlowError::Error)?;
-                                guard.push_back(frame_buffer);
-                                let mut guard =
-                                    fps.lock().map_err(|_| gstreamer::FlowError::Error)?;
-                                *guard = fps_fraction;
+                                    .map_err(|_| gstreamer::FlowError::Error)?
+                                    .push_back(frame_buffer);
+                                *fps.lock().map_err(|_| gstreamer::FlowError::Error)? =
+                                    fps_fraction;
                                 Ok(gstreamer::FlowSuccess::Ok)
                             })
                     }
@@ -128,33 +128,54 @@ impl StreamCapture {
 
     /// Grabs the last captured image frame.
     ///
+    /// NOTE: the image is grabbed as readable buffer, so you must be careful when modifying the
+    /// image data as would cause undefined behavior.
+    ///
     /// # Returns
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
-    pub fn grab(&mut self) -> Result<Option<Image<u8, 3, CpuAllocator>>, StreamCaptureError> {
+    pub fn grab(&mut self) -> Result<Option<Image<u8, 3, GstAllocator>>, StreamCaptureError> {
         let mut circular_buffer = self
             .circular_buffer
             .lock()
             .map_err(|_| StreamCaptureError::MutexPoisonError)?;
-        if let Some(frame_buffer) = circular_buffer.pop_front() {
-            // TODO: solve the zero copy issue
-            // https://discourse.gstreamer.org/t/zero-copy-video-frames/3856/2
-            let buffer = frame_buffer
-                .buffer
-                .map_readable()
-                .map_err(|_| StreamCaptureError::GetBufferError)?;
-            let img = Image::<u8, 3, _>::new(
+
+        let Some(frame_buffer) = circular_buffer.pop_front() else {
+            return Ok(None);
+        };
+
+        // unpack the frame buffer
+        let width = frame_buffer.width;
+        let height = frame_buffer.height;
+        let buffer = frame_buffer.buffer;
+
+        let mapped_buffer = buffer
+            .into_mapped_buffer_readable()
+            .map_err(|_| StreamCaptureError::GetBufferError)?;
+
+        let data_ptr = mapped_buffer.as_ptr();
+        let data_len = mapped_buffer.len();
+
+        // We are using custom `GstAllocator` and storing `gstreamer::Buffer`, as the buffer
+        // is reference counted storage maintained by gstreamer and when it is dropped the
+        // `data_ptr` becomes dangling. To avoid this, we are keeping the `Buffer` within
+        // the `GstAllocator` tied to the `Image`.
+        let alloc = GstAllocator(mapped_buffer.into_buffer());
+
+        let image = unsafe {
+            Image::from_raw_parts(
                 ImageSize {
-                    width: frame_buffer.width as usize,
-                    height: frame_buffer.height as usize,
+                    width: width as usize,
+                    height: height as usize,
                 },
-                buffer.to_owned(),
-                CpuAllocator,
+                data_ptr,
+                data_len,
+                alloc,
             )
-            .map_err(|_| StreamCaptureError::CreateImageFrameError)?;
-            return Ok(Some(img));
-        }
-        Ok(None)
+            .map_err(StreamCaptureError::ImageError)
+        }?;
+
+        Ok(Some(image))
     }
 
     /// Closes the stream capture pipeline.
