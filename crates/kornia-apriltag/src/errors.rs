@@ -7,4 +7,7 @@ pub enum AprilTagError {
     /// The length of the TileBuffer was not as expected.
     #[error("Expected the length of TileBuffer to be {0} but found {1}")]
     InvalidTileBufferSize(usize, usize),
+    /// The minimum image size should be tile_size x tile_size
+    #[error("The minimum image size should be tile_size x tile_size")]
+    InvalidImageSize,
 }
