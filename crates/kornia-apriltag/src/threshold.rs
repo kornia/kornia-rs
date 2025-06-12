@@ -313,6 +313,7 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
 mod tests {
     use super::*;
     use kornia_image::{allocator::CpuAllocator, ImageSize};
+    use kornia_io::png::read_image_png_mono8;
 
     #[test]
     fn test_neighbor_min_max() {
@@ -385,6 +386,17 @@ mod tests {
         let mut tile_buffers = TileBuffers::new(src.size(), 2);
         adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20).unwrap();
         assert_eq!(dst.as_slice(), &[Pixel::Skip; 16]);
+    }
+
+    #[test]
+    fn test_adaptive_threshold_synthetic_image() {
+        let src = read_image_png_mono8("../../tests/data/apriltag.png").unwrap();
+        let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator).unwrap();
+
+        let mut tile_buffers = TileBuffers::new(src.size(), 4);
+        adaptive_threshold(&src, &mut bin, &mut tile_buffers, 20).unwrap();
+
+        assert_eq!(bin.as_slice(), src.as_slice())
     }
 
     #[test]
