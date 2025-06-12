@@ -203,16 +203,6 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
                     let mut neighbor_min = tile_buffers.tile_min[tile_index];
                     let mut neighbor_max = tile_buffers.tile_max[tile_index];
 
-                    // Low constrast tile, Skip processing
-                    if neighbor_max - neighbor_min < min_white_black_diff {
-                        for i in 0..pxs.len() {
-                            let px_index = start_tile_px_index + i;
-                            dst_data[px_index] = Pixel::Skip;
-                        }
-
-                        return;
-                    }
-
                     if tile_x + 1 != tiles_x_len {
                         // Rightmost neighbor
                         tile_buffers.neighbor_mix_max(
@@ -293,6 +283,16 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
                         );
                     }
 
+                    // Low constrast tile, Skip processing
+                    if neighbor_max - neighbor_min < min_white_black_diff {
+                        for i in 0..pxs.len() {
+                            let px_index = start_tile_px_index + i;
+                            dst_data[px_index] = Pixel::Skip;
+                        }
+
+                        return;
+                    }
+
                     let thresh = neighbor_min + (neighbor_max - neighbor_min) / 2;
 
                     pxs.iter().enumerate().for_each(|(i, px)| {
@@ -363,7 +363,7 @@ mod tests {
             255, 0,   0,   0,   255,
             255, 255, 0,   0,   0,
             255, 255, 255, 0,   0,
-            0,   255, 255, 255, 127
+            0,   255, 255, 255, 0
         ];
 
         assert_eq!(dst.as_slice(), expected.as_slice());
