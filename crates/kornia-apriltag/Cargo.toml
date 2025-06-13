@@ -15,8 +15,8 @@ version.workspace = true
 
 [dependencies]
 kornia-image = { workspace = true }
-thiserror = { workspace = true }
 kornia-imgproc = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 kornia-io = { workspace = true }

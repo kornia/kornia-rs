@@ -77,4 +77,30 @@ mod tests {
         assert_eq!(black, 0);
         assert_eq!(skip, 127);
     }
+
+    #[test]
+    fn test_find_total_tiles() {
+        let size = ImageSize {
+            width: 101,
+            height: 257,
+        };
+
+        let tiles = find_total_tiles(size, 4);
+        let expected = Point2d { x: 26, y: 65 };
+
+        assert_eq!(tiles, expected)
+    }
+
+    #[test]
+    fn test_find_full_tiles() {
+        let size = ImageSize {
+            width: 101,
+            height: 257,
+        };
+
+        let tiles = find_full_tiles(size, 4);
+        let expected = Point2d { x: 25, y: 64 };
+
+        assert_eq!(tiles, expected)
+    }
 }
