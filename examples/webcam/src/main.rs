@@ -6,6 +6,7 @@ use kornia::{
         fps_counter::FpsCounter,
         stream::{v4l as kornia_v4l, V4L2CameraConfig},
     },
+    tensor::CpuAllocator,
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
