@@ -1,19 +1,62 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 
+use crate::utils::Point2d;
+
+/// TODO
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TileIndex {
+    /// TODO
+    pub pos: Point2d,
+    /// TODO
+    pub index: usize,
+    /// TODO
+    pub full_index: usize,
+}
+
+/// TODO
+pub type ImageSlice<'a, T> = &'a [&'a [T]];
+
+/// TODO
+#[derive(Debug, Clone)]
+pub enum ImageTile<'a, T> {
+    /// TODO
+    FullTile(ImageSlice<'a, T>),
+    /// TODO
+    PartialTile(ImageSlice<'a, T>),
+}
+
+impl<'a, T> ImageTile<'a, T> {
+    /// TODO
+    pub fn inner(self) -> ImageSlice<'a, T> {
+        match self {
+            ImageTile::FullTile(im) => im,
+            ImageTile::PartialTile(im) => im,
+        }
+    }
+}
+
 /// An enumerator over tiles of an image, yielding the `(y, x)` tile indices and the tile data as slices.
 /// Each item is a tuple of `((tile_y, tile_x), tile)`, where tile is a slice of rows, and each row is a slice of pixel data.
-#[repr(transparent)]
-pub struct TileEnumerator<'a, T>(pub TileIterator<'a, T>);
+pub struct TileEnumerator<'a, T>(TileIterator<'a, T>);
 
 impl<'a, T> Iterator for TileEnumerator<'a, T> {
-    type Item = ((usize, usize), <TileIterator<'a, T> as Iterator>::Item);
+    type Item = (TileIndex, ImageTile<'a, T>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let current_y = self.0.next_tile_y_index;
-        let current_x = self.0.next_tile_x_index;
+        let pos = Point2d {
+            x: self.0.next_tile_x_index,
+            y: self.0.next_tile_y_index,
+        };
+
+        let index = self.0.next_index;
 
         if let Some(item) = self.0.next() {
-            return Some(((current_y, current_x), item));
+            let index = TileIndex {
+                pos,
+                index,
+                full_index: self.0.next_full_index - 1,
+            };
+            return Some((index, item));
         }
 
         None
@@ -45,6 +88,10 @@ pub struct TileIterator<'a, T> {
     next_tile_x_index: usize,
     /// Index of the next tile to yield vertically.
     next_tile_y_index: usize,
+    /// TODO
+    next_index: usize,
+    /// TODO
+    next_full_index: usize,
     /// Buffer holding references to the rows of the current tile.
     buffer: Vec<&'a [T]>,
 }
@@ -92,6 +139,8 @@ impl<'a, T> TileIterator<'a, T> {
             last_tile_y_px,
             next_tile_x_index: 0,
             next_tile_y_index: 0,
+            next_index: 0,
+            next_full_index: 0,
             buffer: Vec::with_capacity(tile_size),
         }
     }
@@ -125,7 +174,7 @@ impl<'a, T> TileIterator<'a, T> {
 }
 
 impl<'a, T> Iterator for TileIterator<'a, T> {
-    type Item = &'a [&'a [T]];
+    type Item = ImageTile<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // Stop iteration if we've processed all tiles
@@ -164,7 +213,18 @@ impl<'a, T> Iterator for TileIterator<'a, T> {
             self.next_tile_y_index += 1;
         }
 
-        Some(unsafe { std::slice::from_raw_parts(self.buffer.as_mut_ptr(), tile_y_px) })
+        self.next_index += 1;
+
+        let data = unsafe { std::slice::from_raw_parts(self.buffer.as_mut_ptr(), tile_y_px) };
+
+        let tile = if data.len() == self.tile_size && data[0].len() == self.tile_size {
+            self.next_full_index += 1;
+            ImageTile::FullTile(data)
+        } else {
+            ImageTile::PartialTile(data)
+        };
+
+        Some(tile)
     }
 }
 
@@ -190,7 +250,7 @@ mod tests {
         let mut counter = 0;
 
         for tile in tile_iter {
-            for tile_row in tile {
+            for tile_row in tile.inner() {
                 let tile_row = tile_row as &[u8];
                 for px in tile_row {
                     assert_eq!(*px, 127);

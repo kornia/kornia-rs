@@ -1,3 +1,49 @@
+use kornia_image::ImageSize;
+
+/// Calculates the total number of tiles needed to cover an image of the given size,
+/// including partial tiles at the edges.
+///
+/// # Arguments
+///
+/// * `size` - The size of the image.
+/// * `tile_size` - The size of each tile.
+///
+/// # Returns
+///
+/// A `Point2d` representing the number of tiles along the x and y axes.
+pub fn find_total_tiles(size: ImageSize, tile_size: usize) -> Point2d {
+    Point2d {
+        x: (size.width + tile_size - 1) / tile_size,
+        y: (size.height + tile_size - 1) / tile_size,
+    }
+}
+
+/// Calculates the number of full tiles that fit within an image of the given size.
+///
+/// # Arguments
+///
+/// * `size` - The size of the image.
+/// * `tile_size` - The size of each tile.
+///
+/// # Returns
+///
+/// A `Point2d` representing the number of full tiles along the x and y axes.
+pub fn find_full_tiles(size: ImageSize, tile_size: usize) -> Point2d {
+    Point2d {
+        x: size.width / tile_size,
+        y: size.height / tile_size,
+    }
+}
+
+/// Represents a point in 2D space.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Point2d {
+    /// The x-coordinate of the point.
+    pub x: usize,
+    /// The y-coordinate of the point.
+    pub y: usize,
+}
+
 #[derive(Default, Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
 /// Represents a pixel that can be white, black, or skipped.
@@ -11,19 +57,24 @@ pub enum Pixel {
     Skip = 127,
 }
 
-impl Pixel {
-    /// Returns the numeric value of the pixel.
-    pub fn value(&self) -> u8 {
-        match self {
-            Pixel::White => 255,
-            Pixel::Black => 0,
-            Pixel::Skip => 127,
-        }
+impl PartialEq<u8> for Pixel {
+    fn eq(&self, other: &u8) -> bool {
+        *self as u8 == *other
     }
 }
 
-impl PartialEq<u8> for Pixel {
-    fn eq(&self, other: &u8) -> bool {
-        self.value() == *other
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pixel_value() {
+        let white = Pixel::White;
+        let black = Pixel::Black;
+        let skip = Pixel::Skip;
+
+        assert_eq!(white, 255);
+        assert_eq!(black, 0);
+        assert_eq!(skip, 127);
     }
 }
