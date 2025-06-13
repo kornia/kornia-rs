@@ -108,13 +108,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         };
 
-        println!("img.buffer: {:?}", img.buffer.len());
-        println!("img.size: {:?}", img.size);
+        println!("img.buffer: {:?}", img.image.numel());
+        println!("img.size: {:?}", img.image.size());
         println!("img.fourcc: {:?}", img.fourcc);
         println!("img.timestamp: {:?}", img.timestamp);
         println!("img.sequence: {:?}", img.sequence);
 
-        kornia::io::jpeg::decode_image_jpeg_rgb8(img.buffer, &mut img_rgb8)?;
+        kornia::io::jpeg::decode_image_jpeg_rgb8(img.image.as_slice(), &mut img_rgb8)?;
 
         println!("img_rgb8.buffer: {:?}", &img_rgb8.as_slice()[..100]);
         println!("########################");
