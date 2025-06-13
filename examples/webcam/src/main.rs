@@ -1,9 +1,4 @@
 use argh::FromArgs;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-
 use kornia::{
     image::{ops, Image, ImageSize},
     imgproc,
@@ -11,6 +6,10 @@ use kornia::{
         fps_counter::FpsCounter,
         stream::{v4l as kornia_v4l, V4L2CameraConfig},
     },
+};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
 };
 
 #[derive(FromArgs)]
@@ -97,7 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //let mut gray = Image::from_size_val(new_size, 0f32)?;
     //let mut bin = Image::from_size_val(new_size, 0f32)?;
 
-    let mut img_rgb8 = Image::from_size_val(img_size, 0u8)?;
+    let mut img_rgb8 = Image::from_size_val(img_size, 0u8, CpuAllocator)?;
 
     // start grabbing frames from the camera
     while !cancel_token.load(Ordering::SeqCst) {

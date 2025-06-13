@@ -20,7 +20,7 @@ use kornia::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
-    let image: Image<u8, 3> = F::read_image_any_rgb8("tests/data/dog.jpeg")?;
+    let image: Image<u8, 3, _> = F::read_image_any_rgb8("tests/data/dog.jpeg")?;
 
     println!("Hello, world! 🦀");
     println!("Loaded Image size: {:?}", image.size());
@@ -84,19 +84,21 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-kornia = "v0.1.8"
+kornia = "0.1.9"
 ```
 
 Alternatively, you can use each sub-crate separately:
 
 ```toml
 [dependencies]
-kornia-tensor = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
-kornia-io = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
-kornia-image = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
-kornia-imgproc = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
-kornia-3d = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
-kornia-icp = { git = "https://github.com/kornia/kornia-rs", tag = "v0.1.8" }
+kornia-tensor = "0.1.9"
+kornia-tensor-ops = "0.1.9"
+kornia-io = "0.1.9"
+kornia-image = "0.1.9"
+kornia-imgproc = "0.1.9"
+kornia-icp = "0.1.9"
+kornia-linalg = "0.1.9"
+kornia-3d = "0.1.9"
 ```
 
 ### 🐍 Python
@@ -121,13 +123,13 @@ use kornia::io::functional as F;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
-    let image: Image<u8, 3> = F::read_image_any_rgb8("tests/data/dog.jpeg")?;
+    let image: Image<u8, 3, _> = F::read_image_any_rgb8("tests/data/dog.jpeg")?;
     let image_viz = image.clone();
 
-    let image_f32: Image<f32, 3> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
+    let image_f32: Image<f32, 3, _> = image.cast_and_scale::<f32>(1.0 / 255.0)?;
 
     // convert the image to grayscale
-    let mut gray = Image::<f32, 1>::from_size_val(image_f32.size(), 0.0)?;
+    let mut gray = Image::<f32, 1, _>::from_size_val(image_f32.size(), 0.0)?;
     imgproc::color::gray_from_rgb(&image_f32, &mut gray)?;
 
     // resize the image
@@ -136,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         height: 128,
     };
 
-    let mut gray_resized = Image::<f32, 1>::from_size_val(new_size, 0.0)?;
+    let mut gray_resized = Image::<f32, 1, _>::from_size_val(new_size, 0.0)?;
     imgproc::resize::resize_native(
         &gray, &mut gray_resized,
         imgproc::interpolation::InterpolationMode::Bilinear,
@@ -181,33 +183,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Load an image, that is converted directly to a numpy array to ease the integration with other libraries.
 
 ```python
-    import kornia_rs as K
-    import numpy as np
+import kornia_rs as K
+import numpy as np
 
-    # load an image with using libjpeg-turbo
-    img: np.ndarray = K.read_image_jpeg("dog.jpeg")
+# load an image with using libjpeg-turbo
+img: np.ndarray = K.read_image_jpeg("dog.jpeg")
 
-    # alternatively, load other formats
-    # img: np.ndarray = K.read_image_any("dog.png")
+# alternatively, load other formats
+# img: np.ndarray = K.read_image_any("dog.png")
 
-    assert img.shape == (195, 258, 3)
+assert img.shape == (195, 258, 3)
 
-    # convert to dlpack to import to torch
-    img_t = torch.from_dlpack(img)
-    assert img_t.shape == (195, 258, 3)
+# convert to dlpack to import to torch
+img_t = torch.from_dlpack(img)
+assert img_t.shape == (195, 258, 3)
 ```
 
 Write an image to disk
 
 ```python
-    import kornia_rs as K
-    import numpy as np
+import kornia_rs as K
+import numpy as np
 
-    # load an image with using libjpeg-turbo
-    img: np.ndarray = K.read_image_jpeg("dog.jpeg")
+# load an image with using libjpeg-turbo
+img: np.ndarray = K.read_image_jpeg("dog.jpeg")
 
-    # write the image to disk
-    K.write_image_jpeg("dog_copy.jpeg", img)
+# write the image to disk
+K.write_image_jpeg("dog_copy.jpeg", img)
 ```
 
 Encode or decode image streams using the `turbojpeg` backend

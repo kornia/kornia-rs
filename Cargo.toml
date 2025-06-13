@@ -24,32 +24,35 @@ license-file = "LICENSE"
 readme = "README.md"
 repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
-version = "0.1.9-rc.2"
+version = "0.1.10-rc.2"
 
 [workspace.dependencies]
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
-kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.9-rc.2" }
-kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.9-rc.2" }
-kornia-icp = { path = "crates/kornia-icp", version = "0.1.9-rc.2" }
-kornia-image = { path = "crates/kornia-image", version = "0.1.9-rc.2" }
-kornia-io = { path = "crates/kornia-io", version = "0.1.9-rc.2" }
-kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.9-rc.2" }
-kornia-3d = { path = "crates/kornia-3d", version = "0.1.9-rc.2" }
-kornia = { path = "crates/kornia", version = "0.1.9-rc.2" }
-kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.9-rc.2" }
-kernels = { path = "crates/kernels", version = "0.1.9-rc.2" }
+kornia-3d = { path = "crates/kornia-3d", version = "0.1.10-rc.2" }
+kornia-icp = { path = "crates/kornia-icp", version = "0.1.10-rc.2" }
+kornia-image = { path = "crates/kornia-image", version = "0.1.10-rc.2" }
+kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.10-rc.2" }
+kornia-io = { path = "crates/kornia-io", version = "0.1.10-rc.2" }
+kornia-lie = { path = "crates/kornia-lie", version = "0.1.10-rc.2" }
+kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.10-rc.2" }
+kornia-nn = { path = "crates/kornia-nn", version = "0.1.10-rc.2" }
+kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.10-rc.2" }
+kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.10-rc.2" }
+kornia = { path = "crates/kornia", version = "0.1.10-rc.2" }
+kornia-apriltag = { path = "crates/kornia-apriltag", version = "0.1.10-rc.2" }
 
 # dev dependencies for workspace
 argh = "0.1"
 approx = "0.5"
 bincode = { version = "2.0.0", features = ["derive"] }
-criterion = "0.5"
+criterion = "0.6"
 ctrlc = "3.4"
 env_logger = "0.11"
 faer = "0.20.1"
 log = "0.4"
 num-traits = "0.2"
 rand = "0.9"
+<<<<<<< HEAD
 #rerun = "^0.22"
 rerun = "0.23.1"
 serde = { version = "1", features = ["derive"] }
@@ -62,3 +65,9 @@ thiserror = "2"
 #arrow = "=54.2.1"
 #arrow-arith = "=54.2.1"
 #chrono = "=0.4.39"
+=======
+rerun = "0.23"
+serde = { version = "1", features = ["derive"] }
+tempfile = "3.10"
+thiserror = "2"
+>>>>>>> main

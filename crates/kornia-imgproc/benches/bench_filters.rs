@@ -1,14 +1,15 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_image::{Image, ImageError};
 use kornia_imgproc::filter::{box_blur_fast, gaussian_blur, kernels, separable_filter};
 
 use image::RgbImage;
 use imageproc::filter::gaussian_blur_f32;
+use kornia_tensor::CpuAllocator;
 
 fn gaussian_blur_u8<const C: usize>(
-    src: &Image<u8, C>,
-    dst: &mut Image<u8, C>,
+    src: &Image<u8, C, CpuAllocator>,
+    dst: &mut Image<u8, C, CpuAllocator>,
     kernel_size: usize,
     sigma: f32,
 ) -> Result<(), ImageError> {
@@ -32,11 +33,12 @@ fn bench_filters(c: &mut Criterion) {
             let image_data = vec![0f32; width * height * 3];
             let image_size = [*width, *height].into();
 
-            let image_f32 = Image::<_, 3>::new(image_size, image_data).unwrap();
+            let image_f32 = Image::<_, 3, _>::new(image_size, image_data, CpuAllocator).unwrap();
             let image_u8 = image_f32.cast::<u8>().unwrap();
 
             // output image
-            let output_f32 = Image::<_, 3>::from_size_val(image_size, 0.0).unwrap();
+            let output_f32 =
+                Image::<_, 3, _>::from_size_val(image_size, 0.0, CpuAllocator).unwrap();
             let output_u8 = output_f32.cast::<u8>().unwrap();
 
             group.bench_with_input(
@@ -45,7 +47,7 @@ fn bench_filters(c: &mut Criterion) {
                 |b, i| {
                     let (src, mut dst) = (i.0, i.1.clone());
                     b.iter(|| {
-                        black_box(gaussian_blur(
+                        std::hint::black_box(gaussian_blur(
                             src,
                             &mut dst,
                             (*kernel_size, *kernel_size),
@@ -60,7 +62,9 @@ fn bench_filters(c: &mut Criterion) {
                 &(&image_u8, &output_u8),
                 |b, i| {
                     let (src, mut dst) = (i.0, i.1.clone());
-                    b.iter(|| black_box(gaussian_blur_u8(src, &mut dst, *kernel_size, 1.5)))
+                    b.iter(|| {
+                        std::hint::black_box(gaussian_blur_u8(src, &mut dst, *kernel_size, 1.5))
+                    })
                 },
             );
 
@@ -70,7 +74,7 @@ fn bench_filters(c: &mut Criterion) {
                 |b, i| {
                     let rgb_image = RgbImage::new(i.cols() as u32, i.rows() as u32);
                     let sigma = (*kernel_size as f32) / 2.0;
-                    b.iter(|| black_box(gaussian_blur_f32(&rgb_image, sigma)))
+                    b.iter(|| std::hint::black_box(gaussian_blur_f32(&rgb_image, sigma)))
                 },
             );
 
@@ -79,7 +83,7 @@ fn bench_filters(c: &mut Criterion) {
                 &(&image_f32, &output_f32),
                 |b, i| {
                     let (src, mut dst) = (i.0, i.1.clone());
-                    b.iter(|| black_box(box_blur_fast(src, &mut dst, (1.5, 1.5))))
+                    b.iter(|| std::hint::black_box(box_blur_fast(src, &mut dst, (1.5, 1.5))))
                 },
             );
         }

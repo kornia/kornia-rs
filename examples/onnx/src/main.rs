@@ -49,17 +49,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_var("ORT_DYLIB_PATH", &args.ort_dylib_path);
 
     // read the image
-    let image: Image<u8, 3> = F::read_image_any_rgb8(&args.image_path)?;
+    let image = F::read_image_any_rgb8(&args.image_path)?;
 
     // read the onnx model
 
-    let model = Session::builder()?
+    let mut model = Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
         .with_intra_threads(4)?
         .commit_from_file(&args.onnx_model_path)?;
 
     // cast and scale the image to f32
-    let mut image_hwc_f32 = Image::from_size_val(image.size(), 0.0f32)?;
+    let mut image_hwc_f32 = Image::from_size_val(image.size(), 0.0f32, CpuAllocator)?;
     kornia::image::ops::cast_and_scale(&image, &mut image_hwc_f32, 1.0 / 255.0)?;
 
     // convert to HWC -> CHW
@@ -105,13 +105,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // run the model
     let outputs = model.run(ort::inputs![
         "input" => ort_tensor,
-    ]?)?;
+    ])?;
 
     println!("time ms: {:?}", time.elapsed().as_secs_f32() * 1000.0);
 
     // get the outputs
 
-    let (out_shape, out_ort) = outputs["output"].try_extract_raw_tensor::<f32>()?;
+    let (out_shape, out_ort) = outputs["output"].try_extract_tensor::<f32>()?;
     println!("out_shape: {:?}", out_shape);
 
     let out_tensor = Tensor::<f32, 3, CpuAllocator>::from_shape_vec(

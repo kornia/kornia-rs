@@ -1,9 +1,10 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_image::Image;
 use kornia_imgproc::filter::{
     spatial_gradient_float, spatial_gradient_float_parallel, spatial_gradient_float_parallel_row,
 };
+use kornia_tensor::CpuAllocator;
 
 fn bench_gradient(c: &mut Criterion) {
     let mut group = c.benchmark_group("Spatial Gradient Float");
@@ -17,18 +18,18 @@ fn bench_gradient(c: &mut Criterion) {
         let image_data = vec![0f32; width * height * 3];
         let image_size = [*width, *height].into();
 
-        let image = Image::<_, 3>::new(image_size, image_data).unwrap();
+        let image = Image::<_, 3, _>::new(image_size, image_data, CpuAllocator).unwrap();
 
         // output image
-        let output_dx = Image::from_size_val(image.size(), 0.0).unwrap();
-        let output_dy = Image::from_size_val(image.size(), 0.0).unwrap();
+        let output_dx = Image::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
+        let output_dy = Image::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("spatial_gradient_float", &parameter_string),
             &(&image, &output_dx, &output_dy),
             |b, i| {
                 let (src, mut dx, mut dy) = (i.0, i.1.clone(), i.2.clone());
-                b.iter(|| black_box(spatial_gradient_float(src, &mut dx, &mut dy)))
+                b.iter(|| std::hint::black_box(spatial_gradient_float(src, &mut dx, &mut dy)))
             },
         );
 
@@ -37,7 +38,9 @@ fn bench_gradient(c: &mut Criterion) {
             &(&image, &output_dx, &output_dy),
             |b, i| {
                 let (src, mut dx, mut dy) = (i.0, i.1.clone(), i.2.clone());
-                b.iter(|| black_box(spatial_gradient_float_parallel_row(src, &mut dx, &mut dy)))
+                b.iter(|| {
+                    std::hint::black_box(spatial_gradient_float_parallel_row(src, &mut dx, &mut dy))
+                })
             },
         );
 
@@ -46,7 +49,9 @@ fn bench_gradient(c: &mut Criterion) {
             &(&image, &output_dx, &output_dy),
             |b, i| {
                 let (src, mut dx, mut dy) = (i.0, i.1.clone(), i.2.clone());
-                b.iter(|| black_box(spatial_gradient_float_parallel(src, &mut dx, &mut dy)))
+                b.iter(|| {
+                    std::hint::black_box(spatial_gradient_float_parallel(src, &mut dx, &mut dy))
+                })
             },
         );
     }

@@ -1,12 +1,12 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::Image;
 use kornia_imgproc::color::{gray_from_rgb, gray_from_rgb_u8};
+use kornia_tensor::CpuAllocator;
 
 // vanilla version
 fn gray_vanilla_get_unchecked(
-    src: &Image<f32, 3>,
-    dst: &mut Image<f32, 1>,
+    src: &Image<f32, 3, CpuAllocator>,
+    dst: &mut Image<f32, 1, CpuAllocator>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let data = dst.as_slice_mut();
     let (cols, _rows) = (src.cols(), src.rows());
@@ -24,8 +24,8 @@ fn gray_vanilla_get_unchecked(
 }
 
 fn gray_ndarray_zip_par(
-    src: &Image<f32, 3>,
-    dst: &mut Image<f32, 1>,
+    src: &Image<f32, 3, CpuAllocator>,
+    dst: &mut Image<f32, 1, CpuAllocator>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     const RW: f32 = 76. / 255.;
     const GW: f32 = 150. / 255.;
@@ -52,7 +52,7 @@ fn gray_ndarray_zip_par(
     Ok(())
 }
 
-fn gray_image_crate(image: &Image<u8, 3>) -> Image<u8, 1> {
+fn gray_image_crate(image: &Image<u8, 3, CpuAllocator>) -> Image<u8, 1, CpuAllocator> {
     let image_data = image.as_slice();
     let rgb = image::RgbImage::from_raw(
         image.size().width as u32,
@@ -64,7 +64,7 @@ fn gray_image_crate(image: &Image<u8, 3>) -> Image<u8, 1> {
 
     let image_gray = image_crate.grayscale();
 
-    Image::new(image.size(), image_gray.into_bytes()).unwrap()
+    Image::new(image.size(), image_gray.into_bytes(), CpuAllocator).unwrap()
 }
 
 fn bench_grayscale(c: &mut Criterion) {
@@ -79,26 +79,26 @@ fn bench_grayscale(c: &mut Criterion) {
         let image_data = vec![0u8; width * height * 3];
         let image_size = [*width, *height].into();
 
-        let image_u8 = Image::new(image_size, image_data).unwrap();
+        let image_u8 = Image::new(image_size, image_data, CpuAllocator).unwrap();
         let image_f32 = image_u8.clone().cast::<f32>().unwrap();
 
         // output image
-        let gray_f32 = Image::from_size_val(image_size, 0.0).unwrap();
-        let gray_u8 = Image::from_size_val(image_size, 0).unwrap();
+        let gray_f32 = Image::from_size_val(image_size, 0.0, CpuAllocator).unwrap();
+        let gray_u8 = Image::from_size_val(image_size, 0, CpuAllocator).unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("vanilla_unchecked", &parameter_string),
             &(&image_f32, &gray_f32),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| black_box(gray_vanilla_get_unchecked(src, &mut dst)))
+                b.iter(|| std::hint::black_box(gray_vanilla_get_unchecked(src, &mut dst)))
             },
         );
 
         group.bench_with_input(
             BenchmarkId::new("image_crate", &parameter_string),
             &image_u8,
-            |b, i| b.iter(|| black_box(gray_image_crate(i))),
+            |b, i| b.iter(|| std::hint::black_box(gray_image_crate(i))),
         );
 
         group.bench_with_input(
@@ -106,7 +106,7 @@ fn bench_grayscale(c: &mut Criterion) {
             &(&image_f32, &gray_f32),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| black_box(gray_ndarray_zip_par(src, &mut dst)))
+                b.iter(|| std::hint::black_box(gray_ndarray_zip_par(src, &mut dst)))
             },
         );
 
@@ -115,7 +115,7 @@ fn bench_grayscale(c: &mut Criterion) {
             &(&image_f32, &gray_f32),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| black_box(gray_from_rgb(src, &mut dst)))
+                b.iter(|| std::hint::black_box(gray_from_rgb(src, &mut dst)))
             },
         );
 
@@ -124,7 +124,7 @@ fn bench_grayscale(c: &mut Criterion) {
             &(&image_u8, &gray_u8),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
-                b.iter(|| black_box(gray_from_rgb_u8(src, &mut dst)))
+                b.iter(|| std::hint::black_box(gray_from_rgb_u8(src, &mut dst)))
             },
         );
     }

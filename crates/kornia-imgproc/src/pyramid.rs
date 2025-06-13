@@ -1,7 +1,8 @@
 use crate::filter::separable_filter;
 use crate::interpolation::InterpolationMode;
 use crate::resize::resize_native;
-use kornia_image::{Image, ImageError};
+use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use kornia_tensor::CpuAllocator;
 
 fn get_pyramid_gaussian_kernel() -> (Vec<f32>, Vec<f32>) {
     // The 2D kernel is:
@@ -43,29 +44,32 @@ fn get_pyramid_gaussian_kernel() -> (Vec<f32>, Vec<f32>) {
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::pyramid::pyrup;
 ///
-/// let image = Image::<f32, 3>::new(
+/// let image = Image::<f32, 3, _>::new(
 ///     ImageSize {
 ///         width: 2,
 ///         height: 2,
 ///     },
 ///     vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0],
+///     CpuAllocator
 /// ).unwrap();
 ///
-/// let mut upsampled = Image::<f32, 3>::from_size_val(
+/// let mut upsampled = Image::<f32, 3, _>::from_size_val(
 ///     ImageSize {
 ///         width: 4,
 ///         height: 4,
 ///     },
 ///     0.0,
+///     CpuAllocator
 /// ).unwrap();
 ///
 /// pyrup(&image, &mut upsampled).unwrap();
 /// ```
-pub fn pyrup<const C: usize>(
-    src: &Image<f32, C>,
-    dst: &mut Image<f32, C>,
+pub fn pyrup<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, C, A1>,
+    dst: &mut Image<f32, C, A2>,
 ) -> Result<(), ImageError> {
     let expected_width = src.width() * 2;
     let expected_height = src.height() * 2;
@@ -79,7 +83,7 @@ pub fn pyrup<const C: usize>(
         ));
     }
 
-    let mut upsampled = Image::<f32, C>::from_size_val(dst.size(), 0.0)?;
+    let mut upsampled = Image::<f32, C, _>::from_size_val(dst.size(), 0.0, CpuAllocator)?;
 
     resize_native(src, &mut upsampled, InterpolationMode::Bilinear)?;
 
@@ -96,20 +100,22 @@ mod tests {
 
     #[test]
     fn test_pyrup() -> Result<(), ImageError> {
-        let src = Image::<f32, 1>::new(
+        let src = Image::<f32, 1, _>::new(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             vec![0.0, 1.0, 2.0, 3.0],
+            CpuAllocator,
         )?;
 
-        let mut dst = Image::<f32, 1>::from_size_val(
+        let mut dst = Image::<f32, 1, _>::from_size_val(
             ImageSize {
                 width: 4,
                 height: 4,
             },
             0.0,
+            CpuAllocator,
         )?;
 
         pyrup(&src, &mut dst)?;

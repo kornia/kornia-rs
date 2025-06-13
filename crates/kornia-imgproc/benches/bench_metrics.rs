@@ -1,7 +1,8 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_image::Image;
 use kornia_imgproc::metrics;
+use kornia_tensor::CpuAllocator;
 
 fn bench_mse(c: &mut Criterion) {
     let mut group = c.benchmark_group("mse");
@@ -13,13 +14,14 @@ fn bench_mse(c: &mut Criterion) {
 
         // input image
         let image_size = [*width, *height].into();
-        let image = Image::<u8, 3>::new(image_size, vec![0u8; width * height * 3]).unwrap();
+        let image = Image::<u8, 3, _>::new(image_size, vec![0u8; width * height * 3], CpuAllocator)
+            .unwrap();
         let image_f32 = image.cast::<f32>().unwrap();
 
         group.bench_with_input(
             BenchmarkId::new("mse_map", &parameter_string),
             &image_f32,
-            |b, i| b.iter(|| metrics::mse(black_box(i), black_box(i))),
+            |b, i| b.iter(|| metrics::mse(std::hint::black_box(i), std::hint::black_box(i))),
         );
     }
     group.finish();

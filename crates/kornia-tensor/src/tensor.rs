@@ -82,10 +82,7 @@ pub struct Tensor<T, const N: usize, A: TensorAllocator> {
     pub strides: [usize; N],
 }
 
-impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A>
-where
-    A: 'static,
-{
+impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// Get the data of the tensor as a slice.
     ///
     /// # Returns
@@ -724,7 +721,7 @@ where
 impl<T, const N: usize, A> Clone for Tensor<T, N, A>
 where
     T: Clone,
-    A: TensorAllocator + Clone + 'static,
+    A: TensorAllocator + Clone,
 {
     fn clone(&self) -> Self {
         Self {
@@ -738,7 +735,7 @@ where
 impl<T, const N: usize, A> std::fmt::Display for Tensor<T, N, A>
 where
     T: std::fmt::Display + std::fmt::LowerExp,
-    A: TensorAllocator + 'static,
+    A: TensorAllocator,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let width = self

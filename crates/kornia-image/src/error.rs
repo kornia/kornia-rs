@@ -1,4 +1,4 @@
-/// An error typr for the io module.
+/// An error type for the image module.
 #[derive(thiserror::Error, Debug)]
 pub enum ImageError {
     /// Error when the pixels type are not compatible.

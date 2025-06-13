@@ -12,6 +12,7 @@ version.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
+features = ["gstreamer/v1_28"]
 rustc-args = ["--cfg", "docsrs"]
 rustdoc-args = ["--cfg", "docsrs"]
 
@@ -19,12 +20,14 @@ rustdoc-args = ["--cfg", "docsrs"]
 image = "0.25"
 circular-buffer = "1.1.0"
 kornia-image = { workspace = true }
+kornia-tensor = { workspace = true }
 png = "0.17"
 jpeg-encoder = "0.6"
 zune-jpeg = "0.4"
 log = { workspace = true }
 thiserror = { workspace = true }
 v4l = "0.14.0"
+tiff = "0.9"
 
 # optional dependencies
 gstreamer = { version = "0.23.5", optional = true }
@@ -34,6 +37,7 @@ turbojpeg = { version = "1.2", optional = true }
 [dev-dependencies]
 criterion = { workspace = true }
 tempfile = { workspace = true }
+reqwest = "0.12"
 
 [features]
 gstreamer = ["dep:gstreamer", "dep:gstreamer-app"]
@@ -43,3 +47,8 @@ turbojpeg = ["dep:turbojpeg"]
 name = "bench_io"
 harness = false
 required-features = ["turbojpeg"]
+
+[[bench]]
+name = "bench_gstreamer"
+harness = false
+required-features = ["gstreamer"]

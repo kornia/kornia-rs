@@ -1,4 +1,5 @@
 use argh::FromArgs;
+use kornia::tensor::CpuAllocator;
 use std::path::PathBuf;
 
 use kornia::io::functional as F;
@@ -20,14 +21,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
 
     // read the image
-    let image: Image<u8, 3> = F::read_image_any_rgb8(args.image_path)?;
+    let image = F::read_image_any_rgb8(args.image_path)?;
 
     // convert the image to f32 and scale it
-    let mut image_f32 = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+    let mut image_f32 = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator)?;
     ops::cast_and_scale(&image, &mut image_f32, 1.0 / 255.0)?;
 
     // modify the image to see the changes
-    let mut image_dirty = Image::<f32, 3>::from_size_val(image.size(), 0.0)?;
+    let mut image_dirty = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator)?;
     imgproc::flip::horizontal_flip(&image_f32, &mut image_dirty)?;
 
     // compute the mean squared error (mse) between the original and the modified image

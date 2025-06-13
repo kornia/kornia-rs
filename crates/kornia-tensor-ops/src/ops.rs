@@ -1,4 +1,4 @@
-use kernels::ops::{cosine_similarity_float_kernel, dot_product1_kernel};
+use crate::kernels::{cosine_similarity_float_kernel, dot_product1_kernel};
 use kornia_tensor::{storage::TensorStorage, CpuAllocator, Tensor, TensorAllocator, TensorError};
 use num_traits::{Float, Zero};
 
@@ -361,7 +361,7 @@ where
         ));
     }
 
-    dot_product1_kernel(a.as_slice(), b.as_slice()).map_err(|e| e.into())
+    dot_product1_kernel(a.as_slice(), b.as_slice())
 }
 
 /// Compute the cosine similarity between two tensors with optimized computation
@@ -406,7 +406,7 @@ where
         ));
     }
 
-    cosine_similarity_float_kernel(a.as_slice(), b.as_slice()).map_err(|e| e.into())
+    cosine_similarity_float_kernel(a.as_slice(), b.as_slice())
 }
 
 /// Compute the cosine distance between two tensors with optimized computation

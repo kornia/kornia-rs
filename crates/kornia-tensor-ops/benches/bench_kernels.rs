@@ -1,5 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use kernels::ops::{cosine_similarity_float_kernel, dot_product1_kernel};
+use criterion::{criterion_group, criterion_main, Criterion};
+use kornia_tensor_ops::kernels::{cosine_similarity_float_kernel, dot_product1_kernel};
 use rand::Rng;
 
 fn bench_product1_float_kernel(c: &mut Criterion) {
@@ -13,7 +13,7 @@ fn bench_product1_float_kernel(c: &mut Criterion) {
         let b: Vec<f32> = (0..size).map(|_| rng.random::<f32>()).collect();
 
         group.bench_function(format!("f32_size_{}", size), |bencher| {
-            bencher.iter(|| black_box(dot_product1_kernel(&a, &b).unwrap()))
+            bencher.iter(|| std::hint::black_box(dot_product1_kernel(&a, &b).unwrap()))
         });
     }
 
@@ -22,7 +22,7 @@ fn bench_product1_float_kernel(c: &mut Criterion) {
         let b: Vec<i8> = (0..size).map(|_| rng.random::<i8>()).collect();
 
         group.bench_function(format!("i8_size_{}", size), |bencher| {
-            bencher.iter(|| black_box(dot_product1_kernel(&a, &b).unwrap()))
+            bencher.iter(|| std::hint::black_box(dot_product1_kernel(&a, &b).unwrap()))
         });
     }
 
@@ -40,7 +40,7 @@ fn bench_cosine_similarity_kernel(c: &mut Criterion) {
         let b: Vec<f32> = (0..size).map(|_| rng.random::<f32>()).collect();
 
         group.bench_function(format!("f32_size_{}", size), |bencher| {
-            bencher.iter(|| black_box(cosine_similarity_float_kernel(&a, &b).unwrap()))
+            bencher.iter(|| std::hint::black_box(cosine_similarity_float_kernel(&a, &b).unwrap()))
         });
     }
 

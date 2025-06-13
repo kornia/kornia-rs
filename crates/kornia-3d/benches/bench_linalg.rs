@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_3d::linalg;
 
@@ -97,7 +97,7 @@ fn bench_transform_points3d(c: &mut Criterion) {
                 let (src, rot, trans, mut dst) = (i.0, i.1, i.2, i.3.clone());
                 b.iter(|| {
                     linalg::transform_points3d(src, rot, trans, &mut dst).unwrap();
-                    black_box(());
+                    std::hint::black_box(());
                 });
             },
         );
@@ -109,7 +109,7 @@ fn bench_transform_points3d(c: &mut Criterion) {
                 let (src, rot, trans, mut dst) = (i.0, i.1, i.2, i.3.clone());
                 b.iter(|| {
                     transform_points3d_col(src, rot, trans, &mut dst);
-                    black_box(());
+                    std::hint::black_box(());
                 });
             },
         );
@@ -121,7 +121,7 @@ fn bench_transform_points3d(c: &mut Criterion) {
                 let (src, rot, trans, mut dst) = (i.0, i.1, i.2, i.3.clone());
                 b.iter(|| {
                     transform_points3d_matmul(src, rot, trans, &mut dst);
-                    black_box(());
+                    std::hint::black_box(());
                 });
             },
         );
@@ -160,14 +160,14 @@ fn bench_matmul33(c: &mut Criterion) {
     group.bench_function(BenchmarkId::new("matmul33", ""), |b| {
         b.iter(|| {
             linalg::matmul33(&a_mat, &b_mat, &mut m_mat);
-            black_box(());
+            std::hint::black_box(());
         });
     });
 
     group.bench_function(BenchmarkId::new("matmul33_dot", ""), |b| {
         b.iter(|| {
             matmul33_dot(&a_mat, &b_mat, &mut m_mat);
-            black_box(());
+            std::hint::black_box(());
         });
     });
 }
