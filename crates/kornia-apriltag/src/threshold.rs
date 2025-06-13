@@ -4,6 +4,9 @@ use crate::{errors::AprilTagError, iter::TileIterator};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 
 /// Stores the minimum and maximum pixel values for each tile for [adaptive_threshold]
+///
+/// The tiles are indexed in row-major order, i.e., tile IDs increase first along the x-axis (columns),
+/// then along the y-axis (rows) only for the full tiles.
 pub struct TileBuffers {
     tile_min: Vec<u8>,
     tile_max: Vec<u8>,
@@ -22,9 +25,8 @@ impl TileBuffers {
     ///
     /// A `TileBuffers` instance with preallocated capacity for tile minima and maxima.
     pub fn new(img_size: ImageSize, tile_size: usize) -> Self {
-        let tiles_x_len = img_size.width / tile_size;
-        let tiles_y_len = img_size.height / tile_size;
-        let num_tiles = tiles_x_len * tiles_y_len;
+        let tiles_full = find_full_tiles(img_size, tile_size);
+        let num_tiles = tiles_full.x * tiles_full.y;
 
         Self {
             tile_min: vec![0; num_tiles],
@@ -355,12 +357,12 @@ mod tests {
     }
 
     #[test]
-    fn test_adaptive_threshold_basic() {
+    fn test_adaptive_threshold_basic() -> Result<(), Box<dyn std::error::Error>> {
         #[rustfmt::skip]
         let src = Image::new(
             ImageSize {
                 width: 5,
-                height: 5,
+                height: 6,
             },
             vec![
                 0,   50,  100, 150, 200,
@@ -368,14 +370,14 @@ mod tests {
                 200, 250, 0,   50,  100,
                 150, 200, 250, 0,   50,
                 100, 150, 200, 250, 0,
+                80,  127, 221, 20,  100,
             ],
             CpuAllocator,
-        )
-        .unwrap();
-        let mut dst = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator).unwrap();
+        )?;
+        let mut dst = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
 
         let mut tile_buffers = TileBuffers::new(src.size(), 2);
-        adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20).unwrap();
+        adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20)?;
 
         #[rustfmt::skip]
         let expected = vec![
@@ -383,14 +385,16 @@ mod tests {
             255, 0,   0,   0,   255,
             255, 255, 0,   0,   0,
             255, 255, 255, 0,   0,
-            0,   255, 255, 255, 0
+            0,   255, 255, 255, 0,
+            0,   255, 255, 0,   0
         ];
 
         assert_eq!(dst.as_slice(), expected.as_slice());
+        Ok(())
     }
 
     #[test]
-    fn test_adaptive_threshold_uniform_image() {
+    fn test_adaptive_threshold_uniform_image() -> Result<(), Box<dyn std::error::Error>> {
         let src = Image::new(
             ImageSize {
                 width: 4,
@@ -398,36 +402,37 @@ mod tests {
             },
             vec![100; 16],
             CpuAllocator,
-        )
-        .unwrap();
-        let mut dst = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator).unwrap();
+        )?;
+        let mut dst = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
 
         let mut tile_buffers = TileBuffers::new(src.size(), 2);
-        adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20).unwrap();
+        adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20)?;
         assert_eq!(dst.as_slice(), &[Pixel::Skip; 16]);
+        Ok(())
     }
 
     #[test]
-    fn test_adaptive_threshold_synthetic_image() {
-        let src = read_image_png_mono8("../../tests/data/apriltag.png").unwrap();
-        let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator).unwrap();
+    fn test_adaptive_threshold_synthetic_image() -> Result<(), Box<dyn std::error::Error>> {
+        let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
+        let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
 
         let mut tile_buffers = TileBuffers::new(src.size(), 4);
-        adaptive_threshold(&src, &mut bin, &mut tile_buffers, 20).unwrap();
+        adaptive_threshold(&src, &mut bin, &mut tile_buffers, 20)?;
 
-        assert_eq!(bin.as_slice(), src.as_slice())
+        assert_eq!(bin.as_slice(), src.as_slice());
+        Ok(())
     }
 
     #[test]
-    fn invalid_buffer_size() {
+    fn invalid_buffer_size() -> Result<(), Box<dyn std::error::Error>> {
         let img_size = ImageSize {
             width: 4,
             height: 4,
         };
 
-        let src = Image::new(img_size, vec![100u8; 16], CpuAllocator).unwrap();
+        let src = Image::new(img_size, vec![100u8; 16], CpuAllocator)?;
 
-        let mut dst = Image::from_size_val(img_size, Pixel::default(), CpuAllocator).unwrap();
+        let mut dst = Image::from_size_val(img_size, Pixel::default(), CpuAllocator)?;
 
         let mut tile_buffers = TileBuffers::new(
             ImageSize {
@@ -445,5 +450,7 @@ mod tests {
         let mut tile_buffers = TileBuffers::new(src.size(), 5);
         let result = adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20);
         assert!(matches!(result, Err(AprilTagError::InvalidImageSize)));
+
+        Ok(())
     }
 }

@@ -1,38 +1,32 @@
+use crate::utils::{find_total_tiles, Point2d};
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 
-use crate::utils::Point2d;
-
-/// TODO
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+/// Represents the index and position of a tile within an image.
+///
+/// `TileIndex` contains the position of the tile in 2D coordinates, its sequential index,
+/// and the index among full (non-partial) tiles.
 pub struct TileIndex {
-    /// TODO
+    /// The 2D position (x, y) of the tile in tile coordinates.
     pub pos: Point2d,
-    /// TODO
+    /// The sequential index of the tile (including partial tiles).
     pub index: usize,
-    /// TODO
+    /// The index among full (non-partial) tiles.
     pub full_index: usize,
 }
 
-/// TODO
+/// A borrowed slice of rows, where each row is a slice of pixel data.
 pub type ImageSlice<'a, T> = &'a [&'a [T]];
 
-/// TODO
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
+/// Represents a tile of an image, which can be either a full-sized tile or a partial tile at the image edge.
+///
+/// Each variant contains a slice of rows, where each row is a slice of pixel data.
 pub enum ImageTile<'a, T> {
-    /// TODO
+    /// A full-sized tile with dimensions equal to the specified tile size.
     FullTile(ImageSlice<'a, T>),
-    /// TODO
+    /// A partial tile, typically at the image edge, with dimensions smaller than the specified tile size.
     PartialTile(ImageSlice<'a, T>),
-}
-
-impl<'a, T> ImageTile<'a, T> {
-    /// TODO
-    pub fn inner(self) -> ImageSlice<'a, T> {
-        match self {
-            ImageTile::FullTile(im) => im,
-            ImageTile::PartialTile(im) => im,
-        }
-    }
 }
 
 /// An enumerator over tiles of an image, yielding the `(y, x)` tile indices and the tile data as slices.
@@ -43,10 +37,7 @@ impl<'a, T> Iterator for TileEnumerator<'a, T> {
     type Item = (TileIndex, ImageTile<'a, T>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let pos = Point2d {
-            x: self.0.next_tile_x_index,
-            y: self.0.next_tile_y_index,
-        };
+        let pos = self.0.next_tile_index;
 
         let index = self.0.next_index;
 
@@ -70,29 +61,16 @@ impl<'a, T> Iterator for TileEnumerator<'a, T> {
 /// except for tiles at the image edges, which may be smaller if the image dimensions are not
 /// multiples of the tile size.
 pub struct TileIterator<'a, T> {
-    /// Reference to the image pixel data as a flat slice.
     img_data: &'a [T],
-    /// The width and height of the image.
     img_size: ImageSize,
-    /// The size (width and height) of each tile in pixels.
     tile_size: usize,
-    /// Number of horizontal tiles.
-    tiles_x_len: usize,
-    /// Number of vertical tiles.
-    tiles_y_len: usize,
-    /// Number of horizontal pixels in the last tile column.
-    last_tile_x_px: usize,
-    /// Number of vertical pixels in the last tile row.
-    last_tile_y_px: usize,
-    /// Index of the next tile to yield horizontally.
-    next_tile_x_index: usize,
-    /// Index of the next tile to yield vertically.
-    next_tile_y_index: usize,
-    /// TODO
+    tiles_len: Point2d,
+    last_tile_px: Point2d,
+    next_tile_index: Point2d,
+    /// The index of the next tile to be yielded by the iterator (counts all tiles, including partial ones).
     next_index: usize,
-    /// TODO
+    /// The index of the next full (non-partial) tile to be yielded by the iterator.
     next_full_index: usize,
-    /// Buffer holding references to the rows of the current tile.
     buffer: Vec<&'a [T]>,
 }
 
@@ -114,53 +92,31 @@ impl<'a, T> TileIterator<'a, T> {
     ) -> Self {
         let img_size = img.size();
 
-        let tiles_x_len = (img_size.width as f32 / tile_size as f32).ceil() as usize;
-        let tiles_y_len = (img_size.height as f32 / tile_size as f32).ceil() as usize;
-
-        let last_tile_x_px = if img.width() % tile_size == 0 {
-            tile_size
-        } else {
-            img_size.width % tile_size
-        };
-
-        let last_tile_y_px = if img.height() % tile_size == 0 {
-            tile_size
-        } else {
-            img_size.height % tile_size
+        let tiles_len = find_total_tiles(img_size, tile_size);
+        let last_tile_px = Point2d {
+            x: if img.width() % tile_size == 0 {
+                tile_size
+            } else {
+                img_size.width % tile_size
+            },
+            y: if img.height() % tile_size == 0 {
+                tile_size
+            } else {
+                img_size.height % tile_size
+            },
         };
 
         Self {
             img_data: img.as_slice(),
             img_size,
             tile_size,
-            tiles_x_len,
-            tiles_y_len,
-            last_tile_x_px,
-            last_tile_y_px,
-            next_tile_x_index: 0,
-            next_tile_y_index: 0,
+            tiles_len,
+            last_tile_px,
+            next_tile_index: Point2d::default(),
             next_index: 0,
             next_full_index: 0,
             buffer: Vec::with_capacity(tile_size),
         }
-    }
-
-    /// Returns the number of tiles along the horizontal x-axis.
-    ///
-    /// This value represents how many tiles fit across the width of the image,
-    /// given the specified tile size.
-    #[inline]
-    pub fn tiles_x_len(&self) -> usize {
-        self.tiles_x_len
-    }
-
-    /// Returns the number of tiles along the vertical y-axis.
-    ///
-    /// This value represents how many tiles fit across the height of the image,
-    /// given the specified tile size.
-    #[inline]
-    pub fn tiles_y_len(&self) -> usize {
-        self.tiles_y_len
     }
 
     /// Returns an enumerator over the tiles, yielding both the tile indices and the tile data.
@@ -178,28 +134,28 @@ impl<'a, T> Iterator for TileIterator<'a, T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         // Stop iteration if we've processed all tiles
-        if self.next_tile_y_index >= self.tiles_y_len {
+        if self.next_tile_index.y >= self.tiles_len.y {
             return None;
         }
 
         // number of horizontal pixels in the current tile
-        let tile_x_px = if self.next_tile_x_index == self.tiles_x_len - 1 {
-            self.last_tile_x_px
+        let tile_x_px = if self.next_tile_index.x == self.tiles_len.x - 1 {
+            self.last_tile_px.x
         } else {
             self.tile_size
         };
 
         // number of vertical pixels in the current tile
-        let tile_y_px = if self.next_tile_y_index == self.tiles_y_len - 1 {
-            self.last_tile_y_px
+        let tile_y_px = if self.next_tile_index.y == self.tiles_len.y - 1 {
+            self.last_tile_px.y
         } else {
             self.tile_size
         };
 
         self.buffer.clear();
         for y_px in 0..tile_y_px {
-            let row = ((self.next_tile_y_index * self.tile_size) + y_px) * self.img_size.width;
-            let start_index = row + (self.next_tile_x_index * self.tile_size);
+            let row = ((self.next_tile_index.y * self.tile_size) + y_px) * self.img_size.width;
+            let start_index = row + (self.next_tile_index.x * self.tile_size);
             let end_index = start_index + tile_x_px;
 
             let row_pxs = &self.img_data[start_index..end_index];
@@ -207,10 +163,10 @@ impl<'a, T> Iterator for TileIterator<'a, T> {
         }
 
         // Update indices
-        self.next_tile_x_index += 1;
-        if self.next_tile_x_index >= self.tiles_x_len {
-            self.next_tile_x_index = 0;
-            self.next_tile_y_index += 1;
+        self.next_tile_index.x += 1;
+        if self.next_tile_index.x >= self.tiles_len.x {
+            self.next_tile_index.x = 0;
+            self.next_tile_index.y += 1;
         }
 
         self.next_index += 1;
@@ -234,7 +190,7 @@ mod tests {
     use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 
     #[test]
-    fn test_tile_iterator() {
+    fn test_tile_iterator_basic() -> Result<(), Box<dyn std::error::Error>> {
         let data = vec![127u8; 100];
         let image: Image<_, 1, _> = Image::new(
             ImageSize {
@@ -243,14 +199,18 @@ mod tests {
             },
             data,
             CpuAllocator,
-        )
-        .unwrap();
+        )?;
 
         let tile_iter = TileIterator::from_image(&image, 4);
         let mut counter = 0;
 
         for tile in tile_iter {
-            for tile_row in tile.inner() {
+            let tile = match tile {
+                ImageTile::FullTile(tile) => tile,
+                ImageTile::PartialTile(tile) => tile,
+            };
+
+            for tile_row in tile {
                 let tile_row = tile_row as &[u8];
                 for px in tile_row {
                     assert_eq!(*px, 127);
@@ -260,5 +220,68 @@ mod tests {
         }
 
         assert_eq!(counter, 100);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_tile_iterator() -> Result<(), Box<dyn std::error::Error>> {
+        #[rustfmt::skip]
+        let data = vec![
+            1,  2,  3,  4,  5,
+            6,  7,  8,  9,  10,
+            11, 12, 13, 14, 15,
+            16, 17, 18, 19, 20,
+            21, 22, 23, 24, 25,
+            26, 27, 28, 29, 30,
+            31, 32, 33, 34, 35,
+        ];
+        let img: Image<_, 1, _> = Image::new(
+            ImageSize {
+                width: 5,
+                height: 7,
+            },
+            data,
+            CpuAllocator,
+        )?;
+
+        let mut iter = TileIterator::from_image(&img, 2).tile_enumerator();
+
+        macro_rules! test_iter_next {
+            ($variant:ident, $x:expr, $y:expr, $index:expr, $full_index:expr, $rows:expr) => {
+                assert_eq!(
+                    iter.next()
+                        .ok_or("Failed to get the next value from iterator")?,
+                    (
+                        TileIndex {
+                            pos: Point2d { x: $x, y: $y },
+                            index: $index,
+                            full_index: $full_index,
+                        },
+                        ImageTile::$variant($rows)
+                    )
+                );
+            };
+        }
+
+        #[rustfmt::skip]
+        let _ = {
+            //              Tile Type    x  y  i  fi  expected value
+            test_iter_next!(FullTile,    0, 0, 0,  0, &[&[1, 2], &[6, 7]]);
+            test_iter_next!(FullTile,    1, 0, 1,  1, &[&[3, 4], &[8, 9]]);
+            test_iter_next!(PartialTile, 2, 0, 2,  1, &[&[5], &[10]]);
+            test_iter_next!(FullTile,    0, 1, 3,  2, &[&[11, 12], &[16, 17]]);
+            test_iter_next!(FullTile,    1, 1, 4,  3, &[&[13, 14], &[18, 19]]);
+            test_iter_next!(PartialTile, 2, 1, 5,  3, &[&[15], &[20]]);
+            test_iter_next!(FullTile,    0, 2, 6,  4, &[&[21, 22], &[26, 27]]);
+            test_iter_next!(FullTile,    1, 2, 7,  5, &[&[23, 24], &[28, 29]]);
+            test_iter_next!(PartialTile, 2, 2, 8,  5, &[&[25], &[30]]);
+            test_iter_next!(PartialTile, 0, 3, 9,  5, &[&[31, 32]]);
+            test_iter_next!(PartialTile, 1, 3, 10, 5, &[&[33, 34]]);
+            test_iter_next!(PartialTile, 2, 3, 11, 5, &[&[35]]);
+        };
+        assert_eq!(iter.next(), None);
+
+        Ok(())
     }
 }
