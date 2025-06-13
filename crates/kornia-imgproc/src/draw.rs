@@ -79,8 +79,8 @@ pub fn draw_line<const C: usize, A: ImageAllocator>(
 /// * `color` - The color of the polygon lines as an array of `C` elements.
 /// * `thickness` - The thickness of the polygon lines.
 ///
-pub fn draw_polygon<const C: usize>(
-    img: &mut Image<u8, C>,
+pub fn draw_polygon<const C: usize, A: ImageAllocator>(
+    img: &mut Image<u8, C, A>,
     points: &[(i64, i64)],
     color: [u8; C],
     thickness: usize,
@@ -88,7 +88,9 @@ pub fn draw_polygon<const C: usize>(
     if points.len() < 3 {
         return;
     }
+
     let num_points = points.len();
+
     for i in 0..num_points {
         let start = points[i];
         // mod to close the polygon
@@ -98,6 +100,7 @@ pub fn draw_polygon<const C: usize>(
 }
 
 /// Draws a colored polygon on an image inplace.
+///
 /// Uses the scanline-fill algorithm.
 ///
 /// # Arguments
@@ -108,8 +111,8 @@ pub fn draw_polygon<const C: usize>(
 /// * `line_color` - The color of the pen used to draw the polygon.
 /// * `thickness` - The thickness of the polygon lines.
 ///
-pub fn draw_filled_polygon<const C: usize>(
-    img: &mut Image<u8, C>,
+pub fn draw_filled_polygon<const C: usize, A: ImageAllocator>(
+    img: &mut Image<u8, C, A>,
     points: &[(i64, i64)],
     fill_color: [u8; C],
     line_color: [u8; C],
@@ -171,6 +174,7 @@ pub fn draw_filled_polygon<const C: usize>(
             }
         }
     }
+
     // drawing the polygon outline
     draw_polygon(img, points, line_color, thickness);
 }
@@ -181,7 +185,6 @@ mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
     use kornia_tensor::CpuAllocator;
 
-    #[rustfmt::skip]
     #[test]
     fn test_draw_line() -> Result<(), ImageError> {
         let mut img = Image::new(
@@ -190,9 +193,12 @@ mod tests {
                 height: 5,
             },
             vec![0; 25],
-            CpuAllocator
+            CpuAllocator,
         )?;
+
         draw_line(&mut img, (0, 0), (4, 4), [255], 1);
+
+        #[rustfmt::skip]
         assert_eq!(
             img.as_slice(),
             vec![
@@ -206,7 +212,6 @@ mod tests {
         Ok(())
     }
 
-    #[rustfmt::skip]
     #[test]
     fn test_draw_polygon() -> Result<(), ImageError> {
         let mut img = Image::new(
@@ -215,9 +220,13 @@ mod tests {
                 height: 5,
             },
             vec![0; 25],
+            CpuAllocator,
         )?;
+
         let points: [(i64, i64); 3] = [(0, 0), (0, 3), (4, 0)];
         draw_polygon(&mut img, &points, [255], 1);
+
+        #[rustfmt::skip]
         assert_eq!(
             img.as_slice(),
             vec![
@@ -231,7 +240,6 @@ mod tests {
         Ok(())
     }
 
-    #[rustfmt::skip]
     #[test]
     fn test_draw_filled_polygon() -> Result<(), ImageError> {
         let mut img = Image::new(
@@ -240,9 +248,13 @@ mod tests {
                 height: 5,
             },
             vec![0; 25],
+            CpuAllocator,
         )?;
+
         let points: [(i64, i64); 3] = [(0, 0), (0, 3), (4, 0)];
         draw_filled_polygon(&mut img, &points, [150], [255], 1);
+
+        #[rustfmt::skip]
         assert_eq!(
             img.as_slice(),
             vec![
@@ -256,7 +268,6 @@ mod tests {
         Ok(())
     }
 
-    #[rustfmt::skip]
     #[test]
     fn test_draw_filled_single_pixel_width() -> Result<(), ImageError> {
         let mut img = Image::new(
@@ -265,9 +276,13 @@ mod tests {
                 height: 5,
             },
             vec![0; 25],
+            CpuAllocator,
         )?;
+
         let points: [(i64, i64); 3] = [(0, 0), (3, 0), (4, 0)];
         draw_filled_polygon(&mut img, &points, [150], [255], 1);
+
+        #[rustfmt::skip]
         assert_eq!(
             img.as_slice(),
             vec![
