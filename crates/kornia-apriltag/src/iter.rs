@@ -1,22 +1,21 @@
 use crate::utils::{find_total_tiles, Point2d};
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
-/// Represents the index and position of a tile within an image.
+/// Contains metadata and data for a single tile of an image.
 ///
-/// `TileIndex` contains the position of the tile in 2D coordinates, its sequential index,
-/// and the index among full (non-partial) tiles.
-pub struct TileIndex {
+/// `TileInfo` holds the position, indices, and a borrowed slice of pixel data for a tile.
+/// The `data` field is a borrowed slice of rows, where each row is a slice of pixel data.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TileInfo<'a, T> {
     /// The 2D position (x, y) of the tile in tile coordinates.
     pub pos: Point2d,
     /// The sequential index of the tile (including partial tiles).
     pub index: usize,
     /// The index among full (non-partial) tiles.
     pub full_index: usize,
+    /// A borrowed slice of rows, where each row is a slice of pixel data.
+    pub data: &'a [&'a [T]],
 }
-
-/// A borrowed slice of rows, where each row is a slice of pixel data.
-pub type ImageSlice<'a, T> = &'a [&'a [T]];
 
 #[derive(Debug, Clone, PartialEq)]
 /// Represents a tile of an image, which can be either a full-sized tile or a partial tile at the image edge.
@@ -24,34 +23,9 @@ pub type ImageSlice<'a, T> = &'a [&'a [T]];
 /// Each variant contains a slice of rows, where each row is a slice of pixel data.
 pub enum ImageTile<'a, T> {
     /// A full-sized tile with dimensions equal to the specified tile size.
-    FullTile(ImageSlice<'a, T>),
+    FullTile(TileInfo<'a, T>),
     /// A partial tile, typically at the image edge, with dimensions smaller than the specified tile size.
-    PartialTile(ImageSlice<'a, T>),
-}
-
-/// An enumerator over tiles of an image, yielding the `(y, x)` tile indices and the tile data as slices.
-/// Each item is a tuple of `((tile_y, tile_x), tile)`, where tile is a slice of rows, and each row is a slice of pixel data.
-pub struct TileEnumerator<'a, T>(TileIterator<'a, T>);
-
-impl<'a, T> Iterator for TileEnumerator<'a, T> {
-    type Item = (TileIndex, ImageTile<'a, T>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let pos = self.0.next_tile_index;
-
-        let index = self.0.next_index;
-
-        if let Some(item) = self.0.next() {
-            let index = TileIndex {
-                pos,
-                index,
-                full_index: self.0.next_full_index - 1,
-            };
-            return Some((index, item));
-        }
-
-        None
-    }
+    PartialTile(TileInfo<'a, T>),
 }
 
 /// An iterator over tiles of an image, yielding non-overlapping rectangular regions as slices.
@@ -118,15 +92,6 @@ impl<'a, T> TileIterator<'a, T> {
             buffer: Vec::with_capacity(tile_size),
         }
     }
-
-    /// Returns an enumerator over the tiles, yielding both the tile indices and the tile data.
-    ///
-    /// The enumerator yields items of the form `((tile_y, tile_x), tile)`, where `tile` is a slice of rows,
-    /// and each row is a slice of pixel data.
-    #[inline]
-    pub fn tile_enumerator(self) -> TileEnumerator<'a, T> {
-        TileEnumerator(self)
-    }
 }
 
 impl<'a, T> Iterator for TileIterator<'a, T> {
@@ -162,6 +127,9 @@ impl<'a, T> Iterator for TileIterator<'a, T> {
             self.buffer.push(row_pxs);
         }
 
+        let next_tile_index = self.next_tile_index;
+        let index = self.next_index;
+
         // Update indices
         self.next_tile_index.x += 1;
         if self.next_tile_index.x >= self.tiles_len.x {
@@ -170,14 +138,23 @@ impl<'a, T> Iterator for TileIterator<'a, T> {
         }
 
         self.next_index += 1;
-
         let data = unsafe { std::slice::from_raw_parts(self.buffer.as_mut_ptr(), tile_y_px) };
 
         let tile = if data.len() == self.tile_size && data[0].len() == self.tile_size {
             self.next_full_index += 1;
-            ImageTile::FullTile(data)
+            ImageTile::FullTile(TileInfo {
+                data,
+                pos: next_tile_index,
+                index,
+                full_index: self.next_full_index - 1,
+            })
         } else {
-            ImageTile::PartialTile(data)
+            ImageTile::PartialTile(TileInfo {
+                data,
+                pos: next_tile_index,
+                index,
+                full_index: self.next_full_index - 1,
+            })
         };
 
         Some(tile)
@@ -210,7 +187,7 @@ mod tests {
                 ImageTile::PartialTile(tile) => tile,
             };
 
-            for tile_row in tile {
+            for tile_row in tile.data {
                 let tile_row = tile_row as &[u8];
                 for px in tile_row {
                     assert_eq!(*px, 127);
@@ -245,21 +222,19 @@ mod tests {
             CpuAllocator,
         )?;
 
-        let mut iter = TileIterator::from_image(&img, 2).tile_enumerator();
+        let mut iter = TileIterator::from_image(&img, 2);
 
         macro_rules! test_iter_next {
             ($variant:ident, $x:expr, $y:expr, $index:expr, $full_index:expr, $rows:expr) => {
                 assert_eq!(
                     iter.next()
                         .ok_or("Failed to get the next value from iterator")?,
-                    (
-                        TileIndex {
-                            pos: Point2d { x: $x, y: $y },
-                            index: $index,
-                            full_index: $full_index,
-                        },
-                        ImageTile::$variant($rows)
-                    )
+                    ImageTile::$variant(TileInfo {
+                        data: $rows,
+                        pos: Point2d { x: $x, y: $y },
+                        index: $index,
+                        full_index: $full_index,
+                    })
                 );
             };
         }

@@ -1,4 +1,4 @@
-use crate::iter::{ImageTile, TileIndex};
+use crate::iter::ImageTile;
 use crate::utils::{find_full_tiles, Pixel, Point2d};
 use crate::{errors::AprilTagError, iter::TileIterator};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
@@ -214,118 +214,104 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
     let dst_data = dst.as_slice_mut();
 
     // Calculate extrema (i.e. min & max grayscale value) of each tile
-    tile_iterator
-        .tile_enumerator()
-        .for_each(|(tile_index, tile)| {
-            let ImageTile::FullTile(tile) = tile else {
-                // Skip non-full tiles
-                return;
-            };
+    tile_iterator.for_each(|tile| {
+        let ImageTile::FullTile(tile) = tile else {
+            // Skip non-full tiles
+            return;
+        };
 
-            let mut local_min = 255;
-            let mut local_max = 0;
+        let mut local_min = 255;
+        let mut local_max = 0;
 
-            for row in tile {
-                for px in row as &[u8] {
-                    if px < &local_min {
-                        local_min = *px;
-                    }
+        for row in tile.data {
+            for px in row as &[u8] {
+                if px < &local_min {
+                    local_min = *px;
+                }
 
-                    if px > &local_max {
-                        local_max = *px;
-                    }
+                if px > &local_max {
+                    local_max = *px;
                 }
             }
+        }
 
-            tile_buffers.tile_min[tile_index.full_index] = local_min;
-            tile_buffers.tile_max[tile_index.full_index] = local_max;
-        });
+        tile_buffers.tile_min[tile.full_index] = local_min;
+        tile_buffers.tile_max[tile.full_index] = local_max;
+    });
 
     // Binarize the image
-    TileIterator::from_image(src, tile_buffers.tile_size)
-        .tile_enumerator()
-        .for_each(
-            |(
-                TileIndex {
-                    pos,
-                    index: _,
-                    full_index,
-                },
-                tile,
-            )| {
-                let (neighbor_min, neighbor_max, tile) = match tile {
-                    ImageTile::FullTile(tile) => {
-                        let (min, max) =
-                            tile_buffers.neighbor_blur(pos, full_index, tiles_full_len);
+    TileIterator::from_image(src, tile_buffers.tile_size).for_each(|tile| {
+        let (neighbor_min, neighbor_max, tile) = match tile {
+            ImageTile::FullTile(tile) => {
+                let (min, max) =
+                    tile_buffers.neighbor_blur(tile.pos, tile.full_index, tiles_full_len);
 
-                        if max - min < min_white_black_diff {
-                            for y_px in 0..tile.len() {
-                                let row = ((pos.y * tile_buffers.tile_size) + y_px) * src.width();
-                                let start_index = row + (pos.x * tile_buffers.tile_size);
-                                let end_index = start_index + tile[0].len();
+                if max - min < min_white_black_diff {
+                    for y_px in 0..tile.data.len() {
+                        let row = ((tile.pos.y * tile_buffers.tile_size) + y_px) * src.width();
+                        let start_index = row + (tile.pos.x * tile_buffers.tile_size);
+                        let end_index = start_index + tile.data[0].len();
 
-                                for px in dst_data.iter_mut().take(end_index).skip(start_index) {
-                                    *px = Pixel::Skip;
-                                }
-                            }
-
-                            return;
+                        for px in dst_data.iter_mut().take(end_index).skip(start_index) {
+                            *px = Pixel::Skip;
                         }
-
-                        (min, max, tile)
                     }
-                    ImageTile::PartialTile(tile) => {
-                        let is_partial_y = tile.len() < tile_buffers.tile_size;
-                        let is_partial_x = tile[0].len() < tile_buffers.tile_size;
 
-                        let (pos, full_index) = if is_partial_y && is_partial_x {
-                            (
-                                Point2d {
-                                    x: pos.x - 1,
-                                    y: pos.y - 1,
-                                },
-                                full_index,
-                            )
-                        } else if is_partial_x {
-                            (
-                                Point2d {
-                                    x: pos.x - 1,
-                                    y: pos.y,
-                                },
-                                full_index,
-                            )
-                        } else {
-                            (
-                                Point2d {
-                                    x: pos.x,
-                                    y: pos.y - 1,
-                                },
-                                full_index + pos.x + 1 - tiles_full_len.x,
-                            )
-                        };
+                    return;
+                }
 
-                        let (min, max) =
-                            tile_buffers.neighbor_blur(pos, full_index, tiles_full_len);
-                        (min, max, tile)
-                    }
+                (min, max, tile)
+            }
+            ImageTile::PartialTile(tile) => {
+                let is_partial_y = tile.data.len() < tile_buffers.tile_size;
+                let is_partial_x = tile.data[0].len() < tile_buffers.tile_size;
+
+                let (pos, full_index) = if is_partial_y && is_partial_x {
+                    (
+                        Point2d {
+                            x: tile.pos.x - 1,
+                            y: tile.pos.y - 1,
+                        },
+                        tile.full_index,
+                    )
+                } else if is_partial_x {
+                    (
+                        Point2d {
+                            x: tile.pos.x - 1,
+                            y: tile.pos.y,
+                        },
+                        tile.full_index,
+                    )
+                } else {
+                    (
+                        Point2d {
+                            x: tile.pos.x,
+                            y: tile.pos.y - 1,
+                        },
+                        tile.full_index + tile.pos.x + 1 - tiles_full_len.x,
+                    )
                 };
 
-                let thresh = neighbor_min + (neighbor_max - neighbor_min) / 2;
+                let (min, max) = tile_buffers.neighbor_blur(pos, full_index, tiles_full_len);
+                (min, max, tile)
+            }
+        };
 
-                for (y_px, row) in tile.iter().enumerate() {
-                    let row_index = ((pos.y * tile_buffers.tile_size) + y_px) * src.width()
-                        + pos.x * tile_buffers.tile_size;
+        let thresh = neighbor_min + (neighbor_max - neighbor_min) / 2;
 
-                    for (x_px, px) in (row as &[u8]).iter().enumerate() {
-                        dst_data[row_index + x_px] = if px > &thresh {
-                            Pixel::White
-                        } else {
-                            Pixel::Black
-                        };
-                    }
-                }
-            },
-        );
+        for (y_px, row) in tile.data.iter().enumerate() {
+            let row_index = ((tile.pos.y * tile_buffers.tile_size) + y_px) * src.width()
+                + tile.pos.x * tile_buffers.tile_size;
+
+            for (x_px, px) in (row as &[u8]).iter().enumerate() {
+                dst_data[row_index + x_px] = if px > &thresh {
+                    Pixel::White
+                } else {
+                    Pixel::Black
+                };
+            }
+        }
+    });
 
     Ok(())
 }
