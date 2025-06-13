@@ -198,7 +198,7 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
         return Err(AprilTagError::InvalidImageSize);
     }
 
-    let tile_iterator = TileIterator::from_image(src, tile_buffers.tile_size);
+    let tile_iterator = TileIterator::from_image(src, tile_buffers.tile_size)?;
     let tiles_full_len = find_full_tiles(src.size(), tile_buffers.tile_size);
 
     let expected_tile_count = tiles_full_len.x * tiles_full_len.y;
@@ -240,7 +240,7 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
     });
 
     // Binarize the image
-    TileIterator::from_image(src, tile_buffers.tile_size).for_each(|tile| {
+    TileIterator::from_image(src, tile_buffers.tile_size)?.for_each(|tile| {
         let (neighbor_min, neighbor_max, tile) = match tile {
             ImageTile::FullTile(tile) => {
                 let (min, max) =

@@ -1,4 +1,7 @@
-use crate::utils::{find_total_tiles, Point2d};
+use crate::{
+    errors::AprilTagError,
+    utils::{find_total_tiles, Point2d},
+};
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 
 /// Contains metadata and data for a single tile of an image.
@@ -63,8 +66,11 @@ impl<'a, T> TileIterator<'a, T> {
     pub fn from_image<const C: usize, A: ImageAllocator>(
         img: &'a Image<T, C, A>,
         tile_size: usize,
-    ) -> Self {
+    ) -> Result<Self, AprilTagError> {
         let img_size = img.size();
+        if img.width() < tile_size || img.height() < tile_size {
+            return Err(AprilTagError::InvalidImageSize);
+        }
 
         let tiles_len = find_total_tiles(img_size, tile_size);
         let last_tile_px = Point2d {
@@ -80,7 +86,7 @@ impl<'a, T> TileIterator<'a, T> {
             },
         };
 
-        Self {
+        Ok(Self {
             img_data: img.as_slice(),
             img_size,
             tile_size,
@@ -90,7 +96,7 @@ impl<'a, T> TileIterator<'a, T> {
             next_index: 0,
             next_full_index: 0,
             buffer: Vec::with_capacity(tile_size),
-        }
+        })
     }
 }
 
@@ -178,7 +184,7 @@ mod tests {
             CpuAllocator,
         )?;
 
-        let tile_iter = TileIterator::from_image(&image, 4);
+        let tile_iter = TileIterator::from_image(&image, 4)?;
         let mut counter = 0;
 
         for tile in tile_iter {
@@ -222,7 +228,7 @@ mod tests {
             CpuAllocator,
         )?;
 
-        let mut iter = TileIterator::from_image(&img, 2);
+        let mut iter = TileIterator::from_image(&img, 2)?;
 
         macro_rules! test_iter_next {
             ($variant:ident, $x:expr, $y:expr, $index:expr, $full_index:expr, $rows:expr) => {
@@ -256,6 +262,23 @@ mod tests {
             test_iter_next!(PartialTile, 2, 3, 11, 5, &[&[35]]);
         };
         assert_eq!(iter.next(), None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_invalid_image() -> Result<(), Box<dyn std::error::Error>> {
+        let img: Image<_, 1, _> = Image::from_size_val(
+            ImageSize {
+                width: 3,
+                height: 4,
+            },
+            0,
+            CpuAllocator,
+        )?;
+
+        let tile_iterator = TileIterator::from_image(&img, 4);
+        matches!(tile_iterator, Err(AprilTagError::InvalidImageSize));
 
         Ok(())
     }
