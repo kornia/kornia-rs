@@ -41,7 +41,7 @@ pub struct TileIterator<'a, T> {
     img_data: &'a [T],
     img_size: ImageSize,
     tile_size: usize,
-    tiles_len: Point2d,
+    tiles_dim: Point2d,
     last_tile_px: Point2d,
     next_tile_index: Point2d,
     /// The index of the next tile to be yielded by the iterator (counts all tiles, including partial ones).
@@ -90,7 +90,7 @@ impl<'a, T> TileIterator<'a, T> {
             img_data: img.as_slice(),
             img_size,
             tile_size,
-            tiles_len,
+            tiles_dim: tiles_len,
             last_tile_px,
             next_tile_index: Point2d::default(),
             next_index: 0,
@@ -105,19 +105,19 @@ impl<'a, T> Iterator for TileIterator<'a, T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         // Stop iteration if we've processed all tiles
-        if self.next_tile_index.y >= self.tiles_len.y {
+        if self.next_tile_index.y >= self.tiles_dim.y {
             return None;
         }
 
         // number of horizontal pixels in the current tile
-        let tile_x_px = if self.next_tile_index.x == self.tiles_len.x - 1 {
+        let tile_x_px = if self.next_tile_index.x == self.tiles_dim.x - 1 {
             self.last_tile_px.x
         } else {
             self.tile_size
         };
 
         // number of vertical pixels in the current tile
-        let tile_y_px = if self.next_tile_index.y == self.tiles_len.y - 1 {
+        let tile_y_px = if self.next_tile_index.y == self.tiles_dim.y - 1 {
             self.last_tile_px.y
         } else {
             self.tile_size
@@ -138,13 +138,13 @@ impl<'a, T> Iterator for TileIterator<'a, T> {
 
         // Update indices
         self.next_tile_index.x += 1;
-        if self.next_tile_index.x >= self.tiles_len.x {
+        if self.next_tile_index.x >= self.tiles_dim.x {
             self.next_tile_index.x = 0;
             self.next_tile_index.y += 1;
         }
 
         self.next_index += 1;
-        let data = unsafe { std::slice::from_raw_parts(self.buffer.as_mut_ptr(), tile_y_px) };
+        let data = unsafe { std::slice::from_raw_parts(self.buffer.as_ptr(), tile_y_px) };
 
         let tile = if data.len() == self.tile_size && data[0].len() == self.tile_size {
             self.next_full_index += 1;

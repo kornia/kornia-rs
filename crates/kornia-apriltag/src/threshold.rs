@@ -7,13 +7,13 @@ use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 ///
 /// The tiles are indexed in row-major order, i.e., tile IDs increase first along the x-axis (columns),
 /// then along the y-axis (rows) only for the full tiles.
-pub struct TileBuffers {
+pub struct TileMinMax {
     tile_min: Vec<u8>,
     tile_max: Vec<u8>,
     tile_size: usize,
 }
 
-impl TileBuffers {
+impl TileMinMax {
     /// Creates a new `TileBuffers` with capacity based on the image size and tile size.
     ///
     /// # Parameters
@@ -163,7 +163,7 @@ impl TileBuffers {
 ///
 /// ```
 /// use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
-/// use kornia_apriltag::threshold::{adaptive_threshold, TileBuffers};
+/// use kornia_apriltag::threshold::{adaptive_threshold, TileMinMax};
 /// use kornia_apriltag::utils::Pixel;
 ///
 /// let src = Image::new(
@@ -177,7 +177,7 @@ impl TileBuffers {
 /// .unwrap();
 /// let mut dst = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator).unwrap();
 ///
-/// let mut tile_buffers = TileBuffers::new(src.size(), 2);
+/// let mut tile_buffers = TileMinMax::new(src.size(), 2);
 /// adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20).unwrap();
 /// assert_eq!(dst.as_slice(), &[0, 0, 255, 255, 255, 255]);
 /// ```
@@ -185,7 +185,7 @@ impl TileBuffers {
 pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<u8, 1, A1>,
     dst: &mut Image<Pixel, 1, A2>,
-    tile_buffers: &mut TileBuffers,
+    tile_buffers: &mut TileMinMax,
     min_white_black_diff: u8,
 ) -> Result<(), AprilTagError> {
     if src.size() != dst.size() {
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn test_neighbor_min_max() {
-        let tile_buffers = TileBuffers {
+        let tile_buffers = TileMinMax {
             tile_min: vec![10, 20, 30, 40],
             tile_max: vec![50, 60, 70, 80],
             tile_size: 2,
@@ -362,7 +362,7 @@ mod tests {
         )?;
         let mut dst = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
 
-        let mut tile_buffers = TileBuffers::new(src.size(), 2);
+        let mut tile_buffers = TileMinMax::new(src.size(), 2);
         adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20)?;
 
         #[rustfmt::skip]
@@ -391,7 +391,7 @@ mod tests {
         )?;
         let mut dst = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
 
-        let mut tile_buffers = TileBuffers::new(src.size(), 2);
+        let mut tile_buffers = TileMinMax::new(src.size(), 2);
         adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20)?;
         assert_eq!(dst.as_slice(), &[Pixel::Skip; 16]);
         Ok(())
@@ -402,7 +402,7 @@ mod tests {
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
         let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
 
-        let mut tile_buffers = TileBuffers::new(src.size(), 4);
+        let mut tile_buffers = TileMinMax::new(src.size(), 4);
         adaptive_threshold(&src, &mut bin, &mut tile_buffers, 20)?;
 
         assert_eq!(bin.as_slice(), src.as_slice());
@@ -420,7 +420,7 @@ mod tests {
 
         let mut dst = Image::from_size_val(img_size, Pixel::default(), CpuAllocator)?;
 
-        let mut tile_buffers = TileBuffers::new(
+        let mut tile_buffers = TileMinMax::new(
             ImageSize {
                 width: 3,
                 height: 2,
@@ -433,7 +433,7 @@ mod tests {
             Err(AprilTagError::InvalidTileBufferSize(1, 4))
         ));
 
-        let mut tile_buffers = TileBuffers::new(src.size(), 5);
+        let mut tile_buffers = TileMinMax::new(src.size(), 5);
         let result = adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20);
         assert!(matches!(result, Err(AprilTagError::InvalidImageSize)));
 
