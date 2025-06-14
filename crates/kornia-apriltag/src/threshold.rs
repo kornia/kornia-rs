@@ -8,8 +8,8 @@ use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 /// The tiles are indexed in row-major order, i.e., tile IDs increase first along the x-axis (columns),
 /// then along the y-axis (rows) only for the full tiles.
 pub struct TileMinMax {
-    tile_min: Vec<u8>,
-    tile_max: Vec<u8>,
+    min: Vec<u8>,
+    max: Vec<u8>,
     tile_size: usize,
 }
 
@@ -29,8 +29,8 @@ impl TileMinMax {
         let num_tiles = tiles_full.x * tiles_full.y;
 
         Self {
-            tile_min: vec![0; num_tiles],
-            tile_max: vec![0; num_tiles],
+            min: vec![0; num_tiles],
+            max: vec![0; num_tiles],
             tile_size,
         }
     }
@@ -41,8 +41,8 @@ impl TileMinMax {
         current_index: usize,
         tiles_len: Point2d,
     ) -> (u8, u8) {
-        let mut neighbor_min = self.tile_min[current_index];
-        let mut neighbor_max = self.tile_max[current_index];
+        let mut neighbor_min = self.min[current_index];
+        let mut neighbor_max = self.max[current_index];
 
         if current_tile.y > 0 {
             // Uppermost tile
@@ -117,12 +117,12 @@ impl TileMinMax {
         neighbor_max: &mut u8,
         neighbor_index: usize,
     ) {
-        if self.tile_min[neighbor_index] < *neighbor_min {
-            *neighbor_min = self.tile_min[neighbor_index]
+        if self.min[neighbor_index] < *neighbor_min {
+            *neighbor_min = self.min[neighbor_index]
         }
 
-        if self.tile_max[neighbor_index] > *neighbor_max {
-            *neighbor_max = self.tile_max[neighbor_index];
+        if self.max[neighbor_index] > *neighbor_max {
+            *neighbor_max = self.max[neighbor_index];
         }
     }
 }
@@ -137,8 +137,9 @@ impl TileMinMax {
 ///
 /// - `src`: The source grayscale image.
 /// - `dst`: The destination image where the binarized result will be stored. Must have the same size as `src`.
-/// - `tile_buffers`: A mutable reference to a [`TileBuffers`] struct used to store the minimum and maximum pixel values for
-///   each tile. This buffer is filled during processing and reused across calls to avoid repeated allocations.
+/// - `tile_min_max`: A mutable reference to a [`TileMinMax`] struct used to store the minimum and maximum pixel
+///   values for each tile. This buffer is filled during processing and reused across calls to avoid repeated
+///   allocations.
 /// - `min_white_black_diff`: The minimum difference between the maximum and minimum pixel values in a tile
 ///   for it to be considered for thresholding. Tiles with lower contrast are skipped.
 ///
@@ -185,7 +186,7 @@ impl TileMinMax {
 pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<u8, 1, A1>,
     dst: &mut Image<Pixel, 1, A2>,
-    tile_buffers: &mut TileMinMax,
+    tile_min_max: &mut TileMinMax,
     min_white_black_diff: u8,
 ) -> Result<(), AprilTagError> {
     if src.size() != dst.size() {
@@ -194,19 +195,19 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
         );
     }
 
-    if src.width() < tile_buffers.tile_size || src.height() < tile_buffers.tile_size {
+    if src.width() < tile_min_max.tile_size || src.height() < tile_min_max.tile_size {
         return Err(AprilTagError::InvalidImageSize);
     }
 
-    let tile_iterator = TileIterator::from_image(src, tile_buffers.tile_size)?;
-    let tiles_full_len = find_full_tiles(src.size(), tile_buffers.tile_size);
+    let tile_iterator = TileIterator::from_image(src, tile_min_max.tile_size)?;
+    let tiles_full_len = find_full_tiles(src.size(), tile_min_max.tile_size);
 
     let expected_tile_count = tiles_full_len.x * tiles_full_len.y;
-    if tile_buffers.tile_min.len() != expected_tile_count {
+    if tile_min_max.min.len() != expected_tile_count {
         // It is guaranteed for tile_min and tile_max to have same length by design
         // so, avoiding additional check for tile_max
         return Err(AprilTagError::InvalidTileBufferSize(
-            tile_buffers.tile_min.len(),
+            tile_min_max.min.len(),
             expected_tile_count,
         ));
     }
@@ -235,21 +236,21 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
             }
         }
 
-        tile_buffers.tile_min[tile.full_index] = local_min;
-        tile_buffers.tile_max[tile.full_index] = local_max;
+        tile_min_max.min[tile.full_index] = local_min;
+        tile_min_max.max[tile.full_index] = local_max;
     });
 
     // Binarize the image
-    TileIterator::from_image(src, tile_buffers.tile_size)?.for_each(|tile| {
+    TileIterator::from_image(src, tile_min_max.tile_size)?.for_each(|tile| {
         let (neighbor_min, neighbor_max, tile) = match tile {
             ImageTile::FullTile(tile) => {
                 let (min, max) =
-                    tile_buffers.neighbor_blur(tile.pos, tile.full_index, tiles_full_len);
+                    tile_min_max.neighbor_blur(tile.pos, tile.full_index, tiles_full_len);
 
                 if max - min < min_white_black_diff {
                     for y_px in 0..tile.data.len() {
-                        let row = ((tile.pos.y * tile_buffers.tile_size) + y_px) * src.width();
-                        let start_index = row + (tile.pos.x * tile_buffers.tile_size);
+                        let row = ((tile.pos.y * tile_min_max.tile_size) + y_px) * src.width();
+                        let start_index = row + (tile.pos.x * tile_min_max.tile_size);
                         let end_index = start_index + tile.data[0].len();
 
                         for px in dst_data.iter_mut().take(end_index).skip(start_index) {
@@ -263,8 +264,8 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
                 (min, max, tile)
             }
             ImageTile::PartialTile(tile) => {
-                let is_partial_y = tile.data.len() < tile_buffers.tile_size;
-                let is_partial_x = tile.data[0].len() < tile_buffers.tile_size;
+                let is_partial_y = tile.data.len() < tile_min_max.tile_size;
+                let is_partial_x = tile.data[0].len() < tile_min_max.tile_size;
 
                 let (pos, full_index) = if is_partial_y && is_partial_x {
                     (
@@ -292,7 +293,7 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
                     )
                 };
 
-                let (min, max) = tile_buffers.neighbor_blur(pos, full_index, tiles_full_len);
+                let (min, max) = tile_min_max.neighbor_blur(pos, full_index, tiles_full_len);
                 (min, max, tile)
             }
         };
@@ -300,8 +301,8 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
         let thresh = neighbor_min + (neighbor_max - neighbor_min) / 2;
 
         for (y_px, row) in tile.data.iter().enumerate() {
-            let row_index = ((tile.pos.y * tile_buffers.tile_size) + y_px) * src.width()
-                + tile.pos.x * tile_buffers.tile_size;
+            let row_index = ((tile.pos.y * tile_min_max.tile_size) + y_px) * src.width()
+                + tile.pos.x * tile_min_max.tile_size;
 
             for (x_px, px) in (row as &[u8]).iter().enumerate() {
                 dst_data[row_index + x_px] = if px > &thresh {
@@ -325,8 +326,8 @@ mod tests {
     #[test]
     fn test_neighbor_min_max() {
         let tile_buffers = TileMinMax {
-            tile_min: vec![10, 20, 30, 40],
-            tile_max: vec![50, 60, 70, 80],
+            min: vec![10, 20, 30, 40],
+            max: vec![50, 60, 70, 80],
             tile_size: 2,
         };
 

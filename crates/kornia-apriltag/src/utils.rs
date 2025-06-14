@@ -11,7 +11,7 @@ use kornia_image::ImageSize;
 /// # Returns
 ///
 /// A `Point2d` representing the number of tiles along the x and y axes.
-pub fn find_total_tiles(size: ImageSize, tile_size: usize) -> Point2d {
+pub(crate) fn find_total_tiles(size: ImageSize, tile_size: usize) -> Point2d {
     Point2d {
         x: size.width.div_ceil(tile_size),
         y: size.height.div_ceil(tile_size),
@@ -28,7 +28,7 @@ pub fn find_total_tiles(size: ImageSize, tile_size: usize) -> Point2d {
 /// # Returns
 ///
 /// A `Point2d` representing the number of full tiles along the x and y axes.
-pub fn find_full_tiles(size: ImageSize, tile_size: usize) -> Point2d {
+pub(crate) fn find_full_tiles(size: ImageSize, tile_size: usize) -> Point2d {
     Point2d {
         x: size.width / tile_size,
         y: size.height / tile_size,
@@ -37,7 +37,7 @@ pub fn find_full_tiles(size: ImageSize, tile_size: usize) -> Point2d {
 
 /// Represents a point in 2D space.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
-pub struct Point2d {
+pub(crate) struct Point2d {
     /// The x-coordinate of the point.
     pub x: usize,
     /// The y-coordinate of the point.

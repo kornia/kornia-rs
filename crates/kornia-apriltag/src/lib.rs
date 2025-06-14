@@ -11,4 +11,4 @@ pub mod utils;
 pub mod threshold;
 
 /// image iteration utilities module.
-pub mod iter;
+pub(crate) mod iter;
