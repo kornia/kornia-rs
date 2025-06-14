@@ -112,6 +112,73 @@ impl SE2 {
             ])),
         )
     }
+
+    #[inline]
+    fn absc(theta: f32) -> (f32, f32, f32, f32) {
+        if theta.abs() < 1e-6 {
+            let t2 = theta * theta;
+            let s = 1.0 - t2 / 6.0;
+            let c = 0.0; // (1 - cos θ) / θ ≈ 0 for small θ
+            let a = 0.5 - t2 / 24.0;
+            let b = 0.5 - t2 / 24.0;
+            (a, b, s, c)
+        } else {
+            let s = theta.sin() / theta;
+            let c = (1.0 - theta.cos()) / theta;
+            let a = c / theta;
+            let b = s / theta;
+            (a, b, s, c)
+        }
+    }
+
+    pub fn right_jacobian(v: Vec2, theta: f32) -> Mat3A {
+        let (_a, _b, s, c) = Self::absc(theta);
+        let p1 = v.x;
+        let p2 = v.y;
+
+        let (third_col_x, third_col_y) = if theta.abs() < 1e-6 {
+            // Limit as theta -> 0: [p2, -p1, 1]
+            (p2, -p1)
+        } else {
+            let theta_sq = theta * theta;
+            let sin_t = theta.sin();
+            let cos_t = theta.cos();
+            (
+                (theta * p1 + p2 * (cos_t - 1.0) - p1 * sin_t) / theta_sq,
+                (p1 * (sin_t - theta) + theta * p2 + p2 * cos_t) / theta_sq,
+            )
+        };
+
+        Mat3A::from_cols(
+            Vec3A::new(s, c, 0.0),
+            Vec3A::new(-c, s, 0.0),
+            Vec3A::new(third_col_x, third_col_y, 1.0),
+        )
+    }
+
+    pub fn left_jacobian(v: Vec2, theta: f32) -> Mat3A {
+        let (_a, _b, s, c) = Self::absc(theta);
+        let p1 = v.x;
+        let p2 = v.y;
+
+        let (third_col_x, third_col_y) = if theta.abs() < 1e-6 {
+            // Limit as theta -> 0: [p2, -p1, 1]
+            (p2, -p1)
+        } else {
+            let theta_sq = theta * theta;
+            let sin_t = theta.sin();
+            let cos_t = theta.cos();
+            (
+                (theta * p1 + p2 * (cos_t - 1.0) + p1 * sin_t) / theta_sq,
+                (-p1 * (sin_t - theta) + theta * p2 - p2 * cos_t) / theta_sq,
+            )
+        };
+        Mat3A::from_cols(
+            Vec3A::new(s, c, 0.0),
+            Vec3A::new(-c, s, 0.0),
+            Vec3A::new(third_col_x, third_col_y, 1.0),
+        )
+    }
 }
 
 impl std::ops::Mul<SE2> for SE2 {
@@ -582,5 +649,105 @@ mod tests {
         assert_relative_eq!(right_result.r.z.y, se2.r.z.y, epsilon = EPSILON);
         assert_relative_eq!(right_result.t.x, se2.t.x, epsilon = EPSILON);
         assert_relative_eq!(right_result.t.y, se2.t.y, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_left_jacobian() {
+        // Test case 1: v = (1.0, 2.0), theta = 0.5
+        let v = Vec2::new(1.0, 2.0);
+        let theta = 0.5;
+        let jl = SE2::left_jacobian(v, theta);
+
+        let sin_t = theta.sin();
+        let cos_t = theta.cos();
+        let theta_sq = theta * theta;
+        let third_col_x = (theta * v.x + v.y * (cos_t - 1.0) + v.x * sin_t) / theta_sq;
+        let third_col_y = (-v.x * (sin_t - theta) + theta * v.y - v.y * cos_t) / theta_sq;
+        let expected_jl = Mat3A::from_cols(
+            Vec3A::new(sin_t / theta, (1.0 - cos_t) / theta, 0.0),
+            Vec3A::new(-(1.0 - cos_t) / theta, sin_t / theta, 0.0),
+            Vec3A::new(third_col_x, third_col_y, 1.0),
+        );
+
+        for col in 0..3 {
+            for row in 0..3 {
+                assert_relative_eq!(
+                    jl.col(col)[row],
+                    expected_jl.col(col)[row],
+                    epsilon = 1e-5
+                );
+            }
+        }
+
+        // Test case 2: v = (1.0, 2.0), theta = 0.0 (small-angle case)
+        let v = Vec2::new(1.0, 2.0);
+        let theta = 0.0;
+        let jl = SE2::left_jacobian(v, theta);
+
+        let expected_jl = Mat3A::from_cols(
+            Vec3A::new(1.0, 0.0, 0.0),
+            Vec3A::new(0.0, 1.0, 0.0),
+            Vec3A::new(v.y, -v.x, 1.0), // [p2, -p1, 1]
+        );
+
+        for col in 0..3 {
+            for row in 0..3 {
+                assert_relative_eq!(
+                    jl.col(col)[row],
+                    expected_jl.col(col)[row],
+                    epsilon = 1e-5
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_right_jacobian() {
+        // Test case 1: v = (1.0, 2.0), theta = 0.5
+        let v = Vec2::new(1.0, 2.0);
+        let theta = 0.5;
+        let jr = SE2::right_jacobian(v, theta);
+
+        let sin_t = theta.sin();
+        let cos_t = theta.cos();
+        let theta_sq = theta * theta;
+        let third_col_x = (theta * v.x + v.y * (cos_t - 1.0) - v.x * sin_t) / theta_sq;
+        let third_col_y = (v.x * (sin_t - theta) + theta * v.y + v.y * cos_t) / theta_sq;
+        let expected_jr = Mat3A::from_cols(
+            Vec3A::new(sin_t / theta, (1.0 - cos_t) / theta, 0.0),
+            Vec3A::new(-(1.0 - cos_t) / theta, sin_t / theta, 0.0),
+            Vec3A::new(third_col_x, third_col_y, 1.0),
+        );
+
+        for col in 0..3 {
+            for row in 0..3 {
+                assert_relative_eq!(
+                    jr.col(col)[row],
+                    expected_jr.col(col)[row],
+                    epsilon = 1e-5
+                );
+            }
+        }
+
+        // Test case 2: v = (1.0, 2.0), theta = 0.0 (small-angle case)
+        let v = Vec2::new(1.0, 2.0);
+        let theta = 0.0;
+        let jr = SE2::right_jacobian(v, theta);
+
+        let expected_jr = Mat3A::from_cols(
+            Vec3A::new(1.0, 0.0, 0.0),
+            Vec3A::new(0.0, 1.0, 0.0),
+            Vec3A::new(v.y, -v.x, 1.0), // [p2, -p1, 1]
+        );
+
+        for col in 0..3 {
+            for row in 0..3 {
+                assert_relative_eq!(
+                    jr.col(col)[row],
+                    expected_jr.col(col)[row],
+                    epsilon = 1e-5
+                );
+            }
+        }
     }
 }

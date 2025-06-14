@@ -81,6 +81,18 @@ impl SO2 {
     pub fn vee(omega: Mat2) -> f32 {
         omega.y_axis.x
     }
+
+    /// Left Jacobian of SO(2).
+    /// For SO(2), the Lie group is commutative, J_l(theta) = 1.
+    pub fn left_jacobian(_theta: f32) -> f32 {
+        1.0
+    }
+
+    /// Right Jacobian of SO(2).
+    /// For SO(2), the Lie group is commutative, J_r(theta) = 1.
+    pub fn right_jacobian(_theta: f32) -> f32 {
+        1.0
+    }
 }
 
 impl std::ops::Mul<Vec2> for SO2 {
