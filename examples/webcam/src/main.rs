@@ -1,14 +1,16 @@
 use argh::FromArgs;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-
 use kornia::{
     image::{ops, Image, ImageSize},
     imgproc,
-    io::{fps_counter::FpsCounter, stream::V4L2CameraConfig},
+    io::{
+        fps_counter::FpsCounter,
+        stream::{v4l as kornia_v4l, V4L2CameraConfig},
+    },
     tensor::CpuAllocator,
+};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
 };
 
 #[derive(FromArgs)]
@@ -35,17 +37,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // create a webcam capture object with camera id 0
     // and force the image size to 640x480
-    let mut webcam = V4L2CameraConfig::new()
-        .with_camera_id(args.camera_id)
-        .with_fps(args.fps)
-        .with_size(ImageSize {
-            width: 640,
-            height: 480,
-        })
-        .build()?;
+    //let mut webcam = V4L2CameraConfig::new()
+    //    .with_camera_id(args.camera_id)
+    //    .with_fps(args.fps)
+    //    .with_size(ImageSize {
+    //        width: 640,
+    //        height: 480,
+    //    })
+    //    .build()?;
 
-    // start the background pipeline
-    webcam.start()?;
+    //// start the background pipeline
+    //webcam.start()?;
+    let img_size = ImageSize {
+        width: 320,
+        height: 180,
+    };
+
+    let mut webcam = kornia_v4l::V4LVideoCapture::new(kornia_v4l::V4LCameraConfig {
+        device_path: "/dev/video0".to_string(),
+        size: img_size,
+        fps: args.fps,
+    })?;
 
     // create a cancel token to stop the webcam capture
     let cancel_token = Arc::new(AtomicBool::new(false));
@@ -80,49 +92,74 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // preallocate images
-    let mut img_resized = Image::from_size_val(new_size, 0u8, CpuAllocator)?;
-    let mut img_f32 = Image::from_size_val(new_size, 0f32, CpuAllocator)?;
-    let mut gray = Image::from_size_val(new_size, 0f32, CpuAllocator)?;
-    let mut bin = Image::from_size_val(new_size, 0f32, CpuAllocator)?;
+    //let mut img_resized = Image::from_size_val(new_size, 0u8)?;
+    //let mut img_f32 = Image::from_size_val(new_size, 0f32)?;
+    //let mut gray = Image::from_size_val(new_size, 0f32)?;
+    //let mut bin = Image::from_size_val(new_size, 0f32)?;
+
+    let mut img_rgb8 = Image::from_size_val(img_size, 0u8, CpuAllocator)?;
 
     // start grabbing frames from the camera
     while !cancel_token.load(Ordering::SeqCst) {
-        let Some(img) = webcam.grab()? else {
+        //let Some(img) = webcam.grab()? else {
+        //    continue;
+        //};
+        let Some(Ok(img)) = webcam.grab() else {
             continue;
         };
 
-        // lets resize the image to 256x256
-        imgproc::resize::resize_fast(
-            &img,
-            &mut img_resized,
-            imgproc::interpolation::InterpolationMode::Bilinear,
-        )?;
+        println!("img.buffer: {:?}", img.image.numel());
+        println!("img.size: {:?}", img.image.size());
+        println!("img.fourcc: {:?}", img.fourcc);
+        println!("img.timestamp: {:?}", img.timestamp);
+        println!("img.sequence: {:?}", img.sequence);
 
-        // convert the image to f32 and normalize before processing
-        ops::cast_and_scale(&img_resized, &mut img_f32, 1. / 255.)?;
+        kornia::io::jpeg::decode_image_jpeg_rgb8(img.image.as_slice(), &mut img_rgb8)?;
 
-        // convert the image to grayscale and binarize
-        imgproc::color::gray_from_rgb(&img_f32, &mut gray)?;
-        imgproc::threshold::threshold_binary(&gray, &mut bin, 0.35, 0.65)?;
+        println!("img_rgb8.buffer: {:?}", &img_rgb8.as_slice()[..100]);
+        println!("########################");
 
-        // update the fps counter
-        fps_counter.update();
-
-        // log the image
         rec.log_static(
             "image",
-            &rerun::Image::from_elements(img.as_slice(), img.size().into(), rerun::ColorModel::RGB),
+            &rerun::Image::from_elements(
+                img_rgb8.as_slice(),
+                img_rgb8.size().into(),
+                rerun::ColorModel::RGB,
+            ),
         )?;
 
-        // log the binary image
-        rec.log_static(
-            "binary",
-            &rerun::Image::from_elements(bin.as_slice(), bin.size().into(), rerun::ColorModel::L),
-        )?;
+        // lets resize the image to 256x256
+        //imgproc::resize::resize_fast(
+        //    &img,
+        //    &mut img_resized,
+        //    imgproc::interpolation::InterpolationMode::Bilinear,
+        //)?;
+
+        //// convert the image to f32 and normalize before processing
+        //ops::cast_and_scale(&img_resized, &mut img_f32, 1. / 255.)?;
+
+        //// convert the image to grayscale and binarize
+        //imgproc::color::gray_from_rgb(&img_f32, &mut gray)?;
+        //imgproc::threshold::threshold_binary(&gray, &mut bin, 0.35, 0.65)?;
+
+        //// update the fps counter
+        //fps_counter.update();
+
+        //// log the image
+        //rec.log_static(
+        //    "image",
+        //    &rerun::Image::from_elements(img.as_slice(), img.size().into(), rerun::ColorModel::RGB),
+        //)?;
+
+        //// log the binary image
+        //rec.log_static(
+        //    "binary",
+        //    &rerun::Image::from_elements(bin.as_slice(), bin.size().into(), rerun::ColorModel::L),
+        //)?;
     }
 
     // NOTE: this is important to close the webcam properly, otherwise the app will hang
-    webcam.close()?;
+    //webcam.close()?;
 
     println!("Finished recording. Closing app.");
 
