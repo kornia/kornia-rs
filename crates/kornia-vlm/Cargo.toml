@@ -1,0 +1,15 @@
+[package]
+name = "kornia-vlm"
+description = "Vision Language Models in Rust"
+authors = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+include = { workspace = true }
+license = { workspace = true }
+readme = { workspace = true }
+repository = { workspace = true }
+rust-version = { workspace = true }
+version = { workspace = true }
+
+[dependencies]
+kornia-image = { workspace = true }
