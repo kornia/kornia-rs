@@ -17,7 +17,8 @@ pub struct TileInfo<'a, T> {
     /// The index among full (non-partial) tiles.
     pub full_index: usize,
     /// A borrowed slice of rows, where each row is a slice of pixel data.
-    pub data: &'a [&'a [T]],
+    //pub data: &'a [&'a [T]],
+    pub data: Vec<&'a [T]>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,7 +47,7 @@ pub struct TileIterator<'a, T> {
     next_tile_index: Point2d,
     /// The index of the next tile to be yielded by the iterator (counts all tiles, including partial ones).
     next_index: usize,
-    /// The index of the next full (non-partial) tile to be yielded by the iterator.
+    /// The index of the next full (,non-partial) tile to be yielded by the iterator.
     next_full_index: usize,
     buffer: Vec<&'a [T]>,
 }
@@ -123,14 +124,16 @@ impl<'a, T> Iterator for TileIterator<'a, T> {
             self.tile_size
         };
 
-        self.buffer.clear();
+        //self.buffer.clear();
+        let mut buffer = Vec::with_capacity(tile_y_px);
         for y_px in 0..tile_y_px {
             let row = ((self.next_tile_index.y * self.tile_size) + y_px) * self.img_size.width;
             let start_index = row + (self.next_tile_index.x * self.tile_size);
             let end_index = start_index + tile_x_px;
 
             let row_pxs = &self.img_data[start_index..end_index];
-            self.buffer.push(row_pxs);
+            //self.buffer.push(row_pxs);
+            buffer.push(row_pxs);
         }
 
         let next_tile_index = self.next_tile_index;
@@ -144,19 +147,20 @@ impl<'a, T> Iterator for TileIterator<'a, T> {
         }
 
         self.next_index += 1;
-        let data = unsafe { std::slice::from_raw_parts(self.buffer.as_ptr(), tile_y_px) };
+        //let data = unsafe { std::slice::from_raw_parts(self.buffer.as_ptr(), tile_y_px) };
 
-        let tile = if data.len() == self.tile_size && data[0].len() == self.tile_size {
+        //let tile = if data.len() == self.tile_size && data[0].len() == self.tile_size {
+        let tile = if buffer.len() == self.tile_size && buffer[0].len() == self.tile_size {
             self.next_full_index += 1;
             ImageTile::FullTile(TileInfo {
-                data,
+                data: buffer,
                 pos: next_tile_index,
                 index,
                 full_index: self.next_full_index - 1,
             })
         } else {
             ImageTile::PartialTile(TileInfo {
-                data,
+                data: buffer,
                 pos: next_tile_index,
                 index,
                 full_index: self.next_full_index - 1,
@@ -248,18 +252,18 @@ mod tests {
         #[rustfmt::skip]
         let _ = {
             //              Tile Type    x  y  i  fi  expected value
-            test_iter_next!(FullTile,    0, 0, 0,  0, &[&[1, 2], &[6, 7]]);
-            test_iter_next!(FullTile,    1, 0, 1,  1, &[&[3, 4], &[8, 9]]);
-            test_iter_next!(PartialTile, 2, 0, 2,  1, &[&[5], &[10]]);
-            test_iter_next!(FullTile,    0, 1, 3,  2, &[&[11, 12], &[16, 17]]);
-            test_iter_next!(FullTile,    1, 1, 4,  3, &[&[13, 14], &[18, 19]]);
-            test_iter_next!(PartialTile, 2, 1, 5,  3, &[&[15], &[20]]);
-            test_iter_next!(FullTile,    0, 2, 6,  4, &[&[21, 22], &[26, 27]]);
-            test_iter_next!(FullTile,    1, 2, 7,  5, &[&[23, 24], &[28, 29]]);
-            test_iter_next!(PartialTile, 2, 2, 8,  5, &[&[25], &[30]]);
-            test_iter_next!(PartialTile, 0, 3, 9,  5, &[&[31, 32]]);
-            test_iter_next!(PartialTile, 1, 3, 10, 5, &[&[33, 34]]);
-            test_iter_next!(PartialTile, 2, 3, 11, 5, &[&[35]]);
+            test_iter_next!(FullTile,    0, 0, 0,  0, vec![&[1, 2], &[6, 7]]);
+            test_iter_next!(FullTile,    1, 0, 1,  1, vec![&[3, 4], &[8, 9]]);
+            test_iter_next!(PartialTile, 2, 0, 2,  1, vec![&[5], &[10]]);
+            test_iter_next!(FullTile,    0, 1, 3,  2, vec![&[11, 12], &[16, 17]]);
+            test_iter_next!(FullTile,    1, 1, 4,  3, vec![&[13, 14], &[18, 19]]);
+            test_iter_next!(PartialTile, 2, 1, 5,  3, vec![&[15], &[20]]);
+            test_iter_next!(FullTile,    0, 2, 6,  4, vec![&[21, 22], &[26, 27]]);
+            test_iter_next!(FullTile,    1, 2, 7,  5, vec![&[23, 24], &[28, 29]]);
+            test_iter_next!(PartialTile, 2, 2, 8,  5, vec![&[25], &[30]]);
+            test_iter_next!(PartialTile, 0, 3, 9,  5, vec![&[31, 32]]);
+            test_iter_next!(PartialTile, 1, 3, 10, 5, vec![&[33, 34]]);
+            test_iter_next!(PartialTile, 2, 3, 11, 5, vec![&[35]]);
         };
         assert_eq!(iter.next(), None);
 
