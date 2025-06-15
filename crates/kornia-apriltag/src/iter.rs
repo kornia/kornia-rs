@@ -37,6 +37,15 @@ pub enum ImageTile<'a, T> {
 /// The tile size is specified at construction, and the iterator will yield tiles of the given size,
 /// except for tiles at the image edges, which may be smaller if the image dimensions are not
 /// multiples of the tile size.
+///
+/// # SAFETY
+///
+/// The slice of row references (`&[&[T]]`) returned by each call to [`next()`](TileIterator::next)
+/// is only valid until the next call to `next()` or until the iterator is dropped.
+///
+/// After calling `next()` again, or dropping the iterator, any previously returned slice
+/// may point to invalid memory and must not be accessed. Do not store or use these slices
+/// beyond the lifetime of the iterator or across calls to `next()`.
 pub struct TileIterator<'a, T> {
     img_data: &'a [T],
     img_size: ImageSize,
@@ -144,6 +153,7 @@ impl<'a, T> Iterator for TileIterator<'a, T> {
         }
 
         self.next_index += 1;
+        // TODO: Check the safety of this usage of from_raw_parts more deeply.
         let data = unsafe { std::slice::from_raw_parts(self.buffer.as_ptr(), tile_y_px) };
 
         let tile = if data.len() == self.tile_size && data[0].len() == self.tile_size {
