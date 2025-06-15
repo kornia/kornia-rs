@@ -5,9 +5,9 @@ pub enum AprilTagError {
     #[error(transparent)]
     ImageError(#[from] kornia_image::error::ImageError),
 
-    /// The length of the TileBuffer was not as expected.
-    #[error("Expected the length of TileBuffer to be {0} but found {1}")]
-    InvalidTileBufferSize(usize, usize),
+    /// The source image dimensions do not match the [TileMinMax](crate::threshold::TileMinMax) dimensions.
+    #[error("The source image dimensions do not match the TileMinMax dimensions")]
+    ImageTileSizeMismatch,
 
     /// The minimum image size should be tile_size x tile_size
     #[error("The minimum image size should be tile_size x tile_size")]

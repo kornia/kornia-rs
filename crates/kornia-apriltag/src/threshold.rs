@@ -202,14 +202,10 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
     let tile_iterator = TileIterator::from_image(src, tile_min_max.tile_size)?;
     let tiles_full_len = find_full_tiles(src.size(), tile_min_max.tile_size);
 
-    let expected_tile_count = tiles_full_len.x * tiles_full_len.y;
-    if tile_min_max.min.len() != expected_tile_count {
+    if tile_min_max.min.len() != tiles_full_len.x * tiles_full_len.y {
         // It is guaranteed for tile_min and tile_max to have same length by design
         // so, avoiding additional check for tile_max
-        return Err(AprilTagError::InvalidTileBufferSize(
-            tile_min_max.min.len(),
-            expected_tile_count,
-        ));
+        return Err(AprilTagError::ImageTileSizeMismatch);
     }
 
     let dst_data = dst.as_slice_mut();
@@ -429,10 +425,7 @@ mod tests {
             2,
         );
         let result = adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20);
-        assert!(matches!(
-            result,
-            Err(AprilTagError::InvalidTileBufferSize(1, 4))
-        ));
+        assert!(matches!(result, Err(AprilTagError::ImageTileSizeMismatch)));
 
         let mut tile_buffers = TileMinMax::new(src.size(), 5);
         let result = adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20);
