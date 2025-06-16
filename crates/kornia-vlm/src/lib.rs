@@ -1,1 +1,1 @@
-// TODO: port paligemma, smolvlm
+pub mod paligemma;
