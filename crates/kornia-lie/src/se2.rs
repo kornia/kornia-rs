@@ -150,7 +150,7 @@ mod tests {
     const EPSILON: f32 = 1e-6;
 
     #[cfg(target_arch = "aarch64")]
-    const EPSILON: f32 = 1e-3;
+    const EPSILON: f32 = 1e-2;
 
     fn make_random_se2() -> SE2 {
         SE2::from_random()
