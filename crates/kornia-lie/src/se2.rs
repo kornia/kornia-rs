@@ -1,5 +1,5 @@
 use crate::so2::SO2;
-use glam::{Mat2, Mat3A, Vec2};
+use glam::{Mat2, Mat3A, Vec2, Vec3A};
 use rand::Rng;
 
 #[derive(Debug, Clone, Copy)]
@@ -61,7 +61,8 @@ impl SE2 {
         mat
     }
 
-    pub fn exp(upsilon: Vec2, theta: f32) -> Self {
+    pub fn exp(v: Vec3A) -> Self {
+        let theta = v.z;
         let so2 = SO2::exp(theta);
 
         Self {
@@ -72,12 +73,12 @@ impl SE2 {
                 } else {
                     (0.0, 0.0)
                 };
-                Vec2::new(a * upsilon.x - b * upsilon.y, b * upsilon.x + a * upsilon.y)
+                Vec2::new(a * v.x - b * v.y, b * v.x + a * v.y)
             },
         }
     }
 
-    pub fn log(&self) -> (Vec2, f32) {
+    pub fn log(&self) -> Vec3A {
         let theta = self.r.log();
         let half_theta = 0.5 * theta;
         let denom = self.r.z.x - 1.0;
@@ -91,11 +92,11 @@ impl SE2 {
         let v_inv = Mat2::from_cols_array(&[a, -half_theta, half_theta, a]);
         let upsilon = v_inv.mul_vec2(self.t);
 
-        (upsilon, theta)
+        Vec3A::new(upsilon.x, upsilon.y, theta)
     }
 
-    pub fn hat(upsilon: Vec2, theta: f32) -> Mat3A {
-        let hat_theta = SO2::hat(theta);
+    pub fn hat(v: Vec3A) -> Mat3A {
+        let hat_theta = SO2::hat(/* theta = */ v.z);
         Mat3A::from_cols_array(&[
             hat_theta.x_axis.x,
             hat_theta.x_axis.y,
@@ -103,20 +104,21 @@ impl SE2 {
             hat_theta.y_axis.x,
             hat_theta.y_axis.y,
             0.0,
-            upsilon.x,
-            upsilon.y,
+            v.x,
+            v.y,
             0.0,
         ])
     }
 
-    pub fn vee(omega: Mat3A) -> (Vec2, f32) {
-        (
-            Vec2::new(omega.z_axis.x, omega.z_axis.y),
+    pub fn vee(omega: Mat3A) -> Vec3A {
+        Vec3A::new(
+            omega.z_axis.x,
+            omega.z_axis.y,
             SO2::vee(Mat2::from_cols_array(&[
-                omega.x_axis.x, // [0, 0]
-                omega.x_axis.y, // [1, 0]
-                omega.y_axis.x, // [0, 1]
-                omega.y_axis.y, // [1, 1]
+                omega.x_axis.x,
+                omega.x_axis.y,
+                omega.y_axis.x,
+                omega.y_axis.y,
             ])),
         )
     }
@@ -323,7 +325,7 @@ mod tests {
         // Test with specific values
         let upsilon = Vec2::new(1.0, 1.0);
         let theta = 1.0;
-        let se2 = SE2::exp(upsilon, theta);
+        let se2 = SE2::exp(Vec3A::new(upsilon.x, upsilon.y, theta));
 
         assert_relative_eq!(se2.r.z.x, 0.5403, epsilon = 1e-3);
         assert_relative_eq!(se2.r.z.y, 0.8415, epsilon = 1e-3);
@@ -333,7 +335,7 @@ mod tests {
         // Test with zero rotation
         let upsilon_zero = Vec2::new(2.0, 3.0);
         let theta_zero = 0.0;
-        let se2_zero = SE2::exp(upsilon_zero, theta_zero);
+        let se2_zero = SE2::exp(Vec3A::new(upsilon_zero.x, upsilon_zero.y, theta_zero));
 
         assert_relative_eq!(se2_zero.r.z.x, 1.0, epsilon = EPSILON);
         assert_relative_eq!(se2_zero.r.z.y, 0.0, epsilon = EPSILON);
@@ -341,7 +343,7 @@ mod tests {
         assert_relative_eq!(se2_zero.t.y, 0.0, epsilon = EPSILON);
 
         // Test exp(0) = identity
-        let se2_identity = SE2::exp(Vec2::ZERO, 0.0);
+        let se2_identity = SE2::exp(Vec3A::ZERO);
         assert_relative_eq!(se2_identity.r.z.x, SE2::IDENTITY.r.z.x, epsilon = EPSILON);
         assert_relative_eq!(se2_identity.r.z.y, SE2::IDENTITY.r.z.y, epsilon = EPSILON);
         assert_relative_eq!(se2_identity.t.x, SE2::IDENTITY.t.x, epsilon = EPSILON);
@@ -353,28 +355,28 @@ mod tests {
         // Test with specific values
         let upsilon = Vec2::new(1.0, 1.0);
         let theta = 1.0;
-        let se2 = SE2::exp(upsilon, theta);
-        let (log_t, log_theta) = se2.log();
+        let se2 = SE2::exp(Vec3A::new(upsilon.x, upsilon.y, theta));
+        let log_t = se2.log();
 
         assert_relative_eq!(log_t.x, upsilon.x, epsilon = 1e-3);
         assert_relative_eq!(log_t.y, upsilon.y, epsilon = 1e-3);
-        assert_relative_eq!(log_theta, theta, epsilon = 1e-3);
+        assert_relative_eq!(log_t.z, theta, epsilon = 1e-3);
 
         // Test with another set of values
         let upsilon2 = Vec2::new(0.5 / 0.707_106_77, -0.5 / 0.707_106_77);
         let theta2 = 0.3;
-        let se2_2 = SE2::exp(upsilon2, theta2);
-        let (log_t2, log_theta2) = se2_2.log();
+        let se2_2 = SE2::exp(Vec3A::new(upsilon2.x, upsilon2.y, theta2));
+        let log_t2 = se2_2.log();
 
         assert_relative_eq!(log_t2.x, upsilon2.x, epsilon = 1e-5);
         assert_relative_eq!(log_t2.y, upsilon2.y, epsilon = 1e-5);
-        assert_relative_eq!(log_theta2, theta2, epsilon = 1e-5);
+        assert_relative_eq!(log_t2.z, theta2, epsilon = 1e-5);
 
         // Test log(identity) = 0
-        let (log_identity_t, log_identity_theta) = SE2::IDENTITY.log();
+        let log_identity_t = SE2::IDENTITY.log();
         assert_relative_eq!(log_identity_t.x, 0.0, epsilon = EPSILON);
         assert_relative_eq!(log_identity_t.y, 0.0, epsilon = EPSILON);
-        assert_relative_eq!(log_identity_theta, 0.0, epsilon = EPSILON);
+        assert_relative_eq!(log_identity_t.z, 0.0, epsilon = EPSILON);
     }
 
     #[test]
@@ -382,13 +384,13 @@ mod tests {
         // Test multiple random values
         for _ in 0..10 {
             let se2 = make_random_se2();
-            let (upsilon, theta) = se2.log();
-            let se2_exp = SE2::exp(upsilon, theta);
-            let (log_upsilon, log_theta) = se2_exp.log();
+            let log_t = se2.log();
+            let se2_exp = SE2::exp(log_t);
+            let log_t_exp = se2_exp.log();
 
-            assert_relative_eq!(log_upsilon.x, upsilon.x, epsilon = EPSILON);
-            assert_relative_eq!(log_upsilon.y, upsilon.y, epsilon = EPSILON);
-            assert_relative_eq!(log_theta, theta, epsilon = EPSILON);
+            assert_relative_eq!(log_t.x, log_t_exp.x, epsilon = EPSILON);
+            assert_relative_eq!(log_t.y, log_t_exp.y, epsilon = EPSILON);
+            assert_relative_eq!(log_t.z, log_t_exp.z, epsilon = EPSILON);
         }
 
         // Test specific values
@@ -400,12 +402,12 @@ mod tests {
         ];
 
         for (upsilon, theta) in test_cases {
-            let se2 = SE2::exp(upsilon, theta);
-            let (log_upsilon, log_theta) = se2.log();
+            let se2 = SE2::exp(Vec3A::new(upsilon.x, upsilon.y, theta));
+            let log_t = se2.log();
 
-            assert_relative_eq!(log_upsilon.x, upsilon.x, epsilon = EPSILON);
-            assert_relative_eq!(log_upsilon.y, upsilon.y, epsilon = EPSILON);
-            assert_relative_eq!(log_theta, theta, epsilon = EPSILON);
+            assert_relative_eq!(log_t.x, upsilon.x, epsilon = EPSILON);
+            assert_relative_eq!(log_t.y, upsilon.y, epsilon = EPSILON);
+            assert_relative_eq!(log_t.z, theta, epsilon = EPSILON);
         }
     }
 
@@ -413,7 +415,7 @@ mod tests {
     fn test_hat() {
         let upsilon = Vec2::new(1.0, 2.0);
         let theta = 0.5;
-        let hat_matrix = SE2::hat(upsilon, theta);
+        let hat_matrix = SE2::hat(Vec3A::new(upsilon.x, upsilon.y, theta));
 
         // Check structure: should be 3x3 matrix with specific form
         // [hat(theta)  upsilon]
@@ -441,12 +443,12 @@ mod tests {
         // Create a test matrix in the correct form
         let upsilon = Vec2::new(1.5, -2.3);
         let theta = 0.7;
-        let omega = SE2::hat(upsilon, theta);
-        let (vee_upsilon, vee_theta) = SE2::vee(omega);
+        let omega = SE2::hat(Vec3A::new(upsilon.x, upsilon.y, theta));
+        let vee_t = SE2::vee(omega);
 
-        assert_relative_eq!(vee_upsilon.x, upsilon.x, epsilon = EPSILON);
-        assert_relative_eq!(vee_upsilon.y, upsilon.y, epsilon = EPSILON);
-        assert_relative_eq!(vee_theta, theta, epsilon = EPSILON);
+        assert_relative_eq!(vee_t.x, upsilon.x, epsilon = EPSILON);
+        assert_relative_eq!(vee_t.y, upsilon.y, epsilon = EPSILON);
+        assert_relative_eq!(vee_t.z, theta, epsilon = EPSILON);
     }
 
     #[test]
@@ -454,22 +456,22 @@ mod tests {
         // Test with specific values
         let upsilon = Vec2::new(1.0 / 2.236_068, 2.0 / 2.236_068);
         let theta = 0.3;
-        let hat_matrix = SE2::hat(upsilon, theta);
-        let (vee_t, vee_theta) = SE2::vee(hat_matrix);
+        let hat_matrix = SE2::hat(Vec3A::new(upsilon.x, upsilon.y, theta));
+        let vee_t = SE2::vee(hat_matrix);
 
         assert_relative_eq!(vee_t.x, upsilon.x, epsilon = 1e-5);
         assert_relative_eq!(vee_t.y, upsilon.y, epsilon = 1e-5);
-        assert_relative_eq!(vee_theta, theta, epsilon = 1e-5);
+        assert_relative_eq!(vee_t.z, theta, epsilon = 1e-5);
 
         // Test with multiple random values
         for _ in 0..10 {
             let (rand_upsilon, rand_theta) = make_random_vec3();
-            let hat = SE2::hat(rand_upsilon, rand_theta);
-            let (vee_upsilon, vee_theta) = SE2::vee(hat);
+            let hat = SE2::hat(Vec3A::new(rand_upsilon.x, rand_upsilon.y, rand_theta));
+            let vee_t = SE2::vee(hat);
 
-            assert_relative_eq!(vee_upsilon.x, rand_upsilon.x, epsilon = EPSILON);
-            assert_relative_eq!(vee_upsilon.y, rand_upsilon.y, epsilon = EPSILON);
-            assert_relative_eq!(vee_theta, rand_theta, epsilon = EPSILON);
+            assert_relative_eq!(vee_t.x, rand_upsilon.x, epsilon = EPSILON);
+            assert_relative_eq!(vee_t.y, rand_upsilon.y, epsilon = EPSILON);
+            assert_relative_eq!(vee_t.z, rand_theta, epsilon = EPSILON);
         }
     }
 
