@@ -84,13 +84,13 @@ impl SO2 {
 
     /// Left Jacobian of SO(2).
     /// For SO(2), the Lie group is commutative, J_l(theta) = 1.
-    pub fn left_jacobian(_theta: f32) -> f32 {
+    pub fn left_jacobian() -> f32 {
         1.0
     }
 
     /// Right Jacobian of SO(2).
     /// For SO(2), the Lie group is commutative, J_r(theta) = 1.
-    pub fn right_jacobian(_theta: f32) -> f32 {
+    pub fn right_jacobian() -> f32 {
         1.0
     }
 }
