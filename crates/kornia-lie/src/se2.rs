@@ -1,5 +1,5 @@
 use crate::so2::SO2;
-use glam::{Mat2, Mat3A, Vec2, Vec3A};
+use glam::{Mat2, Mat3A, Vec2};
 use rand::Rng;
 
 #[derive(Debug, Clone, Copy)]
@@ -96,11 +96,17 @@ impl SE2 {
 
     pub fn hat(upsilon: Vec2, theta: f32) -> Mat3A {
         let hat_theta = SO2::hat(theta);
-        Mat3A::from_cols(
-            hat_theta.x_axis.extend(0.0).into(),
-            hat_theta.y_axis.extend(0.0).into(),
-            Vec3A::new(upsilon.x, upsilon.y, 0.0),
-        )
+        Mat3A::from_cols_array(&[
+            hat_theta.x_axis.x,
+            hat_theta.x_axis.y,
+            0.0,
+            hat_theta.y_axis.x,
+            hat_theta.y_axis.y,
+            0.0,
+            upsilon.x,
+            upsilon.y,
+            0.0,
+        ])
     }
 
     pub fn vee(omega: Mat3A) -> (Vec2, f32) {
@@ -136,6 +142,7 @@ impl std::ops::Mul<Vec2> for SE2 {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+    use glam::Vec3A;
 
     #[cfg(not(target_arch = "aarch64"))]
     const EPSILON: f32 = 1e-6;

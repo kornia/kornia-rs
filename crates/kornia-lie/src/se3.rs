@@ -133,14 +133,14 @@ impl SE3 {
         let h = SO3::hat(omega);
 
         Mat4::from_cols_array(&[
-            h.x_axis.x, h.x_axis.y, h.x_axis.z, upsilon.x, h.y_axis.x, h.y_axis.y, h.y_axis.z,
-            upsilon.y, h.z_axis.x, h.z_axis.y, h.z_axis.z, upsilon.z, 0.0, 0.0, 0.0, 0.0,
+            h.x_axis.x, h.x_axis.y, h.x_axis.z, 0.0, h.y_axis.x, h.y_axis.y, h.y_axis.z, 0.0,
+            h.z_axis.x, h.z_axis.y, h.z_axis.z, 0.0, upsilon.x, upsilon.y, upsilon.z, 0.0,
         ])
     }
 
     pub fn vee(omega: Mat4) -> (Vec3A, Vec3A) {
         (
-            Vec3A::new(omega.x_axis.w, omega.y_axis.w, omega.z_axis.w),
+            Vec3A::new(omega.w_axis.x, omega.w_axis.y, omega.w_axis.z),
             SO3::vee4(omega),
         )
     }
@@ -447,15 +447,15 @@ mod tests {
         let hat_matrix = SE3::hat(upsilon, omega);
 
         // Check that the bottom row is [0, 0, 0, 0]
-        assert_relative_eq!(hat_matrix.w_axis.x, 0.0);
-        assert_relative_eq!(hat_matrix.w_axis.y, 0.0);
-        assert_relative_eq!(hat_matrix.w_axis.z, 0.0);
+        assert_relative_eq!(hat_matrix.x_axis.w, 0.0);
+        assert_relative_eq!(hat_matrix.y_axis.w, 0.0);
+        assert_relative_eq!(hat_matrix.z_axis.w, 0.0);
         assert_relative_eq!(hat_matrix.w_axis.w, 0.0);
 
         // Check that the translation part is correct
-        assert_relative_eq!(hat_matrix.x_axis.w, upsilon.x);
-        assert_relative_eq!(hat_matrix.y_axis.w, upsilon.y);
-        assert_relative_eq!(hat_matrix.z_axis.w, upsilon.z);
+        assert_relative_eq!(hat_matrix.w_axis.x, upsilon.x);
+        assert_relative_eq!(hat_matrix.w_axis.y, upsilon.y);
+        assert_relative_eq!(hat_matrix.w_axis.z, upsilon.z);
     }
 
     #[test]
