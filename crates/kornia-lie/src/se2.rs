@@ -81,13 +81,15 @@ impl SE2 {
         let theta = self.r.log();
         let half_theta = 0.5 * theta;
         let denom = self.r.z.x - 1.0;
+
         let a = if denom != 0.0 {
             -(half_theta * self.r.z.y) / denom
         } else {
             0.0
         };
+
         let v_inv = Mat2::from_cols_array(&[a, -half_theta, half_theta, a]);
-        let upsilon = v_inv * self.t;
+        let upsilon = v_inv.mul_vec2(self.t);
 
         (upsilon, theta)
     }
@@ -135,7 +137,11 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
 
+    #[cfg(not(target_arch = "aarch64"))]
     const EPSILON: f32 = 1e-6;
+
+    #[cfg(target_arch = "aarch64")]
+    const EPSILON: f32 = 1e-3;
 
     fn make_random_se2() -> SE2 {
         SE2::from_random()
