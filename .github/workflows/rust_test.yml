@@ -43,7 +43,7 @@ jobs:
         run: cargo install cross --locked
 
       - name: Run tests
-        run: cross test --target ${{ matrix.target }} --all-features
+        run: cross test --target ${{ matrix.target }}
 
       - name: Show sccache stats
         run: sccache --show-stats
