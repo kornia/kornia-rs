@@ -133,7 +133,8 @@ impl SE2 {
     /// │       0                  0                                1                         │
     /// └                                                                                     ┘
     /// ref: https://arxiv.org/pdf/1812.01537 (eq 163)
-    pub fn right_jacobian(v: Vec2, theta: f32) -> Mat3A {
+    pub fn right_jacobian(v: Vec3A) -> Mat3A {
+        let theta = v.z;
         let (s, c) = Self::sc(theta);
         let p1 = v.x;
         let p2 = v.y;
@@ -165,7 +166,8 @@ impl SE2 {
     /// │       0                  0                                1                        │
     /// └                                                                                    ┘
     /// ref: https://arxiv.org/pdf/1812.01537 (eq 164)
-    pub fn left_jacobian(v: Vec2, theta: f32) -> Mat3A {
+    pub fn left_jacobian(v: Vec3A) -> Mat3A {
+        let theta = v.z;
         let (s, c) = Self::sc(theta);
         let p1 = v.x;
         let p2 = v.y;
@@ -663,16 +665,16 @@ mod tests {
     #[test]
     fn test_right_jacobian() {
         use approx::assert_relative_eq;
-        use glam::{Mat3A, Vec2, Vec3A};
+        use glam::{Mat3A, Vec3A};
 
         // Test case 1: θ = 0.5
-        let v = Vec2::new(1.0, 2.0);
-        let theta = 0.5;
+        let v = Vec3A::new(1.0, 2.0, 0.5);
         let p1 = v.x;
         let p2 = v.y;
 
-        let jr = SE2::right_jacobian(v, theta);
+        let jr = SE2::right_jacobian(v);
 
+        let theta = v.z;
         let sin_t = theta.sin();
         let cos_t = theta.cos();
         let theta_sq = theta * theta;
@@ -696,8 +698,8 @@ mod tests {
         }
 
         // Test case 2: θ = 0.0 (small-angle limit)
-        let theta = 0.0;
-        let jr = SE2::right_jacobian(v, theta);
+        let v = Vec3A::new(1.0, 2.0, 0.0);
+        let jr = SE2::right_jacobian(v);
 
         let expected_jr = Mat3A::from_cols(
             Vec3A::new(1.0, 0.0, 0.0),
@@ -715,16 +717,16 @@ mod tests {
     #[test]
     fn test_left_jacobian() {
         use approx::assert_relative_eq;
-        use glam::{Mat3A, Vec2, Vec3A};
+        use glam::{Mat3A, Vec3A};
 
         // Test case 1: θ = 0.5
-        let v = Vec2::new(1.0, 2.0);
-        let theta = 0.5;
+        let v = Vec3A::new(1.0, 2.0, 0.5);
         let p1 = v.x;
         let p2 = v.y;
 
-        let jl = SE2::left_jacobian(v, theta);
+        let jl = SE2::left_jacobian(v);
 
+        let theta = v.z;
         let sin_t = theta.sin();
         let cos_t = theta.cos();
         let theta_sq = theta * theta;
@@ -748,8 +750,8 @@ mod tests {
         }
 
         // Test case 2: θ = 0.0 (small-angle limit)
-        let theta = 0.0;
-        let jl = SE2::left_jacobian(v, theta);
+        let v = Vec3A::new(1.0, 2.0, 0.0);
+        let jl = SE2::left_jacobian(v);
 
         let expected_jl = Mat3A::from_cols(
             Vec3A::new(1.0, 0.0, 0.0),
