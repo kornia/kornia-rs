@@ -43,7 +43,7 @@ jobs:
         run: cargo install cross --locked
 
       - name: Run tests
-        run: cross test --target ${{ matrix.target }}
+        run: cross test --target ${{ matrix.target }} --features "turbojpeg,gstreamer"
 
       - name: Show sccache stats
         run: sccache --show-stats
