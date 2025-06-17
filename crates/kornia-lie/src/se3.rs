@@ -21,10 +21,10 @@ impl SE3 {
         }
     }
 
-    pub fn from_matrix(mat: Mat4) -> Self {
+    pub fn from_matrix(mat: &Mat4) -> Self {
         Self {
-            r: SO3::from_matrix4(&mat),
-            t: Vec3A::from_array([mat.x_axis.w, mat.y_axis.w, mat.z_axis.w]),
+            r: SO3::from_matrix4(mat),
+            t: Vec3A::new(mat.w_axis.x, mat.w_axis.y, mat.w_axis.z),
         }
     }
 
@@ -59,10 +59,10 @@ impl SE3 {
     pub fn matrix(&self) -> Mat4 {
         let r = self.r.matrix();
         Mat4::from_cols_array(&[
-            r.x_axis.x, r.x_axis.y, r.x_axis.z, self.t.x, //
-            r.y_axis.x, r.y_axis.y, r.y_axis.z, self.t.y, //
-            r.z_axis.x, r.z_axis.y, r.z_axis.z, self.t.z, //
-            0.0, 0.0, 0.0, 1.0,
+            r.x_axis.x, r.x_axis.y, r.x_axis.z, 0.0, // col0
+            r.y_axis.x, r.y_axis.y, r.y_axis.z, 0.0, // col1
+            r.z_axis.x, r.z_axis.y, r.z_axis.z, 0.0, // col2
+            self.t.x, self.t.y, self.t.z, 1.0, // col3
         ])
     }
 
@@ -133,14 +133,14 @@ impl SE3 {
         let h = SO3::hat(omega);
 
         Mat4::from_cols_array(&[
-            h.x_axis.x, h.x_axis.y, h.x_axis.z, upsilon.x, h.y_axis.x, h.y_axis.y, h.y_axis.z,
-            upsilon.y, h.z_axis.x, h.z_axis.y, h.z_axis.z, upsilon.z, 0.0, 0.0, 0.0, 0.0,
+            h.x_axis.x, h.x_axis.y, h.x_axis.z, 0.0, h.y_axis.x, h.y_axis.y, h.y_axis.z, 0.0,
+            h.z_axis.x, h.z_axis.y, h.z_axis.z, 0.0, upsilon.x, upsilon.y, upsilon.z, 0.0,
         ])
     }
 
     pub fn vee(omega: Mat4) -> (Vec3A, Vec3A) {
         (
-            Vec3A::new(omega.x_axis.w, omega.y_axis.w, omega.z_axis.w),
+            Vec3A::new(omega.w_axis.x, omega.w_axis.y, omega.w_axis.z),
             SO3::vee4(omega),
         )
     }
@@ -210,7 +210,7 @@ mod tests {
     fn test_from_matrix() {
         // Test with identity matrix
         let mat = Mat4::IDENTITY;
-        let se3 = SE3::from_matrix(mat);
+        let se3 = SE3::from_matrix(&mat);
         assert_relative_eq!(se3.t.x, 0.0);
         assert_relative_eq!(se3.t.y, 0.0);
         assert_relative_eq!(se3.t.z, 0.0);
@@ -225,9 +225,12 @@ mod tests {
 
         // Test with a specific transformation matrix
         let mat = Mat4::from_cols_array(&[
-            1.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 2.0, 0.0, 1.0, 0.0, 3.0, 0.0, 0.0, 0.0, 1.0,
+            1.0, 0.0, 0.0, 0.0, // col0
+            0.0, 1.0, 0.0, 0.0, // col1
+            0.0, 0.0, 1.0, 0.0, // col2
+            1.0, 2.0, 3.0, 1.0, // col3
         ]);
-        let se3 = SE3::from_matrix(mat);
+        let se3 = SE3::from_matrix(&mat);
         assert_relative_eq!(se3.t.x, 1.0);
         assert_relative_eq!(se3.t.y, 2.0);
         assert_relative_eq!(se3.t.z, 3.0);
@@ -294,7 +297,10 @@ mod tests {
         let se3 = SE3::new(SO3::IDENTITY, Vec3A::new(1.0, 2.0, 3.0));
         let mat = se3.matrix();
         let expected = Mat4::from_cols_array(&[
-            1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 2.0, 0.0, 0.0, 1.0, 3.0, 0.0, 0.0, 0.0, 1.0,
+            1.0, 0.0, 0.0, 0.0, // col0
+            0.0, 1.0, 0.0, 0.0, // col1
+            0.0, 0.0, 1.0, 0.0, // col2
+            1.0, 2.0, 3.0, 1.0, // col3
         ]);
         for i in 0..4 {
             for j in 0..4 {
@@ -447,15 +453,15 @@ mod tests {
         let hat_matrix = SE3::hat(upsilon, omega);
 
         // Check that the bottom row is [0, 0, 0, 0]
-        assert_relative_eq!(hat_matrix.w_axis.x, 0.0);
-        assert_relative_eq!(hat_matrix.w_axis.y, 0.0);
-        assert_relative_eq!(hat_matrix.w_axis.z, 0.0);
+        assert_relative_eq!(hat_matrix.x_axis.w, 0.0);
+        assert_relative_eq!(hat_matrix.y_axis.w, 0.0);
+        assert_relative_eq!(hat_matrix.z_axis.w, 0.0);
         assert_relative_eq!(hat_matrix.w_axis.w, 0.0);
 
         // Check that the translation part is correct
-        assert_relative_eq!(hat_matrix.x_axis.w, upsilon.x);
-        assert_relative_eq!(hat_matrix.y_axis.w, upsilon.y);
-        assert_relative_eq!(hat_matrix.z_axis.w, upsilon.z);
+        assert_relative_eq!(hat_matrix.w_axis.x, upsilon.x);
+        assert_relative_eq!(hat_matrix.w_axis.y, upsilon.y);
+        assert_relative_eq!(hat_matrix.w_axis.z, upsilon.z);
     }
 
     #[test]
@@ -537,7 +543,7 @@ mod tests {
     fn test_matrix_from_matrix_roundtrip() {
         let se3 = make_random_se3();
         let matrix = se3.matrix();
-        let se3_reconstructed = SE3::from_matrix(matrix);
+        let se3_reconstructed = SE3::from_matrix(&matrix);
 
         // Check rotation (quaternions might have opposite signs but represent same rotation)
         let q1 = se3.r.q;
