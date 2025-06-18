@@ -2,18 +2,18 @@
 name = "kornia-3d"
 description = "3d point cloud processing library"
 
-authors.workspace = true
-categories.workspace = true
-edition.workspace = true
-homepage.workspace = true
-license.workspace = true
+authors = { workspace = true }
+categories = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
 publish = true
-repository.workspace = true
-rust-version.workspace = true
-version.workspace = true
+repository = { workspace = true }
+rust-version = { workspace = true }
+version = { workspace = true }
 
 [dependencies]
-bincode = "1.3"
+bincode = { workspace = true }
 faer = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
