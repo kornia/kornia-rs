@@ -256,7 +256,7 @@ mod tests {
         }
 
         #[rustfmt::skip]
-        let _ = {
+        {
             //              Tile Type    x  y  i  fi  expected value
             test_iter_next!(FullTile,    0, 0, 0,  0, &[&[1, 2], &[6, 7]]);
             test_iter_next!(FullTile,    1, 0, 1,  1, &[&[3, 4], &[8, 9]]);

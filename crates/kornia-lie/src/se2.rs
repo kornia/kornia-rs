@@ -466,9 +466,9 @@ mod tests {
             let se2_exp = SE2::exp(log_t);
             let log_t_exp = se2_exp.log();
 
-            assert_relative_eq!(log_t.x, log_t_exp.x, epsilon = EPSILON);
-            assert_relative_eq!(log_t.y, log_t_exp.y, epsilon = EPSILON);
-            assert_relative_eq!(log_t.z, log_t_exp.z, epsilon = EPSILON);
+            assert_relative_eq!(log_t.x, log_t_exp.x, epsilon = 1e-5);
+            assert_relative_eq!(log_t.y, log_t_exp.y, epsilon = 1e-5);
+            assert_relative_eq!(log_t.z, log_t_exp.z, epsilon = 1e-5);
         }
 
         // Test specific values

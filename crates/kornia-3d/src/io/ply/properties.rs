@@ -27,7 +27,7 @@ pub trait PlyPropertyTrait {
 ///
 /// Contains points, colors, and normals.
 #[repr(C, packed)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, bincode::Decode)]
 pub struct XYZRgbNormalsProperty {
     /// x coordinate
     pub x: f32,
@@ -66,7 +66,7 @@ impl PlyPropertyTrait for XYZRgbNormalsProperty {
 /// Header of the OpenSplat PLY file format.
 /// REF: <https://github.com/pierotofy/OpenSplat>
 #[repr(C, packed)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, bincode::Decode)]
 pub struct OpenSplatProperty {
     /// x coordinate
     pub x: f32,
@@ -216,6 +216,7 @@ impl PlyPropertyTrait for OpenSplatProperty {
 #[derive(Debug)]
 pub enum PlyProperty {
     /// OpenSplat property
+    /// NOTE: it's in a box to satisfy clippy::large_enum_variant
     OpenSplat(Box<OpenSplatProperty>),
     /// XYZRgbNormals property
     XYZRgbNormals(XYZRgbNormalsProperty),
@@ -226,11 +227,13 @@ impl PlyType {
     pub fn deserialize(&self, buffer: &[u8]) -> Result<PlyProperty, PlyError> {
         match self {
             PlyType::OpenSplat => {
-                let property: OpenSplatProperty = bincode::deserialize(buffer)?;
+                let (property, _): (OpenSplatProperty, usize) =
+                    bincode::decode_from_slice(buffer, bincode::config::standard())?;
                 Ok(PlyProperty::OpenSplat(Box::new(property)))
             }
             PlyType::XYZRgbNormals => {
-                let property: XYZRgbNormalsProperty = bincode::deserialize(buffer)?;
+                let (property, _): (XYZRgbNormalsProperty, usize) =
+                    bincode::decode_from_slice(buffer, bincode::config::standard())?;
                 Ok(PlyProperty::XYZRgbNormals(property))
             }
         }
