@@ -12,6 +12,17 @@ Welcome to kornia-py's documentation!
 
 
 
+Building Documentation
+======================
+
+To build the documentation locally, make sure you have `just` installed. Then, navigate to the `kornia-py` directory and run:
+
+.. code-block:: bash
+
+   just docs
+
+The built documentation will be available in the `_build/html` directory within the `docs` folder.
+
 Indices and tables
 ==================
 

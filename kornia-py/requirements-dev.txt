@@ -8,5 +8,8 @@ pytest
 pytest-run-parallel
 numpy
 
+sphinx
+sphinx_rtd_theme
+
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
