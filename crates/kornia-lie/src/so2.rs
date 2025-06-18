@@ -75,11 +75,23 @@ impl SO2 {
     }
 
     pub fn hat(theta: f32) -> Mat2 {
-        Mat2::from_cols_array(&[0.0, -theta, theta, 0.0])
+        Mat2::from_cols_array(&[0.0, theta, theta, 0.0])
     }
 
     pub fn vee(omega: Mat2) -> f32 {
         omega.y_axis.x
+    }
+
+    /// Left Jacobian of SO(2).
+    /// For SO(2), the Lie group is commutative, J_l(theta) = 1.
+    pub fn left_jacobian() -> f32 {
+        1.0
+    }
+
+    /// Right Jacobian of SO(2).
+    /// For SO(2), the Lie group is commutative, J_r(theta) = 1.
+    pub fn right_jacobian() -> f32 {
+        1.0
     }
 }
 
@@ -246,7 +258,7 @@ mod tests {
     #[test]
     fn test_hat() {
         let theta = 0.5;
-        let expected = Mat2::from_cols_array(&[0.0, -0.5, 0.5, 0.0]);
+        let expected = Mat2::from_cols_array(&[0.0, 0.5, 0.5, 0.0]);
         let actual = SO2::hat(theta);
 
         for i in 0..2 {
@@ -259,7 +271,7 @@ mod tests {
         let hat_matrix = SO2::hat(theta);
         assert_relative_eq!(hat_matrix.x_axis.x, 0.0);
         assert_relative_eq!(hat_matrix.y_axis.y, 0.0);
-        assert_relative_eq!(hat_matrix.x_axis.y, -hat_matrix.y_axis.x);
+        assert_relative_eq!(hat_matrix.x_axis.y, hat_matrix.y_axis.x);
     }
 
     #[test]

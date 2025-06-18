@@ -1,4 +1,5 @@
-// TODO: port paligemma, smolvlm
+pub mod paligemma;
+
 
 mod text_model;
 mod vision_model;

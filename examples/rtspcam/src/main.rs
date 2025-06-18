@@ -50,11 +50,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         RTSPCameraConfig::new()
             .with_settings(
-                &args.username.as_ref().ok_or("Username required")?,
-                &args.password.as_ref().ok_or("Password required")?,
-                &args.camera_ip.as_ref().ok_or("Camera IP required")?,
+                args.username.as_ref().ok_or("Username required")?,
+                args.password.as_ref().ok_or("Password required")?,
+                args.camera_ip.as_ref().ok_or("Camera IP required")?,
                 &args.camera_port.ok_or("Camera port required")?,
-                &args.stream.as_ref().ok_or("Stream name required")?,
+                args.stream.as_ref().ok_or("Stream name required")?,
             )
             .build()?
     };

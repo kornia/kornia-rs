@@ -13,7 +13,7 @@ pub enum PlyError {
 
     /// Failed to deserialize PLY file
     #[error("Failed to deserialize PLY file")]
-    Deserialize(#[from] bincode::Error),
+    Deserialize(#[from] bincode::error::DecodeError),
 
     /// Unsupported PLY property
     #[error("Unsupported PLY property")]
