@@ -216,7 +216,7 @@ impl PlyPropertyTrait for OpenSplatProperty {
 #[derive(Debug)]
 pub enum PlyProperty {
     /// OpenSplat property
-    /// NOTE: it's in a box to stisfy clippy::large_enum_variant
+    /// NOTE: it's in a box to satisfy clippy::large_enum_variant
     OpenSplat(Box<OpenSplatProperty>),
     /// XYZRgbNormals property
     XYZRgbNormals(XYZRgbNormalsProperty),
