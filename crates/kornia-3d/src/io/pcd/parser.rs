@@ -13,7 +13,7 @@ pub enum PcdError {
 
     /// Failed to deserialize PCD file
     #[error("Failed to deserialize PCD file")]
-    Deserialize(#[from] bincode::Error),
+    Deserialize(#[from] bincode::error::DecodeError),
 
     /// Unsupported PCD property
     #[error("Unsupported PCD property")]
@@ -25,7 +25,7 @@ pub enum PcdError {
 }
 
 /// A property of a point in a PCD file.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, bincode::Decode)]
 pub struct PcdPropertyXYZRGBNCurvature {
     /// x coordinate
     pub x: f32,
@@ -91,9 +91,10 @@ pub fn read_pcd_binary(path: impl AsRef<Path>) -> Result<PointCloud, PcdError> {
     let mut normals = Vec::new();
 
     while reader.read_exact(&mut buffer).is_ok() {
-        let property: PcdPropertyXYZRGBNCurvature = bincode::deserialize(&buffer)?;
+        let (property, _): (PcdPropertyXYZRGBNCurvature, usize) =
+            bincode::decode_from_slice(&buffer, bincode::config::standard())?;
         points.push([property.x as f64, property.y as f64, property.z as f64]);
-        let rgb = property.rgb as u32;
+        let rgb = property.rgb;
         colors.push([
             ((rgb >> 16) & 0xFF) as u8,
             ((rgb >> 8) & 0xFF) as u8,
