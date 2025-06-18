@@ -82,7 +82,7 @@ impl Smol {
     /// * `config` - The configuration for the Smol model
     ///
     /// # Returns
-    pub fn new(config: SmolConfig) -> Result<Self, SmolError> {
+    pub fn new() -> Result<Self, SmolError> {
         // #[cfg(feature = "cuda")]
         // let (device, dtype) = match Device::cuda_if_available(0) {
         //     Ok(device) => (device, DType::BF16),
