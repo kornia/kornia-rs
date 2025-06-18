@@ -1,61 +1,129 @@
 mod text_model;
 mod vision_model;
+mod utils;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    use std::io::{Error, Write};
-    use std::io;
+use std::io::{Error, Write};
+use std::io;
 
-    use candle_core::{Device, IndexOp, Result, Shape, Tensor};
-    use hf_hub::api::sync::Api;
-    use tokenizers::{tokenizer::Tokenizer, PaddingDirection, PaddingParams, PaddingStrategy, TruncationDirection, TruncationParams, TruncationStrategy};
-    use candle_nn::ops;
-    use rand::rng;
-    use rand::prelude::IndexedRandom;
-    use vision_model::preprocess_image;
-    use std::cmp::Ordering;
-    use terminal_size::{terminal_size, Width};
+use candle_core::{Device, IndexOp, Result, Shape, Tensor};
+use hf_hub::api::sync::Api;
+use tokenizers::Encoding;
+use tokenizers::{tokenizer::Tokenizer, PaddingDirection, PaddingParams, PaddingStrategy, TruncationDirection, TruncationParams, TruncationStrategy};
+use candle_nn::ops;
+use rand::rng;
+use rand::prelude::IndexedRandom;
+use std::cmp::Ordering;
+use terminal_size::{terminal_size, Width};
 
-    use crate::vision_model::{load_image_url, get_prompt_split_image};
+use utils::{preprocess_image, load_image_url, get_prompt_split_image};
 
-    fn count_lines(text: &str) -> usize {
-        if let Some((Width(w), _)) = terminal_size() {
-            (text.len() + w as usize + 1) / w as usize
-        } else {
-            1
-        }
+
+
+fn count_lines(text: &str) -> usize {
+    if let Some((Width(w), _)) = terminal_size() {
+        (text.len() + w as usize + 1) / w as usize
+    } else {
+        1
     }
+}
 
-    fn clear_lines(n: usize) {
-        for _ in 0..n {
-            print!("\x1B[1A\x1B[2K");
-        }
-        io::stdout().flush().unwrap();
+fn clear_lines(n: usize) {
+    for _ in 0..n {
+        print!("\x1B[1A\x1B[2K");
     }
+    io::stdout().flush().unwrap();
+}
 
-    fn read_input(cli_prompt: &str) -> String {
-        let mut input = String::new();
-        print!("{}", cli_prompt);
-        io::stdout().flush().unwrap();
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read input");
-        
-        input.trim().to_owned()
-    }
+fn read_input(cli_prompt: &str) -> String {
+    let mut input = String::new();
+    print!("{}", cli_prompt);
+    io::stdout().flush().unwrap();
+    io::stdin()
+        .read_line(&mut input)
+        .expect("Failed to read input");
+    
+    input.trim().to_owned()
+}
 
-    fn main() -> Result<()> {
-        let device = Device::new_cuda(0)?;
-        let mut tokenizer = Tokenizer::from_pretrained("HuggingFaceTB/SmolVLM-Instruct", None).unwrap();
-        let api = Api::new().unwrap();
-        let repo = api.model("HuggingFaceTB/SmolVLM-Instruct".to_string());
-        let weights = repo.get("model.safetensors").unwrap();
-        let weights = candle_core::safetensors::load(weights, &device)?;
-        let mut model = text_model::SmolVLM::load(&weights, &device)?;
+
+#[derive(thiserror::Error, Debug)]
+pub enum SmolError {
+    #[error(transparent)]
+    FailedToLoadModel(#[from] hf_hub::api::sync::ApiError),
+
+    #[error(transparent)]
+    CandleError(#[from] candle_core::Error),
+
+    #[error(transparent)]
+    ImageError(#[from] kornia_image::ImageError),
+
+    #[error(transparent)]
+    TokenizerError(#[from] tokenizers::Error),
+
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
+
+    #[error("Cannot find the <end_of_utterance> token")]
+    EosTokenNotFound,
+}
+
+
+pub struct Smol {
+    model: text_model::SmolVLM,
+    image_token_enc: Encoding,
+}
+
+impl Smol {
+    /// Create a new Smol model
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The configuration for the Smol model
+    ///
+    /// # Returns
+    pub fn new(config: SmolConfig) -> Result<Self, SmolError> {
+        // #[cfg(feature = "cuda")]
+        // let (device, dtype) = match Device::cuda_if_available(0) {
+        //     Ok(device) => (device, DType::BF16),
+        //     Err(e) => {
+        //         log::warn!("CUDA not available, defaulting to CPU: {}", e);
+        //         (Device::Cpu, DType::F32)
+        //     }
+        // };
+
+        // #[cfg(not(feature = "cuda"))]
+        let (device, dtype) = (Device::Device(0), DType::F32);
+        let (model, tokenizer) = Self::load_model(&device)?;
         let image_token_enc = tokenizer.encode("<image>", false).unwrap();
-        let image_token = image_token_enc.get_ids();
+
+        Ok(Self {
+            model,
+            image_token_enc,
+        })
+    }
+
+    /// Run the inference of the Paligemma model
+    ///
+    /// # Arguments
+    ///
+    /// * `image` - The rgb8    image to generate a caption for with shape [H, W, 3]
+    /// * `prompt` - The prompt to generate a caption for
+    /// * `sample_len` - The length of the generated caption
+    /// * `stdout_debug` - Whether to print the debug information to the stdout
+    ///
+    /// # Returns
+    ///
+    /// * `caption` - The generated caption
+    pub fn inference(
+        &mut self,
+        // image: &Image<u8, 3, CpuAllocator>,
+        // prompt: &str,
+        // sample_len: usize,
+        // stdout_debug: bool,
+    ) -> Result<String, SmolError> {
+
+        let image_token = self.image_token_enc.get_ids();
         let mut message = String::from("<|im_start|>");
         let mut image: Vec<(Tensor, Tensor)> = Vec::new();
         let mut response = String::new();
@@ -135,11 +203,19 @@ mod tests {
                 response += &output;
             }
         }
-        Ok(())
+
+        Ok(response)
     }
 
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+    // utility function to load the model
+    fn load_model(device: &Device) -> Result<(Model, Tokenizer), SmolError> {
+        let mut tokenizer = Tokenizer::from_pretrained("HuggingFaceTB/SmolVLM-Instruct", None).unwrap();
+        let api = Api::new().unwrap();
+        let repo = api.model("HuggingFaceTB/SmolVLM-Instruct".to_string());
+        let weights = repo.get("model.safetensors").unwrap();
+        let weights = candle_core::safetensors::load(weights, &device)?;
+        let mut model = text_model::SmolVLM::load(&weights, &device)?;
+
+        Ok((model, tokenizer))
     }
 }
