@@ -162,7 +162,7 @@ impl SE3 {
     ///          − ½ ⎜───────────────────────── − 3 ──────────────────⎟
     ///                       ⎝         θ⁴                    θ⁵      ⎠
     ///            · (θ×ρ×θ²× + θ²×ρ×θ×).
-    ///ref: https://arxiv.org/pdf/1812.01537 (eq 180)
+    /// ref: https://arxiv.org/pdf/1812.01537 (eq 180)
     pub fn left_jacobian(rho: Vec3A, omega: Vec3A) -> [[f32; 6]; 6] {
         let theta2 = omega.dot(omega);
         let theta = theta2.sqrt();
@@ -237,7 +237,7 @@ impl SE3 {
         jl
     }
 
-    /// Right Jacobian  Jᵣ(ρ, θ)  ∈ ℝ⁶ˣ⁶  (Barfoot Eq. 10.32).
+    /// Right Jacobian  Jᵣ(ρ, θ)  ∈ ℝ⁶ˣ⁶.
     /// Using Jᵣ(ρ,θ) = Jₗ(−ρ, −θ).
     pub fn right_jacobian(rho: Vec3A, omega: Vec3A) -> [[f32; 6]; 6] {
         Self::left_jacobian(-rho, -omega)
