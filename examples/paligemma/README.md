@@ -1,5 +1,25 @@
 Example showing how to use the Google Paligemma model with Candle.
+## Setup
 
+Setup huggingface account credentials to access the model.
+ 
+ Accept the licence once (in a browser)
+
+    Open https://huggingface.co/google/paligemma-3b-mix-224
+
+    Log in and click “Agree and access”.
+
+    You should now see a green tick “You have access”.
+
+Create / copy a user access-token
+
+    Go to Settings ▸ Access Tokens on Hugging Face.
+
+    Click “New token”, scope: Read is enough. Copy the string that looks like hf_abcd….
+
+Tell the CLI about the token:
+
+    huggingface-cli login --token hf_yourtoken
 ## Usage
 
 ```bash
