@@ -37,6 +37,26 @@ impl SE2 {
         }
     }
 
+    #[inline]
+    pub fn rplus(&self, tau: Vec3A) -> Self {
+        *self * SE2::exp(tau)
+    }
+
+    #[inline]
+    pub fn rminus(&self, other: &Self) -> Vec3A {
+        (self.inverse() * *other).log()
+    }
+
+    #[inline]
+    pub fn lplus(tau: Vec3A, x: &Self) -> Self {
+        SE2::exp(tau) * *x
+    }
+
+    #[inline]
+    pub fn lminus(y: &Self, x: &Self) -> Vec3A {
+        (*y * x.inverse()).log()
+    }
+
     pub fn matrix(&self) -> Mat3A {
         let r = self.r.matrix();
         Mat3A::from_cols_array(&[
@@ -284,6 +304,28 @@ mod tests {
         );
         assert_relative_eq!(se2_original.t.x, se2_reconstructed.t.x, epsilon = EPSILON);
         assert_relative_eq!(se2_original.t.y, se2_reconstructed.t.y, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_se2_rplus_rminus_roundtrip() {
+        let x = make_random_se2();
+        let tau = Vec3A::new(0.4, -0.2, 0.7); // some increment
+        let y = x.rplus(tau); // X ⊕ τ → Y
+        let diff = x.rminus(&y); // Y ⊖ X → τ
+        assert_relative_eq!(diff.x, tau.x, epsilon = EPSILON);
+        assert_relative_eq!(diff.y, tau.y, epsilon = EPSILON);
+        assert_relative_eq!(diff.z, tau.z, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_se2_lplus_lminus_consistency() {
+        let x = make_random_se2();
+        let tau = Vec3A::new(-1.0, 0.3, -0.5);
+        let y = SE2::lplus(tau, &x); // τ ⊕ X → Y
+        let diff = SE2::lminus(&y, &x); // Y ⊖ X → τ
+        assert_relative_eq!(diff.x, tau.x, epsilon = EPSILON);
+        assert_relative_eq!(diff.y, tau.y, epsilon = EPSILON);
+        assert_relative_eq!(diff.z, tau.z, epsilon = EPSILON);
     }
 
     #[test]
