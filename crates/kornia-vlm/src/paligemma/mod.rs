@@ -5,7 +5,10 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::paligemma::{Config, Model};
 use hf_hub::{api::sync::Api, Repo, RepoType};
-use kornia_image::{allocator::CpuAllocator, Image};
+use kornia_image::{
+    allocator::{CpuAllocator, ImageAllocator},
+    Image,
+};
 use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast};
 use model::{TextGeneration, TextGenerationConfig};
 use tokenizers::Tokenizer;
@@ -113,7 +116,7 @@ impl Paligemma {
     ///
     /// # Arguments
     ///
-    /// * `image` - The rgb8    image to generate a caption for with shape [H, W, 3]
+    /// * `image` - The rgb8 image to generate a caption for with shape [H, W, 3]
     /// * `prompt` - The prompt to generate a caption for
     /// * `sample_len` - The length of the generated caption
     /// * `stdout_debug` - Whether to print the debug information to the stdout
@@ -121,9 +124,9 @@ impl Paligemma {
     /// # Returns
     ///
     /// * `caption` - The generated caption
-    pub fn inference(
+    pub fn inference<A: ImageAllocator>(
         &mut self,
-        image: &Image<u8, 3, CpuAllocator>,
+        image: &Image<u8, 3, A>,
         prompt: &str,
         sample_len: usize,
         stdout_debug: bool,
