@@ -1,5 +1,5 @@
 [package]
-name = "paligemma"
+name = "smol"
 authors = { workspace = true }
 categories = { workspace = true }
 description = { workspace = true }

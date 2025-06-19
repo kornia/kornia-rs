@@ -6,10 +6,9 @@ mod utils;
 use std::io::{Error, Write};
 use std::io;
 
-use candle_core::{Device, IndexOp, Result, Shape, Tensor};
+use candle_core::{Device, DType, IndexOp, Shape, Tensor};
 use hf_hub::api::sync::Api;
-use tokenizers::Encoding;
-use tokenizers::{tokenizer::Tokenizer, PaddingDirection, PaddingParams, PaddingStrategy, TruncationDirection, TruncationParams, TruncationStrategy};
+use tokenizers::{Encoding, Tokenizer};
 use candle_nn::ops;
 use rand::rng;
 use rand::prelude::IndexedRandom;
@@ -17,6 +16,8 @@ use std::cmp::Ordering;
 use terminal_size::{terminal_size, Width};
 
 use utils::{preprocess_image, load_image_url, get_prompt_split_image};
+
+use crate::smol::text_model::SmolVLM;
 
 
 
@@ -71,7 +72,9 @@ pub enum SmolError {
 
 pub struct Smol {
     model: text_model::SmolVLM,
+    tokenizer: Tokenizer,
     image_token_enc: Encoding,
+    device: Device,
 }
 
 impl Smol {
@@ -93,13 +96,15 @@ impl Smol {
         // };
 
         // #[cfg(not(feature = "cuda"))]
-        let (device, dtype) = (Device::Device(0), DType::F32);
+        let (device, _dtype) = (Device::new_cuda(0).unwrap(), DType::F32);
         let (model, tokenizer) = Self::load_model(&device)?;
         let image_token_enc = tokenizer.encode("<image>", false).unwrap();
 
         Ok(Self {
             model,
+            tokenizer,
             image_token_enc,
+            device,
         })
     }
 
@@ -139,7 +144,7 @@ impl Smol {
                             Err(Box::new(Error::new(io::ErrorKind::Other, "One image max")))
                         } else {Ok(v)}
                     )
-                    .map(|img| preprocess_image(img, 1920, 384, &device));
+                    .map(|img| preprocess_image(img, 1920, 384, &self.device));
                 let mut txt_prompt = String::new();
                 if let Ok((_,_,cols,rows)) = img {
                     let img_token = get_prompt_split_image(81, rows, cols);
@@ -158,27 +163,27 @@ impl Smol {
                     image.push((img_patches, mask_patches));
                 }
             }
-            let encoding = tokenizer.encode(message.clone(), false).unwrap();
+            let encoding = self.tokenizer.encode(message.clone(), false).unwrap();
             let tokens = encoding.get_ids();
-            let input = Tensor::from_slice(tokens, Shape::from_dims(&[tokens.len()]), &device)?;
+            let input = Tensor::from_slice(tokens, Shape::from_dims(&[tokens.len()]), &self.device)?;
             let vision_data = if image.len() > 0 {
-                let image_token_mask = Tensor::from_slice(image_token, &[1], &device)?;
+                let image_token_mask = Tensor::from_slice(image_token, &[1], &self.device)?;
                 let image_token_mask = input.broadcast_eq(&image_token_mask)?;
                 Some((image_token_mask, &image[0].0, &image[0].1))
             } else {
                 None
             };
-            let logits = model.forward(&input, i, vision_data, &device)?;
+            let logits = self.model.forward(&input, i, vision_data, &self.device)?;
             let (s, _embed_dim) = logits.dims2()?;
             let last_logit = logits.i((s-1, ..))?;
             let out_token = {
                 let temperature = Tensor::from_slice(&[
                     0.2f32
-                ], (1,), &device)?;
+                ], (1,), &self.device)?;
                 let k = 50;
                 let scaled = last_logit.broadcast_div(&temperature)?;
                 let probs = ops::softmax(&scaled, 0)?;
-                let mut probs_vec: Vec<f32> = probs.to_vec1()?;
+                let probs_vec: Vec<f32> = probs.to_vec1()?;
                 let mut indices: Vec<usize> = (0..probs_vec.len()).collect(); 
                 indices.sort_by(|&i, &j| probs_vec[j].partial_cmp(&probs_vec[i]).unwrap_or(Ordering::Equal));
                 let top_k_indices = &indices[..k];
@@ -191,7 +196,7 @@ impl Smol {
                     .expect("Sampling failed");
                 [*sampled_index as u32]
             };
-            output = tokenizer.decode(&out_token.as_slice(), false).unwrap();
+            output = self.tokenizer.decode(&out_token.as_slice(), false).unwrap();
             if !response.is_empty() {
                 clear_lines(lines_printed);
             }
@@ -208,14 +213,30 @@ impl Smol {
     }
 
     // utility function to load the model
-    fn load_model(device: &Device) -> Result<(Model, Tokenizer), SmolError> {
-        let mut tokenizer = Tokenizer::from_pretrained("HuggingFaceTB/SmolVLM-Instruct", None).unwrap();
+    fn load_model(device: &Device) -> Result<(SmolVLM, Tokenizer), SmolError> {
+        let tokenizer = Tokenizer::from_pretrained("HuggingFaceTB/SmolVLM-Instruct", None).unwrap();
         let api = Api::new().unwrap();
         let repo = api.model("HuggingFaceTB/SmolVLM-Instruct".to_string());
         let weights = repo.get("model.safetensors").unwrap();
         let weights = candle_core::safetensors::load(weights, &device)?;
-        let mut model = text_model::SmolVLM::load(&weights, &device)?;
+        let model = text_model::SmolVLM::load(&weights, &device)?;
 
         Ok((model, tokenizer))
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candle_core::Device;
+
+    #[test]
+    fn test_smol_inference() {
+        let mut model = Smol::new().unwrap();
+
+        // cargo test -p kornia-vlm test_smol_inference --features "cuda" -- --nocapture
+        println!("Running inference on SmolVLM model...");
+        model.inference();
     }
 }

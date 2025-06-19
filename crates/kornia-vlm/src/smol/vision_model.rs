@@ -2,14 +2,9 @@
 #![allow(unused_attributes)] 
 
 
-use std::fs;
-use std::{collections::HashMap, error::Error};
+use std::collections::HashMap;
 use candle_nn::{Conv2d, Conv2dConfig, Embedding, LayerNorm, Linear, Module};
-use candle_core::{DType, Device, Result, Shape, Tensor, D};
-use image::{imageops::FilterType, io::Reader as ImageReader, DynamicImage, GenericImage, GenericImageView, GrayImage, Luma, Rgb, RgbImage};
-use reqwest;
-use std::path::Path;
-use std::io::Cursor;
+use candle_core::{DType, Device, Result, Tensor};
 
 
 
@@ -181,7 +176,7 @@ impl SmolVision {
                 c["model.vision_model.embeddings.patch_embedding.weight"].clone(),
                 Some(c["model.vision_model.embeddings.patch_embedding.bias"].clone()),
                 Conv2dConfig { // kernel/patch size are intrinsically defined in the weights 
-                    padding: 0, stride: 14, dilation: 1, groups: 1, cudnn_fwd_algo: Some(candle_nn::CudnnFwdAlgo::Default),
+                    padding: 0, stride: 14, dilation: 1, groups: 1, cudnn_fwd_algo: Some(candle_core::conv::CudnnFwdAlgo::Direct),
                 }
             ),
             position_embedding: Embedding::new(c["model.vision_model.embeddings.position_embedding.weight"].clone(), 1152),

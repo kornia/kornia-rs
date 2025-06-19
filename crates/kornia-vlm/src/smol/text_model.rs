@@ -1,11 +1,13 @@
+#![allow(unused_variables)]
+#![allow(unused_attributes)] 
+
 use std::collections::HashMap;
 
 use candle_core::{Device, IndexOp, Result, Tensor};
-use candle_nn::{ops, kv_cache::Cache, rotary_emb::rope, Embedding, Linear, Module, RmsNorm};
+use candle_nn::{rotary_emb::rope, Embedding, Linear, Module, RmsNorm};
 use candle_core::DType;
 
-use crate::vision_model::SmolVision;
-
+use super::vision_model::SmolVision;
 
 
 const NUM_OF_HEADS: usize = 32;
@@ -242,7 +244,7 @@ pub struct SmolVLM {
 
 
 impl SmolVLM {
-    const BLOCKS_PER_SAMPLE: u32 = 81;
+    // const BLOCKS_PER_SAMPLE: u32 = 81;
 
     pub fn load(c: &HashMap<String, Tensor>, device: &Device) -> Result<Self> {
         Ok(Self {
