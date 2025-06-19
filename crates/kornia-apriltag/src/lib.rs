@@ -14,4 +14,4 @@ pub mod threshold;
 pub(crate) mod iter;
 
 /// Segmentation utilities for AprilTag detection.
-pub(crate) mod segmentation;
+pub mod segmentation;

@@ -2,10 +2,17 @@ use crate::utils::Pixel;
 use kornia_image::{allocator::ImageAllocator, Image};
 use union_find::{QuickFindUf, UnionBySize, UnionFind};
 
-/// TODO
-pub fn segment_boundaries<A: ImageAllocator>(
+/// Finds connected components in a binary image using union-find.
+///
+/// # Arguments
+///
+/// * `src` - A reference to a binary image where each pixel is of type `Pixel`.
+///
+/// # Returns
+///
+/// A `QuickFindUf<UnionBySize>` structure representing the connected components.
+pub fn find_connected_components<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
-    // cluster: &mut HashMap<(usize, usize), Vec<(f32, f32)>>,
 ) -> QuickFindUf<UnionBySize> {
     let src_size = src.size();
     let src_data = src.as_slice();
@@ -27,7 +34,6 @@ pub fn segment_boundaries<A: ImageAllocator>(
 
             if *pixel == src_data[adj_i] {
                 uf.union(i, adj_i);
-                // union_by_size(&mut uf, i, adj_i);
             }
 
             if *pixel == Pixel::White && row_y > 0 {
@@ -36,7 +42,6 @@ pub fn segment_boundaries<A: ImageAllocator>(
 
                 if *pixel == src_data[dig_i] {
                     uf.union(i, dig_i);
-                    // union_by_size(&mut uf, i, dig_i);
                 }
             }
         }
@@ -47,7 +52,6 @@ pub fn segment_boundaries<A: ImageAllocator>(
 
             if *pixel == src_data[dig_i] {
                 uf.union(i, dig_i);
-                // union_by_size(&mut uf, i, dig_i);
             }
         }
 
@@ -57,7 +61,6 @@ pub fn segment_boundaries<A: ImageAllocator>(
 
             if *pixel == src_data[adj_i] {
                 uf.union(i, adj_i);
-                // union_by_size(&mut uf, i, adj_i);
             }
         }
     });
@@ -80,7 +83,7 @@ mod tests {
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
 
-        let mut uf = segment_boundaries(&bin);
+        let mut uf = find_connected_components(&bin);
 
         let mut union_representatives = String::new();
         let expected =
