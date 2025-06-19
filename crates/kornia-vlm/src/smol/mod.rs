@@ -8,9 +8,10 @@ use std::io;
 
 use candle_core::{Device, DType, IndexOp, Shape, Tensor};
 use hf_hub::api::sync::Api;
+use rand::{SeedableRng, Rng, seq::SliceRandom};
+use rand::rngs::StdRng;
 use tokenizers::{Encoding, Tokenizer};
 use candle_nn::ops;
-use rand::rng;
 use rand::prelude::IndexedRandom;
 use std::cmp::Ordering;
 use terminal_size::{terminal_size, Width};
@@ -19,6 +20,30 @@ use utils::{preprocess_image, load_image_url, get_prompt_split_image};
 
 use crate::smol::text_model::SmolVLM;
 
+
+
+/// Configuration for the SmolVLM model
+pub struct SmolConfig {
+    pub seed: u64,
+    pub temp: f32,
+    pub top_k: usize,
+
+    // TODO
+    pub repeat_penalty: f32,
+    pub repeat_last_n: usize,
+}
+
+impl Default for SmolConfig {
+    fn default() -> Self {
+        Self {
+            seed: 42,
+            temp: 0.2f32,
+            top_k: 50,
+            repeat_penalty: 1.1,
+            repeat_last_n: 64,
+        }
+    }
+}
 
 
 fn count_lines(text: &str) -> usize {
@@ -74,6 +99,8 @@ pub struct Smol {
     model: text_model::SmolVLM,
     tokenizer: Tokenizer,
     image_token_enc: Encoding,
+    config: SmolConfig,
+    rng: StdRng,
     device: Device,
 }
 
@@ -85,26 +112,32 @@ impl Smol {
     /// * `config` - The configuration for the Smol model
     ///
     /// # Returns
-    pub fn new() -> Result<Self, SmolError> {
-        // #[cfg(feature = "cuda")]
-        // let (device, dtype) = match Device::cuda_if_available(0) {
-        //     Ok(device) => (device, DType::BF16),
-        //     Err(e) => {
-        //         log::warn!("CUDA not available, defaulting to CPU: {}", e);
-        //         (Device::Cpu, DType::F32)
-        //     }
-        // };
+    pub fn new(config: SmolConfig) -> Result<Self, SmolError> {
+        #[cfg(feature = "cuda")]
+        let (device, dtype) = match Device::cuda_if_available(0) {
+            Ok(device) => (device, DType::BF16),
+            Err(e) => {
+                log::warn!("CUDA not available, defaulting to CPU: {}", e);
+                (Device::Cpu, DType::F32)
+            }
+        };
 
-        // #[cfg(not(feature = "cuda"))]
-        let (device, _dtype) = (Device::new_cuda(0).unwrap(), DType::F32);
-        let (model, tokenizer) = Self::load_model(&device)?;
+        #[cfg(not(feature = "cuda"))]
+        let (device, dtype) = (Device::Cpu, DType::F32);
+
+        // TODO: find a way to use FP32 if cuda is not available
+
+        let (model, tokenizer) = Self::load_model(dtype, &device)?;
         let image_token_enc = tokenizer.encode("<image>", false).unwrap();
+        let rng = StdRng::seed_from_u64(config.seed);
 
         Ok(Self {
             model,
             tokenizer,
             image_token_enc,
+            config,
             device,
+            rng,
         })
     }
 
@@ -155,6 +188,7 @@ impl Smol {
                     println!("Error: {:?}", img);
                     txt_prompt += "\nUser: ";
                 }
+
                 txt_prompt += &read_input("txt> ");
                 txt_prompt += "<end_of_utterance>\nAssistant:";
                 response.clear();
@@ -178,21 +212,20 @@ impl Smol {
             let last_logit = logits.i((s-1, ..))?;
             let out_token = {
                 let temperature = Tensor::from_slice(&[
-                    0.2f32
+                    self.config.temp
                 ], (1,), &self.device)?;
-                let k = 50;
                 let scaled = last_logit.broadcast_div(&temperature)?;
                 let probs = ops::softmax(&scaled, 0)?;
                 let probs_vec: Vec<f32> = probs.to_vec1()?;
                 let mut indices: Vec<usize> = (0..probs_vec.len()).collect(); 
                 indices.sort_by(|&i, &j| probs_vec[j].partial_cmp(&probs_vec[i]).unwrap_or(Ordering::Equal));
-                let top_k_indices = &indices[..k];
+                let top_k_indices = &indices[..self.config.top_k];
                 let top_k_probs: Vec<f32> = top_k_indices.iter().map(|&i| probs_vec[i]).collect();
                 let sum_probs: f32 = top_k_probs.iter().sum();
                 let normalized_probs: Vec<f32> = top_k_probs.iter().map(|p| p / sum_probs).collect();
-                let mut rng = rng();
+                
                 let sampled_index = top_k_indices
-                    .choose_weighted(&mut rng, |&idx| normalized_probs[top_k_indices.iter().position(|&x| x == idx).unwrap()])
+                    .choose_weighted(&mut self.rng, |&idx| normalized_probs[top_k_indices.iter().position(|&x| x == idx).unwrap()])
                     .expect("Sampling failed");
                 [*sampled_index as u32]
             };
@@ -213,7 +246,7 @@ impl Smol {
     }
 
     // utility function to load the model
-    fn load_model(device: &Device) -> Result<(SmolVLM, Tokenizer), SmolError> {
+    fn load_model(_dtype: DType, device: &Device) -> Result<(SmolVLM, Tokenizer), SmolError> {
         let tokenizer = Tokenizer::from_pretrained("HuggingFaceTB/SmolVLM-Instruct", None).unwrap();
         let api = Api::new().unwrap();
         let repo = api.model("HuggingFaceTB/SmolVLM-Instruct".to_string());
@@ -233,7 +266,7 @@ mod tests {
 
     #[test]
     fn test_smol_inference() {
-        let mut model = Smol::new().unwrap();
+        let mut model = Smol::new(SmolConfig::default()).unwrap();
 
         // cargo test -p kornia-vlm test_smol_inference --features "cuda" -- --nocapture
         println!("Running inference on SmolVLM model...");
