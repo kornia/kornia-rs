@@ -33,7 +33,6 @@ pub fn find_connected_components<A: ImageAllocator>(
             let left_i = i - 1;
 
             if *pixel == src_data[left_i] {
-                // uf.union(i, left_i);
                 uf.union(left_i, i);
             }
 
