@@ -15,3 +15,6 @@ pub(crate) mod iter;
 
 /// Segmentation utilities for AprilTag detection.
 pub mod segmentation;
+
+/// TODO
+pub mod union_find;
