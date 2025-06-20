@@ -78,8 +78,50 @@ pub fn find_connected_components<A: ImageAllocator>(src: &Image<Pixel, 1, A>) ->
 mod tests {
     use super::*;
     use crate::threshold::{adaptive_threshold, TileMinMax};
-    use kornia_image::allocator::CpuAllocator;
+    use kornia_image::{allocator::CpuAllocator, ImageSize};
     use kornia_io::png::read_image_png_mono8;
+
+    #[test]
+    fn test_basic_segmentation() -> Result<(), Box<dyn std::error::Error>> {
+        use Pixel::*;
+        #[rustfmt::skip]
+        let bin_data = vec![
+            Black, Black, White, White,
+            Black, Black, White, White,
+            White, White, Black, Black,
+            White, White, Black, Black
+        ];
+
+        let bin = Image::new(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            bin_data,
+            CpuAllocator,
+        )?;
+
+        let mut uf = find_connected_components(&bin);
+
+        assert_eq!(uf.get_representative(0), 0);
+        assert_eq!(uf.get_representative(1), 0);
+        assert_eq!(uf.get_representative(2), 2);
+        assert_eq!(uf.get_representative(3), 3);
+        assert_eq!(uf.get_representative(4), 0);
+        assert_eq!(uf.get_representative(5), 0);
+        assert_eq!(uf.get_representative(6), 2);
+        assert_eq!(uf.get_representative(7), 7);
+        assert_eq!(uf.get_representative(8), 2);
+        assert_eq!(uf.get_representative(9), 2);
+        assert_eq!(uf.get_representative(10), 10);
+        assert_eq!(uf.get_representative(11), 11);
+        assert_eq!(uf.get_representative(12), 2);
+        assert_eq!(uf.get_representative(13), 2);
+        assert_eq!(uf.get_representative(14), 10);
+        assert_eq!(uf.get_representative(15), 15);
+
+        Ok(())
+    }
 
     #[test]
     fn test_segmentation() -> Result<(), Box<dyn std::error::Error>> {

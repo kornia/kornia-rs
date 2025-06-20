@@ -58,4 +58,56 @@ impl UnionFind {
             self.size[broot] += asize;
         }
     }
+
+    /// Resets the UnionFind structure to its initial state.
+    pub fn reset(&mut self) {
+        (0..self.parent.len()).into_iter().for_each(|i| {
+            self.parent[i] = usize::MAX;
+            self.size[i] = 1;
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_representative() {
+        let mut uf = UnionFind::new(10);
+
+        assert_eq!(uf.get_representative(0), 0);
+        assert_eq!(uf.get_representative(5), 5);
+    }
+
+    #[test]
+    fn test_union() {
+        let mut uf = UnionFind::new(10);
+
+        uf.union(0, 1);
+        assert_eq!(uf.get_representative(0), uf.get_representative(1));
+
+        uf.union(1, 2);
+        assert_eq!(uf.get_representative(0), uf.get_representative(2));
+
+        uf.union(3, 4);
+        assert_eq!(uf.get_representative(3), uf.get_representative(4));
+
+        uf.union(0, 3);
+        assert_eq!(uf.get_representative(0), uf.get_representative(4));
+    }
+
+    #[test]
+    fn test_reset() {
+        let mut uf = UnionFind::new(10);
+        uf.union(0, 1);
+        uf.union(2, 3);
+
+        assert_ne!(uf.get_representative(1), usize::MAX);
+
+        uf.reset();
+
+        assert!(uf.parent.iter().all(|&p| p == usize::MAX));
+        assert!(uf.size.iter().all(|&s| s == 1));
+    }
 }
