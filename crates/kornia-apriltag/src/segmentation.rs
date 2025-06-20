@@ -28,39 +28,41 @@ pub fn find_connected_components<A: ImageAllocator>(
         let row_y = i / src_size.width;
         let row_x = i % src_size.width;
 
-        if row_x + 1 < src_size.width {
-            // Right pixel exists
-            let adj_i = i + 1;
+        if row_x > 0 {
+            // Left pixel exists
+            let left_i = i - 1;
 
-            if *pixel == src_data[adj_i] {
-                uf.union(i, adj_i);
+            if *pixel == src_data[left_i] {
+                // uf.union(i, left_i);
+                uf.union(left_i, i);
             }
 
-            if *pixel == Pixel::White && row_y > 0 {
-                // Upper-right Diagonal exists
-                let dig_i = i - src_size.width + 1;
+            if row_y > 0 && row_x < src_size.width - 1 {
+                let top_i = i - src_size.width;
+                let top_left_i = top_i - 1;
+                let top_right_i = top_i + 1;
 
-                if *pixel == src_data[dig_i] {
-                    uf.union(i, dig_i);
+                if (row_x == 1
+                    || !(src_data[top_left_i] == src_data[top_i]
+                        && src_data[top_i] == src_data[top_right_i]))
+                    && *pixel == src_data[top_i]
+                {
+                    uf.union(top_i, i);
                 }
-            }
-        }
 
-        if *pixel == Pixel::White && row_x > 0 && row_y > 0 {
-            // Upper-left Diagonal exists
-            let dig_i = i - src_size.width - 1;
+                if *pixel == Pixel::White {
+                    if (row_x == 1
+                        || (src_data[top_left_i] != src_data[left_i]
+                            || src_data[top_left_i] != src_data[top_i]))
+                        && *pixel == src_data[top_left_i]
+                    {
+                        uf.union(top_left_i, i);
+                    }
 
-            if *pixel == src_data[dig_i] {
-                uf.union(i, dig_i);
-            }
-        }
-
-        if row_y + 1 < src_size.height {
-            // Bottom pixel exists
-            let adj_i = i + src_size.width;
-
-            if *pixel == src_data[adj_i] {
-                uf.union(i, adj_i);
+                    if src_data[top_i] != src_data[top_right_i] && *pixel == src_data[top_right_i] {
+                        uf.union(top_right_i, i);
+                    }
+                }
             }
         }
     });
