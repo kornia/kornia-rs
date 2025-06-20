@@ -1,5 +1,4 @@
-use crate::utils::Pixel;
-use crate::{errors::AprilTagError, union_find::UnionFind};
+use crate::{errors::AprilTagError, union_find::UnionFind, utils::Pixel};
 use kornia_image::{allocator::ImageAllocator, Image};
 
 /// Finds connected components in a binary image using union-find.
@@ -38,11 +37,9 @@ pub fn find_connected_components<A: ImageAllocator>(
         }
 
         // Check left neighbor
-        if row_x > 0 {
-            let left_i = i - 1;
-            if *pixel == src_data[left_i] {
-                uf.union(i, left_i);
-            }
+        let left_i = i - 1;
+        if *pixel == src_data[left_i] {
+            uf.union(i, left_i);
         }
 
         // Check top neighbor
@@ -54,25 +51,19 @@ pub fn find_connected_components<A: ImageAllocator>(
 
             if *pixel == Pixel::White {
                 // Check top-left neighbor
-                if row_x > 0 && row_y > 0 {
-                    let top_left_i = top_i - 1;
-                    if (row_x == 1
-                        || !(src_data[top_left_i] == src_data[i - 1]
-                            || src_data[top_left_i] == src_data[top_i]))
-                        && *pixel == src_data[top_left_i]
-                    {
-                        uf.union(i, top_left_i);
-                    }
+                let top_left_i = top_i - 1;
+                if (row_x == 1
+                    || !(src_data[top_left_i] == src_data[left_i]
+                        || src_data[top_left_i] == src_data[top_i]))
+                    && *pixel == src_data[top_left_i]
+                {
+                    uf.union(i, top_left_i);
                 }
 
                 // Check top-right neighbor
-                if row_x < src_size.width - 1 && row_y > 0 {
-                    let top_right_i = top_i + 1;
-                    if !(src_data[top_i] == src_data[top_right_i])
-                        && *pixel == src_data[top_right_i]
-                    {
-                        uf.union(i, top_right_i);
-                    }
+                let top_right_i = top_i + 1;
+                if src_data[top_i] != src_data[top_right_i] && *pixel == src_data[top_right_i] {
+                    uf.union(i, top_right_i);
                 }
             }
         }
