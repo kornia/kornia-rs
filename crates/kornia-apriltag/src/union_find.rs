@@ -5,7 +5,7 @@ pub struct UnionFind {
 }
 
 impl UnionFind {
-    /// Creates a new UnionFind structure with elements from 0 to `maxid`.
+    /// Creates a new UnionFind structure with length `len`.
     pub fn new(len: usize) -> Self {
         Self {
             parent: vec![usize::MAX; len],
@@ -65,6 +65,11 @@ impl UnionFind {
             self.parent[i] = usize::MAX;
             self.size[i] = 1;
         });
+    }
+
+    /// Returns the number of elements in the UnionFind structure.
+    pub fn len(&self) -> usize {
+        self.parent.len()
     }
 }
 

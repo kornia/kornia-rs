@@ -1,22 +1,29 @@
-use crate::union_find::UnionFind;
 use crate::utils::Pixel;
+use crate::{errors::AprilTagError, union_find::UnionFind};
 use kornia_image::{allocator::ImageAllocator, Image};
 
 /// Finds connected components in a binary image using union-find.
 ///
 /// # Arguments
 ///
-/// * `src` - A reference to a binary image where each pixel is of type `Pixel`.
+/// * `src` - Reference to the source image containing `Pixel` values.
+/// * `uf` - Mutable reference to a [`UnionFind`] structure for tracking connected components.
+///   Make sure to call [`UnionFind::reset`] if you are using this function multiple times with the same `uf`.
 ///
 /// # Returns
 ///
-/// A `QuickFindUf<UnionBySize>` structure representing the connected components.
-pub fn find_connected_components<A: ImageAllocator>(src: &Image<Pixel, 1, A>) -> UnionFind {
+/// * `Result<(), AprilTagError>` - Returns `Ok(())` if successful, or an error if the union-find size is invalid.
+pub fn find_connected_components<A: ImageAllocator>(
+    src: &Image<Pixel, 1, A>,
+    uf: &mut UnionFind,
+) -> Result<(), AprilTagError> {
     let src_size = src.size();
     let src_data = src.as_slice();
     let src_len = src_data.len();
 
-    let mut uf = UnionFind::new(src_len);
+    if src_len != uf.len() {
+        return Err(AprilTagError::InvalidUnionFindSize(src_len, uf.len()));
+    }
 
     src_data.iter().enumerate().for_each(|(i, pixel)| {
         if *pixel == Pixel::Skip {
@@ -71,7 +78,7 @@ pub fn find_connected_components<A: ImageAllocator>(src: &Image<Pixel, 1, A>) ->
         }
     });
 
-    uf
+    Ok(())
 }
 
 #[cfg(test)]
@@ -101,7 +108,8 @@ mod tests {
             CpuAllocator,
         )?;
 
-        let mut uf = find_connected_components(&bin);
+        let mut uf = UnionFind::new(16);
+        find_connected_components(&bin, &mut uf)?;
 
         assert_eq!(uf.get_representative(0), 0);
         assert_eq!(uf.get_representative(1), 0);
@@ -131,7 +139,8 @@ mod tests {
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
 
-        let mut uf = find_connected_components(&bin);
+        let mut uf = UnionFind::new(bin.as_slice().len());
+        find_connected_components(&bin, &mut uf)?;
 
         let mut union_representatives = String::new();
         let expected =
