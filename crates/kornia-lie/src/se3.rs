@@ -144,6 +144,106 @@ impl SE3 {
             SO3::vee4(omega),
         )
     }
+
+    /// Jₗ(ρ,θ) =
+    /// ⎡ Jₗ(θ)      Q(ρ,θ) ⎤
+    /// ⎢                   ⎥
+    /// ⎣  0         Jₗ(θ)  ⎦
+    ///
+    /// Jₗ(θ)is the left Jacobian of SO(3)
+    ///
+    /// ```text
+    ///              1            θ - sinθ
+    /// Q(ρ,θ) = ───── ρ× + ───────────────── (θ×ρ× + ρ×θ× + θ×ρ×θ×)
+    ///              2              θ³
+    ///                       1 - θ²/2 - cosθ
+    ///          - ────────────────────────── (θ²×ρ× + ρ×θ²× - 3 θ×ρ×θ×)
+    ///                               θ⁴
+    ///                       ⎛ 1 - θ²/2 - cosθ      θ - sinθ - θ³/6  ⎞
+    ///          - ½ ⎜───────────────────────── - 3 ──────────────────⎟
+    ///                       ⎝         θ⁴                    θ⁵      ⎠
+    ///            · (θ×ρ×θ²× + θ²×ρ×θ×).
+    /// ```
+    /// ref: https://arxiv.org/pdf/1812.01537 (eq 180)
+    pub fn left_jacobian(rho: Vec3A, omega: Vec3A) -> [[f32; 6]; 6] {
+        let theta2 = omega.dot(omega);
+        let theta = theta2.sqrt();
+
+        let jl_so3 = SO3::left_jacobian(omega);
+
+        let rho_hat = SO3::hat(rho);
+        let omega_hat = SO3::hat(omega);
+        let omega_hat2 = omega_hat * omega_hat;
+
+        // Small-angle safeguard
+        const EPS: f32 = 1e-6;
+        let (q_mat, jl_so3) = if theta < EPS {
+            // Series:  Q ≈ ½ρ× + 1/12(ω×ρ× + ρ×ω×) - 1/24 ω×ρ×ω×
+            //          Jₗ_SO3 ≈ I + ½ω× + 1/6 ω×²
+            let q = 0.5 * rho_hat + (1.0 / 12.0) * (omega_hat * rho_hat + rho_hat * omega_hat)
+                - (1.0 / 24.0) * (omega_hat * rho_hat * omega_hat);
+            let j = Mat3A::IDENTITY + 0.5 * omega_hat + (1.0 / 6.0) * omega_hat2;
+            (q, j)
+        } else {
+            let theta3 = theta2 * theta;
+            let theta4 = theta2 * theta2;
+
+            let a = 0.5;
+            let b = (theta - theta.sin()) / theta3;
+            let c = (1.0 - 0.5 * theta2 - theta.cos()) / theta4;
+            let d = 0.5 * (c - 3.0 * b / theta);
+
+            let term1 = a * rho_hat;
+            let term2 =
+                b * (omega_hat * rho_hat + rho_hat * omega_hat + omega_hat * rho_hat * omega_hat);
+            let term3 = c
+                * (omega_hat2 * rho_hat + rho_hat * omega_hat2
+                    - 3.0 * omega_hat * rho_hat * omega_hat);
+            let term4 = d * (omega_hat * rho_hat * omega_hat2 + omega_hat2 * rho_hat * omega_hat);
+
+            (term1 + term2 - term3 - term4, jl_so3)
+        };
+
+        let mut jl = [[0.0; 6]; 6];
+
+        // top-left 3×3 : Jₗ_SO3
+        for (i, col) in [jl_so3.x_axis, jl_so3.y_axis, jl_so3.z_axis]
+            .iter()
+            .enumerate()
+        {
+            jl[0][i] = col.x;
+            jl[1][i] = col.y;
+            jl[2][i] = col.z;
+        }
+
+        // top-right 3×3 : Q
+        for (i, col) in [q_mat.x_axis, q_mat.y_axis, q_mat.z_axis]
+            .iter()
+            .enumerate()
+        {
+            jl[0][i + 3] = col.x;
+            jl[1][i + 3] = col.y;
+            jl[2][i + 3] = col.z;
+        }
+
+        // bottom-right 3×3 : Jₗ_SO3
+        for (i, col) in [jl_so3.x_axis, jl_so3.y_axis, jl_so3.z_axis]
+            .iter()
+            .enumerate()
+        {
+            jl[3][i + 3] = col.x;
+            jl[4][i + 3] = col.y;
+            jl[5][i + 3] = col.z;
+        }
+
+        jl
+    }
+
+    /// Right Jacobian  Jᵣ(ρ, θ)  ∈ ℝ⁶ˣ⁶.
+    /// Using Jᵣ(ρ,θ) = Jₗ(−ρ, −θ).
+    pub fn right_jacobian(rho: Vec3A, omega: Vec3A) -> [[f32; 6]; 6] {
+        Self::left_jacobian(-rho, -omega)
+    }
 }
 
 impl std::ops::Mul<SE3> for SE3 {
@@ -581,5 +681,106 @@ mod tests {
         assert_relative_eq!(left_assoc.t.x, right_assoc.t.x, epsilon = EPSILON);
         assert_relative_eq!(left_assoc.t.y, right_assoc.t.y, epsilon = EPSILON);
         assert_relative_eq!(left_assoc.t.z, right_assoc.t.z, epsilon = EPSILON);
+    }
+
+    /// Multiply a 6×6 matrix stored as [[f32;6];6] with a length-6 vector.
+    fn mat6_mul_vec6(mat: &[[f32; 6]; 6], v: &[f32; 6]) -> [f32; 6] {
+        let mut out = [0.0_f32; 6];
+        for i in 0..6 {
+            for j in 0..6 {
+                out[i] += mat[i][j] * v[j];
+            }
+        }
+        out
+    }
+
+    /// True if all entries of the 6×6 matrix are finite.
+    fn mat6_is_finite(mat: &[[f32; 6]; 6]) -> bool {
+        mat.iter().all(|row| row.iter().all(|x| x.is_finite()))
+    }
+
+    /// Transpose of a 6×6 matrix.
+    fn mat6_transpose(mat: &[[f32; 6]; 6]) -> [[f32; 6]; 6] {
+        let mut m = [[0.0_f32; 6]; 6];
+        for i in 0..6 {
+            for j in 0..6 {
+                m[i][j] = mat[j][i];
+            }
+        }
+        m
+    }
+
+    /// Diverse translation/rotation test pairs (ρ, θ).
+    fn test_pairs() -> [(Vec3A, Vec3A); 5] {
+        [
+            (Vec3A::new(0.1, 0.2, 0.3), Vec3A::new(0.02, 0.03, 0.04)),
+            (Vec3A::new(-0.3, 0.5, 0.1), Vec3A::new(0.7, 0.0, 0.0)),
+            (Vec3A::new(0.0, 0.0, 0.0), Vec3A::new(0.001, -0.002, 0.003)), // tiny θ
+            (Vec3A::new(0.5, -0.4, 0.2), Vec3A::ZERO),                     // pure translation
+            (Vec3A::new(0.01, 0.02, 0.03), Vec3A::new(-0.01, 0.02, -0.03)), // small mixed
+        ]
+    }
+
+    #[test]
+    fn test_left_jacobian_se3() {
+        for (rho, omega) in test_pairs() {
+            let jl = SE3::left_jacobian(rho, omega);
+
+            // All entries must be finite
+            assert!(mat6_is_finite(&jl));
+
+            // Identity property:  Jₗ * τ ≈ τ   where τ = [ρ;θ]
+            let tau = [rho.x, rho.y, rho.z, omega.x, omega.y, omega.z];
+            let result = mat6_mul_vec6(&jl, &tau);
+            for k in 0..6 {
+                assert_relative_eq!(result[k], tau[k], epsilon = 1e-4);
+            }
+        }
+    }
+
+    #[test]
+    fn test_right_jacobian_se3() {
+        for (rho, omega) in test_pairs() {
+            let jr = SE3::right_jacobian(rho, omega);
+
+            // All entries must be finite
+            assert!(mat6_is_finite(&jr));
+
+            // Identity property:  Jᵣ * τ ≈ τ
+            let tau = [rho.x, rho.y, rho.z, omega.x, omega.y, omega.z];
+            let result = mat6_mul_vec6(&jr, &tau);
+            for k in 0..6 {
+                assert_relative_eq!(result[k], tau[k], epsilon = 1e-4);
+            }
+        }
+    }
+
+    #[test]
+    fn test_left_right_relationship() {
+        for (rho, omega) in test_pairs() {
+            let jl_minus = SE3::left_jacobian(-rho, -omega);
+            let jr = SE3::right_jacobian(rho, omega);
+
+            for i in 0..6 {
+                for j in 0..6 {
+                    assert_relative_eq!(jr[i][j], jl_minus[i][j], epsilon = 1e-6);
+                }
+            }
+        }
+    }
+
+    // Approximate symmetry  (small-angle heuristic)  Jₗ ≈ Jᵣᵀ
+    #[test]
+    fn test_left_right_transpose_small_angles() {
+        // Use only the tiny-angle pair (index 2 in `test_pairs`)
+        let (rho, omega) = test_pairs()[2];
+        let jl = SE3::left_jacobian(rho, omega);
+        let jr_t = mat6_transpose(&SE3::right_jacobian(rho, omega));
+
+        for i in 0..6 {
+            for j in 0..6 {
+                assert_relative_eq!(jl[i][j], jr_t[i][j], epsilon = 1e-3);
+            }
+        }
     }
 }
