@@ -39,14 +39,14 @@ pub fn find_connected_components<A: ImageAllocator>(
         // Check left neighbor
         let left_i = i - 1;
         if *pixel == src_data[left_i] {
-            uf.union(i, left_i);
+            uf.connect(i, left_i);
         }
 
         // Check top neighbor
         if row_y > 0 {
             let top_i = i - src_size.width;
             if *pixel == src_data[top_i] {
-                uf.union(i, top_i);
+                uf.connect(i, top_i);
             }
 
             if *pixel == Pixel::White {
@@ -57,13 +57,13 @@ pub fn find_connected_components<A: ImageAllocator>(
                         || src_data[top_left_i] == src_data[top_i]))
                     && *pixel == src_data[top_left_i]
                 {
-                    uf.union(i, top_left_i);
+                    uf.connect(i, top_left_i);
                 }
 
                 // Check top-right neighbor
                 let top_right_i = top_i + 1;
                 if src_data[top_i] != src_data[top_right_i] && *pixel == src_data[top_right_i] {
-                    uf.union(i, top_right_i);
+                    uf.connect(i, top_right_i);
                 }
             }
         }

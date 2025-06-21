@@ -14,7 +14,7 @@ impl UnionFind {
     }
 
     /// Returns the representative (root) of the set containing `id`, with path compression.
-    pub fn get_representative(&mut self, id: usize) -> usize {
+    pub fn get_representative(&mut self, mut id: usize) -> usize {
         let mut root = self.parent[id];
 
         if root == usize::MAX {
@@ -28,7 +28,6 @@ impl UnionFind {
         }
 
         // Go back and collapse the tree
-        let mut id = id;
         while self.parent[id] != root {
             let tmp = self.parent[id];
             self.parent[id] = root;
@@ -38,13 +37,13 @@ impl UnionFind {
         root
     }
 
-    /// Unites the sets containing `aid` and `bid`.
-    pub fn union(&mut self, aid: usize, bid: usize) {
+    /// Unites the sets containing `aid` and `bid`, returning the representative of the resulting set.
+    pub fn connect(&mut self, aid: usize, bid: usize) -> usize {
         let aroot = self.get_representative(aid);
         let broot = self.get_representative(bid);
 
         if aroot == broot {
-            return;
+            return aroot;
         }
 
         let asize = self.size[aroot];
@@ -53,9 +52,11 @@ impl UnionFind {
         if asize > bsize {
             self.parent[broot] = aroot;
             self.size[aroot] += bsize;
+            return aroot;
         } else {
             self.parent[aroot] = broot;
             self.size[broot] += asize;
+            return broot;
         }
     }
 
@@ -89,24 +90,24 @@ mod tests {
     fn test_union() {
         let mut uf = UnionFind::new(10);
 
-        uf.union(0, 1);
+        uf.connect(0, 1);
         assert_eq!(uf.get_representative(0), uf.get_representative(1));
 
-        uf.union(1, 2);
+        uf.connect(1, 2);
         assert_eq!(uf.get_representative(0), uf.get_representative(2));
 
-        uf.union(3, 4);
+        uf.connect(3, 4);
         assert_eq!(uf.get_representative(3), uf.get_representative(4));
 
-        uf.union(0, 3);
+        uf.connect(0, 3);
         assert_eq!(uf.get_representative(0), uf.get_representative(4));
     }
 
     #[test]
     fn test_reset() {
         let mut uf = UnionFind::new(10);
-        uf.union(0, 1);
-        uf.union(2, 3);
+        uf.connect(0, 1);
+        uf.connect(2, 3);
 
         assert_ne!(uf.get_representative(1), usize::MAX);
 
