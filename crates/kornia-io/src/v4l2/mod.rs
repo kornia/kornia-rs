@@ -1,9 +1,12 @@
+mod arena;
+mod stream;
+
 use kornia_image::allocator::ImageAllocator;
 use kornia_image::Image;
 use kornia_image::ImageSize;
+use kornia_tensor::CpuAllocator;
 use kornia_tensor::TensorAllocator;
 use v4l::buffer::Type;
-use v4l::io::mmap::Stream;
 use v4l::io::traits::CaptureStream;
 use v4l::video::capture::Parameters;
 use v4l::video::Capture;
@@ -34,9 +37,10 @@ pub struct V4LCameraConfig {
 }
 
 /// A video capture object for a V4L2 camera.
-pub struct V4LVideoCapture<'a> {
-    stream: Stream<'a>,
+pub struct V4LVideoCapture {
+    stream: stream::Stream,
     size: ImageSize,
+    fourcc: FourCC,
 }
 
 /// An allocator for a V4L2 camera
@@ -59,10 +63,10 @@ impl<'a> TensorAllocator for V4lAllocator<'a> {
 }
 
 /// A frame of video from a V4L2 camera.
-pub struct ImageFrame<'a> {
+pub struct EncodedFrame<'a> {
     /// The buffer of the frame
-    //pub buffer: &'a [u8],
-    pub image: Image<u8, 3, V4lAllocator<'a>>,
+    pub buffer: &'a [u8],
+    //pub image: Image<u8, 3, CpuAllocator>,
     /// The fourcc of the frame
     pub fourcc: FourCC,
     /// The timestamp of the frame
@@ -71,19 +75,21 @@ pub struct ImageFrame<'a> {
     pub sequence: u32,
 }
 
-impl<'a> V4LVideoCapture<'a> {
+impl V4LVideoCapture {
     /// Create a new V4L2 video capture object.
     pub fn new(config: V4LCameraConfig) -> Result<Self, V4L2Error> {
         let mut dev = Device::with_path(config.device_path).unwrap();
         let mut fmt = dev.format().unwrap();
         fmt.width = config.size.width as u32;
         fmt.height = config.size.height as u32;
-        fmt.fourcc = FourCC::new(b"MJPG");
+        //fmt.fourcc = FourCC::new(b"MJPG");
+        fmt.fourcc = FourCC::new(b"YUYV");
         dev.set_format(&fmt).unwrap();
+
         let params = Parameters::with_fps(config.fps);
         dev.set_params(&params).unwrap();
 
-        let stream = Stream::with_buffers(&mut dev, Type::VideoCapture, 4).unwrap();
+        let stream = stream::Stream::with_buffers(&mut dev, Type::VideoCapture, 4).unwrap();
 
         Ok(Self {
             stream,
@@ -91,29 +97,23 @@ impl<'a> V4LVideoCapture<'a> {
                 width: config.size.width,
                 height: config.size.height,
             },
+            fourcc: fmt.fourcc,
         })
     }
 
     /// Grab a frame from the V4L2 camera.
-    pub fn grab(&mut self) -> Option<Result<ImageFrame, V4L2Error>> {
+    pub fn grab(&mut self) -> Option<Result<EncodedFrame, V4L2Error>> {
         let Ok((buffer, metadata)) = self.stream.next() else {
             return None;
         };
 
-        let allocator = V4lAllocator(buffer);
-
-        let image = unsafe {
-            Image::from_raw_parts(self.size, buffer.as_ptr(), buffer.len(), allocator)
-                .map_err(|_| V4L2Error::ImageError)
-                .ok()?
-        };
-
-        let frame = ImageFrame {
-            image,
-            fourcc: FourCC::new(b"MJPG"),
+        let frame = EncodedFrame {
+            buffer,
+            fourcc: self.fourcc,
             timestamp: metadata.timestamp,
             sequence: metadata.sequence,
         };
+
         Some(Ok(frame))
     }
 }

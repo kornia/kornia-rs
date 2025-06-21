@@ -26,8 +26,10 @@ jpeg-encoder = "0.6"
 zune-jpeg = "0.4"
 log = { workspace = true }
 thiserror = { workspace = true }
-v4l = "0.14.0"
 tiff = "0.9"
+
+v4l = "0.14.0"
+libc = "0.2"
 
 # optional dependencies
 gstreamer = { version = "0.23.5", optional = true }

@@ -4,7 +4,8 @@ use kornia::{
     imgproc,
     io::{
         fps_counter::FpsCounter,
-        stream::{v4l as kornia_v4l, V4L2CameraConfig},
+        stream::V4L2CameraConfig,
+        v4l2::{V4LCameraConfig, V4LVideoCapture},
     },
     tensor::CpuAllocator,
 };
@@ -53,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         height: 180,
     };
 
-    let mut webcam = kornia_v4l::V4LVideoCapture::new(kornia_v4l::V4LCameraConfig {
+    let mut webcam = V4LVideoCapture::new(V4LCameraConfig {
         device_path: "/dev/video0".to_string(),
         size: img_size,
         fps: args.fps,
@@ -101,29 +102,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // start grabbing frames from the camera
     while !cancel_token.load(Ordering::SeqCst) {
-        //let Some(img) = webcam.grab()? else {
-        //    continue;
-        //};
         let Some(Ok(img)) = webcam.grab() else {
             continue;
         };
 
-        println!("img.buffer: {:?}", img.image.numel());
-        println!("img.size: {:?}", img.image.size());
+        println!("img.size: {:?}", img_size);
         println!("img.fourcc: {:?}", img.fourcc);
         println!("img.timestamp: {:?}", img.timestamp);
         println!("img.sequence: {:?}", img.sequence);
 
-        kornia::io::jpeg::decode_image_jpeg_rgb8(img.image.as_slice(), &mut img_rgb8)?;
-
-        println!("img_rgb8.buffer: {:?}", &img_rgb8.as_slice()[..100]);
-        println!("########################");
+        //kornia::io::jpeg::decode_image_jpeg_rgb8(&img.buffer, &mut img_rgb8)?;
+        convert_yuyv_to_rgb(&img.buffer, &mut img_rgb8);
 
         rec.log_static(
             "image",
             &rerun::Image::from_elements(
                 img_rgb8.as_slice(),
-                img_rgb8.size().into(),
+                img_size.into(),
                 rerun::ColorModel::RGB,
             ),
         )?;
@@ -164,4 +159,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Finished recording. Closing app.");
 
     Ok(())
+}
+
+/// Convert YUYV to RGB - optimized version
+fn convert_yuyv_to_rgb(yuyv_data: &[u8], rgb_image: &mut Image<u8, 3, CpuAllocator>) {
+    let rgb_data = rgb_image.as_slice_mut();
+
+    yuyv_data
+        .chunks_exact(4)
+        .zip(rgb_data.chunks_exact_mut(6)) // 6 bytes = 2 RGB pixels
+        .for_each(|(yuyv_chunk, rgb_chunk)| {
+            // Extract YUYV components
+            let y0 = yuyv_chunk[0] as i32;
+            let u = yuyv_chunk[1] as i32 - 128;
+            let y1 = yuyv_chunk[2] as i32;
+            let v = yuyv_chunk[3] as i32 - 128;
+
+            // Precompute shared chroma components (since U,V are shared)
+            let u_r = 0;
+            let u_g = -11 * u; // -0.344 * 32 ≈ -11
+            let u_b = 57 * u; // 1.772 * 32 ≈ 57
+            let v_r = 45 * v; // 1.402 * 32 ≈ 45
+            let v_g = -23 * v; // -0.714 * 32 ≈ -23
+            let v_b = 0;
+
+            // Convert both pixels using integer arithmetic (scaled by 32)
+            let r0 = ((y0 << 5) + u_r + v_r) >> 5;
+            let g0 = ((y0 << 5) + u_g + v_g) >> 5;
+            let b0 = ((y0 << 5) + u_b + v_b) >> 5;
+
+            let r1 = ((y1 << 5) + u_r + v_r) >> 5;
+            let g1 = ((y1 << 5) + u_g + v_g) >> 5;
+            let b1 = ((y1 << 5) + u_b + v_b) >> 5;
+
+            // Write both RGB pixels at once
+            rgb_chunk[0] = r0.clamp(0, 255) as u8;
+            rgb_chunk[1] = g0.clamp(0, 255) as u8;
+            rgb_chunk[2] = b0.clamp(0, 255) as u8;
+            rgb_chunk[3] = r1.clamp(0, 255) as u8;
+            rgb_chunk[4] = g1.clamp(0, 255) as u8;
+            rgb_chunk[5] = b1.clamp(0, 255) as u8;
+        });
 }

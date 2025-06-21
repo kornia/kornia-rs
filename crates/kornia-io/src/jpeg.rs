@@ -156,6 +156,13 @@ fn decode_jpeg_impl<const C: usize, A: ImageAllocator>(
         )))
     })?;
 
+    println!("image_info: {}", image_info.width);
+    println!("image_info: {}", image_info.height);
+    println!("image_info: {}", image_info.components);
+    println!("image_info: {}", image_info.pixel_density);
+    println!("image_info: {}", image_info.x_density);
+    println!("image_info: {}", image_info.y_density);
+
     if [image_info.height as usize, image_info.width as usize] != [dst.height(), dst.width()] {
         return Err(IoError::DecodeMismatchResolution(
             image_info.height as usize,
