@@ -26,10 +26,9 @@ pub use crate::stream::video::VideoWriter;
 use kornia_image::allocator::ImageAllocator;
 use kornia_tensor::{allocator::TensorAllocatorError, TensorAllocator};
 
-#[allow(dead_code)]
 #[derive(Clone)]
 /// A [TensorAllocator] used for those images, whose memory is managed by gstreamer.
-pub struct GstAllocator(gstreamer::Buffer);
+pub struct GstAllocator(pub gstreamer::Buffer);
 
 impl Default for GstAllocator {
     fn default() -> Self {

@@ -28,6 +28,9 @@ log = { workspace = true }
 thiserror = { workspace = true }
 tiff = "0.9"
 
+v4l = "0.14.0"
+libc = "0.2"
+
 # optional dependencies
 gstreamer = { version = "0.23.5", optional = true }
 gstreamer-app = { version = "0.23.5", optional = true }

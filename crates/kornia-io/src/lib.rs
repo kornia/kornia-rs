@@ -27,6 +27,9 @@ pub mod stream;
 /// TIFF image encoding and decoding.
 pub mod tiff;
 
+/// V4L2 video module for real-time video processing.
+pub mod v4l2;
+
 pub use crate::error::IoError;
 
 /// Utility function to convert 16-bit `Vec<u8>` to `Vec<u16>`
