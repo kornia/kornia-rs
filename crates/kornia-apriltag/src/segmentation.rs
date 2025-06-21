@@ -84,40 +84,44 @@ mod tests {
         use Pixel::*;
         #[rustfmt::skip]
         let bin_data = vec![
-            Black, Black, White, White,
-            Black, Black, White, White,
-            White, White, Black, Black,
-            White, White, Black, Black
+            Black, Black, White, White, White,
+            Black, Black, White, White, White,
+            White, White, Black, Black, Black,
+            White, White, Black, Black, Black
         ];
 
         let bin = Image::new(
             ImageSize {
-                width: 4,
+                width: 5,
                 height: 4,
             },
             bin_data,
             CpuAllocator,
         )?;
 
-        let mut uf = UnionFind::new(16);
+        let mut uf = UnionFind::new(20);
         find_connected_components(&bin, &mut uf)?;
 
         assert_eq!(uf.get_representative(0), 0);
         assert_eq!(uf.get_representative(1), 0);
         assert_eq!(uf.get_representative(2), 2);
-        assert_eq!(uf.get_representative(3), 3);
-        assert_eq!(uf.get_representative(4), 0);
+        assert_eq!(uf.get_representative(3), 2);
+        assert_eq!(uf.get_representative(4), 4);
         assert_eq!(uf.get_representative(5), 0);
-        assert_eq!(uf.get_representative(6), 2);
-        assert_eq!(uf.get_representative(7), 7);
+        assert_eq!(uf.get_representative(6), 0);
+        assert_eq!(uf.get_representative(7), 2);
         assert_eq!(uf.get_representative(8), 2);
-        assert_eq!(uf.get_representative(9), 2);
-        assert_eq!(uf.get_representative(10), 10);
-        assert_eq!(uf.get_representative(11), 11);
-        assert_eq!(uf.get_representative(12), 2);
-        assert_eq!(uf.get_representative(13), 2);
-        assert_eq!(uf.get_representative(14), 10);
-        assert_eq!(uf.get_representative(15), 15);
+        assert_eq!(uf.get_representative(9), 9);
+        assert_eq!(uf.get_representative(10), 2);
+        assert_eq!(uf.get_representative(11), 2);
+        assert_eq!(uf.get_representative(12), 12);
+        assert_eq!(uf.get_representative(13), 12);
+        assert_eq!(uf.get_representative(14), 14);
+        assert_eq!(uf.get_representative(15), 2);
+        assert_eq!(uf.get_representative(16), 2);
+        assert_eq!(uf.get_representative(17), 12);
+        assert_eq!(uf.get_representative(18), 12);
+        assert_eq!(uf.get_representative(19), 19);
 
         Ok(())
     }
