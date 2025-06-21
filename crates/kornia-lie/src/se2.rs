@@ -80,18 +80,22 @@ impl SE2 {
 
     pub fn log(&self) -> Vec3A {
         let theta = self.r.log();
-        let half_theta = 0.5 * theta;
-        let denom = self.r.z.x - 1.0;
 
-        let a = if denom != 0.0 {
-            -(half_theta * self.r.z.y) / denom
-        } else {
-            0.0
-        };
+        // --- very small angle: V ≈ I so V⁻¹ ≈ I
+        if theta.abs() < 1.0e-8 {
+            return Vec3A::new(self.t.x, self.t.y, 0.0);
+        }
 
-        let v_inv = Mat2::from_cols_array(&[a, -half_theta, half_theta, a]);
+        let sin_t = self.r.z.y; // sin θ
+        let cos_t = self.r.z.x; // cos θ
+        let a = sin_t / theta; //  sinθ / θ
+        let b = (1.0 - cos_t) / theta; // (1-cosθ)/θ
+        let denom = a * a + b * b; // det(V)
+
+        // V⁻¹ = 1/det(V) * [[ a,  b],[-b,  a]]
+        let v_inv = Mat2::from_cols_array(&[a / denom, -b / denom, b / denom, a / denom]);
+
         let upsilon = v_inv.mul_vec2(self.t);
-
         Vec3A::new(upsilon.x, upsilon.y, theta)
     }
 
@@ -458,13 +462,14 @@ mod tests {
         // Test multiple random values
         for _ in 0..10 {
             let se2 = make_random_se2();
+
             let log_t = se2.log();
             let se2_exp = SE2::exp(log_t);
             let log_t_exp = se2_exp.log();
 
-            assert_relative_eq!(log_t.x, log_t_exp.x, epsilon = 1e-5);
-            assert_relative_eq!(log_t.y, log_t_exp.y, epsilon = 1e-5);
-            assert_relative_eq!(log_t.z, log_t_exp.z, epsilon = 1e-5);
+            assert_relative_eq!(log_t.x, log_t_exp.x, epsilon = EPSILON);
+            assert_relative_eq!(log_t.y, log_t_exp.y, epsilon = EPSILON);
+            assert_relative_eq!(log_t.z, log_t_exp.z, epsilon = EPSILON);
         }
 
         // Test specific values
