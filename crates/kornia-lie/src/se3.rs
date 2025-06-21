@@ -48,6 +48,26 @@ impl SE3 {
         }
     }
 
+    #[inline]
+    pub fn rplus(&self, upsilon: Vec3A, omega: Vec3A) -> Self {
+        *self * SE3::exp(upsilon, omega)
+    }
+
+    #[inline]
+    pub fn rminus(&self, other: &Self) -> (Vec3A, Vec3A) {
+        (self.inverse() * *other).log()
+    }
+
+    #[inline]
+    pub fn lplus(upsilon: Vec3A, omega: Vec3A, x: &Self) -> Self {
+        SE3::exp(upsilon, omega) * *x
+    }
+
+    #[inline]
+    pub fn lminus(y: &Self, x: &Self) -> (Vec3A, Vec3A) {
+        (*y * x.inverse()).log()
+    }
+
     pub fn inverse(&self) -> Self {
         let r_inv = self.r.inverse();
         Self {
@@ -346,6 +366,40 @@ mod tests {
         assert_relative_eq!(se3.t.x, xyz.x);
         assert_relative_eq!(se3.t.y, xyz.y);
         assert_relative_eq!(se3.t.z, xyz.z);
+    }
+
+    #[test]
+    fn test_se3_rplus_rminus_roundtrip() {
+        let x = make_random_se3();
+        let tau_v = Vec3A::new(0.3, -0.4, 0.2); // translational part
+        let tau_w = Vec3A::new(0.1, 0.5, -0.2); // rotational part
+
+        let y = x.rplus(tau_v, tau_w); // X ⊕ τ  →  Y
+        let (dv, dw) = x.rminus(&y);
+
+        const L_EPS: f32 = 1e-5;
+        assert_relative_eq!(dv.x, tau_v.x, epsilon = L_EPS);
+        assert_relative_eq!(dv.y, tau_v.y, epsilon = L_EPS);
+        assert_relative_eq!(dv.z, tau_v.z, epsilon = L_EPS);
+        assert_relative_eq!(dw.x, tau_w.x, epsilon = L_EPS);
+        assert_relative_eq!(dw.y, tau_w.y, epsilon = L_EPS);
+        assert_relative_eq!(dw.z, tau_w.z, epsilon = L_EPS);
+    }
+
+    #[test]
+    fn test_se3_lplus_lminus_consistency() {
+        let x = make_random_se3();
+        let tau_v = Vec3A::new(-1.0, 0.7, 0.3);
+        let tau_w = Vec3A::new(0.2, 0.1, -0.6);
+
+        let y = SE3::lplus(tau_v, tau_w, &x); // τ ⊕ X → Y
+        let (dv, dw) = SE3::lminus(&y, &x); // Y ⊖ X → τ
+        assert_relative_eq!(dv.x, tau_v.x, epsilon = EPSILON);
+        assert_relative_eq!(dv.y, tau_v.y, epsilon = EPSILON);
+        assert_relative_eq!(dv.z, tau_v.z, epsilon = EPSILON);
+        assert_relative_eq!(dw.x, tau_w.x, epsilon = EPSILON);
+        assert_relative_eq!(dw.y, tau_w.y, epsilon = EPSILON);
+        assert_relative_eq!(dw.z, tau_w.z, epsilon = EPSILON);
     }
 
     #[test]

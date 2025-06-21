@@ -47,6 +47,26 @@ impl SO3 {
         }
     }
 
+    #[inline]
+    pub fn rplus(&self, tau: Vec3A) -> Self {
+        *self * SO3::exp(tau)
+    }
+
+    #[inline]
+    pub fn rminus(&self, other: &Self) -> Vec3A {
+        (self.inverse() * *other).log()
+    }
+
+    #[inline]
+    pub fn lplus(tau: Vec3A, x: &Self) -> Self {
+        SO3::exp(tau) * *x
+    }
+
+    #[inline]
+    pub fn lminus(y: &Self, x: &Self) -> Vec3A {
+        (*y * x.inverse()).log()
+    }
+
     pub fn matrix(&self) -> Mat3A {
         Affine3A::from_quat(self.q).matrix3
     }
@@ -209,6 +229,28 @@ mod tests {
         assert_relative_eq!(s4.q.length(), 1.0, epsilon = EPSILON);
         assert_relative_eq!(s5.q.length(), 1.0, epsilon = EPSILON);
         assert_relative_eq!(s6.q.length(), 1.0, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_so3_rplus_rminus_roundtrip() {
+        let x = SO3::from_random();
+        let tau = Vec3A::new(0.4, -0.2, 0.7);
+        let y = x.rplus(tau); // X ⊕ τ → Y
+        let diff = x.rminus(&y); // Y ⊖ X → τ
+        assert_relative_eq!(diff.x, tau.x, epsilon = EPSILON);
+        assert_relative_eq!(diff.y, tau.y, epsilon = EPSILON);
+        assert_relative_eq!(diff.z, tau.z, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_so3_lplus_lminus_consistency() {
+        let x = SO3::from_random();
+        let tau = Vec3A::new(-0.3, 1.1, 0.2);
+        let y = SO3::lplus(tau, &x); // τ ⊕ X → Y
+        let diff = SO3::lminus(&y, &x); // Y ⊖ X → τ
+        assert_relative_eq!(diff.x, tau.x, epsilon = EPSILON);
+        assert_relative_eq!(diff.y, tau.y, epsilon = EPSILON);
+        assert_relative_eq!(diff.z, tau.z, epsilon = EPSILON);
     }
 
     #[test]

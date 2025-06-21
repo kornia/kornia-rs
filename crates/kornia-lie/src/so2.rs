@@ -45,6 +45,26 @@ impl SO2 {
         }
     }
 
+    #[inline]
+    pub fn rplus(&self, dtheta: f32) -> Self {
+        *self * SO2::exp(dtheta)
+    }
+
+    #[inline]
+    pub fn rminus(&self, other: &Self) -> f32 {
+        (self.inverse() * *other).log()
+    }
+
+    #[inline]
+    pub fn lplus(dtheta: f32, x: &Self) -> Self {
+        SO2::exp(dtheta) * *x
+    }
+
+    #[inline]
+    pub fn lminus(y: &Self, x: &Self) -> f32 {
+        (*y * x.inverse()).log()
+    }
+
     pub fn matrix(&self) -> Mat2 {
         Mat2::from_cols_array(&[self.z.x, self.z.y, -self.z.y, self.z.x])
     }
@@ -158,6 +178,24 @@ mod tests {
         let so2 = SO2::from_matrix(mat);
         assert_relative_eq!(so2.z.x, 0.6);
         assert_relative_eq!(so2.z.y, 0.8);
+    }
+
+    #[test]
+    fn test_rplus_rminus_roundtrip() {
+        let x = make_random_so2();
+        let dtheta = 0.42_f32; // some increment
+        let y = x.rplus(dtheta); // X ⊕ τ → Y
+        let diff = x.rminus(&y); // Y ⊖ X → τ
+        assert_relative_eq!(diff, dtheta, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_lplus_lminus_consistency() {
+        let x = make_random_so2();
+        let dtheta = -1.1_f32; // another increment
+        let y = SO2::lplus(dtheta, &x); // τ ⊕ X → Y
+        let diff = SO2::lminus(&y, &x); // Y ⊖ X → τ
+        assert_relative_eq!(diff, dtheta, epsilon = EPSILON);
     }
 
     #[test]
