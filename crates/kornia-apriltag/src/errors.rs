@@ -12,4 +12,8 @@ pub enum AprilTagError {
     /// The minimum image size should be tile_size x tile_size
     #[error("The minimum image size should be tile_size x tile_size")]
     InvalidImageSize,
+
+    /// The image length does not match the UnionFind length.
+    #[error("The image length {0} mismatches UnionFind length {1}")]
+    InvalidUnionFindSize(usize, usize),
 }
