@@ -1,3 +1,8 @@
+use std::{
+    collections::HashMap,
+    ops::{Mul, Sub},
+};
+
 use crate::{errors::AprilTagError, union_find::UnionFind, utils::Pixel};
 use kornia_image::{allocator::ImageAllocator, Image};
 
@@ -70,6 +75,133 @@ pub fn find_connected_components<A: ImageAllocator>(
     });
 
     Ok(())
+}
+
+/// TODO
+pub struct GradientInfo {
+    /// TODO
+    pub x: usize,
+    /// TODO
+    pub y: usize,
+    /// TODO
+    pub gx: GradientDirection,
+    /// TODO
+    pub gy: GradientDirection,
+}
+
+/// TODO
+#[derive(Debug, Clone, Copy)]
+pub enum GradientDirection {
+    /// TODO
+    TowardsWhite, // 255
+    /// TODO
+    TowardsBlack, // -255
+    /// TODO
+    None, // 0
+}
+
+impl Mul<isize> for GradientDirection {
+    type Output = GradientDirection;
+
+    fn mul(self, rhs: isize) -> Self::Output {
+        if rhs == 0 {
+            GradientDirection::None
+        } else if rhs > 0 {
+            self
+        } else {
+            match self {
+                GradientDirection::TowardsWhite => GradientDirection::TowardsBlack,
+                GradientDirection::TowardsBlack => GradientDirection::TowardsWhite,
+                _ => GradientDirection::None,
+            }
+        }
+    }
+}
+
+impl Sub for Pixel {
+    type Output = GradientDirection;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Pixel::Black, Pixel::White) => GradientDirection::TowardsBlack,
+            (Pixel::White, Pixel::Black) => GradientDirection::TowardsWhite,
+            _ => GradientDirection::None,
+        }
+    }
+}
+
+/// TODO
+pub fn find_gradient_clusters<A: ImageAllocator>(
+    src: &Image<Pixel, 1, A>,
+    uf: &mut UnionFind,
+) -> HashMap<(usize, usize), Vec<GradientInfo>> {
+    let mut clusters = HashMap::new();
+    let src_slice = src.as_slice();
+
+    (1..src.height() - 1).into_iter().for_each(|y| {
+        let mut connected_last = false;
+
+        (1..src.width() - 1).into_iter().for_each(|x| {
+            let i = y * src.width() + x;
+            let v0 = src_slice[i];
+
+            if v0 == Pixel::Skip {
+                connected_last = false;
+                return;
+            }
+
+            let rep0 = uf.get_representative(i);
+            if uf.get_set_size(rep0) < 25 {
+                connected_last = false;
+                return;
+            }
+
+            let mut any_connected = false;
+            let mut check = |dx: isize, dy: isize, new_i: usize, any_connected: &mut bool| {
+                let v1 = src_slice[new_i];
+                if v1 == Pixel::Skip {
+                    return;
+                }
+
+                if v0 != v1 {
+                    let rep1 = uf.get_representative(new_i);
+                    if uf.get_set_size(rep1) > 24 {
+                        let key = if rep0 < rep1 {
+                            (rep0, rep1)
+                        } else {
+                            (rep1, rep0)
+                        };
+                        let entry = clusters.entry(key).or_insert_with(Vec::new);
+
+                        let delta = v1 - v0;
+                        let gradient_info = GradientInfo {
+                            x: (2 * x as isize + dx) as usize,
+                            y: (2 * y as isize + dy) as usize,
+                            gx: delta * dx,
+                            gy: delta * dy,
+                        };
+
+                        entry.push(gradient_info);
+                        *any_connected = true;
+                    }
+                }
+            };
+
+            check(1, 0, i + 1, &mut any_connected);
+            check(0, 1, i + src.width(), &mut any_connected);
+            if !connected_last {
+                check(-1, 1, i + src.width() - 1, &mut any_connected)
+            }
+
+            any_connected = false;
+
+            check(1, 1, i + src.width() + 1, &mut any_connected);
+
+            connected_last = any_connected;
+        });
+    });
+
+    clusters
 }
 
 #[cfg(test)]

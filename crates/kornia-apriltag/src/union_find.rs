@@ -37,6 +37,12 @@ impl UnionFind {
         root
     }
 
+    /// TODO
+    pub fn get_set_size(&mut self, id: usize) -> usize {
+        let repid = self.get_representative(id);
+        self.size[repid]
+    }
+
     /// Unites the sets containing `aid` and `bid`, returning the representative of the resulting set.
     pub fn connect(&mut self, aid: usize, bid: usize) -> usize {
         let aroot = self.get_representative(aid);
