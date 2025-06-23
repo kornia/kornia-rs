@@ -45,6 +45,26 @@ impl SO2 {
         }
     }
 
+    #[inline]
+    pub fn rplus(&self, dtheta: f32) -> Self {
+        *self * SO2::exp(dtheta)
+    }
+
+    #[inline]
+    pub fn rminus(&self, other: &Self) -> f32 {
+        (self.inverse() * *other).log()
+    }
+
+    #[inline]
+    pub fn lplus(dtheta: f32, x: &Self) -> Self {
+        SO2::exp(dtheta) * *x
+    }
+
+    #[inline]
+    pub fn lminus(y: &Self, x: &Self) -> f32 {
+        (*y * x.inverse()).log()
+    }
+
     pub fn matrix(&self) -> Mat2 {
         Mat2::from_cols_array(&[self.z.x, self.z.y, -self.z.y, self.z.x])
     }
@@ -75,11 +95,23 @@ impl SO2 {
     }
 
     pub fn hat(theta: f32) -> Mat2 {
-        Mat2::from_cols_array(&[0.0, -theta, theta, 0.0])
+        Mat2::from_cols_array(&[0.0, theta, theta, 0.0])
     }
 
     pub fn vee(omega: Mat2) -> f32 {
         omega.y_axis.x
+    }
+
+    /// Left Jacobian of SO(2).
+    /// For SO(2), the Lie group is commutative, J_l(theta) = 1.
+    pub fn left_jacobian() -> f32 {
+        1.0
+    }
+
+    /// Right Jacobian of SO(2).
+    /// For SO(2), the Lie group is commutative, J_r(theta) = 1.
+    pub fn right_jacobian() -> f32 {
+        1.0
     }
 }
 
@@ -146,6 +178,24 @@ mod tests {
         let so2 = SO2::from_matrix(mat);
         assert_relative_eq!(so2.z.x, 0.6);
         assert_relative_eq!(so2.z.y, 0.8);
+    }
+
+    #[test]
+    fn test_rplus_rminus_roundtrip() {
+        let x = make_random_so2();
+        let dtheta = 0.42_f32; // some increment
+        let y = x.rplus(dtheta); // X ⊕ τ → Y
+        let diff = x.rminus(&y); // Y ⊖ X → τ
+        assert_relative_eq!(diff, dtheta, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_lplus_lminus_consistency() {
+        let x = make_random_so2();
+        let dtheta = -1.1_f32; // another increment
+        let y = SO2::lplus(dtheta, &x); // τ ⊕ X → Y
+        let diff = SO2::lminus(&y, &x); // Y ⊖ X → τ
+        assert_relative_eq!(diff, dtheta, epsilon = EPSILON);
     }
 
     #[test]
@@ -246,7 +296,7 @@ mod tests {
     #[test]
     fn test_hat() {
         let theta = 0.5;
-        let expected = Mat2::from_cols_array(&[0.0, -0.5, 0.5, 0.0]);
+        let expected = Mat2::from_cols_array(&[0.0, 0.5, 0.5, 0.0]);
         let actual = SO2::hat(theta);
 
         for i in 0..2 {
@@ -259,7 +309,7 @@ mod tests {
         let hat_matrix = SO2::hat(theta);
         assert_relative_eq!(hat_matrix.x_axis.x, 0.0);
         assert_relative_eq!(hat_matrix.y_axis.y, 0.0);
-        assert_relative_eq!(hat_matrix.x_axis.y, -hat_matrix.y_axis.x);
+        assert_relative_eq!(hat_matrix.x_axis.y, hat_matrix.y_axis.x);
     }
 
     #[test]

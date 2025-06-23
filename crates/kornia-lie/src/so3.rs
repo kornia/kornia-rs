@@ -47,6 +47,26 @@ impl SO3 {
         }
     }
 
+    #[inline]
+    pub fn rplus(&self, tau: Vec3A) -> Self {
+        *self * SO3::exp(tau)
+    }
+
+    #[inline]
+    pub fn rminus(&self, other: &Self) -> Vec3A {
+        (self.inverse() * *other).log()
+    }
+
+    #[inline]
+    pub fn lplus(tau: Vec3A, x: &Self) -> Self {
+        SO3::exp(tau) * *x
+    }
+
+    #[inline]
+    pub fn lminus(y: &Self, x: &Self) -> Vec3A {
+        (*y * x.inverse()).log()
+    }
+
     pub fn matrix(&self) -> Mat3A {
         Affine3A::from_quat(self.q).matrix3
     }
@@ -96,17 +116,21 @@ impl SO3 {
     /// Vector space -> Lie algebra
     pub fn hat(v: Vec3A) -> Mat3A {
         let (a, b, c) = (v.x, v.y, v.z);
-        Mat3A::from_cols_array(&[0.0, -c, b, c, 0.0, -a, -b, a, 0.0])
+        Mat3A::from_cols_array(&[0.0, c, -b, -c, 0.0, a, b, -a, 0.0])
     }
 
     /// Lie algebra -> vector space
     pub fn vee(omega: Mat3A) -> Vec3A {
-        Vec3A::new(omega.z_axis.y, omega.x_axis.z, omega.y_axis.x)
+        let a = omega.y_axis.z;
+        let b = omega.z_axis.x;
+        let c = omega.x_axis.y;
+        Vec3A::new(a, b, c)
     }
+
     pub fn vee4(omega: Mat4) -> Vec3A {
-        let a = omega.z_axis.y;
-        let b = omega.x_axis.z;
-        let c = omega.y_axis.x;
+        let a = omega.y_axis.z;
+        let b = omega.z_axis.x;
+        let c = omega.x_axis.y;
         Vec3A::new(a, b, c)
     }
 
@@ -208,6 +232,28 @@ mod tests {
     }
 
     #[test]
+    fn test_so3_rplus_rminus_roundtrip() {
+        let x = SO3::from_random();
+        let tau = Vec3A::new(0.4, -0.2, 0.7);
+        let y = x.rplus(tau); // X ⊕ τ → Y
+        let diff = x.rminus(&y); // Y ⊖ X → τ
+        assert_relative_eq!(diff.x, tau.x, epsilon = EPSILON);
+        assert_relative_eq!(diff.y, tau.y, epsilon = EPSILON);
+        assert_relative_eq!(diff.z, tau.z, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_so3_lplus_lminus_consistency() {
+        let x = SO3::from_random();
+        let tau = Vec3A::new(-0.3, 1.1, 0.2);
+        let y = SO3::lplus(tau, &x); // τ ⊕ X → Y
+        let diff = SO3::lminus(&y, &x); // Y ⊖ X → τ
+        assert_relative_eq!(diff.x, tau.x, epsilon = EPSILON);
+        assert_relative_eq!(diff.y, tau.y, epsilon = EPSILON);
+        assert_relative_eq!(diff.z, tau.z, epsilon = EPSILON);
+    }
+
+    #[test]
     fn test_exp() {
         // Test exp of zero vector is identity
         let v = Vec3A::from_array([0.0, 0.0, 0.0]);
@@ -272,13 +318,13 @@ mod tests {
 
         // Check skew-symmetric matrix structure
         assert_relative_eq!(hat_v.x_axis.x, 0.0, epsilon = EPSILON);
-        assert_relative_eq!(hat_v.x_axis.y, -3.0, epsilon = EPSILON);
-        assert_relative_eq!(hat_v.x_axis.z, 2.0, epsilon = EPSILON);
-        assert_relative_eq!(hat_v.y_axis.x, 3.0, epsilon = EPSILON);
+        assert_relative_eq!(hat_v.x_axis.y, 3.0, epsilon = EPSILON);
+        assert_relative_eq!(hat_v.x_axis.z, -2.0, epsilon = EPSILON);
+        assert_relative_eq!(hat_v.y_axis.x, -3.0, epsilon = EPSILON);
         assert_relative_eq!(hat_v.y_axis.y, 0.0, epsilon = EPSILON);
-        assert_relative_eq!(hat_v.y_axis.z, -1.0, epsilon = EPSILON);
-        assert_relative_eq!(hat_v.z_axis.x, -2.0, epsilon = EPSILON);
-        assert_relative_eq!(hat_v.z_axis.y, 1.0, epsilon = EPSILON);
+        assert_relative_eq!(hat_v.y_axis.z, 1.0, epsilon = EPSILON);
+        assert_relative_eq!(hat_v.z_axis.x, 2.0, epsilon = EPSILON);
+        assert_relative_eq!(hat_v.z_axis.y, -1.0, epsilon = EPSILON);
         assert_relative_eq!(hat_v.z_axis.z, 0.0, epsilon = EPSILON);
     }
 

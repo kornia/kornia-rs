@@ -1,0 +1,28 @@
+[package]
+name = "kornia-vlm"
+description = "Vision Language Models in Rust"
+authors = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+include = { workspace = true }
+license = { workspace = true }
+readme = { workspace = true }
+repository = { workspace = true }
+rust-version = { workspace = true }
+version = { workspace = true }
+
+[dependencies]
+candle-core = { version = "0.9.1" }
+candle-transformers = { version = "0.9.1" }
+candle-examples = "0.9.1"
+candle-nn = { version = "0.9.1" }
+hf-hub = "0.4.2"
+kornia-image = { workspace = true }
+kornia-imgproc = { workspace = true }
+log = "0.4"
+serde_json = "1"
+tokenizers = "0.21.1"
+thiserror = "2"
+
+[features]
+cuda = ["candle-core/cuda", "candle-transformers/cuda", "candle-nn/cuda"]

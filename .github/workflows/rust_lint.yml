@@ -63,7 +63,7 @@ jobs:
 
       - name: Install cross
         run: cargo install cross
-      - run: cross check --all --all-features
+      - run: cross check --all --features "turbojpeg,gstreamer"
 
       - name: Show sccache stats
         run: sccache --show-stats
