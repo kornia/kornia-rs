@@ -284,4 +284,71 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_gradient_clusters() -> Result<(), Box<dyn std::error::Error>> {
+        let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
+        let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
+
+        let mut tile_min_max = TileMinMax::new(src.size(), 4);
+        adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
+
+        let mut uf = UnionFind::new(bin.as_slice().len());
+        find_connected_components(&bin, &mut uf)?;
+
+        let gradient_clusters = find_gradient_clusters(&bin, &mut uf);
+
+        // Since the order of HashMap iteration is random, we cannot rely on the order of clusters.
+        // However, we know from the expected data file that there are exactly 3 unique clusters,
+        // each with a distinct length: 48, 188, and 192. We match clusters by their length and
+        // compare their string representations to the expected output for each size.
+        let expected = std::fs::read_to_string("../../tests/data/apriltag_gradient_clusters.txt")?;
+        let mut expected_len_48 = String::new();
+        let mut expected_len_188 = String::new();
+        let mut expected_len_192 = String::new();
+
+        for line in expected.lines() {
+            if line.starts_with("size 48:") {
+                expected_len_48 = line.to_string();
+            } else if line.starts_with("size 188:") {
+                expected_len_188 = line.to_string();
+            } else if line.starts_with("size 192:") {
+                expected_len_192 = line.to_string();
+            }
+        }
+
+        for (_, infos) in gradient_clusters.iter() {
+            let mut clusters = format!("size {}:\t", infos.len());
+
+            for info in infos {
+                let g_str = |g: GradientDirection| match g {
+                    GradientDirection::None => 0,
+                    GradientDirection::TowardsBlack => -255,
+                    GradientDirection::TowardsWhite => 255,
+                };
+                clusters.push_str(
+                    format!(
+                        " (x={} y={} gx={} gy={})",
+                        info.x,
+                        info.y,
+                        g_str(info.gx),
+                        g_str(info.gy)
+                    )
+                    .as_str(),
+                );
+            }
+
+            match infos.len() {
+                48 => assert_eq!(expected_len_48, clusters),
+                188 => assert_eq!(expected_len_188, clusters),
+                192 => assert_eq!(expected_len_192, clusters),
+                _ => panic!(
+                    "Unexpected length of clusters, expected either 48, 188, or 192 but found {}",
+                    infos.len()
+                ),
+            }
+        }
+
+        Ok(())
+    }
 }
