@@ -37,7 +37,7 @@ impl UnionFind {
         root
     }
 
-    /// TODO
+    /// Returns the size of the set containing `id`.
     pub fn get_set_size(&mut self, id: usize) -> usize {
         let repid = self.get_representative(id);
         self.size[repid]
