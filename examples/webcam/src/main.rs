@@ -95,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Convert YUYV to RGB if needed
         let mut rgb_image = Image::<u8, 3, CpuAllocator>::from_size_val(img_size, 0, CpuAllocator)?;
 
-        let buf = frame.buffer.0.as_slice();
+        let buf = frame.buffer.as_slice();
         match frame.pixel_format {
             PixelFormat::YUYV => {
                 imgproc::color::convert_yuyv_to_rgb_u8(buf, &mut rgb_image);

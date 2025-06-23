@@ -3,8 +3,14 @@ use std::{io, mem, sync::Arc};
 use v4l::{buffer, device::Handle, memory::Memory, v4l2, v4l_sys::*};
 
 #[derive(Clone)]
-//pub struct V4lBuffer(pub Arc<Mutex<Vec<u8>>>);
-pub struct V4lBuffer(pub Arc<Vec<u8>>);
+pub struct V4lBuffer(Arc<Vec<u8>>);
+
+impl std::ops::Deref for V4lBuffer {
+    type Target = Vec<u8>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 /// Manage user allocated buffers
 ///

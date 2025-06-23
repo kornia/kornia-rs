@@ -146,10 +146,7 @@ impl<'a> CaptureStream<'a> for Stream {
     fn queue(&mut self, index: usize) -> io::Result<()> {
         let buffer_desc = self.buffer_desc();
         let buf = &mut self.arena.bufs[index];
-        //let Ok(buf) = buf.0.lock() else {
-        //    return Err(io::Error::new(io::ErrorKind::Other, "Buffer lock failed"));
-        //};
-        let buf = &buf.0;
+        let buf = &buf;
 
         let mut v4l2_buf = v4l2_buffer {
             index: index as u32,

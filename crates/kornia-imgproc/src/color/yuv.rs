@@ -4,25 +4,22 @@ use kornia_image::{allocator::ImageAllocator, Image};
 ///
 /// # Arguments
 ///
-/// * `yuyv_data` - The YUYV image data.
-/// * `rgb_image` - The RGB image to store the result.
+/// * `src` - The YUYV image data.
+/// * `dst` - The RGB image to store the result.
 ///
 /// # Returns
 ///
 /// The RGB image in HxWx3 format.
-pub fn convert_yuyv_to_rgb_u8<A: ImageAllocator>(
-    yuyv_data: &[u8],
-    rgb_image: &mut Image<u8, 3, A>,
-) {
-    let width = rgb_image.width();
-    let rgb_data = rgb_image.as_slice_mut();
+pub fn convert_yuyv_to_rgb_u8<A: ImageAllocator>(src: &[u8], dst: &mut Image<u8, 3, A>) {
+    let width = dst.width();
+    let rgb_data = dst.as_slice_mut();
 
     rgb_data
         .chunks_exact_mut(width * 3)
         .enumerate()
         .for_each(|(row, rgb_row)| {
             let yuyv_row_start = row * width * 2; // 2 bytes per pixel in YUYV
-            let yuyv_row = &yuyv_data[yuyv_row_start..yuyv_row_start + width * 2];
+            let yuyv_row = &src[yuyv_row_start..yuyv_row_start + width * 2];
 
             rgb_row
                 .chunks_exact_mut(6)
