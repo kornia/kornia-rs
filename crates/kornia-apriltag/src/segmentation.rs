@@ -3,7 +3,11 @@ use std::{
     ops::{Mul, Sub},
 };
 
-use crate::{errors::AprilTagError, union_find::UnionFind, utils::Pixel};
+use crate::{
+    errors::AprilTagError,
+    union_find::UnionFind,
+    utils::{Pixel, Point2d},
+};
 use kornia_image::{allocator::ImageAllocator, Image};
 
 /// Finds connected components in a binary image using union-find.
@@ -77,27 +81,35 @@ pub fn find_connected_components<A: ImageAllocator>(
     Ok(())
 }
 
-/// TODO
+/// Information about the gradient at a specific pixel location.
+///
+/// This struct stores the coordinates of the pixel and the gradient directions
+/// in the x and y axes.
+/// Information about the gradient at a specific pixel location.
+///
+/// This struct stores the coordinates of the pixel and the gradient directions
+/// in the x and y axes.
+#[derive(Debug, Clone, Copy)]
 pub struct GradientInfo {
-    /// TODO
-    pub x: usize,
-    /// TODO
-    pub y: usize,
-    /// TODO
+    /// The coordinates of the pixel, represented as the mid-point assuming twice the size of the image.
+    pub pos: Point2d,
+    /// The gradient direction in the x-axis.
     pub gx: GradientDirection,
-    /// TODO
+    /// The gradient direction in the y-axis.
     pub gy: GradientDirection,
 }
 
-/// TODO
+/// Represents the direction of a gradient between two pixels.
+///
+/// Used to indicate whether the gradient is towards a white pixel, towards a black pixel, or if there is no gradient.
 #[derive(Debug, Clone, Copy)]
 pub enum GradientDirection {
-    /// TODO
-    TowardsWhite, // 255
-    /// TODO
-    TowardsBlack, // -255
-    /// TODO
-    None, // 0
+    /// Gradient is towards a white pixel (value 255).
+    TowardsWhite,
+    /// Gradient is towards a black pixel (value -255).
+    TowardsBlack,
+    /// No gradient (value 0).
+    None,
 }
 
 impl Mul<isize> for GradientDirection {
@@ -130,12 +142,23 @@ impl Sub for Pixel {
     }
 }
 
-/// TODO
+/// Finds and groups gradient transitions between connected components in a binary image.
+///
+/// For each pixel, this function checks its neighbors and, if the neighbor belongs to a different
+/// connected component (with sufficient size), records the gradient information between the two components.
+/// The results are stored in the `clusters` map, keyed by the pair of component representatives.
+///
+/// # Arguments
+///
+/// * `src` - Reference to the source image containing `Pixel` values.
+/// * `uf` - Mutable reference to a [`UnionFind`] structure for tracking connected components.
+/// * `clusters` - Mutable reference to a map where the gradient information between component pairs will be stored.
+///     Make sure to call [`HashMap::clear`] if you are using this function multiple times with the same `clusters`
 pub fn find_gradient_clusters<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     uf: &mut UnionFind,
-) -> HashMap<(usize, usize), Vec<GradientInfo>> {
-    let mut clusters = HashMap::new();
+    clusters: &mut HashMap<(usize, usize), Vec<GradientInfo>>,
+) {
     let src_slice = src.as_slice();
 
     (1..src.height() - 1).into_iter().for_each(|y| {
@@ -143,65 +166,69 @@ pub fn find_gradient_clusters<A: ImageAllocator>(
 
         (1..src.width() - 1).into_iter().for_each(|x| {
             let i = y * src.width() + x;
-            let v0 = src_slice[i];
+            let current_pixel = src_slice[i];
 
-            if v0 == Pixel::Skip {
+            if current_pixel == Pixel::Skip {
                 connected_last = false;
                 return;
             }
 
-            let rep0 = uf.get_representative(i);
-            if uf.get_set_size(rep0) < 25 {
+            let current_pixel_representative = uf.get_representative(i);
+            if uf.get_set_size(current_pixel_representative) < 25 {
                 connected_last = false;
                 return;
             }
 
             let mut any_connected = false;
-            let mut check = |dx: isize, dy: isize, new_i: usize, any_connected: &mut bool| {
-                let v1 = src_slice[new_i];
-                if v1 == Pixel::Skip {
-                    return;
-                }
-
-                if v0 != v1 {
-                    let rep1 = uf.get_representative(new_i);
-                    if uf.get_set_size(rep1) > 24 {
-                        let key = if rep0 < rep1 {
-                            (rep0, rep1)
-                        } else {
-                            (rep1, rep0)
-                        };
-                        let entry = clusters.entry(key).or_insert_with(Vec::new);
-
-                        let delta = v1 - v0;
-                        let gradient_info = GradientInfo {
-                            x: (2 * x as isize + dx) as usize,
-                            y: (2 * y as isize + dy) as usize,
-                            gx: delta * dx,
-                            gy: delta * dy,
-                        };
-
-                        entry.push(gradient_info);
-                        *any_connected = true;
+            let mut do_conn =
+                |dx: isize, dy: isize, neighbor_i: usize, any_connected: &mut bool| {
+                    let neighbor_pixel = src_slice[neighbor_i];
+                    if neighbor_pixel == Pixel::Skip {
+                        return;
                     }
-                }
-            };
 
-            check(1, 0, i + 1, &mut any_connected);
-            check(0, 1, i + src.width(), &mut any_connected);
+                    if current_pixel != neighbor_pixel {
+                        let neighbor_pixel_representative = uf.get_representative(neighbor_i);
+                        if uf.get_set_size(neighbor_pixel_representative) > 24 {
+                            let key =
+                                if current_pixel_representative < neighbor_pixel_representative {
+                                    (current_pixel_representative, neighbor_pixel_representative)
+                                } else {
+                                    (neighbor_pixel_representative, current_pixel_representative)
+                                };
+
+                            let entry = clusters.entry(key).or_insert_with(Vec::new);
+
+                            let delta = neighbor_pixel - current_pixel;
+                            let gradient_info = GradientInfo {
+                                pos: Point2d {
+                                    x: (2 * x as isize + dx) as usize,
+                                    y: (2 * y as isize + dy) as usize,
+                                },
+                                gx: delta * dx,
+                                gy: delta * dy,
+                            };
+
+                            entry.push(gradient_info);
+                            *any_connected = true;
+                        }
+                    }
+                };
+
+            do_conn(1, 0, i + 1, &mut any_connected);
+            do_conn(0, 1, i + src.width(), &mut any_connected);
+
             if !connected_last {
-                check(-1, 1, i + src.width() - 1, &mut any_connected)
+                do_conn(-1, 1, i + src.width() - 1, &mut any_connected)
             }
 
             any_connected = false;
 
-            check(1, 1, i + src.width() + 1, &mut any_connected);
+            do_conn(1, 1, i + src.width() + 1, &mut any_connected);
 
             connected_last = any_connected;
         });
     });
-
-    clusters
 }
 
 #[cfg(test)]
@@ -296,7 +323,8 @@ mod tests {
         let mut uf = UnionFind::new(bin.as_slice().len());
         find_connected_components(&bin, &mut uf)?;
 
-        let gradient_clusters = find_gradient_clusters(&bin, &mut uf);
+        let mut gradient_clusters = HashMap::new();
+        find_gradient_clusters(&bin, &mut uf, &mut gradient_clusters);
 
         // Since the order of HashMap iteration is random, we cannot rely on the order of clusters.
         // However, we know from the expected data file that there are exactly 3 unique clusters,
@@ -329,8 +357,8 @@ mod tests {
                 clusters.push_str(
                     format!(
                         " (x={} y={} gx={} gy={})",
-                        info.x,
-                        info.y,
+                        info.pos.x,
+                        info.pos.y,
                         g_str(info.gx),
                         g_str(info.gy)
                     )
