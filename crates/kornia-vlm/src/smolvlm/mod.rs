@@ -1,6 +1,7 @@
 mod text_model;
 mod vision_model;
 mod utils;
+mod model;
 
 
 use std::io::{Error, Write};
@@ -18,12 +19,12 @@ use terminal_size::{terminal_size, Width};
 
 use utils::{preprocess_image, load_image_url, get_prompt_split_image};
 
-use crate::smol::text_model::SmolVLM;
+use crate::smolvlm::text_model::SmolModel;
 
 
 
 /// Configuration for the SmolVLM model
-pub struct SmolConfig {
+pub struct SmolVlmConfig {
     pub seed: u64,
     pub temp: f32,
     pub top_k: usize,
@@ -33,7 +34,7 @@ pub struct SmolConfig {
     pub repeat_last_n: usize,
 }
 
-impl Default for SmolConfig {
+impl Default for SmolVlmConfig {
     fn default() -> Self {
         Self {
             seed: 42,
@@ -74,7 +75,7 @@ fn read_input(cli_prompt: &str) -> String {
 
 
 #[derive(thiserror::Error, Debug)]
-pub enum SmolError {
+pub enum SmolVlmError {
     #[error(transparent)]
     FailedToLoadModel(#[from] hf_hub::api::sync::ApiError),
 
@@ -95,24 +96,24 @@ pub enum SmolError {
 }
 
 
-pub struct Smol {
-    model: text_model::SmolVLM,
+pub struct SmolVlm {
+    model: text_model::SmolModel,
     tokenizer: Tokenizer,
     image_token_enc: Encoding,
-    config: SmolConfig,
+    config: SmolVlmConfig,
     rng: StdRng,
     device: Device,
 }
 
-impl Smol {
-    /// Create a new Smol model
+impl SmolVlm {
+    /// Create a new SmolVlm model
     ///
     /// # Arguments
     ///
-    /// * `config` - The configuration for the Smol model
+    /// * `config` - The configuration for the SmolVlm model
     ///
     /// # Returns
-    pub fn new(config: SmolConfig) -> Result<Self, SmolError> {
+    pub fn new(config: SmolVlmConfig) -> Result<Self, SmolVlmError> {
         #[cfg(feature = "cuda")]
         let (device, dtype) = match Device::cuda_if_available(0) {
             Ok(device) => (device, DType::BF16),
@@ -159,7 +160,7 @@ impl Smol {
         // prompt: &str,
         // sample_len: usize,
         // stdout_debug: bool,
-    ) -> Result<String, SmolError> {
+    ) -> Result<String, SmolVlmError> {
 
         let image_token = self.image_token_enc.get_ids();
         let mut message = String::from("<|im_start|>");
@@ -246,13 +247,13 @@ impl Smol {
     }
 
     // utility function to load the model
-    fn load_model(_dtype: DType, device: &Device) -> Result<(SmolVLM, Tokenizer), SmolError> {
+    fn load_model(_dtype: DType, device: &Device) -> Result<(SmolModel, Tokenizer), SmolVlmError> {
         let tokenizer = Tokenizer::from_pretrained("HuggingFaceTB/SmolVLM-Instruct", None).unwrap();
         let api = Api::new().unwrap();
         let repo = api.model("HuggingFaceTB/SmolVLM-Instruct".to_string());
         let weights = repo.get("model.safetensors").unwrap();
         let weights = candle_core::safetensors::load(weights, &device)?;
-        let model = text_model::SmolVLM::load(&weights, &device)?;
+        let model = text_model::SmolModel::load(&weights, &device)?;
 
         Ok((model, tokenizer))
     }
@@ -265,11 +266,11 @@ mod tests {
     use candle_core::Device;
 
     #[test]
-    fn test_smol_inference() {
-        let mut model = Smol::new(SmolConfig::default()).unwrap();
+    fn test_smolvlm_inference() {
+        let mut model = SmolVlm::new(SmolVlmConfig::default()).unwrap();
 
-        // cargo test -p kornia-vlm test_smol_inference --features "cuda" -- --nocapture
-        println!("Running inference on SmolVLM model...");
+        // cargo test -p kornia-vlm test_smolvlm_inference --features "cuda" -- --nocapture
+        println!("Running inference on SmolVlm model...");
         model.inference();
     }
 }

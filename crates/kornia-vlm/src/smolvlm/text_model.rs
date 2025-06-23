@@ -231,7 +231,7 @@ impl Connector {
 
 
 
-pub struct SmolVLM {
+pub struct SmolModel {
     vision: SmolVision,
     connector: Connector,
     embed: Embedding,
@@ -243,7 +243,7 @@ pub struct SmolVLM {
 }
 
 
-impl SmolVLM {
+impl SmolModel {
     // const BLOCKS_PER_SAMPLE: u32 = 81;
 
     pub fn load(c: &HashMap<String, Tensor>, device: &Device) -> Result<Self> {
