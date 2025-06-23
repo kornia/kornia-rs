@@ -10,7 +10,7 @@ pub mod error;
 /// A module for capturing video streams from rtsp sources.
 pub mod rtsp;
 
-/// A module for capturing video streams from v4l2 cameras.
+/// A module for capturing video streams from v4l cameras.
 pub mod v4l2;
 
 /// A module for capturing video streams from video files.

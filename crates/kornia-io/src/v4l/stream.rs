@@ -1,14 +1,13 @@
-use std::convert::TryInto;
-use std::time::Duration;
-use std::{io, mem, sync::Arc};
-
 use super::arena::Arena;
-use v4l::buffer::{Metadata, Type};
-use v4l::device::{Device, Handle};
-use v4l::io::traits::{CaptureStream, Stream as StreamTrait};
-use v4l::memory::Memory;
-use v4l::v4l2;
-use v4l::v4l_sys::*;
+use std::{convert::TryInto, io, mem, sync::Arc, time::Duration};
+use v4l::{
+    buffer::{Metadata, Type},
+    device::{Device, Handle},
+    io::traits::{CaptureStream, Stream as StreamTrait},
+    memory::Memory,
+    v4l2,
+    v4l_sys::*,
+};
 
 /// Stream of user buffers
 ///
@@ -44,6 +43,7 @@ impl Stream {
     ///     let stream = Stream::new(&dev, Type::VideoCapture);
     /// }
     /// ```
+    #[allow(dead_code)]
     pub fn new(dev: &Device, buf_type: Type) -> io::Result<Self> {
         Stream::with_buffers(dev, buf_type, 4)
     }
@@ -66,16 +66,19 @@ impl Stream {
     }
 
     /// Returns the raw device handle
+    #[allow(dead_code)]
     pub fn handle(&self) -> Arc<Handle> {
         self.handle.clone()
     }
 
     /// Sets a timeout of the v4l file handle.
+    #[allow(dead_code)]
     pub fn set_timeout(&mut self, duration: Duration) {
         self.timeout = Some(duration.as_millis().try_into().unwrap());
     }
 
     /// Clears the timeout of the v4l file handle.
+    #[allow(dead_code)]
     pub fn clear_timeout(&mut self) {
         self.timeout = None;
     }
@@ -108,7 +111,7 @@ impl Drop for Stream {
 }
 
 impl StreamTrait for Stream {
-    type Item = [u8];
+    type Item = super::arena::V4lBuffer;
 
     fn start(&mut self) -> io::Result<()> {
         unsafe {
@@ -141,14 +144,20 @@ impl StreamTrait for Stream {
 
 impl<'a> CaptureStream<'a> for Stream {
     fn queue(&mut self, index: usize) -> io::Result<()> {
+        let buffer_desc = self.buffer_desc();
         let buf = &mut self.arena.bufs[index];
+        //let Ok(buf) = buf.0.lock() else {
+        //    return Err(io::Error::new(io::ErrorKind::Other, "Buffer lock failed"));
+        //};
+        let buf = &buf.0;
+
         let mut v4l2_buf = v4l2_buffer {
             index: index as u32,
             m: v4l2_buffer__bindgen_ty_1 {
                 userptr: buf.as_ptr() as std::os::raw::c_ulong,
             },
             length: buf.len() as u32,
-            ..self.buffer_desc()
+            ..buffer_desc
         };
         unsafe {
             v4l2::ioctl(
@@ -191,7 +200,7 @@ impl<'a> CaptureStream<'a> for Stream {
         Ok(self.arena_index)
     }
 
-    fn next(&'a mut self) -> io::Result<(&Self::Item, &Metadata)> {
+    fn next(&mut self) -> io::Result<(&Self::Item, &Metadata)> {
         if !self.active {
             // Enqueue all buffers once on stream start
             for index in 0..self.arena.bufs.len() {
@@ -207,8 +216,9 @@ impl<'a> CaptureStream<'a> for Stream {
 
         // The index used to access the buffer elements is given to us by v4l2, so we assume it
         // will always be valid.
-        let bytes = &mut self.arena.bufs[self.arena_index];
+        let bytes = &self.arena.bufs[self.arena_index];
         let meta = &self.buf_meta[self.arena_index];
+
         Ok((bytes, meta))
     }
 }

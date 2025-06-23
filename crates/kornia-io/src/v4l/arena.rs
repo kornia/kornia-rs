@@ -1,22 +1,17 @@
 // Modified from https://github.com/raymanfx/libv4l-rs/blob/30f6dbaeed5cdb1b33760fc5b35c1b545cfe0e46/src/io/userptr/arena.rs
 use std::{io, mem, sync::Arc};
-
-use v4l::buffer;
-use v4l::device::Handle;
-use v4l::memory::Memory;
-use v4l::v4l2;
-use v4l::v4l_sys::*;
+use v4l::{buffer, device::Handle, memory::Memory, v4l2, v4l_sys::*};
 
 #[derive(Clone)]
-pub struct V4lBuffer(pub std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+//pub struct V4lBuffer(pub Arc<Mutex<Vec<u8>>>);
+pub struct V4lBuffer(pub Arc<Vec<u8>>);
 
 /// Manage user allocated buffers
 ///
 /// All buffers are released in the Drop impl.
 pub struct Arena {
     handle: Arc<Handle>,
-    pub bufs: Vec<Vec<u8>>,
-    //pub bufs: Vec<Option<V4lBuffer>>,
+    pub bufs: Vec<V4lBuffer>,
     pub buf_type: buffer::Type,
 }
 
@@ -60,13 +55,6 @@ impl Arena {
             )?;
         }
 
-        #[cfg(feature = "v4l-sys")]
-        eprintln!(
-            "\n### WARNING ###\n\
-            As of early 2020, libv4l2 still does not support USERPTR buffers!\n\
-            You may want to use this crate with the raw v4l2 FFI bindings instead!\n"
-        );
-
         let mut v4l2_reqbufs = v4l2_requestbuffers {
             count,
             ..self.requestbuffers_desc()
@@ -80,17 +68,19 @@ impl Arena {
         }
 
         // allocate the new user buffers
-        self.bufs.resize(v4l2_reqbufs.count as usize, Vec::new());
-        //self.bufs.resize(v4l2_reqbufs.count as usize, None);
+        self.bufs.resize(
+            v4l2_reqbufs.count as usize,
+            V4lBuffer(Arc::new(vec![
+                0;
+                unsafe { v4l2_fmt.fmt.pix.sizeimage as usize }
+            ])),
+        );
         for i in 0..v4l2_reqbufs.count {
             let buf = &mut self.bufs[i as usize];
-            unsafe {
-                buf.resize(v4l2_fmt.fmt.pix.sizeimage as usize, 0);
-                //*buf = Some(V4lBuffer(std::sync::Arc::new(std::sync::Mutex::new(vec![
-                //    0;
-                //    v4l2_fmt.fmt.pix.sizeimage as usize
-                //]))));
-            }
+            *buf = V4lBuffer(Arc::new(vec![
+                0;
+                unsafe { v4l2_fmt.fmt.pix.sizeimage as usize }
+            ]));
         }
 
         Ok(v4l2_reqbufs.count)

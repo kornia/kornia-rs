@@ -28,7 +28,8 @@ pub mod stream;
 pub mod tiff;
 
 /// V4L2 video module for real-time video processing.
-pub mod v4l2;
+#[cfg(feature = "v4l")]
+pub mod v4l;
 
 pub use crate::error::IoError;
 
