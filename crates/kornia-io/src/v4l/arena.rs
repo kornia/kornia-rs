@@ -2,6 +2,7 @@
 use std::{io, mem, sync::Arc};
 use v4l::{buffer, device::Handle, memory::Memory, v4l2, v4l_sys::*};
 
+/// Abstracts a buffer from the v4l device.
 #[derive(Clone)]
 pub struct V4lBuffer(Arc<Vec<u8>>);
 
