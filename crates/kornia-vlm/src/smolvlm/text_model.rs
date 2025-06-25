@@ -251,6 +251,7 @@ pub struct SmolModel {
     lm_head: Linear,
 
     image_hidden_states: Option<Tensor>,
+    merged_embeds: Vec<Tensor>,
 }
 
 
@@ -267,12 +268,13 @@ impl SmolModel {
             lm_head: Linear::new(c["lm_head.weight"].clone(), None),
 
             image_hidden_states: None,
+            merged_embeds: Vec::new(),
         })
     }
 
-    fn inputs_merger(&self, image_token_mask: &Tensor, inputs_embeds: &Tensor, image_hidden_states: &Tensor, device: &Device) -> Result<Tensor> {
+    fn inputs_merger(&mut self, image_token_mask: &Tensor, inputs_embeds: &Tensor, device: &Device) -> Result<Tensor> {
         let total_length = image_token_mask.dims1()?;
-        let (patches, patch_size, hidden_dim) = image_hidden_states.dims3()?;
+        // let (patches, patch_size, hidden_dim) = image_hidden_states.dims3()?;
 
         // println!("Image tokens: {:?}", image_token_mask.to_dtype(DType::U32)?.sum_all()?);
         // println!("Patch sequences: {:?}", patches*81);
@@ -301,12 +303,16 @@ impl SmolModel {
         
         // println!("Img embed assign: {:?}", image_embeds);
 
-        let image_hidden_states = image_hidden_states.flatten(0, 1)?;
+        let image_hidden_states = self.image_hidden_states.as_ref().unwrap().flatten(0, 1)?;
 
-        let mut merged_embeds = Vec::with_capacity(total_length);
+        self.merged_embeds.clear();
+        if self.merged_embeds.capacity() < total_length {
+            self.merged_embeds.reserve(total_length - self.merged_embeds.capacity());
+        }
+        
         let mut c = 0;
         for (i, mask) in image_token_mask.to_vec1::<u8>()?.into_iter().enumerate() {
-            merged_embeds.push(if mask != 0 {
+            self.merged_embeds.push(if mask != 0 {
                 // println!("{:?}", c);
                 c += 1;
                 image_hidden_states.i(c-1)?
@@ -316,7 +322,7 @@ impl SmolModel {
         }
 
         // let merged_embeds = Tensor::from_vec(merged_embeds, (total_length, hidden_dim), device)?;
-        let merged_embeds = Tensor::stack(&merged_embeds, 0)?;
+        let merged_embeds = Tensor::stack(&self.merged_embeds, 0)?;
 
         Ok(merged_embeds)
     }
@@ -329,21 +335,23 @@ impl SmolModel {
         if let Some((image_token_mask, pixel_values, pixel_attention_masks)) = vision_data {
             // println!("Vision...");
             // TODO: this assumes there will be at most one new images added
-            let image_hidden_states = if let Some(ref image_hidden_states) = self.image_hidden_states {
-                image_hidden_states
+            inputs_embeds = if let Some(ref image_hidden_states) = self.image_hidden_states {
+                self.inputs_merger(
+                    &image_token_mask, 
+                    &inputs_embeds,
+                    device
+                )?
             } else {
                 let image_hidden_states = self.vision.forward(pixel_values, pixel_attention_masks, device)?;
                 let image_hidden_states = self.connector.forward(&image_hidden_states)?;
                 self.image_hidden_states = Some(image_hidden_states);
-                self.image_hidden_states.as_ref().unwrap()
+
+                self.inputs_merger(
+                    &image_token_mask, 
+                    &inputs_embeds,
+                    device
+                )?
             };
-    
-            inputs_embeds = self.inputs_merger(
-                &image_token_mask, 
-                &inputs_embeds,
-                &image_hidden_states,
-                device
-            )?;
         }
 
         // println!("Language...");
