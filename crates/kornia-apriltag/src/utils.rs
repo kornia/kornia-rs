@@ -37,7 +37,7 @@ pub(crate) fn find_full_tiles(size: ImageSize, tile_size: usize) -> Point2d {
 
 /// Represents a point in 2D space.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
-pub(crate) struct Point2d {
+pub struct Point2d {
     /// The x-coordinate of the point.
     pub x: usize,
     /// The y-coordinate of the point.

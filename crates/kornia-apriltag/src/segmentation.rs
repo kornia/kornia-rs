@@ -1,4 +1,10 @@
-use crate::{errors::AprilTagError, union_find::UnionFind, utils::Pixel};
+use std::{collections::HashMap, ops::Mul};
+
+use crate::{
+    errors::AprilTagError,
+    union_find::UnionFind,
+    utils::{Pixel, Point2d},
+};
 use kornia_image::{allocator::ImageAllocator, Image};
 
 /// Finds connected components in a binary image using union-find.
@@ -70,6 +76,159 @@ pub fn find_connected_components<A: ImageAllocator>(
     });
 
     Ok(())
+}
+
+/// Information about the gradient at a specific pixel location.
+#[derive(Debug, Clone, Copy)]
+pub struct GradientInfo {
+    /// The coordinates of the pixel, represented as the mid-point assuming twice the size of the image.
+    pub pos: Point2d,
+    /// The gradient direction in the x-axis.
+    pub gx: GradientDirection,
+    /// The gradient direction in the y-axis.
+    pub gy: GradientDirection,
+}
+
+/// Represents the direction of a gradient between two pixels.
+///
+/// Used to indicate whether the gradient is towards a white pixel, towards a black pixel, or if there is no gradient.
+#[derive(Debug, Clone, Copy)]
+pub enum GradientDirection {
+    /// Gradient is towards a white pixel (value 255).
+    TowardsWhite,
+    /// Gradient is towards a black pixel (value -255).
+    TowardsBlack,
+    /// No gradient (value 0).
+    None,
+}
+
+impl Mul<isize> for GradientDirection {
+    type Output = GradientDirection;
+
+    fn mul(self, rhs: isize) -> Self::Output {
+        if rhs == 0 {
+            GradientDirection::None
+        } else if rhs > 0 {
+            self
+        } else {
+            match self {
+                GradientDirection::TowardsWhite => GradientDirection::TowardsBlack,
+                GradientDirection::TowardsBlack => GradientDirection::TowardsWhite,
+                _ => GradientDirection::None,
+            }
+        }
+    }
+}
+
+impl Pixel {
+    /// Computes the gradient direction between two pixels.
+    ///
+    /// # Arguments
+    /// * `other` - The pixel to compare against.
+    ///
+    /// # Returns
+    /// A `GradientDirection` indicating the direction of the gradient.
+    pub fn gradient_to(&self, other: Pixel) -> GradientDirection {
+        match (self, other) {
+            (Pixel::Black, Pixel::White) => GradientDirection::TowardsBlack,
+            (Pixel::White, Pixel::Black) => GradientDirection::TowardsWhite,
+            _ => GradientDirection::None,
+        }
+    }
+}
+
+/// Finds and groups gradient transitions between connected components in a binary image.
+///
+/// For each pixel, this function checks its neighbors and, if the neighbor belongs to a different
+/// connected component (with sufficient size), records the gradient information between the two components.
+/// The results are stored in the `clusters` map, keyed by the pair of component representatives.
+///
+/// # Arguments
+///
+/// * `src` - Reference to the source image containing `Pixel` values.
+/// * `uf` - Mutable reference to a [`UnionFind`] structure for tracking connected components.
+/// * `clusters` - Mutable reference to a map where the gradient information between component pairs will be stored.
+///   Make sure to call [`HashMap::clear`] if you are using this function multiple times with the same `clusters`
+pub fn find_gradient_clusters<A: ImageAllocator>(
+    src: &Image<Pixel, 1, A>,
+    uf: &mut UnionFind,
+    clusters: &mut HashMap<(usize, usize), Vec<GradientInfo>>,
+) {
+    let src_slice = src.as_slice();
+
+    (1..src.height() - 1).for_each(|y| {
+        let mut connected_last = false;
+
+        (1..src.width() - 1).for_each(|x| {
+            let i = y * src.width() + x;
+            let current_pixel = src_slice[i];
+
+            if current_pixel == Pixel::Skip {
+                connected_last = false;
+                return;
+            }
+
+            let current_pixel_representative = uf.get_representative(i);
+
+            // Ignore components smaller than 25 pixels to filter out noise and very small regions.
+            if uf.get_set_size(current_pixel_representative) < 25 {
+                connected_last = false;
+                return;
+            }
+
+            let mut any_connected = false;
+            let mut do_conn =
+                |dx: isize, dy: isize, neighbor_i: usize, any_connected: &mut bool| {
+                    let neighbor_pixel = src_slice[neighbor_i];
+                    if neighbor_pixel == Pixel::Skip {
+                        return;
+                    }
+
+                    if current_pixel != neighbor_pixel {
+                        let neighbor_pixel_representative = uf.get_representative(neighbor_i);
+
+                        // Ignore components smaller than 25 pixels to filter out noise and very small regions.
+                        if uf.get_set_size(neighbor_pixel_representative) < 25 {
+                            return;
+                        }
+
+                        let key = if current_pixel_representative < neighbor_pixel_representative {
+                            (current_pixel_representative, neighbor_pixel_representative)
+                        } else {
+                            (neighbor_pixel_representative, current_pixel_representative)
+                        };
+
+                        let entry = clusters.entry(key).or_default();
+
+                        let delta = neighbor_pixel.gradient_to(current_pixel);
+                        let gradient_info = GradientInfo {
+                            pos: Point2d {
+                                x: (2 * x as isize + dx) as usize,
+                                y: (2 * y as isize + dy) as usize,
+                            },
+                            gx: delta * dx,
+                            gy: delta * dy,
+                        };
+
+                        entry.push(gradient_info);
+                        *any_connected = true;
+                    }
+                };
+
+            do_conn(1, 0, i + 1, &mut any_connected);
+            do_conn(0, 1, i + src.width(), &mut any_connected);
+
+            if !connected_last {
+                do_conn(-1, 1, i + src.width() - 1, &mut any_connected)
+            }
+
+            any_connected = false;
+
+            do_conn(1, 1, i + src.width() + 1, &mut any_connected);
+
+            connected_last = any_connected;
+        });
+    });
 }
 
 #[cfg(test)]
@@ -149,6 +308,74 @@ mod tests {
         }
 
         assert_eq!(union_representatives, expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_gradient_clusters() -> Result<(), Box<dyn std::error::Error>> {
+        let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
+        let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
+
+        let mut tile_min_max = TileMinMax::new(src.size(), 4);
+        adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
+
+        let mut uf = UnionFind::new(bin.as_slice().len());
+        find_connected_components(&bin, &mut uf)?;
+
+        let mut gradient_clusters = HashMap::new();
+        find_gradient_clusters(&bin, &mut uf, &mut gradient_clusters);
+
+        // Since the order of HashMap iteration is random, we cannot rely on the order of clusters.
+        // However, we know from the expected data file that there are exactly 3 unique clusters,
+        // each with a distinct length: 48, 188, and 192. We match clusters by their length and
+        // compare their string representations to the expected output for each size.
+        let expected = std::fs::read_to_string("../../tests/data/apriltag_gradient_clusters.txt")?;
+        let mut expected_len_48 = String::new();
+        let mut expected_len_188 = String::new();
+        let mut expected_len_192 = String::new();
+
+        for line in expected.lines() {
+            if line.starts_with("size 48:") {
+                expected_len_48 = line.to_string();
+            } else if line.starts_with("size 188:") {
+                expected_len_188 = line.to_string();
+            } else if line.starts_with("size 192:") {
+                expected_len_192 = line.to_string();
+            }
+        }
+
+        for (_, infos) in gradient_clusters.iter() {
+            let mut clusters = format!("size {}:\t", infos.len());
+
+            for info in infos {
+                let g_str = |g: GradientDirection| match g {
+                    GradientDirection::None => 0,
+                    GradientDirection::TowardsBlack => -255,
+                    GradientDirection::TowardsWhite => 255,
+                };
+                clusters.push_str(
+                    format!(
+                        " (x={} y={} gx={} gy={})",
+                        info.pos.x,
+                        info.pos.y,
+                        g_str(info.gx),
+                        g_str(info.gy)
+                    )
+                    .as_str(),
+                );
+            }
+
+            match infos.len() {
+                48 => assert_eq!(expected_len_48, clusters),
+                188 => assert_eq!(expected_len_188, clusters),
+                192 => assert_eq!(expected_len_192, clusters),
+                _ => panic!(
+                    "Unexpected length of clusters, expected either 48, 188, or 192 but found {}",
+                    infos.len()
+                ),
+            }
+        }
 
         Ok(())
     }
