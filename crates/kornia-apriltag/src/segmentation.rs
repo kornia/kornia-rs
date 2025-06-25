@@ -146,7 +146,7 @@ impl Sub for Pixel {
 /// * `src` - Reference to the source image containing `Pixel` values.
 /// * `uf` - Mutable reference to a [`UnionFind`] structure for tracking connected components.
 /// * `clusters` - Mutable reference to a map where the gradient information between component pairs will be stored.
-///     Make sure to call [`HashMap::clear`] if you are using this function multiple times with the same `clusters`
+///   Make sure to call [`HashMap::clear`] if you are using this function multiple times with the same `clusters`
 pub fn find_gradient_clusters<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     uf: &mut UnionFind,
@@ -196,7 +196,7 @@ pub fn find_gradient_clusters<A: ImageAllocator>(
                             (neighbor_pixel_representative, current_pixel_representative)
                         };
 
-                        let entry = clusters.entry(key).or_insert_with(Vec::new);
+                        let entry = clusters.entry(key).or_default();
 
                         let delta = neighbor_pixel - current_pixel;
                         let gradient_info = GradientInfo {

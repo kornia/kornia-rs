@@ -58,11 +58,11 @@ impl UnionFind {
         if asize > bsize {
             self.parent[broot] = aroot;
             self.size[aroot] += bsize;
-            return aroot;
+            aroot
         } else {
             self.parent[aroot] = broot;
             self.size[broot] += asize;
-            return broot;
+            broot
         }
     }
 
@@ -75,6 +75,7 @@ impl UnionFind {
     }
 
     /// Returns the number of elements in the UnionFind structure.
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.parent.len()
     }
