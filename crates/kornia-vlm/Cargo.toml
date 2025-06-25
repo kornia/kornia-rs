@@ -19,6 +19,8 @@ candle-nn = { version = "0.9.1" }
 hf-hub = "0.4.2"
 kornia-image = { workspace = true }
 
+kornia-tensor = { workspace = true }
+kornia-io ={ workspace = true }
 kornia-imgproc = { workspace = true }
 log = "0.4"
 serde_json = "1"

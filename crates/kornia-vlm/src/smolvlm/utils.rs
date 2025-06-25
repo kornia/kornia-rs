@@ -1,11 +1,14 @@
 use candle_core::{Device, Shape, Tensor};
 
-use std::fs;
 use image::{imageops::FilterType, io::Reader as ImageReader, DynamicImage, GenericImage, GenericImageView, GrayImage, Luma, Rgb, RgbImage};
 use reqwest;
-use std::path::Path;
-use std::io::Cursor;
 use std::error::Error;
+use std::fs;
+use std::path::Path;
+
+use kornia_io::png::read_image_png_rgb8;
+use kornia_image::Image;
+use kornia_tensor::allocator::CpuAllocator;
 
 
 
@@ -15,20 +18,17 @@ const STD: [f32; 3] = [0.229, 0.224, 0.225];
 
 
 
-pub fn load_image_url(url: &str) -> std::result::Result<DynamicImage, Box<dyn Error>> {
+pub fn load_image_url(url: &str) -> std::result::Result<Image<u8, 3, CpuAllocator>, Box<dyn Error>> {
     let dir = Path::new(".vscode");
 
-    // Generate a file name based on the URL (you can customize this to your needs)
     let file_path = {
         let parsed_url = reqwest::Url::parse(url)?;
         let path = parsed_url.path();
-        
-        // Extract the last part of the URL (the file name)
         dir.join(
             Path::new(path)
                 .file_name()
                 .and_then(|name| name.to_str())
-                .unwrap_or("unknown_file.jpg") // Default name if URL doesn't have a file name
+                .unwrap_or("unknown_file.png") // Use PNG as default
                 .to_string()
         )
     };
@@ -39,8 +39,8 @@ pub fn load_image_url(url: &str) -> std::result::Result<DynamicImage, Box<dyn Er
     
     // Check if the file exists locally
     if file_path.exists() {
-        // If the file exists, load it from the local directory
-        let img = image::open(&file_path)?;
+        // Use kornia_io to read the PNG file
+        let img = read_image_png_rgb8(&file_path)?;
         println!("Loaded image from local cache.");
         return Ok(img);
     }
@@ -50,18 +50,11 @@ pub fn load_image_url(url: &str) -> std::result::Result<DynamicImage, Box<dyn Er
 
     // Fetch the image as bytes
     let response = reqwest::blocking::get(url)?.bytes()?;
+    fs::write(&file_path, &response)?;
 
-    // Decode the image
-    let img = ImageReader::new(Cursor::new(response))
-        .with_guessed_format()?
-        .decode()?;
-
-    // Save the image to the local directory
-    img.save(&file_path)?;
-
+    // Use kornia_io to read the PNG file
+    let img = read_image_png_rgb8(&file_path)?;
     println!("Saved image locally as {}", file_path.to_str().unwrap());
-
-    // Return the image
     Ok(img)
 }
 
