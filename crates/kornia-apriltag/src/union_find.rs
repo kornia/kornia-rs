@@ -68,7 +68,7 @@ impl UnionFind {
 
     /// Resets the UnionFind structure to its initial state.
     pub fn reset(&mut self) {
-        (0..self.parent.len()).into_iter().for_each(|i| {
+        (0..self.parent.len()).for_each(|i| {
             self.parent[i] = usize::MAX;
             self.size[i] = 1;
         });

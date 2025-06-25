@@ -82,13 +82,6 @@ pub fn find_connected_components<A: ImageAllocator>(
 }
 
 /// Information about the gradient at a specific pixel location.
-///
-/// This struct stores the coordinates of the pixel and the gradient directions
-/// in the x and y axes.
-/// Information about the gradient at a specific pixel location.
-///
-/// This struct stores the coordinates of the pixel and the gradient directions
-/// in the x and y axes.
 #[derive(Debug, Clone, Copy)]
 pub struct GradientInfo {
     /// The coordinates of the pixel, represented as the mid-point assuming twice the size of the image.
@@ -161,10 +154,10 @@ pub fn find_gradient_clusters<A: ImageAllocator>(
 ) {
     let src_slice = src.as_slice();
 
-    (1..src.height() - 1).into_iter().for_each(|y| {
+    (1..src.height() - 1).for_each(|y| {
         let mut connected_last = false;
 
-        (1..src.width() - 1).into_iter().for_each(|x| {
+        (1..src.width() - 1).for_each(|x| {
             let i = y * src.width() + x;
             let current_pixel = src_slice[i];
 
@@ -174,6 +167,8 @@ pub fn find_gradient_clusters<A: ImageAllocator>(
             }
 
             let current_pixel_representative = uf.get_representative(i);
+
+            // Ignore components smaller than 25 pixels to filter out noise and very small regions.
             if uf.get_set_size(current_pixel_representative) < 25 {
                 connected_last = false;
                 return;
@@ -189,29 +184,32 @@ pub fn find_gradient_clusters<A: ImageAllocator>(
 
                     if current_pixel != neighbor_pixel {
                         let neighbor_pixel_representative = uf.get_representative(neighbor_i);
-                        if uf.get_set_size(neighbor_pixel_representative) > 24 {
-                            let key =
-                                if current_pixel_representative < neighbor_pixel_representative {
-                                    (current_pixel_representative, neighbor_pixel_representative)
-                                } else {
-                                    (neighbor_pixel_representative, current_pixel_representative)
-                                };
 
-                            let entry = clusters.entry(key).or_insert_with(Vec::new);
-
-                            let delta = neighbor_pixel - current_pixel;
-                            let gradient_info = GradientInfo {
-                                pos: Point2d {
-                                    x: (2 * x as isize + dx) as usize,
-                                    y: (2 * y as isize + dy) as usize,
-                                },
-                                gx: delta * dx,
-                                gy: delta * dy,
-                            };
-
-                            entry.push(gradient_info);
-                            *any_connected = true;
+                        // Ignore components smaller than 25 pixels to filter out noise and very small regions.
+                        if uf.get_set_size(neighbor_pixel_representative) < 25 {
+                            return;
                         }
+
+                        let key = if current_pixel_representative < neighbor_pixel_representative {
+                            (current_pixel_representative, neighbor_pixel_representative)
+                        } else {
+                            (neighbor_pixel_representative, current_pixel_representative)
+                        };
+
+                        let entry = clusters.entry(key).or_insert_with(Vec::new);
+
+                        let delta = neighbor_pixel - current_pixel;
+                        let gradient_info = GradientInfo {
+                            pos: Point2d {
+                                x: (2 * x as isize + dx) as usize,
+                                y: (2 * y as isize + dy) as usize,
+                            },
+                            gx: delta * dx,
+                            gy: delta * dy,
+                        };
+
+                        entry.push(gradient_info);
+                        *any_connected = true;
                     }
                 };
 
