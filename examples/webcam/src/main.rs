@@ -1,7 +1,7 @@
 use argh::FromArgs;
 use kornia::{
     image::{Image, ImageSize},
-    imgproc,
+    imgproc::{self, color::YuvToRgbMode},
     io::{
         fps_counter::FpsCounter,
         jpeg,
@@ -98,7 +98,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let buf = frame.buffer.as_slice();
         match frame.pixel_format {
             PixelFormat::YUYV => {
-                imgproc::color::convert_yuyv_to_rgb_u8(buf, &mut rgb_image);
+                imgproc::color::convert_yuyv_to_rgb_u8(
+                    buf,
+                    &mut rgb_image,
+                    YuvToRgbMode::Bt601Full,
+                )?;
             }
             PixelFormat::MJPG => {
                 jpeg::decode_image_jpeg_rgb8(buf, &mut rgb_image)?;
