@@ -82,35 +82,36 @@ impl Attention {
 struct MLP {
     fc1: Linear,
     fc2: Linear,
+    gelu_coeff: Tensor,
+    sqrt_2_over_pi: Tensor,
+    one: Tensor,
+    half: Tensor,
 }
 
 impl MLP {
-    // pub fn new(c: &HashMap<String, Tensor>, device: &Device) -> Result<Self> {
-    //     todo!()
-    // }
-
-    // Constants from PyTorch's GELU implementation
-    const SQRT_2_OVER_PI: f64 = 0.7978845608028654;  // sqrt(2.0 / PI)
-    const GELU_COEFF: f64 = 0.044715;
+    pub fn new(fc1: Linear, fc2: Linear, device: &Device) -> Result<Self> {
+        Ok(Self {
+            fc1,
+            fc2,
+            gelu_coeff: Tensor::new(0.044715, device)?.to_dtype(DType::BF16)?,
+            sqrt_2_over_pi: Tensor::new(0.7978845608028654, device)?.to_dtype(DType::BF16)?,
+            one: Tensor::new(1.0, device)?.to_dtype(DType::BF16)?,
+            half: Tensor::new(0.5, device)?.to_dtype(DType::BF16)?,
+        })
+    }
 
     /// PyTorch-like GELU activation with `tanh` approximation.
-    pub fn gelu_tanh(input: &Tensor) -> Result<Tensor> {
-        let gelu_coeff = Tensor::new(Self::GELU_COEFF, input.device())?.to_dtype(DType::BF16)?;
-        let sqrt_2_over_pi = Tensor::new(Self::SQRT_2_OVER_PI, input.device())?.to_dtype(DType::BF16)?;
-        let one = Tensor::new(1.0, input.device())?.to_dtype(DType::BF16)?;
-        let half = Tensor::new(0.5, input.device())?.to_dtype(DType::BF16)?;
-
+    pub fn gelu_tanh(&self, input: &Tensor) -> Result<Tensor> {
         // Compute: 0.5 * x * (1 + tanh( sqrt(2/π) * (x + 0.044715 * x^3) ))
         let x_cubed = input.powf(3.0)?;
-        let inner = (input + x_cubed.broadcast_mul(&gelu_coeff)?)?;
-        let tanh_arg = inner.broadcast_mul(&sqrt_2_over_pi)?;
+        let inner = (input + x_cubed.broadcast_mul(&self.gelu_coeff)?)?;
+        let tanh_arg = inner.broadcast_mul(&self.sqrt_2_over_pi)?;
         let tanh = tanh_arg.tanh()?;
-
-        half.broadcast_mul(&input.broadcast_mul(&(tanh.broadcast_add(&one)?))?)
+        self.half.broadcast_mul(&input.broadcast_mul(&(tanh.broadcast_add(&self.one)?))?)
     }
 
     pub fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let x = Self::gelu_tanh(&self.fc1.forward(xs)?)?;  // python impl. uses gelo approximated with tanh
+        let x = self.gelu_tanh(&self.fc1.forward(xs)?)?;  // python impl. uses gelu approximated with tanh
         self.fc2.forward(&x)
     }
 }
@@ -139,10 +140,11 @@ impl Block {
                 o_proj: Linear::new(w("self_attn.out_proj"), Some(b("self_attn.out_proj")))
             },
             layer_norm1: LayerNorm::new(w("layer_norm1"), b("layer_norm1"), 1e-6),
-            mlp: MLP {
-                fc1: Linear::new(w("mlp.fc1"), Some(b("mlp.fc1"))),
-                fc2: Linear::new(w("mlp.fc2"), Some(b("mlp.fc2")))
-            },
+            mlp: MLP::new(
+                Linear::new(w("mlp.fc1"), Some(b("mlp.fc1"))),
+                Linear::new(w("mlp.fc2"), Some(b("mlp.fc2"))),
+                device
+            )?,
             layer_norm2: LayerNorm::new(w("layer_norm2"), b("layer_norm2"), 1e-6)
         })
     }
