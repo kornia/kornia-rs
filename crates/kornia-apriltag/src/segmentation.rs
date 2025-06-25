@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    ops::{Mul, Sub},
-};
+use std::{collections::HashMap, ops::Mul};
 
 use crate::{
     errors::AprilTagError,
@@ -123,11 +120,16 @@ impl Mul<isize> for GradientDirection {
     }
 }
 
-impl Sub for Pixel {
-    type Output = GradientDirection;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        match (self, rhs) {
+impl Pixel {
+    /// Computes the gradient direction between two pixels.
+    ///
+    /// # Arguments
+    /// * `other` - The pixel to compare against.
+    ///
+    /// # Returns
+    /// A `GradientDirection` indicating the direction of the gradient.
+    pub fn gradient_to(&self, other: Pixel) -> GradientDirection {
+        match (self, other) {
             (Pixel::Black, Pixel::White) => GradientDirection::TowardsBlack,
             (Pixel::White, Pixel::Black) => GradientDirection::TowardsWhite,
             _ => GradientDirection::None,
@@ -198,7 +200,7 @@ pub fn find_gradient_clusters<A: ImageAllocator>(
 
                         let entry = clusters.entry(key).or_default();
 
-                        let delta = neighbor_pixel - current_pixel;
+                        let delta = neighbor_pixel.gradient_to(current_pixel);
                         let gradient_info = GradientInfo {
                             pos: Point2d {
                                 x: (2 * x as isize + dx) as usize,
