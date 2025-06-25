@@ -75,6 +75,7 @@ impl UnionFind {
     }
 
     /// Returns the number of elements in the UnionFind structure.
+    // We do not provide `is_empty` because a UnionFind structure is always initialized with a fixed, nonzero length.
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.parent.len()
