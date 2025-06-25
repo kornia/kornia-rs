@@ -72,6 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("⚠️ Could not enable auto exposure: {}", e);
     }
 
+    // Enable auto white balance for better color
     if let Err(e) = webcam.set_control(CameraControl::AutoWhiteBalance(true)) {
         println!("⚠️ Could not enable auto white balance: {}", e);
     }
@@ -87,14 +88,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut fps_counter = FpsCounter::new();
 
+    // Pre-allocate RGB image buffer outside the loop
+    let mut rgb_image = Image::<u8, 3, CpuAllocator>::from_size_val(img_size, 0, CpuAllocator)?;
+
     while !cancel_token.load(Ordering::SeqCst) {
         let Ok(Some(frame)) = webcam.grab() else {
             continue;
         };
 
-        // Convert YUYV to RGB if needed
-        let mut rgb_image = Image::<u8, 3, CpuAllocator>::from_size_val(img_size, 0, CpuAllocator)?;
-
+        // Convert YUYV to RGB if needed - reuse the pre-allocated buffer
         let buf = frame.buffer.as_slice();
         match frame.pixel_format {
             PixelFormat::YUYV => {

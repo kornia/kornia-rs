@@ -102,11 +102,16 @@ impl V4LVideoCapture {
         // Create the stream
         let stream = stream::Stream::with_buffers(&device, Type::VideoCapture, 4)?;
 
-        Ok(Self {
+        let mut capture = Self {
             stream,
             pixel_format: PixelFormat::from_fourcc(actual_format.fourcc),
             device,
-        })
+        };
+
+        // default to disable dynamic framerate
+        capture.set_control(CameraControl::DynamicFramerate(false))?;
+
+        Ok(capture)
     }
 
     /// Get the current pixel format
