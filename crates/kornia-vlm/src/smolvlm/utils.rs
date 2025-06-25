@@ -16,7 +16,7 @@ const STD: [f32; 3] = [0.229, 0.224, 0.225];
 
 
 pub fn load_image_url(url: &str) -> std::result::Result<DynamicImage, Box<dyn Error>> {
-    let dir = Path::new("static/images");
+    let dir = Path::new(".vscode");
 
     // Generate a file name based on the URL (you can customize this to your needs)
     let file_path = {
@@ -134,10 +134,10 @@ pub fn preprocess_image(
     };
 
 
-    img.save("static/padded_img.png").unwrap();
-    mask.save("static/mask.png").unwrap();
-    global_img.save("static/global_padded_img.png").unwrap();
-    global_mask.save("static/global_mask.png").unwrap();
+    img.save(".vscode/padded_img.png").unwrap();
+    mask.save(".vscode/mask.png").unwrap();
+    global_img.save(".vscode/global_padded_img.png").unwrap();
+    global_mask.save(".vscode/global_mask.png").unwrap();
 
     let img = {
         let (width, height) = img.dimensions();

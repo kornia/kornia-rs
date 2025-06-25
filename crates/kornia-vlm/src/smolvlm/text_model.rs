@@ -40,6 +40,7 @@ struct Attention {
 
     cos: Tensor,
     sin: Tensor,
+    device: Device, // store device
 }
 
 impl Attention {
@@ -58,6 +59,7 @@ impl Attention {
             o_proj: Linear::new(o, None),
             cos: idx_theta.cos()?.to_dtype(DType::BF16)?,
             sin: idx_theta.sin()?.to_dtype(DType::BF16)?,
+            device: device.clone(), // store device
         })
     }
 
@@ -114,7 +116,7 @@ impl Attention {
             let v = v.to_dtype(DType::F32)?;
     
             let att = (q.matmul(&k.t()?)? / (HEAD_DIM as f64).sqrt())?;
-            let mask = causal_mask(att.shape().dim(2)?, &Device::new_cuda(0)?)?;  // causal masking
+            let mask = causal_mask(att.shape().dim(2)?, &self.device)?;
     
             // println!("{:?}", att.shape());
     
@@ -215,11 +217,20 @@ impl Connector {
     fn pixel_shuffle(&self, x: &Tensor) -> Result<Tensor> {
         let (batch, patches, embed_dim) = x.dims3()?;  // patches == HEIGHT*WIDTH
 
-        x   .reshape(&[batch, Self::HEIGHT, Self::WIDTH, embed_dim])?
-            .reshape(&[batch, Self::HEIGHT, Self::WIDTH/Self::SCALE_FACTOR, embed_dim*Self::SCALE_FACTOR])?
-            .permute([0, 2, 1, 3])?
-            .reshape(&[batch, Self::WIDTH/Self::SCALE_FACTOR, Self::HEIGHT/Self::SCALE_FACTOR, embed_dim*Self::SCALE_FACTOR*Self::SCALE_FACTOR])?
-            .permute([0, 2, 1, 3])?
+        // B,P,E => B,H,W,E => B,H/S,S,W/S,S,E => B,H/S,W/S,S,S,E => B,P/S^2,S^2*E
+        x   .reshape(&[
+                batch,
+                Self::HEIGHT,
+                Self::WIDTH,
+                embed_dim
+            ])?
+            .reshape(&[
+                batch,
+                Self::HEIGHT/Self::SCALE_FACTOR, Self::SCALE_FACTOR,
+                Self::WIDTH/Self::SCALE_FACTOR, Self::SCALE_FACTOR,
+                embed_dim
+            ])?
+            .permute([0, 1, 3, 2, 4, 5])?
             .reshape(&[batch, patches/(Self::SCALE_FACTOR*Self::SCALE_FACTOR), embed_dim*Self::SCALE_FACTOR*Self::SCALE_FACTOR])
     }
 

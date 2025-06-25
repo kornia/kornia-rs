@@ -142,7 +142,7 @@ impl SmolVlm {
         })
     }
 
-    /// Run the inference of the Paligemma model
+    /// Run the inference of the SmolVLM model
     ///
     /// # Arguments
     ///

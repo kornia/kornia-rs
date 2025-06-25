@@ -1,2 +1,2 @@
 pub mod paligemma;
-pub mod smol;
+pub mod smolvlm;
