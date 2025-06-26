@@ -134,7 +134,7 @@ impl StreamCapture {
     /// # Returns
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
-    pub fn grab(&mut self) -> Result<Option<Image<u8, 3, GstAllocator>>, StreamCaptureError> {
+    pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3, GstAllocator>>, StreamCaptureError> {
         let mut circular_buffer = self
             .circular_buffer
             .lock()

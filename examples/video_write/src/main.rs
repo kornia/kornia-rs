@@ -84,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     while !cancel_token.load(Ordering::SeqCst) {
         // start grabbing frames from the webcam
-        if let Some(img) = webcam.grab()? {
+        if let Some(img) = webcam.grab_rgb8()? {
             // write the image to the video writer
             video_writer.write(&img)?;
 

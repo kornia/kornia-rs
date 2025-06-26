@@ -22,7 +22,12 @@ pub mod jpeg;
 
 /// GStreamer video module for real-time video processing.
 #[cfg(feature = "gstreamer")]
-pub mod stream;
+pub mod gstreamer;
+
+// NOTE: remove in future release
+#[cfg(feature = "gstreamer")]
+#[deprecated(since = "0.1.10", note = "Use the gstreamer module instead")]
+pub use gstreamer as stream;
 
 /// TIFF image encoding and decoding.
 pub mod tiff;
