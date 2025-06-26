@@ -1,5 +1,8 @@
-use crate::error::IoError;
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use crate::{
+    error::IoError, jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8,
+    tiff::read_image_tiff_rgb8,
+};
+use kornia_image::{allocator::CpuAllocator, Image};
 use std::path::Path;
 
 /// Reads a RGB8 image from the given file path.
@@ -36,26 +39,18 @@ pub fn read_image_any_rgb8(
         return Err(IoError::FileDoesNotExist(file_path.to_path_buf()));
     }
 
-    // open the file and map it to memory
-    let jpeg_data = std::fs::read(file_path)?;
-
-    // decode the data directly from memory
-    let img = image::ImageReader::new(std::io::Cursor::new(&jpeg_data))
-        .with_guessed_format()?
-        .decode()?;
-
+    // try to read the image from the file path
     // TODO: handle more image formats
-    // return the image data
-    let image = Image::new(
-        ImageSize {
-            width: img.width() as usize,
-            height: img.height() as usize,
-        },
-        img.to_rgb8().to_vec(),
-        CpuAllocator,
-    )?;
-
-    Ok(image)
+    if let Some(extension) = file_path.extension() {
+        match extension.to_string_lossy().to_lowercase().as_ref() {
+            "jpeg" | "jpg" => read_image_jpeg_rgb8(file_path),
+            "png" => read_image_png_rgb8(file_path),
+            "tiff" => read_image_tiff_rgb8(file_path),
+            _ => Err(IoError::InvalidFileExtension(file_path)),
+        }
+    } else {
+        Err(IoError::InvalidFileExtension(file_path))
+    }
 }
 
 #[cfg(test)]
