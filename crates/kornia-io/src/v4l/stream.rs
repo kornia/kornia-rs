@@ -124,7 +124,7 @@ impl StreamTrait for Stream {
     }
 }
 
-impl<'a> CaptureStream<'a> for Stream {
+impl CaptureStream<'_> for Stream {
     fn queue(&mut self, index: usize) -> io::Result<()> {
         let buffer_desc = self.buffer_desc();
         let buf = &mut self.arena.bufs[index];
