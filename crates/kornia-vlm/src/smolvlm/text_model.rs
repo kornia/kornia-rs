@@ -38,7 +38,7 @@ struct Attention {
 impl Attention {
     fn new(q: Tensor, k: Tensor, v: Tensor, o: Tensor) -> Result<Self> {
         let device = q.device();
-        
+
         let theta = Tensor::new(calculate_default_inv_freq(), device)?;
         // 0 -> max position embedding
         let idx_theta = Tensor::arange(0, 16384u32, device)?
@@ -75,7 +75,7 @@ impl Attention {
 
     fn forward(&self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
         let device = x.device();
-        
+
         let (seq_len, hidden_size) = x.dims2()?;
 
         let q = self.q_proj.forward(x)?;
@@ -310,7 +310,7 @@ impl SmolModel {
         &mut self,
         xs: &Tensor,
         index_pos: usize,
-        vision_data: Option<(Tensor, &Tensor, &Tensor)>
+        vision_data: Option<(Tensor, &Tensor, &Tensor)>,
     ) -> Result<Tensor> {
         let mut inputs_embeds = self.embed.forward(xs)?;
 
@@ -320,8 +320,7 @@ impl SmolModel {
                 self.inputs_merger(&image_token_mask, &inputs_embeds)?
             } else {
                 let image_hidden_states =
-                    self.vision
-                        .forward(pixel_values, pixel_attention_masks)?;
+                    self.vision.forward(pixel_values, pixel_attention_masks)?;
                 let image_hidden_states = self.connector.forward(&image_hidden_states)?;
                 self.image_hidden_states = Some(image_hidden_states);
 

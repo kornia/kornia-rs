@@ -200,11 +200,7 @@ impl SmolVision {
         })
     }
 
-    pub fn forward(
-        &self,
-        pixel_values: &Tensor,
-        pixel_attention_masks: &Tensor,
-    ) -> Result<Tensor> {
+    pub fn forward(&self, pixel_values: &Tensor, pixel_attention_masks: &Tensor) -> Result<Tensor> {
         let device = pixel_values.device();
 
         // B = patch rows x patch cols (x number of images)
