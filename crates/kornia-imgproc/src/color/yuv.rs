@@ -2,12 +2,27 @@ use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use rayon::prelude::*;
 
 /// The mode to convert YUV to RGB.
+///
+/// These modes correspond to ITU-R Broadcasting Television standards that define
+/// the coefficients and ranges for YUV color space conversion:
+///
+/// ## Official ITU-R Documentation:
+/// - **BT.601**: [ITU-R BT.601-7](https://www.itu.int/dms_pubrec/itu-r/rec/bt/R-REC-BT.601-7-201103-I!!PDF-E.pdf) - SDTV standard
+/// - **BT.709**: [ITU-R BT.709-6](https://www.itu.int/rec/R-REC-BT.709-6-201506-I/en) - HDTV standard  
+/// - **BT.2020**: [ITU-R BT.2020-2](https://www.itu.int/rec/R-REC-BT.2020-2-201510-I/en) - Ultra HD standard
+///
+/// ## Additional Resources:
+/// - [ITU-R BT.2407-0](https://www.itu.int/dms_pub/itu-r/opb/rep/R-REP-BT.2407-2017-PDF-E.pdf) - Color gamut conversion guide
+/// - [Ultra HD Forum Guidelines](https://ultrahdforum.org/wp-content/uploads/UHD-Guidelines-V2.5-Fall2021.pdf) - Industry best practices
 pub enum YuvToRgbMode {
-    /// BT.601 full range.
+    /// BT.601 full range (0-255 for Y, U, V).
+    /// Used for SDTV, older cameras, and JPEG images.
     Bt601Full,
-    /// BT.709 full range.
+    /// BT.709 full range (0-255 for Y, U, V).
+    /// Used for HDTV, modern displays, and sRGB content.
     Bt709Full,
-    /// BT.601 limited range.
+    /// BT.601 limited range (16-235 for Y, 16-240 for U, V).
+    /// Used for broadcast television and professional video equipment.
     Bt601Limited,
 }
 

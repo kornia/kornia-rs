@@ -37,6 +37,8 @@ pub struct V4LCameraConfig {
     pub fps: u32,
     /// The desired pixel format
     pub format: PixelFormat,
+    /// The number of buffers to use
+    pub buffer_size: u32,
 }
 
 impl Default for V4LCameraConfig {
@@ -49,6 +51,7 @@ impl Default for V4LCameraConfig {
             },
             fps: 30,
             format: PixelFormat::default(),
+            buffer_size: 4,
         }
     }
 }
@@ -100,7 +103,7 @@ impl V4LVideoCapture {
         device.set_params(&params)?;
 
         // Create the stream
-        let stream = stream::Stream::with_buffers(&device, Type::VideoCapture, 4)?;
+        let stream = stream::Stream::with_buffers(&device, Type::VideoCapture, config.buffer_size)?;
 
         let mut capture = Self {
             stream,

@@ -61,6 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         size: img_size,
         fps: args.fps,
         format: args.pixel_format,
+        buffer_size: 4,
     })?;
 
     println!("📹 Starting webcam capture...");
