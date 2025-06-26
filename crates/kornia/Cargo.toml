@@ -15,6 +15,7 @@ version.workspace = true
 [features]
 gstreamer = ["kornia-io/gstreamer"]
 turbojpeg = ["kornia-io/turbojpeg"]
+v4l = ["kornia-io/v4l"]
 
 [dependencies]
 kornia-3d = { workspace = true }
