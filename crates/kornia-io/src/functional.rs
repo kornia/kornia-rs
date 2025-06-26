@@ -38,17 +38,19 @@ pub fn read_image_any_rgb8(
     if !file_path.exists() {
         return Err(IoError::FileDoesNotExist(file_path.to_path_buf()));
     }
-    if let Some(extension) = file_path.extension() {
-        if extension == "jpeg" || extension == "jpg" {
-            return read_image_jpeg_rgb8(file_path);
-        } else if extension == "png" {
-            return read_image_png_rgb8(file_path);
-        } else if extension == "tiff" {
-            return read_image_tiff_rgb8(file_path);
-        }
-    }
 
-    Err(IoError::InvalidFileExtension(file_path))
+    // try to read the image from the file path
+    // TODO: handle more image formats
+    if let Some(extension) = file_path.extension() {
+        match extension.to_string_lossy().to_lowercase().as_ref() {
+            "jpeg" | "jpg" => read_image_jpeg_rgb8(file_path),
+            "png" => read_image_png_rgb8(file_path),
+            "tiff" => read_image_tiff_rgb8(file_path),
+            _ => Err(IoError::InvalidFileExtension(file_path)),
+        }
+    } else {
+        Err(IoError::InvalidFileExtension(file_path))
+    }
 }
 
 #[cfg(test)]

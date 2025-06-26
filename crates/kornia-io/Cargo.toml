@@ -24,7 +24,7 @@ jpeg-encoder = "0.6"
 zune-jpeg = "0.4"
 log = { workspace = true }
 thiserror = { workspace = true }
-tiff = "0.9"
+tiff = "0.10"
 
 # for video capture from v4l2 cameras
 v4l = { version = "0.14.0", optional = true }
