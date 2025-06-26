@@ -1,7 +1,7 @@
 #![allow(unused_variables)]
 #![allow(unused_attributes)]
 
-use candle_core::{DType, Device, Result, Tensor};
+use candle_core::{DType, Result, Tensor};
 use candle_nn::{Conv2d, Conv2dConfig, Embedding, LayerNorm, Linear, Module};
 use std::collections::HashMap;
 
@@ -16,14 +16,14 @@ struct Attention {
 }
 
 impl Attention {
-    // fn new(q: Tensor, k: Tensor, v: Tensor, o: Tensor, device: &Device) -> Result<Self> {
-    //     Ok(Self {
-    //         q_proj: Linear::new(q, None),
-    //         k_proj: Linear::new(k, None),
-    //         v_proj: Linear::new(v, None),
-    //         o_proj: Linear::new(o, None),
-    //     })
-    // }
+    fn new(q: Linear, k: Linear, v: Linear, o: Linear) -> Result<Self> {
+        Ok(Self {
+            q_proj: q,
+            k_proj: k,
+            v_proj: v,
+            o_proj: o,
+        })
+    }
 
     fn forward(&self, x: &Tensor, attention_mask: &Tensor) -> Result<Tensor> {
         let (batches, patches, hidden_size) = x.dims3()?;
@@ -44,15 +44,7 @@ impl Attention {
             .reshape((batches, patches, NUM_OF_HEADS, HEAD_DIM))?
             .transpose(1, 2)?;
 
-        let y =
-        // if false {
-        //     let q = q.transpose(1, 2)?;
-        //     let k = k.transpose(1, 2)?;
-        //     let v = v.transpose(1, 2)?;
-        //     let softmax_scale = 1f32 / (HEAD_DIM as f32).sqrt();
-        //     flash_attn(&q, &k, &v, softmax_scale, batches > 1)?.transpose(1, 2)?.into()
-        // } else
-        {
+        let y = {
             let in_dtype = q.dtype();
             let q = q.to_dtype(DType::F32)?;
             let k = k.to_dtype(DType::F32)?;
@@ -83,7 +75,8 @@ struct MLP {
 }
 
 impl MLP {
-    pub fn new(fc1: Linear, fc2: Linear, device: &Device) -> Result<Self> {
+    pub fn new(fc1: Linear, fc2: Linear) -> Result<Self> {
+        let device = &fc1.weight().device().clone();
         Ok(Self {
             fc1,
             fc2,
@@ -119,7 +112,7 @@ struct Block {
 }
 
 impl Block {
-    pub fn new(c: &HashMap<String, Tensor>, id: u8, device: &Device) -> Result<Self> {
+    pub fn new(c: &HashMap<String, Tensor>, id: u8) -> Result<Self> {
         let w = |k| {
             c[&("model.vision_model.encoder.layers.".to_owned()
                 + &id.to_string()
@@ -140,17 +133,16 @@ impl Block {
         println!("Loaded layer (VT): {:?}", id);
 
         Ok(Self {
-            self_attn: Attention {
-                q_proj: Linear::new(w("self_attn.q_proj"), Some(b("self_attn.q_proj"))),
-                k_proj: Linear::new(w("self_attn.k_proj"), Some(b("self_attn.k_proj"))),
-                v_proj: Linear::new(w("self_attn.v_proj"), Some(b("self_attn.v_proj"))),
-                o_proj: Linear::new(w("self_attn.out_proj"), Some(b("self_attn.out_proj"))),
-            },
+            self_attn: Attention::new(
+                Linear::new(w("self_attn.q_proj"), Some(b("self_attn.q_proj"))),
+                Linear::new(w("self_attn.k_proj"), Some(b("self_attn.k_proj"))),
+                Linear::new(w("self_attn.v_proj"), Some(b("self_attn.v_proj"))),
+                Linear::new(w("self_attn.out_proj"), Some(b("self_attn.out_proj"))),
+            )?,
             layer_norm1: LayerNorm::new(w("layer_norm1"), b("layer_norm1"), 1e-6),
             mlp: MLP::new(
                 Linear::new(w("mlp.fc1"), Some(b("mlp.fc1"))),
                 Linear::new(w("mlp.fc2"), Some(b("mlp.fc2"))),
-                device,
             )?,
             layer_norm2: LayerNorm::new(w("layer_norm2"), b("layer_norm2"), 1e-6),
         })
@@ -178,7 +170,7 @@ pub struct SmolVision {
 impl SmolVision {
     const SUB_PATCH_SIZE: usize = 14;
 
-    pub fn load(c: &HashMap<String, Tensor>, device: &Device) -> Result<Self> {
+    pub fn load(c: &HashMap<String, Tensor>) -> Result<Self> {
         Ok(Self {
             patch_embedding: Conv2d::new(
                 c["model.vision_model.embeddings.patch_embedding.weight"].clone(),
@@ -198,7 +190,7 @@ impl SmolVision {
             ),
             blocks: (0u8..=26)
                 .into_iter()
-                .map(|id| Block::new(c, id, device).unwrap())
+                .map(|id| Block::new(c, id).unwrap())
                 .collect(),
             post_layernorm: LayerNorm::new(
                 c["model.vision_model.post_layernorm.weight"].clone(),
@@ -212,8 +204,9 @@ impl SmolVision {
         &self,
         pixel_values: &Tensor,
         pixel_attention_masks: &Tensor,
-        device: &Device,
     ) -> Result<Tensor> {
+        let device = pixel_values.device();
+
         // B = patch rows x patch cols (x number of images)
         // pixel_values: B x 3 x PatchHeight x PatchWidth
         // pixel_attention_masks: B x PatchHeight x PatchWidth

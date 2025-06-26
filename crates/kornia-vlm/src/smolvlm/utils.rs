@@ -9,7 +9,7 @@ use kornia_image::{Image, ImageSize};
 use kornia_imgproc::interpolation::InterpolationMode;
 use kornia_imgproc::resize::resize_fast;
 use kornia_io::jpeg::read_image_jpeg_rgb8;
-use kornia_io::png::{read_image_png_rgb8, write_image_png_gray8, write_image_png_rgb8};
+use kornia_io::png::{write_image_png_gray8, write_image_png_rgb8};
 use kornia_tensor::allocator::CpuAllocator;
 
 // ImageNet mean and std for normalization

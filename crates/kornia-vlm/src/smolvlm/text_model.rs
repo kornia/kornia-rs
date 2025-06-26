@@ -1,6 +1,3 @@
-#![allow(unused_variables)]
-#![allow(unused_attributes)]
-
 use std::collections::HashMap;
 
 use candle_core::DType;
@@ -36,11 +33,12 @@ struct Attention {
 
     cos: Tensor,
     sin: Tensor,
-    device: Device, // store device
 }
 
 impl Attention {
-    fn new(q: Tensor, k: Tensor, v: Tensor, o: Tensor, device: &Device) -> Result<Self> {
+    fn new(q: Tensor, k: Tensor, v: Tensor, o: Tensor) -> Result<Self> {
+        let device = q.device();
+        
         let theta = Tensor::new(calculate_default_inv_freq(), device)?;
         // 0 -> max position embedding
         let idx_theta = Tensor::arange(0, 16384u32, device)?
@@ -49,13 +47,12 @@ impl Attention {
             .matmul(&theta.reshape((1, theta.elem_count()))?)?;
 
         Ok(Self {
+            cos: idx_theta.cos()?.to_dtype(q.dtype())?,
+            sin: idx_theta.sin()?.to_dtype(q.dtype())?,
             q_proj: Linear::new(q, None),
             k_proj: Linear::new(k, None),
             v_proj: Linear::new(v, None),
             o_proj: Linear::new(o, None),
-            cos: idx_theta.cos()?.to_dtype(DType::BF16)?,
-            sin: idx_theta.sin()?.to_dtype(DType::BF16)?,
-            device: device.clone(), // store device
         })
     }
 
@@ -76,21 +73,9 @@ impl Attention {
         .squeeze(0)
     }
 
-    #[allow(unused_variables)]
-    fn new_with_biases(
-        q: Tensor,
-        k: Tensor,
-        v: Tensor,
-        o: Tensor,
-        qb: Tensor,
-        kb: Tensor,
-        vb: Tensor,
-        ob: Tensor,
-    ) -> Self {
-        todo!()
-    }
-
     fn forward(&self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
+        let device = x.device();
+        
         let (seq_len, hidden_size) = x.dims2()?;
 
         let q = self.q_proj.forward(x)?;
@@ -112,24 +97,16 @@ impl Attention {
         let q = self.apply_rotary_embedding(&q, index_pos)?;
         let k = self.apply_rotary_embedding(&k, index_pos)?;
 
-        let y =
-        // if false {
-        //     let q = q.transpose(1, 2)?;
-        //     let k = k.transpose(1, 2)?;
-        //     let v = v.transpose(1, 2)?;
-        //     let softmax_scale = 1f32 / (HEAD_DIM as f32).sqrt();
-        //     flash_attn(&q, &k, &v, softmax_scale, seq_len > 1)?.transpose(1, 2)?.into()
-        // } else
-        {
+        let y = {
+            // TODO: implement flash attention
+
             let in_dtype = q.dtype();
             let q = q.to_dtype(DType::F32)?;
             let k = k.to_dtype(DType::F32)?;
             let v = v.to_dtype(DType::F32)?;
 
             let att = (q.matmul(&k.t()?)? / (HEAD_DIM as f64).sqrt())?;
-            let mask = causal_mask(att.shape().dim(2)?, &self.device)?;
-
-            // println!("{:?}", att.shape());
+            let mask = causal_mask(att.shape().dim(2)?, device)?;
 
             let att = candle_nn::ops::softmax_last_dim(&att.broadcast_add(&mask)?)?;
             att.matmul(&v)?.contiguous()?.to_dtype(in_dtype)?
@@ -184,7 +161,7 @@ impl Block {
     model.text_model.layers.2.mlp.gate_proj.weight
     model.text_model.layers.2.mlp.down_proj.weight
      */
-    fn load(c: &HashMap<String, Tensor>, id: u8, device: &Device) -> Result<Self> {
+    fn load(c: &HashMap<String, Tensor>, id: u8) -> Result<Self> {
         let val = |k| {
             c[&("model.text_model.layers.".to_owned() + &id.to_string() + "." + k + ".weight")]
                 .clone()
@@ -199,7 +176,6 @@ impl Block {
                 val("self_attn.k_proj"),
                 val("self_attn.v_proj"),
                 val("self_attn.o_proj"),
-                device,
             )?,
             post_layer_norm: RmsNorm::new(val("post_attention_layernorm"), 1e-5),
             gates: MLPGates::new(
@@ -221,7 +197,6 @@ impl Block {
 }
 
 pub struct Connector {
-    // scale_factor = 3
     modality_proj: Linear,
 }
 
@@ -265,16 +240,15 @@ pub struct SmolModel {
     norm: RmsNorm,
     lm_head: Linear,
 
+    // TODO: to be used for caching previous image hidden states
     image_hidden_states: Option<Tensor>,
     merged_embeds: Vec<Tensor>,
 }
 
 impl SmolModel {
-    // const BLOCKS_PER_SAMPLE: u32 = 81;
-
-    pub fn load(c: &HashMap<String, Tensor>, device: &Device) -> Result<Self> {
+    pub fn load(c: &HashMap<String, Tensor>) -> Result<Self> {
         Ok(Self {
-            vision: SmolVision::load(c, device)?,
+            vision: SmolVision::load(c)?,
             connector: Connector {
                 modality_proj: Linear::new(
                     c["model.connector.modality_projection.proj.weight"].clone(),
@@ -284,7 +258,7 @@ impl SmolModel {
             embed: Embedding::new(c["model.text_model.embed_tokens.weight"].clone(), 2048),
             blocks: (0u8..=23)
                 .into_iter()
-                .map(|id| Block::load(c, id, device).unwrap())
+                .map(|id| Block::load(c, id).unwrap())
                 .collect(),
             norm: RmsNorm::new(c["model.text_model.norm.weight"].clone(), 1e-5),
             lm_head: Linear::new(c["lm_head.weight"].clone(), None),
@@ -298,37 +272,14 @@ impl SmolModel {
         &mut self,
         image_token_mask: &Tensor,
         inputs_embeds: &Tensor,
-        device: &Device,
     ) -> Result<Tensor> {
         let total_length = image_token_mask.dims1()?;
-        // let (patches, patch_size, hidden_dim) = image_hidden_states.dims3()?;
 
         // println!("Image tokens: {:?}", image_token_mask.to_dtype(DType::U32)?.sum_all()?);
         // println!("Patch sequences: {:?}", patches*81);
         // println!("Img tkn mask: {:?}", image_token_mask);
         // println!("Inp embeds: {:?}", inputs_embeds);
         // println!("Img hidden: {:?}", image_hidden_states);
-
-        // let scatter_indices = {
-
-        //     let indices = Tensor::arange(0u32, total_length as u32, device)?
-        //         .mul(&image_token_mask.to_dtype(DType::U32)?)?;
-        //     let scatter_indices = indices
-        //         .to_vec1::<u32>()?
-        //         .into_iter()
-        //         .filter(|&x| x != 0)
-        //         .collect::<Vec<u32>>();
-
-        //     Tensor::from_vec(scatter_indices, patches*81, device)
-        // }?;
-
-        // println!("Img embed assign: {:?}", scatter_indices);
-        // println!("Img embed assign: {:?}", scatter_indices.to_vec1::<u32>());
-
-        // let image_embeds = inputs_embeds.zeros_like()?
-        //     .scatter_add(&scatter_indices.unsqueeze(1)?, &image_hidden_states.flatten(0, 1)?, 0)?;
-
-        // println!("Img embed assign: {:?}", image_embeds);
 
         let image_hidden_states = self.image_hidden_states.as_ref().unwrap().flatten(0, 1)?;
 
@@ -339,6 +290,7 @@ impl SmolModel {
         }
 
         let mut c = 0;
+        // TODO: is there a better way to do this? (scatter assignment? cuda kernel?)
         for (i, mask) in image_token_mask.to_vec1::<u8>()?.into_iter().enumerate() {
             self.merged_embeds.push(if mask != 0 {
                 // println!("{:?}", c);
@@ -349,7 +301,6 @@ impl SmolModel {
             });
         }
 
-        // let merged_embeds = Tensor::from_vec(merged_embeds, (total_length, hidden_dim), device)?;
         let merged_embeds = Tensor::stack(&self.merged_embeds, 0)?;
 
         Ok(merged_embeds)
@@ -359,30 +310,26 @@ impl SmolModel {
         &mut self,
         xs: &Tensor,
         index_pos: usize,
-        vision_data: Option<(Tensor, &Tensor, &Tensor)>,
-        device: &Device,
+        vision_data: Option<(Tensor, &Tensor, &Tensor)>
     ) -> Result<Tensor> {
         let mut inputs_embeds = self.embed.forward(xs)?;
 
         if let Some((image_token_mask, pixel_values, pixel_attention_masks)) = vision_data {
-            // println!("Vision...");
             // TODO: this assumes there will be at most one new images added
-            inputs_embeds = if let Some(ref image_hidden_states) = self.image_hidden_states {
-                self.inputs_merger(&image_token_mask, &inputs_embeds, device)?
+            inputs_embeds = if let Some(_) = self.image_hidden_states {
+                self.inputs_merger(&image_token_mask, &inputs_embeds)?
             } else {
                 let image_hidden_states =
                     self.vision
-                        .forward(pixel_values, pixel_attention_masks, device)?;
+                        .forward(pixel_values, pixel_attention_masks)?;
                 let image_hidden_states = self.connector.forward(&image_hidden_states)?;
                 self.image_hidden_states = Some(image_hidden_states);
 
-                self.inputs_merger(&image_token_mask, &inputs_embeds, device)?
+                self.inputs_merger(&image_token_mask, &inputs_embeds)?
             };
         }
 
-        // println!("Language...");
-
-        let mut x = inputs_embeds; //self.inputs_merger(image_token_mask, &inputs_embeds, &image_hidden_states)?;
+        let mut x = inputs_embeds;
 
         for block in &self.blocks {
             x = block.forward(&x, index_pos)?;

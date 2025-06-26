@@ -26,7 +26,7 @@ pub struct SmolVlmConfig {
     pub temp: f32,
     pub top_k: usize,
 
-    // TODO
+    // TODO: check if SmolVLM needs this
     pub repeat_penalty: f32,
     pub repeat_last_n: usize,
 }
@@ -86,6 +86,7 @@ pub enum SmolVlmError {
     #[error(transparent)]
     IoError(#[from] std::io::Error),
 
+    // TODO: not used right now (currently, the end token is handled via if/else, which might be preferred)
     #[error("Cannot find the <end_of_utterance> token")]
     EosTokenNotFound,
 }
@@ -123,7 +124,7 @@ impl SmolVlm {
         // TODO: find a way to use FP32 if cuda is not available
 
         let (model, tokenizer) = Self::load_model(dtype, &device)?;
-        let image_token_enc = tokenizer.encode("<image>", false).unwrap();
+        let image_token_enc = tokenizer.encode("<image>", false)?;
         let rng = StdRng::seed_from_u64(config.seed);
 
         Ok(Self {
@@ -193,7 +194,7 @@ impl SmolVlm {
                     image.push((img_patches, mask_patches));
                 }
             }
-            let encoding = self.tokenizer.encode(message.clone(), false).unwrap();
+            let encoding = self.tokenizer.encode(message.clone(), false)?;
             let tokens = encoding.get_ids();
             let input =
                 Tensor::from_slice(tokens, Shape::from_dims(&[tokens.len()]), &self.device)?;
@@ -204,7 +205,7 @@ impl SmolVlm {
             } else {
                 None
             };
-            let logits = self.model.forward(&input, i, vision_data, &self.device)?;
+            let logits = self.model.forward(&input, i, vision_data)?;
             let (s, _embed_dim) = logits.dims2()?;
             let last_logit = logits.i((s - 1, ..))?;
             let out_token = {
@@ -231,7 +232,7 @@ impl SmolVlm {
                     .expect("Sampling failed");
                 [*sampled_index as u32]
             };
-            output = self.tokenizer.decode(&out_token.as_slice(), false).unwrap();
+            output = self.tokenizer.decode(&out_token.as_slice(), false)?;
             if !response.is_empty() {
                 clear_lines(lines_printed);
             }
@@ -250,11 +251,11 @@ impl SmolVlm {
     // utility function to load the model
     fn load_model(_dtype: DType, device: &Device) -> Result<(SmolModel, Tokenizer), SmolVlmError> {
         let tokenizer = Tokenizer::from_pretrained("HuggingFaceTB/SmolVLM-Instruct", None).unwrap();
-        let api = Api::new().unwrap();
+        let api = Api::new()?;
         let repo = api.model("HuggingFaceTB/SmolVLM-Instruct".to_string());
         let weights = repo.get("model.safetensors").unwrap();
         let weights = candle_core::safetensors::load(weights, &device)?;
-        let model = text_model::SmolModel::load(&weights, &device)?;
+        let model = text_model::SmolModel::load(&weights)?;
 
         Ok((model, tokenizer))
     }
@@ -271,6 +272,6 @@ mod tests {
 
         // cargo test -p kornia-vlm test_smolvlm_inference --features "cuda" -- --nocapture
         println!("Running inference on SmolVlm model...");
-        model.inference();
+        let _ = model.inference();
     }
 }
