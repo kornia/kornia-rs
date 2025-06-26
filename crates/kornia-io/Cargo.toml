@@ -17,7 +17,6 @@ rustc-args = ["--cfg", "docsrs"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-image = "0.25"
 circular-buffer = "1.1.0"
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
