@@ -1,4 +1,4 @@
-use crate::IoError;
+use crate::error::IoError;
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     Image, ImageError, ImageSize,
