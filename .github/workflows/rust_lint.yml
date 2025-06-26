@@ -36,7 +36,7 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.8
 
       - name: Install cross
-        run: cargo install cross
+        uses: taiki-e/install-action@cross
 
       - name: Clippy
         run: cross clippy --workspace --no-deps --features "turbojpeg,gstreamer" --all-targets -- -D warnings
@@ -62,7 +62,8 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.8
 
       - name: Install cross
-        run: cargo install cross
+        uses: taiki-e/install-action@cross
+
       - run: cross check --all --features "turbojpeg,gstreamer"
 
       - name: Show sccache stats
