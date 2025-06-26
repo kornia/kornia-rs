@@ -35,8 +35,11 @@ jobs:
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.8
 
+      - name: Install cross
+        run: cargo install cross
+
       - name: Clippy
-        run: cargo clippy --workspace --no-deps --features "turbojpeg,gstreamer" --all-targets -- -D warnings
+        run: cross clippy --workspace --no-deps --features "turbojpeg,gstreamer" --all-targets -- -D warnings
 
       - name: Show sccache stats
         run: sccache --show-stats

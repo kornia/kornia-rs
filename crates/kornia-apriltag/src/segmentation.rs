@@ -106,16 +106,14 @@ impl Mul<isize> for GradientDirection {
     type Output = GradientDirection;
 
     fn mul(self, rhs: isize) -> Self::Output {
-        if rhs == 0 {
-            GradientDirection::None
-        } else if rhs > 0 {
-            self
-        } else {
-            match self {
+        match rhs.cmp(&0) {
+            std::cmp::Ordering::Equal => GradientDirection::None,
+            std::cmp::Ordering::Greater => self,
+            std::cmp::Ordering::Less => match self {
                 GradientDirection::TowardsWhite => GradientDirection::TowardsBlack,
                 GradientDirection::TowardsBlack => GradientDirection::TowardsWhite,
                 _ => GradientDirection::None,
-            }
+            },
         }
     }
 }
