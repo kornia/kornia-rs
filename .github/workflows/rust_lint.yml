@@ -35,11 +35,11 @@ jobs:
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.8
 
-      - uses: giraffate/clippy-action@v1
-        with:
-          reporter: "github-pr-review"
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          clippy_flags: -- -D warnings
+      - name: Install cross
+        uses: taiki-e/install-action@cross
+
+      - name: Clippy
+        run: cross clippy --workspace --no-deps --features "turbojpeg,gstreamer" --all-targets -- -D warnings
 
       - name: Show sccache stats
         run: sccache --show-stats
@@ -62,7 +62,8 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.8
 
       - name: Install cross
-        run: cargo install cross
+        uses: taiki-e/install-action@cross
+
       - run: cross check --all --features "turbojpeg,gstreamer,v4l"
 
       - name: Show sccache stats

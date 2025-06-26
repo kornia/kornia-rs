@@ -1,6 +1,7 @@
 FROM rust:1.85
 
 RUN rustup update stable
+RUN rustup component add clippy
 
 RUN apt-get update --fix-missing && \
     apt-get install -y --no-install-recommends \

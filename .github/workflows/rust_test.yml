@@ -40,7 +40,7 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.8
 
       - name: Install cross-compilation tools
-        run: cargo install cross --locked
+        uses: taiki-e/install-action@cross
 
       - name: Run tests
         run: cross test --target ${{ matrix.target }} --features "turbojpeg,gstreamer,v4l"
@@ -72,7 +72,7 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.8
 
       - name: Install cross-compilation tools
-        run: cargo install cross --locked
+        uses: taiki-e/install-action@cross
 
       - name: Build examples
         run: cross build --examples
