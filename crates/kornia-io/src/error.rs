@@ -40,10 +40,6 @@ pub enum IoError {
     #[error(transparent)]
     ImageCreationError(#[from] kornia_image::ImageError),
 
-    /// Error to decode the image.
-    #[error(transparent)]
-    ImageDecodeError(#[from] image::ImageError),
-
     /// Error to encode the PNG image.
     #[error("Failed to encode the png image. {0}")]
     PngEncodingError(String),
