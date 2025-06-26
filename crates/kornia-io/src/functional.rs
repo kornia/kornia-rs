@@ -49,7 +49,7 @@ pub fn read_image_any_rgb8(
             _ => Err(IoError::InvalidFileExtension(file_path)),
         }
     } else {
-        return Err(IoError::InvalidFileExtension(file_path));
+        Err(IoError::InvalidFileExtension(file_path))
     }
 }
 
