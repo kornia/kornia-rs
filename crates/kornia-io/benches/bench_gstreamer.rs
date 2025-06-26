@@ -36,7 +36,7 @@ fn benchmark_get_buffer(c: &mut Criterion) {
 
     c.bench_function("grab", |b| {
         b.iter(|| {
-            black_box(stream_capture.grab()).expect("Failed to grab the image");
+            black_box(stream_capture.grab_rgb8()).expect("Failed to grab the image");
         });
     });
 }
