@@ -1,14 +1,16 @@
 use candle_core::{Device, Shape, Tensor};
 
-use image::{imageops::FilterType, io::Reader as ImageReader, DynamicImage, GenericImage, GenericImageView, GrayImage, Luma, Rgb, RgbImage};
 use reqwest;
 use std::error::Error;
 use std::fs;
 use std::path::Path;
 
-use kornia_io::png::read_image_png_rgb8;
-use kornia_image::Image;
+use kornia_io::png::{read_image_png_rgb8, write_image_png_rgb8, write_image_png_gray8};
+use kornia_io::jpeg::{read_image_jpeg_rgb8};
+use kornia_image::{Image, ImageSize};
 use kornia_tensor::allocator::CpuAllocator;
+use kornia_imgproc::resize::{resize_fast};
+use kornia_imgproc::interpolation::InterpolationMode;
 
 
 
@@ -39,8 +41,8 @@ pub fn load_image_url(url: &str) -> std::result::Result<Image<u8, 3, CpuAllocato
     
     // Check if the file exists locally
     if file_path.exists() {
-        // Use kornia_io to read the PNG file
-        let img = read_image_png_rgb8(&file_path)?;
+        // Use kornia_io to read the JPEG file
+        let img = read_image_jpeg_rgb8(&file_path)?;
         println!("Loaded image from local cache.");
         return Ok(img);
     }
@@ -52,8 +54,8 @@ pub fn load_image_url(url: &str) -> std::result::Result<Image<u8, 3, CpuAllocato
     let response = reqwest::blocking::get(url)?.bytes()?;
     fs::write(&file_path, &response)?;
 
-    // Use kornia_io to read the PNG file
-    let img = read_image_png_rgb8(&file_path)?;
+    // Use kornia_io to read the JPEG file
+    let img = read_image_jpeg_rgb8(&file_path)?;
     println!("Saved image locally as {}", file_path.to_str().unwrap());
     Ok(img)
 }
@@ -64,78 +66,89 @@ pub fn preprocess_image(
 
     // resizing image to match the max_size (on the longest edge)
     let img = {
-        let (width, height) = img.dimensions();
+        let (width, height) = (img.width() as u32, img.height() as u32);
         let longest_edge = width.max(height);
-
         if longest_edge <= max_size {
             img.clone()
         } else {
             let scale_factor = max_size as f32 / longest_edge as f32;
-        
-            let new_width = (width as f32 * scale_factor) as u32;
-            let new_height = (height as f32 * scale_factor) as u32;
-    
-            img.resize(new_width, new_height, FilterType::Lanczos3)
+            let new_width = (width as f32 * scale_factor) as usize;
+            let new_height = (height as f32 * scale_factor) as usize;
+            let mut resized = Image::<u8, 3, _>::from_size_val(
+                ImageSize { width: new_width, height: new_height }, 0, CpuAllocator
+            ).unwrap();
+            resize_fast(&img, &mut resized, InterpolationMode::Bilinear).unwrap();
+            resized
         }
     };
     let global_img = {
-        let (width, height) = img.dimensions();
+        let (width, height) = (img.width() as u32, img.height() as u32);
         let longest_edge = width.max(height);
-
         if longest_edge <= outer_patch_size {
             img.clone()
         } else {
             let scale_factor = outer_patch_size as f32 / longest_edge as f32;
-        
-            let new_width = (width as f32 * scale_factor) as u32;
-            let new_height = (height as f32 * scale_factor) as u32;
-    
-            img.resize(new_width, new_height, FilterType::Lanczos3)
+            let new_width = (width as f32 * scale_factor) as usize;
+            let new_height = (height as f32 * scale_factor) as usize;
+            let mut resized = Image::<u8, 3, _>::from_size_val(
+                ImageSize { width: new_width, height: new_height }, 0, CpuAllocator
+            ).unwrap();
+            resize_fast(&img, &mut resized, InterpolationMode::Bilinear).unwrap();
+            resized
         }
     };
 
     // padding image for all dimensions to be multiples of the outer_patch_size
     let (img, mask) = {
-        let (width, height) = img.dimensions();
-        let mask = GrayImage::from_pixel(width, height, Luma([255]));
-
-        let new_width = u32::div_ceil(width, outer_patch_size)*outer_patch_size;
-        let new_height = u32::div_ceil(height, outer_patch_size)*outer_patch_size;
-    
-        // Create a new blank image for padding
-        let mut padded_img = RgbImage::from_pixel(new_width, new_height, Rgb([0, 0, 0]));
-        padded_img.copy_from(&img.to_rgb8(), 0, 0).unwrap();
-        let mut padded_mask = GrayImage::from_pixel(new_width, new_height, Luma([0]));
-        padded_mask.copy_from(&mask, 0, 0).unwrap();
-
+        let (width, height) = (img.width(), img.height());
+        let new_width = ((width as u32 + outer_patch_size - 1) / outer_patch_size) * outer_patch_size;
+        let new_height = ((height as u32 + outer_patch_size - 1) / outer_patch_size) * outer_patch_size;
+        let mut padded_img = Image::<u8, 3, _>::from_size_val(
+            ImageSize { width: new_width as usize, height: new_height as usize }, 0, CpuAllocator
+        ).unwrap();
+        let mut padded_mask = Image::<u8, 1, _>::from_size_val(
+            ImageSize { width: new_width as usize, height: new_height as usize }, 0, CpuAllocator
+        ).unwrap();
+        for y in 0..height {
+            for x in 0..width {
+                for c in 0..3 {
+                    padded_img.set_pixel(x, y, c, *img.get_pixel(x, y, c).unwrap()).unwrap();
+                }
+                padded_mask.set_pixel(x, y, 0, 255).unwrap();
+            }
+        }
         (padded_img, padded_mask)
     };
     let (global_img, global_mask) = {
-        let (width, height) = global_img.dimensions();
-        let mask = GrayImage::from_pixel(width, height, Luma([255]));
-
-        let new_width = u32::div_ceil(width, outer_patch_size)*outer_patch_size;
-        let new_height = u32::div_ceil(height, outer_patch_size)*outer_patch_size;
-    
-        // Create a new blank image for padding
-        let mut padded_img = RgbImage::from_pixel(new_width, new_height, Rgb([0, 0, 0]));
-        padded_img.copy_from(&global_img.to_rgb8(), 0, 0).unwrap();
-        let mut padded_mask = GrayImage::from_pixel(new_width, new_height, Luma([0]));
-        padded_mask.copy_from(&mask, 0, 0).unwrap();
-
+        let (width, height) = (global_img.width(), global_img.height());
+        let new_width = ((width as u32 + outer_patch_size - 1) / outer_patch_size) * outer_patch_size;
+        let new_height = ((height as u32 + outer_patch_size - 1) / outer_patch_size) * outer_patch_size;
+        let mut padded_img = Image::<u8, 3, _>::from_size_val(
+            ImageSize { width: new_width as usize, height: new_height as usize }, 0, CpuAllocator
+        ).unwrap();
+        let mut padded_mask = Image::<u8, 1, _>::from_size_val(
+            ImageSize { width: new_width as usize, height: new_height as usize }, 0, CpuAllocator
+        ).unwrap();
+        for y in 0..height {
+            for x in 0..width {
+                for c in 0..3 {
+                    padded_img.set_pixel(x, y, c, *global_img.get_pixel(x, y, c).unwrap()).unwrap();
+                }
+                padded_mask.set_pixel(x, y, 0, 255).unwrap();
+            }
+        }
         (padded_img, padded_mask)
     };
 
 
-    img.save(".vscode/padded_img.png").unwrap();
-    mask.save(".vscode/mask.png").unwrap();
-    global_img.save(".vscode/global_padded_img.png").unwrap();
-    global_mask.save(".vscode/global_mask.png").unwrap();
+    write_image_png_rgb8(".vscode/padded_img.png", &img).unwrap();
+    write_image_png_gray8(".vscode/mask.png", &mask).unwrap();
+    write_image_png_rgb8(".vscode/global_padded_img.png", &global_img).unwrap();
+    write_image_png_gray8(".vscode/global_mask.png", &global_mask).unwrap();
 
     let img = {
-        let (width, height) = img.dimensions();
-        let img_data: Vec<u8> = img.pixels().flat_map(|p| p.0.iter().copied()).collect();
-
+        let (width, height) = (img.width(), img.height());
+        let img_data: Vec<u8> = img.as_slice().to_vec();
         Tensor::from_vec(
             img_data, Shape::from_dims(&[height as usize, width as usize, 3]), device
         ).unwrap()
@@ -143,18 +156,16 @@ pub fn preprocess_image(
             .to_dtype(candle_core::DType::F32).unwrap()
     };
     let mask = {
-        let (width, height) = mask.dimensions();
-        let img_data: Vec<u8> = mask.pixels().flat_map(|p| p.0.iter().copied()).collect();
-
+        let (width, height) = (mask.width(), mask.height());
+        let img_data: Vec<u8> = mask.as_slice().to_vec();
         Tensor::from_vec(
             img_data, Shape::from_dims(&[height as usize, width as usize]), device
         ).unwrap()
             .to_dtype(candle_core::DType::F32).unwrap()
     };
     let global_img = {
-        let (width, height) = global_img.dimensions();
-        let img_data: Vec<u8> = global_img.pixels().flat_map(|p| p.0.iter().copied()).collect();
-
+        let (width, height) = (global_img.width(), global_img.height());
+        let img_data: Vec<u8> = global_img.as_slice().to_vec();
         Tensor::from_vec(
             img_data, Shape::from_dims(&[height as usize, width as usize, 3]), device
         ).unwrap()
@@ -162,9 +173,8 @@ pub fn preprocess_image(
             .to_dtype(candle_core::DType::F32).unwrap()
     };
     let global_mask = {
-        let (width, height) = global_mask.dimensions();
-        let img_data: Vec<u8> = global_mask.pixels().flat_map(|p| p.0.iter().copied()).collect();
-
+        let (width, height) = (global_mask.width(), global_mask.height());
+        let img_data: Vec<u8> = global_mask.as_slice().to_vec();
         Tensor::from_vec(
             img_data, Shape::from_dims(&[height as usize, width as usize]), device
         ).unwrap()
