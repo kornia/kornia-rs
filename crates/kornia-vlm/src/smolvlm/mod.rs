@@ -9,7 +9,7 @@ use std::io;
 
 use candle_core::{Device, DType, IndexOp, Shape, Tensor};
 use hf_hub::api::sync::Api;
-use rand::{SeedableRng, Rng, seq::SliceRandom};
+use rand::{SeedableRng};
 use rand::rngs::StdRng;
 use tokenizers::{Encoding, Tokenizer};
 use candle_nn::ops;
@@ -263,7 +263,7 @@ impl SmolVlm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use candle_core::Device;
+    // use candle_core::Device;
 
     #[test]
     fn test_smolvlm_inference() {

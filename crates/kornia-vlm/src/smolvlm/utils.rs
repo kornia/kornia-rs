@@ -59,7 +59,7 @@ pub fn load_image_url(url: &str) -> std::result::Result<Image<u8, 3, CpuAllocato
 }
 
 pub fn preprocess_image(
-    img: DynamicImage, max_size: u32, outer_patch_size: u32, device: &Device
+    img: Image<u8, 3, CpuAllocator>, max_size: u32, outer_patch_size: u32, device: &Device
 ) -> (Tensor, Tensor, usize, usize) {
 
     // resizing image to match the max_size (on the longest edge)
