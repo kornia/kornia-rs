@@ -36,8 +36,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let psnr = imgproc::metrics::psnr(&image_f32, &image_dirty, 1.0)?;
 
     // print the mse error
-    println!("MSE error: {:?}", mse);
-    println!("PSNR error: {:?}", psnr);
+    println!("MSE error: {mse:?}");
+    println!("PSNR error: {psnr:?}");
 
     // or, alternatively, compute the mse using the built-in functions
     let mse_map = image_f32.sub(&image_dirty)?.powi(2);

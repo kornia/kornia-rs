@@ -55,7 +55,7 @@ impl V4L2CameraConfig {
     ///
     /// * `camera_id` - The desired camera id
     pub fn with_camera_id(mut self, camera_id: u32) -> Self {
-        self.device = format!("/dev/video{}", camera_id);
+        self.device = format!("/dev/video{camera_id}");
         self
     }
 
@@ -110,7 +110,6 @@ pub fn v4l2_camera_pipeline_description(device: &str, size: Option<ImageSize>, f
     };
 
     format!(
-            "v4l2src device={} {}! videorate ! video/x-raw,framerate={}/1 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
-            device, video_resize, fps
+            "v4l2src device={device} {video_resize}! videorate ! video/x-raw,framerate={fps}/1 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink"
         )
 }

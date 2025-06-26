@@ -127,7 +127,7 @@ impl Drop for Arena {
                 }
             }
 
-            panic!("{:?}", e)
+            panic!("{e:?}")
         }
     }
 }

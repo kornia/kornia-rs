@@ -110,8 +110,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|&m| m / num_samples)
         .collect::<Vec<_>>();
 
-    println!("🔥Total std: {:?}", total_std);
-    println!("🔥Total mean: {:?}", total_mean);
+    println!("🔥Total std: {total_std:?}");
+    println!("🔥Total mean: {total_mean:?}");
 
     Ok(())
 }

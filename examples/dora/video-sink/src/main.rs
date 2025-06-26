@@ -15,7 +15,7 @@ fn main() -> eyre::Result<()> {
         .parse::<u16>()?;
 
     let rr = rerun::RecordingStreamBuilder::new("Camera Sink")
-        .connect_grpc_opts(format!("rerun+http://{}:{}/proxy", rr_host, rr_port), None)?;
+        .connect_grpc_opts(format!("rerun+http://{rr_host}:{rr_port}/proxy"), None)?;
 
     while let Some(event) = events.recv() {
         match event {
