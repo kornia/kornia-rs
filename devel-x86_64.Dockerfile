@@ -5,6 +5,7 @@ RUN rustup component add clippy
 
 RUN apt-get update --fix-missing && \
     apt-get install -y --no-install-recommends \
+    clang \
     cmake \
     nasm \
     libgstreamer1.0-dev \

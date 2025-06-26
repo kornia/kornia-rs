@@ -166,6 +166,7 @@ fn decode_jpeg_impl<const C: usize, A: ImageAllocator>(
     }
 
     decoder.decode_into(dst.as_slice_mut())?;
+
     Ok(())
 }
 
