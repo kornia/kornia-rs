@@ -28,12 +28,15 @@ log = { workspace = true }
 thiserror = { workspace = true }
 tiff = "0.9"
 
+# for video capture from v4l2 cameras
 v4l = { version = "0.14.0", optional = true }
 libc = { version = "0.2", optional = true }
 
-# optional dependencies
+# for video capture from gstreamer sources
 gstreamer = { version = "0.23.5", optional = true }
 gstreamer-app = { version = "0.23.5", optional = true }
+
+# for fast jpeg encoding/decoding
 turbojpeg = { version = "1.2", optional = true }
 
 [dev-dependencies]
