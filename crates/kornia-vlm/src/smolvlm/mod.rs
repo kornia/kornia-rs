@@ -1,27 +1,24 @@
-mod text_model;
-mod vision_model;
-mod utils;
 mod model;
+mod text_model;
+mod utils;
+mod vision_model;
 
-
-use std::io::{Error, Write};
 use std::io;
+use std::io::{Error, Write};
 
-use candle_core::{Device, DType, IndexOp, Shape, Tensor};
-use hf_hub::api::sync::Api;
-use rand::{SeedableRng};
-use rand::rngs::StdRng;
-use tokenizers::{Encoding, Tokenizer};
+use candle_core::{DType, Device, IndexOp, Shape, Tensor};
 use candle_nn::ops;
+use hf_hub::api::sync::Api;
 use rand::prelude::IndexedRandom;
+use rand::rngs::StdRng;
+use rand::SeedableRng;
 use std::cmp::Ordering;
 use terminal_size::{terminal_size, Width};
+use tokenizers::{Encoding, Tokenizer};
 
-use utils::{preprocess_image, load_image_url, get_prompt_split_image};
+use utils::{get_prompt_split_image, load_image_url, preprocess_image};
 
 use crate::smolvlm::text_model::SmolModel;
-
-
 
 /// Configuration for the SmolVLM model
 pub struct SmolVlmConfig {
@@ -46,7 +43,6 @@ impl Default for SmolVlmConfig {
     }
 }
 
-
 fn count_lines(text: &str) -> usize {
     if let Some((Width(w), _)) = terminal_size() {
         (text.len() + w as usize + 1) / w as usize
@@ -69,10 +65,9 @@ fn read_input(cli_prompt: &str) -> String {
     io::stdin()
         .read_line(&mut input)
         .expect("Failed to read input");
-    
+
     input.trim().to_owned()
 }
-
 
 #[derive(thiserror::Error, Debug)]
 pub enum SmolVlmError {
@@ -94,7 +89,6 @@ pub enum SmolVlmError {
     #[error("Cannot find the <end_of_utterance> token")]
     EosTokenNotFound,
 }
-
 
 pub struct SmolVlm {
     model: text_model::SmolModel,
@@ -161,7 +155,6 @@ impl SmolVlm {
         // sample_len: usize,
         // stdout_debug: bool,
     ) -> Result<String, SmolVlmError> {
-
         let image_token = self.image_token_enc.get_ids();
         let mut message = String::from("<|im_start|>");
         let mut image: Vec<(Tensor, Tensor)> = Vec::new();
@@ -172,15 +165,17 @@ impl SmolVlm {
             if i == 0 || output == "<end_of_utterance>" {
                 let img_url = read_input("img> ");
                 let img = load_image_url(&img_url)
-                    .and_then(
-                        |v| if image.len() > 1 {
+                    .and_then(|v| {
+                        if image.len() > 1 {
                             println!("One image max. Cannot add another image. (Restart)");
                             Err(Box::new(Error::new(io::ErrorKind::Other, "One image max")))
-                        } else {Ok(v)}
-                    )
+                        } else {
+                            Ok(v)
+                        }
+                    })
                     .map(|img| preprocess_image(img, 1920, 384, &self.device));
                 let mut txt_prompt = String::new();
-                if let Ok((_,_,cols,rows)) = img {
+                if let Ok((_, _, cols, rows)) = img {
                     let img_token = get_prompt_split_image(81, rows, cols);
                     txt_prompt += "\nUser:<image>";
                     txt_prompt = txt_prompt.replace("<image>", &img_token);
@@ -194,13 +189,14 @@ impl SmolVlm {
                 txt_prompt += "<end_of_utterance>\nAssistant:";
                 response.clear();
                 message += &txt_prompt;
-                if let Ok((img_patches, mask_patches,_,_)) = img {
+                if let Ok((img_patches, mask_patches, _, _)) = img {
                     image.push((img_patches, mask_patches));
                 }
             }
             let encoding = self.tokenizer.encode(message.clone(), false).unwrap();
             let tokens = encoding.get_ids();
-            let input = Tensor::from_slice(tokens, Shape::from_dims(&[tokens.len()]), &self.device)?;
+            let input =
+                Tensor::from_slice(tokens, Shape::from_dims(&[tokens.len()]), &self.device)?;
             let vision_data = if image.len() > 0 {
                 let image_token_mask = Tensor::from_slice(image_token, &[1], &self.device)?;
                 let image_token_mask = input.broadcast_eq(&image_token_mask)?;
@@ -210,23 +206,28 @@ impl SmolVlm {
             };
             let logits = self.model.forward(&input, i, vision_data, &self.device)?;
             let (s, _embed_dim) = logits.dims2()?;
-            let last_logit = logits.i((s-1, ..))?;
+            let last_logit = logits.i((s - 1, ..))?;
             let out_token = {
-                let temperature = Tensor::from_slice(&[
-                    self.config.temp
-                ], (1,), &self.device)?;
+                let temperature = Tensor::from_slice(&[self.config.temp], (1,), &self.device)?;
                 let scaled = last_logit.broadcast_div(&temperature)?;
                 let probs = ops::softmax(&scaled, 0)?;
                 let probs_vec: Vec<f32> = probs.to_vec1()?;
-                let mut indices: Vec<usize> = (0..probs_vec.len()).collect(); 
-                indices.sort_by(|&i, &j| probs_vec[j].partial_cmp(&probs_vec[i]).unwrap_or(Ordering::Equal));
+                let mut indices: Vec<usize> = (0..probs_vec.len()).collect();
+                indices.sort_by(|&i, &j| {
+                    probs_vec[j]
+                        .partial_cmp(&probs_vec[i])
+                        .unwrap_or(Ordering::Equal)
+                });
                 let top_k_indices = &indices[..self.config.top_k];
                 let top_k_probs: Vec<f32> = top_k_indices.iter().map(|&i| probs_vec[i]).collect();
                 let sum_probs: f32 = top_k_probs.iter().sum();
-                let normalized_probs: Vec<f32> = top_k_probs.iter().map(|p| p / sum_probs).collect();
-                
+                let normalized_probs: Vec<f32> =
+                    top_k_probs.iter().map(|p| p / sum_probs).collect();
+
                 let sampled_index = top_k_indices
-                    .choose_weighted(&mut self.rng, |&idx| normalized_probs[top_k_indices.iter().position(|&x| x == idx).unwrap()])
+                    .choose_weighted(&mut self.rng, |&idx| {
+                        normalized_probs[top_k_indices.iter().position(|&x| x == idx).unwrap()]
+                    })
                     .expect("Sampling failed");
                 [*sampled_index as u32]
             };
@@ -258,7 +259,6 @@ impl SmolVlm {
         Ok((model, tokenizer))
     }
 }
-
 
 #[cfg(test)]
 mod tests {
