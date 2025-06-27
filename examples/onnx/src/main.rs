@@ -89,7 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|x| x.name.to_string())
         .collect::<Vec<_>>();
 
-    println!("inputs_name: {:?}", inputs_names);
+    println!("inputs_name: {inputs_names:?}");
 
     // get the outputs names
     let outputs_names = model
@@ -98,7 +98,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|x| x.name.to_string())
         .collect::<Vec<_>>();
 
-    println!("outputs_name: {:?}", outputs_names);
+    println!("outputs_name: {outputs_names:?}");
 
     let time = Instant::now();
 
@@ -112,7 +112,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // get the outputs
 
     let (out_shape, out_ort) = outputs["output"].try_extract_tensor::<f32>()?;
-    println!("out_shape: {:?}", out_shape);
+    println!("out_shape: {out_shape:?}");
 
     let out_tensor = Tensor::<f32, 3, CpuAllocator>::from_shape_vec(
         [

@@ -40,7 +40,7 @@ fn bench_harris_response(c: &mut Criterion) {
     for (width, height) in [(224, 224), (1920, 1080)].iter() {
         group.throughput(criterion::Throughput::Elements((*width * *height) as u64));
 
-        let parameter_string = format!("{}x{}", width, height);
+        let parameter_string = format!("{width}x{height}");
 
         // input image
         let image_data: Vec<f32> = (0..(*width * *height))
@@ -82,7 +82,7 @@ fn bench_dog_response(c: &mut Criterion) {
 
         // Benchmark DoG response (serial version)
         group.bench_with_input(
-            BenchmarkId::new("dog_response", format!("{}x{}", width, height)),
+            BenchmarkId::new("dog_response", format!("{width}x{height}")),
             &(width, height),
             |b, _| {
                 b.iter(|| {

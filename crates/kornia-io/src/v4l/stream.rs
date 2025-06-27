@@ -87,7 +87,7 @@ impl Drop for Stream {
                 }
             }
 
-            panic!("{:?}", e)
+            panic!("{e:?}")
         }
     }
 }

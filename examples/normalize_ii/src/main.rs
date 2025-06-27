@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // imgproc::normalize::normalize_min_max(&gray, &mut gray_norm_min_max, 0.0, 255.0)?;
 
     let (min, max) = imgproc::normalize::find_min_max(&gray)?;
-    println!("min: {:?}, max: {:?}", min, max);
+    println!("min: {min:?}, max: {max:?}");
 
     Ok(())
 }

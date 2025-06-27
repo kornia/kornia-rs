@@ -27,7 +27,7 @@ fn bench_filters(c: &mut Criterion) {
                 (*width * *height * *kernel_size) as u64,
             ));
 
-            let parameter_string = format!("{}x{}x{}", width, height, kernel_size);
+            let parameter_string = format!("{width}x{height}x{kernel_size}");
 
             // input image
             let image_data = vec![0f32; width * height * 3];

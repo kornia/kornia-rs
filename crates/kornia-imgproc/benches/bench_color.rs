@@ -73,7 +73,7 @@ fn bench_grayscale(c: &mut Criterion) {
     for (width, height) in [(256, 224), (512, 448), (1024, 896)].iter() {
         group.throughput(criterion::Throughput::Elements((*width * *height) as u64));
 
-        let parameter_string = format!("{}x{}", width, height);
+        let parameter_string = format!("{width}x{height}");
 
         // input image
         let image_data = vec![0u8; width * height * 3];

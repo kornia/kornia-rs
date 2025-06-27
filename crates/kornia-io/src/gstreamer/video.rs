@@ -187,16 +187,14 @@ impl VideoWriter {
             ImageFormat::Mono8 => {
                 if C != 1 {
                     return Err(StreamCaptureError::InvalidImageFormat(format!(
-                        "Invalid number of channels: expected 1, got {}",
-                        C
+                        "Invalid number of channels: expected 1, got {C}"
                     )));
                 }
             }
             ImageFormat::Rgb8 => {
                 if C != 3 {
                     return Err(StreamCaptureError::InvalidImageFormat(format!(
-                        "Invalid number of channels: expected 3, got {}",
-                        C
+                        "Invalid number of channels: expected 3, got {C}"
                     )));
                 }
             }
@@ -444,7 +442,7 @@ mod tests {
         writer.write(&img)?;
         writer.close()?;
 
-        assert!(file_path.exists(), "File does not exist: {:?}", file_path);
+        assert!(file_path.exists(), "File does not exist: {file_path:?}");
 
         Ok(())
     }
@@ -470,7 +468,7 @@ mod tests {
         writer.write(&img)?;
         writer.close()?;
 
-        assert!(file_path.exists(), "File does not exist: {:?}", file_path);
+        assert!(file_path.exists(), "File does not exist: {file_path:?}");
 
         Ok(())
     }

@@ -83,7 +83,7 @@ fn bench_transform_points3d(c: &mut Criterion) {
 
     for num_points in [1000, 10000, 100000, 200000, 500000].iter() {
         group.throughput(criterion::Throughput::Elements(*num_points as u64));
-        let parameter_string = format!("{}", num_points);
+        let parameter_string = format!("{num_points}");
 
         let src_points = vec![[2.0, 2.0, 2.0]; *num_points];
         let rotation = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];

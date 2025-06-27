@@ -19,7 +19,7 @@ fn download_video() -> (PathBuf, TempDir) {
     )
     .expect("Failed to write video to temp file");
 
-    println!("Video downloaded to: {:?}", temp_file_path);
+    println!("Video downloaded to: {temp_file_path:?}");
     (temp_file_path, temp_dir)
 }
 
