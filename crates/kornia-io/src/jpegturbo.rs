@@ -290,7 +290,7 @@ pub fn write_image_jpegturbo_rgb8<A: ImageAllocator>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::IoError;
+    use crate::error::IoError;
 
     #[test]
     fn image_decoder() -> Result<(), JpegTurboError> {
