@@ -17,7 +17,6 @@ rustc-args = ["--cfg", "docsrs"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-circular-buffer = "1.1.0"
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
 png = "0.17"
@@ -32,6 +31,7 @@ v4l = { version = "0.14.0", optional = true }
 libc = { version = "0.2", optional = true }
 
 # for video capture from gstreamer sources
+circular-buffer = { version = "1.1.0", optional = true }
 gstreamer = { version = "0.23.5", optional = true }
 gstreamer-app = { version = "0.23.5", optional = true }
 
@@ -44,7 +44,7 @@ tempfile = { workspace = true }
 reqwest = "0.12"
 
 [features]
-gstreamer = ["dep:gstreamer", "dep:gstreamer-app"]
+gstreamer = ["dep:gstreamer", "dep:gstreamer-app", "dep:circular-buffer"]
 turbojpeg = ["dep:turbojpeg"]
 v4l = ["dep:v4l", "dep:libc"]
 

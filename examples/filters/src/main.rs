@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut img_f32_filtered = Image::from_size_val(size, 0f32, CpuAllocator)?;
     // start grabbing frames from the camera
     while !cancel_token.load(Ordering::SeqCst) {
-        let Some(img) = webcam.grab()? else {
+        let Some(img) = webcam.grab_rgb8()? else {
             continue;
         };
 

@@ -129,7 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         async move {
             while !cancel_token.load(Ordering::SeqCst) {
                 // read the image from the camera
-                if let Some(img) = webcam.lock().await.grab()? {
+                if let Some(img) = webcam.lock().await.grab_rgb8()? {
                     // send the image to broadcast channel
                     if let Err(e) = tx.send(img).await {
                         println!("Error sending image to channel: {:?}", e.to_string());

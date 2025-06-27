@@ -299,7 +299,9 @@ impl VideoReader {
     /// An Option containing the last captured Image or None if no image has been captured yet.
     #[inline]
     pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3, GstAllocator>>, VideoReaderError> {
-        self.0.grab().map_err(VideoReaderError::StreamCaptureError)
+        self.0
+            .grab_rgb8()
+            .map_err(VideoReaderError::StreamCaptureError)
     }
 
     /// Gets the current state of the video pipeline

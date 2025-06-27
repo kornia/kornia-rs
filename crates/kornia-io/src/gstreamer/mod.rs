@@ -37,10 +37,7 @@ impl Default for GstAllocator {
 }
 
 impl TensorAllocator for GstAllocator {
-    fn alloc(
-        &self,
-        layout: std::alloc::Layout,
-    ) -> Result<*mut u8, kornia_tensor::allocator::TensorAllocatorError> {
+    fn alloc(&self, layout: std::alloc::Layout) -> Result<*mut u8, TensorAllocatorError> {
         let ptr = unsafe { std::alloc::alloc(layout) };
 
         if ptr.is_null() {
