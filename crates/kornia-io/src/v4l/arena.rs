@@ -2,6 +2,17 @@
 use std::{io, mem, sync::Arc};
 use v4l::{buffer, device::Handle, memory::Memory, v4l2, v4l_sys::*};
 
+#[cfg(feature = "arrow")]
+use arrow::array::{Array, ArrayRef, UInt8Array};
+
+/// Trait for converting to Arrow arrays
+#[cfg(feature = "arrow")]
+pub trait IntoArrow {
+    type Output: Array;
+
+    fn into_arrow(self) -> ArrayRef;
+}
+
 /// Abstracts a buffer from the v4l device.
 #[derive(Clone)]
 pub struct V4lBuffer(pub Arc<Vec<u8>>);
@@ -10,6 +21,31 @@ impl std::ops::Deref for V4lBuffer {
     type Target = Vec<u8>;
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+#[cfg(feature = "arrow")]
+impl IntoArrow for V4lBuffer {
+    type Output = UInt8Array;
+
+    fn into_arrow(self) -> ArrayRef {
+        // Try to unwrap the Arc to avoid copying if we're the only reference
+        let data = match Arc::try_unwrap(self.0) {
+            Ok(data) => data,
+            Err(arc_data) => {
+                // If there are other references, we need to copy the data
+                arc_data.as_slice().to_vec()
+            }
+        };
+        Arc::new(UInt8Array::from(data))
+    }
+}
+
+#[cfg(feature = "arrow")]
+impl V4lBuffer {
+    /// Convert the V4lBuffer to an Arrow UInt8Array by reference (always copies)
+    pub fn to_arrow(&self) -> ArrayRef {
+        Arc::new(UInt8Array::from(self.0.as_slice().to_vec()))
     }
 }
 

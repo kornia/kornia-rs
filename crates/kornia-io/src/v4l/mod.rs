@@ -15,6 +15,11 @@ use v4l::video::Capture;
 use v4l::Device;
 use v4l::Timestamp;
 
+#[cfg(feature = "arrow")]
+use crate::v4l::arena::IntoArrow;
+#[cfg(feature = "arrow")]
+use arrow::array::ArrayRef;
+
 /// Error types for the v4l2 module.
 #[derive(Debug, thiserror::Error)]
 pub enum V4L2Error {
@@ -76,6 +81,19 @@ pub struct EncodedFrame {
     pub timestamp: Timestamp,
     /// The sequence number of the frame
     pub sequence: u32,
+}
+
+#[cfg(feature = "arrow")]
+impl EncodedFrame {
+    /// Convert the frame buffer to an Arrow UInt8Array
+    pub fn into_arrow(self) -> ArrayRef {
+        self.buffer.into_arrow()
+    }
+
+    /// Convert the frame buffer to an Arrow UInt8Array by reference
+    pub fn to_arrow(&self) -> ArrayRef {
+        self.buffer.to_arrow()
+    }
 }
 
 impl V4LVideoCapture {

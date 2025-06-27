@@ -38,6 +38,9 @@ gstreamer-app = { version = "0.23.5", optional = true }
 # for fast jpeg encoding/decoding
 turbojpeg = { version = "1.2", optional = true }
 
+# for arrow conversion
+arrow = { version = "55.2.0", optional = true }
+
 [dev-dependencies]
 criterion = { workspace = true }
 tempfile = { workspace = true }
@@ -47,6 +50,7 @@ reqwest = "0.12"
 gstreamer = ["dep:gstreamer", "dep:gstreamer-app", "dep:circular-buffer"]
 turbojpeg = ["dep:turbojpeg"]
 v4l = ["dep:v4l", "dep:libc"]
+arrow = ["dep:arrow"]
 
 [[bench]]
 name = "bench_io"

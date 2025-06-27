@@ -2,7 +2,8 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use dora_image_utils::image_to_arrow;
-use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow, Parameter};
+//use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow, Parameter};
+use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, Parameter};
 use kornia::{
     image::ImageSize,
     io::v4l::{PixelFormat, V4LCameraConfig, V4LVideoCapture},
@@ -10,8 +11,6 @@ use kornia::{
 
 fn main() -> eyre::Result<()> {
     // parse env variables
-    let source_type =
-        std::env::var("SOURCE_TYPE").map_err(|e| eyre::eyre!("SOURCE_TYPE error: {}", e))?;
     let source_device =
         std::env::var("SOURCE_DEVICE").map_err(|e| eyre::eyre!("SOURCE_DEVICE error: {}", e))?;
     let image_cols = std::env::var("IMAGE_COLS")
@@ -72,9 +71,11 @@ fn main() -> eyre::Result<()> {
                         Parameter::Integer(frame.size.height as i64),
                     );
 
-                    let data = Arc::try_unwrap(frame.buffer)
-                        .map_err(|_| eyre::eyre!("Buffer still has references"))?
-                        .0;
+                    // Get data directly from buffer to avoid copying
+                    let data = match std::sync::Arc::try_unwrap(frame.buffer.0) {
+                        Ok(data) => data,
+                        Err(arc_data) => arc_data.as_slice().to_vec(), // Only copy if necessary
+                    };
                     node.send_output(output.clone(), meta_parameters, data.into_arrow())?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
