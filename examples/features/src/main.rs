@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // start grabbing frames from the camera
     while !cancel_token.load(Ordering::SeqCst) {
-        let Some(img) = webcam.grab()? else {
+        let Some(img) = webcam.grab_rgb8()? else {
             continue;
         };
 
