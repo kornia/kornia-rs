@@ -526,6 +526,14 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     pub fn into_vec(self) -> Vec<T> {
         self.0.into_vec()
     }
+
+    /// Get a copy of the image data as a vector.
+    pub fn to_vec(&self) -> Vec<T>
+    where
+        T: Clone,
+    {
+        self.as_slice().to_vec()
+    }
 }
 
 /// helper to convert an single channel tensor to a kornia image with try into

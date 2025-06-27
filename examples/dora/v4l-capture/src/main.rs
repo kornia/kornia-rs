@@ -1,6 +1,6 @@
-use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow, Parameter};
+use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, Parameter};
 use kornia::{
-    image::{Image, ImageSize},
+    image::{arrow::IntoArrow, Image, ImageSize},
     imgproc::color::{convert_yuyv_to_rgb_u8, YuvToRgbMode},
     io::v4l::{PixelFormat, V4LCameraConfig, V4LVideoCapture},
     tensor::CpuAllocator,
@@ -75,11 +75,8 @@ fn main() -> eyre::Result<()> {
                         Parameter::Integer(frame.size.height as i64),
                     );
 
-                    node.send_output(
-                        output.clone(),
-                        meta_parameters,
-                        img_rgb8.into_vec().into_arrow(),
-                    )?;
+                    // TODO: the trait bound `Arc<dyn arrow_array::array::Array>: dora_node_api::arrow::array::Array` is not satisfied
+                    node.send_output(output.clone(), meta_parameters, img_rgb8.into_arrow())?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },

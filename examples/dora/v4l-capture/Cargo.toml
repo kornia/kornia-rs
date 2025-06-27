@@ -9,4 +9,3 @@ dora-image-utils = { path = "../image-utils" }
 eyre = "0.6"
 log = "0.4"
 kornia = { path = "../../../crates/kornia", features = ["v4l", "arrow"] }
-arrow = "55.2.0"
