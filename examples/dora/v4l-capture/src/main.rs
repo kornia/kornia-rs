@@ -1,12 +1,9 @@
-use std::ops::Deref;
-use std::sync::Arc;
-
-use dora_image_utils::image_to_arrow;
-//use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow, Parameter};
-use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, Parameter};
+use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow, Parameter};
 use kornia::{
-    image::ImageSize,
+    image::{Image, ImageSize},
+    imgproc::color::{convert_yuyv_to_rgb_u8, YuvToRgbMode},
     io::v4l::{PixelFormat, V4LCameraConfig, V4LVideoCapture},
+    tensor::CpuAllocator,
 };
 
 fn main() -> eyre::Result<()> {
@@ -60,7 +57,14 @@ fn main() -> eyre::Result<()> {
                         continue;
                     };
 
-                    // let (meta_parameters, data) = image_to_arrow(frame, metadata)?;
+                    // allocate the buffer
+                    let mut img_rgb8 =
+                        Image::<u8, 3, CpuAllocator>::from_size_val(frame.size, 0, CpuAllocator)?;
+
+                    // decode the frame to rgb8
+                    convert_yuyv_to_rgb_u8(&frame.buffer, &mut img_rgb8, YuvToRgbMode::Bt601Full)?;
+
+                    // set the metadata with the image info
                     let mut meta_parameters = metadata.parameters;
                     meta_parameters.insert(
                         "cols".to_string(),
@@ -71,19 +75,15 @@ fn main() -> eyre::Result<()> {
                         Parameter::Integer(frame.size.height as i64),
                     );
 
-                    // Get data directly from buffer to avoid copying
-                    let data = match std::sync::Arc::try_unwrap(frame.buffer.0) {
-                        Ok(data) => data,
-                        Err(arc_data) => arc_data.as_slice().to_vec(), // Only copy if necessary
-                    };
-                    node.send_output(output.clone(), meta_parameters, data.into_arrow())?;
+                    node.send_output(
+                        output.clone(),
+                        meta_parameters,
+                        img_rgb8.into_vec().into_arrow(),
+                    )?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
-            Event::Stop => {
-                // camera.close()?;
-            }
-            other => eprintln!("Received unexpected input: {other:?}"),
+            _ => eprintln!("Received unexpected input: {event:?}"),
         }
     }
 

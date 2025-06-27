@@ -1,10 +1,12 @@
+use dora_node_api::{ArrowData, Metadata, Parameter};
+use kornia::{
+    image::{allocator::ImageAllocator, Image, ImageSize},
+    tensor::CpuAllocator,
+};
 use std::collections::BTreeMap;
 
-use dora_node_api::{ArrowData, Metadata, Parameter};
-use kornia::image::{Image, ImageSize};
-
-pub fn image_to_arrow(
-    image: Image<u8, 3>,
+pub fn image_to_arrow<A: ImageAllocator>(
+    image: Image<u8, 3, A>,
     metadata: Metadata,
 ) -> eyre::Result<(BTreeMap<String, Parameter>, Vec<u8>)> {
     let mut meta_parameters = metadata.parameters;
@@ -17,7 +19,10 @@ pub fn image_to_arrow(
     Ok((meta_parameters, data))
 }
 
-pub fn arrow_to_image(data: ArrowData, metadata: Metadata) -> eyre::Result<Image<u8, 3>> {
+pub fn arrow_to_image(
+    data: ArrowData,
+    metadata: Metadata,
+) -> eyre::Result<Image<u8, 3, CpuAllocator>> {
     // SAFETY: we know that the metadata has the "cols" parameter
     let img_cols = metadata.parameters.get("cols").unwrap();
     let img_cols: i64 = match img_cols {
@@ -40,5 +45,6 @@ pub fn arrow_to_image(data: ArrowData, metadata: Metadata) -> eyre::Result<Image
             height: img_rows as usize,
         },
         img_data,
+        CpuAllocator,
     )?)
 }

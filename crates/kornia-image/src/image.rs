@@ -521,6 +521,11 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
 
         Ok(())
     }
+
+    /// Convert the image to a vector.
+    pub fn into_vec(self) -> Vec<T> {
+        self.0.into_vec()
+    }
 }
 
 /// helper to convert an single channel tensor to a kornia image with try into

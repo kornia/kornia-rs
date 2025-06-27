@@ -1,6 +1,6 @@
 use dora_image_utils::image_to_arrow;
 use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow};
-use kornia::io::stream::{RTSPCameraConfig, V4L2CameraConfig};
+use kornia::io::gstreamer::{RTSPCameraConfig, V4L2CameraConfig};
 
 fn main() -> eyre::Result<()> {
     // parse env variables
@@ -46,7 +46,7 @@ fn main() -> eyre::Result<()> {
                 data: _,
             } => match id.as_str() {
                 "tick" => {
-                    let Some(frame) = camera.grab()? else {
+                    let Some(frame) = camera.grab_rgb8()? else {
                         continue;
                     };
 

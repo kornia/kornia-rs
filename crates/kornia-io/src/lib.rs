@@ -25,8 +25,8 @@ pub mod jpeg;
 pub mod gstreamer;
 
 // NOTE: remove in future release
-#[cfg(feature = "gstreamer")]
 #[deprecated(since = "0.1.10", note = "Use the gstreamer module instead")]
+#[cfg(feature = "gstreamer")]
 pub use gstreamer as stream;
 
 /// TIFF image encoding and decoding.
