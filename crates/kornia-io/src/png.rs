@@ -1,14 +1,13 @@
-use std::{fs, fs::File, path::Path};
-
+use crate::{
+    conv_utils::{convert_buf_u16_u8, convert_buf_u8_u16, convert_buf_u8_u16_into_slice},
+    error::IoError,
+};
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     Image, ImageSize,
 };
 use png::{BitDepth, ColorType, Decoder, Encoder};
-
-use crate::{
-    convert_buf_u16_u8, convert_buf_u8_u16, convert_buf_u8_u16_into_slice, error::IoError,
-};
+use std::{fs, fs::File, path::Path};
 
 /// Read a PNG image with a single channel (mono8).
 ///
