@@ -10,7 +10,7 @@ fn bench_pyramid(c: &mut Criterion) {
     for (width, height) in [(256, 224), (512, 448), (1024, 896)].iter() {
         group.throughput(criterion::Throughput::Elements((*width * *height) as u64));
 
-        let parameter_string = format!("{}x{}", width, height);
+        let parameter_string = format!("{width}x{height}");
 
         let small_image_size = [*width / 2, *height / 2].into();
         let small_image_data = (0..((*width / 2) * (*height / 2)))

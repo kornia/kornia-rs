@@ -63,7 +63,7 @@ impl std::fmt::Display for PixelFormat {
             Self::MJPG => write!(f, "MJPG"),
             Self::Custom(bytes) => {
                 let fourcc_str = std::str::from_utf8(bytes).unwrap_or("????");
-                write!(f, "{}", fourcc_str)
+                write!(f, "{fourcc_str}")
             }
         }
     }
@@ -76,7 +76,7 @@ impl FromStr for PixelFormat {
         match s {
             "YUYV" => Ok(Self::YUYV),
             "MJPG" => Ok(Self::MJPG),
-            _ => Err(format!("Invalid pixel format: {}", s)),
+            _ => Err(format!("Invalid pixel format: {s}")),
         }
     }
 }

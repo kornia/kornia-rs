@@ -75,7 +75,7 @@ pub fn icp_vanilla(
     // main icp loop
     for i in 0..criteria.max_iterations {
         // NOTE: for debugging purposes, we measure the time taken for each iteration
-        log::debug!("Iteration: {}", i);
+        log::debug!("Iteration: {i}");
         let now = std::time::Instant::now();
 
         // find closest points between current source and target
@@ -125,7 +125,7 @@ pub fn icp_vanilla(
 
         // check convergence and exit if below tolerance
         if (result.rmse - rmse).abs() < criteria.tolerance {
-            log::debug!("ICP converged in {} iterations with error {}", i, rmse);
+            log::debug!("ICP converged in {i} iterations with error {rmse}");
             result.rmse = rmse;
             break;
         }
@@ -137,7 +137,7 @@ pub fn icp_vanilla(
         current_source = transformed_points;
 
         let elapsed = now.elapsed();
-        log::debug!("elapsed: {:?}", elapsed);
+        log::debug!("elapsed: {elapsed:?}");
     }
 
     Ok(result)
@@ -188,7 +188,7 @@ mod tests {
             },
         )?;
 
-        println!("result: {:?}", result);
+        println!("result: {result:?}");
 
         // TODO: fixme
         // for i in 0..3 {

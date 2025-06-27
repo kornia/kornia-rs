@@ -113,7 +113,7 @@ where
     T::Err: std::fmt::Display,
 {
     s.parse::<T>()
-        .map_err(|e| ColmapError::ParseError(format!("{}: {}", s, e)))
+        .map_err(|e| ColmapError::ParseError(format!("{s}: {e}")))
 }
 
 /// Parse a camera line and return a ColmapCamera struct.
@@ -125,8 +125,8 @@ fn parse_camera_line(line: &str) -> Result<ColmapCamera, ColmapError> {
 
     if parts.len() < 5 {
         return Err(ColmapError::ParseError(format!(
-            "Invalid number of parts: {}",
-            parts.len()
+            "Invalid number of parts: {parts_len}",
+            parts_len = parts.len()
         )));
     }
 
@@ -156,8 +156,7 @@ fn parse_camera_model_id(model_id: &str) -> Result<CameraModelId, ColmapError> {
         "RADIAL_FISHEYE" => Ok(CameraModelId::CameraModelRadialFisheye),
         "THIN_PRISM_FISHEYE" => Ok(CameraModelId::CameraModelThinPrismFisheye),
         _ => Err(ColmapError::ParseError(format!(
-            "Invalid camera model id: {}",
-            model_id
+            "Invalid camera model id: {model_id}"
         ))),
     }
 }

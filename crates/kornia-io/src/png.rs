@@ -436,7 +436,7 @@ mod tests {
         write_image_png_rgb8(&file_path, &image_data)?;
 
         let image_data_back = read_image_png_rgb8(&file_path)?;
-        assert!(file_path.exists(), "File does not exist: {:?}", file_path);
+        assert!(file_path.exists(), "File does not exist: {file_path:?}");
 
         assert_eq!(image_data_back.cols(), 258);
         assert_eq!(image_data_back.rows(), 195);
@@ -455,7 +455,7 @@ mod tests {
         write_image_png_rgb16(&file_path, &image_data)?;
 
         let image_data_back = read_image_png_rgb16(&file_path)?;
-        assert!(file_path.exists(), "File does not exist: {:?}", file_path);
+        assert!(file_path.exists(), "File does not exist: {file_path:?}");
 
         assert_eq!(image_data_back.cols(), 32);
         assert_eq!(image_data_back.rows(), 32);

@@ -65,26 +65,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     println!("📹 Starting webcam capture...");
-    println!("Requested FPS: {}", args.fps);
-    println!("Image size: {:?}", img_size);
+    println!("Requested FPS: {0}", args.fps);
+    println!("Image size: {img_size:?}");
 
     // Enable auto exposure and auto white balance for best image quality
     if let Err(e) = webcam.set_control(CameraControl::AutoExposure(AutoExposureMode::Auto)) {
-        println!("⚠️ Could not enable auto exposure: {}", e);
+        println!("⚠️ Could not enable auto exposure: {e}");
     }
 
     // Enable auto white balance for better color
     if let Err(e) = webcam.set_control(CameraControl::AutoWhiteBalance(true)) {
-        println!("⚠️ Could not enable auto white balance: {}", e);
+        println!("⚠️ Could not enable auto white balance: {e}");
     }
 
     // For manual control, disable auto and set specific values
     if let Err(e) = webcam.set_control(CameraControl::AutoExposure(AutoExposureMode::Auto)) {
-        println!("⚠️ Could not set manual exposure: {}", e);
+        println!("⚠️ Could not set manual exposure: {e}");
     }
 
     if let Err(e) = webcam.set_control(CameraControl::AutoWhiteBalance(false)) {
-        println!("⚠️ Could not disable auto white balance: {}", e);
+        println!("⚠️ Could not disable auto white balance: {e}");
     }
 
     let mut fps_counter = FpsCounter::new();
