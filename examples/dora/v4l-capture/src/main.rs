@@ -1,4 +1,4 @@
-use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, Parameter};
+use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event};
 use kornia::{
     image::{arrow::IntoArrow, Image, ImageSize},
     imgproc::color::{convert_yuyv_to_rgb_u8, YuvToRgbMode},
@@ -64,19 +64,7 @@ fn main() -> eyre::Result<()> {
                     // decode the frame to rgb8
                     convert_yuyv_to_rgb_u8(&frame.buffer, &mut img_rgb8, YuvToRgbMode::Bt601Full)?;
 
-                    // set the metadata with the image info
-                    let mut meta_parameters = metadata.parameters;
-                    meta_parameters.insert(
-                        "cols".to_string(),
-                        Parameter::Integer(frame.size.width as i64),
-                    );
-                    meta_parameters.insert(
-                        "rows".to_string(),
-                        Parameter::Integer(frame.size.height as i64),
-                    );
-
-                    // TODO: the trait bound `Arc<dyn arrow_array::array::Array>: dora_node_api::arrow::array::Array` is not satisfied
-                    node.send_output(output.clone(), meta_parameters, img_rgb8.into_arrow())?;
+                    node.send_output(output.clone(), metadata.parameters, img_rgb8.into_arrow())?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },

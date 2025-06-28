@@ -1,6 +1,9 @@
-use dora_image_utils::image_to_arrow;
-use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow};
-use kornia::io::gstreamer::{RTSPCameraConfig, V4L2CameraConfig};
+use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event};
+use kornia::{
+    image::{arrow::IntoArrow, Image},
+    io::gstreamer::{RTSPCameraConfig, V4L2CameraConfig},
+    tensor::CpuAllocator,
+};
 
 fn main() -> eyre::Result<()> {
     // parse env variables
@@ -50,9 +53,12 @@ fn main() -> eyre::Result<()> {
                         continue;
                     };
 
-                    let (meta_parameters, data) = image_to_arrow(frame, metadata)?;
+                    let image: Image<u8, 3, CpuAllocator> = {
+                        let img = frame.clone();
+                        Image::new(img.size(), img.to_vec(), CpuAllocator::default())?
+                    };
 
-                    node.send_output(output.clone(), meta_parameters, data.into_arrow())?;
+                    node.send_output(output.clone(), metadata.parameters, image.into_arrow())?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },

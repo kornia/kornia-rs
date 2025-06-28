@@ -1,6 +1,12 @@
-use dora_image_utils::{arrow_to_image, image_to_arrow};
-use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow};
-use kornia::{image::Image, imgproc, tensor::CpuAllocator};
+use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event};
+use kornia::{
+    image::{
+        arrow::{IntoArrow, TryFromArrow},
+        Image,
+    },
+    imgproc,
+    tensor::CpuAllocator,
+};
 
 fn main() -> eyre::Result<()> {
     let (mut node, mut events) = DoraNode::init_from_env()?;
@@ -14,7 +20,7 @@ fn main() -> eyre::Result<()> {
             Event::Input { id, metadata, data } => match id.as_str() {
                 "frame" => {
                     // convert the frame to an image
-                    let img = arrow_to_image(data, metadata.clone())?;
+                    let img = Image::<u8, 3, CpuAllocator>::try_from_arrow(data.into())?;
 
                     // compute the sobel edge map
                     let mut out =
@@ -24,8 +30,7 @@ fn main() -> eyre::Result<()> {
                     // TODO: make this more efficient in kornia-image crate
                     let out_u8 = out.map(|x| *x as u8)?;
 
-                    let (meta_parameters, data) = image_to_arrow(out_u8, metadata)?;
-                    node.send_output(output.clone(), meta_parameters, data.into_arrow())?;
+                    node.send_output(output.clone(), metadata.parameters, out_u8.into_arrow())?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },

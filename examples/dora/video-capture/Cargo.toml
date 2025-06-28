@@ -5,6 +5,5 @@ edition = "2021"
 
 [dependencies]
 dora-node-api = { version = "0.3.10", features = ["tracing"] }
-dora-image-utils = { path = "../image-utils" }
 eyre = "0.6"
-kornia = { path = "../../../crates/kornia", features = ["gstreamer"] }
+kornia = { path = "../../../crates/kornia", features = ["gstreamer", "arrow"] }

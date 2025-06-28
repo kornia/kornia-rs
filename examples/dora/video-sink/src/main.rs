@@ -1,6 +1,8 @@
-use dora_image_utils::arrow_to_image;
 use dora_node_api::{DoraNode, Event};
-use kornia::{image::Image, tensor::CpuAllocator};
+use kornia::{
+    image::{arrow::TryFromArrow, Image},
+    tensor::CpuAllocator,
+};
 
 const RERUN_HOST: &str = "127.0.0.1";
 const RERUN_PORT: u16 = 9876;
@@ -28,13 +30,10 @@ fn main() -> eyre::Result<()> {
                     timestamp_secs * 1_000_000_000 + timestamp_subsec_nanos
                 };
 
+                let image = Image::<u8, 3, CpuAllocator>::try_from_arrow(data.into())?;
+
                 // log the image to rerun
-                log_image(
-                    &rr,
-                    id.as_str(),
-                    timestamp_nanos,
-                    &arrow_to_image(data, metadata)?,
-                )?;
+                log_image(&rr, id.as_str(), timestamp_nanos, &image)?;
             }
             Event::Stop => {
                 println!("Received manual stop");
