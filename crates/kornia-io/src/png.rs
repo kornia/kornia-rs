@@ -1,14 +1,13 @@
-use std::{fs, fs::File, path::Path};
-
+use crate::{
+    conv_utils::{convert_buf_u16_u8, convert_buf_u8_u16, convert_buf_u8_u16_into_slice},
+    error::IoError,
+};
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     Image, ImageSize,
 };
 use png::{BitDepth, ColorType, Decoder, Encoder};
-
-use crate::{
-    convert_buf_u16_u8, convert_buf_u8_u16, convert_buf_u8_u16_into_slice, error::IoError,
-};
+use std::{fs, fs::File, path::Path};
 
 /// Read a PNG image with a single channel (mono8).
 ///
@@ -436,7 +435,7 @@ mod tests {
         write_image_png_rgb8(&file_path, &image_data)?;
 
         let image_data_back = read_image_png_rgb8(&file_path)?;
-        assert!(file_path.exists(), "File does not exist: {:?}", file_path);
+        assert!(file_path.exists(), "File does not exist: {file_path:?}");
 
         assert_eq!(image_data_back.cols(), 258);
         assert_eq!(image_data_back.rows(), 195);
@@ -455,7 +454,7 @@ mod tests {
         write_image_png_rgb16(&file_path, &image_data)?;
 
         let image_data_back = read_image_png_rgb16(&file_path)?;
-        assert!(file_path.exists(), "File does not exist: {:?}", file_path);
+        assert!(file_path.exists(), "File does not exist: {file_path:?}");
 
         assert_eq!(image_data_back.cols(), 32);
         assert_eq!(image_data_back.rows(), 32);

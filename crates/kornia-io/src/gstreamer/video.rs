@@ -187,16 +187,14 @@ impl VideoWriter {
             ImageFormat::Mono8 => {
                 if C != 1 {
                     return Err(StreamCaptureError::InvalidImageFormat(format!(
-                        "Invalid number of channels: expected 1, got {}",
-                        C
+                        "Invalid number of channels: expected 1, got {C}"
                     )));
                 }
             }
             ImageFormat::Rgb8 => {
                 if C != 3 {
                     return Err(StreamCaptureError::InvalidImageFormat(format!(
-                        "Invalid number of channels: expected 3, got {}",
-                        C
+                        "Invalid number of channels: expected 3, got {C}"
                     )));
                 }
             }
@@ -299,7 +297,9 @@ impl VideoReader {
     /// An Option containing the last captured Image or None if no image has been captured yet.
     #[inline]
     pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3, GstAllocator>>, VideoReaderError> {
-        self.0.grab().map_err(VideoReaderError::StreamCaptureError)
+        self.0
+            .grab_rgb8()
+            .map_err(VideoReaderError::StreamCaptureError)
     }
 
     /// Gets the current state of the video pipeline
@@ -442,7 +442,7 @@ mod tests {
         writer.write(&img)?;
         writer.close()?;
 
-        assert!(file_path.exists(), "File does not exist: {:?}", file_path);
+        assert!(file_path.exists(), "File does not exist: {file_path:?}");
 
         Ok(())
     }
@@ -468,7 +468,7 @@ mod tests {
         writer.write(&img)?;
         writer.close()?;
 
-        assert!(file_path.exists(), "File does not exist: {:?}", file_path);
+        assert!(file_path.exists(), "File does not exist: {file_path:?}");
 
         Ok(())
     }

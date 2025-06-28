@@ -1,4 +1,4 @@
-use crate::IoError;
+use crate::error::IoError;
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     Image, ImageError, ImageSize,
@@ -32,7 +32,7 @@ impl Default for JpegTurboDecoder {
     fn default() -> Self {
         match Self::new() {
             Ok(decoder) => decoder,
-            Err(e) => panic!("Failed to create ImageDecoder: {}", e),
+            Err(e) => panic!("Failed to create ImageDecoder: {e}"),
         }
     }
 }
@@ -41,7 +41,7 @@ impl Default for JpegTurboEncoder {
     fn default() -> Self {
         match Self::new() {
             Ok(encoder) => encoder,
-            Err(e) => panic!("Failed to create ImageEncoder: {}", e),
+            Err(e) => panic!("Failed to create ImageEncoder: {e}"),
         }
     }
 }
@@ -290,7 +290,7 @@ pub fn write_image_jpegturbo_rgb8<A: ImageAllocator>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::IoError;
+    use crate::error::IoError;
 
     #[test]
     fn image_decoder() -> Result<(), JpegTurboError> {
@@ -337,7 +337,7 @@ mod tests {
         write_image_jpegturbo_rgb8(&file_path, &image_data, 100)?;
 
         let image_data_back = read_image_jpegturbo_rgb8(&file_path)?;
-        assert!(file_path.exists(), "File does not exist: {:?}", file_path);
+        assert!(file_path.exists(), "File does not exist: {file_path:?}");
 
         assert_eq!(image_data_back.cols(), 258);
         assert_eq!(image_data_back.rows(), 195);

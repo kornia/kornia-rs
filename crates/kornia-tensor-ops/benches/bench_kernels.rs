@@ -12,7 +12,7 @@ fn bench_product1_float_kernel(c: &mut Criterion) {
         let a: Vec<f32> = (0..size).map(|_| rng.random::<f32>()).collect();
         let b: Vec<f32> = (0..size).map(|_| rng.random::<f32>()).collect();
 
-        group.bench_function(format!("f32_size_{}", size), |bencher| {
+        group.bench_function(format!("f32_size_{size}"), |bencher| {
             bencher.iter(|| std::hint::black_box(dot_product1_kernel(&a, &b).unwrap()))
         });
     }
@@ -21,7 +21,7 @@ fn bench_product1_float_kernel(c: &mut Criterion) {
         let a: Vec<i8> = (0..size).map(|_| rng.random::<i8>()).collect();
         let b: Vec<i8> = (0..size).map(|_| rng.random::<i8>()).collect();
 
-        group.bench_function(format!("i8_size_{}", size), |bencher| {
+        group.bench_function(format!("i8_size_{size}"), |bencher| {
             bencher.iter(|| std::hint::black_box(dot_product1_kernel(&a, &b).unwrap()))
         });
     }
@@ -39,7 +39,7 @@ fn bench_cosine_similarity_kernel(c: &mut Criterion) {
         let a: Vec<f32> = (0..size).map(|_| rng.random::<f32>()).collect();
         let b: Vec<f32> = (0..size).map(|_| rng.random::<f32>()).collect();
 
-        group.bench_function(format!("f32_size_{}", size), |bencher| {
+        group.bench_function(format!("f32_size_{size}"), |bencher| {
             bencher.iter(|| std::hint::black_box(cosine_similarity_float_kernel(&a, &b).unwrap()))
         });
     }

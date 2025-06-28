@@ -740,9 +740,9 @@ mod tests {
     /// Multiply a 6×6 matrix stored as [[f32;6];6] with a length-6 vector.
     fn mat6_mul_vec6(mat: &[[f32; 6]; 6], v: &[f32; 6]) -> [f32; 6] {
         let mut out = [0.0_f32; 6];
-        for i in 0..6 {
-            for j in 0..6 {
-                out[i] += mat[i][j] * v[j];
+        for (i, row) in mat.iter().enumerate() {
+            for (j, &vj) in v.iter().enumerate().take(6) {
+                out[i] += row[j] * vj;
             }
         }
         out
@@ -756,9 +756,9 @@ mod tests {
     /// Transpose of a 6×6 matrix.
     fn mat6_transpose(mat: &[[f32; 6]; 6]) -> [[f32; 6]; 6] {
         let mut m = [[0.0_f32; 6]; 6];
-        for i in 0..6 {
-            for j in 0..6 {
-                m[i][j] = mat[j][i];
+        for (i, row) in m.iter_mut().enumerate() {
+            for (j, item) in row.iter_mut().enumerate() {
+                *item = mat[j][i];
             }
         }
         m

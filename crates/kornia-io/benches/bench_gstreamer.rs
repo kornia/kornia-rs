@@ -19,7 +19,7 @@ fn download_video() -> (PathBuf, TempDir) {
     )
     .expect("Failed to write video to temp file");
 
-    println!("Video downloaded to: {:?}", temp_file_path);
+    println!("Video downloaded to: {temp_file_path:?}");
     (temp_file_path, temp_dir)
 }
 
@@ -36,7 +36,7 @@ fn benchmark_get_buffer(c: &mut Criterion) {
 
     c.bench_function("grab", |b| {
         b.iter(|| {
-            black_box(stream_capture.grab()).expect("Failed to grab the image");
+            black_box(stream_capture.grab_rgb8()).expect("Failed to grab the image");
         });
     });
 }

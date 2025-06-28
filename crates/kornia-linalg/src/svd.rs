@@ -203,7 +203,7 @@ impl Index<usize> for IndexedQuat {
             1 => &self.0.y,
             2 => &self.0.z,
             3 => &self.0.w,
-            _ => panic!("Index out of bounds for Quaternion: {}", index),
+            _ => panic!("Index out of bounds for Quaternion: {index}"),
         }
     }
 }
@@ -215,7 +215,7 @@ impl IndexMut<usize> for IndexedQuat {
             1 => &mut self.0.y,
             2 => &mut self.0.z,
             3 => &mut self.0.w,
-            _ => panic!("Index out of bounds for Quaternion: {}", index),
+            _ => panic!("Index out of bounds for Quaternion: {index}"),
         }
     }
 }

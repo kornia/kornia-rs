@@ -245,7 +245,7 @@ fn render_play_controls(app: &mut MyApp, ctx: &eframe::egui::Context) {
 
                 if let Some(fps) = video_reader.get_fps() {
                     ui.label("FPS:");
-                    ui.label(format!("{:.2}", fps));
+                    ui.label(format!("{fps:.2}"));
                     ui.end_row();
                 }
             })

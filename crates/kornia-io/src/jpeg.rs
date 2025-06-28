@@ -166,6 +166,7 @@ fn decode_jpeg_impl<const C: usize, A: ImageAllocator>(
     }
 
     decoder.decode_into(dst.as_slice_mut())?;
+
     Ok(())
 }
 
@@ -192,7 +193,7 @@ mod tests {
         write_image_jpeg_rgb8(&file_path, &image_data, 100)?;
 
         let image_data_back = read_image_jpeg_rgb8(&file_path)?;
-        assert!(file_path.exists(), "File does not exist: {:?}", file_path);
+        assert!(file_path.exists(), "File does not exist: {file_path:?}");
 
         assert_eq!(image_data_back.cols(), 258);
         assert_eq!(image_data_back.rows(), 195);

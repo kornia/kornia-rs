@@ -71,7 +71,7 @@ impl<'cl> CuSrcTask<'cl> for VideoCapture {
     fn process(&mut self, _clock: &RobotClock, output: Self::Output) -> Result<(), CuError> {
         let Some(img) = self
             .0
-            .grab()
+            .grab_rgb8()
             .map_err(|e| CuError::new_with_cause("Failed to grab image", e))?
         else {
             return Ok(());

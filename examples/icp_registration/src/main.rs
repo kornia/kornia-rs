@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
 
-    println!("ICP registration result: {:?}", result);
+    println!("ICP registration result: {result:?}");
 
     // log the final transformation point cloud
     let mut transformed_source = vec![[0.0; 3]; source_cloud.points().len()];

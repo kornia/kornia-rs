@@ -64,6 +64,12 @@ Goodbyte!
 
 Dependeing on the features you want to use, you might need to install the following dependencies in your system:
 
+#### v4l (Video4Linux camera support)
+
+```bash
+sudo apt-get install clang
+```
+
 #### turbojpeg
 
 ```bash

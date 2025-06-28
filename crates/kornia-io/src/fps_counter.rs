@@ -1,7 +1,5 @@
+use std::collections::VecDeque;
 use std::time::Instant;
-
-/// The smoothing factor for the FPS calculation.
-const SMOOTHING: f32 = 0.95;
 
 /// A simple frame per second (FPS) counter.
 ///
@@ -17,42 +15,47 @@ const SMOOTHING: f32 = 0.95;
 /// }
 /// ```
 pub struct FpsCounter {
-    last_time: Instant,
-    frame_count: u32,
-    fps: f32,
+    frame_times: VecDeque<Instant>,
+    window_size: usize,
 }
 
 impl FpsCounter {
     /// Creates a new `FpsCounter`.
     pub fn new() -> Self {
-        Self {
-            last_time: Instant::now(),
-            frame_count: 0,
-            fps: 0.0,
-        }
+        Self::with_window_size(30) // 30 frame window
     }
 
-    /// Returns the current FPS.
-    #[inline]
-    pub fn fps(&self) -> f32 {
-        self.fps
+    /// Creates a new `FpsCounter` with a specified window size.
+    pub fn with_window_size(window_size: usize) -> Self {
+        Self {
+            frame_times: VecDeque::with_capacity(window_size + 1),
+            window_size,
+        }
     }
 
     /// Updates the frame count and calculates the FPS.
     pub fn update(&mut self) {
-        self.frame_count += 1;
-
         let now = Instant::now();
-        let duration = now.duration_since(self.last_time);
+        self.frame_times.push_back(now);
 
-        // update fps
-        let instant_fps = 1.0 / duration.as_secs_f32();
-        self.fps = if self.fps == 0.0 {
-            instant_fps
-        } else {
-            self.fps * SMOOTHING + instant_fps * (1.0 - SMOOTHING)
-        };
-        self.last_time = now;
+        if self.frame_times.len() > self.window_size {
+            self.frame_times.pop_front();
+        }
+    }
+
+    /// Returns the current FPS.
+    pub fn fps(&self) -> f32 {
+        if self.frame_times.len() < 2 {
+            return 0.0;
+        }
+
+        let duration = self
+            .frame_times
+            .back()
+            .unwrap()
+            .duration_since(*self.frame_times.front().unwrap());
+
+        (self.frame_times.len() - 1) as f32 / duration.as_secs_f32()
     }
 }
 

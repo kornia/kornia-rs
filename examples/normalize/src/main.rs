@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Or: image.cast_and_scale::<f64>(1.0 / 255.0)?;
 
     let (min, max) = imgproc::normalize::find_min_max(&image_f32)?;
-    println!("min: {:?}, max: {:?}", min, max);
+    println!("min: {min:?}, max: {max:?}");
 
     Ok(())
 }

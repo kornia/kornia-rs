@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // log the image camera poses
     for (i, image) in colmap_images.iter().enumerate() {
         rec.log(
-            format!("camera_{}", i),
+            format!("camera_{i}"),
             &rerun::Transform3D::from_translation_rotation(
                 image.translation.map(|x| x as f32),
                 rerun::Quaternion::from_wxyz(image.rotation.map(|x| x as f32)),
@@ -56,17 +56,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_relation(rerun::TransformRelation::ChildFromParent),
         )?;
 
-        rec.log(format!("camera_{}", i), &rerun::ViewCoordinates::RDF())?;
+        rec.log(format!("camera_{i}"), &rerun::ViewCoordinates::RDF())?;
 
         let camera = cameras
             .iter()
             .find(|c| c.camera_id == image.camera_id)
             .unwrap_or_else(|| {
-                panic!("Camera with id {} not found", image.camera_id);
+                panic!("Camera with id {0} not found", image.camera_id);
             });
 
         rec.log(
-            format!("camera_{}/image", i),
+            format!("camera_{i}/image"),
             &rerun::Pinhole::from_focal_length_and_resolution(
                 [camera.params[0] as f32, camera.params[1] as f32],
                 [camera.width as f32, camera.height as f32],

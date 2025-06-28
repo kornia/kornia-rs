@@ -10,7 +10,7 @@ pub mod error;
 /// A module for capturing video streams from rtsp sources.
 pub mod rtsp;
 
-/// A module for capturing video streams from v4l2 cameras.
+/// A module for capturing video streams from v4l cameras.
 pub mod v4l2;
 
 /// A module for capturing video streams from video files.
@@ -26,10 +26,9 @@ pub use crate::stream::video::VideoWriter;
 use kornia_image::allocator::ImageAllocator;
 use kornia_tensor::{allocator::TensorAllocatorError, TensorAllocator};
 
-#[allow(dead_code)]
 #[derive(Clone)]
 /// A [TensorAllocator] used for those images, whose memory is managed by gstreamer.
-pub struct GstAllocator(gstreamer::Buffer);
+pub struct GstAllocator(pub gstreamer::Buffer);
 
 impl Default for GstAllocator {
     fn default() -> Self {
@@ -38,10 +37,7 @@ impl Default for GstAllocator {
 }
 
 impl TensorAllocator for GstAllocator {
-    fn alloc(
-        &self,
-        layout: std::alloc::Layout,
-    ) -> Result<*mut u8, kornia_tensor::allocator::TensorAllocatorError> {
+    fn alloc(&self, layout: std::alloc::Layout) -> Result<*mut u8, TensorAllocatorError> {
         let ptr = unsafe { std::alloc::alloc(layout) };
 
         if ptr.is_null() {

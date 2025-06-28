@@ -82,7 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     while !cancel_token.load(Ordering::SeqCst) {
         // start grabbing frames from the camera
-        let Some(img) = capture.grab()? else {
+        let Some(img) = capture.grab_rgb8()? else {
             continue;
         };
 

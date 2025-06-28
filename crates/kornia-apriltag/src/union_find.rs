@@ -37,6 +37,12 @@ impl UnionFind {
         root
     }
 
+    /// Returns the size of the set containing `id`.
+    pub fn get_set_size(&mut self, id: usize) -> usize {
+        let repid = self.get_representative(id);
+        self.size[repid]
+    }
+
     /// Unites the sets containing `aid` and `bid`, returning the representative of the resulting set.
     pub fn connect(&mut self, aid: usize, bid: usize) -> usize {
         let aroot = self.get_representative(aid);
@@ -52,23 +58,25 @@ impl UnionFind {
         if asize > bsize {
             self.parent[broot] = aroot;
             self.size[aroot] += bsize;
-            return aroot;
+            aroot
         } else {
             self.parent[aroot] = broot;
             self.size[broot] += asize;
-            return broot;
+            broot
         }
     }
 
     /// Resets the UnionFind structure to its initial state.
     pub fn reset(&mut self) {
-        (0..self.parent.len()).into_iter().for_each(|i| {
+        (0..self.parent.len()).for_each(|i| {
             self.parent[i] = usize::MAX;
             self.size[i] = 1;
         });
     }
 
     /// Returns the number of elements in the UnionFind structure.
+    // We do not provide `is_empty` because a UnionFind structure is always initialized with a fixed, nonzero length.
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.parent.len()
     }

@@ -93,7 +93,7 @@ impl Paligemma {
         let (device, dtype) = match Device::cuda_if_available(0) {
             Ok(device) => (device, DType::BF16),
             Err(e) => {
-                log::warn!("CUDA not available, defaulting to CPU: {}", e);
+                log::warn!("CUDA not available, defaulting to CPU: {e}");
                 (Device::Cpu, DType::F32)
             }
         };

@@ -71,10 +71,7 @@ impl RTSPCameraConfig {
         port: &u16,
         stream: &str,
     ) -> Self {
-        self.url = format!(
-            "rtsp://{}:{}@{}:{}/{}",
-            username, password, ip, port, stream
-        );
+        self.url = format!("rtsp://{username}:{password}@{ip}:{port}/{stream}");
         self
     }
 
@@ -102,7 +99,6 @@ impl Default for RTSPCameraConfig {
 /// A GStreamer pipeline description
 pub fn rtsp_camera_pipeline_description(url: &str, latency: u32) -> String {
     format!(
-        "rtspsrc location={} latency={} ! rtph264depay ! avdec_h264 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
-        url, latency,
+        "rtspsrc location={url} latency={latency} ! rtph264depay ! avdec_h264 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink"
     )
 }
