@@ -18,7 +18,7 @@ use tokenizers::{Encoding, Tokenizer};
 
 use utils::{get_prompt_split_image, load_image_url, preprocess_image};
 
-use crate::smolvlm::text_model::SmolModel;
+use crate::smolvlm::model::SmolModel;
 
 /// Configuration for the SmolVLM model
 pub struct SmolVlmConfig {
@@ -92,7 +92,7 @@ pub enum SmolVlmError {
 }
 
 pub struct SmolVlm {
-    model: text_model::SmolModel,
+    model: SmolModel,
     tokenizer: Tokenizer,
     image_token_enc: Encoding,
     config: SmolVlmConfig,
@@ -255,7 +255,7 @@ impl SmolVlm {
         let repo = api.model("HuggingFaceTB/SmolVLM-Instruct".to_string());
         let weights = repo.get("model.safetensors").unwrap();
         let weights = candle_core::safetensors::load(weights, &device)?;
-        let model = text_model::SmolModel::load(&weights)?;
+        let model = SmolModel::load(&weights)?;
 
         Ok((model, tokenizer))
     }
