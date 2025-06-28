@@ -87,19 +87,22 @@ pub struct GradientInfo {
     pub gx: GradientDirection,
     /// The gradient direction in the y-axis.
     pub gy: GradientDirection,
+    /// TODO
+    pub slope: f32,
 }
 
 /// Represents the direction of a gradient between two pixels.
 ///
 /// Used to indicate whether the gradient is towards a white pixel, towards a black pixel, or if there is no gradient.
 #[derive(Debug, Clone, Copy)]
+#[repr(i16)]
 pub enum GradientDirection {
     /// Gradient is towards a white pixel (value 255).
-    TowardsWhite,
+    TowardsWhite = 255,
     /// Gradient is towards a black pixel (value -255).
-    TowardsBlack,
+    TowardsBlack = -255,
     /// No gradient (value 0).
-    None,
+    None = 0,
 }
 
 impl Mul<isize> for GradientDirection {
@@ -206,6 +209,7 @@ pub fn find_gradient_clusters<A: ImageAllocator>(
                             },
                             gx: delta * dx,
                             gy: delta * dy,
+                            slope: 0.0,
                         };
 
                         entry.push(gradient_info);
