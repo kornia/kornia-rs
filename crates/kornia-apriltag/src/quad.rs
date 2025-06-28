@@ -5,8 +5,10 @@ use std::{collections::HashMap, f32};
 /// TODO
 #[derive(Debug, Default, Clone)]
 pub struct Quad {
-    point: [[f32; 2]; 4],
-    // reversed_bool: bool,
+    /// TODO
+    pub point: [[f32; 2]; 4],
+    /// TODO
+    pub reversed_border: bool,
     // h: Vec<f32>,
     // hinv: Vec<f32>,
 }
@@ -25,7 +27,7 @@ pub fn fit_quads<A: ImageAllocator>(
 
     let mut quads = Vec::new();
 
-    clusters.iter_mut().for_each(|(_, mut cluster)| {
+    clusters.iter_mut().for_each(|(_, cluster)| {
         if cluster.len() < min_cluster_pixels {
             return;
         }
@@ -36,7 +38,7 @@ pub fn fit_quads<A: ImageAllocator>(
 
         if let Some(quad) = fit_quad(
             src,
-            &mut cluster,
+            cluster,
             tag_family.width_at_border,
             normal_border,
             reversed_border,
@@ -86,7 +88,7 @@ pub fn fit_quad<A: ImageAllocator>(
 
     let mut dot = 0.0;
 
-    let quadrants = [[-1 * (2 << 15), 0], [2 * (2 << 15), 2 << 15]];
+    let quadrants = [[-(2 << 15), 0], [2 * (2 << 15), 2 << 15]];
 
     cluster
         .iter_mut()
@@ -107,19 +109,21 @@ pub fn fit_quad<A: ImageAllocator>(
             }
 
             if dx < 0.0 {
-                let tmp = dx;
-                dx = dy;
-                dy = tmp;
+                std::mem::swap(&mut dx, &mut dy);
             }
 
             *slope = quadrant as f32 + dy / dx;
         });
 
-    let quad_reversed_border = dot < 0.0;
-    if !reversed_border && reversed_border {
+    let mut quad = Quad {
+        reversed_border: dot < 0.0,
+        ..Default::default()
+    };
+
+    if !reversed_border && quad.reversed_border {
         return None;
     }
-    if !normal_border && !quad_reversed_border {
+    if !normal_border && !quad.reversed_border {
         return None;
     }
 
@@ -149,7 +153,6 @@ pub fn fit_quad<A: ImageAllocator>(
 
         if mse > MAX_LINE_FIT_MSE {
             should_return_none = true;
-            return;
         }
     });
 
@@ -158,8 +161,6 @@ pub fn fit_quad<A: ImageAllocator>(
     }
 
     should_return_none = false;
-
-    let mut quad = Quad::default();
 
     (0..4).for_each(|i| {
         if should_return_none {
@@ -246,10 +247,8 @@ pub fn fit_quad<A: ImageAllocator>(
         let cos_dtheta =
             (dx1 * dx2 + dy1 * dy2) / ((dx1 * dx1 + dy1 * dy1) * (dx2 * dx2 + dy2 * dy2)).sqrt();
 
-        if cos_dtheta > COS_CRITICAL_RAD || cos_dtheta < -COS_CRITICAL_RAD || dx1 * dy2 < dy1 * dx2
-        {
+        if !(-COS_CRITICAL_RAD..=COS_CRITICAL_RAD).contains(&cos_dtheta) || dx1 * dy2 < dy1 * dx2 {
             should_return_none = true;
-            return;
         }
     });
 
@@ -263,7 +262,7 @@ pub fn fit_quad<A: ImageAllocator>(
 /// TODO
 pub fn sort_gradient_info(gradient_infos: &mut [GradientInfo]) {
     match gradient_infos.len() {
-        0 | 1 => return,
+        0 | 1 => (),
         2 => sort2(gradient_infos),
         3 => sort3(gradient_infos),
         4 => sort4(gradient_infos),
@@ -317,7 +316,7 @@ fn merge_sort_rec(gradient_infos: &mut [GradientInfo], temp: &mut [GradientInfo]
     let len = gradient_infos.len();
 
     match len {
-        0 | 1 => return,
+        0 | 1 => (),
         2 => sort2(gradient_infos),
         3 => sort3(gradient_infos),
         4 => sort4(gradient_infos),
