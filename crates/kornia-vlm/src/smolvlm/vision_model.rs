@@ -53,8 +53,6 @@ impl Attention {
             let att = (q.matmul(&k.t()?)? / (HEAD_DIM as f64).sqrt())?;
             let att = att.broadcast_add(attention_mask)?;
 
-            // println!("{:?}", att.shape());
-
             let att = candle_nn::ops::softmax_last_dim(&att)?;
             att.matmul(&v)?.contiguous()?.to_dtype(in_dtype)?
         };
@@ -233,10 +231,6 @@ impl SmolVision {
             .contiguous()?
             .to_dtype(DType::U32)?;
         // patch_attention_masks: B x PatchRows x PatchCols x 196
-
-        // println!("{:?}", truncated.shape());
-        // println!("{:?}", patch_attention_masks);
-        // println!("{:?}", patch_attention_masks.to_vec3::<u8>());
 
         let mut hidden_states = {
             let patch_embeddings = self

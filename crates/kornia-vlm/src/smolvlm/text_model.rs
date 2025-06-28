@@ -293,7 +293,6 @@ impl SmolModel {
         // TODO: is there a better way to do this? (scatter assignment? cuda kernel?)
         for (i, mask) in image_token_mask.to_vec1::<u8>()?.into_iter().enumerate() {
             self.merged_embeds.push(if mask != 0 {
-                // println!("{:?}", c);
                 c += 1;
                 image_hidden_states.i(c - 1)?
             } else {
