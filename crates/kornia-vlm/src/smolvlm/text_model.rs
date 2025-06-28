@@ -233,16 +233,17 @@ impl Connector {
 }
 
 pub struct SmolModel {
-    vision: SmolVision,
-    connector: Connector,
     embed: Embedding,
+
+    vision: SmolVision,
+
+    connector: Connector,
+    image_hidden_states: Option<Tensor>, // TODO: to be used for caching previous image hidden states
+    merged_embeds: Vec<Tensor>,          // cache results
+
     blocks: Vec<Block>,
     norm: RmsNorm,
     lm_head: Linear,
-
-    // TODO: to be used for caching previous image hidden states
-    image_hidden_states: Option<Tensor>,
-    merged_embeds: Vec<Tensor>,
 }
 
 impl SmolModel {
