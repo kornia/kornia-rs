@@ -9,35 +9,16 @@ use std::io;
 use std::io::{Error, Write};
 
 use candle_core::{DType, Device, IndexOp, Shape, Tensor};
-use candle_nn::ops;
 use candle_transformers::generation::LogitsProcessor;
 use hf_hub::api::sync::Api;
-use rand::prelude::IndexedRandom;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
-use std::cmp::Ordering;
-use terminal_size::{terminal_size, Width};
-use tokenizers::{Encoding, Tokenizer};
+use tokenizers::Tokenizer;
 
 use preprocessor::{get_prompt_split_image, load_image_url, preprocess_image};
 
 use crate::smolvlm::model::SmolModel;
 use crate::smolvlm::utils::{SmolVlmConfig, SmolVlmError};
-
-fn count_lines(text: &str) -> usize {
-    if let Some((Width(w), _)) = terminal_size() {
-        (text.len() + w as usize + 1) / w as usize
-    } else {
-        1
-    }
-}
-
-fn clear_lines(n: usize) {
-    for _ in 0..n {
-        print!("\x1B[1A\x1B[2K");
-    }
-    io::stdout().flush().unwrap();
-}
 
 fn read_input(cli_prompt: &str) -> String {
     let mut input = String::new();
@@ -55,7 +36,6 @@ pub struct SmolVlm {
     tokenizer: Tokenizer,
     image_token_tensor: Tensor,
     config: SmolVlmConfig,
-    rng: StdRng,
     logits_processor: LogitsProcessor,
     device: Device,
     token_history: String,
@@ -87,8 +67,7 @@ impl SmolVlm {
 
         let (model, tokenizer) = Self::load_model(dtype, &device)?;
         let image_token = tokenizer.encode("<image>", false)?;
-        let image_token_tensor = Tensor::from_slice(image_token.get_ids(), &[1], &self.device)?;
-        let rng = StdRng::seed_from_u64(config.seed);
+        let image_token_tensor = Tensor::from_slice(image_token.get_ids(), &[1], &device)?;
 
         Ok(Self {
             model,
@@ -101,7 +80,6 @@ impl SmolVlm {
                 Some(config.top_p),
             ),
             device,
-            rng,
             token_history: String::from("<|im_start|>"),
             image_history: Vec::new(),
         })
@@ -124,15 +102,18 @@ impl SmolVlm {
         // image: &Image<u8, 3, CpuAllocator>,
         // prompt: &str,
         sample_len: usize, // per prompt
-                           // stdout_debug: bool,
+        stdout_debug: bool,
     ) -> Result<String, SmolVlmError> {
+        if stdout_debug {
+            std::io::stdout().flush()?;
+        }
+
         // let image_token = self.image_token_enc.get_ids(); // STRUCT-WIDE
         // let mut token_history = String::from("<|im_start|>"); // STRUCT-WIDE
         // let mut image: Vec<(Tensor, Tensor)> = Vec::new(); // STRUCT-WIDE
         let mut response = String::new(); // collection of tokens
         let mut token_output = String::new(); // single token
 
-        let mut lines_printed = 0; // OUTSIDE
         for i in 0..sample_len {
             // OUTSIDE
 
@@ -141,7 +122,7 @@ impl SmolVlm {
                 let img_url = read_input("img> ");
                 let raw_img = load_image_url(&img_url)
                     .and_then(|v| {
-                        if image.len() > 1 {
+                        if self.image_history.len() > 1 {
                             println!("One image max. Cannot add another image. (Restart)");
                             Err(Box::new(Error::new(io::ErrorKind::Other, "One image max")))
                         } else {
@@ -172,7 +153,7 @@ impl SmolVlm {
                     txt_prompt += "\nUser:<image>";
                     txt_prompt = txt_prompt.replace("<image>", &img_token);
 
-                    image.push((img_patches, mask_patches));
+                    self.image_history.push((img_patches, mask_patches));
                 } else {
                     txt_prompt += "\nUser: ";
                 }
@@ -188,7 +169,7 @@ impl SmolVlm {
                 Tensor::from_slice(tokens, Shape::from_dims(&[tokens.len()]), &self.device)?;
             let vision_data = if self.image_history.len() > 0 {
                 // let image_token_mask = Tensor::from_slice(image_token, &[1], &self.device)?;
-                let image_token_mask = input.broadcast_eq(&image_token_tensor)?;
+                let image_token_mask = input.broadcast_eq(&self.image_token_tensor)?;
                 Some((
                     image_token_mask,
                     &self.image_history[0].0,
@@ -204,12 +185,10 @@ impl SmolVlm {
             token_output = self.tokenizer.decode(&[out_token], false)?;
 
             //  vvv MOVE OUTSIDE
-            if !response.is_empty() {
-                clear_lines(lines_printed);
+            if stdout_debug {
+                print!("{}", token_output);
+                io::stdout().flush().unwrap();
             }
-            println!("{:?}", response);
-            io::stdout().flush().unwrap();
-            lines_printed = count_lines(&response);
             //  ^^^ MOVE OUTSIDE
 
             self.token_history += &token_output;
@@ -245,6 +224,6 @@ mod tests {
 
         // cargo test -p kornia-vlm test_smolvlm_inference --features "cuda" -- --nocapture
         println!("Running inference on SmolVlm model...");
-        model.inference().unwrap();
+        model.inference(10_000, true).unwrap();
     }
 }
