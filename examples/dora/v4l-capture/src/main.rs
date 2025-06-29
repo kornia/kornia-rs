@@ -46,6 +46,15 @@ fn main() -> eyre::Result<()> {
 
     let (mut node, mut events) = DoraNode::init_from_env()?;
 
+    let mut img_rgb8 = Image::<u8, 3, CpuAllocator>::from_size_val(
+        ImageSize {
+            width: image_cols,
+            height: image_rows,
+        },
+        0,
+        CpuAllocator,
+    )?;
+
     while let Some(event) = events.recv() {
         match event {
             Event::Input {
@@ -57,10 +66,6 @@ fn main() -> eyre::Result<()> {
                     let Some(frame) = camera.grab()? else {
                         continue;
                     };
-
-                    // allocate the buffer
-                    let mut img_rgb8 =
-                        Image::<u8, 3, CpuAllocator>::from_size_val(frame.size, 0, CpuAllocator)?;
 
                     // decode the frame to rgb8
                     match pixel_format {
@@ -79,7 +84,12 @@ fn main() -> eyre::Result<()> {
                         }
                     }
 
-                    node.send_output(output.clone(), metadata.parameters, img_rgb8.into_arrow())?;
+                    // TODO: any other way to not clone the image?
+                    node.send_output(
+                        output.clone(),
+                        metadata.parameters,
+                        img_rgb8.clone().into_arrow(),
+                    )?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
