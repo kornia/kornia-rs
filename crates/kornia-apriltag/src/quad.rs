@@ -940,9 +940,9 @@ mod tests {
         let mut sum_x = 0.0;
         let mut sum_y = 0.0;
         let mut sum_w = 0.0;
-        for i in 0..3 {
-            let x = gradient_infos[i].pos.x as f32 * 0.5 + 0.5;
-            let y = gradient_infos[i].pos.y as f32 * 0.5 + 0.5;
+        for GradientInfo { pos, .. } in gradient_infos.iter().take(3) {
+            let x = pos.x as f32 * 0.5 + 0.5;
+            let y = pos.y as f32 * 0.5 + 0.5;
             sum_x += x;
             sum_y += y;
             sum_w += 1.0;
