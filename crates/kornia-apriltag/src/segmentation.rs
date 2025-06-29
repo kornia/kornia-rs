@@ -87,7 +87,7 @@ pub struct GradientInfo {
     pub gx: GradientDirection,
     /// The gradient direction in the y-axis.
     pub gy: GradientDirection,
-    /// TODO
+    /// The slope of the gradient at this pixel.
     pub slope: f32,
 }
 
@@ -95,7 +95,7 @@ pub struct GradientInfo {
 ///
 /// Used to indicate whether the gradient is towards a white pixel, towards a black pixel, or if there is no gradient.
 #[derive(Debug, Clone, Copy)]
-#[repr(i16)]
+#[repr(i32)]
 pub enum GradientDirection {
     /// Gradient is towards a white pixel (value 255).
     TowardsWhite = 255,

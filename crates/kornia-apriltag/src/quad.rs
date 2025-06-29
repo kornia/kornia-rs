@@ -8,16 +8,32 @@ use std::{collections::HashMap, f32, ops::ControlFlow};
 
 const QUADRANTS: [[i32; 2]; 2] = [[-(2 << 15), 0], [2 * (2 << 15), 2 << 15]];
 
-/// TODO
+/// Represents a detected quadrilateral in the image, corresponding to a tag candidate.
 #[derive(Debug, Default, Clone)]
 pub struct Quad {
-    /// TODO
+    /// The four corners of the quadrilateral, in image coordinates.
+    ///
+    /// Order: [Bottom-left, Bottom-right, Top-right, Top-left]
     pub corners: [Point2d<f32>; 4],
-    /// TODO
+    /// Indicates whether the border is reversed (black border inside white border).
     pub reversed_border: bool,
 }
 
-/// TODO
+/// Fits quadrilaterals (quads) to clusters of gradient information in the image.
+///
+/// # Arguments
+///
+/// * `src` - The source image.
+/// * `tag_family` - The tag family to use for quad fitting.
+/// * `clusters` - A mutable reference to a map of clusters, each containing a vector of `GradientInfo`.
+/// * `min_cluster_pixels` - Minimum number of pixels required in a cluster to be considered.
+/// * `cos_critical_rad` - Cosine of the critical angle in radians.
+/// * `max_line_fit_mse` - Maximum mean squared error allowed for line fitting.
+/// * `max_nmaxima` - Maximum number of maxima to consider.
+///
+/// # Returns
+///
+/// A vector of detected `Quad` structures.
 // TODO: Support multiple tag familes
 pub fn fit_quads<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
@@ -46,7 +62,7 @@ pub fn fit_quads<A: ImageAllocator>(
             return;
         }
 
-        if let Some(quad) = fit_quad(
+        if let Some(quad) = fit_single_quad(
             src,
             cluster,
             tag_family.width_at_border,
@@ -63,8 +79,23 @@ pub fn fit_quads<A: ImageAllocator>(
     quads
 }
 
-/// TODO
-pub fn fit_quad<A: ImageAllocator>(
+/// Fits a single quadrilateral (quad) to a cluster of gradient information in the image.
+///
+/// # Arguments
+///
+/// * `src` - The source image.
+/// * `cluster` - A mutable slice of `GradientInfo` representing the cluster.
+/// * `min_tag_width` - Minimum width of the tag to be considered.
+/// * `normal_border` - Indicates if the normal border is expected.
+/// * `reversed_border` - Indicates if the reversed border is expected.
+/// * `cos_critical_rad` - Cosine of the critical angle in radians.
+/// * `max_line_fit_mse` - Maximum mean squared error allowed for line fitting.
+/// * `max_nmaxima` - Maximum number of maxima to consider.
+///
+/// # Returns
+///
+/// An `Option<Quad>` containing the detected quadrilateral if successful, or `None` otherwise.
+pub fn fit_single_quad<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     cluster: &mut [GradientInfo],
     min_tag_width: usize,
@@ -275,7 +306,7 @@ pub fn fit_quad<A: ImageAllocator>(
     Some(quad)
 }
 
-/// TODO
+/// Stores prefix sums for weighted line fitting over a set of points.
 #[derive(Default, Debug, Clone)]
 pub struct LineFit {
     /// Weighted sum of x coordinates ($\sum_i w_i x_i$)
@@ -292,7 +323,16 @@ pub struct LineFit {
     pub w: f32,
 }
 
-/// TODO
+/// Computes prefix sums for weighted line fitting over a set of gradient information points.
+///
+/// # Arguments
+///
+/// * `src` - The source image.
+/// * `gradient_infos` - A slice of `GradientInfo` representing the cluster.
+///
+/// # Returns
+///
+/// A vector of `LineFit` structures containing prefix sums for each point.
 pub fn compute_line_fit_prefix_sums<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     gradient_infos: &[GradientInfo],
@@ -337,7 +377,24 @@ pub fn compute_line_fit_prefix_sums<A: ImageAllocator>(
     lfps
 }
 
-/// TODO
+/// Segments the gradient information into four maxima corresponding to the corners of a quadrilateral.
+///
+/// This function analyzes the error profile of line fits over the gradient information and finds
+/// four maxima (peaks) in the error signal, which are interpreted as the corners of a quad. It
+/// returns `true` if a valid segmentation is found and writes the indices of the maxima into `indices`.
+///
+/// # Arguments
+///
+/// * `gradient_infos` - Slice of `GradientInfo` representing the cluster.
+/// * `lfps` - Slice of `LineFit` prefix sums for the cluster.
+/// * `indices` - Mutable reference to an array where the four corner indices will be written.
+/// * `max_line_fit_mse` - Maximum mean squared error allowed for line fitting.
+/// * `max_nmaxima` - Maximum number of maxima to consider.
+/// * `cos_critical_rad` - Cosine of the critical angle in radians.
+///
+/// # Returns
+///
+/// `true` if four valid maxima are found and written to `indices`, `false` otherwise.
 pub fn quad_segment_maxima(
     gradient_infos: &[GradientInfo],
     lfps: &[LineFit],
@@ -534,7 +591,21 @@ pub fn quad_segment_maxima(
     false
 }
 
-/// TODO
+/// Fits a line to a segment of points using prefix sums for weighted least squares.
+///
+/// This function computes the best-fit line parameters for the segment of points between indices `i0` and `i1`
+/// (inclusive, possibly wrapping around the end of the array), using the provided prefix sums (`lfps`).
+/// Optionally outputs the line parameters, error, and mean squared error.
+///
+/// # Arguments
+///
+/// * `lfps` - Slice of `LineFit` prefix sums for the points.
+/// * `i0` - Start index of the segment (inclusive).
+/// * `i1` - End index of the segment (inclusive).
+/// * `lineparm` - Optional mutable reference to an array where the line parameters will be written.
+///                The array is [ex, ey, nx, ny], where (ex, ey) is the centroid and (nx, ny) is the direction.
+/// * `err` - Optional mutable reference to a float where the error will be written.
+/// * `mse` - Optional mutable reference to a float where the mean squared error will be written.
 pub fn fit_line(
     lfps: &[LineFit],
     i0: usize,
