@@ -64,7 +64,7 @@ fn read_input(cli_prompt: &str) -> String {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut model = SmolVlm::new(SmolVlmConfig::default())?;
 
-    // cargo test -p kornia-vlm test_smolvlm_inference --features "cuda" -- --nocapture
+    // cargo run -p smol_vlm --features cuda
     for _ in 0..10 {
         let img_url = read_input("img> ");
         let image = load_image_url(&img_url)
@@ -92,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let prompt = read_input("txt> ");
 
-        model.inference(image, &prompt, 100, true)?;
+        model.inference(image, &prompt, 1_000, true)?;
     }
 
     Ok(())

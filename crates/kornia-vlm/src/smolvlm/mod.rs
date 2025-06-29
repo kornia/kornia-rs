@@ -1,4 +1,3 @@
-mod generator;
 mod model;
 mod preprocessor;
 mod text_model;
@@ -27,7 +26,7 @@ pub struct SmolVlm {
     config: SmolVlmConfig,
     logits_processor: LogitsProcessor,
     device: Device,
-    prompt_history: String,
+    token_history: Vec<u32>,
     image_history: Vec<(Tensor, Tensor)>,
 }
 
@@ -57,6 +56,7 @@ impl SmolVlm {
         let (model, tokenizer) = Self::load_model(dtype, &device)?;
         let image_token = tokenizer.encode("<image>", false)?;
         let image_token_tensor = Tensor::from_slice(image_token.get_ids(), &[1], &device)?;
+        let initial_tokens = tokenizer.encode("<|im_start|>", false)?;
 
         Ok(Self {
             model,
@@ -69,7 +69,7 @@ impl SmolVlm {
                 Some(config.top_p),
             ),
             device,
-            prompt_history: String::from("<|im_start|>"),
+            token_history: initial_tokens.get_ids().to_vec(),
             image_history: Vec::new(),
         })
     }
@@ -115,14 +115,17 @@ impl SmolVlm {
 
         full_prompt += prompt;
         full_prompt += "<end_of_utterance>\nAssistant:";
-        response.clear();
-        self.prompt_history += &full_prompt;
+
+        let full_token = self.tokenizer.encode(full_prompt, false)?;
+        self.token_history
+            .append(&mut full_token.get_ids().to_vec());
 
         for i in 0..sample_len {
-            let encoding = self.tokenizer.encode(self.prompt_history.clone(), false)?;
-            let tokens = encoding.get_ids();
-            let input =
-                Tensor::from_slice(tokens, Shape::from_dims(&[tokens.len()]), &self.device)?;
+            let input = Tensor::from_slice(
+                &self.token_history,
+                Shape::from_dims(&[self.token_history.len()]),
+                &self.device,
+            )?;
             let vision_data = if self.image_history.len() > 0 {
                 let image_token_mask = input.broadcast_eq(&self.image_token_tensor)?;
                 Some((
@@ -137,10 +140,10 @@ impl SmolVlm {
             let (s, _embed_dim) = logits.dims2()?;
             let last_logit = logits.i((s - 1, ..))?;
             let out_token = self.logits_processor.sample(&last_logit)?;
+            self.token_history.push(out_token);
 
             let token_output = self.tokenizer.decode(&[out_token], false)?;
 
-            self.prompt_history += &token_output;
             if token_output != "<end_of_utterance>" {
                 response += &token_output;
 
@@ -161,6 +164,7 @@ impl SmolVlm {
         Ok(response)
     }
 
+    #[inline]
     pub fn image_history_count(&self) -> usize {
         self.image_history.len()
     }
