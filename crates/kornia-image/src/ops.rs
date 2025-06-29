@@ -53,7 +53,9 @@ where
         .iter_mut()
         .zip(src.as_slice().iter())
         .try_for_each(|(out, &inp)| {
-            let x = U::from(inp).ok_or(ImageError::CastError)?;
+            let x = U::from(inp).ok_or(ImageError::CastError(
+                std::any::type_name::<U>().to_string(),
+            ))?;
             *out = x * scale;
             Ok::<(), ImageError>(())
         })?;

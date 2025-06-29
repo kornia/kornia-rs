@@ -59,9 +59,15 @@ where
         ));
     }
 
-    let rw = T::from(RW).ok_or(ImageError::CastError)?;
-    let gw = T::from(GW).ok_or(ImageError::CastError)?;
-    let bw = T::from(BW).ok_or(ImageError::CastError)?;
+    let rw = T::from(RW).ok_or(ImageError::CastError(
+        std::any::type_name::<T>().to_string(),
+    ))?;
+    let gw = T::from(GW).ok_or(ImageError::CastError(
+        std::any::type_name::<T>().to_string(),
+    ))?;
+    let bw = T::from(BW).ok_or(ImageError::CastError(
+        std::any::type_name::<T>().to_string(),
+    ))?;
 
     // parallelize the grayscale conversion by rows
     parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {

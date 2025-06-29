@@ -26,8 +26,8 @@ pub enum ImageError {
     InvalidChannelShape(usize, usize),
 
     /// Error when the cast operation fails.
-    #[error("Failed to cast image data")]
-    CastError,
+    #[error("Failed to cast image data to: {0}")]
+    CastError(String),
 
     /// Error when the channel index is out of bounds.
     #[error("Channel index {0} is out of bounds {1}")]

@@ -2,6 +2,7 @@ use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event};
 use kornia::{
     image::{arrow::IntoArrow, Image, ImageSize},
     imgproc::color::{convert_yuyv_to_rgb_u8, YuvToRgbMode},
+    io::jpeg,
     io::v4l::{PixelFormat, V4LCameraConfig, V4LVideoCapture},
     tensor::CpuAllocator,
 };
@@ -62,7 +63,21 @@ fn main() -> eyre::Result<()> {
                         Image::<u8, 3, CpuAllocator>::from_size_val(frame.size, 0, CpuAllocator)?;
 
                     // decode the frame to rgb8
-                    convert_yuyv_to_rgb_u8(&frame.buffer, &mut img_rgb8, YuvToRgbMode::Bt601Full)?;
+                    match pixel_format {
+                        PixelFormat::YUYV => {
+                            convert_yuyv_to_rgb_u8(
+                                &frame.buffer,
+                                &mut img_rgb8,
+                                YuvToRgbMode::Bt601Full,
+                            )?;
+                        }
+                        PixelFormat::MJPG => {
+                            jpeg::decode_image_jpeg_rgb8(&frame.buffer, &mut img_rgb8)?;
+                        }
+                        _ => {
+                            return Err(eyre::eyre!("Unsupported pixel format: {}", pixel_format));
+                        }
+                    }
 
                     node.send_output(output.clone(), metadata.parameters, img_rgb8.into_arrow())?;
                 }

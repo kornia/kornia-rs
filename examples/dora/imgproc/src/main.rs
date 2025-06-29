@@ -22,12 +22,14 @@ fn main() -> eyre::Result<()> {
                     // convert the frame to an image
                     let img = Image::<u8, 3, CpuAllocator>::try_from_arrow(data.into())?;
 
-                    // compute the sobel edge map
+                    // lazily allocate the output image
                     let mut out =
                         out.get_or_insert(Image::from_size_val(img.size(), 0f32, CpuAllocator)?);
+
+                    // compute the sobel edge map
                     imgproc::filter::sobel(&img.cast()?, &mut out, 3)?;
 
-                    // TODO: make this more efficient in kornia-image crate
+                    // cast back to u8
                     let out_u8 = out.map(|x| *x as u8)?;
 
                     node.send_output(output.clone(), metadata.parameters, out_u8.into_arrow())?;

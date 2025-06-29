@@ -52,25 +52,25 @@ impl<const C: usize> TryFromArrow for Image<u8, C, CpuAllocator> {
         let struct_array = array
             .as_any()
             .downcast_ref::<StructArray>()
-            .ok_or(ImageError::CastError)?;
+            .ok_or(ImageError::CastError("StructArray".to_string()))?;
 
         let width = struct_array
             .column(0)
             .as_any()
             .downcast_ref::<UInt32Array>()
-            .ok_or(ImageError::CastError)?
+            .ok_or(ImageError::CastError("UInt32Array".to_string()))?
             .value(0);
         let height = struct_array
             .column(1)
             .as_any()
             .downcast_ref::<UInt32Array>()
-            .ok_or(ImageError::CastError)?
+            .ok_or(ImageError::CastError("UInt32Array".to_string()))?
             .value(0);
         let channels = struct_array
             .column(2)
             .as_any()
             .downcast_ref::<UInt32Array>()
-            .ok_or(ImageError::CastError)?
+            .ok_or(ImageError::CastError("UInt32Array".to_string()))?
             .value(0);
 
         if channels != C as u32 {
@@ -85,7 +85,7 @@ impl<const C: usize> TryFromArrow for Image<u8, C, CpuAllocator> {
             .column(3)
             .as_any()
             .downcast_ref::<BinaryArray>()
-            .ok_or(ImageError::CastError)?
+            .ok_or(ImageError::CastError("BinaryArray".to_string()))?
             .value(0);
 
         Image::<u8, C, CpuAllocator>::new(
