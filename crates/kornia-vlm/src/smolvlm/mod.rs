@@ -2,7 +2,7 @@ mod generator;
 mod model;
 mod preprocessor;
 mod text_model;
-mod utils;
+pub mod utils;
 mod vision_model;
 
 use std::io;
@@ -15,21 +15,10 @@ use kornia_image::Image;
 use kornia_tensor::CpuAllocator;
 use tokenizers::Tokenizer;
 
-use preprocessor::{get_prompt_split_image, load_image_url, preprocess_image};
+use preprocessor::{get_prompt_split_image, preprocess_image};
 
 use crate::smolvlm::model::SmolModel;
 use crate::smolvlm::utils::{SmolVlmConfig, SmolVlmError};
-
-fn read_input(cli_prompt: &str) -> String {
-    let mut input = String::new();
-    print!("{}", cli_prompt);
-    io::stdout().flush().unwrap();
-    io::stdin()
-        .read_line(&mut input)
-        .expect("Failed to read input");
-
-    input.trim().to_owned()
-}
 
 pub struct SmolVlm {
     model: SmolModel,
@@ -172,6 +161,10 @@ impl SmolVlm {
         Ok(response)
     }
 
+    pub fn image_history_count(&self) -> usize {
+        self.image_history.len()
+    }
+
     // utility function to load the model
     fn load_model(_dtype: DType, device: &Device) -> Result<(SmolModel, Tokenizer), SmolVlmError> {
         let tokenizer = Tokenizer::from_pretrained("HuggingFaceTB/SmolVLM-Instruct", None).unwrap();
@@ -188,7 +181,66 @@ impl SmolVlm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // use candle_core::Device;
+
+    use kornia_io::jpeg::read_image_jpeg_rgb8;
+    use kornia_io::png::{write_image_png_gray8, write_image_png_rgb8};
+    use reqwest;
+    use std::error::Error;
+    use std::fs;
+    use std::path::Path;
+
+    pub fn load_image_url(
+        url: &str,
+    ) -> std::result::Result<Image<u8, 3, CpuAllocator>, Box<dyn Error>> {
+        let dir = Path::new(".vscode");
+
+        let file_path = {
+            let parsed_url = reqwest::Url::parse(url)?;
+            let path = parsed_url.path();
+            dir.join(
+                Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("unknown_file.png") // Use PNG as default
+                    .to_string(),
+            )
+        };
+
+        if !dir.exists() {
+            fs::create_dir(dir).unwrap();
+        }
+
+        // Check if the file exists locally
+        if file_path.exists() {
+            // Use kornia_io to read the JPEG file
+            let img = read_image_jpeg_rgb8(&file_path)?;
+            println!("Loaded image from local cache.");
+            return Ok(img);
+        }
+
+        // If the file does not exist, download it and save it
+        println!("Downloading image from URL...");
+
+        // Fetch the image as bytes
+        let response = reqwest::blocking::get(url)?.bytes()?;
+        fs::write(&file_path, &response)?;
+
+        // Use kornia_io to read the JPEG file
+        let img = read_image_jpeg_rgb8(&file_path)?;
+        println!("Saved image locally as {}", file_path.to_str().unwrap());
+        Ok(img)
+    }
+
+    fn read_input(cli_prompt: &str) -> String {
+        let mut input = String::new();
+        print!("{}", cli_prompt);
+        io::stdout().flush().unwrap();
+        io::stdin()
+            .read_line(&mut input)
+            .expect("Failed to read input");
+
+        input.trim().to_owned()
+    }
 
     #[test]
     fn test_smolvlm_inference() {
@@ -201,7 +253,10 @@ mod tests {
                 .and_then(|v| {
                     if model.image_history.len() > 1 {
                         println!("One image max. Cannot add another image. (Restart)");
-                        Err(Box::new(Error::new(io::ErrorKind::Other, "One image max")))
+                        Err(Box::new(io::Error::new(
+                            io::ErrorKind::Other,
+                            "One image max",
+                        )))
                     } else {
                         Ok(v)
                     }

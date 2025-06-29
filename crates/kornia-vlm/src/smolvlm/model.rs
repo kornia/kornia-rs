@@ -82,12 +82,6 @@ impl SmolModel {
     ) -> Result<Tensor> {
         let total_length = image_token_mask.dims1()?;
 
-        // println!("Image tokens: {:?}", image_token_mask.to_dtype(DType::U32)?.sum_all()?);
-        // println!("Patch sequences: {:?}", patches*81);
-        // println!("Img tkn mask: {:?}", image_token_mask);
-        // println!("Inp embeds: {:?}", inputs_embeds);
-        // println!("Img hidden: {:?}", image_hidden_states);
-
         let image_hidden_states = self.image_hidden_states.as_ref().unwrap().flatten(0, 1)?;
 
         self.merged_embeds.clear();

@@ -1,62 +1,16 @@
 use candle_core::{Device, Shape, Tensor};
 
-use reqwest;
-use std::error::Error;
-use std::fs;
-use std::path::Path;
+use kornia_io::jpeg::read_image_jpeg_rgb8;
+use kornia_io::png::{write_image_png_gray8, write_image_png_rgb8};
 
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::interpolation::InterpolationMode;
 use kornia_imgproc::resize::resize_fast;
-use kornia_io::jpeg::read_image_jpeg_rgb8;
-use kornia_io::png::{write_image_png_gray8, write_image_png_rgb8};
 use kornia_tensor::allocator::CpuAllocator;
 
 // ImageNet mean and std for normalization
 const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 const STD: [f32; 3] = [0.229, 0.224, 0.225];
-
-pub fn load_image_url(
-    url: &str,
-) -> std::result::Result<Image<u8, 3, CpuAllocator>, Box<dyn Error>> {
-    let dir = Path::new(".vscode");
-
-    let file_path = {
-        let parsed_url = reqwest::Url::parse(url)?;
-        let path = parsed_url.path();
-        dir.join(
-            Path::new(path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("unknown_file.png") // Use PNG as default
-                .to_string(),
-        )
-    };
-
-    if !dir.exists() {
-        fs::create_dir(dir).unwrap();
-    }
-
-    // Check if the file exists locally
-    if file_path.exists() {
-        // Use kornia_io to read the JPEG file
-        let img = read_image_jpeg_rgb8(&file_path)?;
-        println!("Loaded image from local cache.");
-        return Ok(img);
-    }
-
-    // If the file does not exist, download it and save it
-    println!("Downloading image from URL...");
-
-    // Fetch the image as bytes
-    let response = reqwest::blocking::get(url)?.bytes()?;
-    fs::write(&file_path, &response)?;
-
-    // Use kornia_io to read the JPEG file
-    let img = read_image_jpeg_rgb8(&file_path)?;
-    println!("Saved image locally as {}", file_path.to_str().unwrap());
-    Ok(img)
-}
 
 pub fn preprocess_image(
     img: Image<u8, 3, CpuAllocator>,
