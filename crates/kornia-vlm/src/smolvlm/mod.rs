@@ -7,7 +7,7 @@ mod vision_model;
 use std::io;
 use std::io::Write;
 
-use candle_core::{DType, Device, IndexOp, Shape, Tensor};
+use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_transformers::generation::LogitsProcessor;
 use hf_hub::api::sync::Api;
 use kornia_image::Image;
@@ -26,8 +26,9 @@ pub struct SmolVlm {
     config: SmolVlmConfig,
     logits_processor: LogitsProcessor,
     device: Device,
-    token_history: Vec<u32>,
     image_history: Vec<(Tensor, Tensor)>,
+    index_pos: usize,   // index of the next token to be processed
+    first_prompt: bool, // whether this is the first prompt
 }
 
 impl SmolVlm {
@@ -56,7 +57,6 @@ impl SmolVlm {
         let (model, tokenizer) = Self::load_model(dtype, &device)?;
         let image_token = tokenizer.encode("<image>", false)?;
         let image_token_tensor = Tensor::from_slice(image_token.get_ids(), &[1], &device)?;
-        let initial_tokens = tokenizer.encode("<|im_start|>", false)?;
 
         Ok(Self {
             model,
@@ -69,8 +69,9 @@ impl SmolVlm {
                 Some(config.top_p),
             ),
             device,
-            token_history: initial_tokens.get_ids().to_vec(),
             image_history: Vec::new(),
+            index_pos: 0,
+            first_prompt: true,
         })
     }
 
@@ -99,7 +100,13 @@ impl SmolVlm {
 
         let mut response = String::new(); // collection of tokens
 
-        let mut full_prompt = String::new();
+        let mut full_prompt = if self.first_prompt {
+            self.first_prompt = false;
+            String::from("<|im_start|>")
+        } else {
+            String::new()
+        };
+
         if let Some(raw_img) = image {
             let (img_patches, mask_patches, rows, cols) =
                 preprocess_image(raw_img, 1920, 384, &self.device);
@@ -117,15 +124,11 @@ impl SmolVlm {
         full_prompt += "<end_of_utterance>\nAssistant:";
 
         let full_token = self.tokenizer.encode(full_prompt, false)?;
-        self.token_history
-            .append(&mut full_token.get_ids().to_vec());
 
-        for i in 0..sample_len {
-            let input = Tensor::from_slice(
-                &self.token_history,
-                Shape::from_dims(&[self.token_history.len()]),
-                &self.device,
-            )?;
+        let mut delta_token = full_token.get_ids().to_vec();
+
+        for _i in 0..sample_len {
+            let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
             let vision_data = if self.image_history.len() > 0 {
                 let image_token_mask = input.broadcast_eq(&self.image_token_tensor)?;
                 Some((
@@ -136,11 +139,15 @@ impl SmolVlm {
             } else {
                 None
             };
-            let logits = self.model.forward(&input, i, vision_data)?;
+
+            let logits = self.model.forward(&input, self.index_pos, vision_data)?;
             let (s, _embed_dim) = logits.dims2()?;
             let last_logit = logits.i((s - 1, ..))?;
             let out_token = self.logits_processor.sample(&last_logit)?;
-            self.token_history.push(out_token);
+
+            self.index_pos += delta_token.len();
+            delta_token.clear();
+            delta_token.push(out_token);
 
             let token_output = self.tokenizer.decode(&[out_token], false)?;
 

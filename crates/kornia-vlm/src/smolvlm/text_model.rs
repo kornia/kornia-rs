@@ -7,13 +7,6 @@ use candle_nn::{rotary_emb::rope, Linear, Module, RmsNorm};
 const NUM_OF_HEADS: usize = 32;
 const HEAD_DIM: usize = 64;
 
-fn causal_mask(seq_len: usize, device: &Device) -> Result<Tensor> {
-    let mask: Vec<f32> = (0..seq_len)
-        .flat_map(|i| (0..seq_len).map(move |j| if j > i { f32::NEG_INFINITY } else { 0.0 }))
-        .collect();
-    Tensor::from_vec(mask, (seq_len, seq_len), device)
-}
-
 fn calculate_default_inv_freq() -> Vec<f32> {
     (0..HEAD_DIM)
         .step_by(2)
@@ -29,8 +22,11 @@ struct Attention {
     v_proj: Linear,
     o_proj: Linear,
 
+    // caching
     cos: Tensor,
     sin: Tensor,
+    k_cache: Tensor,
+    v_cache: Tensor,
 }
 
 impl Attention {
@@ -47,6 +43,8 @@ impl Attention {
         Ok(Self {
             cos: idx_theta.cos()?.to_dtype(q.dtype())?,
             sin: idx_theta.sin()?.to_dtype(q.dtype())?,
+            k_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), DType::BF16, device)?,
+            v_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), DType::BF16, device)?,
             q_proj: Linear::new(q, None),
             k_proj: Linear::new(k, None),
             v_proj: Linear::new(v, None),
@@ -71,7 +69,7 @@ impl Attention {
         .squeeze(0)
     }
 
-    fn forward(&self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
+    fn forward(&mut self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
         let device = x.device();
 
         let (seq_len, hidden_size) = x.dims2()?;
@@ -95,22 +93,40 @@ impl Attention {
         let q = self.apply_rotary_embedding(&q, index_pos)?;
         let k = self.apply_rotary_embedding(&k, index_pos)?;
 
+        // use cache (always assumes new tokens are an extension of the previous sequence)
+        // TODO: handle context length
+        self.k_cache = Tensor::cat(&[&self.k_cache, &k], 1)?;
+        self.v_cache = Tensor::cat(&[&self.v_cache, &v], 1)?;
+
         let y = {
             // TODO: implement flash attention
 
             let in_dtype = q.dtype();
             let q = q.to_dtype(DType::F32)?;
-            let k = k.to_dtype(DType::F32)?;
-            let v = v.to_dtype(DType::F32)?;
+            let k = self.k_cache.to_dtype(DType::F32)?;
+            let v = self.v_cache.to_dtype(DType::F32)?;
 
             let att = (q.matmul(&k.t()?)? / (HEAD_DIM as f64).sqrt())?;
-            let mask = causal_mask(att.shape().dim(2)?, device)?;
+            let att = if seq_len == 1 {
+                att
+            } else {
+                let mask = Self::generate_causal_mask(seq_len, self.k_cache.dims()[1], device)?;
+                att.broadcast_add(&mask)?
+            };
+            let att = candle_nn::ops::softmax_last_dim(&att)?;
 
-            let att = candle_nn::ops::softmax_last_dim(&att.broadcast_add(&mask)?)?;
             att.matmul(&v)?.contiguous()?.to_dtype(in_dtype)?
         };
+
         let y = y.transpose(0, 1)?.reshape(&[seq_len, hidden_size])?;
         self.o_proj.forward(&y)
+    }
+
+    fn generate_causal_mask(seq_len: usize, total_len: usize, device: &Device) -> Result<Tensor> {
+        let mask: Vec<f32> = ((total_len - seq_len)..total_len)
+            .flat_map(|i| (0..total_len).map(move |j| if j > i { f32::NEG_INFINITY } else { 0.0 }))
+            .collect();
+        Tensor::from_vec(mask, (seq_len, total_len), device)
     }
 }
 
@@ -184,7 +200,7 @@ impl Block {
         })
     }
 
-    fn forward(&self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
+    fn forward(&mut self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
         let residual = x;
         let x = self.input_layer_norm.forward(x)?;
         let x = (residual + self.attn.forward(&x, index_pos)?)?;
@@ -212,8 +228,8 @@ impl SmolText {
         })
     }
 
-    pub fn forward(&self, mut x: Tensor, index_pos: usize) -> Result<Tensor> {
-        for block in &self.blocks {
+    pub fn forward(&mut self, mut x: Tensor, index_pos: usize) -> Result<Tensor> {
+        for block in &mut self.blocks {
             x = block.forward(&x, index_pos)?;
         }
         let x = self.norm.forward(&x)?;
