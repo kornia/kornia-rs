@@ -257,9 +257,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
             .as_slice()
             .iter()
             .map(|&x| {
-                let xu = U::from(x).ok_or(ImageError::CastError(
-                    std::any::type_name::<U>().to_string(),
-                ))?;
+                let xu = U::from(x).ok_or(ImageError::CastError)?;
                 Ok(xu)
             })
             .collect::<Result<Vec<U>, ImageError>>()?;
@@ -415,9 +413,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
             .as_slice()
             .iter()
             .map(|&x| {
-                let xu = U::from(x).ok_or(ImageError::CastError(
-                    std::any::type_name::<U>().to_string(),
-                ))?;
+                let xu = U::from(x).ok_or(ImageError::CastError)?;
                 Ok(xu * scale)
             })
             .collect::<Result<Vec<U>, ImageError>>()?;
@@ -445,9 +441,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
             .as_slice()
             .iter()
             .map(|&x| {
-                let xu = U::from(x * scale).ok_or(ImageError::CastError(
-                    std::any::type_name::<U>().to_string(),
-                ))?;
+                let xu = U::from(x * scale).ok_or(ImageError::CastError)?;
                 Ok(xu)
             })
             .collect::<Result<Vec<U>, ImageError>>()?;

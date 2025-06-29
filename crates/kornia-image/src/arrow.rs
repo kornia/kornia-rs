@@ -3,8 +3,31 @@ use arrow::{
     array::{ArrayRef, BinaryArray, StructArray, UInt32Array},
     datatypes::{DataType, Field},
 };
-use kornia_tensor::CpuAllocator;
+use kornia_tensor::{allocator::TensorAllocatorError, TensorAllocator};
 use std::sync::Arc;
+
+/// Allocator for Arrow arrays
+#[derive(Clone)]
+#[allow(dead_code)]
+pub struct ArrowAllocator(arrow::buffer::Buffer);
+
+impl TensorAllocator for ArrowAllocator {
+    fn alloc(&self, layout: std::alloc::Layout) -> Result<*mut u8, TensorAllocatorError> {
+        let ptr = unsafe { std::alloc::alloc(layout) };
+
+        if ptr.is_null() {
+            Err(TensorAllocatorError::NullPointer)?
+        }
+
+        Ok(ptr)
+    }
+
+    fn dealloc(&self, _ptr: *mut u8, _layout: std::alloc::Layout) {
+        // Do nothing as the memory is managed by Arrow
+    }
+}
+
+impl ImageAllocator for ArrowAllocator {}
 
 /// Trait for converting to Arrow arrays
 pub trait IntoArrow {
@@ -47,30 +70,30 @@ impl<const C: usize, A: ImageAllocator> IntoArrow for Image<u8, C, A> {
     }
 }
 
-impl<const C: usize> TryFromArrow for Image<u8, C, CpuAllocator> {
+impl<const C: usize> TryFromArrow for Image<u8, C, ArrowAllocator> {
     fn try_from_arrow(array: arrow::array::ArrayRef) -> Result<Self, ImageError> {
         let struct_array = array
             .as_any()
             .downcast_ref::<StructArray>()
-            .ok_or(ImageError::CastError("StructArray".to_string()))?;
+            .ok_or(ImageError::CastError)?;
 
         let width = struct_array
             .column(0)
             .as_any()
             .downcast_ref::<UInt32Array>()
-            .ok_or(ImageError::CastError("UInt32Array".to_string()))?
+            .ok_or(ImageError::CastError)?
             .value(0);
         let height = struct_array
             .column(1)
             .as_any()
             .downcast_ref::<UInt32Array>()
-            .ok_or(ImageError::CastError("UInt32Array".to_string()))?
+            .ok_or(ImageError::CastError)?
             .value(0);
         let channels = struct_array
             .column(2)
             .as_any()
             .downcast_ref::<UInt32Array>()
-            .ok_or(ImageError::CastError("UInt32Array".to_string()))?
+            .ok_or(ImageError::CastError)?
             .value(0);
 
         if channels != C as u32 {
@@ -78,21 +101,35 @@ impl<const C: usize> TryFromArrow for Image<u8, C, CpuAllocator> {
         }
 
         // Extract pixels from BinaryArray
-        let pixels = struct_array
+        let buffer = struct_array
             .column(3)
             .as_any()
             .downcast_ref::<BinaryArray>()
-            .ok_or(ImageError::CastError("BinaryArray".to_string()))?
-            .value(0);
+            .ok_or(ImageError::CastError)?
+            .values();
 
-        Image::<u8, C, CpuAllocator>::new(
-            ImageSize {
-                width: width as usize,
-                height: height as usize,
-            },
-            pixels.to_vec(),
-            CpuAllocator,
-        )
+        // zero copy conversion
+        // NOTE: we need to clone the buffer to avoid the borrow checker, but it is not deep copying
+        // as the internal data is reference counted.
+        let buffer_owned = buffer.clone();
+        let data_ptr = buffer_owned.as_ptr();
+        let data_len = buffer_owned.len();
+
+        let alloc = ArrowAllocator(buffer_owned);
+
+        let image = unsafe {
+            Image::from_raw_parts(
+                ImageSize {
+                    width: width as usize,
+                    height: height as usize,
+                },
+                data_ptr,
+                data_len,
+                alloc,
+            )
+        }?;
+
+        Ok(image)
     }
 }
 
@@ -118,7 +155,7 @@ mod tests {
 
         let arrow_array = image.into_arrow();
 
-        let image_arr = Image::<u8, 1, CpuAllocator>::try_from_arrow(arrow_array.clone())?;
+        let image_arr = Image::<u8, 1, _>::try_from_arrow(arrow_array.clone())?;
 
         assert_eq!(image_arr.width(), 2);
         assert_eq!(image_arr.height(), 3);

@@ -1,8 +1,5 @@
 use dora_node_api::{DoraNode, Event};
-use kornia::{
-    image::{arrow::TryFromArrow, Image},
-    tensor::CpuAllocator,
-};
+use kornia::image::{allocator::ImageAllocator, arrow::TryFromArrow, Image};
 
 const RERUN_HOST: &str = "127.0.0.1";
 const RERUN_PORT: u16 = 9876;
@@ -30,7 +27,7 @@ fn main() -> eyre::Result<()> {
                     timestamp_secs * 1_000_000_000 + timestamp_subsec_nanos
                 };
 
-                let image = Image::<u8, 3, CpuAllocator>::try_from_arrow(data.into())?;
+                let image = Image::<u8, 3, _>::try_from_arrow(data.into())?;
 
                 // log the image to rerun
                 log_image(&rr, id.as_str(), timestamp_nanos, &image)?;
@@ -48,11 +45,11 @@ fn main() -> eyre::Result<()> {
     Ok(())
 }
 
-fn log_image(
+fn log_image<A: ImageAllocator>(
     rr: &rerun::RecordingStream,
     name: &str,
     timestamp_nanos: u64,
-    img: &Image<u8, 3, CpuAllocator>,
+    img: &Image<u8, 3, A>,
 ) -> eyre::Result<()> {
     rr.set_time(
         "time",

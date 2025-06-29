@@ -20,7 +20,7 @@ fn main() -> eyre::Result<()> {
             Event::Input { id, metadata, data } => match id.as_str() {
                 "frame" => {
                     // convert the frame to an image
-                    let img = Image::<u8, 3, CpuAllocator>::try_from_arrow(data.into())?;
+                    let img = Image::<u8, 3, _>::try_from_arrow(data.into())?;
 
                     // lazily allocate the output image
                     let out =
