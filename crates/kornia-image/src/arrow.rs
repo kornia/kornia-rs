@@ -74,10 +74,7 @@ impl<const C: usize> TryFromArrow for Image<u8, C, CpuAllocator> {
             .value(0);
 
         if channels != C as u32 {
-            return Err(ImageError::InvalidChannelShape(
-                C as usize,
-                channels as usize,
-            ));
+            return Err(ImageError::InvalidChannelShape(C, channels as usize));
         }
 
         // Extract pixels from BinaryArray
@@ -94,7 +91,7 @@ impl<const C: usize> TryFromArrow for Image<u8, C, CpuAllocator> {
                 height: height as usize,
             },
             pixels.to_vec(),
-            CpuAllocator::default(),
+            CpuAllocator,
         )
     }
 }
@@ -116,11 +113,10 @@ mod tests {
                 height: 3,
             },
             vec![0, 1, 2, 3, 4, 5],
-            CpuAllocator::default(),
+            CpuAllocator,
         )?;
 
         let arrow_array = image.into_arrow();
-        println!("{:?}", arrow_array);
 
         let image_arr = Image::<u8, 1, CpuAllocator>::try_from_arrow(arrow_array.clone())?;
 

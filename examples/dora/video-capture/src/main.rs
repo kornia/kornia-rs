@@ -55,7 +55,7 @@ fn main() -> eyre::Result<()> {
 
                     let image: Image<u8, 3, CpuAllocator> = {
                         let img = frame.clone();
-                        Image::new(img.size(), img.to_vec(), CpuAllocator::default())?
+                        Image::new(img.size(), img.to_vec(), CpuAllocator)?
                     };
 
                     node.send_output(output.clone(), metadata.parameters, image.into_arrow())?;

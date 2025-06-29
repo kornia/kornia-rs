@@ -23,11 +23,11 @@ fn main() -> eyre::Result<()> {
                     let img = Image::<u8, 3, CpuAllocator>::try_from_arrow(data.into())?;
 
                     // lazily allocate the output image
-                    let mut out =
+                    let out =
                         out.get_or_insert(Image::from_size_val(img.size(), 0f32, CpuAllocator)?);
 
                     // compute the sobel edge map
-                    imgproc::filter::sobel(&img.cast()?, &mut out, 3)?;
+                    imgproc::filter::sobel(&img.cast()?, out, 3)?;
 
                     // cast back to u8
                     let out_u8 = out.map(|x| *x as u8)?;
