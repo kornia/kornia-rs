@@ -167,10 +167,10 @@ impl SmolVlm {
 
     // utility function to load the model
     fn load_model(_dtype: DType, device: &Device) -> Result<(SmolModel, Tokenizer), SmolVlmError> {
-        let tokenizer = Tokenizer::from_pretrained("HuggingFaceTB/SmolVLM-Instruct", None).unwrap();
+        let tokenizer = Tokenizer::from_pretrained("HuggingFaceTB/SmolVLM-Instruct", None)?;
         let api = Api::new()?;
         let repo = api.model("HuggingFaceTB/SmolVLM-Instruct".to_string());
-        let weights = repo.get("model.safetensors").unwrap();
+        let weights = repo.get("model.safetensors")?;
         let weights = candle_core::safetensors::load(weights, &device)?;
         let model = SmolModel::load(&weights)?;
 
