@@ -2,7 +2,7 @@ mod generator;
 mod model;
 mod preprocessor;
 mod text_model;
-mod util;
+mod utils;
 mod vision_model;
 
 use std::io;
@@ -22,7 +22,7 @@ use tokenizers::{Encoding, Tokenizer};
 use preprocessor::{get_prompt_split_image, load_image_url, preprocess_image};
 
 use crate::smolvlm::model::SmolModel;
-use crate::smolvlm::util::{SmolVlmConfig, SmolVlmError};
+use crate::smolvlm::utils::{SmolVlmConfig, SmolVlmError};
 
 fn count_lines(text: &str) -> usize {
     if let Some((Width(w), _)) = terminal_size() {
@@ -53,11 +53,13 @@ fn read_input(cli_prompt: &str) -> String {
 pub struct SmolVlm {
     model: SmolModel,
     tokenizer: Tokenizer,
-    image_token_enc: Encoding,
+    image_token_tensor: Tensor,
     config: SmolVlmConfig,
     rng: StdRng,
     logits_processor: LogitsProcessor,
     device: Device,
+    token_history: String,
+    image_history: Vec<(Tensor, Tensor)>,
 }
 
 impl SmolVlm {
@@ -84,13 +86,14 @@ impl SmolVlm {
         // TODO: find a way to use FP32 if cuda is not available
 
         let (model, tokenizer) = Self::load_model(dtype, &device)?;
-        let image_token_enc = tokenizer.encode("<image>", false)?;
+        let image_token = tokenizer.encode("<image>", false)?;
+        let image_token_tensor = Tensor::from_slice(image_token.get_ids(), &[1], &self.device)?;
         let rng = StdRng::seed_from_u64(config.seed);
 
         Ok(Self {
             model,
             tokenizer,
-            image_token_enc,
+            image_token_tensor,
             config,
             logits_processor: LogitsProcessor::new(
                 config.seed,
@@ -99,6 +102,8 @@ impl SmolVlm {
             ),
             device,
             rng,
+            token_history: String::from("<|im_start|>"),
+            image_history: Vec::new(),
         })
     }
 
@@ -118,18 +123,21 @@ impl SmolVlm {
         &mut self,
         // image: &Image<u8, 3, CpuAllocator>,
         // prompt: &str,
-        // sample_len: usize,
-        // stdout_debug: bool,
+        sample_len: usize, // per prompt
+                           // stdout_debug: bool,
     ) -> Result<String, SmolVlmError> {
-        let image_token = self.image_token_enc.get_ids(); // STRUCT-WIDE
-        let mut message = String::from("<|im_start|>"); // STRUCT-WIDE
-        let mut image: Vec<(Tensor, Tensor)> = Vec::new(); // STRUCT-WIDE
-        let mut response = String::new();
-        let mut output = String::new();
+        // let image_token = self.image_token_enc.get_ids(); // STRUCT-WIDE
+        // let mut token_history = String::from("<|im_start|>"); // STRUCT-WIDE
+        // let mut image: Vec<(Tensor, Tensor)> = Vec::new(); // STRUCT-WIDE
+        let mut response = String::new(); // collection of tokens
+        let mut token_output = String::new(); // single token
+
         let mut lines_printed = 0; // OUTSIDE
-        for i in 0..10_000 {
+        for i in 0..sample_len {
             // OUTSIDE
-            if i == 0 || output == "<end_of_utterance>" {
+
+            // OUTSIDE (i == 0 --> initially, EOU --> end of inference)
+            if i == 0 || token_output == "<end_of_utterance>" {
                 let img_url = read_input("img> ");
                 let raw_img = load_image_url(&img_url)
                     .and_then(|v| {
@@ -172,16 +180,20 @@ impl SmolVlm {
                 txt_prompt += &raw_prompt;
                 txt_prompt += "<end_of_utterance>\nAssistant:";
                 response.clear();
-                message += &txt_prompt;
+                self.token_history += &txt_prompt;
             }
-            let encoding = self.tokenizer.encode(message.clone(), false)?;
+            let encoding = self.tokenizer.encode(self.token_history.clone(), false)?;
             let tokens = encoding.get_ids();
             let input =
                 Tensor::from_slice(tokens, Shape::from_dims(&[tokens.len()]), &self.device)?;
-            let vision_data = if image.len() > 0 {
-                let image_token_mask = Tensor::from_slice(image_token, &[1], &self.device)?;
-                let image_token_mask = input.broadcast_eq(&image_token_mask)?;
-                Some((image_token_mask, &image[0].0, &image[0].1))
+            let vision_data = if self.image_history.len() > 0 {
+                // let image_token_mask = Tensor::from_slice(image_token, &[1], &self.device)?;
+                let image_token_mask = input.broadcast_eq(&image_token_tensor)?;
+                Some((
+                    image_token_mask,
+                    &self.image_history[0].0,
+                    &self.image_history[0].1,
+                ))
             } else {
                 None
             };
@@ -189,7 +201,7 @@ impl SmolVlm {
             let (s, _embed_dim) = logits.dims2()?;
             let last_logit = logits.i((s - 1, ..))?;
             let out_token = self.logits_processor.sample(&last_logit)?;
-            output = self.tokenizer.decode(&[out_token], false)?;
+            token_output = self.tokenizer.decode(&[out_token], false)?;
 
             //  vvv MOVE OUTSIDE
             if !response.is_empty() {
@@ -200,9 +212,9 @@ impl SmolVlm {
             lines_printed = count_lines(&response);
             //  ^^^ MOVE OUTSIDE
 
-            message += &output;
-            if output != "<end_of_utterance>" {
-                response += &output;
+            self.token_history += &token_output;
+            if token_output != "<end_of_utterance>" {
+                response += &token_output;
             }
         } // OUTSIDE
 
