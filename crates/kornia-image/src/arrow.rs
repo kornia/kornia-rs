@@ -47,7 +47,7 @@ impl<const C: usize, A: ImageAllocator> IntoArrow for Image<u8, C, A> {
         let width = self.width() as u32;
         let height = self.height() as u32;
         let channels = self.num_channels() as u32;
-        let data = self.into_vec();
+        let data = self.as_slice();
 
         Arc::new(StructArray::from(vec![
             (
@@ -63,8 +63,8 @@ impl<const C: usize, A: ImageAllocator> IntoArrow for Image<u8, C, A> {
                 Arc::new(UInt32Array::from(vec![channels])) as ArrayRef,
             ),
             (
-                Arc::new(Field::new("pixels", DataType::Binary, false)),
-                Arc::new(BinaryArray::from_vec(vec![&data])) as ArrayRef,
+                Arc::new(Field::new("data", DataType::Binary, false)),
+                Arc::new(BinaryArray::from_vec(vec![data])) as ArrayRef,
             ),
         ]))
     }
@@ -100,7 +100,7 @@ impl<const C: usize> TryFromArrow for Image<u8, C, ArrowAllocator> {
             return Err(ImageError::InvalidChannelShape(C, channels as usize));
         }
 
-        // Extract pixels from BinaryArray
+        // Extract data from BinaryArray
         let buffer = struct_array
             .column(3)
             .as_any()
@@ -109,7 +109,7 @@ impl<const C: usize> TryFromArrow for Image<u8, C, ArrowAllocator> {
             .values();
 
         // zero copy conversion
-        // NOTE: we need to clone the buffer to avoid the borrow checker, but it is not deep copying
+        // NOTE: we need to clone the buffer to own it, but it is not deep copying
         // as the internal data is reference counted.
         let buffer_owned = buffer.clone();
         let data_ptr = buffer_owned.as_ptr();

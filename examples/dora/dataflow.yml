@@ -12,16 +12,16 @@ nodes:
       IMAGE_COLS: 320
       IMAGE_ROWS: 180
       PIXEL_FORMAT: "MJPG"
-  #- id: rtsp-camera
-  #  build: cargo build -p dora-video-capture --release
-  #  path: ./target/debug/dora-video-capture
-  #  inputs:
-  #    tick: dora/timer/millis/10
-  #  outputs:
-  #    - frame
-  #  env:
-  #    SOURCE_TYPE: "rtsp"
-  #    SOURCE_URI: "rtsp://tapo_entrance:123456789@192.168.1.141:554/stream2"
+  - id: rtsp-camera
+    build: cargo build -p dora-video-capture --release
+    path: ./target/release/dora-video-capture
+    inputs:
+      tick: dora/timer/millis/10
+    outputs:
+      - frame
+    env:
+      SOURCE_TYPE: "rtsp"
+      SOURCE_URI: "rtsp://tapo_entrance:123456789@192.168.1.141:554/stream2"
   - id: imgproc
     build: cargo build -p dora-imgproc --release
     path: ./target/release/dora-imgproc
@@ -34,7 +34,7 @@ nodes:
     path: ./target/release/dora-video-sink
     inputs:
       frame: v4l-camera/frame
-      #rtsp-camera/frame: rtsp-camera/frame
+      rtsp: rtsp-camera/frame
       output: imgproc/output
     env:
       RERUN_HOST: 127.0.0.1

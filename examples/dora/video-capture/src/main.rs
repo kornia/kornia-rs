@@ -1,8 +1,7 @@
 use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event};
 use kornia::{
-    image::{arrow::IntoArrow, Image},
+    image::arrow::IntoArrow,
     io::gstreamer::{RTSPCameraConfig, V4L2CameraConfig},
-    tensor::CpuAllocator,
 };
 
 fn main() -> eyre::Result<()> {
@@ -53,12 +52,7 @@ fn main() -> eyre::Result<()> {
                         continue;
                     };
 
-                    let image: Image<u8, 3, CpuAllocator> = {
-                        let img = frame.clone();
-                        Image::new(img.size(), img.to_vec(), CpuAllocator)?
-                    };
-
-                    node.send_output(output.clone(), metadata.parameters, image.into_arrow())?;
+                    node.send_output(output.clone(), metadata.parameters, frame.into_arrow())?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
