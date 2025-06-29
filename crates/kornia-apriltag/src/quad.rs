@@ -60,6 +60,10 @@ pub fn fit_quad<A: ImageAllocator>(
     normal_border: bool,
     reversed_border: bool,
 ) -> Option<Quad> {
+    if cluster.len() < 24 {
+        return None;
+    }
+
     let mut x_max = cluster[0].pos.x;
     let mut x_min = x_max;
     let mut y_max = cluster[0].pos.y;
@@ -96,11 +100,19 @@ pub fn fit_quad<A: ImageAllocator>(
             let mut dx = pos.x as f32 - cx;
             let mut dy = pos.y as f32 - cy;
 
-            // TODO: Improve Gradient Direction Logic
-            let gx = *gx as i16;
-            let gy = *gy as i16;
+            // Convert gradient direction enum to numeric values
+            let gx_val = match gx {
+                crate::segmentation::GradientDirection::TowardsWhite => 255,
+                crate::segmentation::GradientDirection::TowardsBlack => -255,
+                crate::segmentation::GradientDirection::None => 0,
+            };
+            let gy_val = match gy {
+                crate::segmentation::GradientDirection::TowardsWhite => 255,
+                crate::segmentation::GradientDirection::TowardsBlack => -255,
+                crate::segmentation::GradientDirection::None => 0,
+            };
 
-            dot += dx * gx as f32 + dy * gy as f32;
+            dot += dx * gx_val as f32 + dy * gy_val as f32;
 
             let quadrant = quadrants[(dy > 0.0) as usize][(dx > 0.0) as usize];
             if dy < 0.0 {
@@ -109,7 +121,9 @@ pub fn fit_quad<A: ImageAllocator>(
             }
 
             if dx < 0.0 {
-                std::mem::swap(&mut dx, &mut dy);
+                let tmp = dx;
+                dx = dy;
+                dy = -tmp;
             }
 
             *slope = quadrant as f32 + dy / dx;
@@ -200,6 +214,7 @@ pub fn fit_quad<A: ImageAllocator>(
     let mut length = [0f32; 3];
     let mut p: f32;
 
+    // Calculate area of triangle formed by points 0, 1, 2
     (0..3).for_each(|i| {
         let idxa = i;
         let idxb = (i + 1) % 3;
@@ -211,6 +226,7 @@ pub fn fit_quad<A: ImageAllocator>(
     p = (length[0] + length[1] + length[2]) / 2.0;
     area += (p * (p - length[0]) * (p - length[1]) * (p - length[2])).sqrt();
 
+    // Calculate area of triangle formed by points 2, 3, 0
     (0..3).for_each(|i| {
         let idxs = [2, 3, 0, 2];
         let idxa = idxs[i];
@@ -394,11 +410,11 @@ pub fn compute_lfps<A: ImageAllocator>(
         let mut w = 1.0f32;
 
         if ix > 0 && ix + 1 < src.width() && iy > 0 && iy + 1 < src.height() {
-            let grad_x = src_slice[iy * src.width() + ix + 1] as i16
-                - src_slice[iy * src.width() + ix - 1] as i16;
+            let grad_x = src_slice[iy * src.width() + ix + 1] as i32
+                - src_slice[iy * src.width() + ix - 1] as i32;
 
-            let grad_y = src_slice[(iy + 1) * src.width() + ix] as i16
-                - src_slice[(iy - 1) * src.width() + ix] as i16;
+            let grad_y = src_slice[(iy + 1) * src.width() + ix] as i32
+                - src_slice[(iy - 1) * src.width() + ix] as i32;
 
             w = ((grad_x * grad_x + grad_y * grad_y) as f32).sqrt() + 1.0;
         }
@@ -455,7 +471,7 @@ pub fn quad_segment_maxima(
     let mut f = vec![0.0f32; fsz];
 
     (0..fsz).for_each(|i| {
-        let j = i - fsz / 2;
+        let j = i as isize - fsz as isize / 2;
         f[i] = (-(j as f32) * j as f32 / (2.0 * sigma * sigma)).exp();
     });
 
@@ -463,7 +479,9 @@ pub fn quad_segment_maxima(
         let mut acc = 0.0f32;
 
         (0..fsz).for_each(|i| {
-            acc += errors[(iy + i - fsz / 2 + gradient_infos.len()) % gradient_infos.len()];
+            acc += errors[((iy as isize + i as isize - fsz as isize / 2
+                + gradient_infos.len() as isize)
+                % gradient_infos.len() as isize) as usize];
         });
 
         y[iy] = acc;
@@ -498,13 +516,13 @@ pub fn quad_segment_maxima(
 
         let maxima_thresh = maxima_errs_copy[max_nmaxima];
         let mut out = 0usize;
-        (0..nmaxima).for_each(|i| {
+        for i in 0..nmaxima {
             if maxima_errs[i] <= maxima_thresh {
-                return;
+                continue;
             }
-            out += 1;
             maxima[out] = maxima[i];
-        });
+            out += 1;
+        }
         nmaxima = out;
     }
 
