@@ -39,7 +39,7 @@ jobs:
         uses: taiki-e/install-action@cross
 
       - name: Clippy
-        run: cross clippy --workspace --no-deps --features "turbojpeg,gstreamer,v4l" --all-targets -- -D warnings
+        run: cross clippy --workspace --no-deps --features "turbojpeg,gstreamer,v4l,arrow,bincode,serde" --all-targets -- -D warnings
 
       - name: Show sccache stats
         run: sccache --show-stats
@@ -64,7 +64,7 @@ jobs:
       - name: Install cross
         uses: taiki-e/install-action@cross
 
-      - run: cross check --all --features "turbojpeg,gstreamer,v4l"
+      - run: cross check --all --features "turbojpeg,gstreamer,v4l,arrow,bincode,serde"
 
       - name: Show sccache stats
         run: sccache --show-stats

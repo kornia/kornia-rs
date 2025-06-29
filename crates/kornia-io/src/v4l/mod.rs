@@ -61,12 +61,15 @@ pub struct V4LVideoCapture {
     stream: stream::Stream,
     pixel_format: PixelFormat,
     device: Device,
+    size: ImageSize,
 }
 
 /// Represents a captured frame
 pub struct EncodedFrame {
     /// The buffer of the frame
     pub buffer: arena::V4lBuffer,
+    /// The image size of the frame
+    pub size: ImageSize,
     /// The fourcc of the frame
     pub pixel_format: PixelFormat,
     /// The timestamp of the frame
@@ -109,6 +112,7 @@ impl V4LVideoCapture {
             stream,
             pixel_format: PixelFormat::from_fourcc(actual_format.fourcc),
             device,
+            size: config.size,
         };
 
         // default to disable dynamic framerate
@@ -136,6 +140,7 @@ impl V4LVideoCapture {
 
         let frame = EncodedFrame {
             buffer: buffer.clone(),
+            size: self.size,
             pixel_format: self.pixel_format,
             timestamp: metadata.timestamp,
             sequence: metadata.sequence,

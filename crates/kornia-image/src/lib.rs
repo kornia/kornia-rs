@@ -15,3 +15,7 @@ pub mod ops;
 
 pub use crate::error::ImageError;
 pub use crate::image::{Image, ImageSize};
+
+/// Arrow integration for converting images to Arrow format
+#[cfg(feature = "arrow")]
+pub mod arrow;
