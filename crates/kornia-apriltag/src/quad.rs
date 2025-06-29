@@ -1,16 +1,20 @@
-use crate::{family::TagFamily, segmentation::GradientInfo, utils::Pixel};
+use crate::{
+    family::TagFamily,
+    segmentation::GradientInfo,
+    utils::{Pixel, Point2d},
+};
 use kornia_image::{allocator::ImageAllocator, Image};
-use std::{collections::HashMap, f32};
+use std::{collections::HashMap, f32, ops::ControlFlow};
+
+const QUADRANTS: [[i32; 2]; 2] = [[-(2 << 15), 0], [2 * (2 << 15), 2 << 15]];
 
 /// TODO
 #[derive(Debug, Default, Clone)]
 pub struct Quad {
     /// TODO
-    pub point: [[f32; 2]; 4],
+    pub corners: [Point2d<f32>; 4],
     /// TODO
     pub reversed_border: bool,
-    // h: Vec<f32>,
-    // hinv: Vec<f32>,
 }
 
 /// TODO
@@ -20,6 +24,9 @@ pub fn fit_quads<A: ImageAllocator>(
     tag_family: &TagFamily,
     clusters: &mut HashMap<(usize, usize), Vec<GradientInfo>>,
     min_cluster_pixels: usize,
+    cos_critical_rad: f32, // default: 0.984808
+    max_line_fit_mse: f32, // default: 10
+    max_nmaxima: usize,    // default: 10
 ) -> Vec<Quad> {
     // These will be come handy later, once we support more tag familes
     let normal_border = !tag_family.reversed_border;
@@ -27,12 +34,15 @@ pub fn fit_quads<A: ImageAllocator>(
 
     let mut quads = Vec::new();
 
+    let max_cluster_len = 4 * (src.width() + src.height());
+
     clusters.iter_mut().for_each(|(_, cluster)| {
         if cluster.len() < min_cluster_pixels {
             return;
         }
 
-        if cluster.len() > 2 * (2 * src.width() + 2 * src.height()) {
+        // Skip the cluster, if it is too large
+        if cluster.len() > max_cluster_len {
             return;
         }
 
@@ -42,6 +52,9 @@ pub fn fit_quads<A: ImageAllocator>(
             tag_family.width_at_border,
             normal_border,
             reversed_border,
+            cos_critical_rad,
+            max_line_fit_mse,
+            max_nmaxima,
         ) {
             quads.push(quad);
         }
@@ -50,8 +63,6 @@ pub fn fit_quads<A: ImageAllocator>(
     quads
 }
 
-const COS_CRITICAL_RAD: f32 = 0.984808; // TODO: Make this tuneable in fit_quad function
-
 /// TODO
 pub fn fit_quad<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
@@ -59,6 +70,9 @@ pub fn fit_quad<A: ImageAllocator>(
     min_tag_width: usize,
     normal_border: bool,
     reversed_border: bool,
+    cos_critical_rad: f32,
+    max_line_fit_mse: f32,
+    max_nmaxima: usize,
 ) -> Option<Quad> {
     if cluster.len() < 24 {
         return None;
@@ -69,6 +83,7 @@ pub fn fit_quad<A: ImageAllocator>(
     let mut y_max = cluster[0].pos.y;
     let mut y_min = y_max;
 
+    // Find the bounding box of the cluster
     cluster.iter().for_each(|GradientInfo { pos, .. }| {
         if pos.x > x_max {
             x_max = pos.x;
@@ -83,16 +98,17 @@ pub fn fit_quad<A: ImageAllocator>(
         }
     });
 
+    // Reject clusters whose bounding box is too small
     if (x_max - x_min) * (y_max - y_min) < min_tag_width {
         return None;
     }
 
+    // add some noise to (cx,cy) so that pixels get a more diverse set
+    // of theta estimates. This will help us remove more points.
     let cx = (x_min + x_max) as f32 * 0.5 + 0.05118;
     let cy = (y_min + y_max) as f32 * 0.5 - 0.028581;
 
     let mut dot = 0.0;
-
-    let quadrants = [[-(2 << 15), 0], [2 * (2 << 15), 2 << 15]];
 
     cluster
         .iter_mut()
@@ -101,20 +117,13 @@ pub fn fit_quad<A: ImageAllocator>(
             let mut dy = pos.y as f32 - cy;
 
             // Convert gradient direction enum to numeric values
-            let gx_val = match gx {
-                crate::segmentation::GradientDirection::TowardsWhite => 255,
-                crate::segmentation::GradientDirection::TowardsBlack => -255,
-                crate::segmentation::GradientDirection::None => 0,
-            };
-            let gy_val = match gy {
-                crate::segmentation::GradientDirection::TowardsWhite => 255,
-                crate::segmentation::GradientDirection::TowardsBlack => -255,
-                crate::segmentation::GradientDirection::None => 0,
-            };
+            let gx_val = *gx as i32;
+            let gy_val = *gy as i32;
 
             dot += dx * gx_val as f32 + dy * gy_val as f32;
 
-            let quadrant = quadrants[(dy > 0.0) as usize][(dx > 0.0) as usize];
+            let quadrant = QUADRANTS[(dy > 0.0) as usize][(dx > 0.0) as usize];
+
             if dy < 0.0 {
                 dy = -dy;
                 dx = -dx;
@@ -134,6 +143,7 @@ pub fn fit_quad<A: ImageAllocator>(
         ..Default::default()
     };
 
+    // Ensure that the black border is inside the white border
     if !reversed_border && quad.reversed_border {
         return None;
     }
@@ -143,44 +153,40 @@ pub fn fit_quad<A: ImageAllocator>(
 
     cluster.sort_by(|a, b| a.slope.total_cmp(&b.slope));
 
-    let lfps = compute_lfps(src, cluster);
+    let lfps = compute_line_fit_prefix_sums(src, cluster);
 
     let mut indices = [0usize; 4];
 
-    if !quad_segment_maxima(cluster, &lfps, &mut indices) {
+    if !quad_segment_maxima(
+        cluster,
+        &lfps,
+        &mut indices,
+        max_line_fit_mse,
+        max_nmaxima,
+        cos_critical_rad,
+    ) {
         return None;
     }
 
     let mut lines = [[0.0f32; 4]; 4];
 
-    let mut should_return_none = false;
-    (0..4).for_each(|i| {
-        if should_return_none {
-            return;
-        }
-
+    if let ControlFlow::Break(_) = (0..4).try_for_each(|i| {
         let i0 = indices[i];
         let i1 = indices[(i + 1) & 3];
 
         let mut mse = 0.0f32;
         fit_line(&lfps, i0, i1, Some(&mut lines[i]), None, Some(&mut mse));
 
-        if mse > MAX_LINE_FIT_MSE {
-            should_return_none = true;
+        if mse > max_line_fit_mse {
+            return ControlFlow::Break(());
         }
-    });
 
-    if should_return_none {
+        ControlFlow::Continue(())
+    }) {
         return None;
-    }
+    };
 
-    should_return_none = false;
-
-    (0..4).for_each(|i| {
-        if should_return_none {
-            return;
-        }
-
+    if let ControlFlow::Break(_) = (0..4).try_for_each(|i| {
         let a00 = lines[i][3];
         let a01 = -lines[(i + 1) & 3][3];
         let a10 = -lines[i][2];
@@ -191,8 +197,7 @@ pub fn fit_quad<A: ImageAllocator>(
         let det = a00 * a11 - a10 * a01;
 
         if det.abs() < 0.001 {
-            should_return_none = true;
-            return;
+            return ControlFlow::Break(());
         }
 
         let w00 = a11 / det;
@@ -200,15 +205,14 @@ pub fn fit_quad<A: ImageAllocator>(
 
         let l0 = w00 * b0 + w01 * b1;
 
-        quad.point[i][0] = lines[i][0] + l0 * a00;
-        quad.point[i][1] = lines[i][1] + l0 * a10;
-    });
+        quad.corners[i].x = lines[i][0] + l0 * a00;
+        quad.corners[i].y = lines[i][1] + l0 * a10;
 
-    if should_return_none {
+        ControlFlow::Continue(())
+    }) {
         return None;
-    }
+    };
 
-    // Reject quads that are too small
     let mut area = 0.0f32;
 
     let mut length = [0f32; 3];
@@ -218,8 +222,8 @@ pub fn fit_quad<A: ImageAllocator>(
     (0..3).for_each(|i| {
         let idxa = i;
         let idxb = (i + 1) % 3;
-        length[i] = ((quad.point[idxb][0] - quad.point[idxa][0]).powi(2)
-            + (quad.point[idxb][1] - quad.point[idxa][1]).powi(2))
+        length[i] = ((quad.corners[idxb].x - quad.corners[idxa].x).powi(2)
+            + (quad.corners[idxb].y - quad.corners[idxa].y).powi(2))
         .sqrt();
     });
 
@@ -232,45 +236,41 @@ pub fn fit_quad<A: ImageAllocator>(
         let idxa = idxs[i];
         let idxb = idxs[i + 1];
 
-        length[i] = ((quad.point[idxb][0] - quad.point[idxa][0]).powi(2)
-            + (quad.point[idxb][1] - quad.point[idxa][1]).powi(2))
+        length[i] = ((quad.corners[idxb].x - quad.corners[idxa].x).powi(2)
+            + (quad.corners[idxb].y - quad.corners[idxa].y).powi(2))
         .sqrt();
     });
 
     p = (length[0] + length[1] + length[2]) / 2.0;
     area += (p * (p - length[0]) * (p - length[1]) * (p - length[2])).sqrt();
 
+    // Reject quads that are too small
     if area < 0.95 * min_tag_width as f32 * min_tag_width as f32 {
         return None;
     }
 
-    should_return_none = false;
     // Reject quads whose cumulative angle change isn't equal to 2PI
-    (0..4).for_each(|i| {
-        if should_return_none {
-            return;
-        }
-
+    if let ControlFlow::Break(_) = (0..4).try_for_each(|i| {
         let i0 = i;
         let i1 = (i + 1) & 3;
         let i2 = (i + 2) & 3;
 
-        let dx1 = quad.point[i1][0] - quad.point[i0][0];
-        let dy1 = quad.point[i1][1] - quad.point[i0][1];
-        let dx2 = quad.point[i2][0] - quad.point[i1][0];
-        let dy2 = quad.point[i2][1] - quad.point[i1][1];
+        let dx1 = quad.corners[i1].x - quad.corners[i0].x;
+        let dy1 = quad.corners[i1].y - quad.corners[i0].y;
+        let dx2 = quad.corners[i2].x - quad.corners[i1].x;
+        let dy2 = quad.corners[i2].y - quad.corners[i1].y;
 
         let cos_dtheta =
             (dx1 * dx2 + dy1 * dy2) / ((dx1 * dx1 + dy1 * dy1) * (dx2 * dx2 + dy2 * dy2)).sqrt();
 
-        if !(-COS_CRITICAL_RAD..=COS_CRITICAL_RAD).contains(&cos_dtheta) || dx1 * dy2 < dy1 * dx2 {
-            should_return_none = true;
+        if !(-cos_critical_rad..=cos_critical_rad).contains(&cos_dtheta) || dx1 * dy2 < dy1 * dx2 {
+            return ControlFlow::Break(());
         }
-    });
 
-    if should_return_none {
+        ControlFlow::Continue(())
+    }) {
         return None;
-    }
+    };
 
     Some(quad)
 }
@@ -278,20 +278,27 @@ pub fn fit_quad<A: ImageAllocator>(
 /// TODO
 #[derive(Default, Debug, Clone)]
 pub struct LineFit {
-    mx: f32,
-    my: f32,
-    mxx: f32,
-    mxy: f32,
-    myy: f32,
-    w: f32,
+    /// Weighted sum of x coordinates ($\sum_i w_i x_i$)
+    pub mx: f32,
+    /// Weighted sum of y coordinates ($\sum_i w_i y_i$)
+    pub my: f32,
+    /// Weighted sum of squared x coordinates ($\sum_i w_i x_i^2$)
+    pub mxx: f32,
+    /// Weighted sum of x·y products ($\sum_i w_i x_i y_i$)
+    pub mxy: f32,
+    /// Weighted sum of squared y coordinates ($\sum_i w_i y_i^2$)
+    pub myy: f32,
+    /// Total weight ($\sum_i w_i$)
+    pub w: f32,
 }
 
 /// TODO
-pub fn compute_lfps<A: ImageAllocator>(
+pub fn compute_line_fit_prefix_sums<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     gradient_infos: &[GradientInfo],
 ) -> Vec<LineFit> {
     let src_slice = src.as_slice();
+    // TODO: Find a way to avoid allocation
     let mut lfps = vec![LineFit::default(); gradient_infos.len()];
 
     gradient_infos.iter().enumerate().for_each(|(i, cluster)| {
@@ -330,70 +337,71 @@ pub fn compute_lfps<A: ImageAllocator>(
     lfps
 }
 
-const MAX_LINE_FIT_MSE: f32 = 10.0; // TODO: Make this value tuneable in the quad_segment_maxima function
-
 /// TODO
 pub fn quad_segment_maxima(
     gradient_infos: &[GradientInfo],
     lfps: &[LineFit],
     indices: &mut [usize; 4],
+    max_line_fit_mse: f32,
+    max_nmaxima: usize,
+    cos_critical_rad: f32,
 ) -> bool {
-    let ksz = 20.min(gradient_infos.len() / 12);
+    // TODO: check if the length of gradient_infos and lfps is same
+    let len = gradient_infos.len();
+    let window_size = 20.min(len / 12);
 
     // can't fit a quad, too few points
-    if ksz < 2 {
+    if window_size < 2 {
         return false;
     }
 
-    let mut errors = vec![0.0f32; gradient_infos.len()];
+    let mut errors = vec![0.0f32; len];
 
-    (0..gradient_infos.len()).for_each(|i| {
+    (0..len).for_each(|i| {
         fit_line(
             lfps,
-            (i + lfps.len() - ksz) % lfps.len(),
-            (i + ksz) % lfps.len(),
+            (i + len - window_size) % len,
+            (i + window_size) % len,
             None,
             errors.get_mut(i),
             None,
         );
     });
 
-    let mut y = vec![0.0f32; lfps.len()];
-    let sigma = 1.0f32;
-    let cutoff = 0.05f32;
+    const SIGMA: f32 = 1.0;
+    const CUTOFF: f32 = 0.05;
+    const GAUSSIAN_DENOM: f32 = 2.0 * SIGMA * SIGMA;
 
-    let fsz = (2.0 * ((-(cutoff.ln()) * 2.0 * sigma * sigma).sqrt() + 1.0) + 1.0) as usize;
+    let filter_size = (2.0 * ((-(CUTOFF.ln()) * 2.0 * SIGMA * SIGMA).sqrt() + 1.0) + 1.0) as usize;
+    let mut smoothed_errors = vec![0.0f32; len];
 
-    let mut f = vec![0.0f32; fsz];
+    let mut gaussian_kernel = vec![0.0f32; filter_size];
 
-    (0..fsz).for_each(|i| {
-        let j = i as isize - fsz as isize / 2;
-        f[i] = (-(j as f32) * j as f32 / (2.0 * sigma * sigma)).exp();
+    (0..filter_size).for_each(|i| {
+        let j = i as isize - filter_size as isize / 2;
+        gaussian_kernel[i] = (-(j as f32) * j as f32 / GAUSSIAN_DENOM).exp();
     });
 
-    (0..gradient_infos.len()).for_each(|iy| {
+    (0..len).for_each(|iy| {
         let mut acc = 0.0f32;
 
-        (0..fsz).for_each(|i| {
-            acc += errors[((iy as isize + i as isize - fsz as isize / 2
-                + gradient_infos.len() as isize)
-                % gradient_infos.len() as isize) as usize]
-                * f[i];
+        (0..filter_size).for_each(|i| {
+            let idx = (iy as isize + i as isize - filter_size as isize / 2 + len as isize)
+                .rem_euclid(gradient_infos.len() as isize) as usize;
+            acc += errors[idx] * gaussian_kernel[i];
         });
 
-        y[iy] = acc;
+        smoothed_errors[iy] = acc;
     });
 
-    errors = y;
+    errors = smoothed_errors;
 
-    let mut maxima = vec![0usize; gradient_infos.len()];
-    let mut maxima_errs = vec![0.0f32; gradient_infos.len()];
+    let mut maxima = vec![0usize; len];
+    let mut maxima_errs = vec![0.0f32; len];
     let mut nmaxima = 0usize;
 
     (0..gradient_infos.len()).for_each(|i| {
-        if errors[i] > errors[(i + 1) % gradient_infos.len()]
-            && errors[i] > errors[(i + gradient_infos.len() - 1) % gradient_infos.len()]
-        {
+        if errors[i] > errors[(i + 1) % len] && errors[i] > errors[(i + len - 1) % len] {
             maxima[nmaxima] = i;
             maxima_errs[nmaxima] = errors[i];
             nmaxima += 1;
@@ -403,8 +411,6 @@ pub fn quad_segment_maxima(
     if nmaxima < 4 {
         return false;
     }
-
-    let max_nmaxima = 10; // TODO: Make this value tuneable
 
     if nmaxima > max_nmaxima {
         let mut maxima_errs_copy = maxima_errs.clone();
@@ -444,8 +450,6 @@ pub fn quad_segment_maxima(
     let mut params01 = [0.0f32; 4];
     let mut params12 = [0.0f32; 4];
 
-    let max_dot = 0.984808; // TODO: Make this value tuneable
-
     (0..nmaxima - 3).for_each(|m0| {
         let i0 = maxima[m0];
 
@@ -461,7 +465,7 @@ pub fn quad_segment_maxima(
                 Some(&mut mse01),
             );
 
-            if mse01 > MAX_LINE_FIT_MSE {
+            if mse01 > max_line_fit_mse {
                 return;
             }
 
@@ -477,12 +481,12 @@ pub fn quad_segment_maxima(
                     Some(&mut mse12),
                 );
 
-                if mse12 > MAX_LINE_FIT_MSE {
+                if mse12 > max_line_fit_mse {
                     return;
                 }
 
                 let dot = params01[2] * params12[2] + params01[3] * params12[3];
-                if dot.abs() > max_dot {
+                if dot.abs() > cos_critical_rad {
                     return;
                 }
 
@@ -491,13 +495,13 @@ pub fn quad_segment_maxima(
 
                     fit_line(lfps, i2, i3, None, Some(&mut err23), Some(&mut mse23));
 
-                    if mse23 > MAX_LINE_FIT_MSE {
+                    if mse23 > max_line_fit_mse {
                         return;
                     }
 
                     fit_line(lfps, i3, i0, None, Some(&mut err30), Some(&mut mse30));
 
-                    if mse30 > MAX_LINE_FIT_MSE {
+                    if mse30 > max_line_fit_mse {
                         return;
                     }
 
@@ -523,7 +527,7 @@ pub fn quad_segment_maxima(
         indices[i] = *b;
     });
 
-    if (best_error / gradient_infos.len() as f32) < MAX_LINE_FIT_MSE {
+    if (best_error / gradient_infos.len() as f32) < max_line_fit_mse {
         return true;
     }
 
@@ -663,6 +667,11 @@ mod tests {
 
     use super::*;
 
+    const MIN_CLUSTER_PIXELS: usize = 5;
+    const COS_CRITICAL_RAD: f32 = 0.984808;
+    const MAX_LINE_FIT_MSE: f32 = 10.0;
+    const MAX_NMAXIMA: usize = 10;
+
     #[test]
     fn test_fit_quads() -> Result<(), Box<dyn std::error::Error>> {
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
@@ -676,26 +685,34 @@ mod tests {
         find_connected_components(&bin, &mut uf)?;
         find_gradient_clusters(&bin, &mut uf, &mut clusters);
 
-        let quads = fit_quads(&bin, &TagFamily::TAG36_H11, &mut clusters, 5);
+        let quads = fit_quads(
+            &bin,
+            &TagFamily::TAG36_H11,
+            &mut clusters,
+            MIN_CLUSTER_PIXELS,
+            COS_CRITICAL_RAD,
+            MAX_LINE_FIT_MSE,
+            MAX_NMAXIMA,
+        );
 
         let expected_quad = [[[27, 3], [27, 27], [3, 27], [3, 3]]];
 
         assert_eq!(quads.len(), expected_quad.len());
 
-        for (Quad { point, .. }, expected_quad) in quads.iter().zip(expected_quad) {
+        for (Quad { corners: point, .. }, expected_quad) in quads.iter().zip(expected_quad) {
             // We allow a ±1 error here to avoid CI failures due to small precision differences.
             // The expected outputs were generated with C code using 64-bit precision, while our code uses f32.
-            assert!((point[0][0] as usize).abs_diff(expected_quad[0][0]) <= 1);
-            assert!((point[0][1] as usize).abs_diff(expected_quad[0][1]) <= 1);
+            assert!((point[0].x as usize).abs_diff(expected_quad[0][0]) <= 1);
+            assert!((point[0].y as usize).abs_diff(expected_quad[0][1]) <= 1);
 
-            assert!((point[2][0] as usize).abs_diff(expected_quad[2][0]) <= 1);
-            assert!((point[2][0] as usize).abs_diff(expected_quad[2][0]) <= 1);
+            assert!((point[2].x as usize).abs_diff(expected_quad[2][0]) <= 1);
+            assert!((point[2].y as usize).abs_diff(expected_quad[2][1]) <= 1);
 
-            assert!((point[2][1] as usize).abs_diff(expected_quad[2][1]) <= 1);
-            assert!((point[2][1] as usize).abs_diff(expected_quad[2][1]) <= 1);
+            assert!((point[2].x as usize).abs_diff(expected_quad[2][0]) <= 1);
+            assert!((point[2].y as usize).abs_diff(expected_quad[2][1]) <= 1);
 
-            assert!((point[3][1] as usize).abs_diff(expected_quad[3][1]) <= 1);
-            assert!((point[3][1] as usize).abs_diff(expected_quad[3][1]) <= 1);
+            assert!((point[3].x as usize).abs_diff(expected_quad[3][0]) <= 1);
+            assert!((point[3].y as usize).abs_diff(expected_quad[3][1]) <= 1);
         }
 
         Ok(())
@@ -717,7 +734,14 @@ mod tests {
         let mut indices = [0; 4];
 
         // Should return false because ksz < 2 (20/12 = 1.66... < 2)
-        assert!(!quad_segment_maxima(&gradient_infos, &lfps, &mut indices));
+        assert!(!quad_segment_maxima(
+            &gradient_infos,
+            &lfps,
+            &mut indices,
+            MAX_LINE_FIT_MSE,
+            MAX_NMAXIMA,
+            COS_CRITICAL_RAD
+        ));
 
         // Test 2: Empty input
         let empty_gradient_infos = Vec::<GradientInfo>::new();
@@ -725,7 +749,10 @@ mod tests {
         assert!(!quad_segment_maxima(
             &empty_gradient_infos,
             &empty_lfps,
-            &mut indices
+            &mut indices,
+            MAX_LINE_FIT_MSE,
+            MAX_NMAXIMA,
+            COS_CRITICAL_RAD
         ));
 
         // Test 3: Constant slope (no maxima)
@@ -742,7 +769,10 @@ mod tests {
         assert!(!quad_segment_maxima(
             &constant_slope_infos,
             &constant_lfps,
-            &mut indices
+            &mut indices,
+            MAX_LINE_FIT_MSE,
+            MAX_NMAXIMA,
+            COS_CRITICAL_RAD
         ));
     }
 
@@ -765,10 +795,17 @@ mod tests {
             .unwrap();
 
         if largest_cluster.len() >= 24 {
-            let lfps = compute_lfps(&bin, largest_cluster);
+            let lfps = compute_line_fit_prefix_sums(&bin, largest_cluster);
             let mut indices = [0; 4];
 
-            let result = quad_segment_maxima(largest_cluster, &lfps, &mut indices);
+            let result = quad_segment_maxima(
+                largest_cluster,
+                &lfps,
+                &mut indices,
+                MAX_LINE_FIT_MSE,
+                MAX_NMAXIMA,
+                COS_CRITICAL_RAD,
+            );
 
             assert!(!result);
         }
@@ -904,7 +941,7 @@ mod tests {
             gy: GradientDirection::TowardsBlack,
             slope: 0.0,
         }];
-        let lfps = compute_lfps(&img, &gradient_infos);
+        let lfps = compute_line_fit_prefix_sums(&img, &gradient_infos);
         assert_eq!(lfps.len(), 1);
         // The weighted mean should be close to the point's position (scaled by 0.5 + delta)
         let expected_x = 1.0 * 0.5 + 0.5;
@@ -933,7 +970,7 @@ mod tests {
                 slope: 0.0,
             },
         ];
-        let lfps = compute_lfps(&img, &gradient_infos);
+        let lfps = compute_line_fit_prefix_sums(&img, &gradient_infos);
         assert_eq!(lfps.len(), 3);
         // The last element should be the sum of all previous
         let last = &lfps[2];
@@ -953,7 +990,7 @@ mod tests {
 
         // Test 3: Empty input
         let gradient_infos = vec![];
-        let lfps = compute_lfps(&img, &gradient_infos);
+        let lfps = compute_line_fit_prefix_sums(&img, &gradient_infos);
         assert_eq!(lfps.len(), 0);
     }
 }
