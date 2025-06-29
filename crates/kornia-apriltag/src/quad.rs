@@ -37,6 +37,27 @@ impl Default for FitQuadOpts {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+/// Options for fitting quadrilaterals (quads) to clusters of gradient information.
+pub struct FitQuadOpts {
+    /// Cosine of the critical angle in radians.
+    pub cos_critical_rad: f32,
+    /// Maximum mean squared error allowed for line fitting.
+    pub max_line_fit_mse: f32,
+    /// Maximum number of maxima to consider.
+    pub max_nmaxima: usize,
+}
+
+impl Default for FitQuadOpts {
+    fn default() -> Self {
+        Self {
+            cos_critical_rad: 0.984808,
+            max_line_fit_mse: 10.0,
+            max_nmaxima: 10,
+        }
+    }
+}
+
 /// Represents a detected quadrilateral in the image, corresponding to a tag candidate.
 #[derive(Debug, Default, Clone)]
 pub struct Quad {
