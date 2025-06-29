@@ -11,8 +11,8 @@ use std::io::{Error, Write};
 use candle_core::{DType, Device, IndexOp, Shape, Tensor};
 use candle_transformers::generation::LogitsProcessor;
 use hf_hub::api::sync::Api;
-use rand::rngs::StdRng;
-use rand::SeedableRng;
+use kornia_image::Image;
+use kornia_tensor::CpuAllocator;
 use tokenizers::Tokenizer;
 
 use preprocessor::{get_prompt_split_image, load_image_url, preprocess_image};
@@ -38,7 +38,7 @@ pub struct SmolVlm {
     config: SmolVlmConfig,
     logits_processor: LogitsProcessor,
     device: Device,
-    token_history: String,
+    prompt_history: String,
     image_history: Vec<(Tensor, Tensor)>,
 }
 
@@ -80,12 +80,12 @@ impl SmolVlm {
                 Some(config.top_p),
             ),
             device,
-            token_history: String::from("<|im_start|>"),
+            prompt_history: String::from("<|im_start|>"),
             image_history: Vec::new(),
         })
     }
 
-    /// Run the inference of the SmolVLM model
+    /// Run the inference of the SmolVLM model with previous context added.
     ///
     /// # Arguments
     ///
@@ -99,8 +99,8 @@ impl SmolVlm {
     /// * `caption` - The generated caption
     pub fn inference(
         &mut self,
-        // image: &Image<u8, 3, CpuAllocator>,
-        // prompt: &str,
+        image: Option<Image<u8, 3, CpuAllocator>>,
+        prompt: &str,
         sample_len: usize, // per prompt
         stdout_debug: bool,
     ) -> Result<String, SmolVlmError> {
@@ -108,67 +108,33 @@ impl SmolVlm {
             std::io::stdout().flush()?;
         }
 
-        // let image_token = self.image_token_enc.get_ids(); // STRUCT-WIDE
-        // let mut token_history = String::from("<|im_start|>"); // STRUCT-WIDE
-        // let mut image: Vec<(Tensor, Tensor)> = Vec::new(); // STRUCT-WIDE
         let mut response = String::new(); // collection of tokens
-        let mut token_output = String::new(); // single token
+
+        let mut full_prompt = String::new();
+        if let Some(raw_img) = image {
+            let (img_patches, mask_patches, rows, cols) =
+                preprocess_image(raw_img, 1920, 384, &self.device);
+
+            let img_token = get_prompt_split_image(81, rows, cols);
+            full_prompt += "\nUser:<image>";
+            full_prompt = full_prompt.replace("<image>", &img_token);
+
+            self.image_history.push((img_patches, mask_patches));
+        } else {
+            full_prompt += "\nUser: ";
+        }
+
+        full_prompt += prompt;
+        full_prompt += "<end_of_utterance>\nAssistant:";
+        response.clear();
+        self.prompt_history += &full_prompt;
 
         for i in 0..sample_len {
-            // OUTSIDE
-
-            // OUTSIDE (i == 0 --> initially, EOU --> end of inference)
-            if i == 0 || token_output == "<end_of_utterance>" {
-                let img_url = read_input("img> ");
-                let raw_img = load_image_url(&img_url)
-                    .and_then(|v| {
-                        if self.image_history.len() > 1 {
-                            println!("One image max. Cannot add another image. (Restart)");
-                            Err(Box::new(Error::new(io::ErrorKind::Other, "One image max")))
-                        } else {
-                            Ok(v)
-                        }
-                    })
-                    .map_or_else(
-                        |err| {
-                            println!("Invalid or empty URL (no image)");
-                            println!("Error: {:?}", err);
-
-                            Err(err)
-                        },
-                        |ok| Ok(ok),
-                    )
-                    .ok();
-
-                let raw_prompt = read_input("txt> ");
-
-                //  ^^^ MOVE OUTSIDE
-
-                let mut txt_prompt = String::new();
-                if let Some(raw_img) = raw_img {
-                    let (img_patches, mask_patches, rows, cols) =
-                        preprocess_image(raw_img, 1920, 384, &self.device);
-
-                    let img_token = get_prompt_split_image(81, rows, cols);
-                    txt_prompt += "\nUser:<image>";
-                    txt_prompt = txt_prompt.replace("<image>", &img_token);
-
-                    self.image_history.push((img_patches, mask_patches));
-                } else {
-                    txt_prompt += "\nUser: ";
-                }
-
-                txt_prompt += &raw_prompt;
-                txt_prompt += "<end_of_utterance>\nAssistant:";
-                response.clear();
-                self.token_history += &txt_prompt;
-            }
-            let encoding = self.tokenizer.encode(self.token_history.clone(), false)?;
+            let encoding = self.tokenizer.encode(self.prompt_history.clone(), false)?;
             let tokens = encoding.get_ids();
             let input =
                 Tensor::from_slice(tokens, Shape::from_dims(&[tokens.len()]), &self.device)?;
             let vision_data = if self.image_history.len() > 0 {
-                // let image_token_mask = Tensor::from_slice(image_token, &[1], &self.device)?;
                 let image_token_mask = input.broadcast_eq(&self.image_token_tensor)?;
                 Some((
                     image_token_mask,
@@ -182,22 +148,28 @@ impl SmolVlm {
             let (s, _embed_dim) = logits.dims2()?;
             let last_logit = logits.i((s - 1, ..))?;
             let out_token = self.logits_processor.sample(&last_logit)?;
-            token_output = self.tokenizer.decode(&[out_token], false)?;
 
-            //  vvv MOVE OUTSIDE
-            if stdout_debug {
-                print!("{}", token_output);
-                io::stdout().flush().unwrap();
-            }
-            //  ^^^ MOVE OUTSIDE
+            let token_output = self.tokenizer.decode(&[out_token], false)?;
 
-            self.token_history += &token_output;
+            self.prompt_history += &token_output;
             if token_output != "<end_of_utterance>" {
                 response += &token_output;
-            }
-        } // OUTSIDE
 
-        Ok(response) // OUTSIDE
+                if stdout_debug {
+                    print!("{}", token_output);
+                    io::stdout().flush().unwrap();
+                }
+            } else {
+                if stdout_debug {
+                    print!("\n");
+                    io::stdout().flush().unwrap();
+                }
+
+                break;
+            }
+        }
+
+        Ok(response)
     }
 
     // utility function to load the model
@@ -223,7 +195,31 @@ mod tests {
         let mut model = SmolVlm::new(SmolVlmConfig::default()).unwrap();
 
         // cargo test -p kornia-vlm test_smolvlm_inference --features "cuda" -- --nocapture
-        println!("Running inference on SmolVlm model...");
-        model.inference(10_000, true).unwrap();
+        for _ in 0..10 {
+            let img_url = read_input("img> ");
+            let image = load_image_url(&img_url)
+                .and_then(|v| {
+                    if model.image_history.len() > 1 {
+                        println!("One image max. Cannot add another image. (Restart)");
+                        Err(Box::new(Error::new(io::ErrorKind::Other, "One image max")))
+                    } else {
+                        Ok(v)
+                    }
+                })
+                .map_or_else(
+                    |err| {
+                        println!("Invalid or empty URL (no image)");
+                        println!("Error: {:?}", err);
+
+                        Err(err)
+                    },
+                    |ok| Ok(ok),
+                )
+                .ok();
+
+            let prompt = read_input("txt> ");
+
+            model.inference(image, &prompt, 10_000, true).unwrap();
+        }
     }
 }

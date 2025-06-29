@@ -14,7 +14,7 @@ impl Default for SmolVlmConfig {
     fn default() -> Self {
         Self {
             seed: 42,
-            temp: 0.2,
+            temp: 0.8,
             top_p: 0.9,
             repeat_penalty: 1.1,
             repeat_last_n: 64,
