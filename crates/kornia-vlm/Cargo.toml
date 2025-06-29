@@ -12,17 +12,27 @@ rust-version = { workspace = true }
 version = { workspace = true }
 
 [dependencies]
+
+kornia-image = { workspace = true }
+kornia-tensor = { workspace = true }
+kornia-io = { workspace = true }
+kornia-imgproc = { workspace = true }
+
+
 candle-core = { version = "0.9.1" }
 candle-transformers = { version = "0.9.1" }
 candle-examples = "0.9.1"
 candle-nn = { version = "0.9.1" }
 hf-hub = "0.4.2"
-kornia-image = { workspace = true }
-kornia-imgproc = { workspace = true }
+tokenizers = { version = "0.21.1", features = ["http"] }
+
 log = "0.4"
 serde_json = "1"
-tokenizers = "0.21.1"
 thiserror = "2"
+
+[dev-dependencies]
+
+rand = "0.9.0"
 
 [features]
 cuda = ["candle-core/cuda", "candle-transformers/cuda", "candle-nn/cuda"]
