@@ -653,9 +653,12 @@ mod tests {
     use kornia_io::png::read_image_png_mono8;
 
     use crate::{
-        segmentation::{find_connected_components, find_gradient_clusters},
+        segmentation::{
+            find_connected_components, find_gradient_clusters, GradientDirection, GradientInfo,
+        },
         threshold::{adaptive_threshold, TileMinMax},
         union_find::UnionFind,
+        utils::{Pixel, Point2d},
     };
 
     use super::*;
@@ -696,5 +699,215 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn test_quad_segment_maxima_edge_cases() {
+        // Test 1: Edge cases - too few points, empty input, constant slope
+        let gradient_infos = vec![
+            GradientInfo {
+                pos: Point2d { x: 0, y: 0 },
+                gx: GradientDirection::TowardsWhite,
+                gy: GradientDirection::TowardsBlack,
+                slope: 0.0,
+            };
+            20
+        ];
+        let lfps = vec![LineFit::default(); 20];
+        let mut indices = [0; 4];
+        
+        // Should return false because ksz < 2 (20/12 = 1.66... < 2)
+        assert!(!quad_segment_maxima(&gradient_infos, &lfps, &mut indices));
+
+        // Test 2: Empty input
+        let empty_gradient_infos = Vec::<GradientInfo>::new();
+        let empty_lfps = Vec::<LineFit>::new();
+        assert!(!quad_segment_maxima(
+            &empty_gradient_infos,
+            &empty_lfps,
+            &mut indices
+        ));
+
+        // Test 3: Constant slope (no maxima)
+        let mut constant_slope_infos = Vec::new();
+        for i in 0..100 {
+            constant_slope_infos.push(GradientInfo {
+                pos: Point2d { x: i, y: i },
+                gx: GradientDirection::TowardsWhite,
+                gy: GradientDirection::TowardsBlack,
+                slope: 1.0, // Constant slope
+            });
+        }
+        let constant_lfps = vec![LineFit::default(); 100];
+        assert!(!quad_segment_maxima(
+            &constant_slope_infos,
+            &constant_lfps,
+            &mut indices
+        ));
+    }
+
+    #[test]
+    fn test_quad_segment_maxima() -> Result<(), Box<dyn std::error::Error>> {
+        let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
+        let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
+        let mut tile_min_max = TileMinMax::new(src.size(), 4);
+        let mut uf = UnionFind::new(src.as_slice().len());
+        let mut clusters = HashMap::new();
+
+        adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
+        find_connected_components(&bin, &mut uf)?;
+        find_gradient_clusters(&bin, &mut uf, &mut clusters);
+
+        // Find the largest cluster to test with
+        let largest_cluster = clusters
+            .values()
+            .max_by_key(|cluster| cluster.len())
+            .unwrap();
+        
+        if largest_cluster.len() >= 24 {
+            let lfps = compute_lfps(&bin, largest_cluster);
+            let mut indices = [0; 4];
+            
+            let result = quad_segment_maxima(largest_cluster, &lfps, &mut indices);
+            
+            assert!(!result);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fit_line() {
+        // Create some test LineFit data
+        let mut lfps: Vec<LineFit> = Vec::new();
+        
+        // Create a simple line of points: (0,0), (1,1), (2,2), (3,3)
+        for i in 0..4 {
+            let mut lfp = LineFit::default();
+            if i > 0 {
+                lfp = lfps[i - 1].clone();
+            }
+            
+            let x = i as f32;
+            let y = i as f32;
+            let w = 1.0f32;
+            
+            lfp.mx += w * x;
+            lfp.my += w * y;
+            lfp.mxx += w * x * x;
+            lfp.mxy += w * x * y;
+            lfp.myy += w * y * y;
+            lfp.w += w;
+            
+            lfps.push(lfp);
+        }
+        
+        // Test 1: Normal case with all parameters
+        let mut lineparm = [0.0f32; 4];
+        let mut err = 0.0f32;
+        let mut mse = 0.0f32;
+        
+        fit_line(&lfps, 0, 3, Some(&mut lineparm), Some(&mut err), Some(&mut mse));
+        
+        // Check that parameters were computed
+        assert!(lineparm[0] != 0.0 || lineparm[1] != 0.0); // ex, ey should be computed
+        assert!(err >= 0.0); // Error can be zero for perfect fit
+        assert!(mse >= 0.0); // MSE can be zero for perfect fit
+        
+        // Test 2: Edge case - same indices
+        let mut lineparm2 = [0.0f32; 4];
+        let mut err2 = 0.0f32;
+        let mut mse2 = 0.0f32;
+        
+        fit_line(&lfps, 1, 1, Some(&mut lineparm2), Some(&mut err2), Some(&mut mse2));
+        
+        // Should not modify parameters when i0 == i1
+        assert_eq!(lineparm2[0], 0.0);
+        assert_eq!(lineparm2[1], 0.0);
+        assert_eq!(err2, 0.0);
+        assert_eq!(mse2, 0.0);
+        
+        // Test 3: Edge case - out of bounds indices
+        let mut lineparm3 = [0.0f32; 4];
+        let mut err3 = 0.0f32;
+        let mut mse3 = 0.0f32;
+        
+        fit_line(&lfps, 0, 10, Some(&mut lineparm3), Some(&mut err3), Some(&mut mse3));
+        
+        // Should not modify parameters when indices are out of bounds
+        assert_eq!(lineparm3[0], 0.0);
+        assert_eq!(lineparm3[1], 0.0);
+        assert_eq!(err3, 0.0);
+        assert_eq!(mse3, 0.0);
+        
+        // Test 4: Edge case - i0 > i1 (wrapped case)
+        let mut lineparm4 = [0.0f32; 4];
+        let mut err4 = 0.0f32;
+        let mut mse4 = 0.0f32;
+        
+        fit_line(&lfps, 3, 1, Some(&mut lineparm4), Some(&mut err4), Some(&mut mse4));
+        
+        // Should compute parameters for wrapped case
+        assert!(lineparm4[0] != 0.0 || lineparm4[1] != 0.0);
+        assert!(err4 >= 0.0);
+        assert!(mse4 >= 0.0);
+        
+        // Test 5: No output parameters (should not crash)
+        fit_line(&lfps, 0, 3, None, None, None);
+    }
+
+    #[test]
+    fn test_compute_lfps() {
+        use kornia_image::{Image, ImageSize};
+        use crate::utils::Pixel;
+        use crate::segmentation::GradientDirection;
+
+        // Create a 4x4 image with all white pixels
+        let size = ImageSize { width: 4, height: 4 };
+        let img = Image::<Pixel, 1, _>::from_size_val(size, Pixel::White, CpuAllocator).unwrap();
+
+        // Test 1: Single point
+        let gradient_infos = vec![GradientInfo {
+            pos: Point2d { x: 1, y: 2 },
+            gx: GradientDirection::TowardsWhite,
+            gy: GradientDirection::TowardsBlack,
+            slope: 0.0,
+        }];
+        let lfps = compute_lfps(&img, &gradient_infos);
+        assert_eq!(lfps.len(), 1);
+        // The weighted mean should be close to the point's position (scaled by 0.5 + delta)
+        let expected_x = 1.0 * 0.5 + 0.5;
+        let expected_y = 2.0 * 0.5 + 0.5;
+        assert!((lfps[0].mx / lfps[0].w - expected_x).abs() < 1e-4);
+        assert!((lfps[0].my / lfps[0].w - expected_y).abs() < 1e-4);
+
+        // Test 2: Multiple points in a line
+        let gradient_infos = vec![
+            GradientInfo { pos: Point2d { x: 0, y: 0 }, gx: GradientDirection::TowardsWhite, gy: GradientDirection::TowardsBlack, slope: 0.0 },
+            GradientInfo { pos: Point2d { x: 1, y: 1 }, gx: GradientDirection::TowardsWhite, gy: GradientDirection::TowardsBlack, slope: 0.0 },
+            GradientInfo { pos: Point2d { x: 2, y: 2 }, gx: GradientDirection::TowardsWhite, gy: GradientDirection::TowardsBlack, slope: 0.0 },
+        ];
+        let lfps = compute_lfps(&img, &gradient_infos);
+        assert_eq!(lfps.len(), 3);
+        // The last element should be the sum of all previous
+        let last = &lfps[2];
+        let mut sum_x = 0.0;
+        let mut sum_y = 0.0;
+        let mut sum_w = 0.0;
+        for i in 0..3 {
+            let x = gradient_infos[i].pos.x as f32 * 0.5 + 0.5;
+            let y = gradient_infos[i].pos.y as f32 * 0.5 + 0.5;
+            sum_x += x;
+            sum_y += y;
+            sum_w += 1.0;
+        }
+        assert!((last.mx - sum_x).abs() < 1e-4);
+        assert!((last.my - sum_y).abs() < 1e-4);
+        assert!((last.w - sum_w).abs() < 1e-4);
+
+        // Test 3: Empty input
+        let gradient_infos = vec![];
+        let lfps = compute_lfps(&img, &gradient_infos);
+        assert_eq!(lfps.len(), 0);
     }
 }
