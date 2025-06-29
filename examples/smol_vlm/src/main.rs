@@ -92,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let prompt = read_input("txt> ");
 
-        model.inference(image, &prompt, 10_000, true)?;
+        model.inference(image, &prompt, 100, true)?;
     }
 
     Ok(())

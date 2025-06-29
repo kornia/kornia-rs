@@ -1,6 +1,5 @@
 use candle_core::{Device, Shape, Tensor};
 
-use kornia_io::jpeg::read_image_jpeg_rgb8;
 use kornia_io::png::{write_image_png_gray8, write_image_png_rgb8};
 
 use kornia_image::{Image, ImageSize};

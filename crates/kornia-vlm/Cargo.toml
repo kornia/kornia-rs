@@ -33,8 +33,6 @@ thiserror = "2"
 [dev-dependencies]
 
 rand = "0.9.0"
-# TODO: to be moved to the exmples crate
-reqwest = { version = "0.12.15", features = ["blocking"] }
 
 [features]
 cuda = ["candle-core/cuda", "candle-transformers/cuda", "candle-nn/cuda"]
