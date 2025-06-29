@@ -1,6 +1,8 @@
+mod generator;
 mod model;
+mod preprocessor;
 mod text_model;
-mod utils;
+mod util;
 mod vision_model;
 
 use std::io;
@@ -8,6 +10,7 @@ use std::io::{Error, Write};
 
 use candle_core::{DType, Device, IndexOp, Shape, Tensor};
 use candle_nn::ops;
+use candle_transformers::generation::LogitsProcessor;
 use hf_hub::api::sync::Api;
 use rand::prelude::IndexedRandom;
 use rand::rngs::StdRng;
@@ -16,32 +19,10 @@ use std::cmp::Ordering;
 use terminal_size::{terminal_size, Width};
 use tokenizers::{Encoding, Tokenizer};
 
-use utils::{get_prompt_split_image, load_image_url, preprocess_image};
+use preprocessor::{get_prompt_split_image, load_image_url, preprocess_image};
 
 use crate::smolvlm::model::SmolModel;
-
-/// Configuration for the SmolVLM model
-pub struct SmolVlmConfig {
-    pub seed: u64,
-    pub temp: f32,
-    pub top_k: usize,
-
-    // TODO: check if SmolVLM needs this
-    pub repeat_penalty: f32,
-    pub repeat_last_n: usize,
-}
-
-impl Default for SmolVlmConfig {
-    fn default() -> Self {
-        Self {
-            seed: 42,
-            temp: 0.2f32,
-            top_k: 50,
-            repeat_penalty: 1.1,
-            repeat_last_n: 64,
-        }
-    }
-}
+use crate::smolvlm::util::{SmolVlmConfig, SmolVlmError};
 
 fn count_lines(text: &str) -> usize {
     if let Some((Width(w), _)) = terminal_size() {
@@ -69,34 +50,13 @@ fn read_input(cli_prompt: &str) -> String {
     input.trim().to_owned()
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum SmolVlmError {
-    #[error(transparent)]
-    FailedToLoadModel(#[from] hf_hub::api::sync::ApiError),
-
-    #[error(transparent)]
-    CandleError(#[from] candle_core::Error),
-
-    #[error(transparent)]
-    ImageError(#[from] kornia_image::ImageError),
-
-    #[error(transparent)]
-    TokenizerError(#[from] tokenizers::Error),
-
-    #[error(transparent)]
-    IoError(#[from] std::io::Error),
-
-    // TODO: not used right now (currently, the end token is handled via if/else, which might be preferred)
-    #[error("Cannot find the <end_of_utterance> token")]
-    EosTokenNotFound,
-}
-
 pub struct SmolVlm {
     model: SmolModel,
     tokenizer: Tokenizer,
     image_token_enc: Encoding,
     config: SmolVlmConfig,
     rng: StdRng,
+    logits_processor: LogitsProcessor,
     device: Device,
 }
 
@@ -132,6 +92,11 @@ impl SmolVlm {
             tokenizer,
             image_token_enc,
             config,
+            logits_processor: LogitsProcessor::new(
+                config.seed,
+                Some(config.temp),
+                Some(config.top_p),
+            ),
             device,
             rng,
         })
@@ -156,16 +121,17 @@ impl SmolVlm {
         // sample_len: usize,
         // stdout_debug: bool,
     ) -> Result<String, SmolVlmError> {
-        let image_token = self.image_token_enc.get_ids();
-        let mut message = String::from("<|im_start|>");
-        let mut image: Vec<(Tensor, Tensor)> = Vec::new();
+        let image_token = self.image_token_enc.get_ids(); // STRUCT-WIDE
+        let mut message = String::from("<|im_start|>"); // STRUCT-WIDE
+        let mut image: Vec<(Tensor, Tensor)> = Vec::new(); // STRUCT-WIDE
         let mut response = String::new();
         let mut output = String::new();
-        let mut lines_printed = 0;
+        let mut lines_printed = 0; // OUTSIDE
         for i in 0..10_000 {
+            // OUTSIDE
             if i == 0 || output == "<end_of_utterance>" {
                 let img_url = read_input("img> ");
-                let img = load_image_url(&img_url)
+                let raw_img = load_image_url(&img_url)
                     .and_then(|v| {
                         if image.len() > 1 {
                             println!("One image max. Cannot add another image. (Restart)");
@@ -174,25 +140,39 @@ impl SmolVlm {
                             Ok(v)
                         }
                     })
-                    .map(|img| preprocess_image(img, 1920, 384, &self.device));
+                    .map_or_else(
+                        |err| {
+                            println!("Invalid or empty URL (no image)");
+                            println!("Error: {:?}", err);
+
+                            Err(err)
+                        },
+                        |ok| Ok(ok),
+                    )
+                    .ok();
+
+                let raw_prompt = read_input("txt> ");
+
+                //  ^^^ MOVE OUTSIDE
+
                 let mut txt_prompt = String::new();
-                if let Ok((_, _, cols, rows)) = img {
+                if let Some(raw_img) = raw_img {
+                    let (img_patches, mask_patches, rows, cols) =
+                        preprocess_image(raw_img, 1920, 384, &self.device);
+
                     let img_token = get_prompt_split_image(81, rows, cols);
                     txt_prompt += "\nUser:<image>";
                     txt_prompt = txt_prompt.replace("<image>", &img_token);
+
+                    image.push((img_patches, mask_patches));
                 } else {
-                    println!("Invalid or empty URL (no image)");
-                    println!("Error: {:?}", img);
                     txt_prompt += "\nUser: ";
                 }
 
-                txt_prompt += &read_input("txt> ");
+                txt_prompt += &raw_prompt;
                 txt_prompt += "<end_of_utterance>\nAssistant:";
                 response.clear();
                 message += &txt_prompt;
-                if let Ok((img_patches, mask_patches, _, _)) = img {
-                    image.push((img_patches, mask_patches));
-                }
             }
             let encoding = self.tokenizer.encode(message.clone(), false)?;
             let tokens = encoding.get_ids();
@@ -208,44 +188,25 @@ impl SmolVlm {
             let logits = self.model.forward(&input, i, vision_data)?;
             let (s, _embed_dim) = logits.dims2()?;
             let last_logit = logits.i((s - 1, ..))?;
-            let out_token = {
-                let temperature = Tensor::from_slice(&[self.config.temp], (1,), &self.device)?;
-                let scaled = last_logit.broadcast_div(&temperature)?;
-                let probs = ops::softmax(&scaled, 0)?;
-                let probs_vec: Vec<f32> = probs.to_vec1()?;
-                let mut indices: Vec<usize> = (0..probs_vec.len()).collect();
-                indices.sort_by(|&i, &j| {
-                    probs_vec[j]
-                        .partial_cmp(&probs_vec[i])
-                        .unwrap_or(Ordering::Equal)
-                });
-                let top_k_indices = &indices[..self.config.top_k];
-                let top_k_probs: Vec<f32> = top_k_indices.iter().map(|&i| probs_vec[i]).collect();
-                let sum_probs: f32 = top_k_probs.iter().sum();
-                let normalized_probs: Vec<f32> =
-                    top_k_probs.iter().map(|p| p / sum_probs).collect();
+            let out_token = self.logits_processor.sample(&last_logit)?;
+            output = self.tokenizer.decode(&[out_token], false)?;
 
-                let sampled_index = top_k_indices
-                    .choose_weighted(&mut self.rng, |&idx| {
-                        normalized_probs[top_k_indices.iter().position(|&x| x == idx).unwrap()]
-                    })
-                    .expect("Sampling failed");
-                [*sampled_index as u32]
-            };
-            output = self.tokenizer.decode(&out_token.as_slice(), false)?;
+            //  vvv MOVE OUTSIDE
             if !response.is_empty() {
                 clear_lines(lines_printed);
             }
             println!("{:?}", response);
             io::stdout().flush().unwrap();
             lines_printed = count_lines(&response);
+            //  ^^^ MOVE OUTSIDE
+
             message += &output;
             if output != "<end_of_utterance>" {
                 response += &output;
             }
-        }
+        } // OUTSIDE
 
-        Ok(response)
+        Ok(response) // OUTSIDE
     }
 
     // utility function to load the model
@@ -272,6 +233,6 @@ mod tests {
 
         // cargo test -p kornia-vlm test_smolvlm_inference --features "cuda" -- --nocapture
         println!("Running inference on SmolVlm model...");
-        let _ = model.inference();
+        model.inference().unwrap();
     }
 }
