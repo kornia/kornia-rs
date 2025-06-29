@@ -420,6 +420,11 @@ pub fn quad_segment_maxima(
             maxima[out] = maxima[i];
             out += 1;
         }
+
+        if out < 4 {
+            return false;
+        }
+
         nmaxima = out;
     }
 
