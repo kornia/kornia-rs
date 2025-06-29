@@ -141,7 +141,7 @@ pub fn fit_quad<A: ImageAllocator>(
         return None;
     }
 
-    sort_gradient_info(cluster);
+    cluster.sort_by(|a, b| a.slope.total_cmp(&b.slope));
 
     let lfps = compute_lfps(src, cluster);
 
@@ -276,109 +276,6 @@ pub fn fit_quad<A: ImageAllocator>(
 }
 
 /// TODO
-pub fn sort_gradient_info(gradient_infos: &mut [GradientInfo]) {
-    match gradient_infos.len() {
-        0 | 1 => (),
-        2 => sort2(gradient_infos),
-        3 => sort3(gradient_infos),
-        4 => sort4(gradient_infos),
-        5 => sort5(gradient_infos),
-        _ => merge_sort(gradient_infos),
-    }
-}
-
-fn maybe_swap(gradient_infos: &mut [GradientInfo], i: usize, j: usize) {
-    if gradient_infos[i].slope > gradient_infos[j].slope {
-        gradient_infos.swap(i, j);
-    }
-}
-
-fn sort2(gradient_infos: &mut [GradientInfo]) {
-    maybe_swap(gradient_infos, 0, 1);
-}
-
-fn sort3(gradient_infos: &mut [GradientInfo]) {
-    maybe_swap(gradient_infos, 0, 1);
-    maybe_swap(gradient_infos, 0, 2);
-    maybe_swap(gradient_infos, 1, 2);
-}
-
-fn sort4(gradient_infos: &mut [GradientInfo]) {
-    maybe_swap(gradient_infos, 0, 1);
-    maybe_swap(gradient_infos, 2, 3);
-    maybe_swap(gradient_infos, 0, 2);
-    maybe_swap(gradient_infos, 1, 3);
-    maybe_swap(gradient_infos, 1, 2);
-}
-
-fn sort5(gradient_infos: &mut [GradientInfo]) {
-    maybe_swap(gradient_infos, 0, 1);
-    maybe_swap(gradient_infos, 3, 4);
-    maybe_swap(gradient_infos, 2, 4);
-    maybe_swap(gradient_infos, 2, 3);
-    maybe_swap(gradient_infos, 1, 4);
-    maybe_swap(gradient_infos, 0, 3);
-    maybe_swap(gradient_infos, 0, 2);
-    maybe_swap(gradient_infos, 1, 3);
-    maybe_swap(gradient_infos, 1, 2);
-}
-
-fn merge_sort(gradient_infos: &mut [GradientInfo]) {
-    let mut temp = gradient_infos.to_vec();
-    merge_sort_rec(gradient_infos, &mut temp);
-}
-
-fn merge_sort_rec(gradient_infos: &mut [GradientInfo], temp: &mut [GradientInfo]) {
-    let len = gradient_infos.len();
-
-    match len {
-        0 | 1 => (),
-        2 => sort2(gradient_infos),
-        3 => sort3(gradient_infos),
-        4 => sort4(gradient_infos),
-        5 => sort5(gradient_infos),
-        _ => {
-            let mid = len / 2;
-            let (left, right) = gradient_infos.split_at_mut(mid);
-            let (temp_left, temp_right) = temp.split_at_mut(mid);
-
-            merge_sort_rec(left, temp_left);
-            merge_sort_rec(right, temp_right);
-
-            merge(left, right, temp);
-            gradient_infos.copy_from_slice(temp);
-        }
-    }
-}
-
-fn merge(left: &[GradientInfo], right: &[GradientInfo], out: &mut [GradientInfo]) {
-    let mut i = 0;
-    let mut j = 0;
-    let mut k = 0;
-    let n = left.len();
-    let m = right.len();
-
-    while i < n && j < m {
-        if left[i].slope <= right[j].slope {
-            out[k] = left[i];
-            i += 1;
-        } else {
-            out[k] = right[j];
-            j += 1;
-        }
-        k += 1;
-    }
-
-    // Copy any remaining elements
-    if i < n {
-        out[k..(k + n - i)].copy_from_slice(&left[i..n]);
-    }
-    if j < m {
-        out[k..(k + m - j)].copy_from_slice(&right[j..m]);
-    }
-}
-
-/// TODO
 #[derive(Default, Debug, Clone)]
 pub struct LineFit {
     mx: f32,
@@ -450,7 +347,7 @@ pub fn quad_segment_maxima(
 
     let mut errors = vec![0.0f32; gradient_infos.len()];
 
-    (0..lfps.len()).for_each(|i| {
+    (0..gradient_infos.len()).for_each(|i| {
         fit_line(
             lfps,
             (i + lfps.len() - ksz) % lfps.len(),
@@ -465,8 +362,7 @@ pub fn quad_segment_maxima(
     let sigma = 1.0f32;
     let cutoff = 0.05f32;
 
-    let mut fsz = ((-cutoff.ln() * 2.0 * sigma * sigma).sqrt() + 1.0) as usize;
-    fsz = 2 * fsz + 1;
+    let fsz = (2.0 * ((-(cutoff.ln()) * 2.0 * sigma * sigma).sqrt() + 1.0) + 1.0) as usize;
 
     let mut f = vec![0.0f32; fsz];
 
@@ -481,7 +377,8 @@ pub fn quad_segment_maxima(
         (0..fsz).for_each(|i| {
             acc += errors[((iy as isize + i as isize - fsz as isize / 2
                 + gradient_infos.len() as isize)
-                % gradient_infos.len() as isize) as usize];
+                % gradient_infos.len() as isize) as usize]
+                * f[i];
         });
 
         y[iy] = acc;
@@ -742,5 +639,57 @@ pub fn fit_line(
 
     if let Some(mse) = mse {
         *mse = eig_small;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kornia_image::allocator::CpuAllocator;
+    use kornia_io::png::read_image_png_mono8;
+
+    use crate::{
+        segmentation::{find_connected_components, find_gradient_clusters},
+        threshold::{adaptive_threshold, TileMinMax},
+        union_find::UnionFind,
+    };
+
+    use super::*;
+
+    #[test]
+    fn test_fit_quads() -> Result<(), Box<dyn std::error::Error>> {
+        let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
+
+        let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
+        let mut tile_min_max = TileMinMax::new(src.size(), 4);
+        let mut uf = UnionFind::new(src.as_slice().len());
+        let mut clusters = HashMap::new();
+
+        adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
+        find_connected_components(&bin, &mut uf)?;
+        find_gradient_clusters(&bin, &mut uf, &mut clusters);
+
+        let quads = fit_quads(&bin, &TagFamily::TAG36_H11, &mut clusters, 5);
+
+        let expected_quad = [[[27, 3], [27, 27], [3, 27], [3, 3]]];
+
+        assert_eq!(quads.len(), expected_quad.len());
+
+        for (Quad { point, .. }, expected_quad) in quads.iter().zip(expected_quad) {
+            // We allow a ±1 error here to avoid CI failures due to small precision differences.
+            // The expected outputs were generated with C code using 64-bit precision, while our code uses f32.
+            assert!((point[0][0] as usize).abs_diff(expected_quad[0][0]) <= 1);
+            assert!((point[0][1] as usize).abs_diff(expected_quad[0][1]) <= 1);
+
+            assert!((point[2][0] as usize).abs_diff(expected_quad[2][0]) <= 1);
+            assert!((point[2][0] as usize).abs_diff(expected_quad[2][0]) <= 1);
+
+            assert!((point[2][1] as usize).abs_diff(expected_quad[2][1]) <= 1);
+            assert!((point[2][1] as usize).abs_diff(expected_quad[2][1]) <= 1);
+
+            assert!((point[3][1] as usize).abs_diff(expected_quad[3][1]) <= 1);
+            assert!((point[3][1] as usize).abs_diff(expected_quad[3][1]) <= 1);
+        }
+
+        Ok(())
     }
 }
