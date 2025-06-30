@@ -1,8 +1,8 @@
-use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event};
+use std::sync::Arc;
+
+use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow, Parameter};
 use kornia::{
-    image::{arrow::IntoArrow, Image, ImageSize},
-    imgproc::color::{convert_yuyv_to_rgb_u8, YuvToRgbMode},
-    io::jpeg,
+    image::{Image, ImageSize},
     io::v4l::{PixelFormat, V4LCameraConfig, V4LVideoCapture},
     tensor::CpuAllocator,
 };
@@ -46,15 +46,6 @@ fn main() -> eyre::Result<()> {
 
     let (mut node, mut events) = DoraNode::init_from_env()?;
 
-    let mut img_rgb8 = Image::<u8, 3, CpuAllocator>::from_size_val(
-        ImageSize {
-            width: image_cols,
-            height: image_rows,
-        },
-        0,
-        CpuAllocator,
-    )?;
-
     while let Some(event) = events.recv() {
         match event {
             Event::Input {
@@ -67,29 +58,24 @@ fn main() -> eyre::Result<()> {
                         continue;
                     };
 
-                    // decode the frame to rgb8
-                    match pixel_format {
-                        PixelFormat::YUYV => {
-                            convert_yuyv_to_rgb_u8(
-                                &frame.buffer,
-                                &mut img_rgb8,
-                                YuvToRgbMode::Bt601Full,
-                            )?;
-                        }
-                        PixelFormat::MJPG => {
-                            jpeg::decode_image_jpeg_rgb8(&frame.buffer, &mut img_rgb8)?;
-                        }
-                        _ => {
-                            return Err(eyre::eyre!("Unsupported pixel format: {}", pixel_format));
-                        }
-                    }
+                    // add metadata to the frame
+                    let mut param = metadata.parameters;
+                    param.insert(
+                        "width".to_owned(),
+                        Parameter::Integer(frame.size.width as i64),
+                    );
+                    param.insert(
+                        "height".to_owned(),
+                        Parameter::Integer(frame.size.height as i64),
+                    );
+                    param.insert(
+                        "encoding".to_owned(),
+                        Parameter::String(frame.pixel_format.to_string()),
+                    );
 
-                    // TODO: any other way to not clone the image?
-                    node.send_output(
-                        output.clone(),
-                        metadata.parameters,
-                        img_rgb8.clone().into_arrow(),
-                    )?;
+                    // send the frame to the output
+                    let data = frame.buffer.0.to_vec();
+                    node.send_output(output.clone(), param, data.into_arrow())?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },

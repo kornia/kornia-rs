@@ -11,7 +11,7 @@ nodes:
       SOURCE_FPS: 30
       IMAGE_COLS: 320
       IMAGE_ROWS: 180
-      PIXEL_FORMAT: "MJPG"
+      PIXEL_FORMAT: "YUYV"
   - id: rtsp-camera
     build: cargo build -p dora-video-capture --release
     path: ./target/release/dora-video-capture
@@ -35,7 +35,7 @@ nodes:
     inputs:
       frame: v4l-camera/frame
       rtsp: rtsp-camera/frame
-      output: imgproc/output
+      sobel: imgproc/output
     env:
       RERUN_HOST: 127.0.0.1
       RERUN_PORT: 9876
