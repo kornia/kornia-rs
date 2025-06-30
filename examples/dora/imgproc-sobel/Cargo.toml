@@ -1,9 +1,9 @@
 [package]
-name = "dora-imgproc"
+name = "dora-imgproc-sobel"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 dora-node-api = { version = "0.3.10", features = ["tracing"] }
 eyre = "0.6"
-kornia = { path = "../../../crates/kornia", features = ["v4l", "arrow"] }
+kornia = { path = "../../../crates/kornia" }

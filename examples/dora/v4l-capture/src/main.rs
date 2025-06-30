@@ -1,10 +1,7 @@
-use std::sync::Arc;
-
 use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow, Parameter};
 use kornia::{
-    image::{Image, ImageSize},
+    image::ImageSize,
     io::v4l::{PixelFormat, V4LCameraConfig, V4LVideoCapture},
-    tensor::CpuAllocator,
 };
 
 fn main() -> eyre::Result<()> {
@@ -72,9 +69,19 @@ fn main() -> eyre::Result<()> {
                         "encoding".to_owned(),
                         Parameter::String(frame.pixel_format.to_string()),
                     );
+                    param.insert(
+                        "sequence".to_owned(),
+                        Parameter::Integer(frame.sequence as i64),
+                    );
+                    param.insert("stamp_ns".to_owned(), {
+                        let stamp = std::time::Duration::from(frame.timestamp);
+                        Parameter::Integer(stamp.as_nanos() as i64)
+                    });
+
+                    // unwrap the buffer with zero copy if the buffer is not shared, otherwise clone the buffer
+                    let data = frame.buffer.unwrap_or_clone();
 
                     // send the frame to the output
-                    let data = frame.buffer.0.to_vec();
                     node.send_output(output.clone(), param, data.into_arrow())?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),

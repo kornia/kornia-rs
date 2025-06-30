@@ -1,7 +1,6 @@
-use dora_node_api::{
-    self, arrow, dora_core::config::DataId, DoraNode, Event, IntoArrow, Parameter,
-};
+use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, Parameter};
 use kornia::io::gstreamer::{RTSPCameraConfig, V4L2CameraConfig};
+use std::ptr::NonNull;
 
 fn main() -> eyre::Result<()> {
     // parse env variables
@@ -62,8 +61,20 @@ fn main() -> eyre::Result<()> {
                         Parameter::Integer(frame.size().width as i64),
                     );
 
-                    let data = frame.to_vec();
-                    node.send_output(output.clone(), params, data.into_arrow())?;
+                    let frame_arc = std::sync::Arc::new(frame);
+                    let frame_ptr = frame_arc.as_ptr();
+
+                    let buf = unsafe {
+                        arrow::buffer::Buffer::from_custom_allocation(
+                            NonNull::new(frame_ptr as *mut u8).unwrap(),
+                            frame_arc.numel(),
+                            frame_arc.clone(),
+                        )
+                    };
+
+                    let array = arrow::array::UInt8Array::new(buf.into(), None);
+
+                    node.send_output(output.clone(), params, array)?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },

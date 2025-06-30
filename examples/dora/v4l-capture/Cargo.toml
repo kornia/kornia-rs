@@ -7,4 +7,5 @@ edition = "2021"
 dora-node-api = { version = "0.3.10", features = ["tracing"] }
 eyre = "0.6"
 log = "0.4"
-kornia = { path = "../../../crates/kornia", features = ["v4l", "arrow"] }
+kornia = { path = "../../../crates/kornia", features = ["v4l"] }
+

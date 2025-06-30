@@ -4,12 +4,22 @@ use v4l::{buffer, device::Handle, memory::Memory, v4l2, v4l_sys::*};
 
 /// Abstracts a buffer from the v4l device.
 #[derive(Clone)]
-pub struct V4lBuffer(pub Arc<Vec<u8>>);
+pub struct V4lBuffer(Arc<Vec<u8>>);
 
 impl std::ops::Deref for V4lBuffer {
     type Target = Vec<u8>;
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl V4lBuffer {
+    /// Try to unwrap the buffer with zero copy if the buffer is not shared, otherwise clone the buffer
+    pub fn unwrap_or_clone(self) -> Vec<u8> {
+        match Arc::try_unwrap(self.0) {
+            Ok(bytes) => bytes,
+            Err(bytes) => bytes.to_vec(),
+        }
     }
 }
 
