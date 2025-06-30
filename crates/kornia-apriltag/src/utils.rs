@@ -1,4 +1,4 @@
-use kornia_image::ImageSize;
+use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 
 /// Calculates the total number of tiles needed to cover an image of the given size,
 /// including partial tiles at the edges.
@@ -63,6 +63,186 @@ impl PartialEq<u8> for Pixel {
     }
 }
 
+/// TODO
+// TODO: Should we make this function const?
+pub const fn homography_compute(c: [[f32; 4]; 4]) -> Option<[f32; 9]> {
+    #[rustfmt::skip]
+    let mut a = [
+        c[0][0], c[0][1], 1.0, 0.0,     0.0,     0.0, -c[0][0]*c[0][2], -c[0][1]*c[0][2], c[0][2],
+        0.0,     0.0,     0.0, c[0][0], c[0][1], 1.0, -c[0][0]*c[0][3], -c[0][1]*c[0][3], c[0][3],
+        c[1][0], c[1][1], 1.0, 0.0,     0.0,     0.0, -c[1][0]*c[1][2], -c[1][1]*c[1][2], c[1][2],
+        0.0,     0.0,     0.0, c[1][0], c[1][1], 1.0, -c[1][0]*c[1][3], -c[1][1]*c[1][3], c[1][3],
+        c[2][0], c[2][1], 1.0, 0.0,     0.0,     0.0, -c[2][0]*c[2][2], -c[2][1]*c[2][2], c[2][2],
+        0.0,     0.0,     0.0, c[2][0], c[2][1], 1.0, -c[2][0]*c[2][3], -c[2][1]*c[2][3], c[2][3],
+        c[3][0], c[3][1], 1.0, 0.0,     0.0,     0.0, -c[3][0]*c[3][2], -c[3][1]*c[3][2], c[3][2],
+        0.0,     0.0,     0.0, c[3][0], c[3][1], 1.0, -c[3][0]*c[3][3], -c[3][1]*c[3][3], c[3][3],
+    ];
+
+    const EPSILON: f32 = 1e-10;
+    const MAX_COL: usize = 8;
+
+    let mut col = 0;
+    while col < MAX_COL {
+        let mut max_val = 0f32;
+        let mut max_val_idx = 0usize;
+
+        let mut row = 0;
+        while row < MAX_COL {
+            let val = (a[row * 9 + col]).abs();
+
+            if val > max_val {
+                max_val = val;
+                max_val_idx = row;
+            }
+            row += 1;
+        }
+
+        if max_val < EPSILON {
+            // The Matrix is Singular
+            return None;
+        }
+
+        // swap to get best row
+        if max_val_idx != col {
+            let mut i = col;
+            while i < MAX_COL + 1 {
+                let tmp = a[col * 9 + 1];
+                a[col * 9 + 1] = a[max_val_idx * 9 + i];
+                a[max_val_idx * 9 + i] = tmp;
+
+                i += 1;
+            }
+        }
+
+        // Do eliminate
+        let mut i = col;
+        while i < MAX_COL {
+            let f = a[i * 9 + col] / a[col * 9 + col];
+            a[i * 9 + col] = 0.0;
+
+            let mut j = col;
+            while j < MAX_COL + 1 {
+                a[i * 9 + j] -= f * a[col * 9 + j];
+
+                j += 1;
+            }
+
+            i += 1;
+        }
+
+        col += 1;
+    }
+
+    // back solve
+    let mut col = 7;
+    loop {
+        let mut sum = 0f32;
+
+        let mut i = col;
+        while i < MAX_COL {
+            sum += a[col * 9 + 8] * a[col * 9 + col];
+            i += 1;
+        }
+
+        a[col * 9 + 8] = (a[col * 9 + 8] - sum) / a[col * 9 + col];
+
+        if col == 0 {
+            break;
+        }
+
+        col -= 1;
+    }
+
+    Some([a[8], a[17], a[26], a[35], a[44], a[53], a[62], a[71], 1.0])
+}
+
+/// TODO
+pub const fn inverse_3x3_matrix(a: &[f32; 9]) -> [f32; 9] {
+    #[rustfmt::skip]
+    let det =  a[0] * (a[4] * a[8] - a[5] * a[7])
+                  - a[1] * (a[3] * a[8] - a[5] * a[6])
+                  + a[2] * (a[3] * a[7] - a[4] * a[6]);
+
+    let inv_det = 1.0 / det;
+
+    [
+        inv_det * (a[4] * a[8] - a[5] * a[7]),
+        inv_det * (a[2] * a[7] - a[1] * a[8]),
+        inv_det * (a[1] * a[5] - a[2] * a[4]),
+        inv_det * (a[5] * a[6] - a[3] * a[8]),
+        inv_det * (a[0] * a[8] - a[2] * a[6]),
+        inv_det * (a[2] * a[3] - a[0] * a[5]),
+        inv_det * (a[3] * a[7] - a[4] * a[6]),
+        inv_det * (a[1] * a[6] - a[0] * a[7]),
+        inv_det * (a[0] * a[4] - a[1] * a[3]),
+    ]
+}
+
+pub(crate) fn matrix_3x3_cholesky(a: &[[f32; 3]; 3], r: &mut [f32; 9]) {
+    r[0] = a[0][0].sqrt();
+    r[3] = a[0][1] / r[0];
+    r[6] = a[0][2] / r[0];
+
+    r[4] = (a[1][1] - r[3] * r[3]).sqrt();
+    r[7] = (a[1][2] - r[3] * r[6]) / r[4];
+
+    r[8] = (a[2][2] - r[6] * r[6] - r[7] * r[7]).sqrt();
+
+    r[1] = 0.0;
+    r[2] = 0.0;
+    r[5] = 0.0;
+}
+
+pub(crate) fn matrix_3x3_lower_triange_inverse(a: &[f32; 9], r: &mut [f32; 9]) {
+    r[0] = 1.0 / a[0];
+    r[3] = -a[3] * r[0] / a[4];
+    r[4] = 1.0 / a[4];
+    r[6] = (-a[6] * r[0] - a[7] * r[3]) / a[8];
+    r[7] = -a[7] * r[4] / a[8];
+    r[8] = 1.0 / a[8];
+}
+
+#[rustfmt::skip]
+pub(crate) const fn matrix_3x3_mul(a: &[f32; 9], b: &[f32; 9]) -> [f32; 9] {
+    [
+        a[0]*b[0] + a[1]*b[3] + a[2]*b[6],      a[0]*b[1] + a[1]*b[4] + a[2]*b[7],      a[0]*b[2] + a[1]*b[5] + a[2]*b[8],
+        a[3]*b[0] + a[4]*b[3] + a[5]*b[6],      a[3]*b[1] + a[4]*b[4] + a[5]*b[7],      a[3]*b[2] + a[4]*b[5] + a[5]*b[8],
+        a[6]*b[0] + a[7]*b[3] + a[8]*b[6],      a[6]*b[1] + a[7]*b[4] + a[8]*b[7],      a[6]*b[2] + a[7]*b[5] + a[8]*b[8],
+    ]
+}
+
+pub(crate) fn value_for_pixel<A: ImageAllocator>(
+    src: &Image<u8, 1, A>,
+    p: Point2d<f32>,
+) -> Option<f32> {
+    let src_slice = src.as_slice();
+
+    let x1 = (p.x - 0.5).floor() as isize;
+    let x2 = (p.x - 0.5).ceil() as isize;
+    let x = p.x as f32 - 0.5 - x1 as f32;
+
+    let y1 = (p.y - 0.5).floor() as isize;
+    let y2 = (p.y - 0.5).ceil() as isize;
+    let y = p.y - 0.5 - y1 as f32;
+
+    if x1 < 0 || x2 >= src.width() as isize || y1 < 0 || y2 >= src.height() as isize {
+        return None;
+    }
+
+    let x1 = x1 as usize;
+    let x2 = x2 as usize;
+
+    let y1 = y1 as usize;
+    let y2 = y2 as usize;
+
+    Some(
+        src_slice[y1 * src.width() + x1] as f32 * (1.0 - x) * (1.0 - y)
+            + src_slice[y1 * src.width() + x2] as f32 * x * (1.0 - y)
+            + src_slice[y2 * src.width() + x1] as f32 * (1.0 - x) * y
+            + src_slice[y2 * src.width() + x2] as f32 * x * y,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +282,53 @@ mod tests {
         let expected = Point2d { x: 25, y: 64 };
 
         assert_eq!(tiles, expected)
+    }
+
+    #[test]
+    fn test_inverse_matrix() {
+        #[rustfmt::skip]
+        let a = [
+            1.0, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 2.0, 9.0,
+        ];
+
+        #[rustfmt::skip]
+        let expected_inv: [f32; 9] = [
+            -11.0/12.0,  1.0/3.0,  1.0/12.0,
+            - 1.0/6.0,   1.0/3.0, -1.0/6.0,
+              3.0/4.0,  -1.0/3.0,  1.0/12.0,
+        ];
+
+        let inv = inverse_3x3_matrix(&a);
+
+        assert_eq!(inv, expected_inv);
+    }
+
+    #[test]
+    fn test_matrix_mul() {
+        #[rustfmt::skip]
+        let a = [
+            12.0,  8.0,  4.0,
+             3.0, 17.0, 14.0,
+             9.0,  8.0, 10.0,
+        ];
+
+        #[rustfmt::skip]
+        let b = [
+            5.0, 19.0,  3.0,
+            6.0, 15.0,  9.0,
+            7.0,  8.0, 16.0,
+        ];
+
+        #[rustfmt::skip]
+        let expected = [
+            136.0, 380.0,  172.0,
+            215.0, 424.0,  386.0,
+            163.0, 371.0,  259.0,
+        ];
+
+        let mul = matrix_3x3_mul(&a, &b);
+        assert_eq!(mul, expected)
     }
 }
