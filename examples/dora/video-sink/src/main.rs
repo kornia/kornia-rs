@@ -1,8 +1,7 @@
-use dora_node_api::{DoraNode, Event, Parameter};
+use dora_node_api::{arrow::array::UInt8Array, DoraNode, Event, Parameter};
 use kornia::{
     image::{allocator::ImageAllocator, Image, ImageSize},
     imgproc::{self, color::YuvToRgbMode},
-    io,
     tensor::CpuAllocator,
 };
 
@@ -37,6 +36,8 @@ fn main() -> eyre::Result<()> {
     let rr = rerun::RecordingStreamBuilder::new("Camera Sink")
         .connect_grpc_opts(format!("rerun+http://{rr_host}:{rr_port}/proxy"), None)?;
 
+    let mut img_rgb8 = None;
+
     while let Some(event) = events.recv() {
         match event {
             Event::Input { id, metadata, data } => {
@@ -63,9 +64,10 @@ fn main() -> eyre::Result<()> {
                 };
 
                 // create a view into the data
-                let data_arr = data.to_data();
-                let data_slice = data_arr.buffer(0);
-                let img_rgb8_view = {
+                let data_arr: &UInt8Array = data.as_any().downcast_ref().unwrap();
+                let data_slice = data_arr.values();
+
+                let img_rgb8_view: ImageView<3> = {
                     ImageView {
                         data: data_slice,
                         size: ImageSize {
@@ -75,34 +77,40 @@ fn main() -> eyre::Result<()> {
                     }
                 };
 
+                rr.set_time(
+                    "time",
+                    rerun::TimeCell::from_duration_nanos(timestamp_nanos as i64),
+                );
+
                 // log directly if the encoding is RGB8
                 if encoding == "RGB8" {
-                    log_image(&rr, id.as_str(), timestamp_nanos, &img_rgb8_view)?;
-                } else {
-                    // decode the frame to rgb8
-                    let mut img_rgb8 = Image::from_size_val(
-                        ImageSize {
-                            width: *width as usize,
-                            height: *height as usize,
-                        },
-                        0,
-                        CpuAllocator,
-                    )?;
-
-                    if encoding == "YUYV" {
-                        imgproc::color::convert_yuyv_to_rgb_u8(
-                            img_rgb8_view.data,
-                            &mut img_rgb8,
-                            YuvToRgbMode::Bt601Full,
-                        )?;
-                    } else if encoding == "MJPG" {
-                        io::jpeg::decode_image_jpeg_rgb8(img_rgb8_view.data, &mut img_rgb8)?;
-                    } else {
-                        return Err(eyre::eyre!("Unsupported encoding: {}", encoding));
+                    log_image(&rr, id.as_str(), img_rgb8_view)?;
+                } else if encoding == "YUYV" {
+                    // lazy init the image
+                    if img_rgb8.is_none() {
+                        img_rgb8 = Some(Image::from_size_val(
+                            ImageSize {
+                                width: *width as usize,
+                                height: *height as usize,
+                            },
+                            0,
+                            CpuAllocator,
+                        )?);
                     }
-
-                    // log the image to rerun
-                    log_image(&rr, id.as_str(), timestamp_nanos, &(&img_rgb8).into())?;
+                    // SAFETY: we know that img_rgb8 is not None
+                    let img_rgb8 = img_rgb8.as_mut().unwrap();
+                    imgproc::color::convert_yuyv_to_rgb_u8(
+                        img_rgb8_view.data,
+                        img_rgb8,
+                        YuvToRgbMode::Bt601Full,
+                    )?;
+                    log_image(&rr, id.as_str(), (&*img_rgb8).into())?;
+                } else {
+                    // NOTE: for MJPG or PNG, Notice that here we do a copy of the data
+                    rr.log(
+                        id.as_str(),
+                        &rerun::EncodedImage::from_file_contents(data_slice.to_vec()),
+                    )?;
                 }
             }
             Event::Stop => {
@@ -118,16 +126,7 @@ fn main() -> eyre::Result<()> {
     Ok(())
 }
 
-fn log_image(
-    rr: &rerun::RecordingStream,
-    name: &str,
-    timestamp_nanos: u64,
-    img: &ImageView<3>,
-) -> eyre::Result<()> {
-    rr.set_time(
-        "time",
-        rerun::TimeCell::from_duration_nanos(timestamp_nanos as i64),
-    );
+fn log_image(rr: &rerun::RecordingStream, name: &str, img: ImageView<3>) -> eyre::Result<()> {
     rr.log(
         name,
         &rerun::Image::from_elements(
