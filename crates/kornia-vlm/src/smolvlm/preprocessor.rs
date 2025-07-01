@@ -11,7 +11,7 @@ use kornia_tensor::allocator::CpuAllocator;
 const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 const STD: [f32; 3] = [0.229, 0.224, 0.225];
 
-pub fn preprocess_image(
+pub fn preprocess_image<A: ImageAllocator>(
     img: Image<u8, 3, CpuAllocator>,
     max_size: u32,
     outer_patch_size: u32,
