@@ -1,7 +1,7 @@
 nodes:
   - id: v4l-camera
-    build: cargo build -p dora-v4l-capture --release
-    path: ./target/release/dora-v4l-capture
+    build: cargo build -p kornia-v4l-capture --release
+    path: ./target/release/kornia-v4l-capture
     inputs:
       tick: dora/timer/millis/30
     outputs:
@@ -13,8 +13,8 @@ nodes:
       IMAGE_ROWS: 180
       PIXEL_FORMAT: "YUYV"
   - id: rtsp-camera
-    build: cargo build -p dora-gst-capture --release
-    path: ./target/release/dora-gst-capture
+    build: cargo build -p kornia-gst-capture --release
+    path: ./target/release/kornia-gst-capture
     inputs:
       tick: dora/timer/millis/10
     outputs:
@@ -23,15 +23,15 @@ nodes:
       SOURCE_TYPE: "rtsp"
       SOURCE_URI: "rtsp://tapo_entrance:123456789@192.168.1.141:554/stream2"
   - id: sobel
-    build: cargo build -p dora-imgproc-sobel --release
-    path: ./target/release/dora-imgproc-sobel
+    build: cargo build -p kornia-imgproc-sobel --release
+    path: ./target/release/kornia-imgproc-sobel
     inputs:
       frame: v4l-camera/frame
     outputs:
       - output
   - id: video-sink
-    build: cargo build -p dora-video-sink --release
-    path: ./target/release/dora-video-sink
+    build: cargo build -p rerun-video-sink --release
+    path: ./target/release/rerun-video-sink
     inputs:
       frame: v4l-camera/frame
       rtsp: rtsp-camera/frame

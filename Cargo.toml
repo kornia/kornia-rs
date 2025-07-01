@@ -4,10 +4,10 @@ members = [
     "crates/*",
     "examples/*",
     # NOTE: need to add dora examples to make rust analyzer to work
-    "examples/dora/gst-capture",
-    "examples/dora/v4l-capture",
-    "examples/dora/imgproc-sobel",
-    "examples/dora/video-sink",
+    "examples/dora/kornia-gst-capture",
+    "examples/dora/kornia-v4l-capture",
+    "examples/dora/kornia-imgproc-sobel",
+    "examples/dora/rerun-video-sink",
     # "kornia-py",
 ]
 exclude = ["kornia-py", "examples/dora"]

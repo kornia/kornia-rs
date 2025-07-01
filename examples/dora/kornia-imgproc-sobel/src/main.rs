@@ -1,14 +1,14 @@
 use dora_node_api::{
     self, arrow::array::UInt8Array, dora_core::config::DataId, DoraNode, Event, Parameter,
 };
-use kornia::{
-    image::{Image, ImageSize},
-    imgproc::{self, color::YuvToRgbMode},
-    io,
-    tensor::CpuAllocator,
+use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use kornia_imgproc::{
+    color::{self, YuvToRgbMode},
+    filter,
 };
+use kornia_io::jpeg;
 
-fn main() -> eyre::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut node, mut events) = DoraNode::init_from_env()?;
 
     let output = DataId::from("output".to_owned());
@@ -23,15 +23,15 @@ fn main() -> eyre::Result<()> {
                     // decode the frame from arrow
                     let height = match metadata.parameters.get("height") {
                         Some(Parameter::Integer(height)) => height,
-                        _ => return Err(eyre::eyre!("Height not found")),
+                        _ => return Err("Height not found".into()),
                     };
                     let width = match metadata.parameters.get("width") {
                         Some(Parameter::Integer(width)) => width,
-                        _ => return Err(eyre::eyre!("Width not found")),
+                        _ => return Err("Width not found".into()),
                     };
                     let encoding = match metadata.parameters.get("encoding") {
                         Some(Parameter::String(encoding)) => encoding,
-                        _ => return Err(eyre::eyre!("Encoding not found")),
+                        _ => return Err("Encoding not found".into()),
                     };
 
                     let data_arr: &UInt8Array = data.as_any().downcast_ref().unwrap();
@@ -52,15 +52,15 @@ fn main() -> eyre::Result<()> {
                     let img_rgb8 = img_rgb8.as_mut().unwrap();
 
                     if encoding == "YUYV" {
-                        imgproc::color::convert_yuyv_to_rgb_u8(
+                        color::convert_yuyv_to_rgb_u8(
                             data_slice,
                             img_rgb8,
                             YuvToRgbMode::Bt601Full,
                         )?;
                     } else if encoding == "MJPG" {
-                        io::jpeg::decode_image_jpeg_rgb8(data_slice, img_rgb8)?;
+                        jpeg::decode_image_jpeg_rgb8(data_slice, img_rgb8)?;
                     } else {
-                        return Err(eyre::eyre!("Unsupported encoding: {}", encoding));
+                        return Err(format!("Unsupported encoding: {encoding}").into());
                     }
 
                     // lazily allocate the output image
@@ -71,7 +71,7 @@ fn main() -> eyre::Result<()> {
                     let out = out.as_mut().unwrap();
 
                     // compute the sobel edge map
-                    imgproc::filter::sobel(&img_rgb8.cast()?, out, 3)?;
+                    filter::sobel(&img_rgb8.cast()?, out, 3)?;
 
                     // cast back to u8
                     let out_u8 = out.map(|x| *x as u8)?;
@@ -90,7 +90,7 @@ fn main() -> eyre::Result<()> {
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
-            Event::Stop => {
+            Event::Stop(_) => {
                 println!("Received manual stop");
             }
             Event::InputClosed { id } => {

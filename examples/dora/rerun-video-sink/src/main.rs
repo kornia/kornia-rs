@@ -1,9 +1,10 @@
 use dora_node_api::{arrow::array::UInt8Array, DoraNode, Event, Parameter};
-use kornia::{
-    image::{allocator::ImageAllocator, Image, ImageSize},
-    imgproc::{self, color::YuvToRgbMode},
-    tensor::CpuAllocator,
+use kornia_image::{
+    allocator::{CpuAllocator, ImageAllocator},
+    Image, ImageSize,
 };
+use kornia_imgproc::color::{self, YuvToRgbMode};
+use kornia_io::jpeg;
 
 const RERUN_HOST: &str = "127.0.0.1";
 const RERUN_PORT: u16 = 9876;
@@ -24,7 +25,7 @@ impl<'a, A: ImageAllocator> From<&'a Image<u8, 3, A>> for ImageView<'a, 3> {
     }
 }
 
-fn main() -> eyre::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut _node, mut events) = DoraNode::init_from_env()?;
 
     // setup rerun
@@ -49,18 +50,17 @@ fn main() -> eyre::Result<()> {
                     timestamp_secs * 1_000_000_000 + timestamp_subsec_nanos
                 };
 
-                //let image = Image::<u8, 3, _>::try_from_arrow(data.into())?;
                 let width = match metadata.parameters.get("width") {
                     Some(Parameter::Integer(width)) => width,
-                    _ => return Err(eyre::eyre!("Width not found")),
+                    _ => return Err("Width not found".to_string().into()),
                 };
                 let height = match metadata.parameters.get("height") {
                     Some(Parameter::Integer(height)) => height,
-                    _ => return Err(eyre::eyre!("Height not found")),
+                    _ => return Err("Height not found".to_string().into()),
                 };
                 let encoding = match metadata.parameters.get("encoding") {
                     Some(Parameter::String(encoding)) => encoding,
-                    _ => return Err(eyre::eyre!("Encoding not found")),
+                    _ => return Err("Encoding not found".to_string().into()),
                 };
 
                 // create a view into the data
@@ -77,6 +77,20 @@ fn main() -> eyre::Result<()> {
                     }
                 };
 
+                // lazy init the RGB8 image
+                if img_rgb8.is_none() {
+                    img_rgb8 = Some(Image::from_size_val(
+                        ImageSize {
+                            width: *width as usize,
+                            height: *height as usize,
+                        },
+                        0,
+                        CpuAllocator,
+                    )?);
+                }
+                // SAFETY: we know that img_rgb8 is not None
+                let img_rgb8 = img_rgb8.as_mut().unwrap();
+
                 rr.set_time(
                     "time",
                     rerun::TimeCell::from_duration_nanos(timestamp_nanos as i64),
@@ -85,35 +99,22 @@ fn main() -> eyre::Result<()> {
                 // log directly if the encoding is RGB8
                 if encoding == "RGB8" {
                     log_image(&rr, id.as_str(), img_rgb8_view)?;
-                } else if encoding == "YUYV" {
-                    // lazy init the image
-                    if img_rgb8.is_none() {
-                        img_rgb8 = Some(Image::from_size_val(
-                            ImageSize {
-                                width: *width as usize,
-                                height: *height as usize,
-                            },
-                            0,
-                            CpuAllocator,
-                        )?);
-                    }
-                    // SAFETY: we know that img_rgb8 is not None
-                    let img_rgb8 = img_rgb8.as_mut().unwrap();
-                    imgproc::color::convert_yuyv_to_rgb_u8(
-                        img_rgb8_view.data,
-                        img_rgb8,
-                        YuvToRgbMode::Bt601Full,
-                    )?;
-                    log_image(&rr, id.as_str(), (&*img_rgb8).into())?;
                 } else {
-                    // NOTE: for MJPG or PNG, Notice that here we do a copy of the data
-                    rr.log(
-                        id.as_str(),
-                        &rerun::EncodedImage::from_file_contents(data_slice.to_vec()),
-                    )?;
+                    if encoding == "YUYV" {
+                        color::convert_yuyv_to_rgb_u8(
+                            img_rgb8_view.data,
+                            img_rgb8,
+                            YuvToRgbMode::Bt601Full,
+                        )?;
+                    } else if encoding == "MJPG" {
+                        jpeg::decode_image_jpeg_rgb8(data_slice, img_rgb8)?;
+                    } else {
+                        return Err(format!("Unsupported encoding: {encoding}").into());
+                    }
+                    log_image(&rr, id.as_str(), (&*img_rgb8).into())?;
                 }
             }
-            Event::Stop => {
+            Event::Stop(_) => {
                 println!("Received manual stop");
             }
             Event::InputClosed { id } => {
@@ -126,7 +127,11 @@ fn main() -> eyre::Result<()> {
     Ok(())
 }
 
-fn log_image(rr: &rerun::RecordingStream, name: &str, img: ImageView<3>) -> eyre::Result<()> {
+fn log_image(
+    rr: &rerun::RecordingStream,
+    name: &str,
+    img: ImageView<3>,
+) -> Result<(), Box<dyn std::error::Error>> {
     rr.log(
         name,
         &rerun::Image::from_elements(
