@@ -1,3 +1,4 @@
+use argh::FromArgs;
 use kornia_image::Image;
 use kornia_tensor::CpuAllocator;
 use kornia_vlm::smolvlm::{utils::SmolVlmConfig, SmolVlm};
@@ -5,8 +6,28 @@ use kornia_vlm::smolvlm::{utils::SmolVlmConfig, SmolVlm};
 use kornia_io::jpeg::read_image_jpeg_rgb8;
 use reqwest;
 use std::error::Error;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{fs, io, io::Write};
+
+#[derive(FromArgs)]
+/// Generate a description of an image using SmolVlm
+struct Args {
+    /// path to an input image
+    #[argh(option, short = 'i', default = "PathBuf::new()")]
+    image_path: PathBuf,
+
+    /// prompt to ask the model
+    #[argh(option, short = 'p', default = "\"\".to_string()")]
+    text_prompt: String,
+
+    /// the length of the generated text
+    #[argh(option, default = "100")]
+    sample_length: usize,
+
+    /// enable some boolean feature
+    #[argh(switch)]
+    conversation_style: bool,
+}
 
 pub fn load_image_url(
     url: &str,
@@ -62,37 +83,50 @@ fn read_input(cli_prompt: &str) -> String {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut model = SmolVlm::new(SmolVlmConfig::default())?;
+    let args: Args = argh::from_env();
 
-    // cargo run -p smol_vlm --features cuda
-    for _ in 0..10 {
-        let img_url = read_input("img> ");
-        let image = load_image_url(&img_url)
-            .and_then(|v| {
-                if model.image_history_count() > 1 {
-                    println!("One image max. Cannot add another image. (Restart)");
-                    Err(Box::new(io::Error::new(
-                        io::ErrorKind::Other,
-                        "One image max",
-                    )))
-                } else {
-                    Ok(v)
-                }
-            })
-            .map_or_else(
-                |err| {
-                    println!("Invalid or empty URL (no image)");
-                    println!("Error: {:?}", err);
+    if args.conversation_style {
+        let mut model = SmolVlm::new(SmolVlmConfig::default())?;
 
-                    Err(err)
-                },
-                |ok| Ok(ok),
-            )
-            .ok();
+        for _ in 0..10 {
+            let img_url = read_input("img> ");
+            let image = load_image_url(&img_url)
+                .and_then(|v| {
+                    if model.image_history_count() > 1 {
+                        println!("One image max. Cannot add another image. (Restart)");
+                        Err(Box::new(io::Error::new(
+                            io::ErrorKind::Other,
+                            "One image max",
+                        )))
+                    } else {
+                        Ok(v)
+                    }
+                })
+                .map_or_else(
+                    |err| {
+                        println!("Invalid or empty URL (no image)");
+                        println!("Error: {:?}", err);
 
-        let prompt = read_input("txt> ");
+                        Err(err)
+                    },
+                    |ok| Ok(ok),
+                )
+                .ok();
 
-        model.inference(image, &prompt, 1_000, true)?;
+            let prompt = read_input("txt> ");
+
+            model.inference(image, &prompt, args.sample_length, true)?;
+        }
+    } else {
+        // read the image
+        let image = read_image_jpeg_rgb8(args.image_path)?;
+
+        // create the paligemma model
+        let mut smolvlm = SmolVlm::new(SmolVlmConfig::default())?;
+
+        // generate a caption of the image
+        let _caption =
+            smolvlm.inference(Some(image), &args.text_prompt, args.sample_length, true)?;
     }
 
     Ok(())
