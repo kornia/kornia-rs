@@ -4,9 +4,9 @@ pub struct SmolVlmConfig {
     pub seed: u64,
     pub temp: f64,
     pub top_p: f64,
+    pub repeat_penalty: f32,
 
     // TODO: check if SmolVLM needs this
-    pub repeat_penalty: f32,
     pub repeat_last_n: usize,
 }
 
@@ -15,8 +15,8 @@ impl Default for SmolVlmConfig {
         Self {
             seed: 42,
             temp: 1.0,
-            top_p: 0.5,
-            repeat_penalty: 1.1,
+            top_p: 0.8,
+            repeat_penalty: 1.0,
             repeat_last_n: 64,
         }
     }

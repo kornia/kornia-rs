@@ -27,8 +27,9 @@ pub struct SmolVlm {
     logits_processor: LogitsProcessor,
     device: Device,
     image_history: Vec<(Tensor, Tensor)>,
-    index_pos: usize,   // index of the next token to be processed
-    first_prompt: bool, // whether this is the first prompt
+    index_pos: usize,        // index of the next token to be processed
+    first_prompt: bool,      // whether this is the first prompt
+    token_history: Vec<u32>, // stores the history of generated tokens
 }
 
 impl SmolVlm {
@@ -72,6 +73,7 @@ impl SmolVlm {
             image_history: Vec::new(),
             index_pos: 0,
             first_prompt: true,
+            token_history: Vec::new(),
         })
     }
 
@@ -131,6 +133,8 @@ impl SmolVlm {
         let mut generated_tokens = 0usize;
 
         for _i in 0..sample_len {
+            self.token_history.extend(&delta_token);
+
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
             let vision_data = if self.image_history.len() > 0 {
                 let image_token_mask = input.broadcast_eq(&self.image_token_tensor)?;
@@ -146,6 +150,12 @@ impl SmolVlm {
             let logits = self.model.forward(&input, self.index_pos, vision_data)?;
             let (s, _embed_dim) = logits.dims2()?;
             let last_logit = logits.i((s - 1, ..))?;
+
+            let last_logit = candle_transformers::utils::apply_repeat_penalty(
+                &last_logit,
+                self.config.repeat_penalty,
+                &delta_token,
+            )?;
             let out_token = self.logits_processor.sample(&last_logit)?;
 
             self.index_pos += delta_token.len();
