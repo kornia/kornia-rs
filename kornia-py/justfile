@@ -35,3 +35,9 @@ build py_version='3.9' flags='':
   @just install-dev {{ py_version }}
   @echo "🚀 Building kornia-py"
   uv run maturin develop -m Cargo.toml {{ flags }}
+
+# Build the documentation
+docs:
+  @just install-dev
+  @echo "🚀 Building documentation"
+  cd docs && make html
