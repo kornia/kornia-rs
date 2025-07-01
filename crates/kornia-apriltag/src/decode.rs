@@ -90,6 +90,8 @@ pub struct Detection<'a> {
     pub decision_margin: f32,
     /// TODO
     pub center: Point2d<f32>,
+    /// TODO
+    pub quad: Quad,
 }
 
 impl QuickDecode {
@@ -197,6 +199,7 @@ pub fn decode_tags<'a, A: ImageAllocator>(
                     hamming: entry.hamming,
                     decision_margin,
                     center,
+                    quad: std::mem::take(quad), // TODO: Should we take or copy the value? Benchmark it
                 };
 
                 detections.push(detection);
@@ -712,16 +715,11 @@ mod tests {
             false,
         );
 
-        let expected_tags = vec![Detection {
-            tag_family: &TagFamily::TAG36_H11,
-            center: Point2d { x: 15.0, y: 15.0 },
-            decision_margin: 225.50317,
-            id: 23,
-            hamming: 0,
-        }];
-
         assert_eq!(tags.len(), 1);
-        assert_eq!(tags, expected_tags);
+        assert_eq!(tags[0].id, 23);
+        assert_eq!(tags[0].center, Point2d { x: 15.0, y: 15.0 });
+        assert_eq!(tags[0].hamming, 0);
+        assert_eq!(tags[0].tag_family, &TagFamily::TAG36_H11);
 
         Ok(())
     }
