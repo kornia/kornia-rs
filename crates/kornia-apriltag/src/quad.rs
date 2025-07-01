@@ -6,7 +6,14 @@ use crate::{
 use kornia_image::{allocator::ImageAllocator, Image};
 use std::{collections::HashMap, f32, ops::ControlFlow};
 
-const QUADRANTS: [[i32; 2]; 2] = [[-(2 << 15), 0], [2 * (2 << 15), 2 << 15]];
+const SLOPE_OFFSET_BASE: i32 = 2 << 15; // Base value for slope offset calculations.
+const SLOPE_OFFSET_DOUBLE: i32 = 2 * SLOPE_OFFSET_BASE; // Double the base value for extended range.
+
+/// Constants defining quadrant boundaries for slope offset logic.
+const QUADRANTS: [[i32; 2]; 2] = [
+    [-SLOPE_OFFSET_BASE, 0],
+    [SLOPE_OFFSET_DOUBLE, SLOPE_OFFSET_BASE],
+];
 
 #[derive(Debug, Clone, Copy)]
 /// Options for fitting quadrilaterals (quads) to clusters of gradient information.
