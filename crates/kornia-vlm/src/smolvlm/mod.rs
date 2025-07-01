@@ -10,8 +10,8 @@ use std::io::Write;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_transformers::generation::LogitsProcessor;
 use hf_hub::api::sync::Api;
+use kornia_image::allocator::ImageAllocator;
 use kornia_image::Image;
-use kornia_tensor::CpuAllocator;
 use tokenizers::Tokenizer;
 
 use preprocessor::{get_prompt_split_image, preprocess_image};
@@ -89,9 +89,9 @@ impl SmolVlm {
     /// # Returns
     ///
     /// * `caption` - The generated caption
-    pub fn inference<A: ImageAllocator(
+    pub fn inference<A: ImageAllocator>(
         &mut self,
-        image: Option<Image<u8, 3, CpuAllocator>>,
+        image: Option<Image<u8, 3, A>>,
         prompt: &str,
         sample_len: usize, // per prompt
         stdout_debug: bool,
@@ -110,10 +110,10 @@ impl SmolVlm {
         };
 
         if let Some(raw_img) = image {
-            let (img_patches, mask_patches, rows, cols) =
+            let (img_patches, mask_patches, size) =
                 preprocess_image(raw_img, 1920, 384, &self.device);
 
-            let img_token = get_prompt_split_image(81, rows, cols);
+            let img_token = get_prompt_split_image(81, size);
             full_prompt += "\nUser:<image>";
             full_prompt = full_prompt.replace("<image>", &img_token);
 

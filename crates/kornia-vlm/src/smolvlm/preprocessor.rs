@@ -1,6 +1,6 @@
 use candle_core::{Device, Shape, Tensor};
 
-use kornia_io::png::{write_image_png_gray8, write_image_png_rgb8};
+use kornia_image::allocator::ImageAllocator;
 
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::interpolation::InterpolationMode;
@@ -12,7 +12,7 @@ const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 const STD: [f32; 3] = [0.229, 0.224, 0.225];
 
 pub fn preprocess_image<A: ImageAllocator>(
-    img: Image<u8, 3, CpuAllocator>,
+    img: Image<u8, 3, A>,
     max_size: u32,
     outer_patch_size: u32,
     device: &Device,
@@ -27,13 +27,13 @@ pub fn preprocess_image<A: ImageAllocator>(
             let scale_factor = max_size as f32 / longest_edge as f32;
             let new_width = (width as f32 * scale_factor) as usize;
             let new_height = (height as f32 * scale_factor) as usize;
-            let mut resized = Image::<u8, 3, _>::from_size_val(
+            let mut resized = Image::<u8, 3, A>::from_size_val(
                 ImageSize {
                     width: new_width,
                     height: new_height,
                 },
                 0,
-                CpuAllocator,
+                img.0.storage.alloc().clone(),
             )
             .unwrap();
             resize_fast(&img, &mut resized, InterpolationMode::Bilinear).unwrap();
@@ -55,7 +55,7 @@ pub fn preprocess_image<A: ImageAllocator>(
                     height: new_height,
                 },
                 0,
-                CpuAllocator,
+                img.0.storage.alloc().clone(),
             )
             .unwrap();
             resize_fast(&img, &mut resized, InterpolationMode::Bilinear).unwrap();
@@ -247,14 +247,21 @@ pub fn preprocess_image<A: ImageAllocator>(
     let mask_patches =
         Tensor::cat(&[&mask_patches, &global_mask.unsqueeze(0).unwrap()], 0).unwrap();
 
-    (img_patches, mask_patches, cols, rows)
+    (
+        img_patches,
+        mask_patches,
+        ImageSize {
+            width: cols,
+            height: rows,
+        },
+    )
 }
 
-pub fn get_prompt_split_image(img_seq_len: usize, img_rows: usize, img_cols: usize) -> String {
+pub fn get_prompt_split_image(img_seq_len: usize, size: ImageSize) -> String {
     let mut s = String::new();
 
-    for h in 0..img_rows {
-        for w in 0..img_cols {
+    for h in 0..size.height {
+        for w in 0..size.width {
             s += &format!(
                 "<fake_token_around_image><row_{}_col_{}>{}",
                 h + 1,
