@@ -16,7 +16,7 @@ pub fn preprocess_image<A: ImageAllocator>(
     max_size: u32,
     outer_patch_size: u32,
     device: &Device,
-) -> (Tensor, Tensor, usize, usize) {
+) -> (Tensor, Tensor, ImageSize) {
     // resizing image to match the max_size (on the longest edge)
     let img = {
         let (width, height) = (img.width() as u32, img.height() as u32);
