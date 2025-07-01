@@ -1,5 +1,7 @@
 nodes:
   - id: v4l-camera
+    git: https://github.com/kornia/dora-nodes-hub.git
+    rev: 5b309b6c6f95074f8d38f2a236142e2e0751ee19
     build: cargo build -p kornia-v4l-capture --release
     path: ./target/release/kornia-v4l-capture
     inputs:
@@ -13,6 +15,8 @@ nodes:
       IMAGE_ROWS: 180
       PIXEL_FORMAT: "YUYV"
   - id: rtsp-camera
+    git: https://github.com/kornia/dora-nodes-hub.git
+    rev: 5b309b6c6f95074f8d38f2a236142e2e0751ee19
     build: cargo build -p kornia-gst-capture --release
     path: ./target/release/kornia-gst-capture
     inputs:
@@ -23,6 +27,8 @@ nodes:
       SOURCE_TYPE: "rtsp"
       SOURCE_URI: "rtsp://tapo_entrance:123456789@192.168.1.141:554/stream2"
   - id: sobel
+    git: https://github.com/kornia/dora-nodes-hub.git
+    rev: 5b309b6c6f95074f8d38f2a236142e2e0751ee19
     build: cargo build -p kornia-imgproc-sobel --release
     path: ./target/release/kornia-imgproc-sobel
     inputs:
@@ -30,6 +36,8 @@ nodes:
     outputs:
       - output
   - id: video-sink
+    git: https://github.com/kornia/dora-nodes-hub.git
+    rev: 5b309b6c6f95074f8d38f2a236142e2e0751ee19
     build: cargo build -p rerun-video-sink --release
     path: ./target/release/rerun-video-sink
     inputs:
