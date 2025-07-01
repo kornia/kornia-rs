@@ -92,9 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(|v| {
                     if model.image_history_count() > 1 {
                         println!("One image max. Cannot add another image. (Restart)");
-                        Err(Box::new(io::Error::other(
-                            "One image max",
-                        )))
+                        Err(Box::new(io::Error::other("One image max")))
                     } else {
                         Ok(v)
                     }

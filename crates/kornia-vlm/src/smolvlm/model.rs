@@ -116,7 +116,7 @@ impl SmolModel {
 
         if let Some((image_token_mask, pixel_values, pixel_attention_masks)) = vision_data {
             // TODO: this assumes there will be at most one new images added
-            inputs_embeds = if let Some(_) = self.image_hidden_states {
+            inputs_embeds = if self.image_hidden_states.is_some() {
                 self.inputs_merger(&image_token_mask, &inputs_embeds)?
             } else {
                 let image_hidden_states =

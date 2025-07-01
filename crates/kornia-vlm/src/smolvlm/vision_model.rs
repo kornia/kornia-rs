@@ -63,7 +63,7 @@ impl Attention {
     }
 }
 
-struct MLP {
+struct Mlp {
     fc1: Linear,
     fc2: Linear,
     gelu_coeff: Tensor,
@@ -72,7 +72,7 @@ struct MLP {
     half: Tensor,
 }
 
-impl MLP {
+impl Mlp {
     pub fn new(fc1: Linear, fc2: Linear) -> Result<Self> {
         let device = &fc1.weight().device().clone();
         Ok(Self {
@@ -105,7 +105,7 @@ impl MLP {
 struct Block {
     self_attn: Attention,
     layer_norm1: LayerNorm,
-    mlp: MLP,
+    mlp: Mlp,
     layer_norm2: LayerNorm,
 }
 
@@ -138,7 +138,7 @@ impl Block {
                 Linear::new(w("self_attn.out_proj"), Some(b("self_attn.out_proj"))),
             )?,
             layer_norm1: LayerNorm::new(w("layer_norm1"), b("layer_norm1"), 1e-6),
-            mlp: MLP::new(
+            mlp: Mlp::new(
                 Linear::new(w("mlp.fc1"), Some(b("mlp.fc1"))),
                 Linear::new(w("mlp.fc2"), Some(b("mlp.fc2"))),
             )?,
@@ -186,9 +186,7 @@ impl SmolVision {
                 c["model.vision_model.embeddings.position_embedding.weight"].clone(),
                 1152,
             ),
-            blocks: (0u8..=26)
-                .map(|id| Block::new(c, id).unwrap())
-                .collect(),
+            blocks: (0u8..=26).map(|id| Block::new(c, id).unwrap()).collect(),
             post_layernorm: LayerNorm::new(
                 c["model.vision_model.post_layernorm.weight"].clone(),
                 c["model.vision_model.post_layernorm.bias"].clone(),

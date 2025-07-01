@@ -66,10 +66,8 @@ pub fn preprocess_image(
     // padding image for all dimensions to be multiples of the outer_patch_size
     let (img, mask) = {
         let (width, height) = (img.width(), img.height());
-        let new_width =
-            (width as u32).div_ceil(outer_patch_size) * outer_patch_size;
-        let new_height =
-            (height as u32).div_ceil(outer_patch_size) * outer_patch_size;
+        let new_width = (width as u32).div_ceil(outer_patch_size) * outer_patch_size;
+        let new_height = (height as u32).div_ceil(outer_patch_size) * outer_patch_size;
         let mut padded_img = Image::<u8, 3, _>::from_size_val(
             ImageSize {
                 width: new_width as usize,
@@ -102,10 +100,8 @@ pub fn preprocess_image(
     };
     let (global_img, global_mask) = {
         let (width, height) = (global_img.width(), global_img.height());
-        let new_width =
-            (width as u32).div_ceil(outer_patch_size) * outer_patch_size;
-        let new_height =
-            (height as u32).div_ceil(outer_patch_size) * outer_patch_size;
+        let new_width = (width as u32).div_ceil(outer_patch_size) * outer_patch_size;
+        let new_height = (height as u32).div_ceil(outer_patch_size) * outer_patch_size;
         let mut padded_img = Image::<u8, 3, _>::from_size_val(
             ImageSize {
                 width: new_width as usize,
@@ -145,54 +141,38 @@ pub fn preprocess_image(
     let img = {
         let (width, height) = (img.width(), img.height());
         let img_data: Vec<u8> = img.as_slice().to_vec();
-        Tensor::from_vec(
-            img_data,
-            Shape::from_dims(&[height, width, 3]),
-            device,
-        )
-        .unwrap()
-        .permute(vec![2, 0, 1])
-        .unwrap()
-        .to_dtype(candle_core::DType::F32)
-        .unwrap()
+        Tensor::from_vec(img_data, Shape::from_dims(&[height, width, 3]), device)
+            .unwrap()
+            .permute(vec![2, 0, 1])
+            .unwrap()
+            .to_dtype(candle_core::DType::F32)
+            .unwrap()
     };
     let mask = {
         let (width, height) = (mask.width(), mask.height());
         let img_data: Vec<u8> = mask.as_slice().to_vec();
-        Tensor::from_vec(
-            img_data,
-            Shape::from_dims(&[height, width]),
-            device,
-        )
-        .unwrap()
-        .to_dtype(candle_core::DType::F32)
-        .unwrap()
+        Tensor::from_vec(img_data, Shape::from_dims(&[height, width]), device)
+            .unwrap()
+            .to_dtype(candle_core::DType::F32)
+            .unwrap()
     };
     let global_img = {
         let (width, height) = (global_img.width(), global_img.height());
         let img_data: Vec<u8> = global_img.as_slice().to_vec();
-        Tensor::from_vec(
-            img_data,
-            Shape::from_dims(&[height, width, 3]),
-            device,
-        )
-        .unwrap()
-        .permute(vec![2, 0, 1])
-        .unwrap()
-        .to_dtype(candle_core::DType::F32)
-        .unwrap()
+        Tensor::from_vec(img_data, Shape::from_dims(&[height, width, 3]), device)
+            .unwrap()
+            .permute(vec![2, 0, 1])
+            .unwrap()
+            .to_dtype(candle_core::DType::F32)
+            .unwrap()
     };
     let global_mask = {
         let (width, height) = (global_mask.width(), global_mask.height());
         let img_data: Vec<u8> = global_mask.as_slice().to_vec();
-        Tensor::from_vec(
-            img_data,
-            Shape::from_dims(&[height, width]),
-            device,
-        )
-        .unwrap()
-        .to_dtype(candle_core::DType::F32)
-        .unwrap()
+        Tensor::from_vec(img_data, Shape::from_dims(&[height, width]), device)
+            .unwrap()
+            .to_dtype(candle_core::DType::F32)
+            .unwrap()
     };
 
     // rescaling and normalizing

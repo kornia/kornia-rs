@@ -212,6 +212,4 @@ impl SmolVlm {
 }
 
 #[cfg(test)]
-mod tests {
-    
-}
+mod tests {}
