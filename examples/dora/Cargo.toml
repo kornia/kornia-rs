@@ -1,3 +1,8 @@
 [workspace]
-members = ["video-capture", "video-sink", "imgproc", "image-utils"]
+members = [
+    "kornia-gst-capture",
+    "kornia-v4l-capture",
+    "kornia-imgproc-sobel",
+    "rerun-video-sink",
+]
 resolver = "2"

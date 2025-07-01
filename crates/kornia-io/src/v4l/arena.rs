@@ -13,6 +13,16 @@ impl std::ops::Deref for V4lBuffer {
     }
 }
 
+impl V4lBuffer {
+    /// Try to unwrap the buffer with zero copy if the buffer is not shared, otherwise clone the buffer
+    pub fn unwrap_or_clone(self) -> Vec<u8> {
+        match Arc::try_unwrap(self.0) {
+            Ok(bytes) => bytes,
+            Err(bytes) => bytes.to_vec(),
+        }
+    }
+}
+
 /// Manage user allocated buffers
 ///
 /// All buffers are released in the Drop impl.
