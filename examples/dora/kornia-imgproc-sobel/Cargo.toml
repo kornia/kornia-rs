@@ -1,0 +1,10 @@
+[package]
+name = "kornia-imgproc-sobel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dora-node-api = { version = "0.3.12", features = ["tracing"] }
+kornia-image = { path = "../../../crates/kornia-image" }
+kornia-imgproc = { path = "../../../crates/kornia-imgproc" }
+kornia-io = { path = "../../../crates/kornia-io" }
