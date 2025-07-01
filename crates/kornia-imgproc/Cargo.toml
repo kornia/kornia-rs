@@ -12,7 +12,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-fast_image_resize = "5.1.0"
+fast_image_resize = { version = "5.1", features = ["rayon"] }
 kornia-tensor = { workspace = true }
 kornia-image = { workspace = true }
 num-traits = { workspace = true }
@@ -25,7 +25,7 @@ image = "0.25"
 imageproc = "0.25"
 kornia-io = { workspace = true }
 ndarray = { version = "0.15", features = ["rayon"] }
-rand = "0.8.5"
+rand = { workspace = true }
 
 [[bench]]
 name = "bench_color"
