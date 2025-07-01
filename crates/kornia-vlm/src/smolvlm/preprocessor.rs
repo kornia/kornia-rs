@@ -67,9 +67,9 @@ pub fn preprocess_image(
     let (img, mask) = {
         let (width, height) = (img.width(), img.height());
         let new_width =
-            ((width as u32 + outer_patch_size - 1) / outer_patch_size) * outer_patch_size;
+            (width as u32).div_ceil(outer_patch_size) * outer_patch_size;
         let new_height =
-            ((height as u32 + outer_patch_size - 1) / outer_patch_size) * outer_patch_size;
+            (height as u32).div_ceil(outer_patch_size) * outer_patch_size;
         let mut padded_img = Image::<u8, 3, _>::from_size_val(
             ImageSize {
                 width: new_width as usize,
@@ -103,9 +103,9 @@ pub fn preprocess_image(
     let (global_img, global_mask) = {
         let (width, height) = (global_img.width(), global_img.height());
         let new_width =
-            ((width as u32 + outer_patch_size - 1) / outer_patch_size) * outer_patch_size;
+            (width as u32).div_ceil(outer_patch_size) * outer_patch_size;
         let new_height =
-            ((height as u32 + outer_patch_size - 1) / outer_patch_size) * outer_patch_size;
+            (height as u32).div_ceil(outer_patch_size) * outer_patch_size;
         let mut padded_img = Image::<u8, 3, _>::from_size_val(
             ImageSize {
                 width: new_width as usize,
@@ -147,7 +147,7 @@ pub fn preprocess_image(
         let img_data: Vec<u8> = img.as_slice().to_vec();
         Tensor::from_vec(
             img_data,
-            Shape::from_dims(&[height as usize, width as usize, 3]),
+            Shape::from_dims(&[height, width, 3]),
             device,
         )
         .unwrap()
@@ -161,7 +161,7 @@ pub fn preprocess_image(
         let img_data: Vec<u8> = mask.as_slice().to_vec();
         Tensor::from_vec(
             img_data,
-            Shape::from_dims(&[height as usize, width as usize]),
+            Shape::from_dims(&[height, width]),
             device,
         )
         .unwrap()
@@ -173,7 +173,7 @@ pub fn preprocess_image(
         let img_data: Vec<u8> = global_img.as_slice().to_vec();
         Tensor::from_vec(
             img_data,
-            Shape::from_dims(&[height as usize, width as usize, 3]),
+            Shape::from_dims(&[height, width, 3]),
             device,
         )
         .unwrap()
@@ -187,7 +187,7 @@ pub fn preprocess_image(
         let img_data: Vec<u8> = global_mask.as_slice().to_vec();
         Tensor::from_vec(
             img_data,
-            Shape::from_dims(&[height as usize, width as usize]),
+            Shape::from_dims(&[height, width]),
             device,
         )
         .unwrap()

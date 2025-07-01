@@ -4,7 +4,6 @@ use kornia_tensor::CpuAllocator;
 use kornia_vlm::smolvlm::{utils::SmolVlmConfig, SmolVlm};
 
 use kornia_io::jpeg::read_image_jpeg_rgb8;
-use reqwest;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::{fs, io, io::Write};
@@ -41,8 +40,7 @@ pub fn load_image_url(
             Path::new(path)
                 .file_name()
                 .and_then(|name| name.to_str())
-                .unwrap_or("unknown_file.png") // Use PNG as default
-                .to_string(),
+                .unwrap_or("unknown_file.png"),
         )
     };
 
@@ -94,8 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(|v| {
                     if model.image_history_count() > 1 {
                         println!("One image max. Cannot add another image. (Restart)");
-                        Err(Box::new(io::Error::new(
-                            io::ErrorKind::Other,
+                        Err(Box::new(io::Error::other(
                             "One image max",
                         )))
                     } else {
@@ -109,7 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         Err(err)
                     },
-                    |ok| Ok(ok),
+                    Ok,
                 )
                 .ok();
 

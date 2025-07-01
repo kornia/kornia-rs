@@ -187,7 +187,6 @@ impl SmolVision {
                 1152,
             ),
             blocks: (0u8..=26)
-                .into_iter()
                 .map(|id| Block::new(c, id).unwrap())
                 .collect(),
             post_layernorm: LayerNorm::new(

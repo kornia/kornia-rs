@@ -147,8 +147,8 @@ impl MLPGates {
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let gate = self.gate_proj.forward(&x)?.silu()?.to_dtype(DType::F32)?;
-        let up = self.up_proj.forward(&x)?.to_dtype(DType::F32)?;
+        let gate = self.gate_proj.forward(x)?.silu()?.to_dtype(DType::F32)?;
+        let up = self.up_proj.forward(x)?.to_dtype(DType::F32)?;
         let hidden = (gate * up)?.to_dtype(DType::BF16)?;
         let x = self.down_proj.forward(&hidden)?;
         Ok(x)
@@ -220,7 +220,6 @@ impl SmolText {
     pub fn load(c: &HashMap<String, Tensor>) -> Result<Self> {
         Ok(Self {
             blocks: (0u8..=23)
-                .into_iter()
                 .map(|i| Block::load(c, i).unwrap())
                 .collect(),
             norm: RmsNorm::new(c["model.text_model.norm.weight"].clone(), 1e-5),

@@ -136,7 +136,7 @@ impl SmolVlm {
             self.token_history.extend(&delta_token);
 
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
-            let vision_data = if self.image_history.len() > 0 {
+            let vision_data = if !self.image_history.is_empty() {
                 let image_token_mask = input.broadcast_eq(&self.image_token_tensor)?;
                 Some((
                     image_token_mask,
@@ -174,7 +174,7 @@ impl SmolVlm {
                 }
             } else {
                 if stdout_debug {
-                    print!("\n");
+                    println!();
                     io::stdout().flush().unwrap();
                 }
 
@@ -204,7 +204,7 @@ impl SmolVlm {
         let api = Api::new()?;
         let repo = api.model("HuggingFaceTB/SmolVLM-Instruct".to_string());
         let weights = repo.get("model.safetensors")?;
-        let weights = candle_core::safetensors::load(weights, &device)?;
+        let weights = candle_core::safetensors::load(weights, device)?;
         let model = SmolModel::load(&weights)?;
 
         Ok((model, tokenizer))
@@ -213,5 +213,5 @@ impl SmolVlm {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 }
