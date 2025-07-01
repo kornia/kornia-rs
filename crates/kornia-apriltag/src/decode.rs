@@ -1,4 +1,4 @@
-use std::{f32::consts::PI, ops::ControlFlow, usize};
+use std::{f32::consts::PI, ops::ControlFlow};
 
 use crate::{
     family::TagFamily,
@@ -225,7 +225,7 @@ pub fn refine_edges<A: ImageAllocator>(
         let b = (edge + 1) & 3;
 
         let mut nx = quad.corners[b].y - quad.corners[a].y;
-        let mut ny = quad.corners[b].x - quad.corners[a].y;
+        let mut ny = -quad.corners[b].x + quad.corners[a].x;
         let mag = (nx * nx + ny * ny).sqrt();
         nx /= mag;
         ny /= mag;
@@ -381,6 +381,7 @@ pub fn refine_edges<A: ImageAllocator>(
 pub fn quad_update_homographies(quad: &mut Quad) -> bool {
     let mut corr_arr: [[f32; 4]; 4] = Default::default();
 
+    // TODO: Directly assign the array instead of iterating
     (0..4).for_each(|i| {
         corr_arr[i][0] = if i == 0 || i == 3 { -1.0 } else { 1.0 };
         corr_arr[i][1] = if i == 0 || i == 1 { -1.0 } else { 1.0 };
@@ -443,6 +444,11 @@ pub fn quad_decode<A: ImageAllocator>(
         0.5, tag_family.width_at_border as f32 + 0.5,
         1.0, 0.0,
         0.0,
+
+        // bottom black row
+        0.5, tag_family.width_at_border as f32 - 0.5,
+        1.0, 0.0,
+        0.0,
     ];
 
     let src_slice = src.as_slice();
@@ -453,9 +459,9 @@ pub fn quad_decode<A: ImageAllocator>(
     (0..patterns.len() / 5).for_each(|pattern_idx| {
         let pattern_start = pattern_idx * 5;
         let pattern = &patterns[pattern_start..pattern_start + 5];
-        let is_white = match pattern[4] as u8 {
-            255 => true,
-            0 => false,
+        let is_white = match pattern[4] {
+            1.0 => true,
+            0.0 => false,
             _ => unreachable!(),
         };
 
@@ -467,6 +473,11 @@ pub fn quad_decode<A: ImageAllocator>(
             let tagy = 2.0 * (tagy01 - 0.5);
 
             let p = quad.homography_project(tagx, tagy);
+
+            if p.x.trunc() < 0.0 || p.y.trunc() < 0.0 {
+                return;
+            }
+
             let p = Point2d {
                 x: p.x as usize,
                 y: p.y as usize,
@@ -541,7 +552,7 @@ pub fn quad_decode<A: ImageAllocator>(
         let bit_y = tag_family.bit_y[i];
         let bit_x = tag_family.bit_x[i];
 
-        rcode = rcode << 1;
+        rcode <<= 1;
 
         let v = values[((bit_y as isize - min_coord) * tag_family.total_width as isize
             + bit_x as isize
@@ -576,17 +587,22 @@ pub fn sharpen(values: &mut [f32], size: usize) {
          0.0, -1.0,  0.0,
     ];
 
-    (0..size).for_each(|y| {
-        (0..size).for_each(|x| {
-            sharpened[y * size + x] = 0.0;
+    (0..size as isize).for_each(|y| {
+        (0..size as isize).for_each(|x| {
+            sharpened[(y * size as isize + x) as usize] = 0.0;
 
-            (0..3).for_each(|i| {
-                (0..3).for_each(|j| {
-                    if (y + i - 1) > size - 1 || (x + j - 1) > size - 1 {
+            (0..3isize).for_each(|i| {
+                (0..3isize).for_each(|j| {
+                    if (y + i - 1) < 0
+                        || (y + i - 1) > size as isize - 1
+                        || (x + j - 1) < 0
+                        || (x + j - 1) > size as isize - 1
+                    {
                         return;
                     }
-                    sharpened[y * size + x] +=
-                        values[(y + i - 1) * size + (x + j - 1)] * KERNEL[i * 3 + j];
+                    sharpened[(y * size as isize + x) as usize] += values
+                        [((y + i - 1) * size as isize + (x + j - 1)) as usize]
+                        * KERNEL[(i * 3 + j) as usize];
                 });
             });
         });
@@ -594,8 +610,7 @@ pub fn sharpen(values: &mut [f32], size: usize) {
 
     (0..size).for_each(|y| {
         (0..size).for_each(|x| {
-            values[y * size + x] =
-                values[y * size + x] + DECODE_SHARPENING * sharpened[y * size + x];
+            values[y * size + x] += DECODE_SHARPENING * sharpened[y * size + x];
         });
     });
 }
@@ -608,7 +623,7 @@ pub fn quick_decode_codeword(
     quick_decode: &mut QuickDecode,
 ) {
     if let ControlFlow::Break(_) = (0..4).try_for_each(|ridx| {
-        let mut bucket = rcode.clone() % quick_decode.0.len();
+        let mut bucket = *rcode % quick_decode.0.len();
 
         while quick_decode.0[bucket].rcode != usize::MAX {
             if quick_decode.0[bucket].rcode == *rcode {
@@ -643,7 +658,7 @@ fn rotate_90(mut w: usize, num_bits: usize) -> usize {
         l = 1;
     }
 
-    w = ((w >> 1) << (p / 4 + l)) | (w >> (3 * p / 4 + l) << l) | (w & l);
+    w = ((w >> l) << (p / 4 + l)) | (w >> (3 * p / 4 + l) << l) | (w & l);
     w &= (1 << num_bits) - 1;
 
     w

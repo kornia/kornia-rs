@@ -64,8 +64,7 @@ impl PartialEq<u8> for Pixel {
 }
 
 /// TODO
-// TODO: Should we make this function const?
-pub const fn homography_compute(c: [[f32; 4]; 4]) -> Option<[f32; 9]> {
+pub fn homography_compute(c: [[f32; 4]; 4]) -> Option<[f32; 9]> {
     #[rustfmt::skip]
     let mut a = [
         c[0][0], c[0][1], 1.0, 0.0,     0.0,     0.0, -c[0][0]*c[0][2], -c[0][1]*c[0][2], c[0][2],
@@ -79,78 +78,56 @@ pub const fn homography_compute(c: [[f32; 4]; 4]) -> Option<[f32; 9]> {
     ];
 
     const EPSILON: f32 = 1e-10;
-    const MAX_COL: usize = 8;
 
-    let mut col = 0;
-    while col < MAX_COL {
-        let mut max_val = 0f32;
-        let mut max_val_idx = 0usize;
+    // Eliminate
+    for col in 0..8 {
+        // Find best row to swap with
+        let mut max_val = 0.0;
+        let mut max_val_idx = -1;
 
-        let mut row = 0;
-        while row < MAX_COL {
-            let val = (a[row * 9 + col]).abs();
-
+        for row in col..8 {
+            let val = a[row * 9 + col].abs();
             if val > max_val {
                 max_val = val;
-                max_val_idx = row;
+                max_val_idx = row as isize;
             }
-            row += 1;
         }
 
-        if max_val < EPSILON {
-            // The Matrix is Singular
+        if max_val_idx < 0 {
             return None;
         }
 
-        // swap to get best row
-        if max_val_idx != col {
-            let mut i = col;
-            while i < MAX_COL + 1 {
-                let tmp = a[col * 9 + 1];
-                a[col * 9 + 1] = a[max_val_idx * 9 + i];
-                a[max_val_idx * 9 + i] = tmp;
+        let max_val_idx = max_val_idx as usize;
 
-                i += 1;
+        if max_val < EPSILON {
+            // Matrix is singular
+            return None;
+        }
+
+        // Swap to get best row
+        if max_val_idx != col {
+            for i in col..9 {
+                a.swap(col * 9 + i, max_val_idx * 9 + i);
             }
         }
 
         // Do eliminate
-        let mut i = col;
-        while i < MAX_COL {
+        for i in (col + 1)..8 {
             let f = a[i * 9 + col] / a[col * 9 + col];
             a[i * 9 + col] = 0.0;
-
-            let mut j = col;
-            while j < MAX_COL + 1 {
+            for j in (col + 1)..9 {
                 a[i * 9 + j] -= f * a[col * 9 + j];
-
-                j += 1;
             }
-
-            i += 1;
         }
-
-        col += 1;
     }
 
-    // back solve
-    let mut col = 7;
-    loop {
-        let mut sum = 0f32;
-
-        let mut i = col;
-        while i < MAX_COL {
-            sum += a[col * 9 + 8] * a[col * 9 + col];
-            i += 1;
+    // Back solve
+    for col in (0..8).rev() {
+        let mut sum = 0.0;
+        for i in (col + 1)..8 {
+            sum += a[col * 9 + i] * a[i * 9 + 8];
         }
-
         a[col * 9 + 8] = (a[col * 9 + 8] - sum) / a[col * 9 + col];
-
-        if col == 0 {
-            break;
-        }
-
-        col -= 1;
     }
 
     Some([a[8], a[17], a[26], a[35], a[44], a[53], a[62], a[71], 1.0])
@@ -219,7 +196,7 @@ pub(crate) fn value_for_pixel<A: ImageAllocator>(
 
     let x1 = (p.x - 0.5).floor() as isize;
     let x2 = (p.x - 0.5).ceil() as isize;
-    let x = p.x as f32 - 0.5 - x1 as f32;
+    let x = p.x - 0.5 - x1 as f32;
 
     let y1 = (p.y - 0.5).floor() as isize;
     let y2 = (p.y - 0.5).ceil() as isize;
@@ -330,5 +307,21 @@ mod tests {
 
         let mul = matrix_3x3_mul(&a, &b);
         assert_eq!(mul, expected)
+    }
+
+    #[test]
+    fn test_homography_compute() {
+        #[rustfmt::skip]
+        let corr_arr = [
+            [-1.0, -1.0, 27.0,  3.0],
+            [ 1.0, -1.0, 27.0, 27.0],
+            [ 1.0,  1.0,  3.0, 27.0],
+            [-1.0,  1.0,  3.0,  3.0],
+        ];
+
+        let h = homography_compute(corr_arr);
+        let expected = Some([-0.0, -12.0, 15.0, 12.0, -0.0, 15.0, -0.0, 0.0, 1.0]);
+
+        assert_eq!(h, expected)
     }
 }
