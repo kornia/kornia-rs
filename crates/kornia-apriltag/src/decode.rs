@@ -90,8 +90,6 @@ pub struct Detection<'a> {
     pub decision_margin: f32,
     /// TODO
     pub center: Point2d<f32>,
-    /// TODO
-    pub quad: Quad,
 }
 
 impl QuickDecode {
@@ -172,10 +170,9 @@ pub fn decode_tags<'a, A: ImageAllocator>(
             return;
         }
 
-        let mut quad_clone = quad.clone();
         let mut entry = QuickDecodeEntry::default();
 
-        let decision_margin = quad_decode(src, tag_family, &quad_clone, &mut entry, quick_decode);
+        let decision_margin = quad_decode(src, tag_family, &quad, &mut entry, quick_decode);
 
         if let Some(decision_margin) = decision_margin {
             if decision_margin >= 0.0 && entry.hamming < u8::MAX {
@@ -191,15 +188,14 @@ pub fn decode_tags<'a, A: ImageAllocator>(
                     0.0, 0.0, 1.0,
                 ];
 
-                quad_clone.h = matrix_3x3_mul(&quad_clone.h, &r);
-                let center = quad_clone.homography_project(0.0, 0.0);
+                quad.h = matrix_3x3_mul(&quad.h, &r);
+                let center = quad.homography_project(0.0, 0.0);
 
                 let detection = Detection {
                     tag_family,
                     id: entry.id,
                     hamming: entry.hamming,
                     decision_margin,
-                    quad: quad_clone,
                     center,
                 };
 
@@ -662,4 +658,71 @@ fn rotate_90(mut w: usize, num_bits: usize) -> usize {
     w &= (1 << num_bits) - 1;
 
     w
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::{
+        quad::{fit_quads, FitQuadOpts},
+        segmentation::{find_connected_components, find_gradient_clusters},
+        threshold::{adaptive_threshold, TileMinMax},
+        union_find::UnionFind,
+        utils::Pixel,
+    };
+    use kornia_image::allocator::CpuAllocator;
+    use kornia_io::png::read_image_png_mono8;
+
+    #[test]
+    fn test_decode_tags() -> Result<(), Box<dyn std::error::Error>> {
+        let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
+
+        let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
+        let mut tile_min_max = TileMinMax::new(bin.size(), 4);
+        let mut uf = UnionFind::new(bin.as_slice().len());
+        let mut clusters = HashMap::new();
+        let mut quick_decode = QuickDecode::new(&TagFamily::TAG36_H11);
+
+        adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
+        find_connected_components(&bin, &mut uf)?;
+        find_gradient_clusters(&bin, &mut uf, &mut clusters);
+
+        let mut quads = fit_quads(
+            &bin,
+            &TagFamily::TAG36_H11,
+            &mut clusters,
+            5,
+            FitQuadOpts::default(),
+        );
+
+        for quad in &mut quads {
+            for corner in &mut quad.corners {
+                corner.x = corner.x.round();
+                corner.y = corner.y.round();
+            }
+        }
+
+        let tags = decode_tags(
+            &src,
+            &mut quads,
+            &TagFamily::TAG36_H11,
+            &mut quick_decode,
+            false,
+        );
+
+        let expected_tags = vec![Detection {
+            tag_family: &TagFamily::TAG36_H11,
+            center: Point2d { x: 15.0, y: 15.0 },
+            decision_margin: 225.50317,
+            id: 23,
+            hamming: 0,
+        }];
+
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags, expected_tags);
+
+        Ok(())
+    }
 }
