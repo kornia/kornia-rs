@@ -89,7 +89,7 @@ impl SmolVlm {
     /// # Returns
     ///
     /// * `caption` - The generated caption
-    pub fn inference(
+    pub fn inference<A: ImageAllocator(
         &mut self,
         image: Option<Image<u8, 3, CpuAllocator>>,
         prompt: &str,
