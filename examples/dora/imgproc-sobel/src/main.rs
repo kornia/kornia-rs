@@ -1,6 +1,5 @@
 use dora_node_api::{
-    self, arrow::array::UInt8Array, dora_core::config::DataId, DoraNode, Event, IntoArrow,
-    Parameter,
+    self, arrow::array::UInt8Array, dora_core::config::DataId, DoraNode, Event, Parameter,
 };
 use kornia::{
     image::{Image, ImageSize},
@@ -82,7 +81,12 @@ fn main() -> eyre::Result<()> {
                         *p = Parameter::String("RGB8".to_string());
                     }
 
-                    node.send_output(output.clone(), params, out_u8.into_vec().into_arrow())?;
+                    node.send_output_bytes(
+                        output.clone(),
+                        params,
+                        out_u8.numel(),
+                        out_u8.as_slice(),
+                    )?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },

@@ -1,4 +1,4 @@
-use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow, Parameter};
+use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, Parameter};
 use kornia::{
     image::ImageSize,
     io::v4l::{PixelFormat, V4LCameraConfig, V4LVideoCapture},
@@ -78,11 +78,13 @@ fn main() -> eyre::Result<()> {
                         Parameter::Integer(stamp.as_nanos() as i64)
                     });
 
-                    // unwrap the buffer with zero copy if the buffer is not shared, otherwise clone the buffer
-                    let data = frame.buffer.unwrap_or_clone();
-
                     // send the frame to the output
-                    node.send_output(output.clone(), param, data.into_arrow())?;
+                    node.send_output_bytes(
+                        output.clone(),
+                        param,
+                        frame.buffer.len(),
+                        frame.buffer.as_slice(),
+                    )?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
