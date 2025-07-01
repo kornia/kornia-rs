@@ -127,6 +127,9 @@ impl SmolVlm {
 
         let mut delta_token = full_token.get_ids().to_vec();
 
+        let start_gen = std::time::Instant::now();
+        let mut generated_tokens = 0usize;
+
         for _i in 0..sample_len {
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
             let vision_data = if self.image_history.len() > 0 {
@@ -153,6 +156,7 @@ impl SmolVlm {
 
             if token_output != "<end_of_utterance>" {
                 response += &token_output;
+                generated_tokens += 1;
 
                 if stdout_debug {
                     print!("{}", token_output);
@@ -166,6 +170,14 @@ impl SmolVlm {
 
                 break;
             }
+        }
+
+        if stdout_debug {
+            let dt = start_gen.elapsed();
+            println!(
+                "\n{generated_tokens} tokens generated ({:.2} token/s)",
+                generated_tokens as f64 / dt.as_secs_f64(),
+            );
         }
 
         Ok(response)
