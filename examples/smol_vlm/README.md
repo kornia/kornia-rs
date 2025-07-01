@@ -1,11 +1,11 @@
-Example showing how to use the Google Paligemma model with Candle.
+Example showing how to use the HuggingFace SmolVLM model with Candle.
 
 ## Usage
 
 ```bash
-Usage: paligemma -i <image-path> -p <text-prompt> [--sample-length <sample-length>] [--conversation-style]
+Usage: smol_vlm -i <image-path> -p <text-prompt> [--sample-length <sample-length>] [--conversation-style]
 
-Generate a description of an image using Google Paligemma
+Generate a description of an image using HuggingFace SmolVLM
 
 Options:
   -i, --image-path      path to an input image

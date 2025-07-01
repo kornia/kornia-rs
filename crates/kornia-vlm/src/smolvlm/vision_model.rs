@@ -233,22 +233,15 @@ impl SmolVision {
             let patch_embeddings = self
                 .patch_embedding
                 .forward(&pixel_values.to_dtype(DType::BF16)?)?;
-            // println!("{:?}", patch_embeddings.shape());
             let patch_embeddings = patch_embeddings.flatten_from(2)?.transpose(1, 2)?;
-            // println!("{:?}", patch_embeddings.shape());
 
             let position_ids = {
                 let raw_ids = Tensor::arange(0u32, 27 * 27, device)?.expand(&[batch, 27 * 27])?;
                 (raw_ids * &patch_attention_masks)?
             };
             let position_embeddings = self.position_embedding.forward(&position_ids)?;
-            // println!("{:?}", patch_embeddings);
-            // println!("{:?}", position_embeddings);
-            // println!("{:?}", patch_embeddings.to_dtype(DType::F32)?.to_vec3::<f32>());
-            // println!("{:?}", position_embeddings.to_vec3::<u32>());
             patch_embeddings + position_embeddings
         }?;
-        // println!(">> {:?}", hidden_states);
 
         let patch_attention_masks =
             {
@@ -260,7 +253,6 @@ impl SmolVision {
                 let neg_infs = Tensor::full(f32::NEG_INFINITY, inverted_mask.shape(), device)?;
                 inverted_mask.where_cond(&neg_infs, &inverted_mask.to_dtype(DType::F32)?)?
             };
-        // println!(">> {:?}", patch_attention_masks);
 
         for block in &self.blocks {
             hidden_states = block.forward(&hidden_states, &patch_attention_masks)?;

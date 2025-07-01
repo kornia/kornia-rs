@@ -133,11 +133,6 @@ pub fn preprocess_image(
         (padded_img, padded_mask)
     };
 
-    write_image_png_rgb8(".vscode/padded_img.png", &img).unwrap();
-    write_image_png_gray8(".vscode/mask.png", &mask).unwrap();
-    write_image_png_rgb8(".vscode/global_padded_img.png", &global_img).unwrap();
-    write_image_png_gray8(".vscode/global_mask.png", &global_mask).unwrap();
-
     let img = {
         let (width, height) = (img.width(), img.height());
         let img_data: Vec<u8> = img.as_slice().to_vec();
