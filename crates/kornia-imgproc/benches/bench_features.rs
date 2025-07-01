@@ -35,7 +35,7 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
 
 fn bench_harris_response(c: &mut Criterion) {
     let mut group = c.benchmark_group("Features");
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     for (width, height) in [(224, 224), (1920, 1080)].iter() {
         group.throughput(criterion::Throughput::Elements((*width * *height) as u64));
@@ -44,7 +44,7 @@ fn bench_harris_response(c: &mut Criterion) {
 
         // input image
         let image_data: Vec<f32> = (0..(*width * *height))
-            .map(|_| rng.gen_range(0.0..1.0))
+            .map(|_| rng.random_range(0.0..1.0))
             .collect();
         let image_size = [*width, *height].into();
 
