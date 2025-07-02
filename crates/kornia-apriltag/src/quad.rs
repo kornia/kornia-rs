@@ -4,6 +4,7 @@ use crate::{
     utils::{Pixel, Point2d},
 };
 use kornia_image::{allocator::ImageAllocator, Image};
+use kornia_imgproc::filter::kernels::gaussian_kernel_1d;
 use std::{collections::HashMap, f32, ops::ControlFlow};
 
 const SLOPE_OFFSET_BASE: i32 = 2 << 15; // Base value for slope offset calculations.
@@ -436,17 +437,11 @@ pub fn quad_segment_maxima(
 
     const SIGMA: f32 = 1.0;
     const CUTOFF: f32 = 0.05;
-    const GAUSSIAN_DENOM: f32 = 2.0 * SIGMA * SIGMA;
 
     let filter_size = (2.0 * ((-(CUTOFF.ln()) * 2.0 * SIGMA * SIGMA).sqrt() + 1.0) + 1.0) as usize;
     let mut smoothed_errors = vec![0.0f32; len];
 
-    let mut gaussian_kernel = vec![0.0f32; filter_size];
-
-    (0..filter_size).for_each(|i| {
-        let j = i as isize - filter_size as isize / 2;
-        gaussian_kernel[i] = (-(j as f32) * j as f32 / GAUSSIAN_DENOM).exp();
-    });
+    let gaussian_kernel = gaussian_kernel_1d(filter_size, SIGMA);
 
     (0..len).for_each(|iy| {
         let mut acc = 0.0f32;
