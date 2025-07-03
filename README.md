@@ -342,3 +342,16 @@ just py-test
 ## 💜 Contributing
 
 This is a child project of [Kornia](https://github.com/kornia/kornia). Join the community to get in touch with us, or just sponsor the project: <https://opencollective.com/kornia>
+
+## Citation
+
+If you use kornia-rs in your research, please cite:
+
+```bibtex
+@misc{2505.12425,
+Author = {Edgar Riba and Jian Shi and Aditya Kumar and Andrew Shen and Gary Bradski},
+Title = {Kornia-rs: A Low-Level 3D Computer Vision Library In Rust},
+Year = {2025},
+Eprint = {arXiv:2505.12425},
+}
+```
