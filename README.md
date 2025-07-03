@@ -1,5 +1,7 @@
 # kornia-rs: low level computer vision library in Rust
 
+English | [简体中文](README.zh-CN.md)
+
 ![Crates.io Version](https://img.shields.io/crates/v/kornia)
 [![PyPI version](https://badge.fury.io/py/kornia-rs.svg)](https://badge.fury.io/py/kornia-rs)
 [![Documentation](https://img.shields.io/badge/docs.rs-kornia-orange)](https://docs.rs/kornia)
