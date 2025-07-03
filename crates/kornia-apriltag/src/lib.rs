@@ -18,3 +18,9 @@ pub mod segmentation;
 
 /// Union-find utilities for AprilTag detection.
 pub mod union_find;
+
+/// AprilTag family definitions and utilities.
+pub mod family;
+
+/// Quad detection utilities for AprilTag detection.
+pub mod quad;
