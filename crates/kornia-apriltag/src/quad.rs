@@ -775,8 +775,8 @@ mod tests {
             assert!((point[0].x as usize).abs_diff(expected_quad[0][0]) <= 1);
             assert!((point[0].y as usize).abs_diff(expected_quad[0][1]) <= 1);
 
-            assert!((point[2].x as usize).abs_diff(expected_quad[2][0]) <= 1);
-            assert!((point[2].y as usize).abs_diff(expected_quad[2][1]) <= 1);
+            assert!((point[1].x as usize).abs_diff(expected_quad[1][0]) <= 1);
+            assert!((point[1].y as usize).abs_diff(expected_quad[1][1]) <= 1);
 
             assert!((point[2].x as usize).abs_diff(expected_quad[2][0]) <= 1);
             assert!((point[2].y as usize).abs_diff(expected_quad[2][1]) <= 1);
@@ -803,7 +803,7 @@ mod tests {
         let lfps = vec![LineFit::default(); 20];
         let mut indices = [0; 4];
 
-        // Should return false because ksz < 2 (20/12 = 1.66... < 2)
+        // Should return false because window_size < 2 (20/12 = 1.66... < 2)
         assert!(!quad_segment_maxima(
             &gradient_infos,
             &lfps,
