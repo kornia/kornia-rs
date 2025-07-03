@@ -341,4 +341,17 @@ just py-test
 
 ## 💜 贡献
 
-本项目为 [Kornia](https://github.com/kornia/kornia) 的子项目。欢迎加入社区与我们交流，或通过 <https://opencollective.com/kornia> 赞助项目。 
+本项目为 [Kornia](https://github.com/kornia/kornia) 的子项目。欢迎加入社区与我们交流，或通过 <https://opencollective.com/kornia> 赞助项目。
+
+## 论文引用
+
+如果您在研究中使用了 kornia-rs，请引用：
+
+```bibtex
+@misc{2505.12425,
+Author = {Edgar Riba and Jian Shi and Aditya Kumar and Andrew Shen and Gary Bradski},
+Title = {Kornia-rs: A Low-Level 3D Computer Vision Library In Rust},
+Year = {2025},
+Eprint = {arXiv:2505.12425},
+}
+``` 
