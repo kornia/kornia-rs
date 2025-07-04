@@ -64,7 +64,7 @@ impl PartialEq<u8> for Pixel {
 }
 
 /// TODO
-pub fn homography_compute(c: [[f32; 4]; 4]) -> Option<[f32; 9]> {
+pub(crate) fn homography_compute(c: [[f32; 4]; 4]) -> Option<[f32; 9]> {
     #[rustfmt::skip]
     let mut a = [
         c[0][0], c[0][1], 1.0, 0.0,     0.0,     0.0, -c[0][0]*c[0][2], -c[0][1]*c[0][2], c[0][2],
@@ -131,28 +131,6 @@ pub fn homography_compute(c: [[f32; 4]; 4]) -> Option<[f32; 9]> {
     }
 
     Some([a[8], a[17], a[26], a[35], a[44], a[53], a[62], a[71], 1.0])
-}
-
-/// TODO
-pub const fn inverse_3x3_matrix(a: &[f32; 9]) -> [f32; 9] {
-    #[rustfmt::skip]
-    let det =  a[0] * (a[4] * a[8] - a[5] * a[7])
-                  - a[1] * (a[3] * a[8] - a[5] * a[6])
-                  + a[2] * (a[3] * a[7] - a[4] * a[6]);
-
-    let inv_det = 1.0 / det;
-
-    [
-        inv_det * (a[4] * a[8] - a[5] * a[7]),
-        inv_det * (a[2] * a[7] - a[1] * a[8]),
-        inv_det * (a[1] * a[5] - a[2] * a[4]),
-        inv_det * (a[5] * a[6] - a[3] * a[8]),
-        inv_det * (a[0] * a[8] - a[2] * a[6]),
-        inv_det * (a[2] * a[3] - a[0] * a[5]),
-        inv_det * (a[3] * a[7] - a[4] * a[6]),
-        inv_det * (a[1] * a[6] - a[0] * a[7]),
-        inv_det * (a[0] * a[4] - a[1] * a[3]),
-    ]
 }
 
 pub(crate) fn matrix_3x3_cholesky(a: &[[f32; 3]; 3], r: &mut [f32; 9]) {
@@ -259,27 +237,6 @@ mod tests {
         let expected = Point2d { x: 25, y: 64 };
 
         assert_eq!(tiles, expected)
-    }
-
-    #[test]
-    fn test_inverse_matrix() {
-        #[rustfmt::skip]
-        let a = [
-            1.0, 2.0, 3.0,
-            4.0, 5.0, 6.0,
-            7.0, 2.0, 9.0,
-        ];
-
-        #[rustfmt::skip]
-        let expected_inv: [f32; 9] = [
-            -11.0/12.0,  1.0/3.0,  1.0/12.0,
-            - 1.0/6.0,   1.0/3.0, -1.0/6.0,
-              3.0/4.0,  -1.0/3.0,  1.0/12.0,
-        ];
-
-        let inv = inverse_3x3_matrix(&a);
-
-        assert_eq!(inv, expected_inv);
     }
 
     #[test]

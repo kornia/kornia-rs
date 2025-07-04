@@ -48,8 +48,6 @@ pub struct Quad {
     pub reversed_border: bool,
     /// TODO
     pub h: [f32; 9],
-    /// TODO
-    pub h_inv: [f32; 9],
 }
 
 impl Quad {

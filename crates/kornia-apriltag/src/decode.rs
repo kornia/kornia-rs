@@ -4,8 +4,8 @@ use crate::{
     family::TagFamily,
     quad::Quad,
     utils::{
-        homography_compute, inverse_3x3_matrix, matrix_3x3_cholesky,
-        matrix_3x3_lower_triange_inverse, matrix_3x3_mul, value_for_pixel, Point2d,
+        homography_compute, matrix_3x3_cholesky, matrix_3x3_lower_triange_inverse, matrix_3x3_mul,
+        value_for_pixel, Point2d,
     },
 };
 use kornia_image::{allocator::ImageAllocator, Image};
@@ -156,7 +156,9 @@ pub fn decode_tags<'a, A: ImageAllocator>(
     tag_family: &'a TagFamily,
     quick_decode: &mut QuickDecode,
     refine_edges_param: bool,
+    decode_sharpening: f32,
 ) -> Vec<Detection<'a>> {
+    // TODO: Avoid allocations on every call
     let mut detections = Vec::new();
 
     quads.iter_mut().for_each(|quad| {
@@ -174,7 +176,14 @@ pub fn decode_tags<'a, A: ImageAllocator>(
 
         let mut entry = QuickDecodeEntry::default();
 
-        let decision_margin = quad_decode(src, tag_family, &quad, &mut entry, quick_decode);
+        let decision_margin = quad_decode(
+            src,
+            tag_family,
+            &quad,
+            &mut entry,
+            quick_decode,
+            decode_sharpening,
+        );
 
         if let Some(decision_margin) = decision_margin {
             if decision_margin >= 0.0 && entry.hamming < u8::MAX {
@@ -211,11 +220,7 @@ pub fn decode_tags<'a, A: ImageAllocator>(
 }
 
 /// TODO
-pub fn refine_edges<A: ImageAllocator>(
-    src: &Image<u8, 1, A>,
-    quad: &mut Quad,
-    reversed_border: bool,
-) {
+fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad, reversed_border: bool) {
     let src_slice = src.as_slice();
     let mut lines: [[f32; 4]; 4] = Default::default();
 
@@ -253,17 +258,17 @@ pub fn refine_edges<A: ImageAllocator>(
 
             const RANGE: usize = 2; // TODO: Make it tuneable. It will depend on the downscaling factor of the image preprocessing.
 
-            let steps_per_unit = 4;
-            let step_length = 1.0 / steps_per_unit as f32;
-            let max_steps = 2 * steps_per_unit * RANGE + 1;
-            let delta = 0.5f32;
+            const STEPS_PER_UNIT: usize = 4;
+            let step_length = 1.0 / STEPS_PER_UNIT as f32;
+            let max_steps = 2 * STEPS_PER_UNIT * RANGE + 1;
+            const DELTA: f32 = 0.5;
 
             (0..max_steps).for_each(|step| {
                 let n = step_length * step as f32 - RANGE as f32;
-                let grange = 1f32;
+                const GRANGE: f32 = 1.0;
 
-                let x1 = x0 + (n + grange) * nx - delta;
-                let y1 = y0 + (n + grange) * ny - delta;
+                let x1 = x0 + (n + GRANGE) * nx - DELTA;
+                let y1 = y0 + (n + GRANGE) * ny - DELTA;
 
                 let x1i = x1.trunc() as isize;
                 let y1i = y1.trunc() as isize;
@@ -281,8 +286,8 @@ pub fn refine_edges<A: ImageAllocator>(
                 let x1i = x1i as usize;
                 let y1i = y1i as usize;
 
-                let x2 = x0 + (n - grange) * nx - delta;
-                let y2 = y0 + (n - grange) * ny - delta;
+                let x2 = x0 + (n - GRANGE) * nx - DELTA;
+                let y2 = y0 + (n - GRANGE) * ny - DELTA;
 
                 let x2i = x2.trunc() as isize;
                 let y2i = y2.trunc() as isize;
@@ -300,21 +305,27 @@ pub fn refine_edges<A: ImageAllocator>(
                 let x2i = x2i as usize;
                 let y2i = y2i as usize;
 
-                let g1 = (1.0 - a1) * (1.0 - b1) * src_slice[y1i * src.width() + x1i] as f32
-                    + a1 * (1.0 - b1) * src_slice[y1i * src.width() + x1i + 1] as f32
-                    + (1.0 - a1) * b1 * src_slice[(y1i + 1) * src.width() + x1i] as f32
-                    + a1 * b1 * src_slice[(y1i + 1) * src.width() + x1i + 1] as f32;
+                let top_left_idx = y1i * src.width() + x1i;
+                let bottom_left_idx = (y1i + 1) * src.width() + x1i;
 
-                let g2 = (1.0 - a2) * (1.0 - b2) * src_slice[y2i * src.width() + x2i] as f32
-                    + a2 * (1.0 - b2) * src_slice[y2i * src.width() + x2i + 1] as f32
-                    + (1.0 - a2) * b2 * src_slice[(y2i + 1) * src.width() + x2i] as f32
-                    + a2 * b2 * src_slice[(y2i + 1) * src.width() + x2i + 1] as f32;
+                let gray_value_1 = (1.0 - a1) * (1.0 - b1) * src_slice[top_left_idx] as f32
+                    + a1 * (1.0 - b1) * src_slice[top_left_idx + 1] as f32
+                    + (1.0 - a1) * b1 * src_slice[bottom_left_idx] as f32
+                    + a1 * b1 * src_slice[bottom_left_idx + 1] as f32;
 
-                if g1 < g2 {
+                let top_left_idx_2 = y2i * src.width() + x2i;
+                let bottom_left_idx_2 = (y2i + 1) * src.width() + x2i;
+
+                let gray_value_2 = (1.0 - a2) * (1.0 - b2) * src_slice[top_left_idx_2] as f32
+                    + a2 * (1.0 - b2) * src_slice[top_left_idx_2 + 1] as f32
+                    + (1.0 - a2) * b2 * src_slice[bottom_left_idx_2] as f32
+                    + a2 * b2 * src_slice[bottom_left_idx_2 + 1] as f32;
+
+                if gray_value_1 < gray_value_2 {
                     return;
                 }
 
-                let weight = (g2 - g1) * (g2 - g1);
+                let weight = (gray_value_2 - gray_value_1) * (gray_value_2 - gray_value_1);
 
                 mn += weight * n;
                 m_count += weight;
@@ -371,25 +382,21 @@ pub fn refine_edges<A: ImageAllocator>(
             let l0 = w00 * b0 + w01 * b1;
 
             quad.corners[(i + 1) & 3].x = lines[i][0] + l0 * a00;
-            quad.corners[(i + 1) & 3].y = lines[i][1] + l0 * a00;
+            quad.corners[(i + 1) & 3].y = lines[i][1] + l0 * a01;
         }
     });
 }
 
 /// TODO
-pub fn quad_update_homographies(quad: &mut Quad) -> bool {
-    let mut corr_arr: [[f32; 4]; 4] = Default::default();
-
-    // TODO: Directly assign the array instead of iterating
-    (0..4).for_each(|i| {
-        corr_arr[i][0] = if i == 0 || i == 3 { -1.0 } else { 1.0 };
-        corr_arr[i][1] = if i == 0 || i == 1 { -1.0 } else { 1.0 };
-        corr_arr[i][2] = quad.corners[i].x;
-        corr_arr[i][3] = quad.corners[i].y;
-    });
+fn quad_update_homographies(quad: &mut Quad) -> bool {
+    let corr_arr = [
+        [-1.0, -1.0, quad.corners[0].x, quad.corners[0].y],
+        [1.0, -1.0, quad.corners[1].x, quad.corners[1].y],
+        [1.0, 1.0, quad.corners[2].x, quad.corners[2].y],
+        [-1.0, 1.0, quad.corners[3].x, quad.corners[3].y],
+    ];
 
     if let Some(h) = homography_compute(corr_arr) {
-        quad.h_inv = inverse_3x3_matrix(&h);
         quad.h = h;
 
         return true;
@@ -400,73 +407,109 @@ pub fn quad_update_homographies(quad: &mut Quad) -> bool {
 
 /// TODO
 // returns the decision margin
-pub fn quad_decode<A: ImageAllocator>(
+fn quad_decode<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     tag_family: &TagFamily,
     quad: &Quad,
     entry: &mut QuickDecodeEntry,
     quick_decode: &mut QuickDecode,
+    decode_sharpening: f32,
 ) -> Option<f32> {
+    struct Pattern {
+        start_x: f32,
+        start_y: f32,
+        step_x: f32,
+        step_y: f32,
+        is_white: bool,
+    }
+
     #[rustfmt::skip]
     let patterns = [
         // left white column
-        -0.5, 0.5,
-        0.0, 1.0,
-        1.0,
+        Pattern {
+            start_x: -0.5,
+            start_y: 0.5,
+            step_x: 0.0,
+            step_y: 1.0,
+            is_white: true
+        },
 
         // left black column
-        0.5, 0.5,
-        0.0, 1.0,
-        0.0,
+        Pattern {
+            start_x: 0.5,
+            start_y: 0.5,
+            step_x: 0.0,
+            step_y: 1.0,
+            is_white: false
+        },
 
         // right white column
-        tag_family.width_at_border as f32 + 0.5, 0.5,
-        0.0, 1.0,
-        1.0,
+        Pattern {
+            start_x: tag_family.width_at_border as f32 + 0.5,
+            start_y: 0.5,
+            step_x: 0.0,
+            step_y: 1.0,
+            is_white: true,
+        },
 
         // right black column
-        tag_family.width_at_border as f32 - 0.5, 0.5,
-        0.0, 1.0,
-        0.0,
+        Pattern {
+            start_x: tag_family.width_at_border as f32 - 0.5,
+            start_y: 0.5,
+            step_x: 0.0,
+            step_y: 1.0,
+            is_white: false,
+        },
 
         // top white row
-        0.5, -0.5,
-        1.0, 0.0,
-        1.0,
+        Pattern {
+            start_x: 0.5,
+            start_y: -0.5,
+            step_x: 1.0,
+            step_y: 0.0,
+            is_white: true,
+        },
 
         // top black row
-        0.5, 0.5,
-        1.0, 0.0,
-        0.0,
+        Pattern {
+            start_x: 0.5,
+            start_y: 0.5,
+            step_x: 1.0,
+            step_y: 0.0,
+            is_white: false
+        },
 
         // bottom white row
-        0.5, tag_family.width_at_border as f32 + 0.5,
-        1.0, 0.0,
-        0.0,
+        Pattern {
+            start_x: 0.5,
+            start_y: tag_family.width_at_border as f32 + 0.5,
+            step_x: 1.0,
+            step_y: 0.0,
+            is_white: false,
+        },
 
         // bottom black row
-        0.5, tag_family.width_at_border as f32 - 0.5,
-        1.0, 0.0,
-        0.0,
+        Pattern {
+            start_x: 0.5,
+            start_y: tag_family.width_at_border as f32 - 0.5,
+            step_x: 1.0,
+            step_y: 0.0,
+            is_white: false,
+        }
     ];
 
     let src_slice = src.as_slice();
 
+    // TODO: Avoid this allocation every time
     let mut white_model = GrayModel::default();
     let mut black_model = GrayModel::default();
 
-    (0..patterns.len() / 5).for_each(|pattern_idx| {
-        let pattern_start = pattern_idx * 5;
-        let pattern = &patterns[pattern_start..pattern_start + 5];
-        let is_white = match pattern[4] {
-            1.0 => true,
-            0.0 => false,
-            _ => unreachable!(),
-        };
-
+    patterns.iter().for_each(|pattern| {
         (0..tag_family.width_at_border).for_each(|i| {
-            let tagx01 = (pattern[0] + i as f32 * pattern[2]) / tag_family.width_at_border as f32;
-            let tagy01 = (pattern[1] + i as f32 * pattern[3]) / tag_family.width_at_border as f32;
+            let tagx01 =
+                (pattern.start_x + i as f32 * pattern.step_x) / tag_family.width_at_border as f32;
+            let tagy01 =
+                (pattern.start_y + i as f32 * pattern.step_y) / tag_family.width_at_border as f32;
 
             let tagx = 2.0 * (tagx01 - 0.5);
             let tagy = 2.0 * (tagy01 - 0.5);
@@ -488,7 +531,7 @@ pub fn quad_decode<A: ImageAllocator>(
 
             let v = src_slice[p.y * src.width() + p.x] as f32;
 
-            if is_white {
+            if pattern.is_white {
                 white_model.add(tagx, tagy, v);
             } else {
                 black_model.add(tagx, tagy, v);
@@ -544,7 +587,7 @@ pub fn quad_decode<A: ImageAllocator>(
             - min_coord) as usize] = v - thresh;
     });
 
-    sharpen(&mut values, tag_family.total_width);
+    sharpen(&mut values, tag_family.total_width, decode_sharpening);
 
     let mut rcode = 0usize;
     (0..tag_family.nbits).for_each(|i| {
@@ -572,10 +615,8 @@ pub fn quad_decode<A: ImageAllocator>(
     Some((white_score / white_score_count as f32).min(black_score / black_score_count as f32))
 }
 
-const DECODE_SHARPENING: f32 = 0.25; // TODO: Make it tuneable in sharpen function
-
 /// TODO
-pub fn sharpen(values: &mut [f32], size: usize) {
+fn sharpen(values: &mut [f32], size: usize, decode_sharpening: f32) {
     // TODO: Avoid allocation
     let mut sharpened = vec![0f32; size * size];
 
@@ -609,13 +650,13 @@ pub fn sharpen(values: &mut [f32], size: usize) {
 
     (0..size).for_each(|y| {
         (0..size).for_each(|x| {
-            values[y * size + x] += DECODE_SHARPENING * sharpened[y * size + x];
+            values[y * size + x] += decode_sharpening * sharpened[y * size + x];
         });
     });
 }
 
 /// TODO
-pub fn quick_decode_codeword(
+fn quick_decode_codeword(
     tag_family: &TagFamily,
     rcode: &mut usize,
     entry: &mut QuickDecodeEntry,
@@ -712,7 +753,9 @@ mod tests {
             &mut quads,
             &TagFamily::TAG36_H11,
             &mut quick_decode,
+            // TODO: With this true, detection fails, find the bug
             false,
+            0.25,
         );
 
         assert_eq!(tags.len(), 1);
