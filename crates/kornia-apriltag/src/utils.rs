@@ -63,7 +63,16 @@ impl PartialEq<u8> for Pixel {
     }
 }
 
-/// TODO
+/// Computes the homography matrix from four point correspondences.
+///
+/// # Arguments
+///
+/// * `c` - A 4x4 array where each row contains the coordinates of a correspondence:
+///         [x, y, x', y'] where (x, y) maps to (x', y').
+///
+/// # Returns
+///
+/// An `Option<[f32; 9]>` containing the flattened 3x3 homography matrix if successful, or `None` if the matrix is singular.
 pub(crate) fn homography_compute(c: [[f32; 4]; 4]) -> Option<[f32; 9]> {
     #[rustfmt::skip]
     let mut a = [
@@ -166,6 +175,16 @@ pub(crate) const fn matrix_3x3_mul(a: &[f32; 9], b: &[f32; 9]) -> [f32; 9] {
     ]
 }
 
+/// Returns the interpolated value for a given floating-point pixel coordinate in a grayscale image.
+///
+/// # Arguments
+///
+/// * `src` - The source grayscale image.
+/// * `p` - The floating-point pixel coordinate.
+///
+/// # Returns
+///
+/// An `Option<f32>` containing the interpolated pixel value, or `None` if the coordinate is out of bounds.
 pub(crate) fn value_for_pixel<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     p: Point2d<f32>,

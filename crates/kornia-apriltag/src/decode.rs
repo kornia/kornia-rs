@@ -10,20 +10,21 @@ use crate::{
 };
 use kornia_image::{allocator::ImageAllocator, Image};
 
-/// TODO
+/// Represents a model for grayscale interpolation using a quadratic surface.
+/// The model fits a function of the form f(x, y) = c[0]*x + c[1]*y + c[2].
 #[derive(Debug, Default, Clone, PartialEq)]
-pub struct GrayModel {
-    /// TODO
-    pub a: [[f32; 3]; 3],
-    /// TODO
-    pub b: [f32; 3],
-    /// TODO
-    pub c: [f32; 3],
+struct GrayModel {
+    /// The 3x3 matrix of accumulated quadratic terms.
+    a: [[f32; 3]; 3],
+    /// The vector of accumulated linear terms.
+    b: [f32; 3],
+    /// The solved coefficients for the quadratic model.
+    c: [f32; 3],
 }
 
 impl GrayModel {
-    /// TODO
-    pub fn add(&mut self, x: f32, y: f32, gray: f32) {
+    /// Adds a new data point (x, y, gray) to the quadratic model.
+    fn add(&mut self, x: f32, y: f32, gray: f32) {
         self.a[0][0] += x * x;
         self.a[0][1] += x * y;
         self.a[0][2] += x;
@@ -36,8 +37,8 @@ impl GrayModel {
         self.b[2] += gray;
     }
 
-    /// TODO
-    pub fn solve(&mut self) {
+    /// Solves the quadratic model to find the coefficients.
+    fn solve(&mut self) {
         let mut l = [0f32; 9];
         matrix_3x3_cholesky(&self.a, &mut l);
 
@@ -55,22 +56,22 @@ impl GrayModel {
         self.c[2] = m[8] * tmp[2];
     }
 
-    /// TODO
-    pub fn interpolate(&self, x: f32, y: f32) -> f32 {
+    /// Interpolates the grayscale value at the given (x, y) using the solved coefficients.
+    fn interpolate(&self, x: f32, y: f32) -> f32 {
         self.c[0] * x + self.c[1] * y + self.c[2]
     }
 }
 
-/// TODO
+/// Represents an entry in the quick decode table for tag decoding.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct QuickDecodeEntry {
-    /// TODO
+    /// The raw code value associated with the tag.
     pub rcode: usize,
-    /// TODO
+    /// The decoded tag ID.
     pub id: u16,
-    /// TODO
+    /// The Hamming distance for this code.
     pub hamming: u8,
-    /// TODO
+    /// The rotation (in 90-degree increments) of the tag.
     pub rotation: u8,
 }
 
@@ -79,7 +80,15 @@ pub struct QuickDecodeEntry {
 pub struct QuickDecode(Vec<QuickDecodeEntry>);
 
 impl QuickDecode {
-    /// TODO
+    /// Creates a new `QuickDecode` table for the given tag family.
+    ///
+    /// # Arguments
+    ///
+    /// * `tag_family` - A reference to the `TagFamily` for which to build the quick decode table.
+    ///
+    /// # Returns
+    ///
+    /// A `QuickDecode` instance containing precomputed entries for fast tag decoding.
     // TODO: Support multiple tag familes. The current logic needs to be changed then
     pub fn new(tag_family: &TagFamily) -> Self {
         let ncodes = tag_family.code_data.len();
@@ -117,7 +126,13 @@ impl QuickDecode {
         quick_decode
     }
 
-    /// TODO
+    /// Adds a new entry to the quick decode table.
+    ///
+    /// # Arguments
+    ///
+    /// * `code` - The code value to add.
+    /// * `id` - The tag ID associated with the code.
+    /// * `hamming` - The Hamming distance for this code.
     fn add(&mut self, code: usize, id: u16, hamming: u8) {
         let mut bucket = code % self.0.len();
 
@@ -132,38 +147,51 @@ impl QuickDecode {
     }
 }
 
-/// TODO
+/// Represents a detected tag in the image, including its family, ID, decoding quality, and geometric information.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Detection<'a> {
-    /// TODO
+    /// Reference to the tag family this detection belongs to.
     pub tag_family: &'a TagFamily,
-    /// TODO
+    /// The decoded tag ID.
     pub id: u16,
-    /// TODO
+    /// The Hamming distance of the detected code to the closest valid code.
     pub hamming: u8,
-    /// TODO
+    /// The decision margin indicating the confidence of the detection.
     pub decision_margin: f32,
-    /// TODO
+    /// The center point of the detected tag in image coordinates.
     pub center: Point2d<f32>,
-    /// TODO
+    /// The quadrilateral representing the detected tag's corners in the image.
     pub quad: Quad,
 }
 
-/// TODO
+/// Decodes tags from the provided image and quadrilaterals using the specified tag family and quick decode table.
+///
+/// # Arguments
+///
+/// * `src` - Reference to the grayscale source image.
+/// * `quads` - Mutable slice of detected quadrilaterals to process.
+/// * `tag_family` - Reference to the tag family used for decoding.
+/// * `quick_decode` - Mutable reference to the quick decode table for fast tag lookup.
+/// * `refine_edges_enabled` - Whether to refine the edges of the quadrilaterals before decoding.
+/// * `decode_sharpening` - Sharpening factor applied during decoding.
+///
+/// # Returns
+///
+/// A vector of `Detection` objects representing successfully decoded tags.
 // TODO: Add support for multiple tag families
 pub fn decode_tags<'a, A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     quads: &mut [Quad],
     tag_family: &'a TagFamily,
     quick_decode: &mut QuickDecode,
-    refine_edges_param: bool,
+    refine_edges_enabled: bool,
     decode_sharpening: f32,
 ) -> Vec<Detection<'a>> {
     // TODO: Avoid allocations on every call
     let mut detections = Vec::new();
 
     quads.iter_mut().for_each(|quad| {
-        if refine_edges_param {
+        if refine_edges_enabled {
             refine_edges(src, quad, tag_family.reversed_border);
         }
 
@@ -200,7 +228,7 @@ pub fn decode_tags<'a, A: ImageAllocator>(
                     0.0, 0.0, 1.0,
                 ];
 
-                quad.h = matrix_3x3_mul(&quad.h, &r);
+                quad.homography = matrix_3x3_mul(&quad.homography, &r);
                 let center = quad.homography_project(0.0, 0.0);
 
                 let detection = Detection {
@@ -220,7 +248,13 @@ pub fn decode_tags<'a, A: ImageAllocator>(
     detections
 }
 
-/// TODO
+/// Refines the edges of a quadrilateral in the image by adjusting its corners based on local image gradients.
+///
+/// # Arguments
+///
+/// * `src` - Reference to the grayscale source image.
+/// * `quad` - Mutable reference to the quadrilateral to refine.
+/// * `reversed_border` - Whether the border is reversed (affects edge direction).
 fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad, reversed_border: bool) {
     let src_slice = src.as_slice();
     let mut lines: [[f32; 4]; 4] = Default::default();
@@ -388,7 +422,15 @@ fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad, rever
     });
 }
 
-/// TODO
+/// Updates the homography matrix for the given quadrilateral based on its corners.
+///
+/// # Arguments
+///
+/// * `quad` - Mutable reference to the quadrilateral whose homography will be updated.
+///
+/// # Returns
+///
+/// Returns `true` if the homography was successfully computed and updated, `false` otherwise.
 fn quad_update_homographies(quad: &mut Quad) -> bool {
     let corr_arr = [
         [-1.0, -1.0, quad.corners[0].x, quad.corners[0].y],
@@ -398,7 +440,7 @@ fn quad_update_homographies(quad: &mut Quad) -> bool {
     ];
 
     if let Some(h) = homography_compute(corr_arr) {
-        quad.h = h;
+        quad.homography = h;
 
         return true;
     }
@@ -406,8 +448,20 @@ fn quad_update_homographies(quad: &mut Quad) -> bool {
     false
 }
 
-/// TODO
-// returns the decision margin
+/// Decodes a tag from a given quadrilateral in the image, using the provided tag family and quick decode table.
+///
+/// # Arguments
+///
+/// * `src` - Reference to the grayscale source image.
+/// * `tag_family` - Reference to the tag family used for decoding.
+/// * `quad` - Reference to the quadrilateral representing the tag in the image.
+/// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the decoding result.
+/// * `quick_decode` - Mutable reference to the quick decode table for fast tag lookup.
+/// * `decode_sharpening` - Sharpening factor applied during decoding.
+///
+/// # Returns
+///
+/// Returns `Some(f32)` containing the decision margin if decoding is successful, or `None` otherwise.
 fn quad_decode<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     tag_family: &TagFamily,
@@ -616,7 +670,13 @@ fn quad_decode<A: ImageAllocator>(
     Some((white_score / white_score_count as f32).min(black_score / black_score_count as f32))
 }
 
-/// TODO
+/// Applies a sharpening filter to the input values using a Laplacian kernel.
+///
+/// # Arguments
+///
+/// * `values` - Mutable slice of f32 values representing the image or data to be sharpened.
+/// * `size` - The width/height of the (square) data region.
+/// * `decode_sharpening` - The sharpening factor to apply.
 fn sharpen(values: &mut [f32], size: usize, decode_sharpening: f32) {
     // TODO: Avoid allocation
     let mut sharpened = vec![0f32; values.len()];
@@ -656,7 +716,14 @@ fn sharpen(values: &mut [f32], size: usize, decode_sharpening: f32) {
     });
 }
 
-/// TODO
+/// Attempts to decode a codeword using the quick decode table for the given tag family.
+///
+/// # Arguments
+///
+/// * `tag_family` - Reference to the tag family used for decoding.
+/// * `rcode` - The raw code value to decode.
+/// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the decoding result.
+/// * `quick_decode` - Mutable reference to the quick decode table for fast tag lookup.
 fn quick_decode_codeword(
     tag_family: &TagFamily,
     mut rcode: usize,
@@ -690,6 +757,16 @@ fn quick_decode_codeword(
     entry.rotation = 0;
 }
 
+/// Rotates the bits of a codeword by 90 degrees for tag decoding.
+///
+/// # Arguments
+///
+/// * `w` - The codeword to rotate.
+/// * `num_bits` - The number of bits in the codeword.
+///
+/// # Returns
+///
+/// The rotated codeword as a `usize`.
 fn rotate_90(mut w: usize, num_bits: usize) -> usize {
     let mut p = num_bits;
     let mut l = 0;
@@ -812,7 +889,7 @@ mod tests {
                 Point2d { x: 4.0, y: 22.0 },
             ],
             reversed_border: false,
-            h: [0.0; 9],
+            homography: [0.0; 9],
         };
 
         refine_edges(&src, &mut quad, false);
@@ -849,7 +926,7 @@ mod tests {
                 Point2d { x: 4.0, y: 22.0 },
             ],
             reversed_border: false,
-            h: [0.0; 9],
+            homography: [0.0; 9],
         };
 
         quad_update_homographies(&mut quad);
@@ -858,7 +935,7 @@ mod tests {
         ];
 
         for (i, expected) in expected_homographies.iter().enumerate() {
-            assert!((quad.h[i] - expected).abs() < EPSILON);
+            assert!((quad.homography[i] - expected).abs() < EPSILON);
         }
     }
 
@@ -874,12 +951,12 @@ mod tests {
                 Point2d { x: 3.0, y: 3.0 },
             ],
             reversed_border: false,
-            h: [0.0; 9],
+            homography: [0.0; 9],
         };
 
         quad_update_homographies(&mut quad);
         let expected_homographies = [-0.0, -12.0, 15.0, 12.0, -0.0, 15.0, -0.0, 0.0, 1.0];
-        assert_eq!(quad.h, expected_homographies);
+        assert_eq!(quad.homography, expected_homographies);
 
         let mut entry = QuickDecodeEntry::default();
         let quick_decode = &mut QuickDecode::new(&TagFamily::TAG36_H11);

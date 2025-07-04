@@ -46,16 +46,25 @@ pub struct Quad {
     pub corners: [Point2d<f32>; 4],
     /// Indicates whether the border is reversed (black border inside white border).
     pub reversed_border: bool,
-    /// TODO
-    pub h: [f32; 9],
+    /// The 3x3 homography matrix (row-major order) mapping tag coordinates to image coordinates.
+    pub homography: [f32; 9],
 }
 
 impl Quad {
-    /// TODO
+    /// Projects a point (x, y) from tag coordinates to image coordinates using the quad's homography.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - The x coordinate in tag space.
+    /// * `y` - The y coordinate in tag space.
+    ///
+    /// # Returns
+    ///
+    /// A `Point2d<f32>` representing the projected point in image coordinates.
     pub fn homography_project(&self, x: f32, y: f32) -> Point2d<f32> {
-        let xx = self.h[0] * x + self.h[1] * y + self.h[2];
-        let yy = self.h[3] * x + self.h[4] * y + self.h[5];
-        let zz = self.h[6] * x + self.h[7] * y + self.h[8];
+        let xx = self.homography[0] * x + self.homography[1] * y + self.homography[2];
+        let yy = self.homography[3] * x + self.homography[4] * y + self.homography[5];
+        let zz = self.homography[6] * x + self.homography[7] * y + self.homography[8];
 
         Point2d {
             x: xx / zz,

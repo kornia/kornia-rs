@@ -1,20 +1,19 @@
 /// Represents the AprilTag Family
 #[derive(Debug, Clone, PartialEq, Eq)]
-// TODO: Remove NBITS generic
 pub struct TagFamily {
     /// The width of the tag including the border, in units.
     pub width_at_border: usize,
     /// Whether the border is reversed.
     pub reversed_border: bool,
-    /// TODO
+    /// The total width of the tag, including border, in units.
     pub total_width: usize,
-    /// TODO
+    /// The number of bits in the tag code.
     pub nbits: usize,
-    /// TODO
+    /// The x-coordinates of each bit in the tag.
     pub bit_x: &'static [u8],
-    /// TODO
+    /// The y-coordinates of each bit in the tag.
     pub bit_y: &'static [u8],
-    /// TODO
+    /// The code data for the tag family.
     pub code_data: &'static [usize],
     // TODO: more properties
 }
