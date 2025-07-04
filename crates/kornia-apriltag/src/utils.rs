@@ -68,7 +68,7 @@ impl PartialEq<u8> for Pixel {
 /// # Arguments
 ///
 /// * `c` - A 4x4 array where each row contains the coordinates of a correspondence:
-///         [x, y, x', y'] where (x, y) maps to (x', y').
+///   [x, y, x', y'] where (x, y) maps to (x', y').
 ///
 /// # Returns
 ///
