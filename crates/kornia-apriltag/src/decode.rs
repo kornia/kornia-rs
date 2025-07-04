@@ -11,7 +11,7 @@ use crate::{
 use kornia_image::{allocator::ImageAllocator, Image};
 
 /// TODO
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct GrayModel {
     /// TODO
     pub a: [[f32; 3]; 3],
@@ -62,7 +62,7 @@ impl GrayModel {
 }
 
 /// TODO
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct QuickDecodeEntry {
     /// TODO
     pub rcode: usize,
@@ -75,24 +75,8 @@ pub struct QuickDecodeEntry {
 }
 
 /// TODO
+#[derive(Debug, Default, Clone)]
 pub struct QuickDecode(Vec<QuickDecodeEntry>);
-
-/// TODO
-#[derive(Debug, Clone, PartialEq)]
-pub struct Detection<'a> {
-    /// TODO
-    pub tag_family: &'a TagFamily,
-    /// TODO
-    pub id: u16,
-    /// TODO
-    pub hamming: u8,
-    /// TODO
-    pub decision_margin: f32,
-    /// TODO
-    pub center: Point2d<f32>,
-    /// TODO
-    pub quad: Quad,
-}
 
 impl QuickDecode {
     /// TODO
@@ -134,7 +118,7 @@ impl QuickDecode {
     }
 
     /// TODO
-    pub fn add(&mut self, code: usize, id: u16, hamming: u8) {
+    fn add(&mut self, code: usize, id: u16, hamming: u8) {
         let mut bucket = code % self.0.len();
 
         // TODO: Use iterators instead
@@ -146,6 +130,23 @@ impl QuickDecode {
         self.0[bucket].id = id;
         self.0[bucket].hamming = hamming;
     }
+}
+
+/// TODO
+#[derive(Debug, Clone, PartialEq)]
+pub struct Detection<'a> {
+    /// TODO
+    pub tag_family: &'a TagFamily,
+    /// TODO
+    pub id: u16,
+    /// TODO
+    pub hamming: u8,
+    /// TODO
+    pub decision_margin: f32,
+    /// TODO
+    pub center: Point2d<f32>,
+    /// TODO
+    pub quad: Quad,
 }
 
 /// TODO
@@ -610,7 +611,7 @@ fn quad_decode<A: ImageAllocator>(
         }
     });
 
-    quick_decode_codeword(tag_family, &mut rcode, entry, quick_decode);
+    quick_decode_codeword(tag_family, rcode, entry, quick_decode);
 
     Some((white_score / white_score_count as f32).min(black_score / black_score_count as f32))
 }
@@ -618,7 +619,7 @@ fn quad_decode<A: ImageAllocator>(
 /// TODO
 fn sharpen(values: &mut [f32], size: usize, decode_sharpening: f32) {
     // TODO: Avoid allocation
-    let mut sharpened = vec![0f32; size * size];
+    let mut sharpened = vec![0f32; values.len()];
 
     #[rustfmt::skip]
     const KERNEL: [f32; 9] = [
@@ -658,15 +659,15 @@ fn sharpen(values: &mut [f32], size: usize, decode_sharpening: f32) {
 /// TODO
 fn quick_decode_codeword(
     tag_family: &TagFamily,
-    rcode: &mut usize,
+    mut rcode: usize,
     entry: &mut QuickDecodeEntry,
     quick_decode: &mut QuickDecode,
 ) {
     if let ControlFlow::Break(_) = (0..4).try_for_each(|ridx| {
-        let mut bucket = *rcode % quick_decode.0.len();
+        let mut bucket = rcode % quick_decode.0.len();
 
         while quick_decode.0[bucket].rcode != usize::MAX {
-            if quick_decode.0[bucket].rcode == *rcode {
+            if quick_decode.0[bucket].rcode == rcode {
                 *entry = quick_decode.0[bucket].clone();
                 entry.rotation = ridx;
 
@@ -676,7 +677,7 @@ fn quick_decode_codeword(
             bucket = (bucket + 1) % quick_decode.0.len();
         }
 
-        *rcode = rotate_90(*rcode, tag_family.nbits);
+        rcode = rotate_90(rcode, tag_family.nbits);
 
         ControlFlow::Continue(())
     }) {
@@ -719,6 +720,8 @@ mod tests {
     use kornia_image::allocator::CpuAllocator;
     use kornia_io::png::read_image_png_mono8;
 
+    const EPSILON: f32 = 0.0001;
+
     #[test]
     fn test_decode_tags() -> Result<(), Box<dyn std::error::Error>> {
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
@@ -753,7 +756,6 @@ mod tests {
             &mut quads,
             &TagFamily::TAG36_H11,
             &mut quick_decode,
-            // TODO: With this true, detection fails, find the bug
             false,
             0.25,
         );
@@ -765,5 +767,178 @@ mod tests {
         assert_eq!(tags[0].tag_family, &TagFamily::TAG36_H11);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_gray_model() {
+        let mut gm = GrayModel::default();
+
+        gm.add(10.0, 10.0, 5.0);
+        let expected_add_gm = GrayModel {
+            a: [[100.0, 100.0, 10.0], [0.0, 100.0, 10.0], [0.0, 0.0, 1.0]],
+            b: [50.0, 50.0, 5.0],
+            c: [0.0, 0.0, 0.0],
+        };
+
+        assert_eq!(gm, expected_add_gm);
+
+        gm.add(7.0, 15.0, 3.0);
+        gm.solve();
+        let expected_solve_gm = GrayModel {
+            a: [[149.0, 205.0, 17.0], [0.0, 325.0, 25.0], [0.0, 0.0, 2.0]],
+            b: [71.0, 95.0, 8.0],
+            c: [0.562500, -0.062500, 0.0],
+        };
+
+        assert_eq!(gm.a, expected_solve_gm.a);
+        assert_eq!(gm.b, expected_solve_gm.b);
+        assert!((gm.c[0] - expected_solve_gm.c[0]).abs() < EPSILON); // Account for precision errors
+        assert!((gm.c[1] - expected_solve_gm.c[1]).abs() < EPSILON);
+        assert!((gm.c[2] - expected_solve_gm.c[2]).abs() < EPSILON);
+
+        assert!((gm.interpolate(5.0, 3.0) - 2.62500).abs() < EPSILON);
+    }
+
+    #[test]
+    fn test_refine_edges() -> Result<(), Box<dyn std::error::Error>> {
+        // TODO: Fix this test
+        let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
+
+        let mut quad = Quad {
+            corners: [
+                Point2d { x: 3.0, y: 3.0 },
+                Point2d { x: 27.0, y: 3.0 },
+                Point2d { x: 3.0, y: 20.0 },
+                Point2d { x: 4.0, y: 22.0 },
+            ],
+            reversed_border: false,
+            h: [0.0; 9],
+        };
+
+        refine_edges(&src, &mut quad, false);
+        let expected_corners = [
+            Point2d {
+                x: 2.998814,
+                y: 3.0,
+            },
+            Point2d {
+                x: 26.231571,
+                y: 3.0,
+            },
+            Point2d {
+                x: 1.991483,
+                y: 24.232067,
+            },
+            Point2d {
+                x: 3.004358,
+                y: 30.014595,
+            },
+        ];
+
+        assert_eq!(quad.corners, expected_corners);
+        Ok(())
+    }
+
+    #[test]
+    fn test_quad_update_homographies() {
+        let mut quad = Quad {
+            corners: [
+                Point2d { x: 3.0, y: 3.0 },
+                Point2d { x: 27.0, y: 3.0 },
+                Point2d { x: 3.0, y: 20.0 },
+                Point2d { x: 4.0, y: 22.0 },
+            ],
+            reversed_border: false,
+            h: [0.0; 9],
+        };
+
+        quad_update_homographies(&mut quad);
+        let expected_homographies = [
+            -0.675192, 4.672634, 3.0, 0.368286, 23.455243, 22.826087, 0.122762, 1.209719, 1.0,
+        ];
+
+        for i in 0..9 {
+            assert!((quad.h[i] - expected_homographies[i]).abs() < EPSILON);
+        }
+    }
+
+    #[test]
+    fn test_quad_decode() -> Result<(), Box<dyn std::error::Error>> {
+        let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
+
+        let mut quad = Quad {
+            corners: [
+                Point2d { x: 27.0, y: 3.0 },
+                Point2d { x: 27.0, y: 27.0 },
+                Point2d { x: 3.0, y: 27.0 },
+                Point2d { x: 3.0, y: 3.0 },
+            ],
+            reversed_border: false,
+            h: [0.0; 9],
+        };
+
+        quad_update_homographies(&mut quad);
+        let expected_homographies = [-0.0, -12.0, 15.0, 12.0, -0.0, 15.0, -0.0, 0.0, 1.0];
+        assert_eq!(quad.h, expected_homographies);
+
+        let mut entry = QuickDecodeEntry::default();
+        let mut quick_decode = &mut QuickDecode::new(&TagFamily::TAG36_H11);
+        let d = quad_decode(
+            &src,
+            &TagFamily::TAG36_H11,
+            &mut quad,
+            &mut entry,
+            &mut quick_decode,
+            0.25,
+        );
+
+        assert_eq!(d, Some(239.062500));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sharpen() {
+        let mut values = [
+            255.0, 255.0, 127.0, 0.0, 0.0, 0.0, 0.0, -1.0, 127.0, 63.75, 0.0, 63.75, 127.5, -1.0,
+            127.5, 127.5,
+        ];
+
+        sharpen(&mut values, 4, 0.25);
+        let expected_values = [
+            446.25, 414.5, 190.25, -31.5, -95.5, -79.6875, -31.5, -17.9375, 206.1875, 96.0, -63.75,
+            95.875, 223.5, -81.6875, 223.375, 207.1875,
+        ];
+
+        assert_eq!(values, expected_values)
+    }
+
+    #[test]
+    fn test_quick_decode_codeword() {
+        let rcode = 52087007497;
+
+        let mut quick_decode_entry = QuickDecodeEntry::default();
+        let mut quick_decode = QuickDecode::new(&TagFamily::TAG36_H11);
+        quick_decode_codeword(
+            &TagFamily::TAG36_H11,
+            rcode,
+            &mut quick_decode_entry,
+            &mut quick_decode,
+        );
+
+        let expected_decode_entry = QuickDecodeEntry {
+            rcode: 52087007497,
+            id: 85,
+            hamming: 2,
+            rotation: 0,
+        };
+
+        assert_eq!(quick_decode_entry, expected_decode_entry)
+    }
+
+    #[test]
+    fn test_rotate_90() {
+        assert_eq!(rotate_90(52087007497, 36), 5390865284);
+        assert_eq!(rotate_90(42087007497, 36), 39351620409)
     }
 }

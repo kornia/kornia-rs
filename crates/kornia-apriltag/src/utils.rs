@@ -201,6 +201,7 @@ pub(crate) fn value_for_pixel<A: ImageAllocator>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kornia_io::png::read_image_png_mono8;
 
     #[test]
     fn test_pixel_value() {
@@ -280,5 +281,60 @@ mod tests {
         let expected = Some([-0.0, -12.0, 15.0, 12.0, -0.0, 15.0, -0.0, 0.0, 1.0]);
 
         assert_eq!(h, expected)
+    }
+
+    #[test]
+    fn test_value_for_pixel() -> Result<(), Box<dyn std::error::Error>> {
+        let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
+
+        assert_eq!(
+            value_for_pixel(&src, Point2d { x: 15.0, y: 15.0 }),
+            Some(191.25)
+        );
+
+        assert_eq!(
+            value_for_pixel(&src, Point2d { x: 3.0, y: 15.0 }),
+            Some(127.5)
+        );
+
+        assert_eq!(
+            value_for_pixel(&src, Point2d { x: 13.0, y: 8.0 }),
+            Some(0.0)
+        );
+
+        assert_eq!(
+            value_for_pixel(&src, Point2d { x: 26.0, y: 1.0 }),
+            Some(255.0)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_matrix_3x3_cholesky() {
+        let a = [[6.0, 15.0, 55.0], [15.0, 55.0, 225.0], [55.0, 225.0, 979.0]];
+        let mut r = [0.0; 9];
+
+        matrix_3x3_cholesky(&a, &mut r);
+        let expected_r = [
+            2.4495, 0.0, 0.0, 6.1237, 4.1833, 0.0, 22.4537, 20.9165, 6.1101,
+        ];
+
+        for i in 0..9 {
+            assert!((r[i] - expected_r[i]).abs() < 0.0001);
+        }
+    }
+
+    #[test]
+    fn test_matrix_3x3_lower_triange_inverse() {
+        let a = [5.0, 0.0, 0.0, 3.0, 4.0, 0.0, 1.0, 2.0, 6.0];
+        let mut r = [0.0; 9];
+
+        matrix_3x3_lower_triange_inverse(&a, &mut r);
+        let expected_r = [0.2, 0.0, 0.0, -0.15, 0.25, 0.0, 0.01666, -0.08333, 0.16666];
+
+        for i in 0..9 {
+            assert!((r[i] - expected_r[i]).abs() < 0.0001)
+        }
     }
 }
