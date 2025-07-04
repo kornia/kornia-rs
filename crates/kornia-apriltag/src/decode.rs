@@ -180,7 +180,7 @@ pub fn decode_tags<'a, A: ImageAllocator>(
         let decision_margin = quad_decode(
             src,
             tag_family,
-            &quad,
+            quad,
             &mut entry,
             quick_decode,
             decode_sharpening,
@@ -857,8 +857,8 @@ mod tests {
             -0.675192, 4.672634, 3.0, 0.368286, 23.455243, 22.826087, 0.122762, 1.209719, 1.0,
         ];
 
-        for i in 0..9 {
-            assert!((quad.h[i] - expected_homographies[i]).abs() < EPSILON);
+        for (i, expected) in expected_homographies.iter().enumerate() {
+            assert!((quad.h[i] - expected).abs() < EPSILON);
         }
     }
 
@@ -882,17 +882,17 @@ mod tests {
         assert_eq!(quad.h, expected_homographies);
 
         let mut entry = QuickDecodeEntry::default();
-        let mut quick_decode = &mut QuickDecode::new(&TagFamily::TAG36_H11);
+        let quick_decode = &mut QuickDecode::new(&TagFamily::TAG36_H11);
         let d = quad_decode(
             &src,
             &TagFamily::TAG36_H11,
-            &mut quad,
+            &quad,
             &mut entry,
-            &mut quick_decode,
+            quick_decode,
             0.25,
         );
 
-        assert_eq!(d, Some(239.062500));
+        assert_eq!(d, Some(239.0625));
 
         Ok(())
     }
