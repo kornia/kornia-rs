@@ -62,6 +62,34 @@ impl GrayModel {
     }
 }
 
+/// Holds a pair of grayscale quadratic models for white and black regions.
+#[derive(Debug, Default, PartialEq)]
+pub struct GrayModelPair {
+    white_model: GrayModel,
+    black_model: GrayModel,
+}
+
+impl GrayModelPair {
+    /// Creates a new `GrayModelPair` with default values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Resets both the white and black grayscale models to their initial state.
+    pub fn reset(&mut self) {
+        for i in 0..3 {
+            for j in 0..3 {
+                self.white_model.a[i][j] = 0.0;
+                self.black_model.a[i][j] = 0.0;
+            }
+            self.white_model.b[i] = 0.0;
+            self.white_model.c[i] = 0.0;
+            self.black_model.b[i] = 0.0;
+            self.black_model.c[i] = 0.0;
+        }
+    }
+}
+
 /// Represents an entry in the quick decode table for tag decoding.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct QuickDecodeEntry {
@@ -164,6 +192,43 @@ pub struct Detection<'a> {
     pub quad: Quad,
 }
 
+/// Buffer used for storing intermediate values during the sharpening process.
+pub struct SharpeningBuffer {
+    values: Vec<f32>,
+    sharpened: Vec<f32>,
+}
+
+impl SharpeningBuffer {
+    /// Creates a new `SharpeningBuffer` for the given tag family.
+    ///
+    /// # Arguments
+    ///
+    /// * `family` - Reference to the `TagFamily` for which to allocate the buffer.
+    ///
+    /// # Returns
+    ///
+    /// A new `SharpeningBuffer` instance with allocated buffers sized for the tag family.
+    pub fn new(family: &TagFamily) -> Self {
+        let len = family.total_width * family.total_width;
+
+        Self {
+            values: vec![0.0; len],
+            sharpened: vec![0.0; len],
+        }
+    }
+
+    /// Resets the buffer values to zero.
+    pub fn reset(&mut self) {
+        self.values.iter_mut().for_each(|v| {
+            *v = 0.0;
+        });
+
+        self.sharpened.iter_mut().for_each(|s| {
+            *s = 0.0;
+        });
+    }
+}
+
 /// Decodes tags from the provided image and quadrilaterals using the specified tag family and quick decode table.
 ///
 /// # Arguments
@@ -174,18 +239,26 @@ pub struct Detection<'a> {
 /// * `quick_decode` - Mutable reference to the quick decode table for fast tag lookup.
 /// * `refine_edges_enabled` - Whether to refine the edges of the quadrilaterals before decoding.
 /// * `decode_sharpening` - Sharpening factor applied during decoding.
+/// * `gray_model_pair` - A mutable reference to a `GrayModelPair`.
+/// * `sharpening_buffer` - A mutable reference to a `SharpeningBuffer`.
+///
+/// Make sure to call [`GrayModelPair::reset`] and [`SharpeningBuffer::reset`] if you are using this function multiple
+/// times.
 ///
 /// # Returns
 ///
 /// A vector of `Detection` objects representing successfully decoded tags.
 // TODO: Add support for multiple tag families
+#[allow(clippy::too_many_arguments)]
 pub fn decode_tags<'a, A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     quads: &mut [Quad],
     tag_family: &'a TagFamily,
-    quick_decode: &mut QuickDecode,
+    quick_decode: &QuickDecode,
     refine_edges_enabled: bool,
     decode_sharpening: f32,
+    gray_model_pair: &mut GrayModelPair,
+    sharpening_buffer: &mut SharpeningBuffer,
 ) -> Vec<Detection<'a>> {
     // TODO: Avoid allocations on every call
     let mut detections = Vec::new();
@@ -212,6 +285,8 @@ pub fn decode_tags<'a, A: ImageAllocator>(
             &mut entry,
             quick_decode,
             decode_sharpening,
+            gray_model_pair,
+            sharpening_buffer,
         );
 
         if let Some(decision_margin) = decision_margin {
@@ -448,19 +523,24 @@ fn quad_update_homographies(quad: &mut Quad) -> bool {
 /// * `tag_family` - Reference to the tag family used for decoding.
 /// * `quad` - Reference to the quadrilateral representing the tag in the image.
 /// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the decoding result.
-/// * `quick_decode` - Mutable reference to the quick decode table for fast tag lookup.
+/// * `quick_decode` - Reference to the quick decode table for fast tag lookup.
 /// * `decode_sharpening` - Sharpening factor applied during decoding.
+/// * `gray_model_pair` - A mutable reference to a `GrayModelPair`.
+/// * `sharpening_buffer` - A mutable reference to a `SharpeningBuffer`.
 ///
 /// # Returns
 ///
 /// Returns `Some(f32)` containing the decision margin if decoding is successful, or `None` otherwise.
+#[allow(clippy::too_many_arguments)]
 fn quad_decode<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     tag_family: &TagFamily,
     quad: &Quad,
     entry: &mut QuickDecodeEntry,
-    quick_decode: &mut QuickDecode,
+    quick_decode: &QuickDecode,
     decode_sharpening: f32,
+    gray_model_pair: &mut GrayModelPair,
+    sharpening_buffer: &mut SharpeningBuffer,
 ) -> Option<f32> {
     struct Pattern {
         start_x: f32,
@@ -547,10 +627,6 @@ fn quad_decode<A: ImageAllocator>(
 
     let src_slice = src.as_slice();
 
-    // TODO: Avoid this allocation every time
-    let mut white_model = GrayModel::default();
-    let mut black_model = GrayModel::default();
-
     patterns.iter().for_each(|pattern| {
         (0..tag_family.width_at_border).for_each(|i| {
             let tagx01 =
@@ -579,23 +655,25 @@ fn quad_decode<A: ImageAllocator>(
             let v = src_slice[p.y * src.width() + p.x] as f32;
 
             if pattern.is_white {
-                white_model.add(tagx, tagy, v);
+                gray_model_pair.white_model.add(tagx, tagy, v);
             } else {
-                black_model.add(tagx, tagy, v);
+                gray_model_pair.black_model.add(tagx, tagy, v);
             }
         });
     });
 
-    white_model.solve();
+    gray_model_pair.white_model.solve();
     if tag_family.width_at_border > 1 {
-        black_model.solve();
+        gray_model_pair.black_model.solve();
     } else {
-        black_model.c[0] = 0.0;
-        black_model.c[1] = 0.0;
-        black_model.c[2] = black_model.b[2] / 4.0;
+        gray_model_pair.black_model.c[0] = 0.0;
+        gray_model_pair.black_model.c[1] = 0.0;
+        gray_model_pair.black_model.c[2] = gray_model_pair.black_model.b[2] / 4.0;
     }
 
-    if (white_model.interpolate(0.0, 0.0) - black_model.interpolate(0.0, 0.0) < 0.0)
+    if (gray_model_pair.white_model.interpolate(0.0, 0.0)
+        - gray_model_pair.black_model.interpolate(0.0, 0.0)
+        < 0.0)
         != tag_family.reversed_border
     {
         return None;
@@ -605,9 +683,6 @@ fn quad_decode<A: ImageAllocator>(
     let mut white_score = 0f32;
     let mut black_score_count = 1usize;
     let mut white_score_count = 1usize;
-
-    // TODO: Avoid this allocation every time
-    let mut values = vec![0.0f32; tag_family.total_width * tag_family.total_width];
 
     let min_coord = (tag_family.width_at_border as isize - tag_family.total_width as isize) / 2;
 
@@ -627,14 +702,16 @@ fn quad_decode<A: ImageAllocator>(
             return;
         };
 
-        let thresh =
-            (black_model.interpolate(tag_x, tag_y) + white_model.interpolate(tag_x, tag_y)) / 2.0;
+        let thresh = (gray_model_pair.black_model.interpolate(tag_x, tag_y)
+            + gray_model_pair.white_model.interpolate(tag_x, tag_y))
+            / 2.0;
 
-        values[(tag_family.total_width as isize * (bit_y as isize - min_coord) + bit_x as isize
+        sharpening_buffer.values[(tag_family.total_width as isize * (bit_y as isize - min_coord)
+            + bit_x as isize
             - min_coord) as usize] = v - thresh;
     });
 
-    sharpen(&mut values, tag_family.total_width, decode_sharpening);
+    sharpen(sharpening_buffer, tag_family.total_width, decode_sharpening);
 
     let mut rcode = 0usize;
     (0..tag_family.nbits).for_each(|i| {
@@ -643,7 +720,8 @@ fn quad_decode<A: ImageAllocator>(
 
         rcode <<= 1;
 
-        let v = values[((bit_y as isize - min_coord) * tag_family.total_width as isize
+        let v = sharpening_buffer.values[((bit_y as isize - min_coord)
+            * tag_family.total_width as isize
             + bit_x as isize
             - min_coord) as usize];
 
@@ -669,10 +747,7 @@ fn quad_decode<A: ImageAllocator>(
 /// * `values` - Mutable slice of f32 values representing the image or data to be sharpened.
 /// * `size` - The width/height of the (square) data region.
 /// * `decode_sharpening` - The sharpening factor to apply.
-fn sharpen(values: &mut [f32], size: usize, decode_sharpening: f32) {
-    // TODO: Avoid allocation
-    let mut sharpened = vec![0f32; values.len()];
-
+fn sharpen(sharpening_buffer: &mut SharpeningBuffer, size: usize, decode_sharpening: f32) {
     #[rustfmt::skip]
     const KERNEL: [f32; 9] = [
          0.0, -1.0,  0.0,
@@ -682,8 +757,6 @@ fn sharpen(values: &mut [f32], size: usize, decode_sharpening: f32) {
 
     (0..size as isize).for_each(|y| {
         (0..size as isize).for_each(|x| {
-            sharpened[(y * size as isize + x) as usize] = 0.0;
-
             (0..3isize).for_each(|i| {
                 (0..3isize).for_each(|j| {
                     if (y + i - 1) < 0
@@ -693,9 +766,10 @@ fn sharpen(values: &mut [f32], size: usize, decode_sharpening: f32) {
                     {
                         return;
                     }
-                    sharpened[(y * size as isize + x) as usize] += values
-                        [((y + i - 1) * size as isize + (x + j - 1)) as usize]
-                        * KERNEL[(i * 3 + j) as usize];
+                    sharpening_buffer.sharpened[(y * size as isize + x) as usize] +=
+                        sharpening_buffer.values
+                            [((y + i - 1) * size as isize + (x + j - 1)) as usize]
+                            * KERNEL[(i * 3 + j) as usize];
                 });
             });
         });
@@ -703,7 +777,8 @@ fn sharpen(values: &mut [f32], size: usize, decode_sharpening: f32) {
 
     (0..size).for_each(|y| {
         (0..size).for_each(|x| {
-            values[y * size + x] += decode_sharpening * sharpened[y * size + x];
+            sharpening_buffer.values[y * size + x] +=
+                decode_sharpening * sharpening_buffer.sharpened[y * size + x];
         });
     });
 }
@@ -715,12 +790,12 @@ fn sharpen(values: &mut [f32], size: usize, decode_sharpening: f32) {
 /// * `tag_family` - Reference to the tag family used for decoding.
 /// * `rcode` - The raw code value to decode.
 /// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the decoding result.
-/// * `quick_decode` - Mutable reference to the quick decode table for fast tag lookup.
+/// * `quick_decode` - Reference to the quick decode table for fast tag lookup.
 fn quick_decode_codeword(
     tag_family: &TagFamily,
     mut rcode: usize,
     entry: &mut QuickDecodeEntry,
-    quick_decode: &mut QuickDecode,
+    quick_decode: &QuickDecode,
 ) {
     if let ControlFlow::Break(_) = (0..4).try_for_each(|ridx| {
         let mut bucket = rcode % quick_decode.0.len();
@@ -799,7 +874,9 @@ mod tests {
         let mut tile_min_max = TileMinMax::new(bin.size(), 4);
         let mut uf = UnionFind::new(bin.as_slice().len());
         let mut clusters = HashMap::new();
-        let mut quick_decode = QuickDecode::new(&TagFamily::TAG36_H11);
+        let quick_decode = QuickDecode::new(&TagFamily::TAG36_H11);
+        let mut gray_model_pair = GrayModelPair::default();
+        let mut sharpening_buffer = SharpeningBuffer::new(&TagFamily::TAG36_H11);
 
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
@@ -824,9 +901,11 @@ mod tests {
             &src,
             &mut quads,
             &TagFamily::TAG36_H11,
-            &mut quick_decode,
+            &quick_decode,
             true,
             0.25,
+            &mut gray_model_pair,
+            &mut sharpening_buffer,
         );
 
         assert_eq!(tags.len(), 1);
@@ -867,6 +946,14 @@ mod tests {
         assert!((gm.c[2] - expected_solve_gm.c[2]).abs() < EPSILON);
 
         assert!((gm.interpolate(5.0, 3.0) - 2.62500).abs() < EPSILON);
+
+        let mut pair = GrayModelPair {
+            white_model: gm,
+            black_model: expected_add_gm,
+        };
+        pair.reset();
+
+        assert_eq!(pair, GrayModelPair::default())
     }
 
     #[test]
@@ -974,14 +1061,19 @@ mod tests {
         };
 
         let mut entry = QuickDecodeEntry::default();
-        let quick_decode = &mut QuickDecode::new(&TagFamily::TAG36_H11);
+        let quick_decode = QuickDecode::new(&TagFamily::TAG36_H11);
+        let mut gray_model_pair = GrayModelPair::default();
+        let mut sharpening_buffer = SharpeningBuffer::new(&TagFamily::TAG36_H11);
+
         let d = quad_decode(
             &src,
             &TagFamily::TAG36_H11,
             &quad,
             &mut entry,
-            quick_decode,
+            &quick_decode,
             0.25,
+            &mut gray_model_pair,
+            &mut sharpening_buffer,
         );
 
         assert_eq!(d, Some(225.50317));
@@ -991,18 +1083,21 @@ mod tests {
 
     #[test]
     fn test_sharpen() {
-        let mut values = [
-            255.0, 255.0, 127.0, 0.0, 0.0, 0.0, 0.0, -1.0, 127.0, 63.75, 0.0, 63.75, 127.5, -1.0,
-            127.5, 127.5,
-        ];
+        let mut sharpening_buffer = SharpeningBuffer {
+            values: vec![
+                255.0, 255.0, 127.0, 0.0, 0.0, 0.0, 0.0, -1.0, 127.0, 63.75, 0.0, 63.75, 127.5,
+                -1.0, 127.5, 127.5,
+            ],
+            sharpened: vec![0.0; 16],
+        };
 
-        sharpen(&mut values, 4, 0.25);
+        sharpen(&mut sharpening_buffer, 4, 0.25);
         let expected_values = [
             446.25, 414.5, 190.25, -31.5, -95.5, -79.6875, -31.5, -17.9375, 206.1875, 96.0, -63.75,
             95.875, 223.5, -81.6875, 223.375, 207.1875,
         ];
 
-        assert_eq!(values, expected_values)
+        assert_eq!(sharpening_buffer.values, expected_values)
     }
 
     #[test]
@@ -1010,12 +1105,12 @@ mod tests {
         let rcode = 52087007497;
 
         let mut quick_decode_entry = QuickDecodeEntry::default();
-        let mut quick_decode = QuickDecode::new(&TagFamily::TAG36_H11);
+        let quick_decode = QuickDecode::new(&TagFamily::TAG36_H11);
         quick_decode_codeword(
             &TagFamily::TAG36_H11,
             rcode,
             &mut quick_decode_entry,
-            &mut quick_decode,
+            &quick_decode,
         );
 
         let expected_decode_entry = QuickDecodeEntry {
