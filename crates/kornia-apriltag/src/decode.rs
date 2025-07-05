@@ -563,10 +563,10 @@ fn quad_update_homographies(quad: &mut Quad) -> bool {
 /// # Returns
 ///
 /// Returns `Some(f32)` containing the decision margin if decoding is successful, or `None` otherwise.
-fn quad_decode<'a, A: ImageAllocator>(
+fn quad_decode<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     quad: &Quad,
-    opts: &DecodeTagsOpts<'a>,
+    opts: &DecodeTagsOpts<'_>,
     entry: &mut QuickDecodeEntry,
     gray_model_pair: &mut GrayModelPair,
     sharpening_buffer: &mut SharpeningBuffer,
