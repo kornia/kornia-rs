@@ -38,7 +38,7 @@ impl Default for FitQuadOpts {
 }
 
 /// Represents a detected quadrilateral in the image, corresponding to a tag candidate.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Quad {
     /// The four corners of the quadrilateral, in image coordinates.
     ///
@@ -46,6 +46,31 @@ pub struct Quad {
     pub corners: [Point2d<f32>; 4],
     /// Indicates whether the border is reversed (black border inside white border).
     pub reversed_border: bool,
+    /// The 3x3 homography matrix (row-major order) mapping tag coordinates to image coordinates.
+    pub homography: [f32; 9],
+}
+
+impl Quad {
+    /// Projects a point (x, y) from tag coordinates to image coordinates using the quad's homography.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - The x coordinate in tag space.
+    /// * `y` - The y coordinate in tag space.
+    ///
+    /// # Returns
+    ///
+    /// A `Point2d<f32>` representing the projected point in image coordinates.
+    pub fn homography_project(&self, x: f32, y: f32) -> Point2d<f32> {
+        let xx = self.homography[0] * x + self.homography[1] * y + self.homography[2];
+        let yy = self.homography[3] * x + self.homography[4] * y + self.homography[5];
+        let zz = self.homography[6] * x + self.homography[7] * y + self.homography[8];
+
+        Point2d {
+            x: xx / zz,
+            y: yy / zz,
+        }
+    }
 }
 
 /// Fits quadrilaterals (quads) to clusters of gradient information in the image.
