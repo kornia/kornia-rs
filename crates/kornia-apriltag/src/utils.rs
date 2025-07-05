@@ -157,7 +157,7 @@ pub(crate) fn matrix_3x3_cholesky(a: &[[f32; 3]; 3], r: &mut [f32; 9]) {
     r[5] = 0.0;
 }
 
-pub(crate) fn matrix_3x3_lower_triange_inverse(a: &[f32; 9], r: &mut [f32; 9]) {
+pub(crate) fn matrix_3x3_lower_triangle_inverse(a: &[f32; 9], r: &mut [f32; 9]) {
     r[0] = 1.0 / a[0];
     r[3] = -a[3] * r[0] / a[4];
     r[4] = 1.0 / a[4];
@@ -349,7 +349,7 @@ mod tests {
         let a = [5.0, 0.0, 0.0, 3.0, 4.0, 0.0, 1.0, 2.0, 6.0];
         let mut r = [0.0; 9];
 
-        matrix_3x3_lower_triange_inverse(&a, &mut r);
+        matrix_3x3_lower_triangle_inverse(&a, &mut r);
         let expected_r = [0.2, 0.0, 0.0, -0.15, 0.25, 0.0, 0.01666, -0.08333, 0.16666];
 
         for i in 0..9 {

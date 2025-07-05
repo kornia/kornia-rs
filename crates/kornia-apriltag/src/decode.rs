@@ -4,7 +4,7 @@ use crate::{
     family::TagFamily,
     quad::Quad,
     utils::{
-        homography_compute, matrix_3x3_cholesky, matrix_3x3_lower_triange_inverse, matrix_3x3_mul,
+        homography_compute, matrix_3x3_cholesky, matrix_3x3_lower_triangle_inverse, matrix_3x3_mul,
         value_for_pixel, Point2d,
     },
 };
@@ -43,7 +43,7 @@ impl GrayModel {
         matrix_3x3_cholesky(&self.a, &mut l);
 
         let mut m = [0f32; 9];
-        matrix_3x3_lower_triange_inverse(&l, &mut m);
+        matrix_3x3_lower_triangle_inverse(&l, &mut m);
 
         let tmp = [
             m[0] * self.b[0],
@@ -75,7 +75,7 @@ pub struct QuickDecodeEntry {
     pub rotation: u8,
 }
 
-/// TODO
+/// A table for fast lookup of decoded tag codes and their associated metadata.
 #[derive(Debug, Default, Clone)]
 pub struct QuickDecode(Vec<QuickDecodeEntry>);
 
