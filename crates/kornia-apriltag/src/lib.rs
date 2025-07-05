@@ -25,5 +25,5 @@ pub mod family;
 /// Quad detection utilities for AprilTag detection.
 pub mod quad;
 
-/// TODO
+/// Decoding utilities for AprilTag detection.
 pub mod decode;
