@@ -192,7 +192,7 @@ pub fn decode_tags<'a, A: ImageAllocator>(
 
     quads.iter_mut().for_each(|quad| {
         if refine_edges_enabled {
-            refine_edges(src, quad, tag_family.reversed_border);
+            refine_edges(src, quad);
         }
 
         if !quad_update_homographies(quad) {
@@ -254,8 +254,7 @@ pub fn decode_tags<'a, A: ImageAllocator>(
 ///
 /// * `src` - Reference to the grayscale source image.
 /// * `quad` - Mutable reference to the quadrilateral to refine.
-/// * `reversed_border` - Whether the border is reversed (affects edge direction).
-fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad, reversed_border: bool) {
+fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad) {
     let src_slice = src.as_slice();
     let mut lines: [[f32; 4]; 4] = Default::default();
 
@@ -265,108 +264,101 @@ fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad, rever
 
         let mut nx = quad.corners[b].y - quad.corners[a].y;
         let mut ny = -quad.corners[b].x + quad.corners[a].x;
+
         let mag = (nx * nx + ny * ny).sqrt();
         nx /= mag;
         ny /= mag;
 
-        if reversed_border {
+        if quad.reversed_border {
             nx = -nx;
             ny = -ny;
         }
 
         let nsamples = 16.max((mag / 8.0) as usize);
 
-        let mut mx = 0f32;
-        let mut my = 0f32;
-        let mut mxx = 0f32;
-        let mut mxy = 0f32;
-        let mut myy = 0f32;
-        let mut n = 0f32;
+        let mut mx = 0.0;
+        let mut my = 0.0;
+        let mut mxx = 0.0;
+        let mut mxy = 0.0;
+        let mut myy = 0.0;
+        let mut n = 0.0;
 
         (0..nsamples).for_each(|s| {
             let alpha = (1 + s) as f32 / (nsamples + 1) as f32;
             let x0 = alpha * quad.corners[a].x + (1.0 - alpha) * quad.corners[b].x;
             let y0 = alpha * quad.corners[a].y + (1.0 - alpha) * quad.corners[b].y;
 
-            let mut mn = 0f32;
-            let mut m_count = 0f32;
+            let mut mn = 0.0;
+            let mut m_count = 0.0;
 
-            const RANGE: usize = 2; // TODO: Make it tuneable. It will depend on the downscaling factor of the image preprocessing.
-
+            const RANGE: f32 = 2.0; // TODO: Make it tuneable. It will depend on the downscaling factor of the image preprocessing.
             const STEPS_PER_UNIT: usize = 4;
-            let step_length = 1.0 / STEPS_PER_UNIT as f32;
-            let max_steps = 2 * STEPS_PER_UNIT * RANGE + 1;
+            const STEP_LENGTH: f32 = 1.0 / STEPS_PER_UNIT as f32;
+            const MAX_STEPS: usize = 2 * STEPS_PER_UNIT * RANGE as usize + 1;
             const DELTA: f32 = 0.5;
 
-            (0..max_steps).for_each(|step| {
-                let n = step_length * step as f32 - RANGE as f32;
-                const GRANGE: f32 = 1.0;
+            const GRANGE: f32 = 1.0;
+
+            (0..MAX_STEPS).for_each(|step| {
+                let n = -RANGE + STEP_LENGTH * step as f32;
 
                 let x1 = x0 + (n + GRANGE) * nx - DELTA;
                 let y1 = y0 + (n + GRANGE) * ny - DELTA;
 
-                let x1i = x1.trunc() as isize;
-                let y1i = y1.trunc() as isize;
-                let a1 = x1.fract();
-                let b1 = y1.fract();
+                let (x1i, a1) = (x1.trunc(), x1.fract());
+                let (y1i, b1) = (y1.trunc(), y1.fract());
 
-                if x1i < 0
-                    || x1i + 1 >= src.width() as isize
-                    || y1i < 0
-                    || y1i + 1 >= src.height() as isize
+                if x1i < 0.0
+                    || y1i < 0.0
+                    || x1i + 1.0 >= src.width() as f32
+                    || y1i + 1.0 >= src.height() as f32
                 {
                     return;
                 }
-
-                let x1i = x1i as usize;
-                let y1i = y1i as usize;
 
                 let x2 = x0 + (n - GRANGE) * nx - DELTA;
                 let y2 = y0 + (n - GRANGE) * ny - DELTA;
 
-                let x2i = x2.trunc() as isize;
-                let y2i = y2.trunc() as isize;
-                let a2 = x2.fract();
-                let b2 = y2.fract();
+                let (x2i, a2) = (x2.trunc(), x2.fract());
+                let (y2i, b2) = (y2.trunc(), y2.fract());
 
-                if x2i < 0
-                    || x2i + 1 >= src.width() as isize
-                    || y2i < 0
-                    || y2i + 1 >= src.height() as isize
+                if x2i < 0.0
+                    || y2i < 0.0
+                    || x2i + 1.0 >= src.width() as f32
+                    || y2i + 1.0 >= src.height() as f32
                 {
                     return;
                 }
 
-                let x2i = x2i as usize;
-                let y2i = y2i as usize;
+                let (x1i, x2i, y1i, y2i) = (x1i as usize, x2i as usize, y1i as usize, y2i as usize);
 
                 let top_left_idx = y1i * src.width() + x1i;
                 let bottom_left_idx = (y1i + 1) * src.width() + x1i;
 
-                let gray_value_1 = (1.0 - a1) * (1.0 - b1) * src_slice[top_left_idx] as f32
+                let g1 = (1.0 - a1) * (1.0 - b1) * src_slice[top_left_idx] as f32
                     + a1 * (1.0 - b1) * src_slice[top_left_idx + 1] as f32
                     + (1.0 - a1) * b1 * src_slice[bottom_left_idx] as f32
                     + a1 * b1 * src_slice[bottom_left_idx + 1] as f32;
 
-                let top_left_idx_2 = y2i * src.width() + x2i;
-                let bottom_left_idx_2 = (y2i + 1) * src.width() + x2i;
+                let top_left_idx = y2i * src.width() + x2i;
+                let bottom_left_idx = (y2i + 1) * src.width() + x2i;
 
-                let gray_value_2 = (1.0 - a2) * (1.0 - b2) * src_slice[top_left_idx_2] as f32
-                    + a2 * (1.0 - b2) * src_slice[top_left_idx_2 + 1] as f32
-                    + (1.0 - a2) * b2 * src_slice[bottom_left_idx_2] as f32
-                    + a2 * b2 * src_slice[bottom_left_idx_2 + 1] as f32;
+                let g2 = (1.0 - a2) * (1.0 - b2) * src_slice[top_left_idx] as f32
+                    + a2 * (1.0 - b2) * src_slice[top_left_idx + 1] as f32
+                    + (1.0 - a2) * b2 * src_slice[bottom_left_idx] as f32
+                    + a2 * b2 * src_slice[bottom_left_idx + 1] as f32;
 
-                if gray_value_1 < gray_value_2 {
+                if g1 < g2 {
                     return;
                 }
 
-                let weight = (gray_value_2 - gray_value_1) * (gray_value_2 - gray_value_1);
+                let weight = (g2 - g1).powi(2);
 
                 mn += weight * n;
                 m_count += weight;
             });
 
-            if m_count == 0.0 {
+            if m_count <= 0.0 {
                 return;
             }
 
@@ -386,7 +378,7 @@ fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad, rever
         let ex = mx / n;
         let ey = my / n;
         let cxx = mxx / n - ex * ex;
-        let cxy = mxy / n - ex * ex;
+        let cxy = mxy / n - ex * ey;
         let cyy = myy / n - ey * ey;
 
         let normal_theta = 0.5 * (-2.0 * cxy).atan2(cyy - cxx);
@@ -399,7 +391,7 @@ fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad, rever
         lines[edge][3] = ny;
     });
 
-    // now refit the corners of the quad
+    // Now refit the corners of the quad
     (0..4).for_each(|i| {
         let a00 = lines[i][3];
         let a01 = -lines[(i + 1) & 3][3];
@@ -417,7 +409,7 @@ fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad, rever
             let l0 = w00 * b0 + w01 * b1;
 
             quad.corners[(i + 1) & 3].x = lines[i][0] + l0 * a00;
-            quad.corners[(i + 1) & 3].y = lines[i][1] + l0 * a01;
+            quad.corners[(i + 1) & 3].y = lines[i][1] + l0 * a10;
         }
     });
 }
@@ -833,13 +825,14 @@ mod tests {
             &mut quads,
             &TagFamily::TAG36_H11,
             &mut quick_decode,
-            false,
+            true,
             0.25,
         );
 
         assert_eq!(tags.len(), 1);
         assert_eq!(tags[0].id, 23);
-        assert_eq!(tags[0].center, Point2d { x: 15.0, y: 15.0 });
+        assert!((tags[0].center.x - 15.0).abs() < EPSILON);
+        assert!((tags[0].center.y - 15.0).abs() < EPSILON);
         assert_eq!(tags[0].hamming, 0);
         assert_eq!(tags[0].tag_family, &TagFamily::TAG36_H11);
 
@@ -878,41 +871,53 @@ mod tests {
 
     #[test]
     fn test_refine_edges() -> Result<(), Box<dyn std::error::Error>> {
-        // TODO: Fix this test
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
         let mut quad = Quad {
             corners: [
-                Point2d { x: 3.0, y: 3.0 },
-                Point2d { x: 27.0, y: 3.0 },
-                Point2d { x: 3.0, y: 20.0 },
-                Point2d { x: 4.0, y: 22.0 },
+                Point2d { x: 25.0, y: 5.0 },
+                Point2d { x: 25.0, y: 25.0 },
+                Point2d { x: 5.0, y: 25.0 },
+                Point2d { x: 5.0, y: 5.0 },
             ],
             reversed_border: false,
             homography: [0.0; 9],
         };
 
-        refine_edges(&src, &mut quad, false);
+        refine_edges(&src, &mut quad);
         let expected_corners = [
             Point2d {
-                x: 2.998814,
-                y: 3.0,
+                x: 26.612904,
+                y: 3.387097,
             },
             Point2d {
-                x: 26.231571,
-                y: 3.0,
+                x: 26.612904,
+                y: 26.612904,
             },
             Point2d {
-                x: 1.991483,
-                y: 24.232067,
+                x: 3.387097,
+                y: 26.612904,
             },
             Point2d {
-                x: 3.004358,
-                y: 30.014595,
+                x: 3.387097,
+                y: 3.387096,
             },
         ];
 
-        assert_eq!(quad.corners, expected_corners);
+        for (i, expected) in expected_corners.iter().enumerate() {
+            assert!(
+                (quad.corners[i].x - expected.x).abs() <= EPSILON,
+                "Got {}, Expected {}",
+                quad.corners[i].x,
+                expected.x
+            );
+            assert!(
+                (quad.corners[i].y - expected.y).abs() <= EPSILON,
+                "Got {}, Expected {}",
+                quad.corners[i].y,
+                expected.y
+            );
+        }
         Ok(())
     }
 
