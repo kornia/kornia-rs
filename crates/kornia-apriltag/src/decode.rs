@@ -193,6 +193,7 @@ pub struct Detection<'a> {
 }
 
 /// Buffer used for storing intermediate values during the sharpening process.
+#[derive(Debug, PartialEq)]
 pub struct SharpeningBuffer {
     values: Vec<f32>,
     sharpened: Vec<f32>,
@@ -219,12 +220,9 @@ impl SharpeningBuffer {
 
     /// Resets the buffer values to zero.
     pub fn reset(&mut self) {
-        self.values.iter_mut().for_each(|v| {
-            *v = 0.0;
-        });
-
-        self.sharpened.iter_mut().for_each(|s| {
-            *s = 0.0;
+        (0..self.values.len()).for_each(|i| {
+            self.values[i] = 0.0;
+            // No need to reset `sharpened` here as it is reset for every quad
         });
     }
 }
@@ -757,6 +755,8 @@ fn sharpen(sharpening_buffer: &mut SharpeningBuffer, size: usize, decode_sharpen
 
     (0..size as isize).for_each(|y| {
         (0..size as isize).for_each(|x| {
+            sharpening_buffer.sharpened[(y * size as isize + x) as usize] = 0.0;
+
             (0..3isize).for_each(|i| {
                 (0..3isize).for_each(|j| {
                     if (y + i - 1) < 0
