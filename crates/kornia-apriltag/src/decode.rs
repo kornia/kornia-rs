@@ -195,6 +195,7 @@ pub struct Detection<'a> {
 /// Buffer used for storing intermediate values during the sharpening process.
 #[derive(Debug, PartialEq)]
 pub struct SharpeningBuffer {
+    size: usize,
     values: Vec<f32>,
     sharpened: Vec<f32>,
 }
@@ -213,6 +214,7 @@ impl SharpeningBuffer {
         let len = family.total_width * family.total_width;
 
         Self {
+            size: family.total_width,
             values: vec![0.0; len],
             sharpened: vec![0.0; len],
         }
@@ -740,11 +742,7 @@ fn quad_decode<'a, A: ImageAllocator>(
             - min_coord) as usize] = v - thresh;
     });
 
-    sharpen(
-        sharpening_buffer,
-        opts.tag_family.total_width,
-        opts.decode_sharpening,
-    );
+    sharpen(sharpening_buffer, opts.decode_sharpening);
 
     let mut rcode = 0usize;
     (0..opts.tag_family.nbits).for_each(|i| {
@@ -777,10 +775,9 @@ fn quad_decode<'a, A: ImageAllocator>(
 ///
 /// # Arguments
 ///
-/// * `values` - Mutable slice of f32 values representing the image or data to be sharpened.
-/// * `size` - The width/height of the (square) data region.
+/// * `sharpening_buffer` - Mutable reference of `SharpeningBuffer`.
 /// * `decode_sharpening` - The sharpening factor to apply.
-fn sharpen(sharpening_buffer: &mut SharpeningBuffer, size: usize, decode_sharpening: f32) {
+fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32) {
     #[rustfmt::skip]
     const KERNEL: [f32; 9] = [
          0.0, -1.0,  0.0,
@@ -788,34 +785,38 @@ fn sharpen(sharpening_buffer: &mut SharpeningBuffer, size: usize, decode_sharpen
          0.0, -1.0,  0.0,
     ];
 
-    (0..size as isize).for_each(|y| {
-        (0..size as isize).for_each(|x| {
-            sharpening_buffer.sharpened[(y * size as isize + x) as usize] = 0.0;
+    (0..sharpening_buffer.size).for_each(|y| {
+        (0..sharpening_buffer.size).for_each(|x| {
+            let idx = y * sharpening_buffer.size + x;
+            sharpening_buffer.sharpened[idx] = 0.0;
 
-            (0..3isize).for_each(|i| {
-                (0..3isize).for_each(|j| {
-                    if (y + i - 1) < 0
-                        || (y + i - 1) > size as isize - 1
-                        || (x + j - 1) < 0
-                        || (x + j - 1) > size as isize - 1
+            (0..3).for_each(|i| {
+                (0..3).for_each(|j| {
+                    let yi = y + i;
+                    let xj = x + j;
+                    if yi == 0
+                        || xj == 0
+                        || (yi - 1) > sharpening_buffer.size - 1
+                        || (xj - 1) > sharpening_buffer.size - 1
                     {
                         return;
                     }
-                    sharpening_buffer.sharpened[(y * size as isize + x) as usize] +=
-                        sharpening_buffer.values
-                            [((y + i - 1) * size as isize + (x + j - 1)) as usize]
-                            * KERNEL[(i * 3 + j) as usize];
+
+                    sharpening_buffer.sharpened[idx] += sharpening_buffer.values
+                        [(yi - 1) * sharpening_buffer.size + (xj - 1)]
+                        * KERNEL[i * 3 + j];
                 });
             });
         });
     });
 
-    (0..size).for_each(|y| {
-        (0..size).for_each(|x| {
-            sharpening_buffer.values[y * size + x] +=
-                decode_sharpening * sharpening_buffer.sharpened[y * size + x];
+    sharpening_buffer
+        .values
+        .iter_mut()
+        .enumerate()
+        .for_each(|(i, v)| {
+            *v += decode_sharpening * sharpening_buffer.sharpened[i];
         });
-    });
 }
 
 /// Attempts to decode a codeword using the quick decode table for the given tag family.
@@ -1112,6 +1113,7 @@ mod tests {
     #[test]
     fn test_sharpen() {
         let mut sharpening_buffer = SharpeningBuffer {
+            size: 4,
             values: vec![
                 255.0, 255.0, 127.0, 0.0, 0.0, 0.0, 0.0, -1.0, 127.0, 63.75, 0.0, 63.75, 127.5,
                 -1.0, 127.5, 127.5,
@@ -1119,7 +1121,7 @@ mod tests {
             sharpened: vec![0.0; 16],
         };
 
-        sharpen(&mut sharpening_buffer, 4, 0.25);
+        sharpen(&mut sharpening_buffer, 0.25);
         let expected_values = [
             446.25, 414.5, 190.25, -31.5, -95.5, -79.6875, -31.5, -17.9375, 206.1875, 96.0, -63.75,
             95.875, 223.5, -81.6875, 223.375, 207.1875,
