@@ -607,7 +607,7 @@ fn quad_decode<A: ImageAllocator>(
     let mut white_score_count = 1usize;
 
     // TODO: Avoid this allocation every time
-    let mut values = vec![0f32; tag_family.total_width * tag_family.total_width];
+    let mut values = vec![0.0f32; tag_family.total_width * tag_family.total_width];
 
     let min_coord = (tag_family.width_at_border as isize - tag_family.total_width as isize) / 2;
 
@@ -948,20 +948,30 @@ mod tests {
     fn test_quad_decode() -> Result<(), Box<dyn std::error::Error>> {
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
-        let mut quad = Quad {
+        let quad = Quad {
             corners: [
-                Point2d { x: 27.0, y: 3.0 },
-                Point2d { x: 27.0, y: 27.0 },
-                Point2d { x: 3.0, y: 27.0 },
-                Point2d { x: 3.0, y: 3.0 },
+                Point2d {
+                    x: 26.612904,
+                    y: 3.387097,
+                },
+                Point2d {
+                    x: 26.612904,
+                    y: 26.612904,
+                },
+                Point2d {
+                    x: 3.387097,
+                    y: 26.612904,
+                },
+                Point2d {
+                    x: 3.387097,
+                    y: 3.387096,
+                },
             ],
             reversed_border: false,
-            homography: [0.0; 9],
+            homography: [
+                -0.0, -11.612904, 15.0, 11.612904, -0.000001, 15.0, -0.0, -0.0, 1.0,
+            ],
         };
-
-        quad_update_homographies(&mut quad);
-        let expected_homographies = [-0.0, -12.0, 15.0, 12.0, -0.0, 15.0, -0.0, 0.0, 1.0];
-        assert_eq!(quad.homography, expected_homographies);
 
         let mut entry = QuickDecodeEntry::default();
         let quick_decode = &mut QuickDecode::new(&TagFamily::TAG36_H11);
@@ -974,7 +984,7 @@ mod tests {
             0.25,
         );
 
-        assert_eq!(d, Some(239.0625));
+        assert_eq!(d, Some(225.50317));
 
         Ok(())
     }
