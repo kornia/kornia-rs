@@ -361,6 +361,7 @@ pub fn decode_tags<'a, A: ImageAllocator>(
 ///
 /// * `src` - Reference to the grayscale source image.
 /// * `quad` - Mutable reference to the quadrilateral to refine.
+// TODO: Consider moving this somewhere in kornia-imgproc.
 fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad) {
     let src_slice = src.as_slice();
     let mut lines: [[f32; 4]; 4] = Default::default();

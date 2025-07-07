@@ -1,3 +1,6 @@
+// NOTE: Consider whether to place these utilities under a more general-purpose crate,
+// such as kornia-linalg, or another location we decide on later.
+
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 
 /// Calculates the total number of tiles needed to cover an image of the given size,
