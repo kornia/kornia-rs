@@ -71,7 +71,7 @@ pub fn load_image_url(
 
 fn read_input(cli_prompt: &str) -> String {
     let mut input = String::new();
-    print!("{}", cli_prompt);
+    print!("{cli_prompt}");
     io::stdout().flush().unwrap();
     io::stdin()
         .read_line(&mut input)
@@ -100,7 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map_or_else(
                     |err| {
                         println!("Invalid or empty URL (no image)");
-                        println!("Error: {:?}", err);
+                        println!("Error: {err:?}");
 
                         Err(err)
                     },

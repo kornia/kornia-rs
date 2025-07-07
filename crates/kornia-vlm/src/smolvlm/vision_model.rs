@@ -128,7 +128,7 @@ impl Block {
                 .clone()
         };
 
-        println!("Loaded layer (VT): {:?}", id);
+        log::info!("Loaded layer (VT): {id:?}");
 
         Ok(Self {
             self_attn: Attention::new(
