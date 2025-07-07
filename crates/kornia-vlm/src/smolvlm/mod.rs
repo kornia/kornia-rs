@@ -45,7 +45,7 @@ impl SmolVlm {
         let (device, dtype) = match Device::cuda_if_available(0) {
             Ok(device) => (device, DType::BF16),
             Err(e) => {
-                log::warn!("CUDA not available, defaulting to CPU: {}", e);
+                log::warn!("CUDA not available, defaulting to CPU: {e:?}");
                 (Device::Cpu, DType::F32)
             }
         };
@@ -169,7 +169,7 @@ impl SmolVlm {
                 generated_tokens += 1;
 
                 if stdout_debug {
-                    print!("{}", token_output);
+                    print!("{token_output}");
                     io::stdout().flush().unwrap();
                 }
             } else {

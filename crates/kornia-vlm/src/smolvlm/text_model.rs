@@ -181,7 +181,7 @@ impl Block {
                 .clone()
         };
 
-        println!("Loaded layer (LM): {:?}", id);
+        log::info!("Loaded layer (LM): {id:?}");
 
         Ok(Self {
             input_layer_norm: RmsNorm::new(val("input_layernorm"), 1e-5),
