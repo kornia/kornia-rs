@@ -2,21 +2,23 @@ use super::*;
 
 impl TagFamily {
     /// The Tag36H11 AprilTag family.
-    pub const TAG36_H11: Self = Self {
-        width_at_border: 8,
-        reversed_border: false,
-        total_width: 10,
-        nbits: 36,
-        bit_x: &[
-            1, 2, 3, 4, 5, 2, 3, 4, 3, 6, 6, 6, 6, 6, 5, 5, 5, 4, 6, 5, 4, 3, 2, 5, 4, 3, 4, 1, 1,
-            1, 1, 1, 2, 2, 2, 3,
-        ],
-        bit_y: &[
-            1, 1, 1, 1, 1, 2, 2, 2, 3, 1, 2, 3, 4, 5, 2, 3, 4, 3, 6, 6, 6, 6, 6, 5, 5, 5, 4, 6, 5,
-            4, 3, 2, 5, 4, 3, 4,
-        ],
-        code_data: &CODE_DATA,
-    };
+    pub fn tag36_h11() -> Self {
+        Self {
+            width_at_border: 8,
+            reversed_border: false,
+            total_width: 10,
+            nbits: 36,
+            bit_x: vec![
+                1, 2, 3, 4, 5, 2, 3, 4, 3, 6, 6, 6, 6, 6, 5, 5, 5, 4, 6, 5, 4, 3, 2, 5, 4, 3, 4, 1,
+                1, 1, 1, 1, 2, 2, 2, 3,
+            ],
+            bit_y: vec![
+                1, 1, 1, 1, 1, 2, 2, 2, 3, 1, 2, 3, 4, 5, 2, 3, 4, 3, 6, 6, 6, 6, 6, 5, 5, 5, 4, 6,
+                5, 4, 3, 2, 5, 4, 3, 4,
+            ],
+            code_data: CODE_DATA.into(),
+        }
+    }
 }
 
 pub const CODE_DATA: [usize; 587] = [

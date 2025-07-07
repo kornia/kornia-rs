@@ -4,8 +4,8 @@ use crate::{
     family::TagFamily,
     quad::Quad,
     utils::{
-        homography_compute, matrix_3x3_cholesky, matrix_3x3_lower_triangle_inverse, matrix_3x3_mul,
-        value_for_pixel, Point2d,
+        matrix_3x3_cholesky, matrix_3x3_lower_triangle_inverse, matrix_3x3_mul, value_for_pixel,
+        Point2d,
     },
 };
 use kornia_image::{allocator::ImageAllocator, Image};
@@ -302,7 +302,7 @@ pub fn decode_tags<'a, A: ImageAllocator>(
             refine_edges(src, quad);
         }
 
-        if !quad_update_homographies(quad) {
+        if !quad.update_homographies() {
             return;
         }
 
@@ -519,32 +519,6 @@ fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad) {
             quad.corners[(i + 1) & 3].y = lines[i][1] + l0 * a10;
         }
     });
-}
-
-/// Updates the homography matrix for the given quadrilateral based on its corners.
-///
-/// # Arguments
-///
-/// * `quad` - Mutable reference to the quadrilateral whose homography will be updated.
-///
-/// # Returns
-///
-/// Returns `true` if the homography was successfully computed and updated, `false` otherwise.
-fn quad_update_homographies(quad: &mut Quad) -> bool {
-    let corr_arr = [
-        [-1.0, -1.0, quad.corners[0].x, quad.corners[0].y],
-        [1.0, -1.0, quad.corners[1].x, quad.corners[1].y],
-        [1.0, 1.0, quad.corners[2].x, quad.corners[2].y],
-        [-1.0, 1.0, quad.corners[3].x, quad.corners[3].y],
-    ];
-
-    if let Some(h) = homography_compute(corr_arr) {
-        quad.homography = h;
-
-        return true;
-    }
-
-    false
 }
 
 /// Decodes a tag from a given quadrilateral in the image, using the provided tag family and quick decode table.
@@ -786,25 +760,31 @@ fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32) {
     ];
 
     (0..sharpening_buffer.size).for_each(|y| {
+        let idy = y * sharpening_buffer.size;
+
         (0..sharpening_buffer.size).for_each(|x| {
-            let idx = y * sharpening_buffer.size + x;
+            let idx = idy + x;
             sharpening_buffer.sharpened[idx] = 0.0;
 
             (0..3).for_each(|i| {
+                let yi = y + i;
+
+                if yi == 0 || (yi - 1) > sharpening_buffer.size - 1 {
+                    return;
+                }
+
+                let kernel_row_offset = 3 * i;
+                let buffer_row_offset = (yi - 1) * sharpening_buffer.size;
+
                 (0..3).for_each(|j| {
-                    let yi = y + i;
                     let xj = x + j;
-                    if yi == 0
-                        || xj == 0
-                        || (yi - 1) > sharpening_buffer.size - 1
-                        || (xj - 1) > sharpening_buffer.size - 1
-                    {
+                    if xj == 0 || (xj - 1) > sharpening_buffer.size - 1 {
                         return;
                     }
 
                     sharpening_buffer.sharpened[idx] += sharpening_buffer.values
-                        [(yi - 1) * sharpening_buffer.size + (xj - 1)]
-                        * KERNEL[i * 3 + j];
+                        [buffer_row_offset + (xj - 1)]
+                        * KERNEL[kernel_row_offset + j];
                 });
             });
         });
@@ -904,6 +884,7 @@ mod tests {
 
     #[test]
     fn test_decode_tags() -> Result<(), Box<dyn std::error::Error>> {
+        let tag_family = TagFamily::tag36_h11();
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
         let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
@@ -911,19 +892,13 @@ mod tests {
         let mut uf = UnionFind::new(bin.as_slice().len());
         let mut clusters = HashMap::new();
         let mut gray_model_pair = GrayModelPair::default();
-        let mut sharpening_buffer = SharpeningBuffer::new(&TagFamily::TAG36_H11);
+        let mut sharpening_buffer = SharpeningBuffer::new(&tag_family);
 
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
         find_gradient_clusters(&bin, &mut uf, &mut clusters);
 
-        let mut quads = fit_quads(
-            &bin,
-            &TagFamily::TAG36_H11,
-            &mut clusters,
-            5,
-            FitQuadOpts::default(),
-        );
+        let mut quads = fit_quads(&bin, &tag_family, &mut clusters, 5, FitQuadOpts::default());
 
         for quad in &mut quads {
             for corner in &mut quad.corners {
@@ -935,7 +910,7 @@ mod tests {
         let tags = decode_tags(
             &src,
             &mut quads,
-            &DecodeTagsOpts::new(&TagFamily::TAG36_H11, true, 0.25),
+            &DecodeTagsOpts::new(&tag_family, true, 0.25),
             &mut gray_model_pair,
             &mut sharpening_buffer,
         );
@@ -945,7 +920,7 @@ mod tests {
         assert!((tags[0].center.x - 15.0).abs() < EPSILON);
         assert!((tags[0].center.y - 15.0).abs() < EPSILON);
         assert_eq!(tags[0].hamming, 0);
-        assert_eq!(tags[0].tag_family, &TagFamily::TAG36_H11);
+        assert_eq!(tags[0].tag_family, &tag_family);
 
         Ok(())
     }
@@ -1053,7 +1028,7 @@ mod tests {
             homography: [0.0; 9],
         };
 
-        quad_update_homographies(&mut quad);
+        quad.update_homographies();
         let expected_homographies = [
             -0.675192, 4.672634, 3.0, 0.368286, 23.455243, 22.826087, 0.122762, 1.209719, 1.0,
         ];
@@ -1065,6 +1040,7 @@ mod tests {
 
     #[test]
     fn test_quad_decode() -> Result<(), Box<dyn std::error::Error>> {
+        let tag_family = TagFamily::tag36_h11();
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
         let quad = Quad {
@@ -1094,12 +1070,12 @@ mod tests {
 
         let mut entry = QuickDecodeEntry::default();
         let mut gray_model_pair = GrayModelPair::default();
-        let mut sharpening_buffer = SharpeningBuffer::new(&TagFamily::TAG36_H11);
+        let mut sharpening_buffer = SharpeningBuffer::new(&tag_family);
 
         let d = quad_decode(
             &src,
             &quad,
-            &DecodeTagsOpts::new(&TagFamily::TAG36_H11, true, 0.25),
+            &DecodeTagsOpts::new(&tag_family, true, 0.25),
             &mut entry,
             &mut gray_model_pair,
             &mut sharpening_buffer,
@@ -1132,16 +1108,12 @@ mod tests {
 
     #[test]
     fn test_quick_decode_codeword() {
+        let tag_family = TagFamily::tag36_h11();
         let rcode = 52087007497;
 
         let mut quick_decode_entry = QuickDecodeEntry::default();
-        let quick_decode = QuickDecode::new(&TagFamily::TAG36_H11);
-        quick_decode_codeword(
-            &TagFamily::TAG36_H11,
-            rcode,
-            &mut quick_decode_entry,
-            &quick_decode,
-        );
+        let quick_decode = QuickDecode::new(&tag_family);
+        quick_decode_codeword(&tag_family, rcode, &mut quick_decode_entry, &quick_decode);
 
         let expected_decode_entry = QuickDecodeEntry {
             rcode: 52087007497,

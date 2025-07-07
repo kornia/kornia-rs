@@ -10,11 +10,11 @@ pub struct TagFamily {
     /// The number of bits in the tag code.
     pub nbits: usize,
     /// The x-coordinates of each bit in the tag.
-    pub bit_x: &'static [u8],
+    pub bit_x: Vec<u8>,
     /// The y-coordinates of each bit in the tag.
-    pub bit_y: &'static [u8],
+    pub bit_y: Vec<u8>,
     /// The code data for the tag family.
-    pub code_data: &'static [usize],
+    pub code_data: Vec<usize>,
     // TODO: more properties
 }
 

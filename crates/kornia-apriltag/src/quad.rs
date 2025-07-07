@@ -1,7 +1,7 @@
 use crate::{
     family::TagFamily,
     segmentation::GradientInfo,
-    utils::{Pixel, Point2d},
+    utils::{homography_compute, Pixel, Point2d},
 };
 use kornia_image::{allocator::ImageAllocator, Image};
 use kornia_imgproc::filter::kernels::gaussian_kernel_1d;
@@ -47,6 +47,7 @@ pub struct Quad {
     /// Indicates whether the border is reversed (black border inside white border).
     pub reversed_border: bool,
     /// The 3x3 homography matrix (row-major order) mapping tag coordinates to image coordinates.
+    // TODO: Use glam 3x3 mat representation
     pub homography: [f32; 9],
 }
 
@@ -70,6 +71,27 @@ impl Quad {
             x: xx / zz,
             y: yy / zz,
         }
+    }
+
+    /// Updates the homography matrix for the quad based on its current corner positions.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the homography was successfully computed and updated, `false` otherwise.
+    pub fn update_homographies(&mut self) -> bool {
+        let corr_arr = [
+            [-1.0, -1.0, self.corners[0].x, self.corners[0].y],
+            [1.0, -1.0, self.corners[1].x, self.corners[1].y],
+            [1.0, 1.0, self.corners[2].x, self.corners[2].y],
+            [-1.0, 1.0, self.corners[3].x, self.corners[3].y],
+        ];
+
+        if let Some(h) = homography_compute(corr_arr) {
+            self.homography = h;
+            return true;
+        }
+
+        false
     }
 }
 
@@ -784,7 +806,7 @@ mod tests {
 
         let quads = fit_quads(
             &bin,
-            &TagFamily::TAG36_H11,
+            &TagFamily::tag36_h11(),
             &mut clusters,
             MIN_CLUSTER_PIXELS,
             FitQuadOpts::default(),
