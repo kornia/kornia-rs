@@ -56,3 +56,6 @@ pub mod warp;
 
 /// Pyramid operations
 pub mod pyramid;
+
+/// Morphology operations 
+pub mod morphology; 
