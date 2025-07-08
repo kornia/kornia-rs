@@ -128,8 +128,6 @@ impl Block {
                 .clone()
         };
 
-        println!("Loaded layer (VT): {:?}", id);
-
         Ok(Self {
             self_attn: Attention::new(
                 Linear::new(w("self_attn.q_proj"), Some(b("self_attn.q_proj"))),
