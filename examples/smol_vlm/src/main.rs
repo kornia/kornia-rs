@@ -27,7 +27,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image = read_image_jpeg_rgb8(args.image_path)?;
 
     // create the paligemma model
-    let mut smolvlm = SmolVlm::new(SmolVlmConfig::default())?;
+    let mut smolvlm = SmolVlm::new(SmolVlmConfig {
+        do_sample: false, // set to false for greedy decoding
+        ..Default::default()
+    })?;
 
     // generate a caption of the image
     let _caption = smolvlm.inference(Some(image), &args.text_prompt, args.sample_length, true)?;
