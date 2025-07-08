@@ -115,6 +115,13 @@ impl SmolModel {
         let mut inputs_embeds = self.embed.forward(xs)?;
 
         if let Some((image_token_mask, pixel_values, pixel_attention_masks)) = vision_data {
+            // println!(
+            //     "image_token_mask: {:?}, pixel_values: {:?}, pixel_attention_masks: {:?}",
+            //     image_token_mask.dims(),
+            //     pixel_values.dims(),
+            //     pixel_attention_masks.dims()
+            // );
+
             // TODO: this assumes there will be at most one new images added
             inputs_embeds = if self.image_hidden_states.is_some() {
                 self.inputs_merger(&image_token_mask, &inputs_embeds)?

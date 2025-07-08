@@ -111,19 +111,21 @@ impl SmolVlm {
 
         if let Some(raw_img) = image {
             let (img_patches, mask_patches, size) =
-                preprocess_image(raw_img, 1920, 384, &self.device);
+                preprocess_image(raw_img, 1536, 384, &self.device);
 
             let img_token = get_prompt_split_image(81, size);
-            full_prompt += "\nUser:<image>";
+            full_prompt += "User:<image>";
             full_prompt = full_prompt.replace("<image>", &img_token);
 
             self.image_history.push((img_patches, mask_patches));
         } else {
-            full_prompt += "\nUser: ";
+            full_prompt += "User: ";
         }
 
         full_prompt += prompt;
         full_prompt += "<end_of_utterance>\nAssistant:";
+
+        println!(">>: {full_prompt}");
 
         let full_token = self.tokenizer.encode(full_prompt, false)?;
 
