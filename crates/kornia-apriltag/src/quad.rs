@@ -18,7 +18,7 @@ const QUADRANTS: [[i32; 2]; 2] = [
 
 #[derive(Debug, Clone, Copy)]
 /// Options for fitting quadrilaterals (quads) to clusters of gradient information.
-pub struct FitQuadOpts {
+pub struct FitQuadConfig {
     /// Cosine of the critical angle in radians.
     pub cos_critical_rad: f32,
     /// Maximum mean squared error allowed for line fitting.
@@ -27,7 +27,7 @@ pub struct FitQuadOpts {
     pub max_nmaxima: usize,
 }
 
-impl Default for FitQuadOpts {
+impl Default for FitQuadConfig {
     fn default() -> Self {
         Self {
             cos_critical_rad: 0.984808,
@@ -103,7 +103,7 @@ impl Quad {
 /// * `tag_family` - The tag family to use for quad fitting.
 /// * `clusters` - A mutable reference to a map of clusters, each containing a vector of `GradientInfo`.
 /// * `min_cluster_pixels` - Minimum number of pixels required in a cluster to be considered.
-/// * `opts` - Options for quad fitting process
+/// * `config` - Configuration for quad fitting process
 ///
 /// # Returns
 ///
@@ -114,7 +114,7 @@ pub fn fit_quads<A: ImageAllocator>(
     tag_family: &TagFamily,
     clusters: &mut HashMap<(usize, usize), Vec<GradientInfo>>,
     min_cluster_pixels: usize,
-    opts: FitQuadOpts,
+    config: FitQuadConfig,
 ) -> Vec<Quad> {
     // These will be come handy later, once we support more tag familes
     let normal_border = !tag_family.reversed_border;
@@ -140,7 +140,7 @@ pub fn fit_quads<A: ImageAllocator>(
             tag_family.width_at_border,
             normal_border,
             reversed_border,
-            opts,
+            config,
         ) {
             quads.push(quad);
         }
@@ -158,7 +158,7 @@ pub fn fit_quads<A: ImageAllocator>(
 /// * `min_tag_width` - Minimum width of the tag to be considered.
 /// * `normal_border` - Indicates if the normal border is expected.
 /// * `reversed_border` - Indicates if the reversed border is expected.
-/// * `opts` - Options for quad fitting process
+/// * `config` - Configuration for quad fitting process
 ///
 /// # Returns
 ///
@@ -169,7 +169,7 @@ pub fn fit_single_quad<A: ImageAllocator>(
     min_tag_width: usize,
     normal_border: bool,
     reversed_border: bool,
-    opts: FitQuadOpts,
+    config: FitQuadConfig,
 ) -> Option<Quad> {
     if cluster.len() < 24 {
         return None;
@@ -254,7 +254,7 @@ pub fn fit_single_quad<A: ImageAllocator>(
 
     let mut indices = [0usize; 4];
 
-    if !quad_segment_maxima(cluster, &lfps, &mut indices, opts) {
+    if !quad_segment_maxima(cluster, &lfps, &mut indices, config) {
         return None;
     }
 
@@ -267,7 +267,7 @@ pub fn fit_single_quad<A: ImageAllocator>(
         let mut mse = 0.0f32;
         fit_line(&lfps, i0, i1, Some(&mut lines[i]), None, Some(&mut mse));
 
-        if mse > opts.max_line_fit_mse {
+        if mse > config.max_line_fit_mse {
             return ControlFlow::Break(());
         }
 
@@ -353,7 +353,7 @@ pub fn fit_single_quad<A: ImageAllocator>(
         let cos_dtheta =
             (dx1 * dx2 + dy1 * dy2) / ((dx1 * dx1 + dy1 * dy1) * (dx2 * dx2 + dy2 * dy2)).sqrt();
 
-        if !(-opts.cos_critical_rad..=opts.cos_critical_rad).contains(&cos_dtheta)
+        if !(-config.cos_critical_rad..=config.cos_critical_rad).contains(&cos_dtheta)
             || dx1 * dy2 < dy1 * dx2
         {
             return ControlFlow::Break(());
@@ -449,7 +449,7 @@ pub fn compute_line_fit_prefix_sums<A: ImageAllocator>(
 /// * `gradient_infos` - Slice of `GradientInfo` representing the cluster.
 /// * `lfps` - Slice of `LineFit` prefix sums for the cluster.
 /// * `indices` - Mutable reference to an array where the four corner indices will be written.
-/// * `opts` - Options for quad fitting process
+/// * `config` - Configuration for quad fitting process
 ///
 /// # Returns
 ///
@@ -458,7 +458,7 @@ pub fn quad_segment_maxima(
     gradient_infos: &[GradientInfo],
     lfps: &[LineFit],
     indices: &mut [usize; 4],
-    opts: FitQuadOpts,
+    config: FitQuadConfig,
 ) -> bool {
     // TODO: check if the length of gradient_infos and lfps is same
     let len = gradient_infos.len();
@@ -520,12 +520,12 @@ pub fn quad_segment_maxima(
         return false;
     }
 
-    if nmaxima > opts.max_nmaxima {
+    if nmaxima > config.max_nmaxima {
         let mut maxima_errs_copy = maxima_errs.clone();
 
         maxima_errs_copy.sort_by(|a, b| b.total_cmp(a));
 
-        let maxima_thresh = maxima_errs_copy[opts.max_nmaxima];
+        let maxima_thresh = maxima_errs_copy[config.max_nmaxima];
         let mut out = 0usize;
         for i in 0..nmaxima {
             if maxima_errs[i] <= maxima_thresh {
@@ -573,7 +573,7 @@ pub fn quad_segment_maxima(
                 Some(&mut mse01),
             );
 
-            if mse01 > opts.max_line_fit_mse {
+            if mse01 > config.max_line_fit_mse {
                 return;
             }
 
@@ -589,12 +589,12 @@ pub fn quad_segment_maxima(
                     Some(&mut mse12),
                 );
 
-                if mse12 > opts.max_line_fit_mse {
+                if mse12 > config.max_line_fit_mse {
                     return;
                 }
 
                 let dot = params01[2] * params12[2] + params01[3] * params12[3];
-                if dot.abs() > opts.cos_critical_rad {
+                if dot.abs() > config.cos_critical_rad {
                     return;
                 }
 
@@ -603,13 +603,13 @@ pub fn quad_segment_maxima(
 
                     fit_line(lfps, i2, i3, None, Some(&mut err23), Some(&mut mse23));
 
-                    if mse23 > opts.max_line_fit_mse {
+                    if mse23 > config.max_line_fit_mse {
                         return;
                     }
 
                     fit_line(lfps, i3, i0, None, Some(&mut err30), Some(&mut mse30));
 
-                    if mse30 > opts.max_line_fit_mse {
+                    if mse30 > config.max_line_fit_mse {
                         return;
                     }
 
@@ -635,7 +635,7 @@ pub fn quad_segment_maxima(
         indices[i] = *b;
     });
 
-    if (best_error / gradient_infos.len() as f32) < opts.max_line_fit_mse {
+    if (best_error / gradient_infos.len() as f32) < config.max_line_fit_mse {
         return true;
     }
 
@@ -809,7 +809,7 @@ mod tests {
             &TagFamily::tag36_h11(),
             &mut clusters,
             MIN_CLUSTER_PIXELS,
-            FitQuadOpts::default(),
+            FitQuadConfig::default(),
         );
 
         let expected_quad = [[[27, 3], [27, 27], [3, 27], [3, 3]]];
@@ -855,7 +855,7 @@ mod tests {
             &gradient_infos,
             &lfps,
             &mut indices,
-            FitQuadOpts::default()
+            FitQuadConfig::default()
         ));
 
         // Test 2: Empty input
@@ -865,7 +865,7 @@ mod tests {
             &empty_gradient_infos,
             &empty_lfps,
             &mut indices,
-            FitQuadOpts::default()
+            FitQuadConfig::default()
         ));
 
         // Test 3: Constant slope (no maxima)
@@ -883,7 +883,7 @@ mod tests {
             &constant_slope_infos,
             &constant_lfps,
             &mut indices,
-            FitQuadOpts::default()
+            FitQuadConfig::default()
         ));
     }
 
@@ -909,8 +909,12 @@ mod tests {
             let lfps = compute_line_fit_prefix_sums(&bin, largest_cluster);
             let mut indices = [0; 4];
 
-            let result =
-                quad_segment_maxima(largest_cluster, &lfps, &mut indices, FitQuadOpts::default());
+            let result = quad_segment_maxima(
+                largest_cluster,
+                &lfps,
+                &mut indices,
+                FitQuadConfig::default(),
+            );
 
             assert!(!result);
         }

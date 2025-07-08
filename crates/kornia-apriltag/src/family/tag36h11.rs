@@ -4,6 +4,7 @@ impl TagFamily {
     /// The Tag36H11 AprilTag family.
     pub fn tag36_h11() -> Self {
         Self {
+            name: "tag36_h11".to_string(),
             width_at_border: 8,
             reversed_border: false,
             total_width: 10,
