@@ -4,20 +4,17 @@ mod text_model;
 pub mod utils;
 mod vision_model;
 
-use std::io;
-use std::io::Write;
-
+use crate::smolvlm::{
+    model::SmolModel, preprocessor::SmolVlmImagePreprocessor, utils::SmolVlmConfig,
+    utils::SmolVlmError,
+};
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_transformers::generation::LogitsProcessor;
 use hf_hub::api::sync::Api;
-use kornia_image::allocator::ImageAllocator;
-use kornia_image::Image;
+use kornia_image::{allocator::ImageAllocator, Image};
+use preprocessor::get_prompt_split_image;
+use std::io::{self, Write};
 use tokenizers::Tokenizer;
-
-use preprocessor::{get_prompt_split_image, preprocess_image};
-
-use crate::smolvlm::model::SmolModel;
-use crate::smolvlm::utils::{SmolVlmConfig, SmolVlmError};
 
 pub struct SmolVlm {
     model: SmolModel,
@@ -30,6 +27,7 @@ pub struct SmolVlm {
     index_pos: usize,        // index of the next token to be processed
     first_prompt: bool,      // whether this is the first prompt
     token_history: Vec<u32>, // stores the history of generated tokens
+    preprocessor: SmolVlmImagePreprocessor,
 }
 
 impl SmolVlm {
@@ -74,6 +72,7 @@ impl SmolVlm {
             index_pos: 0,
             first_prompt: true,
             token_history: Vec::new(),
+            preprocessor: SmolVlmImagePreprocessor::new(1920, 384),
         })
     }
 
@@ -111,7 +110,7 @@ impl SmolVlm {
 
         if let Some(raw_img) = image {
             let (img_patches, mask_patches, size) =
-                preprocess_image(raw_img, 1920, 384, &self.device);
+                self.preprocessor.preprocess(&raw_img, &self.device)?;
 
             let img_token = get_prompt_split_image(81, size);
             full_prompt += "\nUser:<image>";
