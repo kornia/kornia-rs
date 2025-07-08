@@ -188,6 +188,7 @@ pub(crate) const fn matrix_3x3_mul(a: &[f32; 9], b: &[f32; 9]) -> [f32; 9] {
 /// # Returns
 ///
 /// An `Option<f32>` containing the interpolated pixel value, or `None` if the coordinate is out of bounds.
+// TODO: Make interpolate function in kornia-imgproc generic and use that instead
 pub(crate) fn value_for_pixel<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     p: Point2d<f32>,
