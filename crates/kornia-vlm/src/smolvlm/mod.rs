@@ -8,7 +8,7 @@ use std::io;
 use std::io::Write;
 
 use candle_core::{DType, Device, IndexOp, Tensor};
-use candle_transformers::generation::LogitsProcessor;
+use candle_transformers::generation::{LogitsProcessor, Sampling};
 use hf_hub::api::sync::Api;
 use kornia_image::allocator::ImageAllocator;
 use kornia_image::Image;
@@ -64,11 +64,11 @@ impl SmolVlm {
             tokenizer,
             image_token_tensor,
             config,
-            logits_processor: LogitsProcessor::new(
-                config.seed,
-                Some(config.temp),
-                Some(config.top_p),
-            ),
+            logits_processor: if config.do_sample {
+                LogitsProcessor::new(config.seed, Some(config.temp), Some(config.top_p))
+            } else {
+                LogitsProcessor::from_sampling(config.seed, Sampling::ArgMax)
+            },
             device,
             image_history: Vec::new(),
             index_pos: 0,
