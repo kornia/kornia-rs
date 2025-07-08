@@ -6,10 +6,12 @@ use kornia_image::{Image, ImageSize};
 use kornia_imgproc::interpolation::InterpolationMode;
 use kornia_imgproc::resize::resize_fast;
 use kornia_tensor::allocator::CpuAllocator;
+use std::fs;
+use std::path::Path;
 
-// ImageNet mean and std for normalization
-const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
-const STD: [f32; 3] = [0.229, 0.224, 0.225];
+// https://huggingface.co/HuggingFaceTB/SmolVLM-Instruct/blob/main/preprocessor_config.json
+const MEAN: [f32; 3] = [0.5, 0.5, 0.5];
+const STD: [f32; 3] = [0.5, 0.5, 0.5];
 
 pub fn preprocess_image<A: ImageAllocator>(
     img: Image<u8, 3, A>,
@@ -20,28 +22,31 @@ pub fn preprocess_image<A: ImageAllocator>(
     // resizing image to match the max_size (on the longest edge)
     let img = {
         let (width, height) = (img.width() as u32, img.height() as u32);
+        println!("Image size: {}x{} w/ Max size: {}", width, height, max_size);
         let longest_edge = width.max(height);
-        if longest_edge <= max_size {
-            img.clone()
-        } else {
-            let scale_factor = max_size as f32 / longest_edge as f32;
-            let new_width = (width as f32 * scale_factor) as usize;
-            let new_height = (height as f32 * scale_factor) as usize;
-            let mut resized = Image::<u8, 3, A>::from_size_val(
-                ImageSize {
-                    width: new_width,
-                    height: new_height,
-                },
-                0,
-                img.0.storage.alloc().clone(),
-            )
-            .unwrap();
-            resize_fast(&img, &mut resized, InterpolationMode::Bilinear).unwrap();
-            resized
-        }
+        // if longest_edge <= max_size {
+        //     img.clone()
+        // } else {
+        let scale_factor = max_size as f32 / longest_edge as f32;
+        let new_width = (width as f32 * scale_factor).ceil() as usize;
+        let new_height = (height as f32 * scale_factor).ceil() as usize;
+        let mut resized = Image::<u8, 3, A>::from_size_val(
+            ImageSize {
+                width: new_width,
+                height: new_height,
+            },
+            0,
+            img.0.storage.alloc().clone(),
+        )
+        .unwrap();
+        resize_fast(&img, &mut resized, InterpolationMode::Bilinear).unwrap();
+        resized
+        // }
     };
     let global_img = {
         let (width, height) = (img.width() as u32, img.height() as u32);
+        println!("Resized image size: {}x{}", width, height);
+
         let longest_edge = width.max(height);
         if longest_edge <= outer_patch_size {
             img.clone()
@@ -100,6 +105,8 @@ pub fn preprocess_image<A: ImageAllocator>(
     };
     let (global_img, global_mask) = {
         let (width, height) = (global_img.width(), global_img.height());
+        println!("Global image size: {}x{}", width, height);
+
         let new_width = (width as u32).div_ceil(outer_patch_size) * outer_patch_size;
         let new_height = (height as u32).div_ceil(outer_patch_size) * outer_patch_size;
         let mut padded_img = Image::<u8, 3, _>::from_size_val(
@@ -132,6 +139,86 @@ pub fn preprocess_image<A: ImageAllocator>(
         }
         (padded_img, padded_mask)
     };
+
+    // Debug output before tensor operations
+    println!("=== DEBUG: Before Tensor Operations ===");
+    println!("img: {}x{} channels", img.width(), img.height());
+    println!("mask: {}x{} channels", mask.width(), mask.height());
+    println!(
+        "global_img: {}x{} channels",
+        global_img.width(),
+        global_img.height()
+    );
+    println!(
+        "global_mask: {}x{} channels",
+        global_mask.width(),
+        global_mask.height()
+    );
+
+    // Sample some pixel values for debugging
+    if img.width() > 0 && img.height() > 0 {
+        println!(
+            "img sample pixels (0,0): R={}, G={}, B={}",
+            img.get_pixel(0, 0, 0).unwrap_or(&0),
+            img.get_pixel(0, 0, 1).unwrap_or(&0),
+            img.get_pixel(0, 0, 2).unwrap_or(&0)
+        );
+    }
+    if global_img.width() > 0 && global_img.height() > 0 {
+        println!(
+            "global_img sample pixels (0,0): R={}, G={}, B={}",
+            global_img.get_pixel(0, 0, 0).unwrap_or(&0),
+            global_img.get_pixel(0, 0, 1).unwrap_or(&0),
+            global_img.get_pixel(0, 0, 2).unwrap_or(&0)
+        );
+    }
+    if mask.width() > 0 && mask.height() > 0 {
+        println!(
+            "mask sample pixel (0,0): {}",
+            mask.get_pixel(0, 0, 0).unwrap_or(&0)
+        );
+    }
+    if global_mask.width() > 0 && global_mask.height() > 0 {
+        println!(
+            "global_mask sample pixel (0,0): {}",
+            global_mask.get_pixel(0, 0, 0).unwrap_or(&0)
+        );
+    }
+    println!("=========================================");
+    // Save debug images to .vscode folder for visual inspection
+    println!("=== Saving debug images to .vscode folder ===");
+
+    // Create .vscode directory if it doesn't exist
+    std::fs::create_dir_all(".vscode").unwrap_or_else(|e| {
+        println!("Warning: Could not create .vscode directory: {}", e);
+    });
+
+    // Save img as PPM (simple format)
+    if let Err(e) = save_image_as_ppm(&img, ".vscode/debug_img.ppm") {
+        println!("Failed to save img: {}", e);
+    } else {
+        println!("Saved img to .vscode/debug_img.ppm");
+    }
+
+    // Save global_img as PPM
+    if let Err(e) = save_image_as_ppm(&global_img, ".vscode/debug_global_img.ppm") {
+        println!("Failed to save global_img: {}", e);
+    } else {
+        println!("Saved global_img to .vscode/debug_global_img.ppm");
+    } // Save mask as PPM (convert to RGB for visibility)
+    if let Err(e) = save_mask_as_ppm(&mask, ".vscode/debug_mask.ppm") {
+        println!("Failed to save mask: {}", e);
+    } else {
+        println!("Saved mask to .vscode/debug_mask.ppm");
+    }
+
+    // Save global_mask as PPM
+    if let Err(e) = save_mask_as_ppm(&global_mask, ".vscode/debug_global_mask.ppm") {
+        println!("Failed to save global_mask: {}", e);
+    } else {
+        println!("Saved global_mask to .vscode/debug_global_mask.ppm");
+    }
+    println!("================================================");
 
     let img = {
         let (width, height) = (img.width(), img.height());
@@ -278,4 +365,46 @@ pub fn get_prompt_split_image(img_seq_len: usize, size: ImageSize) -> String {
     );
 
     s
+}
+
+// Helper functions for saving debug images
+fn save_image_as_ppm<A: ImageAllocator>(
+    img: &Image<u8, 3, A>,
+    path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (width, height) = (img.width(), img.height());
+    let mut content = format!("P3\n{} {}\n255\n", width, height);
+
+    for y in 0..height {
+        for x in 0..width {
+            let r = img.get_pixel(x, y, 0).unwrap_or(&0);
+            let g = img.get_pixel(x, y, 1).unwrap_or(&0);
+            let b = img.get_pixel(x, y, 2).unwrap_or(&0);
+            content.push_str(&format!("{} {} {} ", r, g, b));
+        }
+        content.push('\n');
+    }
+
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
+fn save_mask_as_ppm<A: ImageAllocator>(
+    mask: &Image<u8, 1, A>,
+    path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (width, height) = (mask.width(), mask.height());
+    let mut content = format!("P3\n{} {}\n255\n", width, height);
+
+    for y in 0..height {
+        for x in 0..width {
+            let val = mask.get_pixel(x, y, 0).unwrap_or(&0);
+            // Convert grayscale to RGB (white for valid pixels, black for padding)
+            content.push_str(&format!("{} {} {} ", val, val, val));
+        }
+        content.push('\n');
+    }
+
+    std::fs::write(path, content)?;
+    Ok(())
 }

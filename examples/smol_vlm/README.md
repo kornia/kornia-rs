@@ -15,7 +15,7 @@ Options:
 ```
 
 ```bash
-cargo run -p smol_vlm --features cuda -- -i ./.vscode/fuji-mountain-in-autumn.jpg -p "describe" --sample-length 500
+cargo run -p smol_vlm --features cuda -- -i ./.vscode/fuji-mountain-in-autumn.jpg -p "Can you describe the image?" --sample-length 500
 ```
 remove `--features cuda` if you want to use CPU.
 
