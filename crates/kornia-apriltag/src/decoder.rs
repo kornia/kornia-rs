@@ -287,10 +287,10 @@ impl<'a> DecodeTagsConfig<'a> {
 ///
 /// A vector of `Detection` objects representing successfully decoded tags.
 // TODO: Add support for multiple tag families
-pub fn decode_tags<'a, A: ImageAllocator>(
+pub fn decode_tags<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     quads: &mut [Quad],
-    config: &DecodeTagsConfig<'a>,
+    config: &DecodeTagsConfig<'_>,
     gray_model_pair: &mut GrayModelPair,
     sharpening_buffer: &mut SharpeningBuffer,
 ) -> Vec<Detection> {
