@@ -151,11 +151,15 @@ impl SmolVlm {
             let (s, _embed_dim) = logits.dims2()?;
             let last_logit = logits.i((s - 1, ..))?;
 
-            let last_logit = candle_transformers::utils::apply_repeat_penalty(
-                &last_logit,
-                self.config.repeat_penalty,
-                &delta_token,
-            )?;
+            let last_logit = if self.config.do_sample {
+                candle_transformers::utils::apply_repeat_penalty(
+                    &last_logit,
+                    self.config.repeat_penalty,
+                    &delta_token,
+                )?
+            } else {
+                last_logit
+            };
             let out_token = self.logits_processor.sample(&last_logit)?;
 
             self.index_pos += delta_token.len();
