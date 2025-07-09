@@ -125,11 +125,11 @@ impl SmolVlm {
         full_prompt += prompt;
         full_prompt += "<end_of_utterance>\nAssistant:";
 
-        println!(">>: {full_prompt}");
-
         let full_token = self.tokenizer.encode(full_prompt, false)?;
 
         let mut delta_token = full_token.get_ids().to_vec();
+
+        println!("Token: {delta_token:?}");
 
         let start_gen = std::time::Instant::now();
         let mut generated_tokens = 0usize;
