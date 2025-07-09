@@ -131,7 +131,7 @@ impl QuickDecode {
     ///
     /// A `QuickDecode` instance containing precomputed entries for fast tag decoding.
     // TODO: Support multiple tag familes. The current logic needs to be changed then
-    pub fn new(tag_family: &TagFamily) -> Self {
+    pub fn new(tag_family: TagFamily) -> Self {
         let ncodes = tag_family.code_data.len();
         let capacity =
             ncodes + tag_family.nbits * ncodes + ncodes * tag_family.nbits * (tag_family.nbits - 1);
@@ -270,10 +270,14 @@ impl DecodeTagsConfig {
     /// # Returns
     ///
     /// A new `DecodeTagsConfig` instance.
-    pub fn new(family: &TagFamily, refine_edges_enabled: bool, decode_sharpening: f32) -> Self {
+    pub fn new(
+        tag_family_kind: TagFamilyKind,
+        refine_edges_enabled: bool,
+        decode_sharpening: f32,
+    ) -> Self {
         Self {
-            tag_family_kind: family.clone().into(),
-            quick_decode: QuickDecode::new(family),
+            tag_family_kind: tag_family_kind.clone(),
+            quick_decode: QuickDecode::new(tag_family_kind.to_tag_family()), // TODO: Avoid allocation here
             refine_edges_enabled,
             decode_sharpening,
         }
@@ -932,7 +936,7 @@ mod tests {
         let tags = decode_tags(
             &src,
             &mut quads,
-            &DecodeTagsConfig::new(&tag_family, true, 0.25),
+            &DecodeTagsConfig::new(tag_family_kind, true, 0.25),
             &mut gray_model_pair,
             &mut sharpening_buffer,
         );
@@ -1098,7 +1102,7 @@ mod tests {
         let d = quad_decode(
             &src,
             &quad,
-            &DecodeTagsConfig::new(&tag_family, true, 0.25),
+            &DecodeTagsConfig::new(tag_family_kind, true, 0.25),
             &mut entry,
             &mut gray_model_pair,
             &mut sharpening_buffer,
@@ -1136,7 +1140,7 @@ mod tests {
         let rcode = 52087007497;
 
         let mut quick_decode_entry = QuickDecodeEntry::default();
-        let quick_decode = QuickDecode::new(&tag_family);
+        let quick_decode = QuickDecode::new(tag_family.clone());
         quick_decode_codeword(&tag_family, rcode, &mut quick_decode_entry, &quick_decode);
 
         let expected_decode_entry = QuickDecodeEntry {
