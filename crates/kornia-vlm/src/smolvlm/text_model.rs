@@ -57,14 +57,8 @@ impl Attention {
 
         rope(
             &x.unsqueeze(0)?,
-            &self
-                .cos
-                .narrow(0, index_pos, seq_len)
-                .expect("Exceeded context limit"),
-            &self
-                .sin
-                .narrow(0, index_pos, seq_len)
-                .expect("Exceeded context limit"),
+            &self.cos.narrow(0, index_pos, seq_len)?,
+            &self.sin.narrow(0, index_pos, seq_len)?,
         )?
         .squeeze(0)
     }
@@ -100,6 +94,7 @@ impl Attention {
 
         let y = {
             // TODO: implement flash attention
+            // TODO: just using BF16 is plausible
 
             let in_dtype = q.dtype();
             let q = q.to_dtype(DType::F32)?;
