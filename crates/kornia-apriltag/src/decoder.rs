@@ -192,7 +192,7 @@ impl QuickDecode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Detection {
     /// Reference to the tag family this detection belongs to.
-    pub tag_family: TagFamilyKind,
+    pub tag_family_kind: TagFamilyKind,
     /// The decoded tag ID.
     pub id: u16,
     /// The Hamming distance of the detected code to the closest valid code.
@@ -357,7 +357,7 @@ pub fn decode_tags<A: ImageAllocator>(
                 let center = quad.homography_project(0.0, 0.0);
 
                 let detection = Detection {
-                    tag_family: config.tag_family_kind.clone(),
+                    tag_family_kind: config.tag_family_kind.clone(),
                     id: entry.id,
                     hamming: entry.hamming,
                     decision_margin,
@@ -946,7 +946,7 @@ mod tests {
         assert!((tags[0].center.x - 15.0).abs() < EPSILON);
         assert!((tags[0].center.y - 15.0).abs() < EPSILON);
         assert_eq!(tags[0].hamming, 0);
-        assert_eq!(tags[0].tag_family, TagFamilyKind::Tag36H11);
+        assert_eq!(tags[0].tag_family_kind, TagFamilyKind::Tag36H11);
 
         Ok(())
     }
