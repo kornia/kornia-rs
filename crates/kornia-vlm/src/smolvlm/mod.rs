@@ -4,9 +4,11 @@ mod text_model;
 pub mod utils;
 mod vision_model;
 
+use std::collections::HashMap;
 use std::io;
 use std::io::Write;
 
+use candle_core::safetensors::save;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
 use hf_hub::api::sync::Api;
@@ -134,6 +136,9 @@ impl SmolVlm {
         let start_gen = std::time::Instant::now();
         let mut generated_tokens = 0usize;
 
+        // TODO
+        let mut tensors = HashMap::new();
+
         for _i in 0..sample_len {
             self.token_history.extend(&delta_token);
 
@@ -162,7 +167,15 @@ impl SmolVlm {
             } else {
                 last_logit
             };
+
             let out_token = self.logits_processor.sample(&last_logit)?;
+            // println!("#>:{last_logit}");
+
+            tensors.insert(format!("logits_{}", _i), last_logit);
+            tensors.insert(
+                format!("embeds_{}", _i),
+                self.model.DEBUG_embeds.clone().unwrap(),
+            );
 
             self.index_pos += delta_token.len();
             delta_token.clear();
@@ -195,6 +208,10 @@ impl SmolVlm {
                 generated_tokens as f64 / dt.as_secs_f64(),
             );
         }
+
+        // TODO
+        save(&tensors, ".vscode/rust_output.safetensors")?;
+        println!("Token history: {:?}", self.token_history);
 
         Ok(response)
     }
