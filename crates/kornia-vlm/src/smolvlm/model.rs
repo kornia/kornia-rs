@@ -53,6 +53,8 @@ pub struct SmolModel {
     merged_embeds: Vec<Tensor>,          // cache results
 
     text: SmolText,
+
+    pub DEBUG_embeds: Option<Tensor>, // for debugging purposes, to be removed later
 }
 
 impl SmolModel {
@@ -72,6 +74,8 @@ impl SmolModel {
             merged_embeds: Vec::new(),
 
             text: SmolText::load(c)?,
+
+            DEBUG_embeds: None,
         })
     }
 
@@ -113,6 +117,7 @@ impl SmolModel {
         vision_data: Option<(Tensor, &Tensor, &Tensor)>,
     ) -> Result<Tensor> {
         let mut inputs_embeds = self.embed.forward(xs)?;
+        self.DEBUG_embeds = Some(inputs_embeds.clone());
 
         if let Some((image_token_mask, pixel_values, pixel_attention_masks)) = vision_data {
             // println!(

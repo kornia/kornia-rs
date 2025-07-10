@@ -24,16 +24,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
 
     // read the image
-    let image = read_image_jpeg_rgb8(args.image_path)?;
+    let image = read_image_jpeg_rgb8(args.image_path).ok();
 
     // create the paligemma model
     let mut smolvlm = SmolVlm::new(SmolVlmConfig {
         do_sample: false, // set to false for greedy decoding
+        seed: 420,
         ..Default::default()
     })?;
 
     // generate a caption of the image
-    let _caption = smolvlm.inference(Some(image), &args.text_prompt, args.sample_length, true)?;
+    let _caption = smolvlm.inference(image, &args.text_prompt, args.sample_length, true)?;
 
     Ok(())
 }

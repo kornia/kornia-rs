@@ -142,9 +142,9 @@ impl MLPGates {
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let gate = self.gate_proj.forward(x)?.silu()?.to_dtype(DType::F32)?;
-        let up = self.up_proj.forward(x)?.to_dtype(DType::F32)?;
-        let hidden = (gate * up)?.to_dtype(DType::BF16)?;
+        let gate = self.gate_proj.forward(x)?.silu()?; // .to_dtype(DType::F32)?;
+        let up = self.up_proj.forward(x)?; // .to_dtype(DType::F32)?;
+        let hidden = (gate * up)?; // .to_dtype(DType::BF16)?;
         let x = self.down_proj.forward(&hidden)?;
         Ok(x)
     }
