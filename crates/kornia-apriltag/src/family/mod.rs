@@ -1,5 +1,7 @@
+use crate::decoder::QuickDecode;
+
 /// Represents the AprilTag Family
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TagFamily {
     /// The name of the tag
     pub name: String,
@@ -17,6 +19,8 @@ pub struct TagFamily {
     pub bit_y: Vec<u8>,
     /// The code data for the tag family.
     pub code_data: Vec<usize>,
+    /// TODO
+    pub quick_decode: QuickDecode,
     // TODO: more properties
 }
 
@@ -25,6 +29,8 @@ pub struct TagFamily {
 pub enum DecodedTag {
     /// The Tag36H11 Family. [TagFamily::tag36_h11]
     Tag36H11,
+    /// The Tag36H10 Family. [TagFamily::tag36_h10]
+    Tag36H10,
     /// A custom tag family, specified by name.
     Custom(String),
 }
@@ -33,6 +39,7 @@ impl From<TagFamily> for DecodedTag {
     fn from(value: TagFamily) -> Self {
         match value.name.as_str() {
             "tag36_h11" => DecodedTag::Tag36H11,
+            "tag36_h10" => DecodedTag::Tag36H10,
             _ => DecodedTag::Custom(value.name),
         }
     }
@@ -49,3 +56,6 @@ impl From<&TagFamily> for DecodedTag {
 
 #[doc(hidden)]
 pub mod tag36h11;
+
+#[doc(hidden)]
+pub mod tag36h10;
