@@ -133,8 +133,9 @@ impl DecodeTagsConfig {
         self.normal_border |= !family.reversed_border;
         self.reversed_border |= family.reversed_border;
 
-        if self.sharpening_buffer_len.isqrt() < family.total_width {
-            self.sharpening_buffer_len = family.total_width * family.total_width;
+        let len = family.total_width * family.total_width;
+        if self.sharpening_buffer_len < len {
+            self.sharpening_buffer_len = len;
         }
 
         self.tag_families.push(family);
