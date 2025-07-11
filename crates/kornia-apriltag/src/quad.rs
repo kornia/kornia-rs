@@ -1,5 +1,5 @@
 use crate::{
-    family::TagFamily,
+    family::DecodeTagsConfig,
     segmentation::GradientInfo,
     utils::{homography_compute, Pixel, Point2d},
 };
@@ -25,6 +25,8 @@ pub struct FitQuadConfig {
     pub max_line_fit_mse: f32,
     /// Maximum number of maxima to consider.
     pub max_nmaxima: usize,
+    /// Minimum number of pixels required in a cluster to be considered.
+    pub min_cluster_pixels: usize,
 }
 
 impl Default for FitQuadConfig {
@@ -33,6 +35,7 @@ impl Default for FitQuadConfig {
             cos_critical_rad: 0.984808,
             max_line_fit_mse: 10.0,
             max_nmaxima: 10,
+            min_cluster_pixels: 5,
         }
     }
 }
@@ -111,21 +114,16 @@ impl Quad {
 // TODO: Support multiple tag familes
 pub fn fit_quads<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
-    tag_family: &TagFamily,
     clusters: &mut HashMap<(usize, usize), Vec<GradientInfo>>,
-    min_cluster_pixels: usize,
-    config: FitQuadConfig,
+    config: &DecodeTagsConfig,
 ) -> Vec<Quad> {
-    // These will be come handy later, once we support more tag familes
-    let normal_border = !tag_family.reversed_border;
-    let reversed_border = tag_family.reversed_border;
-
+    // TODO: Avoid this allocation every time
     let mut quads = Vec::new();
 
     let max_cluster_len = 4 * (src.width() + src.height());
 
     clusters.iter_mut().for_each(|(_, cluster)| {
-        if cluster.len() < min_cluster_pixels {
+        if cluster.len() < config.fit_quad_config.min_cluster_pixels {
             return;
         }
 
@@ -137,10 +135,10 @@ pub fn fit_quads<A: ImageAllocator>(
         if let Some(quad) = fit_single_quad(
             src,
             cluster,
-            tag_family.width_at_border,
-            normal_border,
-            reversed_border,
-            config,
+            config.min_tag_width,
+            config.normal_border,
+            config.reversed_border,
+            &config.fit_quad_config,
         ) {
             quads.push(quad);
         }
@@ -169,7 +167,7 @@ pub fn fit_single_quad<A: ImageAllocator>(
     min_tag_width: usize,
     normal_border: bool,
     reversed_border: bool,
-    config: FitQuadConfig,
+    config: &FitQuadConfig,
 ) -> Option<Quad> {
     if cluster.len() < 24 {
         return None;
@@ -458,7 +456,7 @@ pub fn quad_segment_maxima(
     gradient_infos: &[GradientInfo],
     lfps: &[LineFit],
     indices: &mut [usize; 4],
-    config: FitQuadConfig,
+    config: &FitQuadConfig,
 ) -> bool {
     // TODO: check if the length of gradient_infos and lfps is same
     let len = gradient_infos.len();
@@ -779,6 +777,7 @@ mod tests {
     use kornia_io::png::read_image_png_mono8;
 
     use crate::{
+        family::TagFamily,
         segmentation::{
             find_connected_components, find_gradient_clusters, GradientDirection, GradientInfo,
         },
@@ -788,8 +787,6 @@ mod tests {
     };
 
     use super::*;
-
-    const MIN_CLUSTER_PIXELS: usize = 5;
 
     #[test]
     fn test_fit_quads() -> Result<(), Box<dyn std::error::Error>> {
@@ -806,10 +803,8 @@ mod tests {
 
         let quads = fit_quads(
             &bin,
-            &TagFamily::tag36_h11(),
             &mut clusters,
-            MIN_CLUSTER_PIXELS,
-            FitQuadConfig::default(),
+            &DecodeTagsConfig::new(vec![TagFamily::tag36_h11()]),
         );
 
         let expected_quad = [[[27, 3], [27, 27], [3, 27], [3, 3]]];
@@ -855,7 +850,7 @@ mod tests {
             &gradient_infos,
             &lfps,
             &mut indices,
-            FitQuadConfig::default()
+            &FitQuadConfig::default()
         ));
 
         // Test 2: Empty input
@@ -865,7 +860,7 @@ mod tests {
             &empty_gradient_infos,
             &empty_lfps,
             &mut indices,
-            FitQuadConfig::default()
+            &FitQuadConfig::default()
         ));
 
         // Test 3: Constant slope (no maxima)
@@ -883,7 +878,7 @@ mod tests {
             &constant_slope_infos,
             &constant_lfps,
             &mut indices,
-            FitQuadConfig::default()
+            &FitQuadConfig::default()
         ));
     }
 
@@ -913,7 +908,7 @@ mod tests {
                 largest_cluster,
                 &lfps,
                 &mut indices,
-                FitQuadConfig::default(),
+                &FitQuadConfig::default(),
             );
 
             assert!(!result);

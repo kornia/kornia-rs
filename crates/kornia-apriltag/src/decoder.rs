@@ -1,7 +1,7 @@
 use std::{f32::consts::PI, ops::ControlFlow};
 
 use crate::{
-    family::{DecodedTag, TagFamily},
+    family::{DecodeTagsConfig, DecodedTag, TagFamily},
     quad::Quad,
     utils::{
         matrix_3x3_cholesky, matrix_3x3_lower_triangle_inverse, matrix_3x3_mul, value_for_pixel,
@@ -190,7 +190,6 @@ pub struct Detection {
 /// Buffer used for storing intermediate values during the sharpening process.
 #[derive(Debug, PartialEq)]
 pub struct SharpeningBuffer {
-    size: usize,
     values: Vec<f32>,
     sharpened: Vec<f32>,
 }
@@ -205,11 +204,8 @@ impl SharpeningBuffer {
     /// # Returns
     ///
     /// A new `SharpeningBuffer` instance with allocated buffers sized for the tag family.
-    pub fn new(family: &TagFamily) -> Self {
-        let len = family.total_width * family.total_width;
-
+    pub fn new(len: usize) -> Self {
         Self {
-            size: family.total_width,
             values: vec![0.0; len],
             sharpened: vec![0.0; len],
         }
@@ -221,45 +217,6 @@ impl SharpeningBuffer {
             self.values[i] = 0.0;
             // No need to reset `sharpened` here as it is reset for every quad
         });
-    }
-}
-
-/// Options for decoding tags from an image.
-///
-/// This struct contains configuration parameters and precomputed data
-/// required for decoding tags, such as the tag family, quick decode table,
-/// edge refinement flag, and sharpening factor.
-pub struct DecodeTagsConfig<'a> {
-    /// Reference to the tag family used for decoding.
-    pub tag_family: &'a [TagFamily],
-    /// Whether to enable edge refinement before decoding.
-    pub refine_edges_enabled: bool,
-    /// Sharpening factor applied during decoding.
-    pub decode_sharpening: f32,
-}
-
-impl<'a> DecodeTagsConfig<'a> {
-    /// Creates a new `DecodeTagsConfig` instance with the specified options.
-    ///
-    /// # Arguments
-    ///
-    /// * `family` - Reference to the tag family used for decoding.
-    /// * `refine_edges_enabled` - Whether to enable edge refinement before decoding.
-    /// * `decode_sharpening` - Sharpening factor applied during decoding.
-    ///
-    /// # Returns
-    ///
-    /// A new `DecodeTagsConfig` instance.
-    pub fn new(
-        family: &'a [TagFamily],
-        refine_edges_enabled: bool,
-        decode_sharpening: f32,
-    ) -> Self {
-        Self {
-            tag_family: family,
-            refine_edges_enabled,
-            decode_sharpening,
-        }
     }
 }
 
@@ -282,11 +239,10 @@ impl<'a> DecodeTagsConfig<'a> {
 /// # Returns
 ///
 /// A vector of `Detection` objects representing successfully decoded tags.
-// TODO: Add support for multiple tag families
 pub fn decode_tags<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     quads: &mut [Quad],
-    config: &DecodeTagsConfig<'_>,
+    config: &DecodeTagsConfig,
     gray_model_pair: &mut GrayModelPair,
     sharpening_buffer: &mut SharpeningBuffer,
 ) -> Vec<Detection> {
@@ -302,7 +258,7 @@ pub fn decode_tags<A: ImageAllocator>(
             return;
         }
 
-        config.tag_family.iter().for_each(|family| {
+        config.tag_families.iter().for_each(|family| {
             if family.reversed_border != quad.reversed_border {
                 return;
             }
@@ -715,7 +671,7 @@ fn quad_decode<A: ImageAllocator>(
             - min_coord) as usize] = v - thresh;
     });
 
-    sharpen(sharpening_buffer, decode_sharpening);
+    sharpen(sharpening_buffer, decode_sharpening, tag_family.total_width);
 
     let mut rcode = 0usize;
     (0..tag_family.nbits).for_each(|i| {
@@ -750,7 +706,7 @@ fn quad_decode<A: ImageAllocator>(
 ///
 /// * `sharpening_buffer` - Mutable reference of `SharpeningBuffer`.
 /// * `decode_sharpening` - The sharpening factor to apply.
-fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32) {
+fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32, size: usize) {
     #[rustfmt::skip]
     const KERNEL: [f32; 9] = [
          0.0, -1.0,  0.0,
@@ -758,26 +714,26 @@ fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32) {
          0.0, -1.0,  0.0,
     ];
 
-    (0..sharpening_buffer.size).for_each(|y| {
-        let idy = y * sharpening_buffer.size;
+    (0..size).for_each(|y| {
+        let idy = y * size;
 
-        (0..sharpening_buffer.size).for_each(|x| {
+        (0..size).for_each(|x| {
             let idx = idy + x;
             sharpening_buffer.sharpened[idx] = 0.0;
 
             (0..3).for_each(|i| {
                 let yi = y + i;
 
-                if yi == 0 || (yi - 1) > sharpening_buffer.size - 1 {
+                if yi == 0 || (yi - 1) > size - 1 {
                     return;
                 }
 
                 let kernel_row_offset = 3 * i;
-                let buffer_row_offset = (yi - 1) * sharpening_buffer.size;
+                let buffer_row_offset = (yi - 1) * size;
 
                 (0..3).for_each(|j| {
                     let xj = x + j;
-                    if xj == 0 || (xj - 1) > sharpening_buffer.size - 1 {
+                    if xj == 0 || (xj - 1) > size - 1 {
                         return;
                     }
 
@@ -865,7 +821,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        quad::{fit_quads, FitQuadConfig},
+        quad::fit_quads,
         segmentation::{find_connected_components, find_gradient_clusters},
         threshold::{adaptive_threshold, TileMinMax},
         union_find::UnionFind,
@@ -878,7 +834,7 @@ mod tests {
 
     #[test]
     fn test_decode_tags() -> Result<(), Box<dyn std::error::Error>> {
-        let tag_family = TagFamily::tag36_h11();
+        let config = DecodeTagsConfig::new(vec![TagFamily::tag36_h11()]);
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
         let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
@@ -886,19 +842,13 @@ mod tests {
         let mut uf = UnionFind::new(bin.as_slice().len());
         let mut clusters = HashMap::new();
         let mut gray_model_pair = GrayModelPair::default();
-        let mut sharpening_buffer = SharpeningBuffer::new(&tag_family);
+        let mut sharpening_buffer = SharpeningBuffer::new(config.sharpening_buffer_len);
 
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
         find_gradient_clusters(&bin, &mut uf, &mut clusters);
 
-        let mut quads = fit_quads(
-            &bin,
-            &tag_family,
-            &mut clusters,
-            5,
-            FitQuadConfig::default(),
-        );
+        let mut quads = fit_quads(&bin, &mut clusters, &config);
 
         for quad in &mut quads {
             for corner in &mut quad.corners {
@@ -910,7 +860,7 @@ mod tests {
         let tags = decode_tags(
             &src,
             &mut quads,
-            &DecodeTagsConfig::new(&[tag_family], true, 0.25),
+            &config,
             &mut gray_model_pair,
             &mut sharpening_buffer,
         );
@@ -1070,7 +1020,8 @@ mod tests {
 
         let mut entry = QuickDecodeEntry::default();
         let mut gray_model_pair = GrayModelPair::default();
-        let mut sharpening_buffer = SharpeningBuffer::new(&tag_family);
+        let mut sharpening_buffer =
+            SharpeningBuffer::new(tag_family.total_width * tag_family.total_width);
 
         let d = quad_decode(
             &src,
@@ -1090,7 +1041,6 @@ mod tests {
     #[test]
     fn test_sharpen() {
         let mut sharpening_buffer = SharpeningBuffer {
-            size: 4,
             values: vec![
                 255.0, 255.0, 127.0, 0.0, 0.0, 0.0, 0.0, -1.0, 127.0, 63.75, 0.0, 63.75, 127.5,
                 -1.0, 127.5, 127.5,
@@ -1098,7 +1048,7 @@ mod tests {
             sharpened: vec![0.0; 16],
         };
 
-        sharpen(&mut sharpening_buffer, 0.25);
+        sharpen(&mut sharpening_buffer, 0.25, 4);
         let expected_values = [
             446.25, 414.5, 190.25, -31.5, -95.5, -79.6875, -31.5, -17.9375, 206.1875, 96.0, -63.75,
             95.875, 223.5, -81.6875, 223.375, 207.1875,

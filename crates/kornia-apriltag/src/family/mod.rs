@@ -1,4 +1,4 @@
-use crate::decoder::QuickDecode;
+use crate::{decoder::QuickDecode, quad::FitQuadConfig};
 
 /// Represents the AprilTag Family
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +50,61 @@ impl From<&TagFamily> for DecodedTag {
         match value.name.as_str() {
             "tag36_h11" => DecodedTag::Tag36H11,
             _ => DecodedTag::Custom(value.name.clone()),
+        }
+    }
+}
+
+/// TODO
+pub struct DecodeTagsConfig {
+    /// TODO
+    pub tag_families: Vec<TagFamily>,
+    /// TODO
+    pub fit_quad_config: FitQuadConfig,
+    /// Whether to enable edge refinement before decoding.
+    pub refine_edges_enabled: bool,
+    /// Sharpening factor applied during decoding.
+    pub decode_sharpening: f32,
+    /// TODO
+    pub normal_border: bool,
+    /// TODO
+    pub reversed_border: bool,
+    /// TODO
+    pub min_tag_width: usize,
+    /// TODO
+    pub sharpening_buffer_len: usize,
+}
+
+impl DecodeTagsConfig {
+    /// TODO
+    pub fn new(tag_families: Vec<TagFamily>) -> Self {
+        let mut normal_border = false;
+        let mut reversed_border = false;
+        let mut min_tag_width = usize::MAX;
+        let mut min_sharpening_buffer_size = 0;
+
+        tag_families.iter().for_each(|family| {
+            if family.width_at_border < min_tag_width {
+                min_tag_width = family.width_at_border;
+            }
+            normal_border |= !family.reversed_border;
+            reversed_border |= family.reversed_border;
+
+            if min_sharpening_buffer_size < family.total_width {
+                min_sharpening_buffer_size = family.total_width;
+            }
+        });
+
+        min_tag_width = min_tag_width.min(3);
+
+        Self {
+            tag_families,
+            fit_quad_config: Default::default(),
+            normal_border,
+            refine_edges_enabled: true,
+            decode_sharpening: 0.25,
+            reversed_border,
+            min_tag_width,
+            sharpening_buffer_len: min_sharpening_buffer_size * min_sharpening_buffer_size,
         }
     }
 }
