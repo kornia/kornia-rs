@@ -25,7 +25,7 @@ pub struct TagFamily {
 
 /// Represents a decoded AprilTag.
 #[derive(Debug, Clone, PartialEq)]
-pub enum DecodedTag {
+pub enum TagFamilyKind {
     /// The Tag36H11 Family. [TagFamily::tag36_h11]
     Tag36H11,
     /// The Tag36H10 Family. [TagFamily::tag36_h10]
@@ -46,27 +46,27 @@ pub enum DecodedTag {
     Custom(String),
 }
 
-impl From<TagFamily> for DecodedTag {
+impl From<TagFamily> for TagFamilyKind {
     fn from(value: TagFamily) -> Self {
         match value.name.as_str() {
-            "tag36_h11" => DecodedTag::Tag36H11,
-            "tag36_h10" => DecodedTag::Tag36H10,
-            "tag25_h9" => DecodedTag::Tag25H9,
-            "tagcircle21_h7" => DecodedTag::TagCircle21H7,
-            "tagcircle19_h12" => DecodedTag::TagCircle49H12,
-            "tagcustom48_h12" => DecodedTag::TagCustom48H12,
-            "tagstandard41_h12" => DecodedTag::TagStandard41H12,
-            "tagstandard52_h13" => DecodedTag::TagStandard52H13,
-            _ => DecodedTag::Custom(value.name),
+            "tag36_h11" => TagFamilyKind::Tag36H11,
+            "tag36_h10" => TagFamilyKind::Tag36H10,
+            "tag25_h9" => TagFamilyKind::Tag25H9,
+            "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
+            "tagcircle19_h12" => TagFamilyKind::TagCircle49H12,
+            "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
+            "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
+            "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
+            _ => TagFamilyKind::Custom(value.name),
         }
     }
 }
 
-impl From<&TagFamily> for DecodedTag {
+impl From<&TagFamily> for TagFamilyKind {
     fn from(value: &TagFamily) -> Self {
         match value.name.as_str() {
-            "tag36_h11" => DecodedTag::Tag36H11,
-            _ => DecodedTag::Custom(value.name.clone()),
+            "tag36_h11" => TagFamilyKind::Tag36H11,
+            _ => TagFamilyKind::Custom(value.name.clone()),
         }
     }
 }

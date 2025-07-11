@@ -1,7 +1,7 @@
 use std::{f32::consts::PI, ops::ControlFlow};
 
 use crate::{
-    family::{DecodeTagsConfig, DecodedTag, TagFamily},
+    family::{DecodeTagsConfig, TagFamily, TagFamilyKind},
     quad::Quad,
     utils::{
         matrix_3x3_cholesky, matrix_3x3_lower_triangle_inverse, matrix_3x3_mul, value_for_pixel,
@@ -107,6 +107,20 @@ pub struct QuickDecodeEntry {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct QuickDecode(Vec<QuickDecodeEntry>);
 
+impl std::ops::Deref for QuickDecode {
+    type Target = Vec<QuickDecodeEntry>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for QuickDecode {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 impl QuickDecode {
     /// Creates a new `QuickDecode` table for fast lookup of decoded tag codes and their associated metadata.
     ///
@@ -157,16 +171,16 @@ impl QuickDecode {
     /// * `id` - The tag ID associated with the code.
     /// * `hamming` - The Hamming distance for this code.
     fn add(&mut self, code: usize, id: u16, hamming: u8) {
-        let mut bucket = code % self.0.len();
+        let mut bucket = code % self.len();
 
         // TODO: Use iterators instead
-        while self.0[bucket].rcode != usize::MAX {
-            bucket = (bucket + 1) % self.0.len();
+        while self[bucket].rcode != usize::MAX {
+            bucket = (bucket + 1) % self.len();
         }
 
-        self.0[bucket].rcode = code;
-        self.0[bucket].id = id;
-        self.0[bucket].hamming = hamming;
+        self[bucket].rcode = code;
+        self[bucket].id = id;
+        self[bucket].hamming = hamming;
     }
 }
 
@@ -174,7 +188,7 @@ impl QuickDecode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Detection {
     /// Reference to the tag family this detection belongs to.
-    pub tag_family: DecodedTag,
+    pub tag_family_kind: TagFamilyKind,
     /// The decoded tag ID.
     pub id: u16,
     /// The Hamming distance of the detected code to the closest valid code.
@@ -287,7 +301,7 @@ pub fn decode_tags<A: ImageAllocator>(
                     let center = quad.homography_project(0.0, 0.0);
 
                     let detection = Detection {
-                        tag_family: family.into(),
+                        tag_family_kind: family.into(),
                         id: entry.id,
                         hamming: entry.hamming,
                         decision_margin,
@@ -863,7 +877,7 @@ mod tests {
         assert!((tags[0].center.x - 15.0).abs() < EPSILON);
         assert!((tags[0].center.y - 15.0).abs() < EPSILON);
         assert_eq!(tags[0].hamming, 0);
-        assert_eq!(tags[0].tag_family, DecodedTag::Tag36H11);
+        assert_eq!(tags[0].tag_family_kind, TagFamilyKind::Tag36H11);
 
         Ok(())
     }
