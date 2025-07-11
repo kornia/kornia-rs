@@ -161,7 +161,7 @@ pub fn fit_quads<A: ImageAllocator>(
 /// # Returns
 ///
 /// An `Option<Quad>` containing the detected quadrilateral if successful, or `None` otherwise.
-pub fn fit_single_quad<A: ImageAllocator>(
+fn fit_single_quad<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     cluster: &mut [GradientInfo],
     min_tag_width: usize,
@@ -367,19 +367,19 @@ pub fn fit_single_quad<A: ImageAllocator>(
 
 /// Stores prefix sums for weighted line fitting over a set of points.
 #[derive(Default, Debug, Clone)]
-pub struct LineFit {
+struct LineFit {
     /// Weighted sum of x coordinates ($\sum_i w_i x_i$)
-    pub mx: f32,
+    mx: f32,
     /// Weighted sum of y coordinates ($\sum_i w_i y_i$)
-    pub my: f32,
+    my: f32,
     /// Weighted sum of squared x coordinates ($\sum_i w_i x_i^2$)
-    pub mxx: f32,
+    mxx: f32,
     /// Weighted sum of x·y products ($\sum_i w_i x_i y_i$)
-    pub mxy: f32,
+    mxy: f32,
     /// Weighted sum of squared y coordinates ($\sum_i w_i y_i^2$)
-    pub myy: f32,
+    myy: f32,
     /// Total weight ($\sum_i w_i$)
-    pub w: f32,
+    w: f32,
 }
 
 /// Computes prefix sums for weighted line fitting over a set of gradient information points.
@@ -392,7 +392,7 @@ pub struct LineFit {
 /// # Returns
 ///
 /// A vector of `LineFit` structures containing prefix sums for each point.
-pub fn compute_line_fit_prefix_sums<A: ImageAllocator>(
+fn compute_line_fit_prefix_sums<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     gradient_infos: &[GradientInfo],
 ) -> Vec<LineFit> {
@@ -452,7 +452,7 @@ pub fn compute_line_fit_prefix_sums<A: ImageAllocator>(
 /// # Returns
 ///
 /// `true` if four valid maxima are found and written to `indices`, `false` otherwise.
-pub fn quad_segment_maxima(
+fn quad_segment_maxima(
     gradient_infos: &[GradientInfo],
     lfps: &[LineFit],
     indices: &mut [usize; 4],
@@ -655,7 +655,7 @@ pub fn quad_segment_maxima(
 ///   The array is [ex, ey, nx, ny], where (ex, ey) is the centroid and (nx, ny) is the direction.
 /// * `err` - Optional mutable reference to a float where the error will be written.
 /// * `mse` - Optional mutable reference to a float where the mean squared error will be written.
-pub fn fit_line(
+fn fit_line(
     lfps: &[LineFit],
     i0: usize,
     i1: usize,
