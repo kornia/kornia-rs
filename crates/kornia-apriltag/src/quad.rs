@@ -103,10 +103,8 @@ impl Quad {
 /// # Arguments
 ///
 /// * `src` - The source image.
-/// * `tag_family` - The tag family to use for quad fitting.
-/// * `clusters` - A mutable reference to a map of clusters, each containing a vector of `GradientInfo`.
-/// * `min_cluster_pixels` - Minimum number of pixels required in a cluster to be considered.
-/// * `config` - Configuration for quad fitting process
+/// * `clusters` - A mutable reference to a HashMap containing clusters of `GradientInfo`.
+/// * `config` - Configuration for decoding tags.
 ///
 /// # Returns
 ///

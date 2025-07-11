@@ -195,15 +195,15 @@ pub struct SharpeningBuffer {
 }
 
 impl SharpeningBuffer {
-    /// Creates a new `SharpeningBuffer` for the given tag family.
+    /// Creates a new `SharpeningBuffer` with the specified length.
     ///
     /// # Arguments
     ///
-    /// * `family` - Reference to the `TagFamily` for which to allocate the buffer.
+    /// * `len` - The length of the buffer arrays.
     ///
     /// # Returns
     ///
-    /// A new `SharpeningBuffer` instance with allocated buffers sized for the tag family.
+    /// A new `SharpeningBuffer` instance with allocated buffers of size `len`.
     pub fn new(len: usize) -> Self {
         Self {
             values: vec![0.0; len],
@@ -220,25 +220,19 @@ impl SharpeningBuffer {
     }
 }
 
-/// Decodes tags from the provided image and quadrilaterals using the specified tag family and quick decode table.
+/// Decodes tags from a grayscale image using detected quadrilaterals and configuration parameters.
 ///
 /// # Arguments
 ///
 /// * `src` - Reference to the grayscale source image.
 /// * `quads` - Mutable slice of detected quadrilaterals to process.
-/// * `tag_family` - Reference to the tag family used for decoding.
-/// * `quick_decode` - Mutable reference to the quick decode table for fast tag lookup.
-/// * `refine_edges_enabled` - Whether to refine the edges of the quadrilaterals before decoding.
-/// * `decode_sharpening` - Sharpening factor applied during decoding.
-/// * `gray_model_pair` - A mutable reference to a `GrayModelPair`.
-/// * `sharpening_buffer` - A mutable reference to a `SharpeningBuffer`.
-///
-/// Make sure to call [`GrayModelPair::reset`] and [`SharpeningBuffer::reset`] if you are using this function multiple
-/// times.
+/// * `config` - Reference to the tag decoding configuration.
+/// * `gray_model_pair` - Mutable reference to a pair of grayscale models for white and black regions.
+/// * `sharpening_buffer` - Mutable reference to a buffer used for sharpening intermediate values.
 ///
 /// # Returns
 ///
-/// A vector of `Detection` objects representing successfully decoded tags.
+/// Returns a vector of `Detection` containing information about each successfully decoded tag.
 pub fn decode_tags<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     quads: &mut [Quad],
@@ -267,8 +261,8 @@ pub fn decode_tags<A: ImageAllocator>(
 
             let decision_margin = quad_decode(
                 src,
-                quad,
                 family,
+                quad,
                 config.decode_sharpening,
                 &mut entry,
                 gray_model_pair,
@@ -484,9 +478,8 @@ fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad) {
 /// * `src` - Reference to the grayscale source image.
 /// * `tag_family` - Reference to the tag family used for decoding.
 /// * `quad` - Reference to the quadrilateral representing the tag in the image.
-/// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the decoding result.
-/// * `quick_decode` - Reference to the quick decode table for fast tag lookup.
 /// * `decode_sharpening` - Sharpening factor applied during decoding.
+/// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the decoding result.
 /// * `gray_model_pair` - A mutable reference to a `GrayModelPair`.
 /// * `sharpening_buffer` - A mutable reference to a `SharpeningBuffer`.
 ///
@@ -495,8 +488,8 @@ fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad) {
 /// Returns `Some(f32)` containing the decision margin if decoding is successful, or `None` otherwise.
 fn quad_decode<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
-    quad: &Quad,
     tag_family: &TagFamily,
+    quad: &Quad,
     decode_sharpening: f32,
     entry: &mut QuickDecodeEntry,
     gray_model_pair: &mut GrayModelPair,
@@ -706,7 +699,8 @@ fn quad_decode<A: ImageAllocator>(
 ///
 /// * `sharpening_buffer` - Mutable reference of `SharpeningBuffer`.
 /// * `decode_sharpening` - The sharpening factor to apply.
-fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32, size: usize) {
+/// * `size` - The width and height of the square buffer.
+pub fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32, size: usize) {
     #[rustfmt::skip]
     const KERNEL: [f32; 9] = [
          0.0, -1.0,  0.0,
@@ -758,10 +752,9 @@ fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32, siz
 ///
 /// # Arguments
 ///
-/// * `tag_family` - Reference to the tag family used for decoding.
-/// * `rcode` - The raw code value to decode.
-/// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the decoding result.
-/// * `quick_decode` - Reference to the quick decode table for fast tag lookup.
+/// * `tag_family` - Reference to the tag family containing the quick decode table.
+/// * `rcode` - The codeword to look up.
+/// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the result.
 fn quick_decode_codeword(tag_family: &TagFamily, mut rcode: usize, entry: &mut QuickDecodeEntry) {
     if let ControlFlow::Break(_) = (0..4).try_for_each(|ridx| {
         let mut bucket = rcode % tag_family.quick_decode.0.len();
@@ -1025,8 +1018,8 @@ mod tests {
 
         let d = quad_decode(
             &src,
-            &quad,
             &tag_family,
+            &quad,
             0.25,
             &mut entry,
             &mut gray_model_pair,

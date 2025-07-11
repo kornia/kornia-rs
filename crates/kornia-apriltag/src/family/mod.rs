@@ -124,6 +124,21 @@ impl DecodeTagsConfig {
             sharpening_buffer_len: min_sharpening_buffer_size * min_sharpening_buffer_size,
         }
     }
+
+    /// TODO
+    pub fn add(&mut self, family: TagFamily) {
+        if family.width_at_border < self.min_tag_width {
+            self.min_tag_width = family.width_at_border;
+        }
+        self.normal_border |= !family.reversed_border;
+        self.reversed_border |= family.reversed_border;
+
+        if self.sharpening_buffer_len.isqrt() < family.total_width {
+            self.sharpening_buffer_len = family.total_width * family.total_width;
+        }
+
+        self.tag_families.push(family);
+    }
 }
 
 #[doc(hidden)]
