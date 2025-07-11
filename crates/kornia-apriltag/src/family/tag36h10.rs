@@ -1,7 +1,7 @@
 use super::*;
 
 impl TagFamily {
-    /// TODO
+    /// The Tag36H10 AprilTag family.
     pub fn tag36_h10() -> Self {
         Self {
             name: "tag36_h10".into(),

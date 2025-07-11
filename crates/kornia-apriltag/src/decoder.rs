@@ -108,16 +108,16 @@ pub struct QuickDecodeEntry {
 pub struct QuickDecode(Vec<QuickDecodeEntry>);
 
 impl QuickDecode {
-    /// Creates a new `QuickDecode` table for the given tag family.
+    /// Creates a new `QuickDecode` table for fast lookup of decoded tag codes and their associated metadata.
     ///
     /// # Arguments
     ///
-    /// * `tag_family` - A reference to the `TagFamily` for which to build the quick decode table.
+    /// * `nbits` - Number of bits in the tag code.
+    /// * `code_data` - Slice of code values to populate the table.
     ///
     /// # Returns
     ///
-    /// A `QuickDecode` instance containing precomputed entries for fast tag decoding.
-    // TODO: Support multiple tag familes. The current logic needs to be changed then
+    /// A new `QuickDecode` instance with precomputed entries for all codes and their Hamming neighbors.
     pub fn new(nbits: usize, code_data: &[usize]) -> Self {
         let ncodes = code_data.len();
         let capacity = ncodes + nbits * ncodes + ncodes * nbits * (nbits - 1);
