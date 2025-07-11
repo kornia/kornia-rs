@@ -23,7 +23,7 @@ impl TagFamily {
     }
 }
 
-const CODE_DATA: [usize; 2320] = [
+pub static CODE_DATA: [usize; 2320] = [
     0x00000001a42f9469,
     0x000000021a48c08d,
     0x000000026dfdbc5d,
