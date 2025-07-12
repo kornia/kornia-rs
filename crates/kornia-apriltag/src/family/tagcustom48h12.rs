@@ -4,7 +4,7 @@ impl TagFamily {
     /// The TagCustom48H12 AprilTag Family.
     pub fn tagcustom48_h12() -> Self {
         Self {
-            name: "tagcustom18_h12".to_string(),
+            name: "tagcustom48_h12".to_string(),
             width_at_border: 6,
             reversed_border: true,
             total_width: 10,

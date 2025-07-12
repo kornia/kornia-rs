@@ -1,12 +1,13 @@
 use std::{f32::consts::PI, ops::ControlFlow};
 
 use crate::{
-    family::{DecodeTagsConfig, TagFamily, TagFamilyKind},
+    family::{TagFamily, TagFamilyKind},
     quad::Quad,
     utils::{
         matrix_3x3_cholesky, matrix_3x3_lower_triangle_inverse, matrix_3x3_mul, value_for_pixel,
         Point2d,
     },
+    DecodeTagsConfig,
 };
 use kornia_image::{allocator::ImageAllocator, Image};
 
@@ -134,7 +135,9 @@ impl QuickDecode {
     /// A new `QuickDecode` instance with precomputed entries for all codes and their Hamming neighbors.
     pub fn new(nbits: usize, code_data: &[usize]) -> Self {
         let ncodes = code_data.len();
-        let capacity = ncodes + nbits * ncodes + ncodes * nbits * (nbits - 1);
+        let capacity = ncodes // Hamming 0
+            + nbits * ncodes // Hamming 1
+            + ncodes * nbits * (nbits - 1); // Hamming 2
 
         let mut quick_decode = Self(vec![
             QuickDecodeEntry {
@@ -159,7 +162,6 @@ impl QuickDecode {
                 });
             });
         });
-
         quick_decode
     }
 

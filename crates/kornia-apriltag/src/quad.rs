@@ -1,7 +1,7 @@
 use crate::{
-    family::DecodeTagsConfig,
     segmentation::GradientInfo,
     utils::{homography_compute, Pixel, Point2d},
+    DecodeTagsConfig,
 };
 use kornia_image::{allocator::ImageAllocator, Image};
 use kornia_imgproc::filter::kernels::gaussian_kernel_1d;

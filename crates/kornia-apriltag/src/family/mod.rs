@@ -1,4 +1,4 @@
-use crate::{decoder::QuickDecode, quad::FitQuadConfig};
+use crate::decoder::QuickDecode;
 
 /// Represents the AprilTag Family
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +26,8 @@ pub struct TagFamily {
 /// Represents a decoded AprilTag.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TagFamilyKind {
+    /// The Tag16H5 Family. [TagFamily::tag16_h5]
+    Tag16H5,
     /// The Tag36H11 Family. [TagFamily::tag36_h11]
     Tag36H11,
     /// The Tag36H10 Family. [TagFamily::tag36_h10]
@@ -49,6 +51,7 @@ pub enum TagFamilyKind {
 impl From<TagFamily> for TagFamilyKind {
     fn from(value: TagFamily) -> Self {
         match value.name.as_str() {
+            "tag16_h5" => TagFamilyKind::Tag16H5,
             "tag36_h11" => TagFamilyKind::Tag36H11,
             "tag36_h10" => TagFamilyKind::Tag36H10,
             "tag25_h9" => TagFamilyKind::Tag25H9,
@@ -65,80 +68,17 @@ impl From<TagFamily> for TagFamilyKind {
 impl From<&TagFamily> for TagFamilyKind {
     fn from(value: &TagFamily) -> Self {
         match value.name.as_str() {
+            "tag16_h5" => TagFamilyKind::Tag16H5,
             "tag36_h11" => TagFamilyKind::Tag36H11,
+            "tag36_h10" => TagFamilyKind::Tag36H10,
+            "tag25_h9" => TagFamilyKind::Tag25H9,
+            "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
+            "tagcircle19_h12" => TagFamilyKind::TagCircle49H12,
+            "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
+            "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
+            "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
             _ => TagFamilyKind::Custom(value.name.clone()),
         }
-    }
-}
-
-/// TODO
-pub struct DecodeTagsConfig {
-    /// TODO
-    pub tag_families: Vec<TagFamily>,
-    /// TODO
-    pub fit_quad_config: FitQuadConfig,
-    /// Whether to enable edge refinement before decoding.
-    pub refine_edges_enabled: bool,
-    /// Sharpening factor applied during decoding.
-    pub decode_sharpening: f32,
-    /// TODO
-    pub normal_border: bool,
-    /// TODO
-    pub reversed_border: bool,
-    /// TODO
-    pub min_tag_width: usize,
-    /// TODO
-    pub sharpening_buffer_len: usize,
-}
-
-impl DecodeTagsConfig {
-    /// TODO
-    pub fn new(tag_families: Vec<TagFamily>) -> Self {
-        let mut normal_border = false;
-        let mut reversed_border = false;
-        let mut min_tag_width = usize::MAX;
-        let mut min_sharpening_buffer_size = 0;
-
-        tag_families.iter().for_each(|family| {
-            if family.width_at_border < min_tag_width {
-                min_tag_width = family.width_at_border;
-            }
-            normal_border |= !family.reversed_border;
-            reversed_border |= family.reversed_border;
-
-            if min_sharpening_buffer_size < family.total_width {
-                min_sharpening_buffer_size = family.total_width;
-            }
-        });
-
-        min_tag_width = min_tag_width.min(3);
-
-        Self {
-            tag_families,
-            fit_quad_config: Default::default(),
-            normal_border,
-            refine_edges_enabled: true,
-            decode_sharpening: 0.25,
-            reversed_border,
-            min_tag_width,
-            sharpening_buffer_len: min_sharpening_buffer_size * min_sharpening_buffer_size,
-        }
-    }
-
-    /// TODO
-    pub fn add(&mut self, family: TagFamily) {
-        if family.width_at_border < self.min_tag_width {
-            self.min_tag_width = family.width_at_border;
-        }
-        self.normal_border |= !family.reversed_border;
-        self.reversed_border |= family.reversed_border;
-
-        let len = family.total_width * family.total_width;
-        if self.sharpening_buffer_len < len {
-            self.sharpening_buffer_len = len;
-        }
-
-        self.tag_families.push(family);
     }
 }
 
