@@ -18,11 +18,12 @@ impl TagFamily {
                 5, 4, 3, 2, 5, 4, 3, 4,
             ],
             code_data: CODE_DATA.into(),
+            quick_decode: QuickDecode::new(36, &CODE_DATA),
         }
     }
 }
 
-pub const CODE_DATA: [usize; 587] = [
+pub static CODE_DATA: [usize; 587] = [
     0x0000000d7e00984b,
     0x0000000dda664ca7,
     0x0000000dc4a1c821,
