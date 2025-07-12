@@ -99,7 +99,7 @@ impl DecodeTagsConfig {
             reversed_border,
             min_tag_width,
             sharpening_buffer_len: min_sharpening_buffer_size * min_sharpening_buffer_size,
-            min_white_black_difference: 5,
+            min_white_black_difference: 20,
         }
     }
 
@@ -164,7 +164,7 @@ impl AprilTagDecoder {
         let sharpening_buffer = SharpeningBuffer::new(config.sharpening_buffer_len);
 
         Ok(Self {
-            config: config,
+            config,
             bin_img,
             tile_min_max,
             uf,
@@ -183,7 +183,7 @@ impl AprilTagDecoder {
 
         // Step 1: Adaptive Threshold
         adaptive_threshold(
-            &src,
+            src,
             &mut self.bin_img,
             &mut self.tile_min_max,
             self.config.min_white_black_difference,
@@ -200,7 +200,7 @@ impl AprilTagDecoder {
 
         // Step 4: Tag Decoding
         Ok(decode_tags(
-            &src,
+            src,
             &mut quads,
             &self.config,
             &mut self.gray_model_pair,
@@ -277,6 +277,7 @@ mod tests {
         images_dir: &str,
         file_name_starts_with: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        decoder.config.refine_edges_enabled = false;
         let mut rgb_img = Image::from_size_val(original_image_size, 0u8, CpuAllocator)?;
         let mut grayscale_img = Image::from_size_val(original_image_size, 0u8, CpuAllocator)?;
         let mut grayscale_upscale = Image::from_size_val(upscale_image_size, 0u8, CpuAllocator)?;
