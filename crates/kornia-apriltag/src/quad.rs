@@ -113,7 +113,7 @@ impl Quad {
 /// # Returns
 ///
 /// A vector of detected `Quad` structures.
-// TODO: Support multiple tag familes
+// TODO: Support multiple tag families
 pub fn fit_quads<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     clusters: &mut HashMap<(usize, usize), Vec<GradientInfo>>,

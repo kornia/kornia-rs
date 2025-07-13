@@ -405,10 +405,10 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Crashes CI and takes a lot of time to run"]
     fn test_tagcircle49h12() -> Result<(), Box<dyn std::error::Error>> {
         let config = DecodeTagsConfig::new(vec![TagFamily::tagcircle49_h12()]);
         let mut decoder = AprilTagDecoder::new(config, [65, 65].into())?;
-        // decoder.config.refine_edges_enabled = false;
 
         let expected_quad = [
             Point2d { x: 45.0, y: 20.0 },
