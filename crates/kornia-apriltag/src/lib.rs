@@ -86,12 +86,13 @@ impl DecodeTagsConfig {
             min_tag_width = 3;
         }
 
+        // TODO: Set the default values which are best for the given tags
         Self {
             tag_families,
             fit_quad_config: Default::default(),
             normal_border,
             refine_edges_enabled: true,
-            decode_sharpening: 0.25,
+            decode_sharpening: 0.15,
             reversed_border,
             min_tag_width,
             min_white_black_difference: 20,
@@ -279,8 +280,6 @@ mod tests {
                 }
 
                 let original_img = read_image_png_mono8(file_path)?;
-
-                decoder.clear();
                 let detection = decoder.decode(&original_img)?;
 
                 assert_eq!(detection.len(), 1, "Tag: {}", file_name);
@@ -305,6 +304,8 @@ mod tests {
                         expected.x
                     );
                 }
+
+                decoder.clear();
             }
         }
 
@@ -407,7 +408,7 @@ mod tests {
     fn test_tagcircle49h12() -> Result<(), Box<dyn std::error::Error>> {
         let config = DecodeTagsConfig::new(vec![TagFamily::tagcircle49_h12()]);
         let mut decoder = AprilTagDecoder::new(config, [65, 65].into())?;
-        decoder.config.refine_edges_enabled = false;
+        // decoder.config.refine_edges_enabled = false;
 
         let expected_quad = [
             Point2d { x: 45.0, y: 20.0 },
@@ -474,7 +475,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_tagstandard52_h13() -> Result<(), Box<dyn std::error::Error>> {
         let config = DecodeTagsConfig::new(vec![TagFamily::tagstandard52_h13()]);
         let mut decoder = AprilTagDecoder::new(config, [60, 60].into())?;

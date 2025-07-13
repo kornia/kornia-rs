@@ -678,13 +678,6 @@ fn quad_decode<A: ImageAllocator>(
             - min_coord) as usize] = v - thresh;
     });
 
-    // println!(
-    //     "Size: {}, Len: {}, {:?}",
-    //     tag_family.total_width,
-    //     sharpening_buffer.values.len(),
-    //     sharpening_buffer.values
-    // );
-
     sharpen(
         &mut tag_family.sharpening_buffer,
         decode_sharpening,
