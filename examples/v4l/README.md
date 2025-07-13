@@ -1,6 +1,6 @@
 An example showing how to use V4L to drive a webcam with the `kornia_io` module with the ability to cancel the feed after a certain amount of time. This example will display the webcam feed in a [`rerun`](https://github.com/rerun-io/rerun) window.
 
-NOTE: This example is only supported on Linux. It also requires the gstremer backend to be enabled. To enable the gstreamer backend, use the `gstreamer` feature flag when building the `kornia` crate and its dependencies.
+NOTE: This example is only supported on Linux.
 
 ```bash
 Usage: v4l [OPTIONS]
