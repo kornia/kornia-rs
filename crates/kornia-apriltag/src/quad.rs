@@ -5,7 +5,11 @@ use crate::{
 };
 use kornia_image::{allocator::ImageAllocator, Image};
 use kornia_imgproc::filter::kernels::gaussian_kernel_1d;
-use std::{collections::HashMap, f32, ops::ControlFlow};
+use std::{
+    collections::HashMap,
+    f32::{self, consts::PI},
+    ops::ControlFlow,
+};
 
 const SLOPE_OFFSET_BASE: i32 = 2 << 15; // Base value for slope offset calculations.
 const SLOPE_OFFSET_DOUBLE: i32 = 2 * SLOPE_OFFSET_BASE; // Double the base value for extended range.
@@ -16,7 +20,7 @@ const QUADRANTS: [[i32; 2]; 2] = [
     [SLOPE_OFFSET_DOUBLE, SLOPE_OFFSET_BASE],
 ];
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 /// Options for fitting quadrilaterals (quads) to clusters of gradient information.
 pub struct FitQuadConfig {
     /// Cosine of the critical angle in radians.
@@ -32,7 +36,7 @@ pub struct FitQuadConfig {
 impl Default for FitQuadConfig {
     fn default() -> Self {
         Self {
-            cos_critical_rad: 0.984808,
+            cos_critical_rad: (10.0 * PI / 180.0).cos(),
             max_line_fit_mse: 10.0,
             max_nmaxima: 10,
             min_cluster_pixels: 5,

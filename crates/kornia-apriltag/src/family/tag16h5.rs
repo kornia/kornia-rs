@@ -13,6 +13,7 @@ impl TagFamily {
             bit_y: vec![1, 1, 1, 2, 1, 2, 3, 2, 4, 4, 4, 3, 4, 3, 2, 3],
             code_data: CODE_DATA.into(),
             quick_decode: QuickDecode::new(16, &CODE_DATA),
+            sharpening_buffer: SharpeningBuffer::new(64),
         }
     }
 }

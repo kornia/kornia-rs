@@ -9,7 +9,7 @@ use kornia_image::{
 };
 
 use crate::{
-    decoder::{decode_tags, Detection, GrayModelPair, SharpeningBuffer},
+    decoder::{decode_tags, Detection, GrayModelPair},
     errors::AprilTagError,
     family::TagFamily,
     quad::{fit_quads, FitQuadConfig},
@@ -46,35 +46,33 @@ pub mod quad;
 /// Decoding utilities for AprilTag detection.
 pub mod decoder;
 
-/// TODO
+#[derive(Debug, Clone, PartialEq)]
+/// Configuration for decoding AprilTags.
 pub struct DecodeTagsConfig {
-    /// TODO
+    /// List of tag families to detect.
     pub tag_families: Vec<TagFamily>,
-    /// TODO
+    /// Configuration for quad fitting.
     pub fit_quad_config: FitQuadConfig,
     /// Whether to enable edge refinement before decoding.
     pub refine_edges_enabled: bool,
     /// Sharpening factor applied during decoding.
     pub decode_sharpening: f32,
-    /// TODO
+    /// Whether normal border tags are present.
     pub normal_border: bool,
-    /// TODO
+    /// Whether reversed border tags are present.
     pub reversed_border: bool,
-    /// TODO
+    /// Minimum tag width at border among all families.
     pub min_tag_width: usize,
-    /// TODO
-    pub sharpening_buffer_len: usize,
-    /// TODO
+    /// Minimum difference between white and black pixels for thresholding.
     pub min_white_black_difference: u8,
 }
 
 impl DecodeTagsConfig {
-    /// TODO
+    /// Creates a new `DecodeTagsConfig` with the given tag families.
     pub fn new(tag_families: Vec<TagFamily>) -> Self {
         let mut normal_border = false;
         let mut reversed_border = false;
         let mut min_tag_width = usize::MAX;
-        let mut min_sharpening_buffer_size = 0;
 
         tag_families.iter().for_each(|family| {
             if family.width_at_border < min_tag_width {
@@ -82,13 +80,11 @@ impl DecodeTagsConfig {
             }
             normal_border |= !family.reversed_border;
             reversed_border |= family.reversed_border;
-
-            if min_sharpening_buffer_size < family.total_width {
-                min_sharpening_buffer_size = family.total_width;
-            }
         });
 
-        min_tag_width = min_tag_width.min(3);
+        if min_tag_width < 3 {
+            min_tag_width = 3;
+        }
 
         Self {
             tag_families,
@@ -98,12 +94,11 @@ impl DecodeTagsConfig {
             decode_sharpening: 0.25,
             reversed_border,
             min_tag_width,
-            sharpening_buffer_len: min_sharpening_buffer_size * min_sharpening_buffer_size,
             min_white_black_difference: 20,
         }
     }
 
-    /// TODO
+    /// Creates a `DecodeTagsConfig` with all supported tag families.
     pub fn all() -> Self {
         let tag_families = vec![
             TagFamily::tag16_h5(),
@@ -120,7 +115,7 @@ impl DecodeTagsConfig {
         Self::new(tag_families)
     }
 
-    /// TODO
+    /// Adds a tag family to the configuration.
     pub fn add(&mut self, family: TagFamily) {
         if family.width_at_border < self.min_tag_width {
             self.min_tag_width = family.width_at_border;
@@ -128,40 +123,49 @@ impl DecodeTagsConfig {
         self.normal_border |= !family.reversed_border;
         self.reversed_border |= family.reversed_border;
 
-        let len = family.total_width * family.total_width;
-        if self.sharpening_buffer_len < len {
-            self.sharpening_buffer_len = len;
-        }
-
         self.tag_families.push(family);
+    }
+
+    /// Resets the sharpening buffer for each tag family in the configuration.
+    pub fn reset(&mut self) {
+        self.tag_families.iter_mut().for_each(|family| {
+            family.sharpening_buffer.reset();
+        });
     }
 }
 
-/// TODO
+/// Decoder for AprilTag detection and decoding.
 pub struct AprilTagDecoder {
-    /// TODO
+    /// Configuration for decoding AprilTags.
     pub config: DecodeTagsConfig,
     bin_img: Image<Pixel, 1, CpuAllocator>,
     tile_min_max: TileMinMax,
     uf: UnionFind,
     clusters: HashMap<(usize, usize), Vec<GradientInfo>>,
     gray_model_pair: GrayModelPair,
-    sharpening_buffer: SharpeningBuffer,
 }
 
 impl AprilTagDecoder {
-    /// TODO
+    /// Adds a tag family to the decoder configuration.
     #[inline]
     pub fn add(&mut self, family: TagFamily) {
         self.config.add(family);
     }
 
-    /// TODO
+    /// Creates a new `AprilTagDecoder` with the given configuration and image size.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The configuration for decoding AprilTags.
+    /// * `img_size` - The size of the image to be processed.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing the new `AprilTagDecoder` or an `AprilTagError`.
     pub fn new(config: DecodeTagsConfig, img_size: ImageSize) -> Result<Self, AprilTagError> {
         let bin_img = Image::from_size_val(img_size, Pixel::Skip, CpuAllocator)?;
         let tile_min_max = TileMinMax::new(img_size, 4);
         let uf = UnionFind::new(img_size.width * img_size.height);
-        let sharpening_buffer = SharpeningBuffer::new(config.sharpening_buffer_len);
 
         Ok(Self {
             config,
@@ -170,11 +174,23 @@ impl AprilTagDecoder {
             uf,
             clusters: HashMap::new(),
             gray_model_pair: GrayModelPair::new(),
-            sharpening_buffer,
         })
     }
 
-    /// TODO
+    /// Decodes AprilTags from the provided grayscale image.
+    ///
+    /// # Arguments
+    ///
+    /// * `src` - The source grayscale image to decode tags from.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing a vector of `Detection` or an `AprilTagError`.
+    ///
+    /// # Note
+    ///
+    /// If you are running this method multiple times on the same decoder instance,
+    /// you should call [`AprilTagDecoder::clear`] between runs to reset internal state.
     pub fn decode<A: ImageAllocator>(
         &mut self,
         src: &Image<u8, 1, A>,
@@ -202,24 +218,27 @@ impl AprilTagDecoder {
         Ok(decode_tags(
             src,
             &mut quads,
-            &self.config,
+            &mut self.config,
             &mut self.gray_model_pair,
-            &mut self.sharpening_buffer,
         ))
     }
 
-    /// TODO
+    /// Clears the internal state of the decoder for reuse.
     pub fn clear(&mut self) {
         self.uf.reset();
         self.clusters.clear();
         self.gray_model_pair.reset();
-        self.sharpening_buffer.reset();
+        self.config.reset();
+    }
+
+    /// Returns a slice of tag families configured for detection.
+    pub fn tag_families(&self) -> &[TagFamily] {
+        &self.config.tag_families
     }
 }
 
 #[cfg(test)]
 mod tests {
-
     use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
     use kornia_imgproc::color::gray_from_rgb_u8;
     use kornia_io::png::read_image_png_rgba8;

@@ -1,4 +1,4 @@
-use crate::decoder::QuickDecode;
+use crate::decoder::{QuickDecode, SharpeningBuffer};
 
 /// Represents the AprilTag Family
 #[derive(Debug, Clone, PartialEq)]
@@ -19,8 +19,10 @@ pub struct TagFamily {
     pub bit_y: Vec<i8>,
     /// The code data for the tag family.
     pub code_data: Vec<usize>,
-    /// TODO
+    /// A table for fast lookup of decoded tag codes and their associated metadata.
     pub quick_decode: QuickDecode,
+    /// Buffer used for storing intermediate values during the sharpening process.
+    pub sharpening_buffer: SharpeningBuffer,
 }
 
 /// Represents a decoded AprilTag.
@@ -67,6 +69,23 @@ impl From<TagFamily> for TagFamilyKind {
 
 impl From<&TagFamily> for TagFamilyKind {
     fn from(value: &TagFamily) -> Self {
+        match value.name.as_str() {
+            "tag16_h5" => TagFamilyKind::Tag16H5,
+            "tag36_h11" => TagFamilyKind::Tag36H11,
+            "tag36_h10" => TagFamilyKind::Tag36H10,
+            "tag25_h9" => TagFamilyKind::Tag25H9,
+            "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
+            "tagcircle19_h12" => TagFamilyKind::TagCircle49H12,
+            "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
+            "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
+            "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
+            _ => TagFamilyKind::Custom(value.name.clone()),
+        }
+    }
+}
+
+impl From<&mut TagFamily> for TagFamilyKind {
+    fn from(value: &mut TagFamily) -> Self {
         match value.name.as_str() {
             "tag16_h5" => TagFamilyKind::Tag16H5,
             "tag36_h11" => TagFamilyKind::Tag36H11,

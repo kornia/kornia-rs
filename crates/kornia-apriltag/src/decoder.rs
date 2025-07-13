@@ -204,7 +204,7 @@ pub struct Detection {
 }
 
 /// Buffer used for storing intermediate values during the sharpening process.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct SharpeningBuffer {
     values: Vec<f32>,
     sharpened: Vec<f32>,
@@ -252,9 +252,8 @@ impl SharpeningBuffer {
 pub fn decode_tags<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     quads: &mut [Quad],
-    config: &DecodeTagsConfig,
+    config: &mut DecodeTagsConfig,
     gray_model_pair: &mut GrayModelPair,
-    sharpening_buffer: &mut SharpeningBuffer,
 ) -> Vec<Detection> {
     // TODO: Avoid allocations on every call
     let mut detections = Vec::new();
@@ -268,7 +267,7 @@ pub fn decode_tags<A: ImageAllocator>(
             return;
         }
 
-        config.tag_families.iter().for_each(|family| {
+        config.tag_families.iter_mut().for_each(|family| {
             if family.reversed_border != quad.reversed_border {
                 return;
             }
@@ -282,7 +281,6 @@ pub fn decode_tags<A: ImageAllocator>(
                 config.decode_sharpening,
                 &mut entry,
                 gray_model_pair,
-                sharpening_buffer,
             );
 
             if let Some(decision_margin) = decision_margin {
@@ -293,11 +291,11 @@ pub fn decode_tags<A: ImageAllocator>(
 
                     // Fix the rotation of our homography to properly orient the tag
                     #[rustfmt::skip]
-                let r = [
-                    c,  -s,   0.0,
-                    s,   c,   0.0,
-                    0.0, 0.0, 1.0,
-                ];
+                    let r = [
+                        c,  -s,   0.0,
+                        s,   c,   0.0,
+                        0.0, 0.0, 1.0,
+                    ];
 
                     quad.homography = matrix_3x3_mul(&quad.homography, &r);
                     let center = quad.homography_project(0.0, 0.0);
@@ -504,12 +502,11 @@ fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad) {
 /// Returns `Some(f32)` containing the decision margin if decoding is successful, or `None` otherwise.
 fn quad_decode<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
-    tag_family: &TagFamily,
+    tag_family: &mut TagFamily,
     quad: &Quad,
     decode_sharpening: f32,
     entry: &mut QuickDecodeEntry,
     gray_model_pair: &mut GrayModelPair,
-    sharpening_buffer: &mut SharpeningBuffer,
 ) -> Option<f32> {
     struct Pattern {
         start_x: f32,
@@ -675,12 +672,24 @@ fn quad_decode<A: ImageAllocator>(
             + gray_model_pair.white_model.interpolate(tag_x, tag_y))
             / 2.0;
 
-        sharpening_buffer.values[(tag_family.total_width as isize * (bit_y as isize - min_coord)
+        tag_family.sharpening_buffer.values[(tag_family.total_width as isize
+            * (bit_y as isize - min_coord)
             + bit_x as isize
             - min_coord) as usize] = v - thresh;
     });
 
-    sharpen(sharpening_buffer, decode_sharpening, tag_family.total_width);
+    // println!(
+    //     "Size: {}, Len: {}, {:?}",
+    //     tag_family.total_width,
+    //     sharpening_buffer.values.len(),
+    //     sharpening_buffer.values
+    // );
+
+    sharpen(
+        &mut tag_family.sharpening_buffer,
+        decode_sharpening,
+        tag_family.total_width,
+    );
 
     let mut rcode = 0usize;
     (0..tag_family.nbits).for_each(|i| {
@@ -689,7 +698,7 @@ fn quad_decode<A: ImageAllocator>(
 
         rcode <<= 1;
 
-        let v = sharpening_buffer.values[((bit_y as isize - min_coord)
+        let v = tag_family.sharpening_buffer.values[((bit_y as isize - min_coord)
             * tag_family.total_width as isize
             + bit_x as isize
             - min_coord) as usize];
@@ -843,7 +852,7 @@ mod tests {
 
     #[test]
     fn test_decode_tags() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamily::tag36_h11()]);
+        let mut config = DecodeTagsConfig::new(vec![TagFamily::tag36_h11()]);
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
         let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
@@ -851,7 +860,6 @@ mod tests {
         let mut uf = UnionFind::new(bin.as_slice().len());
         let mut clusters = HashMap::new();
         let mut gray_model_pair = GrayModelPair::default();
-        let mut sharpening_buffer = SharpeningBuffer::new(config.sharpening_buffer_len);
 
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
@@ -866,13 +874,7 @@ mod tests {
             }
         }
 
-        let tags = decode_tags(
-            &src,
-            &mut quads,
-            &config,
-            &mut gray_model_pair,
-            &mut sharpening_buffer,
-        );
+        let tags = decode_tags(&src, &mut quads, &mut config, &mut gray_model_pair);
 
         assert_eq!(tags.len(), 1);
         assert_eq!(tags[0].id, 23);
@@ -999,7 +1001,7 @@ mod tests {
 
     #[test]
     fn test_quad_decode() -> Result<(), Box<dyn std::error::Error>> {
-        let tag_family = TagFamily::tag36_h11();
+        let mut tag_family = TagFamily::tag36_h11();
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
         let quad = Quad {
@@ -1029,17 +1031,14 @@ mod tests {
 
         let mut entry = QuickDecodeEntry::default();
         let mut gray_model_pair = GrayModelPair::default();
-        let mut sharpening_buffer =
-            SharpeningBuffer::new(tag_family.total_width * tag_family.total_width);
 
         let d = quad_decode(
             &src,
-            &tag_family,
+            &mut tag_family,
             &quad,
             0.25,
             &mut entry,
             &mut gray_model_pair,
-            &mut sharpening_buffer,
         );
 
         assert_eq!(d, Some(225.50317));
