@@ -1,4 +1,3 @@
-#![cfg(not(target_os = "linux"))]
 use argh::FromArgs;
 use kornia::{
     image::{Image, ImageSize},

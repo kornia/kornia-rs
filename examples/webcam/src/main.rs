@@ -2,7 +2,7 @@
 mod webcam;
 #[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    webcam::webcam_demo()?
+    webcam::webcam_demo()
 }
 
 #[cfg(not(target_os = "linux"))]
