@@ -46,8 +46,8 @@ pub mod quad;
 /// Decoding utilities for AprilTag detection.
 pub mod decoder;
 
-#[derive(Debug, Clone, PartialEq)]
 /// Configuration for decoding AprilTags.
+#[derive(Debug, Clone, PartialEq)]
 pub struct DecodeTagsConfig {
     /// List of tag families to detect.
     pub tag_families: Vec<TagFamily>,
@@ -137,8 +137,7 @@ impl DecodeTagsConfig {
 
 /// Decoder for AprilTag detection and decoding.
 pub struct AprilTagDecoder {
-    /// Configuration for decoding AprilTags.
-    pub config: DecodeTagsConfig,
+    config: DecodeTagsConfig,
     bin_img: Image<Pixel, 1, CpuAllocator>,
     tile_min_max: TileMinMax,
     uf: UnionFind,
@@ -147,6 +146,12 @@ pub struct AprilTagDecoder {
 }
 
 impl AprilTagDecoder {
+    /// Returns a reference to the decoder configuration.
+    #[inline]
+    pub fn config(&self) -> &DecodeTagsConfig {
+        &self.config
+    }
+
     /// Adds a tag family to the decoder configuration.
     #[inline]
     pub fn add(&mut self, family: TagFamily) {
@@ -238,7 +243,8 @@ impl AprilTagDecoder {
     }
 }
 
-#[cfg(test)]
+/// Running the test on aarch64 crashes the CI
+#[cfg(all(test, not(target_arch = "aarch64")))]
 mod tests {
     use kornia_io::png::read_image_png_mono8;
 
@@ -405,7 +411,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Crashes CI and takes a lot of time to run"]
     fn test_tagcircle49h12() -> Result<(), Box<dyn std::error::Error>> {
         let config = DecodeTagsConfig::new(vec![TagFamily::tagcircle49_h12()]);
         let mut decoder = AprilTagDecoder::new(config, [65, 65].into())?;
