@@ -176,6 +176,34 @@ impl SmolVlm {
                 format!("embeds_{}", _i),
                 self.model.DEBUG_embeds.clone().unwrap(),
             );
+            for d in 0..=23 {
+                tensors.insert(
+                    format!("DEBUG_input_layer_norm_d{}_i{}", d, _i),
+                    self.model.text.blocks[d]
+                        .DEBUG_input_layer_norm
+                        .clone()
+                        .unwrap(),
+                );
+                tensors.insert(
+                    format!("DEBUG_attn_d{}_i{}", d, _i),
+                    self.model.text.blocks[d].DEBUG_attn.clone().unwrap(),
+                );
+                tensors.insert(
+                    format!("DEBUG_post_layer_norm_d{}_i{}", d, _i),
+                    self.model.text.blocks[d]
+                        .DEBUG_post_layer_norm
+                        .clone()
+                        .unwrap(),
+                );
+                tensors.insert(
+                    format!("DEBUG_gates_d{}_i{}", d, _i),
+                    self.model.text.blocks[d].DEBUG_gates.clone().unwrap(),
+                );
+                tensors.insert(
+                    format!("block_d{}_i{}", d, _i),
+                    self.model.text.blocks[d].DEBUG_block.clone().unwrap(),
+                );
+            }
 
             self.index_pos += delta_token.len();
             delta_token.clear();

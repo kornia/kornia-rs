@@ -151,11 +151,17 @@ impl MLPGates {
 }
 
 #[derive(Debug, Clone)]
-struct Block {
+pub struct Block {
     input_layer_norm: RmsNorm,
     attn: Attention,
     post_layer_norm: RmsNorm,
     gates: MLPGates,
+
+    pub DEBUG_block: Option<Tensor>, // for debugging purposes, to be removed later
+    pub DEBUG_input_layer_norm: Option<Tensor>,
+    pub DEBUG_attn: Option<Tensor>,
+    pub DEBUG_post_layer_norm: Option<Tensor>,
+    pub DEBUG_gates: Option<Tensor>,
 }
 
 impl Block {
@@ -190,21 +196,34 @@ impl Block {
                 val("mlp.gate_proj"),
                 val("mlp.up_proj"),
             ),
+            DEBUG_block: None, // for debugging purposes, to be removed later
+            DEBUG_input_layer_norm: None,
+            DEBUG_attn: None,
+            DEBUG_post_layer_norm: None,
+            DEBUG_gates: None,
         })
     }
 
     fn forward(&mut self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
         let residual = x;
         let x = self.input_layer_norm.forward(x)?;
-        let x = (residual + self.attn.forward(&x, index_pos)?)?;
+        self.DEBUG_input_layer_norm = Some(x.clone()); // for debugging purposes, to be removed later
+        let att = self.attn.forward(&x, index_pos)?;
+        self.DEBUG_attn = Some(att.clone()); // for debugging purposes, to be removed later
+        let x = (residual + att)?;
         let residual = &x;
-        let x = (residual + self.gates.forward(&self.post_layer_norm.forward(&x)?)?)?;
+        let x = self.post_layer_norm.forward(&x)?;
+        self.DEBUG_post_layer_norm = Some(x.clone()); // for debugging purposes, to be removed later
+        let x = self.gates.forward(&x)?;
+        self.DEBUG_gates = Some(x.clone()); // for debugging purposes, to be removed later
+        let x = (residual + x)?;
+        self.DEBUG_block = Some(x.clone()); // for debugging purposes, to be removed later
         Ok(x)
     }
 }
 
 pub struct SmolText {
-    blocks: Vec<Block>,
+    pub blocks: Vec<Block>,
     norm: RmsNorm,
     lm_head: Linear,
 }
