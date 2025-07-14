@@ -1,8 +1,8 @@
 #[cfg(target_os = "linux")]
-mod webcam;
+mod v4l;
 #[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    webcam::v4l_demo()
+    v4l::v4l_demo()
 }
 
 #[cfg(not(target_os = "linux"))]
