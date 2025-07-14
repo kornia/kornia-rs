@@ -52,7 +52,7 @@ pub struct SmolModel {
     image_hidden_states: Option<Tensor>, // TODO: to be used for caching previous image hidden states
     merged_embeds: Vec<Tensor>,          // cache results
 
-    text: SmolText,
+    pub text: SmolText,
 
     pub DEBUG_embeds: Option<Tensor>, // for debugging purposes, to be removed later
 }
