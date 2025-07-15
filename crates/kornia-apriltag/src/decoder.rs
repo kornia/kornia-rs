@@ -1,12 +1,13 @@
 use std::{f32::consts::PI, ops::ControlFlow};
 
 use crate::{
-    family::{DecodedTag, TagFamily},
+    family::{TagFamily, TagFamilyKind},
     quad::Quad,
     utils::{
         matrix_3x3_cholesky, matrix_3x3_lower_triangle_inverse, matrix_3x3_mul, value_for_pixel,
         Point2d,
     },
+    DecodeTagsConfig,
 };
 use kornia_image::{allocator::ImageAllocator, Image};
 
@@ -104,24 +105,39 @@ pub struct QuickDecodeEntry {
 }
 
 /// A table for fast lookup of decoded tag codes and their associated metadata.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct QuickDecode(Vec<QuickDecodeEntry>);
 
+impl std::ops::Deref for QuickDecode {
+    type Target = Vec<QuickDecodeEntry>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for QuickDecode {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 impl QuickDecode {
-    /// Creates a new `QuickDecode` table for the given tag family.
+    /// Creates a new `QuickDecode` table for fast lookup of decoded tag codes and their associated metadata.
     ///
     /// # Arguments
     ///
-    /// * `tag_family` - A reference to the `TagFamily` for which to build the quick decode table.
+    /// * `nbits` - Number of bits in the tag code.
+    /// * `code_data` - Slice of code values to populate the table.
     ///
     /// # Returns
     ///
-    /// A `QuickDecode` instance containing precomputed entries for fast tag decoding.
-    // TODO: Support multiple tag familes. The current logic needs to be changed then
-    pub fn new(tag_family: &TagFamily) -> Self {
-        let ncodes = tag_family.code_data.len();
-        let capacity =
-            ncodes + tag_family.nbits * ncodes + ncodes * tag_family.nbits * (tag_family.nbits - 1);
+    /// A new `QuickDecode` instance with precomputed entries for all codes and their Hamming neighbors.
+    pub fn new(nbits: usize, code_data: &[usize]) -> Self {
+        let ncodes = code_data.len();
+        let capacity = ncodes // Hamming 0
+            + nbits * ncodes // Hamming 1
+            + ncodes * nbits * (nbits - 1); // Hamming 2
 
         let mut quick_decode = Self(vec![
             QuickDecodeEntry {
@@ -131,26 +147,21 @@ impl QuickDecode {
             capacity * 3
         ]);
 
-        tag_family
-            .code_data
-            .iter()
-            .enumerate()
-            .for_each(|(i, code)| {
-                quick_decode.add(*code, i as u16, 0);
+        code_data.iter().enumerate().for_each(|(i, code)| {
+            quick_decode.add(*code, i as u16, 0);
 
-                // add hamming 1
-                (0..tag_family.nbits).for_each(|j| {
-                    quick_decode.add(code ^ (1 << j), i as u16, 1);
-                });
-
-                // add hamming 2
-                (0..tag_family.nbits).for_each(|j| {
-                    (0..j).for_each(|k| {
-                        quick_decode.add(code ^ (1 << j) ^ (1 << k), i as u16, 2);
-                    });
-                });
+            // add hamming 1
+            (0..nbits).for_each(|j| {
+                quick_decode.add(code ^ (1 << j), i as u16, 1);
             });
 
+            // add hamming 2
+            (0..nbits).for_each(|j| {
+                (0..j).for_each(|k| {
+                    quick_decode.add(code ^ (1 << j) ^ (1 << k), i as u16, 2);
+                });
+            });
+        });
         quick_decode
     }
 
@@ -162,16 +173,16 @@ impl QuickDecode {
     /// * `id` - The tag ID associated with the code.
     /// * `hamming` - The Hamming distance for this code.
     fn add(&mut self, code: usize, id: u16, hamming: u8) {
-        let mut bucket = code % self.0.len();
+        let mut bucket = code % self.len();
 
         // TODO: Use iterators instead
-        while self.0[bucket].rcode != usize::MAX {
-            bucket = (bucket + 1) % self.0.len();
+        while self[bucket].rcode != usize::MAX {
+            bucket = (bucket + 1) % self.len();
         }
 
-        self.0[bucket].rcode = code;
-        self.0[bucket].id = id;
-        self.0[bucket].hamming = hamming;
+        self[bucket].rcode = code;
+        self[bucket].id = id;
+        self[bucket].hamming = hamming;
     }
 }
 
@@ -179,7 +190,7 @@ impl QuickDecode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Detection {
     /// Reference to the tag family this detection belongs to.
-    pub tag_family: DecodedTag,
+    pub tag_family_kind: TagFamilyKind,
     /// The decoded tag ID.
     pub id: u16,
     /// The Hamming distance of the detected code to the closest valid code.
@@ -193,28 +204,24 @@ pub struct Detection {
 }
 
 /// Buffer used for storing intermediate values during the sharpening process.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct SharpeningBuffer {
-    size: usize,
     values: Vec<f32>,
     sharpened: Vec<f32>,
 }
 
 impl SharpeningBuffer {
-    /// Creates a new `SharpeningBuffer` for the given tag family.
+    /// Creates a new `SharpeningBuffer` with the specified length.
     ///
     /// # Arguments
     ///
-    /// * `family` - Reference to the `TagFamily` for which to allocate the buffer.
+    /// * `len` - The length of the buffer arrays.
     ///
     /// # Returns
     ///
-    /// A new `SharpeningBuffer` instance with allocated buffers sized for the tag family.
-    pub fn new(family: &TagFamily) -> Self {
-        let len = family.total_width * family.total_width;
-
+    /// A new `SharpeningBuffer` instance with allocated buffers of size `len`.
+    pub fn new(len: usize) -> Self {
         Self {
-            size: family.total_width,
             values: vec![0.0; len],
             sharpened: vec![0.0; len],
         }
@@ -229,70 +236,24 @@ impl SharpeningBuffer {
     }
 }
 
-/// Options for decoding tags from an image.
-///
-/// This struct contains configuration parameters and precomputed data
-/// required for decoding tags, such as the tag family, quick decode table,
-/// edge refinement flag, and sharpening factor.
-pub struct DecodeTagsConfig<'a> {
-    /// Reference to the tag family used for decoding.
-    pub tag_family: &'a TagFamily,
-    /// Precomputed quick decode table for fast tag lookup.
-    pub quick_decode: QuickDecode,
-    /// Whether to enable edge refinement before decoding.
-    pub refine_edges_enabled: bool,
-    /// Sharpening factor applied during decoding.
-    pub decode_sharpening: f32,
-}
-
-impl<'a> DecodeTagsConfig<'a> {
-    /// Creates a new `DecodeTagsConfig` instance with the specified options.
-    ///
-    /// # Arguments
-    ///
-    /// * `family` - Reference to the tag family used for decoding.
-    /// * `refine_edges_enabled` - Whether to enable edge refinement before decoding.
-    /// * `decode_sharpening` - Sharpening factor applied during decoding.
-    ///
-    /// # Returns
-    ///
-    /// A new `DecodeTagsConfig` instance.
-    pub fn new(family: &'a TagFamily, refine_edges_enabled: bool, decode_sharpening: f32) -> Self {
-        Self {
-            tag_family: family,
-            quick_decode: QuickDecode::new(family),
-            refine_edges_enabled,
-            decode_sharpening,
-        }
-    }
-}
-
-/// Decodes tags from the provided image and quadrilaterals using the specified tag family and quick decode table.
+/// Decodes tags from a grayscale image using detected quadrilaterals and configuration parameters.
 ///
 /// # Arguments
 ///
 /// * `src` - Reference to the grayscale source image.
 /// * `quads` - Mutable slice of detected quadrilaterals to process.
-/// * `tag_family` - Reference to the tag family used for decoding.
-/// * `quick_decode` - Mutable reference to the quick decode table for fast tag lookup.
-/// * `refine_edges_enabled` - Whether to refine the edges of the quadrilaterals before decoding.
-/// * `decode_sharpening` - Sharpening factor applied during decoding.
-/// * `gray_model_pair` - A mutable reference to a `GrayModelPair`.
-/// * `sharpening_buffer` - A mutable reference to a `SharpeningBuffer`.
-///
-/// Make sure to call [`GrayModelPair::reset`] and [`SharpeningBuffer::reset`] if you are using this function multiple
-/// times.
+/// * `config` - Reference to the tag decoding configuration.
+/// * `gray_model_pair` - Mutable reference to a pair of grayscale models for white and black regions.
+/// * `sharpening_buffer` - Mutable reference to a buffer used for sharpening intermediate values.
 ///
 /// # Returns
 ///
-/// A vector of `Detection` objects representing successfully decoded tags.
-// TODO: Add support for multiple tag families
+/// Returns a vector of `Detection` containing information about each successfully decoded tag.
 pub fn decode_tags<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     quads: &mut [Quad],
-    config: &DecodeTagsConfig<'_>,
+    config: &mut DecodeTagsConfig,
     gray_model_pair: &mut GrayModelPair,
-    sharpening_buffer: &mut SharpeningBuffer,
 ) -> Vec<Detection> {
     // TODO: Avoid allocations on every call
     let mut detections = Vec::new();
@@ -306,50 +267,52 @@ pub fn decode_tags<A: ImageAllocator>(
             return;
         }
 
-        if config.tag_family.reversed_border != quad.reversed_border {
-            return;
-        }
-
-        let mut entry = QuickDecodeEntry::default();
-
-        let decision_margin = quad_decode(
-            src,
-            quad,
-            config,
-            &mut entry,
-            gray_model_pair,
-            sharpening_buffer,
-        );
-
-        if let Some(decision_margin) = decision_margin {
-            if decision_margin >= 0.0 && entry.hamming < u8::MAX {
-                let theta = entry.rotation as f32 * PI / 2.0;
-                let c = theta.cos();
-                let s = theta.sin();
-
-                // Fix the rotation of our homography to properly orient the tag
-                #[rustfmt::skip]
-                let r = [
-                    c,  -s,   0.0,
-                    s,   c,   0.0,
-                    0.0, 0.0, 1.0,
-                ];
-
-                quad.homography = matrix_3x3_mul(&quad.homography, &r);
-                let center = quad.homography_project(0.0, 0.0);
-
-                let detection = Detection {
-                    tag_family: config.tag_family.into(),
-                    id: entry.id,
-                    hamming: entry.hamming,
-                    decision_margin,
-                    center,
-                    quad: std::mem::take(quad), // TODO: Should we take or copy the value? Benchmark it
-                };
-
-                detections.push(detection);
+        config.tag_families.iter_mut().for_each(|family| {
+            if family.reversed_border != quad.reversed_border {
+                return;
             }
-        }
+
+            let mut entry = QuickDecodeEntry::default();
+
+            let decision_margin = quad_decode(
+                src,
+                family,
+                quad,
+                config.decode_sharpening,
+                &mut entry,
+                gray_model_pair,
+            );
+
+            if let Some(decision_margin) = decision_margin {
+                if decision_margin >= 0.0 && entry.hamming < u8::MAX {
+                    let theta = entry.rotation as f32 * PI / 2.0;
+                    let c = theta.cos();
+                    let s = theta.sin();
+
+                    // Fix the rotation of our homography to properly orient the tag
+                    #[rustfmt::skip]
+                    let r = [
+                        c,  -s,   0.0,
+                        s,   c,   0.0,
+                        0.0, 0.0, 1.0,
+                    ];
+
+                    quad.homography = matrix_3x3_mul(&quad.homography, &r);
+                    let center = quad.homography_project(0.0, 0.0);
+
+                    let detection = Detection {
+                        tag_family_kind: family.into(),
+                        id: entry.id,
+                        hamming: entry.hamming,
+                        decision_margin,
+                        center,
+                        quad: std::mem::take(quad), // TODO: Should we take or copy the value? Benchmark it
+                    };
+
+                    detections.push(detection);
+                }
+            }
+        });
     });
 
     detections
@@ -529,9 +492,8 @@ fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad) {
 /// * `src` - Reference to the grayscale source image.
 /// * `tag_family` - Reference to the tag family used for decoding.
 /// * `quad` - Reference to the quadrilateral representing the tag in the image.
-/// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the decoding result.
-/// * `quick_decode` - Reference to the quick decode table for fast tag lookup.
 /// * `decode_sharpening` - Sharpening factor applied during decoding.
+/// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the decoding result.
 /// * `gray_model_pair` - A mutable reference to a `GrayModelPair`.
 /// * `sharpening_buffer` - A mutable reference to a `SharpeningBuffer`.
 ///
@@ -540,11 +502,11 @@ fn refine_edges<A: ImageAllocator>(src: &Image<u8, 1, A>, quad: &mut Quad) {
 /// Returns `Some(f32)` containing the decision margin if decoding is successful, or `None` otherwise.
 fn quad_decode<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
+    tag_family: &mut TagFamily,
     quad: &Quad,
-    config: &DecodeTagsConfig<'_>,
+    decode_sharpening: f32,
     entry: &mut QuickDecodeEntry,
     gray_model_pair: &mut GrayModelPair,
-    sharpening_buffer: &mut SharpeningBuffer,
 ) -> Option<f32> {
     struct Pattern {
         start_x: f32,
@@ -576,7 +538,7 @@ fn quad_decode<A: ImageAllocator>(
 
         // right white column
         Pattern {
-            start_x: config.tag_family.width_at_border as f32 + 0.5,
+            start_x: tag_family.width_at_border as f32 + 0.5,
             start_y: 0.5,
             step_x: 0.0,
             step_y: 1.0,
@@ -585,7 +547,7 @@ fn quad_decode<A: ImageAllocator>(
 
         // right black column
         Pattern {
-            start_x: config.tag_family.width_at_border as f32 - 0.5,
+            start_x: tag_family.width_at_border as f32 - 0.5,
             start_y: 0.5,
             step_x: 0.0,
             step_y: 1.0,
@@ -613,7 +575,7 @@ fn quad_decode<A: ImageAllocator>(
         // bottom white row
         Pattern {
             start_x: 0.5,
-            start_y: config.tag_family.width_at_border as f32 + 0.5,
+            start_y: tag_family.width_at_border as f32 + 0.5,
             step_x: 1.0,
             step_y: 0.0,
             is_white: false,
@@ -622,7 +584,7 @@ fn quad_decode<A: ImageAllocator>(
         // bottom black row
         Pattern {
             start_x: 0.5,
-            start_y: config.tag_family.width_at_border as f32 - 0.5,
+            start_y: tag_family.width_at_border as f32 - 0.5,
             step_x: 1.0,
             step_y: 0.0,
             is_white: false,
@@ -632,11 +594,11 @@ fn quad_decode<A: ImageAllocator>(
     let src_slice = src.as_slice();
 
     patterns.iter().for_each(|pattern| {
-        (0..config.tag_family.width_at_border).for_each(|i| {
-            let tagx01 = (pattern.start_x + i as f32 * pattern.step_x)
-                / config.tag_family.width_at_border as f32;
-            let tagy01 = (pattern.start_y + i as f32 * pattern.step_y)
-                / config.tag_family.width_at_border as f32;
+        (0..tag_family.width_at_border).for_each(|i| {
+            let tagx01 =
+                (pattern.start_x + i as f32 * pattern.step_x) / tag_family.width_at_border as f32;
+            let tagy01 =
+                (pattern.start_y + i as f32 * pattern.step_y) / tag_family.width_at_border as f32;
 
             let tagx = 2.0 * (tagx01 - 0.5);
             let tagy = 2.0 * (tagy01 - 0.5);
@@ -667,7 +629,7 @@ fn quad_decode<A: ImageAllocator>(
     });
 
     gray_model_pair.white_model.solve();
-    if config.tag_family.width_at_border > 1 {
+    if tag_family.width_at_border > 1 {
         gray_model_pair.black_model.solve();
     } else {
         gray_model_pair.black_model.c[0] = 0.0;
@@ -678,7 +640,7 @@ fn quad_decode<A: ImageAllocator>(
     if (gray_model_pair.white_model.interpolate(0.0, 0.0)
         - gray_model_pair.black_model.interpolate(0.0, 0.0)
         < 0.0)
-        != config.tag_family.reversed_border
+        != tag_family.reversed_border
     {
         return None;
     }
@@ -688,15 +650,14 @@ fn quad_decode<A: ImageAllocator>(
     let mut black_score_count = 1usize;
     let mut white_score_count = 1usize;
 
-    let min_coord =
-        (config.tag_family.width_at_border as isize - config.tag_family.total_width as isize) / 2;
+    let min_coord = (tag_family.width_at_border as isize - tag_family.total_width as isize) / 2;
 
-    (0..config.tag_family.nbits).for_each(|i| {
-        let bit_x = config.tag_family.bit_x[i];
-        let bit_y = config.tag_family.bit_y[i];
+    (0..tag_family.nbits).for_each(|i| {
+        let bit_x = tag_family.bit_x[i];
+        let bit_y = tag_family.bit_y[i];
 
-        let tag_x01 = (bit_x as f32 + 0.5) / config.tag_family.width_at_border as f32;
-        let tag_y01 = (bit_y as f32 + 0.5) / config.tag_family.width_at_border as f32;
+        let tag_x01 = (bit_x as f32 + 0.5) / tag_family.width_at_border as f32;
+        let tag_y01 = (bit_y as f32 + 0.5) / tag_family.width_at_border as f32;
 
         let tag_x = 2.0 * (tag_x01 - 0.5);
         let tag_y = 2.0 * (tag_y01 - 0.5);
@@ -711,23 +672,27 @@ fn quad_decode<A: ImageAllocator>(
             + gray_model_pair.white_model.interpolate(tag_x, tag_y))
             / 2.0;
 
-        sharpening_buffer.values[(config.tag_family.total_width as isize
+        tag_family.sharpening_buffer.values[(tag_family.total_width as isize
             * (bit_y as isize - min_coord)
             + bit_x as isize
             - min_coord) as usize] = v - thresh;
     });
 
-    sharpen(sharpening_buffer, config.decode_sharpening);
+    sharpen(
+        &mut tag_family.sharpening_buffer,
+        decode_sharpening,
+        tag_family.total_width,
+    );
 
     let mut rcode = 0usize;
-    (0..config.tag_family.nbits).for_each(|i| {
-        let bit_y = config.tag_family.bit_y[i];
-        let bit_x = config.tag_family.bit_x[i];
+    (0..tag_family.nbits).for_each(|i| {
+        let bit_y = tag_family.bit_y[i];
+        let bit_x = tag_family.bit_x[i];
 
         rcode <<= 1;
 
-        let v = sharpening_buffer.values[((bit_y as isize - min_coord)
-            * config.tag_family.total_width as isize
+        let v = tag_family.sharpening_buffer.values[((bit_y as isize - min_coord)
+            * tag_family.total_width as isize
             + bit_x as isize
             - min_coord) as usize];
 
@@ -741,7 +706,7 @@ fn quad_decode<A: ImageAllocator>(
         }
     });
 
-    quick_decode_codeword(config.tag_family, rcode, entry, &config.quick_decode);
+    quick_decode_codeword(tag_family, rcode, entry);
 
     Some((white_score / white_score_count as f32).min(black_score / black_score_count as f32))
 }
@@ -752,7 +717,8 @@ fn quad_decode<A: ImageAllocator>(
 ///
 /// * `sharpening_buffer` - Mutable reference of `SharpeningBuffer`.
 /// * `decode_sharpening` - The sharpening factor to apply.
-fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32) {
+/// * `size` - The width and height of the square buffer.
+pub fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32, size: usize) {
     #[rustfmt::skip]
     const KERNEL: [f32; 9] = [
          0.0, -1.0,  0.0,
@@ -760,26 +726,26 @@ fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32) {
          0.0, -1.0,  0.0,
     ];
 
-    (0..sharpening_buffer.size).for_each(|y| {
-        let idy = y * sharpening_buffer.size;
+    (0..size).for_each(|y| {
+        let idy = y * size;
 
-        (0..sharpening_buffer.size).for_each(|x| {
+        (0..size).for_each(|x| {
             let idx = idy + x;
             sharpening_buffer.sharpened[idx] = 0.0;
 
             (0..3).for_each(|i| {
                 let yi = y + i;
 
-                if yi == 0 || (yi - 1) > sharpening_buffer.size - 1 {
+                if yi == 0 || (yi - 1) > size - 1 {
                     return;
                 }
 
                 let kernel_row_offset = 3 * i;
-                let buffer_row_offset = (yi - 1) * sharpening_buffer.size;
+                let buffer_row_offset = (yi - 1) * size;
 
                 (0..3).for_each(|j| {
                     let xj = x + j;
-                    if xj == 0 || (xj - 1) > sharpening_buffer.size - 1 {
+                    if xj == 0 || (xj - 1) > size - 1 {
                         return;
                     }
 
@@ -804,28 +770,22 @@ fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32) {
 ///
 /// # Arguments
 ///
-/// * `tag_family` - Reference to the tag family used for decoding.
-/// * `rcode` - The raw code value to decode.
-/// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the decoding result.
-/// * `quick_decode` - Reference to the quick decode table for fast tag lookup.
-fn quick_decode_codeword(
-    tag_family: &TagFamily,
-    mut rcode: usize,
-    entry: &mut QuickDecodeEntry,
-    quick_decode: &QuickDecode,
-) {
+/// * `tag_family` - Reference to the tag family containing the quick decode table.
+/// * `rcode` - The codeword to look up.
+/// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the result.
+fn quick_decode_codeword(tag_family: &TagFamily, mut rcode: usize, entry: &mut QuickDecodeEntry) {
     if let ControlFlow::Break(_) = (0..4).try_for_each(|ridx| {
-        let mut bucket = rcode % quick_decode.0.len();
+        let mut bucket = rcode % tag_family.quick_decode.0.len();
 
-        while quick_decode.0[bucket].rcode != usize::MAX {
-            if quick_decode.0[bucket].rcode == rcode {
-                *entry = quick_decode.0[bucket].clone();
+        while tag_family.quick_decode.0[bucket].rcode != usize::MAX {
+            if tag_family.quick_decode.0[bucket].rcode == rcode {
+                *entry = tag_family.quick_decode.0[bucket].clone();
                 entry.rotation = ridx;
 
                 return ControlFlow::Break(());
             }
 
-            bucket = (bucket + 1) % quick_decode.0.len();
+            bucket = (bucket + 1) % tag_family.quick_decode.0.len();
         }
 
         rcode = rotate_90(rcode, tag_family.nbits);
@@ -872,7 +832,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        quad::{fit_quads, FitQuadConfig},
+        quad::fit_quads,
         segmentation::{find_connected_components, find_gradient_clusters},
         threshold::{adaptive_threshold, TileMinMax},
         union_find::UnionFind,
@@ -885,7 +845,7 @@ mod tests {
 
     #[test]
     fn test_decode_tags() -> Result<(), Box<dyn std::error::Error>> {
-        let tag_family = TagFamily::tag36_h11();
+        let mut config = DecodeTagsConfig::new(vec![TagFamily::tag36_h11()]);
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
         let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
@@ -893,19 +853,12 @@ mod tests {
         let mut uf = UnionFind::new(bin.as_slice().len());
         let mut clusters = HashMap::new();
         let mut gray_model_pair = GrayModelPair::default();
-        let mut sharpening_buffer = SharpeningBuffer::new(&tag_family);
 
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
         find_gradient_clusters(&bin, &mut uf, &mut clusters);
 
-        let mut quads = fit_quads(
-            &bin,
-            &tag_family,
-            &mut clusters,
-            5,
-            FitQuadConfig::default(),
-        );
+        let mut quads = fit_quads(&bin, &mut clusters, &config);
 
         for quad in &mut quads {
             for corner in &mut quad.corners {
@@ -914,20 +867,14 @@ mod tests {
             }
         }
 
-        let tags = decode_tags(
-            &src,
-            &mut quads,
-            &DecodeTagsConfig::new(&tag_family, true, 0.25),
-            &mut gray_model_pair,
-            &mut sharpening_buffer,
-        );
+        let tags = decode_tags(&src, &mut quads, &mut config, &mut gray_model_pair);
 
         assert_eq!(tags.len(), 1);
         assert_eq!(tags[0].id, 23);
         assert!((tags[0].center.x - 15.0).abs() < EPSILON);
         assert!((tags[0].center.y - 15.0).abs() < EPSILON);
         assert_eq!(tags[0].hamming, 0);
-        assert_eq!(tags[0].tag_family, DecodedTag::Tag36H11);
+        assert_eq!(tags[0].tag_family_kind, TagFamilyKind::Tag36H11);
 
         Ok(())
     }
@@ -1047,7 +994,7 @@ mod tests {
 
     #[test]
     fn test_quad_decode() -> Result<(), Box<dyn std::error::Error>> {
-        let tag_family = TagFamily::tag36_h11();
+        let mut tag_family = TagFamily::tag36_h11();
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
         let quad = Quad {
@@ -1077,15 +1024,14 @@ mod tests {
 
         let mut entry = QuickDecodeEntry::default();
         let mut gray_model_pair = GrayModelPair::default();
-        let mut sharpening_buffer = SharpeningBuffer::new(&tag_family);
 
         let d = quad_decode(
             &src,
+            &mut tag_family,
             &quad,
-            &DecodeTagsConfig::new(&tag_family, true, 0.25),
+            0.25,
             &mut entry,
             &mut gray_model_pair,
-            &mut sharpening_buffer,
         );
 
         assert_eq!(d, Some(225.50317));
@@ -1096,7 +1042,6 @@ mod tests {
     #[test]
     fn test_sharpen() {
         let mut sharpening_buffer = SharpeningBuffer {
-            size: 4,
             values: vec![
                 255.0, 255.0, 127.0, 0.0, 0.0, 0.0, 0.0, -1.0, 127.0, 63.75, 0.0, 63.75, 127.5,
                 -1.0, 127.5, 127.5,
@@ -1104,7 +1049,7 @@ mod tests {
             sharpened: vec![0.0; 16],
         };
 
-        sharpen(&mut sharpening_buffer, 0.25);
+        sharpen(&mut sharpening_buffer, 0.25, 4);
         let expected_values = [
             446.25, 414.5, 190.25, -31.5, -95.5, -79.6875, -31.5, -17.9375, 206.1875, 96.0, -63.75,
             95.875, 223.5, -81.6875, 223.375, 207.1875,
@@ -1119,8 +1064,7 @@ mod tests {
         let rcode = 52087007497;
 
         let mut quick_decode_entry = QuickDecodeEntry::default();
-        let quick_decode = QuickDecode::new(&tag_family);
-        quick_decode_codeword(&tag_family, rcode, &mut quick_decode_entry, &quick_decode);
+        quick_decode_codeword(&tag_family, rcode, &mut quick_decode_entry);
 
         let expected_decode_entry = QuickDecodeEntry {
             rcode: 52087007497,
