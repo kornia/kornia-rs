@@ -69,52 +69,34 @@ pub enum TagFamilyKind {
 
 impl From<TagFamily> for TagFamilyKind {
     fn from(value: TagFamily) -> Self {
-        match value.name.as_str() {
-            "tag16_h5" => TagFamilyKind::Tag16H5,
-            "tag36_h11" => TagFamilyKind::Tag36H11,
-            "tag36_h10" => TagFamilyKind::Tag36H10,
-            "tag25_h9" => TagFamilyKind::Tag25H9,
-            "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
-            "tagcircle49_h12" => TagFamilyKind::TagCircle49H12,
-            "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
-            "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
-            "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
-            _ => TagFamilyKind::Custom(value.name),
-        }
+        to_tag_family_kind_impl(&value.name)
     }
 }
 
 impl From<&TagFamily> for TagFamilyKind {
     fn from(value: &TagFamily) -> Self {
-        match value.name.as_str() {
-            "tag16_h5" => TagFamilyKind::Tag16H5,
-            "tag36_h11" => TagFamilyKind::Tag36H11,
-            "tag36_h10" => TagFamilyKind::Tag36H10,
-            "tag25_h9" => TagFamilyKind::Tag25H9,
-            "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
-            "tagcircle49_h12" => TagFamilyKind::TagCircle49H12,
-            "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
-            "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
-            "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
-            _ => TagFamilyKind::Custom(value.name.clone()),
-        }
+        to_tag_family_kind_impl(&value.name)
     }
 }
 
 impl From<&mut TagFamily> for TagFamilyKind {
     fn from(value: &mut TagFamily) -> Self {
-        match value.name.as_str() {
-            "tag16_h5" => TagFamilyKind::Tag16H5,
-            "tag36_h11" => TagFamilyKind::Tag36H11,
-            "tag36_h10" => TagFamilyKind::Tag36H10,
-            "tag25_h9" => TagFamilyKind::Tag25H9,
-            "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
-            "tagcircle49_h12" => TagFamilyKind::TagCircle49H12,
-            "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
-            "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
-            "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
-            _ => TagFamilyKind::Custom(value.name.clone()),
-        }
+        to_tag_family_kind_impl(&value.name)
+    }
+}
+
+fn to_tag_family_kind_impl(value: &str) -> TagFamilyKind {
+    match value {
+        "tag16_h5" => TagFamilyKind::Tag16H5,
+        "tag36_h11" => TagFamilyKind::Tag36H11,
+        "tag36_h10" => TagFamilyKind::Tag36H10,
+        "tag25_h9" => TagFamilyKind::Tag25H9,
+        "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
+        "tagcircle49_h12" => TagFamilyKind::TagCircle49H12,
+        "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
+        "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
+        "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
+        _ => TagFamilyKind::Custom(value.to_string()),
     }
 }
 
