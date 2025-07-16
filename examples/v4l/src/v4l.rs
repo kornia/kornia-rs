@@ -34,7 +34,7 @@ struct Args {
     debug: bool,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub fn v4l_demo() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
 
     // Create the recording stream

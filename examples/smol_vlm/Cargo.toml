@@ -1,5 +1,5 @@
 [package]
-name = "copper"
+name = "smol_vlm"
 authors.workspace = true
 categories.workspace = true
 description.workspace = true
@@ -13,9 +13,12 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-bincode = { workspace = true }
-cu29 = "0.8.0"
-cu29-helpers = "0.8.0"
-kornia = { workspace = true, features = ["gstreamer"] }
-rerun = { workspace = true }
-tempfile = "3.19"
+argh = { workspace = true }
+reqwest = { version = "0.12.15", features = ["blocking"] }
+kornia-io = { workspace = true }
+kornia-vlm = { workspace = true }
+kornia-image = { workspace = true }
+kornia-tensor = { workspace = true }
+
+[features]
+cuda = ["kornia-vlm/cuda"]

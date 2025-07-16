@@ -29,6 +29,8 @@ jobs:
     steps:
       - run: sudo apt-get update
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Rust toolchain
         run: |
@@ -43,7 +45,7 @@ jobs:
         uses: taiki-e/install-action@cross
 
       - name: Run tests
-        run: cross test --target ${{ matrix.target }} --features "turbojpeg,gstreamer,v4l"
+        run: cross test --target ${{ matrix.target }} --features "turbojpeg,gstreamer,v4l,arrow,bincode,serde"
 
       - name: Show sccache stats
         run: sccache --show-stats
@@ -61,6 +63,8 @@ jobs:
     steps:
       - run: sudo apt-get update
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Rust toolchain
         run: |

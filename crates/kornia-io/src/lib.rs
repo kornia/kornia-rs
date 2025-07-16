@@ -25,15 +25,15 @@ pub mod jpeg;
 pub mod gstreamer;
 
 // NOTE: remove in future release
-#[cfg(feature = "gstreamer")]
 #[deprecated(since = "0.1.10", note = "Use the gstreamer module instead")]
+#[cfg(feature = "gstreamer")]
 pub use gstreamer as stream;
 
 /// TIFF image encoding and decoding.
 pub mod tiff;
 
 /// V4L2 video module for real-time video processing.
-#[cfg(feature = "v4l")]
+#[cfg(all(feature = "v4l", target_os = "linux"))]
 pub mod v4l;
 
 /// Internal utility functions for image bit depth conversion.

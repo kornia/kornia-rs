@@ -1,20 +1,24 @@
 nodes:
-  - id: web-camera
-    build: cargo build -p dora-video-capture
-    path: ./target/debug/dora-video-capture
+  - id: v4l-camera
+    git: https://github.com/kornia/dora-nodes-hub.git
+    rev: 5b309b6c6f95074f8d38f2a236142e2e0751ee19
+    build: cargo build -p kornia-v4l-capture --release
+    path: ./target/release/kornia-v4l-capture
     inputs:
-      tick: dora/timer/millis/10
+      tick: dora/timer/millis/30
     outputs:
       - frame
     env:
-      SOURCE_TYPE: "webcam"
-      SOURCE_URI: "/dev/video0"
+      SOURCE_DEVICE: "/dev/video0"
       SOURCE_FPS: 30
-      IMAGE_COLS: 640
-      IMAGE_ROWS: 480
+      IMAGE_COLS: 320
+      IMAGE_ROWS: 180
+      PIXEL_FORMAT: "YUYV"
   - id: rtsp-camera
-    build: cargo build -p dora-video-capture
-    path: ./target/debug/dora-video-capture
+    git: https://github.com/kornia/dora-nodes-hub.git
+    rev: 5b309b6c6f95074f8d38f2a236142e2e0751ee19
+    build: cargo build -p kornia-gst-capture --release
+    path: ./target/release/kornia-gst-capture
     inputs:
       tick: dora/timer/millis/10
     outputs:
@@ -22,20 +26,24 @@ nodes:
     env:
       SOURCE_TYPE: "rtsp"
       SOURCE_URI: "rtsp://tapo_entrance:123456789@192.168.1.141:554/stream2"
-  - id: imgproc
-    build: cargo build -p dora-imgproc
-    path: ./target/debug/dora-imgproc
+  - id: sobel
+    git: https://github.com/kornia/dora-nodes-hub.git
+    rev: 5b309b6c6f95074f8d38f2a236142e2e0751ee19
+    build: cargo build -p kornia-imgproc-sobel --release
+    path: ./target/release/kornia-imgproc-sobel
     inputs:
-      frame: web-camera/frame
+      frame: v4l-camera/frame
     outputs:
       - output
   - id: video-sink
-    build: cargo build -p dora-video-sink
-    path: ./target/debug/dora-video-sink
+    git: https://github.com/kornia/dora-nodes-hub.git
+    rev: 5b309b6c6f95074f8d38f2a236142e2e0751ee19
+    build: cargo build -p rerun-video-sink --release
+    path: ./target/release/rerun-video-sink
     inputs:
-      web-camera/frame: web-camera/frame
-      rtsp-camera/frame: rtsp-camera/frame
-      imgproc/output: imgproc/output
+      frame: v4l-camera/frame
+      rtsp: rtsp-camera/frame
+      sobel: sobel/output
     env:
       RERUN_HOST: 127.0.0.1
       RERUN_PORT: 9876

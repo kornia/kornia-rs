@@ -3,11 +3,6 @@ resolver = "2"
 members = [
     "crates/*",
     "examples/*",
-    # NOTE: need to add dora examples to make rust analyzer to work
-    "examples/dora/video-capture",
-    "examples/dora/imgproc",
-    "examples/dora/video-sink",
-    "examples/dora/image-utils",
     # "kornia-py",
 ]
 exclude = ["kornia-py", "examples/dora"]
@@ -24,23 +19,23 @@ license-file = "LICENSE"
 readme = "README.md"
 repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
-version = "0.1.10-rc.3"
+version = "0.1.10-rc.4"
 
 [workspace.dependencies]
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
-kornia-3d = { path = "crates/kornia-3d", version = "0.1.10-rc.3" }
-kornia-apriltag = { path = "crates/kornia-apriltag", version = "0.1.10-rc.3" }
-kornia-icp = { path = "crates/kornia-icp", version = "0.1.10-rc.3" }
-kornia-image = { path = "crates/kornia-image", version = "0.1.10-rc.3" }
-kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.10-rc.3" }
-kornia-io = { path = "crates/kornia-io", version = "0.1.10-rc.3" }
-kornia-lie = { path = "crates/kornia-lie", version = "0.1.10-rc.3" }
-kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.10-rc.3" }
-kornia-nn = { path = "crates/kornia-nn", version = "0.1.10-rc.3" }
-kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.10-rc.3" }
-kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.10-rc.3" }
-kornia-vlm = { path = "crates/kornia-vlm", version = "0.1.10-rc.3" }
-kornia = { path = "crates/kornia", version = "0.1.10-rc.3" }
+kornia-3d = { path = "crates/kornia-3d", version = "0.1.10-rc.4" }
+kornia-apriltag = { path = "crates/kornia-apriltag", version = "0.1.10-rc.4" }
+kornia-icp = { path = "crates/kornia-icp", version = "0.1.10-rc.4" }
+kornia-image = { path = "crates/kornia-image", version = "0.1.10-rc.4" }
+kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.10-rc.4" }
+kornia-io = { path = "crates/kornia-io", version = "0.1.10-rc.4" }
+kornia-lie = { path = "crates/kornia-lie", version = "0.1.10-rc.4" }
+kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.10-rc.4" }
+kornia-nn = { path = "crates/kornia-nn", version = "0.1.10-rc.4" }
+kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.10-rc.4" }
+kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.10-rc.4" }
+kornia-vlm = { path = "crates/kornia-vlm", version = "0.1.10-rc.4" }
+kornia = { path = "crates/kornia", version = "0.1.10-rc.4" }
 
 # dev dependencies for workspace
 argh = "0.1"
@@ -55,5 +50,6 @@ num-traits = "0.2"
 rand = "0.9"
 rerun = "0.23"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tempfile = "3.10"
 thiserror = "2"
