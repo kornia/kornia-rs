@@ -116,7 +116,7 @@ impl V4LVideoCapture {
         };
 
         // default to disable dynamic framerate
-        capture.set_control(CameraControl::DynamicFramerate(false))?;
+        //capture.set_control(CameraControl::DynamicFramerate(false))?;
 
         Ok(capture)
     }
