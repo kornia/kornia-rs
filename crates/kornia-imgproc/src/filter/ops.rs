@@ -33,8 +33,10 @@ pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 ///
 /// * `src` - The source image with shape (H, W, C).
 /// * `dst` - The destination image with shape (H, W, C).
-/// * `kernel_size` - The size of the kernel (kernel_x, kernel_y).
-/// * `sigma` - The sigma of the gaussian kernel.
+/// * `kernel_size` - The size of the kernel (kernel_x, kernel_y). Or, they can
+///                   be zero and they will be computed from sigma values.
+/// * `sigma` - The sigma of the gaussian kernel. sigma.1 can be zero and it
+///             will take on the same value as sigma.0.
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
 /// NOTE: This function uses a constant border type.
