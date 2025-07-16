@@ -41,9 +41,32 @@ pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,
-    kernel_size: (usize, usize),
-    sigma: (f32, f32),
+    mut kernel_size: (usize, usize),
+    mut sigma: (f32, f32),
 ) -> Result<(), ImageError> {
+    if sigma.1 <= 0.0 {
+        sigma.1 = sigma.0;
+    }
+
+    // Auto-compute the kernel sizes based on sigma if 0 or negative.
+    // NOTE: the `| 1` is to ensure that the number is always odd i.e. the 2^0
+    //       bit is always ON.
+    if kernel_size.0 <= 0 && sigma.0 > 0.0 {
+        kernel_size.0 =
+            (sigma.0 * (if C == 1 { 3.0 } else { 4.0 }) * 2.0 + 1.0).round() as usize | 1;
+    }
+    if kernel_size.1 <= 0 && sigma.1 > 0.0 {
+        kernel_size.1 =
+            (sigma.1 * (if C == 1 { 3.0 } else { 4.0 }) * 2.0 + 1.0).round() as usize | 1;
+    }
+    assert!(
+        kernel_size.0 > 0 && kernel_size.0 % 2 == 1 && kernel_size.1 > 0 && kernel_size.1 % 2 == 1
+    );
+
+    // Sigma should be always positive.
+    sigma.0 = sigma.0.max(0.0);
+    sigma.1 = sigma.1.max(0.0);
+
     let kernel_x = kernels::gaussian_kernel_1d(kernel_size.0, sigma.0);
     let kernel_y = kernels::gaussian_kernel_1d(kernel_size.1, sigma.1);
     separable_filter(src, dst, &kernel_x, &kernel_y)?;
@@ -403,6 +426,38 @@ mod tests {
                 13.5089, 15.999998, 17.0, 17.999996, 16.86986,
                 15.58594, 18.230816, 19.124311, 20.017801, 18.588936,
             ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_gaussian_blur_autocompute_ksize() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 5,
+            height: 5,
+        };
+
+        #[rustfmt::skip]
+        let img = Image::new(
+            size,
+            (0..25).map(|x| x as f32).collect(),
+            CpuAllocator
+        )?;
+
+        let mut dst = Image::<_, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
+
+        gaussian_blur(&img, &mut dst, (0, 0), (0.5, 0.5))?;
+
+        #[rustfmt::skip]
+        assert_eq!(
+            dst.as_slice(),
+            &[0.573374, 1.4282724, 2.3214629, 3.2134287, 3.5740836, 
+              4.5745554, 5.999999, 7.000791, 7.997888, 7.9328527, 
+              9.039831, 10.997623, 11.999999, 12.996041, 12.399015, 
+              13.500337, 15.989445, 16.992872, 17.987333, 16.858635, 
+              15.576923, 18.21976, 19.117384, 20.004917, 18.577633,
+            ]
+
         );
         Ok(())
     }
