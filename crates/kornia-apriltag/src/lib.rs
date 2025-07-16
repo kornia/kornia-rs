@@ -7,6 +7,7 @@ use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     Image, ImageSize,
 };
+use kornia_imgproc::resize::resize_fast;
 
 use crate::{
     decoder::{decode_tags, Detection, GrayModelPair},
@@ -65,11 +66,13 @@ pub struct DecodeTagsConfig {
     pub min_tag_width: usize,
     /// Minimum difference between white and black pixels for thresholding.
     pub min_white_black_difference: u8,
+    /// TODO
+    downscale_factor: usize,
 }
 
 impl DecodeTagsConfig {
     /// Creates a new `DecodeTagsConfig` with the given tag families.
-    pub fn new(tag_family_kinds: Vec<TagFamilyKind>) -> Self {
+    pub fn new(tag_family_kinds: Vec<TagFamilyKind>, downscale_factor: usize) -> Self {
         let mut tag_families = Vec::with_capacity(tag_family_kinds.len());
         let mut normal_border = false;
         let mut reversed_border = false;
@@ -86,6 +89,8 @@ impl DecodeTagsConfig {
             tag_families.push(family);
         });
 
+        min_tag_width /= downscale_factor;
+
         if min_tag_width < 3 {
             min_tag_width = 3;
         }
@@ -100,12 +105,13 @@ impl DecodeTagsConfig {
             reversed_border,
             min_tag_width,
             min_white_black_difference: 20,
+            downscale_factor,
         }
     }
 
     /// Creates a `DecodeTagsConfig` with all supported tag families.
-    pub fn all() -> Self {
-        Self::new(TagFamilyKind::all())
+    pub fn all(downscale_factor: usize) -> Self {
+        Self::new(TagFamilyKind::all(), downscale_factor)
     }
 
     /// Adds a tag family to the configuration.
@@ -130,6 +136,7 @@ impl DecodeTagsConfig {
 /// Decoder for AprilTag detection and decoding.
 pub struct AprilTagDecoder {
     config: DecodeTagsConfig,
+    downscale_img: Option<Image<u8, 1, CpuAllocator>>,
     bin_img: Image<Pixel, 1, CpuAllocator>,
     tile_min_max: TileMinMax,
     uf: UnionFind,
@@ -161,12 +168,27 @@ impl AprilTagDecoder {
     ///
     /// Returns a `Result` containing the new `AprilTagDecoder` or an `AprilTagError`.
     pub fn new(config: DecodeTagsConfig, img_size: ImageSize) -> Result<Self, AprilTagError> {
-        let bin_img = Image::from_size_val(img_size, Pixel::Skip, CpuAllocator)?;
-        let tile_min_max = TileMinMax::new(img_size, 4);
-        let uf = UnionFind::new(img_size.width * img_size.height);
+        let (new_size, downscale_img) = if config.downscale_factor == 1 {
+            (img_size, None)
+        } else {
+            let new_size = ImageSize {
+                width: img_size.width / config.downscale_factor,
+                height: img_size.height / config.downscale_factor,
+            };
+
+            (
+                new_size,
+                Some(Image::from_size_val(new_size, 0, CpuAllocator)?),
+            )
+        };
+
+        let bin_img = Image::from_size_val(new_size, Pixel::Skip, CpuAllocator)?;
+        let tile_min_max = TileMinMax::new(new_size, 4);
+        let uf = UnionFind::new(new_size.width * new_size.height);
 
         Ok(Self {
             config,
+            downscale_img,
             bin_img,
             tile_min_max,
             uf,
@@ -193,15 +215,30 @@ impl AprilTagDecoder {
         &mut self,
         src: &Image<u8, 1, A>,
     ) -> Result<Vec<Detection>, AprilTagError> {
-        // TODO: Add support for downscaling image
+        if self.config.downscale_factor == 1 {
+            // Step 1: Adaptive Threshold
+            adaptive_threshold(
+                src,
+                &mut self.bin_img,
+                &mut self.tile_min_max,
+                self.config.min_white_black_difference,
+            )?;
+        } else {
+            let downscale_img = unsafe { self.downscale_img.as_mut().unwrap_unchecked() };
+            resize_fast(
+                &src,
+                downscale_img,
+                kornia_imgproc::interpolation::InterpolationMode::Nearest,
+            )?;
 
-        // Step 1: Adaptive Threshold
-        adaptive_threshold(
-            src,
-            &mut self.bin_img,
-            &mut self.tile_min_max,
-            self.config.min_white_black_difference,
-        )?;
+            // Step 1: Adaptive Threshold
+            adaptive_threshold(
+                downscale_img,
+                &mut self.bin_img,
+                &mut self.tile_min_max,
+                self.config.min_white_black_difference,
+            )?;
+        };
 
         // Step 2(a): Find Connected Components
         find_connected_components(&self.bin_img, &mut self.uf)?;
@@ -308,7 +345,7 @@ mod tests {
 
     #[test]
     fn test_tag16_h5() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag16H5]);
+        let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag16H5], 2);
         let mut decoder = AprilTagDecoder::new(config, [50, 50].into())?;
 
         let expected_quad = [
@@ -331,7 +368,7 @@ mod tests {
 
     #[test]
     fn test_tag25_h9() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag25H9]);
+        let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag25H9], 2);
         let mut decoder = AprilTagDecoder::new(config, [55, 55].into())?;
 
         let expected_quad = [
@@ -354,7 +391,7 @@ mod tests {
 
     #[test]
     fn test_tag36_h11() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]);
+        let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11], 2);
         let mut decoder = AprilTagDecoder::new(config, [60, 60].into())?;
 
         let expected_quad = [
@@ -377,7 +414,7 @@ mod tests {
 
     #[test]
     fn test_tagcircle21h7() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCircle21H7]);
+        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCircle21H7], 2);
         let mut decoder = AprilTagDecoder::new(config, [55, 55].into())?;
 
         let expected_quad = [
@@ -400,7 +437,7 @@ mod tests {
 
     #[test]
     fn test_tagcircle49h12() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCircle49H12]);
+        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCircle49H12], 2);
         let mut decoder = AprilTagDecoder::new(config, [65, 65].into())?;
 
         let expected_quad = [
@@ -423,7 +460,7 @@ mod tests {
 
     #[test]
     fn test_tagcustom48_h12() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCustom48H12]);
+        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCustom48H12], 2);
         let mut decoder = AprilTagDecoder::new(config, [60, 60].into())?;
 
         let expected_quad = [
@@ -446,7 +483,7 @@ mod tests {
 
     #[test]
     fn test_tagstandard41_h12() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard41H12]);
+        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard41H12], 2);
         let mut decoder = AprilTagDecoder::new(config, [55, 55].into())?;
 
         let expected_quad = [
@@ -469,7 +506,7 @@ mod tests {
 
     #[test]
     fn test_tagstandard52_h13() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard52H13]);
+        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard52H13], 2);
         let mut decoder = AprilTagDecoder::new(config, [60, 60].into())?;
 
         let expected_quad = [
