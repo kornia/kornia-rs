@@ -55,11 +55,11 @@ pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     // Auto-compute the kernel sizes based on sigma if 0 or negative.
     // NOTE: the `| 1` is to ensure that the number is always odd i.e. the 2^0
     //       bit is always ON.
-    if kernel_size.0 <= 0 && sigma.0 > 0.0 {
+    if kernel_size.0 == 0 && sigma.0 > 0.0 {
         kernel_size.0 =
             (sigma.0 * (if C == 1 { 3.0 } else { 4.0 }) * 2.0 + 1.0).round() as usize | 1;
     }
-    if kernel_size.1 <= 0 && sigma.1 > 0.0 {
+    if kernel_size.1 == 0 && sigma.1 > 0.0 {
         kernel_size.1 =
             (sigma.1 * (if C == 1 { 3.0 } else { 4.0 }) * 2.0 + 1.0).round() as usize | 1;
     }
