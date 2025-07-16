@@ -36,7 +36,9 @@ pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 /// * `kernel_size` - The size of the kernel (kernel_x, kernel_y). Or, they can
 ///                   be zero and they will be computed from sigma values.
 /// * `sigma` - The sigma of the gaussian kernel. sigma.1 can be zero and it
-///             will take on the same value as sigma.0.
+///             will take on the same value as sigma.0. Or, they can both be zero
+///             and they will be computed based on:
+///             [sigma = 0.3 * ((ksize - 1) * 0.5 - 1) + 0.8](https://docs.opencv.org/4.12.0/d4/d86/group__imgproc__filter.html#gac05a120c1ae92a6060dd0db190a61afa).
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
 /// NOTE: This function uses a constant border type.
@@ -68,6 +70,15 @@ pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     // Sigma should be always positive.
     sigma.0 = sigma.0.max(0.0);
     sigma.1 = sigma.1.max(0.0);
+
+    // Auto-compute the sigma values based on 0.3*((ksize-1)*0.5 - 1) + 0.8 formula.
+    // See https://stackoverflow.com/a/14060998 for more details.
+    if sigma.0 <= 0.0 {
+        sigma.0 = 0.3 * (((kernel_size.0 as f32) - 1.0) * 0.5 - 1.0) + 0.8;
+    }
+    if sigma.1 <= 0.0 {
+        sigma.1 = 0.3 * (((kernel_size.1 as f32) - 1.0) * 0.5 - 1.0) + 0.8;
+    }
 
     let kernel_x = kernels::gaussian_kernel_1d(kernel_size.0, sigma.0);
     let kernel_y = kernels::gaussian_kernel_1d(kernel_size.1, sigma.1);
