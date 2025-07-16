@@ -57,7 +57,7 @@ fn get_pixel_with_border<const C: usize>(
     border_value: u8,
 ) -> u8
 where
-    [(); C]: ,
+    [(); C]:,
 {
     let width = img.width() as isize;
     let height = img.height() as isize;
@@ -91,12 +91,13 @@ where
         }
         BorderType::Transparent => {
             if x < 0 || y < 0 || x >= width || y >= height {
-                return border_value; 
+                return border_value;
             }
             (x, y)
         }
     };
 
-    img.get([ny as usize, nx as usize, c]).copied().unwrap_or(border_value)
-
+    img.get([ny as usize, nx as usize, c])
+        .copied()
+        .unwrap_or(border_value)
 }

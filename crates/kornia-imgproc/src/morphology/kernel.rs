@@ -4,7 +4,7 @@ pub enum MorphShape {
     Cross,
 }
 
-/// Creates kernels for erosion 
+/// Creates kernels for erosion
 pub fn kernel_shape(shape: MorphShape, ksize: (usize, usize)) -> Vec<bool> {
     let (rows, cols) = ksize;
     let mut kernel = vec![false; rows * cols];
@@ -20,7 +20,7 @@ pub fn kernel_shape(shape: MorphShape, ksize: (usize, usize)) -> Vec<bool> {
                 MorphShape::Ellipse => {
                     let dy = (r as f64 - cy as f64) / (rows as f64 / 2.0);
                     let dx = (c as f64 - cx as f64) / (cols as f64 / 2.0);
-                    dx*dx + dy*dy <= 1.0
+                    dx * dx + dy * dy <= 1.0
                 }
             };
         }
@@ -50,7 +50,7 @@ mod tests {
         let kernel = kernel_shape(MorphShape::Rect, (rows, cols));
 
         assert_eq!(kernel.len(), rows * cols);
-        assert!(kernel.iter().all(|&v| v)); 
+        assert!(kernel.iter().all(|&v| v));
 
         println!("\nRect 3x3:");
         print_kernel(&kernel, rows, cols);

@@ -1,5 +1,5 @@
-mod kernel; 
-mod border; 
+mod border;
+mod kernel;
 
-pub use kernel::kernel_shape; 
-pub use border::BorderType; 
+pub use border::BorderType;
+pub use kernel::kernel_shape;
