@@ -25,6 +25,23 @@ pub struct TagFamily {
     pub sharpening_buffer: SharpeningBuffer,
 }
 
+impl TagFamily {
+    /// Returns a vector containing all predefined tag families.
+    pub fn all() -> Vec<Self> {
+        vec![
+            Self::tag16_h5(),
+            Self::tag25_h9(),
+            Self::tag36_h10(),
+            Self::tag36_h11(),
+            Self::tagcircle21_h7(),
+            Self::tagcircle49_h12(),
+            Self::tagstandard41_h12(),
+            Self::tagstandard52_h13(),
+            Self::tagcustom48_h12(),
+        ]
+    }
+}
+
 /// Represents a decoded AprilTag.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TagFamilyKind {
@@ -58,7 +75,7 @@ impl From<TagFamily> for TagFamilyKind {
             "tag36_h10" => TagFamilyKind::Tag36H10,
             "tag25_h9" => TagFamilyKind::Tag25H9,
             "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
-            "tagcircle19_h12" => TagFamilyKind::TagCircle49H12,
+            "tagcircle49_h12" => TagFamilyKind::TagCircle49H12,
             "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
             "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
             "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
@@ -75,7 +92,7 @@ impl From<&TagFamily> for TagFamilyKind {
             "tag36_h10" => TagFamilyKind::Tag36H10,
             "tag25_h9" => TagFamilyKind::Tag25H9,
             "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
-            "tagcircle19_h12" => TagFamilyKind::TagCircle49H12,
+            "tagcircle49_h12" => TagFamilyKind::TagCircle49H12,
             "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
             "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
             "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
@@ -92,7 +109,7 @@ impl From<&mut TagFamily> for TagFamilyKind {
             "tag36_h10" => TagFamilyKind::Tag36H10,
             "tag25_h9" => TagFamilyKind::Tag25H9,
             "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
-            "tagcircle19_h12" => TagFamilyKind::TagCircle49H12,
+            "tagcircle49_h12" => TagFamilyKind::TagCircle49H12,
             "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
             "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
             "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,

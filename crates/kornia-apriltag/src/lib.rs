@@ -101,19 +101,7 @@ impl DecodeTagsConfig {
 
     /// Creates a `DecodeTagsConfig` with all supported tag families.
     pub fn all() -> Self {
-        let tag_families = vec![
-            TagFamily::tag16_h5(),
-            TagFamily::tag25_h9(),
-            TagFamily::tag36_h10(),
-            TagFamily::tag36_h11(),
-            TagFamily::tagcircle21_h7(),
-            TagFamily::tagcircle49_h12(),
-            TagFamily::tagstandard41_h12(),
-            TagFamily::tagstandard52_h13(),
-            TagFamily::tagcustom48_h12(),
-        ];
-
-        Self::new(tag_families)
+        Self::new(TagFamily::all())
     }
 
     /// Adds a tag family to the configuration.
