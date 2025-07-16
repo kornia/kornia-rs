@@ -1,3 +1,4 @@
+mod custom_rmsnorm;
 mod model;
 mod preprocessor;
 mod text_model;
@@ -168,7 +169,12 @@ impl SmolVlm {
                 last_logit
             };
 
-            let out_token = self.logits_processor.sample(&last_logit)?;
+            let out_token = if self.config.do_sample {
+                self.logits_processor.sample(&last_logit)?
+            } else {
+                // Use deterministic sampling for reproducible results
+                self.sample_deterministic(&last_logit)?
+            };
             // println!("#>:{last_logit}");
 
             tensors.insert(format!("logits_{}", _i), last_logit);
@@ -195,9 +201,41 @@ impl SmolVlm {
                         .clone()
                         .unwrap(),
                 );
+                // tensors.insert(
+                //     format!("DEBUG_gates_d{}_i{}", d, _i),
+                //     self.model.text.blocks[d].DEBUG_gates.clone().unwrap(),
+                // );
                 tensors.insert(
-                    format!("DEBUG_gates_d{}_i{}", d, _i),
-                    self.model.text.blocks[d].DEBUG_gates.clone().unwrap(),
+                    format!("DEBUG_gate_proj_d{}_i{}", d, _i),
+                    self.model.text.blocks[d]
+                        .gates
+                        .DEBUG_gate_proj
+                        .clone()
+                        .unwrap(),
+                );
+                tensors.insert(
+                    format!("DEBUG_act_fn_d{}_i{}", d, _i),
+                    self.model.text.blocks[d]
+                        .gates
+                        .DEBUG_act_fn
+                        .clone()
+                        .unwrap(),
+                );
+                tensors.insert(
+                    format!("DEBUG_down_proj_d{}_i{}", d, _i),
+                    self.model.text.blocks[d]
+                        .gates
+                        .DEBUG_down_proj
+                        .clone()
+                        .unwrap(),
+                );
+                tensors.insert(
+                    format!("DEBUG_up_proj_d{}_i{}", d, _i),
+                    self.model.text.blocks[d]
+                        .gates
+                        .DEBUG_up_proj
+                        .clone()
+                        .unwrap(),
                 );
                 tensors.insert(
                     format!("block_d{}_i{}", d, _i),
@@ -244,6 +282,38 @@ impl SmolVlm {
         Ok(response)
     }
 
+    /// Deterministic sampling that always selects the token with the lowest index for ties
+    fn sample_deterministic(&self, logits: &Tensor) -> Result<u32, SmolVlmError> {
+        // Convert to f32 for consistent precision
+        let logits_f32 = logits.to_dtype(DType::F32)?;
+        let logits_vec = logits_f32.to_vec1::<f32>()?;
+
+        // Find the maximum value
+        let max_value = logits_vec.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+
+        // Use a small epsilon for floating-point comparison to handle precision issues
+        let epsilon = 1e-8;
+
+        // Find all indices with the maximum value (for debugging ties)
+        let max_indices: Vec<usize> = logits_vec
+            .iter()
+            .enumerate()
+            .filter(|(_, &logit)| (logit - max_value).abs() < epsilon)
+            .map(|(i, _)| i)
+            .collect();
+
+        // Log if there are ties (for debugging)
+        // if max_indices.len() > 1 {
+        //     println!("DEBUG: Found {} tokens with max logit {}: {:?}",
+        //              max_indices.len(), max_value, max_indices);
+        // }
+
+        // Always select the first index (deterministic tiebreaker)
+        let best_token = max_indices[0] as u32;
+
+        Ok(best_token)
+    }
+
     #[inline]
     pub fn image_history_count(&self) -> usize {
         self.image_history.len()
@@ -263,4 +333,60 @@ impl SmolVlm {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use candle_core::Device;
+    use candle_nn::{Linear, Module};
+
+    #[test]
+    fn test_linear_layer_validation() -> Result<(), Box<dyn std::error::Error>> {
+        let test_data = candle_core::safetensors::load(
+            "../../tests/data/linear_test_data_bfloat16.safetensors",
+            &Device::cuda_if_available(0)?,
+        )?;
+        let num_tests = test_data.get("num_tests").unwrap().to_scalar::<i64>()? as usize;
+        let mut failures = Vec::new();
+
+        for i in 0..num_tests {
+            let test_name = format!("test_{}", i);
+            let input = test_data.get(&format!("{}_input", test_name)).unwrap();
+            let weight = test_data.get(&format!("{}_weight", test_name)).unwrap();
+            let expected_output = test_data.get(&format!("{}_output", test_name)).unwrap();
+            let input_dim = test_data
+                .get(&format!("{}_input_dim", test_name))
+                .unwrap()
+                .to_scalar::<i64>()? as usize;
+            let output_dim = test_data
+                .get(&format!("{}_output_dim", test_name))
+                .unwrap()
+                .to_scalar::<i64>()? as usize;
+
+            let linear = Linear::new(weight.clone(), None);
+            let actual_output = linear.forward(input)?;
+            let actual_f32 = actual_output.to_dtype(DType::F32)?;
+            let expected_f32 = expected_output.to_dtype(DType::F32)?;
+            let diff = (&actual_f32 - &expected_f32)?;
+            let mse = diff.powf(2.0)?.mean_all()?.to_scalar::<f32>()?;
+            let mae = diff.abs()?.mean_all()?.to_scalar::<f32>()?;
+
+            if mse <= 0.00 {
+                println!(
+                    "✅ {}: MSE={:.8}, MAE={:.8} (dims: {}x{})",
+                    test_name, mse, mae, input_dim, output_dim
+                );
+            } else {
+                println!(
+                    "❌ {}: MSE={:.8}, MAE={:.8} (dims: {}x{})",
+                    test_name, mse, mae, input_dim, output_dim
+                );
+                failures.push(format!("{} MSE={:.8} > 0.00", test_name, mse));
+            }
+        }
+
+        if !failures.is_empty() {
+            panic!("Test failures:\n{}", failures.join("\n"));
+        }
+
+        Ok(())
+    }
+}

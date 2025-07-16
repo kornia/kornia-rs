@@ -4,8 +4,25 @@ use candle_core::DType;
 use candle_core::{Device, Result, Tensor};
 use candle_nn::{rotary_emb::rope, Linear, Module, RmsNorm};
 
+use crate::smolvlm::custom_rmsnorm::CustomRmsNorm;
+
 const NUM_OF_HEADS: usize = 32;
 const HEAD_DIM: usize = 64;
+
+/// Custom SiLU (Sigmoid Linear Unit) activation function
+/// SiLU(x) = x * sigmoid(x) = x * (1 / (1 + e^(-x)))
+fn silu(x: &Tensor) -> Result<Tensor> {
+    let sigmoid = (x.neg()?.exp()? + 1.0)?.recip()?;
+    x * sigmoid
+}
+
+fn silu_f32(x: &Tensor) -> Result<Tensor> {
+    let original_dtype = x.dtype();
+    let x_f32 = x.to_dtype(DType::F32)?;
+    let sigmoid = (x_f32.neg()?.exp()? + 1.0)?.recip()?;
+    let result = (x_f32 * sigmoid)?;
+    result.to_dtype(original_dtype)
+}
 
 fn calculate_default_inv_freq() -> Vec<f32> {
     (0..HEAD_DIM)
@@ -126,10 +143,15 @@ impl Attention {
 }
 
 #[derive(Debug, Clone)]
-struct MLPGates {
+pub struct MLPGates {
     down_proj: Linear,
     gate_proj: Linear,
     up_proj: Linear,
+
+    pub DEBUG_gate_proj: Option<Tensor>,
+    pub DEBUG_up_proj: Option<Tensor>,
+    pub DEBUG_down_proj: Option<Tensor>,
+    pub DEBUG_act_fn: Option<Tensor>,
 }
 
 impl MLPGates {
@@ -138,24 +160,41 @@ impl MLPGates {
             down_proj: Linear::new(d, None),
             gate_proj: Linear::new(g, None),
             up_proj: Linear::new(u, None),
+            DEBUG_gate_proj: None, // for debugging purposes, to be removed later
+            DEBUG_up_proj: None,   // for debugging purposes, to be removed later
+            DEBUG_down_proj: None, // for debugging purposes, to be removed later
+            DEBUG_act_fn: None,    // for debugging purposes, to be removed later
         }
     }
 
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let gate = self.gate_proj.forward(x)?.silu()?; // .to_dtype(DType::F32)?;
-        let up = self.up_proj.forward(x)?; // .to_dtype(DType::F32)?;
-        let hidden = (gate * up)?; // .to_dtype(DType::BF16)?;
-        let x = self.down_proj.forward(&hidden)?;
-        Ok(x)
+    fn forward(&mut self, x: &Tensor) -> Result<Tensor> {
+        // Convert to F32 for more precise computation
+        let x_f32 = x.to_dtype(DType::F32)?;
+        let original_dtype = x.dtype();
+
+        // All computation in F32 for maximum precision
+        let gate_proj_out = x_f32.matmul(&self.gate_proj.weight().to_dtype(DType::F32)?.t()?)?;
+        let gate = silu_f32(&gate_proj_out)?;
+        let up = x_f32.matmul(&self.up_proj.weight().to_dtype(DType::F32)?.t()?)?;
+        let hidden = (&gate * &up)?;
+        let result = hidden.matmul(&self.down_proj.weight().to_dtype(DType::F32)?.t()?)?;
+
+        // Store debug values in original dtype for compatibility
+        self.DEBUG_gate_proj = Some(gate_proj_out.to_dtype(original_dtype)?);
+        self.DEBUG_act_fn = Some(gate.to_dtype(original_dtype)?);
+        self.DEBUG_up_proj = Some(up.to_dtype(original_dtype)?);
+        self.DEBUG_down_proj = Some(result.to_dtype(original_dtype)?);
+
+        Ok(result.to_dtype(original_dtype)?)
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Block {
-    input_layer_norm: RmsNorm,
+    input_layer_norm: CustomRmsNorm,
     attn: Attention,
-    post_layer_norm: RmsNorm,
-    gates: MLPGates,
+    post_layer_norm: CustomRmsNorm,
+    pub gates: MLPGates,
 
     pub DEBUG_block: Option<Tensor>, // for debugging purposes, to be removed later
     pub DEBUG_input_layer_norm: Option<Tensor>,
@@ -183,14 +222,14 @@ impl Block {
         };
 
         Ok(Self {
-            input_layer_norm: RmsNorm::new(val("input_layernorm"), 1e-5),
+            input_layer_norm: CustomRmsNorm::new(val("input_layernorm"), 1e-5),
             attn: Attention::new(
                 val("self_attn.q_proj"),
                 val("self_attn.k_proj"),
                 val("self_attn.v_proj"),
                 val("self_attn.o_proj"),
             )?,
-            post_layer_norm: RmsNorm::new(val("post_attention_layernorm"), 1e-5),
+            post_layer_norm: CustomRmsNorm::new(val("post_attention_layernorm"), 1e-5),
             gates: MLPGates::new(
                 val("mlp.down_proj"),
                 val("mlp.gate_proj"),
