@@ -46,58 +46,91 @@ pub enum TagFamilyKind {
     TagStandard41H12,
     /// The TagStandard52H13 Family. [TagFamily::tagstandard52_h13]
     TagStandard52H13,
-    /// A custom tag family, specified by name.
-    Custom(String),
+    /// A custom tag family, allowing users to supply a fully defined [`TagFamily`] instance.
+    // TODO: Currently, we are cloning TagFamily if it's custom. Look into optimizing this in the future.
+    Custom(TagFamily),
+}
+
+impl TagFamilyKind {
+    /// Returns a vector containing all built-in tag family kinds.
+    pub fn all() -> Vec<Self> {
+        vec![
+            Self::Tag16H5,
+            Self::Tag36H11,
+            Self::Tag36H10,
+            Self::Tag25H9,
+            Self::TagCircle21H7,
+            Self::TagCircle49H12,
+            Self::TagCustom48H12,
+            Self::TagStandard41H12,
+            Self::TagStandard52H13,
+        ]
+    }
 }
 
 impl From<TagFamily> for TagFamilyKind {
     fn from(value: TagFamily) -> Self {
-        match value.name.as_str() {
-            "tag16_h5" => TagFamilyKind::Tag16H5,
-            "tag36_h11" => TagFamilyKind::Tag36H11,
-            "tag36_h10" => TagFamilyKind::Tag36H10,
-            "tag25_h9" => TagFamilyKind::Tag25H9,
-            "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
-            "tagcircle19_h12" => TagFamilyKind::TagCircle49H12,
-            "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
-            "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
-            "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
-            _ => TagFamilyKind::Custom(value.name),
-        }
+        to_tag_family_kind_impl(&value)
     }
 }
 
 impl From<&TagFamily> for TagFamilyKind {
     fn from(value: &TagFamily) -> Self {
-        match value.name.as_str() {
-            "tag16_h5" => TagFamilyKind::Tag16H5,
-            "tag36_h11" => TagFamilyKind::Tag36H11,
-            "tag36_h10" => TagFamilyKind::Tag36H10,
-            "tag25_h9" => TagFamilyKind::Tag25H9,
-            "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
-            "tagcircle19_h12" => TagFamilyKind::TagCircle49H12,
-            "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
-            "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
-            "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
-            _ => TagFamilyKind::Custom(value.name.clone()),
-        }
+        to_tag_family_kind_impl(value)
     }
 }
 
 impl From<&mut TagFamily> for TagFamilyKind {
     fn from(value: &mut TagFamily) -> Self {
-        match value.name.as_str() {
-            "tag16_h5" => TagFamilyKind::Tag16H5,
-            "tag36_h11" => TagFamilyKind::Tag36H11,
-            "tag36_h10" => TagFamilyKind::Tag36H10,
-            "tag25_h9" => TagFamilyKind::Tag25H9,
-            "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
-            "tagcircle19_h12" => TagFamilyKind::TagCircle49H12,
-            "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
-            "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
-            "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
-            _ => TagFamilyKind::Custom(value.name.clone()),
-        }
+        to_tag_family_kind_impl(value)
+    }
+}
+
+fn to_tag_family_kind_impl(value: &TagFamily) -> TagFamilyKind {
+    match value.name.as_str() {
+        "tag16_h5" => TagFamilyKind::Tag16H5,
+        "tag36_h11" => TagFamilyKind::Tag36H11,
+        "tag36_h10" => TagFamilyKind::Tag36H10,
+        "tag25_h9" => TagFamilyKind::Tag25H9,
+        "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
+        "tagcircle49_h12" => TagFamilyKind::TagCircle49H12,
+        "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
+        "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
+        "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
+        _ => TagFamilyKind::Custom(value.clone()),
+    }
+}
+
+impl From<TagFamilyKind> for TagFamily {
+    fn from(value: TagFamilyKind) -> Self {
+        to_tag_family_impl(&value)
+    }
+}
+
+impl From<&TagFamilyKind> for TagFamily {
+    fn from(value: &TagFamilyKind) -> Self {
+        to_tag_family_impl(value)
+    }
+}
+
+impl From<&mut TagFamilyKind> for TagFamily {
+    fn from(value: &mut TagFamilyKind) -> Self {
+        to_tag_family_impl(value)
+    }
+}
+
+fn to_tag_family_impl(value: &TagFamilyKind) -> TagFamily {
+    match value {
+        TagFamilyKind::Tag16H5 => TagFamily::tag16_h5(),
+        TagFamilyKind::Tag25H9 => TagFamily::tag25_h9(),
+        TagFamilyKind::Tag36H10 => TagFamily::tag36_h10(),
+        TagFamilyKind::Tag36H11 => TagFamily::tag36_h11(),
+        TagFamilyKind::TagCircle21H7 => TagFamily::tagcircle21_h7(),
+        TagFamilyKind::TagCircle49H12 => TagFamily::tagcircle49_h12(),
+        TagFamilyKind::TagCustom48H12 => TagFamily::tagcustom48_h12(),
+        TagFamilyKind::TagStandard41H12 => TagFamily::tagstandard41_h12(),
+        TagFamilyKind::TagStandard52H13 => TagFamily::tagstandard52_h13(),
+        TagFamilyKind::Custom(tag_family) => tag_family.clone(),
     }
 }
 

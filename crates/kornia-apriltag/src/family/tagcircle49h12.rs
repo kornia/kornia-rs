@@ -4,7 +4,7 @@ impl TagFamily {
     /// The TagCircle49H12 AprilTag Family.
     pub fn tagcircle49_h12() -> Self {
         Self {
-            name: "tagcircle19_h12".to_string(),
+            name: "tagcircle49_h12".to_string(),
             width_at_border: 5,
             reversed_border: true,
             total_width: 11,

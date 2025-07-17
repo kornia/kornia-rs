@@ -779,7 +779,7 @@ mod tests {
     use kornia_io::png::read_image_png_mono8;
 
     use crate::{
-        family::TagFamily,
+        family::TagFamilyKind,
         segmentation::{
             find_connected_components, find_gradient_clusters, GradientDirection, GradientInfo,
         },
@@ -806,7 +806,7 @@ mod tests {
         let quads = fit_quads(
             &bin,
             &mut clusters,
-            &DecodeTagsConfig::new(vec![TagFamily::tag36_h11()]),
+            &DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]),
         );
 
         let expected_quad = [[[27, 3], [27, 27], [3, 27], [3, 3]]];
