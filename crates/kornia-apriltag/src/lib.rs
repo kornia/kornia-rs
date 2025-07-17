@@ -68,7 +68,7 @@ pub struct DecodeTagsConfig {
 }
 
 impl DecodeTagsConfig {
-    /// Creates a new `DecodeTagsConfig` with the given tag families.
+    /// Creates a new `DecodeTagsConfig` with the given tag family kinds.
     pub fn new(tag_family_kinds: Vec<TagFamilyKind>) -> Self {
         let mut tag_families = Vec::with_capacity(tag_family_kinds.len());
         let mut normal_border = false;

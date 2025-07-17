@@ -46,7 +46,7 @@ pub enum TagFamilyKind {
     TagStandard41H12,
     /// The TagStandard52H13 Family. [TagFamily::tagstandard52_h13]
     TagStandard52H13,
-    /// A custom tag family, specified by name.
+    /// A custom tag family, allowing users to supply a fully defined [`TagFamily`] instance.
     // TODO: Currently, we are cloning TagFamily if it's custom. Look into optimizing this in the future.
     Custom(TagFamily),
 }
