@@ -39,51 +39,54 @@ pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 /// * `sigma` - The sigma of the gaussian kernel (sigma_x, sigma_y). sigma_y can
 ///             be zero and it will take on the same value as sigma_x. Or, they
 ///             can both be zero and they will be computed based on:
-///             [sigma = 0.3 * ((ksize - 1) * 0.5 - 1) + 0.8](https://docs.opencv.org/4.12.0/d4/d86/group__imgproc__filter.html#gac05a120c1ae92a6060dd0db190a61afa).
+///             sigma = 0.3 * ((ksize - 1) * 0.5 - 1) + 0.8
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
 /// NOTE: This function uses a constant border type.
 pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,
-    mut kernel_size: (usize, usize),
-    mut sigma: (f32, f32),
+    kernel_size: (usize, usize),
+    sigma: (f32, f32),
 ) -> Result<(), ImageError> {
-    if sigma.1 <= 0.0 {
-        sigma.1 = sigma.0;
+    let mut ksize_cpy = kernel_size.clone();
+    let mut sigma_cpy = sigma.clone();
+
+    // Satisfy setting sigma_y = sigma_x if sigma_y is zero.
+    if sigma_cpy.1 <= 0.0 {
+        sigma_cpy.1 = sigma_cpy.0;
     }
 
     // Auto-compute the kernel sizes based on sigma if 0 or negative.
     // NOTE: the `| 1` is to ensure that the number is always odd i.e. the 2^0
     //       bit is always ON.
-    if kernel_size.0 == 0 && sigma.0 > 0.0 {
-        kernel_size.0 =
-            (sigma.0 * (if C == 1 { 3.0 } else { 4.0 }) * 2.0 + 1.0).round() as usize | 1;
+    if ksize_cpy.0 == 0 && sigma_cpy.0 > 0.0 {
+        ksize_cpy.0 =
+            (sigma_cpy.0 * (if C == 1 { 3.0 } else { 4.0 }) * 2.0 + 1.0).round() as usize | 1;
     }
-    if kernel_size.1 == 0 && sigma.1 > 0.0 {
-        kernel_size.1 =
-            (sigma.1 * (if C == 1 { 3.0 } else { 4.0 }) * 2.0 + 1.0).round() as usize | 1;
+    if ksize_cpy.1 == 0 && sigma_cpy.1 > 0.0 {
+        ksize_cpy.1 =
+            (sigma_cpy.1 * (if C == 1 { 3.0 } else { 4.0 }) * 2.0 + 1.0).round() as usize | 1;
     }
-    if !(kernel_size.0 > 0 && kernel_size.0 % 2 == 1 && kernel_size.1 > 0 && kernel_size.1 % 2 == 1)
-    {
-        return Err(ImageError::InvalidSigmaValue(sigma.0, sigma.1));
+    if !(ksize_cpy.0 > 0 && ksize_cpy.0 % 2 == 1 && ksize_cpy.1 > 0 && ksize_cpy.1 % 2 == 1) {
+        return Err(ImageError::InvalidSigmaValue(sigma_cpy.0, sigma_cpy.1));
     }
 
     // Sigma should be always positive.
-    sigma.0 = sigma.0.max(0.0);
-    sigma.1 = sigma.1.max(0.0);
+    sigma_cpy.0 = sigma_cpy.0.max(0.0);
+    sigma_cpy.1 = sigma_cpy.1.max(0.0);
 
     // Auto-compute the sigma values based on 0.3*((ksize-1)*0.5 - 1) + 0.8 formula.
     // See https://stackoverflow.com/a/14060998 for more details.
-    if sigma.0 == 0.0 {
-        sigma.0 = 0.3 * (((kernel_size.0 as f32) - 1.0) * 0.5 - 1.0) + 0.8;
+    if sigma_cpy.0 == 0.0 {
+        sigma_cpy.0 = 0.3 * (((ksize_cpy.0 as f32) - 1.0) * 0.5 - 1.0) + 0.8;
     }
-    if sigma.1 == 0.0 {
-        sigma.1 = 0.3 * (((kernel_size.1 as f32) - 1.0) * 0.5 - 1.0) + 0.8;
+    if sigma_cpy.1 == 0.0 {
+        sigma_cpy.1 = 0.3 * (((ksize_cpy.1 as f32) - 1.0) * 0.5 - 1.0) + 0.8;
     }
 
-    let kernel_x = kernels::gaussian_kernel_1d(kernel_size.0, sigma.0);
-    let kernel_y = kernels::gaussian_kernel_1d(kernel_size.1, sigma.1);
+    let kernel_x = kernels::gaussian_kernel_1d(ksize_cpy.0, sigma_cpy.0);
+    let kernel_y = kernels::gaussian_kernel_1d(ksize_cpy.1, sigma_cpy.1);
     separable_filter(src, dst, &kernel_x, &kernel_y)?;
     Ok(())
 }
@@ -388,12 +391,7 @@ mod tests {
             height: 5,
         };
 
-        #[rustfmt::skip]
-        let img = Image::new(
-            size,
-            (0..25).map(|x| x as f32).collect(),
-            CpuAllocator
-        )?;
+        let img = Image::new(size, (0..25).map(|x| x as f32).collect(), CpuAllocator)?;
         let mut dst = Image::<_, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
 
         box_blur_fast(&img, &mut dst, (0.5, 0.5))?;
@@ -420,12 +418,7 @@ mod tests {
             height: 5,
         };
 
-        #[rustfmt::skip]
-        let img = Image::new(
-            size,
-            (0..25).map(|x| x as f32).collect(),
-            CpuAllocator
-        )?;
+        let img = Image::new(size, (0..25).map(|x| x as f32).collect(), CpuAllocator)?;
 
         let mut dst = Image::<_, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
 
@@ -452,12 +445,7 @@ mod tests {
             height: 5,
         };
 
-        #[rustfmt::skip]
-        let img = Image::new(
-            size,
-            (0..25).map(|x| x as f32).collect(),
-            CpuAllocator
-        )?;
+        let img = Image::new(size, (0..25).map(|x| x as f32).collect(), CpuAllocator)?;
 
         let mut dst = Image::<_, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
 
@@ -483,12 +471,7 @@ mod tests {
             height: 5,
         };
 
-        #[rustfmt::skip]
-        let img = Image::new(
-            size,
-            (0..25).map(|x| x as f32).collect(),
-            CpuAllocator
-        )?;
+        let img = Image::new(size, (0..25).map(|x| x as f32).collect(), CpuAllocator)?;
 
         let mut dst = Image::<_, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
 
@@ -537,11 +520,10 @@ mod tests {
             height: 5,
         };
 
-        #[rustfmt::skip]
         let img = Image::<f32, 2, _>::new(
             size,
             (0..25).flat_map(|x| [x as f32, x as f32 + 25.0]).collect(),
-            CpuAllocator
+            CpuAllocator,
         )?;
         for (test_fn, fn_name) in TEST_FUNCTIONS {
             let mut dx = Image::<_, 2, _>::from_size_val(size, 0.0, CpuAllocator)?;
