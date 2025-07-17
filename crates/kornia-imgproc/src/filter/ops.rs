@@ -49,8 +49,8 @@ pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     kernel_size: (usize, usize),
     sigma: (f32, f32),
 ) -> Result<(), ImageError> {
-    let mut ksize_cpy = kernel_size.clone();
-    let mut sigma_cpy = sigma.clone();
+    let mut ksize_cpy = kernel_size;
+    let mut sigma_cpy = sigma;
 
     // Satisfy setting sigma_y = sigma_x if sigma_y is zero.
     if sigma_cpy.1 <= 0.0 {
