@@ -53,7 +53,10 @@ impl Drop for MmapInfo {
         let ptr = self.ptr.load(Ordering::Relaxed);
         if !ptr.is_null() {
             unsafe {
-                libc::munmap(ptr as *mut libc::c_void, self.length);
+                let result = libc::munmap(ptr as *mut libc::c_void, self.length);
+                if result == -1 {
+                    eprintln!("Error: munmap failed with errno {}", *libc::__errno_location());
+                }
             }
         }
     }
