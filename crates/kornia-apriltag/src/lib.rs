@@ -288,7 +288,7 @@ mod tests {
                 let original_img = read_image_png_mono8(file_path)?;
                 let detection = decoder.decode(&original_img)?;
 
-                assert_eq!(detection.len(), 1, "Tag: {}", file_name);
+                assert_eq!(detection.len(), 1, "Tag: {file_name}");
                 let detection = &detection[0];
 
                 assert_eq!(detection.id, expected_id);
