@@ -12,6 +12,8 @@ pub enum AutoExposureMode {
 pub enum CameraControl {
     // User Controls
     /// Image brightness (-1024 to 1023)
+    /// BREAKING CHANGE: The type of `Brightness` has been changed from `u8` (0-255) to `i32` (-1024 to 1023).
+    /// See the changelog for more details.
     Brightness(i32),
     /// Image contrast (0-255)
     Contrast(u8),
