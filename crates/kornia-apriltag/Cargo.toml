@@ -20,3 +20,9 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 kornia-io = { workspace = true }
+criterion = { workspace = true }
+apriltag = "0.4"
+
+[[bench]]
+name = "bench_decoding"
+harness = false
