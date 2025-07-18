@@ -6,7 +6,7 @@ This example demonstrates how to detect and decode AprilTags in images using the
 ```txt
 Usage: cargo run -p apriltag --release -- <path> [-k <kind...>] [-d <decode-sharpening>] [-r] [-m <min-white-black-difference>]
 
-Detects AprilTags in a image
+Detects AprilTags in an image
 
 Positional Arguments:
   path              image path

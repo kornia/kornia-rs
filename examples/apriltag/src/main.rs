@@ -6,7 +6,7 @@ use kornia::{
 };
 use kornia_apriltag::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
 
-/// Detects AprilTags in a image
+/// Detects AprilTags in an image
 #[derive(Debug, FromArgs)]
 struct Args {
     /// image path
