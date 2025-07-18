@@ -5,7 +5,7 @@ use kornia::{
     io::{
         fps_counter::FpsCounter,
         jpeg,
-        v4l::{AutoExposureMode, CameraControl, PixelFormat, V4LCameraConfig, V4LVideoCapture},
+        v4l::{AutoExposureMode, CameraControl, PixelFormat, V4LCameraConfig, V4lVideoCapture},
     },
     tensor::CpuAllocator,
 };
@@ -56,7 +56,7 @@ pub fn v4l_demo() -> Result<(), Box<dyn std::error::Error>> {
         height: 480,
     };
 
-    let mut webcam = V4LVideoCapture::new(V4LCameraConfig {
+    let mut webcam = V4lVideoCapture::new(V4LCameraConfig {
         device_path: format!("/dev/video{}", args.camera_id),
         size: img_size,
         fps: args.fps,
@@ -67,6 +67,10 @@ pub fn v4l_demo() -> Result<(), Box<dyn std::error::Error>> {
     println!("📹 Starting webcam capture...");
     println!("Requested FPS: {0}", args.fps);
     println!("Image size: {img_size:?}");
+
+    if let Err(e) = webcam.set_control(CameraControl::DynamicFramerate(false)) {
+        println!("⚠️ Could not disable dynamic framerate: {e}");
+    }
 
     // Enable auto exposure and auto white balance for best image quality
     if let Err(e) = webcam.set_control(CameraControl::AutoExposure(AutoExposureMode::Auto)) {
@@ -93,7 +97,7 @@ pub fn v4l_demo() -> Result<(), Box<dyn std::error::Error>> {
     let mut rgb_image = Image::<u8, 3, CpuAllocator>::from_size_val(img_size, 0, CpuAllocator)?;
 
     while !cancel_token.load(Ordering::SeqCst) {
-        let Ok(Some(frame)) = webcam.grab() else {
+        let Some(frame) = webcam.grab_frame()? else {
             continue;
         };
 
