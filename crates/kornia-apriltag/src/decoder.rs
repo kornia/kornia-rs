@@ -283,6 +283,8 @@ pub fn decode_tags<A: ImageAllocator>(
                 gray_model_pair,
             );
 
+            family.sharpening_buffer.reset();
+
             if let Some(decision_margin) = decision_margin {
                 if decision_margin >= 0.0 && entry.hamming < u8::MAX {
                     let theta = entry.rotation as f32 * PI / 2.0;

@@ -90,16 +90,15 @@ impl DecodeTagsConfig {
             min_tag_width = 3;
         }
 
-        // TODO: Set the default values which are best for the given tags
         Self {
             tag_families,
             fit_quad_config: Default::default(),
             normal_border,
             refine_edges_enabled: true,
-            decode_sharpening: 0.15,
+            decode_sharpening: 0.25,
             reversed_border,
             min_tag_width,
-            min_white_black_difference: 20,
+            min_white_black_difference: 5,
         }
     }
 
@@ -117,13 +116,6 @@ impl DecodeTagsConfig {
         self.reversed_border |= family.reversed_border;
 
         self.tag_families.push(family);
-    }
-
-    /// Resets the sharpening buffer for each tag family in the configuration.
-    pub fn reset(&mut self) {
-        self.tag_families.iter_mut().for_each(|family| {
-            family.sharpening_buffer.reset();
-        });
     }
 }
 
@@ -226,7 +218,6 @@ impl AprilTagDecoder {
         self.uf.reset();
         self.clusters.clear();
         self.gray_model_pair.reset();
-        self.config.reset();
     }
 
     /// Returns a slice of tag families configured for detection.
