@@ -283,8 +283,6 @@ pub fn decode_tags<A: ImageAllocator>(
                 gray_model_pair,
             );
 
-            family.sharpening_buffer.reset();
-
             if let Some(decision_margin) = decision_margin {
                 if decision_margin >= 0.0 && entry.hamming < u8::MAX {
                     let theta = entry.rotation as f32 * PI / 2.0;
@@ -707,6 +705,9 @@ fn quad_decode<A: ImageAllocator>(
             black_score_count += 1;
         }
     });
+
+    // Reset the Sharpening Buffer for the next iteration
+    tag_family.sharpening_buffer.reset();
 
     quick_decode_codeword(tag_family, rcode, entry);
 
