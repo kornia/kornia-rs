@@ -706,6 +706,9 @@ fn quad_decode<A: ImageAllocator>(
         }
     });
 
+    // Reset the Sharpening Buffer for the next iteration
+    tag_family.sharpening_buffer.reset();
+
     quick_decode_codeword(tag_family, rcode, entry);
 
     Some((white_score / white_score_count as f32).min(black_score / black_score_count as f32))
