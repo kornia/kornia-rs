@@ -27,7 +27,8 @@ pub enum CameraControl {
     // Camera Controls
     /// Auto exposure mode
     AutoExposure(AutoExposureMode),
-    /// Exposure time in microseconds (500-133000, only when AutoExposure is Manual)
+    /// Exposure time in microseconds (500-133000, only when AutoExposure is Manual).
+    /// Replaces the legacy `ExposureTime` control, which used a `u16` type.
     ExposureTimeAbsolute(u32),
     /// Frame synchronization
     FrameSync(bool),
