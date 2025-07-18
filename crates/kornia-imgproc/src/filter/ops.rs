@@ -35,11 +35,12 @@ pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 /// * `dst` - The destination image with shape (H, W, C).
 /// * `kernel_size` - The size of the kernel (kernel_x, kernel_y). They can differ,
 ///                   but they both have to be positive and odd. Or, they can be zero
-///                   and they will be computed from sigma values.
+///                   and they will be computed from sigma values based on:
+///                   kernel_size = 8*sigma + 1
 /// * `sigma` - The sigma of the gaussian kernel (sigma_x, sigma_y). sigma_y can
 ///             be zero and it will take on the same value as sigma_x. Or, they
 ///             can both be zero and they will be computed based on:
-///             sigma = 0.3 * ((ksize - 1) * 0.5 - 1) + 0.8
+///             sigma = (kernel_size - 1) / 8
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
 /// NOTE: This function uses a constant border type.
@@ -57,16 +58,14 @@ pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
         sigma_cpy.1 = sigma_cpy.0;
     }
 
-    // Auto-compute the kernel sizes based on sigma if 0 or negative.
+    // Auto-compute the kernel sizes based on sigma if 0 or negative using SciPy convention.
     // NOTE: the `| 1` is to ensure that the number is always odd i.e. the 2^0
     //       bit is always ON.
     if ksize_cpy.0 == 0 && sigma_cpy.0 > 0.0 {
-        ksize_cpy.0 =
-            (sigma_cpy.0 * (if C == 1 { 3.0 } else { 4.0 }) * 2.0 + 1.0).round() as usize | 1;
+        ksize_cpy.0 = (2.0 * (4.0 * sigma_cpy.0).round() + 1.0) as usize | 1;
     }
     if ksize_cpy.1 == 0 && sigma_cpy.1 > 0.0 {
-        ksize_cpy.1 =
-            (sigma_cpy.1 * (if C == 1 { 3.0 } else { 4.0 }) * 2.0 + 1.0).round() as usize | 1;
+        ksize_cpy.1 = (2.0 * (4.0 * sigma_cpy.1).round() + 1.0) as usize | 1;
     }
     if !(ksize_cpy.0 > 0 && ksize_cpy.0 % 2 == 1 && ksize_cpy.1 > 0 && ksize_cpy.1 % 2 == 1) {
         return Err(ImageError::InvalidSigmaValue(sigma_cpy.0, sigma_cpy.1));
@@ -76,13 +75,12 @@ pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     sigma_cpy.0 = sigma_cpy.0.max(0.0);
     sigma_cpy.1 = sigma_cpy.1.max(0.0);
 
-    // Auto-compute the sigma values based on 0.3*((ksize-1)*0.5 - 1) + 0.8 formula.
-    // See https://stackoverflow.com/a/14060998 for more details.
+    // Auto-compute the sigma values using SciPy convention.
     if sigma_cpy.0 == 0.0 {
-        sigma_cpy.0 = 0.3 * (((ksize_cpy.0 as f32) - 1.0) * 0.5 - 1.0) + 0.8;
+        sigma_cpy.0 = (ksize_cpy.0 as f32 - 1.0) / 8.0;
     }
     if sigma_cpy.1 == 0.0 {
-        sigma_cpy.1 = 0.3 * (((ksize_cpy.1 as f32) - 1.0) * 0.5 - 1.0) + 0.8;
+        sigma_cpy.1 = (ksize_cpy.1 as f32 - 1.0) / 8.0;
     }
 
     let kernel_x = kernels::gaussian_kernel_1d(ksize_cpy.0, sigma_cpy.0);
@@ -480,11 +478,11 @@ mod tests {
         #[rustfmt::skip]
         assert_eq!(
             dst.as_slice(),
-            &[1.091256, 1.955977, 2.7169826, 3.4779882, 3.0440228,
-              4.0440226, 5.9999995, 6.9999995, 8.0, 6.610057,
-              7.8490515, 10.999999, 11.999999, 13.0, 10.415086,
-              11.654079, 16.0, 17.0, 17.999998, 14.220114,
-              10.85509, 14.786148, 15.547154, 16.30816, 12.807857,
+            &[0.002010752, 1.001341, 2.001006, 3.0006707, 3.9986594, 
+              4.998659, 6.0, 7.0000005, 8.0, 8.996648, 
+              9.996984, 11.0, 12.000002, 13.0, 13.994974, 
+              14.995307, 16.0, 17.0, 18.000002, 18.9933, 
+              19.985254, 20.991283, 21.990952, 22.990616, 23.981903,
             ]
         );
         Ok(())
