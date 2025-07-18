@@ -28,4 +28,4 @@ Options:
 cargo run -p apriltag --release -- "path/to/image"
 ```
 
-// TODO: Add Example Image
+![Demo](https://github.com/user-attachments/assets/e515381c-eb82-4e44-bd40-fe063ffd36c1)
