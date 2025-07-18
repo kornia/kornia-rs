@@ -55,7 +55,10 @@ impl Drop for MmapInfo {
             unsafe {
                 let result = libc::munmap(ptr as *mut libc::c_void, self.length);
                 if result == -1 {
-                    eprintln!("Error: munmap failed with errno {}", *libc::__errno_location());
+                    eprintln!(
+                        "Error: munmap failed with errno {}",
+                        *libc::__errno_location()
+                    );
                 }
             }
         }
