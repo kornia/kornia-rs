@@ -19,23 +19,23 @@ license-file = "LICENSE"
 readme = "README.md"
 repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
-version = "0.1.10-rc.4"
+version = "0.1.10-rc.5"
 
 [workspace.dependencies]
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
-kornia-3d = { path = "crates/kornia-3d", version = "0.1.10-rc.4" }
-kornia-apriltag = { path = "crates/kornia-apriltag", version = "0.1.10-rc.4" }
-kornia-icp = { path = "crates/kornia-icp", version = "0.1.10-rc.4" }
-kornia-image = { path = "crates/kornia-image", version = "0.1.10-rc.4" }
-kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.10-rc.4" }
-kornia-io = { path = "crates/kornia-io", version = "0.1.10-rc.4" }
-kornia-lie = { path = "crates/kornia-lie", version = "0.1.10-rc.4" }
-kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.10-rc.4" }
-kornia-nn = { path = "crates/kornia-nn", version = "0.1.10-rc.4" }
-kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.10-rc.4" }
-kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.10-rc.4" }
-kornia-vlm = { path = "crates/kornia-vlm", version = "0.1.10-rc.4" }
-kornia = { path = "crates/kornia", version = "0.1.10-rc.4" }
+kornia-3d = { path = "crates/kornia-3d", version = "0.1.10-rc.5" }
+kornia-apriltag = { path = "crates/kornia-apriltag", version = "0.1.10-rc.5" }
+kornia-icp = { path = "crates/kornia-icp", version = "0.1.10-rc.5" }
+kornia-image = { path = "crates/kornia-image", version = "0.1.10-rc.5" }
+kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.10-rc.5" }
+kornia-io = { path = "crates/kornia-io", version = "0.1.10-rc.5" }
+kornia-lie = { path = "crates/kornia-lie", version = "0.1.10-rc.5" }
+kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.10-rc.5" }
+kornia-nn = { path = "crates/kornia-nn", version = "0.1.10-rc.5" }
+kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.10-rc.5" }
+kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.10-rc.5" }
+kornia-vlm = { path = "crates/kornia-vlm", version = "0.1.10-rc.5" }
+kornia = { path = "crates/kornia", version = "0.1.10-rc.5" }
 
 # dev dependencies for workspace
 argh = "0.1"
