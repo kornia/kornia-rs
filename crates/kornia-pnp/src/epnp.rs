@@ -29,18 +29,10 @@ impl PnPSolver for EPnP {
 }
 
 /// Parameters controlling the EPnP solver.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct EPNPParams {
     /// Shared numeric tolerances.
     pub tol: NumericTol,
-}
-
-impl Default for EPNPParams {
-    fn default() -> Self {
-        Self {
-            tol: NumericTol::default(),
-        }
-    }
 }
 
 /// Solve Perspective-n-Point (EPnP).
@@ -349,9 +341,9 @@ fn select_control_points(pw: &[[f64; 3]]) -> [[f64; 3]; 4] {
     }
 
     let inv_n = 1.0 / n as f64;
-    for i in 0..3 {
-        for j in 0..3 {
-            cov[i][j] *= inv_n;
+    for row in &mut cov {
+        for val in row {
+            *val *= inv_n;
         }
     }
 
@@ -396,9 +388,8 @@ fn select_control_points(pw: &[[f64; 3]]) -> [[f64; 3]; 4] {
 /// * `pw` – World points *(N,3)*.
 /// * `cw` – Control points *(4,3)*.
 /// * `eps` – Threshold that decides whether the control-point tetrahedron is
-///           degenerate.  If the determinant of the 3-by-3 matrix built from
-///           `cw` is smaller than `eps`, a Moore–Penrose pseudo-inverse is
-///           used instead of the exact inverse.
+///   degenerate. If the determinant of the 3-by-3 matrix built from `cw` is
+///   smaller than `eps`, a Moore–Penrose pseudo-inverse is used instead of the exact inverse.
 ///
 /// # Returns
 /// Vector of length *N* where each element is `[α0, α1, α2, α3]` such that
@@ -435,11 +426,9 @@ fn compute_barycentric(pw: &[[f64; 3]], cw: &[[f64; 3]; 4], eps: f64) -> Vec<[f6
 
         // Invert singular values with thresholding.
         let mut sigma_inv = Mat3::ZERO;
-        let sigmas = [s.x_axis.x, s.y_axis.y, s.z_axis.z];
-        for i in 0..3 {
-            let val = sigmas[i].abs();
+        for (i, sigma) in [s.x_axis.x, s.y_axis.y, s.z_axis.z].iter().enumerate() {
+            let val = sigma.abs();
             if val > eps as f32 {
-                // Place 1/σ on the diagonal.
                 match i {
                     0 => sigma_inv.x_axis.x = 1.0 / val,
                     1 => sigma_inv.y_axis.y = 1.0 / val,
@@ -528,15 +517,15 @@ fn build_m(alphas: &[[f64; 4]], uv: &[[f64; 2]], k: &[[f64; 3]; 3]) -> Vec<[f64;
         let row_x = 2 * i;
         let row_y = row_x + 1;
 
-        for j in 0..4 {
+        for (j, &alpha) in a.iter().enumerate() {
             let base = 3 * j;
             // x-row
-            m[row_x][base] = a[j] * fu;
+            m[row_x][base] = alpha * fu;
             // base+1 remains 0
-            m[row_x][base + 2] = a[j] * (uc - u);
+            m[row_x][base + 2] = alpha * (uc - u);
             // y-row
-            m[row_y][base + 1] = a[j] * fv;
-            m[row_y][base + 2] = a[j] * (vc - v);
+            m[row_y][base + 1] = alpha * fv;
+            m[row_y][base + 2] = alpha * (vc - v);
         }
     }
 
@@ -570,7 +559,7 @@ fn build_l6x10(null4: &DMatrix<f64>) -> [[f64; 10]; 6] {
     }
 
     let mut l = [[0.0f64; 10]; 6];
-    for j in 0..6 {
+    for (j, _) in dv_arr[0].iter().enumerate() {
         l[j][0] = dv_arr[0][j].dot(&dv_arr[0][j]);
         l[j][1] = 2.0 * dv_arr[0][j].dot(&dv_arr[1][j]);
         l[j][2] = dv_arr[1][j].dot(&dv_arr[1][j]);
