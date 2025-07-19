@@ -1,6 +1,7 @@
 use std::{collections::HashMap, ops::Mul};
 
 use crate::{
+    alloc::{MyVec, VecStore},
     errors::AprilTagError,
     union_find::UnionFind,
     utils::{Pixel, Point2d},
@@ -79,7 +80,7 @@ pub fn find_connected_components<A: ImageAllocator>(
 }
 
 /// Information about the gradient at a specific pixel location.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct GradientInfo {
     /// The coordinates of the pixel, represented as the mid-point assuming twice the size of the image.
     pub pos: Point2d,
@@ -94,7 +95,7 @@ pub struct GradientInfo {
 /// Represents the direction of a gradient between two pixels.
 ///
 /// Used to indicate whether the gradient is towards a white pixel, towards a black pixel, or if there is no gradient.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(i32)]
 pub enum GradientDirection {
     /// Gradient is towards a white pixel (value 255).
@@ -102,6 +103,7 @@ pub enum GradientDirection {
     /// Gradient is towards a black pixel (value -255).
     TowardsBlack = -255,
     /// No gradient (value 0).
+    #[default]
     None = 0,
 }
 
@@ -153,7 +155,8 @@ impl Pixel {
 pub fn find_gradient_clusters<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     uf: &mut UnionFind,
-    clusters: &mut HashMap<(usize, usize), Vec<GradientInfo>>,
+    clusters: &mut HashMap<(usize, usize), MyVec<GradientInfo>>,
+    vec_store: &mut VecStore<GradientInfo>,
 ) {
     let src_slice = src.as_slice();
 
@@ -199,7 +202,7 @@ pub fn find_gradient_clusters<A: ImageAllocator>(
                             (neighbor_pixel_representative, current_pixel_representative)
                         };
 
-                        let entry = clusters.entry(key).or_default();
+                        let entry = clusters.entry(key).or_insert_with(|| vec_store.get());
 
                         let delta = neighbor_pixel.gradient_to(current_pixel);
                         let gradient_info = GradientInfo {
@@ -326,7 +329,8 @@ mod tests {
         find_connected_components(&bin, &mut uf)?;
 
         let mut gradient_clusters = HashMap::new();
-        find_gradient_clusters(&bin, &mut uf, &mut gradient_clusters);
+        let mut vec_store = VecStore::new();
+        find_gradient_clusters(&bin, &mut uf, &mut gradient_clusters, &mut vec_store);
 
         // Since the order of HashMap iteration is random, we cannot rely on the order of clusters.
         // However, we know from the expected data file that there are exactly 3 unique clusters,
@@ -350,7 +354,7 @@ mod tests {
         for (_, infos) in gradient_clusters.iter() {
             let mut clusters = format!("size {}:\t", infos.len());
 
-            for info in infos {
+            for info in infos.iter() {
                 let g_str = |g: GradientDirection| match g {
                     GradientDirection::None => 0,
                     GradientDirection::TowardsBlack => -255,

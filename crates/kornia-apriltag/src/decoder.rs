@@ -1,6 +1,7 @@
 use std::{f32::consts::PI, ops::ControlFlow};
 
 use crate::{
+    alloc::MyVec,
     family::{TagFamily, TagFamilyKind},
     quad::Quad,
     utils::{
@@ -254,9 +255,9 @@ pub fn decode_tags<A: ImageAllocator>(
     quads: &mut [Quad],
     config: &mut DecodeTagsConfig,
     gray_model_pair: &mut GrayModelPair,
-) -> Vec<Detection> {
+) -> MyVec<Detection> {
     // TODO: Avoid allocations on every call
-    let mut detections = Vec::new();
+    let mut detections = MyVec::new();
 
     quads.iter_mut().for_each(|quad| {
         if config.refine_edges_enabled {
@@ -835,6 +836,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        alloc::VecStore,
         quad::fit_quads,
         segmentation::{find_connected_components, find_gradient_clusters},
         threshold::{adaptive_threshold, TileMinMax},
@@ -855,15 +857,17 @@ mod tests {
         let mut tile_min_max = TileMinMax::new(bin.size(), 4);
         let mut uf = UnionFind::new(bin.as_slice().len());
         let mut clusters = HashMap::new();
+        let mut vec_store = VecStore::new();
         let mut gray_model_pair = GrayModelPair::default();
+        let mut quads = MyVec::new();
 
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
-        find_gradient_clusters(&bin, &mut uf, &mut clusters);
+        find_gradient_clusters(&bin, &mut uf, &mut clusters, &mut vec_store);
 
-        let mut quads = fit_quads(&bin, &mut clusters, &config);
+        fit_quads(&bin, &mut clusters, &config, &mut quads);
 
-        for quad in &mut quads {
+        for quad in &mut quads.iter_mut() {
             for corner in &mut quad.corners {
                 corner.x = corner.x.round();
                 corner.y = corner.y.round();

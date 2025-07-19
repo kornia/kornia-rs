@@ -1,4 +1,5 @@
 use crate::{
+    alloc::MyVec,
     segmentation::GradientInfo,
     utils::{homography_compute, Pixel, Point2d},
     DecodeTagsConfig,
@@ -116,11 +117,12 @@ impl Quad {
 // TODO: Support multiple tag families
 pub fn fit_quads<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
-    clusters: &mut HashMap<(usize, usize), Vec<GradientInfo>>,
+    clusters: &mut HashMap<(usize, usize), MyVec<GradientInfo>>,
     config: &DecodeTagsConfig,
-) -> Vec<Quad> {
+    quads: &mut MyVec<Quad>,
+) {
     // TODO: Avoid this allocation every time
-    let mut quads = Vec::new();
+    // let mut quads = MyVec::new();
 
     let max_cluster_len = 4 * (src.width() + src.height());
 
@@ -146,7 +148,7 @@ pub fn fit_quads<A: ImageAllocator>(
         }
     });
 
-    quads
+    // quads
 }
 
 /// Fits a single quadrilateral (quad) to a cluster of gradient information in the image.
@@ -779,6 +781,7 @@ mod tests {
     use kornia_io::png::read_image_png_mono8;
 
     use crate::{
+        alloc::VecStore,
         family::TagFamilyKind,
         segmentation::{
             find_connected_components, find_gradient_clusters, GradientDirection, GradientInfo,
@@ -798,15 +801,18 @@ mod tests {
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         let mut uf = UnionFind::new(src.as_slice().len());
         let mut clusters = HashMap::new();
+        let mut vec_store = VecStore::new();
+        let mut quads = MyVec::new();
 
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
-        find_gradient_clusters(&bin, &mut uf, &mut clusters);
+        find_gradient_clusters(&bin, &mut uf, &mut clusters, &mut vec_store);
 
-        let quads = fit_quads(
+        fit_quads(
             &bin,
             &mut clusters,
             &DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]),
+            &mut quads,
         );
 
         let expected_quad = [[[27, 3], [27, 27], [3, 27], [3, 3]]];
@@ -891,10 +897,11 @@ mod tests {
         let mut tile_min_max = TileMinMax::new(src.size(), 4);
         let mut uf = UnionFind::new(src.as_slice().len());
         let mut clusters = HashMap::new();
+        let mut vec_store = VecStore::new();
 
         adaptive_threshold(&src, &mut bin, &mut tile_min_max, 20)?;
         find_connected_components(&bin, &mut uf)?;
-        find_gradient_clusters(&bin, &mut uf, &mut clusters);
+        find_gradient_clusters(&bin, &mut uf, &mut clusters, &mut vec_store);
 
         // Find the largest cluster to test with
         let largest_cluster = clusters

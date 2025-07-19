@@ -9,10 +9,11 @@ use kornia_image::{
 };
 
 use crate::{
+    alloc::{clear_hashmap, MyVec, VecStore},
     decoder::{decode_tags, Detection, GrayModelPair},
     errors::AprilTagError,
     family::{TagFamily, TagFamilyKind},
-    quad::{fit_quads, FitQuadConfig},
+    quad::{fit_quads, FitQuadConfig, Quad},
     segmentation::{find_connected_components, find_gradient_clusters, GradientInfo},
     threshold::{adaptive_threshold, TileMinMax},
     union_find::UnionFind,
@@ -45,6 +46,9 @@ pub mod quad;
 
 /// Decoding utilities for AprilTag detection.
 pub mod decoder;
+
+/// TODO
+pub mod alloc;
 
 /// Configuration for decoding AprilTags.
 #[derive(Debug, Clone, PartialEq)]
@@ -125,8 +129,10 @@ pub struct AprilTagDecoder {
     bin_img: Image<Pixel, 1, CpuAllocator>,
     tile_min_max: TileMinMax,
     uf: UnionFind,
-    clusters: HashMap<(usize, usize), Vec<GradientInfo>>,
+    clusters: HashMap<(usize, usize), MyVec<GradientInfo>>,
+    vec_store: VecStore<GradientInfo>,
     gray_model_pair: GrayModelPair,
+    quads: MyVec<Quad>,
 }
 
 impl AprilTagDecoder {
@@ -164,6 +170,8 @@ impl AprilTagDecoder {
             uf,
             clusters: HashMap::new(),
             gray_model_pair: GrayModelPair::new(),
+            quads: MyVec::with_capacity(50),
+            vec_store: VecStore::new(),
         })
     }
 
@@ -184,7 +192,7 @@ impl AprilTagDecoder {
     pub fn decode<A: ImageAllocator>(
         &mut self,
         src: &Image<u8, 1, A>,
-    ) -> Result<Vec<Detection>, AprilTagError> {
+    ) -> Result<MyVec<Detection>, AprilTagError> {
         // TODO: Add support for downscaling image
 
         // Step 1: Adaptive Threshold
@@ -199,15 +207,25 @@ impl AprilTagDecoder {
         find_connected_components(&self.bin_img, &mut self.uf)?;
 
         // Step 2(b): Find Clusters
-        find_gradient_clusters(&self.bin_img, &mut self.uf, &mut self.clusters);
+        find_gradient_clusters(
+            &self.bin_img,
+            &mut self.uf,
+            &mut self.clusters,
+            &mut self.vec_store,
+        );
 
         // Step 3: Quad Fitting
-        let mut quads = fit_quads(&self.bin_img, &mut self.clusters, &self.config);
+        fit_quads(
+            &self.bin_img,
+            &mut self.clusters,
+            &self.config,
+            &mut self.quads,
+        );
 
         // Step 4: Tag Decoding
         Ok(decode_tags(
             src,
-            &mut quads,
+            &mut self.quads,
             &mut self.config,
             &mut self.gray_model_pair,
         ))
@@ -216,8 +234,10 @@ impl AprilTagDecoder {
     /// Clears the internal state of the decoder for reuse.
     pub fn clear(&mut self) {
         self.uf.reset();
-        self.clusters.clear();
+        // self.clusters.clear();
         self.gray_model_pair.reset();
+        self.quads.clear();
+        clear_hashmap(&mut self.clusters, &mut self.vec_store);
     }
 
     /// Returns a slice of tag families configured for detection.
