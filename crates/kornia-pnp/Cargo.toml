@@ -24,4 +24,4 @@ nalgebra = "0.32"
 
 [dev-dependencies]
 approx = { workspace = true }
-criterion = { workspace = true } 
+criterion = { workspace = true }
