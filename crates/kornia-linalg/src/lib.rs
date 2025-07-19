@@ -3,3 +3,4 @@
 
 /// Module to calculate SVD of a 3x3 matrix
 pub mod svd;
+pub mod rigid;

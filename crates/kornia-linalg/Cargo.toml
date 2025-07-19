@@ -18,7 +18,8 @@ std = ["glam/std"]
 libm = ["glam/libm"]
 
 [dependencies]
-glam = { version = "0.30.0", default-features = false }
+glam = { version = "0.30", default-features = false }
+nalgebra = "0.32"
 
 [dev-dependencies]
 faer = { workspace = true }
