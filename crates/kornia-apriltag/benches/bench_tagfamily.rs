@@ -1,0 +1,176 @@
+use apriltag::DetectorBuilder;
+use criterion::{criterion_group, criterion_main, Criterion};
+use kornia_apriltag::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
+use kornia_image::ImageSize;
+
+const IMG_SIZE: ImageSize = ImageSize {
+    width: 799,
+    height: 533,
+};
+
+fn bench_tagfamily(c: &mut Criterion) {
+    {
+        let mut group = c.benchmark_group("Tag16H5");
+        group.bench_function("kornia-apriltag", |b| {
+            b.iter(|| {
+                let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag16H5]);
+                std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
+            });
+        });
+        group.bench_function("apriltag-c", |b| {
+            b.iter(|| {
+                std::hint::black_box(
+                    DetectorBuilder::new()
+                        .add_family_bits(apriltag::Family::tag_16h5(), 2)
+                        .build()
+                        .unwrap(),
+                );
+            });
+        });
+    }
+
+    {
+        let mut group = c.benchmark_group("Tag36H11");
+        group.bench_function("kornia-apriltag", |b| {
+            b.iter(|| {
+                let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]);
+                std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
+            });
+        });
+        group.bench_function("apriltag-c", |b| {
+            b.iter(|| {
+                std::hint::black_box(
+                    DetectorBuilder::new()
+                        .add_family_bits(apriltag::Family::tag_36h11(), 2)
+                        .build()
+                        .unwrap(),
+                );
+            });
+        });
+    }
+
+    // Tag36H10 Not available on the apriltag bindings crate
+
+    {
+        let mut group = c.benchmark_group("Tag25H9");
+        group.bench_function("kornia-apriltag", |b| {
+            b.iter(|| {
+                let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag25H9]);
+                std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
+            });
+        });
+        group.bench_function("apriltag-c", |b| {
+            b.iter(|| {
+                std::hint::black_box(
+                    DetectorBuilder::new()
+                        .add_family_bits(apriltag::Family::tag_25h9(), 2)
+                        .build()
+                        .unwrap(),
+                );
+            });
+        });
+    }
+
+    {
+        let mut group = c.benchmark_group("TagCircle21H7");
+        group.bench_function("kornia-apriltag", |b| {
+            b.iter(|| {
+                let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCircle21H7]);
+                std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
+            });
+        });
+        group.bench_function("apriltag-c", |b| {
+            b.iter(|| {
+                std::hint::black_box(
+                    DetectorBuilder::new()
+                        .add_family_bits(apriltag::Family::tag_circle_21h7(), 2)
+                        .build()
+                        .unwrap(),
+                );
+            });
+        });
+    }
+
+    {
+        let mut group = c.benchmark_group("TagCircle49H12");
+        group.bench_function("kornia-apriltag", |b| {
+            b.iter(|| {
+                let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCircle49H12]);
+                std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
+            });
+        });
+        group.bench_function("apriltag-c", |b| {
+            b.iter(|| {
+                std::hint::black_box(
+                    DetectorBuilder::new()
+                        .add_family_bits(apriltag::Family::tag_circle_49h12(), 2)
+                        .build()
+                        .unwrap(),
+                );
+            });
+        });
+    }
+
+    {
+        let mut group = c.benchmark_group("TagCustom48H12");
+        group.bench_function("kornia-apriltag", |b| {
+            b.iter(|| {
+                let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCustom48H12]);
+                std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
+            });
+        });
+        group.bench_function("apriltag-c", |b| {
+            b.iter(|| {
+                std::hint::black_box(
+                    DetectorBuilder::new()
+                        .add_family_bits(apriltag::Family::tag_custom_48h12(), 2)
+                        .build()
+                        .unwrap(),
+                );
+            });
+        });
+    }
+
+    {
+        let mut group = c.benchmark_group("TagStandard41H12");
+        group.bench_function("kornia-apriltag", |b| {
+            b.iter(|| {
+                let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard41H12]);
+                std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
+            });
+        });
+        group.bench_function("apriltag-c", |b| {
+            b.iter(|| {
+                std::hint::black_box(
+                    DetectorBuilder::new()
+                        .add_family_bits(apriltag::Family::tag_standard_41h12(), 2)
+                        .build()
+                        .unwrap(),
+                );
+            });
+        });
+    }
+
+    {
+        let mut group = c.benchmark_group("TagStandard52H13");
+        group.bench_function("kornia-apriltag", |b| {
+            b.iter(|| {
+                let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard52H13]);
+                std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
+            });
+        });
+        group.bench_function("apriltag-c", |b| {
+            b.iter(|| {
+                std::hint::black_box(
+                    DetectorBuilder::new()
+                        .add_family_bits(apriltag::Family::tag_standard_52h13(), 2)
+                        .build()
+                        .unwrap(),
+                );
+            });
+        });
+    }
+}
+
+criterion_group!(benches, bench_tagfamily);
+criterion_main!(benches);
