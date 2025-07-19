@@ -1,3 +1,4 @@
+#![allow(clippy::op_ref)]
 use nalgebra::{DMatrix, DVector, Vector4};
 
 /// Compute the centroid of a set of points.
