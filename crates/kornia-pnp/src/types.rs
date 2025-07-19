@@ -50,4 +50,4 @@ pub trait PnPSolver {
         k: &[[f64; 3]; 3],
         params: &Self::Param,
     ) -> Result<PnPResult, &'static str>;
-} 
+}

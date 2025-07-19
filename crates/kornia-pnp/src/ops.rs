@@ -16,19 +16,8 @@ pub(crate) fn compute_centroid(pts: &[[f64; 3]]) -> [f64; 3] {
 }
 
 //TODO: Checkout faer for this
-pub(crate) fn gauss_newton(
-    beta_init: [f64; 4],
-    null4: &DMatrix<f64>,
-    rho: &[f64; 6],
-) -> [f64; 4] {
-    const PAIRS: [(usize, usize); 6] = [
-        (0, 1),
-        (0, 2),
-        (0, 3),
-        (1, 2),
-        (1, 3),
-        (2, 3),
-    ];
+pub(crate) fn gauss_newton(beta_init: [f64; 4], null4: &DMatrix<f64>, rho: &[f64; 6]) -> [f64; 4] {
+    const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 
     let mut bet = Vector4::from_column_slice(&beta_init);
 
