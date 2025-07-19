@@ -162,9 +162,10 @@ pub fn find_gradient_clusters<A: ImageAllocator>(
 
     (1..src.height() - 1).for_each(|y| {
         let mut connected_last = false;
+        let iy = y * src.width();
 
         (1..src.width() - 1).for_each(|x| {
-            let i = y * src.width() + x;
+            let i = iy + x;
             let current_pixel = src_slice[i];
 
             if current_pixel == Pixel::Skip {
@@ -220,16 +221,17 @@ pub fn find_gradient_clusters<A: ImageAllocator>(
                     }
                 };
 
+            let i_src_width = i + src.width();
             do_conn(1, 0, i + 1, &mut any_connected);
-            do_conn(0, 1, i + src.width(), &mut any_connected);
+            do_conn(0, 1, i_src_width, &mut any_connected);
 
             if !connected_last {
-                do_conn(-1, 1, i + src.width() - 1, &mut any_connected)
+                do_conn(-1, 1, i_src_width - 1, &mut any_connected)
             }
 
             any_connected = false;
 
-            do_conn(1, 1, i + src.width() + 1, &mut any_connected);
+            do_conn(1, 1, i_src_width + 1, &mut any_connected);
 
             connected_last = any_connected;
         });

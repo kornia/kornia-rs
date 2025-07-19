@@ -257,7 +257,7 @@ pub fn decode_tags<A: ImageAllocator>(
     gray_model_pair: &mut GrayModelPair,
 ) -> MyVec<Detection> {
     // TODO: Avoid allocations on every call
-    let mut detections = MyVec::new();
+    let mut detections = MyVec::with_capacity(10);
 
     quads.iter_mut().for_each(|quad| {
         if config.refine_edges_enabled {
