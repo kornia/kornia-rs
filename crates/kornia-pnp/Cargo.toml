@@ -1,0 +1,27 @@
+[package]
+name = "kornia-pnp"
+description = "Perspective-n-Point solvers for kornia"
+
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+publish = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+kornia-linalg = { workspace = true }
+kornia-lie = { workspace = true }
+thiserror = { workspace = true }
+glam = { version = "0.30.0", default-features = false }
+
+nalgebra = "0.32"
+
+[dev-dependencies]
+approx = { workspace = true }
+criterion = { workspace = true } 
