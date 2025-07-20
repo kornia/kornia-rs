@@ -3,6 +3,18 @@
 
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 
+#[derive(Clone, Copy)]
+pub(crate) struct SendPtr<T>(pub(crate) *mut T);
+
+unsafe impl<T> Send for SendPtr<T> {}
+unsafe impl<T> Sync for SendPtr<T> {}
+
+impl<T> SendPtr<T> {
+    pub unsafe fn add(self, count: usize) -> SendPtr<T> {
+        SendPtr(self.0.add(count))
+    }
+}
+
 /// Calculates the total number of tiles needed to cover an image of the given size,
 /// including partial tiles at the edges.
 ///

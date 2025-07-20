@@ -1,8 +1,12 @@
 use crate::{
     errors::AprilTagError,
-    utils::{find_total_tiles, Point2d},
+    utils::{find_full_tiles, find_total_tiles, Point2d},
 };
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
+use rayon::{
+    iter::plumbing::{bridge, Producer, ProducerCallback},
+    prelude::*,
+};
 
 /// Contains metadata and data for a single tile of an image.
 ///
@@ -58,6 +62,22 @@ pub struct TileIterator<'a, T> {
     /// The index of the next full (non-partial) tile to be yielded by the iterator.
     next_full_index: usize,
     buffer: Vec<&'a [T]>,
+}
+
+impl<'a, T> Clone for TileIterator<'a, T> {
+    fn clone(&self) -> Self {
+        Self {
+            img_data: self.img_data,
+            img_size: self.img_size,
+            tile_size: self.tile_size,
+            tiles_dim: self.tiles_dim,
+            last_tile_px: self.last_tile_px,
+            next_tile_index: self.next_tile_index,
+            next_index: self.next_index,
+            next_full_index: self.next_full_index,
+            buffer: self.buffer.clone(),
+        }
+    }
 }
 
 impl<'a, T> TileIterator<'a, T> {
@@ -174,6 +194,118 @@ impl<'a, T> Iterator for TileIterator<'a, T> {
         };
 
         Some(tile)
+    }
+}
+
+/// NOTE: The Image for TileIterator must have atleast 2 full sized tiles
+pub struct ParTileIterator<'a, T> {
+    base: TileIterator<'a, T>,
+}
+
+impl<'a, T: Sync> IntoParallelIterator for TileIterator<'a, T> {
+    type Iter = ParTileIterator<'a, T>;
+
+    type Item = ImageTile<'a, T>;
+
+    fn into_par_iter(self) -> Self::Iter {
+        ParTileIterator { base: self }
+    }
+}
+
+impl<'a, T: Sync> ParallelIterator for ParTileIterator<'a, T> {
+    type Item = ImageTile<'a, T>;
+
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+    where
+        C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
+    {
+        bridge(self, consumer)
+    }
+
+    fn opt_len(&self) -> Option<usize> {
+        Some(self.len())
+    }
+}
+
+impl<'a, T: Sync> IndexedParallelIterator for ParTileIterator<'a, T> {
+    fn len(&self) -> usize {
+        self.base.tiles_dim.x * self.base.tiles_dim.y
+    }
+
+    fn drive<C: rayon::iter::plumbing::Consumer<Self::Item>>(self, consumer: C) -> C::Result {
+        bridge(self, consumer)
+    }
+
+    fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
+        callback.callback(TileIteratorProducer {
+            end_index: self.len(),
+            full_tiles_dim: find_full_tiles(self.base.img_size, self.base.tile_size),
+            base: self.base,
+        })
+    }
+}
+
+pub struct TileIteratorProducer<'a, T> {
+    base: TileIterator<'a, T>,
+    full_tiles_dim: Point2d,
+    end_index: usize,
+}
+
+impl<'a, T> Clone for TileIteratorProducer<'a, T> {
+    fn clone(&self) -> Self {
+        Self {
+            base: self.base.clone(),
+            end_index: self.end_index,
+            full_tiles_dim: self.full_tiles_dim,
+        }
+    }
+}
+
+impl<'a, T: Sync> Producer for TileIteratorProducer<'a, T> {
+    type Item = ImageTile<'a, T>;
+
+    type IntoIter = Self;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self
+    }
+
+    fn split_at(self, index: usize) -> (Self, Self) {
+        let mut left = self.clone();
+        left.end_index = index;
+
+        let right_tile_index = Point2d {
+            x: index % self.base.tiles_dim.x,
+            y: index / self.base.tiles_dim.x,
+        };
+        let mut right_tile_full_index = right_tile_index.y * self.full_tiles_dim.x;
+        right_tile_full_index += right_tile_index.x.min(self.full_tiles_dim.x - 1);
+
+        let mut right = self;
+        right.base.next_index = index;
+        right.base.next_tile_index = right_tile_index;
+        right.base.next_full_index = right_tile_full_index;
+
+        (left, right)
+    }
+}
+
+impl<'a, T> ExactSizeIterator for TileIteratorProducer<'a, T> {}
+
+impl<'a, T> DoubleEndedIterator for TileIteratorProducer<'a, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        unimplemented!()
+    }
+}
+
+impl<'a, T> Iterator for TileIteratorProducer<'a, T> {
+    type Item = ImageTile<'a, T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.base.next_index >= self.end_index {
+            return None;
+        }
+        self.base.next()
     }
 }
 
