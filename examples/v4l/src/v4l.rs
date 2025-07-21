@@ -5,7 +5,7 @@ use kornia::{
     io::{
         fps_counter::FpsCounter,
         jpeg,
-        v4l::{AutoExposureMode, CameraControl, PixelFormat, V4LCameraConfig, V4lVideoCapture},
+        v4l::{camera_control, PixelFormat, V4LCameraConfig, V4lVideoCapture},
     },
     tensor::CpuAllocator,
 };
@@ -68,27 +68,17 @@ pub fn v4l_demo() -> Result<(), Box<dyn std::error::Error>> {
     println!("Requested FPS: {0}", args.fps);
     println!("Image size: {img_size:?}");
 
-    if let Err(e) = webcam.set_control(CameraControl::DynamicFramerate(false)) {
+    if let Err(e) = webcam.set_control(ExposureDynamicFramerate(false)) {
         println!("⚠️ Could not disable dynamic framerate: {e}");
     }
 
     // Enable auto exposure and auto white balance for best image quality
-    if let Err(e) = webcam.set_control(CameraControl::AutoExposure(AutoExposureMode::Auto)) {
-        println!("⚠️ Could not enable auto exposure: {e}");
+    if let Err(e) = webcam.set_control(AutoExposure(AutoExposureMode::Priority)) {
+        println!("⚠️ Could not enable aperture priority mode: {e}");
     }
 
-    // Enable auto white balance for better color
-    if let Err(e) = webcam.set_control(CameraControl::AutoWhiteBalance(true)) {
-        println!("⚠️ Could not enable auto white balance: {e}");
-    }
-
-    // For manual control, disable auto and set specific values
-    if let Err(e) = webcam.set_control(CameraControl::AutoExposure(AutoExposureMode::Auto)) {
-        println!("⚠️ Could not set manual exposure: {e}");
-    }
-
-    if let Err(e) = webcam.set_control(CameraControl::AutoWhiteBalance(false)) {
-        println!("⚠️ Could not disable auto white balance: {e}");
+    if let Err(e) = webcam.set_control(WhiteBalanceAutomatic(true)) {
+        println!("⚠️ Could not enable white balance automatic: {e}");
     }
 
     let mut fps_counter = FpsCounter::new();
@@ -136,4 +126,53 @@ pub fn v4l_demo() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+// some camera controls obtained from: v4l2-ctl --device=/dev/video0 --all
+
+#[derive(Debug)]
+struct ExposureDynamicFramerate(pub bool);
+
+#[rustfmt::skip]
+impl camera_control::CameraControlTrait for ExposureDynamicFramerate {
+    fn name(&self) -> &str { "dynamic_framerate" }
+    fn control_id(&self) -> u32 { 0x009a0903 }
+    fn value(&self) -> camera_control::ControlType {
+        camera_control::ControlType::Boolean(self.0)
+    }
+    fn description(&self) -> String { "Dynamic framerate control".to_string() }
+}
+
+#[derive(Debug, Copy, Clone)]
+enum AutoExposureMode {
+    #[allow(dead_code)]
+    Manual = 1,
+    #[allow(dead_code)]
+    Priority = 3, // Aperture Priority Mode
+}
+
+#[derive(Debug)]
+struct AutoExposure(pub AutoExposureMode);
+
+#[rustfmt::skip]
+impl camera_control::CameraControlTrait for AutoExposure {
+    fn name(&self) -> &str { "auto_exposure" }
+    fn control_id(&self) -> u32 { 0x009a0901 }
+    fn value(&self) -> camera_control::ControlType {
+        camera_control::ControlType::Integer(self.0 as i64)
+    }
+    fn description(&self) -> String { "Auto exposure control".to_string() }
+}
+
+#[derive(Debug)]
+struct WhiteBalanceAutomatic(pub bool);
+
+#[rustfmt::skip]
+impl camera_control::CameraControlTrait for WhiteBalanceAutomatic {
+    fn name(&self) -> &str { "white_balance_automatic" }
+    fn control_id(&self) -> u32 { 0x0098090c }
+    fn value(&self) -> camera_control::ControlType {
+        camera_control::ControlType::Boolean(self.0)
+    }
+    fn description(&self) -> String { "White balance automatic control".to_string() }
 }

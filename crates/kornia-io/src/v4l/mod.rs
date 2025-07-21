@@ -1,13 +1,17 @@
-mod camera_control;
+/// module for camera controls
+pub mod camera_control;
+
 mod pixel_format;
 mod stream;
 
 // re-export the camera control and pixel format types
-pub use camera_control::{AutoExposureMode, CameraControl};
 pub use pixel_format::PixelFormat;
 
+use crate::v4l::camera_control::{CameraControlTrait, ControlType};
 use kornia_image::ImageSize;
-use v4l::{buffer::Type, video::capture::Parameters, video::Capture, Device, Timestamp};
+use v4l::{
+    buffer::Type, control::Value, video::capture::Parameters, video::Capture, Device, Timestamp,
+};
 
 /// Error types for the v4l2 module.
 #[derive(Debug, thiserror::Error)]
@@ -118,9 +122,15 @@ impl V4lVideoCapture {
     }
 
     /// Set a camera control
-    pub fn set_control(&mut self, control: CameraControl) -> Result<(), V4L2Error> {
+    pub fn set_control<T: CameraControlTrait>(&mut self, control: T) -> Result<(), V4L2Error> {
         self.device
-            .set_control(control.to_v4l_control())
+            .set_control(v4l::Control {
+                id: control.control_id(),
+                value: match control.value() {
+                    ControlType::Integer(value) => Value::Integer(value),
+                    ControlType::Boolean(value) => Value::Boolean(value),
+                },
+            })
             .map_err(V4L2Error::IoError)
     }
 

@@ -1,5 +1,6 @@
 #[cfg(target_os = "linux")]
 mod v4l;
+
 #[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     v4l::v4l_demo()
