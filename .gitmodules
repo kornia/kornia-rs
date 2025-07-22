@@ -1,3 +1,3 @@
 [submodule "tests/data/apriltag-imgs"]
 	path = tests/data/apriltag-imgs
-	url = https://github.com/AS1100K/apriltag-imgs.git
+	url = https://github.com/kornia/apriltag-imgs.git
