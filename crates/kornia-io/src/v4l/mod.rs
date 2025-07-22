@@ -104,8 +104,9 @@ impl V4lVideoCapture {
         device.set_params(&params)?;
 
         // Create the stream
-        let stream =
+        let mut stream =
             stream::MmapStream::with_buffers(&device, Type::VideoCapture, config.buffer_size)?;
+        stream.next_frame()?;
 
         Ok(Self {
             stream,
