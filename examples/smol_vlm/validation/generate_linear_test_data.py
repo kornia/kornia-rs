@@ -15,9 +15,11 @@ def generate_linear_test_data(num_tests=10, input_dims=[512, 1024, 2048], output
         output_dim = np.random.choice(output_dims)
         batch_size = np.random.choice(batch_sizes)
         
-        x = torch.randn(batch_size, input_dim, dtype=dtype)
-        weight = torch.randn(output_dim, input_dim, dtype=dtype)
-        y = torch.nn.functional.linear(x, weight, bias=None)
+        x = torch.randn(batch_size, input_dim, dtype=dtype, device=torch.device("cpu"))
+        weight = torch.randn(output_dim, input_dim, dtype=dtype, device=torch.device("cpu"))
+        # y = torch.nn.functional.linear(x, weight, bias=None)
+        y = torch.matmul(x, weight.t())
+        # y = torch.ones_like(y)
         
         test_data[f"test_{i}_input"] = x
         test_data[f"test_{i}_weight"] = weight
@@ -31,7 +33,7 @@ def generate_linear_test_data(num_tests=10, input_dims=[512, 1024, 2048], output
     return test_data
 
 
-def main(num_tests=50, output_dir="./tests/data", seed=42, dtype="bfloat16"):
+def main(num_tests=50, output_dir="./tests/data", seed=42, dtype="float32"):
     dtype_map = {"float32": torch.float32, "float64": torch.float64, "bfloat16": torch.bfloat16}
     torch_dtype = dtype_map[dtype]
     
