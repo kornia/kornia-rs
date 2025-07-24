@@ -168,24 +168,16 @@ impl MLPGates {
     }
 
     fn forward(&mut self, x: &Tensor) -> Result<Tensor> {
-        // Convert to F32 for more precise computation
-        let x_f32 = x.to_dtype(DType::F32)?;
-        let original_dtype = x.dtype();
-
-        // All computation in F32 for maximum precision
-        let gate_proj_out = x_f32.matmul(&self.gate_proj.weight().to_dtype(DType::F32)?.t()?)?;
-        let gate = silu_f32(&gate_proj_out)?;
-        let up = x_f32.matmul(&self.up_proj.weight().to_dtype(DType::F32)?.t()?)?;
-        let hidden = (&gate * &up)?;
-        let result = hidden.matmul(&self.down_proj.weight().to_dtype(DType::F32)?.t()?)?;
-
-        // Store debug values in original dtype for compatibility
-        self.DEBUG_gate_proj = Some(gate_proj_out.to_dtype(original_dtype)?);
-        self.DEBUG_act_fn = Some(gate.to_dtype(original_dtype)?);
-        self.DEBUG_up_proj = Some(up.to_dtype(original_dtype)?);
-        self.DEBUG_down_proj = Some(result.to_dtype(original_dtype)?);
-
-        Ok(result.to_dtype(original_dtype)?)
+        let gate_proj_out = self.gate_proj.forward(x)?;
+        self.DEBUG_gate_proj = Some(gate_proj_out.clone()); // for debugging purposes, to be removed later
+        let gate = silu(&gate_proj_out)?;
+        self.DEBUG_act_fn = Some(gate.clone()); // for debugging purposes, to be removed later
+        let up = self.up_proj.forward(x)?;
+        self.DEBUG_up_proj = Some(up.clone()); // for debugging purposes, to be removed later
+        let hidden = (gate * up)?;
+        let x = self.down_proj.forward(&hidden)?;
+        self.DEBUG_down_proj = Some(x.clone()); // for debugging purposes, to be removed later
+        Ok(x)
     }
 }
 
