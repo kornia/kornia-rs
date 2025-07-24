@@ -168,6 +168,10 @@ impl MmapStream {
         })
     }
 
+    pub fn set_timeout(&mut self, timeout: Option<i32>) {
+        self.timeout = timeout;
+    }
+
     fn queue_buffer(&mut self, index: usize) -> io::Result<()> {
         let mut v4l2_buf = v4l2_buffer {
             index: index as u32,
