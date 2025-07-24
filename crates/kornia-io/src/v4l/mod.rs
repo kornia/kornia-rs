@@ -106,10 +106,7 @@ impl V4lVideoCapture {
         // Create the stream
         let mut stream =
             stream::MmapStream::with_buffers(&device, Type::VideoCapture, config.buffer_size)?;
-
-        stream.set_timeout(Some(0)); // non-blocking
-
-        stream.next_frame()?;
+        stream.next_frame()?; // warm up the stream
 
         Ok(Self {
             stream,
@@ -136,6 +133,11 @@ impl V4lVideoCapture {
                 },
             })
             .map_err(V4L2Error::IoError)
+    }
+
+    /// Set the timeout for the stream
+    pub fn set_timeout(&mut self, timeout: i32) {
+        self.stream.set_timeout(Some(timeout));
     }
 
     /// Grab a frame from the camera
