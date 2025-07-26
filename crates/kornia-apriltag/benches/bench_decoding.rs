@@ -4,9 +4,12 @@ use kornia_apriltag::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
 use kornia_image::{allocator::CpuAllocator, Image};
 use kornia_imgproc::color::gray_from_rgb_u8;
 use kornia_io::jpeg::read_image_jpeg_rgb8;
+use std::path::PathBuf;
 
 fn bench_decoding(c: &mut Criterion) {
-    let img = read_image_jpeg_rgb8("../../tests/data/apriltags_tag36h11.jpg").unwrap();
+    let img_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/apriltags_tag36h11.jpg");
+    let img = read_image_jpeg_rgb8(img_path).unwrap();
     let mut gray_img = Image::from_size_val(img.size(), 0, CpuAllocator).unwrap();
     gray_from_rgb_u8(&img, &mut gray_img).unwrap();
 

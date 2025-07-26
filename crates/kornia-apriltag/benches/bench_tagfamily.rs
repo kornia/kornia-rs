@@ -8,6 +8,8 @@ const IMG_SIZE: ImageSize = ImageSize {
     height: 533,
 };
 
+const BITS_CORRECTED: usize = 2;
+
 fn bench_tagfamily(c: &mut Criterion) {
     {
         let mut group = c.benchmark_group("Tag16H5");
@@ -21,7 +23,7 @@ fn bench_tagfamily(c: &mut Criterion) {
             b.iter(|| {
                 std::hint::black_box(
                     DetectorBuilder::new()
-                        .add_family_bits(apriltag::Family::tag_16h5(), 2)
+                        .add_family_bits(apriltag::Family::tag_16h5(), BITS_CORRECTED)
                         .build()
                         .unwrap(),
                 );
@@ -41,7 +43,7 @@ fn bench_tagfamily(c: &mut Criterion) {
             b.iter(|| {
                 std::hint::black_box(
                     DetectorBuilder::new()
-                        .add_family_bits(apriltag::Family::tag_36h11(), 2)
+                        .add_family_bits(apriltag::Family::tag_36h11(), BITS_CORRECTED)
                         .build()
                         .unwrap(),
                 );
@@ -49,7 +51,7 @@ fn bench_tagfamily(c: &mut Criterion) {
         });
     }
 
-    // Tag36H10 Not available on the apriltag bindings crate
+    // Note: Tag36H10 benchmarks are omitted because this family is not available in the apriltag-c bindings crate
 
     {
         let mut group = c.benchmark_group("Tag25H9");
@@ -63,7 +65,7 @@ fn bench_tagfamily(c: &mut Criterion) {
             b.iter(|| {
                 std::hint::black_box(
                     DetectorBuilder::new()
-                        .add_family_bits(apriltag::Family::tag_25h9(), 2)
+                        .add_family_bits(apriltag::Family::tag_25h9(), BITS_CORRECTED)
                         .build()
                         .unwrap(),
                 );
@@ -83,7 +85,7 @@ fn bench_tagfamily(c: &mut Criterion) {
             b.iter(|| {
                 std::hint::black_box(
                     DetectorBuilder::new()
-                        .add_family_bits(apriltag::Family::tag_circle_21h7(), 2)
+                        .add_family_bits(apriltag::Family::tag_circle_21h7(), BITS_CORRECTED)
                         .build()
                         .unwrap(),
                 );
@@ -103,7 +105,7 @@ fn bench_tagfamily(c: &mut Criterion) {
             b.iter(|| {
                 std::hint::black_box(
                     DetectorBuilder::new()
-                        .add_family_bits(apriltag::Family::tag_circle_49h12(), 2)
+                        .add_family_bits(apriltag::Family::tag_circle_49h12(), BITS_CORRECTED)
                         .build()
                         .unwrap(),
                 );
@@ -123,7 +125,7 @@ fn bench_tagfamily(c: &mut Criterion) {
             b.iter(|| {
                 std::hint::black_box(
                     DetectorBuilder::new()
-                        .add_family_bits(apriltag::Family::tag_custom_48h12(), 2)
+                        .add_family_bits(apriltag::Family::tag_custom_48h12(), BITS_CORRECTED)
                         .build()
                         .unwrap(),
                 );
@@ -143,7 +145,7 @@ fn bench_tagfamily(c: &mut Criterion) {
             b.iter(|| {
                 std::hint::black_box(
                     DetectorBuilder::new()
-                        .add_family_bits(apriltag::Family::tag_standard_41h12(), 2)
+                        .add_family_bits(apriltag::Family::tag_standard_41h12(), BITS_CORRECTED)
                         .build()
                         .unwrap(),
                 );
@@ -163,7 +165,7 @@ fn bench_tagfamily(c: &mut Criterion) {
             b.iter(|| {
                 std::hint::black_box(
                     DetectorBuilder::new()
-                        .add_family_bits(apriltag::Family::tag_standard_52h13(), 2)
+                        .add_family_bits(apriltag::Family::tag_standard_52h13(), BITS_CORRECTED)
                         .build()
                         .unwrap(),
                 );
