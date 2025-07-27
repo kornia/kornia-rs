@@ -17,7 +17,6 @@ default = []
 [dependencies]
 kornia-linalg = { workspace = true }
 kornia-lie = { workspace = true }
-thiserror = { workspace = true }
 glam = { version = "0.30.0", default-features = false }
 
 nalgebra = "0.32"
