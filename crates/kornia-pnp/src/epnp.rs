@@ -10,7 +10,7 @@ use glam::{Mat3, Mat3A, Vec3};
 use kornia_lie::so3::SO3;
 use kornia_linalg::rigid::umeyama;
 use kornia_linalg::svd::svd3;
-use nalgebra::{DMatrix, DVector, Vector3, Vector4};
+use nalgebra::{DMatrix, DVector, Matrix3, Vector3, Vector4};
 
 /// Marker type representing the Efficient PnP algorithm.
 pub struct EPnP;
@@ -58,28 +58,27 @@ pub fn solve_epnp(
         return Err("EPnP requires ≥4 2D–3D correspondences");
     }
 
-    // 1. Control points in world frame
     let cw = select_control_points(world_pts);
 
     let alphas = compute_barycentric(world_pts, &cw, params.tol.eps);
 
-    // 3. Build the 2N×12 design matrix M
+    // Build the 2N×12 design matrix M
     let m_rows = build_m(&alphas, image_pts, k);
 
-    // Flatten into a single Vec<f64> row-major for nalgebra
     let m_flat: Vec<f64> = m_rows.iter().flat_map(|row| row.iter()).cloned().collect();
     let m_mat = DMatrix::<f64>::from_row_slice(2 * n, 12, &m_flat);
 
-    // 4. Null-space of M (4 right-singular vectors associated with smallest singular values)
+    // Null-space of M (4 right-singular vectors associated with smallest singular values)
     let svd = m_mat.svd(true, true);
-    let v_t = svd
-        .v_t
-        .expect("SVD should return V^T since full_matrices=true");
+    let v_t = match svd.v_t {
+        Some(v) => v,
+        None => return Err("SVD failed to compute V^T"),
+    };
     let cols = 12;
     let start_col = cols - 4;
     let null4 = v_t.rows(start_col, 4).transpose(); // shape 12×4
 
-    // 5. Build helper matrices for beta initialisation
+    // Build helper matrices for beta initialisation
     let l = build_l6x10(&null4);
     let rho = rho_ctrlpts(&cw);
 
@@ -88,116 +87,21 @@ pub fn solve_epnp(
 
     let mut betas: Vec<[f64; 4]> = Vec::new();
 
-    // -- Approx-1 (4 unknowns, columns 0,1,3,6)
-    {
-        let cols = [0, 1, 3, 6];
-        let sub_data: Vec<f64> = cols
-            .iter()
-            .flat_map(|&c| (0..6).map(move |r| l[r][c]))
-            .collect();
-        let l_sub = DMatrix::<f64>::from_column_slice(6, 4, &sub_data);
-        if let Ok(b4_mat) = l_sub.svd(true, true).solve(&rho_vec, params.tol.svd) {
-            let b4_vec = b4_mat.column(0);
-            let beta1 = if b4_vec[0] < 0.0 {
-                [
-                    (-b4_vec[0]).sqrt(),
-                    -b4_vec[1] / (-b4_vec[0]).sqrt(),
-                    -b4_vec[2] / (-b4_vec[0]).sqrt(),
-                    -b4_vec[3] / (-b4_vec[0]).sqrt(),
-                ]
-            } else {
-                [
-                    b4_vec[0].sqrt(),
-                    b4_vec[1] / b4_vec[0].sqrt(),
-                    b4_vec[2] / b4_vec[0].sqrt(),
-                    b4_vec[3] / b4_vec[0].sqrt(),
-                ]
-            };
-            betas.push(beta1);
-        }
-    }
+    betas.extend(
+        [
+            estimate_beta([0, 1, 3, 6], &l, &rho_vec, params.tol.svd),
+            estimate_beta([0, 1, 2], &l, &rho_vec, params.tol.svd),
+            estimate_beta([0, 1, 2, 3, 4], &l, &rho_vec, params.tol.svd),
+        ]
+        .into_iter()
+        .flatten(),
+    );
 
-    // -- Approx-2 (3 unknowns, columns 0,1,2)
-    {
-        let cols = [0, 1, 2];
-        let sub_data: Vec<f64> = cols
-            .iter()
-            .flat_map(|&c| (0..6).map(move |r| l[r][c]))
-            .collect();
-        let l_sub = DMatrix::<f64>::from_column_slice(6, 3, &sub_data);
-        if let Ok(b3_mat) = l_sub.svd(true, true).solve(&rho_vec, params.tol.svd) {
-            let b3_vec = b3_mat.column(0);
-            let mut beta2 = [0.0; 4];
-            if b3_vec[0] < 0.0 {
-                beta2[0] = (-b3_vec[0]).sqrt();
-                beta2[1] = 0.0;
-                beta2[2] = if b3_vec[2] > 0.0 {
-                    0.0
-                } else {
-                    (-b3_vec[2]).sqrt()
-                };
-            } else {
-                beta2[0] = b3_vec[0].sqrt();
-                beta2[1] = 0.0;
-                beta2[2] = if b3_vec[2] < 0.0 {
-                    0.0
-                } else {
-                    b3_vec[2].sqrt()
-                };
-            }
-            if b3_vec[1] < 0.0 {
-                beta2[0] = -beta2[0];
-            }
-            betas.push(beta2);
-        }
-    }
-
-    // -- Approx-3 (5 unknowns, columns 0,1,2,3,4)
-    {
-        let cols = [0, 1, 2, 3, 4];
-        let sub_data: Vec<f64> = cols
-            .iter()
-            .flat_map(|&c| (0..6).map(move |r| l[r][c]))
-            .collect();
-        let l_sub = DMatrix::<f64>::from_column_slice(6, 5, &sub_data);
-        if let Ok(b5_mat) = l_sub.svd(true, true).solve(&rho_vec, params.tol.svd) {
-            let b5_vec = b5_mat.column(0);
-            let mut beta3 = [0.0; 4];
-            if b5_vec[0] < 0.0 {
-                beta3[0] = (-b5_vec[0]).sqrt();
-                beta3[1] = if b5_vec[2] > 0.0 {
-                    0.0
-                } else {
-                    (-b5_vec[2]).sqrt()
-                };
-                beta3[2] = b5_vec[3] / (-b5_vec[0]).sqrt();
-            } else {
-                beta3[0] = b5_vec[0].sqrt();
-                beta3[1] = if b5_vec[2] < 0.0 {
-                    0.0
-                } else {
-                    b5_vec[2].sqrt()
-                };
-                beta3[2] = b5_vec[3] / b5_vec[0].sqrt();
-            }
-            if b5_vec[1] < 0.0 {
-                beta3[0] = -beta3[0];
-            }
-            betas.push(beta3);
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // 6. Gauss–Newton refinement of each beta candidate
-    // ------------------------------------------------------------------
     let betas_refined: Vec<[f64; 4]> = betas
         .iter()
         .map(|&b| gauss_newton(b, &null4, &rho))
         .collect();
 
-    // ------------------------------------------------------------------
-    // 7. Evaluate reprojection error and pick best candidate
-    // ------------------------------------------------------------------
     let mut best_err = f64::INFINITY;
     let mut best_r = [[1.0; 3]; 3];
     let mut best_t = [0.0; 3];
@@ -243,11 +147,9 @@ fn pose_from_betas(
     cw: &[[f64; 3]; 4],   // control points in world frame
     alphas: &[[f64; 4]],  // barycentric coordinates for each world point
 ) -> ([[f64; 3]; 3], [f64; 3]) {
-    // 1. Compute control points in camera frame: Cc = V * betas
     let beta_vec = Vector4::from_column_slice(betas);
     let cc_flat = null4 * beta_vec; // 12×1 vector
 
-    // Reshape to 4×3 (row-major order: consecutive triplets are x,y,z per point)
     let mut cc: [[f64; 3]; 4] = [[0.0; 3]; 4];
     for i in 0..4 {
         cc[i][0] = cc_flat[3 * i];
@@ -255,7 +157,6 @@ fn pose_from_betas(
         cc[i][2] = cc_flat[3 * i + 2];
     }
 
-    // 2. Reconstruct first point in camera frame for sign check
     let a0 = alphas[0];
     let mut pc0 = [0.0; 3];
     for j in 0..4 {
@@ -264,7 +165,6 @@ fn pose_from_betas(
         pc0[2] += a0[j] * cc[j][2];
     }
 
-    // 3. If Z negative, flip sign of all camera-frame control points
     if pc0[2] < 0.0 {
         for pt in &mut cc {
             pt[0] *= -1.0;
@@ -273,7 +173,6 @@ fn pose_from_betas(
         }
     }
 
-    // 4. Estimate R and t via Umeyama between control points
     let (r, t, _s) = umeyama(cw, &cc);
     (r, t)
 }
@@ -318,40 +217,29 @@ fn select_control_points(pw: &[[f64; 3]]) -> [[f64; 3]; 4] {
     let n = pw.len();
     let c = compute_centroid(pw);
 
-    // ------------------------------------------------------------------
-    // 1. Compute the 3×3 covariance matrix of demeaned points.
-    // ------------------------------------------------------------------
-    let mut cov = [[0.0f64; 3]; 3];
-    for p in pw {
-        let dx = p[0] - c[0];
-        let dy = p[1] - c[1];
-        let dz = p[2] - c[2];
+    // Compute covariance using nalgebra for clarity.
+    let cov_na = pw.iter().fold(Matrix3::<f64>::zeros(), |acc, p| {
+        let diff = Vector3::new(p[0] - c[0], p[1] - c[1], p[2] - c[2]);
+        acc + diff * diff.transpose()
+    }) * (1.0 / n as f64);
 
-        cov[0][0] += dx * dx;
-        cov[0][1] += dx * dy;
-        cov[0][2] += dx * dz;
-
-        cov[1][0] += dy * dx;
-        cov[1][1] += dy * dy;
-        cov[1][2] += dy * dz;
-
-        cov[2][0] += dz * dx;
-        cov[2][1] += dz * dy;
-        cov[2][2] += dz * dz;
-    }
-
-    let inv_n = 1.0 / n as f64;
-    for row in &mut cov {
-        for val in row {
-            *val *= inv_n;
-        }
-    }
-
-    // Convert covariance matrix to glam::Mat3<f32> column-major order.
+    // Convert nalgebra::Matrix3 (row-major) to glam::Mat3 (column-major f32).
     let cov_mat = Mat3::from_cols(
-        Vec3::new(cov[0][0] as f32, cov[1][0] as f32, cov[2][0] as f32),
-        Vec3::new(cov[0][1] as f32, cov[1][1] as f32, cov[2][1] as f32),
-        Vec3::new(cov[0][2] as f32, cov[1][2] as f32, cov[2][2] as f32),
+        Vec3::new(
+            cov_na[(0, 0)] as f32,
+            cov_na[(1, 0)] as f32,
+            cov_na[(2, 0)] as f32,
+        ),
+        Vec3::new(
+            cov_na[(0, 1)] as f32,
+            cov_na[(1, 1)] as f32,
+            cov_na[(2, 1)] as f32,
+        ),
+        Vec3::new(
+            cov_na[(0, 2)] as f32,
+            cov_na[(1, 2)] as f32,
+            cov_na[(2, 2)] as f32,
+        ),
     );
 
     let svd = svd3(&cov_mat);
@@ -365,10 +253,7 @@ fn select_control_points(pw: &[[f64; 3]]) -> [[f64; 3]; 4] {
     ];
     axes_sig.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
 
-    // ------------------------------------------------------------------
-    // 3. Assemble control points: centroid + principal-axis displacements
-    //    using sigmas sorted in descending order.
-    // ------------------------------------------------------------------
+    // Assemble control points: centroid + principal-axis displacements
     let mut cw = [[0.0; 3]; 4];
     cw[0] = c;
 
@@ -395,94 +280,42 @@ fn select_control_points(pw: &[[f64; 3]]) -> [[f64; 3]; 4] {
 /// Vector of length *N* where each element is `[α0, α1, α2, α3]` such that
 /// `α0 + α1 + α2 + α3 = 1` and `pw_i = Σ αj Cw_j`.
 fn compute_barycentric(pw: &[[f64; 3]], cw: &[[f64; 3]; 4], eps: f64) -> Vec<[f64; 4]> {
-    // ------------------------------------------------------------------
-    // 1. Build the 3×3 matrix B = [C1-C0, C2-C0, C3-C0].  Each column is a
-    //    displacement vector from the first control point C0.
-    // ------------------------------------------------------------------
-    let c0 = cw[0];
-    let d1 = [cw[1][0] - c0[0], cw[1][1] - c0[1], cw[1][2] - c0[2]];
-    let d2 = [cw[2][0] - c0[0], cw[2][1] - c0[1], cw[2][2] - c0[2]];
-    let d3 = [cw[3][0] - c0[0], cw[3][1] - c0[1], cw[3][2] - c0[2]];
+    // Build B = [C1 - C0, C2 - C0, C3 - C0].
+    let c0 = Vector3::from_row_slice(&cw[0]);
+    let d1 = Vector3::from_row_slice(&[cw[1][0] - c0.x, cw[1][1] - c0.y, cw[1][2] - c0.z]);
+    let d2 = Vector3::from_row_slice(&[cw[2][0] - c0.x, cw[2][1] - c0.y, cw[2][2] - c0.z]);
+    let d3 = Vector3::from_row_slice(&[cw[3][0] - c0.x, cw[3][1] - c0.y, cw[3][2] - c0.z]);
 
-    // Convert to `glam::Mat3<f32>` column-major layout.
-    let b_mat = Mat3::from_cols(
-        Vec3::new(d1[0] as f32, d1[1] as f32, d1[2] as f32),
-        Vec3::new(d2[0] as f32, d2[1] as f32, d2[2] as f32),
-        Vec3::new(d3[0] as f32, d3[1] as f32, d3[2] as f32),
-    );
+    let b = Matrix3::from_columns(&[d1, d2, d3]);
 
-    // ------------------------------------------------------------------
-    // 2. Invert B (or obtain its pseudo-inverse if nearly singular).
-    // ------------------------------------------------------------------
-    let det = b_mat.determinant() as f64;
-    let b_inv: Mat3 = if det.abs() > eps {
-        b_mat.inverse()
+    // Invert or pseudo-invert B.
+    let b_inv = if b.determinant().abs() > eps {
+        // Safe to invert.
+        b.try_inverse()
+            .expect("Matrix inversion failed unexpectedly")
     } else {
-        // Moore–Penrose pseudo-inverse via SVD: B⁺ = V Σ⁺ Uᵀ
-        let svd = svd3(&b_mat);
-        let u = svd.u();
-        let s = svd.s();
-        let v = svd.v();
-
-        // Invert singular values with thresholding.
-        let mut sigma_inv = Mat3::ZERO;
-        for (i, sigma) in [s.x_axis.x, s.y_axis.y, s.z_axis.z].iter().enumerate() {
-            let val = sigma.abs();
-            if val > eps as f32 {
-                match i {
-                    0 => sigma_inv.x_axis.x = 1.0 / val,
-                    1 => sigma_inv.y_axis.y = 1.0 / val,
-                    2 => sigma_inv.z_axis.z = 1.0 / val,
-                    _ => unreachable!(),
-                }
+        // Moore–Penrose pseudo-inverse: B⁺ = V Σ⁺ Uᵀ
+        let svd = b.svd(true, true);
+        let u = svd.u.unwrap();
+        let v_t = svd.v_t.unwrap();
+        let mut sigma_inv = Matrix3::<f64>::zeros();
+        for i in 0..3 {
+            let sigma = svd.singular_values[i];
+            if sigma.abs() > eps {
+                sigma_inv[(i, i)] = 1.0 / sigma;
             }
         }
-
-        // B⁺ = V * Σ⁺ * Uᵀ
-        v.mul_mat3(&sigma_inv).mul_mat3(&u.transpose())
+        v_t.transpose() * sigma_inv * u.transpose()
     };
 
-    // Convert `b_inv` to f64 for downstream computations.
-    let b_inv_f64: [[f64; 3]; 3] = [
-        [
-            b_inv.x_axis.x as f64,
-            b_inv.y_axis.x as f64,
-            b_inv.z_axis.x as f64,
-        ],
-        [
-            b_inv.x_axis.y as f64,
-            b_inv.y_axis.y as f64,
-            b_inv.z_axis.y as f64,
-        ],
-        [
-            b_inv.x_axis.z as f64,
-            b_inv.y_axis.z as f64,
-            b_inv.z_axis.z as f64,
-        ],
-    ];
-
-    // ------------------------------------------------------------------
-    // 3. Compute barycentric coordinates α such that p = Σ αj Cw_j.
-    // ------------------------------------------------------------------
-    let mut alphas = vec![[0.0; 4]; pw.len()];
-    for (i, p) in pw.iter().enumerate() {
-        let diff = [p[0] - c0[0], p[1] - c0[1], p[2] - c0[2]];
-
-        // λ = B_inv * (p - C0)
-        let mut lamb = [0.0; 3];
-        for row in 0..3 {
-            lamb[row] = b_inv_f64[row][0] * diff[0]
-                + b_inv_f64[row][1] * diff[1]
-                + b_inv_f64[row][2] * diff[2];
-        }
-
-        alphas[i][1] = lamb[0];
-        alphas[i][2] = lamb[1];
-        alphas[i][3] = lamb[2];
-        alphas[i][0] = 1.0 - lamb.iter().sum::<f64>();
-    }
-
-    alphas
+    // Compute barycentric coordinates.
+    pw.iter()
+        .map(|p| {
+            let diff = Vector3::new(p[0] - c0.x, p[1] - c0.y, p[2] - c0.z);
+            let lamb = b_inv * diff;
+            [1.0 - (lamb.x + lamb.y + lamb.z), lamb.x, lamb.y, lamb.z]
+        })
+        .collect()
 }
 
 /// Construct the 2N×12 design matrix **M** used by EPnP.
@@ -519,11 +352,8 @@ fn build_m(alphas: &[[f64; 4]], uv: &[[f64; 2]], k: &[[f64; 3]; 3]) -> Vec<[f64;
 
         for (j, &alpha) in a.iter().enumerate() {
             let base = 3 * j;
-            // x-row
             m[row_x][base] = alpha * fu;
-            // base+1 remains 0
             m[row_x][base + 2] = alpha * (uc - u);
-            // y-row
             m[row_y][base + 1] = alpha * fv;
             m[row_y][base + 2] = alpha * (vc - v);
         }
@@ -549,14 +379,15 @@ fn build_l6x10(null4: &DMatrix<f64>) -> [[f64; 10]; 6] {
         v_cp.push(blocks);
     }
 
-    let pairs = [(0usize, 1usize), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
-
-    let mut dv_arr: Vec<Vec<Vector3<f64>>> = vec![vec![Vector3::zeros(); 6]; 4];
-    for i in 0..4 {
-        for (j, &(a, b)) in pairs.iter().enumerate() {
-            dv_arr[i][j] = v_cp[i][a] - v_cp[i][b];
-        }
-    }
+    // Differences between control-point vectors for each null-space component.
+    let dv_arr: Vec<Vec<Vector3<f64>>> = (0..4)
+        .map(|i| {
+            CP_PAIRS
+                .iter()
+                .map(|&(a, b)| v_cp[i][a] - v_cp[i][b])
+                .collect::<Vec<_>>()
+        })
+        .collect();
 
     let mut l = [[0.0f64; 10]; 6];
     for (j, _) in dv_arr[0].iter().enumerate() {
@@ -575,17 +406,87 @@ fn build_l6x10(null4: &DMatrix<f64>) -> [[f64; 10]; 6] {
     l
 }
 
+/// Extracts a 6×k `DMatrix` by picking the specified columns from the 6×10 `L` matrix.
+fn l_submatrix(l: &[[f64; 10]; 6], cols: &[usize]) -> DMatrix<f64> {
+    let data: Vec<f64> = cols
+        .iter()
+        .flat_map(|&c| (0..6).map(move |r| l[r][c]))
+        .collect();
+    DMatrix::<f64>::from_column_slice(6, cols.len(), &data)
+}
+
+/// Solve for a beta vector given a column subset of the 6×10 L matrix.
+/// Returns `None` if the least-squares solve fails.
+fn estimate_beta<const K: usize>(
+    cols: [usize; K],
+    l: &[[f64; 10]; 6],
+    rho: &DVector<f64>,
+    tol_svd: f64,
+) -> Option<[f64; 4]> {
+    let l_sub = l_submatrix(l, &cols);
+    let sol = l_sub.svd(true, true).solve(rho, tol_svd).ok()?;
+    let x = sol.column(0);
+
+    match K {
+        4 => Some([
+            x[0].abs().sqrt().copysign(1.0), // sign handled below
+            x[1] / x[0].abs().sqrt(),
+            x[2] / x[0].abs().sqrt(),
+            x[3] / x[0].abs().sqrt(),
+        ])
+        .map(|mut b| {
+            if x[0] < 0.0 {
+                for v in &mut b {
+                    *v = -*v;
+                }
+            }
+            b
+        }),
+        3 => {
+            let mut beta = [0.0; 4];
+            if x[0] < 0.0 {
+                beta[0] = (-x[0]).sqrt();
+                beta[2] = if x[2] > 0.0 { 0.0 } else { (-x[2]).sqrt() };
+            } else {
+                beta[0] = x[0].sqrt();
+                beta[2] = if x[2] < 0.0 { 0.0 } else { x[2].sqrt() };
+            }
+            if x[1] < 0.0 {
+                beta[0] = -beta[0];
+            }
+            Some(beta)
+        }
+        5 => {
+            let mut beta = [0.0; 4];
+            if x[0] < 0.0 {
+                beta[0] = (-x[0]).sqrt();
+                beta[1] = if x[2] > 0.0 { 0.0 } else { (-x[2]).sqrt() };
+                beta[2] = x[3] / (-x[0]).sqrt();
+            } else {
+                beta[0] = x[0].sqrt();
+                beta[1] = if x[2] < 0.0 { 0.0 } else { x[2].sqrt() };
+                beta[2] = x[3] / x[0].sqrt();
+            }
+            if x[1] < 0.0 {
+                beta[0] = -beta[0];
+            }
+            Some(beta)
+        }
+        _ => None,
+    }
+}
+
+const CP_PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+
 /// Compute the six squared distances (ρ vector) between the 4 control points.
 fn rho_ctrlpts(cw: &[[f64; 3]; 4]) -> [f64; 6] {
-    let pairs = [(0usize, 1usize), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
-    let mut rho = [0.0f64; 6];
-    for (idx, &(i, j)) in pairs.iter().enumerate() {
-        let dx = cw[i][0] - cw[j][0];
-        let dy = cw[i][1] - cw[j][1];
-        let dz = cw[i][2] - cw[j][2];
-        rho[idx] = dx * dx + dy * dy + dz * dz;
-    }
-    rho
+    CP_PAIRS.map(|(i, j)| {
+        cw[i]
+            .iter()
+            .zip(cw[j].iter())
+            .map(|(&a, &b)| (a - b).powi(2))
+            .sum::<f64>()
+    })
 }
 
 #[cfg(test)]
@@ -595,7 +496,7 @@ mod solve_epnp_tests {
 
     #[test]
     fn test_solve_epnp() {
-        // World points (same sample as before)
+        // Hardcoded test data verified with OpenCV
         let pw: [[f64; 3]; 6] = [
             [0.0315, 0.03333, -0.10409],
             [-0.0315, 0.03333, -0.10409],
@@ -615,18 +516,13 @@ mod solve_epnp_tests {
             [696.44137826, 511.96442904],
         ];
 
-        // Camera intrinsics
         let k: [[f64; 3]; 3] = [[800.0, 0.0, 640.0], [0.0, 800.0, 480.0], [0.0, 0.0, 1.0]];
 
-        // 1. Control points
         let cw = select_control_points(&pw);
 
-        // 2. Barycentric coordinates
         let alphas = compute_barycentric(&pw, &cw, EPNPParams::default().tol.eps);
 
-        // Basic sanity checks on barycentric coordinates
         for (p, alpha) in pw.iter().zip(alphas.iter()) {
-            // reconstruction
             let mut recon = [0.0; 3];
             for j in 0..4 {
                 recon[0] += alpha[j] * cw[j][0];
@@ -640,14 +536,12 @@ mod solve_epnp_tests {
             assert_relative_eq!(alpha.iter().sum::<f64>(), 1.0, epsilon = 1e-9);
         }
 
-        // 3. Design matrix M
         let m = build_m(&alphas, &uv, &k);
         assert_eq!(m.len(), 2 * pw.len());
         for row in &m {
             assert_eq!(row.len(), 12);
         }
 
-        // Verify first correspondence’s rows explicitly (numerical values)
         let fu = k[0][0];
         let fv = k[1][1];
         let uc = k[0][2];
@@ -671,7 +565,6 @@ mod solve_epnp_tests {
             assert_relative_eq!(m[1][k], expected_y[k], epsilon = 1e-9);
         }
 
-        // 4. Ensure `solve_epnp` runs without error (placeholder implementation)
         let result =
             EPnP::solve(&pw, &uv, &k, &EPNPParams::default()).expect("EPnP::solve should succeed");
         let r = result.rotation;
