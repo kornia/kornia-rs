@@ -102,7 +102,7 @@ pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
 }
 
 #[pyfunction]
-/// Decodes the JPEG Image from raw bytes.
+/// Extracts metadata (size and channel count) from JPEG image raw bytes.
 ///
 /// ```py
 /// import kornia_rs as K
