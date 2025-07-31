@@ -170,6 +170,36 @@ fn decode_jpeg_impl<const C: usize, A: ImageAllocator>(
     Ok(())
 }
 
+/// Decodes the header of a JPEG image to retrieve its size and number of channels.
+///
+/// # Arguments
+///
+/// - `src` - A slice of bytes containing the JPEG image data.
+///
+/// # Returns
+///
+/// A tuple containing the size of the image and the number of channels.
+pub fn decode_image_jpeg_info(src: &[u8]) -> Result<(ImageSize, u8), IoError> {
+    let mut decoder = zune_jpeg::JpegDecoder::new(src);
+    decoder.decode_headers()?;
+
+    let image_info = decoder.info().ok_or_else(|| {
+        IoError::JpegDecodingError(zune_jpeg::errors::DecodeErrors::Format(String::from(
+            "Failed to find image info from its metadata",
+        )))
+    })?;
+
+    let num_channels = image_info.components;
+
+    Ok((
+        ImageSize {
+            width: image_info.width as usize,
+            height: image_info.height as usize,
+        },
+        num_channels,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +242,16 @@ mod tests {
         assert_eq!(image.rows(), 195);
         assert_eq!(image.num_channels(), 3);
 
+        Ok(())
+    }
+
+    #[test]
+    fn decode_jpeg_size() -> Result<(), IoError> {
+        let bytes = read("../../tests/data/dog.jpeg")?;
+        let (size, num_channels) = decode_image_jpeg_info(bytes.as_slice())?;
+        assert_eq!(size.width, 258);
+        assert_eq!(size.height, 195);
+        assert_eq!(num_channels, 3);
         Ok(())
     }
 }
