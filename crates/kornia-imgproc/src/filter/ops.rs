@@ -34,13 +34,13 @@ pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 /// * `src` - The source image with shape (H, W, C).
 /// * `dst` - The destination image with shape (H, W, C).
 /// * `kernel_size` - The size of the kernel (kernel_x, kernel_y). They can differ,
-///                   but they both have to be positive and odd. Or, they can be zero
-///                   and they will be computed from sigma values based on:
-///                   kernel_size = 8*sigma + 1
+///   but they both have to be positive and odd. Or, they can be zero
+///   and they will be computed from sigma values based on:
+///   kernel_size = 8*sigma + 1
 /// * `sigma` - The sigma of the gaussian kernel (sigma_x, sigma_y). sigma_y can
-///             be zero and it will take on the same value as sigma_x. Or, they
-///             can both be zero and they will be computed based on:
-///             sigma = (kernel_size - 1) / 8
+///   be zero and it will take on the same value as sigma_x. Or, they
+///   can both be zero and they will be computed based on:
+///   sigma = (kernel_size - 1) / 8
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
 /// NOTE: This function uses a constant border type.
@@ -50,42 +50,43 @@ pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     kernel_size: (usize, usize),
     sigma: (f32, f32),
 ) -> Result<(), ImageError> {
-    let mut ksize_cpy = kernel_size;
-    let mut sigma_cpy = sigma;
+    let (mut kernel_x, mut kernel_y) = kernel_size;
+    let (mut sigma_x, mut sigma_y) = sigma;
 
     // Satisfy setting sigma_y = sigma_x if sigma_y is zero.
-    if sigma_cpy.1 <= 0.0 {
-        sigma_cpy.1 = sigma_cpy.0;
+    if sigma_y <= 0.0 {
+        sigma_y = sigma_x;
     }
 
     // Auto-compute the kernel sizes based on sigma if 0 or negative using SciPy convention.
     // NOTE: the `| 1` is to ensure that the number is always odd i.e. the 2^0
     //       bit is always ON.
-    if ksize_cpy.0 == 0 && sigma_cpy.0 > 0.0 {
-        ksize_cpy.0 = (2.0 * (4.0 * sigma_cpy.0).round() + 1.0) as usize | 1;
+    if kernel_x == 0 && sigma_x > 0.0 {
+        kernel_x = (2.0 * (4.0 * sigma_x).round() + 1.0) as usize | 1;
     }
-    if ksize_cpy.1 == 0 && sigma_cpy.1 > 0.0 {
-        ksize_cpy.1 = (2.0 * (4.0 * sigma_cpy.1).round() + 1.0) as usize | 1;
+    if kernel_y == 0 && sigma_y > 0.0 {
+        kernel_y = (2.0 * (4.0 * sigma_y).round() + 1.0) as usize | 1;
     }
-    if !(ksize_cpy.0 > 0 && ksize_cpy.0 % 2 == 1 && ksize_cpy.1 > 0 && ksize_cpy.1 % 2 == 1) {
-        return Err(ImageError::InvalidSigmaValue(sigma_cpy.0, sigma_cpy.1));
+    if !(kernel_x > 0 && kernel_x % 2 == 1 && kernel_y > 0 && kernel_y % 2 == 1) {
+        return Err(ImageError::InvalidSigmaValue(sigma_x, sigma_y));
     }
 
     // Sigma should be always positive.
-    sigma_cpy.0 = sigma_cpy.0.max(0.0);
-    sigma_cpy.1 = sigma_cpy.1.max(0.0);
+    sigma_x = sigma_x.max(0.0);
+    sigma_y = sigma_y.max(0.0);
 
     // Auto-compute the sigma values using SciPy convention.
-    if sigma_cpy.0 == 0.0 {
-        sigma_cpy.0 = (ksize_cpy.0 as f32 - 1.0) / 8.0;
+    if sigma_x == 0.0 {
+        sigma_x = (kernel_x as f32 - 1.0) / 8.0;
     }
-    if sigma_cpy.1 == 0.0 {
-        sigma_cpy.1 = (ksize_cpy.1 as f32 - 1.0) / 8.0;
+    if sigma_y == 0.0 {
+        sigma_y = (kernel_y as f32 - 1.0) / 8.0;
     }
 
-    let kernel_x = kernels::gaussian_kernel_1d(ksize_cpy.0, sigma_cpy.0);
-    let kernel_y = kernels::gaussian_kernel_1d(ksize_cpy.1, sigma_cpy.1);
+    let kernel_x = kernels::gaussian_kernel_1d(kernel_x, sigma_x);
+    let kernel_y = kernels::gaussian_kernel_1d(kernel_y, sigma_y);
     separable_filter(src, dst, &kernel_x, &kernel_y)?;
+
     Ok(())
 }
 
