@@ -8,7 +8,7 @@ pub mod epnp;
 pub mod types;
 
 pub use epnp::{EPNPParams, EPnP};
-use types::{PnPResult, PnPSolver};
+use types::{PnPError, PnPResult, PnPSolver};
 
 mod ops;
 
@@ -17,7 +17,7 @@ mod ops;
 pub enum Method {
     /// Efficient PnP solver with a user-supplied parameter object.
     EPnP(EPNPParams),
-    /// Efficient PnP solver with the crate’s default parameters.
+    /// Efficient PnP solver with the crate's default parameters.
     EPnPDefault,
     // Placeholder for future solvers such as P3P, DLS, etc.
 }
@@ -28,7 +28,7 @@ pub fn solve(
     image: &[[f64; 2]],
     k: &[[f64; 3]; 3],
     method: Method,
-) -> Result<PnPResult, &'static str> {
+) -> Result<PnPResult, PnPError> {
     match method {
         Method::EPnP(params) => EPnP::solve(world, image, k, &params),
         Method::EPnPDefault => EPnP::solve(world, image, k, &EPNPParams::default()),

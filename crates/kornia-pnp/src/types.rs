@@ -1,5 +1,28 @@
 //! Common data types shared across Perspective-n-Point (PnP) solvers.
 
+use thiserror::Error;
+
+/// Error types for PnP solvers.
+#[derive(Debug, Error)]
+pub enum PnPError {
+    /// Invalid input data - insufficient correspondences for the specific solver
+    #[error("PnP solver requires at least {required} 2D-3D correspondences, got {actual}")]
+    InsufficientCorrespondences {
+        /// Minimum number of correspondences required by the solver
+        required: usize,
+        /// Actual number of correspondences provided
+        actual: usize,
+    },
+
+    /// Invalid input data - mismatched array lengths
+    #[error("Mismatched array lengths: world points ({0}) != image points ({1})")]
+    MismatchedArrayLengths(usize, usize),
+
+    /// Singular value decomposition failed
+    #[error("SVD computation failed: {0}")]
+    SvdFailed(String),
+}
+
 /// Numeric tolerances used by linear algebra routines throughout the PnP pipeline.
 #[derive(Debug, Clone)]
 pub struct NumericTol {
@@ -49,5 +72,5 @@ pub trait PnPSolver {
         image: &[[f64; 2]],
         k: &[[f64; 3]; 3],
         params: &Self::Param,
-    ) -> Result<PnPResult, &'static str>;
+    ) -> Result<PnPResult, PnPError>;
 }

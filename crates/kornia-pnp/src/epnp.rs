@@ -3,9 +3,7 @@
 //! Reference: https://github.com/opencv/opencv/blob/4.x/modules/calib3d/src/epnp.cpp
 
 use crate::ops::{compute_centroid, gauss_newton};
-use crate::types::NumericTol;
-use crate::types::PnPResult;
-use crate::types::PnPSolver;
+use crate::types::{NumericTol, PnPError, PnPResult, PnPSolver};
 use glam::{Mat3, Mat3A, Vec3};
 use kornia_lie::so3::SO3;
 use kornia_linalg::rigid::umeyama;
@@ -23,7 +21,7 @@ impl PnPSolver for EPnP {
         points_image: &[[f64; 2]],
         k: &[[f64; 3]; 3],
         params: &Self::Param,
-    ) -> Result<PnPResult, &'static str> {
+    ) -> Result<PnPResult, PnPError> {
         solve_epnp(points_world, points_image, k, params)
     }
 }
@@ -52,10 +50,16 @@ pub fn solve_epnp(
     points_image: &[[f64; 2]],
     k: &[[f64; 3]; 3],
     params: &EPNPParams,
-) -> Result<PnPResult, &'static str> {
+) -> Result<PnPResult, PnPError> {
     let n = points_world.len();
-    if n != points_image.len() || n < 4 {
-        return Err("EPnP requires ≥4 2D–3D correspondences");
+    if n != points_image.len() {
+        return Err(PnPError::MismatchedArrayLengths(n, points_image.len()));
+    }
+    if n < 4 {
+        return Err(PnPError::InsufficientCorrespondences {
+            required: 4,
+            actual: n,
+        });
     }
 
     let cw = select_control_points(points_world);
@@ -72,7 +76,7 @@ pub fn solve_epnp(
     let svd = m_mat.svd(true, true);
     let v_t = match svd.v_t {
         Some(v) => v,
-        None => return Err("SVD failed to compute V^T"),
+        None => return Err(PnPError::SvdFailed("Failed to compute V^T".to_string())),
     };
     let cols = 12;
     let start_col = cols - 4;

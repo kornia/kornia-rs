@@ -18,6 +18,7 @@ default = []
 kornia-linalg = { workspace = true }
 kornia-lie = { workspace = true }
 glam = { version = "0.30.0", default-features = false }
+thiserror = { workspace = true }
 
 nalgebra = "0.32"
 
