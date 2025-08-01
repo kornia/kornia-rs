@@ -19,12 +19,12 @@ impl PnPSolver for EPnP {
     type Param = EPNPParams;
 
     fn solve(
-        world: &[[f64; 3]],
-        image: &[[f64; 2]],
+        points_world: &[[f64; 3]],
+        points_image: &[[f64; 2]],
         k: &[[f64; 3]; 3],
         params: &Self::Param,
     ) -> Result<PnPResult, &'static str> {
-        solve_epnp(world, image, k, params)
+        solve_epnp(points_world, points_image, k, params)
     }
 }
 
@@ -38,8 +38,8 @@ pub struct EPNPParams {
 /// Solve Perspective-n-Point (EPnP).
 ///
 /// # Arguments
-/// * `world_pts` – 3-D coordinates in the world frame, shape *(N,3)* with `N≥4`.
-/// * `image_pts` – Corresponding pixel coordinates, shape *(N,2)*.
+/// * `points_world` – 3-D coordinates in the world frame, shape *(N,3)* with `N≥4`.
+/// * `points_image` – Corresponding pixel coordinates, shape *(N,2)*.
 /// * `k` – Camera intrinsics matrix.
 ///
 /// # Returns
@@ -48,22 +48,22 @@ pub struct EPNPParams {
 /// * `t` – 3-vector translation,
 /// * `rvec` – Rodrigues axis-angle representation of `R`.
 pub fn solve_epnp(
-    world_pts: &[[f64; 3]],
-    image_pts: &[[f64; 2]],
+    points_world: &[[f64; 3]],
+    points_image: &[[f64; 2]],
     k: &[[f64; 3]; 3],
     params: &EPNPParams,
 ) -> Result<PnPResult, &'static str> {
-    let n = world_pts.len();
-    if n != image_pts.len() || n < 4 {
+    let n = points_world.len();
+    if n != points_image.len() || n < 4 {
         return Err("EPnP requires ≥4 2D–3D correspondences");
     }
 
-    let cw = select_control_points(world_pts);
+    let cw = select_control_points(points_world);
 
-    let alphas = compute_barycentric(world_pts, &cw, params.tol.eps);
+    let alphas = compute_barycentric(points_world, &cw, params.tol.eps);
 
     // Build the 2N×12 design matrix M
-    let m_rows = build_m(&alphas, image_pts, k);
+    let m_rows = build_m(&alphas, points_image, k);
 
     let m_flat: Vec<f64> = m_rows.iter().flat_map(|row| row.iter()).cloned().collect();
     let m_mat = DMatrix::<f64>::from_row_slice(2 * n, 12, &m_flat);
@@ -108,7 +108,7 @@ pub fn solve_epnp(
 
     for bet in &betas_refined {
         let (r_c, t_c) = pose_from_betas(bet, &null4, &cw, &alphas);
-        let err = rmse_px(world_pts, image_pts, &r_c, &t_c, k);
+        let err = rmse_px(points_world, points_image, &r_c, &t_c, k);
         if err < best_err {
             best_err = err;
             best_r = r_c;
@@ -179,13 +179,13 @@ fn pose_from_betas(
 
 /// Root-mean-square reprojection error in pixels.
 fn rmse_px(
-    pw: &[[f64; 3]],
-    uv: &[[f64; 2]],
+    points_world: &[[f64; 3]],
+    points_image: &[[f64; 2]],
     r: &[[f64; 3]; 3],
     t: &[f64; 3],
     k: &[[f64; 3]; 3],
 ) -> f64 {
-    assert_eq!(pw.len(), uv.len());
+    assert_eq!(points_world.len(), points_image.len());
 
     let fx = k[0][0];
     let fy = k[1][1];
@@ -193,9 +193,9 @@ fn rmse_px(
     let cy = k[1][2];
 
     let mut sum_sq = 0.0;
-    let n = pw.len() as f64;
+    let n = points_world.len() as f64;
 
-    for (p, &img) in pw.iter().zip(uv.iter()) {
+    for (p, &img) in points_world.iter().zip(points_image.iter()) {
         // Camera-frame coordinates: Pc = R * Pw + t
         let x_c = r[0][0] * p[0] + r[0][1] * p[1] + r[0][2] * p[2] + t[0];
         let y_c = r[1][0] * p[0] + r[1][1] * p[1] + r[1][2] * p[2] + t[1];
@@ -213,12 +213,12 @@ fn rmse_px(
     (sum_sq / n).sqrt()
 }
 
-fn select_control_points(pw: &[[f64; 3]]) -> [[f64; 3]; 4] {
-    let n = pw.len();
-    let c = compute_centroid(pw);
+fn select_control_points(points_world: &[[f64; 3]]) -> [[f64; 3]; 4] {
+    let n = points_world.len();
+    let c = compute_centroid(points_world);
 
     // Compute covariance using nalgebra for clarity.
-    let cov_na = pw.iter().fold(Matrix3::<f64>::zeros(), |acc, p| {
+    let cov_na = points_world.iter().fold(Matrix3::<f64>::zeros(), |acc, p| {
         let diff = Vector3::new(p[0] - c[0], p[1] - c[1], p[2] - c[2]);
         acc + diff * diff.transpose()
     }) * (1.0 / n as f64);
@@ -270,7 +270,7 @@ fn select_control_points(pw: &[[f64; 3]]) -> [[f64; 3]; 4] {
 /// 4 control points returned by `select_control_points`.
 ///
 /// # Arguments
-/// * `pw` – World points *(N,3)*.
+/// * `points_world` – World points *(N,3)*.
 /// * `cw` – Control points *(4,3)*.
 /// * `eps` – Threshold that decides whether the control-point tetrahedron is
 ///   degenerate. If the determinant of the 3-by-3 matrix built from `cw` is
@@ -279,7 +279,7 @@ fn select_control_points(pw: &[[f64; 3]]) -> [[f64; 3]; 4] {
 /// # Returns
 /// Vector of length *N* where each element is `[α0, α1, α2, α3]` such that
 /// `α0 + α1 + α2 + α3 = 1` and `pw_i = Σ αj Cw_j`.
-fn compute_barycentric(pw: &[[f64; 3]], cw: &[[f64; 3]; 4], eps: f64) -> Vec<[f64; 4]> {
+fn compute_barycentric(points_world: &[[f64; 3]], cw: &[[f64; 3]; 4], eps: f64) -> Vec<[f64; 4]> {
     // Build B = [C1 - C0, C2 - C0, C3 - C0].
     let c0 = Vector3::from_row_slice(&cw[0]);
     let d1 = Vector3::from_row_slice(&[cw[1][0] - c0.x, cw[1][1] - c0.y, cw[1][2] - c0.z]);
@@ -309,7 +309,8 @@ fn compute_barycentric(pw: &[[f64; 3]], cw: &[[f64; 3]; 4], eps: f64) -> Vec<[f6
     };
 
     // Compute barycentric coordinates.
-    pw.iter()
+    points_world
+        .iter()
         .map(|p| {
             let diff = Vector3::new(p[0] - c0.x, p[1] - c0.y, p[2] - c0.z);
             let lamb = b_inv * diff;
@@ -322,15 +323,15 @@ fn compute_barycentric(pw: &[[f64; 3]], cw: &[[f64; 3]; 4], eps: f64) -> Vec<[f6
 ///
 /// * `alphas` – Barycentric coordinates for each world point, produced by
 ///   [`compute_barycentric`]; shape *(N,4)*.
-/// * `uv`     – Pixel coordinates for each correspondence; shape *(N,2)*.
+/// * `points_image`     – Pixel coordinates for each correspondence; shape *(N,2)*.
 /// * `k`      – Camera intrinsics 3×3 matrix.
 ///
 /// The output is a vector of length `2*N` where each element is the 12-vector
 /// corresponding to a row of **M**.
-fn build_m(alphas: &[[f64; 4]], uv: &[[f64; 2]], k: &[[f64; 3]; 3]) -> Vec<[f64; 12]> {
+fn build_m(alphas: &[[f64; 4]], points_image: &[[f64; 2]], k: &[[f64; 3]; 3]) -> Vec<[f64; 12]> {
     assert_eq!(
         alphas.len(),
-        uv.len(),
+        points_image.len(),
         "alphas and uv must have the same length"
     );
     let n = alphas.len();
@@ -343,9 +344,9 @@ fn build_m(alphas: &[[f64; 4]], uv: &[[f64; 2]], k: &[[f64; 3]; 3]) -> Vec<[f64;
     // Pre-allocate 2N rows of zeros.
     let mut m = vec![[0.0f64; 12]; 2 * n];
 
-    for (i, (a, &uv_i)) in alphas.iter().zip(uv.iter()).enumerate() {
-        let u = uv_i[0];
-        let v = uv_i[1];
+    for (i, (a, &points_image_i)) in alphas.iter().zip(points_image.iter()).enumerate() {
+        let u = points_image_i[0];
+        let v = points_image_i[1];
 
         let row_x = 2 * i;
         let row_y = row_x + 1;
@@ -497,7 +498,7 @@ mod solve_epnp_tests {
     #[test]
     fn test_solve_epnp() {
         // Hardcoded test data verified with OpenCV
-        let pw: [[f64; 3]; 6] = [
+        let points_world: [[f64; 3]; 6] = [
             [0.0315, 0.03333, -0.10409],
             [-0.0315, 0.03333, -0.10409],
             [0.0, -0.00102, -0.12977],
@@ -507,7 +508,7 @@ mod solve_epnp_tests {
         ];
 
         // Image points (uv)
-        let uv: [[f64; 2]; 6] = [
+        let points_image: [[f64; 2]; 6] = [
             [722.96465987, 502.08278077],
             [669.88838745, 498.61877868],
             [707.00251568, 478.48975973],
@@ -518,11 +519,11 @@ mod solve_epnp_tests {
 
         let k: [[f64; 3]; 3] = [[800.0, 0.0, 640.0], [0.0, 800.0, 480.0], [0.0, 0.0, 1.0]];
 
-        let cw = select_control_points(&pw);
+        let cw = select_control_points(&points_world);
 
-        let alphas = compute_barycentric(&pw, &cw, EPNPParams::default().tol.eps);
+        let alphas = compute_barycentric(&points_world, &cw, EPNPParams::default().tol.eps);
 
-        for (p, alpha) in pw.iter().zip(alphas.iter()) {
+        for (p, alpha) in points_world.iter().zip(alphas.iter()) {
             let mut recon = [0.0; 3];
             for j in 0..4 {
                 recon[0] += alpha[j] * cw[j][0];
@@ -536,8 +537,8 @@ mod solve_epnp_tests {
             assert_relative_eq!(alpha.iter().sum::<f64>(), 1.0, epsilon = 1e-9);
         }
 
-        let m = build_m(&alphas, &uv, &k);
-        assert_eq!(m.len(), 2 * pw.len());
+        let m = build_m(&alphas, &points_image, &k);
+        assert_eq!(m.len(), 2 * points_world.len());
         for row in &m {
             assert_eq!(row.len(), 12);
         }
@@ -547,8 +548,8 @@ mod solve_epnp_tests {
         let uc = k[0][2];
         let vc = k[1][2];
 
-        let u0 = uv[0][0];
-        let v0 = uv[0][1];
+        let u0 = points_image[0][0];
+        let v0 = points_image[0][1];
 
         let mut expected_x = [0.0; 12];
         let mut expected_y = [0.0; 12];
@@ -565,8 +566,8 @@ mod solve_epnp_tests {
             assert_relative_eq!(m[1][k], expected_y[k], epsilon = 1e-9);
         }
 
-        let result =
-            EPnP::solve(&pw, &uv, &k, &EPNPParams::default()).expect("EPnP::solve should succeed");
+        let result = EPnP::solve(&points_world, &points_image, &k, &EPNPParams::default())
+            .expect("EPnP::solve should succeed");
         let r = result.rotation;
         let t = result.translation;
         let rvec = result.rvec;
