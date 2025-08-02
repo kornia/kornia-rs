@@ -74,11 +74,8 @@ impl SmolModel {
             merged_embeds: Vec::new(),
 
             text: SmolText::load(c)?,
-<<<<<<< HEAD
 
             DEBUG_embeds: None,
-=======
->>>>>>> main
         })
     }
 
@@ -120,7 +117,6 @@ impl SmolModel {
         vision_data: Option<(Tensor, &Tensor, &Tensor)>,
     ) -> Result<Tensor> {
         let mut inputs_embeds = self.embed.forward(xs)?;
-<<<<<<< HEAD
         self.DEBUG_embeds = Some(inputs_embeds.clone());
 
         if let Some((image_token_mask, pixel_values, pixel_attention_masks)) = vision_data {
@@ -131,10 +127,6 @@ impl SmolModel {
             //     pixel_attention_masks.dims()
             // );
 
-=======
-
-        if let Some((image_token_mask, pixel_values, pixel_attention_masks)) = vision_data {
->>>>>>> main
             // TODO: this assumes there will be at most one new images added
             inputs_embeds = if self.image_hidden_states.is_some() {
                 self.inputs_merger(&image_token_mask, &inputs_embeds)?

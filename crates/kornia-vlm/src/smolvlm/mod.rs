@@ -189,7 +189,6 @@ impl SmolVlm {
             let (s, _embed_dim) = logits.dims2()?;
             let last_logit = logits.i((s - 1, ..))?;
 
-<<<<<<< HEAD
             let last_logit = if self.config.do_sample {
                 candle_transformers::utils::apply_repeat_penalty(
                     &last_logit,
@@ -273,14 +272,6 @@ impl SmolVlm {
                     self.model.text.blocks[d].DEBUG_block.clone().unwrap(),
                 );
             }
-=======
-            let last_logit = candle_transformers::utils::apply_repeat_penalty(
-                &last_logit,
-                self.config.repeat_penalty,
-                &delta_token,
-            )?;
-            let out_token = self.logits_processor.sample(&last_logit)?;
->>>>>>> main
 
             self.index_pos += delta_token.len();
             delta_token.clear();
@@ -314,7 +305,6 @@ impl SmolVlm {
             );
         }
 
-<<<<<<< HEAD
         // TODO
         save(&tensors, ".vscode/rust_output.safetensors")?;
         println!("Token history: {:?}", self.token_history);
@@ -354,27 +344,17 @@ impl SmolVlm {
         Ok(best_token)
     }
 
-=======
-        Ok(response)
-    }
-
->>>>>>> main
     #[inline]
     pub fn image_history_count(&self) -> usize {
         self.image_history.len()
     }
 
     // utility function to load the model
-<<<<<<< HEAD
     fn load_model(dtype: DType, device: &Device) -> Result<(SmolModel, Tokenizer), SmolVlmError> {
-=======
-    fn load_model(_dtype: DType, device: &Device) -> Result<(SmolModel, Tokenizer), SmolVlmError> {
->>>>>>> main
         let tokenizer = Tokenizer::from_pretrained("HuggingFaceTB/SmolVLM-Instruct", None)?;
         let api = Api::new()?;
         let repo = api.model("HuggingFaceTB/SmolVLM-Instruct".to_string());
         let weights = repo.get("model.safetensors")?;
-<<<<<<< HEAD
         let mut weights = candle_core::safetensors::load(weights, device)?;
 
         if dtype != DType::BF16 {
@@ -383,9 +363,6 @@ impl SmolVlm {
             }
         }
 
-=======
-        let weights = candle_core::safetensors::load(weights, device)?;
->>>>>>> main
         let model = SmolModel::load(&weights)?;
 
         Ok((model, tokenizer))
@@ -393,7 +370,6 @@ impl SmolVlm {
 }
 
 #[cfg(test)]
-<<<<<<< HEAD
 mod tests {
     use super::*;
     use candle_core::Device;
@@ -703,6 +679,3 @@ mod tests {
         Ok(())
     }
 }
-=======
-mod tests {}
->>>>>>> main
