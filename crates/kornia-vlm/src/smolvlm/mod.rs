@@ -1,14 +1,17 @@
+mod custom_rmsnorm;
 mod model;
 mod preprocessor;
 mod text_model;
 pub mod utils;
 mod vision_model;
 
+use std::collections::HashMap;
 use std::io;
 use std::io::Write;
 
+use candle_core::safetensors::save;
 use candle_core::{DType, Device, IndexOp, Tensor};
-use candle_transformers::generation::LogitsProcessor;
+use candle_transformers::generation::{LogitsProcessor, Sampling};
 use hf_hub::api::sync::Api;
 use kornia_image::allocator::ImageAllocator;
 use kornia_image::Image;
@@ -64,11 +67,11 @@ impl SmolVlm {
             tokenizer,
             image_token_tensor,
             config,
-            logits_processor: LogitsProcessor::new(
-                config.seed,
-                Some(config.temp),
-                Some(config.top_p),
-            ),
+            logits_processor: if config.do_sample {
+                LogitsProcessor::new(config.seed, Some(config.temp), Some(config.top_p))
+            } else {
+                LogitsProcessor::from_sampling(config.seed, Sampling::ArgMax)
+            },
             device,
             image_history: Vec::new(),
             index_pos: 0,
@@ -111,15 +114,15 @@ impl SmolVlm {
 
         if let Some(raw_img) = image {
             let (img_patches, mask_patches, size) =
-                preprocess_image(raw_img, 1920, 384, &self.device);
+                preprocess_image(raw_img, 1536, 384, &self.device);
 
             let img_token = get_prompt_split_image(81, size);
-            full_prompt += "\nUser:<image>";
+            full_prompt += "User:<image>";
             full_prompt = full_prompt.replace("<image>", &img_token);
 
             self.image_history.push((img_patches, mask_patches));
         } else {
-            full_prompt += "\nUser: ";
+            full_prompt += "User: ";
         }
 
         full_prompt += prompt;
@@ -129,8 +132,13 @@ impl SmolVlm {
 
         let mut delta_token = full_token.get_ids().to_vec();
 
+        println!("Token: {delta_token:?}");
+
         let start_gen = std::time::Instant::now();
         let mut generated_tokens = 0usize;
+
+        // TODO
+        let mut tensors = HashMap::new();
 
         for _i in 0..sample_len {
             self.token_history.extend(&delta_token);
@@ -151,12 +159,89 @@ impl SmolVlm {
             let (s, _embed_dim) = logits.dims2()?;
             let last_logit = logits.i((s - 1, ..))?;
 
-            let last_logit = candle_transformers::utils::apply_repeat_penalty(
-                &last_logit,
-                self.config.repeat_penalty,
-                &delta_token,
-            )?;
-            let out_token = self.logits_processor.sample(&last_logit)?;
+            let last_logit = if self.config.do_sample {
+                candle_transformers::utils::apply_repeat_penalty(
+                    &last_logit,
+                    self.config.repeat_penalty,
+                    &delta_token,
+                )?
+            } else {
+                last_logit
+            };
+
+            let out_token = if self.config.do_sample {
+                self.logits_processor.sample(&last_logit)?
+            } else {
+                // Use deterministic sampling for reproducible results
+                self.sample_deterministic(&last_logit)?
+            };
+            // println!("#>:{last_logit}");
+
+            tensors.insert(format!("logits_{}", _i), last_logit);
+            tensors.insert(
+                format!("embeds_{}", _i),
+                self.model.DEBUG_embeds.clone().unwrap(),
+            );
+            for d in 0..=23 {
+                tensors.insert(
+                    format!("DEBUG_input_layer_norm_d{}_i{}", d, _i),
+                    self.model.text.blocks[d]
+                        .DEBUG_input_layer_norm
+                        .clone()
+                        .unwrap(),
+                );
+                tensors.insert(
+                    format!("DEBUG_attn_d{}_i{}", d, _i),
+                    self.model.text.blocks[d].DEBUG_attn.clone().unwrap(),
+                );
+                tensors.insert(
+                    format!("DEBUG_post_layer_norm_d{}_i{}", d, _i),
+                    self.model.text.blocks[d]
+                        .DEBUG_post_layer_norm
+                        .clone()
+                        .unwrap(),
+                );
+                // tensors.insert(
+                //     format!("DEBUG_gates_d{}_i{}", d, _i),
+                //     self.model.text.blocks[d].DEBUG_gates.clone().unwrap(),
+                // );
+                tensors.insert(
+                    format!("DEBUG_gate_proj_d{}_i{}", d, _i),
+                    self.model.text.blocks[d]
+                        .gates
+                        .DEBUG_gate_proj
+                        .clone()
+                        .unwrap(),
+                );
+                tensors.insert(
+                    format!("DEBUG_act_fn_d{}_i{}", d, _i),
+                    self.model.text.blocks[d]
+                        .gates
+                        .DEBUG_act_fn
+                        .clone()
+                        .unwrap(),
+                );
+                tensors.insert(
+                    format!("DEBUG_down_proj_d{}_i{}", d, _i),
+                    self.model.text.blocks[d]
+                        .gates
+                        .DEBUG_down_proj
+                        .clone()
+                        .unwrap(),
+                );
+                tensors.insert(
+                    format!("DEBUG_up_proj_d{}_i{}", d, _i),
+                    self.model.text.blocks[d]
+                        .gates
+                        .DEBUG_up_proj
+                        .clone()
+                        .unwrap(),
+                );
+                tensors.insert(
+                    format!("block_d{}_i{}", d, _i),
+                    self.model.text.blocks[d].DEBUG_block.clone().unwrap(),
+                );
+            }
 
             self.index_pos += delta_token.len();
             delta_token.clear();
@@ -190,7 +275,43 @@ impl SmolVlm {
             );
         }
 
+        // TODO
+        save(&tensors, ".vscode/rust_output.safetensors")?;
+        println!("Token history: {:?}", self.token_history);
+
         Ok(response)
+    }
+
+    /// Deterministic sampling that always selects the token with the lowest index for ties
+    fn sample_deterministic(&self, logits: &Tensor) -> Result<u32, SmolVlmError> {
+        // Convert to f32 for consistent precision
+        let logits_f32 = logits.to_dtype(DType::F32)?;
+        let logits_vec = logits_f32.to_vec1::<f32>()?;
+
+        // Find the maximum value
+        let max_value = logits_vec.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+
+        // Use a small epsilon for floating-point comparison to handle precision issues
+        let epsilon = 1e-8;
+
+        // Find all indices with the maximum value (for debugging ties)
+        let max_indices: Vec<usize> = logits_vec
+            .iter()
+            .enumerate()
+            .filter(|(_, &logit)| (logit - max_value).abs() < epsilon)
+            .map(|(i, _)| i)
+            .collect();
+
+        // Log if there are ties (for debugging)
+        // if max_indices.len() > 1 {
+        //     println!("DEBUG: Found {} tokens with max logit {}: {:?}",
+        //              max_indices.len(), max_value, max_indices);
+        // }
+
+        // Always select the first index (deterministic tiebreaker)
+        let best_token = max_indices[0] as u32;
+
+        Ok(best_token)
     }
 
     #[inline]
@@ -199,12 +320,19 @@ impl SmolVlm {
     }
 
     // utility function to load the model
-    fn load_model(_dtype: DType, device: &Device) -> Result<(SmolModel, Tokenizer), SmolVlmError> {
+    fn load_model(dtype: DType, device: &Device) -> Result<(SmolModel, Tokenizer), SmolVlmError> {
         let tokenizer = Tokenizer::from_pretrained("HuggingFaceTB/SmolVLM-Instruct", None)?;
         let api = Api::new()?;
         let repo = api.model("HuggingFaceTB/SmolVLM-Instruct".to_string());
         let weights = repo.get("model.safetensors")?;
-        let weights = candle_core::safetensors::load(weights, device)?;
+        let mut weights = candle_core::safetensors::load(weights, device)?;
+
+        if dtype != DType::BF16 {
+            for value in weights.values_mut() {
+                *value = value.to_dtype(dtype)?;
+            }
+        }
+
         let model = SmolModel::load(&weights)?;
 
         Ok((model, tokenizer))
@@ -212,4 +340,312 @@ impl SmolVlm {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use candle_core::Device;
+    use candle_nn::{Linear, Module};
+    use candle_onnx;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_linear_layer_validation() -> Result<(), Box<dyn std::error::Error>> {
+        let test_data = candle_core::safetensors::load(
+            "../../tests/data/linear_test_data_float32.safetensors",
+            // &Device::cuda_if_available(0)?,
+            &Device::Cpu,
+        )?;
+        let num_tests = test_data.get("num_tests").unwrap().to_scalar::<i64>()? as usize;
+        let mut failures = Vec::new();
+
+        for i in 0..num_tests {
+            let test_name = format!("test_{}", i);
+            let input = test_data.get(&format!("{}_input", test_name)).unwrap();
+            let weight = test_data.get(&format!("{}_weight", test_name)).unwrap();
+            let expected_output = test_data.get(&format!("{}_output", test_name)).unwrap();
+            let input_dim = test_data
+                .get(&format!("{}_input_dim", test_name))
+                .unwrap()
+                .to_scalar::<i64>()? as usize;
+            let output_dim = test_data
+                .get(&format!("{}_output_dim", test_name))
+                .unwrap()
+                .to_scalar::<i64>()? as usize;
+
+            // let linear = Linear::new(weight.clone(), None);
+            // let actual_output = linear.forward(input)?;
+            // let actual_output = input.matmul(&weight.t()?)?;
+            let actual_output = input.broadcast_matmul(&weight.t()?)?;
+
+            let diff = (&actual_output - expected_output)?;
+            let mse = diff
+                .powf(2.0)?
+                .mean_all()?
+                .to_dtype(DType::F32)?
+                .to_scalar::<f32>()?;
+            let mae = diff
+                .abs()?
+                .mean_all()?
+                .to_dtype(DType::F32)?
+                .to_scalar::<f32>()?;
+
+            if mse <= 0.00 {
+                println!(
+                    "✅ {}: MSE={:.16}, MAE={:.8} (dims: {}x{}, dtype: {:?}), device: {:?})",
+                    test_name,
+                    mse,
+                    mae,
+                    input_dim,
+                    output_dim,
+                    actual_output.dtype(),
+                    actual_output.device()
+                );
+            } else {
+                println!(
+                    "❌ {}: MSE={:.16}, MAE={:.8} (dims: {}x{}, dtype: {:?}, device: {:?})",
+                    test_name,
+                    mse,
+                    mae,
+                    input_dim,
+                    output_dim,
+                    actual_output.dtype(),
+                    actual_output.device()
+                );
+                failures.push(format!("{} MSE={:.8} > 0.00", test_name, mse));
+            }
+        }
+
+        if !failures.is_empty() {
+            panic!("Test failures:\n{}", failures.join("\n"));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_via_onnx() -> Result<(), Box<dyn std::error::Error>> {
+        // Load ONNX model
+        let model: candle_onnx::onnx::ModelProto =
+            candle_onnx::read_file("../../tests/data/onnx/decoder_model_merged.onnx")?;
+        let embedder: candle_onnx::onnx::ModelProto =
+            candle_onnx::read_file("../../tests/data/onnx/embed_tokens.onnx")?;
+        let vision: candle_onnx::onnx::ModelProto =
+            candle_onnx::read_file("../../tests/data/onnx/vision_encoder.onnx")?;
+
+        // Example: Convert a prompt string to input embeddings using a tokenizer
+        let prompt = "A photo of a cat sitting on a mat.";
+        // Load a HuggingFace tokenizer (adjust as needed)
+        let tokenizer = tokenizers::Tokenizer::from_pretrained("bert-base-uncased", None)
+            .map_err(|e| format!("Tokenizer load error: {e}"))?;
+        let encoding = tokenizer
+            .encode(prompt, true)
+            .map_err(|e| format!("Tokenizer encode error: {e}"))?;
+        let input_ids = encoding.get_ids();
+        println!("Prompt: {}", prompt);
+        println!("Token IDs: {:?}", input_ids);
+
+        let seq_len = input_ids.len();
+
+        // Convert token IDs to a tensor (embeddings would require an embedding layer, which should be part of the ONNX model)
+        // Here we just show how to prepare the input tensor
+        let input_tensor = Tensor::from_slice(input_ids, &[1, input_ids.len()], &Device::Cpu)?;
+        let input_tensor = input_tensor.to_dtype(DType::I64)?; //.squeeze(0)?;
+        println!(
+            "Input tensor: {:?} {:?}",
+            input_tensor.shape(),
+            input_tensor.dtype()
+        );
+
+        let attention_mask = Tensor::ones(&[1, seq_len], DType::I64, &Device::Cpu)?;
+        let position_ids: Vec<i64> = (0..seq_len as i64).collect();
+        let position_ids_tensor = Tensor::from_slice(&position_ids, &[1, seq_len], &Device::Cpu)?;
+
+        // At this point, you would feed `input_tensor` (and vision features if needed) into the ONNX model
+        // The ONNX model should contain the embed_tokens, vision, and decoder layers merged
+
+        if let Some(graph) = &model.graph {
+            for input in &graph.input {
+                println!("### Input: {}", input.name);
+                if let candle_onnx::onnx::type_proto::Value::TensorType(t) =
+                    input.r#type.as_ref().unwrap().value.as_ref().unwrap()
+                {
+                    println!(
+                        "{:?} {:?}",
+                        t.elem_type,
+                        t.shape
+                            .as_ref()
+                            .unwrap()
+                            .dim
+                            .iter()
+                            .map(|d| d.value.as_ref().unwrap())
+                            .collect::<Vec<_>>()
+                    );
+                } else {
+                    println!("##################################");
+                }
+            }
+        }
+        if let Some(graph) = &embedder.graph {
+            for input in &graph.input {
+                println!("### Input (Embedder): {}", input.name);
+            }
+        }
+
+        // Run the ONNX model
+        let embedder_out = candle_onnx::simple_eval(&embedder, {
+            // Prepare input map for ONNX model
+            let mut inputs = HashMap::new();
+            inputs.insert("input_ids".to_string(), input_tensor.clone());
+
+            inputs
+        })?;
+
+        for (name, tensor) in &embedder_out {
+            println!("### Output (Embedder): {}", name);
+        }
+
+        // Run the ONNX model
+        let outputs = candle_onnx::simple_eval(&model, {
+            // Prepare input map for ONNX model
+            let mut inputs = HashMap::new();
+            // Replace "input" with the actual input name expected by your ONNX model
+            inputs.insert(
+                "inputs_embeds".to_string(),
+                embedder_out.get("inputs_embeds").unwrap().clone(),
+            );
+            inputs.insert("attention_mask".to_string(), attention_mask);
+            inputs.insert("position_ids".to_string(), position_ids_tensor);
+            for i in 0..30 {
+                inputs.insert(
+                    format!("past_key_values.{}.key", i),
+                    Tensor::zeros(&[1, 3, 1, 64], DType::F32, &Device::Cpu)?,
+                );
+                inputs.insert(
+                    format!("past_key_values.{}.value", i),
+                    Tensor::zeros(&[1, 3, 1, 64], DType::F32, &Device::Cpu)?,
+                );
+            }
+
+            inputs
+        })?;
+
+        // Print all output names and shapes
+        for (name, tensor) in &outputs {
+            println!("Output: {} shape: {:?}", name, tensor.shape());
+        }
+
+        Ok(())
+    }
+
+    use ndarray::Array2;
+    use ort::{Environment, SessionBuilder, Value};
+    use std::sync::Arc;
+
+    #[test]
+    fn test_via_onnx_ort() -> Result<(), Box<dyn std::error::Error>> {
+        // Initialize the ONNX Runtime environment
+        let environment = Arc::new(Environment::builder().with_name("test").build()?);
+
+        // Load the ONNX model
+        let session = SessionBuilder::new(&environment)?
+            .with_model_from_file("../../tests/data/onnx/decoder_model_merged.onnx")?;
+
+        // Prepare input (example: 2D array of f32)
+        let input_array = Array2::<f32>::zeros((1, 10)).into_dyn(); // shape as required by your model
+        let arr = ndarray::CowArray::from(&input_array);
+
+        // Wrap input in ORT Value
+        let input_tensor = Value::from_array(session.allocator(), &arr)?;
+
+        // Run inference
+        let outputs = session.run(vec![input_tensor])?;
+
+        // Get output as OrtOwnedTensor
+        let output_tensor = outputs[0].try_extract::<f32>()?;
+        println!("Output: {:?}", output_tensor);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_via_onnx_specific_layer() -> Result<(), Box<dyn std::error::Error>> {
+        // Load the extracted layer ONNX model
+        let layer_model: candle_onnx::onnx::ModelProto =
+            candle_onnx::read_file("../../tests/data/extracted_layer.onnx")?;
+
+        // Load the safetensor file containing input and output activations
+        let safetensor_path = "../../tests/data/extracted_layer_activations.safetensors";
+        let activations = candle_core::safetensors::load(safetensor_path, &Device::Cpu)?;
+        let input_tensor = activations.get("input").expect("Missing input tensor");
+        let expected_output = activations.get("output").expect("Missing output tensor");
+
+        // Print input tensor shape and dtype for debug
+        println!(
+            "Input tensor shape: {:?}, dtype: {:?}",
+            input_tensor.shape(),
+            input_tensor.dtype()
+        );
+
+        // Print ONNX model input names and shapes for debug
+        if let Some(graph) = &layer_model.graph {
+            for input in &graph.input {
+                println!("### Input: {}", input.name);
+                if let candle_onnx::onnx::type_proto::Value::TensorType(t) =
+                    input.r#type.as_ref().unwrap().value.as_ref().unwrap()
+                {
+                    println!(
+                        "{:?} {:?}",
+                        t.elem_type,
+                        t.shape
+                            .as_ref()
+                            .unwrap()
+                            .dim
+                            .iter()
+                            .map(|d| d.value.as_ref().unwrap())
+                            .collect::<Vec<_>>()
+                    );
+                } else {
+                    println!("##################################");
+                }
+            }
+        }
+
+        // Run the ONNX model for the extracted layer using the actual input
+        let outputs = candle_onnx::simple_eval(&layer_model, {
+            let mut inputs = HashMap::new();
+            // You may need to adjust the input name below to match your ONNX model
+            inputs.insert(
+                "/model/layers.0/input_layernorm/output_0".to_string(),
+                input_tensor.clone(),
+            );
+            inputs
+        })?;
+
+        // Print all output names and shapes
+        for (name, tensor) in &outputs {
+            println!("### Output: {} shape: {:?}", name, tensor.shape());
+        }
+
+        // Get the ONNX output tensor (adjust the key as needed)
+        let onnx_output = outputs
+            .get("/model/layers.0/attn/q_proj/MatMul/output_0")
+            .expect("Missing ONNX output tensor");
+
+        // Compare the ONNX output tensor with the expected output tensor
+        let diff = (onnx_output - expected_output)?;
+        let mse = diff
+            .powf(2.0)?
+            .mean_all()?
+            .to_dtype(DType::F32)?
+            .to_scalar::<f32>()?;
+        let mae = diff
+            .abs()?
+            .mean_all()?
+            .to_dtype(DType::F32)?
+            .to_scalar::<f32>()?;
+
+        println!("MSE: {:.16}, MAE: {:.16}", mse, mae);
+        assert!(mse < 1e-4, "MSE too high: {}", mse);
+
+        Ok(())
+    }
+}

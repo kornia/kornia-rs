@@ -52,7 +52,9 @@ pub struct SmolModel {
     image_hidden_states: Option<Tensor>, // TODO: to be used for caching previous image hidden states
     merged_embeds: Vec<Tensor>,          // cache results
 
-    text: SmolText,
+    pub text: SmolText,
+
+    pub DEBUG_embeds: Option<Tensor>, // for debugging purposes, to be removed later
 }
 
 impl SmolModel {
@@ -72,6 +74,8 @@ impl SmolModel {
             merged_embeds: Vec::new(),
 
             text: SmolText::load(c)?,
+
+            DEBUG_embeds: None,
         })
     }
 
@@ -113,8 +117,16 @@ impl SmolModel {
         vision_data: Option<(Tensor, &Tensor, &Tensor)>,
     ) -> Result<Tensor> {
         let mut inputs_embeds = self.embed.forward(xs)?;
+        self.DEBUG_embeds = Some(inputs_embeds.clone());
 
         if let Some((image_token_mask, pixel_values, pixel_attention_masks)) = vision_data {
+            // println!(
+            //     "image_token_mask: {:?}, pixel_values: {:?}, pixel_attention_masks: {:?}",
+            //     image_token_mask.dims(),
+            //     pixel_values.dims(),
+            //     pixel_attention_masks.dims()
+            // );
+
             // TODO: this assumes there will be at most one new images added
             inputs_embeds = if self.image_hidden_states.is_some() {
                 self.inputs_merger(&image_token_mask, &inputs_embeds)?

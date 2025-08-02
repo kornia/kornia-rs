@@ -5,6 +5,7 @@ pub struct SmolVlmConfig {
     pub temp: f64,
     pub top_p: f64,
     pub repeat_penalty: f32,
+    pub do_sample: bool,
 
     // TODO: check if SmolVLM needs this
     pub repeat_last_n: usize,
@@ -18,6 +19,7 @@ impl Default for SmolVlmConfig {
             top_p: 0.8,
             repeat_penalty: 1.0,
             repeat_last_n: 64,
+            do_sample: true,
         }
     }
 }

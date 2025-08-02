@@ -4,8 +4,25 @@ use candle_core::DType;
 use candle_core::{Device, Result, Tensor};
 use candle_nn::{rotary_emb::rope, Linear, Module, RmsNorm};
 
+use crate::smolvlm::custom_rmsnorm::CustomRmsNorm;
+
 const NUM_OF_HEADS: usize = 32;
 const HEAD_DIM: usize = 64;
+
+/// Custom SiLU (Sigmoid Linear Unit) activation function
+/// SiLU(x) = x * sigmoid(x) = x * (1 / (1 + e^(-x)))
+fn silu(x: &Tensor) -> Result<Tensor> {
+    let sigmoid = (x.neg()?.exp()? + 1.0)?.recip()?;
+    x * sigmoid
+}
+
+fn silu_f32(x: &Tensor) -> Result<Tensor> {
+    let original_dtype = x.dtype();
+    let x_f32 = x.to_dtype(DType::F32)?;
+    let sigmoid = (x_f32.neg()?.exp()? + 1.0)?.recip()?;
+    let result = (x_f32 * sigmoid)?;
+    result.to_dtype(original_dtype)
+}
 
 fn calculate_default_inv_freq() -> Vec<f32> {
     (0..HEAD_DIM)
@@ -32,6 +49,7 @@ struct Attention {
 impl Attention {
     fn new(q: Tensor, k: Tensor, v: Tensor, o: Tensor) -> Result<Self> {
         let device = q.device();
+        let dtype = q.dtype();
 
         let theta = Tensor::new(calculate_default_inv_freq(), device)?;
         // 0 -> max position embedding
@@ -43,8 +61,8 @@ impl Attention {
         Ok(Self {
             cos: idx_theta.cos()?.to_dtype(q.dtype())?,
             sin: idx_theta.sin()?.to_dtype(q.dtype())?,
-            k_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), DType::BF16, device)?,
-            v_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), DType::BF16, device)?,
+            k_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), dtype, device)?,
+            v_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), dtype, device)?,
             q_proj: Linear::new(q, None),
             k_proj: Linear::new(k, None),
             v_proj: Linear::new(v, None),
@@ -57,14 +75,8 @@ impl Attention {
 
         rope(
             &x.unsqueeze(0)?,
-            &self
-                .cos
-                .narrow(0, index_pos, seq_len)
-                .expect("Exceeded context limit"),
-            &self
-                .sin
-                .narrow(0, index_pos, seq_len)
-                .expect("Exceeded context limit"),
+            &self.cos.narrow(0, index_pos, seq_len)?,
+            &self.sin.narrow(0, index_pos, seq_len)?,
         )?
         .squeeze(0)
     }
@@ -100,6 +112,7 @@ impl Attention {
 
         let y = {
             // TODO: implement flash attention
+            // TODO: just using BF16 is plausible
 
             let in_dtype = q.dtype();
             let q = q.to_dtype(DType::F32)?;
@@ -131,10 +144,15 @@ impl Attention {
 }
 
 #[derive(Debug, Clone)]
-struct MLPGates {
+pub struct MLPGates {
     down_proj: Linear,
     gate_proj: Linear,
     up_proj: Linear,
+
+    pub DEBUG_gate_proj: Option<Tensor>,
+    pub DEBUG_up_proj: Option<Tensor>,
+    pub DEBUG_down_proj: Option<Tensor>,
+    pub DEBUG_act_fn: Option<Tensor>,
 }
 
 impl MLPGates {
@@ -143,24 +161,39 @@ impl MLPGates {
             down_proj: Linear::new(d, None),
             gate_proj: Linear::new(g, None),
             up_proj: Linear::new(u, None),
+            DEBUG_gate_proj: None, // for debugging purposes, to be removed later
+            DEBUG_up_proj: None,   // for debugging purposes, to be removed later
+            DEBUG_down_proj: None, // for debugging purposes, to be removed later
+            DEBUG_act_fn: None,    // for debugging purposes, to be removed later
         }
     }
 
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let gate = self.gate_proj.forward(x)?.silu()?.to_dtype(DType::F32)?;
-        let up = self.up_proj.forward(x)?.to_dtype(DType::F32)?;
-        let hidden = (gate * up)?.to_dtype(DType::BF16)?;
+    fn forward(&mut self, x: &Tensor) -> Result<Tensor> {
+        let gate_proj_out = self.gate_proj.forward(x)?;
+        self.DEBUG_gate_proj = Some(gate_proj_out.clone()); // for debugging purposes, to be removed later
+        let gate = silu(&gate_proj_out)?;
+        self.DEBUG_act_fn = Some(gate.clone()); // for debugging purposes, to be removed later
+        let up = self.up_proj.forward(x)?;
+        self.DEBUG_up_proj = Some(up.clone()); // for debugging purposes, to be removed later
+        let hidden = (gate * up)?;
         let x = self.down_proj.forward(&hidden)?;
+        self.DEBUG_down_proj = Some(x.clone()); // for debugging purposes, to be removed later
         Ok(x)
     }
 }
 
 #[derive(Debug, Clone)]
-struct Block {
-    input_layer_norm: RmsNorm,
+pub struct Block {
+    input_layer_norm: CustomRmsNorm,
     attn: Attention,
-    post_layer_norm: RmsNorm,
-    gates: MLPGates,
+    post_layer_norm: CustomRmsNorm,
+    pub gates: MLPGates,
+
+    pub DEBUG_block: Option<Tensor>, // for debugging purposes, to be removed later
+    pub DEBUG_input_layer_norm: Option<Tensor>,
+    pub DEBUG_attn: Option<Tensor>,
+    pub DEBUG_post_layer_norm: Option<Tensor>,
+    pub DEBUG_gates: Option<Tensor>,
 }
 
 impl Block {
@@ -181,37 +214,48 @@ impl Block {
                 .clone()
         };
 
-        log::info!("Loaded layer (LM): {id:?}");
-
         Ok(Self {
-            input_layer_norm: RmsNorm::new(val("input_layernorm"), 1e-5),
+            input_layer_norm: CustomRmsNorm::new(val("input_layernorm"), 1e-5),
             attn: Attention::new(
                 val("self_attn.q_proj"),
                 val("self_attn.k_proj"),
                 val("self_attn.v_proj"),
                 val("self_attn.o_proj"),
             )?,
-            post_layer_norm: RmsNorm::new(val("post_attention_layernorm"), 1e-5),
+            post_layer_norm: CustomRmsNorm::new(val("post_attention_layernorm"), 1e-5),
             gates: MLPGates::new(
                 val("mlp.down_proj"),
                 val("mlp.gate_proj"),
                 val("mlp.up_proj"),
             ),
+            DEBUG_block: None, // for debugging purposes, to be removed later
+            DEBUG_input_layer_norm: None,
+            DEBUG_attn: None,
+            DEBUG_post_layer_norm: None,
+            DEBUG_gates: None,
         })
     }
 
     fn forward(&mut self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
         let residual = x;
         let x = self.input_layer_norm.forward(x)?;
-        let x = (residual + self.attn.forward(&x, index_pos)?)?;
+        self.DEBUG_input_layer_norm = Some(x.clone()); // for debugging purposes, to be removed later
+        let att = self.attn.forward(&x, index_pos)?;
+        self.DEBUG_attn = Some(att.clone()); // for debugging purposes, to be removed later
+        let x = (residual + att)?;
         let residual = &x;
-        let x = (residual + self.gates.forward(&self.post_layer_norm.forward(&x)?)?)?;
+        let x = self.post_layer_norm.forward(&x)?;
+        self.DEBUG_post_layer_norm = Some(x.clone()); // for debugging purposes, to be removed later
+        let x = self.gates.forward(&x)?;
+        self.DEBUG_gates = Some(x.clone()); // for debugging purposes, to be removed later
+        let x = (residual + x)?;
+        self.DEBUG_block = Some(x.clone()); // for debugging purposes, to be removed later
         Ok(x)
     }
 }
 
 pub struct SmolText {
-    blocks: Vec<Block>,
+    pub blocks: Vec<Block>,
     norm: RmsNorm,
     lm_head: Linear,
 }

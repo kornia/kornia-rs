@@ -31,5 +31,9 @@ tokenizers = { version = "0.21.1", features = ["http"] }
 [dev-dependencies]
 rand = "0.9.0"
 
+candle-onnx = "0.9.1"
+ort = "1.16"          # or latest version
+ndarray = "0.15"      # for easy tensor handling
+
 [features]
 cuda = ["candle-core/cuda", "candle-transformers/cuda", "candle-nn/cuda"]
