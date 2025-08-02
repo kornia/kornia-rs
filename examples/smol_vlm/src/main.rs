@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // read the image
     let image = read_image_jpeg_rgb8(args.image_path).ok();
 
-    // create the paligemma model
+    // create the SmolVLM model
     let mut smolvlm = SmolVlm::new(SmolVlmConfig {
         do_sample: false, // set to false for greedy decoding
         seed: 420,

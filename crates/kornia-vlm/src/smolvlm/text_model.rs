@@ -49,6 +49,7 @@ struct Attention {
 impl Attention {
     fn new(q: Tensor, k: Tensor, v: Tensor, o: Tensor) -> Result<Self> {
         let device = q.device();
+        let dtype = q.dtype();
 
         let theta = Tensor::new(calculate_default_inv_freq(), device)?;
         // 0 -> max position embedding
@@ -60,8 +61,8 @@ impl Attention {
         Ok(Self {
             cos: idx_theta.cos()?.to_dtype(q.dtype())?,
             sin: idx_theta.sin()?.to_dtype(q.dtype())?,
-            k_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), DType::BF16, device)?,
-            v_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), DType::BF16, device)?,
+            k_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), dtype, device)?,
+            v_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), dtype, device)?,
             q_proj: Linear::new(q, None),
             k_proj: Linear::new(k, None),
             v_proj: Linear::new(v, None),
