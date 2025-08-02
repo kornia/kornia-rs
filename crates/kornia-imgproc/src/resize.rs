@@ -145,31 +145,35 @@ where
 /// # Errors
 ///
 /// The function returns an error if the image cannot be resized.
-pub fn resize_fast<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, 3, A1>,
-    dst: &mut Image<u8, 3, A2>,
+pub fn resize_fast<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, C, A1>,
+    dst: &mut Image<u8, C, A2>,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
-    if dst.size() != dst.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.size().width,
-            src.size().height,
-            dst.size().width,
-            dst.size().height,
-        ));
-    }
+    // if dst.size() != dst.size() {
+    //     return Err(ImageError::InvalidImageSize(
+    //         src.size().width,
+    //         src.size().height,
+    //         dst.size().width,
+    //         dst.size().height,
+    //     ));
+    // }
 
     // prepare the input image for the fast_image_resize crate
     let (src_cols, src_rows) = (src.cols(), src.rows());
     let src_data_len = src.as_slice().len();
 
-    let src_image = fr::images::ImageRef::new(
-        src_cols as u32,
-        src_rows as u32,
-        src.as_slice(),
-        fr::PixelType::U8x3,
-    )
-    .map_err(|_| ImageError::InvalidChannelShape(src_data_len, src_cols * src_rows * 3))?;
+    let pixel_type = match C {
+        4 => fr::PixelType::U8x4,
+        3 => fr::PixelType::U8x3,
+        1 => fr::PixelType::U8,
+        // TODO: Find a way to generalise it further by supporting multiple types other than u8
+        _ => panic!("Unsupported number of channels: {C}. Only 1, 3, or 4 channels are supported for resize_fast."),
+    };
+
+    let src_image =
+        fr::images::ImageRef::new(src_cols as u32, src_rows as u32, src.as_slice(), pixel_type)
+            .map_err(|_| ImageError::InvalidChannelShape(src_data_len, src_cols * src_rows * C))?;
 
     // prepare the output image for the fast_image_resize crate
     let (dst_cols, dst_rows) = (dst.cols(), dst.rows());
@@ -179,9 +183,9 @@ pub fn resize_fast<A1: ImageAllocator, A2: ImageAllocator>(
         dst_cols as u32,
         dst_rows as u32,
         dst.as_slice_mut(),
-        fr::PixelType::U8x3,
+        pixel_type,
     )
-    .map_err(|_| ImageError::InvalidChannelShape(dst_data_len, dst_cols * dst_rows * 3))?;
+    .map_err(|_| ImageError::InvalidChannelShape(dst_data_len, dst_cols * dst_rows * C))?;
 
     let mut options = fr::ResizeOptions::new();
     options.algorithm = match interpolation {
