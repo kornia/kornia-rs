@@ -167,14 +167,12 @@ fn pose_from_betas(
     }
 
     let a0 = alphas[0];
-    let mut pc0 = [0.0; 3];
+    let mut pc0_vec = Vec3::ZERO;
     for j in 0..4 {
-        pc0[0] += a0[j] * cc[j][0];
-        pc0[1] += a0[j] * cc[j][1];
-        pc0[2] += a0[j] * cc[j][2];
+        pc0_vec += Vec3::from_array(cc[j]) * a0[j];
     }
 
-    if pc0[2] < 0.0 {
+    if pc0_vec.z < 0.0 {
         for pt in &mut cc {
             pt[0] *= -1.0;
             pt[1] *= -1.0;
@@ -206,22 +204,32 @@ fn rmse_px(
     let cx = k[0][2];
     let cy = k[1][2];
 
+    // Pre-compute matrix and vectors in glam form for SIMD-friendly ops
+    let r_mat = Mat3::from_cols(
+        Vec3::new(r[0][0], r[1][0], r[2][0]),
+        Vec3::new(r[0][1], r[1][1], r[2][1]),
+        Vec3::new(r[0][2], r[1][2], r[2][2]),
+    );
+    let t_vec = Vec3::new(t[0], t[1], t[2]);
+
+    // Pack intrinsics so that (intr_x ⋅ Pc) / z = fx * x / z + cx
+    let intr_x = Vec3::new(fx, 0.0, cx);
+    let intr_y = Vec3::new(0.0, fy, cy);
+
     let mut sum_sq = 0.0;
     let n = points_world.len() as f32;
 
-    for (p, &img) in points_world.iter().zip(points_image.iter()) {
-        // Camera-frame coordinates: Pc = R * Pw + t
-        let x_c = r[0][0] * p[0] + r[0][1] * p[1] + r[0][2] * p[2] + t[0];
-        let y_c = r[1][0] * p[0] + r[1][1] * p[1] + r[1][2] * p[2] + t[1];
-        let z_c = r[2][0] * p[0] + r[2][1] * p[1] + r[2][2] * p[2] + t[2];
+    for (pw_arr, &uv) in points_world.iter().zip(points_image.iter()) {
+        let pw = Vec3::from_array(*pw_arr);
+        let pc = r_mat * pw + t_vec; // camera-frame point
 
-        let inv_z = 1.0 / z_c;
-        let u_hat = fx * x_c * inv_z + cx;
-        let v_hat = fy * y_c * inv_z + cy;
+        let inv_z = 1.0 / pc.z;
+        let u_hat = intr_x.dot(pc) * inv_z; // (fx * x + cx * z) / z
+        let v_hat = intr_y.dot(pc) * inv_z; // (fy * y + cy * z) / z
 
-        let du = u_hat - img[0];
-        let dv = v_hat - img[1];
-        sum_sq += du * du + dv * dv;
+        let du = u_hat - uv[0];
+        let dv = v_hat - uv[1];
+        sum_sq += du.mul_add(du, dv * dv); // FMA where available
     }
 
     (sum_sq / n).sqrt()
@@ -235,11 +243,8 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
     let mut cov_mat = Mat3::ZERO;
     for p in points_world {
         let diff = Vec3::new(p[0] - c[0], p[1] - c[1], p[2] - c[2]);
-        let outer_product = Mat3::from_cols(
-            Vec3::new(diff.x * diff.x, diff.y * diff.x, diff.z * diff.x),
-            Vec3::new(diff.x * diff.y, diff.y * diff.y, diff.z * diff.y),
-            Vec3::new(diff.x * diff.z, diff.y * diff.z, diff.z * diff.z),
-        );
+        // Outer product diff * diffᵀ via column scaling
+        let outer_product = Mat3::from_cols(diff * diff.x, diff * diff.y, diff * diff.z);
         cov_mat += outer_product;
     }
     cov_mat *= 1.0 / n as f32;
@@ -256,14 +261,13 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
     ];
     axes_sig.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
 
-    // Assemble control points: centroid + principal-axis displacements
+    let c_vec = Vec3::from_array(c);
     let mut cw = [[0.0; 3]; 4];
     cw[0] = c;
 
     for (i, (sigma, axis)) in axes_sig.iter().enumerate() {
-        cw[i + 1][0] = c[0] + sigma * axis.x;
-        cw[i + 1][1] = c[1] + sigma * axis.y;
-        cw[i + 1][2] = c[2] + sigma * axis.z;
+        let cp = c_vec + *axis * *sigma;
+        cw[i + 1] = cp.to_array();
     }
 
     cw
@@ -327,7 +331,7 @@ fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) 
     points_world
         .iter()
         .map(|p| {
-            let diff = Vec3::new(p[0] - c0.x, p[1] - c0.y, p[2] - c0.z);
+            let diff = Vec3::from_array(*p) - c0;
             let lamb = b_inv * diff;
             [1.0 - (lamb.x + lamb.y + lamb.z), lamb.x, lamb.y, lamb.z]
         })
@@ -414,16 +418,35 @@ fn build_l6x10(null4: &DMatrix<f32>) -> [[f32; 10]; 6] {
 
     let mut l = [[0.0f32; 10]; 6];
     for (j, _) in dv_arr[0].iter().enumerate() {
-        l[j][0] = dv_arr[0][j].dot(dv_arr[0][j]);
-        l[j][1] = 2.0 * dv_arr[0][j].dot(dv_arr[1][j]);
-        l[j][2] = dv_arr[1][j].dot(dv_arr[1][j]);
-        l[j][3] = 2.0 * dv_arr[0][j].dot(dv_arr[2][j]);
-        l[j][4] = 2.0 * dv_arr[1][j].dot(dv_arr[2][j]);
-        l[j][5] = dv_arr[2][j].dot(dv_arr[2][j]);
-        l[j][6] = 2.0 * dv_arr[0][j].dot(dv_arr[3][j]);
-        l[j][7] = 2.0 * dv_arr[1][j].dot(dv_arr[3][j]);
-        l[j][8] = 2.0 * dv_arr[2][j].dot(dv_arr[3][j]);
-        l[j][9] = dv_arr[3][j].dot(dv_arr[3][j]);
+        let d0 = dv_arr[0][j];
+        let d1 = dv_arr[1][j];
+        let d2 = dv_arr[2][j];
+        let d3 = dv_arr[3][j];
+
+        let d00 = d0.dot(d0);
+        let d11 = d1.dot(d1);
+        let d22 = d2.dot(d2);
+        let d33 = d3.dot(d3);
+
+        let d01 = d0.dot(d1);
+        let d02 = d0.dot(d2);
+        let d03 = d0.dot(d3);
+        let d12 = d1.dot(d2);
+        let d13 = d1.dot(d3);
+        let d23 = d2.dot(d3);
+
+        l[j] = [
+            d00,
+            2.0 * d01,
+            d11,
+            2.0 * d02,
+            2.0 * d12,
+            d22,
+            2.0 * d03,
+            2.0 * d13,
+            2.0 * d23,
+            d33,
+        ];
     }
 
     l
@@ -504,11 +527,8 @@ const CP_PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (
 /// Compute the six squared distances (ρ vector) between the 4 control points.
 fn rho_ctrlpts(cw: &[[f32; 3]; 4]) -> [f32; 6] {
     CP_PAIRS.map(|(i, j)| {
-        cw[i]
-            .iter()
-            .zip(cw[j].iter())
-            .map(|(&a, &b)| (a - b).powi(2))
-            .sum::<f32>()
+        let diff = Vec3::from_array(cw[i]) - Vec3::from_array(cw[j]);
+        diff.length_squared()
     })
 }
 
