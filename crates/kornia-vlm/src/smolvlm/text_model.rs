@@ -4,6 +4,7 @@ use candle_core::DType;
 use candle_core::{Device, Result, Tensor};
 use candle_nn::{rotary_emb::rope, Linear, Module, RmsNorm};
 
+<<<<<<< HEAD
 use crate::smolvlm::custom_rmsnorm::CustomRmsNorm;
 
 const NUM_OF_HEADS: usize = 32;
@@ -24,6 +25,11 @@ fn silu_f32(x: &Tensor) -> Result<Tensor> {
     result.to_dtype(original_dtype)
 }
 
+=======
+const NUM_OF_HEADS: usize = 32;
+const HEAD_DIM: usize = 64;
+
+>>>>>>> main
 fn calculate_default_inv_freq() -> Vec<f32> {
     (0..HEAD_DIM)
         .step_by(2)
@@ -49,7 +55,10 @@ struct Attention {
 impl Attention {
     fn new(q: Tensor, k: Tensor, v: Tensor, o: Tensor) -> Result<Self> {
         let device = q.device();
+<<<<<<< HEAD
         let dtype = q.dtype();
+=======
+>>>>>>> main
 
         let theta = Tensor::new(calculate_default_inv_freq(), device)?;
         // 0 -> max position embedding
@@ -61,8 +70,13 @@ impl Attention {
         Ok(Self {
             cos: idx_theta.cos()?.to_dtype(q.dtype())?,
             sin: idx_theta.sin()?.to_dtype(q.dtype())?,
+<<<<<<< HEAD
             k_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), dtype, device)?,
             v_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), dtype, device)?,
+=======
+            k_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), DType::BF16, device)?,
+            v_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), DType::BF16, device)?,
+>>>>>>> main
             q_proj: Linear::new(q, None),
             k_proj: Linear::new(k, None),
             v_proj: Linear::new(v, None),
@@ -75,8 +89,19 @@ impl Attention {
 
         rope(
             &x.unsqueeze(0)?,
+<<<<<<< HEAD
             &self.cos.narrow(0, index_pos, seq_len)?,
             &self.sin.narrow(0, index_pos, seq_len)?,
+=======
+            &self
+                .cos
+                .narrow(0, index_pos, seq_len)
+                .expect("Exceeded context limit"),
+            &self
+                .sin
+                .narrow(0, index_pos, seq_len)
+                .expect("Exceeded context limit"),
+>>>>>>> main
         )?
         .squeeze(0)
     }
@@ -112,7 +137,10 @@ impl Attention {
 
         let y = {
             // TODO: implement flash attention
+<<<<<<< HEAD
             // TODO: just using BF16 is plausible
+=======
+>>>>>>> main
 
             let in_dtype = q.dtype();
             let q = q.to_dtype(DType::F32)?;
@@ -178,6 +206,7 @@ impl MLPGates {
         let hidden = (gate * up)?;
         let x = self.down_proj.forward(&hidden)?;
         self.DEBUG_down_proj = Some(x.clone()); // for debugging purposes, to be removed later
+
         Ok(x)
     }
 }
@@ -222,23 +251,31 @@ impl Block {
                 val("self_attn.v_proj"),
                 val("self_attn.o_proj"),
             )?,
+<<<<<<< HEAD
             post_layer_norm: CustomRmsNorm::new(val("post_attention_layernorm"), 1e-5),
+=======
+            post_layer_norm: RmsNorm::new(val("post_attention_layernorm"), 1e-5),
+>>>>>>> main
             gates: MLPGates::new(
                 val("mlp.down_proj"),
                 val("mlp.gate_proj"),
                 val("mlp.up_proj"),
             ),
+<<<<<<< HEAD
             DEBUG_block: None, // for debugging purposes, to be removed later
             DEBUG_input_layer_norm: None,
             DEBUG_attn: None,
             DEBUG_post_layer_norm: None,
             DEBUG_gates: None,
+=======
+>>>>>>> main
         })
     }
 
     fn forward(&mut self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
         let residual = x;
         let x = self.input_layer_norm.forward(x)?;
+<<<<<<< HEAD
         self.DEBUG_input_layer_norm = Some(x.clone()); // for debugging purposes, to be removed later
         let att = self.attn.forward(&x, index_pos)?;
         self.DEBUG_attn = Some(att.clone()); // for debugging purposes, to be removed later
@@ -250,12 +287,21 @@ impl Block {
         self.DEBUG_gates = Some(x.clone()); // for debugging purposes, to be removed later
         let x = (residual + x)?;
         self.DEBUG_block = Some(x.clone()); // for debugging purposes, to be removed later
+=======
+        let x = (residual + self.attn.forward(&x, index_pos)?)?;
+        let residual = &x;
+        let x = (residual + self.gates.forward(&self.post_layer_norm.forward(&x)?)?)?;
+>>>>>>> main
         Ok(x)
     }
 }
 
 pub struct SmolText {
+<<<<<<< HEAD
     pub blocks: Vec<Block>,
+=======
+    blocks: Vec<Block>,
+>>>>>>> main
     norm: RmsNorm,
     lm_head: Linear,
 }
