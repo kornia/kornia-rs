@@ -1,14 +1,10 @@
-<<<<<<< HEAD
 mod custom_rmsnorm;
-=======
->>>>>>> main
 mod model;
 mod preprocessor;
 mod text_model;
 pub mod utils;
 mod vision_model;
 
-<<<<<<< HEAD
 use std::collections::HashMap;
 use std::io;
 use std::io::Write;
@@ -16,13 +12,6 @@ use std::io::Write;
 use candle_core::safetensors::save;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
-=======
-use std::io;
-use std::io::Write;
-
-use candle_core::{DType, Device, IndexOp, Tensor};
-use candle_transformers::generation::LogitsProcessor;
->>>>>>> main
 use hf_hub::api::sync::Api;
 use kornia_image::allocator::ImageAllocator;
 use kornia_image::Image;
@@ -78,19 +67,11 @@ impl SmolVlm {
             tokenizer,
             image_token_tensor,
             config,
-<<<<<<< HEAD
             logits_processor: if config.do_sample {
                 LogitsProcessor::new(config.seed, Some(config.temp), Some(config.top_p))
             } else {
                 LogitsProcessor::from_sampling(config.seed, Sampling::ArgMax)
             },
-=======
-            logits_processor: LogitsProcessor::new(
-                config.seed,
-                Some(config.temp),
-                Some(config.top_p),
-            ),
->>>>>>> main
             device,
             image_history: Vec::new(),
             index_pos: 0,
@@ -133,26 +114,15 @@ impl SmolVlm {
 
         if let Some(raw_img) = image {
             let (img_patches, mask_patches, size) =
-<<<<<<< HEAD
                 preprocess_image(raw_img, 1536, 384, &self.device);
 
             let img_token = get_prompt_split_image(81, size);
             full_prompt += "User:<image>";
-=======
-                preprocess_image(raw_img, 1920, 384, &self.device);
-
-            let img_token = get_prompt_split_image(81, size);
-            full_prompt += "\nUser:<image>";
->>>>>>> main
             full_prompt = full_prompt.replace("<image>", &img_token);
 
             self.image_history.push((img_patches, mask_patches));
         } else {
-<<<<<<< HEAD
             full_prompt += "User: ";
-=======
-            full_prompt += "\nUser: ";
->>>>>>> main
         }
 
         full_prompt += prompt;
