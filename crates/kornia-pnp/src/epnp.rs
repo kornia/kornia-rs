@@ -3,7 +3,7 @@
 //! Reference: https://github.com/opencv/opencv/blob/4.x/modules/calib3d/src/epnp.cpp
 
 use crate::ops::{compute_centroid, gauss_newton};
-use crate::types::{NumericTol, PnPError, PnPResult, PnPSolver};
+use crate::pnp::{NumericTol, PnPError, PnPResult, PnPSolver};
 use glam::{Mat3, Mat3A, Vec3};
 use kornia_lie::so3::SO3;
 use kornia_linalg::rigid::umeyama;
@@ -14,7 +14,7 @@ use nalgebra::{DMatrix, DVector, Vector4};
 pub struct EPnP;
 
 impl PnPSolver for EPnP {
-    type Param = EPNPParams;
+    type Param = EPnPParams;
 
     fn solve(
         points_world: &[[f32; 3]],
@@ -28,7 +28,7 @@ impl PnPSolver for EPnP {
 
 /// Parameters controlling the EPnP solver.
 #[derive(Debug, Clone, Default)]
-pub struct EPNPParams {
+pub struct EPnPParams {
     /// Shared numeric tolerances.
     pub tol: NumericTol,
 }
@@ -49,7 +49,7 @@ pub fn solve_epnp(
     points_world: &[[f32; 3]],
     points_image: &[[f32; 2]],
     k: &[[f32; 3]; 3],
-    params: &EPNPParams,
+    params: &EPnPParams,
 ) -> Result<PnPResult, PnPError> {
     let n = points_world.len();
     if n != points_image.len() {
@@ -563,7 +563,7 @@ mod solve_epnp_tests {
 
         let cw = select_control_points(&points_world);
 
-        let alphas = compute_barycentric(&points_world, &cw, EPNPParams::default().tol.eps);
+        let alphas = compute_barycentric(&points_world, &cw, EPnPParams::default().tol.eps);
 
         for (p, alpha) in points_world.iter().zip(alphas.iter()) {
             let mut recon = [0.0; 3];
@@ -608,7 +608,7 @@ mod solve_epnp_tests {
             assert_relative_eq!(m[1][k], expected_y[k], epsilon = 1e-9);
         }
 
-        let result = EPnP::solve(&points_world, &points_image, &k, &EPNPParams::default())
+        let result = EPnP::solve(&points_world, &points_image, &k, &EPnPParams::default())
             .expect("EPnP::solve should succeed");
         let r = result.rotation;
         let t = result.translation;
