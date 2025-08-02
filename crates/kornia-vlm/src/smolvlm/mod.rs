@@ -5,10 +5,14 @@ mod text_model;
 pub mod utils;
 mod vision_model;
 
+#[cfg(feature = "debug")]
 use std::collections::HashMap;
+#[cfg(feature = "debug")]
 use std::io;
+#[cfg(feature = "debug")]
 use std::io::Write;
 
+#[cfg(feature = "debug")]
 use candle_core::safetensors::save;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
@@ -99,9 +103,8 @@ impl SmolVlm {
         sample_len: usize, // per prompt
         stdout_debug: bool,
     ) -> Result<String, SmolVlmError> {
-        if stdout_debug {
-            std::io::stdout().flush()?;
-        }
+        #[cfg(feature = "debug")]
+        std::io::stdout().flush()?;
 
         let mut response = String::new(); // collection of tokens
 
@@ -132,13 +135,14 @@ impl SmolVlm {
 
         let mut delta_token = full_token.get_ids().to_vec();
 
-        println!("Token: {delta_token:?}");
-
+        #[cfg(feature = "debug")]
+        println!("Initial tokens: {delta_token:?}");
+        #[cfg(feature = "debug")]
         let start_gen = std::time::Instant::now();
+        #[cfg(feature = "debug")]
         let mut generated_tokens = 0usize;
-
-        // TODO
-        let mut tensors = HashMap::new();
+        #[cfg(feature = "debug")]
+        let mut tensor_introspection = HashMap::new();
 
         for _i in 0..sample_len {
             self.token_history.extend(&delta_token);
@@ -177,70 +181,65 @@ impl SmolVlm {
             };
             // println!("#>:{last_logit}");
 
-            tensors.insert(format!("logits_{}", _i), last_logit);
-            tensors.insert(
-                format!("embeds_{}", _i),
-                self.model.DEBUG_embeds.clone().unwrap(),
-            );
-            for d in 0..=23 {
-                tensors.insert(
-                    format!("DEBUG_input_layer_norm_d{}_i{}", d, _i),
-                    self.model.text.blocks[d]
-                        .DEBUG_input_layer_norm
-                        .clone()
-                        .unwrap(),
+            #[cfg(feature = "debug")]
+            {
+                tensor_introspection.insert(format!("logits_{}", _i), last_logit);
+                tensor_introspection.insert(
+                    format!("embeds_{}", _i),
+                    self.model.dbg_embeds.clone().unwrap(),
                 );
-                tensors.insert(
-                    format!("DEBUG_attn_d{}_i{}", d, _i),
-                    self.model.text.blocks[d].DEBUG_attn.clone().unwrap(),
-                );
-                tensors.insert(
-                    format!("DEBUG_post_layer_norm_d{}_i{}", d, _i),
-                    self.model.text.blocks[d]
-                        .DEBUG_post_layer_norm
-                        .clone()
-                        .unwrap(),
-                );
-                // tensors.insert(
-                //     format!("DEBUG_gates_d{}_i{}", d, _i),
-                //     self.model.text.blocks[d].DEBUG_gates.clone().unwrap(),
-                // );
-                tensors.insert(
-                    format!("DEBUG_gate_proj_d{}_i{}", d, _i),
-                    self.model.text.blocks[d]
-                        .gates
-                        .DEBUG_gate_proj
-                        .clone()
-                        .unwrap(),
-                );
-                tensors.insert(
-                    format!("DEBUG_act_fn_d{}_i{}", d, _i),
-                    self.model.text.blocks[d]
-                        .gates
-                        .DEBUG_act_fn
-                        .clone()
-                        .unwrap(),
-                );
-                tensors.insert(
-                    format!("DEBUG_down_proj_d{}_i{}", d, _i),
-                    self.model.text.blocks[d]
-                        .gates
-                        .DEBUG_down_proj
-                        .clone()
-                        .unwrap(),
-                );
-                tensors.insert(
-                    format!("DEBUG_up_proj_d{}_i{}", d, _i),
-                    self.model.text.blocks[d]
-                        .gates
-                        .DEBUG_up_proj
-                        .clone()
-                        .unwrap(),
-                );
-                tensors.insert(
-                    format!("block_d{}_i{}", d, _i),
-                    self.model.text.blocks[d].DEBUG_block.clone().unwrap(),
-                );
+                for d in 0..=23 {
+                    tensor_introspection.insert(
+                        format!("DEBUG_input_layer_norm_d{}_i{}", d, _i),
+                        self.model.text.blocks[d]
+                            .dbg_input_layer_norm
+                            .clone()
+                            .unwrap(),
+                    );
+                    tensor_introspection.insert(
+                        format!("DEBUG_attn_d{}_i{}", d, _i),
+                        self.model.text.blocks[d].dbg_attn.clone().unwrap(),
+                    );
+                    tensor_introspection.insert(
+                        format!("DEBUG_post_layer_norm_d{}_i{}", d, _i),
+                        self.model.text.blocks[d]
+                            .dbg_post_layer_norm
+                            .clone()
+                            .unwrap(),
+                    );
+                    // tensors.insert(
+                    //     format!("DEBUG_gates_d{}_i{}", d, _i),
+                    //     self.model.text.blocks[d].dbg_gates.clone().unwrap(),
+                    // );
+                    tensor_introspection.insert(
+                        format!("DEBUG_gate_proj_d{}_i{}", d, _i),
+                        self.model.text.blocks[d]
+                            .gates
+                            .dbg_gate_proj
+                            .clone()
+                            .unwrap(),
+                    );
+                    tensor_introspection.insert(
+                        format!("DEBUG_act_fn_d{}_i{}", d, _i),
+                        self.model.text.blocks[d].gates.dbg_act_fn.clone().unwrap(),
+                    );
+                    tensor_introspection.insert(
+                        format!("DEBUG_down_proj_d{}_i{}", d, _i),
+                        self.model.text.blocks[d]
+                            .gates
+                            .dbg_down_proj
+                            .clone()
+                            .unwrap(),
+                    );
+                    tensor_introspection.insert(
+                        format!("DEBUG_up_proj_d{}_i{}", d, _i),
+                        self.model.text.blocks[d].gates.dbg_up_proj.clone().unwrap(),
+                    );
+                    tensor_introspection.insert(
+                        format!("block_d{}_i{}", d, _i),
+                        self.model.text.blocks[d].dbg_block.clone().unwrap(),
+                    );
+                }
             }
 
             self.index_pos += delta_token.len();
@@ -251,14 +250,17 @@ impl SmolVlm {
 
             if token_output != "<end_of_utterance>" {
                 response += &token_output;
-                generated_tokens += 1;
 
-                if stdout_debug {
+                #[cfg(feature = "debug")]
+                {
+                    generated_tokens += 1;
+
                     print!("{token_output}");
                     io::stdout().flush().unwrap();
                 }
             } else {
-                if stdout_debug {
+                #[cfg(feature = "debug")]
+                {
                     println!();
                     io::stdout().flush().unwrap();
                 }
@@ -267,20 +269,20 @@ impl SmolVlm {
             }
         }
 
-        if stdout_debug {
+        #[cfg(feature = "debug")]
+        {
             let dt = start_gen.elapsed();
             println!(
                 "\n{generated_tokens} tokens generated ({:.2} token/s)",
                 generated_tokens as f64 / dt.as_secs_f64(),
             );
-        }
 
-        // TODO
-        save(
-            &tensors,
-            "examples/smol_vlm/validation_data/rust_output.safetensors",
-        )?;
-        println!("Token history: {:?}", self.token_history);
+            save(
+                &tensor_introspection,
+                "examples/smol_vlm/validation_data/rust_output.safetensors",
+            )?;
+            println!("Token history: {:?}", self.token_history);
+        }
 
         Ok(response)
     }

@@ -149,10 +149,14 @@ pub struct MLPGates {
     gate_proj: Linear,
     up_proj: Linear,
 
-    pub DEBUG_gate_proj: Option<Tensor>,
-    pub DEBUG_up_proj: Option<Tensor>,
-    pub DEBUG_down_proj: Option<Tensor>,
-    pub DEBUG_act_fn: Option<Tensor>,
+    #[cfg(feature = "debug")]
+    pub dbg_gate_proj: Option<Tensor>,
+    #[cfg(feature = "debug")]
+    pub dbg_up_proj: Option<Tensor>,
+    #[cfg(feature = "debug")]
+    pub dbg_down_proj: Option<Tensor>,
+    #[cfg(feature = "debug")]
+    pub dbg_act_fn: Option<Tensor>,
 }
 
 impl MLPGates {
@@ -161,23 +165,44 @@ impl MLPGates {
             down_proj: Linear::new(d, None),
             gate_proj: Linear::new(g, None),
             up_proj: Linear::new(u, None),
-            DEBUG_gate_proj: None, // for debugging purposes, to be removed later
-            DEBUG_up_proj: None,   // for debugging purposes, to be removed later
-            DEBUG_down_proj: None, // for debugging purposes, to be removed later
-            DEBUG_act_fn: None,    // for debugging purposes, to be removed later
+
+            #[cfg(feature = "debug")]
+            dbg_gate_proj: None,
+            #[cfg(feature = "debug")]
+            dbg_up_proj: None,
+            #[cfg(feature = "debug")]
+            dbg_down_proj: None,
+            #[cfg(feature = "debug")]
+            dbg_act_fn: None,
         }
     }
 
     fn forward(&mut self, x: &Tensor) -> Result<Tensor> {
         let gate_proj_out = self.gate_proj.forward(x)?;
-        self.DEBUG_gate_proj = Some(gate_proj_out.clone()); // for debugging purposes, to be removed later
+        #[cfg(feature = "debug")]
+        {
+            self.dbg_gate_proj = Some(gate_proj_out.clone());
+        }
+
         let gate = silu(&gate_proj_out)?;
-        self.DEBUG_act_fn = Some(gate.clone()); // for debugging purposes, to be removed later
+        #[cfg(feature = "debug")]
+        {
+            self.dbg_act_fn = Some(gate.clone());
+        }
+
         let up = self.up_proj.forward(x)?;
-        self.DEBUG_up_proj = Some(up.clone()); // for debugging purposes, to be removed later
+        #[cfg(feature = "debug")]
+        {
+            self.dbg_up_proj = Some(up.clone());
+        }
+
         let hidden = (gate * up)?;
+
         let x = self.down_proj.forward(&hidden)?;
-        self.DEBUG_down_proj = Some(x.clone()); // for debugging purposes, to be removed later
+        #[cfg(feature = "debug")]
+        {
+            self.dbg_down_proj = Some(x.clone());
+        }
         Ok(x)
     }
 }
@@ -189,11 +214,16 @@ pub struct Block {
     post_layer_norm: CustomRmsNorm,
     pub gates: MLPGates,
 
-    pub DEBUG_block: Option<Tensor>, // for debugging purposes, to be removed later
-    pub DEBUG_input_layer_norm: Option<Tensor>,
-    pub DEBUG_attn: Option<Tensor>,
-    pub DEBUG_post_layer_norm: Option<Tensor>,
-    pub DEBUG_gates: Option<Tensor>,
+    #[cfg(feature = "debug")]
+    pub dbg_block: Option<Tensor>, // for debugging purposes, to be removed later
+    #[cfg(feature = "debug")]
+    pub dbg_input_layer_norm: Option<Tensor>,
+    #[cfg(feature = "debug")]
+    pub dbg_attn: Option<Tensor>,
+    #[cfg(feature = "debug")]
+    pub dbg_post_layer_norm: Option<Tensor>,
+    #[cfg(feature = "debug")]
+    pub dbg_gates: Option<Tensor>,
 }
 
 impl Block {
@@ -228,28 +258,56 @@ impl Block {
                 val("mlp.gate_proj"),
                 val("mlp.up_proj"),
             ),
-            DEBUG_block: None, // for debugging purposes, to be removed later
-            DEBUG_input_layer_norm: None,
-            DEBUG_attn: None,
-            DEBUG_post_layer_norm: None,
-            DEBUG_gates: None,
+            #[cfg(feature = "debug")]
+            dbg_block: None, // for debugging purposes, to be removed later
+            #[cfg(feature = "debug")]
+            dbg_input_layer_norm: None,
+            #[cfg(feature = "debug")]
+            dbg_attn: None,
+            #[cfg(feature = "debug")]
+            dbg_post_layer_norm: None,
+            #[cfg(feature = "debug")]
+            dbg_gates: None,
         })
     }
 
     fn forward(&mut self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
         let residual = x;
+
         let x = self.input_layer_norm.forward(x)?;
-        self.DEBUG_input_layer_norm = Some(x.clone()); // for debugging purposes, to be removed later
+        #[cfg(feature = "debug")]
+        {
+            self.dbg_input_layer_norm = Some(x.clone());
+        }
+
         let att = self.attn.forward(&x, index_pos)?;
-        self.DEBUG_attn = Some(att.clone()); // for debugging purposes, to be removed later
+        #[cfg(feature = "debug")]
+        {
+            self.dbg_attn = Some(att.clone());
+        }
+
         let x = (residual + att)?;
         let residual = &x;
+
         let x = self.post_layer_norm.forward(&x)?;
-        self.DEBUG_post_layer_norm = Some(x.clone()); // for debugging purposes, to be removed later
+
+        #[cfg(feature = "debug")]
+        {
+            self.dbg_post_layer_norm = Some(x.clone());
+        }
+
         let x = self.gates.forward(&x)?;
-        self.DEBUG_gates = Some(x.clone()); // for debugging purposes, to be removed later
+        #[cfg(feature = "debug")]
+        {
+            self.dbg_gates = Some(x.clone());
+        }
+
         let x = (residual + x)?;
-        self.DEBUG_block = Some(x.clone()); // for debugging purposes, to be removed later
+        #[cfg(feature = "debug")]
+        {
+            self.dbg_block = Some(x.clone());
+        }
+
         Ok(x)
     }
 }
