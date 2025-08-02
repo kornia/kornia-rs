@@ -1,19 +1,17 @@
-mod arena;
-mod camera_control;
+/// module for camera controls
+pub mod camera_control;
+
 mod pixel_format;
 mod stream;
 
 // re-export the camera control and pixel format types
-pub use camera_control::{AutoExposureMode, CameraControl};
 pub use pixel_format::PixelFormat;
 
+use crate::v4l::camera_control::{CameraControlTrait, ControlType};
 use kornia_image::ImageSize;
-use v4l::buffer::Type;
-use v4l::io::traits::CaptureStream;
-use v4l::video::capture::Parameters;
-use v4l::video::Capture;
-use v4l::Device;
-use v4l::Timestamp;
+use v4l::{
+    buffer::Type, control::Value, video::capture::Parameters, video::Capture, Device, Timestamp,
+};
 
 /// Error types for the v4l2 module.
 #[derive(Debug, thiserror::Error)]
@@ -57,8 +55,8 @@ impl Default for V4LCameraConfig {
 }
 
 /// V4L video capture.
-pub struct V4LVideoCapture {
-    stream: stream::Stream,
+pub struct V4lVideoCapture {
+    stream: stream::MmapStream,
     pixel_format: PixelFormat,
     device: Device,
     size: ImageSize,
@@ -67,7 +65,7 @@ pub struct V4LVideoCapture {
 /// Represents a captured frame
 pub struct EncodedFrame {
     /// The buffer of the frame
-    pub buffer: arena::V4lBuffer,
+    pub buffer: stream::V4lBuffer,
     /// The image size of the frame
     pub size: ImageSize,
     /// The fourcc of the frame
@@ -78,7 +76,7 @@ pub struct EncodedFrame {
     pub sequence: u32,
 }
 
-impl V4LVideoCapture {
+impl V4lVideoCapture {
     /// Create a new V4L video capture.
     pub fn new(config: V4LCameraConfig) -> Result<Self, V4L2Error> {
         let device = Device::with_path(&config.device_path)?;
@@ -106,19 +104,16 @@ impl V4LVideoCapture {
         device.set_params(&params)?;
 
         // Create the stream
-        let stream = stream::Stream::with_buffers(&device, Type::VideoCapture, config.buffer_size)?;
+        let mut stream =
+            stream::MmapStream::with_buffers(&device, Type::VideoCapture, config.buffer_size)?;
+        stream.next_frame()?;
 
-        let mut capture = Self {
+        Ok(Self {
             stream,
             pixel_format: PixelFormat::from_fourcc(actual_format.fourcc),
             device,
             size: config.size,
-        };
-
-        // default to disable dynamic framerate
-        capture.set_control(CameraControl::DynamicFramerate(false))?;
-
-        Ok(capture)
+        })
     }
 
     /// Get the current pixel format
@@ -128,18 +123,26 @@ impl V4LVideoCapture {
     }
 
     /// Set a camera control
-    pub fn set_control(&mut self, control: CameraControl) -> Result<(), V4L2Error> {
+    pub fn set_control<T: CameraControlTrait>(&mut self, control: T) -> Result<(), V4L2Error> {
         self.device
-            .set_control(control.to_v4l_control())
+            .set_control(v4l::Control {
+                id: control.control_id(),
+                value: match control.value() {
+                    ControlType::Integer(value) => Value::Integer(value),
+                    ControlType::Boolean(value) => Value::Boolean(value),
+                },
+            })
             .map_err(V4L2Error::IoError)
     }
 
     /// Grab a frame from the camera
-    pub fn grab(&mut self) -> Result<Option<EncodedFrame>, V4L2Error> {
-        let (buffer, metadata) = self.stream.next()?;
+    pub fn grab_frame(&mut self) -> Result<Option<EncodedFrame>, V4L2Error> {
+        let Ok((buffer, metadata)) = self.stream.next_frame() else {
+            return Ok(None);
+        };
 
         let frame = EncodedFrame {
-            buffer: buffer.clone(),
+            buffer,
             size: self.size,
             pixel_format: self.pixel_format,
             timestamp: metadata.timestamp,

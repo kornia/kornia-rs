@@ -1,65 +1,83 @@
-/// Auto exposure modes
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AutoExposureMode {
-    /// Manual exposure - user controls exposure time
-    Manual = 1,
-    /// Aperture priority - camera automatically adjusts exposure
-    Auto = 3,
+/// Core trait that all camera controls must implement
+pub trait CameraControlTrait: std::fmt::Debug + Send + Sync {
+    /// Human-readable name of the control
+    fn name(&self) -> &str;
+
+    /// V4L2 control ID
+    fn control_id(&self) -> u32;
+
+    /// Current value as V4L2 compatible integer
+    fn value(&self) -> ControlType;
+
+    /// Control description
+    fn description(&self) -> String;
 }
 
-/// Basic camera controls
+/// Define the control type for the camera control
+#[derive(Debug)]
+pub enum ControlType {
+    /// Integer control type
+    Integer(i64),
+    /// Boolean control type
+    Boolean(bool),
+}
+
+/// The camera control for brightness
 #[derive(Debug, Clone, PartialEq)]
-pub enum CameraControl {
-    // Basic image controls
-    /// Image brightness (0-255)
-    Brightness(u8),
-    /// Image contrast (0-100)
-    Contrast(u8),
+pub struct Brightness(pub i32);
 
-    // Exposure controls
-    /// Auto exposure mode
-    AutoExposure(AutoExposureMode),
-    /// Exposure time in 100µs units (only when AutoExposure is Manual)
-    ExposureTime(u16),
-    /// Enable/disable dynamic framerate adjustment (the key fix for 30fps!)
-    DynamicFramerate(bool),
-
-    // White balance controls
-    /// Auto white balance on/off
-    AutoWhiteBalance(bool),
-    /// White balance temperature in Kelvin (2800-6500, only when AutoWhiteBalance is false)
-    WhiteBalanceTemperature(u16),
+#[rustfmt::skip]
+impl CameraControlTrait for Brightness {
+    fn name(&self) -> &str { "brightness" }
+    fn control_id(&self) -> u32 { 0x00980900 }
+    fn value(&self) -> ControlType { ControlType::Integer(self.0 as i64) }
+    fn description(&self) -> String { "Picture brightness control".to_string() }
 }
 
-impl CameraControl {
-    /// Get the V4L2 control ID for this control type
-    fn control_id(&self) -> u32 {
-        match self {
-            Self::Brightness(_) => 0x00980900,       // V4L2_CID_BRIGHTNESS
-            Self::Contrast(_) => 0x00980901,         // V4L2_CID_CONTRAST
-            Self::AutoExposure(_) => 0x009a0901,     // V4L2_CID_EXPOSURE_AUTO
-            Self::ExposureTime(_) => 0x009a0902,     // V4L2_CID_EXPOSURE_ABSOLUTE
-            Self::DynamicFramerate(_) => 0x009a0903, // V4L2_CID_EXPOSURE_AUTO_PRIORITY
-            Self::AutoWhiteBalance(_) => 0x0098090c, // V4L2_CID_AUTO_WHITE_BALANCE
-            Self::WhiteBalanceTemperature(_) => 0x0098091a, // V4L2_CID_WHITE_BALANCE_TEMPERATURE
-        }
-    }
+/// The camera control for contrast
+#[derive(Debug, Clone, PartialEq)]
+pub struct Contrast(pub i32);
 
-    /// Convert to V4L2 control value
-    pub fn to_v4l_control(&self) -> v4l::control::Control {
-        use v4l::control::{Control, Value};
+#[rustfmt::skip]
+impl CameraControlTrait for Contrast {
+    fn name(&self) -> &str { "contrast" }
+    fn control_id(&self) -> u32 { 0x00980901 }
+    fn value(&self) -> ControlType { ControlType::Integer(self.0 as i64) }
+    fn description(&self) -> String { "Picture contrast control".to_string() }
+}
 
-        let id = self.control_id();
-        let value = match self {
-            Self::Brightness(v) => Value::Integer(*v as i64),
-            Self::Contrast(v) => Value::Integer(*v as i64),
-            Self::AutoExposure(mode) => Value::Integer(*mode as i64),
-            Self::ExposureTime(v) => Value::Integer(*v as i64),
-            Self::DynamicFramerate(v) => Value::Boolean(*v),
-            Self::AutoWhiteBalance(v) => Value::Boolean(*v),
-            Self::WhiteBalanceTemperature(v) => Value::Integer(*v as i64),
-        };
+/// The camera control for saturation
+#[derive(Debug, Clone, PartialEq)]
+pub struct Saturation(pub i32);
 
-        Control { id, value }
-    }
+#[rustfmt::skip]
+impl CameraControlTrait for Saturation {
+    fn name(&self) -> &str { "saturation" }
+    fn control_id(&self) -> u32 { 0x00980902 }
+    fn value(&self) -> ControlType { ControlType::Integer(self.0 as i64) }
+    fn description(&self) -> String { "Picture saturation control".to_string() }
+}
+
+/// The camera control for hue
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hue(pub i32);
+
+#[rustfmt::skip]
+impl CameraControlTrait for Hue {
+    fn name(&self) -> &str { "hue" }
+    fn control_id(&self) -> u32 { 0x00980903 }
+    fn value(&self) -> ControlType { ControlType::Integer(self.0 as i64) }
+    fn description(&self) -> String { "Picture hue control".to_string() }
+}
+
+/// The camera control for sharpness
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sharpness(pub i32);
+
+#[rustfmt::skip]
+impl CameraControlTrait for Sharpness {
+    fn name(&self) -> &str { "sharpness" }
+    fn control_id(&self) -> u32 { 0x0098091b }
+    fn value(&self) -> ControlType { ControlType::Integer(self.0 as i64) }
+    fn description(&self) -> String { "Picture sharpness control".to_string() }
 }

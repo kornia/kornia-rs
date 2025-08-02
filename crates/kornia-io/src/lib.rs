@@ -33,7 +33,7 @@ pub use gstreamer as stream;
 pub mod tiff;
 
 /// V4L2 video module for real-time video processing.
-#[cfg(feature = "v4l")]
+#[cfg(all(feature = "v4l", target_os = "linux"))]
 pub mod v4l;
 
 /// Internal utility functions for image bit depth conversion.

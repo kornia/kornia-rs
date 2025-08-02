@@ -19,6 +19,7 @@ license-file = "LICENSE"
 readme = "README.md"
 repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
+<<<<<<< HEAD
 version = "0.1.10-rc.4"
 
 [workspace.dependencies]
@@ -36,6 +37,25 @@ kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.10-rc.4" }
 kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.10-rc.4" }
 kornia-vlm = { path = "crates/kornia-vlm", version = "0.1.10-rc.4" }
 kornia = { path = "crates/kornia", version = "0.1.10-rc.4" }
+=======
+version = "0.1.10-rc.6"
+
+[workspace.dependencies]
+# NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
+kornia-3d = { path = "crates/kornia-3d", version = "0.1.10-rc.6" }
+kornia-apriltag = { path = "crates/kornia-apriltag", version = "0.1.10-rc.6" }
+kornia-icp = { path = "crates/kornia-icp", version = "0.1.10-rc.6" }
+kornia-image = { path = "crates/kornia-image", version = "0.1.10-rc.6" }
+kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.10-rc.6" }
+kornia-io = { path = "crates/kornia-io", version = "0.1.10-rc.6" }
+kornia-lie = { path = "crates/kornia-lie", version = "0.1.10-rc.6" }
+kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.10-rc.6" }
+kornia-nn = { path = "crates/kornia-nn", version = "0.1.10-rc.6" }
+kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.10-rc.6" }
+kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.10-rc.6" }
+kornia-vlm = { path = "crates/kornia-vlm", version = "0.1.10-rc.6" }
+kornia = { path = "crates/kornia", version = "0.1.10-rc.6" }
+>>>>>>> main
 
 # dev dependencies for workspace
 argh = "0.1"
@@ -50,5 +70,9 @@ num-traits = "0.2"
 rand = "0.9"
 rerun = "0.23"
 serde = { version = "1", features = ["derive"] }
+<<<<<<< HEAD
+=======
+serde_json = "1"
+>>>>>>> main
 tempfile = "3.10"
 thiserror = "2"

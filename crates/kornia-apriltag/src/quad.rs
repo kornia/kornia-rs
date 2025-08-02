@@ -1,11 +1,15 @@
 use crate::{
-    family::TagFamily,
     segmentation::GradientInfo,
-    utils::{Pixel, Point2d},
+    utils::{homography_compute, Pixel, Point2d},
+    DecodeTagsConfig,
 };
 use kornia_image::{allocator::ImageAllocator, Image};
 use kornia_imgproc::filter::kernels::gaussian_kernel_1d;
-use std::{collections::HashMap, f32, ops::ControlFlow};
+use std::{
+    collections::HashMap,
+    f32::{self, consts::PI},
+    ops::ControlFlow,
+};
 
 const SLOPE_OFFSET_BASE: i32 = 2 << 15; // Base value for slope offset calculations.
 const SLOPE_OFFSET_DOUBLE: i32 = 2 * SLOPE_OFFSET_BASE; // Double the base value for extended range.
@@ -16,29 +20,32 @@ const QUADRANTS: [[i32; 2]; 2] = [
     [SLOPE_OFFSET_DOUBLE, SLOPE_OFFSET_BASE],
 ];
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 /// Options for fitting quadrilaterals (quads) to clusters of gradient information.
-pub struct FitQuadOpts {
+pub struct FitQuadConfig {
     /// Cosine of the critical angle in radians.
     pub cos_critical_rad: f32,
     /// Maximum mean squared error allowed for line fitting.
     pub max_line_fit_mse: f32,
     /// Maximum number of maxima to consider.
     pub max_nmaxima: usize,
+    /// Minimum number of pixels required in a cluster to be considered.
+    pub min_cluster_pixels: usize,
 }
 
-impl Default for FitQuadOpts {
+impl Default for FitQuadConfig {
     fn default() -> Self {
         Self {
-            cos_critical_rad: 0.984808,
+            cos_critical_rad: (10.0 * PI / 180.0).cos(),
             max_line_fit_mse: 10.0,
             max_nmaxima: 10,
+            min_cluster_pixels: 5,
         }
     }
 }
 
 /// Represents a detected quadrilateral in the image, corresponding to a tag candidate.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Quad {
     /// The four corners of the quadrilateral, in image coordinates.
     ///
@@ -46,6 +53,53 @@ pub struct Quad {
     pub corners: [Point2d<f32>; 4],
     /// Indicates whether the border is reversed (black border inside white border).
     pub reversed_border: bool,
+    /// The 3x3 homography matrix (row-major order) mapping tag coordinates to image coordinates.
+    // TODO: Use glam 3x3 mat representation
+    pub homography: [f32; 9],
+}
+
+impl Quad {
+    /// Projects a point (x, y) from tag coordinates to image coordinates using the quad's homography.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - The x coordinate in tag space.
+    /// * `y` - The y coordinate in tag space.
+    ///
+    /// # Returns
+    ///
+    /// A `Point2d<f32>` representing the projected point in image coordinates.
+    pub fn homography_project(&self, x: f32, y: f32) -> Point2d<f32> {
+        let xx = self.homography[0] * x + self.homography[1] * y + self.homography[2];
+        let yy = self.homography[3] * x + self.homography[4] * y + self.homography[5];
+        let zz = self.homography[6] * x + self.homography[7] * y + self.homography[8];
+
+        Point2d {
+            x: xx / zz,
+            y: yy / zz,
+        }
+    }
+
+    /// Updates the homography matrix for the quad based on its current corner positions.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the homography was successfully computed and updated, `false` otherwise.
+    pub fn update_homographies(&mut self) -> bool {
+        let corr_arr = [
+            [-1.0, -1.0, self.corners[0].x, self.corners[0].y],
+            [1.0, -1.0, self.corners[1].x, self.corners[1].y],
+            [1.0, 1.0, self.corners[2].x, self.corners[2].y],
+            [-1.0, 1.0, self.corners[3].x, self.corners[3].y],
+        ];
+
+        if let Some(h) = homography_compute(corr_arr) {
+            self.homography = h;
+            return true;
+        }
+
+        false
+    }
 }
 
 /// Fits quadrilaterals (quads) to clusters of gradient information in the image.
@@ -53,32 +107,25 @@ pub struct Quad {
 /// # Arguments
 ///
 /// * `src` - The source image.
-/// * `tag_family` - The tag family to use for quad fitting.
-/// * `clusters` - A mutable reference to a map of clusters, each containing a vector of `GradientInfo`.
-/// * `min_cluster_pixels` - Minimum number of pixels required in a cluster to be considered.
-/// * `opts` - Options for quad fitting process
+/// * `clusters` - A mutable reference to a HashMap containing clusters of `GradientInfo`.
+/// * `config` - Configuration for decoding tags.
 ///
 /// # Returns
 ///
 /// A vector of detected `Quad` structures.
-// TODO: Support multiple tag familes
+// TODO: Support multiple tag families
 pub fn fit_quads<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
-    tag_family: &TagFamily,
     clusters: &mut HashMap<(usize, usize), Vec<GradientInfo>>,
-    min_cluster_pixels: usize,
-    opts: FitQuadOpts,
+    config: &DecodeTagsConfig,
 ) -> Vec<Quad> {
-    // These will be come handy later, once we support more tag familes
-    let normal_border = !tag_family.reversed_border;
-    let reversed_border = tag_family.reversed_border;
-
+    // TODO: Avoid this allocation every time
     let mut quads = Vec::new();
 
     let max_cluster_len = 4 * (src.width() + src.height());
 
     clusters.iter_mut().for_each(|(_, cluster)| {
-        if cluster.len() < min_cluster_pixels {
+        if cluster.len() < config.fit_quad_config.min_cluster_pixels {
             return;
         }
 
@@ -90,10 +137,10 @@ pub fn fit_quads<A: ImageAllocator>(
         if let Some(quad) = fit_single_quad(
             src,
             cluster,
-            tag_family.width_at_border,
-            normal_border,
-            reversed_border,
-            opts,
+            config.min_tag_width,
+            config.normal_border,
+            config.reversed_border,
+            &config.fit_quad_config,
         ) {
             quads.push(quad);
         }
@@ -111,18 +158,18 @@ pub fn fit_quads<A: ImageAllocator>(
 /// * `min_tag_width` - Minimum width of the tag to be considered.
 /// * `normal_border` - Indicates if the normal border is expected.
 /// * `reversed_border` - Indicates if the reversed border is expected.
-/// * `opts` - Options for quad fitting process
+/// * `config` - Configuration for quad fitting process
 ///
 /// # Returns
 ///
 /// An `Option<Quad>` containing the detected quadrilateral if successful, or `None` otherwise.
-pub fn fit_single_quad<A: ImageAllocator>(
+fn fit_single_quad<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     cluster: &mut [GradientInfo],
     min_tag_width: usize,
     normal_border: bool,
     reversed_border: bool,
-    opts: FitQuadOpts,
+    config: &FitQuadConfig,
 ) -> Option<Quad> {
     if cluster.len() < 24 {
         return None;
@@ -207,7 +254,7 @@ pub fn fit_single_quad<A: ImageAllocator>(
 
     let mut indices = [0usize; 4];
 
-    if !quad_segment_maxima(cluster, &lfps, &mut indices, opts) {
+    if !quad_segment_maxima(cluster, &lfps, &mut indices, config) {
         return None;
     }
 
@@ -220,7 +267,7 @@ pub fn fit_single_quad<A: ImageAllocator>(
         let mut mse = 0.0f32;
         fit_line(&lfps, i0, i1, Some(&mut lines[i]), None, Some(&mut mse));
 
-        if mse > opts.max_line_fit_mse {
+        if mse > config.max_line_fit_mse {
             return ControlFlow::Break(());
         }
 
@@ -306,7 +353,7 @@ pub fn fit_single_quad<A: ImageAllocator>(
         let cos_dtheta =
             (dx1 * dx2 + dy1 * dy2) / ((dx1 * dx1 + dy1 * dy1) * (dx2 * dx2 + dy2 * dy2)).sqrt();
 
-        if !(-opts.cos_critical_rad..=opts.cos_critical_rad).contains(&cos_dtheta)
+        if !(-config.cos_critical_rad..=config.cos_critical_rad).contains(&cos_dtheta)
             || dx1 * dy2 < dy1 * dx2
         {
             return ControlFlow::Break(());
@@ -322,19 +369,19 @@ pub fn fit_single_quad<A: ImageAllocator>(
 
 /// Stores prefix sums for weighted line fitting over a set of points.
 #[derive(Default, Debug, Clone)]
-pub struct LineFit {
+struct LineFit {
     /// Weighted sum of x coordinates ($\sum_i w_i x_i$)
-    pub mx: f32,
+    mx: f32,
     /// Weighted sum of y coordinates ($\sum_i w_i y_i$)
-    pub my: f32,
+    my: f32,
     /// Weighted sum of squared x coordinates ($\sum_i w_i x_i^2$)
-    pub mxx: f32,
+    mxx: f32,
     /// Weighted sum of x·y products ($\sum_i w_i x_i y_i$)
-    pub mxy: f32,
+    mxy: f32,
     /// Weighted sum of squared y coordinates ($\sum_i w_i y_i^2$)
-    pub myy: f32,
+    myy: f32,
     /// Total weight ($\sum_i w_i$)
-    pub w: f32,
+    w: f32,
 }
 
 /// Computes prefix sums for weighted line fitting over a set of gradient information points.
@@ -347,7 +394,7 @@ pub struct LineFit {
 /// # Returns
 ///
 /// A vector of `LineFit` structures containing prefix sums for each point.
-pub fn compute_line_fit_prefix_sums<A: ImageAllocator>(
+fn compute_line_fit_prefix_sums<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     gradient_infos: &[GradientInfo],
 ) -> Vec<LineFit> {
@@ -402,16 +449,16 @@ pub fn compute_line_fit_prefix_sums<A: ImageAllocator>(
 /// * `gradient_infos` - Slice of `GradientInfo` representing the cluster.
 /// * `lfps` - Slice of `LineFit` prefix sums for the cluster.
 /// * `indices` - Mutable reference to an array where the four corner indices will be written.
-/// * `opts` - Options for quad fitting process
+/// * `config` - Configuration for quad fitting process
 ///
 /// # Returns
 ///
 /// `true` if four valid maxima are found and written to `indices`, `false` otherwise.
-pub fn quad_segment_maxima(
+fn quad_segment_maxima(
     gradient_infos: &[GradientInfo],
     lfps: &[LineFit],
     indices: &mut [usize; 4],
-    opts: FitQuadOpts,
+    config: &FitQuadConfig,
 ) -> bool {
     // TODO: check if the length of gradient_infos and lfps is same
     let len = gradient_infos.len();
@@ -473,12 +520,12 @@ pub fn quad_segment_maxima(
         return false;
     }
 
-    if nmaxima > opts.max_nmaxima {
+    if nmaxima > config.max_nmaxima {
         let mut maxima_errs_copy = maxima_errs.clone();
 
         maxima_errs_copy.sort_by(|a, b| b.total_cmp(a));
 
-        let maxima_thresh = maxima_errs_copy[opts.max_nmaxima];
+        let maxima_thresh = maxima_errs_copy[config.max_nmaxima];
         let mut out = 0usize;
         for i in 0..nmaxima {
             if maxima_errs[i] <= maxima_thresh {
@@ -526,7 +573,7 @@ pub fn quad_segment_maxima(
                 Some(&mut mse01),
             );
 
-            if mse01 > opts.max_line_fit_mse {
+            if mse01 > config.max_line_fit_mse {
                 return;
             }
 
@@ -542,12 +589,12 @@ pub fn quad_segment_maxima(
                     Some(&mut mse12),
                 );
 
-                if mse12 > opts.max_line_fit_mse {
+                if mse12 > config.max_line_fit_mse {
                     return;
                 }
 
                 let dot = params01[2] * params12[2] + params01[3] * params12[3];
-                if dot.abs() > opts.cos_critical_rad {
+                if dot.abs() > config.cos_critical_rad {
                     return;
                 }
 
@@ -556,13 +603,13 @@ pub fn quad_segment_maxima(
 
                     fit_line(lfps, i2, i3, None, Some(&mut err23), Some(&mut mse23));
 
-                    if mse23 > opts.max_line_fit_mse {
+                    if mse23 > config.max_line_fit_mse {
                         return;
                     }
 
                     fit_line(lfps, i3, i0, None, Some(&mut err30), Some(&mut mse30));
 
-                    if mse30 > opts.max_line_fit_mse {
+                    if mse30 > config.max_line_fit_mse {
                         return;
                     }
 
@@ -588,7 +635,7 @@ pub fn quad_segment_maxima(
         indices[i] = *b;
     });
 
-    if (best_error / gradient_infos.len() as f32) < opts.max_line_fit_mse {
+    if (best_error / gradient_infos.len() as f32) < config.max_line_fit_mse {
         return true;
     }
 
@@ -610,7 +657,7 @@ pub fn quad_segment_maxima(
 ///   The array is [ex, ey, nx, ny], where (ex, ey) is the centroid and (nx, ny) is the direction.
 /// * `err` - Optional mutable reference to a float where the error will be written.
 /// * `mse` - Optional mutable reference to a float where the mean squared error will be written.
-pub fn fit_line(
+fn fit_line(
     lfps: &[LineFit],
     i0: usize,
     i1: usize,
@@ -732,6 +779,7 @@ mod tests {
     use kornia_io::png::read_image_png_mono8;
 
     use crate::{
+        family::TagFamilyKind,
         segmentation::{
             find_connected_components, find_gradient_clusters, GradientDirection, GradientInfo,
         },
@@ -741,8 +789,6 @@ mod tests {
     };
 
     use super::*;
-
-    const MIN_CLUSTER_PIXELS: usize = 5;
 
     #[test]
     fn test_fit_quads() -> Result<(), Box<dyn std::error::Error>> {
@@ -759,10 +805,8 @@ mod tests {
 
         let quads = fit_quads(
             &bin,
-            &TagFamily::TAG36_H11,
             &mut clusters,
-            MIN_CLUSTER_PIXELS,
-            FitQuadOpts::default(),
+            &DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]),
         );
 
         let expected_quad = [[[27, 3], [27, 27], [3, 27], [3, 3]]];
@@ -808,7 +852,7 @@ mod tests {
             &gradient_infos,
             &lfps,
             &mut indices,
-            FitQuadOpts::default()
+            &FitQuadConfig::default()
         ));
 
         // Test 2: Empty input
@@ -818,7 +862,7 @@ mod tests {
             &empty_gradient_infos,
             &empty_lfps,
             &mut indices,
-            FitQuadOpts::default()
+            &FitQuadConfig::default()
         ));
 
         // Test 3: Constant slope (no maxima)
@@ -836,7 +880,7 @@ mod tests {
             &constant_slope_infos,
             &constant_lfps,
             &mut indices,
-            FitQuadOpts::default()
+            &FitQuadConfig::default()
         ));
     }
 
@@ -862,8 +906,12 @@ mod tests {
             let lfps = compute_line_fit_prefix_sums(&bin, largest_cluster);
             let mut indices = [0; 4];
 
-            let result =
-                quad_segment_maxima(largest_cluster, &lfps, &mut indices, FitQuadOpts::default());
+            let result = quad_segment_maxima(
+                largest_cluster,
+                &lfps,
+                &mut indices,
+                &FitQuadConfig::default(),
+            );
 
             assert!(!result);
         }
