@@ -14,9 +14,18 @@ pub enum PnPError {
         actual: usize,
     },
 
-    /// Invalid input data - mismatched array lengths
-    #[error("Mismatched array lengths: world points ({0}) != image points ({1})")]
-    MismatchedArrayLengths(usize, usize),
+    /// Invalid input data - mismatched array lengths with descriptive labels.
+    #[error("Mismatched array lengths: {left_name} ({left_len}) != {right_name} ({right_len})")]
+    MismatchedArrayLengths {
+        /// Label for the left-hand slice
+        left_name: &'static str,
+        /// Length of the left-hand slice
+        left_len: usize,
+        /// Label for the right-hand slice
+        right_name: &'static str,
+        /// Length of the right-hand slice
+        right_len: usize,
+    },
 
     /// Singular value decomposition failed
     #[error("SVD computation failed: {0}")]

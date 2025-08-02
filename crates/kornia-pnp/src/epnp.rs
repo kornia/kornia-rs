@@ -53,7 +53,12 @@ pub fn solve_epnp(
 ) -> Result<PnPResult, PnPError> {
     let n = points_world.len();
     if n != points_image.len() {
-        return Err(PnPError::MismatchedArrayLengths(n, points_image.len()));
+        return Err(PnPError::MismatchedArrayLengths {
+            left_name: "world points",
+            left_len: n,
+            right_name: "image points",
+            right_len: points_image.len(),
+        });
     }
     if n < 4 {
         return Err(PnPError::InsufficientCorrespondences {
@@ -67,7 +72,7 @@ pub fn solve_epnp(
     let alphas = compute_barycentric(points_world, &cw, params.tol.eps);
 
     // Build the 2N×12 design matrix M
-    let m_rows = build_m(&alphas, points_image, k);
+    let m_rows = build_m(&alphas, points_image, k)?;
 
     let m_flat: Vec<f32> = m_rows.iter().flat_map(|row| row.iter()).cloned().collect();
     let m_mat = DMatrix::<f32>::from_row_slice(2 * n, 12, &m_flat);
@@ -298,9 +303,21 @@ fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) 
         let s_mat = *svd.s();
         let s_diag = [s_mat.x_axis.x, s_mat.y_axis.y, s_mat.z_axis.z];
         let inv_diag = Vec3::new(
-            if s_diag[0].abs() > eps { 1.0 / s_diag[0] } else { 0.0 },
-            if s_diag[1].abs() > eps { 1.0 / s_diag[1] } else { 0.0 },
-            if s_diag[2].abs() > eps { 1.0 / s_diag[2] } else { 0.0 },
+            if s_diag[0].abs() > eps {
+                1.0 / s_diag[0]
+            } else {
+                0.0
+            },
+            if s_diag[1].abs() > eps {
+                1.0 / s_diag[1]
+            } else {
+                0.0
+            },
+            if s_diag[2].abs() > eps {
+                1.0 / s_diag[2]
+            } else {
+                0.0
+            },
         );
         let sigma_inv = Mat3::from_diagonal(inv_diag);
         v_mat * sigma_inv * u.transpose()
@@ -325,13 +342,20 @@ fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) 
 /// * `k`      – Camera intrinsics 3×3 matrix.
 ///
 /// The output is a vector of length `2*N` where each element is the 12-vector
-/// corresponding to a row of **M**.
-fn build_m(alphas: &[[f32; 4]], points_image: &[[f32; 2]], k: &[[f32; 3]; 3]) -> Vec<[f32; 12]> {
-    assert_eq!(
-        alphas.len(),
-        points_image.len(),
-        "alphas and uv must have the same length"
-    );
+/// corresponding to a row of **M**. Returns an error if the input slices differ in length.
+fn build_m(
+    alphas: &[[f32; 4]],
+    points_image: &[[f32; 2]],
+    k: &[[f32; 3]; 3],
+) -> Result<Vec<[f32; 12]>, PnPError> {
+    if alphas.len() != points_image.len() {
+        return Err(PnPError::MismatchedArrayLengths {
+            left_name: "barycentric alphas",
+            left_len: alphas.len(),
+            right_name: "image points",
+            right_len: points_image.len(),
+        });
+    }
     let n = alphas.len();
 
     let fu = k[0][0];
@@ -358,7 +382,7 @@ fn build_m(alphas: &[[f32; 4]], points_image: &[[f32; 2]], k: &[[f32; 3]; 3]) ->
         }
     }
 
-    m
+    Ok(m)
 }
 
 /// Build the 6×10 matrix **L** used in EPnP from the 4-dimensional null-space matrix `V` (shape 12×4).
@@ -535,7 +559,7 @@ mod solve_epnp_tests {
             assert_relative_eq!(alpha.iter().sum::<f32>(), 1.0, epsilon = 1e-9);
         }
 
-        let m = build_m(&alphas, &points_image, &k);
+        let m = build_m(&alphas, &points_image, &k).unwrap();
         assert_eq!(m.len(), 2 * points_world.len());
         for row in &m {
             assert_eq!(row.len(), 12);
