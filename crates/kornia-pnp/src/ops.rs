@@ -2,8 +2,8 @@
 use nalgebra::{DMatrix, DVector, Vector4};
 
 /// Compute the centroid of a set of points.
-pub(crate) fn compute_centroid(pts: &[[f64; 3]]) -> [f64; 3] {
-    let n = pts.len() as f64;
+pub(crate) fn compute_centroid(pts: &[[f32; 3]]) -> [f32; 3] {
+    let n = pts.len() as f32;
     let mut c = [0.0; 3];
     for p in pts {
         c[0] += p[0];
@@ -17,14 +17,14 @@ pub(crate) fn compute_centroid(pts: &[[f64; 3]]) -> [f64; 3] {
 }
 
 //TODO: Checkout faer for this
-pub(crate) fn gauss_newton(beta_init: [f64; 4], null4: &DMatrix<f64>, rho: &[f64; 6]) -> [f64; 4] {
+pub(crate) fn gauss_newton(beta_init: [f32; 4], null4: &DMatrix<f32>, rho: &[f32; 6]) -> [f32; 4] {
     const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 
     let mut bet = Vector4::from_column_slice(&beta_init);
 
     for _ in 0..6 {
-        let mut f_vec = DVector::<f64>::zeros(6);
-        let mut j_mat = DMatrix::<f64>::zeros(6, 4);
+        let mut f_vec = DVector::<f32>::zeros(6);
+        let mut j_mat = DMatrix::<f32>::zeros(6, 4);
 
         for (r, (i, j)) in PAIRS.iter().enumerate() {
             // Vi = (null4 block rows 3*i..3*i+3) * bet
@@ -46,7 +46,7 @@ pub(crate) fn gauss_newton(beta_init: [f64; 4], null4: &DMatrix<f64>, rho: &[f64
         }
 
         let jt = j_mat.transpose();
-        let a = &jt * &j_mat + DMatrix::<f64>::identity(4, 4) * 1e-9;
+        let a = &jt * &j_mat + DMatrix::<f32>::identity(4, 4) * 1e-9;
         let b = &jt * f_vec;
 
         if let Some(delta) = a.lu().solve(&b) {
@@ -69,9 +69,9 @@ mod tests {
 
     #[test]
     fn test_compute_centroid() {
-        let pts = vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+        let pts = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
         let c = compute_centroid(&pts);
-        assert_eq!(c, [2.5, 3.5, 4.5]);
+        assert_eq!(c, [4.0, 5.0, 6.0]);
     }
 }
 
@@ -83,7 +83,7 @@ mod gauss_newton_tests {
     #[test]
     fn test_gauss_newton() {
         let beta_init = [1.0, 2.0, 3.0, 4.0];
-        let null4 = DMatrix::<f64>::zeros(12, 4);
+        let null4 = DMatrix::<f32>::zeros(12, 4);
         let rho = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
 
         let result = gauss_newton(beta_init, &null4, &rho);

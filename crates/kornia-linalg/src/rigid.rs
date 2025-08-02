@@ -1,25 +1,26 @@
 //! Rigid alignment utilities (Kabsch / Umeyama)
 
 // TODO: Make this work with kornia-linalg SVD(encountered some issues with precision)
+use glam::Vec3;
 use nalgebra::{Matrix3, SVD};
 
 /// Umeyama/Kabsch algorithm without scale.
 /// Returns (R, t, s) where s == 1.0.
-pub fn umeyama(src: &[[f64; 3]], dst: &[[f64; 3]]) -> ([[f64; 3]; 3], [f64; 3], f64) {
+pub fn umeyama(src: &[Vec3], dst: &[Vec3]) -> ([[f32; 3]; 3], [f32; 3], f32) {
     assert_eq!(src.len(), dst.len());
-    let n = src.len() as f64;
+    let n = src.len() as f32;
 
     // Centroids
     let mut mu_s = [0.0; 3];
     let mut mu_d = [0.0; 3];
     for i in 0..src.len() {
-        mu_s[0] += src[i][0];
-        mu_s[1] += src[i][1];
-        mu_s[2] += src[i][2];
+        mu_s[0] += src[i].x;
+        mu_s[1] += src[i].y;
+        mu_s[2] += src[i].z;
 
-        mu_d[0] += dst[i][0];
-        mu_d[1] += dst[i][1];
-        mu_d[2] += dst[i][2];
+        mu_d[0] += dst[i].x;
+        mu_d[1] += dst[i].y;
+        mu_d[2] += dst[i].z;
     }
     for x in &mut mu_s {
         *x /= n;
@@ -29,18 +30,10 @@ pub fn umeyama(src: &[[f64; 3]], dst: &[[f64; 3]]) -> ([[f64; 3]; 3], [f64; 3], 
     }
 
     // Covariance matrix H = (dst_c)^T * src_c / n
-    let mut h = [[0.0f64; 3]; 3];
+    let mut h = [[0.0f32; 3]; 3];
     for i in 0..src.len() {
-        let sc = [
-            src[i][0] - mu_s[0],
-            src[i][1] - mu_s[1],
-            src[i][2] - mu_s[2],
-        ];
-        let dc = [
-            dst[i][0] - mu_d[0],
-            dst[i][1] - mu_d[1],
-            dst[i][2] - mu_d[2],
-        ];
+        let sc = [src[i].x - mu_s[0], src[i].y - mu_s[1], src[i].z - mu_s[2]];
+        let dc = [dst[i].x - mu_d[0], dst[i].y - mu_d[1], dst[i].z - mu_d[2]];
         for (r, &dc_r) in dc.iter().enumerate() {
             for (c, &sc_c) in sc.iter().enumerate() {
                 h[r][c] += dc_r * sc_c;
@@ -53,7 +46,7 @@ pub fn umeyama(src: &[[f64; 3]], dst: &[[f64; 3]]) -> ([[f64; 3]; 3], [f64; 3], 
         }
     }
 
-    let h_na = Matrix3::from_row_slice(&[
+    let h_na = Matrix3::<f32>::from_row_slice(&[
         h[0][0], h[0][1], h[0][2], h[1][0], h[1][1], h[1][2], h[2][0], h[2][1], h[2][2],
     ]);
 
@@ -85,30 +78,30 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
 
-    fn apply_rt(r: &[[f64; 3]; 3], t: &[f64; 3], p: &[f64; 3]) -> [f64; 3] {
-        [
-            r[0][0] * p[0] + r[0][1] * p[1] + r[0][2] * p[2] + t[0],
-            r[1][0] * p[0] + r[1][1] * p[1] + r[1][2] * p[2] + t[1],
-            r[2][0] * p[0] + r[2][1] * p[1] + r[2][2] * p[2] + t[2],
-        ]
+    fn apply_rt(r: &[[f32; 3]; 3], t: &[f32; 3], p: &[f32; 3]) -> Vec3 {
+        let x = r[0][0] * p[0] + r[0][1] * p[1] + r[0][2] * p[2] + t[0];
+        let y = r[1][0] * p[0] + r[1][1] * p[1] + r[1][2] * p[2] + t[1];
+        let z = r[2][0] * p[0] + r[2][1] * p[1] + r[2][2] * p[2] + t[2];
+        Vec3::new(x, y, z)
     }
 
     #[test]
     fn test_umeyama_synthetic_z90() {
         // Source points (square in XY plane, z=0)
-        let src: [[f64; 3]; 4] = [
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [1.0, 1.0, 0.0],
-            [0.0, 1.0, 0.0],
+        let src: [Vec3; 4] = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
         ];
         // True transform: 90° about Z, plus translation
-        let r: [[f64; 3]; 3] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        let r: [[f32; 3]; 3] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
         let t = [0.5, -0.3, 2.0];
         // Create dst
-        let mut dst = [[0.0; 3]; 4];
+        let mut dst = [Vec3::new(0.0, 0.0, 0.0); 4];
         for i in 0..4 {
-            dst[i] = apply_rt(&r, &t, &src[i]);
+            let src_array = [src[i].x, src[i].y, src[i].z];
+            dst[i] = apply_rt(&r, &t, &src_array);
         }
 
         let (r_est, t_est, _s) = umeyama(&src, &dst);

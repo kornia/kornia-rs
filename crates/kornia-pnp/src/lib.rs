@@ -24,9 +24,9 @@ pub enum Method {
 
 /// Dispatch function that routes to the chosen PnP solver.
 pub fn solve(
-    world: &[[f64; 3]],
-    image: &[[f64; 2]],
-    k: &[[f64; 3]; 3],
+    world: &[[f32; 3]],
+    image: &[[f32; 2]],
+    k: &[[f32; 3]; 3],
     method: Method,
 ) -> Result<PnPResult, PnPError> {
     match method {

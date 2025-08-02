@@ -27,9 +27,9 @@ pub enum PnPError {
 #[derive(Debug, Clone)]
 pub struct NumericTol {
     /// Tolerance for singular-value decomposition.
-    pub svd: f64,
+    pub svd: f32,
     /// Epsilon threshold for determinant / singular-value checks when deciding whether to fall back to a pseudo-inverse.
-    pub eps: f64,
+    pub eps: f32,
 }
 
 impl Default for NumericTol {
@@ -48,29 +48,35 @@ impl Default for NumericTol {
 #[derive(Debug, Clone)]
 pub struct PnPResult {
     /// Estimated rotation matrix.
-    pub rotation: [[f64; 3]; 3],
+    pub rotation: [[f32; 3]; 3],
     /// Estimated translation vector.
-    pub translation: [f64; 3],
-    /// Rodrigues axis-angle representation (log-map) of `rotation`.
-    pub rvec: [f64; 3],
-    /// Optional root-mean-square reprojection error in pixels.
-    pub reproj_rmse: Option<f64>,
-    /// Optional number of iterations taken by an iterative solver.
+    pub translation: [f32; 3],
+    /// Rodrigues axis-angle representation of the rotation.
+    pub rvec: [f32; 3],
+    /// Root-mean-square reprojection error in pixels (if computed).
+    pub reproj_rmse: Option<f32>,
+    /// Number of iterations taken (if applicable).
     pub num_iterations: Option<usize>,
-    /// Indicates whether an iterative solver reported convergence.
+    /// Whether the solver converged (if applicable).
     pub converged: Option<bool>,
 }
 
-/// Trait implemented by every PnP solver available in this crate.
+/// Trait for PnP solvers.
 pub trait PnPSolver {
-    /// Parameter object specific to the solver.
+    /// Solver-specific parameters.
     type Param;
 
-    /// Runs the solver.
+    /// Solve for camera pose given 2D-3D correspondences.
+    ///
+    /// # Arguments
+    /// * `world` – 3-D coordinates in the world frame.
+    /// * `image` – Corresponding pixel coordinates.
+    /// * `k` – Camera intrinsics matrix.
+    /// * `params` – Solver-specific parameters.
     fn solve(
-        world: &[[f64; 3]],
-        image: &[[f64; 2]],
-        k: &[[f64; 3]; 3],
+        world: &[[f32; 3]],
+        image: &[[f32; 2]],
+        k: &[[f32; 3]; 3],
         params: &Self::Param,
     ) -> Result<PnPResult, PnPError>;
 }
