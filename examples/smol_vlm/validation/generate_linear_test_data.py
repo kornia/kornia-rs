@@ -33,7 +33,7 @@ def generate_linear_test_data(num_tests=10, input_dims=[512, 1024, 2048], output
     return test_data
 
 
-def main(num_tests=50, output_dir="./tests/data", seed=42, dtype="float32"):
+def main(num_tests=50, output_dir="./examples/smol_vlm/validation_data", seed=42, dtype="float32"):
     dtype_map = {"float32": torch.float32, "float64": torch.float64, "bfloat16": torch.bfloat16}
     torch_dtype = dtype_map[dtype]
     

@@ -276,7 +276,10 @@ impl SmolVlm {
         }
 
         // TODO
-        save(&tensors, ".vscode/rust_output.safetensors")?;
+        save(
+            &tensors,
+            "examples/smol_vlm/validation_data/rust_output.safetensors",
+        )?;
         println!("Token history: {:?}", self.token_history);
 
         Ok(response)
