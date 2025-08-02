@@ -95,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     // Run EPnP
-    let result = kpnp::solve(&world_pts, &image_pts, &k, kpnp::Method::EPnPDefault)?;
+    let result = kpnp::solve_pnp(&world_pts, &image_pts, &k, kpnp::PnPMethod::EPnPDefault)?;
 
     // Log observed 2D points
     let img_obs = image_pts
