@@ -101,7 +101,6 @@ impl SmolVlm {
         image: Option<Image<u8, 3, A>>,
         prompt: &str,
         sample_len: usize, // per prompt
-        stdout_debug: bool,
     ) -> Result<String, SmolVlmError> {
         #[cfg(feature = "debug")]
         std::io::stdout().flush()?;

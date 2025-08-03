@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     // generate a caption of the image
-    let _caption = smolvlm.inference(image, &args.text_prompt, args.sample_length, true)?;
+    let _caption = smolvlm.inference(image, &args.text_prompt, args.sample_length)?;
 
     Ok(())
 }
