@@ -5,16 +5,10 @@ use nalgebra::{DMatrix, DVector, Vector4};
 /// Compute the centroid of a set of points.
 pub(crate) fn compute_centroid(pts: &[[f32; 3]]) -> [f32; 3] {
     let n = pts.len() as f32;
-    let mut c = [0.0; 3];
-    for p in pts {
-        c[0] += p[0];
-        c[1] += p[1];
-        c[2] += p[2];
-    }
-    c[0] /= n;
-    c[1] /= n;
-    c[2] /= n;
-    c
+    let sum = pts.iter().fold(Vec3::ZERO, |acc, &p| acc + Vec3::from(p));
+
+    let centroid = sum / n;
+    [centroid.x, centroid.y, centroid.z]
 }
 
 //TODO: Checkout faer for this
