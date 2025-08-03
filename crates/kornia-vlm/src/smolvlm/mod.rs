@@ -91,7 +91,6 @@ impl SmolVlm {
     /// * `image` - The rgb8    image to generate a caption for with shape [H, W, 3]
     /// * `prompt` - The prompt to generate a caption for
     /// * `sample_len` - The length of the generated caption
-    /// * `stdout_debug` - Whether to print the debug information to the stdout
     ///
     /// # Returns
     ///
@@ -102,11 +101,6 @@ impl SmolVlm {
         prompt: &str,
         sample_len: usize, // per prompt
     ) -> Result<String, SmolVlmError> {
-        #[cfg(feature = "debug")]
-        std::io::stdout().flush()?;
-
-        let mut response = String::new(); // collection of tokens
-
         let mut full_prompt = if self.first_prompt {
             self.first_prompt = false;
             String::from("<|im_start|>")
@@ -114,7 +108,7 @@ impl SmolVlm {
             String::new()
         };
 
-        if let Some(raw_img) = image {
+        if let Some(raw_img) = image.clone() {
             let (img_patches, mask_patches, size) =
                 preprocess_image(raw_img, 1536, 384, &self.device);
 
@@ -129,6 +123,52 @@ impl SmolVlm {
 
         full_prompt += prompt;
         full_prompt += "<end_of_utterance>\nAssistant:";
+
+        let response = self.inference_raw(image, &full_prompt, sample_len)?;
+
+        Ok(response)
+    }
+
+    /// Run the inference of the SmolVLM model with previous context added.
+    ///
+    /// # Arguments
+    ///
+    /// * `image` - The rgb8    image to generate a caption for with shape [H, W, 3]
+    /// * `prompt` - The prompt to generate a caption for
+    /// * `sample_len` - The length of the generated caption
+    ///
+    /// # Returns
+    ///
+    /// * `caption` - The generated caption
+    pub fn inference_raw<A: ImageAllocator>(
+        &mut self,
+        image: Option<Image<u8, 3, A>>,
+        full_prompt: &str,
+        sample_len: usize, // per prompt
+    ) -> Result<String, SmolVlmError> {
+        #[cfg(feature = "debug")]
+        std::io::stdout().flush()?;
+
+        let mut response = String::new();
+        let image_tags_count = full_prompt.matches("<image>").count();
+
+        // TODO: support multiple images
+        let full_prompt = if image_tags_count >= 1
+            && full_prompt.matches("<fake_token_around_image>").count() == 0
+        {
+            if let Some(raw_img) = image.clone() {
+                let (img_patches, mask_patches, size) =
+                    preprocess_image(raw_img, 1536, 384, &self.device);
+                self.image_history.push((img_patches, mask_patches));
+                let img_token = get_prompt_split_image(81, size);
+
+                full_prompt.replace("<image>", &img_token)
+            } else {
+                full_prompt.to_string()
+            }
+        } else {
+            full_prompt.to_string()
+        };
 
         let full_token = self.tokenizer.encode(full_prompt, false)?;
 
