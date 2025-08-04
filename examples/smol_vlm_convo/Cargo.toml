@@ -15,6 +15,7 @@ version.workspace = true
 [dependencies]
 argh = { workspace = true }
 reqwest = { version = "0.12.15", features = ["blocking"] }
+tempfile = "3.8"
 kornia-io = { workspace = true }
 kornia-vlm = { workspace = true, features = ["debug"] }
 kornia-image = { workspace = true }

@@ -16,14 +16,6 @@ fn silu(x: &Tensor) -> Result<Tensor> {
     x * sigmoid
 }
 
-fn silu_f32(x: &Tensor) -> Result<Tensor> {
-    let original_dtype = x.dtype();
-    let x_f32 = x.to_dtype(DType::F32)?;
-    let sigmoid = (x_f32.neg()?.exp()? + 1.0)?.recip()?;
-    let result = (x_f32 * sigmoid)?;
-    result.to_dtype(original_dtype)
-}
-
 fn calculate_default_inv_freq() -> Vec<f32> {
     (0..HEAD_DIM)
         .step_by(2)

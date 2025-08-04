@@ -49,8 +49,7 @@ pub struct SmolModel {
     vision: SmolVision,
 
     connector: Connector,
-    image_hidden_states: Option<Tensor>, // TODO: to be used for caching previous image hidden states
-    merged_embeds: Vec<Tensor>,          // cache results
+    merged_embeds: Vec<Tensor>, // cache results
 
     pub text: SmolText,
 
@@ -71,7 +70,6 @@ impl SmolModel {
                     None,
                 ),
             },
-            image_hidden_states: None,
             merged_embeds: Vec::new(),
 
             text: SmolText::load(c)?,
@@ -97,16 +95,6 @@ impl SmolModel {
                 .reserve(total_length - self.merged_embeds.capacity());
         }
 
-        // println!(
-        //     "Number of ones in image_token_mask: {} and image_hidden_states length: {}",
-        //     image_token_mask
-        //         .to_vec1::<u8>()?
-        //         .iter()
-        //         .filter(|&&x| x != 0)
-        //         .count(),
-        //     image_hidden_states.dims2()?.0
-        // );
-
         let mut c = 0;
         // TODO: is there a better way to do this? (scatter assignment? cuda kernel?)
         for (i, mask) in image_token_mask.to_vec1::<u8>()?.into_iter().enumerate() {
@@ -117,7 +105,6 @@ impl SmolModel {
                 inputs_embeds.i(i)?
             });
         }
-        // println!("c: {}", c);
 
         let merged_embeds = Tensor::stack(&self.merged_embeds, 0)?;
 
@@ -144,9 +131,6 @@ impl SmolModel {
             let image_hidden_states = self.connector.forward(&image_hidden_states)?;
             let image_hidden_states = image_hidden_states.flatten(0, 1)?;
             agg_image_hidden_states.push(image_hidden_states);
-            // TODO: under multiple images, we can concatenate image_hidden_states and have image_token_mask be one continuous mask
-
-            // self.inputs_merger(&image_token_mask, &inputs_embeds)?
 
             #[cfg(feature = "debug")]
             println!(
@@ -155,11 +139,6 @@ impl SmolModel {
             );
         }
 
-        // println!(
-        //     "Aggregated image hidden states count: {}",
-        //     agg_image_hidden_states.len(),
-        // );
-
         let inputs_embeds = if !agg_image_hidden_states.is_empty() {
             let image_hidden = Tensor::cat(&agg_image_hidden_states, 0)?;
             self.inputs_merger(&image_token_mask, &image_hidden, &inputs_embeds)?
@@ -167,28 +146,6 @@ impl SmolModel {
             // No images to process, return original embeddings
             inputs_embeds
         };
-
-        // if let Some((_, pixel_values, pixel_attention_masks)) = vision_data {
-        //     // println!(
-        //     //     "image_token_mask: {:?}, pixel_values: {:?}, pixel_attention_masks: {:?}",
-        //     //     image_token_mask.dims(),
-        //     //     pixel_values.dims(),
-        //     //     pixel_attention_masks.dims()
-        //     // );
-
-        //     // TODO: this assumes there will be at most one new images added
-        //     inputs_embeds = if self.image_hidden_states.is_some() {
-        //         self.inputs_merger(&image_token_mask, &inputs_embeds)?
-        //     } else {
-        //         let image_hidden_states =
-        //             self.vision.forward(pixel_values, pixel_attention_masks)?;
-        //         let image_hidden_states = self.connector.forward(&image_hidden_states)?;
-        //         self.image_hidden_states = Some(image_hidden_states);
-        //         // TODO: under multiple images, we can concatenate image_hidden_states and have image_token_mask be one continuous mask
-
-        //         self.inputs_merger(&image_token_mask, &inputs_embeds)?
-        //     };
-        // }
 
         self.text.forward(inputs_embeds, index_pos)
     }

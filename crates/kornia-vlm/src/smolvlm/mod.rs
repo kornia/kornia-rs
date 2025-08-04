@@ -97,7 +97,6 @@ impl SmolVlm {
     /// * `caption` - The generated caption
     pub fn inference<A: ImageAllocator>(
         &mut self,
-        // image: Option<Image<u8, 3, A>>,
         prompt: &str, // TODO: make it structured
         image: Option<Image<u8, 3, A>>,
         sample_len: usize, // per prompt
@@ -136,7 +135,7 @@ impl SmolVlm {
         Ok(response)
     }
 
-    /// Run the inference of the SmolVLM model with previous context added.
+    /// Run the inference of the SmolVLM model without the default prompt formatting.
     ///
     /// # Arguments
     ///
@@ -149,7 +148,6 @@ impl SmolVlm {
     /// * `caption` - The generated caption
     pub fn inference_raw<A: ImageAllocator>(
         &mut self,
-        // image: Option<Image<u8, 3, A>>,
         full_prompt: &str,
         images: Vec<Image<u8, 3, A>>,
         sample_len: usize, // per prompt
@@ -183,26 +181,6 @@ impl SmolVlm {
             offset += img_token.len() - image_tag_len;
         }
 
-        // let image_tags_count = full_prompt.matches("<image>").count();
-
-        // // TODO: support multiple images + remove <fake_token_around_image> check
-        // let full_prompt = if image_tags_count >= 1
-        //     && full_prompt.matches("<fake_token_around_image>").count() == 0
-        // {
-        //     if let Some(raw_img) = image.clone() {
-        //         let (img_patches, mask_patches, size) =
-        //             preprocess_image(raw_img, 1536, 384, &self.device);
-        //         self.image_history.push((img_patches, mask_patches));
-        //         let img_token = get_prompt_split_image(81, size);
-
-        //         full_prompt.replace("<image>", &img_token)
-        //     } else {
-        //         full_prompt.to_string()
-        //     }
-        // } else {
-        //     full_prompt.to_string()
-        // };
-
         // println!("[SmolVLM] Full prompt: {converted_prompt}");
 
         let full_token = self.tokenizer.encode(converted_prompt, false)?;
@@ -224,18 +202,6 @@ impl SmolVlm {
             self.token_history.extend(&delta_token);
 
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
-            // let vision_data = if !self.image_history.is_empty() {
-            //     let image_token_mask = input.broadcast_eq(&self.image_token_tensor)?;
-            //     Some((
-            //         image_token_mask,
-            //         &self.image_history[0].0,
-            //         &self.image_history[0].1,
-            //     ))
-            // } else {
-            //     None
-            // };
-
-            // println!("Processed image count: {}", processed_images.len());
 
             let image_token_mask = input.broadcast_eq(&self.image_token_tensor)?;
             let logits = self.model.forward(
