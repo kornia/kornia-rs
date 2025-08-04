@@ -41,6 +41,12 @@ pub enum SmolVlmError {
     #[error(transparent)]
     IoError(#[from] std::io::Error),
 
+    #[error("Mismatched image count: found {tags} <image> tags but {images} images provided")]
+    MismatchedImageCount { tags: usize, images: usize },
+
+    #[error("Invalid logits detected: {0}")]
+    InvalidLogits(String),
+
     // TODO: not used right now (currently, the end token is handled via if/else, which might be preferred)
     #[error("Cannot find the <end_of_utterance> token")]
     EosTokenNotFound,

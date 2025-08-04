@@ -27,7 +27,7 @@ fn generate(
 
     // generate a caption of the image
     let caption = smolvlm
-        .inference(image, &text_prompt, sample_length)
+        .inference(&text_prompt, image, sample_length)
         .map_err(map_error)?;
 
     Ok(caption)
@@ -43,11 +43,10 @@ fn generate_raw(
     let map_error = |e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{:?}", e));
 
     // read the image
-    let image = if !image_paths.is_empty() {
-        read_image_jpeg_rgb8(&image_paths[0]).ok()
-    } else {
-        None
-    };
+    let images = image_paths
+        .into_iter()
+        .map(|p| read_image_jpeg_rgb8(&p).unwrap())
+        .collect::<Vec<_>>();
 
     let mut smolvlm = SmolVlm::new(SmolVlmConfig {
         do_sample: false, // set to false for greedy decoding
@@ -58,7 +57,7 @@ fn generate_raw(
 
     // generate a caption of the image
     let caption = smolvlm
-        .inference_raw(image, &text_prompt, sample_length)
+        .inference_raw(&text_prompt, images, sample_length)
         .map_err(map_error)?;
 
     Ok(caption)

@@ -84,17 +84,28 @@ impl SmolModel {
     fn inputs_merger(
         &mut self,
         image_token_mask: &Tensor,
+        image_hidden_states: &Tensor,
         inputs_embeds: &Tensor,
     ) -> Result<Tensor> {
         let total_length = image_token_mask.dims1()?;
 
-        let image_hidden_states = self.image_hidden_states.as_ref().unwrap().flatten(0, 1)?;
+        // let image_hidden_states = self.image_hidden_states.as_ref().unwrap().flatten(0, 1)?;
 
         self.merged_embeds.clear();
         if self.merged_embeds.capacity() < total_length {
             self.merged_embeds
                 .reserve(total_length - self.merged_embeds.capacity());
         }
+
+        // println!(
+        //     "Number of ones in image_token_mask: {} and image_hidden_states length: {}",
+        //     image_token_mask
+        //         .to_vec1::<u8>()?
+        //         .iter()
+        //         .filter(|&&x| x != 0)
+        //         .count(),
+        //     image_hidden_states.dims2()?.0
+        // );
 
         let mut c = 0;
         // TODO: is there a better way to do this? (scatter assignment? cuda kernel?)
@@ -106,6 +117,7 @@ impl SmolModel {
                 inputs_embeds.i(i)?
             });
         }
+        // println!("c: {}", c);
 
         let merged_embeds = Tensor::stack(&self.merged_embeds, 0)?;
 
@@ -116,35 +128,67 @@ impl SmolModel {
         &mut self,
         xs: &Tensor,
         index_pos: usize,
-        vision_data: Option<(Tensor, &Tensor, &Tensor)>,
+        image_token_mask: &Tensor,
+        image_data: Vec<(&Tensor, &Tensor)>,
     ) -> Result<Tensor> {
-        let mut inputs_embeds = self.embed.forward(xs)?;
+        let inputs_embeds = self.embed.forward(xs)?;
 
         #[cfg(feature = "debug")]
         {
             self.dbg_embeds = Some(inputs_embeds.clone());
         }
 
-        if let Some((image_token_mask, pixel_values, pixel_attention_masks)) = vision_data {
-            // println!(
-            //     "image_token_mask: {:?}, pixel_values: {:?}, pixel_attention_masks: {:?}",
-            //     image_token_mask.dims(),
-            //     pixel_values.dims(),
-            //     pixel_attention_masks.dims()
-            // );
+        let mut agg_image_hidden_states = vec![];
+        for (pixel_values, pixel_attention_masks) in image_data {
+            let image_hidden_states = self.vision.forward(pixel_values, pixel_attention_masks)?;
+            let image_hidden_states = self.connector.forward(&image_hidden_states)?;
+            let image_hidden_states = image_hidden_states.flatten(0, 1)?;
+            agg_image_hidden_states.push(image_hidden_states);
+            // TODO: under multiple images, we can concatenate image_hidden_states and have image_token_mask be one continuous mask
 
-            // TODO: this assumes there will be at most one new images added
-            inputs_embeds = if self.image_hidden_states.is_some() {
-                self.inputs_merger(&image_token_mask, &inputs_embeds)?
-            } else {
-                let image_hidden_states =
-                    self.vision.forward(pixel_values, pixel_attention_masks)?;
-                let image_hidden_states = self.connector.forward(&image_hidden_states)?;
-                self.image_hidden_states = Some(image_hidden_states);
+            // self.inputs_merger(&image_token_mask, &inputs_embeds)?
 
-                self.inputs_merger(&image_token_mask, &inputs_embeds)?
-            };
+            #[cfg(feature = "debug")]
+            println!(
+                "[Sub-image] image_hidden_states length: {}",
+                agg_image_hidden_states.last().unwrap().dims2()?.0
+            );
         }
+
+        // println!(
+        //     "Aggregated image hidden states count: {}",
+        //     agg_image_hidden_states.len(),
+        // );
+
+        let inputs_embeds = if !agg_image_hidden_states.is_empty() {
+            let image_hidden = Tensor::cat(&agg_image_hidden_states, 0)?;
+            self.inputs_merger(&image_token_mask, &image_hidden, &inputs_embeds)?
+        } else {
+            // No images to process, return original embeddings
+            inputs_embeds
+        };
+
+        // if let Some((_, pixel_values, pixel_attention_masks)) = vision_data {
+        //     // println!(
+        //     //     "image_token_mask: {:?}, pixel_values: {:?}, pixel_attention_masks: {:?}",
+        //     //     image_token_mask.dims(),
+        //     //     pixel_values.dims(),
+        //     //     pixel_attention_masks.dims()
+        //     // );
+
+        //     // TODO: this assumes there will be at most one new images added
+        //     inputs_embeds = if self.image_hidden_states.is_some() {
+        //         self.inputs_merger(&image_token_mask, &inputs_embeds)?
+        //     } else {
+        //         let image_hidden_states =
+        //             self.vision.forward(pixel_values, pixel_attention_masks)?;
+        //         let image_hidden_states = self.connector.forward(&image_hidden_states)?;
+        //         self.image_hidden_states = Some(image_hidden_states);
+        //         // TODO: under multiple images, we can concatenate image_hidden_states and have image_token_mask be one continuous mask
+
+        //         self.inputs_merger(&image_token_mask, &inputs_embeds)?
+        //     };
+        // }
 
         self.text.forward(inputs_embeds, index_pos)
     }

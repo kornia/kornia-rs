@@ -20,6 +20,7 @@ pub fn preprocess_image<A: ImageAllocator>(
     // resizing image to match the max_size (on the longest edge)
     let img = {
         let (width, height) = (img.width() as u32, img.height() as u32);
+        #[cfg(feature = "debug")]
         println!("Image size: {}x{} w/ Max size: {}", width, height, max_size);
         let longest_edge = width.max(height);
 
@@ -40,6 +41,7 @@ pub fn preprocess_image<A: ImageAllocator>(
     };
     let global_img = {
         let (width, height) = (img.width() as u32, img.height() as u32);
+        #[cfg(feature = "debug")]
         println!("Resized image size: {}x{}", width, height);
 
         let longest_edge = width.max(height);
@@ -100,6 +102,7 @@ pub fn preprocess_image<A: ImageAllocator>(
     };
     let (global_img, global_mask) = {
         let (width, height) = (global_img.width(), global_img.height());
+        #[cfg(feature = "debug")]
         println!("Global image size: {}x{}", width, height);
 
         let new_width = (width as u32).div_ceil(outer_patch_size) * outer_patch_size;
