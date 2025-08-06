@@ -390,10 +390,8 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
         let mut flat = Vec::with_capacity(self.shape.iter().product());
         let data = self.as_slice();
         if self.is_contiguous() {
-            println!("here");
             return data[..total_eles].to_vec();
         }
-        println!("here2");
 
         let mut idx = [0usize; C];
         for _ in 0..total_eles {
