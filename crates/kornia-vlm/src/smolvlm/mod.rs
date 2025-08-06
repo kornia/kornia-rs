@@ -7,14 +7,10 @@ pub mod utils;
 mod vision_model;
 
 #[cfg(feature = "debug")]
-use std::collections::HashMap;
-#[cfg(feature = "debug")]
 use std::io;
 #[cfg(feature = "debug")]
 use std::io::Write;
 
-#[cfg(feature = "debug")]
-use candle_core::safetensors::save;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
 use hf_hub::api::sync::Api;
@@ -188,6 +184,7 @@ impl SmolVlm {
         #[cfg(feature = "debug")]
         let mut generated_tokens = 0usize;
         let mut introspector = introspector::ActivationIntrospector::new();
+        let mut vis_introspector = crate::smolvlm::introspector::ActivationIntrospector::new();
 
         let mut response = String::new();
 
@@ -203,6 +200,7 @@ impl SmolVlm {
                 &image_token_mask,
                 processed_images.iter().map(|(a, b)| (a, b)).collect(),
                 &mut introspector,
+                &mut vis_introspector,
             )?;
             processed_images.clear();
 
@@ -230,7 +228,7 @@ impl SmolVlm {
             #[cfg(feature = "debug")]
             {
                 introspector.insert("logits", &last_logit);
-                introspector.increment_token_pos();
+                introspector.increment_batch_pos();
             }
 
             self.index_pos += delta_token.len();
@@ -268,7 +266,10 @@ impl SmolVlm {
                 generated_tokens as f64 / dt.as_secs_f64(),
             );
 
-            introspector.save()?;
+            introspector
+                .save_as("examples/smol_vlm/validation_data/rust_isp_decoder.safetensors")?;
+            vis_introspector
+                .save_as("examples/smol_vlm/validation_data/rust_isp_encoder.safetensors")?;
             println!("Token history: {:?}", self.token_history);
         }
 
