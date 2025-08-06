@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use candle_core::{IndexOp, Result, Tensor};
-use candle_nn::{Embedding, Linear, Module};
+use candle_nn::{Activation, Embedding, Linear, Module};
 
 use crate::smolvlm::text_model::SmolText;
 
@@ -52,9 +52,6 @@ pub struct SmolModel {
     merged_embeds: Vec<Tensor>, // cache results
 
     pub text: SmolText,
-
-    #[cfg(feature = "debug")]
-    pub dbg_embeds: Option<Tensor>, // for debugging purposes, to be removed later
 }
 
 impl SmolModel {
@@ -73,9 +70,6 @@ impl SmolModel {
             merged_embeds: Vec::new(),
 
             text: SmolText::load(c)?,
-
-            #[cfg(feature = "debug")]
-            dbg_embeds: None,
         })
     }
 
@@ -117,13 +111,12 @@ impl SmolModel {
         index_pos: usize,
         image_token_mask: &Tensor,
         image_data: Vec<(&Tensor, &Tensor)>,
+        introspector: &mut super::introspector::ActivationIntrospector,
     ) -> Result<Tensor> {
         let inputs_embeds = self.embed.forward(xs)?;
 
         #[cfg(feature = "debug")]
-        {
-            self.dbg_embeds = Some(inputs_embeds.clone());
-        }
+        introspector.insert("input_embeddings", &inputs_embeds);
 
         let mut agg_image_hidden_states = vec![];
         for (pixel_values, pixel_attention_masks) in image_data {
@@ -147,6 +140,6 @@ impl SmolModel {
             inputs_embeds
         };
 
-        self.text.forward(inputs_embeds, index_pos)
+        self.text.forward(inputs_embeds, index_pos, introspector)
     }
 }

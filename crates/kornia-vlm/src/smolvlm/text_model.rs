@@ -140,15 +140,6 @@ pub struct MLPGates {
     down_proj: Linear,
     gate_proj: Linear,
     up_proj: Linear,
-
-    #[cfg(feature = "debug")]
-    pub dbg_gate_proj: Option<Tensor>,
-    #[cfg(feature = "debug")]
-    pub dbg_up_proj: Option<Tensor>,
-    #[cfg(feature = "debug")]
-    pub dbg_down_proj: Option<Tensor>,
-    #[cfg(feature = "debug")]
-    pub dbg_act_fn: Option<Tensor>,
 }
 
 impl MLPGates {
@@ -157,44 +148,31 @@ impl MLPGates {
             down_proj: Linear::new(d, None),
             gate_proj: Linear::new(g, None),
             up_proj: Linear::new(u, None),
-
-            #[cfg(feature = "debug")]
-            dbg_gate_proj: None,
-            #[cfg(feature = "debug")]
-            dbg_up_proj: None,
-            #[cfg(feature = "debug")]
-            dbg_down_proj: None,
-            #[cfg(feature = "debug")]
-            dbg_act_fn: None,
         }
     }
 
-    fn forward(&mut self, x: &Tensor) -> Result<Tensor> {
+    fn forward(
+        &mut self,
+        x: &Tensor,
+        introspector: &mut super::introspector::ActivationIntrospector,
+    ) -> Result<Tensor> {
         let gate_proj_out = self.gate_proj.forward(x)?;
         #[cfg(feature = "debug")]
-        {
-            self.dbg_gate_proj = Some(gate_proj_out.clone());
-        }
+        introspector.insert("mlp_gate_proj", &gate_proj_out);
 
         let gate = silu(&gate_proj_out)?;
         #[cfg(feature = "debug")]
-        {
-            self.dbg_act_fn = Some(gate.clone());
-        }
+        introspector.insert("mlp_act_fn", &gate);
 
         let up = self.up_proj.forward(x)?;
         #[cfg(feature = "debug")]
-        {
-            self.dbg_up_proj = Some(up.clone());
-        }
+        introspector.insert("mlp_up_proj", &up);
 
         let hidden = (gate * up)?;
 
         let x = self.down_proj.forward(&hidden)?;
         #[cfg(feature = "debug")]
-        {
-            self.dbg_down_proj = Some(x.clone());
-        }
+        introspector.insert("mlp_down_proj", &x);
         Ok(x)
     }
 }
@@ -205,17 +183,6 @@ pub struct Block {
     attn: Attention,
     post_layer_norm: CustomRmsNorm,
     pub gates: MLPGates,
-
-    #[cfg(feature = "debug")]
-    pub dbg_block: Option<Tensor>, // for debugging purposes, to be removed later
-    #[cfg(feature = "debug")]
-    pub dbg_input_layer_norm: Option<Tensor>,
-    #[cfg(feature = "debug")]
-    pub dbg_attn: Option<Tensor>,
-    #[cfg(feature = "debug")]
-    pub dbg_post_layer_norm: Option<Tensor>,
-    #[cfg(feature = "debug")]
-    pub dbg_gates: Option<Tensor>,
 }
 
 impl Block {
@@ -250,55 +217,39 @@ impl Block {
                 val("mlp.gate_proj"),
                 val("mlp.up_proj"),
             ),
-            #[cfg(feature = "debug")]
-            dbg_block: None, // for debugging purposes, to be removed later
-            #[cfg(feature = "debug")]
-            dbg_input_layer_norm: None,
-            #[cfg(feature = "debug")]
-            dbg_attn: None,
-            #[cfg(feature = "debug")]
-            dbg_post_layer_norm: None,
-            #[cfg(feature = "debug")]
-            dbg_gates: None,
         })
     }
 
-    fn forward(&mut self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
+    fn forward(
+        &mut self,
+        x: &Tensor,
+        index_pos: usize,
+        introspector: &mut super::introspector::ActivationIntrospector,
+    ) -> Result<Tensor> {
         let residual = x;
 
         let x = self.input_layer_norm.forward(x)?;
         #[cfg(feature = "debug")]
-        {
-            self.dbg_input_layer_norm = Some(x.clone());
-        }
+        introspector.insert("input_layernorm", &x);
 
         let att = self.attn.forward(&x, index_pos)?;
         #[cfg(feature = "debug")]
-        {
-            self.dbg_attn = Some(att.clone());
-        }
+        introspector.insert("self_attn", &att);
 
         let x = (residual + att)?;
         let residual = &x;
 
         let x = self.post_layer_norm.forward(&x)?;
-
         #[cfg(feature = "debug")]
-        {
-            self.dbg_post_layer_norm = Some(x.clone());
-        }
+        introspector.insert("post_layernorm", &x);
 
-        let x = self.gates.forward(&x)?;
+        let x = self.gates.forward(&x, introspector)?;
         #[cfg(feature = "debug")]
-        {
-            self.dbg_gates = Some(x.clone());
-        }
+        introspector.insert("mlp", &x);
 
         let x = (residual + x)?;
         #[cfg(feature = "debug")]
-        {
-            self.dbg_block = Some(x.clone());
-        }
+        introspector.insert("layers", &x);
 
         Ok(x)
     }
@@ -319,10 +270,19 @@ impl SmolText {
         })
     }
 
-    pub fn forward(&mut self, mut x: Tensor, index_pos: usize) -> Result<Tensor> {
+    pub fn forward(
+        &mut self,
+        mut x: Tensor,
+        index_pos: usize,
+        introspector: &mut super::introspector::ActivationIntrospector,
+    ) -> Result<Tensor> {
+        introspector.start_tracking_depth();
         for block in &mut self.blocks {
-            x = block.forward(&x, index_pos)?;
+            x = block.forward(&x, index_pos, introspector)?;
+            introspector.increment_depth();
         }
+        introspector.stop_tracking_depth();
+
         let x = self.norm.forward(&x)?;
         let logits = self.lm_head.forward(&x)?;
         logits.to_dtype(DType::F32)
