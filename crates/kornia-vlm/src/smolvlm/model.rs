@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use candle_core::{IndexOp, Result, Tensor};
-use candle_nn::{Activation, Embedding, Linear, Module};
+use candle_nn::{Embedding, Linear, Module};
 
 use crate::smolvlm::text_model::SmolText;
 
