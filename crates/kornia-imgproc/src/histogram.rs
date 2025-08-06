@@ -42,7 +42,7 @@ use rayon::prelude::*;
 /// ```
 pub fn compute_histogram<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
-    hist: &mut Vec<usize>,
+    hist: &mut [usize],
     num_bins: usize,
 ) -> Result<(), ImageError> {
     if num_bins == 0 || num_bins > 256 {
@@ -91,7 +91,6 @@ pub fn compute_histogram<A: ImageAllocator>(
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
     use kornia_tensor::CpuAllocator;
-    
     #[test]
     fn test_compute_histogram() -> Result<(), ImageError> {
         let image = Image::new(
