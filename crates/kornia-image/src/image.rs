@@ -382,7 +382,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     }
 
     /// Copy Image data into contiguous memory if not already
-    pub fn to_contiguous(&self) -> Vec<T> 
+    pub fn to_contiguous(&self, alloc: A) -> Self 
     where
         T: Clone,
     {
@@ -390,7 +390,11 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
         let mut flat = Vec::with_capacity(self.shape.iter().product());
         let data = self.as_slice();
         if self.is_contiguous() {
-            return data[..total_eles].to_vec();
+            return Self(Tensor3::from_shape_vec(
+                self.shape,
+                data[..total_eles].to_vec(),
+                alloc,
+            ).unwrap());
         }
 
         let mut idx = [0usize; C];
@@ -414,7 +418,12 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
             }
         }
 
-        flat
+        
+        Self(Tensor3::from_shape_vec(
+                self.shape,
+                flat,
+                alloc,
+            ).unwrap())
     }
 
     /// Cast the pixel data to a different type and scale it.
