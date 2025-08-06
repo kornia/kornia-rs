@@ -370,6 +370,28 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     }
 
     /// Checks if Image data is stored in contiguous memory
+    ///
+    /// # Returns
+    ///
+    /// boolean, true if contiguous and false if not
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kornia_image::{Image, ImageSize};
+    /// use kornia_image::allocator::CpuAllocator;
+    ///
+    /// let image = Image::<f32, 2, _>::from_size_val(
+    ///   ImageSize {
+    ///    width: 10,
+    ///   height: 20,
+    /// },
+    /// 0.0f32,
+    /// CpuAllocator).unwrap();
+    ///
+    /// let channels = image.split_channels().unwrap();
+    /// assert_eq!(channels.len(), 2);
+    /// ```
     pub fn is_contiguous(&self) -> bool {
         let mut expected_stride = 1;
         for i in (0..C).rev() {
@@ -938,6 +960,30 @@ mod tests {
         image_u8.strides[0] = 10;
 
         assert!(!image_u8.is_contiguous());
+        Ok(())
+    }
+
+    #[test]
+    fn test_image_to_contiguous() -> Result<(), ImageError> {
+        let mut image = Image::<u8, 3, CpuAllocator>::new(
+            ImageSize {
+                width: 10,
+                height: 20,
+            },
+            vec![0u8; 10 * 20 * 3],
+            CpuAllocator,
+        )?;
+
+        // Manually break the stride to simulate non-contiguous layout
+        image.strides[0] = 10;
+
+        assert!(!image.is_contiguous());
+
+        let contiguous = image.to_contiguous(CpuAllocator);
+
+        assert!(contiguous.is_contiguous());
+        assert_eq!(contiguous.as_slice(), &vec![0u8; 10 * 20 * 3]);
+
         Ok(())
     }
 }
