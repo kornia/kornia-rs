@@ -369,6 +369,56 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
         C
     }
 
+    /// Checks if Image data is stored in contiguous memory
+    pub fn is_contiguous(&self) -> bool {
+        let mut expected_stride = 1;
+        for i in (0..C).rev() {
+            if self.strides[i] != expected_stride {
+                return false;
+            }
+            expected_stride *= self.shape[i];
+        }
+        true
+    }
+
+    /// Copy Image data into contiguous memory if not already
+    pub fn to_contiguous(&self) -> Vec<T> 
+    where
+        T: Clone,
+    {
+        let total_eles = self.shape.iter().product();
+        let mut flat = Vec::with_capacity(self.shape.iter().product());
+        let data = self.as_slice();
+        if self.is_contiguous() {
+            println!("here");
+            return data[..total_eles].to_vec();
+        }
+        println!("here2");
+
+        let mut idx = [0usize; C];
+        for _ in 0..total_eles {
+            // Computing flat offset using strides
+            let offset = idx.iter()
+                .zip(self.strides.iter())
+                .map(|(&i, &s)| i * s)
+                .sum::<usize>();
+
+            flat.push(data[offset].clone());
+
+            // incrementing C-dimensional index idx
+            for dim in (0..C).rev() {
+                idx[dim] += 1;
+                if idx[dim] < self.shape[dim] {
+                    break;
+                } else {
+                    idx[dim] = 0;
+                }
+            }
+        }
+
+        flat
+    }
+
     /// Cast the pixel data to a different type and scale it.
     ///
     /// # Arguments
@@ -848,6 +898,39 @@ mod tests {
         assert_eq!(image_f32.get([0, 0, 0]), Some(&2.0f32));
         assert_eq!(image_f32.get([1, 0, 0]), Some(&130.0f32));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_image_is_contiguous_true() -> Result<(), ImageError> {
+        let image_u8 = Image::<u8, 1, CpuAllocator>::new(
+            ImageSize {
+                height: 2,
+                width: 1,
+            },
+            vec![0, 128],
+            CpuAllocator,
+        )?;
+
+        assert!(image_u8.is_contiguous());
+        Ok(())
+    }
+
+    #[test]
+    fn test_image_is_contiguous_false() -> Result<(), ImageError> {
+        let mut image_u8 = Image::<u8, 1, CpuAllocator>::new(
+            ImageSize {
+                height: 2,
+                width: 1,
+            },
+            vec![0, 128],
+            CpuAllocator,
+        )?;
+
+        // Manually break the stride to simulate non-contiguous layout
+        image_u8.strides[0] = 10;
+
+        assert!(!image_u8.is_contiguous());
         Ok(())
     }
 }
