@@ -1,6 +1,9 @@
-use std::collections::HashMap;
-use crate::vector::DVec3;
 use crate::pointcloud::PointCloud;
+use crate::vector::DVec3;
+use std::collections::HashMap;
+
+/// Type alias for voxel data in the grid when downsampling all data.
+type VoxelData = (DVec3, Vec<[u8; 3]>, Vec<[f64; 3]>, usize);
 
 /// A 3D voxel grid for downsampling point clouds.
 #[derive(Debug, Clone)]
@@ -26,7 +29,7 @@ impl VoxelGrid {
             panic!("Leaf size must be positive in all dimensions");
         }
 
-        VoxelGrid { 
+        VoxelGrid {
             leaf_size,
             min_points_per_voxel: 1,
             downsample_all_data: true,
@@ -41,8 +44,7 @@ impl VoxelGrid {
     /// # Returns
     /// A new `PointCloud` containing the downsampled points, and optionally colors and normals.
     pub fn downsample(&mut self, point_cloud: &PointCloud) -> PointCloud {
-        let mut grid: HashMap<(i32, i32, i32), (DVec3, Vec<[u8; 3]>, Vec<[f64; 3]>, usize)> =
-            HashMap::new();
+        let mut grid: HashMap<(i32, i32, i32), VoxelData> = HashMap::new();
 
         // Group points into voxels
         for (i, point) in point_cloud.points().iter().enumerate() {
@@ -51,7 +53,12 @@ impl VoxelGrid {
             let iy = (point_vec.y / self.leaf_size.y).floor() as i32;
             let iz = (point_vec.z / self.leaf_size.z).floor() as i32;
             let key = (ix, iy, iz);
-            let entry = grid.entry(key).or_insert((DVec3::from_array(&[0.0, 0.0, 0.0]), Vec::new(), Vec::new(), 0));
+            let entry = grid.entry(key).or_insert((
+                DVec3::from_array(&[0.0, 0.0, 0.0]),
+                Vec::new(),
+                Vec::new(),
+                0,
+            ));
             entry.0.x += point_vec.x;
             entry.0.y += point_vec.y;
             entry.0.z += point_vec.z;
@@ -87,16 +94,20 @@ impl VoxelGrid {
         for (_key, (sum, color_vec, normal_vec, count)) in grid {
             if count >= self.min_points_per_voxel {
                 let inv_count = 1.0 / count as f64;
-                let centroid = DVec3::from_array(&[sum.x * inv_count, sum.y * inv_count, sum.z * inv_count]);
+                let centroid =
+                    DVec3::from_array(&[sum.x * inv_count, sum.y * inv_count, sum.z * inv_count]);
                 points.push([centroid.x, centroid.y, centroid.z]);
 
                 if self.downsample_all_data {
                     if let Some(ref mut colors_vec) = colors {
                         if !color_vec.is_empty() {
-                            let color_sum: [u64; 3] = color_vec.iter().fold(
-                                [0, 0, 0],
-                                |acc, c| [acc[0] + c[0] as u64, acc[1] + c[1] as u64, acc[2] + c[2] as u64],
-                            );
+                            let color_sum: [u64; 3] = color_vec.iter().fold([0, 0, 0], |acc, c| {
+                                [
+                                    acc[0] + c[0] as u64,
+                                    acc[1] + c[1] as u64,
+                                    acc[2] + c[2] as u64,
+                                ]
+                            });
                             colors_vec.push([
                                 (color_sum[0] as f64 * inv_count).round() as u8,
                                 (color_sum[1] as f64 * inv_count).round() as u8,
@@ -106,18 +117,25 @@ impl VoxelGrid {
                     }
                     if let Some(ref mut normals_vec) = normals {
                         if !normal_vec.is_empty() {
-                            let normal_sum: [f64; 3] = normal_vec.iter().fold(
-                                [0.0, 0.0, 0.0],
-                                |acc, n| [acc[0] + n[0], acc[1] + n[1], acc[2] + n[2]],
-                            );
+                            let normal_sum: [f64; 3] =
+                                normal_vec.iter().fold([0.0, 0.0, 0.0], |acc, n| {
+                                    [acc[0] + n[0], acc[1] + n[1], acc[2] + n[2]]
+                                });
                             let normal = [
                                 normal_sum[0] * inv_count,
                                 normal_sum[1] * inv_count,
                                 normal_sum[2] * inv_count,
                             ];
-                            let norm = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+                            let norm = (normal[0] * normal[0]
+                                + normal[1] * normal[1]
+                                + normal[2] * normal[2])
+                                .sqrt();
                             if norm > 0.0 {
-                                normals_vec.push([normal[0] / norm, normal[1] / norm, normal[2] / norm]);
+                                normals_vec.push([
+                                    normal[0] / norm,
+                                    normal[1] / norm,
+                                    normal[2] / norm,
+                                ]);
                             } else {
                                 normals_vec.push(normal);
                             }
@@ -163,7 +181,8 @@ impl VoxelGrid {
         if point_cloud.points().is_empty() {
             DVec3::from_array(&[0.0, 0.0, 0.0])
         } else {
-            let mut max = DVec3::from_array(&[f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY]);
+            let mut max =
+                DVec3::from_array(&[f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY]);
             for point in point_cloud.points() {
                 let point_vec = DVec3::from_array(point);
                 max.x = max.x.max(point_vec.x);
@@ -189,7 +208,7 @@ impl VoxelGrid {
             (point_vec.z / self.leaf_size.z).floor() as i32,
         )
     }
-    
+
     /// Sets the voxel grid leaf size.
     ///
     /// # Arguments
@@ -302,14 +321,16 @@ mod tests {
 
     #[test]
     fn test_bounds() {
-        let point_cloud = PointCloud::new(
-            vec![[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
-            None,
-            None,
-        );
+        let point_cloud = PointCloud::new(vec![[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], None, None);
         let voxel_grid = VoxelGrid::new(DVec3::from_array(&[1.0, 1.0, 1.0]));
-        assert_eq!(voxel_grid.get_min_bound(&point_cloud), DVec3::from_array(&[0.0, 0.0, 0.0]));
-        assert_eq!(voxel_grid.get_max_bound(&point_cloud), DVec3::from_array(&[1.0, 1.0, 1.0]));
+        assert_eq!(
+            voxel_grid.get_min_bound(&point_cloud),
+            DVec3::from_array(&[0.0, 0.0, 0.0])
+        );
+        assert_eq!(
+            voxel_grid.get_max_bound(&point_cloud),
+            DVec3::from_array(&[1.0, 1.0, 1.0])
+        );
     }
 
     #[test]
