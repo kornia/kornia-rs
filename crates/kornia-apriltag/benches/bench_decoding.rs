@@ -29,7 +29,7 @@ fn bench_decoding(c: &mut Criterion) {
         .build()
         .unwrap();
 
-    apriltag_c_detector.set_decimation(1.0);
+    apriltag_c_detector.set_decimation(2.0);
 
     let kornia_detector_config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]);
     let mut kornia_detector =

@@ -134,7 +134,7 @@ pub fn fit_quads<A: ImageAllocator>(
             return;
         }
 
-        if let Some(quad) = fit_single_quad(
+        if let Some(mut quad) = fit_single_quad(
             src,
             cluster,
             config.min_tag_width,
@@ -142,6 +142,14 @@ pub fn fit_quads<A: ImageAllocator>(
             config.reversed_border,
             &config.fit_quad_config,
         ) {
+            if config.downscale_factor > 1 {
+                let downscale_factor = config.downscale_factor as f32;
+                quad.corners.iter_mut().for_each(|c| {
+                    c.x *= downscale_factor;
+                    c.y *= downscale_factor;
+                });
+            }
+
             quads.push(quad);
         }
     });

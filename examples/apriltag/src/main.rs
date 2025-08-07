@@ -33,6 +33,10 @@ struct Args {
     /// minimum difference between white and black for detection
     #[argh(option, short = 'm', default = "5")]
     min_white_black_difference: u8,
+
+    /// TODO
+    #[argh(option, short = 's', default = "2")]
+    downscale_factor: usize,
 }
 
 fn to_tag_family_kind(value: &str) -> Result<TagFamilyKind, String> {
@@ -65,6 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.refine_edges_enabled = args.refine_edges_enabled;
     config.min_white_black_difference = args.min_white_black_difference;
     config.decode_sharpening = args.decode_sharpening;
+    config.downscale_factor = args.downscale_factor;
 
     let mut decoder = AprilTagDecoder::new(config, grayscale_img.size())?;
     let detections = decoder.decode(&grayscale_img)?;
