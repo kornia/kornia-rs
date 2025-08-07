@@ -7,9 +7,9 @@ use kornia_imgproc::interpolation::InterpolationMode;
 use kornia_imgproc::resize::resize_fast;
 use kornia_tensor::allocator::CpuAllocator;
 
-// ImageNet mean and std for normalization
-const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
-const STD: [f32; 3] = [0.229, 0.224, 0.225];
+// https://huggingface.co/HuggingFaceTB/SmolVLM-Instruct/blob/main/preprocessor_config.json
+const MEAN: [f32; 3] = [0.5, 0.5, 0.5];
+const STD: [f32; 3] = [0.5, 0.5, 0.5];
 
 pub fn preprocess_image<A: ImageAllocator>(
     img: Image<u8, 3, A>,
@@ -20,28 +20,30 @@ pub fn preprocess_image<A: ImageAllocator>(
     // resizing image to match the max_size (on the longest edge)
     let img = {
         let (width, height) = (img.width() as u32, img.height() as u32);
+        #[cfg(feature = "debug")]
+        println!("Image size: {}x{} w/ Max size: {}", width, height, max_size);
         let longest_edge = width.max(height);
-        if longest_edge <= max_size {
-            img.clone()
-        } else {
-            let scale_factor = max_size as f32 / longest_edge as f32;
-            let new_width = (width as f32 * scale_factor) as usize;
-            let new_height = (height as f32 * scale_factor) as usize;
-            let mut resized = Image::<u8, 3, A>::from_size_val(
-                ImageSize {
-                    width: new_width,
-                    height: new_height,
-                },
-                0,
-                img.0.storage.alloc().clone(),
-            )
-            .unwrap();
-            resize_fast(&img, &mut resized, InterpolationMode::Bilinear).unwrap();
-            resized
-        }
+
+        let scale_factor = max_size as f32 / longest_edge as f32;
+        let new_width = (width as f32 * scale_factor).ceil() as usize;
+        let new_height = (height as f32 * scale_factor).ceil() as usize;
+        let mut resized = Image::<u8, 3, A>::from_size_val(
+            ImageSize {
+                width: new_width,
+                height: new_height,
+            },
+            0,
+            img.0.storage.alloc().clone(),
+        )
+        .unwrap();
+        resize_fast(&img, &mut resized, InterpolationMode::Lanczos).unwrap();
+        resized
     };
     let global_img = {
         let (width, height) = (img.width() as u32, img.height() as u32);
+        #[cfg(feature = "debug")]
+        println!("Resized image size: {}x{}", width, height);
+
         let longest_edge = width.max(height);
         if longest_edge <= outer_patch_size {
             img.clone()
@@ -58,7 +60,7 @@ pub fn preprocess_image<A: ImageAllocator>(
                 img.0.storage.alloc().clone(),
             )
             .unwrap();
-            resize_fast(&img, &mut resized, InterpolationMode::Bilinear).unwrap();
+            resize_fast(&img, &mut resized, InterpolationMode::Lanczos).unwrap();
             resized
         }
     };
@@ -100,6 +102,9 @@ pub fn preprocess_image<A: ImageAllocator>(
     };
     let (global_img, global_mask) = {
         let (width, height) = (global_img.width(), global_img.height());
+        #[cfg(feature = "debug")]
+        println!("Global image size: {}x{}", width, height);
+
         let new_width = (width as u32).div_ceil(outer_patch_size) * outer_patch_size;
         let new_height = (height as u32).div_ceil(outer_patch_size) * outer_patch_size;
         let mut padded_img = Image::<u8, 3, _>::from_size_val(

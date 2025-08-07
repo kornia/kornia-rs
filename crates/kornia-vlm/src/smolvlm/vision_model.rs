@@ -2,8 +2,10 @@
 #![allow(unused_attributes)]
 
 use candle_core::{DType, Result, Tensor};
-use candle_nn::{Conv2d, Conv2dConfig, Embedding, LayerNorm, Linear, Module};
+use candle_nn::{Conv2d, Conv2dConfig, Embedding, Linear, Module};
 use std::collections::HashMap;
+
+use super::custom_layernorm::CustomLayerNorm;
 
 const NUM_OF_HEADS: usize = 16;
 const HEAD_DIM: usize = 72;
@@ -96,17 +98,32 @@ impl Mlp {
             .broadcast_mul(&input.broadcast_mul(&(tanh.broadcast_add(&self.one)?))?)
     }
 
-    pub fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let x = self.gelu_tanh(&self.fc1.forward(xs)?)?; // python impl. uses gelu approximated with tanh
-        self.fc2.forward(&x)
+    pub fn forward(
+        &self,
+        xs: &Tensor,
+        introspector: &mut super::introspector::ActivationIntrospector,
+    ) -> Result<Tensor> {
+        let i = &self.fc1.forward(xs)?;
+        #[cfg(feature = "debug")]
+        introspector.insert("fc1", &i);
+
+        let x = self.gelu_tanh(i)?; // python impl. uses gelu approximated with tanh
+        #[cfg(feature = "debug")]
+        introspector.insert("mlp_act_fn", &x);
+
+        let o = self.fc2.forward(&x)?;
+        #[cfg(feature = "debug")]
+        introspector.insert("fc2", &o);
+
+        Ok(o)
     }
 }
 
 struct Block {
     self_attn: Attention,
-    layer_norm1: LayerNorm,
+    layer_norm1: CustomLayerNorm,
     mlp: Mlp,
-    layer_norm2: LayerNorm,
+    layer_norm2: CustomLayerNorm,
 }
 
 impl Block {
@@ -128,8 +145,6 @@ impl Block {
                 .clone()
         };
 
-        log::info!("Loaded layer (VT): {id:?}");
-
         Ok(Self {
             self_attn: Attention::new(
                 Linear::new(w("self_attn.q_proj"), Some(b("self_attn.q_proj"))),
@@ -137,23 +152,39 @@ impl Block {
                 Linear::new(w("self_attn.v_proj"), Some(b("self_attn.v_proj"))),
                 Linear::new(w("self_attn.out_proj"), Some(b("self_attn.out_proj"))),
             )?,
-            layer_norm1: LayerNorm::new(w("layer_norm1"), b("layer_norm1"), 1e-6),
+            layer_norm1: CustomLayerNorm::new(w("layer_norm1"), b("layer_norm1"), 1e-6),
             mlp: Mlp::new(
                 Linear::new(w("mlp.fc1"), Some(b("mlp.fc1"))),
                 Linear::new(w("mlp.fc2"), Some(b("mlp.fc2"))),
             )?,
-            layer_norm2: LayerNorm::new(w("layer_norm2"), b("layer_norm2"), 1e-6),
+            layer_norm2: CustomLayerNorm::new(w("layer_norm2"), b("layer_norm2"), 1e-6),
         })
     }
 
-    pub fn forward(&self, xs: &Tensor, attention_mask: &Tensor) -> Result<Tensor> {
+    pub fn forward(
+        &self,
+        xs: &Tensor,
+        attention_mask: &Tensor,
+        introspector: &mut super::introspector::ActivationIntrospector,
+    ) -> Result<Tensor> {
         let residual = xs;
+
         let x = self.layer_norm1.forward(xs)?;
+        #[cfg(feature = "debug")]
+        introspector.insert("input_layernorm", &x);
+
         let x = self.self_attn.forward(&x, attention_mask)?;
+        #[cfg(feature = "debug")]
+        introspector.insert("self_attn", &x);
+
         let x = (residual + x)?;
         let residual = &x;
+
         let x = self.layer_norm2.forward(&x)?;
-        let x = self.mlp.forward(&x);
+        #[cfg(feature = "debug")]
+        introspector.insert("post_layernorm", &x);
+
+        let x = self.mlp.forward(&x, introspector)?;
         residual + x
     }
 }
@@ -162,7 +193,7 @@ pub struct SmolVision {
     patch_embedding: Conv2d,
     position_embedding: Embedding,
     blocks: Vec<Block>,
-    post_layernorm: LayerNorm,
+    post_layernorm: CustomLayerNorm,
 }
 
 impl SmolVision {
@@ -175,11 +206,11 @@ impl SmolVision {
                 Some(c["model.vision_model.embeddings.patch_embedding.bias"].clone()),
                 Conv2dConfig {
                     // kernel/patch size are intrinsically defined in the weights
-                    padding: 0,
-                    stride: 14,
+                    padding: 0, // "valid" padding
+                    stride: 14, // stride equals patch size (14)
                     dilation: 1,
                     groups: 1,
-                    cudnn_fwd_algo: Some(candle_core::conv::CudnnFwdAlgo::Direct),
+                    cudnn_fwd_algo: None,
                 },
             ),
             position_embedding: Embedding::new(
@@ -187,7 +218,7 @@ impl SmolVision {
                 1152,
             ),
             blocks: (0u8..=26).map(|id| Block::new(c, id).unwrap()).collect(),
-            post_layernorm: LayerNorm::new(
+            post_layernorm: CustomLayerNorm::new(
                 c["model.vision_model.post_layernorm.weight"].clone(),
                 c["model.vision_model.post_layernorm.bias"].clone(),
                 1e-6,
@@ -195,7 +226,12 @@ impl SmolVision {
         })
     }
 
-    pub fn forward(&self, pixel_values: &Tensor, pixel_attention_masks: &Tensor) -> Result<Tensor> {
+    pub fn forward(
+        &self,
+        pixel_values: &Tensor,
+        pixel_attention_masks: &Tensor,
+        introspector: &mut super::introspector::ActivationIntrospector,
+    ) -> Result<Tensor> {
         let device = pixel_values.device();
 
         // B = patch rows x patch cols (x number of images)
@@ -233,6 +269,10 @@ impl SmolVision {
             let patch_embeddings = self
                 .patch_embedding
                 .forward(&pixel_values.to_dtype(DType::BF16)?)?;
+
+            #[cfg(feature = "debug")]
+            introspector.insert("patch_embeddings", &patch_embeddings);
+
             let patch_embeddings = patch_embeddings.flatten_from(2)?.transpose(1, 2)?;
 
             let position_ids = {
@@ -240,6 +280,10 @@ impl SmolVision {
                 (raw_ids * &patch_attention_masks)?
             };
             let position_embeddings = self.position_embedding.forward(&position_ids)?;
+
+            #[cfg(feature = "debug")]
+            introspector.insert("position_embeddings", &position_embeddings);
+
             patch_embeddings + position_embeddings
         }?;
 
@@ -254,9 +298,13 @@ impl SmolVision {
                 inverted_mask.where_cond(&neg_infs, &inverted_mask.to_dtype(DType::F32)?)?
             };
 
+        introspector.start_tracking_depth();
         for block in &self.blocks {
-            hidden_states = block.forward(&hidden_states, &patch_attention_masks)?;
+            hidden_states = block.forward(&hidden_states, &patch_attention_masks, introspector)?;
+            introspector.increment_depth();
         }
+        introspector.stop_tracking_depth();
+
         self.post_layernorm.forward(&hidden_states)
     }
 }
