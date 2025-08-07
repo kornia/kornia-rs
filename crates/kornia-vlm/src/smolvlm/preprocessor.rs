@@ -36,7 +36,7 @@ pub fn preprocess_image<A: ImageAllocator>(
             img.0.storage.alloc().clone(),
         )
         .unwrap();
-        resize_fast(&img, &mut resized, InterpolationMode::Bilinear).unwrap();
+        resize_fast(&img, &mut resized, InterpolationMode::Lanczos).unwrap();
         resized
     };
     let global_img = {
@@ -60,7 +60,7 @@ pub fn preprocess_image<A: ImageAllocator>(
                 img.0.storage.alloc().clone(),
             )
             .unwrap();
-            resize_fast(&img, &mut resized, InterpolationMode::Bilinear).unwrap();
+            resize_fast(&img, &mut resized, InterpolationMode::Lanczos).unwrap();
             resized
         }
     };

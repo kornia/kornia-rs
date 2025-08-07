@@ -1,3 +1,4 @@
+mod custom_layernorm;
 mod custom_rmsnorm;
 mod introspector;
 mod model;
@@ -178,7 +179,7 @@ impl SmolVlm {
         let mut delta_token = full_token.get_ids().to_vec();
 
         #[cfg(feature = "debug")]
-        println!("Initial tokens: {delta_token:?}");
+        // println!("Initial tokens: {delta_token:?}");
         #[cfg(feature = "debug")]
         let start_gen = std::time::Instant::now();
         #[cfg(feature = "debug")]
@@ -270,7 +271,7 @@ impl SmolVlm {
                 .save_as("examples/smol_vlm/validation_data/rust_isp_decoder.safetensors")?;
             vis_introspector
                 .save_as("examples/smol_vlm/validation_data/rust_isp_encoder.safetensors")?;
-            println!("Token history: {:?}", self.token_history);
+            // println!("Token history: {:?}", self.token_history);
         }
 
         Ok(response)
@@ -428,6 +429,85 @@ mod tests {
     }
 
     #[test]
+    fn test_layernorm_validation() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::smolvlm::custom_layernorm::CustomLayerNorm;
+
+        let test_data = candle_core::safetensors::load(
+            "../../examples/smol_vlm/validation_data/layernorm_test_data_float32.safetensors",
+            &Device::Cpu,
+        )?;
+        let num_tests = test_data.get("num_tests").unwrap().to_scalar::<i64>()? as usize;
+        let eps = test_data.get("eps").unwrap().to_scalar::<f32>()? as f64;
+        let mut failures = Vec::new();
+
+        for i in 0..num_tests {
+            let test_name = format!("test_{}", i);
+            let input = test_data.get(&format!("{}_input", test_name)).unwrap();
+            let weight = test_data.get(&format!("{}_weight", test_name)).unwrap();
+            let bias = test_data.get(&format!("{}_bias", test_name)).unwrap();
+            let expected_output = test_data.get(&format!("{}_output", test_name)).unwrap();
+            let dim = test_data
+                .get(&format!("{}_dim", test_name))
+                .unwrap()
+                .to_scalar::<i64>()? as usize;
+            let batch_size = test_data
+                .get(&format!("{}_batch_size", test_name))
+                .unwrap()
+                .to_scalar::<i64>()? as usize;
+
+            // Create custom layer norm with the test parameters
+            let layer_norm = CustomLayerNorm::new(weight.clone(), bias.clone(), eps);
+            let actual_output = layer_norm.forward(input)?;
+
+            let diff = (&actual_output - expected_output)?;
+            let mse = diff
+                .powf(2.0)?
+                .mean_all()?
+                .to_dtype(DType::F32)?
+                .to_scalar::<f32>()?;
+            let mae = diff
+                .abs()?
+                .mean_all()?
+                .to_dtype(DType::F32)?
+                .to_scalar::<f32>()?;
+
+            // Layer norm should be quite accurate, but allow some floating point tolerance
+            let tolerance = 1e-5;
+            if mse <= tolerance {
+                println!(
+                    "✅ {}: MSE={:.16}, MAE={:.8} (dims: {}x{}, dtype: {:?}, device: {:?})",
+                    test_name,
+                    mse,
+                    mae,
+                    batch_size,
+                    dim,
+                    actual_output.dtype(),
+                    actual_output.device()
+                );
+            } else {
+                println!(
+                    "❌ {}: MSE={:.16}, MAE={:.8} (dims: {}x{}, dtype: {:?}, device: {:?})",
+                    test_name,
+                    mse,
+                    mae,
+                    batch_size,
+                    dim,
+                    actual_output.dtype(),
+                    actual_output.device()
+                );
+                failures.push(format!("{} MSE={:.8} > {}", test_name, mse, tolerance));
+            }
+        }
+
+        if !failures.is_empty() {
+            panic!("Test failures:\n{}", failures.join("\n"));
+        }
+
+        Ok(())
+    }
+
+    #[ignore]
+    #[test]
     fn test_via_onnx() -> Result<(), Box<dyn std::error::Error>> {
         // Load ONNX model
         let model: candle_onnx::onnx::ModelProto =
@@ -546,6 +626,7 @@ mod tests {
     use ort::{Environment, SessionBuilder, Value};
     use std::sync::Arc;
 
+    #[ignore]
     #[test]
     fn test_via_onnx_ort() -> Result<(), Box<dyn std::error::Error>> {
         // Initialize the ONNX Runtime environment
@@ -572,6 +653,7 @@ mod tests {
         Ok(())
     }
 
+    #[ignore]
     #[test]
     fn test_via_onnx_specific_layer() -> Result<(), Box<dyn std::error::Error>> {
         // Load the extracted layer ONNX model

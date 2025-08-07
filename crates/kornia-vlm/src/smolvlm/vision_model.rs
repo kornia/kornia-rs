@@ -2,8 +2,10 @@
 #![allow(unused_attributes)]
 
 use candle_core::{DType, Result, Tensor};
-use candle_nn::{Conv2d, Conv2dConfig, Embedding, LayerNorm, Linear, Module};
+use candle_nn::{Conv2d, Conv2dConfig, Embedding, Linear, Module};
 use std::collections::HashMap;
+
+use super::custom_layernorm::CustomLayerNorm;
 
 const NUM_OF_HEADS: usize = 16;
 const HEAD_DIM: usize = 72;
@@ -119,9 +121,9 @@ impl Mlp {
 
 struct Block {
     self_attn: Attention,
-    layer_norm1: LayerNorm,
+    layer_norm1: CustomLayerNorm,
     mlp: Mlp,
-    layer_norm2: LayerNorm,
+    layer_norm2: CustomLayerNorm,
 }
 
 impl Block {
@@ -150,12 +152,12 @@ impl Block {
                 Linear::new(w("self_attn.v_proj"), Some(b("self_attn.v_proj"))),
                 Linear::new(w("self_attn.out_proj"), Some(b("self_attn.out_proj"))),
             )?,
-            layer_norm1: LayerNorm::new(w("layer_norm1"), b("layer_norm1"), 1e-6),
+            layer_norm1: CustomLayerNorm::new(w("layer_norm1"), b("layer_norm1"), 1e-6),
             mlp: Mlp::new(
                 Linear::new(w("mlp.fc1"), Some(b("mlp.fc1"))),
                 Linear::new(w("mlp.fc2"), Some(b("mlp.fc2"))),
             )?,
-            layer_norm2: LayerNorm::new(w("layer_norm2"), b("layer_norm2"), 1e-6),
+            layer_norm2: CustomLayerNorm::new(w("layer_norm2"), b("layer_norm2"), 1e-6),
         })
     }
 
@@ -177,6 +179,7 @@ impl Block {
 
         let x = (residual + x)?;
         let residual = &x;
+
         let x = self.layer_norm2.forward(&x)?;
         #[cfg(feature = "debug")]
         introspector.insert("post_layernorm", &x);
@@ -190,7 +193,7 @@ pub struct SmolVision {
     patch_embedding: Conv2d,
     position_embedding: Embedding,
     blocks: Vec<Block>,
-    post_layernorm: LayerNorm,
+    post_layernorm: CustomLayerNorm,
 }
 
 impl SmolVision {
@@ -203,11 +206,11 @@ impl SmolVision {
                 Some(c["model.vision_model.embeddings.patch_embedding.bias"].clone()),
                 Conv2dConfig {
                     // kernel/patch size are intrinsically defined in the weights
-                    padding: 0,
-                    stride: 14,
+                    padding: 0, // "valid" padding
+                    stride: 14, // stride equals patch size (14)
                     dilation: 1,
                     groups: 1,
-                    cudnn_fwd_algo: Some(candle_core::conv::CudnnFwdAlgo::Direct),
+                    cudnn_fwd_algo: None,
                 },
             ),
             position_embedding: Embedding::new(
@@ -215,7 +218,7 @@ impl SmolVision {
                 1152,
             ),
             blocks: (0u8..=26).map(|id| Block::new(c, id).unwrap()).collect(),
-            post_layernorm: LayerNorm::new(
+            post_layernorm: CustomLayerNorm::new(
                 c["model.vision_model.post_layernorm.weight"].clone(),
                 c["model.vision_model.post_layernorm.bias"].clone(),
                 1e-6,
@@ -266,6 +269,7 @@ impl SmolVision {
             let patch_embeddings = self
                 .patch_embedding
                 .forward(&pixel_values.to_dtype(DType::BF16)?)?;
+
             #[cfg(feature = "debug")]
             introspector.insert("patch_embeddings", &patch_embeddings);
 
@@ -276,6 +280,7 @@ impl SmolVision {
                 (raw_ids * &patch_attention_masks)?
             };
             let position_embeddings = self.position_embedding.forward(&position_ids)?;
+
             #[cfg(feature = "debug")]
             introspector.insert("position_embeddings", &position_embeddings);
 

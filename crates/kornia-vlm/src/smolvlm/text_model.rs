@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use candle_core::DType;
 use candle_core::{Device, Result, Tensor};
-use candle_nn::{rotary_emb::rope, Linear, Module, RmsNorm};
+use candle_nn::{rotary_emb::rope, Linear, Module};
 
 use crate::smolvlm::custom_rmsnorm::CustomRmsNorm;
 
@@ -257,7 +257,7 @@ impl Block {
 
 pub struct SmolText {
     pub blocks: Vec<Block>,
-    norm: RmsNorm,
+    norm: CustomRmsNorm,
     lm_head: Linear,
 }
 
@@ -265,7 +265,7 @@ impl SmolText {
     pub fn load(c: &HashMap<String, Tensor>) -> Result<Self> {
         Ok(Self {
             blocks: (0u8..=23).map(|i| Block::load(c, i).unwrap()).collect(),
-            norm: RmsNorm::new(c["model.text_model.norm.weight"].clone(), 1e-5),
+            norm: CustomRmsNorm::new(c["model.text_model.norm.weight"].clone(), 1e-5),
             lm_head: Linear::new(c["lm_head.weight"].clone(), None),
         })
     }
