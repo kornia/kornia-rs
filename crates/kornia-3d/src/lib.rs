@@ -21,3 +21,6 @@ pub mod transforms;
 
 /// 3D vector traits.
 pub mod vector;
+
+/// Voxel Grid
+pub mod voxel_grid;
