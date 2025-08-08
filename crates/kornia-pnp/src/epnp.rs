@@ -1,6 +1,6 @@
 //! Efficient Perspective-n-Point (EPnP) solver
-//! Paper: https://www.tugraz.at/fileadmin/user_upload/Institute/ICG/Images/team_lepetit/publications/lepetit_ijcv08.pdf
-//! Reference: https://github.com/opencv/opencv/blob/4.x/modules/calib3d/src/epnp.cpp
+//! Paper: [Lepetit et al., IJCV 2009](https://www.tugraz.at/fileadmin/user_upload/Institute/ICG/Images/team_lepetit/publications/lepetit_ijcv08.pdf)
+//! Reference: [OpenCV EPnP implementation](https://github.com/opencv/opencv/blob/4.x/modules/calib3d/src/epnp.cpp)
 
 use crate::ops::{compute_centroid, gauss_newton};
 use crate::pnp::{NumericTol, PnPError, PnPResult, PnPSolver};
@@ -41,10 +41,10 @@ pub struct EPnPParams {
 /// * `k` – Camera intrinsics matrix.
 ///
 /// # Returns
-/// Tuple *(R, t, rvec)* where
-/// * `R` – 3×3 rotation **world → camera**,
-/// * `t` – 3-vector translation,
-/// * `rvec` – Rodrigues axis-angle representation of `R`.
+/// Tuple (`R`, `t`, `rvec`) where
+/// - `R`: 3×3 rotation, mapping from world → camera
+/// - `t`: 3-vector translation
+/// - `rvec`: Rodrigues axis-angle representation of `R`
 pub fn solve_epnp(
     points_world: &[[f32; 3]],
     points_image: &[[f32; 2]],
@@ -79,10 +79,9 @@ pub fn solve_epnp(
 
     // Null-space of M (4 right-singular vectors associated with smallest singular values)
     let svd = m_mat.svd(true, true);
-    let v_t = match svd.v_t {
-        Some(v) => v,
-        None => return Err(PnPError::SvdFailed("Failed to compute V^T".to_string())),
-    };
+    let v_t = svd
+        .v_t
+        .ok_or_else(|| PnPError::SvdFailed("Failed to compute V^T".to_string()))?;
     let cols = 12;
     let start_col = cols - 4;
     let null4 = v_t.rows(start_col, 4).transpose(); // shape 12×4
@@ -116,8 +115,8 @@ pub fn solve_epnp(
     let mut best_t = [0.0; 3];
 
     for bet in &betas_refined {
-        let (r_c, t_c) = pose_from_betas(bet, &null4, &cw, &alphas);
-        let err = rmse_px(points_world, points_image, &r_c, &t_c, k);
+        let (r_c, t_c) = pose_from_betas(bet, &null4, &cw, &alphas)?;
+        let err = rmse_px(points_world, points_image, &r_c, &t_c, k)?;
         if err < best_err {
             best_err = err;
             best_r = r_c;
@@ -155,7 +154,7 @@ fn pose_from_betas(
     null4: &DMatrix<f32>, // 12×4 matrix (V)
     cw: &[[f32; 3]; 4],   // control points in world frame
     alphas: &[[f32; 4]],  // barycentric coordinates for each world point
-) -> ([[f32; 3]; 3], [f32; 3]) {
+) -> Result<([[f32; 3]; 3], [f32; 3]), PnPError> {
     let beta_vec = Vector4::from_column_slice(betas);
     let cc_flat = null4 * beta_vec; // 12×1 vector
 
@@ -184,9 +183,9 @@ fn pose_from_betas(
     let cw_vec3: Vec<Vec3> = cw.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect();
     let cc_vec3: Vec<Vec3> = cc.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect();
 
-    let (r, t, _s) = umeyama(&cw_vec3, &cc_vec3);
+    let (r, t, _s) = umeyama(&cw_vec3, &cc_vec3).map_err(|e| PnPError::SvdFailed(e.to_string()))?;
 
-    (r, t)
+    Ok((r, t))
 }
 
 /// Root-mean-square reprojection error in pixels.
@@ -196,8 +195,15 @@ fn rmse_px(
     r: &[[f32; 3]; 3],
     t: &[f32; 3],
     k: &[[f32; 3]; 3],
-) -> f32 {
-    assert_eq!(points_world.len(), points_image.len());
+) -> Result<f32, PnPError> {
+    if points_world.len() != points_image.len() {
+        return Err(PnPError::MismatchedArrayLengths {
+            left_name: "world points",
+            left_len: points_world.len(),
+            right_name: "image points",
+            right_len: points_image.len(),
+        });
+    }
 
     let fx = k[0][0];
     let fy = k[1][1];
@@ -232,7 +238,7 @@ fn rmse_px(
         sum_sq += du.mul_add(du, dv * dv); // FMA where available
     }
 
-    (sum_sq / n).sqrt()
+    Ok((sum_sq / n).sqrt())
 }
 
 fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
@@ -259,7 +265,7 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
         (s_diag[1].sqrt(), v.y_axis),
         (s_diag[2].sqrt(), v.z_axis),
     ];
-    axes_sig.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    axes_sig.sort_by(|a, b| b.0.total_cmp(&a.0));
 
     let c_vec = Vec3::from_array(c);
     let mut cw = [[0.0; 3]; 4];
@@ -277,15 +283,14 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
 /// 4 control points returned by `select_control_points`.
 ///
 /// # Arguments
-/// * `points_world` – World points *(N,3)*.
-/// * `cw` – Control points *(4,3)*.
-/// * `eps` – Threshold that decides whether the control-point tetrahedron is
-///   degenerate. If the determinant of the 3-by-3 matrix built from `cw` is
-///   smaller than `eps`, a Moore–Penrose pseudo-inverse is used instead of the exact inverse.
+/// - `points_world`: World points, shape `(N, 3)`.
+/// - `cw`: Control points, shape `(4, 3)`.
+/// - `eps`: Degeneracy threshold for the control-point tetrahedron. If `det(B) < eps`,
+///   a Moore–Penrose pseudo-inverse is used instead of the exact inverse.
 ///
 /// # Returns
-/// Vector of length *N* where each element is `[α0, α1, α2, α3]` such that
-/// `α0 + α1 + α2 + α3 = 1` and `pw_i = Σ αj Cw_j`.
+/// `Vec<[f32; 4]>` of length `N`. For each point, the weights `[a0, a1, a2, a3]` satisfy
+/// `a0 + a1 + a2 + a3 = 1` and `pw_i = sum_j(a_j * Cw_j)`.
 fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) -> Vec<[f32; 4]> {
     // Build B = [C1 - C0, C2 - C0, C3 - C0].
     let c0 = Vec3::new(cw[0][0], cw[0][1], cw[0][2]);
@@ -338,15 +343,16 @@ fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) 
         .collect()
 }
 
-/// Construct the 2N×12 design matrix **M** used by EPnP.
+/// Construct the 2N x 12 design matrix `M` used by EPnP.
 ///
-/// * `alphas` – Barycentric coordinates for each world point, produced by
-///   [`compute_barycentric`]; shape *(N,4)*.
-/// * `points_image`     – Pixel coordinates for each correspondence; shape *(N,2)*.
-/// * `k`      – Camera intrinsics 3×3 matrix.
+/// # Arguments
+/// - `alphas`: Barycentric coordinates for each world point, produced by [`compute_barycentric`]; shape `(N, 4)`.
+/// - `points_image`: Pixel coordinates for each correspondence; shape `(N, 2)`.
+/// - `k`: Camera intrinsics 3 x 3 matrix.
 ///
-/// The output is a vector of length `2*N` where each element is the 12-vector
-/// corresponding to a row of **M**. Returns an error if the input slices differ in length.
+/// # Returns
+/// `Result<Vec<[f32; 12]>, PnPError>`: a vector of length `2*N` where each element is the 12-vector
+/// corresponding to a row of `M` (two rows per correspondence). Returns an error if the input slices differ in length.
 fn build_m(
     alphas: &[[f32; 4]],
     points_image: &[[f32; 2]],

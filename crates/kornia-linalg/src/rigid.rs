@@ -4,10 +4,18 @@
 use glam::Vec3;
 use nalgebra::{Matrix3, SVD};
 
+/// Rotation (R), translation (t), and scale (s) output of Umeyama without scaling (s = 1).
+pub type UmeyamaOutput = ([[f32; 3]; 3], [f32; 3], f32);
+
+/// Result type alias for Umeyama.
+pub type UmeyamaResult = Result<UmeyamaOutput, &'static str>;
+
 /// Umeyama/Kabsch algorithm without scale.
 /// Returns (R, t, s) where s == 1.0.
-pub fn umeyama(src: &[Vec3], dst: &[Vec3]) -> ([[f32; 3]; 3], [f32; 3], f32) {
-    assert_eq!(src.len(), dst.len());
+pub fn umeyama(src: &[Vec3], dst: &[Vec3]) -> UmeyamaResult {
+    if src.len() != dst.len() {
+        return Err("Source and destination arrays must have the same length");
+    }
     let n = src.len() as f32;
 
     // Centroids
@@ -51,8 +59,8 @@ pub fn umeyama(src: &[Vec3], dst: &[Vec3]) -> ([[f32; 3]; 3], [f32; 3], f32) {
     ]);
 
     let svd = SVD::new(h_na, true, true);
-    let u = svd.u.unwrap();
-    let v_t = svd.v_t.unwrap();
+    let u = svd.u.ok_or("Failed to compute U")?;
+    let v_t = svd.v_t.ok_or("Failed to compute V^T")?;
 
     let mut r_na = u * v_t;
     if r_na.determinant() < 0.0 {
@@ -70,7 +78,7 @@ pub fn umeyama(src: &[Vec3], dst: &[Vec3]) -> ([[f32; 3]; 3], [f32; 3], f32) {
         t[r] = mu_d[r] - (r_arr[r][0] * mu_s[0] + r_arr[r][1] * mu_s[1] + r_arr[r][2] * mu_s[2]);
     }
 
-    (r_arr, t, 1.0)
+    Ok((r_arr, t, 1.0))
 }
 
 #[cfg(test)]
@@ -104,7 +112,7 @@ mod tests {
             dst[i] = apply_rt(&r, &t, &src_array);
         }
 
-        let (r_est, t_est, _s) = umeyama(&src, &dst);
+        let (r_est, t_est, _s) = umeyama(&src, &dst).unwrap();
         for i in 0..3 {
             for j in 0..3 {
                 assert_relative_eq!(r_est[i][j], r[i][j], epsilon = 1e-6);
