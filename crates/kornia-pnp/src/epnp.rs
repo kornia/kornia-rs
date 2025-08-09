@@ -79,9 +79,9 @@ pub fn solve_epnp(
 
     // Null-space of M (4 right-singular vectors associated with smallest singular values)
     let svd = m_mat.svd(true, true);
-    let v_t = svd
-        .v_t
-        .ok_or_else(|| PnPError::SvdFailed("Failed to compute V^T".to_string()))?;
+    let Some(v_t) = svd.v_t else {
+        return Err(PnPError::SvdFailed("Failed to compute V^T".to_string()));
+    };
     let cols = 12;
     let start_col = cols - 4;
     let null4 = v_t.rows(start_col, 4).transpose(); // shape 12×4
@@ -544,7 +544,7 @@ mod solve_epnp_tests {
     use approx::assert_relative_eq;
 
     #[test]
-    fn test_solve_epnp() {
+    fn test_solve_epnp() -> Result<(), PnPError> {
         // Hardcoded test data verified with OpenCV
         let points_world: [[f32; 3]; 6] = [
             [0.0315, 0.03333, -0.10409],
@@ -585,7 +585,7 @@ mod solve_epnp_tests {
             assert_relative_eq!(alpha.iter().sum::<f32>(), 1.0, epsilon = 1e-9);
         }
 
-        let m = build_m(&alphas, &points_image, &k).unwrap();
+        let m = build_m(&alphas, &points_image, &k)?;
         assert_eq!(m.len(), 2 * points_world.len());
         for row in &m {
             assert_eq!(row.len(), 12);
@@ -614,8 +614,7 @@ mod solve_epnp_tests {
             assert_relative_eq!(m[1][k], expected_y[k], epsilon = 1e-9);
         }
 
-        let result = EPnP::solve(&points_world, &points_image, &k, &EPnPParams::default())
-            .expect("EPnP::solve should succeed");
+        let result = EPnP::solve(&points_world, &points_image, &k, &EPnPParams::default())?;
         let r = result.rotation;
         let t = result.translation;
         let rvec = result.rvec;
@@ -635,5 +634,6 @@ mod solve_epnp_tests {
         assert_relative_eq!(rvec[0], -0.39580156, epsilon = 1e-2);
         assert_relative_eq!(rvec[1], -0.8011695, epsilon = 1e-2);
         assert_relative_eq!(rvec[2], 0.08711894, epsilon = 1e-2);
+        Ok(())
     }
 }

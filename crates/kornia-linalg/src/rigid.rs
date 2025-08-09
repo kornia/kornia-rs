@@ -3,18 +3,33 @@
 // TODO: Make this work with kornia-linalg SVD(encountered some issues with precision)
 use glam::Vec3;
 use nalgebra::{Matrix3, SVD};
+use thiserror::Error;
 
 /// Rotation (R), translation (t), and scale (s) output of Umeyama without scaling (s = 1).
 pub type UmeyamaOutput = ([[f32; 3]; 3], [f32; 3], f32);
 
+/// Error type for Umeyama rigid alignment operations.
+#[derive(Debug, Error)]
+pub enum UmeyamaError {
+    /// Source and destination arrays must have the same length
+    #[error("Source and destination arrays must have the same length")]
+    MismatchedInputLengths,
+    /// Failed to compute U in SVD
+    #[error("Failed to compute U in SVD")]
+    SvdU,
+    /// Failed to compute V^T in SVD
+    #[error("Failed to compute V^T in SVD")]
+    SvdVT,
+}
+
 /// Result type alias for Umeyama.
-pub type UmeyamaResult = Result<UmeyamaOutput, &'static str>;
+pub type UmeyamaResult = Result<UmeyamaOutput, UmeyamaError>;
 
 /// Umeyama/Kabsch algorithm without scale.
 /// Returns (R, t, s) where s == 1.0.
 pub fn umeyama(src: &[Vec3], dst: &[Vec3]) -> UmeyamaResult {
     if src.len() != dst.len() {
-        return Err("Source and destination arrays must have the same length");
+        return Err(UmeyamaError::MismatchedInputLengths);
     }
     let n = src.len() as f32;
 
@@ -59,8 +74,12 @@ pub fn umeyama(src: &[Vec3], dst: &[Vec3]) -> UmeyamaResult {
     ]);
 
     let svd = SVD::new(h_na, true, true);
-    let u = svd.u.ok_or("Failed to compute U")?;
-    let v_t = svd.v_t.ok_or("Failed to compute V^T")?;
+    let Some(u) = svd.u else {
+        return Err(UmeyamaError::SvdU);
+    };
+    let Some(v_t) = svd.v_t else {
+        return Err(UmeyamaError::SvdVT);
+    };
 
     let mut r_na = u * v_t;
     if r_na.determinant() < 0.0 {
@@ -94,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn test_umeyama_synthetic_z90() {
+    fn test_umeyama_synthetic_z90() -> Result<(), UmeyamaError> {
         // Source points (square in XY plane, z=0)
         let src: [Vec3; 4] = [
             Vec3::new(0.0, 0.0, 0.0),
@@ -112,7 +131,7 @@ mod tests {
             dst[i] = apply_rt(&r, &t, &src_array);
         }
 
-        let (r_est, t_est, _s) = umeyama(&src, &dst).unwrap();
+        let (r_est, t_est, _s) = umeyama(&src, &dst)?;
         for i in 0..3 {
             for j in 0..3 {
                 assert_relative_eq!(r_est[i][j], r[i][j], epsilon = 1e-6);
@@ -121,5 +140,6 @@ mod tests {
         for k in 0..3 {
             assert_relative_eq!(t_est[k], t[k], epsilon = 1e-6);
         }
+        Ok(())
     }
 }

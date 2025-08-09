@@ -20,6 +20,7 @@ libm = ["glam/libm"]
 [dependencies]
 glam = { version = "0.30.0", default-features = false }
 nalgebra = "0.32"
+thiserror = "1.0"
 
 [dev-dependencies]
 faer = { workspace = true }
