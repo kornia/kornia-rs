@@ -1,5 +1,7 @@
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
 use kornia_3d::linalg;
+use kornia_linalg::svd::svd3;
+use kornia_linalg::{DMat3, DVec3, Mat3};
 
 /// Compute the transformation between two point clouds.
 pub(crate) fn fit_transformation(
@@ -14,16 +16,44 @@ pub(crate) fn fit_transformation(
     let (src_centroid, dst_centroid) = compute_centroids(points_in_src, points_in_dst);
 
     // compute covariance matrix
-    let mut hh = faer::Mat::<f64>::zeros(3, 3);
+    let mut hh = DMat3::ZERO;
     for (p_in_src, p_in_dst) in points_in_src.iter().zip(points_in_dst.iter()) {
-        let p_src = faer::col![p_in_src[0], p_in_src[1], p_in_src[2]] - &src_centroid;
-        let p_dst = faer::col![p_in_dst[0], p_in_dst[1], p_in_dst[2]] - &dst_centroid;
-        hh += p_src * p_dst.transpose();
+        let p_src = DVec3 {
+            x: p_in_src[0],
+            y: p_in_src[1],
+            z: p_in_src[2],
+        } - &src_centroid;
+        let p_dst = DVec3 {
+            x: p_in_dst[0],
+            y: p_in_dst[1],
+            z: p_in_dst[2],
+        } - &dst_centroid;
+        hh += DMat3::from_cols(p_src * p_dst.x, p_src * p_dst.y, p_src * p_dst.z);
     }
 
+    // Convert DMAT3 which is of type f64 to MAT3 of type f32 which is compatible with svd3
+    let hh_f32 = Mat3::from_cols(
+        hh.x_axis.as_vec3(),
+        hh.y_axis.as_vec3(),
+        hh.z_axis.as_vec3(),
+    );
+
     // solve the linear system H * x = 0 to find the rotation
-    let svd = hh.svd();
-    let (u_t, v) = (svd.u().transpose(), svd.v());
+    let svd = svd3(&hh_f32);
+
+    // Convert the MAT3 result of svd3 back to DMAT3
+    let u_f64 = DMat3::from_cols(
+        svd.u().x_axis.as_dvec3(),
+        svd.u().y_axis.as_dvec3(),
+        svd.u().z_axis.as_dvec3(),
+    );
+    let v_f64 = DMat3::from_cols(
+        svd.v().x_axis.as_dvec3(),
+        svd.v().y_axis.as_dvec3(),
+        svd.v().z_axis.as_dvec3(),
+    );
+
+    let (u_t, v) = (u_f64.transpose(), v_f64);
 
     // compute rotation matrix R = V * U^T
     let mut rr = v * u_t;
@@ -33,11 +63,11 @@ pub(crate) fn fit_transformation(
         log::warn!("WARNING: det(R) < 0.0, fixing it...");
         let v_neg = {
             let mut v_neg = v.to_owned();
-            v_neg.col_mut(2).copy_from(-v.col(2));
+            v_neg.col_mut(2).clone_from(&-v.col(2));
             v_neg
         };
         // TODO: improve performance by using matmul33
-        faer::linalg::matmul::matmul(&mut rr, &v_neg, u_t, None, 1.0, faer::Parallelism::None);
+        rr = v_neg * u_t;
     }
 
     // compute translation vector t = C_dst - R * C_src
@@ -46,7 +76,7 @@ pub(crate) fn fit_transformation(
     // copy results back to output
     for i in 0..3 {
         for j in 0..3 {
-            dst_r_src[i][j] = rr.read(i, j);
+            dst_r_src[i][j] = rr.col(j)[i];
         }
         dst_t_src[i] = t[i];
     }
@@ -62,16 +92,21 @@ pub(crate) fn fit_transformation(
 /// # Returns
 ///
 /// The centroids of the two sets of points.
-pub(crate) fn compute_centroids(
-    points1: &[[f64; 3]],
-    points2: &[[f64; 3]],
-) -> (faer::Col<f64>, faer::Col<f64>) {
-    let mut centroid1 = faer::Col::zeros(3);
-    let mut centroid2 = faer::Col::zeros(3);
+pub(crate) fn compute_centroids(points1: &[[f64; 3]], points2: &[[f64; 3]]) -> (DVec3, DVec3) {
+    let mut centroid1 = DVec3::ZERO;
+    let mut centroid2 = DVec3::ZERO;
 
     for (p1, p2) in points1.iter().zip(points2.iter()) {
-        centroid1 += faer::col![p1[0], p1[1], p1[2]];
-        centroid2 += faer::col![p2[0], p2[1], p2[2]];
+        centroid1 += DVec3 {
+            x: p1[0],
+            y: p1[1],
+            z: p1[2],
+        };
+        centroid2 += DVec3 {
+            x: p2[0],
+            y: p2[1],
+            z: p2[2],
+        };
     }
 
     centroid1 /= points1.len() as f64;
@@ -179,12 +214,12 @@ mod tests {
         let points1 = vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
         let points2 = vec![[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]];
         let (centroid1, centroid2) = compute_centroids(&points1, &points2);
-        assert_eq!(centroid1.read(0), 2.5);
-        assert_eq!(centroid1.read(1), 3.5);
-        assert_eq!(centroid1.read(2), 4.5);
-        assert_eq!(centroid2.read(0), 8.5);
-        assert_eq!(centroid2.read(1), 9.5);
-        assert_eq!(centroid2.read(2), 10.5);
+        assert_eq!(centroid1.x, 2.5);
+        assert_eq!(centroid1.y, 3.5);
+        assert_eq!(centroid1.z, 4.5);
+        assert_eq!(centroid2.x, 8.5);
+        assert_eq!(centroid2.y, 9.5);
+        assert_eq!(centroid2.z, 10.5);
     }
 
     #[test]
