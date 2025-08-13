@@ -1,0 +1,22 @@
+[package]
+name = "voxel_grid"
+authors.workspace = true
+categories.workspace = true
+description.workspace = true
+edition.workspace = true
+homepage.workspace = true
+include.workspace = true
+license.workspace = true
+license-file.workspace = true
+readme.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+kornia = { workspace = true }     # For k3d::io::pcd
+kornia-3d = { workspace = true }  # For PointCloud, VoxelGrid
+rerun = { workspace = true }      # For visualization
+argh = { workspace = true }       # For command-line args
+env_logger = { workspace = true } # For logging
+glam = { workspace = true }       # For DVec3
