@@ -408,8 +408,8 @@ mod tests {
     fn test_set_get_downsample_all_data() {
         let mut voxel_grid = VoxelGrid::new(DVec3::from_array([1.0, 1.0, 1.0])).unwrap();
         voxel_grid.set_downsample_all_data(false);
-        assert_eq!(voxel_grid.get_downsample_all_data(), false);
+        assert!(!voxel_grid.get_downsample_all_data());
         voxel_grid.set_downsample_all_data(true);
-        assert_eq!(voxel_grid.get_downsample_all_data(), true);
+        assert!(voxel_grid.get_downsample_all_data());
     }
 }
