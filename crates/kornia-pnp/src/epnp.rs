@@ -3,7 +3,7 @@
 //! Reference: [OpenCV EPnP implementation](https://github.com/opencv/opencv/blob/4.x/modules/calib3d/src/epnp.cpp)
 
 use crate::ops::{compute_centroid, gauss_newton};
-use crate::pnp::{NumericTol, PnPError, PnPResult, PnPSolver};
+use crate::pnp::{NumericTol, PnPError, PnPResult, PnPSolver, PnPSolverWithCamera};
 use glam::{Mat3, Mat3A, Vec3};
 use kornia_lie::so3::SO3;
 use kornia_linalg::rigid::umeyama;
@@ -146,6 +146,40 @@ pub fn solve_epnp(
         num_iterations: None,
         converged: Some(true),
     })
+}
+
+/// Solve Perspective-n-Point (EPnP) with camera model support.
+///
+/// This function automatically handles distortion correction if the camera model includes distortion parameters.
+///
+/// # Arguments
+/// * `points_world` – 3-D coordinates in the world frame, shape *(N,3)* with `N≥4`.
+/// * `points_image` – Corresponding pixel coordinates (may be distorted), shape *(N,2)*.
+/// * `camera` – Camera model with intrinsics and optional distortion.
+/// * `params` – EPnP solver parameters.
+///
+/// # Returns
+/// PnP result with estimated pose.
+pub fn solve_epnp_with_camera(
+    points_world: &[[f32; 3]],
+    points_image: &[[f32; 2]],
+    camera: &crate::camera::CameraModel,
+    params: &EPnPParams,
+) -> Result<PnPResult, PnPError> {
+    // If camera has distortion, undistort the image points first
+    let undistorted_image = if camera.has_distortion() {
+        camera.undistort_points(points_image).map_err(|e| {
+            PnPError::SvdFailed(format!("Failed to undistort points: {}", e))
+        })?
+    } else {
+        points_image.to_vec()
+    };
+
+    // Get intrinsics matrix for the solver
+    let k = camera.intrinsics_matrix();
+
+    // Call the original solver with undistorted points
+    solve_epnp(points_world, &undistorted_image, &k, params)
 }
 
 /// Compute pose (R, t) from a set of betas using the null-space vectors.

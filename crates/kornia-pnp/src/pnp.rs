@@ -1,6 +1,7 @@
 //! Common data types shared across Perspective-n-Point (PnP) solvers.
 
 use thiserror::Error;
+use crate::camera::CameraModel;
 
 /// Error types for PnP solvers.
 #[derive(Debug, Error)]
@@ -30,6 +31,10 @@ pub enum PnPError {
     /// Singular value decomposition failed
     #[error("SVD computation failed: {0}")]
     SvdFailed(String),
+
+    /// Camera model error
+    #[error("Camera model error: {0}")]
+    CameraError(String),
 }
 
 /// Numeric tolerances used by linear algebra routines throughout the PnP pipeline.
@@ -88,4 +93,51 @@ pub trait PnPSolver {
         k: &[[f32; 3]; 3],
         params: &Self::Param,
     ) -> Result<PnPResult, PnPError>;
+}
+
+/// Trait for PnP solvers that support camera models with distortion.
+pub trait PnPSolverWithCamera {
+    /// Solver-specific parameters.
+    type Param;
+
+    /// Solve for camera pose given 2D-3D correspondences with camera model support.
+    ///
+    /// # Arguments
+    /// * `world` – 3-D coordinates in the world frame.
+    /// * `image` – Corresponding pixel coordinates (may be distorted).
+    /// * `camera` – Camera model with intrinsics and optional distortion.
+    /// * `params` – Solver-specific parameters.
+    fn solve_with_camera(
+        world: &[[f32; 3]],
+        image: &[[f32; 2]],
+        camera: &CameraModel,
+        params: &Self::Param,
+    ) -> Result<PnPResult, PnPError>;
+}
+
+/// Default implementation for PnPSolverWithCamera that undistorts points and calls the original solver.
+impl<T: PnPSolver> PnPSolverWithCamera for T {
+    type Param = T::Param;
+
+    fn solve_with_camera(
+        world: &[[f32; 3]],
+        image: &[[f32; 2]],
+        camera: &CameraModel,
+        params: &Self::Param,
+    ) -> Result<PnPResult, PnPError> {
+        // If camera has distortion, undistort the image points first
+        let undistorted_image = if camera.has_distortion() {
+            camera.undistort_points(image).map_err(|e| {
+                PnPError::CameraError(format!("Failed to undistort points: {}", e))
+            })?
+        } else {
+            image.to_vec()
+        };
+
+        // Get intrinsics matrix for the solver
+        let k = camera.intrinsics_matrix();
+
+        // Call the original solver with undistorted points
+        T::solve(world, &undistorted_image, &k, params)
+    }
 }
