@@ -1,4 +1,5 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use rayon::prelude::*;
 
 /// Compute the pixel intensity histogram of an image.
 ///
@@ -41,7 +42,7 @@ use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 /// ```
 pub fn compute_histogram<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
-    hist: &mut Vec<usize>,
+    hist: &mut [usize],
     num_bins: usize,
 ) -> Result<(), ImageError> {
     if num_bins == 0 || num_bins > 256 {
@@ -55,12 +56,33 @@ pub fn compute_histogram<A: ImageAllocator>(
     // we assume 8-bit images for now and range [0, 255]
     let scale = 256.0 / num_bins as f32;
 
-    // TODO: check if this can be done in parallel
-    src.as_slice().iter().fold(hist, |histogram, &pixel| {
-        let bin_pos = (pixel as f32 / scale).floor();
-        histogram[bin_pos as usize] += 1;
-        histogram
-    });
+    let width = src.width();
+    let src_slice = src.as_slice();
+
+    // parallaized computation of histogram on local threads
+    let partial_hist = src_slice
+        .par_chunks_exact(width)
+        .map(|row| {
+            let mut local_hist = vec![0_usize; num_bins];
+            for &pixel in row {
+                let bin = (pixel as f32 / scale).floor() as usize;
+                local_hist[bin] += 1;
+            }
+            local_hist
+        })
+        .reduce(
+            || vec![0; num_bins],
+            |mut a, b| {
+                for (i, val) in b.into_iter().enumerate() {
+                    a[i] += val;
+                }
+                a
+            },
+        );
+
+    for (i, val) in partial_hist.into_iter().enumerate() {
+        hist[i] += val;
+    }
 
     Ok(())
 }
@@ -69,7 +91,6 @@ pub fn compute_histogram<A: ImageAllocator>(
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
     use kornia_tensor::CpuAllocator;
-
     #[test]
     fn test_compute_histogram() -> Result<(), ImageError> {
         let image = Image::new(

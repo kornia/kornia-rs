@@ -40,6 +40,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(io::png::write_image_png_u8, m)?)?;
     m.add_function(wrap_pyfunction!(io::png::write_image_png_u16, m)?)?;
     m.add_function(wrap_pyfunction!(io::jpeg::decode_image_jpeg, m)?)?;
+    m.add_function(wrap_pyfunction!(io::jpeg::decode_image_jpeg_info, m)?)?;
     m.add_function(wrap_pyfunction!(io::jpeg::read_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(io::jpeg::write_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(io::tiff::read_image_tiff_f32, m)?)?;

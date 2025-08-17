@@ -67,7 +67,7 @@ def test_decode_image_jpeg():
     img_path: Path = DATA_DIR / "dog.jpeg"
     with open(img_path, "rb") as f:
         img_data = f.read()
-    img: np.ndarray = K.decode_image_jpeg(bytes(img_data), (195, 258), "rgb")
+    img: np.ndarray = K.decode_image_jpeg(bytes(img_data))
 
     # check the image properties
     assert img.shape == (195, 258, 3)
@@ -75,6 +75,18 @@ def test_decode_image_jpeg():
 
     img_t = torch.from_numpy(img)
     assert img_t.shape == (195, 258, 3)
+
+
+def test_decode_image_jpeg_info():
+    img_path: Path = DATA_DIR / "dog.jpeg"
+    with open(img_path, "rb") as f:
+        img_data = f.read()
+    info: tuple[K.ImageSize, int] = K.decode_image_jpeg_info(bytes(img_data))
+
+    # check the image properties
+    assert info[0].width == 258
+    assert info[0].height == 195
+    assert info[1] == 3
 
 
 def test_decode_image_jpegturbo():
