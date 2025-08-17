@@ -7,7 +7,7 @@ use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     Image, ImageSize,
 };
-use kornia_imgproc::resize::resize_fast;
+use kornia_imgproc::resize::resize_fast_gray;
 
 use crate::{
     decoder::{decode_tags, Detection, GrayModelPair},
@@ -219,7 +219,7 @@ impl AprilTagDecoder {
             )?;
         } else {
             let downscale_img = unsafe { self.downscale_img.as_mut().unwrap_unchecked() };
-            resize_fast(
+            resize_fast_gray(
                 &src,
                 downscale_img,
                 kornia_imgproc::interpolation::InterpolationMode::Nearest,

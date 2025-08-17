@@ -145,7 +145,41 @@ where
 /// # Errors
 ///
 /// The function returns an error if the image cannot be resized.
-pub fn resize_fast<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+pub fn resize_fast<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, 3, A1>,
+    dst: &mut Image<u8, 3, A2>,
+    interpolation: InterpolationMode,
+) -> Result<(), ImageError> {
+    resize_fast_impl(src, dst, interpolation)
+}
+
+/// Resize a grayscale (single-channel) image to a new size using the [fast_image_resize](https://crates.io/crates/fast_image_resize) crate.
+///
+/// The function resizes a grayscale image to a new size using the specified interpolation mode.
+/// It supports only 1-channel images and u8 data type.
+///
+/// # Arguments
+///
+/// * `src` - The input grayscale image container with 1 channel.
+/// * `dst` - The output grayscale image container with 1 channel.
+/// * `interpolation` - The interpolation mode to use.
+///
+/// # Returns
+///
+/// The resized image with the new size.
+///
+/// # Errors
+///
+/// The function returns an error if the image cannot be resized.
+pub fn resize_fast_gray<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, 1, A1>,
+    dst: &mut Image<u8, 1, A2>,
+    interpolation: InterpolationMode,
+) -> Result<(), ImageError> {
+    resize_fast_impl(src, dst, interpolation)
+}
+
+fn resize_fast_impl<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<u8, C, A1>,
     dst: &mut Image<u8, C, A2>,
     interpolation: InterpolationMode,
