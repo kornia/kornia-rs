@@ -66,7 +66,7 @@ pub struct DecodeTagsConfig {
     pub min_tag_width: usize,
     /// Minimum difference between white and black pixels for thresholding.
     pub min_white_black_difference: u8,
-    /// TODO
+    /// Downscale factor for input images.
     pub downscale_factor: usize,
 }
 
@@ -220,7 +220,7 @@ impl AprilTagDecoder {
         } else {
             let downscale_img = unsafe { self.downscale_img.as_mut().unwrap_unchecked() };
             resize_fast_gray(
-                &src,
+                src,
                 downscale_img,
                 kornia_imgproc::interpolation::InterpolationMode::Nearest,
             )?;

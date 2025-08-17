@@ -34,7 +34,7 @@ struct Args {
     #[argh(option, short = 'm', default = "5")]
     min_white_black_difference: u8,
 
-    /// TODO
+    /// downscale factor for detection
     #[argh(option, short = 's', default = "2")]
     downscale_factor: usize,
 }
