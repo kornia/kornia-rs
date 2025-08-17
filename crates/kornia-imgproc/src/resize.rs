@@ -184,15 +184,6 @@ fn resize_fast_impl<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     dst: &mut Image<u8, C, A2>,
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
-    // if dst.size() != dst.size() {
-    //     return Err(ImageError::InvalidImageSize(
-    //         src.size().width,
-    //         src.size().height,
-    //         dst.size().width,
-    //         dst.size().height,
-    //     ));
-    // }
-
     // prepare the input image for the fast_image_resize crate
     let (src_cols, src_rows) = (src.cols(), src.rows());
     let src_data_len = src.as_slice().len();
