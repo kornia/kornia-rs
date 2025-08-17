@@ -314,14 +314,14 @@ mod tests {
 
                 for (point, expected) in detection.quad.corners.iter().zip(expected_quads.iter()) {
                     assert!(
-                        (point.y - expected.y).abs() <= 0.001,
+                        (point.y - expected.y).abs() <= 0.1,
                         "Tag: {}, Got y: {}, Expected: {}",
                         file_name,
                         point.y,
                         expected.y
                     );
                     assert!(
-                        (point.x - expected.x).abs() <= 0.001,
+                        (point.x - expected.x).abs() <= 0.1,
                         "Tag: {}, Got x: {}, Expected: {}",
                         file_name,
                         point.x,

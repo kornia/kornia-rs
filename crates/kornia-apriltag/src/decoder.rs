@@ -849,6 +849,7 @@ mod tests {
     #[test]
     fn test_decode_tags() -> Result<(), Box<dyn std::error::Error>> {
         let mut config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]);
+        config.downscale_factor = 1;
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
         let mut bin = Image::from_size_val(src.size(), Pixel::Skip, CpuAllocator)?;
