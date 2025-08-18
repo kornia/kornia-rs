@@ -1,5 +1,4 @@
 //! Camera models and distortion handling for PnP solvers.
-
 use thiserror::Error;
 
 /// Error types for camera operations.
@@ -69,6 +68,7 @@ impl CameraIntrinsics {
 
 /// Represents polynomial distortion parameters using the Brown-Conrady model.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(missing_docs)]
 pub struct PolynomialDistortion {
     /// Radial distortion coefficients
     pub k1: f32,
@@ -159,7 +159,7 @@ impl CameraModel {
     pub fn undistort_points(&self, points: &[[f32; 2]]) -> CameraResult<Vec<[f32; 2]>> {
         points
             .iter()
-            .map(|&[x, y]| self.undistort_point(x, y))
+            .map(|&[x, y]| self.undistort_point(x, y).map(|(ux, uy)| [ux, uy]))
             .collect()
     }
 
@@ -176,7 +176,7 @@ impl CameraModel {
     pub fn distort_points(&self, points: &[[f32; 2]]) -> CameraResult<Vec<[f32; 2]>> {
         points
             .iter()
-            .map(|&[x, y]| self.distort_point(x, y))
+            .map(|&[x, y]| self.distort_point(x, y).map(|(dx, dy)| [dx, dy]))
             .collect()
     }
 
@@ -360,3 +360,4 @@ mod tests {
         assert!((original_point[1] - undistorted.1).abs() < 1e-3);
     }
 }
+

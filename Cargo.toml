@@ -5,7 +5,7 @@ members = [
     "examples/*",
     # "kornia-py",
 ]
-exclude = ["kornia-py", "examples/dora", "examples/pnp_with_distortion"]
+exclude = ["kornia-py", "examples/dora"]
 
 [workspace.package]
 authors = ["kornia.org <edgar@kornia.org>"]
