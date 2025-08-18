@@ -29,8 +29,8 @@ impl<const C: usize> ToPyImage for Image<u8, C, CpuAllocator> {
     fn to_pyimage(self) -> PyImage {
         Python::with_gil(|py| unsafe {
             let array = PyArray::<u8, _>::new(py, [self.height(), self.width(), C], false);
-            let contiguous_data = self.to_contiguous(CpuAllocator).as_ptr(); 
-            std::ptr::copy_nonoverlapping(contiguous_data, array.data(), self.numel());
+            let contiguous = self.0.to_standard_layout(CpuAllocator);
+            std::ptr::copy_nonoverlapping(contiguous.storage.as_ptr(), array.data(), contiguous.numel());
             array.unbind()
         })
     }
@@ -40,8 +40,8 @@ impl<const C: usize> ToPyImageU16 for Image<u16, C, CpuAllocator> {
     fn to_pyimage_u16(self) -> PyImageU16 {
         Python::with_gil(|py| unsafe {
             let array = PyArray::<u16, _>::new(py, [self.height(), self.width(), C], false);
-            let contiguous_data = self.to_contiguous(CpuAllocator).as_ptr(); 
-            std::ptr::copy_nonoverlapping(contiguous_data, array.data(), self.numel());
+            let contiguous = self.0.to_standard_layout(CpuAllocator);
+            std::ptr::copy_nonoverlapping(contiguous.storage.as_ptr(), array.data(), contiguous.numel());
             array.unbind()
         })
     }
@@ -51,8 +51,8 @@ impl<const C: usize> ToPyImageF32 for Image<f32, C, CpuAllocator> {
     fn to_pyimage_f32(self) -> PyImageF32 {
         Python::with_gil(|py| unsafe {
             let array = PyArray::<f32, _>::new(py, [self.height(), self.width(), C], false);
-            let contiguous_data = self.to_contiguous(CpuAllocator).as_ptr(); 
-            std::ptr::copy_nonoverlapping(contiguous_data, array.data(), self.numel());
+            let contiguous = self.0.to_standard_layout(CpuAllocator);
+            std::ptr::copy_nonoverlapping(contiguous.storage.as_ptr(), array.data(), contiguous.numel());
             array.unbind()
         })
     }
