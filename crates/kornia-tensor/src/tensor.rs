@@ -628,11 +628,8 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     ///
     /// ```
     /// use kornia_tensor::{Tensor, CpuAllocator};
-    ///
     /// let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-    /// let mut t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator)
-    ///     .expect("valid tensor");
-    /// 
+    /// let mut t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator).unwrap();
     /// // arbitrary incorrect stride
     /// t.strides = [10, 5, 1];
     /// assert!(!t.is_standard_layout());
@@ -659,17 +656,14 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// ```
     /// use kornia_tensor::{Tensor, CpuAllocator};
     /// let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-    /// let mut t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data.clone(), CpuAllocator)
-    ///     .expect("valid tensor");
-    /// 
+    /// let mut t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data.clone(), CpuAllocator).unwrap();
     /// // altering strides
     /// t.strides = [1, 6, 2];
     /// assert!(!t.is_standard_layout());
-    /// 
     /// let t2 = t.to_standard_layout(CpuAllocator);
     /// assert!(t2.is_standard_layout());
     /// ```
-    pub fn to_standard_layout(&self, alloc: A) -> Self 
+    pub fn to_standard_layout(&self, alloc: A) -> Self
     where
         T: Clone,
     {
@@ -679,7 +673,8 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
         let slice = self.storage.as_slice();
 
         for _ in 0..total_elems {
-            let offset = idx.iter()
+            let offset = idx
+                .iter()
                 .zip(self.strides.iter())
                 .map(|(&i, &s)| i * s)
                 .sum::<usize>();
@@ -1416,48 +1411,45 @@ mod tests {
     }
 
     #[test]
-    fn contiguous_tensor_is_standard_layout_true() {
+    fn contiguous_tensor_is_standard_layout_true() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator)
-            .expect("valid tensor");
+        let t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
         assert!(t.is_standard_layout());
+        Ok(())
     }
 
     #[test]
-    fn broken_stride_is_standard_layout_false() {
+    fn broken_stride_is_standard_layout_false() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let mut t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator)
-            .expect("valid tensor");
-
+        let mut t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator)?;
         // arbitrary incorrect stride
         t.strides = [10, 5, 1];
         assert!(!t.is_standard_layout());
+        Ok(())
     }
 
     #[test]
-    fn contiguous_tensor_roundtrip() {
+    fn contiguous_tensor_roundtrip() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data.clone(), CpuAllocator)
-            .expect("valid tensor");
-
+        let t =
+            Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data.clone(), CpuAllocator)?;
         assert!(t.is_standard_layout());
-
         let t2 = t.to_standard_layout(CpuAllocator);
         assert!(t2.is_standard_layout());
         assert_eq!(t2.storage.as_slice(), data.as_slice());
+        Ok(())
     }
 
     #[test]
-    fn non_contiguous_to_standard_layout() {
+    fn non_contiguous_to_standard_layout() -> Result<(), TensorError> {
         let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let mut t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data.clone(), CpuAllocator)
-            .expect("valid tensor");
-
+        let mut t =
+            Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data.clone(), CpuAllocator)?;
         // altering strides
         t.strides = [1, 6, 2];
         assert!(!t.is_standard_layout());
-
         let t2 = t.to_standard_layout(CpuAllocator);
         assert!(t2.is_standard_layout());
+        Ok(())
     }
 }
