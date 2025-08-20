@@ -35,6 +35,7 @@ kornia-nn = { path = "crates/kornia-nn", version = "0.1.10-rc.6" }
 kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.10-rc.6" }
 kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.10-rc.6" }
 kornia-vlm = { path = "crates/kornia-vlm", version = "0.1.10-rc.6" }
+kornia-pnp = { path = "crates/kornia-pnp", version = "0.1.10-rc.6" }
 kornia = { path = "crates/kornia", version = "0.1.10-rc.6" }
 
 # dev dependencies for workspace

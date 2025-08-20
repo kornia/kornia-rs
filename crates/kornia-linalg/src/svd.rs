@@ -412,13 +412,13 @@ fn qr_decomposition(b_mat: &mut Mat3) -> QR3 {
 
 /// Wrapping function used to contain all of the required sub calls
 pub fn svd3(a: &Mat3) -> SVD3Set {
-    // Compute the eigenvectors of A^T * A, which is V in SVD (Singular Vectors)
-    let v = jacobi_eigenanalysis(Symmetric3x3::from_mat3x3(&(a.transpose().mul_mat3(a))));
+    // Compute the eigenvectors of A^T * A, which is V in SVD (right singular vectors)
+    let mut v = jacobi_eigenanalysis(Symmetric3x3::from_mat3x3(&(a.transpose().mul_mat3(a))));
     // Compute B = A * V
     let mut b = a.mul_mat3(&v);
 
     // Sort the singular values
-    sort_singular_values(&mut b, &mut v.clone());
+    sort_singular_values(&mut b, &mut v);
 
     // Perform QR decomposition on B to get Q and R
     let qr = qr_decomposition(&mut b);
