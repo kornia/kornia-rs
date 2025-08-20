@@ -2,11 +2,19 @@ use std::f32::consts::SQRT_2;
 
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 use kornia_tensor::CpuAllocator;
+use thiserror::Error;
+
+use crate::resize::resize_fast_gray;
 
 /// TODO
+#[derive(Error, Debug)]
 pub enum OrbError {
     /// Patch Size smaller than 2
+    #[error("Patch Size smaller than 2")]
     SmallPatchSize,
+    /// TODO
+    #[error("TODO")]
+    ImageError(#[from] kornia_image::ImageError),
 }
 
 /// TODO
@@ -92,12 +100,12 @@ impl Default for OrbDetector {
 
 impl OrbDetector {
     /// TODO
-    pub fn detect_and_compute<A1: ImageAllocator, A2: ImageAllocator, A3: ImageAllocator>(
+    pub fn detect_and_compute(
         &self,
-        src: &Image<u8, 1, A1>,
-        mask: Option<&Image<u8, 1, A2>>,
+        src: &Image<u8, 1, CpuAllocator>,
+        mut mask: Option<Image<u8, 1, CpuAllocator>>,
         keypoints: Option<Vec<KeyPoint>>,
-        descriptors: Option<&mut Image<u8, 1, A3>>,
+        descriptors: Option<&mut Image<u8, 1, CpuAllocator>>,
         use_provided_keypoints: bool,
     ) -> Result<(), OrbError> {
         if self.patch_size < 2 {
@@ -195,15 +203,14 @@ impl OrbDetector {
         });
         buf_size.y = (level_ofs.y + level_dy) as isize;
 
-        let img_pyramid: Image<u8, 1, _> = Image::from_size_val(
+        let mut img_pyramid: Image<u8, 1, _> = Image::from_size_val(
             ImageSize {
                 width: buf_size.x as usize,
                 height: buf_size.y as usize,
             },
             0,
             CpuAllocator,
-        )
-        .unwrap();
+        )?;
 
         let mut img_mask_pyramid = None;
         if mask.is_some() {
@@ -220,8 +227,8 @@ impl OrbDetector {
             );
         }
 
-        let prev_img = src;
-        let prev_mask = mask;
+        let mut prev_img = src.clone();
+        let mut prev_mask = mask.clone();
 
         (0..n_levels).for_each(|level| {
             let l_info = layer_info[level];
@@ -240,36 +247,123 @@ impl OrbDetector {
                 height: whole_size.y,
             };
 
-            let ext_img = ImageView::from_rect(&img_pyramid, &whole_l_info);
-            let curr_img = ImageView::from_view_rect(
-                &ext_img,
-                &Rect {
+            // TODO: Don't call unwrap, return the error
+            let mut ext_img = ImageViewMut::from_rect(&mut img_pyramid, whole_l_info).unwrap();
+            let mut curr_img = ImageViewMut::from_rect(
+                ext_img.as_image_mut(),
+                Rect {
                     x: border as u32,
                     y: border as u32,
                     width: sz.x,
                     height: sz.y,
                 },
-            );
+            )
+            .unwrap();
 
-            let (ext_mask, curr_mask) = match mask {
+            let (ext_mask, mut curr_mask) = match mask {
                 Some(mask) => {
-                    let ext_mask = ImageView::from_rect(mask, &whole_l_info);
-                    let curr_mask = ImageView::from_view_rect(
-                        &ext_mask,
-                        &Rect {
+                    let ext_mask = ImageViewMut::from_rect(&mut mask, whole_l_info).unwrap();
+                    let curr_mask = ImageViewMut::from_rect(
+                        ext_mask.as_image_mut(),
+                        Rect {
                             x: border as u32,
                             y: border as u32,
                             width: sz.x,
                             height: sz.y,
                         },
-                    );
+                    )
+                    .unwrap();
 
                     (Some(ext_mask), Some(curr_mask))
                 }
                 None => (None, None),
             };
 
-            if level != self.first_level as usize {}
+            if level != self.first_level as usize {
+                // TODO: Don't call unwrap, return result instead
+                resize_fast_gray(
+                    &prev_img,
+                    curr_img.as_image_mut(),
+                    crate::interpolation::InterpolationMode::Nearest,
+                )
+                .unwrap();
+
+                if mask.is_some() {
+                    let prev_mask = prev_mask.as_ref().unwrap();
+                    let mut curr_mask = curr_mask.unwrap();
+                    resize_fast_gray(
+                        prev_mask,
+                        curr_mask.as_image_mut(),
+                        crate::interpolation::InterpolationMode::Nearest,
+                    )
+                    .unwrap();
+                }
+
+                copy_make_border(
+                    curr_img.as_image(),
+                    ext_img.as_image_mut(),
+                    border,
+                    border,
+                    border,
+                    border,
+                    BorderType::default(),
+                );
+
+                if mask.is_some() {
+                    let curr_mask = curr_mask.unwrap();
+                    let mut ext_mask = ext_mask.unwrap();
+
+                    copy_make_border(
+                        curr_mask.as_image(),
+                        ext_mask.as_image_mut(),
+                        border,
+                        border,
+                        border,
+                        border,
+                        BorderType::Constant,
+                    );
+                } else {
+                    copy_make_border(
+                        src,
+                        ext_img.as_image_mut(),
+                        border,
+                        border,
+                        border,
+                        border,
+                        BorderType::Refelt101,
+                    );
+
+                    if mask.is_some() {
+                        let mask = mask.clone().unwrap();
+                        let mut ext_mask = ext_mask.unwrap();
+
+                        copy_make_border(
+                            &mask,
+                            ext_mask.as_image_mut(),
+                            border,
+                            border,
+                            border,
+                            border,
+                            BorderType::Constant,
+                        );
+                    }
+                }
+
+                if level > self.first_level as usize {
+                    prev_img = curr_img.as_image().clone();
+
+                    if let Some(curr_mask) = curr_mask {
+                        let curr_mask = curr_mask.as_image().clone();
+                        prev_mask = Some(curr_mask)
+                    } else {
+                        prev_mask = None;
+                    }
+                }
+            }
+
+            if do_keypoints {
+                unimplemented!()
+            }
         });
 
         Ok(())
@@ -278,6 +372,72 @@ impl OrbDetector {
 
 fn get_scale(level: i32, first_level: i32, scale_factor: f32) -> f32 {
     scale_factor.powi(level - first_level)
+}
+
+struct ImageViewMut<'a, T: Copy, A: ImageAllocator> {
+    img: Image<T, 1, CpuAllocator>,
+    original: &'a mut Image<T, 1, A>,
+    rect: Rect,
+}
+
+impl<'a, T: Copy, A: ImageAllocator> Drop for ImageViewMut<'a, T, A> {
+    fn drop(&mut self) {
+        let original_width = self.original.width();
+
+        let img_slice = self.img.as_slice();
+        let org_slice = self.original.as_slice_mut();
+
+        (0..self.rect.height as usize).for_each(|y| {
+            let idy = (y + self.rect.y as usize) * original_width;
+
+            (0..self.rect.width as usize).for_each(|x| {
+                let idx = x + self.rect.x as usize;
+                let i_original = idy + idx;
+                let i_img = y * self.img.width() + x;
+
+                org_slice[i_original] = img_slice[i_img];
+            });
+        });
+    }
+}
+
+impl<'a, T: Copy + Default, A: ImageAllocator> ImageViewMut<'a, T, A> {
+    pub fn from_rect(original: &'a mut Image<T, 1, A>, rect: Rect) -> Result<Self, OrbError> {
+        let img_size = ImageSize {
+            width: rect.width as usize,
+            height: rect.height as usize,
+        };
+
+        let mut img = Image::from_size_val(img_size, T::default(), CpuAllocator)?;
+        let img_slice = img.as_slice_mut();
+        let org_slice = original.as_slice();
+
+        (0..rect.height as usize).for_each(|y| {
+            let idy = (y + rect.y as usize) * original.width();
+
+            (0..rect.width as usize).for_each(|x| {
+                let idx = x + rect.x as usize;
+                let i_original = idy + idx;
+                let i_img = y * img_size.width + x;
+
+                img_slice[i_img] = org_slice[i_original];
+            });
+        });
+
+        Ok(Self {
+            img,
+            original,
+            rect,
+        })
+    }
+
+    pub fn as_image(&self) -> &Image<T, 1, CpuAllocator> {
+        &self.img
+    }
+
+    pub fn as_image_mut(&mut self) -> &mut Image<T, 1, CpuAllocator> {
+        &mut self.img
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -351,4 +511,40 @@ impl<'a, T, A: ImageAllocator> Iterator for ImageViewIterator<'a, T, A> {
 
         result
     }
+}
+
+#[derive(Default)]
+enum BorderType {
+    Constant,
+    Replicate,
+    Reflect,
+    Wrap,
+    #[default]
+    Refelt101,
+    Transparent,
+    Isolated,
+}
+
+fn copy_make_border<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, 1, A1>,
+    dst: &mut Image<u8, 1, A2>,
+    top: usize,
+    bottom: usize,
+    left: usize,
+    right: usize,
+    border_type: BorderType,
+) {
+    if top == 0 && left == 0 && bottom == 0 && right == 0 {
+        let dst_slice = dst.as_slice_mut();
+        dst_slice.copy_from_slice(src.as_slice());
+
+        return;
+    }
+
+    match border_type {
+        BorderType::Refelt101 => {}
+        _ => unimplemented!(),
+    }
+
+    todo!()
 }
