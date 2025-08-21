@@ -341,4 +341,130 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_lanczos_resize_filtering() -> Result<(), Box<dyn std::error::Error>> {
+        use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+        use kornia_imgproc::interpolation::InterpolationMode;
+        use kornia_imgproc::resize::resize_native;
+        use kornia_io::png::{read_image_png_rgb8, write_image_png_rgb8};
+        use std::path::Path;
+
+        // Test image path - assumes Zoneplate.png already exists
+        let test_image_path = Path::new("../../examples/smol_vlm/validation_data/Zoneplate.png");
+
+        if !test_image_path.exists() {
+            eprintln!("Error: Test image not found at {:?}", test_image_path);
+            eprintln!("Please ensure Zoneplate.png exists in the validation_data directory");
+            return Ok(()); // Skip test if image doesn't exist
+        }
+
+        // Load the test image and convert to f32
+        println!("Loading test image: {:?}", test_image_path);
+        let original_image_u8 = read_image_png_rgb8(test_image_path)?;
+        let original_image = {
+            let data: Vec<f32> = original_image_u8
+                .as_slice()
+                .iter()
+                .map(|&x| x as f32 / 255.0)
+                .collect();
+            Image::<f32, 3, CpuAllocator>::new(original_image_u8.size(), data, CpuAllocator)?
+        };
+
+        println!(
+            "Original image size: {}x{}",
+            original_image.size().width,
+            original_image.size().height
+        );
+
+        // Test different resize targets
+        let resize_targets = vec![
+            (128, 128), // Downscale
+            (256, 256), // Half size
+            (384, 384), // Model input size
+            (512, 512), // Same size (if original is 512x512)
+            (256, 384), // Non-square
+            (640, 480), // Different aspect ratio
+        ];
+
+        for (width, height) in resize_targets {
+            println!(
+                "Resizing to {}x{} using Lanczos filtering...",
+                width, height
+            );
+
+            // Create destination image
+            let mut resized_image = Image::<f32, 3, CpuAllocator>::from_size_val(
+                ImageSize { width, height },
+                0.0,
+                CpuAllocator,
+            )?;
+
+            // Resize using Lanczos interpolation
+            resize_native(
+                &original_image,
+                &mut resized_image,
+                InterpolationMode::Lanczos,
+            )?;
+
+            // Convert back to u8 and save
+            let resized_u8_data: Vec<u8> = resized_image
+                .as_slice()
+                .iter()
+                .map(|&x| (x.clamp(0.0, 1.0) * 255.0) as u8)
+                .collect();
+            let resized_u8_image = Image::<u8, 3, CpuAllocator>::new(
+                resized_image.size(),
+                resized_u8_data,
+                CpuAllocator,
+            )?;
+
+            let output_path = format!(
+                "../../examples/smol_vlm/validation_data/Zoneplate_{}x{}_lanczos.png",
+                width, height
+            );
+            write_image_png_rgb8(&output_path, &resized_u8_image)?;
+            println!("Saved resized image: {}", output_path);
+        }
+
+        // Test with different interpolation modes for comparison
+        println!("\nTesting different interpolation modes on 256x256:");
+        let modes = vec![
+            (InterpolationMode::Nearest, "nearest"),
+            (InterpolationMode::Bilinear, "bilinear"),
+            (InterpolationMode::Lanczos, "lanczos"),
+        ];
+
+        for (mode, name) in modes {
+            let mut resized = Image::<f32, 3, CpuAllocator>::from_size_val(
+                ImageSize {
+                    width: 256,
+                    height: 256,
+                },
+                0.0,
+                CpuAllocator,
+            )?;
+
+            resize_native(&original_image, &mut resized, mode)?;
+
+            // Convert to u8
+            let resized_u8_data: Vec<u8> = resized
+                .as_slice()
+                .iter()
+                .map(|&x| (x.clamp(0.0, 1.0) * 255.0) as u8)
+                .collect();
+            let resized_u8_image =
+                Image::<u8, 3, CpuAllocator>::new(resized.size(), resized_u8_data, CpuAllocator)?;
+
+            let output_path = format!(
+                "../../examples/smol_vlm/validation_data/Zoneplate_256x256_{}.png",
+                name
+            );
+            write_image_png_rgb8(&output_path, &resized_u8_image)?;
+            println!("Saved {}: {}", name, output_path);
+        }
+
+        println!("Lanczos filtering test completed successfully!");
+        Ok(())
+    }
 }

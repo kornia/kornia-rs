@@ -2,15 +2,6 @@ from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
 import torch
-from PIL import Image
-from transformers import AutoProcessor, AutoModelForVision2Seq
-from transformers.image_utils import load_image
-
-DEVICE = "cuda"
-
-
-import torch, random, numpy as np
-from transformers import set_seed
 
 from safetensors import safe_open
 
