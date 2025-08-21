@@ -2,10 +2,10 @@
 #![allow(unused_attributes)]
 
 use candle_core::{DType, Result, Tensor};
-use candle_nn::{Conv2d, Conv2dConfig, Embedding, Linear, Module};
+use candle_nn::{Conv2d, Conv2dConfig, Embedding, LayerNorm, Linear, Module};
 use std::collections::HashMap;
 
-use super::custom_layernorm::CustomLayerNorm;
+// use super::custom_layernorm::CustomLayerNorm;
 
 const NUM_OF_HEADS: usize = 16;
 const HEAD_DIM: usize = 72;
@@ -29,7 +29,6 @@ impl Attention {
 
     fn forward(&self, x: &Tensor, attention_mask: &Tensor) -> Result<Tensor> {
         let (batches, patches, hidden_size) = x.dims3()?;
-
         let q = self.q_proj.forward(x)?;
         let k = self.k_proj.forward(x)?;
         let v = self.v_proj.forward(x)?;
@@ -44,7 +43,8 @@ impl Attention {
             .contiguous()?;
         let v = v
             .reshape((batches, patches, NUM_OF_HEADS, HEAD_DIM))?
-            .transpose(1, 2)?;
+            .transpose(1, 2)?
+            .contiguous()?;
 
         let y = {
             let in_dtype = q.dtype();
@@ -77,13 +77,15 @@ struct Mlp {
 impl Mlp {
     pub fn new(fc1: Linear, fc2: Linear) -> Result<Self> {
         let device = &fc1.weight().device().clone();
+        let dtype = fc1.weight().dtype();
+
         Ok(Self {
             fc1,
             fc2,
-            gelu_coeff: Tensor::new(0.044715, device)?.to_dtype(DType::BF16)?,
-            sqrt_2_over_pi: Tensor::new(0.7978845608028654, device)?.to_dtype(DType::BF16)?,
-            one: Tensor::new(1.0, device)?.to_dtype(DType::BF16)?,
-            half: Tensor::new(0.5, device)?.to_dtype(DType::BF16)?,
+            gelu_coeff: Tensor::new(0.044715, device)?.to_dtype(dtype)?,
+            sqrt_2_over_pi: Tensor::new(0.7978845608028654, device)?.to_dtype(dtype)?,
+            one: Tensor::new(1.0, device)?.to_dtype(dtype)?,
+            half: Tensor::new(0.5, device)?.to_dtype(dtype)?,
         })
     }
 
@@ -121,9 +123,9 @@ impl Mlp {
 
 struct Block {
     self_attn: Attention,
-    layer_norm1: CustomLayerNorm,
+    layer_norm1: LayerNorm,
     mlp: Mlp,
-    layer_norm2: CustomLayerNorm,
+    layer_norm2: LayerNorm,
 }
 
 impl Block {
@@ -152,12 +154,12 @@ impl Block {
                 Linear::new(w("self_attn.v_proj"), Some(b("self_attn.v_proj"))),
                 Linear::new(w("self_attn.out_proj"), Some(b("self_attn.out_proj"))),
             )?,
-            layer_norm1: CustomLayerNorm::new(w("layer_norm1"), b("layer_norm1"), 1e-6),
+            layer_norm1: LayerNorm::new(w("layer_norm1"), b("layer_norm1"), 1e-6),
             mlp: Mlp::new(
                 Linear::new(w("mlp.fc1"), Some(b("mlp.fc1"))),
                 Linear::new(w("mlp.fc2"), Some(b("mlp.fc2"))),
             )?,
-            layer_norm2: CustomLayerNorm::new(w("layer_norm2"), b("layer_norm2"), 1e-6),
+            layer_norm2: LayerNorm::new(w("layer_norm2"), b("layer_norm2"), 1e-6),
         })
     }
 
@@ -185,6 +187,7 @@ impl Block {
         introspector.insert("post_layernorm", &x);
 
         let x = self.mlp.forward(&x, introspector)?;
+
         residual + x
     }
 }
@@ -193,7 +196,7 @@ pub struct SmolVision {
     patch_embedding: Conv2d,
     position_embedding: Embedding,
     blocks: Vec<Block>,
-    post_layernorm: CustomLayerNorm,
+    post_layernorm: LayerNorm,
 }
 
 impl SmolVision {
@@ -218,7 +221,7 @@ impl SmolVision {
                 1152,
             ),
             blocks: (0u8..=26).map(|id| Block::new(c, id).unwrap()).collect(),
-            post_layernorm: CustomLayerNorm::new(
+            post_layernorm: LayerNorm::new(
                 c["model.vision_model.post_layernorm.weight"].clone(),
                 c["model.vision_model.post_layernorm.bias"].clone(),
                 1e-6,
@@ -233,6 +236,7 @@ impl SmolVision {
         introspector: &mut super::introspector::ActivationIntrospector,
     ) -> Result<Tensor> {
         let device = pixel_values.device();
+        let dtype = self.patch_embedding.weight().dtype();
 
         // B = patch rows x patch cols (x number of images)
         // pixel_values: B x 3 x PatchHeight x PatchWidth
@@ -266,9 +270,10 @@ impl SmolVision {
         // patch_attention_masks: B x PatchRows x PatchCols x 196
 
         let mut hidden_states = {
+            // println!("Pixel values shape: {:?}", pixel_values.shape());
             let patch_embeddings = self
                 .patch_embedding
-                .forward(&pixel_values.to_dtype(DType::BF16)?)?;
+                .forward(&pixel_values.to_dtype(dtype)?)?;
 
             #[cfg(feature = "debug")]
             introspector.insert("patch_embeddings", &patch_embeddings);
@@ -306,5 +311,34 @@ impl SmolVision {
         introspector.stop_tracking_depth();
 
         self.post_layernorm.forward(&hidden_states)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use candle_nn::Module;
+
+    #[test]
+    fn test_validating_vision_enc() -> Result<(), Box<dyn std::error::Error>> {
+        use candle_core::{DType, Device, Result, Tensor};
+
+        let zor = |l: &dyn Fn(&Tensor) -> Result<Tensor>,
+                   s: &[usize]|
+         -> Result<(Tensor, Tensor, Tensor)> {
+            let z = l(&Tensor::zeros(s, DType::BF16, &Device::Cpu)?)?;
+            let o = l(&Tensor::ones(s, DType::BF16, &Device::Cpu)?)?;
+            let r = l(&Tensor::rand(0.0, 1.0, s, &Device::Cpu)?)?.to_dtype(DType::BF16)?;
+            Ok((z, o, r))
+        };
+
+        let smol_vlm = super::super::SmolVlm::load_model(DType::BF16, &Device::Cpu)?.0;
+
+        // Pass a closure calling the forward method and include batch dim in the shape
+        let pte = zor(
+            &|t: &Tensor| smol_vlm.vision.patch_embedding.forward(t),
+            &[1, 3, 384, 384],
+        )?;
+
+        Ok(())
     }
 }

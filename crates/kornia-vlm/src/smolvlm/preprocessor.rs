@@ -68,6 +68,14 @@ pub fn preprocess_image<A: ImageAllocator>(
     // padding image for all dimensions to be multiples of the outer_patch_size
     let (img, mask) = {
         let (width, height) = (img.width(), img.height());
+
+        #[cfg(feature = "debug")]
+        println!(
+            "Patch blocks (HxW): {:?}x{:?}",
+            (height as u32).div_ceil(outer_patch_size),
+            (width as u32).div_ceil(outer_patch_size),
+        );
+
         let new_width = (width as u32).div_ceil(outer_patch_size) * outer_patch_size;
         let new_height = (height as u32).div_ceil(outer_patch_size) * outer_patch_size;
         let mut padded_img = Image::<u8, 3, _>::from_size_val(

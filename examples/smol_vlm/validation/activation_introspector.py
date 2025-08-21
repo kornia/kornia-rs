@@ -62,7 +62,15 @@ class ActivationIntrospector:
         for i in token_indices:
             for name in self.model_layers:
                 if subset is None or (subset is not None and name in subset):
-                    layers[name+f"_i{i}"] = report(rust_safetensor.get_tensor(name+f"_i{i}"), self.activations[name+f"_i{i}"].cpu())
+                    rust_tensor = rust_safetensor.get_tensor(name+f"_i{i}")
+                    python_tensor = self.activations[name+f"_i{i}"].cpu()
+                    try:
+                        layers[name+f"_i{i}"] = report(rust_tensor, python_tensor)
+                    except Exception as e:
+                        print(f"Error occured during token {i} for layer {name}: {e}")
+                        print(f"Rust tensor: {rust_tensor.shape}, {rust_tensor.dtype}")
+                        print(f"Python tensor: {python_tensor.shape}, {python_tensor.dtype}")
+                        raise e
 
         return layers
 

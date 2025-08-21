@@ -19,6 +19,7 @@ kornia-io = { workspace = true }
 kornia-vlm = { workspace = true, features = ["debug"] }
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
+png = "0.17"
 
 [features]
 cuda = ["kornia-vlm/cuda"]

@@ -1,7 +1,7 @@
 use argh::FromArgs;
 use kornia_vlm::smolvlm::{utils::SmolVlmConfig, SmolVlm};
 
-use kornia_io::jpeg::read_image_jpeg_rgb8;
+use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
 use std::path::PathBuf;
 
 #[derive(FromArgs)]
@@ -23,8 +23,15 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
 
-    // read the image
-    let image = read_image_jpeg_rgb8(args.image_path).ok();
+    // read the image based on file extension
+    let image = match args.image_path.extension().and_then(|ext| ext.to_str()) {
+        Some("jpg") | Some("jpeg") => read_image_jpeg_rgb8(&args.image_path).ok(),
+        Some("png") => read_image_png_rgb8(&args.image_path).ok(),
+        _ => {
+            eprintln!("Unsupported image format. Only JPEG and PNG are supported.");
+            return Ok(());
+        }
+    };
 
     // create the SmolVLM model
     let mut smolvlm = SmolVlm::new(SmolVlmConfig {

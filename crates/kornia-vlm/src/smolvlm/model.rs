@@ -46,7 +46,7 @@ impl Connector {
 pub struct SmolModel {
     embed: Embedding,
 
-    vision: SmolVision,
+    pub vision: SmolVision,
 
     connector: Connector,
     merged_embeds: Vec<Tensor>, // cache results

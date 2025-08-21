@@ -334,8 +334,8 @@ impl SmolVlm {
         let weights = repo.get("model.safetensors")?;
         let mut weights = candle_core::safetensors::load(weights, device)?;
 
-        if dtype != DType::BF16 {
-            for value in weights.values_mut() {
+        for value in weights.values_mut() {
+            if value.dtype() != dtype {
                 *value = value.to_dtype(dtype)?;
             }
         }
@@ -349,7 +349,7 @@ impl SmolVlm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use candle_core::Device;
+    use candle_core::{DType, Device};
     use candle_nn::{Linear, Module};
     use candle_onnx;
     use std::collections::HashMap;
