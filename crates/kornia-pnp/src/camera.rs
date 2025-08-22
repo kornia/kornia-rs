@@ -143,7 +143,7 @@ impl CameraModel {
 
     /// Check if the camera has distortion.
     pub fn has_distortion(&self) -> bool {
-        self.distortion.as_ref().map_or(false, |d| d.has_distortion())
+        self.distortion.as_ref().is_some_and(|d| d.has_distortion())
     }
 
     /// Undistort a point using iterative method.

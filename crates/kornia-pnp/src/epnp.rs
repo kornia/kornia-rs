@@ -3,7 +3,7 @@
 //! Reference: [OpenCV EPnP implementation](https://github.com/opencv/opencv/blob/4.x/modules/calib3d/src/epnp.cpp)
 
 use crate::ops::{compute_centroid, gauss_newton};
-use crate::pnp::{NumericTol, PnPError, PnPResult, PnPSolver, PnPSolverWithCamera};
+use crate::pnp::{NumericTol, PnPError, PnPResult, PnPSolver};
 use glam::{Mat3, Mat3A, Vec3};
 use kornia_lie::so3::SO3;
 use kornia_linalg::rigid::umeyama;
