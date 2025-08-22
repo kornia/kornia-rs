@@ -128,7 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              camera.distortion.as_ref().unwrap().k2);
     println!("Number of points: {}", world_pts.len());
 
-    // Test 1: Solve PnP with distorted points using the new camera model interface
+    // Solve PnP with distorted points using the new camera model interface
     println!("\n--- Test 1: PnP with camera model (handles distortion automatically) ---");
     let result_with_camera = kpnp::solve_pnp_with_camera(
         &world_pts, 
@@ -137,43 +137,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         kpnp::PnPMethod::EPnPDefault
     )?;
 
-    println!("Ground truth translation: {:?}", gt_t);
-    println!("Estimated translation  : {:?}", result_with_camera.translation);
-    if let Some(rmse) = result_with_camera.reproj_rmse {
-        println!("Reprojection RMSE: {:.3} px", rmse);
-    }
-
-    // Test 2: Solve PnP with undistorted points (traditional approach)
-    println!("\n--- Test 2: PnP with undistorted points (traditional approach) ---");
-    let result_undistorted = kpnp::solve_pnp(
-        &world_pts, 
-        &undistorted_image_pts, 
-        &camera.intrinsics_matrix(), 
-        kpnp::PnPMethod::EPnPDefault
-    )?;
-
-    println!("Ground truth translation: {:?}", gt_t);
-    println!("Estimated translation  : {:?}", result_undistorted.translation);
-    if let Some(rmse) = result_undistorted.reproj_rmse {
-        println!("Reprojection RMSE: {:.3} px", rmse);
-    }
-
-    // Test 3: Solve PnP with distorted points using old interface (should fail or give poor results)
-    println!("\n--- Test 3: PnP with distorted points using old interface (incorrect) ---");
-    let result_incorrect = kpnp::solve_pnp(
-        &world_pts, 
-        &distorted_image_pts, 
-        &camera.intrinsics_matrix(), 
-        kpnp::PnPMethod::EPnPDefault
-    )?;
-
-    println!("Ground truth translation: {:?}", gt_t);
-    println!("Estimated translation  : {:?}", result_incorrect.translation);
-    if let Some(rmse) = result_incorrect.reproj_rmse {
-        println!("Reprojection RMSE: {:.3} px", rmse);
-    }
-
-    // Reproject world points with estimated pose from Test 1
     let r_est = result_with_camera.rotation;
     let t_est = result_with_camera.translation;
     let mut img_reproj = Vec::with_capacity(world_pts.len());
@@ -209,12 +172,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     println!("\n=== Summary ===");
-    println!("Test 1 (with distortion handling): RMSE = {:.3} px", 
-             result_with_camera.reproj_rmse.unwrap_or(0.0));
-    println!("Test 2 (undistorted points): RMSE = {:.3} px", 
-             result_undistorted.reproj_rmse.unwrap_or(0.0));
-    println!("Test 3 (incorrect, distorted points): RMSE = {:.3} px", 
-             result_incorrect.reproj_rmse.unwrap_or(0.0));
+    println!("Ground truth translation: {:?}", gt_t);
+    println!("Estimated translation  : {:?}", result_with_camera.translation);
+    if let Some(rmse) = result_with_camera.reproj_rmse {
+        println!("Reprojection RMSE: {:.3} px", rmse);
+    }
 
     Ok(())
 }
