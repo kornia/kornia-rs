@@ -110,7 +110,7 @@ where
 /// ```
 /// use kornia_image::{Image, ImageSize};
 /// use kornia_image::allocator::CpuAllocator;
-/// use kornia_imgproc::resize::resize_fast;
+/// use kornia_imgproc::resize::resize_fast_rgb;
 /// use kornia_imgproc::interpolation::InterpolationMode;
 ///
 /// let image = Image::<_, 3, _>::new(
@@ -130,7 +130,7 @@ where
 ///
 /// let mut image_resized = Image::<_, 3, _>::from_size_val(new_size, 0, CpuAllocator).unwrap();
 ///
-/// resize_fast(
+/// resize_fast_rgb(
 ///   &image,
 ///   &mut image_resized,
 ///   InterpolationMode::Nearest,
