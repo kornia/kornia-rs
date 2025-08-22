@@ -145,7 +145,7 @@ where
 /// # Errors
 ///
 /// The function returns an error if the image cannot be resized.
-pub fn resize_fast<A1: ImageAllocator, A2: ImageAllocator>(
+pub fn resize_fast_rgb<A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<u8, 3, A1>,
     dst: &mut Image<u8, 3, A2>,
     interpolation: InterpolationMode,
@@ -171,7 +171,7 @@ pub fn resize_fast<A1: ImageAllocator, A2: ImageAllocator>(
 /// # Errors
 ///
 /// The function returns an error if the image cannot be resized.
-pub fn resize_fast_gray<A1: ImageAllocator, A2: ImageAllocator>(
+pub fn resize_fast_mono<A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<u8, 1, A1>,
     dst: &mut Image<u8, 1, A2>,
     interpolation: InterpolationMode,
@@ -193,7 +193,7 @@ fn resize_fast_impl<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
         3 => fr::PixelType::U8x3,
         1 => fr::PixelType::U8,
         // TODO: Find a way to generalise it further by supporting multiple types other than u8
-        _ => panic!("Unsupported number of channels: {C}. Only 1, 3, or 4 channels are supported for resize_fast."),
+        _ => return Err(ImageError::UnsupportedChannelCount(C)),
     };
 
     let src_image =
@@ -338,7 +338,7 @@ mod tests {
 
         let mut image_resized = Image::<_, 3, _>::from_size_val(new_size, 0, CpuAllocator)?;
 
-        super::resize_fast(
+        super::resize_fast_rgb(
             &image,
             &mut image_resized,
             super::InterpolationMode::Nearest,

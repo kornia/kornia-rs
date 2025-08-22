@@ -7,7 +7,7 @@ use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     Image, ImageSize,
 };
-use kornia_imgproc::resize::resize_fast_gray;
+use kornia_imgproc::resize::resize_fast_mono;
 
 use crate::{
     decoder::{decode_tags, Detection, GrayModelPair},
@@ -209,17 +209,8 @@ impl AprilTagDecoder {
         &mut self,
         src: &Image<u8, 1, A>,
     ) -> Result<Vec<Detection>, AprilTagError> {
-        if self.config.downscale_factor <= 1 {
-            // Step 1: Adaptive Threshold
-            adaptive_threshold(
-                src,
-                &mut self.bin_img,
-                &mut self.tile_min_max,
-                self.config.min_white_black_difference,
-            )?;
-        } else {
-            let downscale_img = unsafe { self.downscale_img.as_mut().unwrap_unchecked() };
-            resize_fast_gray(
+        if let Some(downscale_img) = self.downscale_img.as_mut() {
+            resize_fast_mono(
                 src,
                 downscale_img,
                 kornia_imgproc::interpolation::InterpolationMode::Nearest,
@@ -228,6 +219,14 @@ impl AprilTagDecoder {
             // Step 1: Adaptive Threshold
             adaptive_threshold(
                 downscale_img,
+                &mut self.bin_img,
+                &mut self.tile_min_max,
+                self.config.min_white_black_difference,
+            )?;
+        } else {
+            // Step 1: Adaptive Threshold
+            adaptive_threshold(
+                src,
                 &mut self.bin_img,
                 &mut self.tile_min_max,
                 self.config.min_white_black_difference,

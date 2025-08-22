@@ -52,4 +52,8 @@ pub enum ImageError {
     /// Error when the sigma value is invalid.
     #[error("Invalid sigma values {0} and {1}")]
     InvalidSigmaValue(f32, f32),
+
+    /// Error when the channel count is unsupported.
+    #[error("Unsupported channel count {0}")]
+    UnsupportedChannelCount(usize),
 }
