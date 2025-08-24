@@ -7,11 +7,11 @@ pub enum CameraError {
     /// Invalid camera intrinsics matrix
     #[error("Invalid camera intrinsics matrix: {0}")]
     InvalidIntrinsics(String),
-    
+
     /// Invalid distortion parameters
     #[error("Invalid distortion parameters: {0}")]
     InvalidDistortion(String),
-    
+
     /// Failed to undistort point
     #[error("Failed to undistort point: {0}")]
     UndistortFailed(String),
@@ -44,10 +44,11 @@ impl CameraIntrinsics {
         // Check that the matrix has the expected form
         if k[0][1] != 0.0 || k[1][0] != 0.0 || k[2][0] != 0.0 || k[2][1] != 0.0 || k[2][2] != 1.0 {
             return Err(CameraError::InvalidIntrinsics(
-                "Intrinsics matrix must have form [[fx, 0, cx], [0, fy, cy], [0, 0, 1]]".to_string(),
+                "Intrinsics matrix must have form [[fx, 0, cx], [0, fy, cy], [0, 0, 1]]"
+                    .to_string(),
             ));
         }
-        
+
         Ok(Self {
             fx: k[0][0],
             fy: k[1][1],
@@ -86,32 +87,55 @@ impl PolynomialDistortion {
     /// Create distortion parameters with all coefficients set to zero (no distortion).
     pub fn none() -> Self {
         Self {
-            k1: 0.0, k2: 0.0, k3: 0.0, k4: 0.0, k5: 0.0, k6: 0.0,
-            p1: 0.0, p2: 0.0,
+            k1: 0.0,
+            k2: 0.0,
+            k3: 0.0,
+            k4: 0.0,
+            k5: 0.0,
+            k6: 0.0,
+            p1: 0.0,
+            p2: 0.0,
         }
     }
 
     /// Create distortion parameters with only first two radial coefficients.
     pub fn radial(k1: f32, k2: f32) -> Self {
         Self {
-            k1, k2, k3: 0.0, k4: 0.0, k5: 0.0, k6: 0.0,
-            p1: 0.0, p2: 0.0,
+            k1,
+            k2,
+            k3: 0.0,
+            k4: 0.0,
+            k5: 0.0,
+            k6: 0.0,
+            p1: 0.0,
+            p2: 0.0,
         }
     }
 
     /// Create distortion parameters with radial and tangential coefficients.
     pub fn radial_tangential(k1: f32, k2: f32, p1: f32, p2: f32) -> Self {
         Self {
-            k1, k2, k3: 0.0, k4: 0.0, k5: 0.0, k6: 0.0,
-            p1, p2,
+            k1,
+            k2,
+            k3: 0.0,
+            k4: 0.0,
+            k5: 0.0,
+            k6: 0.0,
+            p1,
+            p2,
         }
     }
 
     /// Check if there is any distortion.
     pub fn has_distortion(&self) -> bool {
-        self.k1 != 0.0 || self.k2 != 0.0 || self.k3 != 0.0 || 
-        self.k4 != 0.0 || self.k5 != 0.0 || self.k6 != 0.0 ||
-        self.p1 != 0.0 || self.p2 != 0.0
+        self.k1 != 0.0
+            || self.k2 != 0.0
+            || self.k3 != 0.0
+            || self.k4 != 0.0
+            || self.k5 != 0.0
+            || self.k6 != 0.0
+            || self.p1 != 0.0
+            || self.p2 != 0.0
     }
 }
 
@@ -222,8 +246,12 @@ impl CameraModel {
             let x_2 = 2.0 * x_undistorted;
             let y_2 = 2.0 * y_undistorted;
             let xy_2 = x_2 * y_undistorted;
-            let x_distorted_pred = x_undistorted * kr + xy_2 * distortion.p1 + distortion.p2 * (r2 + x_2 * x_undistorted);
-            let y_distorted_pred = y_undistorted * kr + distortion.p1 * (r2 + y_2 * y_undistorted) + xy_2 * distortion.p2;
+            let x_distorted_pred = x_undistorted * kr
+                + xy_2 * distortion.p1
+                + distortion.p2 * (r2 + x_2 * x_undistorted);
+            let y_distorted_pred = y_undistorted * kr
+                + distortion.p1 * (r2 + y_2 * y_undistorted)
+                + xy_2 * distortion.p2;
 
             // Update undistorted coordinates
             let dx = x - x_distorted_pred;
@@ -352,7 +380,9 @@ mod tests {
         let camera = CameraModel::with_distortion(intrinsics, distortion);
 
         let original_point = [100.0, 200.0];
-        let distorted = camera.distort_point(original_point[0], original_point[1]).unwrap();
+        let distorted = camera
+            .distort_point(original_point[0], original_point[1])
+            .unwrap();
         let undistorted = camera.undistort_point(distorted.0, distorted.1).unwrap();
 
         // Should be close to original (within numerical precision)
@@ -360,4 +390,3 @@ mod tests {
         assert!((original_point[1] - undistorted.1).abs() < 1e-3);
     }
 }
-

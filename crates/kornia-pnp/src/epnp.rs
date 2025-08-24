@@ -168,9 +168,9 @@ pub fn solve_epnp_with_camera(
 ) -> Result<PnPResult, PnPError> {
     // If camera has distortion, undistort the image points first
     let undistorted_image = if camera.has_distortion() {
-        camera.undistort_points(points_image).map_err(|e| {
-            PnPError::SvdFailed(format!("Failed to undistort points: {}", e))
-        })?
+        camera
+            .undistort_points(points_image)
+            .map_err(|e| PnPError::SvdFailed(format!("Failed to undistort points: {}", e)))?
     } else {
         points_image.to_vec()
     };

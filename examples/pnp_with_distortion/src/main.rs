@@ -7,10 +7,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Camera intrinsics (pinhole, fx=fy=800, cx=640, cy=480)
     let intrinsics = kpnp::CameraIntrinsics::new(800.0, 800.0, 640.0, 480.0);
-    
+
     // Add some radial distortion (k1=0.1, k2=0.01)
     let distortion = kpnp::PolynomialDistortion::radial(0.1, 0.01);
-    
+
     // Create camera model with distortion
     let camera = kpnp::CameraModel::with_distortion(intrinsics, distortion);
 
@@ -30,9 +30,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Add evenly spaced samples along the 12 cube edges for better structure.
     const EDGES: &[(usize, usize)] = &[
-        (0, 1), (1, 2), (2, 3), (3, 0), // bottom face
-        (4, 5), (5, 6), (6, 7), (7, 4), // top face
-        (0, 4), (1, 5), (2, 6), (3, 7), // vertical edges
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0), // bottom face
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4), // top face
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7), // vertical edges
     ];
 
     let num_div = 9; // points per edge excluding endpoints
@@ -85,8 +94,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let x_c = gt_r[0][0] * p[0] + gt_r[0][1] * p[1] + gt_r[0][2] * p[2] + gt_t[0];
             let y_c = gt_r[1][0] * p[0] + gt_r[1][1] * p[1] + gt_r[1][2] * p[2] + gt_t[1];
             let z_c = gt_r[2][0] * p[0] + gt_r[2][1] * p[1] + gt_r[2][2] * p[2] + gt_t[2];
-            let u = camera.intrinsics.fx * x_c / z_c + camera.intrinsics.cx + rng.random::<f32>() * sigma_px;
-            let v = camera.intrinsics.fy * y_c / z_c + camera.intrinsics.cy + rng.random::<f32>() * sigma_px;
+            let u = camera.intrinsics.fx * x_c / z_c
+                + camera.intrinsics.cx
+                + rng.random::<f32>() * sigma_px;
+            let v = camera.intrinsics.fy * y_c / z_c
+                + camera.intrinsics.cy
+                + rng.random::<f32>() * sigma_px;
             [u, v]
         })
         .collect();
@@ -121,20 +134,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     println!("=== PnP with Distortion Demo ===");
-    println!("Camera intrinsics: fx={}, fy={}, cx={}, cy={}", 
-             camera.intrinsics.fx, camera.intrinsics.fy, camera.intrinsics.cx, camera.intrinsics.cy);
-    println!("Distortion: k1={}, k2={}", 
-             camera.distortion.as_ref().unwrap().k1, 
-             camera.distortion.as_ref().unwrap().k2);
+    println!(
+        "Camera intrinsics: fx={}, fy={}, cx={}, cy={}",
+        camera.intrinsics.fx, camera.intrinsics.fy, camera.intrinsics.cx, camera.intrinsics.cy
+    );
+    println!(
+        "Distortion: k1={}, k2={}",
+        camera.distortion.as_ref().unwrap().k1,
+        camera.distortion.as_ref().unwrap().k2
+    );
     println!("Number of points: {}", world_pts.len());
 
     // Solve PnP with distorted points using the new camera model interface
-    println!("\n--- Test 1: PnP with camera model (handles distortion automatically) ---");
+    println!("\n--- Test : PnP with camera model (handles distortion automatically) ---");
     let result_with_camera = kpnp::solve_pnp_with_camera(
-        &world_pts, 
-        &distorted_image_pts, 
-        &camera, 
-        kpnp::PnPMethod::EPnPDefault
+        &world_pts,
+        &distorted_image_pts,
+        &camera,
+        kpnp::PnPMethod::EPnPDefault,
     )?;
 
     let r_est = result_with_camera.rotation;
@@ -173,7 +190,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Summary ===");
     println!("Ground truth translation: {:?}", gt_t);
-    println!("Estimated translation  : {:?}", result_with_camera.translation);
+    println!(
+        "Estimated translation  : {:?}",
+        result_with_camera.translation
+    );
     if let Some(rmse) = result_with_camera.reproj_rmse {
         println!("Reprojection RMSE: {:.3} px", rmse);
     }

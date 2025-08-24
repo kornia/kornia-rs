@@ -1,7 +1,7 @@
 //! Common data types shared across Perspective-n-Point (PnP) solvers.
 
-use thiserror::Error;
 use crate::camera::CameraModel;
+use thiserror::Error;
 
 /// Error types for PnP solvers.
 #[derive(Debug, Error)]
@@ -127,9 +127,9 @@ impl<T: PnPSolver> PnPSolverWithCamera for T {
     ) -> Result<PnPResult, PnPError> {
         // If camera has distortion, undistort the image points first
         let undistorted_image = if camera.has_distortion() {
-            camera.undistort_points(image).map_err(|e| {
-                PnPError::CameraError(format!("Failed to undistort points: {}", e))
-            })?
+            camera
+                .undistort_points(image)
+                .map_err(|e| PnPError::CameraError(format!("Failed to undistort points: {}", e)))?
         } else {
             image.to_vec()
         };
