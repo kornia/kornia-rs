@@ -33,7 +33,7 @@ def generate_layernorm_test_data(num_tests=10,
         
         # Store test data
         test_data[f"test_{i}_input"] = x
-        test_data[f"test_{i}_weight"] = weight
+        test_data[f"test_{i}_weigh  t"] = weight
         test_data[f"test_{i}_bias"] = bias
         test_data[f"test_{i}_output"] = y
         test_data[f"test_{i}_dim"] = torch.tensor(dim, dtype=torch.int32)

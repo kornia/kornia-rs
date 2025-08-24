@@ -316,152 +316,215 @@ impl SmolVision {
 
 #[cfg(test)]
 mod tests {
+    use candle_core::safetensors::save;
+    use std::collections::HashMap;
+
     use candle_nn::Module;
 
     #[test]
     fn test_validating_vision_enc() -> Result<(), Box<dyn std::error::Error>> {
         use candle_core::{DType, Device, Result, Tensor};
 
+        let dtype = DType::F32;
+        let device = &Device::Cpu;
+
         let zor = |l: &dyn Fn(&Tensor) -> Result<Tensor>,
                    s: &[usize]|
-         -> Result<(Tensor, Tensor, Tensor)> {
-            let z = l(&Tensor::zeros(s, DType::BF16, &Device::Cpu)?)?;
-            let o = l(&Tensor::ones(s, DType::BF16, &Device::Cpu)?)?;
-            let r = l(&Tensor::rand(0.0, 1.0, s, &Device::Cpu)?)?.to_dtype(DType::BF16)?;
-            Ok((z, o, r))
+         -> Result<(Tensor, Tensor, Tensor, Tensor, Tensor, Tensor)> {
+            let zeros = Tensor::zeros(s, dtype, device)?;
+            let ones = Tensor::ones(s, dtype, device)?;
+            let randn = Tensor::rand(0.0, 1.0, s, device)?.to_dtype(dtype)?;
+            let z = l(&zeros)?;
+            let o = l(&ones)?;
+            let r = l(&randn)?;
+            Ok((z, o, r, zeros, ones, randn))
         };
 
-        let smol_vlm = super::super::SmolVlm::load_model(DType::BF16, &Device::Cpu)?.0;
+        let smol_vlm = super::super::SmolVlm::load_model(dtype, device)?.0;
 
-        // Pass a closure calling the forward method and include batch dim in the shape
-        let pte = zor(
-            &|t: &Tensor| smol_vlm.vision.patch_embedding.forward(t),
-            &[1, 3, 384, 384],
-        )?;
+        let mut layers = vec![
+            zor(
+                &|t: &Tensor| smol_vlm.vision.patch_embedding.forward(t),
+                &[1, 3, 384, 384],
+            )?,
+            // zor(
+            //     &|t: &Tensor| smol_vlm.vision.position_embedding.forward(t),
+            //     &[1, 3, 384, 384],
+            // )?,
+            zor(
+                &|t: &Tensor| smol_vlm.vision.post_layernorm.forward(t),
+                &[729, 1152],
+            )?,
+        ];
+        for i in 0..27 {
+            layers.push(zor(
+                &|t: &Tensor| smol_vlm.vision.blocks[i].layer_norm1.forward(t),
+                &[729, 1152],
+            )?);
+            layers.push(zor(
+                &|t: &Tensor| smol_vlm.vision.blocks[i].self_attn.k_proj.forward(t),
+                &[729, 1152],
+            )?);
+            layers.push(zor(
+                &|t: &Tensor| smol_vlm.vision.blocks[i].self_attn.q_proj.forward(t),
+                &[729, 1152],
+            )?);
+            layers.push(zor(
+                &|t: &Tensor| smol_vlm.vision.blocks[i].self_attn.v_proj.forward(t),
+                &[729, 1152],
+            )?);
+            layers.push(zor(
+                &|t: &Tensor| smol_vlm.vision.blocks[i].self_attn.o_proj.forward(t),
+                &[729, 1152],
+            )?);
+            layers.push(zor(
+                &|t: &Tensor| smol_vlm.vision.blocks[i].layer_norm2.forward(t),
+                &[729, 1152],
+            )?);
+            layers.push(zor(
+                &|t: &Tensor| smol_vlm.vision.blocks[i].mlp.fc1.forward(t),
+                &[729, 1152],
+            )?);
+            layers.push(zor(
+                &|t: &Tensor| smol_vlm.vision.blocks[i].mlp.fc2.forward(t),
+                &[729, 4304],
+            )?);
+        }
+
+        // Save all activations and inputs to a safetensors file using candle_core
+
+        let mut tensors: HashMap<String, Tensor> = HashMap::new();
+        for (ind, layer) in layers.into_iter().enumerate() {
+            tensors.insert(format!("{:?}_z", ind), layer.0);
+            tensors.insert(format!("{:?}_o", ind), layer.1);
+            tensors.insert(format!("{:?}_r", ind), layer.2);
+            tensors.insert(format!("{:?}_zx", ind), layer.3);
+            tensors.insert(format!("{:?}_ox", ind), layer.4);
+            tensors.insert(format!("{:?}_rx", ind), layer.5);
+        }
+
+        save(
+            &tensors,
+            "../../examples/smol_vlm/validation_data/image_validations/vision_activations.safetensors",
+        )
+        .unwrap();
+        println!("Activations saved to examples/smol_vlm/validation_data/image_validations/vision_activations.safetensors");
 
         Ok(())
     }
 
     #[test]
-    fn test_lanczos_resize_filtering() -> Result<(), Box<dyn std::error::Error>> {
-        use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+    fn test_lanczos_resize_filtering() -> candle_core::Result<()> {
+        use candle_core::Device;
         use kornia_imgproc::interpolation::InterpolationMode;
-        use kornia_imgproc::resize::resize_native;
-        use kornia_io::png::{read_image_png_rgb8, write_image_png_rgb8};
-        use std::path::Path;
+        use kornia_imgproc::resize::resize_fast;
+        use kornia_io::png::read_image_png_mono8;
 
-        // Test image path - assumes Zoneplate.png already exists
-        let test_image_path = Path::new("../../examples/smol_vlm/validation_data/Zoneplate.png");
+        let device = Device::Cpu;
+        let test_image_path = "../../examples/smol_vlm/validation_data/Zoneplate.png";
 
-        if !test_image_path.exists() {
-            eprintln!("Error: Test image not found at {:?}", test_image_path);
-            eprintln!("Please ensure Zoneplate.png exists in the validation_data directory");
-            return Ok(()); // Skip test if image doesn't exist
-        }
-
-        // Load the test image and convert to f32
         println!("Loading test image: {:?}", test_image_path);
-        let original_image_u8 = read_image_png_rgb8(test_image_path)?;
-        let original_image = {
-            let data: Vec<f32> = original_image_u8
-                .as_slice()
-                .iter()
-                .map(|&x| x as f32 / 255.0)
-                .collect();
-            Image::<f32, 3, CpuAllocator>::new(original_image_u8.size(), data, CpuAllocator)?
-        };
 
+        // Load as grayscale and convert to RGB tensor
+        let gray_img = read_image_png_mono8(&test_image_path)
+            .map_err(|e| candle_core::Error::Msg(format!("PNG read error: {e}")))?;
         println!(
-            "Original image size: {}x{}",
-            original_image.size().width,
-            original_image.size().height
+            "Successfully loaded as grayscale: {}x{}",
+            gray_img.size().width,
+            gray_img.size().height
         );
 
-        // Test different resize targets
-        let resize_targets = vec![
-            (128, 128), // Downscale
-            (256, 256), // Half size
-            (384, 384), // Model input size
-            (512, 512), // Same size (if original is 512x512)
-            (256, 384), // Non-square
-            (640, 480), // Different aspect ratio
-        ];
+        // Convert grayscale image to RGB by duplicating channels
+        let size = gray_img.size();
+        let gray_data = gray_img.as_slice();
+        let mut rgb_data = Vec::with_capacity(gray_data.len() * 3);
+        for &g in gray_data {
+            rgb_data.push(g); // R
+            rgb_data.push(g); // G
+            rgb_data.push(g); // B
+        }
+        let img_rgb = kornia_image::Image::<u8, 3, kornia_image::allocator::CpuAllocator>::new(
+            size,
+            rgb_data,
+            kornia_image::allocator::CpuAllocator,
+        )
+        .map_err(|e| candle_core::Error::Msg(format!("RGB image creation error: {e}")))?;
 
-        for (width, height) in resize_targets {
+        // Use u8 image for resize_fast
+        let img_rgb_u8 = img_rgb;
+
+        // Test various sizes with Lanczos filtering
+        let test_sizes = [(256, 256), (512, 512), (128, 128)];
+
+        use kornia_io::png::write_image_png_rgb8;
+        for (target_w, target_h) in test_sizes {
             println!(
                 "Resizing to {}x{} using Lanczos filtering...",
-                width, height
+                target_w, target_h
             );
+            let mut resized =
+                kornia_image::Image::<u8, 3, kornia_image::allocator::CpuAllocator>::from_size_val(
+                    kornia_image::ImageSize {
+                        width: target_w,
+                        height: target_h,
+                    },
+                    0,
+                    kornia_image::allocator::CpuAllocator,
+                )
+                .map_err(|e| {
+                    candle_core::Error::Msg(format!("resize image creation error: {e}"))
+                })?;
+            resize_fast(&img_rgb_u8, &mut resized, InterpolationMode::Lanczos)
+                .map_err(|e| candle_core::Error::Msg(format!("resize_fast error: {e}")))?;
+            println!("Successfully resized to shape: {}x{}", target_w, target_h);
 
-            // Create destination image
-            let mut resized_image = Image::<f32, 3, CpuAllocator>::from_size_val(
-                ImageSize { width, height },
-                0.0,
-                CpuAllocator,
-            )?;
-
-            // Resize using Lanczos interpolation
-            resize_native(
-                &original_image,
-                &mut resized_image,
-                InterpolationMode::Lanczos,
-            )?;
-
-            // Convert back to u8 and save
-            let resized_u8_data: Vec<u8> = resized_image
-                .as_slice()
-                .iter()
-                .map(|&x| (x.clamp(0.0, 1.0) * 255.0) as u8)
-                .collect();
-            let resized_u8_image = Image::<u8, 3, CpuAllocator>::new(
-                resized_image.size(),
-                resized_u8_data,
-                CpuAllocator,
-            )?;
-
+            // Save the resized image
             let output_path = format!(
-                "../../examples/smol_vlm/validation_data/Zoneplate_{}x{}_lanczos.png",
-                width, height
+                "../../examples/smol_vlm/validation_data/image_validations/Zoneplate_{}x{}_lanczos.png",
+                target_w, target_h
             );
-            write_image_png_rgb8(&output_path, &resized_u8_image)?;
+            write_image_png_rgb8(&output_path, &resized)
+                .map_err(|e| candle_core::Error::Msg(format!("Failed to save image: {e}")))?;
             println!("Saved resized image: {}", output_path);
         }
 
-        // Test with different interpolation modes for comparison
         println!("\nTesting different interpolation modes on 256x256:");
-        let modes = vec![
-            (InterpolationMode::Nearest, "nearest"),
-            (InterpolationMode::Bilinear, "bilinear"),
-            (InterpolationMode::Lanczos, "lanczos"),
+        let target_size = (256, 256);
+        let interpolation_modes = [
+            ("Bilinear", InterpolationMode::Bilinear),
+            ("Lanczos", InterpolationMode::Lanczos),
+            ("Nearest", InterpolationMode::Nearest),
         ];
 
-        for (mode, name) in modes {
-            let mut resized = Image::<f32, 3, CpuAllocator>::from_size_val(
-                ImageSize {
-                    width: 256,
-                    height: 256,
-                },
-                0.0,
-                CpuAllocator,
-            )?;
-
-            resize_native(&original_image, &mut resized, mode)?;
-
-            // Convert to u8
-            let resized_u8_data: Vec<u8> = resized
-                .as_slice()
-                .iter()
-                .map(|&x| (x.clamp(0.0, 1.0) * 255.0) as u8)
-                .collect();
-            let resized_u8_image =
-                Image::<u8, 3, CpuAllocator>::new(resized.size(), resized_u8_data, CpuAllocator)?;
-
-            let output_path = format!(
-                "../../examples/smol_vlm/validation_data/Zoneplate_256x256_{}.png",
-                name
+        for (mode_name, mode) in interpolation_modes {
+            println!("Testing {} interpolation...", mode_name);
+            let mut resized =
+                kornia_image::Image::<u8, 3, kornia_image::allocator::CpuAllocator>::from_size_val(
+                    kornia_image::ImageSize {
+                        width: target_size.0,
+                        height: target_size.1,
+                    },
+                    0,
+                    kornia_image::allocator::CpuAllocator,
+                )
+                .map_err(|e| {
+                    candle_core::Error::Msg(format!("resize image creation error: {e}"))
+                })?;
+            resize_fast(&img_rgb_u8, &mut resized, mode)
+                .map_err(|e| candle_core::Error::Msg(format!("resize_fast error: {e}")))?;
+            println!(
+                "  {} result shape: {}x{}",
+                mode_name, target_size.0, target_size.1
             );
-            write_image_png_rgb8(&output_path, &resized_u8_image)?;
-            println!("Saved {}: {}", name, output_path);
+
+            // Save the resized image for each interpolation mode
+            let output_path = format!(
+                "../../examples/smol_vlm/validation_data/image_validations/Zoneplate_256x256_{}.png",
+                mode_name.to_lowercase()
+            );
+            write_image_png_rgb8(&output_path, &resized)
+                .map_err(|e| candle_core::Error::Msg(format!("Failed to save image: {e}")))?;
+            println!("Saved {}: {}", mode_name, output_path);
         }
 
         println!("Lanczos filtering test completed successfully!");
