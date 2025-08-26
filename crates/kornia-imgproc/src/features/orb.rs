@@ -164,7 +164,7 @@ impl OrbDectector {
         octave_image: &Image<f32, 1, A>,
         keypoints: &[(i32, i32)],
         orientations: &[f32],
-    ) -> (Vec<Vec<bool>>, Vec<bool>) {
+    ) -> (Vec<Vec<u8>>, Vec<bool>) {
         let mask = mask_border_keypoints_i32(octave_image.size(), keypoints, 20);
 
         // Filter keypoints and orientations by mask
@@ -191,10 +191,10 @@ impl OrbDectector {
         keypoints: &[(f32, f32)],
         scales: &[f32],
         orientations: &[f32],
-    ) -> Result<(Vec<Vec<bool>>, Vec<bool>), ImageError> {
+    ) -> Result<(Vec<Vec<u8>>, Vec<bool>), ImageError> {
         let pyramid = self.build_pyramid(src)?;
 
-        let mut descriptors_list: Vec<Vec<bool>> = Vec::new();
+        let mut descriptors_list: Vec<Vec<u8>> = Vec::new();
         let mut mask_list: Vec<bool> = Vec::new();
 
         let octaves: Vec<usize> = scales
@@ -357,13 +357,13 @@ fn orb_loop<A: ImageAllocator>(
     src: &Image<f32, 1, A>,
     keypoints: &[(i32, i32)],
     orientation: &[f32],
-) -> Vec<Vec<bool>> {
+) -> Vec<Vec<u8>> {
     let n_keypoints = keypoints.len();
     let descriptor_len = POS0.len();
     let height = src.height() as i32;
     let width = src.width() as i32;
 
-    let mut descriptors = vec![vec![false; descriptor_len]; n_keypoints];
+    let mut descriptors = vec![vec![0; descriptor_len]; n_keypoints];
 
     for i in 0..n_keypoints {
         let angle = orientation[i];
@@ -400,9 +400,9 @@ fn orb_loop<A: ImageAllocator>(
             {
                 let v0 = src.as_slice()[src.size().index(r0 as usize, c0 as usize)];
                 let v1 = src.as_slice()[src.size().index(r1 as usize, c1 as usize)];
-                descriptors[i][j] = if v0 < v1 { true } else { false };
+                descriptors[i][j] = if v0 < v1 { 1 } else { 0 };
             } else {
-                descriptors[i][j] = false;
+                descriptors[i][j] = 0;
             }
         }
     }

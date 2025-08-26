@@ -1,0 +1,13 @@
+[package]
+name = "orb_detector"
+version = "0.1.0"
+authors = ["Aditya Kumar <git@adityais.dev>"]
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+argh = { workspace = true }
+ctrlc = { workspace = true }
+kornia = { workspace = true }
+rerun = { workspace = true }
