@@ -217,42 +217,26 @@ pub mod other {
                     }
                 }
 
-                // // Test for bright pixels
-                // curr_response = corner_fast_response(
-                //     curr_pixel,
-                //     &circle_intensities,
-                //     &bins,
-                //     PixelType::Brighter,
-                //     arc_length,
-                // );
-
-                // // Test for dark pixels
-                // if curr_pixel == 0.0 {
-                //     curr_response = corner_fast_response(
-                //         curr_pixel,
-                //         &circle_intensities,
-                //         &bins,
-                //         PixelType::Darker,
-                //         arc_length,
-                //     );
-                // }
-
-                let bright_response = corner_fast_response(
+                // Test for bright pixels
+                curr_response = corner_fast_response(
                     curr_pixel,
                     &circle_intensities,
                     &bins,
                     PixelType::Brighter,
                     arc_length,
                 );
-                let dark_response = corner_fast_response(
-                    curr_pixel,
-                    &circle_intensities,
-                    &bins,
-                    PixelType::Darker,
-                    arc_length,
-                );
 
-                curr_response = bright_response.max(dark_response);
+                // Test for dark pixels
+                if curr_pixel == 0.0 {
+                    curr_response = corner_fast_response(
+                        curr_pixel,
+                        &circle_intensities,
+                        &bins,
+                        PixelType::Darker,
+                        arc_length,
+                    );
+                }
+
                 corner_response_slice[idx] = curr_response;
             }
         }
@@ -342,25 +326,28 @@ pub mod other {
         mask: &Image<bool, 1, A2>,
         min_distance: usize,
     ) -> Vec<(usize, usize, f32)> {
+        let src_size = src.size();
         let src_slice = src.as_slice();
+
         let mut coords: Vec<_> = mask
             .as_slice()
             .iter()
             .enumerate()
             .filter(|&(_, &value)| value)
             .map(|(i, _)| {
-                let y = i / mask.width();
-                let x = i % mask.width();
+                let (y, x) = src_size.coords(i);
 
                 (y, x, src_slice[i])
             })
             .collect();
 
-        coords.sort_unstable_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
+        // coords.sort_unstable_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
 
         if min_distance > 1 {
             unimplemented!()
         }
+
+        // println!("{:#?}", coords);
 
         coords
     }

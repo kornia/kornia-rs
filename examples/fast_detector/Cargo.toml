@@ -9,5 +9,5 @@ publish = false
 [dependencies]
 argh = { workspace = true }
 ctrlc = { workspace = true }
-kornia = { workspace = true, features = ["gstreamer"] }
+kornia = { workspace = true }
 rerun = { workspace = true }
