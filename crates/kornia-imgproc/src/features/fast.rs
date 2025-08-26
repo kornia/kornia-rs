@@ -341,7 +341,7 @@ pub mod other {
             })
             .collect();
 
-        // coords.sort_unstable_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
+        coords.sort_unstable_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
 
         if min_distance > 1 {
             unimplemented!()
