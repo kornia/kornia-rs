@@ -191,7 +191,6 @@ impl SmolVlm {
 
         for _i in 0..sample_len {
             self.token_history.extend(&delta_token);
-
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
 
             let image_token_mask = input.broadcast_eq(&self.image_token_tensor)?;
@@ -208,15 +207,17 @@ impl SmolVlm {
             let (s, _embed_dim) = logits.dims2()?;
             let last_logit = logits.i((s - 1, ..))?;
 
-            let last_logit = if self.config.do_sample {
+            let output_logit = if self.config.do_sample {
                 candle_transformers::utils::apply_repeat_penalty(
                     &last_logit,
                     self.config.repeat_penalty,
                     &delta_token,
                 )?
             } else {
-                last_logit
+                last_logit.clone()
             };
+
+            let last_logit = output_logit;
 
             let out_token = if self.config.do_sample {
                 self.logits_processor.sample(&last_logit)?

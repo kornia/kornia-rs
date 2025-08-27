@@ -5,8 +5,6 @@ use candle_core::{DType, Result, Tensor};
 use candle_nn::{Conv2d, Conv2dConfig, Embedding, LayerNorm, Linear, Module};
 use std::collections::HashMap;
 
-// use super::custom_layernorm::CustomLayerNorm;
-
 const NUM_OF_HEADS: usize = 16;
 const HEAD_DIM: usize = 72;
 

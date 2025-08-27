@@ -92,7 +92,7 @@ pub fn preprocess_image<A: ImageAllocator>(
                 width: new_width as usize,
                 height: new_height as usize,
             },
-            0,
+            255, // TODO: temp fix (softmax NaN down the line), will look into a more later
             CpuAllocator,
         )
         .unwrap();
@@ -103,7 +103,8 @@ pub fn preprocess_image<A: ImageAllocator>(
                         .set_pixel(x, y, c, *img.get_pixel(x, y, c).unwrap())
                         .unwrap();
                 }
-                padded_mask.set_pixel(x, y, 0, 255).unwrap();
+                // TODO: temp fix (softmax NaN down the line), will look into a more later
+                // padded_mask.set_pixel(x, y, 0, 255).unwrap();
             }
         }
         (padded_img, padded_mask)
@@ -129,7 +130,7 @@ pub fn preprocess_image<A: ImageAllocator>(
                 width: new_width as usize,
                 height: new_height as usize,
             },
-            0,
+            255, // TODO: temp fix (softmax NaN down the line), will look into a more later
             CpuAllocator,
         )
         .unwrap();
@@ -140,7 +141,8 @@ pub fn preprocess_image<A: ImageAllocator>(
                         .set_pixel(x, y, c, *global_img.get_pixel(x, y, c).unwrap())
                         .unwrap();
                 }
-                padded_mask.set_pixel(x, y, 0, 255).unwrap();
+                // TODO: temp fix (softmax NaN down the line), will look into a more later
+                // padded_mask.set_pixel(x, y, 0, 255).unwrap();
             }
         }
         (padded_img, padded_mask)
