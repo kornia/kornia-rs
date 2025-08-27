@@ -134,7 +134,7 @@ pub fn fit_quads<A: ImageAllocator>(
             return;
         }
 
-        if let Some(quad) = fit_single_quad(
+        if let Some(mut quad) = fit_single_quad(
             src,
             cluster,
             config.min_tag_width,
@@ -142,6 +142,14 @@ pub fn fit_quads<A: ImageAllocator>(
             config.reversed_border,
             &config.fit_quad_config,
         ) {
+            if config.downscale_factor > 1 {
+                let downscale_factor = config.downscale_factor as f32;
+                quad.corners.iter_mut().for_each(|c| {
+                    c.x *= downscale_factor;
+                    c.y *= downscale_factor;
+                });
+            }
+
             quads.push(quad);
         }
     });
@@ -803,11 +811,10 @@ mod tests {
         find_connected_components(&bin, &mut uf)?;
         find_gradient_clusters(&bin, &mut uf, &mut clusters);
 
-        let quads = fit_quads(
-            &bin,
-            &mut clusters,
-            &DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]),
-        );
+        let mut decode_tag_config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]);
+        decode_tag_config.downscale_factor = 1;
+
+        let quads = fit_quads(&bin, &mut clusters, &decode_tag_config);
 
         let expected_quad = [[[27, 3], [27, 27], [3, 27], [3, 3]]];
 

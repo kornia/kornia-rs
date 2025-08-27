@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 
 use crate::image::{FromPyImage, PyImage, ToPyImage};
 use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
-use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast};
+use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
 
 #[pyfunction]
 pub fn resize(image: PyImage, new_size: (usize, usize), interpolation: &str) -> PyResult<PyImage> {
@@ -27,7 +27,7 @@ pub fn resize(image: PyImage, new_size: (usize, usize), interpolation: &str) -> 
     let mut image_resized = Image::from_size_val(new_size, 0u8, CpuAllocator)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
-    resize_fast(&image, &mut image_resized, interpolation)
+    resize_fast_rgb(&image, &mut image_resized, interpolation)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
     Ok(image_resized.to_pyimage())
