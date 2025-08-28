@@ -13,5 +13,6 @@ pyo3 = "0.25.0"
 
 kornia-vlm = { path = "../../../../crates/kornia-vlm", features = ["cuda"] }
 kornia-io = { path = "../../../../crates/kornia-io" }
+kornia-image = { path = "../../../../crates/kornia-image" }
 
 [workspace] # exclude it from the general workspace

@@ -7,24 +7,24 @@ mod text_model;
 pub mod utils;
 mod vision_model;
 
+use core::alloc;
 #[cfg(feature = "debug")]
 use std::io;
 #[cfg(feature = "debug")]
 use std::io::Write;
 
+use crate::smolvlm::{
+    model::SmolModel, preprocessor::SmolVlmImagePreprocessor, utils::SmolVlmConfig,
+    utils::SmolVlmError,
+};
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
 use hf_hub::api::sync::Api;
-use kornia_image::allocator::ImageAllocator;
-use kornia_image::Image;
+use kornia_image::{allocator::ImageAllocator, Image};
+use preprocessor::get_prompt_split_image;
 use tokenizers::Tokenizer;
 
-use preprocessor::{get_prompt_split_image, preprocess_image};
-
-use crate::smolvlm::model::SmolModel;
-use crate::smolvlm::utils::{SmolVlmConfig, SmolVlmError};
-
-pub struct SmolVlm {
+pub struct SmolVlm<A: ImageAllocator> {
     model: SmolModel,
     tokenizer: Tokenizer,
     image_token_tensor: Tensor,
@@ -35,9 +35,10 @@ pub struct SmolVlm {
     index_pos: usize,        // index of the next token to be processed
     first_prompt: bool,      // whether this is the first prompt
     token_history: Vec<u32>, // stores the history of generated tokens
+    preprocessor: SmolVlmImagePreprocessor<A>,
 }
 
-impl SmolVlm {
+impl<A: ImageAllocator> SmolVlm<A> {
     /// Create a new SmolVlm model
     ///
     /// # Arguments
@@ -79,6 +80,7 @@ impl SmolVlm {
             index_pos: 0,
             first_prompt: true,
             token_history: Vec::new(),
+            preprocessor: SmolVlmImagePreprocessor::new(1536, 384),
         })
     }
 
@@ -93,11 +95,12 @@ impl SmolVlm {
     /// # Returns
     ///
     /// * `caption` - The generated caption
-    pub fn inference<A: ImageAllocator>(
+    pub fn inference(
         &mut self,
         prompt: &str, // TODO: make it structured
         image: Option<Image<u8, 3, A>>,
         sample_len: usize, // per prompt
+        alloc: A,
     ) -> Result<String, SmolVlmError> {
         let mut full_prompt = if self.first_prompt {
             self.first_prompt = false;
@@ -121,7 +124,7 @@ impl SmolVlm {
             vec![]
         };
 
-        let response = self.inference_raw(&full_prompt, images, sample_len)?;
+        let response = self.inference_raw(&full_prompt, images, sample_len, alloc)?;
 
         Ok(response)
     }
@@ -137,11 +140,12 @@ impl SmolVlm {
     /// # Returns
     ///
     /// * `caption` - The generated caption
-    pub fn inference_raw<A: ImageAllocator>(
+    pub fn inference_raw(
         &mut self,
         full_prompt: &str,
         images: Vec<Image<u8, 3, A>>,
         sample_len: usize, // per prompt
+        alloc: A,
     ) -> Result<String, SmolVlmError> {
         #[cfg(feature = "debug")]
         std::io::stdout().flush()?;
@@ -161,7 +165,9 @@ impl SmolVlm {
         let mut processed_images = vec![];
         for ((start, _), image) in image_tags_pos.iter().zip(images.into_iter()) {
             let (img_patches, mask_patches, size) =
-                preprocess_image(image, 1536, 384, &self.device);
+                self.preprocessor
+                    .preprocess(&image, &self.device, alloc.clone())?;
+            // preprocess_image(image, 1536, 384, &self.device);
             processed_images.push((img_patches, mask_patches));
 
             let img_token = get_prompt_split_image(81, size);

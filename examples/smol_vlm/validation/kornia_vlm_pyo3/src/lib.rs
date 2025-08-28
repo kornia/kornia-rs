@@ -1,10 +1,11 @@
+use kornia_image::allocator::CpuAllocator;
 use kornia_io::jpeg::read_image_jpeg_rgb8;
 use kornia_vlm::smolvlm::{utils::SmolVlmConfig, SmolVlm};
 use pyo3::prelude::*;
 
 #[pyclass]
 pub struct SmolVLMInterface {
-    model: SmolVlm,
+    model: SmolVlm<CpuAllocator>,
 }
 
 #[pymethods]
@@ -43,7 +44,7 @@ impl SmolVLMInterface {
         // generate a caption of the image
         let caption = self
             .model
-            .inference_raw(&text_prompt, images, sample_length)
+            .inference_raw(&text_prompt, images, sample_length, CpuAllocator)
             .map_err(map_error)?;
 
         Ok(caption)
@@ -80,7 +81,7 @@ fn generate(
 
     // generate a caption of the image
     let caption = smolvlm
-        .inference(&text_prompt, image, sample_length)
+        .inference(&text_prompt, image, sample_length, CpuAllocator)
         .map_err(map_error)?;
 
     Ok(caption)
@@ -113,7 +114,7 @@ fn generate_raw(
 
     // generate a caption of the image
     let caption = smolvlm
-        .inference_raw(&text_prompt, images, sample_length)
+        .inference_raw(&text_prompt, images, sample_length, CpuAllocator)
         .map_err(map_error)?;
 
     Ok(caption)
