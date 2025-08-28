@@ -278,6 +278,15 @@ impl SmolVlm {
         Ok(response)
     }
 
+    pub fn clear_context(&mut self) {
+        self.model.reset_cache();
+
+        self.image_history.clear();
+        self.index_pos = 0;
+        self.first_prompt = true;
+        self.token_history.clear();
+    }
+
     /// Deterministic sampling that always selects the token with the lowest index for ties
     fn sample_deterministic(&self, logits: &Tensor) -> Result<u32, SmolVlmError> {
         // Convert to f32 for consistent precision

@@ -25,7 +25,7 @@ fn calculate_default_inv_freq() -> Vec<f32> {
 }
 
 #[derive(Debug, Clone)]
-struct Attention {
+pub struct Attention {
     q_proj: Linear,
     k_proj: Linear,
     v_proj: Linear,
@@ -60,6 +60,21 @@ impl Attention {
             v_proj: Linear::new(v, None),
             o_proj: Linear::new(o, None),
         })
+    }
+
+    pub fn reset_cache(&mut self) {
+        self.k_cache = Tensor::zeros(
+            (NUM_OF_HEADS, 0, HEAD_DIM),
+            self.k_cache.dtype(),
+            self.k_cache.device(),
+        )
+        .unwrap();
+        self.v_cache = Tensor::zeros(
+            (NUM_OF_HEADS, 0, HEAD_DIM),
+            self.v_cache.dtype(),
+            self.v_cache.device(),
+        )
+        .unwrap();
     }
 
     fn apply_rotary_embedding(&self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
@@ -180,7 +195,7 @@ impl MLPGates {
 #[derive(Debug, Clone)]
 pub struct Block {
     input_layer_norm: CustomRmsNorm,
-    attn: Attention,
+    pub attn: Attention,
     post_layer_norm: CustomRmsNorm,
     pub gates: MLPGates,
 }

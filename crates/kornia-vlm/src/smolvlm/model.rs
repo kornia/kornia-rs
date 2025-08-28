@@ -150,4 +150,11 @@ impl SmolModel {
 
         self.text.forward(inputs_embeds, index_pos, introspector)
     }
+
+    pub fn reset_cache(&mut self) {
+        self.text
+            .blocks
+            .iter_mut()
+            .for_each(|b| b.attn.reset_cache());
+    }
 }
