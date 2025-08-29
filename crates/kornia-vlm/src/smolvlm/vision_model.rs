@@ -315,6 +315,7 @@ impl SmolVision {
 #[cfg(test)]
 mod tests {
     use candle_core::safetensors::save;
+    use kornia_tensor::CpuAllocator;
     use std::collections::HashMap;
 
     use candle_nn::Module;
@@ -338,7 +339,7 @@ mod tests {
             Ok((z, o, r, zeros, ones, randn))
         };
 
-        let smol_vlm = super::super::SmolVlm::load_model(dtype, device)?.0;
+        let smol_vlm = super::super::SmolVlm::<CpuAllocator>::load_model(dtype, device)?.0;
 
         let mut layers = vec![
             zor(

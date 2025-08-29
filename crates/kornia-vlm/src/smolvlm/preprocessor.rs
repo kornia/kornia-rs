@@ -460,8 +460,8 @@ mod tests {
             CpuAllocator,
         )?;
 
-        let mut preprocessor = SmolVlmImagePreprocessor::new(512, 32);
         let device = Device::Cpu;
+        let mut preprocessor = SmolVlmImagePreprocessor::new(512, 32, &device);
 
         let (img_patches, mask_patches, size) =
             preprocessor.preprocess(&img, &device, CpuAllocator)?;
@@ -570,7 +570,8 @@ mod tests {
             CpuAllocator,
         )?;
 
-        let mut preprocessor = SmolVlmImagePreprocessor::new(8, 4); // small sizes for testing
+        let device = Device::Cpu;
+        let mut preprocessor = SmolVlmImagePreprocessor::new(8, 4, &device); // small sizes for testing
 
         // First, test just the padding to verify it works correctly
         let mut img_buffer = None;
@@ -605,7 +606,6 @@ mod tests {
         }
 
         // Now test the full preprocessing pipeline
-        let device = Device::Cpu;
         let (img_patches, mask_patches, size) =
             preprocessor.preprocess(&img, &device, CpuAllocator)?;
 
