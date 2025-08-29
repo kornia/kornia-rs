@@ -109,7 +109,7 @@ fn bench_dog_response(c: &mut Criterion) {
 criterion_group!(
     name = benches;
     config = Criterion::default().warm_up_time(std::time::Duration::new(10, 0));
-    targets = bench_fast_corner_detect
+    targets = bench_harris_response, bench_dog_response, bench_fast_corner_detect
 );
 criterion_main!(benches);
 
