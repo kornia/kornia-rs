@@ -204,10 +204,9 @@ fn corner_fast_response(
             consecutive_count += 1;
             if consecutive_count == n {
                 curr_response = 0;
-                for m in 0..16 {
-                    curr_response = curr_response
-                        .saturating_add(circle_intensities[m].saturating_sub(curr_pixel));
-                }
+                circle_intensities.iter().for_each(|m| {
+                    curr_response = curr_response.saturating_add(m.saturating_sub(curr_pixel));
+                });
 
                 return ControlFlow::Break(());
             }
@@ -220,7 +219,7 @@ fn corner_fast_response(
         return curr_response;
     }
 
-    return 0;
+    0
 }
 
 fn get_peak_mask<A: ImageAllocator>(
