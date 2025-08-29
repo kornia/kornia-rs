@@ -1,5 +1,5 @@
 use crate::smolvlm::utils::SmolVlmError;
-use candle_core::{Device, Shape, Tensor};
+use candle_core::{DType, Device, Shape, Tensor};
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast};
 use std::borrow::Cow;
@@ -13,56 +13,6 @@ pub struct SmolVlmImagePreprocessor<A: ImageAllocator> {
     max_size: u32,
     outer_patch_size: u32,
 
-    //     device: &Device,
-    // ) -> (Tensor, Tensor, ImageSize) {
-    //     // resizing image to match the max_size (on the longest edge)
-    //     let img = {
-    //         let (width, height) = (img.width() as u32, img.height() as u32);
-    //         #[cfg(feature = "debug")]
-    //         println!("Image size: {}x{} w/ Max size: {}", width, height, max_size);
-    //         let longest_edge = width.max(height);
-
-    //         let scale_factor = max_size as f32 / longest_edge as f32;
-    //         let new_width = (width as f32 * scale_factor).ceil() as usize;
-    //         let new_height = (height as f32 * scale_factor).ceil() as usize;
-    //         let mut resized = Image::<u8, 3, A>::from_size_val(
-    //             ImageSize {
-    //                 width: new_width,
-    //                 height: new_height,
-    //             },
-    //             0,
-    //             img.0.storage.alloc().clone(),
-    //         )
-    //         .unwrap();
-    //         resize_fast(&img, &mut resized, InterpolationMode::Lanczos).unwrap();
-    //         resized
-    //     };
-    //     let global_img = {
-    //         let (width, height) = (img.width() as u32, img.height() as u32);
-    //         #[cfg(feature = "debug")]
-    //         println!("Resized image size: {}x{}", width, height);
-
-    //         let longest_edge = width.max(height);
-    //         if longest_edge <= outer_patch_size {
-    //             img.clone()
-    //         } else {
-    //             let scale_factor = outer_patch_size as f32 / longest_edge as f32;
-    //             let new_width = (width as f32 * scale_factor) as usize;
-    //             let new_height = (height as f32 * scale_factor) as usize;
-    //             let mut resized = Image::<u8, 3, _>::from_size_val(
-    //                 ImageSize {
-    //                     width: new_width,
-    //                     height: new_height,
-    //                 },
-    //                 0,
-    //                 img.0.storage.alloc().clone(),
-    //             )
-    //             .unwrap();
-    //             resize_fast(&img, &mut resized, InterpolationMode::Lanczos).unwrap();
-    //             resized
-    //         }
-    //     };
-
     // buffers for resizing images
     buf_resize: Option<Image<u8, 3, A>>,
     buf_global_resize: Option<Image<u8, 3, A>>,
@@ -72,11 +22,17 @@ pub struct SmolVlmImagePreprocessor<A: ImageAllocator> {
     buf_padded_mask: Option<Image<u8, 1, A>>,
     buf_global_padded_img: Option<Image<u8, 3, A>>,
     buf_global_padded_mask: Option<Image<u8, 1, A>>,
+
+    // buffers for tensors
+    buf_mask_tensor: Tensor,
+    // buf_img_tensor: Tensor,
+    buf_mean_tensor: Tensor,
+    buf_std_tensor: Tensor,
 }
 
 impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
     /// Create a new SmolVLM image preprocessor
-    pub fn new(max_size: u32, outer_patch_size: u32) -> Self {
+    pub fn new(max_size: u32, outer_patch_size: u32, device: &Device) -> Self {
         Self {
             max_size,
             outer_patch_size,
@@ -86,6 +42,11 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
             buf_padded_mask: None,
             buf_global_padded_img: None,
             buf_global_padded_mask: None,
+            buf_mask_tensor: (Tensor::ones((2048, 2048), DType::F32, device).unwrap() * 255.0)
+                .unwrap(),
+            // buf_img_tensor: Tensor::zeros((1, 1), DType::F32, device).unwrap(),
+            buf_mean_tensor: Tensor::from_slice(&MEAN, (3, 1, 1), device).unwrap(),
+            buf_std_tensor: Tensor::from_slice(&STD, (3, 1, 1), device).unwrap(),
         }
     }
 
@@ -180,12 +141,12 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
 
         // convert to tensors and normalize
         // Process masks first (they need mutable self)
-        let mask_tensor = Self::mask_to_tensor(mask, device)?;
-        let global_mask_tensor = Self::mask_to_tensor(global_mask, device)?;
+        let mask_tensor = self.mask_to_tensor(mask, device)?;
+        let global_mask_tensor = self.mask_to_tensor(global_mask, device)?;
 
         // Then process images (they need immutable self)
-        let img_tensor = Self::image_to_normalized_tensor(img_padded, device)?;
-        let global_img_tensor = Self::image_to_normalized_tensor(global_img, device)?;
+        let img_tensor = self.image_to_normalized_tensor(img_padded, device)?;
+        let global_img_tensor = self.image_to_normalized_tensor(global_img, device)?;
 
         // create patches and concatenate with global image
         let (img_patches, mask_patches, size) = self.create_patches_with_global(
@@ -236,7 +197,7 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
             }
 
             let buf = buffer.as_mut().unwrap();
-            resize_fast(img, buf, InterpolationMode::Bilinear)?;
+            resize_fast(img, buf, InterpolationMode::Lanczos)?;
 
             Ok(Cow::Borrowed(buf))
         }
@@ -262,76 +223,6 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
 
         let new_width = (width as u32).div_ceil(outer_patch_size) * outer_patch_size;
         let new_height = (height as u32).div_ceil(outer_patch_size) * outer_patch_size;
-
-        //     let mut padded_img = Image::<u8, 3, _>::from_size_val(
-        //         ImageSize {
-        //             width: new_width as usize,
-        //             height: new_height as usize,
-        //         },
-        //         0,
-        //         CpuAllocator,
-        //     )
-        //     .unwrap();
-        //     let mut padded_mask = Image::<u8, 1, _>::from_size_val(
-        //         ImageSize {
-        //             width: new_width as usize,
-        //             height: new_height as usize,
-        //         },
-        //         255, // TODO: temp fix (softmax NaN down the line), will look into a more later
-        //         CpuAllocator,
-        //     )
-        //     .unwrap();
-        //     for y in 0..height {
-        //         for x in 0..width {
-        //             for c in 0..3 {
-        //                 padded_img
-        //                     .set_pixel(x, y, c, *img.get_pixel(x, y, c).unwrap())
-        //                     .unwrap();
-        //             }
-        //             // TODO: temp fix (softmax NaN down the line), will look into a more later
-        //             // padded_mask.set_pixel(x, y, 0, 255).unwrap();
-        //         }
-        //     }
-        //     (padded_img, padded_mask)
-        // };
-        // let (global_img, global_mask) = {
-        //     let (width, height) = (global_img.width(), global_img.height());
-        //     #[cfg(feature = "debug")]
-        //     println!("Global image size: {}x{}", width, height);
-
-        //     let new_width = (width as u32).div_ceil(outer_patch_size) * outer_patch_size;
-        //     let new_height = (height as u32).div_ceil(outer_patch_size) * outer_patch_size;
-        //     let mut padded_img = Image::<u8, 3, _>::from_size_val(
-        //         ImageSize {
-        //             width: new_width as usize,
-        //             height: new_height as usize,
-        //         },
-        //         0,
-        //         CpuAllocator,
-        //     )
-        //     .unwrap();
-        //     let mut padded_mask = Image::<u8, 1, _>::from_size_val(
-        //         ImageSize {
-        //             width: new_width as usize,
-        //             height: new_height as usize,
-        //         },
-        //         255, // TODO: temp fix (softmax NaN down the line), will look into a more later
-        //         CpuAllocator,
-        //     )
-        //     .unwrap();
-        //     for y in 0..height {
-        //         for x in 0..width {
-        //             for c in 0..3 {
-        //                 padded_img
-        //                     .set_pixel(x, y, c, *global_img.get_pixel(x, y, c).unwrap())
-        //                     .unwrap();
-        //             }
-        //             // TODO: temp fix (softmax NaN down the line), will look into a more later
-        //             // padded_mask.set_pixel(x, y, 0, 255).unwrap();
-        //         }
-        //     }
-        //     (padded_img, padded_mask)
-        // };
 
         // Lazy init buffers only if size changed
         let needs_resize = img_buffer.as_ref().map_or(true, |buf| {
@@ -365,16 +256,16 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
         }
 
         let padded_img = img_buffer.as_mut().unwrap();
-        let padded_mask = mask_buffer.as_mut().unwrap();
+        // let padded_mask = mask_buffer.as_mut().unwrap();
 
         // Zero out buffers (padding area)
         padded_img.as_slice_mut().fill(0);
-        padded_mask.as_slice_mut().fill(255);
+        // padded_mask.as_slice_mut().fill(255);
 
         // Fast row-by-row copying using slices
         let img_slice = img.as_slice();
         let padded_img_slice = padded_img.as_slice_mut();
-        let padded_mask_slice = padded_mask.as_slice_mut();
+        // let padded_mask_slice = padded_mask.as_slice_mut();
 
         // Copy image data row by row
         for y in 0..height {
@@ -397,6 +288,7 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
 
     /// Convert image to normalized tensor
     fn image_to_normalized_tensor(
+        &self,
         img: Image<u8, 3, A>, // Take ownership
         device: &Device,
     ) -> Result<Tensor, SmolVlmError> {
@@ -408,28 +300,60 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
             .to_dtype(candle_core::DType::F32)?;
 
         // Normalize: scale to [0,1]
-        tensor = (tensor / 255.0)?;
-        let mean = Tensor::from_slice(&MEAN, (3, 1, 1), device)?;
-        let std = Tensor::from_slice(&STD, (3, 1, 1), device)?;
+        tensor = (tensor * 0.00392156862745098)?;
 
-        tensor = tensor.broadcast_sub(&mean)?;
-        tensor = tensor.broadcast_div(&std)?;
+        tensor = tensor
+            .broadcast_sub(&self.buf_mean_tensor)?
+            .broadcast_div(&self.buf_std_tensor)?;
 
         Ok(tensor)
     }
 
     /// Convert mask to tensor
     fn mask_to_tensor(
+        &mut self,
         mask: Image<u8, 1, A>, // Take ownership of the mask
         device: &Device,
     ) -> Result<Tensor, SmolVlmError> {
         let (width, height) = (mask.width(), mask.height());
-        let mask_data = mask.into_vec(); // Take ownership and convert to vec
 
-        Ok(
-            Tensor::from_vec(mask_data, Shape::from_dims(&[height, width]), device)?
-                .to_dtype(candle_core::DType::F32)?,
-        )
+        let (buf_height, buf_width) = self.buf_mask_tensor.dims2()?;
+
+        // let has_non_255 = self
+        //     .buf_mask_tensor
+        //     .to_dtype(DType::U8)?
+        //     .ne(255u8)?
+        //     .sum_all()?
+        //     .to_scalar::<u8>()?
+        //     > 0;
+        // println!("Mask (buf) has non-255 values: {}", has_non_255);
+
+        // let data = mask.as_slice();
+        // let has_non_255 = data.iter().any(|&v| v != 255);
+        // if has_non_255 {
+        //     println!("Mask (input) has non-255 values: {}", has_non_255);
+        // }
+
+        if height == buf_height && width == buf_width {
+            // No resize needed
+            Ok(self.buf_mask_tensor.clone())
+        } else if height > buf_height || width > buf_width {
+            // Resize the buffer if needed
+
+            let mask_data = mask.into_vec();
+
+            self.buf_mask_tensor =
+                Tensor::from_vec(mask_data, Shape::from_dims(&[height, width]), device)?
+                    .to_dtype(DType::F32)?;
+
+            Ok(self.buf_mask_tensor.clone())
+        } else {
+            // Slice the buffer to the required size
+            Ok(self
+                .buf_mask_tensor
+                .narrow(0, 0, height)?
+                .narrow(1, 0, width)?)
+        }
     }
 
     /// Create patches from image and mask, then concatenate with global image

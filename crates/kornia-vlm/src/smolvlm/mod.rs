@@ -75,12 +75,12 @@ impl<A: ImageAllocator> SmolVlm<A> {
             } else {
                 LogitsProcessor::from_sampling(config.seed, Sampling::ArgMax)
             },
-            device,
+            device: device.clone(),
             image_history: Vec::new(),
             index_pos: 0,
             first_prompt: true,
             token_history: Vec::new(),
-            preprocessor: SmolVlmImagePreprocessor::new(1536, 384),
+            preprocessor: SmolVlmImagePreprocessor::new(1536, 384, &device),
         })
     }
 

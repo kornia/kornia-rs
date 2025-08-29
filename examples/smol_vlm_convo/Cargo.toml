@@ -17,9 +17,14 @@ argh = { workspace = true }
 reqwest = { version = "0.12.15", features = ["blocking"] }
 tempfile = "3.8"
 kornia-io = { workspace = true }
-kornia-vlm = { workspace = true, features = ["debug"] }
+kornia-vlm = { workspace = true, features = [] }
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
+
+color-eyre = "0.6.3"
+crossterm = "0.28.1"
+ratatui = "0.29.0"
+textwrap = "0.16.2"
 
 [features]
 cuda = ["kornia-vlm/cuda"]

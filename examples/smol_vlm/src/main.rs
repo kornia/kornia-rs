@@ -1,4 +1,5 @@
 use argh::FromArgs;
+use kornia_tensor::CpuAllocator;
 use kornia_vlm::smolvlm::{utils::SmolVlmConfig, SmolVlm};
 
 use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
@@ -41,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     // generate a caption of the image
-    let _caption = smolvlm.inference(&args.text_prompt, image, args.sample_length)?;
+    let _caption = smolvlm.inference(&args.text_prompt, image, args.sample_length, CpuAllocator)?;
 
     Ok(())
 }
