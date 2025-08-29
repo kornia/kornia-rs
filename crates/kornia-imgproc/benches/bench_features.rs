@@ -30,8 +30,8 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
             let src = i.clone();
             b.iter(|| {
                 let _res = std::hint::black_box(|| {
-                    fast_detector.corner_fast(&src);
-                    fast_detector.get_keypoints().unwrap()
+                    fast_detector.compute_corner_response(&src);
+                    fast_detector.extract_keypoints().unwrap()
                 });
             })
         },
