@@ -29,10 +29,10 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
         |b, i| {
             let src = i.clone();
             b.iter(|| {
-                let _res = std::hint::black_box(|| {
-                    fast_detector.compute_corner_response(&src);
-                    fast_detector.extract_keypoints().unwrap()
-                });
+                fast_detector.compute_corner_response(&src);
+                let _res = std::hint::black_box(fast_detector.extract_keypoints()).unwrap();
+
+                fast_detector.clear();
             })
         },
     );
@@ -109,7 +109,7 @@ fn bench_dog_response(c: &mut Criterion) {
 criterion_group!(
     name = benches;
     config = Criterion::default().warm_up_time(std::time::Duration::new(10, 0));
-    targets = bench_harris_response, bench_dog_response, bench_fast_corner_detect
+    targets = bench_fast_corner_detect
 );
 criterion_main!(benches);
 
