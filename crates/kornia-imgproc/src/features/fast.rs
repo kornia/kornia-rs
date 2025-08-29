@@ -1,4 +1,3 @@
-use kiddo::{ImmutableKdTree, SquaredEuclidean};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use kornia_tensor::CpuAllocator;
 use rayon::prelude::*;
@@ -147,17 +146,6 @@ pub enum PixelType {
 }
 
 /// TODO
-#[derive(Debug, Clone, Copy)]
-pub struct PixelIndex {
-    /// TODO
-    pub x: usize,
-    /// TODO
-    pub y: usize,
-    /// TODO
-    pub index: usize,
-}
-
-/// TODO
 pub fn corner_fast<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     threshold: u8,
@@ -188,8 +176,8 @@ pub fn corner_fast<A: ImageAllocator>(
             let ix = iy + x;
 
             curr_pixel = src_slice[ix];
-            lower_threshold = curr_pixel - threshold;
-            upper_threshold = curr_pixel + threshold;
+            lower_threshold = curr_pixel.saturating_sub(threshold);
+            upper_threshold = curr_pixel.saturating_add(threshold);
 
             if arc_length >= 12 {
                 speed_sum_b = 0;
@@ -270,7 +258,8 @@ fn corner_fast_response(
             if consecutive_count == n {
                 curr_response = 0;
                 for m in 0..16 {
-                    curr_response += circle_intensities[m] - curr_pixel;
+                    curr_response = curr_response
+                        .saturating_add(circle_intensities[m].saturating_sub(curr_pixel));
                 }
 
                 return curr_response;
@@ -288,16 +277,8 @@ pub fn peak_local_max<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     min_distance: usize,
     threshold: u8,
-) -> Result<Vec<[f32; 2]>, ImageError> {
+) -> Result<Vec<[usize; 2]>, ImageError> {
     let border_width = min_distance;
-
-    // TODO: Avoid this step by taking this value as parameter
-    // let threshold = src
-    //     .as_slice()
-    //     .iter()
-    //     .copied()
-    //     .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Greater))
-    //     .unwrap_or_default();
 
     let mut mask = get_peak_mask(src, threshold)?;
     exclude_border(&mut mask, border_width);
@@ -337,88 +318,100 @@ fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<u8, 1, A1>,
     mask: &Image<bool, 1, A2>,
     min_distance: usize,
-) -> Vec<[f32; 2]> {
+) -> Vec<[usize; 2]> {
     let src_size = src.size();
+    let width = src_size.width;
+    let height = src_size.height;
 
-    let coords: Vec<_> = mask
+    let coords_intensity: Vec<[usize; 2]> = mask
         .as_slice()
         .iter()
         .enumerate()
         .filter(|&(_, &value)| value)
         .map(|(i, _)| {
-            let y = (i / src_size.width) as f32;
-            let x = (i % src_size.width) as f32;
-
+            let y = i / width;
+            let x = i % width;
             [y, x]
         })
         .collect();
 
-    if min_distance > 1 {
-        unimplemented!()
-    }
-
-    coords
-}
-
-/// TODO
-pub fn corner_peaks<A: ImageAllocator>(
-    src: &Image<u8, 1, A>,
-    min_distance: usize,
-    threshold: u8,
-) -> Result<Vec<[f32; 2]>, ImageError> {
-    let coords = peak_local_max(src, min_distance, threshold)?;
-
-    let tree = ImmutableKdTree::new_from_slice(&coords);
-
-    let min_distance = min_distance as f32;
-    let mut rejected = std::collections::HashSet::new();
+    let mut taken = vec![vec![false; width]; height];
     let mut result = Vec::new();
 
-    for (i, pixel) in coords.iter().enumerate() {
-        let i = i as u64;
+    for coord in coords_intensity {
+        let y = coord[0];
+        let x = coord[1];
 
-        if rejected.contains(&i) {
+        // If this location is already suppressed, skip
+        if taken[y][x] {
             continue;
         }
 
-        let neighbors = tree.within::<SquaredEuclidean>(pixel, min_distance);
-        for neighbor_idx in neighbors {
-            let neighbor_idx = neighbor_idx.item;
-            if neighbor_idx != i {
-                rejected.insert(neighbor_idx);
+        // Accept this peak
+        result.push([y, x]);
+
+        // Suppress all within min_distance
+        let y0 = y - min_distance;
+        let y1 = (y + min_distance + 1).min(height);
+        let x0 = x - min_distance;
+        let x1 = (x + min_distance + 1).min(width);
+
+        for yy in y0..y1 {
+            for xx in x0..x1 {
+                // Chebyshev distance (max norm)
+                if (yy as isize - y as isize)
+                    .abs()
+                    .max((xx as isize - x as isize).abs())
+                    < min_distance as isize
+                {
+                    taken[yy][xx] = true;
+                }
             }
         }
-
-        result.push(*pixel);
     }
 
-    Ok(result)
+    result
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::color::gray_from_rgb_u8;
+
     use super::*;
     use kornia_image::Image;
+    use kornia_io::jpeg::read_image_jpeg_rgb8;
     use kornia_tensor::CpuAllocator;
 
     #[test]
-    fn test_fast_feature_detector() -> Result<(), ImageError> {
+    fn test_fast_feature_detector() -> Result<(), Box<dyn std::error::Error>> {
         #[rustfmt::skip]
-        let img = Image::new(
-            [7, 7].into(),
-            vec![
-                50,  50,  50,  50,  50,  50,  50,
-                50,  50,  50,  50,  50,  50,  50,
-                50,  50,  50, 200,  50,  50,  50,
-                50,  50, 200, 200, 200,  50,  50,
-                50,  50,  50, 200,  50,  50,  50,
-                50,  50,  50,  50,  50,  50,  50,
-                50,  50,  50,  50,  50,  50,  50,
-            ],
-            CpuAllocator
-        )?;
-        let expected_keypoints = vec![[3, 3]];
-        let keypoints = fast_feature_detector(&img, 100, 9)?;
+        let img = read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
+        let mut gray_img = Image::from_size_val(img.size(), 0, CpuAllocator)?;
+        gray_from_rgb_u8(&img, &mut gray_img)?;
+
+        let expected_keypoints = vec![
+            [32, 86],
+            [44, 80],
+            [45, 175],
+            [55, 76],
+            [63, 183],
+            [70, 88],
+            [71, 169],
+            [108, 125],
+            [120, 64],
+            [125, 164],
+            [128, 92],
+            [133, 177],
+            [135, 161],
+            [138, 96],
+            [153, 104],
+            [161, 148],
+        ];
+
+        const THRESHOLD: u8 = 30;
+        let fast_response = corner_fast(&gray_img, THRESHOLD, 12)?;
+        let keypoints = peak_local_max(&fast_response, 10, THRESHOLD)?;
+
         assert_eq!(keypoints.len(), expected_keypoints.len());
         assert_eq!(keypoints, expected_keypoints);
         Ok(())

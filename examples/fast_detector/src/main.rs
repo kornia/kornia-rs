@@ -17,6 +17,10 @@ struct Args {
     /// arc length for the FAST detector
     #[argh(option, default = "12")]
     arc_length: usize,
+
+    /// minimum distance between detected keypoints
+    #[argh(option, default = "1")]
+    min_distance: usize,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -35,7 +39,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // detect the fast features
     let fast_response =
         imgproc::features::corner_fast(&img_gray8, args.threshold, args.arc_length)?;
-    let keypoints = imgproc::features::corner_peaks(&fast_response, 1, args.threshold)?;
+    let keypoints =
+        imgproc::features::peak_local_max(&fast_response, args.min_distance, args.threshold)?;
     println!("Found {} keypoints", keypoints.len());
 
     // log the image
@@ -49,11 +54,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // log the keypoints
-    let points = keypoints.iter().map(|k| (k[1], k[0])).collect::<Vec<_>>();
+    let points = keypoints
+        .iter()
+        .map(|k| (k[1] as f32, k[0] as f32))
+        .collect::<Vec<_>>();
 
+    let radii = vec![2.0; points.len()];
     rec.log_static(
         "image/keypoints",
-        &rerun::Points2D::new(points).with_colors([[0, 0, 255]]),
+        &rerun::Points2D::new(points)
+            .with_colors([[255, 0, 255]])
+            .with_radii(radii),
     )?;
 
     Ok(())
