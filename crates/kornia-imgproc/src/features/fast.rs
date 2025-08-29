@@ -22,8 +22,6 @@ pub struct FastDetector {
     pub arc_length: usize,
     corner_response: Image<u8, 1, CpuAllocator>,
     mask: Image<bool, 1, CpuAllocator>,
-    bins: [PixelType; 16],
-    circle_intensities: [u8; 16],
     taken: Vec<bool>,
 }
 
@@ -52,8 +50,6 @@ impl FastDetector {
             arc_length,
             corner_response: Image::from_size_val(image_size, 0, CpuAllocator)?,
             mask: Image::from_size_val(image_size, false, CpuAllocator)?,
-            bins: [PixelType::Similar; 16],
-            circle_intensities: [0; 16],
             taken: vec![false; image_size.height * image_size.width],
         })
     }
@@ -78,85 +74,83 @@ impl FastDetector {
     ) -> &Image<u8, 1, CpuAllocator> {
         let src_slice = src.as_slice();
 
-        let mut speed_sum_b = 0;
-        let mut speed_sum_d = 0;
-        let mut curr_pixel = 0;
-        let mut ring_pixel = 0;
-        let mut lower_threshold = 0;
-        let mut upper_threshold = 0;
+        let width = src.width();
+        let height = src.height();
 
         let corner_response = self.corner_response.as_slice_mut();
 
         const RP: [isize; 16] = [0, 1, 2, 3, 3, 3, 2, 1, 0, -1, -2, -3, -3, -3, -2, -1];
         const CP: [isize; 16] = [3, 3, 2, 1, 0, -1, -2, -3, -3, -3, -2, -1, 0, 1, 2, 3];
 
-        let mut curr_response = 0;
+        corner_response[3 * width..(height - 3) * width]
+            .par_chunks_mut(width)
+            .enumerate()
+            .for_each(|(row_idx, row)| {
+                let y = row_idx + 3;
+                let mut bins = [PixelType::Similar; 16];
+                let mut circle_intensities = [0u8; 16];
 
-        (3..src.height() - 3).for_each(|y| {
-            let iy = y * src.width();
+                for x in 3..width - 3 {
+                    let ix = x;
+                    let src_ix = y * width + x;
+                    let curr_pixel = src_slice[src_ix];
+                    let lower_threshold = curr_pixel.saturating_sub(self.threshold);
+                    let upper_threshold = curr_pixel.saturating_add(self.threshold);
 
-            let _: ControlFlow<(), ()> = (3..src.width() - 3).try_for_each(|x| {
-                let ix = iy + x;
+                    let mut speed_sum_b = 0;
+                    let mut speed_sum_d = 0;
 
-                curr_pixel = src_slice[ix];
-                lower_threshold = curr_pixel.saturating_sub(self.threshold);
-                upper_threshold = curr_pixel.saturating_add(self.threshold);
-
-                for k in [0, 4, 8, 12] {
-                    let ik = ((y as isize + RP[k]) * src.width() as isize + (x as isize + CP[k]))
-                        as usize;
-
-                    ring_pixel = src_slice[ik];
-                    if ring_pixel > upper_threshold {
-                        speed_sum_b += 1;
-                    } else if ring_pixel < lower_threshold {
-                        speed_sum_d += 1;
+                    for &k in &[0, 4, 8, 12] {
+                        let ik =
+                            ((y as isize + RP[k]) * width as isize + (x as isize + CP[k])) as usize;
+                        let ring_pixel = src_slice[ik];
+                        if ring_pixel > upper_threshold {
+                            speed_sum_b += 1;
+                        } else if ring_pixel < lower_threshold {
+                            speed_sum_d += 1;
+                        }
                     }
-                }
-
-                if speed_sum_d < 3 && speed_sum_b < 3 {
-                    return ControlFlow::Continue(());
-                }
-
-                for k in 0..16 {
-                    let ik = ((y as isize + RP[k]) * src.width() as isize + (x as isize + CP[k]))
-                        as usize;
-
-                    self.circle_intensities[k] = src_slice[ik];
-                    if self.circle_intensities[k] > upper_threshold {
-                        self.bins[k] = PixelType::Brighter;
-                    } else if self.circle_intensities[k] < lower_threshold {
-                        self.bins[k] = PixelType::Darker;
-                    } else {
-                        self.bins[k] = PixelType::Similar;
+                    if speed_sum_d < 3 && speed_sum_b < 3 {
+                        row[ix] = 0;
+                        continue;
                     }
-                }
 
-                // Test for bright pixels
-                curr_response = corner_fast_response(
-                    curr_pixel,
-                    &self.circle_intensities,
-                    &self.bins,
-                    PixelType::Brighter,
-                    self.arc_length,
-                );
+                    for k in 0..16 {
+                        let ik =
+                            ((y as isize + RP[k]) * width as isize + (x as isize + CP[k])) as usize;
+                        circle_intensities[k] = src_slice[ik];
+                        bins[k] = if circle_intensities[k] > upper_threshold {
+                            PixelType::Brighter
+                        } else if circle_intensities[k] < lower_threshold {
+                            PixelType::Darker
+                        } else {
+                            PixelType::Similar
+                        };
+                    }
 
-                // Test for dark pixels
-                if curr_pixel == 0 {
-                    curr_response = corner_fast_response(
+                    // Test for bright pixels
+                    let mut curr_response = corner_fast_response(
                         curr_pixel,
-                        &self.circle_intensities,
-                        &self.bins,
-                        PixelType::Darker,
+                        &circle_intensities,
+                        &bins,
+                        PixelType::Brighter,
                         self.arc_length,
                     );
+
+                    // Test for dark pixels
+                    if curr_response == 0 {
+                        curr_response = corner_fast_response(
+                            curr_pixel,
+                            &circle_intensities,
+                            &bins,
+                            PixelType::Darker,
+                            self.arc_length,
+                        );
+                    }
+
+                    row[ix] = curr_response;
                 }
-
-                corner_response[ix] = curr_response;
-
-                ControlFlow::Continue(())
             });
-        });
 
         &self.corner_response
     }
@@ -327,6 +321,7 @@ mod tests {
             [63, 183],
             [70, 88],
             [71, 169],
+            [106, 69],
             [108, 125],
             [120, 64],
             [125, 164],
