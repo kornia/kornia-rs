@@ -1,7 +1,12 @@
 use argh::FromArgs;
 use std::path::PathBuf;
 
-use kornia::{image::Image, imgproc, io::functional as F, tensor::CpuAllocator};
+use kornia::{
+    image::Image,
+    imgproc::{self, features::FastDetector},
+    io::functional as F,
+    tensor::CpuAllocator,
+};
 
 /// Detect FAST features on an image.
 #[derive(FromArgs)]
@@ -37,10 +42,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     imgproc::color::gray_from_rgb_u8(&img_rgb8, &mut img_gray8)?;
 
     // detect the fast features
-    let fast_response =
-        imgproc::features::corner_fast(&img_gray8, args.threshold, args.arc_length)?;
-    let keypoints =
-        imgproc::features::peak_local_max(&fast_response, args.min_distance, args.threshold)?;
+    let mut fast_detector = FastDetector::new(
+        img_gray8.size(),
+        args.threshold,
+        args.arc_length,
+        args.min_distance,
+    )?;
+    fast_detector.corner_fast(&img_gray8);
+    let keypoints = fast_detector.get_keypoints()?;
+
     println!("Found {} keypoints", keypoints.len());
 
     // log the image

@@ -19,6 +19,8 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
     let mut img_gray8 = Image::from_size_val(new_size, 0, CpuAllocator).unwrap();
     gray_from_rgb_u8(&img_resized, &mut img_gray8).unwrap();
 
+    let mut fast_detector = FastDetector::new(new_size, 60, 90, 1).unwrap();
+
     let parameter_string = format!("{}x{}", new_size.width, new_size.height);
 
     group.bench_with_input(
@@ -27,7 +29,10 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
         |b, i| {
             let src = i.clone();
             b.iter(|| {
-                let _res = std::hint::black_box(fast_feature_detector(&src, 60, 9)).unwrap();
+                let _res = std::hint::black_box(|| {
+                    fast_detector.corner_fast(&src);
+                    fast_detector.get_keypoints().unwrap()
+                });
             })
         },
     );
