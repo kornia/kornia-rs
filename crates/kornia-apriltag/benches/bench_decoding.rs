@@ -39,8 +39,8 @@ fn bench_decoding(c: &mut Criterion) {
     apriltag_c_detector.set_decimation(2.0);
 
     // AprilGrid-rs
-    let aprigrid_img: image::DynamicImage =
-        image::RgbImage::from_vec(img.width() as u32, img.height() as u32, img.to_vec())
+    let aprilgrid_img: image::DynamicImage =
+        image::GrayImage::from_vec(img.width() as u32, img.height() as u32, img.to_vec())
             .unwrap()
             .into();
 
@@ -59,7 +59,7 @@ fn bench_decoding(c: &mut Criterion) {
     });
 
     c.bench_function("aprilgrid-rs", |b| {
-        b.iter(|| std::hint::black_box(aprilgrid_detector.detect(&aprigrid_img)));
+        b.iter(|| std::hint::black_box(aprilgrid_detector.detect(&aprilgrid_img)));
     });
 }
 
