@@ -71,7 +71,6 @@ rayon = { workspace = true }
 thiserror = { workspace = true }
 wide = "1.1.1"
 kiddo = "5.0.2"
-fixed = "1.29"
 
 [dev-dependencies]
 criterion = { workspace = true }
