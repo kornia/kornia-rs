@@ -1,4 +1,5 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use kornia_tensor::CpuAllocator;
 use rayon::prelude::*;
 
 /// Fast feature detector
@@ -131,6 +132,233 @@ fn is_fast_corner(
     }
 
     false
+}
+
+/// TODO
+#[derive(Clone, Copy, PartialEq)]
+pub enum PixelType {
+    /// TODO
+    Brighter,
+    /// TODO
+    Darker,
+    /// TODO
+    Similar,
+}
+
+/// TODO
+pub struct PixelIndex {
+    /// TODO
+    pub x: usize,
+    /// TODO
+    pub y: usize,
+    /// TODO
+    pub index: usize,
+}
+
+/// TODO
+pub fn corner_fast<A: ImageAllocator>(
+    src: &Image<u8, 1, A>,
+    threshold: u8,
+    arc_length: usize,
+) -> Result<Image<u8, 1, CpuAllocator>, ImageError> {
+    let src_slice = src.as_slice();
+
+    let mut speed_sum_b: i32;
+    let mut speed_sum_d: i32;
+    let mut curr_pixel: u8;
+    let mut ring_pixel: u8;
+    let mut lower_threshold: u8;
+    let mut upper_threshold: u8;
+
+    let mut corner_response = vec![0; src_slice.len()];
+
+    let rp = [0, 1, 2, 3, 3, 3, 2, 1, 0, -1, -2, -3, -3, -3, -2, -1];
+    let cp = [3, 3, 2, 1, 0, -1, -2, -3, -3, -3, -2, -1, 0, 1, 2, 3];
+    let mut bins = [PixelType::Similar; 16];
+    let mut circle_intensities = [0u8; 16];
+
+    let mut curr_response: u8;
+
+    for y in 3..src.height() - 3 {
+        let iy = y * src.width();
+
+        for x in 3..src.width() - 3 {
+            let ix = iy + x;
+
+            curr_pixel = src_slice[ix];
+            lower_threshold = curr_pixel - threshold;
+            upper_threshold = curr_pixel + threshold;
+
+            if arc_length >= 12 {
+                speed_sum_b = 0;
+                speed_sum_d = 0;
+
+                for k in [0, 4, 8, 12] {
+                    let ik = ((y as isize + rp[k]) * src.width() as isize + (x as isize + cp[k]))
+                        as usize;
+
+                    let ring_pixel = src_slice[ik];
+                    if ring_pixel > upper_threshold {
+                        speed_sum_b += 1;
+                    } else if ring_pixel < lower_threshold {
+                        speed_sum_d += 1;
+                    }
+                }
+
+                if speed_sum_d < 3 && speed_sum_b < 3 {
+                    continue;
+                }
+            }
+
+            for k in 0..16 {
+                let ik =
+                    ((y as isize + rp[k]) * src.width() as isize + (x as isize + cp[k])) as usize;
+
+                circle_intensities[k] = src_slice[ik];
+                if circle_intensities[k] > upper_threshold {
+                    bins[k] = PixelType::Brighter;
+                } else if circle_intensities[k] < lower_threshold {
+                    bins[k] = PixelType::Darker;
+                } else {
+                    bins[k] = PixelType::Similar;
+                }
+            }
+
+            // Test for bright pixels
+            curr_response = corner_fast_response(
+                curr_pixel,
+                &circle_intensities,
+                &bins,
+                PixelType::Brighter,
+                arc_length,
+            );
+
+            // Test for dark pixels
+            if curr_pixel == 0 {
+                curr_response = corner_fast_response(
+                    curr_pixel,
+                    &circle_intensities,
+                    &bins,
+                    PixelType::Darker,
+                    arc_length,
+                );
+            }
+
+            corner_response[ix] = curr_response;
+        }
+    }
+
+    return Ok(Image::new(src.size(), corner_response, CpuAllocator)?);
+}
+
+/// TODO
+fn corner_fast_response(
+    curr_pixel: u8,
+    circle_intensities: &[u8; 16],
+    bins: &[PixelType; 16],
+    state: PixelType,
+    n: usize,
+) -> u8 {
+    let mut consecutive_count = 0;
+    let mut curr_response: u8;
+
+    for l in 0..15 + n {
+        if bins[l % 16] == state {
+            consecutive_count += 1;
+            if consecutive_count == n {
+                curr_response = 0;
+                for m in 0..16 {
+                    curr_response += circle_intensities[m] - curr_pixel;
+                }
+
+                return curr_response;
+            }
+        } else {
+            consecutive_count = 0;
+        }
+    }
+
+    return 0;
+}
+
+/// TODO
+pub fn peak_local_max<A: ImageAllocator>(
+    src: &Image<u8, 1, A>,
+    min_distance: usize,
+    threshold: u8,
+) -> Result<Vec<PixelIndex>, ImageError> {
+    let border_width = min_distance;
+
+    // TODO: Avoid this step by taking this value as parameter
+    // let threshold = src
+    //     .as_slice()
+    //     .iter()
+    //     .copied()
+    //     .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Greater))
+    //     .unwrap_or_default();
+
+    let mut mask = get_peak_mask(src, threshold)?;
+    exclude_border(&mut mask, border_width);
+
+    let coordinates = get_high_intensity_peaks(src, &mask, min_distance);
+    Ok(coordinates)
+}
+
+fn get_peak_mask<A: ImageAllocator>(
+    src: &Image<u8, 1, A>,
+    threshold: u8,
+) -> Result<Image<bool, 1, CpuAllocator>, ImageError> {
+    let src_slice = src.as_slice();
+
+    let mask = src_slice.iter().map(|px| *px > threshold).collect();
+    Ok(Image::new(src.size(), mask, CpuAllocator)?)
+}
+
+fn exclude_border<A: ImageAllocator>(label: &mut Image<bool, 1, A>, border_width: usize) {
+    let label_size = label.size();
+    let label_slice = label.as_slice_mut();
+
+    for y in 0..label_size.height {
+        for x in 0..label_size.width {
+            if x < border_width
+                || x >= label_size.width.saturating_sub(border_width)
+                || y < border_width
+                || y >= label_size.height.saturating_sub(border_width)
+            {
+                label_slice[y * label_size.width + x] = false;
+            }
+        }
+    }
+}
+
+fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, 1, A1>,
+    mask: &Image<bool, 1, A2>,
+    min_distance: usize,
+) -> Vec<PixelIndex> {
+    let src_size = src.size();
+    let src_slice = src.as_slice();
+
+    let mut coords: Vec<_> = mask
+        .as_slice()
+        .iter()
+        .enumerate()
+        .filter(|&(_, &value)| value)
+        .map(|(i, _)| {
+            let y = i / src_size.width;
+            let x = i % src_size.width;
+
+            PixelIndex { x, y, index: i }
+        })
+        .collect();
+
+    coords.sort_unstable_by(|a, b| src_slice[b.index].cmp(&src_slice[a.index]));
+
+    if min_distance > 1 {
+        unimplemented!()
+    }
+
+    coords
 }
 
 #[cfg(test)]

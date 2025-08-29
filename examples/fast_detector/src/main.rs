@@ -11,12 +11,12 @@ struct Args {
     image_path: PathBuf,
 
     /// threshold for the FAST detector
-    #[argh(option, default = "10")]
+    #[argh(option, default = "38")]
     threshold: u8,
 
     /// arc length for the FAST detector
-    #[argh(option, default = "5")]
-    arc_length: u8,
+    #[argh(option, default = "12")]
+    arc_length: usize,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,8 +33,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     imgproc::color::gray_from_rgb_u8(&img_rgb8, &mut img_gray8)?;
 
     // detect the fast features
-    let keypoints =
-        imgproc::features::fast_feature_detector(&img_gray8, args.threshold, args.arc_length)?;
+    let fast_response =
+        imgproc::features::corner_fast(&img_gray8, args.threshold, args.arc_length)?;
+    let keypoints = imgproc::features::peak_local_max(&fast_response, 1, args.threshold)?;
     println!("Found {} keypoints", keypoints.len());
 
     // log the image
@@ -50,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // log the keypoints
     let points = keypoints
         .iter()
-        .map(|k| (k[0] as f32, k[1] as f32))
+        .map(|k| (k.x as f32, k.y as f32))
         .collect::<Vec<_>>();
 
     rec.log_static(
