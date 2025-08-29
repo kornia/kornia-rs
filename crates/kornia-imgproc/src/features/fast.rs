@@ -1,5 +1,4 @@
-use fixed::{types::extra::U0, FixedU8};
-use kiddo::fixed::{distance::SquaredEuclidean, kdtree::KdTree};
+use kiddo::{ImmutableKdTree, SquaredEuclidean};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use kornia_tensor::CpuAllocator;
 use rayon::prelude::*;
@@ -200,7 +199,7 @@ pub fn corner_fast<A: ImageAllocator>(
                     let ik = ((y as isize + rp[k]) * src.width() as isize + (x as isize + cp[k]))
                         as usize;
 
-                    let ring_pixel = src_slice[ik];
+                    ring_pixel = src_slice[ik];
                     if ring_pixel > upper_threshold {
                         speed_sum_b += 1;
                     } else if ring_pixel < lower_threshold {
@@ -289,7 +288,7 @@ pub fn peak_local_max<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     min_distance: usize,
     threshold: u8,
-) -> Result<Vec<PixelIndex>, ImageError> {
+) -> Result<Vec<[f32; 2]>, ImageError> {
     let border_width = min_distance;
 
     // TODO: Avoid this step by taking this value as parameter
@@ -338,24 +337,21 @@ fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<u8, 1, A1>,
     mask: &Image<bool, 1, A2>,
     min_distance: usize,
-) -> Vec<PixelIndex> {
+) -> Vec<[f32; 2]> {
     let src_size = src.size();
-    let src_slice = src.as_slice();
 
-    let mut coords: Vec<_> = mask
+    let coords: Vec<_> = mask
         .as_slice()
         .iter()
         .enumerate()
         .filter(|&(_, &value)| value)
         .map(|(i, _)| {
-            let y = i / src_size.width;
-            let x = i % src_size.width;
+            let y = (i / src_size.width) as f32;
+            let x = (i % src_size.width) as f32;
 
-            PixelIndex { x, y, index: i }
+            [y, x]
         })
         .collect();
-
-    coords.sort_unstable_by(|a, b| src_slice[b.index].cmp(&src_slice[a.index]));
 
     if min_distance > 1 {
         unimplemented!()
@@ -369,31 +365,23 @@ pub fn corner_peaks<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     min_distance: usize,
     threshold: u8,
-) -> Result<Vec<PixelIndex>, ImageError> {
-    type Fxd = FixedU8<U0>;
-
+) -> Result<Vec<[f32; 2]>, ImageError> {
     let coords = peak_local_max(src, min_distance, threshold)?;
 
-    let mut tree: KdTree<Fxd, u32, 2, 512, u32> = KdTree::with_capacity(coords.len());
-    for (i, pixel_index) in coords.iter().enumerate() {
-        tree.add(
-            &[Fxd::from_num(pixel_index.x), Fxd::from_num(pixel_index.x)],
-            i as u32,
-        );
-    }
+    let tree = ImmutableKdTree::new_from_slice(&coords);
 
+    let min_distance = min_distance as f32;
     let mut rejected = std::collections::HashSet::new();
     let mut result = Vec::new();
 
     for (i, pixel) in coords.iter().enumerate() {
-        let i = i as u32;
+        let i = i as u64;
 
         if rejected.contains(&i) {
             continue;
         }
 
-        let point = [Fxd::from_num(pixel.x), Fxd::from_num(pixel.y)];
-        let neighbors = tree.within::<SquaredEuclidean>(&point, Fxd::from_num(min_distance.pow(2)));
+        let neighbors = tree.within::<SquaredEuclidean>(pixel, min_distance);
         for neighbor_idx in neighbors {
             let neighbor_idx = neighbor_idx.item;
             if neighbor_idx != i {

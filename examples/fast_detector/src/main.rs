@@ -11,7 +11,7 @@ struct Args {
     image_path: PathBuf,
 
     /// threshold for the FAST detector
-    #[argh(option, default = "38")]
+    #[argh(option, default = "10")]
     threshold: u8,
 
     /// arc length for the FAST detector
@@ -49,10 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // log the keypoints
-    let points = keypoints
-        .iter()
-        .map(|k| (k.x as f32, k.y as f32))
-        .collect::<Vec<_>>();
+    let points = keypoints.iter().map(|k| (k[1], k[0])).collect::<Vec<_>>();
 
     rec.log_static(
         "image/keypoints",
