@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // detect the fast features
     let fast_response =
         imgproc::features::corner_fast(&img_gray8, args.threshold, args.arc_length)?;
-    let keypoints = imgproc::features::peak_local_max(&fast_response, 1, args.threshold)?;
+    let keypoints = imgproc::features::corner_peaks(&fast_response, 1, args.threshold)?;
     println!("Found {} keypoints", keypoints.len());
 
     // log the image

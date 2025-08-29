@@ -1,3 +1,5 @@
+use fixed::{types::extra::U0, FixedU8};
+use kiddo::fixed::{distance::SquaredEuclidean, kdtree::KdTree};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use kornia_tensor::CpuAllocator;
 use rayon::prelude::*;
@@ -146,6 +148,7 @@ pub enum PixelType {
 }
 
 /// TODO
+#[derive(Debug, Clone, Copy)]
 pub struct PixelIndex {
     /// TODO
     pub x: usize,
@@ -359,6 +362,49 @@ fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
     }
 
     coords
+}
+
+/// TODO
+pub fn corner_peaks<A: ImageAllocator>(
+    src: &Image<u8, 1, A>,
+    min_distance: usize,
+    threshold: u8,
+) -> Result<Vec<PixelIndex>, ImageError> {
+    type Fxd = FixedU8<U0>;
+
+    let coords = peak_local_max(src, min_distance, threshold)?;
+
+    let mut tree: KdTree<Fxd, u32, 2, 512, u32> = KdTree::with_capacity(coords.len());
+    for (i, pixel_index) in coords.iter().enumerate() {
+        tree.add(
+            &[Fxd::from_num(pixel_index.x), Fxd::from_num(pixel_index.x)],
+            i as u32,
+        );
+    }
+
+    let mut rejected = std::collections::HashSet::new();
+    let mut result = Vec::new();
+
+    for (i, pixel) in coords.iter().enumerate() {
+        let i = i as u32;
+
+        if rejected.contains(&i) {
+            continue;
+        }
+
+        let point = [Fxd::from_num(pixel.x), Fxd::from_num(pixel.y)];
+        let neighbors = tree.within::<SquaredEuclidean>(&point, Fxd::from_num(min_distance.pow(2)));
+        for neighbor_idx in neighbors {
+            let neighbor_idx = neighbor_idx.item;
+            if neighbor_idx != i {
+                rejected.insert(neighbor_idx);
+            }
+        }
+
+        result.push(*pixel);
+    }
+
+    Ok(result)
 }
 
 #[cfg(test)]

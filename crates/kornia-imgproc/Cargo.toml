@@ -18,6 +18,8 @@ kornia-image = { workspace = true }
 num-traits = { workspace = true }
 rayon = "1.10"
 thiserror = { workspace = true }
+kiddo = "5.0.2"
+fixed = "1.29"
 
 [dev-dependencies]
 criterion = { workspace = true }
