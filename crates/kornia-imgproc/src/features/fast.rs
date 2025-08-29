@@ -24,7 +24,7 @@ pub struct FastDetector {
     mask: Image<bool, 1, CpuAllocator>,
     bins: [PixelType; 16],
     circle_intensities: [u8; 16],
-    taken: Vec<Vec<bool>>,
+    taken: Vec<bool>,
 }
 
 impl FastDetector {
@@ -54,17 +54,13 @@ impl FastDetector {
             mask: Image::from_size_val(image_size, false, CpuAllocator)?,
             bins: [PixelType::Similar; 16],
             circle_intensities: [0; 16],
-            taken: vec![vec![false; image_size.width]; image_size.height],
+            taken: vec![false; image_size.height * image_size.width],
         })
     }
 
     /// Clears the internal state of the detector, marking it ready to detect again.
     pub fn clear(&mut self) {
-        self.taken.par_iter_mut().for_each(|pxs| {
-            pxs.par_iter_mut().for_each(|px| {
-                *px = false;
-            });
-        });
+        self.taken.par_iter_mut().for_each(|px| *px = false);
     }
 
     /// Computes the corner response for the input image.
@@ -106,25 +102,20 @@ impl FastDetector {
                 lower_threshold = curr_pixel.saturating_sub(self.threshold);
                 upper_threshold = curr_pixel.saturating_add(self.threshold);
 
-                if self.arc_length >= 12 {
-                    speed_sum_b = 0;
-                    speed_sum_d = 0;
+                for k in [0, 4, 8, 12] {
+                    let ik = ((y as isize + RP[k]) * src.width() as isize + (x as isize + CP[k]))
+                        as usize;
 
-                    for k in [0, 4, 8, 12] {
-                        let ik = ((y as isize + RP[k]) * src.width() as isize
-                            + (x as isize + CP[k])) as usize;
-
-                        ring_pixel = src_slice[ik];
-                        if ring_pixel > upper_threshold {
-                            speed_sum_b += 1;
-                        } else if ring_pixel < lower_threshold {
-                            speed_sum_d += 1;
-                        }
+                    ring_pixel = src_slice[ik];
+                    if ring_pixel > upper_threshold {
+                        speed_sum_b += 1;
+                    } else if ring_pixel < lower_threshold {
+                        speed_sum_d += 1;
                     }
+                }
 
-                    if speed_sum_d < 3 && speed_sum_b < 3 {
-                        return ControlFlow::Continue(());
-                    }
+                if speed_sum_d < 3 && speed_sum_b < 3 {
+                    return ControlFlow::Continue(());
                 }
 
                 for k in 0..16 {
@@ -257,7 +248,7 @@ fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<u8, 1, A1>,
     mask: &Image<bool, 1, A2>,
     min_distance: usize,
-    taken: &mut [Vec<bool>],
+    taken: &mut [bool],
 ) -> Vec<[usize; 2]> {
     let src_size = src.size();
     let width = src_size.width;
@@ -280,9 +271,10 @@ fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
     for coord in coords_intensity {
         let y = coord[0];
         let x = coord[1];
+        let idx = y * width + x;
 
         // If this location is already suppressed, skip
-        if taken[y][x] {
+        if taken[idx] {
             continue;
         }
 
@@ -290,22 +282,21 @@ fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
         result.push([y, x]);
 
         // Suppress all within min_distance
-        let y0 = y - min_distance;
+        let y0 = y.saturating_sub(min_distance);
         let y1 = (y + min_distance + 1).min(height);
-        let x0 = x - min_distance;
+        let x0 = x.saturating_sub(min_distance);
         let x1 = (x + min_distance + 1).min(width);
 
         (y0..y1)
             .flat_map(|yy| (x0..x1).map(move |xx| (yy, xx)))
             .filter(|&(yy, xx)| {
-                // Chebyshev distance (max norm)
                 (yy as isize - y as isize)
                     .abs()
                     .max((xx as isize - x as isize).abs())
                     < min_distance as isize
             })
             .for_each(|(yy, xx)| {
-                taken[yy][xx] = true;
+                taken[yy * width + xx] = true;
             });
     }
 
