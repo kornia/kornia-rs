@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::Image;
 use kornia_imgproc::{
