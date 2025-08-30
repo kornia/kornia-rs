@@ -22,6 +22,7 @@ thiserror = { workspace = true }
 kornia-imgproc = { workspace = true }
 
 nalgebra = "0.32"
+rand = "0.8"
 
 [dev-dependencies]
 approx = { workspace = true }

@@ -7,6 +7,10 @@ use rand::Rng;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
+
+    // Enable/disable RANSAC for robust estimation
+    const USE_RANSAC: bool = false; // Set to true to use RANSAC, false for direct EPnP
+
     let rec = rerun::RecordingStreamBuilder::new("PnP Demo").spawn()?;
 
     // Camera intrinsics (pinhole, fx=fy=800, cx=640, cy=480)
@@ -139,17 +143,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         kpnp::PnPMethod::EPnPDefault,
     )?;
 
-    // Log observed 2D points
+    // Run pose estimation
+    let result = if USE_RANSAC {
+        // RANSAC mode: robust estimation
+        let ransac_params = kpnp::RansacParams {
+            max_iterations: 100,
+            reproj_threshold_px: 2.0,
+            confidence: 0.99,
+            random_seed: Some(42),
+            refine: true,
+        };
+
+        let ransac_result = kpnp::solve_pnp_ransac(
+            &world_pts,
+            &image_pts,
+            &k,
+            kpnp::PnPMethod::EPnPDefault,
+            &ransac_params,
+        )?;
+        println!("RANSAC EPnP:");
+        println!(
+            "  Inliers found: {}/{}",
+            ransac_result.inliers.len(),
+            world_pts.len()
+        );
+        if let Some(rmse) = ransac_result.pose.reproj_rmse {
+            println!("  RMSE: {:.3} px", rmse);
+        }
+        ransac_result.pose
+    } else {
+        // Direct mode: standard EPnP
+        let direct_result =
+            kpnp::solve_pnp(&world_pts, &image_pts, &k, kpnp::PnPMethod::EPnPDefault)?;
+        println!("Direct EPnP:");
+        if let Some(rmse) = direct_result.reproj_rmse {
+            println!("  RMSE: {:.3} px", rmse);
+        }
+        direct_result
+    };
+
+    // Log observed 2D points (all green since we're using clean data)
     let img_obs = image_pts
         .iter()
         .map(|uv| (uv[0], uv[1]))
         .collect::<Vec<_>>();
     rec.log_static(
         "image/observed",
-        &rerun::Points2D::new(img_obs).with_colors([[0, 255, 0]]), // green
+        &rerun::Points2D::new(img_obs).with_colors([[0, 255, 0]]), // Green for all points
     )?;
 
-    // Reproject world points with estimated pose (apply distortion)
+    // Reproject original world points with estimated pose (not the outliers)
     let r_est = result.rotation;
     let t_est = result.translation;
     let mut img_reproj = Vec::with_capacity(world_pts.len());
@@ -164,7 +207,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     rec.log_static(
         "image/reprojected",
-        &rerun::Points2D::new(img_reproj).with_colors([[255, 0, 0]]), // red
+        &rerun::Points2D::new(img_reproj).with_colors([[0, 0, 255]]), // blue
     )?;
 
     // Compute camera center in world coordinates: C = -R^T * t
@@ -182,15 +225,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             camera_center[1],
             camera_center[2],
         )])
-        .with_colors(vec![rerun::Color::from_rgb(255, 0, 0)]),
+        .with_colors(vec![rerun::Color::from_rgb(255, 165, 0)]), // orange
     )?;
 
-    println!("Ground truth translation: {:?}", gt_t);
-    println!("Estimated translation  : {:?}", result.translation);
-    println!("Ground truth rotation   : {:?}", gt_r);
-    println!("Estimated rotation:\n{:?}", result.rotation);
+    // Compute pose accuracy
+    let trans_error = ((result.translation[0] - gt_t[0]).powi(2)
+        + (result.translation[1] - gt_t[1]).powi(2)
+        + (result.translation[2] - gt_t[2]).powi(2))
+    .sqrt();
+
+    println!("\n=== Results ===");
+    println!("Translation error: {:.3} units", trans_error);
     if let Some(rmse) = result.reproj_rmse {
         println!("Reprojection RMSE: {:.3} px", rmse);
     }
+
+    println!("\n=== Configuration ===");
+    println!("To use RANSAC: set USE_RANSAC = true at the top of main.rs");
+    println!("To use direct EPnP: set USE_RANSAC = false at the top of main.rs");
+
+    println!("\n=== Visualization ===");
+    println!("- Green points: Observed 2D points");
+    println!("- Blue points: Reprojected 3D points using estimated pose");
+    println!("- Yellow points: Original 3D cube structure");
+    println!("- Orange point: Estimated camera center");
     Ok(())
 }

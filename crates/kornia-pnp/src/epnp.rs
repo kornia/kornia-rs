@@ -83,14 +83,23 @@ pub fn solve_epnp(
     let m_flat: Vec<f32> = m_rows.iter().flat_map(|row| row.iter()).cloned().collect();
     let m_mat = DMatrix::<f32>::from_row_slice(2 * n, 12, &m_flat);
 
-    // Null-space of M (4 right-singular vectors associated with smallest singular values)
-    let svd = m_mat.svd(true, true);
-    let Some(v_t) = svd.v_t else {
-        return Err(PnPError::SvdFailed("Failed to compute V^T".to_string()));
+    // Null-space of M via SVD of MtM (12×12), following OpenCV epnp.cpp
+    let mtm = m_mat.transpose() * &m_mat; // 12×12
+    let svd = mtm.svd(true, true);
+    let Some(u) = svd.u else {
+        return Err(PnPError::SvdFailed(
+            "Failed to compute U for MtM".to_string(),
+        ));
     };
-    let cols = 12;
+    // Take the last 4 columns of U (smallest singular values)
+    let cols = u.ncols();
+    if cols < 4 {
+        return Err(PnPError::SvdFailed(
+            "U has fewer than 4 columns".to_string(),
+        ));
+    }
     let start_col = cols - 4;
-    let null4 = v_t.rows(start_col, 4).transpose(); // shape 12×4
+    let null4 = u.columns(start_col, 4).into_owned(); // 12×4
 
     // Build helper matrices for beta initialisation
     let l = build_l6x10(&null4);
