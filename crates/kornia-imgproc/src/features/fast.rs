@@ -348,7 +348,7 @@ mod tests {
         fast_detector.compute_corner_response(&gray_imgf32);
         let keypoints = fast_detector.extract_keypoints()?;
 
-        // assert_eq!(keypoints.len(), expected_keypoints.len());
+        assert_eq!(keypoints.len(), expected_keypoints.len());
         assert_eq!(keypoints, expected_keypoints);
         Ok(())
     }
