@@ -1,7 +1,7 @@
 use eframe::egui::{self, CentralPanel, Grid, TextEdit};
 use humanize_duration::{prelude::*, Truncate};
 use kornia::image::{Image, ImageSize};
-use kornia::imgproc::resize::resize_fast;
+use kornia::imgproc::resize::resize_fast_rgb;
 use kornia::io::stream::video::{ImageFormat, SeekFlags, VideoReader};
 use kornia::io::stream::GstAllocator;
 use std::path::PathBuf;
@@ -298,7 +298,7 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                 if resize_required {
                     if let Some(ts) = texture_store {
                         let dst = &mut ts.image;
-                        resize_fast(
+                        resize_fast_rgb(
                             &image_frame,
                             dst,
                             kornia::imgproc::interpolation::InterpolationMode::Nearest,
@@ -314,7 +314,7 @@ fn render_image(app: &mut MyApp, ui: &mut eframe::egui::Ui) {
                         let mut dst: Image<u8, 3, GstAllocator> =
                             Image::from_size_val(new_image_size, 0, GstAllocator::default())
                                 .expect("Failed to create Image");
-                        resize_fast(
+                        resize_fast_rgb(
                             &image_frame,
                             &mut dst,
                             kornia::imgproc::interpolation::InterpolationMode::Nearest,
