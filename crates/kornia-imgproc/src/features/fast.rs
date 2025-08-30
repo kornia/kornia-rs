@@ -226,13 +226,15 @@ fn exclude_border<A: ImageAllocator>(label: &mut Image<bool, 1, A>, border_width
     let label_slice = label.as_slice_mut();
 
     (0..label_size.height).for_each(|y| {
+        let iy = y * label_size.width;
+
         (0..label_size.width).for_each(|x| {
             if x < border_width
                 || x >= label_size.width.saturating_sub(border_width)
                 || y < border_width
                 || y >= label_size.height.saturating_sub(border_width)
             {
-                label_slice[y * label_size.width + x] = false;
+                label_slice[iy + x] = false;
             }
         });
     });
