@@ -9,5 +9,5 @@ publish = false
 [dependencies]
 argh = { workspace = true }
 ctrlc = { workspace = true }
-kornia = { workspace = true }
+kornia = { workspace = true, features = ["v4l"] }
 rerun = { workspace = true }

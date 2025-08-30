@@ -4,11 +4,15 @@ use std::path::PathBuf;
 use kornia::{
     image::{Image, ImageSize},
     imgproc::{
+        self,
         color::gray_from_rgb_u8,
         features::{match_descriptors, OrbDectector},
-        flip::vertical_flip,
     },
-    io::functional::read_image_any_rgb8,
+    io::{
+        functional::read_image_any_rgb8,
+        jpeg,
+        v4l::{PixelFormat, V4LCameraConfig, V4lVideoCapture},
+    },
     tensor::CpuAllocator,
 };
 
@@ -16,120 +20,171 @@ use kornia::{
 #[derive(FromArgs)]
 struct Args {
     /// TODO
-    #[argh(option, short = 'f')]
+    #[argh(positional)]
     image_path: PathBuf,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
 
+    println!("{}", args.image_path.to_string_lossy());
+
     // start the recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia Fast Detector App").spawn()?;
 
+    let webcam_size = ImageSize {
+        width: 640,
+        height: 480,
+    };
+    let mut webcam = V4lVideoCapture::new(V4LCameraConfig {
+        size: webcam_size,
+        ..Default::default()
+    })?;
+
+    let mut webcam_frame = Image::from_size_val(webcam_size, 0, CpuAllocator)?;
+    let mut webcam_frame_gray = Image::from_size_val(webcam_size, 0, CpuAllocator)?;
+    let mut webcam_frame_grayf32 = Image::from_size_val(webcam_size, 0.0, CpuAllocator)?;
+
+    let webcam_orb_detector = OrbDectector::new();
+
+    println!("Webcam done");
+
     // read the image
-    let first_image = read_image_any_rgb8(args.image_path)?;
-    let mut second_image = Image::from_size_val(first_image.size(), 0, CpuAllocator)?;
-    vertical_flip(&first_image, &mut second_image)?;
+    let img_rgb = read_image_any_rgb8(args.image_path)?;
 
-    let mut first_image_gray = Image::from_size_val(first_image.size(), 0, CpuAllocator)?;
-    let mut second_image_gray = Image::from_size_val(first_image.size(), 0, CpuAllocator)?;
-    gray_from_rgb_u8(&first_image, &mut first_image_gray)?;
-    gray_from_rgb_u8(&second_image, &mut second_image_gray)?;
+    let mut img_gray = Image::from_size_val(img_rgb.size(), 0, CpuAllocator)?;
+    let mut img_grayf32 = Image::from_size_val(img_rgb.size(), 0.0, CpuAllocator)?;
+    gray_from_rgb_u8(&img_rgb, &mut img_gray)?;
+    u8_to_f32_image(&img_gray, &mut img_grayf32);
 
-    let mut first_image_f32: Image<_, 1, _> =
-        Image::from_size_val(first_image.size(), 0f32, CpuAllocator)?;
-    let mut second_image_f32: Image<_, 1, _> =
-        Image::from_size_val(first_image.size(), 0f32, CpuAllocator)?;
+    let mut joined_image = Image::from_size_val(
+        ImageSize {
+            width: webcam_size.width + img_rgb.width(),
+            height: webcam_size.height.max(img_rgb.height()),
+        },
+        0,
+        CpuAllocator,
+    )?;
 
-    let f_f32 = first_image_f32.as_slice_mut();
-    let s_f32 = second_image_f32.as_slice_mut();
+    let img_orb_detector = OrbDectector::new();
+    let img_detection = img_orb_detector.detect(&img_grayf32)?;
+    let img_extract = img_orb_detector.extract(
+        &img_grayf32,
+        &img_detection.0,
+        &img_detection.1,
+        &img_detection.2,
+    )?;
 
-    for (i, (&f_px, &s_px)) in first_image_gray
-        .as_slice()
-        .iter()
-        .zip(second_image_gray.as_slice())
-        .enumerate()
-    {
-        f_f32[i] = f_px as f32;
-        s_f32[i] = s_px as f32;
+    loop {
+        let Some(frame) = webcam.grab_frame()? else {
+            continue;
+        };
+
+        let buf = frame.buffer.as_slice();
+        match frame.pixel_format {
+            PixelFormat::YUYV => {
+                imgproc::color::convert_yuyv_to_rgb_u8(
+                    buf,
+                    &mut webcam_frame,
+                    imgproc::color::YuvToRgbMode::Bt601Full,
+                )?;
+            }
+            PixelFormat::MJPG => {
+                jpeg::decode_image_jpeg_rgb8(buf, &mut webcam_frame)?;
+            }
+            _ => return Err(format!("Unsupported format: {}", frame.pixel_format).into()),
+        }
+
+        gray_from_rgb_u8(&webcam_frame, &mut webcam_frame_gray)?;
+        u8_to_f32_image(&webcam_frame_gray, &mut webcam_frame_grayf32);
+
+        join_images_inplace(&webcam_frame_gray, &img_gray, &mut joined_image);
+
+        rec.log(
+            "image",
+            &rerun::Image::from_elements(
+                joined_image.as_slice(),
+                joined_image.size().into(),
+                rerun::ColorModel::L,
+            ),
+        )?;
+
+        let webcam_detection = webcam_orb_detector.detect(&webcam_frame_grayf32)?;
+        let webcam_extraction = webcam_orb_detector.extract(
+            &webcam_frame_grayf32,
+            &webcam_detection.0,
+            &webcam_detection.1,
+            &webcam_detection.2,
+        )?;
+
+        let matches = match_descriptors(&webcam_extraction.0, &img_extract.0, None, true, None);
+
+        // Converting keypoint coordinates to (W, H) for drawing match lines
+        let mut coords = Vec::new();
+        for &(i1, i2) in matches.iter() {
+            let kp1 = &webcam_detection.0[i1];
+            let kp2 = &img_detection.0[i2];
+
+            let coords1 = (kp1.1, kp1.0);
+            let coords2 = (kp2.1 + webcam_frame_grayf32.width() as f32, kp2.0);
+
+            coords.push([coords1, coords2]);
+        }
+
+        rec.log("image/matches", &rerun::LineStrips2D::new(coords))?;
+
+        let keypoints1: Vec<[f32; 2]> = webcam_detection.0.iter().map(|kp| [kp.1, kp.0]).collect();
+        let keypoints2: Vec<[f32; 2]> = img_detection
+            .0
+            .iter()
+            .map(|kp| [kp.1 + webcam_frame.width() as f32, kp.0])
+            .collect();
+
+        rec.log("image/keypoints1", &rerun::Points2D::new(&keypoints1))?;
+        rec.log("image/keypoints2", &rerun::Points2D::new(&keypoints2))?;
     }
-
-    let joined_image = join_images(&first_image_f32, &second_image_f32);
-    rec.log_static(
-        "image",
-        &rerun::Image::from_elements(
-            joined_image.as_slice(),
-            joined_image.size().into(),
-            rerun::ColorModel::L,
-        ),
-    )?;
-
-    let orb_detector = OrbDectector::default();
-
-    let first_detection = orb_detector.detect(&first_image_f32)?;
-    let first_extract = orb_detector.extract(
-        &first_image_f32,
-        &first_detection.0,
-        &first_detection.1,
-        &first_detection.2,
-    )?;
-
-    let second_detection = orb_detector.detect(&second_image_f32)?;
-    let second_extract = orb_detector.extract(
-        &second_image_f32,
-        &second_detection.0,
-        &second_detection.1,
-        &second_detection.2,
-    )?;
-
-    let matches = match_descriptors(&first_extract.0, &second_extract.0, None, true, None);
-
-    // Converting keypoint coordinates to (W, H) for drawing match lines
-    let mut coords = Vec::new();
-    for &(i1, i2) in matches.iter() {
-        let kp1 = &first_detection.0[i1];
-        let kp2 = &second_detection.0[i2];
-
-        let coords1 = (kp1.1, kp1.0);
-        let coords2 = (kp2.1 + first_image_f32.width() as f32, kp2.0);
-
-        coords.push([coords1, coords2]);
-    }
-
-    rec.log("image/matches", &rerun::LineStrips2D::new(coords))?;
-
-    let keypoints1: Vec<[f32; 2]> = first_detection.0.iter().map(|kp| [kp.1, kp.0]).collect();
-    let keypoints2: Vec<[f32; 2]> = second_detection
-        .0
-        .iter()
-        .map(|kp| [kp.1 + first_image_f32.width() as f32, kp.0])
-        .collect();
-
-    rec.log("image/keypoints1", &rerun::Points2D::new(&keypoints1))?;
-    rec.log("image/keypoints2", &rerun::Points2D::new(&keypoints2))?;
-
-    Ok(())
 }
 
-fn join_images(
-    image1: &Image<f32, 1, CpuAllocator>,
-    image2: &Image<f32, 1, CpuAllocator>,
-) -> Image<f32, 1, CpuAllocator> {
-    let size = ImageSize {
-        width: image1.width() + image2.width(),
-        height: image1.height(),
-    };
+fn join_images_inplace(
+    image1: &Image<u8, 1, CpuAllocator>,
+    image2: &Image<u8, 1, CpuAllocator>,
+    out: &mut Image<u8, 1, CpuAllocator>,
+) {
+    let width1 = image1.width();
+    let width2 = image2.width();
+    let height = image1.height();
 
-    let mut data = Vec::with_capacity(size.height * size.width);
+    assert_eq!(image1.height(), image2.height());
+    assert_eq!(out.width(), width1 + width2);
+    assert_eq!(out.height(), height);
 
-    for (px1, px2) in image1
-        .as_slice()
-        .chunks(image1.width())
-        .zip(image2.as_slice().chunks(image2.width()))
-    {
-        data.extend(px1);
-        data.extend(px2);
+    let row_len1 = width1;
+    let row_len2 = width2;
+    let out_row_len = width1 + width2;
+
+    let src1 = image1.as_slice();
+    let src2 = image2.as_slice();
+    let dst = out.as_slice_mut();
+
+    for row in 0..height {
+        let src1_start = row * row_len1;
+        let src2_start = row * row_len2;
+        let dst_start = row * out_row_len;
+
+        // Copy first image row
+        dst[dst_start..dst_start + row_len1]
+            .copy_from_slice(&src1[src1_start..src1_start + row_len1]);
+        // Copy second image row
+        dst[dst_start + row_len1..dst_start + row_len1 + row_len2]
+            .copy_from_slice(&src2[src2_start..src2_start + row_len2]);
     }
+}
 
-    Image::new(size, data, CpuAllocator).unwrap()
+fn u8_to_f32_image(src: &Image<u8, 1, CpuAllocator>, dst: &mut Image<f32, 1, CpuAllocator>) {
+    src.as_slice()
+        .iter()
+        .zip(dst.as_slice_mut())
+        .for_each(|(&s, d)| {
+            *d = s as f32 / 255.0;
+        });
 }
