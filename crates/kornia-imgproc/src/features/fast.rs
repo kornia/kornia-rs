@@ -71,7 +71,16 @@ impl FastDetector {
     pub fn compute_corner_response<A: ImageAllocator>(
         &mut self,
         src: &Image<f32, 1, A>,
-    ) -> &Image<f32, 1, CpuAllocator> {
+    ) -> Result<&Image<f32, 1, CpuAllocator>, ImageError> {
+        if self.corner_response.size() != src.size() {
+            return Err(ImageError::InvalidImageSize(
+                src.width(),
+                src.height(),
+                self.corner_response.width(),
+                self.corner_response.height(),
+            ));
+        }
+
         let src_slice = src.as_slice();
 
         let width = src.width();
@@ -152,7 +161,7 @@ impl FastDetector {
                 }
             });
 
-        &self.corner_response
+        Ok(&self.corner_response)
     }
 
     /// Extracts keypoints from the computed corner response.
