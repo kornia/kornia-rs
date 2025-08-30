@@ -5,10 +5,7 @@ use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 use kornia_tensor::CpuAllocator;
 
 use crate::{
-    features::{
-        other::{corner_fast, peak_local_max},
-        HarrisResponse,
-    },
+    features::{FastDetector, HarrisResponse},
     filter::gaussian_blur,
     resize::resize_native,
 };
@@ -66,9 +63,10 @@ impl OrbDectector {
     fn detect_octave<A: ImageAllocator>(
         &self,
         octave_image: &Image<f32, 1, A>,
-    ) -> Result<(Vec<(usize, usize)>, Vec<f32>, Vec<f32>), ImageError> {
-        let fast_response = corner_fast(&octave_image, 0.15, 12)?;
-        let keypoints = peak_local_max(&fast_response, 1)?;
+    ) -> Result<(Vec<[usize; 2]>, Vec<f32>, Vec<f32>), ImageError> {
+        let mut fast_detector = FastDetector::new(octave_image.size(), self.fast_threshold, 12, 1)?;
+        fast_detector.compute_corner_response(&octave_image);
+        let keypoints = fast_detector.extract_keypoints()?;
 
         if keypoints.is_empty() {
             return Ok((vec![], vec![], vec![]));
@@ -78,7 +76,7 @@ impl OrbDectector {
         let filtered_keypoints: Vec<_> = keypoints
             .iter()
             .zip(mask.iter())
-            .filter_map(|(kp, &m)| if m { Some((kp.0, kp.1)) } else { None })
+            .filter_map(|(kp, &m)| if m { Some(*kp) } else { None })
             .collect();
 
         if filtered_keypoints.is_empty() {
@@ -93,7 +91,7 @@ impl OrbDectector {
 
         let filtered_responses: Vec<_> = filtered_keypoints
             .iter()
-            .map(|&(r, c)| response.as_slice()[response.size().index(r, c)])
+            .map(|&[r, c]| response.as_slice()[response.size().index(r, c)])
             .collect();
 
         Ok((filtered_keypoints, orientations, filtered_responses))
@@ -116,7 +114,10 @@ impl OrbDectector {
             let scale = self.downscale.powi(octave as i32);
 
             for i in 0..keypoints.len() {
-                keypoints_list.push((keypoints[i].0 as f32 * scale, keypoints[i].1 as f32 * scale));
+                keypoints_list.push((
+                    keypoints[i][0] as f32 * scale,
+                    keypoints[i][1] as f32 * scale,
+                ));
                 orientations_list.push(orientations[i]);
                 scales_list.push(scale);
                 responses_list.push(responses[i]);
@@ -263,17 +264,13 @@ fn pyramid_reduce<A: ImageAllocator>(
     Ok(resized)
 }
 
-fn mask_border_keypoints(
-    size: ImageSize,
-    keypoints: &[(usize, usize, f32)],
-    distance: i32,
-) -> Vec<bool> {
+fn mask_border_keypoints(size: ImageSize, keypoints: &[[usize; 2]], distance: i32) -> Vec<bool> {
     let rows = size.height;
     let cols = size.width;
 
     keypoints
         .iter()
-        .map(|(r, c, _)| {
+        .map(|[r, c]| {
             let min = distance.saturating_sub(1);
             let max_row = rows as isize - distance as isize + 1;
             let max_col = cols as isize - distance as isize + 1;
@@ -310,7 +307,7 @@ fn mask_border_keypoints_i32(
 
 fn corner_orientations<A: ImageAllocator>(
     src: &Image<f32, 1, A>,
-    corners: &[(usize, usize, f32)],
+    corners: &[[usize; 2]],
 ) -> Vec<f32> {
     const M_SIZE: usize = 31; // NOTE: This must be uneven
     let mask = vec![false; M_SIZE * M_SIZE];
@@ -324,7 +321,7 @@ fn corner_orientations<A: ImageAllocator>(
 
     let mut orientations = Vec::with_capacity(corners.len());
 
-    for &(r0, c0, _) in corners {
+    for &[r0, c0] in corners {
         let mut m01 = 0f32;
         let mut m10 = 0f32;
 
