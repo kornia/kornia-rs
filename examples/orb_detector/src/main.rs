@@ -4,13 +4,11 @@ use std::path::PathBuf;
 use kornia::{
     image::{Image, ImageSize},
     imgproc::{
-        self,
         color::gray_from_rgb_u8,
-        draw::draw_line,
         features::{match_descriptors, OrbDectector},
         flip::vertical_flip,
     },
-    io::{functional::read_image_any_rgb8, png::read_image_png_mono8},
+    io::functional::read_image_any_rgb8,
     tensor::CpuAllocator,
 };
 
