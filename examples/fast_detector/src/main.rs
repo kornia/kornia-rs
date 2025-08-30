@@ -16,8 +16,8 @@ struct Args {
     image_path: PathBuf,
 
     /// threshold for the FAST detector
-    #[argh(option, default = "10")]
-    threshold: u8,
+    #[argh(option, default = "0.15")]
+    threshold: f32,
 
     /// arc length for the FAST detector
     #[argh(option, default = "12")]
@@ -41,6 +41,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut img_gray8 = Image::from_size_val(img_rgb8.size(), 0u8, CpuAllocator)?;
     imgproc::color::gray_from_rgb_u8(&img_rgb8, &mut img_gray8)?;
 
+    let mut img_grayf32 = Image::from_size_val(img_gray8.size(), 0.0, CpuAllocator)?;
+    img_gray8
+        .as_slice()
+        .iter()
+        .zip(img_grayf32.as_slice_mut())
+        .for_each(|(&p, m)| {
+            *m = p as f32 / 255.0;
+        });
+
     // detect the fast features
     let mut fast_detector = FastDetector::new(
         img_gray8.size(),
@@ -48,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.arc_length,
         args.min_distance,
     )?;
-    fast_detector.compute_corner_response(&img_gray8);
+    fast_detector.compute_corner_response(&img_grayf32);
     let keypoints = fast_detector.extract_keypoints()?;
 
     println!("Found {} keypoints", keypoints.len());
