@@ -354,7 +354,7 @@ mod tests {
         const THRESHOLD: f32 = 0.15;
 
         let mut fast_detector = FastDetector::new(gray_img.size(), THRESHOLD, 12, 10)?;
-        fast_detector.compute_corner_response(&gray_imgf32);
+        fast_detector.compute_corner_response(&gray_imgf32)?;
         let keypoints = fast_detector.extract_keypoints()?;
 
         assert_eq!(keypoints.len(), expected_keypoints.len());

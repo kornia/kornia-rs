@@ -42,7 +42,7 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
         |b, i| {
             let src = i.clone();
             b.iter(|| {
-                fast_detector.compute_corner_response(&src);
+                fast_detector.compute_corner_response(&src).unwrap();
                 let _res = std::hint::black_box(fast_detector.extract_keypoints()).unwrap();
 
                 fast_detector.clear();
