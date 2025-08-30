@@ -19,13 +19,22 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
     let mut img_gray8 = Image::from_size_val(new_size, 0, CpuAllocator).unwrap();
     gray_from_rgb_u8(&img_resized, &mut img_gray8).unwrap();
 
-    let mut fast_detector = FastDetector::new(new_size, 60, 9, 1).unwrap();
+    let mut img_grayf32 = Image::from_size_val(new_size, 0.0, CpuAllocator).unwrap();
+    img_gray8
+        .as_slice()
+        .iter()
+        .zip(img_grayf32.as_slice_mut())
+        .for_each(|(&p, m)| {
+            *m = p as f32 / 255.0;
+        });
+
+    let mut fast_detector = FastDetector::new(new_size, 0.23, 9, 1).unwrap();
 
     let parameter_string = format!("{}x{}", new_size.width, new_size.height);
 
     group.bench_with_input(
         BenchmarkId::new("fast_native_cpu", &parameter_string),
-        &(img_gray8),
+        &(img_grayf32),
         |b, i| {
             let src = i.clone();
             b.iter(|| {
