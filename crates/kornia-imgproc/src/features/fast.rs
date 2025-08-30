@@ -15,12 +15,12 @@ enum PixelType {
 #[derive(Clone)]
 pub struct FastDetector {
     /// The intensity threshold for detecting corners.
-    pub threshold: u8,
+    pub threshold: f32,
     /// The minimum distance between detected keypoints.
     pub min_distance: usize,
     /// The minimum arc length for a sequence of contiguous pixels to be considered a corner.
     pub arc_length: usize,
-    corner_response: Image<u8, 1, CpuAllocator>,
+    corner_response: Image<f32, 1, CpuAllocator>,
     mask: Image<bool, 1, CpuAllocator>,
     taken: Vec<bool>,
 }
@@ -40,7 +40,7 @@ impl FastDetector {
     /// Returns a `Result` containing the new `FastDetector` or an `ImageError`.
     pub fn new(
         image_size: ImageSize,
-        threshold: u8,
+        threshold: f32,
         arc_length: usize,
         min_distance: usize,
     ) -> Result<Self, ImageError> {
@@ -48,7 +48,7 @@ impl FastDetector {
             threshold,
             min_distance,
             arc_length,
-            corner_response: Image::from_size_val(image_size, 0, CpuAllocator)?,
+            corner_response: Image::from_size_val(image_size, 0.0, CpuAllocator)?,
             mask: Image::from_size_val(image_size, false, CpuAllocator)?,
             taken: vec![false; image_size.height * image_size.width],
         })
@@ -70,8 +70,8 @@ impl FastDetector {
     /// Returns a reference to the image containing the corner response.
     pub fn compute_corner_response<A: ImageAllocator>(
         &mut self,
-        src: &Image<u8, 1, A>,
-    ) -> &Image<u8, 1, CpuAllocator> {
+        src: &Image<f32, 1, A>,
+    ) -> &Image<f32, 1, CpuAllocator> {
         let src_slice = src.as_slice();
 
         let width = src.width();
@@ -88,14 +88,14 @@ impl FastDetector {
             .for_each(|(row_idx, row)| {
                 let y = row_idx + 3;
                 let mut bins = [PixelType::Similar; 16];
-                let mut circle_intensities = [0u8; 16];
+                let mut circle_intensities = [0f32; 16];
 
                 for x in 3..width - 3 {
                     let ix = x;
                     let src_ix = y * width + x;
                     let curr_pixel = src_slice[src_ix];
-                    let lower_threshold = curr_pixel.saturating_sub(self.threshold);
-                    let upper_threshold = curr_pixel.saturating_add(self.threshold);
+                    let lower_threshold = curr_pixel - self.threshold;
+                    let upper_threshold = curr_pixel + self.threshold;
 
                     let mut speed_sum_b = 0;
                     let mut speed_sum_d = 0;
@@ -111,7 +111,7 @@ impl FastDetector {
                         }
                     }
                     if speed_sum_d < 3 && speed_sum_b < 3 {
-                        row[ix] = 0;
+                        row[ix] = 0.0;
                         continue;
                     }
 
@@ -138,7 +138,7 @@ impl FastDetector {
                     );
 
                     // Test for dark pixels
-                    if curr_response == 0 {
+                    if curr_response == 0.0 {
                         curr_response = corner_fast_response(
                             curr_pixel,
                             &circle_intensities,
@@ -175,22 +175,22 @@ impl FastDetector {
 }
 
 fn corner_fast_response(
-    curr_pixel: u8,
-    circle_intensities: &[u8; 16],
+    curr_pixel: f32,
+    circle_intensities: &[f32; 16],
     bins: &[PixelType; 16],
     state: PixelType,
     n: usize,
-) -> u8 {
+) -> f32 {
     let mut consecutive_count = 0;
-    let mut curr_response: u8 = 0;
+    let mut curr_response = 0.0;
 
     if let ControlFlow::Break(_) = (0..15 + n).try_for_each(|l| {
         if bins[l % 16] == state {
             consecutive_count += 1;
             if consecutive_count == n {
-                curr_response = 0;
+                curr_response = 0.0;
                 circle_intensities.iter().for_each(|m| {
-                    curr_response = curr_response.saturating_add(m.saturating_sub(curr_pixel));
+                    curr_response += (m - curr_pixel).abs();
                 });
 
                 return ControlFlow::Break(());
@@ -204,13 +204,13 @@ fn corner_fast_response(
         return curr_response;
     }
 
-    0
+    0.0
 }
 
 fn get_peak_mask<A: ImageAllocator>(
-    src: &Image<u8, 1, A>,
+    src: &Image<f32, 1, A>,
     mask: &mut Image<bool, 1, A>,
-    threshold: u8,
+    threshold: f32,
 ) {
     let src_slice = src.as_slice();
     let mask_slice = mask.as_slice_mut();
@@ -239,7 +239,7 @@ fn exclude_border<A: ImageAllocator>(label: &mut Image<bool, 1, A>, border_width
 }
 
 fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<u8, 1, A1>,
+    src: &Image<f32, 1, A1>,
     mask: &Image<bool, 1, A2>,
     min_distance: usize,
     taken: &mut [bool],
@@ -313,33 +313,40 @@ mod tests {
         let mut gray_img = Image::from_size_val(img.size(), 0, CpuAllocator)?;
         gray_from_rgb_u8(&img, &mut gray_img)?;
 
+        let mut gray_imgf32 = Image::from_size_val(img.size(), 0.0, CpuAllocator)?;
+        gray_img
+            .as_slice()
+            .iter()
+            .zip(gray_imgf32.as_slice_mut())
+            .for_each(|(&p, m)| {
+                *m = p as f32 / 255.0;
+            });
+
         let expected_keypoints = vec![
             [32, 86],
-            [44, 80],
-            [45, 175],
-            [55, 76],
+            [60, 75],
             [63, 183],
-            [70, 88],
-            [71, 169],
+            [71, 84],
+            [72, 169],
             [106, 69],
-            [108, 125],
+            [109, 125],
             [120, 64],
-            [125, 164],
-            [128, 92],
-            [133, 177],
+            [125, 165],
+            [132, 94],
             [135, 161],
-            [138, 96],
+            [141, 121],
+            [143, 99],
             [153, 104],
             [161, 148],
         ];
 
-        const THRESHOLD: u8 = 30;
+        const THRESHOLD: f32 = 0.15;
 
         let mut fast_detector = FastDetector::new(gray_img.size(), THRESHOLD, 12, 10)?;
-        fast_detector.compute_corner_response(&gray_img);
+        fast_detector.compute_corner_response(&gray_imgf32);
         let keypoints = fast_detector.extract_keypoints()?;
 
-        assert_eq!(keypoints.len(), expected_keypoints.len());
+        // assert_eq!(keypoints.len(), expected_keypoints.len());
         assert_eq!(keypoints, expected_keypoints);
         Ok(())
     }
