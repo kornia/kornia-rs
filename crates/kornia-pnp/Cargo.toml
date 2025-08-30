@@ -21,6 +21,7 @@ glam = { version = "0.30.0", default-features = false }
 thiserror = { workspace = true }
 
 nalgebra = "0.32"
+rand = "0.8"
 
 [dev-dependencies]
 approx = { workspace = true }
