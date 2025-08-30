@@ -10,7 +10,9 @@ use rand::Rng;
 fn bench_fast_corner_detect(c: &mut Criterion) {
     let mut group = c.benchmark_group("FastCornerDetect");
 
-    let img_rgb8 = io::read_image_any_rgb8("../../tests/data/apriltags_tag36h11.jpg").unwrap();
+    let img_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/apriltags_tag36h11.jpg");
+    let img_rgb8 = io::read_image_any_rgb8(img_path).unwrap();
 
     let new_size = [1920, 1080].into();
     let mut img_resized = Image::from_size_val(new_size, 0, CpuAllocator).unwrap();
