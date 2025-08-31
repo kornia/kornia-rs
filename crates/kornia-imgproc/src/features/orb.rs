@@ -98,6 +98,13 @@ impl OrbDectector {
         self.best_detection.clear();
     }
 
+    pub fn get_detection(&self) -> &Detection {
+        match self.detection_kind {
+            DetectionKind::Normal => &self.detection,
+            DetectionKind::Best => &self.best_detection,
+        }
+    }
+
     fn build_pyramid<A: ImageAllocator>(
         &self,
         img: &Image<f32, 1, A>,
@@ -161,10 +168,7 @@ impl OrbDectector {
         Ok((filtered_keypoints, orientations, filtered_responses))
     }
 
-    pub fn detect<A: ImageAllocator>(
-        &mut self,
-        src: &Image<f32, 1, A>,
-    ) -> Result<&Detection, ImageError> {
+    pub fn detect<A: ImageAllocator>(&mut self, src: &Image<f32, 1, A>) -> Result<(), ImageError> {
         let pyramid = self.build_pyramid(src)?;
 
         for (octave, octave_image) in pyramid.iter().enumerate() {
@@ -187,7 +191,7 @@ impl OrbDectector {
         if n_keypoints < self.config.n_keypoints {
             // Not enough keypoints, return all
             self.detection_kind = DetectionKind::Normal;
-            Ok(&self.detection)
+            Ok(())
         } else {
             let mut indices: Vec<usize> = (0..n_keypoints).collect();
             indices.sort_unstable_by(|&i, &j| {
@@ -210,7 +214,7 @@ impl OrbDectector {
             }
 
             self.detection_kind = DetectionKind::Best;
-            Ok(&self.best_detection)
+            Ok(())
         }
     }
 
