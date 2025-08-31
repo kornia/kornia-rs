@@ -43,7 +43,7 @@ pub fn match_descriptors(
         .collect();
 
     if cross_check {
-        let mut matches1: Vec<usize> = (0..n)
+        let matches1: Vec<usize> = (0..n)
             .map(|j| {
                 let (min_i, _) = (0..m)
                     .map(|i| (i, distance[i][j]))

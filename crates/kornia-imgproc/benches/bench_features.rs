@@ -119,10 +119,105 @@ fn bench_dog_response(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_orb(c: &mut Criterion) {
+    let mut group = c.benchmark_group("OrbDetector");
+
+    let img_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/apriltags_tag36h11.jpg");
+    let img_rgb8 = io::read_image_any_rgb8(img_path).unwrap();
+
+    let new_size = [1920, 1080].into();
+    let mut img_resized = Image::from_size_val(new_size, 0, CpuAllocator).unwrap();
+    resize_fast_rgb(&img_rgb8, &mut img_resized, InterpolationMode::Bilinear).unwrap();
+
+    let mut img_gray8 = Image::from_size_val(new_size, 0, CpuAllocator).unwrap();
+    gray_from_rgb_u8(&img_resized, &mut img_gray8).unwrap();
+
+    let mut img_grayf32 = Image::from_size_val(new_size, 0.0, CpuAllocator).unwrap();
+    img_gray8
+        .as_slice()
+        .iter()
+        .zip(img_grayf32.as_slice_mut())
+        .for_each(|(&p, m)| {
+            *m = p as f32 / 255.0;
+        });
+
+    let orb = OrbDectector::default();
+    let parameter_string = format!("{}x{}", new_size.width, new_size.height);
+
+    group.bench_with_input(
+        BenchmarkId::new("orb_detect", &parameter_string),
+        &img_grayf32,
+        |b, i| {
+            b.iter(|| {
+                let detection = orb.detect(i).unwrap();
+                let _ =
+                    std::hint::black_box(orb.extract(i, &detection.0, &detection.1, &detection.2))
+                        .unwrap();
+            })
+        },
+    );
+    group.finish();
+}
+
+fn bench_orb_matching(c: &mut Criterion) {
+    let mut group = c.benchmark_group("OrbDescriptorMatching");
+
+    let img_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/apriltags_tag36h11.jpg");
+    let img_rgb8 = io::read_image_any_rgb8(img_path).unwrap();
+
+    let new_size = [1920, 1080].into();
+    let mut img_resized = Image::from_size_val(new_size, 0, CpuAllocator).unwrap();
+    resize_fast_rgb(&img_rgb8, &mut img_resized, InterpolationMode::Bilinear).unwrap();
+
+    let mut img_gray8 = Image::from_size_val(new_size, 0, CpuAllocator).unwrap();
+    gray_from_rgb_u8(&img_resized, &mut img_gray8).unwrap();
+
+    let mut img_grayf32 = Image::from_size_val(new_size, 0.0, CpuAllocator).unwrap();
+    img_gray8
+        .as_slice()
+        .iter()
+        .zip(img_grayf32.as_slice_mut())
+        .for_each(|(&p, m)| {
+            *m = p as f32 / 255.0;
+        });
+
+    // Create a vertically flipped version
+    let mut img_grayf32_flipped = Image::from_size_val(new_size, 0.0, CpuAllocator).unwrap();
+    kornia_imgproc::flip::vertical_flip(&img_grayf32, &mut img_grayf32_flipped).unwrap();
+
+    let orb = OrbDectector::default();
+
+    // Detect and extract descriptors for both images
+    let (kp1, sc1, ori1, _) = orb.detect(&img_grayf32).unwrap();
+    let (desc1, _) = orb.extract(&img_grayf32, &kp1, &sc1, &ori1).unwrap();
+
+    let (kp2, sc2, ori2, _) = orb.detect(&img_grayf32_flipped).unwrap();
+    let (desc2, _) = orb
+        .extract(&img_grayf32_flipped, &kp2, &sc2, &ori2)
+        .unwrap();
+
+    let parameter_string = format!("{}x{}", new_size.width, new_size.height);
+
+    group.bench_with_input(
+        BenchmarkId::new("orb_match", &parameter_string),
+        &(desc1, desc2),
+        |b, (d1, d2)| {
+            b.iter(|| {
+                let _ = std::hint::black_box(kornia_imgproc::features::match_descriptors(
+                    d1, d2, None, true, None,
+                ));
+            })
+        },
+    );
+    group.finish();
+}
+
 criterion_group!(
     name = benches;
     config = Criterion::default().warm_up_time(std::time::Duration::new(10, 0));
-    targets = bench_harris_response, bench_dog_response, bench_fast_corner_detect
+    targets = bench_harris_response, bench_dog_response, bench_fast_corner_detect, bench_orb, bench_orb_matching
 );
 criterion_main!(benches);
 
