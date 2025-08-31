@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.arc_length,
         args.min_distance,
     )?;
-    fast_detector.compute_corner_response(&img_grayf32);
+    fast_detector.compute_corner_response(&img_grayf32)?;
     let keypoints = fast_detector.extract_keypoints()?;
 
     println!("Found {} keypoints", keypoints.len());

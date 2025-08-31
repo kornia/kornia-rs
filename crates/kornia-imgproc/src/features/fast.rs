@@ -71,7 +71,16 @@ impl FastDetector {
     pub fn compute_corner_response<A: ImageAllocator>(
         &mut self,
         src: &Image<f32, 1, A>,
-    ) -> &Image<f32, 1, CpuAllocator> {
+    ) -> Result<&Image<f32, 1, CpuAllocator>, ImageError> {
+        if self.corner_response.size() != src.size() {
+            return Err(ImageError::InvalidImageSize(
+                src.width(),
+                src.height(),
+                self.corner_response.width(),
+                self.corner_response.height(),
+            ));
+        }
+
         let src_slice = src.as_slice();
 
         let width = src.width();
@@ -152,7 +161,7 @@ impl FastDetector {
                 }
             });
 
-        &self.corner_response
+        Ok(&self.corner_response)
     }
 
     /// Extracts keypoints from the computed corner response.
@@ -345,7 +354,7 @@ mod tests {
         const THRESHOLD: f32 = 0.15;
 
         let mut fast_detector = FastDetector::new(gray_img.size(), THRESHOLD, 12, 10)?;
-        fast_detector.compute_corner_response(&gray_imgf32);
+        fast_detector.compute_corner_response(&gray_imgf32)?;
         let keypoints = fast_detector.extract_keypoints()?;
 
         assert_eq!(keypoints.len(), expected_keypoints.len());
