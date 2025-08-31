@@ -13,6 +13,9 @@ version.workspace = true
 
 [features]
 default = []
+opencv_bench = ["dep:opencv"]
+# Enable verbose RANSAC debug prints (disabled by default)
+ransac_debug = []
 
 [dependencies]
 kornia-linalg = { workspace = true }
@@ -23,6 +26,12 @@ kornia-imgproc = { workspace = true }
 
 nalgebra = "0.32"
 rand = "0.8"
+opencv = { version = "0.92", optional = true }
 
 [dev-dependencies]
 approx = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "bench_pnp"
+harness = false
