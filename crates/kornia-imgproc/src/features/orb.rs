@@ -139,8 +139,8 @@ impl OrbDectector {
 
         let mask = mask_border_keypoints(octave_image.size(), &keypoints, 16);
         let filtered_keypoints: Vec<_> = keypoints
-            .iter()
-            .zip(mask.iter())
+            .par_iter()
+            .zip(&mask)
             .filter_map(|(kp, &m)| if m { Some(*kp) } else { None })
             .collect();
 
@@ -154,7 +154,7 @@ impl OrbDectector {
             .compute_unchecked(octave_image, &mut self.harris_response_buff);
 
         let filtered_responses: Vec<_> = filtered_keypoints
-            .iter()
+            .par_iter()
             .map(|&[r, c]| self.harris_response_buff.as_slice()[octave_image.size().index(r, c)])
             .collect();
 
@@ -329,7 +329,7 @@ fn mask_border_keypoints(size: ImageSize, keypoints: &[[usize; 2]], distance: i3
     let cols = size.width;
 
     keypoints
-        .iter()
+        .par_iter()
         .map(|[r, c]| {
             let min = distance.saturating_sub(1);
             let max_row = rows as isize - distance as isize + 1;
@@ -352,7 +352,7 @@ fn mask_border_keypoints_i32(
     let cols = size.width;
 
     keypoints
-        .iter()
+        .par_iter()
         .map(|(r, c)| {
             let min = distance.saturating_sub(1);
             let max_row = rows as isize - distance as isize + 1;
