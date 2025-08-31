@@ -151,9 +151,7 @@ fn bench_orb(c: &mut Criterion) {
         |b, i| {
             b.iter(|| {
                 let detection = orb.detect(i).unwrap();
-                let _ =
-                    std::hint::black_box(orb.extract(i, &detection.0, &detection.1, &detection.2))
-                        .unwrap();
+                let _ = std::hint::black_box(orb.extract(i, &detection)).unwrap();
             })
         },
     );
@@ -190,13 +188,11 @@ fn bench_orb_matching(c: &mut Criterion) {
     let mut orb = OrbDectector::new(OrbDectectorConfig::default(), img_grayf32.size()).unwrap();
 
     // Detect and extract descriptors for both images
-    let (kp1, sc1, ori1, _) = orb.detect(&img_grayf32).unwrap();
-    let (desc1, _) = orb.extract(&img_grayf32, &kp1, &sc1, &ori1).unwrap();
+    let detection1 = orb.detect(&img_grayf32).unwrap();
+    let (desc1, _) = orb.extract(&img_grayf32, &detection1).unwrap();
 
-    let (kp2, sc2, ori2, _) = orb.detect(&img_grayf32_flipped).unwrap();
-    let (desc2, _) = orb
-        .extract(&img_grayf32_flipped, &kp2, &sc2, &ori2)
-        .unwrap();
+    let detection2 = orb.detect(&img_grayf32_flipped).unwrap();
+    let (desc2, _) = orb.extract(&img_grayf32_flipped, &detection2).unwrap();
 
     let parameter_string = format!("{}x{}", new_size.width, new_size.height);
 

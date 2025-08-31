@@ -150,6 +150,16 @@ impl HarrisResponse {
             ));
         }
 
+        self.compute_unchecked(src, dst);
+
+        Ok(())
+    }
+
+    pub(crate) fn compute_unchecked<A1: ImageAllocator, A2: ImageAllocator>(
+        &mut self,
+        src: &Image<f32, 1, A1>,
+        dst: &mut Image<f32, 1, A2>,
+    ) {
         let src_data = src.as_slice();
         let col_slice = src.cols()..src_data.len() - src.cols();
         let row_slice = 1..src.cols() - 1;
@@ -275,8 +285,6 @@ impl HarrisResponse {
                         *dst_pixel = f32::max(0.0, response);
                     });
             });
-
-        Ok(())
     }
 }
 

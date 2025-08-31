@@ -32,9 +32,30 @@ impl Default for OrbDectectorConfig {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct Detection {
+    pub keypoints: Vec<(f32, f32)>,
+    pub orientations: Vec<f32>,
+    pub scales: Vec<f32>,
+    pub responses: Vec<f32>,
+}
+
+impl Detection {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            keypoints: Vec::with_capacity(capacity),
+            orientations: Vec::with_capacity(capacity),
+            scales: Vec::with_capacity(capacity),
+            responses: Vec::with_capacity(capacity),
+        }
+    }
+}
+
 pub struct OrbDectector {
     config: OrbDectectorConfig,
     fast_detector: FastDetector,
+    harris_response: HarrisResponse,
+    harris_response_buff: Image<f32, 1, CpuAllocator>,
 }
 
 impl OrbDectector {
@@ -46,6 +67,8 @@ impl OrbDectector {
                 config.n_keypoints,
                 1,
             )?,
+            harris_response: HarrisResponse::new(image_size).with_k(config.harris_k),
+            harris_response_buff: Image::from_size_val(image_size, 0.0, CpuAllocator)?,
             config,
         })
     }
@@ -101,14 +124,12 @@ impl OrbDectector {
 
         let orientations = corner_orientations(octave_image, &keypoints);
 
-        let mut response = Image::from_size_val(octave_image.size(), 0f32, CpuAllocator)?;
-        let mut harris_response =
-            HarrisResponse::new(octave_image.size()).with_k(self.config.harris_k);
-        harris_response.compute(octave_image, &mut response)?;
+        self.harris_response
+            .compute_unchecked(octave_image, &mut self.harris_response_buff);
 
         let filtered_responses: Vec<_> = filtered_keypoints
             .iter()
-            .map(|&[r, c]| response.as_slice()[response.size().index(r, c)])
+            .map(|&[r, c]| self.harris_response_buff.as_slice()[octave_image.size().index(r, c)])
             .collect();
 
         Ok((filtered_keypoints, orientations, filtered_responses))
@@ -117,13 +138,10 @@ impl OrbDectector {
     pub fn detect<A: ImageAllocator>(
         &mut self,
         src: &Image<f32, 1, A>,
-    ) -> Result<(Vec<(f32, f32)>, Vec<f32>, Vec<f32>, Vec<f32>), ImageError> {
+    ) -> Result<Detection, ImageError> {
         let pyramid = self.build_pyramid(src)?;
 
-        let mut keypoints_list = vec![];
-        let mut orientations_list = vec![];
-        let mut scales_list = vec![];
-        let mut responses_list = vec![];
+        let mut detection = Detection::default();
 
         for (octave, octave_image) in pyramid.iter().enumerate() {
             let (keypoints, orientations, responses) = self.detect_octave(&octave_image)?;
@@ -131,49 +149,40 @@ impl OrbDectector {
             let scale = self.config.downscale.powi(octave as i32);
 
             for i in 0..keypoints.len() {
-                keypoints_list.push((
+                detection.keypoints.push((
                     keypoints[i][0] as f32 * scale,
                     keypoints[i][1] as f32 * scale,
                 ));
-                orientations_list.push(orientations[i]);
-                scales_list.push(scale);
-                responses_list.push(responses[i]);
+                detection.orientations.push(orientations[i]);
+                detection.scales.push(scale);
+                detection.responses.push(responses[i]);
             }
         }
 
-        let n_keypoints = keypoints_list.len();
+        let n_keypoints = detection.keypoints.len();
         if n_keypoints < self.config.n_keypoints {
             // Not enough keypoints, return all
-            Ok((
-                keypoints_list,
-                scales_list,
-                orientations_list,
-                responses_list,
-            ))
+            Ok(detection)
         } else {
             let mut indices: Vec<usize> = (0..n_keypoints).collect();
             indices.sort_unstable_by(|&i, &j| {
-                responses_list[j].partial_cmp(&responses_list[i]).unwrap()
+                detection.responses[j]
+                    .partial_cmp(&detection.responses[i])
+                    .unwrap()
             });
 
-            let mut best_keypoints = Vec::with_capacity(self.config.n_keypoints);
-            let mut best_scales = Vec::with_capacity(self.config.n_keypoints);
-            let mut best_orientations = Vec::with_capacity(self.config.n_keypoints);
-            let mut best_responses = Vec::with_capacity(self.config.n_keypoints);
+            let mut best_detection = Detection::with_capacity(self.config.n_keypoints);
 
             for &idx in indices.iter().take(self.config.n_keypoints) {
-                best_keypoints.push(keypoints_list[idx]);
-                best_scales.push(scales_list[idx]);
-                best_orientations.push(orientations_list[idx]);
-                best_responses.push(responses_list[idx]);
+                best_detection.keypoints.push(detection.keypoints[idx]);
+                best_detection.scales.push(detection.scales[idx]);
+                best_detection
+                    .orientations
+                    .push(detection.orientations[idx]);
+                best_detection.responses.push(detection.responses[idx]);
             }
 
-            Ok((
-                best_keypoints,
-                best_scales,
-                best_orientations,
-                best_responses,
-            ))
+            Ok(best_detection)
         }
     }
 
@@ -204,12 +213,14 @@ impl OrbDectector {
     }
 
     pub fn extract<A: ImageAllocator>(
-        &self,
+        &mut self,
         src: &Image<f32, 1, A>,
-        keypoints: &[(f32, f32)],
-        scales: &[f32],
-        orientations: &[f32],
+        detection: &Detection,
     ) -> Result<(Vec<Vec<u8>>, Vec<bool>), ImageError> {
+        let keypoints = &detection.keypoints;
+        let scales = &detection.scales;
+        let orientations = &detection.orientations;
+
         let pyramid = self.build_pyramid(src)?;
 
         let mut descriptors_list: Vec<Vec<u8>> = Vec::new();
