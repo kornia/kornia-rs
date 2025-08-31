@@ -81,6 +81,13 @@ impl FastDetector {
             ));
         }
 
+        Ok(self.compute_corner_response_unchecked(src))
+    }
+
+    pub(crate) fn compute_corner_response_unchecked<A: ImageAllocator>(
+        &mut self,
+        src: &Image<f32, 1, A>,
+    ) -> &Image<f32, 1, CpuAllocator> {
         let src_slice = src.as_slice();
 
         let width = src.width();
@@ -161,7 +168,7 @@ impl FastDetector {
                 }
             });
 
-        Ok(&self.corner_response)
+        &self.corner_response
     }
 
     /// Extracts keypoints from the computed corner response.
@@ -169,17 +176,20 @@ impl FastDetector {
     /// # Returns
     ///
     /// Returns a `Result` containing a vector of keypoint coordinates or an `ImageError`.
-    pub fn extract_keypoints(&mut self) -> Result<Vec<[usize; 2]>, ImageError> {
-        get_peak_mask(&self.corner_response, &mut self.mask, self.threshold);
-        exclude_border(&mut self.mask, self.min_distance);
+    pub fn extract_keypoints(&mut self) -> Vec<[usize; 2]> {
+        self.extract_keypoints_unchecked(self.corner_response.size())
+    }
 
-        let coordinates = get_high_intensity_peaks(
+    pub(crate) fn extract_keypoints_unchecked(&mut self, image_size: ImageSize) -> Vec<[usize; 2]> {
+        get_peak_mask_region(
             &self.corner_response,
-            &self.mask,
-            self.min_distance,
-            &mut self.taken,
+            &mut self.mask,
+            self.threshold,
+            image_size,
         );
-        Ok(coordinates)
+        exclude_border_region(&mut self.mask, self.min_distance, image_size);
+
+        get_high_intensity_peaks_region(&self.mask, self.min_distance, &mut self.taken, image_size)
     }
 }
 
@@ -216,32 +226,38 @@ fn corner_fast_response(
     0.0
 }
 
-fn get_peak_mask<A: ImageAllocator>(
+fn get_peak_mask_region<A: ImageAllocator>(
     src: &Image<f32, 1, A>,
     mask: &mut Image<bool, 1, A>,
     threshold: f32,
+    image_size: ImageSize,
 ) {
     let src_slice = src.as_slice();
     let mask_slice = mask.as_slice_mut();
+    let len = image_size.width * image_size.height;
 
-    src_slice
+    src_slice[..len]
         .par_iter()
-        .zip(mask_slice)
+        .zip(&mut mask_slice[..len])
         .for_each(|(src, mask)| *mask = *src > threshold);
 }
 
-fn exclude_border<A: ImageAllocator>(label: &mut Image<bool, 1, A>, border_width: usize) {
-    let label_size = label.size();
+fn exclude_border_region<A: ImageAllocator>(
+    label: &mut Image<bool, 1, A>,
+    border_width: usize,
+    image_size: ImageSize,
+) {
+    let width = image_size.width;
+    let height = image_size.height;
     let label_slice = label.as_slice_mut();
 
-    (0..label_size.height).for_each(|y| {
-        let iy = y * label_size.width;
-
-        (0..label_size.width).for_each(|x| {
+    (0..height).for_each(|y| {
+        let iy = y * width;
+        (0..width).for_each(|x| {
             if x < border_width
-                || x >= label_size.width.saturating_sub(border_width)
+                || x >= width.saturating_sub(border_width)
                 || y < border_width
-                || y >= label_size.height.saturating_sub(border_width)
+                || y >= height.saturating_sub(border_width)
             {
                 label_slice[iy + x] = false;
             }
@@ -249,18 +265,17 @@ fn exclude_border<A: ImageAllocator>(label: &mut Image<bool, 1, A>, border_width
     });
 }
 
-fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<f32, 1, A1>,
-    mask: &Image<bool, 1, A2>,
+fn get_high_intensity_peaks_region<A1: ImageAllocator>(
+    mask: &Image<bool, 1, A1>,
     min_distance: usize,
     taken: &mut [bool],
+    image_size: ImageSize,
 ) -> Vec<[usize; 2]> {
-    let src_size = src.size();
-    let width = src_size.width;
-    let height = src_size.height;
+    let width = image_size.width;
+    let height = image_size.height;
+    let len = width * height;
 
-    let coords_intensity: Vec<[usize; 2]> = mask
-        .as_slice()
+    let coords_intensity: Vec<[usize; 2]> = mask.as_slice()[..len]
         .par_iter()
         .enumerate()
         .filter(|&(_, &value)| value)
@@ -310,16 +325,17 @@ fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
 
 #[cfg(test)]
 mod tests {
-    use crate::color::gray_from_rgb_u8;
+    use crate::{color::gray_from_rgb_u8, resize::resize_fast_mono};
 
     use super::*;
     use kornia_image::Image;
     use kornia_io::jpeg::read_image_jpeg_rgb8;
     use kornia_tensor::CpuAllocator;
 
+    const THRESHOLD: f32 = 0.15;
+
     #[test]
     fn test_fast_feature_detector() -> Result<(), Box<dyn std::error::Error>> {
-        #[rustfmt::skip]
         let img = read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
         let mut gray_img = Image::from_size_val(img.size(), 0, CpuAllocator)?;
         gray_from_rgb_u8(&img, &mut gray_img)?;
@@ -333,7 +349,7 @@ mod tests {
                 *m = p as f32 / 255.0;
             });
 
-        let expected_keypoints = vec![
+        const EXPECTED_KEYPOINTS: [[usize; 2]; 15] = [
             [32, 86],
             [60, 75],
             [63, 183],
@@ -351,14 +367,68 @@ mod tests {
             [161, 148],
         ];
 
-        const THRESHOLD: f32 = 0.15;
-
         let mut fast_detector = FastDetector::new(gray_img.size(), THRESHOLD, 12, 10)?;
         fast_detector.compute_corner_response(&gray_imgf32)?;
-        let keypoints = fast_detector.extract_keypoints()?;
+        let keypoints = fast_detector.extract_keypoints();
 
-        assert_eq!(keypoints.len(), expected_keypoints.len());
-        assert_eq!(keypoints, expected_keypoints);
+        assert_eq!(keypoints.len(), EXPECTED_KEYPOINTS.len());
+        assert_eq!(keypoints, EXPECTED_KEYPOINTS);
+        Ok(())
+    }
+
+    #[test]
+    fn test_fast_feature_detector_unchecked() -> Result<(), Box<dyn std::error::Error>> {
+        let img = read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
+        let mut gray_img = Image::from_size_val(img.size(), 0, CpuAllocator)?;
+        gray_from_rgb_u8(&img, &mut gray_img)?;
+
+        let mut resized_img = Image::from_size_val(
+            ImageSize {
+                width: 100,
+                height: 100,
+            },
+            0,
+            CpuAllocator,
+        )?;
+        resize_fast_mono(
+            &gray_img,
+            &mut resized_img,
+            crate::interpolation::InterpolationMode::Nearest,
+        )?;
+
+        let mut gray_imgf32 = Image::from_size_val(resized_img.size(), 0.0, CpuAllocator)?;
+        resized_img
+            .as_slice()
+            .iter()
+            .zip(gray_imgf32.as_slice_mut())
+            .for_each(|(&p, m)| {
+                *m = p as f32 / 255.0;
+            });
+
+        const EXPECTED_KEYPOINTS: [[usize; 2]; 15] = [
+            [14, 33],
+            [18, 65],
+            [25, 20],
+            [28, 59],
+            [35, 28],
+            [35, 71],
+            [39, 38],
+            [52, 19],
+            [62, 24],
+            [64, 64],
+            [65, 76],
+            [66, 35],
+            [72, 51],
+            [76, 39],
+            [82, 57],
+        ];
+
+        let mut fast_detector = FastDetector::new(img.size(), THRESHOLD, 12, 10)?;
+        fast_detector.compute_corner_response_unchecked(&gray_imgf32);
+        let keypoints = fast_detector.extract_keypoints_unchecked(resized_img.size());
+
+        assert_eq!(keypoints.len(), EXPECTED_KEYPOINTS.len());
+        assert_eq!(keypoints, EXPECTED_KEYPOINTS);
         Ok(())
     }
 }

@@ -43,7 +43,7 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
             let src = i.clone();
             b.iter(|| {
                 fast_detector.compute_corner_response(&src).unwrap();
-                let _res = std::hint::black_box(fast_detector.extract_keypoints()).unwrap();
+                let _res = std::hint::black_box(fast_detector.extract_keypoints());
 
                 fast_detector.clear();
             })
@@ -142,7 +142,7 @@ fn bench_orb(c: &mut Criterion) {
             *m = p as f32 / 255.0;
         });
 
-    let orb = OrbDectector::default();
+    let mut orb = OrbDectector::new(OrbDectectorConfig::default(), new_size).unwrap();
     let parameter_string = format!("{}x{}", new_size.width, new_size.height);
 
     group.bench_with_input(
@@ -187,7 +187,7 @@ fn bench_orb_matching(c: &mut Criterion) {
     let mut img_grayf32_flipped = Image::from_size_val(new_size, 0.0, CpuAllocator).unwrap();
     kornia_imgproc::flip::vertical_flip(&img_grayf32, &mut img_grayf32_flipped).unwrap();
 
-    let orb = OrbDectector::default();
+    let mut orb = OrbDectector::new(OrbDectectorConfig::default(), img_grayf32.size()).unwrap();
 
     // Detect and extract descriptors for both images
     let (kp1, sc1, ori1, _) = orb.detect(&img_grayf32).unwrap();
