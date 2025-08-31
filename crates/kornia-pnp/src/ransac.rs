@@ -100,6 +100,7 @@ pub fn solve_pnp_ransac(
 
         // Debug: prevent infinite loops
         if iter > params.max_iterations * 2 {
+            #[cfg(feature = "ransac_debug")]
             eprintln!("RANSAC: Emergency break after {} iterations", iter);
             break;
         }
@@ -120,21 +121,17 @@ pub fn solve_pnp_ransac(
         let pose_maybe = solve_pnp(&w_min, &i_min, k, base.clone());
         let pose_min = match pose_maybe {
             Ok(p) => p,
-            Err(e) => {
-                // Debug: EPnP failed
-                if iter == 1 {
-                    eprintln!("EPnP failed on minimal set: {:?}", e);
-                }
+            Err(_e) => {
+                #[cfg(feature = "ransac_debug")]
+                eprintln!("EPnP failed on minimal set");
                 continue;
             }
         };
 
         // Quick cheirality check on minimal set (all positive depths)
         if !sample_all_positive_depths(&pose_min.rotation, &pose_min.translation, &w_min) {
-            // Debug: Cheirality check failed
-            if iter == 1 {
-                eprintln!("Cheirality check failed on iteration {}", iter);
-            }
+            #[cfg(feature = "ransac_debug")]
+            eprintln!("Cheirality check failed on iteration {}", iter);
             continue;
         }
 
@@ -241,83 +238,146 @@ fn sample_all_positive_depths(r: &[[f32; 3]; 3], t: &[f32; 3], world: &[[f32; 3]
     })
 }
 
+/// This function handles both:
+/// - Scoring all points against a candidate pose (during RANSAC)
+/// - Computing final RMSE on a subset of inlier points
+#[allow(clippy::too_many_arguments)]
+fn classify_points(
+    world: &[[f32; 3]],
+    image: &[[f32; 2]],
+    indices: Option<&[usize]>,
+    rotation_matrix: &[[f32; 3]; 3],
+    translation_vector: &[f32; 3],
+    camera_intrinsics_x: &Vec3,
+    camera_intrinsics_y: &Vec3,
+    threshold: Option<f32>,
+) -> (Vec<usize>, f32) {
+    let rotation = Mat3::from_cols(
+        Vec3::new(
+            rotation_matrix[0][0],
+            rotation_matrix[1][0],
+            rotation_matrix[2][0],
+        ),
+        Vec3::new(
+            rotation_matrix[0][1],
+            rotation_matrix[1][1],
+            rotation_matrix[2][1],
+        ),
+        Vec3::new(
+            rotation_matrix[0][2],
+            rotation_matrix[1][2],
+            rotation_matrix[2][2],
+        ),
+    );
+    let translation = Vec3::new(
+        translation_vector[0],
+        translation_vector[1],
+        translation_vector[2],
+    );
+
+    // Create iterator based on whether we have indices or not
+    let points_iter: Box<dyn Iterator<Item = (usize, &[f32; 3], &[f32; 2])>> = match indices {
+        Some(indices) => Box::new(indices.iter().filter_map(|&idx| {
+            if idx < world.len() && idx < image.len() {
+                Some((idx, &world[idx], &image[idx]))
+            } else {
+                None
+            }
+        })),
+        None => Box::new(
+            world
+                .iter()
+                .zip(image.iter())
+                .enumerate()
+                .map(|(idx, (w, i))| (idx, w, i)),
+        ),
+    };
+
+    let (inliers, total_squared_error): (Vec<usize>, f32) = points_iter
+        .filter_map(|(index, world_point_arr, image_point)| {
+            let world_point = Vec3::from_array(*world_point_arr);
+            let camera_point = rotation * world_point + translation;
+
+            // Skip points behind the camera (negative depth)
+            if camera_point.z <= 0.0 {
+                return None;
+            }
+
+            let inverse_depth = 1.0 / camera_point.z;
+            let projected_u = camera_intrinsics_x.dot(camera_point) * inverse_depth;
+            let projected_v = camera_intrinsics_y.dot(camera_point) * inverse_depth;
+
+            let pixel_error_u = projected_u - image_point[0];
+            let pixel_error_v = projected_v - image_point[1];
+            let squared_error = pixel_error_u.mul_add(pixel_error_u, pixel_error_v * pixel_error_v);
+
+            Some((index, squared_error))
+        })
+        .fold(
+            (Vec::new(), 0.0_f32),
+            |(mut inliers, mut sum_sq), (index, squared_error)| {
+                sum_sq += squared_error;
+
+                // Check threshold if provided
+                let is_inlier = match threshold {
+                    Some(thresh) => squared_error.sqrt() < thresh,
+                    None => true, // Include all valid points if no threshold
+                };
+
+                if is_inlier {
+                    inliers.push(index);
+                }
+
+                (inliers, sum_sq)
+            },
+        );
+
+    (inliers, total_squared_error)
+}
+
+/// Classify inliers on all points (used during RANSAC iteration).
 fn classify_inliers(
     world: &[[f32; 3]],
     image: &[[f32; 2]],
-    r: &[[f32; 3]; 3],
-    t: &[f32; 3],
-    intr_x: &Vec3,
-    intr_y: &Vec3,
-    thresh_px: f32,
+    rotation_matrix: &[[f32; 3]; 3],
+    translation_vector: &[f32; 3],
+    camera_intrinsics_x: &Vec3,
+    camera_intrinsics_y: &Vec3,
+    reprojection_threshold: f32,
 ) -> (Vec<usize>, f32) {
-    let r_mat = Mat3::from_cols(
-        Vec3::new(r[0][0], r[1][0], r[2][0]),
-        Vec3::new(r[0][1], r[1][1], r[2][1]),
-        Vec3::new(r[0][2], r[1][2], r[2][2]),
-    );
-    let t_vec = Vec3::new(t[0], t[1], t[2]);
-    let mut inliers = Vec::new();
-    let mut sum_sq = 0.0_f32;
-
-    for (idx, (pw_arr, &uv)) in world.iter().zip(image.iter()).enumerate() {
-        let pw = Vec3::from_array(*pw_arr);
-        let pc = r_mat * pw + t_vec;
-        let inv_z = 1.0 / pc.z;
-        let u_hat = intr_x.dot(pc) * inv_z;
-        let v_hat = intr_y.dot(pc) * inv_z;
-        let du = u_hat - uv[0];
-        let dv = v_hat - uv[1];
-        let err2 = du.mul_add(du, dv * dv);
-        sum_sq += err2;
-        if err2.sqrt() < thresh_px {
-            inliers.push(idx);
-        }
-    }
-
-    (inliers, sum_sq)
+    classify_points(
+        world,
+        image,
+        None,
+        rotation_matrix,
+        translation_vector,
+        camera_intrinsics_x,
+        camera_intrinsics_y,
+        Some(reprojection_threshold),
+    )
 }
 
-/// Classify inliers and compute error sum-of-squares on a specific subset of points.
+/// Classify inliers and compute error on a specific subset of points.
 /// This is used for computing RMSE on inliers only.
 fn classify_inliers_on_subset(
     world: &[[f32; 3]],
     image: &[[f32; 2]],
-    indices: &[usize],
-    r: &[[f32; 3]; 3],
-    t: &[f32; 3],
-    intr_x: &Vec3,
-    intr_y: &Vec3,
+    inlier_indices: &[usize],
+    rotation_matrix: &[[f32; 3]; 3],
+    translation_vector: &[f32; 3],
+    camera_intrinsics_x: &Vec3,
+    camera_intrinsics_y: &Vec3,
 ) -> (Vec<usize>, f32) {
-    let r_mat = Mat3::from_cols(
-        Vec3::new(r[0][0], r[1][0], r[2][0]),
-        Vec3::new(r[0][1], r[1][1], r[2][1]),
-        Vec3::new(r[0][2], r[1][2], r[2][2]),
-    );
-    let t_vec = Vec3::new(t[0], t[1], t[2]);
-    let mut inliers = Vec::new();
-    let mut sum_sq = 0.0_f32;
-
-    for &idx in indices {
-        if idx >= world.len() || idx >= image.len() {
-            continue; // Skip invalid indices
-        }
-
-        let pw = Vec3::from_array(world[idx]);
-        let pc = r_mat * pw + t_vec;
-        let inv_z = 1.0 / pc.z;
-        let u_hat = intr_x.dot(pc) * inv_z;
-        let v_hat = intr_y.dot(pc) * inv_z;
-        let du = u_hat - image[idx][0];
-        let dv = v_hat - image[idx][1];
-        let err2 = du.mul_add(du, dv * dv);
-        sum_sq += err2;
-        if err2.sqrt() < 1e6 {
-            // Use a large threshold for inlier classification on known inliers
-            inliers.push(idx);
-        }
-    }
-
-    (inliers, sum_sq)
+    classify_points(
+        world,
+        image,
+        Some(inlier_indices),
+        rotation_matrix,
+        translation_vector,
+        camera_intrinsics_x,
+        camera_intrinsics_y,
+        None,
+    )
 }
 
 #[cfg(test)]
