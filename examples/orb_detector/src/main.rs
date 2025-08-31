@@ -29,8 +29,7 @@ impl FromStr for ExampleKind {
             "static" => Ok(ExampleKind::Static),
             "webcam" => Ok(ExampleKind::Webcam),
             _ => Err(format!(
-                "Invalid example: {} (possible values: static, webcam)",
-                s
+                "Invalid example: {s} (possible values: static, webcam)"
             )),
         }
     }

@@ -42,6 +42,13 @@ pub struct Detection {
     pub responses: Vec<f32>,
 }
 
+#[derive(Default)]
+struct OctaveDetection {
+    keypoints: Vec<[usize; 2]>,
+    orientations: Vec<f32>,
+    responses: Vec<f32>,
+}
+
 impl Detection {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -132,16 +139,16 @@ impl OrbDectector {
     fn detect_octave<A: ImageAllocator>(
         &mut self,
         octave_image: &Image<f32, 1, A>,
-    ) -> Result<(Vec<[usize; 2]>, Vec<f32>, Vec<f32>), ImageError> {
+    ) -> Result<OctaveDetection, ImageError> {
         self.fast_detector
-            .compute_corner_response_unchecked(&octave_image);
+            .compute_corner_response_unchecked(octave_image);
         let keypoints = self
             .fast_detector
             .extract_keypoints_unchecked(octave_image.size());
         self.fast_detector.clear();
 
         if keypoints.is_empty() {
-            return Ok((vec![], vec![], vec![]));
+            return Ok(OctaveDetection::default());
         }
 
         let mask = mask_border_keypoints(octave_image.size(), &keypoints, 16);
@@ -152,7 +159,7 @@ impl OrbDectector {
             .collect();
 
         if filtered_keypoints.is_empty() {
-            return Ok((vec![], vec![], vec![]));
+            return Ok(OctaveDetection::default());
         }
 
         let orientations = corner_orientations(octave_image, &keypoints);
@@ -165,14 +172,22 @@ impl OrbDectector {
             .map(|&[r, c]| self.harris_response_buff.as_slice()[octave_image.size().index(r, c)])
             .collect();
 
-        Ok((filtered_keypoints, orientations, filtered_responses))
+        Ok(OctaveDetection {
+            keypoints: filtered_keypoints,
+            orientations,
+            responses: filtered_responses,
+        })
     }
 
     pub fn detect<A: ImageAllocator>(&mut self, src: &Image<f32, 1, A>) -> Result<(), ImageError> {
         let pyramid = self.build_pyramid(src)?;
 
         for (octave, octave_image) in pyramid.iter().enumerate() {
-            let (keypoints, orientations, responses) = self.detect_octave(&octave_image)?;
+            let OctaveDetection {
+                keypoints,
+                orientations,
+                responses,
+            } = self.detect_octave(octave_image)?;
 
             let scale = self.config.downscale.powi(octave as i32);
 
@@ -394,7 +409,7 @@ fn corner_orientations<A: ImageAllocator>(
 
             for c in 0..M_SIZE as i32 {
                 let mask_idx = (r as usize) * M_SIZE + (c as usize);
-                if mask[mask_idx] != false {
+                if mask[mask_idx] {
                     let rr = r0 as i32 + r - mrows2;
                     let cc = c0 as i32 + c - mcols2;
 

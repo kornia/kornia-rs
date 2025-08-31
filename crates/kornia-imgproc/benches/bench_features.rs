@@ -189,10 +189,12 @@ fn bench_orb_matching(c: &mut Criterion) {
     let mut orb = OrbDectector::new(OrbDectectorConfig::default(), img_grayf32.size()).unwrap();
 
     // Detect and extract descriptors for both images
-    let _ = orb.detect(&img_grayf32).unwrap();
+    orb.detect(&img_grayf32).unwrap();
     let (desc1, _) = orb.extract(&img_grayf32).unwrap();
 
-    let _ = orb.detect(&img_grayf32_flipped).unwrap();
+    orb.clear();
+
+    orb.detect(&img_grayf32_flipped).unwrap();
     let (desc2, _) = orb.extract(&img_grayf32_flipped).unwrap();
 
     let parameter_string = format!("{}x{}", new_size.width, new_size.height);
