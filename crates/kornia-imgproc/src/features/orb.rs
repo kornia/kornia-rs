@@ -4,6 +4,8 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 use kornia_tensor::CpuAllocator;
 
+use rayon::prelude::*;
+
 use crate::{
     features::{FastDetector, HarrisResponse},
     filter::gaussian_blur,
@@ -102,19 +104,20 @@ impl OrbDectector {
     ) -> Result<Vec<Image<f32, 1, CpuAllocator>>, ImageError> {
         let img = Image::from_size_slice(img.size(), img.as_slice(), CpuAllocator)?;
 
-        let mut pyramid = Vec::with_capacity(self.config.n_scales);
-        let mut current = img.clone();
-        pyramid.push(current.clone());
+        let mut pyramid = (0..self.config.n_scales)
+            .into_par_iter()
+            .map(|i| {
+                let scale = self.config.downscale.powi(i as i32);
 
-        for _ in 1..self.config.n_scales {
-            let next = pyramid_reduce(&current, self.config.downscale)?;
-            if next.size() == current.size() {
-                break;
-            }
+                if i == 0 {
+                    Ok(img.clone())
+                } else {
+                    pyramid_reduce(&img, scale)
+                }
+            })
+            .collect::<Result<Vec<_>, ImageError>>()?;
 
-            pyramid.push(next.clone());
-            current = next;
-        }
+        pyramid.dedup_by(|a, b| a.size() == b.size());
 
         Ok(pyramid)
     }
@@ -981,3 +984,35 @@ const POS1: [[i8; 2]; 256] = [
     [12, -2],
     [0, -11],
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kornia_image::{Image, ImageSize};
+    use kornia_tensor::CpuAllocator;
+
+    fn create_test_image(width: usize, height: usize, value: f32) -> Image<f32, 1, CpuAllocator> {
+        let data = vec![value; width * height];
+        Image::from_size_slice(ImageSize { width, height }, &data, CpuAllocator).unwrap()
+    }
+
+    #[test]
+    fn test_build_pyramid_basic() {
+        let width = 32;
+        let height = 32;
+        let img = create_test_image(width, height, 1.0);
+
+        let config = OrbDectectorConfig {
+            n_scales: 4,
+            downscale: 2.0,
+            ..Default::default()
+        };
+        let orb = OrbDectector::new(config, img.size()).unwrap();
+
+        let pyramid = orb.build_pyramid(&img).unwrap();
+
+        assert_eq!(pyramid.len(), 4);
+
+        // TODO: Should we compare the harcoded values for this function
+    }
+}
