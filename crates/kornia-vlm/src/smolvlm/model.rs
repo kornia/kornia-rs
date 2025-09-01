@@ -142,7 +142,7 @@ impl SmolModel {
 
         let inputs_embeds = if !agg_image_hidden_states.is_empty() {
             let image_hidden = Tensor::cat(&agg_image_hidden_states, 0)?;
-            self.inputs_merger(&image_token_mask, &image_hidden, &inputs_embeds)?
+            self.inputs_merger(image_token_mask, &image_hidden, &inputs_embeds)?
         } else {
             // No images to process, return original embeddings
             inputs_embeds

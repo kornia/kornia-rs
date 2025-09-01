@@ -105,7 +105,7 @@ impl Mlp {
     ) -> Result<Tensor> {
         let i = &self.fc1.forward(xs)?;
         #[cfg(feature = "debug")]
-        introspector.insert("fc1", &i);
+        introspector.insert("fc1", i);
 
         let x = self.gelu_tanh(i)?; // python impl. uses gelu approximated with tanh
         #[cfg(feature = "debug")]
@@ -427,7 +427,7 @@ mod tests {
         println!("Loading test image: {:?}", test_image_path);
 
         // Load as grayscale and convert to RGB tensor
-        let gray_img = read_image_png_mono8(&test_image_path)
+        let gray_img = read_image_png_mono8(test_image_path)
             .map_err(|e| candle_core::Error::Msg(format!("PNG read error: {e}")))?;
         println!(
             "Successfully loaded as grayscale: {}x{}",

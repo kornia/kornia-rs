@@ -1,6 +1,7 @@
 use candle_core::{Result, Tensor};
 use candle_nn::Module;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CustomLayerNorm {
     weight: Tensor,
@@ -8,6 +9,7 @@ pub struct CustomLayerNorm {
     eps: f64,
 }
 
+#[allow(dead_code)]
 impl CustomLayerNorm {
     pub fn new(weight: Tensor, bias: Tensor, eps: f64) -> Self {
         Self { weight, bias, eps }
@@ -23,7 +25,7 @@ impl CustomLayerNorm {
         // Get the last dimension for normalization
         let shape = x_f32.shape();
         let last_dim = shape.dims().len() - 1;
-        let normalized_shape = shape.dims()[last_dim];
+        // let normalized_shape = shape.dims()[last_dim];
 
         // Calculate mean along the last dimension
         let mean = x_f32.mean_keepdim(last_dim)?;
