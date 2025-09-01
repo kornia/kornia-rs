@@ -1,6 +1,5 @@
 use kornia_vlm::smolvlm::{utils::SmolVlmConfig, SmolVlm};
-use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::mpsc;
 use std::thread;
 
 use kornia_image::Image;
@@ -16,7 +15,6 @@ pub enum ModelRequest {
     SetSampleLength(usize),
     SetDoSample(bool),
     ClearContext,
-    Quit,
 }
 
 pub enum ModelResponse {
@@ -62,24 +60,30 @@ impl ModelStateHandle {
                     }
                     Ok(ModelRequest::SetTemperature(temp)) => {
                         config.temp = temp;
-                        model.update_config(config);
+                        if let Err(e) = model.update_config(config) {
+                            eprintln!("Failed to update config: {e}");
+                        }
                     }
                     Ok(ModelRequest::SetTopP(top_p)) => {
                         config.top_p = top_p;
-                        model.update_config(config);
+                        if let Err(e) = model.update_config(config) {
+                            eprintln!("Failed to update config: {e}");
+                        }
                     }
                     Ok(ModelRequest::SetSampleLength(len)) => {
                         sample_len = len;
                     }
                     Ok(ModelRequest::SetDoSample(do_sample)) => {
                         config.do_sample = do_sample;
-                        model.update_config(config);
+                        if let Err(e) = model.update_config(config) {
+                            eprintln!("Failed to update config: {e}");
+                        }
                     }
                     Ok(ModelRequest::ClearContext) => {
                         // If the model has a method to clear context, call it here
                         let _ = model.clear_context();
                     }
-                    Ok(ModelRequest::Quit) | Err(_) => break,
+                    Err(_) => break,
                 }
             }
         });

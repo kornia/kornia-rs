@@ -1,6 +1,5 @@
 use color_eyre::Result;
 use crossterm::event::{self, Event, KeyEventKind};
-use kornia_image::Image;
 use kornia_io::jpeg::read_image_jpeg_rgb8;
 use kornia_io::png::read_image_png_rgb8;
 use std::sync::mpsc;
@@ -12,7 +11,6 @@ use ratatui::{DefaultTerminal, Frame};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-mod model;
 
 fn main() -> Result<()> {
     color_eyre::install()?;
@@ -677,16 +675,104 @@ fn render(frame: &mut Frame, state: &AppState) {
     let visible_lines: Vec<&str> = all_lines
         .get(start..end)
         .map_or(vec![], |slice| slice.iter().map(|s| s.as_str()).collect());
-    let chat_text = if total_lines < chat_height {
-        // Not enough lines to fill the area, pad the top
-        let mut padded_lines = vec![""; chat_height - total_lines];
-        padded_lines.extend(visible_lines);
-        padded_lines.join("\n")
-    } else {
-        // Show lines at the very top when scrolled to max
-        visible_lines.join("\n")
-    };
-
+    use ratatui::text::{Line, Span as TuiSpan};
+    let mut chat_lines: Vec<Line> = Vec::new();
+    let user_fg = win95_text;
+    let ai_fg = Color::Black;
+    let ai_bg = Color::Rgb(224, 206, 165); // very light gray for AI background
+    let spinner_fg = Color::Rgb(0, 0, 160); // blue for spinner
+    let error_fg = Color::Red;
+    // Highlight by lines that are occupied by the AI response (from SmolVLM: until next You:/Error/Spinner),
+    // and ensure the AI block is determined by the last line before the visible region.
+    // Determine initial state by looking at the last line before the visible region.
+    let mut ai_block_flags = vec![false; visible_lines.len()];
+    let mut current_ai = false;
+    if start > 0 {
+        // Look at the last line before the visible region
+        let mut idx = start - 1;
+        // Walk backwards to find the most recent marker
+        while idx > 0 {
+            let line = &all_lines[idx];
+            if line.starts_with("SmolVLM: ") {
+                current_ai = true;
+                break;
+            } else if line.starts_with("You: ")
+                || line.starts_with("[Error]")
+                || line.contains("Thinking...")
+            {
+                current_ai = false;
+                break;
+            }
+            idx -= 1;
+        }
+        // Check idx == 0 case
+        if idx == 0 {
+            let line = &all_lines[0];
+            if line.starts_with("SmolVLM: ") {
+                current_ai = true;
+            } else if line.starts_with("You: ")
+                || line.starts_with("[Error]")
+                || line.contains("Thinking...")
+            {
+                current_ai = false;
+            }
+        }
+    }
+    for (i, line) in visible_lines.iter().enumerate() {
+        if line.starts_with("SmolVLM: ") {
+            current_ai = true;
+        } else if line.starts_with("You: ")
+            || line.starts_with("[Error]")
+            || line.contains("Thinking...")
+        {
+            current_ai = false;
+        }
+        ai_block_flags[i] = current_ai;
+    }
+    for (i, line) in visible_lines.iter().enumerate() {
+        let line = *line; // convert &&str to &str
+        if line.starts_with("SmolVLM: ") {
+            chat_lines.push(Line::from(TuiSpan::styled(
+                line,
+                Style::default()
+                    .fg(ai_fg)
+                    .bg(ai_bg)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        } else if line.starts_with("You: ") {
+            chat_lines.push(Line::from(TuiSpan::styled(
+                line,
+                Style::default().fg(user_fg).bg(win95_bg),
+            )));
+        } else if line.starts_with("[Error]") {
+            chat_lines.push(Line::from(TuiSpan::styled(
+                line,
+                Style::default().fg(error_fg).bg(win95_bg),
+            )));
+        } else if line.contains("Thinking...") {
+            chat_lines.push(Line::from(TuiSpan::styled(
+                line,
+                Style::default().fg(spinner_fg).bg(win95_bg),
+            )));
+        } else if ai_block_flags[i] {
+            chat_lines.push(Line::from(TuiSpan::styled(
+                line,
+                Style::default().fg(ai_fg).bg(ai_bg),
+            )));
+        } else {
+            chat_lines.push(Line::from(TuiSpan::styled(
+                line,
+                Style::default().fg(user_fg).bg(win95_bg),
+            )));
+        }
+    }
+    // Pad the top if not enough lines
+    while chat_lines.len() < chat_height {
+        chat_lines.insert(
+            0,
+            Line::from(TuiSpan::styled("", Style::default().bg(win95_bg))),
+        );
+    }
     let chat_block = Block::default()
         .title(Span::styled(
             " Chat ",
@@ -698,9 +784,9 @@ fn render(frame: &mut Frame, state: &AppState) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(win95_border))
         .style(Style::default().bg(win95_bg));
-    let chat_para = Paragraph::new(chat_text)
+    let chat_para = Paragraph::new(chat_lines)
         .block(chat_block)
-        .style(Style::default().fg(win95_text).bg(win95_bg))
+        .style(Style::default().bg(win95_bg))
         .wrap(ratatui::widgets::Wrap { trim: false });
     frame.render_widget(chat_para, right_chunks[0]);
 
@@ -724,7 +810,7 @@ fn render(frame: &mut Frame, state: &AppState) {
 
     // Help line overlay (bottom of screen)
     let help_text =
-        "Alt+Enter: Clear | Alt+I: Insert Image | Esc: Quit | Up/Down: Scroll | Tab: Config Mode";
+        "Esc: Quit | Alt+I: Insert 🖼️ | ▲/▼: Scroll | Alt+Enter: Clear | Tab: Config Mode";
     let area = frame.area();
     let help_rect = Rect {
         x: area.x,
