@@ -18,8 +18,8 @@ impl Default for SmolVlmConfig {
             temp: 1.0,
             top_p: 0.8,
             repeat_penalty: 1.0,
-            repeat_last_n: 64,
             do_sample: true,
+            repeat_last_n: 64,
         }
     }
 }

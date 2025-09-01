@@ -36,6 +36,7 @@ pub struct SmolVlm<A: ImageAllocator> {
     first_prompt: bool,      // whether this is the first prompt
     token_history: Vec<u32>, // stores the history of generated tokens
     preprocessor: SmolVlmImagePreprocessor<A>,
+    response: String,
 }
 
 impl<A: ImageAllocator> SmolVlm<A> {
@@ -81,7 +82,12 @@ impl<A: ImageAllocator> SmolVlm<A> {
             first_prompt: true,
             token_history: Vec::new(),
             preprocessor: SmolVlmImagePreprocessor::new(1536, 384, &device),
+            response: String::new(),
         })
+    }
+
+    pub fn get_response(&self) -> &str {
+        &self.response
     }
 
     /// Run the inference of the SmolVLM model with previous context added.
@@ -150,6 +156,8 @@ impl<A: ImageAllocator> SmolVlm<A> {
         #[cfg(feature = "debug")]
         std::io::stdout().flush()?;
 
+        self.response.clear();
+
         let mut converted_prompt = String::from(full_prompt);
         let image_tags_pos: Vec<_> = full_prompt.match_indices("<image>").collect();
         let image_tag_len = "<image>".len();
@@ -185,15 +193,13 @@ impl<A: ImageAllocator> SmolVlm<A> {
         let mut delta_token = full_token.get_ids().to_vec();
 
         #[cfg(feature = "debug")]
-        // println!("Initial tokens: {delta_token:?}");
+        println!("Initial tokens: {delta_token:?}");
         #[cfg(feature = "debug")]
         let start_gen = std::time::Instant::now();
         #[cfg(feature = "debug")]
         let mut generated_tokens = 0usize;
         let mut introspector = introspector::ActivationIntrospector::new();
         let mut vis_introspector = crate::smolvlm::introspector::ActivationIntrospector::new();
-
-        let mut response = String::new();
 
         for _i in 0..sample_len {
             self.token_history.extend(&delta_token);
@@ -246,7 +252,7 @@ impl<A: ImageAllocator> SmolVlm<A> {
             let token_output = self.tokenizer.decode(&[out_token], false)?;
 
             if token_output != "<end_of_utterance>" {
-                response += &token_output;
+                self.response += &token_output;
 
                 #[cfg(feature = "debug")]
                 {
@@ -281,7 +287,7 @@ impl<A: ImageAllocator> SmolVlm<A> {
             // println!("Token history: {:?}", self.token_history);
         }
 
-        Ok(response)
+        Ok(self.response.clone())
     }
 
     pub fn clear_context(&mut self) {

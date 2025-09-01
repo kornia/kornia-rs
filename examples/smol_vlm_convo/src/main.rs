@@ -3,12 +3,15 @@ use crossterm::event::{self, Event, KeyEventKind};
 use kornia_image::Image;
 use kornia_io::jpeg::read_image_jpeg_rgb8;
 use kornia_io::png::read_image_png_rgb8;
-use kornia_tensor::CpuAllocator;
-use kornia_vlm::smolvlm::{utils::SmolVlmConfig, SmolVlm};
+use std::sync::mpsc;
+mod model_state;
+use model_state::{ModelRequest, ModelResponse, ModelStateHandle};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 mod model;
 
 fn main() -> Result<()> {
@@ -17,25 +20,6 @@ fn main() -> Result<()> {
     let res = run(terminal);
     ratatui::restore();
     return res;
-
-    fn get_chat_height(f: &Frame) -> usize {
-        let area = f.area();
-        let right_chunks = ratatui::layout::Layout::default()
-            .direction(ratatui::layout::Direction::Horizontal)
-            .constraints([
-                ratatui::layout::Constraint::Length(30),
-                ratatui::layout::Constraint::Min(1),
-            ])
-            .split(area);
-        let vertical = ratatui::layout::Layout::default()
-            .direction(ratatui::layout::Direction::Vertical)
-            .constraints([
-                ratatui::layout::Constraint::Min(3),
-                ratatui::layout::Constraint::Length(3),
-            ])
-            .split(right_chunks[1]);
-        vertical[0].height.saturating_sub(2) as usize
-    }
 }
 
 fn get_chat_height(f: &Frame) -> usize {
@@ -54,56 +38,96 @@ fn get_chat_height(f: &Frame) -> usize {
             ratatui::layout::Constraint::Length(3),
         ])
         .split(right_chunks[1]);
-    vertical[0].height.saturating_sub(2) as usize
+    vertical[0].height.saturating_sub(2) as usize - 2
 }
 
 struct AppState {
     prompt_input: String,
-    chat_history: Vec<String>,
+    chat_history: Rc<RefCell<Vec<String>>>,
     scroll: usize, // scroll offset for chat
     file_input_mode: bool,
     file_list: Vec<(String, bool)>, // (name, is_folder)
     file_selected: usize,
     file_dir: String,
-    ai_streaming: Option<(String, usize)>, // (full_msg, current_index)
+    ai_streaming: Option<mpsc::Receiver<ModelResponse>>, // streaming channel from model thread
+    response_stream: Rc<RefCell<String>>,                // live response buffer
 
-    model: SmolVlm<CpuAllocator>,
+    model_handle: ModelStateHandle,
     delta_image: Vec<PathBuf>, // for image history between the most recentinput and execution
+    last_chat_area_width: Option<usize>, // for scroll logic
+
+    // Spinner state
+    spinner_index: usize,
+    show_spinner: bool,
+    spinner_tick: usize, // counts ticks for spinner speed
 }
 
 impl AppState {
-    fn flatten_chat_lines(chat_history: &[String]) -> Vec<String> {
-        let mut all_lines = Vec::new();
-        for msg in chat_history {
-            for line in msg.lines() {
-                all_lines.push(line.to_string());
-            }
+    /// Returns all visible chat lines, including streaming response, wrapped to the given width.
+    fn get_all_chat_lines(&self, wrap_width: usize) -> Vec<String> {
+        use textwrap::wrap;
+        let mut all_lines: Vec<String> = Vec::new();
+        for msg in self.chat_history.borrow().iter() {
+            let wrapped = if wrap_width > 0 {
+                wrap(msg, wrap_width)
+                    .into_iter()
+                    .map(|l| l.into_owned())
+                    .collect::<Vec<_>>()
+            } else {
+                vec![msg.clone()]
+            };
+            all_lines.extend(wrapped);
+        }
+        // Add streaming response if present
+        let partial = self.response_stream.borrow();
+        if !partial.is_empty() {
+            let wrapped = if wrap_width > 0 {
+                wrap(partial.as_str(), wrap_width)
+                    .into_iter()
+                    .map(|l| l.into_owned())
+                    .collect::<Vec<_>>()
+            } else {
+                vec![partial.to_string()]
+            };
+            all_lines.extend(wrapped);
+        }
+        // Add spinner if active
+        if self.show_spinner {
+            let spinner_chars = ['-', '/', '|', '\\'];
+            let c = spinner_chars[self.spinner_index % spinner_chars.len()];
+            all_lines.push(format!("{} Thinking...", c));
         }
         all_lines
     }
 
     // TODO: have it get the live response (programatically) instead of first getting the complete response.
     // TODO: also display an error if image failed to load
-    fn get_response(&mut self) -> String {
-        let img_path = self.delta_image.last().cloned().and_then(|path| {
+    fn start_inference(&mut self) {
+        use std::sync::mpsc;
+        let (tx, rx) = mpsc::channel();
+        let prompt = self.prompt_input.trim().to_string();
+        let img = self.delta_image.last().cloned().and_then(|path| {
             match path.extension().and_then(|ext| ext.to_str()) {
                 Some("jpg") | Some("jpeg") => read_image_jpeg_rgb8(path).ok(),
                 Some("png") => read_image_png_rgb8(path).ok(),
-                _ => {
-                    eprintln!("Unsupported image format. Only JPEG and PNG are supported.");
-                    None
-                }
+                _ => None,
             }
         });
-
-        let response = self
-            .model
-            .inference(self.prompt_input.trim(), img_path, 200, CpuAllocator)
-            .unwrap();
-
+        self.model_handle
+            .tx
+            .send(ModelRequest::Inference {
+                prompt,
+                image: img,
+                response_tx: tx,
+            })
+            .ok();
+        self.response_stream.borrow_mut().clear();
+        self.ai_streaming = Some(rx);
         self.delta_image.clear();
-
-        response
+        // Start spinner
+        self.spinner_index = 0;
+        self.spinner_tick = 0;
+        self.show_spinner = true;
     }
 
     fn handle_file_input_mode(&mut self, key: crossterm::event::KeyEvent) {
@@ -134,6 +158,7 @@ impl AppState {
                             format!("{}/{}", self.file_dir, fname)
                         };
                         self.chat_history
+                            .borrow_mut()
                             .push(format!("[Image inserted: {}]", path));
                         self.delta_image.push(PathBuf::from(path));
                         self.file_input_mode = false;
@@ -173,15 +198,14 @@ impl AppState {
                     return Ok(false);
                 }
                 if key.modifiers.contains(KeyModifiers::ALT) {
-                    self.chat_history.clear();
+                    self.chat_history.borrow_mut().clear();
                     self.scroll = 0;
-                    self.model.clear_context();
+                    // No model context to clear in threaded model
                 } else {
                     let user_msg = format!("You: {}", self.prompt_input.trim());
                     if !self.prompt_input.trim().is_empty() {
-                        self.chat_history.push(user_msg);
-                        let ai_msg = format!("SmolVLM: {}", self.get_response());
-                        self.ai_streaming = Some((ai_msg, 0));
+                        self.chat_history.borrow_mut().push(user_msg);
+                        self.start_inference();
                     }
                     self.prompt_input.clear();
                     self.scroll = 0;
@@ -189,11 +213,16 @@ impl AppState {
             }
             KeyCode::Esc => return Ok(true),
             KeyCode::Up => {
-                let all_lines = AppState::flatten_chat_lines(&self.chat_history);
+                // Use chat area width for wrapping, match render logic
+                let wrap_width = self.last_chat_area_width.unwrap_or(80); // fallback
+                let all_lines = self.get_all_chat_lines(wrap_width);
                 let total_lines = all_lines.len();
                 let max_scroll = total_lines.saturating_sub(chat_height);
                 if self.scroll < max_scroll {
                     self.scroll += 1;
+                } else if self.scroll == max_scroll && max_scroll > 0 {
+                    // Allow reaching the very top
+                    self.scroll = max_scroll;
                 }
             }
             KeyCode::Down => {
@@ -206,15 +235,45 @@ impl AppState {
         Ok(false)
     }
 
+    // Store the last chat area width for scroll logic
+
     fn handle_tick(&mut self) {
-        if let Some((full, idx)) = &mut self.ai_streaming {
-            if *idx < full.len() {
-                *idx += 1;
+        if let Some(rx) = &self.ai_streaming {
+            // Collect all available messages first to avoid borrow issues
+            let mut responses = Vec::new();
+            while let Ok(msg) = rx.try_recv() {
+                responses.push(msg);
             }
-            if *idx >= full.len() {
-                self.chat_history.push(full.clone());
-                self.ai_streaming = None;
+            for msg in responses {
+                match msg {
+                    ModelResponse::StreamChunk(chunk) => {
+                        *self.response_stream.borrow_mut() = chunk;
+                    }
+                    ModelResponse::Done => {
+                        let ai_msg = format!("SmolVLM: {}", self.response_stream.borrow());
+                        self.chat_history.borrow_mut().push(ai_msg);
+                        self.response_stream.borrow_mut().clear();
+                        self.ai_streaming = None;
+                        self.show_spinner = false;
+                    }
+                    ModelResponse::Error(e) => {
+                        self.chat_history.borrow_mut().push(format!("[Error] {e}"));
+                        self.response_stream.borrow_mut().clear();
+                        self.ai_streaming = None;
+                        self.show_spinner = false;
+                    }
+                }
             }
+            // Advance spinner frame if still streaming, but slower (every 5 ticks)
+            if self.ai_streaming.is_some() {
+                self.spinner_tick += 1;
+                if self.spinner_tick >= 5 {
+                    self.spinner_index = (self.spinner_index + 1) % 4;
+                    self.spinner_tick = 0;
+                }
+            }
+        } else {
+            self.show_spinner = false;
         }
     }
 
@@ -308,15 +367,20 @@ impl AppState {
 fn run(mut terminal: DefaultTerminal) -> Result<()> {
     let mut state = AppState {
         prompt_input: String::new(),
-        chat_history: Vec::new(),
+        chat_history: Rc::new(RefCell::new(Vec::new())),
         scroll: 0,
         file_input_mode: false,
         file_list: Vec::new(),
         file_selected: 0,
         file_dir: ".".to_string(),
         ai_streaming: None,
-        model: SmolVlm::new(SmolVlmConfig::default())?,
+        response_stream: Rc::new(RefCell::new(String::new())),
+        model_handle: ModelStateHandle::new(),
         delta_image: Vec::new(),
+        last_chat_area_width: None,
+        spinner_index: 0,
+        show_spinner: false,
+        spinner_tick: 0,
     };
     let mut last_chat_height = 0;
     use std::time::{Duration, Instant};
@@ -324,8 +388,27 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
     let tick_rate = Duration::from_millis(20);
     loop {
         let mut chat_height = 0;
+        let mut chat_area_width = 0;
         terminal.draw(|f| {
             chat_height = get_chat_height(f);
+            // Get chat area width for scroll logic
+            let area = f.area();
+            let right_chunks = ratatui::layout::Layout::default()
+                .direction(ratatui::layout::Direction::Horizontal)
+                .constraints([
+                    ratatui::layout::Constraint::Length(30),
+                    ratatui::layout::Constraint::Min(1),
+                ])
+                .split(area);
+            let vertical = ratatui::layout::Layout::default()
+                .direction(ratatui::layout::Direction::Vertical)
+                .constraints([
+                    ratatui::layout::Constraint::Min(3),
+                    ratatui::layout::Constraint::Length(3),
+                ])
+                .split(right_chunks[1]);
+            chat_area_width = vertical[0].width.saturating_sub(2) as usize;
+            state.last_chat_area_width = Some(chat_area_width);
             render(f, &state);
         })?;
         if chat_height != last_chat_height {
@@ -345,8 +428,35 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
                         return Ok(());
                     }
                 }
+            } else if let Event::Mouse(me) = ev {
+                use crossterm::event::MouseEventKind;
+                match me.kind {
+                    MouseEventKind::ScrollUp => {
+                        // Scroll up
+                        let wrap_width = state.last_chat_area_width.unwrap_or(80);
+                        let all_lines = state.get_all_chat_lines(wrap_width);
+                        let total_lines = all_lines.len();
+                        let max_scroll = total_lines.saturating_sub(chat_height);
+                        if state.scroll < max_scroll {
+                            state.scroll += 1;
+                        } else if state.scroll == max_scroll && max_scroll > 0 {
+                            state.scroll = max_scroll;
+                        }
+                    }
+                    MouseEventKind::ScrollDown => {
+                        if state.scroll > 0 {
+                            state.scroll -= 1;
+                        }
+                    }
+                    _ => {}
+                }
             } else if let Event::Resize(_, _) = ev {
-                state.scroll = 0;
+                // Clamp scroll to new max_scroll after resize
+                let wrap_width = state.last_chat_area_width.unwrap_or(80);
+                let all_lines = state.get_all_chat_lines(wrap_width);
+                let total_lines = all_lines.len();
+                let max_scroll = total_lines.saturating_sub(chat_height);
+                state.scroll = state.scroll.min(max_scroll);
                 last_chat_height = chat_height;
             }
         } else {
@@ -403,56 +513,30 @@ fn render(frame: &mut Frame, state: &AppState) {
         .split(chunks[1]);
 
     // --- Chat rendering: always flush to bottom, bottom-up ---
-    // 1. Collect all chat lines (including streaming AI message if present), wrapping each to the chat area width
-    use textwrap::wrap;
     let chat_area_width = right_chunks[0].width.saturating_sub(2) as usize;
-    let mut all_lines: Vec<String> = Vec::new();
-    for msg in &state.chat_history {
-        let wrapped = if chat_area_width > 0 {
-            wrap(msg, chat_area_width)
-                .into_iter()
-                .map(|l| l.into_owned())
-                .collect::<Vec<_>>()
-        } else {
-            vec![msg.clone()]
-        };
-        all_lines.extend(wrapped);
-    }
-    // For streaming AI output, also wrap as a new block
-    if let Some((full, idx)) = &state.ai_streaming {
-        if *idx < full.len() {
-            let partial = &full[..*idx];
-            let wrapped = if chat_area_width > 0 {
-                wrap(partial, chat_area_width)
-                    .into_iter()
-                    .map(|l| l.into_owned())
-                    .collect::<Vec<_>>()
-            } else {
-                vec![partial.to_string()]
-            };
-            all_lines.extend(wrapped);
-        }
-    }
-    // 2. Determine chat area height (minus borders)
+    let all_lines = state.get_all_chat_lines(chat_area_width);
     let chat_height = right_chunks[0].height.saturating_sub(2) as usize;
-    // 3. Calculate scroll bounds
     let total_lines = all_lines.len();
     let max_scroll = total_lines.saturating_sub(chat_height);
     let scroll = state.scroll.min(max_scroll);
-    // 4. Always show the last chat_height lines (flush to bottom), unless scrolled up
     let end = total_lines.saturating_sub(scroll);
-    let start = end.saturating_sub(chat_height);
+    let start = end.saturating_sub(chat_height).max(0);
     let visible_lines: Vec<&str> = all_lines
         .get(start..end)
         .map_or(vec![], |slice| slice.iter().map(|s| s.as_str()).collect());
-    // Pad the top with empty lines if not enough messages to fill the chat area
-    let mut padded_lines = vec![""; chat_height.saturating_sub(visible_lines.len())];
-    padded_lines.extend(visible_lines);
-    let chat_text = padded_lines.join("\n");
+    let chat_text = if total_lines < chat_height {
+        // Not enough lines to fill the area, pad the top
+        let mut padded_lines = vec![""; chat_height - total_lines];
+        padded_lines.extend(visible_lines);
+        padded_lines.join("\n")
+    } else {
+        // Show lines at the very top when scrolled to max
+        visible_lines.join("\n")
+    };
 
     let chat_block = Block::default()
         .title(Span::styled(
-            " SmolVLM Chat ",
+            " Chat ",
             Style::default()
                 .bg(win95_header)
                 .fg(win95_text)
