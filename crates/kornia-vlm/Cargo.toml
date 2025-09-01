@@ -21,7 +21,7 @@ kornia-tensor = { workspace = true }
 kornia-io = { workspace = true }
 kornia-imgproc = { workspace = true }
 
-candle-core = { version = "0.9.1", default-features = false, features = [] }
+candle-core = { version = "0.9.1", features = ["mkl"] }
 candle-transformers = { version = "0.9.1" }
 candle-examples = "0.9.1"
 candle-nn = { version = "0.9.1" }
