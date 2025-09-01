@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use candle_core::{IndexOp, Result, Tensor};
+use candle_core::{DType, IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Linear, Module};
 
 use crate::smolvlm::text_model::SmolText;
@@ -46,13 +46,12 @@ impl Connector {
 pub struct SmolModel {
     embed: Embedding,
 
-    vision: SmolVision,
+    pub vision: SmolVision,
 
     connector: Connector,
-    image_hidden_states: Option<Tensor>, // TODO: to be used for caching previous image hidden states
-    merged_embeds: Vec<Tensor>,          // cache results
+    merged_embeds: Vec<Tensor>, // cache results
 
-    text: SmolText,
+    pub text: SmolText,
 }
 
 impl SmolModel {
@@ -68,7 +67,6 @@ impl SmolModel {
                     None,
                 ),
             },
-            image_hidden_states: None,
             merged_embeds: Vec::new(),
 
             text: SmolText::load(c)?,
@@ -78,11 +76,12 @@ impl SmolModel {
     fn inputs_merger(
         &mut self,
         image_token_mask: &Tensor,
+        image_hidden_states: &Tensor,
         inputs_embeds: &Tensor,
     ) -> Result<Tensor> {
         let total_length = image_token_mask.dims1()?;
 
-        let image_hidden_states = self.image_hidden_states.as_ref().unwrap().flatten(0, 1)?;
+        // let image_hidden_states = self.image_hidden_states.as_ref().unwrap().flatten(0, 1)?;
 
         self.merged_embeds.clear();
         if self.merged_embeds.capacity() < total_length {
@@ -110,24 +109,52 @@ impl SmolModel {
         &mut self,
         xs: &Tensor,
         index_pos: usize,
-        vision_data: Option<(Tensor, &Tensor, &Tensor)>,
+        image_token_mask: &Tensor,
+        image_data: Vec<(&Tensor, &Tensor)>,
+        introspector: &mut super::introspector::ActivationIntrospector,
+        vis_introspector: &mut super::introspector::ActivationIntrospector,
     ) -> Result<Tensor> {
-        let mut inputs_embeds = self.embed.forward(xs)?;
+        let inputs_embeds = self.embed.forward(xs)?;
 
-        if let Some((image_token_mask, pixel_values, pixel_attention_masks)) = vision_data {
-            // TODO: this assumes there will be at most one new images added
-            inputs_embeds = if self.image_hidden_states.is_some() {
-                self.inputs_merger(&image_token_mask, &inputs_embeds)?
-            } else {
-                let image_hidden_states =
-                    self.vision.forward(pixel_values, pixel_attention_masks)?;
-                let image_hidden_states = self.connector.forward(&image_hidden_states)?;
-                self.image_hidden_states = Some(image_hidden_states);
+        #[cfg(feature = "debug")]
+        introspector.insert("input_embeddings", &inputs_embeds);
 
-                self.inputs_merger(&image_token_mask, &inputs_embeds)?
-            };
+        let mut agg_image_hidden_states = vec![];
+        for (pixel_values, pixel_attention_masks) in image_data {
+            let image_hidden_states =
+                self.vision
+                    .forward(pixel_values, pixel_attention_masks, vis_introspector)?;
+            #[cfg(feature = "debug")]
+            vis_introspector.insert("post_layernorm", &image_hidden_states);
+
+            let image_hidden_states = self.connector.forward(&image_hidden_states)?;
+            let image_hidden_states = image_hidden_states.flatten(0, 1)?;
+            agg_image_hidden_states.push(image_hidden_states);
+
+            #[cfg(feature = "debug")]
+            println!(
+                "[Sub-image] image_hidden_states length: {}",
+                agg_image_hidden_states.last().unwrap().dims2()?.0
+            );
+
+            vis_introspector.increment_batch_pos();
         }
 
-        self.text.forward(inputs_embeds, index_pos)
+        let inputs_embeds = if !agg_image_hidden_states.is_empty() {
+            let image_hidden = Tensor::cat(&agg_image_hidden_states, 0)?;
+            self.inputs_merger(&image_token_mask, &image_hidden, &inputs_embeds)?
+        } else {
+            // No images to process, return original embeddings
+            inputs_embeds
+        };
+
+        self.text.forward(inputs_embeds, index_pos, introspector)
+    }
+
+    pub fn reset_cache(&mut self) {
+        self.text
+            .blocks
+            .iter_mut()
+            .for_each(|b| b.attn.reset_cache());
     }
 }
