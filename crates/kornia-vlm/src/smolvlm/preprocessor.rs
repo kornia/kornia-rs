@@ -1,7 +1,7 @@
 use crate::smolvlm::utils::SmolVlmError;
 use candle_core::{DType, Device, Shape, Tensor};
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
-use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast};
+use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
 use std::borrow::Cow;
 
 // https://huggingface.co/HuggingFaceTB/SmolVLM-Instruct/blob/main/preprocessor_config.json
@@ -197,7 +197,7 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
             }
 
             let buf = buffer.as_mut().unwrap();
-            resize_fast(img, buf, InterpolationMode::Lanczos)?;
+            resize_fast_rgb(img, buf, InterpolationMode::Lanczos)?;
 
             Ok(Cow::Borrowed(buf))
         }

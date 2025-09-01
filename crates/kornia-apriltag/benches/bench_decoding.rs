@@ -9,10 +9,17 @@ use std::path::PathBuf;
 fn bench_decoding(c: &mut Criterion) {
     let img_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/apriltags_tag36h11.jpg");
+
+    // Kornia
     let img = read_image_jpeg_rgb8(img_path).unwrap();
     let mut gray_img = Image::from_size_val(img.size(), 0, CpuAllocator).unwrap();
     gray_from_rgb_u8(&img, &mut gray_img).unwrap();
 
+    let kornia_detector_config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]);
+    let mut kornia_detector =
+        AprilTagDecoder::new(kornia_detector_config, gray_img.size()).unwrap();
+
+    // AprilTag C
     let mut apriltag_c_img =
         apriltag::Image::zeros_with_stride(gray_img.width(), gray_img.height(), gray_img.width())
             .unwrap();
@@ -29,11 +36,16 @@ fn bench_decoding(c: &mut Criterion) {
         .build()
         .unwrap();
 
-    apriltag_c_detector.set_decimation(1.0);
+    apriltag_c_detector.set_decimation(2.0);
 
-    let kornia_detector_config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]);
-    let mut kornia_detector =
-        AprilTagDecoder::new(kornia_detector_config, gray_img.size()).unwrap();
+    // AprilGrid-rs
+    let aprilgrid_img: image::DynamicImage =
+        image::GrayImage::from_vec(img.width() as u32, img.height() as u32, img.to_vec())
+            .unwrap()
+            .into();
+
+    let aprilgrid_detector =
+        aprilgrid::detector::TagDetector::new(&aprilgrid::TagFamily::T36H11, None);
 
     c.bench_function("kornia-apriltag", |b| {
         b.iter(|| {
@@ -44,6 +56,10 @@ fn bench_decoding(c: &mut Criterion) {
 
     c.bench_function("apriltag-c", |b| {
         b.iter(|| std::hint::black_box(apriltag_c_detector.detect(&apriltag_c_img)));
+    });
+
+    c.bench_function("aprilgrid-rs", |b| {
+        b.iter(|| std::hint::black_box(aprilgrid_detector.detect(&aprilgrid_img)));
     });
 }
 

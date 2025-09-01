@@ -7,6 +7,7 @@ use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     Image, ImageSize,
 };
+use kornia_imgproc::resize::resize_fast_mono;
 
 use crate::{
     decoder::{decode_tags, Detection, GrayModelPair},
@@ -65,11 +66,15 @@ pub struct DecodeTagsConfig {
     pub min_tag_width: usize,
     /// Minimum difference between white and black pixels for thresholding.
     pub min_white_black_difference: u8,
+    /// Downscale factor for input images.
+    pub downscale_factor: usize,
 }
 
 impl DecodeTagsConfig {
     /// Creates a new `DecodeTagsConfig` with the given tag family kinds.
     pub fn new(tag_family_kinds: Vec<TagFamilyKind>) -> Self {
+        const DEFAULT_DOWNSCALE_FACTOR: usize = 2;
+
         let mut tag_families = Vec::with_capacity(tag_family_kinds.len());
         let mut normal_border = false;
         let mut reversed_border = false;
@@ -86,6 +91,8 @@ impl DecodeTagsConfig {
             tag_families.push(family);
         });
 
+        min_tag_width /= DEFAULT_DOWNSCALE_FACTOR;
+
         if min_tag_width < 3 {
             min_tag_width = 3;
         }
@@ -99,6 +106,7 @@ impl DecodeTagsConfig {
             reversed_border,
             min_tag_width,
             min_white_black_difference: 5,
+            downscale_factor: DEFAULT_DOWNSCALE_FACTOR,
         }
     }
 
@@ -122,6 +130,7 @@ impl DecodeTagsConfig {
 /// Decoder for AprilTag detection and decoding.
 pub struct AprilTagDecoder {
     config: DecodeTagsConfig,
+    downscale_img: Option<Image<u8, 1, CpuAllocator>>,
     bin_img: Image<Pixel, 1, CpuAllocator>,
     tile_min_max: TileMinMax,
     uf: UnionFind,
@@ -153,12 +162,27 @@ impl AprilTagDecoder {
     ///
     /// Returns a `Result` containing the new `AprilTagDecoder` or an `AprilTagError`.
     pub fn new(config: DecodeTagsConfig, img_size: ImageSize) -> Result<Self, AprilTagError> {
+        let (img_size, downscale_img) = if config.downscale_factor <= 1 {
+            (img_size, None)
+        } else {
+            let new_size = ImageSize {
+                width: img_size.width / config.downscale_factor,
+                height: img_size.height / config.downscale_factor,
+            };
+
+            (
+                new_size,
+                Some(Image::from_size_val(new_size, 0, CpuAllocator)?),
+            )
+        };
+
         let bin_img = Image::from_size_val(img_size, Pixel::Skip, CpuAllocator)?;
         let tile_min_max = TileMinMax::new(img_size, 4);
         let uf = UnionFind::new(img_size.width * img_size.height);
 
         Ok(Self {
             config,
+            downscale_img,
             bin_img,
             tile_min_max,
             uf,
@@ -185,15 +209,29 @@ impl AprilTagDecoder {
         &mut self,
         src: &Image<u8, 1, A>,
     ) -> Result<Vec<Detection>, AprilTagError> {
-        // TODO: Add support for downscaling image
+        if let Some(downscale_img) = self.downscale_img.as_mut() {
+            resize_fast_mono(
+                src,
+                downscale_img,
+                kornia_imgproc::interpolation::InterpolationMode::Nearest,
+            )?;
 
-        // Step 1: Adaptive Threshold
-        adaptive_threshold(
-            src,
-            &mut self.bin_img,
-            &mut self.tile_min_max,
-            self.config.min_white_black_difference,
-        )?;
+            // Step 1: Adaptive Threshold
+            adaptive_threshold(
+                downscale_img,
+                &mut self.bin_img,
+                &mut self.tile_min_max,
+                self.config.min_white_black_difference,
+            )?;
+        } else {
+            // Step 1: Adaptive Threshold
+            adaptive_threshold(
+                src,
+                &mut self.bin_img,
+                &mut self.tile_min_max,
+                self.config.min_white_black_difference,
+            )?;
+        }
 
         // Step 2(a): Find Connected Components
         find_connected_components(&self.bin_img, &mut self.uf)?;
@@ -275,14 +313,14 @@ mod tests {
 
                 for (point, expected) in detection.quad.corners.iter().zip(expected_quads.iter()) {
                     assert!(
-                        (point.y - expected.y).abs() <= 0.001,
+                        (point.y - expected.y).abs() <= 0.1,
                         "Tag: {}, Got y: {}, Expected: {}",
                         file_name,
                         point.y,
                         expected.y
                     );
                     assert!(
-                        (point.x - expected.x).abs() <= 0.001,
+                        (point.x - expected.x).abs() <= 0.1,
                         "Tag: {}, Got x: {}, Expected: {}",
                         file_name,
                         point.x,
