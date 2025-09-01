@@ -4,6 +4,7 @@ use candle_core::DType;
 use candle_core::{Device, Result, Tensor};
 use candle_nn::{rotary_emb::rope, Linear, Module};
 
+use crate::context::InferenceContext;
 use crate::smolvlm::custom_rmsnorm::CustomRmsNorm;
 
 const NUM_OF_HEADS: usize = 32;
@@ -166,28 +167,22 @@ impl MLPGates {
         }
     }
 
-    fn forward(
-        &mut self,
-        x: &Tensor,
-        introspector: &mut super::introspector::ActivationIntrospector,
-    ) -> Result<Tensor> {
+    fn forward(&mut self, x: &Tensor, ctx: &mut InferenceContext) -> Result<Tensor> {
         let gate_proj_out = self.gate_proj.forward(x)?;
-        #[cfg(feature = "debug")]
-        introspector.insert("mlp_gate_proj", &gate_proj_out);
+        ctx.text_introspector
+            .insert("mlp_gate_proj", &gate_proj_out);
 
         let gate = silu(&gate_proj_out)?;
-        #[cfg(feature = "debug")]
-        introspector.insert("mlp_act_fn", &gate);
+        ctx.text_introspector.insert("mlp_act_fn", &gate);
 
         let up = self.up_proj.forward(x)?;
-        #[cfg(feature = "debug")]
-        introspector.insert("mlp_up_proj", &up);
+        ctx.text_introspector.insert("mlp_up_proj", &up);
 
         let hidden = (gate * up)?;
 
         let x = self.down_proj.forward(&hidden)?;
-        #[cfg(feature = "debug")]
-        introspector.insert("mlp_down_proj", &x);
+        ctx.text_introspector.insert("mlp_down_proj", &x);
+
         Ok(x)
     }
 }
@@ -239,32 +234,27 @@ impl Block {
         &mut self,
         x: &Tensor,
         index_pos: usize,
-        introspector: &mut super::introspector::ActivationIntrospector,
+        ctx: &mut InferenceContext,
     ) -> Result<Tensor> {
         let residual = x;
 
         let x = self.input_layer_norm.forward(x)?;
-        #[cfg(feature = "debug")]
-        introspector.insert("input_layernorm", &x);
+        ctx.text_introspector.insert("input_layernorm", &x);
 
         let att = self.attn.forward(&x, index_pos)?;
-        #[cfg(feature = "debug")]
-        introspector.insert("self_attn", &att);
+        ctx.text_introspector.insert("self_attn", &att);
 
         let x = (residual + att)?;
         let residual = &x;
 
         let x = self.post_layer_norm.forward(&x)?;
-        #[cfg(feature = "debug")]
-        introspector.insert("post_layernorm", &x);
+        ctx.text_introspector.insert("post_layernorm", &x);
 
-        let x = self.gates.forward(&x, introspector)?;
-        #[cfg(feature = "debug")]
-        introspector.insert("mlp", &x);
+        let x = self.gates.forward(&x, ctx)?;
+        ctx.text_introspector.insert("mlp", &x);
 
         let x = (residual + x)?;
-        #[cfg(feature = "debug")]
-        introspector.insert("layers", &x);
+        ctx.text_introspector.insert("layers", &x);
 
         Ok(x)
     }
@@ -289,14 +279,14 @@ impl SmolText {
         &mut self,
         mut x: Tensor,
         index_pos: usize,
-        introspector: &mut super::introspector::ActivationIntrospector,
+        ctx: &mut InferenceContext,
     ) -> Result<Tensor> {
-        introspector.start_tracking_depth();
+        ctx.text_introspector.start_tracking_depth();
         for block in &mut self.blocks {
-            x = block.forward(&x, index_pos, introspector)?;
-            introspector.increment_depth();
+            x = block.forward(&x, index_pos, ctx)?;
+            ctx.text_introspector.increment_depth();
         }
-        introspector.stop_tracking_depth();
+        ctx.text_introspector.stop_tracking_depth();
 
         let x = self.norm.forward(&x)?;
         let logits = self.lm_head.forward(&x)?;

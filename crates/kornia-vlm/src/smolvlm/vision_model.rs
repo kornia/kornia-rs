@@ -5,6 +5,8 @@ use candle_core::{DType, Result, Tensor};
 use candle_nn::{Conv2d, Conv2dConfig, Embedding, LayerNorm, Linear, Module};
 use std::collections::HashMap;
 
+use crate::context::InferenceContext;
+
 const NUM_OF_HEADS: usize = 16;
 const HEAD_DIM: usize = 72;
 
@@ -98,22 +100,15 @@ impl Mlp {
             .broadcast_mul(&input.broadcast_mul(&(tanh.broadcast_add(&self.one)?))?)
     }
 
-    pub fn forward(
-        &self,
-        xs: &Tensor,
-        introspector: &mut super::introspector::ActivationIntrospector,
-    ) -> Result<Tensor> {
+    pub fn forward(&self, xs: &Tensor, ctx: &mut InferenceContext) -> Result<Tensor> {
         let i = &self.fc1.forward(xs)?;
-        #[cfg(feature = "debug")]
-        introspector.insert("fc1", i);
+        ctx.vis_introspector.insert("fc1", i);
 
         let x = self.gelu_tanh(i)?; // python impl. uses gelu approximated with tanh
-        #[cfg(feature = "debug")]
-        introspector.insert("mlp_act_fn", &x);
+        ctx.vis_introspector.insert("mlp_act_fn", &x);
 
         let o = self.fc2.forward(&x)?;
-        #[cfg(feature = "debug")]
-        introspector.insert("fc2", &o);
+        ctx.vis_introspector.insert("fc2", &o);
 
         Ok(o)
     }
@@ -165,26 +160,23 @@ impl Block {
         &self,
         xs: &Tensor,
         attention_mask: &Tensor,
-        introspector: &mut super::introspector::ActivationIntrospector,
+        ctx: &mut InferenceContext,
     ) -> Result<Tensor> {
         let residual = xs;
 
         let x = self.layer_norm1.forward(xs)?;
-        #[cfg(feature = "debug")]
-        introspector.insert("input_layernorm", &x);
+        ctx.vis_introspector.insert("input_layernorm", &x);
 
         let x = self.self_attn.forward(&x, attention_mask)?;
-        #[cfg(feature = "debug")]
-        introspector.insert("self_attn", &x);
+        ctx.vis_introspector.insert("self_attn", &x);
 
         let x = (residual + x)?;
         let residual = &x;
 
         let x = self.layer_norm2.forward(&x)?;
-        #[cfg(feature = "debug")]
-        introspector.insert("post_layernorm", &x);
+        ctx.vis_introspector.insert("post_layernorm", &x);
 
-        let x = self.mlp.forward(&x, introspector)?;
+        let x = self.mlp.forward(&x, ctx)?;
 
         residual + x
     }
@@ -231,7 +223,7 @@ impl SmolVision {
         &self,
         pixel_values: &Tensor,
         pixel_attention_masks: &Tensor,
-        introspector: &mut super::introspector::ActivationIntrospector,
+        ctx: &mut InferenceContext,
     ) -> Result<Tensor> {
         let device = pixel_values.device();
         let dtype = self.patch_embedding.weight().dtype();
@@ -273,8 +265,8 @@ impl SmolVision {
                 .patch_embedding
                 .forward(&pixel_values.to_dtype(dtype)?)?;
 
-            #[cfg(feature = "debug")]
-            introspector.insert("patch_embeddings", &patch_embeddings);
+            ctx.vis_introspector
+                .insert("patch_embeddings", &patch_embeddings);
 
             let patch_embeddings = patch_embeddings.flatten_from(2)?.transpose(1, 2)?;
 
@@ -284,8 +276,8 @@ impl SmolVision {
             };
             let position_embeddings = self.position_embedding.forward(&position_ids)?;
 
-            #[cfg(feature = "debug")]
-            introspector.insert("position_embeddings", &position_embeddings);
+            ctx.vis_introspector
+                .insert("position_embeddings", &position_embeddings);
 
             patch_embeddings + position_embeddings
         }?;
@@ -301,12 +293,12 @@ impl SmolVision {
                 inverted_mask.where_cond(&neg_infs, &inverted_mask.to_dtype(DType::F32)?)?
             };
 
-        introspector.start_tracking_depth();
+        ctx.vis_introspector.start_tracking_depth();
         for block in &self.blocks {
-            hidden_states = block.forward(&hidden_states, &patch_attention_masks, introspector)?;
-            introspector.increment_depth();
+            hidden_states = block.forward(&hidden_states, &patch_attention_masks, ctx)?;
+            ctx.vis_introspector.increment_depth();
         }
-        introspector.stop_tracking_depth();
+        ctx.vis_introspector.stop_tracking_depth();
 
         self.post_layernorm.forward(&hidden_states)
     }

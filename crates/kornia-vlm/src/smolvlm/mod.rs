@@ -1,6 +1,5 @@
 mod custom_layernorm;
 mod custom_rmsnorm;
-mod introspector;
 mod model;
 mod preprocessor;
 mod text_model;
@@ -12,9 +11,13 @@ use std::io;
 #[cfg(feature = "debug")]
 use std::io::Write;
 
-use crate::smolvlm::{
-    model::SmolModel, preprocessor::SmolVlmImagePreprocessor, utils::SmolVlmConfig,
-    utils::SmolVlmError,
+use crate::{
+    context::InferenceContext,
+    smolvlm::{
+        model::SmolModel,
+        preprocessor::SmolVlmImagePreprocessor,
+        utils::{SmolVlmConfig, SmolVlmError},
+    },
 };
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
@@ -206,8 +209,8 @@ impl<A: ImageAllocator> SmolVlm<A> {
         let start_gen = std::time::Instant::now();
         #[cfg(feature = "debug")]
         let mut generated_tokens = 0usize;
-        let mut introspector = introspector::ActivationIntrospector::new();
-        let mut vis_introspector = crate::smolvlm::introspector::ActivationIntrospector::new();
+
+        let mut ctx = InferenceContext::new();
 
         for _i in 0..sample_len {
             self.token_history.extend(&delta_token);
@@ -219,8 +222,7 @@ impl<A: ImageAllocator> SmolVlm<A> {
                 self.index_pos,
                 &image_token_mask,
                 processed_images.iter().map(|(a, b)| (a, b)).collect(),
-                &mut introspector,
-                &mut vis_introspector,
+                &mut ctx,
             )?;
             processed_images.clear();
 
@@ -245,13 +247,9 @@ impl<A: ImageAllocator> SmolVlm<A> {
                 // Use deterministic sampling for reproducible results
                 self.sample_deterministic(&last_logit)?
             };
-            // println!("#>:{last_logit}");
 
-            #[cfg(feature = "debug")]
-            {
-                introspector.insert("logits", &last_logit);
-                introspector.increment_batch_pos();
-            }
+            ctx.text_introspector.insert("logits", &last_logit);
+            ctx.text_introspector.increment_batch_pos();
 
             self.index_pos += delta_token.len();
             delta_token.clear();
@@ -287,13 +285,12 @@ impl<A: ImageAllocator> SmolVlm<A> {
                 "\n{generated_tokens} tokens generated ({:.2} token/s)",
                 generated_tokens as f64 / dt.as_secs_f64(),
             );
-
-            introspector
-                .save_as("examples/smol_vlm/validation_data/rust_isp_decoder.safetensors")?;
-            vis_introspector
-                .save_as("examples/smol_vlm/validation_data/rust_isp_encoder.safetensors")?;
-            // println!("Token history: {:?}", self.token_history);
         }
+
+        ctx.text_introspector
+            .save_as("examples/smol_vlm/validation_data/rust_isp_decoder.safetensors");
+        ctx.vis_introspector
+            .save_as("examples/smol_vlm/validation_data/rust_isp_encoder.safetensors");
 
         Ok(self.response.clone())
     }
@@ -366,10 +363,10 @@ impl<A: ImageAllocator> SmolVlm<A> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use candle_core::{DType, Device};
     // use candle_onnx;
-    use std::collections::HashMap;
+    // use super::*;
+    // use std::collections::HashMap;
 
     #[ignore]
     #[test]

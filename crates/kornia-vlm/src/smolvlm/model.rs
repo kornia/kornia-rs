@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use candle_core::{IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Linear, Module};
 
-use crate::smolvlm::text_model::SmolText;
+use crate::{context::InferenceContext, smolvlm::text_model::SmolText};
 
 use super::vision_model::SmolVision;
 
@@ -111,21 +111,20 @@ impl SmolModel {
         index_pos: usize,
         image_token_mask: &Tensor,
         image_data: Vec<(&Tensor, &Tensor)>,
-        introspector: &mut super::introspector::ActivationIntrospector,
-        vis_introspector: &mut super::introspector::ActivationIntrospector,
+        ctx: &mut InferenceContext,
     ) -> Result<Tensor> {
         let inputs_embeds = self.embed.forward(xs)?;
 
-        #[cfg(feature = "debug")]
-        introspector.insert("input_embeddings", &inputs_embeds);
+        ctx.text_introspector
+            .insert("input_embeddings", &inputs_embeds);
 
         let mut agg_image_hidden_states = vec![];
         for (pixel_values, pixel_attention_masks) in image_data {
             let image_hidden_states =
                 self.vision
-                    .forward(pixel_values, pixel_attention_masks, vis_introspector)?;
-            #[cfg(feature = "debug")]
-            vis_introspector.insert("post_layernorm", &image_hidden_states);
+                    .forward(pixel_values, pixel_attention_masks, ctx)?;
+            ctx.vis_introspector
+                .insert("post_layernorm", &image_hidden_states);
 
             let image_hidden_states = self.connector.forward(&image_hidden_states)?;
             let image_hidden_states = image_hidden_states.flatten(0, 1)?;
@@ -137,7 +136,7 @@ impl SmolModel {
                 agg_image_hidden_states.last().unwrap().dims2()?.0
             );
 
-            vis_introspector.increment_batch_pos();
+            ctx.vis_introspector.increment_batch_pos();
         }
 
         let inputs_embeds = if !agg_image_hidden_states.is_empty() {
@@ -148,7 +147,7 @@ impl SmolModel {
             inputs_embeds
         };
 
-        self.text.forward(inputs_embeds, index_pos, introspector)
+        self.text.forward(inputs_embeds, index_pos, ctx)
     }
 
     pub fn reset_cache(&mut self) {
