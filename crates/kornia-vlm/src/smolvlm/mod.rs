@@ -86,8 +86,14 @@ impl<A: ImageAllocator> SmolVlm<A> {
         })
     }
 
-    pub fn get_response(&self) -> &str {
-        &self.response
+    pub fn update_config(&mut self, config: SmolVlmConfig) -> Result<(), SmolVlmError> {
+        self.config = config;
+        self.logits_processor = if config.do_sample {
+            LogitsProcessor::new(config.seed, Some(config.temp), Some(config.top_p))
+        } else {
+            LogitsProcessor::from_sampling(config.seed, Sampling::ArgMax)
+        };
+        Ok(())
     }
 
     /// Run the inference of the SmolVLM model with previous context added.

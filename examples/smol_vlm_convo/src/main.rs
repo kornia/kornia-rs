@@ -60,6 +60,16 @@ struct AppState {
     spinner_index: usize,
     show_spinner: bool,
     spinner_tick: usize, // counts ticks for spinner speed
+
+    // Model config UI state
+    config_selected: usize, // which config option is selected in the UI (0: sample_len, 1: temp, 2: top_p, 3: do_sample)
+    config_do_sample: bool, // whether sampling is enabled
+    config_sample_len: usize, // sample length
+    config_temp: f64,       // temperature
+    config_top_p: f64,      // top-p
+
+    // Config input mode
+    config_input_mode: bool, // true if config pane is focused for input
 }
 
 impl AppState {
@@ -362,6 +372,82 @@ impl AppState {
         self.file_list = folders.into_iter().chain(files).collect();
         self.file_selected = 0;
     }
+
+    /// Handle config UI input (Ctrl+arrows/space)
+    fn handle_config_input(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+        match key.code {
+            KeyCode::Up => {
+                if self.config_selected > 0 {
+                    self.config_selected -= 1;
+                }
+            }
+            KeyCode::Down => {
+                if self.config_selected < 3 {
+                    self.config_selected += 1;
+                }
+            }
+            KeyCode::Left => {
+                self.adjust_config(-1);
+            }
+            KeyCode::Right => {
+                self.adjust_config(1);
+            }
+            KeyCode::Char(' ') => {
+                if self.config_selected == 3 {
+                    self.config_do_sample = !self.config_do_sample;
+                    let _ = self
+                        .model_handle
+                        .tx
+                        .send(ModelRequest::SetDoSample(self.config_do_sample));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Adjusts the selected config value by delta
+    fn adjust_config(&mut self, delta: i32) {
+        match self.config_selected {
+            0 => {
+                // Sample length
+                let new_len = (self.config_sample_len as i32 + delta * 10).max(1) as usize;
+                self.config_sample_len = new_len;
+                let _ = self
+                    .model_handle
+                    .tx
+                    .send(ModelRequest::SetSampleLength(self.config_sample_len));
+            }
+            1 => {
+                // Temperature
+                let new_temp = (self.config_temp * 100.0 + (delta as f64))
+                    .max(1.0)
+                    .min(200.0)
+                    / 100.0;
+                self.config_temp = new_temp;
+                let _ = self
+                    .model_handle
+                    .tx
+                    .send(ModelRequest::SetTemperature(self.config_temp));
+            }
+            2 => {
+                // Top-p
+                let new_top_p = (self.config_top_p * 100.0 + (delta as f64))
+                    .max(1.0)
+                    .min(100.0)
+                    / 100.0;
+                self.config_top_p = new_top_p;
+                let _ = self
+                    .model_handle
+                    .tx
+                    .send(ModelRequest::SetTopP(self.config_top_p));
+            }
+            3 => {
+                // Sampling toggle handled by spacebar
+            }
+            _ => {}
+        }
+    }
 }
 
 fn run(mut terminal: DefaultTerminal) -> Result<()> {
@@ -381,6 +467,14 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
         spinner_index: 0,
         show_spinner: false,
         spinner_tick: 0,
+
+        // Model config UI state defaults
+        config_selected: 0,
+        config_do_sample: true,
+        config_sample_len: 128,
+        config_temp: 1.0,
+        config_top_p: 1.0,
+        config_input_mode: false,
     };
     let mut last_chat_height = 0;
     use std::time::{Duration, Instant};
@@ -423,9 +517,29 @@ fn run(mut terminal: DefaultTerminal) -> Result<()> {
             if let Event::Key(key) = ev {
                 if state.file_input_mode {
                     state.handle_file_input_mode(key);
+                } else if state.config_input_mode {
+                    use crossterm::event::KeyCode;
+                    match key.code {
+                        KeyCode::Tab | KeyCode::Esc => {
+                            state.config_input_mode = false;
+                        }
+                        _ => {
+                            if let KeyEventKind::Press = key.kind {
+                                state.handle_config_input(key);
+                            }
+                        }
+                    }
                 } else if let KeyEventKind::Press = key.kind {
-                    if state.handle_main_input(key, chat_height)? {
-                        return Ok(());
+                    use crossterm::event::KeyCode;
+                    match key.code {
+                        KeyCode::Tab => {
+                            state.config_input_mode = true;
+                        }
+                        _ => {
+                            if state.handle_main_input(key, chat_height)? {
+                                return Ok(());
+                            }
+                        }
                     }
                 }
             } else if let Event::Mouse(me) = ev {
@@ -501,7 +615,45 @@ fn render(frame: &mut Frame, state: &AppState) {
         .borders(Borders::ALL | Borders::RIGHT)
         .border_style(Style::default().fg(win95_border))
         .style(Style::default().bg(win95_bg));
-    frame.render_widget(config_block, chunks[0]);
+
+    // Config options as simple label/value/checkbox, highlight selected
+    let config_labels = [
+        format!("Sample length: {}", state.config_sample_len),
+        format!("Temperature: {:.2}", state.config_temp),
+        format!("Top-p: {:.2}", state.config_top_p),
+        format!(
+            "Sampling: {}",
+            if state.config_do_sample { "[x]" } else { "[ ]" }
+        ),
+    ];
+    let mut config_lines = String::new();
+    for label in config_labels.iter() {
+        config_lines.push_str(label);
+        config_lines.push('\n');
+    }
+    let config_para = Paragraph::new(config_lines.trim_end())
+        .block(config_block)
+        .style(Style::default().fg(win95_text).bg(win95_bg))
+        .wrap(ratatui::widgets::Wrap { trim: false });
+    frame.render_widget(config_para, chunks[0]);
+
+    // Draw highlight for selected config option (manual overlay)
+    let left_area = chunks[0];
+    let highlight_y = left_area.y + 1 + state.config_selected as u16; // +1 for border/title
+    let highlight_rect = Rect {
+        x: left_area.x + 1,
+        y: highlight_y,
+        width: left_area.width - 2,
+        height: 1,
+    };
+    let highlight_label = &config_labels[state.config_selected];
+    let highlight_para = Paragraph::new(highlight_label.as_str()).style(
+        Style::default()
+            .fg(win95_highlight_fg)
+            .bg(win95_highlight_bg)
+            .add_modifier(Modifier::BOLD),
+    );
+    frame.render_widget(highlight_para, highlight_rect);
 
     // Right pane: split vertically for chat and prompt
     let right_chunks = Layout::default()
@@ -570,7 +722,8 @@ fn render(frame: &mut Frame, state: &AppState) {
     frame.render_widget(prompt_para, right_chunks[1]);
 
     // Help line overlay (bottom of screen)
-    let help_text = "Alt+Enter: Clear | Alt+I: Insert Image | Esc: Quit | Up/Down: Scroll";
+    let help_text =
+        "Alt+Enter: Clear | Alt+I: Insert Image | Esc: Quit | Up/Down: Scroll | Tab: Config Mode";
     let area = frame.area();
     let help_rect = Rect {
         x: area.x,
