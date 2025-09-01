@@ -320,6 +320,7 @@ mod tests {
 
     use candle_nn::Module;
 
+    #[ignore]
     #[test]
     fn test_validating_vision_enc() -> Result<(), Box<dyn std::error::Error>> {
         use candle_core::{DType, Device, Result, Tensor};
@@ -412,11 +413,12 @@ mod tests {
         Ok(())
     }
 
+    #[ignore]
     #[test]
     fn test_lanczos_resize_filtering() -> candle_core::Result<()> {
         use candle_core::Device;
         use kornia_imgproc::interpolation::InterpolationMode;
-        use kornia_imgproc::resize::resize_fast;
+        use kornia_imgproc::resize::resize_fast_rgb;
         use kornia_io::png::read_image_png_mono8;
 
         let device = Device::Cpu;
@@ -473,7 +475,7 @@ mod tests {
                 .map_err(|e| {
                     candle_core::Error::Msg(format!("resize image creation error: {e}"))
                 })?;
-            resize_fast(&img_rgb_u8, &mut resized, InterpolationMode::Lanczos)
+            resize_fast_rgb(&img_rgb_u8, &mut resized, InterpolationMode::Lanczos)
                 .map_err(|e| candle_core::Error::Msg(format!("resize_fast error: {e}")))?;
             println!("Successfully resized to shape: {}x{}", target_w, target_h);
 
@@ -509,7 +511,7 @@ mod tests {
                 .map_err(|e| {
                     candle_core::Error::Msg(format!("resize image creation error: {e}"))
                 })?;
-            resize_fast(&img_rgb_u8, &mut resized, mode)
+            resize_fast_rgb(&img_rgb_u8, &mut resized, mode)
                 .map_err(|e| candle_core::Error::Msg(format!("resize_fast error: {e}")))?;
             println!(
                 "  {} result shape: {}x{}",

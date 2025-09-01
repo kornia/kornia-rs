@@ -1,4 +1,4 @@
-use candle_core::{DType, Result, Tensor};
+use candle_core::{Result, Tensor};
 use candle_nn::Module;
 
 #[derive(Debug, Clone)]

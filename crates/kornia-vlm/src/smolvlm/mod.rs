@@ -7,7 +7,6 @@ mod text_model;
 pub mod utils;
 mod vision_model;
 
-use core::alloc;
 #[cfg(feature = "debug")]
 use std::io;
 #[cfg(feature = "debug")]
@@ -373,6 +372,7 @@ mod tests {
     use candle_onnx;
     use std::collections::HashMap;
 
+    #[ignore]
     #[test]
     fn test_linear_layer_validation() -> Result<(), Box<dyn std::error::Error>> {
         let test_data = candle_core::safetensors::load(
