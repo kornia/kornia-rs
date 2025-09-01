@@ -8,6 +8,7 @@ use glam::{Mat3, Mat3A, Vec3};
 use kornia_lie::so3::SO3;
 use kornia_linalg::rigid::umeyama;
 use kornia_linalg::svd::svd3;
+use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 use nalgebra::{DMatrix, DVector, Vector4};
 
 /// Marker type representing the Efficient PnP algorithm.
@@ -20,9 +21,10 @@ impl PnPSolver for EPnP {
         points_world: &[[f32; 3]],
         points_image: &[[f32; 2]],
         k: &[[f32; 3]; 3],
+        distortion: &PolynomialDistortion,
         params: &Self::Param,
     ) -> Result<PnPResult, PnPError> {
-        solve_epnp(points_world, points_image, k, params)
+        solve_epnp(points_world, points_image, k, distortion, params)
     }
 }
 
@@ -49,6 +51,7 @@ pub fn solve_epnp(
     points_world: &[[f32; 3]],
     points_image: &[[f32; 2]],
     k: &[[f32; 3]; 3],
+    distortion: &PolynomialDistortion,
     params: &EPnPParams,
 ) -> Result<PnPResult, PnPError> {
     let n = points_world.len();
@@ -148,39 +151,39 @@ pub fn solve_epnp(
     })
 }
 
-/// Solve Perspective-n-Point (EPnP) with camera model support.
-///
-/// This function automatically handles distortion correction if the camera model includes distortion parameters.
-///
-/// # Arguments
-/// * `points_world` – 3-D coordinates in the world frame, shape *(N,3)* with `N≥4`.
-/// * `points_image` – Corresponding pixel coordinates (may be distorted), shape *(N,2)*.
-/// * `camera` – Camera model with intrinsics and optional distortion.
-/// * `params` – EPnP solver parameters.
-///
-/// # Returns
-/// PnP result with estimated pose.
-pub fn solve_epnp_with_camera(
-    points_world: &[[f32; 3]],
-    points_image: &[[f32; 2]],
-    camera: &crate::camera::CameraModel,
-    params: &EPnPParams,
-) -> Result<PnPResult, PnPError> {
-    // If camera has distortion, undistort the image points first
-    let undistorted_image = if camera.has_distortion() {
-        camera
-            .undistort_points(points_image)
-            .map_err(|e| PnPError::SvdFailed(format!("Failed to undistort points: {}", e)))?
-    } else {
-        points_image.to_vec()
-    };
+// /// Solve Perspective-n-Point (EPnP) with camera model support.
+// ///
+// /// This function automatically handles distortion correction if the camera model includes distortion parameters.
+// ///
+// /// # Arguments
+// /// * `points_world` – 3-D coordinates in the world frame, shape *(N,3)* with `N≥4`.
+// /// * `points_image` – Corresponding pixel coordinates (may be distorted), shape *(N,2)*.
+// /// * `camera` – Camera model with intrinsics and optional distortion.
+// /// * `params` – EPnP solver parameters.
+// ///
+// /// # Returns
+// /// PnP result with estimated pose.
+// pub fn solve_epnp_with_camera(
+//     points_world: &[[f32; 3]],
+//     points_image: &[[f32; 2]],
+//     camera: &crate::camera::CameraModel,
+//     params: &EPnPParams,
+// ) -> Result<PnPResult, PnPError> {
+//     // If camera has distortion, undistort the image points first
+//     let undistorted_image = if camera.has_distortion() {
+//         camera
+//             .undistort_points(points_image)
+//             .map_err(|e| PnPError::SvdFailed(format!("Failed to undistort points: {}", e)))?
+//     } else {
+//         points_image.to_vec()
+//     };
 
-    // Get intrinsics matrix for the solver
-    let k = camera.intrinsics_matrix();
+//     // Get intrinsics matrix for the solver
+//     let k = camera.intrinsics_matrix();
 
-    // Call the original solver with undistorted points
-    solve_epnp(points_world, &undistorted_image, &k, params)
-}
+//     // Call the original solver with undistorted points
+//     solve_epnp(points_world, &undistorted_image, &k, params)
+// }
 
 /// Compute pose (R, t) from a set of betas using the null-space vectors.
 fn pose_from_betas(

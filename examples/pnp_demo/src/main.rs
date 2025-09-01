@@ -95,7 +95,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     // Run EPnP
-    let result = kpnp::solve_pnp(&world_pts, &image_pts, &k, kpnp::PnPMethod::EPnPDefault)?;
+    let distortion = kpnp::PolynomialDistortion {
+        k1: 1.7547749280929563,
+        k2: 0.0097926277667284,
+        k3: -0.027250492945313457,
+        k4: 2.1092164516448975,
+        k5: 0.462927520275116,
+        k6: -0.08215277642011642,
+        p1: -0.00005457743463921361,
+        p2: 0.00003006766564794816,
+    };
+    let result = kpnp::solve_pnp(&world_pts, &image_pts, &k, &distortion, kpnp::PnPMethod::EPnPDefault)?;
 
     // Log observed 2D points
     let img_obs = image_pts

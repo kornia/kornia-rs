@@ -17,6 +17,7 @@ default = []
 [dependencies]
 kornia-linalg = { workspace = true }
 kornia-lie = { workspace = true }
+kornia-imgproc = { workspace = true }
 glam = { version = "0.30.0", default-features = false }
 thiserror = { workspace = true }
 
