@@ -210,7 +210,8 @@ impl AppState {
                 if key.modifiers.contains(KeyModifiers::ALT) {
                     self.chat_history.borrow_mut().clear();
                     self.scroll = 0;
-                    // No model context to clear in threaded model
+                    // Clear model context through threads
+                    let _ = self.model_handle.tx.send(ModelRequest::ClearContext);
                 } else {
                     let user_msg = format!("You: {}", self.prompt_input.trim());
                     if !self.prompt_input.trim().is_empty() {

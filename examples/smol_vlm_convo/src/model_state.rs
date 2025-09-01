@@ -15,6 +15,7 @@ pub enum ModelRequest {
     SetTopP(f64),
     SetSampleLength(usize),
     SetDoSample(bool),
+    ClearContext,
     Quit,
 }
 
@@ -73,6 +74,10 @@ impl ModelStateHandle {
                     Ok(ModelRequest::SetDoSample(do_sample)) => {
                         config.do_sample = do_sample;
                         model.update_config(config);
+                    }
+                    Ok(ModelRequest::ClearContext) => {
+                        // If the model has a method to clear context, call it here
+                        let _ = model.clear_context();
                     }
                     Ok(ModelRequest::Quit) | Err(_) => break,
                 }
