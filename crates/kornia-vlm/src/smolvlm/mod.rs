@@ -86,6 +86,7 @@ impl<A: ImageAllocator> SmolVlm<A> {
         })
     }
 
+    /// Update the configuration of the SmolVLM model
     pub fn update_config(&mut self, config: SmolVlmConfig) -> Result<(), SmolVlmError> {
         self.config = config;
         self.logits_processor = if config.do_sample {
@@ -103,6 +104,7 @@ impl<A: ImageAllocator> SmolVlm<A> {
     /// * `image` - The rgb8    image to generate a caption for with shape [H, W, 3]
     /// * `prompt` - The prompt to generate a caption for
     /// * `sample_len` - The length of the generated caption
+    /// * `alloc` - The image allocator to use
     ///
     /// # Returns
     ///
@@ -148,6 +150,7 @@ impl<A: ImageAllocator> SmolVlm<A> {
     /// * `image` - The rgb8    image to generate a caption for with shape [H, W, 3]
     /// * `prompt` - The prompt to generate a caption for
     /// * `sample_len` - The length of the generated caption
+    /// * `alloc` - The image allocator to use
     ///
     /// # Returns
     ///
@@ -296,6 +299,7 @@ impl<A: ImageAllocator> SmolVlm<A> {
         Ok(self.response.clone())
     }
 
+    /// Clear the context of the model (reset image and token history)
     pub fn clear_context(&mut self) {
         self.model.reset_cache();
 
@@ -317,8 +321,6 @@ impl<A: ImageAllocator> SmolVlm<A> {
         // Use a small epsilon for floating-point comparison to handle precision issues
         let epsilon = 1e-8;
 
-        // println!("Logits: {:?}", logits_vec);
-
         // Find all indices with the maximum value (for debugging ties)
         let max_indices: Vec<usize> = logits_vec
             .iter()
@@ -326,17 +328,6 @@ impl<A: ImageAllocator> SmolVlm<A> {
             .filter(|(_, &logit)| 0.0 <= (logit - max_value) && (logit - max_value) < epsilon)
             .map(|(i, _)| i)
             .collect();
-
-        // Log if there are ties (for debugging)
-        // if max_indices.len() > 1 {
-        //     println!("DEBUG: Found {} tokens with max logit {}: {:?}",
-        //              max_indices.len(), max_value, max_indices);
-        // }
-
-        // println!(
-        //     "DEBUG: Max logit value: {}, indices: {:?}",
-        //     max_value, max_indices
-        // );
 
         // Always select the first index (deterministic tiebreaker)
         if max_indices.is_empty() {
