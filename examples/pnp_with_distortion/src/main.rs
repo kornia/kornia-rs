@@ -3,10 +3,16 @@ use rand::Rng;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
-    let rec = rerun::RecordingStreamBuilder::new("PnP Demo").spawn()?;
+    let rec = rerun::RecordingStreamBuilder::new("PnP with Distortion Demo").spawn()?;
 
     // Camera intrinsics (pinhole, fx=fy=800, cx=640, cy=480)
-    let k = [[800.0, 0.0, 640.0], [0.0, 800.0, 480.0], [0.0, 0.0, 1.0]];
+    let intrinsics = kpnp::CameraIntrinsics::new(800.0, 800.0, 640.0, 480.0);
+
+    // Add some radial distortion (k1=0.1, k2=0.01)
+    let distortion = kpnp::PolynomialDistortion::radial(0.1, 0.01);
+
+    // Create camera model with distortion
+    let camera = kpnp::CameraModel::with_distortion(intrinsics, distortion);
 
     // Build a dense cube (corners + 200 random interior points)
     let cube_size = 1.0;
@@ -59,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let color_cube = rerun::Color::from_rgb(255, 215, 0); // gold
     rec.log(
         "cube",
-        &rerun::Points3D::new(p3d).with_colors(vec![color_cube; 8]),
+        &rerun::Points3D::new(p3d).with_colors(vec![color_cube; world_pts.len()]),
     )?;
 
     // Ground-truth pose: small rotation + translation along +Z
@@ -79,64 +85,94 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
     let gt_t = [0.7, -0.4, 5.0];
 
-    // Project points to image plane + add small noise
+    // Project points to image plane (undistorted) + add small noise
     let mut rng = rand::rng();
     let sigma_px = 0.5; // pixel noise
-    let image_pts: Vec<[f32; 2]> = world_pts
+    let undistorted_image_pts: Vec<[f32; 2]> = world_pts
         .iter()
         .map(|p| {
             let x_c = gt_r[0][0] * p[0] + gt_r[0][1] * p[1] + gt_r[0][2] * p[2] + gt_t[0];
             let y_c = gt_r[1][0] * p[0] + gt_r[1][1] * p[1] + gt_r[1][2] * p[2] + gt_t[1];
             let z_c = gt_r[2][0] * p[0] + gt_r[2][1] * p[1] + gt_r[2][2] * p[2] + gt_t[2];
-            let u = k[0][0] * x_c / z_c + k[0][2] + rng.random::<f32>() * sigma_px;
-            let v = k[1][1] * y_c / z_c + k[1][2] + rng.random::<f32>() * sigma_px;
+            let u = camera.intrinsics.fx * x_c / z_c
+                + camera.intrinsics.cx
+                + rng.random::<f32>() * sigma_px;
+            let v = camera.intrinsics.fy * y_c / z_c
+                + camera.intrinsics.cy
+                + rng.random::<f32>() * sigma_px;
             [u, v]
         })
         .collect();
 
-    // Run EPnP
-    let distortion = kpnp::PolynomialDistortion {
-        k1: 1.7547749280929563,
-        k2: 0.0097926277667284,
-        k3: -0.027250492945313457,
-        k4: 2.1092164516448975,
-        k5: 0.462927520275116,
-        k6: -0.08215277642011642,
-        p1: -0.00005457743463921361,
-        p2: 0.00003006766564794816,
-    };
-    let result = kpnp::solve_pnp(&world_pts, &image_pts, &k, &distortion, kpnp::PnPMethod::EPnPDefault)?;
+    // Apply distortion to get the "observed" distorted points
+    let distorted_image_pts: Vec<[f32; 2]> = undistorted_image_pts
+        .iter()
+        .map(|&[u, v]| {
+            let (u_dist, v_dist) = camera.distort_point(u, v).unwrap();
+            [u_dist, v_dist]
+        })
+        .collect();
 
-    // Log observed 2D points
-    let img_obs = image_pts
+    // Log observed distorted 2D points (green)
+    let img_obs = distorted_image_pts
         .iter()
         .map(|uv| (uv[0], uv[1]))
         .collect::<Vec<_>>();
     rec.log_static(
-        "image/observed",
+        "image/distorted_observed",
         &rerun::Points2D::new(img_obs).with_colors([[0, 255, 0]]), // green
     )?;
 
-    // Reproject world points with estimated pose
-    let r_est = result.rotation;
-    let t_est = result.translation;
+    // Log undistorted 2D points (blue) for comparison
+    let img_undist = undistorted_image_pts
+        .iter()
+        .map(|uv| (uv[0], uv[1]))
+        .collect::<Vec<_>>();
+    rec.log_static(
+        "image/undistorted_ground_truth",
+        &rerun::Points2D::new(img_undist).with_colors([[0, 0, 255]]), // blue
+    )?;
+
+    println!("=== PnP with Distortion Demo ===");
+    println!(
+        "Camera intrinsics: fx={}, fy={}, cx={}, cy={}",
+        camera.intrinsics.fx, camera.intrinsics.fy, camera.intrinsics.cx, camera.intrinsics.cy
+    );
+    println!(
+        "Distortion: k1={}, k2={}",
+        camera.distortion.as_ref().unwrap().k1,
+        camera.distortion.as_ref().unwrap().k2
+    );
+    println!("Number of points: {}", world_pts.len());
+
+    // Solve PnP with distorted points using the new camera model interface
+    println!("\n--- Test : PnP with camera model (handles distortion automatically) ---");
+    let result_with_camera = kpnp::solve_pnp_with_camera(
+        &world_pts,
+        &distorted_image_pts,
+        &camera,
+        kpnp::PnPMethod::EPnPDefault,
+    )?;
+
+    let r_est = result_with_camera.rotation;
+    let t_est = result_with_camera.translation;
     let mut img_reproj = Vec::with_capacity(world_pts.len());
     for p in &world_pts {
         let x_c = r_est[0][0] * p[0] + r_est[0][1] * p[1] + r_est[0][2] * p[2] + t_est[0];
         let y_c = r_est[1][0] * p[0] + r_est[1][1] * p[1] + r_est[1][2] * p[2] + t_est[1];
         let z_c = r_est[2][0] * p[0] + r_est[2][1] * p[1] + r_est[2][2] * p[2] + t_est[2];
-        let u = k[0][0] * x_c / z_c + k[0][2];
-        let v = k[1][1] * y_c / z_c + k[1][2];
+        let u = camera.intrinsics.fx * x_c / z_c + camera.intrinsics.cx;
+        let v = camera.intrinsics.fy * y_c / z_c + camera.intrinsics.cy;
         img_reproj.push((u, v));
     }
     rec.log_static(
-        "image/reprojected",
+        "image/reprojected_undistorted",
         &rerun::Points2D::new(img_reproj).with_colors([[255, 0, 0]]), // red
     )?;
 
     // Compute camera center in world coordinates: C = -R^T * t
-    let r = result.rotation;
-    let t = result.translation;
+    let r = result_with_camera.rotation;
+    let t = result_with_camera.translation;
     let camera_center = [
         -(r[0][0] * t[0] + r[1][0] * t[1] + r[2][0] * t[2]),
         -(r[0][1] * t[0] + r[1][1] * t[1] + r[2][1] * t[2]),
@@ -152,12 +188,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_colors(vec![rerun::Color::from_rgb(255, 0, 0)]),
     )?;
 
+    println!("\n=== Summary ===");
     println!("Ground truth translation: {:?}", gt_t);
-    println!("Estimated translation  : {:?}", result.translation);
-    println!("Ground truth rotation   : {:?}", gt_r);
-    println!("Estimated rotation:\n{:?}", result.rotation);
-    if let Some(rmse) = result.reproj_rmse {
+    println!(
+        "Estimated translation  : {:?}",
+        result_with_camera.translation
+    );
+    if let Some(rmse) = result_with_camera.reproj_rmse {
         println!("Reprojection RMSE: {:.3} px", rmse);
     }
+
     Ok(())
 }
