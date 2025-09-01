@@ -4,6 +4,7 @@
 
 use crate::ops::{compute_centroid, gauss_newton};
 use crate::pnp::{NumericTol, PnPError, PnPResult, PnPSolver};
+use crate::refine::{refine_pose_lm, LMParams};
 use glam::{Mat3, Mat3A, Vec3};
 use kornia_lie::so3::SO3;
 use kornia_linalg::rigid::umeyama;
@@ -27,10 +28,19 @@ impl PnPSolver for EPnP {
 }
 
 /// Parameters controlling the EPnP solver.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct EPnPParams {
     /// Shared numeric tolerances.
     pub tol: NumericTol,
+    /// Optional Levenberg–Marquardt refinement parameters. If `Some`, a final LM pass
+    /// runs to refine the pose minimizing pixel reprojection error.
+    pub refine_lm: Option<LMParams>,
+}
+
+impl Default for EPnPParams {
+    fn default() -> Self {
+        Self { tol: NumericTol::default(), refine_lm: None }
+    }
 }
 
 /// Solve Perspective-n-Point (EPnP).
@@ -136,15 +146,37 @@ pub fn solve_epnp(
         best_r[2][2],
     ]);
     let rvec_f32 = SO3::from_matrix(&mat).log();
-    let rvec = [rvec_f32.x, rvec_f32.y, rvec_f32.z];
+    let mut rvec = [rvec_f32.x, rvec_f32.y, rvec_f32.z];
+    let mut tvec = best_t;
+
+    let mut rmse = best_err;
+    let mut iterations = None;
+    let mut converged = Some(true);
+
+    if let Some(lm) = &params.refine_lm {
+        if let Ok((rmse_new, iters, conv)) = refine_pose_lm(points_world, points_image, k, &mut rvec, &mut tvec, lm) {
+            // Update rotation from refined rvec
+            let r_mat_ref = SO3::exp(glam::Vec3A::from_array(rvec)).matrix();
+            let r_ref = [
+                [r_mat_ref.x_axis.x, r_mat_ref.y_axis.x, r_mat_ref.z_axis.x],
+                [r_mat_ref.x_axis.y, r_mat_ref.y_axis.y, r_mat_ref.z_axis.y],
+                [r_mat_ref.x_axis.z, r_mat_ref.y_axis.z, r_mat_ref.z_axis.z],
+            ];
+            best_r = r_ref;
+            tvec = tvec;
+            rmse = rmse_new;
+            iterations = Some(iters);
+            converged = Some(conv);
+        }
+    }
 
     Ok(PnPResult {
         rotation: best_r,
-        translation: best_t,
+        translation: tvec,
         rvec,
-        reproj_rmse: Some(best_err),
-        num_iterations: None,
-        converged: Some(true),
+        reproj_rmse: Some(rmse),
+        num_iterations: iterations,
+        converged,
     })
 }
 
