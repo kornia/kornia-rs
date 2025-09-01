@@ -1,0 +1,12 @@
+# build
+maturin[patchelf]
+cmake
+
+# tests
+pre-commit
+pytest
+pytest-run-parallel
+numpy
+
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
