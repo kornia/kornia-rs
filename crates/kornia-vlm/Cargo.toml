@@ -21,10 +21,10 @@ kornia-tensor = { workspace = true }
 kornia-io = { workspace = true }
 kornia-imgproc = { workspace = true }
 
-candle-core = { version = "0.9.1", features = ["mkl"] }
-candle-transformers = { version = "0.9.1" }
-candle-examples = "0.9.1"
-candle-nn = { version = "0.9.1" }
+candle-core = { version = "0.9.1", default-features = false }
+candle-transformers = { version = "0.9.1", default-features = false }
+candle-examples = { version = "0.9.1", default-features = false, features = [] }
+candle-nn = { version = "0.9.1", default-features = false }
 hf-hub = "0.4.2"
 tokenizers = { version = "0.21.1", features = ["http"] }
 
@@ -33,7 +33,7 @@ rand = "0.9.0"
 
 # candle-onnx = "0.9.1"
 # ort = "1.16"          # or latest version
-ndarray = "0.15" # for easy tensor handling
+# ndarray = "0.15" # for easy tensor handling
 
 [features]
 cuda = ["candle-core/cuda", "candle-transformers/cuda", "candle-nn/cuda"]
