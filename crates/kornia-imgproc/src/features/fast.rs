@@ -170,8 +170,12 @@ impl FastDetector {
     ///
     /// Returns a `Result` containing a vector of keypoint coordinates or an `ImageError`.
     pub fn extract_keypoints(&mut self) -> Result<Vec<[usize; 2]>, ImageError> {
-        get_peak_mask(&self.corner_response, &mut self.mask, self.threshold);
-        exclude_border(&mut self.mask, self.min_distance);
+        get_peak_mask(
+            &self.corner_response,
+            &mut self.mask,
+            self.threshold,
+            self.min_distance,
+        );
 
         let coordinates = get_high_intensity_peaks(
             &self.corner_response,
@@ -220,33 +224,31 @@ fn get_peak_mask<A: ImageAllocator>(
     src: &Image<f32, 1, A>,
     mask: &mut Image<bool, 1, A>,
     threshold: f32,
+    border_width: usize,
 ) {
+    let mask_size = mask.size();
+
     let src_slice = src.as_slice();
     let mask_slice = mask.as_slice_mut();
 
     src_slice
         .par_iter()
         .zip(mask_slice)
-        .for_each(|(src, mask)| *mask = *src > threshold);
-}
+        .enumerate()
+        .for_each(|(i, (src, mask))| {
+            let y = i / mask_size.width;
+            let x = i % mask_size.width;
 
-fn exclude_border<A: ImageAllocator>(label: &mut Image<bool, 1, A>, border_width: usize) {
-    let label_size = label.size();
-    let label_slice = label.as_slice_mut();
-
-    (0..label_size.height).for_each(|y| {
-        let iy = y * label_size.width;
-
-        (0..label_size.width).for_each(|x| {
             if x < border_width
-                || x >= label_size.width.saturating_sub(border_width)
+                || x >= mask_size.width.saturating_sub(border_width)
                 || y < border_width
-                || y >= label_size.height.saturating_sub(border_width)
+                || y >= mask_size.height.saturating_sub(border_width)
             {
-                label_slice[iy + x] = false;
+                *mask = false;
+            } else {
+                *mask = *src > threshold;
             }
         });
-    });
 }
 
 fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
