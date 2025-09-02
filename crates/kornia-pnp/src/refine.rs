@@ -1,7 +1,8 @@
 //! Levenberg–Marquardt pose refinement for PnP solutions.
 
 use crate::pnp::PnPError;
-use glam::{Mat3A, Vec3, Vec3A};
+use glam::{Vec3, Vec3A};
+use kornia_lie::so3::SO3;
 
 /// Parameters controlling the LM pose refinement.
 #[derive(Debug, Clone)]
@@ -35,7 +36,7 @@ impl Default for LMParams {
 /// - `rvec`: Initial axis-angle rotation (input/output)
 /// - `t`: Initial translation (input/output)
 ///
-/// Returns updated `(rvec, t, rmse, num_iters, converged)`.
+/// Returns `(rmse, num_iters, converged)` and writes refined `rvec` and `t` in place.
 pub fn refine_pose_lm(
     points_world: &[[f32; 3]],
     points_image: &[[f32; 2]],
@@ -69,15 +70,17 @@ pub fn refine_pose_lm(
     let intr_x = Vec3::new(fx, 0.0, cx);
     let intr_y = Vec3::new(0.0, fy, cy);
 
-    // Helper closures
-    let project_all = |x: &[f32; 6]| -> (Vec<f32>, f32) {
-        let r = rodrigues(&[x[0], x[1], x[2]]);
-        let t_vec = Vec3::new(x[3], x[4], x[5]);
-        let r_mat = r;
+    // Projection utility writing residuals in-place to avoid allocations
+    let mut residuals = vec![0.0f32; 2 * n];
+    let mut residuals_p = vec![0.0f32; 2 * n];
+    let mut residuals_m = vec![0.0f32; 2 * n];
 
-        let mut residuals = Vec::with_capacity(2 * n);
+    let mut project_all_in_place = |x: &[f32; 6], out: &mut [f32]| -> f32 {
+        let r_mat = SO3::exp(Vec3A::from_array([x[0], x[1], x[2]])).matrix();
+        let t_vec = Vec3::new(x[3], x[4], x[5]);
+
         let mut sum_sq = 0.0f32;
-        for (pw_arr, &uv) in points_world.iter().zip(points_image.iter()) {
+        for (i, (pw_arr, &uv)) in points_world.iter().zip(points_image.iter()).enumerate() {
             let pw = Vec3::from_array(*pw_arr);
             let pc = r_mat * pw + t_vec;
             let inv_z = 1.0 / pc.z;
@@ -85,15 +88,15 @@ pub fn refine_pose_lm(
             let v_hat = intr_y.dot(pc) * inv_z;
             let du = u_hat - uv[0];
             let dv = v_hat - uv[1];
-            residuals.push(du);
-            residuals.push(dv);
+            out[2 * i] = du;
+            out[2 * i + 1] = dv;
             sum_sq += du.mul_add(du, dv * dv);
         }
-        (residuals, sum_sq)
+        sum_sq
     };
 
     let mut lambda = params.lambda_init;
-    let (mut r_base, mut err_sq_base) = project_all(&x);
+    let mut err_sq_base = project_all_in_place(&x, &mut residuals);
 
     let mut iters = 0usize;
     let mut converged = false;
@@ -102,17 +105,21 @@ pub fn refine_pose_lm(
         iters += 1;
         // Numerical Jacobian J (2N x 6)
         let mut j = vec![0.0f32; 2 * n * 6];
-        let step_r = 1e-7f32.max((x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt() * 1e-7);
-        let step_t = 1e-6f32.max((x[3] * x[3] + x[4] * x[4] + x[5] * x[5]).sqrt() * 1e-6);
+        let h_rot = 1e-4f32; // radians
+        let t_scale = x[3].abs().max(x[4].abs()).max(x[5].abs()).max(1.0);
+        let h_trans = 1e-4f32 * t_scale; // world units
 
         for k_idx in 0..6 {
-            let mut x_pert = x;
-            let h = if k_idx < 3 { step_r } else { step_t };
-            x_pert[k_idx] += h;
-            let (r_pert, _) = project_all(&x_pert);
+            // Central differences
+            let h = if k_idx < 3 { h_rot } else { h_trans };
+            let mut x_plus = x;
+            let mut x_minus = x;
+            x_plus[k_idx] += h;
+            x_minus[k_idx] -= h;
+            let _ = project_all_in_place(&x_plus, &mut residuals_p);
+            let _ = project_all_in_place(&x_minus, &mut residuals_m);
             for i in 0..(2 * n) {
-                // Column k_idx stored in j[i*6 + k_idx]
-                j[i * 6 + k_idx] = (r_pert[i] - r_base[i]) / h;
+                j[i * 6 + k_idx] = (residuals_p[i] - residuals_m[i]) / (2.0 * h);
             }
         }
 
@@ -120,7 +127,7 @@ pub fn refine_pose_lm(
         let mut a = [0.0f32; 36];
         let mut b = [0.0f32; 6];
         for r_i in 0..(2 * n) {
-            let r_val = r_base[r_i];
+            let r_val = residuals[r_i];
             for c in 0..6 {
                 let j_ic = j[r_i * 6 + c];
                 b[c] += j_ic * r_val;
@@ -143,11 +150,11 @@ pub fn refine_pose_lm(
             for i in 0..6 {
                 x_new[i] += delta[i];
             }
-            let (_r_new, err_sq_new) = project_all(&x_new);
+            let err_sq_new = project_all_in_place(&x_new, &mut residuals_p);
             if err_sq_new < err_sq_base {
                 // Accept step
                 x = x_new;
-                r_base = _r_new;
+                residuals.copy_from_slice(&residuals_p);
                 if (err_sq_base - err_sq_new) < params.eps {
                     converged = true;
                     err_sq_base = err_sq_new;
@@ -173,34 +180,7 @@ pub fn refine_pose_lm(
     Ok((rmse, iters, converged))
 }
 
-// Rodrigues' rotation formula: axis-angle (scaled axis) to rotation matrix.
-fn rodrigues(rvec: &[f32; 3]) -> Mat3A {
-    let rx = rvec[0] as f32;
-    let ry = rvec[1] as f32;
-    let rz = rvec[2] as f32;
-    let theta2 = rx * rx + ry * ry + rz * rz;
-    if theta2 < 1e-16 {
-        // First-order approximation: R ≈ I + [w]_x
-        let wx = skew(Vec3::new(rx, ry, rz));
-        return Mat3A::IDENTITY + wx;
-    }
-    let theta = theta2.sqrt();
-    let w = Vec3::new(rx / theta, ry / theta, rz / theta);
-    let s = theta.sin();
-    let c = theta.cos();
-    let wx = skew(w);
-    let wx2 = wx * wx;
-    Mat3A::IDENTITY + wx * s + wx2 * (1.0 - c)
-}
-
-#[inline]
-fn skew(w: Vec3) -> Mat3A {
-    Mat3A::from_cols(
-        Vec3A::new(0.0, w.z, -w.y),
-        Vec3A::new(-w.z, 0.0, w.x),
-        Vec3A::new(w.y, -w.x, 0.0),
-    )
-}
+// Rodrigues helpers removed; use SO3::exp for rotations.
 
 // Dense 6x6 solver using Gaussian elimination with partial pivoting.
 fn solve_6x6(a: &mut [f32; 36], b: &mut [f32; 6]) -> Option<[f32; 6]> {

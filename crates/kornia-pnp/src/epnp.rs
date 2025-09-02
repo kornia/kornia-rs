@@ -163,7 +163,6 @@ pub fn solve_epnp(
                 [r_mat_ref.x_axis.z, r_mat_ref.y_axis.z, r_mat_ref.z_axis.z],
             ];
             best_r = r_ref;
-            tvec = tvec;
             rmse = rmse_new;
             iterations = Some(iters);
             converged = Some(conv);
