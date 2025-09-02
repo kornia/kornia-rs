@@ -265,19 +265,20 @@ fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
         .as_slice()
         .par_iter()
         .enumerate()
-        .filter(|&(_, &value)| value)
-        .map(|(i, _)| {
-            let y = i / width;
-            let x = i % width;
-            [y, x]
+        .filter_map(|(i, &value)| {
+            if value {
+                let y = i / width;
+                let x = i % width;
+                Some([y, x])
+            } else {
+                None
+            }
         })
         .collect();
 
     let mut result = Vec::new();
 
-    for coord in coords_intensity {
-        let y = coord[0];
-        let x = coord[1];
+    for [y, x] in coords_intensity {
         let idx = y * width + x;
 
         // If this location is already suppressed, skip
