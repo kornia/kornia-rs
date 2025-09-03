@@ -101,17 +101,24 @@ pub fn refine_pose_lm(
     let mut iters = 0usize;
     let mut converged = false;
 
+    // Preallocate J, A and b once
+    let mut j = vec![0.0f32; 2 * n * 6];
+    let mut a = [0.0f32; 36];
+    let mut b = [0.0f32; 6];
+
     while iters < params.max_iters {
         iters += 1;
-        // Numerical Jacobian J (2N x 6)
-        let mut j = vec![0.0f32; 2 * n * 6];
-        let h_rot = 1e-4f32; // radians
+        // Reset accumulators
+        j.fill(0.0);
+        a = [0.0; 36];
+        b = [0.0; 6];
+        const H_ROT: f32 = 1e-4; // radians
         let t_scale = x[3].abs().max(x[4].abs()).max(x[5].abs()).max(1.0);
         let h_trans = 1e-4f32 * t_scale; // world units
 
         for k_idx in 0..6 {
             // Central differences
-            let h = if k_idx < 3 { h_rot } else { h_trans };
+            let h = if k_idx < 3 { H_ROT } else { h_trans };
             let mut x_plus = x;
             let mut x_minus = x;
             x_plus[k_idx] += h;
@@ -124,8 +131,6 @@ pub fn refine_pose_lm(
         }
 
         // Build normal equations: (J^T J + lambda I) delta = -J^T r
-        let mut a = [0.0f32; 36];
-        let mut b = [0.0f32; 6];
         for r_i in 0..(2 * n) {
             let r_val = residuals[r_i];
             for c in 0..6 {
@@ -173,8 +178,8 @@ pub fn refine_pose_lm(
     }
 
     // Write back results
-    rvec.copy_from_slice(&[x[0], x[1], x[2]]);
-    t.copy_from_slice(&[x[3], x[4], x[5]]);
+    rvec.copy_from_slice(&x[0..3]);
+    t.copy_from_slice(&x[3..6]);
 
     let rmse = (err_sq_base / (2.0 * n as f32)).sqrt();
     Ok((rmse, iters, converged))
