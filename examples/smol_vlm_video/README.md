@@ -20,7 +20,7 @@ cargo run --bin smol_vlm_video --release -- --camera-id 0 --fps 30
 
 ![Screenshot from 2024-08-28 18-33-56](https://github.com/user-attachments/assets/783619e4-4867-48bc-b7d2-d32a133e4f5a)
 
-
+An option from live webcam view or a video file.
 
 
 Notes on connecting via SSH from local (i.e., laptop) to remote (i.e., workstation) on Linux:
@@ -45,5 +45,8 @@ sudo usbip unbind -b <device/bus-id>
 sudo usbip bind -b <device/bus-id>
 sudo usbip attach -r <ip_addr_of_local> -b <device/bus-id>  ### ON REMOTE
 
+
+# to get your rerun viewer's device IP address (if different from where the code is being ran on)
+ip addr show
 ```
 

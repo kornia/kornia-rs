@@ -12,3 +12,6 @@ kornia = { workspace = true, features = ["v4l", "cuda"] }
 ctrlc = { workspace = true }
 rerun = { workspace = true }
 image = "0.24"
+gstreamer = "0.21"
+gstreamer-video = "0.21"
+gstreamer-app = "0.21"

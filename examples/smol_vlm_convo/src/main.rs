@@ -734,10 +734,7 @@ fn render(frame: &mut Frame, state: &AppState) {
         if line.starts_with("SmolVLM: ") {
             chat_lines.push(Line::from(TuiSpan::styled(
                 line,
-                Style::default()
-                    .fg(ai_fg)
-                    .bg(ai_bg)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(ai_fg).bg(ai_bg), // .add_modifier(Modifier::BOLD),
             )));
         } else if line.starts_with("You: ") {
             chat_lines.push(Line::from(TuiSpan::styled(
@@ -883,7 +880,6 @@ fn render(frame: &mut Frame, state: &AppState) {
                         Style::default()
                             .fg(win95_highlight_fg)
                             .bg(win95_highlight_bg)
-                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(Color::Black).bg(win95_file_bg)
                     },

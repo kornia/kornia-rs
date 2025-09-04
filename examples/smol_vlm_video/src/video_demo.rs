@@ -1,4 +1,3 @@
-use argh::FromArgs;
 use kornia::{
     image::{Image, ImageSize},
     imgproc::{self, color::YuvToRgbMode},
@@ -15,32 +14,10 @@ use std::sync::{
     Arc,
 };
 
-#[derive(FromArgs)]
-/// Capture frames from a webcam and log to Rerun
-struct Args {
-    /// the camera id to use
-    #[argh(option, short = 'c', default = "0")]
-    camera_id: u32,
-
-    /// the frames per second to record
-    #[argh(option, short = 'f', default = "30")]
-    fps: u32,
-
-    /// the pixel format to use
-    #[argh(option, short = 'p', default = "PixelFormat::MJPG")]
-    pixel_format: PixelFormat,
-
-    /// debug the frame rate
-    #[argh(switch)]
-    debug: bool,
-}
-
-pub fn video_demo() -> Result<(), Box<dyn std::error::Error>> {
+pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> {
     // ip address of the device with the local rerun viewer you want the data send to
     let ip_address = "192.168.1.4";
     let port = 9999;
-    let prompt = "Describe.";
-    let args: Args = argh::from_env();
 
     let rec = rerun::RecordingStreamBuilder::new("SmolVLM Example: Live Captioning")
         .connect_grpc_opts(
@@ -64,11 +41,20 @@ pub fn video_demo() -> Result<(), Box<dyn std::error::Error>> {
         height: 480,
     };
 
+    let pixel_format = match args.pixel_format.as_deref().unwrap_or("MJPG") {
+        "MJPG" | "mjpg" => PixelFormat::MJPG,
+        "YUYV" | "yuyv" => PixelFormat::YUYV,
+        // Add more formats as needed
+        other => {
+            eprintln!("Unknown pixel format: {}. Defaulting to MJPG.", other);
+            PixelFormat::MJPG
+        }
+    };
     let mut webcam = V4lVideoCapture::new(V4LCameraConfig {
         device_path: format!("/dev/video{}", args.camera_id),
         size: img_size,
         fps: args.fps,
-        format: args.pixel_format,
+        format: pixel_format,
         buffer_size: 4,
     })?;
 
@@ -94,6 +80,7 @@ pub fn video_demo() -> Result<(), Box<dyn std::error::Error>> {
     // Pre-allocate RGB image buffer outside the loop
     let mut rgb_image = Image::<u8, 3, CpuAllocator>::from_size_val(img_size, 0, CpuAllocator)?;
 
+    let prompt = "Describe.";
     let mut smolvlm = SmolVlm::new(SmolVlmConfig::default())?;
 
     while !cancel_token.load(Ordering::SeqCst) {

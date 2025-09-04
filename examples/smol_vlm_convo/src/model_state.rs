@@ -81,7 +81,7 @@ impl ModelStateHandle {
                     }
                     Ok(ModelRequest::ClearContext) => {
                         // If the model has a method to clear context, call it here
-                        let _ = model.clear_context();
+                        model.clear_context();
                     }
                     Err(_) => break,
                 }
