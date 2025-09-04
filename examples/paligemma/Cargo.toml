@@ -14,7 +14,7 @@ publish = false
 [dependencies]
 argh = { workspace = true }
 kornia-io = { workspace = true }
-kornia-vlm = { workspace = true }
+kornia-vlm = { workspace = true, features = ["examples"] }
 
 [features]
 cuda = ["kornia-vlm/cuda"]
