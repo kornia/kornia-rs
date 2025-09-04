@@ -8,10 +8,13 @@ publish = false
 [dependencies]
 argh = { workspace = true }
 reqwest = { version = "0.12.15", features = ["blocking"] }
-kornia = { workspace = true, features = ["v4l", "cuda"] }
+kornia = { workspace = true, features = ["v4l"] }
 ctrlc = { workspace = true }
 rerun = { workspace = true }
 image = "0.24"
 gstreamer = "0.21"
 gstreamer-video = "0.21"
 gstreamer-app = "0.21"
+
+[features]
+cuda = ["kornia/cuda"]

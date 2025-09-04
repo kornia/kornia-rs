@@ -370,7 +370,7 @@ mod tests {
     use super::*;
     use candle_core::{DType, Device};
     use candle_nn::{Linear, Module};
-    use candle_onnx;
+    // use candle_onnx;
     use std::collections::HashMap;
 
     #[test]
@@ -525,234 +525,234 @@ mod tests {
         Ok(())
     }
 
-    #[ignore]
-    #[test]
-    fn test_via_onnx() -> Result<(), Box<dyn std::error::Error>> {
-        // Load ONNX model
-        let model: candle_onnx::onnx::ModelProto =
-            candle_onnx::read_file("../../tests/data/onnx/decoder_model_merged.onnx")?;
-        let embedder: candle_onnx::onnx::ModelProto =
-            candle_onnx::read_file("../../tests/data/onnx/embed_tokens.onnx")?;
-        let vision: candle_onnx::onnx::ModelProto =
-            candle_onnx::read_file("../../tests/data/onnx/vision_encoder.onnx")?;
+    // #[ignore]
+    // #[test]
+    // fn test_via_onnx() -> Result<(), Box<dyn std::error::Error>> {
+    //     // Load ONNX model
+    //     let model: candle_onnx::onnx::ModelProto =
+    //         candle_onnx::read_file("../../tests/data/onnx/decoder_model_merged.onnx")?;
+    //     let embedder: candle_onnx::onnx::ModelProto =
+    //         candle_onnx::read_file("../../tests/data/onnx/embed_tokens.onnx")?;
+    //     let vision: candle_onnx::onnx::ModelProto =
+    //         candle_onnx::read_file("../../tests/data/onnx/vision_encoder.onnx")?;
 
-        // Example: Convert a prompt string to input embeddings using a tokenizer
-        let prompt = "A photo of a cat sitting on a mat.";
-        // Load a HuggingFace tokenizer (adjust as needed)
-        let tokenizer = tokenizers::Tokenizer::from_pretrained("bert-base-uncased", None)
-            .map_err(|e| format!("Tokenizer load error: {e}"))?;
-        let encoding = tokenizer
-            .encode(prompt, true)
-            .map_err(|e| format!("Tokenizer encode error: {e}"))?;
-        let input_ids = encoding.get_ids();
-        println!("Prompt: {}", prompt);
-        println!("Token IDs: {:?}", input_ids);
+    //     // Example: Convert a prompt string to input embeddings using a tokenizer
+    //     let prompt = "A photo of a cat sitting on a mat.";
+    //     // Load a HuggingFace tokenizer (adjust as needed)
+    //     let tokenizer = tokenizers::Tokenizer::from_pretrained("bert-base-uncased", None)
+    //         .map_err(|e| format!("Tokenizer load error: {e}"))?;
+    //     let encoding = tokenizer
+    //         .encode(prompt, true)
+    //         .map_err(|e| format!("Tokenizer encode error: {e}"))?;
+    //     let input_ids = encoding.get_ids();
+    //     println!("Prompt: {}", prompt);
+    //     println!("Token IDs: {:?}", input_ids);
 
-        let seq_len = input_ids.len();
+    //     let seq_len = input_ids.len();
 
-        // Convert token IDs to a tensor (embeddings would require an embedding layer, which should be part of the ONNX model)
-        // Here we just show how to prepare the input tensor
-        let input_tensor = Tensor::from_slice(input_ids, &[1, input_ids.len()], &Device::Cpu)?;
-        let input_tensor = input_tensor.to_dtype(DType::I64)?; //.squeeze(0)?;
-        println!(
-            "Input tensor: {:?} {:?}",
-            input_tensor.shape(),
-            input_tensor.dtype()
-        );
+    //     // Convert token IDs to a tensor (embeddings would require an embedding layer, which should be part of the ONNX model)
+    //     // Here we just show how to prepare the input tensor
+    //     let input_tensor = Tensor::from_slice(input_ids, &[1, input_ids.len()], &Device::Cpu)?;
+    //     let input_tensor = input_tensor.to_dtype(DType::I64)?; //.squeeze(0)?;
+    //     println!(
+    //         "Input tensor: {:?} {:?}",
+    //         input_tensor.shape(),
+    //         input_tensor.dtype()
+    //     );
 
-        let attention_mask = Tensor::ones(&[1, seq_len], DType::I64, &Device::Cpu)?;
-        let position_ids: Vec<i64> = (0..seq_len as i64).collect();
-        let position_ids_tensor = Tensor::from_slice(&position_ids, &[1, seq_len], &Device::Cpu)?;
+    //     let attention_mask = Tensor::ones(&[1, seq_len], DType::I64, &Device::Cpu)?;
+    //     let position_ids: Vec<i64> = (0..seq_len as i64).collect();
+    //     let position_ids_tensor = Tensor::from_slice(&position_ids, &[1, seq_len], &Device::Cpu)?;
 
-        // At this point, you would feed `input_tensor` (and vision features if needed) into the ONNX model
-        // The ONNX model should contain the embed_tokens, vision, and decoder layers merged
+    //     // At this point, you would feed `input_tensor` (and vision features if needed) into the ONNX model
+    //     // The ONNX model should contain the embed_tokens, vision, and decoder layers merged
 
-        if let Some(graph) = &model.graph {
-            for input in &graph.input {
-                println!("### Input: {}", input.name);
-                if let candle_onnx::onnx::type_proto::Value::TensorType(t) =
-                    input.r#type.as_ref().unwrap().value.as_ref().unwrap()
-                {
-                    println!(
-                        "{:?} {:?}",
-                        t.elem_type,
-                        t.shape
-                            .as_ref()
-                            .unwrap()
-                            .dim
-                            .iter()
-                            .map(|d| d.value.as_ref().unwrap())
-                            .collect::<Vec<_>>()
-                    );
-                } else {
-                    println!("##################################");
-                }
-            }
-        }
-        if let Some(graph) = &embedder.graph {
-            for input in &graph.input {
-                println!("### Input (Embedder): {}", input.name);
-            }
-        }
+    //     if let Some(graph) = &model.graph {
+    //         for input in &graph.input {
+    //             println!("### Input: {}", input.name);
+    //             if let candle_onnx::onnx::type_proto::Value::TensorType(t) =
+    //                 input.r#type.as_ref().unwrap().value.as_ref().unwrap()
+    //             {
+    //                 println!(
+    //                     "{:?} {:?}",
+    //                     t.elem_type,
+    //                     t.shape
+    //                         .as_ref()
+    //                         .unwrap()
+    //                         .dim
+    //                         .iter()
+    //                         .map(|d| d.value.as_ref().unwrap())
+    //                         .collect::<Vec<_>>()
+    //                 );
+    //             } else {
+    //                 println!("##################################");
+    //             }
+    //         }
+    //     }
+    //     if let Some(graph) = &embedder.graph {
+    //         for input in &graph.input {
+    //             println!("### Input (Embedder): {}", input.name);
+    //         }
+    //     }
 
-        // Run the ONNX model
-        let embedder_out = candle_onnx::simple_eval(&embedder, {
-            // Prepare input map for ONNX model
-            let mut inputs = HashMap::new();
-            inputs.insert("input_ids".to_string(), input_tensor.clone());
+    //     // Run the ONNX model
+    //     let embedder_out = candle_onnx::simple_eval(&embedder, {
+    //         // Prepare input map for ONNX model
+    //         let mut inputs = HashMap::new();
+    //         inputs.insert("input_ids".to_string(), input_tensor.clone());
 
-            inputs
-        })?;
+    //         inputs
+    //     })?;
 
-        for (name, tensor) in &embedder_out {
-            println!("### Output (Embedder): {}", name);
-        }
+    //     for (name, tensor) in &embedder_out {
+    //         println!("### Output (Embedder): {}", name);
+    //     }
 
-        // Run the ONNX model
-        let outputs = candle_onnx::simple_eval(&model, {
-            // Prepare input map for ONNX model
-            let mut inputs = HashMap::new();
-            // Replace "input" with the actual input name expected by your ONNX model
-            inputs.insert(
-                "inputs_embeds".to_string(),
-                embedder_out.get("inputs_embeds").unwrap().clone(),
-            );
-            inputs.insert("attention_mask".to_string(), attention_mask);
-            inputs.insert("position_ids".to_string(), position_ids_tensor);
-            for i in 0..30 {
-                inputs.insert(
-                    format!("past_key_values.{}.key", i),
-                    Tensor::zeros(&[1, 3, 1, 64], DType::F32, &Device::Cpu)?,
-                );
-                inputs.insert(
-                    format!("past_key_values.{}.value", i),
-                    Tensor::zeros(&[1, 3, 1, 64], DType::F32, &Device::Cpu)?,
-                );
-            }
+    //     // Run the ONNX model
+    //     let outputs = candle_onnx::simple_eval(&model, {
+    //         // Prepare input map for ONNX model
+    //         let mut inputs = HashMap::new();
+    //         // Replace "input" with the actual input name expected by your ONNX model
+    //         inputs.insert(
+    //             "inputs_embeds".to_string(),
+    //             embedder_out.get("inputs_embeds").unwrap().clone(),
+    //         );
+    //         inputs.insert("attention_mask".to_string(), attention_mask);
+    //         inputs.insert("position_ids".to_string(), position_ids_tensor);
+    //         for i in 0..30 {
+    //             inputs.insert(
+    //                 format!("past_key_values.{}.key", i),
+    //                 Tensor::zeros(&[1, 3, 1, 64], DType::F32, &Device::Cpu)?,
+    //             );
+    //             inputs.insert(
+    //                 format!("past_key_values.{}.value", i),
+    //                 Tensor::zeros(&[1, 3, 1, 64], DType::F32, &Device::Cpu)?,
+    //             );
+    //         }
 
-            inputs
-        })?;
+    //         inputs
+    //     })?;
 
-        // Print all output names and shapes
-        for (name, tensor) in &outputs {
-            println!("Output: {} shape: {:?}", name, tensor.shape());
-        }
+    //     // Print all output names and shapes
+    //     for (name, tensor) in &outputs {
+    //         println!("Output: {} shape: {:?}", name, tensor.shape());
+    //     }
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
-    use ndarray::Array2;
-    use ort::{Environment, SessionBuilder, Value};
-    use std::sync::Arc;
+    // use ndarray::Array2;
+    // use ort::{Environment, SessionBuilder, Value};
+    // use std::sync::Arc;
 
-    #[ignore]
-    #[test]
-    fn test_via_onnx_ort() -> Result<(), Box<dyn std::error::Error>> {
-        // Initialize the ONNX Runtime environment
-        let environment = Arc::new(Environment::builder().with_name("test").build()?);
+    // #[ignore]
+    // #[test]
+    // fn test_via_onnx_ort() -> Result<(), Box<dyn std::error::Error>> {
+    //     // Initialize the ONNX Runtime environment
+    //     let environment = Arc::new(Environment::builder().with_name("test").build()?);
 
-        // Load the ONNX model
-        let session = SessionBuilder::new(&environment)?
-            .with_model_from_file("../../tests/data/onnx/decoder_model_merged.onnx")?;
+    //     // Load the ONNX model
+    //     let session = SessionBuilder::new(&environment)?
+    //         .with_model_from_file("../../tests/data/onnx/decoder_model_merged.onnx")?;
 
-        // Prepare input (example: 2D array of f32)
-        let input_array = Array2::<f32>::zeros((1, 10)).into_dyn(); // shape as required by your model
-        let arr = ndarray::CowArray::from(&input_array);
+    //     // Prepare input (example: 2D array of f32)
+    //     let input_array = Array2::<f32>::zeros((1, 10)).into_dyn(); // shape as required by your model
+    //     let arr = ndarray::CowArray::from(&input_array);
 
-        // Wrap input in ORT Value
-        let input_tensor = Value::from_array(session.allocator(), &arr)?;
+    //     // Wrap input in ORT Value
+    //     let input_tensor = Value::from_array(session.allocator(), &arr)?;
 
-        // Run inference
-        let outputs = session.run(vec![input_tensor])?;
+    //     // Run inference
+    //     let outputs = session.run(vec![input_tensor])?;
 
-        // Get output as OrtOwnedTensor
-        let output_tensor = outputs[0].try_extract::<f32>()?;
-        println!("Output: {:?}", output_tensor);
+    //     // Get output as OrtOwnedTensor
+    //     let output_tensor = outputs[0].try_extract::<f32>()?;
+    //     println!("Output: {:?}", output_tensor);
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
-    #[ignore]
-    #[test]
-    fn test_via_onnx_specific_layer() -> Result<(), Box<dyn std::error::Error>> {
-        // Load the extracted layer ONNX model
-        let layer_model: candle_onnx::onnx::ModelProto =
-            candle_onnx::read_file("../../tests/data/extracted_layer.onnx")?;
+    // #[ignore]
+    // #[test]
+    // fn test_via_onnx_specific_layer() -> Result<(), Box<dyn std::error::Error>> {
+    //     // Load the extracted layer ONNX model
+    //     let layer_model: candle_onnx::onnx::ModelProto =
+    //         candle_onnx::read_file("../../tests/data/extracted_layer.onnx")?;
 
-        // Load the safetensor file containing input and output activations
-        let safetensor_path = "../../tests/data/extracted_layer_activations.safetensors";
-        let activations = candle_core::safetensors::load(safetensor_path, &Device::Cpu)?;
-        let input_tensor = activations.get("input").expect("Missing input tensor");
-        let expected_output = activations.get("output").expect("Missing output tensor");
+    //     // Load the safetensor file containing input and output activations
+    //     let safetensor_path = "../../tests/data/extracted_layer_activations.safetensors";
+    //     let activations = candle_core::safetensors::load(safetensor_path, &Device::Cpu)?;
+    //     let input_tensor = activations.get("input").expect("Missing input tensor");
+    //     let expected_output = activations.get("output").expect("Missing output tensor");
 
-        // Print input tensor shape and dtype for debug
-        println!(
-            "Input tensor shape: {:?}, dtype: {:?}",
-            input_tensor.shape(),
-            input_tensor.dtype()
-        );
+    //     // Print input tensor shape and dtype for debug
+    //     println!(
+    //         "Input tensor shape: {:?}, dtype: {:?}",
+    //         input_tensor.shape(),
+    //         input_tensor.dtype()
+    //     );
 
-        // Print ONNX model input names and shapes for debug
-        if let Some(graph) = &layer_model.graph {
-            for input in &graph.input {
-                println!("### Input: {}", input.name);
-                if let candle_onnx::onnx::type_proto::Value::TensorType(t) =
-                    input.r#type.as_ref().unwrap().value.as_ref().unwrap()
-                {
-                    println!(
-                        "{:?} {:?}",
-                        t.elem_type,
-                        t.shape
-                            .as_ref()
-                            .unwrap()
-                            .dim
-                            .iter()
-                            .map(|d| d.value.as_ref().unwrap())
-                            .collect::<Vec<_>>()
-                    );
-                } else {
-                    println!("##################################");
-                }
-            }
-        }
+    //     // Print ONNX model input names and shapes for debug
+    //     if let Some(graph) = &layer_model.graph {
+    //         for input in &graph.input {
+    //             println!("### Input: {}", input.name);
+    //             if let candle_onnx::onnx::type_proto::Value::TensorType(t) =
+    //                 input.r#type.as_ref().unwrap().value.as_ref().unwrap()
+    //             {
+    //                 println!(
+    //                     "{:?} {:?}",
+    //                     t.elem_type,
+    //                     t.shape
+    //                         .as_ref()
+    //                         .unwrap()
+    //                         .dim
+    //                         .iter()
+    //                         .map(|d| d.value.as_ref().unwrap())
+    //                         .collect::<Vec<_>>()
+    //                 );
+    //             } else {
+    //                 println!("##################################");
+    //             }
+    //         }
+    //     }
 
-        // Run the ONNX model for the extracted layer using the actual input
-        let outputs = candle_onnx::simple_eval(&layer_model, {
-            let mut inputs = HashMap::new();
-            // You may need to adjust the input name below to match your ONNX model
-            inputs.insert(
-                "/model/layers.0/input_layernorm/output_0".to_string(),
-                input_tensor.clone(),
-            );
-            inputs
-        })?;
+    //     // Run the ONNX model for the extracted layer using the actual input
+    //     let outputs = candle_onnx::simple_eval(&layer_model, {
+    //         let mut inputs = HashMap::new();
+    //         // You may need to adjust the input name below to match your ONNX model
+    //         inputs.insert(
+    //             "/model/layers.0/input_layernorm/output_0".to_string(),
+    //             input_tensor.clone(),
+    //         );
+    //         inputs
+    //     })?;
 
-        // Print all output names and shapes
-        for (name, tensor) in &outputs {
-            println!("### Output: {} shape: {:?}", name, tensor.shape());
-        }
+    //     // Print all output names and shapes
+    //     for (name, tensor) in &outputs {
+    //         println!("### Output: {} shape: {:?}", name, tensor.shape());
+    //     }
 
-        // Get the ONNX output tensor (adjust the key as needed)
-        let onnx_output = outputs
-            .get("/model/layers.0/attn/q_proj/MatMul/output_0")
-            .expect("Missing ONNX output tensor");
+    //     // Get the ONNX output tensor (adjust the key as needed)
+    //     let onnx_output = outputs
+    //         .get("/model/layers.0/attn/q_proj/MatMul/output_0")
+    //         .expect("Missing ONNX output tensor");
 
-        // Compare the ONNX output tensor with the expected output tensor
-        let diff = (onnx_output - expected_output)?;
-        let mse = diff
-            .powf(2.0)?
-            .mean_all()?
-            .to_dtype(DType::F32)?
-            .to_scalar::<f32>()?;
-        let mae = diff
-            .abs()?
-            .mean_all()?
-            .to_dtype(DType::F32)?
-            .to_scalar::<f32>()?;
+    //     // Compare the ONNX output tensor with the expected output tensor
+    //     let diff = (onnx_output - expected_output)?;
+    //     let mse = diff
+    //         .powf(2.0)?
+    //         .mean_all()?
+    //         .to_dtype(DType::F32)?
+    //         .to_scalar::<f32>()?;
+    //     let mae = diff
+    //         .abs()?
+    //         .mean_all()?
+    //         .to_dtype(DType::F32)?
+    //         .to_scalar::<f32>()?;
 
-        println!("MSE: {:.16}, MAE: {:.16}", mse, mae);
-        assert!(mse < 1e-4, "MSE too high: {}", mse);
+    //     println!("MSE: {:.16}, MAE: {:.16}", mse, mae);
+    //     assert!(mse < 1e-4, "MSE too high: {}", mse);
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 }
