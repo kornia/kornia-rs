@@ -142,12 +142,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_colors(vec![rerun::Color::from_rgb(255, 0, 0)]),
     )?;
 
-    println!("Ground truth translation: {:?}", gt_t);
+    println!("Ground truth translation: {gt_t:?}");
     println!("Estimated translation  : {:?}", result.translation);
-    println!("Ground truth rotation   : {:?}", gt_r);
+    println!("Ground truth rotation   : {gt_r:?}");
     println!("Estimated rotation:\n{:?}", result.rotation);
     if let Some(rmse) = result.reproj_rmse {
-        println!("Reprojection RMSE: {:.3} px", rmse);
+        println!("Reprojection RMSE: {rmse:.3} px");
     }
     Ok(())
 }
