@@ -265,7 +265,7 @@ fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
     let width = src_size.width;
     let height = src_size.height;
 
-    let coords_intensity: Vec<[usize; 2]> = mask
+    let coords_intensity: Vec<(usize, [usize; 2])> = mask
         .as_slice()
         .par_iter()
         .enumerate()
@@ -273,7 +273,7 @@ fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
             if value {
                 let y = i / width;
                 let x = i % width;
-                Some([y, x])
+                Some((i, [y, x]))
             } else {
                 None
             }
@@ -282,9 +282,7 @@ fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
 
     let mut result = Vec::new();
 
-    for [y, x] in coords_intensity {
-        let idx = y * width + x;
-
+    for (idx, [y, x]) in coords_intensity {
         // If this location is already suppressed, skip
         if taken[idx] {
             continue;
