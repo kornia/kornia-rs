@@ -56,7 +56,7 @@ impl FastDetector {
 
     /// Clears the internal state of the detector, marking it ready to detect again.
     pub fn clear(&mut self) {
-        self.taken.par_iter_mut().for_each(|px| *px = false);
+        self.taken.iter_mut().for_each(|px| *px = false);
     }
 
     /// Computes the corner response for the input image.
@@ -88,8 +88,10 @@ impl FastDetector {
 
         let corner_response = self.corner_response.as_slice_mut();
 
-        const RP: [isize; 16] = [0, 1, 2, 3, 3, 3, 2, 1, 0, -1, -2, -3, -3, -3, -2, -1];
-        const CP: [isize; 16] = [3, 3, 2, 1, 0, -1, -2, -3, -3, -3, -2, -1, 0, 1, 2, 3];
+        // Offsets for the 16 pixels forming a Bresenham circle of radius 3 around the center pixel.
+        // These are used to index the circle pixels relative to (y, x).
+        const ROW_OFFSETS: [isize; 16] = [0, 1, 2, 3, 3, 3, 2, 1, 0, -1, -2, -3, -3, -3, -2, -1];
+        const COLUMN_OFFSETS: [isize; 16] = [3, 3, 2, 1, 0, -1, -2, -3, -3, -3, -2, -1, 0, 1, 2, 3];
 
         corner_response[3 * width..(height - 3) * width]
             .par_chunks_mut(width)
@@ -110,8 +112,9 @@ impl FastDetector {
                     let mut speed_sum_d = 0;
 
                     for &k in &[0, 4, 8, 12] {
-                        let ik =
-                            ((y as isize + RP[k]) * width as isize + (x as isize + CP[k])) as usize;
+                        let ik = ((y as isize + ROW_OFFSETS[k]) * width as isize
+                            + (x as isize + COLUMN_OFFSETS[k]))
+                            as usize;
                         let ring_pixel = src_slice[ik];
                         if ring_pixel > upper_threshold {
                             speed_sum_b += 1;
@@ -125,8 +128,9 @@ impl FastDetector {
                     }
 
                     for k in 0..16 {
-                        let ik =
-                            ((y as isize + RP[k]) * width as isize + (x as isize + CP[k])) as usize;
+                        let ik = ((y as isize + ROW_OFFSETS[k]) * width as isize
+                            + (x as isize + COLUMN_OFFSETS[k]))
+                            as usize;
                         circle_intensities[k] = src_slice[ik];
                         bins[k] = if circle_intensities[k] > upper_threshold {
                             PixelType::Brighter
@@ -295,17 +299,19 @@ fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
         let x0 = x.saturating_sub(min_distance);
         let x1 = (x + min_distance + 1).min(width);
 
-        (y0..y1)
-            .flat_map(|yy| (x0..x1).map(move |xx| (yy, xx)))
-            .filter(|&(yy, xx)| {
-                (yy as isize - y as isize)
+        for yy in y0..y1 {
+            let iyy = yy * width;
+
+            for xx in x0..x1 {
+                if (yy as isize - y as isize)
                     .abs()
                     .max((xx as isize - x as isize).abs())
                     < min_distance as isize
-            })
-            .for_each(|(yy, xx)| {
-                taken[yy * width + xx] = true;
-            });
+                {
+                    taken[iyy + xx] = true;
+                }
+            }
+        }
     }
 
     result
