@@ -25,15 +25,18 @@ pub struct SmolVlmImagePreprocessor<A: ImageAllocator> {
 
     // buffers for tensors
     buf_mask_tensor: Tensor,
-    // buf_img_tensor: Tensor,
     buf_mean_tensor: Tensor,
     buf_std_tensor: Tensor,
 }
 
 impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
     /// Create a new SmolVLM image preprocessor
-    pub fn new(max_size: u32, outer_patch_size: u32, device: &Device) -> Self {
-        Self {
+    pub fn new(
+        max_size: u32,
+        outer_patch_size: u32,
+        device: &Device,
+    ) -> Result<Self, SmolVlmError> {
+        Ok(Self {
             max_size,
             outer_patch_size,
             buf_resize: None,
@@ -42,12 +45,10 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
             buf_padded_mask: None,
             buf_global_padded_img: None,
             buf_global_padded_mask: None,
-            buf_mask_tensor: (Tensor::ones((2048, 2048), DType::F32, device).unwrap() * 255.0)
-                .unwrap(),
-            // buf_img_tensor: Tensor::zeros((1, 1), DType::F32, device).unwrap(),
-            buf_mean_tensor: Tensor::from_slice(&MEAN, (3, 1, 1), device).unwrap(),
-            buf_std_tensor: Tensor::from_slice(&STD, (3, 1, 1), device).unwrap(),
-        }
+            buf_mask_tensor: (Tensor::ones((2048, 2048), DType::F32, device)? * 255.0)?,
+            buf_mean_tensor: Tensor::from_slice(&MEAN, (3, 1, 1), device)?,
+            buf_std_tensor: Tensor::from_slice(&STD, (3, 1, 1), device)?,
+        })
     }
 
     /// Preprocess an image for SmolVLM model inference
@@ -57,7 +58,6 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
         device: &Device,
         alloc: A,
     ) -> Result<(Tensor, Tensor, ImageSize), SmolVlmError> {
-        // Process main image: resize then pad in-place
         {
             #[cfg(feature = "debug")]
             println!(
@@ -95,7 +95,6 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
             }
         }
 
-        // Process global image: resize then pad in-place
         {
             #[cfg(feature = "debug")]
             println!(
@@ -133,18 +132,27 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
             }
         }
 
-        // Now we can safely access the buffers
-        let img_padded = self.buf_padded_img.take().unwrap();
-        let mask = self.buf_padded_mask.take().unwrap(); // Take ownership
-        let global_img = self.buf_global_padded_img.take().unwrap();
-        let global_mask = self.buf_global_padded_mask.take().unwrap(); // Take ownership
+        let img_padded = self
+            .buf_padded_img
+            .take()
+            .expect("Tried taking a None image");
+        let mask = self
+            .buf_padded_mask
+            .take()
+            .expect("Tried taking a None mask");
+        let global_img = self
+            .buf_global_padded_img
+            .take()
+            .expect("Tried taking a None global image");
+        let global_mask = self
+            .buf_global_padded_mask
+            .take()
+            .expect("Tried taking a None global mask");
 
         // convert to tensors and normalize
-        // Process masks first (they need mutable self)
         let mask_tensor = self.mask_to_tensor(mask, device)?;
         let global_mask_tensor = self.mask_to_tensor(global_mask, device)?;
 
-        // Then process images (they need immutable self)
         let img_tensor = self.image_to_normalized_tensor(img_padded, device)?;
         let global_img_tensor = self.image_to_normalized_tensor(global_img, device)?;
 
@@ -170,17 +178,14 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
         let longest_edge = width.max(height);
 
         if longest_edge <= target_size {
-            // Return borrowed reference - no copy needed
             Ok(Cow::Borrowed(unsafe {
                 std::mem::transmute::<&Image<u8, 3, A>, &Image<u8, 3, A>>(img)
             }))
         } else {
-            // Resize case - use and return the buffer directly
             let scale_factor = target_size as f32 / longest_edge as f32;
             let new_width = (width as f32 * scale_factor) as usize;
             let new_height = (height as f32 * scale_factor) as usize;
 
-            // Lazy init buffer only if size changed
             let needs_resize = buffer.as_ref().map_or(true, |buf| {
                 buf.width() != new_width || buf.height() != new_height
             });
@@ -196,7 +201,9 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
                 )?);
             }
 
-            let buf = buffer.as_mut().unwrap();
+            let buf = buffer
+                .as_mut()
+                .expect("Tried to resize a None image buffer");
             resize_fast_rgb(img, buf, InterpolationMode::Lanczos)?;
 
             Ok(Cow::Borrowed(buf))
@@ -255,19 +262,16 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
             )?);
         }
 
-        let padded_img = img_buffer.as_mut().unwrap();
-        // let padded_mask = mask_buffer.as_mut().unwrap();
+        let padded_img = img_buffer
+            .as_mut()
+            .expect("Tried to pad a None image buffer");
 
-        // Zero out buffers (padding area)
         padded_img.as_slice_mut().fill(0);
-        // padded_mask.as_slice_mut().fill(255);
 
-        // Fast row-by-row copying using slices
         let img_slice = img.as_slice();
         let padded_img_slice = padded_img.as_slice_mut();
-        // let padded_mask_slice = padded_mask.as_slice_mut();
 
-        // Copy image data row by row
+        // copy image data row by row
         for y in 0..height {
             let src_offset = y * width * 3;
             let dst_offset = y * new_width as usize * 3;
@@ -276,13 +280,6 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
             padded_img_slice[dst_offset..dst_offset + row_bytes]
                 .copy_from_slice(&img_slice[src_offset..src_offset + row_bytes]);
         }
-
-        // Set mask for valid region
-        // for y in 0..height {
-        //     let mask_offset = y * new_width as usize;
-        //     padded_mask_slice[mask_offset..mask_offset + width].fill(255);
-        // }
-
         Ok(())
     }
 
@@ -318,21 +315,6 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
         let (width, height) = (mask.width(), mask.height());
 
         let (buf_height, buf_width) = self.buf_mask_tensor.dims2()?;
-
-        // let has_non_255 = self
-        //     .buf_mask_tensor
-        //     .to_dtype(DType::U8)?
-        //     .ne(255u8)?
-        //     .sum_all()?
-        //     .to_scalar::<u8>()?
-        //     > 0;
-        // println!("Mask (buf) has non-255 values: {}", has_non_255);
-
-        // let data = mask.as_slice();
-        // let has_non_255 = data.iter().any(|&v| v != 255);
-        // if has_non_255 {
-        //     println!("Mask (input) has non-255 values: {}", has_non_255);
-        // }
 
         if height == buf_height && width == buf_width {
             // No resize needed
@@ -461,7 +443,7 @@ mod tests {
         )?;
 
         let device = Device::Cpu;
-        let mut preprocessor = SmolVlmImagePreprocessor::new(512, 32, &device);
+        let mut preprocessor = SmolVlmImagePreprocessor::new(512, 32, &device)?;
 
         let (img_patches, mask_patches, size) =
             preprocessor.preprocess(&img, &device, CpuAllocator)?;
@@ -571,7 +553,7 @@ mod tests {
         )?;
 
         let device = Device::Cpu;
-        let mut preprocessor = SmolVlmImagePreprocessor::new(8, 4, &device); // small sizes for testing
+        let mut preprocessor = SmolVlmImagePreprocessor::new(8, 4, &device)?; // small sizes for testing
 
         // First, test just the padding to verify it works correctly
         let mut img_buffer = None;

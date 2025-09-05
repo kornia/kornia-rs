@@ -81,8 +81,6 @@ impl SmolModel {
     ) -> Result<Tensor> {
         let total_length = image_token_mask.dims1()?;
 
-        // let image_hidden_states = self.image_hidden_states.as_ref().unwrap().flatten(0, 1)?;
-
         self.merged_embeds.clear();
         if self.merged_embeds.capacity() < total_length {
             self.merged_embeds
