@@ -23,17 +23,13 @@ kornia-imgproc = { workspace = true }
 
 candle-core = { workspace = true }
 candle-transformers = { workspace = true }
-candle-examples = { workspace = true, optional = true }
+candle-examples = { workspace = true }
 candle-nn = { workspace = true }
 hf-hub = { workspace = true }
 tokenizers = { workspace = true }
 
 [dev-dependencies]
 rand = "0.9.0"
-# important: also inherit the CPU-only versions here
-candle-core = { workspace = true }
-candle-nn = { workspace = true }
-candle-transformers = { workspace = true }
 
 
 # candle-onnx = "0.9.1"
@@ -41,7 +37,5 @@ candle-transformers = { workspace = true }
 # ndarray = "0.15" # for easy tensor handling
 
 [features]
-default = []
 cuda = ["candle-core/cuda", "candle-transformers/cuda", "candle-nn/cuda"]
 debug = []
-examples = ["dep:candle-examples"]                                        # opt-in path to use candle-examples
