@@ -1,7 +1,8 @@
 use kornia_pnp as kpnp;
 use rand::Rng;
+use std::error::Error;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
     let rec = rerun::RecordingStreamBuilder::new("PnP Demo").spawn()?;
 
@@ -94,8 +95,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
-    // Run EPnP
-    let result = kpnp::solve_pnp(&world_pts, &image_pts, &k, kpnp::PnPMethod::EPnPDefault)?;
+    // Run EPnP (baseline) and EPnP+LM (refined)
+    let result_epnp = kpnp::solve_pnp(&world_pts, &image_pts, &k, kpnp::PnPMethod::EPnPDefault)?;
+    let params_lm = kpnp::EPnPParams {
+        refine_lm: Some(kpnp::LMParams::default()),
+        ..Default::default()
+    };
+    let result_lm = kpnp::solve_pnp(&world_pts, &image_pts, &k, kpnp::PnPMethod::EPnP(params_lm))?;
 
     // Log observed 2D points
     let img_obs = image_pts
@@ -107,26 +113,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &rerun::Points2D::new(img_obs).with_colors([[0, 255, 0]]), // green
     )?;
 
-    // Reproject world points with estimated pose
-    let r_est = result.rotation;
-    let t_est = result.translation;
-    let mut img_reproj = Vec::with_capacity(world_pts.len());
-    for p in &world_pts {
-        let x_c = r_est[0][0] * p[0] + r_est[0][1] * p[1] + r_est[0][2] * p[2] + t_est[0];
-        let y_c = r_est[1][0] * p[0] + r_est[1][1] * p[1] + r_est[1][2] * p[2] + t_est[1];
-        let z_c = r_est[2][0] * p[0] + r_est[2][1] * p[1] + r_est[2][2] * p[2] + t_est[2];
-        let u = k[0][0] * x_c / z_c + k[0][2];
-        let v = k[1][1] * y_c / z_c + k[1][2];
-        img_reproj.push((u, v));
-    }
+    // Helper to reproject with a given pose
+    let reproject = |r: [[f32; 3]; 3], t: [f32; 3]| -> Vec<(f32, f32)> {
+        let mut out = Vec::with_capacity(world_pts.len());
+        for p in &world_pts {
+            let x_c = r[0][0] * p[0] + r[0][1] * p[1] + r[0][2] * p[2] + t[0];
+            let y_c = r[1][0] * p[0] + r[1][1] * p[1] + r[1][2] * p[2] + t[1];
+            let z_c = r[2][0] * p[0] + r[2][1] * p[1] + r[2][2] * p[2] + t[2];
+            let u = k[0][0] * x_c / z_c + k[0][2];
+            let v = k[1][1] * y_c / z_c + k[1][2];
+            out.push((u, v));
+        }
+        out
+    };
+
+    let img_reproj_epnp = reproject(result_epnp.rotation, result_epnp.translation);
+    let img_reproj_lm = reproject(result_lm.rotation, result_lm.translation);
+
     rec.log_static(
-        "image/reprojected",
-        &rerun::Points2D::new(img_reproj).with_colors([[255, 0, 0]]), // red
+        "image/reprojected_epnp",
+        &rerun::Points2D::new(img_reproj_epnp).with_colors([[255, 0, 0]]), // red
+    )?;
+    rec.log_static(
+        "image/reprojected_lm",
+        &rerun::Points2D::new(img_reproj_lm).with_colors([[0, 128, 255]]), // blue
     )?;
 
     // Compute camera center in world coordinates: C = -R^T * t
-    let r = result.rotation;
-    let t = result.translation;
+    let r = result_lm.rotation;
+    let t = result_lm.translation;
     let camera_center = [
         -(r[0][0] * t[0] + r[1][0] * t[1] + r[2][0] * t[2]),
         -(r[0][1] * t[0] + r[1][1] * t[1] + r[2][1] * t[2]),
@@ -143,11 +158,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     println!("Ground truth translation: {:?}", gt_t);
-    println!("Estimated translation  : {:?}", result.translation);
+    println!("Estimated translation (LM): {:?}", result_lm.translation);
     println!("Ground truth rotation   : {:?}", gt_r);
-    println!("Estimated rotation:\n{:?}", result.rotation);
-    if let Some(rmse) = result.reproj_rmse {
-        println!("Reprojection RMSE: {:.3} px", rmse);
-    }
+    println!("Estimated rotation (EPnP):\n{:?}", result_epnp.rotation);
+    println!("Estimated rotation (LM):\n{:?}", result_lm.rotation);
+    if let Some(rmse) = result_epnp.reproj_rmse { println!("EPnP RMSE: {:.3} px", rmse); }
+    if let Some(rmse) = result_lm.reproj_rmse { println!("EPnP+LM RMSE: {:.3} px", rmse); }
+    if let Some(it) = result_lm.num_iterations { println!("LM iterations: {}", it); }
+    if let Some(c) = result_lm.converged { println!("LM converged: {}", c); }
     Ok(())
 }
