@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 
-# source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true
+# NOTE: Don't remove this file and from devcontainer.json. Might break the container setup in a mysterious way.
