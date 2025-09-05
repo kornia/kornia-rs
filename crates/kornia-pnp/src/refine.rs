@@ -75,7 +75,7 @@ pub fn refine_pose_lm(
     let mut residuals_p = vec![0.0f32; 2 * n];
     let mut residuals_m = vec![0.0f32; 2 * n];
 
-    let mut project_all_in_place = |x: &[f32; 6], out: &mut [f32]| -> f32 {
+    let project_all_in_place = |x: &[f32; 6], out: &mut [f32]| -> f32 {
         let r_mat = SO3::exp(Vec3A::from_array([x[0], x[1], x[2]])).matrix();
         let t_vec = Vec3::new(x[3], x[4], x[5]);
 
@@ -110,8 +110,8 @@ pub fn refine_pose_lm(
         iters += 1;
         // Reset accumulators
         j.fill(0.0);
-        a = [0.0; 36];
-        b = [0.0; 6];
+        a.fill(0.0);
+        b.fill(0.0);
         const H_ROT: f32 = 1e-4; // radians
         let t_scale = x[3].abs().max(x[4].abs()).max(x[5].abs()).max(1.0);
         let h_trans = 1e-4f32 * t_scale; // world units
@@ -242,4 +242,48 @@ fn solve_6x6(a: &mut [f32; 36], b: &mut [f32; 6]) -> Option<[f32; 6]> {
     Some(*b)
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{EPnP, EPnPParams, PnPError};
+    use crate::pnp::PnPSolver; 
+
+    #[test]
+    fn test_refine_lm_reduces_rmse() -> Result<(), PnPError> {
+        let points_world: [[f32; 3]; 6] = [
+            [0.0315, 0.03333, -0.10409],
+            [-0.0315, 0.03333, -0.10409],
+            [0.0, -0.00102, -0.12977],
+            [0.02646, -0.03167, -0.1053],
+            [-0.02646, -0.031667, -0.1053],
+            [0.0, 0.04515, -0.11033],
+        ];
+        let points_image: [[f32; 2]; 6] = [
+            [722.96466, 502.0828],
+            [669.88837, 498.61877],
+            [707.0025, 478.48975],
+            [728.05634, 447.56918],
+            [682.6069, 443.91776],
+            [696.4414, 511.96442],
+        ];
+        let k: [[f32; 3]; 3] = [[800.0, 0.0, 640.0], [0.0, 800.0, 480.0], [0.0, 0.0, 1.0]];
+
+        // Baseline EPnP
+        let res_epnp = EPnP::solve(&points_world, &points_image, &k, &EPnPParams::default())?;
+        let rmse0 = res_epnp.reproj_rmse.expect("EPnP should report RMSE");
+
+        // EPnP + LM refinement
+        let res_lm = EPnP::solve(
+            &points_world,
+            &points_image,
+            &k,
+            &EPnPParams { refine_lm: Some(LMParams::default()), ..Default::default() },
+        )?;
+        let rmse1 = res_lm.reproj_rmse.expect("LM should report RMSE");
+
+        assert!(rmse1 <= rmse0 + 1e-4, "LM RMSE should not be worse: {} vs {}", rmse1, rmse0);
+        Ok(())
+    }
+}
 
