@@ -20,7 +20,7 @@
     },
     // Use 'postCreateCommand' to run commands after the container is created.
     "postCreateCommand": "bash ./.devcontainer/postCreateCommand.sh",
-    // "postStartCommand": "bash ./.devcontainer/postStartCommand.sh",
+    "postStartCommand": "bash ./.devcontainer/postStartCommand.sh",
     // Define the user to use.
     "remoteUser": "root"
 }
