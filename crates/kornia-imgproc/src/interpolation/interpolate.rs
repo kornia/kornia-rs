@@ -10,6 +10,8 @@ pub enum InterpolationMode {
     Bilinear,
     /// Nearest neighbor interpolation
     Nearest,
+    /// Lanczos interpolation
+    Lanczos,
 }
 
 /// Kernel for interpolating a pixel value
@@ -35,5 +37,8 @@ pub fn interpolate_pixel<const C: usize, A: ImageAllocator>(
     match interpolation {
         InterpolationMode::Bilinear => bilinear_interpolation(image, u, v, c),
         InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v, c),
+        InterpolationMode::Lanczos => {
+            unimplemented!("Lanczos interpolation is not yet implemented")
+        }
     }
 }

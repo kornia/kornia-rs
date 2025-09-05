@@ -84,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
 
     if args.conversation_style {
-        let mut model = SmolVlm::new(SmolVlmConfig::default())?;
+        let mut model = SmolVlm::<CpuAllocator>::new(SmolVlmConfig::default())?;
 
         for _ in 0..10 {
             let img_url = read_input("img> ");
@@ -110,18 +110,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let prompt = read_input("txt> ");
 
-            model.inference(image, &prompt, args.sample_length, true)?;
+            model.inference(&prompt, image, args.sample_length, CpuAllocator)?;
         }
     } else {
         // read the image
         let image = read_image_jpeg_rgb8(args.image_path)?;
 
         // create the paligemma model
-        let mut smolvlm = SmolVlm::new(SmolVlmConfig::default())?;
+        let mut smolvlm = SmolVlm::<CpuAllocator>::new(SmolVlmConfig::default())?;
 
         // generate a caption of the image
-        let _caption =
-            smolvlm.inference(Some(image), &args.text_prompt, args.sample_length, true)?;
+        let _caption = smolvlm.inference(
+            &args.text_prompt,
+            Some(image),
+            args.sample_length,
+            CpuAllocator,
+        )?;
     }
 
     Ok(())
