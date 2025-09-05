@@ -307,29 +307,34 @@ impl<A: ImageAllocator> SmolVlm<A> {
     /// Deterministic sampling that always selects the token with the lowest index for ties
     fn sample_deterministic(&self, logits: &Tensor) -> Result<u32, SmolVlmError> {
         // Convert to f32 for consistent precision
-        let logits_f32 = logits.to_dtype(DType::F32)?;
-        let logits_vec = logits_f32.to_vec1::<f32>()?;
+        let logits_vec = logits.to_dtype(DType::F32)?.to_vec1::<f32>()?;
 
-        // Find the maximum value
-        let max_value = logits_vec.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-
-        // Use a small epsilon for floating-point comparison to handle precision issues
-        let epsilon = 1e-8;
-
-        // Find all indices with the maximum value (for debugging ties)
-        let max_indices: Vec<usize> = logits_vec
+        // Filter out NaNs
+        let filtered: Vec<(usize, f32)> = logits_vec
             .iter()
             .enumerate()
-            .filter(|(_, &logit)| 0.0 <= (logit - max_value) && (logit - max_value) < epsilon)
-            .map(|(i, _)| i)
+            .filter_map(|(i, &v)| if v.is_finite() { Some((i, v)) } else { None })
             .collect();
-
-        // Always select the first index (deterministic tiebreaker)
-        if max_indices.is_empty() {
+        if filtered.is_empty() {
             return Err(SmolVlmError::InvalidLogits(
                 "No valid logits found - all values may be NaN or invalid".to_string(),
             ));
         }
+
+        // Find the maximum value among valid logits
+        let max_value = filtered
+            .iter()
+            .map(|&(_, v)| v)
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        // Find all indices with the maximum value (exact equality)
+        let max_indices: Vec<usize> = filtered
+            .iter()
+            .filter(|&&(_, v)| v == max_value)
+            .map(|&(i, _)| i)
+            .collect();
+
+        // Always select the first index (deterministic tiebreaker) in order of the token
         let best_token = max_indices[0] as u32;
 
         Ok(best_token)
