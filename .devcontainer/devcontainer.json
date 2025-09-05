@@ -1,11 +1,11 @@
 {
     "name": "Rust",
     "image": "mcr.microsoft.com/devcontainers/rust:1-1",
-    "containerEnv": {
-        // "MKLROOT": "/opt/intel/oneapi/mkl/latest",
-        // "PKG_CONFIG_PATH": "/opt/intel/oneapi/mkl/latest/lib/pkgconfig:/opt/intel/oneapi/compiler/latest/linux/lib/pkgconfig",
-        // "LD_LIBRARY_PATH": "/opt/intel/oneapi/mkl/latest/lib/intel64:/opt/intel/oneapi/compiler/latest/linux/compiler/lib/intel64_lin:${LD_LIBRARY_PATH}"
-    },
+    // "containerEnv": {
+    //     // "MKLROOT": "/opt/intel/oneapi/mkl/latest",
+    //     // "PKG_CONFIG_PATH": "/opt/intel/oneapi/mkl/latest/lib/pkgconfig:/opt/intel/oneapi/compiler/latest/linux/lib/pkgconfig",
+    //     // "LD_LIBRARY_PATH": "/opt/intel/oneapi/mkl/latest/lib/intel64:/opt/intel/oneapi/compiler/latest/linux/compiler/lib/intel64_lin:${LD_LIBRARY_PATH}"
+    // },
     // Set customizations for the container.
     "customizations": {
         "vscode": {
@@ -20,7 +20,7 @@
     },
     // Use 'postCreateCommand' to run commands after the container is created.
     "postCreateCommand": "bash ./.devcontainer/postCreateCommand.sh",
-    "postStartCommand": "bash ./.devcontainer/postStartCommand.sh",
+    // "postStartCommand": "bash ./.devcontainer/postStartCommand.sh",
     // Define the user to use.
     "remoteUser": "root"
 }
