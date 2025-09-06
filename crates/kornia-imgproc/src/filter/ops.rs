@@ -589,4 +589,32 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_gaussian_blur_u8() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 5,
+            height: 5,
+        };
+
+        let img = Image::new(size, (0..25).map(|x| x as u8).collect(), CpuAllocator)?;
+
+        let mut dst = Image::<_, 1, _>::from_size_val(size, 0u8, CpuAllocator)?;
+
+        gaussian_blur(&img, &mut dst, (3, 3), (0.5, 0.5))?;
+
+        // Rounded towards 0 of the f32 outputs
+        #[rustfmt::skip]
+        assert_eq!(
+            dst.as_slice(),
+            &[
+                0, 1, 2, 3, 3,
+                4, 5, 7, 7, 7,
+                9, 10, 12, 12, 12,
+                13, 15, 17, 17, 16,
+                15, 18, 19, 20, 18,
+            ]
+        );
+        Ok(())
+    }
 }
