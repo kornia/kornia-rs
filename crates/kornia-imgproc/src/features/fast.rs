@@ -22,6 +22,17 @@ pub struct FastDetector {
 
 impl FastDetector {
     /// Creates a new `FastDetector` with the specified parameters.
+    ///
+    /// # Arguments
+    ///
+    /// * `image_size` - The size of the image to process.
+    /// * `threshold` - The intensity threshold for detecting corners.
+    /// * `arc_length` - The minimum arc length for a sequence of contiguous pixels to be considered a corner.
+    /// * `min_distance` - The minimum distance between detected keypoints.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing the new `FastDetector` or an `ImageError`.
     pub fn new(
         image_size: ImageSize,
         threshold: f32,
@@ -43,6 +54,14 @@ impl FastDetector {
     }
 
     /// Computes the corner response for the input image.
+    ///
+    /// # Arguments
+    ///
+    /// * `src` - The source grayscale image.
+    ///
+    /// # Returns
+    ///
+    /// Returns a reference to the image containing the corner response.
     pub fn compute_corner_response<A: ImageAllocator>(
         &mut self,
         src: &Image<f32, 1, A>,
@@ -61,6 +80,8 @@ impl FastDetector {
         let height = src.height();
         let corner_response = self.corner_response.as_slice_mut();
 
+        // Offsets for the 16 pixels forming a Bresenham circle of radius 3 around the center pixel.
+        // These are used to index the circle pixels relative to (y, x).
         const ROW_OFFSETS: [isize; 16] = [0, 1, 2, 3, 3, 3, 2, 1, 0, -1, -2, -3, -3, -3, -2, -1];
         const COLUMN_OFFSETS: [isize; 16] = [3, 3, 2, 1, 0, -1, -2, -3, -3, -3, -2, -1, 0, 1, 2, 3];
 
@@ -142,6 +163,10 @@ impl FastDetector {
     }
 
     /// Extracts keypoints using Non-Maximum Suppression on the corner response.
+    ///
+    /// # Returns
+    ///
+    /// Returns a vector of keypoint coordinates `[y, x]`.
     pub fn extract_keypoints(&mut self) -> Vec<[usize; 2]> {
         get_high_intensity_peaks(
             &self.corner_response,
