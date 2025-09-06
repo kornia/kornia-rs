@@ -1,11 +1,12 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 use kornia_tensor::CpuAllocator;
+use num_traits::Zero;
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
     slice::ParallelSliceMut,
 };
 
-use super::{fast_horizontal_filter, kernels, separable_filter};
+use super::{fast_horizontal_filter, kernels, separable_filter, FloatConversion};
 
 /// Blur an image using a box blur filter
 ///
@@ -44,12 +45,15 @@ pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
 /// NOTE: This function uses a constant border type.
-pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<f32, C, A1>,
-    dst: &mut Image<f32, C, A2>,
+pub fn gaussian_blur<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, C, A1>,
+    dst: &mut Image<T, C, A2>,
     kernel_size: (usize, usize),
     sigma: (f32, f32),
-) -> Result<(), ImageError> {
+) -> Result<(), ImageError>
+where
+    T: FloatConversion + Clone + Zero + std::ops::Mul<Output = T> + std::ops::AddAssign,
+{
     let (mut kernel_x, mut kernel_y) = kernel_size;
     let (mut sigma_x, mut sigma_y) = sigma;
 
