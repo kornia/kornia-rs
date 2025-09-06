@@ -1,5 +1,6 @@
 //! RANSAC-based robust wrapper for PnP solvers.
 
+use crate::ops::{intrinsics_as_vectors, pose_to_rt, project_sq_error};
 use crate::pnp::{PnPError, PnPResult};
 use crate::{solve_pnp, PnPMethod};
 use glam::{Mat3, Vec3};
@@ -73,13 +74,8 @@ pub fn solve_pnp_ransac(
     // Minimal set size: EPnP uses 5 points (unless only 4 points available)
     let sample_size: usize = if n == 4 { 4 } else { 5 };
 
-    // Precompute intrinsics and create a projection helper.
-    let fx = k[0][0];
-    let fy = k[1][1];
-    let cx = k[0][2];
-    let cy = k[1][2];
-    let intr_x = Vec3::new(fx, 0.0, cx);
-    let intr_y = Vec3::new(0.0, fy, cy);
+    // Precompute intrinsics vectors
+    let (intr_x, intr_y) = intrinsics_as_vectors(k);
 
     // RNG setup
     let mut rng: StdRng = match params.random_seed {
@@ -252,28 +248,7 @@ fn classify_points(
     camera_intrinsics_y: &Vec3,
     threshold: Option<f32>,
 ) -> (Vec<usize>, f32) {
-    let rotation = Mat3::from_cols(
-        Vec3::new(
-            rotation_matrix[0][0],
-            rotation_matrix[1][0],
-            rotation_matrix[2][0],
-        ),
-        Vec3::new(
-            rotation_matrix[0][1],
-            rotation_matrix[1][1],
-            rotation_matrix[2][1],
-        ),
-        Vec3::new(
-            rotation_matrix[0][2],
-            rotation_matrix[1][2],
-            rotation_matrix[2][2],
-        ),
-    );
-    let translation = Vec3::new(
-        translation_vector[0],
-        translation_vector[1],
-        translation_vector[2],
-    );
+    let (rotation, translation) = pose_to_rt(rotation_matrix, translation_vector);
 
     // Create iterator based on whether we have indices or not
     let points_iter: Box<dyn Iterator<Item = (usize, &[f32; 3], &[f32; 2])>> = match indices {
@@ -295,23 +270,16 @@ fn classify_points(
 
     let (inliers, total_squared_error): (Vec<usize>, f32) = points_iter
         .filter_map(|(index, world_point_arr, image_point)| {
-            let world_point = Vec3::from_array(*world_point_arr);
-            let camera_point = rotation * world_point + translation;
-
-            // Skip points behind the camera (negative depth)
-            if camera_point.z <= 0.0 {
-                return None;
-            }
-
-            let inverse_depth = 1.0 / camera_point.z;
-            let projected_u = camera_intrinsics_x.dot(camera_point) * inverse_depth;
-            let projected_v = camera_intrinsics_y.dot(camera_point) * inverse_depth;
-
-            let pixel_error_u = projected_u - image_point[0];
-            let pixel_error_v = projected_v - image_point[1];
-            let squared_error = pixel_error_u.mul_add(pixel_error_u, pixel_error_v * pixel_error_v);
-
-            Some((index, squared_error))
+            project_sq_error(
+                world_point_arr,
+                image_point,
+                &rotation,
+                &translation,
+                camera_intrinsics_x,
+                camera_intrinsics_y,
+                true,
+            )
+            .map(|se| (index, se))
         })
         .fold(
             (Vec::new(), 0.0_f32),
