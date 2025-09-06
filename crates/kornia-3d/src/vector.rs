@@ -1,5 +1,6 @@
+
 /// Simple 3D vector with x, y, and z coordinates as single precision floats.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Vec3 {
     /// x coordinate
     pub x: f32,
@@ -18,10 +19,11 @@ impl Vec3 {
             z: array[2],
         }
     }
+
 }
 
 /// Simple 3D vector with x, y, and z coordinates as double precision floats.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DVec3 {
     /// x coordinate
     pub x: f64,
@@ -55,6 +57,7 @@ mod tests {
         assert_eq!(vec.z, 3.0);
     }
 
+
     #[test]
     fn test_dvec3_from_array() {
         let array = [1.0, 2.0, 3.0];
@@ -63,4 +66,6 @@ mod tests {
         assert_eq!(vec.y, 2.0);
         assert_eq!(vec.z, 3.0);
     }
+
+    
 }
