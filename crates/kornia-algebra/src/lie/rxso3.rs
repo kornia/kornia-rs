@@ -1,9 +1,9 @@
 //! RxSO3 - Direct product of positive scalars and rotations in 3D
 //!
 //! RxSO3 represents R+ × SO3, the direct product of positive scalars and rotations.
-//! It combines scaling and rotation operations, used as a component of Sim3.
+//! It combines scaling and rotation operations.
 //!
-//! Reference: Sophus library (https://github.com/strasdat/Sophus)
+//! Reference: Sophus library (https://github.com/strasdat/Sophus/blob/main/sophus/rxso3.hpp)
 
 use glam::{Mat3A, Quat};
 
@@ -156,7 +156,8 @@ mod tests {
 
     #[test]
     fn test_rxso3_inverse() {
-        let rxso3 = RxSO3::from_scale_quaternion(2.0, Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize());
+        let rxso3 =
+            RxSO3::from_scale_quaternion(2.0, Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize());
         let inv = rxso3.inverse();
 
         assert_relative_eq!(inv.scale(), 1.0 / rxso3.scale(), epsilon = EPSILON);

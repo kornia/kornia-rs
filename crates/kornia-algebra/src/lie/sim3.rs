@@ -37,10 +37,7 @@ impl Sim3 {
 
     /// Create from RxSO3 and translation
     pub fn new(rxso3: RxSO3, translation: Vec3A) -> Self {
-        Self {
-            rxso3,
-            translation,
-        }
+        Self { rxso3, translation }
     }
 
     /// Create from scale, rotation quaternion, and translation
@@ -62,9 +59,9 @@ impl Sim3 {
         // Extract rotation and scale from top-left 3x3
         // mat.x_axis, mat.y_axis, mat.z_axis are the columns
         let rot_scale_mat = Mat3A::from_cols(
-            Vec3A::new(mat.x_axis.x, mat.x_axis.y, mat.x_axis.z),  // first column
-            Vec3A::new(mat.y_axis.x, mat.y_axis.y, mat.y_axis.z),  // second column
-            Vec3A::new(mat.z_axis.x, mat.z_axis.y, mat.z_axis.z),  // third column
+            Vec3A::new(mat.x_axis.x, mat.x_axis.y, mat.x_axis.z), // first column
+            Vec3A::new(mat.y_axis.x, mat.y_axis.y, mat.y_axis.z), // second column
+            Vec3A::new(mat.z_axis.x, mat.z_axis.y, mat.z_axis.z), // third column
         );
 
         let scale = rot_scale_mat.col(0).length();
@@ -101,10 +98,22 @@ impl Sim3 {
     pub fn matrix(&self) -> Mat4 {
         let rxso3_mat = self.rxso3.matrix();
         Mat4::from_cols_array(&[
-            rxso3_mat.x_axis.x, rxso3_mat.x_axis.y, rxso3_mat.x_axis.z, 0.0,
-            rxso3_mat.y_axis.x, rxso3_mat.y_axis.y, rxso3_mat.y_axis.z, 0.0,
-            rxso3_mat.z_axis.x, rxso3_mat.z_axis.y, rxso3_mat.z_axis.z, 0.0,
-            self.translation.x, self.translation.y, self.translation.z, 1.0,
+            rxso3_mat.x_axis.x,
+            rxso3_mat.x_axis.y,
+            rxso3_mat.x_axis.z,
+            0.0,
+            rxso3_mat.y_axis.x,
+            rxso3_mat.y_axis.y,
+            rxso3_mat.y_axis.z,
+            0.0,
+            rxso3_mat.z_axis.x,
+            rxso3_mat.z_axis.y,
+            rxso3_mat.z_axis.z,
+            0.0,
+            self.translation.x,
+            self.translation.y,
+            self.translation.z,
+            1.0,
         ])
     }
 
@@ -257,8 +266,6 @@ impl std::ops::Mul<Vec3A> for Sim3 {
     }
 }
 
-
-
 // ===== TESTS =====
 
 #[cfg(test)]
@@ -291,10 +298,10 @@ mod tests {
         //         | 0 0 2 3 |
         //         | 0 0 0 1 |
         let mat = Mat4::from_cols_array(&[
-            2.0, 0.0, 0.0, 0.0,    // col 0
-            0.0, 2.0, 0.0, 0.0,    // col 1
-            0.0, 0.0, 2.0, 0.0,    // col 2
-            1.0, 2.0, 3.0, 1.0,    // col 3 (translation)
+            2.0, 0.0, 0.0, 0.0, // col 0
+            0.0, 2.0, 0.0, 0.0, // col 1
+            0.0, 0.0, 2.0, 0.0, // col 2
+            1.0, 2.0, 3.0, 1.0, // col 3 (translation)
         ]);
         let sim3 = Sim3::from_matrix(&mat);
         assert_relative_eq!(sim3.scale(), 2.0, epsilon = EPSILON);
@@ -331,7 +338,11 @@ mod tests {
         let sim3_reconstructed = Sim3::from_matrix(&mat);
 
         assert_relative_eq!(sim3.scale(), sim3_reconstructed.scale(), epsilon = EPSILON);
-        assert_relative_eq!(sim3.translation.distance(sim3_reconstructed.translation), 0.0, epsilon = EPSILON);
+        assert_relative_eq!(
+            sim3.translation.distance(sim3_reconstructed.translation),
+            0.0,
+            epsilon = EPSILON
+        );
     }
 
     #[test]
