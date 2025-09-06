@@ -2,7 +2,9 @@
 //! Paper: [Lepetit et al., IJCV 2009](https://www.tugraz.at/fileadmin/user_upload/Institute/ICG/Images/team_lepetit/publications/lepetit_ijcv08.pdf)
 //! Reference: [OpenCV EPnP implementation](https://github.com/opencv/opencv/blob/4.x/modules/calib3d/src/epnp.cpp)
 
-use crate::ops::{compute_centroid, gauss_newton};
+use crate::ops::{
+    compute_centroid, gauss_newton, intrinsics_as_vectors, pose_to_rt, project_sq_error,
+};
 use crate::pnp::{NumericTol, PnPError, PnPResult, PnPSolver};
 use glam::{Mat3, Mat3A, Vec3};
 use kornia_lie::so3::SO3;
@@ -214,37 +216,16 @@ fn rmse_px(
         });
     }
 
-    let fx = k[0][0];
-    let fy = k[1][1];
-    let cx = k[0][2];
-    let cy = k[1][2];
-
-    // Pre-compute matrix and vectors in glam form for SIMD-friendly ops
-    let r_mat = Mat3::from_cols(
-        Vec3::new(r[0][0], r[1][0], r[2][0]),
-        Vec3::new(r[0][1], r[1][1], r[2][1]),
-        Vec3::new(r[0][2], r[1][2], r[2][2]),
-    );
-    let t_vec = Vec3::new(t[0], t[1], t[2]);
-
-    // Pack intrinsics so that (intr_x ⋅ Pc) / z = fx * x / z + cx
-    let intr_x = Vec3::new(fx, 0.0, cx);
-    let intr_y = Vec3::new(0.0, fy, cy);
+    let (r_mat, t_vec) = pose_to_rt(r, t);
+    let (intr_x, intr_y) = intrinsics_as_vectors(k);
 
     let mut sum_sq = 0.0;
     let n = points_world.len() as f32;
 
-    for (pw_arr, &uv) in points_world.iter().zip(points_image.iter()) {
-        let pw = Vec3::from_array(*pw_arr);
-        let pc = r_mat * pw + t_vec; // camera-frame point
-
-        let inv_z = 1.0 / pc.z;
-        let u_hat = intr_x.dot(pc) * inv_z; // (fx * x + cx * z) / z
-        let v_hat = intr_y.dot(pc) * inv_z; // (fy * y + cy * z) / z
-
-        let du = u_hat - uv[0];
-        let dv = v_hat - uv[1];
-        sum_sq += du.mul_add(du, dv * dv); // FMA where available
+    for (pw_arr, uv) in points_world.iter().zip(points_image.iter()) {
+        if let Some(se) = project_sq_error(pw_arr, uv, &r_mat, &t_vec, &intr_x, &intr_y, false) {
+            sum_sq += se;
+        }
     }
 
     Ok((sum_sq / n).sqrt())
