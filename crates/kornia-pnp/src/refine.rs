@@ -185,8 +185,6 @@ pub fn refine_pose_lm(
     Ok((rmse, iters, converged))
 }
 
-// Rodrigues helpers removed; use SO3::exp for rotations.
-
 // Dense 6x6 solver using Gaussian elimination with partial pivoting.
 fn solve_6x6(a: &mut [f32; 36], b: &mut [f32; 6]) -> Option<[f32; 6]> {
     // Augment A|b in-place operations via indices
