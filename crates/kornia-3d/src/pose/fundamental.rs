@@ -69,9 +69,21 @@ pub fn fundamental_8point(
     // Denormalize with faer matrices: F = T2^T * F * T1
     let t2t = t2.transpose();
     let f_rank2 = faer::mat![
-        [f_rank2_glam.x_axis.x as f64, f_rank2_glam.y_axis.x as f64, f_rank2_glam.z_axis.x as f64],
-        [f_rank2_glam.x_axis.y as f64, f_rank2_glam.y_axis.y as f64, f_rank2_glam.z_axis.y as f64],
-        [f_rank2_glam.x_axis.z as f64, f_rank2_glam.y_axis.z as f64, f_rank2_glam.z_axis.z as f64],
+        [
+            f_rank2_glam.x_axis.x as f64,
+            f_rank2_glam.y_axis.x as f64,
+            f_rank2_glam.z_axis.x as f64
+        ],
+        [
+            f_rank2_glam.x_axis.y as f64,
+            f_rank2_glam.y_axis.y as f64,
+            f_rank2_glam.z_axis.y as f64
+        ],
+        [
+            f_rank2_glam.x_axis.z as f64,
+            f_rank2_glam.y_axis.z as f64,
+            f_rank2_glam.z_axis.z as f64
+        ],
     ];
     let f_denorm = t2t * f_rank2 * t1;
     Ok(from_faer_mat3(&f_denorm))
@@ -93,7 +105,11 @@ fn normalize_points_2d(x: &[[f64; 2]]) -> (Vec<[f64; 2]>, faer::Mat<f64>) {
         mean_dist += (dx * dx + dy * dy).sqrt();
     }
     mean_dist /= n as f64;
-    let scale = if mean_dist > 0.0 { (2.0f64).sqrt() / mean_dist } else { 1.0 };
+    let scale = if mean_dist > 0.0 {
+        (2.0f64).sqrt() / mean_dist
+    } else {
+        1.0
+    };
 
     let mut xn = Vec::with_capacity(n);
     for p in x {
@@ -109,19 +125,13 @@ fn normalize_points_2d(x: &[[f64; 2]]) -> (Vec<[f64; 2]>, faer::Mat<f64>) {
     (xn, t)
 }
 
-fn to_faer_mat3(m: &[[f64; 3]; 3]) -> faer::Mat<f64> {
-    faer::mat![
-        [m[0][0], m[0][1], m[0][2]],
-        [m[1][0], m[1][1], m[1][2]],
-        [m[2][0], m[2][1], m[2][2]]
-    ]
-}
+// removed unused helper `to_faer_mat3`
 
 fn from_faer_mat3(m: &faer::Mat<f64>) -> [[f64; 3]; 3] {
     let mut out = [[0.0; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            out[i][j] = m.read(i, j);
+    for (i, row) in out.iter_mut().enumerate() {
+        for (j, val) in row.iter_mut().enumerate() {
+            *val = m.read(i, j);
         }
     }
     out
@@ -161,7 +171,11 @@ mod tests {
                 f_true[2][0] * x[0] + f_true[2][1] * x[1] + f_true[2][2] * x[2],
             ];
             // pick x2 with y=0 => solve l0*x + l2 = 0
-            let xp = if l[0].abs() > 1e-12f64 { -l[2] / l[0] } else { 0.0f64 };
+            let xp = if l[0].abs() > 1e-12f64 {
+                -l[2] / l[0]
+            } else {
+                0.0f64
+            };
             x2.push([xp, 0.0f64]);
         }
 
@@ -183,5 +197,3 @@ mod tests {
         Ok(())
     }
 }
-
-
