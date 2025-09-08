@@ -391,36 +391,35 @@ pub fn threshold_otsu<A1: ImageAllocator, A2: ImageAllocator>(
     let mut hist: Vec<usize>= vec![0_usize; 256];
     let _ = compute_histogram(src, &mut hist, 256).unwrap();
 
-    let total = (src.rows() * src.cols()) as f64;
+    let n = (src.rows() * src.cols()) as f64;
 
-    let mut sum_all = 0f64;
+    let mut sum = 0f64;
     for i in 0..256 {
-        sum_all += (i as f64) * (hist[i] as f64);
+        sum += (i as f64) * (hist[i] as f64);
     }
 
     let mut sum_b = 0f64;
-    let mut w_b = 0f64;
+    let mut q1 = 0f64;
     let mut var_max = 0f64;
     let mut thresh = 0u8;
 
     for t in 0..256 {
-        w_b += hist[t] as f64;
-        if w_b == 0.0 { continue; }
+        q1 += hist[t] as f64;
+        if q1 == 0.0 { continue; }
 
-        let w_f = total - w_b;
-        if w_f == 0.0 { break; }
+        let q2 = n - q1;
 
         sum_b += (t as f64) * (hist[t] as f64);
 
-        let m_b = sum_b / w_b;
-        let m_f = (sum_all - sum_b) / w_f;
+        let mu_1 = sum_b / q1;
+        let mu_2 = (sum - sum_b) / q2;
 
         // maximize inter class variance
-        let var_between = w_b * w_f * (m_b - m_f).powi(2);
+        let var_between = q1 * q2 * (mu_1 - mu_2).powi(2);
 
         if var_between > var_max {
-            var_max = var_between;
             thresh = t as u8;
+            var_max = var_between;
         }
     }
 
