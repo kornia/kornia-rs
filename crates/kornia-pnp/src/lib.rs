@@ -7,7 +7,7 @@ pub mod epnp;
 /// Common data types shared across PnP solvers.
 pub mod pnp;
 
-    /// Optional refinement routines (Levenberg–Marquardt, etc.)
+/// Optional refinement routines (Levenberg–Marquardt, etc.)
 mod refine;
 
 pub use epnp::{EPnP, EPnPParams};

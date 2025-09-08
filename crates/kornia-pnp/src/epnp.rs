@@ -28,19 +28,13 @@ impl PnPSolver for EPnP {
 }
 
 /// Parameters controlling the EPnP solver.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct EPnPParams {
     /// Shared numeric tolerances.
     pub tol: NumericTol,
     /// Optional Levenberg–Marquardt refinement parameters. If `Some`, a final LM pass
     /// runs to refine the pose minimizing pixel reprojection error.
     pub refine_lm: Option<LMParams>,
-}
-
-impl Default for EPnPParams {
-    fn default() -> Self {
-        Self { tol: NumericTol::default(), refine_lm: None }
-    }
 }
 
 /// Solve Perspective-n-Point (EPnP).
@@ -154,7 +148,9 @@ pub fn solve_epnp(
     let mut converged = Some(true);
 
     if let Some(lm) = &params.refine_lm {
-        if let Ok((rmse_new, iters, conv)) = refine_pose_lm(points_world, points_image, k, &mut rvec, &mut tvec, lm) {
+        if let Ok((rmse_new, iters, conv)) =
+            refine_pose_lm(points_world, points_image, k, &mut rvec, &mut tvec, lm)
+        {
             // Update rotation from refined rvec
             let r_mat_ref = SO3::exp(glam::Vec3A::from_array(rvec)).matrix();
             let r_ref = [
