@@ -374,6 +374,68 @@ where
 
 // TODO: outsu, triangle
 
+/// Apply an otsu threshold to an image
+pub fn threshold_otsu<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, 1, A1>,
+    dst: &mut Image<u8, 1, A2>,
+    max_value: u8,
+) -> Result<(), ImageError>
+{
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+    let mut hist: Vec<usize>= vec![0_usize; 256];
+    let _ = compute_histogram(src, &mut hist, 256).unwrap();
+
+    let total = (src.rows() * src.cols()) as f64;
+
+    let mut sum_all = 0f64;
+    for i in 0..256 {
+        sum_all += (i as f64) * (hist[i] as f64);
+    }
+
+    let mut sum_b = 0f64;
+    let mut w_b = 0f64;
+    let mut var_max = 0f64;
+    let mut thresh = 0u8;
+
+    for t in 0..256 {
+        w_b += hist[t] as f64;
+        if w_b == 0.0 { continue; }
+
+        let w_f = total - w_b;
+        if w_f == 0.0 { break; }
+
+        sum_b += (t as f64) * (hist[t] as f64);
+
+        let m_b = sum_b / w_b;
+        let m_f = (sum_all - sum_b) / w_f;
+
+        // maximize inter class variance
+        let var_between = w_b * w_f * (m_b - m_f).powi(2);
+
+        if var_between > var_max {
+            var_max = var_between;
+            thresh = t as u8;
+        }
+    }
+
+    parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
+        *dst_pixel = if *src_pixel > thresh {
+            max_value
+        } else {
+            0u8
+        };
+    });
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
