@@ -3,7 +3,7 @@ use std::cmp::PartialOrd;
 
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
-use crate::parallel;
+use crate::{histogram::compute_histogram, parallel};
 
 /// Apply a binary threshold to an image.
 ///
