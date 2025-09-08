@@ -9,6 +9,7 @@ pub mod pnp;
 
 pub use epnp::{EPnP, EPnPParams};
 pub use pnp::{PnPError, PnPResult, PnPSolver};
+use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 
 mod ops;
 
@@ -27,10 +28,11 @@ pub fn solve_pnp(
     world: &[[f32; 3]],
     image: &[[f32; 2]],
     k: &[[f32; 3]; 3],
+    distortion: Option<&PolynomialDistortion>,
     method: PnPMethod,
 ) -> Result<PnPResult, PnPError> {
     match method {
-        PnPMethod::EPnP(params) => EPnP::solve(world, image, k, &params),
-        PnPMethod::EPnPDefault => EPnP::solve(world, image, k, &EPnPParams::default()),
+        PnPMethod::EPnP(params) => EPnP::solve(world, image, k, distortion, &params),
+        PnPMethod::EPnPDefault => EPnP::solve(world, image, k, distortion, &EPnPParams::default()),
     }
 }
