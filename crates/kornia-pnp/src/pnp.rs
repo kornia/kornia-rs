@@ -1,6 +1,7 @@
 //! Common data types shared across Perspective-n-Point (PnP) solvers.
 
 use thiserror::Error;
+use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 
 /// Error types for PnP solvers.
 #[derive(Debug, Error)]
@@ -86,6 +87,7 @@ pub trait PnPSolver {
         world: &[[f32; 3]],
         image: &[[f32; 2]],
         k: &[[f32; 3]; 3],
+        distortion: Option<&PolynomialDistortion>,
         params: &Self::Param,
     ) -> Result<PnPResult, PnPError>;
 }
