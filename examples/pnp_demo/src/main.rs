@@ -162,9 +162,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Ground truth rotation   : {:?}", gt_r);
     println!("Estimated rotation (EPnP):\n{:?}", result_epnp.rotation);
     println!("Estimated rotation (LM):\n{:?}", result_lm.rotation);
-    if let Some(rmse) = result_epnp.reproj_rmse { println!("EPnP RMSE: {:.3} px", rmse); }
-    if let Some(rmse) = result_lm.reproj_rmse { println!("EPnP+LM RMSE: {:.3} px", rmse); }
-    if let Some(it) = result_lm.num_iterations { println!("LM iterations: {}", it); }
-    if let Some(c) = result_lm.converged { println!("LM converged: {}", c); }
+    if let Some(rmse) = result_epnp.reproj_rmse {
+        println!("EPnP RMSE: {:.3} px", rmse);
+    }
+    if let Some(rmse) = result_lm.reproj_rmse {
+        println!("EPnP+LM RMSE: {:.3} px", rmse);
+    }
+    if let Some(it) = result_lm.num_iterations {
+        println!("LM iterations: {}", it);
+    }
+    if let Some(c) = result_lm.converged {
+        println!("LM converged: {}", c);
+    }
     Ok(())
 }
