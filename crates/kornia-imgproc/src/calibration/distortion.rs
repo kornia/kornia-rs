@@ -1,7 +1,9 @@
 use super::{CameraExtrinsic, CameraIntrinsic};
 use crate::interpolation::grid::meshgrid_from_fn;
+use anyhow::{bail, Result};
 use kornia_image::ImageSize;
 use kornia_tensor::{CpuTensor2, TensorError};
+use ndarray::{arr1, s, stack, Array1, Array2, Axis};
 
 /// Represents the polynomial distortion parameters of a camera using the Brown-Conrady model.
 ///
@@ -147,10 +149,121 @@ pub fn generate_correction_map_polynomial(
     Ok((map_x, map_y))
 }
 
+/// Computes the ideal point coordinates from observed (distorted) point coordinates.
+///
+/// This function iteratively finds the undistorted point coordinates that, when distorted,
+/// match the observed `src_points`. It operates in a vectorized manner for efficiency and
+/// can optionally apply rectification and new projection matrices.
+///
+/// # Arguments
+/// * `src_points` - An `Nx2` `ndarray` array of observed (distorted) point coordinates.
+/// * `intrinsic` - The intrinsic parameters of the camera.
+/// * `distortion` - The distortion parameters of the camera.
+/// * `r_matrix` - Optional 3x3 rectification transformation. If `None`, an identity matrix is used.
+/// * `p_matrix` - Optional new projection matrix (3x3 or 3x4). If `None`, the final transformation is determined by `r_matrix` alone.
+///
+/// # Returns
+///
+/// An `anyhow::Result` containing the `Nx2` `ndarray` array of corrected (undistorted and rectified) points.
+pub fn undistort_points_polynomial(
+    src_points: &Array2<f64>,
+    intrinsic: &CameraIntrinsic,
+    distortion: &PolynomialDistortion,
+    r_matrix: &Option<Array2<f64>>,
+    p_matrix: &Option<Array2<f64>>,
+) -> Result<Array2<f64>> {
+    // --- 1. Validation ---
+    if src_points.ndim() != 2 || src_points.shape()[1] != 2 {
+        bail!("Input points must be an Nx2 array.");
+    }
+
+    // --- 2. Extract Coefficients ---
+    let (fx, fy, cx, cy) = (intrinsic.fx, intrinsic.fy, intrinsic.cx, intrinsic.cy);
+    let (k1, k2, k3, k4, k5, k6, p1, p2) = (
+        distortion.k1,
+        distortion.k2,
+        distortion.k3,
+        distortion.k4,
+        distortion.k5,
+        distortion.k6,
+        distortion.p1,
+        distortion.p2,
+    );
+
+    // --- 3. Normalize Distorted Points (Vectorized) ---
+    let u = src_points.column(0);
+    let v = src_points.column(1);
+    let x_distorted = u.mapv(|u_i| (u_i - cx) / fx);
+    let y_distorted = v.mapv(|v_i| (v_i - cy) / fy);
+
+    // --- 4. Iteratively Find Undistorted Points (Vectorized) ---
+    let mut x = x_distorted.clone();
+    let mut y = y_distorted.clone();
+
+    // Iterate to find the inverse of the distortion function.
+    // A higher number of iterations are needed for convergence with significant distortion.
+    for _ in 0..10 {
+        let r2 = &x * &x + &y * &y;
+        let r4 = &r2 * &r2;
+        let r6 = &r4 * &r2;
+
+        let radial_numerator = 1.0 + k1 * &r2 + k2 * &r4 + k3 * &r6;
+        let radial_denominator = 1.0 + k4 * &r2 + k5 * &r4 + k6 * &r6;
+        let radial_dist = &radial_numerator / &radial_denominator;
+
+        let d_tan_x = 2.0 * p1 * &x * &y + p2 * (&r2 + 2.0 * &x * &x);
+        let d_tan_y = p1 * (&r2 + 2.0 * &y * &y) + 2.0 * p2 * &x * &y;
+
+        x = (&x_distorted - &d_tan_x) / &radial_dist;
+        y = (&y_distorted - &d_tan_y) / &radial_dist;
+    }
+
+    // --- 5. Apply Rectification (R) and New Projection (P) if provided ---
+    let ones = Array1::ones(src_points.nrows());
+    let undistorted_homo = stack(Axis(1), &[x.view(), y.view(), ones.view()])?;
+
+    let identity = Array2::eye(3);
+    let r_mat = r_matrix.as_ref().unwrap_or(&identity);
+
+    // Create intrinsic matrix K
+    let k_matrix = Array2::from_shape_vec(
+        (3, 3),
+        vec![fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0],
+    ).unwrap();
+
+    // Compose the final transformation matrix (P * R), using K if P is None
+    let final_transform_matrix = if let Some(p) = p_matrix {
+        if p.shape() != [3, 4] && p.shape() != [3, 3] {
+            bail!("P matrix must be a 3x3 or 3x4 array.");
+        }
+        let p_3x3 = p.slice(s![.., ..3]);
+        p_3x3.dot(r_mat)
+    } else {
+        k_matrix.dot(r_mat)
+    };
+
+    let projected_homo = undistorted_homo.dot(&final_transform_matrix.t());
+
+    // --- 6. Final Perspective Divide and Output Formatting ---
+    let mut dst_points = Array2::zeros((src_points.nrows(), 2));
+    let final_x = projected_homo.column(0);
+    let final_y = projected_homo.column(1);
+    let w = projected_homo.column(2);
+
+    // Use azip for efficient, parallel-friendly row-wise operations
+    ndarray::azip!((mut dst_row in dst_points.rows_mut(), &x_i in &final_x, &y_i in &final_y, &w_i in &w) {
+        let w_inv = if w_i.abs() > 1e-6 { 1.0 / w_i } else { 0.0 };
+        dst_row.assign(&arr1(&[x_i * w_inv, y_i * w_inv]));
+    });
+
+    Ok(dst_points)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use kornia_image::ImageSize;
+    use ndarray::arr2;
 
     #[test]
     fn test_distort_point_polynomial() {
@@ -221,5 +334,49 @@ mod tests {
         assert_eq!(map_y.shape[1], 8);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_undistort_points_polynomial() {
+        let intrinsic = CameraIntrinsic {
+            fx: 577.4858,
+            fy: 577.4858,
+            cx: 319.5,
+            cy: 239.5,
+        };
+
+        let distortion = PolynomialDistortion {
+            k1: 0.1,
+            k2: -0.05,
+            k3: 0.005,
+            k4: 0.0,
+            k5: 0.0,
+            k6: 0.0,
+            p1: 0.001,
+            p2: -0.002,
+        };
+
+        // 1. Define an original, undistorted point
+        let x_undistorted = 200.0;
+        let y_undistorted = 150.0;
+
+        // 2. Distort this point using the forward function
+        let (x_distorted, y_distorted) =
+            distort_point_polynomial(x_undistorted, y_undistorted, &intrinsic, &distortion);
+
+        // 3. Create an ndarray with the distorted point
+        let distorted_points = arr2(&[[x_distorted, y_distorted]]);
+
+        // 4. Undistort the point using the new function
+        let undistorted_result =
+            undistort_points_polynomial(&distorted_points, &intrinsic, &distortion, &None, &None)
+                .unwrap();
+
+        // 5. Check if the result is close to the original undistorted point
+        let result_point = undistorted_result.row(0);
+        let tolerance = 1e-6; // A small tolerance for floating point comparisons
+
+        assert!((result_point[0] - x_undistorted).abs() < tolerance);
+        assert!((result_point[1] - y_undistorted).abs() < tolerance);
     }
 }
