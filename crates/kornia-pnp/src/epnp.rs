@@ -4,6 +4,10 @@
 
 use crate::ops::{compute_centroid, gauss_newton};
 use crate::pnp::{NumericTol, PnPError, PnPResult, PnPSolver};
+use kornia_imgproc::calibration::{
+    distortion::{distort_point_polynomial, PolynomialDistortion},
+    CameraIntrinsic,
+};
 use glam::{Mat3, Mat3A, Vec3};
 use kornia_lie::so3::SO3;
 use kornia_linalg::rigid::umeyama;
@@ -20,9 +24,10 @@ impl PnPSolver for EPnP {
         points_world: &[[f32; 3]],
         points_image: &[[f32; 2]],
         k: &[[f32; 3]; 3],
+        distortion: Option<&kornia_imgproc::calibration::distortion::PolynomialDistortion>,
         params: &Self::Param,
     ) -> Result<PnPResult, PnPError> {
-        solve_epnp(points_world, points_image, k, params)
+        solve_epnp(points_world, points_image, k, distortion, params)
     }
 }
 
@@ -49,6 +54,7 @@ pub fn solve_epnp(
     points_world: &[[f32; 3]],
     points_image: &[[f32; 2]],
     k: &[[f32; 3]; 3],
+    distortion: Option<&PolynomialDistortion>,
     params: &EPnPParams,
 ) -> Result<PnPResult, PnPError> {
     let n = points_world.len();
@@ -116,7 +122,7 @@ pub fn solve_epnp(
 
     for bet in &betas_refined {
         let (r_c, t_c) = pose_from_betas(bet, &null4, &cw, &alphas)?;
-        let err = rmse_px(points_world, points_image, &r_c, &t_c, k)?;
+        let err = rmse_px(points_world, points_image, &r_c, &t_c, k, distortion)?;
         if err < best_err {
             best_err = err;
             best_r = r_c;
@@ -195,6 +201,7 @@ fn rmse_px(
     r: &[[f32; 3]; 3],
     t: &[f32; 3],
     k: &[[f32; 3]; 3],
+    distortion: Option<&PolynomialDistortion>,
 ) -> Result<f32, PnPError> {
     if points_world.len() != points_image.len() {
         return Err(PnPError::MismatchedArrayLengths {
@@ -225,13 +232,29 @@ fn rmse_px(
     let mut sum_sq = 0.0;
     let n = points_world.len() as f32;
 
+    // Prepare camera intrinsic for distortion if needed
+    let cam_intr = CameraIntrinsic {
+        fx: fx as f64,
+        fy: fy as f64,
+        cx: cx as f64,
+        cy: cy as f64,
+    };
+
     for (pw_arr, &uv) in points_world.iter().zip(points_image.iter()) {
         let pw = Vec3::from_array(*pw_arr);
         let pc = r_mat * pw + t_vec; // camera-frame point
 
         let inv_z = 1.0 / pc.z;
-        let u_hat = intr_x.dot(pc) * inv_z; // (fx * x + cx * z) / z
-        let v_hat = intr_y.dot(pc) * inv_z; // (fy * y + cy * z) / z
+        let u_undist = intr_x.dot(pc) * inv_z; // (fx * x + cx * z) / z
+        let v_undist = intr_y.dot(pc) * inv_z; // (fy * y + cy * z) / z
+
+        // Apply distortion model if provided
+        let (u_hat, v_hat) = if let Some(d) = distortion {
+            let (ud, vd) = distort_point_polynomial(u_undist as f64, v_undist as f64, &cam_intr, d);
+            (ud as f32, vd as f32)
+        } else {
+            (u_undist, v_undist)
+        };
 
         let du = u_hat - uv[0];
         let dv = v_hat - uv[1];
