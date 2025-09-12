@@ -6,6 +6,7 @@ pub mod grid;
 pub(crate) mod interpolate;
 mod nearest;
 mod remap;
+mod bicubic;
 
 pub use interpolate::InterpolationMode;
 pub use remap::remap;
