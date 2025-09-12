@@ -3,7 +3,7 @@ use std::cmp::PartialOrd;
 
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
-use crate::parallel;
+use crate::{histogram::compute_histogram, parallel};
 
 /// Apply a binary threshold to an image.
 ///
@@ -373,6 +373,66 @@ where
 }
 
 // TODO: outsu, triangle
+
+/// Apply an otsu threshold to an image
+pub fn threshold_otsu<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, 1, A1>,
+    dst: &mut Image<u8, 1, A2>,
+) -> Result<(), ImageError>
+{
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+    let mut hist: Vec<usize>= vec![0_usize; 256];
+    let _ = compute_histogram(src, &mut hist, 256).unwrap();
+
+    let n = (src.rows() * src.cols()) as f64;
+
+    let mut sum = 0f64;
+    for i in 0..256 {
+        sum += (i as f64) * (hist[i] as f64);
+    }
+
+    let mut sum_b = 0f64;
+    let mut q1 = 0f64;
+    let mut var_max = 0f64;
+    let mut thresh = 0u8;
+
+    for t in 0..256 {
+        q1 += hist[t] as f64;
+        if q1 == 0.0 { continue; }
+
+        let q2 = n - q1;
+
+        sum_b += (t as f64) * (hist[t] as f64);
+
+        let mu_1 = sum_b / q1;
+        let mu_2 = (sum - sum_b) / q2;
+
+        // maximize inter class variance
+        let var_between = q1 * q2 * (mu_1 - mu_2).powi(2);
+
+        if var_between > var_max {
+            thresh = t as u8;
+            var_max = var_between;
+        }
+    }
+
+    parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
+        *dst_pixel = if *src_pixel > thresh {
+            255
+        } else {
+            0u8
+        };
+    });
+
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
