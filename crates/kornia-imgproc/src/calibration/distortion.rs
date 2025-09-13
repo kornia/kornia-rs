@@ -1,9 +1,38 @@
 use super::{CameraExtrinsic, CameraIntrinsic};
 use crate::interpolation::grid::meshgrid_from_fn;
-use anyhow::{bail, Result};
 use kornia_image::ImageSize;
 use kornia_tensor::{CpuTensor2, TensorError};
 use ndarray::{arr1, s, stack, Array1, Array2, Axis};
+use std::fmt;
+
+/// Custom error type for distortion-related operations.
+#[derive(Debug)]
+pub enum DistortionError {
+    /// Error when the input points array does not have the expected Nx2 shape.
+    InvalidInputShape(String),
+    /// Error when the projection or rectification matrix has an invalid shape.
+    InvalidMatrixShape(String),
+    /// Error caused by an ndarray operation, typically due to shape mismatches.
+    NdarrayError(ndarray::ShapeError),
+}
+
+impl fmt::Display for DistortionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DistortionError::InvalidInputShape(msg) => write!(f, "Invalid input shape: {}", msg),
+            DistortionError::InvalidMatrixShape(msg) => write!(f, "Invalid matrix shape: {}", msg),
+            DistortionError::NdarrayError(err) => write!(f, "Ndarray error: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for DistortionError {}
+
+impl From<ndarray::ShapeError> for DistortionError {
+    fn from(err: ndarray::ShapeError) -> Self {
+        DistortionError::NdarrayError(err)
+    }
+}
 
 /// Represents the polynomial distortion parameters of a camera using the Brown-Conrady model.
 ///
@@ -138,8 +167,6 @@ pub fn generate_correction_map_polynomial(
     distortion: &PolynomialDistortion,
     size: &ImageSize,
 ) -> Result<(CpuTensor2<f32>, CpuTensor2<f32>), TensorError> {
-    //// create a grid of x and y coordinates for the output image
-    //// and interpolate the values from the input image.
     let (dst_rows, dst_cols) = (size.height, size.width);
     let (map_x, map_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| {
         let (xdst, ydst) = distort_point_polynomial(x as f64, y as f64, intrinsic, distortion);
@@ -164,17 +191,23 @@ pub fn generate_correction_map_polynomial(
 ///
 /// # Returns
 ///
-/// An `anyhow::Result` containing the `Nx2` `ndarray` array of corrected (undistorted and rectified) points.
+/// A `Result` containing the `Nx2` `ndarray` array of corrected (undistorted and rectified) points.
+///
+/// # Errors
+///
+/// Returns a `DistortionError` if the input points or matrices have invalid shapes, or if array operations fail.
 pub fn undistort_points_polynomial(
     src_points: &Array2<f64>,
     intrinsic: &CameraIntrinsic,
     distortion: &PolynomialDistortion,
     r_matrix: &Option<Array2<f64>>,
     p_matrix: &Option<Array2<f64>>,
-) -> Result<Array2<f64>> {
+) -> Result<Array2<f64>, DistortionError> {
     // --- 1. Validation ---
     if src_points.ndim() != 2 || src_points.shape()[1] != 2 {
-        bail!("Input points must be an Nx2 array.");
+        return Err(DistortionError::InvalidInputShape(
+            "Input points must be an Nx2 array.".to_string(),
+        ));
     }
 
     // --- 2. Extract Coefficients ---
@@ -200,9 +233,8 @@ pub fn undistort_points_polynomial(
     let mut x = x_distorted.clone();
     let mut y = y_distorted.clone();
 
-    // Iterate to find the inverse of the distortion function.
-    // A higher number of iterations are needed for convergence with significant distortion.
-    for _ in 0..10 {
+    // Increased iterations for better convergence
+    for _ in 0..20 {
         let r2 = &x * &x + &y * &y;
         let r4 = &r2 * &r2;
         let r6 = &r4 * &r2;
@@ -229,12 +261,14 @@ pub fn undistort_points_polynomial(
     let k_matrix = Array2::from_shape_vec(
         (3, 3),
         vec![fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0],
-    ).unwrap();
+    )?;
 
     // Compose the final transformation matrix (P * R), using K if P is None
     let final_transform_matrix = if let Some(p) = p_matrix {
         if p.shape() != [3, 4] && p.shape() != [3, 3] {
-            bail!("P matrix must be a 3x3 or 3x4 array.");
+            return Err(DistortionError::InvalidMatrixShape(
+                "P matrix must be a 3x3 or 3x4 array.".to_string(),
+            ));
         }
         let p_3x3 = p.slice(s![.., ..3]);
         p_3x3.dot(r_mat)
@@ -250,7 +284,6 @@ pub fn undistort_points_polynomial(
     let final_y = projected_homo.column(1);
     let w = projected_homo.column(2);
 
-    // Use azip for efficient, parallel-friendly row-wise operations
     ndarray::azip!((mut dst_row in dst_points.rows_mut(), &x_i in &final_x, &y_i in &final_y, &w_i in &w) {
         let w_inv = if w_i.abs() > 1e-6 { 1.0 / w_i } else { 0.0 };
         dst_row.assign(&arr1(&[x_i * w_inv, y_i * w_inv]));
