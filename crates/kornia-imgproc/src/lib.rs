@@ -56,6 +56,3 @@ pub mod warp;
 
 /// Pyramid operations
 pub mod pyramid;
-
-///pub mod undistort
-pub mod undistort;
