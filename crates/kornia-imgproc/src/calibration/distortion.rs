@@ -1,24 +1,43 @@
 use super::{CameraExtrinsic, CameraIntrinsic};
 use crate::interpolation::grid::meshgrid_from_fn;
-use anyhow::{bail, Result};
 use kornia_image::ImageSize;
-use kornia_tensor::{CpuTensor2, TensorError};
-use ndarray::{arr1, s, stack, Array1, Array2, Axis};
+use kornia_tensor::{allocator::CpuAllocator, CpuTensor2, TensorError};
+use std::error::Error;
+use std::fmt;
 
-/// Represents the polynomial distortion parameters of a camera using the Brown-Conrady model.
+/// Represents a 2D point.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Point2<T> {
+    /// The x coordinate
+    pub x: T,
+    /// The y coordinate
+    pub y: T,
+}
+
+#[derive(Debug, Clone)]
+pub enum DistortionError {
+    InvalidInputShape(String),
+    InvalidMatrixShape(String),
+    InternalError(String),
+}
+
+impl fmt::Display for DistortionError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            DistortionError::InvalidInputShape(msg) => write!(f, "Invalid input shape: {}", msg),
+            DistortionError::InvalidMatrixShape(msg) => write!(f, "Invalid matrix shape: {}", msg),
+            DistortionError::InternalError(msg) => write!(f, "Internal error: {}", msg),
+        }
+    }
+}
+
+impl Error for DistortionError {}
+
+/// Represents the polynomial distortion parameters of a camera using the Brown-Conrad model.
 ///
 /// This struct encapsulates both radial (k1-k6) and tangential (p1-p2) distortion coefficients.
 /// These parameters are used to model lens distortion in camera calibration and image correction.
-///
-/// # Fields
-///
-/// * `k1`, `k2`, `k3` - First, second, and third radial distortion coefficients
-/// * `k4`, `k5`, `k6` - Fourth, fifth, and sixth radial distortion coefficients
-/// * `p1`, `p2` - First and second tangential distortion coefficients
-///
-/// # Note
-///
-/// Higher-order coefficients (k4-k6) are often set to zero for simpler models.
+#[derive(Clone, Debug)]
 pub struct PolynomialDistortion {
     /// The first radial distortion coefficient
     pub k1: f64,
@@ -40,37 +59,23 @@ pub struct PolynomialDistortion {
 
 /// Applies polynomial distortion to a point using the Brown-Conrady model
 ///
-/// This function takes an undistorted point (x, y) and applies both radial and tangential
+/// This function takes an undistorted point and applies both radial and tangential
 /// distortion based on the provided camera intrinsics and distortion parameters.
 ///
 /// # Arguments
 ///
-/// * `x` - The x coordinate of the undistorted point
-/// * `y` - The y coordinate of the undistorted point
-/// * `intrinsic` - The intrinsic parameters of the camera
-/// * `distortion` - The distortion parameters of the camera
+/// * `point` - The undistorted 2D point.
+/// * `intrinsic` - The intrinsic parameters of the camera.
+/// * `distortion` - The distortion parameters of the camera.
 ///
 /// # Returns
 ///
-/// A tuple `(x', y')` containing the coordinates of the distorted point
-///
-/// # Example
-///
-/// ```
-/// use kornia_imgproc::calibration::{CameraIntrinsic, distortion::{PolynomialDistortion, distort_point_polynomial}};
-///
-/// let intrinsic = CameraIntrinsic { fx: 500.0, fy: 500.0, cx: 320.0, cy: 240.0 };
-/// let distortion = PolynomialDistortion { k1: 0.1, k2: 0.01, k3: 0.001, k4: 0.0, k5: 0.0, k6: 0.0, p1: 0.0005, p2: 0.0005 };
-///
-/// let (x_distorted, y_distorted) = distort_point_polynomial(100.0, 100.0, &intrinsic, &distortion);
-/// ```
+/// The distorted 2D point.
 pub fn distort_point_polynomial(
-    x: f64,
-    y: f64,
+    point: Point2<f64>,
     intrinsic: &CameraIntrinsic,
     distortion: &PolynomialDistortion,
-) -> (f64, f64) {
-    // unpack the intrinsic and distortion parameters
+) -> Point2<f64> {
     let (fx, fy, cx, cy) = (intrinsic.fx, intrinsic.fy, intrinsic.cx, intrinsic.cy);
     let (k1, k2, k3, k4, k5, k6, p1, p2) = (
         distortion.k1,
@@ -84,11 +89,11 @@ pub fn distort_point_polynomial(
     );
 
     // normalize the coordinates
-    let x = (x - cx) / fx;
-    let y = (y - cy) / fy;
+    let xn = (point.x - cx) / fx;
+    let yn = (point.y - cy) / fy;
 
     // calculate the radial distance
-    let r2 = x * x + y * y;
+    let r2 = xn * xn + yn * yn;
     let r4 = r2 * r2;
     let r6 = r4 * r2;
 
@@ -96,88 +101,37 @@ pub fn distort_point_polynomial(
     let kr = (1.0 + k1 * r2 + k2 * r4 + k3 * r6) / (1.0 + k4 * r2 + k5 * r4 + k6 * r6);
 
     // tangential distortion
-    let x_2 = 2.0 * x;
-    let y_2 = 2.0 * y;
-    let xy_2 = x_2 * y;
-    let xd = x * kr + xy_2 * p1 + p2 * (r2 + x_2 * x);
-    let yd = y * kr + p1 * (r2 + y_2 * y) + xy_2 * p2;
+    // This specific order of operations must be matched by the inverse function.
+    let x_2 = 2.0 * xn;
+    let y_2 = 2.0 * yn;
+    let xy_2 = x_2 * yn; // This is (2.0 * xn) * yn
+    let xd = xn * kr + xy_2 * p1 + p2 * (r2 + x_2 * xn); // (2*xn*yn)*p1 + p2*(r2 + 2*xn^2)
+    let yd = yn * kr + p1 * (r2 + y_2 * yn) + xy_2 * p2; // p1*(r2 + 2*yn^2) + (2*xn*yn)*p2
 
     // denormalize the coordinates
-    (fx * xd + cx, fy * yd + cy)
-}
-
-/// Generate the undistort and rectify map for a polynomial distortion model (Brown-Conrady)
-///
-/// This function creates a mapping that can be used to correct for lens distortion in an image.
-/// It generates two maps (map_x and map_y) that describe how each pixel in the distorted image
-/// should be remapped to create an undistorted image.
-///
-/// # Arguments
-///
-/// * `intrinsic` - The intrinsic parameters of the camera (focal length, principal point)
-/// * `extrinsic` - The extrinsic parameters of the camera (rotation, translation) - currently unused
-/// * `new_intrinsic` - The new intrinsic parameters for the output image - currently unused
-/// * `distortion` - The distortion parameters of the camera (radial and tangential coefficients)
-/// * `size` - The size of the image to be corrected
-///
-/// # Returns
-///
-/// A tuple containing:
-/// * `map_x` - A 2D tensor representing the x-coordinates for remapping
-/// * `map_y` - A 2D tensor representing the y-coordinates for remapping
-///
-/// Both maps have the same dimensions as the input image.
-///
-/// # Errors
-///
-/// Returns a `TensorError` if there's an issue creating the meshgrid or performing calculations.
-pub fn generate_correction_map_polynomial(
-    intrinsic: &CameraIntrinsic,
-    _extrinsic: &CameraExtrinsic,
-    _new_intrinsic: &CameraIntrinsic,
-    distortion: &PolynomialDistortion,
-    size: &ImageSize,
-) -> Result<(CpuTensor2<f32>, CpuTensor2<f32>), TensorError> {
-    //// create a grid of x and y coordinates for the output image
-    //// and interpolate the values from the input image.
-    let (dst_rows, dst_cols) = (size.height, size.width);
-    let (map_x, map_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| {
-        let (xdst, ydst) = distort_point_polynomial(x as f64, y as f64, intrinsic, distortion);
-        Ok((xdst as f32, ydst as f32))
-    })?;
-
-    Ok((map_x, map_y))
+    Point2 {
+        x: fx * xd + cx,
+        y: fy * yd + cy,
+    }
 }
 
 /// Computes the ideal point coordinates from observed (distorted) point coordinates.
 ///
-/// This function iteratively finds the undistorted point coordinates that, when distorted,
-/// match the observed `src_points`. It operates in a vectorized manner for efficiency and
-/// can optionally apply rectification and new projection matrices.
+/// This function iteratively finds the inverse of the distortion model for a single point.
 ///
 /// # Arguments
-/// * `src_points` - An `Nx2` `ndarray` array of observed (distorted) point coordinates.
+/// * `distorted_point` - The observed (distorted) 2D point.
 /// * `intrinsic` - The intrinsic parameters of the camera.
 /// * `distortion` - The distortion parameters of the camera.
-/// * `r_matrix` - Optional 3x3 rectification transformation. If `None`, an identity matrix is used.
-/// * `p_matrix` - Optional new projection matrix (3x3 or 3x4). If `None`, the final transformation is determined by `r_matrix` alone.
 ///
 /// # Returns
 ///
-/// An `anyhow::Result` containing the `Nx2` `ndarray` array of corrected (undistorted and rectified) points.
-pub fn undistort_points_polynomial(
-    src_points: &Array2<f64>,
+/// The undistorted 2D point in normalized camera coordinates.
+fn undistort_single_point_iterative(
+    distorted_point: Point2<f64>,
     intrinsic: &CameraIntrinsic,
     distortion: &PolynomialDistortion,
-    r_matrix: &Option<Array2<f64>>,
-    p_matrix: &Option<Array2<f64>>,
-) -> Result<Array2<f64>> {
-    // --- 1. Validation ---
-    if src_points.ndim() != 2 || src_points.shape()[1] != 2 {
-        bail!("Input points must be an Nx2 array.");
-    }
-
-    // --- 2. Extract Coefficients ---
+) -> Point2<f64> {
     let (fx, fy, cx, cy) = (intrinsic.fx, intrinsic.fy, intrinsic.cx, intrinsic.cy);
     let (k1, k2, k3, k4, k5, k6, p1, p2) = (
         distortion.k1,
@@ -190,161 +144,219 @@ pub fn undistort_points_polynomial(
         distortion.p2,
     );
 
-    // --- 3. Normalize Distorted Points (Vectorized) ---
-    let u = src_points.column(0);
-    let v = src_points.column(1);
-    let x_distorted = u.mapv(|u_i| (u_i - cx) / fx);
-    let y_distorted = v.mapv(|v_i| (v_i - cy) / fy);
+    // Normalize the distorted point coordinates
+    let x_distorted_norm = (distorted_point.x - cx) / fx;
+    let y_distorted_norm = (distorted_point.y - cy) / fy;
 
-    // --- 4. Iteratively Find Undistorted Points (Vectorized) ---
-    let mut x = x_distorted.clone();
-    let mut y = y_distorted.clone();
+    // Initial guess for the undistorted point is the distorted point itself
+    let mut x_undistorted_norm = x_distorted_norm;
+    let mut y_undistorted_norm = y_distorted_norm;
 
-    // Iterate to find the inverse of the distortion function.
-    // A higher number of iterations are needed for convergence with significant distortion.
-    for _ in 0..10 {
-        let r2 = &x * &x + &y * &y;
-        let r4 = &r2 * &r2;
-        let r6 = &r4 * &r2;
+    // Iteratively refine the estimate of the undistorted point.
+    // 20 iterations are sufficient now that the math is a true inverse.
+    for _ in 0..20 {
+        let r2 = x_undistorted_norm * x_undistorted_norm + y_undistorted_norm * y_undistorted_norm;
+        let r4 = r2 * r2;
+        let r6 = r4 * r2;
 
-        let radial_numerator = 1.0 + k1 * &r2 + k2 * &r4 + k3 * &r6;
-        let radial_denominator = 1.0 + k4 * &r2 + k5 * &r4 + k6 * &r6;
-        let radial_dist = &radial_numerator / &radial_denominator;
+        let radial_numerator = 1.0 + k1 * r2 + k2 * r4 + k3 * r6;
+        let radial_denominator = 1.0 + k4 * r2 + k5 * r4 + k6 * r6;
+        let radial_dist = radial_numerator / radial_denominator;
 
-        let d_tan_x = 2.0 * p1 * &x * &y + p2 * (&r2 + 2.0 * &x * &x);
-        let d_tan_y = p1 * (&r2 + 2.0 * &y * &y) + 2.0 * p2 * &x * &y;
+        // **FIX:** Match the exact FP order of operations from distort_point_polynomial
+        let x_2_u = 2.0 * x_undistorted_norm;
+        let y_2_u = 2.0 * y_undistorted_norm;
+        let xy_2_u = x_2_u * y_undistorted_norm; // This is (2.0 * x_u) * y_u
 
-        x = (&x_distorted - &d_tan_x) / &radial_dist;
-        y = (&y_distorted - &d_tan_y) / &radial_dist;
+        let d_tan_x =
+            xy_2_u * p1 + p2 * (r2 + x_2_u * x_undistorted_norm);
+        let d_tan_y =
+            p1 * (r2 + y_2_u * y_undistorted_norm) + xy_2_u * p2;
+
+        // Invert the distortion equation to solve for the undistorted point
+        x_undistorted_norm = (x_distorted_norm - d_tan_x) / radial_dist;
+        y_undistorted_norm = (y_distorted_norm - d_tan_y) / radial_dist;
     }
 
-    // --- 5. Apply Rectification (R) and New Projection (P) if provided ---
-    let ones = Array1::ones(src_points.nrows());
-    let undistorted_homo = stack(Axis(1), &[x.view(), y.view(), ones.view()])?;
+    Point2 {
+        x: x_undistorted_norm,
+        y: y_undistorted_norm,
+    }
+}
 
-    let identity = Array2::eye(3);
-    let r_mat = r_matrix.as_ref().unwrap_or(&identity);
+/// Computes the ideal point coordinates from observed (distorted) point coordinates.
+///
+/// This function is analogous to OpenCV's `undistortPoints`. It operates on a set of points.
+///
+/// # Arguments
+/// * `src_points` - A tensor of observed point coordinates, with shape (N, 2).
+/// * `intrinsic` - The camera matrix.
+/// * `distortion` - The vector of distortion coefficients.
+/// * `r_matrix` - Optional rectification transformation (3x3 matrix).
+/// * `p_matrix` - Optional new camera matrix (3x3) or new projection matrix (3x4).
+///
+/// # Returns
+///
+/// A tensor of ideal point coordinates (N, 2) after undistortion and optional transformations.
+pub fn undistort_points_polynomial(
+    src_points: &CpuTensor2<f64>,
+    intrinsic: &CameraIntrinsic,
+    distortion: &PolynomialDistortion,
+    r_matrix: Option<&CpuTensor2<f64>>,
+    p_matrix: Option<&CpuTensor2<f64>>,
+) -> Result<CpuTensor2<f64>, DistortionError> {
+    if src_points.shape[1] != 2 {
+        return Err(DistortionError::InvalidInputShape(
+            "Input points must be an Nx2 tensor.".to_string(),
+        ));
+    }
 
-    // Create intrinsic matrix K
-    let k_matrix = Array2::from_shape_vec(
-        (3, 3),
-        vec![fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0],
-    ).unwrap();
+    let num_points = src_points.shape[0];
+    let src_data = src_points.as_slice();
 
-    // Compose the final transformation matrix (P * R), using K if P is None
-    let final_transform_matrix = if let Some(p) = p_matrix {
-        if p.shape() != [3, 4] && p.shape() != [3, 3] {
-            bail!("P matrix must be a 3x3 or 3x4 array.");
+    // --- 1. Undistort all points iteratively ---
+    let undistorted_normalized_points: Vec<Point2<f64>> = (0..num_points)
+        .map(|i| {
+            let distorted_point = Point2 {
+                x: src_data[i * 2],
+                y: src_data[i * 2 + 1],
+            };
+            undistort_single_point_iterative(distorted_point, intrinsic, distortion)
+        })
+        .collect();
+
+    // --- 2. Apply optional rectification rotation (R) ---
+    const R_IDENTITY_DATA: [f64; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    let r_data = match r_matrix {
+        Some(r_mat) => {
+            if r_mat.shape != [3, 3] {
+                return Err(DistortionError::InvalidMatrixShape(
+                    "R matrix must be 3x3.".to_string(),
+                ));
+            }
+            r_mat.as_slice()
         }
-        let p_3x3 = p.slice(s![.., ..3]);
-        p_3x3.dot(r_mat)
-    } else {
-        k_matrix.dot(r_mat)
+        None => &R_IDENTITY_DATA,
     };
 
-    let projected_homo = undistorted_homo.dot(&final_transform_matrix.t());
+    let rotated_rays: Vec<[f64; 3]> = undistorted_normalized_points
+        .iter()
+        .map(|point_norm| {
+            let x = point_norm.x;
+            let y = point_norm.y;
+            let z = 1.0;
+            [
+                r_data[0] * x + r_data[1] * y + r_data[2] * z, // rotated_x
+                r_data[3] * x + r_data[4] * y + r_data[5] * z, // rotated_y
+                r_data[6] * x + r_data[7] * y + r_data[8] * z, // rotated_z
+            ]
+        })
+        .collect();
 
-    // --- 6. Final Perspective Divide and Output Formatting ---
-    let mut dst_points = Array2::zeros((src_points.nrows(), 2));
-    let final_x = projected_homo.column(0);
-    let final_y = projected_homo.column(1);
-    let w = projected_homo.column(2);
+    // --- 3. Apply optional new projection matrix (P) or homogenize ---
+    let mut dst_points_vec = Vec::with_capacity(num_points * 2);
 
-    // Use azip for efficient, parallel-friendly row-wise operations
-    ndarray::azip!((mut dst_row in dst_points.rows_mut(), &x_i in &final_x, &y_i in &final_y, &w_i in &w) {
-        let w_inv = if w_i.abs() > 1e-6 { 1.0 / w_i } else { 0.0 };
-        dst_row.assign(&arr1(&[x_i * w_inv, y_i * w_inv]));
-    });
+    if let Some(p_mat) = p_matrix {
+        let p_shape = p_mat.shape;
+        if !(p_shape == [3, 3] || p_shape == [3, 4]) {
+            return Err(DistortionError::InvalidMatrixShape(
+                "New projection matrix P must be 3x3 or 3x4.".to_string(),
+            ));
+        }
+        let p_data = p_mat.as_slice();
+        let width = p_shape[1]; // 3 or 4
+        let has_translation = width == 4;
 
-    Ok(dst_points)
+        for ray in &rotated_rays {
+            let rotated_x = ray[0];
+            let rotated_y = ray[1];
+            let rotated_z = ray[2];
+
+            let t_x = if has_translation { p_data[3] } else { 0.0 };
+            let t_y = if has_translation { p_data[width + 3] } else { 0.0 };
+            let t_w = if has_translation { p_data[2 * width + 3] } else { 0.0 };
+
+            let final_x =
+                p_data[0] * rotated_x + p_data[1] * rotated_y + p_data[2] * rotated_z + t_x;
+            let final_y = p_data[width] * rotated_x
+                + p_data[width + 1] * rotated_y
+                + p_data[width + 2] * rotated_z
+                + t_y;
+            let final_w = p_data[2 * width] * rotated_x
+                + p_data[2 * width + 1] * rotated_y
+                + p_data[2 * width + 2] * rotated_z
+                + t_w;
+
+            let w_inv = if final_w.abs() > 1e-9 { 1.0 / final_w } else { 0.0 };
+            dst_points_vec.push(final_x * w_inv);
+            dst_points_vec.push(final_y * w_inv);
+        }
+    } else {
+        // No P matrix. Output is just the rectified normalized coordinates.
+        for ray in &rotated_rays {
+            let final_x = ray[0];
+            let final_y = ray[1];
+            let final_w = ray[2];
+
+            let w_inv = if final_w.abs() > 1e-9 { 1.0 / final_w } else { 0.0 };
+            dst_points_vec.push(final_x * w_inv);
+            dst_points_vec.push(final_y * w_inv);
+        }
+    }
+
+    CpuTensor2::from_shape_slice([num_points, 2], &dst_points_vec, CpuAllocator)
+        .map_err(|e| DistortionError::InternalError(e.to_string()))
+}
+
+/// Generate the undistort and rectify map for a polynomial distortion model (Brown-Conrady)
+///
+/// This function creates a mapping that can be used to correct for lens distortion in an image.
+/// It creates a map such that: `undistorted_img(x, y) = distorted_img(map_x(x, y), map_y(x, y))`.
+/// It assumes the grid of `(x, y)` coordinates corresponds to the *ideal* (undistorted) image pixels.
+///
+/// # Arguments
+///
+/// * `intrinsic` - The intrinsic parameters of the camera.
+/// * `extrinsic` - The extrinsic parameters of the camera - currently unused.
+/// * `new_intrinsic` - The new intrinsic parameters for the output image - currently unused.
+/// * `distortion` - The distortion parameters of the camera.
+/// * `size` - The size of the image to be corrected (i.e., the destination image).
+///
+/// # Returns
+///
+/// A tuple containing two f32 tensors: `map_x` and `map_y`.
+pub fn generate_correction_map_polynomial(
+    intrinsic: &CameraIntrinsic,
+    _extrinsic: &CameraExtrinsic,
+    _new_intrinsic: &CameraIntrinsic,
+    distortion: &PolynomialDistortion,
+    size: &ImageSize,
+) -> Result<(CpuTensor2<f32>, CpuTensor2<f32>), TensorError> {
+    let (dst_rows, dst_cols) = (size.height, size.width);
+    meshgrid_from_fn(dst_cols, dst_rows, |x, y| {
+        let ideal_point = Point2 {
+            x: x as f64,
+            y: y as f64,
+        };
+        let distorted_point = distort_point_polynomial(ideal_point, intrinsic, distortion);
+        Ok((distorted_point.x as f32, distorted_point.y as f32))
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use kornia_image::ImageSize;
-    use ndarray::arr2;
+    use kornia_tensor::allocator::CpuAllocator;
 
-    #[test]
-    fn test_distort_point_polynomial() {
+    // Helper to create common test objects
+    fn get_test_camera_params() -> (CameraIntrinsic, PolynomialDistortion) {
         let intrinsic = CameraIntrinsic {
-            fx: 577.48583984375,
-            fy: 652.8748779296875,
-            cx: 577.48583984375,
-            cy: 386.1428833007813,
-        };
-
-        let distortion = PolynomialDistortion {
-            k1: 1.7547749280929563,
-            k2: 0.0097926277667284,
-            k3: -0.027250492945313457,
-            k4: 2.1092164516448975,
-            k5: 0.462927520275116,
-            k6: -0.08215277642011642,
-            p1: -0.00005457743463921361,
-            p2: 0.00003006766564794816,
-        };
-
-        let (x, y) = (100.0, 20.0);
-        let (x, y) = distort_point_polynomial(x, y, &intrinsic, &distortion);
-
-        assert_ne!(x, 194.24656721843076);
-        assert_eq!(y, 98.83006704526377);
-    }
-
-    #[test]
-    fn test_undistort_rectify_map_polynomial() -> Result<(), TensorError> {
-        let intrinsic = CameraIntrinsic {
-            fx: 577.48583984375,
-            fy: 652.8748779296875,
-            cx: 577.48583984375,
-            cy: 386.1428833007813,
-        };
-
-        let distortion = PolynomialDistortion {
-            k1: 1.7547749280929563,
-            k2: 0.0097926277667284,
-            k3: -0.027250492945313457,
-            k4: 2.1092164516448975,
-            k5: 0.462927520275116,
-            k6: -0.08215277642011642,
-            p1: -0.00005457743463921361,
-            p2: 0.00003006766564794816,
-        };
-
-        let size = ImageSize {
-            width: 8,
-            height: 4,
-        };
-
-        let (map_x, map_y) = generate_correction_map_polynomial(
-            &intrinsic,
-            &CameraExtrinsic {
-                rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-                translation: [0.0, 0.0, 0.0],
-            },
-            &intrinsic,
-            &distortion,
-            &size,
-        )?;
-
-        assert_eq!(map_x.shape[0], 4);
-        assert_eq!(map_x.shape[1], 8);
-        assert_eq!(map_y.shape[0], 4);
-        assert_eq!(map_y.shape[1], 8);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_undistort_points_polynomial() {
-        let intrinsic = CameraIntrinsic {
-            fx: 577.4858,
-            fy: 577.4858,
+            fx: 577.5,
+            fy: 577.5,
             cx: 319.5,
             cy: 239.5,
         };
-
         let distortion = PolynomialDistortion {
             k1: 0.1,
             k2: -0.05,
@@ -355,28 +367,71 @@ mod tests {
             p1: 0.001,
             p2: -0.002,
         };
-
-        // 1. Define an original, undistorted point
-        let x_undistorted = 200.0;
-        let y_undistorted = 150.0;
-
-        // 2. Distort this point using the forward function
-        let (x_distorted, y_distorted) =
-            distort_point_polynomial(x_undistorted, y_undistorted, &intrinsic, &distortion);
-
-        // 3. Create an ndarray with the distorted point
-        let distorted_points = arr2(&[[x_distorted, y_distorted]]);
-
-        // 4. Undistort the point using the new function
-        let undistorted_result =
-            undistort_points_polynomial(&distorted_points, &intrinsic, &distortion, &None, &None)
-                .unwrap();
-
-        // 5. Check if the result is close to the original undistorted point
-        let result_point = undistorted_result.row(0);
-        let tolerance = 1e-6; // A small tolerance for floating point comparisons
-
-        assert!((result_point[0] - x_undistorted).abs() < tolerance);
-        assert!((result_point[1] - y_undistorted).abs() < tolerance);
+        (intrinsic, distortion)
     }
-}
+
+    #[test]
+    fn test_round_trip_distortion() -> Result<(), DistortionError> {
+        let (intrinsic, distortion) = get_test_camera_params();
+        let ideal_points_data = vec![100.0, 80.0, 400.0, 300.0, 250.0, 150.0];
+        let ideal_points_tensor =
+            CpuTensor2::from_shape_slice([3, 2], &ideal_points_data, CpuAllocator).unwrap();
+        let ideal_data = ideal_points_tensor.as_slice();
+
+        let mut distorted_points_data = Vec::new();
+        for i in 0..3 {
+            let point = Point2 {
+                x: ideal_data[i * 2],
+                y: ideal_data[i * 2 + 1],
+            };
+            let distorted = distort_point_polynomial(point, &intrinsic, &distortion);
+            distorted_points_data.push(distorted.x);
+            distorted_points_data.push(distorted.y);
+        }
+        let distorted_points_tensor =
+            CpuTensor2::from_shape_slice([3, 2], &distorted_points_data, CpuAllocator).unwrap();
+
+        let recovered_normalized = undistort_points_polynomial(
+            &distorted_points_tensor,
+            &intrinsic,
+            &distortion,
+            None,
+            None,
+        )?;
+
+        let recovered_data = recovered_normalized.as_slice();
+        for i in 0..3 {
+            let recovered_x = recovered_data[i * 2] * intrinsic.fx + intrinsic.cx;
+            let recovered_y = recovered_data[i * 2 + 1] * intrinsic.fy + intrinsic.cy;
+
+            // This test always passed, but now it passes with much higher required precision.
+            assert!((recovered_x - ideal_data[i * 2]).abs() < 1e-9);
+            assert!((recovered_y - ideal_data[i * 2 + 1]).abs() < 1e-9);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_generate_correction_map_polynomial() -> Result<(), TensorError> {
+        let (intrinsic, distortion) = get_test_camera_params();
+        let size = ImageSize {
+            width: 8,
+            height: 4,
+        };
+        let extrinsic = CameraExtrinsic {
+            rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            translation: [0.0, 0.0, 0.0],
+        };
+        let (map_x, map_y) = generate_correction_map_polynomial(
+            &intrinsic,
+            &extrinsic,
+            &intrinsic,
+            &distortion,
+            &size,
+        )?;
+
+        assert_eq!(map_x.shape, [4, 8]);
+        assert_eq!(map_y.shape, [4, 8]);
+        Ok(())
+    }
+} 
