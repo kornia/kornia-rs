@@ -95,7 +95,7 @@ pub fn solve_pnp_ransac(
         iter += 1;
 
         // Debug: prevent infinite loops
-        if iter > params.max_iterations * 2 {
+        if iter > params.max_iterations {
             #[cfg(feature = "ransac_debug")]
             eprintln!("RANSAC: Emergency break after {} iterations", iter);
             break;
@@ -124,7 +124,7 @@ pub fn solve_pnp_ransac(
             }
         };
 
-        // Quick cheirality check on minimal set (all positive depths)
+        // Optional cheirality check on minimal set (all positive depths)
         if !sample_all_positive_depths(&pose_min.rotation, &pose_min.translation, &w_min) {
             #[cfg(feature = "ransac_debug")]
             eprintln!("Cheirality check failed on iteration {}", iter);

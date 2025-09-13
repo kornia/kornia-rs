@@ -1,17 +1,21 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
 use kornia_pnp as kpnp;
+use rand::seq::SliceRandom;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
 type PnpDataset = (Vec<[f32; 3]>, Vec<[f32; 2]>, [[f32; 3]; 3]);
+const NUM_SEEDS: usize = 5;
 
-fn generate_cube_dataset(num_points: usize, noise_px: f32) -> PnpDataset {
+// Removed unseeded generator; use seeded variant for reproducibility across benches
+
+fn generate_cube_dataset_with_seed(num_points: usize, noise_px: f32, seed: u64) -> PnpDataset {
     // Camera intrinsics, assumes no distortion
     let k = [[800.0, 0.0, 640.0], [0.0, 800.0, 480.0], [0.0, 0.0, 1.0]];
 
     // Simple cube-like distribution in front of the camera
     let mut world = Vec::with_capacity(num_points);
-    let mut rng = StdRng::seed_from_u64(1234);
+    let mut rng = StdRng::seed_from_u64(seed);
     for _ in 0..num_points {
         // points in a 1m cube around z in [3,6]
         world.push([
@@ -42,10 +46,26 @@ fn generate_cube_dataset(num_points: usize, noise_px: f32) -> PnpDataset {
     (world, image, k)
 }
 
+fn inject_outliers_random(image: &mut [[f32; 2]], fraction: f32, seed: u64) {
+    let num_out = (fraction.clamp(0.0, 1.0) * image.len() as f32) as usize;
+    if num_out == 0 {
+        return;
+    }
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut idxs: Vec<usize> = (0..image.len()).collect();
+    idxs.shuffle(&mut rng);
+    for &i in idxs.iter().take(num_out) {
+        let angle = rng.gen_range(0.0..(2.0 * std::f32::consts::PI));
+        let radius = rng.gen_range(300.0..800.0);
+        image[i][0] += radius * angle.cos();
+        image[i][1] += radius * angle.sin();
+    }
+}
+
 fn bench_epnp(c: &mut Criterion) {
     let mut group = c.benchmark_group("pnp_epnp");
     for &n in &[8usize, 32, 128, 512, 2048] {
-        let (world, image, k) = generate_cube_dataset(n, 0.5);
+        let (world, image, k) = generate_cube_dataset_with_seed(n, 0.5, 42);
         group.throughput(Throughput::Elements(n as u64));
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
@@ -61,39 +81,41 @@ fn bench_epnp(c: &mut Criterion) {
 fn bench_ransac(c: &mut Criterion) {
     let mut group = c.benchmark_group("pnp_ransac");
     for &n in &[32usize, 128, 512, 2048] {
-        let (world, mut image, k) = generate_cube_dataset(n, 0.5);
-
-        // Inject 20% outliers by shifting image points far away
-        let num_out = (0.2 * n as f32) as usize;
-        image.iter_mut().take(num_out).for_each(|p| {
-            p[0] += 500.0;
-            p[1] -= 400.0;
-        });
-
-        let params = kpnp::RansacParams {
-            max_iterations: 200,
-            reproj_threshold_px: 3.0,
-            confidence: 0.99,
-            random_seed: Some(42),
-            refine: false,
-        };
-
+        // Run multiple seeds to observe distribution while keeping identical data across libraries
+        let seeds: Vec<u64> = (0..NUM_SEEDS).map(|i| 10_000u64 + i as u64).collect();
         group.throughput(Throughput::Elements(n as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
-            b.iter(|| {
-                let res = kpnp::solve_pnp_ransac(
-                    &world,
-                    &image,
-                    &k,
-                    kpnp::PnPMethod::EPnPDefault,
-                    &params,
-                )
-                .unwrap();
-                std::hint::black_box(res);
-            });
-        });
-        // keep image mutable in scope
-        let _ = image.len();
+        for &seed in &seeds {
+            let (world, mut image, k) = generate_cube_dataset_with_seed(n, 0.5, seed);
+            inject_outliers_random(&mut image, 0.20, seed.wrapping_add(12345));
+
+            let params = kpnp::RansacParams {
+                max_iterations: 200,
+                reproj_threshold_px: 3.0,
+                confidence: 0.99,
+                random_seed: Some(seed),
+                refine: true,
+            };
+
+            group.bench_with_input(
+                BenchmarkId::new("n", format!("{}_s{}", n, seed)),
+                &seed,
+                |b, _| {
+                    b.iter(|| {
+                        let res = kpnp::solve_pnp_ransac(
+                            &world,
+                            &image,
+                            &k,
+                            kpnp::PnPMethod::EPnPDefault,
+                            &params,
+                        )
+                        .unwrap();
+                        std::hint::black_box(res);
+                    });
+                },
+            );
+            // keep image mutable in scope
+            let _ = image.len();
+        }
     }
     group.finish();
 }
@@ -149,7 +171,7 @@ mod opencv_cmp {
         init_opencv_runtime();
         let mut group = c.benchmark_group("opencv_epnp");
         for &n in &[8usize, 32, 128, 512, 2048] {
-            let (world, image, k) = generate_cube_dataset(n, 0.5);
+            let (world, image, k) = generate_cube_dataset_with_seed(n, 0.5, 42);
             let obj = to_mat_object_points(&world).unwrap();
             let img = to_mat_image_points(&image).unwrap();
             let kmat = k_to_mat(&k).unwrap();
@@ -181,42 +203,45 @@ mod opencv_cmp {
         init_opencv_runtime();
         let mut group = c.benchmark_group("opencv_ransac");
         for &n in &[32usize, 128, 512, 2048] {
-            let (world, mut image, k) = generate_cube_dataset(n, 0.5);
-            // 20% outliers
-            let num_out = (0.2 * n as f32) as usize;
-            image.iter_mut().take(num_out).for_each(|p| {
-                p[0] += 500.0;
-                p[1] -= 400.0;
-            });
-            let obj = to_mat_object_points(&world).unwrap();
-            let img = to_mat_image_points(&image).unwrap();
-            let kmat = k_to_mat(&k).unwrap();
-            let dist = Mat::zeros(4, 1, core::CV_64F).unwrap().to_mat().unwrap();
+            let seeds: Vec<u64> = (0..NUM_SEEDS).map(|i| 10_000u64 + i as u64).collect();
             group.throughput(Throughput::Elements(n as u64));
-            // Preallocate once per input size; reuse across iterations
-            let mut rvec = Mat::default();
-            let mut tvec = Mat::default();
-            let mut inliers = Mat::default();
-            group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
-                b.iter(|| {
-                    calib3d::solve_pnp_ransac(
-                        &obj,
-                        &img,
-                        &kmat,
-                        &dist,
-                        &mut rvec,
-                        &mut tvec,
-                        false,
-                        200,
-                        3.0,
-                        0.99,
-                        &mut inliers,
-                        calib3d::SOLVEPNP_EPNP,
-                    )
-                    .unwrap();
-                    std::hint::black_box((&rvec, &tvec, &inliers));
-                });
-            });
+            for &seed in &seeds {
+                let (world, mut image, k) = generate_cube_dataset_with_seed(n, 0.5, seed);
+                inject_outliers_random(&mut image, 0.20, seed.wrapping_add(12345));
+
+                let obj = to_mat_object_points(&world).unwrap();
+                let img = to_mat_image_points(&image).unwrap();
+                let kmat = k_to_mat(&k).unwrap();
+                let dist = Mat::zeros(4, 1, core::CV_64F).unwrap().to_mat().unwrap();
+                // Preallocate once per (n, seed) input to avoid allocation in inner loop
+                let mut rvec = Mat::default();
+                let mut tvec = Mat::default();
+                let mut inliers = Mat::default();
+                group.bench_with_input(
+                    BenchmarkId::new("n", format!("{}_s{}", n, seed)),
+                    &seed,
+                    |b, _| {
+                        b.iter(|| {
+                            calib3d::solve_pnp_ransac(
+                                &obj,
+                                &img,
+                                &kmat,
+                                &dist,
+                                &mut rvec,
+                                &mut tvec,
+                                false,
+                                200,
+                                3.0,
+                                0.99,
+                                &mut inliers,
+                                calib3d::SOLVEPNP_EPNP,
+                            )
+                            .unwrap();
+                            std::hint::black_box((&rvec, &tvec, &inliers));
+                        });
+                    },
+                );
+            }
         }
         group.finish();
     }
