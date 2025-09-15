@@ -8,8 +8,8 @@ pub mod epnp;
 pub mod pnp;
 
 pub use epnp::{EPnP, EPnPParams};
-pub use pnp::{PnPError, PnPResult, PnPSolver};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
+pub use pnp::{PnPError, PnPResult, PnPSolver};
 
 mod ops;
 
