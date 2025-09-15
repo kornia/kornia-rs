@@ -8,6 +8,10 @@ pub mod allocator;
 #[cfg(feature = "bincode")]
 pub mod bincode;
 
+/// cuda module containing the CUDA allocator implementation.
+#[cfg(feature = "cuda")]
+pub mod cuda;
+
 /// serde module containing the serialization and deserialization utilities.
 #[cfg(feature = "serde")]
 pub mod serde;
