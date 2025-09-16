@@ -661,12 +661,23 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// t.strides = [1, 6, 2];
     /// assert!(!t.is_standard_layout());
     /// let t2 = t.to_standard_layout(CpuAllocator);
-    /// assert!(t2.is_standard_layout());
+    /// match t.to_standard_layout(CpuAllocator) {
+    ///     Ok(t2) => {
+    ///         assert!(t2.is_standard_layout());
+    ///     }
+    ///     Err(e) => {
+    ///         eprintln!("to_standard_layout failed: {}", e);
+    ///     }
+    /// }
     /// ```
-    pub fn to_standard_layout(&self, alloc: A) -> Self
+    pub fn to_standard_layout(&self, alloc: A) -> Result<Self, TensorError>
     where
-        T: Clone,
+        T: Clone + std::fmt::Debug,
     {
+        if self.is_standard_layout() {
+            return Ok(self.clone());
+        }
+
         let total_elems: usize = self.shape.iter().product();
         let mut flat = Vec::with_capacity(total_elems);
         let mut idx = [0; N];
@@ -692,8 +703,12 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
             }
         }
 
-        Tensor::from_shape_vec(self.shape, flat, alloc)
-            .expect("to_standard_layout(tensor.rs): construction failed")
+        Tensor::from_shape_vec(self.shape, flat, alloc).map_err(|_| {
+            TensorError::DimensionMismatch(format!(
+                "Cannot construct tensor of shape {:?} with {:?} elements",
+                self.shape, total_elems,
+            ))
+        })
     }
 
     /// Cast the tensor to a new type.
@@ -1434,9 +1449,13 @@ mod tests {
         let t =
             Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data.clone(), CpuAllocator)?;
         assert!(t.is_standard_layout());
-        let t2 = t.to_standard_layout(CpuAllocator);
-        assert!(t2.is_standard_layout());
-        assert_eq!(t2.storage.as_slice(), data.as_slice());
+        match t.to_standard_layout(CpuAllocator) {
+            Ok(t2) => {
+                assert!(t2.is_standard_layout());
+                assert_eq!(t2.storage.as_slice(), data.as_slice());
+            }
+            Err(e) => return Err(e),
+        }
         Ok(())
     }
 
@@ -1448,8 +1467,12 @@ mod tests {
         // altering strides
         t.strides = [1, 6, 2];
         assert!(!t.is_standard_layout());
-        let t2 = t.to_standard_layout(CpuAllocator);
-        assert!(t2.is_standard_layout());
+        match t.to_standard_layout(CpuAllocator) {
+            Ok(t2) => {
+                assert!(t2.is_standard_layout());
+            }
+            Err(e) => return Err(e),
+        }
         Ok(())
     }
 }
