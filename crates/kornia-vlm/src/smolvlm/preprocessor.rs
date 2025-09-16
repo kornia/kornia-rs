@@ -4,7 +4,7 @@ use kornia_image::allocator::ImageAllocator;
 
 use kornia_image::{Image, ImageSize};
 use kornia_imgproc::interpolation::InterpolationMode;
-use kornia_imgproc::resize::resize_fast;
+use kornia_imgproc::resize::resize_fast_rgb;
 use kornia_tensor::allocator::CpuAllocator;
 
 // ImageNet mean and std for normalization
@@ -36,7 +36,7 @@ pub fn preprocess_image<A: ImageAllocator>(
                 img.0.storage.alloc().clone(),
             )
             .unwrap();
-            resize_fast(&img, &mut resized, InterpolationMode::Bilinear).unwrap();
+            resize_fast_rgb(&img, &mut resized, InterpolationMode::Bilinear).unwrap();
             resized
         }
     };
@@ -58,7 +58,7 @@ pub fn preprocess_image<A: ImageAllocator>(
                 img.0.storage.alloc().clone(),
             )
             .unwrap();
-            resize_fast(&img, &mut resized, InterpolationMode::Bilinear).unwrap();
+            resize_fast_rgb(&img, &mut resized, InterpolationMode::Bilinear).unwrap();
             resized
         }
     };

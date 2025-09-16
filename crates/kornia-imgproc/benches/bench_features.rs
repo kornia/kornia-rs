@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::Image;
 use kornia_imgproc::{
-    color::gray_from_rgb_u8, features::*, interpolation::InterpolationMode, resize::resize_fast,
+    color::gray_from_rgb_u8, features::*, interpolation::InterpolationMode, resize::resize_fast_rgb,
 };
 use kornia_io::functional as io;
 use kornia_tensor::CpuAllocator;
@@ -14,7 +14,7 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
 
     let new_size = [1920, 1080].into();
     let mut img_resized = Image::from_size_val(new_size, 0, CpuAllocator).unwrap();
-    resize_fast(&img_rgb8, &mut img_resized, InterpolationMode::Bilinear).unwrap();
+    resize_fast_rgb(&img_rgb8, &mut img_resized, InterpolationMode::Bilinear).unwrap();
 
     let mut img_gray8 = Image::from_size_val(new_size, 0, CpuAllocator).unwrap();
     gray_from_rgb_u8(&img_resized, &mut img_gray8).unwrap();

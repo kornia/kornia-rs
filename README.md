@@ -64,7 +64,7 @@ Goodbyte!
 
 ### >_ System dependencies
 
-Dependeing on the features you want to use, you might need to install the following dependencies in your system:
+Depending on the features you want to use, you might need to install the following dependencies in your system:
 
 #### v4l (Video4Linux camera support)
 
@@ -188,7 +188,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Python usage
 
-Load an image, that is converted directly to a numpy array to ease the integration with other libraries.
+Load an image, which is converted directly to a numpy array to ease the integration with other libraries.
 
 ```python
 import kornia_rs as K

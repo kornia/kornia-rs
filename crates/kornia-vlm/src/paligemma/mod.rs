@@ -9,7 +9,7 @@ use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     Image,
 };
-use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast};
+use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
 use model::{TextGeneration, TextGenerationConfig};
 use tokenizers::Tokenizer;
 use utils::hub_load_safetensors;
@@ -132,7 +132,7 @@ impl Paligemma {
         stdout_debug: bool,
     ) -> Result<String, PaligemmaError> {
         // resize image to 224x224
-        resize_fast(image, &mut self.img_buf, InterpolationMode::Bilinear)?;
+        resize_fast_rgb(image, &mut self.img_buf, InterpolationMode::Bilinear)?;
 
         // convert to tensor with shape [1, 3, 224, 224]
         let image_t = Tensor::from_raw_buffer(
