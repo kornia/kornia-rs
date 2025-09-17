@@ -278,6 +278,157 @@ impl HarrisResponse {
 
         Ok(())
     }
+
+    /// Computes the Harris response for a `u8` grayscale image, writing `f32` output.
+    ///
+    /// Notes:
+    /// - Input intensities are normalized to [0, 1] by dividing by 255.0, so results
+    ///   match the `f32` variant when the same image is expressed as 0.0/1.0 floats.
+    /// - Border pixels are left as zeros to match the f32 implementation behavior.
+    pub fn compute_u8<A1: ImageAllocator, A2: ImageAllocator>(
+        &mut self,
+        src: &Image<u8, 1, A1>,
+        dst: &mut Image<f32, 1, A2>,
+    ) -> Result<(), ImageError> {
+        if src.size() != self.image_size {
+            return Err(ImageError::InvalidImageSize(
+                src.size().width,
+                src.size().height,
+                self.image_size.width,
+                self.image_size.height,
+            ));
+        }
+        if dst.size() != self.image_size {
+            return Err(ImageError::InvalidImageSize(
+                dst.size().width,
+                dst.size().height,
+                self.image_size.width,
+                self.image_size.height,
+            ));
+        }
+
+        let src_data = src.as_slice();
+        let col_slice = src.cols()..src_data.len() - src.cols();
+        let row_slice = 1..src.cols() - 1;
+
+        const INV_255: f32 = 1.0 / 255.0;
+
+        // First pass: compute dx^2, dy^2, dxy on the inner region
+        self.dx2_data
+            .as_mut_slice()
+            .get_mut(col_slice.clone())
+            .unwrap()
+            .par_chunks_exact_mut(src.cols())
+            .zip(
+                self.dy2_data
+                    .as_mut_slice()
+                    .get_mut(col_slice.clone())
+                    .unwrap()
+                    .par_chunks_exact_mut(src.cols()),
+            )
+            .zip(
+                self.dxy_data
+                    .as_mut_slice()
+                    .get_mut(col_slice.clone())
+                    .unwrap()
+                    .par_chunks_exact_mut(src.cols()),
+            )
+            .enumerate()
+            .for_each(|(row_idx, ((dx2_chunk, dy2_chunk), dxy_chunk))| {
+                let row_offset = (row_idx + 1) * src.cols();
+
+                dx2_chunk
+                    .get_mut(row_slice.clone())
+                    .unwrap()
+                    .iter_mut()
+                    .zip(
+                        dy2_chunk
+                            .get_mut(row_slice.clone())
+                            .unwrap()
+                            .iter_mut(),
+                    )
+                    .zip(dxy_chunk.get_mut(row_slice.clone()).unwrap().iter_mut())
+                    .enumerate()
+                    .for_each(|(col_idx, ((dx2_pixel, dy2_pixel), dxy_pixel))| {
+                        let current_idx = row_offset + col_idx + 1;
+                        let prev_row_idx = current_idx - src.cols();
+                        let next_row_idx = current_idx + src.cols();
+
+                        let (v11, v12, v13, v21, v23, v31, v32, v33) = unsafe {
+                            (
+                                *src_data.get_unchecked(prev_row_idx - 1) as f32 * INV_255,
+                                *src_data.get_unchecked(prev_row_idx) as f32 * INV_255,
+                                *src_data.get_unchecked(prev_row_idx + 1) as f32 * INV_255,
+                                *src_data.get_unchecked(current_idx - 1) as f32 * INV_255,
+                                *src_data.get_unchecked(current_idx + 1) as f32 * INV_255,
+                                *src_data.get_unchecked(next_row_idx - 1) as f32 * INV_255,
+                                *src_data.get_unchecked(next_row_idx) as f32 * INV_255,
+                                *src_data.get_unchecked(next_row_idx + 1) as f32 * INV_255,
+                            )
+                        };
+
+                        // I_x,I_y via 3x3 sobel operator and convolved
+                        let dx = (-v33 + v31 - 2.0 * v23 + 2.0 * v21 - v13 + v11) * 0.125;
+                        let dy = (-v33 - 2.0 * v32 - v31 + v13 + 2.0 * v12 + v11) * 0.125;
+
+                        *dx2_pixel = dx * dx;
+                        *dy2_pixel = dy * dy;
+                        *dxy_pixel = dx * dy;
+                    });
+            });
+
+        // Second pass: 3x3 box filter over the structure tensor terms and compute response
+        dst.as_slice_mut()
+            .get_mut(col_slice.clone())
+            .unwrap()
+            .par_chunks_exact_mut(src.cols())
+            .enumerate()
+            .for_each(|(row_idx, dst_chunk)| {
+                let row_offset = (row_idx + 1) * src.cols();
+
+                dst_chunk
+                    .get_mut(row_slice.clone())
+                    .unwrap()
+                    .iter_mut()
+                    .enumerate()
+                    .for_each(|(col_idx, dst_pixel)| {
+                        let current_idx = row_offset + col_idx + 1;
+                        let prev_row_idx = current_idx - src.cols();
+                        let next_row_idx = current_idx + src.cols();
+
+                        let mut m11 = 0.0;
+                        let mut m22 = 0.0;
+                        let mut m12 = 0.0;
+
+                        let idxs = [
+                            prev_row_idx - 1,
+                            prev_row_idx,
+                            prev_row_idx + 1,
+                            current_idx - 1,
+                            current_idx,
+                            current_idx + 1,
+                            next_row_idx - 1,
+                            next_row_idx,
+                            next_row_idx + 1,
+                        ];
+                        for idx in idxs {
+                            unsafe {
+                                m11 += self.dx2_data.get_unchecked(idx);
+                                m22 += self.dy2_data.get_unchecked(idx);
+                                m12 += self.dxy_data.get_unchecked(idx);
+                            }
+                        }
+
+                        let det = m11 * m22 - m12 * m12;
+                        let trace = m11 + m22;
+                        let response = det - self.k * trace * trace;
+
+                        *dst_pixel = f32::max(0.0, response);
+                    });
+            });
+
+        Ok(())
+    }
 }
 
 /// Compute the DoG response of an image.
@@ -482,6 +633,43 @@ mod tests {
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         ]);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_harris_response_u8() -> Result<(), ImageError> {
+        #[rustfmt::skip]
+        let src = Image::from_size_slice(
+            [9, 9].into(),
+            &[
+                0u8, 0, 0, 0, 0, 0, 0, 0, 0,
+                0u8, 0, 0, 0, 0, 0, 0, 0, 0,
+                0u8, 0, 255, 255, 255, 255, 255, 0, 0,
+                0u8, 0, 255, 255, 255, 255, 255, 0, 0,
+                0u8, 0, 255, 255, 255, 255, 255, 0, 0,
+                0u8, 0, 255, 255, 255, 255, 255, 0, 0,
+                0u8, 0, 255, 255, 255, 255, 255, 0, 0,
+                0u8, 0, 0, 0, 0, 0, 0, 0, 0,
+                0u8, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+            CpuAllocator
+        )?;
+
+        let mut dst = Image::<f32, 1, _>::from_size_val([9, 9].into(), 0.0, CpuAllocator)?;
+        HarrisResponse::new(dst.size()).compute_u8(&src, &mut dst)?;
+
+        #[rustfmt::skip]
+        assert_eq!(dst.as_slice(), &[
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.01953125, 0.14078125, 0.08238281, 0.0, 0.08238281, 0.14078125, 0.01953125, 0.0,
+            0.0, 0.14078125, 0.49203125, 0.37144533, 0.0, 0.37144533, 0.49203125, 0.14078125, 0.0,
+            0.0, 0.08238281, 0.37144533, 0.32496095, 0.0, 0.32496095, 0.37144533, 0.08238281, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.08238281, 0.37144533, 0.32496095, 0.0, 0.32496095, 0.37144533, 0.08238281, 0.0,
+            0.0, 0.14078125, 0.49203125, 0.37144533, 0.0, 0.37144533, 0.49203125, 0.14078125, 0.0,
+            0.0, 0.01953125, 0.14078125, 0.08238281, 0.0, 0.08238281, 0.14078125, 0.01953125, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        ]);
         Ok(())
     }
 
