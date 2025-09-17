@@ -39,7 +39,7 @@ jobs:
           rustup default stable
 
       - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.8
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Install cross-compilation tools
         uses: taiki-e/install-action@cross
@@ -73,7 +73,7 @@ jobs:
           rustup default stable
 
       - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.8
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Install cross-compilation tools
         uses: taiki-e/install-action@cross
