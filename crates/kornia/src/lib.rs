@@ -23,3 +23,6 @@ pub use kornia_tensor as tensor;
 
 #[doc(inline)]
 pub use kornia_tensor_ops as tensor_ops;
+
+#[doc(inline)]
+pub use kornia_vlm as vlm;
