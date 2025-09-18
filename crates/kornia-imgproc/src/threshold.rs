@@ -438,7 +438,10 @@ pub fn threshold_otsu<A1: ImageAllocator, A2: ImageAllocator>(
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
+    use kornia_io::png::{read_image_png_mono8, read_image_png_rgb8};
     use kornia_tensor::CpuAllocator;
+
+    use crate::color::gray_from_rgb_u8;
 
     #[test]
     fn threshold_binary() -> Result<(), ImageError> {
@@ -595,4 +598,15 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_threshold_otsu() -> Result<(), ImageError> {
+        let image= read_image_png_mono8("../../tests/data/barabara.png").unwrap();
+        let mut gray = Image::<u8, 1, _>::from_size_val(image.size(), 0, CpuAllocator)?;
+        let mut thresh: u8 = 0;
+        super::threshold_otsu(&image, &mut gray, &mut thresh)?;
+        assert_eq!(thresh, 104);
+        Ok(())
+    }
+
 }
