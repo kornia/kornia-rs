@@ -378,6 +378,7 @@ where
 pub fn threshold_otsu<A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<u8, 1, A1>,
     dst: &mut Image<u8, 1, A2>,
+    threshold_out: &mut u8,
 ) -> Result<(), ImageError>
 {
     if src.size() != dst.size() {
@@ -422,7 +423,7 @@ pub fn threshold_otsu<A1: ImageAllocator, A2: ImageAllocator>(
             var_max = var_between;
         }
     }
-
+    *threshold_out = thresh;
     parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
         *dst_pixel = if *src_pixel > thresh {
             255
