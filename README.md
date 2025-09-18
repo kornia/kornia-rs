@@ -341,6 +341,8 @@ just py-test
 
 ## 💜 Contributing
 
+Please read the [CONTRIBUTING.md](CONTRIBUTING.md) for coding standards, development workflow, and how to run local checks.
+
 This is a child project of [Kornia](https://github.com/kornia/kornia). Join the community to get in touch with us, or just sponsor the project: <https://opencollective.com/kornia>
 
 ## Citation

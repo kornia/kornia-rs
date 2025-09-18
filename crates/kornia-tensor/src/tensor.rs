@@ -507,7 +507,7 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     pub fn reshape<const M: usize>(
         &self,
         shape: [usize; M],
-    ) -> Result<TensorView<T, M, A>, TensorError> {
+    ) -> Result<TensorView<'_, T, M, A>, TensorError> {
         let numel = shape.iter().product::<usize>();
         if numel != self.storage.len() {
             return Err(TensorError::DimensionMismatch(format!(
@@ -537,7 +537,7 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Returns
     ///
     /// A view of the tensor with the dimensions permuted.
-    pub fn permute_axes(&self, axes: [usize; N]) -> TensorView<T, N, A> {
+    pub fn permute_axes(&self, axes: [usize; N]) -> TensorView<'_, T, N, A> {
         let mut new_shape = [0; N];
         let mut new_strides = [0; N];
         for (i, &axis) in axes.iter().enumerate() {
@@ -559,7 +559,7 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Returns
     ///
     /// A `TensorView` instance.
-    pub fn view(&self) -> TensorView<T, N, A> {
+    pub fn view(&self) -> TensorView<'_, T, N, A> {
         TensorView {
             storage: &self.storage,
             shape: self.shape,
