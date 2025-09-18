@@ -1,8 +1,9 @@
 use crate::{
     segmentation::GradientInfo,
-    utils::{homography_compute, Pixel, Point2d},
+    utils::{Pixel, Point2d},
     DecodeTagsConfig,
 };
+use kornia_3d::pose::homography_4pt2d;
 use kornia_image::{allocator::ImageAllocator, Image};
 use kornia_imgproc::filter::kernels::gaussian_kernel_1d;
 use std::{
@@ -86,15 +87,27 @@ impl Quad {
     ///
     /// `true` if the homography was successfully computed and updated, `false` otherwise.
     pub fn update_homographies(&mut self) -> bool {
-        let corr_arr = [
-            [-1.0, -1.0, self.corners[0].x, self.corners[0].y],
-            [1.0, -1.0, self.corners[1].x, self.corners[1].y],
-            [1.0, 1.0, self.corners[2].x, self.corners[2].y],
-            [-1.0, 1.0, self.corners[3].x, self.corners[3].y],
+        let src = [[-1.0f64, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
+        let dst = [
+            [self.corners[0].x as f64, self.corners[0].y as f64],
+            [self.corners[1].x as f64, self.corners[1].y as f64],
+            [self.corners[2].x as f64, self.corners[2].y as f64],
+            [self.corners[3].x as f64, self.corners[3].y as f64],
         ];
 
-        if let Some(h) = homography_compute(corr_arr) {
-            self.homography = h;
+        let mut homo = [[0.0f64; 3]; 3];
+        if homography_4pt2d(&src, &dst, &mut homo).is_ok() {
+            self.homography = [
+                homo[0][0] as f32,
+                homo[0][1] as f32,
+                homo[0][2] as f32,
+                homo[1][0] as f32,
+                homo[1][1] as f32,
+                homo[1][2] as f32,
+                homo[2][0] as f32,
+                homo[2][1] as f32,
+                homo[2][2] as f32,
+            ];
             return true;
         }
 
