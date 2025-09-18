@@ -1,12 +1,11 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 use kornia_tensor::CpuAllocator;
-use num_traits::Zero;
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
     slice::ParallelSliceMut,
 };
 
-use super::{fast_horizontal_filter, kernels, separable_filter, FloatConversion};
+use super::{fast_horizontal_filter, kernels, separable_filter};
 
 /// Blur an image using a box blur filter
 ///
@@ -45,15 +44,12 @@ pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
 /// NOTE: This function uses a constant border type.
-pub fn gaussian_blur<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<T, C, A1>,
-    dst: &mut Image<T, C, A2>,
+pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, C, A1>,
+    dst: &mut Image<f32, C, A2>,
     kernel_size: (usize, usize),
     sigma: (f32, f32),
-) -> Result<(), ImageError>
-where
-    T: FloatConversion + Clone + Zero + std::ops::Mul<Output = T> + std::ops::AddAssign,
-{
+) -> Result<(), ImageError> {
     let (mut kernel_x, mut kernel_y) = kernel_size;
     let (mut sigma_x, mut sigma_y) = sigma;
 
@@ -587,34 +583,6 @@ mod tests {
             );
         }
 
-        Ok(())
-    }
-
-    #[test]
-    fn test_gaussian_blur_u8() -> Result<(), ImageError> {
-        let size = ImageSize {
-            width: 5,
-            height: 5,
-        };
-
-        let img = Image::new(size, (0..25).map(|x| x as u8).collect(), CpuAllocator)?;
-
-        let mut dst = Image::<_, 1, _>::from_size_val(size, 0u8, CpuAllocator)?;
-
-        gaussian_blur(&img, &mut dst, (3, 3), (0.5, 0.5))?;
-
-        // Rounded towards 0 of the f32 outputs
-        #[rustfmt::skip]
-        assert_eq!(
-            dst.as_slice(),
-            &[
-                0, 1, 2, 3, 3,
-                4, 5, 7, 7, 7,
-                9, 10, 12, 12, 12,
-                13, 15, 17, 17, 16,
-                15, 18, 19, 20, 18,
-            ]
-        );
         Ok(())
     }
 }
