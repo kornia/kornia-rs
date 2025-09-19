@@ -4,8 +4,20 @@ use crate::ops::{intrinsics_as_vectors, pose_to_rt, project_sq_error};
 use crate::pnp::{PnPError, PnPResult};
 use crate::{solve_pnp, PnPMethod};
 use glam::{Mat3, Vec3};
+use log::{debug, warn};
 use rand::seq::SliceRandom;
 use rand::{rngs::StdRng, SeedableRng};
+
+const MIN_CORRESPONDENCES: usize = 4; // Minimum 2D-3D pairs required by PnP
+const EPNP_MIN_SAMPLE_SIZE: usize = 5; // Minimal sample size for EPnP (unless only 4 points available)
+
+const DEFAULT_MAX_ITERATIONS: usize = 100;
+const DEFAULT_REPROJ_THRESHOLD_PX: f32 = 8.0;
+const DEFAULT_CONFIDENCE: f32 = 0.99;
+
+const EPS_PROB_MIN: f32 = 1e-6; // Guard for tiny probabilities
+const EPS_LOG_GUARD: f32 = 1e-12; // Guard to avoid log(0) and log(1)
+const HIGH_INLIER_RATIO_STOP: f32 = 0.95; // Early stop when inlier ratio is very high
 
 /// Parameters for RANSAC over PnP.
 #[derive(Debug, Clone)]
@@ -25,9 +37,9 @@ pub struct RansacParams {
 impl Default for RansacParams {
     fn default() -> Self {
         Self {
-            max_iterations: 100,
-            reproj_threshold_px: 8.0,
-            confidence: 0.99,
+            max_iterations: DEFAULT_MAX_ITERATIONS,
+            reproj_threshold_px: DEFAULT_REPROJ_THRESHOLD_PX,
+            confidence: DEFAULT_CONFIDENCE,
             random_seed: None,
             refine: true,
         }
@@ -64,15 +76,19 @@ pub fn solve_pnp_ransac(
             right_len: image.len(),
         });
     }
-    if n < 4 {
+    if n < MIN_CORRESPONDENCES {
         return Err(PnPError::InsufficientCorrespondences {
-            required: 4,
+            required: MIN_CORRESPONDENCES,
             actual: n,
         });
     }
 
     // Minimal set size: EPnP uses 5 points (unless only 4 points available)
-    let sample_size: usize = if n == 4 { 4 } else { 5 };
+    let sample_size: usize = if n == MIN_CORRESPONDENCES {
+        MIN_CORRESPONDENCES
+    } else {
+        EPNP_MIN_SAMPLE_SIZE
+    };
 
     // Precompute intrinsics vectors
     let (intr_x, intr_y) = intrinsics_as_vectors(k);
@@ -96,8 +112,7 @@ pub fn solve_pnp_ransac(
 
         // Debug: prevent infinite loops
         if iter > params.max_iterations {
-            #[cfg(feature = "ransac_debug")]
-            eprintln!("RANSAC: Emergency break after {} iterations", iter);
+            warn!("RANSAC: Emergency break after {} iterations", iter);
             break;
         }
 
@@ -118,33 +133,34 @@ pub fn solve_pnp_ransac(
         let pose_min = match pose_maybe {
             Ok(p) => p,
             Err(_e) => {
-                #[cfg(feature = "ransac_debug")]
-                eprintln!("EPnP failed on minimal set");
+                debug!("EPnP failed on minimal set");
                 continue;
             }
         };
 
         // Optional cheirality check on minimal set (all positive depths)
         if !sample_all_positive_depths(&pose_min.rotation, &pose_min.translation, &w_min) {
-            #[cfg(feature = "ransac_debug")]
-            eprintln!("Cheirality check failed on iteration {}", iter);
+            debug!("Cheirality check failed on iteration {}", iter);
             continue;
         }
 
         // Score model on all points
-        let (inliers, _) = classify_inliers(
+        let (inliers, _total_squared_error) = classify_points(
             world,
             image,
-            &pose_min.rotation,
-            &pose_min.translation,
-            &intr_x,
-            &intr_y,
-            params.reproj_threshold_px,
+            None,
+            ClassificationParams {
+                rotation_matrix: &pose_min.rotation,
+                translation_vector: &pose_min.translation,
+                camera_intrinsics_x: &intr_x,
+                camera_intrinsics_y: &intr_y,
+                threshold: Some(params.reproj_threshold_px),
+            },
         );
 
         if inliers.len() > best_inliers.len() {
             best_inliers = inliers;
-            best_pose = Some(pose_min.clone());
+            best_pose = Some(pose_min);
 
             // Update required iterations based on current inlier ratio and sample size
             if best_inliers.len() >= sample_size {
@@ -152,13 +168,13 @@ pub fn solve_pnp_ransac(
                 let s = sample_size as f32;
 
                 // Avoid numerical issues with very small w
-                if w > 1e-6 && w < 1.0 {
+                if w > EPS_PROB_MIN && w < 1.0 {
                     let ws = w.powf(s);
-                    if ws < 1.0 - 1e-12 && ws > 1e-12 {
+                    if ws < 1.0 - EPS_LOG_GUARD && ws > EPS_LOG_GUARD {
                         // Avoid log(0) and log(1)
-                        let log_conf = (1.0 - params.confidence).max(1e-12).ln();
+                        let log_conf = (1.0 - params.confidence).max(EPS_LOG_GUARD).ln();
                         let log_denom = (1.0 - ws).ln();
-                        if log_denom.is_finite() && log_denom != 0.0 {
+                        if log_denom.is_finite() && log_denom.abs() > EPS_LOG_GUARD {
                             let est = (log_conf / log_denom).ceil();
 
                             if est.is_finite() && est > 0.0 {
@@ -168,7 +184,7 @@ pub fn solve_pnp_ransac(
                                 }
                             }
                         }
-                    } else if w >= 0.95 {
+                    } else if w >= HIGH_INLIER_RATIO_STOP {
                         // Very high inlier ratio (≥95%), we can stop early
                         required_iters = iter;
                     }
@@ -178,9 +194,9 @@ pub fn solve_pnp_ransac(
     }
 
     // Validate and optionally refine
-    if best_inliers.len() < 4 {
+    if best_inliers.len() < MIN_CORRESPONDENCES {
         return Err(PnPError::InsufficientInliers {
-            required: 4,
+            required: MIN_CORRESPONDENCES,
             actual: best_inliers.len(),
         });
     }
@@ -195,18 +211,28 @@ pub fn solve_pnp_ransac(
         }
         solve_pnp(&w_all, &i_all, k, base.clone())?
     } else {
-        best_pose.expect("pose must exist when inliers >= 4")
+        match best_pose {
+            Some(p) => p,
+            None => {
+                return Err(PnPError::SvdFailed(
+                    "RANSAC failed to produce a pose despite sufficient inliers".to_string(),
+                ));
+            }
+        }
     };
 
     // Recompute reprojection error on inliers only
-    let (_inliers, sum_sq_inliers) = classify_inliers_on_subset(
+    let (_inliers, sum_sq_inliers) = classify_points(
         world,
         image,
-        &best_inliers,
-        &final_pose.rotation,
-        &final_pose.translation,
-        &intr_x,
-        &intr_y,
+        Some(&best_inliers),
+        ClassificationParams {
+            rotation_matrix: &final_pose.rotation,
+            translation_vector: &final_pose.translation,
+            camera_intrinsics_x: &intr_x,
+            camera_intrinsics_y: &intr_y,
+            threshold: None,
+        },
     );
     let rmse = if !best_inliers.is_empty() {
         (sum_sq_inliers / best_inliers.len() as f32).sqrt()
@@ -237,115 +263,81 @@ fn sample_all_positive_depths(r: &[[f32; 3]; 3], t: &[f32; 3], world: &[[f32; 3]
 /// This function handles both:
 /// - Scoring all points against a candidate pose (during RANSAC)
 /// - Computing final RMSE on a subset of inlier points
-#[allow(clippy::too_many_arguments)]
+struct ClassificationParams<'a> {
+    rotation_matrix: &'a [[f32; 3]; 3],
+    translation_vector: &'a [f32; 3],
+    camera_intrinsics_x: &'a Vec3,
+    camera_intrinsics_y: &'a Vec3,
+    threshold: Option<f32>,
+}
+
 fn classify_points(
     world: &[[f32; 3]],
     image: &[[f32; 2]],
     indices: Option<&[usize]>,
-    rotation_matrix: &[[f32; 3]; 3],
-    translation_vector: &[f32; 3],
-    camera_intrinsics_x: &Vec3,
-    camera_intrinsics_y: &Vec3,
-    threshold: Option<f32>,
+    params: ClassificationParams,
 ) -> (Vec<usize>, f32) {
-    let (rotation, translation) = pose_to_rt(rotation_matrix, translation_vector);
+    let (rotation, translation) = pose_to_rt(params.rotation_matrix, params.translation_vector);
 
-    // Create iterator based on whether we have indices or not
-    let points_iter: Box<dyn Iterator<Item = (usize, &[f32; 3], &[f32; 2])>> = match indices {
-        Some(indices) => Box::new(indices.iter().filter_map(|&idx| {
-            if idx < world.len() && idx < image.len() {
-                Some((idx, &world[idx], &image[idx]))
-            } else {
-                None
-            }
-        })),
-        None => Box::new(
-            world
-                .iter()
-                .zip(image.iter())
-                .enumerate()
-                .map(|(idx, (w, i))| (idx, w, i)),
-        ),
-    };
+    let mut inliers: Vec<usize> = Vec::new();
+    let mut total_squared_error: f32 = 0.0;
 
-    let (inliers, total_squared_error): (Vec<usize>, f32) = points_iter
-        .filter_map(|(index, world_point_arr, image_point)| {
-            project_sq_error(
-                world_point_arr,
-                image_point,
-                &rotation,
-                &translation,
-                camera_intrinsics_x,
-                camera_intrinsics_y,
-                true,
-            )
-            .map(|se| (index, se))
-        })
-        .fold(
-            (Vec::new(), 0.0_f32),
-            |(mut inliers, mut sum_sq), (index, squared_error)| {
-                sum_sq += squared_error;
-
-                // Check threshold if provided
-                let is_inlier = match threshold {
-                    Some(thresh) => squared_error.sqrt() < thresh,
-                    None => true, // Include all valid points if no threshold
-                };
-
-                if is_inlier {
-                    inliers.push(index);
+    match indices {
+        Some(indices) => {
+            for &idx in indices {
+                if idx >= world.len() || idx >= image.len() {
+                    continue;
                 }
 
-                (inliers, sum_sq)
-            },
-        );
+                if let Some(squared_error) = project_sq_error(
+                    &world[idx],
+                    &image[idx],
+                    &rotation,
+                    &translation,
+                    params.camera_intrinsics_x,
+                    params.camera_intrinsics_y,
+                    true,
+                ) {
+                    total_squared_error += squared_error;
+
+                    let is_inlier = match params.threshold {
+                        Some(thresh) => squared_error.sqrt() < thresh,
+                        None => true,
+                    };
+
+                    if is_inlier {
+                        inliers.push(idx);
+                    }
+                }
+            }
+        }
+        None => {
+            for (idx, (world_point, image_point)) in world.iter().zip(image.iter()).enumerate() {
+                if let Some(squared_error) = project_sq_error(
+                    world_point,
+                    image_point,
+                    &rotation,
+                    &translation,
+                    params.camera_intrinsics_x,
+                    params.camera_intrinsics_y,
+                    true,
+                ) {
+                    total_squared_error += squared_error;
+
+                    let is_inlier = match params.threshold {
+                        Some(thresh) => squared_error.sqrt() < thresh,
+                        None => true,
+                    };
+
+                    if is_inlier {
+                        inliers.push(idx);
+                    }
+                }
+            }
+        }
+    }
 
     (inliers, total_squared_error)
-}
-
-/// Classify inliers on all points (used during RANSAC iteration).
-fn classify_inliers(
-    world: &[[f32; 3]],
-    image: &[[f32; 2]],
-    rotation_matrix: &[[f32; 3]; 3],
-    translation_vector: &[f32; 3],
-    camera_intrinsics_x: &Vec3,
-    camera_intrinsics_y: &Vec3,
-    reprojection_threshold: f32,
-) -> (Vec<usize>, f32) {
-    classify_points(
-        world,
-        image,
-        None,
-        rotation_matrix,
-        translation_vector,
-        camera_intrinsics_x,
-        camera_intrinsics_y,
-        Some(reprojection_threshold),
-    )
-}
-
-/// Classify inliers and compute error on a specific subset of points.
-/// This is used for computing RMSE on inliers only.
-fn classify_inliers_on_subset(
-    world: &[[f32; 3]],
-    image: &[[f32; 2]],
-    inlier_indices: &[usize],
-    rotation_matrix: &[[f32; 3]; 3],
-    translation_vector: &[f32; 3],
-    camera_intrinsics_x: &Vec3,
-    camera_intrinsics_y: &Vec3,
-) -> (Vec<usize>, f32) {
-    classify_points(
-        world,
-        image,
-        Some(inlier_indices),
-        rotation_matrix,
-        translation_vector,
-        camera_intrinsics_x,
-        camera_intrinsics_y,
-        None,
-    )
 }
 
 #[cfg(test)]
