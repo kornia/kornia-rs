@@ -7,7 +7,7 @@ pub mod epnp;
 /// Common data types shared across PnP solvers.
 pub mod pnp;
 
-/// RANSAC wrapper for robust PnP pose estimation.
+/// RANSAC for robust PnP pose estimation.
 pub mod ransac;
 
 pub use epnp::{EPnP, EPnPParams};
