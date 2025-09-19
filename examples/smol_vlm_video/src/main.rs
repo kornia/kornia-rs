@@ -32,7 +32,7 @@ struct Args {
 #[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
-    let pixel_format = args.pixel_format.as_deref().unwrap_or("MJPG");
+    let _pixel_format = args.pixel_format.as_deref().unwrap_or("MJPG");
     if let Some(path) = &args.video_file {
         video_file_demo::video_file_demo(&args, path)
     } else {

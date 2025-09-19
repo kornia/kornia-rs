@@ -6,12 +6,12 @@ use gstreamer_video as gst_video;
 use kornia::{
     image::{Image, ImageSize},
     tensor::CpuAllocator,
-    vlm::smolvlm::{utils::SmolVlmConfig, SmolVlm},
 };
-use rerun;
+use kornia_vlm::smolvlm::{utils::SmolVlmConfig, SmolVlm};
+// use rerun;
 use std::error::Error;
 
-pub fn video_file_demo(args: &Args, path: &str) -> Result<(), Box<dyn Error>> {
+pub fn video_file_demo(_args: &Args, path: &str) -> Result<(), Box<dyn Error>> {
     // Create rerun recording stream (match video_demo.rs)
     let ip_address = "192.168.1.9";
     let port = 9999;
@@ -22,14 +22,17 @@ pub fn video_file_demo(args: &Args, path: &str) -> Result<(), Box<dyn Error>> {
         )?;
 
     gst::init()?;
-    println!("🎬 Reading video file: {}", path);
-    let pipeline_str = format!("filesrc location={} ! decodebin ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink", path);
+    println!("🎬 Reading video file: {path}");
+    let pipeline_str = format!("filesrc location={path} ! decodebin ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink");
     let pipeline = gst::parse_launch(&pipeline_str)?;
     let appsink = pipeline
         .clone()
-        .dynamic_cast::<gst::Bin>()?
-        .by_name("sink")?
-        .dynamic_cast::<gst_app::AppSink>()?;
+        .dynamic_cast::<gst::Bin>()
+        .map_err(|_| "Failed to cast pipeline to Bin")?
+        .by_name("sink")
+        .ok_or("Failed to find sink element")?
+        .dynamic_cast::<gst_app::AppSink>()
+        .map_err(|_| "Failed to cast sink to AppSink")?;
 
     pipeline.set_state(gst::State::Playing)?;
     let mut smolvlm = SmolVlm::new(SmolVlmConfig::default())?;
@@ -37,11 +40,11 @@ pub fn video_file_demo(args: &Args, path: &str) -> Result<(), Box<dyn Error>> {
     let prompt = "What is the the color of the closest car? (Just color only)";
     let mut frame_idx = 0;
 
-    while let Some(sample) = appsink.pull_sample().ok() {
+    while let Ok(sample) = appsink.pull_sample() {
         let buffer = sample.buffer().ok_or("No buffer in sample")?;
         let map = buffer.map_readable().map_err(|_| "Failed to map buffer")?;
         let caps = sample.caps().ok_or("No caps in sample")?;
-        let s = gst_video::VideoInfo::from_caps(&caps)?;
+        let s = gst_video::VideoInfo::from_caps(caps)?;
         let width = s.width() as usize;
         let height = s.height() as usize;
         let img_size = ImageSize { width, height };
@@ -58,7 +61,7 @@ pub fn video_file_demo(args: &Args, path: &str) -> Result<(), Box<dyn Error>> {
         rec.log("prompt", &rerun::TextDocument::new(prompt))?;
         rec.log("response", &rerun::TextDocument::new(response.as_str()))?;
 
-        println!("Frame {}: {}", frame_idx, response);
+        println!("Frame {frame_idx}: {response}");
         frame_idx += 1;
     }
     pipeline.set_state(gst::State::Null)?;

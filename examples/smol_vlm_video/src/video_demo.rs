@@ -7,8 +7,8 @@ use kornia::{
         v4l::{camera_control, PixelFormat, V4LCameraConfig, V4lVideoCapture},
     },
     tensor::CpuAllocator,
-    vlm::smolvlm::{utils::SmolVlmConfig, SmolVlm},
 };
+use kornia_vlm::smolvlm::{utils::SmolVlmConfig, SmolVlm};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -46,7 +46,7 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
         "YUYV" | "yuyv" => PixelFormat::YUYV,
         // Add more formats as needed
         other => {
-            eprintln!("Unknown pixel format: {}. Defaulting to MJPG.", other);
+            eprintln!("Unknown pixel format: {other}. Defaulting to MJPG.");
             PixelFormat::MJPG
         }
     };
