@@ -41,7 +41,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     })?;
 
-<<<<<<< HEAD
         // generate a caption of the image
         let _caption = smolvlm.inference(
             &args.text_prompt,
@@ -50,10 +49,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             CpuAllocator,
         )?;
     }
-=======
-    // generate a caption of the image
-    let _caption = smolvlm.inference(&args.text_prompt, image, args.sample_length, CpuAllocator)?;
->>>>>>> d2357dc (SmolVLM example + validations)
 
     Ok(())
 }
