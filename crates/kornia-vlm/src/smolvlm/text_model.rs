@@ -2,10 +2,20 @@ use std::collections::HashMap;
 
 use candle_core::DType;
 use candle_core::{Device, Result, Tensor};
-use candle_nn::{rotary_emb::rope, Linear, Module, RmsNorm};
+use candle_nn::{rotary_emb::rope, Linear, Module};
+
+use crate::context::InferenceContext;
+use crate::smolvlm::custom_rmsnorm::CustomRmsNorm;
 
 const NUM_OF_HEADS: usize = 32;
 const HEAD_DIM: usize = 64;
+
+/// Custom SiLU (Sigmoid Linear Unit) activation function
+/// SiLU(x) = x * sigmoid(x) = x * (1 / (1 + e^(-x)))
+fn silu(x: &Tensor) -> Result<Tensor> {
+    let sigmoid = (x.neg()?.exp()? + 1.0)?.recip()?;
+    x * sigmoid
+}
 
 fn calculate_default_inv_freq() -> Vec<f32> {
     (0..HEAD_DIM)
@@ -16,7 +26,7 @@ fn calculate_default_inv_freq() -> Vec<f32> {
 }
 
 #[derive(Debug, Clone)]
-struct Attention {
+pub struct Attention {
     q_proj: Linear,
     k_proj: Linear,
     v_proj: Linear,
@@ -32,6 +42,7 @@ struct Attention {
 impl Attention {
     fn new(q: Tensor, k: Tensor, v: Tensor, o: Tensor) -> Result<Self> {
         let device = q.device();
+        let dtype = q.dtype();
 
         let theta = Tensor::new(calculate_default_inv_freq(), device)?;
         // 0 -> max position embedding
@@ -43,8 +54,8 @@ impl Attention {
         Ok(Self {
             cos: idx_theta.cos()?.to_dtype(q.dtype())?,
             sin: idx_theta.sin()?.to_dtype(q.dtype())?,
-            k_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), DType::BF16, device)?,
-            v_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), DType::BF16, device)?,
+            k_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), dtype, device)?,
+            v_cache: Tensor::zeros((NUM_OF_HEADS, 0, HEAD_DIM), dtype, device)?,
             q_proj: Linear::new(q, None),
             k_proj: Linear::new(k, None),
             v_proj: Linear::new(v, None),
@@ -52,19 +63,28 @@ impl Attention {
         })
     }
 
+    pub fn reset_cache(&mut self) {
+        self.k_cache = Tensor::zeros(
+            (NUM_OF_HEADS, 0, HEAD_DIM),
+            self.k_cache.dtype(),
+            self.k_cache.device(),
+        )
+        .unwrap();
+        self.v_cache = Tensor::zeros(
+            (NUM_OF_HEADS, 0, HEAD_DIM),
+            self.v_cache.dtype(),
+            self.v_cache.device(),
+        )
+        .unwrap();
+    }
+
     fn apply_rotary_embedding(&self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
         let (_head_sz, seq_len, _hidden_size) = x.dims3()?;
 
         rope(
             &x.unsqueeze(0)?,
-            &self
-                .cos
-                .narrow(0, index_pos, seq_len)
-                .expect("Exceeded context limit"),
-            &self
-                .sin
-                .narrow(0, index_pos, seq_len)
-                .expect("Exceeded context limit"),
+            &self.cos.narrow(0, index_pos, seq_len)?,
+            &self.sin.narrow(0, index_pos, seq_len)?,
         )?
         .squeeze(0)
     }
@@ -100,6 +120,7 @@ impl Attention {
 
         let y = {
             // TODO: implement flash attention
+            // TODO: just using BF16 is plausible
 
             let in_dtype = q.dtype();
             let q = q.to_dtype(DType::F32)?;
@@ -131,7 +152,7 @@ impl Attention {
 }
 
 #[derive(Debug, Clone)]
-struct MLPGates {
+pub struct MLPGates {
     down_proj: Linear,
     gate_proj: Linear,
     up_proj: Linear,
@@ -146,21 +167,32 @@ impl MLPGates {
         }
     }
 
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let gate = self.gate_proj.forward(x)?.silu()?.to_dtype(DType::F32)?;
-        let up = self.up_proj.forward(x)?.to_dtype(DType::F32)?;
-        let hidden = (gate * up)?.to_dtype(DType::BF16)?;
+    fn forward(&mut self, x: &Tensor, ctx: &mut InferenceContext) -> Result<Tensor> {
+        let gate_proj_out = self.gate_proj.forward(x)?;
+        ctx.text_introspector
+            .insert("mlp_gate_proj", &gate_proj_out);
+
+        let gate = silu(&gate_proj_out)?;
+        ctx.text_introspector.insert("mlp_act_fn", &gate);
+
+        let up = self.up_proj.forward(x)?;
+        ctx.text_introspector.insert("mlp_up_proj", &up);
+
+        let hidden = (gate * up)?;
+
         let x = self.down_proj.forward(&hidden)?;
+        ctx.text_introspector.insert("mlp_down_proj", &x);
+
         Ok(x)
     }
 }
 
 #[derive(Debug, Clone)]
-struct Block {
-    input_layer_norm: RmsNorm,
-    attn: Attention,
-    post_layer_norm: RmsNorm,
-    gates: MLPGates,
+pub struct Block {
+    input_layer_norm: CustomRmsNorm,
+    pub attn: Attention,
+    post_layer_norm: CustomRmsNorm,
+    pub gates: MLPGates,
 }
 
 impl Block {
@@ -181,17 +213,15 @@ impl Block {
                 .clone()
         };
 
-        log::info!("Loaded layer (LM): {id:?}");
-
         Ok(Self {
-            input_layer_norm: RmsNorm::new(val("input_layernorm"), 1e-5),
+            input_layer_norm: CustomRmsNorm::new(val("input_layernorm"), 1e-5),
             attn: Attention::new(
                 val("self_attn.q_proj"),
                 val("self_attn.k_proj"),
                 val("self_attn.v_proj"),
                 val("self_attn.o_proj"),
             )?,
-            post_layer_norm: RmsNorm::new(val("post_attention_layernorm"), 1e-5),
+            post_layer_norm: CustomRmsNorm::new(val("post_attention_layernorm"), 1e-5),
             gates: MLPGates::new(
                 val("mlp.down_proj"),
                 val("mlp.gate_proj"),
@@ -200,19 +230,39 @@ impl Block {
         })
     }
 
-    fn forward(&mut self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
+    fn forward(
+        &mut self,
+        x: &Tensor,
+        index_pos: usize,
+        ctx: &mut InferenceContext,
+    ) -> Result<Tensor> {
         let residual = x;
+
         let x = self.input_layer_norm.forward(x)?;
-        let x = (residual + self.attn.forward(&x, index_pos)?)?;
+        ctx.text_introspector.insert("input_layernorm", &x);
+
+        let att = self.attn.forward(&x, index_pos)?;
+        ctx.text_introspector.insert("self_attn", &att);
+
+        let x = (residual + att)?;
         let residual = &x;
-        let x = (residual + self.gates.forward(&self.post_layer_norm.forward(&x)?)?)?;
+
+        let x = self.post_layer_norm.forward(&x)?;
+        ctx.text_introspector.insert("post_layernorm", &x);
+
+        let x = self.gates.forward(&x, ctx)?;
+        ctx.text_introspector.insert("mlp", &x);
+
+        let x = (residual + x)?;
+        ctx.text_introspector.insert("layers", &x);
+
         Ok(x)
     }
 }
 
 pub struct SmolText {
-    blocks: Vec<Block>,
-    norm: RmsNorm,
+    pub blocks: Vec<Block>,
+    norm: CustomRmsNorm,
     lm_head: Linear,
 }
 
@@ -220,15 +270,24 @@ impl SmolText {
     pub fn load(c: &HashMap<String, Tensor>) -> Result<Self> {
         Ok(Self {
             blocks: (0u8..=23).map(|i| Block::load(c, i).unwrap()).collect(),
-            norm: RmsNorm::new(c["model.text_model.norm.weight"].clone(), 1e-5),
+            norm: CustomRmsNorm::new(c["model.text_model.norm.weight"].clone(), 1e-5),
             lm_head: Linear::new(c["lm_head.weight"].clone(), None),
         })
     }
 
-    pub fn forward(&mut self, mut x: Tensor, index_pos: usize) -> Result<Tensor> {
+    pub fn forward(
+        &mut self,
+        mut x: Tensor,
+        index_pos: usize,
+        ctx: &mut InferenceContext,
+    ) -> Result<Tensor> {
+        ctx.text_introspector.start_tracking_depth();
         for block in &mut self.blocks {
-            x = block.forward(&x, index_pos)?;
+            x = block.forward(&x, index_pos, ctx)?;
+            ctx.text_introspector.increment_depth();
         }
+        ctx.text_introspector.stop_tracking_depth();
+
         let x = self.norm.forward(&x)?;
         let logits = self.lm_head.forward(&x)?;
         logits.to_dtype(DType::F32)

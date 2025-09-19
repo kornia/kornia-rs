@@ -1,0 +1,30 @@
+[package]
+name = "smol_vlm_convo"
+authors.workspace = true
+categories.workspace = true
+description.workspace = true
+edition.workspace = true
+homepage.workspace = true
+include.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+argh = { workspace = true }
+reqwest = { version = "0.12.15", features = ["blocking"] }
+tempfile = "3.8"
+kornia-io = { workspace = true }
+kornia-vlm = { workspace = true, features = [] }
+kornia-image = { workspace = true }
+kornia-tensor = { workspace = true }
+
+color-eyre = "0.6.3"
+crossterm = "0.28.1"
+ratatui = "0.29.0"
+textwrap = "0.16.2"
+
+[features]
+cuda = ["kornia-vlm/cuda"]
