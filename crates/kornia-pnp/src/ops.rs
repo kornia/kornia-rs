@@ -55,7 +55,6 @@ pub(crate) fn project_sq_error(
     Some(du.mul_add(du, dv * dv))
 }
 
-//TODO: Checkout faer for this
 pub(crate) fn gauss_newton(beta_init: [f32; 4], null4: &DMatrix<f32>, rho: &[f32; 6]) -> [f32; 4] {
     const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 
@@ -116,7 +115,7 @@ mod tests {
     }
 }
 
-//TODO: redo this test
+//: redo this test
 #[cfg(test)]
 mod gauss_newton_tests {
     use super::*;
