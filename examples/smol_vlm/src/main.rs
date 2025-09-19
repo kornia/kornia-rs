@@ -110,7 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let prompt = read_input("txt> ");
 
-            model.inference(image, &prompt, args.sample_length, true)?;
+            model.inference(&prompt, image, args.sample_length, CpuAllocator)?;
         }
     } else {
         // read the image
@@ -120,8 +120,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut smolvlm = SmolVlm::new(SmolVlmConfig::default())?;
 
         // generate a caption of the image
-        let _caption =
-            smolvlm.inference(Some(image), &args.text_prompt, args.sample_length, true)?;
+        let _caption = smolvlm.inference(
+            &args.text_prompt,
+            Some(image),
+            args.sample_length,
+            CpuAllocator,
+        )?;
     }
 
     Ok(())
