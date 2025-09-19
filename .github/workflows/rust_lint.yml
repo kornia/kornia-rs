@@ -29,11 +29,9 @@ jobs:
     steps:
       - run: sudo apt-get update
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      - run: rustup update
       - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.8
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Install cross
         uses: taiki-e/install-action@cross
@@ -56,10 +54,10 @@ jobs:
     steps:
       - run: sudo apt-get update
       - uses: actions/checkout@v4
-      - run: rustup toolchain install stable
+      - run: rustup update
 
       - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.8
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Install cross
         uses: taiki-e/install-action@cross

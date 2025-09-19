@@ -18,6 +18,7 @@ turbojpeg = ["kornia-io/turbojpeg"]
 v4l = ["kornia-io/v4l"]
 arrow = ["kornia-image/arrow"]
 cuda = ["kornia-vlm/cuda"]
+mkl = ["kornia-nn/mkl"]
 
 [dependencies]
 kornia-3d = { workspace = true }
@@ -28,6 +29,7 @@ kornia-io = { workspace = true, features = [] }
 kornia-linalg = { workspace = true }
 kornia-tensor.workspace = true
 kornia-tensor-ops.workspace = true
+kornia-nn.workspace = true
 kornia-vlm.workspace = true
 
 [lib]
