@@ -1,8 +1,8 @@
 [package]
 name = "kornia-pnp"
 description = "Perspective-n-Point solvers for kornia"
+authors = ["Christie J Purackal <christie@kornia.org>"]
 
-authors.workspace = true
 edition.workspace = true
 homepage.workspace = true
 license.workspace = true
@@ -12,10 +12,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [features]
-default = []
-opencv_bench = ["dep:opencv"]
-# Enable verbose RANSAC debug prints (disabled by default)
-ransac_debug = []
+opencv_bench = []
 
 [dependencies]
 kornia-linalg = { workspace = true }
@@ -26,11 +23,12 @@ kornia-imgproc = { workspace = true }
 
 nalgebra = "0.32"
 rand = "0.8"
-opencv = { version = "0.92", optional = true }
+log = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
 criterion = { workspace = true }
+opencv = "0.92"
 
 [[bench]]
 name = "bench_pnp"
