@@ -1,9 +1,8 @@
-#![allow(unused_variables)]
-#![allow(unused_attributes)]
-
 use candle_core::{DType, Result, Tensor};
 use candle_nn::{Conv2d, Conv2dConfig, Embedding, LayerNorm, Linear, Module};
 use std::collections::HashMap;
+
+use crate::context::InferenceContext;
 
 const NUM_OF_HEADS: usize = 16;
 const HEAD_DIM: usize = 72;
@@ -27,7 +26,6 @@ impl Attention {
 
     fn forward(&self, x: &Tensor, attention_mask: &Tensor) -> Result<Tensor> {
         let (batches, patches, hidden_size) = x.dims3()?;
-
         let q = self.q_proj.forward(x)?;
         let k = self.k_proj.forward(x)?;
         let v = self.v_proj.forward(x)?;
@@ -42,7 +40,8 @@ impl Attention {
             .contiguous()?;
         let v = v
             .reshape((batches, patches, NUM_OF_HEADS, HEAD_DIM))?
-            .transpose(1, 2)?;
+            .transpose(1, 2)?
+            .contiguous()?;
 
         let y = {
             let in_dtype = q.dtype();
@@ -75,13 +74,15 @@ struct Mlp {
 impl Mlp {
     pub fn new(fc1: Linear, fc2: Linear) -> Result<Self> {
         let device = &fc1.weight().device().clone();
+        let dtype = fc1.weight().dtype();
+
         Ok(Self {
             fc1,
             fc2,
-            gelu_coeff: Tensor::new(0.044715, device)?.to_dtype(DType::BF16)?,
-            sqrt_2_over_pi: Tensor::new(0.7978845608028654, device)?.to_dtype(DType::BF16)?,
-            one: Tensor::new(1.0, device)?.to_dtype(DType::BF16)?,
-            half: Tensor::new(0.5, device)?.to_dtype(DType::BF16)?,
+            gelu_coeff: Tensor::new(0.044715, device)?.to_dtype(dtype)?,
+            sqrt_2_over_pi: Tensor::new(0.7978845608028654, device)?.to_dtype(dtype)?,
+            one: Tensor::new(1.0, device)?.to_dtype(dtype)?,
+            half: Tensor::new(0.5, device)?.to_dtype(dtype)?,
         })
     }
 
@@ -96,9 +97,17 @@ impl Mlp {
             .broadcast_mul(&input.broadcast_mul(&(tanh.broadcast_add(&self.one)?))?)
     }
 
-    pub fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let x = self.gelu_tanh(&self.fc1.forward(xs)?)?; // python impl. uses gelu approximated with tanh
-        self.fc2.forward(&x)
+    pub fn forward(&self, xs: &Tensor, ctx: &mut InferenceContext) -> Result<Tensor> {
+        let i = &self.fc1.forward(xs)?;
+        ctx.vis_introspector.insert("fc1", i);
+
+        let x = self.gelu_tanh(i)?; // python impl. uses gelu approximated with tanh
+        ctx.vis_introspector.insert("mlp_act_fn", &x);
+
+        let o = self.fc2.forward(&x)?;
+        ctx.vis_introspector.insert("fc2", &o);
+
+        Ok(o)
     }
 }
 
@@ -128,8 +137,6 @@ impl Block {
                 .clone()
         };
 
-        log::info!("Loaded layer (VT): {id:?}");
-
         Ok(Self {
             self_attn: Attention::new(
                 Linear::new(w("self_attn.q_proj"), Some(b("self_attn.q_proj"))),
@@ -146,14 +153,28 @@ impl Block {
         })
     }
 
-    pub fn forward(&self, xs: &Tensor, attention_mask: &Tensor) -> Result<Tensor> {
+    pub fn forward(
+        &self,
+        xs: &Tensor,
+        attention_mask: &Tensor,
+        ctx: &mut InferenceContext,
+    ) -> Result<Tensor> {
         let residual = xs;
+
         let x = self.layer_norm1.forward(xs)?;
+        ctx.vis_introspector.insert("input_layernorm", &x);
+
         let x = self.self_attn.forward(&x, attention_mask)?;
+        ctx.vis_introspector.insert("self_attn", &x);
+
         let x = (residual + x)?;
         let residual = &x;
+
         let x = self.layer_norm2.forward(&x)?;
-        let x = self.mlp.forward(&x);
+        ctx.vis_introspector.insert("post_layernorm", &x);
+
+        let x = self.mlp.forward(&x, ctx)?;
+
         residual + x
     }
 }
@@ -175,11 +196,11 @@ impl SmolVision {
                 Some(c["model.vision_model.embeddings.patch_embedding.bias"].clone()),
                 Conv2dConfig {
                     // kernel/patch size are intrinsically defined in the weights
-                    padding: 0,
-                    stride: 14,
+                    padding: 0, // "valid" padding
+                    stride: 14, // stride equals patch size (14)
                     dilation: 1,
                     groups: 1,
-                    cudnn_fwd_algo: Some(candle_core::conv::CudnnFwdAlgo::Direct),
+                    cudnn_fwd_algo: None,
                 },
             ),
             position_embedding: Embedding::new(
@@ -195,8 +216,14 @@ impl SmolVision {
         })
     }
 
-    pub fn forward(&self, pixel_values: &Tensor, pixel_attention_masks: &Tensor) -> Result<Tensor> {
+    pub fn forward(
+        &self,
+        pixel_values: &Tensor,
+        pixel_attention_masks: &Tensor,
+        ctx: &mut InferenceContext,
+    ) -> Result<Tensor> {
         let device = pixel_values.device();
+        let dtype = self.patch_embedding.weight().dtype();
 
         // B = patch rows x patch cols (x number of images)
         // pixel_values: B x 3 x PatchHeight x PatchWidth
@@ -230,9 +257,14 @@ impl SmolVision {
         // patch_attention_masks: B x PatchRows x PatchCols x 196
 
         let mut hidden_states = {
+            // println!("Pixel values shape: {:?}", pixel_values.shape());
             let patch_embeddings = self
                 .patch_embedding
-                .forward(&pixel_values.to_dtype(DType::BF16)?)?;
+                .forward(&pixel_values.to_dtype(dtype)?)?;
+
+            ctx.vis_introspector
+                .insert("patch_embeddings", &patch_embeddings);
+
             let patch_embeddings = patch_embeddings.flatten_from(2)?.transpose(1, 2)?;
 
             let position_ids = {
@@ -240,6 +272,10 @@ impl SmolVision {
                 (raw_ids * &patch_attention_masks)?
             };
             let position_embeddings = self.position_embedding.forward(&position_ids)?;
+
+            ctx.vis_introspector
+                .insert("position_embeddings", &position_embeddings);
+
             patch_embeddings + position_embeddings
         }?;
 
@@ -254,9 +290,13 @@ impl SmolVision {
                 inverted_mask.where_cond(&neg_infs, &inverted_mask.to_dtype(DType::F32)?)?
             };
 
+        ctx.vis_introspector.start_tracking_depth();
         for block in &self.blocks {
-            hidden_states = block.forward(&hidden_states, &patch_attention_masks)?;
+            hidden_states = block.forward(&hidden_states, &patch_attention_masks, ctx)?;
+            ctx.vis_introspector.increment_depth();
         }
+        ctx.vis_introspector.stop_tracking_depth();
+
         self.post_layernorm.forward(&hidden_states)
     }
 }
