@@ -27,12 +27,9 @@ pub fn video_file_demo(args: &Args, path: &str) -> Result<(), Box<dyn Error>> {
     let pipeline = gst::parse_launch(&pipeline_str)?;
     let appsink = pipeline
         .clone()
-        .dynamic_cast::<gst::Bin>()
-        .unwrap()
-        .by_name("sink")
-        .unwrap()
-        .dynamic_cast::<gst_app::AppSink>()
-        .unwrap();
+        .dynamic_cast::<gst::Bin>()?
+        .by_name("sink")?
+        .dynamic_cast::<gst_app::AppSink>()?;
 
     pipeline.set_state(gst::State::Playing)?;
     let mut smolvlm = SmolVlm::new(SmolVlmConfig::default())?;
@@ -57,12 +54,9 @@ pub fn video_file_demo(args: &Args, path: &str) -> Result<(), Box<dyn Error>> {
         rec.log(
             "video_capture",
             &rerun::Image::from_elements(rgb_slice, img_size.into(), rerun::ColorModel::RGB),
-        )
-        .unwrap();
-        rec.log("prompt", &rerun::TextDocument::new(prompt))
-            .unwrap();
-        rec.log("response", &rerun::TextDocument::new(response.as_str()))
-            .unwrap();
+        )?;
+        rec.log("prompt", &rerun::TextDocument::new(prompt))?;
+        rec.log("response", &rerun::TextDocument::new(response.as_str()))?;
 
         println!("Frame {}: {}", frame_idx, response);
         frame_idx += 1;
