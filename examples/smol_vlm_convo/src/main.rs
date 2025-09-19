@@ -17,7 +17,7 @@ fn main() -> Result<()> {
     let terminal = ratatui::init();
     let res = run(terminal);
     ratatui::restore();
-    return res;
+    res
 }
 
 fn get_chat_height(f: &Frame) -> usize {
@@ -103,7 +103,7 @@ impl AppState {
         if self.show_spinner {
             let spinner_chars = ['-', '/', '|', '\\'];
             let c = spinner_chars[self.spinner_index % spinner_chars.len()];
-            all_lines.push(format!("{} Thinking...", c));
+            all_lines.push(format!("{c} Thinking..."));
         }
         all_lines
     }
@@ -167,7 +167,7 @@ impl AppState {
                         };
                         self.chat_history
                             .borrow_mut()
-                            .push(format!("[Image inserted: {}]", path));
+                            .push(format!("[Image inserted: {path}]"));
                         self.delta_image.push(PathBuf::from(path));
                         self.file_input_mode = false;
                         self.scroll = 0;
@@ -419,10 +419,8 @@ impl AppState {
             }
             1 => {
                 // Temperature
-                let new_temp = (self.config_temp * 100.0 + (delta as f64))
-                    .max(1.0)
-                    .min(200.0)
-                    / 100.0;
+                let new_temp =
+                    (self.config_temp * 100.0 + (delta as f64)).clamp(1.0, 200.0) / 100.0;
                 self.config_temp = new_temp;
                 let _ = self
                     .model_handle
@@ -431,10 +429,8 @@ impl AppState {
             }
             2 => {
                 // Top-p
-                let new_top_p = (self.config_top_p * 100.0 + (delta as f64))
-                    .max(1.0)
-                    .min(100.0)
-                    / 100.0;
+                let new_top_p =
+                    (self.config_top_p * 100.0 + (delta as f64)).clamp(1.0, 100.0) / 100.0;
                 self.config_top_p = new_top_p;
                 let _ = self
                     .model_handle
@@ -884,7 +880,7 @@ fn render(frame: &mut Frame, state: &AppState) {
                         Style::default().fg(Color::Black).bg(win95_file_bg)
                     },
                 );
-                let text = format!("{}  {}", icon, name);
+                let text = format!("{icon}  {name}");
                 lines.push((text, style));
             } else {
                 lines.push((String::new(), Style::default().bg(win95_file_bg)));
