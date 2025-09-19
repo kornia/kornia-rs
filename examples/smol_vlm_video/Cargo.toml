@@ -9,6 +9,7 @@ publish = false
 argh = { workspace = true }
 reqwest = { version = "0.12.15", features = ["blocking"] }
 kornia = { workspace = true, features = ["v4l"] }
+kornia-vlm = { workspace = true }
 ctrlc = { workspace = true }
 rerun = { workspace = true }
 image = "0.24"
