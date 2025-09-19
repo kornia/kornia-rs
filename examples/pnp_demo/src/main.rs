@@ -1,9 +1,9 @@
+use kornia_pnp as kpnp;
+use rand::Rng;
 use kornia_imgproc::calibration::{
     distortion::{distort_point_polynomial, PolynomialDistortion},
     CameraIntrinsic,
 };
-use kornia_pnp as kpnp;
-use rand::Rng;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
