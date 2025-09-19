@@ -216,6 +216,7 @@ fn resize_fast_impl<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     options.algorithm = match interpolation {
         InterpolationMode::Bilinear => fr::ResizeAlg::Convolution(fr::FilterType::Bilinear),
         InterpolationMode::Nearest => fr::ResizeAlg::Nearest,
+        InterpolationMode::Lanczos => fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3),
     };
 
     let mut resizer = fr::Resizer::new();
