@@ -88,7 +88,7 @@ impl ModelStateHandle {
                 }
             }
         });
-        Self { 
+        Self {
             tx,
             task_handle: Some(task_handle),
         }
@@ -100,7 +100,7 @@ impl Drop for ModelStateHandle {
         // Signal the thread to stop by dropping the sender
         // This will cause the receiver to return an error and break the loop
         drop(self.tx.clone());
-        
+
         // Wait for the thread to finish
         if let Some(handle) = self.task_handle.take() {
             let _ = handle.join();
