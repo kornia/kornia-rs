@@ -17,6 +17,7 @@ gstreamer = ["kornia-io/gstreamer"]
 turbojpeg = ["kornia-io/turbojpeg"]
 v4l = ["kornia-io/v4l"]
 arrow = ["kornia-image/arrow"]
+cuda = ["kornia-vlm/cuda"]
 mkl = ["kornia-nn/mkl"]
 
 [dependencies]
