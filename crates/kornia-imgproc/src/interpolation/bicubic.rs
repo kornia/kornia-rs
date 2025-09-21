@@ -15,8 +15,8 @@ pub(crate) fn bicubic_interpolation<const C: usize, A: ImageAllocator>(
     let y = v - iv as f32;
 
     let get = |row: usize, col: usize| -> f32 {
-        let row = row.clamp(0, rows-1);
-        let col = col.clamp(0, cols-1);
+        let row = row.clamp(0, rows - 1);
+        let col = col.clamp(0, cols - 1);
 
         *image.get_unchecked([row, col, c])
     };
@@ -34,8 +34,9 @@ pub(crate) fn bicubic_interpolation<const C: usize, A: ImageAllocator>(
             f[j][i] = get(rr, cc);
             fx[j][i] = (get(rr, cc + 1) - get(rr, cc - 1)) * 0.5;
             fy[j][i] = (get(rr + 1, cc) - get(rr - 1, cc)) * 0.5;
-            fxy[j][i] = (get(rr + 1, cc + 1) - get(rr + 1, cc - 1)
-                       - get(rr - 1, cc + 1) + get(rr - 1, cc - 1)) * 0.25;
+            fxy[j][i] = (get(rr + 1, cc + 1) - get(rr + 1, cc - 1) - get(rr - 1, cc + 1)
+                + get(rr - 1, cc - 1))
+                * 0.25;
         }
     }
 
@@ -75,8 +76,8 @@ pub(crate) fn bicubic_interpolation<const C: usize, A: ImageAllocator>(
     }
 
     // [1 x x^2 x^3]*A*[1 y y^2 y^3]^T
-    let px = [1.0, x, x*x, x*x*x];
-    let py = [1.0, y, y*y, y*y*y];
+    let px = [1.0, x, x * x, x * x * x];
+    let py = [1.0, y, y * y, y * y * y];
 
     let mut res = 0.0;
     for i in 0..4 {

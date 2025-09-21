@@ -1,5 +1,5 @@
-use super::bilinear::bilinear_interpolation;
 use super::bicubic::bicubic_interpolation;
+use super::bilinear::bilinear_interpolation;
 use super::nearest::nearest_neighbor_interpolation;
 use kornia_image::allocator::ImageAllocator;
 use kornia_image::Image;
