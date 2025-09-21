@@ -379,8 +379,7 @@ pub fn threshold_otsu<A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<u8, 1, A1>,
     dst: &mut Image<u8, 1, A2>,
     threshold_out: &mut u8,
-) -> Result<(), ImageError>
-{
+) -> Result<(), ImageError> {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
             src.cols(),
@@ -389,7 +388,7 @@ pub fn threshold_otsu<A1: ImageAllocator, A2: ImageAllocator>(
             dst.rows(),
         ));
     }
-    let mut hist: Vec<usize>= vec![0_usize; 256];
+    let mut hist: Vec<usize> = vec![0_usize; 256];
     let _ = compute_histogram(src, &mut hist, 256).unwrap();
 
     let n = (src.rows() * src.cols()) as f64;
@@ -406,7 +405,9 @@ pub fn threshold_otsu<A1: ImageAllocator, A2: ImageAllocator>(
 
     for t in 0..256 {
         q1 += hist[t] as f64;
-        if q1 == 0.0 { continue; }
+        if q1 == 0.0 {
+            continue;
+        }
 
         let q2 = n - q1;
 
@@ -425,11 +426,7 @@ pub fn threshold_otsu<A1: ImageAllocator, A2: ImageAllocator>(
     }
     *threshold_out = thresh;
     parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
-        *dst_pixel = if *src_pixel > thresh {
-            255
-        } else {
-            0u8
-        };
+        *dst_pixel = if *src_pixel > thresh { 255 } else { 0u8 };
     });
 
     Ok(())
@@ -601,12 +598,11 @@ mod tests {
 
     #[test]
     fn test_threshold_otsu() -> Result<(), ImageError> {
-        let image= read_image_png_mono8("../../tests/data/barabara.png").unwrap();
+        let image = read_image_png_mono8("../../tests/data/barabara.png").unwrap();
         let mut gray = Image::<u8, 1, _>::from_size_val(image.size(), 0, CpuAllocator)?;
         let mut thresh: u8 = 0;
         super::threshold_otsu(&image, &mut gray, &mut thresh)?;
         assert_eq!(thresh, 104);
         Ok(())
     }
-
 }
