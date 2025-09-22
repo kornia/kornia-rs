@@ -6,7 +6,6 @@ pub struct SmolVlmConfig {
     pub top_p: f64,
     pub repeat_penalty: f32,
     pub do_sample: bool,
-
     pub debug: bool,
 }
 

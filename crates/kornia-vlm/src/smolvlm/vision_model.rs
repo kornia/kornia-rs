@@ -257,6 +257,7 @@ impl SmolVision {
         // patch_attention_masks: B x PatchRows x PatchCols x 196
 
         let mut hidden_states = {
+            // println!("Pixel values shape: {:?}", pixel_values.shape());
             let patch_embeddings = self
                 .patch_embedding
                 .forward(&pixel_values.to_dtype(dtype)?)?;
