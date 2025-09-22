@@ -5,9 +5,6 @@ mod text_model;
 pub mod utils;
 mod vision_model;
 
-#[cfg(feature = "debug")]
-use std::io;
-#[cfg(feature = "debug")]
 use std::io::Write;
 
 use crate::{
@@ -22,6 +19,7 @@ use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
 use hf_hub::api::sync::Api;
 use kornia_image::{allocator::ImageAllocator, Image};
+use log::debug;
 use preprocessor::get_prompt_split_image;
 use tokenizers::Tokenizer;
 
@@ -139,7 +137,7 @@ impl<A: ImageAllocator> SmolVlm<A> {
             vec![]
         };
 
-        let response = self.inference_raw(&full_prompt, images, sample_len, alloc)?;
+        let response = self.inference_raw(&full_prompt, images, sample_len, alloc, false)?;
 
         Ok(response)
     }
@@ -162,9 +160,13 @@ impl<A: ImageAllocator> SmolVlm<A> {
         images: Vec<Image<u8, 3, A>>,
         sample_len: usize, // per prompt
         alloc: A,
+        debug: bool,
     ) -> Result<String, SmolVlmError> {
-        #[cfg(feature = "debug")]
-        std::io::stdout().flush()?;
+        if debug {
+            std::io::stdout().flush()?;
+        }
+
+        let mut ctx = InferenceContext::new(debug, debug);
 
         self.response.clear();
 
@@ -185,7 +187,6 @@ impl<A: ImageAllocator> SmolVlm<A> {
             let (img_patches, mask_patches, size) =
                 self.preprocessor
                     .preprocess(&image, &self.device, alloc.clone())?;
-            // preprocess_image(image, 1536, 384, &self.device);
             processed_images.push((img_patches, mask_patches));
 
             let img_token = get_prompt_split_image(81, size);
@@ -196,20 +197,19 @@ impl<A: ImageAllocator> SmolVlm<A> {
             offset += img_token.len() - image_tag_len;
         }
 
-        // println!("[SmolVLM] Full prompt: {converted_prompt}");
-
         let full_token = self.tokenizer.encode(converted_prompt, false)?;
 
         let mut delta_token = full_token.get_ids().to_vec();
 
-        #[cfg(feature = "debug")]
-        println!("Initial tokens: {delta_token:?}");
-        #[cfg(feature = "debug")]
-        let start_gen = std::time::Instant::now();
-        #[cfg(feature = "debug")]
+        if debug {
+            debug!("Initial tokens: {delta_token:?}");
+        }
+        let start_gen = if debug {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
         let mut generated_tokens = 0usize;
-
-        let mut ctx = InferenceContext::new();
 
         for _i in 0..sample_len {
             self.token_history.extend(&delta_token);
@@ -259,31 +259,30 @@ impl<A: ImageAllocator> SmolVlm<A> {
             if token_output != "<end_of_utterance>" {
                 self.response += &token_output;
 
-                #[cfg(feature = "debug")]
-                {
+                if debug {
                     generated_tokens += 1;
-
                     print!("{token_output}");
-                    io::stdout().flush().unwrap();
+                    std::io::stdout().flush().unwrap();
                 }
             } else {
-                #[cfg(feature = "debug")]
-                {
+                if debug {
                     println!();
-                    io::stdout().flush().unwrap();
+                    std::io::stdout().flush().unwrap();
                 }
-
                 break;
             }
         }
 
-        #[cfg(feature = "debug")]
-        {
-            let dt = start_gen.elapsed();
-            println!(
-                "\n{generated_tokens} tokens generated ({:.2} token/s)",
-                generated_tokens as f64 / dt.as_secs_f64(),
-            );
+        if debug {
+            if let Some(start_gen) = start_gen {
+                let dt = start_gen.elapsed();
+                println!(
+                    "\n{generated_tokens} tokens generated ({:.2} token/s)",
+                    generated_tokens as f64 / dt.as_secs_f64(),
+                );
+
+                debug!("Generated text: {:?}", self.response);
+            }
         }
 
         ctx.text_introspector
