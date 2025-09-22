@@ -33,3 +33,4 @@ rand = "0.9.0"
 
 [features]
 cuda = ["candle-core/cuda", "candle-transformers/cuda", "candle-nn/cuda"]
+debug = []
