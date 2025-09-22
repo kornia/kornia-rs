@@ -211,8 +211,6 @@ impl<A: ImageAllocator> SmolVlm<A> {
         };
         let mut generated_tokens = 0usize;
 
-        let mut ctx = InferenceContext::new();
-
         for _i in 0..sample_len {
             self.token_history.extend(&delta_token);
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
