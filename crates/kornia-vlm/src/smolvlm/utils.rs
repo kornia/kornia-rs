@@ -23,19 +23,6 @@ impl Default for SmolVlmConfig {
     }
 }
 
-impl SmolVlmConfig {
-    fn validation() -> Self {
-        Self {
-            seed: 42,
-            temp: 1.0,
-            top_p: 0.8,
-            repeat_penalty: 1.1,
-            do_sample: false,
-            debug: true,
-        }
-    }
-}
-
 #[derive(thiserror::Error, Debug)]
 pub enum SmolVlmError {
     #[error(transparent)]
