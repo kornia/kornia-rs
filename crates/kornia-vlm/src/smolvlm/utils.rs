@@ -7,8 +7,7 @@ pub struct SmolVlmConfig {
     pub repeat_penalty: f32,
     pub do_sample: bool,
 
-    // TODO: check if SmolVLM needs this
-    pub repeat_last_n: usize,
+    pub debug: bool,
 }
 
 impl Default for SmolVlmConfig {
@@ -19,7 +18,20 @@ impl Default for SmolVlmConfig {
             top_p: 0.8,
             repeat_penalty: 1.0,
             do_sample: true,
-            repeat_last_n: 64,
+            debug: false,
+        }
+    }
+}
+
+impl SmolVlmConfig {
+    fn validation() -> Self {
+        Self {
+            seed: 42,
+            temp: 1.0,
+            top_p: 0.8,
+            repeat_penalty: 1.1,
+            do_sample: false,
+            debug: true,
         }
     }
 }

@@ -1,7 +1,8 @@
-use crate::smolvlm::utils::SmolVlmError;
+use crate::{context::InferenceContext, smolvlm::utils::SmolVlmError};
 use candle_core::{DType, Device, Shape, Tensor};
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
+use log::info;
 use std::borrow::Cow;
 
 // https://huggingface.co/HuggingFaceTB/SmolVLM-Instruct/blob/main/preprocessor_config.json
@@ -59,8 +60,7 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
         alloc: A,
     ) -> Result<(Tensor, Tensor, ImageSize), SmolVlmError> {
         {
-            #[cfg(feature = "debug")]
-            println!(
+            info!(
                 "Image size: {}x{} w/ Max size: {}",
                 img.width(),
                 img.height(),
@@ -96,8 +96,7 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
         }
 
         {
-            #[cfg(feature = "debug")]
-            println!(
+            info!(
                 "Image size: {}x{} w/ Max size: {}",
                 img.width(),
                 img.height(),
@@ -221,8 +220,7 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
     ) -> Result<(), SmolVlmError> {
         let (width, height) = (img.width(), img.height());
 
-        #[cfg(feature = "debug")]
-        println!(
+        info!(
             "Patch blocks (HxW): {:?}x{:?}",
             (height as u32).div_ceil(outer_patch_size),
             (width as u32).div_ceil(outer_patch_size),

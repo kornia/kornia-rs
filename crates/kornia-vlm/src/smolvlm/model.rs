@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use candle_core::{IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Linear, Module};
+use log::debug;
 
 use crate::{context::InferenceContext, smolvlm::text_model::SmolText};
 
@@ -128,11 +129,12 @@ impl SmolModel {
             let image_hidden_states = image_hidden_states.flatten(0, 1)?;
             agg_image_hidden_states.push(image_hidden_states);
 
-            #[cfg(feature = "debug")]
-            println!(
-                "[Sub-image] image_hidden_states length: {}",
-                agg_image_hidden_states.last().unwrap().dims2()?.0
-            );
+            if ctx.debug {
+                debug!(
+                    "[Sub-image] image_hidden_states length: {}",
+                    agg_image_hidden_states.last().unwrap().dims2()?.0
+                );
+            }
 
             ctx.vis_introspector.increment_batch_pos();
         }

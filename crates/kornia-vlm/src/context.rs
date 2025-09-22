@@ -1,12 +1,10 @@
-#[cfg(feature = "debug")]
 use std::collections::HashMap;
 
-#[cfg(feature = "debug")]
 use candle_core::safetensors::save;
 use candle_core::Tensor;
 
 pub struct ActivationIntrospector {
-    #[cfg(feature = "debug")]
+    enabled: bool,
     activations: HashMap<String, Tensor>,
     counter_batch_pos: u32,
     counter_depth_arbitrary: u32, // useful arbitrary construct when debugging repeated layers found in any VLMs/LLMs
@@ -15,9 +13,9 @@ pub struct ActivationIntrospector {
 }
 
 impl ActivationIntrospector {
-    pub fn new() -> Self {
+    pub fn new(enabled: bool) -> Self {
         Self {
-            #[cfg(feature = "debug")]
+            enabled,
             activations: HashMap::new(),
             counter_batch_pos: 0,
             counter_depth_arbitrary: 0,
@@ -25,26 +23,26 @@ impl ActivationIntrospector {
         }
     }
 
-    #[allow(unused_variables)]
     pub fn save_as(self, fname: &str) {
-        #[cfg(feature = "debug")]
-        save(&self.activations, fname).unwrap();
+        if self.enabled {
+            save(&self.activations, fname).unwrap();
+        }
     }
 
-    #[allow(unused_variables)]
     pub fn insert(&mut self, name: &str, activation: &Tensor) {
-        #[cfg(feature = "debug")]
-        self.activations.insert(
-            if self.tracking_depth {
-                format!(
-                    "{}_d{}_i{}",
-                    name, self.counter_depth_arbitrary, self.counter_batch_pos
-                )
-            } else {
-                format!("{}_i{}", name, self.counter_batch_pos)
-            },
-            activation.clone(),
-        );
+        if self.enabled {
+            self.activations.insert(
+                if self.tracking_depth {
+                    format!(
+                        "{}_d{}_i{}",
+                        name, self.counter_depth_arbitrary, self.counter_batch_pos
+                    )
+                } else {
+                    format!("{}_i{}", name, self.counter_batch_pos)
+                },
+                activation.clone(),
+            );
+        }
     }
 
     pub fn increment_batch_pos(&mut self) {
@@ -56,8 +54,7 @@ impl ActivationIntrospector {
     }
 
     pub fn start_tracking_depth(&mut self) {
-        if self.tracking_depth {
-            #[cfg(feature = "debug")]
+        if self.tracking_depth && self.enabled {
             panic!("Depth tracking has already started!");
         }
 
@@ -66,8 +63,7 @@ impl ActivationIntrospector {
     }
 
     pub fn stop_tracking_depth(&mut self) {
-        if !self.tracking_depth {
-            #[cfg(feature = "debug")]
+        if !self.tracking_depth && self.enabled {
             panic!("Depth tracking has already stopped!");
         }
 
@@ -77,15 +73,23 @@ impl ActivationIntrospector {
 }
 
 pub struct InferenceContext {
+    pub debug: bool,
     pub text_introspector: ActivationIntrospector,
     pub vis_introspector: ActivationIntrospector,
 }
 
+impl Default for InferenceContext {
+    fn default() -> Self {
+        Self::new(false, false)
+    }
+}
+
 impl InferenceContext {
-    pub fn new() -> Self {
+    pub fn new(enabled: bool, debug: bool) -> Self {
         Self {
-            text_introspector: ActivationIntrospector::new(),
-            vis_introspector: ActivationIntrospector::new(),
+            debug,
+            text_introspector: ActivationIntrospector::new(enabled),
+            vis_introspector: ActivationIntrospector::new(enabled),
         }
     }
 }
