@@ -16,7 +16,7 @@ version.workspace = true
 argh = { workspace = true }
 reqwest = { version = "0.12.15", features = ["blocking"] }
 kornia-io = { workspace = true }
-kornia-vlm = { workspace = true, features = ["debug"] }
+kornia-vlm = { workspace = true }
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
 

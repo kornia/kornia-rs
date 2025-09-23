@@ -38,6 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut smolvlm = SmolVlm::new(SmolVlmConfig {
         do_sample: false, // set to false for greedy decoding
         seed: 420,
+        debug: true,
         ..Default::default()
     })?;
 
