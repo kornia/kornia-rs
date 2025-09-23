@@ -29,6 +29,7 @@ kornia-io = { workspace = true, features = [] }
 kornia-linalg = { workspace = true }
 kornia-tensor.workspace = true
 kornia-tensor-ops.workspace = true
+kornia-nn.workspace = true
 kornia-vlm.workspace = true
 
 [lib]
