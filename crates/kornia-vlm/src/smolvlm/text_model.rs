@@ -63,19 +63,18 @@ impl Attention {
         })
     }
 
-    pub fn reset_cache(&mut self) {
+    pub fn reset_cache(&mut self) -> Result<()> {
         self.k_cache = Tensor::zeros(
             (NUM_OF_HEADS, 0, HEAD_DIM),
             self.k_cache.dtype(),
             self.k_cache.device(),
-        )
-        .unwrap();
+        )?;
         self.v_cache = Tensor::zeros(
             (NUM_OF_HEADS, 0, HEAD_DIM),
             self.v_cache.dtype(),
             self.v_cache.device(),
-        )
-        .unwrap();
+        )?;
+        Ok(())
     }
 
     fn apply_rotary_embedding(&self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
@@ -269,7 +268,9 @@ pub struct SmolText {
 impl SmolText {
     pub fn load(c: &HashMap<String, Tensor>) -> Result<Self> {
         Ok(Self {
-            blocks: (0u8..=23).map(|i| Block::load(c, i).unwrap()).collect(),
+            blocks: (0u8..=23)
+                .map(|i| Block::load(c, i))
+                .collect::<Result<Vec<_>>>()?,
             norm: CustomRmsNorm::new(c["model.text_model.norm.weight"].clone(), 1e-5),
             lm_head: Linear::new(c["lm_head.weight"].clone(), None),
         })

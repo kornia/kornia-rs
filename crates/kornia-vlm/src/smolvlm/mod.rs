@@ -262,12 +262,12 @@ impl<A: ImageAllocator> SmolVlm<A> {
                 if debug {
                     generated_tokens += 1;
                     print!("{token_output}");
-                    std::io::stdout().flush().unwrap();
+                    std::io::stdout().flush()?;
                 }
             } else {
                 if debug {
                     println!();
-                    std::io::stdout().flush().unwrap();
+                    std::io::stdout().flush()?;
                 }
                 break;
             }
