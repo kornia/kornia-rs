@@ -1,4 +1,3 @@
-use crate::Args;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
@@ -8,10 +7,9 @@ use kornia::{
     tensor::CpuAllocator,
 };
 use kornia_vlm::smolvlm::{utils::SmolVlmConfig, SmolVlm};
-// use rerun;
 use std::error::Error;
 
-pub fn video_file_demo(_args: &Args, path: &str) -> Result<(), Box<dyn Error>> {
+pub fn video_file_demo(path: &str) -> Result<(), Box<dyn Error>> {
     // Create rerun recording stream (match video_demo.rs)
     let ip_address = "192.168.1.9";
     let port = 9999;
