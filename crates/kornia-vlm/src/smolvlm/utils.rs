@@ -5,9 +5,8 @@ pub struct SmolVlmConfig {
     pub temp: f64,
     pub top_p: f64,
     pub repeat_penalty: f32,
-
-    // TODO: check if SmolVLM needs this
-    pub repeat_last_n: usize,
+    pub do_sample: bool,
+    pub debug: bool,
 }
 
 impl Default for SmolVlmConfig {
@@ -17,7 +16,8 @@ impl Default for SmolVlmConfig {
             temp: 1.0,
             top_p: 0.8,
             repeat_penalty: 1.0,
-            repeat_last_n: 64,
+            do_sample: true,
+            debug: false,
         }
     }
 }
@@ -38,6 +38,12 @@ pub enum SmolVlmError {
 
     #[error(transparent)]
     IoError(#[from] std::io::Error),
+
+    #[error("Mismatched image count: found {tags} <image> tags but {images} images provided")]
+    MismatchedImageCount { tags: usize, images: usize },
+
+    #[error("Invalid logits detected: {0}")]
+    InvalidLogits(String),
 
     // TODO: not used right now (currently, the end token is handled via if/else, which might be preferred)
     #[error("Cannot find the <end_of_utterance> token")]
