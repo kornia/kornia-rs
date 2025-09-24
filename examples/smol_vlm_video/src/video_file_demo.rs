@@ -7,21 +7,21 @@ use kornia::{
     tensor::CpuAllocator,
 };
 use kornia_vlm::smolvlm::{utils::SmolVlmConfig, SmolVlm};
+
+use crate::Args;
 use std::error::Error;
 
-pub fn video_file_demo(path: &str) -> Result<(), Box<dyn Error>> {
-    // Create rerun recording stream (match video_demo.rs)
-    let ip_address = "192.168.1.9";
-    let port = 9999;
+pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
+    // Use ip_address and port from Args
     let rec = rerun::RecordingStreamBuilder::new("SmolVLM Example: Video File Captioning")
         .connect_grpc_opts(
-            format!("rerun+http://{ip_address}:{port}/proxy"),
+            format!("rerun+http://{}:{}/proxy", args.ip_address, args.port),
             rerun::default_flush_timeout(),
         )?;
 
     gst::init()?;
-    println!("🎬 Reading video file: {path}");
-    let pipeline_str = format!("filesrc location={path} ! decodebin ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink");
+
+    let pipeline_str = format!("filesrc location={} ! decodebin ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink", args.video_file);
     let pipeline = gst::parse_launch(&pipeline_str)?;
     let appsink = pipeline
         .clone()
@@ -35,7 +35,7 @@ pub fn video_file_demo(path: &str) -> Result<(), Box<dyn Error>> {
     pipeline.set_state(gst::State::Playing)?;
     let mut smolvlm = SmolVlm::new(SmolVlmConfig::default())?;
 
-    let prompt = "What is the the color of the closest car? (Just color only)";
+    let prompt = &args.prompt;
     let mut frame_idx = 0;
 
     while let Ok(sample) = appsink.pull_sample() {
@@ -59,7 +59,9 @@ pub fn video_file_demo(path: &str) -> Result<(), Box<dyn Error>> {
         rec.log("prompt", &rerun::TextDocument::new(prompt))?;
         rec.log("response", &rerun::TextDocument::new(response.as_str()))?;
 
-        println!("Frame {frame_idx}: {response}");
+        if args.debug {
+            println!("Frame {frame_idx}: {response}");
+        }
         frame_idx += 1;
     }
     pipeline.set_state(gst::State::Null)?;

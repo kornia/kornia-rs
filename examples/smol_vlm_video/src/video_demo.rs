@@ -15,24 +15,23 @@ use std::sync::{
 };
 
 pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> {
-    // ip address of the device with the local rerun viewer you want the data send to
-    let ip_address = "192.168.1.4";
-    let port = 9999;
-
+    // Use ip_address and port from Args
     let rec = rerun::RecordingStreamBuilder::new("SmolVLM Example: Live Captioning")
         .connect_grpc_opts(
-            format!("rerun+http://{ip_address}:{port}/proxy"),
+            format!("rerun+http://{}:{}/proxy", args.ip_address, args.port),
             rerun::default_flush_timeout(),
         )?;
 
     // Create the cancellation token for the video capture
     let cancel_token = Arc::new(AtomicBool::new(false));
-    let cancel_token_clone = Arc::clone(&cancel_token);
 
     // register a signal handler for graceful shutdown
-    ctrlc::set_handler(move || {
-        cancel_token_clone.store(true, Ordering::SeqCst);
-        println!("Sending timer cancel signal !!");
+    ctrlc::set_handler({
+        let cancel_token = cancel_token.clone();
+        move || {
+            cancel_token.store(true, Ordering::SeqCst);
+            println!("Sending timer cancel signal.");
+        }
     })?;
 
     // Create the video capture object
@@ -80,7 +79,7 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
     // Pre-allocate RGB image buffer outside the loop
     let mut rgb_image = Image::<u8, 3, CpuAllocator>::from_size_val(img_size, 0, CpuAllocator)?;
 
-    let prompt = "Describe.";
+    let prompt = &args.prompt;
     let mut smolvlm = SmolVlm::new(SmolVlmConfig::default())?;
 
     while !cancel_token.load(Ordering::SeqCst) {
