@@ -21,7 +21,10 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
 
     gst::init()?;
 
-    let pipeline_str = format!("filesrc location={} ! decodebin ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink", args.video_file);
+    let pipeline_str = format!(
+        "filesrc location={} ! decodebin ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
+        args.video_file.as_ref().expect("Expected video files to be present when calling this function.")
+    );
     let pipeline = gst::parse_launch(&pipeline_str)?;
     let appsink = pipeline
         .clone()
@@ -35,7 +38,7 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
     pipeline.set_state(gst::State::Playing)?;
     let mut smolvlm = SmolVlm::new(SmolVlmConfig::default())?;
 
-    let prompt = &args.prompt;
+    let prompt = &args.prompt as &str;
     let mut frame_idx = 0;
 
     while let Ok(sample) = appsink.pull_sample() {

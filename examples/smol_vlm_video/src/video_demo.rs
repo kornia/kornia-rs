@@ -79,7 +79,7 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
     // Pre-allocate RGB image buffer outside the loop
     let mut rgb_image = Image::<u8, 3, CpuAllocator>::from_size_val(img_size, 0, CpuAllocator)?;
 
-    let prompt = &args.prompt;
+    let prompt = &args.prompt as &str;
     let mut smolvlm = SmolVlm::new(SmolVlmConfig::default())?;
 
     while !cancel_token.load(Ordering::SeqCst) {
