@@ -262,12 +262,12 @@ impl<A: ImageAllocator> SmolVlm<A> {
                 if debug {
                     generated_tokens += 1;
                     print!("{token_output}");
-                    std::io::stdout().flush().unwrap();
+                    std::io::stdout().flush()?;
                 }
             } else {
                 if debug {
                     println!();
-                    std::io::stdout().flush().unwrap();
+                    std::io::stdout().flush()?;
                 }
                 break;
             }
@@ -286,21 +286,23 @@ impl<A: ImageAllocator> SmolVlm<A> {
         }
 
         ctx.text_introspector
-            .save_as("examples/smol_vlm/validation_data/rust_isp_decoder.safetensors");
+            .save_as("examples/smol_vlm/validation_data/rust_isp_decoder.safetensors")?;
         ctx.vis_introspector
-            .save_as("examples/smol_vlm/validation_data/rust_isp_encoder.safetensors");
+            .save_as("examples/smol_vlm/validation_data/rust_isp_encoder.safetensors")?;
 
         Ok(self.response.clone())
     }
 
     /// Clear the context of the model (reset image and token history)
-    pub fn clear_context(&mut self) {
-        self.model.reset_cache();
+    pub fn clear_context(&mut self) -> Result<(), SmolVlmError> {
+        self.model.reset_cache()?;
 
         self.image_history.clear();
         self.index_pos = 0;
         self.first_prompt = true;
         self.token_history.clear();
+
+        Ok(())
     }
 
     /// Deterministic sampling that always selects the token with the lowest index for ties

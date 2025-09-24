@@ -564,7 +564,10 @@ mod tests {
             CpuAllocator,
         )?;
 
-        let padded_img_data = img_buffer.as_ref().unwrap().as_slice();
+        let padded_img_data = img_buffer
+            .as_ref()
+            .expect("Failed to get padded image data")
+            .as_slice();
         let original_img_data = img.as_slice();
 
         // Check each row

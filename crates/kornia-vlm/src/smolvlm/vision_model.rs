@@ -207,7 +207,9 @@ impl SmolVision {
                 c["model.vision_model.embeddings.position_embedding.weight"].clone(),
                 1152,
             ),
-            blocks: (0u8..=26).map(|id| Block::new(c, id).unwrap()).collect(),
+            blocks: (0u8..=26)
+                .map(|id| Block::new(c, id))
+                .collect::<Result<Vec<_>>>()?,
             post_layernorm: LayerNorm::new(
                 c["model.vision_model.post_layernorm.weight"].clone(),
                 c["model.vision_model.post_layernorm.bias"].clone(),

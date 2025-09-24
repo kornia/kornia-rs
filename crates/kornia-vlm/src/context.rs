@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use candle_core::safetensors::save;
-use candle_core::Tensor;
+use candle_core::{Result, Tensor};
 
 pub struct ActivationIntrospector {
     enabled: bool,
@@ -23,10 +23,11 @@ impl ActivationIntrospector {
         }
     }
 
-    pub fn save_as(self, fname: &str) {
+    pub fn save_as(self, fname: &str) -> Result<()> {
         if self.enabled {
-            save(&self.activations, fname).unwrap();
+            save(&self.activations, fname)?;
         }
+        Ok(())
     }
 
     pub fn insert(&mut self, name: &str, activation: &Tensor) {
