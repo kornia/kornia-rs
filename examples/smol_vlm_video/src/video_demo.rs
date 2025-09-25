@@ -105,7 +105,7 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
             continue;
         }
 
-        smolvlm.clear_context();
+        smolvlm.clear_context()?;
         let response = smolvlm.inference(prompt, Some(rgb_image.clone()), 20, CpuAllocator)?;
 
         // Log the frame to rerun

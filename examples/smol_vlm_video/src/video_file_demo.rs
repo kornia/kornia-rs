@@ -51,7 +51,7 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
         let img_size = ImageSize { width, height };
         let rgb_slice = map.as_ref();
         let image = Image::<u8, 3, CpuAllocator>::new(img_size, rgb_slice.to_vec(), CpuAllocator)?;
-        smolvlm.clear_context();
+        smolvlm.clear_context()?;
         let response = smolvlm.inference(prompt, Some(image.clone()), 20, CpuAllocator)?;
 
         // Log image and text to rerun (all using rgb_slice for image)
