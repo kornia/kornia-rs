@@ -16,20 +16,23 @@ pub enum SmolVlm2Error {
     #[error(transparent)]
     IoError(#[from] std::io::Error),
 
+    #[error("Invalid logits detected: {0}")]
+    InvalidLogits(String),
+
     #[error("Cannot find the <end_of_utterance> token")]
     EosTokenNotFound,
 }
 
 /// Configuration for the SmolVLM2 model
+
 #[derive(Clone, Copy)]
 pub struct SmolVlm2Config {
     pub seed: u64,
     pub temp: f64,
     pub top_p: f64,
     pub repeat_penalty: f32,
-
-    // how many last tokens to consider for repeat_penalty
     pub repeat_last_n: usize,
+    pub do_sample: bool,
 }
 
 impl Default for SmolVlm2Config {
@@ -40,6 +43,7 @@ impl Default for SmolVlm2Config {
             top_p: 0.8,
             repeat_penalty: 1.0,
             repeat_last_n: 64,
+            do_sample: true,
         }
     }
 }

@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use candle_core::IndexOp;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
-use candle_transformers::generation::LogitsProcessor;
+use candle_transformers::generation::{LogitsProcessor, Sampling};
 use hf_hub::api::sync::Api;
 use kornia_image::{allocator::ImageAllocator, Image};
 use tokenizers::Tokenizer;
@@ -40,17 +40,19 @@ impl SmolVlm2 {
 
         let (model, tokenizer) = Self::load_model(dtype, &device)?;
 
+        let logits_processor = if config.do_sample {
+            LogitsProcessor::new(config.seed, Some(config.temp), Some(config.top_p))
+        } else {
+            LogitsProcessor::from_sampling(config.seed, Sampling::ArgMax)
+        };
+
         Ok(Self {
             model,
             tokenizer,
             first_prompt: true,
             config,
             device,
-            logits_processor: LogitsProcessor::new(
-                config.seed,
-                Some(config.temp),
-                Some(config.top_p),
-            ),
+            logits_processor,
             index_pos: 0,
             token_history: Vec::new(),
         })
@@ -114,7 +116,12 @@ impl SmolVlm2 {
                 self.config.repeat_penalty,
                 &delta_token,
             )?;
-            let out_token = self.logits_processor.sample(&last_logit)?;
+            let out_token = if self.config.do_sample {
+                self.logits_processor.sample(&last_logit)?
+            } else {
+                // Use deterministic sampling for reproducible results
+                self.sample_deterministic(&last_logit)?
+            };
 
             self.index_pos += delta_token.len();
             delta_token.clear();
@@ -151,6 +158,42 @@ impl SmolVlm2 {
         Ok(response)
     }
 
+    /// Deterministic sampling that always selects the token with the lowest index for ties
+    fn sample_deterministic(&self, logits: &Tensor) -> Result<u32, SmolVlm2Error> {
+        // Convert to f32 for consistent precision
+        let logits_vec = logits.to_dtype(DType::F32)?.to_vec1::<f32>()?;
+
+        // Filter out NaNs
+        let filtered: Vec<(usize, f32)> = logits_vec
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &v)| if v.is_finite() { Some((i, v)) } else { None })
+            .collect();
+        if filtered.is_empty() {
+            return Err(SmolVlm2Error::InvalidLogits(
+                "No valid logits found - all values may be NaN or invalid".to_string(),
+            ));
+        }
+
+        // Find the maximum value among valid logits
+        let max_value = filtered
+            .iter()
+            .map(|&(_, v)| v)
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        // Find all indices with the maximum value (exact equality)
+        let max_indices: Vec<usize> = filtered
+            .iter()
+            .filter(|&&(_, v)| v == max_value)
+            .map(|&(i, _)| i)
+            .collect();
+
+        // Always select the first index (deterministic tiebreaker) in order of the token
+        let best_token = max_indices[0] as u32;
+
+        Ok(best_token)
+    }
+
     fn load_model(
         dtype: DType,
         device: &Device,
@@ -180,7 +223,11 @@ mod tests {
     #[test]
     #[ignore = "Testing for the output prompt, requiring CUDA"]
     fn test_smolvlm2_text_inference() {
-        let config = SmolVlm2Config::default();
+        let config = SmolVlm2Config {
+            seed: 42,
+            do_sample: false,
+            ..Default::default()
+        };
         let mut model = SmolVlm2::new(config).unwrap();
 
         let prompt = "What is life?";
