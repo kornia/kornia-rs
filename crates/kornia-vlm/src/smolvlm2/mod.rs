@@ -165,15 +165,6 @@ impl SmolVlm2 {
 
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[w1, w2], dtype, device)? };
 
-        // let w1 = repo.get("model-00001-of-00002.safetensors")?;
-        // let w2 = repo.get("model-00002-of-00002.safetensors")?;
-        // let weights = candle_core::safetensors::load(w1, device)?;
-        // let weights2 = candle_core::safetensors::load(w2, device)?;
-
-        // println!("Variables loaded: {:?}", weights.keys());
-        // println!("--------------------------------------");
-        // println!("Variables2 loaded: {:?}", weights2.keys());
-
         model::Model::load(vb, dtype, device)
             .map_err(|e| SmolVlm2Error::CandleError(e))
             .map(|m| (m, tokenizer))
