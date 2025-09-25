@@ -5,8 +5,6 @@
 ```bash
 Usage: smol_vlm -i <image-path> -p <text-prompt> [--sample-length <sample-length>]
 
-Generate a description of an image using HuggingFace SmolVLM
-
 Options:
   -i, --image-path      path to an input image
   -p, --text-prompt     prompt to ask the model
@@ -17,5 +15,4 @@ Options:
 ```bash
 cargo run -p smol_vlm --features cuda -- -i ./.vscode/fuji-mountain-in-autumn.jpg -p "Can you describe the image?" --sample-length 500
 ```
-remove `--features cuda` if you want to use CPU.
 
