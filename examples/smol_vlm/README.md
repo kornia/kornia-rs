@@ -1,7 +1,6 @@
 # Basic SmolVLM Example
 
 ## Usage
-
 ```bash
 Usage: smol_vlm -i <image-path> -p <text-prompt> [--sample-length <sample-length>]
 
@@ -12,6 +11,7 @@ Options:
   --help, help      display usage information
 ```
 
+## Command
 ```bash
 cargo run -p smol_vlm --features cuda -- -i ./.vscode/fuji-mountain-in-autumn.jpg -p "Can you describe the image?" --sample-length 500
 ```
