@@ -82,7 +82,9 @@ impl ModelStateHandle {
                     }
                     Ok(ModelRequest::ClearContext) => {
                         // If the model has a method to clear context, call it here
-                        model.clear_context();
+                        if let Err(e) = model.clear_context() {
+                            eprintln!("Failed to clear context: {e}");
+                        }
                     }
                     Err(_) => break,
                 }
