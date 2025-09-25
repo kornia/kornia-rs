@@ -1,4 +1,4 @@
-Example showing how to use the HuggingFace SmolVLM model with Candle.
+# Basic SmolVLM Example
 
 ## Usage
 
