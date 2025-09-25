@@ -3,15 +3,15 @@ mod utils;
 
 use std::io::{self, Write};
 
+use candle_core::IndexOp;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::generation::LogitsProcessor;
 use hf_hub::api::sync::Api;
 use kornia_image::{allocator::ImageAllocator, Image};
 use tokenizers::Tokenizer;
-use candle_core::IndexOp;
 
-use crate::smolvlm2::utils::{SmolVlm2Error, SmolVlm2Config};
+use crate::smolvlm2::utils::{SmolVlm2Config, SmolVlm2Error};
 
 pub struct SmolVlm2 {
     model: model::Model,
@@ -20,7 +20,6 @@ pub struct SmolVlm2 {
     config: SmolVlm2Config,
     device: Device,
     logits_processor: LogitsProcessor,
-    image_history: Vec<(Tensor, Tensor)>,
     index_pos: usize,        // index of the next token to be processed
     token_history: Vec<u32>, // stores the history of generated tokens
 }
@@ -52,7 +51,6 @@ impl SmolVlm2 {
                 Some(config.temp),
                 Some(config.top_p),
             ),
-            image_history: Vec::new(),
             index_pos: 0,
             token_history: Vec::new(),
         })
@@ -72,7 +70,7 @@ impl SmolVlm2 {
     /// * `caption` - The generated caption
     pub fn inference<A: ImageAllocator>(
         &mut self,
-        image: Option<Image<u8, 3, A>>,
+        _image: Option<Image<u8, 3, A>>,
         prompt: &str,
         sample_len: usize, // per prompt
         stdout_debug: bool,
@@ -90,18 +88,7 @@ impl SmolVlm2 {
             String::new()
         };
 
-        // if let Some(raw_img) = image {
-        //     let (img_patches, mask_patches, size) =
-        //         preprocess_image(raw_img, 1920, 384, &self.device);
-
-        //     let img_token = get_prompt_split_image(81, size);
-        //     full_prompt += "\nUser:<image>";
-        //     full_prompt = full_prompt.replace("<image>", &img_token);
-
-        //     self.image_history.push((img_patches, mask_patches));
-        // } else {
         full_prompt += "\nUser: ";
-        // }
 
         full_prompt += prompt;
         full_prompt += "<end_of_utterance>\nAssistant:";
@@ -117,19 +104,8 @@ impl SmolVlm2 {
             self.token_history.extend(&delta_token);
 
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
-            let vision_data = 
-            // if !self.image_history.is_empty() {
-            //     let image_token_mask = input.broadcast_eq(&self.image_token_tensor)?;
-            //     Some((
-            //         image_token_mask,
-            //         &self.image_history[0].0,
-            //         &self.image_history[0].1,
-            //     ))
-            // } else {
-                None;
-            // };
 
-            let logits = self.model.forward(&input, self.index_pos, vision_data)?;
+            let logits = self.model.forward(&input, self.index_pos)?;
             let (s, _embed_dim) = logits.dims2()?;
             let last_logit = logits.i((s - 1, ..))?;
 
@@ -188,8 +164,7 @@ impl SmolVlm2 {
         let w2 = repo.get("model-00002-of-00002.safetensors")?;
 
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[w1, w2], dtype, device)? };
-        
-        
+
         // let w1 = repo.get("model-00001-of-00002.safetensors")?;
         // let w2 = repo.get("model-00002-of-00002.safetensors")?;
         // let weights = candle_core::safetensors::load(w1, device)?;
@@ -207,22 +182,20 @@ impl SmolVlm2 {
 
 #[cfg(test)]
 mod tests {
-    use candle_nn::VarBuilder;
-    use hf_hub::api::sync::Api;
     use kornia_tensor::CpuAllocator;
-    use tokenizers::Tokenizer;
 
     use super::*;
 
     #[test]
-    fn test_smolvlm2_inference() {
+    #[ignore = "Testing for the output prompt, requiring CUDA"]
+    fn test_smolvlm2_text_inference() {
         let config = SmolVlm2Config::default();
         let mut model = SmolVlm2::new(config).unwrap();
 
         let prompt = "What is life?";
-        let sample_len = 50;
+        let sample_len = 500;
         let stdout_debug = true;
 
-        let response = model.inference::<CpuAllocator>(None, prompt, sample_len, stdout_debug);
+        let _response = model.inference::<CpuAllocator>(None, prompt, sample_len, stdout_debug);
     }
 }
