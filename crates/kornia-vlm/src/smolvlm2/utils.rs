@@ -21,6 +21,9 @@ pub enum SmolVlm2Error {
 
     #[error("Cannot find the <end_of_utterance> token")]
     EosTokenNotFound,
+
+    #[error("Mismatched image count: tags = {tags}, images = {images}")]
+    MismatchedImageCount { tags: usize, images: usize },
 }
 
 /// Configuration for the SmolVLM2 model

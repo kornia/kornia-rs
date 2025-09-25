@@ -22,6 +22,8 @@ pub struct SmolVlm2 {
     logits_processor: LogitsProcessor,
     index_pos: usize,        // index of the next token to be processed
     token_history: Vec<u32>, // stores the history of generated tokens
+
+    response: String,
 }
 
 impl SmolVlm2 {
@@ -55,6 +57,7 @@ impl SmolVlm2 {
             logits_processor,
             index_pos: 0,
             token_history: Vec::new(),
+            response: String::new(),
         })
     }
 
@@ -65,24 +68,18 @@ impl SmolVlm2 {
     /// * `image` - The rgb8    image to generate a caption for with shape [H, W, 3]
     /// * `prompt` - The prompt to generate a caption for
     /// * `sample_len` - The length of the generated caption
-    /// * `stdout_debug` - Whether to print the debug information to the stdout
+    /// * `alloc` - The image allocator to use
     ///
     /// # Returns
     ///
     /// * `caption` - The generated caption
     pub fn inference<A: ImageAllocator>(
         &mut self,
-        _image: Option<Image<u8, 3, A>>,
-        prompt: &str,
+        prompt: &str, // TODO: make it structured
+        image: Option<Image<u8, 3, A>>,
         sample_len: usize, // per prompt
-        stdout_debug: bool,
+        alloc: A,
     ) -> Result<String, SmolVlm2Error> {
-        if stdout_debug {
-            std::io::stdout().flush()?;
-        }
-
-        let mut response = String::new(); // collection of tokens
-
         let mut full_prompt = if self.first_prompt {
             self.first_prompt = false;
             String::from("<|im_start|>")
@@ -90,32 +87,116 @@ impl SmolVlm2 {
             String::new()
         };
 
-        full_prompt += "\nUser: ";
+        if image.is_some() {
+            full_prompt += "User:<image>";
+        } else {
+            full_prompt += "User: ";
+        }
 
         full_prompt += prompt;
         full_prompt += "<end_of_utterance>\nAssistant:";
 
-        let full_token = self.tokenizer.encode(full_prompt, false)?;
+        let images = if let Some(img) = image {
+            vec![img]
+        } else {
+            vec![]
+        };
+
+        let response = self.inference_raw(&full_prompt, images, sample_len, alloc, false)?;
+
+        Ok(response)
+    }
+
+    /// Run the inference of the SmolVLM model without the default prompt formatting.
+    ///
+    /// # Arguments
+    ///
+    /// * `image` - The rgb8    image to generate a caption for with shape [H, W, 3]
+    /// * `prompt` - The prompt to generate a caption for
+    /// * `sample_len` - The length of the generated caption
+    /// * `alloc` - The image allocator to use
+    /// * `debug` - Whether to enable debug mode
+    ///
+    /// # Returns
+    ///
+    /// * `caption` - The generated caption
+    pub fn inference_raw<A: ImageAllocator>(
+        &mut self,
+        full_prompt: &str,
+        images: Vec<Image<u8, 3, A>>,
+        sample_len: usize, // per prompt
+        alloc: A,
+        debug: bool,
+    ) -> Result<String, SmolVlm2Error> {
+        if debug {
+            std::io::stdout().flush()?;
+        }
+
+        self.response.clear();
+
+        let mut converted_prompt = String::from(full_prompt);
+        let image_tags_pos: Vec<_> = full_prompt.match_indices("<image>").collect();
+        let image_tag_len = "<image>".len();
+        let mut offset = 0;
+
+        if image_tags_pos.len() != images.len() {
+            return Err(SmolVlm2Error::MismatchedImageCount {
+                tags: image_tags_pos.len(),
+                images: images.len(),
+            });
+        }
+
+        let mut processed_images = vec![];
+        for ((start, _), image) in image_tags_pos.iter().zip(images.into_iter()) {
+            let (img_patches, mask_patches, size) =
+                self.preprocessor
+                    .preprocess(&image, &self.device, alloc.clone())?;
+            processed_images.push((img_patches, mask_patches));
+
+            let img_token = get_prompt_split_image(81, size);
+            converted_prompt.replace_range(
+                &(start + offset)..&(start + offset + image_tag_len),
+                &img_token,
+            );
+            offset += img_token.len() - image_tag_len;
+        }
+
+        let full_token = self.tokenizer.encode(converted_prompt, false)?;
 
         let mut delta_token = full_token.get_ids().to_vec();
 
-        let start_gen = std::time::Instant::now();
+        if debug {
+            debug!("Initial tokens: {delta_token:?}");
+        }
+        let start_gen = if debug {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
         let mut generated_tokens = 0usize;
 
         for _i in 0..sample_len {
             self.token_history.extend(&delta_token);
-
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
 
             let logits = self.model.forward(&input, self.index_pos)?;
+            processed_images.clear();
+
             let (s, _embed_dim) = logits.dims2()?;
             let last_logit = logits.i((s - 1, ..))?;
 
-            let last_logit = candle_transformers::utils::apply_repeat_penalty(
-                &last_logit,
-                self.config.repeat_penalty,
-                &delta_token,
-            )?;
+            let output_logit = if self.config.do_sample {
+                candle_transformers::utils::apply_repeat_penalty(
+                    &last_logit,
+                    self.config.repeat_penalty,
+                    &delta_token,
+                )?
+            } else {
+                last_logit.clone()
+            };
+
+            let last_logit = output_logit;
+
             let out_token = if self.config.do_sample {
                 self.logits_processor.sample(&last_logit)?
             } else {
@@ -130,32 +211,35 @@ impl SmolVlm2 {
             let token_output = self.tokenizer.decode(&[out_token], false)?;
 
             if token_output != "<end_of_utterance>" {
-                response += &token_output;
-                generated_tokens += 1;
+                self.response += &token_output;
 
-                if stdout_debug {
+                if debug {
+                    generated_tokens += 1;
                     print!("{token_output}");
-                    io::stdout().flush().unwrap();
+                    std::io::stdout().flush()?;
                 }
             } else {
-                if stdout_debug {
+                if debug {
                     println!();
-                    io::stdout().flush().unwrap();
+                    std::io::stdout().flush()?;
                 }
-
                 break;
             }
         }
 
-        if stdout_debug {
-            let dt = start_gen.elapsed();
-            println!(
-                "\n{generated_tokens} tokens generated ({:.2} token/s)",
-                generated_tokens as f64 / dt.as_secs_f64(),
-            );
+        if debug {
+            if let Some(start_gen) = start_gen {
+                let dt = start_gen.elapsed();
+                println!(
+                    "\n{generated_tokens} tokens generated ({:.2} token/s)",
+                    generated_tokens as f64 / dt.as_secs_f64(),
+                );
+
+                debug!("Generated text: {:?}", self.response);
+            }
         }
 
-        Ok(response)
+        Ok(self.response.clone())
     }
 
     /// Deterministic sampling that always selects the token with the lowest index for ties
