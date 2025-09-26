@@ -40,6 +40,7 @@ struct TextPreprocessor<'a> {
     message_history: Vec<Message>,
     rendered_history: String, // result of applying messages onto a template
     token_history: Vec<u32>,
+    add_generation_prompt: bool,
 }
 
 impl<'a> TextPreprocessor<'a> {
@@ -67,6 +68,7 @@ impl<'a> TextPreprocessor<'a> {
             message_history: Vec::new(),
             rendered_history: String::new(),
             token_history: Vec::new(),
+            add_generation_prompt: true,
         })
     }
 
@@ -81,17 +83,11 @@ impl<'a> TextPreprocessor<'a> {
     ) -> Result<(Vec<u32>, String), SmolVlm2Error> {
         let template = self.env.get_template("chat")?;
 
-        let add_generation_prompt = if let Role::User = messages.last().unwrap().role {
-            true
-        } else {
-            false
-        };
-
         self.message_history.extend(messages);
 
         let rendered = template.render(context! {
             messages => &self.message_history,
-            add_generation_prompt => add_generation_prompt
+            add_generation_prompt => self.add_generation_prompt,
         })?;
 
         let encoded = self.tokenizer.encode(rendered.clone(), false)?;
@@ -295,6 +291,29 @@ mod tests {
         assert_eq!(
             rendered,
             "<|im_start|>User:<image>Misc<end_of_utterance>\nUser:<image>Misc again.<end_of_utterance>\nAssistant:"
+        );
+    }
+
+    #[test]
+    fn test_add_generation_prompt_after_assistant() {
+        let mut preprocessor =
+            TextPreprocessor::new("HuggingFaceTB/SmolVLM2-2.2B-Instruct".to_string()).unwrap();
+
+        let (_, rendered) = preprocessor
+            .add_message(
+                vec![Message {
+                    role: Role::Assistant,
+                    content: vec![Line::Text {
+                        text: "This is a wonderful world!".to_string(),
+                    }],
+                }],
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(
+            rendered,
+            "<|im_start|>Assistant: This is a wonderful world!<end_of_utterance>\nAssistant:"
         );
     }
 }
