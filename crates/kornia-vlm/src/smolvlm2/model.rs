@@ -6,6 +6,8 @@ pub struct Model {
     text_model: candle_transformers::models::llama::Llama,
 
     // TODO: move these caching into inference context
+    cache_dtype: DType,
+    cache_device: Device,
     cache: Cache,
 }
 
@@ -31,9 +33,6 @@ impl Model {
 
     pub fn load(vb: VarBuilder, dtype: DType, device: &Device) -> Result<Self> {
         let vb = vb.rename_f(|f: &str| {
-            // If variables were namespaced as `model.text_model.model.*`, remove
-            // the extra `.model` so we look up `model.text_model.*` which is
-            // what the checkpoint uses in this repository.
             if let Some(rest) = f.strip_prefix("model.text_model.model") {
                 // exact `model.text_model.model` -> `model.text_model`
                 if rest.is_empty() {
@@ -45,7 +44,6 @@ impl Model {
                 }
             }
 
-            // Map bare lm_head key to the text model lm_head namespace.
             if f == "model.text_model.lm_head.weight" {
                 return "lm_head.weight".to_string();
             }
@@ -58,6 +56,8 @@ impl Model {
                 vb.pp("model.text_model"),
                 &Self::CONFIG,
             )?,
+            cache_device: device.clone(),
+            cache_dtype: dtype,
             cache: Cache::new(true, dtype, &Self::CONFIG, device)?,
         })
     }
@@ -76,5 +76,9 @@ impl Model {
         } else {
             Ok(out)
         }
+    }
+
+    pub fn clear_context(&mut self) {
+        self.cache = Cache::new(true, self.cache_dtype, &Self::CONFIG, &self.cache_device).unwrap();
     }
 }

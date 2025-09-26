@@ -1,7 +1,9 @@
 mod model;
-mod utils;
+mod text_preprocessor;
+pub mod utils;
 
-use std::io::{self, Write};
+use log::debug;
+use std::io::Write;
 
 use candle_core::IndexOp;
 use candle_core::{DType, Device, Tensor};
@@ -61,11 +63,20 @@ impl SmolVlm2 {
         })
     }
 
-    /// Run the inference of the SmolVLM model with previous context added.
+    pub fn clear_context(&mut self) -> Result<(), SmolVlm2Error> {
+        self.model.clear_context();
+
+        self.first_prompt = true;
+        self.index_pos = 0;
+        self.token_history.clear();
+        Ok(())
+    }
+
+    /// Run the inference of the SmolVLM2 model with previous context added.
     ///
     /// # Arguments
     ///
-    /// * `image` - The rgb8    image to generate a caption for with shape [H, W, 3]
+    /// * `image` - The rgb8 image to generate a caption for with shape [H, W, 3]
     /// * `prompt` - The prompt to generate a caption for
     /// * `sample_len` - The length of the generated caption
     /// * `alloc` - The image allocator to use
@@ -107,15 +118,15 @@ impl SmolVlm2 {
         Ok(response)
     }
 
-    /// Run the inference of the SmolVLM model without the default prompt formatting.
+    /// Run the inference of the SmolVLM2 model without the default prompt formatting.
     ///
     /// # Arguments
     ///
-    /// * `image` - The rgb8    image to generate a caption for with shape [H, W, 3]
+    /// * `image` - The rgb8 image to generate a caption for with shape [H, W, 3]
     /// * `prompt` - The prompt to generate a caption for
-    /// * `sample_len` - The length of the generated caption
+    /// * `sample_len` - The maximum number of tokens to generate
     /// * `alloc` - The image allocator to use
-    /// * `debug` - Whether to enable debug mode
+    /// * `debug` - Debug mode
     ///
     /// # Returns
     ///
@@ -125,7 +136,7 @@ impl SmolVlm2 {
         full_prompt: &str,
         images: Vec<Image<u8, 3, A>>,
         sample_len: usize, // per prompt
-        alloc: A,
+        _alloc: A,
         debug: bool,
     ) -> Result<String, SmolVlm2Error> {
         if debug {
@@ -134,31 +145,14 @@ impl SmolVlm2 {
 
         self.response.clear();
 
-        let mut converted_prompt = String::from(full_prompt);
+        let converted_prompt = String::from(full_prompt);
         let image_tags_pos: Vec<_> = full_prompt.match_indices("<image>").collect();
-        let image_tag_len = "<image>".len();
-        let mut offset = 0;
 
         if image_tags_pos.len() != images.len() {
             return Err(SmolVlm2Error::MismatchedImageCount {
                 tags: image_tags_pos.len(),
                 images: images.len(),
             });
-        }
-
-        let mut processed_images = vec![];
-        for ((start, _), image) in image_tags_pos.iter().zip(images.into_iter()) {
-            let (img_patches, mask_patches, size) =
-                self.preprocessor
-                    .preprocess(&image, &self.device, alloc.clone())?;
-            processed_images.push((img_patches, mask_patches));
-
-            let img_token = get_prompt_split_image(81, size);
-            converted_prompt.replace_range(
-                &(start + offset)..&(start + offset + image_tag_len),
-                &img_token,
-            );
-            offset += img_token.len() - image_tag_len;
         }
 
         let full_token = self.tokenizer.encode(converted_prompt, false)?;
@@ -180,7 +174,6 @@ impl SmolVlm2 {
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
 
             let logits = self.model.forward(&input, self.index_pos)?;
-            processed_images.clear();
 
             let (s, _embed_dim) = logits.dims2()?;
             let last_logit = logits.i((s - 1, ..))?;
@@ -316,8 +309,7 @@ mod tests {
 
         let prompt = "What is life?";
         let sample_len = 500;
-        let stdout_debug = true;
 
-        let _response = model.inference::<CpuAllocator>(None, prompt, sample_len, stdout_debug);
+        let _response = model.inference(prompt, None, sample_len, CpuAllocator);
     }
 }

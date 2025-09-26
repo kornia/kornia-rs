@@ -16,6 +16,9 @@ pub enum SmolVlm2Error {
     #[error(transparent)]
     IoError(#[from] std::io::Error),
 
+    #[error(transparent)]
+    JinjaError(#[from] minijinja::Error),
+
     #[error("Invalid logits detected: {0}")]
     InvalidLogits(String),
 
