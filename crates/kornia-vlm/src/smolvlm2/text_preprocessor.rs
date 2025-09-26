@@ -12,7 +12,7 @@ use tokenizers::Tokenizer;
 
 use crate::smolvlm2::utils::SmolVlm2Error;
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
 enum Role {
     User,
@@ -20,7 +20,7 @@ enum Role {
     System,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 #[serde(tag = "type")]
 #[serde(rename_all = "lowercase")]
 enum Line {
@@ -28,7 +28,7 @@ enum Line {
     Image,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 struct Message {
     role: Role,
     content: Vec<Line>,
@@ -36,8 +36,9 @@ struct Message {
 
 struct TextPreprocessor<'a> {
     env: Environment<'a>,
-    add_generation_prompt: bool,
     tokenizer: Tokenizer,
+    message_history: Vec<Message>,
+    rendered_history: String, // result of applying messages onto a template
     token_history: Vec<u32>,
 }
 
@@ -62,32 +63,60 @@ impl<'a> TextPreprocessor<'a> {
 
         Ok(Self {
             env,
-            add_generation_prompt: true,
-            token_history: Vec::new(),
             tokenizer: Tokenizer::from_pretrained(identifier, None).unwrap(),
+            message_history: Vec::new(),
+            rendered_history: String::new(),
+            token_history: Vec::new(),
         })
     }
 
+    /// Add a message to the history and render the full prompt.
+    /// Returns the new tokens and the rendered prompt.
+    /// If `delta` is true, only the new tokens from this message are returned.
+    /// If `delta` is false, all tokens from the full history are returned.
     pub fn add_message(
         &mut self,
         messages: Vec<Message>,
+        delta: bool,
     ) -> Result<(Vec<u32>, String), SmolVlm2Error> {
         let template = self.env.get_template("chat")?;
 
+        let add_generation_prompt = if let Role::User = messages.last().unwrap().role {
+            true
+        } else {
+            false
+        };
+
+        self.message_history.extend(messages);
+
         let rendered = template.render(context! {
-            messages => &messages,
-            add_generation_prompt => self.add_generation_prompt
+            messages => &self.message_history,
+            add_generation_prompt => add_generation_prompt
         })?;
 
         let encoded = self.tokenizer.encode(rendered.clone(), false)?;
         let tokens = encoded.get_ids().to_vec();
 
+        let rendered_old_end_ind = self.rendered_history.len();
+        let token_old_end_ind = self.token_history.len();
+
+        self.rendered_history.clear();
+        self.rendered_history.push_str(&rendered);
+        self.token_history.clear();
         self.token_history.extend(tokens.clone());
 
-        Ok((tokens, rendered))
+        if delta {
+            let new_rendered = self.rendered_history[rendered_old_end_ind..].to_string();
+            let new_tokens = self.token_history[token_old_end_ind..].to_vec();
+            Ok((new_tokens, new_rendered))
+        } else {
+            Ok((self.token_history.clone(), self.rendered_history.clone()))
+        }
     }
 
     pub fn clear_history(&mut self) {
+        self.message_history.clear();
+        self.rendered_history.clear();
         self.token_history.clear();
     }
 }
@@ -95,59 +124,177 @@ impl<'a> TextPreprocessor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn test_text_rendering() {
-        let mut preprocessor =
-            TextPreprocessor::new("HuggingFaceTB/SmolVLM2-2.2B-Instruct".to_string()).unwrap();
-
-        let messages = vec![Message {
-            role: Role::User,
+        let default_response: Vec<Message> = vec![Message {
+            role: Role::Assistant,
             content: vec![Line::Text {
-                text: "What is life?".to_string(),
+                text: "".to_string(),
             }],
         }];
 
-        let (_, rendered) = preprocessor.add_message(messages).unwrap();
+        let mut preprocessor =
+            TextPreprocessor::new("HuggingFaceTB/SmolVLM2-2.2B-Instruct".to_string()).unwrap();
+
+        let (_, rendered) = preprocessor
+            .add_message(
+                vec![Message {
+                    role: Role::User,
+                    content: vec![Line::Text {
+                        text: "What is life?".to_string(),
+                    }],
+                }],
+                true,
+            )
+            .unwrap();
+        let _ = preprocessor
+            .add_message(default_response.clone(), true)
+            .unwrap();
 
         assert_eq!(
             rendered,
             "<|im_start|>User: What is life?<end_of_utterance>\nAssistant:"
         );
 
-        let messages = vec![Message {
-            role: Role::User,
-            content: vec![
-                Line::Image,
-                Line::Text {
-                    text: "Describe the image.".to_string(),
-                },
-            ],
-        }];
-
-        let (_, rendered) = preprocessor.add_message(messages).unwrap();
+        let (_, rendered) = preprocessor
+            .add_message(
+                vec![Message {
+                    role: Role::User,
+                    content: vec![
+                        Line::Image,
+                        Line::Text {
+                            text: "Describe the image.".to_string(),
+                        },
+                    ],
+                }],
+                true,
+            )
+            .unwrap();
+        let _ = preprocessor
+            .add_message(default_response.clone(), true)
+            .unwrap();
 
         assert_eq!(
             rendered,
-            "<|im_start|>User:<image>Describe the image.<end_of_utterance>\nAssistant:"
+            "User:<image>Describe the image.<end_of_utterance>\nAssistant:"
         );
 
-        let messages = vec![Message {
-            role: Role::User,
-            content: vec![
-                Line::Image,
-                Line::Image,
-                Line::Image,
-                Line::Text {
-                    text: "Describe the images.".to_string(),
-                },
-            ],
-        }];
-
-        let (_, rendered) = preprocessor.add_message(messages).unwrap();
+        let (_, rendered) = preprocessor
+            .add_message(
+                vec![Message {
+                    role: Role::User,
+                    content: vec![
+                        Line::Image,
+                        Line::Image,
+                        Line::Image,
+                        Line::Text {
+                            text: "Describe the images.".to_string(),
+                        },
+                    ],
+                }],
+                true,
+            )
+            .unwrap();
+        let _ = preprocessor
+            .add_message(default_response.clone(), true)
+            .unwrap();
 
         assert_eq!(
             rendered,
-            "<|im_start|>User:<image><image><image>Describe the images.<end_of_utterance>\nAssistant:"
+            "User:<image><image><image>Describe the images.<end_of_utterance>\nAssistant:"
+        );
+
+        let (_, rendered) = preprocessor
+            .add_message(
+                vec![
+                    Message {
+                        role: Role::User,
+                        content: vec![
+                            Line::Image,
+                            Line::Text {
+                                text: "Describe the images.".to_string(),
+                            },
+                        ],
+                    },
+                    Message {
+                        role: Role::Assistant,
+                        content: vec![Line::Text {
+                            text: "The image is beautiful!".to_string(),
+                        }],
+                    },
+                    Message {
+                        role: Role::User,
+                        content: vec![Line::Text {
+                            text: "How so?".to_string(),
+                        }],
+                    },
+                ],
+                true,
+            )
+            .unwrap();
+        let _ = preprocessor
+            .add_message(default_response.clone(), true)
+            .unwrap();
+
+        assert_eq!(
+            rendered,
+            "User:<image>Describe the images.<end_of_utterance>\nAssistant: The image is beautiful!<end_of_utterance>\nUser: How so?<end_of_utterance>\nAssistant:"
+        );
+
+        preprocessor.clear_history();
+
+        let (_, rendered) = preprocessor
+            .add_message(
+                vec![Message {
+                    role: Role::User,
+                    content: vec![
+                        Line::Image,
+                        Line::Text {
+                            text: "Misc".to_string(),
+                        },
+                    ],
+                }],
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(
+            rendered,
+            "<|im_start|>User:<image>Misc<end_of_utterance>\nAssistant:"
+        );
+
+        preprocessor.clear_history();
+
+        let (_, rendered) = preprocessor
+            .add_message(
+                vec![
+                    Message {
+                        role: Role::User,
+                        content: vec![
+                            Line::Image,
+                            Line::Text {
+                                text: "Misc".to_string(),
+                            },
+                        ],
+                    },
+                    Message {
+                        role: Role::User,
+                        content: vec![
+                            Line::Image,
+                            Line::Text {
+                                text: "Misc again.".to_string(),
+                            },
+                        ],
+                    },
+                ],
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(
+            rendered,
+            "<|im_start|>User:<image>Misc<end_of_utterance>\nUser:<image>Misc again.<end_of_utterance>\nAssistant:"
         );
     }
 }
