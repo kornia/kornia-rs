@@ -1,7 +1,6 @@
 {
     "name": "Rust",
     "image": "mcr.microsoft.com/devcontainers/rust:1-1",
-
     // Set customizations for the container.
     "customizations": {
         "vscode": {
