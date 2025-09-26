@@ -1,3 +1,5 @@
+use serde::de;
+
 /// Utilities for the SmolVLM2 module.
 #[derive(thiserror::Error, Debug)]
 pub enum SmolVlm2Error {
@@ -19,8 +21,17 @@ pub enum SmolVlm2Error {
     #[error(transparent)]
     JinjaError(#[from] minijinja::Error),
 
+    #[error(transparent)]
+    SerializationError(#[from] serde_json::Error),
+
     #[error("Invalid logits detected: {0}")]
     InvalidLogits(String),
+
+    #[error("Invalid encoding detected: {0}")]
+    InvalidEncoding(String),
+
+    #[error("Missing chat template: {0}")]
+    MissingChatTemplate(String),
 
     #[error("Cannot find the <end_of_utterance> token")]
     EosTokenNotFound,

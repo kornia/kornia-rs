@@ -1,6 +1,5 @@
 mod model;
-pub(super) mod text_postprocessor;
-pub(super) mod text_preprocessor;
+pub(super) mod text_processor;
 pub mod utils;
 
 use log::debug;
@@ -14,6 +13,7 @@ use hf_hub::api::sync::Api;
 use kornia_image::{allocator::ImageAllocator, Image};
 use tokenizers::Tokenizer;
 
+use crate::smolvlm2::text_processor::{Line, Message, Role, TextProcessor};
 use crate::smolvlm2::utils::{SmolVlm2Config, SmolVlm2Error};
 
 pub struct SmolVlm2 {
@@ -22,15 +22,18 @@ pub struct SmolVlm2 {
     device: Device,
     index_pos: usize, // index of the next token to be processed
 
-    logits_processor: LogitsProcessor,
+    txt_processor: TextProcessor,
 
-    token_history: Vec<u32>, // stores the history of generated tokens
-    first_prompt: bool,
-    tokenizer: Tokenizer,
+    // logits_processor: LogitsProcessor,
+    // token_history: Vec<u32>, // stores the history of generated tokens
+    // first_prompt: bool,
+    // tokenizer: Tokenizer,
     response: String,
 }
 
 impl SmolVlm2 {
+    const MODEL_IDENTIFIER: &'static str = "HuggingFaceTB/SmolVLM2-2.2B-Instruct";
+
     pub fn new(config: SmolVlm2Config) -> Result<Self, SmolVlm2Error> {
         #[cfg(feature = "cuda")]
         let (device, dtype) = match Device::cuda_if_available(0) {
@@ -44,33 +47,35 @@ impl SmolVlm2 {
         #[cfg(not(feature = "cuda"))]
         let (device, dtype) = (Device::Cpu, DType::F32);
 
-        let (model, tokenizer) = Self::load_model(dtype, &device)?;
+        let (model, txt_processor) = Self::load_model(config, dtype, &device)?;
 
-        let logits_processor = if config.do_sample {
-            LogitsProcessor::new(config.seed, Some(config.temp), Some(config.top_p))
-        } else {
-            LogitsProcessor::from_sampling(config.seed, Sampling::ArgMax)
-        };
+        // let logits_processor = if config.do_sample {
+        //     LogitsProcessor::new(config.seed, Some(config.temp), Some(config.top_p))
+        // } else {
+        //     LogitsProcessor::from_sampling(config.seed, Sampling::ArgMax)
+        // };
 
         Ok(Self {
             model,
-            tokenizer,
-            first_prompt: true,
+            txt_processor,
             config,
             device,
-            logits_processor,
             index_pos: 0,
-            token_history: Vec::new(),
+
+            // first_prompt: true,
+            // logits_processor,
+            // token_history: Vec::new(),
             response: String::new(),
         })
     }
 
     pub fn clear_context(&mut self) -> Result<(), SmolVlm2Error> {
         self.model.clear_context();
+        self.txt_processor.clear_history();
 
-        self.first_prompt = true;
+        // self.first_prompt = true;
         self.index_pos = 0;
-        self.token_history.clear();
+        // self.token_history.clear();
         Ok(())
     }
 
@@ -92,22 +97,33 @@ impl SmolVlm2 {
         image: Option<Image<u8, 3, A>>,
         sample_len: usize, // per prompt
         alloc: A,
+        debug: bool,
     ) -> Result<String, SmolVlm2Error> {
-        let mut full_prompt = if self.first_prompt {
-            self.first_prompt = false;
-            String::from("<|im_start|>")
-        } else {
-            String::new()
-        };
+        let full_prompt = self.txt_processor.add_and_tokenize_prompt(
+            vec![Message {
+                role: Role::User,
+                content: vec![Line::Text {
+                    text: prompt.to_string(),
+                }],
+            }],
+            true,
+        )?;
 
-        if image.is_some() {
-            full_prompt += "User:<image>";
-        } else {
-            full_prompt += "User: ";
-        }
+        // let mut full_prompt = if self.first_prompt {
+        //     self.first_prompt = false;
+        //     String::from("<|im_start|>")
+        // } else {
+        //     String::new()
+        // };
 
-        full_prompt += prompt;
-        full_prompt += "<end_of_utterance>\nAssistant:";
+        // if image.is_some() {
+        //     full_prompt += "User:<image>";
+        // } else {
+        //     full_prompt += "User: ";
+        // }
+
+        // full_prompt += prompt;
+        // full_prompt += "<end_of_utterance>\nAssistant:";
 
         let images = if let Some(img) = image {
             vec![img]
@@ -115,7 +131,7 @@ impl SmolVlm2 {
             vec![]
         };
 
-        let response = self.inference_raw(&full_prompt, images, sample_len, alloc, false)?;
+        let response = self.inference_raw(&full_prompt, images, sample_len, alloc, debug)?;
 
         Ok(response)
     }
@@ -157,9 +173,7 @@ impl SmolVlm2 {
             });
         }
 
-        let full_token = self.tokenizer.encode(converted_prompt, false)?;
-
-        let mut delta_token = full_token.get_ids().to_vec();
+        let mut delta_token = self.txt_processor.encode_all(&converted_prompt)?;
 
         if debug {
             debug!("Initial tokens: {delta_token:?}");
@@ -172,40 +186,40 @@ impl SmolVlm2 {
         let mut generated_tokens = 0usize;
 
         for _i in 0..sample_len {
-            self.token_history.extend(&delta_token);
+            // self.token_history.extend(&delta_token);
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
 
             let logits = self.model.forward(&input, self.index_pos)?;
 
-            let (s, _embed_dim) = logits.dims2()?;
-            let last_logit = logits.i((s - 1, ..))?;
+            // let (s, _embed_dim) = logits.dims2()?;
+            // let last_logit = logits.i((s - 1, ..))?;
 
-            let output_logit = if self.config.do_sample {
-                candle_transformers::utils::apply_repeat_penalty(
-                    &last_logit,
-                    self.config.repeat_penalty,
-                    &delta_token,
-                )?
-            } else {
-                last_logit.clone()
-            };
+            // let last_logit = if self.config.do_sample {
+            //     candle_transformers::utils::apply_repeat_penalty(
+            //         &last_logit,
+            //         self.config.repeat_penalty,
+            //         &delta_token,
+            //     )?
+            // } else {
+            //     last_logit
+            // };
 
-            let last_logit = output_logit;
+            let out_token = self.txt_processor.sample_logits(&logits, &delta_token)?;
 
-            let out_token = if self.config.do_sample {
-                self.logits_processor.sample(&last_logit)?
-            } else {
-                // Use deterministic sampling for reproducible results
-                self.sample_deterministic(&last_logit)?
-            };
+            // let out_token = if self.config.do_sample {
+            //     self.logits_processor.sample(&last_logit)?
+            // } else {
+            //     // Use deterministic sampling for reproducible results
+            //     self.sample_deterministic(&last_logit)?
+            // };
 
             self.index_pos += delta_token.len();
             delta_token.clear();
             delta_token.push(out_token);
 
-            let token_output = self.tokenizer.decode(&[out_token], false)?;
+            let token_output = self.txt_processor.decode(out_token)?;
 
-            if token_output != "<end_of_utterance>" {
+            if !self.txt_processor.is_eos(token_output.as_str()) {
                 self.response += &token_output;
 
                 if debug {
@@ -233,6 +247,8 @@ impl SmolVlm2 {
                 debug!("Generated text: {:?}", self.response);
             }
         }
+
+        self.txt_processor.add_textual_response(&self.response)?;
 
         Ok(self.response.clone())
     }
@@ -274,13 +290,15 @@ impl SmolVlm2 {
     }
 
     fn load_model(
+        config: SmolVlm2Config,
         dtype: DType,
         device: &Device,
-    ) -> Result<(model::Model, Tokenizer), SmolVlm2Error> {
-        let tokenizer =
-            Tokenizer::from_pretrained("HuggingFaceTB/SmolVLM2-2.2B-Instruct", None).unwrap();
+    ) -> Result<(model::Model, TextProcessor), SmolVlm2Error> {
+        // let tokenizer = Tokenizer::from_pretrained(Self::MODEL_IDENTIFIER, None).unwrap();
+        let txt_processor = TextProcessor::new(Self::MODEL_IDENTIFIER.into(), config)?;
+
         let api = Api::new()?;
-        let repo = api.model("HuggingFaceTB/SmolVLM2-2.2B-Instruct".to_string());
+        let repo = api.model(Self::MODEL_IDENTIFIER.to_string());
 
         let w1 = repo.get("model-00001-of-00002.safetensors")?;
         let w2 = repo.get("model-00002-of-00002.safetensors")?;
@@ -289,7 +307,7 @@ impl SmolVlm2 {
 
         model::Model::load(vb, dtype, device)
             .map_err(|e| SmolVlm2Error::CandleError(e))
-            .map(|m| (m, tokenizer))
+            .map(|m| (m, txt_processor))
     }
 }
 
@@ -299,6 +317,7 @@ mod tests {
 
     use super::*;
 
+    // cargo test -p kornia-vlm test_smolvlm2_text_inference --features cuda -- --nocapture --ignored
     #[test]
     #[ignore = "Testing for the output prompt, requiring CUDA"]
     fn test_smolvlm2_text_inference() {
@@ -312,6 +331,8 @@ mod tests {
         let prompt = "What is life?";
         let sample_len = 500;
 
-        let _response = model.inference(prompt, None, sample_len, CpuAllocator);
+        let _response = model
+            .inference(prompt, None, sample_len, CpuAllocator, true)
+            .expect("Inference failed");
     }
 }
