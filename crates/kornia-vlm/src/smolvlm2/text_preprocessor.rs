@@ -14,7 +14,7 @@ use crate::smolvlm2::utils::SmolVlm2Error;
 
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
-enum Role {
+pub enum Role {
     User,
     Assistant,
     System,
@@ -23,13 +23,13 @@ enum Role {
 #[derive(Serialize, Debug, Clone)]
 #[serde(tag = "type")]
 #[serde(rename_all = "lowercase")]
-enum Line {
+pub enum Line {
     Text { text: String },
     Image,
 }
 
 #[derive(Serialize, Debug, Clone)]
-struct Message {
+pub struct Message {
     role: Role,
     content: Vec<Line>,
 }

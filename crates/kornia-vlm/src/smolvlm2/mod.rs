@@ -1,6 +1,6 @@
 mod model;
-mod text_postprocessor;
-mod text_preprocessor;
+pub(super) mod text_postprocessor;
+pub(super) mod text_preprocessor;
 pub mod utils;
 
 use log::debug;
@@ -20,10 +20,11 @@ pub struct SmolVlm2 {
     model: model::Model,
     config: SmolVlm2Config,
     device: Device,
-    logits_processor: LogitsProcessor,
-    index_pos: usize,        // index of the next token to be processed
-    token_history: Vec<u32>, // stores the history of generated tokens
+    index_pos: usize, // index of the next token to be processed
 
+    logits_processor: LogitsProcessor,
+
+    token_history: Vec<u32>, // stores the history of generated tokens
     first_prompt: bool,
     tokenizer: Tokenizer,
     response: String,
