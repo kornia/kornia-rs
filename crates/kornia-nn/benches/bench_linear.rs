@@ -1,4 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion};
+#[cfg(feature = "mkl")]
 use kornia_nn::linear::linear_layer_gemm;
 use rand::random;
 use std::hint::black_box;
@@ -133,6 +134,7 @@ fn bench_linear_layer(c: &mut Criterion) {
         });
     });
 
+    #[cfg(feature = "mkl")]
     group.bench_function("linear_layer_gemm", |bencher| {
         bencher.iter(|| {
             linear_layer_gemm(

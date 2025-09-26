@@ -28,7 +28,7 @@ jobs:
           override: true
 
       - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.8
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: actions-rs/cargo@v1
         with:
