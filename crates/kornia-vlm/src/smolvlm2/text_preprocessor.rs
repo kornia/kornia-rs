@@ -43,7 +43,6 @@ struct TextProcessor<'a> {
     message_history: Vec<Message>,
     rendered_history: String, // result of applying messages onto a template
     token_history: Vec<u32>,
-    add_generation_prompt: bool,
 
     config: SmolVlm2Config,
     logits_processor: LogitsProcessor,
@@ -81,20 +80,44 @@ impl<'a> TextProcessor<'a> {
             message_history: Vec::new(),
             rendered_history: String::new(),
             token_history: Vec::new(),
-            add_generation_prompt: true,
 
             config,
             logits_processor,
         })
     }
 
-    /// Add a message to the history and render the full prompt.
-    /// Returns the new tokens and the rendered prompt.
-    /// If `delta` is true, only the new tokens from this message are returned.
-    /// If `delta` is false, all tokens from the full history are returned.
-    pub fn add_and_tokenize_message(
+    pub fn add_and_tokenize_prompt(
         &mut self,
         messages: Vec<Message>,
+        delta: bool,
+    ) -> Result<(Vec<u32>, String), SmolVlm2Error> {
+        self.add_and_tokenize_raw_message(messages, true, delta)
+    }
+
+    pub fn add_textual_response<S: Into<String>>(
+        &mut self,
+        textual_response: S,
+    ) -> Result<(), SmolVlm2Error> {
+        self.add_and_tokenize_raw_message(
+            vec![Message {
+                role: Role::Assistant,
+                content: vec![Line::Text {
+                    text: textual_response.into(),
+                }],
+            }],
+            false,
+            false,
+        )
+        .map(|_| ())
+    }
+
+    /// General method to add and retrieve the rendered and tokenized messages.
+    /// If `delta` is true, only the new tokens from this message are returned.
+    /// If `delta` is false, all tokens from the full history are returned.
+    pub fn add_and_tokenize_raw_message(
+        &mut self,
+        messages: Vec<Message>,
+        add_generation_prompt: bool,
         delta: bool,
     ) -> Result<(Vec<u32>, String), SmolVlm2Error> {
         let template = self.env.get_template("chat")?;
@@ -103,7 +126,7 @@ impl<'a> TextProcessor<'a> {
 
         let rendered = template.render(context! {
             messages => &self.message_history,
-            add_generation_prompt => self.add_generation_prompt,
+            add_generation_prompt => add_generation_prompt,
         })?;
 
         let encoded = self.tokenizer.encode(rendered.clone(), false)?;
@@ -147,7 +170,7 @@ impl<'a> TextProcessor<'a> {
                 &delta_token,
             )?
         } else {
-            last_logit.clone()
+            last_logit
         };
 
         if self.has_non_finite(&output_logit)? {
@@ -176,13 +199,6 @@ mod tests {
 
     #[test]
     fn test_text_rendering() {
-        let default_response: Vec<Message> = vec![Message {
-            role: Role::Assistant,
-            content: vec![Line::Text {
-                text: "".to_string(),
-            }],
-        }];
-
         let mut preprocessor = TextProcessor::new(
             "HuggingFaceTB/SmolVLM2-2.2B-Instruct".to_string(),
             SmolVlm2Config {
@@ -196,7 +212,7 @@ mod tests {
         .unwrap();
 
         let (_, rendered) = preprocessor
-            .add_and_tokenize_message(
+            .add_and_tokenize_prompt(
                 vec![Message {
                     role: Role::User,
                     content: vec![Line::Text {
@@ -206,9 +222,7 @@ mod tests {
                 true,
             )
             .unwrap();
-        let _ = preprocessor
-            .add_and_tokenize_message(default_response.clone(), true)
-            .unwrap();
+        preprocessor.add_textual_response("").unwrap();
 
         assert_eq!(
             rendered,
@@ -216,7 +230,7 @@ mod tests {
         );
 
         let (_, rendered) = preprocessor
-            .add_and_tokenize_message(
+            .add_and_tokenize_prompt(
                 vec![Message {
                     role: Role::User,
                     content: vec![
@@ -229,9 +243,7 @@ mod tests {
                 true,
             )
             .unwrap();
-        let _ = preprocessor
-            .add_and_tokenize_message(default_response.clone(), true)
-            .unwrap();
+        preprocessor.add_textual_response("").unwrap();
 
         assert_eq!(
             rendered,
@@ -239,7 +251,7 @@ mod tests {
         );
 
         let (_, rendered) = preprocessor
-            .add_and_tokenize_message(
+            .add_and_tokenize_prompt(
                 vec![Message {
                     role: Role::User,
                     content: vec![
@@ -254,9 +266,7 @@ mod tests {
                 true,
             )
             .unwrap();
-        let _ = preprocessor
-            .add_and_tokenize_message(default_response.clone(), true)
-            .unwrap();
+        preprocessor.add_textual_response("").unwrap();
 
         assert_eq!(
             rendered,
@@ -264,7 +274,7 @@ mod tests {
         );
 
         let (_, rendered) = preprocessor
-            .add_and_tokenize_message(
+            .add_and_tokenize_prompt(
                 vec![
                     Message {
                         role: Role::User,
@@ -291,9 +301,7 @@ mod tests {
                 true,
             )
             .unwrap();
-        let _ = preprocessor
-            .add_and_tokenize_message(default_response.clone(), true)
-            .unwrap();
+        preprocessor.add_textual_response("").unwrap();
 
         assert_eq!(
             rendered,
@@ -303,7 +311,7 @@ mod tests {
         preprocessor.clear_history();
 
         let (_, rendered) = preprocessor
-            .add_and_tokenize_message(
+            .add_and_tokenize_prompt(
                 vec![Message {
                     role: Role::User,
                     content: vec![
@@ -325,7 +333,7 @@ mod tests {
         preprocessor.clear_history();
 
         let (_, rendered) = preprocessor
-            .add_and_tokenize_message(
+            .add_and_tokenize_prompt(
                 vec![
                     Message {
                         role: Role::User,
@@ -358,11 +366,20 @@ mod tests {
 
     #[test]
     fn test_add_generation_prompt_after_assistant() {
-        let mut preprocessor =
-            TextProcessor::new("HuggingFaceTB/SmolVLM2-2.2B-Instruct".to_string()).unwrap();
+        let mut preprocessor = TextProcessor::new(
+            "HuggingFaceTB/SmolVLM2-2.2B-Instruct".to_string(),
+            SmolVlm2Config {
+                seed: 42,
+                temp: 1.0,
+                top_p: 0.9,
+                repeat_penalty: 1.0,
+                do_sample: false,
+            },
+        )
+        .unwrap();
 
         let (_, rendered) = preprocessor
-            .add_and_tokenize_message(
+            .add_and_tokenize_prompt(
                 vec![Message {
                     role: Role::Assistant,
                     content: vec![Line::Text {

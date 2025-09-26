@@ -105,6 +105,6 @@ mod tests {
 
     #[test]
     fn test_text_postprocessing() {
-        let postprocessor = TextPostprocessor::new();
+        // let postprocessor = TextPostprocessor::new();
     }
 }
