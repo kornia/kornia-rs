@@ -5,12 +5,14 @@
 
 use std::{error::Error, fs};
 
+use candle_core::{DType, IndexOp, Tensor};
+use candle_transformers::generation::{LogitsProcessor, Sampling};
 use hf_hub::api::sync::Api;
 use minijinja::{context, AutoEscape, Environment, Template};
 use serde::Serialize;
 use tokenizers::Tokenizer;
 
-use crate::smolvlm2::utils::SmolVlm2Error;
+use crate::smolvlm2::utils::{SmolVlm2Config, SmolVlm2Error};
 
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
@@ -34,17 +36,27 @@ pub struct Message {
     content: Vec<Line>,
 }
 
-struct TextPreprocessor<'a> {
-    env: Environment<'a>,
+struct TextProcessor<'a> {
     tokenizer: Tokenizer,
+
+    env: Environment<'a>,
     message_history: Vec<Message>,
     rendered_history: String, // result of applying messages onto a template
     token_history: Vec<u32>,
     add_generation_prompt: bool,
+
+    config: SmolVlm2Config,
+    logits_processor: LogitsProcessor,
 }
 
-impl<'a> TextPreprocessor<'a> {
-    pub fn new(identifier: String) -> Result<Self, Box<dyn Error>> {
+impl<'a> TextProcessor<'a> {
+    pub fn new(identifier: String, config: SmolVlm2Config) -> Result<Self, Box<dyn Error>> {
+        let logits_processor = if config.do_sample {
+            LogitsProcessor::new(config.seed, Some(config.temp), Some(config.top_p))
+        } else {
+            LogitsProcessor::from_sampling(config.seed, Sampling::ArgMax)
+        };
+
         let api = Api::new()?;
         let repo = api.model(identifier.clone());
 
@@ -63,12 +75,16 @@ impl<'a> TextPreprocessor<'a> {
         env.add_template_owned("chat", template_str)?;
 
         Ok(Self {
-            env,
             tokenizer: Tokenizer::from_pretrained(identifier, None).unwrap(),
+
+            env,
             message_history: Vec::new(),
             rendered_history: String::new(),
             token_history: Vec::new(),
             add_generation_prompt: true,
+
+            config,
+            logits_processor,
         })
     }
 
@@ -76,7 +92,7 @@ impl<'a> TextPreprocessor<'a> {
     /// Returns the new tokens and the rendered prompt.
     /// If `delta` is true, only the new tokens from this message are returned.
     /// If `delta` is false, all tokens from the full history are returned.
-    pub fn add_message(
+    pub fn add_and_tokenize_message(
         &mut self,
         messages: Vec<Message>,
         delta: bool,
@@ -115,6 +131,43 @@ impl<'a> TextPreprocessor<'a> {
         self.rendered_history.clear();
         self.token_history.clear();
     }
+
+    pub fn get_decoded_token(
+        &mut self,
+        raw_logits: &candle_core::Tensor,
+        delta_token: &[u32],
+    ) -> Result<String, SmolVlm2Error> {
+        let (s, _embed_dim) = raw_logits.dims2()?;
+        let last_logit = raw_logits.i((s - 1, ..))?;
+
+        let output_logit = if self.config.do_sample {
+            candle_transformers::utils::apply_repeat_penalty(
+                &last_logit,
+                self.config.repeat_penalty,
+                &delta_token,
+            )?
+        } else {
+            last_logit.clone()
+        };
+
+        if self.has_non_finite(&output_logit)? {
+            Err(SmolVlm2Error::InvalidLogits(
+                "Non-finite values (NaN or +/-Inf) found in logits".to_string(),
+            ))
+        } else {
+            let out_token = self.logits_processor.sample(&output_logit)?;
+
+            let token_output = self.tokenizer.decode(&[out_token], false)?;
+
+            Ok(token_output)
+        }
+    }
+
+    /// Return true if any element in `logits` is not finite (NaN or +/-Inf).
+    fn has_non_finite(&self, logits: &Tensor) -> Result<bool, SmolVlm2Error> {
+        let logits_vec = logits.to_dtype(DType::F32)?.to_vec1::<f32>()?;
+        Ok(logits_vec.iter().any(|&v| !v.is_finite()))
+    }
 }
 
 #[cfg(test)]
@@ -130,11 +183,20 @@ mod tests {
             }],
         }];
 
-        let mut preprocessor =
-            TextPreprocessor::new("HuggingFaceTB/SmolVLM2-2.2B-Instruct".to_string()).unwrap();
+        let mut preprocessor = TextProcessor::new(
+            "HuggingFaceTB/SmolVLM2-2.2B-Instruct".to_string(),
+            SmolVlm2Config {
+                do_sample: false,
+                seed: 42,
+                temp: 1.0,
+                top_p: 0.9,
+                repeat_penalty: 1.0,
+            },
+        )
+        .unwrap();
 
         let (_, rendered) = preprocessor
-            .add_message(
+            .add_and_tokenize_message(
                 vec![Message {
                     role: Role::User,
                     content: vec![Line::Text {
@@ -145,7 +207,7 @@ mod tests {
             )
             .unwrap();
         let _ = preprocessor
-            .add_message(default_response.clone(), true)
+            .add_and_tokenize_message(default_response.clone(), true)
             .unwrap();
 
         assert_eq!(
@@ -154,7 +216,7 @@ mod tests {
         );
 
         let (_, rendered) = preprocessor
-            .add_message(
+            .add_and_tokenize_message(
                 vec![Message {
                     role: Role::User,
                     content: vec![
@@ -168,7 +230,7 @@ mod tests {
             )
             .unwrap();
         let _ = preprocessor
-            .add_message(default_response.clone(), true)
+            .add_and_tokenize_message(default_response.clone(), true)
             .unwrap();
 
         assert_eq!(
@@ -177,7 +239,7 @@ mod tests {
         );
 
         let (_, rendered) = preprocessor
-            .add_message(
+            .add_and_tokenize_message(
                 vec![Message {
                     role: Role::User,
                     content: vec![
@@ -193,7 +255,7 @@ mod tests {
             )
             .unwrap();
         let _ = preprocessor
-            .add_message(default_response.clone(), true)
+            .add_and_tokenize_message(default_response.clone(), true)
             .unwrap();
 
         assert_eq!(
@@ -202,7 +264,7 @@ mod tests {
         );
 
         let (_, rendered) = preprocessor
-            .add_message(
+            .add_and_tokenize_message(
                 vec![
                     Message {
                         role: Role::User,
@@ -230,7 +292,7 @@ mod tests {
             )
             .unwrap();
         let _ = preprocessor
-            .add_message(default_response.clone(), true)
+            .add_and_tokenize_message(default_response.clone(), true)
             .unwrap();
 
         assert_eq!(
@@ -241,7 +303,7 @@ mod tests {
         preprocessor.clear_history();
 
         let (_, rendered) = preprocessor
-            .add_message(
+            .add_and_tokenize_message(
                 vec![Message {
                     role: Role::User,
                     content: vec![
@@ -263,7 +325,7 @@ mod tests {
         preprocessor.clear_history();
 
         let (_, rendered) = preprocessor
-            .add_message(
+            .add_and_tokenize_message(
                 vec![
                     Message {
                         role: Role::User,
@@ -297,10 +359,10 @@ mod tests {
     #[test]
     fn test_add_generation_prompt_after_assistant() {
         let mut preprocessor =
-            TextPreprocessor::new("HuggingFaceTB/SmolVLM2-2.2B-Instruct".to_string()).unwrap();
+            TextProcessor::new("HuggingFaceTB/SmolVLM2-2.2B-Instruct".to_string()).unwrap();
 
         let (_, rendered) = preprocessor
-            .add_message(
+            .add_and_tokenize_message(
                 vec![Message {
                     role: Role::Assistant,
                     content: vec![Line::Text {
