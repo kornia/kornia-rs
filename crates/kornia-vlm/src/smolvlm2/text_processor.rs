@@ -14,6 +14,7 @@ use tokenizers::Tokenizer;
 
 use crate::smolvlm2::utils::{SmolVlm2Config, SmolVlm2Error};
 
+#[allow(dead_code)] // TODO: remove
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -22,6 +23,7 @@ pub enum Role {
     System,
 }
 
+#[allow(dead_code)] // TODO: remove
 #[derive(Serialize, Debug, Clone)]
 #[serde(tag = "type")]
 #[serde(rename_all = "lowercase")]
@@ -106,10 +108,10 @@ impl TextProcessor {
     /// and return the formatted string.
     pub fn reformat_with_additional_prompts(
         &mut self,
-        messages: Vec<Message>,
+        additional_messages: Vec<Message>,
         delta: bool,
     ) -> Result<String, SmolVlm2Error> {
-        self.reformat_with_additional_raw_messages(messages, true, delta)
+        self.reformat_with_additional_raw_messages(additional_messages, true, delta)
     }
 
     /// Record the generated text into the message history from text-only assistant response.
@@ -212,6 +214,7 @@ impl TextProcessor {
         }
     }
 
+    #[allow(dead_code)] // TODO: remove
     pub fn encode(&self, text: &str) -> Result<u32, SmolVlm2Error> {
         let encoding = self.tokenizer.encode(text, true)?;
         let encodings = encoding.get_ids();
@@ -266,8 +269,6 @@ impl TextProcessor {
             ))
         } else {
             let out_token = self.logits_processor.sample(&output_logit)?;
-
-            // let token_output = self.tokenizer.decode(&[out_token], false)?;
 
             Ok(out_token)
         }

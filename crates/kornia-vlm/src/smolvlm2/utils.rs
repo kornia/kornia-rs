@@ -1,5 +1,3 @@
-use serde::de;
-
 /// Utilities for the SmolVLM2 module.
 #[derive(thiserror::Error, Debug)]
 pub enum SmolVlm2Error {

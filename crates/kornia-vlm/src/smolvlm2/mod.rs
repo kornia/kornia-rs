@@ -4,6 +4,7 @@ pub mod utils;
 
 use log::debug;
 use std::io::Write;
+use std::time::Instant;
 
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
@@ -74,7 +75,7 @@ impl SmolVlm2 {
     /// * `caption` - The generated caption
     pub fn inference<A: ImageAllocator>(
         &mut self,
-        prompt: &str, // TODO: make it structured
+        prompt: &str, // TODO: should it be structured?
         image: Option<Image<u8, 3, A>>,
         sample_len: usize, // per prompt
         alloc: A,
@@ -128,7 +129,6 @@ impl SmolVlm2 {
 
         self.response.clear();
 
-        let converted_prompt = String::from(full_prompt);
         let image_tags_pos: Vec<_> = full_prompt.match_indices("<image>").collect();
 
         if image_tags_pos.len() != images.len() {
@@ -138,16 +138,12 @@ impl SmolVlm2 {
             });
         }
 
-        let mut delta_token = self.txt_processor.encode_all(&converted_prompt)?;
+        let mut delta_token = self.txt_processor.encode_all(&full_prompt)?;
 
         if debug {
             debug!("Initial tokens: {delta_token:?}");
         }
-        let start_gen = if debug {
-            Some(std::time::Instant::now())
-        } else {
-            None
-        };
+        let start_gen = if debug { Some(Instant::now()) } else { None };
         let mut generated_tokens = 0usize;
 
         for _i in 0..sample_len {
@@ -213,7 +209,7 @@ impl SmolVlm2 {
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[w1, w2], dtype, device)? };
 
         model::Model::load(vb, dtype, device)
-            .map_err(|e| SmolVlm2Error::CandleError(e))
+            .map_err(SmolVlm2Error::CandleError)
             .map(|m| (m, txt_processor))
     }
 }
