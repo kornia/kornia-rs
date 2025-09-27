@@ -20,8 +20,11 @@ criterion = { workspace = true }
 rand = { workspace = true }
 wide = "0.7.32"
 gemm = "=0.18.2"
-candle-nn = { version = "0.9.1", features = ["mkl"] }
-candle-core = { version = "0.9.1", features = ["mkl"] }
+candle-nn = { workspace = true }
+candle-core = { workspace = true }
+
+[features]
+mkl = ["candle-nn/mkl", "candle-core/mkl"]
 
 [[bench]]
 name = "bench_linear"

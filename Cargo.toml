@@ -54,3 +54,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3.10"
 thiserror = "2"
+
+candle-core = { version = "0.9.1" }
+candle-nn = { version = "0.9.1" }
+candle-transformers = { version = "0.9.1" }
+candle-examples = { version = "0.9.1" }
+hf-hub = "0.4.2"
+tokenizers = { version = "0.21.1", features = ["http"] }
