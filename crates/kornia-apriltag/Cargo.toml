@@ -22,6 +22,8 @@ thiserror = { workspace = true }
 kornia-io = { workspace = true }
 criterion = { workspace = true }
 apriltag = "0.4"
+aprilgrid = "0.6"
+image = "0.25"
 
 [[bench]]
 name = "bench_decoding"

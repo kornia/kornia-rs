@@ -26,37 +26,34 @@ jobs:
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
-    - run: sudo apt-get update
-    - uses: actions/checkout@v4
+      - run: sudo apt-get update
+      - uses: actions/checkout@v4
 
-    - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v2
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: astral-sh/setup-uv@v5
-      with:
-        python-version: ${{ matrix.python-version }}
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        profile: minimal
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
 
-    - name: Install sccache
-      uses: mozilla-actions/sccache-action@v0.0.8
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
-    - name: Install system dependencies
-      run: sudo apt-get install -y nasm libunwind-dev
+      - name: Install system dependencies
+        run: sudo apt-get install -y nasm libunwind-dev
 
-    - name: Setup project environment
-      run: cd kornia-py/ && just install ${{ matrix.python-version }}
+      - name: Setup project environment
+        run: cd kornia-py/ && just install ${{ matrix.python-version }}
 
-    - name: Run tests
-      run: cd kornia-py/ && just test
+      - name: Run tests
+        run: cd kornia-py/ && just test
 
-
-    - name: Show sccache stats
-      run: sccache --show-stats
-
-
+      - name: Show sccache stats
+        run: sccache --show-stats
 
   # TODO: integrate with linux tests once uv bug is fixed
   # https://github.com/astral-sh/uv/issues/12445
@@ -71,44 +68,37 @@ jobs:
       SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
       SCCACHE_LOG: info
 
-
     steps:
-    - run: sudo apt-get update
-    - uses: actions/checkout@v4
+      - run: sudo apt-get update
+      - uses: actions/checkout@v4
 
-    - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v2
 
-    - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v5
 
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        profile: minimal
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
 
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
-    - name: Install sccache
-      uses: mozilla-actions/sccache-action@v0.0.8
+      - name: Install system dependencies
+        run: sudo apt-get install -y nasm libunwind-dev
 
+      - name: Setup project environment
+        run: cd kornia-py/ && just install-dev 3.13t
 
+      - name: Run tests
+        run: |
+          cd kornia-py/
+          source .venv/bin/activate
+          maturin develop -m Cargo.toml
+          pytest --parallel-threads=8 --iterations=50
 
-    - name: Install system dependencies
-      run: sudo apt-get install -y nasm libunwind-dev
-
-    - name: Setup project environment
-      run: cd kornia-py/ && just install-dev 3.13t
-
-    - name: Run tests
-      run: |
-        cd kornia-py/
-        source .venv/bin/activate
-        maturin develop -m Cargo.toml
-        pytest --parallel-threads=8 --iterations=50
-
-
-    - name: Show sccache stats
-      run: sccache --show-stats
-
-
+      - name: Show sccache stats
+        run: sccache --show-stats
 
   # NOTE: there's a systematic fail with the ci on macos
   # test-python-macos:

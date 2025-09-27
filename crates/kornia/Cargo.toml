@@ -17,6 +17,8 @@ gstreamer = ["kornia-io/gstreamer"]
 turbojpeg = ["kornia-io/turbojpeg"]
 v4l = ["kornia-io/v4l"]
 arrow = ["kornia-image/arrow"]
+mkl = ["kornia-nn/mkl"]
+cuda = ["kornia-vlm/cuda"]
 
 [dependencies]
 kornia-3d = { workspace = true }
@@ -27,6 +29,8 @@ kornia-io = { workspace = true, features = [] }
 kornia-linalg = { workspace = true }
 kornia-tensor.workspace = true
 kornia-tensor-ops.workspace = true
+kornia-nn.workspace = true
+kornia-vlm.workspace = true
 
 [lib]
 doctest = false
