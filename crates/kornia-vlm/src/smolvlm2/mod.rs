@@ -222,7 +222,7 @@ mod tests {
 
     // cargo test -p kornia-vlm test_smolvlm2_text_inference --features cuda -- --nocapture --ignored
     #[test]
-    #[ignore = "Testing for the output prompt, requiring CUDA"]
+    #[ignore = "Requires CUDA"]
     fn test_smolvlm2_text_inference() {
         let config = SmolVlm2Config {
             seed: 42,

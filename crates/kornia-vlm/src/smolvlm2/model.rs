@@ -78,7 +78,8 @@ impl Model {
         }
     }
 
-    pub fn clear_context(&mut self) {
-        self.cache = Cache::new(true, self.cache_dtype, &Self::CONFIG, &self.cache_device).unwrap();
+    pub fn clear_context(&mut self) -> Result<()> {
+        self.cache = Cache::new(true, self.cache_dtype, &Self::CONFIG, &self.cache_device)?;
+        Ok(())
     }
 }

@@ -86,7 +86,7 @@ impl TextProcessor {
             .to_string();
 
         Ok(Self {
-            tokenizer: Tokenizer::from_pretrained(identifier, None).unwrap(),
+            tokenizer: Tokenizer::from_pretrained(identifier, None)?,
 
             env,
             message_history: Vec::new(),
@@ -286,6 +286,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "Requires downloading config files from HuggingFace"]
     fn test_text_rendering() {
         let mut preprocessor = TextProcessor::new(
             "HuggingFaceTB/SmolVLM2-2.2B-Instruct".to_string(),
@@ -454,6 +455,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Requires downloading config files from HuggingFace"]
     fn test_add_generation_prompt_after_assistant() {
         let mut preprocessor = TextProcessor::new(
             "HuggingFaceTB/SmolVLM2-2.2B-Instruct".to_string(),
@@ -487,6 +489,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Requires downloading config files from HuggingFace"]
     fn test_add_no_message() {
         let mut preprocessor = TextProcessor::new(
             "HuggingFaceTB/SmolVLM2-2.2B-Instruct".to_string(),
@@ -509,6 +512,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Requires downloading config files from HuggingFace"]
     fn test_add_non_assistant_after_generation_prompt() {
         let mut preprocessor = TextProcessor::new(
             "HuggingFaceTB/SmolVLM2-2.2B-Instruct".to_string(),
