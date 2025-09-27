@@ -31,11 +31,11 @@ impl FloatConversion for f64 {
 
 impl FloatConversion for u8 {
     fn to_f32(&self) -> f32 {
-        *self as f32
+        *self as f32 / 255.0
     }
 
     fn from_f32(val: f32) -> Self {
-        val.clamp(0.0, 255.0) as u8
+        (val.clamp(0.0, 1.0) * 255.0).round() as u8
     }
 }
 
