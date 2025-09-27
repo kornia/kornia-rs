@@ -9,12 +9,24 @@ pub fn read_image_jpeg(file_path: &str, mode: &str) -> PyResult<PyImage> {
         "rgb" => {
             let img = J::read_image_jpeg_rgb8(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            img.to_pyimage()
+            let pyimg = img.to_pyimage().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimg
         }
         "mono" => {
             let img = J::read_image_jpeg_mono8(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            img.to_pyimage()
+            let pyimg = img.to_pyimage().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimg
         }
         _ => {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -81,7 +93,13 @@ pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
                     .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             J::decode_image_jpeg_rgb8(src, &mut output_image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            output_image.to_pyimage()
+            let output_pyimage = output_image.to_pyimage().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            output_pyimage
         }
         1 => {
             let mut output_image =
@@ -89,12 +107,19 @@ pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
                     .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             J::decode_image_jpeg_mono8(src, &mut output_image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            output_image.to_pyimage()
+            let output_pyimage = output_image.to_pyimage().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            output_pyimage
         }
         ch => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                String::from(format!("Unsupported number of channels: {}", ch)),
-            ))
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Unsupported number of channels: {}",
+                ch
+            )))
         }
     };
 

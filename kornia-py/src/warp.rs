@@ -49,7 +49,11 @@ pub fn warp_affine(
         .cast::<u8>()
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
-    Ok(image_warped.to_pyimage())
+    let pyimage_warped = image_warped.to_pyimage().map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
+    })?;
+
+    Ok(pyimage_warped)
 }
 
 #[pyfunction]
@@ -91,5 +95,9 @@ pub fn warp_perspective(
         .cast::<u8>()
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
-    Ok(image_warped.to_pyimage())
+    let pyimage_warped = image_warped.to_pyimage().map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
+    })?;
+
+    Ok(pyimage_warped)
 }

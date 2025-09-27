@@ -10,17 +10,35 @@ pub fn read_image_png_u8(file_path: &str, mode: &str) -> PyResult<PyImage> {
         "rgb" => {
             let img = P::read_image_png_rgb8(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            img.to_pyimage()
+            let pyimg = img.to_pyimage().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimg
         }
         "rgba" => {
             let img = P::read_image_png_rgba8(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            img.to_pyimage()
+            let pyimg = img.to_pyimage().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimg
         }
         "mono" => {
             let img = P::read_image_png_mono8(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            img.to_pyimage()
+            let pyimg = img.to_pyimage().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimg
         }
         _ => {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -45,17 +63,35 @@ pub fn read_image_png_u16(file_path: &str, mode: &str) -> PyResult<PyImageU16> {
         "rgb" => {
             let img = P::read_image_png_rgb16(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            img.to_pyimage_u16()
+            let pyimg = img.to_pyimage_u16().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimg
         }
         "rgba" => {
             let img = P::read_image_png_rgba16(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            img.to_pyimage_u16()
+            let pyimg = img.to_pyimage_u16().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimg
         }
         "mono" => {
             let img = P::read_image_png_mono16(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            img.to_pyimage_u16()
+            let pyimg = img.to_pyimage_u16().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimg
         }
         _ => {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -182,21 +218,39 @@ pub fn decode_image_png_u8(
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             P::decode_image_png_rgb8(src, &mut image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            image.to_pyimage()
+            let pyimage = image.to_pyimage().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimage
         }
         "rgba" => {
             let mut image: Image<u8, 4, _> = Image::from_size_val(image_shape, 0, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             P::decode_image_png_rgba8(src, &mut image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            image.to_pyimage()
+            let pyimage = image.to_pyimage().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimage
         }
         "mono" => {
             let mut image: Image<u8, 1, _> = Image::from_size_val(image_shape, 0, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             P::decode_image_png_mono8(src, &mut image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            image.to_pyimage()
+            let pyimage = image.to_pyimage().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimage
         }
         _ => {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -232,21 +286,39 @@ pub fn decode_image_png_u16(
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             P::decode_image_png_rgb16(src, &mut image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            image.to_pyimage_u16()
+            let pyimage = image.to_pyimage_u16().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimage
         }
         "rgba" => {
             let mut image: Image<u16, 4, _> = Image::from_size_val(image_shape, 0, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             P::decode_image_png_rgba16(src, &mut image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            image.to_pyimage_u16()
+            let pyimage = image.to_pyimage_u16().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimage
         }
         "mono" => {
             let mut image: Image<u16, 1, _> = Image::from_size_val(image_shape, 0, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             P::decode_image_png_mono16(src, &mut image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            image.to_pyimage_u16()
+            let pyimage = image.to_pyimage_u16().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimage
         }
         _ => {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(

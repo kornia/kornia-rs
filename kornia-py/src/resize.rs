@@ -30,5 +30,9 @@ pub fn resize(image: PyImage, new_size: (usize, usize), interpolation: &str) -> 
     resize_fast_rgb(&image, &mut image_resized, interpolation)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
-    Ok(image_resized.to_pyimage())
+    let pyimage_resized = image_resized.to_pyimage().map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
+    })?;
+
+    Ok(pyimage_resized)
 }
