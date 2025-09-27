@@ -40,5 +40,9 @@ pub fn add_weighted(
         .cast::<u8>()
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("dst image: {}", e)))?;
 
-    Ok(dst.to_pyimage())
+    let pyimage_dst = dst.to_pyimage().map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
+    })?;
+
+    Ok(pyimage_dst)
 }

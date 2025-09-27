@@ -14,70 +14,79 @@ pub type PyImageF32 = Py<PyArray3<f32>>;
 
 /// Trait to convert an image to a PyImage (3D numpy array of u8)
 pub trait ToPyImage {
-    fn to_pyimage(self) -> PyImage;
+    fn to_pyimage(self) -> Result<PyImage, ImageError>;
 }
 
 pub trait ToPyImageU16 {
-    fn to_pyimage_u16(self) -> PyImageU16;
+    fn to_pyimage_u16(self) -> Result<PyImageU16, ImageError>;
 }
 
 pub trait ToPyImageF32 {
-    fn to_pyimage_f32(self) -> PyImageF32;
+    fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError>;
 }
 
 impl<const C: usize> ToPyImage for Image<u8, C, CpuAllocator> {
-    fn to_pyimage(self) -> PyImage {
+    fn to_pyimage(self) -> Result<PyImage, ImageError> {
         Python::with_gil(|py| unsafe {
             let array = PyArray::<u8, _>::new(py, [self.height(), self.width(), C], false);
             let contiguous = match self.0.to_standard_layout(CpuAllocator) {
                 Ok(c) => c,
-                Err(_) => { 
+                Err(_) => {
                     let expected = self.height() * self.width() * C;
                     let actual = self.0.numel();
-                    eprintln!("{}", ImageError::InvalidChannelShape(actual, expected));
-                    return array.unbind();
+                    return Err(ImageError::InvalidChannelShape(actual, expected));
                 }
             };
-            std::ptr::copy_nonoverlapping(contiguous.storage.as_ptr(), array.data(), contiguous.numel());
-            array.unbind()
+            std::ptr::copy_nonoverlapping(
+                contiguous.storage.as_ptr(),
+                array.data(),
+                contiguous.numel(),
+            );
+            Ok(array.unbind())
         })
     }
 }
 
 impl<const C: usize> ToPyImageU16 for Image<u16, C, CpuAllocator> {
-    fn to_pyimage_u16(self) -> PyImageU16 {
+    fn to_pyimage_u16(self) -> Result<PyImageU16, ImageError> {
         Python::with_gil(|py| unsafe {
             let array = PyArray::<u16, _>::new(py, [self.height(), self.width(), C], false);
             let contiguous = match self.0.to_standard_layout(CpuAllocator) {
                 Ok(c) => c,
-                Err(_) => { 
+                Err(_) => {
                     let expected = self.height() * self.width() * C;
                     let actual = self.0.numel();
-                    eprintln!("{}", ImageError::InvalidChannelShape(actual, expected));
-                    return array.unbind();
+                    return Err(ImageError::InvalidChannelShape(actual, expected));
                 }
             };
-            std::ptr::copy_nonoverlapping(contiguous.storage.as_ptr(), array.data(), contiguous.numel());
-            array.unbind()
+            std::ptr::copy_nonoverlapping(
+                contiguous.storage.as_ptr(),
+                array.data(),
+                contiguous.numel(),
+            );
+            Ok(array.unbind())
         })
     }
 }
 
 impl<const C: usize> ToPyImageF32 for Image<f32, C, CpuAllocator> {
-    fn to_pyimage_f32(self) -> PyImageF32 {
+    fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError> {
         Python::with_gil(|py| unsafe {
             let array = PyArray::<f32, _>::new(py, [self.height(), self.width(), C], false);
             let contiguous = match self.0.to_standard_layout(CpuAllocator) {
                 Ok(c) => c,
-                Err(_) => { 
+                Err(_) => {
                     let expected = self.height() * self.width() * C;
                     let actual = self.0.numel();
-                    eprintln!("{}", ImageError::InvalidChannelShape(actual, expected));
-                    return array.unbind();
+                    return Err(ImageError::InvalidChannelShape(actual, expected));
                 }
             };
-            std::ptr::copy_nonoverlapping(contiguous.storage.as_ptr(), array.data(), contiguous.numel());
-            array.unbind()
+            std::ptr::copy_nonoverlapping(
+                contiguous.storage.as_ptr(),
+                array.data(),
+                contiguous.numel(),
+            );
+            Ok(array.unbind())
         })
     }
 }

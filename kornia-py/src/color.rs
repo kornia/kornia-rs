@@ -16,7 +16,11 @@ pub fn rgb_from_gray(image: PyImage) -> PyResult<PyImage> {
         PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
     })?;
 
-    Ok(image_rgb.to_pyimage())
+    let pyimage_rgb = image_rgb.to_pyimage().map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
+    })?;
+
+    Ok(pyimage_rgb)
 }
 
 #[pyfunction]
@@ -31,7 +35,11 @@ pub fn bgr_from_rgb(image: PyImage) -> PyResult<PyImage> {
         PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
     })?;
 
-    Ok(image_bgr.to_pyimage())
+    let pyimage_bgr = image_bgr.to_pyimage().map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
+    })?;
+
+    Ok(pyimage_bgr)
 }
 
 #[pyfunction]
@@ -54,5 +62,9 @@ pub fn gray_from_rgb(image: PyImage) -> PyResult<PyImage> {
         PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
     })?;
 
-    Ok(image_gray.to_pyimage())
+    let pyimage_gray = image_gray.to_pyimage().map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
+    })?;
+
+    Ok(pyimage_gray)
 }

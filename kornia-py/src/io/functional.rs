@@ -6,5 +6,8 @@ use pyo3::prelude::*;
 pub fn read_image_any(file_path: &str) -> PyResult<PyImage> {
     let image = F::read_image_any_rgb8(file_path)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyFileExistsError, _>(format!("{}", e)))?;
-    Ok(image.to_pyimage())
+    let pyimage = image.to_pyimage().map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
+    })?;
+    Ok(pyimage)
 }

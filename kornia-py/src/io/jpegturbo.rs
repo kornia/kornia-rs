@@ -30,7 +30,13 @@ impl PyImageDecoder {
             .0
             .decode_rgb8(jpeg_data)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(image.to_pyimage())
+        let pyimage = image.to_pyimage().map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                "failed to convert image: {}",
+                e
+            ))
+        })?;
+        Ok(pyimage)
     }
 
     pub fn decode_gray8(&self, jpeg_data: &[u8]) -> PyResult<PyImage> {
@@ -38,7 +44,13 @@ impl PyImageDecoder {
             .0
             .decode_gray8(jpeg_data)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(image.to_pyimage())
+        let pyimage = image.to_pyimage().map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                "failed to convert image: {}",
+                e
+            ))
+        })?;
+        Ok(pyimage)
     }
 }
 
@@ -76,7 +88,10 @@ impl PyImageEncoder {
 pub fn read_image_jpegturbo(file_path: &str) -> PyResult<PyImage> {
     let image = read_image_jpegturbo_rgb8(file_path)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyFileExistsError, _>(format!("{}", e)))?;
-    Ok(image.to_pyimage())
+    let pyimage = image.to_pyimage().map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
+    })?;
+    Ok(pyimage)
 }
 
 #[pyfunction]
@@ -106,12 +121,24 @@ pub fn decode_image_jpegturbo(jpeg_data: &[u8], mode: &str) -> PyResult<PyImage>
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?
             .decode_rgb8(jpeg_data)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?
-            .to_pyimage(),
+            .to_pyimage()
+            .map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?,
         "mono" => JpegTurboDecoder::new()
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?
             .decode_gray8(jpeg_data)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?
-            .to_pyimage(),
+            .to_pyimage()
+            .map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?,
         _ => {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                 String::from(

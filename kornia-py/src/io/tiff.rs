@@ -12,12 +12,24 @@ pub fn read_image_tiff_u8(file_path: &str, mode: &str) -> PyResult<PyImage> {
         "rgb" => {
             let img = k_tiff::read_image_tiff_rgb8(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            img.to_pyimage()
+            let pyimg = img.to_pyimage().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimg
         }
         "mono" => {
             let img = k_tiff::read_image_tiff_mono8(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            img.to_pyimage()
+            let pyimg = img.to_pyimage().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimg
         }
         _ => {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -41,12 +53,24 @@ pub fn read_image_tiff_u16(file_path: &str, mode: &str) -> PyResult<PyImageU16> 
         "rgb" => {
             let img = k_tiff::read_image_tiff_rgb16(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            img.to_pyimage_u16()
+            let pyimg = img.to_pyimage_u16().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimg
         }
         "mono" => {
             let img = k_tiff::read_image_tiff_mono16(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            img.to_pyimage_u16()
+            let pyimg = img.to_pyimage_u16().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimg
         }
         _ => {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
@@ -69,12 +93,24 @@ pub fn read_image_tiff_f32(file_path: &str, mode: &str) -> PyResult<PyImageF32> 
         "mono" => {
             let img = k_tiff::read_image_tiff_mono32f(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            img.to_pyimage_f32()
+            let pyimg = img.to_pyimage_f32().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimg
         }
         "rgb" => {
             let img = k_tiff::read_image_tiff_rgb32f(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            img.to_pyimage_f32()
+            let pyimg = img.to_pyimage_f32().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "failed to convert image: {}",
+                    e
+                ))
+            })?;
+            pyimg
         }
         _ => {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
