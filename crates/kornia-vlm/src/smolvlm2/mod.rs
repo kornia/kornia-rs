@@ -138,7 +138,7 @@ impl SmolVlm2 {
             });
         }
 
-        let mut delta_token = self.txt_processor.encode_all(&full_prompt)?;
+        let mut delta_token = self.txt_processor.encode_all(full_prompt)?;
 
         if debug {
             debug!("Initial tokens: {delta_token:?}");
