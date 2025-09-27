@@ -34,7 +34,7 @@ impl FastDetector {
     ///
     /// Returns a `Result` containing the new `FastDetector` or an `ImageError`.
     pub fn new(
-        image_size: ImageSize,
+        size: ImageSize,
         threshold: f32,
         arc_length: usize,
         min_distance: usize,
@@ -43,8 +43,8 @@ impl FastDetector {
             threshold,
             min_distance,
             arc_length,
-            corner_response: Image::from_size_val(image_size, 0.0, CpuAllocator)?,
-            taken: vec![false; image_size.height * image_size.width],
+            corner_response: Image::from_size_val(size, 0.0, CpuAllocator)?,
+            taken: vec![false; size.height * size.width],
         })
     }
 
@@ -58,14 +58,10 @@ impl FastDetector {
     /// # Arguments
     ///
     /// * `src` - The source grayscale image.
-    ///
-    /// # Returns
-    ///
-    /// Returns a reference to the image containing the corner response.
     pub fn compute_corner_response<A: ImageAllocator>(
         &mut self,
         src: &Image<f32, 1, A>,
-    ) -> Result<&Image<f32, 1, CpuAllocator>, ImageError> {
+    ) -> Result<(), ImageError> {
         if self.corner_response.size() != src.size() {
             return Err(ImageError::InvalidImageSize(
                 src.width(),
@@ -159,7 +155,7 @@ impl FastDetector {
                 }
             });
 
-        Ok(&self.corner_response)
+        Ok(())
     }
 
     /// Extracts keypoints using Non-Maximum Suppression on the corner response.
