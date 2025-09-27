@@ -5,29 +5,21 @@ pub mod utils;
 use log::debug;
 use std::io::Write;
 
-use candle_core::IndexOp;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
-use candle_transformers::generation::{LogitsProcessor, Sampling};
 use hf_hub::api::sync::Api;
 use kornia_image::{allocator::ImageAllocator, Image};
-use tokenizers::Tokenizer;
 
 use crate::smolvlm2::text_processor::{Line, Message, Role, TextProcessor};
 use crate::smolvlm2::utils::{SmolVlm2Config, SmolVlm2Error};
 
 pub struct SmolVlm2 {
     model: model::Model,
-    config: SmolVlm2Config,
+    _config: SmolVlm2Config,
     device: Device,
     index_pos: usize, // index of the next token to be processed
 
     txt_processor: TextProcessor,
-
-    // logits_processor: LogitsProcessor,
-    // token_history: Vec<u32>, // stores the history of generated tokens
-    // first_prompt: bool,
-    // tokenizer: Tokenizer,
     response: String,
 }
 
@@ -49,22 +41,13 @@ impl SmolVlm2 {
 
         let (model, txt_processor) = Self::load_model(config, dtype, &device)?;
 
-        // let logits_processor = if config.do_sample {
-        //     LogitsProcessor::new(config.seed, Some(config.temp), Some(config.top_p))
-        // } else {
-        //     LogitsProcessor::from_sampling(config.seed, Sampling::ArgMax)
-        // };
-
         Ok(Self {
             model,
             txt_processor,
-            config,
+            _config: config,
             device,
             index_pos: 0,
 
-            // first_prompt: true,
-            // logits_processor,
-            // token_history: Vec::new(),
             response: String::new(),
         })
     }
@@ -73,9 +56,7 @@ impl SmolVlm2 {
         self.model.clear_context();
         self.txt_processor.clear_history();
 
-        // self.first_prompt = true;
         self.index_pos = 0;
-        // self.token_history.clear();
         Ok(())
     }
 
@@ -99,7 +80,7 @@ impl SmolVlm2 {
         alloc: A,
         debug: bool,
     ) -> Result<String, SmolVlm2Error> {
-        let full_prompt = self.txt_processor.add_and_tokenize_prompt(
+        let full_prompt = self.txt_processor.add_and_format_prompt(
             vec![Message {
                 role: Role::User,
                 content: vec![Line::Text {
@@ -108,22 +89,6 @@ impl SmolVlm2 {
             }],
             true,
         )?;
-
-        // let mut full_prompt = if self.first_prompt {
-        //     self.first_prompt = false;
-        //     String::from("<|im_start|>")
-        // } else {
-        //     String::new()
-        // };
-
-        // if image.is_some() {
-        //     full_prompt += "User:<image>";
-        // } else {
-        //     full_prompt += "User: ";
-        // }
-
-        // full_prompt += prompt;
-        // full_prompt += "<end_of_utterance>\nAssistant:";
 
         let images = if let Some(img) = image {
             vec![img]
@@ -186,32 +151,9 @@ impl SmolVlm2 {
         let mut generated_tokens = 0usize;
 
         for _i in 0..sample_len {
-            // self.token_history.extend(&delta_token);
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
-
             let logits = self.model.forward(&input, self.index_pos)?;
-
-            // let (s, _embed_dim) = logits.dims2()?;
-            // let last_logit = logits.i((s - 1, ..))?;
-
-            // let last_logit = if self.config.do_sample {
-            //     candle_transformers::utils::apply_repeat_penalty(
-            //         &last_logit,
-            //         self.config.repeat_penalty,
-            //         &delta_token,
-            //     )?
-            // } else {
-            //     last_logit
-            // };
-
             let out_token = self.txt_processor.sample_logits(&logits, &delta_token)?;
-
-            // let out_token = if self.config.do_sample {
-            //     self.logits_processor.sample(&last_logit)?
-            // } else {
-            //     // Use deterministic sampling for reproducible results
-            //     self.sample_deterministic(&last_logit)?
-            // };
 
             self.index_pos += delta_token.len();
             delta_token.clear();
@@ -253,48 +195,11 @@ impl SmolVlm2 {
         Ok(self.response.clone())
     }
 
-    /// Deterministic sampling that always selects the token with the lowest index for ties
-    fn sample_deterministic(&self, logits: &Tensor) -> Result<u32, SmolVlm2Error> {
-        // Convert to f32 for consistent precision
-        let logits_vec = logits.to_dtype(DType::F32)?.to_vec1::<f32>()?;
-
-        // Filter out NaNs
-        let filtered: Vec<(usize, f32)> = logits_vec
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &v)| if v.is_finite() { Some((i, v)) } else { None })
-            .collect();
-        if filtered.is_empty() {
-            return Err(SmolVlm2Error::InvalidLogits(
-                "No valid logits found - all values may be NaN or invalid".to_string(),
-            ));
-        }
-
-        // Find the maximum value among valid logits
-        let max_value = filtered
-            .iter()
-            .map(|&(_, v)| v)
-            .fold(f32::NEG_INFINITY, f32::max);
-
-        // Find all indices with the maximum value (exact equality)
-        let max_indices: Vec<usize> = filtered
-            .iter()
-            .filter(|&&(_, v)| v == max_value)
-            .map(|&(i, _)| i)
-            .collect();
-
-        // Always select the first index (deterministic tiebreaker) in order of the token
-        let best_token = max_indices[0] as u32;
-
-        Ok(best_token)
-    }
-
     fn load_model(
         config: SmolVlm2Config,
         dtype: DType,
         device: &Device,
     ) -> Result<(model::Model, TextProcessor), SmolVlm2Error> {
-        // let tokenizer = Tokenizer::from_pretrained(Self::MODEL_IDENTIFIER, None).unwrap();
         let txt_processor = TextProcessor::new(Self::MODEL_IDENTIFIER.into(), config)?;
 
         let api = Api::new()?;

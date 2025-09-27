@@ -33,6 +33,9 @@ pub enum SmolVlm2Error {
     #[error("Missing chat template: {0}")]
     MissingChatTemplate(String),
 
+    #[error("Message history mistmatch: {0}")]
+    MessageHistoryMismatch(String),
+
     #[error("Cannot find the <end_of_utterance> token")]
     EosTokenNotFound,
 
