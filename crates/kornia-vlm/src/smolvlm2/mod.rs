@@ -54,7 +54,7 @@ impl SmolVlm2 {
     }
 
     pub fn clear_context(&mut self) -> Result<(), SmolVlm2Error> {
-        self.model.clear_context();
+        self.model.clear_context()?;
         self.txt_processor.clear_history();
 
         self.index_pos = 0;
