@@ -17,8 +17,8 @@ use crate::smolvlm2::utils::{SmolVlm2Config, SmolVlm2Error};
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
-    User,
-    Assistant,
+    User,      // prompt
+    Assistant, // the model's response
     System,
 }
 
@@ -104,20 +104,20 @@ impl TextProcessor {
 
     /// Add prompts (enable generation prompt) to the history, format them using the template,
     /// and return the formatted string.
-    pub fn add_and_format_prompt(
+    pub fn reformat_with_additional_prompts(
         &mut self,
         messages: Vec<Message>,
         delta: bool,
     ) -> Result<String, SmolVlm2Error> {
-        self.add_and_format_raw_message(messages, true, delta)
+        self.reformat_with_additional_raw_messages(messages, true, delta)
     }
 
-    /// Record the generated text into the message history for text-only assistant response.
+    /// Record the generated text into the message history from text-only assistant response.
     pub fn add_textual_response<S: Into<String>>(
         &mut self,
         textual_response: S,
     ) -> Result<(), SmolVlm2Error> {
-        self.add_and_format_raw_message(
+        self.reformat_with_additional_raw_messages(
             vec![Message {
                 role: Role::Assistant,
                 content: vec![Line::Text {
@@ -130,19 +130,51 @@ impl TextProcessor {
         .map(|_| ())
     }
 
+    /// Record the generated text a set of token by a set of token into the message
+    /// history from text-only assistant response.
+    pub fn update_last_textual_response<S: Into<String> + Clone>(
+        &mut self,
+        textual_response: S,
+    ) -> Result<(), SmolVlm2Error> {
+        if let Some(Message {
+            role: Role::Assistant,
+            content,
+        }) = self.message_history.last_mut()
+        {
+            if let Some(Line::Text { text }) = content.last_mut() {
+                text.push_str(&textual_response.clone().into());
+            } else {
+                content.push(Line::Text {
+                    text: textual_response.clone().into(),
+                });
+            }
+
+            let tokens = self.encode_all(&textual_response.clone().into())?;
+
+            self.formatted_history.push_str(&textual_response.into());
+            self.token_history.extend(tokens);
+        } else {
+            self.add_textual_response(textual_response)?;
+        }
+
+        self.previously_added_generation_prompt = false;
+
+        Ok(())
+    }
+
     /// Generalized method to add and return the formatted tokenized messages.
     /// # Arguments
     ///
-    /// * `messages` - The messages to add and format
+    /// * `additional_messages` - The messages to add
     /// * `add_generation_prompt` - Whether to add the generation prompt at the end (note: )
     /// * `delta` - Whether to return only the newly added part of the formatted string
-    pub fn add_and_format_raw_message(
+    pub fn reformat_with_additional_raw_messages(
         &mut self,
-        messages: Vec<Message>,
+        additional_messages: Vec<Message>,
         add_generation_prompt: bool,
         delta: bool,
     ) -> Result<String, SmolVlm2Error> {
-        if let Some(Message { role, content: _ }) = messages.last() {
+        if let Some(Message { role, content: _ }) = additional_messages.last() {
             if let Role::Assistant = role {
             } else if self.previously_added_generation_prompt {
                 // if the last message is not from the assistant yet we supposedly added a generation prompt?
@@ -155,7 +187,7 @@ impl TextProcessor {
 
         let template = self.env.get_template("chat")?;
 
-        self.message_history.extend(messages);
+        self.message_history.extend(additional_messages);
 
         let formatted = template.render(context! {
             messages => &self.message_history,
@@ -210,19 +242,19 @@ impl TextProcessor {
         self.formatted_history.clear();
     }
 
-    pub fn sample_logits(
-        &mut self,
-        raw_logits: &Tensor,
-        delta_token: &[u32],
-    ) -> Result<u32, SmolVlm2Error> {
+    pub fn sample_logits(&mut self, raw_logits: &Tensor) -> Result<u32, SmolVlm2Error> {
         let (s, _embed_dim) = raw_logits.dims2()?;
         let last_logit = raw_logits.i((s - 1, ..))?;
 
         let output_logit = if self.config.do_sample {
+            let start_at = self
+                .token_history
+                .len()
+                .saturating_sub(self.config.repeat_last_n);
             candle_transformers::utils::apply_repeat_penalty(
                 &last_logit,
                 self.config.repeat_penalty,
-                &delta_token,
+                &self.token_history[start_at..],
             )?
         } else {
             last_logit
@@ -262,12 +294,13 @@ mod tests {
                 temp: 1.0,
                 top_p: 0.9,
                 repeat_penalty: 1.0,
+                ..Default::default()
             },
         )
         .unwrap();
 
         let formatted = preprocessor
-            .add_and_format_prompt(
+            .reformat_with_additional_prompts(
                 vec![Message {
                     role: Role::User,
                     content: vec![Line::Text {
@@ -285,7 +318,7 @@ mod tests {
         );
 
         let formatted = preprocessor
-            .add_and_format_prompt(
+            .reformat_with_additional_prompts(
                 vec![Message {
                     role: Role::User,
                     content: vec![
@@ -306,7 +339,7 @@ mod tests {
         );
 
         let formatted = preprocessor
-            .add_and_format_prompt(
+            .reformat_with_additional_prompts(
                 vec![Message {
                     role: Role::User,
                     content: vec![
@@ -329,7 +362,7 @@ mod tests {
         );
 
         let formatted = preprocessor
-            .add_and_format_prompt(
+            .reformat_with_additional_prompts(
                 vec![
                     Message {
                         role: Role::User,
@@ -366,7 +399,7 @@ mod tests {
         preprocessor.clear_history();
 
         let formatted = preprocessor
-            .add_and_format_prompt(
+            .reformat_with_additional_prompts(
                 vec![Message {
                     role: Role::User,
                     content: vec![
@@ -388,7 +421,7 @@ mod tests {
         preprocessor.clear_history();
 
         let formatted = preprocessor
-            .add_and_format_prompt(
+            .reformat_with_additional_prompts(
                 vec![
                     Message {
                         role: Role::User,
@@ -429,12 +462,13 @@ mod tests {
                 top_p: 0.9,
                 repeat_penalty: 1.0,
                 do_sample: false,
+                ..Default::default()
             },
         )
         .unwrap();
 
         let formatted = preprocessor
-            .add_and_format_prompt(
+            .reformat_with_additional_prompts(
                 vec![Message {
                     role: Role::Assistant,
                     content: vec![Line::Text {
@@ -461,11 +495,14 @@ mod tests {
                 top_p: 0.9,
                 repeat_penalty: 1.0,
                 do_sample: false,
+                ..Default::default()
             },
         )
         .unwrap();
 
-        let formatted = preprocessor.add_and_format_prompt(vec![], true).unwrap();
+        let formatted = preprocessor
+            .reformat_with_additional_prompts(vec![], true)
+            .unwrap();
 
         assert_eq!(formatted, "<|im_start|>Assistant:");
     }
@@ -480,12 +517,13 @@ mod tests {
                 top_p: 0.9,
                 repeat_penalty: 1.0,
                 do_sample: false,
+                ..Default::default()
             },
         )
         .unwrap();
 
         let formatted = preprocessor
-            .add_and_format_prompt(
+            .reformat_with_additional_prompts(
                 vec![Message {
                     role: Role::User,
                     content: vec![Line::Text {
@@ -501,7 +539,7 @@ mod tests {
             "<|im_start|>User: What a beautiful day!<end_of_utterance>\nAssistant:"
         );
         let err = preprocessor
-            .add_and_format_prompt(
+            .reformat_with_additional_prompts(
                 vec![Message {
                     role: Role::User,
                     content: vec![Line::Text {

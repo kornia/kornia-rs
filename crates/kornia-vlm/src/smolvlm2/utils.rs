@@ -52,6 +52,7 @@ pub struct SmolVlm2Config {
     pub top_p: f64,
     pub repeat_penalty: f32,
     pub do_sample: bool,
+    pub repeat_last_n: usize,
 }
 
 impl Default for SmolVlm2Config {
@@ -62,6 +63,7 @@ impl Default for SmolVlm2Config {
             top_p: 0.8,
             repeat_penalty: 1.0,
             do_sample: true,
+            repeat_last_n: 64,
         }
     }
 }

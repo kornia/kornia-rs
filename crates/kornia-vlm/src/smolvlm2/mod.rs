@@ -80,7 +80,7 @@ impl SmolVlm2 {
         alloc: A,
         debug: bool,
     ) -> Result<String, SmolVlm2Error> {
-        let full_prompt = self.txt_processor.add_and_format_prompt(
+        let full_prompt = self.txt_processor.reformat_with_additional_prompts(
             vec![Message {
                 role: Role::User,
                 content: vec![Line::Text {
@@ -153,13 +153,15 @@ impl SmolVlm2 {
         for _i in 0..sample_len {
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
             let logits = self.model.forward(&input, self.index_pos)?;
-            let out_token = self.txt_processor.sample_logits(&logits, &delta_token)?;
+            let out_token = self.txt_processor.sample_logits(&logits)?;
 
             self.index_pos += delta_token.len();
             delta_token.clear();
             delta_token.push(out_token);
 
             let token_output = self.txt_processor.decode(out_token)?;
+            self.txt_processor
+                .update_last_textual_response(token_output.clone())?;
 
             if !self.txt_processor.is_eos(token_output.as_str()) {
                 self.response += &token_output;
