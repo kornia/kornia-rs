@@ -35,7 +35,7 @@ impl FloatConversion for u8 {
     }
 
     fn from_f32(val: f32) -> Self {
-        (val.clamp(0.0, 1.0) * 255.0).round() as u8
+        (val.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
     }
 }
 
