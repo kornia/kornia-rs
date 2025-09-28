@@ -4,6 +4,7 @@ use candle_transformers::models::llama::{self, Cache};
 
 pub struct Model {
     text_model: candle_transformers::models::llama::Llama,
+    vision_model: candle_transformers::models::siglip::VisionModel,
 
     // TODO: move these caching into inference context
     cache_dtype: DType,
@@ -55,6 +56,21 @@ impl Model {
             text_model: candle_transformers::models::llama::Llama::load(
                 vb.pp("model.text_model"),
                 &Self::CONFIG,
+            )?,
+            vision_model: candle_transformers::models::siglip::VisionModel::new(
+                &candle_transformers::models::siglip::VisionConfig {
+                    hidden_size: 0,
+                    intermediate_size: 0,
+                    num_hidden_layers: 0,
+                    num_attention_heads: 0,
+                    num_channels: 0,
+                    image_size: 0,
+                    patch_size: 0,
+                    hidden_act: candle_nn::Activation::GeluPytorchTanh,
+                    layer_norm_eps: 0.0,
+                },
+                false,
+                vb.pp("model.vision_model"),
             )?,
             cache_device: device.clone(),
             cache_dtype: dtype,
