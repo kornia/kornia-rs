@@ -39,6 +39,8 @@ impl<A: ImageAllocator> SmolVlm2<A> {
         rescale_factor: 0.00392156862745098, // 1.0 / 255.0
         image_token: "<image>",
     };
+    // https://github.com/huggingface/transformers/blob/3e975acc8bf6d029ec0a54b1c5d0691489dfb051/src/transformers/models/smolvlm/processing_smolvlm.py#L57C26-L57C479
+    const UPDATED_VIDEO_CHAT_TEMPLATE: &'static str = "<|im_start|>{% for message in messages %}{{message['role'] | capitalize}}{% if message['content'][0]['type'] == 'image' %}{{':'}}{% else %}{{': '}}{% endif %}{% for line in message['content'] %}{% if line['type'] == 'text' %}{{line['text']}}{% elif line['type'] == 'image' %}{{ '<image>' }}{% elif line['type'] == 'video' %}{{ '<video>' }}{% endif %}{% endfor %}<end_of_utterance>\n{% endfor %}{% if add_generation_prompt %}{{ 'Assistant:' }}{% endif %}";
 
     pub fn new(config: SmolVlm2Config) -> Result<Self, SmolVlm2Error> {
         #[cfg(feature = "cuda")]
@@ -216,7 +218,8 @@ impl<A: ImageAllocator> SmolVlm2<A> {
         dtype: DType,
         device: &Device,
     ) -> Result<(model::Model, TextProcessor, ImageProcessor<A>), SmolVlm2Error> {
-        let txt_processor = TextProcessor::new(Self::MODEL_IDENTIFIER.into(), config)?;
+        let txt_processor = TextProcessor::new(Self::MODEL_IDENTIFIER.into(), config)?
+            .with_template_string(Self::UPDATED_VIDEO_CHAT_TEMPLATE.into())?;
         let img_processor =
             ImageProcessor::new(Self::IMG_PROCESSOR_CONFIG, device, &txt_processor)?;
 
@@ -238,9 +241,6 @@ impl<A: ImageAllocator> SmolVlm2<A> {
 mod tests {
     use std::path::Path;
 
-    use gstreamer as gst;
-    use gstreamer::prelude::*;
-    use gstreamer_app as gst_app;
     use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
     use kornia_tensor::CpuAllocator;
 
@@ -291,39 +291,5 @@ mod tests {
                 CpuAllocator,
             )
             .expect("Inference failed");
-    }
-
-    // cargo test -p kornia-vlm test_smolvlm2_video_reading --features cuda -- --nocapture --ignored
-
-    #[test]
-    #[ignore = "Requires GStreamer"]
-    fn test_smolvlm2_video_reading() {
-        gst::init().unwrap();
-
-        // Replace "your_video.mp4" with your video file path
-        let pipeline = gst::parse::launch(
-            "filesrc location=../../example_video.mp4 ! decodebin ! videoconvert ! appsink name=sink",
-        )
-        .unwrap();
-
-        let pipeline = pipeline
-            .downcast::<gst::Pipeline>()
-            .expect("Expected a pipeline");
-
-        let appsink = pipeline
-            .by_name("sink")
-            .unwrap()
-            .downcast::<gst_app::AppSink>()
-            .unwrap();
-
-        pipeline.set_state(gst::State::Playing).unwrap();
-
-        while let Ok(sample) = appsink.pull_sample() {
-            let buffer = sample.buffer().unwrap();
-            // Process buffer (video frame) here
-            println!("Got frame of size: {}", buffer.size());
-        }
-
-        pipeline.set_state(gst::State::Null).unwrap();
     }
 }

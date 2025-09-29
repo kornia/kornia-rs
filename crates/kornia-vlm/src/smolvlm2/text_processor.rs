@@ -100,6 +100,14 @@ impl TextProcessor {
         })
     }
 
+    pub fn with_template_string(
+        mut self,
+        new_chat_template: String,
+    ) -> Result<Self, SmolVlm2Error> {
+        self.env.add_template_owned("chat", new_chat_template)?;
+        Ok(self)
+    }
+
     pub fn is_eos(&self, token: &str) -> bool {
         token == self.eos_token
     }
