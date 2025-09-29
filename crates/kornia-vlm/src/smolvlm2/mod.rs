@@ -11,88 +11,32 @@ use candle_nn::VarBuilder;
 use hf_hub::api::sync::Api;
 use kornia_image::{allocator::ImageAllocator, Image};
 
-use crate::smolvlm2::text_processor::{Line, Message, Role, TextProcessor};
+use crate::context::InferenceContext;
+use crate::smolvlm2::image_processor::{ImageProcessor, ImageProcessorConfig};
+use crate::smolvlm2::text_processor::{Message, TextProcessor};
+use crate::smolvlm2::utils::{SmolVlm2Config, SmolVlm2Error};
 
-/// Utilities for the SmolVLM2 module.
-#[derive(thiserror::Error, Debug)]
-pub enum SmolVlm2Error {
-    #[error(transparent)]
-    FailedToLoadModel(#[from] hf_hub::api::sync::ApiError),
-
-    #[error(transparent)]
-    CandleError(#[from] candle_core::Error),
-
-    #[error(transparent)]
-    ImageError(#[from] kornia_image::ImageError),
-
-    #[error(transparent)]
-    TokenizerError(#[from] tokenizers::Error),
-
-    #[error(transparent)]
-    IoError(#[from] std::io::Error),
-
-    #[error(transparent)]
-    JinjaError(#[from] minijinja::Error),
-
-    #[error(transparent)]
-    SerializationError(#[from] serde_json::Error),
-
-    #[error("Invalid logits detected: {0}")]
-    InvalidLogits(String),
-
-    #[error("Invalid encoding detected: {0}")]
-    InvalidEncoding(String),
-
-    #[error("Missing chat template: {0}")]
-    MissingChatTemplate(String),
-
-    #[error("Message history mistmatch: {0}")]
-    MessageHistoryMismatch(String),
-
-    #[error("Cannot find the <end_of_utterance> token")]
-    EosTokenNotFound,
-
-    #[error("Mismatched image count: tags = {tags}, images = {images}")]
-    MismatchedImageCount { tags: usize, images: usize },
-}
-
-/// Configuration for the SmolVLM2 model
-
-#[derive(Clone, Copy)]
-pub struct SmolVlm2Config {
-    pub seed: u64,
-    pub temp: f64,
-    pub top_p: f64,
-    pub repeat_penalty: f32,
-    pub do_sample: bool,
-    pub repeat_last_n: usize,
-}
-
-impl Default for SmolVlm2Config {
-    fn default() -> Self {
-        Self {
-            seed: 42,
-            temp: 1.0,
-            top_p: 0.8,
-            repeat_penalty: 1.0,
-            do_sample: true,
-            repeat_last_n: 64,
-        }
-    }
-}
-
-pub struct SmolVlm2 {
+pub struct SmolVlm2<A: ImageAllocator> {
     model: model::Model,
     config: SmolVlm2Config,
     device: Device,
     index_pos: usize, // index of the next token to be processed
 
     txt_processor: TextProcessor,
+    img_processor: ImageProcessor<A>,
     response: String,
 }
 
-impl SmolVlm2 {
+impl<A: ImageAllocator> SmolVlm2<A> {
     const MODEL_IDENTIFIER: &'static str = "HuggingFaceTB/SmolVLM2-2.2B-Instruct";
+    const IMG_PROCESSOR_CONFIG: ImageProcessorConfig = ImageProcessorConfig {
+        size_longest_edge: 1536,
+        max_image_size_longest_edge: 384,
+        image_mean: [0.5, 0.5, 0.5],
+        image_std: [0.5, 0.5, 0.5],
+        rescale_factor: 0.00392156862745098, // 1.0 / 255.0
+        image_token: "<image>",
+    };
 
     pub fn new(config: SmolVlm2Config) -> Result<Self, SmolVlm2Error> {
         #[cfg(feature = "cuda")]
@@ -107,11 +51,12 @@ impl SmolVlm2 {
         #[cfg(not(feature = "cuda"))]
         let (device, dtype) = (Device::Cpu, DType::F32);
 
-        let (model, txt_processor) = Self::load_model(config, dtype, &device)?;
+        let (model, txt_processor, img_processor) = Self::load_model(config, dtype, &device)?;
 
         Ok(Self {
             model,
             txt_processor,
+            img_processor,
             config,
             device,
             index_pos: 0,
@@ -141,23 +86,17 @@ impl SmolVlm2 {
     ///
     /// # Returns
     ///
-    /// * `Result<String, SmolVlm2Error>` - The generated caption or error
-    pub fn inference<A: ImageAllocator>(
+    /// * `caption` - The generated caption
+    pub fn inference(
         &mut self,
-        prompt: &str, // TODO: should it be structured?
+        prompt: Vec<Message>,
         image: Option<Image<u8, 3, A>>,
         sample_len: usize, // per prompt
         alloc: A,
     ) -> Result<String, SmolVlm2Error> {
-        let full_prompt = self.txt_processor.reformat_with_additional_prompts(
-            vec![Message {
-                role: Role::User,
-                content: vec![Line::Text {
-                    text: prompt.to_string(),
-                }],
-            }],
-            true,
-        )?;
+        let full_prompt = self
+            .txt_processor
+            .reformat_with_additional_prompts(prompt, true)?;
 
         let images = if let Some(img) = image {
             vec![img]
@@ -182,30 +121,47 @@ impl SmolVlm2 {
     ///
     /// # Returns
     ///
-    /// * `Result<String, SmolVlm2Error>` - The generated caption or error
-    pub fn inference_raw<A: ImageAllocator>(
+    /// * `caption` - The generated caption
+    pub fn inference_raw(
         &mut self,
         full_prompt: &str,
         images: Vec<Image<u8, 3, A>>,
         sample_len: usize, // per prompt
-        _alloc: A,
+        alloc: A,
     ) -> Result<String, SmolVlm2Error> {
         if self.config.debug {
             std::io::stdout().flush()?;
         }
+        let mut ctx = InferenceContext::new(self.config.debug, self.config.debug);
 
         self.response.clear();
 
-        let image_tags_pos: Vec<_> = full_prompt.match_indices("<image>").collect();
+        let mut converted_prompt = String::from(full_prompt);
 
-        if image_tags_pos.len() != images.len() {
-            return Err(SmolVlm2Error::MismatchedImageCount {
-                tags: image_tags_pos.len(),
-                images: images.len(),
-            });
-        }
+        self.img_processor
+            .add_and_process_images_and_modify_prompt(
+                &mut converted_prompt,
+                images,
+                &self.device,
+                alloc,
+            )?;
 
-        let mut delta_token = self.txt_processor.encode_all(full_prompt)?;
+        // let mut processed_images = vec![];
+        // for ((start, _), image) in image_tags_pos.iter().zip(images.into_iter()) {
+        //     let (img_patches, mask_patches, size) =
+        //         self.img_processor
+        //             .preprocess(&image, &self.device, alloc.clone())?;
+        //     processed_images.push((img_patches, mask_patches));
+
+        //     let img_token = get_prompt_split_image(81, size);
+        //     converted_prompt.replace_range(
+        //         &(start + offset)..&(start + offset + image_tag_len),
+        //         &img_token,
+        //     );
+        //     offset += img_token.len() - image_tag_len;
+        // }
+
+        let mut delta_token = self.txt_processor.encode_all(&converted_prompt)?;
 
         if self.config.debug {
             debug!("Initial tokens: {delta_token:?}");
@@ -219,7 +175,16 @@ impl SmolVlm2 {
 
         for _i in 0..sample_len {
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
-            let logits = self.model.forward(&input, self.index_pos)?;
+            // let image_token_mask = input.broadcast_eq(&self.image_token_tensor)?;
+
+            let logits = self.model.forward(
+                &input,
+                self.index_pos,
+                &self.img_processor.get_image_token_mask(&input)?,
+                self.img_processor.get_processed_images(),
+                &mut ctx,
+            )?;
+            self.img_processor.clear_processed_images();
             let out_token = self.txt_processor.sample_logits(&logits)?;
 
             self.index_pos += delta_token.len();
@@ -268,8 +233,10 @@ impl SmolVlm2 {
         config: SmolVlm2Config,
         dtype: DType,
         device: &Device,
-    ) -> Result<(model::Model, TextProcessor), SmolVlm2Error> {
+    ) -> Result<(model::Model, TextProcessor, ImageProcessor<A>), SmolVlm2Error> {
         let txt_processor = TextProcessor::new(Self::MODEL_IDENTIFIER.into(), config)?;
+        let img_processor =
+            ImageProcessor::new(Self::IMG_PROCESSOR_CONFIG, device, &txt_processor)?;
 
         let api = Api::new()?;
         let repo = api.model(Self::MODEL_IDENTIFIER.to_string());
@@ -281,20 +248,37 @@ impl SmolVlm2 {
 
         model::Model::load(vb, dtype, device)
             .map_err(SmolVlm2Error::CandleError)
-            .map(|m| (m, txt_processor))
+            .map(|m| (m, txt_processor, img_processor))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
+    use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
     use kornia_tensor::CpuAllocator;
+
+    use crate::smolvlm2::text_processor::{Line, Role};
 
     use super::*;
 
     // cargo test -p kornia-vlm test_smolvlm2_text_inference --features cuda -- --nocapture --ignored
+    // RUST_LOG=debug cargo test -p kornia-vlm test_smolvlm2_text_inference --features cuda -- --nocapture --ignored
     #[test]
     #[ignore = "Requires CUDA"]
     fn test_smolvlm2_text_inference() {
+        env_logger::init();
+
+        let path = Path::new("../../100462016.jpeg"); // or .png
+
+        let image = match path.extension().and_then(|ext| ext.to_str()) {
+            Some("jpg") | Some("jpeg") => read_image_jpeg_rgb8(&path).ok(),
+            Some("png") => read_image_png_rgb8(&path).ok(),
+            _ => None,
+        };
+        let image = image.unwrap();
+
         let config = SmolVlm2Config {
             seed: 42,
             do_sample: false,
@@ -303,11 +287,24 @@ mod tests {
         };
         let mut model = SmolVlm2::new(config).unwrap();
 
-        let prompt = "What is life?";
+        let prompt = "Describe the image.";
         let sample_len = 500;
 
         let _response = model
-            .inference(prompt, None, sample_len, CpuAllocator)
+            .inference(
+                vec![Message {
+                    role: Role::User,
+                    content: vec![
+                        Line::Image,
+                        Line::Text {
+                            text: prompt.to_string(),
+                        },
+                    ],
+                }],
+                Some(image),
+                sample_len,
+                CpuAllocator,
+            )
             .expect("Inference failed");
     }
 }

@@ -1,18 +1,22 @@
-use crate::smolvlm::utils::SmolVlmError;
+use crate::smolvlm2::{text_processor::TextProcessor, utils::SmolVlm2Error};
 use candle_core::{DType, Device, Shape, Tensor};
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
 use log::info;
 use std::borrow::Cow;
 
-// https://huggingface.co/HuggingFaceTB/SmolVLM-Instruct/blob/main/preprocessor_config.json
-const MEAN: [f32; 3] = [0.5, 0.5, 0.5];
-const STD: [f32; 3] = [0.5, 0.5, 0.5];
+pub struct ImageProcessorConfig {
+    pub size_longest_edge: u32,           // TODO: max size
+    pub max_image_size_longest_edge: u32, // TODO: outer patch size
+    pub image_mean: [f32; 3],
+    pub image_std: [f32; 3],
+    pub rescale_factor: f32,
+    pub image_token: &'static str,
+}
 
 /// Image preprocessor for SmolVLM model
 pub struct ImageProcessor<A: ImageAllocator> {
-    max_size: u32,
-    outer_patch_size: u32,
+    config: ImageProcessorConfig,
 
     // buffers for resizing images
     buf_resize: Option<Image<u8, 3, A>>,
@@ -28,18 +32,28 @@ pub struct ImageProcessor<A: ImageAllocator> {
     buf_mask_tensor: Tensor,
     buf_mean_tensor: Tensor,
     buf_std_tensor: Tensor,
+
+    image_tag_len: usize,
+    processed_images: Vec<(Tensor, Tensor)>,
+    image_token_tensor: Option<Tensor>,
 }
 
 impl<A: ImageAllocator> ImageProcessor<A> {
     /// Create a new SmolVLM image preprocessor
     pub fn new(
-        max_size: u32,
-        outer_patch_size: u32,
+        config: ImageProcessorConfig,
         device: &Device,
-    ) -> Result<Self, SmolVlmError> {
+        txt_processor: &TextProcessor,
+    ) -> Result<Self, SmolVlm2Error> {
+        let image_token_tensor = if let Err(SmolVlm2Error::MissingTokenizer) =
+            txt_processor.encode(config.image_token)
+        {
+            None
+        } else {
+            let image_token = txt_processor.encode(config.image_token)?;
+            Some(Tensor::from_slice(&[image_token], &[1], &device)?)
+        };
         Ok(Self {
-            max_size,
-            outer_patch_size,
             buf_resize: None,
             buf_global_resize: None,
             buf_padded_img: None,
@@ -47,9 +61,69 @@ impl<A: ImageAllocator> ImageProcessor<A> {
             buf_global_padded_img: None,
             buf_global_padded_mask: None,
             buf_mask_tensor: (Tensor::ones((2048, 2048), DType::F32, device)? * 255.0)?,
-            buf_mean_tensor: Tensor::from_slice(&MEAN, (3, 1, 1), device)?,
-            buf_std_tensor: Tensor::from_slice(&STD, (3, 1, 1), device)?,
+            buf_mean_tensor: Tensor::from_slice(&config.image_mean, (3, 1, 1), device)?,
+            buf_std_tensor: Tensor::from_slice(&config.image_std, (3, 1, 1), device)?,
+
+            image_tag_len: config.image_token.len(),
+            processed_images: vec![],
+            image_token_tensor,
+
+            config,
         })
+    }
+
+    /// given prompt and images, it modifies the prompt while storing the processed images for later use
+    pub fn add_and_process_images_and_modify_prompt(
+        &mut self,
+        prompt: &mut String,
+        images: Vec<Image<u8, 3, A>>,
+        device: &Device,
+        alloc: A,
+    ) -> Result<(), SmolVlm2Error> {
+        let cloned_prompt = prompt.clone();
+        let image_tags_pos = cloned_prompt
+            .match_indices(&self.config.image_token)
+            .collect::<Vec<_>>();
+        let mut offset = 0;
+
+        if image_tags_pos.len() != images.len() {
+            return Err(SmolVlm2Error::MismatchedImageCount {
+                tags: image_tags_pos.len(),
+                images: images.len(),
+            });
+        }
+
+        for ((start, _), image) in image_tags_pos.iter().zip(images.into_iter()) {
+            let (img_patches, mask_patches, size) =
+                self.preprocess(&image, device, alloc.clone())?;
+            self.processed_images.push((img_patches, mask_patches));
+
+            let img_token = get_prompt_split_image(81, size);
+            prompt.replace_range(
+                &(start + offset)..&(start + offset + self.image_tag_len),
+                &img_token,
+            );
+
+            offset += img_token.len() - self.image_tag_len;
+        }
+
+        Ok(())
+    }
+
+    pub fn get_image_token_mask(&self, input: &Tensor) -> Result<Tensor, SmolVlm2Error> {
+        Ok(input.broadcast_eq(
+            self.image_token_tensor
+                .as_ref()
+                .ok_or(SmolVlm2Error::MissingTokenizer)?,
+        )?)
+    }
+
+    pub fn get_processed_images(&self) -> Vec<(&Tensor, &Tensor)> {
+        self.processed_images.iter().map(|(a, b)| (a, b)).collect()
+    }
+
+    pub fn clear_processed_images(&mut self) {
+        self.processed_images.clear();
     }
 
     /// Preprocess an image for SmolVLM model inference
@@ -58,19 +132,19 @@ impl<A: ImageAllocator> ImageProcessor<A> {
         img: &Image<u8, 3, A>,
         device: &Device,
         alloc: A,
-    ) -> Result<(Tensor, Tensor, ImageSize), SmolVlmError> {
+    ) -> Result<(Tensor, Tensor, ImageSize), SmolVlm2Error> {
         {
             info!(
                 "Image size: {}x{} w/ Max size: {}",
                 img.width(),
                 img.height(),
-                self.max_size
+                self.config.size_longest_edge
             );
 
             let img_resized = Self::resize_image_with_buffer(
                 img,
                 &mut self.buf_resize,
-                self.max_size,
+                self.config.size_longest_edge,
                 alloc.clone(),
             )?;
             match img_resized {
@@ -79,7 +153,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
                         img_ref,
                         &mut self.buf_padded_img,
                         &mut self.buf_padded_mask,
-                        self.outer_patch_size,
+                        self.config.max_image_size_longest_edge,
                         alloc.clone(),
                     )?;
                 }
@@ -88,7 +162,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
                         &img_owned,
                         &mut self.buf_padded_img,
                         &mut self.buf_padded_mask,
-                        self.outer_patch_size,
+                        self.config.max_image_size_longest_edge,
                         alloc.clone(),
                     )?;
                 }
@@ -100,13 +174,13 @@ impl<A: ImageAllocator> ImageProcessor<A> {
                 "Image size: {}x{} w/ Max size: {}",
                 img.width(),
                 img.height(),
-                self.outer_patch_size
+                self.config.max_image_size_longest_edge
             );
 
             let global_resized = Self::resize_image_with_buffer(
                 img,
                 &mut self.buf_global_resize,
-                self.outer_patch_size,
+                self.config.max_image_size_longest_edge,
                 alloc.clone(),
             )?;
             match global_resized {
@@ -115,7 +189,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
                         img_ref,
                         &mut self.buf_global_padded_img,
                         &mut self.buf_global_padded_mask,
-                        self.outer_patch_size,
+                        self.config.max_image_size_longest_edge,
                         alloc.clone(),
                     )?;
                 }
@@ -124,7 +198,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
                         &img_owned,
                         &mut self.buf_global_padded_img,
                         &mut self.buf_global_padded_mask,
-                        self.outer_patch_size,
+                        self.config.max_image_size_longest_edge,
                         alloc.clone(),
                     )?;
                 }
@@ -172,7 +246,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
         buffer: &'a mut Option<Image<u8, 3, A>>,
         target_size: u32,
         alloc: A,
-    ) -> Result<Cow<'a, Image<u8, 3, A>>, SmolVlmError> {
+    ) -> Result<Cow<'a, Image<u8, 3, A>>, SmolVlm2Error> {
         let (width, height) = (img.width() as u32, img.height() as u32);
         let longest_edge = width.max(height);
 
@@ -217,7 +291,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
         mask_buffer: &mut Option<Image<u8, 1, A>>,
         outer_patch_size: u32,
         alloc: A,
-    ) -> Result<(), SmolVlmError> {
+    ) -> Result<(), SmolVlm2Error> {
         let (width, height) = (img.width(), img.height());
 
         info!(
@@ -286,7 +360,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
         &self,
         img: Image<u8, 3, A>, // Take ownership
         device: &Device,
-    ) -> Result<Tensor, SmolVlmError> {
+    ) -> Result<Tensor, SmolVlm2Error> {
         let (width, height) = (img.width(), img.height());
         let img_data = img.into_vec(); // No clone, take ownership
 
@@ -295,7 +369,11 @@ impl<A: ImageAllocator> ImageProcessor<A> {
             .to_dtype(candle_core::DType::F32)?;
 
         // Normalize: scale to [0,1]
-        tensor = (tensor * 0.00392156862745098)?;
+        tensor = tensor.broadcast_mul(&Tensor::from_slice(
+            &[self.config.rescale_factor],
+            &[1],
+            device,
+        )?)?;
 
         tensor = tensor
             .broadcast_sub(&self.buf_mean_tensor)?
@@ -309,7 +387,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
         &mut self,
         mask: Image<u8, 1, A>, // Take ownership of the mask
         device: &Device,
-    ) -> Result<Tensor, SmolVlmError> {
+    ) -> Result<Tensor, SmolVlm2Error> {
         let (width, height) = (mask.width(), mask.height());
 
         let (buf_height, buf_width) = self.buf_mask_tensor.dims2()?;
@@ -343,10 +421,10 @@ impl<A: ImageAllocator> ImageProcessor<A> {
         mask: &Tensor,
         global_img: &Tensor,
         global_mask: &Tensor,
-    ) -> Result<(Tensor, Tensor, ImageSize), SmolVlmError> {
+    ) -> Result<(Tensor, Tensor, ImageSize), SmolVlm2Error> {
         let (c, h, w) = img.dims3()?;
-        let cols = w / self.outer_patch_size as usize;
-        let rows = h / self.outer_patch_size as usize;
+        let cols = w / self.config.max_image_size_longest_edge as usize;
+        let rows = h / self.config.max_image_size_longest_edge as usize;
 
         // Split image into patches
         let img_patches = img
@@ -355,16 +433,16 @@ impl<A: ImageAllocator> ImageProcessor<A> {
             .reshape(&[
                 c,
                 rows,
-                self.outer_patch_size as usize,
+                self.config.max_image_size_longest_edge as usize,
                 cols,
-                self.outer_patch_size as usize,
+                self.config.max_image_size_longest_edge as usize,
             ])?
             .permute([1, 3, 0, 2, 4])?
             .reshape(&[
                 rows * cols,
                 c,
-                self.outer_patch_size as usize,
-                self.outer_patch_size as usize,
+                self.config.max_image_size_longest_edge as usize,
+                self.config.max_image_size_longest_edge as usize,
             ])?;
 
         // Split mask into patches
@@ -373,15 +451,15 @@ impl<A: ImageAllocator> ImageProcessor<A> {
             .unsqueeze(3)?
             .reshape(&[
                 rows,
-                self.outer_patch_size as usize,
+                self.config.max_image_size_longest_edge as usize,
                 cols,
-                self.outer_patch_size as usize,
+                self.config.max_image_size_longest_edge as usize,
             ])?
             .permute([0, 2, 1, 3])?
             .reshape(&[
                 rows * cols,
-                self.outer_patch_size as usize,
-                self.outer_patch_size as usize,
+                self.config.max_image_size_longest_edge as usize,
+                self.config.max_image_size_longest_edge as usize,
             ])?;
 
         // Concatenate global image with patches
@@ -429,7 +507,7 @@ mod tests {
     use kornia_image::allocator::CpuAllocator;
 
     #[test]
-    fn test_smolvlm_preprocessor_basic() -> Result<(), SmolVlmError> {
+    fn test_smolvlm_preprocessor_basic() -> Result<(), SmolVlm2Error> {
         // Create a simple test image (64x64, RGB)
         let img = Image::<u8, 3, CpuAllocator>::from_size_val(
             ImageSize {
@@ -441,7 +519,18 @@ mod tests {
         )?;
 
         let device = Device::Cpu;
-        let mut preprocessor = ImageProcessor::new(512, 32, &device)?;
+        let mut preprocessor = ImageProcessor::new(
+            ImageProcessorConfig {
+                size_longest_edge: 512,
+                max_image_size_longest_edge: 32,
+                image_mean: [0.5, 0.5, 0.5],
+                image_std: [0.5, 0.5, 0.5],
+                rescale_factor: 1.0 / 255.0,
+                image_token: "<image>",
+            },
+            &device,
+            &TextProcessor::default(),
+        )?;
 
         let (img_patches, mask_patches, size) =
             preprocessor.preprocess(&img, &device, CpuAllocator)?;
@@ -468,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resize_image_to_fit() -> Result<(), SmolVlmError> {
+    fn test_resize_image_to_fit() -> Result<(), SmolVlm2Error> {
         let img = Image::<u8, 3, CpuAllocator>::from_size_val(
             ImageSize {
                 width: 100,
@@ -496,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn test_small_image_explicit_values() -> Result<(), SmolVlmError> {
+    fn test_small_image_explicit_values() -> Result<(), SmolVlm2Error> {
         // Create a small 6x4 image with explicit RGB values
         let mut img_data = vec![0u8; 6 * 4 * 3]; // 6 width x 4 height x 3 channels
 
@@ -543,7 +632,18 @@ mod tests {
         )?;
 
         let device = Device::Cpu;
-        let mut preprocessor = ImageProcessor::new(8, 4, &device)?; // small sizes for testing
+        let mut preprocessor = ImageProcessor::new(
+            ImageProcessorConfig {
+                size_longest_edge: 8,
+                max_image_size_longest_edge: 4,
+                image_mean: [0.5, 0.5, 0.5],
+                image_std: [0.5, 0.5, 0.5],
+                rescale_factor: 1.0 / 255.0,
+                image_token: "<image>",
+            },
+            &device,
+            &TextProcessor::default(),
+        )?;
 
         // First, test just the padding to verify it works correctly
         let mut img_buffer = None;
