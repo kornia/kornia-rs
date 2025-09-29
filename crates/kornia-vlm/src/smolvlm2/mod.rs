@@ -238,6 +238,9 @@ impl<A: ImageAllocator> SmolVlm2<A> {
 mod tests {
     use std::path::Path;
 
+    use gstreamer as gst;
+    use gstreamer::prelude::*;
+    use gstreamer_app as gst_app;
     use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
     use kornia_tensor::CpuAllocator;
 
@@ -288,5 +291,39 @@ mod tests {
                 CpuAllocator,
             )
             .expect("Inference failed");
+    }
+
+    // cargo test -p kornia-vlm test_smolvlm2_video_reading --features cuda -- --nocapture --ignored
+
+    #[test]
+    #[ignore = "Requires GStreamer"]
+    fn test_smolvlm2_video_reading() {
+        gst::init().unwrap();
+
+        // Replace "your_video.mp4" with your video file path
+        let pipeline = gst::parse::launch(
+            "filesrc location=../../example_video.mp4 ! decodebin ! videoconvert ! appsink name=sink",
+        )
+        .unwrap();
+
+        let pipeline = pipeline
+            .downcast::<gst::Pipeline>()
+            .expect("Expected a pipeline");
+
+        let appsink = pipeline
+            .by_name("sink")
+            .unwrap()
+            .downcast::<gst_app::AppSink>()
+            .unwrap();
+
+        pipeline.set_state(gst::State::Playing).unwrap();
+
+        while let Ok(sample) = appsink.pull_sample() {
+            let buffer = sample.buffer().unwrap();
+            // Process buffer (video frame) here
+            println!("Got frame of size: {}", buffer.size());
+        }
+
+        pipeline.set_state(gst::State::Null).unwrap();
     }
 }

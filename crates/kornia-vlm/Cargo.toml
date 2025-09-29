@@ -30,6 +30,10 @@ candle-nn = { workspace = true }
 hf-hub = { workspace = true }
 tokenizers = { workspace = true }
 
+gstreamer = "0.24.2"
+gstreamer-app = "0.24.2"
+gstreamer-video = "0.24.2"
+
 [dev-dependencies]
 rand = "0.9.0"
 env_logger = { workspace = true }
