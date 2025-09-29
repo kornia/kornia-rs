@@ -1,3 +1,4 @@
+pub(super) mod image_processor;
 mod model;
 pub(super) mod text_processor;
 pub mod utils;
@@ -16,7 +17,7 @@ use crate::smolvlm2::utils::{SmolVlm2Config, SmolVlm2Error};
 
 pub struct SmolVlm2 {
     model: model::Model,
-    _config: SmolVlm2Config,
+    config: SmolVlm2Config,
     device: Device,
     index_pos: usize, // index of the next token to be processed
 
@@ -45,7 +46,7 @@ impl SmolVlm2 {
         Ok(Self {
             model,
             txt_processor,
-            _config: config,
+            config,
             device,
             index_pos: 0,
 
@@ -79,7 +80,6 @@ impl SmolVlm2 {
         image: Option<Image<u8, 3, A>>,
         sample_len: usize, // per prompt
         alloc: A,
-        debug: bool,
     ) -> Result<String, SmolVlm2Error> {
         let full_prompt = self.txt_processor.reformat_with_additional_prompts(
             vec![Message {
@@ -97,7 +97,7 @@ impl SmolVlm2 {
             vec![]
         };
 
-        let response = self.inference_raw(&full_prompt, images, sample_len, alloc, debug)?;
+        let response = self.inference_raw(&full_prompt, images, sample_len, alloc)?;
 
         Ok(response)
     }
@@ -121,9 +121,8 @@ impl SmolVlm2 {
         images: Vec<Image<u8, 3, A>>,
         sample_len: usize, // per prompt
         _alloc: A,
-        debug: bool,
     ) -> Result<String, SmolVlm2Error> {
-        if debug {
+        if self.config.debug {
             std::io::stdout().flush()?;
         }
 
@@ -140,10 +139,14 @@ impl SmolVlm2 {
 
         let mut delta_token = self.txt_processor.encode_all(full_prompt)?;
 
-        if debug {
+        if self.config.debug {
             debug!("Initial tokens: {delta_token:?}");
         }
-        let start_gen = if debug { Some(Instant::now()) } else { None };
+        let start_gen = if self.config.debug {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let mut generated_tokens = 0usize;
 
         for _i in 0..sample_len {
@@ -162,13 +165,13 @@ impl SmolVlm2 {
             if !self.txt_processor.is_eos(token_output.as_str()) {
                 self.response += &token_output;
 
-                if debug {
+                if self.config.debug {
                     generated_tokens += 1;
                     print!("{token_output}");
                     std::io::stdout().flush()?;
                 }
             } else {
-                if debug {
+                if self.config.debug {
                     println!();
                     std::io::stdout().flush()?;
                 }
@@ -176,7 +179,7 @@ impl SmolVlm2 {
             }
         }
 
-        if debug {
+        if self.config.debug {
             if let Some(start_gen) = start_gen {
                 let dt = start_gen.elapsed();
                 println!(
@@ -227,6 +230,7 @@ mod tests {
         let config = SmolVlm2Config {
             seed: 42,
             do_sample: false,
+            debug: true,
             ..Default::default()
         };
         let mut model = SmolVlm2::new(config).unwrap();
@@ -235,7 +239,7 @@ mod tests {
         let sample_len = 500;
 
         let _response = model
-            .inference(prompt, None, sample_len, CpuAllocator, true)
+            .inference(prompt, None, sample_len, CpuAllocator)
             .expect("Inference failed");
     }
 }
