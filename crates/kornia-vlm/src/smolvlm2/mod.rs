@@ -34,7 +34,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
         max_image_size_longest_edge: 384,
         image_mean: [0.5, 0.5, 0.5],
         image_std: [0.5, 0.5, 0.5],
-        rescale_factor: 0.00392156862745098, // 1.0 / 255.0
+        rescale_factor: 1.0 / 255.0,
         image_token: "<image>",
     };
 

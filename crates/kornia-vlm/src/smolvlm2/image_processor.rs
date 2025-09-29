@@ -6,8 +6,8 @@ use log::info;
 use std::borrow::Cow;
 
 pub struct ImageProcessorConfig {
-    pub size_longest_edge: u32,           // TODO: max size
-    pub max_image_size_longest_edge: u32, // TODO: outer patch size
+    pub size_longest_edge: u32,           // max size
+    pub max_image_size_longest_edge: u32, // outer patch size
     pub image_mean: [f32; 3],
     pub image_std: [f32; 3],
     pub rescale_factor: f32,
@@ -51,7 +51,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
             None
         } else {
             let image_token = txt_processor.encode(config.image_token)?;
-            Some(Tensor::from_slice(&[image_token], &[1], &device)?)
+            Some(Tensor::from_slice(&[image_token], &[1], device)?)
         };
         Ok(Self {
             buf_resize: None,
