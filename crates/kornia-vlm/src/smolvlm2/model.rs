@@ -1,6 +1,9 @@
 use candle_core::{DType, Device, Result, Tensor};
 use candle_nn::VarBuilder;
-use candle_transformers::models::llama::{self, Cache};
+use candle_transformers::models::{
+    llama::{self, Cache},
+    siglip,
+};
 
 pub struct Model {
     text_model: candle_transformers::models::llama::Llama,
@@ -15,7 +18,7 @@ pub struct Model {
 impl Model {
     const HIDDEN_SIZE: usize = 2048;
     const VOCAB_SIZE: usize = 49280;
-    const CONFIG: llama::Config = llama::Config {
+    const TEXT_CONFIG: llama::Config = llama::Config {
         vocab_size: Self::VOCAB_SIZE,
         max_position_embeddings: 16384,
         num_attention_heads: 32,
@@ -30,6 +33,17 @@ impl Model {
         eos_token_id: None,
         rope_scaling: None,
         tie_word_embeddings: false,
+    };
+    const VISION_CONFIG: siglip::VisionConfig = siglip::VisionConfig {
+        hidden_size: 1152,
+        intermediate_size: 4304,
+        num_hidden_layers: 27,
+        num_attention_heads: 16,
+        num_channels: 3,
+        image_size: 384,
+        patch_size: 14,
+        hidden_act: candle_nn::Activation::GeluPytorchTanh,
+        layer_norm_eps: 1e-6,
     };
 
     pub fn load(vb: VarBuilder, dtype: DType, device: &Device) -> Result<Self> {
@@ -55,26 +69,16 @@ impl Model {
         Ok(Self {
             text_model: candle_transformers::models::llama::Llama::load(
                 vb.pp("model.text_model"),
-                &Self::CONFIG,
+                &Self::TEXT_CONFIG,
             )?,
             vision_model: candle_transformers::models::siglip::VisionModel::new(
-                &candle_transformers::models::siglip::VisionConfig {
-                    hidden_size: 0,
-                    intermediate_size: 0,
-                    num_hidden_layers: 0,
-                    num_attention_heads: 0,
-                    num_channels: 0,
-                    image_size: 0,
-                    patch_size: 0,
-                    hidden_act: candle_nn::Activation::GeluPytorchTanh,
-                    layer_norm_eps: 0.0,
-                },
+                &Self::VISION_CONFIG,
                 false,
                 vb.pp("model.vision_model"),
             )?,
             cache_device: device.clone(),
             cache_dtype: dtype,
-            cache: Cache::new(true, dtype, &Self::CONFIG, device)?,
+            cache: Cache::new(true, dtype, &Self::TEXT_CONFIG, device)?,
         })
     }
 
@@ -95,7 +99,12 @@ impl Model {
     }
 
     pub fn clear_context(&mut self) -> Result<()> {
-        self.cache = Cache::new(true, self.cache_dtype, &Self::CONFIG, &self.cache_device)?;
+        self.cache = Cache::new(
+            true,
+            self.cache_dtype,
+            &Self::TEXT_CONFIG,
+            &self.cache_device,
+        )?;
         Ok(())
     }
 }
