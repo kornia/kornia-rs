@@ -28,7 +28,7 @@ pub fn solve_pnp(
     world: &[[f32; 3]],
     image: &[[f32; 2]],
     k: &[[f32; 3]; 3],
-    distortion: Option<&PolynomialDistortion>,
+    distortion: Option<PolynomialDistortion>,
     method: PnPMethod,
 ) -> Result<PnPResult, PnPError> {
     match method {

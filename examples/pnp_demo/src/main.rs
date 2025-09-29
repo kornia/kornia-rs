@@ -126,7 +126,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &world_pts,
         &image_pts,
         &k,
-        Some(&distortion),
+        Some(PolynomialDistortion {
+            k1: distortion.k1,
+            k2: distortion.k2,
+            k3: distortion.k3,
+            k4: distortion.k4,
+            k5: distortion.k5,
+            k6: distortion.k6,
+            p1: distortion.p1,
+            p2: distortion.p2,
+        }),
         kpnp::PnPMethod::EPnPDefault,
     )?;
 

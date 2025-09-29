@@ -24,7 +24,7 @@ impl PnPSolver for EPnP {
         points_world: &[[f32; 3]],
         points_image: &[[f32; 2]],
         k: &[[f32; 3]; 3],
-        distortion: Option<&kornia_imgproc::calibration::distortion::PolynomialDistortion>,
+        distortion: Option<kornia_imgproc::calibration::distortion::PolynomialDistortion>,
         params: &Self::Param,
     ) -> Result<PnPResult, PnPError> {
         solve_epnp(points_world, points_image, k, distortion, params)
@@ -54,7 +54,7 @@ pub fn solve_epnp(
     points_world: &[[f32; 3]],
     points_image: &[[f32; 2]],
     k: &[[f32; 3]; 3],
-    distortion: Option<&PolynomialDistortion>,
+    distortion: Option<PolynomialDistortion>,
     params: &EPnPParams,
 ) -> Result<PnPResult, PnPError> {
     let n = points_world.len();
@@ -122,7 +122,7 @@ pub fn solve_epnp(
 
     for bet in &betas_refined {
         let (r_c, t_c) = pose_from_betas(bet, &null4, &cw, &alphas)?;
-        let err = rmse_px(points_world, points_image, &r_c, &t_c, k, distortion)?;
+        let err = rmse_px(points_world, points_image, &r_c, &t_c, k, distortion.as_ref())?;
         if err < best_err {
             best_err = err;
             best_r = r_c;
@@ -637,7 +637,7 @@ mod solve_epnp_tests {
             assert_relative_eq!(m[1][k], expected_y[k], epsilon = 1e-9);
         }
 
-        let result = EPnP::solve(&points_world, &points_image, &k, &EPnPParams::default())?;
+        let result = EPnP::solve(&points_world, &points_image, &k, None, &EPnPParams::default())?;
         let r = result.rotation;
         let t = result.translation;
         let rvec = result.rvec;
