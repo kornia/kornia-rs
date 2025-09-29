@@ -34,6 +34,9 @@ pub enum SmolVlm2Error {
     #[error("Message history mistmatch: {0}")]
     MessageHistoryMismatch(String),
 
+    #[error("Missing tokenizer")]
+    MissingTokenizer,
+
     #[error("Cannot find the <end_of_utterance> token")]
     EosTokenNotFound,
 
