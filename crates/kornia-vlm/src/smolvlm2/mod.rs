@@ -116,7 +116,6 @@ impl<A: ImageAllocator> SmolVlm2<A> {
     /// * `prompt` - The prompt to generate a caption for
     /// * `sample_len` - The maximum number of tokens to generate
     /// * `alloc` - The image allocator to use
-    /// * `debug` - Debug mode
     ///
     /// # Returns
     ///
@@ -137,28 +136,12 @@ impl<A: ImageAllocator> SmolVlm2<A> {
 
         let mut converted_prompt = String::from(full_prompt);
 
-        self.img_processor
-            .add_and_process_images_and_modify_prompt(
-                &mut converted_prompt,
-                images,
-                &self.device,
-                alloc,
-            )?;
-
-        // let mut processed_images = vec![];
-        // for ((start, _), image) in image_tags_pos.iter().zip(images.into_iter()) {
-        //     let (img_patches, mask_patches, size) =
-        //         self.img_processor
-        //             .preprocess(&image, &self.device, alloc.clone())?;
-        //     processed_images.push((img_patches, mask_patches));
-
-        //     let img_token = get_prompt_split_image(81, size);
-        //     converted_prompt.replace_range(
-        //         &(start + offset)..&(start + offset + image_tag_len),
-        //         &img_token,
-        //     );
-        //     offset += img_token.len() - image_tag_len;
-        // }
+        self.img_processor.binding_images_to_prompt(
+            &mut converted_prompt,
+            images,
+            &self.device,
+            alloc,
+        )?;
 
         let mut delta_token = self.txt_processor.encode_all(&converted_prompt)?;
 
@@ -174,7 +157,6 @@ impl<A: ImageAllocator> SmolVlm2<A> {
 
         for _i in 0..sample_len {
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
-            // let image_token_mask = input.broadcast_eq(&self.image_token_tensor)?;
 
             let logits = self.model.forward(
                 &input,
