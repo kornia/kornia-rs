@@ -44,7 +44,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
             Ok(device) => (device, DType::F32),
             Err(e) => {
                 log::warn!("CUDA not available, defaulting to CPU: {e:?}");
-                (Device::Cpu, DType::F32)
+                (Device::Cpu, DType::BF16)
             }
         };
 
