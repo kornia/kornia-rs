@@ -254,8 +254,8 @@ mod tests {
         let path = Path::new("../../100462016.jpeg"); // or .png
 
         let image = match path.extension().and_then(|ext| ext.to_str()) {
-            Some("jpg") | Some("jpeg") => read_image_jpeg_rgb8(&path).ok(),
-            Some("png") => read_image_png_rgb8(&path).ok(),
+            Some("jpg") | Some("jpeg") => read_image_jpeg_rgb8(path).ok(),
+            Some("png") => read_image_png_rgb8(path).ok(),
             _ => None,
         };
         let image = image.unwrap();
