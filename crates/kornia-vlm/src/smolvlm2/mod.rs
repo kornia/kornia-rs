@@ -2,6 +2,7 @@ pub(super) mod image_processor;
 mod model;
 pub(super) mod text_processor;
 pub mod utils;
+pub(super) mod video_processor;
 
 use log::debug;
 use std::io::Write;
