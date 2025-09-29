@@ -72,8 +72,9 @@ impl<A: ImageAllocator> ImageProcessor<A> {
         })
     }
 
-    /// given prompt and images, it modifies the prompt while storing the processed images for later use
-    pub fn add_and_process_images_and_modify_prompt(
+    /// given prompt and images, it modifies the prompt to facilitate image inputs while
+    /// storing the images themselves as processed images for later use
+    pub fn binding_images_to_prompt(
         &mut self,
         prompt: &mut String,
         images: Vec<Image<u8, 3, A>>,
