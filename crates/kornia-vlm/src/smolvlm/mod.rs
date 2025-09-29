@@ -19,7 +19,7 @@ use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
 use hf_hub::api::sync::Api;
 use kornia_image::{allocator::ImageAllocator, Image};
-use log::debug;
+use log::{debug, info};
 use preprocessor::get_prompt_split_image;
 use tokenizers::Tokenizer;
 
