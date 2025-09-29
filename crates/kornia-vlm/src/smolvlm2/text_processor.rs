@@ -30,6 +30,7 @@ pub enum Role {
 pub enum Line {
     Text { text: String },
     Image,
+    Video,
 }
 
 #[derive(Serialize, Debug, Clone)]
