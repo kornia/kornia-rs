@@ -122,7 +122,14 @@ pub fn solve_epnp(
 
     for bet in &betas_refined {
         let (r_c, t_c) = pose_from_betas(bet, &null4, &cw, &alphas)?;
-        let err = rmse_px(points_world, points_image, &r_c, &t_c, k, distortion.as_ref())?;
+        let err = rmse_px(
+            points_world,
+            points_image,
+            &r_c,
+            &t_c,
+            k,
+            distortion.as_ref(),
+        )?;
         if err < best_err {
             best_err = err;
             best_r = r_c;
@@ -637,7 +644,13 @@ mod solve_epnp_tests {
             assert_relative_eq!(m[1][k], expected_y[k], epsilon = 1e-9);
         }
 
-        let result = EPnP::solve(&points_world, &points_image, &k, None, &EPnPParams::default())?;
+        let result = EPnP::solve(
+            &points_world,
+            &points_image,
+            &k,
+            None,
+            &EPnPParams::default(),
+        )?;
         let r = result.rotation;
         let t = result.translation;
         let rvec = result.rvec;
