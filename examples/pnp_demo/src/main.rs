@@ -1,3 +1,7 @@
+use kornia_imgproc::calibration::{
+    distortion::{distort_point_polynomial, PolynomialDistortion},
+    CameraIntrinsic,
+};
 use kornia_pnp as kpnp;
 use rand::Rng;
 
@@ -7,6 +11,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Camera intrinsics (pinhole, fx=fy=800, cx=640, cy=480)
     let k = [[800.0, 0.0, 640.0], [0.0, 800.0, 480.0], [0.0, 0.0, 1.0]];
+
+    // Intrinsics for distortion API (f64)
+    let cam_intr = CameraIntrinsic {
+        fx: 800.0,
+        fy: 800.0,
+        cx: 640.0,
+        cy: 480.0,
+    };
+
+    // Example Brown-Conrady distortion coefficients
+    let distortion = PolynomialDistortion {
+        k1: 1.0e-4,
+        k2: -5.0e-7,
+        k3: 0.0,
+        k4: 0.0,
+        k5: 0.0,
+        k6: 0.0,
+        p1: 1.0e-5,
+        p2: -1.0e-5,
+    };
 
     // Build a dense cube (corners + 200 random interior points)
     let cube_size = 1.0;
@@ -79,7 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
     let gt_t = [0.7, -0.4, 5.0];
 
-    // Project points to image plane + add small noise
+    // Project points to image plane + apply distortion + add small noise
     let mut rng = rand::rng();
     let sigma_px = 0.5; // pixel noise
     let image_pts: Vec<[f32; 2]> = world_pts
@@ -88,14 +112,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let x_c = gt_r[0][0] * p[0] + gt_r[0][1] * p[1] + gt_r[0][2] * p[2] + gt_t[0];
             let y_c = gt_r[1][0] * p[0] + gt_r[1][1] * p[1] + gt_r[1][2] * p[2] + gt_t[1];
             let z_c = gt_r[2][0] * p[0] + gt_r[2][1] * p[1] + gt_r[2][2] * p[2] + gt_t[2];
-            let u = k[0][0] * x_c / z_c + k[0][2] + rng.random::<f32>() * sigma_px;
-            let v = k[1][1] * y_c / z_c + k[1][2] + rng.random::<f32>() * sigma_px;
-            [u, v]
+            let u = k[0][0] * x_c / z_c + k[0][2];
+            let v = k[1][1] * y_c / z_c + k[1][2];
+            let (ud, vd) = distort_point_polynomial(u as f64, v as f64, &cam_intr, &distortion);
+            let ud = ud as f32 + rng.random::<f32>() * sigma_px;
+            let vd = vd as f32 + rng.random::<f32>() * sigma_px;
+            [ud, vd]
         })
         .collect();
 
-    // Run EPnP
-    let result = kpnp::solve_pnp(&world_pts, &image_pts, &k, kpnp::PnPMethod::EPnPDefault)?;
+    // Run EPnP with distortion model
+    let result = kpnp::solve_pnp(
+        &world_pts,
+        &image_pts,
+        &k,
+        Some(PolynomialDistortion {
+            k1: distortion.k1,
+            k2: distortion.k2,
+            k3: distortion.k3,
+            k4: distortion.k4,
+            k5: distortion.k5,
+            k6: distortion.k6,
+            p1: distortion.p1,
+            p2: distortion.p2,
+        }),
+        kpnp::PnPMethod::EPnPDefault,
+    )?;
 
     // Log observed 2D points
     let img_obs = image_pts
@@ -107,7 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &rerun::Points2D::new(img_obs).with_colors([[0, 255, 0]]), // green
     )?;
 
-    // Reproject world points with estimated pose
+    // Reproject world points with estimated pose (apply distortion)
     let r_est = result.rotation;
     let t_est = result.translation;
     let mut img_reproj = Vec::with_capacity(world_pts.len());
@@ -117,7 +159,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let z_c = r_est[2][0] * p[0] + r_est[2][1] * p[1] + r_est[2][2] * p[2] + t_est[2];
         let u = k[0][0] * x_c / z_c + k[0][2];
         let v = k[1][1] * y_c / z_c + k[1][2];
-        img_reproj.push((u, v));
+        let (ud, vd) = distort_point_polynomial(u as f64, v as f64, &cam_intr, &distortion);
+        img_reproj.push((ud as f32, vd as f32));
     }
     rec.log_static(
         "image/reprojected",
