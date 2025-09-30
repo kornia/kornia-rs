@@ -290,7 +290,7 @@ impl<A: ImageAllocator + Clone> Video<A> {
     ) -> Result<(), VideoError> {
         for i in 0..self.frames.len() {
             let mut buf = Image::<u8, 3, A>::from_size_val(new_size, 0, alloc.clone())?;
-            resize_fast_rgb(&mut self.frames[i], &mut buf, interpolation)?;
+            resize_fast_rgb(&self.frames[i], &mut buf, interpolation)?;
             self.frames[i] = buf;
         }
         Ok(())
