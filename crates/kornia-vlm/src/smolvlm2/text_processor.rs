@@ -12,7 +12,7 @@ use minijinja::{context, AutoEscape, Environment};
 use serde::Serialize;
 use tokenizers::Tokenizer;
 
-use crate::smolvlm2::utils::{SmolVlm2Config, SmolVlm2Error};
+use crate::smolvlm2::{SmolVlm2Config, SmolVlm2Error};
 
 #[allow(dead_code)] // TODO: remove
 #[derive(Serialize, Debug, Clone)]
@@ -211,19 +211,6 @@ impl TextProcessor {
             Ok(new_formatted)
         } else {
             Ok(self.formatted_history.clone())
-        }
-    }
-
-    #[allow(dead_code)] // TODO: remove
-    pub fn encode(&self, text: &str) -> Result<u32, SmolVlm2Error> {
-        let encoding = self.tokenizer.encode(text, true)?;
-        let encodings = encoding.get_ids();
-        if encodings.len() != 1 {
-            Err(SmolVlm2Error::InvalidEncoding(
-                "Expected a single token".to_string(),
-            ))
-        } else {
-            Ok(encodings[0])
         }
     }
 
