@@ -19,6 +19,7 @@ use crate::smolvlm2::image_processor::{ImageProcessor, ImageProcessorConfig};
 use crate::smolvlm2::text_processor::{Message, TextProcessor};
 use crate::smolvlm2::utils::{InputMedia, SmolVlm2Config, SmolVlm2Error};
 use crate::smolvlm2::video_processor::{VideoProcessor, VideoProcessorConfig};
+use crate::video::Video;
 
 pub struct SmolVlm2<A: ImageAllocator> {
     model: model::Model,
@@ -156,6 +157,8 @@ impl<A: ImageAllocator> SmolVlm2<A> {
 
         let mut converted_prompt = String::from(full_prompt);
 
+        let mut use_video = false;
+
         match media {
             InputMedia::Images(images) => {
                 if images.is_empty() {
@@ -188,6 +191,8 @@ impl<A: ImageAllocator> SmolVlm2<A> {
                     &self.device,
                     alloc,
                 )?;
+
+                use_video = true;
             }
             InputMedia::None => {
                 // No media to process
@@ -208,15 +213,22 @@ impl<A: ImageAllocator> SmolVlm2<A> {
 
         for _i in 0..sample_len {
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
+            let img_token_mask = if use_video {
+                self.vid_processor.get_video_token_mask(&input)?
+            } else {
+                self.img_processor.get_image_token_mask(&input)?
+            };
+            let img_data = if use_video {
+                self.vid_processor.get_processed_videos()
+            } else {
+                self.img_processor.get_processed_images()
+            };
 
-            let logits = self.model.forward(
-                &input,
-                self.index_pos,
-                &self.img_processor.get_image_token_mask(&input)?,
-                self.img_processor.get_processed_images(),
-                &mut ctx,
-            )?;
+            let logits =
+                self.model
+                    .forward(&input, self.index_pos, &img_token_mask, img_data, &mut ctx)?;
             self.img_processor.clear_processed_images();
+            self.vid_processor.clear_processed_videos();
             let out_token = self.txt_processor.sample_logits(&logits)?;
 
             self.index_pos += delta_token.len();
@@ -361,7 +373,7 @@ mod tests {
     fn test_smolvlm2_video_inference() {
         env_logger::init();
 
-        let path = Path::new("../../100462016.jpeg"); // or .png
+        let path = Path::new("../../example_video.mp4"); // or .png
 
         // let image = match path.extension().and_then(|ext| ext.to_str()) {
         //     Some("jpg") | Some("jpeg") => read_image_jpeg_rgb8(&path).ok(),
@@ -378,7 +390,7 @@ mod tests {
         };
         let mut model = SmolVlm2::new(config).unwrap();
 
-        let prompt = "Describe the image.";
+        let prompt = "Describe the video.";
         let sample_len = 500;
 
         let _response = model

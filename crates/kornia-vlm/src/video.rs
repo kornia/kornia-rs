@@ -117,7 +117,7 @@ impl<A: ImageAllocator + Clone> Video<A> {
             use kornia_image::ImageSize;
             let pts = buffer.pts().map(|t| t.nseconds()).unwrap_or(0);
 
-            println!(
+            debug!(
                 "Frame {}: PTS = {}, size = {}x{}, data len = {}",
                 frame_idx,
                 pts,
