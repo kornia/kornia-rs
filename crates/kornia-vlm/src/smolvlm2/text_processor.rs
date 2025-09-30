@@ -12,7 +12,7 @@ use minijinja::{context, AutoEscape, Environment};
 use serde::Serialize;
 use tokenizers::Tokenizer;
 
-use crate::smolvlm2::utils::{SmolVlm2Config, SmolVlm2Error};
+use crate::smolvlm2::{SmolVlm2Config, SmolVlm2Error};
 
 #[allow(dead_code)] // TODO: remove
 #[derive(Serialize, Debug, Clone)]

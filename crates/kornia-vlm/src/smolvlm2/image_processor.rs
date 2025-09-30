@@ -1,4 +1,4 @@
-use crate::smolvlm2::{text_processor::TextProcessor, utils::SmolVlm2Error};
+use crate::smolvlm2::{text_processor::TextProcessor, SmolVlm2Error};
 use candle_core::{DType, Device, Shape, Tensor};
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
@@ -6,8 +6,8 @@ use log::info;
 use std::borrow::Cow;
 
 pub struct ImageProcessorConfig {
-    pub size_longest_edge: u32,           // TODO: max size
-    pub max_image_size_longest_edge: u32, // TODO: outer patch size
+    pub size_longest_edge: u32,           // max size
+    pub max_image_size_longest_edge: u32, // outer patch size
     pub image_mean: [f32; 3],
     pub image_std: [f32; 3],
     pub rescale_factor: f32,

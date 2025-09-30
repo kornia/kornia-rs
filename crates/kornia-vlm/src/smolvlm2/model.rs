@@ -185,11 +185,11 @@ impl Model {
             if ctx.debug {
                 debug!(
                     "[Sub-image] image_hidden_states length: {}",
-                    agg_image_hidden_states
-                        .last()
-                        .expect("No image hidden states")
-                        .dims2()?
-                        .0
+                    if let Some(el) = agg_image_hidden_states.last() {
+                        format!("{}", el.dims2()?.0)
+                    } else {
+                        "<No hidden image states>".to_string()
+                    }
                 );
             }
 

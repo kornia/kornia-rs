@@ -12,7 +12,7 @@ const FRAME_TIMESTAMP_MESSAGE: &str = "\nFrame from {timestamp}:";
 const MAX_IMAGE_SIZE: usize = 4096; // 4k resolution as absolute maximum
 
 use crate::{
-    smolvlm2::{text_processor::TextProcessor, utils::SmolVlm2Error},
+    smolvlm2::{text_processor::TextProcessor, SmolVlm2Error},
     video::{Video, VideoMetadata},
 };
 
