@@ -97,52 +97,50 @@ impl<A: ImageAllocator> SmolVlm2<A> {
     /// * `image` - The rgb8 image to generate a caption for with shape [H, W, 3]
     /// * `prompt` - The prompt to generate a caption for
     /// * `sample_len` - The length of the generated caption
-    /// * `alloc` - The image allocator to use
+
+    /// Run inference with prompt formatting and media input.
+    ///
+    /// # Arguments
+    ///
+    /// * `prompt` - Vector of `Message` representing the conversation history and user prompt.
+    /// * `media` - Input media (images, video, or none) as `InputMedia<A>`.
+    /// * `sample_len` - Maximum number of tokens to generate.
+    /// * `alloc` - Image allocator for image/video processing.
     ///
     /// # Returns
     ///
-    /// * `caption` - The generated caption
+    /// * `Result<String, SmolVlm2Error>` - The generated caption or error.
     pub fn inference(
         &mut self,
         prompt: Vec<Message>,
-        // image: Option<Image<u8, 3, A>>,
         media: InputMedia<A>,
-        sample_len: usize, // per prompt
+        sample_len: usize,
         alloc: A,
     ) -> Result<String, SmolVlm2Error> {
         let full_prompt = self
             .txt_processor
             .reformat_with_additional_prompts(prompt, true)?;
-
-        // let images = if let Some(img) = image {
-        //     vec![img]
-        // } else {
-        //     vec![]
-        // };
-
         let response = self.inference_raw(&full_prompt, media, sample_len, alloc)?;
-
         Ok(response)
     }
 
-    /// Run the inference of the SmolVLM2 model without the default prompt formatting.
+    /// Run inference with a pre-formatted prompt and media input.
     ///
     /// # Arguments
     ///
-    /// * `image` - The rgb8 image to generate a caption for with shape [H, W, 3]
-    /// * `prompt` - The prompt to generate a caption for
-    /// * `sample_len` - The maximum number of tokens to generate
-    /// * `alloc` - The image allocator to use
+    /// * `full_prompt` - The fully formatted prompt string (should include any required tags for media).
+    /// * `media` - Input media (images, video, or none) as `InputMedia<A>`.
+    /// * `sample_len` - Maximum number of tokens to generate.
+    /// * `alloc` - Image allocator for image/video processing.
     ///
     /// # Returns
     ///
-    /// * `caption` - The generated caption
+    /// * `Result<String, SmolVlm2Error>` - The generated caption or error.
     pub fn inference_raw(
         &mut self,
         full_prompt: &str,
-        // image: Option<Image<u8, 3, A>>,
         media: InputMedia<A>,
-        sample_len: usize, // per prompt
+        sample_len: usize,
         alloc: A,
     ) -> Result<String, SmolVlm2Error> {
         if self.config.debug {
