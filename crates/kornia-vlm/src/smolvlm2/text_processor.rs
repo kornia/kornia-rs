@@ -165,6 +165,7 @@ impl TextProcessor {
     }
 
     /// Generalized method to add and return the formatted tokenized messages.
+
     /// # Arguments
     ///
     /// * `additional_messages` - The messages to add
