@@ -231,8 +231,6 @@ impl TextProcessor {
             .encode(text, true)?;
         let encodings = encoding.get_ids();
 
-        println!("Encoding text: {}, {:?}", text, encodings);
-
         if encodings.len() != 1 {
             Err(SmolVlm2Error::InvalidEncoding(
                 "Expected a single token".to_string(),

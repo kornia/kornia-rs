@@ -35,6 +35,8 @@ gstreamer-app = "0.24.2"
 gstreamer-video = "0.24.2"
 image = "0.25.6"
 
+num2words = "=1.2.0"
+
 [dev-dependencies]
 rand = "0.9.0"
 env_logger = { workspace = true }

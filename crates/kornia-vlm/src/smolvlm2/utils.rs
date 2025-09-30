@@ -1,5 +1,4 @@
 use kornia_image::{allocator::ImageAllocator, Image};
-use kornia_tensor::CpuAllocator;
 
 use crate::video::{self, Video};
 

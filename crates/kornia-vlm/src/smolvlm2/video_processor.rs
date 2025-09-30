@@ -1,31 +1,18 @@
 use std::time::Duration;
 
-use candle_core::{DType, Device, Shape, Tensor};
-use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
+use candle_core::{DType, Device, Tensor};
+use kornia_image::{allocator::ImageAllocator, ImageSize};
 use kornia_imgproc::interpolation::InterpolationMode;
 use log::warn;
+use num2words::Num2Words;
 
-/// Prompt and system message constants (matching Python values)
-const DEFAULT_SYSTEM_MESSAGE: &str = "You are a helpful language and vision assistant. You are able to understand the visual content that the user provides, and assist the user with a variety of tasks using natural language.";
 const DEFAULT_VIDEO_INTRO: &str = "You are provided the following series of {frame_count} frames from a {video_duration} [H:MM:SS] video.\n";
 const DEFAULT_MEDIA_OUTTRO: &str = "\n\n";
 const FRAME_TIMESTAMP_MESSAGE: &str = "\nFrame from {timestamp}:";
 const MAX_IMAGE_SIZE: usize = 4096; // 4k resolution as absolute maximum
 
-fn num2words(n: usize) -> String {
-    n.to_string() // Placeholder: just use the number as a string
-}
-
-fn format_timestamp(secs: u32) -> String {
-    let min = secs / 60;
-    let sec = secs % 60;
-    format!("{:02}:{:02}", min, sec)
-}
 use crate::{
-    smolvlm2::{
-        text_processor::{self, TextProcessor},
-        utils::SmolVlm2Error,
-    },
+    smolvlm2::{text_processor::TextProcessor, utils::SmolVlm2Error},
     video::{Video, VideoMetadata},
 };
 
@@ -79,7 +66,6 @@ impl VideoProcessor {
         let video_tags_pos = cloned_prompt
             .match_indices(&self.config.video_token)
             .collect::<Vec<_>>();
-        // let mut offset = 0;
 
         if video_tags_pos.len() != videos.len() {
             return Err(SmolVlm2Error::MismatchedVideoCount {
@@ -96,26 +82,12 @@ impl VideoProcessor {
                 .push((img_patches, Tensor::zeros(&[0], DType::F32, &device)?));
         }
 
-        // for ((start, _), mut video) in video_tags_pos.iter().zip(videos.into_iter()) {
-        //     let img_patches = self.preprocess(&mut video, device, alloc.clone())?;
-        //     self.processed_videos
-        //         .push((img_patches, Tensor::zeros(&[0], DType::F32, &device)?));
-
-        //     // let img_token = get_prompt_single_image(81);
-        //     // prompt.replace_range(
-        //     //     &(start + offset)..&(start + offset + self.video_tag_len),
-        //     //     &img_token,
-        //     // );
-
-        //     // offset += img_token.len() - self.video_tag_len;
-        // }
-
         self.expand_text_with_video_tokens(
             prompt,
             self.config.max_frames,
             &video_metadatas,
             &video_tags_pos,
-        );
+        )?;
 
         Ok(())
     }
@@ -135,8 +107,6 @@ impl VideoProcessor {
     pub fn clear_processed_videos(&mut self) {
         self.processed_videos.clear();
     }
-
-    pub fn process(&mut self) {}
 
     /// Preprocess a video for SmolVLM2 model inference
     /// We assume images are RGB.
@@ -193,7 +163,7 @@ impl VideoProcessor {
         num_frames: usize,
         video_metadata: &[VideoMetadata],
         video_tags_pos: &[(usize, &str)],
-    ) {
+    ) -> Result<(), SmolVlm2Error> {
         let mut offset: isize = 0;
         for (meta_idx, (start, _)) in video_tags_pos.iter().enumerate() {
             let metadata = video_metadata
@@ -219,12 +189,19 @@ impl VideoProcessor {
                 .unwrap_or_else(|| *metadata.timestamps.last().unwrap_or(&0));
             let duration_td = Duration::from_secs(duration as u64);
             let duration_str = format!(
-                "{:02}:{:02}",
-                duration_td.as_secs() / 60,
+                "{:01}:{:02}:{:02}",
+                duration_td.as_secs() / 3600,
+                (duration_td.as_secs() % 3600) / 60,
                 duration_td.as_secs() % 60
             );
             let mut image_prompt_strings = DEFAULT_VIDEO_INTRO
-                .replace("{frame_count}", &num2words(num_frames))
+                .replace(
+                    "{frame_count}",
+                    &Num2Words::new(num_frames as i64)
+                        .cardinal()
+                        .to_words()
+                        .map_err(|_| SmolVlm2Error::VideoProcessingError)?,
+                )
                 .replace("{video_duration}", &duration_str);
             for timestamp in timestamps {
                 let image_prompt_string = get_prompt_single_image(81);
@@ -240,6 +217,8 @@ impl VideoProcessor {
             prompt.replace_range(start..end, &image_prompt_strings);
             offset += image_prompt_strings.len() as isize - self.config.video_token.len() as isize;
         }
+
+        Ok(())
     }
 }
 

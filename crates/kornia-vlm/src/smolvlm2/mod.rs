@@ -4,7 +4,6 @@ pub(super) mod text_processor;
 pub mod utils;
 pub(super) mod video_processor;
 
-use kornia_image::ImageSize;
 use log::debug;
 use std::io::Write;
 use std::time::Instant;
@@ -12,14 +11,13 @@ use std::time::Instant;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use hf_hub::api::sync::Api;
-use kornia_image::{allocator::ImageAllocator, Image};
+use kornia_image::allocator::ImageAllocator;
 
 use crate::context::InferenceContext;
 use crate::smolvlm2::image_processor::{ImageProcessor, ImageProcessorConfig};
 use crate::smolvlm2::text_processor::{Message, TextProcessor};
 use crate::smolvlm2::utils::{InputMedia, SmolVlm2Config, SmolVlm2Error};
 use crate::smolvlm2::video_processor::{VideoProcessor, VideoProcessorConfig};
-use crate::video::Video;
 
 pub struct SmolVlm2<A: ImageAllocator> {
     model: model::Model,
@@ -199,6 +197,8 @@ impl<A: ImageAllocator> SmolVlm2<A> {
             }
         }
 
+        debug!("Initial converted prompt: {}", converted_prompt);
+
         let mut delta_token = self.txt_processor.encode_all(&converted_prompt)?;
 
         if self.config.debug {
@@ -375,13 +375,6 @@ mod tests {
 
         let path = Path::new("../../example_video.mp4"); // or .png
 
-        // let image = match path.extension().and_then(|ext| ext.to_str()) {
-        //     Some("jpg") | Some("jpeg") => read_image_jpeg_rgb8(&path).ok(),
-        //     Some("png") => read_image_png_rgb8(&path).ok(),
-        //     _ => None,
-        // };
-        // let image = image.unwrap();
-
         let config = SmolVlm2Config {
             seed: 42,
             do_sample: false,
@@ -390,7 +383,7 @@ mod tests {
         };
         let mut model = SmolVlm2::new(config).unwrap();
 
-        let prompt = "Describe the video.";
+        let prompt = "Describe the video. Is the Earth rotating?";
         let sample_len = 500;
 
         let _response = model

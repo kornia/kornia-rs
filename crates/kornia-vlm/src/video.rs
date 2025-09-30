@@ -6,6 +6,7 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
+use log::debug;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -269,23 +270,6 @@ impl<A: ImageAllocator + Clone> Video<A> {
             duration,
             fps
         );
-
-        // Collect timestamps (in seconds) for each sampled frame using PTS
-        // removed unused variables
-        // We'll collect PTS for each frame as we sample them
-        // To do this, we need to re-sample the frames to get their PTS
-        // Instead, we can collect PTS during the main sampling loop above
-        // So, let's add a vector to store PTS for each sampled frame
-        // We'll need to move the timestamps collection into the main sampling loop
-        // For now, let's assume we have a vector of PTS in nanoseconds for each sampled frame
-        // We'll convert them to seconds (rounded down)
-        // For this patch, let's just use the frame count as a fallback if PTS is not available
-
-        // NOTE: To do this properly, you should collect the PTS values during the frame sampling loop above
-        // For now, let's just set duration to the number of frames as a fallback
-        // and leave timestamps as empty
-        //
-        // If you want to fully implement this, you need to refactor the frame sampling loop to also collect PTS
 
         Ok(Self {
             frames,
