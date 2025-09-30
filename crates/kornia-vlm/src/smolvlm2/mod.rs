@@ -1,7 +1,6 @@
 pub(super) mod image_processor;
 mod model;
 pub(super) mod text_processor;
-pub mod utils;
 
 use log::debug;
 use std::io::Write;
@@ -15,7 +14,79 @@ use kornia_image::{allocator::ImageAllocator, Image};
 use crate::context::InferenceContext;
 use crate::smolvlm2::image_processor::{ImageProcessor, ImageProcessorConfig};
 use crate::smolvlm2::text_processor::{Message, TextProcessor};
-use crate::smolvlm2::utils::{SmolVlm2Config, SmolVlm2Error};
+
+/// Utilities for the SmolVLM2 module.
+#[derive(thiserror::Error, Debug)]
+pub enum SmolVlm2Error {
+    #[error(transparent)]
+    FailedToLoadModel(#[from] hf_hub::api::sync::ApiError),
+
+    #[error(transparent)]
+    CandleError(#[from] candle_core::Error),
+
+    #[error(transparent)]
+    ImageError(#[from] kornia_image::ImageError),
+
+    #[error(transparent)]
+    TokenizerError(#[from] tokenizers::Error),
+
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
+
+    #[error(transparent)]
+    JinjaError(#[from] minijinja::Error),
+
+    #[error(transparent)]
+    SerializationError(#[from] serde_json::Error),
+
+    #[error("Invalid logits detected: {0}")]
+    InvalidLogits(String),
+
+    #[error("Invalid encoding detected: {0}")]
+    InvalidEncoding(String),
+
+    #[error("Missing chat template: {0}")]
+    MissingChatTemplate(String),
+
+    #[error("Message history mistmatch: {0}")]
+    MessageHistoryMismatch(String),
+
+    #[error("Missing tokenizer")]
+    MissingTokenizer,
+
+    #[error("Cannot find the <end_of_utterance> token")]
+    EosTokenNotFound,
+
+    #[error("Mismatched image count: tags = {tags}, images = {images}")]
+    MismatchedImageCount { tags: usize, images: usize },
+}
+
+/// Configuration for the SmolVLM2 model
+
+#[derive(Clone, Copy)]
+pub struct SmolVlm2Config {
+    pub seed: u64,
+    pub temp: f64,
+    pub top_p: f64,
+    pub repeat_penalty: f32,
+    pub do_sample: bool,
+    pub repeat_last_n: usize,
+    pub debug: bool,
+}
+
+impl Default for SmolVlm2Config {
+    fn default() -> Self {
+        Self {
+            seed: 42,
+            temp: 1.0,
+            top_p: 0.8,
+            repeat_penalty: 1.0,
+            do_sample: true,
+            repeat_last_n: 64,
+            debug: false,
+        }
+    }
+}
 
 pub struct SmolVlm2<A: ImageAllocator> {
     model: model::Model,
@@ -75,18 +146,19 @@ impl<A: ImageAllocator> SmolVlm2<A> {
     }
 
     /// Run the inference of the SmolVLM2 model with previous context added.
+    /// Run the inference of the SmolVLM2 model with default prompt formatting.
     ///
     /// # Arguments
     ///
-    /// * `image` - The rgb8 image to generate a caption for with shape [H, W, 3]
-    /// * `prompt` - The prompt to generate a caption for
-    /// * `sample_len` - The length of the generated caption
+    /// * `prompt` - The user prompt string to generate a caption for
+    /// * `image` - Optional RGB image (`Image<u8, 3, A>`) to use for captioning
+    /// * `sample_len` - The maximum number of tokens to generate
     /// * `alloc` - The image allocator to use
     ///
     /// # Returns
     ///
-    /// * `caption` - The generated caption
-    pub fn inference(
+    /// * `Result<String, SmolVlm2Error>` - The generated caption or error
+    pub fn inference<A: ImageAllocator>(
         &mut self,
         prompt: Vec<Message>,
         image: Option<Image<u8, 3, A>>,
@@ -112,8 +184,8 @@ impl<A: ImageAllocator> SmolVlm2<A> {
     ///
     /// # Arguments
     ///
-    /// * `image` - The rgb8 image to generate a caption for with shape [H, W, 3]
-    /// * `prompt` - The prompt to generate a caption for
+    /// * `full_prompt` - The fully formatted prompt string (should include <image> tags if images are provided)
+    /// * `images` - Vector of RGB images (`Vec<Image<u8, 3, A>>`) to use for captioning
     /// * `sample_len` - The maximum number of tokens to generate
     /// * `alloc` - The image allocator to use
     ///
