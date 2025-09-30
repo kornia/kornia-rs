@@ -4,6 +4,7 @@ pub(super) mod text_processor;
 pub mod utils;
 pub(super) mod video_processor;
 
+use kornia_image::ImageSize;
 use log::debug;
 use std::io::Write;
 use std::time::Instant;
@@ -16,7 +17,8 @@ use kornia_image::{allocator::ImageAllocator, Image};
 use crate::context::InferenceContext;
 use crate::smolvlm2::image_processor::{ImageProcessor, ImageProcessorConfig};
 use crate::smolvlm2::text_processor::{Message, TextProcessor};
-use crate::smolvlm2::utils::{SmolVlm2Config, SmolVlm2Error};
+use crate::smolvlm2::utils::{InputMedia, SmolVlm2Config, SmolVlm2Error};
+use crate::smolvlm2::video_processor::{VideoProcessor, VideoProcessorConfig};
 
 pub struct SmolVlm2<A: ImageAllocator> {
     model: model::Model,
@@ -26,6 +28,7 @@ pub struct SmolVlm2<A: ImageAllocator> {
 
     txt_processor: TextProcessor,
     img_processor: ImageProcessor<A>,
+    vid_processor: VideoProcessor,
     response: String,
 }
 
@@ -38,6 +41,16 @@ impl<A: ImageAllocator> SmolVlm2<A> {
         image_std: [0.5, 0.5, 0.5],
         rescale_factor: 0.00392156862745098, // 1.0 / 255.0
         image_token: "<image>",
+    };
+    const VID_PROCESSOR_CONFIG: VideoProcessorConfig = VideoProcessorConfig {
+        fps: 1,
+        max_frames: 64,
+        video_size_longest_edge: 384,
+        image_token: "<image>",
+        video_token: "<video>",
+        frame_mean: [0.5, 0.5, 0.5],
+        frame_std: [0.5, 0.5, 0.5],
+        rescale_factor: 0.00392156862745098, // 1.0 / 255.0
     };
     // https://github.com/huggingface/transformers/blob/3e975acc8bf6d029ec0a54b1c5d0691489dfb051/src/transformers/models/smolvlm/processing_smolvlm.py#L57C26-L57C479
     const UPDATED_VIDEO_CHAT_TEMPLATE: &'static str = "<|im_start|>{% for message in messages %}{{message['role'] | capitalize}}{% if message['content'][0]['type'] == 'image' %}{{':'}}{% else %}{{': '}}{% endif %}{% for line in message['content'] %}{% if line['type'] == 'text' %}{{line['text']}}{% elif line['type'] == 'image' %}{{ '<image>' }}{% elif line['type'] == 'video' %}{{ '<video>' }}{% endif %}{% endfor %}<end_of_utterance>\n{% endfor %}{% if add_generation_prompt %}{{ 'Assistant:' }}{% endif %}";
@@ -55,12 +68,14 @@ impl<A: ImageAllocator> SmolVlm2<A> {
         #[cfg(not(feature = "cuda"))]
         let (device, dtype) = (Device::Cpu, DType::F32);
 
-        let (model, txt_processor, img_processor) = Self::load_model(config, dtype, &device)?;
+        let (model, txt_processor, img_processor, vid_processor) =
+            Self::load_model(config, dtype, &device)?;
 
         Ok(Self {
             model,
             txt_processor,
             img_processor,
+            vid_processor,
             config,
             device,
             index_pos: 0,
@@ -92,7 +107,8 @@ impl<A: ImageAllocator> SmolVlm2<A> {
     pub fn inference(
         &mut self,
         prompt: Vec<Message>,
-        image: Option<Image<u8, 3, A>>,
+        // image: Option<Image<u8, 3, A>>,
+        media: InputMedia<A>,
         sample_len: usize, // per prompt
         alloc: A,
     ) -> Result<String, SmolVlm2Error> {
@@ -100,13 +116,13 @@ impl<A: ImageAllocator> SmolVlm2<A> {
             .txt_processor
             .reformat_with_additional_prompts(prompt, true)?;
 
-        let images = if let Some(img) = image {
-            vec![img]
-        } else {
-            vec![]
-        };
+        // let images = if let Some(img) = image {
+        //     vec![img]
+        // } else {
+        //     vec![]
+        // };
 
-        let response = self.inference_raw(&full_prompt, images, sample_len, alloc)?;
+        let response = self.inference_raw(&full_prompt, media, sample_len, alloc)?;
 
         Ok(response)
     }
@@ -126,7 +142,8 @@ impl<A: ImageAllocator> SmolVlm2<A> {
     pub fn inference_raw(
         &mut self,
         full_prompt: &str,
-        images: Vec<Image<u8, 3, A>>,
+        // image: Option<Image<u8, 3, A>>,
+        media: InputMedia<A>,
         sample_len: usize, // per prompt
         alloc: A,
     ) -> Result<String, SmolVlm2Error> {
@@ -139,12 +156,43 @@ impl<A: ImageAllocator> SmolVlm2<A> {
 
         let mut converted_prompt = String::from(full_prompt);
 
-        self.img_processor.binding_images_to_prompt(
-            &mut converted_prompt,
-            images,
-            &self.device,
-            alloc,
-        )?;
+        match media {
+            InputMedia::Images(images) => {
+                if images.is_empty() {
+                    return Err(SmolVlm2Error::MissingChatTemplate(
+                        "No images provided".to_string(),
+                    ));
+                }
+                if images.len() > 1 && self.config.debug {
+                    debug!("Multiple images provided: {}", images.len());
+                }
+                self.img_processor.binding_images_to_prompt(
+                    &mut converted_prompt,
+                    images,
+                    &self.device,
+                    alloc,
+                )?;
+            }
+            InputMedia::Video(videos) => {
+                if videos.is_empty() {
+                    return Err(SmolVlm2Error::MissingChatTemplate(
+                        "No video provided".to_string(),
+                    ));
+                }
+                if videos.len() > 1 && self.config.debug {
+                    debug!("Multiple video provided: {}", videos.len());
+                }
+                self.vid_processor.binding_videos_to_prompt(
+                    &mut converted_prompt,
+                    videos,
+                    &self.device,
+                    alloc,
+                )?;
+            }
+            InputMedia::None => {
+                // No media to process
+            }
+        }
 
         let mut delta_token = self.txt_processor.encode_all(&converted_prompt)?;
 
@@ -217,11 +265,21 @@ impl<A: ImageAllocator> SmolVlm2<A> {
         config: SmolVlm2Config,
         dtype: DType,
         device: &Device,
-    ) -> Result<(model::Model, TextProcessor, ImageProcessor<A>), SmolVlm2Error> {
+    ) -> Result<
+        (
+            model::Model,
+            TextProcessor,
+            ImageProcessor<A>,
+            VideoProcessor,
+        ),
+        SmolVlm2Error,
+    > {
         let txt_processor = TextProcessor::new(Self::MODEL_IDENTIFIER.into(), config)?
             .with_template_string(Self::UPDATED_VIDEO_CHAT_TEMPLATE.into())?;
         let img_processor =
             ImageProcessor::new(Self::IMG_PROCESSOR_CONFIG, device, &txt_processor)?;
+        let vid_processor =
+            VideoProcessor::new(Self::VID_PROCESSOR_CONFIG, device, &txt_processor)?;
 
         let api = Api::new()?;
         let repo = api.model(Self::MODEL_IDENTIFIER.to_string());
@@ -233,7 +291,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
 
         model::Model::load(vb, dtype, device)
             .map_err(SmolVlm2Error::CandleError)
-            .map(|m| (m, txt_processor, img_processor))
+            .map(|m| (m, txt_processor, img_processor, vid_processor))
     }
 }
 
@@ -244,7 +302,10 @@ mod tests {
     use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
     use kornia_tensor::CpuAllocator;
 
-    use crate::smolvlm2::text_processor::{Line, Role};
+    use crate::{
+        smolvlm2::text_processor::{Line, Role},
+        video::{Video, VideoSamplingMethod},
+    };
 
     use super::*;
 
@@ -286,7 +347,58 @@ mod tests {
                         },
                     ],
                 }],
-                Some(image),
+                InputMedia::Images(vec![image]),
+                sample_len,
+                CpuAllocator,
+            )
+            .expect("Inference failed");
+    }
+
+    // cargo test -p kornia-vlm test_smolvlm2_video_inference --features cuda -- --nocapture --ignored
+    // RUST_LOG=debug cargo test -p kornia-vlm test_smolvlm2_video_inference --features cuda -- --nocapture --ignored
+    #[test]
+    #[ignore = "Requires CUDA"]
+    fn test_smolvlm2_video_inference() {
+        env_logger::init();
+
+        let path = Path::new("../../100462016.jpeg"); // or .png
+
+        // let image = match path.extension().and_then(|ext| ext.to_str()) {
+        //     Some("jpg") | Some("jpeg") => read_image_jpeg_rgb8(&path).ok(),
+        //     Some("png") => read_image_png_rgb8(&path).ok(),
+        //     _ => None,
+        // };
+        // let image = image.unwrap();
+
+        let config = SmolVlm2Config {
+            seed: 42,
+            do_sample: false,
+            debug: true,
+            ..Default::default()
+        };
+        let mut model = SmolVlm2::new(config).unwrap();
+
+        let prompt = "Describe the image.";
+        let sample_len = 500;
+
+        let _response = model
+            .inference(
+                vec![Message {
+                    role: Role::User,
+                    content: vec![
+                        Line::Video,
+                        Line::Text {
+                            text: prompt.to_string(),
+                        },
+                    ],
+                }],
+                InputMedia::Video(vec![Video::from_video_path(
+                    path,
+                    VideoSamplingMethod::Fps(1),
+                    60,
+                    CpuAllocator,
+                )
+                .unwrap()]),
                 sample_len,
                 CpuAllocator,
             )

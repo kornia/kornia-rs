@@ -175,6 +175,7 @@ impl Model {
 
         let mut agg_image_hidden_states = vec![];
         for (pixel_values, _pixel_attention_masks) in image_data {
+            // TODO: masking
             let image_hidden_states = self.vision_model.forward(pixel_values)?;
 
             let image_hidden_states = self.connector.forward(&image_hidden_states)?;

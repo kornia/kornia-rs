@@ -1,3 +1,8 @@
+use kornia_image::{allocator::ImageAllocator, Image};
+use kornia_tensor::CpuAllocator;
+
+use crate::video::{self, Video};
+
 /// Utilities for the SmolVLM2 module.
 #[derive(thiserror::Error, Debug)]
 pub enum SmolVlm2Error {
@@ -22,6 +27,9 @@ pub enum SmolVlm2Error {
     #[error(transparent)]
     SerializationError(#[from] serde_json::Error),
 
+    #[error(transparent)]
+    VideoError(#[from] video::VideoError),
+
     #[error("Invalid logits detected: {0}")]
     InvalidLogits(String),
 
@@ -42,6 +50,12 @@ pub enum SmolVlm2Error {
 
     #[error("Mismatched image count: tags = {tags}, images = {images}")]
     MismatchedImageCount { tags: usize, images: usize },
+
+    #[error("Mismatched video count: tags = {tags}, videos = {videos}")]
+    MismatchedVideoCount { tags: usize, videos: usize },
+
+    #[error("Video processing error")]
+    VideoProcessingError,
 }
 
 /// Configuration for the SmolVLM2 model
@@ -69,4 +83,10 @@ impl Default for SmolVlm2Config {
             debug: false,
         }
     }
+}
+
+pub enum InputMedia<A: ImageAllocator> {
+    Images(Vec<Image<u8, 3, A>>),
+    Video(Vec<Video<A>>),
+    None,
 }
