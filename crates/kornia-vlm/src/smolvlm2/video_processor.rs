@@ -17,7 +17,7 @@ use crate::{
 };
 
 pub struct VideoProcessorConfig {
-    pub fps: u32,
+    // assumes the given video is sampled at 1 FPS
     pub max_frames: usize,
     pub video_size_longest_edge: usize,
     pub image_token: &'static str,

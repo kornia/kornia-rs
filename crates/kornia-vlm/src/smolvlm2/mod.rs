@@ -42,7 +42,6 @@ impl<A: ImageAllocator> SmolVlm2<A> {
         image_token: "<image>",
     };
     const VID_PROCESSOR_CONFIG: VideoProcessorConfig = VideoProcessorConfig {
-        fps: 1,
         max_frames: 64,
         video_size_longest_edge: 384,
         image_token: "<image>",
