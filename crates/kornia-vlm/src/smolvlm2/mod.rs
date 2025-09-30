@@ -38,7 +38,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
         max_image_size_longest_edge: 384,
         image_mean: [0.5, 0.5, 0.5],
         image_std: [0.5, 0.5, 0.5],
-        rescale_factor: 0.00392156862745098, // 1.0 / 255.0
+        rescale_factor: 1.0 / 255.0,
         image_token: "<image>",
     };
     const VID_PROCESSOR_CONFIG: VideoProcessorConfig = VideoProcessorConfig {
@@ -48,7 +48,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
         video_token: "<video>",
         frame_mean: [0.5, 0.5, 0.5],
         frame_std: [0.5, 0.5, 0.5],
-        rescale_factor: 0.00392156862745098, // 1.0 / 255.0
+        rescale_factor: 1.0 / 255.0,
     };
     // https://github.com/huggingface/transformers/blob/3e975acc8bf6d029ec0a54b1c5d0691489dfb051/src/transformers/models/smolvlm/processing_smolvlm.py#L57C26-L57C479
     const UPDATED_VIDEO_CHAT_TEMPLATE: &'static str = "<|im_start|>{% for message in messages %}{{message['role'] | capitalize}}{% if message['content'][0]['type'] == 'image' %}{{':'}}{% else %}{{': '}}{% endif %}{% for line in message['content'] %}{% if line['type'] == 'text' %}{{line['text']}}{% elif line['type'] == 'image' %}{{ '<image>' }}{% elif line['type'] == 'video' %}{{ '<video>' }}{% endif %}{% endfor %}<end_of_utterance>\n{% endfor %}{% if add_generation_prompt %}{{ 'Assistant:' }}{% endif %}";

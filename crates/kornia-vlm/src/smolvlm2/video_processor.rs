@@ -45,7 +45,7 @@ impl VideoProcessor {
             None
         } else {
             let image_token = txt_processor.encode(config.image_token)?;
-            Some(Tensor::from_slice(&[image_token], &[1], &device)?)
+            Some(Tensor::from_slice(&[image_token], &[1], device)?)
         };
 
         Ok(Self {
@@ -79,7 +79,7 @@ impl VideoProcessor {
             video_metadatas.push(video.metadata.clone());
             let img_patches = self.preprocess(&mut video, device, alloc.clone())?;
             self.processed_videos
-                .push((img_patches, Tensor::zeros(&[0], DType::F32, &device)?));
+                .push((img_patches, Tensor::zeros(&[0], DType::F32, device)?));
         }
 
         self.expand_text_with_video_tokens(
@@ -150,10 +150,10 @@ impl VideoProcessor {
             device,
         )?;
 
-        Ok(video
+        video
             .frames_tensor
             .clone()
-            .ok_or(SmolVlm2Error::VideoProcessingError)?)
+            .ok_or(SmolVlm2Error::VideoProcessingError)
     }
 
     /// Expands a single text prompt by replacing video tokens with video prompt strings using metadata.

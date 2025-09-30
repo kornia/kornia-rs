@@ -51,7 +51,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
             None
         } else {
             let image_token = txt_processor.encode(config.image_token)?;
-            Some(Tensor::from_slice(&[image_token], &[1], &device)?)
+            Some(Tensor::from_slice(&[image_token], &[1], device)?)
         };
         Ok(Self {
             buf_resize: None,
