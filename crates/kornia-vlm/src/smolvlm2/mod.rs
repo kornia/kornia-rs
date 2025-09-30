@@ -90,25 +90,13 @@ impl<A: ImageAllocator> SmolVlm2<A> {
         Ok(())
     }
 
-    /// Run the inference of the SmolVLM2 model with previous context added.
-    ///
-    /// # Arguments
-    ///
-    /// * `image` - The rgb8 image to generate a caption for with shape [H, W, 3]
-    /// * `prompt` - The prompt to generate a caption for
-    /// * `sample_len` - The length of the generated caption
-
     /// Run inference with prompt formatting and media input.
-    ///
     /// # Arguments
-    ///
     /// * `prompt` - Vector of `Message` representing the conversation history and user prompt.
     /// * `media` - Input media (images, video, or none) as `InputMedia<A>`.
     /// * `sample_len` - Maximum number of tokens to generate.
     /// * `alloc` - Image allocator for image/video processing.
-    ///
     /// # Returns
-    ///
     /// * `Result<String, SmolVlm2Error>` - The generated caption or error.
     pub fn inference(
         &mut self,
@@ -125,16 +113,12 @@ impl<A: ImageAllocator> SmolVlm2<A> {
     }
 
     /// Run inference with a pre-formatted prompt and media input.
-    ///
     /// # Arguments
-    ///
     /// * `full_prompt` - The fully formatted prompt string (should include any required tags for media).
     /// * `media` - Input media (images, video, or none) as `InputMedia<A>`.
     /// * `sample_len` - Maximum number of tokens to generate.
     /// * `alloc` - Image allocator for image/video processing.
-    ///
     /// # Returns
-    ///
     /// * `Result<String, SmolVlm2Error>` - The generated caption or error.
     pub fn inference_raw(
         &mut self,
