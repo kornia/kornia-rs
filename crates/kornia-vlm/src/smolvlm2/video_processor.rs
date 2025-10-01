@@ -122,15 +122,14 @@ impl VideoProcessor {
             self.config.video_size_longest_edge,
         );
 
-        // TODO: Bicubic
-        video.resize(new_size, InterpolationMode::Lanczos, alloc.clone())?;
+        video.resize(new_size, InterpolationMode::Bicubic, alloc.clone())?;
         video.resize(
             // resize to a potentially distorted square
             ImageSize {
                 width: self.config.video_size_longest_edge,
                 height: self.config.video_size_longest_edge,
             },
-            InterpolationMode::Lanczos,
+            InterpolationMode::Bicubic,
             alloc.clone(),
         )?;
 
