@@ -5,7 +5,7 @@ use rand::seq::SliceRandom;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
 type PnpDataset = (Vec<[f32; 3]>, Vec<[f32; 2]>, [[f32; 3]; 3]);
-const NUM_SEEDS: usize = 5;
+const NUM_SEEDS: usize = 1;
 
 // Removed unseeded generator; use seeded variant for reproducibility across benches
 
@@ -19,9 +19,9 @@ fn generate_cube_dataset_with_seed(num_points: usize, noise_px: f32, seed: u64) 
     for _ in 0..num_points {
         // points in a 1m cube around z in [3,6]
         world.push([
-            rng.gen_range(-0.5..0.5),
-            rng.gen_range(-0.5..0.5),
-            rng.gen_range(3.0..6.0),
+            rng.random_range(-0.5..0.5),
+            rng.random_range(-0.5..0.5),
+            rng.random_range(3.0..6.0),
         ]);
     }
 
@@ -38,8 +38,8 @@ fn generate_cube_dataset_with_seed(num_points: usize, noise_px: f32, seed: u64) 
         let xc = r[0][0] * p[0] + r[0][1] * p[1] + r[0][2] * p[2] + t[0];
         let yc = r[1][0] * p[0] + r[1][1] * p[1] + r[1][2] * p[2] + t[1];
         let zc = r[2][0] * p[0] + r[2][1] * p[1] + r[2][2] * p[2] + t[2];
-        let u = k[0][0] * xc / zc + k[0][2] + rng.gen_range(-noise_px..noise_px);
-        let v = k[1][1] * yc / zc + k[1][2] + rng.gen_range(-noise_px..noise_px);
+        let u = k[0][0] * xc / zc + k[0][2] + rng.random_range(-noise_px..noise_px);
+        let v = k[1][1] * yc / zc + k[1][2] + rng.random_range(-noise_px..noise_px);
         image.push([u, v]);
     }
 
@@ -55,8 +55,8 @@ fn inject_outliers_random(image: &mut [[f32; 2]], fraction: f32, seed: u64) {
     let mut idxs: Vec<usize> = (0..image.len()).collect();
     idxs.shuffle(&mut rng);
     for &i in idxs.iter().take(num_out) {
-        let angle = rng.gen_range(0.0..(2.0 * std::f32::consts::PI));
-        let radius = rng.gen_range(300.0..800.0);
+        let angle = rng.random_range(0.0..(2.0 * std::f32::consts::PI));
+        let radius = rng.random_range(300.0..800.0);
         image[i][0] += radius * angle.cos();
         image[i][1] += radius * angle.sin();
     }
