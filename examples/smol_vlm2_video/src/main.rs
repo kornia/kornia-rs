@@ -42,7 +42,7 @@ struct Args {
 
 #[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-            let _ = env_logger::builder().is_test(true).try_init();
+    let _ = env_logger::builder().is_test(true).try_init();
 
     let args: Args = argh::from_env();
     let _pixel_format = args.pixel_format.as_deref().unwrap_or("MJPG");

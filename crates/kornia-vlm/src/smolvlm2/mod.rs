@@ -391,7 +391,6 @@ mod tests {
     use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
     use kornia_tensor::CpuAllocator;
 
-    use crate::smolvlm2::text_processor::{Line, Role};
     #[cfg(feature = "gstreamer")]
     use crate::video::{Video, VideoSamplingMethod};
 

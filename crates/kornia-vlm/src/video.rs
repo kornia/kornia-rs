@@ -40,46 +40,157 @@ use kornia_io::gstreamer::{video::ImageFormat as IoImageFormat, video::VideoRead
 use log::debug;
 use thiserror::Error;
 
+/// Errors that can occur during video processing operations.
 #[derive(Debug, Error)]
 pub enum VideoError {
+    /// Failed to create a video reader instance.
     #[error("Failed to create video reader: {0}")]
     VideoReaderCreation(String),
+
+    /// Failed to start the video reader.
     #[error("Failed to start video reader")]
     VideoReaderStart,
+
+    /// Failed to grab a frame from the video.
     #[error("Failed to grab frame from video")]
     FrameGrabbing,
+
+    /// Failed to close the video reader.
     #[error("Failed to close video reader")]
     VideoReaderClose,
+
+    /// Error from the image processing library.
     #[error("Image error: {0}")]
     Image(#[from] image::ImageError),
+
+    /// Error from the Candle tensor library.
     #[error("Candle error: {0}")]
     CandleError(#[from] candle_core::Error),
+
+    /// Error from the Kornia image processing library.
     #[error("Kornia image error: {0}")]
     KorniaImage(#[from] kornia_image::ImageError),
 }
 
+/// Video sampling strategies for extracting frames from a video.
+///
+/// Different sampling methods provide various ways to select frames from
+/// a video sequence for processing or analysis.
 #[derive(Debug)]
 pub enum VideoSamplingMethod {
-    Uniform(usize),      // Uniformly sample n frames
-    Fps(usize),          // Number of frames to sample per second
-    FirstN(usize),       // Take the first n frames
-    Indices(Vec<usize>), // Take frames at specified indices
+    /// Uniformly sample n frames across the entire video duration.
+    ///
+    /// This method divides the video into equal segments and takes one frame
+    /// from each segment, ensuring even temporal distribution.
+    Uniform(usize),
+
+    /// Sample frames at a specific rate (frames per second).
+    ///
+    /// This method attempts to extract the specified number of frames per
+    /// second from the video, useful for maintaining temporal consistency.
+    Fps(usize),
+
+    /// Take the first n frames from the video.
+    ///
+    /// This method simply extracts frames sequentially from the beginning
+    /// of the video until the specified count is reached.
+    FirstN(usize),
+
+    /// Take frames at specific indices.
+    ///
+    /// This method allows precise control over which frames are extracted
+    /// by specifying their exact positions in the video sequence.
+    Indices(Vec<usize>),
 }
 
+/// Metadata information for a video.
+///
+/// Contains timing and structural information about the video,
+/// including frame rate, timestamps, and duration.
 #[derive(Clone, Debug)]
 pub struct VideoMetadata {
+    /// Frames per second of the original video, if available.
     pub fps: Option<u32>,
-    pub timestamps: Vec<u32>,  // seconds
-    pub duration: Option<u32>, // seconds
+
+    /// Timestamps in seconds for each frame in the video.
+    pub timestamps: Vec<u32>,
+
+    /// Total duration of the video in seconds, if available.
+    pub duration: Option<u32>,
 }
 
+/// A video container that holds frames and metadata.
+///
+/// This struct represents a video as a collection of image frames along with
+/// their temporal metadata. It supports various operations like resizing,
+/// normalization, and padding for video processing tasks.
+///
+/// # Generic Parameters
+///
+/// * `A` - The image allocator type used for frame storage
 pub struct Video<A: ImageAllocator> {
+    /// Vector of image frames that make up the video.
     pub frames: Vec<Image<u8, 3, A>>,
+
+    /// Optional tensor representation of frames for neural network processing.
+    /// Created by calling `normalize_and_rescale()` method.
     pub frames_tensor: Option<Tensor>,
+
+    /// Metadata containing timing and video information.
     pub metadata: VideoMetadata,
 }
 
 impl<A: ImageAllocator + Clone> Video<A> {
+    /// Create a new Video instance with frames and timestamps.
+    ///
+    /// # Arguments
+    ///
+    /// * `frames` - Vector of image frames
+    /// * `timestamps` - Vector of timestamps in seconds for each frame
+    ///
+    /// # Returns
+    ///
+    /// A new Video instance with the provided frames and metadata
+    pub fn new(frames: Vec<Image<u8, 3, A>>, timestamps: Vec<u32>) -> Self {
+        Self {
+            frames,
+            frames_tensor: None,
+            metadata: VideoMetadata {
+                fps: None,
+                timestamps,
+                duration: None,
+            },
+        }
+    }
+
+    /// Add a new frame to the video with its timestamp.
+    ///
+    /// # Arguments
+    ///
+    /// * `frame` - The image frame to add
+    /// * `timestamp` - Timestamp of the frame in seconds
+    pub fn add_frame(&mut self, frame: Image<u8, 3, A>, timestamp: u32) {
+        self.frames.push(frame);
+        self.metadata.timestamps.push(timestamp);
+    }
+
+    /// Remove old frames to maintain a maximum frame count.
+    ///
+    /// This method removes frames from the beginning of the video if the total
+    /// number of frames exceeds the specified maximum. Both frames and their
+    /// corresponding timestamps are removed.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_frames` - Maximum number of frames to keep
+    pub fn remove_old_frames(&mut self, max_frames: usize) {
+        if self.frames.len() > max_frames {
+            let excess = self.frames.len() - max_frames;
+            self.frames.drain(0..excess);
+            self.metadata.timestamps.drain(0..excess);
+        }
+    }
+
     /// Create a Video from a video file path using kornia-io's VideoReader functionality.
     ///
     /// This method uses kornia-io's VideoReader which provides a higher-level interface
@@ -370,6 +481,20 @@ impl<A: ImageAllocator + Clone> Video<A> {
         })
     }
 
+    /// Resize all frames in the video to a new size.
+    ///
+    /// This method resizes each frame in the video to the specified dimensions
+    /// using the provided interpolation method.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_size` - Target size for all frames
+    /// * `interpolation` - Interpolation method to use for resizing
+    /// * `alloc` - Allocator for creating new resized frames
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), VideoError>` - Ok if successful, VideoError if resizing fails
     pub fn resize(
         &mut self,
         new_size: ImageSize,
@@ -384,6 +509,22 @@ impl<A: ImageAllocator + Clone> Video<A> {
         Ok(())
     }
 
+    /// Normalize and rescale video frames for neural network processing.
+    ///
+    /// This method converts frames to tensors, applies rescaling (typically from [0,255] to [0,1]),
+    /// and then normalizes using mean and standard deviation values. The resulting tensor
+    /// is stored in `frames_tensor` with shape [T, C, H, W] where T is the number of frames.
+    ///
+    /// # Arguments
+    ///
+    /// * `mean` - Mean values for each color channel [R, G, B]
+    /// * `std` - Standard deviation values for each color channel [R, G, B]
+    /// * `rescale_factor` - Factor to rescale pixel values (typically 1.0/255.0)
+    /// * `device` - Device to place the resulting tensor on
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), VideoError>` - Ok if successful, VideoError if tensor operations fail
     pub fn normalize_and_rescale(
         &mut self,
         mean: [f32; 3],
@@ -418,12 +559,25 @@ impl<A: ImageAllocator + Clone> Video<A> {
         Ok(())
     }
 
-    /// Pad video frames spatially and temporally.
+    /// Pad video frames spatially and temporally to target dimensions.
     ///
-    /// - padded_size: target (height, width)
-    /// - max_num_frames: target number of frames
-    /// - fill: value to use for padding (e.g., 0)
-    /// - alloc: allocator for new frames
+    /// This method performs two types of padding:
+    /// 1. Spatial padding: Pads each frame to the target width and height
+    /// 2. Temporal padding: Adds blank frames if fewer than max_num_frames exist
+    ///
+    /// Spatial padding preserves the original image content in the top-left corner
+    /// and fills the remaining area with the specified fill value.
+    ///
+    /// # Arguments
+    ///
+    /// * `padded_size` - Target spatial dimensions (height, width) for frames
+    /// * `max_num_frames` - Target number of frames in the video
+    /// * `fill` - Value to use for padding pixels (e.g., 0 for black)
+    /// * `alloc` - Allocator for creating new padded frames
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), VideoError>` - Ok if successful, VideoError if padding fails
     pub fn pad(
         &mut self,
         padded_size: ImageSize,
