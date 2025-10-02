@@ -115,7 +115,7 @@ mod tests {
     }
 }
 
-//: redo this test
+//TODO: redo this test
 #[cfg(test)]
 mod gauss_newton_tests {
     use super::*;

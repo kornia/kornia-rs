@@ -96,13 +96,18 @@ pub fn solve_pnp_ransac(
     // RNG setup
     let mut rng: StdRng = match params.random_seed {
         Some(seed) => StdRng::seed_from_u64(seed),
-        None => StdRng::from_entropy(),
+        None => {
+            let mut trng = rand::rng();
+            StdRng::from_rng(&mut trng)
+        }
     };
 
     // Working buffers
     let mut indices: Vec<usize> = (0..n).collect();
     let mut best_inliers: Vec<usize> = Vec::new();
     let mut best_pose: Option<PnPResult> = None;
+    let mut w_min: Vec<[f32; 3]> = Vec::with_capacity(sample_size);
+    let mut i_min: Vec<[f32; 2]> = Vec::with_capacity(sample_size);
 
     let mut iter: usize = 0;
     let mut required_iters = params.max_iterations;
@@ -121,8 +126,8 @@ pub fn solve_pnp_ransac(
         let sample = &indices[..sample_size];
 
         // Build minimal subsets
-        let mut w_min: Vec<[f32; 3]> = Vec::with_capacity(sample_size);
-        let mut i_min: Vec<[f32; 2]> = Vec::with_capacity(sample_size);
+        w_min.clear();
+        i_min.clear();
         for &idx in sample.iter() {
             w_min.push(world[idx]);
             i_min.push(image[idx]);
