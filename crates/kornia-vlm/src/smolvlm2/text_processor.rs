@@ -30,6 +30,7 @@ pub enum Role {
 pub enum Line {
     Text { text: String },
     Image,
+    Video,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -39,7 +40,7 @@ pub struct Message {
 }
 
 pub struct TextProcessor {
-    tokenizer: Tokenizer,
+    tokenizer: Option<Tokenizer>,
 
     env: Environment<'static>,
     message_history: Vec<Message>,
@@ -86,7 +87,7 @@ impl TextProcessor {
             .to_string();
 
         Ok(Self {
-            tokenizer: Tokenizer::from_pretrained(identifier, None)?,
+            tokenizer: Some(Tokenizer::from_pretrained(identifier, None)?),
 
             env,
             message_history: Vec::new(),
@@ -98,6 +99,14 @@ impl TextProcessor {
 
             eos_token,
         })
+    }
+
+    pub fn with_template_string(
+        mut self,
+        new_chat_template: String,
+    ) -> Result<Self, SmolVlm2Error> {
+        self.env.add_template_owned("chat", new_chat_template)?;
+        Ok(self)
     }
 
     pub fn is_eos(&self, token: &str) -> bool {
@@ -214,17 +223,42 @@ impl TextProcessor {
         }
     }
 
+    pub fn encode(&self, text: &str) -> Result<u32, SmolVlm2Error> {
+        let encoding = self
+            .tokenizer
+            .as_ref()
+            .ok_or(SmolVlm2Error::MissingTokenizer)?
+            .encode(text, true)?;
+        let encodings = encoding.get_ids();
+
+        if encodings.len() != 1 {
+            Err(SmolVlm2Error::InvalidEncoding(
+                "Expected a single token".to_string(),
+            ))
+        } else {
+            Ok(encodings[0])
+        }
+    }
+
     pub fn decode(&self, encoding: u32) -> Result<String, SmolVlm2Error> {
         self.decode_all(vec![encoding])
     }
 
     pub fn encode_all(&self, text: &str) -> Result<Vec<u32>, SmolVlm2Error> {
-        let encoding = self.tokenizer.encode(text, true)?;
+        let encoding = self
+            .tokenizer
+            .as_ref()
+            .ok_or(SmolVlm2Error::MissingTokenizer)?
+            .encode(text, true)?;
         Ok(encoding.get_ids().to_vec())
     }
 
     pub fn decode_all(&self, encodings: Vec<u32>) -> Result<String, SmolVlm2Error> {
-        Ok(self.tokenizer.decode(&encodings, false)?)
+        Ok(self
+            .tokenizer
+            .as_ref()
+            .ok_or(SmolVlm2Error::MissingTokenizer)?
+            .decode(&encodings, false)?)
     }
 
     pub fn clear_history(&mut self) {
@@ -265,6 +299,22 @@ impl TextProcessor {
     fn has_non_finite(&self, logits: &Tensor) -> Result<bool, SmolVlm2Error> {
         let logits_vec = logits.to_dtype(DType::F32)?.to_vec1::<f32>()?;
         Ok(logits_vec.iter().any(|&v| !v.is_finite()))
+    }
+}
+
+impl Default for TextProcessor {
+    fn default() -> Self {
+        Self {
+            tokenizer: None,
+            env: Environment::new(),
+            message_history: Vec::new(),
+            formatted_history: String::new(),
+            token_history: Vec::new(),
+            config: SmolVlm2Config::default(),
+            logits_processor: LogitsProcessor::from_sampling(42, Sampling::ArgMax),
+            previously_added_generation_prompt: false,
+            eos_token: String::new(),
+        }
     }
 }
 
