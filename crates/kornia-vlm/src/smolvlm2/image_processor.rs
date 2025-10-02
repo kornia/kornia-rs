@@ -2,7 +2,7 @@ use crate::smolvlm2::{text_processor::TextProcessor, SmolVlm2Error};
 use candle_core::{DType, Device, Shape, Tensor};
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
-use log::{info, trace};
+use log::trace;
 use std::borrow::Cow;
 
 pub struct ImageProcessorConfig {

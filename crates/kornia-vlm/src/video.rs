@@ -156,7 +156,7 @@ impl<A: ImageAllocator + Clone> Video<A> {
                     let gst_data = gst_image.as_slice();
 
                     let img = Image::<u8, 3, A>::from_size_slice(size, gst_data, allocator.clone())
-                        .map_err(|e| VideoError::KorniaImage(e))?;
+                        .map_err(VideoError::KorniaImage)?;
 
                     // Get current position for timestamp - using frame index as fallback
                     let current_pos = video_reader
