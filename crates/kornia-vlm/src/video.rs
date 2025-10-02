@@ -20,7 +20,7 @@
 //! use kornia_vlm::video::{Video, VideoSamplingMethod};
 //! use kornia_tensor::CpuAllocator;
 //!
-//! let video = Video::from_video_path_io(
+//! let video = Video::from_video_path(
 //!     "video.mp4",
 //!     VideoSamplingMethod::Uniform(30),
 //!     60, // max_frames
