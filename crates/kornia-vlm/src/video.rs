@@ -474,16 +474,16 @@ mod tests {
     #[cfg(feature = "gstreamer")]
     use kornia_tensor::CpuAllocator;
 
-    // cargo test -p kornia-vlm test_smolvlm2_video_reading --features cuda -- --nocapture --ignored
+    // RUST_LOG=debug cargo test -p kornia-vlm test_smolvlm2_reading_video --features gstreamer -- --nocapture --ignored
     #[test]
     #[cfg(feature = "gstreamer")]
-    #[ignore = "Requires GStreamer"]
-    fn test_smolvlm2_video_reading() {
+    #[ignore = "Requires GStreamer + test files"]
+    fn test_smolvlm2_reading_video() {
         let _ = env_logger::builder().is_test(true).try_init();
 
         let _video = Video::<CpuAllocator>::from_video_path(
             "../../example_video.mp4",
-            VideoSamplingMethod::Uniform(50),
+            VideoSamplingMethod::Uniform(1),
             60, // max_frames
             CpuAllocator,
         )

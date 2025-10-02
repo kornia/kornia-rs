@@ -57,6 +57,9 @@ pub enum SmolVlm2Error {
     #[error("Missing chat template: {0}")]
     MissingChatTemplate(String),
 
+    #[error("Empty media provided: {0}")]
+    EmptyMedia(String),
+
     #[error("Message history mistmatch: {0}")]
     MessageHistoryMismatch(String),
 
@@ -231,8 +234,8 @@ impl<A: ImageAllocator> SmolVlm2<A> {
         match media {
             InputMedia::Images(images) => {
                 if images.is_empty() {
-                    return Err(SmolVlm2Error::MissingChatTemplate(
-                        "No images provided".to_string(),
+                    return Err(SmolVlm2Error::EmptyMedia(
+                        "No images provided in Images variant".to_string(),
                     ));
                 }
                 if images.len() > 1 && self.config.debug {
@@ -247,8 +250,8 @@ impl<A: ImageAllocator> SmolVlm2<A> {
             }
             InputMedia::Video(videos) => {
                 if videos.is_empty() {
-                    return Err(SmolVlm2Error::MissingChatTemplate(
-                        "No video provided".to_string(),
+                    return Err(SmolVlm2Error::EmptyMedia(
+                        "No videos provided in Video variant".to_string(),
                     ));
                 }
                 if videos.len() > 1 && self.config.debug {
