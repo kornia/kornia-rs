@@ -135,7 +135,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
         alloc: A,
     ) -> Result<(Tensor, Tensor, ImageSize), SmolVlm2Error> {
         {
-            info!(
+            trace!(
                 "Image size: {}x{} w/ Max size: {}",
                 img.width(),
                 img.height(),
@@ -295,7 +295,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
     ) -> Result<(), SmolVlm2Error> {
         let (width, height) = (img.width(), img.height());
 
-        info!(
+        trace!(
             "Patch blocks (HxW): {:?}x{:?}",
             (height as u32).div_ceil(outer_patch_size),
             (width as u32).div_ceil(outer_patch_size),
