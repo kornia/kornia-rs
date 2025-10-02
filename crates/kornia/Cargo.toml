@@ -13,7 +13,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [features]
-gstreamer = ["kornia-io/gstreamer"]
+gstreamer = ["kornia-io/gstreamer", "kornia-vlm/gstreamer"]
 turbojpeg = ["kornia-io/turbojpeg"]
 v4l = ["kornia-io/v4l"]
 arrow = ["kornia-image/arrow"]
