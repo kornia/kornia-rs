@@ -14,12 +14,15 @@ use kornia_image::allocator::ImageAllocator;
 
 use crate::context::InferenceContext;
 use crate::smolvlm2::image_processor::{ImageProcessor, ImageProcessorConfig};
-use crate::smolvlm2::text_processor::{Message, TextProcessor};
+use crate::smolvlm2::text_processor::TextProcessor;
 use crate::smolvlm2::video_processor::{VideoProcessor, VideoProcessorConfig};
 
 use kornia_image::Image;
 
 use crate::video::{self, Video};
+
+// Re-export public types for external use
+pub use crate::smolvlm2::text_processor::{Line, Message, Role};
 
 /// Utilities for the SmolVLM2 module.
 #[derive(thiserror::Error, Debug)]
@@ -193,7 +196,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
     /// * `Result<String, SmolVlm2Error>` - The generated caption or error.
     pub fn inference(
         &mut self,
-        prompt: Vec<Message>,
+        prompt: Vec<text_processor::Message>,
         media: InputMedia<A>,
         sample_len: usize,
         alloc: A,
@@ -423,11 +426,11 @@ mod tests {
 
         let _response = model
             .inference(
-                vec![Message {
-                    role: Role::User,
+                vec![text_processor::Message {
+                    role: text_processor::Role::User,
                     content: vec![
-                        Line::Image,
-                        Line::Text {
+                        text_processor::Line::Image,
+                        text_processor::Line::Text {
                             text: prompt.to_string(),
                         },
                     ],
@@ -462,11 +465,11 @@ mod tests {
 
         let _response = model
             .inference(
-                vec![Message {
-                    role: Role::User,
+                vec![text_processor::Message {
+                    role: text_processor::Role::User,
                     content: vec![
-                        Line::Video,
-                        Line::Text {
+                        text_processor::Line::Video,
+                        text_processor::Line::Text {
                             text: prompt.to_string(),
                         },
                     ],
