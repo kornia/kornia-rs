@@ -4,12 +4,21 @@ use kornia_imgproc::calibration::{
 };
 use kornia_pnp as kpnp;
 use rand::Rng;
+use argh::FromArgs;
+
+#[derive(FromArgs, Debug)]
+/// PnP demo application
+struct Args {
+    /// use RANSAC (robust EPnP). If not set, use direct EPnP
+    #[argh(switch)]
+    use_ransac: bool,
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    // Enable/disable RANSAC for robust estimation
-    const USE_RANSAC: bool = false; // Set to true to use RANSAC, false for direct EPnP
+    // Parse CLI arguments
+    let args: Args = argh::from_env();
 
     let rec = rerun::RecordingStreamBuilder::new("PnP Demo").spawn()?;
 
@@ -125,6 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
+<<<<<<< HEAD
     // Run EPnP with distortion model
     let result = kpnp::solve_pnp(
         &world_pts,
@@ -142,9 +152,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
         kpnp::PnPMethod::EPnPDefault,
     )?;
+=======
+    println!("Dataset: {} points", world_pts.len());
+    println!("Using RANSAC: {}", args.use_ransac);
+>>>>>>> fc311b2 (fix: add argh to pnp example)
 
     // Run pose estimation
-    let result = if USE_RANSAC {
+    let result = if args.use_ransac {
         // RANSAC mode: robust estimation
         let ransac_params = kpnp::RansacParams {
             max_iterations: 100,
@@ -241,8 +255,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n=== Configuration ===");
-    println!("To use RANSAC: set USE_RANSAC = true at the top of main.rs");
-    println!("To use direct EPnP: set USE_RANSAC = false at the top of main.rs");
+    println!("To use RANSAC: run with --use-ransac");
+    println!("To use direct EPnP: run without --use-ransac");
 
     println!("\n=== Visualization ===");
     println!("- Green points: Observed 2D points");
