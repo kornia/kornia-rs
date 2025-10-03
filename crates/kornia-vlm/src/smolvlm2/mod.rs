@@ -1,3 +1,48 @@
+//! SmolVLM2 Vision Language Model
+//!
+//! This module provides a Rust implementation of SmolVLM2, a vision-language model
+//! that can understand both text and images. The model supports both loading from
+//! HuggingFace Hub and custom safetensor files.
+//!
+//! # Examples
+//!
+//! ## Basic usage with HuggingFace Hub weights:
+//!
+//! ```no_run
+//! use kornia_vlm::smolvlm2::{SmolVlm2, SmolVlm2Config};
+//! use kornia_tensor::CpuAllocator;
+//!
+//! let config = SmolVlm2Config::default();
+//! let mut model = SmolVlm2::new(config).unwrap();
+//!
+//! let response = model.inference(
+//!     "What do you see in this image?",
+//!     None, // Add image here
+//!     100,  // max tokens
+//!     CpuAllocator,
+//!     false // debug
+//! ).unwrap();
+//! ```
+//!
+//! ## Loading from custom safetensor files:
+//!
+//! ```no_run
+//! use kornia_vlm::smolvlm2::{SmolVlm2, SmolVlm2Config};
+//!
+//! // Method 1: Direct constructor
+//! let weights = vec![
+//!     "/path/to/model-00001-of-00002.safetensors",
+//!     "/path/to/model-00002-of-00002.safetensors",
+//! ];
+//! let model = SmolVlm2::from_safetensors(weights, SmolVlm2Config::default()).unwrap();
+//!
+//! // Method 2: Using config
+//! let config = SmolVlm2Config::with_custom_weights(vec![
+//!     "/path/to/model.safetensors"
+//! ]);
+//! let model = SmolVlm2::new(config).unwrap();
+//! ```
+
 mod model;
 pub(super) mod text_processor;
 
@@ -57,7 +102,7 @@ pub enum SmolVlm2Error {
 
 /// Configuration for the SmolVLM2 model
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct SmolVlm2Config {
     pub seed: u64,
     pub temp: f64,
@@ -65,6 +110,9 @@ pub struct SmolVlm2Config {
     pub repeat_penalty: f32,
     pub do_sample: bool,
     pub repeat_last_n: usize,
+    /// Optional path to custom safetensor weights files. If provided, these will be used
+    /// instead of downloading from HuggingFace Hub. Can be a single file or multiple files.
+    pub custom_weights_paths: Option<Vec<std::path::PathBuf>>,
 }
 
 impl Default for SmolVlm2Config {
@@ -76,6 +124,7 @@ impl Default for SmolVlm2Config {
             repeat_penalty: 1.0,
             do_sample: true,
             repeat_last_n: 64,
+            custom_weights_paths: None,
         }
     }
 }
@@ -93,6 +142,8 @@ pub struct SmolVlm2 {
 impl SmolVlm2 {
     const MODEL_IDENTIFIER: &'static str = "HuggingFaceTB/SmolVLM2-2.2B-Instruct";
 
+    /// Create a new SmolVLM2 instance with the default configuration.
+    /// This will download weights from HuggingFace Hub.
     pub fn new(config: SmolVlm2Config) -> Result<Self, SmolVlm2Error> {
         #[cfg(feature = "cuda")]
         let (device, dtype) = match Device::cuda_if_available(0) {
@@ -106,7 +157,7 @@ impl SmolVlm2 {
         #[cfg(not(feature = "cuda"))]
         let (device, dtype) = (Device::Cpu, DType::F32);
 
-        let (model, txt_processor) = Self::load_model(config, dtype, &device)?;
+        let (model, txt_processor) = Self::load_model(&config, dtype, &device)?;
 
         Ok(Self {
             model,
@@ -117,6 +168,60 @@ impl SmolVlm2 {
 
             response: String::new(),
         })
+    }
+
+    /// Create a new SmolVLM2 instance with custom safetensor weights files.
+    ///
+    /// # Arguments
+    ///
+    /// * `weights_paths` - Vector of paths to safetensor files to load
+    /// * `config` - Configuration for the model (custom_weights_paths will be overridden)
+    ///
+    /// # Returns
+    ///
+    /// A new SmolVLM2 instance loaded with the specified weights
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use kornia_vlm::smolvlm2::{SmolVlm2, SmolVlm2Config};
+    ///
+    /// let weights = vec![
+    ///     "/path/to/model-00001-of-00002.safetensors".into(),
+    ///     "/path/to/model-00002-of-00002.safetensors".into(),
+    /// ];
+    /// let model = SmolVlm2::from_safetensors(weights, SmolVlm2Config::default()).unwrap();
+    /// ```
+    pub fn from_safetensors<P: Into<std::path::PathBuf>>(
+        weights_paths: Vec<P>,
+        mut config: SmolVlm2Config,
+    ) -> Result<Self, SmolVlm2Error> {
+        config.custom_weights_paths = Some(weights_paths.into_iter().map(|p| p.into()).collect());
+        Self::new(config)
+    }
+
+    /// Create a new SmolVLM2 instance from a single safetensor file.
+    ///
+    /// # Arguments
+    ///
+    /// * `weights_path` - Path to a single safetensor file
+    /// * `config` - Configuration for the model
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use kornia_vlm::smolvlm2::{SmolVlm2, SmolVlm2Config};
+    ///
+    /// let model = SmolVlm2::from_single_safetensor(
+    ///     "/path/to/model.safetensors",
+    ///     SmolVlm2Config::default()
+    /// ).unwrap();
+    /// ```
+    pub fn from_single_safetensor<P: Into<std::path::PathBuf>>(
+        weights_path: P,
+        config: SmolVlm2Config,
+    ) -> Result<Self, SmolVlm2Error> {
+        Self::from_safetensors(vec![weights_path], config)
     }
 
     pub fn clear_context(&mut self) -> Result<(), SmolVlm2Error> {
@@ -262,19 +367,33 @@ impl SmolVlm2 {
     }
 
     fn load_model(
-        config: SmolVlm2Config,
+        config: &SmolVlm2Config,
         dtype: DType,
         device: &Device,
     ) -> Result<(model::Model, TextProcessor), SmolVlm2Error> {
-        let txt_processor = TextProcessor::new(Self::MODEL_IDENTIFIER.into(), config)?;
+        let txt_processor = TextProcessor::new(Self::MODEL_IDENTIFIER.into(), config.clone())?;
 
-        let api = Api::new()?;
-        let repo = api.model(Self::MODEL_IDENTIFIER.to_string());
+        // Check if custom weights paths are provided
+        let vb = if let Some(ref weights_paths) = config.custom_weights_paths {
+            debug!("Loading model from custom weights: {:?}", weights_paths);
 
-        let w1 = repo.get("model-00001-of-00002.safetensors")?;
-        let w2 = repo.get("model-00002-of-00002.safetensors")?;
+            // Convert PathBuf to actual paths for mmap loading
+            let paths: Vec<_> = weights_paths.iter().map(|p| p.as_path()).collect();
+            unsafe { VarBuilder::from_mmaped_safetensors(&paths, dtype, device)? }
+        } else {
+            debug!(
+                "Loading model from HuggingFace Hub: {}",
+                Self::MODEL_IDENTIFIER
+            );
 
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[w1, w2], dtype, device)? };
+            let api = Api::new()?;
+            let repo = api.model(Self::MODEL_IDENTIFIER.to_string());
+
+            let w1 = repo.get("model-00001-of-00002.safetensors")?;
+            let w2 = repo.get("model-00002-of-00002.safetensors")?;
+
+            unsafe { VarBuilder::from_mmaped_safetensors(&[w1, w2], dtype, device)? }
+        };
 
         model::Model::load(vb, dtype, device)
             .map_err(SmolVlm2Error::CandleError)
@@ -305,5 +424,34 @@ mod tests {
         let _response = model
             .inference(prompt, None, sample_len, CpuAllocator, true)
             .expect("Inference failed");
+    }
+
+    // Example test for custom weights loading (commented out as it requires actual files)
+    #[test]
+    #[ignore = "Requires custom safetensor files"]
+    fn test_smolvlm2_custom_weights() {
+        // Example of loading from custom safetensor files
+        let weights_paths = vec![
+            "/path/to/model-00001-of-00002.safetensors",
+            "/path/to/model-00002-of-00002.safetensors",
+        ];
+
+        // Method 1: Using from_safetensors
+        let _model1 = SmolVlm2::from_safetensors(weights_paths.clone(), SmolVlm2Config::default());
+
+        // Method 2: Using from_single_safetensor (if you have a single file)
+        let _model2 = SmolVlm2::from_single_safetensor(
+            "/path/to/single-model.safetensors",
+            SmolVlm2Config::default(),
+        );
+
+        // Method 3: Using config with custom weights
+        let config = SmolVlm2Config::with_custom_weights(weights_paths);
+        let _model3 = SmolVlm2::new(config);
+
+        // Method 4: Setting custom weights on existing config
+        let mut config = SmolVlm2Config::default();
+        config.set_custom_weights(vec!["/path/to/model.safetensors"]);
+        let _model4 = SmolVlm2::new(config);
     }
 }
