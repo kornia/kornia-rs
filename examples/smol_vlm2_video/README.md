@@ -62,10 +62,10 @@ lsusb
 usbip list -l
 
 
-# ------ Run only on server
 
 # binding device
 sudo usbip bind -b <device/bus-id>
+# ------ Run only on server
 sudo usbip attach -r <ip_addr_of_local> -b <device/bus-id>
 
 # when restarting

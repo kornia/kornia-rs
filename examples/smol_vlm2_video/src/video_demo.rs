@@ -8,7 +8,8 @@ use kornia::{
     },
     tensor::CpuAllocator,
 };
-use kornia_vlm::smolvlm::{utils::SmolVlmConfig, SmolVlm};
+use kornia_vlm::smolvlm2::{InputMedia, Line, Message, Role, SmolVlm2, SmolVlm2Config};
+use kornia_vlm::video::Video;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -80,7 +81,22 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
     let mut rgb_image = Image::<u8, 3, CpuAllocator>::from_size_val(img_size, 0, CpuAllocator)?;
 
     let prompt = &args.prompt as &str;
-    let mut smolvlm = SmolVlm::new(SmolVlmConfig::default())?;
+    let mut smolvlm2 = SmolVlm2::new(SmolVlm2Config::default())?;
+
+    // === Video Understanding Implementation ===
+    // This implementation uses Line::Video and InputMedia::Video for proper video understanding:
+    //    - Uses Line::Video in message content
+    //    - Passes entire Video<CpuAllocator> via InputMedia::Video
+    //    - Leverages SmolVLM2's native video processing for temporal analysis
+    //    - Provides holistic understanding of motion and temporal relationships
+    //
+    // The video buffer maintains a rolling window of frames with automatic cleanup
+    // to prevent memory accumulation during long camera streaming.
+
+    // Create a video object to manage frames with a rolling buffer
+    let mut video_buffer = Video::<CpuAllocator>::new(vec![], vec![]);
+    let max_frames_in_buffer = 32; // After around keeping 50 frames, CUDA OOM for 24gb GPU
+    let mut frame_idx = 0;
 
     while !cancel_token.load(Ordering::SeqCst) {
         let Some(frame) = webcam.grab_frame()? else {
@@ -105,8 +121,30 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
             continue;
         }
 
-        smolvlm.clear_context()?;
-        let response = smolvlm.inference(prompt, Some(rgb_image.clone()), 20, CpuAllocator)?;
+        // Add frame to video buffer and manage buffer size
+        video_buffer.add_frame(rgb_image.clone(), frame_idx);
+        video_buffer.remove_old_frames(max_frames_in_buffer);
+
+        smolvlm2.clear_context()?;
+
+        // Create a message using Line::Video for proper video understanding
+        let video_message = Message {
+            role: Role::User,
+            content: vec![
+                Line::Video,
+                Line::Text {
+                    text: prompt.to_string(),
+                },
+            ],
+        };
+
+        // Use the entire video buffer for video understanding
+        let response = smolvlm2.inference(
+            vec![video_message],
+            InputMedia::Video(vec![&mut video_buffer]),
+            20,
+            CpuAllocator,
+        )?;
 
         // Log the frame to rerun
         rec.log(
@@ -118,12 +156,31 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
             ),
         )?;
         rec.log("prompt", &rerun::TextDocument::new(prompt))?;
-        rec.log("response", &rerun::TextDocument::new(response))?;
+        rec.log("response", &rerun::TextDocument::new(response.as_str()))?;
+
+        // Log buffer status
+        rec.log(
+            "buffer_info",
+            &rerun::TextDocument::new(format!(
+                "Frame {}: Buffer contains {} frames (max: {})",
+                frame_idx,
+                video_buffer.frames().len(),
+                max_frames_in_buffer
+            )),
+        )?;
 
         if args.debug {
             fps_counter.update();
             println!("FPS: {:.2}", fps_counter.fps());
+            println!("Frame {frame_idx}: {response}");
+            println!(
+                "Video buffer contains {} frames",
+                video_buffer.frames().len()
+            );
+            println!("Using video understanding with Line::Video");
         }
+
+        frame_idx += 1;
     }
 
     Ok(())
