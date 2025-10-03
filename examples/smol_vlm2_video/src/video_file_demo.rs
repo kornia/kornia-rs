@@ -87,6 +87,8 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
     let mut video_buffer = Video::<CpuAllocator>::new(vec![], vec![]);
     let max_frames_in_buffer = 32; // After around keeping 50 frames, CUDA OOM for 24gb GPU
 
+    // FPS tracking variables
+    let start_time = std::time::Instant::now();
     while let Ok(sample) = appsink.pull_sample() {
         let buffer = sample.buffer().ok_or("No buffer in sample")?;
         let map = buffer.map_readable().map_err(|_| "Failed to map buffer")?;
@@ -143,12 +145,20 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
 
         if args.debug {
             println!("Frame {frame_idx}: {response}");
+
+            // Calculate and report actual processing FPS
+            let current_time = std::time::Instant::now();
+            let elapsed = current_time.duration_since(start_time);
+            let actual_fps = if elapsed.as_secs_f64() > 0.0 {
+                (frame_idx + 1) as f64 / elapsed.as_secs_f64()
+            } else {
+                0.0
+            };
             println!(
-                "Video buffer contains {} frames",
-                video_buffer.frames().len()
+                "Processing FPS: {:.2} (Average over {} frames)",
+                actual_fps,
+                frame_idx + 1
             );
-            println!("Using video understanding with Line::Video");
-            println!("Target FPS: {}", args.fps);
         }
         frame_idx += 1;
     }
