@@ -35,12 +35,6 @@
 //!     "/path/to/model-00002-of-00002.safetensors",
 //! ];
 //! let model = SmolVlm2::from_safetensors(weights, SmolVlm2Config::default()).unwrap();
-//!
-//! // Method 2: Using config
-//! let config = SmolVlm2Config::with_custom_weights(vec![
-//!     "/path/to/model.safetensors"
-//! ]);
-//! let model = SmolVlm2::new(config).unwrap();
 //! ```
 
 mod model;
@@ -186,9 +180,9 @@ impl SmolVlm2 {
     /// ```no_run
     /// use kornia_vlm::smolvlm2::{SmolVlm2, SmolVlm2Config};
     ///
-    /// let weights = vec![
-    ///     "/path/to/model-00001-of-00002.safetensors".into(),
-    ///     "/path/to/model-00002-of-00002.safetensors".into(),
+    /// let weights: Vec<&str> = vec![
+    ///     "/path/to/model-00001-of-00002.safetensors",
+    ///     "/path/to/model-00002-of-00002.safetensors",
     /// ];
     /// let model = SmolVlm2::from_safetensors(weights, SmolVlm2Config::default()).unwrap();
     /// ```
