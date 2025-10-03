@@ -117,7 +117,11 @@ pub struct VideoMetadata {
     /// Total duration of the video in seconds, if available.
     pub duration: Option<u32>,
 
-    // Is this frame already processed?
+    /// Processing status for each frame in the video.
+    ///
+    /// Each boolean value indicates whether the corresponding frame has been
+    /// processed by operations like `process_frames()`. This helps avoid
+    /// redundant processing and tracks which frames have been modified.
     pub processed: Vec<bool>,
 }
 
@@ -178,11 +182,22 @@ impl<A: ImageAllocator + Clone> Video<A> {
     ///
     /// This method removes frames from the beginning of the video if the total
     /// number of frames exceeds the specified maximum. Both frames and their
-    /// corresponding timestamps are removed. Remove old frames to maintain buffer size
+    /// corresponding timestamps and processing status are removed to maintain
+    /// consistency across all metadata.
     ///
     /// # Arguments
     ///
     /// * `max_frames` - Maximum number of frames to keep
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use kornia_vlm::video::Video;
+    /// # use kornia_tensor::CpuAllocator;
+    /// # let mut video = Video::<CpuAllocator>::new(vec![], vec![]);
+    /// // Keep only the most recent 10 frames
+    /// video.remove_old_frames(10);
+    /// ```
     pub fn remove_old_frames(&mut self, max_frames: usize) {
         if self.frames.len() > max_frames {
             let excess = self.frames.len() - max_frames;
@@ -484,31 +499,32 @@ impl<A: ImageAllocator + Clone> Video<A> {
 
     /// Process all frames using a closure that modifies each frame in-place.
     ///
-    /// This method applies the provided closure to each frame as a mutable reference,
-    /// allowing for in-place modifications of the frame data. The closure receives
-    /// both the frame index and a mutable reference to the frame.
+    /// This method applies the provided closure to each unprocessed frame as a mutable reference,
+    /// allowing for in-place modifications of the frame data. Frames that have already been
+    /// processed (marked in metadata) are automatically skipped to avoid redundant operations.
     ///
     /// # Arguments
     ///
-    /// * `processor` - A closure that takes the frame index (usize) and a mutable
-    ///                 reference to an Image frame, allowing for in-place modifications
+    /// * `processor` - A closure that takes a mutable reference to an Image frame and returns
+    ///                 a Result, allowing for in-place modifications and error handling
     ///
     /// # Returns
     ///
-    /// A reference to the processed frames vector
+    /// A `Result` indicating success or the first error encountered during processing
     ///
     /// # Examples
     ///
     /// ```no_run
     /// # use kornia_vlm::video::{Video, VideoSamplingMethod};
     /// # use kornia_tensor::CpuAllocator;
-    /// # let mut video = Video::<CpuAllocator>::new(vec![], vec![], 10);
+    /// # let mut video = Video::<CpuAllocator>::new(vec![], vec![]);
     /// // Apply some processing to each frame
-    /// video.process_frames(|frame_idx, frame| {
-    ///     // Example: modify frame data based on frame index
-    ///     println!("Processing frame {}", frame_idx);
+    /// video.process_frames(|frame| {
+    ///     // Example: modify frame data (e.g., apply a filter)
+    ///     println!("Processing frame with size: {:?}", frame.size());
     ///     // frame modifications would go here
-    /// });
+    ///     Ok(())
+    /// }).unwrap();
     /// ```
     pub fn process_frames<F>(&mut self, mut processor: F) -> Result<(), VideoError>
     where
@@ -535,7 +551,40 @@ impl<A: ImageAllocator + Clone> Video<A> {
         &self.frames
     }
 
-    // Outputs N x 3 x H x W tensor, padded if necessary
+    /// Convert the video frames into a tensor representation.
+    ///
+    /// This method converts all video frames into a single 4D tensor with the format
+    /// `N x 3 x H x W` where:
+    /// - `N` is the number of frames
+    /// - `3` is the number of color channels (RGB)
+    /// - `H` is the height of each frame
+    /// - `W` is the width of each frame
+    ///
+    /// The frames are converted to F32 dtype and the color channels are permuted
+    /// from HWC (Height-Width-Channel) to CHW (Channel-Height-Width) format,
+    /// which is the standard format expected by most neural network models.
+    ///
+    /// # Arguments
+    ///
+    /// * `device` - The device (CPU/CUDA) where the tensor should be allocated
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing either:
+    /// - `Ok(Tensor)` - A 4D tensor of shape `[N, 3, H, W]` with F32 dtype
+    /// - `Err(VideoError)` - If tensor creation or operations fail
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use kornia_vlm::video::{Video, VideoSamplingMethod};
+    /// # use kornia_tensor::CpuAllocator;
+    /// # use candle_core::Device;
+    /// # let video = Video::<CpuAllocator>::new(vec![], vec![]);
+    /// let device = Device::Cpu;
+    /// let tensor = video.into_tensor(&device).unwrap();
+    /// println!("Tensor shape: {:?}", tensor.dims()); // [N, 3, H, W]
+    /// ```
     pub fn into_tensor(&self, device: &Device) -> Result<Tensor, VideoError> {
         let mut tensors = vec![];
         for i in 0..self.frames.len() {
@@ -553,6 +602,31 @@ impl<A: ImageAllocator + Clone> Video<A> {
         Ok(Tensor::stack(&tensors, 0)?)
     }
 
+    /// Get a reference to the video metadata.
+    ///
+    /// Returns metadata containing timing and structural information about the video,
+    /// including frame timestamps, FPS, duration, and processing status for each frame.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the `VideoMetadata` containing:
+    /// - `fps`: Original video frame rate (if available)
+    /// - `timestamps`: Vector of frame timestamps in seconds
+    /// - `duration`: Total video duration in seconds (if available)
+    /// - `processed`: Vector indicating which frames have been processed
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use kornia_vlm::video::{Video, VideoSamplingMethod};
+    /// # use kornia_tensor::CpuAllocator;
+    /// # let video = Video::<CpuAllocator>::new(vec![], vec![]);
+    /// let metadata = video.metadata();
+    /// if let Some(fps) = metadata.fps {
+    ///     println!("Video FPS: {}", fps);
+    /// }
+    /// println!("Number of frames: {}", metadata.timestamps.len());
+    /// ```
     pub fn metadata(&self) -> &VideoMetadata {
         &self.metadata
     }

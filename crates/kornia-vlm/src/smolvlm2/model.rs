@@ -8,6 +8,10 @@ use log::debug;
 
 use crate::context::InferenceContext;
 
+/// A connector module that bridges vision and language modalities in SmolVLM2.
+///
+/// The Connector transforms visual features from the vision encoder into a format
+/// compatible with the language model through pixel shuffling and linear projection.
 pub struct Connector {
     modality_proj: Linear,
 }
@@ -17,6 +21,27 @@ impl Connector {
     const HEIGHT: usize = 27;
     const WIDTH: usize = 27;
 
+    /// Perform pixel shuffling operation to rearrange tensor dimensions.
+    ///
+    /// This operation reorganizes image patches by applying a pixel shuffle transformation
+    /// that increases spatial resolution while reducing the number of channels. The operation
+    /// reshapes the input from `[batch, patches, embed_dim]` to a format suitable for
+    /// multi-modal processing.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - Input tensor with shape `[batch, patches, embed_dim]` where patches = HEIGHT*WIDTH
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the pixel-shuffled tensor with reduced patch count and increased embedding dimension
+    ///
+    /// # Tensor Transformations
+    ///
+    /// 1. `B,P,E` → `B,H,W,E` (reshape patches to spatial dimensions)
+    /// 2. `B,H,W,E` → `B,H/S,S,W/S,S,E` (split spatial dims by scale factor)
+    /// 3. `B,H/S,S,W/S,S,E` → `B,H/S,W/S,S,S,E` (permute dimensions)
+    /// 4. `B,H/S,W/S,S,S,E` → `B,P/S²,S²*E` (reshape to final format)
     fn pixel_shuffle(&self, x: &Tensor) -> Result<Tensor> {
         let (batch, patches, embed_dim) = x.dims3()?; // patches == HEIGHT*WIDTH
 
@@ -38,12 +63,49 @@ impl Connector {
             ])
     }
 
+    /// Forward pass through the connector module.
+    ///
+    /// Processes image hidden states through pixel shuffling and linear projection
+    /// to transform visual features into a format compatible with the language model.
+    ///
+    /// # Arguments
+    ///
+    /// * `image_hidden_states` - Tensor containing encoded image features from the vision model
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the projected image features ready for fusion with text embeddings
+    ///
+    /// # Process
+    ///
+    /// 1. Apply pixel shuffling to reorganize spatial dimensions
+    /// 2. Project through linear layer to match language model embedding dimension
     pub fn forward(&self, image_hidden_states: &Tensor) -> Result<Tensor> {
         let image_hidden_states = self.pixel_shuffle(image_hidden_states)?;
         self.modality_proj.forward(&image_hidden_states)
     }
 }
 
+/// The main SmolVLM2 model combining vision and language understanding.
+///
+/// This model integrates a vision encoder (SigLIP), a language model (Llama), and a connector
+/// module to enable multi-modal understanding. It processes both text and images together,
+/// allowing for vision-language tasks like image captioning, visual question answering, and more.
+///
+/// # Architecture
+///
+/// - **Vision Model**: SigLIP vision encoder for processing images
+/// - **Text Model**: Llama language model for text understanding and generation  
+/// - **Connector**: Bridge module that aligns vision and text representations
+/// - **Cache**: Maintains attention cache for efficient sequential generation
+///
+/// # Model Configuration
+///
+/// - Hidden size: 2048 dimensions
+/// - Vocabulary size: 49,280 tokens
+/// - Max sequence length: 16,384 tokens
+/// - Attention heads: 32
+/// - Hidden layers: 24
 pub struct Model {
     text_model: candle_transformers::models::llama::Llama,
     connector: Connector,
@@ -88,6 +150,36 @@ impl Model {
         layer_norm_eps: 1e-6,
     };
 
+    /// Load a SmolVLM2 model from pretrained weights.
+    ///
+    /// Creates a new SmolVLM2 model instance by loading pretrained weights for the vision model,
+    /// text model, and connector components. The method handles weight name mapping to ensure
+    /// compatibility with the expected model architecture.
+    ///
+    /// # Arguments
+    ///
+    /// * `vb` - Variable builder containing the model weights
+    /// * `dtype` - Data type for model parameters (typically F16 or F32)
+    /// * `device` - Device where the model should be loaded (CPU or CUDA)
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing either:
+    /// - `Ok(Model)` - Successfully loaded SmolVLM2 model ready for inference
+    /// - `Err(candle_core::Error)` - If weight loading or model initialization fails
+    ///
+    /// # Model Components Loaded
+    ///
+    /// - **Text Model**: Llama language model with 24 layers and 2048 hidden size
+    /// - **Vision Model**: SigLIP vision encoder with 27 layers and 1152 hidden size  
+    /// - **Connector**: Modality projection layer (10368 → 2048 dimensions)
+    /// - **Cache**: Attention cache initialized for the specified device and dtype
+    ///
+    /// # Weight Mapping
+    ///
+    /// The method applies weight name transformations to handle model checkpoints:
+    /// - `model.text_model.model` → `model.text_model`
+    /// - `model.text_model.lm_head.weight` → `lm_head.weight`
     pub fn load(vb: VarBuilder, dtype: DType, device: &Device) -> Result<Self> {
         let vb = vb.rename_f(|f: &str| {
             if let Some(rest) = f.strip_prefix("model.text_model.model") {
@@ -133,6 +225,33 @@ impl Model {
         })
     }
 
+    /// Merge image and text embeddings based on image token positions.
+    ///
+    /// This method combines visual and textual embeddings into a single sequence by inserting
+    /// image features at positions marked by the image token mask. This allows the language
+    /// model to process both modalities in a unified manner.
+    ///
+    /// # Arguments
+    ///
+    /// * `image_token_mask` - Binary tensor indicating where image tokens should be placed
+    /// * `image_hidden_states` - Encoded image features from the vision model and connector
+    /// * `inputs_embeds` - Text embeddings from the language model's embedding layer
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the merged embedding sequence ready for language model processing
+    ///
+    /// # Process
+    ///
+    /// 1. Clear and prepare the merged embeddings cache
+    /// 2. Iterate through each position in the sequence
+    /// 3. Insert image features where mask is non-zero, text embeddings otherwise
+    /// 4. Stack all embeddings into a single tensor
+    ///
+    /// # Performance Notes
+    ///
+    /// Currently uses a sequential approach for merging. Future optimizations could include
+    /// scatter assignment or CUDA kernels for better performance.
     fn inputs_merger(
         &mut self,
         image_token_mask: &Tensor,
@@ -163,6 +282,40 @@ impl Model {
         Ok(merged_embeds)
     }
 
+    /// Perform a forward pass through the multi-modal SmolVLM2 model.
+    ///
+    /// This method processes both text tokens and image data through their respective encoders,
+    /// merges the representations, and generates the next token logits through the language model.
+    /// It handles multiple images by concatenating their features and supports both text-only
+    /// and multi-modal inputs.
+    ///
+    /// # Arguments
+    ///
+    /// * `xs` - Input token IDs tensor with shape `[sequence_length]`
+    /// * `index_pos` - Current position in the sequence for attention cache management
+    /// * `image_token_mask` - Binary mask indicating positions where image tokens should be inserted
+    /// * `image_data` - Vector of (pixel_values, pixel_attention_masks) tuples for each image
+    /// * `ctx` - Inference context containing debug settings and visual introspection
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing logits tensor for next token prediction with shape `[vocab_size]`
+    ///
+    /// # Process Flow
+    ///
+    /// 1. **Text Embedding**: Convert input tokens to embeddings via language model
+    /// 2. **Vision Processing**: For each image:
+    ///    - Encode through SigLIP vision model
+    ///    - Transform via connector module (pixel shuffle + projection)
+    ///    - Flatten spatial dimensions
+    /// 3. **Multi-modal Fusion**: Merge image and text embeddings based on token mask
+    /// 4. **Language Generation**: Process fused embeddings through language model
+    /// 5. **Output Processing**: Return logits, handling batch dimension appropriately
+    ///
+    /// # Multi-Image Support
+    ///
+    /// Multiple images are processed independently and their features are concatenated
+    /// before merging with text embeddings, enabling complex multi-image reasoning.
     pub fn forward(
         &mut self,
         xs: &Tensor,
@@ -216,6 +369,28 @@ impl Model {
         }
     }
 
+    /// Clear the model's attention cache and reset context.
+    ///
+    /// This method reinitializes the attention cache, effectively clearing any previous
+    /// conversation or context history. This is useful when starting a new conversation
+    /// or when you want to ensure the model doesn't retain information from previous
+    /// inference sessions.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or failure of cache reinitialization
+    ///
+    /// # Use Cases
+    ///
+    /// - Starting a new conversation or inference session
+    /// - Clearing previous context to prevent interference
+    /// - Resetting model state after processing multiple independent inputs
+    /// - Memory management in long-running applications
+    ///
+    /// # Performance Impact
+    ///
+    /// Cache clearing is a lightweight operation that only reinitializes the attention
+    /// cache structure without affecting the model weights or other components.
     pub fn clear_context(&mut self) -> Result<()> {
         self.cache = Cache::new(
             true,

@@ -479,7 +479,7 @@ mod tests {
                     64,
                     CpuAllocator,
                 )
-                .unwrap()]),
+                .expect("Failed to load video")]),
                 sample_len,
                 CpuAllocator,
             )

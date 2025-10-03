@@ -155,38 +155,6 @@ impl VideoProcessor {
             Ok(())
         })?;
 
-        // 2. resize (no splitting)
-
-        // Self::resize(
-        //     &mut video.frames,
-        //     new_size,
-        //     InterpolationMode::Bicubic,
-        //     alloc.clone(),
-        // )?;
-        // Self::resize(
-        //     &mut video.frames,
-        //     ImageSize {
-        //         width: self.config.video_size_longest_edge,
-        //         height: self.config.video_size_longest_edge,
-        //     },
-        //     InterpolationMode::Bicubic,
-        //     alloc.clone(),
-        // )?;
-
-        // // pad
-        // let padded_size = ImageSize {
-        //     width: self.config.video_size_longest_edge,
-        //     height: self.config.video_size_longest_edge,
-        // };
-        // // TODO: masking
-        // Self::pad(
-        //     &mut video.frames,
-        //     padded_size,
-        //     self.config.max_frames,
-        //     0,
-        //     alloc,
-        // )?;
-
         // temporal padding - only pad if we really need consistent batch size
         // For memory efficiency, avoid padding when not necessary
         let video_tensor = video.into_tensor(device)?;
@@ -195,22 +163,6 @@ impl VideoProcessor {
         if video_tensor_shape.dim(0)? > self.config.max_frames {
             return Err(SmolVlm2Error::VideoProcessingError);
         }
-        // Skip padding for now to avoid OOM issues with single frame videos
-        // TODO: Add padding back when we need batch processing
-        // else if video_tensor_shape.dim(0)? < self.config.max_frames {
-        //     let pad_tensor = Tensor::zeros(
-        //         // TODO: cache
-        //         &[
-        //             self.config.max_frames - video_tensor_shape.dim(0)?,
-        //             3,
-        //             video_tensor_shape.dim(2)?,
-        //             video_tensor_shape.dim(3)?,
-        //         ],
-        //         DType::F32,
-        //         device,
-        //     )?;
-        //     video_tensor = Tensor::cat(&[video_tensor, pad_tensor], 0)?;
-        // }
 
         // normalize && rescale (must be the last step)
         let frames_tensor = Self::normalize_and_rescale(
@@ -238,11 +190,7 @@ impl VideoProcessor {
                 .get(meta_idx)
                 .cloned()
                 .unwrap_or(VideoMetadata::default());
-            // let mut metadata = metadata;
-            // if metadata.fps.is_none() {
-            //     warn!("SmolVLM requires frame timestamps to construct prompts, but the `fps` of the input video could not be inferred. Defaulting to `fps=24`. Please provide `video_metadata` for more accurate results.");
-            //     metadata.fps = Some(24);
-            // }
+
             let timestamps: Vec<(u32, u32)> = metadata
                 .timestamps
                 .iter()
@@ -340,8 +288,6 @@ impl VideoProcessor {
         alloc: A,
     ) -> Result<(), VideoError> {
         // Pad each frame spatially if needed
-        // for i in 0..frames.len() {
-        // let frame = frames;
         let size = frame.size();
         if size.width < padded_size.width || size.height < padded_size.height {
             let mut padded = Image::<u8, 3, A>::from_size_val(padded_size, fill, alloc.clone())?;
@@ -357,19 +303,8 @@ impl VideoProcessor {
                 padded_img_slice[dst_offset..dst_offset + row_bytes]
                     .copy_from_slice(&img_slice[src_offset..src_offset + row_bytes]);
             }
-            // frames[i] = padded;
             *frame = padded;
         }
-        // }
-
-        // Pad temporally (add blank frames if needed)
-        // let cur_frames = frames.len();
-        // if cur_frames < max_num_frames {
-        //     let blank = Image::<u8, 3, A>::from_size_val(padded_size, fill, alloc.clone())?;
-        //     for _ in 0..(max_num_frames - cur_frames) {
-        //         frames.push(blank.clone());
-        //     }
-        // }
 
         Ok(())
     }
@@ -406,26 +341,6 @@ impl VideoProcessor {
             .broadcast_mul(&rescale_tensor)?
             .broadcast_sub(&mean_tensor)?
             .broadcast_div(&std_tensor)?)
-        // let mut tensors = vec![];
-        // for i in 0..frames.len() {
-        //     let mut tensor = Tensor::from_vec(
-        //         frames[i].to_vec(),
-        //         Shape::from_dims(&[frames[i].size().height, frames[i].size().width, 3]),
-        //         device,
-        //     )?
-        //     .permute(vec![2, 0, 1])?
-        //     .to_dtype(candle_core::DType::F32)?;
-
-        //     // Normalize: scale to [0,1]
-        //     tensor = tensor.broadcast_mul(&rescale_tensor)?;
-        //     tensor = tensor
-        //         .broadcast_sub(&mean_tensor)?
-        //         .broadcast_div(&std_tensor)?;
-
-        //     tensors.push(tensor);
-        // }
-
-        // Ok(Tensor::stack(&tensors, 0)?)
     }
 }
 
