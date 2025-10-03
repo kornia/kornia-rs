@@ -1,9 +1,8 @@
 use std::time::Duration;
 
-use candle_core::{DType, Device, Shape, Tensor};
+use candle_core::{DType, Device, Tensor};
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
-use log::warn;
 use num2words::Num2Words;
 
 const DEFAULT_VIDEO_INTRO: &str = "You are provided the following series of {frame_count} frames from a {video_duration} [H:MM:SS] video.\n";

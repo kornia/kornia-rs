@@ -32,8 +32,7 @@
 use candle_core::Device;
 use candle_core::Shape;
 use candle_core::Tensor;
-use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
-use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
+use kornia_image::{allocator::ImageAllocator, Image};
 #[cfg(feature = "gstreamer")]
 use kornia_io::gstreamer::{video::ImageFormat as IoImageFormat, video::VideoReader};
 #[cfg(feature = "gstreamer")]
@@ -187,11 +186,6 @@ impl<A: ImageAllocator + Clone> Video<A> {
     pub fn remove_old_frames(&mut self, max_frames: usize) {
         if self.frames.len() > max_frames {
             let excess = self.frames.len() - max_frames;
-            println!(
-                "######## {:?} {:?}",
-                self.frames.len(),
-                self.metadata.timestamps.len()
-            );
             self.frames.drain(0..excess);
             self.metadata.timestamps.drain(0..excess);
             self.metadata.processed.drain(0..excess);
@@ -460,7 +454,7 @@ impl<A: ImageAllocator + Clone> Video<A> {
             .close()
             .map_err(|_| VideoError::VideoReaderClose)?;
 
-        println!(
+        debug!(
             "Video loaded with kornia-io: sampled frames = {}, total frames processed = {}, duration = {:?} seconds, fps = {:?}",
             frames.len(),
             if collect_all { all_frames.len() } else { frame_idx },
