@@ -29,6 +29,7 @@
 //! # }
 //! ```
 
+use candle_core::DType;
 use candle_core::Device;
 use candle_core::Shape;
 use candle_core::Tensor;
@@ -585,7 +586,7 @@ impl<A: ImageAllocator + Clone> Video<A> {
     /// let tensor = video.into_tensor(&device).unwrap();
     /// println!("Tensor shape: {:?}", tensor.dims()); // [N, 3, H, W]
     /// ```
-    pub fn into_tensor(&self, device: &Device) -> Result<Tensor, VideoError> {
+    pub fn into_tensor(&self, dtype: DType, device: &Device) -> Result<Tensor, VideoError> {
         let mut tensors = vec![];
         for i in 0..self.frames.len() {
             let tensor = Tensor::from_vec(
@@ -594,7 +595,7 @@ impl<A: ImageAllocator + Clone> Video<A> {
                 device,
             )?
             .permute(vec![2, 0, 1])?
-            .to_dtype(candle_core::DType::F32)?;
+            .to_dtype(dtype)?;
 
             tensors.push(tensor);
         }

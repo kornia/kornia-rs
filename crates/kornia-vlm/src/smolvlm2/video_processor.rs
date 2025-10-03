@@ -30,12 +30,16 @@ pub struct VideoProcessor {
     config: VideoProcessorConfig,
     processed_videos: Vec<(Tensor, Tensor)>,
     image_token_tensor: Option<Tensor>,
+    mean_tensor: Tensor,
+    std_tensor: Tensor,
+    rescale_tensor: Tensor,
 }
 
 impl VideoProcessor {
     pub fn new(
         config: VideoProcessorConfig,
         device: &Device,
+        dtype: DType,
         txt_processor: &TextProcessor,
     ) -> Result<Self, SmolVlm2Error> {
         let image_token_tensor = if let Err(SmolVlm2Error::MissingTokenizer) =
@@ -47,10 +51,21 @@ impl VideoProcessor {
             Some(Tensor::from_slice(&[image_token], &[1], device)?)
         };
 
+        // Create normalization tensors once
+        let mean_tensor =
+            Tensor::from_slice(&config.frame_mean, &[1, 3, 1, 1], device)?.to_dtype(dtype)?;
+        let std_tensor =
+            Tensor::from_slice(&config.frame_std, &[1, 3, 1, 1], device)?.to_dtype(dtype)?;
+        let rescale_tensor =
+            Tensor::from_slice(&[config.rescale_factor], &[1, 1, 1, 1], device)?.to_dtype(dtype)?;
+
         Ok(Self {
             config,
             processed_videos: Vec::new(),
             image_token_tensor,
+            mean_tensor,
+            std_tensor,
+            rescale_tensor,
         })
     }
 
@@ -58,6 +73,7 @@ impl VideoProcessor {
         &mut self,
         prompt: &mut String,
         videos: Vec<&mut Video<A>>,
+        dtype: DType,
         device: &Device,
         alloc: A,
     ) -> Result<(), SmolVlm2Error> {
@@ -83,9 +99,9 @@ impl VideoProcessor {
         let mut video_metadatas = vec![];
         for video in videos.into_iter() {
             video_metadatas.push(video.metadata().clone());
-            let img_patches = self.preprocess(video, device, alloc.clone())?;
+            let img_patches = self.preprocess(video, device, dtype, alloc.clone())?;
             self.processed_videos
-                .push((img_patches, Tensor::zeros(&[0], DType::F32, device)?));
+                .push((img_patches, Tensor::zeros(&[0], dtype, device)?));
         }
 
         self.expand_text_with_video_tokens(
@@ -120,6 +136,7 @@ impl VideoProcessor {
         &mut self,
         video: &mut Video<A>,
         device: &Device,
+        dtype: DType,
         alloc: A,
     ) -> Result<Tensor, SmolVlm2Error> {
         let new_size = get_resize_output_image_size(
@@ -152,7 +169,7 @@ impl VideoProcessor {
 
         // temporal padding - only pad if we really need consistent batch size
         // For memory efficiency, avoid padding when not necessary
-        let video_tensor = video.into_tensor(device)?;
+        let video_tensor = video.into_tensor(dtype, device)?;
         let video_tensor_shape = video_tensor.shape();
 
         if video_tensor_shape.dim(0)? > self.config.max_frames {
@@ -160,13 +177,7 @@ impl VideoProcessor {
         }
 
         // normalize && rescale (must be the last step)
-        let frames_tensor = Self::normalize_and_rescale(
-            video_tensor,
-            self.config.frame_mean,
-            self.config.frame_std,
-            self.config.rescale_factor,
-            device,
-        )?;
+        let frames_tensor = self.normalize_and_rescale(video_tensor)?;
 
         Ok(frames_tensor)
     }
@@ -312,30 +323,16 @@ impl VideoProcessor {
     ///
     /// # Arguments
     ///
-    /// * `mean` - Mean values for each color channel [R, G, B]
-    /// * `std` - Standard deviation values for each color channel [R, G, B]
-    /// * `rescale_factor` - Factor to rescale pixel values (typically 1.0/255.0)
-    /// * `device` - Device to place the resulting tensor on
+    /// * `frames` - Input tensor containing the video frames
     ///
     /// # Returns
     ///
-    /// * `Result<(), VideoError>` - Ok if successful, VideoError if tensor operations fail
-    pub fn normalize_and_rescale(
-        frames: Tensor,
-        mean: [f32; 3],
-        std: [f32; 3],
-        rescale_factor: f32,
-        device: &Device,
-    ) -> Result<Tensor, SmolVlm2Error> {
-        let mean_tensor = Tensor::from_slice(&mean, &[1, 3, 1, 1], device)?;
-        let std_tensor = Tensor::from_slice(&std, &[1, 3, 1, 1], device)?;
-        let rescale_tensor = Tensor::from_slice(&[rescale_factor], &[1, 1, 1, 1], device)?;
-
+    /// * `Result<Tensor, SmolVlm2Error>` - Ok with normalized tensor if successful, SmolVlm2Error if tensor operations fail
+    pub fn normalize_and_rescale(&self, frames: Tensor) -> Result<Tensor, SmolVlm2Error> {
         Ok(frames
-            .to_dtype(DType::F32)?
-            .broadcast_mul(&rescale_tensor)?
-            .broadcast_sub(&mean_tensor)?
-            .broadcast_div(&std_tensor)?)
+            .broadcast_mul(&self.rescale_tensor)?
+            .broadcast_sub(&self.mean_tensor)?
+            .broadcast_div(&self.std_tensor)?)
     }
 }
 

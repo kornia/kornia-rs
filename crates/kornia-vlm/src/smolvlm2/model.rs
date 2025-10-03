@@ -130,7 +130,7 @@ impl Model {
         intermediate_size: 8192,
         hidden_size: Self::HIDDEN_SIZE,
         num_key_value_heads: 32,
-        use_flash_attn: false,
+        use_flash_attn: true,
         rms_norm_eps: 1e-5,
         rope_theta: 273768.0,
         bos_token_id: None,

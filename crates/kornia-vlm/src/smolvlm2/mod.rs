@@ -119,6 +119,7 @@ pub struct SmolVlm2<A: ImageAllocator> {
     model: model::Model,
     config: SmolVlm2Config,
     device: Device,
+    dtype: DType,
     index_pos: usize, // index of the next token to be processed
 
     txt_processor: TextProcessor,
@@ -152,10 +153,10 @@ impl<A: ImageAllocator> SmolVlm2<A> {
     pub fn new(config: SmolVlm2Config) -> Result<Self, SmolVlm2Error> {
         #[cfg(feature = "cuda")]
         let (device, dtype) = match Device::cuda_if_available(0) {
-            Ok(device) => (device, DType::F32),
+            Ok(device) => (device, DType::BF16),
             Err(e) => {
                 log::warn!("CUDA not available, defaulting to CPU: {e:?}");
-                (Device::Cpu, DType::BF16)
+                (Device::Cpu, DType::F32)
             }
         };
 
@@ -172,6 +173,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
             vid_processor,
             config,
             device,
+            dtype,
             index_pos: 0,
 
             response: String::new(),
@@ -247,6 +249,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
                 self.img_processor.binding_images_to_prompt(
                     &mut converted_prompt,
                     images,
+                    self.dtype,
                     &self.device,
                     alloc,
                 )?;
@@ -263,6 +266,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
                 self.vid_processor.binding_videos_to_prompt(
                     &mut converted_prompt,
                     videos,
+                    self.dtype,
                     &self.device,
                     alloc,
                 )?;
@@ -366,9 +370,9 @@ impl<A: ImageAllocator> SmolVlm2<A> {
         let txt_processor = TextProcessor::new(Self::MODEL_IDENTIFIER.into(), config)?
             .with_template_string(Self::UPDATED_VIDEO_CHAT_TEMPLATE.into())?;
         let img_processor =
-            ImageProcessor::new(Self::IMG_PROCESSOR_CONFIG, device, &txt_processor)?;
+            ImageProcessor::new(Self::IMG_PROCESSOR_CONFIG, dtype, device, &txt_processor)?;
         let vid_processor =
-            VideoProcessor::new(Self::VID_PROCESSOR_CONFIG, device, &txt_processor)?;
+            VideoProcessor::new(Self::VID_PROCESSOR_CONFIG, device, dtype, &txt_processor)?;
 
         let api = Api::new()?;
         let repo = api.model(Self::MODEL_IDENTIFIER.to_string());

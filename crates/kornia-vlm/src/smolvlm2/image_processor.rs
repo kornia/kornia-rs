@@ -42,6 +42,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
     /// Create a new SmolVLM image preprocessor
     pub fn new(
         config: ImageProcessorConfig,
+        dtype: DType,
         device: &Device,
         txt_processor: &TextProcessor,
     ) -> Result<Self, SmolVlm2Error> {
@@ -60,7 +61,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
             buf_padded_mask: None,
             buf_global_padded_img: None,
             buf_global_padded_mask: None,
-            buf_mask_tensor: (Tensor::ones((2048, 2048), DType::F32, device)? * 255.0)?,
+            buf_mask_tensor: (Tensor::ones((2048, 2048), dtype, device)? * 255.0)?,
             buf_mean_tensor: Tensor::from_slice(&config.image_mean, (3, 1, 1), device)?,
             buf_std_tensor: Tensor::from_slice(&config.image_std, (3, 1, 1), device)?,
 
@@ -78,6 +79,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
         &mut self,
         prompt: &mut String,
         images: Vec<Image<u8, 3, A>>,
+        dtype: DType,
         device: &Device,
         alloc: A,
     ) -> Result<(), SmolVlm2Error> {
@@ -96,7 +98,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
 
         for ((start, _), image) in image_tags_pos.iter().zip(images.into_iter()) {
             let (img_patches, mask_patches, size) =
-                self.preprocess(&image, device, alloc.clone())?;
+                self.preprocess(&image, dtype, device, alloc.clone())?;
             self.processed_images.push((img_patches, mask_patches));
 
             let img_token = get_prompt_split_image(81, size);
@@ -131,6 +133,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
     pub fn preprocess(
         &mut self,
         img: &Image<u8, 3, A>,
+        dtype: DType,
         device: &Device,
         alloc: A,
     ) -> Result<(Tensor, Tensor, ImageSize), SmolVlm2Error> {
@@ -224,11 +227,11 @@ impl<A: ImageAllocator> ImageProcessor<A> {
             .expect("Tried taking a None global mask");
 
         // convert to tensors and normalize
-        let mask_tensor = self.mask_to_tensor(mask, device)?;
-        let global_mask_tensor = self.mask_to_tensor(global_mask, device)?;
+        let mask_tensor = self.mask_to_tensor(mask, dtype, device)?;
+        let global_mask_tensor = self.mask_to_tensor(global_mask, dtype, device)?;
 
-        let img_tensor = self.image_to_normalized_tensor(img_padded, device)?;
-        let global_img_tensor = self.image_to_normalized_tensor(global_img, device)?;
+        let img_tensor = self.image_to_normalized_tensor(img_padded, dtype, device)?;
+        let global_img_tensor = self.image_to_normalized_tensor(global_img, dtype, device)?;
 
         // create patches and concatenate with global image
         let (img_patches, mask_patches, size) = self.create_patches_with_global(
@@ -360,6 +363,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
     fn image_to_normalized_tensor(
         &self,
         img: Image<u8, 3, A>, // Take ownership
+        dtype: DType,
         device: &Device,
     ) -> Result<Tensor, SmolVlm2Error> {
         let (width, height) = (img.width(), img.height());
@@ -367,7 +371,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
 
         let mut tensor = Tensor::from_vec(img_data, Shape::from_dims(&[height, width, 3]), device)?
             .permute(vec![2, 0, 1])?
-            .to_dtype(candle_core::DType::F32)?;
+            .to_dtype(dtype)?;
 
         // Normalize: scale to [0,1]
         tensor = tensor.broadcast_mul(&Tensor::from_slice(
@@ -387,6 +391,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
     fn mask_to_tensor(
         &mut self,
         mask: Image<u8, 1, A>, // Take ownership of the mask
+        dtype: DType,
         device: &Device,
     ) -> Result<Tensor, SmolVlm2Error> {
         let (width, height) = (mask.width(), mask.height());
@@ -403,7 +408,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
 
             self.buf_mask_tensor =
                 Tensor::from_vec(mask_data, Shape::from_dims(&[height, width]), device)?
-                    .to_dtype(DType::F32)?;
+                    .to_dtype(dtype)?;
 
             Ok(self.buf_mask_tensor.clone())
         } else {
