@@ -31,15 +31,6 @@ pub enum PnPError {
     /// Singular value decomposition failed
     #[error("SVD computation failed: {0}")]
     SvdFailed(String),
-
-    /// RANSAC failed to find a valid model with enough inliers
-    #[error("RANSAC found insufficient inliers: required {required}, got {actual}")]
-    InsufficientInliers {
-        /// Minimum number of inliers required to accept a model
-        required: usize,
-        /// Actual number of inliers found
-        actual: usize,
-    },
 }
 
 /// Numeric tolerances used by linear algebra routines throughout the PnP pipeline.

@@ -7,6 +7,7 @@ use glam::{Mat3, Vec3};
 use log::{debug, warn};
 use rand::seq::SliceRandom;
 use rand::{rngs::StdRng, SeedableRng};
+use thiserror::Error;
 
 const MIN_CORRESPONDENCES: usize = 4; // Minimum 2D-3D pairs required by PnP
 const EPNP_MIN_SAMPLE_SIZE: usize = 5; // Minimal sample size for EPnP (unless only 4 points available)
@@ -18,6 +19,26 @@ const DEFAULT_CONFIDENCE: f32 = 0.99;
 const EPS_PROB_MIN: f32 = 1e-6; // Guard for tiny probabilities
 const EPS_LOG_GUARD: f32 = 1e-12; // Guard to avoid log(0) and log(1)
 const HIGH_INLIER_RATIO_STOP: f32 = 0.95; // Early stop when inlier ratio is very high
+
+/// Error type for the RANSAC-based PnP solver.
+///
+/// This encapsulates both underlying base-solver errors (`PnPError`) as well as
+/// RANSAC-specific failure modes.
+#[derive(Debug, Error)]
+pub enum PnPRansacError {
+    /// Error returned by the underlying PnP solver used inside RANSAC.
+    #[error(transparent)]
+    Base(#[from] PnPError),
+
+    /// RANSAC failed to find a valid model with enough inliers.
+    #[error("RANSAC found insufficient inliers: required {required}, got {actual}")]
+    InsufficientInliers {
+        /// Minimum number of inliers required to accept a model
+        required: usize,
+        /// Actual number of inliers found
+        actual: usize,
+    },
+}
 
 /// Parameters for RANSAC over PnP.
 #[derive(Debug, Clone)]
@@ -66,7 +87,7 @@ pub fn solve_pnp_ransac(
     k: &[[f32; 3]; 3],
     base: PnPMethod,
     params: &RansacParams,
-) -> Result<PnPRansacResult, PnPError> {
+) -> Result<PnPRansacResult, PnPRansacError> {
     let n = world.len();
     if n != image.len() {
         return Err(PnPError::MismatchedArrayLengths {
@@ -74,13 +95,15 @@ pub fn solve_pnp_ransac(
             left_len: world.len(),
             right_name: "image points",
             right_len: image.len(),
-        });
+        }
+        .into());
     }
     if n < MIN_CORRESPONDENCES {
         return Err(PnPError::InsufficientCorrespondences {
             required: MIN_CORRESPONDENCES,
             actual: n,
-        });
+        }
+        .into());
     }
 
     // Minimal set size: EPnP uses 5 points (unless only 4 points available)
@@ -200,10 +223,11 @@ pub fn solve_pnp_ransac(
 
     // Validate and optionally refine
     if best_inliers.len() < MIN_CORRESPONDENCES {
-        return Err(PnPError::InsufficientInliers {
+        let err = PnPRansacError::InsufficientInliers {
             required: MIN_CORRESPONDENCES,
             actual: best_inliers.len(),
-        });
+        };
+        return Err(err);
     }
 
     let mut final_pose = if params.refine {
@@ -221,7 +245,8 @@ pub fn solve_pnp_ransac(
             None => {
                 return Err(PnPError::SvdFailed(
                     "RANSAC failed to produce a pose despite sufficient inliers".to_string(),
-                ));
+                )
+                .into());
             }
         }
     };
@@ -351,7 +376,7 @@ mod tests {
     use crate::epnp::EPnPParams;
 
     #[test]
-    fn test_ransac_basic_outliers() -> Result<(), PnPError> {
+    fn test_ransac_basic_outliers() -> Result<(), PnPRansacError> {
         // Use the same 6 inlier correspondences from epnp test
         let points_world: [[f32; 3]; 6] = [
             [0.0315, 0.03333, -0.10409],
@@ -398,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ransac_perfect_data() -> Result<(), PnPError> {
+    fn test_ransac_perfect_data() -> Result<(), PnPRansacError> {
         // Test with perfect data (no outliers)
         let points_world: [[f32; 3]; 6] = [
             [0.0315, 0.03333, -0.10409],
@@ -439,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ransac_minimum_points() -> Result<(), PnPError> {
+    fn test_ransac_minimum_points() -> Result<(), PnPRansacError> {
         // Test with exactly 4 points
         let points_world: [[f32; 3]; 4] = [
             [0.0315, 0.03333, -0.10409],
@@ -483,7 +508,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            PnPError::InsufficientCorrespondences { .. }
+            PnPRansacError::Base(PnPError::InsufficientCorrespondences { .. })
         ));
     }
 }

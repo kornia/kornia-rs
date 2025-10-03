@@ -13,7 +13,7 @@ pub mod ransac;
 pub use epnp::{EPnP, EPnPParams};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 pub use pnp::{PnPError, PnPResult, PnPSolver};
-pub use ransac::{solve_pnp_ransac, PnPRansacResult, RansacParams};
+pub use ransac::{solve_pnp_ransac, PnPRansacError, PnPRansacResult, RansacParams};
 
 mod ops;
 
