@@ -1,10 +1,10 @@
+use argh::FromArgs;
 use kornia_imgproc::calibration::{
     distortion::{distort_point_polynomial, PolynomialDistortion},
     CameraIntrinsic,
 };
 use kornia_pnp as kpnp;
 use rand::Rng;
-use argh::FromArgs;
 
 #[derive(FromArgs, Debug)]
 /// PnP demo application
@@ -134,28 +134,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
-<<<<<<< HEAD
-    // Run EPnP with distortion model
-    let result = kpnp::solve_pnp(
-        &world_pts,
-        &image_pts,
-        &k,
-        Some(PolynomialDistortion {
-            k1: distortion.k1,
-            k2: distortion.k2,
-            k3: distortion.k3,
-            k4: distortion.k4,
-            k5: distortion.k5,
-            k6: distortion.k6,
-            p1: distortion.p1,
-            p2: distortion.p2,
-        }),
-        kpnp::PnPMethod::EPnPDefault,
-    )?;
-=======
     println!("Dataset: {} points", world_pts.len());
     println!("Using RANSAC: {}", args.use_ransac);
->>>>>>> fc311b2 (fix: add argh to pnp example)
 
     // Run pose estimation
     let result = if args.use_ransac {
@@ -172,6 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &world_pts,
             &image_pts,
             &k,
+            Some(&distortion),
             kpnp::PnPMethod::EPnPDefault,
             &ransac_params,
         )?;
@@ -187,8 +168,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ransac_result.pose
     } else {
         // Direct mode: standard EPnP
-        let direct_result =
-            kpnp::solve_pnp(&world_pts, &image_pts, &k, kpnp::PnPMethod::EPnPDefault)?;
+        let direct_result = kpnp::solve_pnp(
+            &world_pts,
+            &image_pts,
+            &k,
+            Some(&distortion),
+            kpnp::PnPMethod::EPnPDefault,
+        )?;
         println!("Direct EPnP:");
         if let Some(rmse) = direct_result.reproj_rmse {
             println!("  RMSE: {:.3} px", rmse);

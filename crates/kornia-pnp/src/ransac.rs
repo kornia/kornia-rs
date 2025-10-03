@@ -4,6 +4,7 @@ use crate::ops::{intrinsics_as_vectors, pose_to_rt, project_sq_error};
 use crate::pnp::{PnPError, PnPResult};
 use crate::{solve_pnp, PnPMethod};
 use glam::{Mat3, Vec3};
+use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 use log::{debug, warn};
 use rand::seq::SliceRandom;
 use rand::{rngs::StdRng, SeedableRng};
@@ -85,6 +86,7 @@ pub fn solve_pnp_ransac(
     world: &[[f32; 3]],
     image: &[[f32; 2]],
     k: &[[f32; 3]; 3],
+    distortion: Option<&PolynomialDistortion>,
     base: PnPMethod,
     params: &RansacParams,
 ) -> Result<PnPRansacResult, PnPRansacError> {
@@ -157,7 +159,7 @@ pub fn solve_pnp_ransac(
         }
 
         // Estimate pose on minimal set
-        let pose_maybe = solve_pnp(&w_min, &i_min, k, base.clone());
+        let pose_maybe = solve_pnp(&w_min, &i_min, k, distortion, base.clone());
         let pose_min = match pose_maybe {
             Ok(p) => p,
             Err(_e) => {
@@ -176,6 +178,7 @@ pub fn solve_pnp_ransac(
         let (inliers, _total_squared_error) = classify_points(
             world,
             image,
+            None,
             None,
             ClassificationParams {
                 rotation_matrix: &pose_min.rotation,
@@ -238,7 +241,7 @@ pub fn solve_pnp_ransac(
             w_all.push(world[idx]);
             i_all.push(image[idx]);
         }
-        solve_pnp(&w_all, &i_all, k, base.clone())?
+        solve_pnp(&w_all, &i_all, k, distortion, base.clone())?
     } else {
         match best_pose {
             Some(p) => p,
@@ -255,6 +258,7 @@ pub fn solve_pnp_ransac(
     let (_inliers, sum_sq_inliers) = classify_points(
         world,
         image,
+        None,
         Some(&best_inliers),
         ClassificationParams {
             rotation_matrix: &final_pose.rotation,
@@ -304,6 +308,7 @@ struct ClassificationParams<'a> {
 fn classify_points(
     world: &[[f32; 3]],
     image: &[[f32; 2]],
+    _distortion: Option<&PolynomialDistortion>,
     indices: Option<&[usize]>,
     params: ClassificationParams,
 ) -> (Vec<usize>, f32) {
@@ -412,7 +417,7 @@ mod tests {
 
         let base = PnPMethod::EPnP(EPnPParams::default());
 
-        let res = solve_pnp_ransac(&world, &points_image, &k, base, &params)?;
+        let res = solve_pnp_ransac(&world, &points_image, &k, None, base, &params)?;
         assert!(res.inliers.len() >= 6); // Should find at least the 6 original inliers
         assert!(res.pose.reproj_rmse.is_some());
 
@@ -452,7 +457,7 @@ mod tests {
         };
 
         let base = PnPMethod::EPnP(EPnPParams::default());
-        let res = solve_pnp_ransac(&points_world, &points_image, &k, base, &params)?;
+        let res = solve_pnp_ransac(&points_world, &points_image, &k, None, base, &params)?;
         assert_eq!(res.inliers.len(), 6); // All points should be inliers
         assert!(res.pose.reproj_rmse.is_some());
 
@@ -489,7 +494,7 @@ mod tests {
         };
 
         let base = PnPMethod::EPnP(EPnPParams::default());
-        let res = solve_pnp_ransac(&points_world, &points_image, &k, base, &params)?;
+        let res = solve_pnp_ransac(&points_world, &points_image, &k, None, base, &params)?;
         assert!(res.inliers.len() >= 4);
         Ok(())
     }
@@ -504,7 +509,7 @@ mod tests {
         let base = PnPMethod::EPnP(EPnPParams::default());
 
         // Should fail with insufficient correspondences
-        let result = solve_pnp_ransac(&points_world, &points_image, &k, base, &params);
+        let result = solve_pnp_ransac(&points_world, &points_image, &k, None, base, &params);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),

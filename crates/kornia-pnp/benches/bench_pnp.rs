@@ -69,8 +69,8 @@ fn bench_epnp(c: &mut Criterion) {
         group.throughput(Throughput::Elements(n as u64));
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
-                let res =
-                    kpnp::solve_pnp(&world, &image, &k, kpnp::PnPMethod::EPnPDefault).unwrap();
+                let res = kpnp::solve_pnp(&world, &image, &k, None, kpnp::PnPMethod::EPnPDefault)
+                    .unwrap();
                 std::hint::black_box(res);
             });
         });
@@ -105,6 +105,7 @@ fn bench_ransac(c: &mut Criterion) {
                             &world,
                             &image,
                             &k,
+                            None,
                             kpnp::PnPMethod::EPnPDefault,
                             &params,
                         )
