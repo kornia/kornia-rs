@@ -425,33 +425,4 @@ mod tests {
             .inference(prompt, None, sample_len, CpuAllocator, true)
             .expect("Inference failed");
     }
-
-    // Example test for custom weights loading (commented out as it requires actual files)
-    #[test]
-    #[ignore = "Requires custom safetensor files"]
-    fn test_smolvlm2_custom_weights() {
-        // Example of loading from custom safetensor files
-        let weights_paths = vec![
-            "/path/to/model-00001-of-00002.safetensors",
-            "/path/to/model-00002-of-00002.safetensors",
-        ];
-
-        // Method 1: Using from_safetensors
-        let _model1 = SmolVlm2::from_safetensors(weights_paths.clone(), SmolVlm2Config::default());
-
-        // Method 2: Using from_single_safetensor (if you have a single file)
-        let _model2 = SmolVlm2::from_single_safetensor(
-            "/path/to/single-model.safetensors",
-            SmolVlm2Config::default(),
-        );
-
-        // Method 3: Using config with custom weights
-        let config = SmolVlm2Config::with_custom_weights(weights_paths);
-        let _model3 = SmolVlm2::new(config);
-
-        // Method 4: Setting custom weights on existing config
-        let mut config = SmolVlm2Config::default();
-        config.set_custom_weights(vec!["/path/to/model.safetensors"]);
-        let _model4 = SmolVlm2::new(config);
-    }
 }
