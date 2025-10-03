@@ -16,10 +16,11 @@ use std::error::Error;
 ///
 /// This function demonstrates how to process video files with SmolVLM2 using proper
 /// video understanding with `Line::Video` and the `Video` struct, providing comprehensive
-/// temporal context analysis.
+/// temporal context analysis with configurable FPS streaming.
 ///
 /// ## Features:
 /// - **Native Video Understanding**: Uses `Line::Video` and `InputMedia::Video` for true video comprehension
+/// - **FPS Streaming Control**: Processes frames at the specified FPS rate to control processing speed
 /// - **Automatic Frame Management**: Maintains a rolling buffer of frames with configurable size
 /// - **Memory Optimization**: Automatically removes old frames to prevent memory accumulation
 /// - **Temporal Context**: Analyzes entire video sequences for motion and temporal understanding
@@ -31,9 +32,15 @@ use std::error::Error;
 /// - Automatically removes old frames when buffer exceeds `max_frames_in_buffer`
 /// - Passes entire video buffer to SmolVLM2 for holistic video analysis
 ///
+/// ## FPS Control:
+/// - Uses the `--fps` argument to control video frame rate at the GStreamer pipeline level
+/// - Employs `videorate` element to limit frame rate at the source, not just processing delays
+/// - Ensures actual frame rate control rather than post-processing timing adjustments
+/// - Provides consistent, hardware-level frame rate limiting
+///
 /// ## Usage:
 /// ```bash
-/// cargo run --bin smol_vlm2_video --video-file video.mp4 --prompt "What do you see?"
+/// cargo run --bin smol_vlm2_video --video-file video.mp4 --prompt "What do you see?" --fps 2
 /// ```
 pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
     // Use ip_address and port from Args
@@ -46,8 +53,9 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
     gst::init()?;
 
     let pipeline_str = format!(
-        "filesrc location={} ! decodebin ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
-        args.video_file.as_ref().expect("Expected video files to be present when calling this function.")
+        "filesrc location={} ! decodebin ! videoconvert ! videorate ! video/x-raw,format=RGB,framerate={}/1 ! appsink name=sink",
+        args.video_file.as_ref().expect("Expected video files to be present when calling this function."),
+        args.fps
     );
     let pipeline = gst::parse::launch(&pipeline_str)?;
     let appsink = pipeline
@@ -77,7 +85,7 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
 
     // Create a video object to manage frames with a rolling buffer
     let mut video_buffer = Video::<CpuAllocator>::new(vec![], vec![]);
-    let max_frames_in_buffer = 16; // After around keeping 50 frames, CUDA OOM for 24gb GPU
+    let max_frames_in_buffer = 32; // After around keeping 50 frames, CUDA OOM for 24gb GPU
 
     while let Ok(sample) = appsink.pull_sample() {
         let buffer = sample.buffer().ok_or("No buffer in sample")?;
@@ -140,6 +148,7 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
                 video_buffer.frames().len()
             );
             println!("Using video understanding with Line::Video");
+            println!("Target FPS: {}", args.fps);
         }
         frame_idx += 1;
     }
