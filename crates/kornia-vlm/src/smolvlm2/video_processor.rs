@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use candle_core::{DType, Device, Tensor};
-use kornia_image::{allocator::ImageAllocator, ImageSize};
-use kornia_imgproc::interpolation::InterpolationMode;
+use candle_core::{DType, Device, Shape, Tensor};
+use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
+use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
 use log::warn;
 use num2words::Num2Words;
 
@@ -13,7 +13,7 @@ const MAX_IMAGE_SIZE: usize = 4096; // 4k resolution as absolute maximum
 
 use crate::{
     smolvlm2::{text_processor::TextProcessor, SmolVlm2Error},
-    video::{Video, VideoMetadata},
+    video::{Video, VideoError, VideoMetadata},
 };
 
 pub struct VideoProcessorConfig {
@@ -58,7 +58,7 @@ impl VideoProcessor {
     pub fn binding_videos_to_prompt<A: ImageAllocator>(
         &mut self,
         prompt: &mut String,
-        videos: Vec<Video<A>>,
+        videos: Vec<&mut Video<A>>,
         device: &Device,
         alloc: A,
     ) -> Result<(), SmolVlm2Error> {
@@ -74,9 +74,16 @@ impl VideoProcessor {
             });
         }
 
+        // Get the actual number of frames from the first video before processing
+        let actual_frames = if !videos.is_empty() {
+            videos[0].frames().len()
+        } else {
+            self.config.max_frames
+        };
+
         let mut video_metadatas = vec![];
         for mut video in videos.into_iter() {
-            video_metadatas.push(video.metadata.clone());
+            video_metadatas.push(video.metadata().clone());
             let img_patches = self.preprocess(&mut video, device, alloc.clone())?;
             self.processed_videos
                 .push((img_patches, Tensor::zeros(&[0], DType::F32, device)?));
@@ -84,7 +91,7 @@ impl VideoProcessor {
 
         self.expand_text_with_video_tokens(
             prompt,
-            self.config.max_frames,
+            actual_frames,
             &video_metadatas,
             &video_tags_pos,
         )?;
@@ -116,43 +123,106 @@ impl VideoProcessor {
         device: &Device,
         alloc: A,
     ) -> Result<Tensor, SmolVlm2Error> {
-        // 2. resize (no splitting)
         let new_size = get_resize_output_image_size(
-            video.frames[0].size(),
+            video.frames()[0].size(),
             self.config.video_size_longest_edge,
         );
 
-        video.resize(new_size, InterpolationMode::Bicubic, alloc.clone())?;
-        video.resize(
-            // resize to a potentially distorted square
-            ImageSize {
+        video.process_frames(|mut frame| {
+            Self::resize(
+                &mut frame,
+                new_size,
+                InterpolationMode::Bicubic,
+                alloc.clone(),
+            )?;
+            Self::resize(
+                &mut frame,
+                ImageSize {
+                    width: self.config.video_size_longest_edge,
+                    height: self.config.video_size_longest_edge,
+                },
+                InterpolationMode::Bicubic,
+                alloc.clone(),
+            )?;
+
+            // pad
+            let padded_size = ImageSize {
                 width: self.config.video_size_longest_edge,
                 height: self.config.video_size_longest_edge,
-            },
-            InterpolationMode::Bicubic,
-            alloc.clone(),
-        )?;
+            };
+            // TODO: masking
+            Self::pad(&mut frame, padded_size, 0, alloc.clone())?;
 
-        // pad
-        let padded_size = ImageSize {
-            width: self.config.video_size_longest_edge,
-            height: self.config.video_size_longest_edge,
-        };
-        // TODO: masking
-        video.pad(padded_size, self.config.max_frames, 0, alloc)?;
+            Ok(())
+        })?;
+
+        // 2. resize (no splitting)
+
+        // Self::resize(
+        //     &mut video.frames,
+        //     new_size,
+        //     InterpolationMode::Bicubic,
+        //     alloc.clone(),
+        // )?;
+        // Self::resize(
+        //     &mut video.frames,
+        //     ImageSize {
+        //         width: self.config.video_size_longest_edge,
+        //         height: self.config.video_size_longest_edge,
+        //     },
+        //     InterpolationMode::Bicubic,
+        //     alloc.clone(),
+        // )?;
+
+        // // pad
+        // let padded_size = ImageSize {
+        //     width: self.config.video_size_longest_edge,
+        //     height: self.config.video_size_longest_edge,
+        // };
+        // // TODO: masking
+        // Self::pad(
+        //     &mut video.frames,
+        //     padded_size,
+        //     self.config.max_frames,
+        //     0,
+        //     alloc,
+        // )?;
+
+        // temporal padding - only pad if we really need consistent batch size
+        // For memory efficiency, avoid padding when not necessary
+        let video_tensor = video.into_tensor(device)?;
+        let video_tensor_shape = video_tensor.shape();
+
+        if video_tensor_shape.dim(0)? > self.config.max_frames {
+            return Err(SmolVlm2Error::VideoProcessingError);
+        }
+        // Skip padding for now to avoid OOM issues with single frame videos
+        // TODO: Add padding back when we need batch processing
+        // else if video_tensor_shape.dim(0)? < self.config.max_frames {
+        //     let pad_tensor = Tensor::zeros(
+        //         // TODO: cache
+        //         &[
+        //             self.config.max_frames - video_tensor_shape.dim(0)?,
+        //             3,
+        //             video_tensor_shape.dim(2)?,
+        //             video_tensor_shape.dim(3)?,
+        //         ],
+        //         DType::F32,
+        //         device,
+        //     )?;
+        //     video_tensor = Tensor::cat(&[video_tensor, pad_tensor], 0)?;
+        // }
 
         // normalize && rescale (must be the last step)
-        video.normalize_and_rescale(
+        let frames_tensor = Self::normalize_and_rescale(
+            video_tensor,
             self.config.frame_mean,
             self.config.frame_std,
             self.config.rescale_factor,
             device,
         )?;
 
-        video
-            .frames_tensor
-            .clone()
-            .ok_or(SmolVlm2Error::VideoProcessingError)
+        Ok(frames_tensor)
     }
 
     /// Expands a single text prompt by replacing video tokens with video prompt strings using metadata.
@@ -168,16 +238,12 @@ impl VideoProcessor {
             let metadata = video_metadata
                 .get(meta_idx)
                 .cloned()
-                .unwrap_or(VideoMetadata {
-                    fps: None,
-                    timestamps: vec![],
-                    duration: None,
-                });
-            let mut metadata = metadata;
-            if metadata.fps.is_none() {
-                warn!("SmolVLM requires frame timestamps to construct prompts, but the `fps` of the input video could not be inferred. Defaulting to `fps=24`. Please provide `video_metadata` for more accurate results.");
-                metadata.fps = Some(24);
-            }
+                .unwrap_or(VideoMetadata::default());
+            // let mut metadata = metadata;
+            // if metadata.fps.is_none() {
+            //     warn!("SmolVLM requires frame timestamps to construct prompts, but the `fps` of the input video could not be inferred. Defaulting to `fps=24`. Please provide `video_metadata` for more accurate results.");
+            //     metadata.fps = Some(24);
+            // }
             let timestamps: Vec<(u32, u32)> = metadata
                 .timestamps
                 .iter()
@@ -218,6 +284,149 @@ impl VideoProcessor {
         }
 
         Ok(())
+    }
+
+    /// Resize all frames in the video to a new size.
+    ///
+    /// This method resizes each frame in the video to the specified dimensions
+    /// using the provided interpolation method.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_size` - Target size for all frames
+    /// * `interpolation` - Interpolation method to use for resizing
+    /// * `alloc` - Allocator for creating new resized frames
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), VideoError>` - Ok if successful, VideoError if resizing fails
+    pub fn resize<A: ImageAllocator>(
+        frame: &mut Image<u8, 3, A>,
+        new_size: ImageSize,
+        interpolation: InterpolationMode,
+        alloc: A,
+    ) -> Result<(), VideoError> {
+        // for i in 0..frames.len() {
+        let mut buf = Image::<u8, 3, A>::from_size_val(new_size, 0, alloc.clone())?;
+        resize_fast_rgb(&frame, &mut buf, interpolation)?;
+        // frames[i] = buf;
+        *frame = buf;
+        // }
+        Ok(())
+    }
+
+    /// Pad video frames spatially and temporally to target dimensions.
+    ///
+    /// This method performs two types of padding:
+    /// 1. Spatial padding: Pads each frame to the target width and height
+    /// 2. Temporal padding: Adds blank frames if fewer than max_num_frames exist
+    ///
+    /// Spatial padding preserves the original image content in the top-left corner
+    /// and fills the remaining area with the specified fill value.
+    ///
+    /// # Arguments
+    ///
+    /// * `padded_size` - Target spatial dimensions (height, width) for frames
+    /// * `max_num_frames` - Target number of frames in the video
+    /// * `fill` - Value to use for padding pixels (e.g., 0 for black)
+    /// * `alloc` - Allocator for creating new padded frames
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), VideoError>` - Ok if successful, VideoError if padding fails
+    pub fn pad<A: ImageAllocator>(
+        frame: &mut Image<u8, 3, A>,
+        padded_size: ImageSize,
+        fill: u8,
+        alloc: A,
+    ) -> Result<(), VideoError> {
+        // Pad each frame spatially if needed
+        // for i in 0..frames.len() {
+        // let frame = frames;
+        let size = frame.size();
+        if size.width < padded_size.width || size.height < padded_size.height {
+            let mut padded = Image::<u8, 3, A>::from_size_val(padded_size, fill, alloc.clone())?;
+            let img_slice = frame.as_slice();
+            let padded_img_slice = padded.as_slice_mut();
+            let width = size.width;
+            let height = size.height;
+            let new_width = padded_size.width;
+            for y in 0..height.min(padded_size.height) {
+                let src_offset = y * width * 3;
+                let dst_offset = y * new_width * 3;
+                let row_bytes = width.min(new_width) * 3;
+                padded_img_slice[dst_offset..dst_offset + row_bytes]
+                    .copy_from_slice(&img_slice[src_offset..src_offset + row_bytes]);
+            }
+            // frames[i] = padded;
+            *frame = padded;
+        }
+        // }
+
+        // Pad temporally (add blank frames if needed)
+        // let cur_frames = frames.len();
+        // if cur_frames < max_num_frames {
+        //     let blank = Image::<u8, 3, A>::from_size_val(padded_size, fill, alloc.clone())?;
+        //     for _ in 0..(max_num_frames - cur_frames) {
+        //         frames.push(blank.clone());
+        //     }
+        // }
+
+        Ok(())
+    }
+
+    /// Normalize and rescale video frames for neural network processing.
+    ///
+    /// This method converts frames to tensors, applies rescaling (typically from [0,255] to [0,1]),
+    /// and then normalizes using mean and standard deviation values. The resulting tensor
+    /// is stored in `frames_tensor` with shape [T, C, H, W] where T is the number of frames.
+    ///
+    /// # Arguments
+    ///
+    /// * `mean` - Mean values for each color channel [R, G, B]
+    /// * `std` - Standard deviation values for each color channel [R, G, B]
+    /// * `rescale_factor` - Factor to rescale pixel values (typically 1.0/255.0)
+    /// * `device` - Device to place the resulting tensor on
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), VideoError>` - Ok if successful, VideoError if tensor operations fail
+    pub fn normalize_and_rescale(
+        frames: Tensor,
+        mean: [f32; 3],
+        std: [f32; 3],
+        rescale_factor: f32,
+        device: &Device,
+    ) -> Result<Tensor, SmolVlm2Error> {
+        let mean_tensor = Tensor::from_slice(&mean, &[1, 3, 1, 1], device)?;
+        let std_tensor = Tensor::from_slice(&std, &[1, 3, 1, 1], device)?;
+        let rescale_tensor = Tensor::from_slice(&[rescale_factor], &[1, 1, 1, 1], device)?;
+
+        Ok(frames
+            .to_dtype(DType::F32)?
+            .broadcast_mul(&rescale_tensor)?
+            .broadcast_sub(&mean_tensor)?
+            .broadcast_div(&std_tensor)?)
+        // let mut tensors = vec![];
+        // for i in 0..frames.len() {
+        //     let mut tensor = Tensor::from_vec(
+        //         frames[i].to_vec(),
+        //         Shape::from_dims(&[frames[i].size().height, frames[i].size().width, 3]),
+        //         device,
+        //     )?
+        //     .permute(vec![2, 0, 1])?
+        //     .to_dtype(candle_core::DType::F32)?;
+
+        //     // Normalize: scale to [0,1]
+        //     tensor = tensor.broadcast_mul(&rescale_tensor)?;
+        //     tensor = tensor
+        //         .broadcast_sub(&mean_tensor)?
+        //         .broadcast_div(&std_tensor)?;
+
+        //     tensors.push(tensor);
+        // }
+
+        // Ok(Tensor::stack(&tensors, 0)?)
     }
 }
 

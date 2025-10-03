@@ -12,11 +12,11 @@ use kornia_vlm::video::Video;
 use crate::Args;
 use std::error::Error;
 
-/// Video file demo with intelligent frame buffering and video understanding.
+/// Video file demo with intelligent frame buffering and native video understanding.
 ///
 /// This function demonstrates how to process video files with SmolVLM2 using proper
-/// video understanding with `Line::Video` and the `Video` struct, providing temporal
-/// context analysis automatically.
+/// video understanding with `Line::Video` and the `Video` struct, providing comprehensive
+/// temporal context analysis.
 ///
 /// ## Features:
 /// - **Native Video Understanding**: Uses `Line::Video` and `InputMedia::Video` for true video comprehension
@@ -25,15 +25,14 @@ use std::error::Error;
 /// - **Temporal Context**: Analyzes entire video sequences for motion and temporal understanding
 /// - **Real-time Logging**: Streams results to Rerun for visualization
 ///
-/// ## Frame Buffer Management:
+/// ## Video Buffer Management:
 /// - Creates a `Video<CpuAllocator>` object to manage frame history
 /// - Adds new frames with timestamps for temporal tracking
 /// - Automatically removes old frames when buffer exceeds `max_frames_in_buffer`
-/// - Passes entire video buffer to SmolVLM2 for holistic analysis
+/// - Passes entire video buffer to SmolVLM2 for holistic video analysis
 ///
 /// ## Usage:
 /// ```bash
-/// # Video understanding mode
 /// cargo run --bin smol_vlm2_video --video-file video.mp4 --prompt "What do you see?"
 /// ```
 pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
@@ -78,7 +77,7 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
 
     // Create a video object to manage frames with a rolling buffer
     let mut video_buffer = Video::<CpuAllocator>::new(vec![], vec![]);
-    let max_frames_in_buffer = 10; // Keep last 10 frames in memory
+    let max_frames_in_buffer = 16; // After around keeping 50 frames, CUDA OOM for 24gb GPU
 
     while let Ok(sample) = appsink.pull_sample() {
         let buffer = sample.buffer().ok_or("No buffer in sample")?;
@@ -91,10 +90,7 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
         let rgb_slice = map.as_ref();
         let image = Image::<u8, 3, CpuAllocator>::new(img_size, rgb_slice.to_vec(), CpuAllocator)?;
 
-        // Add the new frame to the video buffer with a timestamp
         video_buffer.add_frame(image.clone(), frame_idx);
-
-        // Remove old frames to maintain buffer size
         video_buffer.remove_old_frames(max_frames_in_buffer);
 
         smolvlm2.clear_context()?;
@@ -111,22 +107,12 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
         };
 
         // Use the entire video buffer for video understanding
-        let response = if video_buffer.frames.len() > 0 {
-            // Create a new video with current frames for inference
-            let current_frames = video_buffer.frames.clone();
-            let current_timestamps = video_buffer.metadata.timestamps.clone();
-            let video_for_inference =
-                Video::<CpuAllocator>::new(current_frames, current_timestamps);
-
-            smolvlm2.inference(
-                vec![video_message],
-                InputMedia::Video(vec![video_for_inference]),
-                20,
-                CpuAllocator,
-            )?
-        } else {
-            "No frames available for video analysis".to_string()
-        };
+        let response = smolvlm2.inference(
+            vec![video_message],
+            InputMedia::Video(vec![&mut video_buffer]),
+            20,
+            CpuAllocator,
+        )?;
 
         // Log image and text to rerun (all using rgb_slice for image)
         rec.log(
@@ -142,14 +128,17 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
             &rerun::TextDocument::new(format!(
                 "Frame {}: Buffer contains {} frames (max: {})",
                 frame_idx,
-                video_buffer.frames.len(),
+                video_buffer.frames().len(),
                 max_frames_in_buffer
             )),
         )?;
 
         if args.debug {
             println!("Frame {frame_idx}: {response}");
-            println!("Video buffer contains {} frames", video_buffer.frames.len());
+            println!(
+                "Video buffer contains {} frames",
+                video_buffer.frames().len()
+            );
             println!("Using video understanding with Line::Video");
         }
         frame_idx += 1;

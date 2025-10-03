@@ -34,8 +34,10 @@ Video file mode:
 cargo run --bin smol_vlm2_video --release -- --video-file ./example_video.mp4 --ip-address 192.168.1.4 --port 9999 --prompt "What is the color of the closest car?"
 
 hostname -I
+rerun reset
+rerun --port 9999
 
-RUST_LOG=debug cargo run --bin smol_vlm2_video --release --features cuda -- --video-file ./example_video.mp4 --ip-address <viewer's IP address> --port 9999 --prompt "What is the color of the closest car?"
+RUST_LOG=debug cargo run --bin smol_vlm2_video --release --features cuda -- --video-file ./example_video.mp4 --ip-address <viewer's IP address> --port 9999 --prompt "What direction is Earth moving?"
 ```
 
 ![GIF](https://private-user-images.githubusercontent.com/39780709/485829152-384ae9d2-a78b-4748-a2b5-ef05ef006621.gif?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NTg3NDE4ODEsIm5iZiI6MTc1ODc0MTU4MSwicGF0aCI6Ii8zOTc4MDcwOS80ODU4MjkxNTItMzg0YWU5ZDItYTc4Yi00NzQ4LWEyYjUtZWYwNWVmMDA2NjIxLmdpZj9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNTA5MjQlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjUwOTI0VDE5MTk0MVomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPTA2OTMxNDk4Y2VlZjA5YjZhZjE0ZmRmY2ZkMTk0ZTQ4YmE2ZTRhYTAxMzM4MTg5YjA5ODkwYzVkYjY4YTBmZDUmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0In0.4AEO9xXsR87z5bDCEh_qpGUZDBqNwOVJUekVrWTJ3v4)

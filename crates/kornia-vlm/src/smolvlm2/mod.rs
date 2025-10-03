@@ -109,9 +109,9 @@ impl Default for SmolVlm2Config {
     }
 }
 
-pub enum InputMedia<A: ImageAllocator> {
+pub enum InputMedia<'v, A: ImageAllocator> {
     Images(Vec<Image<u8, 3, A>>),
-    Video(Vec<Video<A>>),
+    Video(Vec<&'v mut Video<A>>),
     None,
 }
 
@@ -304,6 +304,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
             let logits =
                 self.model
                     .forward(&input, self.index_pos, &img_token_mask, img_data, &mut ctx)?;
+
             self.img_processor.clear_processed_images();
             self.vid_processor.clear_processed_videos();
             let out_token = self.txt_processor.sample_logits(&logits)?;
@@ -315,7 +316,6 @@ impl<A: ImageAllocator> SmolVlm2<A> {
             let token_output = self.txt_processor.decode(out_token)?;
             self.txt_processor
                 .update_last_textual_response(token_output.clone())?;
-
             if !self.txt_processor.is_eos(token_output.as_str()) {
                 self.response += &token_output;
 
@@ -441,8 +441,8 @@ mod tests {
             .expect("Inference failed");
     }
 
-    // cargo test -p kornia-vlm test_smolvlm2_video_inference --features cuda -- --nocapture --ignored
-    // RUST_LOG=debug cargo test -p kornia-vlm test_smolvlm2_video_inference --features cuda -- --nocapture --ignored
+    // cargo test -p kornia-vlm test_smolvlm2_video_inference --features "gstreamer,cuda" -- --nocapture --ignored
+    // RUST_LOG=debug cargo test -p kornia-vlm test_smolvlm2_video_inference --features "gstreamer,cuda" -- --nocapture --ignored
     #[test]
     #[cfg(feature = "gstreamer")]
     #[ignore = "Requires CUDA"]
@@ -473,10 +473,10 @@ mod tests {
                         },
                     ],
                 }],
-                InputMedia::Video(vec![Video::from_video_path(
+                InputMedia::Video(vec![&mut Video::from_video_path(
                     path,
                     VideoSamplingMethod::Fps(1),
-                    60,
+                    64,
                     CpuAllocator,
                 )
                 .unwrap()]),

@@ -107,7 +107,7 @@ pub enum VideoSamplingMethod {
 ///
 /// Contains timing and structural information about the video,
 /// including frame rate, timestamps, and duration.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct VideoMetadata {
     /// Frames per second of the original video, if available.
     pub fps: Option<u32>,
@@ -117,6 +117,9 @@ pub struct VideoMetadata {
 
     /// Total duration of the video in seconds, if available.
     pub duration: Option<u32>,
+
+    // Is this frame already processed?
+    pub processed: Vec<bool>,
 }
 
 /// A video container that holds frames and metadata.
@@ -128,16 +131,13 @@ pub struct VideoMetadata {
 /// # Generic Parameters
 ///
 /// * `A` - The image allocator type used for frame storage
+#[derive(Clone)]
 pub struct Video<A: ImageAllocator> {
     /// Vector of image frames that make up the video.
-    pub frames: Vec<Image<u8, 3, A>>,
-
-    /// Optional tensor representation of frames for neural network processing.
-    /// Created by calling `normalize_and_rescale()` method.
-    pub frames_tensor: Option<Tensor>,
+    frames: Vec<Image<u8, 3, A>>, // TODO: with max frame required, this can be a fixed size array via const generics
 
     /// Metadata containing timing and video information.
-    pub metadata: VideoMetadata,
+    metadata: VideoMetadata,
 }
 
 impl<A: ImageAllocator + Clone> Video<A> {
@@ -153,13 +153,13 @@ impl<A: ImageAllocator + Clone> Video<A> {
     /// A new Video instance with the provided frames and metadata
     pub fn new(frames: Vec<Image<u8, 3, A>>, timestamps: Vec<u32>) -> Self {
         Self {
-            frames,
-            frames_tensor: None,
             metadata: VideoMetadata {
                 fps: None,
                 timestamps,
                 duration: None,
+                processed: vec![false; frames.len()],
             },
+            frames,
         }
     }
 
@@ -172,13 +172,14 @@ impl<A: ImageAllocator + Clone> Video<A> {
     pub fn add_frame(&mut self, frame: Image<u8, 3, A>, timestamp: u32) {
         self.frames.push(frame);
         self.metadata.timestamps.push(timestamp);
+        self.metadata.processed.push(false);
     }
 
     /// Remove old frames to maintain a maximum frame count.
     ///
     /// This method removes frames from the beginning of the video if the total
     /// number of frames exceeds the specified maximum. Both frames and their
-    /// corresponding timestamps are removed.
+    /// corresponding timestamps are removed. Remove old frames to maintain buffer size
     ///
     /// # Arguments
     ///
@@ -186,8 +187,14 @@ impl<A: ImageAllocator + Clone> Video<A> {
     pub fn remove_old_frames(&mut self, max_frames: usize) {
         if self.frames.len() > max_frames {
             let excess = self.frames.len() - max_frames;
+            println!(
+                "######## {:?} {:?}",
+                self.frames.len(),
+                self.metadata.timestamps.len()
+            );
             self.frames.drain(0..excess);
             self.metadata.timestamps.drain(0..excess);
+            self.metadata.processed.drain(0..excess);
         }
     }
 
@@ -471,73 +478,74 @@ impl<A: ImageAllocator + Clone> Video<A> {
         debug!("[kornia-io] ============================");
 
         Ok(Self {
-            frames,
-            frames_tensor: None,
             metadata: VideoMetadata {
                 fps,
                 timestamps,
                 duration,
+                processed: vec![false; frames.len()],
             },
+            frames,
         })
     }
 
-    /// Resize all frames in the video to a new size.
+    /// Process all frames using a closure that modifies each frame in-place.
     ///
-    /// This method resizes each frame in the video to the specified dimensions
-    /// using the provided interpolation method.
+    /// This method applies the provided closure to each frame as a mutable reference,
+    /// allowing for in-place modifications of the frame data. The closure receives
+    /// both the frame index and a mutable reference to the frame.
     ///
     /// # Arguments
     ///
-    /// * `new_size` - Target size for all frames
-    /// * `interpolation` - Interpolation method to use for resizing
-    /// * `alloc` - Allocator for creating new resized frames
+    /// * `processor` - A closure that takes the frame index (usize) and a mutable
+    ///                 reference to an Image frame, allowing for in-place modifications
     ///
     /// # Returns
     ///
-    /// * `Result<(), VideoError>` - Ok if successful, VideoError if resizing fails
-    pub fn resize(
-        &mut self,
-        new_size: ImageSize,
-        interpolation: InterpolationMode,
-        alloc: A,
-    ) -> Result<(), VideoError> {
-        for i in 0..self.frames.len() {
-            let mut buf = Image::<u8, 3, A>::from_size_val(new_size, 0, alloc.clone())?;
-            resize_fast_rgb(&self.frames[i], &mut buf, interpolation)?;
-            self.frames[i] = buf;
+    /// A reference to the processed frames vector
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use kornia_vlm::video::{Video, VideoSamplingMethod};
+    /// # use kornia_tensor::CpuAllocator;
+    /// # let mut video = Video::<CpuAllocator>::new(vec![], vec![], 10);
+    /// // Apply some processing to each frame
+    /// video.process_frames(|frame_idx, frame| {
+    ///     // Example: modify frame data based on frame index
+    ///     println!("Processing frame {}", frame_idx);
+    ///     // frame modifications would go here
+    /// });
+    /// ```
+    pub fn process_frames<F>(&mut self, mut processor: F) -> Result<(), VideoError>
+    where
+        F: FnMut(&mut Image<u8, 3, A>) -> Result<(), VideoError>,
+    {
+        for (frame, processed) in self.frames.iter_mut().zip(&mut self.metadata.processed) {
+            if *processed {
+                continue; // Skip already processed frames
+            }
+
+            processor(frame)?;
+
+            *processed = true;
         }
         Ok(())
     }
 
-    /// Normalize and rescale video frames for neural network processing.
-    ///
-    /// This method converts frames to tensors, applies rescaling (typically from [0,255] to [0,1]),
-    /// and then normalizes using mean and standard deviation values. The resulting tensor
-    /// is stored in `frames_tensor` with shape [T, C, H, W] where T is the number of frames.
-    ///
-    /// # Arguments
-    ///
-    /// * `mean` - Mean values for each color channel [R, G, B]
-    /// * `std` - Standard deviation values for each color channel [R, G, B]
-    /// * `rescale_factor` - Factor to rescale pixel values (typically 1.0/255.0)
-    /// * `device` - Device to place the resulting tensor on
+    /// Get a reference to the frames without processing them.
     ///
     /// # Returns
     ///
-    /// * `Result<(), VideoError>` - Ok if successful, VideoError if tensor operations fail
-    pub fn normalize_and_rescale(
-        &mut self,
-        mean: [f32; 3],
-        std: [f32; 3],
-        rescale_factor: f32,
-        device: &Device,
-    ) -> Result<(), VideoError> {
-        let mean_tensor = Tensor::from_slice(&mean, &[3, 1, 1], device)?;
-        let std_tensor = Tensor::from_slice(&std, &[3, 1, 1], device)?;
-        let rescale_tensor = Tensor::from_slice(&[rescale_factor], &[1], device)?;
+    /// A reference to the frames vector
+    pub fn frames(&self) -> &Vec<Image<u8, 3, A>> {
+        &self.frames
+    }
+
+    // Outputs N x 3 x H x W tensor, padded if necessary
+    pub fn into_tensor(&self, device: &Device) -> Result<Tensor, VideoError> {
         let mut tensors = vec![];
         for i in 0..self.frames.len() {
-            let mut tensor = Tensor::from_vec(
+            let tensor = Tensor::from_vec(
                 self.frames[i].to_vec(),
                 Shape::from_dims(&[self.frames[i].size().height, self.frames[i].size().width, 3]),
                 device,
@@ -545,79 +553,14 @@ impl<A: ImageAllocator + Clone> Video<A> {
             .permute(vec![2, 0, 1])?
             .to_dtype(candle_core::DType::F32)?;
 
-            // Normalize: scale to [0,1]
-            tensor = tensor.broadcast_mul(&rescale_tensor)?;
-            tensor = tensor
-                .broadcast_sub(&mean_tensor)?
-                .broadcast_div(&std_tensor)?;
-
             tensors.push(tensor);
         }
 
-        self.frames_tensor = Some(Tensor::stack(&tensors, 0)?);
-
-        Ok(())
+        Ok(Tensor::stack(&tensors, 0)?)
     }
 
-    /// Pad video frames spatially and temporally to target dimensions.
-    ///
-    /// This method performs two types of padding:
-    /// 1. Spatial padding: Pads each frame to the target width and height
-    /// 2. Temporal padding: Adds blank frames if fewer than max_num_frames exist
-    ///
-    /// Spatial padding preserves the original image content in the top-left corner
-    /// and fills the remaining area with the specified fill value.
-    ///
-    /// # Arguments
-    ///
-    /// * `padded_size` - Target spatial dimensions (height, width) for frames
-    /// * `max_num_frames` - Target number of frames in the video
-    /// * `fill` - Value to use for padding pixels (e.g., 0 for black)
-    /// * `alloc` - Allocator for creating new padded frames
-    ///
-    /// # Returns
-    ///
-    /// * `Result<(), VideoError>` - Ok if successful, VideoError if padding fails
-    pub fn pad(
-        &mut self,
-        padded_size: ImageSize,
-        max_num_frames: usize,
-        fill: u8,
-        alloc: A,
-    ) -> Result<(), VideoError> {
-        // Pad each frame spatially if needed
-        for i in 0..self.frames.len() {
-            let frame = &self.frames[i];
-            let size = frame.size();
-            if size.width < padded_size.width || size.height < padded_size.height {
-                let mut padded =
-                    Image::<u8, 3, A>::from_size_val(padded_size, fill, alloc.clone())?;
-                let img_slice = frame.as_slice();
-                let padded_img_slice = padded.as_slice_mut();
-                let width = size.width;
-                let height = size.height;
-                let new_width = padded_size.width;
-                for y in 0..height.min(padded_size.height) {
-                    let src_offset = y * width * 3;
-                    let dst_offset = y * new_width * 3;
-                    let row_bytes = width.min(new_width) * 3;
-                    padded_img_slice[dst_offset..dst_offset + row_bytes]
-                        .copy_from_slice(&img_slice[src_offset..src_offset + row_bytes]);
-                }
-                self.frames[i] = padded;
-            }
-        }
-
-        // Pad temporally (add blank frames if needed)
-        let cur_frames = self.frames.len();
-        if cur_frames < max_num_frames {
-            let blank = Image::<u8, 3, A>::from_size_val(padded_size, fill, alloc.clone())?;
-            for _ in 0..(max_num_frames - cur_frames) {
-                self.frames.push(blank.clone());
-            }
-        }
-
-        Ok(())
+    pub fn metadata(&self) -> &VideoMetadata {
+        &self.metadata
     }
 }
 
