@@ -506,7 +506,7 @@ impl<A: ImageAllocator + Clone> Video<A> {
     /// # Arguments
     ///
     /// * `processor` - A closure that takes a mutable reference to an Image frame and returns
-    ///                 a Result, allowing for in-place modifications and error handling
+    ///   a Result, allowing for in-place modifications and error handling
     ///
     /// # Returns
     ///

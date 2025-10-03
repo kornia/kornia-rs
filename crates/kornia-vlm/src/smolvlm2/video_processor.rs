@@ -81,9 +81,9 @@ impl VideoProcessor {
         };
 
         let mut video_metadatas = vec![];
-        for mut video in videos.into_iter() {
+        for video in videos.into_iter() {
             video_metadatas.push(video.metadata().clone());
-            let img_patches = self.preprocess(&mut video, device, alloc.clone())?;
+            let img_patches = self.preprocess(video, device, alloc.clone())?;
             self.processed_videos
                 .push((img_patches, Tensor::zeros(&[0], DType::F32, device)?));
         }
@@ -127,15 +127,10 @@ impl VideoProcessor {
             self.config.video_size_longest_edge,
         );
 
-        video.process_frames(|mut frame| {
+        video.process_frames(|frame| {
+            Self::resize(frame, new_size, InterpolationMode::Bicubic, alloc.clone())?;
             Self::resize(
-                &mut frame,
-                new_size,
-                InterpolationMode::Bicubic,
-                alloc.clone(),
-            )?;
-            Self::resize(
-                &mut frame,
+                frame,
                 ImageSize {
                     width: self.config.video_size_longest_edge,
                     height: self.config.video_size_longest_edge,
@@ -150,7 +145,7 @@ impl VideoProcessor {
                 height: self.config.video_size_longest_edge,
             };
             // TODO: masking
-            Self::pad(&mut frame, padded_size, 0, alloc.clone())?;
+            Self::pad(frame, padded_size, 0, alloc.clone())?;
 
             Ok(())
         })?;
@@ -255,7 +250,7 @@ impl VideoProcessor {
     ) -> Result<(), VideoError> {
         // for i in 0..frames.len() {
         let mut buf = Image::<u8, 3, A>::from_size_val(new_size, 0, alloc.clone())?;
-        resize_fast_rgb(&frame, &mut buf, interpolation)?;
+        resize_fast_rgb(frame, &mut buf, interpolation)?;
         // frames[i] = buf;
         *frame = buf;
         // }
