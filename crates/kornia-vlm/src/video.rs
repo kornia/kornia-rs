@@ -29,57 +29,187 @@
 //! # }
 //! ```
 
+use std::collections::VecDeque;
+
+use candle_core::DType;
 use candle_core::Device;
 use candle_core::Shape;
 use candle_core::Tensor;
-use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
-use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
+use kornia_image::{allocator::ImageAllocator, Image};
 #[cfg(feature = "gstreamer")]
 use kornia_io::gstreamer::{video::ImageFormat as IoImageFormat, video::VideoReader};
 #[cfg(feature = "gstreamer")]
 use log::debug;
 use thiserror::Error;
 
+/// Errors that can occur during video processing operations.
 #[derive(Debug, Error)]
 pub enum VideoError {
+    /// Failed to create a video reader instance.
     #[error("Failed to create video reader: {0}")]
     VideoReaderCreation(String),
+
+    /// Failed to start the video reader.
     #[error("Failed to start video reader")]
     VideoReaderStart,
+
+    /// Failed to grab a frame from the video.
     #[error("Failed to grab frame from video")]
     FrameGrabbing,
+
+    /// Failed to close the video reader.
     #[error("Failed to close video reader")]
     VideoReaderClose,
+
+    /// Error from the image processing library.
     #[error("Image error: {0}")]
     Image(#[from] image::ImageError),
+
+    /// Error from the Candle tensor library.
     #[error("Candle error: {0}")]
     CandleError(#[from] candle_core::Error),
+
+    /// Error from the Kornia image processing library.
     #[error("Kornia image error: {0}")]
     KorniaImage(#[from] kornia_image::ImageError),
 }
 
+/// Video sampling strategies for extracting frames from a video.
+///
+/// Different sampling methods provide various ways to select frames from
+/// a video sequence for processing or analysis.
 #[derive(Debug)]
 pub enum VideoSamplingMethod {
-    Uniform(usize),      // Uniformly sample n frames
-    Fps(usize),          // Number of frames to sample per second
-    FirstN(usize),       // Take the first n frames
-    Indices(Vec<usize>), // Take frames at specified indices
+    /// Uniformly sample n frames across the entire video duration.
+    ///
+    /// This method divides the video into equal segments and takes one frame
+    /// from each segment, ensuring even temporal distribution.
+    Uniform(usize),
+
+    /// Sample frames at a specific rate (frames per second).
+    ///
+    /// This method attempts to extract the specified number of frames per
+    /// second from the video, useful for maintaining temporal consistency.
+    Fps(usize),
+
+    /// Take the first n frames from the video.
+    ///
+    /// This method simply extracts frames sequentially from the beginning
+    /// of the video until the specified count is reached.
+    FirstN(usize),
+
+    /// Take frames at specific indices.
+    ///
+    /// This method allows precise control over which frames are extracted
+    /// by specifying their exact positions in the video sequence.
+    Indices(Vec<usize>),
 }
 
-#[derive(Clone, Debug)]
+/// Metadata information for a video.
+///
+/// Contains timing and structural information about the video,
+/// including frame rate, timestamps, and duration.
+#[derive(Clone, Debug, Default)]
 pub struct VideoMetadata {
+    /// Frames per second of the original video, if available.
     pub fps: Option<u32>,
-    pub timestamps: Vec<u32>,  // seconds
-    pub duration: Option<u32>, // seconds
+
+    /// Timestamps in seconds for each frame in the video.
+    pub timestamps: VecDeque<u32>,
+
+    /// Total duration of the video in seconds, if available.
+    pub duration: Option<u32>,
+
+    /// Processing status for each frame in the video.
+    ///
+    /// Each boolean value indicates whether the corresponding frame has been
+    /// processed by operations like `process_frames()`. This helps avoid
+    /// redundant processing and tracks which frames have been modified.
+    pub processed: VecDeque<bool>,
 }
 
+/// A video container that holds frames and metadata.
+///
+/// This struct represents a video as a collection of image frames along with
+/// their temporal metadata. It supports various operations like resizing,
+/// normalization, and padding for video processing tasks.
+///
+/// # Generic Parameters
+///
+/// * `A` - The image allocator type used for frame storage
+#[derive(Clone)]
 pub struct Video<A: ImageAllocator> {
-    pub frames: Vec<Image<u8, 3, A>>,
-    pub frames_tensor: Option<Tensor>,
-    pub metadata: VideoMetadata,
+    /// Vector of image frames that make up the video.
+    frames: VecDeque<Image<u8, 3, A>>, // TODO: with max frame required, this can be a fixed size array via const generics
+
+    /// Metadata containing timing and video information.
+    metadata: VideoMetadata,
 }
 
 impl<A: ImageAllocator + Clone> Video<A> {
+    /// Create a new Video instance with frames and timestamps.
+    ///
+    /// # Arguments
+    ///
+    /// * `frames` - Vector of image frames
+    /// * `timestamps` - Vector of timestamps in seconds for each frame
+    ///
+    /// # Returns
+    ///
+    /// A new Video instance with the provided frames and metadata
+    pub fn new(frames: Vec<Image<u8, 3, A>>, timestamps: Vec<u32>) -> Self {
+        Self {
+            metadata: VideoMetadata {
+                fps: None,
+                timestamps: VecDeque::from(timestamps),
+                duration: None,
+                processed: VecDeque::from(vec![false; frames.len()]),
+            },
+            frames: VecDeque::from(frames),
+        }
+    }
+
+    /// Add a new frame to the video with its timestamp.
+    ///
+    /// # Arguments
+    ///
+    /// * `frame` - The image frame to add
+    /// * `timestamp` - Timestamp of the frame in seconds
+    pub fn add_frame(&mut self, frame: Image<u8, 3, A>, timestamp: u32) {
+        self.frames.push_back(frame);
+        self.metadata.timestamps.push_back(timestamp);
+        self.metadata.processed.push_back(false);
+    }
+
+    /// Remove old frames to maintain a maximum frame count.
+    ///
+    /// This method removes frames from the beginning of the video if the total
+    /// number of frames exceeds the specified maximum. Both frames and their
+    /// corresponding timestamps and processing status are removed to maintain
+    /// consistency across all metadata.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_frames` - Maximum number of frames to keep
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use kornia_vlm::video::Video;
+    /// # use kornia_tensor::CpuAllocator;
+    /// # let mut video = Video::<CpuAllocator>::new(vec![], vec![]);
+    /// // Keep only the most recent 10 frames
+    /// video.remove_old_frames(10);
+    /// ```
+    pub fn remove_old_frames(&mut self, max_frames: usize) {
+        if self.frames.len() > max_frames {
+            let excess = self.frames.len() - max_frames;
+            self.frames.drain(0..excess);
+            self.metadata.timestamps.drain(0..excess);
+            self.metadata.processed.drain(0..excess);
+        }
+    }
+
     /// Create a Video from a video file path using kornia-io's VideoReader functionality.
     ///
     /// This method uses kornia-io's VideoReader which provides a higher-level interface
@@ -342,7 +472,7 @@ impl<A: ImageAllocator + Clone> Video<A> {
             .close()
             .map_err(|_| VideoError::VideoReaderClose)?;
 
-        println!(
+        debug!(
             "Video loaded with kornia-io: sampled frames = {}, total frames processed = {}, duration = {:?} seconds, fps = {:?}",
             frames.len(),
             if collect_all { all_frames.len() } else { frame_idx },
@@ -360,110 +490,148 @@ impl<A: ImageAllocator + Clone> Video<A> {
         debug!("[kornia-io] ============================");
 
         Ok(Self {
-            frames,
-            frames_tensor: None,
             metadata: VideoMetadata {
                 fps,
-                timestamps,
+                timestamps: VecDeque::from(timestamps),
                 duration,
+                processed: VecDeque::from(vec![false; frames.len()]),
             },
+            frames: VecDeque::from(frames),
         })
     }
 
-    pub fn resize(
-        &mut self,
-        new_size: ImageSize,
-        interpolation: InterpolationMode,
-        alloc: A,
-    ) -> Result<(), VideoError> {
-        for i in 0..self.frames.len() {
-            let mut buf = Image::<u8, 3, A>::from_size_val(new_size, 0, alloc.clone())?;
-            resize_fast_rgb(&self.frames[i], &mut buf, interpolation)?;
-            self.frames[i] = buf;
+    /// Process all frames using a closure that modifies each frame in-place.
+    ///
+    /// This method applies the provided closure to each unprocessed frame as a mutable reference,
+    /// allowing for in-place modifications of the frame data. Frames that have already been
+    /// processed (marked in metadata) are automatically skipped to avoid redundant operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `processor` - A closure that takes a mutable reference to an Image frame and returns
+    ///   a Result, allowing for in-place modifications and error handling
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or the first error encountered during processing
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use kornia_vlm::video::{Video, VideoSamplingMethod};
+    /// # use kornia_tensor::CpuAllocator;
+    /// # let mut video = Video::<CpuAllocator>::new(vec![], vec![]);
+    /// // Apply some processing to each frame
+    /// video.process_frames(|frame| {
+    ///     // Example: modify frame data (e.g., apply a filter)
+    ///     println!("Processing frame with size: {:?}", frame.size());
+    ///     // frame modifications would go here
+    ///     Ok(())
+    /// }).unwrap();
+    /// ```
+    pub fn process_frames<F>(&mut self, mut processor: F) -> Result<(), VideoError>
+    where
+        F: FnMut(&mut Image<u8, 3, A>) -> Result<(), VideoError>,
+    {
+        for (frame, processed) in self.frames.iter_mut().zip(&mut self.metadata.processed) {
+            if *processed {
+                continue; // Skip already processed frames
+            }
+
+            processor(frame)?;
+
+            *processed = true;
         }
         Ok(())
     }
 
-    pub fn normalize_and_rescale(
-        &mut self,
-        mean: [f32; 3],
-        std: [f32; 3],
-        rescale_factor: f32,
-        device: &Device,
-    ) -> Result<(), VideoError> {
-        let mean_tensor = Tensor::from_slice(&mean, &[3, 1, 1], device)?;
-        let std_tensor = Tensor::from_slice(&std, &[3, 1, 1], device)?;
-        let rescale_tensor = Tensor::from_slice(&[rescale_factor], &[1], device)?;
+    /// Get a reference to the frames without processing them.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the frames vector
+    pub fn frames(&self) -> &VecDeque<Image<u8, 3, A>> {
+        &self.frames
+    }
+
+    /// Convert the video frames into a tensor representation.
+    ///
+    /// This method converts all video frames into a single 4D tensor with the format
+    /// `N x 3 x H x W` where:
+    /// - `N` is the number of frames
+    /// - `3` is the number of color channels (RGB)
+    /// - `H` is the height of each frame
+    /// - `W` is the width of each frame
+    ///
+    /// The frames are converted to F32 dtype and the color channels are permuted
+    /// from HWC (Height-Width-Channel) to CHW (Channel-Height-Width) format,
+    /// which is the standard format expected by most neural network models.
+    ///
+    /// # Arguments
+    ///
+    /// * `device` - The device (CPU/CUDA) where the tensor should be allocated
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing either:
+    /// - `Ok(Tensor)` - A 4D tensor of shape `[N, 3, H, W]` with F32 dtype
+    /// - `Err(VideoError)` - If tensor creation or operations fail
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use kornia_vlm::video::{Video, VideoSamplingMethod};
+    /// # use kornia_tensor::CpuAllocator;
+    /// # use candle_core::Device;
+    /// # let video = Video::<CpuAllocator>::new(vec![], vec![]);
+    /// let device = Device::Cpu;
+    /// let tensor = video.into_tensor(&device).unwrap();
+    /// println!("Tensor shape: {:?}", tensor.dims()); // [N, 3, H, W]
+    /// ```
+    pub fn into_tensor(&self, dtype: DType, device: &Device) -> Result<Tensor, VideoError> {
         let mut tensors = vec![];
         for i in 0..self.frames.len() {
-            let mut tensor = Tensor::from_vec(
+            let tensor = Tensor::from_vec(
                 self.frames[i].to_vec(),
                 Shape::from_dims(&[self.frames[i].size().height, self.frames[i].size().width, 3]),
                 device,
             )?
             .permute(vec![2, 0, 1])?
-            .to_dtype(candle_core::DType::F32)?;
-
-            // Normalize: scale to [0,1]
-            tensor = tensor.broadcast_mul(&rescale_tensor)?;
-            tensor = tensor
-                .broadcast_sub(&mean_tensor)?
-                .broadcast_div(&std_tensor)?;
+            .to_dtype(dtype)?;
 
             tensors.push(tensor);
         }
 
-        self.frames_tensor = Some(Tensor::stack(&tensors, 0)?);
-
-        Ok(())
+        Ok(Tensor::stack(&tensors, 0)?)
     }
 
-    /// Pad video frames spatially and temporally.
+    /// Get a reference to the video metadata.
     ///
-    /// - padded_size: target (height, width)
-    /// - max_num_frames: target number of frames
-    /// - fill: value to use for padding (e.g., 0)
-    /// - alloc: allocator for new frames
-    pub fn pad(
-        &mut self,
-        padded_size: ImageSize,
-        max_num_frames: usize,
-        fill: u8,
-        alloc: A,
-    ) -> Result<(), VideoError> {
-        // Pad each frame spatially if needed
-        for i in 0..self.frames.len() {
-            let frame = &self.frames[i];
-            let size = frame.size();
-            if size.width < padded_size.width || size.height < padded_size.height {
-                let mut padded =
-                    Image::<u8, 3, A>::from_size_val(padded_size, fill, alloc.clone())?;
-                let img_slice = frame.as_slice();
-                let padded_img_slice = padded.as_slice_mut();
-                let width = size.width;
-                let height = size.height;
-                let new_width = padded_size.width;
-                for y in 0..height.min(padded_size.height) {
-                    let src_offset = y * width * 3;
-                    let dst_offset = y * new_width * 3;
-                    let row_bytes = width.min(new_width) * 3;
-                    padded_img_slice[dst_offset..dst_offset + row_bytes]
-                        .copy_from_slice(&img_slice[src_offset..src_offset + row_bytes]);
-                }
-                self.frames[i] = padded;
-            }
-        }
-
-        // Pad temporally (add blank frames if needed)
-        let cur_frames = self.frames.len();
-        if cur_frames < max_num_frames {
-            let blank = Image::<u8, 3, A>::from_size_val(padded_size, fill, alloc.clone())?;
-            for _ in 0..(max_num_frames - cur_frames) {
-                self.frames.push(blank.clone());
-            }
-        }
-
-        Ok(())
+    /// Returns metadata containing timing and structural information about the video,
+    /// including frame timestamps, FPS, duration, and processing status for each frame.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the `VideoMetadata` containing:
+    /// - `fps`: Original video frame rate (if available)
+    /// - `timestamps`: Vector of frame timestamps in seconds
+    /// - `duration`: Total video duration in seconds (if available)
+    /// - `processed`: Vector indicating which frames have been processed
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use kornia_vlm::video::{Video, VideoSamplingMethod};
+    /// # use kornia_tensor::CpuAllocator;
+    /// # let video = Video::<CpuAllocator>::new(vec![], vec![]);
+    /// let metadata = video.metadata();
+    /// if let Some(fps) = metadata.fps {
+    ///     println!("Video FPS: {}", fps);
+    /// }
+    /// println!("Number of frames: {}", metadata.timestamps.len());
+    /// ```
+    pub fn metadata(&self) -> &VideoMetadata {
+        &self.metadata
     }
 }
 

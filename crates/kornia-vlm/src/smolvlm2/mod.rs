@@ -14,12 +14,15 @@ use kornia_image::allocator::ImageAllocator;
 
 use crate::context::InferenceContext;
 use crate::smolvlm2::image_processor::{ImageProcessor, ImageProcessorConfig};
-use crate::smolvlm2::text_processor::{Message, TextProcessor};
+use crate::smolvlm2::text_processor::TextProcessor;
 use crate::smolvlm2::video_processor::{VideoProcessor, VideoProcessorConfig};
 
 use kornia_image::Image;
 
 use crate::video::{self, Video};
+
+// Re-export public types for external use
+pub use crate::smolvlm2::text_processor::{Line, Message, Role};
 
 /// Utilities for the SmolVLM2 module.
 #[derive(thiserror::Error, Debug)]
@@ -106,9 +109,9 @@ impl Default for SmolVlm2Config {
     }
 }
 
-pub enum InputMedia<A: ImageAllocator> {
+pub enum InputMedia<'v, A: ImageAllocator> {
     Images(Vec<Image<u8, 3, A>>),
-    Video(Vec<Video<A>>),
+    Video(Vec<&'v mut Video<A>>),
     None,
 }
 
@@ -116,6 +119,7 @@ pub struct SmolVlm2<A: ImageAllocator> {
     model: model::Model,
     config: SmolVlm2Config,
     device: Device,
+    dtype: DType,
     index_pos: usize, // index of the next token to be processed
 
     txt_processor: TextProcessor,
@@ -149,10 +153,10 @@ impl<A: ImageAllocator> SmolVlm2<A> {
     pub fn new(config: SmolVlm2Config) -> Result<Self, SmolVlm2Error> {
         #[cfg(feature = "cuda")]
         let (device, dtype) = match Device::cuda_if_available(0) {
-            Ok(device) => (device, DType::F32),
+            Ok(device) => (device, DType::BF16),
             Err(e) => {
                 log::warn!("CUDA not available, defaulting to CPU: {e:?}");
-                (Device::Cpu, DType::BF16)
+                (Device::Cpu, DType::F32)
             }
         };
 
@@ -169,6 +173,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
             vid_processor,
             config,
             device,
+            dtype,
             index_pos: 0,
 
             response: String::new(),
@@ -193,7 +198,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
     /// * `Result<String, SmolVlm2Error>` - The generated caption or error.
     pub fn inference(
         &mut self,
-        prompt: Vec<Message>,
+        prompt: Vec<text_processor::Message>,
         media: InputMedia<A>,
         sample_len: usize,
         alloc: A,
@@ -244,6 +249,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
                 self.img_processor.binding_images_to_prompt(
                     &mut converted_prompt,
                     images,
+                    self.dtype,
                     &self.device,
                     alloc,
                 )?;
@@ -260,6 +266,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
                 self.vid_processor.binding_videos_to_prompt(
                     &mut converted_prompt,
                     videos,
+                    self.dtype,
                     &self.device,
                     alloc,
                 )?;
@@ -301,6 +308,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
             let logits =
                 self.model
                     .forward(&input, self.index_pos, &img_token_mask, img_data, &mut ctx)?;
+
             self.img_processor.clear_processed_images();
             self.vid_processor.clear_processed_videos();
             let out_token = self.txt_processor.sample_logits(&logits)?;
@@ -312,7 +320,6 @@ impl<A: ImageAllocator> SmolVlm2<A> {
             let token_output = self.txt_processor.decode(out_token)?;
             self.txt_processor
                 .update_last_textual_response(token_output.clone())?;
-
             if !self.txt_processor.is_eos(token_output.as_str()) {
                 self.response += &token_output;
 
@@ -363,9 +370,9 @@ impl<A: ImageAllocator> SmolVlm2<A> {
         let txt_processor = TextProcessor::new(Self::MODEL_IDENTIFIER.into(), config)?
             .with_template_string(Self::UPDATED_VIDEO_CHAT_TEMPLATE.into())?;
         let img_processor =
-            ImageProcessor::new(Self::IMG_PROCESSOR_CONFIG, device, &txt_processor)?;
+            ImageProcessor::new(Self::IMG_PROCESSOR_CONFIG, dtype, device, &txt_processor)?;
         let vid_processor =
-            VideoProcessor::new(Self::VID_PROCESSOR_CONFIG, device, &txt_processor)?;
+            VideoProcessor::new(Self::VID_PROCESSOR_CONFIG, device, dtype, &txt_processor)?;
 
         let api = Api::new()?;
         let repo = api.model(Self::MODEL_IDENTIFIER.to_string());
@@ -388,7 +395,6 @@ mod tests {
     use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
     use kornia_tensor::CpuAllocator;
 
-    use crate::smolvlm2::text_processor::{Line, Role};
     #[cfg(feature = "gstreamer")]
     use crate::video::{Video, VideoSamplingMethod};
 
@@ -423,11 +429,11 @@ mod tests {
 
         let _response = model
             .inference(
-                vec![Message {
-                    role: Role::User,
+                vec![text_processor::Message {
+                    role: text_processor::Role::User,
                     content: vec![
-                        Line::Image,
-                        Line::Text {
+                        text_processor::Line::Image,
+                        text_processor::Line::Text {
                             text: prompt.to_string(),
                         },
                     ],
@@ -439,8 +445,8 @@ mod tests {
             .expect("Inference failed");
     }
 
-    // cargo test -p kornia-vlm test_smolvlm2_video_inference --features cuda -- --nocapture --ignored
-    // RUST_LOG=debug cargo test -p kornia-vlm test_smolvlm2_video_inference --features cuda -- --nocapture --ignored
+    // cargo test -p kornia-vlm test_smolvlm2_video_inference --features "gstreamer,cuda" -- --nocapture --ignored
+    // RUST_LOG=debug cargo test -p kornia-vlm test_smolvlm2_video_inference --features "gstreamer,cuda" -- --nocapture --ignored
     #[test]
     #[cfg(feature = "gstreamer")]
     #[ignore = "Requires CUDA"]
@@ -462,22 +468,22 @@ mod tests {
 
         let _response = model
             .inference(
-                vec![Message {
-                    role: Role::User,
+                vec![text_processor::Message {
+                    role: text_processor::Role::User,
                     content: vec![
-                        Line::Video,
-                        Line::Text {
+                        text_processor::Line::Video,
+                        text_processor::Line::Text {
                             text: prompt.to_string(),
                         },
                     ],
                 }],
-                InputMedia::Video(vec![Video::from_video_path(
+                InputMedia::Video(vec![&mut Video::from_video_path(
                     path,
                     VideoSamplingMethod::Fps(1),
-                    60,
+                    64,
                     CpuAllocator,
                 )
-                .unwrap()]),
+                .expect("Failed to load video")]),
                 sample_len,
                 CpuAllocator,
             )
