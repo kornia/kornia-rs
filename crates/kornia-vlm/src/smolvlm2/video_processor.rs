@@ -204,7 +204,7 @@ impl VideoProcessor {
                 .collect();
             let duration = metadata
                 .duration
-                .unwrap_or_else(|| *metadata.timestamps.last().unwrap_or(&0));
+                .unwrap_or_else(|| *metadata.timestamps.back().unwrap_or(&0));
             let duration_td = Duration::from_secs(duration as u64);
             let duration_str = format!(
                 "{:01}:{:02}:{:02}",

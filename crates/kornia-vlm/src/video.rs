@@ -29,6 +29,8 @@
 //! # }
 //! ```
 
+use std::collections::VecDeque;
+
 use candle_core::DType;
 use candle_core::Device;
 use candle_core::Shape;
@@ -113,7 +115,7 @@ pub struct VideoMetadata {
     pub fps: Option<u32>,
 
     /// Timestamps in seconds for each frame in the video.
-    pub timestamps: Vec<u32>,
+    pub timestamps: VecDeque<u32>,
 
     /// Total duration of the video in seconds, if available.
     pub duration: Option<u32>,
@@ -123,7 +125,7 @@ pub struct VideoMetadata {
     /// Each boolean value indicates whether the corresponding frame has been
     /// processed by operations like `process_frames()`. This helps avoid
     /// redundant processing and tracks which frames have been modified.
-    pub processed: Vec<bool>,
+    pub processed: VecDeque<bool>,
 }
 
 /// A video container that holds frames and metadata.
@@ -138,7 +140,7 @@ pub struct VideoMetadata {
 #[derive(Clone)]
 pub struct Video<A: ImageAllocator> {
     /// Vector of image frames that make up the video.
-    frames: Vec<Image<u8, 3, A>>, // TODO: with max frame required, this can be a fixed size array via const generics
+    frames: VecDeque<Image<u8, 3, A>>, // TODO: with max frame required, this can be a fixed size array via const generics
 
     /// Metadata containing timing and video information.
     metadata: VideoMetadata,
@@ -159,11 +161,11 @@ impl<A: ImageAllocator + Clone> Video<A> {
         Self {
             metadata: VideoMetadata {
                 fps: None,
-                timestamps,
+                timestamps: VecDeque::from(timestamps),
                 duration: None,
-                processed: vec![false; frames.len()],
+                processed: VecDeque::from(vec![false; frames.len()]),
             },
-            frames,
+            frames: VecDeque::from(frames),
         }
     }
 
@@ -174,9 +176,9 @@ impl<A: ImageAllocator + Clone> Video<A> {
     /// * `frame` - The image frame to add
     /// * `timestamp` - Timestamp of the frame in seconds
     pub fn add_frame(&mut self, frame: Image<u8, 3, A>, timestamp: u32) {
-        self.frames.push(frame);
-        self.metadata.timestamps.push(timestamp);
-        self.metadata.processed.push(false);
+        self.frames.push_back(frame);
+        self.metadata.timestamps.push_back(timestamp);
+        self.metadata.processed.push_back(false);
     }
 
     /// Remove old frames to maintain a maximum frame count.
@@ -490,11 +492,11 @@ impl<A: ImageAllocator + Clone> Video<A> {
         Ok(Self {
             metadata: VideoMetadata {
                 fps,
-                timestamps,
+                timestamps: VecDeque::from(timestamps),
                 duration,
-                processed: vec![false; frames.len()],
+                processed: VecDeque::from(vec![false; frames.len()]),
             },
-            frames,
+            frames: VecDeque::from(frames),
         })
     }
 
@@ -548,7 +550,7 @@ impl<A: ImageAllocator + Clone> Video<A> {
     /// # Returns
     ///
     /// A reference to the frames vector
-    pub fn frames(&self) -> &Vec<Image<u8, 3, A>> {
+    pub fn frames(&self) -> &VecDeque<Image<u8, 3, A>> {
         &self.frames
     }
 

@@ -32,6 +32,7 @@ pub struct ImageProcessor<A: ImageAllocator> {
     buf_mask_tensor: Tensor,
     buf_mean_tensor: Tensor,
     buf_std_tensor: Tensor,
+    buf_rescale_tensor: Tensor,
 
     image_tag_len: usize,
     processed_images: Vec<(Tensor, Tensor)>,
@@ -62,8 +63,12 @@ impl<A: ImageAllocator> ImageProcessor<A> {
             buf_global_padded_img: None,
             buf_global_padded_mask: None,
             buf_mask_tensor: (Tensor::ones((2048, 2048), dtype, device)? * 255.0)?,
-            buf_mean_tensor: Tensor::from_slice(&config.image_mean, (3, 1, 1), device)?,
-            buf_std_tensor: Tensor::from_slice(&config.image_std, (3, 1, 1), device)?,
+            buf_mean_tensor: Tensor::from_slice(&config.image_mean, (3, 1, 1), device)?
+                .to_dtype(dtype)?,
+            buf_std_tensor: Tensor::from_slice(&config.image_std, (3, 1, 1), device)?
+                .to_dtype(dtype)?,
+            buf_rescale_tensor: Tensor::from_slice(&[config.rescale_factor], &[1], device)?
+                .to_dtype(dtype)?,
 
             image_tag_len: config.image_token.len(),
             processed_images: vec![],
@@ -374,11 +379,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
             .to_dtype(dtype)?;
 
         // Normalize: scale to [0,1]
-        tensor = tensor.broadcast_mul(&Tensor::from_slice(
-            &[self.config.rescale_factor],
-            &[1],
-            device,
-        )?)?;
+        tensor = tensor.broadcast_mul(&self.buf_rescale_tensor)?;
 
         tensor = tensor
             .broadcast_sub(&self.buf_mean_tensor)?
@@ -534,12 +535,13 @@ mod tests {
                 rescale_factor: 1.0 / 255.0,
                 image_token: "<image>",
             },
+            DType::F32,
             &device,
             &TextProcessor::default(),
         )?;
 
         let (img_patches, mask_patches, size) =
-            preprocessor.preprocess(&img, &device, CpuAllocator)?;
+            preprocessor.preprocess(&img, DType::F32, &device, CpuAllocator)?;
 
         // Check that we got the expected dimensions
         assert_eq!(img_patches.dims().len(), 4); // [patches, channels, height, width]
@@ -647,6 +649,7 @@ mod tests {
                 rescale_factor: 1.0 / 255.0,
                 image_token: "<image>",
             },
+            DType::F32,
             &device,
             &TextProcessor::default(),
         )?;
@@ -688,7 +691,7 @@ mod tests {
 
         // Now test the full preprocessing pipeline
         let (img_patches, mask_patches, size) =
-            preprocessor.preprocess(&img, &device, CpuAllocator)?;
+            preprocessor.preprocess(&img, DType::F32, &device, CpuAllocator)?;
 
         // Verify basic structure
         assert_eq!(img_patches.dims().len(), 4); // [patches, channels, height, width]
