@@ -87,7 +87,7 @@ pub trait PnPSolver {
         world: &[[f32; 3]],
         image: &[[f32; 2]],
         k: &[[f32; 3]; 3],
-        distortion: Option<PolynomialDistortion>,
+        distortion: Option<&PolynomialDistortion>,
         params: &Self::Param,
     ) -> Result<PnPResult, PnPError>;
 }
