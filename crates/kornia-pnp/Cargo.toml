@@ -12,7 +12,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [features]
-opencv_bench = []
+opencv_bench = ["dep:opencv"]
 
 [dependencies]
 glam = { version = "0.30.0", default-features = false }
@@ -23,12 +23,13 @@ nalgebra = "0.32"
 log = { workspace = true }
 rand = { workspace = true }
 thiserror = { workspace = true }
+opencv = { version = "0.92", optional = true }
 
 [dev-dependencies]
 approx = { workspace = true }
 criterion = { workspace = true }
-opencv = "0.92"
 
 [[bench]]
 name = "bench_pnp"
 harness = false
+required-features = ["opencv_bench"]
