@@ -126,6 +126,8 @@ pub struct SmolVlm2<A: ImageAllocator> {
     img_processor: ImageProcessor<A>,
     vid_processor: VideoProcessor,
     response: String,
+
+    buf_single_zero_tensor: Tensor, // buffer for a single zero tensor
 }
 
 impl<A: ImageAllocator> SmolVlm2<A> {
@@ -172,11 +174,13 @@ impl<A: ImageAllocator> SmolVlm2<A> {
             img_processor,
             vid_processor,
             config,
-            device,
             dtype,
             index_pos: 0,
 
             response: String::new(),
+            buf_single_zero_tensor: Tensor::zeros(&[1], DType::U8, &device)?,
+
+            device,
         })
     }
 
@@ -294,20 +298,28 @@ impl<A: ImageAllocator> SmolVlm2<A> {
 
         for _i in 0..sample_len {
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
-            let img_token_mask = if use_video {
-                self.vid_processor.get_video_token_mask(&input)?
+            let img_token_mask = if _i > 0 {
+                &self.buf_single_zero_tensor
             } else {
-                self.img_processor.get_image_token_mask(&input)?
+                if use_video {
+                    &self.vid_processor.get_video_token_mask(&input)?
+                } else {
+                    &self.img_processor.get_image_token_mask(&input)?
+                }
             };
-            let img_data = if use_video {
-                self.vid_processor.get_processed_videos()
+            let img_data = if _i > 0 {
+                Vec::new()
             } else {
-                self.img_processor.get_processed_images()
+                if use_video {
+                    self.vid_processor.get_processed_videos()
+                } else {
+                    self.img_processor.get_processed_images()
+                }
             };
 
             let logits =
                 self.model
-                    .forward(&input, self.index_pos, &img_token_mask, img_data, &mut ctx)?;
+                    .forward(&input, self.index_pos, img_token_mask, img_data, &mut ctx)?;
 
             self.img_processor.clear_processed_images();
             self.vid_processor.clear_processed_videos();
@@ -488,5 +500,307 @@ mod tests {
                 CpuAllocator,
             )
             .expect("Inference failed");
+    }
+
+    // cargo test -p kornia-vlm test_smolvlm2_speed_comparison --features "cuda,gstreamer,flash-attn" -- --nocapture --ignored
+    // RUST_LOG=debug cargo test -p kornia-vlm test_smolvlm2_speed_comparison --features "cuda,gstreamer,flash-attn" -- --nocapture --ignored
+    #[test]
+    #[ignore = "Speed comparison test - requires CUDA"]
+    fn test_smolvlm2_speed_comparison() {
+        env_logger::init();
+
+        println!("============================================================");
+        println!("SMOLVLM2 RUST SPEED TEST RESULTS");
+        println!("============================================================");
+
+        // Create a test blue image (224x224)
+        let test_image = create_test_blue_image();
+
+        let config = SmolVlm2Config {
+            seed: 42,
+            do_sample: false,
+            debug: false, // Turn off debug for clean timing
+            ..Default::default()
+        };
+        let mut model = SmolVlm2::new(config).expect("Failed to load model");
+
+        println!("\n==================== Single Image ====================\n");
+
+        let test_prompts = [
+            "Describe this image.",
+            "What color is this image?",
+            "What do you see?",
+        ];
+
+        let mut total_time = 0.0;
+        let mut total_tokens = 0;
+        let mut test_count = 0;
+
+        for (i, prompt) in test_prompts.iter().enumerate() {
+            println!("Test {}: '{}'", i + 1, prompt);
+
+            // Run each test twice to match Python behavior
+            let mut test_times = Vec::new();
+            let mut test_tokens = Vec::new();
+            let mut test_outputs = Vec::new();
+
+            for run in 1..=2 {
+                // Clear model context before each run
+                model.clear_context().expect("Failed to clear context");
+
+                let start_time = std::time::Instant::now();
+
+                let response = model
+                    .inference(
+                        vec![text_processor::Message {
+                            role: text_processor::Role::User,
+                            content: vec![
+                                text_processor::Line::Image,
+                                text_processor::Line::Text {
+                                    text: prompt.to_string(),
+                                },
+                            ],
+                        }],
+                        InputMedia::Images(vec![test_image.clone()]),
+                        200, // Match Python's max_new_tokens=200
+                        CpuAllocator,
+                    )
+                    .expect("Inference failed");
+
+                let duration = start_time.elapsed();
+                let time_secs = duration.as_secs_f64();
+
+                // Count tokens (rough approximation by splitting on whitespace)
+                let token_count = response.split_whitespace().count();
+                let tokens_per_sec = token_count as f64 / time_secs;
+
+                test_times.push(time_secs);
+                test_tokens.push(token_count);
+                test_outputs.push(response.clone());
+
+                // Truncate output for display
+                let truncated_output = if response.len() > 60 {
+                    format!("{}...", &response[..57])
+                } else {
+                    response.clone()
+                };
+
+                println!(
+                    "  Run {}: {:.2}s, {} tokens, {:.1} tok/s",
+                    run, time_secs, token_count, tokens_per_sec
+                );
+                println!("         Output: {}", truncated_output);
+
+                total_time += time_secs;
+                total_tokens += token_count;
+                test_count += 1;
+            }
+
+            // Calculate averages for this test
+            let avg_time = test_times.iter().sum::<f64>() / test_times.len() as f64;
+            let avg_tokens = test_tokens.iter().sum::<usize>() as f64 / test_tokens.len() as f64;
+            let avg_speed = avg_tokens / avg_time;
+
+            println!(
+                "  Average: {:.2}s, {:.0} tokens, {:.1} tok/s\n",
+                avg_time, avg_tokens, avg_speed
+            );
+        }
+
+        // Overall performance summary
+        let overall_avg_time = total_time / test_count as f64;
+        let overall_avg_speed = total_tokens as f64 / total_time;
+
+        println!("🏁 Single Image Section Performance:");
+        println!("   Average Time: {:.2}s", overall_avg_time);
+        println!("   Average Speed: {:.1} tokens/second", overall_avg_speed);
+        println!("   Total Tests: {}", test_count);
+
+        // Video test section (if video processing is available)
+        #[cfg(feature = "gstreamer")]
+        {
+            println!("\n==================== Video 32 frames ====================\n");
+
+            let video_path = Path::new("../../car-detection.mp4");
+            if video_path.exists() {
+                let video_prompts = [
+                    "Describe what happens in this video.",
+                    "What do you see in this video?",
+                    "Summarize the video content.",
+                ];
+
+                let mut video_total_time = 0.0;
+                let mut video_total_tokens = 0;
+                let mut video_test_count = 0;
+
+                for (i, prompt) in video_prompts.iter().enumerate() {
+                    println!("Test {}: '{}'", i + 1, prompt);
+
+                    // Run each test twice to match Python behavior
+                    let mut test_times = Vec::new();
+                    let mut test_tokens = Vec::new();
+
+                    for run in 1..=2 {
+                        model.clear_context().expect("Failed to clear context");
+
+                        // Using 32 frames to match Python test for fair comparison
+                        let video_result = Video::from_video_path(
+                            video_path,
+                            VideoSamplingMethod::Fps(1),
+                            32, // Match Python's 32 frames for fair comparison
+                            CpuAllocator,
+                        );
+
+                        match video_result {
+                            Ok(mut video) => {
+                                let start_time = std::time::Instant::now();
+                                let inference_result = model.inference(
+                                    vec![text_processor::Message {
+                                        role: text_processor::Role::User,
+                                        content: vec![
+                                            text_processor::Line::Video,
+                                            text_processor::Line::Text {
+                                                text: prompt.to_string(),
+                                            },
+                                        ],
+                                    }],
+                                    InputMedia::Video(vec![&mut video]),
+                                    200, // Match Python's max_new_tokens=200
+                                    CpuAllocator,
+                                );
+
+                                match inference_result {
+                                    Ok(response) => {
+                                        let duration = start_time.elapsed();
+                                        let time_secs = duration.as_secs_f64();
+                                        let token_count = response.split_whitespace().count();
+                                        let tokens_per_sec = token_count as f64 / time_secs;
+
+                                        test_times.push(time_secs);
+                                        test_tokens.push(token_count);
+
+                                        let truncated_output = if response.len() > 60 {
+                                            format!("{}...", &response[..57])
+                                        } else {
+                                            response.clone()
+                                        };
+
+                                        println!(
+                                            "  Run {}: {:.2}s, {} tokens, {:.1} tok/s",
+                                            run, time_secs, token_count, tokens_per_sec
+                                        );
+                                        println!("         Output: {}", truncated_output);
+
+                                        video_total_time += time_secs;
+                                        video_total_tokens += token_count;
+                                        video_test_count += 1;
+                                    }
+                                    Err(e) => {
+                                        println!("  Video inference failed: {}", e);
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                println!("  Failed to load video: {}", e);
+                                break;
+                            }
+                        }
+                    }
+
+                    // Calculate averages for this test
+                    if !test_times.is_empty() {
+                        let avg_time = test_times.iter().sum::<f64>() / test_times.len() as f64;
+                        let avg_tokens =
+                            test_tokens.iter().sum::<usize>() as f64 / test_tokens.len() as f64;
+                        let avg_speed = avg_tokens / avg_time;
+
+                        println!(
+                            "  Average: {:.2}s, {:.0} tokens, {:.1} tok/s\n",
+                            avg_time, avg_tokens, avg_speed
+                        );
+                    }
+                }
+
+                // Overall video performance summary
+                if video_test_count > 0 {
+                    let video_avg_time = video_total_time / video_test_count as f64;
+                    let video_avg_speed = video_total_tokens as f64 / video_total_time;
+
+                    println!("🏁 Video 32 frames Section Performance:");
+                    println!("   Average Time: {:.2}s", video_avg_time);
+                    println!("   Average Speed: {:.1} tokens/second", video_avg_speed);
+                    println!("   Total Tests: {}", video_test_count);
+                }
+            } else {
+                println!("  Video file not found: {:?}", video_path);
+            }
+        }
+
+        #[cfg(not(feature = "gstreamer"))]
+        {
+            println!("\n==================== Video Test ====================\n");
+            println!("  Video testing requires 'gstreamer' feature to be enabled");
+            println!("  Run with: cargo test --features \"gstreamer,cuda\"");
+        }
+
+        // Overall summary to match Python format
+        println!("\n============================================================");
+        println!("📊 SECTION-BY-SECTION PERFORMANCE:");
+        println!("============================================================");
+        println!("  Single Image:");
+        println!("    Average Time: {:.2}s", overall_avg_time);
+        println!("    Average Speed: {:.1} tokens/second", overall_avg_speed);
+        println!("    Tests Run: {}", test_count);
+        println!();
+
+        #[cfg(feature = "gstreamer")]
+        {
+            // Video stats will be printed above if gstreamer is enabled
+        }
+
+        println!("============================================================");
+        println!("🎯 OVERALL PERFORMANCE:");
+        println!("  Average Time: {:.2}s", overall_avg_time);
+        println!("  Average Speed: {:.1} tokens/second", overall_avg_speed);
+        println!(
+            "  Device: {}",
+            if cfg!(feature = "cuda") {
+                "cuda"
+            } else {
+                "cpu"
+            }
+        );
+        println!("  Model: HuggingFaceTB/SmolVLM2-2.2B-Instruct");
+        #[cfg(feature = "gstreamer")]
+        {
+            let video_path = Path::new("../../example_video.mp4");
+            if video_path.exists() {
+                println!("  Video Tested: {:?}", video_path);
+            }
+        }
+        println!("============================================================");
+
+        println!("\n============================================================");
+        println!("RUST SPEED TEST COMPLETED");
+        println!("============================================================");
+    }
+
+    /// Create a 224x224 blue RGB image for testing
+    fn create_test_blue_image() -> Image<u8, 3, CpuAllocator> {
+        let width = 224;
+        let height = 224;
+        let channels = 3;
+
+        // Create blue color data (RGB: 0, 0, 255)
+        let mut data = vec![0u8; width * height * channels];
+        for pixel in data.chunks_mut(3) {
+            pixel[0] = 0; // R
+            pixel[1] = 0; // G
+            pixel[2] = 255; // B
+        }
+
+        let image_size = kornia_image::ImageSize { width, height };
+        Image::new(image_size, data, CpuAllocator).expect("Failed to create test image")
     }
 }

@@ -100,7 +100,7 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
         let rgb_slice = map.as_ref();
         let image = Image::<u8, 3, CpuAllocator>::new(img_size, rgb_slice.to_vec(), CpuAllocator)?;
 
-        video_buffer.add_frame(image.clone(), frame_idx);
+        video_buffer.add_frame(image, frame_idx);
         video_buffer.remove_old_frames(max_frames_in_buffer);
 
         smolvlm2.clear_context()?;

@@ -258,28 +258,49 @@ impl Model {
         image_hidden_states: &Tensor,
         inputs_embeds: &Tensor,
     ) -> Result<Tensor> {
-        let total_length = image_token_mask.dims1()?;
+        let (seq_len, hidden_size) = inputs_embeds.dims2()?;
+        let (img_seq_len, _hidden_size) = image_hidden_states.dims2()?;
 
-        self.merged_embeds.clear();
-        if self.merged_embeds.capacity() < total_length {
-            self.merged_embeds
-                .reserve(total_length - self.merged_embeds.capacity());
+        // Convert mask to float for computations
+        let mask_f32 = image_token_mask.to_dtype(candle_core::DType::F32)?;
+
+        // Count number of image tokens to validate input
+        let num_image_tokens = mask_f32.sum_all()?.to_scalar::<f32>()? as usize;
+
+        // Verify we have the expected number of image hidden states
+        if img_seq_len != num_image_tokens {
+            return Err(candle_core::Error::Msg(format!(
+                "Expected {} image hidden states, got {}",
+                num_image_tokens,
+                image_hidden_states.dims1()?
+            )));
         }
 
-        let mut c = 0;
-        // TODO: is there a better way to do this? (scatter assignment? cuda kernel?)
-        for (i, mask) in image_token_mask.to_vec1::<u8>()?.into_iter().enumerate() {
-            self.merged_embeds.push(if mask != 0 {
-                c += 1;
-                image_hidden_states.i(c - 1)?
-            } else {
-                inputs_embeds.i(i)?
-            });
+        if num_image_tokens == 0 {
+            return Ok(inputs_embeds.clone());
         }
 
-        let merged_embeds = Tensor::stack(&self.merged_embeds, 0)?;
+        // Create cumulative sum to get indices for image positions
+        // This creates a mapping from sequence positions to image indices
+        // Subtract 1 from cumsum where mask is 1 to get 0-based indices
+        let image_indices = mask_f32
+            .cumsum(0)?
+            .affine(1.0, -1.0)?
+            .to_dtype(candle_core::DType::I64)?;
 
-        Ok(merged_embeds)
+        // For positions where mask is 0, we need dummy indices (we'll mask them out anyway)
+        // Clamp indices to valid range [0, num_image_tokens-1]
+        let max_idx = (num_image_tokens - 1) as i64;
+        let clamped_indices = image_indices.clamp(0i64, max_idx)?;
+
+        // Gather image embeddings using the computed indices
+        let gathered_image_embeds = image_hidden_states.index_select(&clamped_indices, 0)?;
+
+        // Select image embeddings where mask is true, input embeddings where false
+        image_token_mask
+            .unsqueeze(1)?
+            .expand(&[seq_len, hidden_size])?
+            .where_cond(&gathered_image_embeds, inputs_embeds)
     }
 
     /// Perform a forward pass through the multi-modal SmolVLM2 model.
