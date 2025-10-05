@@ -7,9 +7,13 @@ pub mod epnp;
 /// Common data types shared across PnP solvers.
 pub mod pnp;
 
+/// RANSAC for robust PnP pose estimation.
+pub mod ransac;
+
 pub use epnp::{EPnP, EPnPParams};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 pub use pnp::{PnPError, PnPResult, PnPSolver};
+pub use ransac::{solve_pnp_ransac, PnPRansacError, PnPRansacResult, RansacParams};
 
 mod ops;
 
@@ -28,7 +32,7 @@ pub fn solve_pnp(
     world: &[[f32; 3]],
     image: &[[f32; 2]],
     k: &[[f32; 3]; 3],
-    distortion: Option<PolynomialDistortion>,
+    distortion: Option<&PolynomialDistortion>,
     method: PnPMethod,
 ) -> Result<PnPResult, PnPError> {
     match method {
