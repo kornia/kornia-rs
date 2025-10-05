@@ -5,3 +5,4 @@
 pub mod rigid;
 /// Module to calculate SVD of a 3x3 matrix
 pub mod svd;
+pub use glam::{DMat3, DVec3, Mat3};

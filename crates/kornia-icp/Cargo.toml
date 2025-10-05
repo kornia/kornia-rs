@@ -17,6 +17,7 @@ version.workspace = true
 faer = { workspace = true }
 kiddo = "5.0.2"
 kornia-3d = { workspace = true }
+kornia-linalg = {workspace = true}
 log = { workspace = true }
 thiserror = { workspace = true }
 
