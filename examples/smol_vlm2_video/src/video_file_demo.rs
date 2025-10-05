@@ -7,7 +7,7 @@ use kornia::{
     tensor::CpuAllocator,
 };
 use kornia_vlm::smolvlm2::{InputMedia, Line, Message, Role, SmolVlm2, SmolVlm2Config};
-use kornia_vlm::video::Video;
+use kornia_vlm::video::VideoBuffer;
 
 use crate::Args;
 use std::error::Error;
@@ -84,7 +84,7 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
     // to prevent memory accumulation during long video processing.
 
     // Create a video object to manage frames with a rolling buffer
-    let mut video_buffer = Video::<CpuAllocator>::new(vec![], vec![]);
+    let mut video_buffer = VideoBuffer::<CpuAllocator>::new(vec![], vec![]);
     let max_frames_in_buffer = 32; // After around keeping 50 frames, CUDA OOM for 24gb GPU
 
     // FPS tracking variables

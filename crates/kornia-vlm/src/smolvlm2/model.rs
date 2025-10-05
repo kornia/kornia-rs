@@ -1,4 +1,4 @@
-use candle_core::{DType, Device, IndexOp, Result, Tensor};
+use candle_core::{DType, Device, Result, Tensor};
 use candle_nn::{Linear, Module, VarBuilder};
 use candle_transformers::models::{
     llama::{self, Cache},
@@ -115,8 +115,6 @@ pub struct Model {
     cache_dtype: DType,
     cache_device: Device,
     cache: Cache,
-
-    merged_embeds: Vec<Tensor>, // cache results
 }
 
 impl Model {
@@ -220,8 +218,6 @@ impl Model {
             cache_device: device.clone(),
             cache_dtype: dtype,
             cache: Cache::new(true, dtype, &Self::TEXT_CONFIG, device)?,
-
-            merged_embeds: Vec::new(),
         })
     }
 

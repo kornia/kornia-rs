@@ -19,7 +19,7 @@ use crate::smolvlm2::video_processor::{VideoProcessor, VideoProcessorConfig};
 
 use kornia_image::Image;
 
-use crate::video::{self, Video};
+use crate::video::{self, VideoBuffer};
 
 // Re-export public types for external use
 pub use crate::smolvlm2::text_processor::{Line, Message, Role};
@@ -111,7 +111,7 @@ impl Default for SmolVlm2Config {
 
 pub enum InputMedia<'v, A: ImageAllocator> {
     Images(Vec<Image<u8, 3, A>>),
-    Video(Vec<&'v mut Video<A>>),
+    Video(Vec<&'v mut VideoBuffer<A>>),
     None,
 }
 
@@ -408,7 +408,7 @@ mod tests {
     use kornia_tensor::CpuAllocator;
 
     #[cfg(feature = "gstreamer")]
-    use crate::video::{Video, VideoSamplingMethod};
+    use crate::video::{VideoBuffer, VideoSamplingMethod};
 
     use super::*;
 
@@ -489,7 +489,7 @@ mod tests {
                         },
                     ],
                 }],
-                InputMedia::Video(vec![&mut Video::from_video_path(
+                InputMedia::Video(vec![&mut VideoBuffer::from_video_path(
                     path,
                     VideoSamplingMethod::Fps(1),
                     64,
@@ -644,7 +644,7 @@ mod tests {
                         model.clear_context().expect("Failed to clear context");
 
                         // Using 32 frames to match Python test for fair comparison
-                        let video_result = Video::from_video_path(
+                        let video_result = VideoBuffer::from_video_path(
                             video_path,
                             VideoSamplingMethod::Fps(1),
                             32, // Match Python's 32 frames for fair comparison

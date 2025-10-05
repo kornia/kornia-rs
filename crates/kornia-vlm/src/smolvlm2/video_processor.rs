@@ -12,7 +12,7 @@ const MAX_IMAGE_SIZE: usize = 4096; // 4k resolution as absolute maximum
 
 use crate::{
     smolvlm2::{text_processor::TextProcessor, SmolVlm2Error},
-    video::{Video, VideoError, VideoMetadata},
+    video::{VideoBuffer, VideoError, VideoMetadata},
 };
 
 pub struct VideoProcessorConfig {
@@ -72,7 +72,7 @@ impl VideoProcessor {
     pub fn binding_videos_to_prompt<A: ImageAllocator>(
         &mut self,
         prompt: &mut String,
-        videos: Vec<&mut Video<A>>,
+        videos: Vec<&mut VideoBuffer<A>>,
         dtype: DType,
         device: &Device,
         alloc: A,
@@ -134,7 +134,7 @@ impl VideoProcessor {
     /// We assume images are RGB.
     pub fn preprocess<A: ImageAllocator>(
         &mut self,
-        video: &mut Video<A>,
+        video: &mut VideoBuffer<A>,
         device: &Device,
         dtype: DType,
         alloc: A,

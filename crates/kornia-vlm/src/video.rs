@@ -138,7 +138,7 @@ pub struct VideoMetadata {
 ///
 /// * `A` - The image allocator type used for frame storage
 #[derive(Clone)]
-pub struct Video<A: ImageAllocator> {
+pub struct VideoBuffer<A: ImageAllocator> {
     /// Vector of image frames that make up the video.
     frames: VecDeque<Image<u8, 3, A>>, // TODO: with max frame required, this can be a fixed size array via const generics
 
@@ -146,7 +146,7 @@ pub struct Video<A: ImageAllocator> {
     metadata: VideoMetadata,
 }
 
-impl<A: ImageAllocator + Clone> Video<A> {
+impl<A: ImageAllocator + Clone> VideoBuffer<A> {
     /// Create a new Video instance with frames and timestamps.
     ///
     /// # Arguments
@@ -649,7 +649,7 @@ mod tests {
     fn test_smolvlm2_reading_video() {
         let _ = env_logger::builder().is_test(true).try_init();
 
-        let _video = Video::<CpuAllocator>::from_video_path(
+        let _video = VideoBuffer::<CpuAllocator>::from_video_path(
             "../../example_video.mp4",
             VideoSamplingMethod::Uniform(1),
             60, // max_frames
