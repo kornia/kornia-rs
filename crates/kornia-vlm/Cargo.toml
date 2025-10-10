@@ -30,6 +30,8 @@ candle-nn = { workspace = true }
 hf-hub = { workspace = true }
 tokenizers = { workspace = true }
 
+circular-buffer = { version = "1.1.0" }
+
 image = "0.25.6"
 
 num2words = "=1.2.0"
@@ -40,5 +42,5 @@ env_logger = { workspace = true }
 
 [features]
 default = []
-gstreamer = ["kornia-io/gstreamer"]
 cuda = ["candle-core/cuda", "candle-transformers/cuda", "candle-nn/cuda"]
+flash-attn = ["candle-transformers/flash-attn"]

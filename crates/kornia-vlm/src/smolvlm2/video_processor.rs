@@ -1,9 +1,8 @@
 use std::time::Duration;
 
 use candle_core::{DType, Device, Tensor};
-use kornia_image::{allocator::ImageAllocator, ImageSize};
-use kornia_imgproc::interpolation::InterpolationMode;
-use log::warn;
+use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
+use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
 use num2words::Num2Words;
 
 const DEFAULT_VIDEO_INTRO: &str = "You are provided the following series of {frame_count} frames from a {video_duration} [H:MM:SS] video.\n";
@@ -13,7 +12,7 @@ const MAX_IMAGE_SIZE: usize = 4096; // 4k resolution as absolute maximum
 
 use crate::{
     smolvlm2::{text_processor::TextProcessor, SmolVlm2Error},
-    video::{Video, VideoMetadata},
+    video::{VideoError, VideoMetadata, VideoSample},
 };
 
 pub struct VideoProcessorConfig {
@@ -27,16 +26,22 @@ pub struct VideoProcessorConfig {
     pub rescale_factor: f32,
 }
 
-pub struct VideoProcessor {
+pub struct VideoProcessor<const N: usize> {
     config: VideoProcessorConfig,
     processed_videos: Vec<(Tensor, Tensor)>,
     image_token_tensor: Option<Tensor>,
+    mean_tensor: Tensor,
+    std_tensor: Tensor,
+    rescale_tensor: Tensor,
+
+    default_metadata: VideoMetadata<N>,
 }
 
-impl VideoProcessor {
+impl<const N: usize> VideoProcessor<N> {
     pub fn new(
         config: VideoProcessorConfig,
         device: &Device,
+        dtype: DType,
         txt_processor: &TextProcessor,
     ) -> Result<Self, SmolVlm2Error> {
         let image_token_tensor = if let Err(SmolVlm2Error::MissingTokenizer) =
@@ -48,17 +53,30 @@ impl VideoProcessor {
             Some(Tensor::from_slice(&[image_token], &[1], device)?)
         };
 
+        // Create normalization tensors once
+        let mean_tensor =
+            Tensor::from_slice(&config.frame_mean, &[1, 3, 1, 1], device)?.to_dtype(dtype)?;
+        let std_tensor =
+            Tensor::from_slice(&config.frame_std, &[1, 3, 1, 1], device)?.to_dtype(dtype)?;
+        let rescale_tensor =
+            Tensor::from_slice(&[config.rescale_factor], &[1, 1, 1, 1], device)?.to_dtype(dtype)?;
+
         Ok(Self {
             config,
             processed_videos: Vec::new(),
             image_token_tensor,
+            mean_tensor,
+            std_tensor,
+            rescale_tensor,
+            default_metadata: VideoMetadata::default(),
         })
     }
 
     pub fn binding_videos_to_prompt<A: ImageAllocator>(
         &mut self,
         prompt: &mut String,
-        videos: Vec<Video<A>>,
+        videos: Vec<&mut VideoSample<N, A>>,
+        dtype: DType,
         device: &Device,
         alloc: A,
     ) -> Result<(), SmolVlm2Error> {
@@ -74,17 +92,24 @@ impl VideoProcessor {
             });
         }
 
+        // Get the actual number of frames from the first video before processing
+        let actual_frames = if !videos.is_empty() {
+            videos[0].frames().len()
+        } else {
+            self.config.max_frames
+        };
+
         let mut video_metadatas = vec![];
-        for mut video in videos.into_iter() {
-            video_metadatas.push(video.metadata.clone());
-            let img_patches = self.preprocess(&mut video, device, alloc.clone())?;
+        for video in videos.into_iter() {
+            video_metadatas.push(video.metadata().clone());
+            let img_patches = self.preprocess(video, device, dtype, alloc.clone())?;
             self.processed_videos
-                .push((img_patches, Tensor::zeros(&[0], DType::F32, device)?));
+                .push((img_patches, Tensor::zeros(&[0], dtype, device)?));
         }
 
         self.expand_text_with_video_tokens(
             prompt,
-            self.config.max_frames,
+            actual_frames,
             &video_metadatas,
             &video_tags_pos,
         )?;
@@ -112,48 +137,52 @@ impl VideoProcessor {
     /// We assume images are RGB.
     pub fn preprocess<A: ImageAllocator>(
         &mut self,
-        video: &mut Video<A>,
+        video: &mut VideoSample<N, A>,
         device: &Device,
+        dtype: DType,
         alloc: A,
     ) -> Result<Tensor, SmolVlm2Error> {
-        // 2. resize (no splitting)
         let new_size = get_resize_output_image_size(
-            video.frames[0].size(),
+            video.frames()[0].size(),
             self.config.video_size_longest_edge,
         );
 
-        // TODO: Bicubic
-        video.resize(new_size, InterpolationMode::Lanczos, alloc.clone())?;
-        video.resize(
-            // resize to a potentially distorted square
-            ImageSize {
+        video.process_frames(|frame| {
+            Self::resize(frame, new_size, InterpolationMode::Bicubic, alloc.clone())?;
+            Self::resize(
+                frame,
+                ImageSize {
+                    width: self.config.video_size_longest_edge,
+                    height: self.config.video_size_longest_edge,
+                },
+                InterpolationMode::Bicubic,
+                alloc.clone(),
+            )?;
+
+            // pad
+            let padded_size = ImageSize {
                 width: self.config.video_size_longest_edge,
                 height: self.config.video_size_longest_edge,
-            },
-            InterpolationMode::Lanczos,
-            alloc.clone(),
-        )?;
+            };
+            // TODO: masking
+            Self::pad(frame, padded_size, 0, alloc.clone())?;
 
-        // pad
-        let padded_size = ImageSize {
-            width: self.config.video_size_longest_edge,
-            height: self.config.video_size_longest_edge,
-        };
-        // TODO: masking
-        video.pad(padded_size, self.config.max_frames, 0, alloc)?;
+            Ok(())
+        })?;
+
+        // temporal padding - only pad if we really need consistent batch size
+        // For memory efficiency, avoid padding when not necessary
+        let video_tensor = video.into_tensor(dtype, device)?;
+        let video_tensor_shape = video_tensor.shape();
+
+        if video_tensor_shape.dim(0)? > self.config.max_frames {
+            return Err(SmolVlm2Error::VideoProcessingError);
+        }
 
         // normalize && rescale (must be the last step)
-        video.normalize_and_rescale(
-            self.config.frame_mean,
-            self.config.frame_std,
-            self.config.rescale_factor,
-            device,
-        )?;
+        let frames_tensor = self.normalize_and_rescale(video_tensor)?;
 
-        video
-            .frames_tensor
-            .clone()
-            .ok_or(SmolVlm2Error::VideoProcessingError)
+        Ok(frames_tensor)
     }
 
     /// Expands a single text prompt by replacing video tokens with video prompt strings using metadata.
@@ -161,24 +190,15 @@ impl VideoProcessor {
         &self,
         prompt: &mut String,
         num_frames: usize,
-        video_metadata: &[VideoMetadata],
+        video_metadatas: &[VideoMetadata<N>],
         video_tags_pos: &[(usize, &str)],
     ) -> Result<(), SmolVlm2Error> {
         let mut offset: isize = 0;
         for (meta_idx, (start, _)) in video_tags_pos.iter().enumerate() {
-            let metadata = video_metadata
+            let metadata = video_metadatas
                 .get(meta_idx)
-                .cloned()
-                .unwrap_or(VideoMetadata {
-                    fps: None,
-                    timestamps: vec![],
-                    duration: None,
-                });
-            let mut metadata = metadata;
-            if metadata.fps.is_none() {
-                warn!("SmolVLM requires frame timestamps to construct prompts, but the `fps` of the input video could not be inferred. Defaulting to `fps=24`. Please provide `video_metadata` for more accurate results.");
-                metadata.fps = Some(24);
-            }
+                .unwrap_or(&self.default_metadata);
+
             let timestamps: Vec<(u32, u32)> = metadata
                 .timestamps
                 .iter()
@@ -186,7 +206,7 @@ impl VideoProcessor {
                 .collect();
             let duration = metadata
                 .duration
-                .unwrap_or_else(|| *metadata.timestamps.last().unwrap_or(&0));
+                .unwrap_or_else(|| *metadata.timestamps.back().unwrap_or(&0));
             let duration_td = Duration::from_secs(duration as u64);
             let duration_str = format!(
                 "{:01}:{:02}:{:02}",
@@ -219,6 +239,99 @@ impl VideoProcessor {
         }
 
         Ok(())
+    }
+
+    /// Resize all frames in the video to a new size.
+    ///
+    /// This method resizes each frame in the video to the specified dimensions
+    /// using the provided interpolation method.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_size` - Target size for all frames
+    /// * `interpolation` - Interpolation method to use for resizing
+    /// * `alloc` - Allocator for creating new resized frames
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), VideoError>` - Ok if successful, VideoError if resizing fails
+    pub fn resize<A: ImageAllocator>(
+        frame: &mut Image<u8, 3, A>,
+        new_size: ImageSize,
+        interpolation: InterpolationMode,
+        alloc: A,
+    ) -> Result<(), VideoError> {
+        let mut buf = Image::<u8, 3, A>::from_size_val(new_size, 0, alloc.clone())?;
+        resize_fast_rgb(frame, &mut buf, interpolation)?;
+        *frame = buf;
+        Ok(())
+    }
+
+    /// Pad video frames spatially and temporally to target dimensions.
+    ///
+    /// This method performs two types of padding:
+    /// 1. Spatial padding: Pads each frame to the target width and height
+    /// 2. Temporal padding: Adds blank frames if fewer than max_num_frames exist
+    ///
+    /// Spatial padding preserves the original image content in the top-left corner
+    /// and fills the remaining area with the specified fill value.
+    ///
+    /// # Arguments
+    ///
+    /// * `padded_size` - Target spatial dimensions (height, width) for frames
+    /// * `max_num_frames` - Target number of frames in the video
+    /// * `fill` - Value to use for padding pixels (e.g., 0 for black)
+    /// * `alloc` - Allocator for creating new padded frames
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), VideoError>` - Ok if successful, VideoError if padding fails
+    pub fn pad<A: ImageAllocator>(
+        frame: &mut Image<u8, 3, A>,
+        padded_size: ImageSize,
+        fill: u8,
+        alloc: A,
+    ) -> Result<(), VideoError> {
+        // Pad each frame spatially if needed
+        let size = frame.size();
+        if size.width < padded_size.width || size.height < padded_size.height {
+            let mut padded = Image::<u8, 3, A>::from_size_val(padded_size, fill, alloc.clone())?;
+            let img_slice = frame.as_slice();
+            let padded_img_slice = padded.as_slice_mut();
+            let width = size.width;
+            let height = size.height;
+            let new_width = padded_size.width;
+            for y in 0..height.min(padded_size.height) {
+                let src_offset = y * width * 3;
+                let dst_offset = y * new_width * 3;
+                let row_bytes = width.min(new_width) * 3;
+                padded_img_slice[dst_offset..dst_offset + row_bytes]
+                    .copy_from_slice(&img_slice[src_offset..src_offset + row_bytes]);
+            }
+            *frame = padded;
+        }
+
+        Ok(())
+    }
+
+    /// Normalize and rescale video frames for neural network processing.
+    ///
+    /// This method converts frames to tensors, applies rescaling (typically from [0,255] to [0,1]),
+    /// and then normalizes using mean and standard deviation values. The resulting tensor
+    /// is stored in `frames_tensor` with shape [T, C, H, W] where T is the number of frames.
+    ///
+    /// # Arguments
+    ///
+    /// * `frames` - Input tensor containing the video frames
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Tensor, SmolVlm2Error>` - Ok with normalized tensor if successful, SmolVlm2Error if tensor operations fail
+    pub fn normalize_and_rescale(&self, frames: Tensor) -> Result<Tensor, SmolVlm2Error> {
+        Ok(frames
+            .broadcast_mul(&self.rescale_tensor)?
+            .broadcast_sub(&self.mean_tensor)?
+            .broadcast_div(&self.std_tensor)?)
     }
 }
 

@@ -275,11 +275,15 @@ impl TextProcessor {
                 .token_history
                 .len()
                 .saturating_sub(self.config.repeat_last_n);
-            candle_transformers::utils::apply_repeat_penalty(
-                &last_logit,
-                self.config.repeat_penalty,
-                &self.token_history[start_at..],
-            )?
+            if 1. - 1e-5 < self.config.repeat_penalty && self.config.repeat_penalty < 1. + 1e-5 {
+                last_logit
+            } else {
+                candle_transformers::utils::apply_repeat_penalty(
+                    &last_logit,
+                    self.config.repeat_penalty,
+                    &self.token_history[start_at..],
+                )?
+            }
         } else {
             last_logit
         };
