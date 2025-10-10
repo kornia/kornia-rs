@@ -300,21 +300,17 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
             let img_token_mask = if _i > 0 {
                 &self.buf_single_zero_tensor
+            } else if use_video {
+                &self.vid_processor.get_video_token_mask(&input)?
             } else {
-                if use_video {
-                    &self.vid_processor.get_video_token_mask(&input)?
-                } else {
-                    &self.img_processor.get_image_token_mask(&input)?
-                }
+                &self.img_processor.get_image_token_mask(&input)?
             };
             let img_data = if _i > 0 {
                 Vec::new()
+            } else if use_video {
+                self.vid_processor.get_processed_videos()
             } else {
-                if use_video {
-                    self.vid_processor.get_processed_videos()
-                } else {
-                    self.img_processor.get_processed_images()
-                }
+                self.img_processor.get_processed_images()
             };
 
             let logits =

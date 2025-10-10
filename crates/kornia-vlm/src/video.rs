@@ -1,36 +1,3 @@
-//! Video processing module for Vision Language Models.
-//!
-//! This module provides video loading and processing capabilities with different sampling strategies.
-//! The video functionality requires the `gstreamer` feature to be enabled.
-//!
-//! # Features
-//!
-//! To use video functionality, enable the `gstreamer` feature:
-//!
-//! ```toml
-//! [dependencies]
-//! kornia-vlm = { version = "0.1", features = ["gstreamer"] }
-//! ```
-//!
-//! # Examples
-//!
-//! ```no_run
-//! # #[cfg(feature = "gstreamer")]
-//! # {
-//! use kornia_vlm::video::{Video, VideoSamplingMethod};
-//! use kornia_tensor::CpuAllocator;
-//!
-//! let video = Video::from_video_path(
-//!     "video.mp4",
-//!     VideoSamplingMethod::Uniform(30),
-//!     60, // max_frames
-//!     CpuAllocator,
-//! ).unwrap();
-//! # }
-//! ```
-
-use std::collections::VecDeque;
-
 use candle_core::DType;
 use candle_core::Device;
 use candle_core::Shape;
@@ -96,7 +63,7 @@ pub struct VideoMetadata<const N: usize> {
 /// # Generic Parameters
 ///
 /// * `A` - The image allocator type used for frame storage
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct VideoSample<const N: usize, A: ImageAllocator> {
     /// Circular buffer of image frames that make up the video.
     frames: CircularBuffer<N, Image<u8, 3, A>>,

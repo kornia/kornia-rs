@@ -23,7 +23,6 @@
 /// let video = Video::from_video_path(
 ///     "video.mp4",
 ///     VideoSamplingMethod::Uniform(30),
-///     60, // max_frames
 ///     CpuAllocator,
 /// ).unwrap();
 /// # }
@@ -76,19 +75,17 @@ pub enum VideoSamplingMethod {
 pub fn from_video_path<P: AsRef<std::path::Path>, A: ImageAllocator>(
     path: P,
     sampling: VideoSamplingMethod,
-    max_frames: usize,
     allocator: A,
 ) -> Result<VideoSample<32, A>, VideoError> {
     panic!("This function requires the 'gstreamer' feature to be enabled.");
 }
 
 #[cfg(feature = "gstreamer")]
-pub fn from_video_path<P: AsRef<std::path::Path>, A: ImageAllocator>(
+pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>, A: ImageAllocator>(
     path: P,
     sampling: VideoSamplingMethod,
-    max_frames: usize,
     allocator: A,
-) -> Result<VideoSample<32, A>, VideoError> {
+) -> Result<VideoSample<N, A>, VideoError> {
     let mut video_reader = VideoReader::new(&path, IoImageFormat::Rgb8).map_err(|e| {
         VideoError::VideoReaderCreation(format!("Path: {:?}, Error: {:?}", path.as_ref(), e))
     })?;
@@ -179,7 +176,7 @@ pub fn from_video_path<P: AsRef<std::path::Path>, A: ImageAllocator>(
                             }
                         }
                         VideoSamplingMethod::FirstN(n) => {
-                            if frames.len() < *n && frames.len() < max_frames {
+                            if frames.len() < *n && frames.len() < N {
                                 take = true;
                             }
                         }
@@ -190,14 +187,14 @@ pub fn from_video_path<P: AsRef<std::path::Path>, A: ImageAllocator>(
                         }
                         _ => {}
                     }
-                    if take && frames.len() < max_frames {
+                    if take && frames.len() < N {
                         frames.push(img);
                         frame_pts.push(current_pos);
                         debug!("[kornia-io] ✓ SAMPLED frame {} (pos: {}, timestamp: {}s) - Total sampled: {}", 
                                    frame_idx, current_pos, current_pos as f64 / 1_000_000_000.0, frames.len());
                     } else if take {
                         debug!(
-                            "[kornia-io] ✗ Skipped frame {} due to max_frames limit",
+                            "[kornia-io] ✗ Skipped frame {} due to N (max frame) limit",
                             frame_idx
                         );
                     }
@@ -205,7 +202,7 @@ pub fn from_video_path<P: AsRef<std::path::Path>, A: ImageAllocator>(
                     // Check if we should break early for different sampling methods
                     match &sampling {
                         VideoSamplingMethod::FirstN(n) => {
-                            if frames.len() >= *n.min(&max_frames) {
+                            if frames.len() >= *n.min(&N) {
                                 debug!(
                                     "[kornia-io] Breaking early for FirstN: collected {} frames",
                                     frames.len()
@@ -214,7 +211,7 @@ pub fn from_video_path<P: AsRef<std::path::Path>, A: ImageAllocator>(
                             }
                         }
                         VideoSamplingMethod::Fps(_) => {
-                            if frames.len() >= max_frames {
+                            if frames.len() >= N {
                                 debug!(
                                     "[kornia-io] Breaking early for Fps: collected {} frames",
                                     frames.len()
@@ -223,10 +220,10 @@ pub fn from_video_path<P: AsRef<std::path::Path>, A: ImageAllocator>(
                             }
                         }
                         VideoSamplingMethod::Indices(indices) => {
-                            // Check if we've collected all requested indices within max_frames
+                            // Check if we've collected all requested indices within N
                             let remaining_indices: Vec<_> = indices
                                 .iter()
-                                .filter(|&&idx| idx >= frame_idx && frames.len() < max_frames)
+                                .filter(|&&idx| idx >= frame_idx && frames.len() < N)
                                 .collect();
                             if remaining_indices.is_empty() {
                                 debug!("[kornia-io] Breaking early for Indices: collected all requested frames within limits");
@@ -235,8 +232,8 @@ pub fn from_video_path<P: AsRef<std::path::Path>, A: ImageAllocator>(
                         }
                         _ => {}
                     }
-                    // General max_frames check for all non-uniform methods
-                    if frames.len() >= max_frames {
+                    // General N max frames check for all non-uniform methods
+                    if frames.len() >= N {
                         break;
                     }
                 }
@@ -281,7 +278,7 @@ pub fn from_video_path<P: AsRef<std::path::Path>, A: ImageAllocator>(
         let mut ts = Vec::new();
         if let VideoSamplingMethod::Uniform(n) = sampling {
             if n > 0 && total > 0 {
-                let num = n.min(max_frames);
+                let num = n.min(N);
                 debug!(
                     "[kornia-io] Uniform sampling: selecting {} frames from {} total frames",
                     num, total
@@ -311,10 +308,10 @@ pub fn from_video_path<P: AsRef<std::path::Path>, A: ImageAllocator>(
                                idx, all_pts[idx], all_pts[idx] as f64 / 1_000_000_000.0, i + 1, num);
                 }
             }
-            // If more than max_frames were pushed (shouldn't happen), truncate
-            if frames.len() > max_frames {
-                frames.truncate(max_frames);
-                ts.truncate(max_frames);
+            // If more than N were pushed (shouldn't happen), truncate
+            if frames.len() > N {
+                frames.truncate(N);
+                ts.truncate(N);
             }
         }
         ts
@@ -347,5 +344,9 @@ pub fn from_video_path<P: AsRef<std::path::Path>, A: ImageAllocator>(
     }
     debug!("[kornia-io] ============================");
 
-    Ok(VideoSample::new(frames.into(), timestamps.into()))
+    let mut video_sample = VideoSample::new();
+    for (frame, timestamp) in frames.into_iter().zip(timestamps.into_iter()) {
+        video_sample.add_frame(frame, timestamp);
+    }
+    Ok(video_sample)
 }

@@ -22,7 +22,7 @@ pub fn run_video_demo(
         _ => VideoSamplingMethod::Uniform(sample_frames),
     };
 
-    let video = from_video_path(video_path, sampling_method, sample_frames, CpuAllocator);
+    let video = from_video_path::<32, _, CpuAllocator>(video_path, sampling_method, CpuAllocator);
     let mut video = match video {
         Ok(v) => v,
         Err(e) => {
@@ -38,7 +38,8 @@ pub fn run_video_demo(
         debug: true,
         ..Default::default()
     };
-    let mut model = SmolVlm2::new(config).expect("Failed to create SmolVLM2 model");
+    let mut model =
+        SmolVlm2::<32, CpuAllocator>::new(config).expect("Failed to create SmolVLM2 model");
 
     // Prepare prompt
     let messages = vec![Message {

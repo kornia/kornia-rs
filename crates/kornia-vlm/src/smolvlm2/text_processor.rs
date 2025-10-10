@@ -275,9 +275,7 @@ impl TextProcessor {
                 .token_history
                 .len()
                 .saturating_sub(self.config.repeat_last_n);
-            let logits = if 1. - 1e-5 < self.config.repeat_penalty
-                && self.config.repeat_penalty < 1. + 1e-5
-            {
+            if 1. - 1e-5 < self.config.repeat_penalty && self.config.repeat_penalty < 1. + 1e-5 {
                 last_logit
             } else {
                 candle_transformers::utils::apply_repeat_penalty(
@@ -285,9 +283,7 @@ impl TextProcessor {
                     self.config.repeat_penalty,
                     &self.token_history[start_at..],
                 )?
-            };
-
-            logits
+            }
         } else {
             last_logit
         };
