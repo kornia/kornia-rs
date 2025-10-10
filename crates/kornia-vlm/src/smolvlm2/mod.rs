@@ -109,13 +109,13 @@ impl Default for SmolVlm2Config {
     }
 }
 
-pub enum InputMedia<'v, A: ImageAllocator> {
+pub enum InputMedia<'v, const N: usize, A: ImageAllocator> {
     Images(Vec<Image<u8, 3, A>>),
-    Video(Vec<&'v mut VideoSample<A>>),
+    Video(Vec<&'v mut VideoSample<N, A>>),
     None,
 }
 
-pub struct SmolVlm2<A: ImageAllocator> {
+pub struct SmolVlm2<const N: usize, A: ImageAllocator> {
     model: model::Model,
     config: SmolVlm2Config,
     device: Device,
@@ -124,13 +124,13 @@ pub struct SmolVlm2<A: ImageAllocator> {
 
     txt_processor: TextProcessor,
     img_processor: ImageProcessor<A>,
-    vid_processor: VideoProcessor,
+    vid_processor: VideoProcessor<N>,
     response: String,
 
     buf_single_zero_tensor: Tensor, // buffer for a single zero tensor
 }
 
-impl<A: ImageAllocator> SmolVlm2<A> {
+impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
     const MODEL_IDENTIFIER: &'static str = "HuggingFaceTB/SmolVLM2-2.2B-Instruct";
     const IMG_PROCESSOR_CONFIG: ImageProcessorConfig = ImageProcessorConfig {
         size_longest_edge: 1536,
@@ -203,7 +203,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
     pub fn inference(
         &mut self,
         prompt: Vec<text_processor::Message>,
-        media: InputMedia<A>,
+        media: InputMedia<N, A>,
         sample_len: usize,
         alloc: A,
     ) -> Result<String, SmolVlm2Error> {
@@ -225,7 +225,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
     pub fn inference_raw(
         &mut self,
         full_prompt: &str,
-        media: InputMedia<A>,
+        media: InputMedia<N, A>,
         sample_len: usize,
         alloc: A,
     ) -> Result<String, SmolVlm2Error> {
@@ -375,7 +375,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
             model::Model,
             TextProcessor,
             ImageProcessor<A>,
-            VideoProcessor,
+            VideoProcessor<N>,
         ),
         SmolVlm2Error,
     > {
@@ -432,7 +432,7 @@ mod tests {
             debug: true,
             ..Default::default()
         };
-        let mut model = SmolVlm2::new(config).unwrap();
+        let mut model = SmolVlm2::<32, _>::new(config).unwrap();
 
         let prompt = "Describe the image.";
         let sample_len = 500;
@@ -475,7 +475,7 @@ mod tests {
             debug: false, // Turn off debug for clean timing
             ..Default::default()
         };
-        let mut model = SmolVlm2::new(config).expect("Failed to load model");
+        let mut model = SmolVlm2::<32, _>::new(config).expect("Failed to load model");
 
         info!("\n==================== Single Image ====================\n");
 

@@ -26,7 +26,7 @@ pub struct VideoProcessorConfig {
     pub rescale_factor: f32,
 }
 
-pub struct VideoProcessor {
+pub struct VideoProcessor<const N: usize> {
     config: VideoProcessorConfig,
     processed_videos: Vec<(Tensor, Tensor)>,
     image_token_tensor: Option<Tensor>,
@@ -34,10 +34,10 @@ pub struct VideoProcessor {
     std_tensor: Tensor,
     rescale_tensor: Tensor,
 
-    default_metadata: VideoMetadata,
+    default_metadata: VideoMetadata<N>,
 }
 
-impl VideoProcessor {
+impl<const N: usize> VideoProcessor<N> {
     pub fn new(
         config: VideoProcessorConfig,
         device: &Device,
@@ -75,7 +75,7 @@ impl VideoProcessor {
     pub fn binding_videos_to_prompt<A: ImageAllocator>(
         &mut self,
         prompt: &mut String,
-        videos: Vec<&mut VideoSample<A>>,
+        videos: Vec<&mut VideoSample<N, A>>,
         dtype: DType,
         device: &Device,
         alloc: A,
@@ -137,7 +137,7 @@ impl VideoProcessor {
     /// We assume images are RGB.
     pub fn preprocess<A: ImageAllocator>(
         &mut self,
-        video: &mut VideoSample<A>,
+        video: &mut VideoSample<N, A>,
         device: &Device,
         dtype: DType,
         alloc: A,
@@ -190,7 +190,7 @@ impl VideoProcessor {
         &self,
         prompt: &mut String,
         num_frames: usize,
-        video_metadatas: &[VideoMetadata],
+        video_metadatas: &[VideoMetadata<N>],
         video_tags_pos: &[(usize, &str)],
     ) -> Result<(), SmolVlm2Error> {
         let mut offset: isize = 0;

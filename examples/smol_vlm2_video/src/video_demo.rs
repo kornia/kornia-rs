@@ -94,9 +94,9 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
     // to prevent memory accumulation during long camera streaming.
 
     // Create a video object to manage frames with a rolling buffer
-    let mut video_buffer = VideoSample::<CpuAllocator>::new(vec![], vec![]);
-    let max_frames_in_buffer = 32; // After around keeping 50 frames, CUDA OOM for 24gb GPU
+    const MAX_FRAMES_IN_BUFFER: usize = 32; // After around keeping 50 frames, CUDA OOM for 24gb GPU
     let mut frame_idx = 0;
+    let mut video_buffer = VideoSample::<MAX_FRAMES_IN_BUFFER, CpuAllocator>::new();
 
     while !cancel_token.load(Ordering::SeqCst) {
         let Some(frame) = webcam.grab_frame()? else {
@@ -123,7 +123,6 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
 
         // Add frame to video buffer and manage buffer size
         video_buffer.add_frame(rgb_image.clone(), frame_idx);
-        video_buffer.remove_old_frames(max_frames_in_buffer);
 
         smolvlm2.clear_context()?;
 
@@ -165,7 +164,7 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
                 "Frame {}: Buffer contains {} frames (max: {})",
                 frame_idx,
                 video_buffer.frames().len(),
-                max_frames_in_buffer
+                MAX_FRAMES_IN_BUFFER
             )),
         )?;
 

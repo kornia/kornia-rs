@@ -73,20 +73,10 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
     let prompt = &args.prompt as &str;
     let mut frame_idx = 0;
 
-    // === Video Understanding Implementation ===
-    // This implementation uses Line::Video and InputMedia::Video for proper video understanding:
-    //    - Uses Line::Video in message content
-    //    - Passes entire Video<CpuAllocator> via InputMedia::Video
-    //    - Leverages SmolVLM2's native video processing for temporal analysis
-    //    - Provides holistic understanding of motion and temporal relationships
-    //
-    // The video buffer maintains a rolling window of frames with automatic cleanup
-    // to prevent memory accumulation during long video processing.
+    const MAX_FRAMES_IN_BUFFER: usize = 32;
 
-    // Create a video object to manage frames with a rolling buffer
-    let mut video_buffer = VideoSample::<CpuAllocator>::new();
     // Keeping around 50 frames caused CUDA OOM on a 24GB GPU, so we use 32 as a safety margin.
-    let max_frames_in_buffer = 32;
+    let mut video_buffer = VideoSample::<MAX_FRAMES_IN_BUFFER, CpuAllocator>::new();
 
     // FPS tracking variables
     let mut last_frame_time = std::time::Instant::now();
@@ -102,7 +92,6 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
         let image = Image::<u8, 3, CpuAllocator>::new(img_size, rgb_slice.to_vec(), CpuAllocator)?;
 
         video_buffer.add_frame(image, frame_idx);
-        video_buffer.remove_old_frames(max_frames_in_buffer);
 
         smolvlm2.clear_context()?;
 
@@ -140,7 +129,7 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
                 "Frame {}: Buffer contains {} frames (max: {})",
                 frame_idx,
                 video_buffer.frames().len(),
-                max_frames_in_buffer
+                MAX_FRAMES_IN_BUFFER
             )),
         )?;
 

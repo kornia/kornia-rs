@@ -78,7 +78,7 @@ pub fn from_video_path<P: AsRef<std::path::Path>, A: ImageAllocator>(
     sampling: VideoSamplingMethod,
     max_frames: usize,
     allocator: A,
-) -> Result<VideoSample<A>, VideoError> {
+) -> Result<VideoSample<32, A>, VideoError> {
     panic!("This function requires the 'gstreamer' feature to be enabled.");
 }
 
@@ -88,7 +88,7 @@ pub fn from_video_path<P: AsRef<std::path::Path>, A: ImageAllocator>(
     sampling: VideoSamplingMethod,
     max_frames: usize,
     allocator: A,
-) -> Result<VideoSample<A>, VideoError> {
+) -> Result<VideoSample<32, A>, VideoError> {
     let mut video_reader = VideoReader::new(&path, IoImageFormat::Rgb8).map_err(|e| {
         VideoError::VideoReaderCreation(format!("Path: {:?}, Error: {:?}", path.as_ref(), e))
     })?;

@@ -35,6 +35,7 @@ use candle_core::DType;
 use candle_core::Device;
 use candle_core::Shape;
 use candle_core::Tensor;
+use circular_buffer::CircularBuffer;
 use kornia_image::{allocator::ImageAllocator, Image};
 use thiserror::Error;
 
@@ -75,12 +76,12 @@ pub enum VideoError {
 /// Contains timing and structural information about the video,
 /// including frame rate, timestamps, and duration.
 #[derive(Clone, Debug, Default)]
-pub struct VideoMetadata {
+pub struct VideoMetadata<const N: usize> {
     /// Frames per second of the original video, if available.
     pub fps: Option<u32>,
 
     /// Timestamps in seconds for each frame in the video.
-    pub timestamps: VecDeque<u32>,
+    pub timestamps: CircularBuffer<N, u32>,
 
     /// Total duration of the video in seconds, if available.
     pub duration: Option<u32>,
@@ -96,22 +97,22 @@ pub struct VideoMetadata {
 ///
 /// * `A` - The image allocator type used for frame storage
 #[derive(Clone)]
-pub struct VideoSample<A: ImageAllocator> {
-    /// Vector of image frames that make up the video.
-    frames: VecDeque<Image<u8, 3, A>>, // TODO: with max frame required, this can be a fixed size array via const generics
+pub struct VideoSample<const N: usize, A: ImageAllocator> {
+    /// Circular buffer of image frames that make up the video.
+    frames: CircularBuffer<N, Image<u8, 3, A>>,
 
     /// Metadata containing timing and video information.
-    meta: VideoMetadata,
+    meta: VideoMetadata<N>,
 
     /// Processing status for each frame in the video.
     ///
     /// Each boolean value indicates whether the corresponding frame has been
     /// processed by operations like `process_frames()`. This helps avoid
     /// redundant processing and tracks which frames have been modified.
-    processed: VecDeque<bool>,
+    processed: CircularBuffer<N, bool>,
 }
 
-impl<A: ImageAllocator + Clone> VideoSample<A> {
+impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     /// Create a new Video instance with frames and timestamps.
     ///
     /// # Arguments
@@ -126,11 +127,11 @@ impl<A: ImageAllocator + Clone> VideoSample<A> {
         Self {
             meta: VideoMetadata {
                 fps: None,
-                timestamps: VecDeque::new(),
+                timestamps: CircularBuffer::new(),
                 duration: None,
             },
-            frames: VecDeque::new(),
-            processed: VecDeque::new(),
+            frames: CircularBuffer::new(),
+            processed: CircularBuffer::new(),
         }
     }
 
@@ -144,35 +145,6 @@ impl<A: ImageAllocator + Clone> VideoSample<A> {
         self.frames.push_back(frame);
         self.meta.timestamps.push_back(timestamp);
         self.processed.push_back(false);
-    }
-
-    /// Remove old frames to maintain a maximum frame count.
-    ///
-    /// This method removes frames from the beginning of the video if the total
-    /// number of frames exceeds the specified maximum. Both frames and their
-    /// corresponding timestamps and processing status are removed to maintain
-    /// consistency across all metadata.
-    ///
-    /// # Arguments
-    ///
-    /// * `max_frames` - Maximum number of frames to keep
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # use kornia_vlm::video::Video;
-    /// # use kornia_tensor::CpuAllocator;
-    /// # let mut video = Video::<CpuAllocator>::new(vec![], vec![]);
-    /// // Keep only the most recent 10 frames
-    /// video.remove_old_frames(10);
-    /// ```
-    pub fn remove_old_frames(&mut self, max_frames: usize) {
-        if self.frames.len() > max_frames {
-            let excess = self.frames.len() - max_frames;
-            self.frames.drain(0..excess);
-            self.meta.timestamps.drain(0..excess);
-            self.processed.drain(0..excess);
-        }
     }
 
     /// Process all frames using a closure that modifies each frame in-place.
@@ -208,13 +180,11 @@ impl<A: ImageAllocator + Clone> VideoSample<A> {
     where
         F: FnMut(&mut Image<u8, 3, A>) -> Result<(), VideoError>,
     {
-        for (frame, processed) in self.frames.iter_mut().zip(&mut self.processed) {
+        for (frame, processed) in self.frames.iter_mut().zip(self.processed.iter_mut()) {
             if *processed {
-                continue; // Skip already processed frames
+                continue;
             }
-
             processor(frame)?;
-
             *processed = true;
         }
         Ok(())
@@ -225,7 +195,7 @@ impl<A: ImageAllocator + Clone> VideoSample<A> {
     /// # Returns
     ///
     /// A reference to the frames vector
-    pub fn frames(&self) -> &VecDeque<Image<u8, 3, A>> {
+    pub fn frames(&self) -> &CircularBuffer<N, Image<u8, 3, A>> {
         &self.frames
     }
 
@@ -305,7 +275,7 @@ impl<A: ImageAllocator + Clone> VideoSample<A> {
     /// }
     /// println!("Number of frames: {}", metadata.timestamps.len());
     /// ```
-    pub fn metadata(&self) -> &VideoMetadata {
+    pub fn metadata(&self) -> &VideoMetadata<N> {
         &self.meta
     }
 }
