@@ -81,7 +81,7 @@ pub enum SmolVlm2Error {
 
 /// Configuration for the SmolVLM2 model
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct SmolVlm2Config {
     pub seed: u64,
     pub temp: f64,
@@ -90,6 +90,9 @@ pub struct SmolVlm2Config {
     pub do_sample: bool,
     pub repeat_last_n: usize,
     pub debug: bool,
+    /// Optional path to custom safetensor weights files. If provided, these will be used
+    /// instead of downloading from HuggingFace Hub. Can be a single file or multiple files.
+    pub weights_path: Option<Vec<std::path::PathBuf>>,
 }
 
 impl Default for SmolVlm2Config {
@@ -102,6 +105,7 @@ impl Default for SmolVlm2Config {
             do_sample: true,
             repeat_last_n: 64,
             debug: false,
+            weights_path: None,
         }
     }
 }
@@ -146,6 +150,8 @@ impl<A: ImageAllocator> SmolVlm2<A> {
     // https://github.com/huggingface/transformers/blob/3e975acc8bf6d029ec0a54b1c5d0691489dfb051/src/transformers/models/smolvlm/processing_smolvlm.py#L57C26-L57C479
     const UPDATED_VIDEO_CHAT_TEMPLATE: &'static str = "<|im_start|>{% for message in messages %}{{message['role'] | capitalize}}{% if message['content'][0]['type'] == 'image' %}{{':'}}{% else %}{{': '}}{% endif %}{% for line in message['content'] %}{% if line['type'] == 'text' %}{{line['text']}}{% elif line['type'] == 'image' %}{{ '<image>' }}{% elif line['type'] == 'video' %}{{ '<video>' }}{% endif %}{% endfor %}<end_of_utterance>\n{% endfor %}{% if add_generation_prompt %}{{ 'Assistant:' }}{% endif %}";
 
+    /// Create a new SmolVLM2 instance with the default configuration.
+    /// This will download weights from HuggingFace Hub.
     pub fn new(config: SmolVlm2Config) -> Result<Self, SmolVlm2Error> {
         #[cfg(feature = "cuda")]
         let (device, dtype) = match Device::cuda_if_available(0) {
@@ -173,6 +179,60 @@ impl<A: ImageAllocator> SmolVlm2<A> {
 
             response: String::new(),
         })
+    }
+
+    /// Create a new SmolVLM2 instance with custom safetensor weights files.
+    ///
+    /// # Arguments
+    ///
+    /// * `weights_paths` - Vector of paths to safetensor files to load
+    /// * `config` - Configuration for the model (custom_weights_paths will be overridden)
+    ///
+    /// # Returns
+    ///
+    /// A new SmolVLM2 instance loaded with the specified weights
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use kornia_vlm::smolvlm2::{SmolVlm2, SmolVlm2Config};
+    ///
+    /// let weights: Vec<&str> = vec![
+    ///     "/path/to/model-00001-of-00002.safetensors",
+    ///     "/path/to/model-00002-of-00002.safetensors",
+    /// ];
+    /// let model = SmolVlm2::from_safetensors(weights, SmolVlm2Config::default()).unwrap();
+    /// ```
+    pub fn from_safetensors<P: Into<std::path::PathBuf>>(
+        weights_paths: Vec<P>,
+        mut config: SmolVlm2Config,
+    ) -> Result<Self, SmolVlm2Error> {
+        config.weights_path = Some(weights_paths.into_iter().map(|p| p.into()).collect());
+        Self::new(config)
+    }
+
+    /// Create a new SmolVLM2 instance from a single safetensor file.
+    ///
+    /// # Arguments
+    ///
+    /// * `weights_path` - Path to a single safetensor file
+    /// * `config` - Configuration for the model
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use kornia_vlm::smolvlm2::{SmolVlm2, SmolVlm2Config};
+    ///
+    /// let model = SmolVlm2::from_single_safetensor(
+    ///     "/path/to/model.safetensors",
+    ///     SmolVlm2Config::default()
+    /// ).unwrap();
+    /// ```
+    pub fn from_single_safetensor<P: Into<std::path::PathBuf>>(
+        weights_path: P,
+        config: SmolVlm2Config,
+    ) -> Result<Self, SmolVlm2Error> {
+        Self::from_safetensors(vec![weights_path], config)
     }
 
     pub fn clear_context(&mut self) -> Result<(), SmolVlm2Error> {
@@ -348,7 +408,7 @@ impl<A: ImageAllocator> SmolVlm2<A> {
     }
 
     fn load_model(
-        config: SmolVlm2Config,
+        config: &SmolVlm2Config,
         dtype: DType,
         device: &Device,
     ) -> Result<
@@ -367,13 +427,23 @@ impl<A: ImageAllocator> SmolVlm2<A> {
         let vid_processor =
             VideoProcessor::new(Self::VID_PROCESSOR_CONFIG, device, &txt_processor)?;
 
-        let api = Api::new()?;
-        let repo = api.model(Self::MODEL_IDENTIFIER.to_string());
+            // Convert PathBuf to actual paths for mmap loading
+            let paths: Vec<_> = weights_paths.iter().map(|p| p.as_path()).collect();
+            unsafe { VarBuilder::from_mmaped_safetensors(&paths, dtype, device)? }
+        } else {
+            debug!(
+                "Loading model from HuggingFace Hub: {}",
+                Self::MODEL_IDENTIFIER
+            );
 
-        let w1 = repo.get("model-00001-of-00002.safetensors")?;
-        let w2 = repo.get("model-00002-of-00002.safetensors")?;
+            let api = Api::new()?;
+            let repo = api.model(Self::MODEL_IDENTIFIER.to_string());
 
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[w1, w2], dtype, device)? };
+            let w1 = repo.get("model-00001-of-00002.safetensors")?;
+            let w2 = repo.get("model-00002-of-00002.safetensors")?;
+
+            unsafe { VarBuilder::from_mmaped_safetensors(&[w1, w2], dtype, device)? }
+        };
 
         model::Model::load(vb, dtype, device)
             .map_err(SmolVlm2Error::CandleError)

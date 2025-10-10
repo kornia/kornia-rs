@@ -1,5 +1,5 @@
 #![allow(clippy::op_ref)]
-use glam::Vec3;
+use glam::{Mat3, Vec3};
 use nalgebra::{DMatrix, DVector, Vector4};
 
 /// Compute the centroid of a set of points.
@@ -11,7 +11,50 @@ pub(crate) fn compute_centroid(pts: &[[f32; 3]]) -> [f32; 3] {
     [centroid.x, centroid.y, centroid.z]
 }
 
-//TODO: Checkout faer for this
+/// Construct compact intrinsics vectors used for fast projection.
+pub(crate) fn intrinsics_as_vectors(k: &[[f32; 3]; 3]) -> (Vec3, Vec3) {
+    let fx = k[0][0];
+    let fy = k[1][1];
+    let cx = k[0][2];
+    let cy = k[1][2];
+    (Vec3::new(fx, 0.0, cx), Vec3::new(0.0, fy, cy))
+}
+
+/// Convert array-form pose to glam matrices/vectors.
+pub(crate) fn pose_to_rt(r: &[[f32; 3]; 3], t: &[f32; 3]) -> (Mat3, Vec3) {
+    let r_mat = Mat3::from_cols(
+        Vec3::new(r[0][0], r[1][0], r[2][0]),
+        Vec3::new(r[0][1], r[1][1], r[2][1]),
+        Vec3::new(r[0][2], r[1][2], r[2][2]),
+    );
+    let t_vec = Vec3::new(t[0], t[1], t[2]);
+    (r_mat, t_vec)
+}
+
+/// Compute squared reprojection error for a single correspondence.
+/// If `skip_if_behind` is true, returns `None` for points with non-positive depth.
+pub(crate) fn project_sq_error(
+    world_point: &[f32; 3],
+    image_point: &[f32; 2],
+    r_mat: &Mat3,
+    t_vec: &Vec3,
+    intr_x: &Vec3,
+    intr_y: &Vec3,
+    skip_if_behind: bool,
+) -> Option<f32> {
+    let pw = Vec3::from_array(*world_point);
+    let pc = *r_mat * pw + *t_vec;
+    if skip_if_behind && pc.z <= 0.0 {
+        return None;
+    }
+    let inv_z = 1.0 / pc.z;
+    let u_hat = intr_x.dot(pc) * inv_z;
+    let v_hat = intr_y.dot(pc) * inv_z;
+    let du = u_hat - image_point[0];
+    let dv = v_hat - image_point[1];
+    Some(du.mul_add(du, dv * dv))
+}
+
 pub(crate) fn gauss_newton(beta_init: [f32; 4], null4: &DMatrix<f32>, rho: &[f32; 6]) -> [f32; 4] {
     const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 
