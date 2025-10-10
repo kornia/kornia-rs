@@ -106,7 +106,7 @@ pub struct SmolVlm2Config {
     pub repeat_last_n: usize,
     /// Optional path to custom safetensor weights files. If provided, these will be used
     /// instead of downloading from HuggingFace Hub. Can be a single file or multiple files.
-    pub custom_weights_paths: Option<Vec<std::path::PathBuf>>,
+    pub weights_path: Option<Vec<std::path::PathBuf>>,
 }
 
 impl Default for SmolVlm2Config {
@@ -118,7 +118,7 @@ impl Default for SmolVlm2Config {
             repeat_penalty: 1.0,
             do_sample: true,
             repeat_last_n: 64,
-            custom_weights_paths: None,
+            weights_path: None,
         }
     }
 }
@@ -190,7 +190,7 @@ impl SmolVlm2 {
         weights_paths: Vec<P>,
         mut config: SmolVlm2Config,
     ) -> Result<Self, SmolVlm2Error> {
-        config.custom_weights_paths = Some(weights_paths.into_iter().map(|p| p.into()).collect());
+        config.weights_path = Some(weights_paths.into_iter().map(|p| p.into()).collect());
         Self::new(config)
     }
 
@@ -368,7 +368,7 @@ impl SmolVlm2 {
         let txt_processor = TextProcessor::new(Self::MODEL_IDENTIFIER.into(), config.clone())?;
 
         // Check if custom weights paths are provided
-        let vb = if let Some(ref weights_paths) = config.custom_weights_paths {
+        let vb = if let Some(ref weights_paths) = config.weights_path {
             debug!("Loading model from custom weights: {:?}", weights_paths);
 
             // Convert PathBuf to actual paths for mmap loading
