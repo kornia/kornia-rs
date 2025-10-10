@@ -56,7 +56,7 @@ pub fn run_video_demo(
     let response = model
         .inference(
             messages,
-            InputMedia::Video(vec![&mut video]),
+            Some(InputMedia::Video(vec![&mut video])),
             max_tokens,
             CpuAllocator,
         )
