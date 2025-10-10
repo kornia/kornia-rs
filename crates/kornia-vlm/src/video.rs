@@ -25,10 +25,6 @@ pub enum VideoError {
     #[error("Failed to close video reader")]
     VideoReaderClose,
 
-    /// Error from the image processing library.
-    #[error("Image error: {0}")]
-    Image(#[from] image::ImageError),
-
     /// Error from the Candle tensor library.
     #[error("Candle error: {0}")]
     CandleError(#[from] candle_core::Error),

@@ -109,7 +109,7 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
         // Use the entire video buffer for video understanding
         let response = smolvlm2.inference(
             vec![video_message],
-            InputMedia::Video(vec![&mut video_buffer]),
+            Some(InputMedia::Video(vec![&mut video_buffer])),
             20,
             CpuAllocator,
         )?;

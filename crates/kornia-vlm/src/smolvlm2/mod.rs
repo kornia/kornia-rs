@@ -116,7 +116,6 @@ impl Default for SmolVlm2Config {
 pub enum InputMedia<'v, const N: usize, A: ImageAllocator> {
     Images(Vec<Image<u8, 3, A>>),
     Video(Vec<&'v mut VideoSample<N, A>>),
-    None,
 }
 
 pub struct SmolVlm2<const N: usize, A: ImageAllocator> {
@@ -172,7 +171,7 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
         let (device, dtype) = (Device::Cpu, DType::F32);
 
         let (model, txt_processor, img_processor, vid_processor) =
-            Self::load_model(config, dtype, &device)?;
+            Self::load_model(&config, dtype, &device)?;
 
         Ok(Self {
             model,
@@ -263,7 +262,7 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
     pub fn inference(
         &mut self,
         prompt: Vec<text_processor::Message>,
-        media: InputMedia<N, A>,
+        media: Option<InputMedia<N, A>>,
         sample_len: usize,
         alloc: A,
     ) -> Result<String, SmolVlm2Error> {
@@ -285,7 +284,7 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
     pub fn inference_raw(
         &mut self,
         full_prompt: &str,
-        media: InputMedia<N, A>,
+        media: Option<InputMedia<N, A>>,
         sample_len: usize,
         alloc: A,
     ) -> Result<String, SmolVlm2Error> {
@@ -300,45 +299,44 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
 
         let mut use_video = false;
 
-        match media {
-            InputMedia::Images(images) => {
-                if images.is_empty() {
-                    return Err(SmolVlm2Error::EmptyMedia(
-                        "No images provided in Images variant".to_string(),
-                    ));
+        if let Some(media) = media {
+            match media {
+                InputMedia::Images(images) => {
+                    if images.is_empty() {
+                        return Err(SmolVlm2Error::EmptyMedia(
+                            "No images provided in Images variant".to_string(),
+                        ));
+                    }
+                    if images.len() > 1 && self.config.debug {
+                        debug!("Multiple images provided: {}", images.len());
+                    }
+                    self.img_processor.binding_images_to_prompt(
+                        &mut converted_prompt,
+                        images,
+                        self.dtype,
+                        &self.device,
+                        alloc,
+                    )?;
                 }
-                if images.len() > 1 && self.config.debug {
-                    debug!("Multiple images provided: {}", images.len());
-                }
-                self.img_processor.binding_images_to_prompt(
-                    &mut converted_prompt,
-                    images,
-                    self.dtype,
-                    &self.device,
-                    alloc,
-                )?;
-            }
-            InputMedia::Video(videos) => {
-                if videos.is_empty() {
-                    return Err(SmolVlm2Error::EmptyMedia(
-                        "No videos provided in Video variant".to_string(),
-                    ));
-                }
-                if videos.len() > 1 && self.config.debug {
-                    debug!("Multiple video provided: {}", videos.len());
-                }
-                self.vid_processor.binding_videos_to_prompt(
-                    &mut converted_prompt,
-                    videos,
-                    self.dtype,
-                    &self.device,
-                    alloc,
-                )?;
+                InputMedia::Video(videos) => {
+                    if videos.is_empty() {
+                        return Err(SmolVlm2Error::EmptyMedia(
+                            "No videos provided in Video variant".to_string(),
+                        ));
+                    }
+                    if videos.len() > 1 && self.config.debug {
+                        debug!("Multiple video provided: {}", videos.len());
+                    }
+                    self.vid_processor.binding_videos_to_prompt(
+                        &mut converted_prompt,
+                        videos,
+                        self.dtype,
+                        &self.device,
+                        alloc,
+                    )?;
 
-                use_video = true;
-            }
-            InputMedia::None => {
-                // No media to process
+                    use_video = true;
+                }
             }
         }
 
@@ -435,13 +433,14 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
         ),
         SmolVlm2Error,
     > {
-        let txt_processor = TextProcessor::new(Self::MODEL_IDENTIFIER.into(), config)?
+        let txt_processor = TextProcessor::new(Self::MODEL_IDENTIFIER.into(), config.clone())?
             .with_template_string(Self::UPDATED_VIDEO_CHAT_TEMPLATE.into())?;
         let img_processor =
             ImageProcessor::new(Self::IMG_PROCESSOR_CONFIG, dtype, device, &txt_processor)?;
         let vid_processor =
             VideoProcessor::new(Self::VID_PROCESSOR_CONFIG, device, dtype, &txt_processor)?;
 
+        let vb = if let Some(weights_paths) = &config.weights_path {
             // Convert PathBuf to actual paths for mmap loading
             let paths: Vec<_> = weights_paths.iter().map(|p| p.as_path()).collect();
             unsafe { VarBuilder::from_mmaped_safetensors(&paths, dtype, device)? }
@@ -514,7 +513,7 @@ mod tests {
                         },
                     ],
                 }],
-                InputMedia::Images(vec![image]),
+                Some(InputMedia::Images(vec![image])),
                 sample_len,
                 CpuAllocator,
             )
@@ -580,7 +579,7 @@ mod tests {
                                 },
                             ],
                         }],
-                        InputMedia::Images(vec![test_image.clone()]),
+                        Some(InputMedia::Images(vec![test_image.clone()])),
                         200, // Match Python's max_new_tokens=200
                         CpuAllocator,
                     )
