@@ -84,8 +84,9 @@ pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
     // to prevent memory accumulation during long video processing.
 
     // Create a video object to manage frames with a rolling buffer
-    let mut video_buffer = VideoSample::<CpuAllocator>::new(vec![], vec![]);
-    let max_frames_in_buffer = 32; // After around keeping 50 frames, CUDA OOM for 24gb GPU
+    let mut video_buffer = VideoSample::<CpuAllocator>::new();
+    // Keeping around 50 frames caused CUDA OOM on a 24GB GPU, so we use 32 as a safety margin.
+    let max_frames_in_buffer = 32;
 
     // FPS tracking variables
     let mut last_frame_time = std::time::Instant::now();
