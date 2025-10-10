@@ -1,0 +1,28 @@
+[package]
+name = "smol_vlm2"
+version = "0.1.0"
+authors = ["Andrew Shen <andrewshen31@gmail.com>"]
+edition = "2021"
+publish = false
+
+[dependencies]
+argh = { workspace = true }
+reqwest = { version = "0.12.15", features = ["blocking"] }
+kornia = { workspace = true, features = ["v4l"] }
+kornia-image = { workspace = true }
+kornia-tensor = { workspace = true }
+kornia-vlm = { workspace = true }
+kornia-io = { workspace = true }
+ctrlc = { workspace = true }
+rerun = { workspace = true }
+env_logger = { workspace = true }
+log = "0.4"
+gstreamer = "0.23.5"
+gstreamer-app = "0.23.5"
+gstreamer-video = "0.23.5"
+thiserror = { workspace = true }
+
+
+[features]
+cuda = ["kornia/cuda"]
+gstreamer = ["kornia-io/gstreamer"]
