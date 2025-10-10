@@ -132,9 +132,10 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     /// # Examples
     ///
     /// ```no_run
-    /// # use kornia_vlm::video::{Video, VideoSamplingMethod};
-    /// # use kornia_tensor::CpuAllocator;
-    /// # let mut video = Video::<CpuAllocator>::new(vec![], vec![]);
+    /// use kornia_vlm::video::VideoSample;
+    /// use kornia_tensor::CpuAllocator;
+    /// use kornia_image::Image;
+    /// let mut video = VideoSample::<32, CpuAllocator>::default();
     /// // Apply some processing to each frame
     /// video.process_frames(|frame| {
     ///     // Example: modify frame data (e.g., apply a filter)
@@ -192,12 +193,13 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     /// # Examples
     ///
     /// ```no_run
-    /// # use kornia_vlm::video::{Video, VideoSamplingMethod};
-    /// # use kornia_tensor::CpuAllocator;
-    /// # use candle_core::Device;
-    /// # let video = Video::<CpuAllocator>::new(vec![], vec![]);
+    /// use kornia_vlm::video::VideoSample;
+    /// use kornia_tensor::CpuAllocator;
+    /// use kornia_image::Image;
+    /// use candle_core::Device;
+    /// let video = VideoSample::<32, CpuAllocator>::default();
     /// let device = Device::Cpu;
-    /// let tensor = video.into_tensor(&device).unwrap();
+    /// let tensor = video.into_tensor(candle_core::DType::F32, &device).unwrap();
     /// println!("Tensor shape: {:?}", tensor.dims()); // [N, 3, H, W]
     /// ```
     pub fn into_tensor(&self, dtype: DType, device: &Device) -> Result<Tensor, VideoError> {
@@ -233,9 +235,9 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     /// # Examples
     ///
     /// ```no_run
-    /// # use kornia_vlm::video::{Video, VideoSamplingMethod};
-    /// # use kornia_tensor::CpuAllocator;
-    /// # let video = Video::<CpuAllocator>::new(vec![], vec![]);
+    /// use kornia_vlm::video::VideoSample;
+    /// use kornia_tensor::CpuAllocator;
+    /// let video = VideoSample::<32, CpuAllocator>::default();
     /// let metadata = video.metadata();
     /// if let Some(fps) = metadata.fps {
     ///     println!("Video FPS: {}", fps);
