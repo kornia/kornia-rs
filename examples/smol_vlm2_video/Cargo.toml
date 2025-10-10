@@ -11,7 +11,7 @@ reqwest = { version = "0.12.15", features = ["blocking"] }
 kornia = { workspace = true, features = ["v4l"] }
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
-kornia-vlm = { workspace = true, features = ["gstreamer"] }
+kornia-vlm = { workspace = true }
 ctrlc = { workspace = true }
 rerun = { workspace = true }
 env_logger = { workspace = true }

@@ -40,6 +40,5 @@ env_logger = { workspace = true }
 
 [features]
 default = []
-gstreamer = ["kornia-io/gstreamer"]
 cuda = ["candle-core/cuda", "candle-transformers/cuda", "candle-nn/cuda"]
 flash-attn = ["candle-transformers/flash-attn"]
