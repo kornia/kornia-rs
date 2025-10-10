@@ -84,13 +84,6 @@ pub struct VideoMetadata {
 
     /// Total duration of the video in seconds, if available.
     pub duration: Option<u32>,
-
-    /// Processing status for each frame in the video.
-    ///
-    /// Each boolean value indicates whether the corresponding frame has been
-    /// processed by operations like `process_frames()`. This helps avoid
-    /// redundant processing and tracks which frames have been modified.
-    pub processed: VecDeque<bool>,
 }
 
 /// A video container that holds frames and metadata.
@@ -103,15 +96,22 @@ pub struct VideoMetadata {
 ///
 /// * `A` - The image allocator type used for frame storage
 #[derive(Clone)]
-pub struct VideoBuffer<A: ImageAllocator> {
+pub struct VideoSample<A: ImageAllocator> {
     /// Vector of image frames that make up the video.
     frames: VecDeque<Image<u8, 3, A>>, // TODO: with max frame required, this can be a fixed size array via const generics
 
     /// Metadata containing timing and video information.
-    metadata: VideoMetadata,
+    meta: VideoMetadata,
+
+    /// Processing status for each frame in the video.
+    ///
+    /// Each boolean value indicates whether the corresponding frame has been
+    /// processed by operations like `process_frames()`. This helps avoid
+    /// redundant processing and tracks which frames have been modified.
+    processed: VecDeque<bool>,
 }
 
-impl<A: ImageAllocator + Clone> VideoBuffer<A> {
+impl<A: ImageAllocator + Clone> VideoSample<A> {
     /// Create a new Video instance with frames and timestamps.
     ///
     /// # Arguments
@@ -122,15 +122,15 @@ impl<A: ImageAllocator + Clone> VideoBuffer<A> {
     /// # Returns
     ///
     /// A new Video instance with the provided frames and metadata
-    pub fn new(frames: Vec<Image<u8, 3, A>>, timestamps: Vec<u32>) -> Self {
+    pub fn new() -> Self {
         Self {
-            metadata: VideoMetadata {
+            meta: VideoMetadata {
                 fps: None,
-                timestamps: VecDeque::from(timestamps),
+                timestamps: VecDeque::new(),
                 duration: None,
-                processed: VecDeque::from(vec![false; frames.len()]),
             },
-            frames: VecDeque::from(frames),
+            frames: VecDeque::new(),
+            processed: VecDeque::new(),
         }
     }
 
@@ -142,8 +142,8 @@ impl<A: ImageAllocator + Clone> VideoBuffer<A> {
     /// * `timestamp` - Timestamp of the frame in seconds
     pub fn add_frame(&mut self, frame: Image<u8, 3, A>, timestamp: u32) {
         self.frames.push_back(frame);
-        self.metadata.timestamps.push_back(timestamp);
-        self.metadata.processed.push_back(false);
+        self.meta.timestamps.push_back(timestamp);
+        self.processed.push_back(false);
     }
 
     /// Remove old frames to maintain a maximum frame count.
@@ -170,8 +170,8 @@ impl<A: ImageAllocator + Clone> VideoBuffer<A> {
         if self.frames.len() > max_frames {
             let excess = self.frames.len() - max_frames;
             self.frames.drain(0..excess);
-            self.metadata.timestamps.drain(0..excess);
-            self.metadata.processed.drain(0..excess);
+            self.meta.timestamps.drain(0..excess);
+            self.processed.drain(0..excess);
         }
     }
 
@@ -208,7 +208,7 @@ impl<A: ImageAllocator + Clone> VideoBuffer<A> {
     where
         F: FnMut(&mut Image<u8, 3, A>) -> Result<(), VideoError>,
     {
-        for (frame, processed) in self.frames.iter_mut().zip(&mut self.metadata.processed) {
+        for (frame, processed) in self.frames.iter_mut().zip(&mut self.processed) {
             if *processed {
                 continue; // Skip already processed frames
             }
@@ -306,6 +306,6 @@ impl<A: ImageAllocator + Clone> VideoBuffer<A> {
     /// println!("Number of frames: {}", metadata.timestamps.len());
     /// ```
     pub fn metadata(&self) -> &VideoMetadata {
-        &self.metadata
+        &self.meta
     }
 }

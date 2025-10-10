@@ -217,7 +217,6 @@ fn resize_fast_impl<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
         InterpolationMode::Bilinear => fr::ResizeAlg::Convolution(fr::FilterType::Bilinear),
         InterpolationMode::Nearest => fr::ResizeAlg::Nearest,
         InterpolationMode::Lanczos => fr::ResizeAlg::Convolution(fr::FilterType::Lanczos3),
-        // Similiar to PyTorch
         InterpolationMode::Bicubic => fr::ResizeAlg::Convolution(fr::FilterType::CatmullRom),
     };
 

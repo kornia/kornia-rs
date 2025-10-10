@@ -9,7 +9,7 @@ use kornia::{
     tensor::CpuAllocator,
 };
 use kornia_vlm::smolvlm2::{InputMedia, Line, Message, Role, SmolVlm2, SmolVlm2Config};
-use kornia_vlm::video::VideoBuffer;
+use kornia_vlm::video::VideoSample;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -94,7 +94,7 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
     // to prevent memory accumulation during long camera streaming.
 
     // Create a video object to manage frames with a rolling buffer
-    let mut video_buffer = VideoBuffer::<CpuAllocator>::new(vec![], vec![]);
+    let mut video_buffer = VideoSample::<CpuAllocator>::new(vec![], vec![]);
     let max_frames_in_buffer = 32; // After around keeping 50 frames, CUDA OOM for 24gb GPU
     let mut frame_idx = 0;
 

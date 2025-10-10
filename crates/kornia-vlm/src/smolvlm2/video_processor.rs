@@ -12,7 +12,7 @@ const MAX_IMAGE_SIZE: usize = 4096; // 4k resolution as absolute maximum
 
 use crate::{
     smolvlm2::{text_processor::TextProcessor, SmolVlm2Error},
-    video::{VideoBuffer, VideoError, VideoMetadata},
+    video::{VideoError, VideoMetadata, VideoSample},
 };
 
 pub struct VideoProcessorConfig {
@@ -33,6 +33,8 @@ pub struct VideoProcessor {
     mean_tensor: Tensor,
     std_tensor: Tensor,
     rescale_tensor: Tensor,
+
+    default_metadata: VideoMetadata,
 }
 
 impl VideoProcessor {
@@ -66,13 +68,14 @@ impl VideoProcessor {
             mean_tensor,
             std_tensor,
             rescale_tensor,
+            default_metadata: VideoMetadata::default(),
         })
     }
 
     pub fn binding_videos_to_prompt<A: ImageAllocator>(
         &mut self,
         prompt: &mut String,
-        videos: Vec<&mut VideoBuffer<A>>,
+        videos: Vec<&mut VideoSample<A>>,
         dtype: DType,
         device: &Device,
         alloc: A,
@@ -134,7 +137,7 @@ impl VideoProcessor {
     /// We assume images are RGB.
     pub fn preprocess<A: ImageAllocator>(
         &mut self,
-        video: &mut VideoBuffer<A>,
+        video: &mut VideoSample<A>,
         device: &Device,
         dtype: DType,
         alloc: A,
@@ -187,15 +190,14 @@ impl VideoProcessor {
         &self,
         prompt: &mut String,
         num_frames: usize,
-        video_metadata: &[VideoMetadata],
+        video_metadatas: &[VideoMetadata],
         video_tags_pos: &[(usize, &str)],
     ) -> Result<(), SmolVlm2Error> {
         let mut offset: isize = 0;
         for (meta_idx, (start, _)) in video_tags_pos.iter().enumerate() {
-            let metadata = video_metadata
+            let metadata = video_metadatas
                 .get(meta_idx)
-                .cloned()
-                .unwrap_or(VideoMetadata::default());
+                .unwrap_or(&self.default_metadata);
 
             let timestamps: Vec<(u32, u32)> = metadata
                 .timestamps
@@ -259,12 +261,9 @@ impl VideoProcessor {
         interpolation: InterpolationMode,
         alloc: A,
     ) -> Result<(), VideoError> {
-        // for i in 0..frames.len() {
         let mut buf = Image::<u8, 3, A>::from_size_val(new_size, 0, alloc.clone())?;
         resize_fast_rgb(frame, &mut buf, interpolation)?;
-        // frames[i] = buf;
         *frame = buf;
-        // }
         Ok(())
     }
 

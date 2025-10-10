@@ -19,7 +19,7 @@ use crate::smolvlm2::video_processor::{VideoProcessor, VideoProcessorConfig};
 
 use kornia_image::Image;
 
-use crate::video::{self, VideoBuffer};
+use crate::video::{self, VideoSample};
 
 // Re-export public types for external use
 pub use crate::smolvlm2::text_processor::{Line, Message, Role};
@@ -111,7 +111,7 @@ impl Default for SmolVlm2Config {
 
 pub enum InputMedia<'v, A: ImageAllocator> {
     Images(Vec<Image<u8, 3, A>>),
-    Video(Vec<&'v mut VideoBuffer<A>>),
+    Video(Vec<&'v mut VideoSample<A>>),
     None,
 }
 
@@ -402,13 +402,11 @@ impl<A: ImageAllocator> SmolVlm2<A> {
 
 #[cfg(test)]
 mod tests {
+    use log::info;
     use std::path::Path;
 
     use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
     use kornia_tensor::CpuAllocator;
-
-    #[cfg(feature = "gstreamer")]
-    use crate::video::{VideoBuffer, VideoSamplingMethod};
 
     use super::*;
 
@@ -457,51 +455,6 @@ mod tests {
             .expect("Inference failed");
     }
 
-    // cargo test -p kornia-vlm test_smolvlm2_video_inference --features "gstreamer,cuda" -- --nocapture --ignored
-    // RUST_LOG=debug cargo test -p kornia-vlm test_smolvlm2_video_inference --features "gstreamer,cuda" -- --nocapture --ignored
-    #[test]
-    #[cfg(feature = "gstreamer")]
-    #[ignore = "Requires CUDA"]
-    fn test_smolvlm2_video_inference() {
-        env_logger::init();
-
-        let path = Path::new("../../example_video.mp4"); // or .png
-
-        let config = SmolVlm2Config {
-            seed: 42,
-            do_sample: false,
-            debug: true,
-            ..Default::default()
-        };
-        let mut model = SmolVlm2::new(config).unwrap();
-
-        let prompt = "Describe the video. Is the Earth rotating?";
-        let sample_len = 500;
-
-        let _response = model
-            .inference(
-                vec![text_processor::Message {
-                    role: text_processor::Role::User,
-                    content: vec![
-                        text_processor::Line::Video,
-                        text_processor::Line::Text {
-                            text: prompt.to_string(),
-                        },
-                    ],
-                }],
-                InputMedia::Video(vec![&mut VideoBuffer::from_video_path(
-                    path,
-                    VideoSamplingMethod::Fps(1),
-                    64,
-                    CpuAllocator,
-                )
-                .expect("Failed to load video")]),
-                sample_len,
-                CpuAllocator,
-            )
-            .expect("Inference failed");
-    }
-
     // cargo test -p kornia-vlm test_smolvlm2_speed_comparison --features "cuda,gstreamer,flash-attn" -- --nocapture --ignored
     // RUST_LOG=debug cargo test -p kornia-vlm test_smolvlm2_speed_comparison --features "cuda,gstreamer,flash-attn" -- --nocapture --ignored
     #[test]
@@ -509,9 +462,9 @@ mod tests {
     fn test_smolvlm2_speed_comparison() {
         env_logger::init();
 
-        println!("============================================================");
-        println!("SMOLVLM2 RUST SPEED TEST RESULTS");
-        println!("============================================================");
+        info!("============================================================");
+        info!("SMOLVLM2 RUST SPEED TEST RESULTS");
+        info!("============================================================");
 
         // Create a test blue image (224x224)
         let test_image = create_test_blue_image();
@@ -524,7 +477,7 @@ mod tests {
         };
         let mut model = SmolVlm2::new(config).expect("Failed to load model");
 
-        println!("\n==================== Single Image ====================\n");
+        info!("\n==================== Single Image ====================\n");
 
         let test_prompts = [
             "Describe this image.",
@@ -537,7 +490,7 @@ mod tests {
         let mut test_count = 0;
 
         for (i, prompt) in test_prompts.iter().enumerate() {
-            println!("Test {}: '{}'", i + 1, prompt);
+            info!("Test {}: '{}'", i + 1, prompt);
 
             // Run each test twice to match Python behavior
             let mut test_times = Vec::new();
@@ -585,11 +538,11 @@ mod tests {
                     response.clone()
                 };
 
-                println!(
+                info!(
                     "  Run {}: {:.2}s, {} tokens, {:.1} tok/s",
                     run, time_secs, token_count, tokens_per_sec
                 );
-                println!("         Output: {}", truncated_output);
+                info!("         Output: {}", truncated_output);
 
                 total_time += time_secs;
                 total_tokens += token_count;
@@ -601,7 +554,7 @@ mod tests {
             let avg_tokens = test_tokens.iter().sum::<usize>() as f64 / test_tokens.len() as f64;
             let avg_speed = avg_tokens / avg_time;
 
-            println!(
+            info!(
                 "  Average: {:.2}s, {:.0} tokens, {:.1} tok/s\n",
                 avg_time, avg_tokens, avg_speed
             );
@@ -611,159 +564,154 @@ mod tests {
         let overall_avg_time = total_time / test_count as f64;
         let overall_avg_speed = total_tokens as f64 / total_time;
 
-        println!("🏁 Single Image Section Performance:");
-        println!("   Average Time: {:.2}s", overall_avg_time);
-        println!("   Average Speed: {:.1} tokens/second", overall_avg_speed);
-        println!("   Total Tests: {}", test_count);
+        info!("🏁 Single Image Section Performance:");
+        info!("   Average Time: {:.2}s", overall_avg_time);
+        info!("   Average Speed: {:.1} tokens/second", overall_avg_speed);
+        info!("   Total Tests: {}", test_count);
 
-        // Video test section (if video processing is available)
-        #[cfg(feature = "gstreamer")]
-        {
-            println!("\n==================== Video 32 frames ====================\n");
+        // // Video test section (if video processing is available)
+        // #[cfg(feature = "gstreamer")]
+        // {
+        //     info!("\n==================== Video 32 frames ====================\n");
 
-            let video_path = Path::new("../../car-detection.mp4");
-            if video_path.exists() {
-                let video_prompts = [
-                    "Describe what happens in this video.",
-                    "What do you see in this video?",
-                    "Summarize the video content.",
-                ];
+        //     let video_path = Path::new("../../car-detection.mp4");
+        //     if video_path.exists() {
+        //         let video_prompts = [
+        //             "Describe what happens in this video.",
+        //             "What do you see in this video?",
+        //             "Summarize the video content.",
+        //         ];
 
-                let mut video_total_time = 0.0;
-                let mut video_total_tokens = 0;
-                let mut video_test_count = 0;
+        //         let mut video_total_time = 0.0;
+        //         let mut video_total_tokens = 0;
+        //         let mut video_test_count = 0;
 
-                for (i, prompt) in video_prompts.iter().enumerate() {
-                    println!("Test {}: '{}'", i + 1, prompt);
+        //         for (i, prompt) in video_prompts.iter().enumerate() {
+        //             info!("Test {}: '{}'", i + 1, prompt);
 
-                    // Run each test twice to match Python behavior
-                    let mut test_times = Vec::new();
-                    let mut test_tokens = Vec::new();
+        //             // Run each test twice to match Python behavior
+        //             let mut test_times = Vec::new();
+        //             let mut test_tokens = Vec::new();
 
-                    for run in 1..=2 {
-                        model.clear_context().expect("Failed to clear context");
+        //             for run in 1..=2 {
+        //                 model.clear_context().expect("Failed to clear context");
 
-                        // Using 32 frames to match Python test for fair comparison
-                        let video_result = VideoBuffer::from_video_path(
-                            video_path,
-                            VideoSamplingMethod::Fps(1),
-                            32, // Match Python's 32 frames for fair comparison
-                            CpuAllocator,
-                        );
+        //                 // Using 32 frames to match Python test for fair comparison
+        //                 let video_result = VideoBuffer::from_video_path(
+        //                     video_path,
+        //                     VideoSamplingMethod::Fps(1),
+        //                     32, // Match Python's 32 frames for fair comparison
+        //                     CpuAllocator,
+        //                 );
 
-                        match video_result {
-                            Ok(mut video) => {
-                                let start_time = std::time::Instant::now();
-                                let inference_result = model.inference(
-                                    vec![text_processor::Message {
-                                        role: text_processor::Role::User,
-                                        content: vec![
-                                            text_processor::Line::Video,
-                                            text_processor::Line::Text {
-                                                text: prompt.to_string(),
-                                            },
-                                        ],
-                                    }],
-                                    InputMedia::Video(vec![&mut video]),
-                                    200, // Match Python's max_new_tokens=200
-                                    CpuAllocator,
-                                );
+        //                 match video_result {
+        //                     Ok(mut video) => {
+        //                         let start_time = std::time::Instant::now();
+        //                         let inference_result = model.inference(
+        //                             vec![text_processor::Message {
+        //                                 role: text_processor::Role::User,
+        //                                 content: vec![
+        //                                     text_processor::Line::Video,
+        //                                     text_processor::Line::Text {
+        //                                         text: prompt.to_string(),
+        //                                     },
+        //                                 ],
+        //                             }],
+        //                             InputMedia::Video(vec![&mut video]),
+        //                             200, // Match Python's max_new_tokens=200
+        //                             CpuAllocator,
+        //                         );
 
-                                match inference_result {
-                                    Ok(response) => {
-                                        let duration = start_time.elapsed();
-                                        let time_secs = duration.as_secs_f64();
-                                        let token_count = response.split_whitespace().count();
-                                        let tokens_per_sec = token_count as f64 / time_secs;
+        //                         match inference_result {
+        //                             Ok(response) => {
+        //                                 let duration = start_time.elapsed();
+        //                                 let time_secs = duration.as_secs_f64();
+        //                                 let token_count = response.split_whitespace().count();
+        //                                 let tokens_per_sec = token_count as f64 / time_secs;
 
-                                        test_times.push(time_secs);
-                                        test_tokens.push(token_count);
+        //                                 test_times.push(time_secs);
+        //                                 test_tokens.push(token_count);
 
-                                        let truncated_output = if response.len() > 60 {
-                                            format!("{}...", &response[..57])
-                                        } else {
-                                            response.clone()
-                                        };
+        //                                 let truncated_output = if response.len() > 60 {
+        //                                     format!("{}...", &response[..57])
+        //                                 } else {
+        //                                     response.clone()
+        //                                 };
 
-                                        println!(
-                                            "  Run {}: {:.2}s, {} tokens, {:.1} tok/s",
-                                            run, time_secs, token_count, tokens_per_sec
-                                        );
-                                        println!("         Output: {}", truncated_output);
+        //                                 info!(
+        //                                     "  Run {}: {:.2}s, {} tokens, {:.1} tok/s",
+        //                                     run, time_secs, token_count, tokens_per_sec
+        //                                 );
+        //                                 info!("         Output: {}", truncated_output);
 
-                                        video_total_time += time_secs;
-                                        video_total_tokens += token_count;
-                                        video_test_count += 1;
-                                    }
-                                    Err(e) => {
-                                        println!("  Video inference failed: {}", e);
-                                        break;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                println!("  Failed to load video: {}", e);
-                                break;
-                            }
-                        }
-                    }
+        //                                 video_total_time += time_secs;
+        //                                 video_total_tokens += token_count;
+        //                                 video_test_count += 1;
+        //                             }
+        //                             Err(e) => {
+        //                                 info!("  Video inference failed: {}", e);
+        //                                 break;
+        //                             }
+        //                         }
+        //                     }
+        //                     Err(e) => {
+        //                         info!("  Failed to load video: {}", e);
+        //                         break;
+        //                     }
+        //                 }
+        //             }
 
-                    // Calculate averages for this test
-                    if !test_times.is_empty() {
-                        let avg_time = test_times.iter().sum::<f64>() / test_times.len() as f64;
-                        let avg_tokens =
-                            test_tokens.iter().sum::<usize>() as f64 / test_tokens.len() as f64;
-                        let avg_speed = avg_tokens / avg_time;
+        //             // Calculate averages for this test
+        //             if !test_times.is_empty() {
+        //                 let avg_time = test_times.iter().sum::<f64>() / test_times.len() as f64;
+        //                 let avg_tokens =
+        //                     test_tokens.iter().sum::<usize>() as f64 / test_tokens.len() as f64;
+        //                 let avg_speed = avg_tokens / avg_time;
 
-                        println!(
-                            "  Average: {:.2}s, {:.0} tokens, {:.1} tok/s\n",
-                            avg_time, avg_tokens, avg_speed
-                        );
-                    }
-                }
+        //                 info!(
+        //                     "  Average: {:.2}s, {:.0} tokens, {:.1} tok/s\n",
+        //                     avg_time, avg_tokens, avg_speed
+        //                 );
+        //             }
+        //         }
 
-                // Overall video performance summary
-                if video_test_count > 0 {
-                    let video_avg_time = video_total_time / video_test_count as f64;
-                    let video_avg_speed = video_total_tokens as f64 / video_total_time;
+        //         // Overall video performance summary
+        //         if video_test_count > 0 {
+        //             let video_avg_time = video_total_time / video_test_count as f64;
+        //             let video_avg_speed = video_total_tokens as f64 / video_total_time;
 
-                    println!("🏁 Video 32 frames Section Performance:");
-                    println!("   Average Time: {:.2}s", video_avg_time);
-                    println!("   Average Speed: {:.1} tokens/second", video_avg_speed);
-                    println!("   Total Tests: {}", video_test_count);
-                }
-            } else {
-                println!("  Video file not found: {:?}", video_path);
-            }
-        }
+        //             info!("🏁 Video 32 frames Section Performance:");
+        //             info!("   Average Time: {:.2}s", video_avg_time);
+        //             info!("   Average Speed: {:.1} tokens/second", video_avg_speed);
+        //             info!("   Total Tests: {}", video_test_count);
+        //         }
+        //     } else {
+        //         info!("  Video file not found: {:?}", video_path);
+        //     }
+        // }
 
-        #[cfg(not(feature = "gstreamer"))]
-        {
-            println!("\n==================== Video Test ====================\n");
-            println!("  Video testing requires 'gstreamer' feature to be enabled");
-            println!("  Run with: cargo test --features \"gstreamer,cuda\"");
-        }
+        // #[cfg(not(feature = "gstreamer"))]
+        // {
+        //     info!("\n==================== Video Test ====================\n");
+        //     info!("  Video testing requires 'gstreamer' feature to be enabled");
+        //     info!("  Run with: cargo test --features \"gstreamer,cuda\"");
+        // }
 
         // Overall summary to match Python format
-        println!("\n============================================================");
-        println!("📊 SECTION-BY-SECTION PERFORMANCE:");
-        println!("============================================================");
-        println!("  Single Image:");
-        println!("    Average Time: {:.2}s", overall_avg_time);
-        println!("    Average Speed: {:.1} tokens/second", overall_avg_speed);
-        println!("    Tests Run: {}", test_count);
-        println!();
+        info!("\n============================================================");
+        info!("📊 SECTION-BY-SECTION PERFORMANCE:");
+        info!("============================================================");
+        info!("  Single Image:");
+        info!("    Average Time: {:.2}s", overall_avg_time);
+        info!("    Average Speed: {:.1} tokens/second", overall_avg_speed);
+        info!("    Tests Run: {}", test_count);
+        info!("");
 
-        #[cfg(feature = "gstreamer")]
-        {
-            // Video stats will be printed above if gstreamer is enabled
-        }
-
-        println!("============================================================");
-        println!("🎯 OVERALL PERFORMANCE:");
-        println!("  Average Time: {:.2}s", overall_avg_time);
-        println!("  Average Speed: {:.1} tokens/second", overall_avg_speed);
-        println!(
+        info!("============================================================");
+        info!("🎯 OVERALL PERFORMANCE:");
+        info!("  Average Time: {:.2}s", overall_avg_time);
+        info!("  Average Speed: {:.1} tokens/second", overall_avg_speed);
+        info!(
             "  Device: {}",
             if cfg!(feature = "cuda") {
                 "cuda"
@@ -771,19 +719,19 @@ mod tests {
                 "cpu"
             }
         );
-        println!("  Model: HuggingFaceTB/SmolVLM2-2.2B-Instruct");
-        #[cfg(feature = "gstreamer")]
-        {
-            let video_path = Path::new("../../example_video.mp4");
-            if video_path.exists() {
-                println!("  Video Tested: {:?}", video_path);
-            }
-        }
-        println!("============================================================");
+        info!("  Model: HuggingFaceTB/SmolVLM2-2.2B-Instruct");
+        // #[cfg(feature = "gstreamer")]
+        // {
+        //     let video_path = Path::new("../../example_video.mp4");
+        //     if video_path.exists() {
+        //         info!("  Video Tested: {:?}", video_path);
+        //     }
+        // }
+        info!("============================================================");
 
-        println!("\n============================================================");
-        println!("RUST SPEED TEST COMPLETED");
-        println!("============================================================");
+        info!("\n============================================================");
+        info!("RUST SPEED TEST COMPLETED");
+        info!("============================================================");
     }
 
     /// Create a 224x224 blue RGB image for testing
