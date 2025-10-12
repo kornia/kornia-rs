@@ -287,10 +287,7 @@ mod tests {
         // top-left pixel in padded image should be constant (9,9,9)
         assert_eq!(&dst.as_slice()[0..3], &[9, 9, 9]);
         // center (1,1) should correspond to original (0,0)
-        assert_eq!(
-            &dst.as_slice()[(4 + 1) * 3..(4 + 1) * 3 + 3],
-            &[1, 1, 1]
-        );
+        assert_eq!(&dst.as_slice()[(4 + 1) * 3..(4 + 1) * 3 + 3], &[1, 1, 1]);
 
         // replicate padding
         spatial_padding(
@@ -310,9 +307,6 @@ mod tests {
         // top-right should replicate src(0,1)
         assert_eq!(&dst.as_slice()[3 * 3..3 * 3 + 3], &[2, 2, 2]);
         // bottom-left should replicate src(1,0)
-        assert_eq!(
-            &dst.as_slice()[(3 * 4) * 3..(3 * 4) * 3 + 3],
-            &[3, 3, 3]
-        );
+        assert_eq!(&dst.as_slice()[(3 * 4) * 3..(3 * 4) * 3 + 3], &[3, 3, 3]);
     }
 }
