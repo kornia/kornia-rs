@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(&dst.as_slice()[0..3], &[9, 9, 9]);
         // center (1,1) should correspond to original (0,0)
         assert_eq!(
-            &dst.as_slice()[(1 * 4 + 1) * 3..(1 * 4 + 1) * 3 + 3],
+            &dst.as_slice()[(4 + 1) * 3..(4 + 1) * 3 + 3],
             &[1, 1, 1]
         );
 
@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(&dst.as_slice()[3 * 3..3 * 3 + 3], &[2, 2, 2]);
         // bottom-left should replicate src(1,0)
         assert_eq!(
-            &dst.as_slice()[(3 * 4 + 0) * 3..(3 * 4 + 0) * 3 + 3],
+            &dst.as_slice()[(3 * 4) * 3..(3 * 4) * 3 + 3],
             &[3, 3, 3]
         );
     }
