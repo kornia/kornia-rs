@@ -76,6 +76,7 @@ pub enum BorderType {
 /// assert_eq!(dst.size().width, 4);
 /// assert_eq!(dst.size().height, 4);
 /// ```
+#[allow(clippy::too_many_arguments)]
 pub fn spatial_padding<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<T, C, A1>,
     dst: &mut Image<T, C, A2>,
