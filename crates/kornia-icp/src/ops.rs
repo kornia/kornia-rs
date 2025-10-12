@@ -66,17 +66,19 @@ pub(crate) fn compute_centroids(
     points1: &[[f64; 3]],
     points2: &[[f64; 3]],
 ) -> (faer::Col<f64>, faer::Col<f64>) {
-    let mut centroid1 = faer::Col::zeros(3);
-    let mut centroid2 = faer::Col::zeros(3);
-
+    let (mut c1_x, mut c1_y, mut c1_z) = (0.0, 0.0, 0.0);
+    let (mut c2_x, mut c2_y, mut c2_z) = (0.0, 0.0, 0.0);
     for (p1, p2) in points1.iter().zip(points2.iter()) {
-        centroid1 += faer::col![p1[0], p1[1], p1[2]];
-        centroid2 += faer::col![p2[0], p2[1], p2[2]];
+        c1_x += p1[0];
+        c1_y += p1[1];
+        c1_z += p1[2];
+        c2_x += p2[0];
+        c2_y += p2[1];
+        c2_z += p2[2];
     }
-
-    centroid1 /= points1.len() as f64;
-    centroid2 /= points2.len() as f64;
-
+    let inv_n = 1.0 / (points1.len() as f64);
+    let centroid1 = faer::col![c1_x * inv_n, c1_y * inv_n, c1_z * inv_n];
+    let centroid2 = faer::col![c2_x * inv_n, c2_y * inv_n, c2_z * inv_n];
     (centroid1, centroid2)
 }
 
