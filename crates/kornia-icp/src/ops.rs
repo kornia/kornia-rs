@@ -14,12 +14,44 @@ pub(crate) fn fit_transformation(
     let (src_centroid, dst_centroid) = compute_centroids(points_in_src, points_in_dst);
 
     // compute covariance matrix
-    let mut hh = faer::Mat::<f64>::zeros(3, 3);
+    let mut hh = [[0.0; 3]; 3];
+    let src_c = [
+        src_centroid.read(0),
+        src_centroid.read(1),
+        src_centroid.read(2),
+    ];
+    let dst_c = [
+        dst_centroid.read(0),
+        dst_centroid.read(1),
+        dst_centroid.read(2),
+    ];
+
     for (p_in_src, p_in_dst) in points_in_src.iter().zip(points_in_dst.iter()) {
-        let p_src = faer::col![p_in_src[0], p_in_src[1], p_in_src[2]] - &src_centroid;
-        let p_dst = faer::col![p_in_dst[0], p_in_dst[1], p_in_dst[2]] - &dst_centroid;
-        hh += p_src * p_dst.transpose();
+        let ps = [
+            p_in_src[0] - src_c[0],
+            p_in_src[1] - src_c[1],
+            p_in_src[2] - src_c[2],
+        ];
+        let pd = [
+            p_in_dst[0] - dst_c[0],
+            p_in_dst[1] - dst_c[1],
+            p_in_dst[2] - dst_c[2],
+        ];
+
+        hh[0][0] += ps[0] * pd[0];
+        hh[0][1] += ps[0] * pd[1];
+        hh[0][2] += ps[0] * pd[2];
+
+        hh[1][0] += ps[1] * pd[0];
+        hh[1][1] += ps[1] * pd[1];
+        hh[1][2] += ps[1] * pd[2];
+
+        hh[2][0] += ps[2] * pd[0];
+        hh[2][1] += ps[2] * pd[1];
+        hh[2][2] += ps[2] * pd[2];
     }
+
+    let hh = faer::Mat::<f64>::from_fn(3, 3, |i, j| hh[i][j]);
 
     // solve the linear system H * x = 0 to find the rotation
     let svd = hh.svd();
