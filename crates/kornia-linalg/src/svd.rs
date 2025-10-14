@@ -6,52 +6,10 @@ const CSTAR: f32 = 0.923_879_5;
 const SSTAR: f32 = 0.382_683_43;
 const SVD3_EPSILON: f32 = 1e-6;
 const JACOBI_STEPS: u8 = 6;
-const RSQRT1_STEPS: u8 = 6;
-
-/// Standard CPU division.
-fn fdiv(x: f32, y: f32) -> f32 {
-    x / y
-}
-
-/// Calculates the reciprocal square root of x using a fast approximation.
-fn rsqrt(x: f32) -> f32 {
-    let mut i: i32 = x.to_bits() as i32;
-    i = 0x5F375A86_i32.wrapping_sub(i >> 1);
-    let y = f32::from_bits(i as u32);
-    y * (1.5 - (x * 0.5 * y * y))
-}
-
-/// Uses RSQRT1_STEPS to offer a higher precision alternative
-fn rsqrt1(x: f32) -> f32 {
-    let xhalf = -0.5 * x;
-    let i: i32 = x.to_bits() as i32;
-    let i = 0x5f37599e_i32.wrapping_sub(i >> 1);
-    let mut x: f32 = f32::from_bits(i as u32);
-
-    for _ in 0..RSQRT1_STEPS {
-        x = x * (1.5 + xhalf * x * x);
-    }
-
-    x
-}
-
-/// Calculates the square root of x using 1.f/rsqrt1(x)to give a square root with controllable and consistent precision.
-fn accurate_sqrt(x: f32) -> f32 {
-    fdiv(1.0, rsqrt1(x))
-}
 
 /// Helper function used to swap X with Y and Y with  X if c == true
 fn cond_swap(c: bool, x: &mut f32, y: &mut f32) {
     let z = *x;
-    if c {
-        *x = *y;
-        *y = z;
-    }
-}
-
-// Helper function to swap X and Y and swap Y with -X if c is true
-fn cond_neg_swap(c: bool, x: &mut f32, y: &mut f32) {
-    let z = -(*x);
     if c {
         *x = *y;
         *y = z;
@@ -148,6 +106,7 @@ impl SVD3Set {
 }
 
 /// Calculates the squared norm of the vector [x y z] using a standard scalar product d = x * x + y * y + z * z
+#[inline]
 fn dist2(x: f32, y: f32, z: f32) -> f32 {
     x * x + y * y + z * z
 }
@@ -156,23 +115,16 @@ fn dist2(x: f32, y: f32, z: f32) -> f32 {
 /// Computing the Singular Value Decomposition of 3 x 3 matrices with minimal branching and elementary floating point operations
 /// See Algorithm 2 in reference. Given a matrix A this function returns the givens quaternion (x and w component, y and z are 0)
 fn approximate_givens_quaternion(a: &Symmetric3x3) -> Givens {
-    let g = Givens {
-        ch: 2.0 * (a.m_00 - a.m_11),
-        sh: a.m_10,
-    };
-    let ch2 = g.ch * g.ch;
-    let sh2 = g.sh * g.sh;
-    let mut b = GAMMA * sh2 < ch2;
-    let w = rsqrt(ch2 + sh2);
+    let ch_val = 2.0 * (a.m_00 - a.m_11);
+    let sh_val = a.m_10;
+    let ch2 = ch_val * ch_val;
+    let sh2 = sh_val * sh_val;
 
-    if w.is_nan() {
-        // Checking for NaN
-        b = false;
-    }
-
-    Givens {
-        ch: if b { w * g.ch } else { CSTAR },
-        sh: if b { w * g.sh } else { SSTAR },
+    if GAMMA * sh2 < ch2 {
+        let w = rsqrt_std(ch2 + sh2); // Uses standard rsqrt
+        Givens { ch: w * ch_val, sh: w * sh_val }
+    } else {
+        Givens { ch: CSTAR, sh: SSTAR }
     }
 }
 
@@ -221,106 +173,170 @@ impl IndexMut<usize> for IndexedQuat {
 }
 
 /// Function used to apply a givens rotation S. Calculates the weights and updates the quaternion to contain the cumultative rotation
-fn jacobi_conjugation(x: usize, y: usize, z: usize, s: &mut Symmetric3x3, q: &mut IndexedQuat) {
-    // Compute the Givens rotation (approximated)
+
+/// Function used to contain the givens permutations and the loop of the jacobi steps controlled by JACOBI_STEPS
+/// Returns the quaternion q containing the cumultative result used to reconstruct S
+
+fn conjugate_xy(s: &mut Symmetric3x3, q: &mut IndexedQuat) {
+    // Compute Givens rotation parameters
     let mut g = approximate_givens_quaternion(s);
-    // Scale and calculate intermediate values
+
     let ch2 = g.ch * g.ch;
     let sh2 = g.sh * g.sh;
     let scale = 1.0 / (ch2 + sh2);
     let a = (ch2 - sh2) * scale;
     let b = 2.0 * g.sh * g.ch * scale;
 
-    // Create a copy of the matrix to avoid modifying the original during calculations
-    let mut _s = s.clone();
+    let s00 = s.m_00;
+    let s10 = s.m_10;
+    let s11 = s.m_11;
+    let s20 = s.m_20;
+    let s21 = s.m_21;
 
-    // Perform conjugation: S = Q'*S*Q
-    s.m_00 = a * (a * _s.m_00 + b * _s.m_10) + b * (a * _s.m_10 + b * _s.m_11);
-    s.m_10 = a * (-b * _s.m_00 + a * _s.m_10) + b * (-b * _s.m_10 + a * _s.m_11);
-    s.m_11 = -b * (-b * _s.m_00 + a * _s.m_10) + a * (-b * _s.m_10 + a * _s.m_11);
-    s.m_20 = a * _s.m_20 + b * _s.m_21;
-    s.m_21 = -b * _s.m_20 + a * _s.m_21;
-    s.m_22 = _s.m_22;
+    s.m_00 = a * (a * s00 + b * s10) + b * (a * s10 + b * s11);
+    s.m_10 = a * (-b * s00 + a * s10) + b * (-b * s10 + a * s11);
+    s.m_11 = -b * (-b * s00 + a * s10) + a * (-b * s10 + a * s11);
+    s.m_20 = a * s20 + b * s21;
+    s.m_21 = -b * s20 + a * s21;
 
-    // Update cumulative rotation qV
-    let mut tmp = [0.0, 0.0, 0.0];
-    tmp[0] = q[0] * g.sh;
-    tmp[1] = q[1] * g.sh;
-    tmp[2] = q[2] * g.sh;
+    let tmp0 = q[0] * g.sh;
+    let tmp1 = q[1] * g.sh;
+    let tmp2 = q[2] * g.sh;
     g.sh *= q[3];
 
-    // (x, y, z) corresponds to (0,1,2), (1,2,0), (2,0,1) for (p, q) = (0,1), (1,2), (0,2)
-    q[z] = q[z] * g.ch + g.sh;
-    q[3] = q[3] * g.ch - tmp[z]; // w
-    q[x] = q[x] * g.ch + tmp[y];
-    q[y] = q[y] * g.ch - tmp[x];
-
-    // Re-arrange matrix for next iteration
-    _s.m_00 = s.m_11;
-    _s.m_10 = s.m_21;
-    _s.m_11 = s.m_22;
-    _s.m_20 = s.m_10;
-    _s.m_21 = s.m_20;
-    _s.m_22 = s.m_00;
-
-    s.m_00 = _s.m_00;
-    s.m_10 = _s.m_10;
-    s.m_11 = _s.m_11;
-    s.m_20 = _s.m_20;
-    s.m_21 = _s.m_21;
-    s.m_22 = _s.m_22;
+    q[2] = q[2] * g.ch + g.sh;
+    q[3] = q[3] * g.ch - tmp2;
+    q[0] = q[0] * g.ch + tmp1;
+    q[1] = q[1] * g.ch - tmp0;
 }
 
-/// Function used to contain the givens permutations and the loop of the jacobi steps controlled by JACOBI_STEPS
-/// Returns the quaternion q containing the cumultative result used to reconstruct S
+fn conjugate_yz(s: &mut Symmetric3x3, q: &mut IndexedQuat) {
+    // Compute Givens rotation parameters
+    let mut g = approximate_givens_quaternion(s);
+
+    // Calculate rotation matrix elements 'a' and 'b'
+    let ch2 = g.ch * g.ch;
+    let sh2 = g.sh * g.sh;
+    let scale = 1.0 / (ch2 + sh2);
+    let a = (ch2 - sh2) * scale;
+    let b = 2.0 * g.sh * g.ch * scale;
+
+    // Cache original matrix elements before overwriting
+    let s11 = s.m_11;
+    let s21 = s.m_21;
+    let s22 = s.m_22;
+    let s10 = s.m_10;
+    let s20 = s.m_20;
+
+    // Perform the matrix conjugation: S' = R * S * R^T
+    s.m_11 = a * (a * s11 + b * s21) + b * (a * s21 + b * s22);
+    s.m_21 = a * (-b * s11 + a * s21) + b * (-b * s21 + a * s22);
+    s.m_22 = -b * (-b * s11 + a * s21) + a * (-b * s21 + a * s22);
+    s.m_10 = a * s10 + b * s20;
+    s.m_20 = -b * s10 + a * s20;
+
+    // Update the cumulative rotation quaternion
+    let tmp0 = q[0] * g.sh;
+    let tmp1 = q[1] * g.sh;
+    let tmp2 = q[2] * g.sh;
+    g.sh *= q[3];
+
+    q[0] = q[0] * g.ch + g.sh;
+    q[3] = q[3] * g.ch - tmp0;
+    q[1] = q[1] * g.ch + tmp2;
+    q[2] = q[2] * g.ch - tmp1;
+}
+
+fn conjugate_xz(s: &mut Symmetric3x3, q: &mut IndexedQuat) {
+    // Compute Givens rotation parameters
+    let mut g = approximate_givens_quaternion(s);
+    
+    // Calculate rotation matrix elements 'a' and 'b'
+    let ch2 = g.ch * g.ch;
+    let sh2 = g.sh * g.sh;
+    let scale = 1.0 / (ch2 + sh2);
+    let a = (ch2 - sh2) * scale;
+    let b = 2.0 * g.sh * g.ch * scale;
+
+    // Cache original matrix elements before overwriting
+    let s00 = s.m_00;
+    let s20 = s.m_20;
+    let s22 = s.m_22;
+    let s10 = s.m_10;
+    let s21 = s.m_21;
+
+    // Perform the matrix conjugation: S' = R * S * R^T
+    s.m_00 = a * (a * s00 + b * s20) + b * (a * s20 + b * s22);
+    s.m_20 = a * (-b * s00 + a * s20) + b * (-b * s20 + a * s22);
+    s.m_22 = -b * (-b * s00 + a * s20) + a * (-b * s20 + a * s22);
+    s.m_10 = a * s10 + b * s21;
+    s.m_21 = -b * s10 + a * s21;
+
+    // Update the cumulative rotation quaternion
+    let tmp0 = q[0] * g.sh;
+    let tmp1 = q[1] * g.sh;
+    let tmp2 = q[2] * g.sh;
+    g.sh *= q[3];
+
+    q[1] = q[1] * g.ch + g.sh;
+    q[3] = q[3] * g.ch - tmp1;
+    q[2] = q[2] * g.ch + tmp0;
+    q[0] = q[0] * g.ch - tmp2;
+}
+
 fn jacobi_eigenanalysis(mut s: Symmetric3x3) -> Mat3 {
     let mut q = IndexedQuat::new(Quat::from_xyzw(0.0, 0.0, 0.0, 1.0));
     for _i in 0..JACOBI_STEPS {
-        jacobi_conjugation(0, 1, 2, &mut s, &mut q);
-        jacobi_conjugation(1, 2, 0, &mut s, &mut q);
-        jacobi_conjugation(2, 0, 1, &mut s, &mut q);
+        conjugate_xy(&mut s, &mut q);
+        conjugate_yz(&mut s, &mut q);
+        conjugate_xz(&mut s, &mut q);
     }
-
     Mat3::from_quat(q.to_quat())
 }
 
-/// Implementation of Algorithm 3
+#[inline]
+fn manual_swap<T: Copy>(a: &mut T, b: &mut T) {
+    let temp = *a;
+    *a = *b;
+    *b = temp;
+}
+
 fn sort_singular_values(b: &mut Mat3, v: &mut Mat3) {
     let mut rho1 = dist2(b.x_axis.x, b.x_axis.y, b.x_axis.z);
     let mut rho2 = dist2(b.y_axis.x, b.y_axis.y, b.y_axis.z);
     let mut rho3 = dist2(b.z_axis.x, b.z_axis.y, b.z_axis.z);
 
-    let mut c = rho1 < rho2;
-    cond_neg_swap(c, &mut b.x_axis.x, &mut b.y_axis.x);
-    cond_neg_swap(c, &mut v.x_axis.x, &mut v.y_axis.x);
-    cond_neg_swap(c, &mut b.x_axis.y, &mut b.y_axis.y);
-    cond_neg_swap(c, &mut v.x_axis.y, &mut v.y_axis.y);
-    cond_neg_swap(c, &mut b.x_axis.z, &mut b.y_axis.z);
-    cond_neg_swap(c, &mut v.x_axis.z, &mut v.y_axis.z);
-    cond_swap(c, &mut rho1, &mut rho2);
+    if rho1 < rho2 {
+        manual_swap(&mut b.x_axis, &mut b.y_axis);
+        manual_swap(&mut v.x_axis, &mut v.y_axis);
+        
+        b.y_axis = Vec3 { x: -b.y_axis.x, y: -b.y_axis.y, z: -b.y_axis.z };
+        v.y_axis = Vec3 { x: -v.y_axis.x, y: -v.y_axis.y, z: -v.y_axis.z };
+        
+        manual_swap(&mut rho1, &mut rho2);
+    }
+    if rho1 < rho3 {
+        manual_swap(&mut b.x_axis, &mut b.z_axis);
+        manual_swap(&mut v.x_axis, &mut v.z_axis);
 
-    c = rho1 < rho3;
-    cond_neg_swap(c, &mut b.x_axis.x, &mut b.z_axis.x);
-    cond_neg_swap(c, &mut v.x_axis.x, &mut v.z_axis.x);
-    cond_neg_swap(c, &mut b.x_axis.y, &mut b.z_axis.y);
-    cond_neg_swap(c, &mut v.x_axis.y, &mut v.z_axis.y);
-    cond_neg_swap(c, &mut b.x_axis.z, &mut b.z_axis.z);
-    cond_neg_swap(c, &mut v.x_axis.z, &mut v.z_axis.z);
-    cond_swap(c, &mut rho1, &mut rho3);
+        b.z_axis = Vec3 { x: -b.z_axis.x, y: -b.z_axis.y, z: -b.z_axis.z };
+        v.z_axis = Vec3 { x: -v.z_axis.x, y: -v.z_axis.y, z: -v.z_axis.z };
+        
+        manual_swap(&mut rho1, &mut rho3);
+    }
+    if rho2 < rho3 {
+        manual_swap(&mut b.y_axis, &mut b.z_axis);
+        manual_swap(&mut v.y_axis, &mut v.z_axis);
 
-    c = rho2 < rho3;
-    cond_neg_swap(c, &mut b.y_axis.x, &mut b.z_axis.x);
-    cond_neg_swap(c, &mut v.y_axis.x, &mut v.z_axis.x);
-    cond_neg_swap(c, &mut b.y_axis.y, &mut b.z_axis.y);
-    cond_neg_swap(c, &mut v.y_axis.y, &mut v.z_axis.y);
-    cond_neg_swap(c, &mut b.y_axis.z, &mut b.z_axis.z);
-    cond_neg_swap(c, &mut v.y_axis.z, &mut v.z_axis.z);
+        b.z_axis = Vec3 { x: -b.z_axis.x, y: -b.z_axis.y, z: -b.z_axis.z };
+        v.z_axis = Vec3 { x: -v.z_axis.x, y: -v.z_axis.y, z: -v.z_axis.z };
+    }
 }
 
 /// Implementation of Algorithm 4
 fn qr_givens_quaternion(a1: f32, a2: f32) -> Givens {
     let epsilon = SVD3_EPSILON;
-    let rho = accurate_sqrt(a1 * a1 + a2 * a2);
+    let rho = (a1 * a1 + a2 * a2).sqrt();
 
     let mut g = Givens {
         ch: a1.abs() + f32::max(rho, epsilon),
@@ -330,7 +346,7 @@ fn qr_givens_quaternion(a1: f32, a2: f32) -> Givens {
     let b = a1 < 0.0;
     cond_swap(b, &mut g.sh, &mut g.ch);
 
-    let w = rsqrt(g.ch * g.ch + g.sh * g.sh);
+    let w = (g.ch * g.ch + g.sh * g.sh).rsqrt();
     g.ch *= w;
     g.sh *= w;
     g
@@ -339,73 +355,75 @@ fn qr_givens_quaternion(a1: f32, a2: f32) -> Givens {
 /// Implements a QR decomposition of a Matrix
 fn qr_decomposition(b_mat: &mut Mat3) -> QR3 {
     let mut q = Mat3::ZERO;
-    let mut r = Mat3::ZERO;
+    // The input `b_mat` will be transformed directly into R.
 
-    // First Givens rotation (ch, 0, 0, sh)
+    // --- First Givens rotation to zero out a[1][0] (affects columns 0 and 1) ---
     let g1 = qr_givens_quaternion(b_mat.x_axis.x, b_mat.x_axis.y);
-    let mut a = -2.0 * g1.sh * g1.sh + 1.0;
-    let mut b = 2.0 * g1.ch * g1.sh;
+    let a1 = -2.0 * g1.sh * g1.sh + 1.0;
+    let b1 = 2.0 * g1.ch * g1.sh;
 
-    // Apply B = Q' * B
-    r.x_axis.x = a * b_mat.x_axis.x + b * b_mat.x_axis.y;
-    r.y_axis.x = a * b_mat.y_axis.x + b * b_mat.y_axis.y;
-    r.z_axis.x = a * b_mat.z_axis.x + b * b_mat.z_axis.y;
-    r.x_axis.y = -b * b_mat.x_axis.x + a * b_mat.x_axis.y;
-    r.y_axis.y = -b * b_mat.y_axis.x + a * b_mat.y_axis.y;
-    r.z_axis.y = -b * b_mat.z_axis.x + a * b_mat.z_axis.y;
-    r.x_axis.z = b_mat.x_axis.z;
-    r.y_axis.z = b_mat.y_axis.z;
-    r.z_axis.z = b_mat.z_axis.z;
+    // Apply to row 0
+    let c0 = b_mat.x_axis.x; let c1 = b_mat.x_axis.y;
+    b_mat.x_axis.x = a1 * c0 + b1 * c1;
+    b_mat.x_axis.y = -b1 * c0 + a1 * c1;
+    // Apply to row 1
+    let c0 = b_mat.y_axis.x; let c1 = b_mat.y_axis.y;
+    b_mat.y_axis.x = a1 * c0 + b1 * c1;
+    b_mat.y_axis.y = -b1 * c0 + a1 * c1;
+    // Apply to row 2
+    let c0 = b_mat.z_axis.x; let c1 = b_mat.z_axis.y;
+    b_mat.z_axis.x = a1 * c0 + b1 * c1;
+    b_mat.z_axis.y = -b1 * c0 + a1 * c1;
 
-    // Second Givens rotation (ch, 0, -sh, 0)
-    let g2 = qr_givens_quaternion(r.x_axis.x, r.x_axis.z);
-    a = -2.0 * g2.sh * g2.sh + 1.0;
-    b = 2.0 * g2.ch * g2.sh;
+    // --- Second Givens rotation to zero out a[2][0] (affects columns 0 and 2) ---
+    let g2 = qr_givens_quaternion(b_mat.x_axis.x, b_mat.x_axis.z);
+    let a2 = -2.0 * g2.sh * g2.sh + 1.0;
+    let b2 = 2.0 * g2.ch * g2.sh;
 
-    // Apply B = Q' * B
-    b_mat.x_axis.x = a * r.x_axis.x + b * r.x_axis.z;
-    b_mat.y_axis.x = a * r.y_axis.x + b * r.y_axis.z;
-    b_mat.z_axis.x = a * r.z_axis.x + b * r.z_axis.z;
-    b_mat.x_axis.y = r.x_axis.y;
-    b_mat.y_axis.y = r.y_axis.y;
-    b_mat.z_axis.y = r.z_axis.y;
-    b_mat.x_axis.z = -b * r.x_axis.x + a * r.x_axis.z;
-    b_mat.y_axis.z = -b * r.y_axis.x + a * r.y_axis.z;
-    b_mat.z_axis.z = -b * r.z_axis.x + a * r.z_axis.z;
+    // Apply to row 0
+    let c0 = b_mat.x_axis.x; let c2 = b_mat.x_axis.z;
+    b_mat.x_axis.x = a2 * c0 + b2 * c2;
+    b_mat.x_axis.z = -b2 * c0 + a2 * c2;
+    // Apply to row 1
+    let c0 = b_mat.y_axis.x; let c2 = b_mat.y_axis.z;
+    b_mat.y_axis.x = a2 * c0 + b2 * c2;
+    b_mat.y_axis.z = -b2 * c0 + a2 * c2;
+    // Apply to row 2
+    let c0 = b_mat.z_axis.x; let c2 = b_mat.z_axis.z;
+    b_mat.z_axis.x = a2 * c0 + b2 * c2;
+    b_mat.z_axis.z = -b2 * c0 + a2 * c2;
 
-    // Third Givens rotation (ch, sh, 0, 0)
+    // --- Third Givens rotation to zero out a[2][1] (affects columns 1 and 2) ---
     let g3 = qr_givens_quaternion(b_mat.y_axis.y, b_mat.y_axis.z);
-    a = -2.0 * g3.sh * g3.sh + 1.0;
-    b = 2.0 * g3.ch * g3.sh;
+    let a3 = -2.0 * g3.sh * g3.sh + 1.0;
+    let b3 = 2.0 * g3.ch * g3.sh;
 
-    // R is now set to desired value
-    r.x_axis.x = b_mat.x_axis.x;
-    r.y_axis.x = b_mat.y_axis.x;
-    r.z_axis.x = b_mat.z_axis.x;
-    r.x_axis.y = a * b_mat.x_axis.y + b * b_mat.x_axis.z;
-    r.y_axis.y = a * b_mat.y_axis.y + b * b_mat.y_axis.z;
-    r.z_axis.y = a * b_mat.z_axis.y + b * b_mat.z_axis.z;
-    r.x_axis.z = -b * b_mat.x_axis.y + a * b_mat.x_axis.z;
-    r.y_axis.z = -b * b_mat.y_axis.y + a * b_mat.y_axis.z;
-    r.z_axis.z = -b * b_mat.z_axis.y + a * b_mat.z_axis.z;
+    // Apply to row 0
+    let c1 = b_mat.x_axis.y; let c2 = b_mat.x_axis.z;
+    b_mat.x_axis.y = a3 * c1 + b3 * c2;
+    b_mat.x_axis.z = -b3 * c1 + a3 * c2;
+    // Apply to row 1
+    let c1 = b_mat.y_axis.y; let c2 = b_mat.y_axis.z;
+    b_mat.y_axis.y = a3 * c1 + b3 * c2;
+    b_mat.y_axis.z = -b3 * c1 + a3 * c2;
+    // Apply to row 2
+    let c1 = b_mat.z_axis.y; let c2 = b_mat.z_axis.z;
+    b_mat.z_axis.y = a3 * c1 + b3 * c2;
+    b_mat.z_axis.z = -b3 * c1 + a3 * c2;
+    
+    // At this point, b_mat has been transformed into R.
+    let r = *b_mat;
 
-    // Construct the cumulative rotation Q = Q1 * Q2 * Q3
-    let sh12 = 2.0 * (g1.sh * g1.sh - 0.5);
-    let sh22 = 2.0 * (g2.sh * g2.sh - 0.5);
-    let sh32 = 2.0 * (g3.sh * g3.sh - 0.5);
-
-    q.x_axis.x = sh12 * sh22;
-    q.x_axis.y = 4.0 * g2.ch * g3.ch * sh12 * g2.sh * g3.sh + 2.0 * g1.ch * g1.sh * sh32;
-    q.x_axis.z = 4.0 * g1.ch * g3.ch * g1.sh * g3.sh - 2.0 * g2.ch * sh12 * g2.sh * sh32;
-
-    q.y_axis.x = -2.0 * g1.ch * g1.sh * sh22;
-    q.y_axis.y = -8.0 * g1.ch * g2.ch * g3.ch * g1.sh * g2.sh * g3.sh + sh12 * sh32;
-    q.y_axis.z =
-        -2.0 * g3.ch * g3.sh + 4.0 * g1.sh * (g3.ch * g1.sh * g3.sh + g1.ch * g2.ch * g2.sh * sh32);
-
-    q.z_axis.x = 2.0 * g2.ch * g2.sh;
-    q.z_axis.y = -2.0 * g3.ch * sh22 * g3.sh;
-    q.z_axis.z = sh22 * sh32;
+    // --- Construct Q using the stored a/b values ---
+    q.x_axis.x = a1 * a2;
+    q.x_axis.y = (b2 * b3 * -a1) - b1 * a3;
+    q.x_axis.z = b1 * b3 - b2 * a1 * a3;
+    q.y_axis.x = b1 * a2;
+    q.y_axis.y = a1 * a3 - (b1 * b2 * b3);
+    q.y_axis.z = -2.0 * g3.ch * g3.sh + 4.0 * g1.sh * (g3.ch * g1.sh * g3.sh + g1.ch * g2.ch * g2.sh * (-a3));
+    q.z_axis.x = b2;
+    q.z_axis.y = b3 * a2;
+    q.z_axis.z = a2 * a3;
 
     QR3 { q, r }
 }
