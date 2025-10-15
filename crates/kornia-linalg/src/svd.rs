@@ -339,7 +339,7 @@ fn qr_givens_quaternion(a1: f32, a2: f32) -> Givens {
     let b = a1 < 0.0;
     cond_swap(b, &mut g.sh, &mut g.ch);
 
-    let w = 1.0/((g.ch * g.ch + g.sh * g.sh).sqrt());
+    let w = 1.0 / ((g.ch * g.ch + g.sh * g.sh).sqrt());
     g.ch *= w;
     g.sh *= w;
     g
