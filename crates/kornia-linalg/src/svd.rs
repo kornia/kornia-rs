@@ -115,14 +115,15 @@ fn dist2(x: f32, y: f32, z: f32) -> f32 {
 /// Computing the Singular Value Decomposition of 3 x 3 matrices with minimal branching and elementary floating point operations
 /// See Algorithm 2 in reference. Given a matrix A this function returns the givens quaternion (x and w component, y and z are 0)
 #[inline(always)]
-fn approximate_givens_quaternion(a: &Symmetric3x3) -> Givens {
-    let ch_val = 2.0 * (a.m_00 - a.m_11);
-    let sh_val = a.m_10;
+// Renamed to reflect its generic nature
+fn approximate_givens_parameters(s_pp: f32, s_qq: f32, s_pq: f32) -> Givens {
+    let ch_val = 2.0 * (s_pp - s_qq);
+    let sh_val = s_pq;
     let ch2 = ch_val * ch_val;
     let sh2 = sh_val * sh_val;
 
     if GAMMA * sh2 < ch2 {
-        let w = 1.0/((ch2 + sh2).sqrt());
+        let w = 1.0 / ((ch2 + sh2).sqrt());
         Givens {
             ch: w * ch_val,
             sh: w * sh_val,
@@ -141,7 +142,7 @@ fn approximate_givens_quaternion(a: &Symmetric3x3) -> Givens {
 #[inline(always)]
 fn conjugate_xy(s: &mut Symmetric3x3, q: &mut Quat) {
     // Compute Givens rotation parameters
-    let mut g = approximate_givens_quaternion(s);
+    let mut g = approximate_givens_parameters(s.m_00, s.m_11, s.m_10);
 
     let ch2 = g.ch * g.ch;
     let sh2 = g.sh * g.sh;
@@ -175,7 +176,7 @@ fn conjugate_xy(s: &mut Symmetric3x3, q: &mut Quat) {
 #[inline(always)]
 fn conjugate_yz(s: &mut Symmetric3x3, q: &mut Quat) {
     // Compute Givens rotation parameters
-    let mut g = approximate_givens_quaternion(s);
+    let mut g = approximate_givens_parameters(s.m_11, s.m_22, s.m_21);
 
     // Calculate rotation matrix elements 'a' and 'b'
     let ch2 = g.ch * g.ch;
@@ -213,7 +214,7 @@ fn conjugate_yz(s: &mut Symmetric3x3, q: &mut Quat) {
 #[inline(always)]
 fn conjugate_xz(s: &mut Symmetric3x3, q: &mut Quat) {
     // Compute Givens rotation parameters
-    let mut g = approximate_givens_quaternion(s);
+    let mut g = approximate_givens_parameters(s.m_00, s.m_22, s.m_20);
 
     // Calculate rotation matrix elements 'a' and 'b'
     let ch2 = g.ch * g.ch;
@@ -256,7 +257,7 @@ fn jacobi_eigenanalysis(mut s: Symmetric3x3) -> Mat3 {
         conjugate_xz(&mut s, &mut q);
 
         let sum_off_diagonal_sq = s.m_10 * s.m_10 + s.m_20 * s.m_20 + s.m_21 * s.m_21;
-        if sum_off_diagonal_sq < 1e-8 {
+        if sum_off_diagonal_sq < 1e-6 {
             break;
         }
     }
