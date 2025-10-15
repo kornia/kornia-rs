@@ -4,7 +4,7 @@ const GAMMA: f32 = 5.828_427_3;
 const CSTAR: f32 = 0.923_879_5;
 const SSTAR: f32 = 0.382_683_43;
 const SVD3_EPSILON: f32 = 1e-6;
-const MAX_SWEEPS: usize = 6;
+const MAX_SWEEPS: usize = 12;
 
 /// Helper function used to swap X with Y and Y with  X if c == true
 #[inline(always)]
@@ -256,7 +256,7 @@ fn jacobi_eigenanalysis(mut s: Symmetric3x3) -> Mat3 {
         conjugate_xz(&mut s, &mut q);
 
         let sum_off_diagonal_sq = s.m_10 * s.m_10 + s.m_20 * s.m_20 + s.m_21 * s.m_21;
-        if sum_off_diagonal_sq < SVD3_EPSILON {
+        if sum_off_diagonal_sq < 1e-8 {
             break;
         }
     }
