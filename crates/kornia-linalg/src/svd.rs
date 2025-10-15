@@ -1,8 +1,8 @@
 // Reference: https://github.com/wi-re/tbtSVD/blob/master/source/SVD.h
 use glam::{Mat3, Quat, Vec3};
-const GAMMA: f32 = 5.828_427_124;
-const CSTAR: f32 = 0.923_879_532;
-const SSTAR: f32 = 0.382_683_4323;
+const GAMMA: f32 = 5.828_427_3;
+const CSTAR: f32 = 0.923_879_5;
+const SSTAR: f32 = 0.382_683_43;
 const SVD3_EPSILON: f32 = 1e-6;
 const MAX_SWEEPS: usize = 12;
 
