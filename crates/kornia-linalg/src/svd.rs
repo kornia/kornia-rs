@@ -1,13 +1,14 @@
 // Reference: https://github.com/wi-re/tbtSVD/blob/master/source/SVD.h
-use glam::{Mat3, Quat};
-use std::ops::{Index, IndexMut};
+use glam::{Mat3, Quat, Vec3};
 const GAMMA: f32 = 5.828_427_3;
 const CSTAR: f32 = 0.923_879_5;
 const SSTAR: f32 = 0.382_683_43;
 const SVD3_EPSILON: f32 = 1e-6;
-const JACOBI_STEPS: u8 = 6;
+const MAX_SWEEPS: usize = 6;
+
 
 /// Helper function used to swap X with Y and Y with  X if c == true
+#[inline(always)]
 fn cond_swap(c: bool, x: &mut f32, y: &mut f32) {
     let z = *x;
     if c {
@@ -106,7 +107,7 @@ impl SVD3Set {
 }
 
 /// Calculates the squared norm of the vector [x y z] using a standard scalar product d = x * x + y * y + z * z
-#[inline]
+#[inline(always)]
 fn dist2(x: f32, y: f32, z: f32) -> f32 {
     x * x + y * y + z * z
 }
@@ -114,6 +115,7 @@ fn dist2(x: f32, y: f32, z: f32) -> f32 {
 /// For an explanation of the math see http://pages.cs.wisc.edu/~sifakis/papers/SVD_TR1690.pdf
 /// Computing the Singular Value Decomposition of 3 x 3 matrices with minimal branching and elementary floating point operations
 /// See Algorithm 2 in reference. Given a matrix A this function returns the givens quaternion (x and w component, y and z are 0)
+#[inline(always)]
 fn approximate_givens_quaternion(a: &Symmetric3x3) -> Givens {
     let ch_val = 2.0 * (a.m_00 - a.m_11);
     let sh_val = a.m_10;
@@ -121,54 +123,10 @@ fn approximate_givens_quaternion(a: &Symmetric3x3) -> Givens {
     let sh2 = sh_val * sh_val;
 
     if GAMMA * sh2 < ch2 {
-        let w = rsqrt_std(ch2 + sh2); // Uses standard rsqrt
+        let w = (ch2 + sh2).sqrt().recip();
         Givens { ch: w * ch_val, sh: w * sh_val }
     } else {
         Givens { ch: CSTAR, sh: SSTAR }
-    }
-}
-
-#[derive(Debug)]
-/// A wrapper around the `glam::Quat` type that allows dynamic indexing into its components.
-///
-/// This struct provides custom indexing behavior for quaternion components (`x`, `y`, `z`, and `w`),
-/// enabling access and mutation using an index (e.g., `q[0]`, `q[1]`, etc.). It implements both
-/// the `Index` and `IndexMut` traits to allow for immutable and mutable access to the quaternion's components.
-struct IndexedQuat(Quat);
-
-impl IndexedQuat {
-    fn new(q: Quat) -> Self {
-        IndexedQuat(q)
-    }
-
-    fn to_quat(&self) -> Quat {
-        self.0
-    }
-}
-
-impl Index<usize> for IndexedQuat {
-    type Output = f32;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        match index {
-            0 => &self.0.x,
-            1 => &self.0.y,
-            2 => &self.0.z,
-            3 => &self.0.w,
-            _ => panic!("Index out of bounds for Quaternion: {index}"),
-        }
-    }
-}
-
-impl IndexMut<usize> for IndexedQuat {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        match index {
-            0 => &mut self.0.x,
-            1 => &mut self.0.y,
-            2 => &mut self.0.z,
-            3 => &mut self.0.w,
-            _ => panic!("Index out of bounds for Quaternion: {index}"),
-        }
     }
 }
 
@@ -176,8 +134,8 @@ impl IndexMut<usize> for IndexedQuat {
 
 /// Function used to contain the givens permutations and the loop of the jacobi steps controlled by JACOBI_STEPS
 /// Returns the quaternion q containing the cumultative result used to reconstruct S
-
-fn conjugate_xy(s: &mut Symmetric3x3, q: &mut IndexedQuat) {
+#[inline(always)]
+fn conjugate_xy(s: &mut Symmetric3x3, q: &mut Quat) {
     // Compute Givens rotation parameters
     let mut g = approximate_givens_quaternion(s);
 
@@ -199,18 +157,19 @@ fn conjugate_xy(s: &mut Symmetric3x3, q: &mut IndexedQuat) {
     s.m_20 = a * s20 + b * s21;
     s.m_21 = -b * s20 + a * s21;
 
-    let tmp0 = q[0] * g.sh;
-    let tmp1 = q[1] * g.sh;
-    let tmp2 = q[2] * g.sh;
-    g.sh *= q[3];
+    let tmp_x = q.x * g.sh;
+    let tmp_y = q.y * g.sh;
+    let tmp_z = q.z * g.sh;
+    g.sh *= q.w;
 
-    q[2] = q[2] * g.ch + g.sh;
-    q[3] = q[3] * g.ch - tmp2;
-    q[0] = q[0] * g.ch + tmp1;
-    q[1] = q[1] * g.ch - tmp0;
+    q.z = q.z * g.ch + g.sh;
+    q.w = q.w * g.ch - tmp_z;
+    q.x = q.x * g.ch + tmp_y;
+    q.y = q.y * g.ch - tmp_x;
 }
 
-fn conjugate_yz(s: &mut Symmetric3x3, q: &mut IndexedQuat) {
+#[inline(always)]
+fn conjugate_yz(s: &mut Symmetric3x3, q: &mut Quat) {
     // Compute Givens rotation parameters
     let mut g = approximate_givens_quaternion(s);
 
@@ -221,33 +180,34 @@ fn conjugate_yz(s: &mut Symmetric3x3, q: &mut IndexedQuat) {
     let a = (ch2 - sh2) * scale;
     let b = 2.0 * g.sh * g.ch * scale;
 
-    // Cache original matrix elements before overwriting
+    // Cache original matrix elements
     let s11 = s.m_11;
     let s21 = s.m_21;
     let s22 = s.m_22;
     let s10 = s.m_10;
     let s20 = s.m_20;
 
-    // Perform the matrix conjugation: S' = R * S * R^T
+    // Perform the matrix conjugation
     s.m_11 = a * (a * s11 + b * s21) + b * (a * s21 + b * s22);
     s.m_21 = a * (-b * s11 + a * s21) + b * (-b * s21 + a * s22);
     s.m_22 = -b * (-b * s11 + a * s21) + a * (-b * s21 + a * s22);
     s.m_10 = a * s10 + b * s20;
     s.m_20 = -b * s10 + a * s20;
 
-    // Update the cumulative rotation quaternion
-    let tmp0 = q[0] * g.sh;
-    let tmp1 = q[1] * g.sh;
-    let tmp2 = q[2] * g.sh;
-    g.sh *= q[3];
+    // Update the cumulative rotation quaternion using named fields
+    let tmp_x = q.x * g.sh;
+    let tmp_y = q.y * g.sh;
+    let tmp_z = q.z * g.sh;
+    g.sh *= q.w;
 
-    q[0] = q[0] * g.ch + g.sh;
-    q[3] = q[3] * g.ch - tmp0;
-    q[1] = q[1] * g.ch + tmp2;
-    q[2] = q[2] * g.ch - tmp1;
+    q.x = q.x * g.ch + g.sh;
+    q.w = q.w * g.ch - tmp_x;
+    q.y = q.y * g.ch + tmp_z;
+    q.z = q.z * g.ch - tmp_y;
 }
 
-fn conjugate_xz(s: &mut Symmetric3x3, q: &mut IndexedQuat) {
+#[inline(always)]
+fn conjugate_xz(s: &mut Symmetric3x3, q: &mut Quat) {
     // Compute Givens rotation parameters
     let mut g = approximate_givens_quaternion(s);
     
@@ -258,43 +218,48 @@ fn conjugate_xz(s: &mut Symmetric3x3, q: &mut IndexedQuat) {
     let a = (ch2 - sh2) * scale;
     let b = 2.0 * g.sh * g.ch * scale;
 
-    // Cache original matrix elements before overwriting
+    // Cache original matrix elements
     let s00 = s.m_00;
     let s20 = s.m_20;
     let s22 = s.m_22;
     let s10 = s.m_10;
     let s21 = s.m_21;
 
-    // Perform the matrix conjugation: S' = R * S * R^T
+    // Perform the matrix conjugation
     s.m_00 = a * (a * s00 + b * s20) + b * (a * s20 + b * s22);
     s.m_20 = a * (-b * s00 + a * s20) + b * (-b * s20 + a * s22);
     s.m_22 = -b * (-b * s00 + a * s20) + a * (-b * s20 + a * s22);
     s.m_10 = a * s10 + b * s21;
     s.m_21 = -b * s10 + a * s21;
 
-    // Update the cumulative rotation quaternion
-    let tmp0 = q[0] * g.sh;
-    let tmp1 = q[1] * g.sh;
-    let tmp2 = q[2] * g.sh;
-    g.sh *= q[3];
+    // Update the cumulative rotation quaternion using named fields
+    let tmp_x = q.x * g.sh;
+    let tmp_y = q.y * g.sh;
+    let tmp_z = q.z * g.sh;
+    g.sh *= q.w;
 
-    q[1] = q[1] * g.ch + g.sh;
-    q[3] = q[3] * g.ch - tmp1;
-    q[2] = q[2] * g.ch + tmp0;
-    q[0] = q[0] * g.ch - tmp2;
+    q.y = q.y * g.ch + g.sh;
+    q.w = q.w * g.ch - tmp_y;
+    q.z = q.z * g.ch + tmp_x;
+    q.x = q.x * g.ch - tmp_z;
 }
 
 fn jacobi_eigenanalysis(mut s: Symmetric3x3) -> Mat3 {
-    let mut q = IndexedQuat::new(Quat::from_xyzw(0.0, 0.0, 0.0, 1.0));
-    for _i in 0..JACOBI_STEPS {
+    let mut q = Quat::from_xyzw(0.0, 0.0, 0.0, 1.0);
+    for _i in 0..MAX_SWEEPS {
         conjugate_xy(&mut s, &mut q);
         conjugate_yz(&mut s, &mut q);
         conjugate_xz(&mut s, &mut q);
+
+        let sum_off_diagonal_sq = s.m_10 * s.m_10 + s.m_20 * s.m_20 + s.m_21 * s.m_21;
+        if sum_off_diagonal_sq < SVD3_EPSILON {
+            break; 
+        }
     }
-    Mat3::from_quat(q.to_quat())
+    Mat3::from_quat(q)
 }
 
-#[inline]
+#[inline(always)]
 fn manual_swap<T: Copy>(a: &mut T, b: &mut T) {
     let temp = *a;
     *a = *b;
@@ -334,6 +299,7 @@ fn sort_singular_values(b: &mut Mat3, v: &mut Mat3) {
 }
 
 /// Implementation of Algorithm 4
+#[inline(always)]
 fn qr_givens_quaternion(a1: f32, a2: f32) -> Givens {
     let epsilon = SVD3_EPSILON;
     let rho = (a1 * a1 + a2 * a2).sqrt();
@@ -346,7 +312,7 @@ fn qr_givens_quaternion(a1: f32, a2: f32) -> Givens {
     let b = a1 < 0.0;
     cond_swap(b, &mut g.sh, &mut g.ch);
 
-    let w = (g.ch * g.ch + g.sh * g.sh).rsqrt();
+    let w = (g.ch * g.ch + g.sh * g.sh).sqrt().recip();
     g.ch *= w;
     g.sh *= w;
     g
@@ -355,8 +321,6 @@ fn qr_givens_quaternion(a1: f32, a2: f32) -> Givens {
 /// Implements a QR decomposition of a Matrix
 fn qr_decomposition(b_mat: &mut Mat3) -> QR3 {
     let mut q = Mat3::ZERO;
-    // The input `b_mat` will be transformed directly into R.
-
     // --- First Givens rotation to zero out a[1][0] (affects columns 0 and 1) ---
     let g1 = qr_givens_quaternion(b_mat.x_axis.x, b_mat.x_axis.y);
     let a1 = -2.0 * g1.sh * g1.sh + 1.0;
@@ -411,10 +375,8 @@ fn qr_decomposition(b_mat: &mut Mat3) -> QR3 {
     b_mat.z_axis.y = a3 * c1 + b3 * c2;
     b_mat.z_axis.z = -b3 * c1 + a3 * c2;
     
-    // At this point, b_mat has been transformed into R.
     let r = *b_mat;
 
-    // --- Construct Q using the stored a/b values ---
     q.x_axis.x = a1 * a2;
     q.x_axis.y = (b2 * b3 * -a1) - b1 * a3;
     q.x_axis.z = b1 * b3 - b2 * a1 * a3;
