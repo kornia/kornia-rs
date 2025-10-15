@@ -6,7 +6,6 @@ const SSTAR: f32 = 0.382_683_43;
 const SVD3_EPSILON: f32 = 1e-6;
 const MAX_SWEEPS: usize = 6;
 
-
 /// Helper function used to swap X with Y and Y with  X if c == true
 #[inline(always)]
 fn cond_swap(c: bool, x: &mut f32, y: &mut f32) {
@@ -124,9 +123,15 @@ fn approximate_givens_quaternion(a: &Symmetric3x3) -> Givens {
 
     if GAMMA * sh2 < ch2 {
         let w = (ch2 + sh2).sqrt().recip();
-        Givens { ch: w * ch_val, sh: w * sh_val }
+        Givens {
+            ch: w * ch_val,
+            sh: w * sh_val,
+        }
     } else {
-        Givens { ch: CSTAR, sh: SSTAR }
+        Givens {
+            ch: CSTAR,
+            sh: SSTAR,
+        }
     }
 }
 
@@ -210,7 +215,7 @@ fn conjugate_yz(s: &mut Symmetric3x3, q: &mut Quat) {
 fn conjugate_xz(s: &mut Symmetric3x3, q: &mut Quat) {
     // Compute Givens rotation parameters
     let mut g = approximate_givens_quaternion(s);
-    
+
     // Calculate rotation matrix elements 'a' and 'b'
     let ch2 = g.ch * g.ch;
     let sh2 = g.sh * g.sh;
@@ -253,7 +258,7 @@ fn jacobi_eigenanalysis(mut s: Symmetric3x3) -> Mat3 {
 
         let sum_off_diagonal_sq = s.m_10 * s.m_10 + s.m_20 * s.m_20 + s.m_21 * s.m_21;
         if sum_off_diagonal_sq < SVD3_EPSILON {
-            break; 
+            break;
         }
     }
     Mat3::from_quat(q)
@@ -274,27 +279,51 @@ fn sort_singular_values(b: &mut Mat3, v: &mut Mat3) {
     if rho1 < rho2 {
         manual_swap(&mut b.x_axis, &mut b.y_axis);
         manual_swap(&mut v.x_axis, &mut v.y_axis);
-        
-        b.y_axis = Vec3 { x: -b.y_axis.x, y: -b.y_axis.y, z: -b.y_axis.z };
-        v.y_axis = Vec3 { x: -v.y_axis.x, y: -v.y_axis.y, z: -v.y_axis.z };
-        
+
+        b.y_axis = Vec3 {
+            x: -b.y_axis.x,
+            y: -b.y_axis.y,
+            z: -b.y_axis.z,
+        };
+        v.y_axis = Vec3 {
+            x: -v.y_axis.x,
+            y: -v.y_axis.y,
+            z: -v.y_axis.z,
+        };
+
         manual_swap(&mut rho1, &mut rho2);
     }
     if rho1 < rho3 {
         manual_swap(&mut b.x_axis, &mut b.z_axis);
         manual_swap(&mut v.x_axis, &mut v.z_axis);
 
-        b.z_axis = Vec3 { x: -b.z_axis.x, y: -b.z_axis.y, z: -b.z_axis.z };
-        v.z_axis = Vec3 { x: -v.z_axis.x, y: -v.z_axis.y, z: -v.z_axis.z };
-        
+        b.z_axis = Vec3 {
+            x: -b.z_axis.x,
+            y: -b.z_axis.y,
+            z: -b.z_axis.z,
+        };
+        v.z_axis = Vec3 {
+            x: -v.z_axis.x,
+            y: -v.z_axis.y,
+            z: -v.z_axis.z,
+        };
+
         manual_swap(&mut rho1, &mut rho3);
     }
     if rho2 < rho3 {
         manual_swap(&mut b.y_axis, &mut b.z_axis);
         manual_swap(&mut v.y_axis, &mut v.z_axis);
 
-        b.z_axis = Vec3 { x: -b.z_axis.x, y: -b.z_axis.y, z: -b.z_axis.z };
-        v.z_axis = Vec3 { x: -v.z_axis.x, y: -v.z_axis.y, z: -v.z_axis.z };
+        b.z_axis = Vec3 {
+            x: -b.z_axis.x,
+            y: -b.z_axis.y,
+            z: -b.z_axis.z,
+        };
+        v.z_axis = Vec3 {
+            x: -v.z_axis.x,
+            y: -v.z_axis.y,
+            z: -v.z_axis.z,
+        };
     }
 }
 
@@ -327,15 +356,18 @@ fn qr_decomposition(b_mat: &mut Mat3) -> QR3 {
     let b1 = 2.0 * g1.ch * g1.sh;
 
     // Apply to row 0
-    let c0 = b_mat.x_axis.x; let c1 = b_mat.x_axis.y;
+    let c0 = b_mat.x_axis.x;
+    let c1 = b_mat.x_axis.y;
     b_mat.x_axis.x = a1 * c0 + b1 * c1;
     b_mat.x_axis.y = -b1 * c0 + a1 * c1;
     // Apply to row 1
-    let c0 = b_mat.y_axis.x; let c1 = b_mat.y_axis.y;
+    let c0 = b_mat.y_axis.x;
+    let c1 = b_mat.y_axis.y;
     b_mat.y_axis.x = a1 * c0 + b1 * c1;
     b_mat.y_axis.y = -b1 * c0 + a1 * c1;
     // Apply to row 2
-    let c0 = b_mat.z_axis.x; let c1 = b_mat.z_axis.y;
+    let c0 = b_mat.z_axis.x;
+    let c1 = b_mat.z_axis.y;
     b_mat.z_axis.x = a1 * c0 + b1 * c1;
     b_mat.z_axis.y = -b1 * c0 + a1 * c1;
 
@@ -345,15 +377,18 @@ fn qr_decomposition(b_mat: &mut Mat3) -> QR3 {
     let b2 = 2.0 * g2.ch * g2.sh;
 
     // Apply to row 0
-    let c0 = b_mat.x_axis.x; let c2 = b_mat.x_axis.z;
+    let c0 = b_mat.x_axis.x;
+    let c2 = b_mat.x_axis.z;
     b_mat.x_axis.x = a2 * c0 + b2 * c2;
     b_mat.x_axis.z = -b2 * c0 + a2 * c2;
     // Apply to row 1
-    let c0 = b_mat.y_axis.x; let c2 = b_mat.y_axis.z;
+    let c0 = b_mat.y_axis.x;
+    let c2 = b_mat.y_axis.z;
     b_mat.y_axis.x = a2 * c0 + b2 * c2;
     b_mat.y_axis.z = -b2 * c0 + a2 * c2;
     // Apply to row 2
-    let c0 = b_mat.z_axis.x; let c2 = b_mat.z_axis.z;
+    let c0 = b_mat.z_axis.x;
+    let c2 = b_mat.z_axis.z;
     b_mat.z_axis.x = a2 * c0 + b2 * c2;
     b_mat.z_axis.z = -b2 * c0 + a2 * c2;
 
@@ -363,18 +398,21 @@ fn qr_decomposition(b_mat: &mut Mat3) -> QR3 {
     let b3 = 2.0 * g3.ch * g3.sh;
 
     // Apply to row 0
-    let c1 = b_mat.x_axis.y; let c2 = b_mat.x_axis.z;
+    let c1 = b_mat.x_axis.y;
+    let c2 = b_mat.x_axis.z;
     b_mat.x_axis.y = a3 * c1 + b3 * c2;
     b_mat.x_axis.z = -b3 * c1 + a3 * c2;
     // Apply to row 1
-    let c1 = b_mat.y_axis.y; let c2 = b_mat.y_axis.z;
+    let c1 = b_mat.y_axis.y;
+    let c2 = b_mat.y_axis.z;
     b_mat.y_axis.y = a3 * c1 + b3 * c2;
     b_mat.y_axis.z = -b3 * c1 + a3 * c2;
     // Apply to row 2
-    let c1 = b_mat.z_axis.y; let c2 = b_mat.z_axis.z;
+    let c1 = b_mat.z_axis.y;
+    let c2 = b_mat.z_axis.z;
     b_mat.z_axis.y = a3 * c1 + b3 * c2;
     b_mat.z_axis.z = -b3 * c1 + a3 * c2;
-    
+
     let r = *b_mat;
 
     q.x_axis.x = a1 * a2;
@@ -382,7 +420,8 @@ fn qr_decomposition(b_mat: &mut Mat3) -> QR3 {
     q.x_axis.z = b1 * b3 - b2 * a1 * a3;
     q.y_axis.x = b1 * a2;
     q.y_axis.y = a1 * a3 - (b1 * b2 * b3);
-    q.y_axis.z = -2.0 * g3.ch * g3.sh + 4.0 * g1.sh * (g3.ch * g1.sh * g3.sh + g1.ch * g2.ch * g2.sh * (-a3));
+    q.y_axis.z = -2.0 * g3.ch * g3.sh
+        + 4.0 * g1.sh * (g3.ch * g1.sh * g3.sh + g1.ch * g2.ch * g2.sh * (-a3));
     q.z_axis.x = b2;
     q.z_axis.y = b3 * a2;
     q.z_axis.z = a2 * a3;
