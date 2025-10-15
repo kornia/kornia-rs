@@ -136,7 +136,6 @@ fn approximate_givens_quaternion(a: &Symmetric3x3) -> Givens {
 }
 
 /// Function used to apply a givens rotation S. Calculates the weights and updates the quaternion to contain the cumultative rotation
-
 /// Function used to contain the givens permutations and the loop of the jacobi steps controlled by JACOBI_STEPS
 /// Returns the quaternion q containing the cumultative result used to reconstruct S
 #[inline(always)]
@@ -265,10 +264,8 @@ fn jacobi_eigenanalysis(mut s: Symmetric3x3) -> Mat3 {
 }
 
 #[inline(always)]
-fn manual_swap<T: Copy>(a: &mut T, b: &mut T) {
-    let temp = *a;
-    *a = *b;
-    *b = temp;
+fn swap<T: Copy>(a: &mut T, b: &mut T) {
+    std::mem::swap(&mut (*a), &mut (*b));
 }
 
 fn sort_singular_values(b: &mut Mat3, v: &mut Mat3) {
@@ -277,8 +274,8 @@ fn sort_singular_values(b: &mut Mat3, v: &mut Mat3) {
     let mut rho3 = dist2(b.z_axis.x, b.z_axis.y, b.z_axis.z);
 
     if rho1 < rho2 {
-        manual_swap(&mut b.x_axis, &mut b.y_axis);
-        manual_swap(&mut v.x_axis, &mut v.y_axis);
+        swap(&mut b.x_axis, &mut b.y_axis);
+        swap(&mut v.x_axis, &mut v.y_axis);
 
         b.y_axis = Vec3 {
             x: -b.y_axis.x,
@@ -291,11 +288,11 @@ fn sort_singular_values(b: &mut Mat3, v: &mut Mat3) {
             z: -v.y_axis.z,
         };
 
-        manual_swap(&mut rho1, &mut rho2);
+        swap(&mut rho1, &mut rho2);
     }
     if rho1 < rho3 {
-        manual_swap(&mut b.x_axis, &mut b.z_axis);
-        manual_swap(&mut v.x_axis, &mut v.z_axis);
+        swap(&mut b.x_axis, &mut b.z_axis);
+        swap(&mut v.x_axis, &mut v.z_axis);
 
         b.z_axis = Vec3 {
             x: -b.z_axis.x,
@@ -308,11 +305,11 @@ fn sort_singular_values(b: &mut Mat3, v: &mut Mat3) {
             z: -v.z_axis.z,
         };
 
-        manual_swap(&mut rho1, &mut rho3);
+        swap(&mut rho1, &mut rho3);
     }
     if rho2 < rho3 {
-        manual_swap(&mut b.y_axis, &mut b.z_axis);
-        manual_swap(&mut v.y_axis, &mut v.z_axis);
+        swap(&mut b.y_axis, &mut b.z_axis);
+        swap(&mut v.y_axis, &mut v.z_axis);
 
         b.z_axis = Vec3 {
             x: -b.z_axis.x,
