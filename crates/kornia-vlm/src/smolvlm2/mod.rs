@@ -345,31 +345,32 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
         let mut delta_token = self.txt_processor.encode_all(&converted_prompt)?;
 
         if self.config.debug {
-            debug!("Initial tokens: {delta_token:?}");
+            debug!("Initial number of tokens: {:?}", delta_token.len());
         }
-        let start_gen = if self.config.debug {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        let mut start_gen = None;
         let mut generated_tokens = 0usize;
 
-        for _i in 0..sample_len {
+        for i in 0..sample_len {
             let input = Tensor::from_slice(&delta_token, &[delta_token.len()], &self.device)?;
-            let img_token_mask = if _i > 0 {
+            let img_token_mask = if i > 0 {
                 &self.buf_single_zero_tensor
             } else if use_video {
                 &self.vid_processor.get_video_token_mask(&input)?
             } else {
                 &self.img_processor.get_image_token_mask(&input)?
             };
-            let img_data = if _i > 0 {
+            let img_data = if i > 0 {
                 Vec::new()
             } else if use_video {
                 self.vid_processor.get_processed_videos()
             } else {
                 self.img_processor.get_processed_images()
             };
+            if i == 1 {
+                if self.config.debug {
+                    start_gen = Some(Instant::now());
+                };
+            }
 
             let logits =
                 self.model
@@ -392,7 +393,6 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
                 if self.config.debug {
                     generated_tokens += 1;
                     debug!("{token_output}");
-                    std::io::stdout().flush()?;
                 }
             } else {
                 break;

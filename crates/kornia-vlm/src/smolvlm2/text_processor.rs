@@ -288,21 +288,16 @@ impl TextProcessor {
             last_logit
         };
 
-        if self.has_non_finite(&output_logit)? {
-            Err(SmolVlm2Error::InvalidLogits(
-                "Non-finite values (NaN or +/-Inf) found in logits".to_string(),
-            ))
+        let out_token = if self.config.do_sample {
+            self.logits_processor.sample(&output_logit)?
         } else {
-            let out_token = self.logits_processor.sample(&output_logit)?;
+            output_logit
+                .argmax(0)?
+                .to_dtype(DType::U32)?
+                .to_scalar::<u32>()?
+        };
 
-            Ok(out_token)
-        }
-    }
-
-    /// Return true if any element in `logits` is not finite (NaN or +/-Inf).
-    fn has_non_finite(&self, logits: &Tensor) -> Result<bool, SmolVlm2Error> {
-        let logits_vec = logits.to_dtype(DType::F32)?.to_vec1::<f32>()?;
-        Ok(logits_vec.iter().any(|&v| !v.is_finite()))
+        Ok(out_token)
     }
 }
 
