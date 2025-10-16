@@ -391,14 +391,10 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
 
                 if self.config.debug {
                     generated_tokens += 1;
-                    print!("{token_output}");
+                    debug!("{token_output}");
                     std::io::stdout().flush()?;
                 }
             } else {
-                if self.config.debug {
-                    println!();
-                    std::io::stdout().flush()?;
-                }
                 break;
             }
         }

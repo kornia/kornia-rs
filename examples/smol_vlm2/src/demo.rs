@@ -2,7 +2,6 @@
 //!
 //! Usage: cargo run --example demo <video_path>
 use crate::video::{from_video_path, VideoSamplingMethod};
-use kornia_image::Image;
 use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
 use kornia_tensor::CpuAllocator;
 use kornia_vlm::smolvlm2::{InputMedia, Line, Message, Role, SmolVlm2, SmolVlm2Config};
@@ -81,7 +80,7 @@ mod tests {
         log::info!("SMOLVLM2 RUST IMAGE INFERENCE SPEED TEST");
         log::info!("============================================================");
 
-        let path = std::path::Path::new("../../100462016.jpeg");
+        let path = Path::new("../../100462016.jpeg");
         let image = match path.extension().and_then(|ext| ext.to_str()) {
             Some("jpg") | Some("jpeg") => read_image_jpeg_rgb8(path).ok(),
             Some("png") => read_image_png_rgb8(path).ok(),
@@ -102,50 +101,51 @@ mod tests {
             ..Default::default()
         };
         let mut model = SmolVlm2::<32, CpuAllocator>::new(config).unwrap();
-
-        let prompt = "Describe the image.";
         let sample_len = 500;
 
         let mut inference_times = Vec::new();
-        let mut tokens_per_sec = Vec::new();
         let runs = 3;
-        for run in 1..=runs {
-            let start_time = std::time::Instant::now();
-            let response = model
-                .inference(
-                    vec![Message {
-                        role: Role::User,
-                        content: vec![
-                            Line::Image,
-                            Line::Text {
-                                text: prompt.to_string(),
-                            },
-                        ],
-                    }],
-                    Some(InputMedia::Images(vec![image.clone()])),
-                    sample_len,
-                    CpuAllocator,
-                )
-                .unwrap_or_else(|e| format!("Inference failed: {:?}", e));
-            let duration = start_time.elapsed();
-            let time_secs = duration.as_secs_f64();
-            let tps = sample_len as f64 / time_secs;
-            inference_times.push(time_secs);
-            tokens_per_sec.push(tps);
-            log::info!(
-                "Run {}: inference completed in {:.3}s ({:.2} tokens/s)",
-                run,
-                time_secs,
-                tps
-            );
-            log::info!("Model response: {}", response);
+        let prompts = [
+            "Describe the image.",
+            "What is the appearance of this image in details?",
+            "What do you see?",
+        ];
+        for prompt in prompts.iter() {
+            for run in 1..=runs {
+                model.clear_context().unwrap();
+                let start_time = std::time::Instant::now();
+                let response = model
+                    .inference(
+                        vec![Message {
+                            role: Role::User,
+                            content: vec![
+                                Line::Image,
+                                Line::Text {
+                                    text: prompt.to_string(),
+                                },
+                            ],
+                        }],
+                        Some(InputMedia::Images(vec![image.clone()])),
+                        sample_len,
+                        CpuAllocator,
+                    )
+                    .unwrap_or_else(|e| format!("Inference failed: {:?}", e));
+                let duration = start_time.elapsed();
+                let time_secs = duration.as_secs_f64();
+                inference_times.push(time_secs);
+                log::info!(
+                    "Prompt: {} | Run {}: inference completed in {:.3}s",
+                    prompt,
+                    run,
+                    time_secs
+                );
+                log::info!("Model response: {}", response);
+            }
         }
 
         if !inference_times.is_empty() {
             let avg_time = inference_times.iter().sum::<f64>() / inference_times.len() as f64;
-            let avg_tps = tokens_per_sec.iter().sum::<f64>() / tokens_per_sec.len() as f64;
             log::info!("Average inference time: {:.3}s", avg_time);
-            log::info!("Average speed: {:.2} tokens/s", avg_tps);
         }
     }
     use super::*;
@@ -166,7 +166,7 @@ mod tests {
         {
             log::info!("\n==================== Video 32 frames ====================\n");
 
-            let video_path = Path::new("../../car-detection.mp4");
+            let video_path = Path::new("../../example_video.mp4");
             if video_path.exists() {
                 let video_prompts = [
                     "Describe what happens in this video.",
@@ -188,11 +188,11 @@ mod tests {
                     .expect("Failed to create SmolVLM2 model");
 
                 for (i, prompt) in video_prompts.iter().enumerate() {
+                    model.clear_context().unwrap();
                     log::info!("Video Test {}: '{}'", i + 1, prompt);
 
                     let mut load_times = Vec::new();
                     let mut inference_times = Vec::new();
-                    let mut tokens_per_sec = Vec::new();
                     for run in 1..=2 {
                         // Measure video loading
                         let start_load = std::time::Instant::now();
@@ -227,27 +227,19 @@ mod tests {
                                         },
                                     ],
                                 }];
-                                let max_tokens = 256;
                                 let response = model
                                     .inference(
                                         messages,
                                         Some(InputMedia::Video(vec![&mut video])),
-                                        max_tokens,
+                                        500,
                                         CpuAllocator,
                                     )
                                     .unwrap_or_else(|e| format!("Model error: {:?}", e));
                                 let infer_duration = start_infer.elapsed();
                                 let infer_secs = infer_duration.as_secs_f64();
-                                let tps = max_tokens as f64 / infer_secs;
                                 inference_times.push(infer_secs);
-                                tokens_per_sec.push(tps);
                                 inference_total_time += infer_secs;
-                                log::info!(
-                                    "  Run {}: model inference in {:.3}s ({:.2} tokens/s)",
-                                    run,
-                                    infer_secs,
-                                    tps
-                                );
+                                log::info!("  Run {}: model inference in {:.3}s", run, infer_secs);
                                 log::info!("  Model response: {}", response);
                             }
                             Err(e) => {
@@ -264,10 +256,7 @@ mod tests {
                     if !inference_times.is_empty() {
                         let avg_infer =
                             inference_times.iter().sum::<f64>() / inference_times.len() as f64;
-                        let avg_tps =
-                            tokens_per_sec.iter().sum::<f64>() / tokens_per_sec.len() as f64;
                         log::info!("  Average inference time: {:.3}s", avg_infer);
-                        log::info!("  Average speed: {:.2} tokens/s", avg_tps);
                     }
                 }
 
