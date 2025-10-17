@@ -1,6 +1,6 @@
 #![allow(clippy::op_ref)]
 use glam::{Mat3, Vec3};
-use nalgebra::{DMatrix, DVector, Vector4};
+use nalgebra::{DMatrix, Vector3, Vector4, Matrix4};
 
 /// Compute the centroid of a set of points.
 pub(crate) fn compute_centroid(pts: &[[f32; 3]]) -> [f32; 3] {
@@ -55,44 +55,92 @@ pub(crate) fn project_sq_error(
     Some(du.mul_add(du, dv * dv))
 }
 
+#[inline(always)]
+pub fn solve_4x4_cholesky(a: &Matrix4<f32>, b: &Vector4<f32>) -> Option<Vector4<f32>> {
+    let l11 = a.m11.sqrt();
+    if l11 == 0.0 { return None; }
+    let l21 = a.m21 / l11;
+    let l31 = a.m31 / l11;
+    let l41 = a.m41 / l11;
+    let l22_sq = a.m22 - l21 * l21;
+    if l22_sq <= 0.0 { return None; }
+    let l22 = l22_sq.sqrt();
+    let l32 = (a.m32 - l31 * l21) / l22;
+    let l42 = (a.m42 - l41 * l21) / l22;
+    let l33_sq = a.m33 - l31 * l31 - l32 * l32;
+    if l33_sq <= 0.0 { return None; }
+    let l33 = l33_sq.sqrt();
+    let l43 = (a.m43 - l41 * l31 - l42 * l32) / l33;
+    let l44_sq = a.m44 - l41 * l41 - l42 * l42 - l43 * l43;
+    if l44_sq <= 0.0 { return None; }
+    let l44 = l44_sq.sqrt();
+    let inv_l11 = 1.0 / l11;
+    let inv_l22 = 1.0 / l22;
+    let inv_l33 = 1.0 / l33;
+    let inv_l44 = 1.0 / l44;
+    let y1 = b[0] * inv_l11;
+    let y2 = (b[1] - l21 * y1) * inv_l22;
+    let y3 = (b[2] - (l31 * y1 + l32 * y2)) * inv_l33;
+    let y4 = (b[3] - (l41 * y1 + l42 * y2 + l43 * y3)) * inv_l44;
+    let x4 = y4 * inv_l44;
+    let x3 = (y3 - l43 * x4) * inv_l33;
+    let x2 = (y2 - (l32 * x3 + l42 * x4)) * inv_l22;
+    let x1 = (y1 - (l21 * x2 + l31 * x3 + l41 * x4)) * inv_l11;
+    Some(Vector4::new(x1, x2, x3, x4))
+}
+
 pub(crate) fn gauss_newton(beta_init: [f32; 4], null4: &DMatrix<f32>, rho: &[f32; 6]) -> [f32; 4] {
     const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+    const DAMPING: f32 = 1e-9;
+    const EPS: f32 = 1e-8;
 
-    let mut bet = Vector4::from_column_slice(&beta_init);
+    let mut bet = Vector4::from(beta_init);
 
     for _ in 0..6 {
-        let mut f_vec = DVector::<f32>::zeros(6);
-        let mut j_mat = DMatrix::<f32>::zeros(6, 4);
+        let mut vs = [Vector3::zeros(); 4];
+        for i in 0..4 {
+            let m = null4.view((i * 3, 0), (3, 4));
+            vs[i] = Vector3::new(
+                m[(0, 0)] * bet.x + m[(0, 1)] * bet.y + m[(0, 2)] * bet.z + m[(0, 3)] * bet.w,
+                m[(1, 0)] * bet.x + m[(1, 1)] * bet.y + m[(1, 2)] * bet.z + m[(1, 3)] * bet.w,
+                m[(2, 0)] * bet.x + m[(2, 1)] * bet.y + m[(2, 2)] * bet.z + m[(2, 3)] * bet.w,
+            );
+        }
 
-        for (r, (i, j)) in PAIRS.iter().enumerate() {
-            // Vi = (null4 block rows 3*i..3*i+3) * bet
-            let block_i = null4.view((*i * 3, 0), (3, 4));
-            let block_j = null4.view((*j * 3, 0), (3, 4));
-
-            let vi = &block_i * &bet; // 3×1 nalgebra vec
-            let vj = &block_j * &bet;
-
-            let diff_vec = Vec3::new(vi[0] - vj[0], vi[1] - vj[1], vi[2] - vj[2]);
-
-            f_vec[r] = diff_vec.length_squared() - rho[r];
-
+        let mut f = [0.0f32; 6];
+        let mut j = [[0.0f32; 4]; 6];
+        for (r, &(i, jj)) in PAIRS.iter().enumerate() {
+            let dx = vs[i].x - vs[jj].x;
+            let dy = vs[i].y - vs[jj].y;
+            let dz = vs[i].z - vs[jj].z;
+            f[r] = dx * dx + dy * dy + dz * dz - rho[r];
             for k in 0..4 {
-                let vi_k = block_i.column(k);
-                let vj_k = block_j.column(k);
-                let col_diff = Vec3::new(vi_k[0] - vj_k[0], vi_k[1] - vj_k[1], vi_k[2] - vj_k[2]);
-                let deriv = col_diff.dot(diff_vec) * 2.0;
-                j_mat[(r, k)] = deriv;
+                let di0 = null4[(i * 3, k)] - null4[(jj * 3, k)];
+                let di1 = null4[(i * 3 + 1, k)] - null4[(jj * 3 + 1, k)];
+                let di2 = null4[(i * 3 + 2, k)] - null4[(jj * 3 + 2, k)];
+                j[r][k] = 2.0 * (di0 * dx + di1 * dy + di2 * dz);
             }
         }
 
-        let jt = j_mat.transpose();
-        let a = &jt * &j_mat + DMatrix::<f32>::identity(4, 4) * 1e-9;
-        let b = &jt * f_vec;
+        let mut a = Matrix4::zeros();
+        let mut b = Vector4::zeros();
+        for r in 0..6 {
+            for i in 0..4 {
+                b[i] += j[r][i] * f[r];
+                for k in 0..4 {
+                    a[(i, k)] += j[r][i] * j[r][k];
+                }
+            }
+        }
 
-        if let Some(delta) = a.lu().solve(&b) {
-            let norm_val = delta.norm();
-            bet -= &delta;
-            if norm_val < 1e-8 {
+        a[(0, 0)] += DAMPING;
+        a[(1, 1)] += DAMPING;
+        a[(2, 2)] += DAMPING;
+        a[(3, 3)] += DAMPING;
+
+        if let Some(delta) = solve_4x4_cholesky(&a, &b) {
+            bet -= delta;
+            if delta.norm() < EPS {
                 break;
             }
         } else {
@@ -100,7 +148,7 @@ pub(crate) fn gauss_newton(beta_init: [f32; 4], null4: &DMatrix<f32>, rho: &[f32
         }
     }
 
-    [bet[0], bet[1], bet[2], bet[3]]
+    bet.into()
 }
 
 #[cfg(test)]
@@ -115,18 +163,48 @@ mod tests {
     }
 }
 
-//TODO: redo this test
 #[cfg(test)]
 mod gauss_newton_tests {
     use super::*;
+    use approx::assert_relative_eq;
+    use nalgebra::{DMatrix, Vector3, Vector4};
+
+    fn setup_test_data() -> (DMatrix<f32>, [f32; 6], [f32; 4]) {
+        #[rustfmt::skip]
+        let null4 = DMatrix::from_row_slice(12, 4, &[
+            0.1, 0.5, 0.2, 0.8, 0.4, 0.3, 0.6, 0.1, 0.7, 0.9, 0.3, 0.2,
+            0.2, 0.1, 0.8, 0.5, 0.5, 0.4, 0.2, 0.9, 0.8, 0.7, 0.5, 0.3,
+            0.3, 0.6, 0.9, 0.1, 0.6, 0.2, 0.4, 0.7, 0.9, 0.5, 0.7, 0.4,
+            0.1, 0.8, 0.1, 0.6, 0.4, 0.3, 0.5, 0.2, 0.7, 0.6, 0.8, 0.9,
+        ]);
+
+        let beta_true = [0.5, -0.2, 0.8, 0.1];
+        let beta_vec = Vector4::from(beta_true);
+
+        let mut vs = [Vector3::zeros(); 4];
+        for i in 0..4 {
+            let m = null4.view((i * 3, 0), (3, 4));
+            let v_dynamic = m * beta_vec;
+            vs[i] = Vector3::new(v_dynamic[0], v_dynamic[1], v_dynamic[2]);
+        }
+
+        const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+        let mut rho = [0.0; 6];
+        for (idx, &(i, j)) in PAIRS.iter().enumerate() {
+            rho[idx] = (vs[i] - vs[j]).norm_squared();
+        }
+
+        (null4, rho, beta_true)
+    }
 
     #[test]
     fn test_gauss_newton() {
-        let beta_init = [1.0, 2.0, 3.0, 4.0];
-        let null4 = DMatrix::<f32>::zeros(12, 4);
-        let rho = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-
+        let (null4, rho, beta_true) = setup_test_data();
+        let beta_init = [0.4, -0.1, 0.7, 0.2];
         let result = gauss_newton(beta_init, &null4, &rho);
-        assert_eq!(result, [1.0, 2.0, 3.0, 4.0]);
+
+        for i in 0..4 {
+            assert_relative_eq!(result[i], beta_true[i], epsilon = 1e-6);
+        }
     }
 }
