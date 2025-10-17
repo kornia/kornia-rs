@@ -1,6 +1,6 @@
 #![allow(clippy::op_ref)]
 use glam::{Mat3, Vec3};
-use nalgebra::{DMatrix, Vector3, Vector4, Matrix4};
+use nalgebra::{DMatrix, Matrix4, Vector3, Vector4};
 
 /// Compute the centroid of a set of points.
 pub(crate) fn compute_centroid(pts: &[[f32; 3]]) -> [f32; 3] {
@@ -58,21 +58,29 @@ pub(crate) fn project_sq_error(
 #[inline(always)]
 pub fn solve_4x4_cholesky(a: &Matrix4<f32>, b: &Vector4<f32>) -> Option<Vector4<f32>> {
     let l11 = a.m11.sqrt();
-    if l11 == 0.0 { return None; }
+    if l11 == 0.0 {
+        return None;
+    }
     let l21 = a.m21 / l11;
     let l31 = a.m31 / l11;
     let l41 = a.m41 / l11;
     let l22_sq = a.m22 - l21 * l21;
-    if l22_sq <= 0.0 { return None; }
+    if l22_sq <= 0.0 {
+        return None;
+    }
     let l22 = l22_sq.sqrt();
     let l32 = (a.m32 - l31 * l21) / l22;
     let l42 = (a.m42 - l41 * l21) / l22;
     let l33_sq = a.m33 - l31 * l31 - l32 * l32;
-    if l33_sq <= 0.0 { return None; }
+    if l33_sq <= 0.0 {
+        return None;
+    }
     let l33 = l33_sq.sqrt();
     let l43 = (a.m43 - l41 * l31 - l42 * l32) / l33;
     let l44_sq = a.m44 - l41 * l41 - l42 * l42 - l43 * l43;
-    if l44_sq <= 0.0 { return None; }
+    if l44_sq <= 0.0 {
+        return None;
+    }
     let l44 = l44_sq.sqrt();
     let inv_l11 = 1.0 / l11;
     let inv_l22 = 1.0 / l22;
