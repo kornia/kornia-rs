@@ -106,8 +106,8 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     /// * `timestamp` - Timestamp of the frame in seconds
     pub fn add_frame(&mut self, frame: Image<u8, 3, A>, timestamp: u32) {
         self.frames.push_back(frame);
-        self.meta.timestamps.push_back(timestamp);
         self.processed.push_back(false);
+        self.meta.timestamps.push_back(timestamp);
     }
 
     /// Process all frames using a closure that modifies each frame in-place.
