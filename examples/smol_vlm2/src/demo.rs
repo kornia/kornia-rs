@@ -69,8 +69,8 @@ pub fn run_video_demo(
 mod tests {
     use std::path::Path;
 
-    // RUST_LOG=debug cargo test -p smol_vlm2 --features "gstreamer,cuda" -- --nocapture --ignored test_smolvlm2_image_inference_speed
-    // cargo test --release -p smol_vlm2 --features "gstreamer,cuda" -- --nocapture --ignored test_smolvlm2_image_inference_speed
+    // RUST_LOG=debug cargo test -p smol_vlm2 --features "gstreamer,cuda,flash-attn" -- --nocapture --ignored test_smolvlm2_image_inference_speed
+    // cargo test --release -p smol_vlm2 --features "gstreamer,cuda,flash-attn" -- --nocapture --ignored test_smolvlm2_image_inference_speed
     /// Single image inference speed test
     #[test]
     #[ignore = "Requires CUDA"]
@@ -151,8 +151,8 @@ mod tests {
     }
     use super::*;
 
-    // RUST_LOG=debug cargo test -p smol_vlm2 --features "gstreamer,cuda" -- --nocapture --ignored test_smolvlm2_video_inference_speed
-    // cargo test --release -p smol_vlm2 --features "gstreamer,cuda" -- --nocapture --ignored test_smolvlm2_video_inference_speed
+    // RUST_LOG=debug cargo test -p smol_vlm2 --features "gstreamer,cuda,flash-attn" -- --nocapture --ignored test_smolvlm2_video_inference_speed
+    // cargo test --release -p smol_vlm2 --features "gstreamer,cuda,flash-attn" -- --nocapture --ignored test_smolvlm2_video_inference_speed
     /// Video inference speed test (previously speed comparison)
     #[test]
     #[ignore = "Video inference speed test - requires CUDA/gstreamer"]
