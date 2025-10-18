@@ -366,10 +366,8 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
             } else {
                 self.img_processor.get_processed_images()
             };
-            if i == 1 {
-                if self.config.debug {
-                    start_gen = Some(Instant::now());
-                };
+            if i == 1 && self.config.debug {
+                start_gen = Some(Instant::now());
             }
 
             let logits =
