@@ -2,7 +2,6 @@
 //!
 //! Usage: cargo run --example demo <video_path>
 use crate::video::{from_video_path, VideoSamplingMethod};
-use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
 use kornia_tensor::CpuAllocator;
 use kornia_vlm::smolvlm2::{InputMedia, Line, Message, Role, SmolVlm2, SmolVlm2Config};
 
@@ -67,6 +66,7 @@ pub fn run_video_demo(
 
 #[cfg(test)]
 mod tests {
+    use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
     use std::path::Path;
 
     // RUST_LOG=debug cargo test -p smol_vlm2 --features "gstreamer,cuda,flash-attn" -- --nocapture --ignored test_smolvlm2_image_inference_speed
