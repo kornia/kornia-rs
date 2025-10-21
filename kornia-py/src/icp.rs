@@ -110,7 +110,7 @@ pub fn icp_vanilla(
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
     // convert the initial rotation and translation to a vector
-    let initial_rot = Python::with_gil(|py| {
+    let initial_rot = Python::attach(|py| {
         let array = initial_rot.bind(py);
         let data_slice =
             unsafe { array.as_slice() }.expect("Failed to convert initial rotation to vector");
@@ -121,7 +121,7 @@ pub fn icp_vanilla(
         ]
     });
 
-    let initial_trans = Python::with_gil(|py| {
+    let initial_trans = Python::attach(|py| {
         let array = initial_trans.bind(py);
         let data_slice =
             unsafe { array.as_slice() }.expect("Failed to convert initial translation to vector");
