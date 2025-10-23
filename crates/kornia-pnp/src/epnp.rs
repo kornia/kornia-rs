@@ -265,18 +265,35 @@ fn rmse_px(
 }
 
 fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
-    let n = points_world.len();
+    let n = points_world.len() as f32;
     let c = compute_centroid(points_world);
 
-    // Compute covariance using glam for consistency
-    let mut cov_mat = Mat3::ZERO;
-    for p in points_world {
-        let diff = Vec3::new(p[0] - c[0], p[1] - c[1], p[2] - c[2]);
-        // Outer product diff * diffᵀ via column scaling
-        let outer_product = Mat3::from_cols(diff * diff.x, diff * diff.y, diff * diff.z);
-        cov_mat += outer_product;
+    let mut c00 = 0.0;
+    let mut c01 = 0.0;
+    let mut c02 = 0.0;
+    let mut c11 = 0.0;
+    let mut c12 = 0.0;
+    let mut c22 = 0.0;
+
+    for &p in points_world {
+        let dx = p[0] - c[0];
+        let dy = p[1] - c[1];
+        let dz = p[2] - c[2];
+
+        c00 += dx * dx;
+        c01 += dx * dy;
+        c02 += dx * dz;
+        c11 += dy * dy;
+        c12 += dy * dz;
+        c22 += dz * dz;
     }
-    cov_mat *= 1.0 / n as f32;
+
+    let s = 1.0 / n;
+    let cov_mat = Mat3::from_cols_array(&[
+        c00 * s, c01 * s, c02 * s,
+        c01 * s, c11 * s, c12 * s,
+        c02 * s, c12 * s, c22 * s,
+    ]);
 
     let svd = svd3(&cov_mat);
     let v = svd.v();
