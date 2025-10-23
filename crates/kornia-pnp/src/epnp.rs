@@ -290,9 +290,15 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
 
     let s = 1.0 / n;
     let cov_mat = Mat3::from_cols_array(&[
-        c00 * s, c01 * s, c02 * s,
-        c01 * s, c11 * s, c12 * s,
-        c02 * s, c12 * s, c22 * s,
+        c00 * s,
+        c01 * s,
+        c02 * s,
+        c01 * s,
+        c11 * s,
+        c12 * s,
+        c02 * s,
+        c12 * s,
+        c22 * s,
     ]);
 
     let svd = svd3(&cov_mat);
