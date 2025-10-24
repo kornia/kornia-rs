@@ -421,63 +421,44 @@ fn build_m(
 /// Build the 6×10 matrix **L** used in EPnP from the 4-dimensional null-space matrix `V` (shape 12×4).
 fn build_l6x10(null4: &DMatrix<f32>) -> [[f32; 10]; 6] {
     // Re-ordered column indices (reverse order).
-    let col_order = [3usize, 2, 1, 0];
-
-    // v[i] is 4×3 matrix => Vec<[Vec3;4]>
-    let mut v_cp: Vec<[Vec3; 4]> = Vec::with_capacity(4);
-
-    for &c in &col_order {
-        let col = null4.column(c);
-        let mut blocks = [Vec3::ZERO; 4];
-        for k in 0..4 {
-            blocks[k] = Vec3::new(col[3 * k], col[3 * k + 1], col[3 * k + 2]);
-        }
-        v_cp.push(blocks);
-    }
-
-    // Differences between control-point vectors for each null-space component.
-    let dv_arr: Vec<Vec<Vec3>> = (0..4)
-        .map(|i| {
-            CP_PAIRS
-                .iter()
-                .map(|&(a, b)| v_cp[i][a] - v_cp[i][b])
-                .collect::<Vec<_>>()
-        })
-        .collect();
-
     let mut l = [[0.0f32; 10]; 6];
-    for (j, _) in dv_arr[0].iter().enumerate() {
-        let d0 = dv_arr[0][j];
-        let d1 = dv_arr[1][j];
-        let d2 = dv_arr[2][j];
-        let d3 = dv_arr[3][j];
 
-        let d00 = d0.dot(d0);
-        let d11 = d1.dot(d1);
-        let d22 = d2.dot(d2);
-        let d33 = d3.dot(d3);
+    let c3 = null4.column(3);
+    let c2 = null4.column(2);
+    let c1 = null4.column(1);
+    let c0 = null4.column(0);
 
-        let d01 = d0.dot(d1);
-        let d02 = d0.dot(d2);
-        let d03 = d0.dot(d3);
-        let d12 = d1.dot(d2);
-        let d13 = d1.dot(d3);
-        let d23 = d2.dot(d3);
+    let cols: [&[f32]; 4] = [c3.as_slice(), c2.as_slice(), c1.as_slice(), c0.as_slice()];
+
+    for (j, &(a, b)) in CP_PAIRS.iter().enumerate() {
+        let mut d = [[0.0; 3]; 4];
+
+        for (k, col) in cols.iter().enumerate() {
+            let base_a = 3 * a;
+            let base_b = 3 * b;
+            d[k][0] = col[base_a] - col[base_b];
+            d[k][1] = col[base_a + 1] - col[base_b + 1];
+            d[k][2] = col[base_a + 2] - col[base_b + 2];
+        }
+
+        #[inline(always)]
+        fn dot(a: &[f32; 3], b: &[f32; 3]) -> f32 {
+            a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+        }
 
         l[j] = [
-            d00,
-            2.0 * d01,
-            d11,
-            2.0 * d02,
-            2.0 * d12,
-            d22,
-            2.0 * d03,
-            2.0 * d13,
-            2.0 * d23,
-            d33,
+            dot(&d[0], &d[0]),
+            2.0 * dot(&d[0], &d[1]),
+            dot(&d[1], &d[1]),
+            2.0 * dot(&d[0], &d[2]),
+            2.0 * dot(&d[1], &d[2]),
+            dot(&d[2], &d[2]),
+            2.0 * dot(&d[0], &d[3]),
+            2.0 * dot(&d[1], &d[3]),
+            2.0 * dot(&d[2], &d[3]),
+            dot(&d[3], &d[3]),
         ];
     }
-
     l
 }
 
