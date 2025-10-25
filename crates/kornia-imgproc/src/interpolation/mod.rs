@@ -3,6 +3,7 @@ mod bilinear;
 /// Utility functions to generate meshgrid and remap images
 pub mod grid;
 
+mod bicubic;
 pub(crate) mod interpolate;
 mod nearest;
 mod remap;
