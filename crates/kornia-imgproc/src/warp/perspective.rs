@@ -49,9 +49,9 @@ fn inverse_perspective_matrix(m: &[f32; 9]) -> Result<[f32; 9], ImageError> {
 // implement later as batched operation
 fn transform_point(x: f32, y: f32, m: &[f32; 9]) -> (f32, f32) {
     let w = m[6] * x + m[7] * y + m[8];
-    let x = (m[0] * x + m[1] * y + m[2]) / w;
-    let y = (m[3] * x + m[4] * y + m[5]) / w;
-    (x, y)
+    let x_out = (m[0] * x + m[1] * y + m[2]) / w;
+    let y_out = (m[3] * x + m[4] * y + m[5]) / w;
+    (x_out, y_out)
 }
 
 /// Applies a perspective transformation to an image.
