@@ -1,18 +1,22 @@
 An example showing how to use detect FAST features on an image.
 
 ```bash
-Usage: fast_detector [OPTIONS] --image-path <IMAGE_PATH>
+Usage: fast_detector --image-path <image-path> [--threshold <threshold>] [--arc-length <arc-length>] [--min-distance <min-distance>]
+
+Detect FAST features on an image.
 
 Options:
-  -i, --image-path <IMAGE_PATH>
-  -t, --threshold <THRESHOLD>    [default: 10]
-  -a, --arc-length <ARC_LENGTH>  [default: 5]
-  -h, --help                     Print help
+  --image-path      path to the image to detect FAST features on
+  --threshold       threshold for the FAST detector
+  --arc-length      arc length for the FAST detector
+  --min-distance    minimum distance between detected keypoints
+  --help, help      display usage information
 ```
 
 Example:
 
 ```bash
-cargo run --bin fast_detector --release -- --image-path ./data/fast_detector/test.jpg
+cargo run -p fast_detector --release -- --image-path ./path/to/image.jpg
 ```
-![Screenshot from 2025-04-01 02-12-32](https://github.com/user-attachments/assets/8e81073b-d246-4dc4-b64e-d7595c66ffd3)
+
+![Demo](https://github.com/user-attachments/assets/c04436f6-1cf6-4e53-89a8-2c2b79a56035)
