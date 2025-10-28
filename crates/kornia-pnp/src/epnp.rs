@@ -89,7 +89,7 @@ pub fn solve_epnp(
     let eig = mtm.symmetric_eigen();
 
     let eigenvalues = eig.eigenvalues;
-    let eigenvectors = eig.eigenvectors; 
+    let eigenvectors = eig.eigenvectors;
 
     let mut value_index_pairs: Vec<(f32, usize)> = eigenvalues
         .iter()
@@ -104,7 +104,7 @@ pub fn solve_epnp(
         eigenvectors.column(value_index_pairs[3].1),
         eigenvectors.column(value_index_pairs[2].1),
         eigenvectors.column(value_index_pairs[1].1),
-        eigenvectors.column(value_index_pairs[0].1), 
+        eigenvectors.column(value_index_pairs[0].1),
     ]);
 
     // Build helper matrices for beta initialisation
