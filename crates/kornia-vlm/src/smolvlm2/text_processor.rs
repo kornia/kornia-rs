@@ -3,7 +3,7 @@
     This version of text preprocessing uses a more widely used and flexible approach: Jinja2 templating.
 */
 
-use std::{f32::EPSILON, fs};
+use std::fs;
 
 use candle_core::{DType, IndexOp, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
@@ -277,8 +277,8 @@ impl TextProcessor {
                 .token_history
                 .len()
                 .saturating_sub(self.config.repeat_last_n);
-            if 1. - EPSILON < self.config.repeat_penalty
-                && self.config.repeat_penalty < 1. + EPSILON
+            if 1. - Self::EPSILON < self.config.repeat_penalty
+                && self.config.repeat_penalty < 1. + Self::EPSILON
             {
                 last_logit
             } else {
