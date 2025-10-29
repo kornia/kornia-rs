@@ -35,10 +35,6 @@ use kornia_vlm::video::VideoSample;
 use log::debug;
 
 use kornia_image::allocator::ImageAllocator;
-#[cfg(feature = "gstreamer")]
-// use kornia_io::gstreamer::{video::ImageFormat as IoImageFormat, video::VideoReader}; // Duplicate import
-#[cfg(not(feature = "gstreamer"))]
-use kornia_vlm::video::VideoSample;
 
 /// Video sampling strategies for extracting frames from a video.
 ///

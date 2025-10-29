@@ -3,7 +3,7 @@
     This version of text preprocessing uses a more widely used and flexible approach: Jinja2 templating.
 */
 
-use std::fs;
+use std::{f32::EPSILON, fs};
 
 use candle_core::{DType, IndexOp, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
@@ -55,6 +55,8 @@ pub struct TextProcessor {
 }
 
 impl TextProcessor {
+    const EPSILON: f32 = 1e-5;
+
     pub fn new(identifier: String, config: SmolVlm2Config) -> Result<Self, SmolVlm2Error> {
         let logits_processor = if config.do_sample {
             LogitsProcessor::new(config.seed, Some(config.temp), Some(config.top_p))
@@ -275,7 +277,9 @@ impl TextProcessor {
                 .token_history
                 .len()
                 .saturating_sub(self.config.repeat_last_n);
-            if 1. - 1e-5 < self.config.repeat_penalty && self.config.repeat_penalty < 1. + 1e-5 {
+            if 1. - EPSILON < self.config.repeat_penalty
+                && self.config.repeat_penalty < 1. + EPSILON
+            {
                 last_logit
             } else {
                 candle_transformers::utils::apply_repeat_penalty(
