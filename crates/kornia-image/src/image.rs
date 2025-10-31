@@ -51,6 +51,22 @@ impl From<ImageSize> for [u32; 2] {
     }
 }
 
+impl ImageSize {
+    /// Converts (y, x) coordinates to a flat index (row-major order).
+    #[inline]
+    pub fn index(&self, y: usize, x: usize) -> usize {
+        y * self.width + x
+    }
+
+    /// Converts a flat index to (y, x) coordinates (row-major order).
+    #[inline]
+    pub fn coords(&self, idx: usize) -> (usize, usize) {
+        let y = idx / self.width;
+        let x = idx % self.width;
+        (y, x)
+    }
+}
+
 #[derive(Clone)]
 /// Represents an image with pixel data.
 ///
@@ -590,6 +606,25 @@ mod tests {
         };
         assert_eq!(image_size.width, 10);
         assert_eq!(image_size.height, 20);
+    }
+
+    #[test]
+    fn test_image_size_index_coords() {
+        let size = ImageSize {
+            width: 8,
+            height: 6,
+        };
+        // Test (y, x) -> idx
+        assert_eq!(size.index(0, 0), 0);
+        assert_eq!(size.index(1, 0), 8);
+        assert_eq!(size.index(2, 3), 2 * 8 + 3);
+        assert_eq!(size.index(5, 7), 5 * 8 + 7);
+
+        // Test idx -> (y, x)
+        assert_eq!(size.coords(0), (0, 0));
+        assert_eq!(size.coords(8), (1, 0));
+        assert_eq!(size.coords(19), (2, 3));
+        assert_eq!(size.coords(47), (5, 7));
     }
 
     #[test]
