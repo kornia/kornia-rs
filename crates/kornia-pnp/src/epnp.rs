@@ -83,7 +83,7 @@ pub fn solve_epnp(
     let m_flat: Vec<f32> = m_rows.iter().flat_map(|row| row.iter()).cloned().collect();
     let m_mat = DMatrix::<f32>::from_row_slice(2 * n, 12, &m_flat);
 
-    // Null-space of M via eigen decompositon of MtM (12×12)
+    // Null-space of M via eigen decomposition of MtM (12×12)
     // TODO: mtm is always symmetric; look into more efficient multiplication for this case.
     let mtm = m_mat.transpose() * &m_mat; // 12×12
     let eig = mtm.symmetric_eigen();
