@@ -21,23 +21,23 @@ pub fn fast_feature_detector<A: ImageAllocator>(
 
     // Precompute the offsets for the Bresenham circle
     let offsets = [
-            -3 * cols,     // 1: (0, -3)
-            -3 * cols + 1, // 2: (1, -3)
-            -2 * cols + 2, // 3: (2, -2)
-            -cols + 3,     // 4: (3, -1)
-            3,             // 5: (3, 0)
-            cols + 3,      // 6: (3, 1)
-            2 * cols + 2,  // 7: (2, 2)
-            3 * cols + 1,  // 8: (1, 3)
-            3 * cols,      // 9: (0, 3)
-            3 * cols - 1,  // 10: (-1, 3)
-            2 * cols - 2,  // 11: (-2, 2)
-            cols - 3,      // 12: (-3, 1)
-            -3,            // 13: (-3, 0)
-            -cols - 3,     // 14: (-3, -1)
-            -2 * cols - 2, // 15: (-2, -2)
-            -3 * cols - 1, // 16: (-1, -3)
-        ];
+        -3 * cols,     // 1: (0, -3)
+        -3 * cols + 1, // 2: (1, -3)
+        -2 * cols + 2, // 3: (2, -2)
+        -cols + 3,     // 4: (3, -1)
+        3,             // 5: (3, 0)
+        cols + 3,      // 6: (3, 1)
+        2 * cols + 2,  // 7: (2, 2)
+        3 * cols + 1,  // 8: (1, 3)
+        3 * cols,      // 9: (0, 3)
+        3 * cols - 1,  // 10: (-1, 3)
+        2 * cols - 2,  // 11: (-2, 2)
+        cols - 3,      // 12: (-3, 1)
+        -3,            // 13: (-3, 0)
+        -cols - 3,     // 14: (-3, -1)
+        -2 * cols - 2, // 15: (-2, -2)
+        -3 * cols - 1, // 16: (-1, -3)
+    ];
 
     // Process rows in parallel
     let keypoints = (3..rows - 3)
