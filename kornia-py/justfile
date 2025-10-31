@@ -27,13 +27,13 @@ install py_version='3.9':
 test py_version='3.9' build_flags='' pytest_args='':
   @echo "🚀 Testing code: Running pytest"
   @just build {{ py_version }} {{ build_flags }}
-  @.venv/bin/pytest {{ pytest_args }}
+  @.venv/bin/python -m pytest {{ pytest_args }}
 
 # Compile and install kornia-py for development (run maturin develop)
 build py_version='3.9' flags='':
   @just install-dev {{ py_version }}
   @echo "🚀 Building kornia-py"
-  .venv/bin/maturin develop -m Cargo.toml {{ flags }}
+  uv run maturin develop -m Cargo.toml {{ flags }}
 
 # Clean build artifacts and virtual environment
 clean:
