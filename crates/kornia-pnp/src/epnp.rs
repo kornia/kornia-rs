@@ -624,6 +624,8 @@ mod solve_epnp_tests {
 
         let mut expected_x = [0.0; 12];
         let mut expected_y = [0.0; 12];
+
+        #[allow(clippy::needless_range_loop)]
         for j in 0..4 {
             let base = 3 * j;
             expected_x[base] = alphas[0][j] * fu;
