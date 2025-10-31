@@ -44,7 +44,7 @@ pub fn bgr_from_rgb(image: PyImage) -> PyResult<PyImage> {
 
 #[pyfunction]
 pub fn gray_from_rgb(image: PyImage) -> PyResult<PyImage> {
-    let image_rgb: Image<u8, 3, _> = Image::from_pyimage(image)
+    let image_rgb = Image::from_pyimage(image)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("src image: {}", e)))?;
 
     let image_rgb = image_rgb.cast::<f32>().map_err(|e| {
@@ -67,4 +67,24 @@ pub fn gray_from_rgb(image: PyImage) -> PyResult<PyImage> {
     })?;
 
     Ok(pyimage_gray)
+}
+
+#[pyfunction]
+#[pyo3(signature = (image, background=None))]
+pub fn rgb_from_rgba(image: PyImage, background: Option<[u8; 3]>) -> PyResult<PyImage> {
+    let image_rgba = Image::from_pyimage(image)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("src image: {}", e)))?;
+
+    let mut image_rgb = Image::from_size_val(image_rgba.size(), 0u8, CpuAllocator)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("dst image: {}", e)))?;
+
+    color::rgb_from_rgba(&image_rgba, &mut image_rgb, background).map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
+    })?;
+
+    let pyimage_rgb = image_rgb.to_pyimage().map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
+    })?;
+
+    Ok(pyimage_rgb)
 }
