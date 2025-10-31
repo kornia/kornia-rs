@@ -100,12 +100,14 @@ pub fn solve_epnp(
 
     value_index_pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-    let null4 = DMatrix::from_columns(&[
-        eigenvectors.column(value_index_pairs[3].1),
-        eigenvectors.column(value_index_pairs[2].1),
-        eigenvectors.column(value_index_pairs[1].1),
-        eigenvectors.column(value_index_pairs[0].1),
-    ]);
+    let null4 = DMatrix::from_columns(
+        &value_index_pairs
+            .iter()
+            .rev()
+            .take(4)
+            .map(|&(_, idx)| eigenvectors.column(idx))
+            .collect::<Vec<_>>(),
+    );
 
     // Build helper matrices for beta initialisation
     let l = build_l6x10(&null4);
