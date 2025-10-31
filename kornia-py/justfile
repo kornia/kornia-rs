@@ -16,12 +16,12 @@ install-dev py_version='3.9':
   @just check-environment
   @just venv {{ py_version }}
   @echo "🚀 Installing requirements (for devs)"
-  uv pip install -r requirements-dev.txt
+  uv pip install --python .venv/bin/python -r requirements-dev.txt
 
 # Create virtual environment, install dev requirements, and install kornia-py (--editable)
 install py_version='3.9':
   @just install-dev {{ py_version }}
-  uv pip install -e .
+  uv pip install --python .venv/bin/python -e .
 
 # Test the code with pytest
 test py_version='3.9' build_flags='' pytest_args='':
