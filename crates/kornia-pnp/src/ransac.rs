@@ -5,7 +5,6 @@ use crate::pnp::{PnPError, PnPResult};
 use crate::{solve_pnp, PnPMethod};
 use glam::{Mat3, Vec3};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
-use log::{debug, warn};
 use rand::seq::SliceRandom;
 use rand::{rngs::StdRng, SeedableRng};
 use thiserror::Error;
@@ -142,7 +141,7 @@ pub fn solve_pnp_ransac(
 
         // Debug: prevent infinite loops
         if iter > params.max_iterations {
-            warn!("RANSAC: Emergency break after {} iterations", iter);
+            log::warn!("RANSAC: Emergency break after {iter} iterations");
             break;
         }
 
@@ -163,14 +162,14 @@ pub fn solve_pnp_ransac(
         let pose_min = match pose_maybe {
             Ok(p) => p,
             Err(_e) => {
-                debug!("EPnP failed on minimal set");
+                log::debug!("EPnP failed on minimal set");
                 continue;
             }
         };
 
         // Optional cheirality check on minimal set (all positive depths)
         if !sample_all_positive_depths(&pose_min.rotation, &pose_min.translation, &w_min) {
-            debug!("Cheirality check failed on iteration {}", iter);
+            log::debug!("Cheirality check failed on iteration {iter}");
             continue;
         }
 

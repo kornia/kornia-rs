@@ -44,6 +44,7 @@ pub(crate) fn fit_transformation(
     let t = dst_centroid - &rr * src_centroid;
 
     // copy results back to output
+    #[allow(clippy::needless_range_loop)]
     for i in 0..3 {
         for j in 0..3 {
             dst_r_src[i][j] = rr.read(i, j);
