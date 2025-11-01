@@ -15,7 +15,7 @@ impl FromPyPointCloud for PointCloud {
     fn from_pypointcloud(
         pointcloud: PyPointCloud,
     ) -> Result<PointCloud, Box<dyn std::error::Error>> {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let array = pointcloud.bind(py);
             let data_slice = unsafe { array.as_slice() }
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;

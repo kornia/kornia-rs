@@ -3,9 +3,10 @@ use std::str::FromStr;
 use v4l::FourCC;
 
 /// Supported camera pixel formats
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PixelFormat {
     /// YUYV 4:2:2 format (uncompressed, good quality, high bandwidth)
+    #[default]
     YUYV,
     /// UYVY 4:2:2 format (uncompressed, good quality, high bandwidth)
     UYVY,
@@ -52,12 +53,6 @@ impl PixelFormat {
             Self::MJPG => None,      // Variable compression
             Self::Custom(_) => None, // Unknown
         }
-    }
-}
-
-impl Default for PixelFormat {
-    fn default() -> Self {
-        Self::YUYV // Most compatible format
     }
 }
 

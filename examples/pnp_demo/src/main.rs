@@ -163,7 +163,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             world_pts.len()
         );
         if let Some(rmse) = ransac_result.pose.reproj_rmse {
-            println!("  RMSE: {:.3} px", rmse);
+            println!("  RMSE: {rmse:.3} px");
         }
         ransac_result.pose
     } else {
@@ -177,7 +177,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         println!("Direct EPnP:");
         if let Some(rmse) = direct_result.reproj_rmse {
-            println!("  RMSE: {:.3} px", rmse);
+            println!("  RMSE: {rmse:.3} px");
         }
         direct_result
     };
@@ -235,9 +235,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .sqrt();
 
     println!("\n=== Results ===");
-    println!("Translation error: {:.3} units", trans_error);
+    println!("Translation error: {trans_error:.3} units");
     if let Some(rmse) = result.reproj_rmse {
-        println!("Reprojection RMSE: {:.3} px", rmse);
+        println!("Reprojection RMSE: {rmse:.3} px");
     }
 
     println!("\n=== Configuration ===");
