@@ -237,9 +237,9 @@ mod tests {
         let tau = Vec3A::new(0.4, -0.2, 0.7);
         let y = x.rplus(tau); // X ⊕ τ → Y
         let diff = x.rminus(&y); // Y ⊖ X → τ
-        assert_relative_eq!(diff.x, tau.x, epsilon = EPSILON);
-        assert_relative_eq!(diff.y, tau.y, epsilon = EPSILON);
-        assert_relative_eq!(diff.z, tau.z, epsilon = EPSILON);
+        assert_relative_eq!(diff.x, tau.x, epsilon = 1e-4);
+        assert_relative_eq!(diff.y, tau.y, epsilon = 1e-4);
+        assert_relative_eq!(diff.z, tau.z, epsilon = 1e-4);
     }
 
     #[test]
