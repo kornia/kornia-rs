@@ -5,7 +5,7 @@
 ![Crates.io Version](https://img.shields.io/crates/v/kornia)
 [![PyPI version](https://badge.fury.io/py/kornia-rs.svg)](https://badge.fury.io/py/kornia-rs)
 [![Documentation](https://img.shields.io/badge/docs.rs-kornia-orange)](https://docs.rs/kornia)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENCE)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/HfnywwpBnD)
 
 `kornia` crate 是一个用 [Rust](https://www.rust-lang.org/) 🦀 编写的底层计算机视觉库。
@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Hello, world! 🦀");
     println!("Loaded Image size: {:?}", image.size());
-    println!("\nGoodbyte!");
+    println!("\nGoodbye!");
 
     Ok(())
 }
@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Hello, world! 🦀
 Loaded Image size: ImageSize { width: 258, height: 195 }
 
-Goodbyte!
+Goodbye!
 ```
 
 ## 功能特性
@@ -92,21 +92,26 @@ sudo apt-get install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
 
 ```toml
 [dependencies]
-kornia = "0.1.9"
+kornia = "0.1"
 ```
 
 或者，你也可以单独使用各个子 crate：
 
 ```toml
 [dependencies]
-kornia-tensor = "0.1.9"
-kornia-tensor-ops = "0.1.9"
-kornia-io = "0.1.9"
-kornia-image = "0.1.9"
-kornia-imgproc = "0.1.9"
-kornia-icp = "0.1.9"
-kornia-linalg = "0.1.9"
-kornia-3d = "0.1.9"
+kornia-tensor = "0.1"
+kornia-tensor-ops = "0.1"
+kornia-io = "0.1"
+kornia-image = "0.1"
+kornia-imgproc = "0.1"
+kornia-icp = "0.1"
+kornia-linalg = "0.1"
+kornia-3d = "0.1"
+kornia-apriltag = "0.1"
+kornia-vlm = "0.1"
+kornia-nn = "0.1"
+kornia-pnp = "0.1"
+kornia-lie = "0.1"
 ```
 
 ### 🐍 Python
@@ -193,6 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```python
 import kornia_rs as K
 import numpy as np
+import torch
 
 # 使用 libjpeg-turbo 加载图片
 img: np.ndarray = K.read_image_jpeg("dog.jpeg")
