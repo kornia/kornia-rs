@@ -1,5 +1,42 @@
 #![deny(missing_docs)]
-//! # Kornia AprilTag
+//! # Kornia AprilTag Detection
+//!
+//! Fast and accurate AprilTag detection library for Rust.
+//!
+//! AprilTags are fiducial markers used for robotic navigation, camera calibration,
+//! and augmented reality. This crate provides efficient detection of multiple tag
+//! families with sub-pixel accuracy.
+//!
+//! # Features
+//!
+//! - Detection of multiple tag families (Tag16H5, Tag25H9, Tag36H11, etc.)
+//! - Sub-pixel corner refinement
+//! - Configurable detection parameters
+//! - Support for downscaled images for performance
+//! - Parallel processing optimizations
+//!
+//! # Quick Start
+//!
+//! ```no_run
+//! use kornia_apriltag::{AprilTagDecoder, DecodeTagsConfig};
+//! use kornia_apriltag::family::TagFamilyKind;
+//! use kornia_image::ImageSize;
+//!
+//! // Create decoder for Tag36H11 family
+//! let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]);
+//! let mut decoder = AprilTagDecoder::new(config, ImageSize { width: 640, height: 480 }).unwrap();
+//!
+//! // Detect tags in a grayscale image
+//! // let detections = decoder.decode(&gray_image).unwrap();
+//! ```
+//!
+//! # Tag Families
+//!
+//! This crate supports the following AprilTag families:
+//! - Tag16H5, Tag25H9, Tag36H11 (standard families)
+//! - TagCircle21H7, TagCircle49H12 (circular families)
+//! - TagStandard41H12, TagStandard52H13 (standard families)
+//! - TagCustom48H12 (custom family)
 
 use std::collections::HashMap;
 
@@ -21,30 +58,52 @@ use crate::{
 };
 
 /// Error types for AprilTag detection.
+///
+/// Defines [`AprilTagError`] for handling failures during detection and decoding.
 pub mod errors;
 
-/// Utility functions for AprilTag detection.
+/// Utility functions and data structures.
+///
+/// Common utilities including point representations and geometric helpers
+/// used throughout the detection pipeline.
 pub mod utils;
 
-/// Thresholding utilities for AprilTag detection.
+/// Adaptive thresholding for binary image generation.
+///
+/// Converts grayscale images to binary using adaptive thresholding to handle
+/// varying illumination conditions.
 pub mod threshold;
 
-/// image iteration utilities module.
+/// Internal image iteration utilities.
 pub(crate) mod iter;
 
-/// Segmentation utilities for AprilTag detection.
+/// Connected component segmentation.
+///
+/// Finds and groups connected pixels in binary images to identify potential
+/// tag candidates.
 pub mod segmentation;
 
-/// Union-find utilities for AprilTag detection.
+/// Union-find data structure for disjoint sets.
+///
+/// Efficient union-find implementation used in connected component analysis.
 pub mod union_find;
 
-/// AprilTag family definitions and utilities.
+/// AprilTag family definitions.
+///
+/// Tag family specifications including bit patterns, error correction codes,
+/// and geometric properties for each supported family.
 pub mod family;
 
-/// Quad detection utilities for AprilTag detection.
+/// Quadrilateral detection and fitting.
+///
+/// Detects quadrilateral shapes in connected components and fits them to
+/// potential tag candidates.
 pub mod quad;
 
-/// Decoding utilities for AprilTag detection.
+/// Tag decoding and validation.
+///
+/// Extracts bit patterns from detected quads, decodes them to tag IDs,
+/// and validates against known tag families.
 pub mod decoder;
 
 /// Configuration for decoding AprilTags.
