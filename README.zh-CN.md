@@ -5,7 +5,7 @@
 ![Crates.io Version](https://img.shields.io/crates/v/kornia)
 [![PyPI version](https://badge.fury.io/py/kornia-rs.svg)](https://badge.fury.io/py/kornia-rs)
 [![Documentation](https://img.shields.io/badge/docs.rs-kornia-orange)](https://docs.rs/kornia)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENCE)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/HfnywwpBnD)
 
 `kornia` crate 是一个用 [Rust](https://www.rust-lang.org/) 🦀 编写的底层计算机视觉库。
@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Hello, world! 🦀");
     println!("Loaded Image size: {:?}", image.size());
-    println!("\nGoodbyte!");
+    println!("\nGoodbye!");
 
     Ok(())
 }
@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Hello, world! 🦀
 Loaded Image size: ImageSize { width: 258, height: 195 }
 
-Goodbyte!
+Goodbye!
 ```
 
 ## 功能特性
@@ -288,7 +288,7 @@ Available recipes:
     clean                             # 清理缓存和构建产物
     clippy                            # 用所有特性运行 clippy
     clippy-default                    # 用默认特性运行 clippy
-    fmt                               # 自动格式化和 lint
+    format                            # 自动格式化和 lint
     py-build py_version='3.9'         # 创建虚拟环境并构建 kornia-py
     py-build-release py_version='3.9' # 创建虚拟环境并为发布构建 kornia-py
     py-install py_version='3.9'       # 创建虚拟环境并安装开发依赖

@@ -20,5 +20,5 @@ Output:
 Hello, world! 🦀
 Loaded Image size: ImageSize { width: 258, height: 195 }
 
-Goodbyte!
+Goodbye!
 ```

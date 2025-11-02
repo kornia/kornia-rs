@@ -5,7 +5,7 @@ English | [简体中文](README.zh-CN.md)
 ![Crates.io Version](https://img.shields.io/crates/v/kornia)
 [![PyPI version](https://badge.fury.io/py/kornia-rs.svg)](https://badge.fury.io/py/kornia-rs)
 [![Documentation](https://img.shields.io/badge/docs.rs-kornia-orange)](https://docs.rs/kornia)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENCE)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/HfnywwpBnD)
 
 The `kornia` crate is a low level library for Computer Vision written in [Rust](https://www.rust-lang.org/) 🦀
@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Hello, world! 🦀");
     println!("Loaded Image size: {:?}", image.size());
-    println!("\nGoodbyte!");
+    println!("\nGoodbye!");
 
     Ok(())
 }
@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Hello, world! 🦀
 Loaded Image size: ImageSize { width: 258, height: 195 }
 
-Goodbyte!
+Goodbye!
 ```
 
 ## Features
@@ -45,7 +45,7 @@ Goodbyte!
 - 🚀 Multi-threaded and efficient image I/O, image processing and advanced computer vision operators.
 - 🔢 Efficient Tensor and Image API for deep learning and scientific computing.
 - 🐍 Python bindings are created with [PyO3/Maturin](https://github.com/PyO3/maturin).
-- 📦 We package with support for Linux [amd64/arm64], Macos and WIndows.
+- 📦 We package with support for Linux [amd64/arm64], Macos and Windows.
 - Supported Python versions are 3.7/3.8/3.9/3.10/3.11/3.12/3.13, including the free-threaded build.
 
 ### Supported image formats
@@ -84,7 +84,7 @@ sudo apt-get install nasm
 sudo apt-get install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
 ```
 
-** Check the gstreamr installation guide: <https://docs.rs/gstreamer/latest/gstreamer/#installation>
+** Check the gstreamer installation guide: <https://docs.rs/gstreamer/latest/gstreamer/#installation>
 
 ### 🦀 Rust
 
@@ -238,7 +238,7 @@ img_encoded: list[int] = image_encoder.encode(img)
 # decode back the image
 image_decoder = K.ImageDecoder()
 
-decoded_img: np.ndarray = image_decoder.decode(bytes(image_encoded))
+decoded_img: np.ndarray = image_decoder.decode(bytes(img_encoded))
 ```
 
 Resize an image using the `kornia-rs` backend with SIMD acceleration
@@ -288,7 +288,7 @@ Available recipes:
     clean                             # Clean up caches and build artifacts
     clippy                            # Run clippy with all features
     clippy-default                    # Run clippy with default features
-    fmt                               # Run autoformatting and linting
+    format                            # Run autoformatting and linting
     py-build py_version='3.9'         # Create virtual environment, and build kornia-py
     py-build-release py_version='3.9' # Create virtual environment, and build kornia-py for release
     py-install py_version='3.9'       # Create virtual environment, and install dev requirements
