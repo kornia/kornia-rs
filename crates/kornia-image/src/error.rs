@@ -41,7 +41,7 @@ pub enum ImageError {
     #[error("Invalid number of bins {0}")]
     InvalidHistogramBins(usize),
 
-    /// Error when the cannot compute the determinant.
+    /// Error when the determinant cannot be computed due to a singular matrix.
     #[error("Cannot compute the determinant: matrix is singular")]
     CannotComputeDeterminant,
 

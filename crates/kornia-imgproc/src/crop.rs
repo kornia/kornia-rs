@@ -4,16 +4,28 @@ use rayon::{
     slice::ParallelSliceMut,
 };
 
-/// Crop an image to a specified region.
+/// Crops a rectangular region from an image.
+///
+/// Extracts a sub-region from the source image starting at coordinates `(x, y)`
+/// with dimensions determined by the destination image size. The operation is
+/// performed in parallel for efficiency.
 ///
 /// # Arguments
 ///
-/// * `src` - The source image to crop.
-/// * `dst` - The destination image to store the cropped image.
-/// * `x` - The x-coordinate of the top-left corner of the region to crop.
-/// * `y` - The y-coordinate of the top-left corner of the region to crop.
+/// * `src` - The source image to crop from
+/// * `dst` - The destination image to store the cropped region  
+///   (its size determines the crop dimensions)
+/// * `x` - The column (x-coordinate) of the top-left corner of the crop region
+/// * `y` - The row (y-coordinate) of the top-left corner of the crop region
+///
+/// # Panics
+///
+/// Panics if the crop region extends beyond the source image boundaries.
+/// Ensure that `x + dst.width() <= src.width()` and `y + dst.height() <= src.height()`.
 ///
 /// # Examples
+///
+/// Cropping a 2×2 region from a 4×4 grayscale image:
 ///
 /// ```rust
 /// use kornia_image::{Image, ImageSize};

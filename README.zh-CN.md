@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Hello, world! 🦀");
     println!("Loaded Image size: {:?}", image.size());
-    println!("\nGoodbyte!");
+    println!("\nGoodbye!");
 
     Ok(())
 }
@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Hello, world! 🦀
 Loaded Image size: ImageSize { width: 258, height: 195 }
 
-Goodbyte!
+Goodbye!
 ```
 
 ## 功能特性
