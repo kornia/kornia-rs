@@ -1,14 +1,36 @@
 use kornia_image::{allocator::ImageAllocator, Image};
 
-/// Draws a line on an image inplace.
+/// Draws a line on an image in-place using Bresenham's algorithm.
+///
+/// Renders an anti-aliased line with configurable thickness and color.
+/// Coordinates outside the image bounds are safely clipped.
 ///
 /// # Arguments
 ///
-/// * `img` - The image to draw on.
-/// * `p0` - The start point of the line as a tuple of (x, y).
-/// * `p1` - The end point of the line as a tuple of (x, y).
-/// * `color` - The color of the line as an array of `C` elements.
-/// * `thickness` - The thickness of the line.
+/// * `img` - The image to draw on (modified in-place)
+/// * `p0` - The start point as `(x, y)` coordinates
+/// * `p1` - The end point as `(x, y)` coordinates
+/// * `color` - The line color as an array of channel values
+/// * `thickness` - The line thickness in pixels
+///
+/// # Examples
+///
+/// Drawing a red line on an RGB image:
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_imgproc::draw::draw_line;
+///
+/// let mut img = Image::<u8, 3, _>::from_size_val(
+///     ImageSize { width: 100, height: 100 },
+///     0,
+///     CpuAllocator
+/// ).unwrap();
+///
+/// // Draw a red diagonal line
+/// draw_line(&mut img, (10, 10), (90, 90), [255, 0, 0], 2);
+/// ```
 pub fn draw_line<const C: usize, A: ImageAllocator>(
     img: &mut Image<u8, C, A>,
     p0: (i64, i64),
@@ -70,14 +92,36 @@ pub fn draw_line<const C: usize, A: ImageAllocator>(
     }
 }
 
-/// Draws a polygon on an image inplace.
+/// Draws a closed polygon on an image in-place.
+///
+/// Connects the given vertices in order and closes the polygon by drawing a line
+/// from the last point back to the first. Uses [`draw_line`] for rendering.
 ///
 /// # Arguments
 ///
-/// * `img` - The image to draw on.
-/// * `points` - A slice of points representing the vertices of the polygon in order.
-/// * `color` - The color of the polygon lines as an array of `C` elements.
-/// * `thickness` - The thickness of the polygon lines.
+/// * `img` - The image to draw on (modified in-place)
+/// * `points` - Slice of vertices `(x, y)` defining the polygon
+/// * `color` - The line color as an array of channel values
+/// * `thickness` - The line thickness in pixels
+///
+/// # Examples
+///
+/// Drawing a triangle:
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_imgproc::draw::draw_polygon;
+///
+/// let mut img = Image::<u8, 3, _>::from_size_val(
+///     ImageSize { width: 100, height: 100 },
+///     0,
+///     CpuAllocator
+/// ).unwrap();
+///
+/// let triangle = [(50, 20), (20, 80), (80, 80)];
+/// draw_polygon(&mut img, &triangle, [0, 255, 0], 2);
+/// ```
 ///
 pub fn draw_polygon<const C: usize, A: ImageAllocator>(
     img: &mut Image<u8, C, A>,
