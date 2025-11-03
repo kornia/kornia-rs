@@ -4,6 +4,9 @@
 /// EPnP solver implementation
 pub mod epnp;
 
+/// IPPE (Infinitesimal Plane-based Pose Estimation) solver
+pub mod ippe;
+
 /// Common data types shared across PnP solvers.
 pub mod pnp;
 
@@ -11,6 +14,7 @@ pub mod pnp;
 pub mod ransac;
 
 pub use epnp::{EPnP, EPnPParams};
+pub use ippe::{IPPE, IPPEResult};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 pub use pnp::{PnPError, PnPResult, PnPSolver};
 pub use ransac::{solve_pnp_ransac, PnPRansacError, PnPRansacResult, RansacParams};
