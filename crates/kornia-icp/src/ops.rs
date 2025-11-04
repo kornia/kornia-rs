@@ -91,7 +91,7 @@ pub(crate) fn find_correspondences(
         .iter()
         .map(|p| kdtree.nearest_one::<kiddo::SquaredEuclidean>(p))
         .collect::<Vec<_>>();
-        
+
     let mut distances = nn_results.iter().map(|nn| nn.distance).collect::<Vec<_>>();
     if distances.is_empty() {
         return (Vec::new(), Vec::new(), Vec::new());
