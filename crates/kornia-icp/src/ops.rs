@@ -91,34 +91,46 @@ pub(crate) fn find_correspondences(
         .iter()
         .map(|p| kdtree.nearest_one::<kiddo::SquaredEuclidean>(p))
         .collect::<Vec<_>>();
-
-    // compute median distance
+        
     let mut distances = nn_results.iter().map(|nn| nn.distance).collect::<Vec<_>>();
-    distances.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let median_dist = distances[distances.len() / 2];
+    if distances.is_empty() {
+        return (Vec::new(), Vec::new(), Vec::new());
+    }
 
-    // compute median absolute deviation
-    let dmed = distances
+    let mid_dist = distances.len() / 2;
+    distances.select_nth_unstable_by(mid_dist, |a, b| a.partial_cmp(b).unwrap());
+    let median_dist = distances[mid_dist];
+
+    let mut dmed = nn_results
         .iter()
-        .map(|d| (d - median_dist).abs())
+        .map(|nn| (nn.distance - median_dist).abs())
         .collect::<Vec<_>>();
-    let mad = dmed[dmed.len() / 2];
-    let sigma_d = 1.4826 * mad;
 
-    // put the correspondences in a vector
+    let mid_mad = dmed.len() / 2;
+    dmed.select_nth_unstable_by(mid_mad, |a, b| a.partial_cmp(b).unwrap());
+    let mad = dmed[mid_mad];
+
+    let sigma_d = 1.4826 * mad;
+    let threshold = median_dist + 3.0 * sigma_d;
+
     let res = nn_results
         .iter()
         .enumerate()
-        .filter(|(_, nn)| nn.distance <= median_dist + 3.0 * sigma_d)
+        .filter(|(_, nn)| nn.distance <= threshold)
         .map(|(i, nn)| (source[i], target[nn.item as usize], nn.distance))
         .collect::<Vec<_>>();
 
-    // unzip the results to separate points and distances
-    let (points_in_src, tmp): (Vec<_>, Vec<_>) =
-        res.into_iter().map(|(a, b, c)| (a, (b, c))).unzip();
-    let (points_in_dst, distances) = tmp.into_iter().unzip();
+    let mut points_in_src = Vec::with_capacity(res.len());
+    let mut points_in_dst = Vec::with_capacity(res.len());
+    let mut distances_vec = Vec::with_capacity(res.len());
 
-    (points_in_src, points_in_dst, distances)
+    for (src, dst, dist) in res {
+        points_in_src.push(src);
+        points_in_dst.push(dst);
+        distances_vec.push(dist);
+    }
+
+    (points_in_src, points_in_dst, distances_vec)
 }
 
 pub(crate) fn update_transformation(
