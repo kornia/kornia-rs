@@ -7,6 +7,14 @@ use kornia_pnp as kpnp;
 use rand::Rng;
 use std::error::Error;
 
+#[derive(FromArgs, Debug, Default)]
+/// PnP demo options
+struct Args {
+    /// use RANSAC wrapper around EPnP
+    #[argh(switch)]
+    use_ransac: bool,
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
 
@@ -128,13 +136,28 @@ fn main() -> Result<(), Box<dyn Error>> {
         .collect();
 
     // Run EPnP (baseline) and EPnP+LM (refined)
-    let result_epnp = kpnp::solve_pnp(&world_pts, &image_pts, &k, kpnp::PnPMethod::EPnPDefault)?;
+    let result_epnp = kpnp::solve_pnp(
+        &world_pts,
+        &image_pts,
+        &k,
+        Some(&distortion),
+        kpnp::PnPMethod::EPnPDefault,
+    )?;
     let params_lm = kpnp::EPnPParams {
         refine_lm: Some(kpnp::LMParams::default()),
         ..Default::default()
     };
-    let result_lm = kpnp::solve_pnp(&world_pts, &image_pts, &k, kpnp::PnPMethod::EPnP(params_lm))?;
+    let result_lm = kpnp::solve_pnp(
+        &world_pts,
+        &image_pts,
+        &k,
+        Some(&distortion),
+        kpnp::PnPMethod::EPnP(params_lm),
+    )?;
 
+    // Optionally run RANSAC wrapper
+    let ransac_params = kpnp::RansacParams::default();
+    let _chosen_pose = if args.use_ransac {
         let ransac_result = kpnp::solve_pnp_ransac(
             &world_pts,
             &image_pts,
