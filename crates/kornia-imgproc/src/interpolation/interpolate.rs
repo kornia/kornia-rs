@@ -12,6 +12,8 @@ pub enum InterpolationMode {
     Nearest,
     /// Lanczos interpolation
     Lanczos,
+    /// Bicubic interpolation
+    Bicubic,
 }
 
 /// Kernel for interpolating a pixel value
@@ -39,6 +41,9 @@ pub fn interpolate_pixel<const C: usize, A: ImageAllocator>(
         InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v, c),
         InterpolationMode::Lanczos => {
             unimplemented!("Lanczos interpolation is not yet implemented")
+        }
+        InterpolationMode::Bicubic => {
+            unimplemented!("Bicubic interpolation is not yet implemented")
         }
     }
 }

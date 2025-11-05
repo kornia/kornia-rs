@@ -16,4 +16,6 @@ version.workspace = true
 rand = { workspace = true }
 rerun = { workspace = true }
 kornia-pnp = { workspace = true }
+kornia-imgproc = { workspace = true }
 env_logger = { workspace = true }
+argh = "0.1"

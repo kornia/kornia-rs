@@ -2,10 +2,14 @@
 //! Paper: [Lepetit et al., IJCV 2009](https://www.tugraz.at/fileadmin/user_upload/Institute/ICG/Images/team_lepetit/publications/lepetit_ijcv08.pdf)
 //! Reference: [OpenCV EPnP implementation](https://github.com/opencv/opencv/blob/4.x/modules/calib3d/src/epnp.cpp)
 
-use crate::ops::{compute_centroid, gauss_newton};
+use crate::ops::{compute_centroid, gauss_newton, intrinsics_as_vectors, pose_to_rt};
 use crate::pnp::{NumericTol, PnPError, PnPResult, PnPSolver};
 use crate::refine::{refine_pose_lm, LMParams};
 use glam::{Mat3, Mat3A, Vec3};
+use kornia_imgproc::calibration::{
+    distortion::{distort_point_polynomial, PolynomialDistortion},
+    CameraIntrinsic,
+};
 use kornia_lie::so3::SO3;
 use kornia_linalg::rigid::umeyama;
 use kornia_linalg::svd::svd3;
@@ -21,9 +25,10 @@ impl PnPSolver for EPnP {
         points_world: &[[f32; 3]],
         points_image: &[[f32; 2]],
         k: &[[f32; 3]; 3],
+        distortion: Option<&PolynomialDistortion>,
         params: &Self::Param,
     ) -> Result<PnPResult, PnPError> {
-        solve_epnp(points_world, points_image, k, params)
+        solve_epnp(points_world, points_image, k, distortion, params)
     }
 }
 
@@ -53,6 +58,7 @@ pub fn solve_epnp(
     points_world: &[[f32; 3]],
     points_image: &[[f32; 2]],
     k: &[[f32; 3]; 3],
+    distortion: Option<&PolynomialDistortion>,
     params: &EPnPParams,
 ) -> Result<PnPResult, PnPError> {
     let n = points_world.len();
@@ -81,14 +87,23 @@ pub fn solve_epnp(
     let m_flat: Vec<f32> = m_rows.iter().flat_map(|row| row.iter()).cloned().collect();
     let m_mat = DMatrix::<f32>::from_row_slice(2 * n, 12, &m_flat);
 
-    // Null-space of M (4 right-singular vectors associated with smallest singular values)
-    let svd = m_mat.svd(true, true);
-    let Some(v_t) = svd.v_t else {
-        return Err(PnPError::SvdFailed("Failed to compute V^T".to_string()));
+    // Null-space of M via SVD of MtM (12×12), following OpenCV epnp.cpp
+    let mtm = m_mat.transpose() * &m_mat; // 12×12
+    let svd = mtm.svd(true, true);
+    let Some(u) = svd.u else {
+        return Err(PnPError::SvdFailed(
+            "Failed to compute U for MtM".to_string(),
+        ));
     };
-    let cols = 12;
+    // Take the last 4 columns of U (smallest singular values)
+    let cols = u.ncols();
+    if cols < 4 {
+        return Err(PnPError::SvdFailed(
+            "U has fewer than 4 columns".to_string(),
+        ));
+    }
     let start_col = cols - 4;
-    let null4 = v_t.rows(start_col, 4).transpose(); // shape 12×4
+    let null4 = u.columns(start_col, 4).into_owned(); // 12×4
 
     // Build helper matrices for beta initialisation
     let l = build_l6x10(&null4);
@@ -120,7 +135,7 @@ pub fn solve_epnp(
 
     for bet in &betas_refined {
         let (r_c, t_c) = pose_from_betas(bet, &null4, &cw, &alphas)?;
-        let err = rmse_px(points_world, points_image, &r_c, &t_c, k)?;
+        let err = rmse_px(points_world, points_image, &r_c, &t_c, k, distortion)?;
         if err < best_err {
             best_err = err;
             best_r = r_c;
@@ -222,6 +237,7 @@ fn rmse_px(
     r: &[[f32; 3]; 3],
     t: &[f32; 3],
     k: &[[f32; 3]; 3],
+    distortion: Option<&PolynomialDistortion>,
 ) -> Result<f32, PnPError> {
     if points_world.len() != points_image.len() {
         return Err(PnPError::MismatchedArrayLengths {
@@ -237,28 +253,35 @@ fn rmse_px(
     let cx = k[0][2];
     let cy = k[1][2];
 
-    // Pre-compute matrix and vectors in glam form for SIMD-friendly ops
-    let r_mat = Mat3::from_cols(
-        Vec3::new(r[0][0], r[1][0], r[2][0]),
-        Vec3::new(r[0][1], r[1][1], r[2][1]),
-        Vec3::new(r[0][2], r[1][2], r[2][2]),
-    );
-    let t_vec = Vec3::new(t[0], t[1], t[2]);
-
-    // Pack intrinsics so that (intr_x ⋅ Pc) / z = fx * x / z + cx
-    let intr_x = Vec3::new(fx, 0.0, cx);
-    let intr_y = Vec3::new(0.0, fy, cy);
+    let (r_mat, t_vec) = pose_to_rt(r, t);
+    let (intr_x, intr_y) = intrinsics_as_vectors(k);
 
     let mut sum_sq = 0.0;
     let n = points_world.len() as f32;
+
+    // Prepare camera intrinsic for distortion if needed
+    let cam_intr = CameraIntrinsic {
+        fx: fx as f64,
+        fy: fy as f64,
+        cx: cx as f64,
+        cy: cy as f64,
+    };
 
     for (pw_arr, &uv) in points_world.iter().zip(points_image.iter()) {
         let pw = Vec3::from_array(*pw_arr);
         let pc = r_mat * pw + t_vec; // camera-frame point
 
         let inv_z = 1.0 / pc.z;
-        let u_hat = intr_x.dot(pc) * inv_z; // (fx * x + cx * z) / z
-        let v_hat = intr_y.dot(pc) * inv_z; // (fy * y + cy * z) / z
+        let u_undist = intr_x.dot(pc) * inv_z; // (fx * x + cx * z) / z
+        let v_undist = intr_y.dot(pc) * inv_z; // (fy * y + cy * z) / z
+
+        // Apply distortion model if provided
+        let (u_hat, v_hat) = if let Some(d) = distortion {
+            let (ud, vd) = distort_point_polynomial(u_undist as f64, v_undist as f64, &cam_intr, d);
+            (ud as f32, vd as f32)
+        } else {
+            (u_undist, v_undist)
+        };
 
         let du = u_hat - uv[0];
         let dv = v_hat - uv[1];
@@ -425,63 +448,44 @@ fn build_m(
 /// Build the 6×10 matrix **L** used in EPnP from the 4-dimensional null-space matrix `V` (shape 12×4).
 fn build_l6x10(null4: &DMatrix<f32>) -> [[f32; 10]; 6] {
     // Re-ordered column indices (reverse order).
-    let col_order = [3usize, 2, 1, 0];
-
-    // v[i] is 4×3 matrix => Vec<[Vec3;4]>
-    let mut v_cp: Vec<[Vec3; 4]> = Vec::with_capacity(4);
-
-    for &c in &col_order {
-        let col = null4.column(c);
-        let mut blocks = [Vec3::ZERO; 4];
-        for k in 0..4 {
-            blocks[k] = Vec3::new(col[3 * k], col[3 * k + 1], col[3 * k + 2]);
-        }
-        v_cp.push(blocks);
-    }
-
-    // Differences between control-point vectors for each null-space component.
-    let dv_arr: Vec<Vec<Vec3>> = (0..4)
-        .map(|i| {
-            CP_PAIRS
-                .iter()
-                .map(|&(a, b)| v_cp[i][a] - v_cp[i][b])
-                .collect::<Vec<_>>()
-        })
-        .collect();
-
     let mut l = [[0.0f32; 10]; 6];
-    for (j, _) in dv_arr[0].iter().enumerate() {
-        let d0 = dv_arr[0][j];
-        let d1 = dv_arr[1][j];
-        let d2 = dv_arr[2][j];
-        let d3 = dv_arr[3][j];
 
-        let d00 = d0.dot(d0);
-        let d11 = d1.dot(d1);
-        let d22 = d2.dot(d2);
-        let d33 = d3.dot(d3);
+    let c3 = null4.column(3);
+    let c2 = null4.column(2);
+    let c1 = null4.column(1);
+    let c0 = null4.column(0);
 
-        let d01 = d0.dot(d1);
-        let d02 = d0.dot(d2);
-        let d03 = d0.dot(d3);
-        let d12 = d1.dot(d2);
-        let d13 = d1.dot(d3);
-        let d23 = d2.dot(d3);
+    let cols: [&[f32]; 4] = [c3.as_slice(), c2.as_slice(), c1.as_slice(), c0.as_slice()];
+
+    for (j, &(a, b)) in CP_PAIRS.iter().enumerate() {
+        let mut d = [[0.0; 3]; 4];
+
+        for (k, col) in cols.iter().enumerate() {
+            let base_a = 3 * a;
+            let base_b = 3 * b;
+            d[k][0] = col[base_a] - col[base_b];
+            d[k][1] = col[base_a + 1] - col[base_b + 1];
+            d[k][2] = col[base_a + 2] - col[base_b + 2];
+        }
+
+        #[inline(always)]
+        fn dot(a: &[f32; 3], b: &[f32; 3]) -> f32 {
+            a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+        }
 
         l[j] = [
-            d00,
-            2.0 * d01,
-            d11,
-            2.0 * d02,
-            2.0 * d12,
-            d22,
-            2.0 * d03,
-            2.0 * d13,
-            2.0 * d23,
-            d33,
+            dot(&d[0], &d[0]),
+            2.0 * dot(&d[0], &d[1]),
+            dot(&d[1], &d[1]),
+            2.0 * dot(&d[0], &d[2]),
+            2.0 * dot(&d[1], &d[2]),
+            dot(&d[2], &d[2]),
+            2.0 * dot(&d[0], &d[3]),
+            2.0 * dot(&d[1], &d[3]),
+            2.0 * dot(&d[2], &d[3]),
+            dot(&d[3], &d[3]),
         ];
     }
-
     l
 }
 
@@ -628,6 +632,8 @@ mod solve_epnp_tests {
 
         let mut expected_x = [0.0; 12];
         let mut expected_y = [0.0; 12];
+
+        #[allow(clippy::needless_range_loop)]
         for j in 0..4 {
             let base = 3 * j;
             expected_x[base] = alphas[0][j] * fu;
@@ -641,7 +647,13 @@ mod solve_epnp_tests {
             assert_relative_eq!(m[1][k], expected_y[k], epsilon = 1e-9);
         }
 
-        let result = EPnP::solve(&points_world, &points_image, &k, &EPnPParams::default())?;
+        let result = EPnP::solve(
+            &points_world,
+            &points_image,
+            &k,
+            None,
+            &EPnPParams::default(),
+        )?;
         let r = result.rotation;
         let t = result.translation;
         let rvec = result.rvec;

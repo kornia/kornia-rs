@@ -23,5 +23,5 @@ kornia-icp = { path = "../crates/kornia-icp" }
 kornia-3d = { path = "../crates/kornia-3d" }
 
 # external
-pyo3 = { version = "0.24.0", features = ["extension-module"] }
-numpy = { version = "0.24.0" }
+pyo3 = { version = "0.26.0", features = ["extension-module"] }
+numpy = { version = "0.26.0" }
