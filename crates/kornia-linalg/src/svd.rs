@@ -4,17 +4,7 @@ const GAMMA: f32 = 5.828_427_3;
 const CSTAR: f32 = 0.923_879_5;
 const SSTAR: f32 = 0.382_683_43;
 const SVD3_EPSILON: f32 = 1e-6;
-const MAX_SWEEPS: usize = 12;
-
-/// Helper function used to swap X with Y and Y with  X if c == true
-#[inline(always)]
-fn cond_swap(c: bool, x: &mut f32, y: &mut f32) {
-    let z = *x;
-    if c {
-        *x = *y;
-        *y = z;
-    }
-}
+const MAX_SWEEPS: usize = 5;
 
 #[derive(Debug, Clone)]
 /// A simple symmetric 3x3 Matrix class (contains no storage for (0, 1) (0, 2) and (1, 2)
@@ -63,16 +53,6 @@ struct Givens {
 }
 
 #[derive(Debug)]
-/// Helper struct to store 2 Matrices to avoid OUT parameters on functions
-struct QR3 {
-    /// The orthogonal matrix Q from the QR decomposition.
-    q: Mat3,
-
-    /// The upper triangular matrix R from the QR decomposition.
-    r: Mat3,
-}
-
-#[derive(Debug)]
 /// Helper struct to store 3 Matrices to avoid OUT parameters on functions
 pub struct SVD3Set {
     /// The matrix of left singular vectors.
@@ -105,17 +85,11 @@ impl SVD3Set {
     }
 }
 
-/// Calculates the squared norm of the vector [x y z] using a standard scalar product d = x * x + y * y + z * z
-#[inline(always)]
-fn dist2(x: f32, y: f32, z: f32) -> f32 {
-    x * x + y * y + z * z
-}
-
 /// For an explanation of the math see http://pages.cs.wisc.edu/~sifakis/papers/SVD_TR1690.pdf
 /// Computing the Singular Value Decomposition of 3 x 3 matrices with minimal branching and elementary floating point operations
 /// See Algorithm 2 in reference. Given a matrix A this function returns the givens quaternion (x and w component, y and z are 0)
+/// this implementation dosent follow that paper exactly, as the compelete qr decomposion is redundant for svd calculation
 #[inline(always)]
-// Renamed to reflect its generic nature
 fn approximate_givens_parameters(s_pp: f32, s_qq: f32, s_pq: f32) -> Givens {
     let ch_val = 2.0 * (s_pp - s_qq);
     let sh_val = s_pq;
@@ -136,9 +110,6 @@ fn approximate_givens_parameters(s_pp: f32, s_qq: f32, s_pq: f32) -> Givens {
     }
 }
 
-/// Function used to apply a givens rotation S. Calculates the weights and updates the quaternion to contain the cumultative rotation
-/// Function used to contain the givens permutations and the loop of the jacobi steps controlled by JACOBI_STEPS
-/// Returns the quaternion q containing the cumultative result used to reconstruct S
 #[inline(always)]
 fn conjugate_xy(s: &mut Symmetric3x3, q: &mut Quat) {
     // Compute Givens rotation parameters
@@ -199,7 +170,7 @@ fn conjugate_yz(s: &mut Symmetric3x3, q: &mut Quat) {
     s.m_10 = a * s10 + b * s20;
     s.m_20 = -b * s10 + a * s20;
 
-    // Update the cumulative rotation quaternion using named fields
+    // Update the cumulative rotation
     let tmp_x = q.x * g.sh;
     let tmp_y = q.y * g.sh;
     let tmp_z = q.z * g.sh;
@@ -237,7 +208,7 @@ fn conjugate_xz(s: &mut Symmetric3x3, q: &mut Quat) {
     s.m_10 = a * s10 + b * s21;
     s.m_21 = -b * s10 + a * s21;
 
-    // Update the cumulative rotation quaternion using named fields
+    // Update the cumulative rotation
     let tmp_x = q.x * g.sh;
     let tmp_y = q.y * g.sh;
     let tmp_z = q.z * g.sh;
@@ -249,6 +220,7 @@ fn conjugate_xz(s: &mut Symmetric3x3, q: &mut Quat) {
     q.x = q.x * g.ch - tmp_z;
 }
 
+#[inline(always)]
 fn jacobi_eigenanalysis(mut s: Symmetric3x3) -> Mat3 {
     let mut q = Quat::from_xyzw(0.0, 0.0, 0.0, 1.0);
     for _i in 0..MAX_SWEEPS {
@@ -256,175 +228,71 @@ fn jacobi_eigenanalysis(mut s: Symmetric3x3) -> Mat3 {
         conjugate_yz(&mut s, &mut q);
         conjugate_xz(&mut s, &mut q);
 
-        let sum_off_diagonal_sq = s.m_10 * s.m_10 + s.m_20 * s.m_20 + s.m_21 * s.m_21;
-        if sum_off_diagonal_sq < 1e-6 {
+        let off_diag_norm_sq = s.m_10 * s.m_10 + s.m_20 * s.m_20 + s.m_21 * s.m_21;
+        if off_diag_norm_sq < 1e-6 {
             break;
         }
     }
     Mat3::from_quat(q)
 }
 
+/// Helper function used to swap X with Y and Y with X if c == true
 #[inline(always)]
-fn swap<T: Copy>(a: &mut T, b: &mut T) {
-    std::mem::swap(&mut (*a), &mut (*b));
-}
-
-fn sort_singular_values(b: &mut Mat3, v: &mut Mat3) {
-    let mut rho1 = dist2(b.x_axis.x, b.x_axis.y, b.x_axis.z);
-    let mut rho2 = dist2(b.y_axis.x, b.y_axis.y, b.y_axis.z);
-    let mut rho3 = dist2(b.z_axis.x, b.z_axis.y, b.z_axis.z);
-
-    if rho1 < rho2 {
-        swap(&mut b.x_axis, &mut b.y_axis);
-        swap(&mut v.x_axis, &mut v.y_axis);
-
-        b.y_axis = Vec3 {
-            x: -b.y_axis.x,
-            y: -b.y_axis.y,
-            z: -b.y_axis.z,
-        };
-        v.y_axis = Vec3 {
-            x: -v.y_axis.x,
-            y: -v.y_axis.y,
-            z: -v.y_axis.z,
-        };
-
-        swap(&mut rho1, &mut rho2);
-    }
-    if rho1 < rho3 {
-        swap(&mut b.x_axis, &mut b.z_axis);
-        swap(&mut v.x_axis, &mut v.z_axis);
-
-        b.z_axis = Vec3 {
-            x: -b.z_axis.x,
-            y: -b.z_axis.y,
-            z: -b.z_axis.z,
-        };
-        v.z_axis = Vec3 {
-            x: -v.z_axis.x,
-            y: -v.z_axis.y,
-            z: -v.z_axis.z,
-        };
-
-        swap(&mut rho1, &mut rho3);
-    }
-    if rho2 < rho3 {
-        swap(&mut b.y_axis, &mut b.z_axis);
-        swap(&mut v.y_axis, &mut v.z_axis);
-
-        b.z_axis = Vec3 {
-            x: -b.z_axis.x,
-            y: -b.z_axis.y,
-            z: -b.z_axis.z,
-        };
-        v.z_axis = Vec3 {
-            x: -v.z_axis.x,
-            y: -v.z_axis.y,
-            z: -v.z_axis.z,
-        };
+fn cond_swap(c: bool, x: &mut f32, y: &mut f32) {
+    let z = *x;
+    if c {
+        *x = *y;
+        *y = z;
     }
 }
 
-/// Implementation of Algorithm 4
+/// Helper function to conditionally swap two Vec3s
 #[inline(always)]
-fn qr_givens_quaternion(a1: f32, a2: f32) -> Givens {
-    let epsilon = SVD3_EPSILON;
-    let rho = (a1 * a1 + a2 * a2).sqrt();
-
-    let mut g = Givens {
-        ch: a1.abs() + f32::max(rho, epsilon),
-        sh: if rho > epsilon { a2 } else { 0.0 },
-    };
-
-    let b = a1 < 0.0;
-    cond_swap(b, &mut g.sh, &mut g.ch);
-
-    let w = 1.0 / ((g.ch * g.ch + g.sh * g.sh).sqrt());
-    g.ch *= w;
-    g.sh *= w;
-    g
+fn cond_swap_vec3(c: bool, x: &mut Vec3, y: &mut Vec3) {
+    let z = *x;
+    if c {
+        *x = *y;
+        *y = z;
+    }
 }
 
-/// Implements a QR decomposition of a Matrix
-fn qr_decomposition(b_mat: &mut Mat3) -> QR3 {
-    let mut q = Mat3::ZERO;
-    // --- First Givens rotation to zero out a[1][0] (affects columns 0 and 1) ---
-    let g1 = qr_givens_quaternion(b_mat.x_axis.x, b_mat.x_axis.y);
-    let a1 = -2.0 * g1.sh * g1.sh + 1.0;
-    let b1 = 2.0 * g1.ch * g1.sh;
+/// Helper function to conditionally negate a Vec3
+#[inline(always)]
+fn cond_negate_vec3(c: bool, v: &mut Vec3) {
+    if c {
+        *v = -*v;
+    }
+}
 
-    // Apply to row 0
-    let c0 = b_mat.x_axis.x;
-    let c1 = b_mat.x_axis.y;
-    b_mat.x_axis.x = a1 * c0 + b1 * c1;
-    b_mat.x_axis.y = -b1 * c0 + a1 * c1;
-    // Apply to row 1
-    let c0 = b_mat.y_axis.x;
-    let c1 = b_mat.y_axis.y;
-    b_mat.y_axis.x = a1 * c0 + b1 * c1;
-    b_mat.y_axis.y = -b1 * c0 + a1 * c1;
-    // Apply to row 2
-    let c0 = b_mat.z_axis.x;
-    let c1 = b_mat.z_axis.y;
-    b_mat.z_axis.x = a1 * c0 + b1 * c1;
-    b_mat.z_axis.y = -b1 * c0 + a1 * c1;
+/// Sorts the singular values in descending order and adjusts the corresponding singular vectors accordingly
+#[inline(always)]
+pub fn sort_singular_values(b: &mut Mat3, v: &mut Mat3) {
+    let mut rho1 = b.x_axis.length_squared();
+    let mut rho2 = b.y_axis.length_squared();
+    let mut rho3 = b.z_axis.length_squared();
 
-    // --- Second Givens rotation to zero out a[2][0] (affects columns 0 and 2) ---
-    let g2 = qr_givens_quaternion(b_mat.x_axis.x, b_mat.x_axis.z);
-    let a2 = -2.0 * g2.sh * g2.sh + 1.0;
-    let b2 = 2.0 * g2.ch * g2.sh;
+    // First comparison (rho1, rho2)
+    let c1 = rho1 < rho2;
+    cond_swap(c1, &mut rho1, &mut rho2);
+    cond_swap_vec3(c1, &mut b.x_axis, &mut b.y_axis);
+    cond_swap_vec3(c1, &mut v.x_axis, &mut v.y_axis);
+    cond_negate_vec3(c1, &mut b.y_axis);
+    cond_negate_vec3(c1, &mut v.y_axis);
 
-    // Apply to row 0
-    let c0 = b_mat.x_axis.x;
-    let c2 = b_mat.x_axis.z;
-    b_mat.x_axis.x = a2 * c0 + b2 * c2;
-    b_mat.x_axis.z = -b2 * c0 + a2 * c2;
-    // Apply to row 1
-    let c0 = b_mat.y_axis.x;
-    let c2 = b_mat.y_axis.z;
-    b_mat.y_axis.x = a2 * c0 + b2 * c2;
-    b_mat.y_axis.z = -b2 * c0 + a2 * c2;
-    // Apply to row 2
-    let c0 = b_mat.z_axis.x;
-    let c2 = b_mat.z_axis.z;
-    b_mat.z_axis.x = a2 * c0 + b2 * c2;
-    b_mat.z_axis.z = -b2 * c0 + a2 * c2;
+    // Second comparison (rho1, rho3)
+    let c2 = rho1 < rho3;
+    cond_swap(c2, &mut rho1, &mut rho3);
+    cond_swap_vec3(c2, &mut b.x_axis, &mut b.z_axis);
+    cond_swap_vec3(c2, &mut v.x_axis, &mut v.z_axis);
+    cond_negate_vec3(c2, &mut b.z_axis);
+    cond_negate_vec3(c2, &mut v.z_axis);
 
-    // --- Third Givens rotation to zero out a[2][1] (affects columns 1 and 2) ---
-    let g3 = qr_givens_quaternion(b_mat.y_axis.y, b_mat.y_axis.z);
-    let a3 = -2.0 * g3.sh * g3.sh + 1.0;
-    let b3 = 2.0 * g3.ch * g3.sh;
-
-    // Apply to row 0
-    let c1 = b_mat.x_axis.y;
-    let c2 = b_mat.x_axis.z;
-    b_mat.x_axis.y = a3 * c1 + b3 * c2;
-    b_mat.x_axis.z = -b3 * c1 + a3 * c2;
-    // Apply to row 1
-    let c1 = b_mat.y_axis.y;
-    let c2 = b_mat.y_axis.z;
-    b_mat.y_axis.y = a3 * c1 + b3 * c2;
-    b_mat.y_axis.z = -b3 * c1 + a3 * c2;
-    // Apply to row 2
-    let c1 = b_mat.z_axis.y;
-    let c2 = b_mat.z_axis.z;
-    b_mat.z_axis.y = a3 * c1 + b3 * c2;
-    b_mat.z_axis.z = -b3 * c1 + a3 * c2;
-
-    let r = *b_mat;
-
-    q.x_axis.x = a1 * a2;
-    q.x_axis.y = (b2 * b3 * -a1) - b1 * a3;
-    q.x_axis.z = b1 * b3 - b2 * a1 * a3;
-    q.y_axis.x = b1 * a2;
-    q.y_axis.y = a1 * a3 - (b1 * b2 * b3);
-    q.y_axis.z = -2.0 * g3.ch * g3.sh
-        + 4.0 * g1.sh * (g3.ch * g1.sh * g3.sh + g1.ch * g2.ch * g2.sh * (-a3));
-    q.z_axis.x = b2;
-    q.z_axis.y = b3 * a2;
-    q.z_axis.z = a2 * a3;
-
-    QR3 { q, r }
+    // Third comparison (rho2, rho3)
+    let c3 = rho2 < rho3;
+    cond_swap_vec3(c3, &mut b.y_axis, &mut b.z_axis);
+    cond_swap_vec3(c3, &mut v.y_axis, &mut v.z_axis);
+    cond_negate_vec3(c3, &mut b.z_axis);
+    cond_negate_vec3(c3, &mut v.z_axis);
 }
 
 /// Wrapping function used to contain all of the required sub calls
@@ -437,15 +305,43 @@ pub fn svd3(a: &Mat3) -> SVD3Set {
     // Sort the singular values
     sort_singular_values(&mut b, &mut v);
 
-    // Perform QR decomposition on B to get Q and R
-    let qr = qr_decomposition(&mut b);
+    let s1 = b.x_axis.length();
+    let s2 = b.y_axis.length();
+    let s3 = b.z_axis.length();
 
-    // Return the SVD result, which includes Q (as U), R (as S), and V
-    SVD3Set {
-        u: qr.q,
-        s: qr.r,
-        v,
+    // Create the diagonal singular value matrix S
+    let mut s = Mat3::from_diagonal(Vec3::new(s1, s2, s3));
+
+    // Calculate inverse-length for normalization.
+    // Handle potential division by zero if s_i is tiny.
+    let s1_inv = if s1.abs() < SVD3_EPSILON {
+        0.0
+    } else {
+        1.0 / s1
+    };
+    let s2_inv = if s2.abs() < SVD3_EPSILON {
+        0.0
+    } else {
+        1.0 / s2
+    };
+    let s3_inv = if s3.abs() < SVD3_EPSILON {
+        0.0
+    } else {
+        1.0 / s3
+    };
+
+    // Get U by normalizing the columns of B (U_col_i = B_col_i / s_i).
+    let mut u = Mat3::from_cols(b.x_axis * s1_inv, b.y_axis * s2_inv, b.z_axis * s3_inv);
+
+    // Ensure U is a proper rotation (det(U) = +1).
+    // If not, flip the sign of the column associated with the smallest singular value.
+    if u.determinant() < 0.0 {
+        u.z_axis = -u.z_axis;
+        s.z_axis.z = -s.z_axis.z; // Also flip the singular value
     }
+
+    // Return the SVD result
+    SVD3Set { u, s, v }
 }
 
 #[cfg(test)]
