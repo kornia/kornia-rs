@@ -8,6 +8,8 @@ pub struct SE2 {
     pub t: Vec2,
 }
 
+const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
+
 impl SE2 {
     pub const IDENTITY: Self = Self {
         r: SO2::IDENTITY,
@@ -88,10 +90,11 @@ impl SE2 {
         Self {
             r: so2,
             t: {
-                let (a, b) = if theta != 0.0 {
-                    (so2.z.y / theta, (1.0 - so2.z.x) / theta)
+                let (a, b) = if theta.abs() < SMALL_ANGLE_EPSILON {
+                    // Small-angle approximation path
+                    (1.0 - theta * theta / 6.0, theta / 2.0)
                 } else {
-                    (0.0, 0.0)
+                    (so2.z.y / theta, (1.0 - so2.z.x) / theta)
                 };
                 Vec2::new(a * v.x - b * v.y, b * v.x + a * v.y)
             },
@@ -459,8 +462,8 @@ mod tests {
 
         assert_relative_eq!(se2_zero.r.z.x, 1.0, epsilon = EPSILON);
         assert_relative_eq!(se2_zero.r.z.y, 0.0, epsilon = EPSILON);
-        assert_relative_eq!(se2_zero.t.x, 0.0, epsilon = EPSILON);
-        assert_relative_eq!(se2_zero.t.y, 0.0, epsilon = EPSILON);
+        assert_relative_eq!(se2_zero.t.x, 2.0, epsilon = EPSILON);
+        assert_relative_eq!(se2_zero.t.y, 3.0, epsilon = EPSILON);
 
         // Test exp(0) = identity
         let se2_identity = SE2::exp(Vec3A::ZERO);
