@@ -88,7 +88,7 @@ impl SO3 {
         let theta_half = 0.5 * theta;
 
         let (w, b) = if theta < SMALL_ANGLE_EPSILON {
-            //using the taylor series expansion of cos(x/2) and sin(x/2)/x around 0
+            // using the taylor series expansion of cos(x/2) and sin(x/2)/x around 0
             (1.0 - theta_sq / 8.0, 0.5 - theta_sq / 48.0)
         } else {
             (theta_half.cos(), theta_half.sin() / theta)
