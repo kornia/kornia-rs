@@ -1,5 +1,6 @@
 use glam::{Mat2, Mat3A, Vec2};
 use rand::Rng;
+use std::f32::consts::TAU; // <-- Added this import
 
 #[derive(Debug, Clone, Copy)]
 pub struct SO2 {
@@ -36,13 +37,8 @@ impl SO2 {
 
     pub fn from_random() -> Self {
         let mut rng = rand::rng();
-
-        let r1: f32 = rng.random();
-        let r2: f32 = rng.random();
-
-        Self {
-            z: Vec2 { x: r1, y: r2 }.normalize(),
-        }
+        let theta: f32 = rng.random_range(0.0..TAU); // Sample a uniform angle
+        Self::exp(theta)
     }
 
     #[inline]
@@ -77,8 +73,8 @@ impl SO2 {
         }
     }
 
-    pub fn adjoint(&self) -> Mat2 {
-        Self::IDENTITY.matrix()
+    pub fn adjoint(&self) -> f32 {
+        1.0f32
     }
 
     pub fn exp(theta: f32) -> Self {
@@ -237,15 +233,10 @@ mod tests {
 
     #[test]
     fn test_adjoint() {
-        let so2 = SO2::IDENTITY;
-        let adj = so2.adjoint();
-        let mat = so2.matrix();
-
-        for i in 0..2 {
-            for j in 0..2 {
-                assert_relative_eq!(adj.col(i)[j], mat.col(i)[j]);
-            }
-        }
+        let so2_id = SO2::IDENTITY;
+        assert_relative_eq!(so2_id.adjoint(), 1.0f32);
+        let so2_rand = SO2::from_random();
+        assert_relative_eq!(so2_rand.adjoint(), 1.0f32);
     }
 
     #[test]

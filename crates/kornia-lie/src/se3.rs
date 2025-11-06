@@ -107,20 +107,25 @@ impl SE3 {
     }
 
     pub fn exp(upsilon: Vec3A, omega: Vec3A) -> Self {
-        let theta = omega.dot(omega).sqrt();
+        let theta2 = omega.dot(omega); 
+        let theta = theta2.sqrt();
+        
+        const EPS: f32 = 1e-6; 
 
         Self {
             r: SO3::exp(omega),
-            t: if theta != 0.0 {
+            t: if theta > EPS {
                 let omega_hat = SO3::hat(omega);
                 let omega_hat_sq = omega_hat * omega_hat;
 
-                let mat_v = Mat3A::IDENTITY
-                    + ((1.0 - theta.cos()) / (theta * theta)) * omega_hat
-                    + ((theta - theta.sin()) / (theta.powi(3))) * omega_hat_sq;
+                let a = (1.0 - theta.cos()) / theta2;
+                let b = (theta - theta.sin()) / (theta2 * theta);
 
-                mat_v.mul_vec3a(upsilon) // TODO: a bit sus (should it be the other way around?)
+                let mat_v = Mat3A::IDENTITY + a * omega_hat + b * omega_hat_sq;
+
+                mat_v.mul_vec3a(upsilon)
             } else {
+                // Small-angle approximation: t = I * upsilon
                 upsilon
             },
         }
@@ -129,20 +134,25 @@ impl SE3 {
     /// returns translation, rotation
     pub fn log(&self) -> (Vec3A, Vec3A) {
         let omega = self.r.log();
-        let theta = omega.dot(omega).sqrt();
+        let theta2 = omega.dot(omega); 
+        let theta = theta2.sqrt();
+        
+        const EPS: f32 = 1e-6; // Use an epsilon
 
         (
-            if theta != 0.0 {
+            if theta > EPS { 
                 let omega_hat = SO3::hat(omega);
                 let omega_hat_sq = omega_hat * omega_hat;
 
-                let mat_v_inv = Mat3A::IDENTITY - 0.5 * omega_hat
-                    + ((1.0 - theta * (theta / 2.0).cos() / (2.0 * (theta / 2.0).sin()))
-                        / theta.powi(2))
-                        * omega_hat_sq;
+                // Pre-calculate the half-angle trig
+                let half_theta = theta / 2.0;
+                let a = 1.0 - half_theta * half_theta.cos() / (2.0 * half_theta.sin());
 
-                mat_v_inv.mul_vec3a(self.t) // TODO:
+                let mat_v_inv = Mat3A::IDENTITY - 0.5 * omega_hat + (a / theta2) * omega_hat_sq;
+
+                mat_v_inv.mul_vec3a(self.t)
             } else {
+                // Small-angle approximation: upsilon = I * t
                 self.t
             },
             omega,
