@@ -28,6 +28,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", get_version())?;
     m.add_function(wrap_pyfunction!(color::rgb_from_gray, m)?)?;
     m.add_function(wrap_pyfunction!(color::rgb_from_rgba, m)?)?;
+    m.add_function(wrap_pyfunction!(color::rgb_from_bgra, m)?)?;
     m.add_function(wrap_pyfunction!(color::bgr_from_rgb, m)?)?;
     m.add_function(wrap_pyfunction!(color::gray_from_rgb, m)?)?;
     m.add_function(wrap_pyfunction!(enhance::add_weighted, m)?)?;
