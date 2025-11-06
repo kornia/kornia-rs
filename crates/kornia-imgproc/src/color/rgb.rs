@@ -89,7 +89,7 @@ pub fn rgb_from_rgba<A1: ImageAllocator, A2: ImageAllocator>(
 ///     15, 16, 17, 255, // (1, 2)
 /// ], CpuAllocator).unwrap();
 ///
-/// let mut dst = Image::<u8, 3, CpuAllocator>::new(ImageSize { width: 3, height: 2 }, vec![0; 24], CpuAllocator).unwrap();
+/// let mut dst = Image::<u8, 3, CpuAllocator>::from_size_val(src.size(), 0, CpuAllocator).unwrap();
 ///
 /// rgb_from_bgra(&src, &mut dst, None).unwrap();
 /// ```
