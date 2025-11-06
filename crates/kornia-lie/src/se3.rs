@@ -109,8 +109,8 @@ impl SE3 {
     }
 
     pub fn exp(upsilon: Vec3A, omega: Vec3A) -> Self {
-        let theta2 = omega.dot(omega); 
-        let theta = theta2.sqrt(); 
+        let theta2 = omega.dot(omega);
+        let theta = theta2.sqrt();
 
         Self {
             r: SO3::exp(omega),
@@ -141,8 +141,7 @@ impl SE3 {
                 let omega_hat = SO3::hat(omega);
                 let omega_hat_sq = omega_hat * omega_hat;
                 let mat_v_inv = Mat3A::IDENTITY - 0.5 * omega_hat
-                    + ((1.0 - theta * (theta / 2.0).cos() / (2.0 * (theta / 2.0).sin()))
-                        / theta2) 
+                    + ((1.0 - theta * (theta / 2.0).cos() / (2.0 * (theta / 2.0).sin())) / theta2)
                         * omega_hat_sq;
 
                 mat_v_inv.mul_vec3a(self.t)

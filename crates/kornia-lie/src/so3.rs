@@ -115,7 +115,7 @@ impl SO3 {
         let theta = theta_sq.sqrt();
 
         if theta > SMALL_ANGLE_EPSILON {
-            let half_theta = w.acos(); 
+            let half_theta = w.acos();
             let scale = 2.0 * half_theta / theta;
             vec * scale
         } else {
