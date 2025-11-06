@@ -99,7 +99,7 @@ impl SO3 {
             q: Quat::from_xyzw(xyz.x, xyz.y, xyz.z, w),
         }
     }
-    
+
     /// Lie group -> Lie algebra
     pub fn log(&self) -> Vec3A {
         let real = self.q.w;
