@@ -104,8 +104,7 @@ impl SE2 {
     pub fn log(&self) -> Vec3A {
         let theta = self.r.log();
 
-        // --- very small angle: V ≈ I so V⁻¹ ≈ I
-        if theta.abs() < 1.0e-8 {
+        if theta.abs() < SMALL_ANGLE_EPSILON {
             return Vec3A::new(self.t.x, self.t.y, 0.0);
         }
 
