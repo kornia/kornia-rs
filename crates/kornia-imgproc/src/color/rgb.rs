@@ -69,7 +69,7 @@ pub fn rgb_from_rgba<A1: ImageAllocator, A2: ImageAllocator>(
 /// * `src` - The input BGRA image.
 /// * `dst` - The output RGB image.
 ///
-/// Precondition: the input image must have 3 channels.
+/// Precondition: the input image must have 4 channels.
 /// Precondition: the output image must have 3 channels.
 /// Precondition: the input and output images must have the same size.
 ///
@@ -78,18 +78,18 @@ pub fn rgb_from_rgba<A1: ImageAllocator, A2: ImageAllocator>(
 /// ```
 /// use kornia_image::{Image, ImageSize};
 /// use kornia_image::allocator::CpuAllocator;
-/// use kornia_imgproc::color::rgb_from_bgr;
+/// use kornia_imgproc::color::rgb_from_bgra;
 ///
-/// let src = Image::<u8, 3, CpuAllocator>::new(ImageSize { width: 3, height: 2 }, vec![
-///     0, 1, 2, // (0, 0)
-///     3, 4, 5, // (0, 1)
-///     6, 7, 8, // (0, 2)
-///     9, 10, 11, // (1, 0)
-///     12, 13, 14, // (1, 1)
-///     15, 16, 17, // (1, 2)
+/// let src = Image::<u8, 4, CpuAllocator>::new(ImageSize { width: 3, height: 2 }, vec![
+///     0, 1, 2, 255, // (0, 0)
+///     3, 4, 5, 255, // (0, 1)
+///     6, 7, 8, 255, // (0, 2)
+///     9, 10, 11, 255, // (1, 0)
+///     12, 13, 14, 255, // (1, 1)
+///     15, 16, 17, 255, // (1, 2)
 /// ], CpuAllocator).unwrap();
 ///
-/// let mut dst = Image::<u8, 3, CpuAllocator>::new(ImageSize { width: 3, height: 2 }, vec![0; 18], CpuAllocator).unwrap();
+/// let mut dst = Image::<u8, 3, CpuAllocator>::new(ImageSize { width: 3, height: 2 }, vec![0; 24], CpuAllocator).unwrap();
 ///
 /// rgb_from_bgra(&src, &mut dst, None).unwrap();
 /// ```
@@ -114,9 +114,8 @@ pub fn rgb_from_bgra<A1: ImageAllocator, A2: ImageAllocator>(
             alpha_blend(r, g, b, a, &bg, dst_pixel);
         });
     } else {
-        // just drop the alpha channel in the first index
+        // flip only the red and blue channels, keep the green channel as is
         parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
-            // flip only the red and blue channels, keep the green channel as is
             let (b, g, r) = (src_pixel[0], src_pixel[1], src_pixel[2]);
             dst_pixel[0] = r;
             dst_pixel[1] = g;
