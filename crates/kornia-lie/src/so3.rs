@@ -1,5 +1,6 @@
 use glam::{Affine3A, Mat3A, Mat4, Quat, Vec3A};
 use rand::Rng;
+const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SO3 {
@@ -81,15 +82,15 @@ impl SO3 {
         }
     }
 
-    /// Lie algebra -> Lie group
     pub fn exp(v: Vec3A) -> Self {
-        let theta = v.dot(v).sqrt();
+        let theta_sq = v.dot(v);
+        let theta = theta_sq.sqrt();
         let theta_half = 0.5 * theta;
 
-        let (w, b) = if theta != 0.0 {
-            (theta_half.cos(), theta_half.sin() / theta)
+        let (w, b) = if theta < SMALL_ANGLE_EPSILON {
+            (1.0 - theta_sq / 8.0, 0.5 - theta_sq / 48.0)
         } else {
-            (1.0, 0.0)
+            (theta_half.cos(), theta_half.sin() / theta)
         };
 
         let xyz = b * v;
@@ -98,7 +99,7 @@ impl SO3 {
             q: Quat::from_xyzw(xyz.x, xyz.y, xyz.z, w),
         }
     }
-
+    
     /// Lie group -> Lie algebra
     pub fn log(&self) -> Vec3A {
         let real = self.q.w;
