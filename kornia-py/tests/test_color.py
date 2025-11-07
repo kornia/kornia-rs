@@ -34,3 +34,15 @@ def test_rgb_from_rgba_with_background():
     img_rgb: np.ndarray = K.rgb_from_rgba(img, background=[100, 100, 100])
     assert img_rgb.shape == (1, 1, 3)
     assert np.allclose(img_rgb, np.array([[[178, 50, 50]]]))
+
+def test_rgb_from_bgra():
+    img: np.ndarray = np.array([[[0, 0, 255, 128]]], dtype=np.uint8)
+    img_rgb: np.ndarray = K.rgb_from_bgra(img)
+    assert img_rgb.shape == (1, 1, 3)
+    assert np.allclose(img_rgb, np.array([[[255, 0, 0]]]))
+
+def test_rgb_from_bgra_with_background():
+    img: np.ndarray = np.array([[[0, 0, 255, 128]]], dtype=np.uint8)
+    img_rgb: np.ndarray = K.rgb_from_bgra(img, background=[100, 100, 100])
+    assert img_rgb.shape == (1, 1, 3)
+    assert np.allclose(img_rgb, np.array([[[178, 50, 50]]]))

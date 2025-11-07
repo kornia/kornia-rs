@@ -88,3 +88,23 @@ pub fn rgb_from_rgba(image: PyImage, background: Option<[u8; 3]>) -> PyResult<Py
 
     Ok(pyimage_rgb)
 }
+
+#[pyfunction]
+#[pyo3(signature = (image, background=None))]
+pub fn rgb_from_bgra(image: PyImage, background: Option<[u8; 3]>) -> PyResult<PyImage> {
+    let image_bgra = Image::from_pyimage(image)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("src image: {}", e)))?;
+
+    let mut image_rgb = Image::from_size_val(image_bgra.size(), 0u8, CpuAllocator)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("dst image: {}", e)))?;
+
+    color::rgb_from_bgra(&image_bgra, &mut image_rgb, background).map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
+    })?;
+
+    let pyimage_rgb = image_rgb.to_pyimage().map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
+    })?;
+
+    Ok(pyimage_rgb)
+}
