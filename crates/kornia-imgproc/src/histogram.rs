@@ -1,25 +1,32 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use rayon::prelude::*;
 
-/// Compute the pixel intensity histogram of an image.
+/// Computes the pixel intensity histogram of a grayscale image.
 ///
-/// NOTE: this is limited to 8-bit 1-channel images.
+/// Bins pixel intensities into the specified number of histogram bins.
+/// The computation is parallelized for efficiency using Rayon.
+///
+/// **Note:** Currently limited to 8-bit single-channel images.
 ///
 /// # Arguments
 ///
-/// * `src` - The input image to compute the histogram.
-/// * `hist` - The output histogram.
-/// * `num_bins` - The number of bins to use for the histogram.
+/// * `src` - The input grayscale image (`u8` pixels)
+/// * `hist` - Output histogram slice (must have length `num_bins`)
+/// * `num_bins` - Number of histogram bins (1-256)
 ///
 /// # Returns
 ///
-/// A vector of size `num_bins` containing the histogram.
+/// Returns `Ok(())` on success. The histogram counts are written to `hist`.
 ///
 /// # Errors
 ///
-/// Returns an error if the number of bins is invalid.
+/// Returns [`ImageError::InvalidHistogramBins`] if:
+/// - `num_bins` is 0 or greater than 256
+/// - `hist.len()` does not equal `num_bins`
 ///
-/// # Example
+/// # Examples
+///
+/// Computing a 3-bin histogram:
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
@@ -38,7 +45,27 @@ use rayon::prelude::*;
 /// let mut histogram = vec![0; 3];
 ///
 /// compute_histogram(&image, &mut histogram, 3).unwrap();
+/// // Pixels are binned: [0-85] = 3, [86-170] = 3, [171-255] = 3
 /// assert_eq!(histogram, vec![3, 3, 3]);
+/// ```
+///
+/// Standard 256-bin histogram for analysis:
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_imgproc::histogram::compute_histogram;
+///
+/// let image = Image::<u8, 1, _>::from_size_val(
+///     ImageSize { width: 100, height: 100 },
+///     128,
+///     CpuAllocator
+/// ).unwrap();
+///
+/// let mut hist = vec![0; 256];
+/// compute_histogram(&image, &mut hist, 256).unwrap();
+/// // All 10,000 pixels have value 128
+/// assert_eq!(hist[128], 10000);
 /// ```
 pub fn compute_histogram<A: ImageAllocator>(
     src: &Image<u8, 1, A>,

@@ -51,46 +51,95 @@ impl From<ImageSize> for [u32; 2] {
     }
 }
 
-#[derive(Clone)]
-/// Represents an image with pixel data.
+/// Represents an image with pixel data for computer vision applications.
 ///
-/// The image is represented as a 3D Tensor with shape (H, W, C), where H is the height of the image,
+/// The image is stored as a 3D tensor with shape `(H, W, C)`, where:
+/// - `H` is the height in pixels
+/// - `W` is the width in pixels  
+/// - `C` is the number of channels (e.g., 3 for RGB, 1 for grayscale)
+///
+/// # Type Parameters
+///
+/// * `T` - The pixel data type (e.g., `u8`, `f32`)
+/// * `C` - The number of channels (constant generic parameter)
+/// * `A` - The memory allocator implementing [`ImageAllocator`]
+///
+/// # Memory Layout
+///
+/// Pixel data is stored in row-major order with interleaved channels.
+/// For an RGB image, pixels are stored as: `[R0, G0, B0, R1, G1, B1, ...]`
+///
+/// # Examples
+///
+/// Creating an RGB image:
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
+///
+/// let image = Image::<u8, 3, _>::new(
+///     ImageSize { width: 640, height: 480 },
+///     vec![0u8; 640 * 480 * 3],
+///     CpuAllocator
+/// ).unwrap();
+///
+/// assert_eq!(image.size().width, 640);
+/// assert_eq!(image.size().height, 480);
+/// assert_eq!(image.num_channels(), 3);
+/// ```
+///
+/// Creating a grayscale image:
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
+///
+/// let gray = Image::<f32, 1, _>::from_size_val(
+///     ImageSize { width: 100, height: 100 },
+///     0.5,
+///     CpuAllocator
+/// ).unwrap();
+/// ```
+#[derive(Clone)]
 pub struct Image<T, const C: usize, A: ImageAllocator>(pub Tensor3<T, A>);
 
-/// helper to deference the inner tensor
+/// Provides immutable access to the underlying 3D tensor.
+///
+/// This allows calling tensor methods directly on [`Image`] instances.
 impl<T, const C: usize, A: ImageAllocator> std::ops::Deref for Image<T, C, A> {
     type Target = Tensor3<T, A>;
 
-    // Define the deref method to return a reference to the inner Tensor3<T>.
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-/// helper to deference the inner tensor
+/// Provides mutable access to the underlying 3D tensor.
+///
+/// This allows calling mutable tensor methods directly on [`Image`] instances.
 impl<T, const C: usize, A: ImageAllocator> std::ops::DerefMut for Image<T, C, A> {
-    // Define the deref_mut method to return a mutable reference to the inner Tensor3<T>.
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
 impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
-    /// Create a new image from pixel data.
+    /// Creates a new image from pixel data.
     ///
     /// # Arguments
     ///
-    /// * `size` - The size of the image in pixels.
-    /// * `data` - The pixel data of the image.
-    /// * `alloc` - The allocator of the image
+    /// * `size` - The dimensions of the image in pixels
+    /// * `data` - The pixel data vector (length must equal `width × height × C`)
+    /// * `alloc` - The memory allocator to use for the image storage
     ///
     /// # Returns
     ///
-    /// A new image with the given pixel data.
+    /// Returns a new [`Image`] instance with the provided pixel data.
     ///
     /// # Errors
     ///
-    /// If the length of the pixel data does not match the image size, an error is returned.
+    /// Returns [`ImageError::InvalidChannelShape`] if the data length does not match
+    /// the expected size (`width × height × channels`).
     ///
     /// # Examples
     ///
@@ -111,6 +160,8 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// assert_eq!(image.size().height, 20);
     /// assert_eq!(image.num_channels(), 3);
     /// ```
+    ///
+    /// See also: [`Image::from_size_val`] for creating images with a default value.
     pub fn new(size: ImageSize, data: Vec<T>, alloc: A) -> Result<Self, ImageError>
     where
         T: Clone, // TODO: remove this bound
@@ -131,23 +182,28 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
         )?))
     }
 
-    /// Create a new image with the given size and default pixel data.
+    /// Creates a new image filled with a default value.
+    ///
+    /// All pixels are initialized to the provided value. This is useful for creating
+    /// blank images or pre-allocated buffers for image processing operations.
     ///
     /// # Arguments
     ///
-    /// * `size` - The size of the image in pixels.
-    /// * `val` - The default value of the pixel data.
-    /// * `alloc` - The allocator of the image
+    /// * `size` - The dimensions of the image in pixels
+    /// * `val` - The value to fill all pixel components with
+    /// * `alloc` - The memory allocator to use for the image storage
     ///
     /// # Returns
     ///
-    /// A new image with the given size and default pixel data.
+    /// Returns a new [`Image`] with all pixel components set to `val`.
     ///
     /// # Errors
     ///
-    /// If the length of the pixel data does not match the image size, an error is returned.
+    /// Returns [`ImageError::InvalidChannelShape`] if internal allocation fails.
     ///
     /// # Examples
+    ///
+    /// Creating a black RGB image:
     ///
     /// ```
     /// use kornia_image::{Image, ImageSize};
@@ -163,6 +219,21 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// assert_eq!(image.size().height, 20);
     /// assert_eq!(image.num_channels(), 3);
     /// ```
+    ///
+    /// Creating a normalized float image:
+    ///
+    /// ```
+    /// use kornia_image::{Image, ImageSize};
+    /// use kornia_image::allocator::CpuAllocator;
+    ///
+    /// let gray = Image::<f32, 1, _>::from_size_val(
+    ///     ImageSize { width: 256, height: 256 },
+    ///     0.5,
+    ///     CpuAllocator
+    /// ).unwrap();
+    /// ```
+    ///
+    /// See also: [`Image::new`] for creating images from existing data.
     pub fn from_size_val(size: ImageSize, val: T, alloc: A) -> Result<Self, ImageError>
     where
         T: Clone + Default,

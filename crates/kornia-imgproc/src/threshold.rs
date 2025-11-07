@@ -5,20 +5,26 @@ use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
 use crate::parallel;
 
-/// Apply a binary threshold to an image.
+/// Applies a binary threshold to an image.
+///
+/// Converts an image to binary by setting pixels above a threshold to `max_value`
+/// and all other pixels to zero. This operation is performed in parallel across
+/// all pixels and channels.
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of an arbitrary number of channels and type.
-/// * `dst` - The output image of an arbitrary number of channels and type.
-/// * `threshold` - The threshold value. Must be the same type as the image.
-/// * `max_value` - The maximum value to use when the input value is greater than the threshold.
+/// * `src` - The input image with arbitrary number of channels and data type
+/// * `dst` - The output binary image with the same dimensions as `src`
+/// * `threshold` - The threshold value (same type as image pixels)
+/// * `max_value` - The value assigned to pixels above the threshold
 ///
 /// # Returns
 ///
-/// The thresholded image with the same number of channels as the input image.
+/// Returns `Ok(())` on success, or an error if image sizes don't match.
 ///
 /// # Examples
+///
+/// Thresholding a grayscale image:
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
@@ -31,9 +37,8 @@ use crate::parallel;
 /// let mut thresholded = Image::<_, 1, _>::from_size_val(image.size(), 0, CpuAllocator).unwrap();
 ///
 /// threshold_binary(&image, &mut thresholded, 100, 255).unwrap();
-/// assert_eq!(thresholded.num_channels(), 1);
-/// assert_eq!(thresholded.size().width, 2);
-/// assert_eq!(thresholded.size().height, 3);
+/// // Pixels with value > 100 become 255, others become 0
+/// assert_eq!(thresholded.as_slice(), &[0, 255, 0, 255, 255, 255]);
 /// ```
 pub fn threshold_binary<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<T, C, A1>,
