@@ -83,23 +83,29 @@ pub fn solve_epnp(
     let m_flat: Vec<f32> = m_rows.iter().flat_map(|row| row.iter()).cloned().collect();
     let m_mat = DMatrix::<f32>::from_row_slice(2 * n, 12, &m_flat);
 
-    // Null-space of M via SVD of MtM (12×12), following OpenCV epnp.cpp
+    // Null-space of M via eigen decomposition of MtM (12×12)
+    // TODO: mtm is always symmetric; look into more efficient multiplication for this case.
     let mtm = m_mat.transpose() * &m_mat; // 12×12
-    let svd = mtm.svd(true, true);
-    let Some(u) = svd.u else {
-        return Err(PnPError::SvdFailed(
-            "Failed to compute U for MtM".to_string(),
-        ));
-    };
-    // Take the last 4 columns of U (smallest singular values)
-    let cols = u.ncols();
-    if cols < 4 {
-        return Err(PnPError::SvdFailed(
-            "U has fewer than 4 columns".to_string(),
-        ));
-    }
-    let start_col = cols - 4;
-    let null4 = u.columns(start_col, 4).into_owned(); // 12×4
+    let eig = mtm.symmetric_eigen();
+
+    let eigenvalues = eig.eigenvalues;
+    let eigenvectors = eig.eigenvectors;
+
+    let mut value_index_pairs: Vec<(f32, usize)> = eigenvalues
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, value)| (value.abs(), index))
+        .collect();
+
+    value_index_pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    let null4 = DMatrix::from_columns(&[
+        eigenvectors.column(value_index_pairs[3].1),
+        eigenvectors.column(value_index_pairs[2].1),
+        eigenvectors.column(value_index_pairs[1].1),
+        eigenvectors.column(value_index_pairs[0].1),
+    ]);
 
     // Build helper matrices for beta initialisation
     let l = build_l6x10(&null4);
