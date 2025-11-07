@@ -103,15 +103,25 @@ impl SO3 {
 
     /// Lie group -> Lie algebra
     pub fn log(&self) -> Vec3A {
-        let real = self.q.w;
-        let vec = Vec3A::new(self.q.x, self.q.y, self.q.z);
+        let mut w = self.q.w;
+        let mut vec = Vec3A::new(self.q.x, self.q.y, self.q.z);
 
-        let theta = vec.dot(vec).sqrt();
+        if w < 0.0 {
+            w = -w;
+            vec = -vec;
+        }
 
-        if theta != 0.0 {
-            2.0 * vec * real.acos() / theta
+        let theta_sq = vec.dot(vec);
+        let theta = theta_sq.sqrt();
+
+        if theta > SMALL_ANGLE_EPSILON {
+            let half_theta = w.acos();
+            let scale = 2.0 * half_theta / theta;
+            vec * scale
         } else {
-            2.0 * vec / real
+            // Small-angle approximation (Taylor series)
+            let scale = 2.0 / w;
+            vec * scale
         }
     }
 
