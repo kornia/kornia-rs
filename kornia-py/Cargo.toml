@@ -7,7 +7,7 @@ homepage = "http://kornia.org"
 license = "Apache-2.0"
 repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
-version = "0.1.10"
+version = "0.1.11-rc.1"
 
 [lib]
 name = "kornia_rs"
