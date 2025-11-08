@@ -11,6 +11,10 @@ build profile="debug":
   cmake -B build -DCMAKE_BUILD_TYPE={{ if profile == "debug" { "Debug" } else { "Release" } }} -DBUILD_EXAMPLES=OFF -DBUILD_TESTS=OFF
   cmake --build build --target kornia_rust_lib -j$(nproc)
 
+# Build the C++ library in debug mode
+build-debug:
+  @just build "debug"
+
 # Build tests only
 build-tests profile="debug":
   @echo "🏗️  Building kornia-cpp tests ({{ profile }})..."
@@ -28,6 +32,18 @@ test profile="debug":
   @just build-tests {{ profile }}
   @echo "🧪 Running C++ tests..."
   cd build && ctest --output-on-failure
+
+# Run C++ tests with verbose output
+test-verbose profile="debug":
+  @just build-tests {{ profile }}
+  @echo "🧪 Running C++ tests (verbose)..."
+  cd build && ctest --verbose --output-on-failure
+
+# Run specific C++ test by tag/filter
+test-filter TAG profile="debug":
+  @just build-tests {{ profile }}
+  @echo "🧪 Running C++ tests filtered by tag: {{ TAG }}..."
+  cd build && ctest -R {{ TAG }} --output-on-failure
 
 # Run tests with sanitizers enabled
 test-sanitizers:
