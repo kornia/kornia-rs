@@ -4,6 +4,5 @@ target/
 docker/
 examples/*/Cargo.lock
 kornia-py/Cargo.lock
-Cargo.lock
 *.code-workspace
 .idea/
