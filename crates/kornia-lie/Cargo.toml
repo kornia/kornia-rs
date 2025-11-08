@@ -2,14 +2,15 @@
 name = "kornia-lie"
 description = "Lie groups and algebras"
 
-authors.workspace = true
-edition.workspace = true
-homepage.workspace = true
-license.workspace = true
+authors = { workspace = true }
+categories = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
 publish = true
-repository.workspace = true
-rust-version.workspace = true
-version.workspace = true
+repository = { workspace = true }
+rust-version = { workspace = true }
+version = { workspace = true }
 
 [dependencies]
 glam = "0.30.1"
