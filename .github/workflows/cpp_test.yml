@@ -53,7 +53,7 @@ jobs:
       - name: Build C++ library and tests
         run: |
           cd kornia-cpp
-          cmake -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DBUILD_TESTS=ON
+          cmake -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DBUILD_EXAMPLES=OFF -DBUILD_TESTS=ON
           cmake --build build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
       - name: Run C++ tests
