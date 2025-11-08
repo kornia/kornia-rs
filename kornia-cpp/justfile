@@ -67,10 +67,10 @@ install: build
   sudo cmake --install build
 
 # Uninstall the library (requires sudo)
-uninstall:
-  @echo "🗑️  Uninstalling kornia-cpp..."
-  sudo rm -rf /usr/local/include/kornia
-  sudo rm -f /usr/local/lib/libkornia*.so
-  sudo rm -f /usr/local/lib/libkornia*.a
-  sudo rm -rf /usr/local/lib/cmake/kornia
+uninstall prefix="/usr/local":
+  @echo "🗑️  Uninstalling kornia-cpp from {{ prefix }}..."
+  sudo rm -rf {{ prefix }}/include/kornia
+  sudo rm -f {{ prefix }}/lib/libkornia*.so
+  sudo rm -f {{ prefix }}/lib/libkornia*.a
+  sudo rm -rf {{ prefix }}/lib/cmake/kornia
 

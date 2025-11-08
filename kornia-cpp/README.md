@@ -42,10 +42,12 @@ cmake --install build --prefix ~/local  # optional
 
 ### Using Just
 
+> **Note:** If you are running commands from the `kornia-cpp` directory, use the local commands below. If running from the project root, use the `cpp-` prefixed commands (e.g., `just cpp-test`), which delegate to the local justfile.
+
 ```bash
-just cpp-test          # Build and run tests
-just cpp-build-examples # Build examples
-just cpp-clean         # Clean build
+just test            # Build and run tests
+just build-examples  # Build examples
+just clean           # Clean build
 ```
 
 ## API
