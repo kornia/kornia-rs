@@ -1,0 +1,76 @@
+@_default:
+  just --list
+
+# ------------------------------------------------------------------------------
+# Recipes for the kornia-cpp project
+# ------------------------------------------------------------------------------
+
+# Build the C++ library only (no examples, no tests) - debug or release (default: debug)
+build profile="debug":
+  @echo "🏗️  Building kornia-cpp library ({{ profile }})..."
+  cmake -B build -DCMAKE_BUILD_TYPE={{ if profile == "debug" { "Debug" } else { "Release" } }} -DBUILD_EXAMPLES=OFF -DBUILD_TESTS=OFF
+  cmake --build build --target kornia_rust_lib -j$(nproc)
+
+# Build tests only
+build-tests profile="debug":
+  @echo "🏗️  Building kornia-cpp tests ({{ profile }})..."
+  cmake -B build -DCMAKE_BUILD_TYPE={{ if profile == "debug" { "Debug" } else { "Release" } }} -DBUILD_EXAMPLES=OFF -DBUILD_TESTS=ON
+  cmake --build build -j$(nproc)
+
+# Build examples only
+build-examples profile="debug":
+  @echo "🏗️  Building kornia-cpp examples ({{ profile }})..."
+  cmake -B build -DCMAKE_BUILD_TYPE={{ if profile == "debug" { "Debug" } else { "Release" } }} -DBUILD_EXAMPLES=ON -DBUILD_TESTS=OFF
+  cmake --build build -j$(nproc)
+
+# Run C++ tests
+test profile="debug":
+  @just build-tests {{ profile }}
+  @echo "🧪 Running C++ tests..."
+  cd build && ctest --output-on-failure
+
+# Run tests with sanitizers enabled
+test-sanitizers:
+  @echo "🧪 Building and running tests with sanitizers..."
+  cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON -DENABLE_SANITIZERS=ON
+  cmake --build build -j$(nproc)
+  cd build && ctest --output-on-failure
+
+# Clean build artifacts
+clean:
+  @echo "🧹 Cleaning build artifacts..."
+  rm -rf build/ target/
+
+# Format C++ code (requires clang-format)
+format:
+  @echo "🎨 Formatting C++ code..."
+  @if command -v clang-format >/dev/null 2>&1; then \
+    find include src tests examples -type f \( -name "*.cpp" -o -name "*.hpp" \) -exec clang-format -i {} +; \
+  else \
+    echo "⚠️  clang-format not found. Install it with: sudo apt-get install clang-format"; \
+    exit 1; \
+  fi
+
+# Check format without modifying (requires clang-format)
+format-check:
+  @echo "🔍 Checking C++ format..."
+  @if command -v clang-format >/dev/null 2>&1; then \
+    find include src tests examples -type f \( -name "*.cpp" -o -name "*.hpp" \) -exec clang-format --dry-run --Werror {} +; \
+  else \
+    echo "⚠️  clang-format not found. Install it with: sudo apt-get install clang-format"; \
+    exit 1; \
+  fi
+
+# Install the library (requires sudo)
+install: build
+  @echo "📦 Installing kornia-cpp..."
+  sudo cmake --install build
+
+# Uninstall the library (requires sudo)
+uninstall:
+  @echo "🗑️  Uninstalling kornia-cpp..."
+  sudo rm -rf /usr/local/include/kornia
+  sudo rm -f /usr/local/lib/libkornia*.so
+  sudo rm -f /usr/local/lib/libkornia*.a
+  sudo rm -rf /usr/local/lib/cmake/kornia
+
