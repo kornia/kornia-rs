@@ -19,6 +19,7 @@ kornia-io = { path = "../crates/kornia-io" }
 
 # external
 cxx = "1.0"
+paste = "1.0"
 
 [build-dependencies]
 cxx-build = "1.0"

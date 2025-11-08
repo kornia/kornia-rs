@@ -48,7 +48,7 @@ add_custom_target(kornia_rust_lib
 # Find the CXX bridge generated headers
 set(CXXBRIDGE_DIR ${CARGO_TARGET_DIR}/cxxbridge)
 
-# Create imported library for Rust (makes dependency explicit)
+# Create imported library for Rust (makes dependency explicit during build)
 add_library(kornia_rust STATIC IMPORTED GLOBAL)
 set_target_properties(kornia_rust PROPERTIES
     IMPORTED_LOCATION ${RUST_LIB_PATH}
@@ -62,14 +62,19 @@ add_library(kornia_cpp INTERFACE)
 target_include_directories(kornia_cpp
     INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/kornia>
         $<BUILD_INTERFACE:${CXXBRIDGE_DIR}>
         $<INSTALL_INTERFACE:include>
+        $<INSTALL_INTERFACE:include/kornia>
 )
 
-# Link with Rust library (now properly imported)
+# Link with Rust library
+# For build: use kornia_rust target
+# For install: link directly to the installed static library
 target_link_libraries(kornia_cpp
     INTERFACE
-        kornia_rust
+        $<BUILD_INTERFACE:kornia_rust>
+        $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/libkornia_cpp.a>
 )
 
 # Handle platform-specific system libraries
@@ -82,31 +87,43 @@ endif()
 # Installation rules
 install(TARGETS kornia_cpp
     EXPORT kornia-targets
-    LIBRARY DESTINATION lib
-    ARCHIVE DESTINATION lib
-    RUNTIME DESTINATION bin
     INCLUDES DESTINATION include
 )
 
+# Install headers
 install(DIRECTORY include/
     DESTINATION include
     FILES_MATCHING PATTERN "*.hpp"
 )
 
+# Install Rust library
+install(FILES ${RUST_LIB_PATH}
+    DESTINATION lib
+)
+
+# Install CXX bridge headers
+# Use custom install script to follow symlinks
+install(CODE "
+    file(GLOB_RECURSE CXX_HEADERS 
+        \"${CXXBRIDGE_DIR}/*.h\" 
+        \"${CXXBRIDGE_DIR}/*.hxx\"
+    )
+    foreach(HEADER \${CXX_HEADERS})
+        file(RELATIVE_PATH REL_PATH \"${CXXBRIDGE_DIR}\" \"\${HEADER}\")
+        get_filename_component(DEST_DIR \"\${CMAKE_INSTALL_PREFIX}/include/\${REL_PATH}\" DIRECTORY)
+        file(INSTALL \"\${HEADER}\" DESTINATION \"\${DEST_DIR}\" FOLLOW_SYMLINK_CHAIN)
+    endforeach()
+")
+
+# Install CMake targets file
 install(EXPORT kornia-targets
     FILE kornia-targets.cmake
     NAMESPACE kornia::
     DESTINATION lib/cmake/kornia
 )
 
-# Create config file
+# Generate and install package config file
 include(CMakePackageConfigHelpers)
-write_basic_package_version_file(
-    "${CMAKE_CURRENT_BINARY_DIR}/kornia-config-version.cmake"
-    VERSION ${PROJECT_VERSION}
-    COMPATIBILITY AnyNewerVersion
-)
-
 configure_package_config_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/kornia-config.cmake.in"
     "${CMAKE_CURRENT_BINARY_DIR}/kornia-config.cmake"
@@ -115,7 +132,6 @@ configure_package_config_file(
 
 install(FILES
     "${CMAKE_CURRENT_BINARY_DIR}/kornia-config.cmake"
-    "${CMAKE_CURRENT_BINARY_DIR}/kornia-config-version.cmake"
     DESTINATION lib/cmake/kornia
 )
 
