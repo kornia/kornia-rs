@@ -4,7 +4,6 @@ use crate::resize::resize_native;
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use kornia_tensor::CpuAllocator;
 
-
 /// Upsample an image and then blur it.
 ///
 /// This function doubles the size of the input image using bilinear interpolation
@@ -82,7 +81,6 @@ pub fn pyrup<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     // instead of using separable_filter,
     // a parallelized implementation of this specific gaussian filter
     // would be much faster
-
 
     Ok(())
 }
