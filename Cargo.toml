@@ -19,24 +19,24 @@ license-file = "LICENSE"
 readme = "README.md"
 repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
-version = "0.1.10-rc.6"
+version = "0.1.10"
 
 [workspace.dependencies]
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
-kornia-3d = { path = "crates/kornia-3d", version = "0.1.10-rc.6" }
-kornia-apriltag = { path = "crates/kornia-apriltag", version = "0.1.10-rc.6" }
-kornia-icp = { path = "crates/kornia-icp", version = "0.1.10-rc.6" }
-kornia-image = { path = "crates/kornia-image", version = "0.1.10-rc.6" }
-kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.10-rc.6" }
-kornia-io = { path = "crates/kornia-io", version = "0.1.10-rc.6" }
-kornia-lie = { path = "crates/kornia-lie", version = "0.1.10-rc.6" }
-kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.10-rc.6" }
-kornia-nn = { path = "crates/kornia-nn", version = "0.1.10-rc.6" }
-kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.10-rc.6" }
-kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.10-rc.6" }
-kornia-vlm = { path = "crates/kornia-vlm", version = "0.1.10-rc.6" }
-kornia-pnp = { path = "crates/kornia-pnp", version = "0.1.10-rc.6" }
-kornia = { path = "crates/kornia", version = "0.1.10-rc.6" }
+kornia-3d = { path = "crates/kornia-3d", version = "0.1.10" }
+kornia-apriltag = { path = "crates/kornia-apriltag", version = "0.1.10" }
+kornia-icp = { path = "crates/kornia-icp", version = "0.1.10" }
+kornia-image = { path = "crates/kornia-image", version = "0.1.10" }
+kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.10" }
+kornia-io = { path = "crates/kornia-io", version = "0.1.10" }
+kornia-lie = { path = "crates/kornia-lie", version = "0.1.10" }
+kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.10" }
+kornia-nn = { path = "crates/kornia-nn", version = "0.1.10" }
+kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.10" }
+kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.10" }
+kornia-vlm = { path = "crates/kornia-vlm", version = "0.1.10" }
+kornia-pnp = { path = "crates/kornia-pnp", version = "0.1.10" }
+kornia = { path = "crates/kornia", version = "0.1.10" }
 
 # dev dependencies for workspace
 argh = "0.1"
