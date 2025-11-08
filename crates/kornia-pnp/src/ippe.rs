@@ -1,7 +1,7 @@
 //! Infinitesimal Plane-based Pose Estimation (IPPE)
 //!
 //! This module provides routines to estimate two candidate poses for a planar
-//! object from 2D?3D correspondences, following the IPPE method.
+//! object from 2D to 3D correspondences, following the IPPE method.
 //!
 //! References:
 //! - T. Collins and A. Bartoli, "Infinitesimal Plane-based Pose Estimation"
@@ -16,6 +16,10 @@ use glam::{Mat3A, Vec3, Vec3A};
 use kornia_lie::so3::SO3;
 
 /// Result holding the two IPPE pose solutions sorted by reprojection error (best first).
+///
+/// Note: The current implementation of `solve_square` returns the same solution
+/// for both `first` and `second` as a temporary placeholder until the
+/// IPPE-specific second solution is implemented.
 #[derive(Debug, Clone)]
 pub struct IPPEResult {
     /// Lowest-error pose solution.
@@ -55,7 +59,7 @@ impl IPPE {
             [image_points_norm[3][0] as f64, image_points_norm[3][1] as f64],
         ];
 
-        // Estimate homography mapping object-plane points ? normalized image points.
+// Estimate homography mapping object-plane points to normalized image points.
         let mut hmat = [[0.0f64; 3]; 3];
         kornia_3d::pose::homography_4pt2d(&src, &dst, &mut hmat)
             .map_err(|e| PnPError::SvdFailed(e.to_string()))?;
@@ -107,7 +111,7 @@ fn decompose_h_normalized(h: &[[f64; 3]; 3]) -> ([[f64; 3]; 3], [f64; 3]) {
 
     let n1 = (h1[0] * h1[0] + h1[1] * h1[1] + h1[2] * h1[2]).sqrt();
     let n2 = (h2[0] * h2[0] + h2[1] * h2[1] + h2[2] * h2[2]).sqrt();
-    let s = 1.0 / (n1 * n2).sqrt(); // scale so that ||r1|| ? ||r2|| ? 1
+    let s = 1.0 / (n1 * n2).sqrt(); // scale so that ||r1|| ≈ ||r2|| ≈ 1
 
     let mut r1 = [h1[0] * s, h1[1] * s, h1[2] * s];
     let mut r2 = [h2[0] * s, h2[1] * s, h2[2] * s];
@@ -125,9 +129,21 @@ fn decompose_h_normalized(h: &[[f64; 3]; 3]) -> ([[f64; 3]; 3], [f64; 3]) {
     );
     let so3 = SO3::from_matrix(&r_mat);
     let r_proj = so3.matrix();
-    r1 = [r_proj.x_axis.x as f64, r_proj.y_axis.x as f64, r_proj.z_axis.x as f64];
-    r2 = [r_proj.x_axis.y as f64, r_proj.y_axis.y as f64, r_proj.z_axis.y as f64];
-    r3 = [r_proj.x_axis.z as f64, r_proj.y_axis.z as f64, r_proj.z_axis.z as f64];
+    r1 = [
+        r_proj.x_axis.x as f64,
+        r_proj.x_axis.y as f64,
+        r_proj.x_axis.z as f64,
+    ];
+    r2 = [
+        r_proj.y_axis.x as f64,
+        r_proj.y_axis.y as f64,
+        r_proj.y_axis.z as f64,
+    ];
+    r3 = [
+        r_proj.z_axis.x as f64,
+        r_proj.z_axis.y as f64,
+        r_proj.z_axis.z as f64,
+    ];
 
     let t = [h3[0] * s, h3[1] * s, h3[2] * s];
 
@@ -170,6 +186,12 @@ fn rmse_normalized(
     for (pw, uv) in points_world.iter().zip(points_norm.iter()) {
         let pw_v = Vec3::from_array(*pw);
         let pc = r_mat * pw_v + t_vec;
+        // Prevent division by zero or near-zero depth.
+        if pc.z.abs() < 1e-6 {
+            return Err(PnPError::InvalidPose(
+                "projection has near-zero depth along z axis",
+            ));
+        }
         let inv_z = 1.0 / pc.z;
         let u = pc.x * inv_z;
         let v = pc.y * inv_z;
@@ -177,5 +199,5 @@ fn rmse_normalized(
         let dv = v - uv[1];
         sum_sq += du.mul_add(du, dv * dv);
     }
-    Ok((sum_sq / 4.0).sqrt())
+    Ok((sum_sq / (points_world.len() as f32)).sqrt())
 }
