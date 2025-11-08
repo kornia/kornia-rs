@@ -105,8 +105,6 @@ target_link_libraries(myapp PRIVATE kornia::kornia_cpp)
 
 ```bash
 just cpp-test           # Run all tests
-just cpp-test-verbose   # Verbose output
-just cpp-test-filter "JPEG"  # Run specific tests
 ```
 
 ## Examples

@@ -81,10 +81,6 @@ py-test:
 cpp-build:
   @cd kornia-cpp/ && just build
 
-# Build the C++ library in debug mode
-cpp-build-debug:
-  @cd kornia-cpp/ && just build-debug
-
 # Build C++ examples
 cpp-build-examples:
   @cd kornia-cpp/ && just build-examples
@@ -92,14 +88,6 @@ cpp-build-examples:
 # Test the C++ code
 cpp-test:
   @cd kornia-cpp/ && just test
-
-# Test the C++ code with verbose output
-cpp-test-verbose:
-  @cd kornia-cpp/ && just test-verbose
-
-# Run specific C++ test by tag
-cpp-test-filter TAG:
-  @cd kornia-cpp/ && just test-filter {{ TAG }}
 
 # Clean C++ build artifacts
 cpp-clean:

@@ -69,12 +69,11 @@ target_include_directories(kornia_cpp
 )
 
 # Link with Rust library
-# For build: use kornia_rust target
-# For install: link directly to the installed static library
+# In build tree: use kornia_rust IMPORTED target
+# In install tree: reference kornia_rust imported target (created by config file)
 target_link_libraries(kornia_cpp
     INTERFACE
-        $<BUILD_INTERFACE:kornia_rust>
-        $<INSTALL_INTERFACE:$<INSTALL_PREFIX>/lib/libkornia_cpp.a>
+        kornia_rust
 )
 
 # Handle platform-specific system libraries
@@ -121,8 +120,17 @@ install(EXPORT kornia-targets
     DESTINATION lib/cmake/kornia
 )
 
-# Generate and install package config file
+# Generate and install package config files
 include(CMakePackageConfigHelpers)
+
+# Generate Rust imported target file (no variables to substitute, just copy)
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/kornia-rust-targets.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/kornia-rust-targets.cmake"
+    COPYONLY
+)
+
+# Generate main package config file
 configure_package_config_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/kornia-config.cmake.in"
     "${CMAKE_CURRENT_BINARY_DIR}/kornia-config.cmake"
@@ -131,6 +139,7 @@ configure_package_config_file(
 
 install(FILES
     "${CMAKE_CURRENT_BINARY_DIR}/kornia-config.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/kornia-rust-targets.cmake"
     DESTINATION lib/cmake/kornia
 )
 

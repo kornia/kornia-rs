@@ -1,6 +1,9 @@
 @PACKAGE_INIT@
 
+# Include Rust imported target first (defines kornia_rust)
+include("${CMAKE_CURRENT_LIST_DIR}/kornia-rust-targets.cmake")
+
+# Include C++ wrapper target (links to kornia_rust)
 include("${CMAKE_CURRENT_LIST_DIR}/kornia-targets.cmake")
 
 check_required_components(kornia)
-

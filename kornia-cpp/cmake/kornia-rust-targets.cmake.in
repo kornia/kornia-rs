@@ -1,0 +1,17 @@
+# Imported target for Rust static library
+
+# Compute the installation prefix relative to this file
+get_filename_component(_KORNIA_RUST_IMPORT_PREFIX "${CMAKE_CURRENT_LIST_FILE}" PATH)
+get_filename_component(_KORNIA_RUST_IMPORT_PREFIX "${_KORNIA_RUST_IMPORT_PREFIX}" PATH)
+get_filename_component(_KORNIA_RUST_IMPORT_PREFIX "${_KORNIA_RUST_IMPORT_PREFIX}" PATH)
+get_filename_component(_KORNIA_RUST_IMPORT_PREFIX "${_KORNIA_RUST_IMPORT_PREFIX}" PATH)
+
+# Create kornia_rust imported target (same name as build tree)
+add_library(kornia_rust STATIC IMPORTED GLOBAL)
+set_target_properties(kornia_rust PROPERTIES
+    IMPORTED_LOCATION "${_KORNIA_RUST_IMPORT_PREFIX}/lib/libkornia_cpp.a"
+)
+
+# Cleanup
+unset(_KORNIA_RUST_IMPORT_PREFIX)
+
