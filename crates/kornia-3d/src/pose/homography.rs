@@ -13,25 +13,40 @@ pub fn homography_4pt2d(
     homo: &mut [[f64; 3]; 3],
 ) -> Result<(), Box<dyn std::error::Error>> {
     // construct matrix A
-    let mut mat_a = faer::Mat::<f64>::zeros(8, 9);
-    for i in 0..4 {
-        let (x1_i, x2_i) = (x1[i], x2[i]);
-        unsafe {
-            mat_a.write_unchecked(2 * i, 0, x1_i[0]);
-            mat_a.write_unchecked(2 * i, 1, x1_i[1]);
-            mat_a.write_unchecked(2 * i, 2, 1.0);
-            mat_a.write_unchecked(2 * i, 6, -x2_i[0] * x1_i[0]);
-            mat_a.write_unchecked(2 * i, 7, -x2_i[0] * x1_i[1]);
-            mat_a.write_unchecked(2 * i, 8, -x2_i[0]);
+    let mat_a = faer::Mat::from_fn(8, 9, |i, j| {
+        let point_idx = i / 2;
+        let (x1_i, x2_i) = (x1[point_idx], x2[point_idx]);
+        // Even row: [x1_i[0], x1_i[1], 1.0, 0, 0, 0, -x2_i[0]*x1_i[0], -x2_i[0]*x1_i[1], -x2_i[0]]
+        // Odd row: [0, 0, 0, x1_i[0], x1_i[1], 1.0, -x2_i[1]*x1_i[0], -x2_i[1]*x1_i[1], -x2_i[1]]
 
-            mat_a.write_unchecked(2 * i + 1, 3, x1_i[0]);
-            mat_a.write_unchecked(2 * i + 1, 4, x1_i[1]);
-            mat_a.write_unchecked(2 * i + 1, 5, 1.0);
-            mat_a.write_unchecked(2 * i + 1, 6, -x2_i[1] * x1_i[0]);
-            mat_a.write_unchecked(2 * i + 1, 7, -x2_i[1] * x1_i[1]);
-            mat_a.write_unchecked(2 * i + 1, 8, -x2_i[1]);
+        if i % 2 == 0 {
+            match j {
+                0 => x1_i[0],
+                1 => x1_i[1],
+                2 => 1.0,
+                3 => 0.0,
+                4 => 0.0,
+                5 => 0.0,
+                6 => -x2_i[0] * x1_i[0],
+                7 => -x2_i[0] * x1_i[1],
+                8 => -x2_i[0],
+                _ => 0.0
+            }
+        } else {
+            match j {
+                0 => 0.0,
+                1 => 0.0,
+                2 => 0.0,
+                3 => x1_i[0],
+                4 => x1_i[1],
+                5 => 1.0,
+                6 => -x2_i[1] * x1_i[0],
+                7 => -x2_i[1] * x1_i[1],
+                8 => -x2_i[1],
+                _ => 0.0
+            }
         }
-    }
+    });
 
     // solve -> h_mat: 8x1 and take the smallest singular value
     let svd = mat_a.svd();
@@ -97,26 +112,41 @@ pub fn homography_4pt3d(
         }
     }
 
-    let mut m_mat = faer::Mat::<f64>::zeros(8, 9);
-    for i in 0..4 {
-        let (x1_0, x1_1, x1_2) = (x1[i][0], x1[i][1], x1[i][2]);
-        let (x2_0, x2_1, x2_2) = (x2[i][0], x2[i][1], x2[i][2]);
-        unsafe {
-            m_mat.write_unchecked(2 * i, 0, x2_2 * x1_0);
-            m_mat.write_unchecked(2 * i, 1, x2_2 * x1_1);
-            m_mat.write_unchecked(2 * i, 2, x2_2 * x1_2);
-            m_mat.write_unchecked(2 * i, 6, -x2_0 * x1_0);
-            m_mat.write_unchecked(2 * i, 7, -x2_0 * x1_1);
-            m_mat.write_unchecked(2 * i, 8, -x2_0 * x1_2);
+    let m_mat = faer::Mat::from_fn(8, 9, |i, j| {
+        let point_idx = i / 2;
+        let (x1_0, x1_1, x1_2) = (x1[point_idx][0], x1[point_idx][1], x1[point_idx][2]);
+        let (x2_0, x2_1, x2_2) = (x2[point_idx][0], x2[point_idx][1], x2[point_idx][2]);
+        // Even row: [x2_2*x1_0, x2_2*x1_1, x2_2*x1_2, 0, 0, 0, -x2_0*x1_0, -x2_0*x1_1, -x2_0*x1_2]
+        // Odd row: [0, 0, 0, x2_2*x1_0, x2_2*x1_1, x2_2*x1_2, -x2_1*x1_0, -x2_1*x1_1, -x2_1*x1_2]
 
-            m_mat.write_unchecked(2 * i + 1, 3, x2_2 * x1_0);
-            m_mat.write_unchecked(2 * i + 1, 4, x2_2 * x1_1);
-            m_mat.write_unchecked(2 * i + 1, 5, x2_2 * x1_2);
-            m_mat.write_unchecked(2 * i + 1, 6, -x2_1 * x1_0);
-            m_mat.write_unchecked(2 * i + 1, 7, -x2_1 * x1_1);
-            m_mat.write_unchecked(2 * i + 1, 8, -x2_1 * x1_2);
+        if i % 2 == 0 {
+            match j {
+                0 => x2_2 * x1_0,
+                1 => x2_2 * x1_1,
+                2 => x2_2 * x1_2,
+                3 => 0.0,
+                4 => 0.0,
+                5 => 0.0,
+                6 => -x2_0 * x1_0,
+                7 => -x2_0 * x1_1,
+                8 => -x2_0 * x1_2,
+                _ => 0.0
+            }
+        } else {
+            match j {
+                0 => 0.0,
+                1 => 0.0,
+                2 => 0.0,
+                3 => x2_2 * x1_0,
+                4 => x2_2 * x1_1,
+                5 => x2_2 * x1_2,
+                6 => -x2_1 * x1_0,
+                7 => -x2_1 * x1_1,
+                8 => -x2_1 * x1_2,
+                _ => 0.0
+            }
         }
-    }
+    });
 
     // solve -> h_mat: 8x1
     let h_mat = m_mat
