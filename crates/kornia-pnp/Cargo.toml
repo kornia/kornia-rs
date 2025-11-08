@@ -3,13 +3,14 @@ authors = ["Christie J Purackal <christie@kornia.org>"]
 name = "kornia-pnp"
 description = "Perspective-n-Point solvers for kornia"
 
-edition.workspace = true
-homepage.workspace = true
-license.workspace = true
+categories = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
 publish = true
-repository.workspace = true
-rust-version.workspace = true
-version.workspace = true
+repository = { workspace = true }
+rust-version = { workspace = true }
+version = { workspace = true }
 
 [features]
 opencv_bench = ["dep:opencv"]

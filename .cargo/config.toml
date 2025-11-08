@@ -1,2 +1,5 @@
 [target.aarch64-unknown-linux-gnu]
-rustflags = ["-Ctarget-feature=+fp16,+fhm"]
+# Use opt-level=2 instead of 3 to work around rustc LLVM bug
+# causing SIGSEGV during cross-compilation with opt-level=3
+# See: LLVM BranchProbabilityInfo crash when compiling faer
+rustflags = ["-Copt-level=2", "-Ctarget-feature=+fp16,+fhm"]
