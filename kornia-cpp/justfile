@@ -29,6 +29,18 @@ test profile="debug":
   @echo "🧪 Running C++ tests..."
   cd build && ctest --output-on-failure
 
+# Run C++ tests with verbose output
+test-verbose profile="debug":
+  @just build-tests {{ profile }}
+  @echo "🧪 Running C++ tests (verbose)..."
+  cd build && ctest --output-on-failure --verbose
+
+# Run specific C++ test by tag/filter
+test-filter TAG profile="debug":
+  @just build-tests {{ profile }}
+  @echo "🧪 Running C++ tests matching '{{ TAG }}'..."
+  cd build && ctest --output-on-failure -R "{{ TAG }}"
+
 # Run tests with sanitizers enabled
 test-sanitizers:
   @echo "🧪 Building and running tests with sanitizers..."
