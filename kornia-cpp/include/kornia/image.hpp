@@ -17,13 +17,24 @@ using ImageSize = ::ImageSize;
 #define KORNIA_DEFINE_IMAGE_WRAPPER(CppClass, RustType, FnPrefix, DataType)                        \
     class CppClass {                                                                               \
       public:                                                                                      \
-        CppClass(rust::Box<::RustType> img) : img_(std::move(img)) {}                              \
+        CppClass(rust::Box<::RustType> img) : img_(std::move(img)) {                               \
+        }                                                                                          \
                                                                                                    \
-        size_t width() const { return FnPrefix##_width(*img_); }                                   \
-        size_t height() const { return FnPrefix##_height(*img_); }                                 \
-        size_t channels() const { return FnPrefix##_channels(*img_); }                             \
-        ImageSize size() const { return FnPrefix##_size(*img_); }                                  \
-        rust::Slice<const DataType> data() const { return FnPrefix##_data(*img_); }                \
+        size_t width() const {                                                                     \
+            return FnPrefix##_width(*img_);                                                        \
+        }                                                                                          \
+        size_t height() const {                                                                    \
+            return FnPrefix##_height(*img_);                                                       \
+        }                                                                                          \
+        size_t channels() const {                                                                  \
+            return FnPrefix##_channels(*img_);                                                     \
+        }                                                                                          \
+        ImageSize size() const {                                                                   \
+            return FnPrefix##_size(*img_);                                                         \
+        }                                                                                          \
+        rust::Slice<const DataType> data() const {                                                 \
+            return FnPrefix##_data(*img_);                                                         \
+        }                                                                                          \
                                                                                                    \
       private:                                                                                     \
         rust::Box<::RustType> img_;                                                                \
