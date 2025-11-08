@@ -12,6 +12,8 @@ using ImageSize = ::ImageSize;
 // Macro to generate C++ wrapper classes for image types.
 // All methods delegate to Rust FFI functions (zero-copy via rust::Slice).
 // Naming follows OpenCV convention: ImageU8C3 = Unsigned 8-bit, 3 Channels
+//
+// Thread safety: Concurrent reads are safe. Do not move/destroy while other threads access.
 #define KORNIA_DEFINE_IMAGE_WRAPPER(CppClass, RustType, FnPrefix, DataType)                        \
     class CppClass {                                                                               \
       public:                                                                                      \

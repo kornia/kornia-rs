@@ -8,11 +8,12 @@ Lightweight, zero-overhead C++ interface to kornia-rs. All functions are inline 
 
 ## Features
 
-- ✅ Zero-copy via `rust::Slice`
+- ✅ Zero-copy via `rust::Slice` (direct pointer into Rust memory)
 - ✅ Header-only C++ wrapper
 - ✅ Exception-based error handling
 - ✅ CMake integration with `find_package` support
 - ✅ OpenCV-style image types (`ImageU8C3`, `ImageF32C1`, etc.)
+- ✅ Thread-safe concurrent reads (standard C++ object lifetime rules apply)
 
 ## Quick Start
 
