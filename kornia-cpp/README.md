@@ -1,211 +1,115 @@
 # kornia-cpp
 
-**Thin** C++ wrapper for the Kornia Rust library using [CXX](https://cxx.rs/).
+Thin C++ wrapper for the Kornia Rust library using [CXX](https://cxx.rs/).
 
 ## Overview
 
-This is a **lightweight, zero-overhead** C++ interface to kornia-rs. All functions are inline wrappers that directly expose the Rust implementation with no data copies or performance penalties. It's essentially just namespace organization and exception handling over the raw FFI.
+Lightweight, zero-overhead C++ interface to kornia-rs. All functions are inline wrappers with no data copies or performance penalties.
 
 ## Features
 
-- ✅ **Zero-copy** - Returns Rust types directly (rust::Vec, rust::String)
-- ✅ **Header-only** C++ wrapper
+- ✅ Zero-copy via `rust::Slice`
+- ✅ Header-only C++ wrapper
 - ✅ Exception-based error handling
-- ✅ Namespace organization (`kornia::io`)
-- ✅ CMake integration
-- ✅ Minimal overhead (inline functions)
+- ✅ CMake integration with `find_package` support
+- ✅ OpenCV-style image types (`ImageU8C3`, `ImageF32C1`, etc.)
 
-## Building
-
-### Using CMake (Recommended)
-
-```bash
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build .
-```
-
-### Using Cargo (for development)
-
-```bash
-cargo build --release
-```
-
-## API
-
-### ImageResult (from Rust)
+## Quick Start
 
 ```cpp
-// Directly from Rust - zero copy!
-struct ImageResult {
-    rust::Vec<uint8_t> data;    // Raw pixel data (row-major, interleaved)
-    size_t width;                // Image width in pixels
-    size_t height;               // Image height in pixels
-    size_t channels;             // Number of channels (1 or 3)
-    bool success;                // Always true (throws on error)
-    rust::String error_message;  // Empty (throws on error)
-};
-```
-
-### Image Type
-
-```cpp
-namespace kornia {
-
-// Zero-copy alias to Rust ImageResult
-using Image = ::ImageResult;
-
-}
-```
-
-### I/O Functions
-
-Available in `kornia/io/jpeg.hpp`:
-
-```cpp
-namespace kornia::io {
-
-// Read RGB JPEG (throws std::runtime_error on failure)
-Image read_jpeg_rgb(const std::string& file_path);
-
-// Read grayscale JPEG (throws std::runtime_error on failure)  
-Image read_jpeg_gray(const std::string& file_path);
-
-}
-```
-
-## Quick Start Example
-
-```cpp
-#include <kornia/kornia.hpp>
+#include <kornia.hpp>
 #include <iostream>
 
 int main() {
-    try {
-        // Read RGB image - zero copy, returns Rust types directly
-        kornia::Image image = kornia::io::read_jpeg_rgb("path/to/image.jpg");
-        
-        std::cout << "Loaded: " << image.width << "x" << image.height 
-                  << " (" << image.channels << " channels)" << std::endl;
-        
-        // Access pixel data directly from Rust Vec
-        // Format: row-major, interleaved channels
-        size_t idx = (row * image.width + col) * image.channels + channel;
-        uint8_t pixel_value = image.data[idx];
-        
-        // Or iterate
-        for (size_t i = 0; i < image.data.size(); ++i) {
-            uint8_t value = image.data[i];
-        }
-        
-    } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
-        return 1;
-    }
+    auto image = kornia::io::read_jpeg_rgb8("image.jpg");
+    std::cout << image.width() << "x" << image.height() << std::endl;
+    
+    auto data = image.data();  // rust::Slice<const uint8_t>
+    std::cout << "First pixel R: " << (int)data[0] << std::endl;
     
     return 0;
 }
 ```
 
-## Modular Headers
+## Building
 
-You can also include specific functionality:
-
-```cpp
-#include <kornia/image.hpp>      // Just the Image type
-#include <kornia/io/jpeg.hpp>    // Just JPEG I/O
-#include <kornia/io.hpp>         // All I/O functionality
-#include <kornia/kornia.hpp>     // Everything (recommended)
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+cmake --install build --prefix ~/local  # optional
 ```
 
-## Version Management
+### Using Just
 
-The C++ library version is **automatically synchronized** with `Cargo.toml`:
-
-```cpp
-std::cout << kornia::version() << std::endl;  // "0.1.0"
+```bash
+just cpp-test          # Build and run tests
+just cpp-build-examples # Build examples
+just cpp-clean         # Clean build
 ```
 
-Update version in one place (`Cargo.toml`) and both Rust and C++ stay in sync!
-See [VERSION.md](VERSION.md) for details.
+## API
 
-See `examples/read_jpeg_example.cpp` for a complete working example.
+### Image Types
+
+```cpp
+// OpenCV-style naming: ImageU8C3 = Unsigned 8-bit, 3 Channels
+ImageU8C1   // Grayscale u8 (1 channel)
+ImageU8C3   // RGB u8 (3 channels)
+ImageU8C4   // RGBA u8 (4 channels)
+ImageF32C1  // Grayscale f32 (1 channel)
+ImageF32C3  // RGB f32 (3 channels)
+ImageF32C4  // RGBA f32 (4 channels)
+```
+
+### Image Methods
+
+```cpp
+auto image = kornia::io::read_jpeg_rgb8("image.jpg");
+
+size_t w = image.width();
+size_t h = image.height();
+size_t c = image.channels();
+ImageSize size = image.size();
+rust::Slice<const uint8_t> data = image.data();  // Zero-copy!
+```
+
+### I/O Functions
+
+```cpp
+namespace kornia::io {
+    ImageU8C3 read_jpeg_rgb8(const std::string& file_path);
+    ImageU8C1 read_jpeg_mono8(const std::string& file_path);
+}
+```
+
+## Integration
+
+### Option 1: CMake Subdirectory
+
+```cmake
+add_subdirectory(kornia-cpp)
+target_link_libraries(myapp PRIVATE kornia_cpp)
+```
+
+### Option 2: find_package
+
+```cmake
+find_package(kornia REQUIRED PATHS ~/local)
+target_link_libraries(myapp PRIVATE kornia::kornia_cpp)
+```
 
 ## Testing
 
-### Rust Tests
-
 ```bash
-cargo test
+just cpp-test           # Run all tests
+just cpp-test-verbose   # Verbose output
+just cpp-test-filter "JPEG"  # Run specific tests
 ```
 
-### C++ Tests (with CMake)
+## Examples
 
-```bash
-cd build
-ctest
-```
-
-All tests include:
-- ✅ Reading valid JPEG images
-- ✅ Error handling for invalid paths
-- ✅ Pixel access and bounds checking
-- ✅ CXX bridge compilation verification
-
-## Architecture
-
-The binding uses CXX to create a safe bridge between Rust and C++:
-
-1. **Rust Implementation**: Uses `read_image_jpeg_mono8` and `read_image_jpeg_rgb8` from `kornia-io`
-2. **FFI Bridge**: `#[cxx::bridge]` macro defines the C++-compatible interface
-3. **Wrapper Functions**: Convert Rust `Result<Image>` to C++-friendly `ImageResult` struct
-4. **Code Generation**: CXX automatically generates C++ headers and FFI glue code
-5. **C++ Usage**: Include generated headers and link against the Rust library
-
-## Integration into C++ Projects
-
-### Method 1: Using CMake (Recommended)
-
-Add Kornia as a subdirectory:
-
-```cmake
-add_subdirectory(path/to/kornia-cpp)
-
-add_executable(my_app main.cpp)
-target_link_libraries(my_app PRIVATE kornia)
-```
-
-### Method 2: Find Package
-
-After installing Kornia:
-
-```cmake
-find_package(kornia REQUIRED)
-
-add_executable(my_app main.cpp)
-target_link_libraries(my_app PRIVATE kornia::kornia)
-```
-
-### Method 3: Manual Integration
-
-1. Build the library: `cargo build --release`
-2. Add include directory: `include/`
-3. Link: `target/release/libkornia_cpp.a`
-4. Link system libraries: `pthread`, `dl`, `m` (Linux)
-
-```cmake
-add_executable(my_app main.cpp)
-target_include_directories(my_app PRIVATE 
-    path/to/kornia-cpp/include
-    path/to/kornia-cpp/target/cxxbridge
-)
-target_link_libraries(my_app PRIVATE 
-    path/to/kornia-cpp/target/release/libkornia_cpp.a
-    pthread dl m
-)
-```
+See `examples/read_jpeg/` for a complete example.
 
 ## License
 
 Apache-2.0
-

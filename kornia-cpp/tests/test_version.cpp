@@ -7,4 +7,3 @@ TEST_CASE("Library Version", "[version]") {
     REQUIRE(version != nullptr);
     REQUIRE(std::string(version).length() > 0);
 }
-

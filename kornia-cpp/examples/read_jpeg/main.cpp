@@ -19,7 +19,7 @@ int main(int argc, char* argv[]) {
         std::cout << "\n✓ Successfully loaded image!" << std::endl;
         std::cout << "  Dimensions: " << image.width() << " x " << image.height() << std::endl;
         std::cout << "  Channels: " << image.channels() << std::endl;
-        
+
         auto data = image.data();
         std::cout << "  Data size: " << data.size() << " bytes" << std::endl;
 

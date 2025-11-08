@@ -58,7 +58,7 @@ add_dependencies(kornia_rust kornia_rust_lib)
 # Create C++ library (header-only wrapper + Rust lib)
 add_library(kornia_cpp INTERFACE)
 
-# Set include directories (header-only)
+# Set include directories (allows both #include <kornia.hpp> and #include <kornia/image.hpp>)
 target_include_directories(kornia_cpp
     INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -101,8 +101,7 @@ install(FILES ${RUST_LIB_PATH}
     DESTINATION lib
 )
 
-# Install CXX bridge headers
-# Use custom install script to follow symlinks
+# Install CXX bridge headers (custom script to resolve symlinks)
 install(CODE "
     file(GLOB_RECURSE CXX_HEADERS 
         \"${CXXBRIDGE_DIR}/*.h\" 

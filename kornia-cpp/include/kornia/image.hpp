@@ -9,22 +9,22 @@ namespace kornia {
 /// Matches kornia_image::ImageSize
 using ImageSize = ::ImageSize;
 
-// Macro to generate C++ wrapper classes for image types
-// All methods delegate to Rust FFI functions, which delegate to kornia_image::Image
+// Macro to generate C++ wrapper classes for image types.
+// All methods delegate to Rust FFI functions (zero-copy via rust::Slice).
 // Naming follows OpenCV convention: ImageU8C3 = Unsigned 8-bit, 3 Channels
-#define KORNIA_DEFINE_IMAGE_WRAPPER(CppClass, RustType, FnPrefix, DataType) \
-    class CppClass { \
-    public: \
-        CppClass(rust::Box<::RustType> img) : img_(std::move(img)) {} \
-        \
-        size_t width() const { return FnPrefix##_width(*img_); } \
-        size_t height() const { return FnPrefix##_height(*img_); } \
-        size_t channels() const { return FnPrefix##_channels(*img_); } \
-        ImageSize size() const { return FnPrefix##_size(*img_); } \
-        rust::Slice<const DataType> data() const { return FnPrefix##_data(*img_); } \
-        \
-    private: \
-        rust::Box<::RustType> img_; \
+#define KORNIA_DEFINE_IMAGE_WRAPPER(CppClass, RustType, FnPrefix, DataType)                        \
+    class CppClass {                                                                               \
+      public:                                                                                      \
+        CppClass(rust::Box<::RustType> img) : img_(std::move(img)) {}                              \
+                                                                                                   \
+        size_t width() const { return FnPrefix##_width(*img_); }                                   \
+        size_t height() const { return FnPrefix##_height(*img_); }                                 \
+        size_t channels() const { return FnPrefix##_channels(*img_); }                             \
+        ImageSize size() const { return FnPrefix##_size(*img_); }                                  \
+        rust::Slice<const DataType> data() const { return FnPrefix##_data(*img_); }                \
+                                                                                                   \
+      private:                                                                                     \
+        rust::Box<::RustType> img_;                                                                \
     }
 
 // u8 image types (8-bit unsigned, common for I/O)
