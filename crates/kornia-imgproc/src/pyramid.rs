@@ -4,27 +4,6 @@ use crate::resize::resize_native;
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use kornia_tensor::CpuAllocator;
 
-fn get_pyramid_gaussian_kernel() -> (Vec<f32>, Vec<f32>) {
-    // The 2D kernel is:
-    // [
-    //   [1.0, 4.0, 6.0, 4.0, 1.0],
-    //   [4.0, 16.0, 24.0, 16.0, 4.0],
-    //   [6.0, 24.0, 36.0, 24.0, 6.0],
-    //   [4.0, 16.0, 24.0, 16.0, 4.0],
-    //   [1.0, 4.0, 6.0, 4.0, 1.0],
-    // ] / 256.0
-
-    let kernel_x = [1.0, 4.0, 6.0, 4.0, 1.0]
-        .iter()
-        .map(|&x| x / 16.0)
-        .collect();
-    let kernel_y = [1.0, 4.0, 6.0, 4.0, 1.0]
-        .iter()
-        .map(|&x| x / 16.0)
-        .collect();
-
-    (kernel_x, kernel_y)
-}
 
 /// Upsample an image and then blur it.
 ///
@@ -87,8 +66,23 @@ pub fn pyrup<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 
     resize_native(src, &mut upsampled, InterpolationMode::Bilinear)?;
 
-    let (kernel_x, kernel_y) = get_pyramid_gaussian_kernel();
+    // The 2D kernel is:
+    // [
+    //   [1.0, 4.0, 6.0, 4.0, 1.0],
+    //   [4.0, 16.0, 24.0, 16.0, 4.0],
+    //   [6.0, 24.0, 36.0, 24.0, 6.0],
+    //   [4.0, 16.0, 24.0, 16.0, 4.0],
+    //   [1.0, 4.0, 6.0, 4.0, 1.0],
+    // ] / 256.0
+    let kernel_x = [0.0625_f32, 0.25, 0.375, 0.25, 0.0625];
+    let kernel_y = [0.0625_f32, 0.25, 0.375, 0.25, 0.0625];
+
     separable_filter(&upsampled, dst, &kernel_x, &kernel_y)?;
+    // Possible improvement :
+    // instead of using separable_filter,
+    // a parallelized implementation of this specific gaussian filter
+    // would be much faster
+
 
     Ok(())
 }
