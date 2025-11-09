@@ -34,7 +34,6 @@ add_custom_command(
     DEPENDS 
         ${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml
         ${CMAKE_CURRENT_SOURCE_DIR}/src/lib.rs
-        ${CMAKE_CURRENT_SOURCE_DIR}/build.rs
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Building Rust library with Cargo (${CARGO_PROFILE} profile)"
     USES_TERMINAL
