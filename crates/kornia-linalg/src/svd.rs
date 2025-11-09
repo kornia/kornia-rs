@@ -326,7 +326,9 @@ fn qr_givens_quaternion(a1: f32, a2: f32) -> Givens {
     let b = a1 < 0.0;
     cond_swap(b, &mut g.sin_theta, &mut g.cos_theta);
 
-    let w = (g.cos_theta * g.cos_theta + g.sin_theta * g.sin_theta).sqrt().recip();
+    let w = (g.cos_theta * g.cos_theta + g.sin_theta * g.sin_theta)
+        .sqrt()
+        .recip();
     g.cos_theta *= w;
     g.sin_theta *= w;
     g
@@ -392,27 +394,15 @@ fn qr_decomposition(b_mat: &mut Mat3) -> QR3 {
 
     let r = *b_mat;
 
-    // --- Construct Q = Q1 * Q2 * Q3 ---    
+    // --- Construct Q = Q1 * Q2 * Q3 ---
     // Q1 = (Q1.T).T
-    let q1 = Mat3::from_cols(
-        Vec3::new(a1, b1, 0.0),
-        Vec3::new(-b1, a1, 0.0),
-        Vec3::Z,
-    );
-    
+    let q1 = Mat3::from_cols(Vec3::new(a1, b1, 0.0), Vec3::new(-b1, a1, 0.0), Vec3::Z);
+
     // Q2 = (Q2.T).T
-    let q2 = Mat3::from_cols(
-        Vec3::new(a2, 0.0, b2),
-        Vec3::Y,
-        Vec3::new(-b2, 0.0, a2),
-    );
+    let q2 = Mat3::from_cols(Vec3::new(a2, 0.0, b2), Vec3::Y, Vec3::new(-b2, 0.0, a2));
 
     // Q3 = (Q3.T).T
-    let q3 = Mat3::from_cols(
-        Vec3::X,
-        Vec3::new(0.0, a3, b3),
-        Vec3::new(0.0, -b3, a3),
-    );
+    let q3 = Mat3::from_cols(Vec3::X, Vec3::new(0.0, a3, b3), Vec3::new(0.0, -b3, a3));
 
     let q = q1 * q2 * q3;
     QR3 { q, r }
@@ -447,17 +437,13 @@ pub fn svd3(a: &Mat3) -> SVD3Set {
     s.z_axis.z = s.z_axis.z.abs();
 
     // Return the SVD result
-    SVD3Set {
-        u,
-        s,
-        v,
-    }
+    SVD3Set { u, s, v }
 }
 
 #[cfg(test)]
 mod tests {
-    use glam::{Vec3, Mat3};
     use super::*;
+    use glam::{Mat3, Vec3};
 
     /// Helper function to validate all critical SVD properties
     fn verify_svd_properties(a: &Mat3, svd: &SVD3Set, epsilon: f32) {
@@ -511,7 +497,11 @@ mod tests {
         let svd_result = svd3(&a);
         verify_svd_properties(&a, &svd_result, SVD3_EPSILON);
 
-        let s_diag = Vec3::new(svd_result.s.x_axis.x, svd_result.s.y_axis.y, svd_result.s.z_axis.z);
+        let s_diag = Vec3::new(
+            svd_result.s.x_axis.x,
+            svd_result.s.y_axis.y,
+            svd_result.s.z_axis.z,
+        );
         assert!(s_diag.abs_diff_eq(Vec3::new(3.0, 2.0, 1.0), SVD3_EPSILON));
     }
 
@@ -540,8 +530,12 @@ mod tests {
         };
         let svd_result = svd3(&a);
         verify_svd_properties(&a, &svd_result, SVD3_EPSILON);
-        
-        let s_diag = Vec3::new(svd_result.s.x_axis.x, svd_result.s.y_axis.y, svd_result.s.z_axis.z);
+
+        let s_diag = Vec3::new(
+            svd_result.s.x_axis.x,
+            svd_result.s.y_axis.y,
+            svd_result.s.z_axis.z,
+        );
         assert!(s_diag.x > SVD3_EPSILON);
         assert!(s_diag.y.abs() < SVD3_EPSILON);
         assert!(s_diag.z.abs() < SVD3_EPSILON);
@@ -552,17 +546,25 @@ mod tests {
         let a = Mat3::from_diagonal(Vec3::new(2.0, 3.0, 1.0));
         let svd_result = svd3(&a);
         verify_svd_properties(&a, &svd_result, SVD3_EPSILON);
-        let s_diag = Vec3::new(svd_result.s.x_axis.x, svd_result.s.y_axis.y, svd_result.s.z_axis.z);
+        let s_diag = Vec3::new(
+            svd_result.s.x_axis.x,
+            svd_result.s.y_axis.y,
+            svd_result.s.z_axis.z,
+        );
         assert!(s_diag.abs_diff_eq(Vec3::new(3.0, 2.0, 1.0), SVD3_EPSILON));
     }
 
     #[test]
     fn test_svd3_rotation_matrix() {
-        let a = Mat3::from_rotation_y(std::f32::consts::FRAC_PI_4); 
+        let a = Mat3::from_rotation_y(std::f32::consts::FRAC_PI_4);
         let svd_result = svd3(&a);
         verify_svd_properties(&a, &svd_result, SVD3_EPSILON);
 
-        let s_diag = Vec3::new(svd_result.s.x_axis.x, svd_result.s.y_axis.y, svd_result.s.z_axis.z);
+        let s_diag = Vec3::new(
+            svd_result.s.x_axis.x,
+            svd_result.s.y_axis.y,
+            svd_result.s.z_axis.z,
+        );
         assert!(s_diag.abs_diff_eq(Vec3::ONE, SVD3_EPSILON));
     }
 
@@ -572,7 +574,11 @@ mod tests {
         let svd_result = svd3(&a);
         verify_svd_properties(&a, &svd_result, SVD3_EPSILON);
 
-        let s_diag = Vec3::new(svd_result.s.x_axis.x, svd_result.s.y_axis.y, svd_result.s.z_axis.z);
+        let s_diag = Vec3::new(
+            svd_result.s.x_axis.x,
+            svd_result.s.y_axis.y,
+            svd_result.s.z_axis.z,
+        );
         assert!(s_diag.abs_diff_eq(Vec3::ONE, SVD3_EPSILON));
     }
 
@@ -581,11 +587,15 @@ mod tests {
         let a = Mat3::from_cols(
             Vec3::new(1.0, 4.0, 7.0),
             Vec3::new(2.0, 5.0, 8.0),
-            Vec3::new(3.0, 6.0, 10.0), 
+            Vec3::new(3.0, 6.0, 10.0),
         );
         let svd_result = svd3(&a);
         verify_svd_properties(&a, &svd_result, SVD3_EPSILON);
-        let s_diag = Vec3::new(svd_result.s.x_axis.x, svd_result.s.y_axis.y, svd_result.s.z_axis.z);
+        let s_diag = Vec3::new(
+            svd_result.s.x_axis.x,
+            svd_result.s.y_axis.y,
+            svd_result.s.z_axis.z,
+        );
         assert!(s_diag.min_element() > SVD3_EPSILON);
     }
 
@@ -598,8 +608,12 @@ mod tests {
         );
         let svd_result = svd3(&a);
         verify_svd_properties(&a, &svd_result, SVD3_EPSILON);
-        
-        let s_diag = Vec3::new(svd_result.s.x_axis.x, svd_result.s.y_axis.y, svd_result.s.z_axis.z);
+
+        let s_diag = Vec3::new(
+            svd_result.s.x_axis.x,
+            svd_result.s.y_axis.y,
+            svd_result.s.z_axis.z,
+        );
         assert!(s_diag.x > SVD3_EPSILON);
         assert!(s_diag.y > SVD3_EPSILON);
         assert!(s_diag.z.abs() < SVD3_EPSILON);
