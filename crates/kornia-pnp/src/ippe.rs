@@ -15,18 +15,11 @@ use crate::pnp::{PnPError, PnPResult};
 use glam::{Mat3A, Vec3, Vec3A};
 use kornia_lie::so3::SO3;
 
-/// Result holding the two IPPE pose solutions sorted by reprojection error (best first).
+/// Two IPPE pose solutions sorted by reprojection error (best first).
 ///
-/// Note: The current implementation of `solve_square` returns the same solution
-/// for both `first` and `second` as a temporary placeholder until the
-/// IPPE-specific second solution is implemented.
-#[derive(Debug, Clone)]
-pub struct IPPEResult {
-    /// Lowest-error pose solution.
-    pub first: PnPResult,
-    /// Second pose solution.
-    pub second: PnPResult,
-}
+/// Note: The current implementation returns the same solution twice `(best, second)`
+/// as a temporary placeholder until the IPPE-specific second solution is implemented.
+pub type IPPEResult = (PnPResult, PnPResult);
 
 /// Marker type for the IPPE solver.
 pub struct IPPE;
@@ -65,20 +58,17 @@ impl IPPE {
             .map_err(|e| PnPError::SvdFailed(e.to_string()))?;
 
         // Decompose homography into pose (assuming K = I because points are normalized).
-        let (r, t) = decompose_h_normalized(&hmat);
+        let (r_mat, t_vec) = decompose_h_normalized(&hmat);
 
-        // Convert to f32 and Rodrigues vector.
-        let r32 = [[r[0][0] as f32, r[0][1] as f32, r[0][2] as f32],
-                   [r[1][0] as f32, r[1][1] as f32, r[1][2] as f32],
-                   [r[2][0] as f32, r[2][1] as f32, r[2][2] as f32]];
-        let t32 = [t[0] as f32, t[1] as f32, t[2] as f32];
+        // Convert to arrays for result types and compute Rodrigues vector.
+        let r32 = [
+            [r_mat.x_axis.x, r_mat.y_axis.x, r_mat.z_axis.x],
+            [r_mat.x_axis.y, r_mat.y_axis.y, r_mat.z_axis.y],
+            [r_mat.x_axis.z, r_mat.y_axis.z, r_mat.z_axis.z],
+        ];
+        let t32 = [t_vec.x, t_vec.y, t_vec.z];
 
-        let mat = Mat3A::from_cols_array(&[
-            r32[0][0], r32[1][0], r32[2][0],
-            r32[0][1], r32[1][1], r32[2][1],
-            r32[0][2], r32[1][2], r32[2][2],
-        ]);
-        let rvec_v = SO3::from_matrix(&mat).log();
+        let rvec_v = SO3::from_matrix(&r_mat).log();
         let rvec = [rvec_v.x, rvec_v.y, rvec_v.z];
 
         // Compute RMS reprojection error under normalized intrinsics (K=I).
@@ -97,64 +87,31 @@ impl IPPE {
         };
 
         let second = best.clone();
-
-        Ok(IPPEResult { first: best, second })
+        Ok((best, second))
     }
 }
 
 /// Compute the homography-based pose decomposition assuming normalized image coordinates (K = I).
-fn decompose_h_normalized(h: &[[f64; 3]; 3]) -> ([[f64; 3]; 3], [f64; 3]) {
-    // Columns of H
-    let h1 = [h[0][0], h[1][0], h[2][0]];
-    let h2 = [h[0][1], h[1][1], h[2][1]];
-    let h3 = [h[0][2], h[1][2], h[2][2]];
+fn decompose_h_normalized(h: &[[f64; 3]; 3]) -> (Mat3A, Vec3) {
+    // Columns of H (cast to f32 vectors).
+    let h1 = Vec3::new(h[0][0] as f32, h[1][0] as f32, h[2][0] as f32);
+    let h2 = Vec3::new(h[0][1] as f32, h[1][1] as f32, h[2][1] as f32);
+    let h3 = Vec3::new(h[0][2] as f32, h[1][2] as f32, h[2][2] as f32);
 
-    let n1 = (h1[0] * h1[0] + h1[1] * h1[1] + h1[2] * h1[2]).sqrt();
-    let n2 = (h2[0] * h2[0] + h2[1] * h2[1] + h2[2] * h2[2]).sqrt();
+    let n1 = h1.length();
+    let n2 = h2.length();
     let s = 1.0 / (n1 * n2).sqrt(); // scale so that ||r1|| ≈ ||r2|| ≈ 1
 
-    let mut r1 = [h1[0] * s, h1[1] * s, h1[2] * s];
-    let mut r2 = [h2[0] * s, h2[1] * s, h2[2] * s];
-    let mut r3 = [
-        r1[1] * r2[2] - r1[2] * r2[1],
-        r1[2] * r2[0] - r1[0] * r2[2],
-        r1[0] * r2[1] - r1[1] * r2[0],
-    ];
+    let r1 = h1 * s;
+    let r2 = h2 * s;
+    let r3 = r1.cross(r2);
 
-    // Orthonormalize R via SVD-based projection onto SO(3).
-    let r_mat = Mat3A::from_cols(
-        Vec3A::new(r1[0] as f32, r1[1] as f32, r1[2] as f32),
-        Vec3A::new(r2[0] as f32, r2[1] as f32, r2[2] as f32),
-        Vec3A::new(r3[0] as f32, r3[1] as f32, r3[2] as f32),
-    );
-    let so3 = SO3::from_matrix(&r_mat);
-    let r_proj = so3.matrix();
-    r1 = [
-        r_proj.x_axis.x as f64,
-        r_proj.x_axis.y as f64,
-        r_proj.x_axis.z as f64,
-    ];
-    r2 = [
-        r_proj.y_axis.x as f64,
-        r_proj.y_axis.y as f64,
-        r_proj.y_axis.z as f64,
-    ];
-    r3 = [
-        r_proj.z_axis.x as f64,
-        r_proj.z_axis.y as f64,
-        r_proj.z_axis.z as f64,
-    ];
+    // Orthonormalize R via projection onto SO(3).
+    let r_mat = Mat3A::from_cols(Vec3A::from(r1), Vec3A::from(r2), Vec3A::from(r3));
+    let r_proj = SO3::from_matrix(&r_mat).matrix();
 
-    let t = [h3[0] * s, h3[1] * s, h3[2] * s];
-
-    (
-        [
-            [r1[0], r1[1], r1[2]],
-            [r2[0], r2[1], r2[2]],
-            [r3[0], r3[1], r3[2]],
-        ],
-        t,
-    )
+    let t = h3 * s;
+    (r_proj, t)
 }
 
 /// Generate the 3D object points of a square in the canonical order and z=0 plane.
