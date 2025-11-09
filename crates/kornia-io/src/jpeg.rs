@@ -52,11 +52,10 @@ pub fn write_image_jpeg_gray8<A: ImageAllocator>(
 ///
 /// ```rust
 /// use kornia_io::jpeg::encode_image_jpeg_rgb8;
-/// use kornia_image::Image;
+/// use kornia_image::{Image, allocator::CpuAllocator};
 ///
-/// let image: Image<u8, 3> = ...; // your image
-/// let jpeg_bytes = encode_image_jpeg_rgb8(&image, 95)?;
-/// std::fs::write("output.jpg", jpeg_bytes)?;
+/// let image = Image::<u8, 3, CpuAllocator>::from_size_val([258, 195].into(), 0, CpuAllocator).expect("Failed to create image");
+/// let jpeg_bytes = encode_image_jpeg_rgb8(&image, 100).expect("Failed to encode image");
 /// ```
 pub fn encode_image_jpeg_rgb8<A: ImageAllocator>(
     image: &Image<u8, 3, A>,
