@@ -18,14 +18,23 @@ else()
     set(RUST_LIB_DIR ${CARGO_TARGET_DIR}/debug)
 endif()
 
-# Determine the library name based on platform
+# Determine the library name and path based on platform
+# Windows: kornia_cpp.lib, Unix: libkornia_cpp.a, macOS: libkornia_cpp.a
 if(WIN32)
+    # Windows uses .lib for static libraries
     set(RUST_LIB_NAME "kornia_cpp.lib")
-    set(RUST_LIB_PATH "${RUST_LIB_DIR}/${RUST_LIB_NAME}")
-else()
+    set(RUST_INSTALL_NAME ${RUST_LIB_NAME})
+elseif(APPLE)
+    # macOS uses lib prefix
     set(RUST_LIB_NAME "libkornia_cpp.a")
-    set(RUST_LIB_PATH "${RUST_LIB_DIR}/${RUST_LIB_NAME}")
+    set(RUST_INSTALL_NAME ${RUST_LIB_NAME})
+else()
+    # Linux and other Unix systems
+    set(RUST_LIB_NAME "libkornia_cpp.a")
+    set(RUST_INSTALL_NAME ${RUST_LIB_NAME})
 endif()
+
+set(RUST_LIB_PATH "${RUST_LIB_DIR}/${RUST_LIB_NAME}")
 
 # Build the Rust library as a custom command (runs first)
 add_custom_command(
@@ -76,10 +85,16 @@ target_link_libraries(kornia_cpp
 )
 
 # Handle platform-specific system libraries
+# These are required by Rust's standard library
 if(UNIX AND NOT APPLE)
+    # Linux: pthread (threading), dl (dynamic linking), m (math)
     target_link_libraries(kornia_cpp INTERFACE pthread dl m)
 elseif(APPLE)
+    # macOS: pthread (threading)
     target_link_libraries(kornia_cpp INTERFACE pthread)
+elseif(WIN32)
+    # Windows: Winsock, user environment, crypto APIs, NT DLL
+    target_link_libraries(kornia_cpp INTERFACE ws2_32 userenv bcrypt ntdll)
 endif()
 
 # Installation rules
