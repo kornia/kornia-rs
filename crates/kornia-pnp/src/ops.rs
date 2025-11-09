@@ -137,9 +137,9 @@ pub(crate) fn gauss_newton(beta_init: [f32; 4], null4: &DMatrix<f32>, rho: &[f32
     for _ in 0..MAX_ITERATIONS {
         let mut vs = [Vector3::zeros(); NUM_CONTROL_POINTS];
 
-        for i in 0..NUM_CONTROL_POINTS {
+        for (i, v) in vs.iter_mut().enumerate() {
             let m: Matrix3x4<f32> = null4.fixed_view::<3, 4>(i * 3, 0).into();
-            vs[i] = m * bet;
+            *v = m * bet;
         }
 
         let mut f = SVector::<f32, NUM_PAIRS>::zeros();
