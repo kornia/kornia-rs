@@ -301,20 +301,21 @@ mod tests {
     #[test]
     fn encode_jpeg_rgb8() -> Result<(), IoError> {
         let image = read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
-        
+
         let jpeg_bytes = encode_image_jpeg_rgb8(&image, 100)?;
-        
+
         // Verify JPEG magic bytes (0xFF 0xD8)
         assert!(jpeg_bytes.len() > 2, "JPEG output is too small");
         assert_eq!(jpeg_bytes[0], 0xFF, "Invalid JPEG magic byte 1");
         assert_eq!(jpeg_bytes[1], 0xD8, "Invalid JPEG magic byte 2");
-        
+
         // Verify we can decode it back
-        let mut decoded: Image<u8, 3, _> = Image::from_size_val([258, 195].into(), 0, CpuAllocator)?;
+        let mut decoded: Image<u8, 3, _> =
+            Image::from_size_val([258, 195].into(), 0, CpuAllocator)?;
         decode_image_jpeg_rgb8(&jpeg_bytes, &mut decoded)?;
         assert_eq!(decoded.cols(), 258);
         assert_eq!(decoded.rows(), 195);
-        
+
         Ok(())
     }
 }
