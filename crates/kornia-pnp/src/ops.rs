@@ -1,6 +1,6 @@
 #![allow(clippy::op_ref)]
 use glam::{Mat3, Vec3};
-use nalgebra::{DMatrix, Matrix4, Vector3, Vector4, SMatrix, SVector, Matrix3x4};
+use nalgebra::{DMatrix, Matrix3x4, Matrix4, SMatrix, SVector, Vector3, Vector4};
 
 /// Compute the centroid of a set of points.
 pub(crate) fn compute_centroid(pts: &[[f32; 3]]) -> [f32; 3] {
@@ -56,7 +56,6 @@ pub(crate) fn project_sq_error(
 }
 
 const EPSILON: f32 = 1e-10;
-
 const NUM_CONTROL_POINTS: usize = 4;
 const MAX_ITERATIONS: usize = 6;
 const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
@@ -124,21 +123,20 @@ pub fn solve_4x4_cholesky(a: &Matrix4<f32>, b: &Vector4<f32>) -> Option<Vector4<
     let x3 = (y3 - l_43 * x4) * inv_l33;
     let x2 = (y2 - (l_32 * x3 + l_42 * x4)) * inv_l22;
     let x1 = (y1 - (l_21 * x2 + l_31 * x3 + l_41 * x4)) * inv_l11;
-
     Some(Vector4::new(x1, x2, x3, x4))
 }
 
 /// Performs optimization using the Gauss-Newton algorithm.
 pub(crate) fn gauss_newton(beta_init: [f32; 4], null4: &DMatrix<f32>, rho: &[f32; 6]) -> [f32; 4] {
     const DAMPING: f32 = 1e-9;
-    const STOP_EPS: f32 = 1e-8; 
+    const STOP_EPS: f32 = 1e-8;
 
     let mut bet = Vector4::from(beta_init);
     let rho_vec = SVector::<f32, NUM_PAIRS>::from_row_slice(rho);
 
     for _ in 0..MAX_ITERATIONS {
         let mut vs = [Vector3::zeros(); NUM_CONTROL_POINTS];
-        
+
         for i in 0..NUM_CONTROL_POINTS {
             let m: Matrix3x4<f32> = null4.fixed_view::<3, 4>(i * 3, 0).into();
             vs[i] = m * bet;
@@ -149,7 +147,7 @@ pub(crate) fn gauss_newton(beta_init: [f32; 4], null4: &DMatrix<f32>, rho: &[f32
 
         for (r, &(i, jj)) in PAIRS.iter().enumerate() {
             let diff = vs[i] - vs[jj];
-            f[r] = diff.norm_squared(); 
+            f[r] = diff.norm_squared();
 
             let rows_i = null4.fixed_rows::<3>(i * 3);
             let rows_jj = null4.fixed_rows::<3>(jj * 3);
@@ -164,7 +162,7 @@ pub(crate) fn gauss_newton(beta_init: [f32; 4], null4: &DMatrix<f32>, rho: &[f32
 
         f -= rho_vec;
 
-        let mut a = Matrix4::from(j.transpose() * j);
+        let a = Matrix4::from(j.transpose() * j);
         let b = Vector4::from(j.transpose() * f);
 
         a.diagonal().add_scalar_mut(DAMPING);
@@ -238,5 +236,60 @@ mod gauss_newton_tests {
         for i in 0..4 {
             assert_relative_eq!(result[i], beta_true[i], epsilon = 1e-6);
         }
+    }
+
+    #[test]
+    fn test_solve_4x4_cholesky_valid() {
+        // Create a known symmetric positive-definite matrix
+        // A = [ 5, -1,  0,  0]
+        //     [-1,  5, -1,  0]
+        //     [ 0, -1,  5, -1]
+        //     [ 0,  0, -1,  5]
+        let a = Matrix4::new(
+            5.0, -1.0, 0.0, 0.0, -1.0, 5.0, -1.0, 0.0, 0.0, -1.0, 5.0, -1.0, 0.0, 0.0, -1.0, 5.0,
+        );
+        let b = Vector4::new(1.0, 2.0, 3.0, 4.0);
+
+        // Known solution x for A*x = b
+        let expected_x = Vector4::new(0.3303085, 0.6515426, 0.92740476, 0.98548114);
+        if let Some(x) = solve_4x4_cholesky(&a, &b) {
+            assert_relative_eq!(x, expected_x, epsilon = 1e-4);
+        } else {
+            panic!("Cholesky decomposition failed for a valid matrix.");
+        }
+    }
+
+    #[test]
+    fn test_solve_4x4_cholesky_non_positive_definite() {
+        // Not positive-definite (m22 = -1.0)
+        let a_non_pd = Matrix4::new(
+            4.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, // This row makes it non-PD
+            1.0, -1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 6.0,
+        );
+
+        let b = Vector4::new(1.0, 2.0, 3.0, 4.0);
+
+        let result = solve_4x4_cholesky(&a_non_pd, &b);
+        assert!(
+            result.is_none(),
+            "Solver should return None for non-positive-definite matrix."
+        );
+    }
+
+    #[test]
+    fn test_solve_4x4_cholesky_zero_on_diagonal() {
+        // Not positive-definite (m11 = 0.0)
+        let a_zero_diag = Matrix4::new(
+            0.0, 1.0, 1.0, 1.0, // This row makes it non-PD
+            1.0, 3.0, -1.0, 1.0, 1.0, -1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 6.0,
+        );
+
+        let b = Vector4::new(1.0, 2.0, 3.0, 4.0);
+
+        let result = solve_4x4_cholesky(&a_zero_diag, &b);
+        assert!(
+            result.is_none(),
+            "Solver should return None for matrix with zero on diagonal."
+        );
     }
 }
