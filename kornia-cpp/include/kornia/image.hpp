@@ -36,6 +36,10 @@ using ImageSize = ::ImageSize;
             return FnPrefix##_data(*img_);                                                         \
         }                                                                                          \
                                                                                                    \
+        const ::RustType& inner() const {                                                          \
+            return *img_;                                                                          \
+        }                                                                                          \
+                                                                                                   \
       private:                                                                                     \
         rust::Box<::RustType> img_;                                                                \
     }

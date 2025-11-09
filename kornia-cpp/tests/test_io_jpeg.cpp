@@ -41,3 +41,30 @@ TEST_CASE("Read JPEG - Error Handling", "[io][jpeg][error]") {
     REQUIRE_THROWS(kornia::io::read_jpeg_rgb8("/nonexistent/image.jpg"));
     REQUIRE_THROWS(kornia::io::read_jpeg_rgb8(""));
 }
+TEST_CASE("Encode JPEG RGB8", "[io][jpeg][encode]") {
+    std::string path = get_test_image_path();
+    if (path.empty())
+        SKIP("Test image not found");
+
+    // Load test image
+    auto image = kornia::io::read_jpeg_rgb8(path);
+
+    // Encode to JPEG bytes (returns std::vector)
+    std::vector<uint8_t> jpeg_bytes = kornia::io::encode_jpeg_rgb8(image, 100);
+
+    // Verify JPEG magic bytes (0xFF 0xD8)
+    REQUIRE(jpeg_bytes.size() > 2);
+    REQUIRE(jpeg_bytes[0] == 0xFF);
+    REQUIRE(jpeg_bytes[1] == 0xD8);
+
+    // Verify JPEG end marker (0xFF 0xD9) at the end
+    REQUIRE(jpeg_bytes[jpeg_bytes.size() - 2] == 0xFF);
+    REQUIRE(jpeg_bytes[jpeg_bytes.size() - 1] == 0xD9);
+
+    // Decode from std::vector (works with Unreal, OpenCV, etc.)
+    auto decoded = kornia::io::decode_jpeg_rgb8(jpeg_bytes);
+
+    REQUIRE(decoded.width() == 258);
+    REQUIRE(decoded.height() == 195);
+    REQUIRE(decoded.channels() == 3);
+}
