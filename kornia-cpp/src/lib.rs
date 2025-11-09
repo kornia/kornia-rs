@@ -112,6 +112,39 @@ mod ffi {
         ///
         /// Throws exception if file cannot be read or is invalid
         fn read_jpeg_rgb8(file_path: &str) -> Result<Box<ImageU8C3>>;
+
+        /// Encode an RGB u8 image to JPEG bytes
+        ///
+        /// # Arguments
+        ///
+        /// * `image` - The RGB image to encode
+        /// * `quality` - JPEG quality (0-100, where 100 is highest quality)
+        ///
+        /// # Returns
+        ///
+        /// Vec<u8> containing JPEG-encoded bytes
+        ///
+        /// # Errors
+        ///
+        /// Throws exception if encoding fails
+        fn encode_jpeg_rgb8(image: &ImageU8C3, quality: u8) -> Result<Vec<u8>>;
+
+        /// Decode JPEG bytes to RGB u8 image
+        ///
+        /// # Arguments
+        ///
+        /// * `jpeg_bytes` - JPEG-encoded bytes (borrows via slice)
+        ///
+        /// # Returns
+        ///
+        /// ImageU8C3 containing decoded RGB data
+        ///
+        /// # Errors
+        ///
+        /// Throws exception if decoding fails
+        fn decode_jpeg_rgb8(jpeg_bytes: &[u8]) -> Result<Box<ImageU8C3>>;
+
+        fn version() -> &'static str;
     }
 }
 
@@ -221,4 +254,37 @@ fn read_jpeg_mono8(file_path: &str) -> Result<Box<ImageU8C1>, Box<dyn std::error
 fn read_jpeg_rgb8(file_path: &str) -> Result<Box<ImageU8C3>, Box<dyn std::error::Error>> {
     let image = jpeg::read_image_jpeg_rgb8(file_path)?;
     Ok(Box::new(ImageU8C3(image.into_inner())))
+}
+
+/// Encode an RGB u8 image to JPEG bytes
+fn encode_jpeg_rgb8(image: &ImageU8C3, quality: u8) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let bytes = jpeg::encode_image_jpeg_rgb8(&image.0, quality)?;
+    Ok(bytes)
+}
+
+/// Decode JPEG bytes to RGB u8 image (zero-copy via slice)
+fn decode_jpeg_rgb8(jpeg_bytes: &[u8]) -> Result<Box<ImageU8C3>, Box<dyn std::error::Error>> {
+    // First, get image info to create properly sized image
+    let (size, num_channels) = jpeg::decode_image_jpeg_info(jpeg_bytes)?;
+    
+    if num_channels != 3 {
+        return Err(format!("Expected RGB (3 channels), got {} channels", num_channels).into());
+    }
+    
+    // Create output image
+    let mut image = kornia_image::Image::<u8, 3, CpuAllocator>::from_size_val(
+        size,
+        0,
+        CpuAllocator,
+    )?;
+    
+    // Decode into it (zero-copy from slice)
+    jpeg::decode_image_jpeg_rgb8(jpeg_bytes, &mut image)?;
+    
+    Ok(Box::new(ImageU8C3(image)))
+}
+
+/// Get library version string
+fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
 }
