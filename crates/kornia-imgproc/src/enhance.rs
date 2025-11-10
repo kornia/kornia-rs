@@ -1,4 +1,5 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use num_traits::{Float, FromPrimitive};
 
 use crate::parallel;
 
@@ -60,6 +61,63 @@ where
     Ok(())
 }
 
+/// Adjust the brightness of an image.
+///
+/// This function follows the logic from the Python kornia implementation:
+/// dst(x,y,c) = src(x,y,c) + factor
+///
+/// The result is clamped to the range [0.0, 1.0] if clip_output is true.
+///
+/// # Arguments
+///
+/// * `src` - The first input image.
+/// * `factor` - The brightness factor to add to each pixel.
+/// * `dst` - The output image to store the result.
+/// * `clip_output` - Whether to clamp the output to the [0.0, 1.0] range.
+///
+/// # Returns
+///
+/// Returns Ok(()) if the operation is successful.
+///
+/// # Errors
+///
+/// Returns an error if the sizes of `src` and `dst` do not match.
+pub fn adjust_brightness<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, C, A1>,
+    factor: T,
+    dst: &mut Image<T, C, A2>,
+    clip_output: bool,
+) -> Result<(), ImageError>
+where
+    T: Float + FromPrimitive + std::fmt::Debug + Send + Sync + Copy,
+{
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.width(),
+            src.height(),
+            dst.width(),
+            dst.height(),
+        ));
+    }
+
+    // This is the Rust translation of the logic:
+    // img_adjust = image + factor
+    // if clip_output:
+    //     img_adjust = img_adjust.clamp(min=0.0, max=1.0)
+
+    parallel::par_iter_rows_val(src, dst, |&src_pixel, dst_pixel| {
+        let val = src_pixel + factor;
+        if clip_output {
+            // T::zero() is 0.0, T::one() is 1.0
+            *dst_pixel = val.clamp(T::zero(), T::one());
+        } else {
+            *dst_pixel = val;
+        }
+    });
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use kornia_image::{Image, ImageError, ImageSize};
@@ -98,6 +156,60 @@ mod tests {
             .as_slice()
             .iter()
             .zip(expected.iter())
+            .for_each(|(a, b)| {
+                assert!((a - b).abs() < 1e-6);
+            });
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_adjust_brightness() -> Result<(), ImageError> {
+        // Create a 2x1 image with 0.5f32 values
+        let src_data = vec![0.5f32, 0.5];
+        let src = Image::<f32, 1, _>::new(
+            ImageSize {
+                width: 2,
+                height: 1,
+            },
+            src_data,
+            CpuAllocator,
+        )?;
+
+        // Create an empty destination image
+        let mut dst = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+
+        // 1. Test normal brightening (0.5 + 0.2 = 0.7)
+        let factor1 = 0.2f32;
+        let expected1 = [0.7f32, 0.7];
+        super::adjust_brightness(&src, factor1, &mut dst, true)?;
+
+        dst.as_slice()
+            .iter()
+            .zip(expected1.iter())
+            .for_each(|(a, b)| {
+                assert!((a - b).abs() < 1e-6);
+            });
+
+        // 2. Test clamping (0.5 + 0.8 = 1.3, should clamp to 1.0)
+        let factor2 = 0.8f32;
+        let expected2 = [1.0f32, 1.0];
+        super::adjust_brightness(&src, factor2, &mut dst, true)?;
+
+        dst.as_slice()
+            .iter()
+            .zip(expected2.iter())
+            .for_each(|(a, b)| {
+                assert!((a - b).abs() < 1e-6);
+            });
+
+        // 3. Test no-clip (0.5 + 0.8 = 1.3, should be 1.3)
+        let expected3 = [1.3f32, 1.3];
+        super::adjust_brightness(&src, factor2, &mut dst, false)?; // Same factor, clip_output=false
+
+        dst.as_slice()
+            .iter()
+            .zip(expected3.iter())
             .for_each(|(a, b)| {
                 assert!((a - b).abs() < 1e-6);
             });

@@ -95,7 +95,7 @@ impl Connector {
 /// # Architecture
 ///
 /// - **Vision Model**: SigLIP vision encoder for processing images
-/// - **Text Model**: Llama language model for text understanding and generation  
+/// - **Text Model**: Llama language model for text understanding and generation
 /// - **Connector**: Bridge module that aligns vision and text representations
 /// - **Cache**: Maintains attention cache for efficient sequential generation
 ///
@@ -169,7 +169,7 @@ impl Model {
     /// # Model Components Loaded
     ///
     /// - **Text Model**: Llama language model with 24 layers and 2048 hidden size
-    /// - **Vision Model**: SigLIP vision encoder with 27 layers and 1152 hidden size  
+    /// - **Vision Model**: SigLIP vision encoder with 27 layers and 1152 hidden size
     /// - **Connector**: Modality projection layer (10368 → 2048 dimensions)
     /// - **Cache**: Attention cache initialized for the specified device and dtype
     ///

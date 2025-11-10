@@ -2,7 +2,7 @@ Example showing how to use the Google Paligemma model with Candle.
 ## Setup
 
 Setup huggingface account credentials to access the model.
- 
+
  Accept the licence once (in a browser)
 
     Open https://huggingface.co/google/paligemma-3b-mix-224

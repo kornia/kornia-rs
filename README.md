@@ -390,7 +390,7 @@ We welcome contributions! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for:
 
 ### Community
 
-This is a child project of [Kornia](https://github.com/kornia/kornia). 
+This is a child project of [Kornia](https://github.com/kornia/kornia).
 
 - 💬 Join our community on [Discord](https://discord.gg/HfnywwpBnD)
 - 💖 Support the project on [OpenCollective](https://opencollective.com/kornia)
