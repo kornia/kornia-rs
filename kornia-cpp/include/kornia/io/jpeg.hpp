@@ -6,32 +6,21 @@
 
 namespace kornia {
 namespace io {
+namespace jpeg {
+
+// Import image types into io namespace for convenience
+using kornia::image::ImageBuffer;
+using kornia::image::ImageU8C1;
+using kornia::image::ImageU8C3;
 
 /// @brief Read an RGB JPEG image from file (u8, 3 channels)
 ///
 /// Uses libjpeg-turbo for high-performance JPEG decoding.
 /// Image data is owned by Rust and accessed via zero-copy rust::Slice.
 ///
-/// @param file_path Path to JPEG file (absolute or relative)
-/// @return Image<uint8_t, 3> containing RGB data in row-major, interleaved format
-/// @throws rust::Error if:
-///   - File does not exist or cannot be opened
-///   - File is not a valid JPEG
-///   - JPEG decode fails
-///   - Out of memory
-///
-/// Thread safety: Safe to call concurrently from multiple threads.
-/// Memory: Image memory is managed by Rust (automatic cleanup).
-/// Performance: Zero-copy - no data copies on FFI boundary.
-///
-/// @code{.cpp}
-/// auto image = kornia::io::read_jpeg_rgb8("photo.jpg");
-/// std::cout << image.width() << "x" << image.height() << "\n";
-/// auto data = image.data();  // rust::Slice<const uint8_t>
-/// uint8_t r = data[0];  // First pixel, R channel
-/// @endcode
-inline image::Image<uint8_t, 3> read_jpeg_rgb8(const std::string& file_path) {
-    return image::Image<uint8_t, 3>(::read_jpeg_rgb8(file_path));
+/// @note Memory is managed by Rust. Zero-copy data access.
+inline ImageU8C3 read_jpeg_rgb8(const std::string& file_path) {
+    return ImageU8C3(::read_jpeg_rgb8(file_path));
 }
 
 /// @brief Read a grayscale JPEG image from file (u8, 1 channel)
@@ -40,42 +29,33 @@ inline image::Image<uint8_t, 3> read_jpeg_rgb8(const std::string& file_path) {
 /// If source is color, it will be converted to grayscale.
 /// Image data is owned by Rust and accessed via zero-copy rust::Slice.
 ///
-/// @param file_path Path to JPEG file (absolute or relative)
-/// @return Image<uint8_t, 1> containing grayscale data in row-major format
-/// @throws rust::Error if:
-///   - File does not exist or cannot be opened
-///   - File is not a valid JPEG
-///   - JPEG decode fails
-///   - Out of memory
-///
-/// Thread safety: Safe to call concurrently from multiple threads.
-/// Memory: Image memory is managed by Rust (automatic cleanup).
-/// Performance: Zero-copy - no data copies on FFI boundary.
-///
-/// @note Known issue: May fail on some color JPEGs due to data length mismatch.
-///       This is tracked in the test suite with [!mayfail] tag.
-///
-/// @code{.cpp}
-/// auto image = kornia::io::read_jpeg_mono8("photo.jpg");
-/// std::cout << image.width() << "x" << image.height() << "\n";
-/// auto data = image.data();  // rust::Slice<const uint8_t>
-/// uint8_t gray = data[0];  // First pixel
-/// @endcode
-inline image::Image<uint8_t, 1> read_jpeg_mono8(const std::string& file_path) {
-    return image::Image<uint8_t, 1>(::read_jpeg_mono8(file_path));
+/// @note Memory is managed by Rust. Zero-copy data access.
+inline ImageU8C1 read_jpeg_mono8(const std::string& file_path) {
+    return ImageU8C1(::read_jpeg_mono8(file_path));
 }
 
-/// @brief Encode an RGB JPEG image to bytes (returns std::vector)
+/// @brief Encode an RGB JPEG image to bytes (zero-copy, into ImageBuffer)
 ///
 /// @param image RGB u8 image to encode
 /// @param quality JPEG quality (0-100, where 100 is highest quality)
-/// @return std::vector<uint8_t> containing JPEG-encoded bytes
+/// @param buffer ImageBuffer to write JPEG data into (zero-copy)
 /// @throws rust::Error if encoding fails
 ///
-/// @note Copies data from rust::Vec to std::vector for C++ interop
-inline std::vector<uint8_t> encode_jpeg_rgb8(const ImageU8C3& image, uint8_t quality) {
-    auto bytes = ::encode_jpeg_rgb8(image.inner(), quality);
-    return std::vector<uint8_t>(bytes.begin(), bytes.end());
+/// @note RECOMMENDED for performance. No copies - data stays in Rust-managed memory.
+///       Access via buffer.data()/size() or buffer.as_span() for zero-copy operations.
+///       The same buffer can be reused for different formats (JPEG, PNG, etc.).
+///
+/// @example
+/// @code
+/// kornia::io::ImageBuffer buffer;
+/// for (const auto& image : images) {
+///     buffer.clear();
+///     kornia::io::encode_jpeg_rgb8(image, 95, buffer);
+///     send_network(buffer.data(), buffer.size());  // Zero-copy
+/// }
+/// @endcode
+inline void encode_jpeg_rgb8(const ImageU8C3& image, uint8_t quality, ImageBuffer& buffer) {
+    ::encode_jpeg_rgb8(image.inner(), quality, buffer.rust_vec());
 }
 
 /// @brief Decode JPEG bytes to RGB u8 image
@@ -91,5 +71,6 @@ inline ImageU8C3 decode_jpeg_rgb8(const std::vector<uint8_t>& jpeg_bytes) {
     return ImageU8C3(::decode_jpeg_rgb8(slice));
 }
 
+} // namespace jpeg
 } // namespace io
 } // namespace kornia

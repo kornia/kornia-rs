@@ -165,8 +165,9 @@ pub fn encode_image_jpeg(image: PyImage, quality: u8) -> PyResult<Vec<u8>> {
     let image = Image::<u8, 3, _>::from_pyimage(image)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
     
-    let jpeg_bytes = J::encode_image_jpeg_rgb8(&image, quality)
+    let mut buffer = Vec::new();
+    J::encode_image_jpeg_rgb8(&image, quality, &mut buffer)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
     
-    Ok(jpeg_bytes)
+    Ok(buffer)
 }

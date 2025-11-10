@@ -96,7 +96,7 @@ mod ffi {
         /// # Errors
         ///
         /// Throws exception if file cannot be read or is invalid
-        fn read_jpeg_mono8(file_path: &str) -> Result<Box<ImageU8C1>>;
+        fn read_image_jpeg_mono8(file_path: &str) -> Result<Box<ImageU8C1>>;
 
         /// Read an RGB JPEG image from file path
         ///
@@ -111,7 +111,7 @@ mod ffi {
         /// # Errors
         ///
         /// Throws exception if file cannot be read or is invalid
-        fn read_jpeg_rgb8(file_path: &str) -> Result<Box<ImageU8C3>>;
+        fn read_image_jpeg_rgb8(file_path: &str) -> Result<Box<ImageU8C3>>;
 
         /// Encode an RGB u8 image to JPEG bytes
         ///
@@ -119,15 +119,16 @@ mod ffi {
         ///
         /// * `image` - The RGB image to encode
         /// * `quality` - JPEG quality (0-100, where 100 is highest quality)
+        /// * `buffer` - Output buffer to write the JPEG bytes into
         ///
-        /// # Returns
+        /// # Note
         ///
-        /// Vec<u8> containing JPEG-encoded bytes
+        /// The caller is responsible for clearing the buffer if needed.
         ///
         /// # Errors
         ///
         /// Throws exception if encoding fails
-        fn encode_jpeg_rgb8(image: &ImageU8C3, quality: u8) -> Result<Vec<u8>>;
+        fn encode_image_jpeg_rgb8(image: &ImageU8C3, quality: u8, buffer: &mut Vec<u8>) -> Result<()>;
 
         /// Decode JPEG bytes to RGB u8 image
         ///
@@ -142,7 +143,7 @@ mod ffi {
         /// # Errors
         ///
         /// Throws exception if decoding fails
-        fn decode_jpeg_rgb8(jpeg_bytes: &[u8]) -> Result<Box<ImageU8C3>>;
+        fn decode_image_jpeg_rgb8(jpeg_bytes: &[u8]) -> Result<Box<ImageU8C3>>;
 
         fn version() -> &'static str;
     }
@@ -245,25 +246,29 @@ define_image_type!(ImageF32C4, image_f32c4, f32, 4); // RGBA f32
 // I/O function implementations
 
 /// Read a grayscale JPEG image from file path
-fn read_jpeg_mono8(file_path: &str) -> Result<Box<ImageU8C1>, Box<dyn std::error::Error>> {
+fn read_image_jpeg_mono8(file_path: &str) -> Result<Box<ImageU8C1>, Box<dyn std::error::Error>> {
     let image = jpeg::read_image_jpeg_mono8(file_path)?;
     Ok(Box::new(ImageU8C1(image.into_inner())))
 }
 
 /// Read an RGB JPEG image from file path
-fn read_jpeg_rgb8(file_path: &str) -> Result<Box<ImageU8C3>, Box<dyn std::error::Error>> {
+fn read_image_jpeg_rgb8(file_path: &str) -> Result<Box<ImageU8C3>, Box<dyn std::error::Error>> {
     let image = jpeg::read_image_jpeg_rgb8(file_path)?;
     Ok(Box::new(ImageU8C3(image.into_inner())))
 }
 
 /// Encode an RGB u8 image to JPEG bytes
-fn encode_jpeg_rgb8(image: &ImageU8C3, quality: u8) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let bytes = jpeg::encode_image_jpeg_rgb8(&image.0, quality)?;
-    Ok(bytes)
+fn encode_image_jpeg_rgb8(
+    image: &ImageU8C3,
+    quality: u8,
+    buffer: &mut Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    jpeg::encode_image_jpeg_rgb8(&image.0, quality, buffer)?;
+    Ok(())
 }
 
 /// Decode JPEG bytes to RGB u8 image (zero-copy via slice)
-fn decode_jpeg_rgb8(jpeg_bytes: &[u8]) -> Result<Box<ImageU8C3>, Box<dyn std::error::Error>> {
+fn decode_image_jpeg_rgb8(jpeg_bytes: &[u8]) -> Result<Box<ImageU8C3>, Box<dyn std::error::Error>> {
     // First, get image info to create properly sized image
     let (size, num_channels) = jpeg::decode_image_jpeg_info(jpeg_bytes)?;
     
