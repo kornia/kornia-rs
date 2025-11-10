@@ -22,7 +22,7 @@ use kornia_lie::so3::SO3;
 pub type IPPEResult = (PnPResult, PnPResult);
 
 /// Marker type for the IPPE solver.
-pub struct IPPE;
+pub struct IPPE;    
 
 impl IPPE {
     /// Estimate two candidate poses for a square planar object from its four image corners.
@@ -33,13 +33,23 @@ impl IPPE {
     ///  - p1 = [ L/2,  L/2, 0]
     ///  - p2 = [ L/2, -L/2, 0]
     ///  - p3 = [-L/2, -L/2, 0]
-    ///
-    /// The `image_points_norm` are the corresponding undistorted, normalized image coordinates
-    /// (i.e. pixel coordinates premultiplied by K^{-1}).
     pub fn solve_square(
-        image_points_norm: &[[f32; 2]; 4],
+        points_image: &[[f32; 2]; 4],
+        k: &[[f32; 3]; 3],
         square_length: f32,
     ) -> Result<IPPEResult, PnPError> {
+        // Normalize the input image points using K^{-1}.
+        let k_mat = Mat3A::from_cols(
+            Vec3A::new(k[0][0], k[1][0], k[2][0]),
+            Vec3A::new(k[0][1], k[1][1], k[2][1]),
+            Vec3A::new(k[0][2], k[1][2], k[2][2]),
+        );
+        let k_inv = k_mat.inverse();
+        let image_points_norm: [[f32; 2]; 4] = points_image.map(|uv| {
+            let hp = k_inv * Vec3::new(uv[0], uv[1], 1.0);
+            [hp.x / hp.z, hp.y / hp.z]
+        });
+
         // Build canonical 2D square points (object plane) in the order required above.
         let h = (square_length as f64) / 2.0;
         let src: [[f64; 2]; 4] = [[-h, h], [h, h], [h, -h], [-h, -h]];
@@ -52,7 +62,7 @@ impl IPPE {
             [image_points_norm[3][0] as f64, image_points_norm[3][1] as f64],
         ];
 
-// Estimate homography mapping object-plane points to normalized image points.
+        // Estimate homography mapping object-plane points to normalized image points.
         let mut hmat = [[0.0f64; 3]; 3];
         kornia_3d::pose::homography_4pt2d(&src, &dst, &mut hmat)
             .map_err(|e| PnPError::SvdFailed(e.to_string()))?;
