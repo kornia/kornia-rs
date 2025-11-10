@@ -14,7 +14,7 @@ pub mod pnp;
 pub mod ransac;
 
 pub use epnp::{EPnP, EPnPParams};
-pub use ippe::{IPPE, IPPEResult};
+pub use ippe::{IPPEResult, IPPE};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 pub use pnp::{PnPError, PnPResult, PnPSolver};
 pub use ransac::{solve_pnp_ransac, PnPRansacError, PnPRansacResult, RansacParams};

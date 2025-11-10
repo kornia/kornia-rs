@@ -15,14 +15,20 @@ use crate::pnp::{PnPError, PnPResult};
 use glam::{Mat3A, Vec3, Vec3A};
 use kornia_lie::so3::SO3;
 
-/// Two IPPE pose solutions sorted by reprojection error (best first).
+/// Result holding the two IPPE pose solutions sorted by reprojection error (best first).
 ///
-/// Note: The current implementation returns the same solution twice `(best, second)`
-/// as a temporary placeholder until the IPPE-specific second solution is implemented.
-pub type IPPEResult = (PnPResult, PnPResult);
+/// Note: The current implementation returns the same solution twice as a
+/// temporary placeholder until the IPPE-specific second solution is implemented.
+#[derive(Debug, Clone)]
+pub struct IPPEResult {
+    /// Lowest-error pose solution.
+    pub first: PnPResult,
+    /// Second pose solution.
+    pub second: PnPResult,
+}
 
 /// Marker type for the IPPE solver.
-pub struct IPPE;    
+pub struct IPPE;
 
 impl IPPE {
     /// Estimate two candidate poses for a square planar object from its four image corners.
@@ -56,10 +62,22 @@ impl IPPE {
 
         // Target points are normalized image coordinates.
         let dst: [[f64; 2]; 4] = [
-            [image_points_norm[0][0] as f64, image_points_norm[0][1] as f64],
-            [image_points_norm[1][0] as f64, image_points_norm[1][1] as f64],
-            [image_points_norm[2][0] as f64, image_points_norm[2][1] as f64],
-            [image_points_norm[3][0] as f64, image_points_norm[3][1] as f64],
+            [
+                image_points_norm[0][0] as f64,
+                image_points_norm[0][1] as f64,
+            ],
+            [
+                image_points_norm[1][0] as f64,
+                image_points_norm[1][1] as f64,
+            ],
+            [
+                image_points_norm[2][0] as f64,
+                image_points_norm[2][1] as f64,
+            ],
+            [
+                image_points_norm[3][0] as f64,
+                image_points_norm[3][1] as f64,
+            ],
         ];
 
         // Estimate homography mapping object-plane points to normalized image points.
@@ -68,7 +86,18 @@ impl IPPE {
             .map_err(|e| PnPError::SvdFailed(e.to_string()))?;
 
         // Decompose homography into pose (assuming K = I because points are normalized).
-        let (r_mat, t_vec) = decompose_h_normalized(&hmat);
+        let h32 = Mat3A::from_cols_array(&[
+            hmat[0][0] as f32,
+            hmat[1][0] as f32,
+            hmat[2][0] as f32,
+            hmat[0][1] as f32,
+            hmat[1][1] as f32,
+            hmat[2][1] as f32,
+            hmat[0][2] as f32,
+            hmat[1][2] as f32,
+            hmat[2][2] as f32,
+        ]);
+        let (r_mat, t_vec) = decompose_h_normalized(h32);
 
         // Convert to arrays for result types and compute Rodrigues vector.
         let r32 = [
@@ -83,7 +112,7 @@ impl IPPE {
 
         // Compute RMS reprojection error under normalized intrinsics (K=I).
         let obj3d = square_object_points(square_length);
-        let rmse1 = rmse_normalized(&obj3d, image_points_norm, &r32, &t32)?;
+        let rmse1 = rmse_normalized(&obj3d, &image_points_norm, &r32, &t32)?;
 
         // For now, return the same solution twice as a placeholder; a subsequent
         // iteration will implement the Jacobian-based second solution specific to IPPE.
@@ -97,16 +126,17 @@ impl IPPE {
         };
 
         let second = best.clone();
-        Ok((best, second))
+        Ok(IPPEResult { first: best, second })
     }
 }
 
 /// Compute the homography-based pose decomposition assuming normalized image coordinates (K = I).
-fn decompose_h_normalized(h: &[[f64; 3]; 3]) -> (Mat3A, Vec3) {
-    // Columns of H (cast to f32 vectors).
-    let h1 = Vec3::new(h[0][0] as f32, h[1][0] as f32, h[2][0] as f32);
-    let h2 = Vec3::new(h[0][1] as f32, h[1][1] as f32, h[2][1] as f32);
-    let h3 = Vec3::new(h[0][2] as f32, h[1][2] as f32, h[2][2] as f32);
+fn decompose_h_normalized(h: Mat3A) -> (Mat3A, Vec3) {
+    // TODO: consider moving to kornia-3d
+    // Columns of H
+    let h1 = h.x_axis;
+    let h2 = h.y_axis;
+    let h3 = h.z_axis;
 
     let n1 = h1.length();
     let n2 = h2.length();
@@ -117,22 +147,17 @@ fn decompose_h_normalized(h: &[[f64; 3]; 3]) -> (Mat3A, Vec3) {
     let r3 = r1.cross(r2);
 
     // Orthonormalize R via projection onto SO(3).
-    let r_mat = Mat3A::from_cols(Vec3A::from(r1), Vec3A::from(r2), Vec3A::from(r3));
+    let r_mat = Mat3A::from_cols(r1, r2, r3);
     let r_proj = SO3::from_matrix(&r_mat).matrix();
 
-    let t = h3 * s;
+    let t = Vec3::from(h3 * s);
     (r_proj, t)
 }
 
 /// Generate the 3D object points of a square in the canonical order and z=0 plane.
 fn square_object_points(square_length: f32) -> [[f32; 3]; 4] {
     let h = square_length / 2.0;
-    [
-        [-h, h, 0.0],
-        [h, h, 0.0],
-        [h, -h, 0.0],
-        [-h, -h, 0.0],
-    ]
+    [[-h, h, 0.0], [h, h, 0.0], [h, -h, 0.0], [-h, -h, 0.0]]
 }
 
 /// Root-mean-square reprojection error for normalized image coordinates (K = I).
