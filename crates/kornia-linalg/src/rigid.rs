@@ -140,4 +140,67 @@ mod tests {
         }
         Ok(())
     }
+
+    #[test]
+    fn test_umeyama_identity() -> Result<(), UmeyamaError> {
+        // Source points
+        let src: [Vec3; 4] = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ];
+
+        // Dst points are identical to Src
+        let dst = src;
+
+        // Expected R is identity, t is zero
+        let r_expected = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let t_expected = [0.0, 0.0, 0.0];
+
+        let (r_est, t_est, _s) = umeyama(&src, &dst)?;
+
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_relative_eq!(r_est[i][j], r_expected[i][j], epsilon = 1e-6);
+            }
+        }
+        for k in 0..3 {
+            assert_relative_eq!(t_est[k], t_expected[k], epsilon = 1e-6);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_umeyama_translation_only() -> Result<(), UmeyamaError> {
+        // Source points
+        let src: [Vec3; 4] = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ];
+
+        // Dst is Src + a translation
+        let t_expected = [5.0, -2.0, 3.0];
+        let mut dst = [Vec3::new(0.0, 0.0, 0.0); 4];
+        for i in 0..4 {
+            dst[i] = src[i] + Vec3::new(t_expected[0], t_expected[1], t_expected[2]);
+        }
+
+        // Expected R is identity
+        let r_expected = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+        let (r_est, t_est, _s) = umeyama(&src, &dst)?;
+
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_relative_eq!(r_est[i][j], r_expected[i][j], epsilon = 1e-6);
+            }
+        }
+        for k in 0..3 {
+            assert_relative_eq!(t_est[k], t_expected[k], epsilon = 1e-6);
+        }
+        Ok(())
+    }
 }
