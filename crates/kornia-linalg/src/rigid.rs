@@ -1,8 +1,7 @@
 //! Rigid alignment utilities (Kabsch / Umeyama)
 
-// TODO: Make this work with kornia-linalg SVD(encountered some issues with precision)
-use glam::Vec3;
-use nalgebra::{Matrix3, SVD};
+use crate::svd::svd3;
+use glam::{Mat3, Vec3};
 use thiserror::Error;
 
 /// Rotation (R), translation (t), and scale (s) output of Umeyama without scaling (s = 1).
@@ -14,12 +13,6 @@ pub enum UmeyamaError {
     /// Source and destination arrays must have the same length
     #[error("Source and destination arrays must have the same length")]
     MismatchedInputLengths,
-    /// Failed to compute U in SVD
-    #[error("Failed to compute U in SVD")]
-    SvdU,
-    /// Failed to compute V^T in SVD
-    #[error("Failed to compute V^T in SVD")]
-    SvdVT,
 }
 
 /// Result type alias for Umeyama.
@@ -69,27 +62,32 @@ pub fn umeyama(src: &[Vec3], dst: &[Vec3]) -> UmeyamaResult {
         }
     }
 
-    let h_na = Matrix3::<f32>::from_row_slice(&[
-        h[0][0], h[0][1], h[0][2], h[1][0], h[1][1], h[1][2], h[2][0], h[2][1], h[2][2],
-    ]);
+    // Convert H from [[f32; 3]; 3] (row-major) to glam::Mat3 (column-major)
+    // This is the corrected block
+    let h_glam = Mat3::from_cols(
+        Vec3::new(h[0][0], h[1][0], h[2][0]), // Column 0
+        Vec3::new(h[0][1], h[1][1], h[2][1]), // Column 1
+        Vec3::new(h[0][2], h[1][2], h[2][2]), // Column 2
+    );
 
-    let svd = SVD::new(h_na, true, true);
-    let Some(u) = svd.u else {
-        return Err(UmeyamaError::SvdU);
-    };
-    let Some(v_t) = svd.v_t else {
-        return Err(UmeyamaError::SvdVT);
-    };
+    // Call the internal svd3 function
+    let svd_result = svd3(&h_glam);
+    let u = svd_result.u();
+    let v = svd_result.v();
+    let v_t = v.transpose(); // We need v_t, so we transpose v
 
-    let mut r_na = u * v_t;
-    if r_na.determinant() < 0.0 {
-        r_na.column_mut(2).scale_mut(-1.0);
+    // Calculate rotation matrix R
+    let mut r_glam = *u * v_t;
+    if r_glam.determinant() < 0.0 {
+        // glam's z_axis is the 3rd column
+        r_glam.z_axis *= -1.0;
     }
 
+    // Convert glam::Mat3 (column-major) to a row-major array
     let r_arr = [
-        [r_na[(0, 0)], r_na[(0, 1)], r_na[(0, 2)]],
-        [r_na[(1, 0)], r_na[(1, 1)], r_na[(1, 2)]],
-        [r_na[(2, 0)], r_na[(2, 1)], r_na[(2, 2)]],
+        [r_glam.x_axis.x, r_glam.y_axis.x, r_glam.z_axis.x], // Row 0
+        [r_glam.x_axis.y, r_glam.y_axis.y, r_glam.z_axis.y], // Row 1
+        [r_glam.x_axis.z, r_glam.y_axis.z, r_glam.z_axis.z], // Row 2
     ];
 
     let mut t = [0.0; 3];
