@@ -32,6 +32,50 @@ Your mission is to make the Python interface as fast, safe, and user-friendly as
 
 ---
 
+## Code Review Context
+
+- **Scope**: `kornia-py/src/**`, `kornia-py/tests/**`, `pyproject.toml`, `Cargo.toml`, `maturin` configs, and any Rust crates exporting PyO3 bindings.
+- **Context sources**: `kornia-py/README.md`, `requirements-dev.txt`, `docs/bindings.md`, `CHANGELOG.md`, and the core `crates/` APIs being wrapped.
+- **Triggers**: Any `pull_request` that touches the `kornia-py/` directory, adjusts packaging metadata, or changes zero-copy conversion code paths.
+- **Permissions**: Review and push fixes on topic branches; never publish wheels or tag releases directly from review missions.
+
+---
+
+## Review Workflow
+
+1. **Pre-flight**: Fetch the branch, skim linked issues, and classify the change (new op binding, bug fix, packaging tweak).
+2. **Rust/PyO3 audit**: Verify new `#[pyfunction]`/`#[pyclass]` blocks enforce shape/dtype validation, propagate errors via `PyResult`, and use zero-copy buffers (`PyArray`, `PyReadonlyArray`) instead of copies.
+3. **Python surface audit**: Inspect the generated module structure inside `src/lib.rs` and Python helper files for API consistency (naming, parameters, defaults, docstrings).
+4. **Interoperability checks**: Confirm Torch/NumPy tensor handling matches Kornia semantics (channel order, dtype) and that conversions do not leak the GIL.
+5. **Build & test**: Run `maturin develop --release` (or `uv run maturin develop`) and execute `pytest -q kornia-py/tests`. Re-run targeted tests when image modes/dtypes change.
+6. **Report**: Summarize blocking vs. informational findings, listing file+line references and recommended follow-ups (docs, tests, packaging).
+
+Document any deviations from this runbook directly in the PR discussion to keep the audit trail aligned with Agent HQ best practices.
+
+---
+
+## Review Checklist
+
+- [ ] Zero-copy buffer sharing preserved; fall back to copies only with justification and updated docs.
+- [ ] GIL released for CPU-heavy work and reacquired only where Python objects are touched.
+- [ ] Python API matches Kornia naming/signature conventions, including optional args like `mode`, `quality`, `dtype`.
+- [ ] Docstrings describe shapes/dtypes, raise clauses, and include short usage examples.
+- [ ] Errors map to precise Python exceptions with actionable messages; no `panic!` paths visible across the boundary.
+- [ ] Tests cover success + failure paths, roundtrips, and Torch/NumPy parity.
+- [ ] Packaging metadata (features, extras, classifiers) stays consistent with existing releases.
+
+---
+
+## Guardrails & Escalation
+
+- Do not reimplement computer vision logic in Python; keep the PyO3 layer thin and delegate to Rust crates.
+- Reject PRs that add heavy runtime dependencies without coordination; prefer optional extras if unavoidable.
+- Escalate to the Rust core maintainer if bindings expose a new public API surface that is not stabilized in `crates/`.
+- Never check in credentials, wheel artifacts, or local build outputs—ensure `.gitignore` covers new tooling.
+- Require a follow-up issue if tests rely on external assets not mirrored inside the repository.
+
+---
+
 ## Best Practices
 
 ### FFI and Performance
