@@ -26,7 +26,7 @@ pub fn umeyama(src: &[Vec3], dst: &[Vec3]) -> UmeyamaResult {
     }
     let n = src.len() as f32;
 
-    // --- Centroids (using Vec3 as requested) ---
+    // Centroids
     let mut mu_s = Vec3::ZERO;
     let mut mu_d = Vec3::ZERO;
     for i in 0..src.len() {
@@ -36,12 +36,13 @@ pub fn umeyama(src: &[Vec3], dst: &[Vec3]) -> UmeyamaResult {
     mu_s /= n;
     mu_d /= n;
 
-    // --- Covariance matrix H (using Mat3 as requested) ---
+    // Covariance matrix H
     let mut h = Mat3::ZERO;
     for i in 0..src.len() {
         let sc = src[i] - mu_s;
         let dc = dst[i] - mu_d;
         // H = sum(dc * sc.transpose())
+        // This is the outer product, calculated component-wise
         h += Mat3::from_cols(dc * sc.x, dc * sc.y, dc * sc.z);
     }
     h /= n;
@@ -50,16 +51,18 @@ pub fn umeyama(src: &[Vec3], dst: &[Vec3]) -> UmeyamaResult {
     let svd_result = svd3(&h);
     let u = svd_result.u();
     let v = svd_result.v();
-    let v_t = v.transpose(); // We need v_t, so we transpose v
 
-    // Calculate rotation matrix R
-    let mut r_glam = *u * v_t;
+    let mut u_mat = *u;
+    let v_t = v.transpose();
+
+    let mut r_glam = u_mat * v_t;
     if r_glam.determinant() < 0.0 {
-        // glam's z_axis is the 3rd column
-        r_glam.z_axis *= -1.0;
+        // Flip the last column of U and recompute R to ensure a proper rotation (det = +1)
+        u_mat.z_axis = -u_mat.z_axis;
+        r_glam = u_mat * v_t;
     }
 
-    // --- Calculate translation t ---
+    // Calculate translation t
     // t = mu_d - R * mu_s
     let t_vec: Vec3 = mu_d - (r_glam * mu_s);
     let t: [f32; 3] = t_vec.into(); // Convert Vec3 to [f32; 3]
@@ -181,7 +184,6 @@ mod tests {
         Ok(())
     }
 
-    // New test for a more complex rotation, as requested
     #[test]
     fn test_umeyama_complex_rotation() -> Result<(), UmeyamaError> {
         let src: [Vec3; 4] = [
