@@ -1,4 +1,4 @@
-use glam::{Affine3A, Mat3A, Mat4, Quat, Vec3A};
+use crate::{Affine3A, Mat3A, Mat4, Quat, Vec3A};
 use rand::Rng;
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 
@@ -44,7 +44,7 @@ impl SO3 {
         let z = r1_sqrt * (2.0 * std::f32::consts::PI * r3).sin();
 
         Self {
-            q: Quat::from_xyzw(x, y, z, w).normalize(), // Ensure normalization
+            q: Quat::from(glam::Quat::from_xyzw(x, y, z, w).normalize()), // Ensure normalization
         }
     }
 
@@ -69,7 +69,7 @@ impl SO3 {
     }
 
     pub fn matrix(&self) -> Mat3A {
-        Affine3A::from_quat(self.q).matrix3
+        Mat3A::from(Affine3A::from_quat(glam::Quat::from(self.q)).matrix3)
     }
 
     pub fn adjoint(&self) -> Mat3A {
@@ -78,14 +78,15 @@ impl SO3 {
 
     pub fn inverse(&self) -> Self {
         Self {
-            q: self.q.inverse(),
+            q: Quat::from(glam::Quat::from(self.q).inverse()),
         }
     }
 
     pub fn exp(v: Vec3A) -> Self {
-        let theta_sq = v.dot(v);
+        let v_glam = glam::Vec3A::from(v);
+        let theta_sq = v_glam.dot(v_glam);
         let theta = theta_sq.sqrt();
-        let theta_half = 0.5 * theta;
+        let theta_half: f32 = 0.5 * theta;
 
         let (w, b) = if theta < SMALL_ANGLE_EPSILON {
             // using the taylor series expansion of cos(x/2) and sin(x/2)/x around 0
@@ -111,7 +112,8 @@ impl SO3 {
             vec = -vec;
         }
 
-        let theta_sq = vec.dot(vec);
+        let vec_glam = glam::Vec3A::from(vec);
+        let theta_sq = vec_glam.dot(vec_glam);
         let theta = theta_sq.sqrt();
 
         if theta > SMALL_ANGLE_EPSILON {
@@ -148,7 +150,8 @@ impl SO3 {
 
     pub fn left_jacobian(v: Vec3A) -> Mat3A {
         let skew = Self::hat(v);
-        let theta = v.dot(v).sqrt();
+        let v_glam = glam::Vec3A::from(v);
+        let theta = v_glam.dot(v_glam).sqrt();
         let ident = Mat3A::IDENTITY;
 
         ident
@@ -158,7 +161,8 @@ impl SO3 {
 
     pub fn right_jacobian(v: Vec3A) -> Mat3A {
         let skew = Self::hat(v);
-        let theta = v.dot(v).sqrt();
+        let v_glam = glam::Vec3A::from(v);
+        let theta = v_glam.dot(v_glam).sqrt();
         let ident = Mat3A::IDENTITY;
 
         ident - ((1.0 - theta.cos()) / theta.powi(2)) * skew
@@ -178,8 +182,9 @@ impl std::ops::Mul<Vec3A> for SO3 {
     type Output = Vec3A;
 
     fn mul(self, rhs: Vec3A) -> Self::Output {
-        let quat = Quat::from_xyzw(rhs.x, rhs.y, rhs.z, 0.0);
-        let out = self.q * quat * self.q.conjugate();
+        let quat = glam::Quat::from_xyzw(rhs.x, rhs.y, rhs.z, 0.0);
+        let self_q = glam::Quat::from(self.q);
+        let out = self_q * quat * self_q.conjugate();
         Vec3A::new(out.x, out.y, out.z)
     }
 }
@@ -203,7 +208,7 @@ mod tests {
 
     #[test]
     fn test_from_quaternion() {
-        let q = Quat::from_xyzw(4.0, -2.0, 1.0, 3.5).normalize();
+        let q = Quat::from(glam::Quat::from_xyzw(4.0, -2.0, 1.0, 3.5).normalize());
         let s = SO3::from_quaternion(q);
         assert_relative_eq!(s.q.x, q.x, epsilon = EPSILON);
         assert_relative_eq!(s.q.y, q.y, epsilon = EPSILON);
@@ -226,8 +231,8 @@ mod tests {
     #[test]
     fn test_unit_norm() {
         // Test that quaternions maintain unit norm
-        let q1 = Quat::from_xyzw(1.0, 2.0, 3.0, 4.0).normalize();
-        let q2 = Quat::from_xyzw(-1.0, 0.5, -2.0, 1.5).normalize();
+        let q1 = Quat::from(glam::Quat::from_xyzw(1.0, 2.0, 3.0, 4.0).normalize());
+        let q2 = Quat::from(glam::Quat::from_xyzw(-1.0, 0.5, -2.0, 1.5).normalize());
         let s1 = SO3::from_quaternion(q1);
         let s2 = SO3::from_quaternion(q2);
         let s3 = s1 * s2;
@@ -373,7 +378,7 @@ mod tests {
     #[test]
     fn test_matrix() {
         // Test rotation matrix properties
-        let q = Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
+        let q = Quat::from(glam::Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize());
         let so3 = SO3::from_quaternion(q);
         let r = so3.matrix();
 
@@ -400,7 +405,7 @@ mod tests {
     fn test_mul() {
         // Test multiplication with identity
         let q1 = Quat::IDENTITY;
-        let q2 = Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
+        let q2 = Quat::from(glam::Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize());
         let s1 = SO3::from_quaternion(q1);
         let s2 = SO3::from_quaternion(q2);
 
@@ -432,7 +437,7 @@ mod tests {
         assert_relative_eq!(result.z, t.z, epsilon = EPSILON);
 
         // Test that rotation preserves vector length
-        let q = Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
+        let q = Quat::from(glam::Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize());
         let s2 = SO3::from_quaternion(q);
         let rotated = s2 * t;
         assert_relative_eq!(rotated.length(), t.length(), epsilon = 1e-5);
@@ -441,7 +446,7 @@ mod tests {
     #[test]
     fn test_inverse() {
         // Test inverse properties
-        let q = Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
+        let q = Quat::from(glam::Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize());
         let so3 = SO3::from_quaternion(q);
 
         // Test double inverse
@@ -469,8 +474,8 @@ mod tests {
     #[test]
     fn test_adjoint() {
         // Test adjoint properties
-        let q1 = Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
-        let q2 = Quat::from_xyzw(-0.2, 0.1, 0.4, 0.8).normalize();
+        let q1 = Quat::from(glam::Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize());
+        let q2 = Quat::from(glam::Quat::from_xyzw(-0.2, 0.1, 0.4, 0.8).normalize());
         let x = SO3::from_quaternion(q1);
         let y = SO3::from_quaternion(q2);
 
@@ -588,12 +593,12 @@ mod tests {
         // Test that rotation matrices are orthogonal
         let test_quaternions = [
             Quat::IDENTITY,
-            Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize(),
-            Quat::from_xyzw(-0.5, 0.3, -0.2, 0.7).normalize(),
+            Quat::from(glam::Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize()),
+            Quat::from(glam::Quat::from_xyzw(-0.5, 0.3, -0.2, 0.7).normalize()),
         ];
 
         for q in test_quaternions.iter() {
-            let so3 = SO3::from_quaternion(*q);
+            let so3 = SO3::from_quaternion(Quat::from(*q));
             let r = so3.matrix();
             let r_inv = so3.inverse().matrix();
 

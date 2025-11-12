@@ -1,5 +1,5 @@
 use crate::so2::SO2;
-use glam::{Mat2, Mat3A, Vec2, Vec3A};
+use crate::{Mat2, Mat3A, Vec2, Vec3A};
 use rand::Rng;
 
 #[derive(Debug, Clone, Copy)]
@@ -13,7 +13,7 @@ const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 impl SE2 {
     pub const IDENTITY: Self = Self {
         r: SO2::IDENTITY,
-        t: Vec2::from_array([0.0, 0.0]),
+        t: Vec2::ZERO,
     };
 
     pub fn new(r: SO2, t: Vec2) -> Self {
@@ -117,7 +117,7 @@ impl SE2 {
         // V⁻¹ = 1/det(V) * [[ a,  b],[-b,  a]]
         let v_inv = Mat2::from_cols_array(&[a / denom, -b / denom, b / denom, a / denom]);
 
-        let upsilon = v_inv.mul_vec2(self.t);
+        let upsilon = v_inv.mul_vec2(glam::Vec2::from(self.t));
         Vec3A::new(upsilon.x, upsilon.y, theta)
     }
 
@@ -248,7 +248,6 @@ impl std::ops::Mul<Vec2> for SE2 {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use glam::Vec3A;
 
     const EPSILON: f32 = 1e-6;
 
@@ -725,7 +724,6 @@ mod tests {
     #[test]
     fn test_right_jacobian() {
         use approx::assert_relative_eq;
-        use glam::{Mat3A, Vec3A};
 
         // Test case 1: θ = 0.5
         let v = Vec3A::new(1.0, 2.0, 0.5);
@@ -777,7 +775,6 @@ mod tests {
     #[test]
     fn test_left_jacobian() {
         use approx::assert_relative_eq;
-        use glam::{Mat3A, Vec3A};
 
         // Test case 1: θ = 0.5
         let v = Vec3A::new(1.0, 2.0, 0.5);

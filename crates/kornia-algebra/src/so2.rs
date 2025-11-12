@@ -1,4 +1,4 @@
-use glam::{Mat2, Mat3A, Vec2};
+use crate::{Mat2, Mat3A, Vec2};
 use rand::Rng;
 use std::f32::consts::TAU; // <-- Added this import
 
@@ -10,7 +10,7 @@ pub struct SO2 {
 
 impl SO2 {
     pub const IDENTITY: Self = Self {
-        z: Vec2 { x: 1.0, y: 0.0 },
+        z: Vec2(glam::Vec2::new(1.0, 0.0)),
     };
 
     pub fn new(z: Vec2) -> Self {
@@ -19,19 +19,13 @@ impl SO2 {
 
     pub fn from_matrix(mat: Mat2) -> Self {
         Self {
-            z: Vec2 {
-                x: mat.x_axis.x,
-                y: mat.x_axis.y,
-            },
+            z: Vec2::new(mat.x_axis.x, mat.x_axis.y),
         }
     }
 
     pub fn from_matrix3a(mat: Mat3A) -> Self {
         Self {
-            z: Vec2 {
-                x: mat.x_axis.x,
-                y: mat.x_axis.y,
-            },
+            z: Vec2::new(mat.x_axis.x, mat.x_axis.y),
         }
     }
 
@@ -79,10 +73,7 @@ impl SO2 {
 
     pub fn exp(theta: f32) -> Self {
         Self {
-            z: Vec2 {
-                x: theta.cos(),
-                y: theta.sin(),
-            },
+            z: Vec2::new(theta.cos(), theta.sin()),
         }
     }
 
@@ -329,7 +320,7 @@ mod tests {
     #[test]
     fn test_mul_so2() {
         let s1 = SO2::IDENTITY;
-        let s2 = SO2::new(Vec2::new(0.9, 0.1).normalize());
+        let s2 = SO2::new(Vec2::from(glam::Vec2::new(0.9, 0.1).normalize()));
 
         // Test identity * s2 = s2
         let s1_pose_s2 = s1 * s2;
@@ -345,7 +336,7 @@ mod tests {
     #[test]
     fn test_mul_vec2() {
         let s1 = SO2::IDENTITY;
-        let s2 = SO2::new(Vec2::new(0.9, 0.1).normalize());
+        let s2 = SO2::new(Vec2::from(glam::Vec2::new(0.9, 0.1).normalize()));
         let t1 = Vec2::new(1.0, 2.0);
         let t2 = Vec2::new(3.0, 4.0);
 
@@ -444,7 +435,7 @@ mod tests {
 
         // Test that rotation matrix is orthogonal (R^T * R = I)
         let transpose = matrix.transpose();
-        let product = transpose * matrix;
+        let product = Mat2::from(glam::Mat2::from(transpose) * glam::Mat2::from(matrix));
         assert_relative_eq!(product.x_axis.x, 1.0, epsilon = EPSILON);
         assert_relative_eq!(product.y_axis.y, 1.0, epsilon = EPSILON);
         assert_relative_eq!(product.x_axis.y, 0.0, epsilon = EPSILON);

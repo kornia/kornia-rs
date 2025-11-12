@@ -1,5 +1,5 @@
 use crate::so3::SO3;
-use glam::{Mat3A, Mat4, Quat, Vec3A};
+use crate::{Mat3A, Mat4, Quat, Vec3A};
 use rand::Rng;
 
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
@@ -13,7 +13,7 @@ pub struct SE3 {
 impl SE3 {
     pub const IDENTITY: Self = Self {
         r: SO3::IDENTITY,
-        t: Vec3A::new(0.0, 0.0, 0.0),
+        t: Vec3A::ZERO,
     };
 
     pub fn new(rotation: SO3, translation: Vec3A) -> Self {
@@ -109,7 +109,8 @@ impl SE3 {
     }
 
     pub fn exp(upsilon: Vec3A, omega: Vec3A) -> Self {
-        let theta2 = omega.dot(omega);
+        let omega_glam = glam::Vec3A::from(omega);
+        let theta2 = omega_glam.dot(omega_glam);
         let theta = theta2.sqrt();
 
         Self {
@@ -123,7 +124,7 @@ impl SE3 {
 
                 let mat_v = Mat3A::IDENTITY + a * omega_hat + b * omega_hat_sq;
 
-                mat_v.mul_vec3a(upsilon)
+                Vec3A::from(mat_v.mul_vec3a(glam::Vec3A::from(upsilon)))
             } else {
                 // Small-angle approximation: t = I * upsilon
                 upsilon
@@ -134,7 +135,8 @@ impl SE3 {
     /// returns translation, rotation
     pub fn log(&self) -> (Vec3A, Vec3A) {
         let omega = self.r.log();
-        let theta2 = omega.dot(omega);
+        let omega_glam = glam::Vec3A::from(omega);
+        let theta2 = omega_glam.dot(omega_glam);
         let theta = theta2.sqrt();
         (
             if theta > SMALL_ANGLE_EPSILON {
@@ -144,7 +146,7 @@ impl SE3 {
                     + ((1.0 - theta * (theta / 2.0).cos() / (2.0 * (theta / 2.0).sin())) / theta2)
                         * omega_hat_sq;
 
-                mat_v_inv.mul_vec3a(self.t)
+                Vec3A::from(mat_v_inv.mul_vec3a(glam::Vec3A::from(self.t)))
             } else {
                 self.t
             },
@@ -189,7 +191,8 @@ impl SE3 {
     /// ```
     /// ref: https://arxiv.org/pdf/1812.01537 (eq 180)
     pub fn left_jacobian(rho: Vec3A, omega: Vec3A) -> [[f32; 6]; 6] {
-        let theta2 = omega.dot(omega);
+        let omega_glam = glam::Vec3A::from(omega);
+        let theta2 = omega_glam.dot(omega_glam);
         let theta = theta2.sqrt();
 
         let jl_so3 = SO3::left_jacobian(omega);
@@ -362,7 +365,7 @@ mod tests {
 
     #[test]
     fn test_from_qxyz() {
-        let quat = Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
+        let quat = Quat::from(glam::Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize());
         let xyz = Vec3A::new(1.0, 2.0, 3.0);
         let se3 = SE3::from_qxyz(quat, xyz);
 
