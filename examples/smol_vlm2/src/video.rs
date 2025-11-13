@@ -128,6 +128,8 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>, A: ImageAlloca
     loop {
         match video_reader.grab_rgb8() {
             Ok(Some(gst_image)) => {
+                use kornia_image::Image;
+
                 consecutive_no_frames = 0; // Reset counter when we get a frame
 
                 // Convert GstAllocator image to target allocator
@@ -153,9 +155,10 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>, A: ImageAlloca
                 if collect_all {
                     all_frames.push(img);
                     all_pts.push(current_pos);
-                    debug!(
+                    log::debug!(
                         "[kornia-io] Collected frame {} for later uniform sampling (pos: {})",
-                        frame_idx, current_pos
+                        frame_idx,
+                        current_pos
                     );
                 } else {
                     let mut take = false;
@@ -186,10 +189,10 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>, A: ImageAlloca
                     if take && frames.len() < N {
                         frames.push(img);
                         frame_pts.push(current_pos);
-                        debug!("[kornia-io] ✓ SAMPLED frame {} (pos: {}, timestamp: {}s) - Total sampled: {}", 
+                        log::debug!("[kornia-io] ✓ SAMPLED frame {} (pos: {}, timestamp: {}s) - Total sampled: {}", 
                                    frame_idx, current_pos, current_pos as f64 / 1_000_000_000.0, frames.len());
                     } else if take {
-                        debug!(
+                        log::debug!(
                             "[kornia-io] ✗ Skipped frame {} due to N (max frame) limit",
                             frame_idx
                         );
@@ -199,7 +202,7 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>, A: ImageAlloca
                     match &sampling {
                         VideoSamplingMethod::FirstN(n) => {
                             if frames.len() >= *n.min(&N) {
-                                debug!(
+                                log::debug!(
                                     "[kornia-io] Breaking early for FirstN: collected {} frames",
                                     frames.len()
                                 );
@@ -208,7 +211,7 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>, A: ImageAlloca
                         }
                         VideoSamplingMethod::Fps(_) => {
                             if frames.len() >= N {
-                                debug!(
+                                log::debug!(
                                     "[kornia-io] Breaking early for Fps: collected {} frames",
                                     frames.len()
                                 );
@@ -222,7 +225,7 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>, A: ImageAlloca
                                 .filter(|&&idx| idx >= frame_idx && frames.len() < N)
                                 .collect();
                             if remaining_indices.is_empty() {
-                                debug!("[kornia-io] Breaking early for Indices: collected all requested frames within limits");
+                                log::debug!("[kornia-io] Breaking early for Indices: collected all requested frames within limits");
                                 break;
                             }
                         }
@@ -275,9 +278,10 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>, A: ImageAlloca
         if let VideoSamplingMethod::Uniform(n) = sampling {
             if n > 0 && total > 0 {
                 let num = n.min(N);
-                debug!(
+                log::debug!(
                     "[kornia-io] Uniform sampling: selecting {} frames from {} total frames",
-                    num, total
+                    num,
+                    total
                 );
 
                 // Pre-calculate all indices we need
@@ -291,7 +295,7 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>, A: ImageAlloca
                     indices_to_sample.push(idx);
                 }
 
-                debug!(
+                log::debug!(
                     "[kornia-io] Pre-calculated indices to sample: {:?}",
                     indices_to_sample
                 );
@@ -300,7 +304,7 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>, A: ImageAlloca
                 for (i, &idx) in indices_to_sample.iter().enumerate() {
                     frames.push(all_frames[idx].clone());
                     ts.push((all_pts[idx] / 1_000_000_000) as u32);
-                    debug!("[kornia-io] ✓ SAMPLED frame at index {} (pos: {}, timestamp: {}s) - Uniform selection {}/{}", 
+                    log::debug!("[kornia-io] ✓ SAMPLED frame at index {} (pos: {}, timestamp: {}s) - Uniform selection {}/{}", 
                                idx, all_pts[idx], all_pts[idx] as f64 / 1_000_000_000.0, i + 1, num);
                 }
             }
@@ -323,7 +327,7 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>, A: ImageAlloca
         .close()
         .map_err(|_| VideoError::VideoReaderClose)?;
 
-    debug!(
+    log::debug!(
             "Video loaded with kornia-io: sampled frames = {}, total frames processed = {}, duration = {:?} seconds, fps = {:?}",
             frames.len(),
             if collect_all { all_frames.len() } else { frame_idx },
@@ -332,13 +336,13 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>, A: ImageAlloca
         );
 
     // Log summary of all sampled frames
-    debug!("[kornia-io] === SAMPLING SUMMARY ===");
-    debug!("[kornia-io] Sampling method: {:?}", sampling);
-    debug!("[kornia-io] Total frames sampled: {}", frames.len());
+    log::debug!("[kornia-io] === SAMPLING SUMMARY ===");
+    log::debug!("[kornia-io] Sampling method: {:?}", sampling);
+    log::debug!("[kornia-io] Total frames sampled: {}", frames.len());
     for (i, &timestamp) in timestamps.iter().enumerate() {
-        debug!("[kornia-io]   Sample {}: timestamp {}s", i + 1, timestamp);
+        log::debug!("[kornia-io]   Sample {}: timestamp {}s", i + 1, timestamp);
     }
-    debug!("[kornia-io] ============================");
+    log::debug!("[kornia-io] ============================");
 
     let mut video_sample = VideoSample::new();
     for (frame, timestamp) in frames.into_iter().zip(timestamps.into_iter()) {

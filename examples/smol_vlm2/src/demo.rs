@@ -11,6 +11,11 @@ pub fn run_video_demo(
     prompt: &str,
     max_tokens: usize,
 ) {
+    use kornia_tensor::CpuAllocator;
+    use kornia_vlm::smolvlm2::{InputMedia, Line, Message, Role, SmolVlm2, SmolVlm2Config};
+
+    use crate::video::{from_video_path, VideoSamplingMethod};
+
     let sampling_method = match sampling.to_lowercase().as_str() {
         "uniform" => VideoSamplingMethod::Uniform(sample_frames),
         "fps" => VideoSamplingMethod::Fps(sample_frames),
@@ -65,6 +70,8 @@ pub fn run_video_demo(
 #[cfg(test)]
 mod tests {
     use kornia_io::{jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8};
+    use kornia_tensor::CpuAllocator;
+    use kornia_vlm::smolvlm2::{InputMedia, Line, Message, Role, SmolVlm2, SmolVlm2Config};
     use std::path::Path;
 
     // RUST_LOG=debug cargo test -p smol_vlm2 --features "gstreamer,cuda,flash-attn" -- --nocapture --ignored test_smolvlm2_image_inference_speed
@@ -147,7 +154,6 @@ mod tests {
             log::info!("Average inference time: {:.3}s", avg_time);
         }
     }
-    use super::*;
 
     // RUST_LOG=debug cargo test -p smol_vlm2 --features "gstreamer,cuda,flash-attn" -- --nocapture --ignored test_smolvlm2_video_inference_speed
     // cargo test --release -p smol_vlm2 --features "gstreamer,cuda,flash-attn" -- --nocapture --ignored test_smolvlm2_video_inference_speed
@@ -195,6 +201,8 @@ mod tests {
                     let mut inference_times = Vec::new();
                     for run in 1..=2 {
                         // Measure video loading
+
+                        use crate::video::{from_video_path, VideoSamplingMethod};
                         let start_load = std::time::Instant::now();
                         let video_result = from_video_path::<32, _, CpuAllocator>(
                             video_path,
