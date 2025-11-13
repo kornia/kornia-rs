@@ -3,7 +3,9 @@ use crate::{
     error::IoError,
 };
 use kornia_image::{
-    Image, ImageSize, allocator::{CpuAllocator, ImageAllocator}, color_spaces::{Gray8, Gray16, Rgb8, Rgb16, Rgba8, Rgba16}
+    allocator::{CpuAllocator, ImageAllocator},
+    color_spaces::{Gray16, Gray8, Rgb16, Rgb8, Rgba16, Rgba8},
+    Image, ImageSize,
 };
 use png::{BitDepth, ColorType, Decoder, Encoder};
 use std::{fs, fs::File, path::Path};
