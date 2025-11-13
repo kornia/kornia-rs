@@ -1,6 +1,8 @@
 use crate::error::IoError;
 use kornia_image::{
-    Image, ImageSize, allocator::{CpuAllocator, ImageAllocator}, color_spaces::{Gray8, Gray16, Grayf32, Rgb8, Rgb16, Rgbf32}
+    allocator::{CpuAllocator, ImageAllocator},
+    color_spaces::{Gray16, Gray8, Grayf32, Rgb16, Rgb8, Rgbf32},
+    Image, ImageSize,
 };
 use std::{fs, path::Path};
 use tiff::{
