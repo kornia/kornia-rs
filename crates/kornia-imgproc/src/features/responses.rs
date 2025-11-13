@@ -28,7 +28,7 @@ fn _get_kernel_size(sigma: f32) -> usize {
 
 /// Compute the Hessian response of an image.
 ///
-/// The Hessian response is calculated as the of the determinant
+/// The Hessian response is calculated as the determinant
 /// of the Hessian matrix $H$:
 ///
 /// Response = |L_{xx} L_{yy} - L_{xy}^2|
