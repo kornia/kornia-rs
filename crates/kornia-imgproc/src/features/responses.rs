@@ -28,7 +28,13 @@ fn _get_kernel_size(sigma: f32) -> usize {
 
 /// Compute the Hessian response of an image.
 ///
-/// The Hessian response is computed as the absolute value of the determinant of the Hessian matrix.
+/// The Hessian response is calculated as the of the determinant
+/// of the Hessian matrix $H$:
+///
+/// Response = |L_{xx} L_{yy} - L_{xy}^2|
+///
+/// The second-order derivatives L_{xx}, L_{yy}, and L_{xy} are approximated
+/// using 3x3 finite difference kernels (Sobel-style).
 ///
 /// Args:
 ///     src: The source image with shape (H, W).
