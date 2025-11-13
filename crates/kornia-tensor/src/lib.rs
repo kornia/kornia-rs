@@ -100,6 +100,9 @@ pub mod allocator;
 #[cfg(feature = "bincode")]
 pub mod bincode;
 
+/// Device module containing device abstraction.
+pub mod device;
+
 /// Serde module for JSON/other format serialization and deserialization.
 ///
 /// This module provides flexible serialization support for tensors when the
@@ -125,6 +128,9 @@ pub mod tensor;
 pub mod view;
 
 pub use crate::allocator::{CpuAllocator, TensorAllocator};
+#[cfg(feature = "cuda")]
+pub use crate::allocator::CudaAllocator;
+pub use crate::device::Device;
 pub(crate) use crate::tensor::get_strides_from_shape;
 pub use crate::tensor::{Tensor, TensorError};
 

@@ -81,7 +81,15 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     /// # Returns
     ///
     /// A slice containing all elements in the storage.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the tensor is not on CPU.
     pub fn as_slice(&self) -> &[T] {
+        assert!(
+            self.alloc.device().is_cpu(),
+            "Cannot access GPU tensor as slice. Use to_cpu() to transfer data first."
+        );
         unsafe { std::slice::from_raw_parts(self.as_ptr(), self.len / std::mem::size_of::<T>()) }
     }
 
@@ -92,10 +100,33 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     /// # Returns
     ///
     /// A mutable slice containing all elements in the storage.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the tensor is not on CPU.
     pub fn as_mut_slice(&mut self) -> &mut [T] {
+        assert!(
+            self.alloc.device().is_cpu(),
+            "Cannot access GPU tensor as mutable slice. Use to_cpu() to transfer data first."
+        );
         unsafe {
             std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len / std::mem::size_of::<T>())
         }
+    }
+
+    /// Returns the device where the tensor data is allocated.
+    pub fn device(&self) -> crate::device::Device {
+        self.alloc.device()
+    }
+
+    /// Returns true if the tensor is on CPU.
+    pub fn is_cpu(&self) -> bool {
+        self.alloc.device().is_cpu()
+    }
+
+    /// Returns true if the tensor is on GPU.
+    pub fn is_gpu(&self) -> bool {
+        self.alloc.device().is_gpu()
     }
 
     /// Returns the number of bytes contained in this storage.
