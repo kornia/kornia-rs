@@ -8,18 +8,22 @@ use argh::FromArgs;
 struct DemoArgs {
     /// path to video file
     #[argh(option)]
+    #[allow(dead_code)]
     video_path: String,
 
     /// sampling method: uniform, fps, firstn, indices
     #[argh(option)]
+    #[allow(dead_code)]
     sampling: String,
 
     /// number of frames to sample (for uniform, fps, firstn)
     #[argh(option, default = "8")]
+    #[allow(dead_code)]
     sample_frames: usize,
 
     /// maximum number of generated tokens
     #[argh(option, default = "128")]
+    #[allow(dead_code)]
     max_tokens: usize,
 
     /// prompt for the model

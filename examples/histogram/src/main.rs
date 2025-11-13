@@ -2,10 +2,7 @@ use argh::FromArgs;
 use std::path::PathBuf;
 
 use kornia::io::functional as F;
-use kornia::{
-    image::{Image, ImageError},
-    imgproc,
-};
+use kornia::{image::ImageError, imgproc};
 
 #[derive(FromArgs)]
 /// Compute the histogram of an image and log it to Rerun
@@ -19,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
 
     // read the image
-    let image: Image<u8, 3, _> = F::read_image_any_rgb8(args.image_path)?;
+    let image = F::read_image_any_rgb8(args.image_path)?;
 
     // compute the histogram per channel
     let histograms = image

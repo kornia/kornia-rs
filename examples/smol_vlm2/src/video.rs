@@ -27,12 +27,10 @@
 /// ).unwrap();
 /// # }
 /// ```
-use kornia_image::Image;
 #[cfg(feature = "gstreamer")]
 use kornia_io::gstreamer::{video::ImageFormat as IoImageFormat, video::VideoReader};
 use kornia_vlm::video::VideoError;
 use kornia_vlm::video::VideoSample;
-use log::debug;
 
 use kornia_image::allocator::ImageAllocator;
 
@@ -41,6 +39,7 @@ use kornia_image::allocator::ImageAllocator;
 /// Different sampling methods provide various ways to select frames from
 /// a video sequence for processing or analysis.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum VideoSamplingMethod {
     /// Uniformly sample n frames across the entire video duration.
     ///
@@ -68,10 +67,11 @@ pub enum VideoSamplingMethod {
 }
 
 #[cfg(not(feature = "gstreamer"))]
+#[allow(dead_code)]
 pub fn from_video_path<P: AsRef<std::path::Path>, A: ImageAllocator>(
-    path: P,
-    sampling: VideoSamplingMethod,
-    allocator: A,
+    _path: P,
+    _sampling: VideoSamplingMethod,
+    _allocator: A,
 ) -> Result<VideoSample<32, A>, VideoError> {
     panic!("This function requires the 'gstreamer' feature to be enabled.");
 }

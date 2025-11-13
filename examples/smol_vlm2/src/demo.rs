@@ -1,7 +1,7 @@
 //! Simple video understanding demo
 //!
 //! Usage: cargo run --example demo <video_path>
-use crate::video::{from_video_path, VideoSamplingMethod};
+// use crate::video::{from_video_path, VideoSamplingMethod};
 use kornia_tensor::CpuAllocator;
 use kornia_vlm::smolvlm2::{InputMedia, Line, Message, Role, SmolVlm2, SmolVlm2Config};
 
@@ -328,7 +328,7 @@ mod tests {
                         },
                     ],
                 }],
-                Some(InputMedia::Images(vec![image])),
+                Some(InputMedia::Images(vec![image.into_inner()])),
                 sample_len,
                 CpuAllocator,
             )
