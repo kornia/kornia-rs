@@ -1,8 +1,6 @@
 use crate::error::IoError;
 use kornia_image::{
-    allocator::{CpuAllocator, ImageAllocator},
-    color_spaces::{Gray16, Gray8, Grayf32, Rgb16, Rgb8, Rgbf32},
-    ImageSize,
+    Image, ImageSize, allocator::{CpuAllocator, ImageAllocator}, color_spaces::{Gray8, Gray16, Grayf32, Rgb8, Rgb16, Rgbf32}
 };
 use std::{fs, path::Path};
 use tiff::{
@@ -203,7 +201,7 @@ fn read_image_tiff_impl(
 /// * `image` - The Rgb8 image to write.
 pub fn write_image_tiff_rgb8<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Rgb8<A>,
+    image: &Image<u8, 3, A>,
 ) -> Result<(), IoError> {
     write_image_tiff_impl::<colortype::RGB8, u8>(file_path, image.as_slice(), image.size())
 }
@@ -216,7 +214,7 @@ pub fn write_image_tiff_rgb8<A: ImageAllocator>(
 /// * `image` - The Gray8 image to write.
 pub fn write_image_tiff_mono8<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Gray8<A>,
+    image: &Image<u8, 1, A>,
 ) -> Result<(), IoError> {
     write_image_tiff_impl::<colortype::Gray8, u8>(file_path, image.as_slice(), image.size())
 }
@@ -229,7 +227,7 @@ pub fn write_image_tiff_mono8<A: ImageAllocator>(
 /// * `image` - The Rgb16 image to write.
 pub fn write_image_tiff_rgb16<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Rgb16<A>,
+    image: &Image<u16, 3, A>,
 ) -> Result<(), IoError> {
     write_image_tiff_impl::<colortype::RGB16, u16>(file_path, image.as_slice(), image.size())
 }
@@ -242,7 +240,7 @@ pub fn write_image_tiff_rgb16<A: ImageAllocator>(
 /// * `image` - The Gray16 image to write.
 pub fn write_image_tiff_mono16<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Gray16<A>,
+    image: &Image<u16, 1, A>,
 ) -> Result<(), IoError> {
     write_image_tiff_impl::<colortype::Gray16, u16>(file_path, image.as_slice(), image.size())
 }
@@ -255,7 +253,7 @@ pub fn write_image_tiff_mono16<A: ImageAllocator>(
 /// * `image` - The Grayf32 image to write.
 pub fn write_image_tiff_mono32f<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Grayf32<A>,
+    image: &Image<f32, 1, A>,
 ) -> Result<(), IoError> {
     write_image_tiff_impl::<colortype::Gray32Float, f32>(file_path, image.as_slice(), image.size())
 }
@@ -268,7 +266,7 @@ pub fn write_image_tiff_mono32f<A: ImageAllocator>(
 /// * `image` - The Rgbf32 image to write.
 pub fn write_image_tiff_rgb32f<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Rgbf32<A>,
+    image: &Image<f32, 3, A>,
 ) -> Result<(), IoError> {
     write_image_tiff_impl::<colortype::RGB32Float, f32>(file_path, image.as_slice(), image.size())
 }

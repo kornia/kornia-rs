@@ -16,10 +16,10 @@ use std::{fs, path::Path};
 /// - `quality` - The quality of the JPEG encoding, range from 0 (lowest) to 100 (highest)
 pub fn write_image_jpeg_rgb8<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Rgb8<A>,
+    image: &Image<u8, 3, A>,
     quality: u8,
 ) -> Result<(), IoError> {
-    write_image_jpeg_imp(file_path, &image.0, ColorType::Rgb, quality)
+    write_image_jpeg_imp(file_path, image, ColorType::Rgb, quality)
 }
 
 /// Writes the given JPEG _(grayscale)_ data to the given file path.
@@ -31,10 +31,10 @@ pub fn write_image_jpeg_rgb8<A: ImageAllocator>(
 /// - `quality` - The quality of the JPEG encoding, range from 0 (lowest) to 100 (highest)
 pub fn write_image_jpeg_gray8<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Gray8<A>,
+    image: &Image<u8, 1, A>,
     quality: u8,
 ) -> Result<(), IoError> {
-    write_image_jpeg_imp(file_path, &image.0, ColorType::Luma, quality)
+    write_image_jpeg_imp(file_path, image, ColorType::Luma, quality)
 }
 
 fn write_image_jpeg_imp<const N: usize, A: ImageAllocator>(

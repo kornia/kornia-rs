@@ -49,18 +49,24 @@ macro_rules! define_color_space {
             }
         }
 
-        impl<A: ImageAllocator> Deref for $name<A> {
-            type Target = Image<$type, $channels, A>;
-            fn deref(&self) -> &Self::Target {
-                &self.0
+            impl<A: ImageAllocator> Deref for $name<A> {
+                type Target = Image<$type, $channels, A>;
+                fn deref(&self) -> &Self::Target {
+                    &self.0
+                }
             }
-        }
 
-        impl<A: ImageAllocator> DerefMut for $name<A> {
-            fn deref_mut(&mut self) -> &mut Self::Target {
-                &mut self.0
+            impl<A: ImageAllocator> DerefMut for $name<A> {
+                fn deref_mut(&mut self) -> &mut Self::Target {
+                    &mut self.0
+                }
             }
-        }
+
+            impl<A: ImageAllocator> AsRef<Image<$type, $channels, A>> for $name<A> {
+                fn as_ref(&self) -> &Image<$type, $channels, A> {
+                    &self.0
+                }
+            }
     };
 }
 

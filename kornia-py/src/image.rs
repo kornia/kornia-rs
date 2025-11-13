@@ -1,6 +1,6 @@
 use numpy::{PyArray, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
 
-use kornia_image::{allocator::CpuAllocator, Image, ImageError, ImageSize};
+use kornia_image::{allocator::CpuAllocator, Image, ImageError, ImageSize, color_spaces::*};
 use pyo3::prelude::*;
 
 // type alias for a 3D numpy array of u8
@@ -47,6 +47,37 @@ impl<const C: usize> ToPyImage for Image<u8, C, CpuAllocator> {
     }
 }
 
+// Implement ToPyImage for typed color spaces
+impl ToPyImage for Rgb8<CpuAllocator> {
+    fn to_pyimage(self) -> Result<PyImage, ImageError> {
+        self.0.to_pyimage()
+    }
+}
+
+impl ToPyImage for Rgba8<CpuAllocator> {
+    fn to_pyimage(self) -> Result<PyImage, ImageError> {
+        self.0.to_pyimage()
+    }
+}
+
+impl ToPyImage for Bgr8<CpuAllocator> {
+    fn to_pyimage(self) -> Result<PyImage, ImageError> {
+        self.0.to_pyimage()
+    }
+}
+
+impl ToPyImage for Bgra8<CpuAllocator> {
+    fn to_pyimage(self) -> Result<PyImage, ImageError> {
+        self.0.to_pyimage()
+    }
+}
+
+impl ToPyImage for Gray8<CpuAllocator> {
+    fn to_pyimage(self) -> Result<PyImage, ImageError> {
+        self.0.to_pyimage()
+    }
+}
+
 impl<const C: usize> ToPyImageU16 for Image<u16, C, CpuAllocator> {
     fn to_pyimage_u16(self) -> Result<PyImageU16, ImageError> {
         Python::attach(|py| unsafe {
@@ -69,6 +100,37 @@ impl<const C: usize> ToPyImageU16 for Image<u16, C, CpuAllocator> {
     }
 }
 
+// Implement ToPyImageU16 for typed color spaces
+impl ToPyImageU16 for Rgb16<CpuAllocator> {
+    fn to_pyimage_u16(self) -> Result<PyImageU16, ImageError> {
+        self.0.to_pyimage_u16()
+    }
+}
+
+impl ToPyImageU16 for Rgba16<CpuAllocator> {
+    fn to_pyimage_u16(self) -> Result<PyImageU16, ImageError> {
+        self.0.to_pyimage_u16()
+    }
+}
+
+impl ToPyImageU16 for Bgr16<CpuAllocator> {
+    fn to_pyimage_u16(self) -> Result<PyImageU16, ImageError> {
+        self.0.to_pyimage_u16()
+    }
+}
+
+impl ToPyImageU16 for Bgra16<CpuAllocator> {
+    fn to_pyimage_u16(self) -> Result<PyImageU16, ImageError> {
+        self.0.to_pyimage_u16()
+    }
+}
+
+impl ToPyImageU16 for Gray16<CpuAllocator> {
+    fn to_pyimage_u16(self) -> Result<PyImageU16, ImageError> {
+        self.0.to_pyimage_u16()
+    }
+}
+
 impl<const C: usize> ToPyImageF32 for Image<f32, C, CpuAllocator> {
     fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError> {
         Python::attach(|py| unsafe {
@@ -88,6 +150,43 @@ impl<const C: usize> ToPyImageF32 for Image<f32, C, CpuAllocator> {
             );
             Ok(array.unbind())
         })
+    }
+}
+
+// Implement ToPyImageF32 for typed color spaces
+impl ToPyImageF32 for Rgbf32<CpuAllocator> {
+    fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError> {
+        self.0.to_pyimage_f32()
+    }
+}
+
+impl ToPyImageF32 for Rgbaf32<CpuAllocator> {
+    fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError> {
+        self.0.to_pyimage_f32()
+    }
+}
+
+impl ToPyImageF32 for Bgrf32<CpuAllocator> {
+    fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError> {
+        self.0.to_pyimage_f32()
+    }
+}
+
+impl ToPyImageF32 for Bgraf32<CpuAllocator> {
+    fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError> {
+        self.0.to_pyimage_f32()
+    }
+}
+
+impl ToPyImageF32 for Grayf32<CpuAllocator> {
+    fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError> {
+        self.0.to_pyimage_f32()
+    }
+}
+
+impl ToPyImageF32 for Hsvf32<CpuAllocator> {
+    fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError> {
+        self.0.to_pyimage_f32()
     }
 }
 /// Trait to convert a PyImage (3D numpy array of u8) to an image
