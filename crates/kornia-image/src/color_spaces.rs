@@ -61,12 +61,6 @@ macro_rules! define_color_space {
                 &mut self.0
             }
         }
-
-        impl<A: ImageAllocator> AsRef<Image<$type, $channels, A>> for $name<A> {
-            fn as_ref(&self) -> &Image<$type, $channels, A> {
-                &self.0
-            }
-        }
     };
 }
 
