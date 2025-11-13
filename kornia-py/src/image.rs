@@ -99,6 +99,107 @@ impl_colorspace_to_pyarray!(
     Grayf32<CpuAllocator>,
     Hsvf32<CpuAllocator>,
 );
+
+// u8 color spaces
+impl_colorspace_to_pyarray!(
+    ToPyImage, to_pyimage, PyImage,
+    Rgb8<CpuAllocator>,
+    Rgba8<CpuAllocator>,
+    Bgr8<CpuAllocator>,
+    Bgra8<CpuAllocator>,
+    Gray8<CpuAllocator>,
+);
+
+// u16 color spaces
+impl ToPyImageU16 for Rgb16<CpuAllocator> {
+    fn to_pyimage_u16(self) -> Result<PyImageU16, ImageError> {
+        self.0.to_pyimage_u16()
+    }
+}
+
+impl ToPyImageU16 for Rgba16<CpuAllocator> {
+    fn to_pyimage_u16(self) -> Result<PyImageU16, ImageError> {
+        self.0.to_pyimage_u16()
+    }
+}
+
+impl ToPyImageU16 for Bgr16<CpuAllocator> {
+    fn to_pyimage_u16(self) -> Result<PyImageU16, ImageError> {
+        self.0.to_pyimage_u16()
+    }
+}
+
+impl ToPyImageU16 for Bgra16<CpuAllocator> {
+    fn to_pyimage_u16(self) -> Result<PyImageU16, ImageError> {
+        self.0.to_pyimage_u16()
+    }
+}
+
+impl ToPyImageU16 for Gray16<CpuAllocator> {
+    fn to_pyimage_u16(self) -> Result<PyImageU16, ImageError> {
+        self.0.to_pyimage_u16()
+    }
+}
+
+// Implement ToPyImageF32 for the general Image type
+impl<const C: usize> ToPyImageF32 for Image<f32, C, CpuAllocator> {
+    fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError> {
+        Python::attach(|py| unsafe {
+            let array = PyArray::<f32, _>::new(py, [self.height(), self.width(), C], false);
+            let contiguous = match self.0.to_standard_layout(CpuAllocator) {
+                Ok(c) => c,
+                Err(_) => {
+                    let expected = self.height() * self.width() * C;
+                    let actual = self.0.numel();
+                    return Err(ImageError::InvalidChannelShape(actual, expected));
+                }
+            };
+            std::ptr::copy_nonoverlapping(
+                contiguous.storage.as_ptr(),
+                array.data(),
+                contiguous.numel(),
+            );
+            Ok(array.unbind())
+        })
+    }
+}
+
+// f32 color spaces
+impl ToPyImageF32 for Rgbf32<CpuAllocator> {
+    fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError> {
+        self.0.to_pyimage_f32()
+    }
+}
+
+impl ToPyImageF32 for Rgbaf32<CpuAllocator> {
+    fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError> {
+        self.0.to_pyimage_f32()
+    }
+}
+
+impl ToPyImageF32 for Bgrf32<CpuAllocator> {
+    fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError> {
+        self.0.to_pyimage_f32()
+    }
+}
+
+impl ToPyImageF32 for Bgraf32<CpuAllocator> {
+    fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError> {
+        self.0.to_pyimage_f32()
+    }
+}
+
+impl ToPyImageF32 for Grayf32<CpuAllocator> {
+    fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError> {
+        self.0.to_pyimage_f32()
+    }
+}
+
+impl ToPyImageF32 for Hsvf32<CpuAllocator> {
+    fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError> {
+        self.0.to_pyimage_f32()
+    }
+}
 /// Trait to convert a PyImage (3D numpy array of u8) to an image
 pub trait FromPyImage<const C: usize> {
     fn from_pyimage(image: PyImage) -> Result<Image<u8, C, CpuAllocator>, ImageError>;
