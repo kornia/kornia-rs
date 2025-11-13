@@ -41,7 +41,8 @@ pub fn umeyama(src: &[Vec3], dst: &[Vec3]) -> UmeyamaResult {
     for i in 0..src.len() {
         let sc = src[i] - mu_s;
         let dc = dst[i] - mu_d;
-        // H = sum(dc * sc^T)
+        // H = sum(dc * sc.transpose())
+        // This is the outer product, calculated component-wise
         h += Mat3::from_cols(dc * sc.x, dc * sc.y, dc * sc.z);
     }
     h /= n;
@@ -49,22 +50,25 @@ pub fn umeyama(src: &[Vec3], dst: &[Vec3]) -> UmeyamaResult {
     // Call the internal svd3 function
     let svd_result = svd3(&h);
 
-    // Clone to get owned Mat3 regardless of whether svd3 returned &Mat3 or Mat3.
-    // If svd3 returns a Result or other wrapper you will need to adapt this.
-    let mut u_mat = svd_result.u().clone();
-    let v_mat = svd_result.v().clone();
+    // Get owned copies of U and V by dereferencing (fixes "why clone?")
+    let mut u_mat = *svd_result.u();
+    let v_mat = *svd_result.v();
 
-    // Canonical Umeyama sign correction: if det(U)*det(V) < 0, flip the last column of U.
-    if (u_mat.determinant() * v_mat.determinant()) < 0.0 {
+    let v_t = v_mat.transpose();
+    let mut r_glam = u_mat * v_t;
+
+    // Use an epsilon for determinant check as suggested
+    const DETERMINANT_THRESHOLD: f32 = -1e-6;
+    if r_glam.determinant() < DETERMINANT_THRESHOLD {
+        // Flip the last column of U and recompute R to ensure a proper rotation (det = +1)
         u_mat.z_axis = -u_mat.z_axis;
+        r_glam = u_mat * v_t;
     }
 
-    // Compute rotation R = U * V^T
-    let r_glam = u_mat * v_mat.transpose();
-
-    // Calculate translation t = mu_d - R * mu_s
+    // Calculate translation t
+    // t = mu_d - R * mu_s
     let t_vec: Vec3 = mu_d - (r_glam * mu_s);
-    let t: [f32; 3] = t_vec.into();
+    let t: [f32; 3] = t_vec.into(); // Convert Vec3 to [f32; 3]
 
     // Convert glam::Mat3 (column-major) to a row-major array
     let r_arr = [
@@ -183,6 +187,52 @@ mod tests {
         Ok(())
     }
 
+    // New test for a more complex rotation
+    #[test]
+    fn test_umeyama_complex_rotation() -> Result<(), UmeyamaError> {
+        let src: [Vec3; 4] = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ];
+
+        // True transform: 45° about Y-axis
+        let angle = std::f32::consts::FRAC_PI_4; // 45 degrees
+        let r_quat = Quat::from_rotation_y(angle);
+        let r_mat = Mat3::from_quat(r_quat);
+
+        let r_expected: [[f32; 3]; 3] = r_mat.to_cols_array_2d();
+        // Convert glam's column-major array to row-major for apply_rt
+        let r: [[f32; 3]; 3] = [
+            [r_expected[0][0], r_expected[1][0], r_expected[2][0]],
+            [r_expected[0][1], r_expected[1][1], r_expected[2][1]],
+            [r_expected[0][2], r_expected[1][2], r_expected[2][2]],
+        ];
+
+        let t = [0.0, 0.0, 0.0]; // No translation
+
+        // Create dst
+        let mut dst = [Vec3::new(0.0, 0.0, 0.0); 4];
+        for i in 0..4 {
+            let src_array = [src[i].x, src[i].y, src[i].z];
+            dst[i] = apply_rt(&r, &t, &src_array);
+        }
+
+        let (r_est, t_est, _s) = umeyama(&src, &dst)?;
+
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_relative_eq!(r_est[i][j], r[i][j], epsilon = 1e-6);
+            }
+        }
+        for k in 0..3 {
+            assert_relative_eq!(t_est[k], t[k], epsilon = 1e-6);
+        }
+        Ok(())
+    }
+
+    // New test for reflection (negative determinant)
     #[test]
     fn test_umeyama_reflection() -> Result<(), UmeyamaError> {
         // Source points
@@ -210,50 +260,6 @@ mod tests {
 
         // The algorithm should correct the reflection so determinant is +1
         assert!(r_mat.determinant() > 0.0);
-        Ok(())
-    }
-
-    // New test for a more complex rotation
-    #[test]
-    fn test_umeyama_complex_rotation() -> Result<(), UmeyamaError> {
-        let src: [Vec3; 4] = [
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(1.0, 1.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-        ];
-
-        // True transform: 45° about Y-axis
-        let angle = std::f32::consts::FRAC_PI_4; // 45 degrees
-        let r_quat = Quat::from_rotation_y(angle);
-        let r_mat = Mat3::from_quat(r_quat);
-
-        // Build row-major r from r_mat (glam is column-major)
-        let r: [[f32; 3]; 3] = [
-            [r_mat.x_axis.x, r_mat.y_axis.x, r_mat.z_axis.x],
-            [r_mat.x_axis.y, r_mat.y_axis.y, r_mat.z_axis.y],
-            [r_mat.x_axis.z, r_mat.y_axis.z, r_mat.z_axis.z],
-        ];
-
-        let t = [0.0, 0.0, 0.0]; // No translation
-
-        // Create dst
-        let mut dst = [Vec3::new(0.0, 0.0, 0.0); 4];
-        for i in 0..4 {
-            let src_array = [src[i].x, src[i].y, src[i].z];
-            dst[i] = apply_rt(&r, &t, &src_array);
-        }
-
-        let (r_est, t_est, _s) = umeyama(&src, &dst)?;
-
-        for i in 0..3 {
-            for j in 0..3 {
-                assert_relative_eq!(r_est[i][j], r[i][j], epsilon = 1e-6);
-            }
-        }
-        for k in 0..3 {
-            assert_relative_eq!(t_est[k], t[k], epsilon = 1e-6);
-        }
         Ok(())
     }
 }
