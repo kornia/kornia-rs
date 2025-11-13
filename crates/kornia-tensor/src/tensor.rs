@@ -128,9 +128,147 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// This method destroys the tensor and returns ownership of the underlying data.
     /// The returned vector will have a length equal to the total number of elements in the tensor.
     ///
+    /// # Panics
+    ///
+    /// Panics if the tensor is not on CPU.
     #[inline]
     pub fn into_vec(self) -> Vec<T> {
         self.storage.into_vec()
+    }
+
+    /// Returns the device where the tensor is allocated.
+    #[inline]
+    pub fn device(&self) -> crate::device::Device {
+        self.storage.device()
+    }
+
+    /// Returns true if the tensor is on CPU.
+    #[inline]
+    pub fn is_cpu(&self) -> bool {
+        self.storage.is_cpu()
+    }
+
+    /// Returns true if the tensor is on GPU.
+    #[inline]
+    pub fn is_gpu(&self) -> bool {
+        self.storage.is_gpu()
+    }
+
+    /// Transfer tensor to a different device.
+    ///
+    /// # Arguments
+    ///
+    /// * `target_alloc` - The allocator for the target device
+    ///
+    /// # Returns
+    ///
+    /// A new tensor on the target device
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use kornia_tensor::{Tensor, CpuAllocator};
+    /// # #[cfg(feature = "cuda")]
+    /// use kornia_tensor::CudaAllocator;
+    ///
+    /// # #[cfg(feature = "cuda")]
+    /// # {
+    /// let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+    /// let cpu_tensor = Tensor::<f32, 1, _>::from_shape_vec([4], data, CpuAllocator).unwrap();
+    ///
+    /// // Transfer to CUDA
+    /// let cuda_alloc = CudaAllocator::new(0).unwrap();
+    /// let cuda_tensor = cpu_tensor.to_device(cuda_alloc).unwrap();
+    /// # }
+    /// ```
+    pub fn to_device<B: TensorAllocator>(&self, target_alloc: B) -> Result<Tensor<T, N, B>, TensorError>
+    where
+        T: Copy,
+    {
+        let src_device = self.storage.device();
+        let dst_device = target_alloc.device();
+
+        // If same device, just clone
+        if src_device == dst_device {
+            let layout = self.storage.layout();
+            let dst_ptr = target_alloc.alloc(layout)?;
+            
+            // Copy memory
+            target_alloc.copy_from(
+                self.storage.as_ptr() as *const u8,
+                dst_ptr,
+                self.storage.len(),
+                &src_device,
+            )?;
+
+            let storage = unsafe {
+                TensorStorage::from_raw_parts(
+                    dst_ptr as *const T,
+                    self.storage.len(),
+                    target_alloc,
+                )
+            };
+
+            Ok(Tensor {
+                storage,
+                shape: self.shape,
+                strides: self.strides,
+            })
+        } else {
+            // Different device - allocate and copy
+            let layout = self.storage.layout();
+            let dst_ptr = target_alloc.alloc(layout)?;
+            
+            // Copy memory from source to destination
+            target_alloc.copy_from(
+                self.storage.as_ptr() as *const u8,
+                dst_ptr,
+                self.storage.len(),
+                &src_device,
+            )?;
+
+            let storage = unsafe {
+                TensorStorage::from_raw_parts(
+                    dst_ptr as *const T,
+                    self.storage.len(),
+                    target_alloc,
+                )
+            };
+
+            Ok(Tensor {
+                storage,
+                shape: self.shape,
+                strides: self.strides,
+            })
+        }
+    }
+
+    /// Transfer tensor to CPU.
+    ///
+    /// This is a convenience method equivalent to `to_device(CpuAllocator)`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "cuda")]
+    /// use kornia_tensor::{Tensor, CudaAllocator};
+    ///
+    /// # #[cfg(feature = "cuda")]
+    /// # {
+    /// let cuda_alloc = CudaAllocator::new(0).unwrap();
+    /// let data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+    /// let cpu_tensor = kornia_tensor::Tensor::<f32, 1, _>::from_shape_vec([4], data, kornia_tensor::CpuAllocator).unwrap();
+    /// let cuda_tensor = cpu_tensor.to_device(cuda_alloc).unwrap();
+    ///
+    /// // Transfer back to CPU
+    /// let cpu_tensor_2 = cuda_tensor.to_cpu().unwrap();
+    /// # }
+    /// ```
+    pub fn to_cpu(&self) -> Result<Tensor<T, N, CpuAllocator>, TensorError>
+    where
+        T: Copy,
+    {
+        self.to_device(CpuAllocator)
     }
 
     /// Creates a new `Tensor` with the given shape and data.
@@ -747,6 +885,9 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
 
     /// Perform an element-wise operation on two tensors.
     ///
+    /// NOTE: This operation is currently CPU-only. If the tensors are on GPU,
+    /// use `.to_cpu()` first to transfer to CPU.
+    ///
     /// # Arguments
     ///
     /// * `other` - The other tensor to perform the operation with.
@@ -755,6 +896,10 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Returns
     ///
     /// A new `Tensor` instance.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either tensor is not on CPU.
     ///
     /// # Example
     ///

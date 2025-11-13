@@ -8,6 +8,9 @@ pub mod allocator;
 #[cfg(feature = "bincode")]
 pub mod bincode;
 
+/// device module containing device abstraction.
+pub mod device;
+
 /// serde module containing the serialization and deserialization utilities.
 #[cfg(feature = "serde")]
 pub mod serde;
@@ -22,6 +25,9 @@ pub mod tensor;
 pub mod view;
 
 pub use crate::allocator::{CpuAllocator, TensorAllocator};
+#[cfg(feature = "cuda")]
+pub use crate::allocator::CudaAllocator;
+pub use crate::device::Device;
 pub(crate) use crate::tensor::get_strides_from_shape;
 pub use crate::tensor::{Tensor, TensorError};
 
