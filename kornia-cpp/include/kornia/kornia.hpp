@@ -2,10 +2,10 @@
 
 #include "kornia/version.hpp"
 
-// Core types
+// Core Image types
 #include "kornia/image.hpp"
 
-// I/O functionality
+// Core I/O functionality
 #include "kornia/io.hpp"
 
 namespace kornia {
