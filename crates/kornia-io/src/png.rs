@@ -3,9 +3,7 @@ use crate::{
     error::IoError,
 };
 use kornia_image::{
-    allocator::{CpuAllocator, ImageAllocator},
-    color_spaces::{Gray16, Gray8, Rgb16, Rgb8, Rgba16, Rgba8},
-    ImageSize,
+    Image, ImageSize, allocator::{CpuAllocator, ImageAllocator}, color_spaces::{Gray8, Gray16, Rgb8, Rgb16, Rgba8, Rgba16}
 };
 use png::{BitDepth, ColorType, Decoder, Encoder};
 use std::{fs, fs::File, path::Path};
@@ -262,7 +260,7 @@ fn decode_png_impl<const C: usize>(
 /// - `image` - The Rgb8 image to write.
 pub fn write_image_png_rgb8<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Rgb8<A>,
+    image: &Image<u8, 3, A>,
 ) -> Result<(), IoError> {
     write_png_impl(
         file_path,
@@ -281,7 +279,7 @@ pub fn write_image_png_rgb8<A: ImageAllocator>(
 /// - `image` - The Rgba8 image to write.
 pub fn write_image_png_rgba8<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Rgba8<A>,
+    image: &Image<u8, 4, A>,
 ) -> Result<(), IoError> {
     write_png_impl(
         file_path,
@@ -300,7 +298,7 @@ pub fn write_image_png_rgba8<A: ImageAllocator>(
 /// - `image` - The Gray8 image to write.
 pub fn write_image_png_gray8<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Gray8<A>,
+    image: &Image<u8, 1, A>,
 ) -> Result<(), IoError> {
     write_png_impl(
         file_path,
@@ -319,7 +317,7 @@ pub fn write_image_png_gray8<A: ImageAllocator>(
 /// - `image` - The Rgb16 image to write.
 pub fn write_image_png_rgb16<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Rgb16<A>,
+    image: &Image<u16, 3, A>,
 ) -> Result<(), IoError> {
     let image_size = image.size();
     let image_buf = convert_buf_u16_u8(image.as_slice());
@@ -341,7 +339,7 @@ pub fn write_image_png_rgb16<A: ImageAllocator>(
 /// - `image` - The Rgba16 image to write.
 pub fn write_image_png_rgba16<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Rgba16<A>,
+    image: &Image<u16, 4, A>,
 ) -> Result<(), IoError> {
     let image_size = image.size();
     let image_buf = convert_buf_u16_u8(image.as_slice());
@@ -363,7 +361,7 @@ pub fn write_image_png_rgba16<A: ImageAllocator>(
 /// - `image` - The Gray16 image to write.
 pub fn write_image_png_gray16<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
-    image: &Gray16<A>,
+    image: &Image<u16, 1, A>,
 ) -> Result<(), IoError> {
     let image_size = image.size();
     let image_buf = convert_buf_u16_u8(image.as_slice());
