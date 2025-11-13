@@ -1,0 +1,11 @@
+[package]
+name = "cuda_tensor_transfer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kornia-tensor = { path = "../../crates/kornia-tensor", features = ["cuda"] }
+kornia-image = { path = "../../crates/kornia-image", features = ["cuda"] }
+env_logger = { workspace = true }
+log = { workspace = true }
+

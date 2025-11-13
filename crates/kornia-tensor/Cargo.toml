@@ -17,9 +17,18 @@ serde = { workspace = true, optional = true }
 bincode = { workspace = true, optional = true }
 thiserror = { workspace = true }
 
+# GPU backend dependencies
+cust = { version = "0.3.2", optional = true }
+once_cell = "1.20"
+
 [features]
+default = []
 serde = ["dep:serde"]
 bincode = ["dep:bincode"]
+cuda = ["dep:cust"]
+# Future GPU backends (not yet implemented)
+metal = []
+vulkan = []
 
 [dev-dependencies]
 serde_json = "1"
