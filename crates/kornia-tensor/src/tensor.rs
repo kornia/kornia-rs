@@ -53,26 +53,76 @@ pub fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
     strides
 }
 
-/// A data structure to represent a multi-dimensional tensor.
+/// A multi-dimensional array container for numerical data with flexible memory allocation.
 ///
-/// NOTE: Internally, the data is stored as an `arrow::ScalarBuffer` which represents a contiguous memory
-/// region that can be shared with other buffers and across thread boundaries.
+/// `Tensor<T, N, A>` represents an N-dimensional array of elements of type `T`, allocated
+/// using allocator `A`. The tensor stores its data in a contiguous memory buffer and
+/// maintains shape and stride information for efficient multi-dimensional indexing.
 ///
-/// # Attributes
+/// # Type Parameters
 ///
-/// * `storage` - The storage of the tensor.
-/// * `shape` - The shape of the tensor.
-/// * `strides` - The strides of the tensor data in memory.
+/// * `T` - The element type (e.g., `f32`, `u8`, `i32`)
+/// * `N` - The number of dimensions (compile-time constant)
+/// * `A` - The allocator type (e.g., [`CpuAllocator`])
 ///
-/// # Example
+/// # Memory Layout
+///
+/// Tensors use row-major (C-style) memory layout by default:
+/// * The last dimension is contiguous in memory
+/// * Strides determine how to map multi-dimensional indices to linear memory offsets
+/// * Supports zero-copy sharing via reference counting
+///
+/// # Example: 2D Tensor
 ///
 /// ```
 /// use kornia_tensor::{Tensor, CpuAllocator};
 ///
-/// let data: Vec<u8> = vec![1, 2, 3, 4];
-/// let t = Tensor::<u8, 2, CpuAllocator>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
-/// assert_eq!(t.shape, [2, 2]);
+/// let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+/// let tensor = Tensor::<f32, 2, _>::from_shape_vec(
+///     [2, 3],  // 2 rows, 3 columns
+///     data,
+///     CpuAllocator,
+/// ).unwrap();
+///
+/// assert_eq!(tensor.shape, [2, 3]);
+/// assert_eq!(tensor.numel(), 6);
 /// ```
+///
+/// # Example: 3D Tensor (Batch of Images)
+///
+/// ```
+/// use kornia_tensor::{Tensor, CpuAllocator};
+///
+/// // Batch of 4 images, each 28×28 grayscale pixels
+/// let shape = [4, 28, 28];
+/// let numel = 4 * 28 * 28;
+///
+/// let tensor = Tensor::<u8, 3, _>::from_shape_vec(
+///     shape,
+///     vec![0; numel],
+///     CpuAllocator,
+/// ).unwrap();
+///
+/// assert_eq!(tensor.shape, [4, 28, 28]);
+/// ```
+///
+/// # Storage and Allocators
+///
+/// The tensor internally uses [`TensorStorage`] which wraps an Arrow buffer, enabling:
+/// * Efficient zero-copy operations when possible
+/// * Thread-safe sharing via atomic reference counting
+/// * Integration with Arrow-based data pipelines
+///
+/// # See also
+///
+/// * [`TensorView`] for creating views into tensor data without copying
+/// * [`crate::allocator`] for custom memory allocation strategies
+/// * Common type aliases: [`Tensor1`], [`Tensor2`], [`Tensor3`], [`Tensor4`]
+///
+/// [`Tensor1`]: crate::Tensor1
+/// [`Tensor2`]: crate::Tensor2
+/// [`Tensor3`]: crate::Tensor3
+/// [`Tensor4`]: crate::Tensor4
 pub struct Tensor<T, const N: usize, A: TensorAllocator> {
     /// The storage of the tensor.
     pub storage: TensorStorage<T, A>,
