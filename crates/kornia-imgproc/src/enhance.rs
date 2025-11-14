@@ -5,7 +5,7 @@
 //!
 //! # Available Operations
 //!
-//! * **Weighted Addition** ([`add_weighted`]) - Blend two images with adjustable weights
+//! * **Weighted Addition** ([`add_weighted`](crate::enhance::add_weighted)) - Blend two images with adjustable weights
 //!
 //! # Example: Image Blending
 //!

@@ -6,9 +6,9 @@
 //!
 //! # Available Filters
 //!
-//! * **Box Blur** ([`box_blur`]) - Fast averaging filter, useful for quick smoothing
-//! * **Gaussian Blur** ([`gaussian_blur`]) - Smooth blurring with adjustable sigma
-//! * **Sobel Filter** ([`sobel`]) - Edge detection and gradient computation
+//! * **Box Blur** ([`box_blur`](crate::filter::box_blur)) - Fast averaging filter, useful for quick smoothing
+//! * **Gaussian Blur** ([`gaussian_blur`](crate::filter::gaussian_blur)) - Smooth blurring with adjustable sigma
+//! * **Sobel Filter** ([`sobel`](crate::filter::sobel)) - Edge detection and gradient computation
 //!
 //! # Separable Filtering
 //!

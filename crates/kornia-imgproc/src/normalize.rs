@@ -5,8 +5,8 @@
 //!
 //! # Normalization Methods
 //!
-//! * **Mean-Std Normalization** ([`normalize_mean_std`]) - Z-score normalization
-//! * **Min-Max Normalization** ([`normalize_min_max`]) - Scale to [0, 1] range
+//! * **Mean-Std Normalization** ([`normalize_mean_std`](crate::normalize::normalize_mean_std)) - Z-score normalization
+//! * **Min-Max Normalization** ([`normalize_min_max`](crate::normalize::normalize_min_max)) - Scale to [0, 1] range
 //!
 //! # Use Cases
 //!

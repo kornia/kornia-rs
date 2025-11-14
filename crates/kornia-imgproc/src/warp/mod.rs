@@ -6,8 +6,8 @@
 //!
 //! # Supported Transformations
 //!
-//! * **Affine Transformations** ([`warp_affine`]) - Rotation, translation, scaling, shearing
-//! * **Perspective Transformations** ([`warp_perspective`]) - Full projective transforms
+//! * **Affine Transformations** ([`warp_affine`](crate::warp::warp_affine)) - Rotation, translation, scaling, shearing
+//! * **Perspective Transformations** ([`warp_perspective`](crate::warp::warp_perspective)) - Full projective transforms
 //!
 //! # Transformation Matrices
 //!

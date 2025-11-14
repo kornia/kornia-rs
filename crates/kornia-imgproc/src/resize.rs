@@ -3,9 +3,9 @@
 //! This module provides functions for resizing images to different dimensions using
 //! various interpolation methods. Two implementations are available:
 //!
-//! * **Native implementation** ([`resize_native`]) - Pure Rust, supports any channel count
+//! * **Native implementation** ([`resize_native`](crate::resize::resize_native)) - Pure Rust, supports any channel count
 //!   and f32 data type, parallelized for performance
-//! * **Fast implementation** ([`resize_fast_rgb`]) - Uses the `fast_image_resize` crate,
+//! * **Fast implementation** ([`resize_fast_rgb`](crate::resize::resize_fast_rgb)) - Uses the `fast_image_resize` crate,
 //!   optimized for RGB u8 images with SIMD acceleration
 //!
 //! # Interpolation Modes
@@ -36,8 +36,8 @@
 //!
 //! # Performance Considerations
 //!
-//! * Use [`resize_fast_rgb`] for u8 RGB images when maximum speed is needed
-//! * Use [`resize_native`] for flexibility with any channel count or f32 precision
+//! * Use [`resize_fast_rgb`](crate::resize::resize_fast_rgb) for u8 RGB images when maximum speed is needed
+//! * Use [`resize_native`](crate::resize::resize_native) for flexibility with any channel count or f32 precision
 //! * Downsampling by large factors may benefit from pre-blurring to avoid aliasing
 //!
 //! # See also
