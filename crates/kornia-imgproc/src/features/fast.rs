@@ -1,17 +1,45 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use rayon::prelude::*;
 
-/// Fast feature detector
+/// Detects corners using the FAST (Features from Accelerated Segment Test) algorithm.
+///
+/// FAST is a high-speed corner detection method that identifies keypoints by examining
+/// a circular ring of pixels (Bresenham circle of radius 3) around each candidate point.
+/// A pixel is considered a corner if a contiguous sequence of pixels in the circle are all
+/// either brighter or darker than the center pixel by at least the specified threshold.
 ///
 /// # Arguments
 ///
-/// * `src` - The source image as Gray8 image.
-/// * `threshold` - The threshold for the fast feature detector.
-/// * `arc_length` - The total number of consecutive pixels in the Bresenham circle that must be brighter or darker than the center pixel.
+/// * `src` - The source grayscale image (single-channel u8).
+/// * `threshold` - Intensity difference threshold. Pixels differing from the center by at
+///                 least this value are considered for the arc test.
+/// * `arc_length` - The minimum number of consecutive pixels in the 16-pixel Bresenham
+///                  circle that must all be brighter or all darker than the center pixel.
+///                  Common values: 9 for FAST-9, 12 for FAST-12.
 ///
 /// # Returns
 ///
-/// A vector containing the coordinates of the detected keypoints.
+/// A vector of `[x, y]` coordinates representing detected corner keypoints.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::features::fast_feature_detector;
+///
+/// let image = Image::<u8, 1>::from_size_val(
+///     ImageSize { width: 100, height: 100 },
+///     128,
+/// ).unwrap();
+///
+/// let keypoints = fast_feature_detector(&image, 20, 9).unwrap();
+/// // keypoints contains detected corner locations
+/// ```
+///
+/// # See also
+///
+/// * E. Rosten and T. Drummond, "Machine learning for high-speed corner detection,"
+///   ECCV 2006.
 pub fn fast_feature_detector<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     threshold: u8,

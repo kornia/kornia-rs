@@ -1,28 +1,100 @@
+//! Image enhancement and adjustment operations.
+//!
+//! This module provides functions for enhancing and adjusting image properties such as
+//! brightness, contrast, and combining multiple images with weighted blending.
+//!
+//! # Available Operations
+//!
+//! * **Weighted Addition** ([`add_weighted`]) - Blend two images with adjustable weights
+//!
+//! # Example: Image Blending
+//!
+//! ```
+//! use kornia_image::{Image, ImageSize};
+//! use kornia_imgproc::enhance::add_weighted;
+//!
+//! let img1 = Image::<f32, 3>::from_size_val(
+//!     ImageSize { width: 100, height: 100 },
+//!     0.3,
+//! ).unwrap();
+//!
+//! let img2 = Image::<f32, 3>::from_size_val(
+//!     ImageSize { width: 100, height: 100 },
+//!     0.7,
+//! ).unwrap();
+//!
+//! let mut result = Image::<f32, 3>::from_size_val(
+//!     img1.size(),
+//!     0.0,
+//! ).unwrap();
+//!
+//! // Blend 50% of each image
+//! add_weighted(&img1, 0.5, &img2, 0.5, 0.0, &mut result).unwrap();
+//! ```
+
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
 use crate::parallel;
 
-/// Performs weighted addition of two images `src1` and `src2` with weights `alpha`
-/// and `beta`, and an optional scalar `gamma`. The formula used is:
+/// Blend two images using weighted addition with an optional offset.
 ///
-/// dst(x,y,c) = (src1(x,y,c) * alpha + src2(x,y,c) * beta + gamma)
+/// Performs a pixel-wise weighted combination of two images according to:
+///
+/// ```text
+/// dst(x,y,c) = src1(x,y,c) · α + src2(x,y,c) · β + γ
+/// ```
+///
+/// This operation is useful for:
+/// * Image blending and cross-dissolve effects
+/// * Alpha compositing when combined with masks
+/// * Brightness/contrast adjustment when one image is constant
+/// * Creating image pyramids and multi-resolution blending
 ///
 /// # Arguments
 ///
 /// * `src1` - The first input image.
-/// * `alpha` - Weight of the first image elements to be multiplied.
-/// * `src2` - The second input image.
-/// * `beta` - Weight of the second image elements to be multiplied.
-/// * `gamma` - Scalar added to each sum.
+/// * `alpha` - Multiplicative weight for the first image (α).
+/// * `src2` - The second input image (must match src1 dimensions).
+/// * `beta` - Multiplicative weight for the second image (β).
+/// * `gamma` - Scalar offset added to each pixel (γ).
+/// * `dst` - The output image (must match src1/src2 dimensions).
 ///
-/// # Returns
+/// # Example: 50/50 Blend
 ///
-/// Returns a new `Image` where each element is computed as described above.
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::enhance::add_weighted;
+///
+/// let img1 = Image::<f32, 1>::from_size_val(
+///     ImageSize { width: 10, height: 10 },
+///     100.0,
+/// ).unwrap();
+///
+/// let img2 = Image::<f32, 1>::from_size_val(
+///     ImageSize { width: 10, height: 10 },
+///     200.0,
+/// ).unwrap();
+///
+/// let mut result = Image::<f32, 1>::from_size_val(img1.size(), 0.0).unwrap();
+///
+/// add_weighted(&img1, 0.5, &img2, 0.5, 0.0, &mut result).unwrap();
+/// // result pixels are now 150.0 = 0.5 * 100.0 + 0.5 * 200.0
+/// ```
+///
+/// # Performance
+///
+/// This function is parallelized and processes images row-by-row for efficiency.
 ///
 /// # Errors
 ///
-/// Returns an error if the sizes of `src1` and `src2` do not match.
-/// Returns an error if the size of `dst` does not match the size of `src1` or `src2`.
+/// Returns [`ImageError::InvalidImageSize`] if:
+/// * `src1` and `src2` have different dimensions
+/// * `dst` dimensions don't match `src1`/`src2`
+///
+/// # See also
+///
+/// * Standard alpha blending sets α + β = 1.0
+/// * For contrast/brightness: use constant `src2` with β and γ
 pub fn add_weighted<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator, A3: ImageAllocator>(
     src1: &Image<T, C, A1>,
     alpha: T,

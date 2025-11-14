@@ -1,3 +1,50 @@
+//! Image resizing utilities with multiple interpolation modes.
+//!
+//! This module provides functions for resizing images to different dimensions using
+//! various interpolation methods. Two implementations are available:
+//!
+//! * **Native implementation** ([`resize_native`]) - Pure Rust, supports any channel count
+//!   and f32 data type, parallelized for performance
+//! * **Fast implementation** ([`resize_fast_rgb`]) - Uses the `fast_image_resize` crate,
+//!   optimized for RGB u8 images with SIMD acceleration
+//!
+//! # Interpolation Modes
+//!
+//! * **Nearest** - Fast, blocky results, suitable for masks or discrete data
+//! * **Bilinear** - Smooth results, good quality/speed tradeoff
+//! * **Bicubic** - Higher quality, slower, best for downsampling photographs
+//!
+//! # Example: Resize with Bilinear Interpolation
+//!
+//! ```
+//! use kornia_image::{Image, ImageSize};
+//! use kornia_imgproc::resize::resize_native;
+//! use kornia_imgproc::interpolation::InterpolationMode;
+//!
+//! let src = Image::<f32, 3>::from_size_val(
+//!     ImageSize { width: 640, height: 480 },
+//!     0.5,
+//! ).unwrap();
+//!
+//! let mut dst = Image::<f32, 3>::from_size_val(
+//!     ImageSize { width: 320, height: 240 },
+//!     0.0,
+//! ).unwrap();
+//!
+//! resize_native(&src, &mut dst, InterpolationMode::Bilinear).unwrap();
+//! ```
+//!
+//! # Performance Considerations
+//!
+//! * Use [`resize_fast_rgb`] for u8 RGB images when maximum speed is needed
+//! * Use [`resize_native`] for flexibility with any channel count or f32 precision
+//! * Downsampling by large factors may benefit from pre-blurring to avoid aliasing
+//!
+//! # See also
+//!
+//! * [`crate::filter::gaussian_blur`] for pre-filtering before downsampling
+//! * [`crate::interpolation`] for low-level interpolation primitives
+
 use crate::{
     interpolation::{grid::meshgrid_from_fn, interpolate_pixel, InterpolationMode},
     parallel,

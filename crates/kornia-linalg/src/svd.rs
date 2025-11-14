@@ -1,3 +1,59 @@
+//! Fast 3×3 Singular Value Decomposition (SVD) implementation.
+//!
+//! This module provides an efficient, branch-minimizing algorithm for computing
+//! the singular value decomposition of 3×3 matrices, commonly needed in computer
+//! vision applications such as pose estimation, point cloud registration, and
+//! camera calibration.
+//!
+//! # Mathematical Background
+//!
+//! For any matrix A ∈ ℝ³ˣ³, the SVD decomposes it into three matrices:
+//!
+//! ```text
+//! A = U Σ Vᵀ
+//! ```
+//!
+//! where:
+//! * U ∈ ℝ³ˣ³ is an orthogonal matrix (left singular vectors)
+//! * Σ ∈ ℝ³ˣ³ is a diagonal matrix of singular values (σ₁ ≥ σ₂ ≥ σ₃ ≥ 0)
+//! * V ∈ ℝ³ˣ³ is an orthogonal matrix (right singular vectors)
+//!
+//! # Implementation Details
+//!
+//! This implementation uses:
+//! * Jacobi eigenvalue algorithm for symmetric matrices
+//! * QR decomposition using Givens rotations
+//! * Minimal branching for SIMD-friendly performance
+//!
+//! # Example
+//!
+//! ```
+//! use glam::Mat3;
+//! use kornia_linalg::svd::svd3;
+//!
+//! let matrix = Mat3::from_cols_array(&[
+//!     1.0, 0.0, 0.0,
+//!     0.0, 2.0, 0.0,
+//!     0.0, 0.0, 3.0,
+//! ]);
+//!
+//! let svd_result = svd3(&matrix);
+//! let u = svd_result.u();
+//! let s = svd_result.s();
+//! let v = svd_result.v();
+//! ```
+//!
+//! # References
+//!
+//! * McAdams, Selle, Tamstorf, Teran, and Sifakis (2011).
+//!   "Computing the Singular Value Decomposition of 3x3 matrices with minimal
+//!   branching and elementary floating point operations."
+//!   University of Wisconsin-Madison Technical Report TR1690.
+//!
+//! # See also
+//!
+//! * [`crate::rigid`] for using SVD in rigid body transformations
+
 // Reference: https://github.com/wi-re/tbtSVD/blob/master/source/SVD.h
 use glam::{Mat3, Quat, Vec3};
 const GAMMA: f32 = 5.828_427_3;

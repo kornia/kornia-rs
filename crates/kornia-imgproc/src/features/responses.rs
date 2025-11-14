@@ -26,19 +26,54 @@ fn _get_kernel_size(sigma: f32) -> usize {
     ksize
 }
 
-/// Compute the Hessian response of an image.
+/// Compute the Hessian response of an image for blob detection.
 ///
-/// The Hessian response is calculated as the determinant
-/// of the Hessian matrix $H$:
+/// The Hessian response is calculated as the absolute value of the determinant
+/// of the Hessian matrix H:
 ///
-/// Response = |L_{xx} L_{yy} - L_{xy}^2|
+/// ```text
+/// Response = |det(H)| = |L_xx · L_yy - L_xy²|
+/// ```
 ///
-/// The second-order derivatives L_{xx}, L_{yy}, and L_{xy} are approximated
-/// using 3x3 finite difference kernels (Sobel-style).
+/// where L_xx, L_yy, and L_xy are the second-order partial derivatives
+/// of the image intensity function. These derivatives are approximated using
+/// 3×3 finite difference kernels (Sobel-style operators).
 ///
-/// Args:
-///     src: The source image with shape (H, W).
-///     dst: The destination image with shape (H, W).
+/// The Hessian response is commonly used for detecting blobs (regions of
+/// interest) in images. High response values indicate strong blob-like
+/// structures at various scales.
+///
+/// # Arguments
+///
+/// * `src` - The source grayscale image with shape (H, W), type f32.
+/// * `dst` - The destination image with shape (H, W) for storing response values.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::features::hessian_response;
+///
+/// let src = Image::<f32, 1>::from_size_val(
+///     ImageSize { width: 100, height: 100 },
+///     0.5,
+/// ).unwrap();
+///
+/// let mut dst = Image::<f32, 1>::from_size_val(src.size(), 0.0).unwrap();
+///
+/// hessian_response(&src, &mut dst).unwrap();
+/// // dst now contains the Hessian response map
+/// ```
+///
+/// # See also
+///
+/// * T. Lindeberg (1998). "Feature detection with automatic scale selection."
+///   International Journal of Computer Vision, 30(2), 79-116.
+/// * [`crate::filter::gaussian_blur`] for multi-scale blob detection
+///
+/// # Errors
+///
+/// Returns an error if the source and destination images have different sizes.
 pub fn hessian_response<A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, 1, A1>,
     dst: &mut Image<f32, 1, A2>,

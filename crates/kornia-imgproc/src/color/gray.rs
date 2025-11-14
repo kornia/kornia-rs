@@ -6,18 +6,27 @@ const RW: f64 = 0.299;
 const GW: f64 = 0.587;
 const BW: f64 = 0.114;
 
-/// Convert an RGB image to grayscale using the formula:
+/// Convert an RGB image to grayscale using the ITU-R BT.601 luma coefficients.
 ///
-/// Y = 0.299 * R + 0.587 * G + 0.114 * B
+/// The grayscale conversion applies the standard luminance formula:
+///
+/// ```text
+/// Y = 0.299·R + 0.587·G + 0.114·B
+/// ```
+///
+/// These weights approximate human perception of color brightness, where
+/// green contributes most to perceived luminance, followed by red, then blue.
 ///
 /// # Arguments
 ///
-/// * `src` - The input RGB image.
-/// * `dst` - The output grayscale image.
+/// * `src` - The input RGB image (3 channels, floating-point).
+/// * `dst` - The output grayscale image (1 channel, same type as src).
 ///
-/// Precondition: the input image must have 3 channels.
-/// Precondition: the output image must have 1 channel.
-/// Precondition: the input and output images must have the same size.
+/// # Preconditions
+///
+/// * Input image must have exactly 3 channels (RGB).
+/// * Output image must have exactly 1 channel.
+/// * Input and output images must have identical dimensions.
 ///
 /// # Example
 ///
@@ -26,23 +35,31 @@ const BW: f64 = 0.114;
 /// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::color::gray_from_rgb;
 ///
-/// let image = Image::<f32, 3, _>::new(
-///     ImageSize {
-///         width: 4,
-///         height: 5,
-///     },
-///     vec![0f32; 4 * 5 * 3],
+/// let rgb = Image::<f32, 3, _>::new(
+///     ImageSize { width: 640, height: 480 },
+///     vec![0.5f32; 640 * 480 * 3],
 ///     CpuAllocator
-/// )
-/// .unwrap();
+/// ).unwrap();
 ///
-/// let mut gray = Image::<f32, 1, _>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
+/// let mut gray = Image::<f32, 1, _>::from_size_val(
+///     rgb.size(),
+///     0.0,
+///     CpuAllocator,
+/// ).unwrap();
 ///
-/// gray_from_rgb(&image, &mut gray).unwrap();
+/// gray_from_rgb(&rgb, &mut gray).unwrap();
 /// assert_eq!(gray.num_channels(), 1);
-/// assert_eq!(gray.size().width, 4);
-/// assert_eq!(gray.size().height, 5);
 /// ```
+///
+/// # Performance
+///
+/// This function is parallelized using Rayon and processes the image row-by-row.
+///
+/// # See also
+///
+/// * [`gray_from_rgb_u8`] for optimized u8 conversion
+/// * [`rgb_from_gray`] for the inverse operation
+/// * ITU-R Recommendation BT.601-7 for the standard weights
 pub fn gray_from_rgb<T, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<T, 3, A1>,
     dst: &mut Image<T, 1, A2>,
