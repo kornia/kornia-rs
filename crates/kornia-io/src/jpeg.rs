@@ -90,7 +90,7 @@ pub fn read_image_jpeg_mono8(file_path: impl AsRef<Path>) -> Result<Gray8<CpuAll
     )?)
 }
 
-/// Decodes a JPEG image with three channel (rgb8) from Raw Bytes.
+/// Decodes a JPEG image with as RGB8 from raw bytes.
 ///
 /// # Arguments
 ///
@@ -103,7 +103,7 @@ pub fn decode_image_jpeg_rgb8<A: ImageAllocator>(
     decode_jpeg_impl(src, &mut dst.0)
 }
 
-/// Decodes a JPEG image with single channel (mono8) from Raw Bytes.
+/// Decodes a JPEG image as grayscale (Gray8) from raw bytes.
 ///
 /// # Arguments
 ///

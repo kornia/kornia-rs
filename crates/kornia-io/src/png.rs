@@ -100,7 +100,7 @@ pub fn read_image_png_mono16(file_path: impl AsRef<Path>) -> Result<Gray16<CpuAl
     Ok(Gray16::from_size_vec(size.into(), buf_u16, CpuAllocator)?)
 }
 
-/// Decodes a PNG image with a single channel (mono8) from Raw Bytes.
+/// Decodes a PNG image with as grayscale (Gray8) from Raw Bytes.
 ///
 /// # Arguments
 ///
@@ -142,7 +142,7 @@ pub fn decode_image_png_rgba8<A: ImageAllocator>(
     decode_png_impl::<4>(src, dst.as_slice_mut(), size)
 }
 
-/// Decodes a PNG (16 Bit) image with a single channel (mono16) from Raw Bytes.
+/// Decodes a PNG (16 Bit) image as grayscale (Gray16) from Raw Bytes.
 ///
 /// # Arguments
 ///
@@ -174,7 +174,7 @@ pub fn decode_image_png_rgb16<A: ImageAllocator>(
     Ok(())
 }
 
-/// Decodes a PNG (16 Bit) image with a four channel (rgba16) from Raw Bytes.
+/// Decodes a PNG (16 Bit) image with as RGBA (Rgba16) from Raw Bytes.
 ///
 /// # Arguments
 ///

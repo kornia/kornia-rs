@@ -15,7 +15,7 @@ use std::path::Path;
 ///
 /// # Returns
 ///
-/// A tensor image containing the image data in RGB8 format with shape (H, W, 3).
+/// An Rgb8 image with the image data.
 ///
 /// # Example
 ///
