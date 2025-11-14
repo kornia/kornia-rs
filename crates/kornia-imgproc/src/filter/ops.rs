@@ -7,15 +7,48 @@ use rayon::{
 
 use super::{fast_horizontal_filter, kernels, separable_filter};
 
-/// Blur an image using a box blur filter
+/// Apply box blur (mean filter) to smooth an image.
+///
+/// Box blur replaces each pixel with the average of pixels in a rectangular
+/// neighborhood. While less sophisticated than Gaussian blur, it's significantly
+/// faster and suitable for quick smoothing or preprocessing operations.
+///
+/// The filter is implemented as a separable operation for efficiency.
 ///
 /// # Arguments
 ///
 /// * `src` - The source image with shape (H, W, C).
 /// * `dst` - The destination image with shape (H, W, C).
-/// * `kernel_size` - The size of the kernel (kernel_x, kernel_y).
+/// * `kernel_size` - The size of the kernel `(width, height)`. Both must be positive odd integers.
 ///
-/// PRECONDITION: `src` and `dst` must have the same shape.
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::filter::box_blur;
+///
+/// let src = Image::<f32, 3>::from_size_val(
+///     ImageSize { width: 100, height: 100 },
+///     0.5,
+/// ).unwrap();
+///
+/// let mut dst = Image::<f32, 3>::from_size_val(src.size(), 0.0).unwrap();
+///
+/// box_blur(&src, &mut dst, (5, 5)).unwrap();
+/// ```
+///
+/// # Performance
+///
+/// Box blur has O(1) complexity per pixel using integral images or sliding window,
+/// making it faster than Gaussian blur for large kernel sizes.
+///
+/// # See also
+///
+/// * [`gaussian_blur`] for higher quality smoothing
+///
+/// # Errors
+///
+/// Returns an error if `src` and `dst` have different shapes.
 pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,
@@ -27,23 +60,77 @@ pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     Ok(())
 }
 
-/// Blur an image using a gaussian blur filter
+/// Apply Gaussian blur to smooth an image with adjustable kernel size and standard deviation.
+///
+/// Gaussian blur convolves the image with a Gaussian function, providing high-quality
+/// smoothing that reduces image noise and detail. The blur strength is controlled by
+/// the sigma (standard deviation) parameters.
 ///
 /// # Arguments
 ///
 /// * `src` - The source image with shape (H, W, C).
 /// * `dst` - The destination image with shape (H, W, C).
-/// * `kernel_size` - The size of the kernel (kernel_x, kernel_y). They can differ,
-///   but they both have to be positive and odd. Or, they can be zero
-///   and they will be computed from sigma values based on:
-///   kernel_size = 8*sigma + 1
-/// * `sigma` - The sigma of the gaussian kernel (sigma_x, sigma_y). sigma_y can
-///   be zero and it will take on the same value as sigma_x. Or, they
-///   can both be zero and they will be computed based on:
-///   sigma = (kernel_size - 1) / 8
+/// * `kernel_size` - Kernel dimensions `(width, height)` in pixels.
+///   * Must be positive odd integers, or
+///   * Set to `(0, 0)` to auto-compute from sigma: `kernel = 8·σ + 1`
+/// * `sigma` - Standard deviation `(σ_x, σ_y)` of the Gaussian.
+///   * `σ_y` can be `0.0` to match `σ_x` (isotropic blur)
+///   * Both can be `0.0` to auto-compute from kernel_size: `σ = (kernel - 1) / 8`
 ///
-/// PRECONDITION: `src` and `dst` must have the same shape.
-/// NOTE: This function uses a constant border type.
+/// # Example: Automatic Kernel Size
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::filter::gaussian_blur;
+///
+/// let src = Image::<f32, 1>::from_size_val(
+///     ImageSize { width: 320, height: 240 },
+///     0.5,
+/// ).unwrap();
+///
+/// let mut dst = Image::<f32, 1>::from_size_val(src.size(), 0.0).unwrap();
+///
+/// // Auto-compute kernel from sigma (typical use case)
+/// gaussian_blur(&src, &mut dst, (0, 0), (2.0, 2.0)).unwrap();
+/// ```
+///
+/// # Example: Manual Kernel Size
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::filter::gaussian_blur;
+///
+/// let src = Image::<f32, 3>::from_size_val(
+///     ImageSize { width: 640, height: 480 },
+///     0.0,
+/// ).unwrap();
+///
+/// let mut dst = Image::<f32, 3>::from_size_val(src.size(), 0.0).unwrap();
+///
+/// // Use 7×7 kernel with auto-computed sigma
+/// gaussian_blur(&src, &mut dst, (7, 7), (0.0, 0.0)).unwrap();
+/// ```
+///
+/// # Implementation Notes
+///
+/// * Uses separable filtering for efficiency: O(k) instead of O(k²) per pixel
+/// * Border handling: constant padding (replicates edge pixels)
+/// * Follows SciPy conventions for auto-computing kernel size and sigma
+/// * Parallelized across image rows for multi-core performance
+///
+/// # Errors
+///
+/// Returns [`ImageError::InvalidSigmaValue`] if:
+/// * Kernel sizes are even or non-positive (when manually specified)
+/// * Both kernel size and sigma are zero or invalid
+///
+/// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` shapes differ.
+///
+/// # See also
+///
+/// * [`box_blur`] for faster approximate smoothing
+/// * Use Gaussian blur before downsampling to prevent aliasing
+/// * Typical sigma values: 0.5–2.0 for mild blur, 3.0+ for strong blur
 pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,

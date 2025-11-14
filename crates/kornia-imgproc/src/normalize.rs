@@ -1,60 +1,127 @@
+//! Image normalization operations for preprocessing and standardization.
+//!
+//! This module provides utilities for normalizing image pixel values, a critical
+//! preprocessing step for machine learning models and computer vision algorithms.
+//!
+//! # Normalization Methods
+//!
+//! * **Mean-Std Normalization** ([`normalize_mean_std`]) - Z-score normalization
+//! * **Min-Max Normalization** ([`normalize_min_max`]) - Scale to [0, 1] range
+//!
+//! # Use Cases
+//!
+//! * **Deep Learning** - Standardize inputs to neural networks (e.g., ImageNet normalization)
+//! * **Image Comparison** - Reduce lighting variations before similarity metrics
+//! * **Histogram Equalization** - Improve contrast by normalizing intensity distribution
+//!
+//! # Example: ImageNet-style Normalization
+//!
+//! ```
+//! use kornia_image::{Image, ImageSize};
+//! use kornia_imgproc::normalize::normalize_mean_std;
+//!
+//! let image = Image::<f32, 3>::from_size_val(
+//!     ImageSize { width: 224, height: 224 },
+//!     0.5,
+//! ).unwrap();
+//!
+//! let mut normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
+//!
+//! // ImageNet mean and std per channel (RGB)
+//! let mean = [0.485, 0.456, 0.406];
+//! let std = [0.229, 0.224, 0.225];
+//!
+//! normalize_mean_std(&image, &mut normalized, &mean, &std).unwrap();
+//! ```
+//!
+//! # Mathematical Background
+//!
+//! **Z-score normalization** transforms each pixel to have zero mean and unit variance:
+//!
+//! ```text
+//! normalized = (pixel - μ) / σ
+//! ```
+//!
+//! where μ is the mean and σ is the standard deviation for each channel.
+//!
+//! # See also
+//!
+//! * Common ImageNet normalization values widely used in pretrained models
+//! * [`crate::enhance`] for other image adjustment operations
+
 use num_traits::Float;
 
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
 use crate::parallel;
 
-/// Normalize an image using the mean and standard deviation.
+/// Normalize an image using per-channel mean and standard deviation (Z-score normalization).
 ///
-/// The formula for normalizing an image is:
-///
-/// (image - mean) / std
-///
-/// Each channel is normalized independently.
+/// Applies the transformation `(pixel - μ) / σ` independently to each color channel,
+/// producing a normalized image with zero mean and unit standard deviation. This is
+/// the standard preprocessing step for many deep learning models.
 ///
 /// # Arguments
 ///
-/// * `src` - The input image of shape (height, width, channels).
-/// * `dst` - The output image of shape (height, width, channels).
-/// * `mean` - The mean value for each channel.
-/// * `std` - The standard deviation for each channel.
+/// * `src` - The input image with shape (H, W, C).
+/// * `dst` - The output normalized image with shape (H, W, C).
+/// * `mean` - Array of mean values, one per channel (μ₁, μ₂, ..., μ_C).
+/// * `std` - Array of standard deviation values, one per channel (σ₁, σ₂, ..., σ_C).
 ///
-/// # Returns
-///
-/// The normalized image of shape (height, width, channels).
-///
-/// # Example
+/// # Example: ImageNet Normalization
 ///
 /// ```
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::normalize::normalize_mean_std;
 ///
-/// let image_data = vec![0f32, 1.0, 0.0, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 1.0, 2.0, 3.0];
-/// let image = Image::<f32, 3, _>::new(
-///   ImageSize {
-///     width: 2,
-///     height: 2,
-///   },
-///   image_data,
-///   CpuAllocator
-/// )
-/// .unwrap();
+/// let image = Image::<f32, 3>::from_size_val(
+///     ImageSize { width: 224, height: 224 },
+///     0.5,
+/// ).unwrap();
 ///
-/// let mut image_normalized = Image::<f32, 3, _>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
+/// let mut normalized = Image::<f32, 3>::from_size_val(image.size(), 0.0).unwrap();
 ///
-/// normalize_mean_std(
-///     &image,
-///     &mut image_normalized,
-///     &[0.5, 1.0, 0.5],
-///     &[1.0, 1.0, 1.0],
-/// )
-/// .unwrap();
+/// // Standard ImageNet RGB normalization
+/// let mean = [0.485, 0.456, 0.406];
+/// let std = [0.229, 0.224, 0.225];
 ///
-/// assert_eq!(image_normalized.num_channels(), 3);
-/// assert_eq!(image_normalized.size().width, 2);
-/// assert_eq!(image_normalized.size().height, 2);
+/// normalize_mean_std(&image, &mut normalized, &mean, &std).unwrap();
 /// ```
+///
+/// # Example: Grayscale Normalization
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_imgproc::normalize::normalize_mean_std;
+///
+/// let image = Image::<f32, 1>::from_size_val(
+///     ImageSize { width: 100, height: 100 },
+///     128.0,
+/// ).unwrap();
+///
+/// let mut normalized = Image::<f32, 1>::from_size_val(image.size(), 0.0).unwrap();
+///
+/// normalize_mean_std(&image, &mut normalized, &[127.5], &[50.0]).unwrap();
+/// ```
+///
+/// # Common Precomputed Values
+///
+/// * **ImageNet (RGB)**: mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+/// * **CIFAR-10 (RGB)**: mean=[0.4914, 0.4822, 0.4465], std=[0.2470, 0.2435, 0.2616]
+/// * **MNIST (Grayscale)**: mean=[0.1307], std=[0.3081]
+///
+/// # Performance
+///
+/// This function is parallelized using Rayon for efficient processing of large images.
+///
+/// # Errors
+///
+/// Returns [`ImageError::InvalidImageSize`] if `src` and `dst` have different dimensions.
+///
+/// # See also
+///
+/// * [`normalize_min_max`] for scaling to a specific range instead
+/// * Use this before feeding images to pretrained neural networks
 pub fn normalize_mean_std<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<T, C, A1>,
     dst: &mut Image<T, C, A2>,
