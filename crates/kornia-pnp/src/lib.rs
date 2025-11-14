@@ -7,13 +7,13 @@ pub mod epnp;
 /// Common data types shared across PnP solvers.
 pub mod pnp;
 
-/// RANSAC for robust PnP pose estimation.
-pub mod ransac;
+/// Optional refinement routines (Levenberg–Marquardt, etc.)
+mod refine;
 
 pub use epnp::{EPnP, EPnPParams};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 pub use pnp::{PnPError, PnPResult, PnPSolver};
-pub use ransac::{solve_pnp_ransac, PnPRansacError, PnPRansacResult, RansacParams};
+pub use refine::LMParams;
 
 mod ops;
 
