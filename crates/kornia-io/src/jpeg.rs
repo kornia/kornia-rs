@@ -2,6 +2,7 @@ use crate::error::IoError;
 use jpeg_encoder::{ColorType, Encoder};
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
+    color_spaces::{Gray8, Rgb8},
     Image, ImageSize,
 };
 use std::{fs, path::Path};
@@ -11,7 +12,7 @@ use std::{fs, path::Path};
 /// # Arguments
 ///
 /// - `file_path` - The path to the JPEG image.
-/// - `image` - The tensor containing the JPEG image data
+/// - `image` - The RGB8 image to write
 /// - `quality` - The quality of the JPEG encoding, range from 0 (lowest) to 100 (highest)
 pub fn write_image_jpeg_rgb8<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
@@ -26,7 +27,7 @@ pub fn write_image_jpeg_rgb8<A: ImageAllocator>(
 /// # Arguments
 ///
 /// - `file_path` - The path to the JPEG image.
-/// - `image` - The tensor containing the JPEG image data
+/// - `image` - The grayscale image to write
 /// - `quality` - The quality of the JPEG encoding, range from 0 (lowest) to 100 (highest)
 pub fn write_image_jpeg_gray8<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
@@ -53,7 +54,7 @@ fn write_image_jpeg_imp<const N: usize, A: ImageAllocator>(
     Ok(())
 }
 
-/// Read a JPEG image with a four channel _(rgb8)_.
+/// Read a JPEG image as RGB8.
 ///
 /// # Arguments
 ///
@@ -61,14 +62,17 @@ fn write_image_jpeg_imp<const N: usize, A: ImageAllocator>(
 ///
 /// # Returns
 ///
-/// A RGB image with four channels _(rgb8)_.
-pub fn read_image_jpeg_rgb8(
-    file_path: impl AsRef<Path>,
-) -> Result<Image<u8, 3, CpuAllocator>, IoError> {
-    read_image_jpeg_impl(file_path)
+/// An RGB8 typed image.
+pub fn read_image_jpeg_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8<CpuAllocator>, IoError> {
+    let img = read_image_jpeg_impl::<3>(file_path)?;
+    Ok(Rgb8::from_size_vec(
+        img.size(),
+        img.into_vec(),
+        CpuAllocator,
+    )?)
 }
 
-/// Reads a JPEG file with a single channel _(mono8)_
+/// Reads a JPEG file as grayscale.
 ///
 /// # Arguments
 ///
@@ -76,37 +80,40 @@ pub fn read_image_jpeg_rgb8(
 ///
 /// # Returns
 ///
-/// A grayscale image with a single channel _(mono8)_.
-pub fn read_image_jpeg_mono8(
-    file_path: impl AsRef<Path>,
-) -> Result<Image<u8, 1, CpuAllocator>, IoError> {
-    read_image_jpeg_impl(file_path)
+/// A Gray8 typed image.
+pub fn read_image_jpeg_mono8(file_path: impl AsRef<Path>) -> Result<Gray8<CpuAllocator>, IoError> {
+    let img = read_image_jpeg_impl::<1>(file_path)?;
+    Ok(Gray8::from_size_vec(
+        img.size(),
+        img.into_vec(),
+        CpuAllocator,
+    )?)
 }
 
-/// Decodes a JPEG image with three channel (rgb8) from Raw Bytes.
+/// Decodes a JPEG image with as RGB8 from raw bytes.
 ///
 /// # Arguments
 ///
-/// - `image` - A mutable reference to your `Image`
-/// - `bytes` - Raw bytes of the jpeg file
+/// - `src` - Raw bytes of the jpeg file
+/// - `dst` - A mutable reference to your `Rgb8` image
 pub fn decode_image_jpeg_rgb8<A: ImageAllocator>(
     src: &[u8],
-    dst: &mut Image<u8, 3, A>,
+    dst: &mut Rgb8<A>,
 ) -> Result<(), IoError> {
-    decode_jpeg_impl(src, dst)
+    decode_jpeg_impl(src, &mut dst.0)
 }
 
-/// Decodes a JPEG image with single channel (mono8) from Raw Bytes.
+/// Decodes a JPEG image as grayscale (Gray8) from raw bytes.
 ///
 /// # Arguments
 ///
-/// - `image` - A mutable reference to your `Image`
-/// - `bytes` - Raw bytes of the jpeg file
+/// - `src` - Raw bytes of the jpeg file
+/// - `dst` - A mutable reference to your `Gray8` image
 pub fn decode_image_jpeg_mono8<A: ImageAllocator>(
     src: &[u8],
-    dst: &mut Image<u8, 1, A>,
+    dst: &mut Gray8<A>,
 ) -> Result<(), IoError> {
-    decode_jpeg_impl(src, dst)
+    decode_jpeg_impl(src, &mut dst.0)
 }
 
 fn read_image_jpeg_impl<const N: usize>(
@@ -235,7 +242,7 @@ mod tests {
     #[test]
     fn decode_jpeg() -> Result<(), IoError> {
         let bytes = read("../../tests/data/dog.jpeg")?;
-        let mut image: Image<u8, 3, _> = Image::from_size_val([258, 195].into(), 0, CpuAllocator)?;
+        let mut image = Rgb8::from_size_val([258, 195].into(), 0, CpuAllocator)?;
         decode_image_jpeg_rgb8(&bytes, &mut image)?;
 
         assert_eq!(image.cols(), 258);

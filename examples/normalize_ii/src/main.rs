@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image = F::read_image_any_rgb8(args.image_path)?;
 
     // cast the image to floating point
-    let image_f32 = image.cast_and_scale::<f32>(1.0 / 255.0)?;
+    let image_f32 = image.into_inner().cast_and_scale::<f32>(1.0 / 255.0)?;
 
     // convert to grayscale
     let mut gray = Image::<f32, 1, _>::from_size_val(image_f32.size(), 0.0, CpuAllocator)?;

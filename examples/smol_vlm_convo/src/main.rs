@@ -125,7 +125,7 @@ impl AppState {
             .tx
             .send(ModelRequest::Inference {
                 prompt,
-                image: img,
+                image: img.map(|i| i.into_inner()),
                 response_tx: tx,
             })
             .ok();
