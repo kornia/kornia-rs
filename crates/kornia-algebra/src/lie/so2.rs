@@ -1,4 +1,4 @@
-use glam::{Mat2, Mat3A, Vec2};
+use crate::{Mat2, Mat3A, Vec2};
 use rand::Rng;
 use std::f32::consts::TAU; // <-- Added this import
 
@@ -10,28 +10,22 @@ pub struct SO2 {
 
 impl SO2 {
     pub const IDENTITY: Self = Self {
-        z: Vec2 { x: 1.0, y: 0.0 },
+        z: Vec2(glam::Vec2::new(1.0, 0.0)),
     };
 
     pub fn new(z: Vec2) -> Self {
         Self { z }
     }
 
-    pub fn from_matrix(mat: Mat2) -> Self {
+    pub fn from_matrix(mat: &Mat2) -> Self {
         Self {
-            z: Vec2 {
-                x: mat.x_axis.x,
-                y: mat.x_axis.y,
-            },
+            z: Vec2::new(mat.x_axis.x, mat.x_axis.y),
         }
     }
 
-    pub fn from_matrix3a(mat: Mat3A) -> Self {
+    pub fn from_matrix3a(mat: &Mat3A) -> Self {
         Self {
-            z: Vec2 {
-                x: mat.x_axis.x,
-                y: mat.x_axis.y,
-            },
+            z: Vec2::new(mat.x_axis.x, mat.x_axis.y),
         }
     }
 
@@ -79,10 +73,7 @@ impl SO2 {
 
     pub fn exp(theta: f32) -> Self {
         Self {
-            z: Vec2 {
-                x: theta.cos(),
-                y: theta.sin(),
-            },
+            z: Vec2::new(theta.cos(), theta.sin()),
         }
     }
 
@@ -161,7 +152,7 @@ mod tests {
     fn test_from_matrix() {
         // Test with identity matrix
         let mat = Mat2::IDENTITY;
-        let so2 = SO2::from_matrix(mat);
+        let so2 = SO2::from_matrix(&mat);
         assert_relative_eq!(so2.z.x, 1.0);
         assert_relative_eq!(so2.z.y, 0.0);
 
@@ -171,7 +162,7 @@ mod tests {
         // [0.8   0.6]
         // x_axis = [0.6, 0.8], y_axis = [-0.8, 0.6]
         let mat = Mat2::from_cols_array(&[0.6, 0.8, -0.8, 0.6]);
-        let so2 = SO2::from_matrix(mat);
+        let so2 = SO2::from_matrix(&mat);
         assert_relative_eq!(so2.z.x, 0.6);
         assert_relative_eq!(so2.z.y, 0.8);
     }
@@ -329,7 +320,7 @@ mod tests {
     #[test]
     fn test_mul_so2() {
         let s1 = SO2::IDENTITY;
-        let s2 = SO2::new(Vec2::new(0.9, 0.1).normalize());
+        let s2 = SO2::new(Vec2::from(glam::Vec2::new(0.9, 0.1).normalize()));
 
         // Test identity * s2 = s2
         let s1_pose_s2 = s1 * s2;
@@ -345,7 +336,7 @@ mod tests {
     #[test]
     fn test_mul_vec2() {
         let s1 = SO2::IDENTITY;
-        let s2 = SO2::new(Vec2::new(0.9, 0.1).normalize());
+        let s2 = SO2::new(Vec2::from(glam::Vec2::new(0.9, 0.1).normalize()));
         let t1 = Vec2::new(1.0, 2.0);
         let t2 = Vec2::new(3.0, 4.0);
 
@@ -384,7 +375,7 @@ mod tests {
     fn test_from_matrix_matrix_roundtrip() {
         let so2 = make_random_so2();
         let matrix = so2.matrix();
-        let so2_reconstructed = SO2::from_matrix(matrix);
+        let so2_reconstructed = SO2::from_matrix(&matrix);
 
         // Check that we get back the same rotation (up to normalization)
         let norm_original = so2.z.length();
@@ -444,7 +435,7 @@ mod tests {
 
         // Test that rotation matrix is orthogonal (R^T * R = I)
         let transpose = matrix.transpose();
-        let product = transpose * matrix;
+        let product = Mat2::from(glam::Mat2::from(transpose) * glam::Mat2::from(matrix));
         assert_relative_eq!(product.x_axis.x, 1.0, epsilon = EPSILON);
         assert_relative_eq!(product.y_axis.y, 1.0, epsilon = EPSILON);
         assert_relative_eq!(product.x_axis.y, 0.0, epsilon = EPSILON);
@@ -480,7 +471,7 @@ mod tests {
 
         // Test matrix roundtrip
         let matrix = so2.matrix();
-        let so2_from_matrix = SO2::from_matrix(matrix);
+        let so2_from_matrix = SO2::from_matrix(&matrix);
         assert_relative_eq!(so2.z.x, so2_from_matrix.z.x, epsilon = EPSILON);
         assert_relative_eq!(so2.z.y, so2_from_matrix.z.y, epsilon = EPSILON);
 

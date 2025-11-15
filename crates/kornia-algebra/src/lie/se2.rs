@@ -1,5 +1,5 @@
-use crate::so2::SO2;
-use glam::{Mat2, Mat3A, Vec2, Vec3A};
+use super::so2::SO2;
+use crate::{Mat2, Mat3A, Vec2, Vec3A};
 use rand::Rng;
 
 #[derive(Debug, Clone, Copy)]
@@ -13,17 +13,30 @@ const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 impl SE2 {
     pub const IDENTITY: Self = Self {
         r: SO2::IDENTITY,
-        t: Vec2::from_array([0.0, 0.0]),
+        t: Vec2::ZERO,
     };
 
-    pub fn new(r: SO2, t: Vec2) -> Self {
-        Self { r, t }
+    pub fn new(rotation: SO2, translation: Vec2) -> Self {
+        Self {
+            r: rotation,
+            t: translation,
+        }
     }
 
-    pub fn from_matrix(mat: Mat3A) -> Self {
+    pub fn from_matrix(mat: &Mat3A) -> Self {
         Self {
             r: SO2::from_matrix3a(mat),
             t: Vec2::new(mat.z_axis.x, mat.z_axis.y),
+        }
+    }
+
+    /// Create an SE2 from an angle (in radians) and translation.
+    /// This is a convenience method similar to SE3::from_qxyz.
+    #[inline]
+    pub fn from_angle_translation(angle: f32, translation: Vec2) -> Self {
+        Self {
+            r: SO2::exp(angle),
+            t: translation,
         }
     }
 
@@ -117,7 +130,7 @@ impl SE2 {
         // V⁻¹ = 1/det(V) * [[ a,  b],[-b,  a]]
         let v_inv = Mat2::from_cols_array(&[a / denom, -b / denom, b / denom, a / denom]);
 
-        let upsilon = v_inv.mul_vec2(self.t);
+        let upsilon = v_inv.mul_vec2(glam::Vec2::from(self.t));
         Vec3A::new(upsilon.x, upsilon.y, theta)
     }
 
@@ -248,7 +261,6 @@ impl std::ops::Mul<Vec2> for SE2 {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use glam::Vec3A;
 
     const EPSILON: f32 = 1e-6;
 
@@ -286,7 +298,7 @@ mod tests {
     fn test_from_matrix() {
         // Test with identity matrix
         let mat = Mat3A::IDENTITY;
-        let se2 = SE2::from_matrix(mat);
+        let se2 = SE2::from_matrix(&mat);
         assert_eq!(se2.t, Vec2::new(0.0, 0.0));
         assert_eq!(se2.r.matrix(), SO2::IDENTITY.matrix());
 
@@ -296,7 +308,7 @@ mod tests {
         let translation = Vec2::new(2.0, 3.0);
         let se2_original = SE2::new(so2, translation);
         let matrix = se2_original.matrix();
-        let se2_reconstructed = SE2::from_matrix(matrix);
+        let se2_reconstructed = SE2::from_matrix(&matrix);
 
         assert_relative_eq!(
             se2_original.r.z.x,
@@ -671,7 +683,7 @@ mod tests {
     fn test_from_matrix_matrix_roundtrip() {
         let se2 = make_random_se2();
         let matrix = se2.matrix();
-        let se2_reconstructed = SE2::from_matrix(matrix);
+        let se2_reconstructed = SE2::from_matrix(&matrix);
 
         // Check that we get back the same transformation
         assert_relative_eq!(se2.r.z.x, se2_reconstructed.r.z.x, epsilon = EPSILON);
@@ -725,7 +737,6 @@ mod tests {
     #[test]
     fn test_right_jacobian() {
         use approx::assert_relative_eq;
-        use glam::{Mat3A, Vec3A};
 
         // Test case 1: θ = 0.5
         let v = Vec3A::new(1.0, 2.0, 0.5);
@@ -777,7 +788,6 @@ mod tests {
     #[test]
     fn test_left_jacobian() {
         use approx::assert_relative_eq;
-        use glam::{Mat3A, Vec3A};
 
         // Test case 1: θ = 0.5
         let v = Vec3A::new(1.0, 2.0, 0.5);
