@@ -1,7 +1,6 @@
 //! 2x2 matrix (single precision).
 
 use crate::vec2::Vec2;
-use glam;
 use std::ops::{Deref, DerefMut};
 
 /// 2x2 matrix (single precision).
@@ -66,6 +65,16 @@ impl std::ops::Mul<Mat2> for Mat2 {
     #[inline]
     fn mul(self, rhs: Mat2) -> Self::Output {
         Mat2::from(self.0 * rhs.0)
+    }
+}
+
+// Matrix-vector multiplication
+impl std::ops::Mul<Vec2> for Mat2 {
+    type Output = Vec2;
+
+    #[inline]
+    fn mul(self, rhs: Vec2) -> Self::Output {
+        Vec2::from(self.0 * glam::Vec2::from(rhs))
     }
 }
 

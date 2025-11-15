@@ -10,9 +10,18 @@ pub struct SO3 {
 impl SO3 {
     pub const IDENTITY: Self = Self { q: Quat::IDENTITY };
 
-    // NOTE: quatenrion should be normalized
-    pub fn from_quaternion(quat: Quat) -> Self {
+    /// Create a new SO3 from a quaternion.
+    /// NOTE: quaternion should be normalized
+    #[inline]
+    pub fn new(quat: Quat) -> Self {
         Self { q: quat }
+    }
+
+    /// Create a new SO3 from a quaternion.
+    /// NOTE: quaternion should be normalized
+    #[inline]
+    pub fn from_quaternion(quat: Quat) -> Self {
+        Self::new(quat)
     }
 
     pub fn from_matrix(mat: &Mat3A) -> Self {
@@ -598,7 +607,7 @@ mod tests {
         ];
 
         for q in test_quaternions.iter() {
-            let so3 = SO3::from_quaternion(Quat::from(*q));
+            let so3 = SO3::from_quaternion(*q);
             let r = so3.matrix();
             let r_inv = so3.inverse().matrix();
 

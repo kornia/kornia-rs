@@ -1,7 +1,6 @@
 //! 3x3 matrix (aligned, single precision).
 
 use crate::vec3a::Vec3A;
-use glam;
 use std::ops::{Deref, DerefMut};
 
 /// 3x3 matrix (aligned, single precision).

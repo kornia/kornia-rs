@@ -1,4 +1,4 @@
-use crate::so2::SO2;
+use super::so2::SO2;
 use crate::{Mat2, Mat3A, Vec2, Vec3A};
 use rand::Rng;
 
@@ -16,14 +16,27 @@ impl SE2 {
         t: Vec2::ZERO,
     };
 
-    pub fn new(r: SO2, t: Vec2) -> Self {
-        Self { r, t }
+    pub fn new(rotation: SO2, translation: Vec2) -> Self {
+        Self {
+            r: rotation,
+            t: translation,
+        }
     }
 
-    pub fn from_matrix(mat: Mat3A) -> Self {
+    pub fn from_matrix(mat: &Mat3A) -> Self {
         Self {
             r: SO2::from_matrix3a(mat),
             t: Vec2::new(mat.z_axis.x, mat.z_axis.y),
+        }
+    }
+
+    /// Create an SE2 from an angle (in radians) and translation.
+    /// This is a convenience method similar to SE3::from_qxyz.
+    #[inline]
+    pub fn from_angle_translation(angle: f32, translation: Vec2) -> Self {
+        Self {
+            r: SO2::exp(angle),
+            t: translation,
         }
     }
 
@@ -285,7 +298,7 @@ mod tests {
     fn test_from_matrix() {
         // Test with identity matrix
         let mat = Mat3A::IDENTITY;
-        let se2 = SE2::from_matrix(mat);
+        let se2 = SE2::from_matrix(&mat);
         assert_eq!(se2.t, Vec2::new(0.0, 0.0));
         assert_eq!(se2.r.matrix(), SO2::IDENTITY.matrix());
 
@@ -295,7 +308,7 @@ mod tests {
         let translation = Vec2::new(2.0, 3.0);
         let se2_original = SE2::new(so2, translation);
         let matrix = se2_original.matrix();
-        let se2_reconstructed = SE2::from_matrix(matrix);
+        let se2_reconstructed = SE2::from_matrix(&matrix);
 
         assert_relative_eq!(
             se2_original.r.z.x,
@@ -670,7 +683,7 @@ mod tests {
     fn test_from_matrix_matrix_roundtrip() {
         let se2 = make_random_se2();
         let matrix = se2.matrix();
-        let se2_reconstructed = SE2::from_matrix(matrix);
+        let se2_reconstructed = SE2::from_matrix(&matrix);
 
         // Check that we get back the same transformation
         assert_relative_eq!(se2.r.z.x, se2_reconstructed.r.z.x, epsilon = EPSILON);

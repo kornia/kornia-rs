@@ -1,6 +1,5 @@
 //! 3D vector (single precision).
 
-use glam;
 use std::ops::{Deref, DerefMut};
 
 /// 3D vector (single precision).

@@ -1,7 +1,6 @@
 //! 4x4 matrix (single precision).
 
 use crate::{vec3::Vec3, vec4::Vec4};
-use glam;
 use std::ops::{Deref, DerefMut};
 
 /// 4x4 matrix (single precision).
@@ -69,6 +68,16 @@ impl From<Mat4> for glam::Mat4 {
     #[inline]
     fn from(m: Mat4) -> Self {
         m.0
+    }
+}
+
+// Matrix-matrix multiplication
+impl std::ops::Mul<Mat4> for Mat4 {
+    type Output = Mat4;
+
+    #[inline]
+    fn mul(self, rhs: Mat4) -> Self::Output {
+        Mat4::from(self.0 * rhs.0)
     }
 }
 

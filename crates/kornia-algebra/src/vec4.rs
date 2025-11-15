@@ -1,7 +1,6 @@
 //! 4D vector (single precision).
 
 use crate::vec3::Vec3;
-use glam;
 use std::ops::{Deref, DerefMut};
 
 /// 4D vector (single precision).

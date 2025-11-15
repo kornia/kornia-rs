@@ -1,7 +1,6 @@
 //! 3D vector (aligned, single precision).
 
 use crate::vec3::Vec3;
-use glam;
 use std::ops::{Deref, DerefMut};
 
 /// 3D vector (aligned, single precision).

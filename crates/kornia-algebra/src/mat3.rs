@@ -1,7 +1,6 @@
 //! 3x3 matrix (single precision).
 
 use crate::vec3::Vec3;
-use glam;
 use std::ops::{Deref, DerefMut};
 
 /// 3x3 matrix (single precision).
@@ -18,6 +17,12 @@ impl Mat3 {
             glam::Vec3::from(y_axis),
             glam::Vec3::from(z_axis),
         ))
+    }
+
+    /// Create a new Mat3 from a column-major array.
+    #[inline]
+    pub fn from_cols_array(arr: &[f32; 9]) -> Self {
+        Self(glam::Mat3::from_cols_array(arr))
     }
 
     /// Identity matrix.
@@ -51,6 +56,16 @@ impl From<Mat3> for glam::Mat3 {
     #[inline]
     fn from(m: Mat3) -> Self {
         m.0
+    }
+}
+
+// Matrix-matrix multiplication
+impl std::ops::Mul<Mat3> for Mat3 {
+    type Output = Mat3;
+
+    #[inline]
+    fn mul(self, rhs: Mat3) -> Self::Output {
+        Mat3::from(self.0 * rhs.0)
     }
 }
 

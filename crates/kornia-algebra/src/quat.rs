@@ -1,7 +1,5 @@
 //! Quaternion (single precision).
 
-use glam;
-
 /// Quaternion (single precision).
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(transparent)]
@@ -10,6 +8,12 @@ pub struct Quat(pub glam::Quat);
 impl Quat {
     /// Identity quaternion.
     pub const IDENTITY: Self = Self(glam::Quat::IDENTITY);
+
+    /// Create a new quaternion from x, y, z, w components.
+    #[inline]
+    pub fn new(x: f32, y: f32, z: f32, w: f32) -> Self {
+        Self(glam::Quat::from_xyzw(x, y, z, w))
+    }
 
     /// Create a quaternion from x, y, z, w components.
     #[inline]

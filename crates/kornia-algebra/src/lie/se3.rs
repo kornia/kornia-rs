@@ -1,4 +1,4 @@
-use crate::so3::SO3;
+use super::so3::SO3;
 use crate::{Mat3A, Mat4, Quat, Vec3A};
 use rand::Rng;
 

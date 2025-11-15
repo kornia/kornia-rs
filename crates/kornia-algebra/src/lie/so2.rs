@@ -17,13 +17,13 @@ impl SO2 {
         Self { z }
     }
 
-    pub fn from_matrix(mat: Mat2) -> Self {
+    pub fn from_matrix(mat: &Mat2) -> Self {
         Self {
             z: Vec2::new(mat.x_axis.x, mat.x_axis.y),
         }
     }
 
-    pub fn from_matrix3a(mat: Mat3A) -> Self {
+    pub fn from_matrix3a(mat: &Mat3A) -> Self {
         Self {
             z: Vec2::new(mat.x_axis.x, mat.x_axis.y),
         }
@@ -152,7 +152,7 @@ mod tests {
     fn test_from_matrix() {
         // Test with identity matrix
         let mat = Mat2::IDENTITY;
-        let so2 = SO2::from_matrix(mat);
+        let so2 = SO2::from_matrix(&mat);
         assert_relative_eq!(so2.z.x, 1.0);
         assert_relative_eq!(so2.z.y, 0.0);
 
@@ -162,7 +162,7 @@ mod tests {
         // [0.8   0.6]
         // x_axis = [0.6, 0.8], y_axis = [-0.8, 0.6]
         let mat = Mat2::from_cols_array(&[0.6, 0.8, -0.8, 0.6]);
-        let so2 = SO2::from_matrix(mat);
+        let so2 = SO2::from_matrix(&mat);
         assert_relative_eq!(so2.z.x, 0.6);
         assert_relative_eq!(so2.z.y, 0.8);
     }
@@ -375,7 +375,7 @@ mod tests {
     fn test_from_matrix_matrix_roundtrip() {
         let so2 = make_random_so2();
         let matrix = so2.matrix();
-        let so2_reconstructed = SO2::from_matrix(matrix);
+        let so2_reconstructed = SO2::from_matrix(&matrix);
 
         // Check that we get back the same rotation (up to normalization)
         let norm_original = so2.z.length();
@@ -471,7 +471,7 @@ mod tests {
 
         // Test matrix roundtrip
         let matrix = so2.matrix();
-        let so2_from_matrix = SO2::from_matrix(matrix);
+        let so2_from_matrix = SO2::from_matrix(&matrix);
         assert_relative_eq!(so2.z.x, so2_from_matrix.z.x, epsilon = EPSILON);
         assert_relative_eq!(so2.z.y, so2_from_matrix.z.y, epsilon = EPSILON);
 
