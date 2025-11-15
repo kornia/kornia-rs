@@ -39,17 +39,32 @@ impl IPPE {
     ///  - p1 = [ L/2,  L/2, 0]
     ///  - p2 = [ L/2, -L/2, 0]
     ///  - p3 = [-L/2, -L/2, 0]
+    ///
+    /// Accepts 2D pixel coordinates; internally lifted to homogeneous and normalized by `K^{-1}`.
     pub fn solve_square(
         points_image: &[Vec2; 4],
         k: &Mat3A,
         square_length: f32,
     ) -> Result<IPPEResult, PnPError> {
-        // Normalize the input image points using K^{-1}.
+        let points_h: [Vec3; 4] = points_image.map(|uv| Vec3::new(uv.x, uv.y, 1.0));
+        Self::solve_square_h(&points_h, k, square_length)
+    }
+
+    /// Estimate two candidate poses given four homogeneous pixel points `(u, v, 1)` and intrinsics.
+    ///
+    /// The points are first normalized via `K^{-1}` and the rest of the pipeline follows IPPE.
+    pub fn solve_square_h(
+        points_image_h: &[Vec3; 4],
+        k: &Mat3A,
+        square_length: f32,
+    ) -> Result<IPPEResult, PnPError> {
+        // Normalize the input homogeneous image points using K^{-1}.
         let k_inv = k.inverse();
-        let image_points_norm: [[f32; 2]; 4] = points_image.map(|uv| {
-            let hp = k_inv * Vec3::new(uv.x, uv.y, 1.0);
-            [hp.x / hp.z, hp.y / hp.z]
-        });
+        let image_points_norm: [[f32; 2]; 4] =
+            points_image_h.map(|hp| {
+                let q = k_inv * Vec3A::from(hp);
+                [q.x / q.z, q.y / q.z]
+            });
 
         // Build canonical 2D square points (object plane) in the order required above.
         let h = (square_length as f64) / 2.0;
@@ -125,6 +140,18 @@ impl IPPE {
     }
 }
 
+/// Free function variant for stateless IPPE solving.
+///
+/// This is equivalent to calling `IPPE::solve_square`.
+pub fn solve_pnp_ippe(
+    points_image: &[Vec2; 4],
+    k: &Mat3A,
+    square_length: f32,
+) -> Result<IPPEResult, PnPError> {
+    IPPE::solve_square(points_image, k, square_length)
+}
+
+// TODO: move homography pose decomposition to kornia-3d (or shared pose module)
 /// Compute the homography-based pose decomposition assuming normalized image coordinates (K = I).
 fn decompose_h_normalized(h: Mat3A) -> (Mat3A, Vec3) {
     // TODO: consider moving to kornia-3d
