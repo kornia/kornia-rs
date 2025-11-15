@@ -12,7 +12,7 @@
 //! OpenCV project license for details.
 
 use crate::pnp::{PnPError, PnPResult};
-use glam::{Mat3A, Vec3, Vec3A};
+use glam::{Mat3A, Vec2, Vec3, Vec3A};
 use kornia_lie::so3::SO3;
 
 /// Result holding the two IPPE pose solutions sorted by reprojection error (best first).
@@ -40,19 +40,14 @@ impl IPPE {
     ///  - p2 = [ L/2, -L/2, 0]
     ///  - p3 = [-L/2, -L/2, 0]
     pub fn solve_square(
-        points_image: &[[f32; 2]; 4],
-        k: &[[f32; 3]; 3],
+        points_image: &[Vec2; 4],
+        k: &Mat3A,
         square_length: f32,
     ) -> Result<IPPEResult, PnPError> {
         // Normalize the input image points using K^{-1}.
-        let k_mat = Mat3A::from_cols(
-            Vec3A::new(k[0][0], k[1][0], k[2][0]),
-            Vec3A::new(k[0][1], k[1][1], k[2][1]),
-            Vec3A::new(k[0][2], k[1][2], k[2][2]),
-        );
-        let k_inv = k_mat.inverse();
+        let k_inv = k.inverse();
         let image_points_norm: [[f32; 2]; 4] = points_image.map(|uv| {
-            let hp = k_inv * Vec3::new(uv[0], uv[1], 1.0);
+            let hp = k_inv * Vec3::new(uv.x, uv.y, 1.0);
             [hp.x / hp.z, hp.y / hp.z]
         });
 
@@ -155,14 +150,19 @@ fn decompose_h_normalized(h: Mat3A) -> (Mat3A, Vec3) {
 }
 
 /// Generate the 3D object points of a square in the canonical order and z=0 plane.
-fn square_object_points(square_length: f32) -> [[f32; 3]; 4] {
+fn square_object_points(square_length: f32) -> [Vec3; 4] {
     let h = square_length / 2.0;
-    [[-h, h, 0.0], [h, h, 0.0], [h, -h, 0.0], [-h, -h, 0.0]]
+    [
+        Vec3::new(-h, h, 0.0),
+        Vec3::new(h, h, 0.0),
+        Vec3::new(h, -h, 0.0),
+        Vec3::new(-h, -h, 0.0),
+    ]
 }
 
 /// Root-mean-square reprojection error for normalized image coordinates (K = I).
 fn rmse_normalized(
-    points_world: &[[f32; 3]; 4],
+    points_world: &[Vec3; 4],
     points_norm: &[[f32; 2]; 4],
     r: &[[f32; 3]; 3],
     t: &[f32; 3],
@@ -172,12 +172,11 @@ fn rmse_normalized(
         Vec3A::new(r[0][1], r[1][1], r[2][1]),
         Vec3A::new(r[0][2], r[1][2], r[2][2]),
     );
-    let t_vec = Vec3::new(t[0], t[1], t[2]);
+    let t_vec = Vec3A::new(t[0], t[1], t[2]);
 
     let mut sum_sq = 0.0f32;
     for (pw, uv) in points_world.iter().zip(points_norm.iter()) {
-        let pw_v = Vec3::from_array(*pw);
-        let pc = r_mat * pw_v + t_vec;
+        let pc = r_mat * Vec3A::from(*pw) + t_vec;
         // Prevent division by zero or near-zero depth.
         if pc.z.abs() < 1e-6 {
             return Err(PnPError::InvalidPose(
