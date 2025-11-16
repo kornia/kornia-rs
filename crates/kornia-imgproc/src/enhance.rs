@@ -88,11 +88,9 @@ pub fn adjust_brightness<T, const C: usize, A1: ImageAllocator, A2: ImageAllocat
     clip_output: bool,
 ) -> Result<(), ImageError>
 where
-    // Removed FromPrimitive, as it's not needed
     T: Float + std::fmt::Debug + Send + Sync + Copy,
 {
     if src.size() != dst.size() {
-        // FIX: Use cols() and rows() for consistency
         return Err(ImageError::InvalidImageSize(
             src.cols(),
             src.rows(),
@@ -101,20 +99,12 @@ where
         ));
     }
 
-    // FIX: Moved the `if clip_output` check *outside* the loop for performance.
     if clip_output {
         let zero = T::zero();
         let one = T::one();
         parallel::par_iter_rows_val(src, dst, |&src_pixel, dst_pixel| {
             let val = src_pixel + factor;
-            // Manual clamp logic
-            *dst_pixel = if val < zero {
-                zero
-            } else if val > one {
-                one
-            } else {
-                val
-            };
+            *dst_pixel = val.clamp(zero, one);
         });
     } else {
         parallel::par_iter_rows_val(src, dst, |&src_pixel, dst_pixel| {
@@ -127,9 +117,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    // FIX: Add missing imports for tests
     use kornia_image::{allocator::CpuAllocator, Image, ImageError, ImageSize};
-
+    type TestImage = Image<f32, 1, CpuAllocator>;
     #[test]
     fn test_add_weighted() -> Result<(), ImageError> {
         let src1_data = vec![1.0f32, 2.0, 3.0, 4.0];
@@ -171,8 +160,7 @@ mod tests {
     }
 
     // Helper function to create a base image for tests
-    fn create_test_image(
-    ) -> Result<(Image<f32, 1, CpuAllocator>, Image<f32, 1, CpuAllocator>), ImageError> {
+    fn create_test_image() -> Result<(TestImage, TestImage), ImageError> {
         let src_data = vec![0.5f32, 0.5];
         let src = Image::<f32, 1, _>::new(
             ImageSize {
