@@ -203,6 +203,77 @@ where
     Ok(())
 }
 
+/// Convert a BGR image to grayscale using the formula:
+///
+/// Y = 0.299 * R + 0.587 * G + 0.114 * B
+///
+/// Note: The input is in BGR order, but the formula is applied to RGB values.
+///
+/// # Arguments
+///
+/// * `src` - The input BGR image.
+/// * `dst` - The output grayscale image.
+///
+/// Precondition: the input image must have 3 channels.
+/// Precondition: the output image must have 1 channel.
+/// Precondition: the input and output images must have the same size.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_imgproc::color::gray_from_bgr;
+///
+/// let image = Image::<f32, 3, _>::new(
+///     ImageSize {
+///         width: 4,
+///         height: 5,
+///     },
+///     vec![0f32; 4 * 5 * 3],
+///     CpuAllocator
+/// )
+/// .unwrap();
+///
+/// let mut gray = Image::<f32, 1, _>::from_size_val(image.size(), 0.0, CpuAllocator).unwrap();
+///
+/// gray_from_bgr(&image, &mut gray).unwrap();
+/// assert_eq!(gray.num_channels(), 1);
+/// assert_eq!(gray.size().width, 4);
+/// assert_eq!(gray.size().height, 5);
+/// ```
+pub fn gray_from_bgr<T, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, 3, A1>,
+    dst: &mut Image<T, 1, A2>,
+) -> Result<(), ImageError>
+where
+    T: Send + Sync + num_traits::Float,
+{
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    let rw = T::from(RW).ok_or(ImageError::CastError)?;
+    let gw = T::from(GW).ok_or(ImageError::CastError)?;
+    let bw = T::from(BW).ok_or(ImageError::CastError)?;
+
+    // parallelize the grayscale conversion by rows
+    // Note: BGR order means src_pixel[2] is Red, src_pixel[1] is Green, src_pixel[0] is Blue
+    parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
+        let b = src_pixel[0];
+        let g = src_pixel[1];
+        let r = src_pixel[2];
+        dst_pixel[0] = rw * r + gw * g + bw * b;
+    });
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use kornia_image::{ops, Image, ImageSize};
@@ -357,6 +428,46 @@ mod tests {
         super::gray_from_rgb_u8(&image, &mut gray)?;
 
         assert_eq!(gray.as_slice(), &[103, 53]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn gray_from_bgr_regression() -> Result<(), Box<dyn std::error::Error>> {
+        // Create a BGR image (note the channel order is reversed compared to RGB)
+        #[rustfmt::skip]
+        let image = Image::new(
+            ImageSize {
+                width: 2,
+                height: 3,
+            },
+            vec![
+                0.0, 0.0, 1.0,  // Blue=0, Green=0, Red=1
+                0.0, 1.0, 0.0,  // Blue=0, Green=1, Red=0
+                1.0, 0.0, 0.0,  // Blue=1, Green=0, Red=0
+                0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0,
+            ],
+            CpuAllocator
+        )?;
+
+        let mut gray = Image::<f32, 1, _>::from_size_val(image.size(), 0.0, CpuAllocator)?;
+
+        super::gray_from_bgr(&image, &mut gray)?;
+
+        let expected: Image<f32, 1, _> = Image::new(
+            ImageSize {
+                width: 2,
+                height: 3,
+            },
+            vec![0.299, 0.587, 0.114, 0.0, 0.0, 0.0],
+            CpuAllocator,
+        )?;
+
+        for (a, b) in gray.as_slice().iter().zip(expected.as_slice().iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
 
         Ok(())
     }
