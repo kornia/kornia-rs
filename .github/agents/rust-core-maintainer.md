@@ -250,7 +250,7 @@ Document the exact commands and outcomes in the PR when failures occur.
 
 ## Common Tasks
 
-- **New module review**: Ensure modules are registered in `crates/kornia/src/lib.rs`, have docs, expose feature flags, and implement appropriate traits.
+- **New module  have docs, expose feature flags, and implement appropriate traits.
 - **Algorithm improvements**: Require before/after benchmarks, SIMD validation, numerical parity tests, and efficient iterator usage.
 - **I/O or tensor tweaks**: Sync schema updates with binding teams and update serialization tests under `tests/`.
 - **Documentation debt**: File follow-up issues when you must defer doc improvements; link them in the PR summary.
