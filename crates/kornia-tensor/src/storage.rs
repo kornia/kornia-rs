@@ -182,6 +182,7 @@ mod tests {
 
     use super::TensorStorage;
     use crate::allocator::{CpuAllocator, TensorAllocatorError};
+    use crate::device::Device;
     use crate::TensorAllocator;
     use std::alloc::Layout;
     use std::cell::RefCell;
@@ -268,6 +269,18 @@ mod tests {
             fn dealloc(&self, ptr: *mut u8, layout: Layout) {
                 *self.bytes_allocated.borrow_mut() -= layout.size() as i32;
                 CpuAllocator.dealloc(ptr, layout)
+            }
+            fn device(&self) -> Device {
+                CpuAllocator.device()
+            }
+            unsafe fn copy_from(
+                &self,
+                src_ptr: *const u8,
+                dst_ptr: *mut u8,
+                len: usize,
+                src_device: &Device,
+            ) -> Result<(), TensorAllocatorError> {
+                CpuAllocator.copy_from(src_ptr, dst_ptr, len, src_device)
             }
         }
 
