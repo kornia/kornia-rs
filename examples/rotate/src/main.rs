@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // read the image
     let image = F::read_image_any_rgb8(args.image_path)?;
-    let image = image.cast_and_scale::<f32>(1.0 / 255.0)?;
+    let image = image.into_inner().cast_and_scale::<f32>(1.0 / 255.0)?;
 
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;
 
