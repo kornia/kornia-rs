@@ -124,6 +124,32 @@ mod ffi {
         ///
         /// ImageU8C1 filled with the specified value
         fn image_u8c1_new(width: usize, height: usize, value: u8) -> Box<ImageU8C1>;
+
+        /// Create a new ImageU8C3 from existing data
+        ///
+        /// # Arguments
+        ///
+        /// * `width` - Image width in pixels
+        /// * `height` - Image height in pixels
+        /// * `data` - Slice containing pixel data (length must be width * height * 3)
+        ///
+        /// # Returns
+        ///
+        /// ImageU8C3 containing the provided data
+        fn image_u8c3_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C3>;
+
+        /// Create a new ImageU8C1 from existing data
+        ///
+        /// # Arguments
+        ///
+        /// * `width` - Image width in pixels
+        /// * `height` - Image height in pixels
+        /// * `data` - Slice containing pixel data (length must be width * height)
+        ///
+        /// # Returns
+        ///
+        /// ImageU8C1 containing the provided data
+        fn image_u8c1_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C1>;
     }
 }
 
@@ -225,6 +251,40 @@ fn image_u8c1_new(width: usize, height: usize, value: u8) -> Box<ImageU8C1> {
     let alloc = CpuAllocator::default();
     let image = kornia_image::Image::<u8, 1, CpuAllocator>::from_size_val(size, value, alloc)
         .expect("Failed to create image");
+    Box::new(ImageU8C1(image))
+}
+
+/// Create a new ImageU8C3 from existing data
+fn image_u8c3_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C3> {
+    let size = kornia_image::ImageSize { width, height };
+    let expected_len = width * height * 3;
+    if data.len() != expected_len {
+        panic!(
+            "Data length mismatch: expected {} bytes, got {}",
+            expected_len,
+            data.len()
+        );
+    }
+    let alloc = CpuAllocator::default();
+    let image = kornia_image::Image::<u8, 3, CpuAllocator>::from_size_slice(size, data, alloc)
+        .expect("Failed to create image from data");
+    Box::new(ImageU8C3(image))
+}
+
+/// Create a new ImageU8C1 from existing data
+fn image_u8c1_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C1> {
+    let size = kornia_image::ImageSize { width, height };
+    let expected_len = width * height;
+    if data.len() != expected_len {
+        panic!(
+            "Data length mismatch: expected {} bytes, got {}",
+            expected_len,
+            data.len()
+        );
+    }
+    let alloc = CpuAllocator::default();
+    let image = kornia_image::Image::<u8, 1, CpuAllocator>::from_size_slice(size, data, alloc)
+        .expect("Failed to create image from data");
     Box::new(ImageU8C1(image))
 }
 

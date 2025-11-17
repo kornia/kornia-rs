@@ -1,6 +1,7 @@
 #pragma once
 
 #include "kornia-cpp/src/lib.rs.h"
+#include <vector>
 
 namespace kornia {
 
@@ -66,18 +67,70 @@ using ImageSize = ::ImageSize;
         rust::Box<::RustType> img_;                                                                \
     }
 
+/// @brief Macro to generate C++ wrapper classes with convenience constructors
+///
+/// Extended version that includes constructors for creating images from shape+value or shape+data.
+/// Only use for image types that have corresponding FFI functions (_new and _from_data).
+#define KORNIA_DEFINE_IMAGE_WRAPPER_WITH_CTORS(CppClass, RustType, FnPrefix, DataType)             \
+    class CppClass {                                                                               \
+      public:                                                                                      \
+        explicit CppClass(rust::Box<::RustType> img) : img_(std::move(img)) {                      \
+        }                                                                                          \
+                                                                                                   \
+        CppClass(size_t width, size_t height, DataType value)                                      \
+            : img_(::FnPrefix##_new(width, height, value)) {                                       \
+        }                                                                                          \
+                                                                                                   \
+        CppClass(size_t width, size_t height, const std::vector<DataType>& data)                   \
+            : img_(::FnPrefix##_from_data(                                                         \
+                  width, height, rust::Slice<const DataType>(data.data(), data.size()))) {         \
+        }                                                                                          \
+                                                                                                   \
+        CppClass(const CppClass&) = delete;                                                        \
+        CppClass& operator=(const CppClass&) = delete;                                             \
+        CppClass(CppClass&&) = default;                                                            \
+        CppClass& operator=(CppClass&&) = default;                                                 \
+                                                                                                   \
+        size_t width() const {                                                                     \
+            return FnPrefix##_width(*img_);                                                        \
+        }                                                                                          \
+        size_t height() const {                                                                    \
+            return FnPrefix##_height(*img_);                                                       \
+        }                                                                                          \
+        size_t channels() const {                                                                  \
+            return FnPrefix##_channels(*img_);                                                     \
+        }                                                                                          \
+        ImageSize size() const {                                                                   \
+            return FnPrefix##_size(*img_);                                                         \
+        }                                                                                          \
+        rust::Slice<const DataType> data() const {                                                 \
+            return FnPrefix##_data(*img_);                                                         \
+        }                                                                                          \
+                                                                                                   \
+      private:                                                                                     \
+        rust::Box<::RustType> img_;                                                                \
+    }
+
 // u8 image types (8-bit unsigned, common for I/O)
 /// @brief Grayscale u8 image (1 channel). Wraps kornia_image::Image<u8, 1>.
 ///
 /// Thread safety: Safe for concurrent reads. Do not access after move or destruction.
 /// Memory: Managed by Rust, zero-copy data access via rust::Slice.
-KORNIA_DEFINE_IMAGE_WRAPPER(ImageU8C1, ImageU8C1, image_u8c1, uint8_t);
+///
+/// Constructors:
+/// - ImageU8C1(width, height, value) - Create filled with value
+/// - ImageU8C1(width, height, data) - Create from std::vector<uint8_t>
+KORNIA_DEFINE_IMAGE_WRAPPER_WITH_CTORS(ImageU8C1, ImageU8C1, image_u8c1, uint8_t);
 
 /// @brief RGB u8 image (3 channels). Wraps kornia_image::Image<u8, 3>.
 ///
 /// Thread safety: Safe for concurrent reads. Do not access after move or destruction.
 /// Memory: Managed by Rust, zero-copy data access via rust::Slice.
-KORNIA_DEFINE_IMAGE_WRAPPER(ImageU8C3, ImageU8C3, image_u8c3, uint8_t);
+///
+/// Constructors:
+/// - ImageU8C3(width, height, value) - Create filled with value
+/// - ImageU8C3(width, height, data) - Create from std::vector<uint8_t>
+KORNIA_DEFINE_IMAGE_WRAPPER_WITH_CTORS(ImageU8C3, ImageU8C3, image_u8c3, uint8_t);
 
 /// @brief RGBA u8 image (4 channels). Wraps kornia_image::Image<u8, 4>.
 ///
@@ -105,8 +158,9 @@ KORNIA_DEFINE_IMAGE_WRAPPER(ImageF32C3, ImageF32C3, image_f32c3, float);
 KORNIA_DEFINE_IMAGE_WRAPPER(ImageF32C4, ImageF32C4, image_f32c4, float);
 
 #undef KORNIA_DEFINE_IMAGE_WRAPPER
+#undef KORNIA_DEFINE_IMAGE_WRAPPER_WITH_CTORS
 
-// Factory functions to create images from C++
+// Factory functions to create images from C++ (deprecated - use constructors instead)
 
 namespace image {
 
