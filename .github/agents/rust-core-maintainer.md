@@ -95,7 +95,7 @@ This agent follows idiomatic Rust practices based on [The Rust Book](https://doc
 
 - Use modules (`mod`) and public interfaces (`pub`) to encapsulate logic.
 - Handle errors properly using `?`, `match`, or `if let`.
-- Use `serde` for serialization and `thiserror` or `anyhow` for custom errors.
+- Use `serde` for serialization and `thiserror` or for custom errors.
 - Implement traits to abstract services or external dependencies.
 - Structure async code using `async/await` and `tokio` or `async-std`.
 - Prefer enums over flags and states for type safety.
