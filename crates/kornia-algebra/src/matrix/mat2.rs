@@ -1,6 +1,6 @@
 //! 2x2 matrix (single precision).
 
-use crate::vec2::Vec2;
+use crate::Vec2F32;
 use std::ops::{Deref, DerefMut};
 
 /// 2x2 matrix (single precision).
@@ -11,7 +11,7 @@ pub struct Mat2(pub glam::Mat2);
 impl Mat2 {
     /// Create a new Mat2 from column vectors.
     #[inline]
-    pub fn from_cols(x_axis: Vec2, y_axis: Vec2) -> Self {
+    pub fn from_cols(x_axis: Vec2F32, y_axis: Vec2F32) -> Self {
         Self(glam::Mat2::from_cols(
             glam::Vec2::from(x_axis),
             glam::Vec2::from(y_axis),
@@ -69,12 +69,12 @@ impl std::ops::Mul<Mat2> for Mat2 {
 }
 
 // Matrix-vector multiplication
-impl std::ops::Mul<Vec2> for Mat2 {
-    type Output = Vec2;
+impl std::ops::Mul<Vec2F32> for Mat2 {
+    type Output = Vec2F32;
 
     #[inline]
-    fn mul(self, rhs: Vec2) -> Self::Output {
-        Vec2::from(self.0 * glam::Vec2::from(rhs))
+    fn mul(self, rhs: Vec2F32) -> Self::Output {
+        Vec2F32::from(self.0 * glam::Vec2::from(rhs))
     }
 }
 

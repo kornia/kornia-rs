@@ -8,9 +8,9 @@ use std::ops::{Deref, DerefMut};
 /// algebraic type system for kornia-rs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(transparent)]
-pub struct Vec2(pub glam::Vec2);
+pub struct Vec2F32(pub glam::Vec2);
 
-impl Vec2 {
+impl Vec2F32 {
     /// Create a new Vec2 from x and y components.
     #[inline]
     pub fn new(x: f32, y: f32) -> Self {
@@ -45,7 +45,7 @@ impl Vec2 {
     }
 }
 
-impl Deref for Vec2 {
+impl Deref for Vec2F32 {
     type Target = glam::Vec2;
 
     #[inline]
@@ -54,43 +54,43 @@ impl Deref for Vec2 {
     }
 }
 
-impl DerefMut for Vec2 {
+impl DerefMut for Vec2F32 {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl From<glam::Vec2> for Vec2 {
+impl From<glam::Vec2> for Vec2F32 {
     #[inline]
     fn from(v: glam::Vec2) -> Self {
         Self(v)
     }
 }
 
-impl From<Vec2> for glam::Vec2 {
+impl From<Vec2F32> for glam::Vec2 {
     #[inline]
-    fn from(v: Vec2) -> Self {
+    fn from(v: Vec2F32) -> Self {
         v.0
     }
 }
 
-impl From<[f32; 2]> for Vec2 {
+impl From<[f32; 2]> for Vec2F32 {
     #[inline]
     fn from(arr: [f32; 2]) -> Self {
         Self::from_array(arr)
     }
 }
 
-impl From<Vec2> for [f32; 2] {
+impl From<Vec2F32> for [f32; 2] {
     #[inline]
-    fn from(v: Vec2) -> Self {
+    fn from(v: Vec2F32) -> Self {
         v.to_array()
     }
 }
 
 // Arithmetic operations
-impl std::ops::Add for Vec2 {
+impl std::ops::Add for Vec2F32 {
     type Output = Self;
 
     #[inline]
@@ -99,7 +99,7 @@ impl std::ops::Add for Vec2 {
     }
 }
 
-impl std::ops::Sub for Vec2 {
+impl std::ops::Sub for Vec2F32 {
     type Output = Self;
 
     #[inline]
@@ -108,7 +108,7 @@ impl std::ops::Sub for Vec2 {
     }
 }
 
-impl std::ops::Mul<f32> for Vec2 {
+impl std::ops::Mul<f32> for Vec2F32 {
     type Output = Self;
 
     #[inline]
@@ -117,7 +117,7 @@ impl std::ops::Mul<f32> for Vec2 {
     }
 }
 
-impl std::ops::Div<f32> for Vec2 {
+impl std::ops::Div<f32> for Vec2F32 {
     type Output = Self;
 
     #[inline]
@@ -126,7 +126,7 @@ impl std::ops::Div<f32> for Vec2 {
     }
 }
 
-impl std::ops::Neg for Vec2 {
+impl std::ops::Neg for Vec2F32 {
     type Output = Self;
 
     #[inline]
@@ -141,22 +141,22 @@ mod tests {
 
     #[test]
     fn test_vec2_basic() {
-        let v = Vec2::new(1.0, 2.0);
+        let v = Vec2F32::new(1.0, 2.0);
         assert_eq!(v.x, 1.0);
         assert_eq!(v.y, 2.0);
     }
 
     #[test]
     fn test_vec2_from_array() {
-        let v = Vec2::from_array([1.0, 2.0]);
+        let v = Vec2F32::from_array([1.0, 2.0]);
         assert_eq!(v.to_array(), [1.0, 2.0]);
     }
 
     #[test]
     fn test_vec2_arithmetic() {
-        let v1 = Vec2::new(1.0, 2.0);
-        let v2 = Vec2::new(3.0, 4.0);
-        assert_eq!(v1 + v2, Vec2::new(4.0, 6.0));
-        assert_eq!(v1 * 2.0, Vec2::new(2.0, 4.0));
+        let v1 = Vec2F32::new(1.0, 2.0);
+        let v2 = Vec2F32::new(3.0, 4.0);
+        assert_eq!(v1 + v2, Vec2F32::new(4.0, 6.0));
+        assert_eq!(v1 * 2.0, Vec2F32::new(2.0, 4.0));
     }
 }

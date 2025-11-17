@@ -1,6 +1,6 @@
 //! 3x3 matrix (single precision).
 
-use crate::vec3::Vec3;
+use crate::Vec3F32;
 use std::ops::{Deref, DerefMut};
 
 /// 3x3 matrix (single precision).
@@ -11,7 +11,7 @@ pub struct Mat3(pub glam::Mat3);
 impl Mat3 {
     /// Create a new Mat3 from column vectors.
     #[inline]
-    pub fn from_cols(x_axis: Vec3, y_axis: Vec3, z_axis: Vec3) -> Self {
+    pub fn from_cols(x_axis: Vec3F32, y_axis: Vec3F32, z_axis: Vec3F32) -> Self {
         Self(glam::Mat3::from_cols(
             glam::Vec3::from(x_axis),
             glam::Vec3::from(y_axis),
@@ -70,12 +70,12 @@ impl std::ops::Mul<Mat3> for Mat3 {
 }
 
 // Matrix-vector multiplication
-impl std::ops::Mul<Vec3> for Mat3 {
-    type Output = Vec3;
+impl std::ops::Mul<Vec3F32> for Mat3 {
+    type Output = Vec3F32;
 
     #[inline]
-    fn mul(self, rhs: Vec3) -> Self::Output {
-        Vec3::from(self.0 * glam::Vec3::from(rhs))
+    fn mul(self, rhs: Vec3F32) -> Self::Output {
+        Vec3F32::from(self.0 * glam::Vec3::from(rhs))
     }
 }
 
@@ -86,7 +86,7 @@ mod tests {
     #[test]
     fn test_mat3_mul_vec3() {
         let m = Mat3::IDENTITY;
-        let v = Vec3::new(1.0, 2.0, 3.0);
+        let v = Vec3F32::new(1.0, 2.0, 3.0);
         let result = m * v;
         assert_eq!(result, v);
     }

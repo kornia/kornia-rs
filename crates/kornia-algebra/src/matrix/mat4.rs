@@ -1,6 +1,6 @@
 //! 4x4 matrix (single precision).
 
-use crate::{vec3::Vec3, vec4::Vec4};
+use crate::{Vec3F32, Vec4};
 use std::ops::{Deref, DerefMut};
 
 /// 4x4 matrix (single precision).
@@ -20,9 +20,14 @@ impl Mat4 {
         ))
     }
 
-    /// Create a new Mat4 from Vec3 column vectors (w component defaults to 0 for x/y/z, 1 for w).
+    /// Create a new Mat4 from Vec3F32 column vectors (w component defaults to 0 for x/y/z, 1 for w).
     #[inline]
-    pub fn from_cols_vec3(x_axis: Vec3, y_axis: Vec3, z_axis: Vec3, w_axis: Vec3) -> Self {
+    pub fn from_cols_vec3(
+        x_axis: Vec3F32,
+        y_axis: Vec3F32,
+        z_axis: Vec3F32,
+        w_axis: Vec3F32,
+    ) -> Self {
         Self(glam::Mat4::from_cols(
             glam::Vec4::new(x_axis.x, x_axis.y, x_axis.z, 0.0),
             glam::Vec4::new(y_axis.x, y_axis.y, y_axis.z, 0.0),
@@ -92,11 +97,11 @@ impl std::ops::Mul<Vec4> for Mat4 {
 }
 
 impl Mat4 {
-    /// Multiply Mat4 by Vec3 (treats Vec3 as homogeneous with w=1).
+    /// Multiply Mat4 by Vec3F32 (treats Vec3F32 as homogeneous with w=1).
     #[inline]
-    pub fn mul_vec3(self, rhs: Vec3) -> Vec3 {
+    pub fn mul_vec3(self, rhs: Vec3F32) -> Vec3F32 {
         let v4 = glam::Vec4::new(rhs.x, rhs.y, rhs.z, 1.0);
         let result = self.0 * v4;
-        Vec3::new(result.x, result.y, result.z)
+        Vec3F32::new(result.x, result.y, result.z)
     }
 }

@@ -1,11 +1,11 @@
 use super::so2::SO2;
-use crate::{Mat2, Mat3A, Vec2, Vec3A};
+use crate::{Mat2, Mat3A, Vec2F32, Vec3AF32};
 use rand::Rng;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SE2 {
     pub r: SO2,
-    pub t: Vec2,
+    pub t: Vec2F32,
 }
 
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
@@ -13,10 +13,10 @@ const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 impl SE2 {
     pub const IDENTITY: Self = Self {
         r: SO2::IDENTITY,
-        t: Vec2::ZERO,
+        t: Vec2F32::ZERO,
     };
 
-    pub fn new(rotation: SO2, translation: Vec2) -> Self {
+    pub fn new(rotation: SO2, translation: Vec2F32) -> Self {
         Self {
             r: rotation,
             t: translation,
@@ -26,14 +26,14 @@ impl SE2 {
     pub fn from_matrix(mat: &Mat3A) -> Self {
         Self {
             r: SO2::from_matrix3a(mat),
-            t: Vec2::new(mat.z_axis.x, mat.z_axis.y),
+            t: Vec2F32::new(mat.z_axis.x, mat.z_axis.y),
         }
     }
 
     /// Create an SE2 from an angle (in radians) and translation.
     /// This is a convenience method similar to SE3::from_qxyz.
     #[inline]
-    pub fn from_angle_translation(angle: f32, translation: Vec2) -> Self {
+    pub fn from_angle_translation(angle: f32, translation: Vec2F32) -> Self {
         Self {
             r: SO2::exp(angle),
             t: translation,
@@ -48,27 +48,27 @@ impl SE2 {
 
         Self {
             r: SO2::from_random(),
-            t: Vec2::new(r1, r2),
+            t: Vec2F32::new(r1, r2),
         }
     }
 
     #[inline]
-    pub fn rplus(&self, tau: Vec3A) -> Self {
+    pub fn rplus(&self, tau: Vec3AF32) -> Self {
         *self * SE2::exp(tau)
     }
 
     #[inline]
-    pub fn rminus(&self, other: &Self) -> Vec3A {
+    pub fn rminus(&self, other: &Self) -> Vec3AF32 {
         (self.inverse() * *other).log()
     }
 
     #[inline]
-    pub fn lplus(tau: Vec3A, x: &Self) -> Self {
+    pub fn lplus(tau: Vec3AF32, x: &Self) -> Self {
         SE2::exp(tau) * *x
     }
 
     #[inline]
-    pub fn lminus(y: &Self, x: &Self) -> Vec3A {
+    pub fn lminus(y: &Self, x: &Self) -> Vec3AF32 {
         (*y * x.inverse()).log()
     }
 
@@ -96,7 +96,7 @@ impl SE2 {
         mat
     }
 
-    pub fn exp(v: Vec3A) -> Self {
+    pub fn exp(v: Vec3AF32) -> Self {
         let theta = v.z;
         let so2 = SO2::exp(theta);
 
@@ -109,16 +109,16 @@ impl SE2 {
                 } else {
                     (so2.z.y / theta, (1.0 - so2.z.x) / theta)
                 };
-                Vec2::new(a * v.x - b * v.y, b * v.x + a * v.y)
+                Vec2F32::new(a * v.x - b * v.y, b * v.x + a * v.y)
             },
         }
     }
 
-    pub fn log(&self) -> Vec3A {
+    pub fn log(&self) -> Vec3AF32 {
         let theta = self.r.log();
 
         if theta.abs() < SMALL_ANGLE_EPSILON {
-            return Vec3A::new(self.t.x, self.t.y, 0.0);
+            return Vec3AF32::new(self.t.x, self.t.y, 0.0);
         }
 
         let sin_t = self.r.z.y; // sin θ
@@ -131,10 +131,10 @@ impl SE2 {
         let v_inv = Mat2::from_cols_array(&[a / denom, -b / denom, b / denom, a / denom]);
 
         let upsilon = v_inv.mul_vec2(glam::Vec2::from(self.t));
-        Vec3A::new(upsilon.x, upsilon.y, theta)
+        Vec3AF32::new(upsilon.x, upsilon.y, theta)
     }
 
-    pub fn hat(v: Vec3A) -> Mat3A {
+    pub fn hat(v: Vec3AF32) -> Mat3A {
         let hat_theta = SO2::hat(/* theta = */ v.z);
         Mat3A::from_cols_array(&[
             hat_theta.x_axis.x,
@@ -149,8 +149,8 @@ impl SE2 {
         ])
     }
 
-    pub fn vee(omega: Mat3A) -> Vec3A {
-        Vec3A::new(
+    pub fn vee(omega: Mat3A) -> Vec3AF32 {
+        Vec3AF32::new(
             omega.z_axis.x,
             omega.z_axis.y,
             SO2::vee(Mat2::from_cols_array(&[
@@ -182,7 +182,7 @@ impl SE2 {
     /// │       0                  0                                1                         │
     /// └                                                                                     ┘
     /// ref: https://arxiv.org/pdf/1812.01537 (eq 163)
-    pub fn right_jacobian(v: Vec3A) -> Mat3A {
+    pub fn right_jacobian(v: Vec3AF32) -> Mat3A {
         let theta = v.z;
         let (s, c) = Self::sc(theta);
         let p1 = v.x;
@@ -202,9 +202,9 @@ impl SE2 {
         };
 
         Mat3A::from_cols(
-            Vec3A::new(s, -c, 0.0),
-            Vec3A::new(c, s, 0.0),
-            Vec3A::new(third_col_x, third_col_y, 1.0),
+            Vec3AF32::new(s, -c, 0.0),
+            Vec3AF32::new(c, s, 0.0),
+            Vec3AF32::new(third_col_x, third_col_y, 1.0),
         )
     }
 
@@ -215,7 +215,7 @@ impl SE2 {
     /// │       0                  0                                1                        │
     /// └                                                                                    ┘
     /// ref: https://arxiv.org/pdf/1812.01537 (eq 164)
-    pub fn left_jacobian(v: Vec3A) -> Mat3A {
+    pub fn left_jacobian(v: Vec3AF32) -> Mat3A {
         let theta = v.z;
         let (s, c) = Self::sc(theta);
         let p1 = v.x;
@@ -234,9 +234,9 @@ impl SE2 {
             )
         };
         Mat3A::from_cols(
-            Vec3A::new(s, c, 0.0),
-            Vec3A::new(-c, s, 0.0),
-            Vec3A::new(third_col_x, third_col_y, 1.0),
+            Vec3AF32::new(s, c, 0.0),
+            Vec3AF32::new(-c, s, 0.0),
+            Vec3AF32::new(third_col_x, third_col_y, 1.0),
         )
     }
 }
@@ -249,10 +249,10 @@ impl std::ops::Mul<SE2> for SE2 {
     }
 }
 
-impl std::ops::Mul<Vec2> for SE2 {
-    type Output = Vec2;
+impl std::ops::Mul<Vec2F32> for SE2 {
+    type Output = Vec2F32;
 
-    fn mul(self, rhs: Vec2) -> Self::Output {
+    fn mul(self, rhs: Vec2F32) -> Self::Output {
         self.r * rhs + self.t
     }
 }
@@ -268,27 +268,27 @@ mod tests {
         SE2::from_random()
     }
 
-    fn make_random_vec2() -> Vec2 {
+    fn make_random_vec2() -> Vec2F32 {
         let mut rng = rand::rng();
-        Vec2::new(rng.random(), rng.random())
+        Vec2F32::new(rng.random(), rng.random())
     }
 
-    fn make_random_vec3() -> (Vec2, f32) {
+    fn make_random_vec3() -> (Vec2F32, f32) {
         let mut rng = rand::rng();
-        (Vec2::new(rng.random(), rng.random()), rng.random())
+        (Vec2F32::new(rng.random(), rng.random()), rng.random())
     }
 
     #[test]
     fn test_identity() {
         let identity = SE2::IDENTITY;
         assert_eq!(identity.r.z, SO2::IDENTITY.z);
-        assert_eq!(identity.t, Vec2::ZERO);
+        assert_eq!(identity.t, Vec2F32::ZERO);
     }
 
     #[test]
     fn test_new() {
         let rotation = SO2::exp(0.5);
-        let translation = Vec2::new(1.0, 2.0);
+        let translation = Vec2F32::new(1.0, 2.0);
         let se2 = SE2::new(rotation, translation);
         assert_eq!(se2.t, translation);
         assert_eq!(se2.r.z, rotation.z);
@@ -299,13 +299,13 @@ mod tests {
         // Test with identity matrix
         let mat = Mat3A::IDENTITY;
         let se2 = SE2::from_matrix(&mat);
-        assert_eq!(se2.t, Vec2::new(0.0, 0.0));
+        assert_eq!(se2.t, Vec2F32::new(0.0, 0.0));
         assert_eq!(se2.r.matrix(), SO2::IDENTITY.matrix());
 
         // Test with specific transformation matrix
         let theta = std::f32::consts::PI / 4.0;
         let so2 = SO2::exp(theta);
-        let translation = Vec2::new(2.0, 3.0);
+        let translation = Vec2F32::new(2.0, 3.0);
         let se2_original = SE2::new(so2, translation);
         let matrix = se2_original.matrix();
         let se2_reconstructed = SE2::from_matrix(&matrix);
@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn test_se2_rplus_rminus_roundtrip() {
         let x = make_random_se2();
-        let tau = Vec3A::new(0.4, -0.2, 0.7); // some increment
+        let tau = Vec3AF32::new(0.4, -0.2, 0.7); // some increment
         let y = x.rplus(tau); // X ⊕ τ → Y
         let diff = x.rminus(&y); // Y ⊖ X → τ
         assert_relative_eq!(diff.x, tau.x, epsilon = EPSILON);
@@ -338,7 +338,7 @@ mod tests {
     #[test]
     fn test_se2_lplus_lminus_consistency() {
         let x = make_random_se2();
-        let tau = Vec3A::new(-1.0, 0.3, -0.5);
+        let tau = Vec3AF32::new(-1.0, 0.3, -0.5);
         let y = SE2::lplus(tau, &x); // τ ⊕ X → Y
         let diff = SE2::lminus(&y, &x); // Y ⊖ X → τ
         assert_relative_eq!(diff.x, tau.x, epsilon = EPSILON);
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn test_matrix() {
-        let se2 = SE2::new(SO2::exp(0.5), Vec2::new(1.0, 2.0));
+        let se2 = SE2::new(SO2::exp(0.5), Vec2F32::new(1.0, 2.0));
         let mat = se2.matrix();
 
         // Check translation components
@@ -379,7 +379,7 @@ mod tests {
 
     #[test]
     fn test_inverse() {
-        let se2 = SE2::new(SO2::exp(0.5), Vec2::new(1.0, 2.0));
+        let se2 = SE2::new(SO2::exp(0.5), Vec2F32::new(1.0, 2.0));
         let inv = se2.inverse();
 
         // Test inverse properties
@@ -439,7 +439,7 @@ mod tests {
     fn test_mul_vec2() {
         // Test identity transformation
         let s1 = SE2::IDENTITY;
-        let v = Vec2::new(1.0, 2.0);
+        let v = Vec2F32::new(1.0, 2.0);
         let result = s1 * v;
         assert_relative_eq!(result.x, v.x, epsilon = EPSILON);
         assert_relative_eq!(result.y, v.y, epsilon = EPSILON);
@@ -457,9 +457,9 @@ mod tests {
     #[test]
     fn test_exp() {
         // Test with specific values
-        let upsilon = Vec2::new(1.0, 1.0);
+        let upsilon = Vec2F32::new(1.0, 1.0);
         let theta = 1.0;
-        let se2 = SE2::exp(Vec3A::new(upsilon.x, upsilon.y, theta));
+        let se2 = SE2::exp(Vec3AF32::new(upsilon.x, upsilon.y, theta));
 
         assert_relative_eq!(se2.r.z.x, 0.5403, epsilon = 1e-3);
         assert_relative_eq!(se2.r.z.y, 0.8415, epsilon = 1e-3);
@@ -467,9 +467,9 @@ mod tests {
         assert_relative_eq!(se2.t.y, 1.3012, epsilon = 1e-3);
 
         // Test with zero rotation
-        let upsilon_zero = Vec2::new(2.0, 3.0);
+        let upsilon_zero = Vec2F32::new(2.0, 3.0);
         let theta_zero = 0.0;
-        let se2_zero = SE2::exp(Vec3A::new(upsilon_zero.x, upsilon_zero.y, theta_zero));
+        let se2_zero = SE2::exp(Vec3AF32::new(upsilon_zero.x, upsilon_zero.y, theta_zero));
 
         assert_relative_eq!(se2_zero.r.z.x, 1.0, epsilon = EPSILON);
         assert_relative_eq!(se2_zero.r.z.y, 0.0, epsilon = EPSILON);
@@ -477,7 +477,7 @@ mod tests {
         assert_relative_eq!(se2_zero.t.y, 3.0, epsilon = EPSILON);
 
         // Test exp(0) = identity
-        let se2_identity = SE2::exp(Vec3A::ZERO);
+        let se2_identity = SE2::exp(Vec3AF32::ZERO);
         assert_relative_eq!(se2_identity.r.z.x, SE2::IDENTITY.r.z.x, epsilon = EPSILON);
         assert_relative_eq!(se2_identity.r.z.y, SE2::IDENTITY.r.z.y, epsilon = EPSILON);
         assert_relative_eq!(se2_identity.t.x, SE2::IDENTITY.t.x, epsilon = EPSILON);
@@ -487,9 +487,9 @@ mod tests {
     #[test]
     fn test_log() {
         // Test with specific values
-        let upsilon = Vec2::new(1.0, 1.0);
+        let upsilon = Vec2F32::new(1.0, 1.0);
         let theta = 1.0;
-        let se2 = SE2::exp(Vec3A::new(upsilon.x, upsilon.y, theta));
+        let se2 = SE2::exp(Vec3AF32::new(upsilon.x, upsilon.y, theta));
         let log_t = se2.log();
 
         assert_relative_eq!(log_t.x, upsilon.x, epsilon = 1e-3);
@@ -497,9 +497,9 @@ mod tests {
         assert_relative_eq!(log_t.z, theta, epsilon = 1e-3);
 
         // Test with another set of values
-        let upsilon2 = Vec2::new(0.5 / 0.707_106_77, -0.5 / 0.707_106_77);
+        let upsilon2 = Vec2F32::new(0.5 / 0.707_106_77, -0.5 / 0.707_106_77);
         let theta2 = 0.3;
-        let se2_2 = SE2::exp(Vec3A::new(upsilon2.x, upsilon2.y, theta2));
+        let se2_2 = SE2::exp(Vec3AF32::new(upsilon2.x, upsilon2.y, theta2));
         let log_t2 = se2_2.log();
 
         assert_relative_eq!(log_t2.x, upsilon2.x, epsilon = 1e-5);
@@ -530,14 +530,14 @@ mod tests {
 
         // Test specific values
         let test_cases = [
-            (Vec2::new(0.0, 0.0), 0.0),
-            (Vec2::new(1.0, 0.0), 0.5),
-            (Vec2::new(0.0, 1.0), -0.3),
-            (Vec2::new(2.0, -1.5), 1.2),
+            (Vec2F32::new(0.0, 0.0), 0.0),
+            (Vec2F32::new(1.0, 0.0), 0.5),
+            (Vec2F32::new(0.0, 1.0), -0.3),
+            (Vec2F32::new(2.0, -1.5), 1.2),
         ];
 
         for (upsilon, theta) in test_cases {
-            let se2 = SE2::exp(Vec3A::new(upsilon.x, upsilon.y, theta));
+            let se2 = SE2::exp(Vec3AF32::new(upsilon.x, upsilon.y, theta));
             let log_t = se2.log();
 
             assert_relative_eq!(log_t.x, upsilon.x, epsilon = EPSILON);
@@ -548,9 +548,9 @@ mod tests {
 
     #[test]
     fn test_hat() {
-        let upsilon = Vec2::new(1.0, 2.0);
+        let upsilon = Vec2F32::new(1.0, 2.0);
         let theta = 0.5;
-        let hat_matrix = SE2::hat(Vec3A::new(upsilon.x, upsilon.y, theta));
+        let hat_matrix = SE2::hat(Vec3AF32::new(upsilon.x, upsilon.y, theta));
 
         // Check structure: should be 3x3 matrix with specific form
         // [hat(theta)  upsilon]
@@ -576,9 +576,9 @@ mod tests {
     #[test]
     fn test_vee() {
         // Create a test matrix in the correct form
-        let upsilon = Vec2::new(1.5, -2.3);
+        let upsilon = Vec2F32::new(1.5, -2.3);
         let theta = 0.7;
-        let omega = SE2::hat(Vec3A::new(upsilon.x, upsilon.y, theta));
+        let omega = SE2::hat(Vec3AF32::new(upsilon.x, upsilon.y, theta));
         let vee_t = SE2::vee(omega);
 
         assert_relative_eq!(vee_t.x, upsilon.x, epsilon = EPSILON);
@@ -589,9 +589,9 @@ mod tests {
     #[test]
     fn test_hat_vee_roundtrip() {
         // Test with specific values
-        let upsilon = Vec2::new(1.0 / 2.236_068, 2.0 / 2.236_068);
+        let upsilon = Vec2F32::new(1.0 / 2.236_068, 2.0 / 2.236_068);
         let theta = 0.3;
-        let hat_matrix = SE2::hat(Vec3A::new(upsilon.x, upsilon.y, theta));
+        let hat_matrix = SE2::hat(Vec3AF32::new(upsilon.x, upsilon.y, theta));
         let vee_t = SE2::vee(hat_matrix);
 
         assert_relative_eq!(vee_t.x, upsilon.x, epsilon = 1e-5);
@@ -601,7 +601,7 @@ mod tests {
         // Test with multiple random values
         for _ in 0..10 {
             let (rand_upsilon, rand_theta) = make_random_vec3();
-            let hat = SE2::hat(Vec3A::new(rand_upsilon.x, rand_upsilon.y, rand_theta));
+            let hat = SE2::hat(Vec3AF32::new(rand_upsilon.x, rand_upsilon.y, rand_theta));
             let vee_t = SE2::vee(hat);
 
             assert_relative_eq!(vee_t.x, rand_upsilon.x, epsilon = EPSILON);
@@ -655,9 +655,9 @@ mod tests {
         // Test that SE2 * v equals matrix multiplication
         let result1 = se2 * v;
         let matrix = se2.matrix();
-        let v_homogeneous = Vec3A::new(v.x, v.y, 1.0);
+        let v_homogeneous = Vec3AF32::new(v.x, v.y, 1.0);
         let result2_homogeneous = matrix * v_homogeneous;
-        let result2 = Vec2::new(result2_homogeneous.x, result2_homogeneous.y);
+        let result2 = Vec2F32::new(result2_homogeneous.x, result2_homogeneous.y);
 
         assert_relative_eq!(result1.x, result2.x, epsilon = EPSILON);
         assert_relative_eq!(result1.y, result2.y, epsilon = EPSILON);
@@ -695,21 +695,21 @@ mod tests {
     #[test]
     fn test_specific_transformations() {
         // Test pure translation
-        let translation_only = SE2::new(SO2::IDENTITY, Vec2::new(3.0, 4.0));
-        let point = Vec2::new(1.0, 2.0);
+        let translation_only = SE2::new(SO2::IDENTITY, Vec2F32::new(3.0, 4.0));
+        let point = Vec2F32::new(1.0, 2.0);
         let transformed = translation_only * point;
         assert_relative_eq!(transformed.x, 4.0, epsilon = EPSILON);
         assert_relative_eq!(transformed.y, 6.0, epsilon = EPSILON);
 
         // Test pure rotation (90 degrees)
-        let rotation_only = SE2::new(SO2::exp(std::f32::consts::PI / 2.0), Vec2::ZERO);
-        let point2 = Vec2::new(1.0, 0.0);
+        let rotation_only = SE2::new(SO2::exp(std::f32::consts::PI / 2.0), Vec2F32::ZERO);
+        let point2 = Vec2F32::new(1.0, 0.0);
         let rotated = rotation_only * point2;
         assert_relative_eq!(rotated.x, 0.0, epsilon = EPSILON);
         assert_relative_eq!(rotated.y, 1.0, epsilon = EPSILON);
 
         // Test combined transformation
-        let combined = SE2::new(SO2::exp(std::f32::consts::PI / 2.0), Vec2::new(1.0, 1.0));
+        let combined = SE2::new(SO2::exp(std::f32::consts::PI / 2.0), Vec2F32::new(1.0, 1.0));
         let transformed_combined = combined * point2;
         assert_relative_eq!(transformed_combined.x, 1.0, epsilon = EPSILON);
         assert_relative_eq!(transformed_combined.y, 2.0, epsilon = EPSILON);
@@ -739,7 +739,7 @@ mod tests {
         use approx::assert_relative_eq;
 
         // Test case 1: θ = 0.5
-        let v = Vec3A::new(1.0, 2.0, 0.5);
+        let v = Vec3AF32::new(1.0, 2.0, 0.5);
         let p1 = v.x;
         let p2 = v.y;
 
@@ -757,9 +757,9 @@ mod tests {
         let third_col_y = (p1 + theta * p2 - p1 * cos_t - p2 * sin_t) / theta_sq;
 
         let expected_jr = Mat3A::from_cols(
-            Vec3A::new(s, -c, 0.0),
-            Vec3A::new(c, s, 0.0),
-            Vec3A::new(third_col_x, third_col_y, 1.0),
+            Vec3AF32::new(s, -c, 0.0),
+            Vec3AF32::new(c, s, 0.0),
+            Vec3AF32::new(third_col_x, third_col_y, 1.0),
         );
 
         for col in 0..3 {
@@ -769,13 +769,13 @@ mod tests {
         }
 
         // Test case 2: θ = 0.0 (small-angle limit)
-        let v = Vec3A::new(1.0, 2.0, 0.0);
+        let v = Vec3AF32::new(1.0, 2.0, 0.0);
         let jr = SE2::right_jacobian(v);
 
         let expected_jr = Mat3A::from_cols(
-            Vec3A::new(1.0, 0.0, 0.0),
-            Vec3A::new(0.0, 1.0, 0.0),
-            Vec3A::new(p2, -p1, 1.0),
+            Vec3AF32::new(1.0, 0.0, 0.0),
+            Vec3AF32::new(0.0, 1.0, 0.0),
+            Vec3AF32::new(p2, -p1, 1.0),
         );
 
         for col in 0..3 {
@@ -790,7 +790,7 @@ mod tests {
         use approx::assert_relative_eq;
 
         // Test case 1: θ = 0.5
-        let v = Vec3A::new(1.0, 2.0, 0.5);
+        let v = Vec3AF32::new(1.0, 2.0, 0.5);
         let p1 = v.x;
         let p2 = v.y;
 
@@ -808,9 +808,9 @@ mod tests {
         let third_col_y = (-p1 + theta * p2 + p1 * cos_t - p2 * sin_t) / theta_sq;
 
         let expected_jl = Mat3A::from_cols(
-            Vec3A::new(s, c, 0.0),
-            Vec3A::new(-c, s, 0.0),
-            Vec3A::new(third_col_x, third_col_y, 1.0),
+            Vec3AF32::new(s, c, 0.0),
+            Vec3AF32::new(-c, s, 0.0),
+            Vec3AF32::new(third_col_x, third_col_y, 1.0),
         );
 
         for col in 0..3 {
@@ -820,13 +820,13 @@ mod tests {
         }
 
         // Test case 2: θ = 0.0 (small-angle limit)
-        let v = Vec3A::new(1.0, 2.0, 0.0);
+        let v = Vec3AF32::new(1.0, 2.0, 0.0);
         let jl = SE2::left_jacobian(v);
 
         let expected_jl = Mat3A::from_cols(
-            Vec3A::new(1.0, 0.0, 0.0),
-            Vec3A::new(0.0, 1.0, 0.0),
-            Vec3A::new(p2, -p1, 1.0),
+            Vec3AF32::new(1.0, 0.0, 0.0),
+            Vec3AF32::new(0.0, 1.0, 0.0),
+            Vec3AF32::new(p2, -p1, 1.0),
         );
 
         for col in 0..3 {

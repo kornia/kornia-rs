@@ -1,6 +1,6 @@
 //! 3x3 matrix (aligned, single precision).
 
-use crate::vec3a::Vec3A;
+use crate::Vec3AF32;
 use std::ops::{Deref, DerefMut};
 
 /// 3x3 matrix (aligned, single precision).
@@ -11,7 +11,7 @@ pub struct Mat3A(pub glam::Mat3A);
 impl Mat3A {
     /// Create a new Mat3A from column vectors.
     #[inline]
-    pub fn from_cols(x_axis: Vec3A, y_axis: Vec3A, z_axis: Vec3A) -> Self {
+    pub fn from_cols(x_axis: Vec3AF32, y_axis: Vec3AF32, z_axis: Vec3AF32) -> Self {
         Self(glam::Mat3A::from_cols(
             glam::Vec3A::from(x_axis),
             glam::Vec3A::from(y_axis),
@@ -60,12 +60,12 @@ impl From<Mat3A> for glam::Mat3A {
 }
 
 // Matrix-vector multiplication
-impl std::ops::Mul<Vec3A> for Mat3A {
-    type Output = Vec3A;
+impl std::ops::Mul<Vec3AF32> for Mat3A {
+    type Output = Vec3AF32;
 
     #[inline]
-    fn mul(self, rhs: Vec3A) -> Self::Output {
-        Vec3A::from(self.0 * glam::Vec3A::from(rhs))
+    fn mul(self, rhs: Vec3AF32) -> Self::Output {
+        Vec3AF32::from(self.0 * glam::Vec3A::from(rhs))
     }
 }
 

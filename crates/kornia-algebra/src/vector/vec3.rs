@@ -8,9 +8,9 @@ use std::ops::{Deref, DerefMut};
 /// algebraic type system for kornia-rs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(transparent)]
-pub struct Vec3(pub glam::Vec3);
+pub struct Vec3F32(pub glam::Vec3);
 
-impl Vec3 {
+impl Vec3F32 {
     /// Create a new Vec3 from x, y, and z components.
     #[inline]
     pub fn new(x: f32, y: f32, z: f32) -> Self {
@@ -51,7 +51,7 @@ impl Vec3 {
     }
 }
 
-impl Deref for Vec3 {
+impl Deref for Vec3F32 {
     type Target = glam::Vec3;
 
     #[inline]
@@ -60,43 +60,43 @@ impl Deref for Vec3 {
     }
 }
 
-impl DerefMut for Vec3 {
+impl DerefMut for Vec3F32 {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl From<glam::Vec3> for Vec3 {
+impl From<glam::Vec3> for Vec3F32 {
     #[inline]
     fn from(v: glam::Vec3) -> Self {
         Self(v)
     }
 }
 
-impl From<Vec3> for glam::Vec3 {
+impl From<Vec3F32> for glam::Vec3 {
     #[inline]
-    fn from(v: Vec3) -> Self {
+    fn from(v: Vec3F32) -> Self {
         v.0
     }
 }
 
-impl From<[f32; 3]> for Vec3 {
+impl From<[f32; 3]> for Vec3F32 {
     #[inline]
     fn from(arr: [f32; 3]) -> Self {
         Self::from_array(arr)
     }
 }
 
-impl From<Vec3> for [f32; 3] {
+impl From<Vec3F32> for [f32; 3] {
     #[inline]
-    fn from(v: Vec3) -> Self {
+    fn from(v: Vec3F32) -> Self {
         v.to_array()
     }
 }
 
 // Arithmetic operations
-impl std::ops::Add for Vec3 {
+impl std::ops::Add for Vec3F32 {
     type Output = Self;
 
     #[inline]
@@ -105,7 +105,7 @@ impl std::ops::Add for Vec3 {
     }
 }
 
-impl std::ops::Sub for Vec3 {
+impl std::ops::Sub for Vec3F32 {
     type Output = Self;
 
     #[inline]
@@ -114,7 +114,7 @@ impl std::ops::Sub for Vec3 {
     }
 }
 
-impl std::ops::Mul<f32> for Vec3 {
+impl std::ops::Mul<f32> for Vec3F32 {
     type Output = Self;
 
     #[inline]
@@ -123,7 +123,7 @@ impl std::ops::Mul<f32> for Vec3 {
     }
 }
 
-impl std::ops::Div<f32> for Vec3 {
+impl std::ops::Div<f32> for Vec3F32 {
     type Output = Self;
 
     #[inline]
@@ -132,7 +132,7 @@ impl std::ops::Div<f32> for Vec3 {
     }
 }
 
-impl std::ops::Neg for Vec3 {
+impl std::ops::Neg for Vec3F32 {
     type Output = Self;
 
     #[inline]
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn test_vec3_basic() {
-        let v = Vec3::new(1.0, 2.0, 3.0);
+        let v = Vec3F32::new(1.0, 2.0, 3.0);
         assert_eq!(v.x, 1.0);
         assert_eq!(v.y, 2.0);
         assert_eq!(v.z, 3.0);
@@ -155,15 +155,15 @@ mod tests {
 
     #[test]
     fn test_vec3_from_array() {
-        let v = Vec3::from_array([1.0, 2.0, 3.0]);
+        let v = Vec3F32::from_array([1.0, 2.0, 3.0]);
         assert_eq!(v.to_array(), [1.0, 2.0, 3.0]);
     }
 
     #[test]
     fn test_vec3_conversion() {
-        let v = Vec3::new(1.0, 2.0, 3.0);
+        let v = Vec3F32::new(1.0, 2.0, 3.0);
         let glam_v: glam::Vec3 = v.into();
-        let back: Vec3 = glam_v.into();
+        let back: Vec3F32 = glam_v.into();
         assert_eq!(v, back);
     }
 }

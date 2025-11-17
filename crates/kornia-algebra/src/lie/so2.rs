@@ -1,31 +1,31 @@
-use crate::{Mat2, Mat3A, Vec2};
+use crate::{Mat2, Mat3A, Vec2F32};
 use rand::Rng;
 use std::f32::consts::TAU; // <-- Added this import
 
 #[derive(Debug, Clone, Copy)]
 pub struct SO2 {
     /// representing complex number [real, imaginary]
-    pub z: Vec2,
+    pub z: Vec2F32,
 }
 
 impl SO2 {
     pub const IDENTITY: Self = Self {
-        z: Vec2(glam::Vec2::new(1.0, 0.0)),
+        z: Vec2F32(glam::Vec2::new(1.0, 0.0)),
     };
 
-    pub fn new(z: Vec2) -> Self {
+    pub fn new(z: Vec2F32) -> Self {
         Self { z }
     }
 
     pub fn from_matrix(mat: &Mat2) -> Self {
         Self {
-            z: Vec2::new(mat.x_axis.x, mat.x_axis.y),
+            z: Vec2F32::new(mat.x_axis.x, mat.x_axis.y),
         }
     }
 
     pub fn from_matrix3a(mat: &Mat3A) -> Self {
         Self {
-            z: Vec2::new(mat.x_axis.x, mat.x_axis.y),
+            z: Vec2F32::new(mat.x_axis.x, mat.x_axis.y),
         }
     }
 
@@ -63,7 +63,7 @@ impl SO2 {
     /// assumes unit norm
     pub fn inverse(&self) -> Self {
         Self {
-            z: Vec2::new(self.z.x, -self.z.y),
+            z: Vec2F32::new(self.z.x, -self.z.y),
         }
     }
 
@@ -73,7 +73,7 @@ impl SO2 {
 
     pub fn exp(theta: f32) -> Self {
         Self {
-            z: Vec2::new(theta.cos(), theta.sin()),
+            z: Vec2F32::new(theta.cos(), theta.sin()),
         }
     }
 
@@ -102,11 +102,11 @@ impl SO2 {
     }
 }
 
-impl std::ops::Mul<Vec2> for SO2 {
-    type Output = Vec2;
+impl std::ops::Mul<Vec2F32> for SO2 {
+    type Output = Vec2F32;
 
-    fn mul(self, rhs: Vec2) -> Self::Output {
-        Vec2::new(
+    fn mul(self, rhs: Vec2F32) -> Self::Output {
+        Vec2F32::new(
             self.z.x * rhs.x - self.z.y * rhs.y,
             self.z.y * rhs.x + self.z.x * rhs.y,
         )
@@ -120,7 +120,7 @@ impl std::ops::Mul<SO2> for SO2 {
         // Complex number multiplication: (a + bi)(c + di) = (ac - bd) + (ad + bc)i
         let real = self.z.x * other.z.x - self.z.y * other.z.y;
         let imag = self.z.x * other.z.y + self.z.y * other.z.x;
-        SO2::new(Vec2::new(real, imag))
+        SO2::new(Vec2F32::new(real, imag))
     }
 }
 
@@ -138,12 +138,12 @@ mod tests {
     #[test]
     fn test_identity() {
         let identity = SO2::IDENTITY;
-        assert_eq!(identity.z, Vec2::new(1.0, 0.0));
+        assert_eq!(identity.z, Vec2F32::new(1.0, 0.0));
     }
 
     #[test]
     fn test_new() {
-        let z = Vec2::new(0.5, 0.5);
+        let z = Vec2F32::new(0.5, 0.5);
         let so2 = SO2::new(z);
         assert_eq!(so2.z, z);
     }
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn test_matrix() {
-        let so2 = SO2::new(Vec2::new(0.6, 0.8));
+        let so2 = SO2::new(Vec2F32::new(0.6, 0.8));
         let expected = Mat2::from_cols_array(&[0.6, 0.8, -0.8, 0.6]);
         let actual = so2.matrix();
 
@@ -203,14 +203,14 @@ mod tests {
         // Test with identity
         let so2 = SO2::IDENTITY;
         let inv = so2.inverse();
-        let expected = Vec2::new(1.0, 0.0);
+        let expected = Vec2F32::new(1.0, 0.0);
         assert_relative_eq!(inv.z.x, expected.x);
         assert_relative_eq!(inv.z.y, expected.y);
 
         // Test with specific rotation
-        let so2 = SO2::new(Vec2::new(0.6, 0.8));
+        let so2 = SO2::new(Vec2F32::new(0.6, 0.8));
         let inv = so2.inverse();
-        let expected = Vec2::new(0.6, -0.8);
+        let expected = Vec2F32::new(0.6, -0.8);
         assert_relative_eq!(inv.z.x, expected.x);
         assert_relative_eq!(inv.z.y, expected.y);
 
@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn test_log() {
-        let so2 = SO2::new(Vec2::new(0.6, 0.8));
+        let so2 = SO2::new(Vec2F32::new(0.6, 0.8));
         let theta = so2.log();
         assert_relative_eq!(theta, 0.9273, epsilon = 1e-4);
 
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn test_mul_so2() {
         let s1 = SO2::IDENTITY;
-        let s2 = SO2::new(Vec2::from(glam::Vec2::new(0.9, 0.1).normalize()));
+        let s2 = SO2::new(Vec2F32::from(glam::Vec2::new(0.9, 0.1).normalize()));
 
         // Test identity * s2 = s2
         let s1_pose_s2 = s1 * s2;
@@ -336,9 +336,9 @@ mod tests {
     #[test]
     fn test_mul_vec2() {
         let s1 = SO2::IDENTITY;
-        let s2 = SO2::new(Vec2::from(glam::Vec2::new(0.9, 0.1).normalize()));
-        let t1 = Vec2::new(1.0, 2.0);
-        let t2 = Vec2::new(3.0, 4.0);
+        let s2 = SO2::new(Vec2F32::from(glam::Vec2::new(0.9, 0.1).normalize()));
+        let t1 = Vec2F32::new(1.0, 2.0);
+        let t2 = Vec2F32::new(3.0, 4.0);
 
         // Test identity rotation doesn't change vector
         let t1_pose_s1 = s1 * t1;
@@ -357,12 +357,12 @@ mod tests {
     fn test_matrix_vector_consistency() {
         let theta = std::f32::consts::PI / 3.0;
         let so2 = SO2::exp(theta);
-        let t = Vec2::new(1.0, 2.0);
+        let t = Vec2F32::new(1.0, 2.0);
 
         // Test that matrix multiplication gives same result as vector multiplication
         let result1 = so2 * t;
         let matrix = so2.matrix();
-        let result2 = Vec2::new(
+        let result2 = Vec2F32::new(
             matrix.x_axis.x * t.x + matrix.y_axis.x * t.y,
             matrix.x_axis.y * t.x + matrix.y_axis.y * t.y,
         );
@@ -424,7 +424,7 @@ mod tests {
         let so2 = SO2::exp(theta);
 
         // Test that rotation preserves vector length
-        let v = Vec2::new(3.0, 4.0);
+        let v = Vec2F32::new(3.0, 4.0);
         let rotated_v = so2 * v;
         assert_relative_eq!(v.length(), rotated_v.length(), epsilon = EPSILON);
 
@@ -446,7 +446,7 @@ mod tests {
     fn test_specific_angles() {
         // Test 90 degree rotation
         let so2_90 = SO2::exp(std::f32::consts::PI / 2.0);
-        let v = Vec2::new(1.0, 0.0);
+        let v = Vec2F32::new(1.0, 0.0);
         let rotated = so2_90 * v;
         assert_relative_eq!(rotated.x, 0.0, epsilon = EPSILON);
         assert_relative_eq!(rotated.y, 1.0, epsilon = EPSILON);
