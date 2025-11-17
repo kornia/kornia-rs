@@ -5,37 +5,151 @@ use thiserror::Error;
 
 use crate::device::Device;
 
-/// Error type for tensor memory allocation operations.
+/// An error type for tensor allocator operations.
 ///
-/// This enum represents all possible errors that can occur during tensor memory
-/// allocation and deallocation.
+/// This enum provides detailed error information for memory allocation,
+/// deallocation, and transfer operations across different devices.
 #[derive(Debug, Error, PartialEq)]
 pub enum TensorAllocatorError {
-    /// Invalid memory layout for tensor allocation.
+    /// Memory layout is invalid for the requested allocation.
     ///
-    /// This error occurs when attempting to create a memory layout with invalid
-    /// parameters (e.g., size too large, alignment requirements not met).
-    #[error("Invalid tensor layout {0}")]
+    /// This typically occurs when the size or alignment requirements
+    /// exceed system limits or are internally inconsistent.
+    ///
+    /// # Possible Causes
+    /// - Requested size exceeds `isize::MAX`
+    /// - Alignment is not a power of two
+    /// - Size is not a multiple of alignment
+    #[error("Invalid memory layout: {0}. Check that size fits in isize::MAX and alignment is a power of 2.")]
     LayoutError(core::alloc::LayoutError),
 
-    /// Allocation returned a null pointer.
+    /// Memory allocation returned a null pointer.
     ///
-    /// This typically indicates an out-of-memory condition or other allocation failure.
-    #[error("Null pointer")]
+    /// This indicates that the system was unable to allocate the requested memory,
+    /// typically due to insufficient available memory.
+    ///
+    /// # Possible Causes
+    /// - Out of memory (OOM)
+    /// - Requested allocation size too large
+    /// - Memory fragmentation
+    ///
+    /// # Recommended Actions
+    /// - Reduce tensor size
+    /// - Free unused tensors
+    /// - Check system memory availability
+    #[error("Memory allocation failed: received null pointer. System may be out of memory.")]
+>>>>>>> c8c28ff (implement cuda backend)
     NullPointer,
 
-    /// Device mismatch error for memory transfer operations.
-    #[error("Device mismatch: source device {0}, destination device {1}")]
+    /// Attempted memory transfer between incompatible devices.
+    ///
+    /// This occurs when trying to copy data between devices that don't support
+    /// direct memory transfers without going through the host.
+    ///
+    /// # Example
+    /// Copying directly between two different CUDA devices without peer-to-peer support.
+    #[error("Device mismatch: cannot transfer from {0} to {1}. Consider using host as intermediate.")]
     DeviceMismatch(String, String),
 
-    /// Memory transfer error.
+    /// Memory transfer operation failed.
+    ///
+    /// This can occur during host-to-device, device-to-host, or device-to-device
+    /// memory transfers.
+    ///
+    /// # Possible Causes
+    /// - Invalid memory addresses
+    /// - Insufficient device memory
+    /// - Device communication error
     #[error("Memory transfer failed: {0}")]
     MemoryTransferError(String),
 
-    /// CUDA error
+    /// CUDA-specific error occurred.
+    ///
+    /// This wraps errors from CUDA driver or runtime API calls.
+    ///
+    /// # Common CUDA Errors
+    /// - Out of memory
+    /// - Invalid device
+    /// - Invalid context
+    /// - Launch failure
+    ///
+    /// # Debugging Tips
+    /// - Check device memory availability with `nvidia-smi`
+    /// - Verify device ID is valid
+    /// - Ensure CUDA drivers are up to date
     #[cfg(feature = "cuda")]
     #[error("CUDA error: {0}")]
     CudaError(String),
+
+    /// Operation not supported on this device or configuration.
+    ///
+    /// This error indicates that the requested operation is not available
+    /// for the current device or tensor configuration.
+    ///
+    /// # Examples
+    /// - Attempting to use features not supported by hardware
+    /// - Invalid operation for the current device type
+    #[error("Unsupported operation: {0}")]
+    UnsupportedOperation(String),
+}
+
+impl TensorAllocatorError {
+    /// Returns true if this error is recoverable by freeing memory.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the error might be resolved by freeing memory and retrying.
+    pub fn is_out_of_memory(&self) -> bool {
+        match self {
+            TensorAllocatorError::NullPointer => true,
+            #[cfg(feature = "cuda")]
+            TensorAllocatorError::CudaError(s) if s.contains("out of memory") => true,
+            _ => false,
+        }
+    }
+
+    /// Returns true if this error indicates a programming error rather than a runtime issue.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the error is likely due to incorrect API usage.
+    pub fn is_programming_error(&self) -> bool {
+        matches!(
+            self,
+            TensorAllocatorError::LayoutError(_)
+                | TensorAllocatorError::DeviceMismatch(_, _)
+                | TensorAllocatorError::UnsupportedOperation(_)
+        )
+    }
+
+    /// Returns a user-friendly suggestion for resolving the error.
+    pub fn suggestion(&self) -> &str {
+        match self {
+            TensorAllocatorError::LayoutError(_) => {
+                "Verify tensor dimensions don't exceed system limits (size < isize::MAX)"
+            }
+            TensorAllocatorError::NullPointer => {
+                "Free unused tensors or reduce tensor size. Check available memory with system tools."
+            }
+            TensorAllocatorError::DeviceMismatch(_, _) => {
+                "Use intermediate host memory for transfers between incompatible devices"
+            }
+            TensorAllocatorError::MemoryTransferError(_) => {
+                "Check that source and destination pointers are valid and devices are accessible"
+            }
+            #[cfg(feature = "cuda")]
+            TensorAllocatorError::CudaError(e) if e.contains("out of memory") => {
+                "Free GPU memory or reduce batch size. Check GPU memory with nvidia-smi"
+            }
+            #[cfg(feature = "cuda")]
+            TensorAllocatorError::CudaError(_) => {
+                "Check CUDA device status and ensure drivers are up to date"
+            }
+            TensorAllocatorError::UnsupportedOperation(_) => {
+                "Check device capabilities and API documentation for supported operations"
+            }
+        }
+    }
 }
 
 /// Trait for custom tensor memory allocators.

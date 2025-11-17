@@ -1,5 +1,8 @@
 use crate::{
-    get_strides_from_shape, storage::TensorStorage, CpuAllocator, Tensor, TensorAllocator,
+    device_marker::{Cpu, DeviceMarker},
+    get_strides_from_shape,
+    storage::TensorStorage,
+    Tensor,
 };
 
 /// A non-owning view into tensor data.
@@ -24,10 +27,10 @@ use crate::{
 /// Creating a view through reshaping:
 ///
 /// ```rust
-/// use kornia_tensor::{Tensor, CpuAllocator};
+/// use kornia_tensor::{Tensor1, Cpu};
 ///
 /// let data = vec![1, 2, 3, 4, 5, 6];
-/// let tensor = Tensor::<i32, 1, _>::from_shape_vec([6], data, CpuAllocator).unwrap();
+/// let tensor = Tensor1::<i32, Cpu>::from_shape_vec([6], data).unwrap();
 ///
 /// // Create a 2x3 view of the 1D tensor
 /// let view = tensor.reshape([2, 3]).unwrap();
@@ -39,21 +42,21 @@ use crate::{
 /// Converting a view to a contiguous tensor:
 ///
 /// ```rust
-/// use kornia_tensor::{Tensor, CpuAllocator};
+/// use kornia_tensor::{Tensor2, Cpu};
 ///
 /// let data = vec![1, 2, 3, 4];
-/// let tensor = Tensor::<i32, 2, _>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
+/// let tensor = Tensor2::<i32, Cpu>::from_shape_vec([2, 2], data).unwrap();
 ///
 /// // Permute creates a non-contiguous view
 /// let view = tensor.permute_axes([1, 0]);
 ///
 /// // Convert to an owned contiguous tensor
-/// let contiguous = view.as_contiguous();
+/// let contiguous = view.as_contiguous().unwrap();
 /// assert_eq!(contiguous.as_slice(), &[1, 3, 2, 4]);
 /// ```
-pub struct TensorView<'a, T, const N: usize, A: TensorAllocator> {
+pub struct TensorView<'a, T, const N: usize, D: DeviceMarker> {
     /// Reference to the storage held by another tensor.
-    pub storage: &'a TensorStorage<T, A>,
+    pub storage: &'a TensorStorage<T, D>,
 
     /// The shape of the tensor view.
     pub shape: [usize; N],
@@ -62,7 +65,7 @@ pub struct TensorView<'a, T, const N: usize, A: TensorAllocator> {
     pub strides: [usize; N],
 }
 
-impl<T, const N: usize, A: TensorAllocator> TensorView<'_, T, N, A> {
+impl<T, const N: usize, D: DeviceMarker> TensorView<'_, T, N, D> {
     /// Returns a slice view of the underlying storage.
     ///
     /// Note: This returns the entire underlying storage slice, not just the elements
@@ -146,25 +149,12 @@ impl<T, const N: usize, A: TensorAllocator> TensorView<'_, T, N, A> {
     ///
     /// # Returns
     ///
-    /// A new [`Tensor`] instance with contiguous memory containing the same logical
-    /// data as this view, allocated using [`CpuAllocator`].
+    /// A new `Tensor` instance with contiguous memory.
     ///
-    /// # Examples
+    /// # Errors
     ///
-    /// ```rust
-    /// use kornia_tensor::{Tensor, CpuAllocator};
-    ///
-    /// let data = vec![1, 2, 3, 4, 5, 6];
-    /// let tensor = Tensor::<i32, 2, _>::from_shape_vec([2, 3], data, CpuAllocator).unwrap();
-    ///
-    /// // Transpose by permuting axes
-    /// let transposed = tensor.permute_axes([1, 0]);
-    ///
-    /// // Convert to contiguous layout: [[1, 4], [2, 5], [3, 6]]
-    /// let contiguous = transposed.as_contiguous();
-    /// assert_eq!(contiguous.as_slice(), &[1, 4, 2, 5, 3, 6]);
-    /// ```
-    pub fn as_contiguous(&self) -> Tensor<T, N, CpuAllocator>
+    /// Returns an error if memory allocation fails.
+    pub fn as_contiguous(&self) -> Result<Tensor<T, N, Cpu>, crate::TensorError>
     where
         T: Clone,
     {
@@ -189,25 +179,25 @@ impl<T, const N: usize, A: TensorAllocator> TensorView<'_, T, N, A> {
 
         let strides = get_strides_from_shape(self.shape);
 
-        Tensor {
-            storage: TensorStorage::from_vec(data, CpuAllocator),
+        Ok(Tensor {
+            storage: TensorStorage::from_vec(data)?,
             shape: self.shape,
             strides,
-        }
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::allocator::{CpuAllocator, TensorAllocatorError};
+    use crate::{Cpu, TensorError};
 
     #[test]
-    fn test_tensor_view_from_vec() -> Result<(), TensorAllocatorError> {
+    fn test_tensor_view_from_vec() -> Result<(), TensorError> {
         let vec = vec![1, 2, 3, 4, 5, 6, 7, 8];
-        let storage = TensorStorage::from_vec(vec, CpuAllocator);
+        let storage = TensorStorage::<u8, Cpu>::from_vec(vec)?;
 
-        let view = TensorView::<u8, 1, _> {
+        let view = TensorView::<u8, 1, Cpu> {
             storage: &storage,
             shape: [8],
             strides: [1],

@@ -1,12 +1,12 @@
-use crate::{allocator::TensorAllocator, storage::TensorStorage, Tensor};
+use crate::{device_marker::DeviceMarker, storage::TensorStorage, Tensor};
 
 use serde::ser::SerializeStruct;
 use serde::Deserialize;
 
-impl<T, const N: usize, A> serde::Serialize for Tensor<T, N, A>
+impl<T, const N: usize, D> serde::Serialize for Tensor<T, N, D>
 where
     T: serde::Serialize,
-    A: TensorAllocator + 'static,
+    D: DeviceMarker + 'static,
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -20,14 +20,14 @@ where
     }
 }
 
-impl<'de, T, const N: usize, A: TensorAllocator + Default + 'static> serde::Deserialize<'de>
-    for Tensor<T, N, A>
+impl<'de, T, const N: usize, D: DeviceMarker + 'static> serde::Deserialize<'de>
+    for Tensor<T, N, D>
 where
     T: serde::Deserialize<'de>,
 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<De>(deserializer: De) -> Result<Self, De::Error>
     where
-        D: serde::Deserializer<'de>,
+        De: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
         struct TensorData<T> {
@@ -42,7 +42,8 @@ where
             strides,
         } = TensorData::deserialize(deserializer)?;
 
-        let storage_array = TensorStorage::from_vec(data, A::default());
+        let storage_array = TensorStorage::from_vec(data)
+            .map_err(|e| serde::de::Error::custom(format!("Storage error: {}", e)))?;
 
         let shape_array: [usize; N] = shape
             .try_into()
@@ -62,15 +63,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::allocator::CpuAllocator;
+    use crate::{device_marker::Cpu, Tensor2};
 
     #[test]
     fn test_serde() -> Result<(), Box<dyn std::error::Error>> {
         let data = vec![1, 2, 3, 4, 5, 6];
-        let tensor = Tensor::<u8, 2, CpuAllocator>::from_shape_vec([2, 3], data, CpuAllocator)?;
+        let tensor = Tensor2::<u8, Cpu>::from_shape_vec([2, 3], data)?;
         let serialized = serde_json::to_string(&tensor)?;
-        let deserialized: Tensor<u8, 2, CpuAllocator> = serde_json::from_str(&serialized)?;
+        let deserialized: Tensor2<u8, Cpu> = serde_json::from_str(&serialized)?;
         assert_eq!(tensor.as_slice(), deserialized.as_slice());
         Ok(())
     }

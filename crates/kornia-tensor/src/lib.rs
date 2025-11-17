@@ -93,6 +93,9 @@
 /// memory backends. The default [`CpuAllocator`] uses the system allocator for CPU memory.
 pub mod allocator;
 
+/// backend module containing device operation abstractions.
+pub mod backend;
+
 /// Bincode module for binary serialization and deserialization.
 ///
 /// This module provides efficient binary serialization support for tensors when the
@@ -102,6 +105,9 @@ pub mod bincode;
 
 /// Device module containing device abstraction.
 pub mod device;
+
+/// device_marker module containing zero-cost device type markers.
+pub mod device_marker;
 
 /// Serde module for JSON/other format serialization and deserialization.
 ///
@@ -130,7 +136,13 @@ pub mod view;
 pub use crate::allocator::{CpuAllocator, TensorAllocator};
 #[cfg(feature = "cuda")]
 pub use crate::allocator::CudaAllocator;
+pub use crate::backend::{Backend, CpuBackend};
+#[cfg(feature = "cuda")]
+pub use crate::backend::CudaBackend;
 pub use crate::device::Device;
+pub use crate::device_marker::{Cpu, DeviceMarker};
+#[cfg(feature = "cuda")]
+pub use crate::device_marker::Cuda;
 pub(crate) use crate::tensor::get_strides_from_shape;
 pub use crate::tensor::{Tensor, TensorError};
 
