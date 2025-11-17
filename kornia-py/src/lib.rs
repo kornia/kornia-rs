@@ -65,7 +65,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyICPResult>()?;
 
     let apriltag_mod = PyModule::new(m.py(), "apriltag")?;
-    apriltag::apriltag(&apriltag_mod)?;
+    apriltag::init(&apriltag_mod)?;
     m.add_submodule(&apriltag_mod)?;
 
     Ok(())

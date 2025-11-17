@@ -4,7 +4,7 @@ use pyo3::{
     Bound, PyResult,
 };
 
-pub fn apriltag(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let family_mod = PyModule::new(m.py(), "family")?;
     family::init(&family_mod)?;
     m.add_submodule(&family_mod)?;
