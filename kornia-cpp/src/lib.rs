@@ -96,6 +96,34 @@ mod ffi {
         ///
         /// Throws exception if file cannot be read or is invalid
         fn read_jpeg_rgb8(file_path: &str) -> Result<Box<ImageU8C3>>;
+
+        // Image creation functions
+        
+        /// Create a new ImageU8C3 with specified dimensions, filled with a value
+        ///
+        /// # Arguments
+        ///
+        /// * `width` - Image width in pixels
+        /// * `height` - Image height in pixels
+        /// * `value` - Initial value for all pixels
+        ///
+        /// # Returns
+        ///
+        /// ImageU8C3 filled with the specified value
+        fn image_u8c3_new(width: usize, height: usize, value: u8) -> Box<ImageU8C3>;
+
+        /// Create a new ImageU8C1 with specified dimensions, filled with a value
+        ///
+        /// # Arguments
+        ///
+        /// * `width` - Image width in pixels
+        /// * `height` - Image height in pixels
+        /// * `value` - Initial value for all pixels
+        ///
+        /// # Returns
+        ///
+        /// ImageU8C1 filled with the specified value
+        fn image_u8c1_new(width: usize, height: usize, value: u8) -> Box<ImageU8C1>;
     }
 }
 
@@ -178,5 +206,25 @@ fn read_jpeg_mono8(file_path: &str) -> Result<Box<ImageU8C1>, Box<dyn std::error
 fn read_jpeg_rgb8(file_path: &str) -> Result<Box<ImageU8C3>, Box<dyn std::error::Error>> {
     let image = jpeg::read_image_jpeg_rgb8(file_path)?;
     Ok(Box::new(ImageU8C3(image)))
+}
+
+// Image creation functions
+
+/// Create a new ImageU8C3 with specified dimensions, filled with a value
+fn image_u8c3_new(width: usize, height: usize, value: u8) -> Box<ImageU8C3> {
+    let size = kornia_image::ImageSize { width, height };
+    let alloc = CpuAllocator::default();
+    let image = kornia_image::Image::<u8, 3, CpuAllocator>::from_size_val(size, value, alloc)
+        .expect("Failed to create image");
+    Box::new(ImageU8C3(image))
+}
+
+/// Create a new ImageU8C1 with specified dimensions, filled with a value
+fn image_u8c1_new(width: usize, height: usize, value: u8) -> Box<ImageU8C1> {
+    let size = kornia_image::ImageSize { width, height };
+    let alloc = CpuAllocator::default();
+    let image = kornia_image::Image::<u8, 1, CpuAllocator>::from_size_val(size, value, alloc)
+        .expect("Failed to create image");
+    Box::new(ImageU8C1(image))
 }
 

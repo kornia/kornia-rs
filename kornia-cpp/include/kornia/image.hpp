@@ -106,4 +106,38 @@ KORNIA_DEFINE_IMAGE_WRAPPER(ImageF32C4, ImageF32C4, image_f32c4, float);
 
 #undef KORNIA_DEFINE_IMAGE_WRAPPER
 
+// Factory functions to create images from C++
+
+namespace image {
+
+/// @brief Create a new ImageU8C3 filled with a specific value
+///
+/// @param width Image width in pixels
+/// @param height Image height in pixels
+/// @param value Initial value for all pixels (applied to all channels)
+/// @return ImageU8C3 filled with the specified value
+///
+/// @code{.cpp}
+/// auto img = kornia::image::ImageU8C3::from_size_val(100, 80, 128);
+/// @endcode
+inline ImageU8C3 image_u8c3_from_size_val(size_t width, size_t height, uint8_t value) {
+    return ImageU8C3(::image_u8c3_new(width, height, value));
+}
+
+/// @brief Create a new ImageU8C1 filled with a specific value
+///
+/// @param width Image width in pixels
+/// @param height Image height in pixels
+/// @param value Initial value for all pixels
+/// @return ImageU8C1 filled with the specified value
+///
+/// @code{.cpp}
+/// auto img = kornia::image::image_u8c1_from_size_val(50, 60, 128);
+/// @endcode
+inline ImageU8C1 image_u8c1_from_size_val(size_t width, size_t height, uint8_t value) {
+    return ImageU8C1(::image_u8c1_new(width, height, value));
+}
+
+} // namespace image
+
 } // namespace kornia
