@@ -24,7 +24,7 @@ pub use crate::stream::v4l2::V4L2CameraConfig;
 pub use crate::stream::video::VideoWriter;
 
 use kornia_image::allocator::ImageAllocator;
-use kornia_tensor::{allocator::TensorAllocatorError, TensorAllocator};
+use kornia_tensor::{allocator::TensorAllocatorError, device::Device, TensorAllocator};
 
 #[derive(Clone)]
 /// A [TensorAllocator] used for those images, whose memory is managed by gstreamer.
@@ -50,6 +50,22 @@ impl TensorAllocator for GstAllocator {
     fn dealloc(&self, _ptr: *mut u8, _layout: std::alloc::Layout) {
         // Do nothing as the memory is managed by Gstreamer
         // For more info, check https://github.com/kornia/kornia-rs/pull/338
+    }
+
+    fn device(&self) -> Device {
+        Device::Cpu
+    }
+
+    unsafe fn copy_from(
+        &self,
+        src_ptr: *const u8,
+        dst_ptr: *mut u8,
+        len: usize,
+        _src_device: &Device,
+    ) -> Result<(), TensorAllocatorError> {
+        // GStreamer buffers are CPU-based, use standard memcpy
+        std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, len);
+        Ok(())
     }
 }
 

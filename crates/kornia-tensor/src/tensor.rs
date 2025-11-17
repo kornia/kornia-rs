@@ -252,12 +252,14 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
             let dst_ptr = target_alloc.alloc(layout)?;
             
             // Copy memory
-            target_alloc.copy_from(
-                self.storage.as_ptr() as *const u8,
-                dst_ptr,
-                self.storage.len(),
-                &src_device,
-            )?;
+            unsafe {
+                target_alloc.copy_from(
+                    self.storage.as_ptr() as *const u8,
+                    dst_ptr,
+                    self.storage.len(),
+                    &src_device,
+                )?;
+            }
 
             let storage = unsafe {
                 TensorStorage::from_raw_parts(
@@ -278,12 +280,14 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
             let dst_ptr = target_alloc.alloc(layout)?;
             
             // Copy memory from source to destination
-            target_alloc.copy_from(
-                self.storage.as_ptr() as *const u8,
-                dst_ptr,
-                self.storage.len(),
-                &src_device,
-            )?;
+            unsafe {
+                target_alloc.copy_from(
+                    self.storage.as_ptr() as *const u8,
+                    dst_ptr,
+                    self.storage.len(),
+                    &src_device,
+                )?;
+            }
 
             let storage = unsafe {
                 TensorStorage::from_raw_parts(

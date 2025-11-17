@@ -156,17 +156,20 @@ pub trait TensorAllocator: Clone {
 
     /// Copies data from source pointer to destination pointer.
     ///
+    /// # Safety
+    ///
+    /// This function dereferences raw pointers. Callers must ensure:
+    /// - `src_ptr` and `dst_ptr` are valid for reads/writes of `len` bytes
+    /// - The memory regions must not overlap
+    /// - Both pointers must be properly aligned
+    ///
     /// # Arguments
     ///
     /// * `src_ptr` - Source pointer
     /// * `dst_ptr` - Destination pointer
     /// * `len` - Number of bytes to copy
     /// * `src_device` - Source device
-    ///
-    /// # Safety
-    ///
-    /// The pointers must be valid and the length must be correct.
-    fn copy_from(
+    unsafe fn copy_from(
         &self,
         src_ptr: *const u8,
         dst_ptr: *mut u8,
@@ -263,7 +266,7 @@ impl TensorAllocator for CpuAllocator {
     }
 
     /// Copies data from source pointer to destination pointer.
-    fn copy_from(
+    unsafe fn copy_from(
         &self,
         src_ptr: *const u8,
         dst_ptr: *mut u8,
@@ -361,6 +364,13 @@ impl CudaAllocator {
     pub fn device_id(&self) -> usize {
         self.device_id
     }
+
+    /// Set this context as current on the calling thread
+    fn set_current(&self) -> Result<(), TensorAllocatorError> {
+        use cust::context::CurrentContext;
+        CurrentContext::set_current(self._context.as_ref())
+            .map_err(|e| TensorAllocatorError::CudaError(format!("Failed to set context: {:?}", e)))
+    }
 }
 
 #[cfg(feature = "cuda")]
@@ -375,6 +385,9 @@ impl TensorAllocator for CudaAllocator {
     fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError> {
         use cust::memory::DeviceBuffer;
         
+        // Set context as current before allocation
+        self.set_current()?;
+        
         // Allocate device memory
         let buffer = DeviceBuffer::<u8>::zeroed(layout.size())
             .map_err(|e| TensorAllocatorError::CudaError(format!("CUDA malloc failed: {:?}", e)))?;
@@ -388,10 +401,13 @@ impl TensorAllocator for CudaAllocator {
 
     fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
         if !ptr.is_null() {
-            use cust::memory::DevicePointer;
-            // Convert back to DevicePointer and drop it
-            let _dev_ptr = DevicePointer::<u8>::from_raw(ptr as u64);
-            // dev_ptr will be dropped automatically, freeing the memory
+            // Set context as current before deallocation
+            if self.set_current().is_ok() {
+                use cust::memory::DevicePointer;
+                // Convert back to DevicePointer and drop it
+                let _dev_ptr = DevicePointer::<u8>::from_raw(ptr as u64);
+                // dev_ptr will be dropped automatically, freeing the memory
+            }
         }
     }
 
@@ -401,13 +417,16 @@ impl TensorAllocator for CudaAllocator {
         }
     }
 
-    fn copy_from(
+    unsafe fn copy_from(
         &self,
         src_ptr: *const u8,
         dst_ptr: *mut u8,
         len: usize,
         src_device: &Device,
     ) -> Result<(), TensorAllocatorError> {
+        // Set context as current before copy operations
+        self.set_current()?;
+        
         match src_device {
             Device::Cpu => {
                 // CPU to CUDA copy (upload) using raw CUDA API
@@ -457,10 +476,14 @@ impl TensorAllocator for CudaAllocator {
                 
                 Ok(())
             }
-            _ => Err(TensorAllocatorError::MemoryTransferError(format!(
-                "Unsupported copy from {:?} to CUDA",
-                src_device
-            ))),
+            #[cfg(feature = "metal")]
+            Device::Metal { .. } => Err(TensorAllocatorError::MemoryTransferError(
+                "Metal to CUDA copy not supported".to_string(),
+            )),
+            #[cfg(feature = "vulkan")]
+            Device::Vulkan { .. } => Err(TensorAllocatorError::MemoryTransferError(
+                "Vulkan to CUDA copy not supported".to_string(),
+            )),
         }
     }
 }

@@ -1,9 +1,10 @@
 /// Device type enumeration for tensor allocation.
 ///
 /// Represents different compute devices where tensors can be allocated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Device {
     /// CPU device
+    #[default]
     Cpu,
     /// CUDA device with device ID
     #[cfg(feature = "cuda")]
@@ -81,11 +82,6 @@ impl Device {
     }
 }
 
-impl Default for Device {
-    fn default() -> Self {
-        Device::Cpu
-    }
-}
 
 impl std::fmt::Display for Device {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
