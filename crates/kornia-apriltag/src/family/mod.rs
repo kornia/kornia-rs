@@ -38,7 +38,7 @@ pub enum TagFamilyKind {
     Tag25H9,
     /// The TagCircle21H7 Family. [TagFamily::tagcircle21_h7]
     TagCircle21H7,
-    /// The TagCircle49H12 Family. [TagFamily::tagcircle19_h12]
+    /// The TagCircle49H12 Family. [TagFamily::tagcircle49_h12]
     TagCircle49H12,
     /// The TagCustom48H12 Family. [TagFamily::tagcustom48_h12]
     TagCustom48H12,
