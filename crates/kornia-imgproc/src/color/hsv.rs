@@ -337,4 +337,63 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn hsv_edge_cases() -> Result<(), ImageError> {
+        // Test with pure black (should result in H=0, S=0, V=0)
+        let black = Image::<f32, 3, _>::new(
+            ImageSize {
+                width: 1,
+                height: 1,
+            },
+            vec![0.0, 0.0, 0.0],
+            CpuAllocator,
+        )?;
+        let mut hsv = Image::<f32, 3, _>::from_size_val(black.size(), 0.0, CpuAllocator)?;
+        super::hsv_from_rgb(&black, &mut hsv)?;
+
+        assert!(hsv.as_slice()[0].abs() < 1e-5); // H
+        assert!(hsv.as_slice()[1].abs() < 1e-5); // S
+        assert!(hsv.as_slice()[2].abs() < 1e-5); // V
+
+        // Test with pure white (should result in H=0, S=0, V=255)
+        let white = Image::<f32, 3, _>::new(
+            ImageSize {
+                width: 1,
+                height: 1,
+            },
+            vec![255.0, 255.0, 255.0],
+            CpuAllocator,
+        )?;
+        let mut hsv = Image::<f32, 3, _>::from_size_val(white.size(), 0.0, CpuAllocator)?;
+        super::hsv_from_rgb(&white, &mut hsv)?;
+
+        assert!(hsv.as_slice()[0].abs() < 1e-5); // H
+        assert!(hsv.as_slice()[1].abs() < 1e-5); // S
+        assert!((hsv.as_slice()[2] - 255.0).abs() < 1.0); // V
+
+        Ok(())
+    }
+
+    #[test]
+    fn rgb_from_hsv_edge_cases() -> Result<(), ImageError> {
+        // Test with H=360 (should wrap to red like H=0)
+        let hsv_360 = Image::<f32, 3, _>::new(
+            ImageSize {
+                width: 1,
+                height: 1,
+            },
+            vec![255.0, 255.0, 255.0], // H=255 represents 360 degrees
+            CpuAllocator,
+        )?;
+        let mut rgb = Image::<f32, 3, _>::from_size_val(hsv_360.size(), 0.0, CpuAllocator)?;
+        super::rgb_from_hsv(&hsv_360, &mut rgb)?;
+
+        // Should be close to red
+        assert!((rgb.as_slice()[0] - 255.0).abs() < 2.0); // R
+        assert!(rgb.as_slice()[1].abs() < 2.0); // G
+        assert!(rgb.as_slice()[2].abs() < 2.0); // B
+
+        Ok(())
+    }
 }

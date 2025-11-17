@@ -17,24 +17,25 @@
 //! # Supported Conversions
 //!
 //! ## RGB ↔ Grayscale
-//! - [`gray_from_rgb`] - Convert RGB to grayscale using standard luminance weights
-//! - [`gray_from_rgb_u8`] - Optimized u8 version using fixed-point arithmetic
-//! - [`rgb_from_gray`] - Convert grayscale to RGB by replicating the value
+//! - `gray_from_rgb` - Convert RGB to grayscale using standard luminance weights
+//! - `gray_from_rgb_u8` - Optimized u8 version using fixed-point arithmetic
+//! - `rgb_from_gray` - Convert grayscale to RGB by replicating the value
 //!
 //! ## BGR ↔ RGB
-//! - [`bgr_from_rgb`] - Swap red and blue channels
-//! - [`gray_from_bgr`] - Convert BGR to grayscale
+//! - `bgr_from_rgb` - Swap red and blue channels
+//! - `gray_from_bgr` - Convert BGR to grayscale
+//! - `gray_from_bgr_u8` - Optimized u8 version for BGR to grayscale
 //!
 //! ## RGB ↔ HSV
-//! - [`hsv_from_rgb`] - Convert RGB to HSV color space
-//! - [`rgb_from_hsv`] - Convert HSV back to RGB color space
+//! - `hsv_from_rgb` - Convert RGB to HSV color space
+//! - `rgb_from_hsv` - Convert HSV back to RGB color space
 //!
 //! ## RGBA/BGRA → RGB
-//! - [`rgb_from_rgba`] - Remove alpha channel with optional background blending
-//! - [`rgb_from_bgra`] - Remove alpha channel from BGRA with optional background blending
+//! - `rgb_from_rgba` - Remove alpha channel with optional background blending
+//! - `rgb_from_bgra` - Remove alpha channel from BGRA with optional background blending
 //!
 //! ## YUV → RGB
-//! - [`convert_yuyv_to_rgb_u8`] - Convert YUYV (YUY2) format to RGB
+//! - `convert_yuyv_to_rgb_u8` - Convert YUYV (YUY2) format to RGB
 //!   - Supports BT.601 Full Range (JPEG standard)
 //!   - Supports BT.709 Full Range (HDTV standard)
 //!   - Supports BT.601 Limited Range (Broadcast standard)
@@ -96,14 +97,16 @@
 //! - **BT.709**: High Definition Television (HDTV)
 //! - **BT.2020**: Ultra High Definition Television (UHDTV)
 //!
-//! See [`YuvToRgbMode`] for more details on YUV conversion modes.
+//! See `YuvToRgbMode` for more details on YUV conversion modes.
 
 mod gray;
 mod hsv;
 mod rgb;
 mod yuv;
 
-pub use gray::{bgr_from_rgb, gray_from_bgr, gray_from_rgb, gray_from_rgb_u8, rgb_from_gray};
+pub use gray::{
+    bgr_from_rgb, gray_from_bgr, gray_from_bgr_u8, gray_from_rgb, gray_from_rgb_u8, rgb_from_gray,
+};
 pub use hsv::{hsv_from_rgb, rgb_from_hsv};
 pub use rgb::{rgb_from_bgra, rgb_from_rgba};
 pub use yuv::{convert_yuyv_to_rgb_u8, YuvToRgbMode};
