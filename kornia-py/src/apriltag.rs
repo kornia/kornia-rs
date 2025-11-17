@@ -15,12 +15,11 @@ pub fn apriltag(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[pymodule]
 mod family {
     use kornia_apriltag::family::TagFamilyKind;
-    use pyo3::{exceptions::PyException, prelude::*, types::PyList, PyResult};
+    use pyo3::{exceptions::PyException, prelude::*, types::PyList, Py, PyResult};
 
     #[pymodule_init]
     pub fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_class::<PyTagFamilyKind>()?;
-        m.add_function(wrap_pyfunction!(all_tag_family_kind, m)?)?;
         Ok(())
     }
 
@@ -61,16 +60,16 @@ mod family {
                 _ => Err(PyErr::new::<PyException, _>("unknown tagfamily kind")),
             }
         }
-    }
 
-    #[pyfunction]
-    pub fn all_tag_family_kind() -> PyResult<Py<PyList>> {
-        let all = TagFamilyKind::all();
-        let py_all: Vec<_> = all.iter().map(|tag| PyTagFamilyKind(tag.clone())).collect();
+        #[staticmethod]
+        pub fn all() -> PyResult<Py<PyList>> {
+            let all = TagFamilyKind::all();
+            let py_all: Vec<_> = all.iter().map(|tag| PyTagFamilyKind(tag.clone())).collect();
 
-        Python::attach(|py| match PyList::new(py, py_all) {
-            Ok(list) => Ok(list.unbind()),
-            Err(e) => Err(e),
-        })
+            Python::attach(|py| match PyList::new(py, py_all) {
+                Ok(list) => Ok(list.unbind()),
+                Err(e) => Err(e),
+            })
+        }
     }
 }

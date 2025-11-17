@@ -4,7 +4,7 @@ TF = K.apriltag.family.TagFamilyKind
 
 
 def test_all_tag_family_kind():
-    all = K.apriltag.family.all_tag_family_kind()
+    all = TF.all()
     all_expected = [
         TF("tag16_h5"),
         TF("tag36_h11"),
