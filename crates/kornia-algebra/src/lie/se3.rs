@@ -1,5 +1,5 @@
 use super::so3::SO3;
-use crate::{Mat3A, Mat4, Quat, Vec3AF32};
+use crate::{Mat3AF32, Mat4F32, QuatF32, Vec3AF32};
 use rand::Rng;
 
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
@@ -23,7 +23,7 @@ impl SE3 {
         }
     }
 
-    pub fn from_matrix(mat: &Mat4) -> Self {
+    pub fn from_matrix(mat: &Mat4F32) -> Self {
         Self {
             r: SO3::from_matrix4(mat),
             t: Vec3AF32::new(mat.w_axis.x, mat.w_axis.y, mat.w_axis.z),
@@ -43,7 +43,7 @@ impl SE3 {
         }
     }
 
-    pub fn from_qxyz(quat: Quat, xyz: Vec3AF32) -> Self {
+    pub fn from_qxyz(quat: QuatF32, xyz: Vec3AF32) -> Self {
         Self {
             r: SO3::from_quaternion(quat),
             t: xyz,
@@ -78,9 +78,9 @@ impl SE3 {
         }
     }
 
-    pub fn matrix(&self) -> Mat4 {
+    pub fn matrix(&self) -> Mat4F32 {
         let r = self.r.matrix();
-        Mat4::from_cols_array(&[
+        Mat4F32::from_cols_array(&[
             r.x_axis.x, r.x_axis.y, r.x_axis.z, 0.0, // col0
             r.y_axis.x, r.y_axis.y, r.y_axis.z, 0.0, // col1
             r.z_axis.x, r.z_axis.y, r.z_axis.z, 0.0, // col2
@@ -122,7 +122,7 @@ impl SE3 {
                 let a = (1.0 - theta.cos()) / theta2;
                 let b = (theta - theta.sin()) / (theta2 * theta);
 
-                let mat_v = Mat3A::IDENTITY + a * omega_hat + b * omega_hat_sq;
+                let mat_v = Mat3AF32::IDENTITY + a * omega_hat + b * omega_hat_sq;
 
                 Vec3AF32::from(mat_v.mul_vec3a(glam::Vec3A::from(upsilon)))
             } else {
@@ -142,7 +142,7 @@ impl SE3 {
             if theta > SMALL_ANGLE_EPSILON {
                 let omega_hat = SO3::hat(omega);
                 let omega_hat_sq = omega_hat * omega_hat;
-                let mat_v_inv = Mat3A::IDENTITY - 0.5 * omega_hat
+                let mat_v_inv = Mat3AF32::IDENTITY - 0.5 * omega_hat
                     + ((1.0 - theta * (theta / 2.0).cos() / (2.0 * (theta / 2.0).sin())) / theta2)
                         * omega_hat_sq;
 
@@ -154,16 +154,16 @@ impl SE3 {
         )
     }
 
-    pub fn hat(upsilon: Vec3AF32, omega: Vec3AF32) -> Mat4 {
+    pub fn hat(upsilon: Vec3AF32, omega: Vec3AF32) -> Mat4F32 {
         let h = SO3::hat(omega);
 
-        Mat4::from_cols_array(&[
+        Mat4F32::from_cols_array(&[
             h.x_axis.x, h.x_axis.y, h.x_axis.z, 0.0, h.y_axis.x, h.y_axis.y, h.y_axis.z, 0.0,
             h.z_axis.x, h.z_axis.y, h.z_axis.z, 0.0, upsilon.x, upsilon.y, upsilon.z, 0.0,
         ])
     }
 
-    pub fn vee(omega: Mat4) -> (Vec3AF32, Vec3AF32) {
+    pub fn vee(omega: Mat4F32) -> (Vec3AF32, Vec3AF32) {
         (
             Vec3AF32::new(omega.w_axis.x, omega.w_axis.y, omega.w_axis.z),
             SO3::vee4(omega),
@@ -208,7 +208,7 @@ impl SE3 {
             //          Jₗ_SO3 ≈ I + ½ω× + 1/6 ω×²
             let q = 0.5 * rho_hat + (1.0 / 12.0) * (omega_hat * rho_hat + rho_hat * omega_hat)
                 - (1.0 / 24.0) * (omega_hat * rho_hat * omega_hat);
-            let j = Mat3A::IDENTITY + 0.5 * omega_hat + (1.0 / 6.0) * omega_hat2;
+            let j = Mat3AF32::IDENTITY + 0.5 * omega_hat + (1.0 / 6.0) * omega_hat2;
             (q, j)
         } else {
             let theta3 = theta2 * theta;
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_new() {
-        let rotation = SO3::from_quaternion(Quat::IDENTITY);
+        let rotation = SO3::from_quaternion(QuatF32::IDENTITY);
         let translation = Vec3AF32::new(1.0, 2.0, 3.0);
         let se3 = SE3::new(rotation, translation);
         assert_relative_eq!(se3.t.x, translation.x);
@@ -336,7 +336,7 @@ mod tests {
     #[test]
     fn test_from_matrix() {
         // Test with identity matrix
-        let mat = Mat4::IDENTITY;
+        let mat = Mat4F32::IDENTITY;
         let se3 = SE3::from_matrix(&mat);
         assert_relative_eq!(se3.t.x, 0.0);
         assert_relative_eq!(se3.t.y, 0.0);
@@ -351,7 +351,7 @@ mod tests {
         }
 
         // Test with a specific transformation matrix
-        let mat = Mat4::from_cols_array(&[
+        let mat = Mat4F32::from_cols_array(&[
             1.0, 0.0, 0.0, 0.0, // col0
             0.0, 1.0, 0.0, 0.0, // col1
             0.0, 0.0, 1.0, 0.0, // col2
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn test_from_qxyz() {
-        let quat = Quat::from(glam::Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize());
+        let quat = QuatF32::from(glam::Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize());
         let xyz = Vec3AF32::new(1.0, 2.0, 3.0);
         let se3 = SE3::from_qxyz(quat, xyz);
 
@@ -447,7 +447,7 @@ mod tests {
         // Test identity
         let se3 = SE3::IDENTITY;
         let mat = se3.matrix();
-        let expected = Mat4::IDENTITY;
+        let expected = Mat4F32::IDENTITY;
         for i in 0..4 {
             for j in 0..4 {
                 assert_relative_eq!(mat.col(i)[j], expected.col(i)[j]);
@@ -457,7 +457,7 @@ mod tests {
         // Test with translation
         let se3 = SE3::new(SO3::IDENTITY, Vec3AF32::new(1.0, 2.0, 3.0));
         let mat = se3.matrix();
-        let expected = Mat4::from_cols_array(&[
+        let expected = Mat4F32::from_cols_array(&[
             1.0, 0.0, 0.0, 0.0, // col0
             0.0, 1.0, 0.0, 0.0, // col1
             0.0, 0.0, 1.0, 0.0, // col2

@@ -1,4 +1,4 @@
-use crate::{Mat2, Mat3A, Vec2F32};
+use crate::{Mat2F32, Mat3AF32, Vec2F32};
 use rand::Rng;
 use std::f32::consts::TAU; // <-- Added this import
 
@@ -10,20 +10,20 @@ pub struct SO2 {
 
 impl SO2 {
     pub const IDENTITY: Self = Self {
-        z: Vec2F32(glam::Vec2::new(1.0, 0.0)),
+        z: Vec2F32 { x: 1.0, y: 0.0 },
     };
 
     pub fn new(z: Vec2F32) -> Self {
         Self { z }
     }
 
-    pub fn from_matrix(mat: &Mat2) -> Self {
+    pub fn from_matrix(mat: &Mat2F32) -> Self {
         Self {
             z: Vec2F32::new(mat.x_axis.x, mat.x_axis.y),
         }
     }
 
-    pub fn from_matrix3a(mat: &Mat3A) -> Self {
+    pub fn from_matrix3a(mat: &Mat3AF32) -> Self {
         Self {
             z: Vec2F32::new(mat.x_axis.x, mat.x_axis.y),
         }
@@ -55,8 +55,8 @@ impl SO2 {
         (*y * x.inverse()).log()
     }
 
-    pub fn matrix(&self) -> Mat2 {
-        Mat2::from_cols_array(&[self.z.x, self.z.y, -self.z.y, self.z.x])
+    pub fn matrix(&self) -> Mat2F32 {
+        Mat2F32::from_cols_array(&[self.z.x, self.z.y, -self.z.y, self.z.x])
     }
 
     /// inverting the complex number z (represented as a 2D vector)
@@ -81,11 +81,11 @@ impl SO2 {
         self.z.y.atan2(self.z.x)
     }
 
-    pub fn hat(theta: f32) -> Mat2 {
-        Mat2::from_cols_array(&[0.0, theta, -theta, 0.0])
+    pub fn hat(theta: f32) -> Mat2F32 {
+        Mat2F32::from_cols_array(&[0.0, theta, -theta, 0.0])
     }
 
-    pub fn vee(omega: Mat2) -> f32 {
+    pub fn vee(omega: Mat2F32) -> f32 {
         omega.x_axis.y
     }
 
@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn test_from_matrix() {
         // Test with identity matrix
-        let mat = Mat2::IDENTITY;
+        let mat = Mat2F32::IDENTITY;
         let so2 = SO2::from_matrix(&mat);
         assert_relative_eq!(so2.z.x, 1.0);
         assert_relative_eq!(so2.z.y, 0.0);
@@ -161,7 +161,7 @@ mod tests {
         // [0.6  -0.8]
         // [0.8   0.6]
         // x_axis = [0.6, 0.8], y_axis = [-0.8, 0.6]
-        let mat = Mat2::from_cols_array(&[0.6, 0.8, -0.8, 0.6]);
+        let mat = Mat2F32::from_cols_array(&[0.6, 0.8, -0.8, 0.6]);
         let so2 = SO2::from_matrix(&mat);
         assert_relative_eq!(so2.z.x, 0.6);
         assert_relative_eq!(so2.z.y, 0.8);
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn test_matrix() {
         let so2 = SO2::new(Vec2F32::new(0.6, 0.8));
-        let expected = Mat2::from_cols_array(&[0.6, 0.8, -0.8, 0.6]);
+        let expected = Mat2F32::from_cols_array(&[0.6, 0.8, -0.8, 0.6]);
         let actual = so2.matrix();
 
         for i in 0..2 {
@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn test_hat() {
         let theta = 0.5;
-        let expected = Mat2::from_cols_array(&[0.0, 0.5, -0.5, 0.0]);
+        let expected = Mat2F32::from_cols_array(&[0.0, 0.5, -0.5, 0.0]);
         let actual = SO2::hat(theta);
 
         for i in 0..2 {
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn test_vee() {
-        let omega = Mat2::from_cols_array(&[0.0, 0.5, 0.5, 0.0]);
+        let omega = Mat2F32::from_cols_array(&[0.0, 0.5, 0.5, 0.0]);
         let theta = SO2::vee(omega);
         assert_relative_eq!(theta, 0.5);
     }
@@ -435,7 +435,7 @@ mod tests {
 
         // Test that rotation matrix is orthogonal (R^T * R = I)
         let transpose = matrix.transpose();
-        let product = Mat2::from(glam::Mat2::from(transpose) * glam::Mat2::from(matrix));
+        let product = Mat2F32::from(transpose * glam::Mat2::from(matrix));
         assert_relative_eq!(product.x_axis.x, 1.0, epsilon = EPSILON);
         assert_relative_eq!(product.y_axis.y, 1.0, epsilon = EPSILON);
         assert_relative_eq!(product.x_axis.y, 0.0, epsilon = EPSILON);

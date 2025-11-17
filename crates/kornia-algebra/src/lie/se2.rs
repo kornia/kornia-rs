@@ -1,5 +1,5 @@
 use super::so2::SO2;
-use crate::{Mat2, Mat3A, Vec2F32, Vec3AF32};
+use crate::{Mat2F32, Mat3AF32, Vec2F32, Vec3AF32};
 use rand::Rng;
 
 #[derive(Debug, Clone, Copy)]
@@ -23,7 +23,7 @@ impl SE2 {
         }
     }
 
-    pub fn from_matrix(mat: &Mat3A) -> Self {
+    pub fn from_matrix(mat: &Mat3AF32) -> Self {
         Self {
             r: SO2::from_matrix3a(mat),
             t: Vec2F32::new(mat.z_axis.x, mat.z_axis.y),
@@ -72,9 +72,9 @@ impl SE2 {
         (*y * x.inverse()).log()
     }
 
-    pub fn matrix(&self) -> Mat3A {
+    pub fn matrix(&self) -> Mat3AF32 {
         let r = self.r.matrix();
-        Mat3A::from_cols_array(&[
+        Mat3AF32::from_cols_array(&[
             r.x_axis.x, r.x_axis.y, 0.0, //
             r.y_axis.x, r.y_axis.y, 0.0, //
             self.t.x, self.t.y, 1.0, //
@@ -89,7 +89,7 @@ impl SE2 {
         }
     }
 
-    pub fn adjoint(&self) -> Mat3A {
+    pub fn adjoint(&self) -> Mat3AF32 {
         let mut mat = self.matrix();
         mat.z_axis.x = self.t.y; // matrix[0, 2] = t.y
         mat.z_axis.y = -self.t.x; // matrix[1, 2] = -t.x
@@ -128,15 +128,15 @@ impl SE2 {
         let denom = a * a + b * b; // det(V)
 
         // V⁻¹ = 1/det(V) * [[ a,  b],[-b,  a]]
-        let v_inv = Mat2::from_cols_array(&[a / denom, -b / denom, b / denom, a / denom]);
+        let v_inv = Mat2F32::from_cols_array(&[a / denom, -b / denom, b / denom, a / denom]);
 
         let upsilon = v_inv.mul_vec2(glam::Vec2::from(self.t));
         Vec3AF32::new(upsilon.x, upsilon.y, theta)
     }
 
-    pub fn hat(v: Vec3AF32) -> Mat3A {
+    pub fn hat(v: Vec3AF32) -> Mat3AF32 {
         let hat_theta = SO2::hat(/* theta = */ v.z);
-        Mat3A::from_cols_array(&[
+        Mat3AF32::from_cols_array(&[
             hat_theta.x_axis.x,
             hat_theta.x_axis.y,
             0.0,
@@ -149,11 +149,11 @@ impl SE2 {
         ])
     }
 
-    pub fn vee(omega: Mat3A) -> Vec3AF32 {
+    pub fn vee(omega: Mat3AF32) -> Vec3AF32 {
         Vec3AF32::new(
             omega.z_axis.x,
             omega.z_axis.y,
-            SO2::vee(Mat2::from_cols_array(&[
+            SO2::vee(Mat2F32::from_cols_array(&[
                 omega.x_axis.x,
                 omega.x_axis.y,
                 omega.y_axis.x,
@@ -182,7 +182,7 @@ impl SE2 {
     /// │       0                  0                                1                         │
     /// └                                                                                     ┘
     /// ref: https://arxiv.org/pdf/1812.01537 (eq 163)
-    pub fn right_jacobian(v: Vec3AF32) -> Mat3A {
+    pub fn right_jacobian(v: Vec3AF32) -> Mat3AF32 {
         let theta = v.z;
         let (s, c) = Self::sc(theta);
         let p1 = v.x;
@@ -201,7 +201,7 @@ impl SE2 {
             )
         };
 
-        Mat3A::from_cols(
+        Mat3AF32::from_cols(
             Vec3AF32::new(s, -c, 0.0),
             Vec3AF32::new(c, s, 0.0),
             Vec3AF32::new(third_col_x, third_col_y, 1.0),
@@ -215,7 +215,7 @@ impl SE2 {
     /// │       0                  0                                1                        │
     /// └                                                                                    ┘
     /// ref: https://arxiv.org/pdf/1812.01537 (eq 164)
-    pub fn left_jacobian(v: Vec3AF32) -> Mat3A {
+    pub fn left_jacobian(v: Vec3AF32) -> Mat3AF32 {
         let theta = v.z;
         let (s, c) = Self::sc(theta);
         let p1 = v.x;
@@ -233,7 +233,7 @@ impl SE2 {
                 (-p1 + theta * p2 + p1 * cos_t - p2 * sin_t) / theta_sq,
             )
         };
-        Mat3A::from_cols(
+        Mat3AF32::from_cols(
             Vec3AF32::new(s, c, 0.0),
             Vec3AF32::new(-c, s, 0.0),
             Vec3AF32::new(third_col_x, third_col_y, 1.0),
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn test_from_matrix() {
         // Test with identity matrix
-        let mat = Mat3A::IDENTITY;
+        let mat = Mat3AF32::IDENTITY;
         let se2 = SE2::from_matrix(&mat);
         assert_eq!(se2.t, Vec2F32::new(0.0, 0.0));
         assert_eq!(se2.r.matrix(), SO2::IDENTITY.matrix());
@@ -358,7 +358,7 @@ mod tests {
 
         // Check rotation part
         let rotation_part =
-            Mat2::from_cols_array(&[mat.x_axis.x, mat.x_axis.y, mat.y_axis.x, mat.y_axis.y]);
+            Mat2F32::from_cols_array(&[mat.x_axis.x, mat.x_axis.y, mat.y_axis.x, mat.y_axis.y]);
         let expected_rotation = se2.r.matrix();
 
         for i in 0..2 {
@@ -756,7 +756,7 @@ mod tests {
         let third_col_x = (theta * p1 - p2 + p2 * cos_t - p1 * sin_t) / theta_sq;
         let third_col_y = (p1 + theta * p2 - p1 * cos_t - p2 * sin_t) / theta_sq;
 
-        let expected_jr = Mat3A::from_cols(
+        let expected_jr = Mat3AF32::from_cols(
             Vec3AF32::new(s, -c, 0.0),
             Vec3AF32::new(c, s, 0.0),
             Vec3AF32::new(third_col_x, third_col_y, 1.0),
@@ -772,7 +772,7 @@ mod tests {
         let v = Vec3AF32::new(1.0, 2.0, 0.0);
         let jr = SE2::right_jacobian(v);
 
-        let expected_jr = Mat3A::from_cols(
+        let expected_jr = Mat3AF32::from_cols(
             Vec3AF32::new(1.0, 0.0, 0.0),
             Vec3AF32::new(0.0, 1.0, 0.0),
             Vec3AF32::new(p2, -p1, 1.0),
@@ -807,7 +807,7 @@ mod tests {
         let third_col_x = (theta * p1 + p2 - p2 * cos_t - p1 * sin_t) / theta_sq;
         let third_col_y = (-p1 + theta * p2 + p1 * cos_t - p2 * sin_t) / theta_sq;
 
-        let expected_jl = Mat3A::from_cols(
+        let expected_jl = Mat3AF32::from_cols(
             Vec3AF32::new(s, c, 0.0),
             Vec3AF32::new(-c, s, 0.0),
             Vec3AF32::new(third_col_x, third_col_y, 1.0),
@@ -823,7 +823,7 @@ mod tests {
         let v = Vec3AF32::new(1.0, 2.0, 0.0);
         let jl = SE2::left_jacobian(v);
 
-        let expected_jl = Mat3A::from_cols(
+        let expected_jl = Mat3AF32::from_cols(
             Vec3AF32::new(1.0, 0.0, 0.0),
             Vec3AF32::new(0.0, 1.0, 0.0),
             Vec3AF32::new(p2, -p1, 1.0),
