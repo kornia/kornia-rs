@@ -4222,6 +4222,12 @@ dependencies = [
 
 [[package]]
 name = "glam"
+version = "0.29.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8babf46d4c1c9d92deac9f7be466f76dfc4482b6452fc5024b5e8daf6ffeb3ee"
+
+[[package]]
+name = "glam"
 version = "0.30.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bd47b05dddf0005d850e5644cae7f2b14ac3df487979dbfff3b56f20b1a6ae46"
@@ -5897,6 +5903,14 @@ dependencies = [
  "opencv",
  "rand 0.9.2",
  "thiserror 2.0.17",
+]
+
+[[package]]
+name = "kornia-slam"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "glam 0.29.3",
 ]
 
 [[package]]

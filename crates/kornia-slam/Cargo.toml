@@ -1,0 +1,11 @@
+[package]
+name = "kornia-slam"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+glam = "0.29"
+
+[dev-dependencies]
+approx = "0.5"
+

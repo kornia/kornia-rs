@@ -7,7 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🎨 Type-Safe Color Space API Demo\n");
 
     // Load an image - now returns Rgb8 directly!
-    let rgb = F::read_image_any_rgb8("../../tests/data/dog.jpeg")?;
+    let rgb: Rgb8<CpuAllocator> = F::read_image_any_rgb8("../../tests/data/dog.jpeg")?;
     println!("✓ Loaded RGB8 image: {}x{}", rgb.width(), rgb.height());
 
     // Convert to grayscale with type safety

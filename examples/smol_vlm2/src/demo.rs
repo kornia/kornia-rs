@@ -1,7 +1,6 @@
 //! Simple video understanding demo
 //!
 //! Usage: cargo run --example demo <video_path>
-// use crate::video::{from_video_path, VideoSamplingMethod};
 
 #[cfg(feature = "gstreamer")]
 pub fn run_video_demo(
