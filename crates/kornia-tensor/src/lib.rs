@@ -4,12 +4,18 @@
 /// allocator module containing the memory management utilities.
 pub mod allocator;
 
+/// backend module containing device operation abstractions.
+pub mod backend;
+
 /// bincode module containing the serialization and deserialization utilities.
 #[cfg(feature = "bincode")]
 pub mod bincode;
 
 /// device module containing device abstraction.
 pub mod device;
+
+/// device_marker module containing zero-cost device type markers.
+pub mod device_marker;
 
 /// serde module containing the serialization and deserialization utilities.
 #[cfg(feature = "serde")]
@@ -27,7 +33,13 @@ pub mod view;
 pub use crate::allocator::{CpuAllocator, TensorAllocator};
 #[cfg(feature = "cuda")]
 pub use crate::allocator::CudaAllocator;
+pub use crate::backend::{Backend, CpuBackend};
+#[cfg(feature = "cuda")]
+pub use crate::backend::CudaBackend;
 pub use crate::device::Device;
+pub use crate::device_marker::{Cpu, DeviceMarker};
+#[cfg(feature = "cuda")]
+pub use crate::device_marker::Cuda;
 pub(crate) use crate::tensor::get_strides_from_shape;
 pub use crate::tensor::{Tensor, TensorError};
 

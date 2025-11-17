@@ -1,11 +1,14 @@
 use crate::{
-    get_strides_from_shape, storage::TensorStorage, CpuAllocator, Tensor, TensorAllocator,
+    device_marker::{Cpu, DeviceMarker},
+    get_strides_from_shape,
+    storage::TensorStorage,
+    Tensor,
 };
 
 /// A view into a tensor.
-pub struct TensorView<'a, T, const N: usize, A: TensorAllocator> {
+pub struct TensorView<'a, T, const N: usize, D: DeviceMarker> {
     /// Reference to the storage held by the another tensor.
-    pub storage: &'a TensorStorage<T, A>,
+    pub storage: &'a TensorStorage<T, D>,
 
     /// The shape of the tensor.
     pub shape: [usize; N],
@@ -14,7 +17,7 @@ pub struct TensorView<'a, T, const N: usize, A: TensorAllocator> {
     pub strides: [usize; N],
 }
 
-impl<T, const N: usize, A: TensorAllocator> TensorView<'_, T, N, A> {
+impl<T, const N: usize, D: DeviceMarker> TensorView<'_, T, N, D> {
     /// Returns the data slice of the tensor.
     #[inline]
     pub fn as_slice(&self) -> &[T] {
@@ -55,7 +58,11 @@ impl<T, const N: usize, A: TensorAllocator> TensorView<'_, T, N, A> {
     /// # Returns
     ///
     /// A new `Tensor` instance with contiguous memory.
-    pub fn as_contiguous(&self) -> Tensor<T, N, CpuAllocator>
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if memory allocation fails.
+    pub fn as_contiguous(&self) -> Result<Tensor<T, N, Cpu>, crate::TensorError>
     where
         T: Clone,
     {
@@ -80,25 +87,25 @@ impl<T, const N: usize, A: TensorAllocator> TensorView<'_, T, N, A> {
 
         let strides = get_strides_from_shape(self.shape);
 
-        Tensor {
-            storage: TensorStorage::from_vec(data, CpuAllocator),
+        Ok(Tensor {
+            storage: TensorStorage::from_vec(data)?,
             shape: self.shape,
             strides,
-        }
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::allocator::{CpuAllocator, TensorAllocatorError};
+    use crate::{Cpu, TensorError};
 
     #[test]
-    fn test_tensor_view_from_vec() -> Result<(), TensorAllocatorError> {
+    fn test_tensor_view_from_vec() -> Result<(), TensorError> {
         let vec = vec![1, 2, 3, 4, 5, 6, 7, 8];
-        let storage = TensorStorage::from_vec(vec, CpuAllocator);
+        let storage = TensorStorage::<u8, Cpu>::from_vec(vec)?;
 
-        let view = TensorView::<u8, 1, _> {
+        let view = TensorView::<u8, 1, Cpu> {
             storage: &storage,
             shape: [8],
             strides: [1],

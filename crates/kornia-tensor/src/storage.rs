@@ -1,30 +1,85 @@
-use std::{alloc::Layout, ptr::NonNull};
+//! Arc-based storage management for zero-copy views and efficient sharing.
+//!
+//! This module provides an improved storage implementation using `Arc` for
+//! reference counting, enabling cheap clones and zero-copy tensor views.
 
-use crate::allocator::TensorAllocator;
+use std::{alloc::Layout, ptr::NonNull, sync::Arc};
 
-/// Definition of the buffer for a tensor.
-pub struct TensorStorage<T, A: TensorAllocator> {
-    /// The pointer to the tensor memory which must be non null.
-    pub(crate) ptr: NonNull<T>,
-    /// The length of the tensor memory in bytes.
-    pub(crate) len: usize,
-    /// The layout of the tensor memory.
-    pub(crate) layout: Layout,
-    /// The allocator used to allocate/deallocate the tensor memory.
-    pub(crate) alloc: A,
+use crate::{device_marker::DeviceMarker, TensorAllocator};
+
+/// Inner storage implementation that holds the actual memory.
+///
+/// This is wrapped in an `Arc` to enable reference counting and
+/// zero-copy views with different offsets.
+struct StorageImpl<T, D: DeviceMarker> {
+    /// The pointer to the tensor memory which must be non-null.
+    ptr: NonNull<T>,
+    /// The total length of allocated memory in bytes.
+    len: usize,
+    /// The memory layout used for allocation.
+    layout: Layout,
+    /// Marker for device type (zero-sized).
+    _device: std::marker::PhantomData<D>,
 }
 
-impl<T, A: TensorAllocator> TensorStorage<T, A> {
-    /// Returns the pointer to the tensor memory.
+impl<T, D: DeviceMarker> std::fmt::Debug for StorageImpl<T, D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StorageImpl")
+            .field("ptr", &self.ptr)
+            .field("len", &self.len)
+            .field("layout", &self.layout)
+            .finish()
+    }
+}
+
+/// Arc-based tensor storage enabling zero-copy views and efficient sharing.
+///
+/// This storage type uses `Arc` internally, making clones cheap (just
+/// incrementing a reference count) and enabling multiple tensors to share
+/// the same underlying memory with different views.
+///
+/// # Thread Safety
+///
+/// `TensorStorage` is `Send + Sync` when `T: Send + Sync`, allowing tensors
+/// to be safely shared across threads. The Arc ensures proper synchronization
+/// of the reference count.
+///
+/// # Memory Management
+///
+/// Memory is allocated using the device-specific allocator and automatically
+/// freed when the last reference is dropped.
+pub struct TensorStorage<T, D: DeviceMarker> {
+    /// Reference-counted inner storage.
+    inner: Arc<StorageImpl<T, D>>,
+    /// Offset into the storage for views (in number of elements).
+    ///
+    /// This allows creating zero-copy views that point to a subset of the
+    /// underlying storage.
+    offset: usize,
+    /// Number of elements accessible from this view.
+    ///
+    /// May be less than `inner.len` for views.
+    view_len: usize,
+}
+
+impl<T, D: DeviceMarker> TensorStorage<T, D> {
+    /// Returns the pointer to the tensor memory, accounting for offset.
     #[inline]
     pub fn as_ptr(&self) -> *const T {
-        self.ptr.as_ptr()
+        // SAFETY: offset is always within bounds (validated at construction)
+        unsafe { self.inner.ptr.as_ptr().add(self.offset) }
     }
 
-    /// Returns the pointer to the tensor memory.
+    /// Returns the mutable pointer to the tensor memory, accounting for offset.
+    ///
+    /// # Safety
+    ///
+    /// This returns a mutable pointer even though we only have `&self`.
+    /// The caller must ensure exclusive access when dereferencing.
     #[inline]
     pub fn as_mut_ptr(&mut self) -> *mut T {
-        self.ptr.as_ptr()
+        // SAFETY: offset is always within bounds (validated at construction)
+        unsafe { self.inner.ptr.as_ptr().add(self.offset) }
     }
 
     /// Returns the data pointer as a slice.
@@ -34,356 +89,390 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     /// Panics if the tensor is not on CPU.
     pub fn as_slice(&self) -> &[T] {
         assert!(
-            self.alloc.device().is_cpu(),
+            self.is_cpu(),
             "Cannot access GPU tensor as slice. Use to_cpu() to transfer data first."
         );
-        unsafe { std::slice::from_raw_parts(self.as_ptr(), self.len / std::mem::size_of::<T>()) }
+        let elem_count = self.view_len / std::mem::size_of::<T>();
+        // SAFETY: ptr is valid for view_len bytes, properly aligned, and on CPU (checked above)
+        // offset was validated at construction
+        unsafe { std::slice::from_raw_parts(self.as_ptr(), elem_count) }
     }
 
     /// Returns the data pointer as a mutable slice.
     ///
     /// # Panics
     ///
-    /// Panics if the tensor is not on CPU.
+    /// Panics if the tensor is not on CPU or if there are other references to this storage.
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         assert!(
-            self.alloc.device().is_cpu(),
+            self.is_cpu(),
             "Cannot access GPU tensor as mutable slice. Use to_cpu() to transfer data first."
         );
-        unsafe {
-            std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len / std::mem::size_of::<T>())
-        }
+        assert!(
+            Arc::strong_count(&self.inner) == 1,
+            "Cannot get mutable slice when storage is shared. Clone the tensor first."
+        );
+        let elem_count = self.view_len / std::mem::size_of::<T>();
+        // SAFETY: ptr is valid for view_len bytes, properly aligned, on CPU, and exclusively owned
+        // offset was validated at construction
+        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), elem_count) }
     }
 
     /// Returns the device where the tensor data is allocated.
+    #[inline]
     pub fn device(&self) -> crate::device::Device {
-        self.alloc.device()
+        D::device_info()
     }
 
     /// Returns true if the tensor is on CPU.
+    #[inline]
     pub fn is_cpu(&self) -> bool {
-        self.alloc.device().is_cpu()
+        D::device_info().is_cpu()
     }
 
     /// Returns true if the tensor is on GPU.
+    #[inline]
     pub fn is_gpu(&self) -> bool {
-        self.alloc.device().is_gpu()
+        D::device_info().is_gpu()
     }
 
-    /// Returns the number of bytes contained in this `TensorStorage`.
+    /// Returns the number of bytes accessible from this view.
     #[inline]
     pub fn len(&self) -> usize {
-        self.len
+        self.view_len
     }
 
-    /// Returns true if the `TensorStorage` has a length of 0.
+    /// Returns true if this view has a length of 0.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.view_len == 0
     }
 
-    /// Returns the layout of the tensor buffer.
+    /// Returns the memory layout of the underlying storage.
     #[inline]
     pub fn layout(&self) -> Layout {
-        self.layout
+        self.inner.layout
     }
 
-    /// Returns the allocator of the tensor buffer.
+    /// Returns true if this storage is uniquely owned (no other Arc references).
+    ///
+    /// This is useful for determining if mutation is safe without cloning.
     #[inline]
-    pub fn alloc(&self) -> &A {
-        &self.alloc
+    pub fn is_unique(&self) -> bool {
+        Arc::strong_count(&self.inner) == 1
     }
 
-    // TODO: use the allocator somehow
+    /// Returns the current offset into the underlying storage (in elements).
+    #[inline]
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
     /// Creates a new tensor buffer from a vector.
-    pub fn from_vec(value: Vec<T>, alloc: A) -> Self {
-        //let buf = arrow_buffer::Buffer::from_vec(value);
-        // Safety
-        // Vec::as_ptr guaranteed to not be null
-        let ptr = unsafe { NonNull::new_unchecked(value.as_ptr() as _) };
-        let len = value.len() * std::mem::size_of::<T>();
-        // Safety
-        // Vec guaranteed to have a valid layout matching that of `Layout::array`
-        // This is based on `RawVec::current_memory`
-        let layout = unsafe { Layout::array::<T>(value.capacity()).unwrap_unchecked() };
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if memory allocation fails.
+    pub fn from_vec(value: Vec<T>) -> Result<Self, crate::TensorError> {
+        let alloc = D::allocator()?;
+        
+        let buf_len = value.len() * std::mem::size_of::<T>();
+        let buf_layout = Layout::from_size_align(buf_len, std::mem::align_of::<T>())
+            .map_err(|e| crate::TensorError::StorageError(
+                crate::allocator::TensorAllocatorError::LayoutError(e)
+            ))?;
+        let raw_ptr = alloc.alloc(buf_layout)
+            .map_err(crate::TensorError::StorageError)?;
+        let buf_ptr = raw_ptr as *mut T;
+        
+        let buf_ptr = NonNull::new(buf_ptr)
+            .ok_or(crate::TensorError::StorageError(
+                crate::allocator::TensorAllocatorError::NullPointer
+            ))?;
+
+        // SAFETY: buf_ptr is valid (just allocated), value.as_ptr() is valid, regions don't overlap
+        unsafe {
+            std::ptr::copy_nonoverlapping(value.as_ptr(), buf_ptr.as_ptr(), value.len());
+        }
+        
         std::mem::forget(value);
 
-        Self {
-            ptr,
-            len,
-            layout,
-            alloc,
-        }
+        Ok(Self {
+            inner: Arc::new(StorageImpl {
+                ptr: buf_ptr,
+                len: buf_len,
+                layout: buf_layout,
+                _device: std::marker::PhantomData,
+            }),
+            offset: 0,
+            view_len: buf_len,
+        })
     }
 
-    /// Creates a new tensor buffer from a raw pointer.
+    /// Creates a new tensor buffer from raw parts.
     ///
     /// # Safety
     ///
-    /// The pointer must be non-null and the length must be valid.
-    pub unsafe fn from_raw_parts(data: *const T, len: usize, alloc: A) -> Self {
-        let ptr = NonNull::new_unchecked(data as _);
-        let layout = Layout::from_size_align_unchecked(len, std::mem::size_of::<T>());
-        Self {
-            ptr,
-            len,
-            layout,
-            alloc,
-        }
+    /// The caller must ensure that:
+    /// - `ptr` is valid for reads of `len` bytes
+    /// - `ptr` is properly aligned for type `T`
+    /// - The memory at `ptr` was allocated by an allocator compatible with device `D`
+    /// - The memory will not be accessed after this storage is dropped
+    pub unsafe fn from_raw_parts(ptr: *const T, len: usize) -> Result<Self, crate::TensorError> {
+        // SAFETY: Caller guarantees len and alignment are valid
+        let layout = Layout::from_size_align_unchecked(len, std::mem::align_of::<T>());
+        let ptr = NonNull::new(ptr as *mut T)
+            .ok_or(crate::TensorError::StorageError(
+                crate::allocator::TensorAllocatorError::NullPointer
+            ))?;
+        Ok(Self {
+            inner: Arc::new(StorageImpl {
+                ptr,
+                len,
+                layout,
+                _device: std::marker::PhantomData,
+            }),
+            offset: 0,
+            view_len: len,
+        })
     }
 
-    /// Converts the `TensorStorage` into a `Vec<T>`.
+    /// Consumes the storage and returns the data as a vector.
     ///
-    /// Returns `Err(self)` if the buffer does not have the same layout as the destination Vec.
+    /// # Panics
+    ///
+    /// Panics if the tensor is not on CPU or if the storage is shared.
     pub fn into_vec(self) -> Vec<T> {
-        // TODO: check if the buffer is a cpu buffer or comes from a custom allocator
-        let _layout = &self.layout;
+        assert!(self.is_cpu(), "Cannot convert GPU tensor to Vec. Use to_cpu() first.");
+        assert!(
+            self.is_unique() && self.offset == 0,
+            "Cannot convert shared or offset storage to Vec. Clone first."
+        );
+        
+        // Try to unwrap the Arc - this should succeed since we checked is_unique()
+        let inner = Arc::try_unwrap(self.inner)
+            .expect("Storage should be unique after is_unique() check");
+        
+        let vec_capacity = inner.layout.size() / std::mem::size_of::<T>();
+        let vec_len = inner.len / std::mem::size_of::<T>();
+        let ptr = inner.ptr;
 
-        let vec_capacity = self.layout.size() / std::mem::size_of::<T>();
-        //match Layout::array::<T>(vec_capacity) {
-        //    Ok(expected) if layout == &expected => {}
-        //    e => return Err(TensorAllocatorError::LayoutError(e.unwrap_err())),
-        //}
-
-        let length = self.len;
-        let ptr = self.ptr;
-        let vec_len = length / std::mem::size_of::<T>();
-
-        // Safety
-        std::mem::forget(self);
+        // SAFETY: Prevent double-free by forgetting inner
+        std::mem::forget(inner);
+        
+        // SAFETY: ptr, vec_len, and vec_capacity are valid, and we've prevented double-free
         unsafe { Vec::from_raw_parts(ptr.as_ptr(), vec_len, vec_capacity) }
     }
-}
 
-// Safety:
-// TensorStorage is thread safe if the allocator is thread safe.
-unsafe impl<T, A: TensorAllocator> Send for TensorStorage<T, A> {}
-unsafe impl<T, A: TensorAllocator> Sync for TensorStorage<T, A> {}
+    /// Creates a new view into this storage with the specified offset and length.
+    ///
+    /// This is a zero-copy operation that creates a new `TensorStorage` pointing
+    /// to a subset of the underlying memory.
+    ///
+    /// # Arguments
+    ///
+    /// * `offset` - Offset in elements (not bytes)
+    /// * `len` - Length in elements (not bytes)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the offset + len exceeds the storage bounds.
+    pub fn view(&self, offset: usize, len: usize) -> Result<Self, crate::TensorError> {
+        let byte_offset = offset * std::mem::size_of::<T>();
+        let byte_len = len * std::mem::size_of::<T>();
+        
+        let end_pos = self.offset + byte_offset + byte_len;
+        if end_pos > self.inner.len {
+            return Err(crate::TensorError::index_out_of_bounds(end_pos, self.inner.len));
+        }
 
-impl<T, A: TensorAllocator> Drop for TensorStorage<T, A> {
-    fn drop(&mut self) {
-        self.alloc
-            .dealloc(self.ptr.as_ptr() as *mut u8, self.layout);
+        Ok(Self {
+            inner: Arc::clone(&self.inner),
+            offset: self.offset + offset,
+            view_len: byte_len,
+        })
     }
 }
-/// A new `TensorStorage` instance with cloned data if successful, otherwise an error.
-impl<T, A> Clone for TensorStorage<T, A>
-where
-    T: Clone,
-    A: TensorAllocator,
-{
+
+// SAFETY: TensorStorage can be sent between threads because:
+// - Arc<StorageImpl> is Send when T: Send
+// - D: DeviceMarker implies Send + Sync
+// - offset and view_len are primitive types (Send + Sync)
+unsafe impl<T: Send, D: DeviceMarker> Send for TensorStorage<T, D> {}
+
+// SAFETY: TensorStorage can be shared between threads because:
+// - Arc provides synchronized access to the inner storage
+// - Access to data requires &self (immutable) or &mut self (exclusive via as_mut_slice)
+// - D: DeviceMarker implies Send + Sync
+// - T: Sync is required by the impl bound
+unsafe impl<T: Sync, D: DeviceMarker> Sync for TensorStorage<T, D> {}
+
+impl<T, D: DeviceMarker> Drop for StorageImpl<T, D> {
+    fn drop(&mut self) {
+        // SAFETY: ptr and layout were created together during allocation
+        // This is the final drop of StorageImpl, so no other Arc references exist
+        if let Ok(alloc) = D::allocator() {
+            alloc.dealloc(self.ptr.as_ptr() as *mut u8, self.layout);
+        }
+    }
+}
+
+impl<T, D: DeviceMarker> Clone for TensorStorage<T, D> {
+    /// Creates a cheap clone by incrementing the Arc reference count.
+    ///
+    /// This is a O(1) operation that doesn't copy the underlying data.
     fn clone(&self) -> Self {
-        Self::from_vec(self.as_slice().to_vec(), self.alloc.clone())
+        Self {
+            inner: Arc::clone(&self.inner),
+            offset: self.offset,
+            view_len: self.view_len,
+        }
+    }
+}
+
+impl<T, D: DeviceMarker> std::fmt::Debug for TensorStorage<T, D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TensorStorage")
+            .field("ptr", &self.inner.ptr)
+            .field("len", &self.inner.len)
+            .field("offset", &self.offset)
+            .field("view_len", &self.view_len)
+            .field("device", &self.device())
+            .field("is_unique", &self.is_unique())
+            .finish()
     }
 }
 
 #[cfg(test)]
 mod tests {
-
-    use super::TensorStorage;
-    use crate::allocator::{CpuAllocator, TensorAllocatorError};
-    use crate::device::Device;
-    use crate::TensorAllocator;
-    use std::alloc::Layout;
-    use std::cell::RefCell;
-    use std::ptr::NonNull;
-    use std::rc::Rc;
+    use super::*;
+    use crate::device_marker::Cpu;
+    use crate::TensorError;
 
     #[test]
-    fn test_tensor_buffer_create_raw() -> Result<(), TensorAllocatorError> {
-        let size = 8;
-        let allocator = CpuAllocator;
-        let layout = Layout::array::<u8>(size).map_err(TensorAllocatorError::LayoutError)?;
-        let ptr =
-            NonNull::new(allocator.alloc(layout)?).ok_or(TensorAllocatorError::NullPointer)?;
-        let ptr_raw = ptr.as_ptr();
-
-        let buffer = TensorStorage {
-            alloc: allocator,
-            len: size * std::mem::size_of::<u8>(),
-            layout,
-            ptr,
-        };
-
-        assert_eq!(buffer.ptr.as_ptr(), ptr_raw);
-        assert!(!ptr_raw.is_null());
-        assert_eq!(buffer.layout, layout);
-        assert_eq!(buffer.len(), size);
+    fn test_tensor_buffer_create_f32() -> Result<(), TensorError> {
+        let data = vec![0.0_f32; 10];
+        let buffer = TensorStorage::<f32, Cpu>::from_vec(data)?;
+        assert_eq!(buffer.len(), 10 * std::mem::size_of::<f32>());
         assert!(!buffer.is_empty());
-        assert_eq!(buffer.len(), size * std::mem::size_of::<u8>());
-
+        assert!(buffer.is_cpu());
+        assert!(!buffer.is_gpu());
         Ok(())
     }
 
     #[test]
-    fn test_tensor_buffer_ptr() -> Result<(), TensorAllocatorError> {
-        let size = 8;
-        let allocator = CpuAllocator;
-        let layout = Layout::array::<u8>(size).map_err(TensorAllocatorError::LayoutError)?;
-        let ptr =
-            NonNull::new(allocator.alloc(layout)?).ok_or(TensorAllocatorError::NullPointer)?;
-
-        // check alignment
-        let ptr_raw = ptr.as_ptr() as usize;
-        let alignment = std::mem::align_of::<u8>();
-        assert_eq!(ptr_raw % alignment, 0);
-
+    fn test_tensor_buffer_from_vec() -> Result<(), TensorError> {
+        let data = vec![1, 2, 3, 4, 5];
+        let buffer = TensorStorage::<i32, Cpu>::from_vec(data)?;
+        assert_eq!(buffer.as_slice(), &[1, 2, 3, 4, 5]);
         Ok(())
     }
 
     #[test]
-    fn test_tensor_buffer_create_f32() -> Result<(), TensorAllocatorError> {
-        let size = 8;
-        let allocator = CpuAllocator;
-        let layout = Layout::array::<f32>(size).map_err(TensorAllocatorError::LayoutError)?;
-        let ptr =
-            NonNull::new(allocator.alloc(layout)?).ok_or(TensorAllocatorError::NullPointer)?;
-
-        let buffer = TensorStorage {
-            alloc: allocator,
-            len: size,
-            layout,
-            ptr: ptr.cast::<f32>(),
-        };
-
-        assert_eq!(buffer.as_ptr(), ptr.as_ptr() as *const f32);
-        assert_eq!(buffer.layout, layout);
-        assert_eq!(buffer.len(), size);
-
+    fn test_tensor_buffer_into_vec() -> Result<(), TensorError> {
+        let data = vec![1, 2, 3, 4, 5];
+        let buffer = TensorStorage::<i32, Cpu>::from_vec(data)?;
+        let vec = buffer.into_vec();
+        assert_eq!(vec, vec![1, 2, 3, 4, 5]);
         Ok(())
     }
 
     #[test]
-    fn test_tensor_buffer_lifecycle() -> Result<(), TensorAllocatorError> {
-        /// A simple allocator that counts the number of bytes allocated and deallocated.
-        #[derive(Clone)]
-        struct TestAllocator {
-            bytes_allocated: Rc<RefCell<i32>>,
-        }
+    fn test_tensor_buffer_lifecycle() -> Result<(), TensorError> {
+        let data = vec![1, 2, 3, 4];
+        let buffer = TensorStorage::<i32, Cpu>::from_vec(data)?;
+        assert_eq!(buffer.len(), 4 * std::mem::size_of::<i32>());
+        drop(buffer); // Explicitly drop
+        Ok(())
+    }
 
-        impl TensorAllocator for TestAllocator {
-            fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError> {
-                *self.bytes_allocated.borrow_mut() += layout.size() as i32;
-                CpuAllocator.alloc(layout)
-            }
-            fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-                *self.bytes_allocated.borrow_mut() -= layout.size() as i32;
-                CpuAllocator.dealloc(ptr, layout)
-            }
-            fn device(&self) -> Device {
-                CpuAllocator.device()
-            }
-            unsafe fn copy_from(
-                &self,
-                src_ptr: *const u8,
-                dst_ptr: *mut u8,
-                len: usize,
-                src_device: &Device,
-            ) -> Result<(), TensorAllocatorError> {
-                CpuAllocator.copy_from(src_ptr, dst_ptr, len, src_device)
-            }
-        }
+    #[test]
+    fn test_tensor_buffer_ptr() -> Result<(), TensorError> {
+        let data = vec![1, 2, 3, 4];
+        let buffer = TensorStorage::<i32, Cpu>::from_vec(data)?;
+        let ptr = buffer.as_ptr();
+        assert!(!ptr.is_null());
+        Ok(())
+    }
 
-        let allocator = TestAllocator {
-            bytes_allocated: Rc::new(RefCell::new(0)),
-        };
-        assert_eq!(*allocator.bytes_allocated.borrow(), 0);
-
-        let size = 1024;
-
-        // TensorStorage::from_vec() -> TensorStorage::into_vec()
-        // TensorStorage::from_vec() currently does not use the custom allocator, so the
-        // bytes_allocated value should not change.
+    #[test]
+    fn test_tensor_mutability() -> Result<(), TensorError> {
+        let data = vec![1, 2, 3, 4];
+        let mut buffer = TensorStorage::<i32, Cpu>::from_vec(data)?;
         {
-            let vec = Vec::<u8>::with_capacity(size);
-            let vec_ptr = vec.as_ptr();
-            let vec_capacity = vec.capacity();
-
-            let buffer = TensorStorage::from_vec(vec, allocator.clone());
-            assert_eq!(*allocator.bytes_allocated.borrow(), 0);
-
-            let result_vec = buffer.into_vec();
-            assert_eq!(*allocator.bytes_allocated.borrow(), 0);
-
-            assert_eq!(result_vec.capacity(), vec_capacity);
-            assert!(std::ptr::eq(result_vec.as_ptr(), vec_ptr));
+            let slice = buffer.as_mut_slice();
+            slice[0] = 10;
         }
-        assert_eq!(*allocator.bytes_allocated.borrow(), 0);
-
+        assert_eq!(buffer.as_slice()[0], 10);
         Ok(())
     }
 
     #[test]
-    fn test_tensor_buffer_from_vec() -> Result<(), TensorAllocatorError> {
-        let vec: Vec<i32> = vec![1, 2, 3, 4, 5];
-        let vec_ptr = vec.as_ptr();
-        let vec_len = vec.len();
-
-        let buffer = TensorStorage::<_, CpuAllocator>::from_vec(vec, CpuAllocator);
-
-        // check NO copy
-        let buffer_ptr = buffer.as_ptr();
-        assert!(std::ptr::eq(buffer_ptr, vec_ptr));
-
-        // check alignment
-        let buffer_ptr = buffer.as_ptr() as usize;
-        let alignment = std::mem::align_of::<i32>();
-        assert_eq!(buffer_ptr % alignment, 0);
-
-        // check accessors
-        let data = buffer.as_slice();
-        assert_eq!(data.len(), vec_len);
-        assert_eq!(data[0], 1);
-        assert_eq!(data[1], 2);
-        assert_eq!(data[2], 3);
-        assert_eq!(data[3], 4);
-        assert_eq!(data[4], 5);
-
-        assert_eq!(data.first(), Some(&1));
-        assert_eq!(data.get(1), Some(&2));
-        assert_eq!(data.get(2), Some(&3));
-        assert_eq!(data.get(3), Some(&4));
-        assert_eq!(data.get(4), Some(&5));
-        assert_eq!(data.get(5), None);
-
-        unsafe {
-            assert_eq!(data.get_unchecked(0), &1);
-            assert_eq!(data.get_unchecked(1), &2);
-            assert_eq!(data.get_unchecked(2), &3);
-            assert_eq!(data.get_unchecked(3), &4);
-            assert_eq!(data.get_unchecked(4), &5);
-        }
-
+    fn test_arc_storage_create() -> Result<(), TensorError> {
+        let data = vec![1, 2, 3, 4, 5];
+        let storage = TensorStorage::<i32, Cpu>::from_vec(data)?;
+        assert_eq!(storage.as_slice(), &[1, 2, 3, 4, 5]);
+        assert!(storage.is_unique());
         Ok(())
     }
 
     #[test]
-    fn test_tensor_buffer_into_vec() -> Result<(), TensorAllocatorError> {
-        let vec: Vec<i32> = vec![1, 2, 3, 4, 5];
-        let vec_ptr = vec.as_ptr();
-        let vec_cap = vec.capacity();
-
-        let buffer = TensorStorage::<_, CpuAllocator>::from_vec(vec, CpuAllocator);
-
-        // convert back to vec
-        let result_vec = buffer.into_vec();
-
-        // check NO copy
-        assert_eq!(result_vec.capacity(), vec_cap);
-        assert!(std::ptr::eq(result_vec.as_ptr(), vec_ptr));
-
+    fn test_arc_storage_cheap_clone() -> Result<(), TensorError> {
+        let data = vec![1, 2, 3, 4, 5];
+        let storage1 = TensorStorage::<i32, Cpu>::from_vec(data)?;
+        
+        // Clone should be cheap (just Arc increment)
+        let storage2 = storage1.clone();
+        
+        assert_eq!(storage1.as_slice(), &[1, 2, 3, 4, 5]);
+        assert_eq!(storage2.as_slice(), &[1, 2, 3, 4, 5]);
+        assert!(!storage1.is_unique());
+        assert!(!storage2.is_unique());
+        
         Ok(())
     }
 
     #[test]
-    fn test_tensor_mutability() -> Result<(), TensorAllocatorError> {
-        let vec: Vec<i32> = vec![1, 2, 3, 4, 5];
-        let mut buffer = TensorStorage::<_, CpuAllocator>::from_vec(vec, CpuAllocator);
-        let ptr_mut = buffer.as_mut_ptr();
-        unsafe {
-            *ptr_mut.add(0) = 10;
+    fn test_arc_storage_view() -> Result<(), TensorError> {
+        let data = vec![1, 2, 3, 4, 5];
+        let storage = TensorStorage::<i32, Cpu>::from_vec(data)?;
+        
+        // Create a view of elements [1, 2, 3] (indices 1-3)
+        let view = storage.view(1, 3)?;
+        assert_eq!(view.as_slice(), &[2, 3, 4]);
+        assert_eq!(view.offset(), 1);
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_arc_storage_shared_mutation_panics() {
+        let data = vec![1, 2, 3, 4, 5];
+        let mut storage1 = TensorStorage::<i32, Cpu>::from_vec(data).unwrap();
+        let _storage2 = storage1.clone();
+        
+        // Should panic because storage is shared
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = storage1.as_mut_slice();
+        }));
+        
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_arc_storage_unique_mutation() -> Result<(), TensorError> {
+        let data = vec![1, 2, 3, 4, 5];
+        let mut storage = TensorStorage::<i32, Cpu>::from_vec(data)?;
+        
+        assert!(storage.is_unique());
+        
+        // Should work because storage is unique
+        {
+            let slice = storage.as_mut_slice();
+            slice[0] = 10;
         }
-        assert_eq!(buffer.into_vec(), vec![10, 2, 3, 4, 5]);
+        
+        assert_eq!(storage.as_slice()[0], 10);
         Ok(())
     }
 }
