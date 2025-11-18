@@ -23,7 +23,7 @@ fn example_create_from_value() -> Result<(), ImageError> {
         width: 640,
         height: 480,
     };
-    let alloc = CpuAllocator::default();
+    let alloc = CpuAllocator;
     let img = Image::<u8, 3, _>::from_size_val(size, 128, alloc)?;
 
     println!("✓ Created {}x{}x{} image", img.width(), img.height(), 3);
@@ -48,7 +48,7 @@ fn example_create_from_data() -> Result<(), ImageError> {
         width: 10,
         height: 10,
     };
-    let alloc = CpuAllocator::default();
+    let alloc = CpuAllocator;
     let img = Image::<u8, 1, _>::new(size, data, alloc)?;
 
     println!(
@@ -73,7 +73,7 @@ fn example_error_handling() {
         width: 10,
         height: 10,
     };
-    let alloc = CpuAllocator::default();
+    let alloc = CpuAllocator;
 
     match Image::<u8, 3, _>::new(size, data, alloc) {
         Ok(_) => println!("✓ Created image (should not reach here)"),
@@ -94,7 +94,7 @@ fn example_zero_copy_access() -> Result<(), ImageError> {
         width: 5,
         height: 5,
     };
-    let alloc = CpuAllocator::default();
+    let alloc = CpuAllocator;
     let img = Image::<u8, 3, _>::from_size_val(size, 42, alloc)?;
 
     // Zero-copy access to underlying data
@@ -126,7 +126,7 @@ fn example_owned_copy() -> Result<(), ImageError> {
         width: 3,
         height: 3,
     };
-    let alloc = CpuAllocator::default();
+    let alloc = CpuAllocator;
     let img = Image::<f32, 3, _>::from_size_val(size, 0.5, alloc)?;
 
     // Zero-copy view
@@ -151,7 +151,7 @@ fn example_different_types() -> Result<(), ImageError> {
         width: 100,
         height: 100,
     };
-    let alloc = CpuAllocator::default();
+    let alloc = CpuAllocator;
 
     // U8 images (8-bit unsigned)
     let _gray_u8 = Image::<u8, 1, _>::from_size_val(size, 255, alloc.clone())?;
@@ -185,7 +185,7 @@ fn example_pixel_access() -> Result<(), ImageError> {
         width: 5,
         height: 5,
     };
-    let alloc = CpuAllocator::default();
+    let alloc = CpuAllocator;
     let mut img = Image::<u8, 3, _>::from_size_val(size, 0, alloc)?;
 
     // Set individual pixels
@@ -226,7 +226,7 @@ fn example_image_from_slice() -> Result<(), ImageError> {
         width: 10,
         height: 10,
     };
-    let alloc = CpuAllocator::default();
+    let alloc = CpuAllocator;
 
     // Create image from slice (copies data)
     let img = Image::<u8, 3, _>::from_size_slice(size, &data, alloc)?;
@@ -252,7 +252,7 @@ fn example_channel_operations() -> Result<(), ImageError> {
         width: 10,
         height: 10,
     };
-    let alloc = CpuAllocator::default();
+    let alloc = CpuAllocator;
 
     // Create RGB image with different values per channel
     let mut data = Vec::with_capacity(10 * 10 * 3);
