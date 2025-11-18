@@ -34,46 +34,50 @@ using ImageSize = ::ImageSize;
 /// - Lifetime tied to wrapper object
 
 // Forward declaration of traits
-template<typename T, size_t C>
-struct ImageTraits;
+template <typename T, size_t C> struct ImageTraits;
 
 // X-Macros pattern: Single source of truth for all image types
 // Define the list once, expand it multiple times for different purposes
-#define KORNIA_IMAGE_TYPES \
-    KORNIA_IMAGE_TYPE(uint8_t, ImageU8C1, image_u8c1, 1) \
-    KORNIA_IMAGE_TYPE(uint8_t, ImageU8C3, image_u8c3, 3) \
-    KORNIA_IMAGE_TYPE(uint8_t, ImageU8C4, image_u8c4, 4) \
-    KORNIA_IMAGE_TYPE(float, ImageF32C1, image_f32c1, 1) \
-    KORNIA_IMAGE_TYPE(float, ImageF32C3, image_f32c3, 3) \
+#define KORNIA_IMAGE_TYPES                                                                         \
+    KORNIA_IMAGE_TYPE(uint8_t, ImageU8C1, image_u8c1, 1)                                           \
+    KORNIA_IMAGE_TYPE(uint8_t, ImageU8C3, image_u8c3, 3)                                           \
+    KORNIA_IMAGE_TYPE(uint8_t, ImageU8C4, image_u8c4, 4)                                           \
+    KORNIA_IMAGE_TYPE(float, ImageF32C1, image_f32c1, 1)                                           \
+    KORNIA_IMAGE_TYPE(float, ImageF32C3, image_f32c3, 3)                                           \
     KORNIA_IMAGE_TYPE(float, ImageF32C4, image_f32c4, 4)
 
 // First expansion: Generate traits (before Image template)
-#define KORNIA_IMAGE_TYPE(CppType, RustType, FnPrefix, Channels)                              \
-    template<>                                                                                 \
-    struct ImageTraits<CppType, Channels> {                                                    \
-        using RustType_ = ::RustType;                                                          \
-        static size_t width(const RustType_& img) { return FnPrefix##_width(img); }            \
-        static size_t height(const RustType_& img) { return FnPrefix##_height(img); }          \
-        static size_t channels(const RustType_&) { return Channels; }                          \
-        static ImageSize size(const RustType_& img) { return FnPrefix##_size(img); }           \
-        static rust::Slice<const CppType> data(const RustType_& img) {                         \
-            return FnPrefix##_data(img);                                                       \
-        }                                                                                      \
-        static rust::Box<RustType_> new_image(size_t w, size_t h, CppType v) {                \
-            return FnPrefix##_new(w, h, v);                                                    \
-        }                                                                                      \
-        static rust::Box<RustType_> from_data(size_t w, size_t h,                             \
-                                               rust::Slice<const CppType> d) {                 \
-            return FnPrefix##_from_data(w, h, d);                                              \
-        }                                                                                      \
+#define KORNIA_IMAGE_TYPE(CppType, RustType, FnPrefix, Channels)                                   \
+    template <> struct ImageTraits<CppType, Channels> {                                            \
+        using RustType_ = ::RustType;                                                              \
+        static size_t width(const RustType_& img) {                                                \
+            return FnPrefix##_width(img);                                                          \
+        }                                                                                          \
+        static size_t height(const RustType_& img) {                                               \
+            return FnPrefix##_height(img);                                                         \
+        }                                                                                          \
+        static size_t channels(const RustType_&) {                                                 \
+            return Channels;                                                                       \
+        }                                                                                          \
+        static ImageSize size(const RustType_& img) {                                              \
+            return FnPrefix##_size(img);                                                           \
+        }                                                                                          \
+        static rust::Slice<const CppType> data(const RustType_& img) {                             \
+            return FnPrefix##_data(img);                                                           \
+        }                                                                                          \
+        static rust::Box<RustType_> new_image(size_t w, size_t h, CppType v) {                     \
+            return FnPrefix##_new(w, h, v);                                                        \
+        }                                                                                          \
+        static rust::Box<RustType_> from_data(size_t w, size_t h, rust::Slice<const CppType> d) {  \
+            return FnPrefix##_from_data(w, h, d);                                                  \
+        }                                                                                          \
     };
 
 KORNIA_IMAGE_TYPES
 #undef KORNIA_IMAGE_TYPE
 
 // Single template implementation shared by all image types
-template<typename T, size_t C>
-class Image {
+template <typename T, size_t C> class Image {
     using Traits = ImageTraits<T, C>;
     using RustType = typename Traits::RustType_;
 
@@ -118,7 +122,7 @@ class Image {
 };
 
 // Second expansion: Generate type aliases (after Image template)
-#define KORNIA_IMAGE_TYPE(CppType, TypeName, FnPrefix, Channels) \
+#define KORNIA_IMAGE_TYPE(CppType, TypeName, FnPrefix, Channels)                                   \
     using TypeName = Image<CppType, Channels>;
 
 KORNIA_IMAGE_TYPES

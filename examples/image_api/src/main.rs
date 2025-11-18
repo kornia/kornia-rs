@@ -51,7 +51,11 @@ fn example_create_from_data() -> Result<(), ImageError> {
     let alloc = CpuAllocator::default();
     let img = Image::<u8, 1, _>::new(size, data, alloc)?;
 
-    println!("✓ Created {}x{} grayscale image from data", img.width(), img.height());
+    println!(
+        "✓ Created {}x{} grayscale image from data",
+        img.width(),
+        img.height()
+    );
     println!("  First pixel: {}", img.as_slice()[0]);
     println!("  Last pixel: {}", img.as_slice()[img.as_slice().len() - 1]);
     println!();
@@ -86,7 +90,10 @@ fn example_zero_copy_access() -> Result<(), ImageError> {
     print_separator();
 
     // Create small RGB image
-    let size = ImageSize { width: 5, height: 5 };
+    let size = ImageSize {
+        width: 5,
+        height: 5,
+    };
     let alloc = CpuAllocator::default();
     let img = Image::<u8, 3, _>::from_size_val(size, 42, alloc)?;
 
@@ -115,7 +122,10 @@ fn example_owned_copy() -> Result<(), ImageError> {
     print_separator();
 
     // Create image
-    let size = ImageSize { width: 3, height: 3 };
+    let size = ImageSize {
+        width: 3,
+        height: 3,
+    };
     let alloc = CpuAllocator::default();
     let img = Image::<f32, 3, _>::from_size_val(size, 0.5, alloc)?;
 
@@ -171,7 +181,10 @@ fn example_pixel_access() -> Result<(), ImageError> {
     println!("Example 7: Pixel-level access and manipulation");
     print_separator();
 
-    let size = ImageSize { width: 5, height: 5 };
+    let size = ImageSize {
+        width: 5,
+        height: 5,
+    };
     let alloc = CpuAllocator::default();
     let mut img = Image::<u8, 3, _>::from_size_val(size, 0, alloc)?;
 
@@ -191,9 +204,10 @@ fn example_pixel_access() -> Result<(), ImageError> {
 
     println!("✓ Set and retrieved individual pixels");
     println!("  Pixel (0,0) RGB: ({}, {}, {})", r, g, b);
-    println!("  Pixel (2,2) RGB: ({}, {}, {})", 
-        img.get_pixel(2, 2, 0)?, 
-        img.get_pixel(2, 2, 1)?, 
+    println!(
+        "  Pixel (2,2) RGB: ({}, {}, {})",
+        img.get_pixel(2, 2, 0)?,
+        img.get_pixel(2, 2, 1)?,
         img.get_pixel(2, 2, 2)?
     );
     println!();
@@ -207,14 +221,22 @@ fn example_image_from_slice() -> Result<(), ImageError> {
 
     // Create data
     let data = vec![128u8; 10 * 10 * 3];
-    
-    let size = ImageSize { width: 10, height: 10 };
+
+    let size = ImageSize {
+        width: 10,
+        height: 10,
+    };
     let alloc = CpuAllocator::default();
-    
+
     // Create image from slice (copies data)
     let img = Image::<u8, 3, _>::from_size_slice(size, &data, alloc)?;
 
-    println!("✓ Created {}x{}x{} image from slice", img.width(), img.height(), 3);
+    println!(
+        "✓ Created {}x{}x{} image from slice",
+        img.width(),
+        img.height(),
+        3
+    );
     println!("  Original data length: {} bytes", data.len());
     println!("  Image data length: {} bytes", img.as_slice().len());
     println!();
@@ -226,22 +248,29 @@ fn example_channel_operations() -> Result<(), ImageError> {
     println!("Example 9: Channel extraction and splitting");
     print_separator();
 
-    let size = ImageSize { width: 10, height: 10 };
+    let size = ImageSize {
+        width: 10,
+        height: 10,
+    };
     let alloc = CpuAllocator::default();
-    
+
     // Create RGB image with different values per channel
     let mut data = Vec::with_capacity(10 * 10 * 3);
     for _ in 0..100 {
         data.push(255); // R
         data.push(128); // G
-        data.push(64);  // B
+        data.push(64); // B
     }
-    
+
     let img = Image::<u8, 3, _>::new(size, data, alloc)?;
 
     // Extract single channel
     let red_channel = img.channel(0)?;
-    println!("✓ Extracted red channel ({}x{})", red_channel.width(), red_channel.height());
+    println!(
+        "✓ Extracted red channel ({}x{})",
+        red_channel.width(),
+        red_channel.height()
+    );
     println!("  First pixel value: {}", red_channel.as_slice()[0]);
 
     // Split into all channels
@@ -279,4 +308,3 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-
