@@ -43,7 +43,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     // generate a caption of the image
-    let _caption = smolvlm.inference(&args.text_prompt, image, args.sample_length, CpuAllocator)?;
+    let _caption = smolvlm.inference(
+        &args.text_prompt,
+        image.map(|i| i.into_inner()),
+        args.sample_length,
+        CpuAllocator,
+    )?;
 
     Ok(())
 }

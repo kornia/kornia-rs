@@ -214,11 +214,11 @@ define_image_type!(ImageF32C4, image_f32c4, f32, 4); // RGBA f32
 /// Read a grayscale JPEG image from file path
 fn read_jpeg_mono8(file_path: &str) -> Result<Box<ImageU8C1>, Box<dyn std::error::Error>> {
     let image = jpeg::read_image_jpeg_mono8(file_path)?;
-    Ok(Box::new(ImageU8C1(image)))
+    Ok(Box::new(ImageU8C1(image.into_inner())))
 }
 
 /// Read an RGB JPEG image from file path
 fn read_jpeg_rgb8(file_path: &str) -> Result<Box<ImageU8C3>, Box<dyn std::error::Error>> {
     let image = jpeg::read_image_jpeg_rgb8(file_path)?;
-    Ok(Box::new(ImageU8C3(image)))
+    Ok(Box::new(ImageU8C3(image.into_inner())))
 }

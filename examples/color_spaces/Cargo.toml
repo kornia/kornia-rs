@@ -1,0 +1,17 @@
+[package]
+name = "color_spaces"
+description = "Example demonstrating type-safe color space conversions"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+kornia-image = { path = "../../crates/kornia-image" }
+kornia-imgproc = { path = "../../crates/kornia-imgproc" }
+kornia-io = { path = "../../crates/kornia-io" }
+
