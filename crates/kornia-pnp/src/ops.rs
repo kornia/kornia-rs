@@ -1,6 +1,6 @@
 #![allow(clippy::op_ref)]
 use glam::{Mat3, Vec3};
-use nalgebra::{DMatrix, DVector, Vector4};
+use nalgebra::{DMatrix, Matrix3x4, Matrix4, SMatrix, SVector, Vector3, Vector4};
 
 /// Compute the centroid of a set of points.
 pub(crate) fn compute_centroid(pts: &[[f32; 3]]) -> [f32; 3] {
@@ -55,52 +55,131 @@ pub(crate) fn project_sq_error(
     Some(du.mul_add(du, dv * dv))
 }
 
+const EPSILON: f32 = 1e-10;
+const NUM_CONTROL_POINTS: usize = 4;
+const MAX_ITERATIONS: usize = 6;
+const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+const NUM_PAIRS: usize = PAIRS.len(); // 6
+
+/// Solves the linear system A * x = b for a 4x4 symmetric positive-definite matrix A
+/// using an unrolled Cholesky decomposition.
+///
+/// # Arguments
+/// * `a` - A reference to a 4x4 matrix, assumed to be symmetric positive-definite.
+/// * `b` - A reference to a 4x4 vector.
+///
+/// # Returns
+/// * `Some(Vector4<f32>)` containing the solution vector `x` if `A` is positive-definite.
+/// * `None` if the decomposition fails (i.e., `A` is not positive-definite).
+#[inline(always)]
+pub fn solve_4x4_cholesky(a: &Matrix4<f32>, b: &Vector4<f32>) -> Option<Vector4<f32>> {
+    // --- Cholesky Decomposition (L * L^T = A) ---
+    // First column of L
+    let l_11 = a.m11.sqrt();
+    if l_11 < EPSILON {
+        return None;
+    }
+    let l_21 = a.m21 / l_11;
+    let l_31 = a.m31 / l_11;
+    let l_41 = a.m41 / l_11;
+
+    // Second column of L
+    let l_22_sq = a.m22 - l_21 * l_21;
+    if l_22_sq < EPSILON {
+        return None;
+    }
+    let l_22 = l_22_sq.sqrt();
+    let l_32 = (a.m32 - l_31 * l_21) / l_22;
+    let l_42 = (a.m42 - l_41 * l_21) / l_22;
+
+    // Third column of L
+    let l_33_sq = a.m33 - l_31 * l_31 - l_32 * l_32;
+    if l_33_sq < EPSILON {
+        return None;
+    }
+    let l_33 = l_33_sq.sqrt();
+    let l_43 = (a.m43 - l_41 * l_31 - l_42 * l_32) / l_33;
+
+    // Fourth column of L
+    let l_44_sq = a.m44 - l_41 * l_41 - l_42 * l_42 - l_43 * l_43;
+    if l_44_sq < EPSILON {
+        return None;
+    }
+    let l_44 = l_44_sq.sqrt();
+
+    // --- Solve L * y = b (Forward substitution) ---
+    let inv_l11 = 1.0 / l_11;
+    let inv_l22 = 1.0 / l_22;
+    let inv_l33 = 1.0 / l_33;
+    let inv_l44 = 1.0 / l_44;
+
+    let y1 = b[0] * inv_l11;
+    let y2 = (b[1] - l_21 * y1) * inv_l22;
+    let y3 = (b[2] - (l_31 * y1 + l_32 * y2)) * inv_l33;
+    let y4 = (b[3] - (l_41 * y1 + l_42 * y2 + l_43 * y3)) * inv_l44;
+
+    // --- Solve L^T * x = y (Backward substitution) ---
+    let x4 = y4 * inv_l44;
+    let x3 = (y3 - l_43 * x4) * inv_l33;
+    let x2 = (y2 - (l_32 * x3 + l_42 * x4)) * inv_l22;
+    let x1 = (y1 - (l_21 * x2 + l_31 * x3 + l_41 * x4)) * inv_l11;
+    Some(Vector4::new(x1, x2, x3, x4))
+}
+
+/// Performs optimization using the Gauss-Newton algorithm.
+#[allow(clippy::needless_range_loop)]
 pub(crate) fn gauss_newton(beta_init: [f32; 4], null4: &DMatrix<f32>, rho: &[f32; 6]) -> [f32; 4] {
-    const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+    const DAMPING: f32 = 1e-9;
+    const STOP_EPS: f32 = 1e-8;
 
-    let mut bet = Vector4::from_column_slice(&beta_init);
+    let mut bet = Vector4::from(beta_init);
+    let rho_vec = SVector::<f32, NUM_PAIRS>::from_row_slice(rho);
 
-    for _ in 0..6 {
-        let mut f_vec = DVector::<f32>::zeros(6);
-        let mut j_mat = DMatrix::<f32>::zeros(6, 4);
+    for _ in 0..MAX_ITERATIONS {
+        let mut vs = [Vector3::zeros(); NUM_CONTROL_POINTS];
 
-        for (r, (i, j)) in PAIRS.iter().enumerate() {
-            // Vi = (null4 block rows 3*i..3*i+3) * bet
-            let block_i = null4.view((*i * 3, 0), (3, 4));
-            let block_j = null4.view((*j * 3, 0), (3, 4));
+        for i in 0..NUM_CONTROL_POINTS {
+            let m: Matrix3x4<f32> = null4.fixed_view::<3, 4>(i * 3, 0).into();
+            vs[i] = m * bet;
+        }
 
-            let vi = &block_i * &bet; // 3×1 nalgebra vec
-            let vj = &block_j * &bet;
+        let mut f = SVector::<f32, NUM_PAIRS>::zeros();
+        let mut j = SMatrix::<f32, NUM_PAIRS, NUM_CONTROL_POINTS>::zeros();
 
-            let diff_vec = Vec3::new(vi[0] - vj[0], vi[1] - vj[1], vi[2] - vj[2]);
+        for (r, &(i, jj)) in PAIRS.iter().enumerate() {
+            let diff = vs[i] - vs[jj];
+            f[r] = diff.norm_squared();
 
-            f_vec[r] = diff_vec.length_squared() - rho[r];
+            let rows_i = null4.fixed_rows::<3>(i * 3);
+            let rows_jj = null4.fixed_rows::<3>(jj * 3);
 
-            for k in 0..4 {
-                let vi_k = block_i.column(k);
-                let vj_k = block_j.column(k);
-                let col_diff = Vec3::new(vi_k[0] - vj_k[0], vi_k[1] - vj_k[1], vi_k[2] - vj_k[2]);
-                let deriv = col_diff.dot(diff_vec) * 2.0;
-                j_mat[(r, k)] = deriv;
+            for k in 0..NUM_CONTROL_POINTS {
+                let d_col_i = rows_i.column(k);
+                let d_col_jj = rows_jj.column(k);
+                let d_col = d_col_i - d_col_jj;
+                j[(r, k)] = 2.0 * diff.dot(&d_col);
             }
         }
 
-        let jt = j_mat.transpose();
-        let a = &jt * &j_mat + DMatrix::<f32>::identity(4, 4) * 1e-9;
-        let b = &jt * f_vec;
+        f -= rho_vec;
 
-        if let Some(delta) = a.lu().solve(&b) {
-            let norm_val = delta.norm();
-            bet -= &delta;
-            if norm_val < 1e-8 {
-                break;
+        let a = Matrix4::from(j.transpose() * j);
+        let b = Vector4::from(j.transpose() * f);
+
+        a.diagonal().add_scalar_mut(DAMPING);
+
+        if let Some(delta) = solve_4x4_cholesky(&a, &b) {
+            bet -= delta;
+            if delta.norm() < STOP_EPS {
+                break; // Converged
             }
         } else {
+            // Cholesky failed, matrix is not positive-definite.
             break;
         }
     }
 
-    [bet[0], bet[1], bet[2], bet[3]]
+    bet.into()
 }
 
 #[cfg(test)]
@@ -115,18 +194,103 @@ mod tests {
     }
 }
 
-//TODO: redo this test
 #[cfg(test)]
 mod gauss_newton_tests {
     use super::*;
+    use approx::assert_relative_eq;
+    use nalgebra::{DMatrix, Vector3, Vector4};
+
+    fn setup_test_data() -> (DMatrix<f32>, [f32; 6], [f32; 4]) {
+        #[rustfmt::skip]
+        let null4 = DMatrix::from_row_slice(12, 4, &[
+            0.1, 0.5, 0.2, 0.8, 0.4, 0.3, 0.6, 0.1, 0.7, 0.9, 0.3, 0.2,
+            0.2, 0.1, 0.8, 0.5, 0.5, 0.4, 0.2, 0.9, 0.8, 0.7, 0.5, 0.3,
+            0.3, 0.6, 0.9, 0.1, 0.6, 0.2, 0.4, 0.7, 0.9, 0.5, 0.7, 0.4,
+            0.1, 0.8, 0.1, 0.6, 0.4, 0.3, 0.5, 0.2, 0.7, 0.6, 0.8, 0.9,
+        ]);
+
+        let beta_true = [0.5, -0.2, 0.8, 0.1];
+        let beta_vec = Vector4::from(beta_true);
+
+        let mut vs = [Vector3::zeros(); 4];
+        for i in 0..4 {
+            let m = null4.view((i * 3, 0), (3, 4));
+            let v_dynamic = m * beta_vec;
+            vs[i] = Vector3::new(v_dynamic[0], v_dynamic[1], v_dynamic[2]);
+        }
+
+        const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+        let mut rho = [0.0; 6];
+        for (idx, &(i, j)) in PAIRS.iter().enumerate() {
+            rho[idx] = (vs[i] - vs[j]).norm_squared();
+        }
+
+        (null4, rho, beta_true)
+    }
 
     #[test]
     fn test_gauss_newton() {
-        let beta_init = [1.0, 2.0, 3.0, 4.0];
-        let null4 = DMatrix::<f32>::zeros(12, 4);
-        let rho = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-
+        let (null4, rho, beta_true) = setup_test_data();
+        let beta_init = [0.4, -0.1, 0.7, 0.2];
         let result = gauss_newton(beta_init, &null4, &rho);
-        assert_eq!(result, [1.0, 2.0, 3.0, 4.0]);
+
+        for i in 0..4 {
+            assert_relative_eq!(result[i], beta_true[i], epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_solve_4x4_cholesky_valid() {
+        // Create a known symmetric positive-definite matrix
+        // A = [ 5, -1,  0,  0]
+        //     [-1,  5, -1,  0]
+        //     [ 0, -1,  5, -1]
+        //     [ 0,  0, -1,  5]
+        let a = Matrix4::new(
+            5.0, -1.0, 0.0, 0.0, -1.0, 5.0, -1.0, 0.0, 0.0, -1.0, 5.0, -1.0, 0.0, 0.0, -1.0, 5.0,
+        );
+        let b = Vector4::new(1.0, 2.0, 3.0, 4.0);
+
+        // Known solution x for A*x = b
+        let expected_x = Vector4::new(0.3303085, 0.6515426, 0.92740476, 0.98548114);
+        if let Some(x) = solve_4x4_cholesky(&a, &b) {
+            assert_relative_eq!(x, expected_x, epsilon = 1e-4);
+        } else {
+            panic!("Cholesky decomposition failed for a valid matrix.");
+        }
+    }
+
+    #[test]
+    fn test_solve_4x4_cholesky_non_positive_definite() {
+        // Not positive-definite (m22 = -1.0)
+        let a_non_pd = Matrix4::new(
+            4.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, // This row makes it non-PD
+            1.0, -1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 6.0,
+        );
+
+        let b = Vector4::new(1.0, 2.0, 3.0, 4.0);
+
+        let result = solve_4x4_cholesky(&a_non_pd, &b);
+        assert!(
+            result.is_none(),
+            "Solver should return None for non-positive-definite matrix."
+        );
+    }
+
+    #[test]
+    fn test_solve_4x4_cholesky_zero_on_diagonal() {
+        // Not positive-definite (m11 = 0.0)
+        let a_zero_diag = Matrix4::new(
+            0.0, 1.0, 1.0, 1.0, // This row makes it non-PD
+            1.0, 3.0, -1.0, 1.0, 1.0, -1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 6.0,
+        );
+
+        let b = Vector4::new(1.0, 2.0, 3.0, 4.0);
+
+        let result = solve_4x4_cholesky(&a_zero_diag, &b);
+        assert!(
+            result.is_none(),
+            "Solver should return None for matrix with zero on diagonal."
+        );
     }
 }
