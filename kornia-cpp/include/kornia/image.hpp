@@ -149,8 +149,6 @@ template <typename T, size_t C> struct ImageTraits;
 KORNIA_IMAGE_TYPES
 #undef KORNIA_IMAGE_TYPE
 
-namespace image {
-
 /// @brief Generic image wrapper template
 ///
 /// Usage: kornia::image::Image<uint8_t, 3> for RGB images
@@ -211,16 +209,12 @@ template <typename T, size_t C> class Image {
     rust::Box<RustType> img_;
 };
 
-} // namespace image
-
-// Type aliases in kornia::image namespace for convenience
-namespace image {
+// Type aliases for convenience
 #define KORNIA_IMAGE_TYPE(CppType, TypeName, FnPrefix, Channels)                                   \
     using TypeName = Image<CppType, Channels>;
 
 KORNIA_IMAGE_TYPES
 #undef KORNIA_IMAGE_TYPE
-} // namespace image
 
 #undef KORNIA_IMAGE_TYPES
 

@@ -167,9 +167,9 @@ pub fn read_image_jpeg_mono8(file_path: impl AsRef<Path>) -> Result<Gray8<CpuAll
 /// - `dst` - A mutable reference to your `Rgb8` image
 pub fn decode_image_jpeg_rgb8<A: ImageAllocator>(
     src: &[u8],
-    dst: &mut Rgb8<A>,
+    dst: &mut Image<u8, 3, A>,
 ) -> Result<(), IoError> {
-    decode_jpeg_impl(src, &mut dst.0)
+    decode_jpeg_impl(src, dst)
 }
 
 /// Decodes a JPEG image as grayscale (Gray8) from raw bytes.
@@ -180,9 +180,9 @@ pub fn decode_image_jpeg_rgb8<A: ImageAllocator>(
 /// - `dst` - A mutable reference to your `Gray8` image
 pub fn decode_image_jpeg_mono8<A: ImageAllocator>(
     src: &[u8],
-    dst: &mut Gray8<A>,
+    dst: &mut Image<u8, 1, A>,
 ) -> Result<(), IoError> {
-    decode_jpeg_impl(src, &mut dst.0)
+    decode_jpeg_impl(src, dst)
 }
 
 fn read_image_jpeg_impl<const N: usize>(

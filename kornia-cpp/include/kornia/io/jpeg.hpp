@@ -20,7 +20,7 @@ using kornia::image::ImageU8C3;
 ///
 /// @note Memory is managed by Rust. Zero-copy data access.
 inline ImageU8C3 read_jpeg_rgb8(const std::string& file_path) {
-    return ImageU8C3(::read_jpeg_rgb8(file_path));
+    return ImageU8C3(::read_image_jpeg_rgb8(file_path));
 }
 
 /// @brief Read a grayscale JPEG image from file (u8, 1 channel)
@@ -31,7 +31,7 @@ inline ImageU8C3 read_jpeg_rgb8(const std::string& file_path) {
 ///
 /// @note Memory is managed by Rust. Zero-copy data access.
 inline ImageU8C1 read_jpeg_mono8(const std::string& file_path) {
-    return ImageU8C1(::read_jpeg_mono8(file_path));
+    return ImageU8C1(::read_image_jpeg_mono8(file_path));
 }
 
 /// @brief Encode an RGB JPEG image to bytes (zero-copy, into ImageBuffer)
@@ -54,8 +54,8 @@ inline ImageU8C1 read_jpeg_mono8(const std::string& file_path) {
 ///     send_network(buffer.data(), buffer.size());  // Zero-copy
 /// }
 /// @endcode
-inline void encode_jpeg_rgb8(const ImageU8C3& image, uint8_t quality, ImageBuffer& buffer) {
-    ::encode_jpeg_rgb8(image.inner(), quality, buffer.rust_vec());
+inline void encode_image_jpeg_rgb8(const ImageU8C3& image, uint8_t quality, ImageBuffer& buffer) {
+    ::encode_image_jpeg_rgb8(image.inner(), quality, buffer.rust_vec());
 }
 
 /// @brief Decode JPEG bytes to RGB u8 image
@@ -65,10 +65,10 @@ inline void encode_jpeg_rgb8(const ImageU8C3& image, uint8_t quality, ImageBuffe
 /// @throws rust::Error if decoding fails or not RGB
 ///
 /// @note Zero-copy: creates rust::Slice view of std::vector. Perfect for Unreal/OpenCV interop.
-inline ImageU8C3 decode_jpeg_rgb8(const std::vector<uint8_t>& jpeg_bytes) {
+inline ImageU8C3 decode_image_jpeg_rgb8(const std::vector<uint8_t>& jpeg_bytes) {
     // Zero-copy: rust::Slice is just a view into the std::vector
     rust::Slice<const uint8_t> slice(jpeg_bytes.data(), jpeg_bytes.size());
-    return ImageU8C3(::decode_jpeg_rgb8(slice));
+    return ImageU8C3(::decode_image_jpeg_rgb8(slice));
 }
 
 } // namespace jpeg
