@@ -35,6 +35,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(histogram::compute_histogram, m)?)?;
     m.add_function(wrap_pyfunction!(icp::icp_vanilla, m)?)?;
     m.add_function(wrap_pyfunction!(io::functional::read_image_any, m)?)?;
+    m.add_function(wrap_pyfunction!(io::functional::read_image, m)?)?;
     m.add_function(wrap_pyfunction!(io::png::decode_image_png_u8, m)?)?;
     m.add_function(wrap_pyfunction!(io::png::decode_image_png_u16, m)?)?;
     m.add_function(wrap_pyfunction!(io::png::read_image_png_u8, m)?)?;
