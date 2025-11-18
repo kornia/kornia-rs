@@ -9,19 +9,21 @@ Comprehensive example demonstrating the kornia-cpp Image API, including:
 ## Building
 
 ```bash
+# From the kornia-cpp directory
 cd kornia-cpp
-just build-examples
+cmake -B build
+cmake --build build
+
+# Run the example
 ./build/examples/image_api/image_api_example
 ```
 
-Or build standalone:
+Or use just:
 
 ```bash
-cd examples/image_api
-mkdir build && cd build
-cmake ..
-make
-./image_api_example
+cd kornia-cpp
+just build-examples
+./build/examples/image_api/image_api_example
 ```
 
 ## Example Output
