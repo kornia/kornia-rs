@@ -1,9 +1,4 @@
-use kornia_apriltag::{
-    decoder::Detection,
-    family::TagFamily,
-    quad::{FitQuadConfig, Quad},
-    AprilTagDecoder, DecodeTagsConfig,
-};
+use kornia_apriltag::{decoder::Detection, quad::Quad, AprilTagDecoder, DecodeTagsConfig};
 use kornia_image::Image;
 use pyo3::{
     exceptions::PyException,
@@ -12,10 +7,7 @@ use pyo3::{
     Bound, PyResult,
 };
 
-use crate::{
-    apriltag::family::PyTagFamilyKind,
-    image::{FromPyImage, PyImage, PyImageSize},
-};
+use crate::image::{FromPyImage, PyImage, PyImageSize};
 
 pub fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let family_mod = PyModule::new(m.py(), "family")?;
@@ -31,64 +23,8 @@ pub fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-#[pyclass(name = "DecodeTagsConfig", get_all, set_all)]
-#[derive(Default)]
-pub struct PyDecodeTagsConfig {
-    pub tag_families: Vec<Py<family::PyTagFamily>>,
-    pub fit_quad_config: PyFitQuadConfig,
-    pub refine_edges_enabled: bool,
-    pub decode_sharpening: f32,
-    pub normal_border: bool,
-    pub reversed_border: bool,
-    pub min_tag_width: usize,
-    pub min_white_black_difference: u8,
-    pub downscale_factor: usize,
-}
-
-impl PyDecodeTagsConfig {
-    pub fn into_decode_tags_config(self_: Py<Self>, py: Python<'_>) -> PyResult<DecodeTagsConfig> {
-        let self_: PyRef<Self> = self_.extract(py)?;
-        let mut tag_families = Vec::with_capacity(self_.tag_families.len());
-
-        for tag in &self_.tag_families {
-            let py_tag: PyRef<family::PyTagFamily> = tag.extract(py)?;
-            tag_families.push(TagFamily {
-                name: py_tag.name.clone(),
-                width_at_border: py_tag.width_at_border,
-                reversed_border: py_tag.reversed_border,
-                total_width: py_tag.total_width,
-                nbits: py_tag.nbits,
-                bit_x: py_tag.bit_x.clone(),
-                bit_y: py_tag.bit_y.clone(),
-                code_data: py_tag.code_data.clone(),
-                quick_decode: py_tag.quick_decode.extract::<family::PyQuickDecode>(py)?.0,
-                sharpening_buffer: py_tag
-                    .sharpening_buffer
-                    .extract::<family::PySharpeningBuffer>(py)?
-                    .0,
-            });
-        }
-
-        let fit_quad_config = FitQuadConfig {
-            cos_critical_rad: self_.fit_quad_config.cos_critical_rad,
-            max_line_fit_mse: self_.fit_quad_config.max_line_fit_mse,
-            max_nmaxima: self_.fit_quad_config.max_nmaxima,
-            min_cluster_pixels: self_.fit_quad_config.min_cluster_pixels,
-        };
-
-        Ok(DecodeTagsConfig {
-            tag_families,
-            fit_quad_config,
-            refine_edges_enabled: self_.refine_edges_enabled,
-            decode_sharpening: self_.decode_sharpening,
-            normal_border: self_.normal_border,
-            reversed_border: self_.reversed_border,
-            min_tag_width: self_.min_tag_width,
-            min_white_black_difference: self_.min_white_black_difference,
-            downscale_factor: self_.downscale_factor,
-        })
-    }
-}
+#[pyclass(name = "DecodeTagsConfig")]
+pub struct PyDecodeTagsConfig(DecodeTagsConfig);
 
 #[pymethods]
 impl PyDecodeTagsConfig {
@@ -98,25 +34,17 @@ impl PyDecodeTagsConfig {
             let mut tag_families = Vec::with_capacity(tag_family_kinds.len());
             for family_kind in tag_family_kinds.iter() {
                 let py_family_kind: family::PyTagFamilyKind = family_kind.extract(py)?;
-                let py_family = py_family_kind.into_family()?;
-                tag_families.push(Py::new(py, py_family)?);
+                let family = py_family_kind.0;
+                tag_families.push(family);
             }
 
-            Ok(PyDecodeTagsConfig {
-                tag_families,
-                ..Default::default()
-            })
+            Ok(Self(DecodeTagsConfig::new(tag_families)))
         })
     }
 
-    pub fn add(&mut self, family: Py<family::PyTagFamily>) {
-        self.tag_families.push(family);
-    }
-
     #[staticmethod]
-    pub fn all() -> PyResult<Self> {
-        let kinds = PyTagFamilyKind::all()?;
-        Self::new(kinds)
+    pub fn all() -> Self {
+        Self(DecodeTagsConfig::all())
     }
 }
 
@@ -137,10 +65,10 @@ impl PyAprilTagDecoder {
     #[new]
     pub fn new(config: Py<PyDecodeTagsConfig>, img_size: PyImageSize) -> PyResult<Self> {
         Python::attach(|py| {
-            let config = PyDecodeTagsConfig::into_decode_tags_config(config, py)?;
+            let config = config.borrow(py);
 
             Ok(Self(
-                AprilTagDecoder::new(config, img_size.into())
+                AprilTagDecoder::new(config.0.clone(), img_size.into())
                     .map_err(|err| PyErr::new::<PyException, _>(err.to_string()))?,
             ))
         })

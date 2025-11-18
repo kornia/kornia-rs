@@ -1,4 +1,17 @@
+from pathlib import Path
+
 import kornia_rs as K
+import numpy as np
+import pytest
+
+TAG36H11_TAG = (
+    Path(__file__).parents[2]
+    / "tests"
+    / "data"
+    / "apriltag-imgs"
+    / "tag36h11"
+    / "tag36_11_00005.png"
+)
 
 TagFamilyKind = K.apriltag.family.TagFamilyKind
 
@@ -37,3 +50,25 @@ def test_tag_family_into_family_kind():
     )
     kind = tf.into_family_kind()
     assert kind.name == "custom"
+
+
+def test_apriltag_decoder():
+    kinds = [TagFamilyKind("tag36_h11")]
+    config = K.apriltag.DecodeTagsConfig(kinds)
+    decoder = K.apriltag.AprilTagDecoder(config, K.ImageSize(60, 60))
+
+    expected_quad = [(50.0, 10.0), (50.0, 50.0), (10.0, 50.0), (10.0, 10.0)]
+
+    with open(TAG36H11_TAG, "rb") as f:
+        img_data = f.read()
+    img: np.ndarray = K.decode_image_png_u8(bytes(img_data), (60, 60), "mono")
+    assert img.shape == (60, 60, 1)
+    assert img.dtype == np.uint8
+
+    detection = decoder.decode(img)
+    assert len(detection) == 1
+    assert detection[0].id == 5
+
+    for (ax, ay), (ex, ey) in zip(detection[0].quad.corners, expected_quad):
+        assert ax == pytest.approx(ex, abs=1e-3)
+        assert ay == pytest.approx(ey, abs=1e-3)
