@@ -10,7 +10,7 @@ TEST_CASE("ImageSize construction", "[image][size]") {
 
 TEST_CASE("ImageU8C3 basic interface", "[image][u8c3]") {
     // Create a test image directly using constructor (100x80, filled with value 42)
-    kornia::ImageU8C3 image(100, 80, 42);
+    kornia::image::ImageU8C3 image(100, 80, 42);
 
     SECTION("Dimensions") {
         REQUIRE(image.width() == 100);
@@ -44,7 +44,7 @@ TEST_CASE("ImageU8C3 basic interface", "[image][u8c3]") {
 
 TEST_CASE("ImageU8C1 basic interface", "[image][u8c1]") {
     // Create a grayscale test image directly using constructor (50x60, filled with value 128)
-    kornia::ImageU8C1 image(50, 60, 128);
+    kornia::image::ImageU8C1 image(50, 60, 128);
 
     SECTION("Dimensions") {
         REQUIRE(image.width() == 50);
@@ -69,17 +69,17 @@ TEST_CASE("ImageU8C1 basic interface", "[image][u8c1]") {
 }
 
 TEST_CASE("Image move semantics", "[image][move]") {
-    kornia::ImageU8C3 image1(100, 80, 42);
+    kornia::image::ImageU8C3 image1(100, 80, 42);
 
     SECTION("Move construction") {
-        kornia::ImageU8C3 image2 = std::move(image1);
+        kornia::image::ImageU8C3 image2 = std::move(image1);
         REQUIRE(image2.width() == 100);
         REQUIRE(image2.height() == 80);
         REQUIRE(image2.channels() == 3);
     }
 
     SECTION("Move assignment") {
-        kornia::ImageU8C3 image2(50, 50, 0);
+        kornia::image::ImageU8C3 image2(50, 50, 0);
         image2 = std::move(image1);
         REQUIRE(image2.width() == 100);
         REQUIRE(image2.height() == 80);
@@ -88,7 +88,7 @@ TEST_CASE("Image move semantics", "[image][move]") {
 
 TEST_CASE("Image data layout", "[image][layout]") {
     // Create test image with known dimensions
-    kornia::ImageU8C3 image(100, 80, 42);
+    kornia::image::ImageU8C3 image(100, 80, 42);
 
     SECTION("Row-major interleaved RGB") {
         auto data = image.data();
@@ -113,7 +113,7 @@ TEST_CASE("Image data layout", "[image][layout]") {
 TEST_CASE("Image from vector", "[image][from_vector]") {
     // Create image from vector of data
     std::vector<uint8_t> data(10 * 8 * 3, 99);
-    kornia::ImageU8C3 image(10, 8, data);
+    kornia::image::ImageU8C3 image(10, 8, data);
 
     SECTION("Dimensions") {
         REQUIRE(image.width() == 10);

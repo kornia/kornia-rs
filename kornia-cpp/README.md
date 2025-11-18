@@ -12,7 +12,7 @@ Lightweight, zero-overhead C++ interface to kornia-rs. All functions are inline 
 - ✅ Header-only C++ wrapper (inline functions only)
 - ✅ Exception-based error handling (Rust `Result` → C++ exceptions)
 - ✅ CMake integration with `find_package` support
-- ✅ OpenCV-style image types (`ImageU8C3`, `ImageF32C1`, etc.)
+- ✅ Namespaced image types (`kornia::image::ImageU8C3`, `kornia::image::ImageF32C1`, etc.)
 - ✅ Thread-safe concurrent reads (standard C++ object lifetime rules)
 - ✅ Move semantics (no copy constructors for image types)
 - ✅ Cross-platform (Linux, macOS, Windows)
@@ -65,13 +65,13 @@ just clean           # Clean build artifacts
 ### Image Types
 
 ```cpp
-// OpenCV-style naming: ImageU8C3 = Unsigned 8-bit, 3 Channels
-ImageU8C1   // Grayscale u8 (1 channel)
-ImageU8C3   // RGB u8 (3 channels)
-ImageU8C4   // RGBA u8 (4 channels)
-ImageF32C1  // Grayscale f32 (1 channel)
-ImageF32C3  // RGB f32 (3 channels)
-ImageF32C4  // RGBA f32 (4 channels)
+// Image types in kornia::image namespace
+kornia::image::ImageU8C1   // Grayscale u8 (1 channel)
+kornia::image::ImageU8C3   // RGB u8 (3 channels)
+kornia::image::ImageU8C4   // RGBA u8 (4 channels)
+kornia::image::ImageF32C1  // Grayscale f32 (1 channel)
+kornia::image::ImageF32C3  // RGB f32 (3 channels)
+kornia::image::ImageF32C4  // RGBA f32 (4 channels)
 ```
 
 ### Image Methods
@@ -102,10 +102,10 @@ uint8_t value = data[idx];
 ```cpp
 namespace kornia::io {
     // Read JPEG as RGB u8 (uses libjpeg-turbo)
-    ImageU8C3 read_jpeg_rgb8(const std::string& file_path);
+    image::Image<uint8_t, 3> read_jpeg_rgb8(const std::string& file_path);
     
     // Read JPEG as grayscale u8 (auto-converts if needed)
-    ImageU8C1 read_jpeg_mono8(const std::string& file_path);
+    image::Image<uint8_t, 1> read_jpeg_mono8(const std::string& file_path);
 }
 ```
 

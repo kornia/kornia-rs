@@ -12,7 +12,7 @@ namespace io {
 /// Image data is owned by Rust and accessed via zero-copy rust::Slice.
 ///
 /// @param file_path Path to JPEG file (absolute or relative)
-/// @return ImageU8C3 containing RGB data in row-major, interleaved format
+/// @return Image<uint8_t, 3> containing RGB data in row-major, interleaved format
 /// @throws rust::Error if:
 ///   - File does not exist or cannot be opened
 ///   - File is not a valid JPEG
@@ -29,8 +29,8 @@ namespace io {
 /// auto data = image.data();  // rust::Slice<const uint8_t>
 /// uint8_t r = data[0];  // First pixel, R channel
 /// @endcode
-inline ImageU8C3 read_jpeg_rgb8(const std::string& file_path) {
-    return ImageU8C3(::read_jpeg_rgb8(file_path));
+inline image::Image<uint8_t, 3> read_jpeg_rgb8(const std::string& file_path) {
+    return image::Image<uint8_t, 3>(::read_jpeg_rgb8(file_path));
 }
 
 /// @brief Read a grayscale JPEG image from file (u8, 1 channel)
@@ -40,7 +40,7 @@ inline ImageU8C3 read_jpeg_rgb8(const std::string& file_path) {
 /// Image data is owned by Rust and accessed via zero-copy rust::Slice.
 ///
 /// @param file_path Path to JPEG file (absolute or relative)
-/// @return ImageU8C1 containing grayscale data in row-major format
+/// @return Image<uint8_t, 1> containing grayscale data in row-major format
 /// @throws rust::Error if:
 ///   - File does not exist or cannot be opened
 ///   - File is not a valid JPEG
@@ -60,8 +60,8 @@ inline ImageU8C3 read_jpeg_rgb8(const std::string& file_path) {
 /// auto data = image.data();  // rust::Slice<const uint8_t>
 /// uint8_t gray = data[0];  // First pixel
 /// @endcode
-inline ImageU8C1 read_jpeg_mono8(const std::string& file_path) {
-    return ImageU8C1(::read_jpeg_mono8(file_path));
+inline image::Image<uint8_t, 1> read_jpeg_mono8(const std::string& file_path) {
+    return image::Image<uint8_t, 1>(::read_jpeg_mono8(file_path));
 }
 
 } // namespace io

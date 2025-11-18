@@ -58,7 +58,7 @@ Example 3: Error handling (wrong data size)
 
 ```cpp
 // Create 640x480 RGB image filled with value 128
-auto img = kornia::ImageU8C3(640, 480, 128);
+auto img = kornia::image::ImageU8C3(640, 480, 128);
 ```
 
 ### 2. Creating Images from Data Vectors
@@ -66,13 +66,13 @@ auto img = kornia::ImageU8C3(640, 480, 128);
 ```cpp
 std::vector<uint8_t> data(100);
 // ... fill data ...
-auto img = kornia::ImageU8C1(10, 10, data);
+auto img = kornia::image::ImageU8C1(10, 10, data);
 ```
 
 ### 3. Zero-Copy Data Access
 
 ```cpp
-auto img = kornia::ImageU8C3(100, 100, 42);
+auto img = kornia::image::ImageU8C3(100, 100, 42);
 auto data = img.data();  // rust::Slice<const uint8_t> - zero copy!
 uint8_t pixel = data[0];
 ```
@@ -80,7 +80,7 @@ uint8_t pixel = data[0];
 ### 4. Owned Copy of Data
 
 ```cpp
-auto img = kornia::ImageF32C3(100, 100, 0.5f);
+auto img = kornia::image::ImageF32C3(100, 100, 0.5f);
 auto owned_copy = img.to_vec();  // std::vector<float>
 // Can modify independently of original
 ```
@@ -90,7 +90,7 @@ auto owned_copy = img.to_vec();  // std::vector<float>
 ```cpp
 try {
     std::vector<uint8_t> wrong_size(100);  // Need 300
-    auto img = kornia::ImageU8C3(10, 10, wrong_size);
+    auto img = kornia::image::ImageU8C3(10, 10, wrong_size);
 } catch (const std::exception& e) {
     // Catches: "Data length (100) does not match the image size (300)"
     std::cerr << "Error: " << e.what() << "\n";
@@ -100,7 +100,7 @@ try {
 ### 6. Image Properties
 
 ```cpp
-auto img = kornia::ImageU8C3(640, 480, 0);
+auto img = kornia::image::ImageU8C3(640, 480, 0);
 size_t w = img.width();       // 640
 size_t h = img.height();      // 480
 size_t c = img.channels();    // 3
@@ -111,12 +111,12 @@ auto size = img.size();       // ImageSize{width: 640, height: 480}
 
 | Type | Description | C++ Type | Channels |
 |------|-------------|----------|----------|
-| `ImageU8C1` | Grayscale 8-bit | `uint8_t` | 1 |
-| `ImageU8C3` | RGB 8-bit | `uint8_t` | 3 |
-| `ImageU8C4` | RGBA 8-bit | `uint8_t` | 4 |
-| `ImageF32C1` | Grayscale float | `float` | 1 |
-| `ImageF32C3` | RGB float | `float` | 3 |
-| `ImageF32C4` | RGBA float | `float` | 4 |
+| `kornia::image::ImageU8C1` | Grayscale 8-bit | `uint8_t` | 1 |
+| `kornia::image::ImageU8C3` | RGB 8-bit | `uint8_t` | 3 |
+| `kornia::image::ImageU8C4` | RGBA 8-bit | `uint8_t` | 4 |
+| `kornia::image::ImageF32C1` | Grayscale float | `float` | 1 |
+| `kornia::image::ImageF32C3` | RGB float | `float` | 3 |
+| `kornia::image::ImageF32C4` | RGBA float | `float` | 4 |
 
 ## Memory Management
 

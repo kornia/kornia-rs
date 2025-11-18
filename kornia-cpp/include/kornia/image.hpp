@@ -76,7 +76,20 @@ template <typename T, size_t C> struct ImageTraits;
 KORNIA_IMAGE_TYPES
 #undef KORNIA_IMAGE_TYPE
 
-// Single template implementation shared by all image types
+namespace image {
+
+/// @brief Generic image wrapper template
+///
+/// Usage: kornia::image::Image<uint8_t, 3> for RGB images
+///        kornia::image::Image<float, 1> for grayscale float images
+///
+/// Supported types:
+/// - Image<uint8_t, 1>  - Grayscale 8-bit
+/// - Image<uint8_t, 3>  - RGB 8-bit
+/// - Image<uint8_t, 4>  - RGBA 8-bit
+/// - Image<float, 1>    - Grayscale 32-bit float
+/// - Image<float, 3>    - RGB 32-bit float
+/// - Image<float, 4>    - RGBA 32-bit float
 template <typename T, size_t C> class Image {
     using Traits = ImageTraits<T, C>;
     using RustType = typename Traits::RustType_;
@@ -121,12 +134,17 @@ template <typename T, size_t C> class Image {
     rust::Box<RustType> img_;
 };
 
-// Second expansion: Generate type aliases (after Image template)
+} // namespace image
+
+// Type aliases in kornia::image namespace for convenience
+namespace image {
 #define KORNIA_IMAGE_TYPE(CppType, TypeName, FnPrefix, Channels)                                   \
     using TypeName = Image<CppType, Channels>;
 
 KORNIA_IMAGE_TYPES
 #undef KORNIA_IMAGE_TYPE
+} // namespace image
+
 #undef KORNIA_IMAGE_TYPES
 
 } // namespace kornia

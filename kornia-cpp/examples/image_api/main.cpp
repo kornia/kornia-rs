@@ -11,7 +11,7 @@ void example_create_from_value() {
 
     try {
         // Create a 640x480 RGB image filled with value 128
-        auto img = kornia::ImageU8C3(640, 480, 128);
+        auto img = kornia::image::ImageU8C3(640, 480, 128);
         std::cout << "✓ Created " << img.width() << "x" << img.height() << "x" << img.channels()
                   << " image\n";
         std::cout << "  Fill value: " << (int)img.data()[0] << "\n";
@@ -35,7 +35,7 @@ void example_create_from_data() {
             data[i] = static_cast<uint8_t>((i * 255) / data.size());
         }
 
-        auto img = kornia::ImageU8C1(10, 10, data);
+        auto img = kornia::image::ImageU8C1(10, 10, data);
         std::cout << "✓ Created " << img.width() << "x" << img.height()
                   << " grayscale image from data\n";
         std::cout << "  First pixel: " << (int)img.data()[0] << "\n";
@@ -55,7 +55,7 @@ void example_error_handling() {
     try {
         // Deliberately create wrong-sized data
         std::vector<uint8_t> data(100); // Need 300 for 10x10x3 image
-        auto img = kornia::ImageU8C3(10, 10, data);
+        auto img = kornia::image::ImageU8C3(10, 10, data);
         std::cout << "✓ Created image (should not reach here)\n";
 
     } catch (const std::exception& e) {
@@ -72,7 +72,7 @@ void example_zero_copy_access() {
 
     try {
         // Create small RGB image
-        auto img = kornia::ImageU8C3(5, 5, 42);
+        auto img = kornia::image::ImageU8C3(5, 5, 42);
 
         // Zero-copy access to underlying Rust data
         auto data = img.data(); // rust::Slice<const uint8_t>
@@ -100,7 +100,7 @@ void example_copy_data() {
 
     try {
         // Create image
-        auto img = kornia::ImageF32C3(3, 3, 0.5f);
+        auto img = kornia::image::ImageF32C3(3, 3, 0.5f);
 
         // Zero-copy view
         auto data_view = img.data();
@@ -125,14 +125,14 @@ void example_different_types() {
 
     try {
         // U8 images (8-bit unsigned)
-        auto gray_u8 = kornia::ImageU8C1(100, 100, 255);
-        auto rgb_u8 = kornia::ImageU8C3(100, 100, 128);
-        auto rgba_u8 = kornia::ImageU8C4(100, 100, 64);
+        auto gray_u8 = kornia::image::ImageU8C1(100, 100, 255);
+        auto rgb_u8 = kornia::image::ImageU8C3(100, 100, 128);
+        auto rgba_u8 = kornia::image::ImageU8C4(100, 100, 64);
 
         // F32 images (32-bit float, common for ML/processing)
-        auto gray_f32 = kornia::ImageF32C1(100, 100, 1.0f);
-        auto rgb_f32 = kornia::ImageF32C3(100, 100, 0.5f);
-        auto rgba_f32 = kornia::ImageF32C4(100, 100, 0.25f);
+        auto gray_f32 = kornia::image::ImageF32C1(100, 100, 1.0f);
+        auto rgb_f32 = kornia::image::ImageF32C3(100, 100, 0.5f);
+        auto rgba_f32 = kornia::image::ImageF32C4(100, 100, 0.25f);
 
         std::cout << "✓ Created 6 different image types:\n";
         std::cout << "  U8:  Grayscale (C1), RGB (C3), RGBA (C4)\n";
