@@ -66,85 +66,6 @@ impl PartialEq<u8> for Pixel {
     }
 }
 
-/// Computes the homography matrix from four point correspondences.
-///
-/// # Arguments
-///
-/// * `c` - A 4x4 array where each row contains the coordinates of a correspondence:
-///   [x, y, x', y'] where (x, y) maps to (x', y').
-///
-/// # Returns
-///
-/// An `Option<[f32; 9]>` containing the flattened 3x3 homography matrix if successful, or `None` if the matrix is singular.
-pub(crate) fn homography_compute(c: [[f32; 4]; 4]) -> Option<[f32; 9]> {
-    #[rustfmt::skip]
-    let mut a = [
-        c[0][0], c[0][1], 1.0, 0.0,     0.0,     0.0, -c[0][0]*c[0][2], -c[0][1]*c[0][2], c[0][2],
-        0.0,     0.0,     0.0, c[0][0], c[0][1], 1.0, -c[0][0]*c[0][3], -c[0][1]*c[0][3], c[0][3],
-        c[1][0], c[1][1], 1.0, 0.0,     0.0,     0.0, -c[1][0]*c[1][2], -c[1][1]*c[1][2], c[1][2],
-        0.0,     0.0,     0.0, c[1][0], c[1][1], 1.0, -c[1][0]*c[1][3], -c[1][1]*c[1][3], c[1][3],
-        c[2][0], c[2][1], 1.0, 0.0,     0.0,     0.0, -c[2][0]*c[2][2], -c[2][1]*c[2][2], c[2][2],
-        0.0,     0.0,     0.0, c[2][0], c[2][1], 1.0, -c[2][0]*c[2][3], -c[2][1]*c[2][3], c[2][3],
-        c[3][0], c[3][1], 1.0, 0.0,     0.0,     0.0, -c[3][0]*c[3][2], -c[3][1]*c[3][2], c[3][2],
-        0.0,     0.0,     0.0, c[3][0], c[3][1], 1.0, -c[3][0]*c[3][3], -c[3][1]*c[3][3], c[3][3],
-    ];
-
-    const EPSILON: f32 = 1e-10;
-
-    // Eliminate
-    for col in 0..8 {
-        // Find best row to swap with
-        let mut max_val = 0.0;
-        let mut max_val_idx = -1;
-
-        for row in col..8 {
-            let val = a[row * 9 + col].abs();
-            if val > max_val {
-                max_val = val;
-                max_val_idx = row as isize;
-            }
-        }
-
-        if max_val_idx < 0 {
-            return None;
-        }
-
-        let max_val_idx = max_val_idx as usize;
-
-        if max_val < EPSILON {
-            // Matrix is singular
-            return None;
-        }
-
-        // Swap to get best row
-        if max_val_idx != col {
-            for i in col..9 {
-                a.swap(col * 9 + i, max_val_idx * 9 + i);
-            }
-        }
-
-        // Do eliminate
-        for i in (col + 1)..8 {
-            let f = a[i * 9 + col] / a[col * 9 + col];
-            a[i * 9 + col] = 0.0;
-            for j in (col + 1)..9 {
-                a[i * 9 + j] -= f * a[col * 9 + j];
-            }
-        }
-    }
-
-    // Back solve
-    for col in (0..8).rev() {
-        let mut sum = 0.0;
-        for i in (col + 1)..8 {
-            sum += a[col * 9 + i] * a[i * 9 + 8];
-        }
-        a[col * 9 + 8] = (a[col * 9 + 8] - sum) / a[col * 9 + col];
-    }
-
-    Some([a[8], a[17], a[26], a[35], a[44], a[53], a[62], a[71], 1.0])
-}
-
 pub(crate) fn matrix_3x3_cholesky(a: &[[f32; 3]; 3], r: &mut [f32; 9]) {
     r[0] = a[0][0].sqrt();
     r[3] = a[0][1] / r[0];
@@ -288,22 +209,6 @@ mod tests {
 
         let mul = matrix_3x3_mul(&a, &b);
         assert_eq!(mul, expected)
-    }
-
-    #[test]
-    fn test_homography_compute() {
-        #[rustfmt::skip]
-        let corr_arr = [
-            [-1.0, -1.0, 27.0,  3.0],
-            [ 1.0, -1.0, 27.0, 27.0],
-            [ 1.0,  1.0,  3.0, 27.0],
-            [-1.0,  1.0,  3.0,  3.0],
-        ];
-
-        let h = homography_compute(corr_arr);
-        let expected = Some([-0.0, -12.0, 15.0, 12.0, -0.0, 15.0, -0.0, 0.0, 1.0]);
-
-        assert_eq!(h, expected)
     }
 
     #[test]
