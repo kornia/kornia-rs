@@ -2,7 +2,7 @@
 #include <kornia.hpp>
 
 TEST_CASE("ImageSize construction", "[image][size]") {
-    kornia::ImageSize size{640, 480};
+    kornia::image::ImageSize size{640, 480};
 
     REQUIRE(size.width == 640);
     REQUIRE(size.height == 480);

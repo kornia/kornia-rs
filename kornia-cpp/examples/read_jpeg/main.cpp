@@ -2,6 +2,9 @@
 #include <iostream>
 #include <kornia.hpp>
 
+using namespace kornia::image;
+using namespace kornia::io::jpeg;
+
 int main(int argc, char* argv[]) {
     if (argc != 2) {
         std::cerr << "Usage: " << argv[0] << " <path_to_jpeg_image>" << std::endl;
@@ -13,14 +16,14 @@ int main(int argc, char* argv[]) {
         std::cout << "Reading JPEG image from: " << argv[1] << std::endl;
 
         // Read RGB image - wraps kornia_image::Image<u8, 3> (zero-copy)
-        kornia::image::ImageU8C3 image = kornia::io::read_jpeg_rgb8(argv[1]);
+        ImageU8C3 img = read_jpeg_rgb8(argv[1]);
 
         // Print image information
         std::cout << "\n✓ Successfully loaded image!" << std::endl;
-        std::cout << "  Dimensions: " << image.width() << " x " << image.height() << std::endl;
-        std::cout << "  Channels: " << image.channels() << std::endl;
+        std::cout << "  Dimensions: " << img.width() << " x " << img.height() << std::endl;
+        std::cout << "  Channels: " << img.channels() << std::endl;
 
-        auto data = image.data();
+        auto data = img.data();
         std::cout << "  Data size: " << data.size() << " bytes" << std::endl;
 
         // Access pixel data directly (from Rust - no copy!)
@@ -31,7 +34,7 @@ int main(int argc, char* argv[]) {
         std::cout << std::endl;
 
         // Pixel access example (row-major, interleaved channels)
-        size_t idx = (0 * image.width() + 0) * image.channels() + 0; // pixel (0,0), channel R
+        size_t idx = (0 * img.width() + 0) * img.channels() + 0; // pixel (0,0), channel R
         std::cout << "  Pixel (0,0) R channel: " << static_cast<int>(data[idx]) << std::endl;
 
         return 0;

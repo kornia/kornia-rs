@@ -12,6 +12,7 @@ FetchContent_MakeAvailable(Catch2)
 
 # Test executable
 add_executable(kornia_cpp_tests
+    test_image_buffer.cpp
     test_io_jpeg.cpp
     test_version.cpp
     test_image.cpp
