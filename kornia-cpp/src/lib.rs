@@ -15,6 +15,10 @@ mod ffi {
     // ImageU8C1  - Unsigned 8-bit,  1 Channel  (Grayscale)
     // ImageU8C3  - Unsigned 8-bit,  3 Channels (RGB)
     // ImageF32C3 - Float    32-bit, 3 Channels (RGB)
+    //
+    // Note: cxx::bridge doesn't support macros in extern "Rust" blocks,
+    // so types must be declared explicitly. However, implementations use
+    // macros to reduce boilerplate.
     
     extern "Rust" {
         // ============ ImageU8C1 (Grayscale u8) ============
@@ -24,6 +28,8 @@ mod ffi {
         fn image_u8c1_channels(img: &ImageU8C1) -> usize;
         fn image_u8c1_size(img: &ImageU8C1) -> ImageSize;
         fn image_u8c1_data(img: &ImageU8C1) -> &[u8];
+        fn image_u8c1_new(width: usize, height: usize, value: u8) -> Box<ImageU8C1>;
+        fn image_u8c1_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C1>;
 
         // ============ ImageU8C3 (RGB u8) ============
         type ImageU8C3;
@@ -32,6 +38,8 @@ mod ffi {
         fn image_u8c3_channels(img: &ImageU8C3) -> usize;
         fn image_u8c3_size(img: &ImageU8C3) -> ImageSize;
         fn image_u8c3_data(img: &ImageU8C3) -> &[u8];
+        fn image_u8c3_new(width: usize, height: usize, value: u8) -> Box<ImageU8C3>;
+        fn image_u8c3_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C3>;
 
         // ============ ImageU8C4 (RGBA u8) ============
         type ImageU8C4;
@@ -40,6 +48,8 @@ mod ffi {
         fn image_u8c4_channels(img: &ImageU8C4) -> usize;
         fn image_u8c4_size(img: &ImageU8C4) -> ImageSize;
         fn image_u8c4_data(img: &ImageU8C4) -> &[u8];
+        fn image_u8c4_new(width: usize, height: usize, value: u8) -> Box<ImageU8C4>;
+        fn image_u8c4_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C4>;
 
         // ============ ImageF32C1 (Grayscale f32) ============
         type ImageF32C1;
@@ -48,6 +58,8 @@ mod ffi {
         fn image_f32c1_channels(img: &ImageF32C1) -> usize;
         fn image_f32c1_size(img: &ImageF32C1) -> ImageSize;
         fn image_f32c1_data(img: &ImageF32C1) -> &[f32];
+        fn image_f32c1_new(width: usize, height: usize, value: f32) -> Box<ImageF32C1>;
+        fn image_f32c1_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C1>;
 
         // ============ ImageF32C3 (RGB f32) ============
         type ImageF32C3;
@@ -56,6 +68,8 @@ mod ffi {
         fn image_f32c3_channels(img: &ImageF32C3) -> usize;
         fn image_f32c3_size(img: &ImageF32C3) -> ImageSize;
         fn image_f32c3_data(img: &ImageF32C3) -> &[f32];
+        fn image_f32c3_new(width: usize, height: usize, value: f32) -> Box<ImageF32C3>;
+        fn image_f32c3_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C3>;
 
         // ============ ImageF32C4 (RGBA f32) ============
         type ImageF32C4;
@@ -64,6 +78,8 @@ mod ffi {
         fn image_f32c4_channels(img: &ImageF32C4) -> usize;
         fn image_f32c4_size(img: &ImageF32C4) -> ImageSize;
         fn image_f32c4_data(img: &ImageF32C4) -> &[f32];
+        fn image_f32c4_new(width: usize, height: usize, value: f32) -> Box<ImageF32C4>;
+        fn image_f32c4_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C4>;
 
         // I/O functions
         
@@ -96,70 +112,6 @@ mod ffi {
         ///
         /// Throws exception if file cannot be read or is invalid
         fn read_jpeg_rgb8(file_path: &str) -> Result<Box<ImageU8C3>>;
-
-        // Image creation functions
-        
-        /// Create a new ImageU8C3 with specified dimensions, filled with a value
-        ///
-        /// # Arguments
-        ///
-        /// * `width` - Image width in pixels
-        /// * `height` - Image height in pixels
-        /// * `value` - Initial value for all pixels
-        ///
-        /// # Returns
-        ///
-        /// ImageU8C3 filled with the specified value
-        fn image_u8c3_new(width: usize, height: usize, value: u8) -> Box<ImageU8C3>;
-
-        /// Create a new ImageU8C1 with specified dimensions, filled with a value
-        ///
-        /// # Arguments
-        ///
-        /// * `width` - Image width in pixels
-        /// * `height` - Image height in pixels
-        /// * `value` - Initial value for all pixels
-        ///
-        /// # Returns
-        ///
-        /// ImageU8C1 filled with the specified value
-        fn image_u8c1_new(width: usize, height: usize, value: u8) -> Box<ImageU8C1>;
-
-        /// Create a new ImageU8C3 from existing data
-        ///
-        /// # Arguments
-        ///
-        /// * `width` - Image width in pixels
-        /// * `height` - Image height in pixels
-        /// * `data` - Slice containing pixel data (length must be width * height * 3)
-        ///
-        /// # Returns
-        ///
-        /// ImageU8C3 containing the provided data
-        fn image_u8c3_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C3>;
-
-        /// Create a new ImageU8C1 from existing data
-        ///
-        /// # Arguments
-        ///
-        /// * `width` - Image width in pixels
-        /// * `height` - Image height in pixels
-        /// * `data` - Slice containing pixel data (length must be width * height)
-        ///
-        /// # Returns
-        ///
-        /// ImageU8C1 containing the provided data
-        fn image_u8c1_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C1>;
-
-        // Additional image type constructors
-        fn image_u8c4_new(width: usize, height: usize, value: u8) -> Box<ImageU8C4>;
-        fn image_u8c4_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C4>;
-        fn image_f32c1_new(width: usize, height: usize, value: f32) -> Box<ImageF32C1>;
-        fn image_f32c1_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C1>;
-        fn image_f32c3_new(width: usize, height: usize, value: f32) -> Box<ImageF32C3>;
-        fn image_f32c3_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C3>;
-        fn image_f32c4_new(width: usize, height: usize, value: f32) -> Box<ImageF32C4>;
-        fn image_f32c4_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C4>;
     }
 }
 
@@ -190,6 +142,11 @@ impl From<ffi::ImageSize> for kornia_image::ImageSize {
 /// This reduces boilerplate for wrapping kornia_image::Image<T, C> types.
 /// All methods directly delegate to the underlying kornia_image::Image.
 ///
+/// Generates:
+/// - Wrapper struct
+/// - Accessor functions (width, height, channels, size, data)
+/// - Constructor functions (_new, _from_data)
+///
 /// Usage: define_image_type!(ImageU8_3, image_u8_3, u8, 3);
 /// 
 /// Args: (TypeName, fn_prefix, dtype, channels)
@@ -198,11 +155,38 @@ macro_rules! define_image_type {
         pub struct $wrapper(kornia_image::Image<$dtype, $ch, CpuAllocator>);
 
         ::paste::paste! {
+            // Accessor functions
             fn [<$prefix _width>](img: &$wrapper) -> usize { img.0.width() }
             fn [<$prefix _height>](img: &$wrapper) -> usize { img.0.height() }
             fn [<$prefix _channels>](_img: &$wrapper) -> usize { $ch }
             fn [<$prefix _size>](img: &$wrapper) -> ffi::ImageSize { img.0.size().into() }
             fn [<$prefix _data>](img: &$wrapper) -> &[$dtype] { img.0.as_slice() }
+            
+            // Constructor: from size and fill value
+            fn [<$prefix _new>](width: usize, height: usize, value: $dtype) -> Box<$wrapper> {
+                let size = kornia_image::ImageSize { width, height };
+                let alloc = CpuAllocator::default();
+                let image = kornia_image::Image::<$dtype, $ch, CpuAllocator>::from_size_val(size, value, alloc)
+                    .expect("Failed to create image");
+                Box::new($wrapper(image))
+            }
+
+            // Constructor: from existing data
+            fn [<$prefix _from_data>](width: usize, height: usize, data: &[$dtype]) -> Box<$wrapper> {
+                let size = kornia_image::ImageSize { width, height };
+                let expected_len = width * height * $ch;
+                if data.len() != expected_len {
+                    panic!(
+                        "Data length mismatch: expected {} bytes, got {}",
+                        expected_len,
+                        data.len()
+                    );
+                }
+                let alloc = CpuAllocator::default();
+                let image = kornia_image::Image::<$dtype, $ch, CpuAllocator>::from_size_slice(size, data, alloc)
+                    .expect("Failed to create image from data");
+                Box::new($wrapper(image))
+            }
         }
     };
 }
@@ -243,164 +227,3 @@ fn read_jpeg_rgb8(file_path: &str) -> Result<Box<ImageU8C3>, Box<dyn std::error:
     let image = jpeg::read_image_jpeg_rgb8(file_path)?;
     Ok(Box::new(ImageU8C3(image)))
 }
-
-// Image creation functions
-
-/// Create a new ImageU8C3 with specified dimensions, filled with a value
-fn image_u8c3_new(width: usize, height: usize, value: u8) -> Box<ImageU8C3> {
-    let size = kornia_image::ImageSize { width, height };
-    let alloc = CpuAllocator::default();
-    let image = kornia_image::Image::<u8, 3, CpuAllocator>::from_size_val(size, value, alloc)
-        .expect("Failed to create image");
-    Box::new(ImageU8C3(image))
-}
-
-/// Create a new ImageU8C1 with specified dimensions, filled with a value
-fn image_u8c1_new(width: usize, height: usize, value: u8) -> Box<ImageU8C1> {
-    let size = kornia_image::ImageSize { width, height };
-    let alloc = CpuAllocator::default();
-    let image = kornia_image::Image::<u8, 1, CpuAllocator>::from_size_val(size, value, alloc)
-        .expect("Failed to create image");
-    Box::new(ImageU8C1(image))
-}
-
-/// Create a new ImageU8C3 from existing data
-fn image_u8c3_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C3> {
-    let size = kornia_image::ImageSize { width, height };
-    let expected_len = width * height * 3;
-    if data.len() != expected_len {
-        panic!(
-            "Data length mismatch: expected {} bytes, got {}",
-            expected_len,
-            data.len()
-        );
-    }
-    let alloc = CpuAllocator::default();
-    let image = kornia_image::Image::<u8, 3, CpuAllocator>::from_size_slice(size, data, alloc)
-        .expect("Failed to create image from data");
-    Box::new(ImageU8C3(image))
-}
-
-/// Create a new ImageU8C1 from existing data
-fn image_u8c1_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C1> {
-    let size = kornia_image::ImageSize { width, height };
-    let expected_len = width * height;
-    if data.len() != expected_len {
-        panic!(
-            "Data length mismatch: expected {} bytes, got {}",
-            expected_len,
-            data.len()
-        );
-    }
-    let alloc = CpuAllocator::default();
-    let image = kornia_image::Image::<u8, 1, CpuAllocator>::from_size_slice(size, data, alloc)
-        .expect("Failed to create image from data");
-    Box::new(ImageU8C1(image))
-}
-
-// Additional image type constructors
-
-/// Create a new ImageU8C4 with specified dimensions, filled with a value
-fn image_u8c4_new(width: usize, height: usize, value: u8) -> Box<ImageU8C4> {
-    let size = kornia_image::ImageSize { width, height };
-    let alloc = CpuAllocator::default();
-    let image = kornia_image::Image::<u8, 4, CpuAllocator>::from_size_val(size, value, alloc)
-        .expect("Failed to create image");
-    Box::new(ImageU8C4(image))
-}
-
-/// Create a new ImageU8C4 from existing data
-fn image_u8c4_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C4> {
-    let size = kornia_image::ImageSize { width, height };
-    let expected_len = width * height * 4;
-    if data.len() != expected_len {
-        panic!(
-            "Data length mismatch: expected {} bytes, got {}",
-            expected_len,
-            data.len()
-        );
-    }
-    let alloc = CpuAllocator::default();
-    let image = kornia_image::Image::<u8, 4, CpuAllocator>::from_size_slice(size, data, alloc)
-        .expect("Failed to create image from data");
-    Box::new(ImageU8C4(image))
-}
-
-/// Create a new ImageF32C1 with specified dimensions, filled with a value
-fn image_f32c1_new(width: usize, height: usize, value: f32) -> Box<ImageF32C1> {
-    let size = kornia_image::ImageSize { width, height };
-    let alloc = CpuAllocator::default();
-    let image = kornia_image::Image::<f32, 1, CpuAllocator>::from_size_val(size, value, alloc)
-        .expect("Failed to create image");
-    Box::new(ImageF32C1(image))
-}
-
-/// Create a new ImageF32C1 from existing data
-fn image_f32c1_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C1> {
-    let size = kornia_image::ImageSize { width, height };
-    let expected_len = width * height;
-    if data.len() != expected_len {
-        panic!(
-            "Data length mismatch: expected {} elements, got {}",
-            expected_len,
-            data.len()
-        );
-    }
-    let alloc = CpuAllocator::default();
-    let image = kornia_image::Image::<f32, 1, CpuAllocator>::from_size_slice(size, data, alloc)
-        .expect("Failed to create image from data");
-    Box::new(ImageF32C1(image))
-}
-
-/// Create a new ImageF32C3 with specified dimensions, filled with a value
-fn image_f32c3_new(width: usize, height: usize, value: f32) -> Box<ImageF32C3> {
-    let size = kornia_image::ImageSize { width, height };
-    let alloc = CpuAllocator::default();
-    let image = kornia_image::Image::<f32, 3, CpuAllocator>::from_size_val(size, value, alloc)
-        .expect("Failed to create image");
-    Box::new(ImageF32C3(image))
-}
-
-/// Create a new ImageF32C3 from existing data
-fn image_f32c3_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C3> {
-    let size = kornia_image::ImageSize { width, height };
-    let expected_len = width * height * 3;
-    if data.len() != expected_len {
-        panic!(
-            "Data length mismatch: expected {} elements, got {}",
-            expected_len,
-            data.len()
-        );
-    }
-    let alloc = CpuAllocator::default();
-    let image = kornia_image::Image::<f32, 3, CpuAllocator>::from_size_slice(size, data, alloc)
-        .expect("Failed to create image from data");
-    Box::new(ImageF32C3(image))
-}
-
-/// Create a new ImageF32C4 with specified dimensions, filled with a value
-fn image_f32c4_new(width: usize, height: usize, value: f32) -> Box<ImageF32C4> {
-    let size = kornia_image::ImageSize { width, height };
-    let alloc = CpuAllocator::default();
-    let image = kornia_image::Image::<f32, 4, CpuAllocator>::from_size_val(size, value, alloc)
-        .expect("Failed to create image");
-    Box::new(ImageF32C4(image))
-}
-
-/// Create a new ImageF32C4 from existing data
-fn image_f32c4_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C4> {
-    let size = kornia_image::ImageSize { width, height };
-    let expected_len = width * height * 4;
-    if data.len() != expected_len {
-        panic!(
-            "Data length mismatch: expected {} elements, got {}",
-            expected_len,
-            data.len()
-        );
-    }
-    let alloc = CpuAllocator::default();
-    let image = kornia_image::Image::<f32, 4, CpuAllocator>::from_size_slice(size, data, alloc)
-        .expect("Failed to create image from data");
-    Box::new(ImageF32C4(image))
-}
-
