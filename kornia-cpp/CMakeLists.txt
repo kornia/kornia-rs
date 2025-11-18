@@ -161,6 +161,7 @@ install(FILES
 option(BUILD_EXAMPLES "Build examples" ON)
 if(BUILD_EXAMPLES)
     add_subdirectory(examples/read_jpeg)
+    add_subdirectory(examples/image_api)
 endif()
 
 # Tests (optional)

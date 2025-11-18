@@ -28,8 +28,8 @@ mod ffi {
         fn image_u8c1_channels(img: &ImageU8C1) -> usize;
         fn image_u8c1_size(img: &ImageU8C1) -> ImageSize;
         fn image_u8c1_data(img: &ImageU8C1) -> &[u8];
-        fn image_u8c1_new(width: usize, height: usize, value: u8) -> Box<ImageU8C1>;
-        fn image_u8c1_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C1>;
+        fn image_u8c1_new(width: usize, height: usize, value: u8) -> Result<Box<ImageU8C1>>;
+        fn image_u8c1_from_data(width: usize, height: usize, data: &[u8]) -> Result<Box<ImageU8C1>>;
 
         // ============ ImageU8C3 (RGB u8) ============
         type ImageU8C3;
@@ -38,8 +38,8 @@ mod ffi {
         fn image_u8c3_channels(img: &ImageU8C3) -> usize;
         fn image_u8c3_size(img: &ImageU8C3) -> ImageSize;
         fn image_u8c3_data(img: &ImageU8C3) -> &[u8];
-        fn image_u8c3_new(width: usize, height: usize, value: u8) -> Box<ImageU8C3>;
-        fn image_u8c3_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C3>;
+        fn image_u8c3_new(width: usize, height: usize, value: u8) -> Result<Box<ImageU8C3>>;
+        fn image_u8c3_from_data(width: usize, height: usize, data: &[u8]) -> Result<Box<ImageU8C3>>;
 
         // ============ ImageU8C4 (RGBA u8) ============
         type ImageU8C4;
@@ -48,8 +48,8 @@ mod ffi {
         fn image_u8c4_channels(img: &ImageU8C4) -> usize;
         fn image_u8c4_size(img: &ImageU8C4) -> ImageSize;
         fn image_u8c4_data(img: &ImageU8C4) -> &[u8];
-        fn image_u8c4_new(width: usize, height: usize, value: u8) -> Box<ImageU8C4>;
-        fn image_u8c4_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C4>;
+        fn image_u8c4_new(width: usize, height: usize, value: u8) -> Result<Box<ImageU8C4>>;
+        fn image_u8c4_from_data(width: usize, height: usize, data: &[u8]) -> Result<Box<ImageU8C4>>;
 
         // ============ ImageF32C1 (Grayscale f32) ============
         type ImageF32C1;
@@ -58,8 +58,8 @@ mod ffi {
         fn image_f32c1_channels(img: &ImageF32C1) -> usize;
         fn image_f32c1_size(img: &ImageF32C1) -> ImageSize;
         fn image_f32c1_data(img: &ImageF32C1) -> &[f32];
-        fn image_f32c1_new(width: usize, height: usize, value: f32) -> Box<ImageF32C1>;
-        fn image_f32c1_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C1>;
+        fn image_f32c1_new(width: usize, height: usize, value: f32) -> Result<Box<ImageF32C1>>;
+        fn image_f32c1_from_data(width: usize, height: usize, data: &[f32]) -> Result<Box<ImageF32C1>>;
 
         // ============ ImageF32C3 (RGB f32) ============
         type ImageF32C3;
@@ -68,8 +68,8 @@ mod ffi {
         fn image_f32c3_channels(img: &ImageF32C3) -> usize;
         fn image_f32c3_size(img: &ImageF32C3) -> ImageSize;
         fn image_f32c3_data(img: &ImageF32C3) -> &[f32];
-        fn image_f32c3_new(width: usize, height: usize, value: f32) -> Box<ImageF32C3>;
-        fn image_f32c3_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C3>;
+        fn image_f32c3_new(width: usize, height: usize, value: f32) -> Result<Box<ImageF32C3>>;
+        fn image_f32c3_from_data(width: usize, height: usize, data: &[f32]) -> Result<Box<ImageF32C3>>;
 
         // ============ ImageF32C4 (RGBA f32) ============
         type ImageF32C4;
@@ -78,8 +78,8 @@ mod ffi {
         fn image_f32c4_channels(img: &ImageF32C4) -> usize;
         fn image_f32c4_size(img: &ImageF32C4) -> ImageSize;
         fn image_f32c4_data(img: &ImageF32C4) -> &[f32];
-        fn image_f32c4_new(width: usize, height: usize, value: f32) -> Box<ImageF32C4>;
-        fn image_f32c4_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C4>;
+        fn image_f32c4_new(width: usize, height: usize, value: f32) -> Result<Box<ImageF32C4>>;
+        fn image_f32c4_from_data(width: usize, height: usize, data: &[f32]) -> Result<Box<ImageF32C4>>;
 
         // I/O functions
         
@@ -116,6 +116,7 @@ mod ffi {
 }
 
 use kornia_image::allocator::CpuAllocator;
+use kornia_image::ImageError;
 use kornia_io::jpeg;
 
 // Conversion traits to seamlessly use kornia_image::ImageSize
@@ -163,29 +164,23 @@ macro_rules! define_image_type {
             fn [<$prefix _data>](img: &$wrapper) -> &[$dtype] { img.0.as_slice() }
             
             // Constructor: from size and fill value
-            fn [<$prefix _new>](width: usize, height: usize, value: $dtype) -> Box<$wrapper> {
+            fn [<$prefix _new>](width: usize, height: usize, value: $dtype) -> Result<Box<$wrapper>, ImageError> {
                 let size = kornia_image::ImageSize { width, height };
                 let alloc = CpuAllocator::default();
-                let image = kornia_image::Image::<$dtype, $ch, CpuAllocator>::from_size_val(size, value, alloc)
-                    .expect("Failed to create image");
-                Box::new($wrapper(image))
+                let image = kornia_image::Image::<$dtype, $ch, CpuAllocator>::from_size_val(size, value, alloc)?;
+                Ok(Box::new($wrapper(image)))
             }
 
             // Constructor: from existing data
-            fn [<$prefix _from_data>](width: usize, height: usize, data: &[$dtype]) -> Box<$wrapper> {
+            fn [<$prefix _from_data>](width: usize, height: usize, data: &[$dtype]) -> Result<Box<$wrapper>, ImageError> {
                 let size = kornia_image::ImageSize { width, height };
                 let expected_len = width * height * $ch;
                 if data.len() != expected_len {
-                    panic!(
-                        "Data length mismatch: expected {} bytes, got {}",
-                        expected_len,
-                        data.len()
-                    );
+                    return Err(ImageError::InvalidChannelShape(data.len(), expected_len));
                 }
                 let alloc = CpuAllocator::default();
-                let image = kornia_image::Image::<$dtype, $ch, CpuAllocator>::from_size_slice(size, data, alloc)
-                    .expect("Failed to create image from data");
-                Box::new($wrapper(image))
+                let image = kornia_image::Image::<$dtype, $ch, CpuAllocator>::from_size_slice(size, data, alloc)?;
+                Ok(Box::new($wrapper(image)))
             }
         }
     };
