@@ -216,30 +216,6 @@ mod family {
                 sharpening_buffer,
             }
         }
-
-        #[allow(clippy::wrong_self_convention)]
-        pub fn into_family_kind(&self) -> PyResult<Py<PyTagFamilyKind>> {
-            Python::attach(|py| {
-                let quick_decode: PyQuickDecode = self.quick_decode.extract(py)?;
-                let sharpening_buffer: PySharpeningBuffer = self.sharpening_buffer.extract(py)?;
-
-                let tag_family = TagFamily {
-                    name: self.name.clone(),
-                    width_at_border: self.width_at_border,
-                    reversed_border: self.reversed_border,
-                    total_width: self.total_width,
-                    nbits: self.nbits,
-                    bit_x: self.bit_x.clone(),
-                    bit_y: self.bit_y.clone(),
-                    code_data: self.code_data.clone(),
-                    quick_decode: quick_decode.0,
-                    sharpening_buffer: sharpening_buffer.0,
-                };
-
-                let kind = TagFamilyKind::Custom(tag_family);
-                Py::new(py, PyTagFamilyKind(kind))
-            })
-        }
     }
 
     #[pyclass(name = "QuickDecode")]
@@ -306,11 +282,6 @@ mod family {
                 TagFamilyKind::TagStandard52H13 => Ok("tagstandard52_h13"),
                 TagFamilyKind::Custom(family) => Ok(family.name.as_str()),
             }
-        }
-
-        pub fn into_family(&self) -> PyResult<PyTagFamily> {
-            let inner: TagFamily = self.0.clone().into();
-            Python::attach(|py| Ok(PyTagFamily::from_tag_family(py, inner)?))
         }
 
         #[staticmethod]
