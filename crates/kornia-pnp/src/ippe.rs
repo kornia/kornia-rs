@@ -41,6 +41,10 @@ impl IPPE {
     ///  - p3 = [-L/2, -L/2, 0]
     ///
     /// Accepts 2D pixel coordinates; internally lifted to homogeneous and normalized by `K^{-1}`.
+    ///
+    /// Note: The current implementation returns a placeholder second solution by
+    /// cloning the best result. This is temporary until the IPPE-specific
+    /// second pose is implemented and properly ranked by reprojection error.
     pub fn solve_square(
         points_image: &[Vec2; 4],
         k: &Mat3A,
@@ -135,6 +139,9 @@ impl IPPE {
             converged: Some(true),
         };
 
+        // TODO: Replace cloning with the actual second IPPE pose solution.
+        // This duplication is a temporary placeholder and should be replaced by
+        // computing the Jacobian-based alternative pose and selecting order by RMSE.
         let second = best.clone();
         Ok(IPPEResult { first: best, second })
     }
@@ -154,7 +161,6 @@ pub fn solve_pnp_ippe(
 // TODO: move homography pose decomposition to kornia-3d (or shared pose module)
 /// Compute the homography-based pose decomposition assuming normalized image coordinates (K = I).
 fn decompose_h_normalized(h: Mat3A) -> (Mat3A, Vec3) {
-    // TODO: consider moving to kornia-3d
     // Columns of H
     let h1 = h.x_axis;
     let h2 = h.y_axis;
