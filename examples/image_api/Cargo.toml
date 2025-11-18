@@ -1,0 +1,8 @@
+[package]
+name = "image_api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kornia-image = { path = "../../crates/kornia-image" }
+
