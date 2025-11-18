@@ -22,6 +22,9 @@ using ImageSize = ::ImageSize;
 /// @param FnPrefix Function prefix for FFI calls (e.g., image_u8c3)
 /// @param DataType C++ data type for pixel values (e.g., uint8_t, float)
 ///
+/// Includes constructors for creating images from shape+value or shape+data
+/// (requires corresponding FFI functions _new and _from_data).
+///
 /// Thread safety:
 /// - Safe for concurrent reads from multiple threads
 /// - Not safe to access after move or destruction
@@ -37,41 +40,6 @@ using ImageSize = ::ImageSize;
 /// - No data copies on FFI boundary
 /// - Lifetime tied to wrapper object
 #define KORNIA_DEFINE_IMAGE_WRAPPER(CppClass, RustType, FnPrefix, DataType)                        \
-    class CppClass {                                                                               \
-      public:                                                                                      \
-        explicit CppClass(rust::Box<::RustType> img) : img_(std::move(img)) {                      \
-        }                                                                                          \
-                                                                                                   \
-        CppClass(const CppClass&) = delete;                                                        \
-        CppClass& operator=(const CppClass&) = delete;                                             \
-        CppClass(CppClass&&) = default;                                                            \
-        CppClass& operator=(CppClass&&) = default;                                                 \
-                                                                                                   \
-        size_t width() const {                                                                     \
-            return FnPrefix##_width(*img_);                                                        \
-        }                                                                                          \
-        size_t height() const {                                                                    \
-            return FnPrefix##_height(*img_);                                                       \
-        }                                                                                          \
-        size_t channels() const {                                                                  \
-            return FnPrefix##_channels(*img_);                                                     \
-        }                                                                                          \
-        ImageSize size() const {                                                                   \
-            return FnPrefix##_size(*img_);                                                         \
-        }                                                                                          \
-        rust::Slice<const DataType> data() const {                                                 \
-            return FnPrefix##_data(*img_);                                                         \
-        }                                                                                          \
-                                                                                                   \
-      private:                                                                                     \
-        rust::Box<::RustType> img_;                                                                \
-    }
-
-/// @brief Macro to generate C++ wrapper classes with convenience constructors
-///
-/// Extended version that includes constructors for creating images from shape+value or shape+data.
-/// Only use for image types that have corresponding FFI functions (_new and _from_data).
-#define KORNIA_DEFINE_IMAGE_WRAPPER_WITH_CTORS(CppClass, RustType, FnPrefix, DataType)             \
     class CppClass {                                                                               \
       public:                                                                                      \
         explicit CppClass(rust::Box<::RustType> img) : img_(std::move(img)) {                      \
@@ -120,7 +88,7 @@ using ImageSize = ::ImageSize;
 /// Constructors:
 /// - ImageU8C1(width, height, value) - Create filled with value
 /// - ImageU8C1(width, height, data) - Create from std::vector<uint8_t>
-KORNIA_DEFINE_IMAGE_WRAPPER_WITH_CTORS(ImageU8C1, ImageU8C1, image_u8c1, uint8_t);
+KORNIA_DEFINE_IMAGE_WRAPPER(ImageU8C1, ImageU8C1, image_u8c1, uint8_t);
 
 /// @brief RGB u8 image (3 channels). Wraps kornia_image::Image<u8, 3>.
 ///
@@ -130,12 +98,16 @@ KORNIA_DEFINE_IMAGE_WRAPPER_WITH_CTORS(ImageU8C1, ImageU8C1, image_u8c1, uint8_t
 /// Constructors:
 /// - ImageU8C3(width, height, value) - Create filled with value
 /// - ImageU8C3(width, height, data) - Create from std::vector<uint8_t>
-KORNIA_DEFINE_IMAGE_WRAPPER_WITH_CTORS(ImageU8C3, ImageU8C3, image_u8c3, uint8_t);
+KORNIA_DEFINE_IMAGE_WRAPPER(ImageU8C3, ImageU8C3, image_u8c3, uint8_t);
 
 /// @brief RGBA u8 image (4 channels). Wraps kornia_image::Image<u8, 4>.
 ///
 /// Thread safety: Safe for concurrent reads. Do not access after move or destruction.
 /// Memory: Managed by Rust, zero-copy data access via rust::Slice.
+///
+/// Constructors:
+/// - ImageU8C4(width, height, value) - Create filled with value
+/// - ImageU8C4(width, height, data) - Create from std::vector<uint8_t>
 KORNIA_DEFINE_IMAGE_WRAPPER(ImageU8C4, ImageU8C4, image_u8c4, uint8_t);
 
 // f32 image types (32-bit float, common for ML/processing)
@@ -143,21 +115,32 @@ KORNIA_DEFINE_IMAGE_WRAPPER(ImageU8C4, ImageU8C4, image_u8c4, uint8_t);
 ///
 /// Thread safety: Safe for concurrent reads. Do not access after move or destruction.
 /// Memory: Managed by Rust, zero-copy data access via rust::Slice.
+///
+/// Constructors:
+/// - ImageF32C1(width, height, value) - Create filled with value
+/// - ImageF32C1(width, height, data) - Create from std::vector<float>
 KORNIA_DEFINE_IMAGE_WRAPPER(ImageF32C1, ImageF32C1, image_f32c1, float);
 
 /// @brief RGB f32 image (3 channels). Wraps kornia_image::Image<f32, 3>.
 ///
 /// Thread safety: Safe for concurrent reads. Do not access after move or destruction.
 /// Memory: Managed by Rust, zero-copy data access via rust::Slice.
+///
+/// Constructors:
+/// - ImageF32C3(width, height, value) - Create filled with value
+/// - ImageF32C3(width, height, data) - Create from std::vector<float>
 KORNIA_DEFINE_IMAGE_WRAPPER(ImageF32C3, ImageF32C3, image_f32c3, float);
 
 /// @brief RGBA f32 image (4 channels). Wraps kornia_image::Image<f32, 4>.
 ///
 /// Thread safety: Safe for concurrent reads. Do not access after move or destruction.
 /// Memory: Managed by Rust, zero-copy data access via rust::Slice.
+///
+/// Constructors:
+/// - ImageF32C4(width, height, value) - Create filled with value
+/// - ImageF32C4(width, height, data) - Create from std::vector<float>
 KORNIA_DEFINE_IMAGE_WRAPPER(ImageF32C4, ImageF32C4, image_f32c4, float);
 
 #undef KORNIA_DEFINE_IMAGE_WRAPPER
-#undef KORNIA_DEFINE_IMAGE_WRAPPER_WITH_CTORS
 
 } // namespace kornia

@@ -150,6 +150,16 @@ mod ffi {
         ///
         /// ImageU8C1 containing the provided data
         fn image_u8c1_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C1>;
+
+        // Additional image type constructors
+        fn image_u8c4_new(width: usize, height: usize, value: u8) -> Box<ImageU8C4>;
+        fn image_u8c4_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C4>;
+        fn image_f32c1_new(width: usize, height: usize, value: f32) -> Box<ImageF32C1>;
+        fn image_f32c1_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C1>;
+        fn image_f32c3_new(width: usize, height: usize, value: f32) -> Box<ImageF32C3>;
+        fn image_f32c3_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C3>;
+        fn image_f32c4_new(width: usize, height: usize, value: f32) -> Box<ImageF32C4>;
+        fn image_f32c4_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C4>;
     }
 }
 
@@ -286,5 +296,111 @@ fn image_u8c1_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8
     let image = kornia_image::Image::<u8, 1, CpuAllocator>::from_size_slice(size, data, alloc)
         .expect("Failed to create image from data");
     Box::new(ImageU8C1(image))
+}
+
+// Additional image type constructors
+
+/// Create a new ImageU8C4 with specified dimensions, filled with a value
+fn image_u8c4_new(width: usize, height: usize, value: u8) -> Box<ImageU8C4> {
+    let size = kornia_image::ImageSize { width, height };
+    let alloc = CpuAllocator::default();
+    let image = kornia_image::Image::<u8, 4, CpuAllocator>::from_size_val(size, value, alloc)
+        .expect("Failed to create image");
+    Box::new(ImageU8C4(image))
+}
+
+/// Create a new ImageU8C4 from existing data
+fn image_u8c4_from_data(width: usize, height: usize, data: &[u8]) -> Box<ImageU8C4> {
+    let size = kornia_image::ImageSize { width, height };
+    let expected_len = width * height * 4;
+    if data.len() != expected_len {
+        panic!(
+            "Data length mismatch: expected {} bytes, got {}",
+            expected_len,
+            data.len()
+        );
+    }
+    let alloc = CpuAllocator::default();
+    let image = kornia_image::Image::<u8, 4, CpuAllocator>::from_size_slice(size, data, alloc)
+        .expect("Failed to create image from data");
+    Box::new(ImageU8C4(image))
+}
+
+/// Create a new ImageF32C1 with specified dimensions, filled with a value
+fn image_f32c1_new(width: usize, height: usize, value: f32) -> Box<ImageF32C1> {
+    let size = kornia_image::ImageSize { width, height };
+    let alloc = CpuAllocator::default();
+    let image = kornia_image::Image::<f32, 1, CpuAllocator>::from_size_val(size, value, alloc)
+        .expect("Failed to create image");
+    Box::new(ImageF32C1(image))
+}
+
+/// Create a new ImageF32C1 from existing data
+fn image_f32c1_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C1> {
+    let size = kornia_image::ImageSize { width, height };
+    let expected_len = width * height;
+    if data.len() != expected_len {
+        panic!(
+            "Data length mismatch: expected {} elements, got {}",
+            expected_len,
+            data.len()
+        );
+    }
+    let alloc = CpuAllocator::default();
+    let image = kornia_image::Image::<f32, 1, CpuAllocator>::from_size_slice(size, data, alloc)
+        .expect("Failed to create image from data");
+    Box::new(ImageF32C1(image))
+}
+
+/// Create a new ImageF32C3 with specified dimensions, filled with a value
+fn image_f32c3_new(width: usize, height: usize, value: f32) -> Box<ImageF32C3> {
+    let size = kornia_image::ImageSize { width, height };
+    let alloc = CpuAllocator::default();
+    let image = kornia_image::Image::<f32, 3, CpuAllocator>::from_size_val(size, value, alloc)
+        .expect("Failed to create image");
+    Box::new(ImageF32C3(image))
+}
+
+/// Create a new ImageF32C3 from existing data
+fn image_f32c3_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C3> {
+    let size = kornia_image::ImageSize { width, height };
+    let expected_len = width * height * 3;
+    if data.len() != expected_len {
+        panic!(
+            "Data length mismatch: expected {} elements, got {}",
+            expected_len,
+            data.len()
+        );
+    }
+    let alloc = CpuAllocator::default();
+    let image = kornia_image::Image::<f32, 3, CpuAllocator>::from_size_slice(size, data, alloc)
+        .expect("Failed to create image from data");
+    Box::new(ImageF32C3(image))
+}
+
+/// Create a new ImageF32C4 with specified dimensions, filled with a value
+fn image_f32c4_new(width: usize, height: usize, value: f32) -> Box<ImageF32C4> {
+    let size = kornia_image::ImageSize { width, height };
+    let alloc = CpuAllocator::default();
+    let image = kornia_image::Image::<f32, 4, CpuAllocator>::from_size_val(size, value, alloc)
+        .expect("Failed to create image");
+    Box::new(ImageF32C4(image))
+}
+
+/// Create a new ImageF32C4 from existing data
+fn image_f32c4_from_data(width: usize, height: usize, data: &[f32]) -> Box<ImageF32C4> {
+    let size = kornia_image::ImageSize { width, height };
+    let expected_len = width * height * 4;
+    if data.len() != expected_len {
+        panic!(
+            "Data length mismatch: expected {} elements, got {}",
+            expected_len,
+            data.len()
+        );
+    }
+    let alloc = CpuAllocator::default();
+    let image = kornia_image::Image::<f32, 4, CpuAllocator>::from_size_slice(size, data, alloc)
+        .expect("Failed to create image from data");
+    Box::new(ImageF32C4(image))
 }
 
