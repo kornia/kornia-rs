@@ -1,3 +1,4 @@
+use glam::{DMat3, DVec3};
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
 use kornia_3d::linalg;
 
@@ -14,12 +15,26 @@ pub(crate) fn fit_transformation(
     let (src_centroid, dst_centroid) = compute_centroids(points_in_src, points_in_dst);
 
     // compute covariance matrix
-    let mut hh = faer::Mat::<f64>::zeros(3, 3);
+    let mut hh = DMat3::ZERO;
+    let src_c = DVec3::new(
+        src_centroid.read(0),
+        src_centroid.read(1),
+        src_centroid.read(2),
+    );
+    let dst_c = DVec3::new(
+        dst_centroid.read(0),
+        dst_centroid.read(1),
+        dst_centroid.read(2),
+    );
+
     for (p_in_src, p_in_dst) in points_in_src.iter().zip(points_in_dst.iter()) {
-        let p_src = faer::col![p_in_src[0], p_in_src[1], p_in_src[2]] - &src_centroid;
-        let p_dst = faer::col![p_in_dst[0], p_in_dst[1], p_in_dst[2]] - &dst_centroid;
-        hh += p_src * p_dst.transpose();
+        let ps = DVec3::from(*p_in_src) - src_c;
+        let pd = DVec3::from(*p_in_dst) - dst_c;
+
+        hh += DMat3::from_cols(ps * pd.x, ps * pd.y, ps * pd.z);
     }
+
+    let hh = faer::Mat::<f64>::from_fn(3, 3, |i, j| hh.col(j)[i]);
 
     // solve the linear system H * x = 0 to find the rotation
     let svd = hh.svd();
