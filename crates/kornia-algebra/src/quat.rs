@@ -1,8 +1,7 @@
 //! Quaternion types.
 //!
 //! This module provides quaternion types for kornia-rs as thin newtype
-//! wrappers over `glam` quaternions. The core API is generated via a small
-//! helper macro so we can easily support multiple precisions.
+//! wrappers over `glam` quaternions.
 
 macro_rules! define_quat_type {
     ($(#[$meta:meta])* $name:ident, $glam_type:ty, $scalar:ty) => {
@@ -25,6 +24,18 @@ macro_rules! define_quat_type {
             #[inline]
             pub fn from_xyzw(x: $scalar, y: $scalar, z: $scalar, w: $scalar) -> Self {
                 Self(<$glam_type>::from_xyzw(x, y, z, w))
+            }
+
+            /// Create a quaternion from an array of 4 components.
+            #[inline]
+            pub fn from_array(arr: [$scalar; 4]) -> Self {
+                Self(<$glam_type>::from_array(arr))
+            }
+
+            /// Convert the quaternion to an array of 4 components.
+            #[inline]
+            pub fn to_array(&self) -> [$scalar; 4] {
+                self.0.to_array()
             }
         }
 

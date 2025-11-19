@@ -19,6 +19,16 @@ impl SO3 {
         Self { q: quat }
     }
 
+    pub fn from_array(arr: [f32; 4]) -> Self {
+        Self {
+            q: QuatF32::from_array(arr),
+        }
+    }
+
+    pub fn to_array(&self) -> [f32; 4] {
+        self.q.to_array()
+    }
+
     /// Create a new SO3 from a quaternion.
     /// NOTE: quaternion should be normalized
     #[inline]

@@ -23,6 +23,19 @@ impl SE2 {
         }
     }
 
+    pub fn from_array(arr: [f32; 4]) -> Self {
+        Self {
+            r: SO2::from_array([arr[0], arr[1]]),
+            t: Vec2F32::from_array([arr[2], arr[3]]),
+        }
+    }
+
+    pub fn to_array(&self) -> [f32; 4] {
+        let r = self.r.to_array();
+        let t = self.t.to_array();
+        [r[0], r[1], t[0], t[1]]
+    }
+
     pub fn from_matrix(mat: &Mat3AF32) -> Self {
         Self {
             r: SO2::from_matrix3a(mat),

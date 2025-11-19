@@ -17,6 +17,16 @@ impl SO2 {
         Self { z }
     }
 
+    pub fn from_array(arr: [f32; 2]) -> Self {
+        Self {
+            z: Vec2F32::from_array(arr),
+        }
+    }
+
+    pub fn to_array(&self) -> [f32; 2] {
+        self.z.to_array()
+    }
+
     pub fn from_matrix(mat: &Mat2F32) -> Self {
         Self {
             z: Vec2F32::new(mat.x_axis.x, mat.x_axis.y),
@@ -435,7 +445,7 @@ mod tests {
 
         // Test that rotation matrix is orthogonal (R^T * R = I)
         let transpose = matrix.transpose();
-        let product = Mat2F32::from(transpose * glam::Mat2::from(matrix));
+        let product = transpose * matrix;
         assert_relative_eq!(product.x_axis.x, 1.0, epsilon = EPSILON);
         assert_relative_eq!(product.y_axis.y, 1.0, epsilon = EPSILON);
         assert_relative_eq!(product.x_axis.y, 0.0, epsilon = EPSILON);
