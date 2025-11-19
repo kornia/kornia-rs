@@ -21,24 +21,25 @@ endif()
 # Determine the library name and path based on platform
 # Windows: kornia_cpp.lib, Unix: libkornia_cpp.a, macOS: libkornia_cpp.a
 if(WIN32)
-    # Windows uses .lib for static libraries
-    set(RUST_LIB_NAME "kornia_cpp.lib")
-    set(RUST_INSTALL_NAME ${RUST_LIB_NAME})
+    # Windows uses .lib for static libraries and .dll for dynamic
+    set(RUST_STATIC_LIB_NAME "kornia_cpp.lib")
+    set(RUST_DYNAMIC_LIB_NAME "kornia_cpp.dll")
 elseif(APPLE)
-    # macOS uses lib prefix
-    set(RUST_LIB_NAME "libkornia_cpp.a")
-    set(RUST_INSTALL_NAME ${RUST_LIB_NAME})
+    # macOS uses lib prefix, .a for static, .dylib for dynamic
+    set(RUST_STATIC_LIB_NAME "libkornia_cpp.a")
+    set(RUST_DYNAMIC_LIB_NAME "libkornia_cpp.dylib")
 else()
-    # Linux and other Unix systems
-    set(RUST_LIB_NAME "libkornia_cpp.a")
-    set(RUST_INSTALL_NAME ${RUST_LIB_NAME})
+    # Linux and other Unix systems: .a for static, .so for dynamic
+    set(RUST_STATIC_LIB_NAME "libkornia_cpp.a")
+    set(RUST_DYNAMIC_LIB_NAME "libkornia_cpp.so")
 endif()
 
-set(RUST_LIB_PATH "${RUST_LIB_DIR}/${RUST_LIB_NAME}")
+set(RUST_LIB_PATH "${RUST_LIB_DIR}/${RUST_STATIC_LIB_NAME}")
+set(RUST_DYNAMIC_LIB_PATH "${RUST_LIB_DIR}/${RUST_DYNAMIC_LIB_NAME}")
 
 # Build the Rust library as a custom command (runs first)
 add_custom_command(
-    OUTPUT ${RUST_LIB_PATH}
+    OUTPUT ${RUST_LIB_PATH} ${RUST_DYNAMIC_LIB_PATH}
     COMMAND cargo build --color=always $<$<CONFIG:Release>:--release>
     DEPENDS 
         ${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml
@@ -49,8 +50,8 @@ add_custom_command(
 )
 
 # Create a custom target that depends on the Rust library
-add_custom_target(kornia_rust_lib
-    DEPENDS ${RUST_LIB_PATH}
+add_custom_target(kornia_rust_lib ALL
+    DEPENDS ${RUST_LIB_PATH} ${RUST_DYNAMIC_LIB_PATH}
 )
 
 # Find the CXX bridge generated headers
@@ -109,10 +110,65 @@ install(DIRECTORY include/
     FILES_MATCHING PATTERN "*.hpp"
 )
 
-# Install Rust library
-install(FILES ${RUST_LIB_PATH}
+# Install dynamic library as-is
+install(FILES ${RUST_DYNAMIC_LIB_PATH}
     DESTINATION lib
 )
+
+# Merge static library with CXX bridge runtime into single archive
+install(CODE "
+    # Find CXX bridge library
+    file(GLOB CXXBRIDGE_LIB \"${CARGO_TARGET_DIR}/${CARGO_PROFILE}/build/cxx-*/out/libcxxbridge1.a\")
+    if(NOT CXXBRIDGE_LIB)
+        message(FATAL_ERROR \"Could not find libcxxbridge1.a\")
+    endif()
+    list(GET CXXBRIDGE_LIB 0 CXXBRIDGE_LIB_PATH)
+    
+    message(STATUS \"Merging libraries:\")
+    message(STATUS \"  Rust library: ${RUST_LIB_PATH}\")
+    message(STATUS \"  CXX bridge: \${CXXBRIDGE_LIB_PATH}\")
+    
+    # Create temporary directory for extraction
+    set(MERGE_DIR \"\${CMAKE_INSTALL_PREFIX}/lib/kornia_merge_tmp\")
+    file(MAKE_DIRECTORY \${MERGE_DIR})
+    
+    # Extract both archives
+    execute_process(
+        COMMAND ${CMAKE_AR} x \"${RUST_LIB_PATH}\"
+        WORKING_DIRECTORY \${MERGE_DIR}
+        RESULT_VARIABLE result
+    )
+    if(result)
+        message(FATAL_ERROR \"Failed to extract ${RUST_LIB_PATH}\")
+    endif()
+    
+    execute_process(
+        COMMAND ${CMAKE_AR} x \"\${CXXBRIDGE_LIB_PATH}\"
+        WORKING_DIRECTORY \${MERGE_DIR}
+        RESULT_VARIABLE result
+    )
+    if(result)
+        message(FATAL_ERROR \"Failed to extract \${CXXBRIDGE_LIB_PATH}\")
+    endif()
+    
+    # Get all object files
+    file(GLOB_RECURSE OBJ_FILES \"\${MERGE_DIR}/*.o\")
+    
+    # Create merged archive
+    set(MERGED_LIB \"\${CMAKE_INSTALL_PREFIX}/lib/${RUST_STATIC_LIB_NAME}\")
+    execute_process(
+        COMMAND ${CMAKE_AR} rcs \"\${MERGED_LIB}\" \${OBJ_FILES}
+        RESULT_VARIABLE result
+    )
+    if(result)
+        message(FATAL_ERROR \"Failed to create merged archive\")
+    endif()
+    
+    # Clean up temporary directory
+    file(REMOVE_RECURSE \${MERGE_DIR})
+    
+    message(STATUS \"Successfully merged libraries into: \${MERGED_LIB}\")
+")
 
 # Install CXX bridge headers (custom script to resolve symlinks)
 install(CODE "
