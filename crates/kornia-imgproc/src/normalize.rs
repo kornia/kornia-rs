@@ -1,4 +1,5 @@
 use num_traits::Float;
+use rayon::prelude::*;
 
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
@@ -128,7 +129,7 @@ pub fn find_min_max<T, const C: usize, A: ImageAllocator>(
     image: &Image<T, C, A>,
 ) -> Result<(T, T), ImageError>
 where
-    T: Clone + Copy + PartialOrd,
+    T: Clone + Copy + PartialOrd + Send + Sync,
 {
     // get the first element in the image
     let first_element = match image.as_slice().iter().next() {
@@ -136,19 +137,27 @@ where
         None => return Err(ImageError::ImageDataNotInitialized),
     };
 
-    let mut min = first_element;
-    let mut max = first_element;
+    let (min, max) = image
+        .as_slice()
+        .par_iter()
+        .fold(
+            || (*first_element, *first_element),
+            |(min, max), x| {
+                let new_min = if *x < min { *x } else { min };
+                let new_max = if *x > max { *x } else { max };
+                (new_min, new_max)
+            },
+        )
+        .reduce(
+            || (*first_element, *first_element),
+            |(min1, max1), (min2, max2)| {
+                let new_min = if min2 < min1 { min2 } else { min1 };
+                let new_max = if max2 > max1 { max2 } else { max1 };
+                (new_min, new_max)
+            },
+        );
 
-    for x in image.as_slice().iter() {
-        if x < min {
-            min = x;
-        }
-        if x > max {
-            max = x;
-        }
-    }
-
-    Ok((*min, *max))
+    Ok((min, max))
 }
 
 /// Normalize an image using the minimum and maximum values.

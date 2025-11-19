@@ -2,6 +2,7 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
+    prelude::*,
     slice::{ParallelSlice, ParallelSliceMut},
 };
 
@@ -42,19 +43,35 @@ use rayon::{
 /// assert_eq!(mean, [111.25, 112.25, 113.25]);
 /// ```
 pub fn std_mean<A: ImageAllocator>(image: &Image<u8, 3, A>) -> ([f64; 3], [f64; 3]) {
-    let (sum, sq_sum) = image.as_slice().chunks_exact(3).fold(
-        ([0f64; 3], [0f64; 3]),
-        |(mut sum, mut sq_sum), pixel| {
-            sum.iter_mut()
-                .zip(pixel.iter())
-                .for_each(|(s, &p)| *s += p as f64);
-            sq_sum
-                .iter_mut()
-                .zip(pixel.iter())
-                .for_each(|(s, &p)| *s += (p as f64).powi(2));
-            (sum, sq_sum)
-        },
-    );
+    let (sum, sq_sum) = image
+        .as_slice()
+        .par_chunks_exact(3)
+        .fold(
+            || ([0f64; 3], [0f64; 3]),
+            |(mut sum, mut sq_sum), pixel| {
+                sum.iter_mut()
+                    .zip(pixel.iter())
+                    .for_each(|(s, &p)| *s += p as f64);
+                sq_sum
+                    .iter_mut()
+                    .zip(pixel.iter())
+                    .for_each(|(s, &p)| *s += (p as f64).powi(2));
+                (sum, sq_sum)
+            },
+        )
+        .reduce(
+            || ([0f64; 3], [0f64; 3]),
+            |(mut sum1, mut sq_sum1), (sum2, sq_sum2)| {
+                sum1.iter_mut()
+                    .zip(sum2.iter())
+                    .for_each(|(s1, &s2)| *s1 += s2);
+                sq_sum1
+                    .iter_mut()
+                    .zip(sq_sum2.iter())
+                    .for_each(|(sq1, &sq2)| *sq1 += sq2);
+                (sum1, sq_sum1)
+            },
+        );
 
     let n = (image.width() * image.height()) as f64;
     let mean = [sum[0] / n, sum[1] / n, sum[2] / n];
@@ -157,13 +174,12 @@ pub fn bitwise_and<
         ));
     }
 
-    // apply the mask to the image
-
+    // apply the mask to the image in parallel
     dst.as_slice_mut()
-        .chunks_exact_mut(C)
-        .zip(src1.as_slice().chunks_exact(C))
-        .zip(src2.as_slice().chunks_exact(C))
-        .zip(mask.as_slice().iter())
+        .par_chunks_exact_mut(C)
+        .zip(src1.as_slice().par_chunks_exact(C))
+        .zip(src2.as_slice().par_chunks_exact(C))
+        .zip(mask.as_slice().par_iter())
         .for_each(|(((dst_chunk, src1_chunk), src2_chunk), &mask_chunk)| {
             dst_chunk
                 .iter_mut()
