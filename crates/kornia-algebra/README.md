@@ -1,8 +1,9 @@
 # kornia-algebra
 
-**kornia-algebra** is a core library for geometric algebra in the [kornia-rs](https://github.com/kornia/kornia-rs) ecosystem. It provides a robust set of types for linear algebra and Lie theory, designed specifically for computer vision, robotics, and spatial computing applications.
+**kornia-algebra** is a core library for geometric algebra in the [kornia-rs](https://github.com/kornia/kornia-rs) ecosystem. It provides a robust set of types for linear algebra and Lie theory, designed specifically for computer vision and robotics.
 
-It is built on top of the excellent [glam](https://github.com/bitshifter/glam-rs) crate, providing strict newtypes and extending functionality for Lie groups and manifolds.
+It is built on top of the excellent [glam](https://github.com/bitshifter/glam-rs) crate, providing strict newtypes and extending functionality for the aglebra types.
+
 Most operations are accelerated using SIMD instructions thanks to `glam`'s optimized implementation.
 
 ## Features
