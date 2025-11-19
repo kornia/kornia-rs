@@ -4,12 +4,11 @@
 
 use crate::ops::{compute_centroid, gauss_newton, intrinsics_as_vectors, pose_to_rt};
 use crate::pnp::{NumericTol, PnPError, PnPResult, PnPSolver};
-use glam::{Mat3, Mat3A, Vec3};
+use kornia_algebra::{Mat3, Mat3A, Vec3, SO3};
 use kornia_imgproc::calibration::{
     distortion::{distort_point_polynomial, PolynomialDistortion},
     CameraIntrinsic,
 };
-use kornia_lie::so3::SO3;
 use kornia_linalg::rigid::umeyama;
 use kornia_linalg::svd::svd3;
 use nalgebra::{DMatrix, DVector, Vector4};
@@ -189,7 +188,7 @@ fn pose_from_betas(
     let a0 = alphas[0];
     let mut pc0_vec = Vec3::ZERO;
     for j in 0..4 {
-        pc0_vec += Vec3::from_array(cc[j]) * a0[j];
+        pc0_vec = pc0_vec + Vec3::from_array(cc[j]) * a0[j];
     }
 
     if pc0_vec.z < 0.0 {
@@ -201,8 +200,14 @@ fn pose_from_betas(
     }
 
     // Convert arrays to Vec3 for consistency with glam usage
-    let cw_vec3: Vec<Vec3> = cw.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect();
-    let cc_vec3: Vec<Vec3> = cc.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect();
+    let cw_vec3: Vec<glam::Vec3> = cw
+        .iter()
+        .map(|p| glam::Vec3::new(p[0], p[1], p[2]))
+        .collect();
+    let cc_vec3: Vec<glam::Vec3> = cc
+        .iter()
+        .map(|p| glam::Vec3::new(p[0], p[1], p[2]))
+        .collect();
 
     let (r, t, _s) = umeyama(&cw_vec3, &cc_vec3).map_err(|e| PnPError::SvdFailed(e.to_string()))?;
 
@@ -275,14 +280,14 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
     let c = compute_centroid(points_world);
 
     // Compute covariance using glam for consistency
-    let mut cov_mat = Mat3::ZERO;
+    let mut cov_mat = Mat3::from_cols_array(&[0.0; 9]);
     for p in points_world {
         let diff = Vec3::new(p[0] - c[0], p[1] - c[1], p[2] - c[2]);
         // Outer product diff * diffᵀ via column scaling
         let outer_product = Mat3::from_cols(diff * diff.x, diff * diff.y, diff * diff.z);
-        cov_mat += outer_product;
+        cov_mat = cov_mat + outer_product;
     }
-    cov_mat *= 1.0 / n as f32;
+    cov_mat = cov_mat * (1.0 / n as f32);
 
     let svd = svd3(&cov_mat);
     let v = svd.v();
@@ -290,9 +295,9 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
 
     let s_diag = [s.x_axis.x, s.y_axis.y, s.z_axis.z];
     let mut axes_sig: Vec<(f32, Vec3)> = vec![
-        (s_diag[0].sqrt(), v.x_axis),
-        (s_diag[1].sqrt(), v.y_axis),
-        (s_diag[2].sqrt(), v.z_axis),
+        (s_diag[0].sqrt(), Vec3::from(v.x_axis)),
+        (s_diag[1].sqrt(), Vec3::from(v.y_axis)),
+        (s_diag[2].sqrt(), Vec3::from(v.z_axis)),
     ];
     axes_sig.sort_by(|a, b| b.0.total_cmp(&a.0));
 
@@ -336,8 +341,8 @@ fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) 
     } else {
         // Moore–Penrose pseudo-inverse: B⁺ = V Σ⁺ Uᵀ
         let svd = svd3(&b);
-        let u = *svd.u();
-        let v_mat = *svd.v();
+        let u = Mat3::from(*svd.u());
+        let v_mat = Mat3::from(*svd.v());
         let s_mat = *svd.s();
         let s_diag = [s_mat.x_axis.x, s_mat.y_axis.y, s_mat.z_axis.z];
         let inv_diag = Vec3::new(
@@ -357,7 +362,7 @@ fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) 
                 0.0
             },
         );
-        let sigma_inv = Mat3::from_diagonal(inv_diag);
+        let sigma_inv = Mat3::from(glam::Mat3::from_diagonal(inv_diag.into()));
         v_mat * sigma_inv * u.transpose()
     };
 
@@ -544,7 +549,7 @@ const CP_PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (
 fn rho_ctrlpts(cw: &[[f32; 3]; 4]) -> [f32; 6] {
     CP_PAIRS.map(|(i, j)| {
         let diff = Vec3::from_array(cw[i]) - Vec3::from_array(cw[j]);
-        diff.length_squared()
+        diff.dot(diff)
     })
 }
 
