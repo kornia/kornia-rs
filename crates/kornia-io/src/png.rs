@@ -20,7 +20,8 @@ use std::{fs, fs::File, path::Path};
 ///
 /// A grayscale image (Gray8).
 pub fn read_image_png_mono8(file_path: impl AsRef<Path>) -> Result<Gray8<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path)?;
+    let (buf, size, color_type, bit_depth) = read_png_impl(file_path)?;
+    let buf = normalize_png_gray8_buffer(buf, color_type, bit_depth)?;
     Ok(Gray8::from_size_vec(size.into(), buf, CpuAllocator)?)
 }
 
@@ -34,7 +35,8 @@ pub fn read_image_png_mono8(file_path: impl AsRef<Path>) -> Result<Gray8<CpuAllo
 ///
 /// An RGB8 typed image.
 pub fn read_image_png_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path)?;
+    let (buf, size, color_type, bit_depth) = read_png_impl(file_path)?;
+    let buf = normalize_png_rgb8_buffer(buf, color_type, bit_depth)?;
     Ok(Rgb8::from_size_vec(size.into(), buf, CpuAllocator)?)
 }
 
@@ -48,7 +50,8 @@ pub fn read_image_png_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8<CpuAlloca
 ///
 /// An RGBA8 typed image.
 pub fn read_image_png_rgba8(file_path: impl AsRef<Path>) -> Result<Rgba8<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path)?;
+    let (buf, size, color_type, bit_depth) = read_png_impl(file_path)?;
+    let buf = normalize_png_rgba8_buffer(buf, color_type, bit_depth)?;
     Ok(Rgba8::from_size_vec(size.into(), buf, CpuAllocator)?)
 }
 
@@ -62,7 +65,10 @@ pub fn read_image_png_rgba8(file_path: impl AsRef<Path>) -> Result<Rgba8<CpuAllo
 ///
 /// An RGB16 typed image.
 pub fn read_image_png_rgb16(file_path: impl AsRef<Path>) -> Result<Rgb16<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path)?;
+    let (buf, size, color_type, bit_depth) = read_png_impl(file_path)?;
+    if !(color_type == ColorType::Rgb && bit_depth == BitDepth::Sixteen) {
+        return Err(IoError::UnsupportedPngColorType(color_type, bit_depth));
+    }
     let buf_u16 = convert_buf_u8_u16(buf);
 
     Ok(Rgb16::from_size_vec(size.into(), buf_u16, CpuAllocator)?)
@@ -78,7 +84,10 @@ pub fn read_image_png_rgb16(file_path: impl AsRef<Path>) -> Result<Rgb16<CpuAllo
 ///
 /// An RGBA16 typed image.
 pub fn read_image_png_rgba16(file_path: impl AsRef<Path>) -> Result<Rgba16<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path)?;
+    let (buf, size, color_type, bit_depth) = read_png_impl(file_path)?;
+    if !(color_type == ColorType::Rgba && bit_depth == BitDepth::Sixteen) {
+        return Err(IoError::UnsupportedPngColorType(color_type, bit_depth));
+    }
     let buf_u16 = convert_buf_u8_u16(buf);
 
     Ok(Rgba16::from_size_vec(size.into(), buf_u16, CpuAllocator)?)
@@ -94,7 +103,10 @@ pub fn read_image_png_rgba16(file_path: impl AsRef<Path>) -> Result<Rgba16<CpuAl
 ///
 /// A Gray16 typed image.
 pub fn read_image_png_mono16(file_path: impl AsRef<Path>) -> Result<Gray16<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path)?;
+    let (buf, size, color_type, bit_depth) = read_png_impl(file_path)?;
+    if !(color_type == ColorType::Grayscale && bit_depth == BitDepth::Sixteen) {
+        return Err(IoError::UnsupportedPngColorType(color_type, bit_depth));
+    }
     let buf_u16 = convert_buf_u8_u16(buf);
 
     Ok(Gray16::from_size_vec(size.into(), buf_u16, CpuAllocator)?)
@@ -191,7 +203,9 @@ pub fn decode_image_png_rgba16<A: ImageAllocator>(
 }
 
 // utility function to read the png file
-fn read_png_impl(file_path: impl AsRef<Path>) -> Result<(Vec<u8>, [usize; 2]), IoError> {
+fn read_png_impl(
+    file_path: impl AsRef<Path>,
+) -> Result<(Vec<u8>, [usize; 2], ColorType, BitDepth), IoError> {
     // verify the file exists
     let file_path = file_path.as_ref();
     if !file_path.exists() {
@@ -216,8 +230,100 @@ fn read_png_impl(file_path: impl AsRef<Path>) -> Result<(Vec<u8>, [usize; 2]), I
     let info = reader
         .next_frame(&mut buf)
         .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
+    buf.truncate(info.buffer_size());
 
-    Ok((buf, [info.width as usize, info.height as usize]))
+    Ok((
+        buf,
+        [info.width as usize, info.height as usize],
+        info.color_type,
+        info.bit_depth,
+    ))
+}
+
+fn normalize_png_gray8_buffer(
+    buf: Vec<u8>,
+    color_type: ColorType,
+    bit_depth: BitDepth,
+) -> Result<Vec<u8>, IoError> {
+    match (color_type, bit_depth) {
+        (ColorType::Grayscale, BitDepth::Eight) => Ok(buf),
+        (ColorType::GrayscaleAlpha, BitDepth::Eight) => {
+            let mut gray = Vec::with_capacity(buf.len() / 2);
+            for chunk in buf.chunks_exact(2) {
+                gray.push(chunk[0]);
+            }
+            Ok(gray)
+        }
+        _ => Err(IoError::UnsupportedPngColorType(color_type, bit_depth)),
+    }
+}
+
+fn normalize_png_rgb8_buffer(
+    buf: Vec<u8>,
+    color_type: ColorType,
+    bit_depth: BitDepth,
+) -> Result<Vec<u8>, IoError> {
+    match (color_type, bit_depth) {
+        (ColorType::Rgb, BitDepth::Eight) => Ok(buf),
+        (ColorType::Rgba, BitDepth::Eight) => {
+            let mut rgb = Vec::with_capacity(buf.len() / 4 * 3);
+            for chunk in buf.chunks_exact(4) {
+                rgb.extend_from_slice(&chunk[..3]);
+            }
+            Ok(rgb)
+        }
+        (ColorType::Grayscale, BitDepth::Eight) => {
+            let mut rgb = Vec::with_capacity(buf.len() * 3);
+            for gray in buf {
+                rgb.extend_from_slice(&[gray, gray, gray]);
+            }
+            Ok(rgb)
+        }
+        (ColorType::GrayscaleAlpha, BitDepth::Eight) => {
+            let mut rgb = Vec::with_capacity(buf.len() / 2 * 3);
+            for chunk in buf.chunks_exact(2) {
+                let gray = chunk[0];
+                rgb.extend_from_slice(&[gray, gray, gray]);
+            }
+            Ok(rgb)
+        }
+        _ => Err(IoError::UnsupportedPngColorType(color_type, bit_depth)),
+    }
+}
+
+fn normalize_png_rgba8_buffer(
+    buf: Vec<u8>,
+    color_type: ColorType,
+    bit_depth: BitDepth,
+) -> Result<Vec<u8>, IoError> {
+    match (color_type, bit_depth) {
+        (ColorType::Rgba, BitDepth::Eight) => Ok(buf),
+        (ColorType::Rgb, BitDepth::Eight) => {
+            let mut rgba = Vec::with_capacity(buf.len() / 3 * 4);
+            for chunk in buf.chunks_exact(3) {
+                rgba.extend_from_slice(chunk);
+                rgba.push(255);
+            }
+            Ok(rgba)
+        }
+        (ColorType::Grayscale, BitDepth::Eight) => {
+            let mut rgba = Vec::with_capacity(buf.len() * 4);
+            for gray in buf {
+                rgba.extend_from_slice(&[gray, gray, gray, 255]);
+            }
+            Ok(rgba)
+        }
+        (ColorType::GrayscaleAlpha, BitDepth::Eight) => {
+            let mut rgba = Vec::with_capacity(buf.len() / 2 * 4);
+            for chunk in buf.chunks_exact(2) {
+                let gray = chunk[0];
+                let alpha = chunk[1];
+                rgba.extend_from_slice(&[gray, gray, gray, alpha]);
+            }
+            Ok(rgba)
+        }
+        _ => Err(IoError::UnsupportedPngColorType(color_type, bit_depth)),
+    }
 }
 
 // Utility function to decode png files from raw bytes
@@ -404,6 +510,7 @@ fn write_png_impl(
 mod tests {
     use super::*;
     use crate::error::IoError;
+    use kornia_image::color_spaces::Rgba8;
     use std::fs::{create_dir_all, read};
 
     #[test]
@@ -429,6 +536,34 @@ mod tests {
         assert_eq!(image_data_back.cols(), 258);
         assert_eq!(image_data_back.rows(), 195);
         assert_eq!(image_data_back.num_channels(), 3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn read_png_rgb8_from_rgba_source() -> Result<(), IoError> {
+        let tmp_dir = tempfile::tempdir()?;
+        create_dir_all(tmp_dir.path())?;
+
+        let file_path = tmp_dir.path().join("rgba_source.png");
+        let mut rgba =
+            Rgba8::from_size_val(ImageSize { width: 4, height: 4 }, [0, 0, 0, 255], CpuAllocator)?;
+        rgba.as_slice_mut()
+            .chunks_exact_mut(4)
+            .enumerate()
+            .for_each(|(idx, pixel)| {
+                pixel[0] = (idx % 255) as u8;
+                pixel[1] = 10;
+                pixel[2] = 20;
+            });
+
+        write_image_png_rgba8(&file_path, &rgba)?;
+
+        let rgb = read_image_png_rgb8(&file_path)?;
+        assert_eq!(rgb.num_channels(), 3);
+        assert_eq!(rgb.cols(), rgba.cols());
+        assert_eq!(rgb.rows(), rgba.rows());
+        assert_eq!(rgb.as_slice()[0], rgba.as_slice()[0]);
 
         Ok(())
     }

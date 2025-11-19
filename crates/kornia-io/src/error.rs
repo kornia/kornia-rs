@@ -48,6 +48,10 @@ pub enum IoError {
     #[error("Failed to decode the png image. {0}")]
     PngDecodeError(String),
 
+    /// Unsupported PNG color type for the requested conversion.
+    #[error("Unsupported PNG color type {0:?} with bit depth {1:?}")]
+    UnsupportedPngColorType(png::ColorType, png::BitDepth),
+
     /// Error to decode the TIFF image.
     #[error(transparent)]
     TiffDecodingError(#[from] tiff::TiffError),
