@@ -3,6 +3,8 @@
 //! This module provides quaternion types for kornia-rs as thin newtype
 //! wrappers over `glam` quaternions.
 
+use crate::{Mat3AF32, Mat4F32};
+
 macro_rules! define_quat_type {
     ($(#[$meta:meta])* $name:ident, $glam_type:ty, $scalar:ty) => {
         $(#[$meta])*
@@ -85,40 +87,79 @@ macro_rules! define_quat_type {
 // Quaternion (single precision, `f32`).
 define_quat_type!(QuatF32, glam::Quat, f32);
 
-// Quaternion (double precision, `f64`).
-define_quat_type!(QuatF64, glam::DQuat, f64);
-
 impl QuatF32 {
-    /// Create a quaternion from a `Mat3AF32` matrix.
+    /// Create a quaternion from a 3x3 rotation matrix.
     #[inline]
-    pub fn from_mat3a(mat: &crate::Mat3AF32) -> Self {
-        Self(glam::Quat::from_mat3a(&glam::Mat3A::from(*mat)))
+    pub fn from_mat3a(mat: &Mat3AF32) -> Self {
+        Self(glam::Quat::from_mat3a(&mat.0))
     }
 
-    /// Create a quaternion from a `Mat4` matrix.
+    /// Create a quaternion from a 4x4 matrix.
     #[inline]
-    pub fn from_mat4(mat: &crate::Mat4) -> Self {
-        Self(glam::Quat::from_mat4(&glam::Mat4::from(*mat)))
+    pub fn from_mat4(mat: &Mat4F32) -> Self {
+        Self(glam::Quat::from_mat4(&mat.0))
     }
 }
+
+// Quaternion (double precision, `f64`).
+define_quat_type!(QuatF64, glam::DQuat, f64);
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_quatf32_from_mat3a() {
-        let mat = crate::Mat3AF32::IDENTITY;
-        let quat = QuatF32::from_mat3a(&mat);
-        // Just ensure the conversion compiles and produces a finite quaternion.
-        let q_glam: glam::Quat = quat.into();
-        assert!(q_glam.is_finite());
+    fn test_quatf32_identity() {
+        let quat = QuatF32::IDENTITY;
+        assert_eq!(quat, QuatF32::from_xyzw(0.0, 0.0, 0.0, 1.0));
     }
+
     #[test]
-    fn test_quatf32_from_mat4() {
-        let mat = crate::Mat4F32::IDENTITY;
-        let quat = QuatF32::from_mat4(&mat);
-        let q_glam: glam::Quat = quat.into();
-        assert!(q_glam.is_finite());
+    fn test_quatf32_new() {
+        let quat = QuatF32::new(0.0, 0.0, 0.0, 1.0);
+        assert_eq!(quat, QuatF32::from_xyzw(0.0, 0.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn test_quatf32_from_xyzw() {
+        let quat = QuatF32::from_xyzw(0.0, 0.0, 0.0, 1.0);
+        assert_eq!(quat, QuatF32::from_xyzw(0.0, 0.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn test_quatf32_from_array() {
+        let quat = QuatF32::from_array([0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(quat, QuatF32::from_xyzw(0.0, 0.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn test_quat64_identity() {
+        let quat = QuatF64::IDENTITY;
+        assert_eq!(quat, QuatF64::from_xyzw(0.0, 0.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn test_quat64_new() {
+        let quat = QuatF64::new(0.0, 0.0, 0.0, 1.0);
+        assert_eq!(quat, QuatF64::from_xyzw(0.0, 0.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn test_quat64_from_xyzw() {
+        let quat = QuatF64::from_xyzw(0.0, 0.0, 0.0, 1.0);
+        assert_eq!(quat, QuatF64::from_xyzw(0.0, 0.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn test_quat64_from_array() {
+        let quat = QuatF64::from_array([0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(quat, QuatF64::from_xyzw(0.0, 0.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn test_quat64_to_array() {
+        let quat = QuatF64::from_xyzw(0.0, 0.0, 0.0, 1.0);
+        let array = quat.to_array();
+        assert_eq!(array, [0.0, 0.0, 0.0, 1.0]);
     }
 }

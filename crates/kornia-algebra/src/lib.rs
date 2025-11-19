@@ -27,6 +27,8 @@ pub type Mat2 = Mat2F32;
 pub type Mat3 = Mat3F32;
 pub type Mat3A = Mat3AF32;
 pub type Mat4 = Mat4F32;
+
+// Type aliases for default single-precision quaternion types.
 pub type Quat = QuatF32;
 
 // Isometry type aliases
