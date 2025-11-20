@@ -1,6 +1,9 @@
 use numpy::{PyArray, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
 
-use kornia_image::{allocator::CpuAllocator, Image, ImageError, ImageSize, color_spaces::*};
+use kornia_image::{
+    allocator::CpuAllocator, color_spaces::*, ChannelsOrder, Image, ImageError, ImageLayout,
+    ImagePixelFormat, ImageSize,
+};
 use pyo3::prelude::*;
 
 // type alias for a 3D numpy array of u8
@@ -193,5 +196,123 @@ impl From<ImageSize> for PyImageSize {
 impl From<PyImageSize> for ImageSize {
     fn from(image_size: PyImageSize) -> Self {
         image_size.inner
+    }
+}
+
+#[pyclass(name = "ImageLayout", frozen)]
+#[derive(Clone)]
+pub struct PyImageLayout {
+    inner: ImageLayout,
+}
+
+fn parse_channels_order(order: &str) -> Option<ChannelsOrder> {
+    match order.to_lowercase().as_str() {
+        "channels_last" => Some(ChannelsOrder::ChannelsLast),
+        "channels_first" => Some(ChannelsOrder::ChannelsFirst),
+        _ => None,
+    }
+}
+
+fn parse_pixel_format(pixel_format: &str) -> Option<ImagePixelFormat> {
+    match pixel_format.to_lowercase().as_str() {
+        "u8" | "uint8" => Some(ImagePixelFormat::U8),
+        "u16" | "uint16" => Some(ImagePixelFormat::U16),
+        "f32" | "float32" => Some(ImagePixelFormat::F32),
+        _ => None,
+    }
+}
+
+fn channels_order_as_str(order: ChannelsOrder) -> &'static str {
+    match order {
+        ChannelsOrder::ChannelsLast => "channels_last",
+        ChannelsOrder::ChannelsFirst => "channels_first",
+    }
+}
+
+fn pixel_format_as_str(pixel_format: ImagePixelFormat) -> &'static str {
+    match pixel_format {
+        ImagePixelFormat::U8 => "u8",
+        ImagePixelFormat::U16 => "u16",
+        ImagePixelFormat::F32 => "f32",
+    }
+}
+
+#[pymethods]
+impl PyImageLayout {
+    #[new]
+    pub fn new(
+        image_size: PyImageSize,
+        channels: u8,
+        channels_order: &str,
+        pixel_format: &str,
+    ) -> PyResult<Self> {
+        let order = parse_channels_order(channels_order).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "unsupported channels_order: {}",
+                channels_order
+            ))
+        })?;
+        let format = parse_pixel_format(pixel_format).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "unsupported pixel_format: {}",
+                pixel_format
+            ))
+        })?;
+        Ok(Self {
+            inner: ImageLayout {
+                image_size: image_size.clone().into(),
+                channels,
+                channels_order: order,
+                pixel_format: format,
+            },
+        })
+    }
+
+    #[getter]
+    pub fn image_size(&self) -> PyImageSize {
+        self.inner.image_size.into()
+    }
+
+    #[getter]
+    pub fn channels(&self) -> u8 {
+        self.inner.channels
+    }
+
+    #[getter]
+    pub fn channels_order(&self) -> &'static str {
+        channels_order_as_str(self.inner.channels_order)
+    }
+
+    #[getter]
+    pub fn pixel_format(&self) -> &'static str {
+        pixel_format_as_str(self.inner.pixel_format)
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        let size = self.inner.image_size;
+        Ok(format!(
+            "ImageLayout(image_size=ImageSize(width={}, height={}), channels={}, channels_order='{}', pixel_format='{}')",
+            size.width,
+            size.height,
+            self.channels(),
+            self.channels_order(),
+            self.pixel_format()
+        ))
+    }
+
+    fn __str__(&self) -> PyResult<String> {
+        self.__repr__()
+    }
+}
+
+impl From<ImageLayout> for PyImageLayout {
+    fn from(layout: ImageLayout) -> Self {
+        PyImageLayout { inner: layout }
+    }
+}
+
+impl From<PyImageLayout> for ImageLayout {
+    fn from(layout: PyImageLayout) -> Self {
+        layout.inner
     }
 }

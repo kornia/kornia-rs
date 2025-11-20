@@ -5,7 +5,7 @@ use crate::{
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     color_spaces::{Gray16, Gray8, Rgb16, Rgb8, Rgba16, Rgba8},
-    Image, ImageSize,
+    Image, ImageLayout, ImagePixelFormat, ImageSize,
 };
 use png::{BitDepth, ColorType, Decoder, Encoder};
 use std::{fs, fs::File, path::Path};
@@ -188,6 +188,40 @@ pub fn decode_image_png_rgba16<A: ImageAllocator>(
     decode_png_impl::<4>(src, image_u8.as_mut_slice(), dst.size())?;
     convert_buf_u8_u16_into_slice(image_u8.as_slice(), dst.as_slice_mut());
     Ok(())
+}
+
+pub fn decode_image_png_info(src: &[u8]) -> Result<ImageLayout, IoError> {
+    let decoder = Decoder::new(src);
+    let reader = decoder
+        .read_info()
+        .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
+
+    let info = reader.info();
+    let size = ImageSize {
+        width: info.width as usize,
+        height: info.height as usize,
+    };
+
+    let channels = match info.color_type {
+        ColorType::Grayscale => 1u8,
+        ColorType::Rgb => 3u8,
+        ColorType::Rgba => 4u8,
+        ColorType::GrayscaleAlpha => 2u8,
+        ColorType::Indexed => 1u8,
+    };
+
+    let pixel_format = match info.bit_depth {
+        BitDepth::Eight => ImagePixelFormat::U8,
+        BitDepth::Sixteen => ImagePixelFormat::U16,
+        other => {
+            return Err(IoError::PngDecodeError(format!(
+                "Unsupported bit depth: {:?}",
+                other
+            )))
+        }
+    };
+
+    Ok(ImageLayout::new(size, channels, pixel_format))
 }
 
 // utility function to read the png file
