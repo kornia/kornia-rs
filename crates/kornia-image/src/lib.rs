@@ -1,4 +1,4 @@
-#![deny(missing_docs)]
+#![warn(missing_docs)]
 #![doc = env!("CARGO_PKG_DESCRIPTION")]
 
 /// allocator module containing the memory management utilities.
@@ -17,7 +17,7 @@ pub mod ops;
 pub mod color_spaces;
 
 pub use crate::error::ImageError;
-pub use crate::image::{Image, ImageSize};
+pub use crate::image::{ChannelsOrder, Image, ImageLayout, ImagePixelFormat, ImageSize};
 
 /// Arrow integration for converting images to Arrow format
 #[cfg(feature = "arrow")]

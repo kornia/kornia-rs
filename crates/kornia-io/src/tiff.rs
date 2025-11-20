@@ -2,7 +2,7 @@ use crate::error::IoError;
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     color_spaces::{Gray16, Gray8, Grayf32, Rgb16, Rgb8, Rgbf32},
-    Image, ImageSize,
+    Image, ImageLayout, ImagePixelFormat, ImageSize,
 };
 use std::{fs, path::Path};
 use tiff::{
@@ -195,7 +195,7 @@ fn read_image_tiff_impl(
     Ok((result, [width as usize, height as usize]))
 }
 
-fn extract_channels_from_tiff_colortype(colortype: tiff::ColorType) -> Option<u8> {
+fn extract_channels_from_tiff_colortype(colortype: &tiff::ColorType) -> Option<u8> {
     match colortype {
         tiff::ColorType::Gray(_) => Some(1),
         tiff::ColorType::RGB(_) => Some(3),
@@ -206,10 +206,30 @@ fn extract_channels_from_tiff_colortype(colortype: tiff::ColorType) -> Option<u8
     }
 }
 
+fn pixel_format_from_bits(bits: u8) -> Option<ImagePixelFormat> {
+    match bits {
+        8 => Some(ImagePixelFormat::U8),
+        16 => Some(ImagePixelFormat::U16),
+        32 => Some(ImagePixelFormat::F32),
+        _ => None,
+    }
+}
+
+fn pixel_format_from_tiff_colortype(colortype: &tiff::ColorType) -> Option<ImagePixelFormat> {
+    match colortype {
+        tiff::ColorType::Gray(bits)
+        | tiff::ColorType::RGB(bits)
+        | tiff::ColorType::Palette(bits)
+        | tiff::ColorType::GrayA(bits)
+        | tiff::ColorType::RGBA(bits) => pixel_format_from_bits(*bits),
+        _ => None,
+    }
+}
+
 /// Decodes TIFF metadata from raw bytes.
-pub fn decode_image_tiff_info(src: &[u8]) -> Result<(ImageSize, u8, u8), IoError> {
+pub fn decode_image_tiff_info(src: &[u8]) -> Result<ImageLayout, IoError> {
     use std::io::Cursor;
-    
+
     let cursor = Cursor::new(src);
     let mut decoder = tiff::decoder::Decoder::new(cursor)?;
 
@@ -219,23 +239,25 @@ pub fn decode_image_tiff_info(src: &[u8]) -> Result<(ImageSize, u8, u8), IoError
         height: height as usize,
     };
 
-    let num_channels = decoder.colortype()
-        .ok()
-        .and_then(extract_channels_from_tiff_colortype)
-        .ok_or_else(|| IoError::TiffDecodingError(
-            tiff::TiffError::UnsupportedError(
-                tiff::TiffUnsupportedError::UnknownInterpretation,
-            ),
-        ))?;
+    let colortype = decoder.colortype()?;
+    let num_channels = extract_channels_from_tiff_colortype(&colortype).ok_or_else(|| {
+        IoError::TiffDecodingError(tiff::TiffError::UnsupportedError(
+            tiff::TiffUnsupportedError::UnknownInterpretation,
+        ))
+    })?;
 
-    let bit_depth = 8;
+    let pixel_format = pixel_format_from_tiff_colortype(&colortype).ok_or_else(|| {
+        IoError::TiffDecodingError(tiff::TiffError::UnsupportedError(
+            tiff::TiffUnsupportedError::UnknownInterpretation,
+        ))
+    })?;
 
-    Ok((size, num_channels, bit_depth))
+    Ok(ImageLayout::new(size, num_channels, pixel_format))
 }
 /// Reads TIFF image with decoded data and metadata.
 pub fn read_image_tiff_with_metadata(
     file_path: impl AsRef<Path>,
-) -> Result<(DecodingResult, ImageSize, u8), IoError> {
+) -> Result<(DecodingResult, ImageLayout), IoError> {
     let file_path = file_path.as_ref().to_owned();
     if !file_path.exists() {
         return Err(IoError::FileDoesNotExist(file_path.to_path_buf()));
@@ -256,25 +278,33 @@ pub fn read_image_tiff_with_metadata(
         height: height as usize,
     };
 
-    let num_channels_from_metadata = decoder.colortype()
-        .ok()
-        .and_then(extract_channels_from_tiff_colortype);
+    let colortype = decoder.colortype().ok();
+    let num_channels_from_metadata = colortype
+        .as_ref()
+        .and_then(|ct| extract_channels_from_tiff_colortype(ct));
 
     let result = decoder.read_image()?;
+
+    let pixel_format = match &result {
+        DecodingResult::U8(_) => ImagePixelFormat::U8,
+        DecodingResult::U16(_) => ImagePixelFormat::U16,
+        DecodingResult::F32(_) => ImagePixelFormat::F32,
+        _ => {
+            return Err(IoError::TiffDecodingError(
+                tiff::TiffError::UnsupportedError(
+                    tiff::TiffUnsupportedError::UnknownInterpretation,
+                ),
+            ))
+        }
+    };
 
     let num_channels = if let Some(channels) = num_channels_from_metadata {
         channels
     } else {
         match &result {
-            DecodingResult::U8(data) => {
-                (data.len() / (size.width * size.height)) as u8
-            }
-            DecodingResult::U16(data) => {
-                (data.len() / (size.width * size.height)) as u8
-            }
-            DecodingResult::F32(data) => {
-                (data.len() / (size.width * size.height)) as u8
-            }
+            DecodingResult::U8(data) => (data.len() / (size.width * size.height)) as u8,
+            DecodingResult::U16(data) => (data.len() / (size.width * size.height)) as u8,
+            DecodingResult::F32(data) => (data.len() / (size.width * size.height)) as u8,
             _ => {
                 return Err(IoError::TiffDecodingError(
                     tiff::TiffError::UnsupportedError(
@@ -285,7 +315,9 @@ pub fn read_image_tiff_with_metadata(
         }
     };
 
-    Ok((result, size, num_channels))
+    let layout = ImageLayout::new(size, num_channels, pixel_format);
+
+    Ok((result, layout))
 }
 
 /// Write a TIFF image with a RGB8 color type.

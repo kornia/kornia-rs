@@ -5,7 +5,7 @@ use crate::{
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     color_spaces::{Gray16, Gray8, Rgb16, Rgb8, Rgba16, Rgba8},
-    Image, ImageSize,
+    Image, ImageLayout, ImagePixelFormat, ImageSize,
 };
 use png::{BitDepth, ColorType, Decoder, Encoder};
 use std::{fs, fs::File, path::Path};
@@ -190,10 +190,10 @@ pub fn decode_image_png_rgba16<A: ImageAllocator>(
     Ok(())
 }
 
-/// Decodes PNG metadata from raw bytes.
-pub fn decode_image_png_info(src: &[u8]) -> Result<(ImageSize, u8, u8), IoError> {
+pub fn decode_image_png_info(src: &[u8]) -> Result<ImageLayout, IoError> {
     let decoder = Decoder::new(src);
-    let reader = decoder.read_info()
+    let reader = decoder
+        .read_info()
         .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
 
     let info = reader.info();
@@ -202,23 +202,26 @@ pub fn decode_image_png_info(src: &[u8]) -> Result<(ImageSize, u8, u8), IoError>
         height: info.height as usize,
     };
 
-    let num_channels = match info.color_type {
-        ColorType::Grayscale => 1,
-        ColorType::Rgb => 3,
-        ColorType::Rgba => 4,
-        ColorType::GrayscaleAlpha => 2,
-        ColorType::Indexed => 1,
+    let channels = match info.color_type {
+        ColorType::Grayscale => 1u8,
+        ColorType::Rgb => 3u8,
+        ColorType::Rgba => 4u8,
+        ColorType::GrayscaleAlpha => 2u8,
+        ColorType::Indexed => 1u8,
     };
 
-    let bit_depth = match info.bit_depth {
-        BitDepth::Eight => 8,
-        BitDepth::Sixteen => 16,
-        BitDepth::Four => 4,
-        BitDepth::Two => 2,
-        BitDepth::One => 1,
+    let pixel_format = match info.bit_depth {
+        BitDepth::Eight => ImagePixelFormat::U8,
+        BitDepth::Sixteen => ImagePixelFormat::U16,
+        other => {
+            return Err(IoError::PngDecodeError(format!(
+                "Unsupported bit depth: {:?}",
+                other
+            )))
+        }
     };
 
-    Ok((size, num_channels, bit_depth))
+    Ok(ImageLayout::new(size, channels, pixel_format))
 }
 
 // utility function to read the png file

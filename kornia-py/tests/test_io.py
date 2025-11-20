@@ -81,12 +81,13 @@ def test_decode_image_jpeg_info():
     img_path: Path = DATA_DIR / "dog.jpeg"
     with open(img_path, "rb") as f:
         img_data = f.read()
-    info: tuple[K.ImageSize, int] = K.decode_image_jpeg_info(bytes(img_data))
+    layout = K.decode_image_jpeg_info(bytes(img_data))
 
-    # check the image properties
-    assert info[0].width == 258
-    assert info[0].height == 195
-    assert info[1] == 3
+    assert layout.image_size.width == 258
+    assert layout.image_size.height == 195
+    assert layout.channels == 3
+    assert layout.channels_order == "channels_last"
+    assert layout.pixel_format == "u8"
 
 
 def test_decode_image_jpegturbo():

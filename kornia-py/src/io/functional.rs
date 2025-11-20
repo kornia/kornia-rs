@@ -1,9 +1,10 @@
 use crate::image::{PyImage, ToPyImage, ToPyImageF32, ToPyImageU16};
-use crate::io::jpeg as J;
+use crate::io::jpeg as J_py;
 use kornia_io::functional as F;
 use kornia_io::png as P_IO;
 use kornia_io::tiff as T_IO;
-use kornia_image::{allocator::CpuAllocator, color_spaces::{Gray8, Gray16, Grayf32, Rgb8, Rgb16, Rgbf32}};
+use kornia_io::jpeg as J_IO;
+use kornia_image::{allocator::CpuAllocator, color_spaces::{Gray8, Gray16, Grayf32, Rgb8, Rgb16, Rgbf32}, ImagePixelFormat};
 use pyo3::prelude::*;
 use std::path::Path;
 use std::fs;
@@ -18,37 +19,6 @@ pub fn read_image_any(file_path: &str) -> PyResult<PyImage> {
     })?;
     Ok(pyimage)
 }
-
-/// Generic image reader that automatically detects format, bit depth, and channels.
-///
-/// This function attempts to read an image file and automatically determine:
-/// - File format (PNG, TIFF, JPEG)
-/// - Bit depth (u8, u16, f32)
-/// - Channel count (mono, rgb, rgba)
-///
-/// Returns a numpy array with the appropriate dtype (uint8, uint16, or float32).
-///
-/// # Arguments
-///
-/// * `file_path` - The path to the image file.
-///
-/// # Returns
-///
-/// A numpy array (PyObject) that can be uint8, uint16, or float32 depending on the image.
-///
-/// # Example
-///
-/// ```python
-/// import kornia_rs as K
-/// import numpy as np
-/// from pathlib import Path
-///
-/// # Works with u8, u16, f32 images
-/// img = K.read_image("path/to/image.png")
-/// assert isinstance(img, np.ndarray)
-///
-/// img = K.read_image(Path("path/to/image.png"))
-/// ```
 #[pyfunction]
 pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<PyObject> {
     let file_path_str = if let Ok(s) = file_path.extract::<&str>() {
@@ -98,11 +68,14 @@ fn read_image_png_dispatcher(file_path: &Path) -> PyResult<PyObject> {
     let png_data = fs::read(file_path)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
 
-    let (_, num_channels, bit_depth) = P_IO::decode_image_png_info(&png_data)
+    let layout = P_IO::decode_image_png_info(&png_data)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
-    match (num_channels, bit_depth) {
-        (1, 8) => {
+    let channels = layout.channels;
+    let pixel_format = layout.pixel_format;
+
+    match (channels, pixel_format) {
+        (1, ImagePixelFormat::U8) => {
             let img = P_IO::read_image_png_mono8(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             Ok(img.to_pyimage()
@@ -111,7 +84,7 @@ fn read_image_png_dispatcher(file_path: &Path) -> PyResult<PyObject> {
                 ))?
                 .into())
         }
-        (1, 16) => {
+        (1, ImagePixelFormat::U16) => {
             let img = P_IO::read_image_png_mono16(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             Ok(img.to_pyimage_u16()
@@ -120,7 +93,7 @@ fn read_image_png_dispatcher(file_path: &Path) -> PyResult<PyObject> {
                 ))?
                 .into())
         }
-        (3, 8) => {
+        (3, ImagePixelFormat::U8) => {
             let img = P_IO::read_image_png_rgb8(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             Ok(img.to_pyimage()
@@ -129,7 +102,7 @@ fn read_image_png_dispatcher(file_path: &Path) -> PyResult<PyObject> {
                 ))?
                 .into())
         }
-        (3, 16) => {
+        (3, ImagePixelFormat::U16) => {
             let img = P_IO::read_image_png_rgb16(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             Ok(img.to_pyimage_u16()
@@ -138,7 +111,7 @@ fn read_image_png_dispatcher(file_path: &Path) -> PyResult<PyObject> {
                 ))?
                 .into())
         }
-        (4, 8) => {
+        (4, ImagePixelFormat::U8) => {
             let img = P_IO::read_image_png_rgba8(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             Ok(img.to_pyimage()
@@ -147,7 +120,7 @@ fn read_image_png_dispatcher(file_path: &Path) -> PyResult<PyObject> {
                 ))?
                 .into())
         }
-        (4, 16) => {
+        (4, ImagePixelFormat::U16) => {
             let img = P_IO::read_image_png_rgba16(file_path)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             Ok(img.to_pyimage_u16()
@@ -163,7 +136,10 @@ fn read_image_png_dispatcher(file_path: &Path) -> PyResult<PyObject> {
         }
         _ => {
             Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                format!("Unsupported PNG format: {} channels, {} bit depth", num_channels, bit_depth)
+                format!(
+                    "Unsupported PNG format: {} channels, {:?} pixel format",
+                    channels, pixel_format
+                )
             ))
         }
     }
@@ -172,12 +148,16 @@ fn read_image_png_dispatcher(file_path: &Path) -> PyResult<PyObject> {
 fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<PyObject> {
     use tiff::decoder::DecodingResult;
 
-    let (result, size, num_channels) = T_IO::read_image_tiff_with_metadata(file_path)
+    let (result, layout) = T_IO::read_image_tiff_with_metadata(file_path)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
-    match (result, num_channels) {
-        (DecodingResult::U8(data), 1) => {
-            let img = Gray8::from_size_vec(size.into(), data, CpuAllocator)
+    let image_size = layout.image_size;
+    let channels = layout.channels;
+    let pixel_format = layout.pixel_format;
+
+    match (result, pixel_format, channels) {
+        (DecodingResult::U8(data), ImagePixelFormat::U8, 1) => {
+            let img = Gray8::from_size_vec(image_size, data, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             Ok(img.to_pyimage()
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(
@@ -185,8 +165,8 @@ fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<PyObject> {
                 ))?
                 .into())
         }
-        (DecodingResult::U8(data), 3) => {
-            let img = Rgb8::from_size_vec(size.into(), data, CpuAllocator)
+        (DecodingResult::U8(data), ImagePixelFormat::U8, 3) => {
+            let img = Rgb8::from_size_vec(image_size, data, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             Ok(img.to_pyimage()
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(
@@ -194,8 +174,8 @@ fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<PyObject> {
                 ))?
                 .into())
         }
-        (DecodingResult::U16(data), 1) => {
-            let img = Gray16::from_size_vec(size.into(), data, CpuAllocator)
+        (DecodingResult::U16(data), ImagePixelFormat::U16, 1) => {
+            let img = Gray16::from_size_vec(image_size, data, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             Ok(img.to_pyimage_u16()
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(
@@ -203,8 +183,8 @@ fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<PyObject> {
                 ))?
                 .into())
         }
-        (DecodingResult::U16(data), 3) => {
-            let img = Rgb16::from_size_vec(size.into(), data, CpuAllocator)
+        (DecodingResult::U16(data), ImagePixelFormat::U16, 3) => {
+            let img = Rgb16::from_size_vec(image_size, data, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             Ok(img.to_pyimage_u16()
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(
@@ -212,8 +192,8 @@ fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<PyObject> {
                 ))?
                 .into())
         }
-        (DecodingResult::F32(data), 1) => {
-            let img = Grayf32::from_size_vec(size.into(), data, CpuAllocator)
+        (DecodingResult::F32(data), ImagePixelFormat::F32, 1) => {
+            let img = Grayf32::from_size_vec(image_size, data, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             Ok(img.to_pyimage_f32()
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(
@@ -221,8 +201,8 @@ fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<PyObject> {
                 ))?
                 .into())
         }
-        (DecodingResult::F32(data), 3) => {
-            let img = Rgbf32::from_size_vec(size.into(), data, CpuAllocator)
+        (DecodingResult::F32(data), ImagePixelFormat::F32, 3) => {
+            let img = Rgbf32::from_size_vec(image_size, data, CpuAllocator)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             Ok(img.to_pyimage_f32()
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(
@@ -230,8 +210,11 @@ fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<PyObject> {
                 ))?
                 .into())
         }
-        (_, channels) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            format!("Unsupported TIFF format: {} channels", channels)
+        (_, _, channels) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            format!(
+                "Unsupported TIFF format: {} channels with pixel format {:?}",
+                channels, pixel_format
+            )
         )),
     }
 }
@@ -242,18 +225,18 @@ fn read_image_jpeg_dispatcher(file_path: &Path) -> PyResult<PyObject> {
     let jpeg_data = fs::read(file_path)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
 
-    let (_, num_channels) = J::decode_image_jpeg_info(&jpeg_data)
+    let layout = J_IO::decode_image_jpeg_info(&jpeg_data)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
     let file_path_str = file_path.to_string_lossy();
-        let img = match num_channels {
-        1 => J::read_image_jpeg(&file_path_str, "mono")
+    let img = match layout.channels {
+        1 => J_py::read_image_jpeg(&file_path_str, "mono")
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?,
-        3 => J::read_image_jpeg(&file_path_str, "rgb")
+        3 => J_py::read_image_jpeg(&file_path_str, "rgb")
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?,
             _ => {
                 return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                    format!("Unsupported JPEG channel count: {}", num_channels)
+                format!("Unsupported JPEG channel count: {}", layout.channels)
                 ));
             }
         };
