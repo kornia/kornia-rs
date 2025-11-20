@@ -195,6 +195,106 @@ fn read_image_tiff_impl(
     Ok((result, [width as usize, height as usize]))
 }
 
+/// Decodes TIFF metadata from raw bytes.
+pub fn decode_image_tiff_info(src: &[u8]) -> Result<(ImageSize, u8, u8), IoError> {
+    use std::io::Cursor;
+    
+    let cursor = Cursor::new(src);
+    let mut decoder = tiff::decoder::Decoder::new(cursor)?;
+
+    let (width, height) = decoder.dimensions()?;
+    let size = ImageSize {
+        width: width as usize,
+        height: height as usize,
+    };
+
+    let num_channels = decoder.colortype()
+        .ok()
+        .and_then(|ct| {
+            match ct {
+                tiff::ColorType::Gray(_) => Some(1),
+                tiff::ColorType::RGB(_) => Some(3),
+                tiff::ColorType::Palette(_) => None,
+                tiff::ColorType::GrayA(_) => Some(2),
+                tiff::ColorType::RGBA(_) => Some(4),
+                _ => None,
+            }
+        })
+        .ok_or_else(|| IoError::TiffDecodingError(
+            tiff::TiffError::UnsupportedError(
+                tiff::TiffUnsupportedError::UnknownInterpretation,
+            ),
+        ))?;
+
+    let bit_depth = 8;
+
+    Ok((size, num_channels, bit_depth))
+}
+/// Reads TIFF image with decoded data and metadata.
+pub fn read_image_tiff_with_metadata(
+    file_path: impl AsRef<Path>,
+) -> Result<(DecodingResult, ImageSize, u8), IoError> {
+    let file_path = file_path.as_ref().to_owned();
+    if !file_path.exists() {
+        return Err(IoError::FileDoesNotExist(file_path.to_path_buf()));
+    }
+
+    if file_path.extension().map_or(true, |ext| {
+        !ext.eq_ignore_ascii_case("tiff") && !ext.eq_ignore_ascii_case("tif")
+    }) {
+        return Err(IoError::InvalidFileExtension(file_path.to_path_buf()));
+    }
+
+    let tiff_data = fs::File::open(file_path)?;
+    let mut decoder = tiff::decoder::Decoder::new(tiff_data)?;
+
+    let (width, height) = decoder.dimensions()?;
+    let size = ImageSize {
+        width: width as usize,
+        height: height as usize,
+    };
+
+    let num_channels_from_metadata = decoder.colortype()
+        .ok()
+        .and_then(|ct| {
+            match ct {
+                tiff::ColorType::Gray(_) => Some(1),
+                tiff::ColorType::RGB(_) => Some(3),
+                tiff::ColorType::Palette(_) => None,
+                tiff::ColorType::GrayA(_) => Some(2),
+                tiff::ColorType::RGBA(_) => Some(4),
+                _ => None,
+            }
+        });
+
+    let result = decoder.read_image()?;
+
+    let num_channels = if let Some(channels) = num_channels_from_metadata {
+        channels
+    } else {
+        match &result {
+            DecodingResult::U8(data) => {
+                (data.len() / (size.width * size.height)) as u8
+            }
+            DecodingResult::U16(data) => {
+                (data.len() / (size.width * size.height)) as u8
+            }
+            DecodingResult::F32(data) => {
+                (data.len() / (size.width * size.height)) as u8
+            }
+            _ => {
+                return Err(IoError::TiffDecodingError(
+                    tiff::TiffError::UnsupportedError(
+                        tiff::TiffUnsupportedError::UnknownInterpretation,
+                    ),
+                ))
+            }
+        }
+    };
+
+    Ok((result, size, num_channels))
+}
+
 /// Write a TIFF image with a RGB8 color type.
 ///
 /// # Arguments

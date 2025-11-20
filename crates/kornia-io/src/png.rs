@@ -190,6 +190,36 @@ pub fn decode_image_png_rgba16<A: ImageAllocator>(
     Ok(())
 }
 
+pub fn decode_image_png_info(src: &[u8]) -> Result<(ImageSize, u8, u8), IoError> {
+    let decoder = Decoder::new(src);
+    let reader = decoder.read_info()
+        .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
+
+    let info = reader.info();
+    let size = ImageSize {
+        width: info.width as usize,
+        height: info.height as usize,
+    };
+
+    let num_channels = match info.color_type {
+        ColorType::Grayscale => 1,
+        ColorType::Rgb => 3,
+        ColorType::Rgba => 4,
+        ColorType::GrayscaleAlpha => 2,
+        ColorType::Indexed => 1,
+    };
+
+    let bit_depth = match info.bit_depth {
+        BitDepth::Eight => 8,
+        BitDepth::Sixteen => 16,
+        BitDepth::Four => 4,
+        BitDepth::Two => 2,
+        BitDepth::One => 1,
+    };
+
+    Ok((size, num_channels, bit_depth))
+}
+
 // utility function to read the png file
 fn read_png_impl(file_path: impl AsRef<Path>) -> Result<(Vec<u8>, [usize; 2]), IoError> {
     // verify the file exists

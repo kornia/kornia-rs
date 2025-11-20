@@ -6,7 +6,3 @@ examples/*/Cargo.lock
 kornia-py/Cargo.lock
 *.code-workspace
 .idea/
-test_images/
-test_image_ops.py
-kornia-py/test_read_image.py
-kornia-py/setup_and_test.sh
