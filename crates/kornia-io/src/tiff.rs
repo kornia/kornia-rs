@@ -195,6 +195,17 @@ fn read_image_tiff_impl(
     Ok((result, [width as usize, height as usize]))
 }
 
+fn extract_channels_from_tiff_colortype(colortype: tiff::ColorType) -> Option<u8> {
+    match colortype {
+        tiff::ColorType::Gray(_) => Some(1),
+        tiff::ColorType::RGB(_) => Some(3),
+        tiff::ColorType::Palette(_) => None,
+        tiff::ColorType::GrayA(_) => Some(2),
+        tiff::ColorType::RGBA(_) => Some(4),
+        _ => None,
+    }
+}
+
 /// Decodes TIFF metadata from raw bytes.
 pub fn decode_image_tiff_info(src: &[u8]) -> Result<(ImageSize, u8, u8), IoError> {
     use std::io::Cursor;
@@ -210,16 +221,7 @@ pub fn decode_image_tiff_info(src: &[u8]) -> Result<(ImageSize, u8, u8), IoError
 
     let num_channels = decoder.colortype()
         .ok()
-        .and_then(|ct| {
-            match ct {
-                tiff::ColorType::Gray(_) => Some(1),
-                tiff::ColorType::RGB(_) => Some(3),
-                tiff::ColorType::Palette(_) => None,
-                tiff::ColorType::GrayA(_) => Some(2),
-                tiff::ColorType::RGBA(_) => Some(4),
-                _ => None,
-            }
-        })
+        .and_then(extract_channels_from_tiff_colortype)
         .ok_or_else(|| IoError::TiffDecodingError(
             tiff::TiffError::UnsupportedError(
                 tiff::TiffUnsupportedError::UnknownInterpretation,
@@ -256,16 +258,7 @@ pub fn read_image_tiff_with_metadata(
 
     let num_channels_from_metadata = decoder.colortype()
         .ok()
-        .and_then(|ct| {
-            match ct {
-                tiff::ColorType::Gray(_) => Some(1),
-                tiff::ColorType::RGB(_) => Some(3),
-                tiff::ColorType::Palette(_) => None,
-                tiff::ColorType::GrayA(_) => Some(2),
-                tiff::ColorType::RGBA(_) => Some(4),
-                _ => None,
-            }
-        });
+        .and_then(extract_channels_from_tiff_colortype);
 
     let result = decoder.read_image()?;
 

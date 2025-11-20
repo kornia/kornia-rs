@@ -190,6 +190,7 @@ pub fn decode_image_png_rgba16<A: ImageAllocator>(
     Ok(())
 }
 
+/// Decodes PNG metadata from raw bytes.
 pub fn decode_image_png_info(src: &[u8]) -> Result<(ImageSize, u8, u8), IoError> {
     let decoder = Decoder::new(src);
     let reader = decoder.read_info()
