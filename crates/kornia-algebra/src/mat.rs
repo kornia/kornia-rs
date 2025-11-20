@@ -16,6 +16,9 @@
 //! * `glam_vec`    - The underlying `glam` vector type.
 //! * `cols`        - The column parameters (e.g. `[x_axis, y_axis]`).
 //!
+
+use crate::{Vec2F32, Vec2F64, Vec3AF32, Vec3F32, Vec3F64, Vec4F32, Vec4F64};
+
 macro_rules! define_matrix_type {
     (
         $(#[$meta:meta])*
@@ -182,8 +185,6 @@ macro_rules! define_matrix_type {
         }
     };
 }
-
-use crate::{Vec2F32, Vec2F64, Vec3AF32, Vec3F32, Vec3F64, Vec4F32, Vec4F64};
 
 // 2x2 matrix (single and double precision).
 define_matrix_type!(

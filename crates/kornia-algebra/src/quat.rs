@@ -3,10 +3,18 @@
 //! This module provides quaternion types for kornia-rs as thin newtype
 //! wrappers over `glam` quaternions.
 
-use crate::{Mat3AF32, Mat4F32};
+use crate::{Mat3AF32, Mat3F64, Mat4F32, Mat4F64};
 
 macro_rules! define_quat_type {
-    ($(#[$meta:meta])* $name:ident, $glam_type:ty, $scalar:ty) => {
+    (
+        $(#[$meta:meta])*
+        $name:ident,
+        $glam_type:ty,
+        $scalar:ty,
+        $mat3_type:ty,
+        $mat4_type:ty,
+        $from_mat3:ident
+    ) => {
         $(#[$meta])*
         #[derive(Debug, Clone, Copy, PartialEq)]
         #[repr(transparent)]
@@ -38,6 +46,18 @@ macro_rules! define_quat_type {
             #[inline]
             pub fn to_array(&self) -> [$scalar; 4] {
                 self.0.to_array()
+            }
+
+            /// Create a quaternion from a 3x3 rotation matrix.
+            #[inline]
+            pub fn $from_mat3(mat: &$mat3_type) -> Self {
+                Self(<$glam_type>::$from_mat3(&mat.0))
+            }
+
+            /// Create a quaternion from a 4x4 matrix.
+            #[inline]
+            pub fn from_mat4(mat: &$mat4_type) -> Self {
+                Self(<$glam_type>::from_mat4(&mat.0))
             }
         }
 
@@ -85,24 +105,10 @@ macro_rules! define_quat_type {
 }
 
 // Quaternion (single precision, `f32`).
-define_quat_type!(QuatF32, glam::Quat, f32);
-
-impl QuatF32 {
-    /// Create a quaternion from a 3x3 rotation matrix.
-    #[inline]
-    pub fn from_mat3a(mat: &Mat3AF32) -> Self {
-        Self(glam::Quat::from_mat3a(&mat.0))
-    }
-
-    /// Create a quaternion from a 4x4 matrix.
-    #[inline]
-    pub fn from_mat4(mat: &Mat4F32) -> Self {
-        Self(glam::Quat::from_mat4(&mat.0))
-    }
-}
+define_quat_type!(QuatF32, glam::Quat, f32, Mat3AF32, Mat4F32, from_mat3a);
 
 // Quaternion (double precision, `f64`).
-define_quat_type!(QuatF64, glam::DQuat, f64);
+define_quat_type!(QuatF64, glam::DQuat, f64, Mat3F64, Mat4F64, from_mat3);
 
 #[cfg(test)]
 mod tests {
