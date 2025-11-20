@@ -22,7 +22,7 @@ cross publish -p kornia-io --all-features $DRY_RUN
 cross publish -p kornia-imgproc $DRY_RUN
 cross publish -p kornia-linalg $DRY_RUN
 cross publish -p kornia-apriltag $DRY_RUN
-cross publish -p kornia-lie $DRY_RUN
+cross publish -p kornia-algebra $DRY_RUN
 cross publish -p kornia-pnp $DRY_RUN
 
 # TODO: decide if we want to publish kornia crate and if so, how to handle the dependencies

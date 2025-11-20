@@ -1,8 +1,8 @@
 [package]
-name = "kornia-lie"
-description = "Lie groups and algebras"
+name = "kornia-algebra"
+description = "Algebraic types for kornia-rs"
 
-authors = { workspace = true }
+authors = ["kornia.org <christie@kornia.org>"]
 categories = { workspace = true }
 edition = { workspace = true }
 homepage = { workspace = true }

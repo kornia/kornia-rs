@@ -1,5 +1,5 @@
 #![allow(clippy::op_ref)]
-use glam::{Mat3, Vec3};
+use kornia_algebra::{Mat3, Vec3};
 use nalgebra::{DMatrix, DVector, Vector4};
 
 /// Compute the centroid of a set of points.
@@ -74,7 +74,7 @@ pub(crate) fn gauss_newton(beta_init: [f32; 4], null4: &DMatrix<f32>, rho: &[f32
 
             let diff_vec = Vec3::new(vi[0] - vj[0], vi[1] - vj[1], vi[2] - vj[2]);
 
-            f_vec[r] = diff_vec.length_squared() - rho[r];
+            f_vec[r] = diff_vec.dot(diff_vec) - rho[r];
 
             for k in 0..4 {
                 let vi_k = block_i.column(k);

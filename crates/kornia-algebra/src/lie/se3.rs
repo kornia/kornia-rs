@@ -1,5 +1,5 @@
-use crate::so3::SO3;
-use glam::{Mat3A, Mat4, Quat, Vec3A};
+use super::so3::SO3;
+use crate::{Mat3AF32, Mat4F32, QuatF32, Vec3AF32};
 use rand::Rng;
 
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
@@ -7,26 +7,39 @@ const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 #[derive(Debug, Clone, Copy)]
 pub struct SE3 {
     pub r: SO3,
-    pub t: Vec3A,
+    pub t: Vec3AF32,
 }
 
 impl SE3 {
     pub const IDENTITY: Self = Self {
         r: SO3::IDENTITY,
-        t: Vec3A::new(0.0, 0.0, 0.0),
+        t: Vec3AF32::ZERO,
     };
 
-    pub fn new(rotation: SO3, translation: Vec3A) -> Self {
+    pub fn new(rotation: SO3, translation: Vec3AF32) -> Self {
         Self {
             r: rotation,
             t: translation,
         }
     }
 
-    pub fn from_matrix(mat: &Mat4) -> Self {
+    pub fn from_array(arr: [f32; 7]) -> Self {
+        Self {
+            r: SO3::from_array([arr[0], arr[1], arr[2], arr[3]]),
+            t: Vec3AF32::from_array([arr[4], arr[5], arr[6]]),
+        }
+    }
+
+    pub fn to_array(&self) -> [f32; 7] {
+        let r = self.r.to_array();
+        let t = self.t.to_array();
+        [r[0], r[1], r[2], r[3], t[0], t[1], t[2]]
+    }
+
+    pub fn from_matrix(mat: &Mat4F32) -> Self {
         Self {
             r: SO3::from_matrix4(mat),
-            t: Vec3A::new(mat.w_axis.x, mat.w_axis.y, mat.w_axis.z),
+            t: Vec3AF32::new(mat.w_axis.x, mat.w_axis.y, mat.w_axis.z),
         }
     }
 
@@ -39,11 +52,11 @@ impl SE3 {
 
         Self {
             r: SO3::from_random(),
-            t: Vec3A::new(r1, r2, r3),
+            t: Vec3AF32::new(r1, r2, r3),
         }
     }
 
-    pub fn from_qxyz(quat: Quat, xyz: Vec3A) -> Self {
+    pub fn from_qxyz(quat: QuatF32, xyz: Vec3AF32) -> Self {
         Self {
             r: SO3::from_quaternion(quat),
             t: xyz,
@@ -51,22 +64,22 @@ impl SE3 {
     }
 
     #[inline]
-    pub fn rplus(&self, upsilon: Vec3A, omega: Vec3A) -> Self {
+    pub fn rplus(&self, upsilon: Vec3AF32, omega: Vec3AF32) -> Self {
         *self * SE3::exp(upsilon, omega)
     }
 
     #[inline]
-    pub fn rminus(&self, other: &Self) -> (Vec3A, Vec3A) {
+    pub fn rminus(&self, other: &Self) -> (Vec3AF32, Vec3AF32) {
         (self.inverse() * *other).log()
     }
 
     #[inline]
-    pub fn lplus(upsilon: Vec3A, omega: Vec3A, x: &Self) -> Self {
+    pub fn lplus(upsilon: Vec3AF32, omega: Vec3AF32, x: &Self) -> Self {
         SE3::exp(upsilon, omega) * *x
     }
 
     #[inline]
-    pub fn lminus(y: &Self, x: &Self) -> (Vec3A, Vec3A) {
+    pub fn lminus(y: &Self, x: &Self) -> (Vec3AF32, Vec3AF32) {
         (*y * x.inverse()).log()
     }
 
@@ -78,9 +91,9 @@ impl SE3 {
         }
     }
 
-    pub fn matrix(&self) -> Mat4 {
+    pub fn matrix(&self) -> Mat4F32 {
         let r = self.r.matrix();
-        Mat4::from_cols_array(&[
+        Mat4F32::from_cols_array(&[
             r.x_axis.x, r.x_axis.y, r.x_axis.z, 0.0, // col0
             r.y_axis.x, r.y_axis.y, r.y_axis.z, 0.0, // col1
             r.z_axis.x, r.z_axis.y, r.z_axis.z, 0.0, // col2
@@ -108,8 +121,9 @@ impl SE3 {
         ]
     }
 
-    pub fn exp(upsilon: Vec3A, omega: Vec3A) -> Self {
-        let theta2 = omega.dot(omega);
+    pub fn exp(upsilon: Vec3AF32, omega: Vec3AF32) -> Self {
+        let omega_glam = glam::Vec3A::from(omega);
+        let theta2 = omega_glam.dot(omega_glam);
         let theta = theta2.sqrt();
 
         Self {
@@ -121,9 +135,9 @@ impl SE3 {
                 let a = (1.0 - theta.cos()) / theta2;
                 let b = (theta - theta.sin()) / (theta2 * theta);
 
-                let mat_v = Mat3A::IDENTITY + a * omega_hat + b * omega_hat_sq;
+                let mat_v = Mat3AF32::IDENTITY + a * omega_hat + b * omega_hat_sq;
 
-                mat_v.mul_vec3a(upsilon)
+                Vec3AF32::from(mat_v.mul_vec3a(glam::Vec3A::from(upsilon)))
             } else {
                 // Small-angle approximation: t = I * upsilon
                 upsilon
@@ -132,19 +146,20 @@ impl SE3 {
     }
 
     /// returns translation, rotation
-    pub fn log(&self) -> (Vec3A, Vec3A) {
+    pub fn log(&self) -> (Vec3AF32, Vec3AF32) {
         let omega = self.r.log();
-        let theta2 = omega.dot(omega);
+        let omega_glam = glam::Vec3A::from(omega);
+        let theta2 = omega_glam.dot(omega_glam);
         let theta = theta2.sqrt();
         (
             if theta > SMALL_ANGLE_EPSILON {
                 let omega_hat = SO3::hat(omega);
                 let omega_hat_sq = omega_hat * omega_hat;
-                let mat_v_inv = Mat3A::IDENTITY - 0.5 * omega_hat
+                let mat_v_inv = Mat3AF32::IDENTITY - 0.5 * omega_hat
                     + ((1.0 - theta * (theta / 2.0).cos() / (2.0 * (theta / 2.0).sin())) / theta2)
                         * omega_hat_sq;
 
-                mat_v_inv.mul_vec3a(self.t)
+                Vec3AF32::from(mat_v_inv.mul_vec3a(glam::Vec3A::from(self.t)))
             } else {
                 self.t
             },
@@ -152,18 +167,18 @@ impl SE3 {
         )
     }
 
-    pub fn hat(upsilon: Vec3A, omega: Vec3A) -> Mat4 {
+    pub fn hat(upsilon: Vec3AF32, omega: Vec3AF32) -> Mat4F32 {
         let h = SO3::hat(omega);
 
-        Mat4::from_cols_array(&[
+        Mat4F32::from_cols_array(&[
             h.x_axis.x, h.x_axis.y, h.x_axis.z, 0.0, h.y_axis.x, h.y_axis.y, h.y_axis.z, 0.0,
             h.z_axis.x, h.z_axis.y, h.z_axis.z, 0.0, upsilon.x, upsilon.y, upsilon.z, 0.0,
         ])
     }
 
-    pub fn vee(omega: Mat4) -> (Vec3A, Vec3A) {
+    pub fn vee(omega: Mat4F32) -> (Vec3AF32, Vec3AF32) {
         (
-            Vec3A::new(omega.w_axis.x, omega.w_axis.y, omega.w_axis.z),
+            Vec3AF32::new(omega.w_axis.x, omega.w_axis.y, omega.w_axis.z),
             SO3::vee4(omega),
         )
     }
@@ -188,8 +203,9 @@ impl SE3 {
     ///            · (θ×ρ×θ²× + θ²×ρ×θ×).
     /// ```
     /// ref: https://arxiv.org/pdf/1812.01537 (eq 180)
-    pub fn left_jacobian(rho: Vec3A, omega: Vec3A) -> [[f32; 6]; 6] {
-        let theta2 = omega.dot(omega);
+    pub fn left_jacobian(rho: Vec3AF32, omega: Vec3AF32) -> [[f32; 6]; 6] {
+        let omega_glam = glam::Vec3A::from(omega);
+        let theta2 = omega_glam.dot(omega_glam);
         let theta = theta2.sqrt();
 
         let jl_so3 = SO3::left_jacobian(omega);
@@ -205,7 +221,7 @@ impl SE3 {
             //          Jₗ_SO3 ≈ I + ½ω× + 1/6 ω×²
             let q = 0.5 * rho_hat + (1.0 / 12.0) * (omega_hat * rho_hat + rho_hat * omega_hat)
                 - (1.0 / 24.0) * (omega_hat * rho_hat * omega_hat);
-            let j = Mat3A::IDENTITY + 0.5 * omega_hat + (1.0 / 6.0) * omega_hat2;
+            let j = Mat3AF32::IDENTITY + 0.5 * omega_hat + (1.0 / 6.0) * omega_hat2;
             (q, j)
         } else {
             let theta3 = theta2 * theta;
@@ -265,7 +281,7 @@ impl SE3 {
 
     /// Right Jacobian  Jᵣ(ρ, θ)  ∈ ℝ⁶ˣ⁶.
     /// Using Jᵣ(ρ,θ) = Jₗ(−ρ, −θ).
-    pub fn right_jacobian(rho: Vec3A, omega: Vec3A) -> [[f32; 6]; 6] {
+    pub fn right_jacobian(rho: Vec3AF32, omega: Vec3AF32) -> [[f32; 6]; 6] {
         Self::left_jacobian(-rho, -omega)
     }
 }
@@ -280,10 +296,10 @@ impl std::ops::Mul<SE3> for SE3 {
     }
 }
 
-impl std::ops::Mul<Vec3A> for SE3 {
-    type Output = Vec3A;
+impl std::ops::Mul<Vec3AF32> for SE3 {
+    type Output = Vec3AF32;
 
-    fn mul(self, rhs: Vec3A) -> Self::Output {
+    fn mul(self, rhs: Vec3AF32) -> Self::Output {
         self.r * rhs + self.t
     }
 }
@@ -299,9 +315,9 @@ mod tests {
         SE3::from_random()
     }
 
-    fn make_random_vec3() -> Vec3A {
+    fn make_random_vec3() -> Vec3AF32 {
         let mut rng = rand::rng();
-        Vec3A::new(rng.random(), rng.random(), rng.random())
+        Vec3AF32::new(rng.random(), rng.random(), rng.random())
     }
 
     #[test]
@@ -318,8 +334,8 @@ mod tests {
 
     #[test]
     fn test_new() {
-        let rotation = SO3::from_quaternion(Quat::IDENTITY);
-        let translation = Vec3A::new(1.0, 2.0, 3.0);
+        let rotation = SO3::from_quaternion(QuatF32::IDENTITY);
+        let translation = Vec3AF32::new(1.0, 2.0, 3.0);
         let se3 = SE3::new(rotation, translation);
         assert_relative_eq!(se3.t.x, translation.x);
         assert_relative_eq!(se3.t.y, translation.y);
@@ -333,7 +349,7 @@ mod tests {
     #[test]
     fn test_from_matrix() {
         // Test with identity matrix
-        let mat = Mat4::IDENTITY;
+        let mat = Mat4F32::IDENTITY;
         let se3 = SE3::from_matrix(&mat);
         assert_relative_eq!(se3.t.x, 0.0);
         assert_relative_eq!(se3.t.y, 0.0);
@@ -348,7 +364,7 @@ mod tests {
         }
 
         // Test with a specific transformation matrix
-        let mat = Mat4::from_cols_array(&[
+        let mat = Mat4F32::from_cols_array(&[
             1.0, 0.0, 0.0, 0.0, // col0
             0.0, 1.0, 0.0, 0.0, // col1
             0.0, 0.0, 1.0, 0.0, // col2
@@ -362,8 +378,8 @@ mod tests {
 
     #[test]
     fn test_from_qxyz() {
-        let quat = Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
-        let xyz = Vec3A::new(1.0, 2.0, 3.0);
+        let quat = QuatF32::from(glam::Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize());
+        let xyz = Vec3AF32::new(1.0, 2.0, 3.0);
         let se3 = SE3::from_qxyz(quat, xyz);
 
         assert_relative_eq!(se3.r.q.x, quat.x);
@@ -375,8 +391,8 @@ mod tests {
     #[test]
     fn test_se3_rplus_rminus_roundtrip() {
         let x = make_random_se3();
-        let tau_v = Vec3A::new(0.3, -0.4, 0.2); // translational part
-        let tau_w = Vec3A::new(0.1, 0.5, -0.2); // rotational part
+        let tau_v = Vec3AF32::new(0.3, -0.4, 0.2); // translational part
+        let tau_w = Vec3AF32::new(0.1, 0.5, -0.2); // rotational part
 
         let y = x.rplus(tau_v, tau_w); // X ⊕ τ  →  Y
         let (dv, dw) = x.rminus(&y);
@@ -393,8 +409,8 @@ mod tests {
     #[test]
     fn test_se3_lplus_lminus_consistency() {
         let x = make_random_se3();
-        let tau_v = Vec3A::new(-1.0, 0.7, 0.3);
-        let tau_w = Vec3A::new(0.2, 0.1, -0.6);
+        let tau_v = Vec3AF32::new(-1.0, 0.7, 0.3);
+        let tau_w = Vec3AF32::new(0.2, 0.1, -0.6);
 
         let y = SE3::lplus(tau_v, tau_w, &x); // τ ⊕ X → Y
         let (dv, dw) = SE3::lminus(&y, &x); // Y ⊖ X → τ
@@ -420,7 +436,7 @@ mod tests {
         assert_relative_eq!(inv.t.z, se3.t.z);
 
         // Test with translation only
-        let se3 = SE3::new(SO3::IDENTITY, Vec3A::new(1.0, 2.0, 3.0));
+        let se3 = SE3::new(SO3::IDENTITY, Vec3AF32::new(1.0, 2.0, 3.0));
         let inv = se3.inverse();
         assert_relative_eq!(inv.t.x, -1.0);
         assert_relative_eq!(inv.t.y, -2.0);
@@ -444,7 +460,7 @@ mod tests {
         // Test identity
         let se3 = SE3::IDENTITY;
         let mat = se3.matrix();
-        let expected = Mat4::IDENTITY;
+        let expected = Mat4F32::IDENTITY;
         for i in 0..4 {
             for j in 0..4 {
                 assert_relative_eq!(mat.col(i)[j], expected.col(i)[j]);
@@ -452,9 +468,9 @@ mod tests {
         }
 
         // Test with translation
-        let se3 = SE3::new(SO3::IDENTITY, Vec3A::new(1.0, 2.0, 3.0));
+        let se3 = SE3::new(SO3::IDENTITY, Vec3AF32::new(1.0, 2.0, 3.0));
         let mat = se3.matrix();
-        let expected = Mat4::from_cols_array(&[
+        let expected = Mat4F32::from_cols_array(&[
             1.0, 0.0, 0.0, 0.0, // col0
             0.0, 1.0, 0.0, 0.0, // col1
             0.0, 0.0, 1.0, 0.0, // col2
@@ -517,8 +533,8 @@ mod tests {
     #[test]
     fn test_exp_identity() {
         // exp(0) = identity
-        let upsilon = Vec3A::ZERO;
-        let omega = Vec3A::ZERO;
+        let upsilon = Vec3AF32::ZERO;
+        let omega = Vec3AF32::ZERO;
         let se3 = SE3::exp(upsilon, omega);
 
         assert_relative_eq!(se3.r.q.x, SE3::IDENTITY.r.q.x);
@@ -533,8 +549,8 @@ mod tests {
     #[test]
     fn test_exp_translation_only() {
         // Pure translation (omega = 0)
-        let upsilon = Vec3A::new(1.0, 2.0, 3.0);
-        let omega = Vec3A::ZERO;
+        let upsilon = Vec3AF32::new(1.0, 2.0, 3.0);
+        let omega = Vec3AF32::ZERO;
         let se3 = SE3::exp(upsilon, omega);
 
         assert_relative_eq!(se3.r.q.x, SE3::IDENTITY.r.q.x);
@@ -561,7 +577,7 @@ mod tests {
 
     #[test]
     fn test_log_translation_only() {
-        let translation = Vec3A::new(1.0, 2.0, 3.0);
+        let translation = Vec3AF32::new(1.0, 2.0, 3.0);
         let se3 = SE3::new(SO3::IDENTITY, translation);
         let (upsilon, omega) = se3.log();
 
@@ -575,8 +591,8 @@ mod tests {
 
     #[test]
     fn test_exp_log_roundtrip() {
-        let upsilon = Vec3A::new(0.5, -0.5, 1.0);
-        let omega = Vec3A::new(0.1, 0.2, -0.3);
+        let upsilon = Vec3AF32::new(0.5, -0.5, 1.0);
+        let omega = Vec3AF32::new(0.1, 0.2, -0.3);
 
         let se3 = SE3::exp(upsilon, omega);
         let (log_upsilon, log_omega) = se3.log();
@@ -591,8 +607,8 @@ mod tests {
 
     #[test]
     fn test_hat_vee_roundtrip() {
-        let upsilon = Vec3A::new(1.0, 2.0, 3.0);
-        let omega = Vec3A::new(0.1, -0.2, 0.3);
+        let upsilon = Vec3AF32::new(1.0, 2.0, 3.0);
+        let omega = Vec3AF32::new(0.1, -0.2, 0.3);
 
         let hat_matrix = SE3::hat(upsilon, omega);
         let (vee_upsilon, vee_omega) = SE3::vee(hat_matrix);
@@ -606,8 +622,8 @@ mod tests {
 
     #[test]
     fn test_hat_structure() {
-        let upsilon = Vec3A::new(1.0, 2.0, 3.0);
-        let omega = Vec3A::new(0.1, -0.2, 0.3);
+        let upsilon = Vec3AF32::new(1.0, 2.0, 3.0);
+        let omega = Vec3AF32::new(0.1, -0.2, 0.3);
         let hat_matrix = SE3::hat(upsilon, omega);
 
         // Check that the bottom row is [0, 0, 0, 0]
@@ -769,13 +785,22 @@ mod tests {
     }
 
     /// Diverse translation/rotation test pairs (ρ, θ).
-    fn test_pairs() -> [(Vec3A, Vec3A); 5] {
+    fn test_pairs() -> [(Vec3AF32, Vec3AF32); 5] {
         [
-            (Vec3A::new(0.1, 0.2, 0.3), Vec3A::new(0.02, 0.03, 0.04)),
-            (Vec3A::new(-0.3, 0.5, 0.1), Vec3A::new(0.7, 0.0, 0.0)),
-            (Vec3A::new(0.0, 0.0, 0.0), Vec3A::new(0.001, -0.002, 0.003)), // tiny θ
-            (Vec3A::new(0.5, -0.4, 0.2), Vec3A::ZERO),                     // pure translation
-            (Vec3A::new(0.01, 0.02, 0.03), Vec3A::new(-0.01, 0.02, -0.03)), // small mixed
+            (
+                Vec3AF32::new(0.1, 0.2, 0.3),
+                Vec3AF32::new(0.02, 0.03, 0.04),
+            ),
+            (Vec3AF32::new(-0.3, 0.5, 0.1), Vec3AF32::new(0.7, 0.0, 0.0)),
+            (
+                Vec3AF32::new(0.0, 0.0, 0.0),
+                Vec3AF32::new(0.001, -0.002, 0.003),
+            ), // tiny θ
+            (Vec3AF32::new(0.5, -0.4, 0.2), Vec3AF32::ZERO), // pure translation
+            (
+                Vec3AF32::new(0.01, 0.02, 0.03),
+                Vec3AF32::new(-0.01, 0.02, -0.03),
+            ), // small mixed
         ]
     }
 

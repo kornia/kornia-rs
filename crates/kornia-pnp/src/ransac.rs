@@ -3,7 +3,7 @@
 use crate::ops::{intrinsics_as_vectors, pose_to_rt, project_sq_error};
 use crate::pnp::{PnPError, PnPResult};
 use crate::{solve_pnp, PnPMethod};
-use glam::{Mat3, Vec3};
+use kornia_algebra::{Mat3, Vec3};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 use rand::seq::SliceRandom;
 use rand::{rngs::StdRng, SeedableRng};
