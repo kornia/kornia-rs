@@ -3,16 +3,16 @@ mod enhance;
 mod histogram;
 mod icp;
 mod image;
+mod image_api;
 mod io;
-mod pil;
 mod pointcloud;
 mod resize;
 mod warp;
 
 use crate::icp::{PyICPConvergenceCriteria, PyICPResult};
 use crate::image::PyImageSize;
+use crate::image_api::PyImage3;
 use crate::io::jpegturbo::{PyImageDecoder, PyImageEncoder};
-use crate::pil::PyImage3;
 use pyo3::prelude::*;
 
 pub fn get_version() -> String {
