@@ -4,13 +4,29 @@ use pyo3::prelude::*;
 
 use crate::image::{FromPyImage, ToPyImage, PyImage, PyImageSize};
 
-/// Internal storage for the PIL-like Image class
-/// This enum allows us to support multiple image modes with different channel counts
-#[derive(Clone)]
+/// Internal storage for the high-level Image class
+/// Uses kornia's typed color space wrappers for compile-time type safety
 enum ImageData {
-    Rgb(KorniaImage<u8, 3, CpuAllocator>),
-    Rgba(KorniaImage<u8, 4, CpuAllocator>),
-    L(KorniaImage<u8, 1, CpuAllocator>),
+    Rgb(Rgb8<CpuAllocator>),
+    Rgba(Rgba8<CpuAllocator>),
+    L(Gray8<CpuAllocator>),
+}
+
+impl Clone for ImageData {
+    fn clone(&self) -> Self {
+        match self {
+            ImageData::Rgb(img) => {
+                // Clone the inner Image and wrap in Rgb8
+                ImageData::Rgb(Rgb8(img.as_image().clone()))
+            }
+            ImageData::Rgba(img) => {
+                ImageData::Rgba(Rgba8(img.as_image().clone()))
+            }
+            ImageData::L(img) => {
+                ImageData::L(Gray8(img.as_image().clone()))
+            }
+        }
+    }
 }
 
 impl ImageData {
@@ -87,28 +103,27 @@ pub struct PyImage3 {
 impl PyImage3 {
     /// Create a new image from a file path.
     ///
-    /// Automatically loads as RGB and can convert to other modes.
+    /// Currently loads images as RGB. Mode conversion support coming soon.
     ///
     /// # Arguments
     ///
     /// * `path` - Path to the image file
-    /// * `mode` - Optional mode to convert to ("RGB", "RGBA", "L"). Defaults to "RGB".
+    /// * `mode` - Reserved for future use. Currently only "RGB" is supported.
     ///
     /// # Returns
     ///
-    /// A new Image instance
+    /// A new Image instance in RGB mode
     ///
     /// # Examples
     ///
     /// ```python
     /// import kornia_rs as K
     /// img = K.Image.open("dog.jpeg")  # Loads as RGB
-    /// img_gray = K.Image.open("dog.jpeg", mode="L")  # Convert to grayscale
     /// ```
     #[staticmethod]
     #[pyo3(signature = (path, mode=None))]
     pub fn open(path: &str, mode: Option<&str>) -> PyResult<Self> {
-        // Always load as RGB first (this is what the I/O layer supports)
+        // Load as RGB using kornia's typed color space
         let rgb8 = kornia_io::functional::read_image_any_rgb8(path)
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Failed to open image: {}", e)))?;
         
@@ -116,23 +131,10 @@ impl PyImage3 {
         
         match target_mode {
             "RGB" => {
-                Ok(PyImage3 { inner: ImageData::Rgb(rgb8.into_inner()) })
-            }
-            "L" => {
-                // Convert RGB to grayscale
-                // For now, return error as conversion not implemented
-                Err(pyo3::exceptions::PyValueError::new_err(
-                    "Grayscale mode 'L' not yet fully supported. Use 'RGB' mode."
-                ))
-            }
-            "RGBA" => {
-                // Convert RGB to RGBA
-                Err(pyo3::exceptions::PyValueError::new_err(
-                    "RGBA mode not yet fully supported. Use 'RGB' mode."
-                ))
+                Ok(PyImage3 { inner: ImageData::Rgb(rgb8) })
             }
             _ => Err(pyo3::exceptions::PyValueError::new_err(
-                format!("Unsupported mode: {}. Use 'RGB' for now.", target_mode)
+                format!("Mode '{}' not yet supported. Currently only 'RGB' is available.", target_mode)
             )),
         }
     }
@@ -184,22 +186,22 @@ impl PyImage3 {
                             data.push(tuple.1);
                             data.push(tuple.2);
                         }
-                        let image = KorniaImage::new(image_size, data, CpuAllocator)
+                        let rgb = Rgb8::from_size_vec(image_size, data, CpuAllocator)
                             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to create image: {}", e)))?;
-                        return Ok(PyImage3 { inner: ImageData::Rgb(image) });
+                        return Ok(PyImage3 { inner: ImageData::Rgb(rgb) });
                     } else if let Ok(val) = c.extract::<u8>() {
-                        let image = KorniaImage::from_size_val(image_size, val, CpuAllocator)
+                        let rgb = Rgb8::from_size_val(image_size, val, CpuAllocator)
                             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to create image: {}", e)))?;
-                        return Ok(PyImage3 { inner: ImageData::Rgb(image) });
+                        return Ok(PyImage3 { inner: ImageData::Rgb(rgb) });
                     } else {
                         return Err(pyo3::exceptions::PyValueError::new_err(
                             "Color for RGB mode must be an integer or tuple of (R, G, B)"
                         ));
                     }
                 }
-                let image = KorniaImage::from_size_val(image_size, 0u8, CpuAllocator)
+                let rgb = Rgb8::from_size_val(image_size, 0u8, CpuAllocator)
                     .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to create image: {}", e)))?;
-                Ok(PyImage3 { inner: ImageData::Rgb(image) })
+                Ok(PyImage3 { inner: ImageData::Rgb(rgb) })
             }
             "RGBA" => {
                 if let Some(c) = color {
@@ -211,22 +213,22 @@ impl PyImage3 {
                             data.push(tuple.2);
                             data.push(tuple.3);
                         }
-                        let image = KorniaImage::new(image_size, data, CpuAllocator)
+                        let rgba = Rgba8::from_size_vec(image_size, data, CpuAllocator)
                             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to create image: {}", e)))?;
-                        return Ok(PyImage3 { inner: ImageData::Rgba(image) });
+                        return Ok(PyImage3 { inner: ImageData::Rgba(rgba) });
                     } else if let Ok(val) = c.extract::<u8>() {
-                        let image = KorniaImage::from_size_val(image_size, val, CpuAllocator)
+                        let rgba = Rgba8::from_size_val(image_size, val, CpuAllocator)
                             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to create image: {}", e)))?;
-                        return Ok(PyImage3 { inner: ImageData::Rgba(image) });
+                        return Ok(PyImage3 { inner: ImageData::Rgba(rgba) });
                     } else {
                         return Err(pyo3::exceptions::PyValueError::new_err(
                             "Color for RGBA mode must be an integer or tuple of (R, G, B, A)"
                         ));
                     }
                 }
-                let image = KorniaImage::from_size_val(image_size, 0u8, CpuAllocator)
+                let rgba = Rgba8::from_size_val(image_size, 0u8, CpuAllocator)
                     .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to create image: {}", e)))?;
-                Ok(PyImage3 { inner: ImageData::Rgba(image) })
+                Ok(PyImage3 { inner: ImageData::Rgba(rgba) })
             }
             "L" => {
                 let fill_value = if let Some(c) = color {
@@ -236,9 +238,9 @@ impl PyImage3 {
                 } else {
                     0
                 };
-                let image = KorniaImage::from_size_val(image_size, fill_value, CpuAllocator)
+                let gray = Gray8::from_size_val(image_size, fill_value, CpuAllocator)
                     .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to create image: {}", e)))?;
-                Ok(PyImage3 { inner: ImageData::L(image) })
+                Ok(PyImage3 { inner: ImageData::L(gray) })
             }
             _ => Err(pyo3::exceptions::PyValueError::new_err(
                 format!("Unsupported mode: {}. Supported modes: 'RGB', 'RGBA', 'L'.", mode)
@@ -412,7 +414,7 @@ impl PyImage3 {
 
         let resized_data = match &self.inner {
             ImageData::Rgb(img) => {
-                let mut resized = KorniaImage::from_size_val(new_size, 0u8, CpuAllocator)
+                let mut resized = Rgb8::from_size_val(new_size, 0u8, CpuAllocator)
                     .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to create output image: {}", e)))?;
                 kornia_imgproc::resize::resize_fast_rgb(img, &mut resized, interp)
                     .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to resize: {}", e)))?;
@@ -424,7 +426,7 @@ impl PyImage3 {
                 ));
             }
             ImageData::L(img) => {
-                let mut resized = KorniaImage::from_size_val(new_size, 0u8, CpuAllocator)
+                let mut resized = Gray8::from_size_val(new_size, 0u8, CpuAllocator)
                     .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to create output image: {}", e)))?;
                 kornia_imgproc::resize::resize_fast_mono(img, &mut resized, interp)
                     .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to resize: {}", e)))?;
@@ -624,8 +626,15 @@ impl PyImage3 {
     /// ```
     pub fn to_numpy(&self) -> PyResult<PyImage> {
         match &self.inner {
-            ImageData::Rgb(img) => img.clone().to_pyimage()
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to convert to numpy: {}", e))),
+            ImageData::Rgb(img) => {
+                // Clone the Rgb8 wrapper using our Clone implementation
+                let owned = self.inner.clone();
+                match owned {
+                    ImageData::Rgb(rgb) => rgb.to_pyimage()
+                        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to convert to numpy: {}", e))),
+                    _ => unreachable!(),
+                }
+            }
             ImageData::Rgba(_) => Err(pyo3::exceptions::PyValueError::new_err(
                 "RGBA to numpy conversion not yet implemented. Use RGB mode."
             )),
@@ -659,10 +668,12 @@ impl PyImage3 {
     #[staticmethod]
     pub fn from_numpy(array: PyImage) -> PyResult<Self> {
         // For now, only support RGB (3-channel)
-        let image = KorniaImage::<u8, 3, CpuAllocator>::from_pyimage(array)
+        let inner_image = KorniaImage::<u8, 3, CpuAllocator>::from_pyimage(array)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to create image from numpy: {}", e)))?;
         
-        Ok(PyImage3 { inner: ImageData::Rgb(image) })
+        // Wrap in Rgb8 color space
+        let rgb = Rgb8(inner_image);
+        Ok(PyImage3 { inner: ImageData::Rgb(rgb) })
     }
 
     /// String representation of the Image.
