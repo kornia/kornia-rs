@@ -458,15 +458,23 @@ impl PyImage3 {
 
     /// Get the pixel value at coordinates (x, y).
     ///
+    /// **⚠️ Performance Warning:** This method is slow for processing many pixels.
+    /// For bulk operations, use `to_numpy()` to get a NumPy array and operate on that instead.
+    ///
     /// # Arguments
     ///
-    /// * `xy` - Tuple of (x, y) coordinates
+    /// * `xy` - Tuple of (x, y) coordinates where (0, 0) is top-left corner
     ///
     /// # Returns
     ///
     /// - For RGB: tuple (R, G, B)
     /// - For RGBA: tuple (R, G, B, A)
     /// - For L: int (0-255)
+    ///
+    /// # Coordinate Convention
+    ///
+    /// Uses (x, y) coordinates where x is horizontal (column) and y is vertical (row).
+    /// This matches PIL convention. Top-left corner is (0, 0).
     ///
     /// # Examples
     ///
@@ -475,8 +483,10 @@ impl PyImage3 {
     /// img = K.Image.open("image.jpg", mode="RGB")
     /// r, g, b = img.getpixel((10, 20))
     /// 
-    /// gray = K.Image.open("image.jpg", mode="L")
-    /// val = gray.getpixel((10, 20))
+    /// # For bulk operations, use NumPy instead:
+    /// arr = img.to_numpy()  # Shape: (height, width, channels)
+    /// # Access pixel at (x, y): arr[y, x]
+    /// pixel = arr[20, 10]  # Note: NumPy uses (row, col) = (y, x)
     /// ```
     pub fn getpixel(&self, py: Python, xy: (usize, usize)) -> PyResult<PyObject> {
         let (x, y) = xy;
@@ -519,13 +529,21 @@ impl PyImage3 {
 
     /// Set the pixel value at coordinates (x, y).
     ///
+    /// **⚠️ Performance Warning:** This method is slow for setting many pixels.
+    /// For bulk operations, use `to_numpy()`, modify the array, then `from_numpy()`.
+    ///
     /// # Arguments
     ///
-    /// * `xy` - Tuple of (x, y) coordinates
+    /// * `xy` - Tuple of (x, y) coordinates where (0, 0) is top-left corner
     /// * `value` - Pixel value:
     ///   - For RGB: tuple (R, G, B) or int
     ///   - For RGBA: tuple (R, G, B, A) or int
     ///   - For L: int (0-255)
+    ///
+    /// # Coordinate Convention
+    ///
+    /// Uses (x, y) coordinates where x is horizontal (column) and y is vertical (row).
+    /// Top-left corner is (0, 0).
     ///
     /// # Examples
     ///
@@ -534,8 +552,11 @@ impl PyImage3 {
     /// img = K.Image.open("image.jpg", mode="RGB")
     /// img.putpixel((10, 20), (255, 0, 0))  # Set pixel to red
     /// 
-    /// gray = K.Image.new("L", (100, 100))
-    /// gray.putpixel((10, 20), 128)  # Set gray value
+    /// # For bulk modifications, use NumPy:
+    /// arr = img.to_numpy()
+    /// arr[20, 10] = [255, 0, 0]  # NumPy uses (row, col) = (y, x)
+    /// arr[100:200, 50:150] = [0, 255, 0]  # Set region to green
+    /// modified_img = K.Image.from_numpy(arr)
     /// ```
     pub fn putpixel(&mut self, xy: (usize, usize), value: &Bound<'_, PyAny>) -> PyResult<()> {
         let (x, y) = xy;
@@ -674,6 +695,260 @@ impl PyImage3 {
         // Wrap in Rgb8 color space
         let rgb = Rgb8(inner_image);
         Ok(PyImage3 { inner: ImageData::Rgb(rgb) })
+    }
+
+    /// Crop the image to a rectangular region.
+    ///
+    /// Returns a new image containing the specified rectangular region.
+    /// Unlike PIL, this always returns a copy for safety and clarity.
+    ///
+    /// # Arguments
+    ///
+    /// * `box` - Tuple of (left, upper, right, lower) coordinates
+    ///   - left: x coordinate of left edge
+    ///   - upper: y coordinate of top edge  
+    ///   - right: x coordinate of right edge (exclusive)
+    ///   - lower: y coordinate of bottom edge (exclusive)
+    ///
+    /// # Returns
+    ///
+    /// A new Image containing the cropped region
+    ///
+    /// # Examples
+    ///
+    /// ```python
+    /// import kornia_rs as K
+    /// img = K.Image.open("image.jpg")
+    /// # Crop 100x100 region starting at (50, 30)
+    /// cropped = img.crop((50, 30, 150, 130))
+    /// print(cropped.size)  # ImageSize(width: 100, height: 100)
+    /// ```
+    #[pyo3(signature = (box_coords))]
+    pub fn crop(&self, box_coords: (usize, usize, usize, usize)) -> PyResult<Self> {
+        let (left, upper, right, lower) = box_coords;
+        
+        // Validate coordinates
+        if left >= right || upper >= lower {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("Invalid crop box: left ({}) must be < right ({}), upper ({}) must be < lower ({})",
+                    left, right, upper, lower)
+            ));
+        }
+        
+        if right > self.inner.width() || lower > self.inner.height() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("Crop box ({}, {}, {}, {}) exceeds image bounds ({}, {})",
+                    left, upper, right, lower, self.inner.width(), self.inner.height())
+            ));
+        }
+
+        let crop_width = right - left;
+        let crop_height = lower - upper;
+        let crop_size = ImageSize {
+            width: crop_width,
+            height: crop_height,
+        };
+
+        // Crop by copying pixels from source region
+        let cropped_data = match &self.inner {
+            ImageData::Rgb(img) => {
+                let mut cropped = Rgb8::from_size_val(crop_size, 0u8, CpuAllocator)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to create cropped image: {}", e)))?;
+                
+                // Copy pixels row by row
+                for y in 0..crop_height {
+                    for x in 0..crop_width {
+                        let src_x = left + x;
+                        let src_y = upper + y;
+                        for c in 0..3 {
+                            let pixel = *img.get_pixel(src_x, src_y, c)
+                                .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to get pixel: {}", e)))?;
+                            cropped.set_pixel(x, y, c, pixel)
+                                .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to set pixel: {}", e)))?;
+                        }
+                    }
+                }
+                ImageData::Rgb(cropped)
+            }
+            ImageData::Rgba(img) => {
+                let mut cropped = Rgba8::from_size_val(crop_size, 0u8, CpuAllocator)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to create cropped image: {}", e)))?;
+                
+                for y in 0..crop_height {
+                    for x in 0..crop_width {
+                        let src_x = left + x;
+                        let src_y = upper + y;
+                        for c in 0..4 {
+                            let pixel = *img.get_pixel(src_x, src_y, c)
+                                .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to get pixel: {}", e)))?;
+                            cropped.set_pixel(x, y, c, pixel)
+                                .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to set pixel: {}", e)))?;
+                        }
+                    }
+                }
+                ImageData::Rgba(cropped)
+            }
+            ImageData::L(img) => {
+                let mut cropped = Gray8::from_size_val(crop_size, 0u8, CpuAllocator)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to create cropped image: {}", e)))?;
+                
+                for y in 0..crop_height {
+                    for x in 0..crop_width {
+                        let src_x = left + x;
+                        let src_y = upper + y;
+                        let pixel = *img.get_pixel(src_x, src_y, 0)
+                            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to get pixel: {}", e)))?;
+                        cropped.set_pixel(x, y, 0, pixel)
+                            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to set pixel: {}", e)))?;
+                    }
+                }
+                ImageData::L(cropped)
+            }
+        };
+
+        Ok(PyImage3 { inner: cropped_data })
+    }
+
+    /// Convert the image to a different color mode.
+    ///
+    /// This addresses a major pain point of OpenCV (BGR confusion) and PIL (unclear conversions)
+    /// by making color space conversions explicit and type-safe.
+    ///
+    /// # Arguments
+    ///
+    /// * `mode` - Target color mode: "RGB", "RGBA", "L"
+    ///
+    /// # Returns
+    ///
+    /// A new Image in the specified mode
+    ///
+    /// # Supported Conversions
+    ///
+    /// - RGB → RGBA: Adds alpha channel (fully opaque, alpha=255)
+    /// - RGB → L: Converts to grayscale using standard weights (0.299*R + 0.587*G + 0.114*B)
+    /// - RGBA → RGB: Discards alpha channel
+    /// - L → RGB: Replicates gray value across R, G, B channels
+    ///
+    /// # Examples
+    ///
+    /// ```python
+    /// import kornia_rs as K
+    /// 
+    /// # Load RGB image
+    /// rgb = K.Image.open("image.jpg")
+    /// 
+    /// # Convert to grayscale
+    /// gray = rgb.convert("L")
+    /// 
+    /// # Convert to RGBA with full opacity
+    /// rgba = rgb.convert("RGBA")
+    /// 
+    /// # Unlike OpenCV, no BGR confusion - always explicit!
+    /// ```
+    #[pyo3(signature = (mode))]
+    pub fn convert(&self, mode: &str) -> PyResult<Self> {
+        // Check if already in target mode
+        if self.inner.mode() == mode {
+            return self.copy();
+        }
+
+        let converted_data = match (&self.inner, mode) {
+            // RGB → L (grayscale)
+            (ImageData::Rgb(img), "L") => {
+                let gray_size = ImageSize {
+                    width: img.width(),
+                    height: img.height(),
+                };
+                let mut gray = Gray8::from_size_val(gray_size, 0u8, CpuAllocator)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to create grayscale image: {}", e)))?;
+                
+                // Standard RGB to grayscale conversion: 0.299*R + 0.587*G + 0.114*B
+                for y in 0..img.height() {
+                    for x in 0..img.width() {
+                        let r = *img.get_pixel(x, y, 0).unwrap() as f32;
+                        let g = *img.get_pixel(x, y, 1).unwrap() as f32;
+                        let b = *img.get_pixel(x, y, 2).unwrap() as f32;
+                        let gray_val = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
+                        gray.set_pixel(x, y, 0, gray_val).unwrap();
+                    }
+                }
+                ImageData::L(gray)
+            }
+            
+            // RGB → RGBA (add alpha channel)
+            (ImageData::Rgb(img), "RGBA") => {
+                let rgba_size = ImageSize {
+                    width: img.width(),
+                    height: img.height(),
+                };
+                let mut rgba = Rgba8::from_size_val(rgba_size, 0u8, CpuAllocator)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to create RGBA image: {}", e)))?;
+                
+                for y in 0..img.height() {
+                    for x in 0..img.width() {
+                        let r = *img.get_pixel(x, y, 0).unwrap();
+                        let g = *img.get_pixel(x, y, 1).unwrap();
+                        let b = *img.get_pixel(x, y, 2).unwrap();
+                        rgba.set_pixel(x, y, 0, r).unwrap();
+                        rgba.set_pixel(x, y, 1, g).unwrap();
+                        rgba.set_pixel(x, y, 2, b).unwrap();
+                        rgba.set_pixel(x, y, 3, 255).unwrap();  // Full opacity
+                    }
+                }
+                ImageData::Rgba(rgba)
+            }
+            
+            // RGBA → RGB (discard alpha)
+            (ImageData::Rgba(img), "RGB") => {
+                let rgb_size = ImageSize {
+                    width: img.width(),
+                    height: img.height(),
+                };
+                let mut rgb = Rgb8::from_size_val(rgb_size, 0u8, CpuAllocator)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to create RGB image: {}", e)))?;
+                
+                for y in 0..img.height() {
+                    for x in 0..img.width() {
+                        let r = *img.get_pixel(x, y, 0).unwrap();
+                        let g = *img.get_pixel(x, y, 1).unwrap();
+                        let b = *img.get_pixel(x, y, 2).unwrap();
+                        rgb.set_pixel(x, y, 0, r).unwrap();
+                        rgb.set_pixel(x, y, 1, g).unwrap();
+                        rgb.set_pixel(x, y, 2, b).unwrap();
+                    }
+                }
+                ImageData::Rgb(rgb)
+            }
+            
+            // L → RGB (replicate gray value)
+            (ImageData::L(img), "RGB") => {
+                let rgb_size = ImageSize {
+                    width: img.width(),
+                    height: img.height(),
+                };
+                let mut rgb = Rgb8::from_size_val(rgb_size, 0u8, CpuAllocator)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to create RGB image: {}", e)))?;
+                
+                for y in 0..img.height() {
+                    for x in 0..img.width() {
+                        let gray = *img.get_pixel(x, y, 0).unwrap();
+                        rgb.set_pixel(x, y, 0, gray).unwrap();
+                        rgb.set_pixel(x, y, 1, gray).unwrap();
+                        rgb.set_pixel(x, y, 2, gray).unwrap();
+                    }
+                }
+                ImageData::Rgb(rgb)
+            }
+            
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    format!("Conversion from {} to {} not supported. Supported: RGB↔RGBA, RGB↔L, L→RGB",
+                        self.inner.mode(), mode)
+                ));
+            }
+        };
+
+        Ok(PyImage3 { inner: converted_data })
     }
 
     /// String representation of the Image.

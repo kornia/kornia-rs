@@ -335,3 +335,169 @@ class TestImageProperties:
         assert isinstance(size, K.ImageSize)
         assert size.width == 640
         assert size.height == 480
+
+
+class TestImageCrop:
+    """Test Image.crop() functionality"""
+
+    def test_crop_rgb(self):
+        """Test cropping RGB image"""
+        img = K.Image.new("RGB", (200, 200), color=(255, 0, 0))
+        cropped = img.crop((50, 30, 150, 130))
+        
+        assert cropped.mode == "RGB"
+        assert cropped.width == 100
+        assert cropped.height == 100
+
+    def test_crop_rgba(self):
+        """Test cropping RGBA image"""
+        img = K.Image.new("RGBA", (200, 200), color=(255, 0, 0, 128))
+        cropped = img.crop((10, 10, 60, 60))
+        
+        assert cropped.mode == "RGBA"
+        assert cropped.width == 50
+        assert cropped.height == 50
+
+    def test_crop_grayscale(self):
+        """Test cropping grayscale image"""
+        img = K.Image.new("L", (200, 200), color=128)
+        cropped = img.crop((20, 20, 120, 120))
+        
+        assert cropped.mode == "L"
+        assert cropped.width == 100
+        assert cropped.height == 100
+
+    def test_crop_preserves_pixel_values(self):
+        """Test that crop preserves pixel values"""
+        img = K.Image.new("RGB", (100, 100), color=(255, 128, 64))
+        cropped = img.crop((10, 10, 60, 60))
+        
+        pixel = cropped.getpixel((25, 25))
+        assert pixel == (255, 128, 64)
+
+    def test_crop_invalid_coordinates(self):
+        """Test that invalid crop coordinates raise error"""
+        img = K.Image.new("RGB", (100, 100))
+        
+        with pytest.raises(ValueError, match="left.*must be < right"):
+            img.crop((60, 10, 10, 60))  # left > right
+
+    def test_crop_out_of_bounds(self):
+        """Test that out of bounds crop raises error"""
+        img = K.Image.new("RGB", (100, 100))
+        
+        with pytest.raises(ValueError, match="exceeds image bounds"):
+            img.crop((0, 0, 200, 200))
+
+
+class TestImageConvert:
+    """Test Image.convert() color space conversion"""
+
+    def test_convert_rgb_to_gray(self):
+        """Test RGB to grayscale conversion"""
+        img = K.Image.new("RGB", (100, 100), color=(100, 150, 50))
+        gray = img.convert("L")
+        
+        assert gray.mode == "L"
+        assert gray.width == img.width
+        assert gray.height == img.height
+        
+        # Check conversion formula: 0.299*R + 0.587*G + 0.114*B
+        expected = int(0.299 * 100 + 0.587 * 150 + 0.114 * 50)
+        pixel = gray.getpixel((50, 50))
+        assert abs(pixel - expected) <= 1  # Allow for rounding
+
+    def test_convert_rgb_to_rgba(self):
+        """Test RGB to RGBA conversion"""
+        img = K.Image.new("RGB", (100, 100), color=(255, 128, 64))
+        rgba = img.convert("RGBA")
+        
+        assert rgba.mode == "RGBA"
+        assert rgba.width == img.width
+        assert rgba.height == img.height
+        
+        # Check alpha is 255 (fully opaque)
+        pixel = rgba.getpixel((50, 50))
+        assert pixel == (255, 128, 64, 255)
+
+    def test_convert_rgba_to_rgb(self):
+        """Test RGBA to RGB conversion (discards alpha)"""
+        img = K.Image.new("RGBA", (100, 100), color=(255, 128, 64, 128))
+        rgb = img.convert("RGB")
+        
+        assert rgb.mode == "RGB"
+        pixel = rgb.getpixel((50, 50))
+        assert pixel == (255, 128, 64)  # Alpha discarded
+
+    def test_convert_gray_to_rgb(self):
+        """Test grayscale to RGB conversion"""
+        img = K.Image.new("L", (100, 100), color=150)
+        rgb = img.convert("RGB")
+        
+        assert rgb.mode == "RGB"
+        pixel = rgb.getpixel((50, 50))
+        assert pixel == (150, 150, 150)  # Gray replicated
+
+    def test_convert_to_same_mode(self):
+        """Test converting to same mode returns copy"""
+        img = K.Image.new("RGB", (100, 100))
+        copy = img.convert("RGB")
+        
+        assert copy.mode == img.mode
+        # Verify it's a copy by modifying one
+        copy.putpixel((10, 10), (255, 0, 0))
+        assert img.getpixel((10, 10)) != (255, 0, 0)
+
+    def test_convert_invalid_mode(self):
+        """Test that invalid conversion raises error"""
+        img = K.Image.new("RGB", (100, 100))
+        
+        with pytest.raises(ValueError, match="not supported"):
+            img.convert("INVALID")
+
+
+class TestPerformanceDocumentation:
+    """Test that performance warnings are clear"""
+
+    def test_getpixel_has_performance_warning_in_docstring(self):
+        """Verify getpixel documents performance concerns"""
+        import kornia_rs as K
+        img = K.Image.new("RGB", (10, 10))
+        
+        # Docstring should mention performance
+        docstring = img.getpixel.__doc__
+        assert "Performance Warning" in docstring or "slow" in docstring.lower()
+
+    def test_putpixel_has_performance_warning_in_docstring(self):
+        """Verify putpixel documents performance concerns"""
+        import kornia_rs as K
+        img = K.Image.new("RGB", (10, 10))
+        
+        # Docstring should mention performance
+        docstring = img.putpixel.__doc__
+        assert "Performance Warning" in docstring or "slow" in docstring.lower()
+
+
+class TestCoordinateConventions:
+    """Test and document coordinate conventions"""
+
+    def test_coordinate_convention_matches_pil(self):
+        """Test that coordinates follow PIL convention (x, y) not OpenCV (row, col)"""
+        img = K.Image.new("RGB", (100, 50))  # width=100, height=50
+        
+        # Top-left should be (0, 0)
+        img.putpixel((0, 0), (255, 0, 0))
+        assert img.getpixel((0, 0)) == (255, 0, 0)
+        
+        # Bottom-right should be (99, 49)
+        img.putpixel((99, 49), (0, 255, 0))
+        assert img.getpixel((99, 49)) == (0, 255, 0)
+
+    def test_crop_coordinates(self):
+        """Test that crop uses (left, upper, right, lower) convention"""
+        img = K.Image.new("RGB", (100, 100))
+        # Crop should be (left, upper, right, lower) = (10, 20, 60, 70)
+        cropped = img.crop((10, 20, 60, 70))
+        
+        assert cropped.width == 50   # right - left
+        assert cropped.height == 50  # lower - upper
