@@ -1,8 +1,16 @@
-use kornia_apriltag::{decoder::Detection, quad::Quad, AprilTagDecoder, DecodeTagsConfig};
+use kornia_apriltag::{
+    decoder::Detection,
+    family::TagFamilyKind,
+    quad::{FitQuadConfig, Quad},
+    AprilTagDecoder, DecodeTagsConfig,
+};
 use kornia_image::Image;
 use pyo3::{exceptions::PyException, prelude::*, PyResult};
 
-use crate::image::{FromPyImage, PyImage, PyImageSize};
+use crate::{
+    apriltag::family::PyTagFamily,
+    image::{FromPyImage, PyImage, PyImageSize},
+};
 
 #[pyclass(name = "DecodeTagsConfig")]
 pub struct PyDecodeTagsConfig(DecodeTagsConfig);
@@ -21,6 +29,113 @@ impl PyDecodeTagsConfig {
 
             Ok(Self(DecodeTagsConfig::new(tag_families)))
         })
+    }
+
+    pub fn add(&mut self, family: Py<PyTagFamily>) -> PyResult<()> {
+        Python::attach(|py| {
+            let py_family = family.borrow(py).into_tag_family_kind()?;
+            let inner = match py_family.0 {
+                TagFamilyKind::Custom(inner) => inner,
+                _ => unreachable!(),
+            };
+
+            self.0.add(inner);
+            Ok(())
+        })
+    }
+
+    // TODO: Add getter for tag_families
+
+    #[getter]
+    pub fn get_fit_quad_config(&self) -> PyFitQuadConfig {
+        PyFitQuadConfig {
+            cos_critical_rad: self.0.fit_quad_config.cos_critical_rad,
+            max_line_fit_mse: self.0.fit_quad_config.max_line_fit_mse,
+            max_nmaxima: self.0.fit_quad_config.max_nmaxima,
+            min_cluster_pixels: self.0.fit_quad_config.min_cluster_pixels,
+        }
+    }
+
+    #[setter]
+    pub fn set_fit_quad_config(&mut self, value: PyFitQuadConfig) {
+        let config = FitQuadConfig {
+            cos_critical_rad: value.cos_critical_rad,
+            max_line_fit_mse: value.max_line_fit_mse,
+            max_nmaxima: value.max_nmaxima,
+            min_cluster_pixels: value.min_cluster_pixels,
+        };
+
+        self.0.fit_quad_config = config;
+    }
+
+    #[getter]
+    pub fn get_refine_edges_enabled(&self) -> bool {
+        self.0.refine_edges_enabled
+    }
+
+    #[setter]
+    pub fn set_refine_edges_enabled(&mut self, value: bool) {
+        self.0.refine_edges_enabled = value;
+    }
+
+    #[getter]
+    pub fn get_decode_sharpening(&self) -> f32 {
+        self.0.decode_sharpening
+    }
+
+    #[setter]
+    pub fn set_decode_sharpening(&mut self, value: f32) {
+        self.0.decode_sharpening = value;
+    }
+
+    #[getter]
+    pub fn get_normal_border(&self) -> bool {
+        self.0.normal_border
+    }
+
+    #[setter]
+    pub fn set_normal_border(&mut self, value: bool) {
+        self.0.normal_border = value;
+    }
+
+    #[getter]
+    pub fn get_reversed_border(&self) -> bool {
+        self.0.reversed_border
+    }
+
+    #[setter]
+    pub fn set_reversed_border(&mut self, value: bool) {
+        self.0.reversed_border = value;
+    }
+
+    #[getter]
+    pub fn get_min_tag_width(&self) -> usize {
+        self.0.min_tag_width
+    }
+
+    #[setter]
+    pub fn set_min_tag_width(&mut self, value: usize) {
+        self.0.min_tag_width = value;
+    }
+
+    #[getter]
+    pub fn get_min_white_black_difference(&self) -> u8 {
+        self.0.min_white_black_difference
+    }
+
+    #[setter]
+    pub fn set_min_white_black_difference(&mut self, value: u8) {
+        self.0.min_white_black_difference = value;
+    }
+
+    #[getter]
+    pub fn get_downscale_factor(&self) -> usize {
+        self.0.downscale_factor
+    }
+
+    #[setter]
+    pub fn set_downscale_factor(&mut self, value: usize) {
+        self.0.downscale_factor = value;
     }
 
     #[staticmethod]
