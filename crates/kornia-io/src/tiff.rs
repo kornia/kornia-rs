@@ -226,10 +226,17 @@ fn pixel_format_from_tiff_colortype(colortype: &tiff::ColorType) -> Option<Image
     }
 }
 
-/// Decodes TIFF metadata from raw bytes.
+/// Decodes TIFF image metadata from raw bytes without decoding pixel data.
+///
+/// # Arguments
+///
+/// - `src` - Raw bytes of the TIFF file
+///
+/// # Returns
+///
+/// An `ImageLayout` containing the image metadata (size, channels, pixel format).
 pub fn decode_image_tiff_info(src: &[u8]) -> Result<ImageLayout, IoError> {
     use std::io::Cursor;
-
     let cursor = Cursor::new(src);
     let mut decoder = tiff::decoder::Decoder::new(cursor)?;
 
@@ -297,7 +304,7 @@ pub fn read_image_tiff_with_metadata(
             ))
         }
     };
-
+    
     let num_channels = if let Some(channels) = num_channels_from_metadata {
         channels
     } else {

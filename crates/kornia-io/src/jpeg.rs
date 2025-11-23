@@ -177,6 +177,15 @@ fn decode_jpeg_impl<const C: usize, A: ImageAllocator>(
     Ok(())
 }
 
+/// Decodes JPEG image metadata from raw bytes without decoding pixel data.
+///
+/// # Arguments
+///
+/// - `src` - Raw bytes of the JPEG file
+///
+/// # Returns
+///
+/// An `ImageLayout` containing the image metadata (size, channels, pixel format).
 pub fn decode_image_jpeg_info(src: &[u8]) -> Result<ImageLayout, IoError> {
     let mut decoder = zune_jpeg::JpegDecoder::new(src);
     decoder.decode_headers()?;

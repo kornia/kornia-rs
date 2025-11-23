@@ -25,5 +25,5 @@ kornia-3d = { path = "../crates/kornia-3d" }
 # external
 pyo3 = { version = "0.26.0", features = ["extension-module"] }
 numpy = { version = "0.26.0" }
-png = "0.17"
+png = "0.18"
 tiff = "0.10"

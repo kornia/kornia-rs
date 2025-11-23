@@ -190,6 +190,15 @@ pub fn decode_image_png_rgba16<A: ImageAllocator>(
     Ok(())
 }
 
+/// Decodes PNG image metadata from raw bytes without decoding pixel data.
+///
+/// # Arguments
+///
+/// - `src` - Raw bytes of the PNG file
+///
+/// # Returns
+///
+/// An `ImageLayout` containing the image metadata (size, channels, pixel format).
 pub fn decode_image_png_info(src: &[u8]) -> Result<ImageLayout, IoError> {
     let decoder = Decoder::new(src);
     let reader = decoder
@@ -203,11 +212,11 @@ pub fn decode_image_png_info(src: &[u8]) -> Result<ImageLayout, IoError> {
     };
 
     let channels = match info.color_type {
-        ColorType::Grayscale => 1u8,
-        ColorType::Rgb => 3u8,
-        ColorType::Rgba => 4u8,
-        ColorType::GrayscaleAlpha => 2u8,
-        ColorType::Indexed => 1u8,
+        ColorType::Grayscale => 1,
+        ColorType::Rgb => 3,
+        ColorType::Rgba => 4,
+        ColorType::GrayscaleAlpha => 2,
+        ColorType::Indexed => 1,
     };
 
     let pixel_format = match info.bit_depth {

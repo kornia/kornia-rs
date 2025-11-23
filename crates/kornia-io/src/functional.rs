@@ -19,8 +19,6 @@ use std::path::Path;
 /// - `png::read_image_png_rgb8()` for PNG
 /// - `tiff::read_image_tiff_rgb8()` for TIFF
 ///
-/// For Python users, use `read_image()` which auto-detects format and type.
-///
 /// # Arguments
 ///
 /// * `file_path` - The path to the image.
@@ -43,7 +41,7 @@ use std::path::Path;
 /// ```
 #[deprecated(
     since = "0.1.12",
-    note = "Use explicit typed readers (jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8, etc.) instead. For Python, use read_image() which auto-detects format and type."
+    note = "Use explicit typed readers (jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8, etc.) instead."
 )]
 pub fn read_image_any_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8<CpuAllocator>, IoError> {
     let file_path = file_path.as_ref().to_owned();

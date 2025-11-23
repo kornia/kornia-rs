@@ -1,4 +1,4 @@
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 #![doc = env!("CARGO_PKG_DESCRIPTION")]
 
 /// allocator module containing the memory management utilities.

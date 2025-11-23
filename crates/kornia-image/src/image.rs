@@ -51,28 +51,50 @@ impl From<ImageSize> for [u32; 2] {
     }
 }
 
+/// Ordering of color channels in image data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelsOrder {
+    /// Channels are stored in the last dimension (HWC format).
     ChannelsLast,
+    /// Channels are stored in the first dimension (CHW format).
     ChannelsFirst,
 }
 
+/// Pixel data type format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImagePixelFormat {
+    /// Unsigned 8-bit samples (0-255).
     U8,
+    /// Unsigned 16-bit samples (0-65535).
     U16,
+    /// 32-bit floating point samples.
     F32,
 }
 
+/// Created a struct with enum fields to store common metadata, read_image and functions like
+/// decode_image_jpeg_info also uses ImageLayout instead of storing separate fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImageLayout {
+    /// Spatial size of the image (width and height).
     pub image_size: ImageSize,
+    /// Number of color channels.
     pub channels: u8,
+    /// Ordering of channels in memory.
     pub channels_order: ChannelsOrder,
+    /// Scalar data type for pixel values.
     pub pixel_format: ImagePixelFormat,
 }
 
 impl ImageLayout {
+    /// Creates a new `ImageLayout` with the given size, channel count, and pixel format.
+    ///
+    /// Defaults to `ChannelsOrder::ChannelsLast` for channel ordering.
+    ///
+    /// # Arguments
+    ///
+    /// * `image_size` - The width and height of the image
+    /// * `channels` - Number of color channels
+    /// * `pixel_format` - The data type for pixel values
     pub fn new(image_size: ImageSize, channels: u8, pixel_format: ImagePixelFormat) -> Self {
         Self {
             image_size,
@@ -82,6 +104,11 @@ impl ImageLayout {
         }
     }
 
+    /// Sets the channel ordering for this layout.
+    ///
+    /// # Arguments
+    ///
+    /// * `channels_order` - The desired channel ordering
     pub fn with_channels_order(mut self, channels_order: ChannelsOrder) -> Self {
         self.channels_order = channels_order;
         self
