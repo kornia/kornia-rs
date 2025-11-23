@@ -1,11 +1,6 @@
 use kornia_apriltag::{decoder::Detection, quad::Quad, AprilTagDecoder, DecodeTagsConfig};
 use kornia_image::Image;
-use pyo3::{
-    exceptions::PyException,
-    prelude::*,
-    types::{PyModule, PyModuleMethods},
-    Bound, PyResult,
-};
+use pyo3::{exceptions::PyException, prelude::*, PyResult};
 
 use crate::image::{FromPyImage, PyImage, PyImageSize};
 
@@ -177,6 +172,7 @@ pub mod family {
             }
         }
 
+        #[allow(clippy::wrong_self_convention)]
         pub fn into_tag_family_kind(&self) -> PyResult<PyTagFamilyKind> {
             Python::attach(|py| {
                 let quick_decode: PyQuickDecode = self.quick_decode.extract(py)?;
