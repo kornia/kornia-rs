@@ -48,7 +48,7 @@ def test_tag_family_into_family_kind():
         quick_decode=qd,
         sharpening_buffer=sb,
     )
-    kind = tf.into_family_kind()
+    kind = tf.into_tag_family_kind()
     assert kind.name == "custom"
 
 

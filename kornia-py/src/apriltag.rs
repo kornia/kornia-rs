@@ -147,23 +147,6 @@ pub mod family {
         pub sharpening_buffer: Py<PySharpeningBuffer>,
     }
 
-    impl PyTagFamily {
-        pub fn from_tag_family(py: Python<'_>, family: TagFamily) -> PyResult<Self> {
-            Ok(PyTagFamily {
-                name: family.name,
-                width_at_border: family.width_at_border,
-                reversed_border: family.reversed_border,
-                total_width: family.total_width,
-                nbits: family.nbits,
-                bit_x: family.bit_x,
-                bit_y: family.bit_y,
-                code_data: family.code_data,
-                quick_decode: Py::new(py, PyQuickDecode(family.quick_decode))?,
-                sharpening_buffer: Py::new(py, PySharpeningBuffer(family.sharpening_buffer))?,
-            })
-        }
-    }
-
     #[pymethods]
     impl PyTagFamily {
         #[new]
@@ -192,6 +175,29 @@ pub mod family {
                 quick_decode,
                 sharpening_buffer,
             }
+        }
+
+        pub fn into_tag_family_kind(&self) -> PyResult<PyTagFamilyKind> {
+            Python::attach(|py| {
+                let quick_decode: PyQuickDecode = self.quick_decode.extract(py)?;
+                let sharpening_buffer: PySharpeningBuffer = self.sharpening_buffer.extract(py)?;
+
+                let tag_family = TagFamily {
+                    name: self.name.clone(),
+                    width_at_border: self.width_at_border,
+                    reversed_border: self.reversed_border,
+                    total_width: self.total_width,
+                    nbits: self.nbits,
+                    bit_x: self.bit_x.clone(),
+                    bit_y: self.bit_y.clone(),
+                    code_data: self.code_data.clone(),
+                    quick_decode: quick_decode.0,
+                    sharpening_buffer: sharpening_buffer.0,
+                };
+
+                let kind = TagFamilyKind::Custom(tag_family);
+                Ok(PyTagFamilyKind(kind))
+            })
         }
     }
 
