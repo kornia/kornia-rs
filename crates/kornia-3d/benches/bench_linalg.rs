@@ -1,6 +1,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_3d::linalg;
+use kornia_3d::pose::{fundamental_8point, homography_4pt2d};
 
 // transform_points3d_col using faer with cols point by point
 fn transform_points3d_col(
@@ -172,5 +173,81 @@ fn bench_matmul33(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_transform_points3d, bench_matmul33);
+fn bench_homography_4pt2d(c: &mut Criterion) {
+    let mut group = c.benchmark_group("homography_4pt2d");
+
+    // Fixed src square and dst quad as in tests
+    let src = [[-1.0f64, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
+    let dst = [[27.0f64, 3.0], [27.0, 27.0], [3.0, 27.0], [3.0, 3.0]];
+
+    group.bench_function(BenchmarkId::new("4pt2d", "fixed"), |b| {
+        b.iter(|| {
+            let mut h = [[0.0f64; 3]; 3];
+            homography_4pt2d(&src, &dst, &mut h).unwrap();
+            std::hint::black_box(h);
+        });
+    });
+}
+
+fn bench_fundamental_8point(c: &mut Criterion) {
+    let mut group = c.benchmark_group("fundamental_8point");
+
+    // Use a fixed rank-2 fundamental matrix to generate consistent correspondences
+    let f_true = [
+        [0.0, -0.001, 0.01],
+        [0.0015, 0.0, -0.02],
+        [-0.01, 0.02, 1.0],
+    ];
+
+    // Helper to generate N correspondences lying on epipolar lines induced by f_true
+    fn generate_corr(f_true: &[[f64; 3]; 3], n: usize) -> (Vec<[f64; 2]>, Vec<[f64; 2]>) {
+        let mut x1 = Vec::with_capacity(n);
+        let mut x2 = Vec::with_capacity(n);
+        // Deterministic grid-like points to avoid randomness dependencies
+        for i in 0..n {
+            let xi = (i as f64) * 1.3 - 50.0;
+            let yi = (i as f64) * -0.7 + 20.0;
+            let x = [xi, yi, 1.0];
+            let l = [
+                f_true[0][0] * x[0] + f_true[0][1] * x[1] + f_true[0][2] * x[2],
+                f_true[1][0] * x[0] + f_true[1][1] * x[1] + f_true[1][2] * x[2],
+                f_true[2][0] * x[0] + f_true[2][1] * x[1] + f_true[2][2] * x[2],
+            ];
+            // Choose intersection with y=0 if possible, else x=0
+            let (xp, yp) = if l[0].abs() > 1e-12 {
+                (-l[2] / l[0], 0.0)
+            } else if l[1].abs() > 1e-12 {
+                (0.0, -l[2] / l[1])
+            } else {
+                (0.0, 0.0)
+            };
+            x1.push([x[0], x[1]]);
+            x2.push([xp, yp]);
+        }
+        (x1, x2)
+    }
+
+    for &n in &[8usize, 16, 64, 256, 1024] {
+        group.throughput(criterion::Throughput::Elements(n as u64));
+        let (x1, x2) = generate_corr(&f_true, n);
+        group.bench_with_input(
+            BenchmarkId::new("8point", n),
+            &(&x1, &x2),
+            |b, (x1b, x2b)| {
+                b.iter(|| {
+                    let f = fundamental_8point(x1b, x2b).unwrap();
+                    std::hint::black_box(f);
+                });
+            },
+        );
+    }
+}
+
+criterion_group!(
+    benches,
+    bench_transform_points3d,
+    bench_matmul33,
+    bench_homography_4pt2d,
+    bench_fundamental_8point
+);
 criterion_main!(benches);
