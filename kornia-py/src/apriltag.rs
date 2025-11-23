@@ -9,20 +9,6 @@ use pyo3::{
 
 use crate::image::{FromPyImage, PyImage, PyImageSize};
 
-pub fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    let family_mod = PyModule::new(m.py(), "family")?;
-    family::init(&family_mod)?;
-    m.add_submodule(&family_mod)?;
-
-    m.add_class::<PyDecodeTagsConfig>()?;
-    m.add_class::<PyFitQuadConfig>()?;
-    m.add_class::<PyAprilTagDecoder>()?;
-    m.add_class::<PyDetection>()?;
-    m.add_class::<PyQuad>()?;
-
-    Ok(())
-}
-
 #[pyclass(name = "DecodeTagsConfig")]
 pub struct PyDecodeTagsConfig(DecodeTagsConfig);
 
@@ -140,21 +126,12 @@ impl From<Quad> for PyQuad {
 }
 
 #[pymodule]
-mod family {
+pub mod family {
     use kornia_apriltag::{
         decoder::{QuickDecode, SharpeningBuffer},
         family::{TagFamily, TagFamilyKind},
     };
     use pyo3::{exceptions::PyException, prelude::*, Py, PyResult};
-
-    #[pymodule_init]
-    pub fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
-        m.add_class::<PyTagFamily>()?;
-        m.add_class::<PyTagFamilyKind>()?;
-        m.add_class::<PyQuickDecode>()?;
-        m.add_class::<PySharpeningBuffer>()?;
-        Ok(())
-    }
 
     #[pyclass(name = "TagFamily", get_all, set_all)]
     pub struct PyTagFamily {
