@@ -13,7 +13,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Reading JPEG image from: " << argv[1] << std::endl;
 
         // Read RGB image - wraps kornia_image::Image<u8, 3> (zero-copy)
-        kornia::ImageU8C3 image = kornia::io::read_jpeg_rgb8(argv[1]);
+        kornia::image::ImageU8C3 image = kornia::io::read_jpeg_rgb8(argv[1]);
 
         // Print image information
         std::cout << "\n✓ Successfully loaded image!" << std::endl;

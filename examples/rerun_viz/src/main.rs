@@ -1,5 +1,5 @@
 use argh::FromArgs;
-use kornia::{image::Image, io::functional as F, tensor::CpuAllocator};
+use kornia::io::functional as F;
 use std::path::PathBuf;
 
 #[derive(FromArgs)]
@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
 
     // read the image
-    let image: Image<u8, 3, CpuAllocator> = F::read_image_any_rgb8(args.image_path)?;
+    let image = F::read_image_any_rgb8(args.image_path)?.into_inner();
 
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;

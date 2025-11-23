@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     imgproc::threshold::threshold_binary(&image, &mut bin, 127, 255)?;
 
     // normalize the image between 0 and 1
-    let image_f32 = image.cast_and_scale::<f32>(1.0 / 255.0)?;
+    let image_f32 = image.into_inner().cast_and_scale::<f32>(1.0 / 255.0)?;
 
     // convert to grayscale as floating point
     let mut gray = Image::<f32, 1, _>::from_size_val(image_f32.size(), 0.0, CpuAllocator)?;
