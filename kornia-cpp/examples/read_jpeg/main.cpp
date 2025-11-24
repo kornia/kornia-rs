@@ -14,7 +14,7 @@ int main(int argc, char* argv[]) {
 
         // Read RGB image - wraps kornia_image::Image<u8, 3> (zero-copy)
         // Use fully qualified name to avoid ambiguity with CXX bridge types
-        kornia::image::ImageU8C3 img = kornia::io::jpeg::read_jpeg_rgb8(argv[1]);
+        kornia::image::ImageU8C3 img = kornia::io::jpeg::read_image_jpeg_rgb8(argv[1]);
 
         // Print image information
         std::cout << "\n✓ Successfully loaded image!" << std::endl;

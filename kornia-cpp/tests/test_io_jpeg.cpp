@@ -17,7 +17,7 @@ TEST_CASE("Read JPEG RGB8", "[io][jpeg]") {
     if (path.empty())
         SKIP("Test image not found");
 
-    auto image = jpeg::read_jpeg_rgb8(path);
+    auto image = jpeg::read_image_jpeg_rgb8(path);
 
     REQUIRE(image.width() == 258);
     REQUIRE(image.height() == 195);
@@ -31,7 +31,7 @@ TEST_CASE("Read JPEG Mono8", "[io][jpeg][!mayfail]") {
     if (path.empty())
         SKIP("Test image not found");
 
-    auto image = jpeg::read_jpeg_mono8(path);
+    auto image = jpeg::read_image_jpeg_mono8(path);
 
     REQUIRE(image.width() == 258);
     REQUIRE(image.height() == 195);
@@ -40,8 +40,8 @@ TEST_CASE("Read JPEG Mono8", "[io][jpeg][!mayfail]") {
 }
 
 TEST_CASE("Read JPEG - Error Handling", "[io][jpeg][error]") {
-    REQUIRE_THROWS(jpeg::read_jpeg_rgb8("/nonexistent/image.jpg"));
-    REQUIRE_THROWS(jpeg::read_jpeg_rgb8(""));
+    REQUIRE_THROWS(jpeg::read_image_jpeg_rgb8("/nonexistent/image.jpg"));
+    REQUIRE_THROWS(jpeg::read_image_jpeg_rgb8(""));
 }
 
 TEST_CASE("Encode JPEG RGB8", "[io][jpeg][encode]") {
@@ -50,7 +50,7 @@ TEST_CASE("Encode JPEG RGB8", "[io][jpeg][encode]") {
         SKIP("Test image not found");
 
     // Load test image
-    auto image = jpeg::read_jpeg_rgb8(path);
+    auto image = jpeg::read_image_jpeg_rgb8(path);
 
     // Encode using img::ImageBuffer
     img::ImageBuffer buffer;
@@ -80,7 +80,7 @@ TEST_CASE("Encode JPEG RGB8 with img::ImageBuffer - Multiple Encodes", "[io][jpe
         SKIP("Test image not found");
 
     // Load test image
-    auto image = jpeg::read_jpeg_rgb8(path);
+    auto image = jpeg::read_image_jpeg_rgb8(path);
 
     // Reuse img::ImageBuffer across multiple encodes
     img::ImageBuffer buffer;
@@ -119,7 +119,7 @@ TEST_CASE("Encode JPEG RGB8 with img::ImageBuffer (Zero-Copy)", "[io][jpeg][enco
     if (path.empty())
         SKIP("Test image not found");
 
-    auto image = jpeg::read_jpeg_rgb8(path);
+    auto image = jpeg::read_image_jpeg_rgb8(path);
 
     // Zero-copy buffer - data stays in Rust memory
     // Can be reused for JPEG, PNG, WebP, etc.
