@@ -180,7 +180,8 @@ template <typename T, size_t C> class Image {
     /// @param width Image width in pixels
     /// @param height Image height in pixels
     /// @param data Raw pointer to pixel data (must be width * height * channels elements)
-    /// @note The data is copied during construction. The caller retains ownership of the input data.
+    /// @note The data is copied during construction. The caller retains ownership of the input
+    /// data.
     /// @note explicit to avoid ambiguity with value constructor when passing 0/nullptr
     explicit Image(size_t width, size_t height, const T* data)
         : img_(Traits::from_data(width, height, rust::Slice<const T>(data, width * height * C))) {

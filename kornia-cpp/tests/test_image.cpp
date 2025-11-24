@@ -155,7 +155,7 @@ TEST_CASE("Image from raw pointer", "[image][from_pointer]") {
     SECTION("Data is copied - modifying source doesn't affect image") {
         // Modify the source data
         raw_data[0] = 123;
-        
+
         // Image data should be unchanged (data was copied during construction)
         auto img_data = image.data();
         REQUIRE(img_data[0] == 77);
@@ -167,7 +167,7 @@ TEST_CASE("Image from raw pointer - BGRA", "[image][from_pointer][bgra]") {
     const size_t width = 16;
     const size_t height = 12;
     const size_t channels = 4;
-    
+
     // Create BGRA data: [B, G, R, A, B, G, R, A, ...]
     std::vector<uint8_t> bgra_data(width * height * channels);
     for (size_t i = 0; i < width * height; ++i) {
@@ -189,7 +189,7 @@ TEST_CASE("Image from raw pointer - BGRA", "[image][from_pointer][bgra]") {
     SECTION("Data values preserved") {
         auto img_data = image.data();
         REQUIRE(img_data.size() == width * height * channels);
-        
+
         // Verify first pixel BGRA values
         REQUIRE(img_data[0] == 255); // B
         REQUIRE(img_data[1] == 128); // G

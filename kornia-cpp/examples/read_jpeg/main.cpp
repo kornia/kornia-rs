@@ -2,9 +2,6 @@
 #include <iostream>
 #include <kornia.hpp>
 
-using namespace kornia::image;
-using namespace kornia::io::jpeg;
-
 int main(int argc, char* argv[]) {
     if (argc != 2) {
         std::cerr << "Usage: " << argv[0] << " <path_to_jpeg_image>" << std::endl;
@@ -16,7 +13,8 @@ int main(int argc, char* argv[]) {
         std::cout << "Reading JPEG image from: " << argv[1] << std::endl;
 
         // Read RGB image - wraps kornia_image::Image<u8, 3> (zero-copy)
-        ImageU8C3 img = read_jpeg_rgb8(argv[1]);
+        // Use fully qualified name to avoid ambiguity with CXX bridge types
+        kornia::image::ImageU8C3 img = kornia::io::jpeg::read_jpeg_rgb8(argv[1]);
 
         // Print image information
         std::cout << "\n✓ Successfully loaded image!" << std::endl;

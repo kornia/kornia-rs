@@ -51,7 +51,7 @@ inline ImageU8C1 read_jpeg_mono8(const std::string& file_path) {
 /// kornia::io::ImageBuffer buffer;
 /// for (const auto& image : images) {
 ///     buffer.clear();
-///     kornia::io::encode_jpeg_rgb8(image, 95, buffer);
+///     kornia::io::jpeg::encode_image_jpeg_rgb8(image, 95, buffer);
 ///     send_network(buffer.data(), buffer.size());  // Zero-copy
 /// }
 /// @endcode
@@ -77,7 +77,7 @@ inline void encode_image_jpeg_rgb8(const ImageU8C3& image, uint8_t quality, Imag
 /// kornia::io::ImageBuffer buffer;
 /// for (const auto& image : bgra_images) {
 ///     buffer.clear();
-///     kornia::io::encode_image_jpeg_bgra8(image, 95, buffer);
+///     kornia::io::jpeg::encode_image_jpeg_bgra8(image, 95, buffer);
 ///     send_network(buffer.data(), buffer.size());  // Zero-copy
 /// }
 /// @endcode

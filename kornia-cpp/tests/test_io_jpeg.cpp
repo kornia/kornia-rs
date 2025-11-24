@@ -52,7 +52,7 @@ TEST_CASE("Encode JPEG RGB8", "[io][jpeg][encode]") {
     // Load test image
     auto image = jpeg::read_jpeg_rgb8(path);
 
-    // Encode using img::img::ImageBuffer
+    // Encode using img::ImageBuffer
     img::ImageBuffer buffer;
     jpeg::encode_image_jpeg_rgb8(image, 100, buffer);
 
@@ -74,7 +74,7 @@ TEST_CASE("Encode JPEG RGB8", "[io][jpeg][encode]") {
     REQUIRE(decoded.channels() == 3);
 }
 
-TEST_CASE("Encode JPEG RGB8 with img::img::ImageBuffer - Multiple Encodes", "[io][jpeg][encode]") {
+TEST_CASE("Encode JPEG RGB8 with img::ImageBuffer - Multiple Encodes", "[io][jpeg][encode]") {
     std::string path = get_test_image_path();
     if (path.empty())
         SKIP("Test image not found");
@@ -82,7 +82,7 @@ TEST_CASE("Encode JPEG RGB8 with img::img::ImageBuffer - Multiple Encodes", "[io
     // Load test image
     auto image = jpeg::read_jpeg_rgb8(path);
 
-    // Reuse img::img::ImageBuffer across multiple encodes
+    // Reuse img::ImageBuffer across multiple encodes
     img::ImageBuffer buffer;
 
     // First encode
@@ -114,8 +114,7 @@ TEST_CASE("Encode JPEG RGB8 with img::img::ImageBuffer - Multiple Encodes", "[io
     REQUIRE(decoded2.height() == 195);
 }
 
-TEST_CASE("Encode JPEG RGB8 with img::img::ImageBuffer (Zero-Copy)",
-          "[io][jpeg][encode][zerocopy]") {
+TEST_CASE("Encode JPEG RGB8 with img::ImageBuffer (Zero-Copy)", "[io][jpeg][encode][zerocopy]") {
     std::string path = get_test_image_path();
     if (path.empty())
         SKIP("Test image not found");
@@ -160,16 +159,16 @@ TEST_CASE("Encode JPEG BGRA8 from raw pointer", "[io][jpeg][encode][bgra]") {
     const size_t width = 64;
     const size_t height = 48;
     const size_t channels = 4;
-    
+
     // Create test BGRA data with a gradient pattern
     std::vector<uint8_t> bgra_data(width * height * channels);
     for (size_t y = 0; y < height; ++y) {
         for (size_t x = 0; x < width; ++x) {
             size_t idx = (y * width + x) * 4;
-            bgra_data[idx + 0] = static_cast<uint8_t>((x * 255) / width);       // B
-            bgra_data[idx + 1] = static_cast<uint8_t>((y * 255) / height);      // G
-            bgra_data[idx + 2] = 128;                                            // R
-            bgra_data[idx + 3] = 255;                                            // A (full opacity)
+            bgra_data[idx + 0] = static_cast<uint8_t>((x * 255) / width);  // B
+            bgra_data[idx + 1] = static_cast<uint8_t>((y * 255) / height); // G
+            bgra_data[idx + 2] = 128;                                      // R
+            bgra_data[idx + 3] = 255;                                      // A (full opacity)
         }
     }
 
@@ -218,14 +217,14 @@ TEST_CASE("Encode JPEG BGRA8 - Unreal Engine use case", "[io][jpeg][encode][bgra
     // Simulate Unreal Engine FColor buffer (BGRA format)
     const size_t width = 128;
     const size_t height = 96;
-    
+
     // Create a simple test pattern: solid red with full alpha
     std::vector<uint8_t> unreal_pixels(width * height * 4);
     for (size_t i = 0; i < width * height; ++i) {
-        unreal_pixels[i * 4 + 0] = 0;    // B
-        unreal_pixels[i * 4 + 1] = 0;    // G
-        unreal_pixels[i * 4 + 2] = 255;  // R (red)
-        unreal_pixels[i * 4 + 3] = 255;  // A (opaque)
+        unreal_pixels[i * 4 + 0] = 0;   // B
+        unreal_pixels[i * 4 + 1] = 0;   // G
+        unreal_pixels[i * 4 + 2] = 255; // R (red)
+        unreal_pixels[i * 4 + 3] = 255; // A (opaque)
     }
 
     // Construct image from raw pointer (like reinterpret_cast<const uint8_t*>(FColor*))
