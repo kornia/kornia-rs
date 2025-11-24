@@ -96,7 +96,7 @@ mod ffi {
         /// # Errors
         ///
         /// Throws exception if file cannot be read or is invalid
-        fn read_jpeg_mono8(file_path: &str) -> Result<Box<ImageU8C1>>;
+        fn read_image_jpeg_mono8(file_path: &str) -> Result<Box<ImageU8C1>>;
 
         /// Read an RGB JPEG image from file path
         ///
@@ -111,7 +111,59 @@ mod ffi {
         /// # Errors
         ///
         /// Throws exception if file cannot be read or is invalid
-        fn read_jpeg_rgb8(file_path: &str) -> Result<Box<ImageU8C3>>;
+        fn read_image_jpeg_rgb8(file_path: &str) -> Result<Box<ImageU8C3>>;
+
+        /// Encode an RGB u8 image to JPEG bytes
+        ///
+        /// # Arguments
+        ///
+        /// * `image` - The RGB image to encode
+        /// * `quality` - JPEG quality (0-100, where 100 is highest quality)
+        /// * `buffer` - Output buffer to write the JPEG bytes into
+        ///
+        /// # Note
+        ///
+        /// The caller is responsible for clearing the buffer if needed.
+        ///
+        /// # Errors
+        ///
+        /// Throws exception if encoding fails
+        fn encode_image_jpeg_rgb8(image: &ImageU8C3, quality: u8, buffer: &mut Vec<u8>) -> Result<()>;
+
+        /// Encode a BGRA u8 image to JPEG bytes
+        ///
+        /// # Arguments
+        ///
+        /// * `image` - The BGRA image to encode
+        /// * `quality` - JPEG quality (0-100, where 100 is highest quality)
+        /// * `buffer` - Output buffer to write the JPEG bytes into
+        ///
+        /// # Note
+        ///
+        /// The caller is responsible for clearing the buffer if needed.
+        /// BGRA format is common in graphics APIs like DirectX and Unreal Engine.
+        ///
+        /// # Errors
+        ///
+        /// Throws exception if encoding fails
+        fn encode_image_jpeg_bgra8(image: &ImageU8C4, quality: u8, buffer: &mut Vec<u8>) -> Result<()>;
+
+        /// Decode JPEG bytes to RGB u8 image
+        ///
+        /// # Arguments
+        ///
+        /// * `jpeg_bytes` - JPEG-encoded bytes (borrows via slice)
+        ///
+        /// # Returns
+        ///
+        /// ImageU8C3 containing decoded RGB data
+        ///
+        /// # Errors
+        ///
+        /// Throws exception if decoding fails
+        fn decode_image_jpeg_rgb8(jpeg_bytes: &[u8]) -> Result<Box<ImageU8C3>>;
+
+        fn version() -> &'static str;
     }
 }
 
@@ -212,13 +264,60 @@ define_image_type!(ImageF32C4, image_f32c4, f32, 4); // RGBA f32
 // I/O function implementations
 
 /// Read a grayscale JPEG image from file path
-fn read_jpeg_mono8(file_path: &str) -> Result<Box<ImageU8C1>, Box<dyn std::error::Error>> {
+fn read_image_jpeg_mono8(file_path: &str) -> Result<Box<ImageU8C1>, Box<dyn std::error::Error>> {
     let image = jpeg::read_image_jpeg_mono8(file_path)?;
     Ok(Box::new(ImageU8C1(image.into_inner())))
 }
 
 /// Read an RGB JPEG image from file path
-fn read_jpeg_rgb8(file_path: &str) -> Result<Box<ImageU8C3>, Box<dyn std::error::Error>> {
+fn read_image_jpeg_rgb8(file_path: &str) -> Result<Box<ImageU8C3>, Box<dyn std::error::Error>> {
     let image = jpeg::read_image_jpeg_rgb8(file_path)?;
     Ok(Box::new(ImageU8C3(image.into_inner())))
+}
+
+/// Encode an RGB u8 image to JPEG bytes
+fn encode_image_jpeg_rgb8(
+    image: &ImageU8C3,
+    quality: u8,
+    buffer: &mut Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    jpeg::encode_image_jpeg_rgb8(&image.0, quality, buffer)?;
+    Ok(())
+}
+
+/// Encode a BGRA u8 image to JPEG bytes
+fn encode_image_jpeg_bgra8(
+    image: &ImageU8C4,
+    quality: u8,
+    buffer: &mut Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    jpeg::encode_image_jpeg_bgra8(&image.0, quality, buffer)?;
+    Ok(())
+}
+
+/// Decode JPEG bytes to RGB u8 image (zero-copy via slice)
+fn decode_image_jpeg_rgb8(jpeg_bytes: &[u8]) -> Result<Box<ImageU8C3>, Box<dyn std::error::Error>> {
+    // First, get image info to create properly sized image
+    let (size, num_channels) = jpeg::decode_image_jpeg_info(jpeg_bytes)?;
+    
+    if num_channels != 3 {
+        return Err(format!("Expected RGB (3 channels), got {} channels", num_channels).into());
+    }
+    
+    // Create output image
+    let mut image = kornia_image::Image::<u8, 3, CpuAllocator>::from_size_val(
+        size,
+        0,
+        CpuAllocator,
+    )?;
+    
+    // Decode into it (zero-copy from slice)
+    jpeg::decode_image_jpeg_rgb8(jpeg_bytes, &mut image)?;
+    
+    Ok(Box::new(ImageU8C3(image)))
+}
+
+/// Get library version string
+fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
 }

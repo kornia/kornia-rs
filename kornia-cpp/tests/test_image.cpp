@@ -1,8 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
-#include <kornia.hpp>
+#include <kornia/image.hpp>
 
 TEST_CASE("ImageSize construction", "[image][size]") {
-    kornia::ImageSize size{640, 480};
+    kornia::image::ImageSize size{640, 480};
 
     REQUIRE(size.width == 640);
     REQUIRE(size.height == 480);
@@ -79,7 +79,7 @@ TEST_CASE("Image move semantics", "[image][move]") {
     }
 
     SECTION("Move assignment") {
-        kornia::image::ImageU8C3 image2(50, 50, 0);
+        kornia::image::ImageU8C3 image2(50, 50, uint8_t(0));
         image2 = std::move(image1);
         REQUIRE(image2.width() == 100);
         REQUIRE(image2.height() == 80);
@@ -126,5 +126,74 @@ TEST_CASE("Image from vector", "[image][from_vector]") {
         REQUIRE(img_data.size() == 10 * 8 * 3);
         REQUIRE(img_data[0] == 99);
         REQUIRE(img_data[img_data.size() - 1] == 99);
+    }
+}
+
+TEST_CASE("Image from raw pointer", "[image][from_pointer]") {
+    // Create test data in a raw array
+    const size_t width = 10;
+    const size_t height = 8;
+    const size_t channels = 3;
+    std::vector<uint8_t> raw_data(width * height * channels, 77);
+
+    // Construct image from raw pointer (explicit constructor)
+    kornia::image::ImageU8C3 image(width, height, raw_data.data());
+
+    SECTION("Dimensions") {
+        REQUIRE(image.width() == width);
+        REQUIRE(image.height() == height);
+        REQUIRE(image.channels() == channels);
+    }
+
+    SECTION("Data values") {
+        auto img_data = image.data();
+        REQUIRE(img_data.size() == width * height * channels);
+        REQUIRE(img_data[0] == 77);
+        REQUIRE(img_data[img_data.size() - 1] == 77);
+    }
+
+    SECTION("Data is copied - modifying source doesn't affect image") {
+        // Modify the source data
+        raw_data[0] = 123;
+
+        // Image data should be unchanged (data was copied during construction)
+        auto img_data = image.data();
+        REQUIRE(img_data[0] == 77);
+    }
+}
+
+TEST_CASE("Image from raw pointer - BGRA", "[image][from_pointer][bgra]") {
+    // Test with 4-channel BGRA image (common in graphics APIs like Unreal/DirectX)
+    const size_t width = 16;
+    const size_t height = 12;
+    const size_t channels = 4;
+
+    // Create BGRA data: [B, G, R, A, B, G, R, A, ...]
+    std::vector<uint8_t> bgra_data(width * height * channels);
+    for (size_t i = 0; i < width * height; ++i) {
+        bgra_data[i * 4 + 0] = 255; // B (blue)
+        bgra_data[i * 4 + 1] = 128; // G (green)
+        bgra_data[i * 4 + 2] = 64;  // R (red)
+        bgra_data[i * 4 + 3] = 255; // A (alpha)
+    }
+
+    // Construct BGRA image from raw pointer
+    kornia::image::ImageU8C4 image(width, height, bgra_data.data());
+
+    SECTION("Dimensions") {
+        REQUIRE(image.width() == width);
+        REQUIRE(image.height() == height);
+        REQUIRE(image.channels() == channels);
+    }
+
+    SECTION("Data values preserved") {
+        auto img_data = image.data();
+        REQUIRE(img_data.size() == width * height * channels);
+
+        // Verify first pixel BGRA values
+        REQUIRE(img_data[0] == 255); // B
+        REQUIRE(img_data[1] == 128); // G
+        REQUIRE(img_data[2] == 64);  // R
+        REQUIRE(img_data[3] == 255); // A
     }
 }

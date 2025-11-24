@@ -4,3 +4,4 @@ build/
 # Generated version header (regenerated from Cargo.toml on build)
 include/kornia/version.hpp
 
+Cargo.lock

@@ -1,14 +1,87 @@
 #pragma once
 
-#include "kornia-cpp/src/lib.rs.h"
+#include "kornia/detail/lib.rs.h"
+#include <cstddef>
+#include <cstdint>
 #include <vector>
 
+// Check for C++20 std::span support
+#if __cplusplus >= 202002L && __has_include(<span>)
+#include <span>
+#define KORNIA_HAS_STD_SPAN 1
+#endif
+
 namespace kornia {
+namespace image {
 
 /// @brief Image size in pixels
 ///
 /// Matches kornia_image::ImageSize from Rust
 using ImageSize = ::ImageSize;
+
+/// @brief Zero-copy buffer for encoded image data
+///
+/// Generic buffer for all image encoding formats (JPEG, PNG, WebP, TIFF, etc.).
+/// Wraps the underlying Rust buffer to provide zero-copy access without
+/// exposing Rust types to user code. Data stays in Rust-managed memory.
+///
+/// @note Reuse the same buffer across different encoders to minimize allocations.
+///
+/// @example
+/// @code
+/// kornia::image::ImageBuffer buffer;
+/// for (const auto& image : images) {
+///     buffer.clear();
+///     kornia::io::encode_jpeg_rgb8(image, 95, buffer);
+///     send_network(buffer.data(), buffer.size());
+///
+///     buffer.clear();
+///     kornia::io::encode_png_rgb8(image, buffer);  // Same buffer!
+/// }
+/// @endcode
+class ImageBuffer {
+  public:
+    ImageBuffer() = default;
+
+    /// @brief Get raw pointer to encoded data (zero-copy)
+    /// @return Pointer to encoded bytes
+    const uint8_t* data() const {
+        return rust_buffer_.data();
+    }
+
+    /// @brief Get size of encoded data in bytes
+    /// @return Size in bytes
+    size_t size() const {
+        return rust_buffer_.size();
+    }
+
+    /// @brief Check if buffer is empty
+    /// @return true if empty
+    bool empty() const {
+        return rust_buffer_.empty();
+    }
+
+    /// @brief Explicitly convert to std::vector (performs copy)
+    /// @return std::vector containing a copy of the encoded data
+    /// @note This performs a copy. Use data()/size() for zero-copy access.
+    std::vector<uint8_t> to_vector() const {
+        return {rust_buffer_.begin(), rust_buffer_.end()};
+    }
+
+    /// @brief Clear the buffer (retains capacity for reuse)
+    void clear() {
+        rust_buffer_.clear();
+    }
+
+    /// @brief Get access to internal rust::Vec (for I/O functions)
+    /// @note Internal use only - not part of public API
+    rust::Vec<uint8_t>& rust_vec() {
+        return rust_buffer_;
+    }
+
+  private:
+    rust::Vec<uint8_t> rust_buffer_; // Hidden implementation detail
+};
 
 /// @brief Traits-based image wrapper with template support
 ///
@@ -76,8 +149,6 @@ template <typename T, size_t C> struct ImageTraits;
 KORNIA_IMAGE_TYPES
 #undef KORNIA_IMAGE_TYPE
 
-namespace image {
-
 /// @brief Generic image wrapper template
 ///
 /// Usage: kornia::image::Image<uint8_t, 3> for RGB images
@@ -105,6 +176,17 @@ template <typename T, size_t C> class Image {
         : img_(Traits::from_data(width, height, rust::Slice<const T>(data.data(), data.size()))) {
     }
 
+    /// Constructor from raw pointer (zero-copy via rust::Slice)
+    /// @param width Image width in pixels
+    /// @param height Image height in pixels
+    /// @param data Raw pointer to pixel data (must be width * height * channels elements)
+    /// @note The data is copied during construction. The caller retains ownership of the input
+    /// data.
+    /// @note explicit to avoid ambiguity with value constructor when passing 0/nullptr
+    explicit Image(size_t width, size_t height, const T* data)
+        : img_(Traits::from_data(width, height, rust::Slice<const T>(data, width * height * C))) {
+    }
+
     Image(const Image&) = delete;
     Image& operator=(const Image&) = delete;
     Image(Image&&) = default;
@@ -130,21 +212,22 @@ template <typename T, size_t C> class Image {
         return std::vector<T>(slice.begin(), slice.end());
     }
 
+    const RustType& inner() const {
+        return *img_;
+    }
+
   private:
     rust::Box<RustType> img_;
 };
 
-} // namespace image
-
-// Type aliases in kornia::image namespace for convenience
-namespace image {
+// Type aliases for convenience
 #define KORNIA_IMAGE_TYPE(CppType, TypeName, FnPrefix, Channels)                                   \
     using TypeName = Image<CppType, Channels>;
 
 KORNIA_IMAGE_TYPES
 #undef KORNIA_IMAGE_TYPE
-} // namespace image
 
 #undef KORNIA_IMAGE_TYPES
 
+} // namespace image
 } // namespace kornia
