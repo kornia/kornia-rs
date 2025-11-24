@@ -75,7 +75,11 @@ target_link_libraries(kornia_cpp INTERFACE kornia_rust_lib)
 # - The consuming project (like Unreal Engine) provides its own C++ stdlib
 # - Unreal uses bundled libc++, explicitly linking stdc++ causes conflicts
 # - The C++ stdlib will be automatically linked by the final executable
-if(UNIX)
+if(APPLE)
+    # macOS: dl functions are part of the system, only pthread is needed
+    target_link_libraries(kornia_cpp INTERFACE pthread)
+elseif(UNIX)
+    # Linux: needs both dl and pthread
     target_link_libraries(kornia_cpp INTERFACE dl pthread)
 elseif(WIN32)
     # Windows handles C++ stdlib automatically, but may need these:
