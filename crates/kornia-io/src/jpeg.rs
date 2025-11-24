@@ -77,6 +77,46 @@ pub fn encode_image_jpeg_rgb8<A: ImageAllocator>(
     Ok(())
 }
 
+/// Encodes the given BGRA8 image to JPEG bytes (in-memory) using a provided buffer.
+///
+/// This is the zero-allocation version - reuse your buffer across multiple encodes.
+///
+/// # Arguments
+///
+/// - `image` - The BGRA8 image to encode
+/// - `quality` - The quality of the JPEG encoding, range from 0 (lowest) to 100 (highest)
+/// - `buffer` - A mutable buffer to write the JPEG bytes into
+///
+/// # Note
+///
+/// The caller is responsible for clearing the buffer if needed. The encoded data will be
+/// appended to any existing content in the buffer.
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_io::jpeg::encode_image_jpeg_bgra8;
+/// use kornia_image::{Image, allocator::CpuAllocator};
+///
+/// let image = Image::<u8, 4, CpuAllocator>::from_size_val([258, 195].into(), 0, CpuAllocator).expect("Failed to create image");
+/// let mut buffer = Vec::new();
+/// encode_image_jpeg_bgra8(&image, 100, &mut buffer).expect("Failed to encode image");
+/// ```
+pub fn encode_image_jpeg_bgra8<A: ImageAllocator>(
+    image: &Image<u8, 4, A>,
+    quality: u8,
+    buffer: &mut Vec<u8>,
+) -> Result<(), IoError> {
+    let encoder = Encoder::new(buffer, quality);
+    encoder.encode(
+        image.as_slice(),
+        image.width() as u16,
+        image.height() as u16,
+        ColorType::Rgba,
+    )?;
+    Ok(())
+}
+
 /// Encodes the given grayscale image to JPEG bytes (in-memory) using a provided buffer.
 ///
 /// This is the zero-allocation version - reuse your buffer across multiple encodes.

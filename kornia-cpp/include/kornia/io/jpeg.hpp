@@ -12,6 +12,7 @@ namespace jpeg {
 using kornia::image::ImageBuffer;
 using kornia::image::ImageU8C1;
 using kornia::image::ImageU8C3;
+using kornia::image::ImageU8C4;
 
 /// @brief Read an RGB JPEG image from file (u8, 3 channels)
 ///
@@ -56,6 +57,32 @@ inline ImageU8C1 read_jpeg_mono8(const std::string& file_path) {
 /// @endcode
 inline void encode_image_jpeg_rgb8(const ImageU8C3& image, uint8_t quality, ImageBuffer& buffer) {
     ::encode_image_jpeg_rgb8(image.inner(), quality, buffer.rust_vec());
+}
+
+/// @brief Encode a BGRA JPEG image to bytes (zero-copy, into ImageBuffer)
+///
+/// @param image BGRA u8 image to encode (4 channels)
+/// @param quality JPEG quality (0-100, where 100 is highest quality)
+/// @param buffer ImageBuffer to write JPEG data into (zero-copy)
+/// @throws rust::Error if encoding fails
+///
+/// @note RECOMMENDED for performance. No copies - data stays in Rust-managed memory.
+///       BGRA format is common in graphics APIs like DirectX and Unreal Engine.
+///       The alpha channel is included in the JPEG encoding.
+///       Access via buffer.data()/size() or buffer.as_span() for zero-copy operations.
+///       The same buffer can be reused for different formats (JPEG, PNG, etc.).
+///
+/// @example
+/// @code
+/// kornia::io::ImageBuffer buffer;
+/// for (const auto& image : bgra_images) {
+///     buffer.clear();
+///     kornia::io::encode_image_jpeg_bgra8(image, 95, buffer);
+///     send_network(buffer.data(), buffer.size());  // Zero-copy
+/// }
+/// @endcode
+inline void encode_image_jpeg_bgra8(const ImageU8C4& image, uint8_t quality, ImageBuffer& buffer) {
+    ::encode_image_jpeg_bgra8(image.inner(), quality, buffer.rust_vec());
 }
 
 /// @brief Decode JPEG bytes to RGB u8 image

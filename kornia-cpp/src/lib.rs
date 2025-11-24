@@ -130,6 +130,24 @@ mod ffi {
         /// Throws exception if encoding fails
         fn encode_image_jpeg_rgb8(image: &ImageU8C3, quality: u8, buffer: &mut Vec<u8>) -> Result<()>;
 
+        /// Encode a BGRA u8 image to JPEG bytes
+        ///
+        /// # Arguments
+        ///
+        /// * `image` - The BGRA image to encode
+        /// * `quality` - JPEG quality (0-100, where 100 is highest quality)
+        /// * `buffer` - Output buffer to write the JPEG bytes into
+        ///
+        /// # Note
+        ///
+        /// The caller is responsible for clearing the buffer if needed.
+        /// BGRA format is common in graphics APIs like DirectX and Unreal Engine.
+        ///
+        /// # Errors
+        ///
+        /// Throws exception if encoding fails
+        fn encode_image_jpeg_bgra8(image: &ImageU8C4, quality: u8, buffer: &mut Vec<u8>) -> Result<()>;
+
         /// Decode JPEG bytes to RGB u8 image
         ///
         /// # Arguments
@@ -264,6 +282,16 @@ fn encode_image_jpeg_rgb8(
     buffer: &mut Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     jpeg::encode_image_jpeg_rgb8(&image.0, quality, buffer)?;
+    Ok(())
+}
+
+/// Encode a BGRA u8 image to JPEG bytes
+fn encode_image_jpeg_bgra8(
+    image: &ImageU8C4,
+    quality: u8,
+    buffer: &mut Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    jpeg::encode_image_jpeg_bgra8(&image.0, quality, buffer)?;
     Ok(())
 }
 

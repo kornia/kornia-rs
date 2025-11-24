@@ -176,6 +176,15 @@ template <typename T, size_t C> class Image {
         : img_(Traits::from_data(width, height, rust::Slice<const T>(data.data(), data.size()))) {
     }
 
+    /// Constructor from raw pointer (zero-copy via rust::Slice)
+    /// @param width Image width in pixels
+    /// @param height Image height in pixels
+    /// @param data Raw pointer to pixel data (must be width * height * channels elements)
+    /// @note The data is copied during construction. The caller retains ownership of the input data.
+    Image(size_t width, size_t height, const T* data)
+        : img_(Traits::from_data(width, height, rust::Slice<const T>(data, width * height * C))) {
+    }
+
     Image(const Image&) = delete;
     Image& operator=(const Image&) = delete;
     Image(Image&&) = default;
