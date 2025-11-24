@@ -119,7 +119,7 @@ pub fn encode_image_jpeg_bgra8<A: ImageAllocator>(
         image.as_slice(),
         image.width() as u16,
         image.height() as u16,
-        ColorType::Rgba,
+        ColorType::Bgra,
     )?;
     Ok(())
 }

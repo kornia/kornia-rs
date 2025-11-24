@@ -2,7 +2,10 @@ cmake_minimum_required(VERSION 3.12)
 
 project(KorniaCppLib VERSION 1.0 LANGUAGES CXX)
 
+# C++ Standard
 set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # --- 1. Settings ---
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
