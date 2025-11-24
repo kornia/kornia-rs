@@ -36,6 +36,7 @@ impl PyDecodeTagsConfig {
             let py_family = family.borrow(py).into_tag_family_kind()?;
             let inner = match py_family.0 {
                 TagFamilyKind::Custom(inner) => inner,
+                // The into_tag_family_kind always wraps every TagFamily into TagFamilyKind::Custom
                 _ => unreachable!(),
             };
 
@@ -153,6 +154,24 @@ pub struct PyFitQuadConfig {
     pub min_cluster_pixels: usize,
 }
 
+#[pymethods]
+impl PyFitQuadConfig {
+    #[new]
+    pub fn new(
+        cos_critical_rad: f32,
+        max_line_fit_mse: f32,
+        max_nmaxima: usize,
+        min_cluster_pixels: usize,
+    ) -> Self {
+        Self {
+            cos_critical_rad,
+            max_line_fit_mse,
+            max_nmaxima,
+            min_cluster_pixels,
+        }
+    }
+}
+
 #[pyclass(name = "AprilTagDecoder")]
 pub struct PyAprilTagDecoder(AprilTagDecoder);
 
@@ -199,6 +218,28 @@ pub struct PyDetection {
     pub quad: PyQuad,
 }
 
+#[pymethods]
+impl PyDetection {
+    #[new]
+    pub fn new(
+        tag_family_kind: family::PyTagFamilyKind,
+        id: u16,
+        hamming: u8,
+        decision_margin: f32,
+        center: (f32, f32),
+        quad: PyQuad,
+    ) -> Self {
+        Self {
+            tag_family_kind,
+            id,
+            hamming,
+            decision_margin,
+            center,
+            quad,
+        }
+    }
+}
+
 impl From<Detection> for PyDetection {
     fn from(value: Detection) -> Self {
         Self {
@@ -218,6 +259,18 @@ pub struct PyQuad {
     pub corners: [(f32, f32); 4],
     pub reversed_border: bool,
     pub homography: [f32; 9],
+}
+
+#[pymethods]
+impl PyQuad {
+    #[new]
+    pub fn new(corners: [(f32, f32); 4], reversed_border: bool, homography: [f32; 9]) -> Self {
+        Self {
+            corners,
+            reversed_border,
+            homography,
+        }
+    }
 }
 
 impl From<Quad> for PyQuad {
