@@ -8,7 +8,16 @@ fn main() {
         .flag_if_supported("-std=c++14")
         .compile("kornia-cpp");
 
+    // Build glibc compatibility shim for libc++ environments
+    #[cfg(target_os = "linux")]
+    {
+        cc::Build::new()
+            .file("src/glibc_compat.c")
+            .compile("glibc_compat");
+    }
+
     println!("cargo:rerun-if-changed=src/lib.rs");
+    println!("cargo:rerun-if-changed=src/glibc_compat.c");
 
     // Generate version header from Cargo.toml
     generate_version_header();
@@ -64,4 +73,3 @@ inline const char* get_version() {{
     
     println!("cargo:rerun-if-changed=Cargo.toml");
 }
-

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "kornia-cpp/src/lib.rs.h"
+#include "kornia/detail/lib.rs.h"
 #include <cstddef>
 #include <cstdint>
 #include <vector>

@@ -1,173 +1,123 @@
-cmake_minimum_required(VERSION 3.15)
-project(kornia-cpp VERSION 0.1.0 LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.12)
 
-# Set C++ standard
+project(KorniaCppLib VERSION 1.0 LANGUAGES CXX)
+
 set(CMAKE_CXX_STANDARD 14)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Build Rust library first
-set(CARGO_TARGET_DIR ${CMAKE_CURRENT_SOURCE_DIR}/target)
-
-# Cargo uses lowercase profile names
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    set(CARGO_PROFILE "release")
-    set(RUST_LIB_DIR ${CARGO_TARGET_DIR}/release)
+# --- 1. Settings ---
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(RUST_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/target/debug")
+    set(CARGO_CMD cargo build)
 else()
-    set(CARGO_PROFILE "debug")
-    set(RUST_LIB_DIR ${CARGO_TARGET_DIR}/debug)
+    set(RUST_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/target/release")
+    set(CARGO_CMD cargo build --release)
 endif()
 
-# Determine the library name and path based on platform
-# Windows: kornia_cpp.lib, Unix: libkornia_cpp.a, macOS: libkornia_cpp.a
+# Use static library (required for CXX bridge C++ symbol export)
 if(WIN32)
-    # Windows uses .lib for static libraries
     set(RUST_LIB_NAME "kornia_cpp.lib")
-    set(RUST_INSTALL_NAME ${RUST_LIB_NAME})
-elseif(APPLE)
-    # macOS uses lib prefix
-    set(RUST_LIB_NAME "libkornia_cpp.a")
-    set(RUST_INSTALL_NAME ${RUST_LIB_NAME})
 else()
-    # Linux and other Unix systems
     set(RUST_LIB_NAME "libkornia_cpp.a")
-    set(RUST_INSTALL_NAME ${RUST_LIB_NAME})
 endif()
 
-set(RUST_LIB_PATH "${RUST_LIB_DIR}/${RUST_LIB_NAME}")
-
-# Build the Rust library as a custom command (runs first)
-add_custom_command(
-    OUTPUT ${RUST_LIB_PATH}
-    COMMAND cargo build --color=always $<$<CONFIG:Release>:--release>
-    DEPENDS 
-        ${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/lib.rs
+# --- 2. Build Rust ---
+add_custom_target(cargo_build ALL
+    COMMAND ${CARGO_CMD}
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "Building Rust library with Cargo (${CARGO_PROFILE} profile)"
-    USES_TERMINAL
+    COMMENT "Building Kornia C++ Rust Crate..."
+    BYPRODUCTS "${RUST_TARGET_DIR}/${RUST_LIB_NAME}"
 )
 
-# Create a custom target that depends on the Rust library
-add_custom_target(kornia_rust_lib
-    DEPENDS ${RUST_LIB_PATH}
+# Create detail directory structure for cleaner includes during build
+add_custom_command(TARGET cargo_build POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different 
+        ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h 
+        ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/lib.rs.h
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different 
+        ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h 
+        ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/cxx.h
+    COMMENT "Organizing CXX bridge headers into kornia/detail/"
 )
 
-# Find the CXX bridge generated headers
-set(CXXBRIDGE_DIR ${CARGO_TARGET_DIR}/cxxbridge)
+# --- 3. Define Header Locations ---
+set(CXX_GEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge")
 
-# Create imported library for Rust (makes dependency explicit during build)
-add_library(kornia_rust STATIC IMPORTED GLOBAL)
-set_target_properties(kornia_rust PROPERTIES
-    IMPORTED_LOCATION ${RUST_LIB_PATH}
+# IMPORTANT: CXX generates the folder structure using the crate name (kornia-cpp with dash).
+set(MAIN_HEADER "${CXX_GEN_DIR}/kornia-cpp/src/lib.rs.h")
+set(RUST_CXX_HEADER "${CXX_GEN_DIR}/rust/cxx.h")
+
+# Create imported target for the Rust static library
+add_library(kornia_rust_lib STATIC IMPORTED GLOBAL)
+set_target_properties(kornia_rust_lib PROPERTIES
+    IMPORTED_LOCATION "${RUST_TARGET_DIR}/${RUST_LIB_NAME}"
 )
-add_dependencies(kornia_rust kornia_rust_lib)
+add_dependencies(kornia_rust_lib cargo_build)
 
-# Create C++ library (header-only wrapper + Rust lib)
+# Create kornia_cpp as INTERFACE library that wraps everything
 add_library(kornia_cpp INTERFACE)
-
-# Set include directories (allows both #include <kornia.hpp> and #include <kornia/image.hpp>)
-target_include_directories(kornia_cpp
-    INTERFACE
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/kornia>
-        $<BUILD_INTERFACE:${CXXBRIDGE_DIR}>
-        $<INSTALL_INTERFACE:include>
-        $<INSTALL_INTERFACE:include/kornia>
+target_include_directories(kornia_cpp INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/kornia>
+    $<BUILD_INTERFACE:${CXX_GEN_DIR}>
+    $<INSTALL_INTERFACE:include>
+    $<INSTALL_INTERFACE:include/kornia>
 )
 
-# Link with Rust library
-# In build tree: use kornia_rust IMPORTED target
-# In install tree: reference kornia_rust imported target (created by config file)
-target_link_libraries(kornia_cpp
-    INTERFACE
-        kornia_rust
-)
+# Link the Rust library
+target_link_libraries(kornia_cpp INTERFACE kornia_rust_lib)
 
-# Handle platform-specific system libraries
-# These are required by Rust's standard library
-if(UNIX AND NOT APPLE)
-    # Linux: pthread (threading), dl (dynamic linking), m (math)
-    target_link_libraries(kornia_cpp INTERFACE pthread dl m)
-elseif(APPLE)
-    # macOS: pthread (threading)
-    target_link_libraries(kornia_cpp INTERFACE pthread)
+# --- 4. Link System Libraries ---
+# Note: We don't explicitly link stdc++ or libc++ here because:
+# - The consuming project (like Unreal Engine) provides its own C++ stdlib
+# - Unreal uses bundled libc++, explicitly linking stdc++ causes conflicts
+# - The C++ stdlib will be automatically linked by the final executable
+if(UNIX)
+    target_link_libraries(kornia_cpp INTERFACE dl pthread)
 elseif(WIN32)
-    # Windows: Winsock, user environment, crypto APIs, NT DLL
+    # Windows handles C++ stdlib automatically, but may need these:
     target_link_libraries(kornia_cpp INTERFACE ws2_32 userenv bcrypt ntdll)
 endif()
 
-# Installation rules
-install(TARGETS kornia_cpp
-    EXPORT kornia-targets
-    INCLUDES DESTINATION include
+# --- 5. Install Rules ---
+include(GNUInstallDirs)
+
+# Install libkornia_cpp.a
+install(FILES "${RUST_TARGET_DIR}/${RUST_LIB_NAME}"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 
-# Install headers
+# Install C++ wrapper headers from include/
 install(DIRECTORY include/
-    DESTINATION include
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     FILES_MATCHING PATTERN "*.hpp"
 )
 
-# Install Rust library
-install(FILES ${RUST_LIB_PATH}
-    DESTINATION lib
-)
-
-# Install CXX bridge headers (custom script to resolve symlinks)
+# Install CXX bridge headers (into kornia/detail/ for cleaner structure)
 install(CODE "
     file(GLOB_RECURSE CXX_HEADERS 
-        \"${CXXBRIDGE_DIR}/*.h\" 
-        \"${CXXBRIDGE_DIR}/*.hxx\"
+        \"${CXX_GEN_DIR}/*.h\" 
+        \"${CXX_GEN_DIR}/*.hxx\"
     )
     foreach(HEADER \${CXX_HEADERS})
-        file(RELATIVE_PATH REL_PATH \"${CXXBRIDGE_DIR}\" \"\${HEADER}\")
-        get_filename_component(DEST_DIR \"\${CMAKE_INSTALL_PREFIX}/include/\${REL_PATH}\" DIRECTORY)
-        file(INSTALL \"\${HEADER}\" DESTINATION \"\${DEST_DIR}\" FOLLOW_SYMLINK_CHAIN)
+        get_filename_component(HEADER_NAME \"\${HEADER}\" NAME)
+        # Install all CXX bridge headers into kornia/detail/ directory
+        file(INSTALL \"\${HEADER}\" 
+             DESTINATION \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_INCLUDEDIR}/kornia/detail\" 
+             FOLLOW_SYMLINK_CHAIN)
     endforeach()
 ")
 
-# Install CMake targets file
-install(EXPORT kornia-targets
-    FILE kornia-targets.cmake
-    NAMESPACE kornia::
-    DESTINATION lib/cmake/kornia
-)
-
-# Generate and install package config files
-include(CMakePackageConfigHelpers)
-
-# Generate Rust imported target file (no variables to substitute, just copy)
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/kornia-rust-targets.cmake.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/kornia-rust-targets.cmake"
-    COPYONLY
-)
-
-# Generate main package config file
-configure_package_config_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/kornia-config.cmake.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/kornia-config.cmake"
-    INSTALL_DESTINATION lib/cmake/kornia
-)
-
-install(FILES
-    "${CMAKE_CURRENT_BINARY_DIR}/kornia-config.cmake"
-    "${CMAKE_CURRENT_BINARY_DIR}/kornia-rust-targets.cmake"
-    DESTINATION lib/cmake/kornia
-)
-
-# Examples (optional)
+# --- 6. Examples ---
 option(BUILD_EXAMPLES "Build examples" ON)
 if(BUILD_EXAMPLES)
     add_subdirectory(examples/read_jpeg)
     add_subdirectory(examples/image_api)
 endif()
 
-# Tests (optional)
+# --- 7. Tests ---
 option(BUILD_TESTS "Build tests" OFF)
 if(BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
-

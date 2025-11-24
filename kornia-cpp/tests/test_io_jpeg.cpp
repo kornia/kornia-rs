@@ -1,6 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
-#include <kornia.hpp>
+#include <kornia/io.hpp>
 
 namespace fs = std::filesystem;
 namespace img = kornia::image;

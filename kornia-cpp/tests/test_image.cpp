@@ -1,5 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
-#include <kornia.hpp>
+#include <kornia/image.hpp>
 
 TEST_CASE("ImageSize construction", "[image][size]") {
     kornia::image::ImageSize size{640, 480};
