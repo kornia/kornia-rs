@@ -96,11 +96,11 @@ pub fn encode_image_jpeg_rgb8<A: ImageAllocator>(
 /// # Example
 ///
 /// ```no_run
-/// use kornia_image::{Image, CpuAllocator};
+/// use kornia_image::{Image, allocator::CpuAllocator};
 /// use kornia_io::jpeg;
 ///
 /// let bgra_data = vec![0u8; 640 * 480 * 4]; // BGRA pixels from graphics API
-/// let image = Image::<u8, 4, CpuAllocator>::new([640, 480], bgra_data)?;
+/// let image = Image::<u8, 4, _>::new([640, 480].into(), bgra_data, CpuAllocator)?;
 ///
 /// let mut buffer = Vec::new();
 /// jpeg::encode_image_jpeg_bgra8(&image, 90, &mut buffer)?;
