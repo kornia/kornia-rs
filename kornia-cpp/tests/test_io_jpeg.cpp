@@ -154,3 +154,92 @@ TEST_CASE("Encode JPEG RGB8 with img::img::ImageBuffer (Zero-Copy)",
     REQUIRE(buffer.data()[0] == 0xFF);
     REQUIRE(buffer.data()[1] == 0xD8);
 }
+
+TEST_CASE("Encode JPEG BGRA8 from raw pointer", "[io][jpeg][encode][bgra]") {
+    // Create a test BGRA image from raw data (simulating Unreal Engine's FColor)
+    const size_t width = 64;
+    const size_t height = 48;
+    const size_t channels = 4;
+    
+    // Create test BGRA data with a gradient pattern
+    std::vector<uint8_t> bgra_data(width * height * channels);
+    for (size_t y = 0; y < height; ++y) {
+        for (size_t x = 0; x < width; ++x) {
+            size_t idx = (y * width + x) * 4;
+            bgra_data[idx + 0] = static_cast<uint8_t>((x * 255) / width);       // B
+            bgra_data[idx + 1] = static_cast<uint8_t>((y * 255) / height);      // G
+            bgra_data[idx + 2] = 128;                                            // R
+            bgra_data[idx + 3] = 255;                                            // A (full opacity)
+        }
+    }
+
+    // Construct image from raw pointer (explicit constructor)
+    img::ImageU8C4 image(width, height, bgra_data.data());
+
+    SECTION("Image properties") {
+        REQUIRE(image.width() == width);
+        REQUIRE(image.height() == height);
+        REQUIRE(image.channels() == channels);
+    }
+
+    SECTION("Encode to JPEG") {
+        img::ImageBuffer buffer;
+        jpeg::encode_image_jpeg_bgra8(image, 95, buffer);
+
+        // Verify JPEG magic bytes
+        REQUIRE(buffer.size() > 2);
+        REQUIRE(buffer.data()[0] == 0xFF);
+        REQUIRE(buffer.data()[1] == 0xD8);
+
+        // Verify JPEG end marker
+        REQUIRE(buffer.data()[buffer.size() - 2] == 0xFF);
+        REQUIRE(buffer.data()[buffer.size() - 1] == 0xD9);
+    }
+
+    SECTION("Multiple encodes with buffer reuse") {
+        img::ImageBuffer buffer;
+
+        // First encode at quality 100
+        buffer.clear();
+        jpeg::encode_image_jpeg_bgra8(image, 100, buffer);
+        size_t size_q100 = buffer.size();
+        REQUIRE(size_q100 > 0);
+
+        // Second encode at quality 50 (should be smaller)
+        buffer.clear();
+        jpeg::encode_image_jpeg_bgra8(image, 50, buffer);
+        size_t size_q50 = buffer.size();
+        REQUIRE(size_q50 > 0);
+        REQUIRE(size_q50 < size_q100); // Lower quality = smaller file
+    }
+}
+
+TEST_CASE("Encode JPEG BGRA8 - Unreal Engine use case", "[io][jpeg][encode][bgra][unreal]") {
+    // Simulate Unreal Engine FColor buffer (BGRA format)
+    const size_t width = 128;
+    const size_t height = 96;
+    
+    // Create a simple test pattern: solid red with full alpha
+    std::vector<uint8_t> unreal_pixels(width * height * 4);
+    for (size_t i = 0; i < width * height; ++i) {
+        unreal_pixels[i * 4 + 0] = 0;    // B
+        unreal_pixels[i * 4 + 1] = 0;    // G
+        unreal_pixels[i * 4 + 2] = 255;  // R (red)
+        unreal_pixels[i * 4 + 3] = 255;  // A (opaque)
+    }
+
+    // Construct image from raw pointer (like reinterpret_cast<const uint8_t*>(FColor*))
+    img::ImageU8C4 camera_frame(width, height, unreal_pixels.data());
+
+    // Encode to JPEG for network transmission
+    img::ImageBuffer jpeg_buffer;
+    jpeg::encode_image_jpeg_bgra8(camera_frame, 85, jpeg_buffer);
+
+    REQUIRE(jpeg_buffer.size() > 0);
+    REQUIRE(jpeg_buffer.data()[0] == 0xFF);
+    REQUIRE(jpeg_buffer.data()[1] == 0xD8);
+
+    // Buffer can be sent over network using data() and size()
+    // In Unreal: zenoh::Bytes(jpeg_buffer.data(), jpeg_buffer.size())
+    REQUIRE(!jpeg_buffer.empty());
+}

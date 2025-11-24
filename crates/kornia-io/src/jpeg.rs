@@ -79,28 +79,35 @@ pub fn encode_image_jpeg_rgb8<A: ImageAllocator>(
 
 /// Encodes the given BGRA8 image to JPEG bytes (in-memory) using a provided buffer.
 ///
-/// This is the zero-allocation version - reuse your buffer across multiple encodes.
+/// This is designed for graphics APIs that use BGRA pixel format (e.g., DirectX, Unreal Engine).
+/// The alpha channel is included in the encoding.
 ///
 /// # Arguments
 ///
-/// - `image` - The BGRA8 image to encode
+/// - `image` - The BGRA image to encode (4 channels: Blue, Green, Red, Alpha)
 /// - `quality` - The quality of the JPEG encoding, range from 0 (lowest) to 100 (highest)
 /// - `buffer` - A mutable buffer to write the JPEG bytes into
 ///
 /// # Note
 ///
-/// The caller is responsible for clearing the buffer if needed. The encoded data will be
-/// appended to any existing content in the buffer.
+/// This is the zero-allocation version - reuse your buffer across multiple encodes
+/// by calling `buffer.clear()` between encodes. The buffer retains its capacity.
 ///
 /// # Example
 ///
-/// ```rust
-/// use kornia_io::jpeg::encode_image_jpeg_bgra8;
-/// use kornia_image::{Image, allocator::CpuAllocator};
+/// ```no_run
+/// use kornia_image::{Image, CpuAllocator};
+/// use kornia_io::jpeg;
 ///
-/// let image = Image::<u8, 4, CpuAllocator>::from_size_val([258, 195].into(), 0, CpuAllocator).expect("Failed to create image");
+/// let bgra_data = vec![0u8; 640 * 480 * 4]; // BGRA pixels from graphics API
+/// let image = Image::<u8, 4, CpuAllocator>::new([640, 480], bgra_data)?;
+///
 /// let mut buffer = Vec::new();
-/// encode_image_jpeg_bgra8(&image, 100, &mut buffer).expect("Failed to encode image");
+/// jpeg::encode_image_jpeg_bgra8(&image, 90, &mut buffer)?;
+///
+/// // Send JPEG bytes over network or save to disk
+/// std::fs::write("output.jpg", &buffer)?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn encode_image_jpeg_bgra8<A: ImageAllocator>(
     image: &Image<u8, 4, A>,

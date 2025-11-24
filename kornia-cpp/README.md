@@ -68,10 +68,30 @@ just clean           # Clean build artifacts
 // Image types in kornia::image namespace
 kornia::image::ImageU8C1   // Grayscale u8 (1 channel)
 kornia::image::ImageU8C3   // RGB u8 (3 channels)
-kornia::image::ImageU8C4   // RGBA u8 (4 channels)
+kornia::image::ImageU8C4   // RGBA/BGRA u8 (4 channels)
 kornia::image::ImageF32C1  // Grayscale f32 (1 channel)
 kornia::image::ImageF32C3  // RGB f32 (3 channels)
 kornia::image::ImageF32C4  // RGBA f32 (4 channels)
+```
+
+### Image Construction
+
+Images can be constructed in multiple ways:
+
+```cpp
+// 1. From I/O functions (zero-copy)
+auto image = kornia::io::jpeg::read_jpeg_rgb8("image.jpg");
+
+// 2. Create filled with a value
+kornia::image::ImageU8C3 image(width, height, 255);  // All pixels = 255
+
+// 3. From std::vector
+std::vector<uint8_t> data(width * height * 3, 128);
+kornia::image::ImageU8C3 image(width, height, data);
+
+// 4. From raw pointer (explicit constructor - useful for graphics APIs)
+const uint8_t* pixels = /* from Unreal, OpenGL, etc. */;
+kornia::image::ImageU8C4 image(width, height, pixels);
 ```
 
 ### Image Methods
@@ -79,13 +99,14 @@ kornia::image::ImageF32C4  // RGBA f32 (4 channels)
 All methods are `const` and thread-safe for concurrent reads:
 
 ```cpp
-auto image = kornia::io::read_jpeg_rgb8("image.jpg");
+auto image = kornia::io::jpeg::read_jpeg_rgb8("image.jpg");
 
 size_t w = image.width();          // Image width in pixels
 size_t h = image.height();         // Image height in pixels
 size_t c = image.channels();       // Number of channels
 ImageSize size = image.size();     // {width, height} struct
 rust::Slice<const uint8_t> data = image.data();  // Zero-copy data view!
+std::vector<uint8_t> vec = image.to_vec();       // Explicit copy to vector
 ```
 
 **Data Layout:** Row-major, interleaved channels (e.g., `RGBRGBRGB...`)
@@ -99,13 +120,45 @@ uint8_t value = data[idx];
 
 ### I/O Functions
 
+#### Reading Images
+
 ```cpp
-namespace kornia::io {
+namespace kornia::io::jpeg {
     // Read JPEG as RGB u8 (uses libjpeg-turbo)
-    image::Image<uint8_t, 3> read_jpeg_rgb8(const std::string& file_path);
+    ImageU8C3 read_jpeg_rgb8(const std::string& file_path);
     
     // Read JPEG as grayscale u8 (auto-converts if needed)
-    image::Image<uint8_t, 1> read_jpeg_mono8(const std::string& file_path);
+    ImageU8C1 read_jpeg_mono8(const std::string& file_path);
+}
+```
+
+#### Encoding Images
+
+```cpp
+namespace kornia::io::jpeg {
+    // Encode RGB image to JPEG bytes (zero-copy buffer)
+    void encode_image_jpeg_rgb8(const ImageU8C3& image, uint8_t quality, ImageBuffer& buffer);
+    
+    // Encode BGRA image to JPEG bytes (zero-copy buffer)
+    // Perfect for Unreal Engine, DirectX, and other BGRA-based graphics APIs
+    void encode_image_jpeg_bgra8(const ImageU8C4& image, uint8_t quality, ImageBuffer& buffer);
+    
+    // Decode JPEG bytes back to RGB image
+    ImageU8C3 decode_image_jpeg_rgb8(const std::vector<uint8_t>& jpeg_bytes);
+}
+```
+
+**ImageBuffer** is a reusable, zero-copy buffer for encoded data:
+```cpp
+kornia::image::ImageBuffer buffer;
+
+// Encode multiple images with the same buffer (efficient!)
+for (const auto& img : images) {
+    buffer.clear();  // Retains capacity
+    kornia::io::jpeg::encode_image_jpeg_rgb8(img, 95, buffer);
+    
+    // Zero-copy access: no std::vector allocation
+    send_to_network(buffer.data(), buffer.size());
 }
 ```
 
@@ -159,12 +212,52 @@ just test-sanitizers   # Run with ASAN/UBSAN enabled
 
 Tests use [Catch2](https://github.com/catchorg/Catch2) v3 framework.
 
+## Use Cases
+
+### Graphics API Integration (Unreal Engine, DirectX, OpenGL)
+
+Perfect for encoding BGRA framebuffers from graphics APIs:
+
+```cpp
+// Unreal Engine example: encode FColor buffer (BGRA) to JPEG
+const FColor* unreal_pixels = /* from UTextureRenderTarget2D */;
+const uint8_t* pixel_data = reinterpret_cast<const uint8_t*>(unreal_pixels);
+
+kornia::image::ImageU8C4 frame(width, height, pixel_data);
+kornia::image::ImageBuffer jpeg_buffer;
+
+kornia::io::jpeg::encode_image_jpeg_bgra8(frame, 85, jpeg_buffer);
+
+// Send over network (zero-copy)
+zenoh_publisher.put(jpeg_buffer.data(), jpeg_buffer.size());
+```
+
+### High-Performance Image Processing Pipeline
+
+Reuse buffers across frames for minimal allocations:
+
+```cpp
+kornia::image::ImageBuffer buffer;
+
+while (running) {
+    auto frame = capture_camera_frame();
+    
+    buffer.clear();  // Reuse same buffer
+    kornia::io::jpeg::encode_image_jpeg_rgb8(frame, 90, buffer);
+    
+    // Process encoded data (zero-copy)
+    process_jpeg(buffer.data(), buffer.size());
+}
+```
+
 ## Examples
 
-See `examples/read_jpeg/` for a complete example demonstrating:
+See `examples/` directory for complete examples demonstrating:
 - Reading JPEG images
+- Encoding images to JPEG (RGB and BGRA)
 - Accessing image properties
 - Zero-copy data access
+- Buffer reuse for performance
 - Error handling with try/catch
 
 ## Requirements
