@@ -1,58 +1,143 @@
 #![deny(missing_docs)]
 #![doc = env!("CARGO_PKG_DESCRIPTION")]
-/// image undistortion module.
+//!
+//! # Kornia Image Processing
+//!
+//! Comprehensive image processing operations for computer vision applications.
+//!
+//! ## Key Features
+//!
+//! - **Color Conversions**: RGB ↔ Grayscale, HSV, YUV
+//! - **Geometric Transforms**: Resize, crop, flip, warp, affine transforms
+//! - **Filtering**: Gaussian, box blur, median, Sobel, and custom kernels
+//! - **Feature Detection**: FAST corners, Harris, gradient-based features
+//! - **Enhancement**: Histogram equalization, normalization, sharpening
+//! - **Metrics**: MSE, L1, Huber loss for image comparison
+//!
+//! ## Example: Basic Image Processing
+//!
+//! ```rust
+//! use kornia_image::{Image, ImageSize, CpuAllocator};
+//! use kornia_imgproc::color::gray_from_rgb;
+//! use kornia_imgproc::filter::gaussian_blur;
+//!
+//! // Create an RGB image
+//! let rgb_img = Image::<u8, 3, _>::from_size_val(
+//!     ImageSize { width: 640, height: 480 },
+//!     128,
+//!     CpuAllocator
+//! )?;
+//!
+//! // Convert to grayscale
+//! let gray_img = gray_from_rgb(&rgb_img)?;
+//!
+//! // Apply Gaussian blur
+//! let blurred = gaussian_blur(&gray_img, [5, 5], [1.0, 1.0])?;
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! ## Example: Feature Detection
+//!
+//! ```rust
+//! use kornia_image::{Image, CpuAllocator};
+//! use kornia_imgproc::features::fast::fast_score;
+//!
+//! // Detect FAST corners in a grayscale image
+//! let img = Image::<u8, 1, _>::from_size_val([480, 640].into(), 0, CpuAllocator)?;
+//! let corners = fast_score(&img, 9, 20)?;
+//! println!("Detected {} corners", corners.len());
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+
+/// Camera calibration and lens distortion correction.
+///
+/// Supports polynomial distortion models for image undistortion.
 pub mod calibration;
 
-/// color transformations module.
+/// Color space transformations.
+///
+/// Convert between RGB, grayscale, HSV, YUV, and other color spaces.
 pub mod color;
 
-/// image basic operations module.
+/// Core image operations.
+///
+/// Basic image manipulation functions and utilities.
 pub mod core;
 
-/// image cropping module.
+/// Image cropping operations.
+///
+/// Extract regions of interest from images.
 pub mod crop;
 
 // NOTE: not ready yet
 // pub mod distance_transform;
 
-/// utilities to draw on images.
+/// Drawing utilities for visualization.
+///
+/// Draw shapes, text, and markers on images.
 pub mod draw;
 
-/// image enhancement module.
+/// Image enhancement operations.
+///
+/// Histogram equalization, contrast adjustment, and sharpening.
 pub mod enhance;
 
-/// feature detection module.
+/// Feature detection algorithms.
+///
+/// FAST, Harris corners, and gradient-based feature detectors.
 pub mod features;
 
-/// image filtering module.
+/// Image filtering operations.
+///
+/// Convolution, Gaussian blur, median filter, and edge detection.
 pub mod filter;
 
-/// image flipping module.
+/// Image flipping operations.
+///
+/// Horizontal, vertical, and diagonal flips.
 pub mod flip;
 
-/// compute image histogram module.
+/// Histogram computation and analysis.
+///
+/// Calculate image histograms for visualization and equalization.
 pub mod histogram;
 
-/// utilities for interpolation.
+/// Interpolation utilities.
+///
+/// Bilinear, nearest neighbor, and other interpolation methods.
 pub mod interpolation;
 
-/// module containing parallization utilities.
+/// Parallelization utilities for multi-threaded processing.
+///
+/// Utilities to leverage multi-core CPUs for faster image operations.
 pub mod parallel;
 
-/// image processing metrics module.
+/// Image quality metrics.
+///
+/// MSE, L1, Huber, and other similarity/distance metrics.
 pub mod metrics;
 
-/// operations to normalize images.
+/// Image normalization operations.
+///
+/// Rescale pixel values to specific ranges or distributions.
 pub mod normalize;
 
-/// utility functions for resizing images.
+/// Image resizing operations.
+///
+/// Scale images with various interpolation methods.
 pub mod resize;
 
-/// operations to threshold images.
+/// Thresholding operations.
+///
+/// Binary, adaptive, and Otsu thresholding methods.
 pub mod threshold;
 
-/// image geometric transformations module.
+/// Geometric transformation operations.
+///
+/// Affine, perspective, and homography warping.
 pub mod warp;
 
-/// Pyramid operations
+/// Image pyramid operations.
+///
+/// Gaussian and Laplacian pyramids for multi-scale processing.
 pub mod pyramid;
