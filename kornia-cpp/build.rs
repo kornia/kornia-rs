@@ -14,6 +14,9 @@ fn main() {
         cc::Build::new()
             .file("src/glibc_compat.c")
             .compile("glibc_compat");
+        
+        // For staticlib, we need to ensure glibc_compat is linked
+        println!("cargo:rustc-link-lib=static=glibc_compat");
     }
 
     println!("cargo:rerun-if-changed=src/lib.rs");
