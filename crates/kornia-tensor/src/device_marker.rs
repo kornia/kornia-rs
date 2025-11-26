@@ -88,6 +88,26 @@ mod private {
     impl<const ID: usize> Sealed for super::Cuda<ID> {}
 }
 
+/// Marker trait for CPU-only operations.
+///
+/// This trait is implemented only for `Cpu`, enabling compile-time type safety
+/// for operations that are only valid on CPU devices (e.g., `as_slice()`).
+///
+/// # Examples
+///
+/// ```
+/// use kornia_tensor::{Tensor2, Cpu, CpuDevice};
+///
+/// fn process_cpu<D: CpuDevice>(tensor: &Tensor2<f32, D>) -> &[f32] {
+///     // This only compiles for CPU tensors
+///     tensor.as_slice()
+/// }
+///
+/// let tensor = Tensor2::<f32, Cpu>::zeros([10, 10]).unwrap();
+/// let slice = process_cpu(&tensor);
+/// ```
+pub trait CpuDevice: DeviceMarker {}
+
 /// Zero-sized type representing CPU device.
 ///
 /// This is the default device for tensor operations. CPU tensors can be
@@ -108,6 +128,8 @@ mod private {
 /// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Cpu;
+
+impl CpuDevice for Cpu {}
 
 impl DeviceMarker for Cpu {
     type Allocator = crate::CpuAllocator;

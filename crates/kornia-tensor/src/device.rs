@@ -1,7 +1,7 @@
 /// Device type enumeration for tensor allocation.
 ///
 /// Represents different compute devices where tensors can be allocated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub enum Device {
     /// CPU device
     #[default]
@@ -26,9 +26,8 @@ pub enum Device {
     },
 }
 
-impl Device {
-    /// Returns the device type as a string.
-    pub fn device_type(&self) -> &str {
+impl AsRef<str> for Device {
+    fn as_ref(&self) -> &str {
         match self {
             Device::Cpu => "cpu",
             #[cfg(feature = "cuda")]
@@ -39,63 +38,30 @@ impl Device {
             Device::Vulkan { .. } => "vulkan",
         }
     }
+}
 
-    /// Returns the device ID if applicable.
-    pub fn device_id(&self) -> Option<usize> {
-        match self {
-            Device::Cpu => None,
-            #[cfg(feature = "cuda")]
-            Device::Cuda { device_id } => Some(*device_id),
-            #[cfg(feature = "metal")]
-            Device::Metal { device_id } => Some(*device_id),
-            #[cfg(feature = "vulkan")]
-            Device::Vulkan { device_id } => Some(*device_id),
-        }
-    }
-
-    /// Returns true if the device is CPU.
+impl Device {
+    /// Returns true if this device is CPU.
+    #[inline]
     pub fn is_cpu(&self) -> bool {
         matches!(self, Device::Cpu)
     }
 
-    /// Returns true if the device is a GPU.
-    pub fn is_gpu(&self) -> bool {
-        !self.is_cpu()
-    }
-
-    /// Creates a CUDA device with the specified device ID.
+    /// Returns true if this device is CUDA.
     #[cfg(feature = "cuda")]
-    pub fn cuda(device_id: usize) -> Self {
-        Device::Cuda { device_id }
+    #[inline]
+    pub fn is_cuda(&self) -> bool {
+        matches!(self, Device::Cuda { .. })
     }
 
-    /// Creates a Metal device with the specified device ID.
-    #[cfg(feature = "metal")]
-    pub fn metal(device_id: usize) -> Self {
-        Device::Metal { device_id }
-    }
-
-    /// Creates a Vulkan device with the specified device ID.
-    #[cfg(feature = "vulkan")]
-    pub fn vulkan(device_id: usize) -> Self {
-        Device::Vulkan { device_id }
+    /// Returns true if this device is CUDA.
+    #[cfg(not(feature = "cuda"))]
+    #[inline]
+    pub fn is_cuda(&self) -> bool {
+        false
     }
 }
 
-
-impl std::fmt::Display for Device {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Device::Cpu => write!(f, "cpu"),
-            #[cfg(feature = "cuda")]
-            Device::Cuda { device_id } => write!(f, "cuda:{}", device_id),
-            #[cfg(feature = "metal")]
-            Device::Metal { device_id } => write!(f, "metal:{}", device_id),
-            #[cfg(feature = "vulkan")]
-            Device::Vulkan { device_id } => write!(f, "vulkan:{}", device_id),
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -104,27 +70,27 @@ mod tests {
     #[test]
     fn test_device_cpu() {
         let device = Device::Cpu;
-        assert_eq!(device.device_type(), "cpu");
-        assert_eq!(device.device_id(), None);
+        assert_eq!(device.as_ref(), "cpu");
         assert!(device.is_cpu());
-        assert!(!device.is_gpu());
+        assert!(!device.is_cuda());
     }
 
     #[cfg(feature = "cuda")]
     #[test]
     fn test_device_cuda() {
-        let device = Device::cuda(0);
-        assert_eq!(device.device_type(), "cuda");
-        assert_eq!(device.device_id(), Some(0));
+        let device = Device::Cuda { device_id: 0 };
+        assert_eq!(device.as_ref(), "cuda");
+        assert_eq!(format!("{:?}", device), "Cuda { device_id: 0 }");
         assert!(!device.is_cpu());
-        assert!(device.is_gpu());
-        assert_eq!(format!("{}", device), "cuda:0");
+        assert!(device.is_cuda());
     }
 
     #[test]
     fn test_device_default() {
         let device = Device::default();
         assert_eq!(device, Device::Cpu);
+        assert!(device.is_cpu());
+        assert!(!device.is_cuda());
     }
 }
 

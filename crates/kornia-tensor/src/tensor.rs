@@ -307,18 +307,35 @@ impl<T, const N: usize, D: DeviceMarker> Tensor<T, N, D> {
     /// # Returns
     ///
     /// A slice containing the data of the tensor.
+    /// Returns the tensor data as a slice.
+    ///
+    /// This provides safe, immutable access to the tensor's underlying data.
+    /// This method is only available for CPU devices, ensuring compile-time type safety.
+    ///
+    /// # Returns
+    ///
+    /// A slice containing all elements in the tensor.
     #[inline]
-    pub fn as_slice(&self) -> &[T] {
+    pub fn as_slice(&self) -> &[T]
+    where
+        D: crate::device_marker::CpuDevice,
+    {
         self.storage.as_slice()
     }
 
     /// Get the data of the tensor as a mutable slice.
     ///
+    /// This provides safe, mutable access to the tensor's underlying data.
+    /// This method is only available for CPU devices, ensuring compile-time type safety.
+    ///
     /// # Returns
     ///
     /// A mutable slice containing the data of the tensor.
     #[inline]
-    pub fn as_slice_mut(&mut self) -> &mut [T] {
+    pub fn as_slice_mut(&mut self) -> &mut [T]
+    where
+        D: crate::device_marker::CpuDevice,
+    {
         self.storage.as_mut_slice()
     }
 
@@ -398,7 +415,10 @@ impl<T, const N: usize, D: DeviceMarker> Tensor<T, N, D> {
     /// assert_eq!(doubled, vec![2, 4, 6, 8, 10]);
     /// ```
     #[inline]
-    pub fn iter(&self) -> std::slice::Iter<'_, T> {
+    pub fn iter(&self) -> std::slice::Iter<'_, T>
+    where
+        D: crate::device_marker::CpuDevice,
+    {
         self.as_slice().iter()
     }
 
@@ -426,7 +446,10 @@ impl<T, const N: usize, D: DeviceMarker> Tensor<T, N, D> {
     /// assert_eq!(tensor.as_slice(), &[2, 4, 6, 8, 10]);
     /// ```
     #[inline]
-    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T>
+    where
+        D: crate::device_marker::CpuDevice,
+    {
         self.as_slice_mut().iter_mut()
     }
 
@@ -475,29 +498,36 @@ impl<T, const N: usize, D: DeviceMarker> Tensor<T, N, D> {
         // Get target allocator
         let target_alloc = Target::allocator()?;
         let src_device = self.storage.device();
+        let _target_device = target_alloc.device();
 
         // Allocate on target device and copy
+        use crate::allocator::BufferOps;
+        
         let layout = self.storage.layout();
-        let dst_ptr = target_alloc.alloc(layout)?;
+        let mut dst_buffer = target_alloc.alloc(layout)?;
+        
+        // Create source buffer wrapper for copy_from
+        let src_ptr = self.storage.as_ptr() as *const u8;
         
         // Copy memory from source to destination
-        // SAFETY: Both pointers are valid, lengths match, and we own the destination
+        // SAFETY: Both buffers are valid, lengths match, and we own the destination
         unsafe {
             target_alloc.copy_from(
-                self.storage.as_ptr() as *const u8,
-                dst_ptr,
+                &src_ptr as &dyn BufferOps,
+                &mut dst_buffer as &mut dyn BufferOps,
                 self.storage.len(),
                 &src_device,
             )?;
         }
 
-        // SAFETY: dst_ptr is valid and was just allocated with correct layout
-        let storage = unsafe {
-            TensorStorage::from_raw_parts(
-                dst_ptr as *const T,
-                self.storage.len(),
-            )?
-        };
+        // Convert buffer to storage using the allocator's conversion method
+        let buffer = target_alloc.convert_to_storage_buffer(dst_buffer, self.storage.len(), layout)
+            .map_err(crate::TensorError::StorageError)?;
+        
+        // Create storage from the buffer
+        // For all devices, we create StorageImpl directly with the buffer
+        // This ensures consistent memory management across all device types
+        let storage = TensorStorage::from_buffer(buffer, self.storage.len());
 
         Ok(Tensor {
             storage,
@@ -833,7 +863,10 @@ impl<T, const N: usize, D: DeviceMarker> Tensor<T, N, D> {
     /// assert_eq!(*t.get_unchecked([1, 0]), 3);
     /// assert_eq!(*t.get_unchecked([1, 1]), 4);
     /// ```
-    pub fn get_unchecked(&self, index: [usize; N]) -> &T {
+    pub fn get_unchecked(&self, index: [usize; N]) -> &T
+    where
+        D: crate::device_marker::CpuDevice,
+    {
         let offset = self.get_iter_offset_unchecked(index);
         unsafe { self.storage.as_slice().get_unchecked(offset) }
     }
@@ -868,7 +901,10 @@ impl<T, const N: usize, D: DeviceMarker> Tensor<T, N, D> {
     ///
     /// assert!(t.get([2, 0]).is_none());
     /// ```
-    pub fn get(&self, index: [usize; N]) -> Option<&T> {
+    pub fn get(&self, index: [usize; N]) -> Option<&T>
+    where
+        D: crate::device_marker::CpuDevice,
+    {
         self.get_iter_offset(index)
             .and_then(|i| self.storage.as_slice().get(i))
     }
@@ -1010,6 +1046,7 @@ impl<T, const N: usize, D: DeviceMarker> Tensor<T, N, D> {
     /// ```
     pub fn map<U, F>(&self, f: F) -> Result<Tensor<U, N, D>, TensorError>
     where
+        D: crate::device_marker::CpuDevice,
         F: Fn(&T) -> U,
     {
         let data: Vec<U> = self.as_slice().iter().map(f).collect();
@@ -1109,6 +1146,7 @@ impl<T, const N: usize, D: DeviceMarker> Tensor<T, N, D> {
     /// ```
     pub fn to_standard_layout(&self) -> Result<Self, TensorError>
     where
+        D: crate::device_marker::CpuDevice,
         T: Clone + std::fmt::Debug,
     {
         if self.is_standard_layout() {
@@ -1165,6 +1203,7 @@ impl<T, const N: usize, D: DeviceMarker> Tensor<T, N, D> {
     /// ```
     pub fn cast<U>(&self) -> Result<Tensor<U, N, Cpu>, TensorError>
     where
+        D: crate::device_marker::CpuDevice,
         U: From<T>,
         T: Clone,
     {
@@ -1227,6 +1266,7 @@ impl<T, const N: usize, D: DeviceMarker> Tensor<T, N, D> {
         op: F,
     ) -> Result<Tensor<T, N, Cpu>, TensorError>
     where
+        D: crate::device_marker::CpuDevice,
         F: Fn(&T, &T) -> T,
     {
         if self.shape != other.shape {
@@ -1267,8 +1307,9 @@ where
     }
 }
 
-impl<T, const N: usize, D: DeviceMarker> std::fmt::Display for Tensor<T, N, D>
+impl<T, const N: usize, D> std::fmt::Display for Tensor<T, N, D>
 where
+    D: DeviceMarker + crate::device_marker::CpuDevice,
     T: std::fmt::Display + std::fmt::LowerExp,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

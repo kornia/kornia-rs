@@ -111,15 +111,17 @@ fn test_multidimensional_transfer() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-#[should_panic(expected = "Cannot access GPU tensor as slice")]
 fn test_cannot_access_gpu_tensor_as_slice() {
     let data = vec![1.0f32, 2.0, 3.0, 4.0];
     let cpu_tensor = Tensor1::<f32, Cpu>::from_shape_vec([4], data).unwrap();
 
     let cuda_tensor: Tensor1<f32, Cuda<0>> = cpu_tensor.to_device().unwrap();
 
-    // This should panic
-    let _ = cuda_tensor.as_slice();
+    // as_slice() is now compile-time restricted to CPU tensors only
+    // To access CUDA tensor data, we must transfer to CPU first
+    let cpu_tensor = cuda_tensor.to_cpu().unwrap();
+    let slice = cpu_tensor.as_slice();
+    assert_eq!(slice, &[1.0, 2.0, 3.0, 4.0]);
 }
 
 #[test]

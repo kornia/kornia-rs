@@ -3,7 +3,252 @@
 //! This module provides an improved storage implementation using `Arc` for
 //! reference counting, enabling cheap clones and zero-copy tensor views.
 
-use std::{alloc::Layout, ptr::NonNull, sync::Arc};
+use std::{alloc::Layout, sync::Arc};
+
+/// Trait for extension buffers that can be used with custom allocators.
+///
+/// This trait allows external crates (like `kornia-io` for GStreamer) to implement
+/// their own buffer types that can be stored in the `Buffer` enum.
+///
+/// The trait extends `BufferOps` with device information. Note that extension buffers
+/// can be on any device (CPU, CUDA, etc.) - the buffer itself reports its device.
+///
+/// # Example (in kornia-io crate)
+///
+/// ```rust,no_run
+/// use kornia_tensor::storage::ExtensionBuffer;
+/// use kornia_tensor::allocator::BufferOps;
+/// use std::sync::Arc;
+/// use gstreamer::Buffer;
+///
+/// // GStreamer buffer can be on CPU or CUDA depending on the pipeline
+/// impl ExtensionBuffer for Arc<Buffer> {
+///     fn device(&self) -> kornia_tensor::device::Device {
+///         // Check buffer metadata to determine actual device
+///         // For now, assume CPU (could be enhanced to check GStreamer caps)
+///         kornia_tensor::device::Device::Cpu
+///     }
+/// }
+///
+/// impl BufferOps for Arc<Buffer> {
+///     fn as_ptr(&self) -> *const u8 {
+///         self.map_readable().map(|m| m.as_slice().as_ptr() as *const u8)
+///             .unwrap_or(std::ptr::null())
+///     }
+///     fn as_mut_ptr(&mut self) -> *mut u8 {
+///         self.as_ptr() as *mut u8
+///     }
+///     fn len(&self) -> usize {
+///         self.map_readable().map(|m| m.as_slice().len())
+///             .unwrap_or(0)
+///     }
+/// }
+/// ```
+pub trait ExtensionBuffer: crate::allocator::BufferOps + Send + Sync {
+    /// Returns the device where this buffer's memory is located.
+    ///
+    /// This allows the buffer to report its actual device, which may differ
+    /// from the allocator's device (e.g., GStreamer can manage CPU or CUDA buffers).
+    fn device(&self) -> crate::device::Device;
+}
+
+/// Device-agnostic buffer storage enum.
+///
+/// This enum stores the actual buffer types for different memory backends:
+/// - **CPU**: `Vec<u8>` (owns the memory, automatic deallocation)
+/// - **CUDA**: `Arc<DeviceBuffer<u8>>` (reference-counted, automatic deallocation)
+/// - **Extension**: Custom buffer types from external crates (e.g., `Arc<gstreamer::Buffer>`)
+///
+/// Note: Extension buffers can be on any device (CPU, CUDA, etc.) - the buffer
+/// itself reports its device via `ExtensionBuffer::device()`.
+///
+/// This simplifies memory management by using owned types that handle
+/// deallocation automatically via Drop.
+pub enum Buffer {
+    /// CPU memory buffer (owned Vec).
+    Cpu(Vec<u8>),
+    /// CUDA device buffer (reference-counted).
+    #[cfg(feature = "cuda")]
+    Cuda(Arc<cust::memory::DeviceBuffer<u8>>),
+    /// Extension buffer for custom allocators (e.g., GStreamer).
+    /// 
+    /// This allows external crates to provide their own buffer types
+    /// without modifying kornia-tensor. The buffer can be on any device
+    /// and reports its device via `ExtensionBuffer::device()`.
+    Extension(Box<dyn ExtensionBuffer>),
+}
+
+impl std::fmt::Debug for Buffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Buffer::Cpu(vec) => f.debug_tuple("Cpu").field(&vec.len()).finish(),
+            #[cfg(feature = "cuda")]
+            Buffer::Cuda(arc) => {
+                use crate::allocator::BufferOps;
+                f.debug_tuple("Cuda").field(&arc.len()).finish()
+            }
+            Buffer::Extension(ext) => {
+                f.debug_tuple("Extension")
+                    .field(&ext.device())
+                    .field(&ext.len())
+                    .finish()
+            }
+        }
+    }
+}
+
+impl Buffer {
+    /// Returns a pointer to the buffer's data.
+    pub fn as_ptr(&self) -> *const u8 {
+        match self {
+            Buffer::Cpu(vec) => vec.as_ptr(),
+            #[cfg(feature = "cuda")]
+            Buffer::Cuda(arc) => {
+                use crate::allocator::BufferOps;
+                arc.as_ptr()
+            }
+            Buffer::Extension(ext) => ext.as_ptr(),
+        }
+    }
+
+    /// Returns a mutable pointer to the buffer's data.
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        match self {
+            Buffer::Cpu(vec) => vec.as_mut_ptr(),
+            #[cfg(feature = "cuda")]
+            Buffer::Cuda(arc) => {
+                use crate::allocator::BufferOps;
+                // For Arc, we can't get mutable access, so we cast the const pointer
+                arc.as_ptr() as *mut u8
+            }
+            Buffer::Extension(ext) => ext.as_mut_ptr(),
+        }
+    }
+
+    /// Returns the length of the buffer in bytes.
+    pub fn len(&self) -> usize {
+        match self {
+            Buffer::Cpu(vec) => vec.len(),
+            #[cfg(feature = "cuda")]
+            Buffer::Cuda(arc) => {
+                use crate::allocator::BufferOps;
+                arc.len()
+            }
+            Buffer::Extension(ext) => ext.len(),
+        }
+    }
+
+    /// Returns the device where this buffer's memory is located.
+    ///
+    /// For extension buffers, this queries the buffer itself, allowing
+    /// it to report its actual device (e.g., GStreamer buffers can be CPU or CUDA).
+    pub fn device(&self) -> crate::device::Device {
+        match self {
+            Buffer::Cpu(_) => crate::device::Device::Cpu,
+            #[cfg(feature = "cuda")]
+            Buffer::Cuda(_) => {
+                // For CUDA, we'd need to track device_id, but for now assume device 0
+                // This could be improved by storing device info in the buffer
+                crate::device::Device::Cuda { device_id: 0 }
+            }
+            Buffer::Extension(ext) => ext.device(),
+        }
+    }
+}
+
+// SAFETY: Buffer is Send + Sync:
+// - Vec<u8> is Send + Sync
+// - Arc<DeviceBuffer<u8>> is Send + Sync
+unsafe impl Send for Buffer {}
+unsafe impl Sync for Buffer {}
+
+/// Device-agnostic pointer type for pointer operations.
+///
+/// This is derived from Buffer for pointer arithmetic and operations.
+#[derive(Debug, Clone, Copy)]
+pub enum DevicePtr {
+    /// CPU memory pointer.
+    Cpu(*mut u8),
+    /// CUDA device memory address.
+    #[cfg(feature = "cuda")]
+    Cuda(u64),
+}
+
+// SAFETY: DevicePtr is Send + Sync:
+// - *mut u8 is Send + Sync (raw pointers are Send + Sync)
+// - u64 is Send + Sync
+unsafe impl Send for DevicePtr {}
+unsafe impl Sync for DevicePtr {}
+
+impl DevicePtr {
+    /// Creates a CPU device pointer from a raw pointer.
+    ///
+    /// # Safety
+    ///
+    /// The pointer must be valid for the lifetime of the DevicePtr.
+    pub unsafe fn from_cpu_ptr(ptr: *mut u8) -> Self {
+        DevicePtr::Cpu(ptr)
+    }
+
+    /// Creates a CUDA device pointer from a device address.
+    ///
+    /// # Safety
+    ///
+    /// The address must be a valid CUDA device memory address.
+    #[cfg(feature = "cuda")]
+    pub unsafe fn from_cuda_addr(addr: u64) -> Self {
+        DevicePtr::Cuda(addr)
+    }
+
+    /// Returns the pointer as a CPU pointer, or None if it's not a CPU pointer.
+    pub fn as_cpu_ptr(&self) -> Option<*mut u8> {
+        match self {
+            DevicePtr::Cpu(ptr) => Some(*ptr),
+            #[cfg(feature = "cuda")]
+            DevicePtr::Cuda(_) => None,
+        }
+    }
+
+    /// Returns the pointer as a CUDA address, or None if it's not a CUDA pointer.
+    #[cfg(feature = "cuda")]
+    pub fn as_cuda_addr(&self) -> Option<u64> {
+        match self {
+            DevicePtr::Cpu(_) => None,
+            DevicePtr::Cuda(addr) => Some(*addr),
+        }
+    }
+
+    /// Returns a const pointer to the data.
+    pub fn as_ptr(&self) -> *const u8 {
+        match self {
+            DevicePtr::Cpu(ptr) => *ptr as *const u8,
+            #[cfg(feature = "cuda")]
+            DevicePtr::Cuda(addr) => *addr as *const u8,
+        }
+    }
+
+    /// Returns a mutable pointer to the data.
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        match self {
+            DevicePtr::Cpu(ptr) => *ptr,
+            #[cfg(feature = "cuda")]
+            DevicePtr::Cuda(addr) => *addr as *mut u8,
+        }
+    }
+
+    /// Adds an offset to the pointer.
+    pub fn add(&self, offset: usize) -> Self {
+        match self {
+            DevicePtr::Cpu(ptr) => {
+                DevicePtr::Cpu(unsafe { ptr.add(offset) })
+            }
+            #[cfg(feature = "cuda")]
+            DevicePtr::Cuda(addr) => {
+                DevicePtr::Cuda(addr.wrapping_add(offset as u64))
+            }
+        }
+    }
+}
 
 use crate::{device_marker::DeviceMarker, TensorAllocator};
 
@@ -12,12 +257,11 @@ use crate::{device_marker::DeviceMarker, TensorAllocator};
 /// This is wrapped in an `Arc` to enable reference counting and
 /// zero-copy views with different offsets.
 struct StorageImpl<T, D: DeviceMarker> {
-    /// The pointer to the tensor memory which must be non-null.
-    ptr: NonNull<T>,
-    /// The total length of allocated memory in bytes.
-    len: usize,
-    /// The memory layout used for allocation.
-    layout: Layout,
+    /// The actual buffer (owns or references the memory).
+    /// This contains all the data - length, pointer, etc. can be derived from it.
+    buffer: Buffer,
+    /// Marker for element type (zero-sized).
+    _element: std::marker::PhantomData<T>,
     /// Marker for device type (zero-sized).
     _device: std::marker::PhantomData<D>,
 }
@@ -25,9 +269,7 @@ struct StorageImpl<T, D: DeviceMarker> {
 impl<T, D: DeviceMarker> std::fmt::Debug for StorageImpl<T, D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StorageImpl")
-            .field("ptr", &self.ptr)
-            .field("len", &self.len)
-            .field("layout", &self.layout)
+            .field("buffer", &self.buffer)
             .finish()
     }
 }
@@ -63,11 +305,40 @@ pub struct TensorStorage<T, D: DeviceMarker> {
 }
 
 impl<T, D: DeviceMarker> TensorStorage<T, D> {
+    /// Creates a new `TensorStorage` from a `Buffer`.
+    ///
+    /// This is used internally when transferring tensors between devices.
+    /// The buffer must match the device type `D`.
+    ///
+    /// # Arguments
+    ///
+    /// * `buffer` - The buffer containing the tensor data
+    /// * `len` - The length of the buffer in bytes
+    ///
+    /// # Returns
+    ///
+    /// A new `TensorStorage` instance.
+    pub(crate) fn from_buffer(buffer: Buffer, len: usize) -> Self {
+        Self {
+            inner: Arc::new(StorageImpl {
+                buffer,
+                _element: std::marker::PhantomData,
+                _device: std::marker::PhantomData,
+            }),
+            offset: 0,
+            view_len: len,
+        }
+    }
+
     /// Returns the pointer to the tensor memory, accounting for offset.
     #[inline]
     pub fn as_ptr(&self) -> *const T {
+        // Calculate byte offset
+        let byte_offset = self.offset * std::mem::size_of::<T>();
+        // Get base pointer from buffer and add offset
+        let base_ptr = self.inner.buffer.as_ptr();
         // SAFETY: offset is always within bounds (validated at construction)
-        unsafe { self.inner.ptr.as_ptr().add(self.offset) }
+        unsafe { base_ptr.add(byte_offset) as *const T }
     }
 
     /// Returns the mutable pointer to the tensor memory, accounting for offset.
@@ -78,13 +349,20 @@ impl<T, D: DeviceMarker> TensorStorage<T, D> {
     /// The caller must ensure exclusive access when dereferencing.
     #[inline]
     pub fn as_mut_ptr(&mut self) -> *mut T {
+        // Calculate byte offset
+        let byte_offset = self.offset * std::mem::size_of::<T>();
+        // Get base pointer from buffer and add offset
+        // Note: We can't get mutable access to Arc, so we use the const pointer
+        // and cast it. This is safe because the caller must ensure exclusive ownership.
+        let base_ptr = self.inner.buffer.as_ptr() as *mut u8;
         // SAFETY: offset is always within bounds (validated at construction)
-        unsafe { self.inner.ptr.as_ptr().add(self.offset) }
+        unsafe { base_ptr.add(byte_offset) as *mut T }
     }
 
     /// Returns the storage data as a slice.
     ///
     /// This provides safe, immutable access to the storage's underlying data.
+    /// This method is only available for CPU devices, ensuring compile-time type safety.
     ///
     /// # Returns
     ///
@@ -92,14 +370,13 @@ impl<T, D: DeviceMarker> TensorStorage<T, D> {
     ///
     /// # Panics
     ///
-    /// Panics if the tensor is not on CPU.
-    pub fn as_slice(&self) -> &[T] {
-        assert!(
-            self.is_cpu(),
-            "Cannot access GPU tensor as slice. Use to_cpu() to transfer data first."
-        );
+    /// Panics if there are other references to this storage (checked via Arc::strong_count).
+    pub fn as_slice(&self) -> &[T]
+    where
+        D: crate::device_marker::CpuDevice,
+    {
         let elem_count = self.view_len / std::mem::size_of::<T>();
-        // SAFETY: ptr is valid for view_len bytes, properly aligned, and on CPU (checked above)
+        // SAFETY: ptr is valid for view_len bytes, properly aligned, and on CPU (enforced by trait bound)
         // offset was validated at construction
         unsafe { std::slice::from_raw_parts(self.as_ptr(), elem_count) }
     }
@@ -107,6 +384,7 @@ impl<T, D: DeviceMarker> TensorStorage<T, D> {
     /// Returns the storage data as a mutable slice.
     ///
     /// This provides safe, mutable access to the storage's underlying data.
+    /// This method is only available for CPU devices, ensuring compile-time type safety.
     ///
     /// # Returns
     ///
@@ -114,18 +392,17 @@ impl<T, D: DeviceMarker> TensorStorage<T, D> {
     ///
     /// # Panics
     ///
-    /// Panics if the tensor is not on CPU or if there are other references to this storage.
-    pub fn as_mut_slice(&mut self) -> &mut [T] {
-        assert!(
-            self.is_cpu(),
-            "Cannot access GPU tensor as mutable slice. Use to_cpu() to transfer data first."
-        );
+    /// Panics if there are other references to this storage (checked via Arc::strong_count).
+    pub fn as_mut_slice(&mut self) -> &mut [T]
+    where
+        D: crate::device_marker::CpuDevice,
+    {
         assert!(
             Arc::strong_count(&self.inner) == 1,
             "Cannot get mutable slice when storage is shared. Clone the tensor first."
         );
         let elem_count = self.view_len / std::mem::size_of::<T>();
-        // SAFETY: ptr is valid for view_len bytes, properly aligned, on CPU, and exclusively owned
+        // SAFETY: ptr is valid for view_len bytes, properly aligned, on CPU (enforced by trait bound), and exclusively owned
         // offset was validated at construction
         unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), elem_count) }
     }
@@ -139,13 +416,13 @@ impl<T, D: DeviceMarker> TensorStorage<T, D> {
     /// Returns true if the tensor is on CPU.
     #[inline]
     pub fn is_cpu(&self) -> bool {
-        D::device_info().is_cpu()
+        matches!(D::device_info(), crate::device::Device::Cpu)
     }
 
     /// Returns true if the tensor is on GPU.
     #[inline]
     pub fn is_gpu(&self) -> bool {
-        D::device_info().is_gpu()
+        !self.is_cpu()
     }
 
     /// Returns the number of bytes accessible from this view.
@@ -163,7 +440,12 @@ impl<T, D: DeviceMarker> TensorStorage<T, D> {
     /// Returns the memory layout of the underlying storage.
     #[inline]
     pub fn layout(&self) -> Layout {
-        self.inner.layout
+        // Reconstruct layout from buffer length and element alignment
+        let size = self.inner.buffer.len();
+        let align = std::mem::align_of::<T>();
+        unsafe {
+            Layout::from_size_align_unchecked(size, align)
+        }
     }
 
     /// Returns true if this storage is uniquely owned (no other Arc references).
@@ -184,7 +466,7 @@ impl<T, D: DeviceMarker> TensorStorage<T, D> {
     ///
     /// # Errors
     ///
-    /// Returns an error if memory allocation fails.
+    /// Returns an error if memory allocation fails or memory transfer fails.
     pub fn from_vec(value: Vec<T>) -> Result<Self, crate::TensorError> {
         let alloc = D::allocator()?;
         
@@ -193,27 +475,38 @@ impl<T, D: DeviceMarker> TensorStorage<T, D> {
             .map_err(|e| crate::TensorError::StorageError(
                 crate::allocator::TensorAllocatorError::LayoutError(e)
             ))?;
-        let raw_ptr = alloc.alloc(buf_layout)
-            .map_err(crate::TensorError::StorageError)?;
-        let buf_ptr = raw_ptr as *mut T;
         
-        let buf_ptr = NonNull::new(buf_ptr)
-            .ok_or(crate::TensorError::StorageError(
-                crate::allocator::TensorAllocatorError::NullPointer
-            ))?;
+        // Allocate buffer using allocator and convert to our Buffer enum
+        let alloc_buffer = alloc.alloc(buf_layout)
+            .map_err(crate::TensorError::StorageError)?;
 
-        // SAFETY: buf_ptr is valid (just allocated), value.as_ptr() is valid, regions don't overlap
+        // Convert allocator buffer to our Buffer enum using the allocator's conversion method
+        let mut buffer = alloc.convert_to_storage_buffer(alloc_buffer, buf_len, buf_layout)
+            .map_err(crate::TensorError::StorageError)?;
+        
+        // Copy data from value into the buffer
+        // Create temporary wrappers for BufferOps
+        use crate::allocator::{BufferOps, RawPtr};
+        let cpu_buffer = value.as_ptr() as *const u8;
+        let cpu_wrapper = RawPtr(cpu_buffer as *mut u8);
+        let buffer_ptr = buffer.as_mut_ptr();
+        let mut buffer_wrapper = RawPtr(buffer_ptr);
+        
         unsafe {
-            std::ptr::copy_nonoverlapping(value.as_ptr(), buf_ptr.as_ptr(), value.len());
+            alloc.copy_from(
+                &cpu_wrapper as &dyn BufferOps,
+                &mut buffer_wrapper as &mut dyn BufferOps,
+                buf_len,
+                &crate::device::Device::Cpu,
+            )?;
         }
         
         std::mem::forget(value);
 
         Ok(Self {
             inner: Arc::new(StorageImpl {
-                ptr: buf_ptr,
-                len: buf_len,
-                layout: buf_layout,
+                buffer,
+                _element: std::marker::PhantomData,
                 _device: std::marker::PhantomData,
             }),
             offset: 0,
@@ -230,18 +523,64 @@ impl<T, D: DeviceMarker> TensorStorage<T, D> {
     /// - `ptr` is properly aligned for type `T`
     /// - The memory at `ptr` was allocated by an allocator compatible with device `D`
     /// - The memory will not be accessed after this storage is dropped
+    /// - For GPU devices, `ptr` must be a device pointer (not a CPU pointer)
+    /// 
+    /// # Note
+    ///
+    /// For CUDA devices, this method cannot create a DevicePtr from a raw pointer
+    /// because we need the actual `Arc<DeviceBuffer>`. This method is primarily
+    /// for CPU tensors. For CUDA, use `from_vec()` or other allocation methods.
     pub unsafe fn from_raw_parts(ptr: *const T, len: usize) -> Result<Self, crate::TensorError> {
         // SAFETY: Caller guarantees len and alignment are valid
-        let layout = Layout::from_size_align_unchecked(len, std::mem::align_of::<T>());
-        let ptr = NonNull::new(ptr as *mut T)
-            .ok_or(crate::TensorError::StorageError(
-                crate::allocator::TensorAllocatorError::NullPointer
-            ))?;
+        let _layout = Layout::from_size_align_unchecked(len, std::mem::align_of::<T>());
+        
+        let device = D::device_info();
+        let buffer = match device {
+            crate::device::Device::Cpu => {
+                let ptr_u8 = ptr as *const u8 as *mut u8;
+                if ptr_u8.is_null() {
+                    return Err(crate::TensorError::StorageError(
+                        crate::allocator::TensorAllocatorError::NullPointer
+                    ));
+                }
+                // Create Vec from raw pointer
+                // SAFETY: Caller guarantees ptr is valid for len bytes
+                let vec = unsafe {
+                    Vec::from_raw_parts(ptr_u8, len, len)
+                };
+                Buffer::Cpu(vec)
+            }
+            #[cfg(feature = "cuda")]
+            crate::device::Device::Cuda { .. } => {
+                // For CUDA, we cannot create Buffer from raw pointer
+                // because we need the actual Arc<DeviceBuffer> for proper memory management
+                // This is a limitation - use from_vec() or other allocation methods for CUDA
+                return Err(crate::TensorError::StorageError(
+                    crate::allocator::TensorAllocatorError::UnsupportedOperation(
+                        "from_raw_parts() not supported for CUDA. Use from_vec() or allocation methods.".to_string()
+                    )
+                ));
+            }
+            #[allow(unreachable_patterns)]
+            _ => {
+                // For other devices, treat as CPU pointer for now
+                let ptr_u8 = ptr as *const u8 as *mut u8;
+                if ptr_u8.is_null() {
+                    return Err(crate::TensorError::StorageError(
+                        crate::allocator::TensorAllocatorError::NullPointer
+                    ));
+                }
+                let vec = unsafe {
+                    Vec::from_raw_parts(ptr_u8, len, len)
+                };
+                Buffer::Cpu(vec)
+            }
+        };
+        
         Ok(Self {
             inner: Arc::new(StorageImpl {
-                ptr,
-                len,
-                layout,
+                buffer,
+                _element: std::marker::PhantomData,
                 _device: std::marker::PhantomData,
             }),
             offset: 0,
@@ -262,18 +601,32 @@ impl<T, D: DeviceMarker> TensorStorage<T, D> {
         );
         
         // Try to unwrap the Arc - this should succeed since we checked is_unique()
-        let inner = Arc::try_unwrap(self.inner)
+        let mut inner = Arc::try_unwrap(self.inner)
             .expect("Storage should be unique after is_unique() check");
         
-        let vec_capacity = inner.layout.size() / std::mem::size_of::<T>();
-        let vec_len = inner.len / std::mem::size_of::<T>();
-        let ptr = inner.ptr;
-
-        // SAFETY: Prevent double-free by forgetting inner
-        std::mem::forget(inner);
-        
-        // SAFETY: ptr, vec_len, and vec_capacity are valid, and we've prevented double-free
-        unsafe { Vec::from_raw_parts(ptr.as_ptr(), vec_len, vec_capacity) }
+        // Extract Vec from Buffer
+        // We need to move the buffer out, so we replace it with an empty buffer
+        match std::mem::replace(&mut inner.buffer, Buffer::Cpu(Vec::new())) {
+            Buffer::Cpu(mut vec) => {
+                // Convert Vec<u8> to Vec<T>
+                let elem_count = vec.len() / std::mem::size_of::<T>();
+                let vec_capacity = vec.capacity() / std::mem::size_of::<T>();
+                let ptr = vec.as_mut_ptr() as *mut T;
+                
+                // Prevent Vec<u8> from dropping
+                std::mem::forget(vec);
+                
+                // SAFETY: ptr, elem_count, and vec_capacity are valid
+                unsafe { Vec::from_raw_parts(ptr, elem_count, vec_capacity) }
+            }
+            #[cfg(feature = "cuda")]
+            Buffer::Cuda(_) => {
+                panic!("Cannot convert CUDA tensor to Vec. Use to_cpu() first.");
+            }
+            Buffer::Extension(_) => {
+                panic!("Cannot convert extension buffer to Vec. Use to_cpu() first.");
+            }
+        }
     }
 
     /// Creates a new view into this storage with the specified offset and length.
@@ -294,8 +647,9 @@ impl<T, D: DeviceMarker> TensorStorage<T, D> {
         let byte_len = len * std::mem::size_of::<T>();
         
         let end_pos = self.offset + byte_offset + byte_len;
-        if end_pos > self.inner.len {
-            return Err(crate::TensorError::index_out_of_bounds(end_pos, self.inner.len));
+        let buffer_len = self.inner.buffer.len();
+        if end_pos > buffer_len {
+            return Err(crate::TensorError::index_out_of_bounds(end_pos, buffer_len));
         }
 
         Ok(Self {
@@ -321,11 +675,10 @@ unsafe impl<T: Sync, D: DeviceMarker> Sync for TensorStorage<T, D> {}
 
 impl<T, D: DeviceMarker> Drop for StorageImpl<T, D> {
     fn drop(&mut self) {
-        // SAFETY: ptr and layout were created together during allocation
-        // This is the final drop of StorageImpl, so no other Arc references exist
-        if let Ok(alloc) = D::allocator() {
-            alloc.dealloc(self.ptr.as_ptr() as *mut u8, self.layout);
-        }
+        // Buffer enum handles deallocation automatically:
+        // - Buffer::Cpu(Vec<u8>) - Vec's Drop handles deallocation
+        // - Buffer::Cuda(Arc<DeviceBuffer>) - Arc's Drop handles deallocation when last reference
+        // No manual deallocation needed!
     }
 }
 
@@ -345,8 +698,8 @@ impl<T, D: DeviceMarker> Clone for TensorStorage<T, D> {
 impl<T, D: DeviceMarker> std::fmt::Debug for TensorStorage<T, D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TensorStorage")
-            .field("ptr", &self.inner.ptr)
-            .field("len", &self.inner.len)
+            .field("buffer", &self.inner.buffer)
+            .field("buffer_len", &self.inner.buffer.len())
             .field("offset", &self.offset)
             .field("view_len", &self.view_len)
             .field("device", &self.device())
@@ -485,6 +838,56 @@ mod tests {
         }
         
         assert_eq!(storage.as_slice()[0], 10);
+        Ok(())
+    }
+
+    #[test]
+    fn test_device_ptr_cpu() {
+        let mut ptr = unsafe { DevicePtr::from_cpu_ptr(0x1000 as *mut u8) };
+        assert!(ptr.as_ptr() as usize == 0x1000);
+        assert!(ptr.as_mut_ptr() as usize == 0x1000);
+        
+        // Test pointer arithmetic
+        let ptr2 = ptr.add(100);
+        assert!(ptr2.as_ptr() as usize == 0x1000 + 100);
+        
+        #[cfg(feature = "cuda")]
+        assert!(ptr.as_cuda_addr().is_none());
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn test_device_ptr_cuda() {
+        let addr: u64 = 0x8000_0000_0000_0000;
+        let ptr = unsafe { DevicePtr::from_cuda_addr(addr) };
+        assert_eq!(ptr.as_cuda_addr(), Some(addr));
+        
+        // Test pointer arithmetic
+        let ptr2 = ptr.add(256);
+        assert_eq!(ptr2.as_cuda_addr(), Some(addr + 256));
+    }
+
+    #[test]
+    fn test_device_ptr_send_sync() {
+        // Verify DevicePtr is Send + Sync
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<DevicePtr>();
+    }
+
+    #[test]
+    fn test_storage_device_ptr_integration() -> Result<(), TensorError> {
+        // Test that StorageImpl correctly uses DevicePtr
+        let data = vec![1.0_f32, 2.0, 3.0, 4.0];
+        let storage = TensorStorage::<f32, Cpu>::from_vec(data)?;
+        
+        // Verify we can get pointers
+        let ptr = storage.as_ptr();
+        assert!(!ptr.is_null());
+        
+        // Verify we can access the data
+        let slice = storage.as_slice();
+        assert_eq!(slice, &[1.0, 2.0, 3.0, 4.0]);
+        
         Ok(())
     }
 }

@@ -29,11 +29,11 @@
 //! Creating and manipulating tensors:
 //!
 //! ```rust
-//! use kornia_tensor::{Tensor, CpuAllocator};
+//! use kornia_tensor::{Tensor2, Cpu};
 //!
 //! // Create a 2x3 tensor from a vector
 //! let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-//! let tensor = Tensor::<f32, 2, _>::from_shape_vec([2, 3], data, CpuAllocator).unwrap();
+//! let tensor = Tensor2::<f32, Cpu>::from_shape_vec([2, 3], data).unwrap();
 //!
 //! // Access elements
 //! assert_eq!(tensor.get([0, 0]), Some(&1.0));
@@ -47,28 +47,28 @@
 //! Using tensor operations:
 //!
 //! ```rust
-//! use kornia_tensor::{Tensor, CpuAllocator};
+//! use kornia_tensor::{Tensor2, Cpu};
 //!
 //! // Create tensors with specific values
-//! let zeros = Tensor::<f32, 2, _>::zeros([3, 3], CpuAllocator);
-//! let ones = Tensor::<f32, 2, _>::from_shape_val([3, 3], 1.0, CpuAllocator);
+//! let zeros = Tensor2::<f32, Cpu>::zeros([3, 3]).unwrap();
+//! let ones = Tensor2::<f32, Cpu>::from_shape_val([3, 3], 1.0).unwrap();
 //!
 //! // Generate data with a function
-//! let identity = Tensor::<f32, 2, _>::from_shape_fn([3, 3], CpuAllocator, |[i, j]| {
+//! let identity = Tensor2::<f32, Cpu>::from_shape_fn([3, 3], |[i, j]| {
 //!     if i == j { 1.0 } else { 0.0 }
-//! });
+//! }).unwrap();
 //!
 //! // Apply element-wise operations
-//! let result = ones.map(|x| x * 2.0);
+//! let result = ones.map(|x| *x * 2.0).unwrap();
 //! ```
 //!
 //! Working with views:
 //!
 //! ```rust
-//! use kornia_tensor::{Tensor, CpuAllocator};
+//! use kornia_tensor::{Tensor1, Cpu};
 //!
 //! let data = vec![1, 2, 3, 4, 5, 6];
-//! let tensor = Tensor::<i32, 1, _>::from_shape_vec([6], data, CpuAllocator).unwrap();
+//! let tensor = Tensor1::<i32, Cpu>::from_shape_vec([6], data).unwrap();
 //!
 //! // Create a reshaped view without copying data
 //! let view = tensor.reshape([2, 3]).unwrap();
@@ -92,9 +92,6 @@
 /// This module provides the [`TensorAllocator`] trait and implementations for different
 /// memory backends. The default [`CpuAllocator`] uses the system allocator for CPU memory.
 pub mod allocator;
-
-/// backend module containing device operation abstractions.
-pub mod backend;
 
 /// Bincode module for binary serialization and deserialization.
 ///
@@ -133,16 +130,14 @@ pub mod tensor;
 /// into existing tensor data.
 pub mod view;
 
-pub use crate::allocator::{CpuAllocator, TensorAllocator};
+pub use crate::allocator::{CpuAllocator, TensorAllocator, BufferOps};
 #[cfg(feature = "cuda")]
 pub use crate::allocator::CudaAllocator;
-pub use crate::backend::{Backend, CpuBackend};
-#[cfg(feature = "cuda")]
-pub use crate::backend::CudaBackend;
 pub use crate::device::Device;
-pub use crate::device_marker::{Cpu, DeviceMarker};
+pub use crate::device_marker::{Cpu, CpuDevice, DeviceMarker};
 #[cfg(feature = "cuda")]
 pub use crate::device_marker::Cuda;
+pub use crate::storage::ExtensionBuffer;
 pub(crate) use crate::tensor::get_strides_from_shape;
 pub use crate::tensor::{Tensor, TensorError};
 

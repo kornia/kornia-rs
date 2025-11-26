@@ -68,6 +68,9 @@ pub struct TensorView<'a, T, const N: usize, D: DeviceMarker> {
 impl<T, const N: usize, D: DeviceMarker> TensorView<'_, T, N, D> {
     /// Returns a slice view of the underlying storage.
     ///
+    /// This provides safe, immutable access to the view's underlying data.
+    /// This method is only available for CPU devices, ensuring compile-time type safety.
+    ///
     /// Note: This returns the entire underlying storage slice, not just the elements
     /// visible through this view's shape and strides. For element-wise access respecting
     /// the view's layout, use [`get_unchecked`](Self::get_unchecked).
@@ -76,7 +79,10 @@ impl<T, const N: usize, D: DeviceMarker> TensorView<'_, T, N, D> {
     ///
     /// A slice containing all elements in the underlying storage.
     #[inline]
-    pub fn as_slice(&self) -> &[T] {
+    pub fn as_slice(&self) -> &[T]
+    where
+        D: crate::device_marker::CpuDevice,
+    {
         self.storage.as_slice()
     }
 
@@ -123,17 +129,20 @@ impl<T, const N: usize, D: DeviceMarker> TensorView<'_, T, N, D> {
     /// # Examples
     ///
     /// ```rust
-    /// use kornia_tensor::{Tensor, CpuAllocator};
+    /// use kornia_tensor::{Tensor1, Cpu};
     ///
     /// let data = vec![1, 2, 3, 4, 5, 6];
-    /// let tensor = Tensor::<i32, 1, _>::from_shape_vec([6], data, CpuAllocator).unwrap();
+    /// let tensor = Tensor1::<i32, Cpu>::from_shape_vec([6], data).unwrap();
     /// let view = tensor.reshape([2, 3]).unwrap();
     ///
     /// assert_eq!(*view.get_unchecked([0, 0]), 1);
     /// assert_eq!(*view.get_unchecked([0, 1]), 2);
     /// assert_eq!(*view.get_unchecked([1, 2]), 6);
     /// ```
-    pub fn get_unchecked(&self, index: [usize; N]) -> &T {
+    pub fn get_unchecked(&self, index: [usize; N]) -> &T
+    where
+        D: crate::device_marker::CpuDevice,
+    {
         let offset = index
             .iter()
             .zip(self.strides.iter())
@@ -156,6 +165,7 @@ impl<T, const N: usize, D: DeviceMarker> TensorView<'_, T, N, D> {
     /// Returns an error if memory allocation fails.
     pub fn as_contiguous(&self) -> Result<Tensor<T, N, Cpu>, crate::TensorError>
     where
+        D: crate::device_marker::CpuDevice,
         T: Clone,
     {
         let mut data = Vec::<T>::with_capacity(self.numel());
