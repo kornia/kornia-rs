@@ -199,6 +199,13 @@ impl std::ops::Mul<SO3> for SO3 {
     }
 }
 
+impl std::ops::MulAssign<SO3> for SO3 {
+    #[inline]
+    fn mul_assign(&mut self, rhs: SO3) {
+        *self = *self * rhs;
+    }
+}
+
 impl std::ops::Mul<Vec3AF32> for SO3 {
     type Output = Vec3AF32;
 
@@ -443,6 +450,27 @@ mod tests {
         assert_relative_eq!(identity_result.q.y, s1.q.y, epsilon = 1e-5);
         assert_relative_eq!(identity_result.q.z, s1.q.z, epsilon = 1e-5);
         assert_relative_eq!(identity_result.q.w.abs(), s1.q.w.abs(), epsilon = 1e-5);
+    }
+
+    #[test]
+    fn test_mul_assign() {
+        let mut s = SO3::IDENTITY;
+        let s2 = SO3::from_random();
+        s *= s2;
+        assert_relative_eq!(s.q.x, s2.q.x, epsilon = EPSILON);
+        assert_relative_eq!(s.q.y, s2.q.y, epsilon = EPSILON);
+        assert_relative_eq!(s.q.z, s2.q.z, epsilon = EPSILON);
+        assert_relative_eq!(s.q.w, s2.q.w, epsilon = EPSILON);
+
+        let mut s3 = SO3::from_random();
+        let original_s3 = s3;
+        let s4 = SO3::from_random();
+        s3 *= s4;
+        let expected = original_s3 * s4;
+        assert_relative_eq!(s3.q.x, expected.q.x, epsilon = EPSILON);
+        assert_relative_eq!(s3.q.y, expected.q.y, epsilon = EPSILON);
+        assert_relative_eq!(s3.q.z, expected.q.z, epsilon = EPSILON);
+        assert_relative_eq!(s3.q.w, expected.q.w, epsilon = EPSILON);
     }
 
     #[test]

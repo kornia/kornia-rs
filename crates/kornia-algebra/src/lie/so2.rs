@@ -134,6 +134,13 @@ impl std::ops::Mul<SO2> for SO2 {
     }
 }
 
+impl std::ops::MulAssign<SO2> for SO2 {
+    #[inline]
+    fn mul_assign(&mut self, rhs: SO2) {
+        *self = *self * rhs;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,6 +348,23 @@ mod tests {
         let s2_pose_s2_inv = s2 * s2.inverse();
         assert_relative_eq!(s2_pose_s2_inv.z.x, s1.z.x, epsilon = EPSILON);
         assert_relative_eq!(s2_pose_s2_inv.z.y, s1.z.y, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_mul_assign() {
+        let mut s = SO2::IDENTITY;
+        let s2 = SO2::exp(0.5);
+        s *= s2;
+        assert_relative_eq!(s.z.x, s2.z.x);
+        assert_relative_eq!(s.z.y, s2.z.y);
+
+        let mut s3 = SO2::exp(0.3);
+        let original_s3 = s3;
+        let s4 = SO2::exp(0.2);
+        s3 *= s4;
+        let expected = original_s3 * s4;
+        assert_relative_eq!(s3.z.x, expected.z.x);
+        assert_relative_eq!(s3.z.y, expected.z.y);
     }
 
     #[test]

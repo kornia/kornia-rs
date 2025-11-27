@@ -151,6 +151,34 @@ macro_rules! define_vector_type {
                 Self::from(-a)
             }
         }
+
+        impl std::ops::AddAssign for $name {
+            #[inline]
+            fn add_assign(&mut self, rhs: Self) {
+                *self = *self + rhs;
+            }
+        }
+
+        impl std::ops::SubAssign for $name {
+            #[inline]
+            fn sub_assign(&mut self, rhs: Self) {
+                *self = *self - rhs;
+            }
+        }
+
+        impl std::ops::MulAssign<$scalar> for $name {
+            #[inline]
+            fn mul_assign(&mut self, rhs: $scalar) {
+                *self = *self * rhs;
+            }
+        }
+
+        impl std::ops::DivAssign<$scalar> for $name {
+            #[inline]
+            fn div_assign(&mut self, rhs: $scalar) {
+                *self = *self / rhs;
+            }
+        }
     };
 }
 
@@ -337,5 +365,21 @@ mod tests {
         let glam_v: glam::DVec4 = v.into();
         let back: Vec4F64 = glam_v.into();
         assert_eq!(v, back);
+    }
+
+    #[test]
+    fn test_vec2f32_assign_ops() {
+        let mut v = Vec2F32::new(1.0, 2.0);
+        v += Vec2F32::new(3.0, 4.0);
+        assert_eq!(v, Vec2F32::new(4.0, 6.0));
+
+        v -= Vec2F32::new(1.0, 1.0);
+        assert_eq!(v, Vec2F32::new(3.0, 5.0));
+
+        v *= 2.0;
+        assert_eq!(v, Vec2F32::new(6.0, 10.0));
+
+        v /= 2.0;
+        assert_eq!(v, Vec2F32::new(3.0, 5.0));
     }
 }

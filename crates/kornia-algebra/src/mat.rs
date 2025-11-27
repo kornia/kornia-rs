@@ -183,6 +183,38 @@ macro_rules! define_matrix_type {
                 $name::from(self * rhs.0)
             }
         }
+
+        // Matrix addition assignment
+        impl std::ops::AddAssign<$name> for $name {
+            #[inline]
+            fn add_assign(&mut self, rhs: $name) {
+                self.0 += rhs.0;
+            }
+        }
+
+        // Matrix subtraction assignment
+        impl std::ops::SubAssign<$name> for $name {
+            #[inline]
+            fn sub_assign(&mut self, rhs: $name) {
+                self.0 -= rhs.0;
+            }
+        }
+
+        // Matrix multiplication assignment
+        impl std::ops::MulAssign<$name> for $name {
+            #[inline]
+            fn mul_assign(&mut self, rhs: $name) {
+                self.0 *= rhs.0;
+            }
+        }
+
+        // Scalar multiplication assignment
+        impl std::ops::MulAssign<$scalar> for $name {
+            #[inline]
+            fn mul_assign(&mut self, rhs: $scalar) {
+                self.0 *= rhs;
+            }
+        }
     };
 }
 
@@ -832,5 +864,22 @@ mod tests {
         let v = Vec4F64::new(1.0, 2.0, 3.0, 4.0);
         let result = m * v;
         assert_eq!(result, v);
+    }
+
+    #[test]
+    fn test_mat2f32_assign_ops() {
+        let mut m = Mat2F32::IDENTITY;
+        m += Mat2F32::IDENTITY;
+        assert_eq!(m.x_axis, glam::Vec2::new(2.0, 0.0));
+
+        m -= Mat2F32::IDENTITY;
+        assert_eq!(m, Mat2F32::IDENTITY);
+
+        m *= 2.0;
+        assert_eq!(m.x_axis, glam::Vec2::new(2.0, 0.0));
+
+        let mut m2 = Mat2F32::IDENTITY;
+        m2 *= Mat2F32::IDENTITY;
+        assert_eq!(m2, Mat2F32::IDENTITY);
     }
 }

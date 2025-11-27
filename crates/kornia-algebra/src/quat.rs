@@ -101,6 +101,13 @@ macro_rules! define_quat_type {
                 $name::from(self.0 * rhs.0)
             }
         }
+
+        impl std::ops::MulAssign<$name> for $name {
+            #[inline]
+            fn mul_assign(&mut self, rhs: $name) {
+                self.0 *= rhs.0;
+            }
+        }
     };
 }
 
@@ -167,5 +174,13 @@ mod tests {
         let quat = QuatF64::from_xyzw(0.0, 0.0, 0.0, 1.0);
         let array = quat.to_array();
         assert_eq!(array, [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn test_quatf32_mul_assign() {
+        let mut q = QuatF32::IDENTITY;
+        let q2 = QuatF32::from_xyzw(0.0, 0.0, 0.0, 1.0);
+        q *= q2;
+        assert_eq!(q, QuatF32::IDENTITY);
     }
 }

@@ -262,6 +262,13 @@ impl std::ops::Mul<SE2> for SE2 {
     }
 }
 
+impl std::ops::MulAssign<SE2> for SE2 {
+    #[inline]
+    fn mul_assign(&mut self, rhs: SE2) {
+        *self = *self * rhs;
+    }
+}
+
 impl std::ops::Mul<Vec2F32> for SE2 {
     type Output = Vec2F32;
 
@@ -446,6 +453,27 @@ mod tests {
         assert_relative_eq!(composed.r.z.y, expected_r.z.y, epsilon = EPSILON);
         assert_relative_eq!(composed.t.x, expected_t.x, epsilon = EPSILON);
         assert_relative_eq!(composed.t.y, expected_t.y, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_mul_assign() {
+        let mut s = SE2::IDENTITY;
+        let s2 = make_random_se2();
+        s *= s2;
+        assert_relative_eq!(s.r.z.x, s2.r.z.x, epsilon = EPSILON);
+        assert_relative_eq!(s.r.z.y, s2.r.z.y, epsilon = EPSILON);
+        assert_relative_eq!(s.t.x, s2.t.x, epsilon = EPSILON);
+        assert_relative_eq!(s.t.y, s2.t.y, epsilon = EPSILON);
+
+        let mut s3 = make_random_se2();
+        let original_s3 = s3;
+        let s4 = make_random_se2();
+        s3 *= s4;
+        let expected = original_s3 * s4;
+        assert_relative_eq!(s3.r.z.x, expected.r.z.x, epsilon = EPSILON);
+        assert_relative_eq!(s3.r.z.y, expected.r.z.y, epsilon = EPSILON);
+        assert_relative_eq!(s3.t.x, expected.t.x, epsilon = EPSILON);
+        assert_relative_eq!(s3.t.y, expected.t.y, epsilon = EPSILON);
     }
 
     #[test]
