@@ -2,13 +2,15 @@
 
 **kornia-algebra** is a core library for geometric algebra in the [kornia-rs](https://github.com/kornia/kornia-rs) ecosystem. It provides a robust set of types for linear algebra and Lie theory, designed specifically for computer vision and robotics.
 
-It is built on top of the excellent [glam](https://github.com/bitshifter/glam-rs) crate, providing strict newtypes and extending functionality for the aglebra types.
+It is built on top of the excellent [glam](https://github.com/bitshifter/glam-rs) crate, providing strict newtypes and extending functionality for the algebra types.
 
-Most operations are accelerated using SIMD instructions thanks to `glam`'s optimized implementation.
+Most operations are SIMD accelerated thanks to `glam`.
 
 ## Features
 
-- **Strict Type Definitions**: Newtype wrappers around `glam` types (`Vec3`, `Mat3`, `Quat`, etc.) to ensure API stability and allow for extension traits.
+- **Vectors**: `Vec2`, `Vec3`, `Vec3A`, `Vec4` (and `F32`/`F64` variants) with arithmetic operations, dot products, and length calculations.
+- **Matrices**: `Mat2`, `Mat3`, `Mat3A`, `Mat4` (and `F32`/`F64` variants) with matrix multiplication, transpose, inverse, and diagonal construction.
+- **Quaternions**: `Quat` (and `QuatF32`/`QuatF64` variants) for 3D rotations with quaternion multiplication.
 - **Lie Groups**: Comprehensive implementations of common Lie groups used in robotics and vision:
   - **SO(2)**: 2D Rotations.
   - **SE(2)**: 2D Rigid Body Transformations (Rotation + Translation).
@@ -45,53 +47,55 @@ assert_eq!(v_transformed, v);
 ### 3D Rotations (SO3)
 
 ```rust
-use kornia_algebra::{SO3, Vec3};
+use kornia_algebra::{SO3, Vec3A};
 
 // Create a rotation of 90 degrees around X axis
-let rotation = SO3::exp(Vec3::new(std::f32::consts::FRAC_PI_2, 0.0, 0.0));
+let rotation = SO3::exp(Vec3A::new(std::f32::consts::FRAC_PI_2, 0.0, 0.0));
 
-let point = Vec3::new(0.0, 1.0, 0.0);
+let point = Vec3A::new(0.0, 1.0, 0.0);
 let rotated_point = rotation * point;
 
 // (0, 1, 0) rotated 90 deg around X becomes (0, 0, 1)
-assert!((rotated_point - Vec3::new(0.0, 0.0, 1.0)).length() < 1e-6);
+assert!((rotated_point - Vec3A::new(0.0, 0.0, 1.0)).length() < 1e-6);
 ```
 
 ### Rigid Body Transformations (SE3)
 
 ```rust
-use kornia_algebra::{SE3, SO3, Vec3};
+use kornia_algebra::{SE3, SO3, Vec3A};
 
 // Rotation + Translation
 let rotation = SO3::IDENTITY;
-let translation = Vec3::new(1.0, 0.0, 0.0);
+let translation = Vec3A::new(1.0, 0.0, 0.0);
 let pose = SE3::new(rotation, translation);
 
-let point = Vec3::new(0.0, 0.0, 0.0);
+let point = Vec3A::new(0.0, 0.0, 0.0);
 let transformed = pose * point;
 
-assert_eq!(transformed, Vec3::new(1.0, 0.0, 0.0));
+assert_eq!(transformed, Vec3A::new(1.0, 0.0, 0.0));
 ```
 
 ### Lie Algebra Interpolation
 
 ```rust
-use kornia_algebra::{SE3, Vec3};
+use kornia_algebra::{SE3, Vec3A};
 
 let start = SE3::IDENTITY;
 // Move 1 meter in X and rotate 90 degrees around Z
-let end = SE3::exp(Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 0.0, std::f32::consts::FRAC_PI_2));
+let translation = Vec3A::new(1.0, 0.0, 0.0);
+let rotation = Vec3A::new(0.0, 0.0, std::f32::consts::FRAC_PI_2);
+let end = SE3::exp(translation, rotation);
 
 // Interpolate halfway
 let t = 0.5;
-let delta_log = start.rminus(&end); // Logarithmic difference
-let interpolated = start.rplus(delta_log * t);
+let (delta_trans, delta_rot) = start.rminus(&end); // Logarithmic difference
+let interpolated = start.rplus(delta_trans * t, delta_rot * t);
 ```
 
 ### 2D Rigid Body Transformations (SE2)
 
 ```rust
-use kornia_algebra::{SE2, SO2, Vec2, Vec3};
+use kornia_algebra::{SE2, SO2, Vec2};
 
 // Create from angle (radians) and translation
 let rotation = SO2::exp(std::f32::consts::FRAC_PI_2); // 90 deg
@@ -109,24 +113,26 @@ assert!((transformed - Vec2::new(10.0, 1.0)).length() < 1e-6);
 ### Optimization Tools (Jacobians)
 
 ```rust
-use kornia_algebra::{SE3, Vec3};
+use kornia_algebra::{SE3, Vec3A};
 
 let pose = SE3::from_random();
-let point = Vec3::new(1.0, 0.0, 0.0);
+let point = Vec3A::new(1.0, 0.0, 0.0);
 
 // Compute Jacobians for optimization
 // Right Jacobian maps tangent space variations to group variations
-let twist = Vec3::new(0.1, 0.0, 0.0); // Small translation in x
-// ...
+let translation_twist = Vec3A::new(0.1, 0.0, 0.0); // Small translation in x
+let rotation_twist = Vec3A::new(0.0, 0.0, 0.0);
+let jacobian = SE3::right_jacobian(translation_twist, rotation_twist);
+// Use jacobian in optimization algorithms...
 ```
 
 ### Data Conversions
 
 ```rust
-use kornia_algebra::{SE3, SO3, Vec3};
+use kornia_algebra::{SE3, SO3, Vec3A};
 
-// Create from array
-let pose_arr = [0.0, 0.0, 0.0, 1.0, 10.0, 20.0, 30.0]; // qx, qy, qz, qw, tx, ty, tz
+// Create from array [qx, qy, qz, qw, tx, ty, tz]
+let pose_arr = [0.0, 0.0, 0.0, 1.0, 10.0, 20.0, 30.0];
 let pose = SE3::from_array(pose_arr);
 
 // Convert back to array
