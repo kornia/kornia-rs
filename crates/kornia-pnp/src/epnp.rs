@@ -188,7 +188,7 @@ fn pose_from_betas(
     let a0 = alphas[0];
     let mut pc0_vec = Vec3::ZERO;
     for j in 0..4 {
-        pc0_vec = pc0_vec + Vec3::from_array(cc[j]) * a0[j];
+        pc0_vec += Vec3::from_array(cc[j]) * a0[j];
     }
 
     if pc0_vec.z < 0.0 {
@@ -285,7 +285,7 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
         let diff = Vec3::new(p[0] - c[0], p[1] - c[1], p[2] - c[2]);
         // Outer product diff * diffᵀ via column scaling
         let outer_product = Mat3::from_cols(diff * diff.x, diff * diff.y, diff * diff.z);
-        cov_mat = cov_mat + outer_product;
+        cov_mat += outer_product;
     }
     cov_mat *= 1.0 / n as f32;
 
