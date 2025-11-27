@@ -76,6 +76,12 @@ macro_rules! define_matrix_type {
             pub fn is_finite(self) -> bool {
                 self.0.is_finite()
             }
+
+            /// Create a diagonal matrix from a vector.
+            #[inline]
+            pub fn from_diagonal(diagonal: $vec_type) -> Self {
+                Self(<$glam_type>::from_diagonal(<$glam_vec>::from(diagonal).into()))
+            }
         }
 
         impl std::ops::Deref for $name {
@@ -881,5 +887,14 @@ mod tests {
         let mut m2 = Mat2F32::IDENTITY;
         m2 *= Mat2F32::IDENTITY;
         assert_eq!(m2, Mat2F32::IDENTITY);
+    }
+
+    #[test]
+    fn test_mat3f32_from_diagonal() {
+        let diag = Vec3F32::new(1.0, 2.0, 3.0);
+        let m = Mat3F32::from_diagonal(diag);
+        assert_eq!(m.x_axis, glam::Vec3::new(1.0, 0.0, 0.0));
+        assert_eq!(m.y_axis, glam::Vec3::new(0.0, 2.0, 0.0));
+        assert_eq!(m.z_axis, glam::Vec3::new(0.0, 0.0, 3.0));
     }
 }

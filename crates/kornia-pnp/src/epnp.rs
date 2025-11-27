@@ -287,7 +287,7 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
         let outer_product = Mat3::from_cols(diff * diff.x, diff * diff.y, diff * diff.z);
         cov_mat = cov_mat + outer_product;
     }
-    cov_mat = cov_mat * (1.0 / n as f32);
+    cov_mat *= 1.0 / n as f32;
 
     let svd = svd3(&cov_mat);
     let v = svd.v();
@@ -362,7 +362,7 @@ fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) 
                 0.0
             },
         );
-        let sigma_inv = Mat3::from(glam::Mat3::from_diagonal(inv_diag.into()));
+        let sigma_inv = Mat3::from_diagonal(inv_diag);
         v_mat * sigma_inv * u.transpose()
     };
 
