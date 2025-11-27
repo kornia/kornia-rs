@@ -51,18 +51,9 @@ impl From<ImageSize> for [u32; 2] {
     }
 }
 
-/// Ordering of color channels in image data.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ChannelsOrder {
-    /// Channels are stored in the last dimension (HWC format).
-    ChannelsLast,
-    /// Channels are stored in the first dimension (CHW format).
-    ChannelsFirst,
-}
-
 /// Pixel data type format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ImagePixelFormat {
+pub enum PixelFormat {
     /// Unsigned 8-bit samples (0-255).
     U8,
     /// Unsigned 16-bit samples (0-65535).
@@ -72,46 +63,31 @@ pub enum ImagePixelFormat {
 }
 
 /// Created a struct with enum fields to store common metadata, read_image and functions like
-/// decode_image_jpeg_info also uses ImageLayout instead of storing separate fields.
+/// decode_image_jpeg_layout also uses ImageLayout instead of storing separate fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImageLayout {
     /// Spatial size of the image (width and height).
     pub image_size: ImageSize,
     /// Number of color channels.
     pub channels: u8,
-    /// Ordering of channels in memory.
-    pub channels_order: ChannelsOrder,
     /// Scalar data type for pixel values.
-    pub pixel_format: ImagePixelFormat,
+    pub pixel_format: PixelFormat,
 }
 
 impl ImageLayout {
     /// Creates a new `ImageLayout` with the given size, channel count, and pixel format.
-    ///
-    /// Defaults to `ChannelsOrder::ChannelsLast` for channel ordering.
     ///
     /// # Arguments
     ///
     /// * `image_size` - The width and height of the image
     /// * `channels` - Number of color channels
     /// * `pixel_format` - The data type for pixel values
-    pub fn new(image_size: ImageSize, channels: u8, pixel_format: ImagePixelFormat) -> Self {
+    pub fn new(image_size: ImageSize, channels: u8, pixel_format: PixelFormat) -> Self {
         Self {
             image_size,
             channels,
-            channels_order: ChannelsOrder::ChannelsLast,
             pixel_format,
         }
-    }
-
-    /// Sets the channel ordering for this layout.
-    ///
-    /// # Arguments
-    ///
-    /// * `channels_order` - The desired channel ordering
-    pub fn with_channels_order(mut self, channels_order: ChannelsOrder) -> Self {
-        self.channels_order = channels_order;
-        self
     }
 }
 
@@ -643,7 +619,7 @@ impl<T, const C: usize, A: ImageAllocator> TryInto<Tensor3<T, A>> for Image<T, C
 
 #[cfg(test)]
 mod tests {
-    use crate::image::{ChannelsOrder, Image, ImageError, ImageLayout, ImagePixelFormat, ImageSize};
+    use crate::image::{Image, ImageError, ImageLayout, PixelFormat, ImageSize};
     use kornia_tensor::{CpuAllocator, Tensor};
 
     #[test]
@@ -663,13 +639,12 @@ mod tests {
             height: 195,
         };
 
-        let layout = ImageLayout::new(size, 3, ImagePixelFormat::U8);
+        let layout = ImageLayout::new(size, 3, PixelFormat::U8);
 
         assert_eq!(layout.image_size.width, 258);
         assert_eq!(layout.image_size.height, 195);
         assert_eq!(layout.channels, 3);
-        assert_eq!(layout.pixel_format, ImagePixelFormat::U8);
-        assert_eq!(layout.channels_order, ChannelsOrder::ChannelsLast);
+        assert_eq!(layout.pixel_format, PixelFormat::U8);
     }
 
     #[test]
@@ -679,29 +654,17 @@ mod tests {
             height: 100,
         };
 
-        let layout_u8 = ImageLayout::new(size, 1, ImagePixelFormat::U8);
-        assert_eq!(layout_u8.pixel_format, ImagePixelFormat::U8);
+        let layout_u8 = ImageLayout::new(size, 1, PixelFormat::U8);
+        assert_eq!(layout_u8.pixel_format, PixelFormat::U8);
 
-        let layout_u16 = ImageLayout::new(size, 1, ImagePixelFormat::U16);
-        assert_eq!(layout_u16.pixel_format, ImagePixelFormat::U16);
+        let layout_u16 = ImageLayout::new(size, 1, PixelFormat::U16);
+        assert_eq!(layout_u16.pixel_format, PixelFormat::U16);
 
-        let layout_f32 = ImageLayout::new(size, 4, ImagePixelFormat::F32);
-        assert_eq!(layout_f32.pixel_format, ImagePixelFormat::F32);
+        let layout_f32 = ImageLayout::new(size, 4, PixelFormat::F32);
+        assert_eq!(layout_f32.pixel_format, PixelFormat::F32);
         assert_eq!(layout_f32.channels, 4);
     }
 
-    #[test]
-    fn test_image_layout_channels_order() {
-        let size = ImageSize {
-            width: 100,
-            height: 100,
-        };
-
-        let layout = ImageLayout::new(size, 3, ImagePixelFormat::U8)
-            .with_channels_order(ChannelsOrder::ChannelsFirst);
-
-        assert_eq!(layout.channels_order, ChannelsOrder::ChannelsFirst);
-    }
 
     #[test]
     fn test_image_smoke() -> Result<(), ImageError> {

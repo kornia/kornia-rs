@@ -86,7 +86,6 @@ def test_decode_image_jpeg_info():
     assert layout.image_size.width == 258
     assert layout.image_size.height == 195
     assert layout.channels == 3
-    assert layout.channels_order == "channels_last"
     assert layout.pixel_format == "u8"
 
 

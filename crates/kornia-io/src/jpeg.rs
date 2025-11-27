@@ -3,7 +3,7 @@ use jpeg_encoder::{ColorType, Encoder};
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     color_spaces::{Gray8, Rgb8},
-    Image, ImageLayout, ImagePixelFormat, ImageSize,
+    Image, ImageLayout, PixelFormat, ImageSize,
 };
 use std::{fs, path::Path};
 
@@ -186,7 +186,7 @@ fn decode_jpeg_impl<const C: usize, A: ImageAllocator>(
 /// # Returns
 ///
 /// An `ImageLayout` containing the image metadata (size, channels, pixel format).
-pub fn decode_image_jpeg_info(src: &[u8]) -> Result<ImageLayout, IoError> {
+pub fn decode_image_jpeg_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
     let mut decoder = zune_jpeg::JpegDecoder::new(src);
     decoder.decode_headers()?;
 
@@ -202,8 +202,18 @@ pub fn decode_image_jpeg_info(src: &[u8]) -> Result<ImageLayout, IoError> {
             height: image_info.height as usize,
         },
         image_info.components as u8,
-        ImagePixelFormat::U8,
+        PixelFormat::U8,
     ))
+}
+
+/// Decodes JPEG image metadata from raw bytes without decoding pixel data.
+///
+/// # Deprecated
+///
+/// Use [`decode_image_jpeg_layout`] instead.
+#[deprecated(note = "Use decode_image_jpeg_layout instead")]
+pub fn decode_image_jpeg_info(src: &[u8]) -> Result<ImageLayout, IoError> {
+    decode_image_jpeg_layout(src)
 }
 
 #[cfg(test)]
@@ -254,7 +264,7 @@ mod tests {
     #[test]
     fn decode_jpeg_size() -> Result<(), IoError> {
         let bytes = read("../../tests/data/dog.jpeg")?;
-        let layout = decode_image_jpeg_info(bytes.as_slice())?;
+        let layout = decode_image_jpeg_layout(bytes.as_slice())?;
         assert_eq!(layout.image_size.width, 258);
         assert_eq!(layout.image_size.height, 195);
         assert_eq!(layout.channels, 3);

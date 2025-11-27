@@ -5,10 +5,15 @@ use crate::{
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     color_spaces::{Gray16, Gray8, Rgb16, Rgb8, Rgba16, Rgba8},
-    Image, ImageLayout, ImagePixelFormat, ImageSize,
+    Image, ImageLayout, PixelFormat, ImageSize,
 };
 use png::{BitDepth, ColorType, Decoder, Encoder};
-use std::{fs, fs::File, path::Path};
+use std::{
+    fs,
+    fs::File,
+    io::{BufReader, Cursor},
+    path::Path,
+};
 
 /// Read a PNG image as grayscale (Gray8).
 ///
@@ -199,8 +204,9 @@ pub fn decode_image_png_rgba16<A: ImageAllocator>(
 /// # Returns
 ///
 /// An `ImageLayout` containing the image metadata (size, channels, pixel format).
-pub fn decode_image_png_info(src: &[u8]) -> Result<ImageLayout, IoError> {
-    let decoder = Decoder::new(src);
+pub fn decode_image_png_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
+    let cursor = Cursor::new(src);
+    let decoder = Decoder::new(cursor);
     let reader = decoder
         .read_info()
         .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
@@ -220,8 +226,8 @@ pub fn decode_image_png_info(src: &[u8]) -> Result<ImageLayout, IoError> {
     };
 
     let pixel_format = match info.bit_depth {
-        BitDepth::Eight => ImagePixelFormat::U8,
-        BitDepth::Sixteen => ImagePixelFormat::U16,
+        BitDepth::Eight => PixelFormat::U8,
+        BitDepth::Sixteen => PixelFormat::U16,
         other => {
             return Err(IoError::PngDecodeError(format!(
                 "Unsupported bit depth: {:?}",
@@ -231,6 +237,16 @@ pub fn decode_image_png_info(src: &[u8]) -> Result<ImageLayout, IoError> {
     };
 
     Ok(ImageLayout::new(size, channels, pixel_format))
+}
+
+/// Decodes PNG image metadata from raw bytes without decoding pixel data.
+///
+/// # Deprecated
+///
+/// Use [`decode_image_png_layout`] instead.
+#[deprecated(note = "Use decode_image_png_layout instead")]
+pub fn decode_image_png_info(src: &[u8]) -> Result<ImageLayout, IoError> {
+    decode_image_png_layout(src)
 }
 
 // utility function to read the png file
@@ -251,11 +267,15 @@ fn read_png_impl(file_path: impl AsRef<Path>) -> Result<(Vec<u8>, [usize; 2]), I
     }
 
     let file = fs::File::open(file_path)?;
-    let mut reader = Decoder::new(file)
+    let reader = BufReader::new(file);
+    let mut reader = Decoder::new(reader)
         .read_info()
         .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
 
-    let mut buf = vec![0; reader.output_buffer_size()];
+    let buffer_size = reader
+        .output_buffer_size()
+        .ok_or_else(|| IoError::PngDecodeError("PNG output buffer size overflowed".into()))?;
+    let mut buf = vec![0; buffer_size];
     let info = reader
         .next_frame(&mut buf)
         .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
@@ -269,7 +289,8 @@ fn decode_png_impl<const C: usize>(
     dst: &mut [u8],
     image_size: ImageSize,
 ) -> Result<(), IoError> {
-    let mut reader = Decoder::new(src)
+    let cursor = Cursor::new(src);
+    let mut reader = Decoder::new(cursor)
         .read_info()
         .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
 
@@ -283,10 +304,14 @@ fn decode_png_impl<const C: usize>(
         ));
     }
 
-    if dst.len() < reader.output_buffer_size() {
+    let buffer_size = reader
+        .output_buffer_size()
+        .ok_or_else(|| IoError::PngDecodeError("PNG output buffer size overflowed".into()))?;
+
+    if dst.len() < buffer_size {
         return Err(IoError::InvalidBufferSize(
             dst.len(),
-            reader.output_buffer_size(),
+            buffer_size,
         ));
     }
 

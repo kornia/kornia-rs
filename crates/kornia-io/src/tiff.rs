@@ -2,9 +2,9 @@ use crate::error::IoError;
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     color_spaces::{Gray16, Gray8, Grayf32, Rgb16, Rgb8, Rgbf32},
-    Image, ImageLayout, ImagePixelFormat, ImageSize,
+    Image, ImageLayout, PixelFormat, ImageSize,
 };
-use std::{fs, path::Path};
+use std::{fs, io::Cursor, path::Path};
 use tiff::{
     decoder::DecodingResult,
     encoder::{colortype, TiffEncoder},
@@ -206,16 +206,16 @@ fn extract_channels_from_tiff_colortype(colortype: &tiff::ColorType) -> Option<u
     }
 }
 
-fn pixel_format_from_bits(bits: u8) -> Option<ImagePixelFormat> {
+fn pixel_format_from_bits(bits: u8) -> Option<PixelFormat> {
     match bits {
-        8 => Some(ImagePixelFormat::U8),
-        16 => Some(ImagePixelFormat::U16),
-        32 => Some(ImagePixelFormat::F32),
+        8 => Some(PixelFormat::U8),
+        16 => Some(PixelFormat::U16),
+        32 => Some(PixelFormat::F32),
         _ => None,
     }
 }
 
-fn pixel_format_from_tiff_colortype(colortype: &tiff::ColorType) -> Option<ImagePixelFormat> {
+fn pixel_format_from_tiff_colortype(colortype: &tiff::ColorType) -> Option<PixelFormat> {
     match colortype {
         tiff::ColorType::Gray(bits)
         | tiff::ColorType::RGB(bits)
@@ -235,8 +235,7 @@ fn pixel_format_from_tiff_colortype(colortype: &tiff::ColorType) -> Option<Image
 /// # Returns
 ///
 /// An `ImageLayout` containing the image metadata (size, channels, pixel format).
-pub fn decode_image_tiff_info(src: &[u8]) -> Result<ImageLayout, IoError> {
-    use std::io::Cursor;
+pub fn decode_image_tiff_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
     let cursor = Cursor::new(src);
     let mut decoder = tiff::decoder::Decoder::new(cursor)?;
 
@@ -261,6 +260,17 @@ pub fn decode_image_tiff_info(src: &[u8]) -> Result<ImageLayout, IoError> {
 
     Ok(ImageLayout::new(size, num_channels, pixel_format))
 }
+
+/// Decodes TIFF image metadata from raw bytes without decoding pixel data.
+///
+/// # Deprecated
+///
+/// Use [`decode_image_tiff_layout`] instead.
+#[deprecated(note = "Use decode_image_tiff_layout instead")]
+pub fn decode_image_tiff_info(src: &[u8]) -> Result<ImageLayout, IoError> {
+    decode_image_tiff_layout(src)
+}
+
 /// Reads TIFF image with decoded data and metadata.
 pub fn read_image_tiff_with_metadata(
     file_path: impl AsRef<Path>,
@@ -293,9 +303,9 @@ pub fn read_image_tiff_with_metadata(
     let result = decoder.read_image()?;
 
     let pixel_format = match &result {
-        DecodingResult::U8(_) => ImagePixelFormat::U8,
-        DecodingResult::U16(_) => ImagePixelFormat::U16,
-        DecodingResult::F32(_) => ImagePixelFormat::F32,
+        DecodingResult::U8(_) => PixelFormat::U8,
+        DecodingResult::U16(_) => PixelFormat::U16,
+        DecodingResult::F32(_) => PixelFormat::F32,
         _ => {
             return Err(IoError::TiffDecodingError(
                 tiff::TiffError::UnsupportedError(
