@@ -261,16 +261,6 @@ pub fn decode_image_tiff_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
     Ok(ImageLayout::new(size, num_channels, pixel_format))
 }
 
-/// Decodes TIFF image metadata from raw bytes without decoding pixel data.
-///
-/// # Deprecated
-///
-/// Use [`decode_image_tiff_layout`] instead.
-#[deprecated(note = "Use decode_image_tiff_layout instead")]
-pub fn decode_image_tiff_info(src: &[u8]) -> Result<ImageLayout, IoError> {
-    decode_image_tiff_layout(src)
-}
-
 /// Reads TIFF image with decoded data and metadata.
 pub fn read_image_tiff_with_metadata(
     file_path: impl AsRef<Path>,
