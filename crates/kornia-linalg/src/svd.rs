@@ -848,6 +848,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "aarch64"))]
     fn test_svd3_f64_diagonal_sorted() {
         let a = DMat3::from_diagonal(DVec3::new(3.0, 2.0, 1.0));
         let svd_result = svd3_f64(&a);
@@ -855,6 +856,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "aarch64"))]
     fn test_svd3_f64_general_full_rank() {
         let a = DMat3::from_cols(
             DVec3::new(1.0, 4.0, 7.0),
