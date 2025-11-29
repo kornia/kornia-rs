@@ -1,8 +1,14 @@
 use argh::FromArgs;
-use foxglove::{WebSocketServer, schemas::{Timestamp, CompressedImage}};
+use foxglove::{
+    schemas::{CompressedImage, Timestamp},
+    WebSocketServer,
+};
 use kornia_image::ImageSize;
-use kornia_io::v4l::{V4lVideoCapture, V4LCameraConfig, PixelFormat};
-use std::{sync::Arc, sync::atomic::{AtomicBool, Ordering}};
+use kornia_io::v4l::{PixelFormat, V4LCameraConfig, V4lVideoCapture};
+use std::{
+    sync::atomic::{AtomicBool, Ordering},
+    sync::Arc,
+};
 
 #[derive(FromArgs)]
 /// Foxglove demo application
@@ -42,7 +48,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // start the camera capture
     let mut camera = V4lVideoCapture::new(V4LCameraConfig {
         device_path: format!("/dev/video{}", args.camera_id),
-        size: ImageSize { width: 640, height: 480 },
+        size: ImageSize {
+            width: 640,
+            height: 480,
+        },
         fps: args.fps,
         format: pixel_format,
         buffer_size: 4,
@@ -55,12 +64,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // convert the frame to a compressed image
         let compressed_image = CompressedImage {
-            format: pixel_format.as_str().to_lowercase().into(),
+            format: pixel_format.as_str().to_lowercase(),
             data: frame.buffer.into_vec().into(),
-                timestamp: Some(Timestamp::new(frame.timestamp.sec as u32, frame.timestamp.usec as u32)),
-                frame_id: "camera".to_string(),
-            };
-        
+            timestamp: Some(Timestamp::new(
+                frame.timestamp.sec as u32,
+                frame.timestamp.usec as u32,
+            )),
+            frame_id: "camera".to_string(),
+        };
+
         // send the compressed image to the web socket server
         foxglove::log!("/camera/compressed", compressed_image);
     }
