@@ -4,35 +4,45 @@ use faer::prelude::SpSolverLstsq;
 ///
 /// * `x1` - The source points with shape (4, 2).
 /// * `x2` - The destination points with shape (4, 2).
-/// * `affine` - The output 2D affine transformation matrix with shape (3, 3).
+/// * `affine` - The output 2D affine transformation matrix with shape (2, 3).
 ///
 /// # Returns
 ///
 /// The output 2D affine transformation matrix with shape (2, 3).
 pub fn affine_4pt2d(x1: &[[f64; 2]; 4], x2: &[[f64; 2]; 4], affine: &mut [[f64; 3]; 2]) {
-    // construct matrix A
-    let mut mat_a = faer::Mat::<f64>::zeros(8, 6);
-    let mut mat_b = faer::Mat::<f64>::zeros(8, 1);
-
-    for i in 0..4 {
-        let (x1_0, x1_1) = (x1[i][0], x1[i][1]);
-        let (x2_0, x2_1) = (x2[i][0], x2[i][1]);
-        unsafe {
-            mat_a.write_unchecked(2 * i, 0, x1_0);
-            mat_a.write_unchecked(2 * i, 1, x1_1);
-            mat_a.write_unchecked(2 * i, 2, 1.0);
-            mat_a.write_unchecked(2 * i + 1, 3, x1_0);
-            mat_a.write_unchecked(2 * i + 1, 4, x1_1);
-            mat_a.write_unchecked(2 * i + 1, 5, 1.0);
-            mat_b.write_unchecked(2 * i, 0, x2_0);
-            mat_b.write_unchecked(2 * i + 1, 0, x2_1);
+    let mat_a = faer::Mat::from_fn(8, 6, |i, j| {
+        // Even row: [x, y, 1, 0, 0, 0]
+        // Odd row:  [0, 0, 0, x, y, 1]
+        if i % 2 == 0 {
+            match j {
+                0 => x1[i / 2][0],
+                1 => x1[i / 2][1],
+                2 => 1.0,
+                _ => 0.0,
+            }
+        } else {
+            match j {
+                3 => x1[i / 2][0],
+                4 => x1[i / 2][1],
+                5 => 1.0,
+                _ => 0.0,
+            }
         }
-    }
+    });
 
+    let mat_b = faer::Mat::from_fn(8, 1, |i, _| {
+        if i % 2 == 0 {
+            x2[i / 2][0]
+        } else {
+            x2[i / 2][1]
+        }
+    });
+
+    // Solve the least squares problem
     let params = mat_a.qr().solve_lstsq(mat_b);
     let aff = params.col(0);
 
-    // copy to affine matrix
+    // Copy the result of optimization to affine matrix
     affine[0] = [aff[0], aff[1], aff[2]];
     affine[1] = [aff[3], aff[4], aff[5]];
 }
