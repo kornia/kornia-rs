@@ -9,7 +9,7 @@ pub mod protos {
 
 impl MessageTypeInfo for protos::CompressedImage {
     fn type_name() -> &'static str {
-        "bubbaloop.hal.v1.CompressedImage"
+        "bubbaloop.camera.v1.CompressedImage"
     }
 
     fn type_hash() -> TypeHash {
