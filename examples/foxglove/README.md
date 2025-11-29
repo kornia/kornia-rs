@@ -6,7 +6,7 @@ NOTE: This example is only supported on Linux.
 Usage: foxglove [OPTIONS]
 
 Options:
-  -c, --camera-id <CAMERA_ID>  the port to use [default: 0]
+  -c, --camera-id <CAMERA_ID>  the camera id to use [default: 0]
   -f, --fps <FPS>              the frames per second to record [default: 30]
   -h, --help                   Print help
 ```

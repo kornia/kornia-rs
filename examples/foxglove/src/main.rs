@@ -13,7 +13,7 @@ use std::{
 #[derive(FromArgs)]
 /// Foxglove demo application
 struct Args {
-    /// the port to use
+    /// the camera id to use
     #[argh(option, short = 'c', default = "0")]
     camera_id: u32,
 
@@ -64,13 +64,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // convert the frame to a compressed image
         let compressed_image = CompressedImage {
-            format: pixel_format.as_str().to_lowercase(),
-            data: frame.buffer.into_vec().into(),
             timestamp: Some(Timestamp::new(
                 frame.timestamp.sec as u32,
                 frame.timestamp.usec as u32,
             )),
             frame_id: "camera".to_string(),
+            format: pixel_format.as_str().to_lowercase(),
+            data: frame.buffer.into_vec().into(),
         };
 
         // send the compressed image to the web socket server
