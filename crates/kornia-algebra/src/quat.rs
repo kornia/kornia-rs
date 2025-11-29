@@ -59,6 +59,38 @@ macro_rules! define_quat_type {
             pub fn from_mat4(mat: &$mat4_type) -> Self {
                 Self(<$glam_type>::from_mat4(&mat.0))
             }
+
+            /// Normalize the quaternion to unit length.
+            #[inline]
+            pub fn normalize(self) -> Self {
+                Self(self.0.normalize())
+            }
+
+            /// Get the inverse of the quaternion.
+            #[inline]
+            pub fn inverse(self) -> Self {
+                Self(self.0.inverse())
+            }
+
+            /// Get the conjugate of the quaternion.
+            #[inline]
+            pub fn conjugate(self) -> Self {
+                Self(self.0.conjugate())
+            }
+
+            /// Get the length (magnitude) of the quaternion.
+            #[inline]
+            pub fn length(self) -> $scalar {
+                self.0.length()
+            }
+
+            /// Rotate a 3D vector by this quaternion.
+            /// This computes q * v * q^-1 where v is treated as a pure quaternion.
+            #[inline]
+            pub fn mul_vec3(self, v: [$scalar; 3]) -> [$scalar; 3] {
+                let result = self.0.mul_vec3(<_>::from(v));
+                result.into()
+            }
         }
 
         impl std::ops::Deref for $name {

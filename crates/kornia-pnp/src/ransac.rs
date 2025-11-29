@@ -3,7 +3,7 @@
 use crate::ops::{intrinsics_as_vectors, pose_to_rt, project_sq_error};
 use crate::pnp::{PnPError, PnPResult};
 use crate::{solve_pnp, PnPMethod};
-use kornia_algebra::{Mat3, Vec3};
+use kornia_algebra::{Mat3F32, Vec3F32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 use rand::seq::SliceRandom;
 use rand::{rngs::StdRng, SeedableRng};
@@ -281,14 +281,14 @@ pub fn solve_pnp_ransac(
 }
 
 fn sample_all_positive_depths(r: &[[f32; 3]; 3], t: &[f32; 3], world: &[[f32; 3]]) -> bool {
-    let r_mat = Mat3::from_cols(
-        Vec3::new(r[0][0], r[1][0], r[2][0]),
-        Vec3::new(r[0][1], r[1][1], r[2][1]),
-        Vec3::new(r[0][2], r[1][2], r[2][2]),
+    let r_mat = Mat3F32::from_cols(
+        Vec3F32::new(r[0][0], r[1][0], r[2][0]),
+        Vec3F32::new(r[0][1], r[1][1], r[2][1]),
+        Vec3F32::new(r[0][2], r[1][2], r[2][2]),
     );
-    let t_vec = Vec3::new(t[0], t[1], t[2]);
+    let t_vec = Vec3F32::new(t[0], t[1], t[2]);
     world.iter().all(|pw| {
-        let pc = r_mat * Vec3::from_array(*pw) + t_vec;
+        let pc = r_mat * Vec3F32::from_array(*pw) + t_vec;
         pc.z > 0.0
     })
 }
@@ -299,8 +299,8 @@ fn sample_all_positive_depths(r: &[[f32; 3]; 3], t: &[f32; 3], world: &[[f32; 3]
 struct ClassificationParams<'a> {
     rotation_matrix: &'a [[f32; 3]; 3],
     translation_vector: &'a [f32; 3],
-    camera_intrinsics_x: &'a Vec3,
-    camera_intrinsics_y: &'a Vec3,
+    camera_intrinsics_x: &'a Vec3F32,
+    camera_intrinsics_y: &'a Vec3F32,
     threshold: Option<f32>,
 }
 

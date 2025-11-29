@@ -17,7 +17,7 @@
 //! * `cols`        - The column parameters (e.g. `[x_axis, y_axis]`).
 //!
 
-use crate::{Vec2F32, Vec2F64, Vec3AF32, Vec3F32, Vec3F64, Vec4F32, Vec4F64};
+use crate::{QuatF32, Vec2F32, Vec2F64, Vec3AF32, Vec3F32, Vec3F64, Vec4F32, Vec4F64};
 
 macro_rules! define_matrix_type {
     (
@@ -82,6 +82,14 @@ macro_rules! define_matrix_type {
             pub fn from_diagonal(diagonal: $vec_type) -> Self {
                 Self(<$glam_type>::from_diagonal(<$glam_vec>::from(diagonal).into()))
             }
+
+            $(
+            /// Get the $col column vector.
+            #[inline]
+            pub fn $col(&self) -> $vec_type {
+                <$vec_type>::from(self.0.$col)
+            }
+            )+
         }
 
         impl std::ops::Deref for $name {
@@ -277,6 +285,14 @@ define_matrix_type!(
     [x_axis, y_axis, z_axis]
 );
 
+impl Mat3AF32 {
+    /// Create a 3x3 rotation matrix from a quaternion.
+    #[inline]
+    pub fn from_quat(quat: QuatF32) -> Self {
+        Self(glam::Mat3A::from_quat(quat.0))
+    }
+}
+
 // 4x4 matrix (single and double precision).
 define_matrix_type!(
     Mat4F32,
@@ -308,39 +324,39 @@ mod tests {
         let col1 = Vec2F32::new(1.0, 2.0);
         let col2 = Vec2F32::new(3.0, 4.0);
         let m = Mat2F32::from_cols(col1, col2);
-        assert_eq!(m.x_axis, glam::Vec2::new(1.0, 2.0));
-        assert_eq!(m.y_axis, glam::Vec2::new(3.0, 4.0));
+        assert_eq!(m.x_axis(), Vec2F32::new(1.0, 2.0));
+        assert_eq!(m.y_axis(), Vec2F32::new(3.0, 4.0));
     }
 
     #[test]
     fn test_mat2f32_from_cols_array() {
         let arr = [1.0, 2.0, 3.0, 4.0];
         let m = Mat2F32::from_cols_array(&arr);
-        assert_eq!(m.x_axis, glam::Vec2::new(1.0, 2.0));
-        assert_eq!(m.y_axis, glam::Vec2::new(3.0, 4.0));
+        assert_eq!(m.x_axis(), Vec2F32::new(1.0, 2.0));
+        assert_eq!(m.y_axis(), Vec2F32::new(3.0, 4.0));
     }
 
     #[test]
     fn test_mat2f32_identity() {
         let m = Mat2F32::IDENTITY;
-        assert_eq!(m.x_axis, glam::Vec2::new(1.0, 0.0));
-        assert_eq!(m.y_axis, glam::Vec2::new(0.0, 1.0));
+        assert_eq!(m.x_axis(), Vec2F32::new(1.0, 0.0));
+        assert_eq!(m.y_axis(), Vec2F32::new(0.0, 1.0));
     }
 
     #[test]
     fn test_mat2f32_transpose() {
         let m = Mat2F32::from_cols_array(&[1.0, 2.0, 3.0, 4.0]);
         let mt = m.transpose();
-        assert_eq!(mt.x_axis, glam::Vec2::new(1.0, 3.0));
-        assert_eq!(mt.y_axis, glam::Vec2::new(2.0, 4.0));
+        assert_eq!(mt.x_axis(), Vec2F32::new(1.0, 3.0));
+        assert_eq!(mt.y_axis(), Vec2F32::new(2.0, 4.0));
     }
 
     #[test]
     fn test_mat2f32_inverse() {
         let m = Mat2F32::from_cols_array(&[1.0, 0.0, 0.0, 2.0]); // diagonal matrix
         let inv = m.inverse();
-        assert_eq!(inv.x_axis, glam::Vec2::new(1.0, 0.0));
-        assert_eq!(inv.y_axis, glam::Vec2::new(0.0, 0.5));
+        assert_eq!(inv.x_axis(), Vec2F32::new(1.0, 0.0));
+        assert_eq!(inv.y_axis(), Vec2F32::new(0.0, 0.5));
     }
 
     #[test]
@@ -354,8 +370,8 @@ mod tests {
     fn test_mat2f32_conversions() {
         let arr = [1.0, 2.0, 3.0, 4.0];
         let m: Mat2F32 = arr.into();
-        assert_eq!(m.x_axis, glam::Vec2::new(1.0, 2.0));
-        assert_eq!(m.y_axis, glam::Vec2::new(3.0, 4.0));
+        assert_eq!(m.x_axis(), Vec2F32::new(1.0, 2.0));
+        assert_eq!(m.y_axis(), Vec2F32::new(3.0, 4.0));
 
         let m_glam: glam::Mat2 = m.into();
         assert_eq!(m_glam.x_axis, glam::Vec2::new(1.0, 2.0));
@@ -389,39 +405,39 @@ mod tests {
         let col1 = Vec2F64::new(1.0, 2.0);
         let col2 = Vec2F64::new(3.0, 4.0);
         let m = Mat2F64::from_cols(col1, col2);
-        assert_eq!(m.x_axis, glam::DVec2::new(1.0, 2.0));
-        assert_eq!(m.y_axis, glam::DVec2::new(3.0, 4.0));
+        assert_eq!(m.x_axis(), Vec2F64::new(1.0, 2.0));
+        assert_eq!(m.y_axis(), Vec2F64::new(3.0, 4.0));
     }
 
     #[test]
     fn test_mat2f64_from_cols_array() {
         let arr = [1.0, 2.0, 3.0, 4.0];
         let m = Mat2F64::from_cols_array(&arr);
-        assert_eq!(m.x_axis, glam::DVec2::new(1.0, 2.0));
-        assert_eq!(m.y_axis, glam::DVec2::new(3.0, 4.0));
+        assert_eq!(m.x_axis(), Vec2F64::new(1.0, 2.0));
+        assert_eq!(m.y_axis(), Vec2F64::new(3.0, 4.0));
     }
 
     #[test]
     fn test_mat2f64_identity() {
         let m = Mat2F64::IDENTITY;
-        assert_eq!(m.x_axis, glam::DVec2::new(1.0, 0.0));
-        assert_eq!(m.y_axis, glam::DVec2::new(0.0, 1.0));
+        assert_eq!(m.x_axis(), Vec2F64::new(1.0, 0.0));
+        assert_eq!(m.y_axis(), Vec2F64::new(0.0, 1.0));
     }
 
     #[test]
     fn test_mat2f64_transpose() {
         let m = Mat2F64::from_cols_array(&[1.0, 2.0, 3.0, 4.0]);
         let mt = m.transpose();
-        assert_eq!(mt.x_axis, glam::DVec2::new(1.0, 3.0));
-        assert_eq!(mt.y_axis, glam::DVec2::new(2.0, 4.0));
+        assert_eq!(mt.x_axis(), Vec2F64::new(1.0, 3.0));
+        assert_eq!(mt.y_axis(), Vec2F64::new(2.0, 4.0));
     }
 
     #[test]
     fn test_mat2f64_inverse() {
         let m = Mat2F64::from_cols_array(&[1.0, 0.0, 0.0, 2.0]); // diagonal matrix
         let inv = m.inverse();
-        assert_eq!(inv.x_axis, glam::DVec2::new(1.0, 0.0));
-        assert_eq!(inv.y_axis, glam::DVec2::new(0.0, 0.5));
+        assert_eq!(inv.x_axis(), Vec2F64::new(1.0, 0.0));
+        assert_eq!(inv.y_axis(), Vec2F64::new(0.0, 0.5));
     }
 
     #[test]
@@ -435,8 +451,8 @@ mod tests {
     fn test_mat2f64_conversions() {
         let arr = [1.0, 2.0, 3.0, 4.0];
         let m: Mat2F64 = arr.into();
-        assert_eq!(m.x_axis, glam::DVec2::new(1.0, 2.0));
-        assert_eq!(m.y_axis, glam::DVec2::new(3.0, 4.0));
+        assert_eq!(m.x_axis(), Vec2F64::new(1.0, 2.0));
+        assert_eq!(m.y_axis(), Vec2F64::new(3.0, 4.0));
 
         let m_glam: glam::DMat2 = m.into();
         assert_eq!(m_glam.x_axis, glam::DVec2::new(1.0, 2.0));
@@ -456,44 +472,44 @@ mod tests {
         let col2 = Vec3F32::new(4.0, 5.0, 6.0);
         let col3 = Vec3F32::new(7.0, 8.0, 9.0);
         let m = Mat3F32::from_cols(col1, col2, col3);
-        assert_eq!(m.x_axis, glam::Vec3::new(1.0, 2.0, 3.0));
-        assert_eq!(m.y_axis, glam::Vec3::new(4.0, 5.0, 6.0));
-        assert_eq!(m.z_axis, glam::Vec3::new(7.0, 8.0, 9.0));
+        assert_eq!(m.x_axis(), Vec3F32::new(1.0, 2.0, 3.0));
+        assert_eq!(m.y_axis(), Vec3F32::new(4.0, 5.0, 6.0));
+        assert_eq!(m.z_axis(), Vec3F32::new(7.0, 8.0, 9.0));
     }
 
     #[test]
     fn test_mat3f32_from_cols_array() {
         let arr = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
         let m = Mat3F32::from_cols_array(&arr);
-        assert_eq!(m.x_axis, glam::Vec3::new(1.0, 2.0, 3.0));
-        assert_eq!(m.y_axis, glam::Vec3::new(4.0, 5.0, 6.0));
-        assert_eq!(m.z_axis, glam::Vec3::new(7.0, 8.0, 9.0));
+        assert_eq!(m.x_axis(), Vec3F32::new(1.0, 2.0, 3.0));
+        assert_eq!(m.y_axis(), Vec3F32::new(4.0, 5.0, 6.0));
+        assert_eq!(m.z_axis(), Vec3F32::new(7.0, 8.0, 9.0));
     }
 
     #[test]
     fn test_mat3f32_identity() {
         let m = Mat3F32::IDENTITY;
-        assert_eq!(m.x_axis, glam::Vec3::new(1.0, 0.0, 0.0));
-        assert_eq!(m.y_axis, glam::Vec3::new(0.0, 1.0, 0.0));
-        assert_eq!(m.z_axis, glam::Vec3::new(0.0, 0.0, 1.0));
+        assert_eq!(m.x_axis(), Vec3F32::new(1.0, 0.0, 0.0));
+        assert_eq!(m.y_axis(), Vec3F32::new(0.0, 1.0, 0.0));
+        assert_eq!(m.z_axis(), Vec3F32::new(0.0, 0.0, 1.0));
     }
 
     #[test]
     fn test_mat3f32_transpose() {
         let m = Mat3F32::from_cols_array(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
         let mt = m.transpose();
-        assert_eq!(mt.x_axis, glam::Vec3::new(1.0, 4.0, 7.0));
-        assert_eq!(mt.y_axis, glam::Vec3::new(2.0, 5.0, 8.0));
-        assert_eq!(mt.z_axis, glam::Vec3::new(3.0, 6.0, 9.0));
+        assert_eq!(mt.x_axis(), Vec3F32::new(1.0, 4.0, 7.0));
+        assert_eq!(mt.y_axis(), Vec3F32::new(2.0, 5.0, 8.0));
+        assert_eq!(mt.z_axis(), Vec3F32::new(3.0, 6.0, 9.0));
     }
 
     #[test]
     fn test_mat3f32_inverse() {
         let m = Mat3F32::from_cols_array(&[1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.5]);
         let inv = m.inverse();
-        assert_eq!(inv.x_axis, glam::Vec3::new(1.0, 0.0, 0.0));
-        assert_eq!(inv.y_axis, glam::Vec3::new(0.0, 0.5, 0.0));
-        assert_eq!(inv.z_axis, glam::Vec3::new(0.0, 0.0, 2.0));
+        assert_eq!(inv.x_axis(), Vec3F32::new(1.0, 0.0, 0.0));
+        assert_eq!(inv.y_axis(), Vec3F32::new(0.0, 0.5, 0.0));
+        assert_eq!(inv.z_axis(), Vec3F32::new(0.0, 0.0, 2.0));
     }
 
     #[test]
@@ -506,7 +522,7 @@ mod tests {
     fn test_mat3f32_conversions() {
         let arr = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
         let m: Mat3F32 = arr.into();
-        assert_eq!(m.x_axis, glam::Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(m.x_axis(), Vec3F32::new(1.0, 2.0, 3.0));
 
         let m_glam: glam::Mat3 = m.into();
         assert_eq!(m_glam.x_axis, glam::Vec3::new(1.0, 2.0, 3.0));
@@ -532,44 +548,44 @@ mod tests {
         let col2 = Vec3F64::new(4.0, 5.0, 6.0);
         let col3 = Vec3F64::new(7.0, 8.0, 9.0);
         let m = Mat3F64::from_cols(col1, col2, col3);
-        assert_eq!(m.x_axis, glam::DVec3::new(1.0, 2.0, 3.0));
-        assert_eq!(m.y_axis, glam::DVec3::new(4.0, 5.0, 6.0));
-        assert_eq!(m.z_axis, glam::DVec3::new(7.0, 8.0, 9.0));
+        assert_eq!(m.x_axis(), Vec3F64::new(1.0, 2.0, 3.0));
+        assert_eq!(m.y_axis(), Vec3F64::new(4.0, 5.0, 6.0));
+        assert_eq!(m.z_axis(), Vec3F64::new(7.0, 8.0, 9.0));
     }
 
     #[test]
     fn test_mat3f64_from_cols_array() {
         let arr = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
         let m = Mat3F64::from_cols_array(&arr);
-        assert_eq!(m.x_axis, glam::DVec3::new(1.0, 2.0, 3.0));
-        assert_eq!(m.y_axis, glam::DVec3::new(4.0, 5.0, 6.0));
-        assert_eq!(m.z_axis, glam::DVec3::new(7.0, 8.0, 9.0));
+        assert_eq!(m.x_axis(), Vec3F64::new(1.0, 2.0, 3.0));
+        assert_eq!(m.y_axis(), Vec3F64::new(4.0, 5.0, 6.0));
+        assert_eq!(m.z_axis(), Vec3F64::new(7.0, 8.0, 9.0));
     }
 
     #[test]
     fn test_mat3f64_identity() {
         let m = Mat3F64::IDENTITY;
-        assert_eq!(m.x_axis, glam::DVec3::new(1.0, 0.0, 0.0));
-        assert_eq!(m.y_axis, glam::DVec3::new(0.0, 1.0, 0.0));
-        assert_eq!(m.z_axis, glam::DVec3::new(0.0, 0.0, 1.0));
+        assert_eq!(m.x_axis(), Vec3F64::new(1.0, 0.0, 0.0));
+        assert_eq!(m.y_axis(), Vec3F64::new(0.0, 1.0, 0.0));
+        assert_eq!(m.z_axis(), Vec3F64::new(0.0, 0.0, 1.0));
     }
 
     #[test]
     fn test_mat3f64_transpose() {
         let m = Mat3F64::from_cols_array(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
         let mt = m.transpose();
-        assert_eq!(mt.x_axis, glam::DVec3::new(1.0, 4.0, 7.0));
-        assert_eq!(mt.y_axis, glam::DVec3::new(2.0, 5.0, 8.0));
-        assert_eq!(mt.z_axis, glam::DVec3::new(3.0, 6.0, 9.0));
+        assert_eq!(mt.x_axis(), Vec3F64::new(1.0, 4.0, 7.0));
+        assert_eq!(mt.y_axis(), Vec3F64::new(2.0, 5.0, 8.0));
+        assert_eq!(mt.z_axis(), Vec3F64::new(3.0, 6.0, 9.0));
     }
 
     #[test]
     fn test_mat3f64_inverse() {
         let m = Mat3F64::from_cols_array(&[1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.5]);
         let inv = m.inverse();
-        assert_eq!(inv.x_axis, glam::DVec3::new(1.0, 0.0, 0.0));
-        assert_eq!(inv.y_axis, glam::DVec3::new(0.0, 0.5, 0.0));
-        assert_eq!(inv.z_axis, glam::DVec3::new(0.0, 0.0, 2.0));
+        assert_eq!(inv.x_axis(), Vec3F64::new(1.0, 0.0, 0.0));
+        assert_eq!(inv.y_axis(), Vec3F64::new(0.0, 0.5, 0.0));
+        assert_eq!(inv.z_axis(), Vec3F64::new(0.0, 0.0, 2.0));
     }
 
     #[test]
@@ -582,7 +598,7 @@ mod tests {
     fn test_mat3f64_conversions() {
         let arr = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
         let m: Mat3F64 = arr.into();
-        assert_eq!(m.x_axis, glam::DVec3::new(1.0, 2.0, 3.0));
+        assert_eq!(m.x_axis(), Vec3F64::new(1.0, 2.0, 3.0));
 
         let m_glam: glam::DMat3 = m.into();
         assert_eq!(m_glam.x_axis, glam::DVec3::new(1.0, 2.0, 3.0));
@@ -617,44 +633,44 @@ mod tests {
         let col2 = Vec3AF32::new(4.0, 5.0, 6.0);
         let col3 = Vec3AF32::new(7.0, 8.0, 9.0);
         let m = Mat3AF32::from_cols(col1, col2, col3);
-        assert_eq!(m.x_axis, glam::Vec3A::new(1.0, 2.0, 3.0));
-        assert_eq!(m.y_axis, glam::Vec3A::new(4.0, 5.0, 6.0));
-        assert_eq!(m.z_axis, glam::Vec3A::new(7.0, 8.0, 9.0));
+        assert_eq!(m.x_axis(), Vec3AF32::new(1.0, 2.0, 3.0));
+        assert_eq!(m.y_axis(), Vec3AF32::new(4.0, 5.0, 6.0));
+        assert_eq!(m.z_axis(), Vec3AF32::new(7.0, 8.0, 9.0));
     }
 
     #[test]
     fn test_mat3af32_from_cols_array() {
         let arr = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
         let m = Mat3AF32::from_cols_array(&arr);
-        assert_eq!(m.x_axis, glam::Vec3A::new(1.0, 2.0, 3.0));
-        assert_eq!(m.y_axis, glam::Vec3A::new(4.0, 5.0, 6.0));
-        assert_eq!(m.z_axis, glam::Vec3A::new(7.0, 8.0, 9.0));
+        assert_eq!(m.x_axis(), Vec3AF32::new(1.0, 2.0, 3.0));
+        assert_eq!(m.y_axis(), Vec3AF32::new(4.0, 5.0, 6.0));
+        assert_eq!(m.z_axis(), Vec3AF32::new(7.0, 8.0, 9.0));
     }
 
     #[test]
     fn test_mat3af32_identity() {
         let m = Mat3AF32::IDENTITY;
-        assert_eq!(m.x_axis, glam::Vec3A::new(1.0, 0.0, 0.0));
-        assert_eq!(m.y_axis, glam::Vec3A::new(0.0, 1.0, 0.0));
-        assert_eq!(m.z_axis, glam::Vec3A::new(0.0, 0.0, 1.0));
+        assert_eq!(m.x_axis(), Vec3AF32::new(1.0, 0.0, 0.0));
+        assert_eq!(m.y_axis(), Vec3AF32::new(0.0, 1.0, 0.0));
+        assert_eq!(m.z_axis(), Vec3AF32::new(0.0, 0.0, 1.0));
     }
 
     #[test]
     fn test_mat3af32_transpose() {
         let m = Mat3AF32::from_cols_array(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
         let mt = m.transpose();
-        assert_eq!(mt.x_axis, glam::Vec3A::new(1.0, 4.0, 7.0));
-        assert_eq!(mt.y_axis, glam::Vec3A::new(2.0, 5.0, 8.0));
-        assert_eq!(mt.z_axis, glam::Vec3A::new(3.0, 6.0, 9.0));
+        assert_eq!(mt.x_axis(), Vec3AF32::new(1.0, 4.0, 7.0));
+        assert_eq!(mt.y_axis(), Vec3AF32::new(2.0, 5.0, 8.0));
+        assert_eq!(mt.z_axis(), Vec3AF32::new(3.0, 6.0, 9.0));
     }
 
     #[test]
     fn test_mat3af32_inverse() {
         let m = Mat3AF32::from_cols_array(&[1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.5]);
         let inv = m.inverse();
-        assert_eq!(inv.x_axis, glam::Vec3A::new(1.0, 0.0, 0.0));
-        assert_eq!(inv.y_axis, glam::Vec3A::new(0.0, 0.5, 0.0));
-        assert_eq!(inv.z_axis, glam::Vec3A::new(0.0, 0.0, 2.0));
+        assert_eq!(inv.x_axis(), Vec3AF32::new(1.0, 0.0, 0.0));
+        assert_eq!(inv.y_axis(), Vec3AF32::new(0.0, 0.5, 0.0));
+        assert_eq!(inv.z_axis(), Vec3AF32::new(0.0, 0.0, 2.0));
     }
 
     #[test]
@@ -667,7 +683,7 @@ mod tests {
     fn test_mat3af32_conversions() {
         let arr = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
         let m: Mat3AF32 = arr.into();
-        assert_eq!(m.x_axis, glam::Vec3A::new(1.0, 2.0, 3.0));
+        assert_eq!(m.x_axis(), Vec3AF32::new(1.0, 2.0, 3.0));
 
         let m_glam: glam::Mat3A = m.into();
         assert_eq!(m_glam.x_axis, glam::Vec3A::new(1.0, 2.0, 3.0));
@@ -695,10 +711,10 @@ mod tests {
         let col3 = Vec4F32::new(9.0, 10.0, 11.0, 12.0);
         let col4 = Vec4F32::new(13.0, 14.0, 15.0, 16.0);
         let m = Mat4F32::from_cols(col1, col2, col3, col4);
-        assert_eq!(m.x_axis, glam::Vec4::new(1.0, 2.0, 3.0, 4.0));
-        assert_eq!(m.y_axis, glam::Vec4::new(5.0, 6.0, 7.0, 8.0));
-        assert_eq!(m.z_axis, glam::Vec4::new(9.0, 10.0, 11.0, 12.0));
-        assert_eq!(m.w_axis, glam::Vec4::new(13.0, 14.0, 15.0, 16.0));
+        assert_eq!(m.x_axis(), Vec4F32::new(1.0, 2.0, 3.0, 4.0));
+        assert_eq!(m.y_axis(), Vec4F32::new(5.0, 6.0, 7.0, 8.0));
+        assert_eq!(m.z_axis(), Vec4F32::new(9.0, 10.0, 11.0, 12.0));
+        assert_eq!(m.w_axis(), Vec4F32::new(13.0, 14.0, 15.0, 16.0));
     }
 
     #[test]
@@ -707,19 +723,19 @@ mod tests {
             1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
         ];
         let m = Mat4F32::from_cols_array(&arr);
-        assert_eq!(m.x_axis, glam::Vec4::new(1.0, 2.0, 3.0, 4.0));
-        assert_eq!(m.y_axis, glam::Vec4::new(5.0, 6.0, 7.0, 8.0));
-        assert_eq!(m.z_axis, glam::Vec4::new(9.0, 10.0, 11.0, 12.0));
-        assert_eq!(m.w_axis, glam::Vec4::new(13.0, 14.0, 15.0, 16.0));
+        assert_eq!(m.x_axis(), Vec4F32::new(1.0, 2.0, 3.0, 4.0));
+        assert_eq!(m.y_axis(), Vec4F32::new(5.0, 6.0, 7.0, 8.0));
+        assert_eq!(m.z_axis(), Vec4F32::new(9.0, 10.0, 11.0, 12.0));
+        assert_eq!(m.w_axis(), Vec4F32::new(13.0, 14.0, 15.0, 16.0));
     }
 
     #[test]
     fn test_mat4f32_identity() {
         let m = Mat4F32::IDENTITY;
-        assert_eq!(m.x_axis, glam::Vec4::new(1.0, 0.0, 0.0, 0.0));
-        assert_eq!(m.y_axis, glam::Vec4::new(0.0, 1.0, 0.0, 0.0));
-        assert_eq!(m.z_axis, glam::Vec4::new(0.0, 0.0, 1.0, 0.0));
-        assert_eq!(m.w_axis, glam::Vec4::new(0.0, 0.0, 0.0, 1.0));
+        assert_eq!(m.x_axis(), Vec4F32::new(1.0, 0.0, 0.0, 0.0));
+        assert_eq!(m.y_axis(), Vec4F32::new(0.0, 1.0, 0.0, 0.0));
+        assert_eq!(m.z_axis(), Vec4F32::new(0.0, 0.0, 1.0, 0.0));
+        assert_eq!(m.w_axis(), Vec4F32::new(0.0, 0.0, 0.0, 1.0));
     }
 
     #[test]
@@ -728,10 +744,10 @@ mod tests {
             1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
         ]);
         let mt = m.transpose();
-        assert_eq!(mt.x_axis, glam::Vec4::new(1.0, 5.0, 9.0, 13.0));
-        assert_eq!(mt.y_axis, glam::Vec4::new(2.0, 6.0, 10.0, 14.0));
-        assert_eq!(mt.z_axis, glam::Vec4::new(3.0, 7.0, 11.0, 15.0));
-        assert_eq!(mt.w_axis, glam::Vec4::new(4.0, 8.0, 12.0, 16.0));
+        assert_eq!(mt.x_axis(), Vec4F32::new(1.0, 5.0, 9.0, 13.0));
+        assert_eq!(mt.y_axis(), Vec4F32::new(2.0, 6.0, 10.0, 14.0));
+        assert_eq!(mt.z_axis(), Vec4F32::new(3.0, 7.0, 11.0, 15.0));
+        assert_eq!(mt.w_axis(), Vec4F32::new(4.0, 8.0, 12.0, 16.0));
     }
 
     #[test]
@@ -740,10 +756,10 @@ mod tests {
             1.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.5,
         ]); // diagonal matrix
         let inv = m.inverse();
-        assert_eq!(inv.x_axis, glam::Vec4::new(1.0, 0.0, 0.0, 0.0));
-        assert_eq!(inv.y_axis, glam::Vec4::new(0.0, 0.5, 0.0, 0.0));
-        assert_eq!(inv.z_axis, glam::Vec4::new(0.0, 0.0, 0.25, 0.0));
-        assert_eq!(inv.w_axis, glam::Vec4::new(0.0, 0.0, 0.0, 2.0));
+        assert_eq!(inv.x_axis(), Vec4F32::new(1.0, 0.0, 0.0, 0.0));
+        assert_eq!(inv.y_axis(), Vec4F32::new(0.0, 0.5, 0.0, 0.0));
+        assert_eq!(inv.z_axis(), Vec4F32::new(0.0, 0.0, 0.25, 0.0));
+        assert_eq!(inv.w_axis(), Vec4F32::new(0.0, 0.0, 0.0, 2.0));
     }
 
     #[test]
@@ -760,7 +776,7 @@ mod tests {
             1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
         ];
         let m: Mat4F32 = arr.into();
-        assert_eq!(m.x_axis, glam::Vec4::new(1.0, 2.0, 3.0, 4.0));
+        assert_eq!(m.x_axis(), Vec4F32::new(1.0, 2.0, 3.0, 4.0));
 
         let m_glam: glam::Mat4 = m.into();
         assert_eq!(m_glam.x_axis, glam::Vec4::new(1.0, 2.0, 3.0, 4.0));
@@ -787,10 +803,10 @@ mod tests {
         let col3 = Vec4F64::new(9.0, 10.0, 11.0, 12.0);
         let col4 = Vec4F64::new(13.0, 14.0, 15.0, 16.0);
         let m = Mat4F64::from_cols(col1, col2, col3, col4);
-        assert_eq!(m.x_axis, glam::DVec4::new(1.0, 2.0, 3.0, 4.0));
-        assert_eq!(m.y_axis, glam::DVec4::new(5.0, 6.0, 7.0, 8.0));
-        assert_eq!(m.z_axis, glam::DVec4::new(9.0, 10.0, 11.0, 12.0));
-        assert_eq!(m.w_axis, glam::DVec4::new(13.0, 14.0, 15.0, 16.0));
+        assert_eq!(m.x_axis(), Vec4F64::new(1.0, 2.0, 3.0, 4.0));
+        assert_eq!(m.y_axis(), Vec4F64::new(5.0, 6.0, 7.0, 8.0));
+        assert_eq!(m.z_axis(), Vec4F64::new(9.0, 10.0, 11.0, 12.0));
+        assert_eq!(m.w_axis(), Vec4F64::new(13.0, 14.0, 15.0, 16.0));
     }
 
     #[test]
@@ -799,19 +815,19 @@ mod tests {
             1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
         ];
         let m = Mat4F64::from_cols_array(&arr);
-        assert_eq!(m.x_axis, glam::DVec4::new(1.0, 2.0, 3.0, 4.0));
-        assert_eq!(m.y_axis, glam::DVec4::new(5.0, 6.0, 7.0, 8.0));
-        assert_eq!(m.z_axis, glam::DVec4::new(9.0, 10.0, 11.0, 12.0));
-        assert_eq!(m.w_axis, glam::DVec4::new(13.0, 14.0, 15.0, 16.0));
+        assert_eq!(m.x_axis(), Vec4F64::new(1.0, 2.0, 3.0, 4.0));
+        assert_eq!(m.y_axis(), Vec4F64::new(5.0, 6.0, 7.0, 8.0));
+        assert_eq!(m.z_axis(), Vec4F64::new(9.0, 10.0, 11.0, 12.0));
+        assert_eq!(m.w_axis(), Vec4F64::new(13.0, 14.0, 15.0, 16.0));
     }
 
     #[test]
     fn test_mat4f64_identity() {
         let m = Mat4F64::IDENTITY;
-        assert_eq!(m.x_axis, glam::DVec4::new(1.0, 0.0, 0.0, 0.0));
-        assert_eq!(m.y_axis, glam::DVec4::new(0.0, 1.0, 0.0, 0.0));
-        assert_eq!(m.z_axis, glam::DVec4::new(0.0, 0.0, 1.0, 0.0));
-        assert_eq!(m.w_axis, glam::DVec4::new(0.0, 0.0, 0.0, 1.0));
+        assert_eq!(m.x_axis(), Vec4F64::new(1.0, 0.0, 0.0, 0.0));
+        assert_eq!(m.y_axis(), Vec4F64::new(0.0, 1.0, 0.0, 0.0));
+        assert_eq!(m.z_axis(), Vec4F64::new(0.0, 0.0, 1.0, 0.0));
+        assert_eq!(m.w_axis(), Vec4F64::new(0.0, 0.0, 0.0, 1.0));
     }
 
     #[test]
@@ -820,10 +836,10 @@ mod tests {
             1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
         ]);
         let mt = m.transpose();
-        assert_eq!(mt.x_axis, glam::DVec4::new(1.0, 5.0, 9.0, 13.0));
-        assert_eq!(mt.y_axis, glam::DVec4::new(2.0, 6.0, 10.0, 14.0));
-        assert_eq!(mt.z_axis, glam::DVec4::new(3.0, 7.0, 11.0, 15.0));
-        assert_eq!(mt.w_axis, glam::DVec4::new(4.0, 8.0, 12.0, 16.0));
+        assert_eq!(mt.x_axis(), Vec4F64::new(1.0, 5.0, 9.0, 13.0));
+        assert_eq!(mt.y_axis(), Vec4F64::new(2.0, 6.0, 10.0, 14.0));
+        assert_eq!(mt.z_axis(), Vec4F64::new(3.0, 7.0, 11.0, 15.0));
+        assert_eq!(mt.w_axis(), Vec4F64::new(4.0, 8.0, 12.0, 16.0));
     }
 
     #[test]
@@ -832,10 +848,10 @@ mod tests {
             1.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.5,
         ]); // diagonal matrix
         let inv = m.inverse();
-        assert_eq!(inv.x_axis, glam::DVec4::new(1.0, 0.0, 0.0, 0.0));
-        assert_eq!(inv.y_axis, glam::DVec4::new(0.0, 0.5, 0.0, 0.0));
-        assert_eq!(inv.z_axis, glam::DVec4::new(0.0, 0.0, 0.25, 0.0));
-        assert_eq!(inv.w_axis, glam::DVec4::new(0.0, 0.0, 0.0, 2.0));
+        assert_eq!(inv.x_axis(), Vec4F64::new(1.0, 0.0, 0.0, 0.0));
+        assert_eq!(inv.y_axis(), Vec4F64::new(0.0, 0.5, 0.0, 0.0));
+        assert_eq!(inv.z_axis(), Vec4F64::new(0.0, 0.0, 0.25, 0.0));
+        assert_eq!(inv.w_axis(), Vec4F64::new(0.0, 0.0, 0.0, 2.0));
     }
 
     #[test]
@@ -852,7 +868,7 @@ mod tests {
             1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
         ];
         let m: Mat4F64 = arr.into();
-        assert_eq!(m.x_axis, glam::DVec4::new(1.0, 2.0, 3.0, 4.0));
+        assert_eq!(m.x_axis(), Vec4F64::new(1.0, 2.0, 3.0, 4.0));
 
         let m_glam: glam::DMat4 = m.into();
         assert_eq!(m_glam.x_axis, glam::DVec4::new(1.0, 2.0, 3.0, 4.0));
@@ -876,13 +892,13 @@ mod tests {
     fn test_mat2f32_assign_ops() {
         let mut m = Mat2F32::IDENTITY;
         m += Mat2F32::IDENTITY;
-        assert_eq!(m.x_axis, glam::Vec2::new(2.0, 0.0));
+        assert_eq!(m.x_axis(), Vec2F32::new(2.0, 0.0));
 
         m -= Mat2F32::IDENTITY;
         assert_eq!(m, Mat2F32::IDENTITY);
 
         m *= 2.0;
-        assert_eq!(m.x_axis, glam::Vec2::new(2.0, 0.0));
+        assert_eq!(m.x_axis(), Vec2F32::new(2.0, 0.0));
 
         let mut m2 = Mat2F32::IDENTITY;
         m2 *= Mat2F32::IDENTITY;
@@ -893,8 +909,8 @@ mod tests {
     fn test_mat3f32_from_diagonal() {
         let diag = Vec3F32::new(1.0, 2.0, 3.0);
         let m = Mat3F32::from_diagonal(diag);
-        assert_eq!(m.x_axis, glam::Vec3::new(1.0, 0.0, 0.0));
-        assert_eq!(m.y_axis, glam::Vec3::new(0.0, 2.0, 0.0));
-        assert_eq!(m.z_axis, glam::Vec3::new(0.0, 0.0, 3.0));
+        assert_eq!(m.x_axis(), Vec3F32::new(1.0, 0.0, 0.0));
+        assert_eq!(m.y_axis(), Vec3F32::new(0.0, 2.0, 0.0));
+        assert_eq!(m.z_axis(), Vec3F32::new(0.0, 0.0, 3.0));
     }
 }

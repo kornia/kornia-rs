@@ -55,6 +55,13 @@ macro_rules! define_vector_type {
                 let b: $glam_type = rhs.into();
                 a.dot(b)
             }
+
+            /// Normalize the vector to unit length.
+            #[inline]
+            pub fn normalize(self) -> Self {
+                let v: $glam_type = self.into();
+                Self::from(v.normalize())
+            }
         }
 
         // Conversions to and from the underlying glam type.

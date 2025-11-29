@@ -4,7 +4,7 @@
 
 use crate::ops::{compute_centroid, gauss_newton, intrinsics_as_vectors, pose_to_rt};
 use crate::pnp::{NumericTol, PnPError, PnPResult, PnPSolver};
-use kornia_algebra::{Mat3, Mat3A, Vec3, SO3};
+use kornia_algebra::{Mat3AF32, Mat3F32, Vec3F32, SO3F32};
 use kornia_imgproc::calibration::{
     distortion::{distort_point_polynomial, PolynomialDistortion},
     CameraIntrinsic,
@@ -144,7 +144,7 @@ pub fn solve_epnp(
         }
     }
 
-    let mat = Mat3A::from_cols_array(&[
+    let mat = Mat3AF32::from_cols_array(&[
         best_r[0][0],
         best_r[1][0],
         best_r[2][0],
@@ -155,7 +155,7 @@ pub fn solve_epnp(
         best_r[1][2],
         best_r[2][2],
     ]);
-    let rvec_f32 = SO3::from_matrix(&mat).log();
+    let rvec_f32 = SO3F32::from_matrix(&mat).log();
     let rvec = [rvec_f32.x, rvec_f32.y, rvec_f32.z];
 
     Ok(PnPResult {
@@ -186,9 +186,9 @@ fn pose_from_betas(
     }
 
     let a0 = alphas[0];
-    let mut pc0_vec = Vec3::ZERO;
+    let mut pc0_vec = Vec3F32::ZERO;
     for j in 0..4 {
-        pc0_vec += Vec3::from_array(cc[j]) * a0[j];
+        pc0_vec += Vec3F32::from_array(cc[j]) * a0[j];
     }
 
     if pc0_vec.z < 0.0 {
@@ -252,7 +252,7 @@ fn rmse_px(
     };
 
     for (pw_arr, &uv) in points_world.iter().zip(points_image.iter()) {
-        let pw = Vec3::from_array(*pw_arr);
+        let pw = Vec3F32::from_array(*pw_arr);
         let pc = r_mat * pw + t_vec; // camera-frame point
 
         let inv_z = 1.0 / pc.z;
@@ -280,11 +280,11 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
     let c = compute_centroid(points_world);
 
     // Compute covariance using glam for consistency
-    let mut cov_mat = Mat3::from_cols_array(&[0.0; 9]);
+    let mut cov_mat = Mat3F32::from_cols_array(&[0.0; 9]);
     for p in points_world {
-        let diff = Vec3::new(p[0] - c[0], p[1] - c[1], p[2] - c[2]);
+        let diff = Vec3F32::new(p[0] - c[0], p[1] - c[1], p[2] - c[2]);
         // Outer product diff * diffᵀ via column scaling
-        let outer_product = Mat3::from_cols(diff * diff.x, diff * diff.y, diff * diff.z);
+        let outer_product = Mat3F32::from_cols(diff * diff.x, diff * diff.y, diff * diff.z);
         cov_mat += outer_product;
     }
     cov_mat *= 1.0 / n as f32;
@@ -294,14 +294,14 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
     let s = svd.s(); // diagonal matrix of singular values (eigenvalues)
 
     let s_diag = [s.x_axis.x, s.y_axis.y, s.z_axis.z];
-    let mut axes_sig: Vec<(f32, Vec3)> = vec![
-        (s_diag[0].sqrt(), Vec3::from(v.x_axis)),
-        (s_diag[1].sqrt(), Vec3::from(v.y_axis)),
-        (s_diag[2].sqrt(), Vec3::from(v.z_axis)),
+    let mut axes_sig: Vec<(f32, Vec3F32)> = vec![
+        (s_diag[0].sqrt(), Vec3F32::from(v.x_axis)),
+        (s_diag[1].sqrt(), Vec3F32::from(v.y_axis)),
+        (s_diag[2].sqrt(), Vec3F32::from(v.z_axis)),
     ];
     axes_sig.sort_by(|a, b| b.0.total_cmp(&a.0));
 
-    let c_vec = Vec3::from_array(c);
+    let c_vec = Vec3F32::from_array(c);
     let mut cw = [[0.0; 3]; 4];
     cw[0] = c;
 
@@ -327,12 +327,12 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
 /// `a0 + a1 + a2 + a3 = 1` and `pw_i = sum_j(a_j * Cw_j)`.
 fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) -> Vec<[f32; 4]> {
     // Build B = [C1 - C0, C2 - C0, C3 - C0].
-    let c0 = Vec3::new(cw[0][0], cw[0][1], cw[0][2]);
-    let d1 = Vec3::new(cw[1][0] - c0.x, cw[1][1] - c0.y, cw[1][2] - c0.z);
-    let d2 = Vec3::new(cw[2][0] - c0.x, cw[2][1] - c0.y, cw[2][2] - c0.z);
-    let d3 = Vec3::new(cw[3][0] - c0.x, cw[3][1] - c0.y, cw[3][2] - c0.z);
+    let c0 = Vec3F32::new(cw[0][0], cw[0][1], cw[0][2]);
+    let d1 = Vec3F32::new(cw[1][0] - c0.x, cw[1][1] - c0.y, cw[1][2] - c0.z);
+    let d2 = Vec3F32::new(cw[2][0] - c0.x, cw[2][1] - c0.y, cw[2][2] - c0.z);
+    let d3 = Vec3F32::new(cw[3][0] - c0.x, cw[3][1] - c0.y, cw[3][2] - c0.z);
 
-    let b = Mat3::from_cols(d1, d2, d3);
+    let b = Mat3F32::from_cols(d1, d2, d3);
 
     // Invert or pseudo-invert B.
     let b_inv = if b.determinant().abs() > eps {
@@ -341,11 +341,11 @@ fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) 
     } else {
         // Moore–Penrose pseudo-inverse: B⁺ = V Σ⁺ Uᵀ
         let svd = svd3(&b);
-        let u = Mat3::from(*svd.u());
-        let v_mat = Mat3::from(*svd.v());
+        let u = Mat3F32::from(*svd.u());
+        let v_mat = Mat3F32::from(*svd.v());
         let s_mat = *svd.s();
         let s_diag = [s_mat.x_axis.x, s_mat.y_axis.y, s_mat.z_axis.z];
-        let inv_diag = Vec3::new(
+        let inv_diag = Vec3F32::new(
             if s_diag[0].abs() > eps {
                 1.0 / s_diag[0]
             } else {
@@ -362,7 +362,7 @@ fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) 
                 0.0
             },
         );
-        let sigma_inv = Mat3::from_diagonal(inv_diag);
+        let sigma_inv = Mat3F32::from_diagonal(inv_diag);
         v_mat * sigma_inv * u.transpose()
     };
 
@@ -370,7 +370,7 @@ fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) 
     points_world
         .iter()
         .map(|p| {
-            let diff = Vec3::from_array(*p) - c0;
+            let diff = Vec3F32::from_array(*p) - c0;
             let lamb = b_inv * diff;
             [1.0 - (lamb.x + lamb.y + lamb.z), lamb.x, lamb.y, lamb.z]
         })
@@ -548,7 +548,7 @@ const CP_PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (
 /// Compute the six squared distances (ρ vector) between the 4 control points.
 fn rho_ctrlpts(cw: &[[f32; 3]; 4]) -> [f32; 6] {
     CP_PAIRS.map(|(i, j)| {
-        let diff = Vec3::from_array(cw[i]) - Vec3::from_array(cw[j]);
+        let diff = Vec3F32::from_array(cw[i]) - Vec3F32::from_array(cw[j]);
         diff.dot(diff)
     })
 }
