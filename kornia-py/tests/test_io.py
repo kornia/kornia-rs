@@ -81,12 +81,12 @@ def test_decode_image_jpeg_info():
     img_path: Path = DATA_DIR / "dog.jpeg"
     with open(img_path, "rb") as f:
         img_data = f.read()
-    info: tuple[K.ImageSize, int] = K.decode_image_jpeg_info(bytes(img_data))
+    layout = K.decode_image_jpeg_info(bytes(img_data))
 
-    # check the image properties
-    assert info[0].width == 258
-    assert info[0].height == 195
-    assert info[1] == 3
+    assert layout.image_size.width == 258
+    assert layout.image_size.height == 195
+    assert layout.channels == 3
+    assert layout.pixel_format == "u8"
 
 
 def test_decode_image_jpegturbo():
@@ -142,6 +142,31 @@ def test_read_image_any():
     assert img.dtype == np.uint8
     img_t = torch.from_numpy(img)
     assert img_t.shape == (195, 258, 3)
+
+
+def test_read_image():
+    """Test the new read_image function with auto-detection"""
+    # Test JPEG
+    jpeg_path: Path = DATA_DIR / "dog.jpeg"
+    img_jpeg: np.ndarray = K.read_image(str(jpeg_path.absolute()))
+    assert img_jpeg.shape == (195, 258, 3)
+    assert img_jpeg.dtype == np.uint8
+
+    # Test PNG (may be grayscale or RGB depending on file)
+    png_path: Path = DATA_DIR / "dog.png"
+    if png_path.exists():
+        img_png: np.ndarray = K.read_image(str(png_path.absolute()))
+        assert img_png.dtype == np.uint8
+        # PNG might be grayscale (1 channel) or RGB (3 channels)
+        assert len(img_png.shape) == 3
+        assert img_png.shape[2] in [1, 3]
+
+    # Test PNG uint16 if available
+    png16_path: Path = DATA_DIR / "rgb16.png"
+    if png16_path.exists():
+        img_png16: np.ndarray = K.read_image(str(png16_path.absolute()))
+        assert img_png16.dtype == np.uint16
+        assert img_png16.shape == (32, 32, 3)
 
 
 def test_decompress():

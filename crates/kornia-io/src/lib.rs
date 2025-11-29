@@ -32,6 +32,12 @@ pub use gstreamer as stream;
 /// TIFF image encoding and decoding.
 pub mod tiff;
 
+// Re-export TIFF types for convenience
+/// TIFF decoding result type, re-exported from the `tiff` crate.
+///
+/// This enum represents the different data types that can be decoded from a TIFF image.
+pub use ::tiff::decoder::DecodingResult;
+
 /// V4L2 video module for real-time video processing.
 #[cfg(all(feature = "v4l", target_os = "linux"))]
 pub mod v4l;

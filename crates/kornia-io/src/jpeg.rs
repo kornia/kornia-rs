@@ -3,7 +3,7 @@ use jpeg_encoder::{ColorType, Encoder};
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     color_spaces::{Gray8, Rgb8},
-    Image, ImageSize,
+    Image, ImageLayout, PixelFormat, ImageSize,
 };
 use std::{fs, path::Path};
 
@@ -293,16 +293,16 @@ fn decode_jpeg_impl<const C: usize, A: ImageAllocator>(
     Ok(())
 }
 
-/// Decodes the header of a JPEG image to retrieve its size and number of channels.
+/// Decodes JPEG image metadata from raw bytes without decoding pixel data.
 ///
 /// # Arguments
 ///
-/// - `src` - A slice of bytes containing the JPEG image data.
+/// - `src` - Raw bytes of the JPEG file
 ///
 /// # Returns
 ///
-/// A tuple containing the size of the image and the number of channels.
-pub fn decode_image_jpeg_info(src: &[u8]) -> Result<(ImageSize, u8), IoError> {
+/// An `ImageLayout` containing the image metadata (size, channels, pixel format).
+pub fn decode_image_jpeg_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
     let mut decoder = zune_jpeg::JpegDecoder::new(src);
     decoder.decode_headers()?;
 
@@ -312,15 +312,24 @@ pub fn decode_image_jpeg_info(src: &[u8]) -> Result<(ImageSize, u8), IoError> {
         )))
     })?;
 
-    let num_channels = image_info.components;
-
-    Ok((
+    Ok(ImageLayout::new(
         ImageSize {
             width: image_info.width as usize,
             height: image_info.height as usize,
         },
-        num_channels,
+        image_info.components as u8,
+        PixelFormat::U8,
     ))
+}
+
+/// Decodes JPEG image metadata from raw bytes without decoding pixel data.
+///
+/// # Deprecated
+///
+/// Use [`decode_image_jpeg_layout`] instead.
+#[deprecated(note = "Use decode_image_jpeg_layout instead")]
+pub fn decode_image_jpeg_info(src: &[u8]) -> Result<ImageLayout, IoError> {
+    decode_image_jpeg_layout(src)
 }
 
 #[cfg(test)]
@@ -371,10 +380,10 @@ mod tests {
     #[test]
     fn decode_jpeg_size() -> Result<(), IoError> {
         let bytes = read("../../tests/data/dog.jpeg")?;
-        let (size, num_channels) = decode_image_jpeg_info(bytes.as_slice())?;
-        assert_eq!(size.width, 258);
-        assert_eq!(size.height, 195);
-        assert_eq!(num_channels, 3);
+        let layout = decode_image_jpeg_layout(bytes.as_slice())?;
+        assert_eq!(layout.image_size.width, 258);
+        assert_eq!(layout.image_size.height, 195);
+        assert_eq!(layout.channels, 3);
         Ok(())
     }
 

@@ -9,7 +9,7 @@ mod resize;
 mod warp;
 
 use crate::icp::{PyICPConvergenceCriteria, PyICPResult};
-use crate::image::PyImageSize;
+use crate::image::{PyImageLayout, PyImageSize};
 use crate::io::jpegturbo::{PyImageDecoder, PyImageEncoder};
 use pyo3::prelude::*;
 
@@ -35,6 +35,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(histogram::compute_histogram, m)?)?;
     m.add_function(wrap_pyfunction!(icp::icp_vanilla, m)?)?;
     m.add_function(wrap_pyfunction!(io::functional::read_image_any, m)?)?;
+    m.add_function(wrap_pyfunction!(io::functional::read_image, m)?)?;
     m.add_function(wrap_pyfunction!(io::png::decode_image_png_u8, m)?)?;
     m.add_function(wrap_pyfunction!(io::png::decode_image_png_u16, m)?)?;
     m.add_function(wrap_pyfunction!(io::png::read_image_png_u8, m)?)?;
@@ -59,6 +60,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(warp::warp_affine, m)?)?;
     m.add_function(wrap_pyfunction!(warp::warp_perspective, m)?)?;
     m.add_class::<PyImageSize>()?;
+    m.add_class::<PyImageLayout>()?;
     m.add_class::<PyImageDecoder>()?;
     m.add_class::<PyImageEncoder>()?;
     m.add_class::<PyICPConvergenceCriteria>()?;
