@@ -3,6 +3,7 @@ mod enhance;
 mod histogram;
 mod icp;
 mod image;
+mod image_api;
 mod io;
 mod pointcloud;
 mod resize;
@@ -10,6 +11,7 @@ mod warp;
 
 use crate::icp::{PyICPConvergenceCriteria, PyICPResult};
 use crate::image::PyImageSize;
+use crate::image_api::PyImage3;
 use crate::io::jpegturbo::{PyImageDecoder, PyImageEncoder};
 use pyo3::prelude::*;
 
@@ -63,5 +65,6 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyImageEncoder>()?;
     m.add_class::<PyICPConvergenceCriteria>()?;
     m.add_class::<PyICPResult>()?;
+    m.add_class::<PyImage3>()?;
     Ok(())
 }
