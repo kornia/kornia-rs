@@ -10,6 +10,7 @@ publish = false
 argh = { workspace = true }
 ctrlc = { workspace = true }
 env_logger = { workspace = true }
+flume = "0.11.1"
 foxglove = "0.16.1"
 kornia-io = { workspace = true, features = ["v4l"] }
 kornia-image = { workspace = true }

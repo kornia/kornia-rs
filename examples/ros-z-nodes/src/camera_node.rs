@@ -13,9 +13,8 @@ pub struct CameraNode {
     #[allow(dead_code)]
     node: ZNode,
     publisher: ZPub<CompressedImage, ProtobufSerdes<CompressedImage>>,
-    camera: V4lVideoCapture,
-    frame_id: String,
-    pixel_format: String,
+    frame_rx: flume::Receiver<CompressedImage>,
+    handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl CameraNode {
@@ -32,7 +31,7 @@ impl CameraNode {
 
         // initialize camera
         let pixel_format = PixelFormat::MJPG;
-        let camera = V4lVideoCapture::new(V4LCameraConfig {
+        let mut camera = V4lVideoCapture::new(V4LCameraConfig {
             device_path: format!("/dev/video{}", camera_id),
             size: ImageSize {
                 width: 640,
@@ -43,15 +42,40 @@ impl CameraNode {
             buffer_size: 4,
         })?;
 
+        let (frame_tx, frame_rx) = flume::unbounded();
+
+        let handle = std::thread::spawn(move || {
+            while let Ok(Some(frame)) = camera.grab_frame() {
+                let pub_time = nix::time::clock_gettime(nix::time::ClockId::CLOCK_REALTIME)
+                    .expect("Failed to get clock time")
+                    .num_nanoseconds() as u64;
+                let msg = CompressedImage {
+                    header: Some(Header {
+                        acq_time: stamp_from_sec_nanos(
+                            frame.timestamp.sec as u64,
+                            frame.timestamp.usec as u32,
+                        ),
+                        pub_time,
+                        sequence: frame.sequence,
+                        frame_id: "camera".to_string(),
+                    }),
+                    format: "mjpg".to_string(),
+                    data: frame.buffer.into_vec(),
+                };
+                if let Err(e) = frame_tx.send(msg) {
+                    log::error!("Error sending frame to channel: {}", e);
+                }
+            }
+        });
+
         log::info!("Camera initialized: /dev/video{}", camera_id);
         log::info!("Image size: 640x480, FPS: {}", fps);
 
         Ok(Self {
             node,
             publisher,
-            camera,
-            frame_id: format!("camera_{}", camera_id),
-            pixel_format: pixel_format.as_str().to_lowercase(),
+            frame_rx,
+            handle: Some(handle),
         })
     }
 
@@ -61,32 +85,14 @@ impl CameraNode {
 
         log::info!("Camera node started, publishing");
 
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(33));
-
         loop {
             tokio::select! {
                 _ = shutdown_rx.changed() => {
                     break;
                 }
-                _ = interval.tick() => {
-                    if let Some(frame) = self.camera.grab_frame()? {
-                        let pub_time = nix::time::clock_gettime(nix::time::ClockId::CLOCK_REALTIME)?.num_nanoseconds() as u64;
-
-                        let msg = CompressedImage {
-                            header: Some(Header {
-                                acq_time: stamp_from_sec_nanos(
-                                    frame.timestamp.sec as u64,
-                                    frame.timestamp.usec as u32,
-                                ),
-                                pub_time,
-                                sequence: frame.sequence,
-                                frame_id: self.frame_id.clone(),
-                            }),
-                            format: self.pixel_format.clone(),
-                            data: frame.buffer.into_vec(),
-                        };
-
-                        self.publisher.publish(&msg)?;
+                Ok(frame) = self.frame_rx.recv_async() => {
+                    if let Err(e) = self.publisher.async_publish(&frame).await {
+                        log::error!("Error publishing frame: {}", e);
                     }
                 }
             }
@@ -95,6 +101,17 @@ impl CameraNode {
         log::info!("Shutting down camera node...");
 
         Ok(())
+    }
+}
+
+impl Drop for CameraNode {
+    fn drop(&mut self) {
+        log::info!("Shutting down camera node...");
+        if let Some(handle) = self.handle.take() {
+            if let Err(e) = handle.join() {
+                log::error!("Error joining camera thread: {:?}", e);
+            }
+        }
     }
 }
 

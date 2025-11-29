@@ -11437,6 +11437,7 @@ dependencies = [
  "argh",
  "ctrlc",
  "env_logger",
+ "flume",
  "foxglove 0.16.1",
  "kornia-image",
  "kornia-io",
