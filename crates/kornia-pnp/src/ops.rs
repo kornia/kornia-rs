@@ -1,33 +1,35 @@
 #![allow(clippy::op_ref)]
-use glam::{Mat3, Vec3};
+use kornia_algebra::{Mat3F32, Vec3F32};
 use nalgebra::{DMatrix, DVector, Vector4};
 
 /// Compute the centroid of a set of points.
 pub(crate) fn compute_centroid(pts: &[[f32; 3]]) -> [f32; 3] {
     let n = pts.len() as f32;
-    let sum = pts.iter().fold(Vec3::ZERO, |acc, &p| acc + Vec3::from(p));
+    let sum = pts
+        .iter()
+        .fold(Vec3F32::ZERO, |acc, &p| acc + Vec3F32::from(p));
 
     let centroid = sum / n;
     [centroid.x, centroid.y, centroid.z]
 }
 
 /// Construct compact intrinsics vectors used for fast projection.
-pub(crate) fn intrinsics_as_vectors(k: &[[f32; 3]; 3]) -> (Vec3, Vec3) {
+pub(crate) fn intrinsics_as_vectors(k: &[[f32; 3]; 3]) -> (Vec3F32, Vec3F32) {
     let fx = k[0][0];
     let fy = k[1][1];
     let cx = k[0][2];
     let cy = k[1][2];
-    (Vec3::new(fx, 0.0, cx), Vec3::new(0.0, fy, cy))
+    (Vec3F32::new(fx, 0.0, cx), Vec3F32::new(0.0, fy, cy))
 }
 
 /// Convert array-form pose to glam matrices/vectors.
-pub(crate) fn pose_to_rt(r: &[[f32; 3]; 3], t: &[f32; 3]) -> (Mat3, Vec3) {
-    let r_mat = Mat3::from_cols(
-        Vec3::new(r[0][0], r[1][0], r[2][0]),
-        Vec3::new(r[0][1], r[1][1], r[2][1]),
-        Vec3::new(r[0][2], r[1][2], r[2][2]),
+pub(crate) fn pose_to_rt(r: &[[f32; 3]; 3], t: &[f32; 3]) -> (Mat3F32, Vec3F32) {
+    let r_mat = Mat3F32::from_cols(
+        Vec3F32::new(r[0][0], r[1][0], r[2][0]),
+        Vec3F32::new(r[0][1], r[1][1], r[2][1]),
+        Vec3F32::new(r[0][2], r[1][2], r[2][2]),
     );
-    let t_vec = Vec3::new(t[0], t[1], t[2]);
+    let t_vec = Vec3F32::new(t[0], t[1], t[2]);
     (r_mat, t_vec)
 }
 
@@ -36,13 +38,13 @@ pub(crate) fn pose_to_rt(r: &[[f32; 3]; 3], t: &[f32; 3]) -> (Mat3, Vec3) {
 pub(crate) fn project_sq_error(
     world_point: &[f32; 3],
     image_point: &[f32; 2],
-    r_mat: &Mat3,
-    t_vec: &Vec3,
-    intr_x: &Vec3,
-    intr_y: &Vec3,
+    r_mat: &Mat3F32,
+    t_vec: &Vec3F32,
+    intr_x: &Vec3F32,
+    intr_y: &Vec3F32,
     skip_if_behind: bool,
 ) -> Option<f32> {
-    let pw = Vec3::from_array(*world_point);
+    let pw = Vec3F32::from_array(*world_point);
     let pc = *r_mat * pw + *t_vec;
     if skip_if_behind && pc.z <= 0.0 {
         return None;
@@ -72,14 +74,15 @@ pub(crate) fn gauss_newton(beta_init: [f32; 4], null4: &DMatrix<f32>, rho: &[f32
             let vi = &block_i * &bet; // 3×1 nalgebra vec
             let vj = &block_j * &bet;
 
-            let diff_vec = Vec3::new(vi[0] - vj[0], vi[1] - vj[1], vi[2] - vj[2]);
+            let diff_vec = Vec3F32::new(vi[0] - vj[0], vi[1] - vj[1], vi[2] - vj[2]);
 
-            f_vec[r] = diff_vec.length_squared() - rho[r];
+            f_vec[r] = diff_vec.dot(diff_vec) - rho[r];
 
             for k in 0..4 {
                 let vi_k = block_i.column(k);
                 let vj_k = block_j.column(k);
-                let col_diff = Vec3::new(vi_k[0] - vj_k[0], vi_k[1] - vj_k[1], vi_k[2] - vj_k[2]);
+                let col_diff =
+                    Vec3F32::new(vi_k[0] - vj_k[0], vi_k[1] - vj_k[1], vi_k[2] - vj_k[2]);
                 let deriv = col_diff.dot(diff_vec) * 2.0;
                 j_mat[(r, k)] = deriv;
             }
