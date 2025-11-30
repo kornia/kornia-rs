@@ -193,7 +193,7 @@ impl PyAprilTagDecoder {
         self.0.clear();
     }
 
-    pub fn decode(&mut self, src: PyImage) -> PyResult<Vec<PyDetection>> {
+    pub fn decode(&mut self, src: PyImage) -> PyResult<Vec<PyApriltagDetection>> {
         let img: Image<u8, 1, _> = Image::from_pyimage(src)
             .map_err(|err| PyErr::new::<PyException, _>(err.to_string()))?;
 
@@ -207,9 +207,9 @@ impl PyAprilTagDecoder {
     }
 }
 
-#[pyclass(name = "Detection", eq, get_all, set_all)]
+#[pyclass(name = "ApriltagDetection", eq, get_all, set_all)]
 #[derive(PartialEq, Clone)]
-pub struct PyDetection {
+pub struct PyApriltagDetection {
     pub tag_family_kind: family::PyTagFamilyKind,
     pub id: u16,
     pub hamming: u8,
@@ -219,7 +219,7 @@ pub struct PyDetection {
 }
 
 #[pymethods]
-impl PyDetection {
+impl PyApriltagDetection {
     #[new]
     pub fn new(
         tag_family_kind: family::PyTagFamilyKind,
@@ -240,7 +240,7 @@ impl PyDetection {
     }
 }
 
-impl From<Detection> for PyDetection {
+impl From<Detection> for PyApriltagDetection {
     fn from(value: Detection) -> Self {
         Self {
             tag_family_kind: family::PyTagFamilyKind(value.tag_family_kind),
