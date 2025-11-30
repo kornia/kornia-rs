@@ -22,11 +22,22 @@ const MAX_SWEEPS: usize = 4;
 #[derive(Debug, Clone)]
 /// A simple symmetric 3x3 Matrix class (contains no storage for (0, 1) (0, 2) and (1, 2)
 struct Symmetric3x3 {
+    /// The element at row 0, column 0, first diagonal element.
     m_00: f32,
+
+    /// The element at row 1, column 0. equivalent to `m_01`.
     m_10: f32,
+
+    /// The element at row 1, column 1, the second diagonal element.
     m_11: f32,
+
+    /// The element at row 2, column 0. equivalent to `m_02`.
     m_20: f32,
+
+    /// The element at row 2, column 1. equivalent to `m_12`.
     m_21: f32,
+
+    /// The element at row 2, column 2, the third diagonal element.
     m_22: f32,
 }
 
@@ -390,12 +401,19 @@ pub fn svd3(a: &Mat3) -> SVD3Set {
 // =================================================================================
 
 #[derive(Debug, Clone)]
+/// A simple symmetric 3x3 Matrix class (f64)
 struct Symmetric3x3F64 {
+    /// The element at row 0, column 0, first diagonal element.
     m_00: f64,
+    /// The element at row 1, column 0. equivalent to `m_01`.
     m_10: f64,
+    /// The element at row 1, column 1, the second diagonal element.
     m_11: f64,
+    /// The element at row 2, column 0. equivalent to `m_02`.
     m_20: f64,
+    /// The element at row 2, column 1. equivalent to `m_12`.
     m_21: f64,
+    /// The element at row 2, column 2, the third diagonal element.
     m_22: f64,
 }
 
