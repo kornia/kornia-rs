@@ -88,7 +88,7 @@ pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> 
         };
 
         // Convert YUYV to RGB if needed - reuse the pre-allocated buffer
-        let buf = frame.buffer.as_slice();
+        let buf = frame.buffer.as_ref();
         let decode_result: Result<(), Box<dyn std::error::Error>> = match frame.pixel_format {
             PixelFormat::YUYV => {
                 imgproc::color::convert_yuyv_to_rgb_u8(buf, &mut rgb_image, YuvToRgbMode::Bt601Full)

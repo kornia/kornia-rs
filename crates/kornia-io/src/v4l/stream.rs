@@ -14,29 +14,66 @@ use v4l::{
     v4l_sys::*,
 };
 
-/// A zero-copy, thread-safe buffer that owns its memory
-#[derive(Clone)]
-pub struct V4lBuffer {
-    data: Arc<std::mem::ManuallyDrop<Vec<u8>>>,
-    // Store the original mmap info for proper cleanup
+/// A memory-mapped buffer that provides safe access to mmap'd memory.
+///
+/// This buffer wraps a raw pointer to mmap'd memory and ensures proper cleanup
+/// via the `MmapInfo` struct. The buffer itself does not own the memory - it's
+/// managed by the `MmapStream` and will be unmapped when the stream is dropped.
+///
+/// # Safety
+///
+/// This buffer is only valid while the `MmapStream` that created it is still alive.
+/// The buffer should not be used after the stream is dropped.
+pub struct MmapBuffer {
+    /// Raw pointer to the mmap'd memory
+    ptr: *const u8,
+    /// Length of the buffer in bytes
+    length: usize,
+    /// Reference to the mmap info for proper cleanup tracking
+    /// This ensures the memory is not unmapped while the buffer is still in use
     _mmap_info: Arc<MmapInfo>,
 }
 
-impl V4lBuffer {
-    /// Get the buffer data as a slice
-    pub fn as_slice(&self) -> &[u8] {
-        &self.data
+unsafe impl Send for MmapBuffer {}
+unsafe impl Sync for MmapBuffer {}
+
+impl MmapBuffer {
+    /// Create a new MmapBuffer from a raw pointer and length.
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must be a valid pointer to `length` bytes of memory
+    /// - The memory must remain valid for the lifetime of the buffer
+    /// - `mmap_info` must be the same `MmapInfo` that was used to create the mmap
+    unsafe fn new(ptr: *const u8, length: usize, mmap_info: Arc<MmapInfo>) -> Self {
+        Self {
+            ptr,
+            length,
+            _mmap_info: mmap_info,
+        }
     }
 
-    /// Get the buffer data as a Vec (zero-copy if this is the only reference)
-    pub fn into_vec(self) -> Vec<u8> {
-        match Arc::try_unwrap(self.data) {
-            Ok(manually_drop) => std::mem::ManuallyDrop::into_inner(manually_drop),
-            Err(arc) => {
-                // Clone the data since we can't take ownership
-                (**arc).clone()
-            }
-        }
+    /// Get the buffer data as a slice
+    pub fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.length) }
+    }
+
+    /// Convert the buffer to an owned `Box<[u8]>` by copying the data.
+    ///
+    /// This is necessary because the mmap'd memory is tied to the stream lifetime.
+    /// Only copies the actual used bytes if `used_bytes` is provided.
+    pub fn to_boxed_slice(&self, used_bytes: Option<usize>) -> Box<[u8]> {
+        let len = used_bytes.unwrap_or(self.length).min(self.length);
+        let slice = unsafe { std::slice::from_raw_parts(self.ptr, len) };
+        slice.to_vec().into_boxed_slice()
+    }
+}
+
+impl std::ops::Deref for MmapBuffer {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
     }
 }
 
@@ -68,7 +105,7 @@ impl Drop for MmapInfo {
 /// Zero-copy mmap stream that returns owned references
 pub struct MmapStream {
     handle: Arc<Handle>,
-    buffers: Vec<V4lBuffer>,
+    buffers: Vec<(MmapBuffer, Arc<MmapInfo>)>,
     buf_type: Type,
     buf_meta: Vec<Metadata>,
     active: bool,
@@ -143,17 +180,10 @@ impl MmapStream {
                 offset,
             });
 
-            // Create a zero-copy Vec that points to mmap'd memory
-            // Use ManuallyDrop to prevent Vec from trying to free the memory
-            let vec_data = unsafe { Vec::from_raw_parts(ptr as *mut u8, length, length) };
-            let manually_drop_vec = std::mem::ManuallyDrop::new(vec_data);
+            // Create a safe buffer wrapper for the mmap'd memory
+            let buffer = unsafe { MmapBuffer::new(ptr as *const u8, length, mmap_info.clone()) };
 
-            let owned_buffer = V4lBuffer {
-                data: Arc::new(manually_drop_vec),
-                _mmap_info: mmap_info,
-            };
-
-            buffers.push(owned_buffer);
+            buffers.push((buffer, mmap_info));
             buf_meta.push(Metadata::default());
         }
 
@@ -221,8 +251,11 @@ impl MmapStream {
         Ok(index)
     }
 
-    /// Get the next frame (zero-copy, owned reference)
-    pub fn next_frame(&mut self) -> io::Result<(V4lBuffer, Metadata)> {
+    /// Get the next frame and return the buffer data as an owned `Box<[u8]>`.
+    ///
+    /// The data is copied from the mmap'd buffer to ensure it can outlive the stream.
+    /// Only the actual used bytes (from metadata.bytesused) are copied for efficiency.
+    pub fn next_frame(&mut self) -> io::Result<(Box<[u8]>, Metadata)> {
         if !self.active {
             // Queue all buffers and start streaming
             for i in 0..self.buffers.len() {
@@ -237,15 +270,24 @@ impl MmapStream {
         // Dequeue the next available buffer
         self.current_index = self.dequeue_buffer()?;
 
-        let buffer = self.buffers[self.current_index].clone();
+        let (buffer, _) = &self.buffers[self.current_index];
         let metadata = self.buf_meta[self.current_index];
 
-        Ok((buffer, metadata))
+        // Copy the data from mmap'd memory to an owned buffer
+        // Use bytesused if available, otherwise use full buffer length
+        let used_bytes = if metadata.bytesused > 0 {
+            Some(metadata.bytesused as usize)
+        } else {
+            None
+        };
+        let owned_buffer = buffer.to_boxed_slice(used_bytes);
+
+        Ok((owned_buffer, metadata))
     }
 }
 
 impl StreamTrait for MmapStream {
-    type Item = V4lBuffer;
+    type Item = Box<[u8]>;
 
     fn start(&mut self) -> io::Result<()> {
         if self.active {

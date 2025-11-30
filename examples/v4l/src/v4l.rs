@@ -92,7 +92,7 @@ pub fn v4l_demo() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         // Convert YUYV to RGB if needed - reuse the pre-allocated buffer
-        let buf = frame.buffer.as_slice();
+        let buf = frame.buffer.as_ref();
         match frame.pixel_format {
             PixelFormat::YUYV => {
                 imgproc::color::convert_yuyv_to_rgb_u8(
