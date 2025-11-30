@@ -1,5 +1,6 @@
 use crate::{allocator::ImageAllocator, error::ImageError};
 use kornia_tensor::{Tensor, Tensor2, Tensor3};
+use crate::allocator::CpuAllocator;
 
 /// Image size in pixels
 ///
@@ -74,6 +75,43 @@ impl<T, const C: usize, A: ImageAllocator> std::ops::DerefMut for Image<T, C, A>
         &mut self.0
     }
 }
+
+/// Type alias for Image with CpuAllocator for backward compatibility.
+///
+/// This type alias allows using `ImageCpu::<T, C>` instead of `Image::<T, C, CpuAllocator>`
+/// to maintain compatibility with code written for kornia-image 0.1.9 and earlier.
+///
+/// # Migration from 0.1.9
+///
+/// If you have code like:
+/// ```ignore
+/// Image::<f32, 3>::new(size, data).unwrap()
+/// ```
+///
+/// You can migrate to:
+/// ```ignore
+/// ImageCpu::<f32, 3>::new_cpu(size, data).unwrap()
+/// ```
+///
+/// Or use the full API:
+/// ```ignore
+/// Image::<f32, 3, CpuAllocator>::new(size, data, CpuAllocator).unwrap()
+/// ```
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{ImageCpu, ImageSize};
+///
+/// let image = ImageCpu::<f32, 3>::new_cpu(
+///     ImageSize {
+///         width: 2,
+///         height: 2,
+///     },
+///     vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+/// ).unwrap();
+/// ```
+pub type ImageCpu<T, const C: usize> = Image<T, C, CpuAllocator>;
 
 impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// Create a new image from pixel data.
@@ -172,7 +210,88 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
 
         Ok(image)
     }
+}
 
+// Helper implementations for Image with CpuAllocator to provide backward compatibility
+impl<T, const C: usize> ImageCpu<T, C> {
+    /// Create a new image from pixel data using CpuAllocator.
+    ///
+    /// This is a convenience method that uses CpuAllocator by default,
+    /// providing backward compatibility with kornia-image 0.1.9 and earlier.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The size of the image in pixels.
+    /// * `data` - The pixel data of the image.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the given pixel data.
+    ///
+    /// # Errors
+    ///
+    /// If the length of the pixel data does not match the image size, an error is returned.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_image::{ImageCpu, ImageSize};
+    ///
+    /// let image = ImageCpu::<f32, 3>::new_cpu(
+    ///     ImageSize {
+    ///         width: 2,
+    ///         height: 2,
+    ///     },
+    ///     vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+    /// ).unwrap();
+    /// ```
+    pub fn new_cpu(size: ImageSize, data: Vec<T>) -> Result<Self, ImageError>
+    where
+        T: Clone,
+    {
+        Self::new(size, data, CpuAllocator)
+    }
+
+    /// Create a new image with the given size and default pixel data using CpuAllocator.
+    ///
+    /// This is a convenience method that uses CpuAllocator by default,
+    /// providing backward compatibility with kornia-image 0.1.9 and earlier.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The size of the image in pixels.
+    /// * `val` - The default value of the pixel data.
+    ///
+    /// # Returns
+    ///
+    /// A new image with the given size and default pixel data.
+    ///
+    /// # Errors
+    ///
+    /// If the length of the pixel data does not match the image size, an error is returned.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_image::{ImageCpu, ImageSize};
+    ///
+    /// let image = ImageCpu::<u8, 3>::from_size_val_cpu(
+    ///     ImageSize {
+    ///         width: 10,
+    ///         height: 20,
+    ///     },
+    ///     0u8,
+    /// ).unwrap();
+    /// ```
+    pub fn from_size_val_cpu(size: ImageSize, val: T) -> Result<Self, ImageError>
+    where
+        T: Clone + Default,
+    {
+        Self::from_size_val(size, val, CpuAllocator)
+    }
+}
+
+impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// Create a new image from raw parts.
     ///
     /// # Arguments
