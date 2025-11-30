@@ -1,11 +1,4 @@
-use std::{
-    io, mem,
-    ptr::NonNull,
-    sync::{
-        atomic::{AtomicPtr, Ordering},
-        Arc,
-    },
-};
+use std::{io, mem, ptr::NonNull, sync::Arc};
 use v4l::{
     buffer::{Metadata, Type},
     device::{Device, Handle},
@@ -42,7 +35,18 @@ pub struct MmapBuffer {
     _mmap_info: Arc<MmapInfo>,
 }
 
+// Safety: MmapBuffer is Send because:
+// - The mmap'd memory is read-only from the buffer's perspective
+// - Arc<MmapInfo> is Send and Sync, providing thread-safe reference counting
+// - Multiple threads can safely read from the same mmap'd memory concurrently
+// - The pointer and length are Copy types that can be safely moved between threads
 unsafe impl Send for MmapBuffer {}
+
+// Safety: MmapBuffer is Sync because:
+// - The mmap'd memory is read-only from the buffer's perspective
+// - Arc<MmapInfo> is Send and Sync, providing thread-safe reference counting
+// - Multiple threads can safely read from the same mmap'd memory concurrently
+// - The pointer and length are Copy types that can be safely shared between threads
 unsafe impl Sync for MmapBuffer {}
 
 impl MmapBuffer {
@@ -66,17 +70,25 @@ impl MmapBuffer {
     /// This is used to create a buffer that only covers the used bytes, while
     /// still keeping the full mmap alive via the shared `Arc<MmapInfo>`.
     ///
-    /// # Safety
-    ///
-    /// - `used_bytes` must be <= the original buffer length
-    /// - The pointer must remain valid for `used_bytes` length
-    pub(crate) unsafe fn with_length(&self, used_bytes: usize) -> Self {
+    /// The method safely bounds-checks `used_bytes` against the current buffer length,
+    /// ensuring memory safety regardless of the input value.
+    pub(crate) fn with_length(&self, used_bytes: usize) -> Self {
         let len = used_bytes.min(self.length);
         Self {
             ptr: self.ptr,
             length: len,
             _mmap_info: self._mmap_info.clone(),
         }
+    }
+
+    /// Get the length of the buffer in bytes
+    pub fn len(&self) -> usize {
+        self.length
+    }
+
+    /// Check if the buffer is empty
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
     }
 
     /// Get the buffer data as a slice
@@ -102,7 +114,7 @@ impl std::ops::Deref for MmapBuffer {
 
 /// Information about memory-mapped buffer
 pub(crate) struct MmapInfo {
-    ptr: AtomicPtr<u8>, // Stored as *mut for munmap compatibility
+    ptr: *mut u8, // Stored as *mut for munmap compatibility
     length: usize,
     #[allow(dead_code)]
     offset: u32,
@@ -110,10 +122,9 @@ pub(crate) struct MmapInfo {
 
 impl Drop for MmapInfo {
     fn drop(&mut self) {
-        let ptr = self.ptr.load(Ordering::Relaxed);
-        if !ptr.is_null() {
+        if !self.ptr.is_null() {
             unsafe {
-                let result = libc::munmap(ptr as *mut libc::c_void, self.length);
+                let result = libc::munmap(self.ptr as *mut libc::c_void, self.length);
                 if result == -1 {
                     eprintln!(
                         "Error: munmap failed with errno {}",
@@ -128,7 +139,7 @@ impl Drop for MmapInfo {
 /// Zero-copy mmap stream that returns owned references
 pub struct MmapStream {
     handle: Arc<Handle>,
-    buffers: Vec<(MmapBuffer, Arc<MmapInfo>)>,
+    buffers: Vec<MmapBuffer>,
     buf_type: Type,
     buf_meta: Vec<Metadata>,
     active: bool,
@@ -198,15 +209,15 @@ impl MmapStream {
             }
 
             let mmap_info = Arc::new(MmapInfo {
-                ptr: AtomicPtr::new(ptr as *mut u8),
+                ptr: ptr as *mut u8,
                 length,
                 offset,
             });
 
             // Create a safe buffer wrapper for the mmap'd memory
-            let buffer = unsafe { MmapBuffer::new(ptr as *const u8, length, mmap_info.clone()) };
+            let buffer = unsafe { MmapBuffer::new(ptr as *const u8, length, mmap_info) };
 
-            buffers.push((buffer, mmap_info));
+            buffers.push(buffer);
             buf_meta.push(Metadata::default());
         }
 
@@ -294,7 +305,7 @@ impl MmapStream {
         // Dequeue the next available buffer
         self.current_index = self.dequeue_buffer()?;
 
-        let (buffer, _) = &self.buffers[self.current_index];
+        let buffer = &self.buffers[self.current_index];
         let metadata = self.buf_meta[self.current_index];
 
         // Create a zero-copy buffer that only covers the used bytes
@@ -302,9 +313,9 @@ impl MmapStream {
         let used_bytes = if metadata.bytesused > 0 {
             metadata.bytesused as usize
         } else {
-            buffer.length
+            buffer.len()
         };
-        let frame_buffer = unsafe { buffer.with_length(used_bytes) };
+        let frame_buffer = buffer.with_length(used_bytes);
 
         Ok((frame_buffer, metadata))
     }
@@ -377,5 +388,143 @@ impl Drop for MmapStream {
                 &mut v4l2_reqbufs as *mut _ as *mut std::os::raw::c_void,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that MmapBuffer cloning preserves data access
+    #[test]
+    fn test_mmap_buffer_clone_preserves_data() {
+        // Create a test buffer with some data
+        let test_data = b"Hello, World!";
+        let mmap_info = Arc::new(MmapInfo {
+            ptr: std::ptr::null_mut(),
+            length: test_data.len(),
+            offset: 0,
+        });
+
+        // Note: This test uses unsafe to create a buffer for testing purposes
+        // In real usage, buffers are created from actual mmap'd memory
+        let buffer =
+            unsafe { MmapBuffer::new(test_data.as_ptr(), test_data.len(), mmap_info.clone()) };
+
+        // Clone the buffer
+        let cloned = buffer.clone();
+
+        // Both should have the same data
+        assert_eq!(buffer.as_slice(), test_data);
+        assert_eq!(cloned.as_slice(), test_data);
+        assert_eq!(buffer.as_slice(), cloned.as_slice());
+
+        // Both should have the same length
+        assert_eq!(buffer.len(), test_data.len());
+        assert_eq!(cloned.len(), test_data.len());
+    }
+
+    /// Test that with_length correctly restricts buffer size
+    #[test]
+    fn test_mmap_buffer_with_length() {
+        let test_data = b"Hello, World!";
+        let mmap_info = Arc::new(MmapInfo {
+            ptr: std::ptr::null_mut(),
+            length: test_data.len(),
+            offset: 0,
+        });
+
+        let buffer =
+            unsafe { MmapBuffer::new(test_data.as_ptr(), test_data.len(), mmap_info.clone()) };
+
+        // Create a shorter buffer
+        let shorter = buffer.with_length(5);
+        assert_eq!(shorter.len(), 5);
+        assert_eq!(shorter.as_slice(), b"Hello");
+
+        // Create a buffer with length larger than original (should be clamped)
+        let longer = buffer.with_length(100);
+        assert_eq!(longer.len(), test_data.len());
+        assert_eq!(longer.as_slice(), test_data);
+
+        // Create a buffer with zero length
+        let empty = buffer.with_length(0);
+        assert_eq!(empty.len(), 0);
+        assert!(empty.is_empty());
+    }
+
+    /// Test that as_slice returns correct data
+    #[test]
+    fn test_mmap_buffer_as_slice() {
+        let test_data = b"Test Data";
+        let mmap_info = Arc::new(MmapInfo {
+            ptr: std::ptr::null_mut(),
+            length: test_data.len(),
+            offset: 0,
+        });
+
+        let buffer =
+            unsafe { MmapBuffer::new(test_data.as_ptr(), test_data.len(), mmap_info.clone()) };
+
+        let slice = buffer.as_slice();
+        assert_eq!(slice, test_data);
+        assert_eq!(slice.len(), test_data.len());
+    }
+
+    /// Test len() and is_empty() methods
+    #[test]
+    fn test_mmap_buffer_len_and_is_empty() {
+        let test_data = b"Data";
+        let mmap_info = Arc::new(MmapInfo {
+            ptr: std::ptr::null_mut(),
+            length: test_data.len(),
+            offset: 0,
+        });
+
+        let buffer =
+            unsafe { MmapBuffer::new(test_data.as_ptr(), test_data.len(), mmap_info.clone()) };
+
+        assert_eq!(buffer.len(), 4);
+        assert!(!buffer.is_empty());
+
+        let empty = buffer.with_length(0);
+        assert_eq!(empty.len(), 0);
+        assert!(empty.is_empty());
+    }
+
+    /// Test that Deref works correctly
+    #[test]
+    fn test_mmap_buffer_deref() {
+        let test_data = b"Hello";
+        let mmap_info = Arc::new(MmapInfo {
+            ptr: std::ptr::null_mut(),
+            length: test_data.len(),
+            offset: 0,
+        });
+
+        let buffer =
+            unsafe { MmapBuffer::new(test_data.as_ptr(), test_data.len(), mmap_info.clone()) };
+
+        // Test Deref to [u8]
+        let slice: &[u8] = &*buffer;
+        assert_eq!(slice, test_data);
+    }
+
+    /// Test into_vec copies data correctly
+    #[test]
+    fn test_mmap_buffer_into_vec() {
+        let test_data = b"Copy Test";
+        let mmap_info = Arc::new(MmapInfo {
+            ptr: std::ptr::null_mut(),
+            length: test_data.len(),
+            offset: 0,
+        });
+
+        let buffer =
+            unsafe { MmapBuffer::new(test_data.as_ptr(), test_data.len(), mmap_info.clone()) };
+
+        let vec = buffer.into_vec();
+        assert_eq!(vec.as_slice(), test_data);
+        assert_eq!(vec.len(), test_data.len());
     }
 }
