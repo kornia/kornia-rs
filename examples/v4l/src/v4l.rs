@@ -68,10 +68,6 @@ pub fn v4l_demo() -> Result<(), Box<dyn std::error::Error>> {
     println!("Requested FPS: {0}", args.fps);
     println!("Image size: {img_size:?}");
 
-    if let Err(e) = webcam.set_control(ExposureDynamicFramerate(false)) {
-        println!("⚠️ Could not disable dynamic framerate: {e}");
-    }
-
     // Enable auto exposure and auto white balance for best image quality
     if let Err(e) = webcam.set_control(AutoExposure(AutoExposureMode::Priority)) {
         println!("⚠️ Could not enable aperture priority mode: {e}");
@@ -92,7 +88,7 @@ pub fn v4l_demo() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         // Convert YUYV to RGB if needed - reuse the pre-allocated buffer
-        let buf = frame.buffer.as_ref();
+        let buf = frame.buffer.as_slice();
         match frame.pixel_format {
             PixelFormat::YUYV => {
                 imgproc::color::convert_yuyv_to_rgb_u8(
@@ -129,19 +125,6 @@ pub fn v4l_demo() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // some camera controls obtained from: v4l2-ctl --device=/dev/video0 --all
-
-#[derive(Debug)]
-struct ExposureDynamicFramerate(pub bool);
-
-#[rustfmt::skip]
-impl camera_control::CameraControlTrait for ExposureDynamicFramerate {
-    fn name(&self) -> &str { "dynamic_framerate" }
-    fn control_id(&self) -> u32 { 0x009a0903 }
-    fn value(&self) -> camera_control::ControlType {
-        camera_control::ControlType::Boolean(self.0)
-    }
-    fn description(&self) -> String { "Dynamic framerate control".to_string() }
-}
 
 #[derive(Debug, Copy, Clone)]
 enum AutoExposureMode {

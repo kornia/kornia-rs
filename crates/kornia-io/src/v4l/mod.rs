@@ -6,6 +6,7 @@ mod stream;
 
 // re-export the camera control and pixel format types
 pub use pixel_format::PixelFormat;
+pub use stream::MmapBuffer;
 
 use crate::v4l::camera_control::{CameraControlTrait, ControlType};
 use kornia_image::ImageSize;
@@ -65,11 +66,11 @@ pub struct V4lVideoCapture {
 /// Represents a captured frame from a V4L camera.
 ///
 /// The frame can contain either compressed data (e.g., JPEG) or uncompressed data
-/// (e.g., YUYV, UYVY). The buffer is always owned and can be accessed directly or
-/// converted to a kornia Image when appropriate.
+/// (e.g., YUYV, UYVY). The buffer uses zero-copy semantics via `MmapBuffer`, which
+/// keeps the mmap'd memory alive via `Arc<MmapInfo>`.
 pub struct EncodedFrame {
-    /// The buffer of the frame (owned, zero-copy when possible)
-    pub buffer: Box<[u8]>,
+    /// The buffer of the frame (zero-copy via mmap)
+    pub buffer: MmapBuffer,
     /// The image size of the frame
     pub size: ImageSize,
     /// The pixel format of the frame
@@ -155,49 +156,4 @@ impl V4lVideoCapture {
 
         Ok(Some(frame))
     }
-}
-
-impl EncodedFrame {
-    /// Get the raw buffer data as a slice
-    ///
-    /// This is provided for convenience. You can also access `self.buffer.as_ref()` directly.
-    pub fn buffer(&self) -> &[u8] {
-        self.buffer.as_ref()
-    }
-
-    /// Consume the frame and return the owned buffer as `Box<[u8]>`
-    pub fn into_buffer(self) -> Box<[u8]> {
-        self.buffer
-    }
-
-    /// Consume the frame and return the owned buffer as `Vec<u8>`
-    ///
-    /// Note: This method copies the data from `Box<[u8]>` to `Vec<u8>` because
-    /// they have different memory layouts. For zero-copy moves, consider using
-    /// `into_buffer()` and working with `Box<[u8]>` directly, or change the
-    /// `EncodedFrame` to use `Vec<u8>` as the buffer type.
-    pub fn into_vec(self) -> Vec<u8> {
-        self.buffer.to_vec()
-    }
-
-    /// Get the image size
-    pub fn size(&self) -> ImageSize {
-        self.size
-    }
-
-    /// Get the pixel format
-    pub fn pixel_format(&self) -> PixelFormat {
-        self.pixel_format
-    }
-
-    /// Get the timestamp
-    pub fn timestamp(&self) -> Timestamp {
-        self.timestamp
-    }
-
-    /// Get the sequence number
-    pub fn sequence(&self) -> u32 {
-        self.sequence
-    }
-
 }
