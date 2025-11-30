@@ -6,6 +6,7 @@ mod stream;
 
 // re-export the camera control and pixel format types
 pub use pixel_format::PixelFormat;
+pub use stream::MmapBuffer;
 
 use crate::v4l::camera_control::{CameraControlTrait, ControlType};
 use kornia_image::ImageSize;
@@ -62,13 +63,17 @@ pub struct V4lVideoCapture {
     size: ImageSize,
 }
 
-/// Represents a captured frame
+/// Represents a captured frame from a V4L camera.
+///
+/// The frame can contain either compressed data (e.g., JPEG) or uncompressed data
+/// (e.g., YUYV, UYVY). The buffer uses zero-copy semantics via `MmapBuffer`, which
+/// keeps the mmap'd memory alive via `Arc<MmapInfo>`.
 pub struct EncodedFrame {
-    /// The buffer of the frame
-    pub buffer: stream::V4lBuffer,
+    /// The buffer of the frame (zero-copy via mmap)
+    pub buffer: MmapBuffer,
     /// The image size of the frame
     pub size: ImageSize,
-    /// The fourcc of the frame
+    /// The pixel format of the frame
     pub pixel_format: PixelFormat,
     /// The timestamp of the frame
     pub timestamp: Timestamp,
