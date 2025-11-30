@@ -21,6 +21,7 @@ kornia-imgproc = { path = "../crates/kornia-imgproc" }
 kornia-io = { path = "../crates/kornia-io", features = ["turbojpeg"] }
 kornia-icp = { path = "../crates/kornia-icp" }
 kornia-3d = { path = "../crates/kornia-3d" }
+kornia-apriltag = { path = "../crates/kornia-apriltag" }
 
 # external
 pyo3 = { version = "0.26.0", features = ["extension-module"] }
