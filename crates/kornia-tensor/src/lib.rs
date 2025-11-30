@@ -138,7 +138,21 @@ pub type Tensor2<T, A> = Tensor<T, 2, A>;
 pub type Tensor3<T, A> = Tensor<T, 3, A>;
 
 /// Type alias for a 4-dimensional tensor.
+///
+/// Commonly used for batch processing: `[batch, channels, height, width]`.
 pub type Tensor4<T, A> = Tensor<T, 4, A>;
 
 /// Type alias for a 2-dimensional tensor with CPU allocator.
+///
+/// The most commonly used tensor type for matrices on CPU.
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_tensor::CpuTensor2;
+///
+/// // Create a 3x4 matrix of zeros
+/// let matrix: CpuTensor2<f32> = CpuTensor2::zeros([3, 4]);
+/// assert_eq!(matrix.shape, [3, 4]);
+/// ```
 pub type CpuTensor2<T> = Tensor2<T, CpuAllocator>;

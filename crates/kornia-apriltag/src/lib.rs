@@ -1,5 +1,73 @@
 #![deny(missing_docs)]
-//! # Kornia AprilTag
+#![doc = env!("CARGO_PKG_DESCRIPTION")]
+//!
+//! # Kornia AprilTag Detection
+//!
+//! High-performance AprilTag detection library for robotics and augmented reality applications.
+//!
+//! ## Supported Tag Families
+//!
+//! - **Tag16H5**: 16-bit tags with Hamming distance 5
+//! - **Tag25H9**: 25-bit tags with Hamming distance 9
+//! - **Tag36H10**: 36-bit tags with Hamming distance 10
+//! - **Tag36H11**: 36-bit tags with Hamming distance 11 (most common)
+//! - **TagCircle21H7**: Circular 21-bit tags
+//! - **TagCircle49H12**: Circular 49-bit tags
+//! - **TagCustom48H12**: Custom 48-bit tags
+//! - **TagStandard41H12**: Standard 41-bit tags
+//! - **TagStandard52H13**: Standard 52-bit tags
+//!
+//! ## Example: Basic Detection
+//!
+//! ```rust,no_run
+//! use kornia_apriltag::{AprilTagDecoder, DecodeTagsConfig};
+//! use kornia_apriltag::family::TagFamilyKind;
+//! use kornia_io::functional::read_image_any;
+//!
+//! // Load an image
+//! let img = read_image_any("image.jpg")?;
+//!
+//! // Configure detector for Tag36H11 family
+//! let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]);
+//!
+//! // Create decoder
+//! let mut decoder = AprilTagDecoder::new(config, img.size())?;
+//!
+//! // Detect tags
+//! let detections = decoder.decode(&img)?;
+//!
+//! for detection in detections {
+//!     println!("Found tag ID: {} at position {:?}",
+//!         detection.id, detection.quad.corners);
+//! }
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! ## Example: Multiple Tag Families
+//!
+//! ```rust
+//! use kornia_apriltag::DecodeTagsConfig;
+//! use kornia_apriltag::family::TagFamilyKind;
+//!
+//! // Detect multiple tag families simultaneously
+//! let config = DecodeTagsConfig::new(vec![
+//!     TagFamilyKind::Tag36H11,
+//!     TagFamilyKind::Tag25H9,
+//!     TagFamilyKind::Tag16H5,
+//! ]);
+//!
+//! // Or detect all supported families
+//! let config_all = DecodeTagsConfig::all();
+//! ```
+//!
+//! ## Algorithm Pipeline
+//!
+//! The detection process consists of four main stages:
+//!
+//! 1. **Adaptive Thresholding**: Convert grayscale image to binary
+//! 2. **Connected Components**: Find candidate regions using union-find
+//! 3. **Quad Fitting**: Extract quadrilateral shapes from components
+//! 4. **Tag Decoding**: Decode tag bits and identify family/ID
 
 use std::collections::HashMap;
 
