@@ -3,24 +3,297 @@ use std::alloc::Layout;
 
 use thiserror::Error;
 
-/// Error type for tensor memory allocation operations.
+use crate::device::Device;
+
+/// Trait for buffer operations that can be performed on allocator buffer types.
 ///
-/// This enum represents all possible errors that can occur during tensor memory
-/// allocation and deallocation.
+/// This trait allows extensions (like GStreamer) to implement their own buffer types
+/// without kornia-tensor needing to know about them. The trait provides a common interface
+/// for extracting pointers and length information from any buffer type.
+///
+/// # Safety
+///
+/// Implementations must ensure that:
+/// - `as_ptr()` returns a valid pointer for at least `len()` bytes
+/// - The pointer remains valid as long as the buffer is alive
+/// - `as_mut_ptr()` is only called when the buffer is exclusively owned
+///
+/// # Examples
+///
+/// Built-in implementations:
+///
+/// ```rust
+/// use kornia_tensor::allocator::BufferOps;
+///
+/// let ptr: *mut u8 = unsafe { std::alloc::alloc(std::alloc::Layout::new::<u8>()) };
+/// assert!(!ptr.as_ptr().is_null());
+/// ```
+///
+/// Extension implementations:
+///
+/// ```rust
+/// use kornia_tensor::allocator::BufferOps;
+///
+/// impl BufferOps for Vec<u8> {
+///     fn as_ptr(&self) -> *const u8 {
+///         self.as_ptr() as *const u8
+///     }
+///
+///     fn as_mut_ptr(&mut self) -> *mut u8 {
+///         self.as_mut_ptr()
+///     }
+///
+///     fn len(&self) -> usize {
+///         self.len()
+///     }
+/// }
+/// ```
+pub trait BufferOps {
+    /// Returns a pointer to the buffer's data.
+    ///
+    /// # Safety
+    ///
+    /// The returned pointer must be valid for at least `len()` bytes.
+    /// The pointer remains valid as long as the buffer is alive.
+    fn as_ptr(&self) -> *const u8;
+
+    /// Returns a mutable pointer to the buffer's data.
+    ///
+    /// # Safety
+    ///
+    /// This should only be called when the buffer is exclusively owned.
+    /// The returned pointer must be valid for at least `len()` bytes.
+    fn as_mut_ptr(&mut self) -> *mut u8;
+
+    /// Returns the length of the buffer in bytes.
+    fn len(&self) -> usize;
+}
+
+/// An error type for tensor allocator operations.
+///
+/// This enum provides detailed error information for memory allocation,
+/// deallocation, and transfer operations across different devices.
 #[derive(Debug, Error, PartialEq)]
 pub enum TensorAllocatorError {
-    /// Invalid memory layout for tensor allocation.
+    /// Memory layout is invalid for the requested allocation.
     ///
-    /// This error occurs when attempting to create a memory layout with invalid
-    /// parameters (e.g., size too large, alignment requirements not met).
-    #[error("Invalid tensor layout {0}")]
+    /// This typically occurs when the size or alignment requirements
+    /// exceed system limits or are internally inconsistent.
+    ///
+    /// # Possible Causes
+    /// - Requested size exceeds `isize::MAX`
+    /// - Alignment is not a power of two
+    /// - Size is not a multiple of alignment
+    #[error("Invalid memory layout: {0}. Check that size fits in isize::MAX and alignment is a power of 2.")]
     LayoutError(core::alloc::LayoutError),
 
-    /// Allocation returned a null pointer.
+    /// Memory allocation returned a null pointer.
     ///
-    /// This typically indicates an out-of-memory condition or other allocation failure.
-    #[error("Null pointer")]
+    /// This indicates that the system was unable to allocate the requested memory,
+    /// typically due to insufficient available memory.
+    ///
+    /// # Possible Causes
+    /// - Out of memory (OOM)
+    /// - Requested allocation size too large
+    /// - Memory fragmentation
+    ///
+    /// # Recommended Actions
+    /// - Reduce tensor size
+    /// - Free unused tensors
+    /// - Check system memory availability
+    #[error("Memory allocation failed: received null pointer. System may be out of memory.")]
     NullPointer,
+
+    /// Attempted memory transfer between incompatible devices.
+    ///
+    /// This occurs when trying to copy data between devices that don't support
+    /// direct memory transfers without going through the host.
+    ///
+    /// # Example
+    /// Copying directly between two different CUDA devices without peer-to-peer support.
+    #[error("Device mismatch: cannot transfer from {0} to {1}. Consider using host as intermediate.")]
+    DeviceMismatch(String, String),
+
+    /// Memory transfer operation failed.
+    ///
+    /// This can occur during host-to-device, device-to-host, or device-to-device
+    /// memory transfers.
+    ///
+    /// # Possible Causes
+    /// - Invalid memory addresses
+    /// - Insufficient device memory
+    /// - Device communication error
+    #[error("Memory transfer failed: {0}")]
+    MemoryTransferError(String),
+
+    /// CUDA-specific error occurred.
+    ///
+    /// This wraps errors from CUDA driver or runtime API calls.
+    ///
+    /// # Common CUDA Errors
+    /// - Out of memory
+    /// - Invalid device
+    /// - Invalid context
+    /// - Launch failure
+    ///
+    /// # Debugging Tips
+    /// - Check device memory availability with `nvidia-smi`
+    /// - Verify device ID is valid
+    /// - Ensure CUDA drivers are up to date
+    #[cfg(feature = "cuda")]
+    #[error("CUDA error: {0}")]
+    CudaError(String),
+
+    /// Operation not supported on this device or configuration.
+    ///
+    /// This error indicates that the requested operation is not available
+    /// for the current device or tensor configuration.
+    ///
+    /// # Examples
+    /// - Attempting to use features not supported by hardware
+    /// - Invalid operation for the current device type
+    #[error("Unsupported operation: {0}")]
+    UnsupportedOperation(String),
+}
+
+impl TensorAllocatorError {
+    /// Returns true if this error is recoverable by freeing memory.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the error might be resolved by freeing memory and retrying.
+    pub fn is_out_of_memory(&self) -> bool {
+        match self {
+            TensorAllocatorError::NullPointer => true,
+            #[cfg(feature = "cuda")]
+            TensorAllocatorError::CudaError(s) if s.contains("out of memory") => true,
+            _ => false,
+        }
+    }
+
+    /// Returns true if this error indicates a programming error rather than a runtime issue.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the error is likely due to incorrect API usage.
+    pub fn is_programming_error(&self) -> bool {
+        matches!(
+            self,
+            TensorAllocatorError::LayoutError(_)
+                | TensorAllocatorError::DeviceMismatch(_, _)
+                | TensorAllocatorError::UnsupportedOperation(_)
+        )
+    }
+
+    /// Returns a user-friendly suggestion for resolving the error.
+    pub fn suggestion(&self) -> &str {
+        match self {
+            TensorAllocatorError::LayoutError(_) => {
+                "Verify tensor dimensions don't exceed system limits (size < isize::MAX)"
+            }
+            TensorAllocatorError::NullPointer => {
+                "Free unused tensors or reduce tensor size. Check available memory with system tools."
+            }
+            TensorAllocatorError::DeviceMismatch(_, _) => {
+                "Use intermediate host memory for transfers between incompatible devices"
+            }
+            TensorAllocatorError::MemoryTransferError(_) => {
+                "Check that source and destination pointers are valid and devices are accessible"
+            }
+            #[cfg(feature = "cuda")]
+            TensorAllocatorError::CudaError(e) if e.contains("out of memory") => {
+                "Free GPU memory or reduce batch size. Check GPU memory with nvidia-smi"
+            }
+            #[cfg(feature = "cuda")]
+            TensorAllocatorError::CudaError(_) => {
+                "Check CUDA device status and ensure drivers are up to date"
+            }
+            TensorAllocatorError::UnsupportedOperation(_) => {
+                "Check device capabilities and API documentation for supported operations"
+            }
+        }
+    }
+}
+
+// Implement BufferOps for built-in types
+
+// Wrapper for *mut u8 to make it Send + Sync
+#[derive(Clone, Copy, Debug)]
+/// A wrapper around a raw pointer to make it `Send + Sync`.
+///
+/// This is used as the buffer type for `CpuAllocator` to enable
+/// safe sharing of raw pointers across thread boundaries.
+pub struct RawPtr(pub *mut u8);
+
+unsafe impl Send for RawPtr {}
+unsafe impl Sync for RawPtr {}
+
+impl BufferOps for RawPtr {
+    fn as_ptr(&self) -> *const u8 {
+        self.0 as *const u8
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.0
+    }
+
+    fn len(&self) -> usize {
+        // For raw pointers, we can't determine length without additional context
+        // This is a limitation - callers must track length separately
+        0
+    }
+}
+
+// Also implement for *mut u8 directly (for convenience)
+impl BufferOps for *mut u8 {
+    fn as_ptr(&self) -> *const u8 {
+        *self as *const u8
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        *self
+    }
+
+    fn len(&self) -> usize {
+        0
+    }
+}
+
+impl BufferOps for *const u8 {
+    fn as_ptr(&self) -> *const u8 {
+        *self
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        *self as *mut u8
+    }
+
+    fn len(&self) -> usize {
+        0
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl BufferOps for std::sync::Arc<cust::memory::DeviceBuffer<u8>> {
+    fn as_ptr(&self) -> *const u8 {
+        // Get DevicePointer and convert to *const u8
+        let dev_ptr = self.as_device_ptr();
+        dev_ptr.as_raw() as usize as *const u8
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        // Get DevicePointer and convert to *mut u8
+        let dev_ptr = self.as_device_ptr();
+        dev_ptr.as_raw() as usize as *mut u8
+    }
+
+    fn len(&self) -> usize {
+        // DeviceBuffer stores its length - use the buffer's size
+        // Note: DeviceBuffer doesn't expose len() directly, but we can get it from the allocation
+        // For now, we'll need to track this separately or use a wrapper
+        // This is a limitation - we may need to store length alongside the buffer
+        0  // TODO: Need to track length separately or use DeviceBuffer API
+    }
 }
 
 /// Trait for custom tensor memory allocators.
@@ -38,23 +311,24 @@ pub enum TensorAllocatorError {
 ///
 /// - [`alloc`](Self::alloc): Called when creating new tensor storage
 /// - [`dealloc`](Self::dealloc): Called when tensor storage is dropped
+/// - [`device`](Self::device): Returns the device associated with this allocator
+/// - [`copy_from`](Self::copy_from): Copies data from a source device to this device
 ///
 /// # Examples
 ///
 /// Using the default CPU allocator:
 ///
 /// ```rust
-/// use kornia_tensor::{Tensor, CpuAllocator};
+/// use kornia_tensor::{Tensor2, Cpu};
 ///
-/// let allocator = CpuAllocator;
-/// let tensor = Tensor::<f32, 2, _>::zeros([100, 100], allocator);
+/// let tensor = Tensor2::<f32, Cpu>::zeros([100, 100]).unwrap();
 /// ```
 ///
 /// Implementing a custom allocator:
 ///
 /// ```rust
 /// use std::alloc::Layout;
-/// use kornia_tensor::{TensorAllocator, allocator::TensorAllocatorError};
+/// use kornia_tensor::{TensorAllocator, allocator::TensorAllocatorError, device::Device};
 ///
 /// #[derive(Clone)]
 /// struct AlignedAllocator {
@@ -81,9 +355,43 @@ pub enum TensorAllocatorError {
 ///             unsafe { std::alloc::dealloc(ptr, aligned_layout) }
 ///         }
 ///     }
+///
+///     fn device(&self) -> Device {
+///         Device::Cpu
+///     }
+///
+    ///     unsafe fn copy_from(
+    ///         &self,
+    ///         src_ptr: *const u8,
+    ///         dst_ptr: *mut u8,
+    ///         len: usize,
+    ///         src_device: &Device,
+    ///     ) -> Result<(), TensorAllocatorError> {
+///         if matches!(src_device, Device::Cpu) {
+///             unsafe {
+///                 std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, len);
+///             }
+///             Ok(())
+///         } else {
+///             Err(TensorAllocatorError::MemoryTransferError(
+///                 "Unsupported device".to_string()
+///             ))
+///         }
+///     }
 /// }
 /// ```
 pub trait TensorAllocator: Clone {
+    /// The buffer type returned by this allocator.
+    ///
+    /// Different allocators return different buffer types:
+    /// - CPU: `*mut u8` (raw pointer)
+    /// - CUDA: `Arc<DeviceBuffer<u8>>` (reference-counted device buffer)
+    /// - Extensions: Their own buffer types (e.g., `Arc<gstreamer::Buffer>`)
+    ///
+    /// The buffer type must implement `BufferOps` to allow pointer extraction
+    /// and length queries without kornia-tensor needing to know the specific type.
+    type Buffer: Send + Sync + BufferOps;
+
     /// Allocates memory for a tensor with the given layout.
     ///
     /// # Arguments
@@ -92,24 +400,84 @@ pub trait TensorAllocator: Clone {
     ///
     /// # Returns
     ///
-    /// A pointer to the allocated memory on success, or an error on failure.
+    /// A buffer containing the allocated memory on success, or an error on failure.
     ///
     /// # Errors
     ///
     /// Returns [`TensorAllocatorError::NullPointer`] if allocation fails.
-    fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError>;
+    fn alloc(&self, layout: Layout) -> Result<Self::Buffer, TensorAllocatorError>;
 
     /// Deallocates memory previously allocated by this allocator.
     ///
     /// # Arguments
     ///
-    /// * `ptr` - The pointer to the memory to deallocate
+    /// * `buffer` - The buffer to deallocate
     /// * `layout` - The layout used when allocating this memory
     ///
     /// # Safety
     ///
-    /// The pointer must have been returned by [`alloc`](Self::alloc) with the same layout.
-    fn dealloc(&self, ptr: *mut u8, layout: Layout);
+    /// The buffer must have been returned by [`alloc`](Self::alloc) with the same layout.
+    fn dealloc(&self, buffer: Self::Buffer, layout: Layout);
+
+    /// Returns the device associated with this allocator.
+    fn device(&self) -> Device;
+
+    /// Copies data from source buffer to destination buffer.
+    ///
+    /// # Safety
+    ///
+    /// This function works with buffers that implement `BufferOps`. Callers must ensure:
+    /// - Source and destination buffers are valid for reads/writes of `len` bytes
+    /// - The memory regions must not overlap
+    /// - Both buffers must be properly aligned
+    ///
+    /// # Arguments
+    ///
+    /// * `src` - Source buffer (implements `BufferOps`)
+    /// * `dst` - Destination buffer (implements `BufferOps`)
+    /// * `len` - Number of bytes to copy
+    /// * `src_device` - Source device
+    unsafe fn copy_from(
+        &self,
+        src: &dyn BufferOps,
+        dst: &mut dyn BufferOps,
+        len: usize,
+        src_device: &Device,
+    ) -> Result<(), TensorAllocatorError>;
+
+    /// Converts the allocator's buffer to the storage `Buffer` enum.
+    ///
+    /// This method allows extension allocators to convert their buffer type
+    /// to the storage's `Buffer` enum. Built-in allocators (CPU, CUDA) override
+    /// this method to handle their concrete buffer types. Extension allocators
+    /// should override this to return `Buffer::Extension` wrapping their buffer.
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation returns an error, requiring extension allocators
+    /// to override this method.
+    ///
+    /// # Arguments
+    ///
+    /// * `buffer` - The buffer returned by `alloc()`
+    /// * `data_len` - The actual data length in bytes (may be less than layout.size())
+    /// * `layout` - The layout used for allocation (needed for proper deallocation)
+    ///
+    /// # Returns
+    ///
+    /// The buffer converted to the storage `Buffer` enum.
+    fn convert_to_storage_buffer(
+        &self,
+        _buffer: Self::Buffer,
+        _data_len: usize,
+        _layout: Layout,
+    ) -> Result<crate::storage::Buffer, TensorAllocatorError> {
+        // Default implementation: extension allocators must override this
+        let device = self.device();
+        Err(TensorAllocatorError::UnsupportedOperation(
+            format!("Extension allocator for device {:?} must implement convert_to_storage_buffer()", device)
+        ))
+    }
 }
 
 /// CPU memory allocator using the system allocator.
@@ -120,9 +488,9 @@ pub trait TensorAllocator: Clone {
 /// # Examples
 ///
 /// ```rust
-/// use kornia_tensor::{Tensor, CpuAllocator};
+/// use kornia_tensor::{Tensor2, Cpu};
 ///
-/// let tensor = Tensor::<f32, 2, _>::zeros([10, 10], CpuAllocator);
+/// let tensor = Tensor2::<f32, Cpu>::zeros([10, 10]).unwrap();
 /// ```
 #[derive(Clone)]
 pub struct CpuAllocator;
@@ -136,6 +504,8 @@ impl Default for CpuAllocator {
 
 /// Implements [`TensorAllocator`] using the Rust global allocator.
 impl TensorAllocator for CpuAllocator {
+    type Buffer = RawPtr;
+
     /// Allocates memory using the system allocator.
     ///
     /// This uses Rust's global allocator (typically the system's malloc/free) to allocate
@@ -165,12 +535,12 @@ impl TensorAllocator for CpuAllocator {
     /// let ptr = allocator.alloc(layout).unwrap();
     /// allocator.dealloc(ptr, layout);
     /// ```
-    fn alloc(&self, layout: Layout) -> Result<*mut u8, TensorAllocatorError> {
+    fn alloc(&self, layout: Layout) -> Result<Self::Buffer, TensorAllocatorError> {
         let ptr = unsafe { alloc::alloc(layout) };
         if ptr.is_null() {
             Err(TensorAllocatorError::NullPointer)?
         }
-        Ok(ptr)
+        Ok(RawPtr(ptr))
     }
 
     /// Deallocates memory using the system allocator.
@@ -180,17 +550,280 @@ impl TensorAllocator for CpuAllocator {
     ///
     /// # Arguments
     ///
-    /// * `ptr` - The pointer to deallocate (can be null)
+    /// * `buffer` - The buffer (pointer) to deallocate (can be null)
     /// * `layout` - The layout used when allocating this memory
     ///
     /// # Safety
     ///
-    /// If `ptr` is non-null, it must have been allocated with this allocator using
+    /// If `buffer` is non-null, it must have been allocated with this allocator using
     /// the same layout. The memory must not be accessed after deallocation.
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
-    fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if !ptr.is_null() {
-            unsafe { alloc::dealloc(ptr, layout) }
+    fn dealloc(&self, buffer: Self::Buffer, layout: Layout) {
+        if !buffer.0.is_null() {
+            unsafe { alloc::dealloc(buffer.0, layout) }
+        }
+    }
+
+    /// Returns the device associated with this allocator.
+    fn device(&self) -> Device {
+        Device::Cpu
+    }
+
+    /// Converts RawPtr to Buffer::Cpu.
+    fn convert_to_storage_buffer(
+        &self,
+        buffer: Self::Buffer,
+        data_len: usize,
+        layout: Layout,
+    ) -> Result<crate::storage::Buffer, TensorAllocatorError> {
+        let RawPtr(ptr) = buffer;
+        if ptr.is_null() {
+            return Err(TensorAllocatorError::NullPointer);
+        }
+        // Copy only the actual data length into a new Vec to ensure proper memory management.
+        // This is safer than using Vec::from_raw_parts because alloc::alloc memory
+        // might not be compatible with Vec's deallocation expectations.
+        // SAFETY: ptr is valid for data_len bytes (allocated by this allocator, data_len <= layout.size())
+        let slice = unsafe { std::slice::from_raw_parts(ptr, data_len) };
+        let vec = slice.to_vec();
+        // Deallocate the original memory
+        unsafe {
+            alloc::dealloc(ptr, layout);
+        }
+        Ok(crate::storage::Buffer::Cpu(vec))
+    }
+
+    /// Copies data from source buffer to destination buffer.
+    unsafe fn copy_from(
+        &self,
+        src: &dyn BufferOps,
+        dst: &mut dyn BufferOps,
+        len: usize,
+        src_device: &Device,
+    ) -> Result<(), TensorAllocatorError> {
+        let src_ptr = src.as_ptr();
+        let dst_ptr = dst.as_mut_ptr();
+
+        // For CPU, we support copy from CPU and any GPU device (download)
+        #[cfg(feature = "cuda")]
+        if let Device::Cuda { .. } = src_device {
+            // CUDA to CPU copy using raw CUDA API
+            use cust::sys::cuMemcpyDtoH_v2;
+            
+            let result = unsafe {
+                cuMemcpyDtoH_v2(
+                    dst_ptr as *mut std::ffi::c_void,
+                    src_ptr as u64,
+                    len,
+                )
+            };
+            
+            if result != cust::sys::cudaError_enum::CUDA_SUCCESS {
+                return Err(TensorAllocatorError::CudaError(format!(
+                    "DtoH copy failed with error code: {:?}",
+                    result
+                )));
+            }
+            
+            return Ok(());
+        }
+
+        match src_device {
+            Device::Cpu => {
+                // CPU to CPU copy using memcpy
+                unsafe {
+                    std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, len);
+                }
+                Ok(())
+            }
+            #[allow(unreachable_patterns)]
+            _ => Err(TensorAllocatorError::MemoryTransferError(format!(
+                "Unsupported copy from {:?} to CPU",
+                src_device
+            ))),
+        }
+    }
+}
+
+#[cfg(feature = "cuda")]
+/// CUDA allocator for GPU tensors.
+#[derive(Clone)]
+pub struct CudaAllocator {
+    device_id: usize,
+    _context: std::sync::Arc<cust::context::Context>,
+}
+
+#[cfg(feature = "cuda")]
+impl CudaAllocator {
+    /// Creates a new CUDA allocator for the specified device.
+    pub fn new(device_id: usize) -> Result<Self, TensorAllocatorError> {
+        use once_cell::sync::Lazy;
+        use std::sync::Mutex;
+        
+        // Global CUDA context cache
+        static CUDA_CONTEXTS: Lazy<Mutex<std::collections::HashMap<usize, std::sync::Arc<cust::context::Context>>>> = 
+            Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
+        
+        let mut contexts = CUDA_CONTEXTS.lock().unwrap();
+        
+        let context = if let Some(ctx) = contexts.get(&device_id) {
+            ctx.clone()
+        } else {
+            // Initialize CUDA if not already done
+            let _ = cust::init(cust::CudaFlags::empty());
+            
+            // Get device
+            let device = cust::device::Device::get_device(device_id as u32)
+                .map_err(|e| TensorAllocatorError::CudaError(format!("Failed to get device: {:?}", e)))?;
+            
+            // Create a new context for this device
+            let ctx = cust::context::Context::new(device)
+                .map_err(|e| TensorAllocatorError::CudaError(format!("Failed to create context: {:?}", e)))?;
+            
+            let ctx_arc = std::sync::Arc::new(ctx);
+            contexts.insert(device_id, ctx_arc.clone());
+            ctx_arc
+        };
+        
+        Ok(Self {
+            device_id,
+            _context: context,
+        })
+    }
+
+    /// Returns the device ID.
+    pub fn device_id(&self) -> usize {
+        self.device_id
+    }
+
+    /// Set this context as current on the calling thread
+    fn set_current(&self) -> Result<(), TensorAllocatorError> {
+        use cust::context::CurrentContext;
+        CurrentContext::set_current(self._context.as_ref())
+            .map_err(|e| TensorAllocatorError::CudaError(format!("Failed to set context: {:?}", e)))
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl Default for CudaAllocator {
+    fn default() -> Self {
+        Self::new(0).expect("Failed to create default CUDA allocator")
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl TensorAllocator for CudaAllocator {
+    type Buffer = std::sync::Arc<cust::memory::DeviceBuffer<u8>>;
+
+    fn alloc(&self, layout: Layout) -> Result<Self::Buffer, TensorAllocatorError> {
+        use cust::memory::DeviceBuffer;
+        
+        // Set context as current before allocation
+        self.set_current()?;
+        
+        // Allocate device memory
+        let buffer = DeviceBuffer::<u8>::zeroed(layout.size())
+            .map_err(|e| TensorAllocatorError::CudaError(format!("CUDA malloc failed: {:?}", e)))?;
+        
+        // Return Arc-wrapped buffer - no need to forget, Arc handles lifetime
+        Ok(std::sync::Arc::new(buffer))
+    }
+
+    fn dealloc(&self, buffer: Self::Buffer, _layout: Layout) {
+        // Set context as current before deallocation
+        if self.set_current().is_ok() {
+            // Drop the Arc - if this is the last reference, DeviceBuffer will be dropped
+            // and memory will be freed automatically
+            drop(buffer);
+        }
+    }
+
+    fn device(&self) -> Device {
+        Device::Cuda {
+            device_id: self.device_id,
+        }
+    }
+
+    /// Converts Arc<DeviceBuffer<u8>> to Buffer::Cuda.
+    fn convert_to_storage_buffer(
+        &self,
+        buffer: Self::Buffer,
+        _data_len: usize,
+        _layout: Layout,
+    ) -> Result<crate::storage::Buffer, TensorAllocatorError> {
+        Ok(crate::storage::Buffer::Cuda(buffer))
+    }
+
+    unsafe fn copy_from(
+        &self,
+        src: &dyn BufferOps,
+        dst: &mut dyn BufferOps,
+        len: usize,
+        src_device: &Device,
+    ) -> Result<(), TensorAllocatorError> {
+        // Set context as current before copy operations
+        self.set_current()?;
+        
+        let src_ptr = src.as_ptr();
+        let dst_ptr = dst.as_mut_ptr();
+        
+        match src_device {
+            Device::Cpu => {
+                // CPU to CUDA copy (upload) using raw CUDA API
+                use cust::sys::cuMemcpyHtoD_v2;
+                
+                let result = unsafe {
+                    cuMemcpyHtoD_v2(
+                        dst_ptr as u64,
+                        src_ptr as *const std::ffi::c_void,
+                        len,
+                    )
+                };
+                
+                if result != cust::sys::cudaError_enum::CUDA_SUCCESS {
+                    return Err(TensorAllocatorError::CudaError(format!(
+                        "HtoD copy failed with error code: {:?}",
+                        result
+                    )));
+                }
+                
+                Ok(())
+            }
+            Device::Cuda { device_id } => {
+                if *device_id != self.device_id {
+                    return Err(TensorAllocatorError::DeviceMismatch(
+                        format!("cuda:{}", device_id),
+                        format!("cuda:{}", self.device_id),
+                    ));
+                }
+                // CUDA to CUDA copy (same device) - use raw memcpy
+                use cust::sys::cuMemcpy;
+                
+                let result = unsafe {
+                    cuMemcpy(
+                        dst_ptr as u64,
+                        src_ptr as u64,
+                        len,
+                    )
+                };
+                
+                if result != cust::sys::cudaError_enum::CUDA_SUCCESS {
+                    return Err(TensorAllocatorError::CudaError(format!(
+                        "DtoD copy failed with error code: {:?}",
+                        result
+                    )));
+                }
+                
+                Ok(())
+            }
+            #[cfg(feature = "metal")]
+            Device::Metal { .. } => Err(TensorAllocatorError::MemoryTransferError(
+                "Metal to CUDA copy not supported".to_string(),
+            )),
+            #[cfg(feature = "vulkan")]
+            Device::Vulkan { .. } => Err(TensorAllocatorError::MemoryTransferError(
+                "Vulkan to CUDA copy not supported".to_string(),
+            )),
         }
     }
 }
@@ -206,5 +839,22 @@ mod tests {
         let ptr = allocator.alloc(layout)?;
         allocator.dealloc(ptr, layout);
         Ok(())
+    }
+
+    #[test]
+    fn test_cpu_allocator_device() {
+        let allocator = CpuAllocator;
+        assert_eq!(allocator.device(), Device::Cpu);
+        assert!(allocator.device().is_cpu());
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn test_cuda_allocator_device() {
+        if let Ok(allocator) = CudaAllocator::new(0) {
+            assert_eq!(allocator.device(), Device::Cuda { device_id: 0 });
+            assert!(!allocator.device().is_cpu());
+            assert!(allocator.device().is_cuda());
+        }
     }
 }
