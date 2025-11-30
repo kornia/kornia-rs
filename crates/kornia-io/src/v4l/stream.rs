@@ -35,18 +35,24 @@ pub struct MmapBuffer {
     _mmap_info: Arc<MmapInfo>,
 }
 
-// Safety: MmapBuffer is Send because:
-// - The mmap'd memory is read-only from the buffer's perspective
-// - Arc<MmapInfo> is Send and Sync, providing thread-safe reference counting
-// - Multiple threads can safely read from the same mmap'd memory concurrently
-// - The pointer and length are Copy types that can be safely moved between threads
+/// # Safety
+///
+/// `MmapBuffer` is `Send` because:
+/// - The mmap'd memory is read-only from the buffer's perspective (no mutable access)
+/// - `Arc<MmapInfo>` is `Send` and `Sync`, providing thread-safe reference counting
+/// - The pointer (`NonNull<u8>`) and length (`usize`) are `Copy` types that can be safely moved between threads
+/// - Multiple threads can safely read from the same mmap'd memory concurrently
+/// - The `Arc<MmapInfo>` ensures the memory remains valid across thread boundaries
 unsafe impl Send for MmapBuffer {}
 
-// Safety: MmapBuffer is Sync because:
-// - The mmap'd memory is read-only from the buffer's perspective
-// - Arc<MmapInfo> is Send and Sync, providing thread-safe reference counting
-// - Multiple threads can safely read from the same mmap'd memory concurrently
-// - The pointer and length are Copy types that can be safely shared between threads
+/// # Safety
+///
+/// `MmapBuffer` is `Sync` because:
+/// - The mmap'd memory is read-only from the buffer's perspective (no mutable access)
+/// - `Arc<MmapInfo>` is `Send` and `Sync`, providing thread-safe reference counting
+/// - The pointer (`NonNull<u8>`) and length (`usize`) are `Copy` types that can be safely shared between threads
+/// - Multiple threads can safely read from the same mmap'd memory concurrently
+/// - The `Arc<MmapInfo>` ensures the memory remains valid when shared across threads
 unsafe impl Sync for MmapBuffer {}
 
 impl MmapBuffer {
@@ -55,8 +61,10 @@ impl MmapBuffer {
     /// # Safety
     ///
     /// - `ptr` must be a valid, non-null pointer to `length` bytes of memory
-    /// - The memory must remain valid for the lifetime of the buffer
     /// - `mmap_info` must be the same `MmapInfo` that was used to create the mmap
+    ///
+    /// Note: The memory validity is automatically ensured by `Arc<MmapInfo>`, which keeps
+    /// the mmap'd memory alive for the lifetime of the buffer.
     pub(crate) unsafe fn new(ptr: *const u8, length: usize, mmap_info: Arc<MmapInfo>) -> Self {
         Self {
             ptr: NonNull::new_unchecked(ptr as *mut u8),
@@ -526,5 +534,90 @@ mod tests {
         let vec = buffer.into_vec();
         assert_eq!(vec.as_slice(), test_data);
         assert_eq!(vec.len(), test_data.len());
+    }
+
+    /// Test that proper cleanup occurs when buffers are dropped
+    ///
+    /// This test verifies that:
+    /// - Multiple buffers can share the same mmap via Arc<MmapInfo>
+    /// - Dropping individual buffers doesn't invalidate others
+    /// - The last buffer drop triggers cleanup (via Arc reference counting)
+    #[test]
+    fn test_mmap_buffer_cleanup() {
+        let test_data = b"Cleanup Test Data";
+        let mmap_info = Arc::new(MmapInfo {
+            ptr: std::ptr::null_mut(),
+            length: test_data.len(),
+            offset: 0,
+        });
+
+        // Create multiple buffers sharing the same mmap
+        let buffer1 =
+            unsafe { MmapBuffer::new(test_data.as_ptr(), test_data.len(), mmap_info.clone()) };
+        let buffer2 = buffer1.clone();
+        let buffer3 = buffer1.clone();
+
+        // All buffers should access the same data
+        assert_eq!(buffer1.as_slice(), test_data);
+        assert_eq!(buffer2.as_slice(), test_data);
+        assert_eq!(buffer3.as_slice(), test_data);
+
+        // Verify Arc reference counting: should have 4 references
+        // (1 original mmap_info + 3 buffers)
+        assert_eq!(Arc::strong_count(&mmap_info), 4);
+
+        // Drop one buffer - mmap should still be alive
+        drop(buffer1);
+        assert_eq!(Arc::strong_count(&mmap_info), 3);
+        assert_eq!(buffer2.as_slice(), test_data); // Still valid
+        assert_eq!(buffer3.as_slice(), test_data); // Still valid
+
+        // Drop another buffer
+        drop(buffer2);
+        assert_eq!(Arc::strong_count(&mmap_info), 2);
+        assert_eq!(buffer3.as_slice(), test_data); // Still valid
+
+        // Drop the last buffer - now only the original Arc remains
+        drop(buffer3);
+        assert_eq!(Arc::strong_count(&mmap_info), 1);
+
+        // Drop the original Arc - this would trigger cleanup in real usage
+        // (In this test, the ptr is null so munmap is a no-op)
+        drop(mmap_info);
+    }
+
+    /// Test that buffers with different lengths from the same mmap work correctly
+    #[test]
+    fn test_mmap_buffer_multiple_lengths() {
+        let test_data = b"Multiple Lengths Test";
+        let mmap_info = Arc::new(MmapInfo {
+            ptr: std::ptr::null_mut(),
+            length: test_data.len(),
+            offset: 0,
+        });
+
+        let full_buffer =
+            unsafe { MmapBuffer::new(test_data.as_ptr(), test_data.len(), mmap_info.clone()) };
+
+        // Create buffers with different lengths
+        let half = full_buffer.with_length(test_data.len() / 2);
+        let quarter = full_buffer.with_length(test_data.len() / 4);
+        let empty = full_buffer.with_length(0);
+
+        // Verify each buffer has correct length and data
+        assert_eq!(full_buffer.len(), test_data.len());
+        assert_eq!(full_buffer.as_slice(), test_data);
+
+        assert_eq!(half.len(), test_data.len() / 2);
+        assert_eq!(half.as_slice(), &test_data[..test_data.len() / 2]);
+
+        assert_eq!(quarter.len(), test_data.len() / 4);
+        assert_eq!(quarter.as_slice(), &test_data[..test_data.len() / 4]);
+
+        assert_eq!(empty.len(), 0);
+        assert!(empty.is_empty());
+
+        // All buffers should share the same mmap_info
+        assert_eq!(Arc::strong_count(&mmap_info), 5); // 1 original + 4 buffers
     }
 }
