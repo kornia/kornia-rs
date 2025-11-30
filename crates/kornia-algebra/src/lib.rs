@@ -52,7 +52,7 @@
 //! // Create a rotation of 90 degrees around X axis
 //! let rotation = SO3F32::exp(Vec3AF32::new(std::f32::consts::FRAC_PI_2, 0.0, 0.0));
 //!
-//! let point = Vec3F32::new(0.0, 1.0, 0.0);
+//! let point = Vec3AF32::new(0.0, 1.0, 0.0);
 //! let rotated_point = rotation * point;
 //!
 //! // (0, 1, 0) rotated 90 deg around X becomes (0, 0, 1)
