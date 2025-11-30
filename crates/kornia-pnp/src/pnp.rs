@@ -31,6 +31,10 @@ pub enum PnPError {
     /// Singular value decomposition failed
     #[error("SVD computation failed: {0}")]
     SvdFailed(String),
+
+    /// Invalid or degenerate pose estimate (e.g., division by near-zero depth)
+    #[error("Invalid pose estimate: {0}")]
+    InvalidPose(&'static str),
 }
 
 /// Numeric tolerances used by linear algebra routines throughout the PnP pipeline.
