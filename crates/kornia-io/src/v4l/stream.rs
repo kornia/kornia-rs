@@ -128,6 +128,25 @@ pub(crate) struct MmapInfo {
     offset: u32,
 }
 
+/// # Safety
+///
+/// `MmapInfo` is `Send` because:
+/// - The raw pointer `*mut u8` points to mmap'd memory that is managed by the kernel
+/// - The pointer is only used for reading (via MmapBuffer) and unmapping (in Drop)
+/// - No mutable access occurs through this pointer in a way that would cause data races
+/// - The mmap'd memory is read-only from the buffer's perspective
+unsafe impl Send for MmapInfo {}
+
+/// # Safety
+///
+/// `MmapInfo` is `Sync` because:
+/// - The raw pointer `*mut u8` points to mmap'd memory that is managed by the kernel
+/// - The pointer is only used for reading (via MmapBuffer) and unmapping (in Drop)
+/// - No mutable access occurs through this pointer in a way that would cause data races
+/// - Multiple threads can safely read from the same mmap'd memory concurrently
+/// - The `Drop` implementation is safe to call from any thread (munmap is thread-safe)
+unsafe impl Sync for MmapInfo {}
+
 impl Drop for MmapInfo {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
@@ -514,7 +533,7 @@ mod tests {
             unsafe { MmapBuffer::new(test_data.as_ptr(), test_data.len(), mmap_info.clone()) };
 
         // Test Deref to [u8]
-        let slice: &[u8] = &*buffer;
+        let slice: &[u8] = &buffer;
         assert_eq!(slice, test_data);
     }
 
