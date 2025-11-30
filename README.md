@@ -100,7 +100,7 @@ kornia-apriltag = "0.1"
 kornia-vlm = "0.1"
 kornia-nn = "0.1"
 kornia-pnp = "0.1"
-kornia-lie = "0.1"
+kornia-algebra = "0.1"
 ```
 
 ### 🐍 Python
@@ -390,7 +390,7 @@ We welcome contributions! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for:
 
 ### Community
 
-This is a child project of [Kornia](https://github.com/kornia/kornia). 
+This is a child project of [Kornia](https://github.com/kornia/kornia).
 
 - 💬 Join our community on [Discord](https://discord.gg/HfnywwpBnD)
 - 💖 Support the project on [OpenCollective](https://opencollective.com/kornia)
