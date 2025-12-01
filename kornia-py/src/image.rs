@@ -199,27 +199,38 @@ impl From<PyImageSize> for ImageSize {
     }
 }
 
+#[pyclass(name = "PixelFormat")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PyPixelFormat {
+    U8,
+    U16,
+    F32,
+}
+
+impl From<PixelFormat> for PyPixelFormat {
+    fn from(value: PixelFormat) -> Self {
+        match value {
+            PixelFormat::U8 => PyPixelFormat::U8,
+            PixelFormat::U16 => PyPixelFormat::U16,
+            PixelFormat::F32 => PyPixelFormat::F32,
+        }
+    }
+}
+
+impl From<PyPixelFormat> for PixelFormat {
+    fn from(value: PyPixelFormat) -> Self {
+        match value {
+            PyPixelFormat::U8 => PixelFormat::U8,
+            PyPixelFormat::U16 => PixelFormat::U16,
+            PyPixelFormat::F32 => PixelFormat::F32,
+        }
+    }
+}
+
 #[pyclass(name = "ImageLayout", frozen)]
 #[derive(Clone)]
 pub struct PyImageLayout {
     inner: ImageLayout,
-}
-
-fn parse_pixel_format(pixel_format: &str) -> Option<PixelFormat> {
-    match pixel_format.to_lowercase().as_str() {
-        "u8" | "uint8" => Some(PixelFormat::U8),
-        "u16" | "uint16" => Some(PixelFormat::U16),
-        "f32" | "float32" => Some(PixelFormat::F32),
-        _ => None,
-    }
-}
-
-fn pixel_format_as_str(pixel_format: PixelFormat) -> &'static str {
-    match pixel_format {
-        PixelFormat::U8 => "u8",
-        PixelFormat::U16 => "u16",
-        PixelFormat::F32 => "f32",
-    }
 }
 
 #[pymethods]
@@ -228,19 +239,13 @@ impl PyImageLayout {
     pub fn new(
         image_size: PyImageSize,
         channels: u8,
-        pixel_format: &str,
+        pixel_format: PyPixelFormat,
     ) -> PyResult<Self> {
-        let format = parse_pixel_format(pixel_format).ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "unsupported pixel_format: {}",
-                pixel_format
-            ))
-        })?;
         Ok(Self {
             inner: ImageLayout {
                 image_size: image_size.clone().into(),
                 channels,
-                pixel_format: format,
+                pixel_format: pixel_format.into(),
             },
         })
     }
@@ -256,18 +261,23 @@ impl PyImageLayout {
     }
 
     #[getter]
-    pub fn pixel_format(&self) -> &'static str {
-        pixel_format_as_str(self.inner.pixel_format)
+    pub fn pixel_format(&self) -> PyPixelFormat {
+        self.inner.pixel_format.into()
     }
 
     fn __repr__(&self) -> PyResult<String> {
         let size = self.inner.image_size;
+        let pf_str = match self.inner.pixel_format {
+            PixelFormat::U8 => "U8",
+            PixelFormat::U16 => "U16",
+            PixelFormat::F32 => "F32",
+        };
         Ok(format!(
-            "ImageLayout(image_size=ImageSize(width={}, height={}), channels={}, pixel_format='{}')",
+            "ImageLayout(image_size=ImageSize(width={}, height={}), channels={}, pixel_format=PixelFormat.{})",
             size.width,
             size.height,
             self.channels(),
-            self.pixel_format()
+            pf_str
         ))
     }
 

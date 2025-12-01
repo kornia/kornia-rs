@@ -3,7 +3,6 @@ use kornia_io::functional as F;
 use kornia_io::png as png_io;
 use kornia_io::tiff as tiff_io;
 use kornia_io::jpeg as jpeg_io;
-use kornia_io::DecodingResult;
 use kornia_image::{allocator::CpuAllocator, color_spaces::{Gray8, Gray16, Grayf32, Rgb8, Rgb16, Rgba8, Rgba16, Rgbf32}, PixelFormat};
 use pyo3::prelude::*;
 use std::path::Path;
@@ -143,11 +142,6 @@ fn read_image_png_dispatcher(file_path: &Path) -> PyResult<PyObject> {
                 ))?
                 .into())
         }
-        (2, _) => {
-            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "PNG GrayscaleAlpha color type is not supported"
-            ))
-            }
         _ => {
             Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                 format!(
@@ -160,16 +154,20 @@ fn read_image_png_dispatcher(file_path: &Path) -> PyResult<PyObject> {
 }
 
 fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<PyObject> {
-    let (result, layout) = tiff_io::read_image_tiff_with_metadata(file_path)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+    let tiff_data = fs::read(file_path)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
     
-    let image_size = layout.image_size;
+    let layout = tiff_io::decode_image_tiff_layout(&tiff_data)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
     let channels = layout.channels;
     let pixel_format = layout.pixel_format;
+    let image_size = layout.image_size;
 
-    match (result, pixel_format, channels) {
-        (DecodingResult::U8(data), PixelFormat::U8, 1) => {
-            let img = Gray8::from_size_vec(image_size, data, CpuAllocator)
+    match (channels, pixel_format) {
+        (1, PixelFormat::U8) => {
+            let mut img = Gray8::from_size_val(image_size, 0, CpuAllocator)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            tiff_io::decode_image_tiff_mono8(&tiff_data, &mut img)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             Ok(img.to_pyimage()
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(
@@ -177,58 +175,70 @@ fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<PyObject> {
                 ))?
                 .into())
         }
-        (DecodingResult::U8(data), PixelFormat::U8, 3) => {
-            let img = Rgb8::from_size_vec(image_size, data, CpuAllocator)
+        (1, PixelFormat::U16) => {
+            let mut img = Gray16::from_size_val(image_size, 0, CpuAllocator)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            tiff_io::decode_image_tiff_mono16(&tiff_data, &mut img)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            Ok(img.to_pyimage_u16()
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(
+                    format!("failed to convert image: {}", e)
+                ))?
+                .into())
+        }
+        (3, PixelFormat::U8) => {
+            let mut img = Rgb8::from_size_val(image_size, 0, CpuAllocator)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            tiff_io::decode_image_tiff_rgb8(&tiff_data, &mut img)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             Ok(img.to_pyimage()
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(
                     format!("failed to convert image: {}", e)
                 ))?
                 .into())
-                    }
-        (DecodingResult::U16(data), PixelFormat::U16, 1) => {
-            let img = Gray16::from_size_vec(image_size, data, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            Ok(img.to_pyimage_u16()
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(
-                    format!("failed to convert image: {}", e)
-                ))?
-                .into())
-                    }
-        (DecodingResult::U16(data), PixelFormat::U16, 3) => {
-            let img = Rgb16::from_size_vec(image_size, data, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            Ok(img.to_pyimage_u16()
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(
-                    format!("failed to convert image: {}", e)
-                ))?
-                .into())
-                    }
-        (DecodingResult::F32(data), PixelFormat::F32, 1) => {
-            let img = Grayf32::from_size_vec(image_size, data, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            Ok(img.to_pyimage_f32()
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(
-                    format!("failed to convert image: {}", e)
-                ))?
-                .into())
-                    }
-        (DecodingResult::F32(data), PixelFormat::F32, 3) => {
-            let img = Rgbf32::from_size_vec(image_size, data, CpuAllocator)
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-            Ok(img.to_pyimage_f32()
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(
-                    format!("failed to convert image: {}", e)
-                ))?
-                .into())
-                    }
-        (_, _, channels) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            format!(
-                "Unsupported TIFF format: {} channels with pixel format {:?}",
-                channels, pixel_format
-            )
-            )),
         }
+        (3, PixelFormat::U16) => {
+            let mut img = Rgb16::from_size_val(image_size, 0, CpuAllocator)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            tiff_io::decode_image_tiff_rgb16(&tiff_data, &mut img)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            Ok(img.to_pyimage_u16()
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(
+                    format!("failed to convert image: {}", e)
+                ))?
+                .into())
+        }
+        (1, PixelFormat::F32) => {
+            let mut img = Grayf32::from_size_val(image_size, 0.0, CpuAllocator)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            tiff_io::decode_image_tiff_mono32f(&tiff_data, &mut img)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            Ok(img.to_pyimage_f32()
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(
+                    format!("failed to convert image: {}", e)
+                ))?
+                .into())
+        }
+        (3, PixelFormat::F32) => {
+            let mut img = Rgbf32::from_size_val(image_size, 0.0, CpuAllocator)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            tiff_io::decode_image_tiff_rgb32f(&tiff_data, &mut img)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            Ok(img.to_pyimage_f32()
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(
+                    format!("failed to convert image: {}", e)
+                ))?
+                .into())
+        }
+        _ => {
+            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!(
+                    "Unsupported TIFF format: {} channels with pixel format {:?}",
+                    channels, pixel_format
+                )
+            ))
+        }
+    }
 }
 
 fn read_image_jpeg_dispatcher(file_path: &Path) -> PyResult<PyObject> {

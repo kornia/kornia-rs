@@ -261,41 +261,112 @@ pub fn decode_image_tiff_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
     Ok(ImageLayout::new(size, num_channels, pixel_format))
 }
 
-/// Reads TIFF image with decoded data and metadata.
-pub fn read_image_tiff_with_metadata(
-    file_path: impl AsRef<Path>,
-) -> Result<(DecodingResult, ImageLayout), IoError> {
-    let file_path = file_path.as_ref().to_owned();
-    if !file_path.exists() {
-        return Err(IoError::FileDoesNotExist(file_path.to_path_buf()));
-    }
+/// Decodes a TIFF image with a three channel (rgb8) from Raw Bytes.
+///
+/// # Arguments
+///
+/// - `src` - Raw bytes of the TIFF file
+/// - `dst` - A mutabl+e reference to your `Rgb8` image
+pub fn decode_image_tiff_rgb8<A: ImageAllocator>(
+    src: &[u8],
+    dst: &mut Rgb8<A>,
+) -> Result<(), IoError> {
+    let size = dst.size();
+    decode_tiff_impl_u8(src, dst.as_slice_mut(), size, 3)
+}
 
-    if file_path.extension().map_or(true, |ext| {
-        !ext.eq_ignore_ascii_case("tiff") && !ext.eq_ignore_ascii_case("tif")
-    }) {
-        return Err(IoError::InvalidFileExtension(file_path.to_path_buf()));
-    }
+/// Decodes a TIFF image with as grayscale (Gray8) from Raw Bytes.
+///
+/// # Arguments
+///
+/// - `src` - Raw bytes of the TIFF file
+/// - `dst` - A mutable reference to your `Gray8` image
+pub fn decode_image_tiff_mono8<A: ImageAllocator>(
+    src: &[u8],
+    dst: &mut Gray8<A>,
+) -> Result<(), IoError> {
+    let size = dst.size();
+    decode_tiff_impl_u8(src, dst.as_slice_mut(), size, 1)
+}
 
-    let tiff_data = fs::File::open(file_path)?;
-    let mut decoder = tiff::decoder::Decoder::new(tiff_data)?;
+/// Decodes a TIFF (16 Bit) image with a three channel (rgb16) from Raw Bytes.
+///
+/// # Arguments
+///
+/// - `src` - Raw bytes of the TIFF file
+/// - `dst` - A mutable reference to your `Rgb16` image
+pub fn decode_image_tiff_rgb16<A: ImageAllocator>(
+    src: &[u8],
+    dst: &mut Rgb16<A>,
+) -> Result<(), IoError> {
+    let size = dst.size();
+    decode_tiff_impl_u16(src, dst.as_slice_mut(), size, 3)
+}
+
+/// Decodes a TIFF (16 Bit) image as grayscale (Gray16) from Raw Bytes.
+///
+/// # Arguments
+///
+/// - `src` - Raw bytes of the TIFF file
+/// - `dst` - A mutable reference to your `Gray16` image
+pub fn decode_image_tiff_mono16<A: ImageAllocator>(
+    src: &[u8],
+    dst: &mut Gray16<A>,
+) -> Result<(), IoError> {
+    let size = dst.size();
+    decode_tiff_impl_u16(src, dst.as_slice_mut(), size, 1)
+}
+
+/// Decodes a TIFF (32 Bit Float) image as grayscale (Grayf32) from Raw Bytes.
+///
+/// # Arguments
+///
+/// - `src` - Raw bytes of the TIFF file
+/// - `dst` - A mutable reference to your `Grayf32` image
+pub fn decode_image_tiff_mono32f<A: ImageAllocator>(
+    src: &[u8],
+    dst: &mut Grayf32<A>,
+) -> Result<(), IoError> {
+    let size = dst.size();
+    decode_tiff_impl_f32(src, dst.as_slice_mut(), size, 1)
+}
+
+/// Decodes a TIFF (32 Bit Float) image with a three channel (rgbf32) from Raw Bytes.
+///
+/// # Arguments
+///
+/// - `src` - Raw bytes of the TIFF file
+/// - `dst` - A mutable reference to your `Rgbf32` image
+pub fn decode_image_tiff_rgb32f<A: ImageAllocator>(
+    src: &[u8],
+    dst: &mut Rgbf32<A>,
+) -> Result<(), IoError> {
+    let size = dst.size();
+    decode_tiff_impl_f32(src, dst.as_slice_mut(), size, 3)
+}
+
+fn decode_tiff_impl_u8(
+    src: &[u8],
+    dst: &mut [u8],
+    image_size: ImageSize,
+    expected_channels: u8,
+) -> Result<(), IoError> {
+    let cursor = Cursor::new(src);
+    let mut decoder = tiff::decoder::Decoder::new(cursor)?;
 
     let (width, height) = decoder.dimensions()?;
-    let size = ImageSize {
-        width: width as usize,
-        height: height as usize,
-    };
-
-    let colortype = decoder.colortype().ok();
-    let num_channels_from_metadata = colortype
-        .as_ref()
-        .and_then(|ct| extract_channels_from_tiff_colortype(ct));
+    if width as usize != image_size.width || height as usize != image_size.height {
+        return Err(IoError::DecodeMismatchResolution(
+            height as usize,
+            width as usize,
+            image_size.height,
+            image_size.width,
+        ));
+    }
 
     let result = decoder.read_image()?;
-
-    let pixel_format = match &result {
-        DecodingResult::U8(_) => PixelFormat::U8,
-        DecodingResult::U16(_) => PixelFormat::U16,
-        DecodingResult::F32(_) => PixelFormat::F32,
+    let data = match result {
+        DecodingResult::U8(data) => data,
         _ => {
             return Err(IoError::TiffDecodingError(
                 tiff::TiffError::UnsupportedError(
@@ -304,27 +375,94 @@ pub fn read_image_tiff_with_metadata(
             ))
         }
     };
-    
-    let num_channels = if let Some(channels) = num_channels_from_metadata {
-        channels
-    } else {
-        match &result {
-            DecodingResult::U8(data) => (data.len() / (size.width * size.height)) as u8,
-            DecodingResult::U16(data) => (data.len() / (size.width * size.height)) as u8,
-            DecodingResult::F32(data) => (data.len() / (size.width * size.height)) as u8,
-            _ => {
-                return Err(IoError::TiffDecodingError(
-                    tiff::TiffError::UnsupportedError(
-                        tiff::TiffUnsupportedError::UnknownInterpretation,
-                    ),
-                ))
-            }
+
+    let expected_len = image_size.width * image_size.height * expected_channels as usize;
+    if data.len() != expected_len {
+        return Err(IoError::InvalidBufferSize(data.len(), expected_len));
+    }
+
+    dst.copy_from_slice(&data);
+    Ok(())
+}
+
+fn decode_tiff_impl_u16(
+    src: &[u8],
+    dst: &mut [u16],
+    image_size: ImageSize,
+    expected_channels: u8,
+) -> Result<(), IoError> {
+    let cursor = Cursor::new(src);
+    let mut decoder = tiff::decoder::Decoder::new(cursor)?;
+
+    let (width, height) = decoder.dimensions()?;
+    if width as usize != image_size.width || height as usize != image_size.height {
+        return Err(IoError::DecodeMismatchResolution(
+            height as usize,
+            width as usize,
+            image_size.height,
+            image_size.width,
+        ));
+    }
+
+    let result = decoder.read_image()?;
+    let data = match result {
+        DecodingResult::U16(data) => data,
+        _ => {
+            return Err(IoError::TiffDecodingError(
+                tiff::TiffError::UnsupportedError(
+                    tiff::TiffUnsupportedError::UnknownInterpretation,
+                ),
+            ))
         }
     };
 
-    let layout = ImageLayout::new(size, num_channels, pixel_format);
+    let expected_len = image_size.width * image_size.height * expected_channels as usize;
+    if data.len() != expected_len {
+        return Err(IoError::InvalidBufferSize(data.len(), expected_len));
+    }
 
-    Ok((result, layout))
+    dst.copy_from_slice(&data);
+    Ok(())
+}
+
+fn decode_tiff_impl_f32(
+    src: &[u8],
+    dst: &mut [f32],
+    image_size: ImageSize,
+    expected_channels: u8,
+) -> Result<(), IoError> {
+    let cursor = Cursor::new(src);
+    let mut decoder = tiff::decoder::Decoder::new(cursor)?;
+
+    let (width, height) = decoder.dimensions()?;
+    if width as usize != image_size.width || height as usize != image_size.height {
+        return Err(IoError::DecodeMismatchResolution(
+            height as usize,
+            width as usize,
+            image_size.height,
+            image_size.width,
+        ));
+    }
+
+    let result = decoder.read_image()?;
+    let data = match result {
+        DecodingResult::F32(data) => data,
+        _ => {
+            return Err(IoError::TiffDecodingError(
+                tiff::TiffError::UnsupportedError(
+                    tiff::TiffUnsupportedError::UnknownInterpretation,
+                ),
+            ))
+        }
+    };
+
+    let expected_len = image_size.width * image_size.height * expected_channels as usize;
+    if data.len() != expected_len {
+        return Err(IoError::InvalidBufferSize(data.len(), expected_len));
+    }
+
+    dst.copy_from_slice(&data);
+    Ok(())
 }
 
 /// Write a TIFF image with a RGB8 color type.

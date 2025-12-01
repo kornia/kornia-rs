@@ -206,16 +206,6 @@ pub fn decode_image_jpeg_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
     ))
 }
 
-/// Decodes JPEG image metadata from raw bytes without decoding pixel data.
-///
-/// # Deprecated
-///
-/// Use [`decode_image_jpeg_layout`] instead.
-#[deprecated(note = "Use decode_image_jpeg_layout instead")]
-pub fn decode_image_jpeg_info(src: &[u8]) -> Result<ImageLayout, IoError> {
-    decode_image_jpeg_layout(src)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -62,8 +62,6 @@ pub enum PixelFormat {
     F32,
 }
 
-/// Created a struct with enum fields to store common metadata, read_image and functions like
-/// decode_image_jpeg_layout also uses ImageLayout instead of storing separate fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImageLayout {
     /// Spatial size of the image (width and height).
