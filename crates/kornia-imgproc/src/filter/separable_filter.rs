@@ -1,5 +1,6 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use num_traits::Zero;
+use rayon::prelude::*;
 
 /// Trait for floating point casting
 pub trait FloatConversion {
@@ -81,8 +82,8 @@ where
     // preallocate the temporary buffer for intermediate results
     let mut temp = vec![0.0f32; src_data.len()];
 
-    // Row-wise filtering
-    for r in 0..src.rows() {
+    // Row-wise filtering - parallelize by rows
+    (0..src.rows()).into_par_iter().for_each(|r| {
         let row_offset = r * src.cols();
         for c in 0..src.cols() {
             let col_offset = (row_offset + c) * C;
@@ -103,10 +104,10 @@ where
                 }
             }
         }
-    }
+    });
 
-    // Column-wise filtering
-    for r in 0..src.rows() {
+    // Column-wise filtering - parallelize by rows
+    (0..src.rows()).into_par_iter().for_each(|r| {
         let row_offset = r * src.cols();
         for c in 0..src.cols() {
             let col_offset = (row_offset + c) * C;
@@ -126,7 +127,7 @@ where
                 }
             }
         }
-    }
+    });
 
     Ok(())
 }
