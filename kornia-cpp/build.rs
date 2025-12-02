@@ -64,4 +64,3 @@ inline const char* get_version() {{
     
     println!("cargo:rerun-if-changed=Cargo.toml");
 }
-

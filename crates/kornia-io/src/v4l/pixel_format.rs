@@ -54,6 +54,16 @@ impl PixelFormat {
             Self::Custom(_) => None, // Unknown
         }
     }
+
+    /// Get the format as a string
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::YUYV => "YUYV",
+            Self::UYVY => "UYVY",
+            Self::MJPG => "MJPG",
+            Self::Custom(_) => "custom",
+        }
+    }
 }
 
 impl std::fmt::Display for PixelFormat {

@@ -34,15 +34,33 @@ pub enum TensorError {
     UnsupportedOperation(String),
 }
 
-/// Compute the strides from the shape of a tensor.
+/// Computes the strides for a row-major (C-contiguous) tensor layout.
+///
+/// Strides define how many elements to skip in memory to move along each dimension.
+/// For row-major layout, the rightmost dimension has stride 1, and each dimension's
+/// stride is the product of all dimensions to its right.
 ///
 /// # Arguments
 ///
-/// * `shape` - The shape of the tensor.
+/// * `shape` - The shape of the tensor
 ///
 /// # Returns
 ///
-/// * `strides` - The strides of the tensor.
+/// An array of strides corresponding to each dimension.
+///
+/// # Examples
+///
+/// ```rust
+/// use kornia_tensor::tensor::get_strides_from_shape;
+///
+/// // For a 2x3 matrix: [[a, b, c], [d, e, f]]
+/// let strides = get_strides_from_shape([2, 3]);
+/// assert_eq!(strides, [3, 1]); // Move 3 elements for rows, 1 for columns
+///
+/// // For a 2x3x4 tensor
+/// let strides = get_strides_from_shape([2, 3, 4]);
+/// assert_eq!(strides, [12, 4, 1]); // 12 = 3*4, 4 = 4*1, 1 = 1
+/// ```
 pub fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
     let mut strides: [usize; N] = [0; N];
     let mut stride = 1;
@@ -53,25 +71,65 @@ pub fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
     strides
 }
 
-/// A data structure to represent a multi-dimensional tensor.
+/// A multi-dimensional array (tensor) with owned data.
 ///
-/// NOTE: Internally, the data is stored as an `arrow::ScalarBuffer` which represents a contiguous memory
-/// region that can be shared with other buffers and across thread boundaries.
+/// `Tensor` is the core data structure for storing and manipulating multi-dimensional arrays.
+/// It combines data storage, shape information, and memory layout (strides) into a single,
+/// type-safe structure with compile-time dimensionality checking.
 ///
-/// # Attributes
+/// # Type Parameters
 ///
-/// * `storage` - The storage of the tensor.
-/// * `shape` - The shape of the tensor.
-/// * `strides` - The strides of the tensor data in memory.
+/// * `T` - The element type stored in the tensor
+/// * `N` - The number of dimensions (const generic, checked at compile time)
+/// * `A` - The allocator type for memory management
 ///
-/// # Example
+/// # Architecture
 ///
-/// ```
+/// The tensor consists of three main components:
+///
+/// * **Storage** - Owns the actual data in a contiguous memory buffer managed by an allocator
+/// * **Shape** - Defines the size of each dimension
+/// * **Strides** - Describes the memory layout for element access
+///
+/// # Memory Layout
+///
+/// By default, tensors use row-major (C-contiguous) layout where the rightmost dimension
+/// varies fastest in memory. The strides array defines how many elements to skip when
+/// moving along each dimension.
+///
+/// # Thread Safety
+///
+/// Tensors are `Send` and `Sync` when using thread-safe allocators, allowing safe sharing
+/// across thread boundaries.
+///
+/// # Examples
+///
+/// Creating a tensor from data:
+///
+/// ```rust
 /// use kornia_tensor::{Tensor, CpuAllocator};
 ///
-/// let data: Vec<u8> = vec![1, 2, 3, 4];
-/// let t = Tensor::<u8, 2, CpuAllocator>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
-/// assert_eq!(t.shape, [2, 2]);
+/// let data = vec![1, 2, 3, 4, 5, 6];
+/// let tensor = Tensor::<i32, 2, _>::from_shape_vec([2, 3], data, CpuAllocator).unwrap();
+///
+/// assert_eq!(tensor.shape, [2, 3]);
+/// assert_eq!(tensor.strides, [3, 1]); // Row-major layout
+/// assert_eq!(tensor.numel(), 6);
+/// ```
+///
+/// Creating tensors with convenience constructors:
+///
+/// ```rust
+/// use kornia_tensor::{Tensor, CpuAllocator};
+///
+/// // All zeros
+/// let zeros = Tensor::<f32, 2, _>::zeros([3, 3], CpuAllocator);
+///
+/// // All ones
+/// let ones = Tensor::<f32, 2, _>::from_shape_val([3, 3], 1.0, CpuAllocator);
+///
+/// // Generated with a function
+/// let range = Tensor::<i32, 1, _>::from_shape_fn([10], CpuAllocator, |[i]| i as i32);
 /// ```
 pub struct Tensor<T, const N: usize, A: TensorAllocator> {
     /// The storage of the tensor.
@@ -509,10 +567,10 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
         shape: [usize; M],
     ) -> Result<TensorView<'_, T, M, A>, TensorError> {
         let numel = shape.iter().product::<usize>();
-        if numel != self.storage.len() {
+        if numel != self.numel() {
             return Err(TensorError::DimensionMismatch(format!(
                 "Cannot reshape tensor of shape {:?} with {} elements to shape {:?} with {} elements",
-                self.shape, self.storage.len(), shape, numel
+                self.shape, self.numel(), shape, numel
             )));
         }
 
@@ -525,18 +583,58 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
         })
     }
 
-    /// Permute the dimensions of the tensor.
+    /// Permutes (reorders) the dimensions of the tensor.
     ///
-    /// The permutation is given as an array of indices, where the value at each index is the new index of the dimension.
-    /// The data is not moved, only the order of the dimensions is changed.
+    /// This is a zero-copy operation that returns a view with reordered dimensions.
+    /// The underlying data is not moved; only the shape and strides are adjusted.
+    /// Common use cases include matrix transposition and changing data layout.
     ///
     /// # Arguments
     ///
-    /// * `axes` - The new order of the dimensions.
+    /// * `axes` - An array specifying the new dimension order. `axes[i]` indicates which
+    ///   source dimension becomes the i-th dimension in the output.
     ///
     /// # Returns
     ///
-    /// A view of the tensor with the dimensions permuted.
+    /// A [`TensorView`] with permuted dimensions.
+    ///
+    /// # Examples
+    ///
+    /// Transposing a 2D tensor (matrix):
+    ///
+    /// ```rust
+    /// use kornia_tensor::{Tensor, CpuAllocator};
+    ///
+    /// let data = vec![1, 2, 3, 4, 5, 6];
+    /// let tensor = Tensor::<i32, 2, _>::from_shape_vec([2, 3], data, CpuAllocator).unwrap();
+    ///
+    /// // Original: [[1, 2, 3],
+    /// //            [4, 5, 6]]
+    ///
+    /// // Transpose by swapping dimensions
+    /// let transposed = tensor.permute_axes([1, 0]);
+    /// assert_eq!(transposed.shape, [3, 2]);
+    ///
+    /// // Result: [[1, 4],
+    /// //          [2, 5],
+    /// //          [3, 6]]
+    /// assert_eq!(*transposed.get_unchecked([0, 0]), 1);
+    /// assert_eq!(*transposed.get_unchecked([0, 1]), 4);
+    /// assert_eq!(*transposed.get_unchecked([1, 0]), 2);
+    /// ```
+    ///
+    /// Reordering dimensions of a 3D tensor (e.g., changing channel order):
+    ///
+    /// ```rust
+    /// use kornia_tensor::{Tensor, CpuAllocator};
+    ///
+    /// // Create a 2x3x4 tensor (batch x height x width)
+    /// let tensor = Tensor::<i32, 3, _>::from_shape_val([2, 3, 4], 1, CpuAllocator);
+    ///
+    /// // Reorder to (batch x width x height)
+    /// let permuted = tensor.permute_axes([0, 2, 1]);
+    /// assert_eq!(permuted.shape, [2, 4, 3]);
+    /// ```
     pub fn permute_axes(&self, axes: [usize; N]) -> TensorView<'_, T, N, A> {
         let mut new_shape = [0; N];
         let mut new_strides = [0; N];
@@ -618,21 +716,61 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
         }
     }
 
-    /// Checks if the Tensor has a standard contiguous layout according to its `shape` and `strides`.
+    /// Checks if the tensor has a standard contiguous (row-major) memory layout.
+    ///
+    /// A standard layout means the tensor's data is stored contiguously in memory
+    /// following row-major order, where the rightmost dimension varies fastest.
+    /// This is important for performance in many operations and for interoperability
+    /// with other libraries.
     ///
     /// # Returns
     ///
-    /// boolean, true if contiguous and false if not
+    /// `true` if the tensor has contiguous row-major layout, `false` otherwise.
+    ///
+    /// # When is a layout non-standard?
+    ///
+    /// - After dimension permutation (e.g., transpose)
+    /// - After certain slicing operations
+    /// - When strides have been manually modified
+    /// - When the tensor is a non-contiguous view
     ///
     /// # Examples
     ///
-    /// ```
+    /// Standard layout:
+    ///
+    /// ```rust
     /// use kornia_tensor::{Tensor, CpuAllocator};
-    /// let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-    /// let mut t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data, CpuAllocator).unwrap();
-    /// // arbitrary incorrect stride
-    /// t.strides = [10, 5, 1];
-    /// assert!(!t.is_standard_layout());
+    ///
+    /// let tensor = Tensor::<i32, 2, _>::from_shape_val([3, 4], 0, CpuAllocator);
+    /// assert!(tensor.is_standard_layout());
+    /// ```
+    ///
+    /// Non-standard layout after transpose:
+    ///
+    /// ```rust
+    /// use kornia_tensor::{Tensor, CpuAllocator};
+    ///
+    /// let data = vec![1, 2, 3, 4];
+    /// let tensor = Tensor::<i32, 2, _>::from_shape_vec([2, 2], data, CpuAllocator).unwrap();
+    ///
+    /// // After permutation, the memory layout is no longer contiguous
+    /// let mut transposed = tensor.permute_axes([1, 0]).as_contiguous();
+    /// transposed.strides = [1, 2]; // Transpose stride pattern
+    ///
+    /// // This would need to_standard_layout() to become contiguous again
+    /// ```
+    ///
+    /// Detecting non-standard layout:
+    ///
+    /// ```rust
+    /// use kornia_tensor::{Tensor, CpuAllocator};
+    ///
+    /// let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    /// let mut tensor = Tensor::<i32, 3, _>::from_shape_vec([2, 2, 3], data, CpuAllocator).unwrap();
+    ///
+    /// // Manually corrupt the strides
+    /// tensor.strides = [10, 5, 1];
+    /// assert!(!tensor.is_standard_layout());
     /// ```
     pub fn is_standard_layout(&self) -> bool {
         let mut expected_stride: usize = 1;
@@ -645,30 +783,82 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
         true
     }
 
-    /// Copy Tensor storage data into contiguous memory if not already
+    /// Converts the tensor to standard contiguous (row-major) memory layout.
+    ///
+    /// If the tensor already has standard layout, returns a clone. Otherwise, creates a new
+    /// tensor with contiguous memory by copying elements in the correct order according to
+    /// the current shape and strides.
+    ///
+    /// This is essential for:
+    /// - Interfacing with libraries expecting contiguous memory
+    /// - Optimizing performance of certain operations
+    /// - Ensuring consistent memory layout after transformations
+    ///
+    /// # Arguments
+    ///
+    /// * `alloc` - The allocator to use for the new tensor if reallocation is needed
     ///
     /// # Returns
     ///
-    /// A new Tensor with contiguous storage
+    /// A new tensor with standard layout on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TensorError::DimensionMismatch`] if the tensor's shape and data are inconsistent.
+    ///
+    /// # Performance
+    ///
+    /// This operation is O(1) if already standard layout (just clones), O(n) otherwise where
+    /// n is the number of elements.
     ///
     /// # Examples
     ///
-    /// ```
+    /// Converting after permutation:
+    ///
+    /// ```rust
     /// use kornia_tensor::{Tensor, CpuAllocator};
-    /// let data: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-    /// let mut t = Tensor::<u8, 3, CpuAllocator>::from_shape_vec([2, 2, 3], data.clone(), CpuAllocator).unwrap();
-    /// // altering strides
-    /// t.strides = [1, 6, 2];
-    /// assert!(!t.is_standard_layout());
-    /// let t2 = t.to_standard_layout(CpuAllocator);
-    /// match t.to_standard_layout(CpuAllocator) {
-    ///     Ok(t2) => {
-    ///         assert!(t2.is_standard_layout());
-    ///     }
-    ///     Err(e) => {
-    ///         eprintln!("to_standard_layout failed: {}", e);
-    ///     }
-    /// }
+    ///
+    /// let data = vec![1, 2, 3, 4, 5, 6];
+    /// let tensor = Tensor::<i32, 2, _>::from_shape_vec([2, 3], data, CpuAllocator).unwrap();
+    ///
+    /// // Transpose creates non-contiguous layout
+    /// let transposed = tensor.permute_axes([1, 0]);
+    /// let owned = transposed.as_contiguous(); // Now we have an owned tensor
+    ///
+    /// // Convert to standard layout
+    /// let standard = owned.to_standard_layout(CpuAllocator).unwrap();
+    /// assert!(standard.is_standard_layout());
+    /// ```
+    ///
+    /// Fixing corrupted strides:
+    ///
+    /// ```rust
+    /// use kornia_tensor::{Tensor, CpuAllocator};
+    ///
+    /// let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    /// let mut tensor = Tensor::<i32, 3, _>::from_shape_vec([2, 2, 3], data, CpuAllocator).unwrap();
+    ///
+    /// // Simulate non-standard strides
+    /// tensor.strides = [1, 6, 2];
+    /// assert!(!tensor.is_standard_layout());
+    ///
+    /// // Restore standard layout
+    /// let fixed = tensor.to_standard_layout(CpuAllocator).unwrap();
+    /// assert!(fixed.is_standard_layout());
+    /// assert_eq!(fixed.strides, [6, 3, 1]);
+    /// ```
+    ///
+    /// No-op for already standard tensors:
+    ///
+    /// ```rust
+    /// use kornia_tensor::{Tensor, CpuAllocator};
+    ///
+    /// let tensor = Tensor::<i32, 2, _>::from_shape_val([3, 4], 42, CpuAllocator);
+    /// assert!(tensor.is_standard_layout());
+    ///
+    /// // This will just clone since it's already standard
+    /// let standard = tensor.to_standard_layout(CpuAllocator).unwrap();
+    /// assert!(standard.is_standard_layout());
     /// ```
     pub fn to_standard_layout(&self, alloc: A) -> Result<Self, TensorError>
     where

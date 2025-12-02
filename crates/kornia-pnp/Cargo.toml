@@ -17,7 +17,7 @@ opencv_bench = ["dep:opencv"]
 
 [dependencies]
 glam = { version = "0.30.0", default-features = false }
-kornia-lie = { workspace = true }
+kornia-algebra = { workspace = true }
 kornia-linalg = { workspace = true }
 kornia-imgproc = { workspace = true }
 nalgebra = "0.32"
