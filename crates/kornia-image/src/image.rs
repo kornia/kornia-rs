@@ -62,6 +62,7 @@ pub enum PixelFormat {
     F32,
 }
 
+/// Metadata describing the layout of an image including dimensions, channels, and pixel format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImageLayout {
     /// Spatial size of the image (width and height).

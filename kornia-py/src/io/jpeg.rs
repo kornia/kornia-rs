@@ -123,17 +123,3 @@ pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
 
     Ok(result)
 }
-
-#[pyfunction]
-/// Extracts metadata (size, channels, and pixel format) from JPEG image raw bytes.
-///
-/// ```py
-/// import kornia_rs as K
-///
-/// layout = K.decode_image_jpeg_info(bytes(img_data))
-/// ```
-pub fn decode_image_jpeg_info(src: &[u8]) -> PyResult<crate::image::PyImageLayout> {
-    let layout = J::decode_image_jpeg_layout(src)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-    Ok(layout.into())
-}

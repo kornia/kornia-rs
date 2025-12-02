@@ -364,24 +364,12 @@ fn decode_tiff_impl_u8(
         ));
     }
 
-    let result = decoder.read_image()?;
-    let data = match result {
-        DecodingResult::U8(data) => data,
-        _ => {
-            return Err(IoError::TiffDecodingError(
-                tiff::TiffError::UnsupportedError(
-                    tiff::TiffUnsupportedError::UnknownInterpretation,
-                ),
-            ))
-        }
-    };
-
     let expected_len = image_size.width * image_size.height * expected_channels as usize;
-    if data.len() != expected_len {
-        return Err(IoError::InvalidBufferSize(data.len(), expected_len));
+    if dst.len() != expected_len {
+        return Err(IoError::InvalidBufferSize(dst.len(), expected_len));
     }
 
-    dst.copy_from_slice(&data);
+    decoder.read_image_bytes(dst)?;
     Ok(())
 }
 
@@ -567,7 +555,7 @@ where
 mod tests {
     use super::*;
     use crate::error::IoError;
-    use std::fs::create_dir_all;
+    use std::fs::{create_dir_all, read};
 
     #[test]
     fn synthetic_write_tiff_rgb8() -> Result<(), IoError> {
@@ -737,6 +725,60 @@ mod tests {
 
         let img_rgb32f_back = read_image_tiff_rgb32f(&file_path)?;
         assert_eq!(img_rgb32f_back.as_slice(), img_rgb32f.as_slice());
+
+        Ok(())
+    }
+
+    #[test]
+    fn decode_tiff_rgb8() -> Result<(), IoError> {
+        let bytes = read("../../tests/data/dog.tiff")?;
+        let layout = decode_image_tiff_layout(&bytes)?;
+        assert_eq!(layout.image_size.width, 258);
+        assert_eq!(layout.image_size.height, 195);
+        assert_eq!(layout.channels, 3);
+
+        let mut image = Rgb8::from_size_val(layout.image_size, 0, CpuAllocator)?;
+        decode_image_tiff_rgb8(&bytes, &mut image)?;
+
+        assert_eq!(image.cols(), layout.image_size.width);
+        assert_eq!(image.rows(), layout.image_size.height);
+        assert_eq!(image.num_channels(), layout.channels as usize);
+
+        Ok(())
+    }
+
+    #[test]
+    fn decode_tiff_rgb16() -> Result<(), IoError> {
+        let bytes = read("../../tests/data/rgb16.tiff")?;
+        let layout = decode_image_tiff_layout(&bytes)?;
+        assert_eq!(layout.image_size.width, 32);
+        assert_eq!(layout.image_size.height, 32);
+        assert_eq!(layout.channels, 3);
+
+        let mut image = Rgb16::from_size_val(layout.image_size, 0, CpuAllocator)?;
+        decode_image_tiff_rgb16(&bytes, &mut image)?;
+
+        assert_eq!(image.cols(), layout.image_size.width);
+        assert_eq!(image.rows(), layout.image_size.height);
+        assert_eq!(image.num_channels(), layout.channels as usize);
+
+        Ok(())
+    }
+
+    #[test]
+    fn decode_tiff_rgb32f() -> Result<(), IoError> {
+        let bytes = read("../../tests/data/rgb32.tiff")?;
+        let layout = decode_image_tiff_layout(&bytes)?;
+        assert_eq!(layout.image_size.width, 32);
+        assert_eq!(layout.image_size.height, 32);
+        assert_eq!(layout.channels, 3);
+
+        let mut image = Rgbf32::from_size_val(layout.image_size, 0.0f32, CpuAllocator)?;
+        decode_image_tiff_rgb32f(&bytes, &mut image)?;
+
+        assert_eq!(image.cols(), layout.image_size.width);
+        assert_eq!(image.rows(), layout.image_size.height);
+        assert_eq!(image.num_channels(), layout.channels as usize);
 
         Ok(())
     }
