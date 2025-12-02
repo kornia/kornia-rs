@@ -176,7 +176,7 @@ impl PyFitQuadConfig {
 /// AprilTag detector for identifying and decoding AprilTags in images.
 ///
 /// # Example
-/// ```python
+/// ```py
 /// import kornia_rs as K
 ///
 /// kinds = [K.apriltag.family.TagFamilyKind("tag36_h11")]
