@@ -6,7 +6,6 @@ use kornia_algebra::{Mat3F32, Mat3F64};
 // =================================================================================
 
 mod impl_f32 {
-    use super::*;
     use glam::{Mat3, Quat, Vec3};
 
     const GAMMA: f32 = 5.828_427_3;
@@ -18,11 +17,17 @@ mod impl_f32 {
     #[derive(Debug, Clone)]
     /// A simple symmetric 3x3 Matrix class
     struct Symmetric3x3 {
+        /// The element at row 0, column 0.
         m_00: f32,
+        /// The element at row 1, column 0.
         m_10: f32,
+        /// The element at row 1, column 1.
         m_11: f32,
+        /// The element at row 2, column 0.
         m_20: f32,
+        /// The element at row 2, column 1.
         m_21: f32,
+        /// The element at row 2, column 2.
         m_22: f32,
     }
 
@@ -55,29 +60,11 @@ mod impl_f32 {
     /// Helper struct to store 3 Matrices to avoid OUT parameters on functions
     pub struct SVD3Set {
         /// The matrix of left singular vectors.
-        pub u: Mat3F32,
+        pub u: Mat3,
         /// The diagonal matrix of singular values.
-        pub s: Mat3F32,
+        pub s: Mat3,
         /// The matrix of right singular vectors.
-        pub v: Mat3F32,
-    }
-
-    impl SVD3Set {
-        /// Get the left singular vectors matrix.
-        #[inline]
-        pub fn u(&self) -> &Mat3F32 {
-            &self.u
-        }
-        /// Get the diagonal matrix of singular values.
-        #[inline]
-        pub fn s(&self) -> &Mat3F32 {
-            &self.s
-        }
-        /// Get the right singular vectors matrix.
-        #[inline]
-        pub fn v(&self) -> &Mat3F32 {
-            &self.v
-        }
+        pub v: Mat3,
     }
 
     #[inline(always)]
@@ -348,11 +335,10 @@ mod impl_f32 {
         QR3 { q, r }
     }
 
-    /// Wrapping function used to contain all of the required sub calls
-    pub fn svd(a: &Mat3F32) -> SVD3Set {
-        let a_inner: Mat3 = (*a).into();
-        let mut v = jacobi_eigenanalysis(Symmetric3x3::from_mat(&(a_inner.transpose() * a_inner)));
-        let mut b = a_inner * v;
+    /// Internal SVD implementation for f32 (glam types)
+    pub fn svd_inner(a: &Mat3) -> SVD3Set {
+        let mut v = jacobi_eigenanalysis(Symmetric3x3::from_mat(&(a.transpose() * (*a))));
+        let mut b = *a * v;
         sort_singular_values(&mut b, &mut v);
         let qr = qr_decomposition(&mut b);
         let mut u = qr.q;
@@ -370,11 +356,7 @@ mod impl_f32 {
         s.y_axis.y = s.y_axis.y.abs();
         s.z_axis.z = s.z_axis.z.abs();
 
-        SVD3Set {
-            u: u.into(),
-            s: s.into(),
-            v: v.into(),
-        }
+        SVD3Set { u, s, v }
     }
 }
 
@@ -383,7 +365,6 @@ mod impl_f32 {
 // =================================================================================
 
 mod impl_f64 {
-    use super::*;
     use glam::{DMat3, DQuat, DVec3};
 
     const GAMMA: f64 = 5.828_427_124_746_19; // 3 + 2 * sqrt(2)
@@ -395,11 +376,17 @@ mod impl_f64 {
     #[derive(Debug, Clone)]
     /// A simple symmetric 3x3 Matrix class (f64)
     struct Symmetric3x3 {
+        /// The element at row 0, column 0.
         m_00: f64,
+        /// The element at row 1, column 0.
         m_10: f64,
+        /// The element at row 1, column 1.
         m_11: f64,
+        /// The element at row 2, column 0.
         m_20: f64,
+        /// The element at row 2, column 1.
         m_21: f64,
+        /// The element at row 2, column 2.
         m_22: f64,
     }
 
@@ -432,27 +419,28 @@ mod impl_f64 {
     /// Helper struct to store 3 Matrices to avoid OUT parameters on functions
     pub struct SVD3Set {
         /// The matrix of left singular vectors.
-        pub u: Mat3F64,
+        pub u: DMat3,
         /// The diagonal matrix of singular values.
-        pub s: Mat3F64,
+        pub s: DMat3,
         /// The matrix of right singular vectors.
-        pub v: Mat3F64,
+        pub v: DMat3,
     }
 
+    #[allow(dead_code)] // These are part of the public API, used by future consumers
     impl SVD3Set {
         /// Get the left singular vectors matrix.
         #[inline]
-        pub fn u(&self) -> &Mat3F64 {
+        pub fn u(&self) -> &DMat3 {
             &self.u
         }
         /// Get the diagonal matrix of singular values.
         #[inline]
-        pub fn s(&self) -> &Mat3F64 {
+        pub fn s(&self) -> &DMat3 {
             &self.s
         }
         /// Get the right singular vectors matrix.
         #[inline]
-        pub fn v(&self) -> &Mat3F64 {
+        pub fn v(&self) -> &DMat3 {
             &self.v
         }
     }
@@ -609,7 +597,8 @@ mod impl_f64 {
 
     #[inline(always)]
     fn cond_negate_vec(c: bool, v: &mut DVec3) {
-        let mask = 0_i64.wrapping_sub(c as i64) as u64;
+        let zero: i64 = 0;
+        let mask = zero.wrapping_sub(c as i64) as u64;
         let sign_mask = 0x8000_0000_0000_0000u64;
         let neg_mask = mask & sign_mask;
         *v = DVec3::new(
@@ -725,11 +714,10 @@ mod impl_f64 {
         QR3 { q, r }
     }
 
-    /// Wrapping function used to contain all of the required sub calls
-    pub fn svd(a: &Mat3F64) -> SVD3Set {
-        let a_inner: DMat3 = (*a).into();
-        let mut v = jacobi_eigenanalysis(Symmetric3x3::from_mat(&(a_inner.transpose() * a_inner)));
-        let mut b = a_inner * v;
+    /// Internal SVD implementation for f64 (glam types)
+    pub fn svd_inner(a: &DMat3) -> SVD3Set {
+        let mut v = jacobi_eigenanalysis(Symmetric3x3::from_mat(&(a.transpose() * (*a))));
+        let mut b = *a * v;
         sort_singular_values(&mut b, &mut v);
         let qr = qr_decomposition(&mut b);
         let mut u = qr.q;
@@ -747,20 +735,97 @@ mod impl_f64 {
         s.y_axis.y = s.y_axis.y.abs();
         s.z_axis.z = s.z_axis.z.abs();
 
-        SVD3Set {
-            u: u.into(),
-            s: s.into(),
-            v: v.into(),
-        }
+        SVD3Set { u, s, v }
     }
 }
 
-// Re-export the main types and functions to keep the API compatible
-pub use impl_f32::svd as svd3;
-pub use impl_f32::SVD3Set;
+// =================================================================================
+//  Public Wrappers
+// =================================================================================
 
-pub use impl_f64::svd as svd3_f64;
-pub use impl_f64::SVD3Set as SVD3SetF64;
+/// Helper struct to store 3 Matrices to avoid OUT parameters on functions (f32)
+#[derive(Debug)]
+pub struct SVD3Set {
+    /// The matrix of left singular vectors.
+    pub u: Mat3F32,
+    /// The diagonal matrix of singular values.
+    pub s: Mat3F32,
+    /// The matrix of right singular vectors.
+    pub v: Mat3F32,
+}
+
+impl SVD3Set {
+    /// Get the left singular vectors matrix.
+    #[inline]
+    pub fn u(&self) -> &Mat3F32 {
+        &self.u
+    }
+    /// Get the diagonal matrix of singular values.
+    #[inline]
+    pub fn s(&self) -> &Mat3F32 {
+        &self.s
+    }
+    /// Get the right singular vectors matrix.
+    #[inline]
+    pub fn v(&self) -> &Mat3F32 {
+        &self.v
+    }
+}
+
+/// Helper struct to store 3 Matrices to avoid OUT parameters on functions (f64)
+#[derive(Debug)]
+pub struct SVD3SetF64 {
+    /// The matrix of left singular vectors.
+    pub u: Mat3F64,
+    /// The diagonal matrix of singular values.
+    pub s: Mat3F64,
+    /// The matrix of right singular vectors.
+    pub v: Mat3F64,
+}
+
+impl SVD3SetF64 {
+    /// Get the left singular vectors matrix.
+    #[inline]
+    pub fn u(&self) -> &Mat3F64 {
+        &self.u
+    }
+    /// Get the diagonal matrix of singular values.
+    #[inline]
+    pub fn s(&self) -> &Mat3F64 {
+        &self.s
+    }
+    /// Get the right singular vectors matrix.
+    #[inline]
+    pub fn v(&self) -> &Mat3F64 {
+        &self.v
+    }
+}
+
+/// SVD for f32 matrices.
+///
+/// Wraps internal glam implementation.
+pub fn svd3(a: &Mat3F32) -> SVD3Set {
+    let a_inner: glam::Mat3 = (*a).into();
+    let res = impl_f32::svd_inner(&a_inner);
+    SVD3Set {
+        u: res.u.into(),
+        s: res.s.into(),
+        v: res.v.into(),
+    }
+}
+
+/// SVD for f64 matrices.
+///
+/// Wraps internal glam implementation.
+pub fn svd3_f64(a: &Mat3F64) -> SVD3SetF64 {
+    let a_inner: glam::DMat3 = (*a).into();
+    let res = impl_f64::svd_inner(&a_inner);
+    SVD3SetF64 {
+        u: res.u.into(),
+        s: res.s.into(),
+        v: res.v.into(),
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -867,6 +932,7 @@ mod tests {
         let svd_result = svd3(&a);
         verify_svd_properties(&a, &svd_result, 1e-6);
 
+        // Convert to glam to access components easily
         let s_diag: glam::Mat3 = svd_result.s.into();
         let s_vec = glam::Vec3::new(s_diag.x_axis.x, s_diag.y_axis.y, s_diag.z_axis.z);
         assert!((s_vec - glam::Vec3::new(3.0, 2.0, 1.0)).length() < 1e-6);
