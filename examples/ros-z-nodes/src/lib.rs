@@ -1,5 +1,6 @@
 pub mod camera_node;
 pub mod foxglove_node;
+pub mod logger_node;
 
 use ros_z::{MessageTypeInfo, TypeHash, WithTypeInfo};
 

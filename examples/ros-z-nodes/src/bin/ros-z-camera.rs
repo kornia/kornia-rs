@@ -2,7 +2,7 @@ use argh::FromArgs;
 use ros_z::{context::ZContextBuilder, Builder, Result as ZResult};
 use std::sync::Arc;
 
-use ros_z_nodes::{camera_node::CameraNode, foxglove_node::FoxgloveNode};
+use ros_z_nodes::{camera_node::CameraNode, logger_node::LoggerNode};
 
 #[derive(FromArgs)]
 /// ROS2-style camera publisher using ros-z
@@ -39,14 +39,15 @@ async fn main() -> ZResult<()> {
     let ctx = Arc::new(ZContextBuilder::default().build()?);
 
     // create and initialize the camera publisher node
-    let mut camera_node = CameraNode::new(ctx.clone(), args.camera_id, args.fps)?;
-    let mut foxglove_node = FoxgloveNode::new(ctx.clone(), args.camera_id)?;
+    let camera_node = CameraNode::new(ctx.clone(), args.camera_id, args.fps)?;
+    // let foxglove_node = FoxgloveNode::new(ctx.clone(), args.camera_id)?;
+    let logger_node = LoggerNode::new(ctx.clone(), args.camera_id)?;
 
     // run the nodes
-    let shutdown_tx2 = shutdown_tx.clone();
     let nodes = vec![
-        tokio::spawn(async move { camera_node.run(shutdown_tx).await }),
-        tokio::spawn(async move { foxglove_node.run(shutdown_tx2).await }),
+        tokio::spawn(camera_node.run(shutdown_tx.clone())),
+        tokio::spawn(logger_node.run(shutdown_tx.clone())),
+        // tokio::spawn(foxglove_node.run(shutdown_tx.clone())),
     ];
 
     for node in nodes {

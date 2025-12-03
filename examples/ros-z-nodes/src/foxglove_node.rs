@@ -14,6 +14,7 @@ pub struct FoxgloveNode {
     #[allow(dead_code)]
     node: ZNode,
     subscriber: ZSub<CompressedImage, Sample, ProtobufSerdes<CompressedImage>>,
+    camera_id: u32,
 }
 
 impl FoxgloveNode {
@@ -21,18 +22,20 @@ impl FoxgloveNode {
         // create ROS-Z node
         let node = ctx.create_node("foxglove_node").build()?;
 
-        let topic = format!("/camera/{camera_id}/compressed");
-
         // create subscriber with protobuf serialization
         let subscriber = node
-            .create_sub::<CompressedImage>(topic.as_str())
+            .create_sub::<CompressedImage>(format!("/camera/{camera_id}/compressed").as_str())
             .with_serdes::<ProtobufSerdes<CompressedImage>>()
             .build()?;
 
-        Ok(Self { node, subscriber })
+        Ok(Self {
+            node,
+            subscriber,
+            camera_id,
+        })
     }
 
-    pub async fn run(&mut self, shutdown_tx: tokio::sync::watch::Sender<()>) -> ZResult<()> {
+    pub async fn run(self, shutdown_tx: tokio::sync::watch::Sender<()>) -> ZResult<()> {
         let mut shutdown_rx = shutdown_tx.subscribe();
 
         log::info!("Foxglove node started, subscribing");
@@ -60,7 +63,11 @@ impl FoxgloveNode {
                         data: msg.data.into(),
                     };
 
-                    foxglove::log!("/camera/0/compressed", foxglove_msg);
+                    match self.camera_id {
+                        0 => foxglove::log!("/camera/0/compressed", foxglove_msg),
+                        1 => foxglove::log!("/camera/1/compressed", foxglove_msg),
+                        e => panic!("Invalid camera id: {}", e),
+                    }
                 }
             }
         }
