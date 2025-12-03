@@ -175,15 +175,20 @@ impl PyFitQuadConfig {
 #[pyclass(name = "AprilTagDecoder")]
 /// AprilTag detector for identifying and decoding AprilTags in images.
 ///
-/// # Example
-/// ```py
-/// import kornia_rs as K
+/// The decoder is stateful and maintains internal buffers for performance.
+/// It expects single-channel 8-bit images (grayscale).
 ///
-/// kinds = [K.apriltag.family.TagFamilyKind("tag36_h11")]
-/// config = K.apriltag.DecodeTagsConfig(kinds)
-/// decoder = K.apriltag.AprilTagDecoder(config, K.ImageSize(640, 480))
-/// detections = decoder.decode(image)
-/// ```
+/// # Arguments
+/// * `config` - The decoding configuration.
+/// * `img_size` - The size of images to be processed. All input images must match this size.
+///
+/// # Returns
+/// * A list of `ApriltagDetection` objects.
+///
+/// # Exceptions
+/// Raises `PyException` if:
+/// * The input image cannot be converted to grayscale u8.
+/// * The input image size does not match the configured size.
 pub struct PyAprilTagDecoder(AprilTagDecoder);
 
 #[pymethods]
