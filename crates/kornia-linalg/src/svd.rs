@@ -67,6 +67,25 @@ mod impl_f32 {
         pub v: Mat3,
     }
 
+    #[allow(dead_code)]
+    impl SVD3Set {
+        /// Get the left singular vectors matrix.
+        #[inline]
+        pub fn u(&self) -> &Mat3 {
+            &self.u
+        }
+        /// Get the diagonal matrix of singular values.
+        #[inline]
+        pub fn s(&self) -> &Mat3 {
+            &self.s
+        }
+        /// Get the right singular vectors matrix.
+        #[inline]
+        pub fn v(&self) -> &Mat3 {
+            &self.v
+        }
+    }
+
     #[inline(always)]
     fn approximate_givens_parameters(s_pp: f32, s_qq: f32, s_pq: f32) -> Givens {
         let cos_theta_val = 2.0 * (s_pp - s_qq);
@@ -219,7 +238,7 @@ mod impl_f32 {
 
     #[inline(always)]
     fn cond_negate_vec(c: bool, v: &mut Vec3) {
-        let mask = (0 as i32).wrapping_sub(c as i32) as u32;
+        let mask = 0_i32.wrapping_sub(c as i32) as u32;
         let sign_mask = 0x8000_0000u32;
         let neg_mask = mask & sign_mask;
         *v = Vec3::new(
@@ -426,7 +445,7 @@ mod impl_f64 {
         pub v: DMat3,
     }
 
-    #[allow(dead_code)] // These are part of the public API, used by future consumers
+    #[allow(dead_code)]
     impl SVD3Set {
         /// Get the left singular vectors matrix.
         #[inline]
@@ -597,8 +616,8 @@ mod impl_f64 {
 
     #[inline(always)]
     fn cond_negate_vec(c: bool, v: &mut DVec3) {
-        let zero: i64 = 0;
-        let mask = zero.wrapping_sub(c as i64) as u64;
+        // FIX: Use 0_i64 to avoid clippy::unnecessary_cast
+        let mask = 0_i64.wrapping_sub(c as i64) as u64;
         let sign_mask = 0x8000_0000_0000_0000u64;
         let neg_mask = mask & sign_mask;
         *v = DVec3::new(
@@ -754,6 +773,7 @@ pub struct SVD3Set {
     pub v: Mat3F32,
 }
 
+#[allow(dead_code)]
 impl SVD3Set {
     /// Get the left singular vectors matrix.
     #[inline]
@@ -783,6 +803,7 @@ pub struct SVD3SetF64 {
     pub v: Mat3F64,
 }
 
+#[allow(dead_code)] // These are part of the public API, used by future consumers
 impl SVD3SetF64 {
     /// Get the left singular vectors matrix.
     #[inline]
