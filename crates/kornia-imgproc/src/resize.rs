@@ -1,6 +1,5 @@
 use crate::{
-    interpolation::{grid::meshgrid_from_fn, interpolate_pixel, InterpolationMode},
-    parallel,
+    interpolation::{InterpolationMode},
 };
 use fast_image_resize::{self as fr};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
@@ -60,8 +59,7 @@ pub fn resize_native<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,
     interpolation: InterpolationMode,
-) -> Result<(), ImageError>
-where
+) -> Result<(), kornia_image::ImageError>
 {
     // check if the input and output images have the same size
     // and copy the input image to the output image if they have the same size
@@ -70,25 +68,28 @@ where
         return Ok(());
     }
 
-    // create a grid of x and y coordinates for the output image
-    // and interpolate the values from the input image.
     let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
-    let step_x = (src.cols() - 1) as f32 / (dst.cols() - 1) as f32;
-    let step_y = (src.rows() - 1) as f32 / (dst.rows() - 1) as f32;
-    let (map_x, map_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| {
-        Ok((x as f32 * step_x, y as f32 * step_y))
-    })?;
 
-    // iterate over the output image and interpolate the pixel values
-    parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {
-        // interpolate the pixel values for each channel
-        dst_pixel.iter_mut().enumerate().for_each(|(k, pixel)| {
-            *pixel = interpolate_pixel(src, x, y, k, interpolation);
-        });
+    let step_x = (src.cols() - 1) as f32 / (dst_cols - 1) as f32;
+    let step_y = (src.rows() - 1) as f32 / (dst_rows - 1) as f32;
+
+    //going for otf calculation instead of allocating mesh
+
+    crate::parallel::par_iter_rows_indexed_mut(dst, |row_idx, row| {
+        let y_src = row_idx as f32 * step_y;
+
+        for (col_idx, pix) in row.chunks_exact_mut(C).enumerate() {
+            let x_src = col_idx as f32 * step_x;
+
+            pix.iter_mut().enumerate().for_each(|(k, p)| {
+                *p = crate::interpolation::interpolate_pixel(src, x_src, y_src, k, interpolation);
+            });
+        }
     });
 
     Ok(())
 }
+
 
 /// Resize an image to a new size using the [fast_image_resize](https://crates.io/crates/fast_image_resize) crate.
 ///

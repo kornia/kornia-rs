@@ -128,3 +128,19 @@ pub fn par_iter_rows_resample<const C: usize, A: ImageAllocator>(
                 });
         });
 }
+
+/// Apply a function to each row in the image in parallel
+pub fn par_iter_rows_indexed_mut<T, const C: usize, A: ImageAllocator>(
+    dst: &mut Image<T, C, A>,
+    f: impl Fn(usize, &mut [T]) + Send + Sync,
+) where
+    T: Send + Sync,
+{
+    let cols = dst.cols();
+    dst.as_slice_mut()
+        .par_chunks_exact_mut(C * cols)
+        .enumerate()
+        .for_each(|(row_idx, dst_row_slice)| {
+            f(row_idx, dst_row_slice);
+        });
+}
