@@ -42,30 +42,47 @@ use rayon::{
 /// assert_eq!(mean, [111.25, 112.25, 113.25]);
 /// ```
 pub fn std_mean<A: ImageAllocator>(image: &Image<u8, 3, A>) -> ([f64; 3], [f64; 3]) {
-    let (sum, sq_sum) = image.as_slice().chunks_exact(3).fold(
-        ([0f64; 3], [0f64; 3]),
-        |(mut sum, mut sq_sum), pixel| {
-            sum.iter_mut()
-                .zip(pixel.iter())
-                .for_each(|(s, &p)| *s += p as f64);
-            sq_sum
-                .iter_mut()
-                .zip(pixel.iter())
-                .for_each(|(s, &p)| *s += (p as f64).powi(2));
-            (sum, sq_sum)
-        },
-    );
+    //parallel version for the same(welford's algorithm)
+    let (sum, sq_sum) = image
+        .as_slice()
+        .par_chunks_exact(3)
+        .fold(
+            || ([0f64; 3], [0f64; 3]),
+            |(mut sum, mut sq_sum), pixel| {
+                sum[0] += pixel[0] as f64;
+                sum[1] += pixel[1] as f64;
+                sum[2] += pixel[2] as f64;
+
+                sq_sum[0] += (pixel[0] as f64).powi(2);
+                sq_sum[1] += (pixel[1] as f64).powi(2);
+                sq_sum[2] += (pixel[2] as f64).powi(2);
+
+                (sum, sq_sum)
+            },
+        )
+        .reduce(
+            || ([0f64; 3], [0f64; 3]),
+            |(sa, ssa), (sb, ssb)| {
+                (
+                    //Will prove to be slower for small images due to comparable load of 'reduce'
+                    //Sigmificantly faster for images > 512x512
+                 
+                    [sa[0] + sb[0], sa[1] + sb[1], sa[2] + sb[2]],
+                    [ssa[0] + ssb[0], ssa[1] + ssb[1], ssa[2] + ssb[2]],
+                )
+            },
+        );
 
     let n = (image.width() * image.height()) as f64;
     let mean = [sum[0] / n, sum[1] / n, sum[2] / n];
 
-    let variance = [
-        (sq_sum[0] / n - mean[0].powi(2)).sqrt(),
-        (sq_sum[1] / n - mean[1].powi(2)).sqrt(),
-        (sq_sum[2] / n - mean[2].powi(2)).sqrt(),
+    let std = [
+        (sq_sum[0] / n - mean[0] * mean[0]).sqrt(),
+        (sq_sum[1] / n - mean[1] * mean[1]).sqrt(),
+        (sq_sum[2] / n - mean[2] * mean[2]).sqrt(),
     ];
 
-    (variance, mean)
+    (std, mean)
 }
 
 /// Perform a bitwise AND operation between two images using a mask.
