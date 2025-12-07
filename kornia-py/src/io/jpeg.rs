@@ -123,3 +123,37 @@ pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
 
     Ok(result)
 }
+
+#[pyfunction]
+/// Encodes an RGB u8 image to JPEG bytes.
+///
+/// # Arguments
+///
+/// * `image` - RGB image as numpy array (H, W, 3) with dtype uint8
+/// * `quality` - JPEG quality (0-100, where 100 is highest quality)
+///
+/// # Returns
+///
+/// bytes containing JPEG-encoded image
+///
+/// # Example
+///
+/// ```py
+/// import kornia_rs as K
+/// import numpy as np
+///
+/// img = K.read_image_jpeg("dog.jpg", "rgb")
+/// jpeg_bytes = K.encode_image_jpeg(img, quality=95)
+/// with open("output.jpg", "wb") as f:
+///     f.write(jpeg_bytes)
+/// ```
+pub fn encode_image_jpeg(image: PyImage, quality: u8) -> PyResult<Vec<u8>> {
+    let image = Image::<u8, 3, _>::from_pyimage(image)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+    
+    let mut buffer = Vec::new();
+    J::encode_image_jpeg_rgb8(&image, quality, &mut buffer)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+    
+    Ok(buffer)
+}

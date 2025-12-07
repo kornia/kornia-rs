@@ -132,6 +132,28 @@ def test_read_image_any():
     assert img_t.shape == (195, 258, 3)
 
 
+def test_read_image_png_grayscale():
+    """Test reading grayscale PNG image"""
+    png_path: Path = DATA_DIR / "dog.png"
+    if png_path.exists():
+        img_png: np.ndarray = K.read_image(str(png_path.absolute()))
+        assert img_png.dtype == np.uint8
+        assert len(img_png.shape) == 3
+        assert img_png.shape[2] == 1
+        assert img_png.shape[:2] == (195, 258)
+
+
+def test_read_image_png_rgb():
+    """Test reading RGB PNG image"""
+    png_path: Path = DATA_DIR / "dog-rgb8.png"
+    if png_path.exists():
+        img_png: np.ndarray = K.read_image(str(png_path.absolute()))
+        assert img_png.dtype == np.uint8
+        assert len(img_png.shape) == 3
+        assert img_png.shape[2] == 3
+        assert img_png.shape[:2] == (195, 258)
+
+
 def test_read_image():
     """Test the new read_image function with auto-detection"""
     # Test JPEG
@@ -139,15 +161,6 @@ def test_read_image():
     img_jpeg: np.ndarray = K.read_image(str(jpeg_path.absolute()))
     assert img_jpeg.shape == (195, 258, 3)
     assert img_jpeg.dtype == np.uint8
-
-    # Test PNG (may be grayscale or RGB depending on file)
-    png_path: Path = DATA_DIR / "dog.png"
-    if png_path.exists():
-        img_png: np.ndarray = K.read_image(str(png_path.absolute()))
-        assert img_png.dtype == np.uint8
-        # PNG might be grayscale (1 channel) or RGB (3 channels)
-        assert len(img_png.shape) == 3
-        assert img_png.shape[2] in [1, 3]
 
     # Test PNG uint16 if available
     png16_path: Path = DATA_DIR / "rgb16.png"
