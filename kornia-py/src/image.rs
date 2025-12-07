@@ -1,6 +1,9 @@
 use numpy::{PyArray, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
 
-use kornia_image::{allocator::CpuAllocator, Image, ImageError, ImageSize, color_spaces::*};
+use kornia_image::{
+    allocator::CpuAllocator, color_spaces::*, Image, ImageError, ImageLayout,
+    PixelFormat, ImageSize,
+};
 use pyo3::prelude::*;
 
 // type alias for a 3D numpy array of u8
@@ -193,5 +196,104 @@ impl From<ImageSize> for PyImageSize {
 impl From<PyImageSize> for ImageSize {
     fn from(image_size: PyImageSize) -> Self {
         image_size.inner
+    }
+}
+
+#[pyclass(name = "PixelFormat")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PyPixelFormat {
+    U8,
+    U16,
+    F32,
+}
+
+impl From<PixelFormat> for PyPixelFormat {
+    fn from(value: PixelFormat) -> Self {
+        match value {
+            PixelFormat::U8 => PyPixelFormat::U8,
+            PixelFormat::U16 => PyPixelFormat::U16,
+            PixelFormat::F32 => PyPixelFormat::F32,
+        }
+    }
+}
+
+impl From<PyPixelFormat> for PixelFormat {
+    fn from(value: PyPixelFormat) -> Self {
+        match value {
+            PyPixelFormat::U8 => PixelFormat::U8,
+            PyPixelFormat::U16 => PixelFormat::U16,
+            PyPixelFormat::F32 => PixelFormat::F32,
+        }
+    }
+}
+
+#[pyclass(name = "ImageLayout", frozen)]
+#[derive(Clone)]
+pub struct PyImageLayout {
+    inner: ImageLayout,
+}
+
+#[pymethods]
+impl PyImageLayout {
+    #[new]
+    pub fn new(
+        image_size: PyImageSize,
+        channels: u8,
+        pixel_format: PyPixelFormat,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: ImageLayout {
+                image_size: image_size.clone().into(),
+                channels,
+                pixel_format: pixel_format.into(),
+            },
+        })
+    }
+
+    #[getter]
+    pub fn image_size(&self) -> PyImageSize {
+        self.inner.image_size.into()
+    }
+
+    #[getter]
+    pub fn channels(&self) -> u8 {
+        self.inner.channels
+    }
+
+    #[getter]
+    pub fn pixel_format(&self) -> PyPixelFormat {
+        self.inner.pixel_format.into()
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        let size = self.inner.image_size;
+        let pf_str = match self.inner.pixel_format {
+            PixelFormat::U8 => "U8",
+            PixelFormat::U16 => "U16",
+            PixelFormat::F32 => "F32",
+        };
+        Ok(format!(
+            "ImageLayout(image_size=ImageSize(width={}, height={}), channels={}, pixel_format=PixelFormat.{})",
+            size.width,
+            size.height,
+            self.channels(),
+            pf_str
+        ))
+    }
+
+    fn __str__(&self) -> PyResult<String> {
+        self.__repr__()
+    }
+}
+
+impl From<ImageLayout> for PyImageLayout {
+    fn from(layout: ImageLayout) -> Self {
+        PyImageLayout { inner: layout }
+    }
+}
+
+impl From<PyImageLayout> for ImageLayout {
+    fn from(layout: PyImageLayout) -> Self {
+        layout.inner
     }
 }
