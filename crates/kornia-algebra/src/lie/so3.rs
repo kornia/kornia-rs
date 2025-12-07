@@ -1,29 +1,50 @@
-use glam::{Affine3A, Mat3A, Mat4, Quat, Vec3A};
+use crate::{Mat3AF32, Mat4F32, QuatF32, Vec3AF32};
 use rand::Rng;
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 
 #[derive(Debug, Clone, Copy)]
-pub struct SO3 {
-    pub q: Quat,
+pub struct SO3F32 {
+    pub q: QuatF32,
 }
 
-impl SO3 {
-    pub const IDENTITY: Self = Self { q: Quat::IDENTITY };
+impl SO3F32 {
+    pub const IDENTITY: Self = Self {
+        q: QuatF32::IDENTITY,
+    };
 
-    // NOTE: quatenrion should be normalized
-    pub fn from_quaternion(quat: Quat) -> Self {
+    /// Create a new SO3F32 from a quaternion.
+    /// NOTE: quaternion should be normalized
+    #[inline]
+    pub fn new(quat: QuatF32) -> Self {
         Self { q: quat }
     }
 
-    pub fn from_matrix(mat: &Mat3A) -> Self {
+    pub fn from_array(arr: [f32; 4]) -> Self {
         Self {
-            q: Quat::from_mat3a(mat),
+            q: QuatF32::from_array(arr),
         }
     }
 
-    pub fn from_matrix4(mat: &Mat4) -> Self {
+    pub fn to_array(&self) -> [f32; 4] {
+        self.q.to_array()
+    }
+
+    /// Create a new SO3F32 from a quaternion.
+    /// NOTE: quaternion should be normalized
+    #[inline]
+    pub fn from_quaternion(quat: QuatF32) -> Self {
+        Self::new(quat)
+    }
+
+    pub fn from_matrix(mat: &Mat3AF32) -> Self {
         Self {
-            q: Quat::from_mat4(mat),
+            q: QuatF32::from_mat3a(mat),
+        }
+    }
+
+    pub fn from_matrix4(mat: &Mat4F32) -> Self {
+        Self {
+            q: QuatF32::from_mat4(mat),
         }
     }
 
@@ -44,35 +65,35 @@ impl SO3 {
         let z = r1_sqrt * (2.0 * std::f32::consts::PI * r3).sin();
 
         Self {
-            q: Quat::from_xyzw(x, y, z, w).normalize(), // Ensure normalization
+            q: QuatF32::from_xyzw(x, y, z, w).normalize(),
         }
     }
 
     #[inline]
-    pub fn rplus(&self, tau: Vec3A) -> Self {
-        *self * SO3::exp(tau)
+    pub fn rplus(&self, tau: Vec3AF32) -> Self {
+        *self * SO3F32::exp(tau)
     }
 
     #[inline]
-    pub fn rminus(&self, other: &Self) -> Vec3A {
+    pub fn rminus(&self, other: &Self) -> Vec3AF32 {
         (self.inverse() * *other).log()
     }
 
     #[inline]
-    pub fn lplus(tau: Vec3A, x: &Self) -> Self {
-        SO3::exp(tau) * *x
+    pub fn lplus(tau: Vec3AF32, x: &Self) -> Self {
+        SO3F32::exp(tau) * *x
     }
 
     #[inline]
-    pub fn lminus(y: &Self, x: &Self) -> Vec3A {
+    pub fn lminus(y: &Self, x: &Self) -> Vec3AF32 {
         (*y * x.inverse()).log()
     }
 
-    pub fn matrix(&self) -> Mat3A {
-        Affine3A::from_quat(self.q).matrix3
+    pub fn matrix(&self) -> Mat3AF32 {
+        Mat3AF32::from_quat(self.q)
     }
 
-    pub fn adjoint(&self) -> Mat3A {
+    pub fn adjoint(&self) -> Mat3AF32 {
         self.matrix()
     }
 
@@ -82,10 +103,10 @@ impl SO3 {
         }
     }
 
-    pub fn exp(v: Vec3A) -> Self {
+    pub fn exp(v: Vec3AF32) -> Self {
         let theta_sq = v.dot(v);
         let theta = theta_sq.sqrt();
-        let theta_half = 0.5 * theta;
+        let theta_half: f32 = 0.5 * theta;
 
         let (w, b) = if theta < SMALL_ANGLE_EPSILON {
             // using the taylor series expansion of cos(x/2) and sin(x/2)/x around 0
@@ -97,14 +118,14 @@ impl SO3 {
         let xyz = b * v;
 
         Self {
-            q: Quat::from_xyzw(xyz.x, xyz.y, xyz.z, w),
+            q: QuatF32::from_xyzw(xyz.x, xyz.y, xyz.z, w),
         }
     }
 
     /// Lie group -> Lie algebra
-    pub fn log(&self) -> Vec3A {
+    pub fn log(&self) -> Vec3AF32 {
         let mut w = self.q.w;
-        let mut vec = Vec3A::new(self.q.x, self.q.y, self.q.z);
+        let mut vec = Vec3AF32::new(self.q.x, self.q.y, self.q.z);
 
         if w < 0.0 {
             w = -w;
@@ -126,61 +147,67 @@ impl SO3 {
     }
 
     /// Vector space -> Lie algebra
-    pub fn hat(v: Vec3A) -> Mat3A {
+    pub fn hat(v: Vec3AF32) -> Mat3AF32 {
         let (a, b, c) = (v.x, v.y, v.z);
-        Mat3A::from_cols_array(&[0.0, c, -b, -c, 0.0, a, b, -a, 0.0])
+        Mat3AF32::from_cols_array(&[0.0, c, -b, -c, 0.0, a, b, -a, 0.0])
     }
 
     /// Lie algebra -> vector space
-    pub fn vee(omega: Mat3A) -> Vec3A {
+    pub fn vee(omega: Mat3AF32) -> Vec3AF32 {
         let a = omega.y_axis.z;
         let b = omega.z_axis.x;
         let c = omega.x_axis.y;
-        Vec3A::new(a, b, c)
+        Vec3AF32::new(a, b, c)
     }
 
-    pub fn vee4(omega: Mat4) -> Vec3A {
+    pub fn vee4(omega: Mat4F32) -> Vec3AF32 {
         let a = omega.y_axis.z;
         let b = omega.z_axis.x;
         let c = omega.x_axis.y;
-        Vec3A::new(a, b, c)
+        Vec3AF32::new(a, b, c)
     }
 
-    pub fn left_jacobian(v: Vec3A) -> Mat3A {
+    pub fn left_jacobian(v: Vec3AF32) -> Mat3AF32 {
         let skew = Self::hat(v);
         let theta = v.dot(v).sqrt();
-        let ident = Mat3A::IDENTITY;
+        let ident = Mat3AF32::IDENTITY;
 
         ident
             + ((1.0 - theta.cos()) / theta.powi(2)) * skew
             + ((theta - theta.sin()) / theta.powi(3)) * (skew * skew)
     }
 
-    pub fn right_jacobian(v: Vec3A) -> Mat3A {
+    pub fn right_jacobian(v: Vec3AF32) -> Mat3AF32 {
         let skew = Self::hat(v);
         let theta = v.dot(v).sqrt();
-        let ident = Mat3A::IDENTITY;
+        let ident = Mat3AF32::IDENTITY;
 
         ident - ((1.0 - theta.cos()) / theta.powi(2)) * skew
             + ((theta - theta.sin()) / theta.powi(3)) * (skew * skew)
     }
 }
 
-impl std::ops::Mul<SO3> for SO3 {
-    type Output = SO3;
+impl std::ops::Mul<SO3F32> for SO3F32 {
+    type Output = SO3F32;
 
     fn mul(self, rhs: Self) -> Self::Output {
         Self { q: self.q * rhs.q }
     }
 }
 
-impl std::ops::Mul<Vec3A> for SO3 {
-    type Output = Vec3A;
+impl std::ops::MulAssign<SO3F32> for SO3F32 {
+    #[inline]
+    fn mul_assign(&mut self, rhs: SO3F32) {
+        *self = *self * rhs;
+    }
+}
 
-    fn mul(self, rhs: Vec3A) -> Self::Output {
-        let quat = Quat::from_xyzw(rhs.x, rhs.y, rhs.z, 0.0);
-        let out = self.q * quat * self.q.conjugate();
-        Vec3A::new(out.x, out.y, out.z)
+impl std::ops::Mul<Vec3AF32> for SO3F32 {
+    type Output = Vec3AF32;
+
+    fn mul(self, rhs: Vec3AF32) -> Self::Output {
+        let result = self.q.mul_vec3([rhs.x, rhs.y, rhs.z]);
+        Vec3AF32::new(result[0], result[1], result[2])
     }
 }
 
@@ -193,8 +220,8 @@ mod tests {
 
     #[test]
     fn test_identity() {
-        let s = SO3::IDENTITY;
-        let q_expected = Quat::from_xyzw(0.0, 0.0, 0.0, 1.0);
+        let s = SO3F32::IDENTITY;
+        let q_expected = QuatF32::from_xyzw(0.0, 0.0, 0.0, 1.0);
         assert_relative_eq!(s.q.x, q_expected.x, epsilon = EPSILON);
         assert_relative_eq!(s.q.y, q_expected.y, epsilon = EPSILON);
         assert_relative_eq!(s.q.z, q_expected.z, epsilon = EPSILON);
@@ -203,8 +230,8 @@ mod tests {
 
     #[test]
     fn test_from_quaternion() {
-        let q = Quat::from_xyzw(4.0, -2.0, 1.0, 3.5).normalize();
-        let s = SO3::from_quaternion(q);
+        let q = QuatF32::from_xyzw(4.0, -2.0, 1.0, 3.5).normalize();
+        let s = SO3F32::from_quaternion(q);
         assert_relative_eq!(s.q.x, q.x, epsilon = EPSILON);
         assert_relative_eq!(s.q.y, q.y, epsilon = EPSILON);
         assert_relative_eq!(s.q.z, q.z, epsilon = EPSILON);
@@ -213,10 +240,10 @@ mod tests {
 
     #[test]
     fn test_from_matrix() {
-        let mat = Mat3A::from_cols_array(&[1.0, 0.0, 0.0, 0.0, 0.6, 0.8, 0.0, -0.8, 0.6]);
-        let s = SO3::from_matrix(&mat);
+        let mat = Mat3AF32::from_cols_array(&[1.0, 0.0, 0.0, 0.0, 0.6, 0.8, 0.0, -0.8, 0.6]);
+        let s = SO3F32::from_matrix(&mat);
 
-        let q_expected = Quat::from_xyzw(0.5, 0.0, 0.0, 1.0).normalize();
+        let q_expected = QuatF32::from_xyzw(0.5, 0.0, 0.0, 1.0).normalize();
         assert_relative_eq!(s.q.x, q_expected.x, epsilon = EPSILON);
         assert_relative_eq!(s.q.y, q_expected.y, epsilon = EPSILON);
         assert_relative_eq!(s.q.z, q_expected.z, epsilon = EPSILON);
@@ -226,10 +253,10 @@ mod tests {
     #[test]
     fn test_unit_norm() {
         // Test that quaternions maintain unit norm
-        let q1 = Quat::from_xyzw(1.0, 2.0, 3.0, 4.0).normalize();
-        let q2 = Quat::from_xyzw(-1.0, 0.5, -2.0, 1.5).normalize();
-        let s1 = SO3::from_quaternion(q1);
-        let s2 = SO3::from_quaternion(q2);
+        let q1 = QuatF32::from_xyzw(1.0, 2.0, 3.0, 4.0).normalize();
+        let q2 = QuatF32::from_xyzw(-1.0, 0.5, -2.0, 1.5).normalize();
+        let s1 = SO3F32::from_quaternion(q1);
+        let s2 = SO3F32::from_quaternion(q2);
         let s3 = s1 * s2;
         let s4 = s1.inverse();
         let s5 = s2.inverse();
@@ -245,8 +272,8 @@ mod tests {
 
     #[test]
     fn test_so3_rplus_rminus_roundtrip() {
-        let x = SO3::from_random();
-        let tau = Vec3A::new(0.4, -0.2, 0.7);
+        let x = SO3F32::from_random();
+        let tau = Vec3AF32::new(0.4, -0.2, 0.7);
         let y = x.rplus(tau); // X ⊕ τ → Y
         let diff = x.rminus(&y); // Y ⊖ X → τ
         assert_relative_eq!(diff.x, tau.x, epsilon = EPSILON);
@@ -256,10 +283,10 @@ mod tests {
 
     #[test]
     fn test_so3_lplus_lminus_consistency() {
-        let x = SO3::from_random();
-        let tau = Vec3A::new(-0.3, 1.1, 0.2);
-        let y = SO3::lplus(tau, &x); // τ ⊕ X → Y
-        let diff = SO3::lminus(&y, &x); // Y ⊖ X → τ
+        let x = SO3F32::from_random();
+        let tau = Vec3AF32::new(-0.3, 1.1, 0.2);
+        let y = SO3F32::lplus(tau, &x); // τ ⊕ X → Y
+        let diff = SO3F32::lminus(&y, &x); // Y ⊖ X → τ
         assert_relative_eq!(diff.x, tau.x, epsilon = EPSILON);
         assert_relative_eq!(diff.y, tau.y, epsilon = EPSILON);
         assert_relative_eq!(diff.z, tau.z, epsilon = EPSILON);
@@ -268,10 +295,10 @@ mod tests {
     #[test]
     fn test_exp() {
         // Test exp of zero vector is identity
-        let v = Vec3A::from_array([0.0, 0.0, 0.0]);
-        let s = SO3::exp(v);
+        let v = Vec3AF32::from_array([0.0, 0.0, 0.0]);
+        let s = SO3F32::exp(v);
 
-        let q_expected = Quat::from_xyzw(0.0, 0.0, 0.0, 1.0);
+        let q_expected = QuatF32::from_xyzw(0.0, 0.0, 0.0, 1.0);
         assert_relative_eq!(s.q.x, q_expected.x, epsilon = EPSILON);
         assert_relative_eq!(s.q.y, q_expected.y, epsilon = EPSILON);
         assert_relative_eq!(s.q.z, q_expected.z, epsilon = EPSILON);
@@ -282,10 +309,10 @@ mod tests {
     fn test_log() {
         // Test 1: log of identity quaternion should be zero vector
         {
-            let so3 = SO3::IDENTITY;
+            let so3 = SO3F32::IDENTITY;
             let log = so3.log();
 
-            let log_expected = Vec3A::new(0.0, 0.0, 0.0);
+            let log_expected = Vec3AF32::new(0.0, 0.0, 0.0);
             assert_relative_eq!(log.x, log_expected.x, epsilon = EPSILON);
             assert_relative_eq!(log.y, log_expected.y, epsilon = EPSILON);
             assert_relative_eq!(log.z, log_expected.z, epsilon = EPSILON);
@@ -293,10 +320,10 @@ mod tests {
 
         // Test 2: exp-log consistency
         {
-            let so3 = SO3::exp(Vec3A::new(1.0, 0.0, 0.0));
+            let so3 = SO3F32::exp(Vec3AF32::new(1.0, 0.0, 0.0));
             let log = so3.log();
 
-            let log_expected = Vec3A::new(1.0, 0.0, 0.0);
+            let log_expected = Vec3AF32::new(1.0, 0.0, 0.0);
             assert_relative_eq!(log.x, log_expected.x, epsilon = EPSILON);
             assert_relative_eq!(log.y, log_expected.y, epsilon = EPSILON);
             assert_relative_eq!(log.z, log_expected.z, epsilon = EPSILON);
@@ -307,15 +334,15 @@ mod tests {
     fn test_exp_log() {
         // Test exp-log consistency for various vectors
         let test_vectors = [
-            Vec3A::new(0.1, 0.2, 0.3),
-            Vec3A::new(1.0, 0.0, 0.0),
-            Vec3A::new(0.0, 1.0, 0.0),
-            Vec3A::new(0.0, 0.0, 1.0),
-            Vec3A::new(-0.5, 0.3, -0.2),
+            Vec3AF32::new(0.1, 0.2, 0.3),
+            Vec3AF32::new(1.0, 0.0, 0.0),
+            Vec3AF32::new(0.0, 1.0, 0.0),
+            Vec3AF32::new(0.0, 0.0, 1.0),
+            Vec3AF32::new(-0.5, 0.3, -0.2),
         ];
 
         for v in test_vectors.iter() {
-            let s = SO3::exp(*v);
+            let s = SO3F32::exp(*v);
             let log_result = s.log();
             assert_relative_eq!(log_result.x, v.x, epsilon = 1e-5);
             assert_relative_eq!(log_result.y, v.y, epsilon = 1e-5);
@@ -325,8 +352,8 @@ mod tests {
 
     #[test]
     fn test_hat() {
-        let v = Vec3A::new(1.0, 2.0, 3.0);
-        let hat_v = SO3::hat(v);
+        let v = Vec3AF32::new(1.0, 2.0, 3.0);
+        let hat_v = SO3F32::hat(v);
 
         // Check skew-symmetric matrix structure
         assert_relative_eq!(hat_v.x_axis.x, 0.0, epsilon = EPSILON);
@@ -343,10 +370,10 @@ mod tests {
     #[test]
     fn test_vee() {
         // Test vee operation
-        let omega = SO3::hat(Vec3A::new(1.0, 2.0, 3.0));
-        let v = SO3::vee(omega);
+        let omega = SO3F32::hat(Vec3AF32::new(1.0, 2.0, 3.0));
+        let v = SO3F32::vee(omega);
 
-        let v_expected = Vec3A::new(1.0, 2.0, 3.0);
+        let v_expected = Vec3AF32::new(1.0, 2.0, 3.0);
         assert_relative_eq!(v.x, v_expected.x, epsilon = EPSILON);
         assert_relative_eq!(v.y, v_expected.y, epsilon = EPSILON);
         assert_relative_eq!(v.z, v_expected.z, epsilon = EPSILON);
@@ -356,14 +383,14 @@ mod tests {
     fn test_hat_vee() {
         // Test hat-vee consistency
         let test_vectors = [
-            Vec3A::new(1.0, 2.0, 3.0),
-            Vec3A::new(-0.5, 0.0, 1.5),
-            Vec3A::new(0.1, -0.2, 0.3),
+            Vec3AF32::new(1.0, 2.0, 3.0),
+            Vec3AF32::new(-0.5, 0.0, 1.5),
+            Vec3AF32::new(0.1, -0.2, 0.3),
         ];
 
         for v in test_vectors.iter() {
-            let omega = SO3::hat(*v);
-            let v_recovered = SO3::vee(omega);
+            let omega = SO3F32::hat(*v);
+            let v_recovered = SO3F32::vee(omega);
             assert_relative_eq!(v_recovered.x, v.x, epsilon = EPSILON);
             assert_relative_eq!(v_recovered.y, v.y, epsilon = EPSILON);
             assert_relative_eq!(v_recovered.z, v.z, epsilon = EPSILON);
@@ -373,13 +400,13 @@ mod tests {
     #[test]
     fn test_matrix() {
         // Test rotation matrix properties
-        let q = Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
-        let so3 = SO3::from_quaternion(q);
+        let q = QuatF32::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
+        let so3 = SO3F32::from_quaternion(q);
         let r = so3.matrix();
 
         // Test that it's orthogonal (R^T * R = I)
         let identity = r.transpose() * r;
-        let identity_expected = Mat3A::IDENTITY;
+        let identity_expected = Mat3AF32::IDENTITY;
 
         for i in 0..3 {
             for j in 0..3 {
@@ -399,10 +426,10 @@ mod tests {
     #[test]
     fn test_mul() {
         // Test multiplication with identity
-        let q1 = Quat::IDENTITY;
-        let q2 = Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
-        let s1 = SO3::from_quaternion(q1);
-        let s2 = SO3::from_quaternion(q2);
+        let q1 = QuatF32::IDENTITY;
+        let q2 = QuatF32::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
+        let s1 = SO3F32::from_quaternion(q1);
+        let s2 = SO3F32::from_quaternion(q2);
 
         let result = s1 * s2;
         assert_relative_eq!(result.q.x, s2.q.x, epsilon = EPSILON);
@@ -420,10 +447,31 @@ mod tests {
     }
 
     #[test]
+    fn test_mul_assign() {
+        let mut s = SO3F32::IDENTITY;
+        let s2 = SO3F32::from_random();
+        s *= s2;
+        assert_relative_eq!(s.q.x, s2.q.x, epsilon = EPSILON);
+        assert_relative_eq!(s.q.y, s2.q.y, epsilon = EPSILON);
+        assert_relative_eq!(s.q.z, s2.q.z, epsilon = EPSILON);
+        assert_relative_eq!(s.q.w, s2.q.w, epsilon = EPSILON);
+
+        let mut s3 = SO3F32::from_random();
+        let original_s3 = s3;
+        let s4 = SO3F32::from_random();
+        s3 *= s4;
+        let expected = original_s3 * s4;
+        assert_relative_eq!(s3.q.x, expected.q.x, epsilon = EPSILON);
+        assert_relative_eq!(s3.q.y, expected.q.y, epsilon = EPSILON);
+        assert_relative_eq!(s3.q.z, expected.q.z, epsilon = EPSILON);
+        assert_relative_eq!(s3.q.w, expected.q.w, epsilon = EPSILON);
+    }
+
+    #[test]
     fn test_mul_vec() {
         // Test rotation of vectors
-        let s1 = SO3::IDENTITY;
-        let t = Vec3A::new(1.0, 2.0, 3.0);
+        let s1 = SO3F32::IDENTITY;
+        let t = Vec3AF32::new(1.0, 2.0, 3.0);
 
         // Identity rotation should not change the vector
         let result = s1 * t;
@@ -432,8 +480,8 @@ mod tests {
         assert_relative_eq!(result.z, t.z, epsilon = EPSILON);
 
         // Test that rotation preserves vector length
-        let q = Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
-        let s2 = SO3::from_quaternion(q);
+        let q = QuatF32::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
+        let s2 = SO3F32::from_quaternion(q);
         let rotated = s2 * t;
         assert_relative_eq!(rotated.length(), t.length(), epsilon = 1e-5);
     }
@@ -441,8 +489,8 @@ mod tests {
     #[test]
     fn test_inverse() {
         // Test inverse properties
-        let q = Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
-        let so3 = SO3::from_quaternion(q);
+        let q = QuatF32::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
+        let so3 = SO3F32::from_quaternion(q);
 
         // Test double inverse
         let double_inv = so3.inverse().inverse();
@@ -469,10 +517,10 @@ mod tests {
     #[test]
     fn test_adjoint() {
         // Test adjoint properties
-        let q1 = Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
-        let q2 = Quat::from_xyzw(-0.2, 0.1, 0.4, 0.8).normalize();
-        let x = SO3::from_quaternion(q1);
-        let y = SO3::from_quaternion(q2);
+        let q1 = QuatF32::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize();
+        let q2 = QuatF32::from_xyzw(-0.2, 0.1, 0.4, 0.8).normalize();
+        let x = SO3F32::from_quaternion(q1);
+        let y = SO3F32::from_quaternion(q2);
 
         // Test: x^-1.adjoint() = x.adjoint()^-1
         let left = x.inverse().adjoint();
@@ -498,15 +546,15 @@ mod tests {
     #[test]
     fn test_left_jacobian() {
         let test_vectors = [
-            Vec3A::new(0.1, 0.2, 0.3),
-            Vec3A::new(0.01, 0.02, 0.03), // Small angles
-            Vec3A::new(1.0, 0.0, 0.0),
-            Vec3A::new(0.0, 1.0, 0.0),
-            Vec3A::new(0.0, 0.0, 1.0),
+            Vec3AF32::new(0.1, 0.2, 0.3),
+            Vec3AF32::new(0.01, 0.02, 0.03), // Small angles
+            Vec3AF32::new(1.0, 0.0, 0.0),
+            Vec3AF32::new(0.0, 1.0, 0.0),
+            Vec3AF32::new(0.0, 0.0, 1.0),
         ];
 
         for v in test_vectors.iter() {
-            let jl = SO3::left_jacobian(*v);
+            let jl = SO3F32::left_jacobian(*v);
 
             // Test that Jacobian is finite
             assert!(jl.is_finite());
@@ -522,13 +570,13 @@ mod tests {
     #[test]
     fn test_right_jacobian() {
         let test_vectors = [
-            Vec3A::new(0.1, 0.2, 0.3),
-            Vec3A::new(0.01, 0.02, 0.03), // Small angles
-            Vec3A::new(-0.1, 0.3, 0.2),
+            Vec3AF32::new(0.1, 0.2, 0.3),
+            Vec3AF32::new(0.01, 0.02, 0.03), // Small angles
+            Vec3AF32::new(-0.1, 0.3, 0.2),
         ];
 
         for v in test_vectors.iter() {
-            let jr = SO3::right_jacobian(*v);
+            let jr = SO3F32::right_jacobian(*v);
 
             // Test that Jacobian is finite
             assert!(jr.is_finite());
@@ -544,11 +592,14 @@ mod tests {
     #[test]
     fn test_right_left_jacobian() {
         // Test relationship between left and right Jacobians
-        let test_vectors = [Vec3A::new(0.1, 0.2, 0.3), Vec3A::new(-0.05, 0.15, -0.1)];
+        let test_vectors = [
+            Vec3AF32::new(0.1, 0.2, 0.3),
+            Vec3AF32::new(-0.05, 0.15, -0.1),
+        ];
 
         for v in test_vectors.iter() {
-            let jr = SO3::right_jacobian(*v);
-            let jl = SO3::left_jacobian(*v);
+            let jr = SO3F32::right_jacobian(*v);
+            let jl = SO3F32::left_jacobian(*v);
 
             // Test: Jl = Jr^T (approximately for small angles)
             let jr_transpose = jr.transpose();
@@ -569,7 +620,7 @@ mod tests {
     fn test_random() {
         // Test that random rotations are valid
         for _ in 0..10 {
-            let so3 = SO3::from_random();
+            let so3 = SO3F32::from_random();
 
             // Test unit quaternion
             assert_relative_eq!(so3.q.length(), 1.0, epsilon = 1e-5);
@@ -587,19 +638,19 @@ mod tests {
     fn test_orthogonal_matrix() {
         // Test that rotation matrices are orthogonal
         let test_quaternions = [
-            Quat::IDENTITY,
-            Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize(),
-            Quat::from_xyzw(-0.5, 0.3, -0.2, 0.7).normalize(),
+            QuatF32::IDENTITY,
+            QuatF32::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize(),
+            QuatF32::from_xyzw(-0.5, 0.3, -0.2, 0.7).normalize(),
         ];
 
         for q in test_quaternions.iter() {
-            let so3 = SO3::from_quaternion(*q);
+            let so3 = SO3F32::from_quaternion(*q);
             let r = so3.matrix();
             let r_inv = so3.inverse().matrix();
 
             // Test R * R^T = I
             let identity = r * r.transpose();
-            let expected_identity = Mat3A::IDENTITY;
+            let expected_identity = Mat3AF32::IDENTITY;
 
             for i in 0..3 {
                 for j in 0..3 {

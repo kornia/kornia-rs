@@ -9,7 +9,7 @@
 build profile="debug":
   @echo "🏗️  Building kornia-cpp library ({{ profile }})..."
   cmake -B build -DCMAKE_BUILD_TYPE={{ if profile == "debug" { "Debug" } else { "Release" } }} -DBUILD_EXAMPLES=OFF -DBUILD_TESTS=OFF
-  cmake --build build --target kornia_rust_lib -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+  cmake --build build --target cargo_build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
 # Build tests only
 build-tests profile="debug":
