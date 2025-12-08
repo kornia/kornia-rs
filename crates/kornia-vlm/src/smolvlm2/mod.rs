@@ -506,7 +506,7 @@ mod tests {
                         },
                     ],
                 }],
-                Some(InputMedia::Images(vec![image])),
+                Some(InputMedia::Images(vec![image.into_inner()])),
                 sample_len,
                 CpuAllocator,
             )

@@ -1,0 +1,26 @@
+[package]
+name = "kornia-cpp"
+categories = ["computer-vision", "science::robotics"]
+description = "C++ bindings for Kornia Rust library"
+edition = "2021"
+homepage = "http://kornia.org"
+license = "Apache-2.0"
+repository = "https://github.com/kornia/kornia-rs"
+rust-version = "1.76"
+version = "0.1.0"
+
+[lib]
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+# kornia
+kornia-image = { path = "../crates/kornia-image" }
+kornia-io = { path = "../crates/kornia-io" }
+
+# external
+cxx = "1.0"
+paste = "1.0"
+
+[build-dependencies]
+cxx-build = "1.0"
+

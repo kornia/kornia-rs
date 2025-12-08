@@ -4,12 +4,11 @@
 
 use crate::ops::{compute_centroid, gauss_newton, intrinsics_as_vectors, pose_to_rt};
 use crate::pnp::{NumericTol, PnPError, PnPResult, PnPSolver};
-use glam::{Mat3, Mat3A, Vec3};
+use kornia_algebra::{Mat3AF32, Mat3F32, Vec3F32, SO3F32};
 use kornia_imgproc::calibration::{
     distortion::{distort_point_polynomial, PolynomialDistortion},
     CameraIntrinsic,
 };
-use kornia_lie::so3::SO3;
 use kornia_linalg::rigid::umeyama;
 use kornia_linalg::svd::svd3;
 use nalgebra::{DMatrix, DVector, Vector4};
@@ -83,23 +82,29 @@ pub fn solve_epnp(
     let m_flat: Vec<f32> = m_rows.iter().flat_map(|row| row.iter()).cloned().collect();
     let m_mat = DMatrix::<f32>::from_row_slice(2 * n, 12, &m_flat);
 
-    // Null-space of M via SVD of MtM (12×12), following OpenCV epnp.cpp
+    // Null-space of M via eigen decomposition of MtM (12×12)
+    // TODO: mtm is always symmetric; look into more efficient multiplication for this case.
     let mtm = m_mat.transpose() * &m_mat; // 12×12
-    let svd = mtm.svd(true, true);
-    let Some(u) = svd.u else {
-        return Err(PnPError::SvdFailed(
-            "Failed to compute U for MtM".to_string(),
-        ));
-    };
-    // Take the last 4 columns of U (smallest singular values)
-    let cols = u.ncols();
-    if cols < 4 {
-        return Err(PnPError::SvdFailed(
-            "U has fewer than 4 columns".to_string(),
-        ));
-    }
-    let start_col = cols - 4;
-    let null4 = u.columns(start_col, 4).into_owned(); // 12×4
+    let eig = mtm.symmetric_eigen();
+
+    let eigenvalues = eig.eigenvalues;
+    let eigenvectors = eig.eigenvectors;
+
+    let mut value_index_pairs: Vec<(f32, usize)> = eigenvalues
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, value)| (value.abs(), index))
+        .collect();
+
+    value_index_pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    let null4 = DMatrix::from_columns(&[
+        eigenvectors.column(value_index_pairs[3].1),
+        eigenvectors.column(value_index_pairs[2].1),
+        eigenvectors.column(value_index_pairs[1].1),
+        eigenvectors.column(value_index_pairs[0].1),
+    ]);
 
     // Build helper matrices for beta initialisation
     let l = build_l6x10(&null4);
@@ -139,7 +144,7 @@ pub fn solve_epnp(
         }
     }
 
-    let mat = Mat3A::from_cols_array(&[
+    let mat = Mat3AF32::from_cols_array(&[
         best_r[0][0],
         best_r[1][0],
         best_r[2][0],
@@ -150,7 +155,7 @@ pub fn solve_epnp(
         best_r[1][2],
         best_r[2][2],
     ]);
-    let rvec_f32 = SO3::from_matrix(&mat).log();
+    let rvec_f32 = SO3F32::from_matrix(&mat).log();
     let rvec = [rvec_f32.x, rvec_f32.y, rvec_f32.z];
 
     Ok(PnPResult {
@@ -181,9 +186,9 @@ fn pose_from_betas(
     }
 
     let a0 = alphas[0];
-    let mut pc0_vec = Vec3::ZERO;
+    let mut pc0_vec = Vec3F32::ZERO;
     for j in 0..4 {
-        pc0_vec += Vec3::from_array(cc[j]) * a0[j];
+        pc0_vec += Vec3F32::from_array(cc[j]) * a0[j];
     }
 
     if pc0_vec.z < 0.0 {
@@ -195,8 +200,14 @@ fn pose_from_betas(
     }
 
     // Convert arrays to Vec3 for consistency with glam usage
-    let cw_vec3: Vec<Vec3> = cw.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect();
-    let cc_vec3: Vec<Vec3> = cc.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect();
+    let cw_vec3: Vec<glam::Vec3> = cw
+        .iter()
+        .map(|p| glam::Vec3::new(p[0], p[1], p[2]))
+        .collect();
+    let cc_vec3: Vec<glam::Vec3> = cc
+        .iter()
+        .map(|p| glam::Vec3::new(p[0], p[1], p[2]))
+        .collect();
 
     let (r, t, _s) = umeyama(&cw_vec3, &cc_vec3).map_err(|e| PnPError::SvdFailed(e.to_string()))?;
 
@@ -241,7 +252,7 @@ fn rmse_px(
     };
 
     for (pw_arr, &uv) in points_world.iter().zip(points_image.iter()) {
-        let pw = Vec3::from_array(*pw_arr);
+        let pw = Vec3F32::from_array(*pw_arr);
         let pc = r_mat * pw + t_vec; // camera-frame point
 
         let inv_z = 1.0 / pc.z;
@@ -269,11 +280,11 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
     let c = compute_centroid(points_world);
 
     // Compute covariance using glam for consistency
-    let mut cov_mat = Mat3::ZERO;
+    let mut cov_mat = Mat3F32::from_cols_array(&[0.0; 9]);
     for p in points_world {
-        let diff = Vec3::new(p[0] - c[0], p[1] - c[1], p[2] - c[2]);
+        let diff = Vec3F32::new(p[0] - c[0], p[1] - c[1], p[2] - c[2]);
         // Outer product diff * diffᵀ via column scaling
-        let outer_product = Mat3::from_cols(diff * diff.x, diff * diff.y, diff * diff.z);
+        let outer_product = Mat3F32::from_cols(diff * diff.x, diff * diff.y, diff * diff.z);
         cov_mat += outer_product;
     }
     cov_mat *= 1.0 / n as f32;
@@ -283,14 +294,14 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
     let s = svd.s(); // diagonal matrix of singular values (eigenvalues)
 
     let s_diag = [s.x_axis.x, s.y_axis.y, s.z_axis.z];
-    let mut axes_sig: Vec<(f32, Vec3)> = vec![
-        (s_diag[0].sqrt(), v.x_axis),
-        (s_diag[1].sqrt(), v.y_axis),
-        (s_diag[2].sqrt(), v.z_axis),
+    let mut axes_sig: Vec<(f32, Vec3F32)> = vec![
+        (s_diag[0].sqrt(), Vec3F32::from(v.x_axis)),
+        (s_diag[1].sqrt(), Vec3F32::from(v.y_axis)),
+        (s_diag[2].sqrt(), Vec3F32::from(v.z_axis)),
     ];
     axes_sig.sort_by(|a, b| b.0.total_cmp(&a.0));
 
-    let c_vec = Vec3::from_array(c);
+    let c_vec = Vec3F32::from_array(c);
     let mut cw = [[0.0; 3]; 4];
     cw[0] = c;
 
@@ -316,12 +327,12 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
 /// `a0 + a1 + a2 + a3 = 1` and `pw_i = sum_j(a_j * Cw_j)`.
 fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) -> Vec<[f32; 4]> {
     // Build B = [C1 - C0, C2 - C0, C3 - C0].
-    let c0 = Vec3::new(cw[0][0], cw[0][1], cw[0][2]);
-    let d1 = Vec3::new(cw[1][0] - c0.x, cw[1][1] - c0.y, cw[1][2] - c0.z);
-    let d2 = Vec3::new(cw[2][0] - c0.x, cw[2][1] - c0.y, cw[2][2] - c0.z);
-    let d3 = Vec3::new(cw[3][0] - c0.x, cw[3][1] - c0.y, cw[3][2] - c0.z);
+    let c0 = Vec3F32::new(cw[0][0], cw[0][1], cw[0][2]);
+    let d1 = Vec3F32::new(cw[1][0] - c0.x, cw[1][1] - c0.y, cw[1][2] - c0.z);
+    let d2 = Vec3F32::new(cw[2][0] - c0.x, cw[2][1] - c0.y, cw[2][2] - c0.z);
+    let d3 = Vec3F32::new(cw[3][0] - c0.x, cw[3][1] - c0.y, cw[3][2] - c0.z);
 
-    let b = Mat3::from_cols(d1, d2, d3);
+    let b = Mat3F32::from_cols(d1, d2, d3);
 
     // Invert or pseudo-invert B.
     let b_inv = if b.determinant().abs() > eps {
@@ -330,11 +341,11 @@ fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) 
     } else {
         // Moore–Penrose pseudo-inverse: B⁺ = V Σ⁺ Uᵀ
         let svd = svd3(&b);
-        let u = *svd.u();
-        let v_mat = *svd.v();
+        let u = Mat3F32::from(*svd.u());
+        let v_mat = Mat3F32::from(*svd.v());
         let s_mat = *svd.s();
         let s_diag = [s_mat.x_axis.x, s_mat.y_axis.y, s_mat.z_axis.z];
-        let inv_diag = Vec3::new(
+        let inv_diag = Vec3F32::new(
             if s_diag[0].abs() > eps {
                 1.0 / s_diag[0]
             } else {
@@ -351,7 +362,7 @@ fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) 
                 0.0
             },
         );
-        let sigma_inv = Mat3::from_diagonal(inv_diag);
+        let sigma_inv = Mat3F32::from_diagonal(inv_diag);
         v_mat * sigma_inv * u.transpose()
     };
 
@@ -359,7 +370,7 @@ fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) 
     points_world
         .iter()
         .map(|p| {
-            let diff = Vec3::from_array(*p) - c0;
+            let diff = Vec3F32::from_array(*p) - c0;
             let lamb = b_inv * diff;
             [1.0 - (lamb.x + lamb.y + lamb.z), lamb.x, lamb.y, lamb.z]
         })
@@ -421,63 +432,44 @@ fn build_m(
 /// Build the 6×10 matrix **L** used in EPnP from the 4-dimensional null-space matrix `V` (shape 12×4).
 fn build_l6x10(null4: &DMatrix<f32>) -> [[f32; 10]; 6] {
     // Re-ordered column indices (reverse order).
-    let col_order = [3usize, 2, 1, 0];
-
-    // v[i] is 4×3 matrix => Vec<[Vec3;4]>
-    let mut v_cp: Vec<[Vec3; 4]> = Vec::with_capacity(4);
-
-    for &c in &col_order {
-        let col = null4.column(c);
-        let mut blocks = [Vec3::ZERO; 4];
-        for k in 0..4 {
-            blocks[k] = Vec3::new(col[3 * k], col[3 * k + 1], col[3 * k + 2]);
-        }
-        v_cp.push(blocks);
-    }
-
-    // Differences between control-point vectors for each null-space component.
-    let dv_arr: Vec<Vec<Vec3>> = (0..4)
-        .map(|i| {
-            CP_PAIRS
-                .iter()
-                .map(|&(a, b)| v_cp[i][a] - v_cp[i][b])
-                .collect::<Vec<_>>()
-        })
-        .collect();
-
     let mut l = [[0.0f32; 10]; 6];
-    for (j, _) in dv_arr[0].iter().enumerate() {
-        let d0 = dv_arr[0][j];
-        let d1 = dv_arr[1][j];
-        let d2 = dv_arr[2][j];
-        let d3 = dv_arr[3][j];
 
-        let d00 = d0.dot(d0);
-        let d11 = d1.dot(d1);
-        let d22 = d2.dot(d2);
-        let d33 = d3.dot(d3);
+    let c3 = null4.column(3);
+    let c2 = null4.column(2);
+    let c1 = null4.column(1);
+    let c0 = null4.column(0);
 
-        let d01 = d0.dot(d1);
-        let d02 = d0.dot(d2);
-        let d03 = d0.dot(d3);
-        let d12 = d1.dot(d2);
-        let d13 = d1.dot(d3);
-        let d23 = d2.dot(d3);
+    let cols: [&[f32]; 4] = [c3.as_slice(), c2.as_slice(), c1.as_slice(), c0.as_slice()];
+
+    for (j, &(a, b)) in CP_PAIRS.iter().enumerate() {
+        let mut d = [[0.0; 3]; 4];
+
+        for (k, col) in cols.iter().enumerate() {
+            let base_a = 3 * a;
+            let base_b = 3 * b;
+            d[k][0] = col[base_a] - col[base_b];
+            d[k][1] = col[base_a + 1] - col[base_b + 1];
+            d[k][2] = col[base_a + 2] - col[base_b + 2];
+        }
+
+        #[inline(always)]
+        fn dot(a: &[f32; 3], b: &[f32; 3]) -> f32 {
+            a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+        }
 
         l[j] = [
-            d00,
-            2.0 * d01,
-            d11,
-            2.0 * d02,
-            2.0 * d12,
-            d22,
-            2.0 * d03,
-            2.0 * d13,
-            2.0 * d23,
-            d33,
+            dot(&d[0], &d[0]),
+            2.0 * dot(&d[0], &d[1]),
+            dot(&d[1], &d[1]),
+            2.0 * dot(&d[0], &d[2]),
+            2.0 * dot(&d[1], &d[2]),
+            dot(&d[2], &d[2]),
+            2.0 * dot(&d[0], &d[3]),
+            2.0 * dot(&d[1], &d[3]),
+            2.0 * dot(&d[2], &d[3]),
+            dot(&d[3], &d[3]),
         ];
     }
-
     l
 }
 
@@ -556,8 +548,8 @@ const CP_PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (
 /// Compute the six squared distances (ρ vector) between the 4 control points.
 fn rho_ctrlpts(cw: &[[f32; 3]; 4]) -> [f32; 6] {
     CP_PAIRS.map(|(i, j)| {
-        let diff = Vec3::from_array(cw[i]) - Vec3::from_array(cw[j]);
-        diff.length_squared()
+        let diff = Vec3F32::from_array(cw[i]) - Vec3F32::from_array(cw[j]);
+        diff.dot(diff)
     })
 }
 

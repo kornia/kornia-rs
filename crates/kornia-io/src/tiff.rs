@@ -1,6 +1,7 @@
 use crate::error::IoError;
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
+    color_spaces::{Gray16, Gray8, Grayf32, Rgb16, Rgb8, Rgbf32},
     Image, ImageSize,
 };
 use std::{fs, path::Path};
@@ -17,10 +18,8 @@ use tiff::{
 ///
 /// # Returns
 ///
-/// The rgb8 image as a `Image<u8, 3>`.
-pub fn read_image_tiff_rgb8(
-    file_path: impl AsRef<Path>,
-) -> Result<Image<u8, 3, CpuAllocator>, IoError> {
+/// The RGB8 typed image.
+pub fn read_image_tiff_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8<CpuAllocator>, IoError> {
     let (result, size) = read_image_tiff_impl(file_path)?;
 
     let data = match result {
@@ -34,10 +33,10 @@ pub fn read_image_tiff_rgb8(
         }
     };
 
-    Ok(Image::new(size.into(), data, CpuAllocator)?)
+    Ok(Rgb8::from_size_vec(size.into(), data, CpuAllocator)?)
 }
 
-/// Read a TIFF image and return it as a mono8 image.
+/// Read a TIFF image and return it as a grayscale image.
 ///
 /// # Arguments
 ///
@@ -45,10 +44,8 @@ pub fn read_image_tiff_rgb8(
 ///
 /// # Returns
 ///
-/// The mono8 image as a `Image<u8, 1>`.
-pub fn read_image_tiff_mono8(
-    file_path: impl AsRef<Path>,
-) -> Result<Image<u8, 1, CpuAllocator>, IoError> {
+/// The Gray8 typed image.
+pub fn read_image_tiff_mono8(file_path: impl AsRef<Path>) -> Result<Gray8<CpuAllocator>, IoError> {
     let (result, size) = read_image_tiff_impl(file_path)?;
 
     let data = match result {
@@ -62,7 +59,7 @@ pub fn read_image_tiff_mono8(
         }
     };
 
-    Ok(Image::new(size.into(), data, CpuAllocator)?)
+    Ok(Gray8::from_size_vec(size.into(), data, CpuAllocator)?)
 }
 
 /// Read a TIFF image and return it as a RGB16 image.
@@ -73,10 +70,8 @@ pub fn read_image_tiff_mono8(
 ///
 /// # Returns
 ///
-/// The rgb16 image as a `Image<u16, 3>`.
-pub fn read_image_tiff_rgb16(
-    file_path: impl AsRef<Path>,
-) -> Result<Image<u16, 3, CpuAllocator>, IoError> {
+/// The RGB16 typed image.
+pub fn read_image_tiff_rgb16(file_path: impl AsRef<Path>) -> Result<Rgb16<CpuAllocator>, IoError> {
     let (result, size) = read_image_tiff_impl(file_path)?;
 
     let data = match result {
@@ -90,10 +85,10 @@ pub fn read_image_tiff_rgb16(
         }
     };
 
-    Ok(Image::new(size.into(), data, CpuAllocator)?)
+    Ok(Rgb16::from_size_vec(size.into(), data, CpuAllocator)?)
 }
 
-/// Read a TIFF image and return it as a mono16 image.
+/// Read a TIFF image and return it as a grayscale 16-bit image.
 ///
 /// # Arguments
 ///
@@ -101,10 +96,10 @@ pub fn read_image_tiff_rgb16(
 ///
 /// # Returns
 ///
-/// The mono16 image as a `Image<u16, 1>`.
+/// The Gray16 typed image.
 pub fn read_image_tiff_mono16(
     file_path: impl AsRef<Path>,
-) -> Result<Image<u16, 1, CpuAllocator>, IoError> {
+) -> Result<Gray16<CpuAllocator>, IoError> {
     let (result, size) = read_image_tiff_impl(file_path)?;
 
     let data = match result {
@@ -118,10 +113,10 @@ pub fn read_image_tiff_mono16(
         }
     };
 
-    Ok(Image::new(size.into(), data, CpuAllocator)?)
+    Ok(Gray16::from_size_vec(size.into(), data, CpuAllocator)?)
 }
 
-/// Read a TIFF image and return it as single precision floating point image with one channel.
+/// Read a TIFF image and return it as single precision floating point grayscale image.
 ///
 /// # Arguments
 ///
@@ -129,10 +124,10 @@ pub fn read_image_tiff_mono16(
 ///
 /// # Returns
 ///
-/// The floating point image as a `Image<f32, 1>`.
+/// The Grayf32 typed image.
 pub fn read_image_tiff_mono32f(
     file_path: impl AsRef<Path>,
-) -> Result<Image<f32, 1, CpuAllocator>, IoError> {
+) -> Result<Grayf32<CpuAllocator>, IoError> {
     let (result, size) = read_image_tiff_impl(file_path)?;
 
     let data = match result {
@@ -146,10 +141,10 @@ pub fn read_image_tiff_mono32f(
         }
     };
 
-    Ok(Image::new(size.into(), data, CpuAllocator)?)
+    Ok(Grayf32::from_size_vec(size.into(), data, CpuAllocator)?)
 }
 
-/// Read a TIFF image and return it as single precision floating point image with three channels.
+/// Read a TIFF image and return it as single precision floating point RGB image.
 ///
 /// # Arguments
 ///
@@ -157,10 +152,10 @@ pub fn read_image_tiff_mono32f(
 ///
 /// # Returns
 ///
-/// The floating point image as a `Image<f32, 3>`.
+/// The Rgbf32 typed image.
 pub fn read_image_tiff_rgb32f(
     file_path: impl AsRef<Path>,
-) -> Result<Image<f32, 3, CpuAllocator>, IoError> {
+) -> Result<Rgbf32<CpuAllocator>, IoError> {
     let (result, size) = read_image_tiff_impl(file_path)?;
 
     let data = match result {
@@ -174,7 +169,7 @@ pub fn read_image_tiff_rgb32f(
         }
     };
 
-    Ok(Image::new(size.into(), data, CpuAllocator)?)
+    Ok(Rgbf32::from_size_vec(size.into(), data, CpuAllocator)?)
 }
 
 fn read_image_tiff_impl(
@@ -205,7 +200,7 @@ fn read_image_tiff_impl(
 /// # Arguments
 ///
 /// * `file_path` - The path to the TIFF image.
-/// * `image` - The image to write.
+/// * `image` - The Rgb8 image to write.
 pub fn write_image_tiff_rgb8<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
     image: &Image<u8, 3, A>,
@@ -218,7 +213,7 @@ pub fn write_image_tiff_rgb8<A: ImageAllocator>(
 /// # Arguments
 ///
 /// * `file_path` - The path to the TIFF image.
-/// * `image` - The image to write.
+/// * `image` - The Gray8 image to write.
 pub fn write_image_tiff_mono8<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
     image: &Image<u8, 1, A>,
@@ -231,7 +226,7 @@ pub fn write_image_tiff_mono8<A: ImageAllocator>(
 /// # Arguments
 ///
 /// * `file_path` - The path to the TIFF image.
-/// * `image` - The image to write.
+/// * `image` - The Rgb16 image to write.
 pub fn write_image_tiff_rgb16<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
     image: &Image<u16, 3, A>,
@@ -244,7 +239,7 @@ pub fn write_image_tiff_rgb16<A: ImageAllocator>(
 /// # Arguments
 ///
 /// * `file_path` - The path to the TIFF image.
-/// * `image` - The image to write.
+/// * `image` - The Gray16 image to write.
 pub fn write_image_tiff_mono16<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
     image: &Image<u16, 1, A>,
@@ -257,7 +252,7 @@ pub fn write_image_tiff_mono16<A: ImageAllocator>(
 /// # Arguments
 ///
 /// * `file_path` - The path to the TIFF image.
-/// * `image` - The image to write.
+/// * `image` - The Grayf32 image to write.
 pub fn write_image_tiff_mono32f<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
     image: &Image<f32, 1, A>,
@@ -270,7 +265,7 @@ pub fn write_image_tiff_mono32f<A: ImageAllocator>(
 /// # Arguments
 ///
 /// * `file_path` - The path to the TIFF image.
-/// * `image` - The image to write.
+/// * `image` - The Rgbf32 image to write.
 pub fn write_image_tiff_rgb32f<A: ImageAllocator>(
     file_path: impl AsRef<Path>,
     image: &Image<f32, 3, A>,
@@ -302,7 +297,6 @@ where
 mod tests {
     use super::*;
     use crate::error::IoError;
-    use kornia_image::Image;
     use std::fs::create_dir_all;
 
     #[test]
@@ -316,7 +310,7 @@ mod tests {
 
         let data = (0..(width * height * channels)).collect::<Vec<_>>();
 
-        let img_rgb8 = Image::<u8, 3, CpuAllocator>::new(
+        let img_rgb8 = Rgb8::from_size_vec(
             ImageSize {
                 width: width as usize,
                 height: height as usize,
@@ -345,7 +339,7 @@ mod tests {
 
         let data = (0..(width * height * channels)).collect::<Vec<_>>();
 
-        let img_mono8 = Image::<u8, 1, CpuAllocator>::new(
+        let img_mono8 = Gray8::from_size_vec(
             ImageSize {
                 width: width as usize,
                 height: height as usize,
@@ -374,7 +368,7 @@ mod tests {
 
         let data = (0..(width * height * channels)).collect::<Vec<_>>();
 
-        let img_rgb16 = Image::<u16, 3, CpuAllocator>::new(
+        let img_rgb16 = Rgb16::from_size_vec(
             ImageSize {
                 width: width as usize,
                 height: height as usize,
@@ -403,7 +397,7 @@ mod tests {
 
         let data = (0..(width * height * channels)).collect::<Vec<_>>();
 
-        let img_mono16 = Image::<u16, 1, CpuAllocator>::new(
+        let img_mono16 = Gray16::from_size_vec(
             ImageSize {
                 width: width as usize,
                 height: height as usize,
@@ -431,7 +425,7 @@ mod tests {
 
         let data = vec![3.0, 2.0];
 
-        let img_mono32f = Image::<f32, 1, CpuAllocator>::new(
+        let img_mono32f = Grayf32::from_size_vec(
             ImageSize {
                 width: width as usize,
                 height: height as usize,
@@ -459,7 +453,7 @@ mod tests {
 
         let data = vec![3.0, 2.0, 1.0, 0.0, 1.0, 2.0];
 
-        let img_rgb32f = Image::<f32, 3, CpuAllocator>::new(
+        let img_rgb32f = Rgbf32::from_size_vec(
             ImageSize {
                 width: width as usize,
                 height: height as usize,
