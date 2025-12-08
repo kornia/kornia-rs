@@ -12,6 +12,9 @@ pub mod core;
 /// image cropping module.
 pub mod crop;
 
+/// image padding module.
+pub mod padding;
+
 // NOTE: not ready yet
 // pub mod distance_transform;
 
