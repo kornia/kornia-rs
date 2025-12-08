@@ -72,3 +72,27 @@ py-build-release py_version='3.9':
 # Test the kornia-py code with pytest
 py-test:
   @cd kornia-py/ && just test
+
+# ------------------------------------------------------------------------------
+# Recipes for the kornia-cpp project
+# ------------------------------------------------------------------------------
+
+# Build the C++ library
+cpp-build:
+  @cd kornia-cpp/ && just build
+
+# Build C++ examples
+cpp-build-examples:
+  @cd kornia-cpp/ && just build-examples
+
+# Test the C++ code
+cpp-test:
+  @cd kornia-cpp/ && just test
+
+# Clean C++ build artifacts
+cpp-clean:
+  @cd kornia-cpp/ && just clean
+
+# Format C++ code
+cpp-format:
+  @cd kornia-cpp/ && just format

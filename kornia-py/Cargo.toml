@@ -7,7 +7,7 @@ homepage = "http://kornia.org"
 license = "Apache-2.0"
 repository = "https://github.com/kornia/kornia-rs"
 rust-version = "1.76"
-version = "0.1.10-rc.6"
+version = "0.1.11-rc.1"
 
 [lib]
 name = "kornia_rs"
@@ -21,6 +21,7 @@ kornia-imgproc = { path = "../crates/kornia-imgproc" }
 kornia-io = { path = "../crates/kornia-io", features = ["turbojpeg"] }
 kornia-icp = { path = "../crates/kornia-icp" }
 kornia-3d = { path = "../crates/kornia-3d" }
+kornia-apriltag = { path = "../crates/kornia-apriltag" }
 
 # external
 pyo3 = { version = "0.26.0", features = ["extension-module"] }

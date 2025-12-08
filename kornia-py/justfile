@@ -11,27 +11,36 @@ venv py_version='3.9':
   @echo "🚀 Creating virtual environment using uv"
   [ -d .venv ] || uv venv -p {{ py_version }}
 
-
 # Create virtual environment, and install dev requirements
 install-dev py_version='3.9':
   @just check-environment
   @just venv {{ py_version }}
   @echo "🚀 Installing requirements (for devs)"
-  uv pip install -r requirements-dev.txt pip
+  uv pip install --python .venv/bin/python -r requirements-dev.txt
 
 # Create virtual environment, install dev requirements, and install kornia-py (--editable)
 install py_version='3.9':
   @just install-dev {{ py_version }}
-  uv pip install -e .
+  uv pip install --python .venv/bin/python -e .
 
 # Test the code with pytest
-test py_version='3.9' flags='':
+test py_version='3.9' build_flags='' pytest_args='':
   @echo "🚀 Testing code: Running pytest"
-  @just build {{ py_version }} {{ flags }}
-  @pytest
+  @just build {{ py_version }} {{ build_flags }}
+  @.venv/bin/python -m pytest {{ pytest_args }}
 
 # Compile and install kornia-py for development (run maturin develop)
 build py_version='3.9' flags='':
   @just install-dev {{ py_version }}
   @echo "🚀 Building kornia-py"
   uv run maturin develop -m Cargo.toml {{ flags }}
+
+# Clean build artifacts and virtual environment
+clean:
+  @echo "🧹 Cleaning build artifacts and virtual environment"
+  rm -rf .venv
+  rm -rf target
+  rm -rf dist
+  rm -rf *.egg-info
+  find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+  find . -type f -name "*.pyc" -delete 2>/dev/null || true

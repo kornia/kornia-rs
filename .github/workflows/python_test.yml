@@ -28,6 +28,8 @@ jobs:
     steps:
       - run: sudo apt-get update
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: extractions/setup-just@v2
 
@@ -50,11 +52,12 @@ jobs:
         run: cd kornia-py/ && just install ${{ matrix.python-version }}
 
       - name: Run tests
-        run: cd kornia-py/ && just test
+        if: ${{ matrix.python-version != '3.14t' }}
+        run: cd kornia-py/ && just test ${{ matrix.python-version }}
 
       - name: Run multithreaded tests (3.14t only)
         if: ${{ matrix.python-version == '3.14t' }}
-        run: pytest --parallel-threads=8 --iterations=50
+        run: cd kornia-py/ && just test 3.14t '' '--parallel-threads=8 --iterations=50'
 
       - name: Show sccache stats
         run: sccache --show-stats

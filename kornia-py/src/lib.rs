@@ -1,3 +1,4 @@
+mod apriltag;
 mod color;
 mod enhance;
 mod histogram;
@@ -27,6 +28,8 @@ pub fn get_version() -> String {
 pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", get_version())?;
     m.add_function(wrap_pyfunction!(color::rgb_from_gray, m)?)?;
+    m.add_function(wrap_pyfunction!(color::rgb_from_rgba, m)?)?;
+    m.add_function(wrap_pyfunction!(color::rgb_from_bgra, m)?)?;
     m.add_function(wrap_pyfunction!(color::bgr_from_rgb, m)?)?;
     m.add_function(wrap_pyfunction!(color::gray_from_rgb, m)?)?;
     m.add_function(wrap_pyfunction!(enhance::add_weighted, m)?)?;
@@ -43,6 +46,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(io::jpeg::decode_image_jpeg_info, m)?)?;
     m.add_function(wrap_pyfunction!(io::jpeg::read_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(io::jpeg::write_image_jpeg, m)?)?;
+    m.add_function(wrap_pyfunction!(io::jpeg::encode_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(io::tiff::read_image_tiff_f32, m)?)?;
     m.add_function(wrap_pyfunction!(io::tiff::read_image_tiff_u8, m)?)?;
     m.add_function(wrap_pyfunction!(io::tiff::read_image_tiff_u16, m)?)?;
@@ -60,5 +64,22 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyImageEncoder>()?;
     m.add_class::<PyICPConvergenceCriteria>()?;
     m.add_class::<PyICPResult>()?;
+
+    let apriltag_mod = PyModule::new(m.py(), "apriltag")?;
+    apriltag_mod.add_class::<apriltag::PyDecodeTagsConfig>()?;
+    apriltag_mod.add_class::<apriltag::PyFitQuadConfig>()?;
+    apriltag_mod.add_class::<apriltag::PyAprilTagDecoder>()?;
+    apriltag_mod.add_class::<apriltag::PyApriltagDetection>()?;
+    apriltag_mod.add_class::<apriltag::PyQuad>()?;
+
+    let apriltag_family_mod = PyModule::new(apriltag_mod.py(), "family")?;
+    apriltag_family_mod.add_class::<apriltag::family::PyTagFamily>()?;
+    apriltag_family_mod.add_class::<apriltag::family::PyTagFamilyKind>()?;
+    apriltag_family_mod.add_class::<apriltag::family::PyQuickDecode>()?;
+    apriltag_family_mod.add_class::<apriltag::family::PySharpeningBuffer>()?;
+
+    apriltag_mod.add_submodule(&apriltag_family_mod)?;
+    m.add_submodule(&apriltag_mod)?;
+
     Ok(())
 }
