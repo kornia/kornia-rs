@@ -113,52 +113,37 @@ impl PaddingMode {
         new_height: usize,
         padding: &Padding2D,
     ) {
+        if let PaddingMode::Constant = self {
+            return; // already filled
+        }
+
         let top = padding.top;
         let bottom = padding.bottom;
         let left = padding.left;
         let right = padding.right;
 
-        if matches!(self, PaddingMode::Constant) {
-            // constant padding was already handled when initializing new_data
-            return;
-        }
-
-        // top
+        // top + bottom rows
         for y in 0..top {
             let src_y = self.map_index(y as isize - top as isize, old_height);
-            let dst_row_start = y * new_width * C;
-            let src_row_start = (src_y + top) * new_width * C;
-            let row_len = new_width * C;
-
-            let temp_src_row = new_data[src_row_start..src_row_start + row_len].to_vec();
-            new_data[dst_row_start..dst_row_start + row_len].copy_from_slice(&temp_src_row);
+            let dst_row = y * new_width * C;
+            let src_row = (src_y + top) * new_width * C;
+            new_data.copy_within(src_row..src_row + new_width * C, dst_row);
         }
 
-        // bottom
-        for y in (new_height - bottom)..new_height {
+        for y in new_height - bottom..new_height {
             let src_y = self.map_index(y as isize - top as isize, old_height);
-            let dst_row_start = y * new_width * C;
-            let src_row_start = (src_y + top) * new_width * C;
-            let row_len = new_width * C;
-
-            let temp_src_row = new_data[src_row_start..src_row_start + row_len].to_vec();
-            new_data[dst_row_start..dst_row_start + row_len].copy_from_slice(&temp_src_row);
+            let dst_row = y * new_width * C;
+            let src_row = (src_y + top) * new_width * C;
+            new_data.copy_within(src_row..src_row + new_width * C, dst_row);
         }
 
-        // left and right
-        for y in 0..new_height {
-            let row_start = y * new_width * C;
-            let row_end = row_start + new_width * C;
-            let row = &mut new_data[row_start..row_end];
-
+        for row in new_data.chunks_exact_mut(new_width * C) {
             // left
             for x in 0..left {
                 let src_x = self.map_index(x as isize - left as isize, old_width);
                 let src_idx = (left + src_x) * C;
                 let dst_idx = x * C;
-
-                let temp_row = row[src_idx..src_idx + C].to_vec();
-                row[dst_idx..dst_idx + C].copy_from_slice(&temp_row);
+                row.copy_within(src_idx..src_idx + C, dst_idx);
             }
 
             // right
@@ -166,9 +151,7 @@ impl PaddingMode {
                 let src_x = self.map_index(x as isize - left as isize, old_width);
                 let src_idx = (left + src_x) * C;
                 let dst_idx = x * C;
-
-                let temp_row = row[src_idx..src_idx + C].to_vec();
-                row[dst_idx..dst_idx + C].copy_from_slice(&temp_row);
+                row.copy_within(src_idx..src_idx + C, dst_idx);
             }
         }
     }
@@ -265,7 +248,6 @@ impl Padding2D {
 /// assert_eq!(dst.size().width, 4);
 /// assert_eq!(dst.size().height, 4);
 /// ```
-#[allow(clippy::too_many_arguments)]
 pub fn spatial_padding<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<T, C, A1>,
     dst: &mut Image<T, C, A2>,
@@ -296,31 +278,26 @@ where
     match padding_mode {
         // if constant padding, fill with constant value
         PaddingMode::Constant => {
-            for chunk in new_data.chunks_exact_mut(C) {
-                chunk.copy_from_slice(&constant_value);
-            }
+            new_data
+                .chunks_exact_mut(C)
+                .for_each(|chunk| chunk.copy_from_slice(&constant_value));
         }
         _ => {
-            for v in new_data.iter_mut() {
-                *v = T::default();
-            }
+            new_data.fill(T::default());
         }
     }
 
     // copy old image data as center of new image data
     let new_stride = new_width * C;
     let old_stride = old_width * C;
-    let row_len = old_stride;
 
-    let mut old_row_start = 0;
-    let mut new_row_start = padding.top * new_stride + padding.left * C;
+    let row_offset = padding.top * new_stride + padding.left * C;
 
-    for _ in 0..old_height {
-        new_data[new_row_start..new_row_start + row_len]
-            .copy_from_slice(&old_data[old_row_start..old_row_start + row_len]);
-
-        old_row_start += old_stride;
-        new_row_start += new_stride;
+    for (src_row, dst_row) in old_data
+        .chunks_exact(old_stride)
+        .zip(new_data[row_offset..].chunks_exact_mut(new_stride))
+    {
+        dst_row[..old_stride].copy_from_slice(src_row);
     }
 
     padding_mode.apply_padding::<T, C>(
