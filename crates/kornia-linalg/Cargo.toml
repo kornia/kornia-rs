@@ -19,6 +19,7 @@ libm = ["glam/libm"]
 
 [dependencies]
 glam = { version = "0.30.0", default-features = false }
+kornia-algebra = { version = "0.1.11-rc.1", path = "../kornia-algebra" }
 nalgebra = "0.32"
 thiserror = "1.0"
 

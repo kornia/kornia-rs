@@ -1,8 +1,9 @@
 //! Rigid alignment utilities (Kabsch / Umeyama)
 
-// TODO: Make this work with kornia-linalg SVD(encountered some issues with precision)
-use glam::Vec3;
-use nalgebra::{Matrix3, SVD};
+// We use the f64 version of SVD for higher precision, then cast back to f32
+use crate::svd::svd3_f64;
+use glam::{DMat3, DVec3, Vec3};
+use kornia_algebra::Mat3F64;
 use thiserror::Error;
 
 /// Rotation (R), translation (t), and scale (s) output of Umeyama without scaling (s = 1).
@@ -14,12 +15,6 @@ pub enum UmeyamaError {
     /// Source and destination arrays must have the same length
     #[error("Source and destination arrays must have the same length")]
     MismatchedInputLengths,
-    /// Failed to compute U in SVD
-    #[error("Failed to compute U in SVD")]
-    SvdU,
-    /// Failed to compute V^T in SVD
-    #[error("Failed to compute V^T in SVD")]
-    SvdVT,
 }
 
 /// Result type alias for Umeyama.
@@ -69,27 +64,48 @@ pub fn umeyama(src: &[Vec3], dst: &[Vec3]) -> UmeyamaResult {
         }
     }
 
-    let h_na = Matrix3::<f32>::from_row_slice(&[
-        h[0][0], h[0][1], h[0][2], h[1][0], h[1][1], h[1][2], h[2][0], h[2][1], h[2][2],
-    ]);
+    // 1. Convert H from [[f32; 3]; 3] to glam::DMat3 (f64) for precision
+    let h_glam = DMat3::from_cols(
+        DVec3::new(h[0][0] as f64, h[1][0] as f64, h[2][0] as f64), // Col 0
+        DVec3::new(h[0][1] as f64, h[1][1] as f64, h[2][1] as f64), // Col 1
+        DVec3::new(h[0][2] as f64, h[1][2] as f64, h[2][2] as f64), // Col 2
+    );
 
-    let svd = SVD::new(h_na, true, true);
-    let Some(u) = svd.u else {
-        return Err(UmeyamaError::SvdU);
-    };
-    let Some(v_t) = svd.v_t else {
-        return Err(UmeyamaError::SvdVT);
-    };
+    // 2. Wrap in Mat3F64 and call the f64 SVD
+    let svd_result = svd3_f64(&Mat3F64::from(h_glam));
 
-    let mut r_na = u * v_t;
-    if r_na.determinant() < 0.0 {
-        r_na.column_mut(2).scale_mut(-1.0);
+    // 3. Unwrap results back to glam types to do the math
+    let u: DMat3 = svd_result.u.into();
+    let v: DMat3 = svd_result.v.into();
+
+    // We need V_transpose.
+    let v_t = v.transpose();
+
+    // Calculate rotation matrix R (in f64)
+    let mut r_glam_f64 = u * v_t;
+
+    // Handle reflection case (determinant < 0)
+    if r_glam_f64.determinant() < 0.0 {
+        r_glam_f64.z_axis *= -1.0;
     }
 
+    // 4. Convert glam::DMat3 (f64) back to array [[f32; 3]; 3]
     let r_arr = [
-        [r_na[(0, 0)], r_na[(0, 1)], r_na[(0, 2)]],
-        [r_na[(1, 0)], r_na[(1, 1)], r_na[(1, 2)]],
-        [r_na[(2, 0)], r_na[(2, 1)], r_na[(2, 2)]],
+        [
+            r_glam_f64.x_axis.x as f32,
+            r_glam_f64.y_axis.x as f32,
+            r_glam_f64.z_axis.x as f32,
+        ], // Row 0
+        [
+            r_glam_f64.x_axis.y as f32,
+            r_glam_f64.y_axis.y as f32,
+            r_glam_f64.z_axis.y as f32,
+        ], // Row 1
+        [
+            r_glam_f64.x_axis.z as f32,
+            r_glam_f64.y_axis.z as f32,
+            r_glam_f64.z_axis.z as f32,
+        ], // Row 2
     ];
 
     let mut t = [0.0; 3];
