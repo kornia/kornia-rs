@@ -341,8 +341,8 @@ fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) 
     } else {
         // Moore–Penrose pseudo-inverse: B⁺ = V Σ⁺ Uᵀ
         let svd = svd3(&b);
-        let u = Mat3F32::from(*svd.u());
-        let v_mat = Mat3F32::from(*svd.v());
+        let u = *svd.u();
+        let v_mat = *svd.v();
         let s_mat = *svd.s();
         let s_diag = [s_mat.x_axis.x, s_mat.y_axis.y, s_mat.z_axis.z];
         let inv_diag = Vec3F32::new(
