@@ -18,6 +18,3 @@ pub mod pose;
 
 /// 3D transforms algorithms.
 pub mod transforms;
-
-/// 3D vector traits.
-pub mod vector;
