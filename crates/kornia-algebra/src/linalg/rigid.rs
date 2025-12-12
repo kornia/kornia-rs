@@ -1,7 +1,6 @@
 //! Rigid alignment utilities (Kabsch / Umeyama)
 
-// TODO: Make this work with kornia-linalg SVD(encountered some issues with precision)
-use glam::Vec3;
+use crate::Vec3F32;
 use nalgebra::{Matrix3, SVD};
 use thiserror::Error;
 
@@ -27,7 +26,7 @@ pub type UmeyamaResult = Result<UmeyamaOutput, UmeyamaError>;
 
 /// Umeyama/Kabsch algorithm without scale.
 /// Returns (R, t, s) where s == 1.0.
-pub fn umeyama(src: &[Vec3], dst: &[Vec3]) -> UmeyamaResult {
+pub fn umeyama(src: &[Vec3F32], dst: &[Vec3F32]) -> UmeyamaResult {
     if src.len() != dst.len() {
         return Err(UmeyamaError::MismatchedInputLengths);
     }
@@ -105,27 +104,27 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
 
-    fn apply_rt(r: &[[f32; 3]; 3], t: &[f32; 3], p: &[f32; 3]) -> Vec3 {
+    fn apply_rt(r: &[[f32; 3]; 3], t: &[f32; 3], p: &[f32; 3]) -> Vec3F32 {
         let x = r[0][0] * p[0] + r[0][1] * p[1] + r[0][2] * p[2] + t[0];
         let y = r[1][0] * p[0] + r[1][1] * p[1] + r[1][2] * p[2] + t[1];
         let z = r[2][0] * p[0] + r[2][1] * p[1] + r[2][2] * p[2] + t[2];
-        Vec3::new(x, y, z)
+        Vec3F32::new(x, y, z)
     }
 
     #[test]
     fn test_umeyama_synthetic_z90() -> Result<(), UmeyamaError> {
         // Source points (square in XY plane, z=0)
-        let src: [Vec3; 4] = [
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(1.0, 1.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
+        let src: [Vec3F32; 4] = [
+            Vec3F32::new(0.0, 0.0, 0.0),
+            Vec3F32::new(1.0, 0.0, 0.0),
+            Vec3F32::new(1.0, 1.0, 0.0),
+            Vec3F32::new(0.0, 1.0, 0.0),
         ];
         // True transform: 90° about Z, plus translation
         let r: [[f32; 3]; 3] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
         let t = [0.5, -0.3, 2.0];
         // Create dst
-        let mut dst = [Vec3::new(0.0, 0.0, 0.0); 4];
+        let mut dst = [Vec3F32::new(0.0, 0.0, 0.0); 4];
         for i in 0..4 {
             let src_array = [src[i].x, src[i].y, src[i].z];
             dst[i] = apply_rt(&r, &t, &src_array);

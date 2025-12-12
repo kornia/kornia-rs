@@ -4,13 +4,13 @@
 
 use crate::ops::{compute_centroid, gauss_newton, intrinsics_as_vectors, pose_to_rt};
 use crate::pnp::{NumericTol, PnPError, PnPResult, PnPSolver};
+use kornia_algebra::linalg::rigid::umeyama;
+use kornia_algebra::linalg::svd::svd3;
 use kornia_algebra::{Mat3AF32, Mat3F32, Vec3F32, SO3F32};
 use kornia_imgproc::calibration::{
     distortion::{distort_point_polynomial, PolynomialDistortion},
     CameraIntrinsic,
 };
-use kornia_linalg::rigid::umeyama;
-use kornia_linalg::svd::svd3;
 use nalgebra::{DMatrix, DVector, Vector4};
 
 /// Marker type representing the Efficient PnP algorithm.
@@ -199,15 +199,9 @@ fn pose_from_betas(
         }
     }
 
-    // Convert arrays to Vec3 for consistency with glam usage
-    let cw_vec3: Vec<glam::Vec3> = cw
-        .iter()
-        .map(|p| glam::Vec3::new(p[0], p[1], p[2]))
-        .collect();
-    let cc_vec3: Vec<glam::Vec3> = cc
-        .iter()
-        .map(|p| glam::Vec3::new(p[0], p[1], p[2]))
-        .collect();
+    // Convert arrays to Vec3F32 for umeyama
+    let cw_vec3: Vec<Vec3F32> = cw.iter().map(|p| Vec3F32::from_array(*p)).collect();
+    let cc_vec3: Vec<Vec3F32> = cc.iter().map(|p| Vec3F32::from_array(*p)).collect();
 
     let (r, t, _s) = umeyama(&cw_vec3, &cc_vec3).map_err(|e| PnPError::SvdFailed(e.to_string()))?;
 

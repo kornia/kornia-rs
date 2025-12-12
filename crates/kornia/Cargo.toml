@@ -16,11 +16,11 @@ doctest = false
 
 [dependencies]
 kornia-3d = { workspace = true }
+kornia-algebra = { workspace = true }
 kornia-icp = { workspace = true }
 kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
 kornia-io = { workspace = true, features = [] }
-kornia-linalg = { workspace = true }
 kornia-tensor = { workspace = true }
 kornia-tensor-ops = { workspace = true }
 kornia-vlm = { workspace = true }

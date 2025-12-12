@@ -16,7 +16,7 @@ pub use kornia_imgproc as imgproc;
 pub use kornia_io as io;
 
 #[doc(inline)]
-pub use kornia_linalg as linalg;
+pub use kornia_algebra::linalg;
 
 #[doc(inline)]
 pub use kornia_tensor as tensor;
