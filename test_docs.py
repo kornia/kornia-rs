@@ -1,7 +1,7 @@
 import doctest
 import kornia_rs
 import sys
-import importlib
+import inspect
 
 def test_doctests():
     print("Running doctests...")
@@ -9,26 +9,47 @@ def test_doctests():
     finder = doctest.DocTestFinder()
     runner = doctest.DocTestRunner(verbose=True)
 
-    # 1. Start with the main module
-    objects_to_test = [kornia_rs]
+    # Use a set to track object IDs we have already seen
+    # This prevents testing 'resize' twice
+    seen_ids = set()
+    objects_to_test = []
 
-    # 2. Dynamically add submodules if they exist
-    # We use importlib here to avoid UnboundLocalError
-    try:
-        # Attempt to load the apriltag submodule
-        apriltag_mod = importlib.import_module("kornia_rs.apriltag")
-        objects_to_test.append(apriltag_mod)
-    except ImportError:
-        # It's okay if it doesn't exist (e.g., feature disabled)
-        pass
+    # Helper to add object safely
+    def add_unique(obj):
+        if id(obj) not in seen_ids:
+            seen_ids.add(id(obj))
+            objects_to_test.append(obj)
+
+    # 1. Start with the main module
+    add_unique(kornia_rs)
+
+    # 2. Find all submodules
+    submodules = []
+    for name, obj in inspect.getmembers(kornia_rs):
+        if inspect.ismodule(obj):
+            print(f"Discovered submodule: {name}")
+            submodules.append(obj)
+            add_unique(obj)
+
+    # 3. Look INSIDE submodules for Classes/Functions
+    for module in submodules:
+        print(f"Scanning submodule: {module.__name__}...")
+        for name, obj in inspect.getmembers(module):
+            if inspect.isclass(obj) or inspect.isroutine(obj):
+                # Skip private members
+                if name.startswith("_"):
+                    continue
+                # Add to test list (deduplication happens inside add_unique)
+                add_unique(obj)
 
     total_failed = 0
     total_attempted = 0
 
+    print(f"\nVerifying {len(objects_to_test)} unique objects...")
+
     for obj in objects_to_test:
-        # Find all tests in the object
-        # getattr(obj, "__name__", "obj") gets the clean name of the module
-        tests = finder.find(obj, name=getattr(obj, "__name__", "obj"))
+        obj_name = getattr(obj, "__name__", str(obj))
+        tests = finder.find(obj, name=obj_name)
 
         for test in tests:
             if not test.examples:
@@ -41,7 +62,6 @@ def test_doctests():
 
     print(f"Total: failed={total_failed}, attempted={total_attempted}")
 
-    # Fail CI if any examples fail
     if total_failed > 0:
         sys.exit(1)
 
