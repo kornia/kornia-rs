@@ -2,7 +2,7 @@ name: Python Docstrings
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, ci-python-doctests ]
   pull_request:
     branches: [ main ]
 
@@ -30,8 +30,10 @@ jobs:
         python -m pip install --upgrade pip
         pip install maturin pytest
 
-    - name: Build Python bindings
-      run: maturin develop -m kornia-py/Cargo.toml
+    - name: Build and Install Python bindings
+      run: |
+        maturin build -m kornia-py/Cargo.toml --out dist
+        pip install dist/*.whl
 
     - name: Run Doctests
       run: python test_docs.py
