@@ -105,7 +105,6 @@ kornia-io = "0.1"
 kornia-image = "0.1"
 kornia-imgproc = "0.1"
 kornia-icp = "0.1"
-kornia-linalg = "0.1"
 kornia-3d = "0.1"
 kornia-apriltag = "0.1"
 kornia-vlm = "0.1"
@@ -360,4 +359,4 @@ Title = {Kornia-rs: A Low-Level 3D Computer Vision Library In Rust},
 Year = {2025},
 Eprint = {arXiv:2505.12425},
 }
-``` 
+```

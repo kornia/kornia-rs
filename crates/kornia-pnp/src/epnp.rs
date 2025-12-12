@@ -4,13 +4,13 @@
 
 use crate::ops::{compute_centroid, gauss_newton, intrinsics_as_vectors, pose_to_rt};
 use crate::pnp::{NumericTol, PnPError, PnPResult, PnPSolver};
+use kornia_algebra::linalg::rigid::umeyama;
+use kornia_algebra::linalg::svd::svd3;
 use kornia_algebra::{Mat3AF32, Mat3F32, Vec3F32, SO3F32};
 use kornia_imgproc::calibration::{
     distortion::{distort_point_polynomial, PolynomialDistortion},
     CameraIntrinsic,
 };
-use kornia_linalg::rigid::umeyama;
-use kornia_linalg::svd::svd3;
 use nalgebra::{DMatrix, DVector, Vector4};
 
 /// Marker type representing the Efficient PnP algorithm.
@@ -199,15 +199,9 @@ fn pose_from_betas(
         }
     }
 
-    // Convert arrays to Vec3 for consistency with glam usage
-    let cw_vec3: Vec<glam::Vec3> = cw
-        .iter()
-        .map(|p| glam::Vec3::new(p[0], p[1], p[2]))
-        .collect();
-    let cc_vec3: Vec<glam::Vec3> = cc
-        .iter()
-        .map(|p| glam::Vec3::new(p[0], p[1], p[2]))
-        .collect();
+    // Convert arrays to Vec3F32 for umeyama
+    let cw_vec3: Vec<Vec3F32> = cw.iter().map(|p| Vec3F32::from_array(*p)).collect();
+    let cc_vec3: Vec<Vec3F32> = cc.iter().map(|p| Vec3F32::from_array(*p)).collect();
 
     let (r, t, _s) = umeyama(&cw_vec3, &cc_vec3).map_err(|e| PnPError::SvdFailed(e.to_string()))?;
 
@@ -293,11 +287,17 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
     let v = svd.v();
     let s = svd.s(); // diagonal matrix of singular values (eigenvalues)
 
-    let s_diag = [s.x_axis.x, s.y_axis.y, s.z_axis.z];
+    let s_x = s.x_axis();
+    let s_y = s.y_axis();
+    let s_z = s.z_axis();
+    let s_diag = [s_x.x, s_y.y, s_z.z];
+    let v_x = v.x_axis();
+    let v_y = v.y_axis();
+    let v_z = v.z_axis();
     let mut axes_sig: Vec<(f32, Vec3F32)> = vec![
-        (s_diag[0].sqrt(), Vec3F32::from(v.x_axis)),
-        (s_diag[1].sqrt(), Vec3F32::from(v.y_axis)),
-        (s_diag[2].sqrt(), Vec3F32::from(v.z_axis)),
+        (s_diag[0].sqrt(), v_x),
+        (s_diag[1].sqrt(), v_y),
+        (s_diag[2].sqrt(), v_z),
     ];
     axes_sig.sort_by(|a, b| b.0.total_cmp(&a.0));
 
@@ -341,10 +341,13 @@ fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) 
     } else {
         // Moore–Penrose pseudo-inverse: B⁺ = V Σ⁺ Uᵀ
         let svd = svd3(&b);
-        let u = Mat3F32::from(*svd.u());
-        let v_mat = Mat3F32::from(*svd.v());
+        let u = *svd.u();
+        let v_mat = *svd.v();
         let s_mat = *svd.s();
-        let s_diag = [s_mat.x_axis.x, s_mat.y_axis.y, s_mat.z_axis.z];
+        let s_x = s_mat.x_axis();
+        let s_y = s_mat.y_axis();
+        let s_z = s_mat.z_axis();
+        let s_diag = [s_x.x, s_y.y, s_z.z];
         let inv_diag = Vec3F32::new(
             if s_diag[0].abs() > eps {
                 1.0 / s_diag[0]

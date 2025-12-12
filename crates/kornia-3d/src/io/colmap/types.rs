@@ -1,11 +1,3 @@
-/// Represents a 2D vector.
-pub struct Vector2d {
-    /// x coordinate
-    pub x: f64,
-    /// y coordinate
-    pub y: f64,
-}
-
 /// Represents a Colmap camera model id.
 #[derive(Debug)]
 pub enum CameraModelId {
