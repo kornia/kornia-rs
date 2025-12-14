@@ -392,24 +392,19 @@ fn decode_tiff_impl_u16(
         ));
     }
 
-    let result = decoder.read_image()?;
-    let data = match result {
-        DecodingResult::U16(data) => data,
-        _ => {
-            return Err(IoError::TiffDecodingError(
-                tiff::TiffError::UnsupportedError(
-                    tiff::TiffUnsupportedError::UnknownInterpretation,
-                ),
-            ))
-        }
-    };
-
     let expected_len = image_size.width * image_size.height * expected_channels as usize;
-    if data.len() != expected_len {
-        return Err(IoError::InvalidBufferSize(data.len(), expected_len));
+    if dst.len() != expected_len {
+        return Err(IoError::InvalidBufferSize(dst.len(), expected_len));
     }
 
-    dst.copy_from_slice(&data);
+    let bytes_needed = expected_len * 2;
+    let mut temp_buffer = vec![0u8; bytes_needed];
+    decoder.read_image_bytes(&mut temp_buffer)?;
+
+    for (i, chunk) in temp_buffer.chunks_exact(2).enumerate() {
+        dst[i] = u16::from_ne_bytes([chunk[0], chunk[1]]);
+    }
+
     Ok(())
 }
 
@@ -432,24 +427,19 @@ fn decode_tiff_impl_f32(
         ));
     }
 
-    let result = decoder.read_image()?;
-    let data = match result {
-        DecodingResult::F32(data) => data,
-        _ => {
-            return Err(IoError::TiffDecodingError(
-                tiff::TiffError::UnsupportedError(
-                    tiff::TiffUnsupportedError::UnknownInterpretation,
-                ),
-            ))
-        }
-    };
-
     let expected_len = image_size.width * image_size.height * expected_channels as usize;
-    if data.len() != expected_len {
-        return Err(IoError::InvalidBufferSize(data.len(), expected_len));
+    if dst.len() != expected_len {
+        return Err(IoError::InvalidBufferSize(dst.len(), expected_len));
     }
 
-    dst.copy_from_slice(&data);
+    let bytes_needed = expected_len * 4;
+    let mut temp_buffer = vec![0u8; bytes_needed];
+    decoder.read_image_bytes(&mut temp_buffer)?;
+
+    for (i, chunk) in temp_buffer.chunks_exact(4).enumerate() {
+        dst[i] = f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    }
+
     Ok(())
 }
 
