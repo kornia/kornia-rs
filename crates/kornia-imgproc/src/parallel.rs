@@ -129,7 +129,38 @@ pub fn par_iter_rows_resample<const C: usize, A: ImageAllocator>(
         });
 }
 
-/// Apply a function to each row in the image in parallel
+/// Apply a function to each row in the image in parallel, providing the row index.
+///
+/// # Arguments
+///
+/// * `dst` - The destination image whose rows will be iterated over.
+/// * `f` - A function that receives the row index and a mutable slice corresponding
+///   to the row's pixel data.
+///
+/// # Example
+///
+/// ```
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_image::allocator::CpuAllocator;
+/// use kornia_imgproc::parallel::par_iter_rows_indexed_mut;
+///
+/// let mut image = Image::<f32, 3, _>::from_size_val(
+///     ImageSize {
+///         width: 4,
+///         height: 4,
+///     },
+///     0.0,
+///     CpuAllocator,
+/// )
+/// .unwrap();
+///
+/// par_iter_rows_indexed_mut(&mut image, |row_idx, row| {
+///     for v in row.iter_mut() {
+///         *v += row_idx as f32;
+///     }
+/// });
+/// ```
+
 pub fn par_iter_rows_indexed_mut<T, const C: usize, A: ImageAllocator>(
     dst: &mut Image<T, C, A>,
     f: impl Fn(usize, &mut [T]) + Send + Sync,

@@ -1,6 +1,4 @@
-use crate::{
-    interpolation::{InterpolationMode},
-};
+use crate::interpolation::InterpolationMode;
 use fast_image_resize::{self as fr};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
@@ -59,8 +57,7 @@ pub fn resize_native<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,
     interpolation: InterpolationMode,
-) -> Result<(), kornia_image::ImageError>
-{
+) -> Result<(), kornia_image::ImageError> {
     // check if the input and output images have the same size
     // and copy the input image to the output image if they have the same size
     if src.size() == dst.size() {
@@ -70,10 +67,20 @@ pub fn resize_native<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 
     let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
 
-    let step_x = (src.cols() - 1) as f32 / (dst_cols - 1) as f32;
-    let step_y = (src.rows() - 1) as f32 / (dst_rows - 1) as f32;
+    // Handle division by zero when the destination dimension is 1
+    let step_x = if dst_cols > 1 {
+        (src.cols() - 1) as f32 / (dst_cols - 1) as f32
+    } else {
+        0.0
+    };
 
-    //going for otf calculation instead of allocating mesh
+    let step_y = if dst_rows > 1 {
+        (src.rows() - 1) as f32 / (dst_rows - 1) as f32
+    } else {
+        0.0
+    };
+
+    // going for on-the-fly coordinate calculation instead of allocating mesh
 
     crate::parallel::par_iter_rows_indexed_mut(dst, |row_idx, row| {
         let y_src = row_idx as f32 * step_y;
@@ -89,7 +96,6 @@ pub fn resize_native<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 
     Ok(())
 }
-
 
 /// Resize an image to a new size using the [fast_image_resize](https://crates.io/crates/fast_image_resize) crate.
 ///
