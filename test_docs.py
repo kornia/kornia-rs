@@ -1,69 +1,79 @@
 import doctest
-import kornia_rs
-import sys
 import inspect
+import sys
+import kornia_rs
 
-def test_doctests():
-    print("Running doctests...")
+def get_testable_objects(mod):
+    """
+    Recursively find all classes and functions in the module
+    that are part of kornia_rs.
+    """
+    objects = []
+    seen = set()
 
-    finder = doctest.DocTestFinder()
-    runner = doctest.DocTestRunner(verbose=True)
+    def recurse(obj, name_prefix):
+        if id(obj) in seen:
+            return
+        seen.add(id(obj))
 
-    # Use a set to track object IDs we have already seen
-    # This prevents testing 'resize' twice
-    seen_ids = set()
-    objects_to_test = []
+        # Add the object itself if it has a docstring
+        if hasattr(obj, "__doc__") and obj.__doc__:
+            objects.append((obj, name_prefix))
 
-    # Helper to add object safely
-    def add_unique(obj):
-        if id(obj) not in seen_ids:
-            seen_ids.add(id(obj))
-            objects_to_test.append(obj)
-
-    # 1. Start with the main module
-    add_unique(kornia_rs)
-
-    # 2. Find all submodules
-    submodules = []
-    for name, obj in inspect.getmembers(kornia_rs):
-        if inspect.ismodule(obj):
-            print(f"Discovered submodule: {name}")
-            submodules.append(obj)
-            add_unique(obj)
-
-    # 3. Look INSIDE submodules for Classes/Functions
-    for module in submodules:
-        print(f"Scanning submodule: {module.__name__}...")
-        for name, obj in inspect.getmembers(module):
-            if inspect.isclass(obj) or inspect.isroutine(obj):
-                # Skip private members
-                if name.startswith("_"):
-                    continue
-                # Add to test list (deduplication happens inside add_unique)
-                add_unique(obj)
-
-    total_failed = 0
-    total_attempted = 0
-
-    print(f"\nVerifying {len(objects_to_test)} unique objects...")
-
-    for obj in objects_to_test:
-        obj_name = getattr(obj, "__name__", str(obj))
-        tests = finder.find(obj, name=obj_name)
-
-        for test in tests:
-            if not test.examples:
+        # Inspect members
+        for name, member in inspect.getmembers(obj):
+            # Skip private/magic members
+            if name.startswith("__"):
                 continue
 
-            print(f"Testing {test.name}...")
-            runner.run(test)
-            total_failed += runner.failures
-            total_attempted += runner.tries
+            # Filter to only keep objects belonging to kornia_rs
+            if hasattr(member, "__module__") and member.__module__:
+                 if "kornia_rs" not in member.__module__:
+                     continue
 
-    print(f"Total: failed={total_failed}, attempted={total_attempted}")
+            if inspect.ismodule(member) or inspect.isclass(member):
+                recurse(member, f"{name_prefix}.{name}")
 
-    if total_failed > 0:
+    recurse(mod, "kornia_rs")
+    return objects
+
+def main():
+    print("Running doctests for kornia_rs...")
+
+    # 1. Discovery
+    items = get_testable_objects(kornia_rs)
+    print(f"Discovered {len(items)} testable objects.")
+
+    # 2. Test Execution
+    # FIX: Use Parser + Runner manually to allow shared state
+    parser = doctest.DocTestParser()
+    runner = doctest.DocTestRunner(verbose=False)
+
+    for obj, name in items:
+        if not obj.__doc__:
+            continue
+
+        # Manually create the DocTest object
+        # We pass 'name' as the filename too, just for error reporting
+        test = parser.get_doctest(obj.__doc__, {"kornia_rs": kornia_rs}, name, name, 0)
+
+        # Run it with our shared runner
+        runner.run(test)
+
+    # 3. Reporting
+    failed = runner.failures
+    attempted = runner.tries
+
+    print("-" * 40)
+    print(f"Test Summary: {attempted} examples attempted, {failed} failed.")
+    print("-" * 40)
+
+    if failed > 0:
+        print("❌ Doctests failed!")
         sys.exit(1)
+    else:
+        print("✅ All doctests passed!")
+        sys.exit(0)
 
 if __name__ == "__main__":
-    test_doctests()
+    main()
