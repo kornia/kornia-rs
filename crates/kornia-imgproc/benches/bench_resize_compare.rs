@@ -9,7 +9,7 @@ use kornia_imgproc::{
     parallel,
 };
 
-// old code that allocated mesh grid
+// Old code that allocated mesh grid
 pub fn resize_native_old<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,
@@ -37,7 +37,7 @@ pub fn resize_native_old<const C: usize, A1: ImageAllocator, A2: ImageAllocator>
     Ok(())
 }
 
-// new code that does otf calculation of source coordinates
+// New code that does on-the-fly calculation for coordinates
 pub fn resize_native_new<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,
