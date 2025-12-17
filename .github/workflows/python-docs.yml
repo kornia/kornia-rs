@@ -1,41 +1,44 @@
-name: Python Docstrings
+name: python-docs
 
 on:
   push:
-    branches: [ main, ci-python-doctests ]
+    branches: [ main ]
   pull_request:
     branches: [ main ]
 
 jobs:
   test-docstrings:
+    name: Verify Python Docstrings
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.12'
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
 
-    - name: Install Rust toolchain
-      uses: actions-rs/toolchain@v1
-      with:
-        profile: minimal
-        toolchain: stable
-        override: true
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y nasm
-        python -m pip install --upgrade pip
-        pip install maturin pytest
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm
 
-    - name: Build and Install Python bindings
-      run: |
-        maturin build -m kornia-py/Cargo.toml --out dist
-        pip install dist/*.whl
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # FIX: Removed 'pytest' since we use the custom script
+          pip install maturin
 
-    - name: Run Doctests
-      run: python test_docs.py
+      - name: Build and Install kornia_rs
+        run: |
+          maturin build --release --out dist
+          pip install dist/*.whl
+
+      - name: Run Doctests
+        run: python test_docs.py
