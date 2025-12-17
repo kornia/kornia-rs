@@ -9,13 +9,12 @@ use kornia_imgproc::{
     parallel,
 };
 
-//old code that alloted mesh grid
+// old code that allocated mesh grid
 pub fn resize_native_old<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,
     interpolation: InterpolationMode,
-) -> Result<(), kornia_image::ImageError>
-{
+) -> Result<(), kornia_image::ImageError> {
     if src.size() == dst.size() {
         dst.as_slice_mut().copy_from_slice(src.as_slice());
         return Ok(());
@@ -43,8 +42,7 @@ pub fn resize_native_new<const C: usize, A1: ImageAllocator, A2: ImageAllocator>
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,
     interpolation: InterpolationMode,
-) -> Result<(), kornia_image::ImageError>
-{
+) -> Result<(), kornia_image::ImageError> {
     if src.size() == dst.size() {
         dst.as_slice_mut().copy_from_slice(src.as_slice());
         return Ok(());
@@ -62,15 +60,19 @@ pub fn resize_native_new<const C: usize, A1: ImageAllocator, A2: ImageAllocator>
             let x_src = col_idx as f32 * step_x;
 
             pix.iter_mut().enumerate().for_each(|(k, p)| {
-                *p = kornia_imgproc::interpolation::interpolate_pixel(src, x_src, y_src, k, interpolation);
+                *p = kornia_imgproc::interpolation::interpolate_pixel(
+                    src,
+                    x_src,
+                    y_src,
+                    k,
+                    interpolation,
+                );
             });
         }
     });
 
     Ok(())
 }
-
-
 
 // BENCHMARK
 
@@ -80,10 +82,25 @@ fn bench_resize_native(c: &mut Criterion) {
     let sizes = [(256, 256), (512, 512), (1024, 1024)];
 
     for (w, h) in sizes {
-        let src = Image::<f32, 3, _>::from_size_val(ImageSize {width: w, height: h}, 0.5, CpuAllocator).unwrap();
+        let src = Image::<f32, 3, _>::from_size_val(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            0.5,
+            CpuAllocator,
+        )
+        .unwrap();
 
-        let mut dst_old =
-            Image::<f32, 3, _>::from_size_val(ImageSize {width: w / 2, height: h / 2}, 0.0, CpuAllocator).unwrap();
+        let mut dst_old = Image::<f32, 3, _>::from_size_val(
+            ImageSize {
+                width: w / 2,
+                height: h / 2,
+            },
+            0.0,
+            CpuAllocator,
+        )
+        .unwrap();
         let mut dst_new = dst_old.clone();
 
         let label = format!("{w}x{h}");
@@ -98,7 +115,8 @@ fn bench_resize_native(c: &mut Criterion) {
                         black_box(src),
                         black_box(&mut dst_old),
                         black_box(InterpolationMode::Nearest),
-                    ).unwrap();
+                    )
+                    .unwrap();
                 })
             },
         );
@@ -113,7 +131,8 @@ fn bench_resize_native(c: &mut Criterion) {
                         black_box(src),
                         black_box(&mut dst_new),
                         black_box(InterpolationMode::Nearest),
-                    ).unwrap();
+                    )
+                    .unwrap();
                 })
             },
         );
