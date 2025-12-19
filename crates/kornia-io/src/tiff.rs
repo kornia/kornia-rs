@@ -2,7 +2,7 @@ use crate::error::IoError;
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     color_spaces::{Gray16, Gray8, Grayf32, Rgb16, Rgb8, Rgbf32},
-    Image, ImageLayout, PixelFormat, ImageSize,
+    Image, ImageLayout, ImageSize, PixelFormat,
 };
 use std::{fs, io::Cursor, path::Path};
 use tiff::{
@@ -246,17 +246,17 @@ pub fn decode_image_tiff_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
     };
 
     let colortype = decoder.colortype()?;
-    let num_channels = extract_channels_from_tiff_colortype(&colortype).ok_or_else(|| {
+    let num_channels = extract_channels_from_tiff_colortype(&colortype).ok_or(
         IoError::TiffDecodingError(tiff::TiffError::UnsupportedError(
             tiff::TiffUnsupportedError::UnknownInterpretation,
         ))
-    })?;
+    )?;
 
-    let pixel_format = pixel_format_from_tiff_colortype(&colortype).ok_or_else(|| {
+    let pixel_format = pixel_format_from_tiff_colortype(&colortype).ok_or(
         IoError::TiffDecodingError(tiff::TiffError::UnsupportedError(
             tiff::TiffUnsupportedError::UnknownInterpretation,
         ))
-    })?;
+    )?;
 
     Ok(ImageLayout::new(size, num_channels, pixel_format))
 }

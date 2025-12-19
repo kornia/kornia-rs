@@ -211,6 +211,7 @@ mod tests {
 
     #[test]
     fn gray_from_rgb() -> Result<(), Box<dyn std::error::Error>> {
+        #[allow(deprecated)]
         let image = F::read_image_any_rgb8("../../tests/data/dog.jpeg")?;
 
         let mut image_norm = Image::from_size_val(image.size(), 0.0, CpuAllocator)?;

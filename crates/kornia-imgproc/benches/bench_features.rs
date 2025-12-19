@@ -10,6 +10,7 @@ use rand::Rng;
 fn bench_fast_corner_detect(c: &mut Criterion) {
     let mut group = c.benchmark_group("FastCornerDetect");
 
+    #[allow(deprecated)]
     let img_rgb8 = io::read_image_any_rgb8("/home/edgar/Downloads/kodim08_grayscale.png").unwrap();
 
     let new_size = [1920, 1080].into();

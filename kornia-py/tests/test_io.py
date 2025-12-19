@@ -168,19 +168,19 @@ def test_read_image():
         img_png16: np.ndarray = K.read_image(str(png16_path.absolute()))
         assert img_png16.dtype == np.uint16
         assert img_png16.shape == (32, 32, 3)
-        #Test reading an 8-bit rgb tiff
+        # Test reading an 8-bit rgb tiff
     tiff8_path: Path = DATA_DIR / "dog.tiff"
     if tiff8_path.exists():
         img_tiff8: np.ndarray = K.read_image(str(tiff8_path.absolute()))
         assert img_tiff8.dtype == np.uint8
         assert img_tiff8.shape == (195, 258, 3)
-        #Test reading an 16-bit rgb tiff
+        # Test reading an 16-bit rgb tiff
     tiff16_path: Path = DATA_DIR / "rgb16.tiff"
     if tiff16_path.exists():
         img_tiff16: np.ndarray = K.read_image(str(tiff16_path.absolute()))
         assert img_tiff16.dtype == np.uint16
         assert img_tiff16.shape == (32, 32, 3)
-        #Test reading an 32-bit float rgb tiff
+        # Test reading an 32-bit float rgb tiff
     tiff32_path: Path = DATA_DIR / "rgb32.tiff"
     if tiff32_path.exists():
         img_tiff32: np.ndarray = K.read_image(str(tiff32_path.absolute()))

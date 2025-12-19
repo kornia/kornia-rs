@@ -72,6 +72,7 @@ mod tests {
 
     #[test]
     fn read_any() -> Result<(), IoError> {
+        #[allow(deprecated)]
         let image = read_image_any_rgb8("../../tests/data/dog.jpeg")?;
         assert_eq!(image.cols(), 258);
         assert_eq!(image.rows(), 195);

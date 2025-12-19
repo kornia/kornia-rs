@@ -11,6 +11,7 @@ fn bench_read_jpeg(c: &mut Criterion) {
         b.iter(|| std::hint::black_box(read_image_jpegturbo_rgb8(img_path)).unwrap())
     });
 
+    #[allow(deprecated)]
     group.bench_function("image_any", |b| {
         b.iter(|| std::hint::black_box(read_image_any_rgb8(img_path)).unwrap())
     });

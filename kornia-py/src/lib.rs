@@ -59,13 +59,16 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(resize::resize, m)?)?;
     m.add_function(wrap_pyfunction!(warp::warp_affine, m)?)?;
     m.add_function(wrap_pyfunction!(warp::warp_perspective, m)?)?;
-    m.add_class::<PyImageSize>()?;
-    m.add_class::<PyPixelFormat>()?;
-    m.add_class::<PyImageLayout>()?;
     m.add_class::<PyImageDecoder>()?;
     m.add_class::<PyImageEncoder>()?;
     m.add_class::<PyICPConvergenceCriteria>()?;
     m.add_class::<PyICPResult>()?;
+
+    let image_mod = PyModule::new(m.py(), "image")?;
+    image_mod.add_class::<PyImageSize>()?;
+    image_mod.add_class::<PyPixelFormat>()?;
+    image_mod.add_class::<PyImageLayout>()?;
+    m.add_submodule(&image_mod)?;
 
     let apriltag_mod = PyModule::new(m.py(), "apriltag")?;
     apriltag_mod.add_class::<apriltag::PyDecodeTagsConfig>()?;
