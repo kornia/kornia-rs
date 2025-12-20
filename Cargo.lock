@@ -2739,6 +2739,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashmap"
+version = "5.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
+dependencies = [
+ "cfg-if",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3724,6 +3737,9 @@ name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+dependencies = [
+ "getrandom 0.2.16",
+]
 
 [[package]]
 name = "fax"
@@ -3865,6 +3881,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "flume"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
+dependencies = [
+ "fastrand",
+ "futures-core",
+ "futures-sink",
+ "spin 0.9.8",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3956,7 +3984,7 @@ dependencies = [
  "bimap",
  "bytes",
  "delegate",
- "flume",
+ "flume 0.11.1",
  "foxglove_derive",
  "futures-util",
  "mcap",
@@ -11407,16 +11435,18 @@ dependencies = [
 [[package]]
 name = "ros-z"
 version = "0.1.0"
-source = "git+https://github.com/ZettaScaleLabs/ros-z.git?branch=main#1f6efb4c77977f79e4421e9ceadd7654325c9eb8"
+source = "git+https://github.com/ZettaScaleLabs/ros-z.git?branch=main#a312c63e581581743d001bc3c93735b95097e043"
 dependencies = [
  "byteorder",
  "cdr",
  "cdr-encoding",
  "clap",
  "csv",
- "flume",
+ "dashmap",
+ "flume 0.11.1",
  "json5",
  "parking_lot",
+ "paste",
  "prost 0.14.1",
  "prost-build",
  "serde",
@@ -11425,7 +11455,9 @@ dependencies = [
  "slab",
  "strum 0.27.2",
  "tokio",
+ "tokio-util",
  "tracing",
+ "uuid",
  "zenoh",
  "zenoh-ext",
 ]
@@ -11437,7 +11469,7 @@ dependencies = [
  "argh",
  "ctrlc",
  "env_logger",
- "flume",
+ "flume 0.12.0",
  "foxglove 0.16.1",
  "kornia-image",
  "kornia-io",
@@ -15791,7 +15823,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "const_format",
- "flume",
+ "flume 0.11.1",
  "futures",
  "git-version",
  "itertools 0.14.0",
@@ -15921,7 +15953,7 @@ checksum = "6c896b65964bf27279f7432bd0c9290cab9ef779e39e7f387b8561f89e46c528"
 dependencies = [
  "async-trait",
  "bincode 1.3.3",
- "flume",
+ "flume 0.11.1",
  "futures",
  "leb128",
  "serde",
@@ -15977,7 +16009,7 @@ checksum = "5be05b499b789afb2024de4253e12ccaa3e296f66a0db6147deb9acec491f622"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
- "flume",
+ "flume 0.11.1",
  "futures",
  "quinn",
  "rustls",
@@ -16285,7 +16317,7 @@ checksum = "2abd4521cd556093161156fc0799a506743304e1510fc7ed83adff99ca601f34"
 dependencies = [
  "async-trait",
  "crossbeam-utils",
- "flume",
+ "flume 0.11.1",
  "lazy_static",
  "lz4_flex",
  "paste",
@@ -16320,7 +16352,7 @@ checksum = "42a736159ed0935c9ef258c151067ccce40f95f08d7f9360993e858e268b0a9d"
 dependencies = [
  "async-trait",
  "const_format",
- "flume",
+ "flume 0.11.1",
  "home",
  "humantime",
  "lazy_static",

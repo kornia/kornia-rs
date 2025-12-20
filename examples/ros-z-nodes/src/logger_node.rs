@@ -39,7 +39,10 @@ impl LoggerNode {
                     break;
                 }
                 Ok(msg) = self.subscriber.async_recv() => {
-                    log::info!("Received message: {:?}", msg);
+                    // find the max value in the image
+                    let min_value = msg.data.iter().min().unwrap();
+                    let max_value = msg.data.iter().max().unwrap();
+                    log::info!("Min value: {}, Max value: {}", min_value, max_value);
                 }
             }
         }

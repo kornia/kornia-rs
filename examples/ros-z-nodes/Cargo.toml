@@ -10,7 +10,7 @@ publish = false
 argh = { workspace = true }
 ctrlc = { workspace = true }
 env_logger = { workspace = true }
-flume = "0.11.1"
+flume = "0.12"
 foxglove = "0.16.1"
 kornia-io = { workspace = true, features = ["v4l"] }
 kornia-image = { workspace = true }
@@ -19,6 +19,7 @@ nix = { version = "0.30.1", features = ["time"] }
 prost = "0.14.1"
 prost-types = "0.14.1"
 ros-z = { git = "https://github.com/ZettaScaleLabs/ros-z.git", branch = "main", features = ["protobuf"] }
+#ros-z = { path = "/home/edgar/software/ros-z/ros-z", features = ["protobuf"] }
 serde = { workspace = true, features = ["derive"] }
 zenoh = "1.6"
 tokio = { version = "1", features = ["full"] }
