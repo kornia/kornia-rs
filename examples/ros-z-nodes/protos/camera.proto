@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package bubbaloop.camera.v1;
+
+message Header {
+    uint64 acq_time = 1;
+    uint64 pub_time = 2;
+    uint32 sequence = 3;
+    string frame_id = 4;
+}
+
+message CompressedImage {
+    Header header = 1;
+    string format = 2;
+    bytes data = 3;
+}

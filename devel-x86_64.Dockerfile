@@ -8,6 +8,7 @@ RUN apt-get update --fix-missing && \
     clang \
     cmake \
     nasm \
+    protobuf-compiler \
     libgstreamer1.0-dev \
     libgstreamer-plugins-base1.0-dev \
     && \
