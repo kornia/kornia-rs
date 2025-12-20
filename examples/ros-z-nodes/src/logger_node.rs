@@ -15,7 +15,7 @@ pub struct LoggerNode {
 impl LoggerNode {
     pub fn new(ctx: Arc<ZContext>, camera_id: u32) -> ZResult<Self> {
         // create ROS-Z node
-        let node = ctx.create_node("foxglove_node").build()?;
+        let node = ctx.create_node("logger_node").build()?;
 
         // create subscriber with protobuf serialization
         let topic = format!("/camera/{camera_id}/compressed");
@@ -39,8 +39,8 @@ impl LoggerNode {
                 }
                 Ok(msg) = self.subscriber.async_recv() => {
                     // find the min and max value in the image
-                    let min_value = msg.data.iter().min().unwrap();
-                    let max_value = msg.data.iter().max().unwrap();
+                    let min_value = msg.data.iter().min().unwrap_or(&0);
+                    let max_value = msg.data.iter().max().unwrap_or(&0);
                     log::info!("Min value: {}, Max value: {}", min_value, max_value);
                 }
             }

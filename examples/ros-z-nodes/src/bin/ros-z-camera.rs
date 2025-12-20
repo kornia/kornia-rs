@@ -61,6 +61,9 @@ async fn main() -> ZResult<()> {
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
+    let env = env_logger::Env::default().default_filter_or("info");
+    env_logger::init_from_env(env);
+
     log::error!("This example is only supported on Linux due to V4L dependency.");
     std::process::exit(1);
 }
