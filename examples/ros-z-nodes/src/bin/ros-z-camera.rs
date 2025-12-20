@@ -2,7 +2,9 @@ use argh::FromArgs;
 use ros_z::{context::ZContextBuilder, Builder, Result as ZResult};
 use std::sync::Arc;
 
-use ros_z_nodes::{camera_node::CameraNode, foxglove_node::FoxgloveNode, logger_node::LoggerNode};
+use ros_z_nodes::{
+    camera_node::V4lCameraNode, foxglove_node::FoxgloveNode, logger_node::LoggerNode,
+};
 
 #[derive(FromArgs)]
 /// ROS2-style camera publisher using ros-z
@@ -39,7 +41,7 @@ async fn main() -> ZResult<()> {
     let ctx = Arc::new(ZContextBuilder::default().build()?);
 
     // create and initialize the camera publisher node
-    let camera_node = CameraNode::new(ctx.clone(), args.camera_id, args.fps)?;
+    let camera_node = V4lCameraNode::new(ctx.clone(), args.camera_id, args.fps)?;
     let foxglove_node = FoxgloveNode::new(ctx.clone(), args.camera_id)?;
     let logger_node = LoggerNode::new(ctx.clone(), args.camera_id)?;
 

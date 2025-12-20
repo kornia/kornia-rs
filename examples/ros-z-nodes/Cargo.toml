@@ -19,9 +19,8 @@ nix = { version = "0.30.1", features = ["time"] }
 prost = "0.14.1"
 prost-types = "0.14.1"
 ros-z = { git = "https://github.com/ZettaScaleLabs/ros-z.git", branch = "main", features = ["protobuf"] }
-#ros-z = { path = "/home/edgar/software/ros-z/ros-z", features = ["protobuf"] }
 serde = { workspace = true, features = ["derive"] }
-zenoh = "1.6"
+zenoh = "1.7"
 tokio = { version = "1", features = ["full"] }
 
 [build-dependencies]

@@ -8,7 +8,7 @@ use ros_z::{
 use std::sync::Arc;
 
 /// ROS2-style camera publisher node
-pub struct CameraNode {
+pub struct V4lCameraNode {
     #[allow(dead_code)]
     node: ZNode,
     publisher: ZPub<CompressedImage, ProtobufSerdes<CompressedImage>>,
@@ -17,7 +17,7 @@ pub struct CameraNode {
     fps: u32,
 }
 
-impl CameraNode {
+impl V4lCameraNode {
     /// Create a new camera publisher node
     pub fn new(ctx: Arc<ZContext>, camera_id: u32, fps: u32) -> ZResult<Self> {
         // create ROS-Z node
@@ -43,7 +43,6 @@ impl CameraNode {
         let mut shutdown_rx = shutdown_tx.subscribe();
 
         // initialize camera
-        let pixel_format = PixelFormat::MJPG;
         let camera = V4lVideoCapture::new(V4LCameraConfig {
             device_path: format!("/dev/video{}", self.camera_id),
             size: ImageSize {
@@ -51,7 +50,7 @@ impl CameraNode {
                 height: 480,
             },
             fps: self.fps,
-            format: pixel_format,
+            format: PixelFormat::MJPG,
             buffer_size: 4,
         })?;
 
@@ -87,7 +86,7 @@ impl CameraNode {
     }
 }
 
-impl Drop for CameraNode {
+impl Drop for V4lCameraNode {
     fn drop(&mut self) {
         // Safety net: if node was dropped without calling run() or run() didn't complete cleanup
         if let Some(handle) = self.handle.take() {

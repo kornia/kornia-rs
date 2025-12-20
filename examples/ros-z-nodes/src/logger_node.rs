@@ -17,9 +17,8 @@ impl LoggerNode {
         // create ROS-Z node
         let node = ctx.create_node("foxglove_node").build()?;
 
-        let topic = format!("/camera/{camera_id}/compressed");
-
         // create subscriber with protobuf serialization
+        let topic = format!("/camera/{camera_id}/compressed");
         let subscriber = node
             .create_sub::<CompressedImage>(topic.as_str())
             .with_serdes::<ProtobufSerdes<CompressedImage>>()
@@ -39,7 +38,7 @@ impl LoggerNode {
                     break;
                 }
                 Ok(msg) = self.subscriber.async_recv() => {
-                    // find the max value in the image
+                    // find the min and max value in the image
                     let min_value = msg.data.iter().min().unwrap();
                     let max_value = msg.data.iter().max().unwrap();
                     log::info!("Min value: {}, Max value: {}", min_value, max_value);
