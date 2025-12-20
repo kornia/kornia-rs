@@ -240,10 +240,7 @@ pub fn decode_image_png_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
 }
 
 // utility function to read the png file
-fn read_png_impl(
-    file_path: impl AsRef<Path>,
-    strip_alpha: bool,
-) -> Result<(Vec<u8>, [usize; 2]), IoError> {
+fn read_png_impl(file_path: impl AsRef<Path>, strip_alpha: bool) -> Result<(Vec<u8>, [usize; 2]), IoError> {
     // verify the file exists
     let file_path = file_path.as_ref();
     if !file_path.exists() {
@@ -553,19 +550,13 @@ mod tests {
         Ok(())
     }
 
-    /// Regression test for the RGBA->RGB buffer size mismatch issue.
-    ///
-    /// This reproduces the CI error where a PNG with RGBA data is read as RGB,
-    /// causing "Data length (1449616) does not match the image size (1087212)".
-    ///
-    /// The ratio 1449616/1087212 ≈ 1.333 = 4/3, confirming RGBA (4 channels)
-    /// vs RGB (3 channels) mismatch.
+    /// Regression test for the RGBA->RGB buffer size decoding.
     #[test]
     fn test_rgba_png_read_as_rgb_buffer_truncation() -> Result<(), IoError> {
         let tmp_dir = tempfile::tempdir()?;
         create_dir_all(tmp_dir.path())?;
 
-        // Create an RGBA image (603x603 to match the CI error dimensions)
+        // Create an RGBA image (603x603)
         let size = ImageSize {
             width: 603,
             height: 603,
@@ -576,22 +567,13 @@ mod tests {
         // Write as RGBA PNG
         let file_path = tmp_dir.path().join("rgba_test.png");
         write_image_png_rgba8(&file_path, &rgba_image)?;
-
-        // Expected sizes:
-        // RGBA: 603 * 603 * 4 = 1,453,636 bytes
-        // RGB:  603 * 603 * 3 = 1,090,227 bytes
-        // Ratio: 1,453,636 / 1,090,227 ≈ 1.333 (same as CI error!)
-
-        // Try to read RGBA PNG as RGB - this reproduces the CI error
         let result = read_image_png_rgb8(&file_path);
 
         // Debug: print the error
         if let Err(ref e) = result {
             println!("Error: {}", e);
         }
-
-        // With the truncation fix, this should succeed (though data may be wrong)
-        // Without the fix, it would fail with the exact CI error message
+        
         assert!(
             result.is_ok(),
             "Should not fail with data length mismatch error: {:?}",
