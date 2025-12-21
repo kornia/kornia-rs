@@ -576,7 +576,7 @@ mod tests {
         if let Err(ref e) = result {
             println!("Error: {}", e);
         }
-        
+
         assert!(
             result.is_ok(),
             "Should not fail with data length mismatch error: {:?}",
