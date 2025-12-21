@@ -240,7 +240,10 @@ pub fn decode_image_png_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
 }
 
 // utility function to read the png file
-fn read_png_impl(file_path: impl AsRef<Path>, strip_alpha: bool) -> Result<(Vec<u8>, [usize; 2]), IoError> {
+fn read_png_impl(
+    file_path: impl AsRef<Path>,
+    strip_alpha: bool,
+) -> Result<(Vec<u8>, [usize; 2]), IoError> {
     // verify the file exists
     let file_path = file_path.as_ref();
     if !file_path.exists() {
