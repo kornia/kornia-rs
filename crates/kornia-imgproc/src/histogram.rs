@@ -54,11 +54,12 @@ pub fn compute_histogram<A: ImageAllocator>(
     }
 
     let mut bin_lut = [0usize; 256];
-    for i in 0..256 {
-        bin_lut[i] = (i * num_bins) >> 8;
+    for (i, val) in bin_lut.iter_mut().enumerate() {
+        *val = (i * num_bins) >> 8;
     }
 
-    let counts = src.as_slice()
+    let counts = src
+        .as_slice()
         .par_chunks(4096)
         .fold(
             || vec![0usize; num_bins],
@@ -80,8 +81,8 @@ pub fn compute_histogram<A: ImageAllocator>(
             },
         );
 
-    for i in 0..num_bins {
-        hist[i] += counts[i];
+    for (h, c) in hist.iter_mut().zip(counts.iter()) {
+        *h += c;
     }
 
     Ok(())
