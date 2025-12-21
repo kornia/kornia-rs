@@ -357,16 +357,20 @@ where
         ));
     }
 
-    // parallelize the operation by rows
+    // parallelize the operation
     parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
-        let mut is_in_range = true;
-        src_pixel
-            .iter()
-            .zip(lower_bound.iter().zip(upper_bound.iter()))
-            .for_each(|(src_val, (lower, upper))| {
-                is_in_range &= src_val >= lower && src_val <= upper;
-            });
-        dst_pixel[0] = if is_in_range { 255 } else { 0 };
+        let mut ok = true;
+
+        // manually unroll over channels
+        for c in 0..C {
+            let v = &src_pixel[c];
+            if v < &lower_bound[c] || v > &upper_bound[c] {
+                ok = false;
+                break;
+            }
+        }
+
+        dst_pixel[0] = if ok { 255 } else { 0 };
     });
 
     Ok(())
