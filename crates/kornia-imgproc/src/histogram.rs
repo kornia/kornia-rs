@@ -53,35 +53,35 @@ pub fn compute_histogram<A: ImageAllocator>(
         return Err(ImageError::InvalidHistogramBins(num_bins));
     }
 
-    // we assume 8-bit images for now and range [0, 255]
-    let scale = 256.0 / num_bins as f32;
+    let mut bin_lut = [0usize; 256];
+    for i in 0..256 {
+        bin_lut[i] = (i * num_bins) >> 8;
+    }
 
-    let width = src.width();
-    let src_slice = src.as_slice();
-
-    // parallaized computation of histogram on local threads
-    let partial_hist = src_slice
-        .par_chunks_exact(width)
-        .map(|row| {
-            let mut local_hist = vec![0_usize; num_bins];
-            for &pixel in row {
-                let bin = (pixel as f32 / scale).floor() as usize;
-                local_hist[bin] += 1;
-            }
-            local_hist
-        })
+    let counts = src.as_slice()
+        .par_chunks(4096)
+        .fold(
+            || vec![0usize; num_bins],
+            |mut local, chunk| {
+                for &px in chunk {
+                    let idx = bin_lut[px as usize];
+                    local[idx] += 1;
+                }
+                local
+            },
+        )
         .reduce(
-            || vec![0; num_bins],
+            || vec![0usize; num_bins],
             |mut a, b| {
-                for (i, val) in b.into_iter().enumerate() {
+                for (i, val) in b.iter().enumerate() {
                     a[i] += val;
                 }
                 a
             },
         );
 
-    for (i, val) in partial_hist.into_iter().enumerate() {
-        hist[i] += val;
+    for i in 0..num_bins {
+        hist[i] += counts[i];
     }
 
     Ok(())
