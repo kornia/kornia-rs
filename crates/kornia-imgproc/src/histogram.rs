@@ -63,12 +63,12 @@ pub fn compute_histogram<A: ImageAllocator>(
         .par_chunks(4096)
         .fold(
             || vec![0usize; num_bins],
-            |mut local, chunk| {
+            |mut local_bin, chunk| {
                 for &px in chunk {
                     let idx = bin_lut[px as usize];
-                    local[idx] += 1;
+                    local_bin[idx] += 1;
                 }
-                local
+                local_bin
             },
         )
         .reduce(
@@ -81,10 +81,10 @@ pub fn compute_histogram<A: ImageAllocator>(
             },
         );
 
-    for (h, c) in hist.iter_mut().zip(counts.iter()) {
-        *h += c;
+    for (bin, val) in hist.iter_mut().zip(counts.iter()) {
+        *bin += val;
     }
-
+    
     Ok(())
 }
 
