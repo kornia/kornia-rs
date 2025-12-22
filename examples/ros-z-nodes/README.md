@@ -54,6 +54,7 @@ Options:
 ```bash
 cargo run -p ros-z-nodes --bin ros-z-camera --release -- --camera-name front --device-id 0 --fps 30
 ```
+<img width="1044" height="1271" alt="Screenshot from 2025-12-22 14-25-10" src="https://github.com/user-attachments/assets/4fdbe4d6-6396-4ddb-b9bc-331ca49e48ef" />
 
 ## Foxglove Visualization
 
