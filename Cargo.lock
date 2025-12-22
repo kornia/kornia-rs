@@ -6314,6 +6314,7 @@ dependencies = [
  "criterion",
  "faer 0.20.1",
  "glam 0.30.9",
+ "kornia-algebra",
  "nalgebra",
  "thiserror 1.0.69",
 ]
