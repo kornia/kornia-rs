@@ -53,35 +53,43 @@ pub fn compute_histogram<A: ImageAllocator>(
         return Err(ImageError::InvalidHistogramBins(num_bins));
     }
 
-    // we assume 8-bit images for now and range [0, 255]
-    let scale = 256.0 / num_bins as f32;
+    let mut bin_lut = [0usize; 256];
+    for (i, val) in bin_lut.iter_mut().enumerate() {
+        *val = (i * num_bins) >> 8;
+    }
 
-    let width = src.width();
-    let src_slice = src.as_slice();
+    let total_pixels = src.width() * src.height();
+    let num_threads = rayon::current_num_threads();
+    
+    // max with 4*width to ensure divide by 0 error does not occur for very small images
+    let chunk_size = (total_pixels / num_threads).max(src.width() * 4);
 
-    // parallaized computation of histogram on local threads
-    let partial_hist = src_slice
-        .par_chunks_exact(width)
-        .map(|row| {
-            let mut local_hist = vec![0_usize; num_bins];
-            for &pixel in row {
-                let bin = (pixel as f32 / scale).floor() as usize;
-                local_hist[bin] += 1;
-            }
-            local_hist
-        })
+    let counts = src.as_slice()
+        .par_chunks(chunk_size) 
+        .fold(
+            || vec![0usize; num_bins],
+            |mut local_bin, chunk| {
+                for &px in chunk {
+                    unsafe {
+                        let idx = *bin_lut.get_unchecked(px as usize);
+                        *local_bin.get_unchecked_mut(idx) += 1;
+                    }
+                }
+                local_bin
+            },
+        )
         .reduce(
-            || vec![0; num_bins],
+            || vec![0usize; num_bins],
             |mut a, b| {
-                for (i, val) in b.into_iter().enumerate() {
+                for (i, val) in b.iter().enumerate() {
                     a[i] += val;
                 }
                 a
             },
         );
 
-    for (i, val) in partial_hist.into_iter().enumerate() {
-        hist[i] += val;
+    for (i, count) in counts.iter().enumerate() {
+        hist[i] += count;
     }
 
     Ok(())
