@@ -58,15 +58,22 @@ pub fn compute_histogram<A: ImageAllocator>(
         *val = (i * num_bins) >> 8;
     }
 
-    let counts = src
-        .as_slice()
-        .par_chunks(4096)
+    let total_pixels = src.width() * src.height();
+    let num_threads = rayon::current_num_threads();
+    
+    // max with 4*width to ensure divide by 0 error does not occur for very small images
+    let chunk_size = (total_pixels / num_threads).max(src.width() * 4);
+
+    let counts = src.as_slice()
+        .par_chunks(chunk_size) 
         .fold(
             || vec![0usize; num_bins],
             |mut local_bin, chunk| {
                 for &px in chunk {
-                    let idx = bin_lut[px as usize];
-                    local_bin[idx] += 1;
+                    unsafe {
+                        let idx = *bin_lut.get_unchecked(px as usize);
+                        *local_bin.get_unchecked_mut(idx) += 1;
+                    }
                 }
                 local_bin
             },
@@ -81,10 +88,10 @@ pub fn compute_histogram<A: ImageAllocator>(
             },
         );
 
-    for (bin, val) in hist.iter_mut().zip(counts.iter()) {
-        *bin += val;
+    for (i, count) in counts.iter().enumerate() {
+        hist[i] += count;
     }
-    
+
     Ok(())
 }
 
