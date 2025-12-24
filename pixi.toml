@@ -48,15 +48,14 @@ nasm = "*"
 libunwind = "*"
 
 [feature.rust.tasks]
-rust-check = { cmd = "cargo check --all --all-targets --features ci", description = "Check Rust compilation" }
-rust-clippy = { cmd = "cargo clippy --workspace --no-deps --features ci --all-targets -- -D warnings", description = "Run clippy" }
+rust-check = { cmd = "cargo check --workspace --all-targets --features ci", description = "Check Rust compilation (all targets)" }
+rust-clippy = { cmd = "cargo clippy --workspace --no-deps --all-targets --features ci -- -D warnings", description = "Run clippy (all targets)" }
 rust-fmt = { cmd = "cargo fmt --all", description = "Format Rust code" }
 rust-fmt-check = { cmd = "cargo fmt --all -- --check", description = "Check Rust formatting" }
 rust-lint = { depends-on = ["rust-fmt", "rust-clippy", "rust-check"], description = "Run all Rust lints" }
 rust-test = { cmd = "cargo test --features ci", description = "Run Rust tests" }
+rust-test-release = { cmd = "cargo test --release --features ci", description = "Run Rust tests (release)" }
 rust-test-package = { cmd = "cargo test -p", description = "Run tests for a specific package (usage: pixi run rust-test-package <package>)" }
-rust-build = { cmd = "cargo build --features ci", description = "Build Rust (debug)" }
-rust-build-release = { cmd = "cargo build --release --features ci", description = "Build Rust (release)" }
 rust-build-examples = { cmd = "cargo build --examples", description = "Build examples" }
 rust-clean = { cmd = "cargo clean", description = "Clean Rust build artifacts" }
 # Cross-compilation tasks (aarch64) - requires Docker and system rustup

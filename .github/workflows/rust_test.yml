@@ -9,9 +9,8 @@ on:
       - main
 
 jobs:
-  # Native x86_64 tests using pixi
-  build_and_test:
-    name: Test Suite - x86_64
+  test_debug_x86:
+    name: Test Debug - x86_64
     runs-on: ubuntu-latest
     env:
       RUSTC_WRAPPER: sccache
@@ -33,15 +32,43 @@ jobs:
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
-      - name: Run tests
+      - name: Run tests (debug)
         run: pixi run rust-test
 
       - name: Show sccache stats
         run: sccache --show-stats
 
-  # Cross-compiled aarch64 tests using rustup + cross (not pixi)
-  build_and_test_aarch64:
-    name: Test Suite - aarch64
+  test_release_x86:
+    name: Test Release - x86_64
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_CACHE_SIZE: 6G
+      SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
+      SCCACHE_LOG: info
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: v0.40.0
+          cache: true
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Run tests (release)
+        run: pixi run rust-test-release
+
+      - name: Show sccache stats
+        run: sccache --show-stats
+
+  test_debug_aarch64:
+    name: Test Debug - aarch64
     runs-on: ubuntu-latest
     env:
       RUSTC_WRAPPER: sccache
@@ -67,37 +94,8 @@ jobs:
       - name: Install cross
         uses: taiki-e/install-action@cross
 
-      - name: Run tests
+      - name: Run tests (debug)
         run: cross test --target aarch64-unknown-linux-gnu --features ci
-
-      - name: Show sccache stats
-        run: sccache --show-stats
-
-  build_release:
-    name: Build Release - x86_64
-    runs-on: ubuntu-latest
-    env:
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      SCCACHE_CACHE_SIZE: 6G
-      SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
-      SCCACHE_LOG: info
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - uses: prefix-dev/setup-pixi@v0.8.1
-        with:
-          pixi-version: v0.40.0
-          cache: true
-
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Build release
-        run: pixi run rust-build-release
 
       - name: Show sccache stats
         run: sccache --show-stats
