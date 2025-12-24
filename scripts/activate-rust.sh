@@ -8,3 +8,8 @@ export PKG_CONFIG_PATH="${CONDA_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH}"
 export OPENSSL_DIR="${CONDA_PREFIX}"
 export OPENSSL_INCLUDE_DIR="${CONDA_PREFIX}/include"
 export OPENSSL_LIB_DIR="${CONDA_PREFIX}/lib"
+
+# Protobuf compiler - needed for prost-build
+if [ -f "${CONDA_PREFIX}/bin/protoc" ]; then
+    export PROTOC="${CONDA_PREFIX}/bin/protoc"
+fi

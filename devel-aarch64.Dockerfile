@@ -19,3 +19,8 @@ RUN apt-get install --assume-yes --no-install-recommends \
     && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+# Set environment variables for cross-compilation pkg-config
+ENV PKG_CONFIG_ALLOW_CROSS=1
+ENV PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
+ENV PKG_CONFIG_SYSROOT_DIR=/
