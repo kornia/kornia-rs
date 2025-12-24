@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package bubbaloop.camera.v1;
+
+import "header.proto";
+
+// Compressed image (H264, JPEG, etc.)
+message CompressedImage {
+    bubbaloop.header.v1.Header header = 1;
+    string format = 2;      // "h264", "jpeg", etc.
+    bytes data = 3;
+}
+
+// Raw decoded image (RGB, BGR, grayscale, etc.)
+message RawImage {
+    bubbaloop.header.v1.Header header = 1;
+    uint32 width = 2;
+    uint32 height = 3;
+    string encoding = 4;    // "rgb8", "bgr8", "mono8", etc.
+    uint32 step = 5;        // Row stride in bytes (width * bytes_per_pixel)
+    bytes data = 6;
+}

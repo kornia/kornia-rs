@@ -27,7 +27,7 @@ jobs:
       SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
       SCCACHE_LOG: info
     steps:
-      - run: sudo apt-get update
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: actions/checkout@v4
       - run: rustup update
       - name: Install sccache
@@ -52,7 +52,7 @@ jobs:
       SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
       SCCACHE_LOG: info
     steps:
-      - run: sudo apt-get update
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: actions/checkout@v4
       - run: rustup update
 
