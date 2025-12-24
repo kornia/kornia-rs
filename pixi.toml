@@ -33,11 +33,6 @@ rust = ">=1.76"
 sccache = "*"
 openssl = "*"
 pkg-config = "*"
-
-[feature.rust.activation]
-scripts = ["scripts/activate-rust.sh"]
-
-[feature.rust.target.linux-64.dependencies]
 libprotobuf = "*"  # Provides protoc compiler
 glib = "*"
 zlib = "*"
@@ -45,7 +40,15 @@ gstreamer = "*"
 gst-plugins-base = "*"
 gst-plugins-good = "*"
 nasm = "*"
-libunwind = "*"
+
+[feature.rust.activation]
+scripts = ["scripts/activate-rust.sh"]
+
+[feature.rust.target.linux-64.dependencies]
+libunwind = "*"  # Linux-only
+
+[feature.rust.target.linux-aarch64.dependencies]
+libunwind = "*"  # Linux-only
 
 [feature.rust.tasks]
 rust-check = { cmd = "cargo check --workspace --all-targets --features ci", description = "Check Rust compilation (all targets)" }
