@@ -5990,7 +5990,6 @@ dependencies = [
  "tiff 0.10.3",
  "turbojpeg",
  "v4l 0.14.0",
- "zune-core 0.5.0",
  "zune-jpeg 0.5.8",
 ]
 

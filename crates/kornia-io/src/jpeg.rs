@@ -270,8 +270,8 @@ fn decode_jpeg_impl<const C: usize, A: ImageAllocator>(
     src: &[u8],
     dst: &mut Image<u8, C, A>,
 ) -> Result<(), IoError> {
-    use zune_core::colorspace::ColorSpace;
-    use zune_core::options::DecoderOptions;
+    use zune_jpeg::zune_core::colorspace::ColorSpace;
+    use zune_jpeg::zune_core::options::DecoderOptions;
 
     // First pass: decode headers to get image info
     let mut decoder = zune_jpeg::JpegDecoder::new(Cursor::new(src));
