@@ -31,7 +31,6 @@ jobs:
         with:
           pixi-version: v0.40.0
           cache: true
-          environments: dev
 
       - name: Check TOML formatting
         run: pixi run -e dev toml-fmt-check

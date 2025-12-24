@@ -1,20 +1,20 @@
 [package]
 name = "video_player"
-authors.workspace = true
-categories.workspace = true
-description.workspace = true
-edition.workspace = true
-homepage.workspace = true
-include.workspace = true
-license.workspace = true
-readme.workspace = true
-repository.workspace = true
-rust-version.workspace = true
 version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description.workspace = true
+readme.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+categories.workspace = true
+include.workspace = true
 
 [dependencies]
-kornia = { workspace = true, features = ["gstreamer"] }
 eframe = "0.31"
 env_logger = "0.11"
-log = "0.4"
 humanize-duration = "0.0"
+kornia = { workspace = true, features = ["gstreamer"] }
+log = "0.4"

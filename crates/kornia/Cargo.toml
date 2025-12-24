@@ -1,29 +1,18 @@
 [package]
 name = "kornia"
-description = "kornia - low-level 3D computer vision library in Rust"
-readme = "../../README.md"
-
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+description = "kornia - low-level 3D computer vision library in Rust"
+readme = "../../README.md"
 homepage.workspace = true
+repository.workspace = true
 license.workspace = true
 publish = true
-repository.workspace = true
-rust-version.workspace = true
-version.workspace = true
 
-[features]
-gstreamer = ["kornia-io/gstreamer"]
-turbojpeg = ["kornia-io/turbojpeg"]
-v4l = ["kornia-io/v4l"]
-arrow = ["kornia-image/arrow"]
-serde = ["kornia-tensor/serde"]
-bincode = ["kornia-tensor/bincode"]
-mkl = ["kornia-nn/mkl"]
-cuda = ["kornia-vlm/cuda"]
-
-# CI-compatible feature bundle (everything except cuda/mkl which need special hardware)
-ci = ["turbojpeg", "gstreamer", "v4l", "arrow", "serde", "bincode"]
+[lib]
+doctest = false
 
 [dependencies]
 kornia-3d = { workspace = true }
@@ -32,10 +21,19 @@ kornia-image.workspace = true
 kornia-imgproc.workspace = true
 kornia-io = { workspace = true, features = [] }
 kornia-linalg = { workspace = true }
+kornia-nn.workspace = true
 kornia-tensor.workspace = true
 kornia-tensor-ops.workspace = true
-kornia-nn.workspace = true
 kornia-vlm.workspace = true
 
-[lib]
-doctest = false
+[features]
+arrow = ["kornia-image/arrow"]
+bincode = ["kornia-tensor/bincode"]
+# CI-compatible feature bundle (everything except cuda/mkl which need special hardware)
+ci = ["arrow", "bincode", "gstreamer", "serde", "turbojpeg", "v4l"]
+cuda = ["kornia-vlm/cuda"]
+gstreamer = ["kornia-io/gstreamer"]
+mkl = ["kornia-nn/mkl"]
+serde = ["kornia-tensor/serde"]
+turbojpeg = ["kornia-io/turbojpeg"]
+v4l = ["kornia-io/v4l"]

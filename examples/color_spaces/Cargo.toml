@@ -1,13 +1,13 @@
 [package]
 name = "color_spaces"
-description = "Example demonstrating type-safe color space conversions"
 version.workspace = true
-edition.workspace = true
 authors.workspace = true
-license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Example demonstrating type-safe color space conversions"
 homepage.workspace = true
 repository.workspace = true
-rust-version.workspace = true
+license.workspace = true
 publish = false
 
 [dependencies]

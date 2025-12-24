@@ -1,16 +1,19 @@
 [package]
 name = "kornia-3d"
-description = "3d point cloud processing library"
-
-authors = { workspace = true }
-categories = { workspace = true }
-edition = { workspace = true }
-homepage = { workspace = true }
-license = { workspace = true }
-publish = true
-repository = { workspace = true }
-rust-version = { workspace = true }
 version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+description = "3d point cloud processing library"
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+categories = { workspace = true }
+publish = true
+
+[[bench]]
+harness = false
+name = "bench_linalg"
 
 [dependencies]
 bincode = { workspace = true }
@@ -21,7 +24,3 @@ thiserror = { workspace = true }
 [dev-dependencies]
 approx = { workspace = true }
 criterion = { workspace = true }
-
-[[bench]]
-name = "bench_linalg"
-harness = false

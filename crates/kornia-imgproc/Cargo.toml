@@ -1,20 +1,59 @@
 [package]
 name = "kornia-imgproc"
-description = "Image processing operations in Rust"
-
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+description = "Image processing operations in Rust"
 homepage.workspace = true
+repository.workspace = true
 license.workspace = true
 publish = true
-repository.workspace = true
-rust-version.workspace = true
-version.workspace = true
+
+[[bench]]
+harness = false
+name = "bench_color"
+
+[[bench]]
+harness = false
+name = "bench_resize"
+
+[[bench]]
+harness = false
+name = "bench_metrics"
+
+[[bench]]
+harness = false
+name = "bench_warp"
+
+[[bench]]
+harness = false
+name = "bench_flip"
+
+[[bench]]
+harness = false
+name = "bench_crop"
+
+[[bench]]
+harness = false
+name = "bench_filters"
+
+[[bench]]
+harness = false
+name = "bench_features"
+
+[[bench]]
+harness = false
+name = "bench_pyramid"
+
+[[bench]]
+harness = false
+name = "bench_gradient"
 
 [dependencies]
 fast_image_resize = { version = "=5.1", features = ["rayon"] }
-kornia-tensor = { workspace = true }
 kornia-image = { workspace = true }
+kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
 rayon = "1.10"
 thiserror = { workspace = true }
@@ -26,43 +65,3 @@ imageproc = "0.25"
 kornia-io = { workspace = true }
 ndarray = { version = "0.15", features = ["rayon"] }
 rand = { workspace = true }
-
-[[bench]]
-name = "bench_color"
-harness = false
-
-[[bench]]
-name = "bench_resize"
-harness = false
-
-[[bench]]
-name = "bench_metrics"
-harness = false
-
-[[bench]]
-name = "bench_warp"
-harness = false
-
-[[bench]]
-name = "bench_flip"
-harness = false
-
-[[bench]]
-name = "bench_crop"
-harness = false
-
-[[bench]]
-name = "bench_filters"
-harness = false
-
-[[bench]]
-name = "bench_features"
-harness = false
-
-[[bench]]
-name = "bench_pyramid"
-harness = false
-
-[[bench]]
-name = "bench_gradient"
-harness = false

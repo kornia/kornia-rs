@@ -2,7 +2,6 @@
 authors = ["Christie J Purackal <christie@kornia.org>"]
 name = "kornia-pnp"
 description = "Perspective-n-Point solvers for kornia"
-
 categories = { workspace = true }
 edition = { workspace = true }
 homepage = { workspace = true }
@@ -12,25 +11,25 @@ repository = { workspace = true }
 rust-version = { workspace = true }
 version = { workspace = true }
 
-[features]
-opencv_bench = ["dep:opencv"]
+[[bench]]
+harness = false
+name = "bench_pnp"
+required-features = ["opencv_bench"]
 
 [dependencies]
 glam = { version = "0.30.0", default-features = false }
 kornia-algebra = { workspace = true }
-kornia-linalg = { workspace = true }
 kornia-imgproc = { workspace = true }
-nalgebra = "0.32"
+kornia-linalg = { workspace = true }
 log = { workspace = true }
+nalgebra = "0.32"
+opencv = { version = "0.92", optional = true }
 rand = { workspace = true }
 thiserror = { workspace = true }
-opencv = { version = "0.92", optional = true }
 
 [dev-dependencies]
 approx = { workspace = true }
 criterion = { workspace = true }
 
-[[bench]]
-name = "bench_pnp"
-harness = false
-required-features = ["opencv_bench"]
+[features]
+opencv_bench = ["dep:opencv"]

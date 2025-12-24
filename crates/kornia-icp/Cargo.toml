@@ -1,17 +1,15 @@
 [package]
 name = "kornia-icp"
-description = "Iterative closest point algorithm library"
-
-authors.workspace = true
-categories.workspace = true
-edition.workspace = true
-homepage.workspace = true
-license.workspace = true
-publish = true
-repository.workspace = true
-rust-version.workspace = true
 version.workspace = true
-
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Iterative closest point algorithm library"
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+categories.workspace = true
+publish = true
 
 [dependencies]
 faer = { workspace = true }

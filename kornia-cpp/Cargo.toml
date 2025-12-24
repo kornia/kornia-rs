@@ -1,24 +1,23 @@
 [package]
 name = "kornia-cpp"
-categories = ["computer-vision", "science::robotics"]
-description = "C++ bindings for Kornia Rust library"
-edition = "2021"
-homepage = "http://kornia.org"
-license = "Apache-2.0"
-repository = "https://github.com/kornia/kornia-rs"
-rust-version = "1.76"
 version = "0.1.0"
+edition = "2021"
+rust-version = "1.76"
+description = "C++ bindings for Kornia Rust library"
+homepage = "http://kornia.org"
+repository = "https://github.com/kornia/kornia-rs"
+license = "Apache-2.0"
+categories = ["computer-vision", "science::robotics"]
 
 [lib]
-crate-type = ["staticlib", "cdylib"]
+crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
+# external
+cxx = "1.0"
 # kornia
 kornia-image = { path = "../crates/kornia-image" }
 kornia-io = { path = "../crates/kornia-io" }
-
-# external
-cxx = "1.0"
 paste = "1.0"
 
 [build-dependencies]

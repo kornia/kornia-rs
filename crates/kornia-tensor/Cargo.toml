@@ -1,25 +1,24 @@
 [package]
 name = "kornia-tensor"
-description = "Lightweight tensor library in Rust for computer vision"
-
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+description = "Lightweight tensor library in Rust for computer vision"
 homepage.workspace = true
+repository.workspace = true
 license.workspace = true
 publish = true
-repository.workspace = true
-rust-version.workspace = true
-version.workspace = true
 
 [dependencies]
+bincode = { workspace = true, optional = true }
 num-traits = { workspace = true }
 serde = { workspace = true, optional = true }
-bincode = { workspace = true, optional = true }
 thiserror = { workspace = true }
-
-[features]
-serde = ["dep:serde"]
-bincode = ["dep:bincode"]
 
 [dev-dependencies]
 serde_json = "1"
+
+[features]
+bincode = ["dep:bincode"]
+serde = ["dep:serde"]
