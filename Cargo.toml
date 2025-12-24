@@ -5,8 +5,8 @@ members = [
   "examples/*",
   # "kornia-py",
 ]
-default-members = ["crates/*"]
 exclude = ["examples/dora", "kornia-cpp", "kornia-py"]
+default-members = ["crates/*"]
 
 [workspace.package]
 version = "0.1.11-rc.1"
