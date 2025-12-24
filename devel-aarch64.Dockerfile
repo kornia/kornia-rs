@@ -11,6 +11,7 @@ RUN apt-get install --assume-yes --no-install-recommends \
     clang \
     cmake \
     nasm \
+    pkg-config \
     protobuf-compiler \
     libgstreamer1.0-dev:arm64 \
     libgstreamer-plugins-base1.0-dev:arm64 \
@@ -22,5 +23,6 @@ RUN apt-get install --assume-yes --no-install-recommends \
 
 # Set environment variables for cross-compilation pkg-config
 ENV PKG_CONFIG_ALLOW_CROSS=1
-ENV PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
+ENV PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
 ENV PKG_CONFIG_SYSROOT_DIR=/
+ENV PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig
