@@ -18,7 +18,7 @@ use kornia_tensor::{Tensor, Tensor2, Tensor3};
 /// assert_eq!(image_size.width, 10);
 /// assert_eq!(image_size.height, 20);
 /// ```
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImageSize {
     /// Width of the image in pixels
     pub width: usize,
@@ -48,6 +48,45 @@ impl From<[usize; 2]> for ImageSize {
 impl From<ImageSize> for [u32; 2] {
     fn from(size: ImageSize) -> Self {
         [size.width as u32, size.height as u32]
+    }
+}
+
+/// Pixel data type format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PixelFormat {
+    /// Unsigned 8-bit samples (0-255).
+    U8,
+    /// Unsigned 16-bit samples (0-65535).
+    U16,
+    /// 32-bit floating point samples.
+    F32,
+}
+
+/// Metadata describing the layout of an image including dimensions, channels, and pixel format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageLayout {
+    /// Spatial size of the image (width and height).
+    pub image_size: ImageSize,
+    /// Number of color channels.
+    pub channels: u8,
+    /// Scalar data type for pixel values.
+    pub pixel_format: PixelFormat,
+}
+
+impl ImageLayout {
+    /// Creates a new `ImageLayout` with the given size, channel count, and pixel format.
+    ///
+    /// # Arguments
+    ///
+    /// * `image_size` - The width and height of the image
+    /// * `channels` - Number of color channels
+    /// * `pixel_format` - The data type for pixel values
+    pub fn new(image_size: ImageSize, channels: u8, pixel_format: PixelFormat) -> Self {
+        Self {
+            image_size,
+            channels,
+            pixel_format,
+        }
     }
 }
 
@@ -579,7 +618,7 @@ impl<T, const C: usize, A: ImageAllocator> TryInto<Tensor3<T, A>> for Image<T, C
 
 #[cfg(test)]
 mod tests {
-    use crate::image::{Image, ImageError, ImageSize};
+    use crate::image::{Image, ImageError, ImageLayout, ImageSize, PixelFormat};
     use kornia_tensor::{CpuAllocator, Tensor};
 
     #[test]
@@ -590,6 +629,39 @@ mod tests {
         };
         assert_eq!(image_size.width, 10);
         assert_eq!(image_size.height, 20);
+    }
+
+    #[test]
+    fn test_image_layout_creation() {
+        let size = ImageSize {
+            width: 258,
+            height: 195,
+        };
+
+        let layout = ImageLayout::new(size, 3, PixelFormat::U8);
+
+        assert_eq!(layout.image_size.width, 258);
+        assert_eq!(layout.image_size.height, 195);
+        assert_eq!(layout.channels, 3);
+        assert_eq!(layout.pixel_format, PixelFormat::U8);
+    }
+
+    #[test]
+    fn test_image_layout_pixel_formats() {
+        let size = ImageSize {
+            width: 100,
+            height: 100,
+        };
+
+        let layout_u8 = ImageLayout::new(size, 1, PixelFormat::U8);
+        assert_eq!(layout_u8.pixel_format, PixelFormat::U8);
+
+        let layout_u16 = ImageLayout::new(size, 1, PixelFormat::U16);
+        assert_eq!(layout_u16.pixel_format, PixelFormat::U16);
+
+        let layout_f32 = ImageLayout::new(size, 4, PixelFormat::F32);
+        assert_eq!(layout_f32.pixel_format, PixelFormat::F32);
+        assert_eq!(layout_f32.channels, 4);
     }
 
     #[test]

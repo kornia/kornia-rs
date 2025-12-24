@@ -298,15 +298,15 @@ fn encode_image_jpeg_bgra8(
 /// Decode JPEG bytes to RGB u8 image (zero-copy via slice)
 fn decode_image_jpeg_rgb8(jpeg_bytes: &[u8]) -> Result<Box<ImageU8C3>, Box<dyn std::error::Error>> {
     // First, get image info to create properly sized image
-    let (size, num_channels) = jpeg::decode_image_jpeg_info(jpeg_bytes)?;
+    let layout = jpeg::decode_image_jpeg_layout(jpeg_bytes)?;
     
-    if num_channels != 3 {
-        return Err(format!("Expected RGB (3 channels), got {} channels", num_channels).into());
+    if layout.channels != 3 {
+        return Err(format!("Expected RGB (3 channels), got {} channels", layout.channels).into());
     }
     
     // Create output image
     let mut image = kornia_image::Image::<u8, 3, CpuAllocator>::from_size_val(
-        size,
+        layout.image_size,
         0,
         CpuAllocator,
     )?;

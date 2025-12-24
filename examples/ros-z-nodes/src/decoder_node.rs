@@ -2,7 +2,7 @@
 
 use crate::protos::{CompressedImage, Header, RawImage};
 use kornia_image::{allocator::CpuAllocator, Image};
-use kornia_io::jpeg::{decode_image_jpeg_info, decode_image_jpeg_rgb8};
+use kornia_io::jpeg::{decode_image_jpeg_layout, decode_image_jpeg_rgb8};
 use prost::Message;
 use ros_z::{
     context::ZContext, msg::ProtobufSerdes, node::ZNode, pubsub::ZSub, Builder, Result as ZResult,
@@ -78,10 +78,11 @@ impl DecoderNode {
     }
 
     fn decode_jpeg(&mut self, msg: &CompressedImage) -> ZResult<RawImage> {
-        let (size, num_channels) = decode_image_jpeg_info(&msg.data)?;
-        assert_eq!(num_channels, 3);
+        let layout = decode_image_jpeg_layout(&msg.data)?;
+        assert_eq!(layout.channels, 3);
 
-        let mut image = Image::<u8, 3, CpuAllocator>::from_size_val(size, 0, CpuAllocator)?;
+        let mut image =
+            Image::<u8, 3, CpuAllocator>::from_size_val(layout.image_size, 0, CpuAllocator)?;
         decode_image_jpeg_rgb8(&msg.data, &mut image)?;
 
         let sequence = self.sequence;
@@ -94,10 +95,10 @@ impl DecoderNode {
                 sequence,
                 frame_id: self.camera_name.clone(),
             }),
-            width: size.width as u32,
-            height: size.height as u32,
+            width: layout.image_size.width as u32,
+            height: layout.image_size.height as u32,
             encoding: "rgb8".to_string(),
-            step: size.width as u32 * 3,
+            step: layout.image_size.width as u32 * 3,
             data: image.into_vec(),
         })
     }

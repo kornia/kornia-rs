@@ -77,18 +77,6 @@ def test_decode_image_jpeg():
     assert img_t.shape == (195, 258, 3)
 
 
-def test_decode_image_jpeg_info():
-    img_path: Path = DATA_DIR / "dog.jpeg"
-    with open(img_path, "rb") as f:
-        img_data = f.read()
-    info: tuple[K.ImageSize, int] = K.decode_image_jpeg_info(bytes(img_data))
-
-    # check the image properties
-    assert info[0].width == 258
-    assert info[0].height == 195
-    assert info[1] == 3
-
-
 def test_decode_image_jpegturbo():
     img_path: Path = DATA_DIR / "dog.jpeg"
     with open(img_path, "rb") as f:
@@ -135,13 +123,69 @@ def test_decode_image_png_u16():
 def test_read_image_any():
     # load an image with image-rs
     img_path: Path = DATA_DIR / "dog.jpeg"
-    img: np.ndarray = K.read_image_any(str(img_path.absolute()))
+    img: np.ndarray = K.read_image(str(img_path.absolute()))
 
     # check the image properties
     assert img.shape == (195, 258, 3)
     assert img.dtype == np.uint8
     img_t = torch.from_numpy(img)
     assert img_t.shape == (195, 258, 3)
+
+
+def test_read_image_png_grayscale():
+    """Test reading grayscale PNG image"""
+    png_path: Path = DATA_DIR / "dog.png"
+    if png_path.exists():
+        img_png: np.ndarray = K.read_image(str(png_path.absolute()))
+        assert img_png.dtype == np.uint8
+        assert len(img_png.shape) == 3
+        assert img_png.shape[2] == 1
+        assert img_png.shape[:2] == (195, 258)
+
+
+def test_read_image_png_rgb():
+    """Test reading RGB PNG image"""
+    png_path: Path = DATA_DIR / "dog-rgb8.png"
+    if png_path.exists():
+        img_png: np.ndarray = K.read_image(str(png_path.absolute()))
+        assert img_png.dtype == np.uint8
+        assert len(img_png.shape) == 3
+        assert img_png.shape[2] == 3
+        assert img_png.shape[:2] == (195, 258)
+
+
+def test_read_image():
+    """Test the new read_image function with auto-detection"""
+    # Test JPEG
+    jpeg_path: Path = DATA_DIR / "dog.jpeg"
+    img_jpeg: np.ndarray = K.read_image(str(jpeg_path.absolute()))
+    assert img_jpeg.shape == (195, 258, 3)
+    assert img_jpeg.dtype == np.uint8
+
+    # Test PNG uint16 if available
+    png16_path: Path = DATA_DIR / "rgb16.png"
+    if png16_path.exists():
+        img_png16: np.ndarray = K.read_image(str(png16_path.absolute()))
+        assert img_png16.dtype == np.uint16
+        assert img_png16.shape == (32, 32, 3)
+        # Test reading an 8-bit rgb tiff
+    tiff8_path: Path = DATA_DIR / "dog.tiff"
+    if tiff8_path.exists():
+        img_tiff8: np.ndarray = K.read_image(str(tiff8_path.absolute()))
+        assert img_tiff8.dtype == np.uint8
+        assert img_tiff8.shape == (195, 258, 3)
+        # Test reading an 16-bit rgb tiff
+    tiff16_path: Path = DATA_DIR / "rgb16.tiff"
+    if tiff16_path.exists():
+        img_tiff16: np.ndarray = K.read_image(str(tiff16_path.absolute()))
+        assert img_tiff16.dtype == np.uint16
+        assert img_tiff16.shape == (32, 32, 3)
+        # Test reading an 32-bit float rgb tiff
+    tiff32_path: Path = DATA_DIR / "rgb32.tiff"
+    if tiff32_path.exists():
+        img_tiff32: np.ndarray = K.read_image(str(tiff32_path.absolute()))
+        assert img_tiff32.dtype == np.float32
+        assert img_tiff32.shape == (32, 32, 3)
 
 
 def test_decompress():

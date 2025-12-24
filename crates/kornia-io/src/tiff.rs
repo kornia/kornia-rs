@@ -2,9 +2,9 @@ use crate::error::IoError;
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     color_spaces::{Gray16, Gray8, Grayf32, Rgb16, Rgb8, Rgbf32},
-    Image, ImageSize,
+    Image, ImageLayout, ImageSize, PixelFormat,
 };
-use std::{fs, path::Path};
+use std::{fs, io::Cursor, path::Path};
 use tiff::{
     decoder::DecodingResult,
     encoder::{colortype, TiffEncoder},
@@ -195,6 +195,252 @@ fn read_image_tiff_impl(
     Ok((result, [width as usize, height as usize]))
 }
 
+fn extract_channels_from_tiff_colortype(colortype: &tiff::ColorType) -> Option<u8> {
+    match colortype {
+        tiff::ColorType::Gray(_) => Some(1),
+        tiff::ColorType::RGB(_) => Some(3),
+        tiff::ColorType::Palette(_) => None,
+        tiff::ColorType::GrayA(_) => Some(2),
+        tiff::ColorType::RGBA(_) => Some(4),
+        _ => None,
+    }
+}
+
+fn pixel_format_from_bits(bits: u8) -> Option<PixelFormat> {
+    match bits {
+        8 => Some(PixelFormat::U8),
+        16 => Some(PixelFormat::U16),
+        32 => Some(PixelFormat::F32),
+        _ => None,
+    }
+}
+
+fn pixel_format_from_tiff_colortype(colortype: &tiff::ColorType) -> Option<PixelFormat> {
+    match colortype {
+        tiff::ColorType::Gray(bits)
+        | tiff::ColorType::RGB(bits)
+        | tiff::ColorType::Palette(bits)
+        | tiff::ColorType::GrayA(bits)
+        | tiff::ColorType::RGBA(bits) => pixel_format_from_bits(*bits),
+        _ => None,
+    }
+}
+
+/// Decodes TIFF image metadata from raw bytes without decoding pixel data.
+///
+/// # Arguments
+///
+/// - `src` - Raw bytes of the TIFF file
+///
+/// # Returns
+///
+/// An `ImageLayout` containing the image metadata (size, channels, pixel format).
+pub fn decode_image_tiff_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
+    let cursor = Cursor::new(src);
+    let mut decoder = tiff::decoder::Decoder::new(cursor)?;
+
+    let (width, height) = decoder.dimensions()?;
+    let size = ImageSize {
+        width: width as usize,
+        height: height as usize,
+    };
+
+    let colortype = decoder.colortype()?;
+    let num_channels =
+        extract_channels_from_tiff_colortype(&colortype).ok_or(IoError::TiffDecodingError(
+            tiff::TiffError::UnsupportedError(tiff::TiffUnsupportedError::UnknownInterpretation),
+        ))?;
+
+    let pixel_format =
+        pixel_format_from_tiff_colortype(&colortype).ok_or(IoError::TiffDecodingError(
+            tiff::TiffError::UnsupportedError(tiff::TiffUnsupportedError::UnknownInterpretation),
+        ))?;
+
+    Ok(ImageLayout::new(size, num_channels, pixel_format))
+}
+
+/// Decodes a TIFF image with a three channel (rgb8) from Raw Bytes.
+///
+/// # Arguments
+///
+/// - `src` - Raw bytes of the TIFF file
+/// - `dst` - A mutabl+e reference to your `Rgb8` image
+pub fn decode_image_tiff_rgb8<A: ImageAllocator>(
+    src: &[u8],
+    dst: &mut Rgb8<A>,
+) -> Result<(), IoError> {
+    let size = dst.size();
+    decode_tiff_impl_u8(src, dst.as_slice_mut(), size, 3)
+}
+
+/// Decodes a TIFF image with as grayscale (Gray8) from Raw Bytes.
+///
+/// # Arguments
+///
+/// - `src` - Raw bytes of the TIFF file
+/// - `dst` - A mutable reference to your `Gray8` image
+pub fn decode_image_tiff_mono8<A: ImageAllocator>(
+    src: &[u8],
+    dst: &mut Gray8<A>,
+) -> Result<(), IoError> {
+    let size = dst.size();
+    decode_tiff_impl_u8(src, dst.as_slice_mut(), size, 1)
+}
+
+/// Decodes a TIFF (16 Bit) image with a three channel (rgb16) from Raw Bytes.
+///
+/// # Arguments
+///
+/// - `src` - Raw bytes of the TIFF file
+/// - `dst` - A mutable reference to your `Rgb16` image
+pub fn decode_image_tiff_rgb16<A: ImageAllocator>(
+    src: &[u8],
+    dst: &mut Rgb16<A>,
+) -> Result<(), IoError> {
+    let size = dst.size();
+    decode_tiff_impl_u16(src, dst.as_slice_mut(), size, 3)
+}
+
+/// Decodes a TIFF (16 Bit) image as grayscale (Gray16) from Raw Bytes.
+///
+/// # Arguments
+///
+/// - `src` - Raw bytes of the TIFF file
+/// - `dst` - A mutable reference to your `Gray16` image
+pub fn decode_image_tiff_mono16<A: ImageAllocator>(
+    src: &[u8],
+    dst: &mut Gray16<A>,
+) -> Result<(), IoError> {
+    let size = dst.size();
+    decode_tiff_impl_u16(src, dst.as_slice_mut(), size, 1)
+}
+
+/// Decodes a TIFF (32 Bit Float) image as grayscale (Grayf32) from Raw Bytes.
+///
+/// # Arguments
+///
+/// - `src` - Raw bytes of the TIFF file
+/// - `dst` - A mutable reference to your `Grayf32` image
+pub fn decode_image_tiff_mono32f<A: ImageAllocator>(
+    src: &[u8],
+    dst: &mut Grayf32<A>,
+) -> Result<(), IoError> {
+    let size = dst.size();
+    decode_tiff_impl_f32(src, dst.as_slice_mut(), size, 1)
+}
+
+/// Decodes a TIFF (32 Bit Float) image with a three channel (rgbf32) from Raw Bytes.
+///
+/// # Arguments
+///
+/// - `src` - Raw bytes of the TIFF file
+/// - `dst` - A mutable reference to your `Rgbf32` image
+pub fn decode_image_tiff_rgb32f<A: ImageAllocator>(
+    src: &[u8],
+    dst: &mut Rgbf32<A>,
+) -> Result<(), IoError> {
+    let size = dst.size();
+    decode_tiff_impl_f32(src, dst.as_slice_mut(), size, 3)
+}
+
+fn decode_tiff_impl_u8(
+    src: &[u8],
+    dst: &mut [u8],
+    image_size: ImageSize,
+    expected_channels: u8,
+) -> Result<(), IoError> {
+    let cursor = Cursor::new(src);
+    let mut decoder = tiff::decoder::Decoder::new(cursor)?;
+
+    let (width, height) = decoder.dimensions()?;
+    if width as usize != image_size.width || height as usize != image_size.height {
+        return Err(IoError::DecodeMismatchResolution(
+            height as usize,
+            width as usize,
+            image_size.height,
+            image_size.width,
+        ));
+    }
+
+    let expected_len = image_size.width * image_size.height * expected_channels as usize;
+    if dst.len() != expected_len {
+        return Err(IoError::InvalidBufferSize(dst.len(), expected_len));
+    }
+
+    decoder.read_image_bytes(dst)?;
+    Ok(())
+}
+
+fn decode_tiff_impl_u16(
+    src: &[u8],
+    dst: &mut [u16],
+    image_size: ImageSize,
+    expected_channels: u8,
+) -> Result<(), IoError> {
+    let cursor = Cursor::new(src);
+    let mut decoder = tiff::decoder::Decoder::new(cursor)?;
+
+    let (width, height) = decoder.dimensions()?;
+    if width as usize != image_size.width || height as usize != image_size.height {
+        return Err(IoError::DecodeMismatchResolution(
+            height as usize,
+            width as usize,
+            image_size.height,
+            image_size.width,
+        ));
+    }
+
+    let expected_len = image_size.width * image_size.height * expected_channels as usize;
+    if dst.len() != expected_len {
+        return Err(IoError::InvalidBufferSize(dst.len(), expected_len));
+    }
+
+    let bytes_needed = expected_len * 2;
+    let mut temp_buffer = vec![0u8; bytes_needed];
+    decoder.read_image_bytes(&mut temp_buffer)?;
+
+    for (i, chunk) in temp_buffer.chunks_exact(2).enumerate() {
+        dst[i] = u16::from_ne_bytes([chunk[0], chunk[1]]);
+    }
+
+    Ok(())
+}
+
+fn decode_tiff_impl_f32(
+    src: &[u8],
+    dst: &mut [f32],
+    image_size: ImageSize,
+    expected_channels: u8,
+) -> Result<(), IoError> {
+    let cursor = Cursor::new(src);
+    let mut decoder = tiff::decoder::Decoder::new(cursor)?;
+
+    let (width, height) = decoder.dimensions()?;
+    if width as usize != image_size.width || height as usize != image_size.height {
+        return Err(IoError::DecodeMismatchResolution(
+            height as usize,
+            width as usize,
+            image_size.height,
+            image_size.width,
+        ));
+    }
+
+    let expected_len = image_size.width * image_size.height * expected_channels as usize;
+    if dst.len() != expected_len {
+        return Err(IoError::InvalidBufferSize(dst.len(), expected_len));
+    }
+
+    let bytes_needed = expected_len * 4;
+    let mut temp_buffer = vec![0u8; bytes_needed];
+    decoder.read_image_bytes(&mut temp_buffer)?;
+
+    for (i, chunk) in temp_buffer.chunks_exact(4).enumerate() {
+        dst[i] = f32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    }
+
+    Ok(())
+}
+
 /// Write a TIFF image with a RGB8 color type.
 ///
 /// # Arguments
@@ -297,7 +543,7 @@ where
 mod tests {
     use super::*;
     use crate::error::IoError;
-    use std::fs::create_dir_all;
+    use std::fs::{create_dir_all, read};
 
     #[test]
     fn synthetic_write_tiff_rgb8() -> Result<(), IoError> {
@@ -467,6 +713,60 @@ mod tests {
 
         let img_rgb32f_back = read_image_tiff_rgb32f(&file_path)?;
         assert_eq!(img_rgb32f_back.as_slice(), img_rgb32f.as_slice());
+
+        Ok(())
+    }
+
+    #[test]
+    fn decode_tiff_rgb8() -> Result<(), IoError> {
+        let bytes = read("../../tests/data/dog.tiff")?;
+        let layout = decode_image_tiff_layout(&bytes)?;
+        assert_eq!(layout.image_size.width, 258);
+        assert_eq!(layout.image_size.height, 195);
+        assert_eq!(layout.channels, 3);
+
+        let mut image = Rgb8::from_size_val(layout.image_size, 0, CpuAllocator)?;
+        decode_image_tiff_rgb8(&bytes, &mut image)?;
+
+        assert_eq!(image.cols(), layout.image_size.width);
+        assert_eq!(image.rows(), layout.image_size.height);
+        assert_eq!(image.num_channels(), layout.channels as usize);
+
+        Ok(())
+    }
+
+    #[test]
+    fn decode_tiff_rgb16() -> Result<(), IoError> {
+        let bytes = read("../../tests/data/rgb16.tiff")?;
+        let layout = decode_image_tiff_layout(&bytes)?;
+        assert_eq!(layout.image_size.width, 32);
+        assert_eq!(layout.image_size.height, 32);
+        assert_eq!(layout.channels, 3);
+
+        let mut image = Rgb16::from_size_val(layout.image_size, 0, CpuAllocator)?;
+        decode_image_tiff_rgb16(&bytes, &mut image)?;
+
+        assert_eq!(image.cols(), layout.image_size.width);
+        assert_eq!(image.rows(), layout.image_size.height);
+        assert_eq!(image.num_channels(), layout.channels as usize);
+
+        Ok(())
+    }
+
+    #[test]
+    fn decode_tiff_rgb32f() -> Result<(), IoError> {
+        let bytes = read("../../tests/data/rgb32.tiff")?;
+        let layout = decode_image_tiff_layout(&bytes)?;
+        assert_eq!(layout.image_size.width, 32);
+        assert_eq!(layout.image_size.height, 32);
+        assert_eq!(layout.channels, 3);
+
+        let mut image = Rgbf32::from_size_val(layout.image_size, 0.0f32, CpuAllocator)?;
+        decode_image_tiff_rgb32f(&bytes, &mut image)?;
+
+        assert_eq!(image.cols(), layout.image_size.width);
+        assert_eq!(image.rows(), layout.image_size.height);
+        assert_eq!(image.num_channels(), layout.channels as usize);
 
         Ok(())
     }
