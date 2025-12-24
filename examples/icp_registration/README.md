@@ -26,4 +26,3 @@ NOTE: download the point clouds from [here](https://github.com/kornia/data/tree/
 ## Output
 
 https://github.com/user-attachments/assets/fb7d481e-2ffd-4fda-8aca-8dcdac06e65f
-

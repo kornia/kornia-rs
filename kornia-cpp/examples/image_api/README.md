@@ -152,4 +152,3 @@ All constructor errors are returned as `std::exception` with descriptive message
 - Image creation: O(n) where n = width × height × channels
 - Move operations: O(1)
 - Copy operations: O(n) via `to_vec()`
-

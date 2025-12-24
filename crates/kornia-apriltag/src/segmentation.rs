@@ -309,7 +309,8 @@ mod tests {
             union_representatives.push(' ');
         }
 
-        assert_eq!(union_representatives, expected);
+        // Trim to handle trailing whitespace/newlines in either string
+        assert_eq!(union_representatives.trim(), expected.trim());
 
         Ok(())
     }

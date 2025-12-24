@@ -35,16 +35,16 @@ This agent follows idiomatic Rust practices based on [The Rust Book](https://doc
 
 ## Review Workflow
 
-1. **Pre-flight**  
-   - Fetch the branch, read the PR description, and note linked issues or benchmarks.  
+1. **Pre-flight**
+   - Fetch the branch, read the PR description, and note linked issues or benchmarks.
    - Determine whether the change is API-facing, perf-oriented, or refactoring.
-2. **API & design audit**  
-   - Verify naming, module placement, and visibility match existing conventions (`kornia::image::`, `kornia::geometry::`).  
+2. **API & design audit**
+   - Verify naming, module placement, and visibility match existing conventions (`kornia::image::`, `kornia::geometry::`).
    - Check error types, result enums, and `cfg` gating for consistency.
    - Ensure proper trait implementations (`Debug`, `Clone`, `PartialEq` where appropriate).
    - Validate type safety: newtypes for static distinctions, meaningful parameter types over generic `bool`.
-3. **Safety & performance pass**  
-   - Inspect all `unsafe` blocks, pointer arithmetic, and FFI calls; demand comments explaining invariants.  
+3. **Safety & performance pass**
+   - Inspect all `unsafe` blocks, pointer arithmetic, and FFI calls; demand comments explaining invariants.
    - Look for unnecessary allocations or copies; prefer slice views and iterators.
    - Check for proper borrowing (`&T`) over cloning unless ownership transfer is necessary.
    - Validate use of `Rc<T>`/`Arc<T>` for reference counting and `RefCell<T>`/`Mutex<T>` for interior mutability.
@@ -53,18 +53,18 @@ This agent follows idiomatic Rust practices based on [The Rust Book](https://doc
    - Verify error types are meaningful and implement standard traits (using `thiserror` or similar).
    - Check that `?` operator is preferred over `unwrap()` or `expect()`.
    - Validate function arguments and ensure appropriate errors for invalid input.
-5. **Docs & examples**  
-   - Ensure new APIs ship with `///` docs, examples (runnable where possible), and updated guides or changelogs.  
+5. **Docs & examples**
+   - Ensure new APIs ship with `///` docs, examples (runnable where possible), and updated guides or changelogs.
    - Align prose with benchmarking claims; require `cargo test --doc` for doctests that were touched.
    - Verify all public APIs have rustdoc comments following API Guidelines.
    - Check that examples use `?` operator, not `unwrap()` or deprecated `try!` macro.
    - Ensure error conditions, panic scenarios, and safety considerations are documented.
-6. **Build & test**  
-   - Run `just format`, `just clippy`, and `just test` (or targeted `cargo test -p crate_name`).  
+6. **Build & test**
+   - Run `just format`, `just clippy`, and `just test` (or targeted `cargo test -p crate_name`).
    - For feature-specific code, execute `cargo test -p crate_name --all-features` and relevant `cargo bench --no-run` if benches changed.
    - Ensure code compiles without warnings.
-7. **Report**  
-   - Summarize blockers vs. polish comments, referencing `file:line`.  
+7. **Report**
+   - Summarize blockers vs. polish comments, referencing `file:line`.
    - Highlight follow-up issues (e.g., missing benches, docs debt) to keep history auditable per Agent HQ guidance.
 
 ---

@@ -10,34 +10,23 @@ on:
 
 jobs:
   cpp_build_and_test:
-    name: C++ Test Suite - ${{ matrix.os }}
+    name: C++ Test Suite - ${{ matrix.os }} (${{ matrix.build_type }})
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
         build_type: [Debug, Release]
-    
+
     runs-on: ${{ matrix.os }}
-    
+
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Install dependencies (Ubuntu)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake build-essential
-
-      - name: Install dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install cmake
-
-      - name: Install Rust toolchain
-        run: |
-          rustup update stable
-          rustup default stable
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: v0.40.0
+          cache: true
 
       - name: Cache Rust dependencies
         uses: actions/cache@v4
@@ -50,30 +39,25 @@ jobs:
             kornia-cpp/target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/Cargo.toml') }}
 
-      - name: Build C++ library and tests
-        run: |
-          cd kornia-cpp
-          cmake -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DBUILD_EXAMPLES=OFF -DBUILD_TESTS=ON
-          cmake --build build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+      - name: Build and run C++ tests (Debug)
+        if: matrix.build_type == 'Debug'
+        run: pixi run cpp-test
 
-      - name: Run C++ tests
-        run: |
-          cd kornia-cpp/build
-          ctest --output-on-failure --verbose
+      - name: Build and run C++ tests (Release)
+        if: matrix.build_type == 'Release'
+        run: pixi run cpp-test-release
 
   cpp_lint:
     name: C++ Format Check
     runs-on: ubuntu-latest
-    
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install clang-format
-        run: sudo apt-get update && sudo apt-get install -y clang-format
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: v0.40.0
+          cache: true
 
       - name: Check formatting
-        run: |
-          find kornia-cpp/include kornia-cpp/tests kornia-cpp/examples \
-            -type f \( -name "*.cpp" -o -name "*.hpp" \) \
-            -exec clang-format --dry-run --Werror {} +
-
+        run: pixi run cpp-fmt-check

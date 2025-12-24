@@ -148,10 +148,10 @@ Document any deviations from this runbook directly in the PR discussion to keep 
 
 These projects and documentation sources represent the standards your work should follow:
 
-- [**PyO3 User Guide**](https://pyo3.rs/latest/) — official documentation for classes, error handling, and GIL management.  
-- [**rust-numpy**](https://github.com/PyO3/rust-numpy) — demonstrates high-performance, zero-copy NumPy interop from Rust.  
-- [**Polars and pyo3-polars**](https://github.com/pola-rs/polars) — production-grade example of PyO3 bindings with Rust core.  
-- [**maturin**](https://github.com/PyO3/maturin) — build and distribution system for Python packages written in Rust.  
+- [**PyO3 User Guide**](https://pyo3.rs/latest/) — official documentation for classes, error handling, and GIL management.
+- [**rust-numpy**](https://github.com/PyO3/rust-numpy) — demonstrates high-performance, zero-copy NumPy interop from Rust.
+- [**Polars and pyo3-polars**](https://github.com/pola-rs/polars) — production-grade example of PyO3 bindings with Rust core.
+- [**maturin**](https://github.com/PyO3/maturin) — build and distribution system for Python packages written in Rust.
 - Blog tutorials that combine **PyO3 + rust-numpy** to create high-performance numerical and image processing extensions.
 
 ---

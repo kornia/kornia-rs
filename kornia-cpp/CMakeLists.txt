@@ -34,11 +34,11 @@ add_custom_target(cargo_build ALL
 # Create detail directory structure for cleaner includes during build
 add_custom_command(TARGET cargo_build POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different 
-        ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h 
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h
         ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/lib.rs.h
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different 
-        ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h 
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h
         ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/cxx.h
     COMMENT "Organizing CXX bridge headers into kornia/detail/"
 )
@@ -102,15 +102,15 @@ install(DIRECTORY include/
 
 # Install CXX bridge headers (into kornia/detail/ for cleaner structure)
 install(CODE "
-    file(GLOB_RECURSE CXX_HEADERS 
-        \"${CXX_GEN_DIR}/*.h\" 
+    file(GLOB_RECURSE CXX_HEADERS
+        \"${CXX_GEN_DIR}/*.h\"
         \"${CXX_GEN_DIR}/*.hxx\"
     )
     foreach(HEADER \${CXX_HEADERS})
         get_filename_component(HEADER_NAME \"\${HEADER}\" NAME)
         # Install all CXX bridge headers into kornia/detail/ directory
-        file(INSTALL \"\${HEADER}\" 
-             DESTINATION \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_INCLUDEDIR}/kornia/detail\" 
+        file(INSTALL \"\${HEADER}\"
+             DESTINATION \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_INCLUDEDIR}/kornia/detail\"
              FOLLOW_SYMLINK_CHAIN)
     endforeach()
 ")

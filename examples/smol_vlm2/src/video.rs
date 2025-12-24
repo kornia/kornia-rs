@@ -189,7 +189,7 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>, A: ImageAlloca
                     if take && frames.len() < N {
                         frames.push(img);
                         frame_pts.push(current_pos);
-                        log::debug!("[kornia-io] ✓ SAMPLED frame {} (pos: {}, timestamp: {}s) - Total sampled: {}", 
+                        log::debug!("[kornia-io] ✓ SAMPLED frame {} (pos: {}, timestamp: {}s) - Total sampled: {}",
                                    frame_idx, current_pos, current_pos as f64 / 1_000_000_000.0, frames.len());
                     } else if take {
                         log::debug!(
@@ -304,7 +304,7 @@ pub fn from_video_path<const N: usize, P: AsRef<std::path::Path>, A: ImageAlloca
                 for (i, &idx) in indices_to_sample.iter().enumerate() {
                     frames.push(all_frames[idx].clone());
                     ts.push((all_pts[idx] / 1_000_000_000) as u32);
-                    log::debug!("[kornia-io] ✓ SAMPLED frame at index {} (pos: {}, timestamp: {}s) - Uniform selection {}/{}", 
+                    log::debug!("[kornia-io] ✓ SAMPLED frame at index {} (pos: {}, timestamp: {}s) - Uniform selection {}/{}",
                                idx, all_pts[idx], all_pts[idx] as f64 / 1_000_000_000.0, i + 1, num);
                 }
             }

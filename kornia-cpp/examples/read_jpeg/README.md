@@ -26,7 +26,7 @@ Reading JPEG image from: dog.jpeg
   Channels: 3
   Data size: 150930 bytes
 
-  First 10 bytes: 188 179 174 188 179 174 188 179 174 188 
+  First 10 bytes: 188 179 174 188 179 174 188 179 174 188
   Pixel (0,0) R channel: 188
 ```
 

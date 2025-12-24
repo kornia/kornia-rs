@@ -17,8 +17,13 @@ gstreamer = ["kornia-io/gstreamer"]
 turbojpeg = ["kornia-io/turbojpeg"]
 v4l = ["kornia-io/v4l"]
 arrow = ["kornia-image/arrow"]
+serde = ["kornia-tensor/serde"]
+bincode = ["kornia-tensor/bincode"]
 mkl = ["kornia-nn/mkl"]
 cuda = ["kornia-vlm/cuda"]
+
+# CI-compatible feature bundle (everything except cuda/mkl which need special hardware)
+ci = ["turbojpeg", "gstreamer", "v4l", "arrow", "serde", "bincode"]
 
 [dependencies]
 kornia-3d = { workspace = true }

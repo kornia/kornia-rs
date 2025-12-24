@@ -261,19 +261,19 @@ def test_encode_image_jpeg():
     # Load test image
     img_path: Path = DATA_DIR / "dog.jpeg"
     img: np.ndarray = K.read_image_jpeg(str(img_path.absolute()), "rgb")
-    
+
     # Encode to JPEG bytes
     jpeg_bytes: bytes = K.encode_image_jpeg(img, quality=95)
-    
+
     # Verify it's valid JPEG (magic bytes 0xFF 0xD8)
     assert len(jpeg_bytes) > 2
     assert jpeg_bytes[0] == 0xFF
     assert jpeg_bytes[1] == 0xD8
-    
+
     # Verify JPEG end marker (0xFF 0xD9)
     assert jpeg_bytes[-2] == 0xFF
     assert jpeg_bytes[-1] == 0xD9
-    
+
     # Verify we can decode it back
     decoded_img: np.ndarray = K.decode_image_jpeg(jpeg_bytes)
     assert decoded_img.shape == (195, 258, 3)

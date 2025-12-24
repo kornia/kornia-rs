@@ -360,4 +360,4 @@ Title = {Kornia-rs: A Low-Level 3D Computer Vision Library In Rust},
 Year = {2025},
 Eprint = {arXiv:2505.12425},
 }
-``` 
+```

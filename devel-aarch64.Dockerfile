@@ -1,8 +1,13 @@
-FROM ghcr.io/cross-rs/aarch64-unknown-linux-gnu:edge
+ARG CROSS_BASE_IMAGE=ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main
+FROM $CROSS_BASE_IMAGE
 
-RUN apt-get update && dpkg --add-architecture arm64 && apt-get update
+# Clean and update package lists
+RUN rm -rf /var/lib/apt/lists/* && \
+    apt-get update && \
+    dpkg --add-architecture arm64 && \
+    apt-get update
 
-RUN apt-get install --assume-yes \
+RUN apt-get install --assume-yes --no-install-recommends \
     clang \
     cmake \
     nasm \
@@ -12,4 +17,5 @@ RUN apt-get install --assume-yes \
     libssl-dev:arm64 \
     libglib2.0-dev:arm64 \
     && \
-    apt-get clean
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*

@@ -35,6 +35,17 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-run-parallel",
+    "numpy",
+    "torch",
+]
+
+[tool.uv]
+extra-index-url = ["https://download.pytorch.org/whl/cpu"]
+
 [project.urls]
 homepage = "http://www.kornia.org"
 documentation = "https://kornia.readthedocs.io"

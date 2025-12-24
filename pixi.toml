@@ -1,0 +1,186 @@
+[workspace]
+name = "kornia-rs"
+version = "0.1.11-rc.1"
+description = "Low-level 3D computer vision library in Rust"
+authors = ["kornia.org <edgar@kornia.org>"]
+channels = ["conda-forge"]
+platforms = ["linux-64", "linux-aarch64", "osx-arm64", "osx-64"]
+
+# ------------------------------------------------------------------------------
+# Environments
+# ------------------------------------------------------------------------------
+
+[environments]
+default = { features = ["rust", "python", "cpp"], solve-group = "default" }
+cuda = { features = ["rust", "python", "cuda"], solve-group = "cuda" }
+dev = { features = ["rust", "python", "cpp", "dev-tools"], solve-group = "default" }
+
+# Python version-specific environments for CI matrix testing
+py38 = { features = ["rust", "python", "py38"] }
+py39 = { features = ["rust", "python", "py39"] }
+py310 = { features = ["rust", "python", "py310"] }
+py311 = { features = ["rust", "python", "py311"] }
+py312 = { features = ["rust", "python", "py312"] }
+py313 = { features = ["rust", "python", "py313"] }
+py314 = { features = ["rust", "python", "py314"] }
+py314t = { features = ["rust", "py314t"] }
+
+# ------------------------------------------------------------------------------
+# Feature: Rust
+# ------------------------------------------------------------------------------
+
+[feature.rust.dependencies]
+rust = ">=1.76"
+sccache = "*"
+openssl = "*"
+pkg-config = "*"
+
+[feature.rust.activation]
+scripts = ["scripts/activate-rust.sh"]
+
+[feature.rust.target.linux-64.dependencies]
+protobuf = "*"
+glib = "*"
+zlib = "*"
+gstreamer = "*"
+gst-plugins-base = "*"
+gst-plugins-good = "*"
+nasm = "*"
+libunwind = "*"
+
+[feature.rust.tasks]
+rust-check = { cmd = "cargo check --all --all-targets --features ci", description = "Check Rust compilation" }
+rust-clippy = { cmd = "cargo clippy --workspace --no-deps --features ci --all-targets -- -D warnings", description = "Run clippy" }
+rust-fmt = { cmd = "cargo fmt --all", description = "Format Rust code" }
+rust-fmt-check = { cmd = "cargo fmt --all -- --check", description = "Check Rust formatting" }
+rust-lint = { depends-on = ["rust-fmt", "rust-clippy", "rust-check"], description = "Run all Rust lints" }
+rust-test = { cmd = "cargo test --features ci", description = "Run Rust tests" }
+rust-test-package = { cmd = "cargo test -p", description = "Run tests for a specific package (usage: pixi run rust-test-package <package>)" }
+rust-build-examples = { cmd = "cargo build --examples", description = "Build examples" }
+rust-clean = { cmd = "cargo clean", description = "Clean Rust build artifacts" }
+
+# Cross-compilation tasks (aarch64) - requires Docker and system rustup
+rust-cross-build-aarch64 = { cmd = "env -u CARGO -u RUSTC -u RUSTUP_HOME PATH=\"$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin\" cross build --target aarch64-unknown-linux-gnu", description = "Cross-compile for aarch64 (uses system rustup)" }
+rust-cross-test-aarch64 = { cmd = "env -u CARGO -u RUSTC -u RUSTUP_HOME PATH=\"$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin\" cross test --target aarch64-unknown-linux-gnu", description = "Cross-compile and test for aarch64 (uses system rustup)" }
+rust-cross-test-aarch64-full = { cmd = "env -u CARGO -u RUSTC -u RUSTUP_HOME PATH=\"$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin\" cross test --target aarch64-unknown-linux-gnu --features ci", description = "Cross-compile and test for aarch64 with features (uses system rustup)" }
+
+# ------------------------------------------------------------------------------
+# Feature: Python (base feature with all tasks)
+# ------------------------------------------------------------------------------
+
+[feature.python.dependencies]
+python = ">=3.8"
+uv = "*"
+maturin = "*"
+pytest = "*"
+
+[feature.python.tasks]
+py-build = { cmd = "maturin develop --uv -m Cargo.toml --extras dev", cwd = "kornia-py", description = "Build kornia-py for development" }
+py-build-release = { cmd = "maturin develop --uv -m Cargo.toml --release --extras dev", cwd = "kornia-py", description = "Build kornia-py for release" }
+py-test = { cmd = "python -m pytest", cwd = "kornia-py", depends-on = ["py-build"], description = "Run pytest" }
+py-test-threaded = { cmd = "python -m pytest --parallel-threads=8 --iterations=50", cwd = "kornia-py", depends-on = ["py-build"], description = "Run pytest with free-threading" }
+py-clean = { cmd = "rm -rf .venv target dist *.egg-info && find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true", cwd = "kornia-py", description = "Clean Python build artifacts" }
+
+# ------------------------------------------------------------------------------
+# Python version overrides (only specify version, inherit tasks from python)
+# ------------------------------------------------------------------------------
+
+[feature.py38.dependencies]
+python = "3.8.*"
+
+[feature.py39.dependencies]
+python = "3.9.*"
+
+[feature.py310.dependencies]
+python = "3.10.*"
+
+[feature.py311.dependencies]
+python = "3.11.*"
+
+[feature.py312.dependencies]
+python = "3.12.*"
+
+[feature.py313.dependencies]
+python = "3.13.*"
+
+[feature.py314.dependencies]
+python = "3.14.*"
+
+# Python 3.14t (free-threaded) - uses uv to provide Python since conda-forge doesn't have 3.14t yet
+[feature.py314t.dependencies]
+uv = "*"
+maturin = "*"
+pytest = "*"
+
+[feature.py314t.activation]
+scripts = ["scripts/activate-py314t.sh"]
+
+[feature.py314t.tasks]
+py-build = { cmd = "maturin develop -m Cargo.toml --extras dev", cwd = "kornia-py", description = "Build kornia-py with Python 3.14t" }
+py-test = { cmd = "python -m pytest", cwd = "kornia-py", depends-on = ["py-build"], description = "Test kornia-py with Python 3.14t" }
+py-test-threaded = { cmd = "python -m pytest --parallel-threads=8 --iterations=50", cwd = "kornia-py", depends-on = ["py-build"], description = "Test kornia-py with Python 3.14t free-threaded" }
+
+# ------------------------------------------------------------------------------
+# Feature: C++
+# ------------------------------------------------------------------------------
+
+[feature.cpp.dependencies]
+cmake = "*"
+cxx-compiler = "*"
+clang-format = "*"
+
+[feature.cpp.target.linux-64.dependencies]
+libstdcxx-ng = "*"  # C++ runtime for linking
+
+[feature.cpp.tasks]
+cpp-build = { cmd = "../scripts/cpp-build.sh", cwd = "kornia-cpp", description = "Build C++ library (debug)" }
+cpp-build-release = { cmd = "../scripts/cpp-build.sh --release", cwd = "kornia-cpp", description = "Build C++ library (release)" }
+cpp-build-tests = { cmd = "../scripts/cpp-build.sh --tests", cwd = "kornia-cpp", description = "Build C++ tests" }
+cpp-build-examples = { cmd = "../scripts/cpp-build.sh --examples", cwd = "kornia-cpp", description = "Build C++ examples" }
+cpp-test = { cmd = "../scripts/cpp-build.sh --run-tests", cwd = "kornia-cpp", description = "Build and run C++ tests (debug)" }
+cpp-test-release = { cmd = "../scripts/cpp-build.sh --release --run-tests", cwd = "kornia-cpp", description = "Build and run C++ tests (release)" }
+cpp-test-sanitizers = { cmd = "../scripts/cpp-build.sh --sanitizers --run-tests", cwd = "kornia-cpp", description = "Run C++ tests with sanitizers" }
+cpp-fmt = { cmd = "../scripts/cpp-fmt.sh", cwd = "kornia-cpp", description = "Format C++ code" }
+cpp-fmt-check = { cmd = "../scripts/cpp-fmt.sh --check", cwd = "kornia-cpp", description = "Check C++ code formatting" }
+cpp-clean = { cmd = "rm -rf build/ target/", cwd = "kornia-cpp", description = "Clean C++ build artifacts" }
+cpp-install = { cmd = "../scripts/cpp-build.sh --release --install", cwd = "kornia-cpp", description = "Install C++ library system-wide" }
+
+# ------------------------------------------------------------------------------
+# Feature: CUDA (for local development with GPU - Linux only)
+# ------------------------------------------------------------------------------
+
+[feature.cuda.target.linux-64.dependencies]
+cuda-toolkit = ">=12.0,<13"  # cudarc doesn't support CUDA 13.x yet
+gcc = "12.*"  # CUDA 12.x requires GCC ≤12
+gxx = "12.*"
+sysroot_linux-64 = "*"
+
+[feature.cuda.target.linux-aarch64.dependencies]
+cuda-toolkit = ">=12.0,<13"
+gcc = "12.*"
+gxx = "12.*"
+sysroot_linux-aarch64 = "*"
+
+[feature.cuda.activation]
+scripts = ["scripts/activate-cuda.sh"]
+
+[feature.cuda.tasks]
+rust-build-cuda = { cmd = "cargo build --features cuda", description = "Build Rust with CUDA support" }
+rust-test-cuda = { cmd = "cargo test --features cuda", description = "Run Rust tests with CUDA support" }
+rust-clippy-cuda = { cmd = "cargo clippy --features cuda --all-targets -- -D warnings", description = "Run clippy with CUDA support" }
+rust-build-vlm-cuda = { cmd = "cargo build --package paligemma --features cuda", description = "Build VLM examples with CUDA" }
+
+# ------------------------------------------------------------------------------
+# Feature: Dev Tools
+# ------------------------------------------------------------------------------
+
+[feature.dev-tools.dependencies]
+git = "*"
+taplo = "*"
+
+[feature.dev-tools.tasks]
+toml-fmt = { cmd = "taplo fmt", description = "Format TOML files" }
+toml-fmt-check = { cmd = "taplo fmt --check", description = "Check TOML formatting" }
+clean-all = { depends-on = ["rust-clean", "py-clean", "cpp-clean"], description = "Clean all build artifacts" }
+test-all = { depends-on = ["rust-test", "py-test", "cpp-test"], description = "Run all tests" }
+fmt-all = { depends-on = ["rust-fmt", "toml-fmt", "cpp-fmt"], description = "Format all code" }

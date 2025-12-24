@@ -14,8 +14,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: rustup toolchain install stable --component rustfmt
-      - run: cargo fmt --all -- --check
+
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: v0.40.0
+          cache: true
+
+      - name: Check formatting
+        run: pixi run rust-fmt-check
 
   clippy:
     name: Clippy
@@ -27,17 +33,18 @@ jobs:
       SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
       SCCACHE_LOG: info
     steps:
-      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: actions/checkout@v4
-      - run: rustup update
+
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: v0.40.0
+          cache: true
+
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
-      - name: Install cross
-        uses: taiki-e/install-action@cross
-
       - name: Clippy
-        run: cross clippy --workspace --no-deps --features "turbojpeg,gstreamer,v4l,arrow,bincode,serde" --all-targets -- -D warnings
+        run: pixi run rust-clippy
 
       - name: Show sccache stats
         run: sccache --show-stats
@@ -52,17 +59,18 @@ jobs:
       SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
       SCCACHE_LOG: info
     steps:
-      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: actions/checkout@v4
-      - run: rustup update
+
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: v0.40.0
+          cache: true
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
-      - name: Install cross
-        uses: taiki-e/install-action@cross
-
-      - run: cross check --all --features "turbojpeg,gstreamer,v4l,arrow,bincode,serde"
+      - name: Check
+        run: pixi run rust-check
 
       - name: Show sccache stats
         run: sccache --show-stats

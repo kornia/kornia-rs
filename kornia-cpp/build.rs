@@ -17,7 +17,7 @@ fn main() {
 fn generate_version_header() {
     let version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    
+
     let version_hpp = format!(
         r#"#pragma once
 
@@ -46,21 +46,20 @@ inline const char* get_version() {{
     );
 
     // Write to OUT_DIR for Rust build
-    fs::write(out_dir.join("version.hpp"), &version_hpp)
-        .expect("Failed to write version.hpp");
+    fs::write(out_dir.join("version.hpp"), &version_hpp).expect("Failed to write version.hpp");
 
     // Also write to include directory for development
     let include_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
         .join("include")
         .join("kornia");
-    
+
     if let Err(e) = fs::create_dir_all(&include_dir) {
         eprintln!("Warning: Could not create include dir: {}", e);
     }
-    
+
     if let Err(e) = fs::write(include_dir.join("version.hpp"), &version_hpp) {
         eprintln!("Warning: Could not write version.hpp to include dir: {}", e);
     }
-    
+
     println!("cargo:rerun-if-changed=Cargo.toml");
 }

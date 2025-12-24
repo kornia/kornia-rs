@@ -6,3 +6,4 @@ examples/*/Cargo.lock
 kornia-py/Cargo.lock
 *.code-workspace
 .idea/
+.pixi/
