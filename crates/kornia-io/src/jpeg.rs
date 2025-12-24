@@ -235,6 +235,9 @@ pub fn decode_image_jpeg_mono8<A: ImageAllocator>(
 fn read_image_jpeg_impl<const N: usize>(
     file_path: impl AsRef<Path>,
 ) -> Result<Image<u8, N, CpuAllocator>, IoError> {
+    use zune_jpeg::zune_core::colorspace::ColorSpace;
+    use zune_jpeg::zune_core::options::DecoderOptions;
+
     let file_path = file_path.as_ref().to_owned();
     if !file_path.exists() {
         return Err(IoError::FileDoesNotExist(file_path.to_path_buf()));
@@ -247,6 +250,8 @@ fn read_image_jpeg_impl<const N: usize>(
     }
 
     let jpeg_data = fs::read(file_path)?;
+
+    // First pass: decode headers to get image info
     let mut decoder = zune_jpeg::JpegDecoder::new(Cursor::new(&jpeg_data));
     decoder.decode_headers()?;
 
@@ -256,11 +261,38 @@ fn read_image_jpeg_impl<const N: usize>(
         )))
     })?;
 
+    // Infer colorspace from actual image components
+    let colorspace = match image_info.components {
+        1 => ColorSpace::Luma,
+        3 => ColorSpace::RGB,
+        n => {
+            return Err(IoError::JpegDecodingError(
+                zune_jpeg::errors::DecodeErrors::Format(format!(
+                    "Unsupported JPEG component count: {}. Expected 1 (grayscale) or 3 (RGB)",
+                    n
+                )),
+            ))
+        }
+    };
+
+    // Validate destination matches image channels
+    if image_info.components != N as u8 {
+        return Err(IoError::JpegDecodingError(
+            zune_jpeg::errors::DecodeErrors::Format(format!(
+                "Channel mismatch: JPEG has {} components but requested {}",
+                image_info.components, N
+            )),
+        ));
+    }
+
     let image_size = ImageSize {
         width: image_info.width as usize,
         height: image_info.height as usize,
     };
 
+    // Decode with correct output colorspace
+    let options = DecoderOptions::default().jpeg_set_out_colorspace(colorspace);
+    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(Cursor::new(&jpeg_data), options);
     let img_data = decoder.decode()?;
 
     Ok(Image::new(image_size, img_data, CpuAllocator)?)

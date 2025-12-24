@@ -6303,7 +6303,7 @@ dependencies = [
  "tiff 0.10.3",
  "turbojpeg",
  "v4l 0.14.0",
- "zune-jpeg",
+ "zune-jpeg 0.5.8",
 ]
 
 [[package]]
