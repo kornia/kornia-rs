@@ -17,6 +17,11 @@ use std::{
 
 /// Read a PNG image as grayscale (Gray8).
 ///
+/// # Deprecation Note
+///
+/// For Python users: prefer using `kornia_rs.read_image()` which auto-detects format and type.
+/// This function will strip alpha channels if present (GrayscaleAlpha → Grayscale).
+///
 /// # Arguments
 ///
 /// * `file_path` - The path to the PNG file.
@@ -30,6 +35,11 @@ pub fn read_image_png_mono8(file_path: impl AsRef<Path>) -> Result<Gray8<CpuAllo
 }
 
 /// Read a PNG image as RGB8.
+///
+/// # Deprecation Note
+///
+/// For Python users: prefer using `kornia_rs.read_image()` which auto-detects format and type.
+/// This function will strip alpha channels if present (RGBA → RGB).
 ///
 /// # Arguments
 ///
@@ -45,6 +55,10 @@ pub fn read_image_png_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8<CpuAlloca
 
 /// Read a PNG image as RGBA8.
 ///
+/// # Deprecation Note
+///
+/// For Python users: prefer using `kornia_rs.read_image()` which auto-detects format and type.
+///
 /// # Arguments
 ///
 /// * `file_path` - The path to the PNG file.
@@ -58,6 +72,11 @@ pub fn read_image_png_rgba8(file_path: impl AsRef<Path>) -> Result<Rgba8<CpuAllo
 }
 
 /// Read a PNG image as RGB16.
+///
+/// # Deprecation Note
+///
+/// For Python users: prefer using `kornia_rs.read_image()` which auto-detects format and type.
+/// This function will strip alpha channels if present (RGBA16 → RGB16).
 ///
 /// # Arguments
 ///
@@ -75,6 +94,10 @@ pub fn read_image_png_rgb16(file_path: impl AsRef<Path>) -> Result<Rgb16<CpuAllo
 
 /// Read a PNG image as RGBA16.
 ///
+/// # Deprecation Note
+///
+/// For Python users: prefer using `kornia_rs.read_image()` which auto-detects format and type.
+///
 /// # Arguments
 ///
 /// * `file_path` - The path to the PNG file.
@@ -90,6 +113,11 @@ pub fn read_image_png_rgba16(file_path: impl AsRef<Path>) -> Result<Rgba16<CpuAl
 }
 
 /// Read a PNG image as grayscale (Gray16).
+///
+/// # Deprecation Note
+///
+/// For Python users: prefer using `kornia_rs.read_image()` which auto-detects format and type.
+/// This function will strip alpha channels if present (GrayscaleAlpha16 → Grayscale16).
 ///
 /// # Arguments
 ///
