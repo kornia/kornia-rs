@@ -3,7 +3,7 @@ use jpeg_encoder::{ColorType, Encoder};
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     color_spaces::{Gray8, Rgb8},
-    Image, ImageLayout, PixelFormat, ImageSize,
+    Image, ImageLayout, ImageSize, PixelFormat,
 };
 use std::{fs, path::Path};
 

@@ -5,7 +5,7 @@ use crate::{
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     color_spaces::{Gray16, Gray8, Rgb16, Rgb8, Rgba16, Rgba8},
-    Image, ImageLayout, PixelFormat, ImageSize,
+    Image, ImageLayout, ImageSize, PixelFormat,
 };
 use png::{BitDepth, ColorType, Decoder, Encoder};
 use std::{
@@ -239,16 +239,6 @@ pub fn decode_image_png_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
     Ok(ImageLayout::new(size, channels, pixel_format))
 }
 
-/// Decodes PNG image metadata from raw bytes without decoding pixel data.
-///
-/// # Deprecated
-///
-/// Use [`decode_image_png_layout`] instead.
-#[deprecated(note = "Use decode_image_png_layout instead")]
-pub fn decode_image_png_info(src: &[u8]) -> Result<ImageLayout, IoError> {
-    decode_image_png_layout(src)
-}
-
 // utility function to read the png file
 fn read_png_impl(file_path: impl AsRef<Path>) -> Result<(Vec<u8>, [usize; 2]), IoError> {
     // verify the file exists
@@ -309,10 +299,7 @@ fn decode_png_impl<const C: usize>(
         .ok_or_else(|| IoError::PngDecodeError("PNG output buffer size overflowed".into()))?;
 
     if dst.len() < buffer_size {
-        return Err(IoError::InvalidBufferSize(
-            dst.len(),
-            buffer_size,
-        ));
+        return Err(IoError::InvalidBufferSize(dst.len(), buffer_size));
     }
 
     let _ = reader

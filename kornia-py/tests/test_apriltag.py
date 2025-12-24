@@ -55,7 +55,7 @@ def test_tag_family_into_family_kind():
 def test_apriltag_decoder():
     kinds = [TagFamilyKind("tag36_h11")]
     config = K.apriltag.DecodeTagsConfig(kinds)
-    decoder = K.apriltag.AprilTagDecoder(config, K.ImageSize(60, 60))
+    decoder = K.apriltag.AprilTagDecoder(config, K.image.ImageSize(60, 60))
 
     expected_quad = [(50.0, 10.0), (50.0, 50.0), (10.0, 50.0), (10.0, 10.0)]
 

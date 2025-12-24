@@ -206,13 +206,12 @@ where
 #[cfg(test)]
 mod tests {
     use kornia_image::{ops, Image, ImageSize};
-    use kornia_io::functional as F;
+    use kornia_io::jpeg::read_image_jpeg_rgb8;
     use kornia_tensor::CpuAllocator;
 
     #[test]
-    fn gray_from_rgb() -> Result<(), Box<dyn std::error::Error>> {
-        #[allow(deprecated)]
-        let image = F::read_image_any_rgb8("../../tests/data/dog.jpeg")?;
+    fn test_gray_from_rgb() -> Result<(), Box<dyn std::error::Error>> {
+        let image = read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
 
         let mut image_norm = Image::from_size_val(image.size(), 0.0, CpuAllocator)?;
         ops::cast_and_scale(&image, &mut image_norm, 1. / 255.0)?;
@@ -228,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn gray_from_rgb_regression() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_gray_from_rgb_regression() -> Result<(), Box<dyn std::error::Error>> {
         #[rustfmt::skip]
         let image = Image::new(
             ImageSize {
@@ -267,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn rgb_from_grayscale() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_rgb_from_grayscale() -> Result<(), Box<dyn std::error::Error>> {
         let image = Image::new(
             ImageSize {
                 width: 2,
@@ -304,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn bgr_from_rgb() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_bgr_from_rgb() -> Result<(), Box<dyn std::error::Error>> {
         #[rustfmt::skip]
         let image = Image::new(
             ImageSize {
@@ -343,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn gray_from_rgb_u8() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_gray_from_rgb_u8() -> Result<(), Box<dyn std::error::Error>> {
         let image = Image::new(
             ImageSize {
                 width: 1,

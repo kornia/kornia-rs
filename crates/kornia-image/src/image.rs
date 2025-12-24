@@ -618,7 +618,7 @@ impl<T, const C: usize, A: ImageAllocator> TryInto<Tensor3<T, A>> for Image<T, C
 
 #[cfg(test)]
 mod tests {
-    use crate::image::{Image, ImageError, ImageLayout, PixelFormat, ImageSize};
+    use crate::image::{Image, ImageError, ImageLayout, ImageSize, PixelFormat};
     use kornia_tensor::{CpuAllocator, Tensor};
 
     #[test]
@@ -663,7 +663,6 @@ mod tests {
         assert_eq!(layout_f32.pixel_format, PixelFormat::F32);
         assert_eq!(layout_f32.channels, 4);
     }
-
 
     #[test]
     fn test_image_smoke() -> Result<(), ImageError> {

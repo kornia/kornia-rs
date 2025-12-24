@@ -1,4 +1,4 @@
-use crate::image::{FromPyImage, PyImage, PyImageSize, ToPyImage};
+use crate::image::{FromPyImage, PyImage, ToPyImage};
 use kornia_image::{allocator::CpuAllocator, Image};
 use kornia_io::jpeg as J;
 use pyo3::prelude::*;

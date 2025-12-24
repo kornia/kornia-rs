@@ -9,12 +9,12 @@ use std::path::Path;
 ///
 /// The method tries to read from any image format supported by the image crate.
 ///
-/// # Deprecated
+/// # Warning
 ///
-/// This function is deprecated because it always returns `Rgb8`, which doesn't match
-/// grayscale, 16-bit, or float images. It conflicts with the strictly typed design.
+/// This function always returns `Rgb8`, which doesn't match grayscale, 16-bit, or float images.
+/// It conflicts with the strictly typed design.
 ///
-/// Use explicit typed readers instead:
+/// To avoid this, use explicit typed readers instead:
 /// - `jpeg::read_image_jpeg_rgb8()` for JPEG
 /// - `png::read_image_png_rgb8()` for PNG
 /// - `tiff::read_image_tiff_rgb8()` for TIFF
@@ -39,10 +39,6 @@ use std::path::Path;
 /// assert_eq!(image.rows(), 195);
 /// assert_eq!(image.num_channels(), 3);
 /// ```
-#[deprecated(
-    since = "0.1.12",
-    note = "Use explicit typed readers (jpeg::read_image_jpeg_rgb8, png::read_image_png_rgb8, etc.) instead."
-)]
 pub fn read_image_any_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8<CpuAllocator>, IoError> {
     let file_path = file_path.as_ref().to_owned();
 
@@ -71,8 +67,7 @@ mod tests {
     use crate::functional::read_image_any_rgb8;
 
     #[test]
-    fn read_any() -> Result<(), IoError> {
-        #[allow(deprecated)]
+    fn test_read_any_rgb8() -> Result<(), IoError> {
         let image = read_image_any_rgb8("../../tests/data/dog.jpeg")?;
         assert_eq!(image.cols(), 258);
         assert_eq!(image.rows(), 195);

@@ -246,17 +246,15 @@ pub fn decode_image_tiff_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
     };
 
     let colortype = decoder.colortype()?;
-    let num_channels = extract_channels_from_tiff_colortype(&colortype).ok_or(
-        IoError::TiffDecodingError(tiff::TiffError::UnsupportedError(
-            tiff::TiffUnsupportedError::UnknownInterpretation,
-        ))
-    )?;
+    let num_channels =
+        extract_channels_from_tiff_colortype(&colortype).ok_or(IoError::TiffDecodingError(
+            tiff::TiffError::UnsupportedError(tiff::TiffUnsupportedError::UnknownInterpretation),
+        ))?;
 
-    let pixel_format = pixel_format_from_tiff_colortype(&colortype).ok_or(
-        IoError::TiffDecodingError(tiff::TiffError::UnsupportedError(
-            tiff::TiffUnsupportedError::UnknownInterpretation,
-        ))
-    )?;
+    let pixel_format =
+        pixel_format_from_tiff_colortype(&colortype).ok_or(IoError::TiffDecodingError(
+            tiff::TiffError::UnsupportedError(tiff::TiffUnsupportedError::UnknownInterpretation),
+        ))?;
 
     Ok(ImageLayout::new(size, num_channels, pixel_format))
 }

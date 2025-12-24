@@ -5907,6 +5907,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kornia-algebra"
+version = "0.1.11-rc.1"
+dependencies = [
+ "approx",
+ "glam 0.30.9",
+ "rand 0.9.2",
+]
+
+[[package]]
 name = "kornia-apriltag"
 version = "0.1.11-rc.1"
 dependencies = [
@@ -5985,15 +5994,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kornia-lie"
-version = "0.1.11-rc.1"
-dependencies = [
- "approx",
- "glam 0.30.9",
- "rand 0.9.2",
-]
-
-[[package]]
 name = "kornia-linalg"
 version = "0.1.11-rc.1"
 dependencies = [
@@ -6026,8 +6026,8 @@ dependencies = [
  "approx",
  "criterion",
  "glam 0.30.9",
+ "kornia-algebra",
  "kornia-imgproc",
- "kornia-lie",
  "kornia-linalg",
  "log",
  "nalgebra",

@@ -123,7 +123,7 @@ def test_decode_image_png_u16():
 def test_read_image_any():
     # load an image with image-rs
     img_path: Path = DATA_DIR / "dog.jpeg"
-    img: np.ndarray = K.read_image_any(str(img_path.absolute()))
+    img: np.ndarray = K.read_image(str(img_path.absolute()))
 
     # check the image properties
     assert img.shape == (195, 258, 3)
