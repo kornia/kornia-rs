@@ -5,7 +5,7 @@ use kornia_image::{
     color_spaces::{Gray8, Rgb8},
     Image, ImageLayout, ImageSize, PixelFormat,
 };
-use std::{fs, path::Path};
+use std::{fs, io::Cursor, path::Path};
 
 /// Writes the given JPEG _(rgb8)_ data to the given file path.
 ///
@@ -247,7 +247,7 @@ fn read_image_jpeg_impl<const N: usize>(
     }
 
     let jpeg_data = fs::read(file_path)?;
-    let mut decoder = zune_jpeg::JpegDecoder::new(jpeg_data);
+    let mut decoder = zune_jpeg::JpegDecoder::new(Cursor::new(&jpeg_data));
     decoder.decode_headers()?;
 
     let image_info = decoder.info().ok_or_else(|| {
@@ -270,7 +270,11 @@ fn decode_jpeg_impl<const C: usize, A: ImageAllocator>(
     src: &[u8],
     dst: &mut Image<u8, C, A>,
 ) -> Result<(), IoError> {
-    let mut decoder = zune_jpeg::JpegDecoder::new(src);
+    use zune_core::colorspace::ColorSpace;
+    use zune_core::options::DecoderOptions;
+
+    // First pass: decode headers to get image info
+    let mut decoder = zune_jpeg::JpegDecoder::new(Cursor::new(src));
     decoder.decode_headers()?;
 
     let image_info = decoder.info().ok_or_else(|| {
@@ -278,6 +282,30 @@ fn decode_jpeg_impl<const C: usize, A: ImageAllocator>(
             "Failed to find image info from its metadata",
         )))
     })?;
+
+    // Infer colorspace from actual image components
+    let colorspace = match image_info.components {
+        1 => ColorSpace::Luma,
+        3 => ColorSpace::RGB,
+        n => {
+            return Err(IoError::JpegDecodingError(
+                zune_jpeg::errors::DecodeErrors::Format(format!(
+                    "Unsupported JPEG component count: {}. Expected 1 (grayscale) or 3 (RGB)",
+                    n
+                )),
+            ))
+        }
+    };
+
+    // Validate destination buffer matches image channels
+    if image_info.components != C as u8 {
+        return Err(IoError::JpegDecodingError(
+            zune_jpeg::errors::DecodeErrors::Format(format!(
+                "Channel mismatch: JPEG has {} components but destination expects {}",
+                image_info.components, C
+            )),
+        ));
+    }
 
     if [image_info.height as usize, image_info.width as usize] != [dst.height(), dst.width()] {
         return Err(IoError::DecodeMismatchResolution(
@@ -288,6 +316,9 @@ fn decode_jpeg_impl<const C: usize, A: ImageAllocator>(
         ));
     }
 
+    // Decode with correct output colorspace
+    let options = DecoderOptions::default().jpeg_set_out_colorspace(colorspace);
+    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(Cursor::new(src), options);
     decoder.decode_into(dst.as_slice_mut())?;
 
     Ok(())
@@ -303,7 +334,7 @@ fn decode_jpeg_impl<const C: usize, A: ImageAllocator>(
 ///
 /// An `ImageLayout` containing the image metadata (size, channels, pixel format).
 pub fn decode_image_jpeg_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
-    let mut decoder = zune_jpeg::JpegDecoder::new(src);
+    let mut decoder = zune_jpeg::JpegDecoder::new(Cursor::new(src));
     decoder.decode_headers()?;
 
     let image_info = decoder.info().ok_or_else(|| {
@@ -328,7 +359,7 @@ mod tests {
     use std::fs::{create_dir_all, read};
 
     #[test]
-    fn read_jpeg() -> Result<(), IoError> {
+    fn test_read_jpeg() -> Result<(), IoError> {
         let image = read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
         assert_eq!(image.cols(), 258);
         assert_eq!(image.rows(), 195);
@@ -336,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn read_write_jpeg() -> Result<(), IoError> {
+    fn test_read_write_jpeg() -> Result<(), IoError> {
         let tmp_dir = tempfile::tempdir()?;
         create_dir_all(tmp_dir.path())?;
 
@@ -355,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_jpeg() -> Result<(), IoError> {
+    fn test_decode_jpeg() -> Result<(), IoError> {
         let bytes = read("../../tests/data/dog.jpeg")?;
         let mut image = Rgb8::from_size_val([258, 195].into(), 0, CpuAllocator)?;
         decode_image_jpeg_rgb8(&bytes, &mut image)?;
@@ -368,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_jpeg_size() -> Result<(), IoError> {
+    fn test_decode_jpeg_size() -> Result<(), IoError> {
         let bytes = read("../../tests/data/dog.jpeg")?;
         let layout = decode_image_jpeg_layout(bytes.as_slice())?;
         assert_eq!(layout.image_size.width, 258);
@@ -378,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_jpeg_rgb8_with_buffer() -> Result<(), IoError> {
+    fn test_encode_jpeg_rgb8_with_buffer() -> Result<(), IoError> {
         let image = read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
 
         let mut buffer = Vec::new();
@@ -400,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_jpeg_gray8_with_buffer() -> Result<(), IoError> {
+    fn test_encode_jpeg_gray8_with_buffer() -> Result<(), IoError> {
         // Create a synthetic grayscale image for testing
         let image = Image::<u8, 1, _>::from_size_val([258, 195].into(), 128, CpuAllocator)?;
 
@@ -423,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_jpeg_buffer_reuse() -> Result<(), IoError> {
+    fn test_encode_jpeg_buffer_reuse() -> Result<(), IoError> {
         let image1 = read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
         let image2 = Image::<u8, 3, _>::from_size_val([100, 100].into(), 255, CpuAllocator)?;
 

@@ -21,7 +21,8 @@ kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
 png = "0.18"
 jpeg-encoder = "0.6"
-zune-jpeg = "0.4"
+zune-jpeg = "0.5"
+zune-core = "0.5"
 log = { workspace = true }
 thiserror = { workspace = true }
 tiff = "0.10"
