@@ -58,9 +58,7 @@ rust-lint = { depends-on = ["rust-fmt", "rust-clippy", "rust-check"], descriptio
 rust-test = { cmd = "cargo test --features ci", description = "Run Rust tests" }
 rust-test-release = { cmd = "cargo test --release --features ci", description = "Run Rust tests (release)" }
 rust-test-package = { cmd = "cargo test -p", description = "Run tests for a specific package (usage: pixi run rust-test-package <package>)" }
-rust-build-examples = { cmd = "cargo build --workspace", description = "Build examples" }
-# Combined build+test to reuse artifacts in CI (saves disk space)
-rust-build-all-and-test = { cmd = "cargo build --workspace --features ci --all-targets && cargo test --features ci", description = "Build all (workspace+benches) then test, reusing build artifacts" }
+rust-build-examples = { cmd = "cargo build --workspace --exclude kornia-py --exclude kornia-cpp", description = "Build examples (excluding bindings)" }
 rust-clean = { cmd = "cargo clean", description = "Clean Rust build artifacts" }
 # Cross-compilation tasks (aarch64) - requires Docker and system rustup
 rust-cross-build-aarch64 = { cmd = "env -u CARGO -u RUSTC -u RUSTUP_HOME PATH=\"$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin\" cross build --target aarch64-unknown-linux-gnu", description = "Cross-compile for aarch64 (uses system rustup)" }

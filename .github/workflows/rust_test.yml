@@ -25,20 +25,23 @@ jobs:
   test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: Build All & Test Debug - x86_64
+          - name: Test Debug - x86_64
             runner: ubuntu-latest
-            command: rust-build-all-and-test
+            command: rust-test
           - name: Test Release - x86_64
             runner: ubuntu-latest
             command: rust-test-release
           - name: Test Debug - aarch64
             runner: ubuntu-24.04-arm
             command: rust-test
+          - name: Build Examples
+            runner: ubuntu-latest
+            command: rust-build-examples
 
     steps:
       - uses: actions/checkout@v4
