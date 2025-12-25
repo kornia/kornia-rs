@@ -13,7 +13,7 @@ publish = true
 
 [dependencies]
 faer = { workspace = true }
-kiddo = "5.0.2"
+kiddo = "5.2.3"
 kornia-3d = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }

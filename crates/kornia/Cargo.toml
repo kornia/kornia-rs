@@ -21,7 +21,6 @@ kornia-image.workspace = true
 kornia-imgproc.workspace = true
 kornia-io = { workspace = true, features = [] }
 kornia-linalg = { workspace = true }
-kornia-nn.workspace = true
 kornia-tensor.workspace = true
 kornia-tensor-ops.workspace = true
 kornia-vlm.workspace = true
@@ -33,7 +32,6 @@ bincode = ["kornia-tensor/bincode"]
 ci = ["arrow", "bincode", "gstreamer", "serde", "turbojpeg", "v4l"]
 cuda = ["kornia-vlm/cuda"]
 gstreamer = ["kornia-io/gstreamer"]
-mkl = ["kornia-nn/mkl"]
 serde = ["kornia-tensor/serde"]
 turbojpeg = ["kornia-io/turbojpeg"]
 v4l = ["kornia-io/v4l"]

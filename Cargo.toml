@@ -26,12 +26,13 @@ include = ["Cargo.toml"]
 [workspace.dependencies]
 approx = "0.5"
 argh = "0.1"
-bincode = { version = "2.0.0", features = ["derive"] }
+# TODO: update to version 3 but it requires some changes in the codebase
+bincode = { version = "2", features = ["derive"] }
 candle-core = { version = "0.9.1" }
 candle-examples = { version = "0.9.1" }
 candle-nn = { version = "0.9.1" }
 candle-transformers = { version = "0.9.1" }
-criterion = "0.6"
+criterion = "0.8"
 ctrlc = "3.4"
 env_logger = "0.11"
 faer = "=0.20.1"
@@ -46,7 +47,6 @@ kornia-image = { path = "crates/kornia-image", version = "0.1.11-rc.1" }
 kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.11-rc.1" }
 kornia-io = { path = "crates/kornia-io", version = "0.1.11-rc.1" }
 kornia-linalg = { path = "crates/kornia-linalg", version = "0.1.11-rc.1" }
-kornia-nn = { path = "crates/kornia-nn", version = "0.1.11-rc.1" }
 kornia-pnp = { path = "crates/kornia-pnp", version = "0.1.11-rc.1" }
 kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.11-rc.1" }
 kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.11-rc.1" }
@@ -54,6 +54,7 @@ kornia-vlm = { path = "crates/kornia-vlm", version = "0.1.11-rc.1" }
 log = "0.4"
 num-traits = "0.2"
 rand = "0.9"
+rayon = "1.11"
 rerun = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
