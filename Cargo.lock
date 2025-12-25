@@ -5939,7 +5939,7 @@ dependencies = [
 
 [[package]]
 name = "image_api"
-version = "0.1.0"
+version = "0.1.11-rc.1"
 dependencies = [
  "kornia-image",
 ]
@@ -6436,7 +6436,7 @@ dependencies = [
 
 [[package]]
 name = "kornia-cpp"
-version = "0.1.0"
+version = "0.1.11-rc.1"
 dependencies = [
  "cxx",
  "cxx-build",
