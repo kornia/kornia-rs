@@ -13,9 +13,7 @@ categories = ["computer-vision", "science::robotics"]
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-# external
 cxx = "1.0"
-# kornia
 kornia-image = { path = "../crates/kornia-image" }
 kornia-io = { path = "../crates/kornia-io" }
 paste = "1.0"

@@ -17,10 +17,8 @@ name = "kornia_rs"
 kornia-3d = { path = "../crates/kornia-3d" }
 kornia-apriltag = { path = "../crates/kornia-apriltag" }
 kornia-icp = { path = "../crates/kornia-icp" }
-# kornia
 kornia-image = { path = "../crates/kornia-image" }
 kornia-imgproc = { path = "../crates/kornia-imgproc" }
 kornia-io = { path = "../crates/kornia-io", features = ["turbojpeg"] }
-numpy = { version = "0.26.0" }
-# external
-pyo3 = { version = "0.26.0", features = ["extension-module"] }
+numpy = { version = "0.27" }
+pyo3 = { version = "0.27", features = ["extension-module"] }
