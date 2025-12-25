@@ -592,24 +592,42 @@ mod tests {
             width: 603,
             height: 603,
         };
-        let data = vec![128u8; size.width * size.height * 4]; // RGBA: 4 channels
+        let mut data = Vec::with_capacity(size.width * size.height * 4);
+        for _ in 0..(size.width * size.height) {
+            data.extend_from_slice(&[100u8, 150u8, 200u8, 255u8]);
+        }
         let rgba_image = Rgba8::from_size_vec(size, data, CpuAllocator)?;
 
         // Write as RGBA PNG
         let file_path = tmp_dir.path().join("rgba_test.png");
         write_image_png_rgba8(&file_path, &rgba_image)?;
-        let result = read_image_png_rgb8(&file_path);
 
-        // Debug: print the error
-        if let Err(ref e) = result {
-            println!("Error: {}", e);
+        // Read back as RGB (should strip alpha channel)
+        let rgb_image = read_image_png_rgb8(&file_path)?;
+
+        // Verify dimensions
+        assert_eq!(rgb_image.width(), size.width);
+        assert_eq!(rgb_image.height(), size.height);
+        assert_eq!(rgb_image.num_channels(), 3);
+
+        // Verify that RGB data matches alpha stripped original
+        let rgb_data = rgb_image.as_slice();
+        for i in 0..(size.width * size.height) {
+            let offset = i * 3;
+            assert_eq!(rgb_data[offset], 100u8, "R channel mismatch at pixel {}", i);
+            assert_eq!(
+                rgb_data[offset + 1],
+                150u8,
+                "G channel mismatch at pixel {}",
+                i
+            );
+            assert_eq!(
+                rgb_data[offset + 2],
+                200u8,
+                "B channel mismatch at pixel {}",
+                i
+            );
         }
-
-        assert!(
-            result.is_ok(),
-            "Should not fail with data length mismatch error: {:?}",
-            result.err()
-        );
 
         Ok(())
     }
