@@ -17,6 +17,11 @@ use std::{
 
 /// Read a PNG image as grayscale (Gray8).
 ///
+/// # Deprecation Note
+///
+/// For Python users: prefer using `kornia_rs.read_image()` which auto-detects format and type.
+/// This function will strip alpha channels if present (GrayscaleAlpha → Grayscale).
+///
 /// # Arguments
 ///
 /// * `file_path` - The path to the PNG file.
@@ -25,11 +30,16 @@ use std::{
 ///
 /// A grayscale image (Gray8).
 pub fn read_image_png_mono8(file_path: impl AsRef<Path>) -> Result<Gray8<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path)?;
+    let (buf, size) = read_png_impl(file_path, true)?;
     Ok(Gray8::from_size_vec(size.into(), buf, CpuAllocator)?)
 }
 
 /// Read a PNG image as RGB8.
+///
+/// # Deprecation Note
+///
+/// For Python users: prefer using `kornia_rs.read_image()` which auto-detects format and type.
+/// This function will strip alpha channels if present (RGBA → RGB).
 ///
 /// # Arguments
 ///
@@ -39,11 +49,15 @@ pub fn read_image_png_mono8(file_path: impl AsRef<Path>) -> Result<Gray8<CpuAllo
 ///
 /// An RGB8 typed image.
 pub fn read_image_png_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path)?;
+    let (buf, size) = read_png_impl(file_path, true)?;
     Ok(Rgb8::from_size_vec(size.into(), buf, CpuAllocator)?)
 }
 
 /// Read a PNG image as RGBA8.
+///
+/// # Deprecation Note
+///
+/// For Python users: prefer using `kornia_rs.read_image()` which auto-detects format and type.
 ///
 /// # Arguments
 ///
@@ -53,11 +67,16 @@ pub fn read_image_png_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8<CpuAlloca
 ///
 /// An RGBA8 typed image.
 pub fn read_image_png_rgba8(file_path: impl AsRef<Path>) -> Result<Rgba8<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path)?;
+    let (buf, size) = read_png_impl(file_path, false)?;
     Ok(Rgba8::from_size_vec(size.into(), buf, CpuAllocator)?)
 }
 
 /// Read a PNG image as RGB16.
+///
+/// # Deprecation Note
+///
+/// For Python users: prefer using `kornia_rs.read_image()` which auto-detects format and type.
+/// This function will strip alpha channels if present (RGBA16 → RGB16).
 ///
 /// # Arguments
 ///
@@ -67,13 +86,17 @@ pub fn read_image_png_rgba8(file_path: impl AsRef<Path>) -> Result<Rgba8<CpuAllo
 ///
 /// An RGB16 typed image.
 pub fn read_image_png_rgb16(file_path: impl AsRef<Path>) -> Result<Rgb16<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path)?;
+    let (buf, size) = read_png_impl(file_path, true)?;
     let buf_u16 = convert_buf_u8_u16(buf);
 
     Ok(Rgb16::from_size_vec(size.into(), buf_u16, CpuAllocator)?)
 }
 
 /// Read a PNG image as RGBA16.
+///
+/// # Deprecation Note
+///
+/// For Python users: prefer using `kornia_rs.read_image()` which auto-detects format and type.
 ///
 /// # Arguments
 ///
@@ -83,13 +106,18 @@ pub fn read_image_png_rgb16(file_path: impl AsRef<Path>) -> Result<Rgb16<CpuAllo
 ///
 /// An RGBA16 typed image.
 pub fn read_image_png_rgba16(file_path: impl AsRef<Path>) -> Result<Rgba16<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path)?;
+    let (buf, size) = read_png_impl(file_path, false)?;
     let buf_u16 = convert_buf_u8_u16(buf);
 
     Ok(Rgba16::from_size_vec(size.into(), buf_u16, CpuAllocator)?)
 }
 
 /// Read a PNG image as grayscale (Gray16).
+///
+/// # Deprecation Note
+///
+/// For Python users: prefer using `kornia_rs.read_image()` which auto-detects format and type.
+/// This function will strip alpha channels if present (GrayscaleAlpha16 → Grayscale16).
 ///
 /// # Arguments
 ///
@@ -99,7 +127,7 @@ pub fn read_image_png_rgba16(file_path: impl AsRef<Path>) -> Result<Rgba16<CpuAl
 ///
 /// A Gray16 typed image.
 pub fn read_image_png_mono16(file_path: impl AsRef<Path>) -> Result<Gray16<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path)?;
+    let (buf, size) = read_png_impl(file_path, true)?;
     let buf_u16 = convert_buf_u8_u16(buf);
 
     Ok(Gray16::from_size_vec(size.into(), buf_u16, CpuAllocator)?)
@@ -240,7 +268,10 @@ pub fn decode_image_png_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
 }
 
 // utility function to read the png file
-fn read_png_impl(file_path: impl AsRef<Path>) -> Result<(Vec<u8>, [usize; 2]), IoError> {
+fn read_png_impl(
+    file_path: impl AsRef<Path>,
+    strip_alpha: bool,
+) -> Result<(Vec<u8>, [usize; 2]), IoError> {
     // verify the file exists
     let file_path = file_path.as_ref();
     if !file_path.exists() {
@@ -258,19 +289,49 @@ fn read_png_impl(file_path: impl AsRef<Path>) -> Result<(Vec<u8>, [usize; 2]), I
 
     let file = fs::File::open(file_path)?;
     let reader = BufReader::new(file);
-    let mut reader = Decoder::new(reader)
+    let mut decoder = Decoder::new(reader);
+    decoder.set_transformations(png::Transformations::IDENTITY);
+
+    let mut reader = decoder
         .read_info()
         .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
+
+    let info = reader.info();
+    let color_type = info.color_type;
 
     let buffer_size = reader
         .output_buffer_size()
         .ok_or_else(|| IoError::PngDecodeError("PNG output buffer size overflowed".into()))?;
     let mut buf = vec![0; buffer_size];
-    let info = reader
+    let frame_info = reader
         .next_frame(&mut buf)
         .map_err(|e| IoError::PngDecodeError(e.to_string()))?;
 
-    Ok((buf, [info.width as usize, info.height as usize]))
+    buf.truncate(frame_info.buffer_size());
+
+    if strip_alpha && matches!(color_type, ColorType::Rgba | ColorType::GrayscaleAlpha) {
+        // Convert RGBA -> RGB or GA -> G by removing alpha channel
+        let channels_in = match color_type {
+            ColorType::Rgba => 4,
+            ColorType::GrayscaleAlpha => 2,
+            _ => unreachable!(),
+        };
+        let channels_out = channels_in - 1;
+
+        let pixel_count = frame_info.width as usize * frame_info.height as usize;
+        let mut rgb_buf = Vec::with_capacity(pixel_count * channels_out);
+
+        for i in 0..pixel_count {
+            for c in 0..channels_out {
+                rgb_buf.push(buf[i * channels_in + c]);
+            }
+            // Skip alpha channel
+        }
+
+        buf = rgb_buf;
+    }
+
+    Ok((buf, [frame_info.width as usize, frame_info.height as usize]))
 }
 
 // Utility function to decode png files from raw bytes
@@ -516,6 +577,55 @@ mod tests {
         assert_eq!(image.cols(), 258);
         assert_eq!(image.rows(), 195);
         assert_eq!(image.num_channels(), 3);
+
+        Ok(())
+    }
+
+    /// Regression test for the RGBA->RGB buffer size decoding.
+    #[test]
+    fn test_rgba_png_read_as_rgb_buffer_truncation() -> Result<(), IoError> {
+        let tmp_dir = tempfile::tempdir()?;
+        create_dir_all(tmp_dir.path())?;
+
+        // Create an RGBA image (603x603)
+        let size = ImageSize {
+            width: 603,
+            height: 603,
+        };
+        let mut data = Vec::with_capacity(size.width * size.height * 4);
+        for _ in 0..(size.width * size.height) {
+            data.extend_from_slice(&[100u8, 150u8, 200u8, 255u8]);
+        }
+        let rgba_image = Rgba8::from_size_vec(size, data, CpuAllocator)?;
+        let file_path = tmp_dir.path().join("rgba_test.png");
+        write_image_png_rgba8(&file_path, &rgba_image)?;
+
+        // Read back as RGB (stripped)
+        let rgb_image = read_image_png_rgb8(&file_path)?;
+
+        // Verify dimensions
+        assert_eq!(rgb_image.width(), size.width);
+        assert_eq!(rgb_image.height(), size.height);
+        assert_eq!(rgb_image.num_channels(), 3);
+
+        // Verify that RGB data matches alpha stripped original
+        let rgb_data = rgb_image.as_slice();
+        for i in 0..(size.width * size.height) {
+            let offset = i * 3;
+            assert_eq!(rgb_data[offset], 100u8, "R channel mismatch at pixel {}", i);
+            assert_eq!(
+                rgb_data[offset + 1],
+                150u8,
+                "G channel mismatch at pixel {}",
+                i
+            );
+            assert_eq!(
+                rgb_data[offset + 2],
+                200u8,
+                "B channel mismatch at pixel {}",
+                i
+            );
+        }
 
         Ok(())
     }
