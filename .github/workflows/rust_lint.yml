@@ -1,76 +1,59 @@
 name: Rust Lint
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
+    paths:
+      - "crates/**"
+      - "examples/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust_lint.yml"
   pull_request:
     branches:
       - main
+    paths:
+      - "crates/**"
+      - "examples/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust_lint.yml"
 
 jobs:
-  fmt:
-    name: Rustfmt
+  lint:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Rustfmt
+            command: rust-fmt-check
+            needs-sccache: false
+          - name: Clippy
+            command: rust-clippy
+            needs-sccache: true
+          - name: Check
+            command: rust-check
+            needs-sccache: true
+
     steps:
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-rust-cache
+        with:
+          with-sccache: ${{ matrix.needs-sccache }}
 
       - uses: prefix-dev/setup-pixi@v0.8.1
         with:
           pixi-version: v0.40.0
           cache: true
 
-      - name: Check formatting
-        run: pixi run rust-fmt-check
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    env:
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      SCCACHE_CACHE_SIZE: 6G
-      SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
-      SCCACHE_LOG: info
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: prefix-dev/setup-pixi@v0.8.1
-        with:
-          pixi-version: v0.40.0
-          cache: true
-
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Clippy
-        run: pixi run rust-clippy
+      - name: Run ${{ matrix.name }}
+        run: pixi run ${{ matrix.command }}
 
       - name: Show sccache stats
-        run: sccache --show-stats
-
-  check:
-    name: Check
-    runs-on: ubuntu-latest
-    env:
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      SCCACHE_CACHE_SIZE: 6G
-      SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
-      SCCACHE_LOG: info
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: prefix-dev/setup-pixi@v0.8.1
-        with:
-          pixi-version: v0.40.0
-          cache: true
-
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Check
-        run: pixi run rust-check
-
-      - name: Show sccache stats
+        if: matrix.needs-sccache
         run: sccache --show-stats

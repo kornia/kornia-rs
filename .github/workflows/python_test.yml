@@ -1,30 +1,37 @@
 name: Python Test
 
 on:
-  pull_request:
-    branches:
-      - main
+  workflow_dispatch:
   push:
     branches:
       - main
+    paths:
+      - "kornia-py/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/python_test.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "kornia-py/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/python_test.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test-python-linux:
+  test:
     name: py${{ matrix.python-version }}-linux
     runs-on: ubuntu-latest
-    env:
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      SCCACHE_CACHE_SIZE: 6G
-      SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
-      SCCACHE_LOG: info
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.14t"]
         include:
           - python-version: "3.8"
             pixi-env: py38
@@ -42,10 +49,14 @@ jobs:
             pixi-env: py314
           - python-version: "3.14t"
             pixi-env: py314t
+            threaded: true
+
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - uses: ./.github/actions/setup-rust-cache
 
       - uses: prefix-dev/setup-pixi@v0.8.1
         with:
@@ -53,15 +64,12 @@ jobs:
           cache: true
           environments: ${{ matrix.pixi-env }}
 
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
       - name: Run tests
-        if: ${{ matrix.python-version != '3.14t' }}
+        if: ${{ !matrix.threaded }}
         run: pixi run -e ${{ matrix.pixi-env }} py-test
 
-      - name: Run multithreaded tests (3.14t only)
-        if: ${{ matrix.python-version == '3.14t' }}
+      - name: Run multithreaded tests
+        if: ${{ matrix.threaded }}
         run: pixi run -e ${{ matrix.pixi-env }} py-test-threaded
 
       - name: Show sccache stats

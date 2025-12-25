@@ -1,53 +1,61 @@
 name: C++ Test
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
+    paths:
+      - "kornia-cpp/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/cpp_test.yml"
   pull_request:
     branches:
       - main
+    paths:
+      - "kornia-cpp/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/cpp_test.yml"
 
 jobs:
-  cpp_build_and_test:
-    name: C++ Test Suite - ${{ matrix.os }} (${{ matrix.build_type }})
+  test:
+    name: C++ Test - ${{ matrix.os }} (${{ matrix.build_type }})
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
         build_type: [Debug, Release]
-
-    runs-on: ${{ matrix.os }}
+        include:
+          - build_type: Debug
+            command: cpp-test
+          - build_type: Release
+            command: cpp-test-release
 
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
+      - uses: ./.github/actions/setup-rust-cache
+        with:
+          cache-prefix: cpp
+          extra-cache-paths: kornia-cpp/target/
+          with-sccache: "false"
+
       - uses: prefix-dev/setup-pixi@v0.8.1
         with:
           pixi-version: v0.40.0
           cache: true
 
-      - name: Cache Rust dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            kornia-cpp/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/Cargo.toml') }}
+      - name: Build and run C++ tests
+        run: pixi run ${{ matrix.command }}
 
-      - name: Build and run C++ tests (Debug)
-        if: matrix.build_type == 'Debug'
-        run: pixi run cpp-test
-
-      - name: Build and run C++ tests (Release)
-        if: matrix.build_type == 'Release'
-        run: pixi run cpp-test-release
-
-  cpp_lint:
+  lint:
     name: C++ Format Check
     runs-on: ubuntu-latest
 
