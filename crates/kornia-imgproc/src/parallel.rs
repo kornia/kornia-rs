@@ -3,6 +3,18 @@ use rayon::prelude::*;
 use kornia_image::{allocator::ImageAllocator, Image};
 use kornia_tensor::{CpuAllocator, Tensor2};
 
+/// Controls how parallel operations are executed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecutionStrategy {
+    /// Use the global thread pool.
+    #[default]
+    Auto,
+    /// Run sequentially on the current thread.
+    Serial,
+    /// Run on a local pool with `n` threads.
+    Fixed(usize),
+}
+
 /// Apply a function to each pixel in the image in parallel.
 ///
 /// # Arguments
