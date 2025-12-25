@@ -597,12 +597,10 @@ mod tests {
             data.extend_from_slice(&[100u8, 150u8, 200u8, 255u8]);
         }
         let rgba_image = Rgba8::from_size_vec(size, data, CpuAllocator)?;
-
-        // Write as RGBA PNG
         let file_path = tmp_dir.path().join("rgba_test.png");
         write_image_png_rgba8(&file_path, &rgba_image)?;
 
-        // Read back as RGB (should strip alpha channel)
+        // Read back as RGB (stripped)
         let rgb_image = read_image_png_rgb8(&file_path)?;
 
         // Verify dimensions
