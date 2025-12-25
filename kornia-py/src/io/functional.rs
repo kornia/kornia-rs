@@ -24,7 +24,7 @@ pub fn read_image_any(file_path: &str) -> PyResult<PyImage> {
 }
 
 #[pyfunction]
-pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<PyObject> {
+pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     // Attempt to obtain a path-like object via PEP 519 (`__fspath__`)
     let path_obj = file_path
         .call_method0("__fspath__")
@@ -67,7 +67,7 @@ pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<PyObject> {
     }
 }
 
-fn read_image_png_dispatcher(file_path: &Path) -> PyResult<PyObject> {
+fn read_image_png_dispatcher(file_path: &Path) -> PyResult<Py<PyAny>> {
     // Read file once
     let png_data = fs::read(file_path)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
@@ -179,7 +179,7 @@ fn read_image_png_dispatcher(file_path: &Path) -> PyResult<PyObject> {
     }
 }
 
-fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<PyObject> {
+fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<Py<PyAny>> {
     let tiff_data = fs::read(file_path)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
 
@@ -287,7 +287,7 @@ fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<PyObject> {
     }
 }
 
-fn read_image_jpeg_dispatcher(file_path: &Path) -> PyResult<PyObject> {
+fn read_image_jpeg_dispatcher(file_path: &Path) -> PyResult<Py<PyAny>> {
     // Read file once
     let jpeg_data = fs::read(file_path)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
