@@ -1,13 +1,13 @@
 [package]
 name = "kornia-tensor-ops"
-version.workspace = true
-authors.workspace = true
-edition.workspace = true
-rust-version.workspace = true
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
 description = "Tensor operations library in Rust for computer vision"
-homepage.workspace = true
-repository.workspace = true
-license.workspace = true
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
 publish = true
 
 [[bench]]

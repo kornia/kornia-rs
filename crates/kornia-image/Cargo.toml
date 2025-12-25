@@ -1,13 +1,13 @@
 [package]
 name = "kornia-image"
-version.workspace = true
-authors.workspace = true
-edition.workspace = true
-rust-version.workspace = true
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
 description = "Image types and traits for generating and manipulating images"
-homepage.workspace = true
-repository.workspace = true
-license.workspace = true
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
 publish = true
 
 [dependencies]

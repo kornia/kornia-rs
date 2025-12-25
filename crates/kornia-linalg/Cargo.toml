@@ -1,13 +1,13 @@
 [package]
 name = "kornia-linalg"
-version.workspace = true
-authors.workspace = true
-edition.workspace = true
-rust-version.workspace = true
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
 description = "Linear algebra operations for kornia"
-homepage.workspace = true
-repository.workspace = true
-license.workspace = true
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
 publish = true
 
 [[bench]]

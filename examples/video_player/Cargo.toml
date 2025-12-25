@@ -1,16 +1,16 @@
 [package]
 name = "video_player"
-version.workspace = true
-authors.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-description.workspace = true
-readme.workspace = true
-homepage.workspace = true
-repository.workspace = true
-license.workspace = true
-categories.workspace = true
-include.workspace = true
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+description = { workspace = true }
+readme = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+categories = { workspace = true }
+include = { workspace = true }
 
 [dependencies]
 eframe = "0.31"
