@@ -243,9 +243,10 @@ pub fn read_image_jpegturbo_rgb8(
         return Err(IoError::FileDoesNotExist(file_path.to_path_buf()));
     }
 
-    if file_path.extension().map_or(true, |ext| {
-        !ext.eq_ignore_ascii_case("jpg") && !ext.eq_ignore_ascii_case("jpeg")
-    }) {
+    if file_path
+        .extension()
+        .is_none_or(|ext| !ext.eq_ignore_ascii_case("jpg") && !ext.eq_ignore_ascii_case("jpeg"))
+    {
         return Err(IoError::InvalidFileExtension(file_path.to_path_buf()));
     }
 

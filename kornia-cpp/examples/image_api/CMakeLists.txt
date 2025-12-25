@@ -18,4 +18,3 @@ add_executable(image_api_example main.cpp)
 
 # Link with kornia_cpp (works both ways)
 target_link_libraries(image_api_example PRIVATE kornia_cpp)
-

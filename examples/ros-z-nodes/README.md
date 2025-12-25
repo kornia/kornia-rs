@@ -80,4 +80,3 @@ The example uses custom protobuf messages defined in `protos/`:
 - `header.proto` - Common header with timestamps and sequence
 - `camera.proto` - `CompressedImage` and `RawImage` messages
 - `stats.proto` - `ImageStats` with per-channel statistics
-

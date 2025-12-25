@@ -19,7 +19,7 @@ mod ffi {
     // Note: cxx::bridge doesn't support macros in extern "Rust" blocks,
     // so types must be declared explicitly. However, implementations use
     // macros to reduce boilerplate.
-    
+
     extern "Rust" {
         // ============ ImageU8C1 (Grayscale u8) ============
         type ImageU8C1;
@@ -29,7 +29,8 @@ mod ffi {
         fn image_u8c1_size(img: &ImageU8C1) -> ImageSize;
         fn image_u8c1_data(img: &ImageU8C1) -> &[u8];
         fn image_u8c1_new(width: usize, height: usize, value: u8) -> Result<Box<ImageU8C1>>;
-        fn image_u8c1_from_data(width: usize, height: usize, data: &[u8]) -> Result<Box<ImageU8C1>>;
+        fn image_u8c1_from_data(width: usize, height: usize, data: &[u8])
+            -> Result<Box<ImageU8C1>>;
 
         // ============ ImageU8C3 (RGB u8) ============
         type ImageU8C3;
@@ -39,7 +40,8 @@ mod ffi {
         fn image_u8c3_size(img: &ImageU8C3) -> ImageSize;
         fn image_u8c3_data(img: &ImageU8C3) -> &[u8];
         fn image_u8c3_new(width: usize, height: usize, value: u8) -> Result<Box<ImageU8C3>>;
-        fn image_u8c3_from_data(width: usize, height: usize, data: &[u8]) -> Result<Box<ImageU8C3>>;
+        fn image_u8c3_from_data(width: usize, height: usize, data: &[u8])
+            -> Result<Box<ImageU8C3>>;
 
         // ============ ImageU8C4 (RGBA u8) ============
         type ImageU8C4;
@@ -49,7 +51,8 @@ mod ffi {
         fn image_u8c4_size(img: &ImageU8C4) -> ImageSize;
         fn image_u8c4_data(img: &ImageU8C4) -> &[u8];
         fn image_u8c4_new(width: usize, height: usize, value: u8) -> Result<Box<ImageU8C4>>;
-        fn image_u8c4_from_data(width: usize, height: usize, data: &[u8]) -> Result<Box<ImageU8C4>>;
+        fn image_u8c4_from_data(width: usize, height: usize, data: &[u8])
+            -> Result<Box<ImageU8C4>>;
 
         // ============ ImageF32C1 (Grayscale f32) ============
         type ImageF32C1;
@@ -59,7 +62,11 @@ mod ffi {
         fn image_f32c1_size(img: &ImageF32C1) -> ImageSize;
         fn image_f32c1_data(img: &ImageF32C1) -> &[f32];
         fn image_f32c1_new(width: usize, height: usize, value: f32) -> Result<Box<ImageF32C1>>;
-        fn image_f32c1_from_data(width: usize, height: usize, data: &[f32]) -> Result<Box<ImageF32C1>>;
+        fn image_f32c1_from_data(
+            width: usize,
+            height: usize,
+            data: &[f32],
+        ) -> Result<Box<ImageF32C1>>;
 
         // ============ ImageF32C3 (RGB f32) ============
         type ImageF32C3;
@@ -69,7 +76,11 @@ mod ffi {
         fn image_f32c3_size(img: &ImageF32C3) -> ImageSize;
         fn image_f32c3_data(img: &ImageF32C3) -> &[f32];
         fn image_f32c3_new(width: usize, height: usize, value: f32) -> Result<Box<ImageF32C3>>;
-        fn image_f32c3_from_data(width: usize, height: usize, data: &[f32]) -> Result<Box<ImageF32C3>>;
+        fn image_f32c3_from_data(
+            width: usize,
+            height: usize,
+            data: &[f32],
+        ) -> Result<Box<ImageF32C3>>;
 
         // ============ ImageF32C4 (RGBA f32) ============
         type ImageF32C4;
@@ -79,10 +90,14 @@ mod ffi {
         fn image_f32c4_size(img: &ImageF32C4) -> ImageSize;
         fn image_f32c4_data(img: &ImageF32C4) -> &[f32];
         fn image_f32c4_new(width: usize, height: usize, value: f32) -> Result<Box<ImageF32C4>>;
-        fn image_f32c4_from_data(width: usize, height: usize, data: &[f32]) -> Result<Box<ImageF32C4>>;
+        fn image_f32c4_from_data(
+            width: usize,
+            height: usize,
+            data: &[f32],
+        ) -> Result<Box<ImageF32C4>>;
 
         // I/O functions
-        
+
         /// Read a grayscale JPEG image from file path
         ///
         /// # Arguments
@@ -128,7 +143,11 @@ mod ffi {
         /// # Errors
         ///
         /// Throws exception if encoding fails
-        fn encode_image_jpeg_rgb8(image: &ImageU8C3, quality: u8, buffer: &mut Vec<u8>) -> Result<()>;
+        fn encode_image_jpeg_rgb8(
+            image: &ImageU8C3,
+            quality: u8,
+            buffer: &mut Vec<u8>,
+        ) -> Result<()>;
 
         /// Encode a BGRA u8 image to JPEG bytes
         ///
@@ -146,7 +165,11 @@ mod ffi {
         /// # Errors
         ///
         /// Throws exception if encoding fails
-        fn encode_image_jpeg_bgra8(image: &ImageU8C4, quality: u8, buffer: &mut Vec<u8>) -> Result<()>;
+        fn encode_image_jpeg_bgra8(
+            image: &ImageU8C4,
+            quality: u8,
+            buffer: &mut Vec<u8>,
+        ) -> Result<()>;
 
         /// Decode JPEG bytes to RGB u8 image
         ///
@@ -191,7 +214,7 @@ impl From<ffi::ImageSize> for kornia_image::ImageSize {
 }
 
 /// Macro to define image wrapper types and their accessor functions
-/// 
+///
 /// This reduces boilerplate for wrapping kornia_image::Image<T, C> types.
 /// All methods directly delegate to the underlying kornia_image::Image.
 ///
@@ -201,7 +224,7 @@ impl From<ffi::ImageSize> for kornia_image::ImageSize {
 /// - Constructor functions (_new, _from_data)
 ///
 /// Usage: define_image_type!(ImageU8_3, image_u8_3, u8, 3);
-/// 
+///
 /// Args: (TypeName, fn_prefix, dtype, channels)
 macro_rules! define_image_type {
     ($wrapper:ident, $prefix:ident, $dtype:ty, $ch:expr) => {
@@ -214,7 +237,7 @@ macro_rules! define_image_type {
             fn [<$prefix _channels>](_img: &$wrapper) -> usize { $ch }
             fn [<$prefix _size>](img: &$wrapper) -> ffi::ImageSize { img.0.size().into() }
             fn [<$prefix _data>](img: &$wrapper) -> &[$dtype] { img.0.as_slice() }
-            
+
             // Constructor: from size and fill value
             fn [<$prefix _new>](width: usize, height: usize, value: $dtype) -> Result<Box<$wrapper>, ImageError> {
                 let size = kornia_image::ImageSize { width, height };
@@ -247,9 +270,9 @@ macro_rules! define_image_type {
 //   ImageF32C3 = Float    32-bit, 3 Channels (RGB)
 
 // u8 images (most common for I/O)
-define_image_type!(ImageU8C1, image_u8c1, u8, 1);   // Grayscale u8
-define_image_type!(ImageU8C3, image_u8c3, u8, 3);   // RGB u8
-define_image_type!(ImageU8C4, image_u8c4, u8, 4);   // RGBA u8
+define_image_type!(ImageU8C1, image_u8c1, u8, 1); // Grayscale u8
+define_image_type!(ImageU8C3, image_u8c3, u8, 3); // RGB u8
+define_image_type!(ImageU8C4, image_u8c4, u8, 4); // RGBA u8
 
 // f32 images (common for processing/ML)
 define_image_type!(ImageF32C1, image_f32c1, f32, 1); // Grayscale f32
@@ -299,21 +322,25 @@ fn encode_image_jpeg_bgra8(
 fn decode_image_jpeg_rgb8(jpeg_bytes: &[u8]) -> Result<Box<ImageU8C3>, Box<dyn std::error::Error>> {
     // First, get image info to create properly sized image
     let layout = jpeg::decode_image_jpeg_layout(jpeg_bytes)?;
-    
+
     if layout.channels != 3 {
-        return Err(format!("Expected RGB (3 channels), got {} channels", layout.channels).into());
+        return Err(format!(
+            "Expected RGB (3 channels), got {} channels",
+            layout.channels
+        )
+        .into());
     }
-    
+
     // Create output image
     let mut image = kornia_image::Image::<u8, 3, CpuAllocator>::from_size_val(
         layout.image_size,
         0,
         CpuAllocator,
     )?;
-    
+
     // Decode into it (zero-copy from slice)
     jpeg::decode_image_jpeg_rgb8(jpeg_bytes, &mut image)?;
-    
+
     Ok(Box::new(ImageU8C3(image)))
 }
 

@@ -1,85 +1,59 @@
 name: Rust Test
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
+    paths:
+      - "crates/**"
+      - "examples/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust_test.yml"
   pull_request:
     branches:
       - main
+    paths:
+      - "crates/**"
+      - "examples/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust_test.yml"
 
 jobs:
-  build_and_test:
-    name: Test Suite - ${{ matrix.target }}
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
     strategy:
+      fail-fast: false
       matrix:
-        target:
-          #- i686-unknown-linux-gnu
-          - x86_64-unknown-linux-gnu
-          - aarch64-unknown-linux-gnu
-
-    runs-on: ubuntu-latest
-    env:
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      SCCACHE_CACHE_SIZE: 6G
-      SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
-      SCCACHE_LOG: info
+        include:
+          - name: Test Debug - x86_64
+            runner: ubuntu-latest
+            command: rust-test
+          - name: Test Release - x86_64
+            runner: ubuntu-latest
+            command: rust-test-release
+          - name: Test Debug - aarch64
+            runner: ubuntu-24.04-arm
+            command: rust-test
 
     steps:
-      - run: sudo apt-get update
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Install Rust toolchain
-        run: |
-          rustup update stable
-          rustup target add ${{ matrix.target }}
-          rustup default stable
+      - uses: ./.github/actions/setup-rust-cache
 
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Install cross-compilation tools
-        uses: taiki-e/install-action@cross
-
-      - name: Run tests
-        run: cross test --target ${{ matrix.target }} --features "turbojpeg,gstreamer,v4l,arrow,bincode,serde"
-
-      - name: Show sccache stats
-        run: sccache --show-stats
-
-  build_examples:
-    name: Build Examples
-    runs-on: ubuntu-latest
-    env:
-      RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      SCCACHE_CACHE_SIZE: 6G
-      SCCACHE_ERROR_LOG: /tmp/sccache_log.txt
-      SCCACHE_LOG: info
-
-    steps:
-      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      - uses: actions/checkout@v4
+      - uses: prefix-dev/setup-pixi@v0.8.1
         with:
-          submodules: recursive
+          pixi-version: v0.40.0
+          cache: true
 
-      - name: Install Rust toolchain
-        run: |
-          rustup update stable
-          rustup target add x86_64-unknown-linux-gnu
-          rustup default stable
-
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Install cross-compilation tools
-        uses: taiki-e/install-action@cross
-
-      - name: Build examples
-        run: cross build --examples
+      - name: Run ${{ matrix.command }}
+        run: pixi run ${{ matrix.command }}
 
       - name: Show sccache stats
         run: sccache --show-stats

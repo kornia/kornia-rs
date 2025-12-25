@@ -193,16 +193,16 @@ The `ImageError` enum provides structured error handling:
 pub enum ImageError {
     /// Data length doesn't match expected size
     InvalidChannelShape(usize, usize),
-    
+
     /// Invalid image dimensions
     InvalidImageSize(usize, usize, usize, usize),
-    
+
     /// Pixel coordinates out of bounds
     PixelIndexOutOfBounds(usize, usize, usize, usize),
-    
+
     /// Channel index out of bounds
     ChannelIndexOutOfBounds(usize, usize),
-    
+
     // ... and more
 }
 ```
@@ -222,4 +222,3 @@ All errors implement `std::error::Error` and have descriptive Display messages.
 - [kornia-image crate documentation](https://docs.rs/kornia-image)
 - [kornia-tensor crate](../kornia-tensor)
 - [Main project README](../../README.md)
-

@@ -1,8 +1,8 @@
 use numpy::{PyArray, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
 
 use kornia_image::{
-    allocator::CpuAllocator, color_spaces::*, Image, ImageError, ImageLayout,
-    PixelFormat, ImageSize,
+    allocator::CpuAllocator, color_spaces::*, Image, ImageError, ImageLayout, ImageSize,
+    PixelFormat,
 };
 use pyo3::prelude::*;
 
@@ -34,7 +34,8 @@ macro_rules! impl_image_to_pyarray {
         impl<const C: usize> $trait for Image<$dtype, C, CpuAllocator> {
             fn $method(self) -> Result<$array_type, ImageError> {
                 Python::attach(|py| unsafe {
-                    let array = PyArray::<$dtype, _>::new(py, [self.height(), self.width(), C], false);
+                    let array =
+                        PyArray::<$dtype, _>::new(py, [self.height(), self.width(), C], false);
                     let contiguous = match self.to_standard_layout(CpuAllocator) {
                         Ok(c) => c,
                         Err(_) => {
@@ -74,7 +75,9 @@ macro_rules! impl_colorspace_to_pyarray {
 
 // u8 color spaces
 impl_colorspace_to_pyarray!(
-    ToPyImage, to_pyimage, PyImage,
+    ToPyImage,
+    to_pyimage,
+    PyImage,
     Rgb8<CpuAllocator>,
     Rgba8<CpuAllocator>,
     Bgr8<CpuAllocator>,
@@ -84,7 +87,9 @@ impl_colorspace_to_pyarray!(
 
 // u16 color spaces
 impl_colorspace_to_pyarray!(
-    ToPyImageU16, to_pyimage_u16, PyImageU16,
+    ToPyImageU16,
+    to_pyimage_u16,
+    PyImageU16,
     Rgb16<CpuAllocator>,
     Rgba16<CpuAllocator>,
     Bgr16<CpuAllocator>,
@@ -94,7 +99,9 @@ impl_colorspace_to_pyarray!(
 
 // f32 color spaces
 impl_colorspace_to_pyarray!(
-    ToPyImageF32, to_pyimage_f32, PyImageF32,
+    ToPyImageF32,
+    to_pyimage_f32,
+    PyImageF32,
     Rgbf32<CpuAllocator>,
     Rgbaf32<CpuAllocator>,
     Bgrf32<CpuAllocator>,
@@ -122,7 +129,7 @@ macro_rules! impl_pyarray_to_image {
             fn $method(image: $array_type) -> Result<Image<$dtype, C, CpuAllocator>, ImageError> {
                 Python::attach(|py| {
                     let pyarray = image.bind(py);
-                    
+
                     // TODO: we should find a way to avoid copying the data
                     // Possible solutions:
                     // - Use a custom ndarray wrapper that does not copy the data

@@ -35,4 +35,3 @@ endif()
 
 # Cleanup
 unset(_KORNIA_RUST_IMPORT_PREFIX)
-

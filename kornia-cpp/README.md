@@ -26,14 +26,14 @@ Lightweight, zero-overhead C++ interface to kornia-rs. All functions are inline 
 int main() {
     // Read JPEG image with zero-copy data access
     auto image = kornia::io::read_jpeg_rgb8("image.jpg");
-    
-    std::cout << "Loaded: " << image.width() << "x" << image.height() 
+
+    std::cout << "Loaded: " << image.width() << "x" << image.height()
               << " (" << image.channels() << " channels)\n";
-    
+
     // Access raw pixel data (rust::Slice - no copy!)
     auto data = image.data();
     std::cout << "First pixel R: " << (int)data[0] << "\n";
-    
+
     return 0;
 }
 ```
@@ -126,7 +126,7 @@ uint8_t value = data[idx];
 namespace kornia::io::jpeg {
     // Read JPEG as RGB u8 (uses libjpeg-turbo)
     ImageU8C3 read_jpeg_rgb8(const std::string& file_path);
-    
+
     // Read JPEG as grayscale u8 (auto-converts if needed)
     ImageU8C1 read_jpeg_mono8(const std::string& file_path);
 }
@@ -138,11 +138,11 @@ namespace kornia::io::jpeg {
 namespace kornia::io::jpeg {
     // Encode RGB image to JPEG bytes (zero-copy buffer)
     void encode_image_jpeg_rgb8(const ImageU8C3& image, uint8_t quality, ImageBuffer& buffer);
-    
+
     // Encode BGRA image to JPEG bytes (zero-copy buffer)
     // Perfect for Unreal Engine, DirectX, and other BGRA-based graphics APIs
     void encode_image_jpeg_bgra8(const ImageU8C4& image, uint8_t quality, ImageBuffer& buffer);
-    
+
     // Decode JPEG bytes back to RGB image
     ImageU8C3 decode_image_jpeg_rgb8(const std::vector<uint8_t>& jpeg_bytes);
 }
@@ -156,7 +156,7 @@ kornia::image::ImageBuffer buffer;
 for (const auto& img : images) {
     buffer.clear();  // Retains capacity
     kornia::io::jpeg::encode_image_jpeg_rgb8(img, 95, buffer);
-    
+
     // Zero-copy access: no std::vector allocation
     send_to_network(buffer.data(), buffer.size());
 }
@@ -241,10 +241,10 @@ kornia::image::ImageBuffer buffer;
 
 while (running) {
     auto frame = capture_camera_frame();
-    
+
     buffer.clear();  // Reuse same buffer
     kornia::io::jpeg::encode_image_jpeg_rgb8(frame, 90, buffer);
-    
+
     // Process encoded data (zero-copy)
     process_jpeg(buffer.data(), buffer.size());
 }

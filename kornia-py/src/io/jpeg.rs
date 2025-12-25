@@ -88,7 +88,8 @@ pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
 
     let result = match layout.channels {
         3 => {
-            let mut output_image = kornia_image::color_spaces::Rgb8::from_size_val(layout.image_size, 0, CpuAllocator)
+            let mut output_image =
+                kornia_image::color_spaces::Rgb8::from_size_val(layout.image_size, 0, CpuAllocator)
                     .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             J::decode_image_jpeg_rgb8(src, &mut output_image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
@@ -101,8 +102,12 @@ pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
             output_pyimage
         }
         1 => {
-            let mut output_image = kornia_image::color_spaces::Gray8::from_size_val(layout.image_size, 0, CpuAllocator)
-                    .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            let mut output_image = kornia_image::color_spaces::Gray8::from_size_val(
+                layout.image_size,
+                0,
+                CpuAllocator,
+            )
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             J::decode_image_jpeg_mono8(src, &mut output_image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             let output_pyimage = output_image.to_pyimage().map_err(|e| {
@@ -150,10 +155,10 @@ pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
 pub fn encode_image_jpeg(image: PyImage, quality: u8) -> PyResult<Vec<u8>> {
     let image = Image::<u8, 3, _>::from_pyimage(image)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-    
+
     let mut buffer = Vec::new();
     J::encode_image_jpeg_rgb8(&image, quality, &mut buffer)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-    
+
     Ok(buffer)
 }
