@@ -180,9 +180,10 @@ fn read_image_tiff_impl(
         return Err(IoError::FileDoesNotExist(file_path.to_path_buf()));
     }
 
-    if file_path.extension().map_or(true, |ext| {
-        !ext.eq_ignore_ascii_case("tiff") && !ext.eq_ignore_ascii_case("tif")
-    }) {
+    if file_path
+        .extension()
+        .is_none_or(|ext| !ext.eq_ignore_ascii_case("tiff") && !ext.eq_ignore_ascii_case("tif"))
+    {
         return Err(IoError::InvalidFileExtension(file_path.to_path_buf()));
     }
 

@@ -40,7 +40,7 @@ inline const char* get_version() {{
 }} // namespace kornia
 "#,
         version = version,
-        major = version.split('.').nth(0).unwrap_or("0"),
+        major = version.split('.').next().unwrap_or("0"),
         minor = version.split('.').nth(1).unwrap_or("0"),
         patch = version.split('.').nth(2).unwrap_or("0"),
     );

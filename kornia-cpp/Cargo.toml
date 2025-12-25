@@ -2,7 +2,7 @@
 name = "kornia-cpp"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.76"
+rust-version = "1.82"
 description = "C++ bindings for Kornia Rust library"
 homepage = "http://kornia.org"
 repository = "https://github.com/kornia/kornia-rs"

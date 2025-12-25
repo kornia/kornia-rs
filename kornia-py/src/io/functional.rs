@@ -28,7 +28,7 @@ pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<PyObject> {
     // Attempt to obtain a path-like object via PEP 519 (`__fspath__`)
     let path_obj = file_path
         .call_method0("__fspath__")
-        .unwrap_or_else(|_| file_path.clone().into());
+        .unwrap_or_else(|_| file_path.clone());
 
     let path_os: std::ffi::OsString = path_obj.extract().map_err(|_| {
         PyErr::new::<pyo3::exceptions::PyTypeError, _>(
@@ -57,9 +57,9 @@ pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<PyObject> {
         })?;
 
     match extension.as_str() {
-        "png" => read_image_png_dispatcher(&path),
-        "tiff" | "tif" => read_image_tiff_dispatcher(&path),
-        "jpg" | "jpeg" => read_image_jpeg_dispatcher(&path),
+        "png" => read_image_png_dispatcher(path),
+        "tiff" | "tif" => read_image_tiff_dispatcher(path),
+        "jpg" | "jpeg" => read_image_jpeg_dispatcher(path),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
             "Unsupported file format: {}. Supported formats: png, tiff, jpeg",
             extension
