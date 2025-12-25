@@ -3,9 +3,9 @@ resolver = "2"
 members = [
   "crates/*",
   "examples/*",
-  # "kornia-py",
+  "kornia-py",
 ]
-exclude = ["examples/dora", "kornia-cpp", "kornia-py"]
+exclude = ["examples/dora", "kornia-cpp"]
 default-members = ["crates/*"]
 
 [workspace.package]
@@ -24,7 +24,6 @@ include = ["Cargo.toml"]
 
 [workspace.dependencies]
 approx = "0.5"
-# dev dependencies for workspace
 argh = "0.1"
 bincode = { version = "2.0.0", features = ["derive"] }
 candle-core = { version = "0.9.1" }
@@ -36,8 +35,8 @@ ctrlc = "3.4"
 env_logger = "0.11"
 faer = "=0.20.1"
 hf-hub = "0.4.2"
-kornia = { path = "crates/kornia", version = "0.1.11-rc.1" }
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
+kornia = { path = "crates/kornia", version = "0.1.11-rc.1" }
 kornia-3d = { path = "crates/kornia-3d", version = "0.1.11-rc.1" }
 kornia-algebra = { path = "crates/kornia-algebra", version = "0.1.11-rc.1" }
 kornia-apriltag = { path = "crates/kornia-apriltag", version = "0.1.11-rc.1" }
