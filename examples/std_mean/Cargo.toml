@@ -14,7 +14,7 @@ publish = false
 
 [dependencies]
 argh = { workspace = true }
-indicatif = { version = "0.17", features = ["rayon"] }
+indicatif = { workspace = true }
 kornia = { workspace = true }
-rayon = "1"
-walkdir = "2"
+rayon = { workspace = true }
+walkdir = { workspace = true }

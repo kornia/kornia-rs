@@ -16,10 +16,9 @@ use std::sync::{
 
 pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> {
     // Use ip_address and port from Args
-    let rec = rerun::RecordingStreamBuilder::new("SmolVLM Example: Live Captioning")
-        .connect_grpc_opts(
+    let rec =
+        rerun::RecordingStreamBuilder::new("SmolVLM Example: Live Captioning").connect_grpc_opts(
             format!("rerun+http://{}:{}/proxy", args.ip_address, args.port),
-            rerun::default_flush_timeout(),
         )?;
 
     // Create the cancellation token for the video capture

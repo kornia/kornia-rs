@@ -11,7 +11,7 @@ license = { workspace = true }
 publish = true
 
 [dependencies]
-arrow = { version = "57", optional = true }
+arrow = { workspace = true, optional = true }
 kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
 thiserror = { workspace = true }

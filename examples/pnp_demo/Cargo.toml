@@ -13,7 +13,7 @@ categories = { workspace = true }
 include = { workspace = true }
 
 [dependencies]
-argh = "0.1"
+argh = { workspace = true }
 env_logger = { workspace = true }
 kornia-imgproc = { workspace = true }
 kornia-pnp = { workspace = true }

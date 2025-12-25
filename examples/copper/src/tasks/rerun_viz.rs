@@ -37,7 +37,7 @@ impl<'cl> CuSinkTask<'cl> for RerunViz {
         };
 
         let rec = rerun::RecordingStreamBuilder::new("kornia_app")
-            .connect_grpc_opts(format!("rerun+http://{host}:{port}/proxy"), None)
+            .connect_grpc_opts(format!("rerun+http://{host}:{port}/proxy"))
             .map_err(|e| CuError::new_with_cause("Failed to spawn rerun stream", e))?;
 
         Ok(Self(rec))

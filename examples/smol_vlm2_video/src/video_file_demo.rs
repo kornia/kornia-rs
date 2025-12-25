@@ -45,10 +45,10 @@ use std::error::Error;
 pub fn video_file_demo(args: &Args) -> Result<(), Box<dyn Error>> {
     // Use ip_address and port from Args
     let rec = rerun::RecordingStreamBuilder::new("SmolVLM2 Example: Video Understanding")
-        .connect_grpc_opts(
-            format!("rerun+http://{}:{}/proxy", args.ip_address, args.port),
-            rerun::default_flush_timeout(),
-        )?;
+        .connect_grpc_opts(format!(
+            "rerun+http://{}:{}/proxy",
+            args.ip_address, args.port
+        ))?;
 
     gst::init()?;
 

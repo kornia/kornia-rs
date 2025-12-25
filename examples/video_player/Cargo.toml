@@ -14,7 +14,7 @@ include = { workspace = true }
 
 [dependencies]
 eframe = "0.31"
-env_logger = "0.11"
+env_logger = { workspace = true }
 humanize-duration = "0.0"
 kornia = { workspace = true, features = ["gstreamer"] }
-log = "0.4"
+log = { workspace = true }
