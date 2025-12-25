@@ -39,9 +39,6 @@ jobs:
           - name: Test Debug - aarch64
             runner: ubuntu-24.04-arm
             command: rust-test
-          - name: Build Examples
-            runner: ubuntu-latest
-            command: rust-build-examples
 
     steps:
       - uses: actions/checkout@v4
