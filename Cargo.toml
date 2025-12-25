@@ -1,11 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-  "crates/*",
-  "examples/*",
-  "kornia-py",
+  "crates/*", # kornia-rs main library crates
+  "examples/*", # kornia examples as standalone projects
+  "kornia-py", # kornia-rs python bindings
+  "kornia-cpp", # kornia-rs C++ bindings
 ]
-exclude = ["examples/dora", "kornia-cpp"]
+exclude = ["examples/dora"]
 default-members = ["crates/*"]
 
 [workspace.package]
