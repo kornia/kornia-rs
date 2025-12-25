@@ -1,6 +1,5 @@
 [workspace]
 name = "kornia-rs"
-version = "0.1.11-rc.1"
 description = "Low-level 3D computer vision library in Rust"
 authors = ["kornia.org <edgar@kornia.org>"]
 channels = ["conda-forge"]
@@ -59,7 +58,7 @@ rust-lint = { depends-on = ["rust-fmt", "rust-clippy", "rust-check"], descriptio
 rust-test = { cmd = "cargo test --features ci", description = "Run Rust tests" }
 rust-test-release = { cmd = "cargo test --release --features ci", description = "Run Rust tests (release)" }
 rust-test-package = { cmd = "cargo test -p", description = "Run tests for a specific package (usage: pixi run rust-test-package <package>)" }
-rust-build-examples = { cmd = "cargo build --examples", description = "Build examples" }
+rust-build-examples = { cmd = "cargo build --workspace", description = "Build examples" }
 rust-clean = { cmd = "cargo clean", description = "Clean Rust build artifacts" }
 # Cross-compilation tasks (aarch64) - requires Docker and system rustup
 rust-cross-build-aarch64 = { cmd = "env -u CARGO -u RUSTC -u RUSTUP_HOME PATH=\"$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin\" cross build --target aarch64-unknown-linux-gnu", description = "Cross-compile for aarch64 (uses system rustup)" }
