@@ -310,7 +310,12 @@ mod tests {
         }
 
         // Trim to handle trailing whitespace/newlines in either string
-        assert_eq!(union_representatives.trim(), expected.trim());
+        assert_eq!(
+            union_representatives
+                .split_whitespace()
+                .collect::<Vec<&str>>(),
+            expected.split_whitespace().collect::<Vec<&str>>()
+        );
 
         Ok(())
     }

@@ -7,3 +7,4 @@ kornia-py/Cargo.lock
 *.code-workspace
 .idea/
 .pixi/
+build/

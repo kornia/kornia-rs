@@ -25,7 +25,6 @@ classifiers = [
   "Programming Language :: Python :: Implementation :: CPython",
   "Programming Language :: Python :: Implementation :: PyPy",
   "Programming Language :: Rust",
-  "Programming Language :: Rust",
   "Topic :: Scientific/Engineering",
 ]
 dynamic = ["version"]
