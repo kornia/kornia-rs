@@ -140,3 +140,41 @@ pub fn par_iter_rows_resample<const C: usize, A: ImageAllocator>(
                 });
         });
 }
+
+/// Trait to execute operations on a slice with a given strategy.
+pub trait ExecuteExt<T> {
+    /// Execute an operation on the slice with the given strategy.
+    ///
+    /// # Arguments
+    ///
+    /// * `strategy` - The execution strategy.
+    /// * `dst` - The destination slice.
+    /// * `op` - The operation to perform on each pixel.
+    fn execute_with<F>(self, strategy: ExecutionStrategy, dst: &mut [T], op: F)
+    where
+        F: Fn((&T, &mut T)) + Sync + Send;
+}
+
+impl<T: Sync + Send> ExecuteExt<T> for &[T] {
+    fn execute_with<F>(self, strategy: ExecutionStrategy, dst: &mut [T], op: F)
+    where
+        F: Fn((&T, &mut T)) + Sync + Send,
+    {
+        match strategy {
+            ExecutionStrategy::Serial => {
+                self.iter().zip(dst.iter_mut()).for_each(op);
+            }
+            ExecutionStrategy::Auto => {
+                self.par_iter().zip(dst.par_iter_mut()).for_each(op);
+            }
+            ExecutionStrategy::Fixed(n) => {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(n)
+                    .build()
+                    .expect("Failed to create thread pool");
+
+                pool.install(|| self.par_iter().zip(dst.par_iter_mut()).for_each(op));
+            }
+        }
+    }
+}

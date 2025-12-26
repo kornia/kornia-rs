@@ -1,11 +1,10 @@
 use num_traits::Zero;
-use rayon::prelude::*;
 use std::cmp::PartialOrd;
 
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
 use crate::parallel;
-use crate::parallel::ExecutionStrategy;
+use crate::parallel::{ExecuteExt, ExecutionStrategy};
 
 /// Apply a binary threshold to an image.
 ///
@@ -58,51 +57,17 @@ where
         ));
     }
 
-    match strategy {
-        ExecutionStrategy::Serial => {
-            src.as_slice()
-                .iter()
-                .zip(dst.as_slice_mut().iter_mut())
-                .for_each(|(src_pixel, dst_pixel)| {
-                    *dst_pixel = if *src_pixel > threshold {
-                        max_value
-                    } else {
-                        T::zero()
-                    };
-                });
-        }
-        ExecutionStrategy::Auto => {
-            src.as_slice()
-                .par_iter()
-                .zip(dst.as_slice_mut().par_iter_mut())
-                .for_each(|(src_pixel, dst_pixel)| {
-                    *dst_pixel = if *src_pixel > threshold {
-                        max_value
-                    } else {
-                        T::zero()
-                    };
-                });
-        }
-        ExecutionStrategy::Fixed(num_threads) => {
-            let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(num_threads)
-                .build()
-                .expect("Failed to create thread pool");
-
-            pool.install(|| {
-                src.as_slice()
-                    .par_iter()
-                    .zip(dst.as_slice_mut().par_iter_mut())
-                    .for_each(|(src_pixel, dst_pixel)| {
-                        *dst_pixel = if *src_pixel > threshold {
-                            max_value
-                        } else {
-                            T::zero()
-                        };
-                    });
-            });
-        }
-    }
+    src.as_slice().execute_with(
+        strategy,
+        dst.as_slice_mut(),
+        |(src_pixel, dst_pixel)| {
+            *dst_pixel = if *src_pixel > threshold {
+                max_value
+            } else {
+                T::zero()
+            };
+        },
+    );
 
     Ok(())
 }
@@ -155,6 +120,7 @@ where
         ));
     }
 
+    // run the thresholding operation in parallel
     parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
         *dst_pixel = if *src_pixel > threshold {
             T::zero()
@@ -211,6 +177,7 @@ where
         ));
     }
 
+    // run the thresholding operation in parallel
     parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
         *dst_pixel = if *src_pixel > threshold {
             threshold
@@ -267,6 +234,7 @@ where
         ));
     }
 
+    // run the thresholding operation in parallel
     parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
         *dst_pixel = if *src_pixel > threshold {
             *src_pixel
@@ -323,6 +291,7 @@ where
         ));
     }
 
+    // run the thresholding operation in parallel
     parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
         *dst_pixel = if *src_pixel > threshold {
             T::zero()
@@ -395,6 +364,7 @@ where
         ));
     }
 
+    // parallelize the operation by rows
     parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
         let mut is_in_range = true;
         src_pixel
