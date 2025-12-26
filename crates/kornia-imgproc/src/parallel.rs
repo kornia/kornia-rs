@@ -3,6 +3,18 @@ use rayon::prelude::*;
 use kornia_image::{allocator::ImageAllocator, Image};
 use kornia_tensor::{CpuAllocator, Tensor2};
 
+/// Controls how parallel operations are executed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecutionStrategy {
+    /// Use the global thread pool.
+    #[default]
+    Auto,
+    /// Run sequentially on the current thread.
+    Serial,
+    /// Run on a local pool with `n` threads.
+    Fixed(usize),
+}
+
 /// Apply a function to each pixel in the image in parallel.
 ///
 /// # Arguments
@@ -127,4 +139,42 @@ pub fn par_iter_rows_resample<const C: usize, A: ImageAllocator>(
                     f(x, y, dst_pixel);
                 });
         });
+}
+
+/// Trait to execute operations on a slice with a given strategy.
+pub trait ExecuteExt<T> {
+    /// Execute an operation on the slice with the given strategy.
+    ///
+    /// # Arguments
+    ///
+    /// * `strategy` - The execution strategy.
+    /// * `dst` - The destination slice.
+    /// * `op` - The operation to perform on each pixel.
+    fn execute_with<F>(self, strategy: ExecutionStrategy, dst: &mut [T], op: F)
+    where
+        F: Fn((&T, &mut T)) + Sync + Send;
+}
+
+impl<T: Sync + Send> ExecuteExt<T> for &[T] {
+    fn execute_with<F>(self, strategy: ExecutionStrategy, dst: &mut [T], op: F)
+    where
+        F: Fn((&T, &mut T)) + Sync + Send,
+    {
+        match strategy {
+            ExecutionStrategy::Serial => {
+                self.iter().zip(dst.iter_mut()).for_each(op);
+            }
+            ExecutionStrategy::Auto => {
+                self.par_iter().zip(dst.par_iter_mut()).for_each(op);
+            }
+            ExecutionStrategy::Fixed(n) => {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(n)
+                    .build()
+                    .expect("Failed to create thread pool");
+
+                pool.install(|| self.par_iter().zip(dst.par_iter_mut()).for_each(op));
+            }
+        }
+    }
 }
