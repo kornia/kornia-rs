@@ -636,3 +636,31 @@ mod tests {
         Ok(())
     }
 }
+#[test]
+fn test_image_grad_separable() -> Result<(), ImageError> {
+    use kornia_tensor::CpuAllocator;
+
+    let size = ImageSize {
+        width: 5,
+        height: 5,
+    };
+
+    // simple ramp image
+    let img = Image::<f32, 1, _>::new(
+        size,
+        (0..25).map(|x| x as f32).collect(),
+        CpuAllocator,
+    )?;
+
+    let mut dx = Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
+    let mut dy = Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
+
+    image_grad(&img, &mut dx, &mut dy, 3)?;
+
+    // sanity checks (not exact equality yet)
+    assert!(dx.as_slice().iter().any(|&v| v != 0.0));
+    assert!(dy.as_slice().iter().any(|&v| v != 0.0));
+
+    Ok(())
+}
+
