@@ -89,16 +89,66 @@ pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 
     Ok(())
 }
+/// Compute first-order image gradients (dx, dy) using a Sobel operator.
+///
+/// # Arguments
+///
+/// * `src` - The source image with shape (H, W, C).
+/// * `dx`  - Output image storing gradient in x direction, shape (H, W, C).
+/// * `dy`  - Output image storing gradient in y direction, shape (H, W, C).
+/// * `kernel_size` - Sobel kernel size (e.g. 3 or 5).
+///
+/// PRECONDITION: `src`, `dx`, and `dy` must have the same shape.
+pub fn image_grad<const C: usize, A1: ImageAllocator, A2: ImageAllocator, A3: ImageAllocator>(
+    src: &Image<f32, C, A1>,
+    dx: &mut Image<f32, C, A2>,
+    dy: &mut Image<f32, C, A3>,
+    kernel_size: usize,
+) -> Result<(), ImageError> {
+    // size checks
+    if src.size() != dx.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dx.cols(),
+            dx.rows(),
+        ));
+    }
 
-/// Computer sobel filter
+    if src.size() != dy.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dy.cols(),
+            dy.rows(),
+        ));
+    }
+
+    // get separable sobel kernels
+    let (kernel_x, kernel_y) = kernels::sobel_kernel_1d(kernel_size);
+
+    // compute gradients
+    separable_filter(src, dx, &kernel_x, &kernel_y)?;
+    separable_filter(src, dy, &kernel_y, &kernel_x)?;
+
+    Ok(())
+}
+/// Compute the Sobel edge magnitude of an image.
+///
+/// This function computes the horizontal and vertical Sobel responses
+/// using separable filters and then combines them to produce the gradient
+/// magnitude image.
 ///
 /// # Arguments
 ///
 /// * `src` - The source image with shape (H, W, C).
 /// * `dst` - The destination image with shape (H, W, C).
-/// * `kernel_size` - The size of the kernel (kernel_x, kernel_y).
+/// * `kernel_size` - The size of the Sobel kernel (e.g. 3 or 5).
 ///
-/// PRECONDITION: `src` and `dst` must have the same shape.
+/// # Errors
+///
+/// Returns an error if `src` and `dst` have different sizes.
+
 pub fn sobel<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,
