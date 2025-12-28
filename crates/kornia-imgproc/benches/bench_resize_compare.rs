@@ -21,8 +21,18 @@ pub fn resize_native_old<const C: usize, A1: ImageAllocator, A2: ImageAllocator>
     }
 
     let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
-    let step_x = (src.cols() - 1) as f32 / (dst_cols - 1) as f32;
-    let step_y = (src.rows() - 1) as f32 / (dst_rows - 1) as f32;
+
+    // Added division-by-zero guards
+    let step_x = if dst_cols > 1 {
+        (src.cols() - 1) as f32 / (dst_cols - 1) as f32
+    } else {
+        0.0
+    };
+    let step_y = if dst_rows > 1 {
+        (src.rows() - 1) as f32 / (dst_rows - 1) as f32
+    } else {
+        0.0
+    };
 
     let (map_x, map_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| {
         Ok((x as f32 * step_x, y as f32 * step_y))
@@ -50,8 +60,17 @@ pub fn resize_native_new<const C: usize, A1: ImageAllocator, A2: ImageAllocator>
 
     let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
 
-    let step_x = (src.cols() - 1) as f32 / (dst_cols - 1) as f32;
-    let step_y = (src.rows() - 1) as f32 / (dst_rows - 1) as f32;
+    // Added division-by-zero guards
+    let step_x = if dst_cols > 1 {
+        (src.cols() - 1) as f32 / (dst_cols - 1) as f32
+    } else {
+        0.0
+    };
+    let step_y = if dst_rows > 1 {
+        (src.rows() - 1) as f32 / (dst_rows - 1) as f32
+    } else {
+        0.0
+    };
 
     kornia_imgproc::parallel::par_iter_rows_indexed_mut(dst, |row_idx, row| {
         let y_src = row_idx as f32 * step_y;

@@ -50,6 +50,10 @@ name = "bench_pyramid"
 harness = false
 name = "bench_gradient"
 
+[[bench]]
+harness = false
+name = "bench_resize_compare"
+
 [dependencies]
 # TODO: update to version but it requires some changes in the codebase
 fast_image_resize = { version = "=5.1", features = ["rayon"] }

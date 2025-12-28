@@ -358,4 +358,97 @@ mod tests {
         assert_eq!(image_resized.size().height, 3);
         Ok(())
     }
+    #[test]
+    fn resize_single_pixel() -> Result<(), ImageError> {
+        let image = Image::<f32, 1, _>::new(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            vec![1.0, 2.0, 3.0, 4.0],
+            CpuAllocator,
+        )?;
+
+        let mut image_resized = Image::<f32, 1, _>::from_size_val(
+            ImageSize {
+                width: 1,
+                height: 1,
+            },
+            0.0,
+            CpuAllocator,
+        )?;
+
+        super::resize_native(
+            &image,
+            &mut image_resized,
+            super::InterpolationMode::Bilinear,
+        )?;
+
+        assert!(image_resized.as_slice()[0].is_finite());
+        assert_eq!(image_resized.as_slice()[0], 1.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn resize_single_column() -> Result<(), ImageError> {
+        let image = Image::<f32, 1, _>::from_size_val(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            0.5,
+            CpuAllocator,
+        )?;
+
+        let mut image_resized = Image::<f32, 1, _>::from_size_val(
+            ImageSize {
+                width: 1,
+                height: 4,
+            },
+            0.0,
+            CpuAllocator,
+        )?;
+
+        super::resize_native(
+            &image,
+            &mut image_resized,
+            super::InterpolationMode::Nearest,
+        )?;
+
+        assert!(image_resized.as_slice().iter().all(|v| v.is_finite()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn resize_single_row() -> Result<(), ImageError> {
+        let image = Image::<f32, 1, _>::from_size_val(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            0.5,
+            CpuAllocator,
+        )?;
+
+        let mut image_resized = Image::<f32, 1, _>::from_size_val(
+            ImageSize {
+                width: 4,
+                height: 1,
+            },
+            0.0,
+            CpuAllocator,
+        )?;
+
+        super::resize_native(
+            &image,
+            &mut image_resized,
+            super::InterpolationMode::Nearest,
+        )?;
+
+        assert!(image_resized.as_slice().iter().all(|v| v.is_finite()));
+
+        Ok(())
+    }
 }

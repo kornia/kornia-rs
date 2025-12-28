@@ -160,7 +160,6 @@ pub fn par_iter_rows_resample<const C: usize, A: ImageAllocator>(
 ///     }
 /// });
 /// ```
-
 pub fn par_iter_rows_indexed_mut<T, const C: usize, A: ImageAllocator>(
     dst: &mut Image<T, C, A>,
     f: impl Fn(usize, &mut [T]) + Send + Sync,
