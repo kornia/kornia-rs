@@ -6,80 +6,58 @@ use kornia_io::jpegturbo::{
 use pyo3::prelude::*;
 
 #[pyclass(name = "ImageDecoder", frozen)]
-pub struct PyImageDecoder(JpegTurboDecoder);
+pub struct PyImageDecoder(pub JpegTurboDecoder);
 
 #[pymethods]
 impl PyImageDecoder {
     #[new]
-    pub fn new() -> PyResult<PyImageDecoder> {
+    pub fn new() -> PyResult<Self> {
         let decoder = JpegTurboDecoder::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(PyImageDecoder(decoder))
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?;
+        Ok(Self(decoder))
     }
 
     pub fn read_header(&self, jpeg_data: &[u8]) -> PyResult<PyImageSize> {
-        let image_size = self
-            .0
-            .read_header(jpeg_data)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(image_size.into())
+        let size = self.0.read_header(jpeg_data)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?;
+        Ok(size.into())
     }
 
     pub fn decode(&self, jpeg_data: &[u8]) -> PyResult<PyImage> {
-        let image = self
-            .0
-            .decode_rgb8(jpeg_data)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        let pyimage = image.to_pyimage().map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                "failed to convert image: {}",
-                e
-            ))
-        })?;
-        Ok(pyimage)
+        let image = self.0.decode_rgb8(jpeg_data)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?;
+        image.to_pyimage().map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))
     }
 
     pub fn decode_gray8(&self, jpeg_data: &[u8]) -> PyResult<PyImage> {
-        let image = self
-            .0
-            .decode_gray8(jpeg_data)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        let pyimage = image.to_pyimage().map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                "failed to convert image: {}",
-                e
-            ))
-        })?;
-        Ok(pyimage)
+        let image = self.0.decode_gray8(jpeg_data)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?;
+        image.to_pyimage().map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))
     }
 }
 
 #[pyclass(name = "ImageEncoder", frozen)]
-pub struct PyImageEncoder(JpegTurboEncoder);
+pub struct PyImageEncoder(pub JpegTurboEncoder);
 
 #[pymethods]
 impl PyImageEncoder {
     #[new]
-    pub fn new() -> PyResult<PyImageEncoder> {
+    pub fn new() -> PyResult<Self> {
         let encoder = JpegTurboEncoder::new()
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(PyImageEncoder(encoder))
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?;
+        Ok(Self(encoder))
     }
 
     pub fn encode(&self, image: PyImage) -> PyResult<Vec<u8>> {
-        let image = Image::from_pyimage(image)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        let jpeg_data = self
-            .0
-            .encode_rgb8(&image)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-        Ok(jpeg_data)
+        let img = Image::from_pyimage(image)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?;
+        self.0.encode_rgb8(&img)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))
     }
 
     pub fn set_quality(&self, quality: i32) -> PyResult<()> {
-        self.0
-            .set_quality(quality)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+        self.0.set_quality(quality)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?;
         Ok(())
     }
 }

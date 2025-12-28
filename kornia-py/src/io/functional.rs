@@ -25,46 +25,37 @@ pub fn read_image_any(file_path: &str) -> PyResult<PyImage> {
 
 #[pyfunction]
 pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    // Attempt to obtain a path-like object via PEP 519 (`__fspath__`)
-    let path_obj = file_path
-        .call_method0("__fspath__")
-        .unwrap_or_else(|_| file_path.clone());
+    Python::attach(|py| {
+        let path_obj = file_path
+            .call_method0("__fspath__")
+            .unwrap_or_else(|_| file_path.clone());
 
-    let path_os: std::ffi::OsString = path_obj.extract().map_err(|_| {
-        PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            "file_path must implement __fspath__ and return a valid path",
-        )
-    })?;
-
-    let path = Path::new(&path_os);
-    let path_display = path_os.to_str().unwrap_or("<non-utf8 path>").to_string();
-
-    if !path.exists() {
-        return Err(PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(
-            format!("File does not exist: {}", path_display),
-        ));
-    }
-
-    let extension = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|s| s.to_lowercase())
-        .ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "Could not determine file extension for: {}",
-                path_display
-            ))
+        let path_os: std::ffi::OsString = path_obj.extract().map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                "file_path must implement __fspath__ and return a valid path",
+            )
         })?;
 
-    match extension.as_str() {
-        "png" => read_image_png_dispatcher(path),
-        "tiff" | "tif" => read_image_tiff_dispatcher(path),
-        "jpg" | "jpeg" => read_image_jpeg_dispatcher(path),
-        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Unsupported file format: {}. Supported formats: png, tiff, jpeg",
-            extension
-        ))),
-    }
+        let path = Path::new(&path_os);
+        if !path.exists() {
+            return Err(PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(
+                format!("File does not exist: {:?}", path),
+            ));
+        }
+
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|s| s.to_lowercase())
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("No extension"))?;
+
+        match extension.as_str() {
+            "png" => read_image_png_dispatcher(path),
+            "tiff" | "tif" => read_image_tiff_dispatcher(path),
+            "jpg" | "jpeg" => read_image_jpeg_dispatcher(path),
+            _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Unsupported format")),
+        }
+    })
 }
 
 fn read_image_png_dispatcher(file_path: &Path) -> PyResult<Py<PyAny>> {
