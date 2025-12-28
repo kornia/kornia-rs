@@ -637,30 +637,60 @@ mod tests {
     }
 }
 #[test]
-fn test_image_grad_separable() -> Result<(), ImageError> {
-    use kornia_tensor::CpuAllocator;
+fn test_image_grad_matches_opencv_sobel_ksize3() {
+    use crate::filter::ops::image_grad;
+    use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
 
     let size = ImageSize {
         width: 5,
         height: 5,
     };
 
-    // simple ramp image
-    let img = Image::<f32, 1, _>::new(
-        size,
-        (0..25).map(|x| x as f32).collect(),
-        CpuAllocator,
-    )?;
+    // 5x5 horizontal ramp image
+    let data = vec![
+        0., 1., 2., 3., 4.,
+        0., 1., 2., 3., 4.,
+        0., 1., 2., 3., 4.,
+        0., 1., 2., 3., 4.,
+        0., 1., 2., 3., 4.,
+    ];
 
-    let mut dx = Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
-    let mut dy = Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
+    let src = Image::<f32, 1, _>::new(size, data, CpuAllocator).unwrap();
+    let mut dx =
+        Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator).unwrap();
+    let mut dy =
+        Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator).unwrap();
 
-    image_grad(&img, &mut dx, &mut dy, 3)?;
+    image_grad(&src, &mut dx, &mut dy, 3).unwrap();
 
-    // sanity checks (not exact equality yet)
-    assert!(dx.as_slice().iter().any(|&v| v != 0.0));
-    assert!(dy.as_slice().iter().any(|&v| v != 0.0));
+    // Expected OpenCV Sobel (ksize=3) results
+    let expected_dx = vec![
+        0., 8., 8., 8., 0.,
+        0., 8., 8., 8., 0.,
+        0., 8., 8., 8., 0.,
+        0., 8., 8., 8., 0.,
+        0., 8., 8., 8., 0.,
+    ];
 
-    Ok(())
+    let expected_dy = vec![
+        0., 0., 0., 0., 0.,
+        0., 0., 0., 0., 0.,
+        0., 0., 0., 0., 0.,
+        0., 0., 0., 0., 0.,
+        0., 0., 0., 0., 0.,
+    ];
+
+    let eps = 1e-4;
+
+    let w = size.width as usize;
+    let h = size.height as usize;
+// we compare only the interior region since border handling
+// differs between OpenCV (reflect padding) and Kornia (explicit padding)
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let idx = y * w + x;
+            assert!((dx.as_slice()[idx] - expected_dx[idx]).abs() < eps);
+            assert!((dy.as_slice()[idx] - expected_dy[idx]).abs() < eps);
+        }
+    }
 }
-
