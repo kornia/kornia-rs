@@ -637,22 +637,26 @@ mod tests {
     }
 }
 #[test]
-fn test_image_grad_matches_opencv_sobel_ksize3() {
+fn test_image_grad_matches_opencv_sobel_non_square() {
     use crate::filter::ops::image_grad;
     use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
 
+    // Non-square image to avoid assuming width == height
     let size = ImageSize {
         width: 5,
-        height: 5,
+        height: 3,
     };
 
-    // 5x5 horizontal ramp image
+    // 2D ramp image: value = x + y
+    // Produces non-zero gradients in both dx and dy
+    //
+    // y=0: 0 1 2 3 4
+    // y=1: 1 2 3 4 5
+    // y=2: 2 3 4 5 6
     let data = vec![
         0., 1., 2., 3., 4.,
-        0., 1., 2., 3., 4.,
-        0., 1., 2., 3., 4.,
-        0., 1., 2., 3., 4.,
-        0., 1., 2., 3., 4.,
+        1., 2., 3., 4., 5.,
+        2., 3., 4., 5., 6.,
     ];
 
     let src = Image::<f32, 1, _>::new(size, data, CpuAllocator).unwrap();
@@ -663,10 +667,10 @@ fn test_image_grad_matches_opencv_sobel_ksize3() {
 
     image_grad(&src, &mut dx, &mut dy, 3).unwrap();
 
-    // Expected OpenCV Sobel (ksize=3) results
+    // Expected OpenCV Sobel (ksize=3) results computed externally.
+    // NOTE: We compare only interior pixels since border handling
+    // differs between OpenCV (reflect padding) and Kornia.
     let expected_dx = vec![
-        0., 8., 8., 8., 0.,
-        0., 8., 8., 8., 0.,
         0., 8., 8., 8., 0.,
         0., 8., 8., 8., 0.,
         0., 8., 8., 8., 0.,
@@ -674,18 +678,14 @@ fn test_image_grad_matches_opencv_sobel_ksize3() {
 
     let expected_dy = vec![
         0., 0., 0., 0., 0.,
-        0., 0., 0., 0., 0.,
-        0., 0., 0., 0., 0.,
-        0., 0., 0., 0., 0.,
+        8., 8., 8., 8., 8.,
         0., 0., 0., 0., 0.,
     ];
 
-    let eps = 1e-4;
-
     let w = size.width as usize;
     let h = size.height as usize;
-// we compare only the interior region since border handling
-// differs between OpenCV (reflect padding) and Kornia (explicit padding)
+    let eps = 1e-4;
+
     for y in 1..h - 1 {
         for x in 1..w - 1 {
             let idx = y * w + x;
