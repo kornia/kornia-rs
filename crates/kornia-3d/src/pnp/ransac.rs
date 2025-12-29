@@ -1,9 +1,9 @@
 //! RANSAC-based robust wrapper for PnP solvers.
 
-use crate::ops::{intrinsics_as_vectors, pose_to_rt, project_sq_error};
-use crate::pnp::{PnPError, PnPResult};
-use crate::{solve_pnp, PnPMethod};
-use kornia_algebra::{Mat3F32, Vec3F32};
+use super::ops::{intrinsics_as_vectors, project_sq_error};
+use super::{solve_pnp, PnPMethod};
+use super::{PnPError, PnPResult};
+use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 use rand::seq::SliceRandom;
 use rand::{rngs::StdRng, SeedableRng};
@@ -82,9 +82,9 @@ pub struct PnPRansacResult {
 /// - Scoring uses Euclidean pixel reprojection error.
 /// - Iterations adapt from current inlier ratio and desired confidence.
 pub fn solve_pnp_ransac(
-    world: &[[f32; 3]],
-    image: &[[f32; 2]],
-    k: &[[f32; 3]; 3],
+    world: &[Vec3AF32],
+    image: &[Vec2F32],
+    k: &Mat3AF32,
     distortion: Option<&PolynomialDistortion>,
     base: PnPMethod,
     params: &RansacParams,
@@ -130,8 +130,8 @@ pub fn solve_pnp_ransac(
     let mut indices: Vec<usize> = (0..n).collect();
     let mut best_inliers: Vec<usize> = Vec::new();
     let mut best_pose: Option<PnPResult> = None;
-    let mut w_min: Vec<[f32; 3]> = Vec::with_capacity(sample_size);
-    let mut i_min: Vec<[f32; 2]> = Vec::with_capacity(sample_size);
+    let mut w_min: Vec<Vec3AF32> = Vec::with_capacity(sample_size);
+    let mut i_min: Vec<Vec2F32> = Vec::with_capacity(sample_size);
 
     let mut iter: usize = 0;
     let mut required_iters = params.max_iterations;
@@ -280,15 +280,9 @@ pub fn solve_pnp_ransac(
     })
 }
 
-fn sample_all_positive_depths(r: &[[f32; 3]; 3], t: &[f32; 3], world: &[[f32; 3]]) -> bool {
-    let r_mat = Mat3F32::from_cols(
-        Vec3F32::new(r[0][0], r[1][0], r[2][0]),
-        Vec3F32::new(r[0][1], r[1][1], r[2][1]),
-        Vec3F32::new(r[0][2], r[1][2], r[2][2]),
-    );
-    let t_vec = Vec3F32::new(t[0], t[1], t[2]);
-    world.iter().all(|pw| {
-        let pc = r_mat * Vec3F32::from_array(*pw) + t_vec;
+fn sample_all_positive_depths(r: &Mat3AF32, t: &Vec3AF32, world: &[Vec3AF32]) -> bool {
+    world.iter().all(|&pw| {
+        let pc = *r * pw + *t;
         pc.z > 0.0
     })
 }
@@ -297,21 +291,22 @@ fn sample_all_positive_depths(r: &[[f32; 3]; 3], t: &[f32; 3], world: &[[f32; 3]
 /// - Scoring all points against a candidate pose (during RANSAC)
 /// - Computing final RMSE on a subset of inlier points
 struct ClassificationParams<'a> {
-    rotation_matrix: &'a [[f32; 3]; 3],
-    translation_vector: &'a [f32; 3],
-    camera_intrinsics_x: &'a Vec3F32,
-    camera_intrinsics_y: &'a Vec3F32,
+    rotation_matrix: &'a Mat3AF32,
+    translation_vector: &'a Vec3AF32,
+    camera_intrinsics_x: &'a Vec3AF32,
+    camera_intrinsics_y: &'a Vec3AF32,
     threshold: Option<f32>,
 }
 
 fn classify_points(
-    world: &[[f32; 3]],
-    image: &[[f32; 2]],
+    world: &[Vec3AF32],
+    image: &[Vec2F32],
     _distortion: Option<&PolynomialDistortion>,
     indices: Option<&[usize]>,
     params: ClassificationParams,
 ) -> (Vec<usize>, f32) {
-    let (rotation, translation) = pose_to_rt(params.rotation_matrix, params.translation_vector);
+    let rotation = params.rotation_matrix;
+    let translation = params.translation_vector;
 
     let mut inliers: Vec<usize> = Vec::new();
     let mut total_squared_error: f32 = 0.0;
@@ -326,8 +321,8 @@ fn classify_points(
                 if let Some(squared_error) = project_sq_error(
                     &world[idx],
                     &image[idx],
-                    &rotation,
-                    &translation,
+                    rotation,
+                    translation,
                     params.camera_intrinsics_x,
                     params.camera_intrinsics_y,
                     true,
@@ -350,8 +345,8 @@ fn classify_points(
                 if let Some(squared_error) = project_sq_error(
                     world_point,
                     image_point,
-                    &rotation,
-                    &translation,
+                    rotation,
+                    translation,
                     params.camera_intrinsics_x,
                     params.camera_intrinsics_y,
                     true,
@@ -376,35 +371,43 @@ fn classify_points(
 
 #[cfg(test)]
 mod tests {
+    use super::super::epnp::EPnPParams;
     use super::*;
-    use crate::epnp::EPnPParams;
+
+    fn k_default() -> Mat3AF32 {
+        // Column-major: [fx, 0, 0,  0, fy, 0,  cx, cy, 1]
+        Mat3AF32::from_cols_array(&[800.0, 0.0, 0.0, 0.0, 800.0, 0.0, 640.0, 480.0, 1.0])
+    }
 
     #[test]
     fn test_ransac_basic_outliers() -> Result<(), PnPRansacError> {
         // Use the same 6 inlier correspondences from epnp test
-        let points_world: [[f32; 3]; 6] = [
-            [0.0315, 0.03333, -0.10409],
-            [-0.0315, 0.03333, -0.10409],
-            [0.0, -0.00102, -0.12977],
-            [0.02646, -0.03167, -0.1053],
-            [-0.02646, -0.031667, -0.1053],
-            [0.0, 0.04515, -0.11033],
+        let points_world: [Vec3AF32; 6] = [
+            Vec3AF32::new(0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(-0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(0.0, -0.00102, -0.12977),
+            Vec3AF32::new(0.02646, -0.03167, -0.1053),
+            Vec3AF32::new(-0.02646, -0.031667, -0.1053),
+            Vec3AF32::new(0.0, 0.04515, -0.11033),
         ];
-        let mut points_image: Vec<[f32; 2]> = vec![
-            [722.96466, 502.0828],
-            [669.88837, 498.61877],
-            [707.0025, 478.48975],
-            [728.05634, 447.56918],
-            [682.6069, 443.91776],
-            [696.4414, 511.96442],
+        let mut points_image: Vec<Vec2F32> = vec![
+            Vec2F32::new(722.96466, 502.0828),
+            Vec2F32::new(669.88837, 498.61877),
+            Vec2F32::new(707.0025, 478.48975),
+            Vec2F32::new(728.05634, 447.56918),
+            Vec2F32::new(682.6069, 443.91776),
+            Vec2F32::new(696.4414, 511.96442),
         ];
         // Inject 4 strong outliers
         let mut world = points_world.to_vec();
         for (j, &point_world) in points_world.iter().enumerate().take(4) {
             world.push(point_world);
-            points_image.push([1200.0 + j as f32 * 5.0, -300.0 - j as f32 * 3.0]);
+            points_image.push(Vec2F32::new(
+                1200.0 + j as f32 * 5.0,
+                -300.0 - j as f32 * 3.0,
+            ));
         }
-        let k: [[f32; 3]; 3] = [[800.0, 0.0, 640.0], [0.0, 800.0, 480.0], [0.0, 0.0, 1.0]];
+        let k = k_default();
 
         let params = RansacParams {
             max_iterations: 10,          // Reduce for testing
@@ -429,23 +432,23 @@ mod tests {
     #[test]
     fn test_ransac_perfect_data() -> Result<(), PnPRansacError> {
         // Test with perfect data (no outliers)
-        let points_world: [[f32; 3]; 6] = [
-            [0.0315, 0.03333, -0.10409],
-            [-0.0315, 0.03333, -0.10409],
-            [0.0, -0.00102, -0.12977],
-            [0.02646, -0.03167, -0.1053],
-            [-0.02646, -0.031667, -0.1053],
-            [0.0, 0.04515, -0.11033],
+        let points_world: [Vec3AF32; 6] = [
+            Vec3AF32::new(0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(-0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(0.0, -0.00102, -0.12977),
+            Vec3AF32::new(0.02646, -0.03167, -0.1053),
+            Vec3AF32::new(-0.02646, -0.031667, -0.1053),
+            Vec3AF32::new(0.0, 0.04515, -0.11033),
         ];
-        let points_image: [[f32; 2]; 6] = [
-            [722.96466, 502.0828],
-            [669.88837, 498.61877],
-            [707.0025, 478.48975],
-            [728.05634, 447.56918],
-            [682.6069, 443.91776],
-            [696.4414, 511.96442],
+        let points_image: [Vec2F32; 6] = [
+            Vec2F32::new(722.96466, 502.0828),
+            Vec2F32::new(669.88837, 498.61877),
+            Vec2F32::new(707.0025, 478.48975),
+            Vec2F32::new(728.05634, 447.56918),
+            Vec2F32::new(682.6069, 443.91776),
+            Vec2F32::new(696.4414, 511.96442),
         ];
-        let k: [[f32; 3]; 3] = [[800.0, 0.0, 640.0], [0.0, 800.0, 480.0], [0.0, 0.0, 1.0]];
+        let k = k_default();
 
         let params = RansacParams {
             max_iterations: 10,
@@ -470,19 +473,19 @@ mod tests {
     #[test]
     fn test_ransac_minimum_points() -> Result<(), PnPRansacError> {
         // Test with exactly 4 points
-        let points_world: [[f32; 3]; 4] = [
-            [0.0315, 0.03333, -0.10409],
-            [-0.0315, 0.03333, -0.10409],
-            [0.0, -0.00102, -0.12977],
-            [0.02646, -0.03167, -0.1053],
+        let points_world: [Vec3AF32; 4] = [
+            Vec3AF32::new(0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(-0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(0.0, -0.00102, -0.12977),
+            Vec3AF32::new(0.02646, -0.03167, -0.1053),
         ];
-        let points_image: [[f32; 2]; 4] = [
-            [722.96466, 502.0828],
-            [669.88837, 498.61877],
-            [707.0025, 478.48975],
-            [728.05634, 447.56918],
+        let points_image: [Vec2F32; 4] = [
+            Vec2F32::new(722.96466, 502.0828),
+            Vec2F32::new(669.88837, 498.61877),
+            Vec2F32::new(707.0025, 478.48975),
+            Vec2F32::new(728.05634, 447.56918),
         ];
-        let k: [[f32; 3]; 3] = [[800.0, 0.0, 640.0], [0.0, 800.0, 480.0], [0.0, 0.0, 1.0]];
+        let k = k_default();
 
         let params = RansacParams {
             max_iterations: 5,
@@ -500,9 +503,21 @@ mod tests {
 
     #[test]
     fn test_ransac_error_cases() {
-        let points_world: [[f32; 3]; 3] = [[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0]];
-        let points_image: [[f32; 2]; 3] = [[100.0, 100.0], [200.0, 100.0], [100.0, 200.0]];
-        let k: [[f32; 3]; 3] = [[800.0, 0.0, 400.0], [0.0, 800.0, 300.0], [0.0, 0.0, 1.0]];
+        let points_world: [Vec3AF32; 3] = [
+            Vec3AF32::new(0.0, 0.0, 1.0),
+            Vec3AF32::new(1.0, 0.0, 1.0),
+            Vec3AF32::new(0.0, 1.0, 1.0),
+        ];
+        let points_image: [Vec2F32; 3] = [
+            Vec2F32::new(100.0, 100.0),
+            Vec2F32::new(200.0, 100.0),
+            Vec2F32::new(100.0, 200.0),
+        ];
+        let k = Mat3AF32::from_cols(
+            Vec3AF32::new(800.0, 0.0, 0.0),
+            Vec3AF32::new(0.0, 800.0, 0.0),
+            Vec3AF32::new(400.0, 300.0, 1.0),
+        );
 
         let params = RansacParams::default();
         let base = PnPMethod::EPnP(EPnPParams::default());

@@ -4,7 +4,7 @@ use rand::Rng;
 
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SE3F32 {
     pub r: SO3F32,
     pub t: Vec3AF32,
@@ -305,6 +305,40 @@ impl std::ops::Mul<Vec3AF32> for SE3F32 {
 
     fn mul(self, rhs: Vec3AF32) -> Self::Output {
         self.r * rhs + self.t
+    }
+}
+
+#[cfg(feature = "approx")]
+impl approx::AbsDiffEq for SE3F32 {
+    type Epsilon = <SO3F32 as approx::AbsDiffEq>::Epsilon;
+
+    #[inline]
+    fn default_epsilon() -> Self::Epsilon {
+        <SO3F32 as approx::AbsDiffEq>::default_epsilon()
+    }
+
+    #[inline]
+    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
+        self.r.abs_diff_eq(&other.r, epsilon) && self.t.abs_diff_eq(&other.t, epsilon)
+    }
+}
+
+#[cfg(feature = "approx")]
+impl approx::RelativeEq for SE3F32 {
+    #[inline]
+    fn default_max_relative() -> Self::Epsilon {
+        <SO3F32 as approx::RelativeEq>::default_max_relative()
+    }
+
+    #[inline]
+    fn relative_eq(
+        &self,
+        other: &Self,
+        epsilon: Self::Epsilon,
+        max_relative: Self::Epsilon,
+    ) -> bool {
+        self.r.relative_eq(&other.r, epsilon, max_relative)
+            && self.t.relative_eq(&other.t, epsilon, max_relative)
     }
 }
 

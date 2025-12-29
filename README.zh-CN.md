@@ -109,7 +109,6 @@ kornia-3d = "0.1"
 kornia-apriltag = "0.1"
 kornia-vlm = "0.1"
 kornia-nn = "0.1"
-kornia-pnp = "0.1"
 kornia-lie = "0.1"
 ```
 
