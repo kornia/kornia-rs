@@ -34,26 +34,37 @@ struct PcdField {
 struct PcdLayout {
     fields: HashMap<String, PcdField>,
     point_step: usize, // total bytes per point
-    points: usize,     // number of points
+    num_points: usize,     // number of points
 }
 
+impl PcdLayout {
+    fn get_field_offset(&self, name: &str) -> Result<usize, PcdError> {
+        self.fields
+            .get(name)
+            .map(|f| f.offset)
+            .ok_or(PcdError::UnsupportedProperty)
+    }
+}
 /// Read a little-endian f32 from a byte buffer
 #[inline]
-fn read_f32(buf: &[u8], offset: usize) -> f32 {
-    f32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap())
+fn read_f32(buf: &[u8], offset: usize) -> Result<f32, PcdError> {
+    let slice = buf.get(offset..offset + 4).ok_or(PcdError::UnsupportedProperty)?;
+    let mut bytes = [0u8; 4];
+    bytes.copy_from_slice(slice);
+    Ok(f32::from_le_bytes(bytes))
 }
-
 /// Read a little-endian u32 from a byte buffer
 #[inline]
-fn read_u32(buf: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap())
+fn read_u32(buf: &[u8], offset: usize) -> Result<u32, PcdError> {
+    let slice = buf.get(offset..offset + 4).ok_or(PcdError::UnsupportedProperty)?;
+    let mut bytes = [0u8; 4];
+    bytes.copy_from_slice(slice);
+    Ok(u32::from_le_bytes(bytes))
 }
-
-/// Parse the ASCII PCD header and compute the binary layout.
 
 
 fn parse_pcd_header<R: BufRead>(reader: &mut R) -> Result<PcdLayout, PcdError> {
-    let mut field_names = Vec::new();
+    let mut field_names: Vec<String> = Vec::new();
     let mut sizes = Vec::new();
     let mut types = Vec::new();
     let mut counts = Vec::new();
@@ -73,16 +84,37 @@ fn parse_pcd_header<R: BufRead>(reader: &mut R) -> Result<PcdLayout, PcdError> {
 
         let mut it = line.split_whitespace();
         match it.next() {
+            Some("SIZE") => {
+                sizes = it
+                    .map(|v| v.parse::<usize>().map_err(|_| PcdError::UnsupportedProperty))
+                    .collect::<Result<Vec<_>, _>>()?;
+            }
+            Some("TYPE") => {
+                types = it
+                    .map(|v| v.chars().next().ok_or(PcdError::UnsupportedProperty))
+                    .collect::<Result<Vec<_>, _>>()?;
+            }
+            Some("COUNT") => {
+                counts = it
+                    .map(|v| v.parse::<usize>().map_err(|_| PcdError::UnsupportedProperty))
+                    .collect::<Result<Vec<_>, _>>()?;
+            }
+            Some("POINTS") => {
+                let token = it.next().ok_or(PcdError::UnsupportedProperty)?;
+                points = token
+                    .parse::<usize>()
+                    .map_err(|_| PcdError::UnsupportedProperty)?;
+            }
             Some("FIELDS") => field_names = it.map(String::from).collect(),
-            Some("SIZE") => sizes = it.map(|v| v.parse().unwrap()).collect(),
-            Some("TYPE") => types = it.map(|v| v.chars().next().unwrap()).collect(),
-            Some("COUNT") => counts = it.map(|v| v.parse().unwrap()).collect(),
-            Some("POINTS") => points = it.next().unwrap().parse().unwrap(),
             _ => {}
         }
     }
 
-    if field_names.is_empty() {
+    if field_names.is_empty()
+        || sizes.len() != field_names.len()
+        || types.len() != field_names.len()
+        || (!counts.is_empty() && counts.len() != field_names.len())
+    {
         return Err(PcdError::UnsupportedProperty);
     }
 
@@ -100,6 +132,21 @@ fn parse_pcd_header<R: BufRead>(reader: &mut R) -> Result<PcdLayout, PcdError> {
             count,
             kind: types[i],
         };
+
+        match field_names[i].as_str() {
+            "x" | "y"| "z" | "normal_x" | "normal_y" | "normal_z" | "nx" | "ny" | "nz" => {
+                if !(size == 4 && count == 1 && types[i] == 'F') {
+                    return Err(PcdError::UnsupportedProperty);
+                }
+            }
+            "rgb" => {
+                if !(size == 4 && count == 1 && (types[i] == 'U' || types[i] == 'I')) {
+                    return Err(PcdError::UnsupportedProperty);
+                }
+            }
+            _ => {}
+        }
+
         offset += size * count;
         fields.insert(field.name.clone(), field);
     }
@@ -107,7 +154,7 @@ fn parse_pcd_header<R: BufRead>(reader: &mut R) -> Result<PcdLayout, PcdError> {
     Ok(PcdLayout {
         fields,
         point_step: offset,
-        points,
+        num_points: points,
     })
 }
 
@@ -128,38 +175,48 @@ pub fn read_pcd_binary(path: impl AsRef<Path>) -> Result<PointCloud, PcdError> {
         ));
     }
 
-    // ---- Open file ----
+    // Open file
     let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::new(file);
 
     let layout = parse_pcd_header(&mut reader)?;
 
-    // ---- Required fields ----
-    let fx = layout.fields.get("x").ok_or(PcdError::UnsupportedProperty)?.offset;
-    let fy = layout.fields.get("y").ok_or(PcdError::UnsupportedProperty)?.offset;
-    let fz = layout.fields.get("z").ok_or(PcdError::UnsupportedProperty)?.offset;
+    // Required fields
+    let fx = layout.get_field_offset("x")?;
+    let fy = layout.get_field_offset("y")?;
+    let fz = layout.get_field_offset("z")?;
 
-    // ---- Optional fields ----
+
+    // Optional fields
     let frgb = layout.fields.get("rgb").map(|f| f.offset);
-    let fnx = layout.fields.get("normal_x").map(|f| f.offset);
-    let fny = layout.fields.get("normal_y").map(|f| f.offset);
-    let fnz = layout.fields.get("normal_z").map(|f| f.offset);
+    let fnx = layout.fields.get("normal_x").or_else(|| layout.fields.get("nx")).map(|f| f.offset);
+    let fny = layout.fields.get("normal_y").or_else(|| layout.fields.get("ny")).map(|f| f.offset);
+    let fnz = layout.fields.get("normal_z").or_else(|| layout.fields.get("nz")).map(|f| f.offset);
 
     let mut buffer = vec![0u8; layout.point_step];
 
-    let mut points = Vec::with_capacity(layout.points);
-    let mut colors = Vec::new();
-    let mut normals = Vec::new();
+    let mut points = Vec::with_capacity(layout.num_points);
+    let mut colors = if frgb.is_some() {
+        Vec::with_capacity(layout.num_points)
+    } else {
+        Vec::new()
+    };
 
-    // ---- Read binary points ----
+    let mut normals = if fnx.is_some() && fny.is_some() && fnz.is_some() {
+        Vec::with_capacity(layout.num_points)
+    } else {
+        Vec::new()
+    };
+
+    // Read binary points
     while reader.read_exact(&mut buffer).is_ok() {
-        let x = read_f32(&buffer, fx);
-        let y = read_f32(&buffer, fy);
-        let z = read_f32(&buffer, fz);
+        let x = read_f32(&buffer, fx)?;
+        let y = read_f32(&buffer, fy)?;
+        let z = read_f32(&buffer, fz)?;
         points.push([x as f64, y as f64, z as f64]);
 
         if let Some(off) = frgb {
-            let rgb = read_u32(&buffer, off);
+            let rgb = read_u32(&buffer, off)?;
             colors.push([
                 ((rgb >> 16) & 0xFF) as u8,
                 ((rgb >> 8) & 0xFF) as u8,
@@ -169,16 +226,61 @@ pub fn read_pcd_binary(path: impl AsRef<Path>) -> Result<PointCloud, PcdError> {
 
         if let (Some(ox), Some(oy), Some(oz)) = (fnx, fny, fnz) {
             normals.push([
-                read_f32(&buffer, ox) as f64,
-                read_f32(&buffer, oy) as f64,
-                read_f32(&buffer, oz) as f64,
+                read_f32(&buffer, ox)? as f64,
+                read_f32(&buffer, oy)? as f64,
+                read_f32(&buffer, oz)? as f64,
             ]);
         }
     }
 
     Ok(PointCloud::new(
         points,
-        if colors.is_empty() { None } else { Some(colors) },
-        if normals.is_empty() { None } else { Some(normals) },
+        (!colors.is_empty()).then_some(colors),
+        (!normals.is_empty()).then_some(normals),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn fails_on_ascii_or_non_binary() {
+        let data = b"FIELDS x y z
+SIZE 4 4 4
+TYPE F F F
+COUNT 1 1 1
+POINTS 1
+DATA ascii";
+        let mut reader = Cursor::new(&data[..]);
+        assert!(parse_pcd_header(&mut reader).is_err());
+    }
+
+    #[test]
+    fn parses_valid_binary_header() {
+        let data = b"FIELDS x y z
+SIZE 4 4 4
+TYPE F F F
+COUNT 1 1 1
+POINTS 10
+DATA binary";
+        let mut reader = Cursor::new(&data[..]);
+        let layout = parse_pcd_header(&mut reader).unwrap();
+        assert_eq!(layout.num_points, 10);
+        assert!(layout.fields.contains_key("x"));
+    }
+
+    #[test]
+    fn rejects_wrong_type_for_xyz() {
+        let data = b"FIELDS x y z
+SIZE 4 4 4
+TYPE I I I
+COUNT 1 1 1
+POINTS 5
+DATA binary";
+        let mut reader = Cursor::new(&data[..]);
+        assert!(parse_pcd_header(&mut reader).is_err());
+    }
+}
+
