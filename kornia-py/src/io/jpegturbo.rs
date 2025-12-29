@@ -18,21 +18,31 @@ impl PyImageDecoder {
     }
 
     pub fn read_header(&self, jpeg_data: &[u8]) -> PyResult<PyImageSize> {
-        let size = self.0.read_header(jpeg_data)
+        let size = self
+            .0
+            .read_header(jpeg_data)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?;
         Ok(size.into())
     }
 
     pub fn decode(&self, jpeg_data: &[u8]) -> PyResult<PyImage> {
-        let image = self.0.decode_rgb8(jpeg_data)
+        let image = self
+            .0
+            .decode_rgb8(jpeg_data)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?;
-        image.to_pyimage().map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))
+        image
+            .to_pyimage()
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))
     }
 
     pub fn decode_gray8(&self, jpeg_data: &[u8]) -> PyResult<PyImage> {
-        let image = self.0.decode_gray8(jpeg_data)
+        let image = self
+            .0
+            .decode_gray8(jpeg_data)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?;
-        image.to_pyimage().map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))
+        image
+            .to_pyimage()
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))
     }
 }
 
@@ -51,12 +61,14 @@ impl PyImageEncoder {
     pub fn encode(&self, image: PyImage) -> PyResult<Vec<u8>> {
         let img = Image::from_pyimage(image)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?;
-        self.0.encode_rgb8(&img)
+        self.0
+            .encode_rgb8(&img)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))
     }
 
     pub fn set_quality(&self, quality: i32) -> PyResult<()> {
-        self.0.set_quality(quality)
+        self.0
+            .set_quality(quality)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?;
         Ok(())
     }

@@ -16,5 +16,5 @@ def test_resize():
     # check the image properties
     assert img.shape == (195, 258, 3)
 
-    img_resized: np.ndarray = K.resize(img, (43, 34), "bilinear")
+    img_resized: np.ndarray = K.imgproc.resize(img, (43, 34), "bilinear")
     assert img_resized.shape == (43, 34, 3)

@@ -53,7 +53,9 @@ pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
             "png" => read_image_png_dispatcher(path),
             "tiff" | "tif" => read_image_tiff_dispatcher(path),
             "jpg" | "jpeg" => read_image_jpeg_dispatcher(path),
-            _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Unsupported format")),
+            _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Unsupported format",
+            )),
         }
     })
 }

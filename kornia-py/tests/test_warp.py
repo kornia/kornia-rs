@@ -17,7 +17,7 @@ def test_warp_affine():
 
     affine_matrix = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
 
-    img_transformed: np.ndarray = K.warp_affine(
+    img_transformed: np.ndarray = K.imgproc.warp_affine(
         img, affine_matrix, img.shape[:2], "bilinear"
     )
     assert (img_transformed == img).all()
@@ -31,7 +31,7 @@ def test_warp_perspective():
 
     perspective_matrix = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
-    img_transformed: np.ndarray = K.warp_perspective(
+    img_transformed: np.ndarray = K.imgproc.warp_perspective(
         img, perspective_matrix, img.shape[:2], "bilinear"
     )
     assert (img_transformed == img).all()
