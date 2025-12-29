@@ -7,10 +7,8 @@
 
 # Check if the code is linting and formatted
 check:
-  @echo "🚀 Checking workspace (excluding kornia-pnp)"
-  @cargo check --workspace --exclude kornia-pnp --all-targets --all-features --locked
-  @echo "🚀 Checking kornia-pnp (without opencv_bench)"
-  @cargo check -p kornia-pnp --all-targets --locked
+  @echo "🚀 Checking workspace"
+  @cargo check --workspace --all-targets --all-features --locked
 
 # Check if the required binaries for the project are installed
 check-environment:
@@ -18,10 +16,8 @@ check-environment:
 
 # Run clippy with all features
 clippy:
-  @echo "🚀 Running clippy on workspace (excluding kornia-pnp)"
-  cargo clippy --workspace --exclude kornia-pnp --all-targets --all-features --locked -- -D warnings
-  @echo "🚀 Running clippy on kornia-pnp (without opencv_bench)"
-  cargo clippy -p kornia-pnp --all-targets --locked -- -D warnings
+  @echo "🚀 Running clippy on workspace"
+  cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
 # Run clippy with default features
 clippy-default:

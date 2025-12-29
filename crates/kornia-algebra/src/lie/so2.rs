@@ -2,7 +2,7 @@ use crate::{Mat2F32, Mat3AF32, Vec2F32};
 use rand::Rng;
 use std::f32::consts::TAU; // <-- Added this import
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SO2F32 {
     /// representing complex number [real, imaginary]
     pub z: Vec2F32,
@@ -138,6 +138,39 @@ impl std::ops::MulAssign<SO2F32> for SO2F32 {
     #[inline]
     fn mul_assign(&mut self, rhs: SO2F32) {
         *self = *self * rhs;
+    }
+}
+
+#[cfg(feature = "approx")]
+impl approx::AbsDiffEq for SO2F32 {
+    type Epsilon = <Vec2F32 as approx::AbsDiffEq>::Epsilon;
+
+    #[inline]
+    fn default_epsilon() -> Self::Epsilon {
+        <Vec2F32 as approx::AbsDiffEq>::default_epsilon()
+    }
+
+    #[inline]
+    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
+        self.z.abs_diff_eq(&other.z, epsilon)
+    }
+}
+
+#[cfg(feature = "approx")]
+impl approx::RelativeEq for SO2F32 {
+    #[inline]
+    fn default_max_relative() -> Self::Epsilon {
+        <Vec2F32 as approx::RelativeEq>::default_max_relative()
+    }
+
+    #[inline]
+    fn relative_eq(
+        &self,
+        other: &Self,
+        epsilon: Self::Epsilon,
+        max_relative: Self::Epsilon,
+    ) -> bool {
+        self.z.relative_eq(&other.z, epsilon, max_relative)
     }
 }
 

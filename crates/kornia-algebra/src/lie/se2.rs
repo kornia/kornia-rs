@@ -2,7 +2,7 @@ use super::so2::SO2F32;
 use crate::{Mat2F32, Mat3AF32, Vec2F32, Vec3AF32};
 use rand::Rng;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SE2F32 {
     pub r: SO2F32,
     pub t: Vec2F32,
@@ -274,6 +274,40 @@ impl std::ops::Mul<Vec2F32> for SE2F32 {
 
     fn mul(self, rhs: Vec2F32) -> Self::Output {
         self.r * rhs + self.t
+    }
+}
+
+#[cfg(feature = "approx")]
+impl approx::AbsDiffEq for SE2F32 {
+    type Epsilon = <SO2F32 as approx::AbsDiffEq>::Epsilon;
+
+    #[inline]
+    fn default_epsilon() -> Self::Epsilon {
+        <SO2F32 as approx::AbsDiffEq>::default_epsilon()
+    }
+
+    #[inline]
+    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
+        self.r.abs_diff_eq(&other.r, epsilon) && self.t.abs_diff_eq(&other.t, epsilon)
+    }
+}
+
+#[cfg(feature = "approx")]
+impl approx::RelativeEq for SE2F32 {
+    #[inline]
+    fn default_max_relative() -> Self::Epsilon {
+        <SO2F32 as approx::RelativeEq>::default_max_relative()
+    }
+
+    #[inline]
+    fn relative_eq(
+        &self,
+        other: &Self,
+        epsilon: Self::Epsilon,
+        max_relative: Self::Epsilon,
+    ) -> bool {
+        self.r.relative_eq(&other.r, epsilon, max_relative)
+            && self.t.relative_eq(&other.t, epsilon, max_relative)
     }
 }
 

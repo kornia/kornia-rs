@@ -2,11 +2,11 @@
 //! Paper: [Lepetit et al., IJCV 2009](https://www.tugraz.at/fileadmin/user_upload/Institute/ICG/Images/team_lepetit/publications/lepetit_ijcv08.pdf)
 //! Reference: [OpenCV EPnP implementation](https://github.com/opencv/opencv/blob/4.x/modules/calib3d/src/epnp.cpp)
 
-use crate::ops::{compute_centroid, gauss_newton, intrinsics_as_vectors, pose_to_rt};
-use crate::pnp::{NumericTol, PnPError, PnPResult, PnPSolver};
+use super::ops::{compute_centroid, gauss_newton, intrinsics_as_vectors};
+use super::{NumericTol, PnPError, PnPResult, PnPSolver};
 use kornia_algebra::linalg::rigid::umeyama;
 use kornia_algebra::linalg::svd::svd3;
-use kornia_algebra::{Mat3AF32, Mat3F32, Vec3F32, SO3F32};
+use kornia_algebra::{Mat3AF32, Mat3F32, Vec2F32, Vec3AF32, Vec3F32, SO3F32};
 use kornia_imgproc::calibration::{
     distortion::{distort_point_polynomial, PolynomialDistortion},
     CameraIntrinsic,
@@ -20,9 +20,9 @@ impl PnPSolver for EPnP {
     type Param = EPnPParams;
 
     fn solve(
-        points_world: &[[f32; 3]],
-        points_image: &[[f32; 2]],
-        k: &[[f32; 3]; 3],
+        points_world: &[Vec3AF32],
+        points_image: &[Vec2F32],
+        k: &Mat3AF32,
         distortion: Option<&PolynomialDistortion>,
         params: &Self::Param,
     ) -> Result<PnPResult, PnPError> {
@@ -50,9 +50,9 @@ pub struct EPnPParams {
 /// - `t`: 3-vector translation
 /// - `rvec`: Rodrigues axis-angle representation of `R`
 pub fn solve_epnp(
-    points_world: &[[f32; 3]],
-    points_image: &[[f32; 2]],
-    k: &[[f32; 3]; 3],
+    points_world: &[Vec3AF32],
+    points_image: &[Vec2F32],
+    k: &Mat3AF32,
     distortion: Option<&PolynomialDistortion>,
     params: &EPnPParams,
 ) -> Result<PnPResult, PnPError> {
@@ -131,8 +131,8 @@ pub fn solve_epnp(
         .collect();
 
     let mut best_err = f32::INFINITY;
-    let mut best_r = [[1.0; 3]; 3];
-    let mut best_t = [0.0; 3];
+    let mut best_r = Mat3AF32::IDENTITY;
+    let mut best_t = Vec3AF32::ZERO;
 
     for bet in &betas_refined {
         let (r_c, t_c) = pose_from_betas(bet, &null4, &cw, &alphas)?;
@@ -144,19 +144,7 @@ pub fn solve_epnp(
         }
     }
 
-    let mat = Mat3AF32::from_cols_array(&[
-        best_r[0][0],
-        best_r[1][0],
-        best_r[2][0],
-        best_r[0][1],
-        best_r[1][1],
-        best_r[2][1],
-        best_r[0][2],
-        best_r[1][2],
-        best_r[2][2],
-    ]);
-    let rvec_f32 = SO3F32::from_matrix(&mat).log();
-    let rvec = [rvec_f32.x, rvec_f32.y, rvec_f32.z];
+    let rvec = SO3F32::from_matrix(&best_r).log();
 
     Ok(PnPResult {
         rotation: best_r,
@@ -172,49 +160,40 @@ pub fn solve_epnp(
 fn pose_from_betas(
     betas: &[f32; 4],
     null4: &DMatrix<f32>, // 12×4 matrix (V)
-    cw: &[[f32; 3]; 4],   // control points in world frame
+    cw: &[Vec3AF32; 4],   // control points in world frame
     alphas: &[[f32; 4]],  // barycentric coordinates for each world point
-) -> Result<([[f32; 3]; 3], [f32; 3]), PnPError> {
+) -> Result<(Mat3AF32, Vec3AF32), PnPError> {
     let beta_vec = Vector4::from_column_slice(betas);
     let cc_flat = null4 * beta_vec; // 12×1 vector
 
-    let mut cc: [[f32; 3]; 4] = [[0.0; 3]; 4];
+    let mut cc: [Vec3AF32; 4] = [Vec3AF32::ZERO; 4];
     for i in 0..4 {
-        cc[i][0] = cc_flat[3 * i];
-        cc[i][1] = cc_flat[3 * i + 1];
-        cc[i][2] = cc_flat[3 * i + 2];
+        cc[i] = Vec3AF32::new(cc_flat[3 * i], cc_flat[3 * i + 1], cc_flat[3 * i + 2]);
     }
 
     let a0 = alphas[0];
-    let mut pc0_vec = Vec3F32::ZERO;
+    let mut pc0_vec = Vec3AF32::ZERO;
     for j in 0..4 {
-        pc0_vec += Vec3F32::from_array(cc[j]) * a0[j];
+        pc0_vec += cc[j] * a0[j];
     }
 
     if pc0_vec.z < 0.0 {
         for pt in &mut cc {
-            pt[0] *= -1.0;
-            pt[1] *= -1.0;
-            pt[2] *= -1.0;
+            *pt *= -1.0;
         }
     }
 
-    // Convert arrays to Vec3F32 for umeyama
-    let cw_vec3: Vec<Vec3F32> = cw.iter().map(|p| Vec3F32::from_array(*p)).collect();
-    let cc_vec3: Vec<Vec3F32> = cc.iter().map(|p| Vec3F32::from_array(*p)).collect();
-
-    let (r, t, _s) = umeyama(&cw_vec3, &cc_vec3).map_err(|e| PnPError::SvdFailed(e.to_string()))?;
-
+    let (r, t, _s) = umeyama(cw, &cc).map_err(|e| PnPError::SvdFailed(e.to_string()))?;
     Ok((r, t))
 }
 
 /// Root-mean-square reprojection error in pixels.
 fn rmse_px(
-    points_world: &[[f32; 3]],
-    points_image: &[[f32; 2]],
-    r: &[[f32; 3]; 3],
-    t: &[f32; 3],
-    k: &[[f32; 3]; 3],
+    points_world: &[Vec3AF32],
+    points_image: &[Vec2F32],
+    r: &Mat3AF32,
+    t: &Vec3AF32,
+    k: &Mat3AF32,
     distortion: Option<&PolynomialDistortion>,
 ) -> Result<f32, PnPError> {
     if points_world.len() != points_image.len() {
@@ -226,13 +205,11 @@ fn rmse_px(
         });
     }
 
-    let fx = k[0][0];
-    let fy = k[1][1];
-    let cx = k[0][2];
-    let cy = k[1][2];
-
-    let (r_mat, t_vec) = pose_to_rt(r, t);
     let (intr_x, intr_y) = intrinsics_as_vectors(k);
+    let fx = k.x_axis().x;
+    let fy = k.y_axis().y;
+    let cx = k.z_axis().x;
+    let cy = k.z_axis().y;
 
     let mut sum_sq = 0.0;
     let n = points_world.len() as f32;
@@ -245,9 +222,8 @@ fn rmse_px(
         cy: cy as f64,
     };
 
-    for (pw_arr, &uv) in points_world.iter().zip(points_image.iter()) {
-        let pw = Vec3F32::from_array(*pw_arr);
-        let pc = r_mat * pw + t_vec; // camera-frame point
+    for (&pw, &uv) in points_world.iter().zip(points_image.iter()) {
+        let pc = *r * pw + *t; // camera-frame point
 
         let inv_z = 1.0 / pc.z;
         let u_undist = intr_x.dot(pc) * inv_z; // (fx * x + cx * z) / z
@@ -261,22 +237,23 @@ fn rmse_px(
             (u_undist, v_undist)
         };
 
-        let du = u_hat - uv[0];
-        let dv = v_hat - uv[1];
+        let du = u_hat - uv.x;
+        let dv = v_hat - uv.y;
         sum_sq += du.mul_add(du, dv * dv); // FMA where available
     }
 
     Ok((sum_sq / n).sqrt())
 }
 
-fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
+fn select_control_points(points_world: &[Vec3AF32]) -> [Vec3AF32; 4] {
     let n = points_world.len();
     let c = compute_centroid(points_world);
 
     // Compute covariance using glam for consistency
     let mut cov_mat = Mat3F32::from_cols_array(&[0.0; 9]);
     for p in points_world {
-        let diff = Vec3F32::new(p[0] - c[0], p[1] - c[1], p[2] - c[2]);
+        // svd3 currently expects Mat3F32; keep covariance math on Vec3F32.
+        let diff = Vec3F32::new(p.x - c.x, p.y - c.y, p.z - c.z);
         // Outer product diff * diffᵀ via column scaling
         let outer_product = Mat3F32::from_cols(diff * diff.x, diff * diff.y, diff * diff.z);
         cov_mat += outer_product;
@@ -294,20 +271,19 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
     let v_x = v.x_axis();
     let v_y = v.y_axis();
     let v_z = v.z_axis();
-    let mut axes_sig: Vec<(f32, Vec3F32)> = vec![
-        (s_diag[0].sqrt(), v_x),
-        (s_diag[1].sqrt(), v_y),
-        (s_diag[2].sqrt(), v_z),
+    let mut axes_sig: Vec<(f32, Vec3AF32)> = vec![
+        (s_diag[0].sqrt(), Vec3AF32::new(v_x.x, v_x.y, v_x.z)),
+        (s_diag[1].sqrt(), Vec3AF32::new(v_y.x, v_y.y, v_y.z)),
+        (s_diag[2].sqrt(), Vec3AF32::new(v_z.x, v_z.y, v_z.z)),
     ];
     axes_sig.sort_by(|a, b| b.0.total_cmp(&a.0));
 
-    let c_vec = Vec3F32::from_array(c);
-    let mut cw = [[0.0; 3]; 4];
+    let mut cw = [Vec3AF32::ZERO; 4];
     cw[0] = c;
 
     for (i, (sigma, axis)) in axes_sig.iter().enumerate() {
-        let cp = c_vec + *axis * *sigma;
-        cw[i + 1] = cp.to_array();
+        let cp = c + *axis * *sigma;
+        cw[i + 1] = cp;
     }
 
     cw
@@ -325,12 +301,13 @@ fn select_control_points(points_world: &[[f32; 3]]) -> [[f32; 3]; 4] {
 /// # Returns
 /// `Vec<[f32; 4]>` of length `N`. For each point, the weights `[a0, a1, a2, a3]` satisfy
 /// `a0 + a1 + a2 + a3 = 1` and `pw_i = sum_j(a_j * Cw_j)`.
-fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) -> Vec<[f32; 4]> {
+fn compute_barycentric(points_world: &[Vec3AF32], cw: &[Vec3AF32; 4], eps: f32) -> Vec<[f32; 4]> {
     // Build B = [C1 - C0, C2 - C0, C3 - C0].
-    let c0 = Vec3F32::new(cw[0][0], cw[0][1], cw[0][2]);
-    let d1 = Vec3F32::new(cw[1][0] - c0.x, cw[1][1] - c0.y, cw[1][2] - c0.z);
-    let d2 = Vec3F32::new(cw[2][0] - c0.x, cw[2][1] - c0.y, cw[2][2] - c0.z);
-    let d3 = Vec3F32::new(cw[3][0] - c0.x, cw[3][1] - c0.y, cw[3][2] - c0.z);
+    // Keep the linear algebra here on Mat3F32 for simplicity (svd3 and friends are Mat3F32-based).
+    let c0 = Vec3F32::new(cw[0].x, cw[0].y, cw[0].z);
+    let d1 = Vec3F32::new(cw[1].x - cw[0].x, cw[1].y - cw[0].y, cw[1].z - cw[0].z);
+    let d2 = Vec3F32::new(cw[2].x - cw[0].x, cw[2].y - cw[0].y, cw[2].z - cw[0].z);
+    let d3 = Vec3F32::new(cw[3].x - cw[0].x, cw[3].y - cw[0].y, cw[3].z - cw[0].z);
 
     let b = Mat3F32::from_cols(d1, d2, d3);
 
@@ -372,8 +349,8 @@ fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) 
     // Compute barycentric coordinates.
     points_world
         .iter()
-        .map(|p| {
-            let diff = Vec3F32::from_array(*p) - c0;
+        .map(|&p| {
+            let diff = Vec3F32::new(p.x - c0.x, p.y - c0.y, p.z - c0.z);
             let lamb = b_inv * diff;
             [1.0 - (lamb.x + lamb.y + lamb.z), lamb.x, lamb.y, lamb.z]
         })
@@ -392,8 +369,8 @@ fn compute_barycentric(points_world: &[[f32; 3]], cw: &[[f32; 3]; 4], eps: f32) 
 /// corresponding to a row of `M` (two rows per correspondence). Returns an error if the input slices differ in length.
 fn build_m(
     alphas: &[[f32; 4]],
-    points_image: &[[f32; 2]],
-    k: &[[f32; 3]; 3],
+    points_image: &[Vec2F32],
+    k: &Mat3AF32,
 ) -> Result<Vec<[f32; 12]>, PnPError> {
     if alphas.len() != points_image.len() {
         return Err(PnPError::MismatchedArrayLengths {
@@ -405,17 +382,17 @@ fn build_m(
     }
     let n = alphas.len();
 
-    let fu = k[0][0];
-    let fv = k[1][1];
-    let uc = k[0][2];
-    let vc = k[1][2];
+    let fu = k.x_axis().x;
+    let fv = k.y_axis().y;
+    let uc = k.z_axis().x;
+    let vc = k.z_axis().y;
 
     // Pre-allocate 2N rows of zeros.
     let mut m = vec![[0.0f32; 12]; 2 * n];
 
     for (i, (a, &points_image_i)) in alphas.iter().zip(points_image.iter()).enumerate() {
-        let u = points_image_i[0];
-        let v = points_image_i[1];
+        let u = points_image_i.x;
+        let v = points_image_i.y;
 
         let row_x = 2 * i;
         let row_y = row_x + 1;
@@ -549,10 +526,12 @@ fn estimate_beta<const K: usize>(
 const CP_PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 
 /// Compute the six squared distances (ρ vector) between the 4 control points.
-fn rho_ctrlpts(cw: &[[f32; 3]; 4]) -> [f32; 6] {
+fn rho_ctrlpts(cw: &[Vec3AF32; 4]) -> [f32; 6] {
     CP_PAIRS.map(|(i, j)| {
-        let diff = Vec3F32::from_array(cw[i]) - Vec3F32::from_array(cw[j]);
-        diff.dot(diff)
+        let dx = cw[i].x - cw[j].x;
+        let dy = cw[i].y - cw[j].y;
+        let dz = cw[i].z - cw[j].z;
+        dx.mul_add(dx, dy.mul_add(dy, dz * dz))
     })
 }
 
@@ -564,40 +543,42 @@ mod solve_epnp_tests {
     #[test]
     fn test_solve_epnp() -> Result<(), PnPError> {
         // Hardcoded test data verified with OpenCV
-        let points_world: [[f32; 3]; 6] = [
-            [0.0315, 0.03333, -0.10409],
-            [-0.0315, 0.03333, -0.10409],
-            [0.0, -0.00102, -0.12977],
-            [0.02646, -0.03167, -0.1053],
-            [-0.02646, -0.031667, -0.1053],
-            [0.0, 0.04515, -0.11033],
+        let points_world: [Vec3AF32; 6] = [
+            Vec3AF32::new(0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(-0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(0.0, -0.00102, -0.12977),
+            Vec3AF32::new(0.02646, -0.03167, -0.1053),
+            Vec3AF32::new(-0.02646, -0.031667, -0.1053),
+            Vec3AF32::new(0.0, 0.04515, -0.11033),
         ];
 
         // Image points (uv)
-        let points_image: [[f32; 2]; 6] = [
-            [722.96466, 502.0828],
-            [669.88837, 498.61877],
-            [707.0025, 478.48975],
-            [728.05634, 447.56918],
-            [682.6069, 443.91776],
-            [696.4414, 511.96442],
+        let points_image: [Vec2F32; 6] = [
+            Vec2F32::new(722.96466, 502.0828),
+            Vec2F32::new(669.88837, 498.61877),
+            Vec2F32::new(707.0025, 478.48975),
+            Vec2F32::new(728.05634, 447.56918),
+            Vec2F32::new(682.6069, 443.91776),
+            Vec2F32::new(696.4414, 511.96442),
         ];
 
-        let k: [[f32; 3]; 3] = [[800.0, 0.0, 640.0], [0.0, 800.0, 480.0], [0.0, 0.0, 1.0]];
+        let k = Mat3AF32::from_cols(
+            Vec3AF32::new(800.0, 0.0, 0.0),
+            Vec3AF32::new(0.0, 800.0, 0.0),
+            Vec3AF32::new(640.0, 480.0, 1.0),
+        );
 
         let cw = select_control_points(&points_world);
 
         let alphas = compute_barycentric(&points_world, &cw, EPnPParams::default().tol.eps);
 
         for (p, alpha) in points_world.iter().zip(alphas.iter()) {
-            let mut recon = [0.0; 3];
+            let mut recon = Vec3AF32::ZERO;
             for j in 0..4 {
-                recon[0] += alpha[j] * cw[j][0];
-                recon[1] += alpha[j] * cw[j][1];
-                recon[2] += alpha[j] * cw[j][2];
+                recon += cw[j] * alpha[j];
             }
             for k in 0..3 {
-                assert_relative_eq!(recon[k], p[k], epsilon = 1e-6);
+                assert_relative_eq!(recon.to_array()[k], p.to_array()[k], epsilon = 1e-6);
             }
 
             assert_relative_eq!(alpha.iter().sum::<f32>(), 1.0, epsilon = 1e-9);
@@ -609,13 +590,13 @@ mod solve_epnp_tests {
             assert_eq!(row.len(), 12);
         }
 
-        let fu = k[0][0];
-        let fv = k[1][1];
-        let uc = k[0][2];
-        let vc = k[1][2];
+        let fu = k.x_axis().x;
+        let fv = k.y_axis().y;
+        let uc = k.z_axis().x;
+        let vc = k.z_axis().y;
 
-        let u0 = points_image[0][0];
-        let v0 = points_image[0][1];
+        let u0 = points_image[0].x;
+        let v0 = points_image[0].y;
 
         let mut expected_x = [0.0; 12];
         let mut expected_y = [0.0; 12];
@@ -645,21 +626,22 @@ mod solve_epnp_tests {
         let t = result.translation;
         let rvec = result.rvec;
 
-        assert_relative_eq!(r[0][0], 0.6965054, epsilon = 1e-2);
-        assert_relative_eq!(r[0][1], 0.07230615, epsilon = 1e-2);
-        assert_relative_eq!(r[0][2], -0.71389916, epsilon = 1e-2);
-        assert_relative_eq!(r[1][0], 0.2240602, epsilon = 1e-2);
-        assert_relative_eq!(r[1][1], 0.92324643, epsilon = 1e-2);
-        assert_relative_eq!(r[1][2], 0.31211066, epsilon = 1e-2);
-        assert_relative_eq!(r[2][0], 0.6816724, epsilon = 1e-2);
+        // Mat3F32 stores columns; r[row][col] == column(col)[row].
+        assert_relative_eq!(r.x_axis().x, 0.6965054, epsilon = 1e-2);
+        assert_relative_eq!(r.y_axis().x, 0.07230615, epsilon = 1e-2);
+        assert_relative_eq!(r.z_axis().x, -0.71389916, epsilon = 1e-2);
+        assert_relative_eq!(r.x_axis().y, 0.2240602, epsilon = 1e-2);
+        assert_relative_eq!(r.y_axis().y, 0.92324643, epsilon = 1e-2);
+        assert_relative_eq!(r.z_axis().y, 0.31211066, epsilon = 1e-2);
+        assert_relative_eq!(r.x_axis().z, 0.6816724, epsilon = 1e-2);
 
-        assert_relative_eq!(t[0], -0.00861299, epsilon = 1e-2);
-        assert_relative_eq!(t[1], 0.02666388, epsilon = 1e-2);
-        assert_relative_eq!(t[2], 1.014955, epsilon = 1e-2);
+        assert_relative_eq!(t.x, -0.00861299, epsilon = 1e-2);
+        assert_relative_eq!(t.y, 0.02666388, epsilon = 1e-2);
+        assert_relative_eq!(t.z, 1.014955, epsilon = 1e-2);
 
-        assert_relative_eq!(rvec[0], -0.39580156, epsilon = 1e-2);
-        assert_relative_eq!(rvec[1], -0.8011695, epsilon = 1e-2);
-        assert_relative_eq!(rvec[2], 0.08711894, epsilon = 1e-2);
+        assert_relative_eq!(rvec.x, -0.39580156, epsilon = 1e-2);
+        assert_relative_eq!(rvec.y, -0.8011695, epsilon = 1e-2);
+        assert_relative_eq!(rvec.z, 0.08711894, epsilon = 1e-2);
         Ok(())
     }
 }

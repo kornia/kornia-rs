@@ -2,8 +2,8 @@ use core::f64;
 
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
 
-use crate::ops::{find_correspondences, fit_transformation, update_transformation};
-use kornia_3d::{linalg::transform_points3d, pointcloud::PointCloud};
+use super::ops::{find_correspondences, fit_transformation, update_transformation};
+use crate::{linalg::transform_points3d, pointcloud::PointCloud};
 
 /// Result of the ICP algorithm.
 ///
@@ -147,7 +147,7 @@ pub fn icp_vanilla(
 mod tests {
 
     use super::{icp_vanilla, ICPConvergenceCriteria};
-    use kornia_3d::{
+    use crate::{
         linalg::transform_points3d, pointcloud::PointCloud,
         transforms::axis_angle_to_rotation_matrix,
     };

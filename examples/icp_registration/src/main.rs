@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use kornia::k3d;
 use kornia::k3d::pointcloud::PointCloud;
-use kornia_icp as kicp;
+use kornia::k3d::registration as kicp;
 
 #[derive(FromArgs)]
 /// Example of ICP registration

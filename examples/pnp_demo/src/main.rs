@@ -1,9 +1,10 @@
 use argh::FromArgs;
+use kornia_3d::pnp as kpnp;
+use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::{
     distortion::{distort_point_polynomial, PolynomialDistortion},
     CameraIntrinsic,
 };
-use kornia_pnp as kpnp;
 use rand::Rng;
 
 #[derive(FromArgs, Debug)]
@@ -23,7 +24,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rec = rerun::RecordingStreamBuilder::new("PnP Demo").spawn()?;
 
     // Camera intrinsics (pinhole, fx=fy=800, cx=640, cy=480)
-    let k = [[800.0, 0.0, 640.0], [0.0, 800.0, 480.0], [0.0, 0.0, 1.0]];
+    let k = Mat3AF32::from_cols(
+        Vec3AF32::new(800.0, 0.0, 0.0),
+        Vec3AF32::new(0.0, 800.0, 0.0),
+        Vec3AF32::new(640.0, 480.0, 1.0),
+    );
 
     // Intrinsics for distortion API (f64)
     let cam_intr = CameraIntrinsic {
@@ -49,14 +54,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cube_size = 1.0;
     let half = cube_size / 2.0;
     let mut world_pts = vec![
-        [-half, -half, 0.0],
-        [half, -half, 0.0],
-        [half, half, 0.0],
-        [-half, half, 0.0],
-        [-half, -half, cube_size],
-        [half, -half, cube_size],
-        [half, half, cube_size],
-        [-half, half, cube_size],
+        Vec3AF32::new(-half, -half, 0.0),
+        Vec3AF32::new(half, -half, 0.0),
+        Vec3AF32::new(half, half, 0.0),
+        Vec3AF32::new(-half, half, 0.0),
+        Vec3AF32::new(-half, -half, cube_size),
+        Vec3AF32::new(half, -half, cube_size),
+        Vec3AF32::new(half, half, cube_size),
+        Vec3AF32::new(-half, half, cube_size),
     ];
 
     // Add evenly spaced samples along the 12 cube edges for better structure.
@@ -81,17 +86,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let p1 = world_pts[b];
         for i in 1..num_div {
             let t = i as f32 / num_div as f32;
-            let x = p0[0] * (1.0 - t) + p1[0] * t;
-            let y = p0[1] * (1.0 - t) + p1[1] * t;
-            let z = p0[2] * (1.0 - t) + p1[2] * t;
-            world_pts.push([x, y, z]);
+            let x = p0.x * (1.0 - t) + p1.x * t;
+            let y = p0.y * (1.0 - t) + p1.y * t;
+            let z = p0.z * (1.0 - t) + p1.z * t;
+            world_pts.push(Vec3AF32::new(x, y, z));
         }
     }
 
     // Log the cube points (yellow)
     let p3d = world_pts
         .iter()
-        .map(|p| rerun::Position3D::new(p[0], p[1], p[2]))
+        .map(|p| rerun::Position3D::new(p.x, p.y, p.z))
         .collect::<Vec<_>>();
     let color_cube = rerun::Color::from_rgb(255, 215, 0); // gold
     rec.log(
@@ -109,28 +114,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (cr, sr) = (roll.cos(), roll.sin());
 
     // R = Rz * Ry * Rx
-    let gt_r = [
-        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-        [-sp, cp * sr, cp * cr],
-    ];
-    let gt_t = [0.7, -0.4, 5.0];
+    let r00 = cy * cp;
+    let r01 = cy * sp * sr - sy * cr;
+    let r02 = cy * sp * cr + sy * sr;
+    let r10 = sy * cp;
+    let r11 = sy * sp * sr + cy * cr;
+    let r12 = sy * sp * cr - cy * sr;
+    let r20 = -sp;
+    let r21 = cp * sr;
+    let r22 = cp * cr;
+    let gt_r = Mat3AF32::from_cols(
+        Vec3AF32::new(r00, r10, r20),
+        Vec3AF32::new(r01, r11, r21),
+        Vec3AF32::new(r02, r12, r22),
+    );
+    let gt_t = Vec3AF32::new(0.7, -0.4, 5.0);
 
     // Project points to image plane + apply distortion + add small noise
     let mut rng = rand::rng();
     let sigma_px = 0.5; // pixel noise
-    let image_pts: Vec<[f32; 2]> = world_pts
+    let fx = k.x_axis().x;
+    let fy = k.y_axis().y;
+    let cx = k.z_axis().x;
+    let cy = k.z_axis().y;
+    let image_pts: Vec<Vec2F32> = world_pts
         .iter()
         .map(|p| {
-            let x_c = gt_r[0][0] * p[0] + gt_r[0][1] * p[1] + gt_r[0][2] * p[2] + gt_t[0];
-            let y_c = gt_r[1][0] * p[0] + gt_r[1][1] * p[1] + gt_r[1][2] * p[2] + gt_t[1];
-            let z_c = gt_r[2][0] * p[0] + gt_r[2][1] * p[1] + gt_r[2][2] * p[2] + gt_t[2];
-            let u = k[0][0] * x_c / z_c + k[0][2];
-            let v = k[1][1] * y_c / z_c + k[1][2];
+            let pc = gt_r * *p + gt_t;
+            let u = fx * pc.x / pc.z + cx;
+            let v = fy * pc.y / pc.z + cy;
             let (ud, vd) = distort_point_polynomial(u as f64, v as f64, &cam_intr, &distortion);
             let ud = ud as f32 + rng.random::<f32>() * sigma_px;
             let vd = vd as f32 + rng.random::<f32>() * sigma_px;
-            [ud, vd]
+            Vec2F32::new(ud, vd)
         })
         .collect();
 
@@ -183,10 +199,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Log observed 2D points (all green since we're using clean data)
-    let img_obs = image_pts
-        .iter()
-        .map(|uv| (uv[0], uv[1]))
-        .collect::<Vec<_>>();
+    let img_obs = image_pts.iter().map(|uv| (uv.x, uv.y)).collect::<Vec<_>>();
     rec.log_static(
         "image/observed",
         &rerun::Points2D::new(img_obs).with_colors([[0, 255, 0]]), // Green for all points
@@ -197,11 +210,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t_est = result.translation;
     let mut img_reproj = Vec::with_capacity(world_pts.len());
     for p in &world_pts {
-        let x_c = r_est[0][0] * p[0] + r_est[0][1] * p[1] + r_est[0][2] * p[2] + t_est[0];
-        let y_c = r_est[1][0] * p[0] + r_est[1][1] * p[1] + r_est[1][2] * p[2] + t_est[1];
-        let z_c = r_est[2][0] * p[0] + r_est[2][1] * p[1] + r_est[2][2] * p[2] + t_est[2];
-        let u = k[0][0] * x_c / z_c + k[0][2];
-        let v = k[1][1] * y_c / z_c + k[1][2];
+        let pc = r_est * *p + t_est;
+        let u = fx * pc.x / pc.z + cx;
+        let v = fy * pc.y / pc.z + cy;
         let (ud, vd) = distort_point_polynomial(u as f64, v as f64, &cam_intr, &distortion);
         img_reproj.push((ud as f32, vd as f32));
     }
@@ -211,28 +222,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // Compute camera center in world coordinates: C = -R^T * t
-    let r = result.rotation;
-    let t = result.translation;
-    let camera_center = [
-        -(r[0][0] * t[0] + r[1][0] * t[1] + r[2][0] * t[2]),
-        -(r[0][1] * t[0] + r[1][1] * t[1] + r[2][1] * t[2]),
-        -(r[0][2] * t[0] + r[1][2] * t[1] + r[2][2] * t[2]),
-    ];
+    let camera_center = -(result.rotation.transpose() * result.translation);
     rec.log(
         "camera_center",
         &rerun::Points3D::new(vec![rerun::Position3D::new(
-            camera_center[0],
-            camera_center[1],
-            camera_center[2],
+            camera_center.x,
+            camera_center.y,
+            camera_center.z,
         )])
         .with_colors(vec![rerun::Color::from_rgb(255, 165, 0)]), // orange
     )?;
 
     // Compute pose accuracy
-    let trans_error = ((result.translation[0] - gt_t[0]).powi(2)
-        + (result.translation[1] - gt_t[1]).powi(2)
-        + (result.translation[2] - gt_t[2]).powi(2))
-    .sqrt();
+    let trans_error = (result.translation - gt_t).length();
 
     println!("\n=== Results ===");
     println!("Translation error: {trans_error:.3} units");

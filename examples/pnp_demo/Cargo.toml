@@ -15,7 +15,8 @@ version.workspace = true
 [dependencies]
 rand = { workspace = true }
 rerun = { workspace = true }
-kornia-pnp = { workspace = true }
+kornia-3d = { workspace = true }
+kornia-algebra = { workspace = true }
 kornia-imgproc = { workspace = true }
 env_logger = { workspace = true }
 argh = "0.1"

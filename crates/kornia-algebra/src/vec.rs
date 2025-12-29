@@ -96,6 +96,47 @@ macro_rules! define_vector_type {
             }
         }
 
+        #[cfg(feature = "approx")]
+        impl approx::AbsDiffEq for $name {
+            type Epsilon = <$scalar as approx::AbsDiffEq>::Epsilon;
+
+            #[inline]
+            fn default_epsilon() -> Self::Epsilon {
+                <$scalar as approx::AbsDiffEq>::default_epsilon()
+            }
+
+            #[inline]
+            fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
+                let a: $array = (*self).to_array();
+                let b: $array = (*other).to_array();
+                a.iter()
+                    .zip(b.iter())
+                    .all(|(ai, bi)| <$scalar as approx::AbsDiffEq>::abs_diff_eq(ai, bi, epsilon))
+            }
+        }
+
+        #[cfg(feature = "approx")]
+        impl approx::RelativeEq for $name {
+            #[inline]
+            fn default_max_relative() -> Self::Epsilon {
+                <$scalar as approx::RelativeEq>::default_max_relative()
+            }
+
+            #[inline]
+            fn relative_eq(
+                &self,
+                other: &Self,
+                epsilon: Self::Epsilon,
+                max_relative: Self::Epsilon,
+            ) -> bool {
+                let a: $array = (*self).to_array();
+                let b: $array = (*other).to_array();
+                a.iter().zip(b.iter()).all(|(ai, bi)| {
+                    <$scalar as approx::RelativeEq>::relative_eq(ai, bi, epsilon, max_relative)
+                })
+            }
+        }
+
         // Arithmetic operations implemented via glam.
         impl std::ops::Add for $name {
             type Output = Self;

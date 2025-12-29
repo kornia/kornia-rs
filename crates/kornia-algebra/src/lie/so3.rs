@@ -2,7 +2,7 @@ use crate::{Mat3AF32, Mat4F32, QuatF32, Vec3AF32};
 use rand::Rng;
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SO3F32 {
     pub q: QuatF32,
 }
@@ -208,6 +208,39 @@ impl std::ops::Mul<Vec3AF32> for SO3F32 {
     fn mul(self, rhs: Vec3AF32) -> Self::Output {
         let result = self.q.mul_vec3([rhs.x, rhs.y, rhs.z]);
         Vec3AF32::new(result[0], result[1], result[2])
+    }
+}
+
+#[cfg(feature = "approx")]
+impl approx::AbsDiffEq for SO3F32 {
+    type Epsilon = <QuatF32 as approx::AbsDiffEq>::Epsilon;
+
+    #[inline]
+    fn default_epsilon() -> Self::Epsilon {
+        <QuatF32 as approx::AbsDiffEq>::default_epsilon()
+    }
+
+    #[inline]
+    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
+        self.q.abs_diff_eq(&other.q, epsilon)
+    }
+}
+
+#[cfg(feature = "approx")]
+impl approx::RelativeEq for SO3F32 {
+    #[inline]
+    fn default_max_relative() -> Self::Epsilon {
+        <QuatF32 as approx::RelativeEq>::default_max_relative()
+    }
+
+    #[inline]
+    fn relative_eq(
+        &self,
+        other: &Self,
+        epsilon: Self::Epsilon,
+        max_relative: Self::Epsilon,
+    ) -> bool {
+        self.q.relative_eq(&other.q, epsilon, max_relative)
     }
 }
 
