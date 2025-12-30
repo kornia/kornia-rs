@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 use kornia_imgproc::threshold::threshold_binary;
-use kornia_imgproc::parallel::ExecutionStrategy; // <--- Import the enum
+use kornia_imgproc::parallel::ExecutionStrategy;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -31,6 +31,14 @@ fn bench_threshold(c: &mut Criterion) {
     group.bench_with_input(BenchmarkId::new("binary_auto", format!("{}x{}", w, h)), &src, |b, src| {
         b.iter(|| {
             threshold_binary(src, &mut dst, 127, 255, ExecutionStrategy::Auto).unwrap();
+        })
+    });
+
+    // 3. Benchmark Fixed (Custom Pool) Execution
+    // This demonstrates the overhead of creating a pool per call
+    group.bench_with_input(BenchmarkId::new("binary_fixed_4", format!("{}x{}", w, h)), &src, |b, src| {
+        b.iter(|| {
+            threshold_binary(src, &mut dst, 127, 255, ExecutionStrategy::Fixed(4)).unwrap();
         })
     });
 
