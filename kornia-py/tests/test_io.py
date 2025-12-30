@@ -52,7 +52,7 @@ def _test_write_read_impl(
 def test_read_image_jpeg():
     # load an image with libjpeg-turbo
     img_path: Path = DATA_DIR / "dog.jpeg"
-    img: np.ndarray = K.io.read_image_jpeg(str(img_path.absolute()), "rgb")
+    img: np.ndarray = K.io.read_image(str(img_path.absolute()), "rgb")
 
     # check the image properties
     assert img.shape == (195, 258, 3)
@@ -95,7 +95,7 @@ def test_decode_image_png_u8():
     img_path: Path = DATA_DIR / "dog.png"
     with open(img_path, "rb") as f:
         img_data = f.read()
-    img: np.ndarray = K.decode_image_png_u8(bytes(img_data), (195, 258), "rgb")
+    img: np.ndarray = K.io.decode_image_png_u8(bytes(img_data), (195, 258), "rgb")
 
     # check the image properties
     assert img.shape == (195, 258, 3)
@@ -110,7 +110,8 @@ def test_decode_image_png_u16():
     with open(img_path, "rb") as f:
         img_data = f.read()
     # img_size: np.ndarray = np.array([32, 32])
-    img: np.ndarray = K.decode_image_png_u16(bytes(img_data), (32, 32), "rgb")
+    img: np.ndarray = K.io.decode_image_png_u16(bytes(img_data), (32, 32), "rgb")
+
 
     # check the image properties
     assert img.shape == (32, 32, 3)
@@ -191,7 +192,7 @@ def test_read_image():
 def test_decompress():
     # load an image with libjpeg-turbo
     img_path: Path = DATA_DIR / "dog.jpeg"
-    img: np.ndarray = K.io.read_image_jpeg(str(img_path), "rgb")
+    img: np.ndarray = K.io.read_image(str(img_path), "rgb")
 
     image_encoder = K.io.ImageEncoder()
     image_encoded: list[int] = image_encoder.encode(img)
@@ -260,7 +261,7 @@ def test_write_read_jpeg_mono8():
 def test_encode_image_jpeg():
     # Load test image
     img_path: Path = DATA_DIR / "dog.jpeg"
-    img: np.ndarray = K.io.read_image_jpeg(str(img_path.absolute()), "rgb")
+    img: np.ndarray = K.io.read_image(str(img_path.absolute()), "rgb")
 
     # Encode to JPEG bytes
     jpeg_bytes: bytes = K.io.encode_image_jpeg(img, quality=95)
@@ -285,8 +286,8 @@ def test_write_read_jpegturbo():
         dtype=np.uint8,
         channels=3,
         file_name="test_write_read_jpegturbo.jpg",
-        fcn_write=K.write_image_jpegturbo,
-        fcn_read=K.read_image_jpegturbo,
+        fcn_write=K.io.write_image_jpegturbo,
+        fcn_read=K.io.read_image_jpegturbo,
         quality=100,
     )
 
@@ -297,8 +298,8 @@ def test_write_read_tiff_rgb8():
         channels=3,
         mode="rgb",
         file_name="test_write_read_tiff.tiff",
-        fcn_write=K.write_image_tiff_u8,
-        fcn_read=K.read_image_tiff_u8,
+        fcn_write=K.io.write_image_tiff_u8,
+        fcn_read=K.io.read_image_tiff_u8,
     )
 
 
@@ -308,8 +309,8 @@ def test_write_read_tiff_mono8():
         channels=1,
         mode="mono",
         file_name="test_write_read_tiff.tiff",
-        fcn_write=K.write_image_tiff_u8,
-        fcn_read=K.read_image_tiff_u8,
+        fcn_write=K.io.write_image_tiff_u8,
+        fcn_read=K.io.read_image_tiff_u8,
     )
 
 
@@ -319,8 +320,8 @@ def test_write_read_tiff_rgb16():
         channels=3,
         mode="rgb",
         file_name="test_write_read_tiff.tiff",
-        fcn_write=K.write_image_tiff_u16,
-        fcn_read=K.read_image_tiff_u16,
+        fcn_write=K.io.write_image_tiff_u16,
+        fcn_read=K.io.read_image_tiff_u16,
     )
 
 
@@ -330,8 +331,8 @@ def test_write_read_tiff_mono16():
         channels=1,
         mode="mono",
         file_name="test_write_read_tiff.tiff",
-        fcn_write=K.write_image_tiff_u16,
-        fcn_read=K.read_image_tiff_u16,
+        fcn_write=K.io.write_image_tiff_u16,
+        fcn_read=K.io.read_image_tiff_u16,
     )
 
 
@@ -341,8 +342,8 @@ def test_write_read_tiff_rgbf32():
         channels=3,
         mode="rgb",
         file_name="test_write_read_tiff.tiff",
-        fcn_write=K.write_image_tiff_f32,
-        fcn_read=K.read_image_tiff_f32,
+        fcn_write=K.io.write_image_tiff_f32,
+        fcn_read=K.io.read_image_tiff_f32,
     )
 
 
@@ -352,8 +353,8 @@ def test_write_read_tiff_monof32():
         channels=1,
         mode="mono",
         file_name="test_write_read_tiff.tiff",
-        fcn_write=K.write_image_tiff_f32,
-        fcn_read=K.read_image_tiff_f32,
+        fcn_write=K.io.write_image_tiff_f32,
+        fcn_read=K.io.read_image_tiff_f32,
     )
 
 
@@ -396,8 +397,8 @@ def test_write_read_png_mono16():
         channels=1,
         mode="mono",
         file_name="test_write_read_png.png",
-        fcn_write=K.write_image_png_u16,
-        fcn_read=K.read_image_png_u16,
+        fcn_write=K.io.write_image_png_u16,
+        fcn_read=K.io.read_image_png_u16,
     )
 
 
@@ -407,8 +408,8 @@ def test_write_read_png_rgb16():
         channels=3,
         mode="rgb",
         file_name="test_write_read_png.png",
-        fcn_write=K.write_image_png_u16,
-        fcn_read=K.read_image_png_u16,
+        fcn_write=K.io.write_image_png_u16,
+        fcn_read=K.io.read_image_png_u16,
     )
 
 
@@ -418,6 +419,6 @@ def test_write_read_png_rgba16():
         channels=4,
         mode="rgba",
         file_name="test_write_read_png.png",
-        fcn_write=K.write_image_png_u16,
-        fcn_read=K.read_image_png_u16,
+        fcn_write=K.io.write_image_png_u16,
+        fcn_read=K.io.read_image_png_u16,
     )

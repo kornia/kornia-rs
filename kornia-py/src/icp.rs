@@ -43,6 +43,20 @@ pub struct PyICPResult(pub ICPResult);
 
 #[pymethods]
 impl PyICPResult {
+    #[new]
+    pub fn new() -> Self {
+        Self(ICPResult {
+            rotation: [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            translation: [0.0, 0.0, 0.0],
+            num_iterations: 0,
+            rmse: 0.0,
+        })
+    }
+
     #[getter]
     pub fn rotation(&self) -> [[f64; 3]; 3] {
         self.0.rotation
@@ -65,8 +79,11 @@ impl PyICPResult {
 
     fn __repr__(&self) -> String {
         format!(
-            "ICPResult(num_iterations={}, rmse={:.6})",
-            self.0.num_iterations, self.0.rmse
+            "ICPResult(num_iterations={}, rmse={:.6}, rotation={:?}, translation={:?})",
+            self.0.num_iterations,
+            self.0.rmse,
+            self.0.rotation,
+            self.0.translation
         )
     }
 }
