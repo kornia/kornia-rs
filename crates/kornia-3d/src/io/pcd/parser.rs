@@ -45,6 +45,7 @@ impl PcdLayout {
             .ok_or(PcdError::UnsupportedProperty)
     }
 }
+
 /// Read a little-endian f32 from a byte buffer
 #[inline]
 fn read_f32(buf: &[u8], offset: usize) -> Result<f32, PcdError> {
@@ -53,6 +54,7 @@ fn read_f32(buf: &[u8], offset: usize) -> Result<f32, PcdError> {
     bytes.copy_from_slice(slice);
     Ok(f32::from_le_bytes(bytes))
 }
+
 /// Read a little-endian u32 from a byte buffer
 #[inline]
 fn read_u32(buf: &[u8], offset: usize) -> Result<u32, PcdError> {
