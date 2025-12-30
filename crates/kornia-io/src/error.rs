@@ -49,8 +49,13 @@ pub enum IoError {
     PngDecodeError(String),
 
     /// Error when PNG color type doesn't match expected type.
-    #[error("PNG color type mismatch. Expected {0}, but found {1}")]
-    PngColorTypeMismatch(String, String),
+    #[error("Invalid PNG color type (expected {expected}, found {found})")]
+    PngColorTypeMismatch {
+        /// Expected color type
+        expected: String,
+        /// Found color type
+        found: String,
+    },
 
     /// Error to decode the TIFF image.
     #[error(transparent)]

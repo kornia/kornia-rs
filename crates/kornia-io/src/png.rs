@@ -17,8 +17,6 @@ use std::{
 
 /// Read a PNG image as grayscale (Gray8).
 ///
-/// # Deprecation warning: prefer using `kornia_rs.read_image()` which auto-detects format and type.
-///
 /// # Arguments
 ///
 /// * `file_path` - The path to the PNG file.
@@ -31,15 +29,11 @@ use std::{
 ///
 /// Returns `IoError::PngColorTypeMismatch` if the PNG color type is not Grayscale.
 pub fn read_image_png_mono8(file_path: impl AsRef<Path>) -> Result<Gray8<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path, ColorType::Grayscale)?;
-    Ok(Gray8::from_size_vec(size.into(), buf, CpuAllocator)?)
+    let (buf, layout) = read_png_impl(file_path, ColorType::Grayscale)?;
+    Ok(Gray8::from_size_vec(layout.image_size, buf, CpuAllocator)?)
 }
 
 /// Read a PNG image as RGB8.
-///
-/// # Deprecation Note
-///
-/// For Python users: prefer using `kornia_rs.read_image()` which auto-detects format and type.
 ///
 /// # Arguments
 ///
@@ -53,15 +47,11 @@ pub fn read_image_png_mono8(file_path: impl AsRef<Path>) -> Result<Gray8<CpuAllo
 ///
 /// Returns `IoError::PngColorTypeMismatch` if the PNG color type is not RGB.
 pub fn read_image_png_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path, ColorType::Rgb)?;
-    Ok(Rgb8::from_size_vec(size.into(), buf, CpuAllocator)?)
+    let (buf, layout) = read_png_impl(file_path, ColorType::Rgb)?;
+    Ok(Rgb8::from_size_vec(layout.image_size, buf, CpuAllocator)?)
 }
 
 /// Read a PNG image as RGBA8.
-///
-/// # Deprecation Note
-///
-/// For Python users: prefer using `kornia_rs.read_image()` which auto-detects format and type.
 ///
 /// # Arguments
 ///
@@ -75,15 +65,11 @@ pub fn read_image_png_rgb8(file_path: impl AsRef<Path>) -> Result<Rgb8<CpuAlloca
 ///
 /// Returns `IoError::PngColorTypeMismatch` if the PNG color type is not RGBA.
 pub fn read_image_png_rgba8(file_path: impl AsRef<Path>) -> Result<Rgba8<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path, ColorType::Rgba)?;
-    Ok(Rgba8::from_size_vec(size.into(), buf, CpuAllocator)?)
+    let (buf, layout) = read_png_impl(file_path, ColorType::Rgba)?;
+    Ok(Rgba8::from_size_vec(layout.image_size, buf, CpuAllocator)?)
 }
 
 /// Read a PNG image as RGB16.
-///
-/// # Deprecation Note
-///
-/// For Python users: prefer using `kornia_rs.read_image()` which auto-detects format and type.
 ///
 /// # Arguments
 ///
@@ -97,17 +83,17 @@ pub fn read_image_png_rgba8(file_path: impl AsRef<Path>) -> Result<Rgba8<CpuAllo
 ///
 /// Returns `IoError::PngColorTypeMismatch` if the PNG color type is not RGB.
 pub fn read_image_png_rgb16(file_path: impl AsRef<Path>) -> Result<Rgb16<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path, ColorType::Rgb)?;
+    let (buf, layout) = read_png_impl(file_path, ColorType::Rgb)?;
     let buf_u16 = convert_buf_u8_u16(buf);
 
-    Ok(Rgb16::from_size_vec(size.into(), buf_u16, CpuAllocator)?)
+    Ok(Rgb16::from_size_vec(
+        layout.image_size,
+        buf_u16,
+        CpuAllocator,
+    )?)
 }
 
 /// Read a PNG image as RGBA16.
-///
-/// # Deprecation Note
-///
-/// For Python users: prefer using `kornia_rs.read_image()` which auto-detects format and type.
 ///
 /// # Arguments
 ///
@@ -121,17 +107,17 @@ pub fn read_image_png_rgb16(file_path: impl AsRef<Path>) -> Result<Rgb16<CpuAllo
 ///
 /// Returns `IoError::PngColorTypeMismatch` if the PNG color type is not RGBA.
 pub fn read_image_png_rgba16(file_path: impl AsRef<Path>) -> Result<Rgba16<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path, ColorType::Rgba)?;
+    let (buf, layout) = read_png_impl(file_path, ColorType::Rgba)?;
     let buf_u16 = convert_buf_u8_u16(buf);
 
-    Ok(Rgba16::from_size_vec(size.into(), buf_u16, CpuAllocator)?)
+    Ok(Rgba16::from_size_vec(
+        layout.image_size,
+        buf_u16,
+        CpuAllocator,
+    )?)
 }
 
 /// Read a PNG image as grayscale (Gray16).
-///
-/// # Deprecation Note
-///
-/// For Python users: prefer using `kornia_rs.read_image()` which auto-detects format and type.
 ///
 /// # Arguments
 ///
@@ -145,10 +131,14 @@ pub fn read_image_png_rgba16(file_path: impl AsRef<Path>) -> Result<Rgba16<CpuAl
 ///
 /// Returns `IoError::PngColorTypeMismatch` if the PNG color type is not Grayscale.
 pub fn read_image_png_mono16(file_path: impl AsRef<Path>) -> Result<Gray16<CpuAllocator>, IoError> {
-    let (buf, size) = read_png_impl(file_path, ColorType::Grayscale)?;
+    let (buf, layout) = read_png_impl(file_path, ColorType::Grayscale)?;
     let buf_u16 = convert_buf_u8_u16(buf);
 
-    Ok(Gray16::from_size_vec(size.into(), buf_u16, CpuAllocator)?)
+    Ok(Gray16::from_size_vec(
+        layout.image_size,
+        buf_u16,
+        CpuAllocator,
+    )?)
 }
 
 /// Decodes a PNG image with as grayscale (Gray8) from Raw Bytes.
@@ -289,7 +279,7 @@ pub fn decode_image_png_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
 fn read_png_impl(
     file_path: impl AsRef<Path>,
     expected_color_type: ColorType,
-) -> Result<(Vec<u8>, [usize; 2]), IoError> {
+) -> Result<(Vec<u8>, ImageLayout), IoError> {
     // verify the file exists
     let file_path = file_path.as_ref();
     if !file_path.exists() {
@@ -316,13 +306,14 @@ fn read_png_impl(
 
     let info = reader.info();
     let color_type = info.color_type;
+    let bit_depth = info.bit_depth;
 
     // Validate color type matches expected
     if color_type != expected_color_type {
-        return Err(IoError::PngColorTypeMismatch(
-            format!("{:?}", expected_color_type),
-            format!("{:?}", color_type),
-        ));
+        return Err(IoError::PngColorTypeMismatch {
+            expected: format!("{:?}", expected_color_type),
+            found: format!("{:?}", color_type),
+        });
     }
 
     let buffer_size = reader
@@ -335,7 +326,27 @@ fn read_png_impl(
 
     buf.truncate(frame_info.buffer_size());
 
-    Ok((buf, [frame_info.width as usize, frame_info.height as usize]))
+    let image_size = ImageSize {
+        width: frame_info.width as usize,
+        height: frame_info.height as usize,
+    };
+
+    let channels = expected_color_type.samples() as u8;
+
+    let pixel_format = match bit_depth {
+        BitDepth::Eight => PixelFormat::U8,
+        BitDepth::Sixteen => PixelFormat::U16,
+        other => {
+            return Err(IoError::PngDecodeError(format!(
+                "Unsupported bit depth: {:?}",
+                other
+            )))
+        }
+    };
+
+    let layout = ImageLayout::new(image_size, channels, pixel_format);
+
+    Ok((buf, layout))
 }
 
 // Utility function to decode png files from raw bytes
