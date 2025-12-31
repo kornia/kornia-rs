@@ -10,7 +10,7 @@ def test_histogram():
         3, 3, 1
     )
 
-    img_histogram: list[int] = K.compute_histogram(img, num_bins=3)
+    img_histogram: list[int] = K.imgproc.compute_histogram(img, num_bins=3)
 
     assert len(img_histogram) == 3
     assert img_histogram[0] == 3
