@@ -149,7 +149,7 @@ let mut parent_map: Vec<Option<usize>> = Vec::new();
                 for k in 0..8 {
                     let d = (start_idx + k) % 8;
                     let (dx, dy) = directions[d];
-                    let nx = (x as isize + dx) as usize;
+                    let nx_i = x as isize + dx; let ny_i = y as isize + dy; if nx_i < 0 || ny_i < 0 { continue; } let nx = nx_i as usize; let ny = ny_i as usize + dx) as usize;
                     let ny = (y as isize + dy) as usize;
                     
                     if get_val(ny, nx, &image_padded) != 0 {
