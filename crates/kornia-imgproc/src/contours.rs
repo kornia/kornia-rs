@@ -460,6 +460,7 @@ let mut parent_map: Vec<Option<usize>> = Vec::new();
                          let mut prev_hole = -1;
                          
                          while curr_hole != -1 {
+                                         if curr_hole < 0 || curr_hole as usize >= new_hierarchy.len() { break; }
                              new_hierarchy[curr_hole as usize][3] = i as i32;
                              new_hierarchy[curr_hole as usize][2] = -1; // No child
                              
