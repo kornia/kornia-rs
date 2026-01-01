@@ -114,6 +114,7 @@ pub fn image_grad<const C: usize, A1: ImageAllocator, A2: ImageAllocator, A3: Im
     dy: &mut Image<f32, C, A3>,
     kernel_size: usize,
 ) -> Result<(), ImageError> {
+    // size checks
     if src.size() != dx.size() {
         return Err(ImageError::InvalidImageSize(
             src.cols(),
@@ -132,8 +133,20 @@ pub fn image_grad<const C: usize, A1: ImageAllocator, A2: ImageAllocator, A3: Im
         ));
     }
 
+    // validate kernel size to avoid panic in sobel_kernel_1d
+    if kernel_size != 3 && kernel_size != 5 {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            src.cols(),
+            src.rows(),
+        ));
+    }
+
+    // safe: kernel_size is now guaranteed to be valid
     let (kernel_x, kernel_y) = kernels::sobel_kernel_1d(kernel_size);
 
+    // compute gradients
     separable_filter(src, dx, &kernel_x, &kernel_y)?;
     separable_filter(src, dy, &kernel_y, &kernel_x)?;
 
