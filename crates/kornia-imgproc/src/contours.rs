@@ -1,4 +1,5 @@
 use kornia_image::{Image, ImageError};
+use std::collections::HashMap;
 
 /// Mode of the contour retrieval algorithm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +108,11 @@ where
         (1, -1),
     ];
 
+    
+let mut lnbd: i16 = 1;
+let mut nbd: i16 = 1;
+let mut nbd_to_index: std::collections::HashMap<i16, usize> = std::collections::HashMap::new();
+let mut parent_map: Vec<Option<usize>> = Vec::new();
     for y in 1..=height {
         lnbd = 1;
         for x in 1..=width {
