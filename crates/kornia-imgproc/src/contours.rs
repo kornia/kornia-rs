@@ -472,8 +472,7 @@ let mut parent_map: Vec<Option<usize>> = Vec::new();
                              }
                              
                              prev_hole = curr_hole;
-                             curr_hole = hierarchy[curr_hole as usize][0]; // Next sibling
-                         }
+            if curr_hole < 0 || curr_hole as usize >= hierarchy.len() { break; } curr_hole = hierarchy[curr_hole as usize][0]; // Next sibling
                          
                          // We processed all children of i.
                          break; 
