@@ -37,9 +37,10 @@ pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         })?;
 
         let path = Path::new(&path_os);
+        let path_display = path.to_str().unwrap_or("<non-utf8 path>");
         if !path.exists() {
             return Err(PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(
-                format!("File does not exist: {:?}", path),
+                format!("File does not exist: {}", path_display),
             ));
         }
 
