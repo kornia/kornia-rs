@@ -261,7 +261,7 @@ def test_write_read_jpeg_mono8():
 def test_encode_image_jpeg():
     # Load test image
     img_path: Path = DATA_DIR / "dog.jpeg"
-    img: np.ndarray = K.io.read_image(str(img_path.absolute()), "rgb")
+    img: np.ndarray = K.io.read_image_jpeg(str(img_path.absolute()), "rgb")
 
     # Encode to JPEG bytes
     jpeg_bytes: bytes = K.io.encode_image_jpeg(img, quality=95)
