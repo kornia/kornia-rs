@@ -111,8 +111,6 @@ def test_decode_image_png_u16():
         img_data = f.read()
     # img_size: np.ndarray = np.array([32, 32])
     img: np.ndarray = K.io.decode_image_png_u16(bytes(img_data), (32, 32), "rgb")
-
-
     # check the image properties
     assert img.shape == (32, 32, 3)
     assert img.dtype == np.uint16
