@@ -127,15 +127,13 @@ pub fn icp_vanilla(
 
     use numpy::{PyArray1, PyArray2};
 
-    Python::attach(|py| {
-        let rot_nd: Array2<f64> =
-            Array2::from_shape_vec((3, 3), initial_rot.concat()).unwrap();
+    let rot_nd: Array2<f64> =
+        Array2::from_shape_vec((3, 3), initial_rot.concat()).unwrap();
 
-        let rot = PyArray2::from_array(py, &rot_nd).into();
-        let trans = PyArray1::from_slice(py, &initial_trans).into();
+    let rot = PyArray2::from_array(py, &rot_nd).into();
+    let trans = PyArray1::from_slice(py, &initial_trans).into();
 
-        icp::icp_vanilla(source, target, rot, trans, criteria)
-    })
+    icp::icp_vanilla(source, target, rot, trans, criteria)
 }
 
 // IO
