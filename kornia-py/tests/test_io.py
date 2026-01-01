@@ -52,7 +52,7 @@ def _test_write_read_impl(
 def test_read_image_jpeg():
     # load an image with libjpeg-turbo
     img_path: Path = DATA_DIR / "dog.jpeg"
-    img: np.ndarray = K.io.read_image(str(img_path.absolute()), "rgb")
+    img: np.ndarray = K.io.read_image_jpeg(str(img_path.absolute()), "rgb")
 
     # check the image properties
     assert img.shape == (195, 258, 3)
