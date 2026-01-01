@@ -80,7 +80,7 @@ where
     // 0 for background
     // And modifies values during execution.
     // Negative values are used for visited markers.
-    // LNBD (Last Non-Zero Boarder found) logic.
+    // LNBD (Last Non-Zero Border found) logic.
 
     for y in 0..height {
         for x in 0..width {
@@ -125,7 +125,7 @@ let mut parent_map: Vec<Option<usize>> = Vec::new();
             if is_start_outer || is_start_hole {
                 // Precedence: Outer > Hole
                 let is_outer = is_start_outer;
-                let is_hole = !is_outer && is_start_hole; // Actually if is_outer is true, we process as outer.
+                 && is_start_hole; // Actually if is_outer is true, we process as outer.
                 
                 // 2.1 Decide the starting direction
                 let mut from = if is_outer { 7 } else { 3 };
