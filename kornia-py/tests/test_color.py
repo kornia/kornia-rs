@@ -18,7 +18,7 @@ def test_bgr_from_rgb():
 
 def test_gray_from_rgb():
     img: np.ndarray = np.array([[[0, 128, 255]]], dtype=np.uint8)
-    img_gray: np.ndarray = K.gray_from_rgb(img)
+    img_gray: np.ndarray = K.imgproc.gray_from_rgb(img)
     assert img_gray.shape == (1, 1, 1)
     assert np.allclose(img_gray, np.array([[[104]]]))
 
