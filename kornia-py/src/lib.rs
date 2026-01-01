@@ -127,8 +127,9 @@ pub fn icp_vanilla(
 
     use numpy::{PyArray1, PyArray2};
 
+    let rot_data: Vec<f64> = initial_rot.into_iter().flatten().collect();
     let rot_nd: Array2<f64> =
-        Array2::from_shape_vec((3, 3), initial_rot.concat()).unwrap();
+        Array2::from_shape_vec((3, 3), rot_data).unwrap();
 
     let rot = PyArray2::from_array(py, &rot_nd).into();
     let trans = PyArray1::from_slice(py, &initial_trans).into();
