@@ -198,7 +198,7 @@ def test_decompress():
     image_encoded: list[int] = image_encoder.encode(img)
 
     image_decoder = K.io.ImageDecoder()
-    image_size: K.ImageSize = image_decoder.read_header(bytes(image_encoded))
+    image_size: K.image.ImageSize = image_decoder.read_header(bytes(image_encoded))
     assert image_size.width == 258
     assert image_size.height == 195
 
@@ -224,7 +224,7 @@ def test_compress_decompress():
     image_encoded: list = image_encoder.encode(img)
 
     image_decoder = K.io.ImageDecoder()
-    image_size: K.ImageSize = image_decoder.read_header(bytes(image_encoded))
+    image_size: K.image.ImageSize = image_decoder.read_header(bytes(image_encoded))
     assert image_size.width == 5
     assert image_size.height == 4
 
