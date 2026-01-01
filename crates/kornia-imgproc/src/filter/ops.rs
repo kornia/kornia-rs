@@ -98,6 +98,15 @@ pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 /// * `dy`  - Output image storing gradient in y direction, shape (H, W, C).
 /// * `kernel_size` - Sobel kernel size (e.g. 3 or 5).
 ///
+/// # Errors
+///
+/// Returns an error if `src`, `dx`, and `dy` have different sizes.
+///
+/// # Panics
+///
+/// Panics if `kernel_size` is not supported by the Sobel operator
+/// (currently only 3 or 5).
+///
 /// PRECONDITION: `src`, `dx`, and `dy` must have the same shape.
 pub fn image_grad<const C: usize, A1: ImageAllocator, A2: ImageAllocator, A3: ImageAllocator>(
     src: &Image<f32, C, A1>,
@@ -105,7 +114,6 @@ pub fn image_grad<const C: usize, A1: ImageAllocator, A2: ImageAllocator, A3: Im
     dy: &mut Image<f32, C, A3>,
     kernel_size: usize,
 ) -> Result<(), ImageError> {
-    // size checks
     if src.size() != dx.size() {
         return Err(ImageError::InvalidImageSize(
             src.cols(),
@@ -124,15 +132,14 @@ pub fn image_grad<const C: usize, A1: ImageAllocator, A2: ImageAllocator, A3: Im
         ));
     }
 
-    // get separable sobel kernels
     let (kernel_x, kernel_y) = kernels::sobel_kernel_1d(kernel_size);
 
-    // compute gradients
     separable_filter(src, dx, &kernel_x, &kernel_y)?;
     separable_filter(src, dy, &kernel_y, &kernel_x)?;
 
     Ok(())
 }
+
 /// Compute the Sobel edge magnitude of an image.
 ///
 /// This function computes the horizontal and vertical Sobel responses
@@ -635,62 +642,62 @@ mod tests {
 
         Ok(())
     }
-}
-#[test]
-fn test_image_grad_matches_opencv_sobel_non_square() {
-    use crate::filter::ops::image_grad;
-    use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
+    #[test]
+    fn test_image_grad_matches_opencv_sobel_non_square() {
+        use crate::filter::ops::image_grad;
+        use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
 
-    // Non-square image to avoid assuming width == height
-    let size = ImageSize {
-        width: 5,
-        height: 3,
-    };
+        // Non-square image to avoid assuming width == height
+        let size = ImageSize {
+            width: 5,
+            height: 3,
+        };
 
-    // 2D ramp image: value = x + y
-    // Produces non-zero gradients in both dx and dy
-    //
-    // y=0: 0 1 2 3 4
-    // y=1: 1 2 3 4 5
-    // y=2: 2 3 4 5 6
-    let data = vec![
-        0., 1., 2., 3., 4.,
-        1., 2., 3., 4., 5.,
-        2., 3., 4., 5., 6.,
-    ];
+        // 2D ramp image: value = x + y
+        // Produces non-zero gradients in both dx and dy
+        //
+        // y=0: 0 1 2 3 4
+        // y=1: 1 2 3 4 5
+        // y=2: 2 3 4 5 6
+        let data = vec![
+            0., 1., 2., 3., 4.,
+            1., 2., 3., 4., 5.,
+            2., 3., 4., 5., 6.,
+        ];
 
-    let src = Image::<f32, 1, _>::new(size, data, CpuAllocator).unwrap();
-    let mut dx =
-        Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator).unwrap();
-    let mut dy =
-        Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator).unwrap();
+        let src = Image::<f32, 1, _>::new(size, data, CpuAllocator).unwrap();
+        let mut dx =
+            Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator).unwrap();
+        let mut dy =
+            Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator).unwrap();
 
-    image_grad(&src, &mut dx, &mut dy, 3).unwrap();
+        image_grad(&src, &mut dx, &mut dy, 3).unwrap();
 
-    // Expected OpenCV Sobel (ksize=3) results computed externally.
-    // NOTE: We compare only interior pixels since border handling
-    // differs between OpenCV (reflect padding) and Kornia.
-    let expected_dx = vec![
-        0., 8., 8., 8., 0.,
-        0., 8., 8., 8., 0.,
-        0., 8., 8., 8., 0.,
-    ];
+        // Expected OpenCV Sobel (ksize=3) results computed externally.
+        // NOTE: We compare only interior pixels since border handling
+        // differs between OpenCV (reflect padding) and Kornia.
+        let expected_dx = vec![
+            0., 8., 8., 8., 0.,
+            0., 8., 8., 8., 0.,
+            0., 8., 8., 8., 0.,
+        ];
 
-    let expected_dy = vec![
-        0., 0., 0., 0., 0.,
-        8., 8., 8., 8., 8.,
-        0., 0., 0., 0., 0.,
-    ];
+        let expected_dy = vec![
+            0., 0., 0., 0., 0.,
+            8., 8., 8., 8., 8.,
+            0., 0., 0., 0., 0.,
+        ];
 
-    let w = size.width as usize;
-    let h = size.height as usize;
-    let eps = 1e-4;
+        let w = size.width as usize;
+        let h = size.height as usize;
+        let eps = 1e-4;
 
-    for y in 1..h - 1 {
-        for x in 1..w - 1 {
-            let idx = y * w + x;
-            assert!((dx.as_slice()[idx] - expected_dx[idx]).abs() < eps);
-            assert!((dy.as_slice()[idx] - expected_dy[idx]).abs() < eps);
+        for y in 1..h - 1 {
+            for x in 1..w - 1 {
+                let idx = y * w + x;
+                assert!((dx.as_slice()[idx] - expected_dx[idx]).abs() < eps);
+                assert!((dy.as_slice()[idx] - expected_dy[idx]).abs() < eps);
+            }
         }
     }
 }
