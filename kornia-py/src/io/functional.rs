@@ -47,7 +47,12 @@ pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
             .extension()
             .and_then(|ext| ext.to_str())
             .map(|s| s.to_lowercase())
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>("No extension"))?;
+            .ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "No extension found for file: {:?}",
+                    path
+                ))
+            })?;
 
         match extension.as_str() {
             "png" => read_image_png_dispatcher(path),
