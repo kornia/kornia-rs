@@ -56,3 +56,7 @@ pub mod warp;
 
 /// Pyramid operations
 pub mod pyramid;
+
+/// Contour detection module.
+pub mod contours;
+
