@@ -9,6 +9,16 @@ use std::path::Path;
 ///
 /// The method tries to read from any image format supported by the image crate.
 ///
+/// # Warning
+///
+/// This function always returns `Rgb8`, which doesn't match grayscale, 16-bit, or float images.
+/// It conflicts with the strictly typed design.
+///
+/// To avoid this, use explicit typed readers instead:
+/// - `jpeg::read_image_jpeg_rgb8()` for JPEG
+/// - `png::read_image_png_rgb8()` for PNG
+/// - `tiff::read_image_tiff_rgb8()` for TIFF
+///
 /// # Arguments
 ///
 /// * `file_path` - The path to the image.
@@ -57,7 +67,7 @@ mod tests {
     use crate::functional::read_image_any_rgb8;
 
     #[test]
-    fn read_any() -> Result<(), IoError> {
+    fn test_read_any_rgb8() -> Result<(), IoError> {
         let image = read_image_any_rgb8("../../tests/data/dog.jpeg")?;
         assert_eq!(image.cols(), 258);
         assert_eq!(image.rows(), 195);

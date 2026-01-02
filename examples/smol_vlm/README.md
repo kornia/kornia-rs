@@ -15,4 +15,3 @@ Options:
 ```bash
 cargo run -p smol_vlm --features cuda -- -i ./.vscode/fuji-mountain-in-autumn.jpg -p "Can you describe the image?" --sample-length 500
 ```
-

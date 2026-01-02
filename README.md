@@ -388,6 +388,19 @@ We welcome contributions! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for:
 - Development workflow
 - How to run local checks before submitting PRs
 
+### AI Policy
+
+Kornia-rs accepts AI-assisted code but strictly rejects AI-generated contributions where the submitter acts as a proxy. All contributors must be the **Sole Responsible Author** for every line of code. Please review our [AI Policy](AI_POLICY.md) before submitting pull requests. Key requirements include:
+
+- **Proof of Verification**: PRs must include local test logs proving execution (e.g., `pixi run rust-test` or `cargo test`)
+- **Pre-Discussion**: All PRs must be discussed in Discord or via a GitHub issue before implementation
+- **Library References**: Implementations must be based on existing library references (Rust crates, OpenCV, etc.)
+- **Use Existing Utilities**: Use existing `kornia-rs` utilities instead of reinventing the wheel
+- **Error Handling**: Use `Result<T, E>` for error handling (avoid `unwrap()`/`expect()` in library code)
+- **Explain It**: You must be able to explain any code you submit
+
+Automated AI reviewers (e.g., @copilot) will check PRs against these policies. See [AI_POLICY.md](AI_POLICY.md) for complete details.
+
 ### Community
 
 This is a child project of [Kornia](https://github.com/kornia/kornia).

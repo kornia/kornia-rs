@@ -5,11 +5,10 @@ license = "Apache-2.0"
 edition = "2021"
 publish = false
 
-
 [dependencies]
 argh = { workspace = true }
 ctrlc = { workspace = true }
 env_logger = { workspace = true }
 foxglove = "0.16.1"
-kornia-io = { workspace = true, features = ["v4l"] }
 kornia-image = { workspace = true }
+kornia-io = { workspace = true, features = ["v4l"] }

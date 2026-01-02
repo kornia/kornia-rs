@@ -185,9 +185,9 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
             let new_width = (width as f32 * scale_factor) as usize;
             let new_height = (height as f32 * scale_factor) as usize;
 
-            let needs_resize = buffer.as_ref().map_or(true, |buf| {
-                buf.width() != new_width || buf.height() != new_height
-            });
+            let needs_resize = buffer
+                .as_ref()
+                .is_none_or(|buf| buf.width() != new_width || buf.height() != new_height);
 
             if needs_resize {
                 *buffer = Some(Image::<u8, 3, A>::from_size_val(
@@ -230,7 +230,7 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
         let new_height = (height as u32).div_ceil(outer_patch_size) * outer_patch_size;
 
         // Lazy init buffers only if size changed
-        let needs_resize = img_buffer.as_ref().map_or(true, |buf| {
+        let needs_resize = img_buffer.as_ref().is_none_or(|buf| {
             buf.width() != new_width as usize || buf.height() != new_height as usize
         });
 
@@ -245,7 +245,7 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
             )?);
         }
 
-        let needs_mask_resize = mask_buffer.as_ref().map_or(true, |buf| {
+        let needs_mask_resize = mask_buffer.as_ref().is_none_or(|buf| {
             buf.width() != new_width as usize || buf.height() != new_height as usize
         });
 

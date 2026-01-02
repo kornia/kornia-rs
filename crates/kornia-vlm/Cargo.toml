@@ -1,44 +1,40 @@
 [package]
 name = "kornia-vlm"
-description = "Vision Language Models in Rust"
+version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }
-homepage = { workspace = true }
-include = { workspace = true }
-license = { workspace = true }
-readme = { workspace = true }
-repository = { workspace = true }
 rust-version = { workspace = true }
-version = { workspace = true }
+description = "Vision Language Models in Rust"
+readme = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+include = { workspace = true }
 
 [dependencies]
-log = { workspace = true }
-serde_json = { workspace = true }
-serde = { workspace = true }
-minijinja = { version = "2.12.0", features = ["loader"] }
-thiserror = { workspace = true }
-
-kornia-image = { workspace = true }
-kornia-tensor = { workspace = true }
-kornia-io = { workspace = true }
-kornia-imgproc = { workspace = true }
-
 candle-core = { workspace = true }
-candle-transformers = { workspace = true }
 candle-examples = { workspace = true }
 candle-nn = { workspace = true }
+candle-transformers = { workspace = true }
+circular-buffer = { version = "1.1.0" }
 hf-hub = { workspace = true }
+kornia-image = { workspace = true }
+kornia-imgproc = { workspace = true }
+kornia-io = { workspace = true }
+kornia-tensor = { workspace = true }
+log = { workspace = true }
+minijinja = { version = "2.12.0", features = ["loader"] }
+num2words = "1.2.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 tokenizers = { workspace = true }
 
-circular-buffer = { version = "1.1.0" }
-
-num2words = "1.2.0"
-
 [dev-dependencies]
-rand = "0.9.0"
 env_logger = { workspace = true }
+rand = "0.9.0"
 
 [features]
 default = []
-cuda = ["candle-core/cuda", "candle-transformers/cuda", "candle-nn/cuda"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 flash-attn = ["candle-transformers/flash-attn"]

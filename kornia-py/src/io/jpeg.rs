@@ -1,4 +1,4 @@
-use crate::image::{FromPyImage, PyImage, PyImageSize, ToPyImage};
+use crate::image::{FromPyImage, PyImage, ToPyImage};
 use kornia_image::{allocator::CpuAllocator, Image};
 use kornia_io::jpeg as J;
 use pyo3::prelude::*;
@@ -83,12 +83,13 @@ pub fn write_image_jpeg(file_path: &str, image: PyImage, mode: &str, quality: u8
 /// img = K.decode_image_jpeg(bytes(img_data))
 /// ```
 pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
-    let (image_shape, num_channels) = J::decode_image_jpeg_info(src)
+    let layout = J::decode_image_jpeg_layout(src)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
-    let result = match num_channels {
+    let result = match layout.channels {
         3 => {
-            let mut output_image = kornia_image::color_spaces::Rgb8::from_size_val(image_shape, 0, CpuAllocator)
+            let mut output_image =
+                kornia_image::color_spaces::Rgb8::from_size_val(layout.image_size, 0, CpuAllocator)
                     .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             J::decode_image_jpeg_rgb8(src, &mut output_image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
@@ -101,8 +102,12 @@ pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
             output_pyimage
         }
         1 => {
-            let mut output_image = kornia_image::color_spaces::Gray8::from_size_val(image_shape, 0, CpuAllocator)
-                    .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+            let mut output_image = kornia_image::color_spaces::Gray8::from_size_val(
+                layout.image_size,
+                0,
+                CpuAllocator,
+            )
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             J::decode_image_jpeg_mono8(src, &mut output_image)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             let output_pyimage = output_image.to_pyimage().map_err(|e| {
@@ -122,20 +127,6 @@ pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
     };
 
     Ok(result)
-}
-
-#[pyfunction]
-/// Extracts metadata (size and channel count) from JPEG image raw bytes.
-///
-/// ```py
-/// import kornia_rs as K
-///
-/// (size, num_channels) = K.decode_image_jpeg_info(bytes(img_data))
-/// ```
-pub fn decode_image_jpeg_info(src: &[u8]) -> PyResult<(PyImageSize, u8)> {
-    let (image_shape, num_channels) = J::decode_image_jpeg_info(src)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-    Ok((image_shape.into(), num_channels))
 }
 
 #[pyfunction]
@@ -164,10 +155,10 @@ pub fn decode_image_jpeg_info(src: &[u8]) -> PyResult<(PyImageSize, u8)> {
 pub fn encode_image_jpeg(image: PyImage, quality: u8) -> PyResult<Vec<u8>> {
     let image = Image::<u8, 3, _>::from_pyimage(image)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-    
+
     let mut buffer = Vec::new();
     J::encode_image_jpeg_rgb8(&image, quality, &mut buffer)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-    
+
     Ok(buffer)
 }

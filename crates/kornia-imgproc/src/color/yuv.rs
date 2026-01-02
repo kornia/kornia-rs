@@ -8,7 +8,7 @@ use rayon::prelude::*;
 ///
 /// ## Official ITU-R Documentation:
 /// - **BT.601**: [ITU-R BT.601-7](https://www.itu.int/dms_pubrec/itu-r/rec/bt/R-REC-BT.601-7-201103-I!!PDF-E.pdf) - SDTV standard
-/// - **BT.709**: [ITU-R BT.709-6](https://www.itu.int/rec/R-REC-BT.709-6-201506-I/en) - HDTV standard  
+/// - **BT.709**: [ITU-R BT.709-6](https://www.itu.int/rec/R-REC-BT.709-6-201506-I/en) - HDTV standard
 /// - **BT.2020**: [ITU-R BT.2020-2](https://www.itu.int/rec/R-REC-BT.2020-2-201510-I/en) - Ultra HD standard
 ///
 /// ## Additional Resources:

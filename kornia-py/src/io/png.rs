@@ -1,4 +1,8 @@
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize, color_spaces::{Rgb8, Rgba8, Gray8, Rgb16, Rgba16, Gray16}};
+use kornia_image::{
+    allocator::CpuAllocator,
+    color_spaces::{Gray16, Gray8, Rgb16, Rgb8, Rgba16, Rgba8},
+    Image, ImageSize,
+};
 use pyo3::prelude::*;
 
 use crate::image::{FromPyImage, FromPyImageU16, PyImage, PyImageU16, ToPyImage, ToPyImageU16};

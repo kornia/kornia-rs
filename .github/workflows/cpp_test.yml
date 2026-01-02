@@ -1,79 +1,71 @@
 name: C++ Test
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
+    paths:
+      - "kornia-cpp/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/cpp_test.yml"
   pull_request:
     branches:
       - main
+    paths:
+      - "kornia-cpp/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/cpp_test.yml"
 
 jobs:
-  cpp_build_and_test:
-    name: C++ Test Suite - ${{ matrix.os }}
+  test:
+    name: C++ Test - ${{ matrix.os }} (${{ matrix.build_type }})
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
         build_type: [Debug, Release]
-    
-    runs-on: ${{ matrix.os }}
-    
+        include:
+          - build_type: Debug
+            command: cpp-test
+          - build_type: Release
+            command: cpp-test-release
+
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Install dependencies (Ubuntu)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake build-essential
-
-      - name: Install dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install cmake
-
-      - name: Install Rust toolchain
-        run: |
-          rustup update stable
-          rustup default stable
-
-      - name: Cache Rust dependencies
-        uses: actions/cache@v4
+      - uses: ./.github/actions/setup-rust-cache
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            kornia-cpp/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/Cargo.toml') }}
+          cache-prefix: cpp
+          extra-cache-paths: kornia-cpp/target/
+          with-sccache: "false"
 
-      - name: Build C++ library and tests
-        run: |
-          cd kornia-cpp
-          cmake -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DBUILD_EXAMPLES=OFF -DBUILD_TESTS=ON
-          cmake --build build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: v0.40.0
+          cache: true
 
-      - name: Run C++ tests
-        run: |
-          cd kornia-cpp/build
-          ctest --output-on-failure --verbose
+      - name: Build and run C++ tests
+        run: pixi run ${{ matrix.command }}
 
-  cpp_lint:
+  lint:
     name: C++ Format Check
     runs-on: ubuntu-latest
-    
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install clang-format
-        run: sudo apt-get update && sudo apt-get install -y clang-format
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: v0.40.0
+          cache: true
 
       - name: Check formatting
-        run: |
-          find kornia-cpp/include kornia-cpp/tests kornia-cpp/examples \
-            -type f \( -name "*.cpp" -o -name "*.hpp" \) \
-            -exec clang-format --dry-run --Werror {} +
-
+        run: pixi run cpp-fmt-check

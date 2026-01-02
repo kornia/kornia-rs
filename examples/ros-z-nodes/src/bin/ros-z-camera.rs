@@ -3,17 +3,22 @@ use ros_z::{context::ZContextBuilder, Builder, Result as ZResult};
 use std::sync::Arc;
 
 use ros_z_nodes::{
-    camera_node::V4lCameraNode, foxglove_node::FoxgloveNode, logger_node::LoggerNode,
+    camera_node::V4lCameraNode, compute_node::ComputeNode, decoder_node::DecoderNode,
+    foxglove_node::FoxgloveNode, logger_node::LoggerNode,
 };
 
 #[derive(FromArgs)]
 /// ROS2-style camera publisher using ros-z
 struct Args {
-    /// the camera id to use
-    #[argh(option, short = 'c', default = "0")]
-    camera_id: u32,
+    /// camera name for topics (e.g., "front", "back")
+    #[argh(option, short = 'n', default = "String::from(\"front\")")]
+    camera_name: String,
 
-    /// the frames per second to record
+    /// V4L device ID (e.g., 0 for /dev/video0)
+    #[argh(option, short = 'd', default = "0")]
+    device_id: u32,
+
+    /// frames per second
     #[argh(option, short = 'f', default = "30")]
     fps: u32,
 }
@@ -26,7 +31,13 @@ async fn main() -> ZResult<()> {
 
     let args: Args = argh::from_env();
 
-    // create the cancellation token
+    log::info!(
+        "Starting camera '{}' (device: /dev/video{}, fps: {})",
+        args.camera_name,
+        args.device_id,
+        args.fps
+    );
+
     let shutdown_tx = tokio::sync::watch::Sender::new(());
 
     ctrlc::set_handler({
@@ -37,17 +48,18 @@ async fn main() -> ZResult<()> {
         }
     })?;
 
-    // initialize ROS-Z context
     let ctx = Arc::new(ZContextBuilder::default().build()?);
 
-    // create and initialize the camera publisher node
-    let camera_node = V4lCameraNode::new(ctx.clone(), args.camera_id, args.fps)?;
-    let foxglove_node = FoxgloveNode::new(ctx.clone(), args.camera_id)?;
-    let logger_node = LoggerNode::new(ctx.clone(), args.camera_id)?;
+    let camera_node = V4lCameraNode::new(ctx.clone(), &args.camera_name, args.device_id, args.fps)?;
+    let compute_node = ComputeNode::new(ctx.clone(), &args.camera_name)?;
+    let decoder_node = DecoderNode::new(ctx.clone(), &args.camera_name)?;
+    let foxglove_node = FoxgloveNode::new(ctx.clone(), &args.camera_name)?;
+    let logger_node = LoggerNode::new(ctx.clone(), &args.camera_name)?;
 
-    // run the nodes
     let nodes = vec![
         tokio::spawn(camera_node.run(shutdown_tx.clone())),
+        tokio::spawn(compute_node.run(shutdown_tx.clone())),
+        tokio::spawn(decoder_node.run(shutdown_tx.clone())),
         tokio::spawn(logger_node.run(shutdown_tx.clone())),
         tokio::spawn(foxglove_node.run(shutdown_tx.clone())),
     ];

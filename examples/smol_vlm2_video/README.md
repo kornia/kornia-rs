@@ -83,4 +83,3 @@ sudo usbip attach -r <ip_addr_of_local> -b <device/bus-id>
 # to get your rerun viewer's device IP address, which is likely to be different then the IP address of your server.
 ip addr show
 ```
-

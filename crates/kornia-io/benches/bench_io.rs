@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use kornia_io::{functional::read_image_any_rgb8, jpegturbo::read_image_jpegturbo_rgb8};
+use kornia_io::{jpeg::read_image_jpeg_rgb8, jpegturbo::read_image_jpegturbo_rgb8};
 
 fn bench_read_jpeg(c: &mut Criterion) {
     let mut group = c.benchmark_group("JpegReader");
@@ -12,7 +12,7 @@ fn bench_read_jpeg(c: &mut Criterion) {
     });
 
     group.bench_function("image_any", |b| {
-        b.iter(|| std::hint::black_box(read_image_any_rgb8(img_path)).unwrap())
+        b.iter(|| std::hint::black_box(read_image_jpeg_rgb8(img_path)).unwrap())
     });
 
     group.finish();
