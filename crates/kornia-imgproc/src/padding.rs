@@ -72,8 +72,8 @@ impl PaddingMode {
     /// Maps index `i` to a valid index i.e. within `[0, len)` according to the padding mode.
     ///
     /// - `Replicate`: clamp to edge  
-    /// - `Reflect`: mirror excluding edge  
-    /// - `Reflect101`: mirror including edge  
+    /// - `Reflect`: mirror including edge  
+    /// - `Reflect101`: mirror excluding edge  
     /// - `Wrap`: circular wrap  
     /// - `Constant`: returns 0 (not used directly)
     ///
@@ -133,9 +133,7 @@ impl PaddingMode {
                 .enumerate()
                 .for_each(|(y, dst_row)| {
                     let src_y = self.map_index(y as isize - top as isize, old_height);
-                    let src_start = (src_y + top) * row_stride;
-                    let src_row = &rest
-                        [src_start - top * row_stride..src_start - top * row_stride + row_stride];
+                    let src_row = &rest[src_y * row_stride..(src_y + 1) * row_stride];
                     dst_row.copy_from_slice(src_row);
                 });
         }
@@ -212,12 +210,8 @@ impl Padding2D {
     /// assert!(padding.validate_size(old_size, new_size));
     /// ```
     pub fn validate_size(&self, old_size: ImageSize, new_size: ImageSize) -> bool {
-        if new_size.width != old_size.width + self.left + self.right
+        new_size.width != old_size.width + self.left + self.right
             || new_size.height != old_size.height + self.top + self.bottom
-        {
-            return false;
-        }
-        true
     }
 }
 
@@ -231,6 +225,11 @@ impl Padding2D {
 /// * `padding` - The amount of padding (in pixels) for all four sides defined in [`Padding2D`] (top, bottom, left, right).
 /// * `padding_mode` - The type of border handling to use defined in [`PaddingMode`] (e.g., Constant, Replicate, Reflect, Reflect101, Wrap).
 /// * `constant_value` - The pixel value used for constant padding, specified as an array of length `C` (one value per channel).
+///
+/// # Errors
+///
+/// Returns an error if the size of `dst` does not match with the expected size
+/// i.e. after applying padding specified in argument `padding` on `src`.
 ///
 /// # Example
 ///
@@ -275,7 +274,7 @@ pub fn spatial_padding<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator
 where
     T: Copy + Default + Send + Sync,
 {
-    if !padding.validate_size(src.size(), dst.size()) {
+    if padding.validate_size(src.size(), dst.size()) {
         return Err(ImageError::InvalidImageSize(
             dst.width(),
             dst.height(),
