@@ -71,10 +71,10 @@ impl PaddingMode {
 
     /// Maps index `i` to a valid index i.e. within `[0, len)` according to the padding mode.
     ///
-    /// - `Replicate`: clamp to edge  
-    /// - `Reflect`: mirror including edge  
-    /// - `Reflect101`: mirror excluding edge  
-    /// - `Wrap`: circular wrap  
+    /// - `Replicate`: clamp to edge
+    /// - `Reflect`: mirror including edge
+    /// - `Reflect101`: mirror excluding edge
+    /// - `Wrap`: circular wrap
     /// - `Constant`: returns 0 (not used directly)
     ///
     /// # Arguments
@@ -210,8 +210,8 @@ impl Padding2D {
     /// assert!(padding.validate_size(old_size, new_size));
     /// ```
     pub fn validate_size(&self, old_size: ImageSize, new_size: ImageSize) -> bool {
-        new_size.width != old_size.width + self.left + self.right
-            || new_size.height != old_size.height + self.top + self.bottom
+        new_size.width == old_size.width + self.left + self.right
+            && new_size.height == old_size.height + self.top + self.bottom
     }
 }
 
@@ -274,7 +274,7 @@ pub fn spatial_padding<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator
 where
     T: Copy + Default + Send + Sync,
 {
-    if padding.validate_size(src.size(), dst.size()) {
+    if !padding.validate_size(src.size(), dst.size()) {
         return Err(ImageError::InvalidImageSize(
             dst.width(),
             dst.height(),
@@ -458,7 +458,15 @@ mod tests {
 
     #[test]
     fn test_spatial_padding_dst_size_mismatch() {
-        let src = make_src_2x2_rgb();
+        let src = Image::new(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            vec![1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4],
+            CpuAllocator,
+        )
+        .unwrap();
 
         let mut dst = Image::<u8, 3, _>::new(
             ImageSize {
@@ -471,7 +479,9 @@ mod tests {
         .unwrap();
 
         let res = spatial_padding(&src, &mut dst, PAD_1, PaddingMode::Replicate, [0, 0, 0]);
-
+        println!("{:?}", src.size());
+        println!("{:?}", dst.size());
+        println!("{:?}", res);
         assert!(res.is_err());
     }
 
