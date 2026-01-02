@@ -1,7 +1,4 @@
-use crate::{
-    interpolation::{grid::meshgrid_from_fn, interpolate_pixel, InterpolationMode},
-    parallel,
-};
+use crate::interpolation::InterpolationMode;
 use fast_image_resize::{self as fr};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
@@ -60,9 +57,7 @@ pub fn resize_native<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,
     interpolation: InterpolationMode,
-) -> Result<(), ImageError>
-where
-{
+) -> Result<(), kornia_image::ImageError> {
     // check if the input and output images have the same size
     // and copy the input image to the output image if they have the same size
     if src.size() == dst.size() {
@@ -70,21 +65,33 @@ where
         return Ok(());
     }
 
-    // create a grid of x and y coordinates for the output image
-    // and interpolate the values from the input image.
     let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
-    let step_x = (src.cols() - 1) as f32 / (dst.cols() - 1) as f32;
-    let step_y = (src.rows() - 1) as f32 / (dst.rows() - 1) as f32;
-    let (map_x, map_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| {
-        Ok((x as f32 * step_x, y as f32 * step_y))
-    })?;
 
-    // iterate over the output image and interpolate the pixel values
-    parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {
-        // interpolate the pixel values for each channel
-        dst_pixel.iter_mut().enumerate().for_each(|(k, pixel)| {
-            *pixel = interpolate_pixel(src, x, y, k, interpolation);
-        });
+    // Handle division by zero when the destination dimension is 1
+    let step_x = if dst_cols > 1 {
+        (src.cols() - 1) as f32 / (dst_cols - 1) as f32
+    } else {
+        0.0
+    };
+
+    let step_y = if dst_rows > 1 {
+        (src.rows() - 1) as f32 / (dst_rows - 1) as f32
+    } else {
+        0.0
+    };
+
+    // going for on-the-fly coordinate calculation instead of allocating mesh
+
+    crate::parallel::par_iter_rows_indexed_mut(dst, |row_idx, row| {
+        let y_src = row_idx as f32 * step_y;
+
+        for (col_idx, pix) in row.chunks_exact_mut(C).enumerate() {
+            let x_src = col_idx as f32 * step_x;
+
+            pix.iter_mut().enumerate().for_each(|(k, p)| {
+                *p = crate::interpolation::interpolate_pixel(src, x_src, y_src, k, interpolation);
+            });
+        }
     });
 
     Ok(())
@@ -349,6 +356,99 @@ mod tests {
         assert_eq!(image_resized.num_channels(), 3);
         assert_eq!(image_resized.size().width, 2);
         assert_eq!(image_resized.size().height, 3);
+        Ok(())
+    }
+    #[test]
+    fn resize_single_pixel() -> Result<(), ImageError> {
+        let image = Image::<f32, 1, _>::new(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            vec![1.0, 2.0, 3.0, 4.0],
+            CpuAllocator,
+        )?;
+
+        let mut image_resized = Image::<f32, 1, _>::from_size_val(
+            ImageSize {
+                width: 1,
+                height: 1,
+            },
+            0.0,
+            CpuAllocator,
+        )?;
+
+        super::resize_native(
+            &image,
+            &mut image_resized,
+            super::InterpolationMode::Bilinear,
+        )?;
+
+        assert!(image_resized.as_slice()[0].is_finite());
+        assert_eq!(image_resized.as_slice()[0], 1.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn resize_single_column() -> Result<(), ImageError> {
+        let image = Image::<f32, 1, _>::from_size_val(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            0.5,
+            CpuAllocator,
+        )?;
+
+        let mut image_resized = Image::<f32, 1, _>::from_size_val(
+            ImageSize {
+                width: 1,
+                height: 4,
+            },
+            0.0,
+            CpuAllocator,
+        )?;
+
+        super::resize_native(
+            &image,
+            &mut image_resized,
+            super::InterpolationMode::Nearest,
+        )?;
+
+        assert!(image_resized.as_slice().iter().all(|v| v.is_finite()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn resize_single_row() -> Result<(), ImageError> {
+        let image = Image::<f32, 1, _>::from_size_val(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            0.5,
+            CpuAllocator,
+        )?;
+
+        let mut image_resized = Image::<f32, 1, _>::from_size_val(
+            ImageSize {
+                width: 4,
+                height: 1,
+            },
+            0.0,
+            CpuAllocator,
+        )?;
+
+        super::resize_native(
+            &image,
+            &mut image_resized,
+            super::InterpolationMode::Nearest,
+        )?;
+
+        assert!(image_resized.as_slice().iter().all(|v| v.is_finite()));
+
         Ok(())
     }
 }
