@@ -3,6 +3,29 @@ use rayon::prelude::*;
 use kornia_image::{allocator::ImageAllocator, Image};
 use kornia_tensor::{CpuAllocator, Tensor2};
 
+/// Controls how parallel operations are executed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecutionStrategy {
+    /// Use the global Rayon thread pool.
+    ///
+    /// This is the default strategy. It is generally efficient for heavy workloads
+    /// but may have overhead for very small tasks compared to [`ExecutionStrategy::Serial`].
+    #[default]
+    Auto,
+    /// Run sequentially on the current thread.
+    ///
+    /// Useful for small images, debugging, or when the overhead of parallelization
+    /// outweighs the benefits (e.g., simple thresholding on small/medium images).
+    Serial,
+    /// Run on a local thread pool with `n` threads.
+    ///
+    /// # Warning
+    /// Creates a new thread pool on every call, which has significant overhead.
+    /// Use this primarily for benchmarking or specific isolation needs, not for
+    /// tight loops.
+    Fixed(usize),
+}
+
 /// Apply a function to each pixel in the image in parallel.
 ///
 /// # Arguments
@@ -127,4 +150,100 @@ pub fn par_iter_rows_resample<const C: usize, A: ImageAllocator>(
                     f(x, y, dst_pixel);
                 });
         });
+}
+
+/// Trait to execute operations on a slice with a given strategy.
+pub trait ExecuteExt<T> {
+    /// Execute an operation on the slice with the given strategy.
+    ///
+    /// # Arguments
+    ///
+    /// * `strategy` - The execution strategy.
+    /// * `dst` - The destination slice.
+    /// * `op` - The operation to perform on each pixel.
+    fn execute_with<F>(self, strategy: ExecutionStrategy, dst: &mut [T], op: F)
+    where
+        F: Fn((&T, &mut T)) + Sync + Send;
+}
+
+impl<T: Sync + Send> ExecuteExt<T> for &[T] {
+    fn execute_with<F>(self, strategy: ExecutionStrategy, dst: &mut [T], op: F)
+    where
+        F: Fn((&T, &mut T)) + Sync + Send,
+    {
+        match strategy {
+            ExecutionStrategy::Serial => {
+                self.iter().zip(dst.iter_mut()).for_each(op);
+            }
+            ExecutionStrategy::Auto => {
+                self.par_iter().zip(dst.par_iter_mut()).for_each(op);
+            }
+            ExecutionStrategy::Fixed(n) => {
+                if n == 0 {
+                    panic!("ExecutionStrategy::Fixed(n) requires n > 0");
+                }
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(n)
+                    .build()
+                    .unwrap_or_else(|e| {
+                        panic!("Failed to create thread pool with {} threads: {}", n, e);
+                    });
+
+                pool.install(|| self.par_iter().zip(dst.par_iter_mut()).for_each(op));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_execute_serial() {
+        let src = vec![1, 2, 3, 4];
+        let mut dst = vec![0; 4];
+        src.as_slice().execute_with(
+            ExecutionStrategy::Serial,
+            &mut dst,
+            |(s, d)| *d = *s * 2,
+        );
+        assert_eq!(dst, vec![2, 4, 6, 8]);
+    }
+
+    #[test]
+    fn test_execute_auto() {
+        let src = vec![1, 2, 3, 4];
+        let mut dst = vec![0; 4];
+        src.as_slice().execute_with(
+            ExecutionStrategy::Auto,
+            &mut dst,
+            |(s, d)| *d = *s * 2,
+        );
+        assert_eq!(dst, vec![2, 4, 6, 8]);
+    }
+
+    #[test]
+    fn test_execute_fixed() {
+        let src = vec![1, 2, 3, 4];
+        let mut dst = vec![0; 4];
+        src.as_slice().execute_with(
+            ExecutionStrategy::Fixed(2),
+            &mut dst,
+            |(s, d)| *d = *s * 2,
+        );
+        assert_eq!(dst, vec![2, 4, 6, 8]);
+    }
+
+    #[test]
+    #[should_panic(expected = "ExecutionStrategy::Fixed(n) requires n > 0")]
+    fn test_execute_fixed_zero() {
+        let src = vec![1];
+        let mut dst = vec![0];
+        src.as_slice().execute_with(
+            ExecutionStrategy::Fixed(0),
+            &mut dst,
+            |(_, _)| {},
+        );
+    }
 }
