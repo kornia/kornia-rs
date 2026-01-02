@@ -9,4 +9,3 @@ AllowShortFunctionsOnASingleLine: None
 AllowShortIfStatementsOnASingleLine: Never
 IndentCaseLabels: false
 NamespaceIndentation: None
-

@@ -1,21 +1,18 @@
 [package]
 name = "kornia-linalg"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
 description = "Linear algebra operations for kornia"
-
-authors.workspace = true
-edition.workspace = true
-homepage.workspace = true
-license.workspace = true
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
 publish = true
-repository.workspace = true
-rust-version.workspace = true
-version.workspace = true
 
-[features]
-default = ["std"]
-
-std = ["glam/std"]
-libm = ["glam/libm"]
+[[bench]]
+harness = false
+name = "bench_linalg"
 
 [dependencies]
 glam = { version = "0.30.0", default-features = false }
@@ -23,10 +20,11 @@ nalgebra = "0.32"
 thiserror = "1.0"
 
 [dev-dependencies]
-faer = { workspace = true }
 approx = { workspace = true }
 criterion = { workspace = true }
+faer = { workspace = true }
 
-[[bench]]
-name = "bench_linalg"
-harness = false
+[features]
+default = ["std"]
+libm = ["glam/libm"]
+std = ["glam/std"]

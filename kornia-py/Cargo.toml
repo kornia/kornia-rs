@@ -1,28 +1,24 @@
 [package]
 name = "kornia-py"
-categories = ["computer-vision", "science::robotics"]
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
 description = "Python bindings for Kornia Rust library"
-edition = "2021"
-homepage = "http://kornia.org"
-license = "Apache-2.0"
-repository = "https://github.com/kornia/kornia-rs"
-rust-version = "1.76"
-version = "0.1.11-rc.1"
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+categories = { workspace = true }
 
 [lib]
-name = "kornia_rs"
 crate-type = ["cdylib"]
+name = "kornia_rs"
 
 [dependencies]
-
-# kornia
-kornia-image = { path = "../crates/kornia-image" }
-kornia-imgproc = { path = "../crates/kornia-imgproc" }
-kornia-io = { path = "../crates/kornia-io", features = ["turbojpeg"] }
-kornia-icp = { path = "../crates/kornia-icp" }
-kornia-3d = { path = "../crates/kornia-3d" }
-kornia-apriltag = { path = "../crates/kornia-apriltag" }
-
-# external
-pyo3 = { version = "0.26.0", features = ["extension-module"] }
-numpy = { version = "0.26.0" }
+kornia-3d = { workspace = true }
+kornia-apriltag = { workspace = true }
+kornia-icp = { workspace = true }
+kornia-image = { workspace = true }
+kornia-imgproc = { workspace = true }
+kornia-io = { workspace = true, features = ["turbojpeg"] }
+numpy = "0.27"
+pyo3 = { version = "0.27", features = ["extension-module"] }

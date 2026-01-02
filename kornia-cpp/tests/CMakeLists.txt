@@ -62,4 +62,3 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT MSVC)
         )
     endif()
 endif()
-

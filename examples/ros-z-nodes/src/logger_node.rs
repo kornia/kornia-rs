@@ -1,36 +1,40 @@
+use crate::protos::ImageStats;
 use ros_z::{
     context::ZContext, msg::ProtobufSerdes, node::ZNode, pubsub::ZSub, Builder, Result as ZResult,
 };
 use std::sync::Arc;
 use zenoh::sample::Sample;
 
-use crate::protos::CompressedImage;
-
 pub struct LoggerNode {
     #[allow(dead_code)]
     node: ZNode,
-    subscriber: ZSub<CompressedImage, Sample, ProtobufSerdes<CompressedImage>>,
+    camera_name: String,
+    subscriber: ZSub<ImageStats, Sample, ProtobufSerdes<ImageStats>>,
 }
 
 impl LoggerNode {
-    pub fn new(ctx: Arc<ZContext>, camera_id: u32) -> ZResult<Self> {
-        // create ROS-Z node
+    pub fn new(ctx: Arc<ZContext>, camera_name: &str) -> ZResult<Self> {
         let node = ctx.create_node("logger_node").build()?;
 
-        // create subscriber with protobuf serialization
-        let topic = format!("/camera/{camera_id}/compressed");
+        let topic = format!("camera/{camera_name}/stats");
         let subscriber = node
-            .create_sub::<CompressedImage>(topic.as_str())
-            .with_serdes::<ProtobufSerdes<CompressedImage>>()
+            .create_sub::<ImageStats>(topic.as_str())
+            .with_serdes::<ProtobufSerdes<ImageStats>>()
             .build()?;
 
-        Ok(Self { node, subscriber })
+        log::info!("Logger node subscribing to '{}'", topic);
+
+        Ok(Self {
+            node,
+            camera_name: camera_name.to_string(),
+            subscriber,
+        })
     }
 
     pub async fn run(self, shutdown_tx: tokio::sync::watch::Sender<()>) -> ZResult<()> {
         let mut shutdown_rx = shutdown_tx.subscribe();
 
-        log::info!("Logger node started, subscribing");
+        log::info!("Logger node started for camera '{}'", self.camera_name);
 
         loop {
             tokio::select! {
@@ -38,10 +42,14 @@ impl LoggerNode {
                     break;
                 }
                 Ok(msg) = self.subscriber.async_recv() => {
-                    // find the min and max value in the image
-                    let min_value = msg.data.iter().min().unwrap_or(&0);
-                    let max_value = msg.data.iter().max().unwrap_or(&0);
-                    log::info!("Min value: {}, Max value: {}", min_value, max_value);
+                    let mean_avg = msg.mean.iter().sum::<f32>() / msg.mean.len() as f32;
+                    let std_avg = msg.std.iter().sum::<f32>() / msg.std.len() as f32;
+                    log::info!(
+                        "[stats] Frame {}: mean={:.2}, std={:.2}",
+                        msg.header.as_ref().unwrap().sequence,
+                        mean_avg,
+                        std_avg
+                    );
                 }
             }
         }

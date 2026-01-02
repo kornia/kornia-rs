@@ -66,7 +66,7 @@ pub enum TensorAllocatorError {
 ///         // Custom allocation with guaranteed alignment
 ///         let aligned_layout = Layout::from_size_align(layout.size(), self.alignment)
 ///             .map_err(TensorAllocatorError::LayoutError)?;
-///         
+///
 ///         let ptr = unsafe { std::alloc::alloc(aligned_layout) };
 ///         if ptr.is_null() {
 ///             return Err(TensorAllocatorError::NullPointer);

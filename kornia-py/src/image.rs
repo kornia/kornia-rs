@@ -1,6 +1,9 @@
 use numpy::{PyArray, PyArray3, PyArrayMethods, PyUntypedArrayMethods};
 
-use kornia_image::{allocator::CpuAllocator, Image, ImageError, ImageSize, color_spaces::*};
+use kornia_image::{
+    allocator::CpuAllocator, color_spaces::*, Image, ImageError, ImageLayout, ImageSize,
+    PixelFormat,
+};
 use pyo3::prelude::*;
 
 // type alias for a 3D numpy array of u8
@@ -31,7 +34,8 @@ macro_rules! impl_image_to_pyarray {
         impl<const C: usize> $trait for Image<$dtype, C, CpuAllocator> {
             fn $method(self) -> Result<$array_type, ImageError> {
                 Python::attach(|py| unsafe {
-                    let array = PyArray::<$dtype, _>::new(py, [self.height(), self.width(), C], false);
+                    let array =
+                        PyArray::<$dtype, _>::new(py, [self.height(), self.width(), C], false);
                     let contiguous = match self.to_standard_layout(CpuAllocator) {
                         Ok(c) => c,
                         Err(_) => {
@@ -71,7 +75,9 @@ macro_rules! impl_colorspace_to_pyarray {
 
 // u8 color spaces
 impl_colorspace_to_pyarray!(
-    ToPyImage, to_pyimage, PyImage,
+    ToPyImage,
+    to_pyimage,
+    PyImage,
     Rgb8<CpuAllocator>,
     Rgba8<CpuAllocator>,
     Bgr8<CpuAllocator>,
@@ -81,7 +87,9 @@ impl_colorspace_to_pyarray!(
 
 // u16 color spaces
 impl_colorspace_to_pyarray!(
-    ToPyImageU16, to_pyimage_u16, PyImageU16,
+    ToPyImageU16,
+    to_pyimage_u16,
+    PyImageU16,
     Rgb16<CpuAllocator>,
     Rgba16<CpuAllocator>,
     Bgr16<CpuAllocator>,
@@ -91,7 +99,9 @@ impl_colorspace_to_pyarray!(
 
 // f32 color spaces
 impl_colorspace_to_pyarray!(
-    ToPyImageF32, to_pyimage_f32, PyImageF32,
+    ToPyImageF32,
+    to_pyimage_f32,
+    PyImageF32,
     Rgbf32<CpuAllocator>,
     Rgbaf32<CpuAllocator>,
     Bgrf32<CpuAllocator>,
@@ -119,7 +129,7 @@ macro_rules! impl_pyarray_to_image {
             fn $method(image: $array_type) -> Result<Image<$dtype, C, CpuAllocator>, ImageError> {
                 Python::attach(|py| {
                     let pyarray = image.bind(py);
-                    
+
                     // TODO: we should find a way to avoid copying the data
                     // Possible solutions:
                     // - Use a custom ndarray wrapper that does not copy the data
@@ -193,5 +203,104 @@ impl From<ImageSize> for PyImageSize {
 impl From<PyImageSize> for ImageSize {
     fn from(image_size: PyImageSize) -> Self {
         image_size.inner
+    }
+}
+
+#[pyclass(name = "PixelFormat")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PyPixelFormat {
+    U8,
+    U16,
+    F32,
+}
+
+impl From<PixelFormat> for PyPixelFormat {
+    fn from(value: PixelFormat) -> Self {
+        match value {
+            PixelFormat::U8 => PyPixelFormat::U8,
+            PixelFormat::U16 => PyPixelFormat::U16,
+            PixelFormat::F32 => PyPixelFormat::F32,
+        }
+    }
+}
+
+impl From<PyPixelFormat> for PixelFormat {
+    fn from(value: PyPixelFormat) -> Self {
+        match value {
+            PyPixelFormat::U8 => PixelFormat::U8,
+            PyPixelFormat::U16 => PixelFormat::U16,
+            PyPixelFormat::F32 => PixelFormat::F32,
+        }
+    }
+}
+
+#[pyclass(name = "ImageLayout", frozen)]
+#[derive(Clone)]
+pub struct PyImageLayout {
+    inner: ImageLayout,
+}
+
+#[pymethods]
+impl PyImageLayout {
+    #[new]
+    pub fn new(
+        image_size: PyImageSize,
+        channels: u8,
+        pixel_format: PyPixelFormat,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: ImageLayout {
+                image_size: image_size.clone().into(),
+                channels,
+                pixel_format: pixel_format.into(),
+            },
+        })
+    }
+
+    #[getter]
+    pub fn image_size(&self) -> PyImageSize {
+        self.inner.image_size.into()
+    }
+
+    #[getter]
+    pub fn channels(&self) -> u8 {
+        self.inner.channels
+    }
+
+    #[getter]
+    pub fn pixel_format(&self) -> PyPixelFormat {
+        self.inner.pixel_format.into()
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        let size = self.inner.image_size;
+        let pf_str = match self.inner.pixel_format {
+            PixelFormat::U8 => "U8",
+            PixelFormat::U16 => "U16",
+            PixelFormat::F32 => "F32",
+        };
+        Ok(format!(
+            "ImageLayout(image_size=ImageSize(width={}, height={}), channels={}, pixel_format=PixelFormat.{})",
+            size.width,
+            size.height,
+            self.channels(),
+            pf_str
+        ))
+    }
+
+    fn __str__(&self) -> PyResult<String> {
+        self.__repr__()
+    }
+}
+
+impl From<ImageLayout> for PyImageLayout {
+    fn from(layout: ImageLayout) -> Self {
+        PyImageLayout { inner: layout }
+    }
+}
+
+impl From<PyImageLayout> for ImageLayout {
+    fn from(layout: PyImageLayout) -> Self {
+        layout.inner
     }
 }

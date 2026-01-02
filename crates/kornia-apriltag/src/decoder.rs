@@ -137,7 +137,7 @@ impl QuickDecode {
         let ncodes = code_data.len();
         let capacity = ncodes // Hamming 0
             + nbits * ncodes // Hamming 1
-            + ncodes * nbits * (nbits - 1); // Hamming 2
+            + ncodes * nbits * (nbits - 1) / 2; // Hamming 2
 
         let mut quick_decode = Self(vec![
             QuickDecodeEntry {

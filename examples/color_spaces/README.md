@@ -52,4 +52,3 @@ resize::resize_native(&rgb, (320, 240), ...)?;  // Automatic coercion
 - **8-bit**: `Rgb8`, `Bgr8`, `Gray8`, `Rgba8`, `Bgra8`
 - **16-bit**: `Rgb16`, `Bgr16`, `Gray16`, `Rgba16`, `Bgra16`
 - **Float**: `Rgbf32`, `Rgbf64`, `Grayf32`, `Grayf64`, `Hsvf32`, `Hsvf64`
-

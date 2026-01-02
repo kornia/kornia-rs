@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package bubbaloop.stats.v1;
+
+import "header.proto";
+
+message ImageStats {
+    bubbaloop.header.v1.Header header = 1;
+    repeated float mean = 2; // mean of each channel
+    repeated float std = 3; // standard deviation of each channel
+}

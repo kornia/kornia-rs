@@ -1,41 +1,50 @@
-[build-system]
-requires = ["maturin>=1,<2"]
-build-backend = "maturin"
-
 [project]
 name = "kornia_rs"
 description = "Low level implementations for computer vision in Rust"
 readme = "README.md"
-authors = [{ email = "edgar@kornia.org", name = "Edgar Riba" }]
-maintainers = [{ email = "edgar@kornia.org", name = "Edgar Riba" }]
-license = { file = "LICENSE" }
 requires-python = ">=3.8"
-dynamic = ["version"]
-
+license = { file = "LICENSE" }
+authors = [{ name = "Edgar Riba", email = "edgar@kornia.org" }]
+maintainers = [{ name = "Edgar Riba", email = "edgar@kornia.org" }]
 keywords = ["computer vision", "rust"]
 classifiers = [
-    "Intended Audience :: Science/Research",
-    "Operating System :: OS Independent",
-    "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
-    "Programming Language :: Python :: Free Threading :: 3 - Stable",
-    "Programming Language :: Rust",
-    "Topic :: Scientific/Engineering",
-    "Programming Language :: Rust",
-    "Programming Language :: Python :: Implementation :: CPython",
-    "Programming Language :: Python :: Implementation :: PyPy",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: Free Threading :: 3 - Stable",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+  "Programming Language :: Rust",
+  "Topic :: Scientific/Engineering",
 ]
+dynamic = ["version"]
 
 [project.urls]
-homepage = "http://www.kornia.org"
 documentation = "https://kornia.readthedocs.io"
+homepage = "http://www.kornia.org"
 repository = "https://github.com/kornia/kornia-rs"
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "pytest-run-parallel",
+  "numpy",
+  "torch",
+]
+
+[build-system]
+requires = ["maturin>=1,<2"]
+build-backend = "maturin"
+
+[tool.uv]
+extra-index-url = ["https://download.pytorch.org/whl/cpu"]
