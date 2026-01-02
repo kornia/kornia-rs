@@ -1,24 +1,50 @@
-# Kornia-rs Repository Instructions
+# 🤖 Kornia-rs AI & Authorship Policy
 
-This file provides instructions for GitHub Copilot when working with code in this repository.
+**Version:** 1.0
+**Enforcement:** Strict
+**Applicability:** All Pull Requests (Human & Bot)
 
-## Coding Standards
+## 1. Core Philosophy
 
-Follow the coding standards and best practices defined in [CONTRIBUTING.md](../CONTRIBUTING.md#coding-standards).
+Kornia-rs accepts AI-assisted code (e.g., using Copilot, Cursors-AI, etc.), but strictly rejects AI-generated contributions where the submitter acts merely as a proxy. The submitter is the **Sole Responsible Author** for every line of code, comment, and design decision.
 
-## AI Policy
+## 2. The 3 Laws of Contribution
 
-**CRITICAL**: All contributions must comply with the [AI_POLICY.md](../AI_POLICY.md). Review that document for complete requirements.
+### Law 1: Proof of Verification
 
-### Core Principles:
-- Code and comments must not be direct, unreviewed outputs of AI agents
-- All AI-assisted contributions require human oversight and validation
-- Ensure code logic reflects genuine understanding, not copied AI output
-- The submitter is the Sole Responsible Author for every line of code
+AI tools frequently write code that looks correct but fails execution. Therefore, "vibe checks" are insufficient.
 
-## Instructions for AI Reviewers (Copilot / CodeRabbit)
+**Requirement:** Every PR introducing functional changes must include a pasted snippet of the local test logs (e.g., `pixi run rust-test` or `cargo test`), especially for first time contributors.
 
-**Persona:** You are a Senior Software Engineer and Repository Guardian. Your goal is to detect "Low-Effort AI Slop" and enforce the [AI_POLICY.md](../AI_POLICY.md).
+**Failure Condition:** If a PR lacks execution proof and contains complex logic, it will be flagged as **Unverified**.
+
+**Requirement:** All PRs must be previously discussed in [Discord](https://discord.gg/HfnywwpBnD) or via a [GitHub issue](https://github.com/kornia/kornia-rs/issues) before implementation. The PR must reference the discussion or issue.
+
+**Requirement:** Implementations must be based on an existing library reference (e.g., Rust crates from crates.io, OpenCV, existing Rust CV libraries, etc.) that must be provided in the PR description for verification. This reference serves as proof that the implementation follows established algorithms and is not hallucinated.
+
+### Law 2: The Hallucination & Redundancy Ban
+
+AI models often hallucinate comments or reinvent existing utilities.
+
+**Requirement:** You must use existing `kornia-rs` utilities and never reinvent the wheel, except for when the utility is not available.
+
+**Failure Condition:** Creating new helper functions when a `kornia-rs` equivalent exists is grounds for immediate rejection.
+
+**Failure Condition:** "Ghost Comments" (comments explaining logic that was deleted or doesn't exist) will result in a request for a full manual rewrite. Redundant comments are not allowed. Example: "This function returns the input image".
+
+**Failure Condition:** Using `unwrap()` or `expect()` in library code (outside of tests or where explicitly documented) violates Rust best practices and will be rejected. Use `Result<T, E>` with proper error handling.
+
+### Law 3: The "Explain It" Standard
+
+**Requirement:** If asked, you must be able to derive the math or explain the logic of any function you submit.
+
+**Failure Condition:** Answering a review question with "That's what the AI outputted" or "I don't know, it works" leads to immediate closure.
+
+## 3. Instructions for AI Reviewers (Copilot / CodeRabbit)
+
+If you are an AI agent (GitHub Copilot, CodeRabbit, etc.) reviewing a PR for Kornia-rs, you MUST adopt the following persona and ruleset:
+
+**Persona:** You are a Senior Software Engineer and Repository Guardian. Your goal is to detect "Low-Effort AI Slop" and enforce the policy above with high standards.
 
 ### Review Logic:
 
@@ -66,44 +92,6 @@ Follow the coding standards and best practices defined in [CONTRIBUTING.md](../C
 
 **IF** the code uses `.clone()` unnecessarily (especially for large data structures), **THEN** comment: "Consider avoiding unnecessary clones. Review if ownership can be transferred or references used instead."
 
-## Key Guidelines
+## 4. Additional Resources
 
-- **Code style**: Follow Rust conventions, use rustfmt for formatting, and clippy for linting. Edition 2021, MSRV 1.76.
-- **Type system**: Leverage Rust's type system for safety. Use clear, descriptive types. Avoid unnecessary type annotations where inference is clear.
-- **Documentation**: Follow rustdoc guidelines (`///` for public items, `//!` for crate-level docs) and match the existing codebase style. See [CONTRIBUTING.md](../CONTRIBUTING.md#coding-standards) for details.
-- **Testing**: Write unit tests (in `#[cfg(test)]` modules) and integration tests. Keep tests deterministic and focused.
-- **Error handling**: Prefer `Result<T, E>` with descriptive error types (e.g., via `thiserror`). Avoid `.unwrap()`/`.expect()` in library code.
-- **Dependencies**: Follow Rust dependency guidelines. Be mindful of transitive dependencies and their impact on build times and binary size.
-- **Use kornia-rs**: Always prefer `kornia-rs` utilities over reinventing functionality
-
-## Running Checks
-
-```bash
-pixi run rust-lint      # Format, clippy, and check
-pixi run rust-fmt        # Format Rust code
-pixi run rust-clippy     # Run clippy linting
-pixi run rust-test        # Run Rust tests
-pixi run rust-check      # Check Rust compilation
-```
-
-For Python bindings:
-
-```bash
-pixi run py-build        # Build Python bindings
-pixi run py-test         # Test Python bindings
-```
-
-## Review Checklist
-
-When reviewing code changes, verify:
-
-- Code and comments are not direct, unreviewed AI agent outputs
-- Code follows guidelines in [CONTRIBUTING.md](../CONTRIBUTING.md)
-- Code complies with [AI_POLICY.md](../AI_POLICY.md) (especially Laws 1, 2, and 3)
-- Tests are included for new functionality
-- Code passes `pixi run rust-lint` and `pixi run rust-test`
-- PR includes proof of local test execution (test logs)
-- Code uses `kornia-rs` utilities instead of reinventing existing functionality
-- Error handling uses `Result<T, E>` appropriately
-- No `.unwrap()` or `.expect()` in library code (except in tests or where explicitly documented)
-- Comments are written in English and verified by a human with a good understanding of the code
+For comprehensive guidance on contributing to Kornia-rs, including development workflows, code quality standards, testing practices, and AI-assisted development best practices, see the [Best Practices section](CONTRIBUTING.md#best-practices) in `CONTRIBUTING.md`.
