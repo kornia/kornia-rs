@@ -6,9 +6,17 @@ This project is part of the Kornia ecosystem. Join the community on [Discord](ht
 
 ## Policies and Guidelines
 
-- **AI-Assisted Development**: AI tools (e.g., GitHub Copilot, ChatGPT, Cursor) may be used to assist with coding, but all contributions must be authored and reviewed by humans. PRs that are fully AI-generated without human understanding, oversight, or ability to explain the code will be rejected. Contributors must understand all code they submit and be able to respond to review feedback.
-  - **Automated Detection**: Automated review systems (including GitHub Copilot) analyze PRs for AI-generated content. PRs flagged as having excessive AI-generated content without sufficient human authorship will be rejected. Ensure your contributions reflect genuine human understanding and modification of any AI-assisted code.
+- **AI Policy & Authorship**: See [AI_POLICY.md](AI_POLICY.md) for the complete policy. Summary:
+    - Kornia-rs accepts AI-assisted code but strictly rejects AI-generated contributions where the submitter acts as a proxy.
+    - **Proof of Verification**: PRs must include local test logs proving execution (e.g., `pixi run rust-test` or `cargo test`).
+    - **Pre-Discussion**: All PRs must be discussed in Discord or via a GitHub issue before implementation.
+    - **Library References**: Implementations must be based on existing library references (Rust crates, OpenCV, etc.).
+    - **Hallucination & Redundancy Ban**: Use existing `kornia-rs` utilities and never reinvent the wheel, except when the utility is not available.
+    - **The "Explain It" Standard**: You must be able to explain any code you submit.
+    - Violations result in immediate closure or rejection.
+
 - **15-Day Rule**: PRs with no activity for 15+ days will be automatically closed.
+
 - **Transparency**: All discussions must be public.
 
 We're all volunteers. These policies help us focus on high-impact work.
@@ -27,9 +35,8 @@ We're all volunteers. These policies help us focus on high-impact work.
 
 3. **Fix bugs or add features:**
    - Check [help wanted issues](https://github.com/kornia/kornia-rs/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22help%20wanted%22) for starting points.
-   - **PRs must be linked to an issue** (use "Closes #123" or "Fixes #123").
    - Follow the [development setup](#developing-kornia-rs) below.
-   - Run local tests before submitting.
+   - See [Pull Request](#pull-request) section for PR requirements.
 
 4. **Donate resources:**
    - [Open Collective](https://opencollective.com/kornia)
@@ -145,10 +152,6 @@ We're all volunteers. These policies help us focus on high-impact work.
 
 5. **Develop and test:**
 
-   **Requirements:**
-   - AI tools may assist with coding, but you must understand and review all code before submission
-   - **All local tests must pass before submitting PRs**
-
    Create test cases for your code. Run tests with:
    ```bash
    # Run all Rust tests
@@ -165,8 +168,6 @@ We're all volunteers. These policies help us focus on high-impact work.
    ```
 
 # Coding Standards
-
-- Use meaningful names for variables, functions, and types.
 
 - **Write small incremental changes:**
   - Commit small, logical changes
@@ -196,32 +197,136 @@ We're all volunteers. These policies help us focus on high-impact work.
   - Prefer `Result<T, E>` with descriptive error types (e.g., via `thiserror`)
   - Avoid `.unwrap()`/`.expect()` in library code (except in tests or where explicitly documented)
   - Use `?` operator for error propagation where appropriate
+  - See [Best Practices](#best-practices) for more detailed error handling guidance
 
-- **Naming and clarity:**
-  - Choose descriptive names
-  - Prefer early returns
-  - Keep functions short and cohesive
-  - Use Rust's type system for safety
+# Best Practices
 
-- **Documentation:**
-  - Use rustdoc comments (`///` for public items, `//!` for crate-level docs)
-  - Document public APIs thoroughly
-  - Include examples in documentation where helpful
-  - Run `cargo doc --no-deps` to verify documentation builds
+This section provides comprehensive guidance for contributing to kornia-rs, with a focus on Rust best practices, performance, and maintainability.
 
-- **Dependencies:**
-  - Be mindful of transitive dependencies and their impact on build times and binary size
-  - Follow Rust dependency guidelines
-  - Lock dependency resolution: use `--locked` flag when appropriate
+## Before You Start
+
+1. **Discuss First**: Always discuss your proposed changes in Discord or via a GitHub issue before starting implementation (see [Policies and Guidelines](#policies-and-guidelines)). This ensures your work aligns with project goals and avoids duplicate effort.
+
+2. **Start Small**: If you're new to the project, start with small bug fixes or documentation improvements to familiarize yourself with the codebase and contribution process.
+
+3. **Understand the Codebase**: Take time to explore existing code patterns, architecture, and conventions before implementing new features.
+
+4. **Review Existing Utilities**: Before implementing new functionality, search the codebase for existing utilities in `kornia-rs` crates. This aligns with the AI Policy's Hallucination & Redundancy Ban (see [Policies and Guidelines](#policies-and-guidelines)).
+
+## Development Workflow
+
+1. **Keep PRs Focused**: Each PR should address a single concern. If you're working on multiple features, create separate PRs for each.
+
+2. **Test Locally First**: Always run all relevant tests locally before submitting (see [Pull Request](#pull-request) for requirements):
+   ```bash
+   pixi run rust-lint    # Check formatting and linting
+   pixi run rust-test    # Run all tests
+   pixi run rust-check   # Verify compilation
+   ```
+
+3. **Update Documentation**: When adding new features or changing behavior, update rustdoc comments for public APIs (see [Coding Standards](#coding-standards) and [Rust-Specific Best Practices](#rust-specific-best-practices) for documentation guidelines).
+
+4. **Follow Rust Idioms**:
+   - Use pattern matching effectively (`match`, `if let`, `while let`)
+   - Prefer composition over inheritance
+   - Use `Option` and `Result` types appropriately
+   - Prefer iterator chains over manual loops where idiomatic
+
+## Code Quality
+
+1. **Ownership and Performance**:
+   - Prefer borrowing (`&T`, `&mut T`) over owned values; use `&[T]` over `Vec<T>` in parameters when ownership isn't needed
+   - Avoid unnecessary allocations and clones (especially for large data structures like images and tensors)
+   - Use `Cow<T>` for conditional cloning scenarios
+   - Consider zero-copy operations (references, slices, views)
+   - Use `Arc<T>` or `Rc<T>` only when shared ownership is truly needed
+   - Prefer `&str` over `String` in function parameters
+   - Profile before optimizing (use `cargo bench` and profiling tools)
+   - Consider SIMD optimizations for numerical computations when available
+   - Use appropriate data structures (e.g., `HashMap` vs `BTreeMap` based on access patterns)
+
+2. **Code Clarity**:
+   - Use descriptive variable and function names that convey intent
+   - Keep functions focused and single-purpose
+   - Prefer clear code over comments; when comments are needed, explain "why" not "what"
+   - Avoid over-engineering; start simple and refactor when needed
+
+3. **Memory Safety**:
+   - Avoid `unsafe` code unless absolutely necessary
+   - If using `unsafe`, document why it's safe with `// SAFETY:` comments
+   - Prefer safe abstractions over raw pointers
+   - Use `MaybeUninit` for uninitialized memory when needed
+
+## Testing Best Practices
+
+- Write tests for happy paths, error cases, edge conditions, boundary conditions, and integration scenarios
+- Keep unit tests in `#[cfg(test)]` modules close to the code they test (see [Coding Standards](#coding-standards) for test structure)
+- Create integration tests in `tests/` directory
+- Make tests deterministic, fast, and independent
+- Use descriptive test names; consider property-based testing (`proptest`) for numerical algorithms
+
+## Review Process
+
+- Review your own PR first: check for typos/formatting, verify tests pass, ensure documentation is updated, and confirm AI policy compliance
+- Respond promptly to review feedback
+- Be open to feedback and explain your decisions when questioned
+- See [Pull Request](#pull-request) section for review requirements
+
+## AI-Assisted Development
+
+- Understand every line of code you submit; you must be able to explain it during review (see [AI Policy](AI_POLICY.md))
+- Review AI output thoroughly: check for unnecessary complexity, verify it follows project conventions, ensure it uses existing utilities, and test it
+- Be transparent in PR descriptions about what was AI-assisted and what you manually reviewed (see [Pull Request](#pull-request) for AI Usage Disclosure requirements)
+
+## Communication
+
+- Write clear, concise PR descriptions (see [Pull Request](#pull-request) for requirements)
+- Always link to related issues or discussions in your PR description
+- Ask questions in Discord or PR comments if unsure; it's better to clarify early than to rework later
+
+## Rust-Specific Best Practices
+
+1. **Error Handling**:
+   - Use `Result<T, E>` with descriptive error types (prefer `thiserror` for library code)
+   - Use `?` operator for error propagation
+   - Avoid `unwrap()` and `expect()` in library code (except in tests or where explicitly documented)
+   - Provide context in error messages; consider error conversion with `From` trait implementations
+
+2. **Type Safety**:
+   - Use newtype patterns for domain-specific types (e.g., `Image`, `Tensor`)
+   - Leverage Rust's type system to prevent invalid states
+   - Prefer enums over boolean flags for state representation
+
+3. **Documentation**:
+   - Document all public APIs with rustdoc comments (`///`)
+   - Include examples, document panics/errors/safety requirements, and performance characteristics when relevant
+
+4. **Dependencies**:
+   - Minimize dependencies; prefer standard library when possible
+   - Use feature flags for optional dependencies
+   - Document why each dependency is needed
+   - Keep dependency versions up to date (within MSRV constraints)
 
 # Pull Request
 
 **Requirements:**
 - Link PR to an issue (use "Closes #123" or "Fixes #123")
 - Pass all local tests before submission
+- For first time contributors, provide proof of local test execution in the PR description
+- **AI Policy Compliance**: Must comply with [AI_POLICY.md](AI_POLICY.md). This includes:
+  - Using existing `kornia-rs` utilities instead of reinventing
+  - Using `Result<T, E>` for error handling (avoid `unwrap()`/`expect()` in library code)
+  - Being able to explain all submitted code
+  - Providing proof of local test execution (test logs)
+  - Linking to pre-discussion (Discord/GitHub issue)
+  - Providing library reference for implementations
 - 15-Day Rule: Inactive PRs (>15 days) will be closed
-- AI-Assisted Development: AI tools may assist, but PRs must be human-authored and reviewed. Fully AI-generated PRs without human understanding will be rejected. Automated systems (including GitHub Copilot) detect excessive AI-generated content and may reject PRs.
 - Transparency: Keep discussions public
+
+**Code review:**
+- By default, @copilot will check the PR against the AI Policy and the coding standards.
+- Code must be reviewed by the repository owner or a senior contributor to finally decide over the quality of the PR.
+- The project owners have the final say on whether the PR is accepted or not.
 
 **Note:** Tickets may be closed during cleanup. Feel free to reopen if you plan to finish the work.
 
@@ -237,7 +342,7 @@ Fix any failing checks before your PR will be considered.
 ## Git and PR workflow
 
 - Create feature branches from `main` and open PRs against `main`.
-- Keep PRs focused and small when possible; include tests and documentation updates.
+- Keep PRs focused and small when possible (see [Best Practices](#best-practices)); include tests and documentation updates.
 - Ensure all local checks pass before pushing:
   - `pre-commit run -a`
   - `pixi run rust-lint`
