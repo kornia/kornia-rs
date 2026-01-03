@@ -11,17 +11,6 @@ use pyo3::prelude::*;
 use std::fs;
 use std::path::Path;
 
-// #[pyfunction]
-// #[pyo3(warn(message = "read_image_any is deprecated, use read_image instead", category = pyo3::exceptions::PyDeprecationWarning))]
-// pub fn read_image_any(file_path: &str) -> PyResult<PyImage> {
-//     let image = F::read_image_any_rgb8(file_path)
-//         .map_err(|e| PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(e.to_string()))?;
-//     let pyimage = image.to_pyimage().map_err(|e| {
-//         PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-//     })?;
-//     Ok(pyimage)
-// }
-
 #[pyfunction]
 pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     // Attempt to obtain a path-like object via PEP 519 (`__fspath__`)
@@ -36,7 +25,7 @@ pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     })?;
 
     let path = Path::new(&path_os);
-    let path_display = path_os.to_str().unwrap_or("<non-utf8 path>");
+    let path_display = path_os.to_str().map(|s| s.to_owned()).unwrap_or_else(|| "<non-utf8 path>".to_string());
 
     if !path.exists() {
         return Err(PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(

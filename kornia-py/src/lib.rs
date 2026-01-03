@@ -13,8 +13,7 @@ use crate::icp::{PyICPConvergenceCriteria, PyICPResult};
 use crate::image::{PyImageLayout, PyImageSize, PyPixelFormat};
 use crate::io::jpegturbo::{PyImageDecoder, PyImageEncoder};
 use pyo3::prelude::*;
-use std::ffi::CString;
-use numpy::ndarray::Array2;
+use pyo3::exceptions::PyDeprecationWarning;
 
 pub fn get_version() -> String {
     let version = env!("CARGO_PKG_VERSION").to_string();
@@ -28,13 +27,18 @@ pub fn get_version() -> String {
 
 /// Helper to emit a deprecation warning in Python
 fn warn_deprecation(py: Python<'_>, message: &str) -> PyResult<()> {
-    let binding = py.get_type::<pyo3::exceptions::PyDeprecationWarning>();
-    let category = binding.as_any();
-
+    use std::ffi::CString;
     let message_cstr =
-        CString::new(message).expect("Deprecation warning message contained a null byte");
+        CString::new(message).map_err(|_| PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "Deprecation warning message contained a null byte",
+        ))?;
 
-    pyo3::PyErr::warn(py, category, message_cstr.as_c_str(), 2)
+    pyo3::PyErr::warn(
+        py,
+        &py.get_type::<PyDeprecationWarning>(),
+        message_cstr.as_c_str(),
+        2,
+    )
 }
 
 // Root Level Deprecated Wrappers
@@ -107,10 +111,9 @@ pub fn compute_histogram(
     py: Python<'_>,
     image: image::PyImage,
     nbins: usize,
-) -> PyResult<Vec<u32>> {
+) -> PyResult<Vec<usize>> {
     warn_deprecation(py, "kornia_rs.compute_histogram is deprecated. Use kornia_rs.imgproc.compute_histogram.")?;
-    let hist = histogram::compute_histogram(image, nbins)?;
-    Ok(hist.into_iter().map(|v| v as u32).collect())
+    histogram::compute_histogram(image, nbins)
 }
 
 // ICP
@@ -123,26 +126,32 @@ pub fn icp_vanilla(
     initial_trans: [f64; 3],
     criteria: PyICPConvergenceCriteria,
 ) -> PyResult<PyICPResult> {
-    warn_deprecation(py, "kornia_rs.icp_vanilla is deprecated. Use kornia_rs.k3d.icp_vanilla.")?;
+    warn_deprecation(
+        py,
+        "kornia_rs.icp_vanilla is deprecated. Use kornia_rs.k3d.icp_vanilla.",
+    )?;
 
+    use numpy::ndarray::Array2;
     use numpy::{PyArray1, PyArray2};
+    use pyo3::exceptions::PyValueError;
 
+    // Flatten rotation matrix
     let rot_data: Vec<f64> = initial_rot.into_iter().flatten().collect();
-    let rot_nd: Array2<f64> =
-        Array2::from_shape_vec((3, 3), rot_data).unwrap();
 
+    // Safely construct ndarray
+    let rot_nd = Array2::from_shape_vec((3, 3), rot_data).map_err(|e| {
+        PyValueError::new_err(format!(
+            "Failed to construct 3x3 rotation matrix: {e}"
+        ))
+    })?;
+
+    // Convert to NumPy arrays
     let rot = PyArray2::from_array(py, &rot_nd).into();
     let trans = PyArray1::from_slice(py, &initial_trans).into();
 
+    // Call actual implementation
     icp::icp_vanilla(source, target, rot, trans, criteria)
 }
-
-// // IO
-// #[pyfunction]
-// pub fn read_image_any(py: Python<'_>, file_path: &str) -> PyResult<image::PyImage> {
-//     warn_deprecation(py, "kornia_rs.read_image_any is deprecated. Use kornia_rs.io.read_image_any.")?;
-//     io::functional::read_image_any(file_path)
-// }
 
 #[pyfunction]
 pub fn read_image(py: Python<'_>, file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
@@ -188,7 +197,7 @@ pub fn write_image_png_u8(
 }
 
 // Resize
-#[pyfunction]
+#[pyfunction(name = "resize")]
 pub fn resize_deprecated(
     py: Python<'_>,
     image: image::PyImage,
@@ -243,7 +252,6 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(add_weighted, m)?)?;
     m.add_function(wrap_pyfunction!(compute_histogram, m)?)?;
     m.add_function(wrap_pyfunction!(icp_vanilla, m)?)?;
-    // m.add_function(wrap_pyfunction!(read_image_any, m)?)?;
     m.add_function(wrap_pyfunction!(read_image, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(write_image_jpeg, m)?)?;
@@ -267,7 +275,6 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // IO submodule
     let io_mod = PyModule::new(py, "io")?;
     io_mod.add_function(wrap_pyfunction!(io::functional::read_image, &io_mod)?)?;
-    // io_mod.add_function(wrap_pyfunction!(io::functional::read_image_any, &io_mod)?)?;
     io_mod.add_function(wrap_pyfunction!(io::png::decode_image_png_u8, &io_mod)?)?;
     io_mod.add_function(wrap_pyfunction!(io::png::decode_image_png_u16, &io_mod)?)?;
     io_mod.add_function(wrap_pyfunction!(io::png::read_image_png_u8, &io_mod)?)?;
