@@ -13,28 +13,18 @@ impl UnionFind {
         }
     }
 
-    /// Returns the representative (root) of the set containing `id`, with path compression.
+    /// Returns the representative (root) of the set containing `id`, with path halving.
     pub fn get_representative(&mut self, mut id: usize) -> usize {
-        let mut root = self.parent[id];
-
-        if root == usize::MAX {
+        if self.parent[id] == usize::MAX {
             self.parent[id] = id;
             return id;
         }
 
-        // Chase down the root
-        while self.parent[root] != root {
-            root = self.parent[root];
+        while self.parent[id] != id {
+            self.parent[id] = self.parent[self.parent[id]];
+            id = self.parent[id];
         }
-
-        // Go back and collapse the tree
-        while self.parent[id] != root {
-            let tmp = self.parent[id];
-            self.parent[id] = root;
-            id = tmp;
-        }
-
-        root
+        id
     }
 
     /// Returns the size of the set containing `id`.
