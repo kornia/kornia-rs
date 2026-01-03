@@ -1,10 +1,9 @@
-use crate::image::{PyImage, ToPyImage, ToPyImageF32, ToPyImageU16};
+use crate::image::{ToPyImage, ToPyImageF32, ToPyImageU16};
 use kornia_image::{
     allocator::CpuAllocator,
     color_spaces::{Gray16, Gray8, Grayf32, Rgb16, Rgb8, Rgba16, Rgba8, Rgbf32},
     PixelFormat,
 };
-use kornia_io::functional as F;
 use kornia_io::jpeg as jpeg_io;
 use kornia_io::png as png_io;
 use kornia_io::tiff as tiff_io;
