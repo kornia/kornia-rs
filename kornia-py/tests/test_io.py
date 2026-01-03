@@ -119,18 +119,6 @@ def test_decode_image_png_u16():
     assert img_t.shape == (32, 32, 3)
 
 
-def test_read_image_any():
-    # load an image with image-rs
-    img_path: Path = DATA_DIR / "dog.jpeg"
-    img: np.ndarray = K.io.read_image(str(img_path.absolute()))
-
-    # check the image properties
-    assert img.shape == (195, 258, 3)
-    assert img.dtype == np.uint8
-    img_t = torch.from_numpy(img)
-    assert img_t.shape == (195, 258, 3)
-
-
 def test_read_image_png_grayscale():
     """Test reading grayscale PNG image"""
     png_path: Path = DATA_DIR / "dog.png"

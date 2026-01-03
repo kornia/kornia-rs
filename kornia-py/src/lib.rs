@@ -137,12 +137,12 @@ pub fn icp_vanilla(
     icp::icp_vanilla(source, target, rot, trans, criteria)
 }
 
-// IO
-#[pyfunction]
-pub fn read_image_any(py: Python<'_>, file_path: &str) -> PyResult<image::PyImage> {
-    warn_deprecation(py, "kornia_rs.read_image_any is deprecated. Use kornia_rs.io.read_image_any.")?;
-    io::functional::read_image_any(file_path)
-}
+// // IO
+// #[pyfunction]
+// pub fn read_image_any(py: Python<'_>, file_path: &str) -> PyResult<image::PyImage> {
+//     warn_deprecation(py, "kornia_rs.read_image_any is deprecated. Use kornia_rs.io.read_image_any.")?;
+//     io::functional::read_image_any(file_path)
+// }
 
 #[pyfunction]
 pub fn read_image(py: Python<'_>, file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
@@ -243,7 +243,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(add_weighted, m)?)?;
     m.add_function(wrap_pyfunction!(compute_histogram, m)?)?;
     m.add_function(wrap_pyfunction!(icp_vanilla, m)?)?;
-    m.add_function(wrap_pyfunction!(read_image_any, m)?)?;
+    // m.add_function(wrap_pyfunction!(read_image_any, m)?)?;
     m.add_function(wrap_pyfunction!(read_image, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(write_image_jpeg, m)?)?;
@@ -267,7 +267,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // IO submodule
     let io_mod = PyModule::new(py, "io")?;
     io_mod.add_function(wrap_pyfunction!(io::functional::read_image, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::functional::read_image_any, &io_mod)?)?;
+    // io_mod.add_function(wrap_pyfunction!(io::functional::read_image_any, &io_mod)?)?;
     io_mod.add_function(wrap_pyfunction!(io::png::decode_image_png_u8, &io_mod)?)?;
     io_mod.add_function(wrap_pyfunction!(io::png::decode_image_png_u16, &io_mod)?)?;
     io_mod.add_function(wrap_pyfunction!(io::png::read_image_png_u8, &io_mod)?)?;

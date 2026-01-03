@@ -5,7 +5,6 @@ import numpy as np
 
 
 def test_histogram():
-    # load an image with libjpeg-turbo
     img = np.array([0, 2, 4, 128, 130, 132, 254, 255, 255], dtype=np.uint8).reshape(
         3, 3, 1
     )
