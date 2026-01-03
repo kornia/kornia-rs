@@ -326,10 +326,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+    use kornia_image::{allocator::CpuAllocator, Image, ImageError, ImageSize};
 
     // helper functions
-    fn make_src_2x2_rgb() -> Image<u8, 3, CpuAllocator> {
+    fn make_src_2x2_rgb() -> Result<Image<u8, 3, CpuAllocator>, ImageError> {
         Image::new(
             ImageSize {
                 width: 2,
@@ -338,10 +338,9 @@ mod tests {
             vec![1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4],
             CpuAllocator,
         )
-        .unwrap()
     }
 
-    fn make_dst_4x4_rgb() -> Image<u8, 3, CpuAllocator> {
+    fn make_dst_4x4_rgb() -> Result<Image<u8, 3, CpuAllocator>, ImageError> {
         Image::new(
             ImageSize {
                 width: 4,
@@ -350,7 +349,6 @@ mod tests {
             vec![0u8; 48],
             CpuAllocator,
         )
-        .unwrap()
     }
 
     const PAD_1: Padding2D = Padding2D {
@@ -361,11 +359,11 @@ mod tests {
     };
 
     #[test]
-    fn test_spatial_padding_constant() {
-        let src = make_src_2x2_rgb();
-        let mut dst = make_dst_4x4_rgb();
+    fn test_spatial_padding_constant() -> Result<(), ImageError> {
+        let src = make_src_2x2_rgb()?;
+        let mut dst = make_dst_4x4_rgb()?;
 
-        spatial_padding(&src, &mut dst, PAD_1, PaddingMode::Constant, [9, 9, 9]).unwrap();
+        spatial_padding(&src, &mut dst, PAD_1, PaddingMode::Constant, [9, 9, 9])?;
 
         let d = dst.as_slice();
 
@@ -379,14 +377,16 @@ mod tests {
         // actual image
         assert_eq!(&d[15..18], &[1, 1, 1]);
         assert_eq!(&d[30..33], &[4, 4, 4]);
+
+        Ok(())
     }
 
     #[test]
-    fn test_spatial_padding_replicate() {
-        let src = make_src_2x2_rgb();
-        let mut dst = make_dst_4x4_rgb();
+    fn test_spatial_padding_replicate() -> Result<(), ImageError> {
+        let src = make_src_2x2_rgb()?;
+        let mut dst = make_dst_4x4_rgb()?;
 
-        spatial_padding(&src, &mut dst, PAD_1, PaddingMode::Replicate, [0, 0, 0]).unwrap();
+        spatial_padding(&src, &mut dst, PAD_1, PaddingMode::Replicate, [0, 0, 0])?;
 
         let d = dst.as_slice();
 
@@ -397,14 +397,16 @@ mod tests {
         // edges
         assert_eq!(&d[3..6], &[1, 1, 1]);
         assert_eq!(&d[21..24], &[2, 2, 2]);
+
+        Ok(())
     }
 
     #[test]
-    fn test_spatial_padding_reflect101() {
-        let src = make_src_2x2_rgb();
-        let mut dst = make_dst_4x4_rgb();
+    fn test_spatial_padding_reflect101() -> Result<(), ImageError> {
+        let src = make_src_2x2_rgb()?;
+        let mut dst = make_dst_4x4_rgb()?;
 
-        spatial_padding(&src, &mut dst, PAD_1, PaddingMode::Reflect101, [0, 0, 0]).unwrap();
+        spatial_padding(&src, &mut dst, PAD_1, PaddingMode::Reflect101, [0, 0, 0])?;
 
         let d = dst.as_slice();
 
@@ -417,14 +419,16 @@ mod tests {
 
         // actual image
         assert_eq!(&d[15..18], &[1, 1, 1]);
+
+        Ok(())
     }
 
     #[test]
-    fn test_spatial_padding_reflect() {
-        let src = make_src_2x2_rgb();
-        let mut dst = make_dst_4x4_rgb();
+    fn test_spatial_padding_reflect() -> Result<(), ImageError> {
+        let src = make_src_2x2_rgb()?;
+        let mut dst = make_dst_4x4_rgb()?;
 
-        spatial_padding(&src, &mut dst, PAD_1, PaddingMode::Reflect, [0, 0, 0]).unwrap();
+        spatial_padding(&src, &mut dst, PAD_1, PaddingMode::Reflect, [0, 0, 0])?;
 
         let d = dst.as_slice();
 
@@ -435,14 +439,16 @@ mod tests {
         // edges
         assert_eq!(&d[6..9], &[2, 2, 2]);
         assert_eq!(&d[39..42], &[3, 3, 3]);
+
+        Ok(())
     }
 
     #[test]
-    fn test_spatial_padding_wrap() {
-        let src = make_src_2x2_rgb();
-        let mut dst = make_dst_4x4_rgb();
+    fn test_spatial_padding_wrap() -> Result<(), ImageError> {
+        let src = make_src_2x2_rgb()?;
+        let mut dst = make_dst_4x4_rgb()?;
 
-        spatial_padding(&src, &mut dst, PAD_1, PaddingMode::Wrap, [0, 0, 0]).unwrap();
+        spatial_padding(&src, &mut dst, PAD_1, PaddingMode::Wrap, [0, 0, 0])?;
 
         let d = dst.as_slice();
 
@@ -454,20 +460,13 @@ mod tests {
 
         // edges
         assert_eq!(&d[12..15], &[2, 2, 2]);
+
+        Ok(())
     }
 
     #[test]
-    fn test_spatial_padding_dst_size_mismatch() {
-        let src = Image::new(
-            ImageSize {
-                width: 2,
-                height: 2,
-            },
-            vec![1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4],
-            CpuAllocator,
-        )
-        .unwrap();
-
+    fn test_spatial_padding_dst_size_mismatch() -> Result<(), ImageError> {
+        let src = make_src_2x2_rgb()?;
         let mut dst = Image::<u8, 3, _>::new(
             ImageSize {
                 width: 3,
@@ -475,18 +474,16 @@ mod tests {
             },
             vec![0u8; 36],
             CpuAllocator,
-        )
-        .unwrap();
+        )?;
 
         let res = spatial_padding(&src, &mut dst, PAD_1, PaddingMode::Replicate, [0, 0, 0]);
-        println!("{:?}", src.size());
-        println!("{:?}", dst.size());
-        println!("{:?}", res);
         assert!(res.is_err());
+
+        Ok(())
     }
 
     #[test]
-    fn test_spatial_padding_larger_than_image_replicate() {
+    fn test_spatial_padding_larger_than_image_replicate() -> Result<(), ImageError> {
         let src = Image::<u8, 3, _>::new(
             ImageSize {
                 width: 1,
@@ -494,8 +491,7 @@ mod tests {
             },
             vec![7, 7, 7],
             CpuAllocator,
-        )
-        .unwrap();
+        )?;
 
         let padding = Padding2D {
             top: 3,
@@ -511,18 +507,19 @@ mod tests {
             },
             vec![0u8; 189],
             CpuAllocator,
-        )
-        .unwrap();
+        )?;
 
-        spatial_padding(&src, &mut dst, padding, PaddingMode::Replicate, [0, 0, 0]).unwrap();
+        spatial_padding(&src, &mut dst, padding, PaddingMode::Replicate, [0, 0, 0])?;
 
         for px in dst.as_slice().chunks_exact(3) {
             assert_eq!(px, &[7, 7, 7]);
         }
+
+        Ok(())
     }
 
     #[test]
-    fn test_spatial_padding_larger_than_image_wrap() {
+    fn test_spatial_padding_larger_than_image_wrap() -> Result<(), ImageError> {
         let src = Image::<u8, 3, _>::new(
             ImageSize {
                 width: 1,
@@ -530,8 +527,7 @@ mod tests {
             },
             vec![5, 5, 5],
             CpuAllocator,
-        )
-        .unwrap();
+        )?;
 
         let padding = Padding2D {
             top: 2,
@@ -547,13 +543,14 @@ mod tests {
             },
             vec![0u8; 75],
             CpuAllocator,
-        )
-        .unwrap();
+        )?;
 
-        spatial_padding(&src, &mut dst, padding, PaddingMode::Wrap, [0, 0, 0]).unwrap();
+        spatial_padding(&src, &mut dst, padding, PaddingMode::Wrap, [0, 0, 0])?;
 
         for px in dst.as_slice().chunks_exact(3) {
             assert_eq!(px, &[5, 5, 5]);
         }
+
+        Ok(())
     }
 }
