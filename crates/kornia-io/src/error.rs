@@ -48,6 +48,15 @@ pub enum IoError {
     #[error("Failed to decode the png image. {0}")]
     PngDecodeError(String),
 
+    /// Error when PNG color type doesn't match expected type.
+    #[error("Invalid PNG color type (expected {expected}, found {found})")]
+    PngColorTypeMismatch {
+        /// Expected color type
+        expected: String,
+        /// Found color type
+        found: String,
+    },
+
     /// Error to decode the TIFF image.
     #[error(transparent)]
     TiffDecodingError(#[from] tiff::TiffError),
