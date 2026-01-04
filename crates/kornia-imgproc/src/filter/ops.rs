@@ -168,7 +168,6 @@ pub fn image_grad<const C: usize, A1: ImageAllocator, A2: ImageAllocator, A3: Im
 /// # Errors
 ///
 /// Returns an error if `src` and `dst` have different sizes.
-
 pub fn sobel<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,
@@ -655,54 +654,32 @@ mod tests {
 
         Ok(())
     }
-    #[test]
-    fn test_image_grad_matches_opencv_sobel_non_square() {
-        use crate::filter::ops::image_grad;
-        use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
 
-        // Non-square image to avoid assuming width == height
+    #[test]
+    fn test_image_grad_matches_opencv_sobel_non_square() -> Result<(), ImageError> {
+        use crate::filter::ops::image_grad;
+        use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+
         let size = ImageSize {
             width: 5,
             height: 3,
         };
 
-        // 2D ramp image: value = x + y
-        // Produces non-zero gradients in both dx and dy
-        //
-        // y=0: 0 1 2 3 4
-        // y=1: 1 2 3 4 5
-        // y=2: 2 3 4 5 6
-        let data = vec![
-            0., 1., 2., 3., 4.,
-            1., 2., 3., 4., 5.,
-            2., 3., 4., 5., 6.,
-        ];
+        let data = vec![0., 1., 2., 3., 4., 1., 2., 3., 4., 5., 2., 3., 4., 5., 6.];
 
-        let src = Image::<f32, 1, _>::new(size, data, CpuAllocator).unwrap();
-        let mut dx =
-            Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator).unwrap();
-        let mut dy =
-            Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator).unwrap();
+        let src = Image::<f32, 1, _>::new(size, data, CpuAllocator)?;
+        let mut dx = Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        let mut dy = Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
 
-        image_grad(&src, &mut dx, &mut dy, 3).unwrap();
+        image_grad(&src, &mut dx, &mut dy, 3)?;
 
-        // Expected OpenCV Sobel (ksize=3) results computed externally.
-        // NOTE: We compare only interior pixels since border handling
-        // differs between OpenCV (reflect padding) and Kornia.
-        let expected_dx = vec![
-            0., 8., 8., 8., 0.,
-            0., 8., 8., 8., 0.,
-            0., 8., 8., 8., 0.,
-        ];
+        let expected_dx = vec![0., 8., 8., 8., 0., 0., 8., 8., 8., 0., 0., 8., 8., 8., 0.];
 
-        let expected_dy = vec![
-            0., 0., 0., 0., 0.,
-            8., 8., 8., 8., 8.,
-            0., 0., 0., 0., 0.,
-        ];
+        let expected_dy = vec![0., 0., 0., 0., 0., 8., 8., 8., 8., 8., 0., 0., 0., 0., 0.];
 
-        let w = size.width as usize;
-        let h = size.height as usize;
+        let w = size.width;
+        let h = size.height;
+
         let eps = 1e-4;
 
         for y in 1..h - 1 {
@@ -712,5 +689,7 @@ mod tests {
                 assert!((dy.as_slice()[idx] - expected_dy[idx]).abs() < eps);
             }
         }
+
+        Ok(())
     }
 }
