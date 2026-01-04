@@ -1,0 +1,116 @@
+name: 🐛 Bug Report
+description: Create a report to help us improve
+title: "[Bug]: "
+labels: ["bug", "help wanted"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+
+        **Before submitting:**
+        - [ ] I have searched existing issues to ensure this bug hasn't been reported
+        - [ ] I have checked the [help wanted issues](https://github.com/kornia/kornia-rs/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22help%20wanted%22) list
+        - [ ] I have read the [Contributing Guide](https://github.com/kornia/kornia-rs/blob/main/CONTRIBUTING.md)
+
+        ---
+
+        **⚠️ Important: Before submitting a PR**
+
+        If you plan to fix this bug yourself:
+
+        1. **Wait for maintainer approval**: A maintainer must review and approve this issue first
+        2. **Wait for assignment**: You must be assigned to this issue by a maintainer before submitting a PR
+        3. **Do not start work until assigned**: PRs submitted without prior issue approval and assignment may be closed
+
+        This helps us ensure the issue aligns with project goals, avoid duplicate work, and coordinate contributions effectively. See the [Contributing Guide](https://github.com/kornia/kornia-rs/blob/main/CONTRIBUTING.md#pull-request) for more details.
+
+  - type: textarea
+    id: describe-bug
+    attributes:
+      label: 🐛 Describe the bug
+      description: A clear and concise description of what the bug is.
+      placeholder: |
+        Example: When I call function X with parameters Y, I get error Z instead of the expected result.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction-steps
+    attributes:
+      label: 🔄 Steps to Reproduce
+      description: Steps to reproduce the behavior. Include minimal code example if possible.
+      value: |
+        1.
+        2.
+        3.
+        ...
+      render: bash
+    validations:
+      required: true
+
+  - type: textarea
+    id: code-example
+    attributes:
+      label: 💻 Minimal Code Example
+      description: If applicable, provide a minimal code example that reproduces the bug
+      placeholder: |
+        ```rust
+        use kornia_rs::*;
+        // Your minimal code here
+        ```
+      render: rust
+    validations:
+      required: false
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: ✅ Expected behavior
+      description: A clear and concise description of what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: ❌ Actual behavior
+      description: What actually happened? Include error messages if any.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 🔧 Environment
+      description: Please provide your environment details
+      value: |
+        - kornia-rs version:
+        - Rust version (`rustc -V`):
+        - Cargo version (`cargo -V`):
+        - OS (e.g., Linux, macOS, Windows):
+        - Target architecture (if cross-compiling):
+        - Python version (if using Python bindings):
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: 📝 Additional context
+      description: Add any other context, backtraces, or relevant information about the problem here.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribution-intent
+    attributes:
+      label: 🤝 Contribution Intent
+      description: Are you planning to contribute a fix for this bug?
+      options:
+        - label: I plan to submit a PR to fix this bug
+          required: false
+        - label: I'm reporting this bug but not planning to fix it
+          required: false
