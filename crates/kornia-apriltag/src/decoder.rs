@@ -138,7 +138,8 @@ impl QuickDecode {
         let ncodes = code_data.len();
         let capacity = (ncodes // Hamming 0
             + nbits * ncodes // Hamming 1
-            + ncodes * nbits * (nbits - 1) / 2) * 3; // Hamming 2, with a loadfactor of ~0.33
+            + ncodes * nbits * (nbits - 1) / 2)
+            * 3; // Hamming 2, with a loadfactor of ~0.33
 
         let mut quick_decode = Self {
             codes: vec![usize::MAX; capacity],
@@ -184,7 +185,7 @@ impl QuickDecode {
         }
 
         self.codes[bucket] = code;
-        self.entries[bucket] = PackedEntry { id, hamming};
+        self.entries[bucket] = PackedEntry { id, hamming };
     }
 }
 
@@ -788,7 +789,6 @@ fn quick_decode_codeword(tag_family: &TagFamily, mut rcode: usize, entry: &mut Q
 
         while quick_decode.codes[bucket] != usize::MAX {
             if quick_decode.codes[bucket] == rcode {
-
                 let packed_entry = quick_decode.entries[bucket];
 
                 let id = packed_entry.id;
