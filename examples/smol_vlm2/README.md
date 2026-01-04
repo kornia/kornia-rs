@@ -23,5 +23,3 @@ cargo run --bin smol_vlm2 --release --features "gstreamer flash-attn cuda" -- --
 ```bash
 cargo run --bin smol_vlm2 --release --features "gstreamer flash-attn cuda" -- --video-path example_video.mp4 --sampling uniform --sample-frames 8 --max-tokens 128 --prompt "Describe the video."
 ```
-
-

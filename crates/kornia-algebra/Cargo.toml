@@ -1,7 +1,6 @@
 [package]
 name = "kornia-algebra"
 description = "Algebraic types for kornia-rs"
-
 authors = ["kornia.org <christie@kornia.org>"]
 categories = { workspace = true }
 edition = { workspace = true }

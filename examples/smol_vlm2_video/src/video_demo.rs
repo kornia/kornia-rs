@@ -18,10 +18,10 @@ use std::sync::{
 pub fn video_demo(args: &crate::Args) -> Result<(), Box<dyn std::error::Error>> {
     // Use ip_address and port from Args
     let rec = rerun::RecordingStreamBuilder::new("SmolVLM2 Example: Video Understanding")
-        .connect_grpc_opts(
-            format!("rerun+http://{}:{}/proxy", args.ip_address, args.port),
-            rerun::default_flush_timeout(),
-        )?;
+        .connect_grpc_opts(format!(
+            "rerun+http://{}:{}/proxy",
+            args.ip_address, args.port
+        ))?;
 
     // Create the cancellation token for the video capture
     let cancel_token = Arc::new(AtomicBool::new(false));

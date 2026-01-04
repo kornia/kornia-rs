@@ -16,4 +16,3 @@ Example:
 ```bash
 cargo run --bin foxglove --release -- --camera-id 0 --fps 30
 ```
-

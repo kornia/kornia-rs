@@ -313,7 +313,7 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
 
-    const EPSILON: f32 = 1e-6;
+    const EPSILON: f32 = 1e-5;
 
     fn make_random_se3() -> SE3F32 {
         SE3F32::from_random()

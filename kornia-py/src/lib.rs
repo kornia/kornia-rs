@@ -10,7 +10,7 @@ mod resize;
 mod warp;
 
 use crate::icp::{PyICPConvergenceCriteria, PyICPResult};
-use crate::image::PyImageSize;
+use crate::image::{PyImageLayout, PyImageSize, PyPixelFormat};
 use crate::io::jpegturbo::{PyImageDecoder, PyImageEncoder};
 use pyo3::prelude::*;
 
@@ -36,6 +36,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(histogram::compute_histogram, m)?)?;
     m.add_function(wrap_pyfunction!(icp::icp_vanilla, m)?)?;
     m.add_function(wrap_pyfunction!(io::functional::read_image_any, m)?)?;
+    m.add_function(wrap_pyfunction!(io::functional::read_image, m)?)?;
     m.add_function(wrap_pyfunction!(io::png::decode_image_png_u8, m)?)?;
     m.add_function(wrap_pyfunction!(io::png::decode_image_png_u16, m)?)?;
     m.add_function(wrap_pyfunction!(io::png::read_image_png_u8, m)?)?;
@@ -43,7 +44,6 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(io::png::write_image_png_u8, m)?)?;
     m.add_function(wrap_pyfunction!(io::png::write_image_png_u16, m)?)?;
     m.add_function(wrap_pyfunction!(io::jpeg::decode_image_jpeg, m)?)?;
-    m.add_function(wrap_pyfunction!(io::jpeg::decode_image_jpeg_info, m)?)?;
     m.add_function(wrap_pyfunction!(io::jpeg::read_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(io::jpeg::write_image_jpeg, m)?)?;
     m.add_function(wrap_pyfunction!(io::jpeg::encode_image_jpeg, m)?)?;
@@ -59,11 +59,16 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(resize::resize, m)?)?;
     m.add_function(wrap_pyfunction!(warp::warp_affine, m)?)?;
     m.add_function(wrap_pyfunction!(warp::warp_perspective, m)?)?;
-    m.add_class::<PyImageSize>()?;
     m.add_class::<PyImageDecoder>()?;
     m.add_class::<PyImageEncoder>()?;
     m.add_class::<PyICPConvergenceCriteria>()?;
     m.add_class::<PyICPResult>()?;
+
+    let image_mod = PyModule::new(m.py(), "image")?;
+    image_mod.add_class::<PyImageSize>()?;
+    image_mod.add_class::<PyPixelFormat>()?;
+    image_mod.add_class::<PyImageLayout>()?;
+    m.add_submodule(&image_mod)?;
 
     let apriltag_mod = PyModule::new(m.py(), "apriltag")?;
     apriltag_mod.add_class::<apriltag::PyDecodeTagsConfig>()?;
