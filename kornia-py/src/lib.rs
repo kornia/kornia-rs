@@ -44,15 +44,21 @@ fn warn_deprecation(py: Python<'_>, message: &str) -> PyResult<()> {
 // Root Level Deprecated Wrappers
 
 // Color
-#[pyfunction]
-pub fn rgb_from_gray(py: Python<'_>, image: image::PyImage) -> PyResult<image::PyImage> {
-    warn_deprecation(py, "kornia_rs.rgb_from_gray is deprecated. Use kornia_rs.imgproc.rgb_from_gray.")?;
+#[pyfunction(name = "rgb_from_gray")]
+pub fn rgb_from_gray_deprecated(
+    py: Python<'_>,
+    image: image::PyImage,
+) -> PyResult<image::PyImage> {
+    warn_deprecation(
+        py,
+        "kornia_rs.rgb_from_gray is deprecated. Use kornia_rs.imgproc.rgb_from_gray.",
+    )?;
     color::rgb_from_gray(image)
 }
 
-#[pyfunction]
+#[pyfunction(name = "rgb_from_rgba")]
 #[pyo3(signature = (image, background=None))]
-pub fn rgb_from_rgba(
+pub fn rgb_from_rgba_deprecated(
     py: Python<'_>,
     image: image::PyImage,
     background: Option<[u8; 3]>,
@@ -61,13 +67,12 @@ pub fn rgb_from_rgba(
         py,
         "kornia_rs.rgb_from_rgba is deprecated. Use kornia_rs.imgproc.rgb_from_rgba.",
     )?;
-
     color::rgb_from_rgba(image, background)
 }
 
-#[pyfunction]
+#[pyfunction(name = "rgb_from_bgra")]
 #[pyo3(signature = (image, background=None))]
-pub fn rgb_from_bgra(
+pub fn rgb_from_bgra_deprecated(
     py: Python<'_>,
     image: image::PyImage,
     background: Option<[u8; 3]>,
@@ -76,25 +81,36 @@ pub fn rgb_from_bgra(
         py,
         "kornia_rs.rgb_from_bgra is deprecated. Use kornia_rs.imgproc.rgb_from_bgra.",
     )?;
-
     color::rgb_from_bgra(image, background)
 }
 
-#[pyfunction]
-pub fn bgr_from_rgb(py: Python<'_>, image: image::PyImage) -> PyResult<image::PyImage> {
-    warn_deprecation(py, "kornia_rs.bgr_from_rgb is deprecated. Use kornia_rs.imgproc.bgr_from_rgb.")?;
+#[pyfunction(name = "bgr_from_rgb")]
+pub fn bgr_from_rgb_deprecated(
+    py: Python<'_>,
+    image: image::PyImage,
+) -> PyResult<image::PyImage> {
+    warn_deprecation(
+        py,
+        "kornia_rs.bgr_from_rgb is deprecated. Use kornia_rs.imgproc.bgr_from_rgb.",
+    )?;
     color::bgr_from_rgb(image)
 }
 
-#[pyfunction]
-pub fn gray_from_rgb(py: Python<'_>, image: image::PyImage) -> PyResult<image::PyImage> {
-    warn_deprecation(py, "kornia_rs.gray_from_rgb is deprecated. Use kornia_rs.imgproc.gray_from_rgb.")?;
+#[pyfunction(name = "gray_from_rgb")]
+pub fn gray_from_rgb_deprecated(
+    py: Python<'_>,
+    image: image::PyImage,
+) -> PyResult<image::PyImage> {
+    warn_deprecation(
+        py,
+        "kornia_rs.gray_from_rgb is deprecated. Use kornia_rs.imgproc.gray_from_rgb.",
+    )?;
     color::gray_from_rgb(image)
 }
 
 // Enhance / Histogram
-#[pyfunction]
-pub fn add_weighted(
+#[pyfunction(name = "add_weighted")]
+pub fn add_weighted_deprecated(
     py: Python<'_>,
     src1: image::PyImage,
     alpha: f32,
@@ -102,23 +118,29 @@ pub fn add_weighted(
     beta: f32,
     gamma: f32,
 ) -> PyResult<image::PyImage> {
-    warn_deprecation(py, "kornia_rs.add_weighted is deprecated. Use kornia_rs.imgproc.add_weighted.")?;
+    warn_deprecation(
+        py,
+        "kornia_rs.add_weighted is deprecated. Use kornia_rs.imgproc.add_weighted.",
+    )?;
     enhance::add_weighted(src1, alpha, src2, beta, gamma)
 }
 
-#[pyfunction]
-pub fn compute_histogram(
+#[pyfunction(name = "compute_histogram")]
+pub fn compute_histogram_deprecated(
     py: Python<'_>,
     image: image::PyImage,
     nbins: usize,
 ) -> PyResult<Vec<usize>> {
-    warn_deprecation(py, "kornia_rs.compute_histogram is deprecated. Use kornia_rs.imgproc.compute_histogram.")?;
+    warn_deprecation(
+        py,
+        "kornia_rs.compute_histogram is deprecated. Use kornia_rs.imgproc.compute_histogram.",
+    )?;
     histogram::compute_histogram(image, nbins)
 }
 
 // ICP
-#[pyfunction]
-pub fn icp_vanilla(
+#[pyfunction(name = "icp_vanilla")]
+pub fn icp_vanilla_deprecated(
     py: Python<'_>,
     source: pointcloud::PyPointCloud,
     target: pointcloud::PyPointCloud,
@@ -135,64 +157,81 @@ pub fn icp_vanilla(
     use numpy::{PyArray1, PyArray2};
     use pyo3::exceptions::PyValueError;
 
-    // Flatten rotation matrix
     let rot_data: Vec<f64> = initial_rot.into_iter().flatten().collect();
-
-    // Safely construct ndarray
     let rot_nd = Array2::from_shape_vec((3, 3), rot_data).map_err(|e| {
-        PyValueError::new_err(format!(
-            "Failed to construct 3x3 rotation matrix: {e}"
-        ))
+        PyValueError::new_err(format!("Failed to construct 3x3 rotation matrix: {e}"))
     })?;
 
-    // Convert to NumPy arrays
     let rot = PyArray2::from_array(py, &rot_nd).into();
     let trans = PyArray1::from_slice(py, &initial_trans).into();
 
-    // Call actual implementation
     icp::icp_vanilla(source, target, rot, trans, criteria)
 }
 
-#[pyfunction]
-pub fn read_image(py: Python<'_>, file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    warn_deprecation(py, "kornia_rs.read_image is deprecated. Use kornia_rs.io.read_image.")?;
+// IO
+#[pyfunction(name = "read_image")]
+pub fn read_image_deprecated(py: Python<'_>, file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    warn_deprecation(
+        py,
+        "kornia_rs.read_image is deprecated. Use kornia_rs.io.read_image.",
+    )?;
     io::functional::read_image(file_path)
 }
 
 // JPEG
-#[pyfunction]
-pub fn read_image_jpeg(py: Python<'_>, file_path: &str, mode: &str) -> PyResult<image::PyImage> {
-    warn_deprecation(py, "kornia_rs.read_image_jpeg is deprecated. Use kornia_rs.io.read_image_jpeg.")?;
+#[pyfunction(name = "read_image_jpeg")]
+pub fn read_image_jpeg_deprecated(
+    py: Python<'_>,
+    file_path: &str,
+    mode: &str,
+) -> PyResult<image::PyImage> {
+    warn_deprecation(
+        py,
+        "kornia_rs.read_image_jpeg is deprecated. Use kornia_rs.io.read_image_jpeg.",
+    )?;
     io::jpeg::read_image_jpeg(file_path, mode)
 }
 
-#[pyfunction]
-pub fn write_image_jpeg(
+#[pyfunction(name = "write_image_jpeg")]
+pub fn write_image_jpeg_deprecated(
     py: Python<'_>,
     file_path: &str,
     image: image::PyImage,
     mode: &str,
     quality: u8,
 ) -> PyResult<()> {
-    warn_deprecation(py, "kornia_rs.write_image_jpeg is deprecated. Use kornia_rs.io.write_image_jpeg.")?;
+    warn_deprecation(
+        py,
+        "kornia_rs.write_image_jpeg is deprecated. Use kornia_rs.io.write_image_jpeg.",
+    )?;
     io::jpeg::write_image_jpeg(file_path, image, mode, quality)
 }
 
 // PNG
-#[pyfunction]
-pub fn read_image_png_u8(py: Python<'_>, file_path: &str, mode: &str) -> PyResult<image::PyImage> {
-    warn_deprecation(py, "kornia_rs.read_image_png_u8 is deprecated. Use kornia_rs.io.read_image_png_u8.")?;
+#[pyfunction(name = "read_image_png_u8")]
+pub fn read_image_png_u8_deprecated(
+    py: Python<'_>,
+    file_path: &str,
+    mode: &str,
+) -> PyResult<image::PyImage> {
+    warn_deprecation(
+        py,
+        "kornia_rs.read_image_png_u8 is deprecated. Use kornia_rs.io.read_image_png_u8.",
+    )?;
     io::png::read_image_png_u8(file_path, mode)
 }
 
-#[pyfunction]
-pub fn write_image_png_u8(
+#[pyfunction(name = "write_image_png_u8")]
+pub fn write_image_png_u8_deprecated(
     py: Python<'_>,
     file_path: &str,
     image: image::PyImage,
     mode: &str,
 ) -> PyResult<()> {
-    warn_deprecation(py, "kornia_rs.write_image_png_u8 is deprecated. Use kornia_rs.io.write_image_png_u8.")?;
+    warn_deprecation(
+        py,
+        "kornia_rs.write_image_png_u8 is deprecated. Use kornia_rs.io.write_image_png_u8.",
+    )?;
     io::png::write_image_png_u8(file_path, image, mode)
 }
 
@@ -212,27 +251,33 @@ pub fn resize_deprecated(
 }
 
 // Warp
-#[pyfunction]
-pub fn warp_affine(
+#[pyfunction(name = "warp_affine")]
+pub fn warp_affine_deprecated(
     py: Python<'_>,
     image: image::PyImage,
     m: [f32; 6],
     new_size: (usize, usize),
     interpolation: &str,
 ) -> PyResult<image::PyImage> {
-    warn_deprecation(py, "kornia_rs.warp_affine is deprecated. Use kornia_rs.imgproc.warp_affine.")?;
+    warn_deprecation(
+        py,
+        "kornia_rs.warp_affine is deprecated. Use kornia_rs.imgproc.warp_affine.",
+    )?;
     warp::warp_affine(image, m, new_size, interpolation)
 }
 
-#[pyfunction]
-pub fn warp_perspective(
+#[pyfunction(name = "warp_perspective")]
+pub fn warp_perspective_deprecated(
     py: Python<'_>,
     image: image::PyImage,
     m: [f32; 9],
     new_size: (usize, usize),
     interpolation: &str,
 ) -> PyResult<image::PyImage> {
-    warn_deprecation(py, "kornia_rs.warp_perspective is deprecated. Use kornia_rs.imgproc.warp_perspective.")?;
+    warn_deprecation(
+        py,
+        "kornia_rs.warp_perspective is deprecated. Use kornia_rs.imgproc.warp_perspective.",
+    )?;
     warp::warp_perspective(image, m, new_size, interpolation)
 }
 
@@ -244,22 +289,22 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", get_version())?;
 
     // Deprecated root-level functions
-    m.add_function(wrap_pyfunction!(rgb_from_gray, m)?)?;
-    m.add_function(wrap_pyfunction!(rgb_from_rgba, m)?)?;
-    m.add_function(wrap_pyfunction!(rgb_from_bgra, m)?)?;
-    m.add_function(wrap_pyfunction!(bgr_from_rgb, m)?)?;
-    m.add_function(wrap_pyfunction!(gray_from_rgb, m)?)?;
-    m.add_function(wrap_pyfunction!(add_weighted, m)?)?;
-    m.add_function(wrap_pyfunction!(compute_histogram, m)?)?;
-    m.add_function(wrap_pyfunction!(icp_vanilla, m)?)?;
-    m.add_function(wrap_pyfunction!(read_image, m)?)?;
-    m.add_function(wrap_pyfunction!(read_image_jpeg, m)?)?;
-    m.add_function(wrap_pyfunction!(write_image_jpeg, m)?)?;
-    m.add_function(wrap_pyfunction!(read_image_png_u8, m)?)?;
-    m.add_function(wrap_pyfunction!(write_image_png_u8, m)?)?;
+    m.add_function(wrap_pyfunction!(rgb_from_gray_deprecated, m)?)?;
+    m.add_function(wrap_pyfunction!(rgb_from_rgba_deprecated, m)?)?;
+    m.add_function(wrap_pyfunction!(rgb_from_bgra_deprecated, m)?)?;
+    m.add_function(wrap_pyfunction!(bgr_from_rgb_deprecated, m)?)?;
+    m.add_function(wrap_pyfunction!(gray_from_rgb_deprecated, m)?)?;
+    m.add_function(wrap_pyfunction!(add_weighted_deprecated, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_histogram_deprecated, m)?)?;
+    m.add_function(wrap_pyfunction!(icp_vanilla_deprecated, m)?)?;
+    m.add_function(wrap_pyfunction!(read_image_deprecated, m)?)?;
+    m.add_function(wrap_pyfunction!(read_image_jpeg_deprecated, m)?)?;
+    m.add_function(wrap_pyfunction!(write_image_jpeg_deprecated, m)?)?;
+    m.add_function(wrap_pyfunction!(read_image_png_u8_deprecated, m)?)?;
+    m.add_function(wrap_pyfunction!(write_image_png_u8_deprecated, m)?)?;
     m.add_function(wrap_pyfunction!(resize_deprecated, m)?)?;
-    m.add_function(wrap_pyfunction!(warp_affine, m)?)?;
-    m.add_function(wrap_pyfunction!(warp_perspective, m)?)?;
+    m.add_function(wrap_pyfunction!(warp_affine_deprecated, m)?)?;
+    m.add_function(wrap_pyfunction!(warp_perspective_deprecated, m)?)?;
 
     // Deprecated root-level classes
     m.add_class::<PyICPConvergenceCriteria>()?;
