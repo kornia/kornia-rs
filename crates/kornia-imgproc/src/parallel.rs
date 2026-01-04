@@ -1,38 +1,57 @@
 use rayon::prelude::*;
+use thiserror::Error;
 
 use kornia_image::{allocator::ImageAllocator, Image};
 use kornia_tensor::{CpuAllocator, Tensor2};
 
+/// Errors that can occur during parallel execution.
+#[derive(Error, Debug)]
+pub enum ParallelError {
+    /// The thread pool failed to build.
+    #[error("failed to build thread pool")]
+    BuildError(#[from] rayon::ThreadPoolBuildError),
+
+    /// The requested thread count is invalid.
+    #[error("thread count must be > 0, got {0}")]
+    InvalidThreadCount(usize),
+
+    /// The row stride for AutoRows must be valid.
+    #[error("row stride must be > 0 for AutoRows strategy")]
+    InvalidRowStride,
+}
+
 /// Controls how parallel operations are executed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExecutionStrategy {
-    /// Use the global Rayon thread pool.
+    /// Use the global Rayon thread pool to process every element in parallel.
     ///
-    /// This is the default strategy. It is generally efficient for heavy workloads
-    /// but may have overhead for very small tasks compared to [`ExecutionStrategy::Serial`].
+    /// This maximizes parallelism but may have overhead for small operations.
     #[default]
-    Auto,
+    AutoFull,
+
+    /// Use the global Rayon thread pool to process rows (chunks) in parallel.
+    ///
+    /// You must provide the row stride (width * channels).
+    /// This is often more cache-friendly than [`ExecutionStrategy::AutoFull`].
+    AutoRows(usize),
+
     /// Run sequentially on the current thread.
     ///
     /// Useful for small images, debugging, or when the overhead of parallelization
-    /// outweighs the benefits (e.g., simple thresholding on small/medium images).
+    /// outweighs the benefits.
     Serial,
+
     /// Run on a local thread pool with `n` threads.
     ///
     /// # Warning
     /// Creates a new thread pool on every call, which has significant overhead.
-    /// Use this primarily for benchmarking or specific isolation needs, not for
-    /// tight loops.
+    /// Use this primarily for benchmarking or specific isolation needs.
     Fixed(usize),
 }
 
+// --- LEGACY HELPERS (Restored to fix compilation errors) ---
+
 /// Apply a function to each pixel in the image in parallel.
-///
-/// # Arguments
-///
-/// * `src` - The input image.
-/// * `dst` - The output image.
-/// * `f` - The function to apply to each pixel.
 pub fn par_iter_rows<
     T1,
     const C1: usize,
@@ -152,6 +171,8 @@ pub fn par_iter_rows_resample<const C: usize, A: ImageAllocator>(
         });
 }
 
+// --- NEW ABSTRACTION ---
+
 /// Trait to execute operations on a slice with a given strategy.
 pub trait ExecuteExt<T> {
     /// Execute an operation on the slice with the given strategy.
@@ -160,36 +181,65 @@ pub trait ExecuteExt<T> {
     ///
     /// * `strategy` - The execution strategy.
     /// * `dst` - The destination slice.
-    /// * `op` - The operation to perform on each pixel.
-    fn execute_with<F>(self, strategy: ExecutionStrategy, dst: &mut [T], op: F)
+    /// * `op` - The operation to perform on each (source, destination) element pair.
+    fn execute_with<F>(
+        &self,
+        strategy: ExecutionStrategy,
+        dst: &mut [T],
+        op: F,
+    ) -> Result<(), ParallelError>
     where
         F: Fn((&T, &mut T)) + Sync + Send;
 }
 
 impl<T: Sync + Send> ExecuteExt<T> for &[T] {
-    fn execute_with<F>(self, strategy: ExecutionStrategy, dst: &mut [T], op: F)
+    fn execute_with<F>(
+        &self,
+        strategy: ExecutionStrategy,
+        dst: &mut [T],
+        op: F,
+    ) -> Result<(), ParallelError>
     where
         F: Fn((&T, &mut T)) + Sync + Send,
     {
+        // Validation: slices must be same length.
+        debug_assert_eq!(
+            self.len(),
+            dst.len(),
+            "Source and destination slices must have the same length"
+        );
+
         match strategy {
             ExecutionStrategy::Serial => {
                 self.iter().zip(dst.iter_mut()).for_each(op);
+                Ok(())
             }
-            ExecutionStrategy::Auto => {
+            ExecutionStrategy::AutoFull => {
                 self.par_iter().zip(dst.par_iter_mut()).for_each(op);
+                Ok(())
+            }
+            ExecutionStrategy::AutoRows(stride) => {
+                if stride == 0 {
+                    return Err(ParallelError::InvalidRowStride);
+                }
+                // Parallelize by chunks (rows), then iterate serially within the row
+                self.par_chunks(stride)
+                    .zip(dst.par_chunks_mut(stride))
+                    .for_each(|(src_row, dst_row)| {
+                        src_row.iter().zip(dst_row.iter_mut()).for_each(&op);
+                    });
+                Ok(())
             }
             ExecutionStrategy::Fixed(n) => {
                 if n == 0 {
-                    panic!("ExecutionStrategy::Fixed(n) requires n > 0");
+                    return Err(ParallelError::InvalidThreadCount(n));
                 }
                 let pool = rayon::ThreadPoolBuilder::new()
                     .num_threads(n)
-                    .build()
-                    .unwrap_or_else(|e| {
-                        panic!("Failed to create thread pool with {} threads: {}", n, e);
-                    });
+                    .build()?; // Error propagates automatically via `?` thanks to thiserror
 
                 pool.install(|| self.par_iter().zip(dst.par_iter_mut()).for_each(op));
+                Ok(())
             }
         }
     }
@@ -203,47 +253,45 @@ mod tests {
     fn test_execute_serial() {
         let src = vec![1, 2, 3, 4];
         let mut dst = vec![0; 4];
-        src.as_slice().execute_with(
-            ExecutionStrategy::Serial,
-            &mut dst,
-            |(s, d)| *d = *s * 2,
-        );
+        src.as_slice()
+            .execute_with(ExecutionStrategy::Serial, &mut dst, |(s, d)| *d = *s * 2)
+            .unwrap();
         assert_eq!(dst, vec![2, 4, 6, 8]);
     }
 
     #[test]
-    fn test_execute_auto() {
+    fn test_execute_auto_full() {
         let src = vec![1, 2, 3, 4];
         let mut dst = vec![0; 4];
-        src.as_slice().execute_with(
-            ExecutionStrategy::Auto,
-            &mut dst,
-            |(s, d)| *d = *s * 2,
-        );
+        src.as_slice()
+            .execute_with(ExecutionStrategy::AutoFull, &mut dst, |(s, d)| *d = *s * 2)
+            .unwrap();
         assert_eq!(dst, vec![2, 4, 6, 8]);
     }
 
     #[test]
-    fn test_execute_fixed() {
-        let src = vec![1, 2, 3, 4];
+    fn test_execute_auto_rows() {
+        let src = vec![1, 2, 3, 4]; // 2x2 image
         let mut dst = vec![0; 4];
-        src.as_slice().execute_with(
-            ExecutionStrategy::Fixed(2),
-            &mut dst,
-            |(s, d)| *d = *s * 2,
-        );
+        src.as_slice()
+            .execute_with(
+                ExecutionStrategy::AutoRows(2), // Stride of 2
+                &mut dst,
+                |(s, d)| *d = *s * 2,
+            )
+            .unwrap();
         assert_eq!(dst, vec![2, 4, 6, 8]);
     }
 
     #[test]
-    #[should_panic(expected = "ExecutionStrategy::Fixed(n) requires n > 0")]
-    fn test_execute_fixed_zero() {
+    fn test_execute_fixed_error() {
         let src = vec![1];
         let mut dst = vec![0];
-        src.as_slice().execute_with(
+        let res = src.as_slice().execute_with(
             ExecutionStrategy::Fixed(0),
             &mut dst,
             |(_, _)| {},
         );
+        assert!(matches!(res, Err(ParallelError::InvalidThreadCount(0))));
     }
 }

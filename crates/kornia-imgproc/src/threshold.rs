@@ -14,7 +14,7 @@ use crate::parallel::{ExecuteExt, ExecutionStrategy};
 /// * `dst` - The output image of an arbitrary number of channels and type.
 /// * `threshold` - The threshold value. Must be the same type as the image.
 /// * `max_value` - The maximum value to use when the input value is greater than the threshold.
-/// * `strategy` - The execution strategy (Auto, Serial, or Fixed).
+/// * `strategy` - The execution strategy.
 ///
 /// # Returns
 ///
@@ -33,7 +33,8 @@ use crate::parallel::{ExecuteExt, ExecutionStrategy};
 ///
 /// let mut thresholded = Image::<_, 1, _>::from_size_val(image.size(), 0, CpuAllocator).unwrap();
 ///
-/// threshold_binary(&image, &mut thresholded, 100, 255, ExecutionStrategy::Auto).unwrap();
+/// // Use Serial strategy for small images
+/// threshold_binary(&image, &mut thresholded, 100, 255, ExecutionStrategy::Serial).unwrap();
 /// assert_eq!(thresholded.num_channels(), 1);
 /// assert_eq!(thresholded.size().width, 2);
 /// assert_eq!(thresholded.size().height, 3);
@@ -57,17 +58,21 @@ where
         ));
     }
 
-    src.as_slice().execute_with(
-        strategy,
-        dst.as_slice_mut(),
-        |(src_pixel, dst_pixel)| {
-            *dst_pixel = if *src_pixel > threshold {
-                max_value
-            } else {
-                T::zero()
-            };
-        },
-    );
+    src.as_slice()
+        .execute_with(
+            strategy,
+            dst.as_slice_mut(),
+            |(src_pixel, dst_pixel)| {
+                *dst_pixel = if *src_pixel > threshold {
+                    max_value
+                } else {
+                    T::zero()
+                };
+            },
+        )
+        // FIXME: kornia_image::ImageError does not yet have a variant for ParallelError.
+        // We expect() here to allow compilation until ImageError is extended.
+        .expect("Parallel execution failed");
 
     Ok(())
 }
