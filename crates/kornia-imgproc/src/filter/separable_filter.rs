@@ -1,6 +1,5 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use num_traits::Zero;
-use rayon::prelude::*;
 
 /// Trait for floating point casting
 pub trait FloatConversion {
@@ -39,7 +38,6 @@ impl FloatConversion for u8 {
         val.clamp(0.0, 255.0) as u8
     }
 }
-
 struct SeparableFilter<'a> {
     kernel_x: &'a [f32],
     kernel_y: &'a [f32],
@@ -74,7 +72,7 @@ impl<'a> SeparableFilter<'a> {
         dst: &mut Image<T, C, A2>,
     ) -> Result<(), ImageError>
     where
-        T: FloatConversion + Clone + Zero + Send + Sync,
+        T: FloatConversion + Clone + Zero,
     {
         let rows = src.rows();
         let cols = src.cols();
@@ -83,106 +81,62 @@ impl<'a> SeparableFilter<'a> {
         let dst_data = dst.as_slice_mut();
         let mut temp = vec![0.0f32; src_data.len()];
 
-        const TILE_SIZE: usize = 64;
-
         // Horizontal
-        temp.par_chunks_mut(TILE_SIZE * cols * C)
-            .enumerate()
-            .for_each(|(tile_idx, tile)| {
-                let start = tile_idx * TILE_SIZE;
-                let end = (start + TILE_SIZE).min(rows);
+        for r in 0..rows {
+            let row_offset = r * cols * C;
 
-                for r in start..end {
-                    let local_r = r - start;
-                    self.apply_kernel_row::<T, C>(src_data, tile, r, local_r, cols);
+            for c in 0..cols {
+                let mut acc = [0.0f32; C];
+
+                for (&k, &off) in self.kernel_x.iter().zip(self.offsets_x.iter()) {
+                    let x = c as isize + off;
+                    if x >= 0 && x < cols as isize {
+                        let idx = row_offset + x as usize * C;
+                        for ch in 0..C {
+                            acc[ch] += unsafe { src_data.get_unchecked(idx + ch).to_f32() } * k;
+                        }
+                    }
                 }
-            });
+
+                let out_idx = row_offset + c * C;
+                for ch in 0..C {
+                    unsafe {
+                        *temp.get_unchecked_mut(out_idx + ch) = acc[ch];
+                    }
+                }
+            }
+        }
 
         // Vertical
-        dst_data
-            .par_chunks_mut(TILE_SIZE * cols * C)
-            .enumerate()
-            .for_each(|(tile_idx, tile)| {
-                let start = tile_idx * TILE_SIZE;
-                let end = (start + TILE_SIZE).min(rows);
+        for r in 0..rows {
+            let row_offset = r * cols * C;
 
-                for r in start..end {
-                    let local_r = r - start;
-                    self.apply_kernel_col::<T, C>(&temp, tile, r, local_r, rows, cols);
+            for c in 0..cols {
+                let mut acc = [0.0f32; C];
+
+                for (&k, &off) in self.kernel_y.iter().zip(self.offsets_y.iter()) {
+                    let y = r as isize + off;
+                    if y >= 0 && y < rows as isize {
+                        let idx = y as usize * cols * C + c * C;
+                        for ch in 0..C {
+                            acc[ch] += unsafe { *temp.get_unchecked(idx + ch) } * k;
+                        }
+                    }
                 }
-            });
+
+                let out_idx = row_offset + c * C;
+                for ch in 0..C {
+                    unsafe {
+                        *dst_data.get_unchecked_mut(out_idx + ch) = T::from_f32(acc[ch]);
+                    }
+                }
+            }
+        }
 
         Ok(())
     }
-
-    #[inline]
-    fn apply_kernel_row<T: FloatConversion, const C: usize>(
-        &self,
-        src: &[T],
-        dst: &mut [f32],
-        r: usize,
-        local_r: usize,
-        cols: usize,
-    ) {
-        let global_row = r * cols * C;
-        let local_row = local_r * cols * C;
-
-        for c in 0..cols {
-            let mut acc = [0.0f32; C];
-
-            for (&k, &off) in self.kernel_x.iter().zip(self.offsets_x.iter()) {
-                let x = c as isize + off;
-                if x >= 0 && x < cols as isize {
-                    let idx = global_row + x as usize * C;
-                    for ch in 0..C {
-                        acc[ch] += unsafe { src.get_unchecked(idx + ch).to_f32() } * k;
-                    }
-                }
-            }
-
-            let out = local_row + c * C;
-            for ch in 0..C {
-                unsafe {
-                    *dst.get_unchecked_mut(out + ch) = acc[ch];
-                }
-            }
-        }
-    }
-
-    #[inline]
-    fn apply_kernel_col<T: FloatConversion, const C: usize>(
-        &self,
-        src: &[f32],
-        dst: &mut [T],
-        r: usize,
-        local_r: usize,
-        rows: usize,
-        cols: usize,
-    ) {
-        let local_row = local_r * cols * C;
-
-        for c in 0..cols {
-            let mut acc = [0.0f32; C];
-
-            for (&k, &off) in self.kernel_y.iter().zip(self.offsets_y.iter()) {
-                let y = r as isize + off;
-                if y >= 0 && y < rows as isize {
-                    let idx = y as usize * cols * C + c * C;
-                    for ch in 0..C {
-                        acc[ch] += unsafe { *src.get_unchecked(idx + ch) } * k;
-                    }
-                }
-            }
-
-            let out = local_row + c * C;
-            for ch in 0..C {
-                unsafe {
-                    *dst.get_unchecked_mut(out + ch) = T::from_f32(acc[ch]);
-                }
-            }
-        }
-    }
 }
+
 /// Apply a separable filter to an image.
 ///
 /// # Arguments
@@ -198,13 +152,7 @@ pub fn separable_filter<T, const C: usize, A1: ImageAllocator, A2: ImageAllocato
     kernel_y: &[f32],
 ) -> Result<(), ImageError>
 where
-    T: FloatConversion
-        + Clone
-        + Zero
-        + Send
-        + Sync
-        + std::ops::Mul<Output = T>
-        + std::ops::AddAssign,
+    T: FloatConversion + Clone + Zero + std::ops::Mul<Output = T> + std::ops::AddAssign,
 {
     if kernel_x.is_empty() || kernel_y.is_empty() {
         return Err(ImageError::InvalidKernelLength(
