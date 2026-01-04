@@ -1,4 +1,4 @@
-use std::{f32::consts::PI, ops::ControlFlow};
+use std::f32::consts::PI;
 
 use crate::{
     family::{TagFamily, TagFamilyKind},
@@ -91,7 +91,7 @@ impl GrayModelPair {
     }
 }
 
-/// Represents an entry in the quick decode table for tag decoding.
+/// struct with all values, kept for backwards compatibility.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct QuickDecodeEntry {
     /// The raw code value associated with the tag.
@@ -104,22 +104,23 @@ pub struct QuickDecodeEntry {
     pub rotation: u8,
 }
 
-/// A table for fast lookup of decoded tag codes and their associated metadata.
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct QuickDecode(Vec<QuickDecodeEntry>);
-
-impl std::ops::Deref for QuickDecode {
-    type Target = Vec<QuickDecodeEntry>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
+/// Represents a packed entry in the quick decode table, storing ID and Hamming distance.
+#[repr(packed)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct PackedEntry {
+    /// The decoded tag ID.
+    pub id: u16,
+    /// The Hamming distance for this code.
+    pub hamming: u8,
 }
 
-impl std::ops::DerefMut for QuickDecode {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
+/// A table for fast lookup of decoded tag codes and their associated metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuickDecode {
+    /// The raw code value associated with the tag.
+    pub codes: Vec<usize>,
+    /// The entries containing metadata.
+    pub entries: Vec<PackedEntry>,
 }
 
 impl QuickDecode {
@@ -135,33 +136,34 @@ impl QuickDecode {
     /// A new `QuickDecode` instance with precomputed entries for all codes and their Hamming neighbors.
     pub fn new(nbits: usize, code_data: &[usize]) -> Self {
         let ncodes = code_data.len();
-        let capacity = ncodes // Hamming 0
+        let capacity = (ncodes // Hamming 0
             + nbits * ncodes // Hamming 1
-            + ncodes * nbits * (nbits - 1) / 2; // Hamming 2
+            + ncodes * nbits * (nbits - 1) / 2) * 3; // Hamming 2, with a loadfactor of ~0.33
 
-        let mut quick_decode = Self(vec![
-            QuickDecodeEntry {
-                rcode: usize::MAX,
-                ..Default::default()
-            };
-            capacity * 3
-        ]);
+        let mut quick_decode = Self {
+            codes: vec![usize::MAX; capacity],
+            entries: vec![PackedEntry::default(); capacity],
+        };
 
-        code_data.iter().enumerate().for_each(|(i, code)| {
-            quick_decode.add(*code, i as u16, 0);
+        for (i, &code) in code_data.iter().enumerate() {
+            let id = i as u16;
 
-            // add hamming 1
-            (0..nbits).for_each(|j| {
-                quick_decode.add(code ^ (1 << j), i as u16, 1);
-            });
+            // Insert exact code (0 bits)
+            quick_decode.add(code, id, 0);
 
-            // add hamming 2
-            (0..nbits).for_each(|j| {
-                (0..j).for_each(|k| {
-                    quick_decode.add(code ^ (1 << j) ^ (1 << k), i as u16, 2);
-                });
-            });
-        });
+            // Insert 1-bit errors
+            for j in 0..nbits {
+                quick_decode.add(code ^ (1 << j), id, 1);
+            }
+
+            // Insert 2-bit errors
+            for j in 0..nbits {
+                for k in (j + 1)..nbits {
+                    quick_decode.add(code ^ (1 << j) ^ (1 << k), id, 2);
+                }
+            }
+        }
+
         quick_decode
     }
 
@@ -173,16 +175,16 @@ impl QuickDecode {
     /// * `id` - The tag ID associated with the code.
     /// * `hamming` - The Hamming distance for this code.
     fn add(&mut self, code: usize, id: u16, hamming: u8) {
-        let mut bucket = code % self.len();
+        let len = self.codes.len();
+        let mut bucket = code % len;
 
-        // TODO: Use iterators instead
-        while self[bucket].rcode != usize::MAX {
-            bucket = (bucket + 1) % self.len();
+        // Linear probing
+        while self.codes[bucket] != usize::MAX {
+            bucket = (bucket + 1) % len;
         }
 
-        self[bucket].rcode = code;
-        self[bucket].id = id;
-        self[bucket].hamming = hamming;
+        self.codes[bucket] = code;
+        self.entries[bucket] = PackedEntry { id, hamming};
     }
 }
 
@@ -777,31 +779,42 @@ pub fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32,
 /// * `rcode` - The codeword to look up.
 /// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the result.
 fn quick_decode_codeword(tag_family: &TagFamily, mut rcode: usize, entry: &mut QuickDecodeEntry) {
-    if let ControlFlow::Break(_) = (0..4).try_for_each(|ridx| {
-        let mut bucket = rcode % tag_family.quick_decode.0.len();
+    let quick_decode = &tag_family.quick_decode;
+    let len = quick_decode.codes.len();
+    let nbits = tag_family.nbits;
 
-        while tag_family.quick_decode.0[bucket].rcode != usize::MAX {
-            if tag_family.quick_decode.0[bucket].rcode == rcode {
-                *entry = tag_family.quick_decode.0[bucket].clone();
-                entry.rotation = ridx;
+    for ridx in 0..4 {
+        let mut bucket = rcode % len;
 
-                return ControlFlow::Break(());
+        while quick_decode.codes[bucket] != usize::MAX {
+            if quick_decode.codes[bucket] == rcode {
+
+                let packed_entry = quick_decode.entries[bucket];
+
+                let id = packed_entry.id;
+                let hamming = packed_entry.hamming;
+
+                *entry = QuickDecodeEntry {
+                    rcode,
+                    id,
+                    hamming,
+                    rotation: ridx as u8,
+                };
+                return;
             }
-
-            bucket = (bucket + 1) % tag_family.quick_decode.0.len();
+            bucket = (bucket + 1) % len;
         }
 
-        rcode = rotate_90(rcode, tag_family.nbits);
-
-        ControlFlow::Continue(())
-    }) {
-        return;
+        // If not found, rotate the query code by 90 degrees and try again
+        rcode = rotate_90(rcode, nbits);
     }
 
-    entry.rcode = 0;
-    entry.id = u16::MAX;
-    entry.hamming = 255;
-    entry.rotation = 0;
+    *entry = QuickDecodeEntry {
+        rcode: 0,
+        id: u16::MAX,
+        hamming: 255,
+        rotation: 0,
+    };
 }
 
 /// Rotates the bits of a codeword by 90 degrees for tag decoding.
