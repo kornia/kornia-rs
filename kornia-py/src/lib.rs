@@ -298,7 +298,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Deprecated root-level classes
     // PyO3 does not support emitting a deprecation warning when a class is imported.
-    // These top-level classes are retained for backward compatibility purposes only. 
+    // These top-level classes are retained for backward compatibility purposes only.
     // Users should import them from `kornia_rs::k3d`
     m.add_class::<PyICPConvergenceCriteria>()?;
     m.add_class::<PyICPResult>()?;
