@@ -4,6 +4,28 @@ use kornia_io::jpeg as J;
 use pyo3::prelude::*;
 
 #[pyfunction]
+#[pyo3(
+    text_signature = "(file_path, mode, /)",
+    doc = "Read a JPEG image from disk.\n\n\
+Parameters\n----------\n\
+file_path : str\n\
+    Path to the JPEG image file.\n\
+mode : str\n\
+    Image mode. Supported values are:\n\
+    - 'rgb'  : 8-bit RGB image (H, W, 3)\n\
+    - 'mono' : 8-bit grayscale image (H, W)\n\n\
+Returns\n-------\n\
+PyImage\n\
+    Image loaded as a NumPy-backed PyImage.\n\n\
+Raises\n------\n\
+ValueError\n\
+    If an unsupported mode is provided or the image cannot be read.\n\n\
+Examples\n--------\n\
+>>> import kornia_rs as K\n\
+>>> img = K.read_image_jpeg('dog.jpg', 'rgb')\n\
+>>> img.shape\n\
+(195, 258, 3)\n"
+)]
 pub fn read_image_jpeg(file_path: &str, mode: &str) -> PyResult<PyImage> {
     let result = match mode {
         "rgb" => {
@@ -45,6 +67,30 @@ pub fn read_image_jpeg(file_path: &str, mode: &str) -> PyResult<PyImage> {
 }
 
 #[pyfunction]
+#[pyo3(
+    text_signature = "(file_path, image, mode, quality=95, /)",
+    doc = "Write an image to disk in JPEG format.\n\n\
+Parameters\n----------\n\
+file_path : str\n\
+    Output file path (e.g. 'output.jpg').\n\
+image : PyImage\n\
+    Image to write. Expected dtype is uint8.\n\
+mode : str\n\
+    Image mode. Supported values are:\n\
+    - 'rgb'  : RGB image with shape (H, W, 3)\n\
+    - 'mono' : Grayscale image with shape (H, W)\n\
+quality : int\n\
+    JPEG quality in range [0, 100]. Higher means better quality.\n\n\
+Returns\n-------\n\
+None\n\n\
+Raises\n------\n\
+ValueError\n\
+    If an unsupported mode is provided or encoding fails.\n\n\
+Examples\n--------\n\
+>>> import kornia_rs as K\n\
+>>> img = K.read_image_jpeg('dog.jpg', 'rgb')\n\
+>>> K.write_image_jpeg('out.jpg', img, 'rgb', quality=90)\n"
+)]
 pub fn write_image_jpeg(file_path: &str, image: PyImage, mode: &str, quality: u8) -> PyResult<()> {
     match mode {
         "rgb" => {
