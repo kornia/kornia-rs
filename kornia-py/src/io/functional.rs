@@ -15,7 +15,7 @@ use std::path::Path;
 pub fn read_image_any_deprecated(py: Python<'_>, file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     crate::warn_deprecation(
         py,
-        "kornia_rs.read_image_any is deprecated. Use kornia_rs.read_image instead.",
+        "kornia_rs.read_image_any is deprecated. Use kornia_rs.io.read_image instead.",
     )?;
 
     read_image(file_path)
