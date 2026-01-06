@@ -12,8 +12,9 @@ mod warp;
 use crate::icp::{PyICPConvergenceCriteria, PyICPResult};
 use crate::image::{PyImageLayout, PyImageSize, PyPixelFormat};
 use crate::io::jpegturbo::{PyImageDecoder, PyImageEncoder};
-use pyo3::prelude::*;
+use numpy::{PyArray1, PyArray2};
 use pyo3::exceptions::PyDeprecationWarning;
+use pyo3::prelude::*;
 
 pub fn get_version() -> String {
     let version = env!("CARGO_PKG_VERSION").to_string();
@@ -144,8 +145,8 @@ pub fn icp_vanilla_deprecated(
     py: Python<'_>,
     source: pointcloud::PyPointCloud,
     target: pointcloud::PyPointCloud,
-    initial_rot: [[f64; 3]; 3],
-    initial_trans: [f64; 3],
+    initial_rot: Py<PyArray2<f64>>,
+    initial_trans: Py<PyArray1<f64>>,
     criteria: PyICPConvergenceCriteria,
 ) -> PyResult<PyICPResult> {
     warn_deprecation(
@@ -153,19 +154,7 @@ pub fn icp_vanilla_deprecated(
         "kornia_rs.icp_vanilla is deprecated. Use kornia_rs.k3d.icp_vanilla.",
     )?;
 
-    use numpy::ndarray::Array2;
-    use numpy::{PyArray1, PyArray2};
-    use pyo3::exceptions::PyValueError;
-
-    let rot_data: Vec<f64> = initial_rot.into_iter().flatten().collect();
-    let rot_nd = Array2::from_shape_vec((3, 3), rot_data).map_err(|e| {
-        PyValueError::new_err(format!("Failed to construct 3x3 rotation matrix: {e}"))
-    })?;
-
-    let rot = PyArray2::from_array(py, &rot_nd).into();
-    let trans = PyArray1::from_slice(py, &initial_trans).into();
-
-    icp::icp_vanilla(source, target, rot, trans, criteria)
+    icp::icp_vanilla(source, target, initial_rot, initial_trans, criteria)
 }
 
 // IO
@@ -298,6 +287,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_histogram_deprecated, m)?)?;
     m.add_function(wrap_pyfunction!(icp_vanilla_deprecated, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_deprecated, m)?)?;
+    m.add_function(wrap_pyfunction!(io::functional::read_image_any_deprecated, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_jpeg_deprecated, m)?)?;
     m.add_function(wrap_pyfunction!(write_image_jpeg_deprecated, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_png_u8_deprecated, m)?)?;
@@ -307,6 +297,9 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(warp_perspective_deprecated, m)?)?;
 
     // Deprecated root-level classes
+    // PyO3 does not support emitting a deprecation warning when a class is imported.
+    // These top-level classes are retained for backward compatibility purposes only. 
+    // Users should import them from `kornia_rs::k3d`
     m.add_class::<PyICPConvergenceCriteria>()?;
     m.add_class::<PyICPResult>()?;
 
@@ -319,6 +312,11 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // IO submodule
     let io_mod = PyModule::new(py, "io")?;
+
+    // NOTE:
+    // Some IO helpers (e.g. decode/enc helpers and TIFF internals)
+    // are now available only under `kornia_rs.io`.
+    // There are no deprecated root-scoped aliases among these functions.
     io_mod.add_function(wrap_pyfunction!(io::functional::read_image, &io_mod)?)?;
     io_mod.add_function(wrap_pyfunction!(io::png::decode_image_png_u8, &io_mod)?)?;
     io_mod.add_function(wrap_pyfunction!(io::png::decode_image_png_u16, &io_mod)?)?;

@@ -11,6 +11,16 @@ use pyo3::prelude::*;
 use std::fs;
 use std::path::Path;
 
+#[pyfunction(name = "read_image_any")]
+pub fn read_image_any_deprecated(py: Python<'_>, file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    crate::warn_deprecation(
+        py,
+        "kornia_rs.read_image_any is deprecated. Use kornia_rs.read_image instead.",
+    )?;
+
+    read_image(file_path)
+}
+
 #[pyfunction]
 pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     // Attempt to obtain a path-like object via PEP 519 (`__fspath__`)
