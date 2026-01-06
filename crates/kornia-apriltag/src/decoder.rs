@@ -803,10 +803,7 @@ pub fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32,
 /// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the result.
 fn quick_decode_codeword(tag_family: &TagFamily, mut rcode: usize, entry: &mut QuickDecodeEntry) {
     if let ControlFlow::Break(_) = (0..4).try_for_each(|ridx| {
-        if let Some(mut decoded) = tag_family
-            .quick_decode
-            .decode(rcode, &tag_family.code_data)
-        {
+        if let Some(mut decoded) = tag_family.quick_decode.decode(rcode, &tag_family.code_data) {
             decoded.rotation = ridx as u8;
             *entry = decoded;
 
