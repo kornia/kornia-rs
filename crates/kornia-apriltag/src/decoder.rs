@@ -94,82 +94,79 @@ impl GrayModelPair {
 /// Represents an entry in the quick decode table for tag decoding.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct QuickDecodeEntry {
-    /// The raw code value associated with the tag.
+    /// The raw observed code from the image.
     pub rcode: usize,
-    /// The decoded tag ID.
+    /// The decoded Tag ID.
     pub id: u16,
-    /// The Hamming distance for this code.
+    /// The Hamming distance found (0, 1, 2, or 3).
     pub hamming: u8,
-    /// The rotation (in 90-degree increments) of the tag.
+    /// Rotation
     pub rotation: u8,
 }
 
-/// Sentinel value used to mark unoccupied slots in the quick decode hash table.
-const SLOT_EMPTY: u16 = u16::MAX;
-
-/// A table for fast lookup of decoded tag codes and their associated metadata.
-#[derive(Debug, Default, Clone, PartialEq)]
+/// A lookup table for fast Hamming distance decoding.
+#[derive(Debug, Clone, PartialEq)]
 pub struct QuickDecode {
-    table: Vec<u16>,
+    /// Four lookup tables, one for each chunk position.
+    tables: [Vec<Vec<u16>>; 4],
+
+    /// The number of bits to shift right to extract each chunk.
+    shifts: [usize; 4],
+
+    /// Bitmask to isolate the value of a single chunk.
+    chunk_mask: usize,
+
+    /// The maximum allowed Hamming distance.
+    /// This allows us to restrict small families (16h5) to 2 errors,
+    /// while allowing large families to correct up to 3 errors.
+    max_hamming: u8,
 }
 
 impl QuickDecode {
-    /// Creates a new `QuickDecode` table for fast lookup of decoded tag codes and their associated metadata.
+    /// Creates a new QuickDecode table.
     ///
     /// # Arguments
     ///
-    /// * `nbits` - Number of bits in the tag code.
-    /// * `code_data` - Slice of code values to populate the table.
-    ///
-    /// # Returns
-    ///
-    /// A new `QuickDecode` instance with precomputed entries for all codes and their Hamming neighbors.
-    pub fn new(nbits: usize, code_data: &[usize]) -> Self {
-        let ncodes = code_data.len();
-        let entries_needed = ncodes // Hamming 0
-            + nbits * ncodes // Hamming 1
-            + ncodes * nbits * (nbits - 1) / 2; // Hamming 2
+    /// * `nbits` - The total number of bits in the tag (e.g., 36 for 36h11).
+    /// * `valid_codes` - The list of valid tag codes (the index is used as the ID).
+    /// * `allowed_errors` - Max bit errors to correct.
+    ///   - **WARNING:** Must be `< 4`. This implementation guarantees finding up to 3 errors.
+    ///   - set allowed_errors as 2 for 16h5 and other smaller families.
+    pub fn new(nbits: usize, valid_codes: &[usize], allowed_errors: u8) -> Self {
+        assert!(
+            allowed_errors < 4,
+            "This 4-chunk implementation can only guarantee up to 3 errors."
+        );
 
-        let capacity = entries_needed * 3;
+        let chunk_size = (nbits + 3) / 4;
+        let capacity = 1 << chunk_size;
+        let chunk_mask = capacity - 1;
 
-        let mut quick_decode = Self {
-            table: vec![SLOT_EMPTY; capacity],
-        };
+        let mut tables = [
+            vec![Vec::new(); capacity],
+            vec![Vec::new(); capacity],
+            vec![Vec::new(); capacity],
+            vec![Vec::new(); capacity],
+        ];
 
-        code_data.iter().enumerate().for_each(|(i, code)| {
+        let shifts = [0, chunk_size, chunk_size * 2, chunk_size * 3];
+
+        for (i, &code) in valid_codes.iter().enumerate() {
             let id = i as u16;
-            quick_decode.add(*code, id);
 
-            // add hamming 1
-            (0..nbits).for_each(|j| {
-                quick_decode.add(code ^ (1 << j), id);
-            });
-
-            // add hamming 2
-            (0..nbits).for_each(|j| {
-                (0..j).for_each(|k| {
-                    quick_decode.add(code ^ (1 << j) ^ (1 << k), id);
-                });
-            });
-        });
-        quick_decode
-    }
-
-    /// Adds a new entry to the quick decode table.
-    ///
-    /// # Arguments
-    ///
-    /// * `code` - The code value to add.
-    /// * `id` - The tag ID associated with the code.
-    fn add(&mut self, code: usize, id: u16) {
-        let len = self.table.len();
-        let mut bucket = code % len;
-
-        while self.table[bucket] != SLOT_EMPTY {
-            bucket = (bucket + 1) % len;
+            for chunk_idx in 0..4 {
+                let shift = shifts[chunk_idx];
+                let val = (code >> shift) & chunk_mask;
+                tables[chunk_idx][val].push(id);
+            }
         }
 
-        self.table[bucket] = id;
+        Self {
+            tables,
+            shifts,
+            chunk_mask,
+            max_hamming: allowed_errors,
+        }
     }
 
     /// Decodes an observed code using the quick decode table.
@@ -181,34 +178,30 @@ impl QuickDecode {
     ///
     /// # Returns
     ///
-    /// Returns `Some(QuickDecodeEntry)` if the code is found within a Hamming distance of 2, or `None` otherwise.
+    /// Returns `Some(QuickDecodeEntry)` if the code is found within `max_hamming`, or `None` otherwise.
     pub fn decode(&self, observed_code: usize, valid_codes: &[usize]) -> Option<QuickDecodeEntry> {
-        let len = self.table.len();
-        let mut bucket = observed_code % len;
+        for i in 0..4 {
+            let val = (observed_code >> self.shifts[i]) & self.chunk_mask;
 
-        loop {
-            let candidate_id = self.table[bucket];
+            if let Some(candidates) = self.tables[i].get(val) {
+                for &id in candidates {
+                    let perfect_code = valid_codes[id as usize];
 
-            if candidate_id == SLOT_EMPTY {
-                return None;
+                    let dist = (observed_code ^ perfect_code).count_ones() as u8;
+
+                    if dist <= self.max_hamming {
+                        return Some(QuickDecodeEntry {
+                            rcode: observed_code,
+                            id,
+                            hamming: dist,
+                            rotation: 0,
+                        });
+                    }
+                }
             }
-
-            let perfect_code = valid_codes[candidate_id as usize];
-            let delta = observed_code ^ perfect_code;
-
-            let hamming = delta.count_ones();
-
-            if hamming <= 2 {
-                return Some(QuickDecodeEntry {
-                    rcode: observed_code,
-                    id: candidate_id,
-                    hamming: hamming as u8,
-                    rotation: 0,
-                });
-            }
-
-            bucket = (bucket + 1) % len;
         }
+
+        None
     }
 }
 
