@@ -290,12 +290,16 @@ impl AprilTagDecoder {
     }
 }
 
-/// Running the test on aarch64 crashes the CI
-#[cfg(all(test, not(target_arch = "aarch64")))]
+#[cfg(test)]
 mod tests {
     use kornia_io::png::read_image_png_mono8;
 
-    use crate::{family::TagFamilyKind, utils::Point2d, AprilTagDecoder, DecodeTagsConfig};
+    use crate::{
+        decoder::HammingConfig,
+        family::{TagFamilyBuilder, TagFamilyKind},
+        utils::Point2d,
+        AprilTagDecoder, DecodeTagsConfig,
+    };
 
     fn test_tags(
         decoder: &mut AprilTagDecoder,
@@ -455,7 +459,10 @@ mod tests {
 
     #[test]
     fn test_tagcircle49h12() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCircle49H12]);
+        let family = TagFamilyBuilder::tagcircle49_h12()
+            .hamming_config(HammingConfig::TABLE_1_SEARCH_1)
+            .build();
+        let config = DecodeTagsConfig::with_families(vec![family]);
         let mut decoder = AprilTagDecoder::new(config, [65, 65].into())?;
 
         let expected_quad = [
@@ -478,7 +485,10 @@ mod tests {
 
     #[test]
     fn test_tagcustom48_h12() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCustom48H12]);
+        let family = TagFamilyBuilder::tagcustom48_h12()
+            .hamming_config(HammingConfig::TABLE_1_SEARCH_1)
+            .build();
+        let config = DecodeTagsConfig::with_families(vec![family]);
         let mut decoder = AprilTagDecoder::new(config, [60, 60].into())?;
 
         let expected_quad = [
@@ -501,7 +511,10 @@ mod tests {
 
     #[test]
     fn test_tagstandard41_h12() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard41H12]);
+        let family = TagFamilyBuilder::tagstandard41_h12()
+            .hamming_config(HammingConfig::TABLE_1_SEARCH_1)
+            .build();
+        let config = DecodeTagsConfig::with_families(vec![family]);
         let mut decoder = AprilTagDecoder::new(config, [55, 55].into())?;
 
         let expected_quad = [
@@ -524,7 +537,10 @@ mod tests {
 
     #[test]
     fn test_tagstandard52_h13() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard52H13]);
+        let family = TagFamilyBuilder::tagstandard52_h13()
+            .hamming_config(HammingConfig::TABLE_1_SEARCH_1)
+            .build();
+        let config = DecodeTagsConfig::with_families(vec![family]);
         let mut decoder = AprilTagDecoder::new(config, [60, 60].into())?;
 
         let expected_quad = [
