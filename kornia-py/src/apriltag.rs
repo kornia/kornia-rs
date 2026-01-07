@@ -388,8 +388,9 @@ pub mod family {
     #[pymethods]
     impl PyQuickDecode {
         #[new]
-        pub fn new(nbits: usize, code_data: Vec<usize>) -> Self {
-            Self(QuickDecode::new(nbits, &code_data))
+        #[pyo3(signature = (nbits, code_data, allowed_errors=2))]
+        pub fn new(nbits: usize, code_data: Vec<usize>, allowed_errors: u8) -> Self {
+            Self(QuickDecode::new(nbits, &code_data, allowed_errors))
         }
     }
 
