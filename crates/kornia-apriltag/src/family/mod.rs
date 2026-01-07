@@ -1,4 +1,4 @@
-use crate::decoder::{QuickDecode, SharpeningBuffer};
+use crate::decoder::{HammingConfig, QuickDecode, SharpeningBuffer};
 
 /// Represents the AprilTag Family
 #[derive(Debug, Clone, PartialEq)]

@@ -1,4 +1,4 @@
-use std::{f32::consts::PI, ops::ControlFlow};
+use std::f32::consts::PI;
 
 use crate::{
     family::{TagFamily, TagFamilyKind},
@@ -104,13 +104,90 @@ pub struct QuickDecodeEntry {
     pub rotation: u8,
 }
 
+/// Configuration for the Hamming distance error correction strategy.
+///
+/// Controls the trade-off between initialization time, memory usage, and lookup performance.
+/// The strategy is defined by two parameters:
+/// - `table_distance`: The maximum Hamming distance to pre-store in the lookup table
+/// - `search_distance`: The maximum additional Hamming distance to search for at lookup time
+///
+/// Total error tolerance = table_distance + search_distance
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HammingConfig {
+    /// Maximum Hamming distance to pre-store in the lookup table (0, 1, or 2).
+    table_distance: u8,
+    /// Maximum additional Hamming distance to search for at lookup time (0, 1, or 2).
+    search_distance: u8,
+}
+
+impl HammingConfig {
+    /// Store only exact codes (H0) in the table. No error correction.
+    pub const EXACT: Self = Self {
+        table_distance: 0,
+        search_distance: 0,
+    };
+
+    /// Store H0 in the table, search for H1 errors at lookup.
+    pub const SEARCH_1: Self = Self {
+        table_distance: 0,
+        search_distance: 1,
+    };
+
+    /// Store H0 in the table, search for H1+H2 errors at lookup.
+    pub const SEARCH_2: Self = Self {
+        table_distance: 0,
+        search_distance: 2,
+    };
+
+    /// Store H0+H1 in the table. Direct lookup for 1-bit errors.
+    pub const TABLE_1: Self = Self {
+        table_distance: 1,
+        search_distance: 0,
+    };
+
+    /// Store H0+H1 in the table, search for H2 errors at lookup.
+    pub const TABLE_1_SEARCH_1: Self = Self {
+        table_distance: 1,
+        search_distance: 1,
+    };
+
+    /// Store H0+H1+H2 in the table. Direct lookup for 2-bit errors.
+    pub const TABLE_2: Self = Self {
+        table_distance: 2,
+        search_distance: 0,
+    };
+
+    /// Returns the table distance.
+    pub(crate) fn table_distance(&self) -> u8 {
+        self.table_distance
+    }
+
+    /// Returns the search distance.
+    pub(crate) fn search_distance(&self) -> u8 {
+        self.search_distance
+    }
+
+    /// Returns the total error tolerance (table_distance + search_distance).
+    pub fn total_distance(&self) -> u8 {
+        self.table_distance + self.search_distance
+    }
+}
+
+impl Default for HammingConfig {
+    fn default() -> Self {
+        Self::TABLE_2
+    }
+}
+
 /// Sentinel value used to mark unoccupied slots in the quick decode hash table.
 const SLOT_EMPTY: u16 = u16::MAX;
 
 /// A table for fast lookup of decoded tag codes and their associated metadata.
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct QuickDecode {
     table: Vec<u16>,
+    config: HammingConfig,
+    nbits: usize,
 }
 
 impl QuickDecode {
@@ -120,38 +197,59 @@ impl QuickDecode {
     ///
     /// * `nbits` - Number of bits in the tag code.
     /// * `code_data` - Slice of code values to populate the table.
+    /// * `config` - The Hamming distance configuration to use.
     ///
     /// # Returns
     ///
     /// A new `QuickDecode` instance with precomputed entries for all codes and their Hamming neighbors.
-    pub fn new(nbits: usize, code_data: &[usize]) -> Self {
+    pub fn new(nbits: usize, code_data: &[usize], config: HammingConfig) -> Self {
         let ncodes = code_data.len();
-        let entries_needed = ncodes // Hamming 0
-            + nbits * ncodes // Hamming 1
-            + ncodes * nbits * (nbits - 1) / 2; // Hamming 2
+        let table_distance = config.table_distance();
+
+        let entries_needed = match table_distance {
+            0 => ncodes, // Hamming 0 only
+            1 => {
+                ncodes // Hamming 0
+                    + nbits * ncodes // Hamming 1
+            }
+            2 => {
+                ncodes // Hamming 0
+                    + nbits * ncodes // Hamming 1
+                    + ncodes * nbits * (nbits - 1) / 2 // Hamming 2
+            }
+            _ => ncodes, // Fallback to H0 only
+        };
 
         let capacity = entries_needed * 3;
 
         let mut quick_decode = Self {
             table: vec![SLOT_EMPTY; capacity],
+            config,
+            nbits,
         };
 
-        code_data.iter().enumerate().for_each(|(i, code)| {
+        for (i, code) in code_data.iter().enumerate() {
             let id = i as u16;
+            // Hamming 0: base code (always stored)
             quick_decode.add(*code, id);
 
-            // add hamming 1
-            (0..nbits).for_each(|j| {
-                quick_decode.add(code ^ (1 << j), id);
-            });
+            // Hamming 1: flip each bit individually (if table_distance >= 1)
+            if table_distance >= 1 {
+                for j in 0..nbits {
+                    quick_decode.add(code ^ (1 << j), id);
+                }
+            }
 
-            // add hamming 2
-            (0..nbits).for_each(|j| {
-                (0..j).for_each(|k| {
-                    quick_decode.add(code ^ (1 << j) ^ (1 << k), id);
-                });
-            });
-        });
+            // Hamming 2: flip each pair of bits (if table_distance >= 2)
+            if table_distance >= 2 {
+                for j in 0..nbits {
+                    for k in 0..j {
+                        quick_decode.add(code ^ (1 << j) ^ (1 << k), id);
+                    }
+                }
+            }
+        }
+
         quick_decode
     }
 
@@ -181,8 +279,41 @@ impl QuickDecode {
     ///
     /// # Returns
     ///
-    /// Returns `Some(QuickDecodeEntry)` if the code is found within a Hamming distance of 2, or `None` otherwise.
+    /// Returns `Some(QuickDecodeEntry)` if the code is found within the configured Hamming distance, or `None` otherwise.
     pub fn decode(&self, observed_code: usize, valid_codes: &[usize]) -> Option<QuickDecodeEntry> {
+        let total_distance = self.config.total_distance();
+
+        // Direct lookup (handles exact matches and pre-stored Hamming variants)
+        if let Some(entry) = self.try_decode(observed_code, valid_codes, total_distance) {
+            return Some(entry);
+        }
+
+        let search_distance = self.config.search_distance();
+
+        // If search_distance >= 1, search for H1 errors
+        if search_distance >= 1 {
+            if let Some(entry) = self.search_h1(observed_code, valid_codes, total_distance) {
+                return Some(entry);
+            }
+        }
+
+        // If search_distance >= 2, search for H2 errors
+        if search_distance >= 2 {
+            if let Some(entry) = self.search_h2(observed_code, valid_codes, total_distance) {
+                return Some(entry);
+            }
+        }
+
+        None
+    }
+
+    /// Tries to decode a code by direct lookup in the table.
+    fn try_decode(
+        &self,
+        observed_code: usize,
+        valid_codes: &[usize],
+        max_hamming: u8,
+    ) -> Option<QuickDecodeEntry> {
         let len = self.table.len();
         let mut bucket = observed_code % len;
 
@@ -195,20 +326,89 @@ impl QuickDecode {
 
             let perfect_code = valid_codes[candidate_id as usize];
             let delta = observed_code ^ perfect_code;
+            let hamming = delta.count_ones() as u8;
 
-            let hamming = delta.count_ones();
-
-            if hamming <= 2 {
+            if hamming <= max_hamming {
                 return Some(QuickDecodeEntry {
                     rcode: observed_code,
                     id: candidate_id,
-                    hamming: hamming as u8,
+                    hamming,
                     rotation: 0,
                 });
             }
 
             bucket = (bucket + 1) % len;
         }
+    }
+
+    /// Searches by flipping 1 bit and looking up the result.
+    fn search_h1(
+        &self,
+        observed_code: usize,
+        valid_codes: &[usize],
+        max_hamming: u8,
+    ) -> Option<QuickDecodeEntry> {
+        for i in 0..self.nbits {
+            let flipped_code = observed_code ^ (1 << i);
+            // The flipped code adds 1 to the effective hamming distance
+            if let Some(mut entry) = self.try_decode(flipped_code, valid_codes, max_hamming - 1) {
+                entry.hamming += 1;
+                entry.rcode = observed_code;
+                return Some(entry);
+            }
+        }
+        None
+    }
+
+    /// Searches by flipping 2 bits and looking up the result.
+    fn search_h2(
+        &self,
+        observed_code: usize,
+        valid_codes: &[usize],
+        max_hamming: u8,
+    ) -> Option<QuickDecodeEntry> {
+        for i in 0..self.nbits {
+            for j in 0..i {
+                let flipped_code = observed_code ^ (1 << i) ^ (1 << j);
+                // The flipped code adds 2 to the effective hamming distance
+                if max_hamming < 2 {
+                    continue;
+                }
+                if let Some(mut entry) = self.try_decode(flipped_code, valid_codes, max_hamming - 2)
+                {
+                    entry.hamming += 2;
+                    entry.rcode = observed_code;
+                    return Some(entry);
+                }
+            }
+        }
+        None
+    }
+
+    /// Looks up a codeword in the quick decode table, trying all 4 rotations.
+    ///
+    /// # Arguments
+    ///
+    /// * `rcode` - The codeword to look up.
+    /// * `valid_codes` - Slice of valid codes for the tag family.
+    /// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the result.
+    pub fn lookup(&self, mut rcode: usize, valid_codes: &[usize], entry: &mut QuickDecodeEntry) {
+        // Try all 4 rotations
+        for ridx in 0..4u8 {
+            if let Some(mut decoded) = self.decode(rcode, valid_codes) {
+                decoded.rotation = ridx;
+                *entry = decoded;
+                return;
+            }
+
+            rcode = rotate_90(rcode, self.nbits);
+        }
+
+        // No match found
+        entry.rcode = 0;
+        entry.id = u16::MAX;
+        entry.hamming = 255;
+        entry.rotation = 0;
     }
 }
 
@@ -735,7 +935,9 @@ fn quad_decode<A: ImageAllocator>(
     // Reset the Sharpening Buffer for the next iteration
     tag_family.sharpening_buffer.reset();
 
-    quick_decode_codeword(tag_family, rcode, entry);
+    tag_family
+        .quick_decode
+        .lookup(rcode, &tag_family.code_data, entry);
 
     Some((white_score / white_score_count as f32).min(black_score / black_score_count as f32))
 }
@@ -793,35 +995,6 @@ pub fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32,
         .for_each(|(i, v)| {
             *v += decode_sharpening * sharpening_buffer.sharpened[i];
         });
-}
-
-/// Attempts to decode a codeword using the quick decode table for the given tag family.
-///
-/// # Arguments
-///
-/// * `tag_family` - Reference to the tag family containing the quick decode table.
-/// * `rcode` - The codeword to look up.
-/// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the result.
-fn quick_decode_codeword(tag_family: &TagFamily, mut rcode: usize, entry: &mut QuickDecodeEntry) {
-    if let ControlFlow::Break(_) = (0..4).try_for_each(|ridx| {
-        if let Some(mut decoded) = tag_family.quick_decode.decode(rcode, &tag_family.code_data) {
-            decoded.rotation = ridx as u8;
-            *entry = decoded;
-
-            return ControlFlow::Break(());
-        }
-
-        rcode = rotate_90(rcode, tag_family.nbits);
-
-        ControlFlow::Continue(())
-    }) {
-        return;
-    }
-
-    entry.rcode = 0;
-    entry.id = u16::MAX;
-    entry.hamming = 255;
-    entry.rotation = 0;
 }
 
 /// Rotates the bits of a codeword by 90 degrees for tag decoding.
@@ -1083,12 +1256,14 @@ mod tests {
     }
 
     #[test]
-    fn test_quick_decode_codeword() {
+    fn test_quick_decode_lookup() {
         let tag_family = TagFamily::tag36_h11();
         let rcode = 52087007497;
 
         let mut quick_decode_entry = QuickDecodeEntry::default();
-        quick_decode_codeword(&tag_family, rcode, &mut quick_decode_entry);
+        tag_family
+            .quick_decode
+            .lookup(rcode, &tag_family.code_data, &mut quick_decode_entry);
 
         let expected_decode_entry = QuickDecodeEntry {
             rcode: 52087007497,
