@@ -68,7 +68,7 @@ pub fn read_image_jpeg(file_path: &str, mode: &str) -> PyResult<PyImage> {
 
 #[pyfunction]
 #[pyo3(
-    text_signature = "(file_path, image, mode, quality=95, /)",
+    text_signature = "(file_path, image, mode, quality, /)",
     doc = "Write an image to disk in JPEG format.\n\n\
 Parameters\n----------\n\
 file_path : str\n\
