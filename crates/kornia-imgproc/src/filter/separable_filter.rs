@@ -38,15 +38,25 @@ impl FloatConversion for u8 {
         val.clamp(0.0, 255.0) as u8
     }
 }
-struct SeparableFilter<'a> {
-    kernel_x: &'a [f32],
-    kernel_y: &'a [f32],
+
+/// A separable 2D filter that applies horizontal and vertical 1D convolutions sequentially.
+///
+/// This struct caches the kernel data and precomputed offsets for efficient filtering.
+struct SeparableFilter {
+    kernel_x: Vec<f32>,
+    kernel_y: Vec<f32>,
     offsets_x: Vec<isize>,
     offsets_y: Vec<isize>,
 }
 
-impl<'a> SeparableFilter<'a> {
-    fn new(kernel_x: &'a [f32], kernel_y: &'a [f32]) -> Self {
+impl SeparableFilter {
+    /// Create a new separable filter with the given kernels.
+    ///
+    /// # Arguments
+    ///
+    /// * `kernel_x` - The horizontal convolution kernel
+    /// * `kernel_y` - The vertical convolution kernel
+    fn new(kernel_x: &[f32], kernel_y: &[f32]) -> Self {
         let half_x = kernel_x.len() / 2;
         let half_y = kernel_y.len() / 2;
 
@@ -59,13 +69,21 @@ impl<'a> SeparableFilter<'a> {
             .collect();
 
         Self {
-            kernel_x,
-            kernel_y,
+            kernel_x: kernel_x.to_vec(),
+            kernel_y: kernel_y.to_vec(),
             offsets_x,
             offsets_y,
         }
     }
 
+    /// Apply the filter to an image.
+    ///
+    /// Performs horizontal filtering followed by vertical filtering using a temporary buffer.
+    ///
+    /// # Arguments
+    ///
+    /// * `src` - The source image
+    /// * `dst` - The destination image (must be same size as source)
     fn apply<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
         &self,
         src: &Image<T, C, A1>,
@@ -92,16 +110,16 @@ impl<'a> SeparableFilter<'a> {
                     let x = c as isize + off;
                     if x >= 0 && x < cols as isize {
                         let idx = row_offset + x as usize * C;
-                        for ch in 0..C {
-                            acc[ch] += unsafe { src_data.get_unchecked(idx + ch).to_f32() } * k;
+                        for (ch, acc_val) in acc.iter_mut().enumerate().take(C) {
+                            *acc_val += unsafe { src_data.get_unchecked(idx + ch).to_f32() } * k;
                         }
                     }
                 }
 
                 let out_idx = row_offset + c * C;
-                for ch in 0..C {
+                for (ch, &acc_val) in acc.iter().enumerate().take(C) {
                     unsafe {
-                        *temp.get_unchecked_mut(out_idx + ch) = acc[ch];
+                        *temp.get_unchecked_mut(out_idx + ch) = acc_val;
                     }
                 }
             }
@@ -118,16 +136,16 @@ impl<'a> SeparableFilter<'a> {
                     let y = r as isize + off;
                     if y >= 0 && y < rows as isize {
                         let idx = y as usize * cols * C + c * C;
-                        for ch in 0..C {
-                            acc[ch] += unsafe { *temp.get_unchecked(idx + ch) } * k;
+                        for (ch, acc_val) in acc.iter_mut().enumerate().take(C) {
+                            *acc_val += unsafe { *temp.get_unchecked(idx + ch) } * k;
                         }
                     }
                 }
 
                 let out_idx = row_offset + c * C;
-                for ch in 0..C {
+                for (ch, &acc_val) in acc.iter().enumerate().take(C) {
                     unsafe {
-                        *dst_data.get_unchecked_mut(out_idx + ch) = T::from_f32(acc[ch]);
+                        *dst_data.get_unchecked_mut(out_idx + ch) = T::from_f32(acc_val);
                     }
                 }
             }
@@ -152,7 +170,7 @@ pub fn separable_filter<T, const C: usize, A1: ImageAllocator, A2: ImageAllocato
     kernel_y: &[f32],
 ) -> Result<(), ImageError>
 where
-    T: FloatConversion + Clone + Zero + std::ops::Mul<Output = T> + std::ops::AddAssign,
+    T: FloatConversion + Clone + Zero,
 {
     if kernel_x.is_empty() || kernel_y.is_empty() {
         return Err(ImageError::InvalidKernelLength(
