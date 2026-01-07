@@ -72,24 +72,50 @@ pub struct DecodeTagsConfig {
 
 impl DecodeTagsConfig {
     /// Creates a new `DecodeTagsConfig` with the given tag family kinds.
+    ///
+    /// This method creates tag families with default configuration. For custom
+    /// configurations (e.g., different Hamming distance strategies), use
+    /// [`DecodeTagsConfig::with_families`] instead.
     pub fn new(tag_family_kinds: Vec<TagFamilyKind>) -> Self {
+        let tag_families: Vec<TagFamily> = tag_family_kinds
+            .iter()
+            .map(|family_kind| family_kind.into())
+            .collect();
+        Self::with_families(tag_families)
+    }
+
+    /// Creates a new `DecodeTagsConfig` with the given tag families.
+    ///
+    /// This method allows passing pre-configured tag families, enabling custom
+    /// Hamming distance configurations via [`TagFamilyBuilder`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_apriltag::{DecodeTagsConfig, family::TagFamilyBuilder, decoder::HammingConfig};
+    ///
+    /// // Create a config with fast-initializing tag families
+    /// let family = TagFamilyBuilder::tag36_h11()
+    ///     .hamming_config(HammingConfig::SEARCH_1)
+    ///     .build();
+    /// let config = DecodeTagsConfig::with_families(vec![family]);
+    /// ```
+    ///
+    /// [`TagFamilyBuilder`]: crate::family::TagFamilyBuilder
+    pub fn with_families(tag_families: Vec<TagFamily>) -> Self {
         const DEFAULT_DOWNSCALE_FACTOR: usize = 2;
 
-        let mut tag_families = Vec::with_capacity(tag_family_kinds.len());
         let mut normal_border = false;
         let mut reversed_border = false;
         let mut min_tag_width = usize::MAX;
 
-        tag_family_kinds.iter().for_each(|family_kind| {
-            let family: TagFamily = family_kind.into();
+        for family in &tag_families {
             if family.width_at_border < min_tag_width {
                 min_tag_width = family.width_at_border;
             }
             normal_border |= !family.reversed_border;
             reversed_border |= family.reversed_border;
-
-            tag_families.push(family);
-        });
+        }
 
         min_tag_width /= DEFAULT_DOWNSCALE_FACTOR;
 
