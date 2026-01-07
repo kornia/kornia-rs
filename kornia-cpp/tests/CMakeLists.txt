@@ -24,6 +24,9 @@ target_link_libraries(kornia_cpp_tests
         Catch2::Catch2WithMain
 )
 
+# Ensure headers are organized before compiling tests
+add_dependencies(kornia_cpp_tests organize_cxx_headers)
+
 # Set C++ standard (match parent project)
 target_compile_features(kornia_cpp_tests PRIVATE cxx_std_17)
 

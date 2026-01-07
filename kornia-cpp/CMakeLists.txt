@@ -53,11 +53,24 @@ if(EXISTS \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h\")
 endif()
 ")
 
+# --- 3. Define Header Locations ---
+set(CXX_GEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge")
+
+# IMPORTANT: CXX generates the folder structure using the crate name (kornia-cpp with dash).
+set(MAIN_HEADER "${CXX_GEN_DIR}/kornia-cpp/src/lib.rs.h")
+set(RUST_CXX_HEADER "${CXX_GEN_DIR}/rust/cxx.h")
+
+# Output header files (organized into kornia/detail/)
+set(ORGANIZED_LIB_RS_H "${CXX_GEN_DIR}/kornia/detail/lib.rs.h")
+set(ORGANIZED_CXX_H "${CXX_GEN_DIR}/kornia/detail/cxx.h")
+
 # Create a target to organize headers - runs after cargo_build but before compilation
+# Mark the output files so other targets can depend on them
 add_custom_target(organize_cxx_headers
     COMMAND ${CMAKE_COMMAND} -P ${COPY_HEADERS_SCRIPT}
     COMMENT "Organizing CXX bridge headers into kornia/detail/"
     DEPENDS cargo_build
+    BYPRODUCTS ${ORGANIZED_LIB_RS_H} ${ORGANIZED_CXX_H}
 )
 
 # Also run it as POST_BUILD for cargo_build to ensure it happens
@@ -65,13 +78,6 @@ add_custom_command(TARGET cargo_build POST_BUILD
     COMMAND ${CMAKE_COMMAND} -P ${COPY_HEADERS_SCRIPT}
     COMMENT "Organizing CXX bridge headers into kornia/detail/"
 )
-
-# --- 3. Define Header Locations ---
-set(CXX_GEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge")
-
-# IMPORTANT: CXX generates the folder structure using the crate name (kornia-cpp with dash).
-set(MAIN_HEADER "${CXX_GEN_DIR}/kornia-cpp/src/lib.rs.h")
-set(RUST_CXX_HEADER "${CXX_GEN_DIR}/rust/cxx.h")
 
 # Create imported target for the Rust static library
 # The library file is created by cargo_build, so we mark it as a dependency
@@ -94,7 +100,8 @@ target_include_directories(kornia_cpp INTERFACE
 )
 
 # Ensure headers are organized before any target uses kornia_cpp
-add_dependencies(kornia_cpp organize_cxx_headers)
+# Note: add_dependencies on INTERFACE libraries doesn't work as expected,
+# so we'll make individual targets depend on organize_cxx_headers directly
 
 # Link the Rust library
 target_link_libraries(kornia_cpp INTERFACE kornia_rust_lib)

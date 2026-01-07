@@ -18,3 +18,8 @@ add_executable(image_api_example main.cpp)
 
 # Link with kornia_cpp (works both ways)
 target_link_libraries(image_api_example PRIVATE kornia_cpp)
+
+# Ensure headers are organized before compiling
+if(TARGET organize_cxx_headers)
+    add_dependencies(image_api_example organize_cxx_headers)
+endif()
