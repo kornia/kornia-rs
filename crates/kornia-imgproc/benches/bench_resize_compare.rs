@@ -88,7 +88,7 @@ fn bench_resize_native(c: &mut Criterion) {
                 })
             });
 
-            // NEW 
+            // NEW
             group.bench_with_input(BenchmarkId::new("new", &label), &src, |b, src| {
                 b.iter(|| {
                     resize_native(black_box(src), black_box(&mut dst_new), black_box(mode))
