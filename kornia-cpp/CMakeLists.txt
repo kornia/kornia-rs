@@ -70,10 +70,13 @@ set(MAIN_HEADER "${CXX_GEN_DIR}/kornia-cpp/src/lib.rs.h")
 set(RUST_CXX_HEADER "${CXX_GEN_DIR}/rust/cxx.h")
 
 # Create imported target for the Rust static library
+# The library file is created by cargo_build, so we mark it as a dependency
 add_library(kornia_rust_lib STATIC IMPORTED GLOBAL)
 set_target_properties(kornia_rust_lib PROPERTIES
     IMPORTED_LOCATION "${RUST_TARGET_DIR}/${RUST_LIB_NAME}"
 )
+# Ensure cargo_build completes before this imported library is used
+# This tells CMake the file will be created by cargo_build
 add_dependencies(kornia_rust_lib cargo_build)
 
 # Create kornia_cpp as INTERFACE library that wraps everything
