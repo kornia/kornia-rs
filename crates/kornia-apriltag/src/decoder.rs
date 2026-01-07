@@ -104,6 +104,7 @@ pub struct QuickDecodeEntry {
     pub rotation: u8,
 }
 
+/// Sentinel value used to mark unoccupied slots in the quick decode hash table.
 const SLOT_EMPTY: u16 = u16::MAX;
 
 /// A table for fast lookup of decoded tag codes and their associated metadata.
