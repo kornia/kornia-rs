@@ -158,7 +158,7 @@ fn pyrup_vertical_pass_par<const C: usize>(
 ///
 /// * `src` - The source image to be upsampled.
 /// * `dst` - The destination image to store the result. Must have dimensions
-///           twice the width and height of the source image.
+/// twice the width and height of the source image.
 ///
 /// # Returns
 ///
@@ -174,7 +174,7 @@ fn pyrup_vertical_pass_par<const C: usize>(
 /// ```
 /// use kornia_image::{Image, ImageSize};
 /// use kornia_tensor::CpuAllocator;
-/// use kornia_imgproc::pyramidnew::pyrup_new;
+/// use kornia_imgproc::pyramid::pyrup;
 ///
 /// let image = Image::<f32, 1, _>::new(
 ///     ImageSize { width: 2, height: 2 },
