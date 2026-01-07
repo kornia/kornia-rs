@@ -38,14 +38,18 @@ file(WRITE ${COPY_HEADERS_SCRIPT}
 "# Auto-generated script to copy CXX bridge headers
 file(MAKE_DIRECTORY \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail\")
 if(EXISTS \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h\")
-  file(COPY \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h\"
-       DESTINATION \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail\"
-       ONLY_IF_DIFFERENT)
+  configure_file(
+    \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h\"
+    \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/lib.rs.h\"
+    COPYONLY
+  )
 endif()
 if(EXISTS \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h\")
-  file(COPY \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h\"
-       DESTINATION \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail\"
-       ONLY_IF_DIFFERENT)
+  configure_file(
+    \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h\"
+    \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/cxx.h\"
+    COPYONLY
+  )
 endif()
 ")
 
