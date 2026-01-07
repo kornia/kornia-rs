@@ -37,31 +37,44 @@ set(COPY_HEADERS_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/copy_cxx_headers.cmake")
 file(WRITE ${COPY_HEADERS_SCRIPT}
 "# Auto-generated script to copy CXX bridge headers
 file(MAKE_DIRECTORY \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail\")
-set(COPIED_ANY FALSE)
-if(EXISTS \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h\")
+
+# Try to find CXX headers in multiple possible locations
+set(LIB_RS_H_SRC \"\")
+set(CXX_H_SRC \"\")
+
+# Check standard location first
+set(TRY_LIB_RS_H \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h\")
+set(TRY_CXX_H \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h\")
+
+if(EXISTS \"${TRY_LIB_RS_H}\")
+  set(LIB_RS_H_SRC \"${TRY_LIB_RS_H}\")
+endif()
+if(EXISTS \"${TRY_CXX_H}\")
+  set(CXX_H_SRC \"${TRY_CXX_H}\")
+endif()
+
+# Copy lib.rs.h if found
+if(LIB_RS_H_SRC)
   configure_file(
-    \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h\"
+    \"${LIB_RS_H_SRC}\"
     \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/lib.rs.h\"
     COPYONLY
   )
-  set(COPIED_ANY TRUE)
   message(STATUS \"Copied lib.rs.h to kornia/detail/\")
 else()
-  message(WARNING \"Source header not found: ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h\")
+  message(FATAL_ERROR \"CXX bridge header not found: ${TRY_LIB_RS_H}. CXX headers must be generated during Rust build.\")
 endif()
-if(EXISTS \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h\")
+
+# Copy cxx.h if found
+if(CXX_H_SRC)
   configure_file(
-    \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h\"
+    \"${CXX_H_SRC}\"
     \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/cxx.h\"
     COPYONLY
   )
-  set(COPIED_ANY TRUE)
   message(STATUS \"Copied cxx.h to kornia/detail/\")
 else()
-  message(WARNING \"Source header not found: ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h\")
-endif()
-if(NOT COPIED_ANY)
-  message(WARNING \"No CXX bridge headers were copied. They may not have been generated yet.\")
+  message(FATAL_ERROR \"CXX header not found: ${TRY_CXX_H}. CXX headers must be generated during Rust build.\")
 endif()
 ")
 
