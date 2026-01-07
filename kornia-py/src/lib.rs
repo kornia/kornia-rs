@@ -29,10 +29,11 @@ pub fn get_version() -> String {
 /// Helper to emit a deprecation warning in Python
 fn warn_deprecation(py: Python<'_>, message: &str) -> PyResult<()> {
     use std::ffi::CString;
-    let message_cstr =
-        CString::new(message).map_err(|_| PyErr::new::<pyo3::exceptions::PyValueError, _>(
+    let message_cstr = CString::new(message).map_err(|_| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(
             "Deprecation warning message contained a null byte",
-        ))?;
+        )
+    })?;
 
     pyo3::PyErr::warn(
         py,
@@ -46,10 +47,7 @@ fn warn_deprecation(py: Python<'_>, message: &str) -> PyResult<()> {
 
 // Color
 #[pyfunction(name = "rgb_from_gray")]
-pub fn rgb_from_gray_deprecated(
-    py: Python<'_>,
-    image: image::PyImage,
-) -> PyResult<image::PyImage> {
+pub fn rgb_from_gray_deprecated(py: Python<'_>, image: image::PyImage) -> PyResult<image::PyImage> {
     warn_deprecation(
         py,
         "kornia_rs.rgb_from_gray is deprecated. Use kornia_rs.imgproc.rgb_from_gray.",
@@ -86,10 +84,7 @@ pub fn rgb_from_bgra_deprecated(
 }
 
 #[pyfunction(name = "bgr_from_rgb")]
-pub fn bgr_from_rgb_deprecated(
-    py: Python<'_>,
-    image: image::PyImage,
-) -> PyResult<image::PyImage> {
+pub fn bgr_from_rgb_deprecated(py: Python<'_>, image: image::PyImage) -> PyResult<image::PyImage> {
     warn_deprecation(
         py,
         "kornia_rs.bgr_from_rgb is deprecated. Use kornia_rs.imgproc.bgr_from_rgb.",
@@ -98,10 +93,7 @@ pub fn bgr_from_rgb_deprecated(
 }
 
 #[pyfunction(name = "gray_from_rgb")]
-pub fn gray_from_rgb_deprecated(
-    py: Python<'_>,
-    image: image::PyImage,
-) -> PyResult<image::PyImage> {
+pub fn gray_from_rgb_deprecated(py: Python<'_>, image: image::PyImage) -> PyResult<image::PyImage> {
     warn_deprecation(
         py,
         "kornia_rs.gray_from_rgb is deprecated. Use kornia_rs.imgproc.gray_from_rgb.",
@@ -287,7 +279,10 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_histogram_deprecated, m)?)?;
     m.add_function(wrap_pyfunction!(icp_vanilla_deprecated, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_deprecated, m)?)?;
-    m.add_function(wrap_pyfunction!(io::functional::read_image_any_deprecated, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        io::functional::read_image_any_deprecated,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(read_image_jpeg_deprecated, m)?)?;
     m.add_function(wrap_pyfunction!(write_image_jpeg_deprecated, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_png_u8_deprecated, m)?)?;

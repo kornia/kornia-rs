@@ -12,7 +12,10 @@ use std::fs;
 use std::path::Path;
 
 #[pyfunction(name = "read_image_any")]
-pub fn read_image_any_deprecated(py: Python<'_>, file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+pub fn read_image_any_deprecated(
+    py: Python<'_>,
+    file_path: Bound<'_, PyAny>,
+) -> PyResult<Py<PyAny>> {
     crate::warn_deprecation(
         py,
         "kornia_rs.read_image_any is deprecated. Use kornia_rs.io.read_image instead.",
@@ -35,10 +38,7 @@ pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     })?;
 
     let path = Path::new(&path_os);
-    let path_display = path_os
-        .to_str()
-        .unwrap_or("<non-utf8 path>")
-        .to_string();
+    let path_display = path_os.to_str().unwrap_or("<non-utf8 path>").to_string();
 
     if !path.exists() {
         return Err(PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(
