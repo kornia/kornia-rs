@@ -1280,4 +1280,55 @@ mod tests {
         assert_eq!(rotate_90(52087007497, 36), 5390865284);
         assert_eq!(rotate_90(42087007497, 36), 39351620409)
     }
+
+    #[test]
+    fn test_quick_decode_consistent_across_hamming_configs() {
+        let nbits = 16;
+        let codes: Vec<usize> = vec![
+            0b1010_1010_1010_1010,
+            0b1100_1100_1100_1100,
+            0b1111_0000_1111_0000,
+        ];
+
+        let base_code = codes[0];
+        let test_codes = [
+            (base_code, 0),                        // exact match
+            (base_code ^ (1 << 5), 1),             // 1-bit flip
+            (base_code ^ (1 << 5) ^ (1 << 10), 2), // 2-bit flip
+        ];
+
+        let configs = [
+            HammingConfig::EXACT,
+            HammingConfig::SEARCH_1,
+            HammingConfig::SEARCH_2,
+            HammingConfig::TABLE_1,
+            HammingConfig::TABLE_1_SEARCH_1,
+            HammingConfig::TABLE_2,
+        ];
+
+        for (search_code, error_distance) in test_codes {
+            for config in &configs {
+                let qd = QuickDecode::new(nbits, &codes, *config);
+                let mut entry = QuickDecodeEntry::default();
+                qd.lookup(search_code, &codes, &mut entry);
+
+                let should_find = config.total_distance() >= error_distance;
+                let found = entry.hamming != 255;
+
+                assert_eq!(
+                    found,
+                    should_find,
+                    "error_distance={}, total_distance={}: expected found={}, got found={}",
+                    error_distance,
+                    config.total_distance(),
+                    should_find,
+                    found
+                );
+
+                if found {
+                    assert_eq!(entry.id, 0, "Should find correct tag id");
+                }
+            }
+        }
+    }
 }
