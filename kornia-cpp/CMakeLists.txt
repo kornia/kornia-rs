@@ -76,14 +76,19 @@ set(RUST_CXX_HEADER "${CXX_GEN_DIR}/rust/cxx.h")
 set(ORGANIZED_LIB_RS_H "${CXX_GEN_DIR}/kornia/detail/lib.rs.h")
 set(ORGANIZED_CXX_H "${CXX_GEN_DIR}/kornia/detail/cxx.h")
 
-# Create a target to organize headers - runs after cargo_build but before compilation
-# Mark the output files so other targets can depend on them
-# Make it part of ALL so it's built by default
-add_custom_target(organize_cxx_headers ALL
+# Create a command to organize headers - runs after cargo_build but before compilation
+# Use OUTPUT so CMake knows these files must exist before targets that depend on them
+add_custom_command(
+    OUTPUT ${ORGANIZED_LIB_RS_H} ${ORGANIZED_CXX_H}
     COMMAND ${CMAKE_COMMAND} -P ${COPY_HEADERS_SCRIPT}
     COMMENT "Organizing CXX bridge headers into kornia/detail/"
-    DEPENDS cargo_build
-    BYPRODUCTS ${ORGANIZED_LIB_RS_H} ${ORGANIZED_CXX_H}
+    DEPENDS cargo_build ${MAIN_HEADER} ${RUST_CXX_HEADER}
+    VERBATIM
+)
+
+# Create a target that produces the organized headers
+add_custom_target(organize_cxx_headers ALL
+    DEPENDS ${ORGANIZED_LIB_RS_H} ${ORGANIZED_CXX_H}
 )
 
 # Also run it as POST_BUILD for cargo_build to ensure it happens
