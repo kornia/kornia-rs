@@ -1,4 +1,5 @@
 use crate::interpolation::InterpolationMode;
+use crate::parallel;
 use fast_image_resize::{self as fr};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
@@ -57,42 +58,99 @@ pub fn resize_native<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,
     interpolation: InterpolationMode,
-) -> Result<(), kornia_image::ImageError> {
+) -> Result<(), ImageError> {
     // check if the input and output images have the same size
-    // and copy the input image to the output image if they have the same size
     if src.size() == dst.size() {
         dst.as_slice_mut().copy_from_slice(src.as_slice());
         return Ok(());
     }
 
+    let (src_rows, src_cols) = (src.rows(), src.cols());
     let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
 
     // Handle division by zero when the destination dimension is 1
     let step_x = if dst_cols > 1 {
-        (src.cols() - 1) as f32 / (dst_cols - 1) as f32
+        (src_cols - 1) as f32 / (dst_cols - 1) as f32
     } else {
         0.0
     };
 
     let step_y = if dst_rows > 1 {
-        (src.rows() - 1) as f32 / (dst_rows - 1) as f32
+        (src_rows - 1) as f32 / (dst_rows - 1) as f32
     } else {
         0.0
     };
 
-    // going for on-the-fly coordinate calculation instead of allocating mesh
+    // match the interpolation mode
+    match interpolation {
+        InterpolationMode::Nearest => {
+            parallel::par_iter_rows_indexed_mut(dst, |row_idx, row| {
+                let iy = ((row_idx as f32 * step_y).round() as usize).min(src_rows - 1);
+                let mut x = 0.0f32;
 
-    crate::parallel::par_iter_rows_indexed_mut(dst, |row_idx, row| {
-        let y_src = row_idx as f32 * step_y;
+                for pix in row.chunks_exact_mut(C) {
+                    let ix = (x.round() as usize).min(src_cols - 1);
 
-        for (col_idx, pix) in row.chunks_exact_mut(C).enumerate() {
-            let x_src = col_idx as f32 * step_x;
-
-            pix.iter_mut().enumerate().for_each(|(k, p)| {
-                *p = crate::interpolation::interpolate_pixel(src, x_src, y_src, k, interpolation);
+                    unsafe {
+                        let src_ptr = src.get_unchecked([iy, ix, 0]) as *const f32;
+                        for c in 0..C {
+                            *pix.get_unchecked_mut(c) = *src_ptr.add(c);
+                        }
+                    }
+                    x += step_x;
+                }
             });
         }
-    });
+
+        InterpolationMode::Bilinear => {
+            parallel::par_iter_rows_indexed_mut(dst, |row_idx, row| {
+                let y = row_idx as f32 * step_y;
+                let iv = y.trunc() as usize;
+                let iv1 = (iv + 1).min(src_rows - 1);
+                let fv = y.fract();
+                let wv0 = 1.0 - fv;
+                let wv1 = fv;
+
+                let mut x = 0.0f32;
+
+                for pix in row.chunks_exact_mut(C) {
+                    let iu = x.trunc() as usize;
+                    let iu1 = (iu + 1).min(src_cols - 1);
+                    let fu = x.fract();
+
+                    // Pre-calculating weights once for all channels
+                    let w00 = (1.0 - fu) * wv0;
+                    let w01 = fu * wv0;
+                    let w10 = (1.0 - fu) * wv1;
+                    let w11 = fu * wv1;
+
+                    unsafe {
+                        // pointer math as pixel data is stored contiguously
+                        let p00 = src.get_unchecked([iv, iu, 0]) as *const f32;
+                        let p01 = src.get_unchecked([iv, iu1, 0]) as *const f32;
+                        let p10 = src.get_unchecked([iv1, iu, 0]) as *const f32;
+                        let p11 = src.get_unchecked([iv1, iu1, 0]) as *const f32;
+
+                        for c in 0..C {
+                            *pix.get_unchecked_mut(c) = *p00.add(c) * w00
+                                + *p01.add(c) * w01
+                                + *p10.add(c) * w10
+                                + *p11.add(c) * w11;
+                        }
+                    }
+                    x += step_x;
+                }
+            });
+        }
+
+        InterpolationMode::Lanczos => {
+            unimplemented!("Lanczos interpolation is not yet implemented")
+        }
+
+        InterpolationMode::Bicubic => {
+            unimplemented!("Bicubic interpolation is not yet implemented")
+        }
+    }
 
     Ok(())
 }
