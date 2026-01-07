@@ -53,7 +53,7 @@ if(EXISTS \"${LIB_RS_H_SRC}\")
   )
   message(STATUS \"Copied lib.rs.h to kornia/detail/\")
 else()
-  message(FATAL_ERROR \"CXX bridge header not found: ${LIB_RS_H_SRC}\\nCXX headers must be generated during Rust build. Check that build.rs is running correctly.\")
+  message(FATAL_ERROR \"CXX bridge header not found: ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h\\nCXX headers must be generated during Rust build. Check that build.rs is running correctly.\")
 endif()
 
 # Copy cxx.h if found
@@ -65,7 +65,7 @@ if(EXISTS \"${CXX_H_SRC}\")
   )
   message(STATUS \"Copied cxx.h to kornia/detail/\")
 else()
-  message(FATAL_ERROR \"CXX header not found: ${CXX_H_SRC}\\nCXX headers must be generated during Rust build. Check that build.rs is running correctly.\")
+  message(FATAL_ERROR \"CXX header not found: ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h\\nCXX headers must be generated during Rust build. Check that build.rs is running correctly.\")
 endif()
 ")
 
