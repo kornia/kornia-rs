@@ -38,43 +38,34 @@ file(WRITE ${COPY_HEADERS_SCRIPT}
 "# Auto-generated script to copy CXX bridge headers
 file(MAKE_DIRECTORY \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail\")
 
-# Try to find CXX headers in multiple possible locations
-set(LIB_RS_H_SRC \"\")
-set(CXX_H_SRC \"\")
-
-# Check standard location first
-set(TRY_LIB_RS_H \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h\")
-set(TRY_CXX_H \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h\")
-
-if(EXISTS \"${TRY_LIB_RS_H}\")
-  set(LIB_RS_H_SRC \"${TRY_LIB_RS_H}\")
-endif()
-if(EXISTS \"${TRY_CXX_H}\")
-  set(CXX_H_SRC \"${TRY_CXX_H}\")
-endif()
+# Define expected header locations
+set(LIB_RS_H_SRC \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h\")
+set(CXX_H_SRC \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h\")
+set(LIB_RS_H_DST \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/lib.rs.h\")
+set(CXX_H_DST \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/cxx.h\")
 
 # Copy lib.rs.h if found
-if(LIB_RS_H_SRC)
+if(EXISTS \"${LIB_RS_H_SRC}\")
   configure_file(
     \"${LIB_RS_H_SRC}\"
-    \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/lib.rs.h\"
+    \"${LIB_RS_H_DST}\"
     COPYONLY
   )
   message(STATUS \"Copied lib.rs.h to kornia/detail/\")
 else()
-  message(FATAL_ERROR \"CXX bridge header not found: ${TRY_LIB_RS_H}. CXX headers must be generated during Rust build.\")
+  message(FATAL_ERROR \"CXX bridge header not found: ${LIB_RS_H_SRC}\\nCXX headers must be generated during Rust build. Check that build.rs is running correctly.\")
 endif()
 
 # Copy cxx.h if found
-if(CXX_H_SRC)
+if(EXISTS \"${CXX_H_SRC}\")
   configure_file(
     \"${CXX_H_SRC}\"
-    \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/cxx.h\"
+    \"${CXX_H_DST}\"
     COPYONLY
   )
   message(STATUS \"Copied cxx.h to kornia/detail/\")
 else()
-  message(FATAL_ERROR \"CXX header not found: ${TRY_CXX_H}. CXX headers must be generated during Rust build.\")
+  message(FATAL_ERROR \"CXX header not found: ${CXX_H_SRC}\\nCXX headers must be generated during Rust build. Check that build.rs is running correctly.\")
 endif()
 ")
 
