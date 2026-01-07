@@ -104,22 +104,13 @@ pub struct QuickDecodeEntry {
     pub rotation: u8,
 }
 
+/// Sentinel value used to mark unoccupied slots in the quick decode hash table.
+const SLOT_EMPTY: u16 = u16::MAX;
+
 /// A table for fast lookup of decoded tag codes and their associated metadata.
 #[derive(Debug, Default, Clone, PartialEq)]
-pub struct QuickDecode(Vec<QuickDecodeEntry>);
-
-impl std::ops::Deref for QuickDecode {
-    type Target = Vec<QuickDecodeEntry>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for QuickDecode {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
+pub struct QuickDecode {
+    table: Vec<u16>,
 }
 
 impl QuickDecode {
@@ -135,30 +126,29 @@ impl QuickDecode {
     /// A new `QuickDecode` instance with precomputed entries for all codes and their Hamming neighbors.
     pub fn new(nbits: usize, code_data: &[usize]) -> Self {
         let ncodes = code_data.len();
-        let capacity = ncodes // Hamming 0
+        let entries_needed = ncodes // Hamming 0
             + nbits * ncodes // Hamming 1
             + ncodes * nbits * (nbits - 1) / 2; // Hamming 2
 
-        let mut quick_decode = Self(vec![
-            QuickDecodeEntry {
-                rcode: usize::MAX,
-                ..Default::default()
-            };
-            capacity * 3
-        ]);
+        let capacity = entries_needed * 3;
+
+        let mut quick_decode = Self {
+            table: vec![SLOT_EMPTY; capacity],
+        };
 
         code_data.iter().enumerate().for_each(|(i, code)| {
-            quick_decode.add(*code, i as u16, 0);
+            let id = i as u16;
+            quick_decode.add(*code, id);
 
             // add hamming 1
             (0..nbits).for_each(|j| {
-                quick_decode.add(code ^ (1 << j), i as u16, 1);
+                quick_decode.add(code ^ (1 << j), id);
             });
 
             // add hamming 2
             (0..nbits).for_each(|j| {
                 (0..j).for_each(|k| {
-                    quick_decode.add(code ^ (1 << j) ^ (1 << k), i as u16, 2);
+                    quick_decode.add(code ^ (1 << j) ^ (1 << k), id);
                 });
             });
         });
@@ -171,18 +161,54 @@ impl QuickDecode {
     ///
     /// * `code` - The code value to add.
     /// * `id` - The tag ID associated with the code.
-    /// * `hamming` - The Hamming distance for this code.
-    fn add(&mut self, code: usize, id: u16, hamming: u8) {
-        let mut bucket = code % self.len();
+    fn add(&mut self, code: usize, id: u16) {
+        let len = self.table.len();
+        let mut bucket = code % len;
 
-        // TODO: Use iterators instead
-        while self[bucket].rcode != usize::MAX {
-            bucket = (bucket + 1) % self.len();
+        while self.table[bucket] != SLOT_EMPTY {
+            bucket = (bucket + 1) % len;
         }
 
-        self[bucket].rcode = code;
-        self[bucket].id = id;
-        self[bucket].hamming = hamming;
+        self.table[bucket] = id;
+    }
+
+    /// Decodes an observed code using the quick decode table.
+    ///
+    /// # Arguments
+    ///
+    /// * `observed_code` - The code value to decode.
+    /// * `valid_codes` - Slice of valid codes for the tag family.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(QuickDecodeEntry)` if the code is found within a Hamming distance of 2, or `None` otherwise.
+    pub fn decode(&self, observed_code: usize, valid_codes: &[usize]) -> Option<QuickDecodeEntry> {
+        let len = self.table.len();
+        let mut bucket = observed_code % len;
+
+        loop {
+            let candidate_id = self.table[bucket];
+
+            if candidate_id == SLOT_EMPTY {
+                return None;
+            }
+
+            let perfect_code = valid_codes[candidate_id as usize];
+            let delta = observed_code ^ perfect_code;
+
+            let hamming = delta.count_ones();
+
+            if hamming <= 2 {
+                return Some(QuickDecodeEntry {
+                    rcode: observed_code,
+                    id: candidate_id,
+                    hamming: hamming as u8,
+                    rotation: 0,
+                });
+            }
+
+            bucket = (bucket + 1) % len;
+        }
     }
 }
 
@@ -778,17 +804,11 @@ pub fn sharpen(sharpening_buffer: &mut SharpeningBuffer, decode_sharpening: f32,
 /// * `entry` - Mutable reference to a `QuickDecodeEntry` to store the result.
 fn quick_decode_codeword(tag_family: &TagFamily, mut rcode: usize, entry: &mut QuickDecodeEntry) {
     if let ControlFlow::Break(_) = (0..4).try_for_each(|ridx| {
-        let mut bucket = rcode % tag_family.quick_decode.0.len();
+        if let Some(mut decoded) = tag_family.quick_decode.decode(rcode, &tag_family.code_data) {
+            decoded.rotation = ridx as u8;
+            *entry = decoded;
 
-        while tag_family.quick_decode.0[bucket].rcode != usize::MAX {
-            if tag_family.quick_decode.0[bucket].rcode == rcode {
-                *entry = tag_family.quick_decode.0[bucket].clone();
-                entry.rotation = ridx;
-
-                return ControlFlow::Break(());
-            }
-
-            bucket = (bucket + 1) % tag_family.quick_decode.0.len();
+            return ControlFlow::Break(());
         }
 
         rcode = rotate_90(rcode, tag_family.nbits);
