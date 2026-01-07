@@ -252,8 +252,8 @@ pub struct UndistortIterResult {
 /// # Returns
 ///
 /// Returns an [`UndistortIterResult`] containing:
-/// * `x`, `y` - Recovered **undistorted normalized coordinates**. 
-///     
+/// * `x`, `y` - Recovered **undistorted normalized coordinates**.
+///
 ///     These can be projected into pixel space via:
 ///     ```text
 ///     u_u = fx * x_u + cx
@@ -270,7 +270,7 @@ pub struct UndistortIterResult {
 ///   - Radial distortion: `k1..k6`
 ///   - Tangential distortion: `p1`, `p2`
 /// - **Prism distortion is not supported.**
-/// - This function inverts distortion only in **normalized** space.  
+/// - This function inverts distortion only in **normalized** space.
 ///   Any rectification or reprojection using `R` or `P` matrices must be
 ///   applied separately.
 pub fn undistort_normalized_point_iter(
