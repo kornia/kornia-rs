@@ -78,11 +78,13 @@ set(ORGANIZED_CXX_H "${CXX_GEN_DIR}/kornia/detail/cxx.h")
 
 # Create a command to organize headers - runs after cargo_build but before compilation
 # Use OUTPUT so CMake knows these files must exist before targets that depend on them
+# Note: We only depend on cargo_build, not the source headers, because they may not exist
+# and CMake will try to build them as targets if we list them as DEPENDS
 add_custom_command(
     OUTPUT ${ORGANIZED_LIB_RS_H} ${ORGANIZED_CXX_H}
     COMMAND ${CMAKE_COMMAND} -P ${COPY_HEADERS_SCRIPT}
     COMMENT "Organizing CXX bridge headers into kornia/detail/"
-    DEPENDS cargo_build ${MAIN_HEADER} ${RUST_CXX_HEADER}
+    DEPENDS cargo_build
     VERBATIM
 )
 
