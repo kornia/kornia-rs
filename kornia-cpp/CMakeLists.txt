@@ -34,12 +34,8 @@ add_custom_target(cargo_build ALL
 # Create detail directory structure for cleaner includes during build
 add_custom_command(TARGET cargo_build POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h
-        ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/lib.rs.h
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h
-        ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/cxx.h
+    COMMAND sh -c "test -f '${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h' && ${CMAKE_COMMAND} -E copy_if_different '${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h' '${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/lib.rs.h' || true"
+    COMMAND sh -c "test -f '${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h' && ${CMAKE_COMMAND} -E copy_if_different '${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h' '${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/cxx.h' || true"
     COMMENT "Organizing CXX bridge headers into kornia/detail/"
 )
 
