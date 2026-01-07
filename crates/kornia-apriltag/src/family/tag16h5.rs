@@ -1,20 +1,25 @@
 use super::*;
 
-impl TagFamily {
-    /// The Tag16H5 AprilTag family.
+impl TagFamilyBuilder {
+    /// Creates a builder for the Tag16H5 AprilTag family.
     pub fn tag16_h5() -> Self {
-        Self {
-            name: "tag16_h5".to_string(),
-            width_at_border: 6,
-            reversed_border: false,
-            total_width: 8,
-            nbits: 16,
-            bit_x: vec![1, 2, 3, 2, 4, 4, 4, 3, 4, 3, 2, 3, 1, 1, 1, 2],
-            bit_y: vec![1, 1, 1, 2, 1, 2, 3, 2, 4, 4, 4, 3, 4, 3, 2, 3],
-            code_data: CODE_DATA.into(),
-            quick_decode: QuickDecode::new(16, &CODE_DATA, HammingConfig::default()),
-            sharpening_buffer: SharpeningBuffer::new(64),
-        }
+        Self::new(
+            "tag16_h5",
+            6,
+            false,
+            8,
+            16,
+            vec![1, 2, 3, 2, 4, 4, 4, 3, 4, 3, 2, 3, 1, 1, 1, 2],
+            vec![1, 1, 1, 2, 1, 2, 3, 2, 4, 4, 4, 3, 4, 3, 2, 3],
+            CODE_DATA.into(),
+        )
+    }
+}
+
+impl TagFamily {
+    /// The Tag16H5 AprilTag family with default configuration.
+    pub fn tag16_h5() -> Self {
+        TagFamilyBuilder::tag16_h5().build()
     }
 }
 

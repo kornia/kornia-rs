@@ -1,24 +1,29 @@
 use super::*;
 
-impl TagFamily {
-    /// The TagCircle21H7 AprilTag Family.
+impl TagFamilyBuilder {
+    /// Creates a builder for the TagCircle21H7 AprilTag family.
     pub fn tagcircle21_h7() -> Self {
-        Self {
-            name: "tagcircle21_h7".to_string(),
-            width_at_border: 5,
-            reversed_border: true,
-            total_width: 9,
-            nbits: 21,
-            bit_x: vec![
+        Self::new(
+            "tagcircle21_h7",
+            5,
+            true,
+            9,
+            21,
+            vec![
                 1, 2, 3, 1, 2, 6, 6, 6, 3, 3, 3, 2, 1, 3, 2, -2, -2, -2, 1, 1, 2,
             ],
-            bit_y: vec![
+            vec![
                 -2, -2, -2, 1, 1, 1, 2, 3, 1, 2, 6, 6, 6, 3, 3, 3, 2, 1, 3, 2, 2,
             ],
-            code_data: CODE_DATA.into(),
-            quick_decode: QuickDecode::new(21, &CODE_DATA, HammingConfig::default()),
-            sharpening_buffer: SharpeningBuffer::new(81),
-        }
+            CODE_DATA.into(),
+        )
+    }
+}
+
+impl TagFamily {
+    /// The TagCircle21H7 AprilTag family with default configuration.
+    pub fn tagcircle21_h7() -> Self {
+        TagFamilyBuilder::tagcircle21_h7().build()
     }
 }
 

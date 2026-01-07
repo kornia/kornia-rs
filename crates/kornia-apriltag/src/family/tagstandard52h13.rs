@@ -1,28 +1,33 @@
 use super::*;
 
-impl TagFamily {
-    /// The TagStandard52H13 AprilTag Family.
+impl TagFamilyBuilder {
+    /// Creates a builder for the TagStandard52H13 AprilTag family.
     pub fn tagstandard52_h13() -> Self {
-        Self {
-            name: "tagstandard52_h13".to_string(),
-            width_at_border: 6,
-            reversed_border: true,
-            total_width: 10,
-            nbits: 52,
-            bit_x: vec![
+        Self::new(
+            "tagstandard52_h13",
+            6,
+            true,
+            10,
+            52,
+            vec![
                 -2, -1, 0, 1, 2, 3, 4, 5, 6, 1, 2, 3, 2, 7, 7, 7, 7, 7, 7, 7, 7, 7, 4, 4, 4, 3, 7,
                 6, 5, 4, 3, 2, 1, 0, -1, 4, 3, 2, 3, -2, -2, -2, -2, -2, -2, -2, -2, -2, 1, 1, 1,
                 2,
             ],
-            bit_y: vec![
+            vec![
                 -2, -2, -2, -2, -2, -2, -2, -2, -2, 1, 1, 1, 2, -2, -1, 0, 1, 2, 3, 4, 5, 6, 1, 2,
                 3, 2, 7, 7, 7, 7, 7, 7, 7, 7, 7, 4, 4, 4, 3, 7, 6, 5, 4, 3, 2, 1, 0, -1, 4, 3, 2,
                 3,
             ],
-            code_data: CODE_DATA.into(),
-            quick_decode: QuickDecode::new(52, &CODE_DATA, HammingConfig::default()),
-            sharpening_buffer: SharpeningBuffer::new(100),
-        }
+            CODE_DATA.into(),
+        )
+    }
+}
+
+impl TagFamily {
+    /// The TagStandard52H13 AprilTag family with default configuration.
+    pub fn tagstandard52_h13() -> Self {
+        TagFamilyBuilder::tagstandard52_h13().build()
     }
 }
 

@@ -1,26 +1,31 @@
 use super::*;
 
-impl TagFamily {
-    /// The Tag36H11 AprilTag family.
+impl TagFamilyBuilder {
+    /// Creates a builder for the Tag36H11 AprilTag family.
     pub fn tag36_h11() -> Self {
-        Self {
-            name: "tag36_h11".to_string(),
-            width_at_border: 8,
-            reversed_border: false,
-            total_width: 10,
-            nbits: 36,
-            bit_x: vec![
+        Self::new(
+            "tag36_h11",
+            8,
+            false,
+            10,
+            36,
+            vec![
                 1, 2, 3, 4, 5, 2, 3, 4, 3, 6, 6, 6, 6, 6, 5, 5, 5, 4, 6, 5, 4, 3, 2, 5, 4, 3, 4, 1,
                 1, 1, 1, 1, 2, 2, 2, 3,
             ],
-            bit_y: vec![
+            vec![
                 1, 1, 1, 1, 1, 2, 2, 2, 3, 1, 2, 3, 4, 5, 2, 3, 4, 3, 6, 6, 6, 6, 6, 5, 5, 5, 4, 6,
                 5, 4, 3, 2, 5, 4, 3, 4,
             ],
-            code_data: CODE_DATA.into(),
-            quick_decode: QuickDecode::new(36, &CODE_DATA, HammingConfig::default()),
-            sharpening_buffer: SharpeningBuffer::new(100),
-        }
+            CODE_DATA.into(),
+        )
+    }
+}
+
+impl TagFamily {
+    /// The Tag36H11 AprilTag family with default configuration.
+    pub fn tag36_h11() -> Self {
+        TagFamilyBuilder::tag36_h11().build()
     }
 }
 

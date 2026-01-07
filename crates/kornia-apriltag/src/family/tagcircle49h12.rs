@@ -1,26 +1,31 @@
 use super::*;
 
-impl TagFamily {
-    /// The TagCircle49H12 AprilTag Family.
+impl TagFamilyBuilder {
+    /// Creates a builder for the TagCircle49H12 AprilTag family.
     pub fn tagcircle49_h12() -> Self {
-        Self {
-            name: "tagcircle49_h12".to_string(),
-            width_at_border: 5,
-            reversed_border: true,
-            total_width: 11,
-            nbits: 49,
-            bit_x: vec![
+        Self::new(
+            "tagcircle49_h12",
+            5,
+            true,
+            11,
+            49,
+            vec![
                 1, 2, 3, -1, 0, 1, 2, 3, 4, 5, 1, 2, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 3, 3, 3, 2, 1,
                 5, 4, 3, 2, 1, 0, -1, 3, 2, -3, -3, -3, -2, -2, -2, -2, -2, -2, -2, -2, 1, 1, 2,
             ],
-            bit_y: vec![
+            vec![
                 -3, -3, -3, -2, -2, -2, -2, -2, -2, -2, 1, 1, 1, 2, 3, -1, 0, 1, 2, 3, 4, 5, 1, 2,
                 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 3, 3, 3, 2, 1, 5, 4, 3, 2, 1, 0, -1, 3, 2, 2,
             ],
-            code_data: CODE_DATA.into(),
-            quick_decode: QuickDecode::new(49, &CODE_DATA, HammingConfig::default()),
-            sharpening_buffer: SharpeningBuffer::new(121),
-        }
+            CODE_DATA.into(),
+        )
+    }
+}
+
+impl TagFamily {
+    /// The TagCircle49H12 AprilTag family with default configuration.
+    pub fn tagcircle49_h12() -> Self {
+        TagFamilyBuilder::tagcircle49_h12().build()
     }
 }
 

@@ -1,24 +1,29 @@
 use super::*;
 
-impl TagFamily {
-    /// The Tag25H9 AprilTag Family.
+impl TagFamilyBuilder {
+    /// Creates a builder for the Tag25H9 AprilTag family.
     pub fn tag25_h9() -> Self {
-        Self {
-            name: "tag25_h9".to_string(),
-            width_at_border: 7,
-            reversed_border: false,
-            total_width: 9,
-            nbits: 25,
-            bit_x: vec![
+        Self::new(
+            "tag25_h9",
+            7,
+            false,
+            9,
+            25,
+            vec![
                 1, 2, 3, 4, 2, 3, 5, 5, 5, 5, 4, 4, 5, 4, 3, 2, 4, 3, 1, 1, 1, 1, 2, 2, 3,
             ],
-            bit_y: vec![
+            vec![
                 1, 1, 1, 1, 2, 2, 1, 2, 3, 4, 2, 3, 5, 5, 5, 5, 4, 4, 5, 4, 3, 2, 4, 3, 3,
             ],
-            code_data: CODE_DATA.into(),
-            quick_decode: QuickDecode::new(25, &CODE_DATA, HammingConfig::default()),
-            sharpening_buffer: SharpeningBuffer::new(81),
-        }
+            CODE_DATA.into(),
+        )
+    }
+}
+
+impl TagFamily {
+    /// The Tag25H9 AprilTag family with default configuration.
+    pub fn tag25_h9() -> Self {
+        TagFamilyBuilder::tag25_h9().build()
     }
 }
 

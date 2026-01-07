@@ -25,6 +25,106 @@ pub struct TagFamily {
     pub sharpening_buffer: SharpeningBuffer,
 }
 
+/// Builder for creating and configuring a [`TagFamily`] with custom settings.
+///
+/// # Example
+///
+/// ```
+/// use kornia_apriltag::family::{TagFamily, TagFamilyBuilder};
+/// use kornia_apriltag::decoder::HammingConfig;
+///
+/// // Create a Tag36H11 family with faster initialization (smaller lookup table)
+/// let family = TagFamilyBuilder::tag36_h11()
+///     .hamming_config(HammingConfig::SEARCH_1)
+///     .build();
+/// ```
+#[derive(Debug, Clone)]
+pub struct TagFamilyBuilder {
+    name: String,
+    width_at_border: usize,
+    reversed_border: bool,
+    total_width: usize,
+    nbits: usize,
+    bit_x: Vec<i8>,
+    bit_y: Vec<i8>,
+    code_data: Vec<usize>,
+    hamming_config: HammingConfig,
+}
+
+impl TagFamilyBuilder {
+    /// Creates a new `TagFamilyBuilder` with the given parameters.
+    ///
+    /// This is typically not called directly; use the specific tag family
+    /// builder methods like [`TagFamilyBuilder::tag36_h11`] instead.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        name: impl Into<String>,
+        width_at_border: usize,
+        reversed_border: bool,
+        total_width: usize,
+        nbits: usize,
+        bit_x: Vec<i8>,
+        bit_y: Vec<i8>,
+        code_data: Vec<usize>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            width_at_border,
+            reversed_border,
+            total_width,
+            nbits,
+            bit_x,
+            bit_y,
+            code_data,
+            hamming_config: HammingConfig::default(),
+        }
+    }
+
+    /// Sets the Hamming distance configuration for the tag family.
+    ///
+    /// This controls the trade-off between initialization time, memory usage,
+    /// and lookup performance for error correction.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The Hamming configuration to use.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_apriltag::family::TagFamilyBuilder;
+    /// use kornia_apriltag::decoder::HammingConfig;
+    ///
+    /// // Use a smaller table with search-time error correction
+    /// let family = TagFamilyBuilder::tag36_h11()
+    ///     .hamming_config(HammingConfig::SEARCH_1)
+    ///     .build();
+    /// ```
+    pub fn hamming_config(mut self, config: HammingConfig) -> Self {
+        self.hamming_config = config;
+        self
+    }
+
+    /// Builds the [`TagFamily`] with the configured settings.
+    pub fn build(self) -> TagFamily {
+        let quick_decode = QuickDecode::new(self.nbits, &self.code_data, self.hamming_config);
+        let sharpening_buffer = SharpeningBuffer::new(self.total_width * self.total_width);
+
+        TagFamily {
+            name: self.name,
+            width_at_border: self.width_at_border,
+            reversed_border: self.reversed_border,
+            total_width: self.total_width,
+            nbits: self.nbits,
+            bit_x: self.bit_x,
+            bit_y: self.bit_y,
+            code_data: self.code_data,
+            quick_decode,
+            sharpening_buffer,
+        }
+    }
+}
+
 /// Represents a decoded AprilTag.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TagFamilyKind {

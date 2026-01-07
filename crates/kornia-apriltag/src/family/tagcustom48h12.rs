@@ -1,26 +1,31 @@
 use super::*;
 
-impl TagFamily {
-    /// The TagCustom48H12 AprilTag Family.
+impl TagFamilyBuilder {
+    /// Creates a builder for the TagCustom48H12 AprilTag family.
     pub fn tagcustom48_h12() -> Self {
-        Self {
-            name: "tagcustom48_h12".to_string(),
-            width_at_border: 6,
-            reversed_border: true,
-            total_width: 10,
-            nbits: 48,
-            bit_x: vec![
+        Self::new(
+            "tagcustom48_h12",
+            6,
+            true,
+            10,
+            48,
+            vec![
                 -2, -1, 0, 1, 2, 3, 4, 5, 6, 1, 2, 3, 7, 7, 7, 7, 7, 7, 7, 7, 7, 4, 4, 4, 7, 6, 5,
                 4, 3, 2, 1, 0, -1, 4, 3, 2, -2, -2, -2, -2, -2, -2, -2, -2, -2, 1, 1, 1,
             ],
-            bit_y: vec![
+            vec![
                 -2, -2, -2, -2, -2, -2, -2, -2, -2, 1, 1, 1, -2, -1, 0, 1, 2, 3, 4, 5, 6, 1, 2, 3,
                 7, 7, 7, 7, 7, 7, 7, 7, 7, 4, 4, 4, 7, 6, 5, 4, 3, 2, 1, 0, -1, 4, 3, 2,
             ],
-            code_data: CODE_DATE.into(),
-            quick_decode: QuickDecode::new(48, &CODE_DATE, HammingConfig::default()),
-            sharpening_buffer: SharpeningBuffer::new(100),
-        }
+            CODE_DATE.into(),
+        )
+    }
+}
+
+impl TagFamily {
+    /// The TagCustom48H12 AprilTag family with default configuration.
+    pub fn tagcustom48_h12() -> Self {
+        TagFamilyBuilder::tagcustom48_h12().build()
     }
 }
 
