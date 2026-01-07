@@ -241,7 +241,7 @@ pub struct UndistortIterResult {
 /// # Arguments
 ///
 /// * `x`, `y` - Initial guess for the **distorted** normalized coordinates. These are typically `(u - cx) / fx`, `(v - cy) / fy`.
-/// * `u`, `v` - Original pixel coordinates.  
+/// * `u`, `v` - Original pixel coordinates.
 /// * `intrinsic` - Camera intrinsic parameters (fx, fy, cx, cy).
 /// * `distortion` - Full Brown-Conrady distortion parameters:
 ///   radial (`k1..k6`) and tangential (`p1, p2`).
@@ -252,7 +252,7 @@ pub struct UndistortIterResult {
 /// # Returns
 ///
 /// Returns an [`UndistortIterResult`] containing:
-/// * `x`, `y` - Recovered **undistorted normalized coordinates**.  
+/// * `x`, `y` - Recovered **undistorted normalized coordinates**. 
 ///     
 ///     These can be projected into pixel space via:
 ///     ```text
@@ -267,9 +267,9 @@ pub struct UndistortIterResult {
 /// # Notes
 ///
 /// - Supported components:
-///   - Radial distortion: `k1..k6`  
+///   - Radial distortion: `k1..k6`
 ///   - Tangential distortion: `p1`, `p2`
-/// - **Prism distortion is not supported.**s
+/// - **Prism distortion is not supported.**
 /// - This function inverts distortion only in **normalized** space.  
 ///   Any rectification or reprojection using `R` or `P` matrices must be
 ///   applied separately.
@@ -397,7 +397,7 @@ pub fn undistort_normalized_point_iter(
 /// - If none provided, we return the normalized (x,y) unchanged.
 ///
 /// # Returns
-/// `(x', y')` — the transformed coordinates after applying `R` and/or `P`.  
+/// `(x', y')` — the transformed coordinates after applying `R` and/or `P`.
 pub fn apply_r_and_p(
     x: f64,
     y: f64,
