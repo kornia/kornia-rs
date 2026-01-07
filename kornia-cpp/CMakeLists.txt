@@ -49,6 +49,14 @@ if(EXISTS \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h\")
 endif()
 ")
 
+# Create a target to organize headers - runs after cargo_build but before compilation
+add_custom_target(organize_cxx_headers
+    COMMAND ${CMAKE_COMMAND} -P ${COPY_HEADERS_SCRIPT}
+    COMMENT "Organizing CXX bridge headers into kornia/detail/"
+    DEPENDS cargo_build
+)
+
+# Also run it as POST_BUILD for cargo_build to ensure it happens
 add_custom_command(TARGET cargo_build POST_BUILD
     COMMAND ${CMAKE_COMMAND} -P ${COPY_HEADERS_SCRIPT}
     COMMENT "Organizing CXX bridge headers into kornia/detail/"
@@ -77,6 +85,9 @@ target_include_directories(kornia_cpp INTERFACE
     $<INSTALL_INTERFACE:include>
     $<INSTALL_INTERFACE:include/kornia>
 )
+
+# Ensure headers are organized before any target uses kornia_cpp
+add_dependencies(kornia_cpp organize_cxx_headers)
 
 # Link the Rust library
 target_link_libraries(kornia_cpp INTERFACE kornia_rust_lib)
