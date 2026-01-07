@@ -37,12 +37,17 @@ set(COPY_HEADERS_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/copy_cxx_headers.cmake")
 file(WRITE ${COPY_HEADERS_SCRIPT}
 "# Auto-generated script to copy CXX bridge headers
 file(MAKE_DIRECTORY \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail\")
+set(COPIED_ANY FALSE)
 if(EXISTS \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h\")
   configure_file(
     \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h\"
     \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/lib.rs.h\"
     COPYONLY
   )
+  set(COPIED_ANY TRUE)
+  message(STATUS \"Copied lib.rs.h to kornia/detail/\")
+else()
+  message(WARNING \"Source header not found: ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h\")
 endif()
 if(EXISTS \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h\")
   configure_file(
@@ -50,6 +55,13 @@ if(EXISTS \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h\")
     \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/cxx.h\"
     COPYONLY
   )
+  set(COPIED_ANY TRUE)
+  message(STATUS \"Copied cxx.h to kornia/detail/\")
+else()
+  message(WARNING \"Source header not found: ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h\")
+endif()
+if(NOT COPIED_ANY)
+  message(WARNING \"No CXX bridge headers were copied. They may not have been generated yet.\")
 endif()
 ")
 
@@ -66,7 +78,8 @@ set(ORGANIZED_CXX_H "${CXX_GEN_DIR}/kornia/detail/cxx.h")
 
 # Create a target to organize headers - runs after cargo_build but before compilation
 # Mark the output files so other targets can depend on them
-add_custom_target(organize_cxx_headers
+# Make it part of ALL so it's built by default
+add_custom_target(organize_cxx_headers ALL
     COMMAND ${CMAKE_COMMAND} -P ${COPY_HEADERS_SCRIPT}
     COMMENT "Organizing CXX bridge headers into kornia/detail/"
     DEPENDS cargo_build
