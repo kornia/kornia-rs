@@ -18,6 +18,7 @@ name = "bench_linalg"
 [dependencies]
 bincode = { workspace = true }
 faer = { workspace = true }
+kiddo = "5.0.2"
 kornia-algebra = { workspace = true }
 kornia-imgproc = { workspace = true }
 log = { workspace = true }
@@ -25,7 +26,6 @@ nalgebra = "0.32"
 rand = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
-kiddo = "5.0.2"
 
 [dev-dependencies]
 approx = { workspace = true }
