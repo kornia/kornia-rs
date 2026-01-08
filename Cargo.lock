@@ -7729,6 +7729,7 @@ dependencies = [
  "fast_image_resize",
  "image 0.25.8",
  "imageproc",
+ "kornia-algebra",
  "kornia-image",
  "kornia-io",
  "kornia-tensor",

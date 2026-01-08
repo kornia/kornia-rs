@@ -1,5 +1,6 @@
 use super::{CameraExtrinsic, CameraIntrinsic};
 use crate::interpolation::grid::meshgrid_from_fn;
+use kornia_algebra::{Mat3F64, Mat4F64, Vec3F64, Vec4F64};
 use kornia_image::ImageSize;
 use kornia_tensor::{CpuTensor2, Tensor, TensorAllocator, TensorError};
 use rayon::prelude::*;
@@ -387,63 +388,69 @@ pub fn undistort_normalized_point_iter(
 ///
 /// # Arguments
 /// * `x`, `y` — normalized undistorted coordinates.
-/// * `r_opt` — optional 3×3 rectification matrix `R`.
-/// * `p3_opt` — optional 3×3 projection matrix `P`.
-/// * `p34_opt` — optional 3×4 projection matrix `P`.
+/// * `r_opt` — optional [`Mat3F64`] 3x3 rectification matrix `R`.
+/// * `p3_opt` — optional [`Mat3F64`] 3x3 projection matrix `P`.
 ///
-/// - If r_opt is Some(&[[f64;3];3]), this function compute v = R * [x,y,1]^T and normalize v.
-/// - If p3_opt (3x3 P) is Some, this function compute p = P * [x,y,1]^T and normalize p.
-/// - Else if p34_opt (3x4 P) is Some, we compute p = P * [x,y,1,1]^T and normalize p.
-/// - If none provided, we return the normalized (x,y) unchanged.
+///     `p3_opt` matrix example:
+///     ```text
+///     | fx   0   cx  |
+///     | 0   fy   cy  |
+///     | 0    0    1  |
+///     ```
+/// * `p34_opt` — optional [`Mat3F64`] 4x4 matrix for 3x4 projection matrix `P`.
+///
+///     `p34_opt` matrix example:
+///     ```text
+///     | fx   0   cx  tx |
+///     | 0   fy   cy  ty |
+///     | 0    0    1   0 |
+///     | 0    0    0   1 |
+///     ```
+///
+/// # Notes
+/// - If `p3_opt` and `p34_opt` are both provided p3_opt will be applied.
+/// - If `r_opt` is Some(3x3 R), this function compute v = R * [x,y,1]^T and normalize v.
+/// - If `p3_opt` is Some(3x3 P), this function compute p = P * [x,y,1]^T and normalize p.
+/// - Else if `p34_opt` is Some(4x4 P), we compute p = P * [x,y,1,1]^T and normalize p.
+/// - If none provided, this function return the normalized (x,y) unchanged.
 ///
 /// # Returns
 /// `(x', y')` — the transformed coordinates after applying `R` and/or `P`.
 pub fn apply_r_and_p(
     x: f64,
     y: f64,
-    r_opt: Option<&[[f64; 3]; 3]>,
-    p3_opt: Option<&[[f64; 3]; 3]>,
-    p34_opt: Option<&[[f64; 4]; 3]>,
+    r_opt: Option<&Mat3F64>,
+    p3_opt: Option<&Mat3F64>,
+    p34_opt: Option<&Mat4F64>,
 ) -> (f64, f64) {
-    // apply R if present (v = R * [x,y,1]^T and normalize v)
-    let (x_r, y_r) = if let Some(r) = r_opt {
-        let xx = r[0][0] * x + r[0][1] * y + r[0][2];
-        let yy = r[1][0] * x + r[1][1] * y + r[1][2];
-        let ww = r[2][0] * x + r[2][1] * y + r[2][2];
+    let mut v = Vec3F64::new(x, y, 1.0);
 
-        if ww.abs() > f64::EPSILON {
-            (xx / ww, yy / ww)
-        } else {
-            (xx, yy)
+    // apply R if present (v = R * [x,y,1]^T and normalize v)
+    if let Some(r) = r_opt {
+        v = *r * v;
+        if v.z.abs() > f64::EPSILON {
+            v /= v.z;
         }
-    } else {
-        (x, y)
-    };
+    }
 
     // apply P (3x3) (p = P * [x,y,1]^T and normalize p)
     if let Some(p3) = p3_opt {
-        let xp = p3[0][0] * x_r + p3[0][1] * y_r + p3[0][2];
-        let yp = p3[1][0] * x_r + p3[1][1] * y_r + p3[1][2];
-        let wp = p3[2][0] * x_r + p3[2][1] * y_r + p3[2][2];
-
-        if wp.abs() > f64::EPSILON {
-            (xp / wp, yp / wp)
-        } else {
-            (xp, yp)
+        let mut p = *p3 * v;
+        if p.z.abs() > f64::EPSILON {
+            p /= p.z;
         }
+        (p.x, p.y)
     } else if let Some(p34) = p34_opt {
-        let xp = p34[0][0] * x_r + p34[0][1] * y_r + p34[0][2] + p34[0][3];
-        let yp = p34[1][0] * x_r + p34[1][1] * y_r + p34[1][2] + p34[1][3];
-        let wp = p34[2][0] * x_r + p34[2][1] * y_r + p34[2][2] + p34[2][3];
+        let v4 = Vec4F64::new(v.x, v.y, 1.0, 1.0);
+        let mut p = *p34 * v4;
 
-        if wp.abs() > f64::EPSILON {
-            (xp / wp, yp / wp)
-        } else {
-            (xp, yp)
+        if p.z.abs() > f64::EPSILON {
+            p /= p.z;
         }
+        (p.x, p.y)
     } else {
         // no projection, return normalized coordinates
-        (x_r, y_r)
+        (v.x, v.y)
     }
 }
 
@@ -468,11 +475,26 @@ pub struct UndistortResults {
 /// # Arguments
 /// * `src` - Input Tensor<f64, 2, A> with shape [N, 2] containing distorted pixel coords (u,v)
 /// * `dst` - Output Tensor<f64, 2, A> with shape [N, 2] (will be overwritten)
-/// * `intrinsic` - camera intrinsic parameters in a struct CameraIntrinsic
-/// * `distortion` - polynomial distortion model parameters in a struct PolynomialDistortion
-/// * `r_opt` - Option<&[[f64;3];3]> rectification matrix R (or None)
-/// * `p3_opt` - Option<&[[f64;3];3]> projection matrix P (3x3) (or None)
-/// * `p34_opt` - Option<&[[f64;4];3]> projection matrix P (3x4) (or None)
+/// * `intrinsic` - camera intrinsic parameters in a struct [`CameraIntrinsic`]
+/// * `distortion` - polynomial distortion model parameters in a struct [`PolynomialDistortion`]
+/// * `r_opt` - optional [`Mat3F64`] rectification matrix R (3x3) (or None)
+/// * `p3_opt` - optional [`Mat3F64`] projection matrix P (3x3) (or None)
+///
+///     `p3_opt` matrix example:
+///     ```text
+///     | fx   0   cx  |
+///     | 0   fy   cy  |
+///     | 0    0    1  |
+///     ```
+/// * `p34_opt` - optional [`Mat4F64`] projection matrix P (3x4) (or None)
+///
+///     `p34_opt` matrix example:
+///     ```text
+///     | fx   0   cx  tx |
+///     | 0   fy   cy  ty |
+///     | 0    0    1   0 |
+///     | 0    0    0   1 |
+///     ```
 /// * `criteria` - termination criteria for the iterative undistortion
 ///
 /// # Returns
@@ -525,9 +547,9 @@ pub fn undistort_points<A: TensorAllocator>(
     dst: &mut Tensor<f64, 2, A>,
     intrinsic: &CameraIntrinsic,
     distortion: &PolynomialDistortion,
-    r_opt: Option<&[[f64; 3]; 3]>,
-    p3_opt: Option<&[[f64; 3]; 3]>,
-    p34_opt: Option<&[[f64; 4]; 3]>,
+    r_opt: Option<&Mat3F64>,
+    p3_opt: Option<&Mat3F64>,
+    p34_opt: Option<&Mat4F64>,
     criteria: TermCriteria,
 ) -> Result<UndistortResults, TensorError> {
     // src must be (N × 2)
@@ -818,12 +840,12 @@ mod tests {
     }
 
     #[test]
-    fn test_undistort_with_r_and_p() {
+    fn test_undistort_with_p34() {
         let intr = realistic_intrinsic();
         let dist = realistic_distortion();
         let c = TermCriteria::default();
 
-        let (x, y) = (0.1, -0.08);
+        let (x, y) = (0.12, -0.07);
 
         let (xd, yd) = brown_conrady_distort_normalized(x, y, &dist);
         let u = xd * intr.fx + intr.cx;
@@ -833,23 +855,102 @@ mod tests {
         let mut dst =
             Tensor::<f64, 2, _>::from_shape_vec([1, 2], vec![0.0, 0.0], CpuAllocator).unwrap();
 
-        let p = [
-            [intr.fx, 0.0, intr.cx],
-            [0.0, intr.fy, intr.cy],
-            [0.0, 0.0, 1.0],
+        let p34_arr = [
+            intr.fx, 0.0, 0.0, 0.0, 0.0, intr.fy, 0.0, 0.0, intr.cx, intr.cy, 1.0, 0.0,
+            // translation
+            10.0, -5.0, 0.0, 1.0,
         ];
+        let p34 = Mat4F64::from_cols_array(&p34_arr);
 
-        undistort_points(&src, &mut dst, &intr, &dist, None, Some(&p), None, c).unwrap();
+        undistort_points(&src, &mut dst, &intr, &dist, None, None, Some(&p34), c).unwrap();
 
-        let out = dst.storage.as_slice();
+        let out = dst.as_slice();
         let u_out = out[0];
         let v_out = out[1];
 
-        let ue = x * intr.fx + intr.cx;
-        let ve = y * intr.fy + intr.cy;
+        let res = undistort_normalized_point_iter(
+            (u - intr.cx) / intr.fx,
+            (v - intr.cy) / intr.fy,
+            u,
+            v,
+            &intr,
+            &dist,
+            c,
+        );
 
-        assert!((u_out - ue).abs() <= 1e-2);
-        assert!((v_out - ve).abs() <= 1e-2);
+        let (u_ref, v_ref) = apply_r_and_p(res.x, res.y, None, None, Some(&p34));
+
+        assert!(res.converged);
+        assert!((u_out - u_ref).abs() <= 1e-6);
+        assert!((v_out - v_ref).abs() <= 1e-6);
+    }
+
+    #[test]
+    fn test_undistort_with_r_and_p3() {
+        let intr = realistic_intrinsic();
+        let dist = realistic_distortion();
+        let criteria = TermCriteria::default();
+
+        // original points
+        let (x, y) = (0.12, -0.07);
+
+        let (xd, yd) = brown_conrady_distort_normalized(x, y, &dist);
+        let u = xd * intr.fx + intr.cx;
+        let v = yd * intr.fy + intr.cy;
+
+        let src = Tensor::<f64, 2, _>::from_shape_vec([1, 2], vec![u, v], CpuAllocator).unwrap();
+
+        let mut dst =
+            Tensor::<f64, 2, _>::from_shape_vec([1, 2], vec![0.0, 0.0], CpuAllocator).unwrap();
+
+        let theta = 5.0_f64.to_radians();
+        let r = Mat3F64::from_cols_array(&[
+            theta.cos(),
+            -theta.sin(),
+            0.0,
+            theta.sin(),
+            theta.cos(),
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ]);
+        let p = Mat3F64::from_cols_array(&[
+            intr.fx, 0.0, intr.cx, 0.0, intr.fy, intr.cy, 0.0, 0.0, 1.0,
+        ]);
+
+        undistort_points(
+            &src,
+            &mut dst,
+            &intr,
+            &dist,
+            Some(&r),
+            Some(&p),
+            None,
+            criteria,
+        )
+        .unwrap();
+
+        let out = dst.as_slice();
+        let u_out = out[0];
+        let v_out = out[1];
+
+        let res = undistort_normalized_point_iter(
+            (u - intr.cx) / intr.fx,
+            (v - intr.cy) / intr.fy,
+            u,
+            v,
+            &intr,
+            &dist,
+            criteria,
+        );
+
+        assert!(res.converged);
+
+        let (u_ref, v_ref) = apply_r_and_p(res.x, res.y, Some(&r), Some(&p), None);
+
+        assert!((u_out - u_ref).abs() <= 1e-9);
+        assert!((v_out - v_ref).abs() <= 1e-9);
     }
 
     #[test]
