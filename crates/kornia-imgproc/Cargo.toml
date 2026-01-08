@@ -50,6 +50,11 @@ name = "bench_pyramid"
 harness = false
 name = "bench_gradient"
 
+[[bench]]
+harness = false
+name = "bench_distortion"
+required-features = ["opencv_bench"]
+
 [dependencies]
 # TODO: update to version but it requires some changes in the codebase
 fast_image_resize = { version = "=5.1", features = ["rayon"] }
@@ -59,6 +64,7 @@ kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }
+opencv = { version = "0.92", optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
@@ -67,3 +73,6 @@ imageproc = "0.25"
 kornia-io = { workspace = true }
 ndarray = { version = "0.15", features = ["rayon"] }
 rand = { workspace = true }
+
+[features]
+opencv_bench = ["dep:opencv"]
