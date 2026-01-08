@@ -1,28 +1,21 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use rand::Rng;
-use std::hint::black_box;
 use kornia_imgproc::calibration::{
-    distortion::{undistort_points, brown_conrady_distort_normalized, PolynomialDistortion, TermCriteria},
+    distortion::{
+        brown_conrady_distort_normalized, undistort_points, PolynomialDistortion, TermCriteria,
+    },
     CameraIntrinsic,
 };
 use kornia_tensor::{CpuAllocator, Tensor};
+use rand::Rng;
+use std::hint::black_box;
 
 #[cfg(feature = "opencv_bench")]
-use opencv::{
-    calib3d,
-    core::Mat,
-    prelude::*,
-};
+use opencv::{calib3d, core::Mat, prelude::*};
 
 fn gen_normalized_points(n: usize) -> Vec<(f64, f64)> {
     let mut rng = rand::rng();
     (0..n)
-        .map(|_| {
-            (
-                rng.random_range(-0.4..0.4),
-                rng.random_range(-0.3..0.3),
-            )
-        })
+        .map(|_| (rng.random_range(-0.4..0.4), rng.random_range(-0.3..0.3)))
         .collect()
 }
 
