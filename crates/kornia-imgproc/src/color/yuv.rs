@@ -101,6 +101,85 @@ pub fn convert_yuyv_to_rgb_u8<A: ImageAllocator>(
     Ok(())
 }
 
+/// Convert a UYVY image to an RGB image.
+///
+/// UYVY format stores pixels as: U Y0 V Y1 (4 bytes for 2 pixels)
+/// where U and V are shared between two adjacent Y samples.
+///
+/// # Arguments
+///
+/// * `src` - The UYVY image data.
+/// * `dst` - The RGB image to store the result.
+/// * `mode` - The mode to convert YUV to RGB.
+///
+/// # Returns
+///
+/// The RGB image in HxWx3 format.
+pub fn convert_uyvy_to_rgb_u8<A: ImageAllocator>(
+    src: &[u8],
+    dst: &mut Image<u8, 3, A>,
+    mode: YuvToRgbMode,
+) -> Result<(), ImageError> {
+    // the uyvy image is 2 bytes per pixel, so we need to divide by 2
+    let (width, height) = (dst.width(), dst.height());
+    if src.len() != width * height * 2 {
+        return Err(ImageError::InvalidImageSize(
+            src.len(),
+            width,
+            height,
+            width * height * 2,
+        ));
+    }
+
+    let rgb_data = dst.as_slice_mut();
+
+    rgb_data
+        .par_chunks_exact_mut(width * 3)
+        .enumerate()
+        .for_each(|(row, rgb_row)| {
+            let uyvy_row_start = row * width * 2; // 2 bytes per pixel in UYVY
+            let uyvy_row = &src[uyvy_row_start..uyvy_row_start + width * 2];
+
+            rgb_row
+                .chunks_exact_mut(6)
+                .enumerate()
+                .for_each(|(col, rgb_chunk)| {
+                    let uyvy_idx = col * 4;
+                    if uyvy_idx + 3 < uyvy_row.len() {
+                        // UYVY byte order: U Y0 V Y1
+                        let u = uyvy_row[uyvy_idx];
+                        let y0 = uyvy_row[uyvy_idx + 1];
+                        let v = uyvy_row[uyvy_idx + 2];
+                        let y1 = uyvy_row[uyvy_idx + 3];
+
+                        // Convert YUV to RGB for first pixel
+                        let (r0, g0, b0) = match mode {
+                            YuvToRgbMode::Bt601Full => yuv_to_rgb_u8_bt601_full(y0, u, v),
+                            YuvToRgbMode::Bt709Full => yuv_to_rgb_u8_bt709_full(y0, u, v),
+                            YuvToRgbMode::Bt601Limited => yuv_to_rgb_u8_bt601_limited(y0, u, v),
+                        };
+
+                        // Convert YUV to RGB for second pixel
+                        let (r1, g1, b1) = match mode {
+                            YuvToRgbMode::Bt601Full => yuv_to_rgb_u8_bt601_full(y1, u, v),
+                            YuvToRgbMode::Bt709Full => yuv_to_rgb_u8_bt709_full(y1, u, v),
+                            YuvToRgbMode::Bt601Limited => yuv_to_rgb_u8_bt601_limited(y1, u, v),
+                        };
+
+                        // Write both RGB pixels
+                        rgb_chunk[0] = r0;
+                        rgb_chunk[1] = g0;
+                        rgb_chunk[2] = b0;
+                        rgb_chunk[3] = r1;
+                        rgb_chunk[4] = g1;
+                        rgb_chunk[5] = b1;
+                    }
+                });
+        });
+
+    Ok(())
+}
+
 #[inline]
 fn yuv_to_rgb_u8_bt601_full(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
     // Convert to signed integers and apply offsets
