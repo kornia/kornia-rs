@@ -4,6 +4,7 @@ use rand::Rng;
 
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 
+// TODO: Address double cover issue.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SE3F32 {
     pub r: SO3F32,
