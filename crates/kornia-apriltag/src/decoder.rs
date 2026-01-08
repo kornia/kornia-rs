@@ -139,7 +139,7 @@ impl QuickDecode {
             return Err(AprilTagError::InvalidAllowedErrors(allowed_errors));
         }
 
-        let chunk_size = (nbits + 3) / 4;
+        let chunk_size = nbits.div_ceil(4);
         let capacity = 1 << chunk_size;
         let chunk_mask = capacity - 1;
         let shifts = [0, chunk_size, chunk_size * 2, chunk_size * 3];
@@ -158,9 +158,9 @@ impl QuickDecode {
             }
         }
 
-        for i in 0..4 {
+        for offset in &mut offsets {
             for j in 0..capacity {
-                offsets[i][j + 1] += offsets[i][j];
+                offset[j + 1] += offset[j];
             }
         }
 

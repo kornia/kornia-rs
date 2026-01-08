@@ -48,7 +48,7 @@ pub enum TagFamilyKind {
     TagStandard52H13,
     /// A custom tag family, allowing users to supply a fully defined [`TagFamily`] instance.
     // TODO: Currently, we are cloning TagFamily if it's custom. Look into optimizing this in the future.
-    Custom(TagFamily),
+    Custom(Box<TagFamily>),
 }
 
 impl TagFamilyKind {
@@ -97,7 +97,7 @@ fn to_tag_family_kind_impl(value: &TagFamily) -> TagFamilyKind {
         "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
         "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
         "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
-        _ => TagFamilyKind::Custom(value.clone()),
+        _ => TagFamilyKind::Custom(Box::new(value.clone())),
     }
 }
 
@@ -130,7 +130,7 @@ fn to_tag_family_impl(value: &TagFamilyKind) -> TagFamily {
         TagFamilyKind::TagCustom48H12 => TagFamily::tagcustom48_h12(),
         TagFamilyKind::TagStandard41H12 => TagFamily::tagstandard41_h12(),
         TagFamilyKind::TagStandard52H13 => TagFamily::tagstandard52_h13(),
-        TagFamilyKind::Custom(tag_family) => tag_family.clone(),
+        TagFamilyKind::Custom(tag_family) => *tag_family.clone(),
     }
 }
 
