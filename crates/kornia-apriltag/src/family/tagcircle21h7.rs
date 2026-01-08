@@ -16,8 +16,8 @@ impl TagFamily {
                 -2, -2, -2, 1, 1, 1, 2, 3, 1, 2, 6, 6, 6, 3, 3, 3, 2, 1, 3, 2, 2,
             ],
             code_data: CODE_DATA.into(),
-            quick_decode: QuickDecode::new(21, &CODE_DATA, 3),
-            sharpening_buffer: SharpeningBuffer::new(81),
+            quick_decode: QuickDecode::new(21, &CODE_DATA, 2).unwrap(),
+            sharpening_buffer: SharpeningBuffer::new(100),
         }
     }
 }

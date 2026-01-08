@@ -20,7 +20,7 @@ impl TagFamily {
                 3,
             ],
             code_data: CODE_DATA.into(),
-            quick_decode: QuickDecode::new(52, &CODE_DATA, 3),
+            quick_decode: QuickDecode::new(52, &CODE_DATA, 2).unwrap(),
             sharpening_buffer: SharpeningBuffer::new(100),
         }
     }

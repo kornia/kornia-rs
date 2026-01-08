@@ -1,6 +1,7 @@
 use std::{f32::consts::PI, ops::ControlFlow};
 
 use crate::{
+    errors::AprilTagError,
     family::{TagFamily, TagFamilyKind},
     quad::Quad,
     utils::{
@@ -107,8 +108,11 @@ pub struct QuickDecodeEntry {
 /// A lookup table for fast Hamming distance decoding.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QuickDecode {
-    /// Four lookup tables, one for each chunk position.
-    tables: [Vec<Vec<u16>>; 4],
+    /// Flattened storage for IDs.
+    chunk_ids: [Vec<u16>; 4],
+
+    /// Index lookup table.
+    chunk_offsets: [Vec<u16>; 4],
 
     /// The number of bits to shift right to extract each chunk.
     shifts: [usize; 4],
@@ -117,56 +121,80 @@ pub struct QuickDecode {
     chunk_mask: usize,
 
     /// The maximum allowed Hamming distance.
-    /// This allows us to restrict small families (16h5) to 2 errors,
-    /// while allowing large families to correct up to 3 errors.
-    max_hamming: u8,
+    max_hamming: u32,
 }
 
 impl QuickDecode {
     /// Creates a new QuickDecode table.
-    ///
-    /// # Arguments
-    ///
-    /// * `nbits` - The total number of bits in the tag (e.g., 36 for 36h11).
-    /// * `valid_codes` - The list of valid tag codes (the index is used as the ID).
-    /// * `allowed_errors` - Max bit errors to correct.
-    ///   - **WARNING:** Must be `< 4`. This implementation guarantees finding up to 3 errors.
-    ///   - set allowed_errors as 2 for 16h5 and other smaller families.
-    pub fn new(nbits: usize, valid_codes: &[usize], allowed_errors: u8) -> Self {
-        assert!(
-            allowed_errors < 4,
-            "This 4-chunk implementation can only guarantee up to 3 errors."
-        );
+    pub fn new(
+        nbits: usize,
+        valid_codes: &[usize],
+        allowed_errors: u8,
+    ) -> Result<Self, AprilTagError> {
+        if valid_codes.len() > u16::MAX as usize {
+            return Err(AprilTagError::TooManyCodes(valid_codes.len()));
+        }
+
+        if allowed_errors >= 4 {
+            return Err(AprilTagError::InvalidAllowedErrors(allowed_errors));
+        }
 
         let chunk_size = (nbits + 3) / 4;
         let capacity = 1 << chunk_size;
         let chunk_mask = capacity - 1;
-
-        let mut tables = [
-            vec![Vec::new(); capacity],
-            vec![Vec::new(); capacity],
-            vec![Vec::new(); capacity],
-            vec![Vec::new(); capacity],
-        ];
-
         let shifts = [0, chunk_size, chunk_size * 2, chunk_size * 3];
 
-        for (i, &code) in valid_codes.iter().enumerate() {
-            let id = i as u16;
+        let mut offsets = [
+            vec![0u16; capacity + 1],
+            vec![0u16; capacity + 1],
+            vec![0u16; capacity + 1],
+            vec![0u16; capacity + 1],
+        ];
 
-            for chunk_idx in 0..4 {
-                let shift = shifts[chunk_idx];
-                let val = (code >> shift) & chunk_mask;
-                tables[chunk_idx][val].push(id);
+        for &code in valid_codes {
+            for i in 0..4 {
+                let val = (code >> shifts[i]) & chunk_mask;
+                offsets[i][val + 1] += 1;
             }
         }
 
-        Self {
-            tables,
+        for i in 0..4 {
+            for j in 0..capacity {
+                offsets[i][j + 1] += offsets[i][j];
+            }
+        }
+
+        let mut cursors = [
+            offsets[0].clone(),
+            offsets[1].clone(),
+            offsets[2].clone(),
+            offsets[3].clone(),
+        ];
+
+        let mut ids = [
+            vec![0u16; valid_codes.len()],
+            vec![0u16; valid_codes.len()],
+            vec![0u16; valid_codes.len()],
+            vec![0u16; valid_codes.len()],
+        ];
+
+        for (idx, &code) in valid_codes.iter().enumerate() {
+            let id = idx as u16;
+            for i in 0..4 {
+                let val = (code >> shifts[i]) & chunk_mask;
+                let write_pos = cursors[i][val] as usize;
+                ids[i][write_pos] = id;
+                cursors[i][val] += 1;
+            }
+        }
+
+        Ok(Self {
+            chunk_ids: ids,
+            chunk_offsets: offsets,
             shifts,
             chunk_mask,
-            max_hamming: allowed_errors,
-        }
+            max_hamming: allowed_errors as u32,
+        })
     }
 
     /// Decodes an observed code using the quick decode table.
@@ -180,16 +208,25 @@ impl QuickDecode {
     ///
     /// Returns `Some(QuickDecodeEntry)` if the code is found within `max_hamming`, or `None` otherwise.
     pub fn decode(&self, observed_code: usize, valid_codes: &[usize]) -> Option<QuickDecodeEntry> {
+        // Closure to check Hamming distance
+        let check = |id: u16| -> Option<u8> {
+            let perfect = valid_codes[id as usize];
+            let dist = (observed_code ^ perfect).count_ones();
+            if dist <= self.max_hamming {
+                Some(dist as u8)
+            } else {
+                None
+            }
+        };
+
         for i in 0..4 {
             let val = (observed_code >> self.shifts[i]) & self.chunk_mask;
 
-            if let Some(candidates) = self.tables[i].get(val) {
+            if let Some(&start) = self.chunk_offsets[i].get(val) {
+                let end = self.chunk_offsets[i][val + 1];
+                let candidates = &self.chunk_ids[i][(start as usize)..(end as usize)];
                 for &id in candidates {
-                    let perfect_code = valid_codes[id as usize];
-
-                    let dist = (observed_code ^ perfect_code).count_ones() as u8;
-
-                    if dist <= self.max_hamming {
+                    if let Some(dist) = check(id) {
                         return Some(QuickDecodeEntry {
                             rcode: observed_code,
                             id,
