@@ -149,16 +149,13 @@ fn pyrup_vertical_pass_par<const C: usize>(
 }
 // --- Main Function ---
 
-/// Optimized pyrUp with polyphase implementation.
-///
 /// This function upsamples an image by a factor of 2. It's efficient
 /// by combining upsampling and blurring in a single polyphase operation.
 ///
 /// # Arguments
 ///
 /// * `src` - The source image to be upsampled.
-/// * `dst` - The destination image to store the result. Must have dimensions
-/// twice the width and height of the source image.
+/// * `dst` - The destination image to store the result. Must have dimensions twice the width and height of the source image.
 ///
 /// # Returns
 ///
@@ -188,7 +185,7 @@ fn pyrup_vertical_pass_par<const C: usize>(
 ///     CpuAllocator,
 /// ).unwrap();
 ///
-/// pyrup_new(&image, &mut upsampled).unwrap();
+/// pyrup(&image, &mut upsampled).unwrap();
 /// ```
 pub fn pyrup<const C: usize>(
     src: &Image<f32, C, CpuAllocator>,
