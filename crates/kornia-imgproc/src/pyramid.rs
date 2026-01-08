@@ -134,12 +134,12 @@ pub fn pyrup<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 ///
 /// pyrdown(&image, &mut downsampled).unwrap();
 /// ```
-pub fn pyrdown<const C: usize>(
-    src: &Image<f32, C>,
-    dst: &mut Image<f32, C>,
+pub fn pyrdown<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, C, A1>,
+    dst: &mut Image<f32, C, A2>,
 ) -> Result<(), ImageError> {
-    let expected_width = (src.width() + 1) / 2;
-    let expected_height = (src.height() + 1) / 2;
+    let expected_width = src.width().div_ceil(2);
+    let expected_height = src.height().div_ceil(2);
 
     if dst.width() != expected_width || dst.height() != expected_height {
         return Err(ImageError::InvalidImageSize(
@@ -151,7 +151,7 @@ pub fn pyrdown<const C: usize>(
     }
 
     // First apply Gaussian blur
-    let mut blurred = Image::<f32, C>::from_size_val(src.size(), 0.0)?;
+    let mut blurred = Image::<f32, C, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
     let (kernel_x, kernel_y) = get_pyramid_gaussian_kernel();
     separable_filter(src, &mut blurred, &kernel_x, &kernel_y)?;
 
@@ -200,25 +200,25 @@ mod tests {
 
     #[test]
     fn test_pyrdown() -> Result<(), ImageError> {
-        let src = Image::<f32, 1>::new(
+        let src = Image::<f32, 1, _>::new(
             ImageSize {
                 width: 4,
                 height: 4,
             },
             vec![
-                0.0, 1.0, 2.0, 3.0,
-                4.0, 5.0, 6.0, 7.0,
-                8.0, 9.0, 10.0, 11.0,
-                12.0, 13.0, 14.0, 15.0,
+                0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
+                15.0,
             ],
+            CpuAllocator,
         )?;
 
-        let mut dst = Image::<f32, 1>::from_size_val(
+        let mut dst = Image::<f32, 1, _>::from_size_val(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             0.0,
+            CpuAllocator,
         )?;
 
         pyrdown(&src, &mut dst)?;
@@ -235,20 +235,22 @@ mod tests {
 
     #[test]
     fn test_pyrdown_3c() -> Result<(), ImageError> {
-        let src = Image::<f32, 3>::new(
+        let src = Image::<f32, 3, _>::new(
             ImageSize {
                 width: 4,
                 height: 4,
             },
             (0..48).map(|x| x as f32).collect(),
+            CpuAllocator,
         )?;
 
-        let mut dst = Image::<f32, 3>::from_size_val(
+        let mut dst = Image::<f32, 3, _>::from_size_val(
             ImageSize {
                 width: 2,
                 height: 2,
             },
             0.0,
+            CpuAllocator,
         )?;
 
         pyrdown(&src, &mut dst)?;
@@ -265,20 +267,22 @@ mod tests {
 
     #[test]
     fn test_pyrdown_invalid_size() -> Result<(), ImageError> {
-        let src = Image::<f32, 1>::new(
+        let src = Image::<f32, 1, _>::new(
             ImageSize {
                 width: 4,
                 height: 4,
             },
             vec![0.0; 16],
+            CpuAllocator,
         )?;
 
-        let mut dst = Image::<f32, 1>::from_size_val(
+        let mut dst = Image::<f32, 1, _>::from_size_val(
             ImageSize {
                 width: 3,
                 height: 3,
             },
             0.0,
+            CpuAllocator,
         )?;
 
         let result = pyrdown(&src, &mut dst);
