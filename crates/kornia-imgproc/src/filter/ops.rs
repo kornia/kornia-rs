@@ -16,11 +16,14 @@ use super::{fast_horizontal_filter, kernels, separable_filter};
 /// * `kernel_size` - The size of the kernel (kernel_x, kernel_y).
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
-pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<f32, C, A1>,
-    dst: &mut Image<f32, C, A2>,
+pub fn box_blur<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, C, A1>,
+    dst: &mut Image<T, C, A2>,
     kernel_size: (usize, usize),
-) -> Result<(), ImageError> {
+) -> Result<(), ImageError>
+where
+    T: super::separable_filter::FloatConversion + Clone + num_traits::Zero,
+{
     let kernel_x = kernels::box_blur_kernel_1d(kernel_size.0);
     let kernel_y = kernels::box_blur_kernel_1d(kernel_size.1);
     separable_filter(src, dst, &kernel_x, &kernel_y)?;
@@ -44,12 +47,15 @@ pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 ///
 /// PRECONDITION: `src` and `dst` must have the same shape.
 /// NOTE: This function uses a constant border type.
-pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
-    src: &Image<f32, C, A1>,
-    dst: &mut Image<f32, C, A2>,
+pub fn gaussian_blur<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, C, A1>,
+    dst: &mut Image<T, C, A2>,
     kernel_size: (usize, usize),
     sigma: (f32, f32),
-) -> Result<(), ImageError> {
+) -> Result<(), ImageError>
+where
+    T: super::separable_filter::FloatConversion + Clone + num_traits::Zero,
+{
     let (mut kernel_x, mut kernel_y) = kernel_size;
     let (mut sigma_x, mut sigma_y) = sigma;
 
@@ -582,6 +588,31 @@ mod tests {
                 "{fn_name} dy channel(1)",
             );
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_gaussian_blur_u8() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 5,
+            height: 5,
+        };
+
+        let img = Image::new(
+            size,
+            (0..25).map(|x| (x * 10) as u8).collect(),
+            CpuAllocator,
+        )?;
+
+        let mut dst = Image::<_, 1, _>::from_size_val(size, 0u8, CpuAllocator)?;
+
+        gaussian_blur(&img, &mut dst, (3, 3), (0.5, 0.5))?;
+
+        // Verify that the output is properly clamped and computed
+        // The center pixel should be blurred with its neighbors
+        assert!(dst.as_slice()[12] > 0); // Center should have some value
+        assert!(dst.as_slice()[12] < 255); // Should be clamped
 
         Ok(())
     }
