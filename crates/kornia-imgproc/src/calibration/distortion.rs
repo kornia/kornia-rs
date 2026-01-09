@@ -167,60 +167,6 @@ impl Default for TermCriteria {
     }
 }
 
-/// Applies **Brown-Conrady polynomial distortion** to a point in
-/// **normalized camera coordinates**.
-///
-/// This function performs **forward distortion**, mapping an **undistorted**
-/// normalized point `(x, y)` to its **distorted normalized** location using
-/// the Brown-Conrady model.
-///
-/// # Arguments
-///
-/// * `x`, `y` - Undistorted **normalized** image coordinates.
-/// * `distortion` - Brown-Conrady distortion parameters:
-///   - Radial: `k1..k6`
-///   - Tangential: `p1`, `p2`
-///
-/// # Returns
-///
-/// Returns `(x_d, y_d)` - **distorted normalized coordinates**.
-///
-/// These can be projected into pixel space via:
-/// ```text
-/// u = fx * x_d + cx
-/// v = fy * y_d + cy
-/// ```
-///
-/// # Notes
-///
-/// - Supported distortion components:
-///   - Radial (`k1..k6`)
-///   - Tangential (`p1`, `p2`)
-/// - **Prism distortion is not supported.**
-/// - This function operates purely in **normalized space**.
-///   No intrinsic or extrinsic matrices are applied here.
-pub fn brown_conrady_distort_normalized(
-    x: f64,
-    y: f64,
-    distortion: &PolynomialDistortion,
-) -> (f64, f64) {
-    let r2 = x * x + y * y;
-    let r4 = r2 * r2;
-    let r6 = r4 * r2;
-
-    let c = 1.0 + distortion.k1 * r2 + distortion.k2 * r4 + distortion.k3 * r6;
-    let inv = 1.0 / (1.0 + distortion.k4 * r2 + distortion.k5 * r4 + distortion.k6 * r6);
-
-    let a1 = 2.0 * x * y;
-    let a2 = r2 + 2.0 * x * x;
-    let a3 = r2 + 2.0 * y * y;
-
-    let xd = x * c * inv + distortion.p1 * a1 + distortion.p2 * a2;
-    let yd = y * c * inv + distortion.p1 * a3 + distortion.p2 * a1;
-
-    (xd, yd)
-}
-
 /// Result of iterative undistortion for a **single normalized point**.
 #[derive(Debug, Clone, Copy)]
 pub struct UndistortIterResult {
@@ -348,8 +294,20 @@ pub fn undistort_normalized_point_iter(
         // compute reprojection error (if eps used)
         let mut error2 = 0.0;
         if criteria.eps > 0.0 {
-            // forward-distort using Brown-Conrady model
-            let (xd0, yd0) = brown_conrady_distort_normalized(new_x, new_y, distortion);
+            // forward-distort new_x/new_y then project back to pixel coords to compute error
+            let r2n = new_x * new_x + new_y * new_y;
+            let r4n = r2n * r2n;
+            let r6n = r4n * r2n;
+
+            let cdist = 1.0 + k1 * r2n + k2 * r4n + k3 * r6n;
+            let invcdist2 = 1.0 / (1.0 + k4 * r2n + k5 * r4n + k6 * r6n);
+
+            let a1 = 2.0 * new_x * new_y;
+            let a2 = r2n + 2.0 * new_x * new_x;
+            let a3 = r2n + 2.0 * new_y * new_y;
+
+            let xd0 = new_x * cdist * invcdist2 + p1 * a1 + p2 * a2;
+            let yd0 = new_y * cdist * invcdist2 + p1 * a3 + p2 * a1;
 
             let dx = xd0 * fx + cx - u;
             let dy = yd0 * fy + cy - v;
@@ -791,22 +749,26 @@ mod tests {
             eps: 1e-7,
         };
 
-        let pts = [(0.0, 0.0), (0.15, -0.1)];
+        let pts = [
+            (intr.cx, intr.cy),
+            (intr.cx + 0.15 * intr.fx, intr.cy - 0.1 * intr.fy),
+        ];
 
         for &(x, y) in &pts {
-            let (xd, yd) = brown_conrady_distort_normalized(x, y, &dist);
-            let u = xd * intr.fx + intr.cx;
-            let v = yd * intr.fy + intr.cy;
+            let (u, v) = distort_point_polynomial(x, y, &intr, &dist);
 
-            let x0 = (u - intr.cx) / intr.fx;
-            let y0 = (v - intr.cy) / intr.fy;
+            let src =
+                Tensor::<f64, 2, _>::from_shape_vec([1, 2], vec![u, v], CpuAllocator).unwrap();
+            let mut dst = Tensor::<f64, 2, _>::from_shape_val([1, 2], 0.0, CpuAllocator);
 
-            let res = undistort_normalized_point_iter(x0, y0, u, v, &intr, &dist, c);
+            undistort_points(&src, &mut dst, &intr, &dist, None, None, None, c).unwrap();
 
-            assert!(res.converged);
-            assert!(res.iterations <= c.max_iter);
-            assert!((res.x - x).abs() <= 1e-5);
-            assert!((res.y - y).abs() <= 1e-5);
+            let dst_slice = dst.as_slice();
+            let x_undist = dst_slice[0] * intr.fx + intr.cx;
+            let y_undist = dst_slice[1] * intr.fy + intr.cy;
+
+            assert!((x_undist - x).abs() <= 1e-5);
+            assert!((y_undist - y).abs() <= 1e-5);
         }
     }
 
@@ -819,23 +781,26 @@ mod tests {
             eps: 1e-7,
         };
 
-        let pts = [(0.0, 0.0), (0.08, -0.05)];
+        let pts = [
+            (intr.cx, intr.cy),
+            (intr.cx + 0.15 * intr.fx, intr.cy - 0.1 * intr.fy),
+        ];
 
         for &(x, y) in &pts {
-            let (xd, yd) = brown_conrady_distort_normalized(x, y, &dist);
-            let u = xd * intr.fx + intr.cx;
-            let v = yd * intr.fy + intr.cy;
+            let (u, v) = distort_point_polynomial(x, y, &intr, &dist);
 
-            let x0 = (u - intr.cx) / intr.fx;
-            let y0 = (v - intr.cy) / intr.fy;
+            let src =
+                Tensor::<f64, 2, _>::from_shape_vec([1, 2], vec![u, v], CpuAllocator).unwrap();
+            let mut dst = Tensor::<f64, 2, _>::from_shape_val([1, 2], 0.0, CpuAllocator);
 
-            let res = undistort_normalized_point_iter(x0, y0, u, v, &intr, &dist, c);
+            undistort_points(&src, &mut dst, &intr, &dist, None, None, None, c).unwrap();
 
-            // strong distortion may converge slower, but should still converge
-            assert!(res.converged);
-            assert!(res.iterations <= c.max_iter);
-            assert!((res.x - x).abs() <= 1e-4);
-            assert!((res.y - y).abs() <= 1e-4);
+            let dst_slice = dst.as_slice();
+            let x_undist = dst_slice[0] * intr.fx + intr.cx;
+            let y_undist = dst_slice[1] * intr.fy + intr.cy;
+
+            assert!((x_undist - x).abs() <= 1e-5);
+            assert!((y_undist - y).abs() <= 1e-5);
         }
     }
 
@@ -845,11 +810,10 @@ mod tests {
         let dist = realistic_distortion();
         let c = TermCriteria::default();
 
-        let (x, y) = (0.12, -0.07);
+        let x = intr.cx + 0.12 * intr.fx;
+        let y = intr.cy - 0.07 * intr.fy;
 
-        let (xd, yd) = brown_conrady_distort_normalized(x, y, &dist);
-        let u = xd * intr.fx + intr.cx;
-        let v = yd * intr.fy + intr.cy;
+        let (u, v) = distort_point_polynomial(x, y, &intr, &dist);
 
         let src = Tensor::<f64, 2, _>::from_shape_vec([1, 2], vec![u, v], CpuAllocator).unwrap();
         let mut dst =
@@ -891,12 +855,10 @@ mod tests {
         let dist = realistic_distortion();
         let criteria = TermCriteria::default();
 
-        // original points
-        let (x, y) = (0.12, -0.07);
+        let x = intr.cx + 0.12 * intr.fx;
+        let y = intr.cy - 0.07 * intr.fy;
 
-        let (xd, yd) = brown_conrady_distort_normalized(x, y, &dist);
-        let u = xd * intr.fx + intr.cx;
-        let v = yd * intr.fy + intr.cy;
+        let (u, v) = distort_point_polynomial(x, y, &intr, &dist);
 
         let src = Tensor::<f64, 2, _>::from_shape_vec([1, 2], vec![u, v], CpuAllocator).unwrap();
 
