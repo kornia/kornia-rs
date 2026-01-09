@@ -1,8 +1,6 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use kornia_imgproc::calibration::{
-    distortion::{
-        distort_point_polynomial, undistort_points, PolynomialDistortion, TermCriteria,
-    },
+    distortion::{distort_point_polynomial, undistort_points, PolynomialDistortion, TermCriteria},
     CameraIntrinsic,
 };
 use kornia_tensor::{CpuAllocator, Tensor};
