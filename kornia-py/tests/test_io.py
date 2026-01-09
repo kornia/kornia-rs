@@ -52,7 +52,7 @@ def _test_write_read_impl(
 def test_read_image_jpeg():
     # load an image with libjpeg-turbo
     img_path: Path = DATA_DIR / "dog.jpeg"
-    img: np.ndarray = K.read_image_jpeg(str(img_path.absolute()), "rgb")
+    img: np.ndarray = K.io.read_image_jpeg(str(img_path.absolute()), "rgb")
 
     # check the image properties
     assert img.shape == (195, 258, 3)
@@ -67,7 +67,7 @@ def test_decode_image_jpeg():
     img_path: Path = DATA_DIR / "dog.jpeg"
     with open(img_path, "rb") as f:
         img_data = f.read()
-    img: np.ndarray = K.decode_image_jpeg(bytes(img_data))
+    img: np.ndarray = K.io.decode_image_jpeg(bytes(img_data))
 
     # check the image properties
     assert img.shape == (195, 258, 3)
@@ -81,7 +81,7 @@ def test_decode_image_jpegturbo():
     img_path: Path = DATA_DIR / "dog.jpeg"
     with open(img_path, "rb") as f:
         img_data = f.read()
-    img: np.ndarray = K.decode_image_jpegturbo(bytes(img_data), "rgb")
+    img: np.ndarray = K.io.decode_image_jpegturbo(bytes(img_data), "rgb")
 
     # check the image properties
     assert img.shape == (195, 258, 3)
@@ -95,7 +95,7 @@ def test_decode_image_png_u8():
     img_path: Path = DATA_DIR / "dog.png"
     with open(img_path, "rb") as f:
         img_data = f.read()
-    img: np.ndarray = K.decode_image_png_u8(bytes(img_data), (195, 258), "rgb")
+    img: np.ndarray = K.io.decode_image_png_u8(bytes(img_data), (195, 258), "rgb")
 
     # check the image properties
     assert img.shape == (195, 258, 3)
@@ -110,8 +110,7 @@ def test_decode_image_png_u16():
     with open(img_path, "rb") as f:
         img_data = f.read()
     # img_size: np.ndarray = np.array([32, 32])
-    img: np.ndarray = K.decode_image_png_u16(bytes(img_data), (32, 32), "rgb")
-
+    img: np.ndarray = K.io.decode_image_png_u16(bytes(img_data), (32, 32), "rgb")
     # check the image properties
     assert img.shape == (32, 32, 3)
     assert img.dtype == np.uint16
@@ -120,23 +119,11 @@ def test_decode_image_png_u16():
     assert img_t.shape == (32, 32, 3)
 
 
-def test_read_image_any():
-    # load an image with image-rs
-    img_path: Path = DATA_DIR / "dog.jpeg"
-    img: np.ndarray = K.read_image(str(img_path.absolute()))
-
-    # check the image properties
-    assert img.shape == (195, 258, 3)
-    assert img.dtype == np.uint8
-    img_t = torch.from_numpy(img)
-    assert img_t.shape == (195, 258, 3)
-
-
 def test_read_image_png_grayscale():
     """Test reading grayscale PNG image"""
     png_path: Path = DATA_DIR / "dog.png"
     if png_path.exists():
-        img_png: np.ndarray = K.read_image(str(png_path.absolute()))
+        img_png: np.ndarray = K.io.read_image(str(png_path.absolute()))
         assert img_png.dtype == np.uint8
         assert len(img_png.shape) == 3
         assert img_png.shape[2] == 1
@@ -147,7 +134,7 @@ def test_read_image_png_rgb():
     """Test reading RGB PNG image"""
     png_path: Path = DATA_DIR / "dog-rgb8.png"
     if png_path.exists():
-        img_png: np.ndarray = K.read_image(str(png_path.absolute()))
+        img_png: np.ndarray = K.io.read_image(str(png_path.absolute()))
         assert img_png.dtype == np.uint8
         assert len(img_png.shape) == 3
         assert img_png.shape[2] == 3
@@ -158,32 +145,32 @@ def test_read_image():
     """Test the new read_image function with auto-detection"""
     # Test JPEG
     jpeg_path: Path = DATA_DIR / "dog.jpeg"
-    img_jpeg: np.ndarray = K.read_image(str(jpeg_path.absolute()))
+    img_jpeg: np.ndarray = K.io.read_image(str(jpeg_path.absolute()))
     assert img_jpeg.shape == (195, 258, 3)
     assert img_jpeg.dtype == np.uint8
 
     # Test PNG uint16 if available
     png16_path: Path = DATA_DIR / "rgb16.png"
     if png16_path.exists():
-        img_png16: np.ndarray = K.read_image(str(png16_path.absolute()))
+        img_png16: np.ndarray = K.io.read_image(str(png16_path.absolute()))
         assert img_png16.dtype == np.uint16
         assert img_png16.shape == (32, 32, 3)
         # Test reading an 8-bit rgb tiff
     tiff8_path: Path = DATA_DIR / "dog.tiff"
     if tiff8_path.exists():
-        img_tiff8: np.ndarray = K.read_image(str(tiff8_path.absolute()))
+        img_tiff8: np.ndarray = K.io.read_image(str(tiff8_path.absolute()))
         assert img_tiff8.dtype == np.uint8
         assert img_tiff8.shape == (195, 258, 3)
         # Test reading an 16-bit rgb tiff
     tiff16_path: Path = DATA_DIR / "rgb16.tiff"
     if tiff16_path.exists():
-        img_tiff16: np.ndarray = K.read_image(str(tiff16_path.absolute()))
+        img_tiff16: np.ndarray = K.io.read_image(str(tiff16_path.absolute()))
         assert img_tiff16.dtype == np.uint16
         assert img_tiff16.shape == (32, 32, 3)
         # Test reading an 32-bit float rgb tiff
     tiff32_path: Path = DATA_DIR / "rgb32.tiff"
     if tiff32_path.exists():
-        img_tiff32: np.ndarray = K.read_image(str(tiff32_path.absolute()))
+        img_tiff32: np.ndarray = K.io.read_image(str(tiff32_path.absolute()))
         assert img_tiff32.dtype == np.float32
         assert img_tiff32.shape == (32, 32, 3)
 
@@ -191,13 +178,13 @@ def test_read_image():
 def test_decompress():
     # load an image with libjpeg-turbo
     img_path: Path = DATA_DIR / "dog.jpeg"
-    img: np.ndarray = K.read_image_jpeg(str(img_path), "rgb")
+    img: np.ndarray = K.io.read_image(str(img_path))
 
-    image_encoder = K.ImageEncoder()
+    image_encoder = K.io.ImageEncoder()
     image_encoded: list[int] = image_encoder.encode(img)
 
-    image_decoder = K.ImageDecoder()
-    image_size: K.ImageSize = image_decoder.read_header(bytes(image_encoded))
+    image_decoder = K.io.ImageDecoder()
+    image_size: K.image.ImageSize = image_decoder.read_header(bytes(image_encoded))
     assert image_size.width == 258
     assert image_size.height == 195
 
@@ -217,13 +204,13 @@ def test_compress_decompress():
     )
     img = np.repeat(img[..., None], 3, axis=-1)
 
-    image_encoder = K.ImageEncoder()
+    image_encoder = K.io.ImageEncoder()
     image_encoder.set_quality(100)
 
     image_encoded: list = image_encoder.encode(img)
 
-    image_decoder = K.ImageDecoder()
-    image_size: K.ImageSize = image_decoder.read_header(bytes(image_encoded))
+    image_decoder = K.io.ImageDecoder()
+    image_size: K.image.ImageSize = image_decoder.read_header(bytes(image_encoded))
     assert image_size.width == 5
     assert image_size.height == 4
 
@@ -238,8 +225,8 @@ def test_write_read_jpeg_rgb8():
         dtype=np.uint8,
         channels=3,
         file_name="test_write_read_jpeg.jpg",
-        fcn_write=K.write_image_jpeg,
-        fcn_read=K.read_image_jpeg,
+        fcn_write=K.io.write_image_jpeg,
+        fcn_read=K.io.read_image_jpeg,
         mode="rgb",
         quality=100,
     )
@@ -250,8 +237,8 @@ def test_write_read_jpeg_mono8():
         dtype=np.uint8,
         channels=1,
         file_name="test_write_read_jpeg.jpg",
-        fcn_write=K.write_image_jpeg,
-        fcn_read=K.read_image_jpeg,
+        fcn_write=K.io.write_image_jpeg,
+        fcn_read=K.io.read_image_jpeg,
         mode="mono",
         quality=100,
     )
@@ -260,10 +247,10 @@ def test_write_read_jpeg_mono8():
 def test_encode_image_jpeg():
     # Load test image
     img_path: Path = DATA_DIR / "dog.jpeg"
-    img: np.ndarray = K.read_image_jpeg(str(img_path.absolute()), "rgb")
+    img: np.ndarray = K.io.read_image_jpeg(str(img_path.absolute()), "rgb")
 
     # Encode to JPEG bytes
-    jpeg_bytes: bytes = K.encode_image_jpeg(img, quality=95)
+    jpeg_bytes: bytes = K.io.encode_image_jpeg(img, quality=95)
 
     # Verify it's valid JPEG (magic bytes 0xFF 0xD8)
     assert len(jpeg_bytes) > 2
@@ -275,7 +262,7 @@ def test_encode_image_jpeg():
     assert jpeg_bytes[-1] == 0xD9
 
     # Verify we can decode it back
-    decoded_img: np.ndarray = K.decode_image_jpeg(jpeg_bytes)
+    decoded_img: np.ndarray = K.io.decode_image_jpeg(jpeg_bytes)
     assert decoded_img.shape == (195, 258, 3)
     assert decoded_img.dtype == np.uint8
 
@@ -285,8 +272,8 @@ def test_write_read_jpegturbo():
         dtype=np.uint8,
         channels=3,
         file_name="test_write_read_jpegturbo.jpg",
-        fcn_write=K.write_image_jpegturbo,
-        fcn_read=K.read_image_jpegturbo,
+        fcn_write=K.io.write_image_jpegturbo,
+        fcn_read=K.io.read_image_jpegturbo,
         quality=100,
     )
 
@@ -297,8 +284,8 @@ def test_write_read_tiff_rgb8():
         channels=3,
         mode="rgb",
         file_name="test_write_read_tiff.tiff",
-        fcn_write=K.write_image_tiff_u8,
-        fcn_read=K.read_image_tiff_u8,
+        fcn_write=K.io.write_image_tiff_u8,
+        fcn_read=K.io.read_image_tiff_u8,
     )
 
 
@@ -308,8 +295,8 @@ def test_write_read_tiff_mono8():
         channels=1,
         mode="mono",
         file_name="test_write_read_tiff.tiff",
-        fcn_write=K.write_image_tiff_u8,
-        fcn_read=K.read_image_tiff_u8,
+        fcn_write=K.io.write_image_tiff_u8,
+        fcn_read=K.io.read_image_tiff_u8,
     )
 
 
@@ -319,8 +306,8 @@ def test_write_read_tiff_rgb16():
         channels=3,
         mode="rgb",
         file_name="test_write_read_tiff.tiff",
-        fcn_write=K.write_image_tiff_u16,
-        fcn_read=K.read_image_tiff_u16,
+        fcn_write=K.io.write_image_tiff_u16,
+        fcn_read=K.io.read_image_tiff_u16,
     )
 
 
@@ -330,8 +317,8 @@ def test_write_read_tiff_mono16():
         channels=1,
         mode="mono",
         file_name="test_write_read_tiff.tiff",
-        fcn_write=K.write_image_tiff_u16,
-        fcn_read=K.read_image_tiff_u16,
+        fcn_write=K.io.write_image_tiff_u16,
+        fcn_read=K.io.read_image_tiff_u16,
     )
 
 
@@ -341,8 +328,8 @@ def test_write_read_tiff_rgbf32():
         channels=3,
         mode="rgb",
         file_name="test_write_read_tiff.tiff",
-        fcn_write=K.write_image_tiff_f32,
-        fcn_read=K.read_image_tiff_f32,
+        fcn_write=K.io.write_image_tiff_f32,
+        fcn_read=K.io.read_image_tiff_f32,
     )
 
 
@@ -352,8 +339,8 @@ def test_write_read_tiff_monof32():
         channels=1,
         mode="mono",
         file_name="test_write_read_tiff.tiff",
-        fcn_write=K.write_image_tiff_f32,
-        fcn_read=K.read_image_tiff_f32,
+        fcn_write=K.io.write_image_tiff_f32,
+        fcn_read=K.io.read_image_tiff_f32,
     )
 
 
@@ -363,8 +350,8 @@ def test_write_read_png_rgb8():
         channels=3,
         mode="rgb",
         file_name="test_write_read_png.png",
-        fcn_write=K.write_image_png_u8,
-        fcn_read=K.read_image_png_u8,
+        fcn_write=K.io.write_image_png_u8,
+        fcn_read=K.io.read_image_png_u8,
     )
 
 
@@ -374,8 +361,8 @@ def test_write_read_png_rgba8():
         channels=4,
         mode="rgba",
         file_name="test_write_read_png.png",
-        fcn_write=K.write_image_png_u8,
-        fcn_read=K.read_image_png_u8,
+        fcn_write=K.io.write_image_png_u8,
+        fcn_read=K.io.read_image_png_u8,
     )
 
 
@@ -385,8 +372,8 @@ def test_write_read_png_mono8():
         channels=1,
         mode="mono",
         file_name="test_write_read_png.png",
-        fcn_write=K.write_image_png_u8,
-        fcn_read=K.read_image_png_u8,
+        fcn_write=K.io.write_image_png_u8,
+        fcn_read=K.io.read_image_png_u8,
     )
 
 
@@ -396,8 +383,8 @@ def test_write_read_png_mono16():
         channels=1,
         mode="mono",
         file_name="test_write_read_png.png",
-        fcn_write=K.write_image_png_u16,
-        fcn_read=K.read_image_png_u16,
+        fcn_write=K.io.write_image_png_u16,
+        fcn_read=K.io.read_image_png_u16,
     )
 
 
@@ -407,8 +394,8 @@ def test_write_read_png_rgb16():
         channels=3,
         mode="rgb",
         file_name="test_write_read_png.png",
-        fcn_write=K.write_image_png_u16,
-        fcn_read=K.read_image_png_u16,
+        fcn_write=K.io.write_image_png_u16,
+        fcn_read=K.io.read_image_png_u16,
     )
 
 
@@ -418,6 +405,6 @@ def test_write_read_png_rgba16():
         channels=4,
         mode="rgba",
         file_name="test_write_read_png.png",
-        fcn_write=K.write_image_png_u16,
-        fcn_read=K.read_image_png_u16,
+        fcn_write=K.io.write_image_png_u16,
+        fcn_read=K.io.read_image_png_u16,
     )
