@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use kornia_imgproc::calibration::{
     distortion::{
-        brown_conrady_distort_normalized, undistort_points, PolynomialDistortion, TermCriteria,
+        distort_point_polynomial, undistort_points, PolynomialDistortion, TermCriteria,
     },
     CameraIntrinsic,
 };
@@ -12,10 +12,14 @@ use std::hint::black_box;
 #[cfg(feature = "opencv_bench")]
 use opencv::{calib3d, core::Mat, prelude::*};
 
-fn gen_normalized_points(n: usize) -> Vec<(f64, f64)> {
+fn gen_pixel_points(n: usize, width: f64, height: f64) -> Vec<(f64, f64)> {
     let mut rng = rand::rng();
     (0..n)
-        .map(|_| (rng.random_range(-0.4..0.4), rng.random_range(-0.3..0.3)))
+        .map(|_| {
+            let x = rng.random_range(0.0..width);
+            let y = rng.random_range(0.0..height);
+            (x, y)
+        })
         .collect()
 }
 
@@ -27,11 +31,7 @@ fn distort_and_project(
     let mut data = Vec::with_capacity(pts.len() * 2);
 
     for &(x, y) in pts {
-        let (xd, yd) = brown_conrady_distort_normalized(x, y, dist);
-
-        let u = xd * intr.fx + intr.cx;
-        let v = yd * intr.fy + intr.cy;
-
+        let (u, v) = distort_point_polynomial(x, y, intr, dist);
         data.push(u);
         data.push(v);
     }
@@ -63,9 +63,9 @@ fn bench_rust(c: &mut Criterion) {
         eps: 1e-9,
     };
 
-    let pts = gen_normalized_points(10_000);
+    let pts = gen_pixel_points(10000, 640.0, 480.0);
     let src = distort_and_project(&pts, &intr, &dist);
-    let mut dst = Tensor::<f64, 2, _>::zeros([10_000, 2], CpuAllocator);
+    let mut dst = Tensor::<f64, 2, _>::zeros([10000, 2], CpuAllocator);
 
     c.bench_function("undistort_rust", |b| {
         b.iter(|| {
@@ -91,7 +91,7 @@ fn bench_opencv(c: &mut Criterion) {
 
     let dist = Mat::from_slice(&[-0.2, 0.05, 0.001, -0.001, 0.0, 0.0, 0.0, 0.0]).unwrap();
 
-    let pts = gen_normalized_points(10_000);
+    let pts = gen_pixel_points(10000, 640.0, 480.0);
     let intr_rust = CameraIntrinsic {
         fx: 800.0,
         fy: 800.0,
