@@ -3,7 +3,7 @@ An example showing how to use `undistort_points` function provided by `kornia-im
 NOTE: Build release version first
 ```bash
 cargo build --release
-``` 
+```
 
 ```bash
 Usage: cargo run --release -- -i <IMAGE_PATH>
@@ -14,4 +14,4 @@ Options:
 ```
 
 Output:
-This example will display the webcam feed in a [`rerun`](https://github.com/rerun-io/rerun) window.
+This example will display the distorted and undistorted image in a [`rerun`](https://github.com/rerun-io/rerun) window.
