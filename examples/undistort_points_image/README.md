@@ -15,3 +15,4 @@ Options:
 
 Output:
 This example will display the distorted and undistorted image in a [`rerun`](https://github.com/rerun-io/rerun) window.
+![](https://github.com/user-attachments/assets/8b989eb8-746e-4693-b6d5-42f4ff37f7fc)
