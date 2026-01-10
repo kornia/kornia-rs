@@ -15,7 +15,7 @@ fn bench_tagfamily(c: &mut Criterion) {
         let mut group = c.benchmark_group("Tag16H5");
         group.bench_function("kornia-apriltag", |b| {
             b.iter(|| {
-                let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag16H5]);
+                let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag16H5]).unwrap();
                 std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
             });
         });
@@ -35,7 +35,7 @@ fn bench_tagfamily(c: &mut Criterion) {
         let mut group = c.benchmark_group("Tag36H11");
         group.bench_function("kornia-apriltag", |b| {
             b.iter(|| {
-                let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]);
+                let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]).unwrap();
                 std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
             });
         });
@@ -57,7 +57,7 @@ fn bench_tagfamily(c: &mut Criterion) {
         let mut group = c.benchmark_group("Tag25H9");
         group.bench_function("kornia-apriltag", |b| {
             b.iter(|| {
-                let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag25H9]);
+                let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag25H9]).unwrap();
                 std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
             });
         });
@@ -77,7 +77,7 @@ fn bench_tagfamily(c: &mut Criterion) {
         let mut group = c.benchmark_group("TagCircle21H7");
         group.bench_function("kornia-apriltag", |b| {
             b.iter(|| {
-                let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCircle21H7]);
+                let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCircle21H7]).unwrap();
                 std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
             });
         });
@@ -97,7 +97,7 @@ fn bench_tagfamily(c: &mut Criterion) {
         let mut group = c.benchmark_group("TagCircle49H12");
         group.bench_function("kornia-apriltag", |b| {
             b.iter(|| {
-                let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCircle49H12]);
+                let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCircle49H12]).unwrap();
                 std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
             });
         });
@@ -117,7 +117,7 @@ fn bench_tagfamily(c: &mut Criterion) {
         let mut group = c.benchmark_group("TagCustom48H12");
         group.bench_function("kornia-apriltag", |b| {
             b.iter(|| {
-                let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCustom48H12]);
+                let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCustom48H12]).unwrap();
                 std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
             });
         });
@@ -137,7 +137,7 @@ fn bench_tagfamily(c: &mut Criterion) {
         let mut group = c.benchmark_group("TagStandard41H12");
         group.bench_function("kornia-apriltag", |b| {
             b.iter(|| {
-                let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard41H12]);
+                let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard41H12]).unwrap();
                 std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
             });
         });
@@ -157,7 +157,7 @@ fn bench_tagfamily(c: &mut Criterion) {
         let mut group = c.benchmark_group("TagStandard52H13");
         group.bench_function("kornia-apriltag", |b| {
             b.iter(|| {
-                let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard52H13]);
+                let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard52H13]).unwrap();
                 std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
             });
         });

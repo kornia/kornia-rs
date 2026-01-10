@@ -27,7 +27,9 @@ impl PyDecodeTagsConfig {
                 tag_families.push(family);
             }
 
-            Ok(Self(DecodeTagsConfig::new(tag_families)))
+            Ok(Self(DecodeTagsConfig::new(tag_families).map_err(|e| {
+                PyErr::new::<PyException, _>(e.to_string())
+            })?))
         })
     }
 
@@ -35,7 +37,7 @@ impl PyDecodeTagsConfig {
         Python::attach(|py| {
             let py_family = family.borrow(py).into_tag_family_kind()?;
             let inner = match py_family.0 {
-                TagFamilyKind::Custom(inner) => inner,
+                TagFamilyKind::Custom(inner) => *inner,
                 // The into_tag_family_kind always wraps every TagFamily into TagFamilyKind::Custom
                 _ => unreachable!(),
             };
@@ -140,8 +142,10 @@ impl PyDecodeTagsConfig {
     }
 
     #[staticmethod]
-    pub fn all() -> Self {
-        Self(DecodeTagsConfig::all())
+    pub fn all() -> PyResult<Self> {
+        Ok(Self(DecodeTagsConfig::all().map_err(|e| {
+            PyErr::new::<PyException, _>(e.to_string())
+        })?))
     }
 }
 
@@ -375,7 +379,7 @@ pub mod family {
                     sharpening_buffer: sharpening_buffer.0,
                 };
 
-                let kind = TagFamilyKind::Custom(tag_family);
+                let kind = TagFamilyKind::Custom(Box::new(tag_family));
                 Ok(PyTagFamilyKind(kind))
             })
         }
@@ -388,8 +392,10 @@ pub mod family {
     #[pymethods]
     impl PyQuickDecode {
         #[new]
-        pub fn new(nbits: usize, code_data: Vec<usize>) -> Self {
-            Self(QuickDecode::new(nbits, &code_data))
+        pub fn new(nbits: usize, code_data: Vec<usize>) -> PyResult<Self> {
+            Ok(Self(QuickDecode::new(nbits, &code_data, 2).map_err(
+                |e| PyErr::new::<PyException, _>(e.to_string()),
+            )?))
         }
     }
 

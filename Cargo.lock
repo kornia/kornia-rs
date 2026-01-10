@@ -414,21 +414,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aprilgrid"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8df9c681cce0390b1a3c285d04bc5fc64d92efe59af52a36f85a77d798cb5b97"
-dependencies = [
- "faer 0.22.6",
- "glam",
- "image 0.25.9",
- "imageproc",
- "itertools 0.14.0",
- "kiddo",
- "rand 0.9.2",
-]
-
-[[package]]
 name = "apriltag"
 version = "0.1.11-rc.1"
 dependencies = [
@@ -436,34 +421,6 @@ dependencies = [
  "kornia",
  "kornia-apriltag",
  "rerun",
-]
-
-[[package]]
-name = "apriltag"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3278ce87faf6559bf159b5d5920de622f39dfe7c035387a6e70854e3dfcfa55"
-dependencies = [
- "apriltag-sys",
- "libc",
- "measurements",
- "noisy_float",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "apriltag-sys"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "168f741d3e5f434b54fa6fa857e35093b631900addbb3fb452715a2a67cd14c2"
-dependencies = [
- "anyhow",
- "cc",
- "cmake",
- "glob",
- "itertools 0.10.5",
- "once_cell",
- "pkg-config",
 ]
 
 [[package]]
@@ -1275,16 +1232,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f28d99ec8bfea296261ca1af174f24225171fea9664ba9003cbebee704810528"
 dependencies = [
  "num-traits",
-]
-
-[[package]]
-name = "atomic-wait"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a55b94919229f2c42292fd71ffa4b75e83193bffdd77b1e858cd55fd2d0b0ea8"
-dependencies = [
- "libc",
- "windows-sys 0.42.0",
 ]
 
 [[package]]
@@ -4013,12 +3960,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6ca96b45ca70b8045e0462f191bd209fcb3c3bfe8dbfb1257ada54c4dd59169"
 
 [[package]]
-name = "defer"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "930c7171c8df9fb1782bdf9b918ed9ed2d33d1d22300abb754f9085bc48bf8e8"
-
-[[package]]
 name = "delegate"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4997,32 +4938,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "faer"
-version = "0.22.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49fce40ad65c366fbc6cd70a99d09d1008f075280bf2455e558e163c82913a9f"
-dependencies = [
- "bytemuck",
- "dyn-stack 0.13.2",
- "equator 0.4.2",
- "faer-macros",
- "faer-traits",
- "gemm 0.18.2",
- "generativity",
- "libm",
- "nano-gemm",
- "npyz",
- "num-complex",
- "num-traits",
- "private-gemm-x86",
- "pulp 0.21.5",
- "rand 0.8.5",
- "rand_distr 0.4.3",
- "rayon",
- "reborrow",
-]
-
-[[package]]
 name = "faer-entity"
 version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5034,35 +4949,6 @@ dependencies = [
  "num-complex",
  "num-traits",
  "pulp 0.18.22",
- "reborrow",
-]
-
-[[package]]
-name = "faer-macros"
-version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d0a255d1442b5825c61812a7eafda9034ec53d969c98555251085e148428e6a"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.114",
-]
-
-[[package]]
-name = "faer-traits"
-version = "0.22.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54febfcbb90edaab562d85447a94d500f1601f11db0b30d27da87ed6542c8f91"
-dependencies = [
- "bytemuck",
- "dyn-stack 0.13.2",
- "faer-macros",
- "generativity",
- "libm",
- "num-complex",
- "num-traits",
- "pulp 0.21.5",
- "qd",
  "reborrow",
 ]
 
@@ -7439,17 +7325,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8bb03732005da905c88227371639bf1ad885cc712789c011c31c5fb3ab3ccf02"
 
 [[package]]
-name = "interpol"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb58032ba748f4010d15912a1855a8a0b1ba9eaad3395b0c171c09b3b356ae50"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
 name = "interpolate_name"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7743,13 +7618,7 @@ dependencies = [
  "approx",
  "bincode 2.0.1",
  "criterion",
- "faer 0.20.1",
- "kiddo",
- "kornia-algebra",
- "kornia-imgproc",
- "log",
- "nalgebra",
- "rand 0.9.2",
+ "faer",
  "serde",
  "thiserror 2.0.17",
 ]
@@ -7771,8 +7640,6 @@ dependencies = [
 name = "kornia-apriltag"
 version = "0.1.11-rc.1"
 dependencies = [
- "aprilgrid",
- "apriltag 0.4.0",
  "criterion",
  "image 0.25.9",
  "kornia-image",
@@ -7790,6 +7657,19 @@ dependencies = [
  "kornia-image",
  "kornia-io",
  "paste",
+]
+
+[[package]]
+name = "kornia-icp"
+version = "0.1.11-rc.1"
+dependencies = [
+ "approx",
+ "faer",
+ "kiddo",
+ "kornia-3d",
+ "log",
+ "rand 0.9.2",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
@@ -7841,6 +7721,35 @@ dependencies = [
  "turbojpeg",
  "v4l 0.14.0",
  "zune-jpeg 0.5.8",
+]
+
+[[package]]
+name = "kornia-linalg"
+version = "0.1.11-rc.1"
+dependencies = [
+ "approx",
+ "criterion",
+ "faer",
+ "glam",
+ "nalgebra",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "kornia-pnp"
+version = "0.1.11-rc.1"
+dependencies = [
+ "approx",
+ "criterion",
+ "glam",
+ "kornia-algebra",
+ "kornia-imgproc",
+ "kornia-linalg",
+ "log",
+ "nalgebra",
+ "opencv",
+ "rand 0.9.2",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
@@ -8169,19 +8078,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loom"
-version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "419e0dc8046cb947daa77eb95ae174acfbddb7673b4151f56d1eed8e93fbfaca"
-dependencies = [
- "cfg-if",
- "generator",
- "scoped-tls",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "loop9"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8395,15 +8291,6 @@ checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
 dependencies = [
  "cfg-if",
  "digest",
-]
-
-[[package]]
-name = "measurements"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f72b38901c571007811f0483e64a7e215ac9e6e3688e9f83705a717621d81513"
-dependencies = [
- "libm",
 ]
 
 [[package]]
@@ -8977,15 +8864,6 @@ name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
-
-[[package]]
-name = "noisy_float"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c16843be85dd410c6a12251c4eca0dd1d3ee8c5725f746c4d5e0fdcec0a864b2"
-dependencies = [
- "num-traits",
-]
 
 [[package]]
 name = "nom"
@@ -10619,22 +10497,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "private-gemm-x86"
-version = "0.1.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0af8c3e5087969c323f667ccb4b789fa0954f5aa650550e38e81cf9108be21b5"
-dependencies = [
- "crossbeam",
- "defer",
- "interpol",
- "num_cpus",
- "raw-cpuid 11.6.0",
- "rayon",
- "spindle",
- "sysctl 0.6.0",
-]
-
-[[package]]
 name = "proc-macro-crate"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10971,18 +10833,6 @@ dependencies = [
  "pyo3-build-config",
  "quote",
  "syn 2.0.114",
-]
-
-[[package]]
-name = "qd"
-version = "0.7.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff8bb755b6008c3b41bf8a0866c8dd4e1245a2f011ceaa22a13ee55c538493e2"
-dependencies = [
- "bytemuck",
- "libm",
- "num-traits",
- "pulp 0.21.5",
 ]
 
 [[package]]
@@ -14777,19 +14627,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
 
 [[package]]
-name = "spindle"
-version = "0.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aaca3d8aa5387a6eba861fbf984af5348d9df5d940c25c6366b19556fdf64"
-dependencies = [
- "atomic-wait",
- "crossbeam",
- "equator 0.4.2",
- "loom",
- "rayon",
-]
-
-[[package]]
 name = "spirv"
 version = "0.3.0+sdk-1.3.268.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17474,21 +17311,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091"
 dependencies = [
  "windows-link 0.2.1",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.42.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a3e1820f08b8513f676f7ab6c1f99ff312fb97b553d30ff4dd86f9f15728aa7"
-dependencies = [
- "windows_aarch64_gnullvm 0.42.2",
- "windows_aarch64_msvc 0.42.2",
- "windows_i686_gnu 0.42.2",
- "windows_i686_msvc 0.42.2",
- "windows_x86_64_gnu 0.42.2",
- "windows_x86_64_gnullvm 0.42.2",
- "windows_x86_64_msvc 0.42.2",
 ]
 
 [[package]]
