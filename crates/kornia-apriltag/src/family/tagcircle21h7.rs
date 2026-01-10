@@ -1,9 +1,10 @@
 use super::*;
+use crate::errors::AprilTagError;
 
 impl TagFamily {
-    /// The TagCircle21H7 AprilTag Family.
-    pub fn tagcircle21_h7() -> Self {
-        Self {
+    /// The TagCircle21H7 AprilTag family.
+    pub fn tagcircle21_h7() -> Result<Self, AprilTagError> {
+        Ok(Self {
             name: "tagcircle21_h7".to_string(),
             width_at_border: 5,
             reversed_border: true,
@@ -16,9 +17,9 @@ impl TagFamily {
                 -2, -2, -2, 1, 1, 1, 2, 3, 1, 2, 6, 6, 6, 3, 3, 3, 2, 1, 3, 2, 2,
             ],
             code_data: CODE_DATA.into(),
-            quick_decode: QuickDecode::new(21, &CODE_DATA, 2).unwrap(),
-            sharpening_buffer: SharpeningBuffer::new(100),
-        }
+            quick_decode: QuickDecode::new(21, &CODE_DATA, 2)?,
+            sharpening_buffer: SharpeningBuffer::new(81),
+        })
     }
 }
 

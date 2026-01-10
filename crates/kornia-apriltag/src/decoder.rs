@@ -897,7 +897,7 @@ mod tests {
 
     #[test]
     fn test_decode_tags() -> Result<(), Box<dyn std::error::Error>> {
-        let mut config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]);
+        let mut config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11])?;
         config.downscale_factor = 1;
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
@@ -1047,7 +1047,7 @@ mod tests {
 
     #[test]
     fn test_quad_decode() -> Result<(), Box<dyn std::error::Error>> {
-        let mut tag_family = TagFamily::tag36_h11();
+        let mut tag_family = TagFamily::tag36_h11()?;
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
         let quad = Quad {
@@ -1112,8 +1112,8 @@ mod tests {
     }
 
     #[test]
-    fn test_quick_decode_codeword() {
-        let tag_family = TagFamily::tag36_h11();
+    fn test_quick_decode_codeword() -> Result<(), Box<dyn std::error::Error>> {
+        let tag_family = TagFamily::tag36_h11()?;
         let rcode = 52087007497;
 
         let mut quick_decode_entry = QuickDecodeEntry::default();
@@ -1126,7 +1126,8 @@ mod tests {
             rotation: 0,
         };
 
-        assert_eq!(quick_decode_entry, expected_decode_entry)
+        assert_eq!(quick_decode_entry, expected_decode_entry);
+        Ok(())
     }
 
     #[test]

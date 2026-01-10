@@ -1,9 +1,10 @@
 use super::*;
+use crate::errors::AprilTagError;
 
 impl TagFamily {
     /// The Tag16H5 AprilTag family.
-    pub fn tag16_h5() -> Self {
-        Self {
+    pub fn tag16_h5() -> Result<Self, AprilTagError> {
+        Ok(Self {
             name: "tag16_h5".to_string(),
             width_at_border: 6,
             reversed_border: false,
@@ -12,9 +13,9 @@ impl TagFamily {
             bit_x: vec![1, 2, 3, 2, 4, 4, 4, 3, 4, 3, 2, 3, 1, 1, 1, 2],
             bit_y: vec![1, 1, 1, 2, 1, 2, 3, 2, 4, 4, 4, 3, 4, 3, 2, 3],
             code_data: CODE_DATA.into(),
-            quick_decode: QuickDecode::new(16, &CODE_DATA, 2).unwrap(),
-            sharpening_buffer: SharpeningBuffer::new(100),
-        }
+            quick_decode: QuickDecode::new(16, &CODE_DATA, 2)?,
+            sharpening_buffer: SharpeningBuffer::new(64),
+        })
     }
 }
 

@@ -1,9 +1,10 @@
 use super::*;
+use crate::errors::AprilTagError;
 
 impl TagFamily {
     /// The TagCustom48H12 AprilTag Family.
-    pub fn tagcustom48_h12() -> Self {
-        Self {
+    pub fn tagcustom48_h12() -> Result<Self, AprilTagError> {
+        Ok(Self {
             name: "tagcustom48_h12".to_string(),
             width_at_border: 6,
             reversed_border: true,
@@ -17,14 +18,14 @@ impl TagFamily {
                 -2, -2, -2, -2, -2, -2, -2, -2, -2, 1, 1, 1, -2, -1, 0, 1, 2, 3, 4, 5, 6, 1, 2, 3,
                 7, 7, 7, 7, 7, 7, 7, 7, 7, 4, 4, 4, 7, 6, 5, 4, 3, 2, 1, 0, -1, 4, 3, 2,
             ],
-            code_data: CODE_DATE.into(),
-            quick_decode: QuickDecode::new(48, &CODE_DATE, 2).unwrap(),
+            code_data: CODE_DATA.into(),
+            quick_decode: QuickDecode::new(48, &CODE_DATA, 2)?,
             sharpening_buffer: SharpeningBuffer::new(100),
-        }
+        })
     }
 }
 
-pub static CODE_DATE: [usize; 42211] = [
+pub static CODE_DATA: [usize; 42211] = [
     0x0000d6c8ae76dff0,
     0x0000d6c8e905e5b5,
     0x0000d6c92394eb7a,
