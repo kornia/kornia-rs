@@ -206,52 +206,60 @@ impl Sim3F32 {
     }
 
     /// Adjoint representation for computing Jacobians
+    ///
+    /// Returns the 7x7 adjoint matrix for Sim3:
+    /// ```text
+    /// [ sR    [t]×R    -t ]
+    /// [  0      R       0 ]
+    /// [  0      0       1 ]
+    /// ```
     pub fn adjoint(&self) -> [[f32; 7]; 7] {
-        let rot_mat = self.rxso3.rotation_matrix();
-        let scale = self.rxso3.scale();
-        let t_hat = SO3F32::hat(self.translation);
+        let r = self.rxso3.rotation_matrix();
+        let s = self.rxso3.scale();
+        let t_cross_r = SO3F32::hat(self.translation) * r;
+        let t = self.translation;
 
-        let mut adj = [[0.0f32; 7]; 7];
-
-        // Top-left 3x3: scaled rotation
-        for (i, adj_row) in adj.iter_mut().enumerate().take(3) {
-            for (j, adj_elem) in adj_row.iter_mut().enumerate().take(3) {
-                *adj_elem = scale * rot_mat.col(i)[j];
-            }
-        }
-
-        // Top-right 3x3: scaled [t]× R
-        let scaled_t_cross_r = t_hat * rot_mat * scale;
-        for (i, adj_row) in adj.iter_mut().enumerate().take(3) {
-            for (j, adj_elem) in adj_row.iter_mut().enumerate().skip(3).take(3) {
-                *adj_elem = scaled_t_cross_r.col(i)[j - 3];
-            }
-        }
-
-        // Top-right 3x1: -t (last column)
-        let t_arr = self.translation.to_array();
-        for (i, adj_row) in adj.iter_mut().enumerate().take(3) {
-            adj_row[6] = -t_arr[i];
-        }
-
-        // Bottom-left 3x3: R
-        for (i, adj_row) in adj.iter_mut().enumerate().skip(3).take(3) {
-            for (j, adj_elem) in adj_row.iter_mut().enumerate().take(3) {
-                *adj_elem = rot_mat.col(i - 3)[j];
-            }
-        }
-
-        // Bottom-right 3x3: R
-        for (i, adj_row) in adj.iter_mut().enumerate().skip(3).take(3) {
-            for (j, adj_elem) in adj_row.iter_mut().enumerate().skip(3).take(3) {
-                *adj_elem = rot_mat.col(i - 3)[j - 3];
-            }
-        }
-
-        // Bottom row: scale factor
-        adj[6][6] = 1.0;
-
-        adj
+        // Build the 7x7 adjoint matrix directly
+        // Row 0: [sR row0, [t]×R row0, -t[0]]
+        // Row 1: [sR row1, [t]×R row1, -t[1]]
+        // Row 2: [sR row2, [t]×R row2, -t[2]]
+        // Row 3: [0, 0, 0, R row0, 0]
+        // Row 4: [0, 0, 0, R row1, 0]
+        // Row 5: [0, 0, 0, R row2, 0]
+        // Row 6: [0, 0, 0, 0, 0, 0, 1]
+        [
+            [
+                s * r.x_axis.x,
+                s * r.y_axis.x,
+                s * r.z_axis.x,
+                t_cross_r.x_axis.x,
+                t_cross_r.y_axis.x,
+                t_cross_r.z_axis.x,
+                -t.x,
+            ],
+            [
+                s * r.x_axis.y,
+                s * r.y_axis.y,
+                s * r.z_axis.y,
+                t_cross_r.x_axis.y,
+                t_cross_r.y_axis.y,
+                t_cross_r.z_axis.y,
+                -t.y,
+            ],
+            [
+                s * r.x_axis.z,
+                s * r.y_axis.z,
+                s * r.z_axis.z,
+                t_cross_r.x_axis.z,
+                t_cross_r.y_axis.z,
+                t_cross_r.z_axis.z,
+                -t.z,
+            ],
+            [0.0, 0.0, 0.0, r.x_axis.x, r.y_axis.x, r.z_axis.x, 0.0],
+            [0.0, 0.0, 0.0, r.x_axis.y, r.y_axis.y, r.z_axis.y, 0.0],
+            [0.0, 0.0, 0.0, r.x_axis.z, r.y_axis.z, r.z_axis.z, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        ]
     }
 }
 // ===== OPERATOR OVERLOADS =====
@@ -526,5 +534,68 @@ mod tests {
         assert_relative_eq!(sim3.scale(), sigma.exp(), epsilon = EPSILON);
         assert_relative_eq!(sim3.translation.length(), 0.0, epsilon = EPSILON);
         assert_relative_eq!(sim3.rotation().w.abs(), 1.0, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_sim3_adjoint_identity() {
+        let sim3 = Sim3F32::IDENTITY;
+        let adj = sim3.adjoint();
+
+        // Expected 7x7 adjoint of identity: identity matrix
+        // For identity: scale=1, R=I, t=0
+        // So adjoint should be 7x7 identity
+        let expected = [
+            [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        ];
+
+        for i in 0..7 {
+            for j in 0..7 {
+                assert_relative_eq!(adj[i][j], expected[i][j], epsilon = EPSILON);
+            }
+        }
+    }
+
+    #[test]
+    fn test_sim3_adjoint_properties() {
+        // Test: Ad(g * h) = Ad(g) * Ad(h)
+        let sim3_1 = Sim3F32::from_scale_rotation_translation(
+            1.5,
+            QuatF32::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize(),
+            Vec3AF32::new(1.0, 2.0, 3.0),
+        );
+
+        let sim3_2 = Sim3F32::from_scale_rotation_translation(
+            2.0,
+            QuatF32::from_xyzw(-0.2, 0.1, 0.4, 0.8).normalize(),
+            Vec3AF32::new(-1.0, 0.5, 2.0),
+        );
+
+        let composed = sim3_1 * sim3_2;
+        let adj_composed = composed.adjoint();
+
+        let adj_1 = sim3_1.adjoint();
+        let adj_2 = sim3_2.adjoint();
+
+        // Matrix multiplication of 7x7 matrices: adj_1 * adj_2
+        let mut adj_product = [[0.0f32; 7]; 7];
+        for i in 0..7 {
+            for j in 0..7 {
+                for (k, adj_2k) in adj_2.iter().enumerate() {
+                    adj_product[i][j] += adj_1[i][k] * adj_2k[j];
+                }
+            }
+        }
+
+        for i in 0..7 {
+            for j in 0..7 {
+                assert_relative_eq!(adj_composed[i][j], adj_product[i][j], epsilon = EPSILON);
+            }
+        }
     }
 }
