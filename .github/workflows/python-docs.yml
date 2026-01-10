@@ -32,7 +32,7 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install maturin
+          pip install maturin pytest
 
       - name: Build and Install kornia_rs
         run: |
@@ -40,4 +40,4 @@ jobs:
           pip install dist/*.whl
 
       - name: Run Doctests
-        run: python test_docs.py
+        run: pytest tests/test_doctests.py
