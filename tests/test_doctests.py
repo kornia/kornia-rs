@@ -1,54 +1,59 @@
 import doctest
 import pytest
 import kornia_rs
+import inspect
 
-def run_doctests_recursive(module, runner, finder, visited):
-    """Recursively finds and runs doctests in a module and its members."""
-    if module in visited:
-        return
-    visited.add(module)
+def get_testable_objects(mod):
+    """Recursively discover all objects with docstrings in the compiled module."""
+    objects = []
+    seen = set()
 
-    # 1. Parse and Run doctests on the object itself
-    # finder.find() returns a list of DocTest objects for the given object
-    # We use name=... to give it a nice label in logs
-    try:
-        tests = finder.find(module, name=getattr(module, "__name__", str(module)))
-        for test in tests:
-            if test.examples:  # Only run if there are examples
-                runner.run(test)
-    except ValueError:
-        # Some objects (like built-in types) might fail parsing, skip them
-        pass
+    def recurse(obj, name_prefix):
+        if id(obj) in seen:
+            return
+        seen.add(id(obj))
 
-    # 2. Inspect all members (classes, functions, submodules)
-    # dir() works on compiled modules where pkgutil.walk_packages fails
-    for name in dir(module):
-        if name.startswith("_"):
-            continue
+        # 1. Add object if it has a docstring
+        if hasattr(obj, "__doc__") and obj.__doc__:
+            objects.append((obj, name_prefix))
 
-        try:
-            obj = getattr(module, name)
-        except Exception:
-            continue
+        # 2. Inspect members
+        for name in dir(obj):
+            if name.startswith("_"):
+                continue
 
-        # Check if object belongs to kornia_rs to avoid recursion into stdlib
-        obj_mod = getattr(obj, "__module__", "")
-        if hasattr(obj, "__name__") and (obj_mod and "kornia_rs" in obj_mod):
-            # Recurse!
-            run_doctests_recursive(obj, runner, finder, visited)
+            try:
+                member = getattr(obj, name)
+            except Exception:
+                continue
 
-def test_compiled_docstrings():
-    """
-    Custom pytest hook to find and run doctests inside the compiled kornia_rs binary.
-    """
-    runner = doctest.DocTestRunner(verbose=True)
-    finder = doctest.DocTestFinder()
-    visited = set()
+            # Check if member belongs to kornia_rs
+            mod_name = getattr(member, "__module__", None)
+            if mod_name and "kornia_rs" in mod_name:
+                if inspect.ismodule(member) or inspect.isclass(member):
+                     recurse(member, f"{name_prefix}.{name}")
 
-    print(f"\nScanning kornia_rs for doctests...")
-    run_doctests_recursive(kornia_rs, runner, finder, visited)
+    recurse(mod, "kornia_rs")
+    return objects
 
-    print(f"Ran {runner.tries} doctests.")
+# Collect objects once
+TEST_OBJECTS = get_testable_objects(kornia_rs)
 
-    # Fail if any doctests failed
-    assert runner.failures == 0, f"Found {runner.failures} doctest failures!"
+@pytest.mark.parametrize("obj, name", TEST_OBJECTS)
+def test_docstrings(obj, name):
+    """Run doctest for a specific object."""
+    # Create the context so 'kornia_rs' is available in the docstring examples
+    globs = {"kornia_rs": kornia_rs}
+
+    # Parser and Runner
+    parser = doctest.DocTestParser()
+    runner = doctest.DocTestRunner(verbose=False)
+
+    # Create the test
+    test = parser.get_doctest(obj.__doc__, globs, name, name, 0)
+
+    # Run it
+    runner.run(test)
+
+    # Assert
+    assert runner.failures == 0, f"Doctest failed for {name}. See output above."
