@@ -104,14 +104,11 @@ kornia-tensor-ops = "0.1"
 kornia-io = "0.1"
 kornia-image = "0.1"
 kornia-imgproc = "0.1"
-kornia-icp = "0.1"
-kornia-linalg = "0.1"
 kornia-3d = "0.1"
 kornia-apriltag = "0.1"
 kornia-vlm = "0.1"
 kornia-nn = "0.1"
-kornia-pnp = "0.1"
-kornia-lie = "0.1"
+kornia-algebra = "0.1"
 ```
 
 ### 🐍 Python

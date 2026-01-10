@@ -15,7 +15,8 @@ include = { workspace = true }
 [dependencies]
 argh = { workspace = true }
 env_logger = { workspace = true }
+kornia-3d = { workspace = true }
+kornia-algebra = { workspace = true }
 kornia-imgproc = { workspace = true }
-kornia-pnp = { workspace = true }
 rand = { workspace = true }
 rerun = { workspace = true }

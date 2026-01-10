@@ -16,8 +16,11 @@ pub mod pointcloud;
 /// Pose estimation algorithms.
 pub mod pose;
 
+/// Perspective-n-Point (PnP) solvers.
+pub mod pnp;
+
+/// Registration algorithms.
+pub mod registration;
+
 /// 3D transforms algorithms.
 pub mod transforms;
-
-/// 3D vector traits.
-pub mod vector;
