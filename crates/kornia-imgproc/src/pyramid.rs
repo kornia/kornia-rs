@@ -1,14 +1,15 @@
-use kornia_image::{Image, ImageError};
-use kornia_tensor::CpuAllocator;
+use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use rayon::prelude::*;
 
 // Helper functions
 
-fn pyrup_horizontal_pass_par<const C: usize>(
-    src: &Image<f32, C, CpuAllocator>,
+fn pyrup_horizontal_pass_par<const C: usize, A>(
+    src: &Image<f32, C, A>,
     dst: &mut [f32],
     dst_width: usize,
-) {
+) where
+    A: ImageAllocator,
+{
     let src_width = src.width();
     let src_data = src.as_slice();
     let dst_stride = dst_width * C;
@@ -187,10 +188,14 @@ fn pyrup_vertical_pass_par<const C: usize>(
 ///
 /// pyrup(&image, &mut upsampled).unwrap();
 /// ```
-pub fn pyrup<const C: usize>(
-    src: &Image<f32, C, CpuAllocator>,
-    dst: &mut Image<f32, C, CpuAllocator>,
-) -> Result<(), ImageError> {
+pub fn pyrup<const C: usize, A1, A2>(
+    src: &Image<f32, C, A1>,
+    dst: &mut Image<f32, C, A2>,
+) -> Result<(), ImageError>
+where
+    A1: ImageAllocator,
+    A2: ImageAllocator,
+{
     let expected_width = src.width() * 2;
     let expected_height = src.height() * 2;
 
@@ -207,7 +212,7 @@ pub fn pyrup<const C: usize>(
     }
 
     let mut scratch = vec![0.0f32; dst.width() * src.height() * C];
-    pyrup_horizontal_pass_par(src, &mut scratch, dst.width());
+    pyrup_horizontal_pass_par::<C, _>(src, &mut scratch, dst.width());
 
     let dst_width = dst.width();
     pyrup_vertical_pass_par::<C>(
@@ -224,7 +229,7 @@ pub fn pyrup<const C: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kornia_image::ImageSize;
+    use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 
     #[test]
     fn test_pyrup() -> Result<(), ImageError> {
