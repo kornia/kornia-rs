@@ -9,41 +9,46 @@
 //!
 //! Reference: Sophus library (https://github.com/strasdat/Sophus)
 
-use super::rxso3::RxSO3;
-use super::so3::SO3;
-use glam::{Mat3A, Mat4, Quat, Vec3A};
+use crate::{Mat3AF32, Mat4F32, QuatF32, Vec3AF32};
+
+use super::rxso3::RxSO3F32;
+use super::so3::SO3F32;
 
 /// Similarity transformation in 3D: rotation + scale + translation
 ///
-/// SIM3 = R+ × SE3, where:
+/// Sim3F32 = R+ × SE3, where:
 /// - R+ is positive real numbers (scale)
 /// - SE3 is rigid transformations (rotation + translation)
 ///
 /// 7 degrees of freedom: 3 for rotation, 1 for scale, 3 for translation
 #[derive(Debug, Clone, Copy)]
-pub struct Sim3 {
+pub struct Sim3F32 {
     /// Scaling and rotation component
-    pub rxso3: RxSO3,
+    pub rxso3: RxSO3F32,
     /// Translation component
-    pub translation: Vec3A,
+    pub translation: Vec3AF32,
 }
 
-impl Sim3 {
+impl Sim3F32 {
     /// Identity transformation
     pub const IDENTITY: Self = Self {
-        rxso3: RxSO3::IDENTITY,
-        translation: Vec3A::new(0.0, 0.0, 0.0),
+        rxso3: RxSO3F32::IDENTITY,
+        translation: Vec3AF32::ZERO,
     };
 
-    /// Create from RxSO3 and translation
-    pub fn new(rxso3: RxSO3, translation: Vec3A) -> Self {
+    /// Create from RxSO3F32 and translation
+    pub fn new(rxso3: RxSO3F32, translation: Vec3AF32) -> Self {
         Self { rxso3, translation }
     }
 
     /// Create from scale, rotation quaternion, and translation
-    pub fn from_scale_rotation_translation(scale: f32, rotation: Quat, translation: Vec3A) -> Self {
+    pub fn from_scale_rotation_translation(
+        scale: f32,
+        rotation: QuatF32,
+        translation: Vec3AF32,
+    ) -> Self {
         Self {
-            rxso3: RxSO3::from_scale_quaternion(scale, rotation),
+            rxso3: RxSO3F32::from_scale_quaternion(scale, rotation),
             translation,
         }
     }
@@ -55,27 +60,27 @@ impl Sim3 {
     /// |  0  1 |
     ///
     /// where R is rotation, s is scale, t is translation
-    pub fn from_matrix(mat: &Mat4) -> Self {
+    pub fn from_matrix(mat: &Mat4F32) -> Self {
         // Extract rotation and scale from top-left 3x3
         // mat.x_axis, mat.y_axis, mat.z_axis are the columns
-        let rot_scale_mat = Mat3A::from_cols(
-            Vec3A::new(mat.x_axis.x, mat.x_axis.y, mat.x_axis.z), // first column
-            Vec3A::new(mat.y_axis.x, mat.y_axis.y, mat.y_axis.z), // second column
-            Vec3A::new(mat.z_axis.x, mat.z_axis.y, mat.z_axis.z), // third column
+        let rot_scale_mat = Mat3AF32::from_cols(
+            Vec3AF32::new(mat.x_axis.x, mat.x_axis.y, mat.x_axis.z), // first column
+            Vec3AF32::new(mat.y_axis.x, mat.y_axis.y, mat.y_axis.z), // second column
+            Vec3AF32::new(mat.z_axis.x, mat.z_axis.y, mat.z_axis.z), // third column
         );
 
         let scale = rot_scale_mat.col(0).length();
 
         // Normalize to get pure rotation
-        let rot_mat = Mat3A::from_cols(
-            rot_scale_mat.x_axis / scale,
-            rot_scale_mat.y_axis / scale,
-            rot_scale_mat.z_axis / scale,
+        let rot_mat = Mat3AF32::from_cols(
+            Vec3AF32::from(rot_scale_mat.x_axis / scale),
+            Vec3AF32::from(rot_scale_mat.y_axis / scale),
+            Vec3AF32::from(rot_scale_mat.z_axis / scale),
         );
 
         Self {
-            rxso3: RxSO3::from_scale_matrix(scale, rot_mat),
-            translation: Vec3A::new(mat.w_axis.x, mat.w_axis.y, mat.w_axis.z),
+            rxso3: RxSO3F32::from_scale_matrix(scale, rot_mat),
+            translation: Vec3AF32::new(mat.w_axis.x, mat.w_axis.y, mat.w_axis.z),
         }
     }
 
@@ -85,19 +90,19 @@ impl Sim3 {
     }
 
     /// Get the rotation quaternion
-    pub fn rotation(&self) -> Quat {
+    pub fn rotation(&self) -> QuatF32 {
         self.rxso3.rotation()
     }
 
     /// Get the rotation matrix
-    pub fn rotation_matrix(&self) -> Mat3A {
+    pub fn rotation_matrix(&self) -> Mat3AF32 {
         self.rxso3.rotation_matrix()
     }
 
     /// Convert to 4x4 homogeneous transformation matrix
-    pub fn matrix(&self) -> Mat4 {
+    pub fn matrix(&self) -> Mat4F32 {
         let rxso3_mat = self.rxso3.matrix();
-        Mat4::from_cols_array(&[
+        Mat4F32::from_cols_array(&[
             rxso3_mat.x_axis.x,
             rxso3_mat.x_axis.y,
             rxso3_mat.x_axis.z,
@@ -138,24 +143,24 @@ impl Sim3 {
     /// - upsilon: 3D translation velocity
     /// - omega: 3D rotation velocity
     /// - sigma: scale velocity
-    pub fn exp(upsilon: Vec3A, omega: Vec3A, sigma: f32) -> Self {
-        let rxso3 = RxSO3::exp(omega, sigma);
+    pub fn exp(upsilon: Vec3AF32, omega: Vec3AF32, sigma: f32) -> Self {
+        let rxso3 = RxSO3F32::exp(omega, sigma);
         let scale = rxso3.scale();
 
         // For small angles, use first-order approximation
         // V ≈ I + 1/2 [ω]× + (1/6)σ [ω]×²
-        let omega_hat = SO3::hat(omega);
+        let omega_hat = SO3F32::hat(omega);
 
         let v_mat = if omega.length() < 1e-6 {
             // Small angle approximation
-            Mat3A::IDENTITY - 0.5 * omega_hat
+            Mat3AF32::IDENTITY - omega_hat * 0.5
         } else {
             let theta = omega.length();
             let theta_sq = theta * theta;
 
-            Mat3A::IDENTITY
-                + ((1.0 - theta.cos()) / theta_sq) * omega_hat
-                + ((theta - theta.sin()) / (theta_sq * theta)) * (omega_hat * omega_hat)
+            Mat3AF32::IDENTITY
+                + omega_hat * ((1.0 - theta.cos()) / theta_sq)
+                + (omega_hat * omega_hat) * ((theta - theta.sin()) / (theta_sq * theta))
         };
 
         let t = v_mat * upsilon / scale;
@@ -172,24 +177,24 @@ impl Sim3 {
     /// - upsilon: 3D translation velocity
     /// - omega: 3D rotation velocity
     /// - sigma: scale velocity
-    pub fn log(&self) -> (Vec3A, Vec3A, f32) {
+    pub fn log(&self) -> (Vec3AF32, Vec3AF32, f32) {
         let (omega, sigma) = self.rxso3.log();
         let rot_mat = self.rxso3.rotation_matrix();
         let scale = self.rxso3.scale();
 
         // Compute W_inv matrix for translation
-        let omega_hat = SO3::hat(omega);
+        let omega_hat = SO3F32::hat(omega);
         let theta = omega.length();
 
         let w_inv = if theta < 1e-6 {
             // Small angle approximation
-            Mat3A::IDENTITY + 0.5 * omega_hat + (1.0 / 6.0) * (omega_hat * omega_hat) * sigma
+            Mat3AF32::IDENTITY + omega_hat * 0.5 + (omega_hat * omega_hat) * ((1.0 / 6.0) * sigma)
         } else {
             let theta_sq = theta * theta;
             let a = theta.sin() / theta;
             let c = (1.0 - a / theta_sq) / theta_sq;
 
-            Mat3A::IDENTITY - 0.5 * omega_hat + c * sigma * (omega_hat * omega_hat)
+            Mat3AF32::IDENTITY - omega_hat * 0.5 + (omega_hat * omega_hat) * (c * sigma)
         };
 
         let upsilon = w_inv * rot_mat.transpose() * self.translation * scale;
@@ -201,7 +206,7 @@ impl Sim3 {
     pub fn adjoint(&self) -> [[f32; 7]; 7] {
         let rot_mat = self.rxso3.rotation_matrix();
         let scale = self.rxso3.scale();
-        let t_hat = SO3::hat(self.translation);
+        let t_hat = SO3F32::hat(self.translation);
 
         let mut adj = [[0.0f32; 7]; 7];
 
@@ -221,8 +226,9 @@ impl Sim3 {
         }
 
         // Top-right 3x1: -t (last column)
+        let t_arr = self.translation.to_array();
         for (i, adj_row) in adj.iter_mut().enumerate().take(3) {
-            adj_row[6] = -self.translation[i];
+            adj_row[6] = -t_arr[i];
         }
 
         // Bottom-left 3x3: R
@@ -247,20 +253,20 @@ impl Sim3 {
 }
 // ===== OPERATOR OVERLOADS =====
 
-impl std::ops::Mul<Sim3> for Sim3 {
-    type Output = Sim3;
+impl std::ops::Mul<Sim3F32> for Sim3F32 {
+    type Output = Sim3F32;
 
-    fn mul(self, rhs: Sim3) -> Self::Output {
+    fn mul(self, rhs: Sim3F32) -> Self::Output {
         let rxso3 = self.rxso3 * rhs.rxso3;
         let translation = self.translation + self.rxso3.matrix() * rhs.translation;
-        Sim3::new(rxso3, translation)
+        Sim3F32::new(rxso3, translation)
     }
 }
 
-impl std::ops::Mul<Vec3A> for Sim3 {
-    type Output = Vec3A;
+impl std::ops::Mul<Vec3AF32> for Sim3F32 {
+    type Output = Vec3AF32;
 
-    fn mul(self, rhs: Vec3A) -> Self::Output {
+    fn mul(self, rhs: Vec3AF32) -> Self::Output {
         let scaled_rotated = self.rxso3.matrix() * rhs;
         scaled_rotated + self.translation
     }
@@ -277,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_sim3_identity() {
-        let sim3 = Sim3::IDENTITY;
+        let sim3 = Sim3F32::IDENTITY;
         assert_relative_eq!(sim3.scale(), 1.0, epsilon = EPSILON);
         assert_relative_eq!(sim3.translation.x, 0.0, epsilon = EPSILON);
         assert_relative_eq!(sim3.translation.y, 0.0, epsilon = EPSILON);
@@ -287,8 +293,8 @@ mod tests {
     #[test]
     fn test_sim3_from_matrix() {
         // Test identity matrix
-        let mat = Mat4::IDENTITY;
-        let sim3 = Sim3::from_matrix(&mat);
+        let mat = Mat4F32::IDENTITY;
+        let sim3 = Sim3F32::from_matrix(&mat);
         assert_relative_eq!(sim3.scale(), 1.0, epsilon = EPSILON);
         assert_relative_eq!(sim3.translation.length(), 0.0, epsilon = EPSILON);
 
@@ -297,13 +303,13 @@ mod tests {
         //         | 0 2 0 2 |
         //         | 0 0 2 3 |
         //         | 0 0 0 1 |
-        let mat = Mat4::from_cols_array(&[
+        let mat = Mat4F32::from_cols_array(&[
             2.0, 0.0, 0.0, 0.0, // col 0
             0.0, 2.0, 0.0, 0.0, // col 1
             0.0, 0.0, 2.0, 0.0, // col 2
             1.0, 2.0, 3.0, 1.0, // col 3 (translation)
         ]);
-        let sim3 = Sim3::from_matrix(&mat);
+        let sim3 = Sim3F32::from_matrix(&mat);
         assert_relative_eq!(sim3.scale(), 2.0, epsilon = EPSILON);
         assert_relative_eq!(sim3.translation.x, 1.0, epsilon = EPSILON);
         assert_relative_eq!(sim3.translation.y, 2.0, epsilon = EPSILON);
@@ -312,10 +318,10 @@ mod tests {
 
     #[test]
     fn test_sim3_inverse() {
-        let sim3 = Sim3::from_scale_rotation_translation(
+        let sim3 = Sim3F32::from_scale_rotation_translation(
             2.0,
-            Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize(),
-            Vec3A::new(1.0, 2.0, 3.0),
+            QuatF32::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize(),
+            Vec3AF32::new(1.0, 2.0, 3.0),
         );
 
         let inv = sim3.inverse();
@@ -328,18 +334,18 @@ mod tests {
 
     #[test]
     fn test_sim3_matrix_roundtrip() {
-        let sim3 = Sim3::from_scale_rotation_translation(
+        let sim3 = Sim3F32::from_scale_rotation_translation(
             1.5,
-            Quat::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize(),
-            Vec3A::new(1.0, 2.0, 3.0),
+            QuatF32::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize(),
+            Vec3AF32::new(1.0, 2.0, 3.0),
         );
 
         let mat = sim3.matrix();
-        let sim3_reconstructed = Sim3::from_matrix(&mat);
+        let sim3_reconstructed = Sim3F32::from_matrix(&mat);
 
         assert_relative_eq!(sim3.scale(), sim3_reconstructed.scale(), epsilon = EPSILON);
         assert_relative_eq!(
-            sim3.translation.distance(sim3_reconstructed.translation),
+            (sim3.translation - sim3_reconstructed.translation).length(),
             0.0,
             epsilon = EPSILON
         );
@@ -347,16 +353,16 @@ mod tests {
 
     #[test]
     fn test_sim3_multiplication() {
-        let sim3_1 = Sim3::from_scale_rotation_translation(
+        let sim3_1 = Sim3F32::from_scale_rotation_translation(
             2.0,
-            Quat::IDENTITY, // Identity rotation for simplicity
-            Vec3A::new(1.0, 0.0, 0.0),
+            QuatF32::IDENTITY, // Identity rotation for simplicity
+            Vec3AF32::new(1.0, 0.0, 0.0),
         );
 
-        let sim3_2 = Sim3::from_scale_rotation_translation(
+        let sim3_2 = Sim3F32::from_scale_rotation_translation(
             1.5,
-            Quat::from_xyzw(0.0, 0.0, 0.0, 1.0), // Identity rotation
-            Vec3A::new(0.0, 1.0, 0.0),
+            QuatF32::from_xyzw(0.0, 0.0, 0.0, 1.0), // Identity rotation
+            Vec3AF32::new(0.0, 1.0, 0.0),
         );
 
         let combined = sim3_1 * sim3_2;
@@ -367,13 +373,13 @@ mod tests {
 
     #[test]
     fn test_point_transformation() {
-        let sim3 = Sim3::from_scale_rotation_translation(
+        let sim3 = Sim3F32::from_scale_rotation_translation(
             2.0,
-            Quat::IDENTITY, // No rotation
-            Vec3A::new(1.0, 2.0, 3.0),
+            QuatF32::IDENTITY, // No rotation
+            Vec3AF32::new(1.0, 2.0, 3.0),
         );
 
-        let point = Vec3A::new(1.0, 1.0, 1.0);
+        let point = Vec3AF32::new(1.0, 1.0, 1.0);
         let transformed = sim3 * point;
 
         // Should be: 2.0 * [1,1,1] + [1,2,3] = [3,4,5]
