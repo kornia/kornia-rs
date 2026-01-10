@@ -76,13 +76,13 @@ fn pyrup_horizontal_pass_par<const C: usize, A>(
 }
 
 fn pyrup_vertical_pass_par<const C: usize>(
-    src_scratch: &[f32],
-    src_scratch_width: usize,
+    src_buffer: &[f32],
+    src_buffer_width: usize,
     src_height: usize,
     dst_data: &mut [f32],
     dst_width: usize,
 ) {
-    let stride = src_scratch_width * C;
+    let stride = src_buffer_width * C;
     let dst_stride = dst_width * C;
 
     // Process source rows in parallel
@@ -123,26 +123,26 @@ fn pyrup_vertical_pass_par<const C: usize>(
             if y == 0 {
                 for i in 0..stride {
                     row_even[i] =
-                        (6.0 * src_scratch[off_c + i] + 2.0 * src_scratch[off_b + i]) * 0.125;
+                        (6.0 * src_buffer[off_c + i] + 2.0 * src_buffer[off_b + i]) * 0.125;
                     if !row_odd.is_empty() {
-                        row_odd[i] = (src_scratch[off_c + i] + src_scratch[off_b + i]) * 0.5;
+                        row_odd[i] = (src_buffer[off_c + i] + src_buffer[off_b + i]) * 0.5;
                     }
                 }
             } else if y == src_height - 1 {
                 for i in 0..stride {
-                    row_even[i] = (src_scratch[off_t + i] + 7.0 * src_scratch[off_c + i]) * 0.125;
+                    row_even[i] = (src_buffer[off_t + i] + 7.0 * src_buffer[off_c + i]) * 0.125;
                     if !row_odd.is_empty() {
-                        row_odd[i] = src_scratch[off_c + i];
+                        row_odd[i] = src_buffer[off_c + i];
                     }
                 }
             } else {
                 for i in 0..stride {
-                    row_even[i] = (src_scratch[off_t + i]
-                        + 6.0 * src_scratch[off_c + i]
-                        + src_scratch[off_b + i])
+                    row_even[i] = (src_buffer[off_t + i]
+                        + 6.0 * src_buffer[off_c + i]
+                        + src_buffer[off_b + i])
                         * 0.125;
                     if !row_odd.is_empty() {
-                        row_odd[i] = (src_scratch[off_c + i] + src_scratch[off_b + i]) * 0.5;
+                        row_odd[i] = (src_buffer[off_c + i] + src_buffer[off_b + i]) * 0.5;
                     }
                 }
             }
@@ -211,12 +211,12 @@ where
         ));
     }
 
-    let mut scratch = vec![0.0f32; dst.width() * src.height() * C];
-    pyrup_horizontal_pass_par::<C, _>(src, &mut scratch, dst.width());
+    let mut buffer = vec![0.0f32; dst.width() * src.height() * C];
+    pyrup_horizontal_pass_par::<C, _>(src, &mut buffer, dst.width());
 
     let dst_width = dst.width();
     pyrup_vertical_pass_par::<C>(
-        &scratch,
+        &buffer,
         dst_width,
         src.height(),
         dst.as_slice_mut(),
