@@ -308,6 +308,40 @@ impl std::ops::Mul<Vec3AF32> for SE3F32 {
     }
 }
 
+#[cfg(feature = "approx")]
+impl approx::AbsDiffEq for SE3F32 {
+    type Epsilon = <SO3F32 as approx::AbsDiffEq>::Epsilon;
+
+    #[inline]
+    fn default_epsilon() -> Self::Epsilon {
+        <SO3F32 as approx::AbsDiffEq>::default_epsilon()
+    }
+
+    #[inline]
+    fn abs_diff_eq(&self, other: &Self, epsilon: Self::Epsilon) -> bool {
+        self.r.abs_diff_eq(&other.r, epsilon) && self.t.abs_diff_eq(&other.t, epsilon)
+    }
+}
+
+#[cfg(feature = "approx")]
+impl approx::RelativeEq for SE3F32 {
+    #[inline]
+    fn default_max_relative() -> Self::Epsilon {
+        <SO3F32 as approx::RelativeEq>::default_max_relative()
+    }
+
+    #[inline]
+    fn relative_eq(
+        &self,
+        other: &Self,
+        epsilon: Self::Epsilon,
+        max_relative: Self::Epsilon,
+    ) -> bool {
+        self.r.relative_eq(&other.r, epsilon, max_relative)
+            && self.t.relative_eq(&other.t, epsilon, max_relative)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

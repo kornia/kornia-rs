@@ -1,10 +1,9 @@
-use crate::image::{PyImage, ToPyImage, ToPyImageF32, ToPyImageU16};
+use crate::image::{ToPyImage, ToPyImageF32, ToPyImageU16};
 use kornia_image::{
     allocator::CpuAllocator,
     color_spaces::{Gray16, Gray8, Grayf32, Rgb16, Rgb8, Rgba16, Rgba8, Rgbf32},
     PixelFormat,
 };
-use kornia_io::functional as F;
 use kornia_io::jpeg as jpeg_io;
 use kornia_io::png as png_io;
 use kornia_io::tiff as tiff_io;
@@ -12,15 +11,17 @@ use pyo3::prelude::*;
 use std::fs;
 use std::path::Path;
 
-#[pyfunction]
-#[pyo3(warn(message = "read_image_any is deprecated, use read_image instead", category = pyo3::exceptions::PyDeprecationWarning))]
-pub fn read_image_any(file_path: &str) -> PyResult<PyImage> {
-    let image = F::read_image_any_rgb8(file_path)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(e.to_string()))?;
-    let pyimage = image.to_pyimage().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-    Ok(pyimage)
+#[pyfunction(name = "read_image_any")]
+pub fn read_image_any_deprecated(
+    py: Python<'_>,
+    file_path: Bound<'_, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    crate::warn_deprecation(
+        py,
+        "kornia_rs.read_image_any is deprecated. Use kornia_rs.io.read_image instead.",
+    )?;
+
+    read_image(file_path)
 }
 
 #[pyfunction]

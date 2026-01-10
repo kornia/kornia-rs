@@ -1,5 +1,5 @@
+use crate::linalg;
 use kiddo::immutable::float::kdtree::ImmutableKdTree;
-use kornia_3d::linalg;
 
 /// Compute the transformation between two point clouds.
 pub(crate) fn fit_transformation(
@@ -151,9 +151,9 @@ pub(crate) fn update_transformation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{linalg::transform_points3d, transforms::axis_angle_to_rotation_matrix};
     use approx::assert_relative_eq;
     use kiddo::immutable::float::kdtree::ImmutableKdTree;
-    use kornia_3d::{linalg::transform_points3d, transforms::axis_angle_to_rotation_matrix};
 
     fn create_random_points(num_points: usize) -> Vec<[f64; 3]> {
         (0..num_points)

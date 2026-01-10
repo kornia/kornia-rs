@@ -4,7 +4,7 @@
 pub use kornia_3d as k3d;
 
 #[doc(inline)]
-pub use kornia_icp as icp;
+pub use kornia_3d::registration as icp;
 
 #[doc(inline)]
 pub use kornia_image as image;
@@ -16,7 +16,7 @@ pub use kornia_imgproc as imgproc;
 pub use kornia_io as io;
 
 #[doc(inline)]
-pub use kornia_linalg as linalg;
+pub use kornia_algebra::linalg;
 
 #[doc(inline)]
 pub use kornia_tensor as tensor;

@@ -2,7 +2,7 @@ use numpy::{PyArray1, PyArray2, PyArrayMethods};
 use pyo3::prelude::*;
 
 use kornia_3d::pointcloud::PointCloud;
-use kornia_icp::{icp_vanilla as icp_vanilla_fn, ICPConvergenceCriteria, ICPResult};
+use kornia_3d::registration::{icp_vanilla as icp_vanilla_fn, ICPConvergenceCriteria, ICPResult};
 
 use crate::pointcloud::{FromPyPointCloud, PyPointCloud};
 
