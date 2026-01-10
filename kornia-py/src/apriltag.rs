@@ -27,10 +27,9 @@ impl PyDecodeTagsConfig {
                 tag_families.push(family);
             }
 
-            Ok(Self(
-                DecodeTagsConfig::new(tag_families)
-                    .map_err(|e| PyErr::new::<PyException, _>(e.to_string()))?,
-            ))
+            Ok(Self(DecodeTagsConfig::new(tag_families).map_err(|e| {
+                PyErr::new::<PyException, _>(e.to_string())
+            })?))
         })
     }
 
@@ -144,9 +143,9 @@ impl PyDecodeTagsConfig {
 
     #[staticmethod]
     pub fn all() -> PyResult<Self> {
-        Ok(Self(
-            DecodeTagsConfig::all().map_err(|e| PyErr::new::<PyException, _>(e.to_string()))?,
-        ))
+        Ok(Self(DecodeTagsConfig::all().map_err(|e| {
+            PyErr::new::<PyException, _>(e.to_string())
+        })?))
     }
 }
 
