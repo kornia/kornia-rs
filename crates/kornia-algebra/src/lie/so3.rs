@@ -2,8 +2,7 @@ use crate::{Mat3AF32, Mat4F32, QuatF32, Vec3AF32};
 use rand::Rng;
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 
-// TODO: Address double cover issue.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 pub struct SO3F32 {
     pub q: QuatF32,
 }
