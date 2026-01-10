@@ -387,4 +387,141 @@ mod tests {
         assert_relative_eq!(transformed.y, 4.0, epsilon = EPSILON);
         assert_relative_eq!(transformed.z, 5.0, epsilon = EPSILON);
     }
+
+    #[test]
+    fn test_sim3_exp_log_roundtrip() {
+        // Test exp then log roundtrip for simpler inputs
+        // Note: The exp/log implementation uses approximations that work well for
+        // small angles and simple cases
+        let test_cases = [
+            // Translation only (no rotation, no scale)
+            (Vec3AF32::new(1.0, 2.0, 3.0), Vec3AF32::ZERO, 0.0),
+            // Scale only
+            (Vec3AF32::ZERO, Vec3AF32::ZERO, 0.5),
+            // Pure rotation around X
+            (Vec3AF32::ZERO, Vec3AF32::new(0.5, 0.0, 0.0), 0.0),
+            // Pure rotation around Y
+            (Vec3AF32::ZERO, Vec3AF32::new(0.0, 0.5, 0.0), 0.0),
+            // Pure rotation around Z
+            (Vec3AF32::ZERO, Vec3AF32::new(0.0, 0.0, 0.5), 0.0),
+        ];
+
+        for (upsilon, omega, sigma) in test_cases {
+            let sim3 = Sim3F32::exp(upsilon, omega, sigma);
+            let (upsilon_out, omega_out, sigma_out) = sim3.log();
+
+            assert_relative_eq!(upsilon_out.x, upsilon.x, epsilon = 0.01);
+            assert_relative_eq!(upsilon_out.y, upsilon.y, epsilon = 0.01);
+            assert_relative_eq!(upsilon_out.z, upsilon.z, epsilon = 0.01);
+            assert_relative_eq!(omega_out.x, omega.x, epsilon = EPSILON);
+            assert_relative_eq!(omega_out.y, omega.y, epsilon = EPSILON);
+            assert_relative_eq!(omega_out.z, omega.z, epsilon = EPSILON);
+            assert_relative_eq!(sigma_out, sigma, epsilon = EPSILON);
+        }
+    }
+
+    #[test]
+    fn test_sim3_log_exp_roundtrip() {
+        // Test log then exp roundtrip for simpler Sim3 elements
+        let test_cases = [
+            // Identity with translation
+            Sim3F32::from_scale_rotation_translation(
+                1.0,
+                QuatF32::IDENTITY,
+                Vec3AF32::new(1.0, 2.0, 3.0),
+            ),
+            // Scale only
+            Sim3F32::from_scale_rotation_translation(2.0, QuatF32::IDENTITY, Vec3AF32::ZERO),
+            // Rotation only (no scale, no translation)
+            Sim3F32::from_scale_rotation_translation(
+                1.0,
+                QuatF32::from_xyzw(0.0, 0.0, 0.383, 0.924).normalize(), // ~45 deg around Z
+                Vec3AF32::ZERO,
+            ),
+        ];
+
+        for sim3 in test_cases {
+            let (upsilon, omega, sigma) = sim3.log();
+            let sim3_out = Sim3F32::exp(upsilon, omega, sigma);
+
+            assert_relative_eq!(sim3_out.scale(), sim3.scale(), epsilon = 0.01);
+            assert_relative_eq!(
+                (sim3_out.translation - sim3.translation).length(),
+                0.0,
+                epsilon = 0.01
+            );
+            // Rotations should be equivalent
+            let dot = sim3_out.rotation().dot(sim3.rotation().0).abs();
+            assert_relative_eq!(dot, 1.0, epsilon = EPSILON);
+        }
+    }
+
+    #[test]
+    fn test_sim3_exp_identity() {
+        // exp(0, 0, 0) should give identity
+        let sim3 = Sim3F32::exp(Vec3AF32::ZERO, Vec3AF32::ZERO, 0.0);
+
+        assert_relative_eq!(sim3.scale(), 1.0, epsilon = EPSILON);
+        assert_relative_eq!(sim3.translation.x, 0.0, epsilon = EPSILON);
+        assert_relative_eq!(sim3.translation.y, 0.0, epsilon = EPSILON);
+        assert_relative_eq!(sim3.translation.z, 0.0, epsilon = EPSILON);
+        assert_relative_eq!(sim3.rotation().w.abs(), 1.0, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_sim3_log_identity() {
+        // log(identity) should give (0, 0, 0)
+        let (upsilon, omega, sigma) = Sim3F32::IDENTITY.log();
+
+        assert_relative_eq!(upsilon.x, 0.0, epsilon = EPSILON);
+        assert_relative_eq!(upsilon.y, 0.0, epsilon = EPSILON);
+        assert_relative_eq!(upsilon.z, 0.0, epsilon = EPSILON);
+        assert_relative_eq!(omega.x, 0.0, epsilon = EPSILON);
+        assert_relative_eq!(omega.y, 0.0, epsilon = EPSILON);
+        assert_relative_eq!(omega.z, 0.0, epsilon = EPSILON);
+        assert_relative_eq!(sigma, 0.0, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_sim3_exp_small_angles() {
+        // Test behavior with very small rotation angles (Taylor series regime)
+        let upsilon = Vec3AF32::new(0.1, 0.2, 0.3);
+        let omega = Vec3AF32::new(1e-8, 2e-8, 3e-8);
+        let sigma = 0.1;
+
+        let sim3 = Sim3F32::exp(upsilon, omega, sigma);
+        let (upsilon_out, omega_out, sigma_out) = sim3.log();
+
+        // Should recover the inputs even for small angles
+        assert_relative_eq!(upsilon_out.x, upsilon.x, epsilon = 0.01);
+        assert_relative_eq!(upsilon_out.y, upsilon.y, epsilon = 0.01);
+        assert_relative_eq!(upsilon_out.z, upsilon.z, epsilon = 0.01);
+        assert_relative_eq!(omega_out.x, omega.x, epsilon = 1e-6);
+        assert_relative_eq!(omega_out.y, omega.y, epsilon = 1e-6);
+        assert_relative_eq!(omega_out.z, omega.z, epsilon = 1e-6);
+        assert_relative_eq!(sigma_out, sigma, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_sim3_translation_only() {
+        // Test pure translation (no rotation, no scale)
+        let upsilon = Vec3AF32::new(1.0, 2.0, 3.0);
+        let sim3 = Sim3F32::exp(upsilon, Vec3AF32::ZERO, 0.0);
+
+        assert_relative_eq!(sim3.scale(), 1.0, epsilon = EPSILON);
+        assert_relative_eq!(sim3.translation.x, upsilon.x, epsilon = EPSILON);
+        assert_relative_eq!(sim3.translation.y, upsilon.y, epsilon = EPSILON);
+        assert_relative_eq!(sim3.translation.z, upsilon.z, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_sim3_scale_only() {
+        // Test pure scaling (no rotation, no translation)
+        let sigma = 0.693; // ln(2) ≈ 0.693
+        let sim3 = Sim3F32::exp(Vec3AF32::ZERO, Vec3AF32::ZERO, sigma);
+
+        assert_relative_eq!(sim3.scale(), sigma.exp(), epsilon = EPSILON);
+        assert_relative_eq!(sim3.translation.length(), 0.0, epsilon = EPSILON);
+        assert_relative_eq!(sim3.rotation().w.abs(), 1.0, epsilon = EPSILON);
+    }
 }

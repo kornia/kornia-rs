@@ -172,4 +172,103 @@ mod tests {
         let combined = rxso3_1 * rxso3_2;
         assert_relative_eq!(combined.scale(), 3.0, epsilon = EPSILON);
     }
+
+    #[test]
+    fn test_rxso3_exp_log_roundtrip() {
+        // Test exp then log roundtrip for various inputs
+        let test_cases = [
+            (Vec3AF32::new(0.1, 0.2, 0.3), 0.5),   // General case
+            (Vec3AF32::new(1.0, 0.0, 0.0), 0.0),   // Rotation only around X
+            (Vec3AF32::new(0.0, 1.0, 0.0), 0.0),   // Rotation only around Y
+            (Vec3AF32::new(0.0, 0.0, 1.0), 0.0),   // Rotation only around Z
+            (Vec3AF32::new(0.0, 0.0, 0.0), 1.0),   // Scale only
+            (Vec3AF32::new(-0.2, 0.1, 0.4), -0.3), // Mixed with negative scale log
+        ];
+
+        for (omega, sigma) in test_cases {
+            let rxso3 = RxSO3F32::exp(omega, sigma);
+            let (omega_out, sigma_out) = rxso3.log();
+
+            assert_relative_eq!(omega_out.x, omega.x, epsilon = EPSILON);
+            assert_relative_eq!(omega_out.y, omega.y, epsilon = EPSILON);
+            assert_relative_eq!(omega_out.z, omega.z, epsilon = EPSILON);
+            assert_relative_eq!(sigma_out, sigma, epsilon = EPSILON);
+        }
+    }
+
+    #[test]
+    fn test_rxso3_log_exp_roundtrip() {
+        // Test log then exp roundtrip for various RxSO3 elements
+        let test_cases = [
+            RxSO3F32::from_scale_quaternion(2.0, QuatF32::IDENTITY),
+            RxSO3F32::from_scale_quaternion(
+                1.5,
+                QuatF32::from_xyzw(0.1, 0.2, 0.3, 0.9).normalize(),
+            ),
+            RxSO3F32::from_scale_quaternion(
+                0.5,
+                QuatF32::from_xyzw(-0.1, 0.3, -0.2, 0.8).normalize(),
+            ),
+        ];
+
+        for rxso3 in test_cases {
+            let (omega, sigma) = rxso3.log();
+            let rxso3_out = RxSO3F32::exp(omega, sigma);
+
+            assert_relative_eq!(rxso3_out.scale(), rxso3.scale(), epsilon = EPSILON);
+            // Rotations should be equivalent (dot product close to 1 or -1)
+            let dot = rxso3_out.rotation().dot(rxso3.rotation().0).abs();
+            assert_relative_eq!(dot, 1.0, epsilon = EPSILON);
+        }
+    }
+
+    #[test]
+    fn test_rxso3_exp_identity() {
+        // exp(0, 0) should give identity
+        let rxso3 = RxSO3F32::exp(Vec3AF32::ZERO, 0.0);
+
+        assert_relative_eq!(rxso3.scale(), 1.0, epsilon = EPSILON);
+        assert_relative_eq!(rxso3.rotation().w, 1.0, epsilon = EPSILON);
+        assert_relative_eq!(rxso3.rotation().x, 0.0, epsilon = EPSILON);
+        assert_relative_eq!(rxso3.rotation().y, 0.0, epsilon = EPSILON);
+        assert_relative_eq!(rxso3.rotation().z, 0.0, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_rxso3_log_identity() {
+        // log(identity) should give (0, 0)
+        let (omega, sigma) = RxSO3F32::IDENTITY.log();
+
+        assert_relative_eq!(omega.x, 0.0, epsilon = EPSILON);
+        assert_relative_eq!(omega.y, 0.0, epsilon = EPSILON);
+        assert_relative_eq!(omega.z, 0.0, epsilon = EPSILON);
+        assert_relative_eq!(sigma, 0.0, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_rxso3_exp_small_angles() {
+        // Test behavior with very small rotation angles (Taylor series regime)
+        let omega = Vec3AF32::new(1e-8, 2e-8, 3e-8);
+        let sigma = 0.1;
+
+        let rxso3 = RxSO3F32::exp(omega, sigma);
+        let (omega_out, sigma_out) = rxso3.log();
+
+        // Should recover the inputs even for small angles
+        assert_relative_eq!(omega_out.x, omega.x, epsilon = 1e-6);
+        assert_relative_eq!(omega_out.y, omega.y, epsilon = 1e-6);
+        assert_relative_eq!(omega_out.z, omega.z, epsilon = 1e-6);
+        assert_relative_eq!(sigma_out, sigma, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_rxso3_scale_only() {
+        // Test pure scaling (no rotation)
+        let sigma = 0.693; // ln(2) ≈ 0.693
+        let rxso3 = RxSO3F32::exp(Vec3AF32::ZERO, sigma);
+
+        assert_relative_eq!(rxso3.scale(), sigma.exp(), epsilon = EPSILON);
+        // Rotation should be identity
+        assert_relative_eq!(rxso3.rotation().w.abs(), 1.0, epsilon = EPSILON);
+    }
 }
