@@ -1,12 +1,11 @@
 //! Rigid alignment utilities (Kabsch / Umeyama)
 
-// TODO: Make this work with kornia-linalg SVD(encountered some issues with precision)
-use glam::Vec3;
+use crate::{Mat3AF32, Mat3F32, Vec3AF32, Vec3F32};
 use nalgebra::{Matrix3, SVD};
 use thiserror::Error;
 
 /// Rotation (R), translation (t), and scale (s) output of Umeyama without scaling (s = 1).
-pub type UmeyamaOutput = ([[f32; 3]; 3], [f32; 3], f32);
+pub type UmeyamaOutput = (Mat3AF32, Vec3AF32, f32);
 
 /// Error type for Umeyama rigid alignment operations.
 #[derive(Debug, Error)]
@@ -27,7 +26,7 @@ pub type UmeyamaResult = Result<UmeyamaOutput, UmeyamaError>;
 
 /// Umeyama/Kabsch algorithm without scale.
 /// Returns (R, t, s) where s == 1.0.
-pub fn umeyama(src: &[Vec3], dst: &[Vec3]) -> UmeyamaResult {
+pub fn umeyama(src: &[Vec3AF32], dst: &[Vec3AF32]) -> UmeyamaResult {
     if src.len() != dst.len() {
         return Err(UmeyamaError::MismatchedInputLengths);
     }
@@ -97,49 +96,57 @@ pub fn umeyama(src: &[Vec3], dst: &[Vec3]) -> UmeyamaResult {
         t[r] = mu_d[r] - (r_arr[r][0] * mu_s[0] + r_arr[r][1] * mu_s[1] + r_arr[r][2] * mu_s[2]);
     }
 
-    Ok((r_arr, t, 1.0))
+    // Convert row-major array to column-major for Mat3F32::from_cols_array
+    let r_flat = [
+        r_arr[0][0],
+        r_arr[1][0],
+        r_arr[2][0], // first column
+        r_arr[0][1],
+        r_arr[1][1],
+        r_arr[2][1], // second column
+        r_arr[0][2],
+        r_arr[1][2],
+        r_arr[2][2], // third column
+    ];
+    let r = Mat3F32::from_cols_array(&r_flat);
+    let t = Vec3F32::from_array(t);
+
+    let r_cols: [f32; 9] = r.into();
+    Ok((
+        Mat3AF32::from_cols_array(&r_cols),
+        Vec3AF32::new(t.x, t.y, t.z),
+        1.0,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use approx::assert_relative_eq;
-
-    fn apply_rt(r: &[[f32; 3]; 3], t: &[f32; 3], p: &[f32; 3]) -> Vec3 {
-        let x = r[0][0] * p[0] + r[0][1] * p[1] + r[0][2] * p[2] + t[0];
-        let y = r[1][0] * p[0] + r[1][1] * p[1] + r[1][2] * p[2] + t[1];
-        let z = r[2][0] * p[0] + r[2][1] * p[1] + r[2][2] * p[2] + t[2];
-        Vec3::new(x, y, z)
-    }
 
     #[test]
+    #[cfg(feature = "approx")]
     fn test_umeyama_synthetic_z90() -> Result<(), UmeyamaError> {
+        use approx::assert_relative_eq;
         // Source points (square in XY plane, z=0)
-        let src: [Vec3; 4] = [
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(1.0, 1.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
+        let src: [Vec3AF32; 4] = [
+            Vec3AF32::new(0.0, 0.0, 0.0),
+            Vec3AF32::new(1.0, 0.0, 0.0),
+            Vec3AF32::new(1.0, 1.0, 0.0),
+            Vec3AF32::new(0.0, 1.0, 0.0),
         ];
         // True transform: 90° about Z, plus translation
-        let r: [[f32; 3]; 3] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
-        let t = [0.5, -0.3, 2.0];
+        // Rotation matrix (row-major): [[0, -1, 0], [1, 0, 0], [0, 0, 1]]
+        // Converted to column-major for from_cols
+        let r = Mat3AF32::from_cols_array(&[0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        let t = Vec3AF32::new(0.5, -0.3, 2.0);
         // Create dst
-        let mut dst = [Vec3::new(0.0, 0.0, 0.0); 4];
+        let mut dst = [Vec3AF32::new(0.0, 0.0, 0.0); 4];
         for i in 0..4 {
-            let src_array = [src[i].x, src[i].y, src[i].z];
-            dst[i] = apply_rt(&r, &t, &src_array);
+            dst[i] = r * src[i] + t
         }
 
         let (r_est, t_est, _s) = umeyama(&src, &dst)?;
-        for i in 0..3 {
-            for j in 0..3 {
-                assert_relative_eq!(r_est[i][j], r[i][j], epsilon = 1e-6);
-            }
-        }
-        for k in 0..3 {
-            assert_relative_eq!(t_est[k], t[k], epsilon = 1e-6);
-        }
+        assert_relative_eq!(r_est, r, epsilon = 1e-6);
+        assert_relative_eq!(t_est, t, epsilon = 1e-6);
         Ok(())
     }
 }
