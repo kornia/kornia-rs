@@ -222,18 +222,17 @@ impl QuickDecode {
         for i in 0..4 {
             let val = (observed_code >> self.shifts[i]) & self.chunk_mask;
 
-            if let Some(&start) = self.chunk_offsets[i].get(val) {
-                let end = self.chunk_offsets[i][val + 1];
-                let candidates = &self.chunk_ids[i][(start as usize)..(end as usize)];
-                for &id in candidates {
-                    if let Some(dist) = check(id) {
-                        return Some(QuickDecodeEntry {
-                            rcode: observed_code,
-                            id,
-                            hamming: dist,
-                            rotation: 0,
-                        });
-                    }
+            let start = self.chunk_offsets[i][val];
+            let end = self.chunk_offsets[i][val + 1];
+            let candidates = &self.chunk_ids[i][(start as usize)..(end as usize)];
+            for &id in candidates {
+                if let Some(dist) = check(id) {
+                    return Some(QuickDecodeEntry {
+                        rcode: observed_code,
+                        id,
+                        hamming: dist,
+                        rotation: 0,
+                    });
                 }
             }
         }
