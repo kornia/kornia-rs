@@ -7,6 +7,9 @@
 
 use crate::{Mat3AF32, QuatF32, Vec3AF32};
 
+/// Minimum allowed scale to prevent numerical issues
+const MIN_SCALE: f32 = 1.0e-6;
+
 use super::so3::SO3F32;
 
 /// Scaling and rotation component: R₊ × SO(3)
@@ -112,12 +115,11 @@ impl std::ops::Mul for RxSO3F32 {
     fn mul(self, rhs: RxSO3F32) -> Self::Output {
         // Quaternion multiplication with saturation to avoid scale becoming too small
         let result_q = self.quaternion * rhs.quaternion;
-        let min_scale = 1e-6; // Minimum allowed scale
 
-        if result_q.length_squared() < min_scale {
+        if result_q.length_squared() < MIN_SCALE {
             // Saturation: keep minimum scale
             let current_norm = result_q.length();
-            let target_norm = min_scale.sqrt();
+            let target_norm = MIN_SCALE.sqrt();
             Self {
                 quaternion: QuatF32::from(result_q.0 * (target_norm / current_norm)),
             }

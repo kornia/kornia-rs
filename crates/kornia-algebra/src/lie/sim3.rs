@@ -11,6 +11,9 @@
 
 use crate::{Mat3AF32, Mat4F32, QuatF32, Vec3AF32};
 
+/// Small angle threshold for Taylor series approximations
+const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
+
 use super::rxso3::RxSO3F32;
 use super::so3::SO3F32;
 
@@ -151,7 +154,7 @@ impl Sim3F32 {
         // V ≈ I + 1/2 [ω]× + (1/6)σ [ω]×²
         let omega_hat = SO3F32::hat(omega);
 
-        let v_mat = if omega.length() < 1e-6 {
+        let v_mat = if omega.length() < SMALL_ANGLE_EPSILON {
             // Small angle approximation
             Mat3AF32::IDENTITY - omega_hat * 0.5
         } else {
@@ -186,7 +189,7 @@ impl Sim3F32 {
         let omega_hat = SO3F32::hat(omega);
         let theta = omega.length();
 
-        let w_inv = if theta < 1e-6 {
+        let w_inv = if theta < SMALL_ANGLE_EPSILON {
             // Small angle approximation
             Mat3AF32::IDENTITY + omega_hat * 0.5 + (omega_hat * omega_hat) * ((1.0 / 6.0) * sigma)
         } else {
