@@ -19,9 +19,11 @@ use super::so3::SO3F32;
 
 /// Similarity transformation in 3D: rotation + scale + translation
 ///
-/// Sim3F32 = R+ × SE3, where:
-/// - R+ is positive real numbers (scale)
-/// - SE3 is rigid transformations (rotation + translation)
+/// Sim3F32 represents the similarity group Sim(3) in 3D as
+/// the semi-direct product (R+ × SO(3)) ⋉ R³, where:
+/// - R+ is the positive real numbers (scale)
+/// - SO(3) is the rotation group in 3D
+/// - R³ is the 3D Euclidean vector space (translation)
 ///
 /// 7 degrees of freedom: 3 for rotation, 1 for scale, 3 for translation
 #[derive(Debug, Clone, Copy)]
@@ -156,7 +158,7 @@ impl Sim3F32 {
 
         let v_mat = if omega.length() < SMALL_ANGLE_EPSILON {
             // Small angle approximation
-            Mat3AF32::IDENTITY - omega_hat * 0.5
+            Mat3AF32::IDENTITY + omega_hat * 0.5
         } else {
             let theta = omega.length();
             let theta_sq = theta * theta;
