@@ -264,7 +264,6 @@ impl Sim3F32 {
         ]
     }
 }
-// ===== OPERATOR OVERLOADS =====
 
 impl std::ops::Mul<Sim3F32> for Sim3F32 {
     type Output = Sim3F32;
@@ -284,8 +283,6 @@ impl std::ops::Mul<Vec3AF32> for Sim3F32 {
         scaled_rotated + self.translation
     }
 }
-
-// ===== TESTS =====
 
 #[cfg(test)]
 mod tests {
