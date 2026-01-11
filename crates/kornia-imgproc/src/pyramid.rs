@@ -150,13 +150,61 @@ pub fn pyrdown<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
         ));
     }
 
-    // First apply Gaussian blur
-    let mut blurred = Image::<f32, C, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
-    let (kernel_x, kernel_y) = get_pyramid_gaussian_kernel();
-    separable_filter(src, &mut blurred, &kernel_x, &kernel_y)?;
+    let src_width = src.width();
+    let src_height = src.height();
+    let dst_width = dst.width();
+    let dst_height = dst.height();
 
-    // Then downsample using bilinear interpolation
-    resize_native(&blurred, dst, InterpolationMode::Bilinear)?;
+    // Fused Gaussian blur + downsample in a single pass.
+    // For each output pixel at (dst_x, dst_y), we compute the Gaussian-weighted
+    // average of a 5x5 neighborhood centered at (dst_x * 2, dst_y * 2) in the source.
+    // This avoids allocating an intermediate buffer and only computes values at
+    // output pixel locations.
+
+    let src_data = src.as_slice();
+    let dst_data = dst.as_slice_mut();
+    let (kernel_x, kernel_y) = get_pyramid_gaussian_kernel();
+
+    for dst_y in 0..dst_height {
+        let src_center_y = (dst_y * 2) as i32;
+
+        for dst_x in 0..dst_width {
+            let src_center_x = (dst_x * 2) as i32;
+
+            // Precompute combined 5x5 kernel weights for this output pixel to avoid
+            // recomputing kx*ky for each channel.
+            let mut combined = [[0.0f32; 5]; 5];
+            for (ky, row) in combined.iter_mut().enumerate() {
+                let ky_weight = kernel_y[ky];
+                for (kx, val) in row.iter_mut().enumerate() {
+                    *val = ky_weight * kernel_x[kx];
+                }
+            }
+
+            // Apply 5x5 Gaussian kernel centered at (src_center_x, src_center_y)
+            for c in 0..C {
+                let mut sum = 0.0f32;
+
+                for (ky, row) in combined.iter().enumerate() {
+                    let src_y = src_center_y + ky as i32 - 2;
+                    // Clamp to image bounds (replicate border)
+                    let src_y_clamped = src_y.clamp(0, src_height as i32 - 1) as usize;
+
+                    for (kx, &weight) in row.iter().enumerate() {
+                        let src_x = src_center_x + kx as i32 - 2;
+                        // Clamp to image bounds (replicate border)
+                        let src_x_clamped = src_x.clamp(0, src_width as i32 - 1) as usize;
+
+                        let src_idx = (src_y_clamped * src_width + src_x_clamped) * C + c;
+                        sum += src_data[src_idx] * weight;
+                    }
+                }
+
+                let dst_idx = (dst_y * dst_width + dst_x) * C + c;
+                dst_data[dst_idx] = sum;
+            }
+        }
+    }
 
     Ok(())
 }
