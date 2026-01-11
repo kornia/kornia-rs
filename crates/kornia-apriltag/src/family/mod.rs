@@ -28,6 +28,40 @@ pub struct TagFamily {
     pub sharpening_buffer: SharpeningBuffer,
 }
 
+impl TagFamily {
+    /// Sets the maximum allowed Hamming distance for decoding and returns self.
+    ///
+    /// The Hamming distance determines how many bit errors are tolerated when
+    /// matching observed codes to valid tag codes. A lower value reduces false
+    /// positives but may miss detections in noisy images.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_hamming` - The maximum number of bit errors to tolerate (0-3).
+    ///
+    /// # Errors
+    ///
+    /// Returns `AprilTagError::InvalidAllowedErrors` if `max_hamming` is greater than 3.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_apriltag::family::TagFamily;
+    ///
+    /// let family = TagFamily::tag36_h11()?.with_max_hamming(1)?;
+    /// # Ok::<(), kornia_apriltag::errors::AprilTagError>(())
+    /// ```
+    pub fn with_max_hamming(mut self, max_hamming: u8) -> Result<Self, AprilTagError> {
+        self.quick_decode.set_max_hamming(max_hamming)?;
+        Ok(self)
+    }
+
+    /// Returns the current maximum allowed Hamming distance.
+    pub fn max_hamming(&self) -> u8 {
+        self.quick_decode.max_hamming()
+    }
+}
+
 /// Represents a decoded AprilTag.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TagFamilyKind {
