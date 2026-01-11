@@ -392,10 +392,24 @@ pub mod family {
     #[pymethods]
     impl PyQuickDecode {
         #[new]
-        pub fn new(nbits: usize, code_data: Vec<usize>) -> PyResult<Self> {
-            Ok(Self(QuickDecode::new(nbits, &code_data, 2).map_err(
-                |e| PyErr::new::<PyException, _>(e.to_string()),
-            )?))
+        #[pyo3(signature = (nbits, code_data, max_hamming=2))]
+        pub fn new(nbits: usize, code_data: Vec<usize>, max_hamming: u8) -> PyResult<Self> {
+            Ok(Self(
+                QuickDecode::new(nbits, &code_data, max_hamming)
+                    .map_err(|e| PyErr::new::<PyException, _>(e.to_string()))?,
+            ))
+        }
+
+        #[getter]
+        pub fn get_max_hamming(&self) -> u8 {
+            self.0.max_hamming()
+        }
+
+        #[setter]
+        pub fn set_max_hamming(&mut self, value: u8) -> PyResult<()> {
+            self.0
+                .set_max_hamming(value)
+                .map_err(|e| PyErr::new::<PyException, _>(e.to_string()))
         }
     }
 
