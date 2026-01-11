@@ -193,3 +193,6 @@ toml-fmt-check = { cmd = "tombi format --check", description = "Check TOML forma
 clean-all = { depends-on = ["rust-clean", "py-clean", "cpp-clean"], description = "Clean all build artifacts" }
 test-all = { depends-on = ["rust-test", "py-test", "cpp-test"], description = "Run all tests" }
 fmt-all = { depends-on = ["rust-fmt", "toml-fmt", "cpp-fmt"], description = "Format all code" }
+
+[dependencies]
+pip = ">=24.3.1,<26"
