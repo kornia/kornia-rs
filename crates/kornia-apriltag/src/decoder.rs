@@ -1,6 +1,7 @@
 use std::{f32::consts::PI, ops::ControlFlow};
 
 use crate::{
+    errors::AprilTagError,
     family::{TagFamily, TagFamilyKind},
     quad::Quad,
     utils::{
@@ -94,82 +95,106 @@ impl GrayModelPair {
 /// Represents an entry in the quick decode table for tag decoding.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct QuickDecodeEntry {
-    /// The raw code value associated with the tag.
+    /// The raw observed code from the image.
     pub rcode: usize,
-    /// The decoded tag ID.
+    /// The decoded Tag ID.
     pub id: u16,
-    /// The Hamming distance for this code.
+    /// The Hamming distance found (0, 1, 2, or 3).
     pub hamming: u8,
-    /// The rotation (in 90-degree increments) of the tag.
+    /// Rotation
     pub rotation: u8,
 }
 
-/// Sentinel value used to mark unoccupied slots in the quick decode hash table.
-const SLOT_EMPTY: u16 = u16::MAX;
-
-/// A table for fast lookup of decoded tag codes and their associated metadata.
-#[derive(Debug, Default, Clone, PartialEq)]
+/// A lookup table for fast Hamming distance decoding.
+#[derive(Debug, Clone, PartialEq)]
 pub struct QuickDecode {
-    table: Vec<u16>,
+    /// Flattened storage for IDs.
+    chunk_ids: [Vec<u16>; 4],
+
+    /// Index lookup table.
+    chunk_offsets: [Vec<u16>; 4],
+
+    /// The number of bits to shift right to extract each chunk.
+    shifts: [usize; 4],
+
+    /// Bitmask to isolate the value of a single chunk.
+    chunk_mask: usize,
+
+    /// The maximum allowed Hamming distance.
+    max_hamming: u32,
 }
 
 impl QuickDecode {
-    /// Creates a new `QuickDecode` table for fast lookup of decoded tag codes and their associated metadata.
-    ///
-    /// # Arguments
-    ///
-    /// * `nbits` - Number of bits in the tag code.
-    /// * `code_data` - Slice of code values to populate the table.
-    ///
-    /// # Returns
-    ///
-    /// A new `QuickDecode` instance with precomputed entries for all codes and their Hamming neighbors.
-    pub fn new(nbits: usize, code_data: &[usize]) -> Self {
-        let ncodes = code_data.len();
-        let entries_needed = ncodes // Hamming 0
-            + nbits * ncodes // Hamming 1
-            + ncodes * nbits * (nbits - 1) / 2; // Hamming 2
-
-        let capacity = entries_needed * 3;
-
-        let mut quick_decode = Self {
-            table: vec![SLOT_EMPTY; capacity],
-        };
-
-        code_data.iter().enumerate().for_each(|(i, code)| {
-            let id = i as u16;
-            quick_decode.add(*code, id);
-
-            // add hamming 1
-            (0..nbits).for_each(|j| {
-                quick_decode.add(code ^ (1 << j), id);
-            });
-
-            // add hamming 2
-            (0..nbits).for_each(|j| {
-                (0..j).for_each(|k| {
-                    quick_decode.add(code ^ (1 << j) ^ (1 << k), id);
-                });
-            });
-        });
-        quick_decode
-    }
-
-    /// Adds a new entry to the quick decode table.
-    ///
-    /// # Arguments
-    ///
-    /// * `code` - The code value to add.
-    /// * `id` - The tag ID associated with the code.
-    fn add(&mut self, code: usize, id: u16) {
-        let len = self.table.len();
-        let mut bucket = code % len;
-
-        while self.table[bucket] != SLOT_EMPTY {
-            bucket = (bucket + 1) % len;
+    /// Creates a new QuickDecode table.
+    pub fn new(
+        nbits: usize,
+        valid_codes: &[usize],
+        allowed_errors: u8,
+    ) -> Result<Self, AprilTagError> {
+        if valid_codes.len() > u16::MAX as usize {
+            return Err(AprilTagError::TooManyCodes(valid_codes.len()));
         }
 
-        self.table[bucket] = id;
+        if allowed_errors >= 4 {
+            return Err(AprilTagError::InvalidAllowedErrors(allowed_errors));
+        }
+
+        let chunk_size = nbits.div_ceil(4);
+        let capacity = 1 << chunk_size;
+        let chunk_mask = capacity - 1;
+        let shifts = [0, chunk_size, chunk_size * 2, chunk_size * 3];
+
+        let mut offsets = [
+            vec![0u16; capacity + 1],
+            vec![0u16; capacity + 1],
+            vec![0u16; capacity + 1],
+            vec![0u16; capacity + 1],
+        ];
+
+        for &code in valid_codes {
+            for i in 0..4 {
+                let val = (code >> shifts[i]) & chunk_mask;
+                offsets[i][val + 1] += 1;
+            }
+        }
+
+        for offset in &mut offsets {
+            for j in 0..capacity {
+                offset[j + 1] += offset[j];
+            }
+        }
+
+        let mut cursors = [
+            offsets[0].clone(),
+            offsets[1].clone(),
+            offsets[2].clone(),
+            offsets[3].clone(),
+        ];
+
+        let mut ids = [
+            vec![0u16; valid_codes.len()],
+            vec![0u16; valid_codes.len()],
+            vec![0u16; valid_codes.len()],
+            vec![0u16; valid_codes.len()],
+        ];
+
+        for (idx, &code) in valid_codes.iter().enumerate() {
+            let id = idx as u16;
+            for i in 0..4 {
+                let val = (code >> shifts[i]) & chunk_mask;
+                let write_pos = cursors[i][val] as usize;
+                ids[i][write_pos] = id;
+                cursors[i][val] += 1;
+            }
+        }
+
+        Ok(Self {
+            chunk_ids: ids,
+            chunk_offsets: offsets,
+            shifts,
+            chunk_mask,
+            max_hamming: allowed_errors as u32,
+        })
     }
 
     /// Decodes an observed code using the quick decode table.
@@ -181,34 +206,38 @@ impl QuickDecode {
     ///
     /// # Returns
     ///
-    /// Returns `Some(QuickDecodeEntry)` if the code is found within a Hamming distance of 2, or `None` otherwise.
+    /// Returns `Some(QuickDecodeEntry)` if the code is found within `max_hamming`, or `None` otherwise.
     pub fn decode(&self, observed_code: usize, valid_codes: &[usize]) -> Option<QuickDecodeEntry> {
-        let len = self.table.len();
-        let mut bucket = observed_code % len;
-
-        loop {
-            let candidate_id = self.table[bucket];
-
-            if candidate_id == SLOT_EMPTY {
-                return None;
+        // Closure to check Hamming distance
+        let check = |id: u16| -> Option<u8> {
+            let perfect = valid_codes[id as usize];
+            let dist = (observed_code ^ perfect).count_ones();
+            if dist <= self.max_hamming {
+                Some(dist as u8)
+            } else {
+                None
             }
+        };
 
-            let perfect_code = valid_codes[candidate_id as usize];
-            let delta = observed_code ^ perfect_code;
+        for i in 0..4 {
+            let val = (observed_code >> self.shifts[i]) & self.chunk_mask;
 
-            let hamming = delta.count_ones();
-
-            if hamming <= 2 {
-                return Some(QuickDecodeEntry {
-                    rcode: observed_code,
-                    id: candidate_id,
-                    hamming: hamming as u8,
-                    rotation: 0,
-                });
+            let start = self.chunk_offsets[i][val];
+            let end = self.chunk_offsets[i][val + 1];
+            let candidates = &self.chunk_ids[i][(start as usize)..(end as usize)];
+            for &id in candidates {
+                if let Some(dist) = check(id) {
+                    return Some(QuickDecodeEntry {
+                        rcode: observed_code,
+                        id,
+                        hamming: dist,
+                        rotation: 0,
+                    });
+                }
             }
-
-            bucket = (bucket + 1) % len;
         }
+
+        None
     }
 }
 
@@ -868,7 +897,7 @@ mod tests {
 
     #[test]
     fn test_decode_tags() -> Result<(), Box<dyn std::error::Error>> {
-        let mut config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]);
+        let mut config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11])?;
         config.downscale_factor = 1;
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
@@ -1018,7 +1047,7 @@ mod tests {
 
     #[test]
     fn test_quad_decode() -> Result<(), Box<dyn std::error::Error>> {
-        let mut tag_family = TagFamily::tag36_h11();
+        let mut tag_family = TagFamily::tag36_h11()?;
         let src = read_image_png_mono8("../../tests/data/apriltag.png")?;
 
         let quad = Quad {
@@ -1083,8 +1112,8 @@ mod tests {
     }
 
     #[test]
-    fn test_quick_decode_codeword() {
-        let tag_family = TagFamily::tag36_h11();
+    fn test_quick_decode_codeword() -> Result<(), Box<dyn std::error::Error>> {
+        let tag_family = TagFamily::tag36_h11()?;
         let rcode = 52087007497;
 
         let mut quick_decode_entry = QuickDecodeEntry::default();
@@ -1097,7 +1126,8 @@ mod tests {
             rotation: 0,
         };
 
-        assert_eq!(quick_decode_entry, expected_decode_entry)
+        assert_eq!(quick_decode_entry, expected_decode_entry);
+        Ok(())
     }
 
     #[test]

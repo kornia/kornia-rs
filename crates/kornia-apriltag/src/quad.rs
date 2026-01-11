@@ -811,7 +811,7 @@ mod tests {
         find_connected_components(&bin, &mut uf)?;
         find_gradient_clusters(&bin, &mut uf, &mut clusters);
 
-        let mut decode_tag_config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]);
+        let mut decode_tag_config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11])?;
         decode_tag_config.downscale_factor = 1;
 
         let quads = fit_quads(&bin, &mut clusters, &decode_tag_config);

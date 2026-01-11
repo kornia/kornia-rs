@@ -149,6 +149,9 @@ mod mat;
 mod quat;
 mod vec;
 
+// Linear algebra operations
+pub mod linalg;
+
 // Re-export types at crate root for convenience
 pub use lie::{SE2F32, SE3F32, SO2F32, SO3F32};
 pub use mat::{Mat2F32, Mat2F64, Mat3AF32, Mat3F32, Mat3F64, Mat4F32, Mat4F64};

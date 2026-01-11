@@ -1,4 +1,7 @@
-use crate::decoder::{QuickDecode, SharpeningBuffer};
+use crate::{
+    decoder::{QuickDecode, SharpeningBuffer},
+    errors::AprilTagError,
+};
 
 /// Represents the AprilTag Family
 #[derive(Debug, Clone, PartialEq)]
@@ -48,7 +51,7 @@ pub enum TagFamilyKind {
     TagStandard52H13,
     /// A custom tag family, allowing users to supply a fully defined [`TagFamily`] instance.
     // TODO: Currently, we are cloning TagFamily if it's custom. Look into optimizing this in the future.
-    Custom(TagFamily),
+    Custom(Box<TagFamily>),
 }
 
 impl TagFamilyKind {
@@ -97,29 +100,46 @@ fn to_tag_family_kind_impl(value: &TagFamily) -> TagFamilyKind {
         "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
         "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
         "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
-        _ => TagFamilyKind::Custom(value.clone()),
+        _ => TagFamilyKind::Custom(Box::new(value.clone())),
     }
 }
 
-impl From<TagFamilyKind> for TagFamily {
-    fn from(value: TagFamilyKind) -> Self {
-        to_tag_family_impl(&value)
+impl TryFrom<TagFamilyKind> for TagFamily {
+    type Error = AprilTagError;
+
+    fn try_from(value: TagFamilyKind) -> Result<Self, Self::Error> {
+        match value {
+            TagFamilyKind::Tag16H5 => TagFamily::tag16_h5(),
+            TagFamilyKind::Tag25H9 => TagFamily::tag25_h9(),
+            TagFamilyKind::Tag36H10 => TagFamily::tag36_h10(),
+            TagFamilyKind::Tag36H11 => TagFamily::tag36_h11(),
+            TagFamilyKind::TagCircle21H7 => TagFamily::tagcircle21_h7(),
+            TagFamilyKind::TagCircle49H12 => TagFamily::tagcircle49_h12(),
+            TagFamilyKind::TagCustom48H12 => TagFamily::tagcustom48_h12(),
+            TagFamilyKind::TagStandard41H12 => TagFamily::tagstandard41_h12(),
+            TagFamilyKind::TagStandard52H13 => TagFamily::tagstandard52_h13(),
+            TagFamilyKind::Custom(tag_family) => Ok(*tag_family),
+        }
     }
 }
 
-impl From<&TagFamilyKind> for TagFamily {
-    fn from(value: &TagFamilyKind) -> Self {
+impl TryFrom<&TagFamilyKind> for TagFamily {
+    type Error = AprilTagError;
+
+    fn try_from(value: &TagFamilyKind) -> Result<Self, Self::Error> {
         to_tag_family_impl(value)
     }
 }
 
-impl From<&mut TagFamilyKind> for TagFamily {
-    fn from(value: &mut TagFamilyKind) -> Self {
+impl TryFrom<&mut TagFamilyKind> for TagFamily {
+    type Error = AprilTagError;
+
+    fn try_from(value: &mut TagFamilyKind) -> Result<Self, Self::Error> {
         to_tag_family_impl(value)
     }
 }
 
-fn to_tag_family_impl(value: &TagFamilyKind) -> TagFamily {
+fn to_tag_family_impl(value: &TagFamilyKind) -> Result<TagFamily, AprilTagError> {
     match value {
         TagFamilyKind::Tag16H5 => TagFamily::tag16_h5(),
         TagFamilyKind::Tag25H9 => TagFamily::tag25_h9(),
@@ -130,7 +150,7 @@ fn to_tag_family_impl(value: &TagFamilyKind) -> TagFamily {
         TagFamilyKind::TagCustom48H12 => TagFamily::tagcustom48_h12(),
         TagFamilyKind::TagStandard41H12 => TagFamily::tagstandard41_h12(),
         TagFamilyKind::TagStandard52H13 => TagFamily::tagstandard52_h13(),
-        TagFamilyKind::Custom(tag_family) => tag_family.clone(),
+        TagFamilyKind::Custom(tag_family) => Ok(tag_family.as_ref().clone()),
     }
 }
 

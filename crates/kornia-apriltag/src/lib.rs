@@ -72,7 +72,7 @@ pub struct DecodeTagsConfig {
 
 impl DecodeTagsConfig {
     /// Creates a new `DecodeTagsConfig` with the given tag family kinds.
-    pub fn new(tag_family_kinds: Vec<TagFamilyKind>) -> Self {
+    pub fn new(tag_family_kinds: Vec<TagFamilyKind>) -> Result<Self, AprilTagError> {
         const DEFAULT_DOWNSCALE_FACTOR: usize = 2;
 
         let mut tag_families = Vec::with_capacity(tag_family_kinds.len());
@@ -80,8 +80,8 @@ impl DecodeTagsConfig {
         let mut reversed_border = false;
         let mut min_tag_width = usize::MAX;
 
-        tag_family_kinds.iter().for_each(|family_kind| {
-            let family: TagFamily = family_kind.into();
+        for family_kind in tag_family_kinds {
+            let family: TagFamily = family_kind.try_into()?;
             if family.width_at_border < min_tag_width {
                 min_tag_width = family.width_at_border;
             }
@@ -89,7 +89,7 @@ impl DecodeTagsConfig {
             reversed_border |= family.reversed_border;
 
             tag_families.push(family);
-        });
+        }
 
         min_tag_width /= DEFAULT_DOWNSCALE_FACTOR;
 
@@ -97,7 +97,7 @@ impl DecodeTagsConfig {
             min_tag_width = 3;
         }
 
-        Self {
+        Ok(Self {
             tag_families,
             fit_quad_config: Default::default(),
             normal_border,
@@ -107,11 +107,11 @@ impl DecodeTagsConfig {
             min_tag_width,
             min_white_black_difference: 5,
             downscale_factor: DEFAULT_DOWNSCALE_FACTOR,
-        }
+        })
     }
 
     /// Creates a `DecodeTagsConfig` with all supported tag families.
-    pub fn all() -> Self {
+    pub fn all() -> Result<Self, AprilTagError> {
         Self::new(TagFamilyKind::all())
     }
 
@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn test_tag16_h5() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag16H5]);
+        let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag16H5])?;
         let mut decoder = AprilTagDecoder::new(config, [50, 50].into())?;
 
         let expected_quad = [
@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn test_tag25_h9() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag25H9]);
+        let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag25H9])?;
         let mut decoder = AprilTagDecoder::new(config, [55, 55].into())?;
 
         let expected_quad = [
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn test_tag36_h11() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]);
+        let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11])?;
         let mut decoder = AprilTagDecoder::new(config, [60, 60].into())?;
 
         let expected_quad = [
@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_tagcircle21h7() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCircle21H7]);
+        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCircle21H7])?;
         let mut decoder = AprilTagDecoder::new(config, [55, 55].into())?;
 
         let expected_quad = [
@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn test_tagcircle49h12() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCircle49H12]);
+        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCircle49H12])?;
         let mut decoder = AprilTagDecoder::new(config, [65, 65].into())?;
 
         let expected_quad = [
@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn test_tagcustom48_h12() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCustom48H12]);
+        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCustom48H12])?;
         let mut decoder = AprilTagDecoder::new(config, [60, 60].into())?;
 
         let expected_quad = [
@@ -475,7 +475,7 @@ mod tests {
 
     #[test]
     fn test_tagstandard41_h12() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard41H12]);
+        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard41H12])?;
         let mut decoder = AprilTagDecoder::new(config, [55, 55].into())?;
 
         let expected_quad = [
@@ -498,7 +498,7 @@ mod tests {
 
     #[test]
     fn test_tagstandard52_h13() -> Result<(), Box<dyn std::error::Error>> {
-        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard52H13]);
+        let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard52H13])?;
         let mut decoder = AprilTagDecoder::new(config, [60, 60].into())?;
 
         let expected_quad = [

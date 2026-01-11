@@ -16,5 +16,4 @@ include = { workspace = true }
 argh = { workspace = true }
 env_logger = { workspace = true }
 kornia = { workspace = true }
-kornia-icp = { workspace = true }
 rerun = { workspace = true }

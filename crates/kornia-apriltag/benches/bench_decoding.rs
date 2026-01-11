@@ -15,7 +15,7 @@ fn bench_decoding(c: &mut Criterion) {
     let mut gray_img = Image::from_size_val(img.size(), 0, CpuAllocator).unwrap();
     gray_from_rgb_u8(&img, &mut gray_img).unwrap();
 
-    let kornia_detector_config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]);
+    let kornia_detector_config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11]).unwrap();
     let mut kornia_detector =
         AprilTagDecoder::new(kornia_detector_config, gray_img.size()).unwrap();
 

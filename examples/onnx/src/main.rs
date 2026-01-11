@@ -84,18 +84,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // get the inputs names
     let inputs_names = model
-        .inputs
+        .inputs()
         .iter()
-        .map(|x| x.name.to_string())
+        .map(|x| x.name().to_string())
         .collect::<Vec<_>>();
 
     println!("inputs_name: {inputs_names:?}");
 
     // get the outputs names
     let outputs_names = model
-        .outputs
+        .outputs()
         .iter()
-        .map(|x| x.name.to_string())
+        .map(|x| x.name().to_string())
         .collect::<Vec<_>>();
 
     println!("outputs_name: {outputs_names:?}");

@@ -16,4 +16,12 @@ pub enum AprilTagError {
     /// The image length does not match the UnionFind length.
     #[error("The image length {0} mismatches UnionFind length {1}")]
     InvalidUnionFindSize(usize, usize),
+
+    /// Too many codes for u16 IDs.
+    #[error("Too many codes for u16 IDs: {0}")]
+    TooManyCodes(usize),
+
+    /// Allowed errors must be less than 4.
+    #[error("Allowed errors must be less than 4, got {0}")]
+    InvalidAllowedErrors(u8),
 }
