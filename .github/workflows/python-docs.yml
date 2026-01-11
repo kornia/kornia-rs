@@ -21,7 +21,7 @@ jobs:
           environments: default
 
       - name: Build kornia_rs
-        run: pixi run py-build
+        run: pixi run --environment default py-build
 
       - name: Run Doctests
         run: pixi run pytest tests/test_doctests.py
