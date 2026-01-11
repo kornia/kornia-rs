@@ -1,20 +1,17 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use rayon::prelude::*;
 
-// --- Constants for Gaussian pyramid upsampling ---
+// Gaussian kernel weights
 
 const SCALE_EVEN: f32 = 0.125;
 const SCALE_ODD: f32 = 0.5;
 const W_CENTER: f32 = 6.0;
 const W_NEIGHBOR: f32 = 1.0;
 
-// --- Helper functions ---
+// Helper functions for horizontal and vertical passes
 
 /// Performs the horizontal pass of Gaussian pyramid upsampling.
 ///
-/// This pass upsamples each row by a factor of 2 while applying the horizontal
-/// component of the separable Gaussian filter derived from the
-/// `[1, 4, 6, 4, 1]` kernel.
 ///
 /// # Arguments
 ///
@@ -37,7 +34,7 @@ fn pyrup_horizontal_pass_par<const C: usize, A>(
         .for_each(|(y, dst_row)| {
             let src_row_offset = y * src_width * C;
 
-            // Degenerate case: single-column image
+            // Special case of single column image
             if src_width == 1 {
                 for k in 0..C {
                     let val = src_data[src_row_offset + k];
@@ -57,7 +54,6 @@ fn pyrup_horizontal_pass_par<const C: usize, A>(
                 dst_row[C + k] = (pixel_left + pixel_right) * SCALE_ODD;
             }
 
-            // Central region
             for x in 1..(src_width - 1) {
                 let off = src_row_offset + x * C;
                 let dst_off = 2 * x * C;
@@ -92,8 +88,6 @@ fn pyrup_horizontal_pass_par<const C: usize, A>(
 
 /// Performs the vertical pass of Gaussian pyramid upsampling.
 ///
-/// This pass upsamples the intermediate buffer vertically by a factor of 2
-/// using the same polyphase Gaussian formulation as the horizontal pass.
 ///
 /// # Arguments
 ///
@@ -120,7 +114,6 @@ fn pyrup_vertical_pass_par<const C: usize>(
                 return;
             }
 
-            // Get pointers to previous, current, and next rows
             let (row_top, row_center, row_bottom) = if src_height == 1 {
                 (0, 0, 0)
             } else if y == 0 {
@@ -135,11 +128,10 @@ fn pyrup_vertical_pass_par<const C: usize>(
             let offset_center = row_center * stride;
             let offset_bottom = row_bottom * stride;
 
-            // Split chunk into even (2y) and odd (2y+1) rows
             let (row_even, row_odd) = dst_rows_chunk.split_at_mut(dst_stride);
 
             if y == 0 {
-                // Top border: Reflect (center is weighted 6, bottom weighted 2)
+                // Top border
                 for i in 0..stride {
                     row_even[i] = (W_CENTER * src_buffer[offset_center + i]
                         + 2.0 * src_buffer[offset_bottom + i])
@@ -148,7 +140,7 @@ fn pyrup_vertical_pass_par<const C: usize>(
                         (src_buffer[offset_center + i] + src_buffer[offset_bottom + i]) * SCALE_ODD;
                 }
             } else if y == src_height - 1 {
-                // Bottom border: Replicate (top weighted 1, center weighted 7)
+                // Bottom border
                 for i in 0..stride {
                     row_even[i] = (W_NEIGHBOR * src_buffer[offset_top + i]
                         + 7.0 * src_buffer[offset_center + i])
@@ -156,14 +148,12 @@ fn pyrup_vertical_pass_par<const C: usize>(
                     row_odd[i] = src_buffer[offset_center + i];
                 }
             } else {
-                // Central body
                 for i in 0..stride {
                     row_even[i] = (W_NEIGHBOR * src_buffer[offset_top + i]
                         + W_CENTER * src_buffer[offset_center + i]
                         + W_NEIGHBOR * src_buffer[offset_bottom + i])
                         * SCALE_EVEN;
 
-                    // Standard interpolation for odd row
                     row_odd[i] =
                         (src_buffer[offset_center + i] + src_buffer[offset_bottom + i]) * SCALE_ODD;
                 }
@@ -171,7 +161,7 @@ fn pyrup_vertical_pass_par<const C: usize>(
         });
 }
 
-// --- Main Function ---
+// Main pyrup function
 
 /// Upsample an image by a factor of 2.
 ///
