@@ -73,8 +73,16 @@ where
     // create a grid of x and y coordinates for the output image
     // and interpolate the values from the input image.
     let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
-    let step_x = (src.cols() - 1) as f32 / (dst.cols() - 1) as f32;
-    let step_y = (src.rows() - 1) as f32 / (dst.rows() - 1) as f32;
+    let step_x = if dst.cols() > 1 {
+        (src.cols() - 1) as f32 / (dst.cols() - 1) as f32
+    } else {
+        0.0
+    };
+    let step_y = if dst.rows() > 1 {
+        (src.rows() - 1) as f32 / (dst.rows() - 1) as f32
+    } else {
+        0.0
+    };
     let (map_x, map_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| {
         Ok((x as f32 * step_x, y as f32 * step_y))
     })?;
