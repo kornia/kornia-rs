@@ -64,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut grayscale_img = Image::from_size_val(img.size(), 0, CpuAllocator)?;
     gray_from_rgb_u8(&img, &mut grayscale_img)?;
 
-    let mut config = DecodeTagsConfig::new(args.kind);
+    let mut config = DecodeTagsConfig::new(args.kind)?;
 
     config.refine_edges_enabled = args.refine_edges_enabled;
     config.min_white_black_difference = args.min_white_black_difference;
