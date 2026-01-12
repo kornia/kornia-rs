@@ -1,0 +1,12 @@
+[package]
+name = "onnx-siglip2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+argh = "0.1"
+kornia = { path = "../../crates/kornia" }
+kornia-image = { path = "../../crates/kornia-image" }
+kornia-io = { path = "../../crates/kornia-io" }
+kornia-tensor = { path = "../../crates/kornia-tensor" }
+ort = { version = "2.0.0-rc.11" }
