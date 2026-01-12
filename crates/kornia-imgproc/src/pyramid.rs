@@ -7,6 +7,7 @@ const SCALE_EVEN: f32 = 0.125;
 const SCALE_ODD: f32 = 0.5;
 const W_CENTER: f32 = 6.0;
 const W_NEIGHBOR: f32 = 1.0;
+const W_BORDER: f32 = 7.0;
 
 // Helper functions for horizontal and vertical passes
 
@@ -80,7 +81,7 @@ fn pyrup_horizontal_pass_par<const C: usize, A>(
                 let pixel_curr = src_data[off_last + k];
 
                 dst_row[dst_off_last + k] =
-                    (W_NEIGHBOR * pixel_prev + 7.0 * pixel_curr) * SCALE_EVEN;
+                    (W_NEIGHBOR * pixel_prev + W_BORDER * pixel_curr) * SCALE_EVEN;
                 dst_row[dst_off_last + C + k] = pixel_curr;
             }
         });
@@ -143,7 +144,7 @@ fn pyrup_vertical_pass_par<const C: usize>(
                 // Bottom border
                 for i in 0..stride {
                     row_even[i] = (W_NEIGHBOR * src_buffer[offset_top + i]
-                        + 7.0 * src_buffer[offset_center + i])
+                        + W_BORDER * src_buffer[offset_center + i])
                         * SCALE_EVEN;
                     row_odd[i] = src_buffer[offset_center + i];
                 }
