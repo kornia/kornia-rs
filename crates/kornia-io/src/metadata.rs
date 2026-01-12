@@ -76,7 +76,7 @@ pub fn read_image_metadata<P: AsRef<Path>>(path: P) -> Result<ImageMetadata, IoE
     if let Some(metadata) = metadata {
         for tag in metadata.get_tag(&little_exif::exif_tag::ExifTag::Orientation(Vec::new())) {
             if let little_exif::exif_tag::ExifTag::Orientation(values) = tag {
-                if let Some(&v) = values.get(0) {
+                if let Some(&v) = values.first() {
                     if (1..=8).contains(&v) {
                         orientation = Some(v);
                         break;
