@@ -111,7 +111,7 @@ fn reflect_101(mut p: i32, len: i32) -> i32 {
 
     // Compute which "period" we're in
     let period = 2 * (len - 1);
-    p = p % period;
+    p %= period;
 
     // If in the second half of the period, reflect back
     if p >= len {
@@ -304,7 +304,7 @@ mod tests {
         pyrdown(&src, &mut dst)?;
 
         // Expected output from OpenCV cv2.pyrDown with BORDER_DEFAULT
-        let expected = vec![3.75, 4.875, 8.25, 9.375];
+        let expected = [3.75, 4.875, 8.25, 9.375];
 
         let actual = dst.as_slice();
         for (idx, (act, exp)) in actual.iter().zip(expected.iter()).enumerate() {
@@ -344,7 +344,7 @@ mod tests {
         pyrdown(&src, &mut dst)?;
 
         // Expected output from OpenCV cv2.pyrDown with BORDER_DEFAULT
-        let expected = vec![
+        let expected = [
             11.25, 12.25, 13.25, // pixel (0,0)
             14.625, 15.625, 16.625, // pixel (0,1)
             24.75, 25.75, 26.75, // pixel (1,0)
