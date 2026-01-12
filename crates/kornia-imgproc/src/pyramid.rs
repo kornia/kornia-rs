@@ -93,10 +93,41 @@ pub fn pyrup<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     Ok(())
 }
 
+/// Border reflection mode BORDER_REFLECT_101 (same as OpenCV default).
+///
+/// Reflects coordinates at image boundaries without repeating the edge pixel.
+/// Example for size=5: -2 -1 | 0 1 2 3 4 | 5 6
+///                      1  0 | 0 1 2 3 4 | 3 2
+#[inline]
+fn reflect_101(mut p: i32, len: i32) -> i32 {
+    if len == 1 {
+        return 0;
+    }
+
+    // Handle negative indices by reflecting
+    if p < 0 {
+        p = -p;
+    }
+
+    // Compute which "period" we're in
+    let period = 2 * (len - 1);
+    p = p % period;
+
+    // If in the second half of the period, reflect back
+    if p >= len {
+        p = period - p;
+    }
+
+    p
+}
+
 /// Downsample an image by applying Gaussian blur and then subsampling.
 ///
 /// This function halves the size of the input image by first applying a Gaussian blur
 /// and then subsampling every other pixel. This is the inverse operation of [`pyrup`].
+///
+/// Uses BORDER_REFLECT_101 border mode (same as OpenCV default) for handling pixels
+/// near image boundaries.
 ///
 /// # Arguments
 ///
@@ -187,13 +218,13 @@ pub fn pyrdown<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 
                 for (ky, row) in combined.iter().enumerate() {
                     let src_y = src_center_y + ky as i32 - 2;
-                    // Clamp to image bounds (replicate border)
-                    let src_y_clamped = src_y.clamp(0, src_height as i32 - 1) as usize;
+                    // BORDER_REFLECT_101: reflect at borders without repeating edge pixel
+                    let src_y_clamped = reflect_101(src_y, src_height as i32) as usize;
 
                     for (kx, &weight) in row.iter().enumerate() {
                         let src_x = src_center_x + kx as i32 - 2;
-                        // Clamp to image bounds (replicate border)
-                        let src_x_clamped = src_x.clamp(0, src_width as i32 - 1) as usize;
+                        // BORDER_REFLECT_101: reflect at borders without repeating edge pixel
+                        let src_x_clamped = reflect_101(src_x, src_width as i32) as usize;
 
                         let src_idx = (src_y_clamped * src_width + src_x_clamped) * C + c;
                         sum += src_data[src_idx] * weight;
@@ -248,6 +279,7 @@ mod tests {
 
     #[test]
     fn test_pyrdown() -> Result<(), ImageError> {
+        // NOTE: verified with opencv
         let src = Image::<f32, 1, _>::new(
             ImageSize {
                 width: 4,
@@ -271,11 +303,18 @@ mod tests {
 
         pyrdown(&src, &mut dst)?;
 
-        assert_eq!(dst.width(), 2);
-        assert_eq!(dst.height(), 2);
+        // Expected output from OpenCV cv2.pyrDown with BORDER_DEFAULT
+        let expected = vec![3.75, 4.875, 8.25, 9.375];
 
-        for val in dst.as_slice() {
-            assert!(!val.is_nan());
+        let actual = dst.as_slice();
+        for (idx, (act, exp)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (act - exp).abs() < 1e-4,
+                "Mismatch at index {}: expected {}, got {}",
+                idx,
+                exp,
+                act
+            );
         }
 
         Ok(())
@@ -283,6 +322,7 @@ mod tests {
 
     #[test]
     fn test_pyrdown_3c() -> Result<(), ImageError> {
+        // NOTE: verified with opencv
         let src = Image::<f32, 3, _>::new(
             ImageSize {
                 width: 4,
@@ -303,11 +343,23 @@ mod tests {
 
         pyrdown(&src, &mut dst)?;
 
-        assert_eq!(dst.width(), 2);
-        assert_eq!(dst.height(), 2);
+        // Expected output from OpenCV cv2.pyrDown with BORDER_DEFAULT
+        let expected = vec![
+            11.25, 12.25, 13.25, // pixel (0,0)
+            14.625, 15.625, 16.625, // pixel (0,1)
+            24.75, 25.75, 26.75, // pixel (1,0)
+            28.125, 29.125, 30.125, // pixel (1,1)
+        ];
 
-        for val in dst.as_slice() {
-            assert!(!val.is_nan());
+        let actual = dst.as_slice();
+        for (idx, (act, exp)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (act - exp).abs() < 1e-4,
+                "Mismatch at index {}: expected {}, got {}",
+                idx,
+                exp,
+                act
+            );
         }
 
         Ok(())
