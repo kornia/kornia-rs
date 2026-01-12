@@ -196,38 +196,73 @@ pub fn pyrdown<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     let dst_data = dst.as_slice_mut();
     let (kernel_x, kernel_y) = get_pyramid_gaussian_kernel();
 
+    // Precompute flattened kernel
+    let mut kernel_weights = [0.0f32; 25];
+    let mut idx = 0;
+    for &ky_weight in kernel_y.iter() {
+        for &kx_weight in kernel_x.iter() {
+            kernel_weights[idx] = ky_weight * kx_weight;
+            idx += 1;
+        }
+    }
+
+    // Define center region (pixels that don't need border handling)
+    let center_y_start = 1;
+    let center_y_end = (dst_height - 1).min(dst_height);
+    let center_x_start = 1;
+    let center_x_end = (dst_width - 1).min(dst_width);
+
+    // Process center region (fast path - no border checks)
+    for dst_y in center_y_start..center_y_end {
+        let src_center_y = dst_y * 2;
+
+        for dst_x in center_x_start..center_x_end {
+            let src_center_x = dst_x * 2;
+
+            for c in 0..C {
+                let mut sum = 0.0f32;
+                let mut k_idx = 0;
+
+                for ky in 0..5 {
+                    let src_y = src_center_y + ky - 2;
+                    for kx in 0..5 {
+                        let src_x = src_center_x + kx - 2;
+                        let src_idx = (src_y * src_width + src_x) * C + c;
+                        sum += src_data[src_idx] * kernel_weights[k_idx];
+                        k_idx += 1;
+                    }
+                }
+
+                let dst_idx = (dst_y * dst_width + dst_x) * C + c;
+                dst_data[dst_idx] = sum;
+            }
+        }
+    }
+
+    // Process border regions (slow path - with reflect_101)
     for dst_y in 0..dst_height {
         let src_center_y = (dst_y * 2) as i32;
+        let is_border_y = dst_y < center_y_start || dst_y >= center_y_end;
 
         for dst_x in 0..dst_width {
             let src_center_x = (dst_x * 2) as i32;
+            let is_border_x = dst_x < center_x_start || dst_x >= center_x_end;
 
-            // Precompute combined 5x5 kernel weights for this output pixel to avoid
-            // recomputing kx*ky for each channel.
-            let mut combined = [[0.0f32; 5]; 5];
-            for (ky, row) in combined.iter_mut().enumerate() {
-                let ky_weight = kernel_y[ky];
-                for (kx, val) in row.iter_mut().enumerate() {
-                    *val = ky_weight * kernel_x[kx];
-                }
+            if !is_border_y && !is_border_x {
+                continue;
             }
 
-            // Apply 5x5 Gaussian kernel centered at (src_center_x, src_center_y)
             for c in 0..C {
                 let mut sum = 0.0f32;
+                let mut k_idx = 0;
 
-                for (ky, row) in combined.iter().enumerate() {
-                    let src_y = src_center_y + ky as i32 - 2;
-                    // BORDER_REFLECT_101: reflect at borders without repeating edge pixel
-                    let src_y_clamped = reflect_101(src_y, src_height as i32) as usize;
-
-                    for (kx, &weight) in row.iter().enumerate() {
-                        let src_x = src_center_x + kx as i32 - 2;
-                        // BORDER_REFLECT_101: reflect at borders without repeating edge pixel
-                        let src_x_clamped = reflect_101(src_x, src_width as i32) as usize;
-
-                        let src_idx = (src_y_clamped * src_width + src_x_clamped) * C + c;
-                        sum += src_data[src_idx] * weight;
+                for ky in 0..5 {
+                    let src_y = reflect_101(src_center_y + ky - 2, src_height as i32) as usize;
+                    for kx in 0..5 {
+                        let src_x = reflect_101(src_center_x + kx - 2, src_width as i32) as usize;
+                        let src_idx = (src_y * src_width + src_x) * C + c;
+                        sum += src_data[src_idx] * kernel_weights[k_idx];
+                        k_idx += 1;
                     }
                 }
 
