@@ -12,6 +12,7 @@ pub struct ImageMetadata {
     pub exif_orientation: Option<u16>,
 }
 
+
 /// Read metadata from an image file without decoding pixels.
 ///
 /// # Arguments
@@ -35,12 +36,12 @@ pub struct ImageMetadata {
 /// ```
 pub fn read_image_metadata<P: AsRef<Path>>(path: P) -> Result<ImageMetadata, IoError> {
     let bytes = std::fs::read(path.as_ref()).map_err(IoError::FileError)?;
-
     if let Some(v) = parse_exif_orientation(&bytes) {
         return Ok(ImageMetadata {
             exif_orientation: Some(v),
         });
     }
+
 
     let ext = path
         .as_ref()
@@ -53,6 +54,7 @@ pub fn read_image_metadata<P: AsRef<Path>>(path: P) -> Result<ImageMetadata, IoE
         Some("tif") | Some("tiff") => Some(FileExtension::TIFF),
         _ => None,
     };
+
 
     let metadata = file_type
         .map(|ft| little_exif::metadata::Metadata::new_from_vec(&bytes, ft))
@@ -72,11 +74,11 @@ pub fn read_image_metadata<P: AsRef<Path>>(path: P) -> Result<ImageMetadata, IoE
                 }
             })
     });
-
     Ok(ImageMetadata {
         exif_orientation: orientation,
     })
 }
+
 
 /// Minimal EXIF parser for Orientation tag.
 fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
@@ -84,10 +86,10 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
     let needle = b"Exif\0\0";
     let pos = bytes.windows(needle.len()).position(|w| w == needle)?;
     let mut offset = pos + needle.len();
-
     if offset + 8 > bytes.len() {
         return None;
     }
+
 
     // Determine byte order (II or MM)
     let le = match &bytes[offset..offset + 2] {
@@ -97,6 +99,7 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
     };
     offset += 2;
 
+    // Check TIFF magic number (42)
     let magic = if le {
         u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
     } else {
@@ -107,6 +110,8 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
     }
     offset += 2;
 
+
+    // Offset to 0th IFD (relative to TIFF header start)
     let ifd_offset = if le {
         u32::from_le_bytes([
             bytes[offset],
@@ -141,6 +146,7 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
             return None;
         }
 
+
         let tag = if le {
             u16::from_le_bytes([bytes[entry_pos], bytes[entry_pos + 1]])
         } else {
@@ -171,6 +177,7 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
 
         // Orientation tag is short type
         if tag == 0x0112 && field_type == 3 && count >= 1 {
+
             let v0 = bytes[entry_pos + 8];
             let v1 = bytes[entry_pos + 9];
             let val = if le {
@@ -197,6 +204,8 @@ mod tests {
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+
+    /// Helper to write a unique temp file in the system temp dir.
     fn write_temp_file(name_suffix: &str, data: &[u8]) -> std::path::PathBuf {
         let mut path = std::env::temp_dir();
         let ts = SystemTime::now()
@@ -236,6 +245,8 @@ mod tests {
         let original = fs::read(repo_img).expect("read repo jpeg");
 
         for &val in &[1u16, 6u16, 8u16] {
+
+            // Create metadata with Orientation tag set
             let mut metadata = little_exif::metadata::Metadata::new();
             metadata.set_tag(little_exif::exif_tag::ExifTag::Orientation(vec![val]));
 
@@ -262,6 +273,7 @@ mod tests {
 
         let original = fs::read(repo_img).expect("read repo jpeg");
 
+        
         for val in 1u16..=8 {
             let mut metadata = little_exif::metadata::Metadata::new();
             metadata.set_tag(little_exif::exif_tag::ExifTag::Orientation(vec![val]));
