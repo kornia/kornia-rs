@@ -15,5 +15,5 @@ cargo run -p imgproc -- --image-path path/to/image.jpg
 ```
 
 Output:
+![](https://github.com/user-attachments/assets/e31ca22f-c083-49a3-aa77-3da993c16f93)
 
-TODO: add output here
