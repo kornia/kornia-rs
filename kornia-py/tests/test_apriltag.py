@@ -58,7 +58,10 @@ def test_apriltag_decoder():
 
     kinds = [TagFamilyKind("tag36_h11")]
     config = K.apriltag.DecodeTagsConfig(kinds)
-    decoder = K.apriltag.AprilTagDecoder(config, K.image.ImageSize(60, 60))
+    decoder = K.apriltag.AprilTagDecoder(
+        config,
+        K.image.ImageSize(60, 60),
+    )
 
     expected_quad = [
         (50.0, 10.0),
@@ -67,6 +70,7 @@ def test_apriltag_decoder():
         (10.0, 10.0),
     ]
 
+    # Decode only - no resize or mode arguments
     py_img = K.io.decode_image(TAG36H11_TAG)
     img = np.asarray(py_img)
 
@@ -74,10 +78,12 @@ def test_apriltag_decoder():
     assert img.shape == (60, 60, 1)
     assert img.dtype == np.uint8
 
-    detection = decoder.decode(img)
-    assert len(detection) == 1
-    assert detection[0].id == 5
+    detections = decoder.decode(img)
+    assert len(detections) == 1
 
-    for (ax, ay), (ex, ey) in zip(detection[0].quad.corners, expected_quad):
+    det = detections[0]
+    assert det.id == 5
+
+    for (ax, ay), (ex, ey) in zip(det.quad.corners, expected_quad):
         assert ax == pytest.approx(ex, abs=1e-3)
         assert ay == pytest.approx(ey, abs=1e-3)

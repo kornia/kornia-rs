@@ -416,59 +416,6 @@ fn write_image_png_dispatcher(
     ))
 }
 
-// fn decode_image_png(path: &Path) -> PyResult<Py<PyAny>> {
-//     let png_data = std::fs::read(path)
-//         .map_err(|e| PyRuntimeError::new_err(format!("Failed to read PNG: {e}")))?;
-
-//     let layout = png_io::decode_image_png_layout(&png_data)
-//         .map_err(|e| PyRuntimeError::new_err(format!("Failed to read PNG layout: {e}")))?;
-
-//     match (layout.channels, layout.pixel_format) {
-//         (3, PixelFormat::U8) => {
-//             let mut img = Rgb8::from_size_val(layout.image_size, 0, CpuAllocator)
-//                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-//             png_io::decode_image_png_rgb8(&png_data, &mut img)
-//                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-//             Ok(img
-//                 .to_pyimage()
-//                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?
-//                 .into())
-//         }
-//         (4, PixelFormat::U8) => {
-//             let mut img = Rgba8::from_size_val(layout.image_size, 0, CpuAllocator)
-//                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-//             png_io::decode_image_png_rgba8(&png_data, &mut img)
-//                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-//             Ok(img
-//                 .to_pyimage()
-//                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?
-//                 .into())
-//         }
-//         (1, PixelFormat::U8) => {
-//             let mut img = Gray8::from_size_val(layout.image_size, 0, CpuAllocator)
-//                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-//             png_io::decode_image_png_mono8(&png_data, &mut img)
-//                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-//             Ok(img
-//                 .to_pyimage()
-//                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?
-//                 .into())
-//         }
-//         (3, PixelFormat::U16) => {
-//             let mut img = Rgb16::from_size_val(layout.image_size, 0, CpuAllocator)
-//                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-//             png_io::decode_image_png_rgb16(&png_data, &mut img)
-//                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-//             Ok(img
-//                 .to_pyimage_u16()
-//                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?
-//                 .into())
-//         }
-//         (4, PixelFormat::U16) => {
-//             let mut img = Rgba16::from_size_val(layout.image_size, 0, CpuAllocator)
-//                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-//             png_io::decode_image_png_rgba16(&png_data, &mut img)
-
 fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<Py<PyAny>> {
     let tiff_data = fs::read(file_path)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
@@ -710,18 +657,6 @@ fn write_image_jpeg_dispatcher(
     Ok(())
 }
 
-// fn decode_image_jpeg(path: &Path) -> PyResult<Py<PyAny>> {
-//     let jpeg_data = std::fs::read(path)
-//         .map_err(|e| PyRuntimeError::new_err(format!("Failed to read JPEG: {e}")))?;
-
-//     let layout = jpeg_io::decode_image_jpeg_layout(&jpeg_data)
-//         .map_err(|e| PyRuntimeError::new_err(format!("Failed to read JPEG layout: {e}")))?;
-
-//     match (layout.channels, layout.pixel_format) {
-//         (3, PixelFormat::U8) => {
-//             let mut img = Rgb8::from_size_val(layout.image_size, 0, CpuAllocator)
-//                 .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
-//             jpeg_io::decode_image_jpeg_rgb8(&jpeg_data, &mut img)
 fn invalid_png_mode_u8() -> PyResult<()> {
     Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
         r#"Supported PNG u8 modes: "rgb", "rgba", "mono""#,

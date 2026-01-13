@@ -173,7 +173,11 @@ pub fn write_image_deprecated(
         "kornia_rs.write_image is deprecated. Use kornia_rs.io.write_image.",
     )?;
 
-    io::functional::write_image(file_path, image, mode, quality)
+    if mode == "auto" {
+        io::functional::write_image_any(file_path, image, quality)
+    } else {
+        io::functional::write_image(file_path, image, mode, quality)
+    }
 }
 
 #[pyfunction(name = "decode_image")]
