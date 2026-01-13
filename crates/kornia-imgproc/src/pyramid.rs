@@ -93,27 +93,19 @@ pub fn pyrup<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     Ok(())
 }
 
-/// Border reflection mode BORDER_REFLECT_101 (same as OpenCV default).
-///
-/// Reflects coordinates at image boundaries without repeating the edge pixel.
-/// Example for size=5: -2 -1 | 0 1 2 3 4 | 5 6
-///                      1  0 | 0 1 2 3 4 | 3 2
 #[inline]
 fn reflect_101(mut p: i32, len: i32) -> i32 {
     if len == 1 {
         return 0;
     }
 
-    // Handle negative indices by reflecting
     if p < 0 {
         p = -p;
     }
 
-    // Compute which "period" we're in
     let period = 2 * (len - 1);
     p %= period;
 
-    // If in the second half of the period, reflect back
     if p >= len {
         p = period - p;
     }
@@ -187,11 +179,6 @@ pub fn pyrdown<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     let dst_height = dst.height();
 
     // Fused Gaussian blur + downsample in a single pass.
-    // For each output pixel at (dst_x, dst_y), we compute the Gaussian-weighted
-    // average of a 5x5 neighborhood centered at (dst_x * 2, dst_y * 2) in the source.
-    // This avoids allocating an intermediate buffer and only computes values at
-    // output pixel locations.
-
     let src_data = src.as_slice();
     let dst_data = dst.as_slice_mut();
     let (kernel_x, kernel_y) = get_pyramid_gaussian_kernel();
@@ -206,13 +193,11 @@ pub fn pyrdown<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
         }
     }
 
-    // Define center region (pixels that don't need border handling)
     let center_y_start = 1;
     let center_y_end = (dst_height - 1).min(dst_height);
     let center_x_start = 1;
     let center_x_end = (dst_width - 1).min(dst_width);
 
-    // Process center region (fast path - no border checks)
     for dst_y in center_y_start..center_y_end {
         let src_center_y = dst_y * 2;
 
@@ -239,7 +224,6 @@ pub fn pyrdown<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
         }
     }
 
-    // Process border regions (slow path - with reflect_101)
     for dst_y in 0..dst_height {
         let src_center_y = (dst_y * 2) as i32;
         let is_border_y = dst_y < center_y_start || dst_y >= center_y_end;
@@ -338,7 +322,6 @@ mod tests {
 
         pyrdown(&src, &mut dst)?;
 
-        // Expected output from OpenCV cv2.pyrDown with BORDER_DEFAULT
         let expected = [3.75, 4.875, 8.25, 9.375];
 
         let actual = dst.as_slice();
@@ -378,7 +361,6 @@ mod tests {
 
         pyrdown(&src, &mut dst)?;
 
-        // Expected output from OpenCV cv2.pyrDown with BORDER_DEFAULT
         let expected = [
             11.25, 12.25, 13.25, // pixel (0,0)
             14.625, 15.625, 16.625, // pixel (0,1)
@@ -428,7 +410,6 @@ mod tests {
 
     #[test]
     fn test_pyrdown_odd_dims() -> Result<(), ImageError> {
-        // 5x7 -> div_ceil halves to 3x4
         let src = Image::<f32, 1, _>::new(
             ImageSize {
                 width: 5,
@@ -460,7 +441,6 @@ mod tests {
 
     #[test]
     fn test_pyrdown_min_sizes() -> Result<(), ImageError> {
-        // 1x1 -> 1x1
         let src1 = Image::<f32, 1, _>::new(
             ImageSize {
                 width: 1,
@@ -482,7 +462,6 @@ mod tests {
         assert_eq!(dst1.height(), 1);
         assert!(dst1.as_slice().iter().all(|v| v.is_finite()));
 
-        // 1x2 -> 1x1
         let src2 = Image::<f32, 1, _>::new(
             ImageSize {
                 width: 1,
@@ -504,7 +483,6 @@ mod tests {
         assert_eq!(dst2.height(), 1);
         assert!(dst2.as_slice().iter().all(|v| v.is_finite()));
 
-        // 2x1 -> 1x1
         let src3 = Image::<f32, 1, _>::new(
             ImageSize {
                 width: 2,
@@ -532,7 +510,6 @@ mod tests {
 
     #[test]
     fn test_pyrdown_numeric_extremes() -> Result<(), ImageError> {
-        // Large uniform values should remain finite and approximately equal after pyrdown
         let large_val = 1e9_f32;
         let src = Image::<f32, 1, _>::new(
             ImageSize {
@@ -553,7 +530,6 @@ mod tests {
         pyrdown(&src, &mut dst)?;
         for &v in dst.as_slice() {
             assert!(v.is_finite());
-            // With our current boundary handling the output may be scaled near edges; ensure finiteness
             assert!(v.abs() <= large_val);
         }
 
