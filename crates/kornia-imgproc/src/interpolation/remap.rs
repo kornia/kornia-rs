@@ -110,4 +110,45 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn remap_bicubic_smoke() -> Result<(), ImageError> {
+        let image = Image::<_, 1, _>::new(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            vec![
+                0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
+                15.0,
+            ],
+            CpuAllocator,
+        )?;
+
+        let new_size = [2, 2];
+
+        let map_x = Tensor2::from_shape_vec(new_size, vec![0.5, 2.5, 0.5, 2.5], CpuAllocator)?;
+        let map_y = Tensor2::from_shape_vec(new_size, vec![0.5, 0.5, 2.5, 2.5], CpuAllocator)?;
+
+        let mut image_transformed =
+            Image::<_, 1, _>::from_size_val(new_size.into(), 0.0, CpuAllocator)?;
+
+        super::remap(
+            &image,
+            &mut image_transformed,
+            &map_x,
+            &map_y,
+            super::InterpolationMode::Bicubic,
+        )?;
+
+        assert_eq!(image_transformed.num_channels(), 1);
+        assert_eq!(image_transformed.size().width, 2);
+        assert_eq!(image_transformed.size().height, 2);
+
+        for val in image_transformed.as_slice().iter() {
+            assert!(*val >= -1.0 && *val <= 16.0);
+        }
+
+        Ok(())
+    }
 }
