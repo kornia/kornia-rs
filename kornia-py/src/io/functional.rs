@@ -181,7 +181,33 @@ pub fn write_image(
     }
 }
 
-/// Decoding behavior is determined by the file extension (e.g. png, jpeg).
+/// Decode an image file from disk into a Python object.
+///
+/// Decoding behavior is determined by the file extension (e.g. `png`, `jpg`, `jpeg`).
+///
+/// # Parameters
+/// * `file_path` - A path-like object implementing `__fspath__` (for example a `str` or
+///   `pathlib.Path`) that points to the image file on disk.
+///
+/// # Returns
+/// A Python object containing the decoded image data. In typical usage this will be a
+/// Python image representation (for example a NumPy `ndarray`) that can be passed to
+/// Kornia or other image-processing functions.
+///
+/// # Errors
+/// * `TypeError` if `file_path` does not implement `__fspath__` or cannot be converted to
+///   a valid path.
+/// * `FileNotFoundError` if the file does not exist.
+/// * `ValueError` if the file extension cannot be determined or is not supported
+///   (`png`, `jpg`, `jpeg` are currently supported).
+///
+/// # Examples
+/// ```python
+/// # Decode an image from disk
+/// img = decode_image("input.png")
+///
+/// # `img` now contains the decoded image data and can be passed to Kornia APIs.
+/// ```
 #[pyfunction]
 pub fn decode_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     // PEP 519 (__fspath__)
