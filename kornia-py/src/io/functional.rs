@@ -442,25 +442,6 @@ fn write_image_png_dispatcher(
 //             let mut img = Rgba16::from_size_val(layout.image_size, 0, CpuAllocator)
 //                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 //             png_io::decode_image_png_rgba16(&png_data, &mut img)
-//                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-//             Ok(img
-//                 .to_pyimage_u16()
-//                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?
-//                 .into())
-//         }
-//         (1, PixelFormat::U16) => {
-//             let mut img = Gray16::from_size_val(layout.image_size, 0, CpuAllocator)
-//                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-//             png_io::decode_image_png_mono16(&png_data, &mut img)
-//                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-//             Ok(img
-//                 .to_pyimage_u16()
-//                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?
-//                 .into())
-//         }
-//         _ => Err(PyRuntimeError::new_err("Unsupported PNG format")),
-//     }
-// }
 
 fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<Py<PyAny>> {
     let tiff_data = fs::read(file_path)
