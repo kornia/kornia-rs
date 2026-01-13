@@ -51,4 +51,8 @@ pub enum IoError {
     /// Error to decode the TIFF image.
     #[error(transparent)]
     TiffDecodingError(#[from] tiff::TiffError),
+
+    /// Error to decode the WEBP image.
+    #[error(transparent)]
+    WebpDecodingError(#[from] image_webp::DecodingError),
 }
