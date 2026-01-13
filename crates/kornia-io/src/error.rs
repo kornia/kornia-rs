@@ -58,4 +58,8 @@ pub enum IoError {
     /// Unsupported pixel type.
     #[error("Unsupported pixel type")]
     UnsupportedPixelType,
+
+    /// Error to decode the WEBP image.
+    #[error(transparent)]
+    WebpDecodingError(#[from] image_webp::DecodingError),
 }
