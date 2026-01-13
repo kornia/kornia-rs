@@ -35,7 +35,6 @@ jpeg-encoder = "0.6"
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
 log = { workspace = true }
-# EXIF parsing (metadata only)
 little_exif = "0.6"
 png = "0.18"
 thiserror = { workspace = true }

@@ -4,7 +4,6 @@ use crate::error::IoError;
 use little_exif::filetype::FileExtension;
 
 /// Simple image metadata extracted during decoding.
-///
 /// For now this only includes the EXIF Orientation tag (if present).
 /// See `read_image_metadata` for the helper function that extracts this.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -13,46 +12,36 @@ pub struct ImageMetadata {
     pub exif_orientation: Option<u16>,
 }
 
-/// Read only metadata from an image file.
-///
-/// This does NOT decode the image pixels. It returns `ImageMetadata` with
-/// `exif_orientation` set when an EXIF Orientation tag is present and parsable.
-/// File I/O errors are returned as `IoError::FileError`.
+/// Read metadata from an image file without decoding pixels.
 ///
 /// # Arguments
 ///
-/// * `path` - The path to the image file (supports JPEG, PNG, TIFF).
+/// * `path` - Path to image file (JPEG, PNG, or TIFF).
 ///
 /// # Returns
 ///
-/// An `ImageMetadata` struct with `exif_orientation` set if found.
+/// `ImageMetadata` with `exif_orientation` set if found.
 ///
-/// # Examples
+/// # Example
 ///
 /// ```no_run
 /// use kornia_io::metadata::read_image_metadata;
 ///
 /// let metadata = read_image_metadata("photo.jpg")?;
 /// if let Some(orientation) = metadata.exif_orientation {
-///     println!("Image has EXIF orientation: {}", orientation);
+///     println!("Orientation: {}", orientation);
 /// }
 /// # Ok::<(), kornia_io::error::IoError>(())
 /// ```
 pub fn read_image_metadata<P: AsRef<Path>>(path: P) -> Result<ImageMetadata, IoError> {
-    // Read the file bytes first. I/O errors are reported as `IoError::FileError`.
     let bytes = std::fs::read(path.as_ref()).map_err(IoError::FileError)?;
 
-    // First try to find a raw EXIF block in the file (useful for synthetic
-    // tests which write only the EXIF bytes). If present, parse orientation
-    // directly without relying on full-file decoding.
     if let Some(v) = parse_exif_orientation(&bytes) {
         return Ok(ImageMetadata {
             exif_orientation: Some(v),
         });
     }
 
-    // Otherwise, try to detect the file type and parse via `little_exif`.
-    // Since little_exif doesn't expose get_file_type, we detect by extension.
     let ext = path
         .as_ref()
         .extension()
@@ -65,41 +54,36 @@ pub fn read_image_metadata<P: AsRef<Path>>(path: P) -> Result<ImageMetadata, IoE
         _ => None,
     };
 
-    let metadata = if let Some(ft) = file_type {
-        little_exif::metadata::Metadata::new_from_vec(&bytes, ft).ok()
-    } else {
-        // Fall back to trying JPEG parsing; if it fails treat as absent EXIF.
-        little_exif::metadata::Metadata::new_from_vec(&bytes, FileExtension::JPEG).ok()
-    };
+    let metadata = file_type
+        .map(|ft| little_exif::metadata::Metadata::new_from_vec(&bytes, ft))
+        .unwrap_or_else(|| {
+            little_exif::metadata::Metadata::new_from_vec(&bytes, FileExtension::JPEG)
+        })
+        .ok();
 
-    let mut orientation: Option<u16> = None;
-    if let Some(metadata) = metadata {
-        for tag in metadata.get_tag(&little_exif::exif_tag::ExifTag::Orientation(Vec::new())) {
-            if let little_exif::exif_tag::ExifTag::Orientation(values) = tag {
-                if let Some(&v) = values.first() {
-                    if (1..=8).contains(&v) {
-                        orientation = Some(v);
-                        break;
-                    }
+    let orientation = metadata.and_then(|m| {
+        m.get_tag(&little_exif::exif_tag::ExifTag::Orientation(Vec::new()))
+            .into_iter()
+            .find_map(|tag| {
+                if let little_exif::exif_tag::ExifTag::Orientation(values) = tag {
+                    values.first().copied().filter(|&v| (1..=8).contains(&v))
+                } else {
+                    None
                 }
-            }
-        }
-    }
+            })
+    });
 
     Ok(ImageMetadata {
         exif_orientation: orientation,
     })
 }
 
-// Minimal EXIF extractor for the Orientation tag. This is intentionally small and
-// only implements what's required for our tests: locating a leading "Exif\0\0"
-// block and reading IFD0 entries for tag 0x0112 with type SHORT (3).
+/// Minimal EXIF parser for Orientation tag (0x0112).
 fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
     let needle = b"Exif\0\0";
     let pos = bytes.windows(needle.len()).position(|w| w == needle)?;
-    let mut offset = pos + needle.len(); // start of TIFF header
+    let mut offset = pos + needle.len();
 
-    // Need at least 8 bytes for TIFF header (endian + 42 + offset)
     if offset + 8 > bytes.len() {
         return None;
     }
@@ -111,7 +95,6 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
     };
     offset += 2;
 
-    // Check magic number 42
     let magic = if le {
         u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
     } else {
@@ -122,7 +105,6 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
     }
     offset += 2;
 
-    // Offset to 0th IFD (relative to TIFF header start)
     let ifd_offset = if le {
         u32::from_le_bytes([
             bytes[offset],
@@ -185,8 +167,6 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
         };
 
         if tag == 0x0112 && field_type == 3 && count >= 1 {
-            // value is stored in the 4-byte value/offset field; for SHORT it's the
-            // lower 2 bytes in the same endianness.
             let v0 = bytes[entry_pos + 8];
             let v1 = bytes[entry_pos + 9];
             let val = if le {
@@ -213,7 +193,6 @@ mod tests {
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    /// Helper to write a unique temp file in the system temp dir.
     fn write_temp_file(name_suffix: &str, data: &[u8]) -> std::path::PathBuf {
         let mut path = std::env::temp_dir();
         let ts = SystemTime::now()
@@ -227,10 +206,8 @@ mod tests {
 
     #[test]
     fn test_missing_exif_returns_none() {
-        // Use an existing small JPEG from the repo if available.
         let repo_img = std::path::Path::new("../../tests/data/dog.jpeg");
         if !repo_img.exists() {
-            // If not present, skip the test.
             eprintln!("skipping test_missing_exif_returns_none: test image not found");
             return;
         }
@@ -255,7 +232,6 @@ mod tests {
         let original = fs::read(repo_img).expect("read repo jpeg");
 
         for &val in &[1u16, 6u16, 8u16] {
-            // Create metadata with Orientation tag set
             let mut metadata = little_exif::metadata::Metadata::new();
             metadata.set_tag(little_exif::exif_tag::ExifTag::Orientation(vec![val]));
 
@@ -282,7 +258,6 @@ mod tests {
 
         let original = fs::read(repo_img).expect("read repo jpeg");
 
-        // Test all 8 valid EXIF orientation values
         for val in 1u16..=8 {
             let mut metadata = little_exif::metadata::Metadata::new();
             metadata.set_tag(little_exif::exif_tag::ExifTag::Orientation(vec![val]));
