@@ -60,9 +60,17 @@ def test_apriltag_decoder():
     config = K.apriltag.DecodeTagsConfig(kinds)
     decoder = K.apriltag.AprilTagDecoder(config, K.image.ImageSize(60, 60))
 
-    expected_quad = [(50.0, 10.0), (50.0, 50.0), (10.0, 50.0), (10.0, 10.0)]
+    expected_quad = [
+        (50.0, 10.0),
+        (50.0, 50.0),
+        (10.0, 50.0),
+        (10.0, 10.0),
+    ]
 
-    img: np.ndarray = K.io.decode_image(TAG36H11_TAG, (60, 60), "mono")
+    py_img = K.io.decode_image(TAG36H11_TAG)
+    img = np.asarray(py_img)
+
+    # The test image is already 60x60 mono
     assert img.shape == (60, 60, 1)
     assert img.dtype == np.uint8
 
