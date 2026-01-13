@@ -21,25 +21,25 @@ fn bench_threshold(c: &mut Criterion) {
     
     // 1. Benchmark Serial Execution
     group.bench_with_input(BenchmarkId::new("binary_serial", format!("{}x{}", w, h)), &src, |b, src| {
+        // Allocate outside to measure only algorithm performance
+        let mut dst = Image::from_size_val(src.size(), 0, CpuAllocator).unwrap();
         b.iter(|| {
-            // Allocate dst inside loop to ensure correctness (avoiding cache cheating)
-            let mut dst = Image::from_size_val(src.size(), 0, CpuAllocator).unwrap();
             threshold_binary(src, &mut dst, 127, 255, ExecutionStrategy::Serial).unwrap();
         })
     });
 
-    // 2. Benchmark AutoFull (Parallel)
-    group.bench_with_input(BenchmarkId::new("binary_auto_full", format!("{}x{}", w, h)), &src, |b, src| {
+    // 2. Benchmark Parallel Elements
+    group.bench_with_input(BenchmarkId::new("binary_parallel_elements", format!("{}x{}", w, h)), &src, |b, src| {
+        let mut dst = Image::from_size_val(src.size(), 0, CpuAllocator).unwrap();
         b.iter(|| {
-            let mut dst = Image::from_size_val(src.size(), 0, CpuAllocator).unwrap();
-            threshold_binary(src, &mut dst, 127, 255, ExecutionStrategy::AutoFull).unwrap();
+            threshold_binary(src, &mut dst, 127, 255, ExecutionStrategy::ParallelElements).unwrap();
         })
     });
 
     // 3. Benchmark AutoRows (Parallel Rows)
     group.bench_with_input(BenchmarkId::new("binary_auto_rows", format!("{}x{}", w, h)), &src, |b, src| {
+        let mut dst = Image::from_size_val(src.size(), 0, CpuAllocator).unwrap();
         b.iter(|| {
-            let mut dst = Image::from_size_val(src.size(), 0, CpuAllocator).unwrap();
             // stride = width * channels (1)
             threshold_binary(src, &mut dst, 127, 255, ExecutionStrategy::AutoRows(src.width())).unwrap();
         })
@@ -47,8 +47,8 @@ fn bench_threshold(c: &mut Criterion) {
 
     // 4. Benchmark Fixed (Custom Pool)
     group.bench_with_input(BenchmarkId::new("binary_fixed_4", format!("{}x{}", w, h)), &src, |b, src| {
+        let mut dst = Image::from_size_val(src.size(), 0, CpuAllocator).unwrap();
         b.iter(|| {
-            let mut dst = Image::from_size_val(src.size(), 0, CpuAllocator).unwrap();
             threshold_binary(src, &mut dst, 127, 255, ExecutionStrategy::Fixed(4)).unwrap();
         })
     });

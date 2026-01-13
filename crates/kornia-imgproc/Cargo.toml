@@ -1,7 +1,6 @@
 [package]
 name = "kornia-imgproc"
 description = "Image processing operations in Rust"
-
 authors.workspace = true
 edition.workspace = true
 homepage.workspace = true
@@ -16,7 +15,7 @@ fast_image_resize = { version = "=5.1", features = ["rayon"] }
 kornia-tensor = { workspace = true }
 kornia-image = { workspace = true }
 num-traits = { workspace = true }
-rayon = "1.10"
+rayon = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

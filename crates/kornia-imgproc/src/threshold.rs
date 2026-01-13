@@ -70,9 +70,7 @@ where
                 };
             },
         )
-        // FIXME: kornia_image::ImageError does not yet have a variant for ParallelError.
-        // We expect() here to allow compilation until ImageError is extended.
-        .expect("Parallel execution failed");
+        .map_err(|e| ImageError::Parallel(e.to_string()))?;
 
     Ok(())
 }
@@ -125,7 +123,6 @@ where
         ));
     }
 
-    // run the thresholding operation in parallel
     parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
         *dst_pixel = if *src_pixel > threshold {
             T::zero()
@@ -182,7 +179,6 @@ where
         ));
     }
 
-    // run the thresholding operation in parallel
     parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
         *dst_pixel = if *src_pixel > threshold {
             threshold
@@ -239,7 +235,6 @@ where
         ));
     }
 
-    // run the thresholding operation in parallel
     parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
         *dst_pixel = if *src_pixel > threshold {
             *src_pixel
@@ -296,7 +291,6 @@ where
         ));
     }
 
-    // run the thresholding operation in parallel
     parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
         *dst_pixel = if *src_pixel > threshold {
             T::zero()
@@ -369,7 +363,6 @@ where
         ));
     }
 
-    // parallelize the operation by rows
     parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
         let mut is_in_range = true;
         src_pixel
