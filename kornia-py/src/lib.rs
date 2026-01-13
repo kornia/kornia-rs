@@ -178,6 +178,7 @@ pub fn write_image_deprecated(
 
 #[pyfunction(name = "decode_image")]
 #[pyo3(signature = (file_path, mode=None))]
+#[allow(unused_variables)]
 pub fn decode_image_deprecated(
     py: Python<'_>,
     file_path: Bound<'_, PyAny>,
@@ -188,7 +189,7 @@ pub fn decode_image_deprecated(
         "kornia_rs.decode_image is deprecated. Use kornia_rs.io.decode_image.",
     )?;
 
-    io::functional::decode_image(file_path, mode)
+    io::functional::decode_image(file_path)
 }
 
 // JPEG
@@ -320,7 +321,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         io::functional::write_image_any_deprecated,
         m
     )?)?;
-    m.add_function(wrap_pyfunction!(decode_image_deprecated, m)?)?;
+    m.add_function(wrap_pyfunction!(crate::decode_image_deprecated, m.py())?)?;
     m.add_function(wrap_pyfunction!(
         io::functional::decode_image_any_deprecated,
         m
@@ -359,7 +360,10 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // deprecated aliases.
     io_mod.add_function(wrap_pyfunction!(io::functional::read_image, &io_mod)?)?;
     io_mod.add_function(wrap_pyfunction!(io::functional::write_image, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::functional::decode_image, &io_mod)?)?;
+    io_mod.add_function(wrap_pyfunction!(
+        crate::io::functional::decode_image,
+        io_mod.py()
+    )?)?;
     io_mod.add_function(wrap_pyfunction!(
         io::jpegturbo::decode_image_jpegturbo,
         &io_mod

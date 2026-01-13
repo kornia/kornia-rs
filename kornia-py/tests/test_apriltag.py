@@ -62,9 +62,7 @@ def test_apriltag_decoder():
 
     expected_quad = [(50.0, 10.0), (50.0, 50.0), (10.0, 50.0), (10.0, 10.0)]
 
-    with open(TAG36H11_TAG, "rb") as f:
-        img_data = f.read()
-    img: np.ndarray = K.io.decode_image(bytes(img_data), (60, 60), "mono")
+    img: np.ndarray = K.io.decode_image(TAG36H11_TAG, (60, 60), "mono")
     assert img.shape == (60, 60, 1)
     assert img.dtype == np.uint8
 

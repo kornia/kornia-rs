@@ -58,7 +58,7 @@ def test_read_image_jpeg():
 
 def test_decode_image_jpeg():
     img_path: Path = DATA_DIR / "dog.jpeg"
-    img: np.ndarray = K.io.decode_image(str(img_path), "rgb")
+    img: np.ndarray = K.io.decode_image(str(img_path))
 
     assert img.shape == (195, 258, 3)
     assert img.dtype == np.uint8
