@@ -74,6 +74,7 @@ pub fn write_image_jpeg(file_path: &str, image: PyImage, mode: &str, quality: u8
     Ok(())
 }
 
+#[allow(dead_code)]
 #[pyfunction]
 /// Decodes the JPEG Image from raw bytes.
 ///
@@ -129,6 +130,7 @@ pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
     Ok(result)
 }
 
+#[allow(dead_code)]
 #[pyfunction]
 /// Encodes an RGB u8 image to JPEG bytes.
 ///
