@@ -172,7 +172,7 @@ pub fn decode_image(file_path: Bound<'_, PyAny>, mode: Option<&str>) -> PyResult
     })?;
 
     let path = Path::new(&path_os);
-    let path_display = path_os.to_str().unwrap_or("<non-utf8 path>").to_string();
+    let path_display = path_os.to_str().unwrap_or("<non-utf8 path>");
 
     if !path.exists() {
         return Err(PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(
