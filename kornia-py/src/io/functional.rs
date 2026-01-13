@@ -714,26 +714,6 @@ fn write_image_jpeg_dispatcher(
 //             let mut img = Rgb8::from_size_val(layout.image_size, 0, CpuAllocator)
 //                 .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
 //             jpeg_io::decode_image_jpeg_rgb8(&jpeg_data, &mut img)
-//                 .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
-//             Ok(img
-//                 .to_pyimage()
-//                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?
-//                 .into())
-//         }
-//         (1, PixelFormat::U8) => {
-//             let mut img = Gray8::from_size_val(layout.image_size, 0, CpuAllocator)
-//                 .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
-//             jpeg_io::decode_image_jpeg_mono8(&jpeg_data, &mut img)
-//                 .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
-//             Ok(img
-//                 .to_pyimage()
-//                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(e.to_string()))?
-//                 .into())
-//         }
-//         _ => Err(PyRuntimeError::new_err("Unsupported JPEG color type")),
-//     }
-// }
-
 fn invalid_png_mode_u8() -> PyResult<()> {
     Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
         r#"Supported PNG u8 modes: "rgb", "rgba", "mono""#,
