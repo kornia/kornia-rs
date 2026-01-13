@@ -53,6 +53,9 @@ def test_tag_family_into_family_kind():
 
 
 def test_apriltag_decoder():
+    if not TAG36H11_TAG.exists():
+        pytest.skip("AprilTag test image not available")
+
     kinds = [TagFamilyKind("tag36_h11")]
     config = K.apriltag.DecodeTagsConfig(kinds)
     decoder = K.apriltag.AprilTagDecoder(config, K.image.ImageSize(60, 60))
@@ -61,7 +64,7 @@ def test_apriltag_decoder():
 
     with open(TAG36H11_TAG, "rb") as f:
         img_data = f.read()
-    img: np.ndarray = K.io.decode_image_png_u8(bytes(img_data), (60, 60), "mono")
+    img: np.ndarray = K.io.decode_image(bytes(img_data), (60, 60), "mono")
     assert img.shape == (60, 60, 1)
     assert img.dtype == np.uint8
 
