@@ -208,48 +208,13 @@ pub fn write_image(
 ///
 /// # `img` now contains the decoded image data and can be passed to Kornia APIs.
 /// ```
+///
+/// This function is a convenience alias for [`read_image`] and exists for API
+/// compatibility with earlier versions and other Kornia bindings. It forwards
+/// all arguments directly to [`read_image`].
 #[pyfunction]
 pub fn decode_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    // PEP 519 (__fspath__)
-    let path_obj = file_path
-        .call_method0("__fspath__")
-        .unwrap_or_else(|_| file_path.clone());
-
-    let path_os: std::ffi::OsString = path_obj.extract().map_err(|_| {
-        PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            "file_path must implement __fspath__ and return a valid path",
-        )
-    })?;
-
-    let path = Path::new(&path_os);
-    let path_display = path_os.to_str().unwrap_or("<non-utf8 path>");
-
-    if !path.exists() {
-        return Err(PyErr::new::<pyo3::exceptions::PyFileNotFoundError, _>(
-            format!("File does not exist: {}", path_display),
-        ));
-    }
-
-    let extension = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.to_lowercase())
-        .ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "Could not determine file extension for: {}",
-                path_display
-            ))
-        })?;
-
-    match extension.as_str() {
-        "png" => read_image_png_dispatcher(path),
-        "jpg" | "jpeg" => read_image_jpeg_dispatcher(path),
-        "tif" | "tiff" => read_image_tiff_dispatcher(path),
-        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Unsupported file format for decode: {}. Supported formats: png, jpeg, tiff",
-            extension
-        ))),
-    }
+    read_image(file_path)
 }
 
 fn read_image_png_dispatcher(file_path: &Path) -> PyResult<Py<PyAny>> {
