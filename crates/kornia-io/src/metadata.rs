@@ -78,8 +78,9 @@ pub fn read_image_metadata<P: AsRef<Path>>(path: P) -> Result<ImageMetadata, IoE
     })
 }
 
-/// Minimal EXIF parser for Orientation tag (0x0112).
+/// Minimal EXIF parser for Orientation tag.
 fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
+    // Locate EXIF header marker
     let needle = b"Exif\0\0";
     let pos = bytes.windows(needle.len()).position(|w| w == needle)?;
     let mut offset = pos + needle.len();
@@ -88,6 +89,7 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
         return None;
     }
 
+    // Determine byte order (II or MM)
     let le = match &bytes[offset..offset + 2] {
         b"II" => true,
         b"MM" => false,
@@ -138,6 +140,7 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
         if entry_pos + 12 > bytes.len() {
             return None;
         }
+
         let tag = if le {
             u16::from_le_bytes([bytes[entry_pos], bytes[entry_pos + 1]])
         } else {
@@ -166,6 +169,7 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
             ])
         };
 
+        // Orientation tag is short type
         if tag == 0x0112 && field_type == 3 && count >= 1 {
             let v0 = bytes[entry_pos + 8];
             let v1 = bytes[entry_pos + 9];
