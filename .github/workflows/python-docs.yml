@@ -18,10 +18,10 @@ jobs:
         with:
           pixi-version: v0.40.1
           cache: true
-          environments: default
+          environments: dev
 
       - name: Build kornia_rs
-        run: pixi run --environment default py-build
+        run: pixi run --environment dev py-build
 
       - name: Run Doctests
-        run: pixi run pytest tests/test_doctests.py
+        run: pixi run --environment dev pytest tests/test_doctests.py
