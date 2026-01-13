@@ -356,8 +356,9 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // are available only under `kornia_rs.io`.
     // The Python IO API is intentionally restricted to canonical entry points
     // (`read_image`, `decode_image`, `write_image`).
-    // Format-specific helpers remain internal and there are no root-scoped
-    // deprecated aliases.
+    // Other format-specific helpers remain internal and there are no root-scoped
+    // deprecated aliases; JPEG Turbo helpers are intentionally exposed here for
+    // performance-sensitive use cases.
     io_mod.add_function(wrap_pyfunction!(io::functional::read_image, &io_mod)?)?;
     io_mod.add_function(wrap_pyfunction!(io::functional::write_image, &io_mod)?)?;
     io_mod.add_function(wrap_pyfunction!(
