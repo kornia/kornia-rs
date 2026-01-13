@@ -153,8 +153,13 @@ pub fn write_image(
     }
 }
 
+/// Decode an image from the given `file_path`.
+///
+/// The `mode` parameter is reserved for future use and is currently ignored.
+/// Decoding behavior is determined by the file extension (e.g. png, jpeg).
+#[allow(unused_variables)]
 #[pyfunction]
-pub fn decode_image(file_path: Bound<'_, PyAny>, _mode: Option<&str>) -> PyResult<Py<PyAny>> {
+pub fn decode_image(file_path: Bound<'_, PyAny>, mode: Option<&str>) -> PyResult<Py<PyAny>> {
     // PEP 519 (__fspath__)
     let path_obj = file_path
         .call_method0("__fspath__")
