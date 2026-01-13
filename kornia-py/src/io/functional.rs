@@ -218,8 +218,9 @@ pub fn decode_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     match extension.as_str() {
         "png" => read_image_png_dispatcher(path),
         "jpg" | "jpeg" => read_image_jpeg_dispatcher(path),
+        "tif" | "tiff" => read_image_tiff_dispatcher(path),
         _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "Unsupported file format for decode: {}. Supported formats: png, jpeg",
+            "Unsupported file format for decode: {}. Supported formats: png, jpeg, tiff",
             extension
         ))),
     }
