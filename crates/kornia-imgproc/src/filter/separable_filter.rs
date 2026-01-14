@@ -1,5 +1,6 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use num_traits::Zero;
+use wide::f32x4;
 
 /// Trait for floating point casting
 pub trait FloatConversion {
@@ -256,6 +257,155 @@ pub(crate) fn fast_horizontal_filter<const C: usize, A1: ImageAllocator, A2: Ima
     Ok(())
 }
 
+/// Apply box blur using incremental column sums.
+///
+/// # Arguments
+///
+/// * `src` - The source image with shape (H, W, C).
+/// * `dst` - The destination image with shape (H, W, C).
+/// * `kernel_size` - The size of the kernel (kernel_x, kernel_y).
+pub(crate) fn columnar_sat<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, C, A1>,
+    __dst__: &mut Image<f32, C, A2>,
+    kernel_size: (usize, usize),
+) -> Result<(), ImageError> {
+    if src.size() != __dst__.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            __dst__.cols(),
+            __dst__.rows(),
+        ));
+    }
+
+    if kernel_size.0 == 0 || kernel_size.1 == 0 {
+        return Err(ImageError::InvalidImageSize(
+            kernel_size.0,
+            kernel_size.1,
+            src.cols(),
+            src.rows(),
+        ));
+    }
+
+    if kernel_size.0 > src.cols() || kernel_size.1 > src.rows() {
+        return Err(ImageError::InvalidImageSize(
+            kernel_size.0,
+            kernel_size.1,
+            src.cols(),
+            src.rows(),
+        ));
+    }
+
+    let half_x = kernel_size.0 / 2;
+    let half_y = kernel_size.1 / 2;
+
+    let src_data = src.as_slice();
+    let __dst_data__ = __dst__.as_slice_mut();
+    let mut __col_sums__ = vec![0.0f32; src.cols() * C];
+    let mut __row_acc__ = [0.0f32; C];
+
+    for r in 0..src.rows() {
+        let y_start = r.saturating_sub(half_y);
+        let y_end = (r + half_y + 1).min(src.rows());
+        let row_offset = r * src.cols() * C;
+
+        if r == 0 {
+            for y in y_start..y_end {
+                for c in 0..src.cols() {
+                    let idx = (y * src.cols() + c) * C;
+                    for ch in 0..C {
+                        __col_sums__[c * C + ch] += unsafe {
+                            *src_data.get_unchecked(idx + ch)
+                        };
+                    }
+                }
+            }
+        } else {
+            if r > half_y {
+                let rm_y = r - half_y - 1;
+                for c in 0..src.cols() {
+                    let idx = (rm_y * src.cols() + c) * C;
+                    for ch in 0..C {
+                        __col_sums__[c * C + ch] -= unsafe {
+                            *src_data.get_unchecked(idx + ch)
+                        };
+                    }
+                }
+            }
+            if r + half_y < src.rows() {
+                let add_y = r + half_y;
+                for c in 0..src.cols() {
+                    let idx = (add_y * src.cols() + c) * C;
+                    for ch in 0..C {
+                        __col_sums__[c * C + ch] += unsafe {
+                            *src_data.get_unchecked(idx + ch)
+                        };
+                    }
+                }
+            }
+        }
+
+        for c in 0..src.cols() {
+            let x_start = c.saturating_sub(half_x);
+            let x_end = (c + half_x + 1).min(src.cols());
+
+            if c == 0 {
+                __row_acc__.fill(0.0);
+                for x in x_start..x_end {
+                    for ch in 0..C {
+                        __row_acc__[ch] += __col_sums__[x * C + ch];
+                    }
+                }
+            } else {
+                let prev_x_start = (c - 1).saturating_sub(half_x);
+                if x_start > prev_x_start {
+                    for ch in 0..C {
+                        __row_acc__[ch] -= __col_sums__[prev_x_start * C + ch];
+                    }
+                }
+                let prev_x_end = (c - 1 + half_x + 1).min(src.cols());
+                if x_end > prev_x_end {
+                    for ch in 0..C {
+                        __row_acc__[ch] += __col_sums__[(x_end - 1) * C + ch];
+                    }
+                }
+            }
+
+            let area = ((x_end - x_start) * (y_end - y_start)) as f32;
+            let inv_area = 1.0 / area;
+
+            let out_idx = row_offset + c * C;
+
+            if C == 4 {
+                let v = f32x4::from([
+                    __row_acc__[0],
+                    __row_acc__[1],
+                    __row_acc__[2],
+                    __row_acc__[3],
+                ]) * f32x4::splat(inv_area);
+
+                let arr = v.to_array();
+                unsafe {
+                    *__dst_data__.get_unchecked_mut(out_idx + 0) = arr[0];
+                    *__dst_data__.get_unchecked_mut(out_idx + 1) = arr[1];
+                    *__dst_data__.get_unchecked_mut(out_idx + 2) = arr[2];
+                    *__dst_data__.get_unchecked_mut(out_idx + 3) = arr[3];
+                }
+            } else {
+                for ch in 0..C {
+                    unsafe {
+                        *__dst_data__.get_unchecked_mut(out_idx + ch) =
+                            __row_acc__[ch] * inv_area;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,4 +578,39 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_columnar_sat_box_blur() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 5,
+            height: 5,
+        };
+
+        #[rustfmt::skip]
+        let img = Image::new(
+            size,
+            vec![
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 255.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+            CpuAllocator,
+        )?;
+
+        let mut dst = Image::<f32, 1, _>::from_size_val(img.size(), 0.0, CpuAllocator)?;
+
+        columnar_sat(&img, &mut dst, (3, 3))?;
+
+        let center_val = 255.0 / 9.0;
+
+        assert!((dst.as_slice()[6]  - center_val).abs() < 1e-3);
+        assert!((dst.as_slice()[7]  - center_val).abs() < 1e-3);
+        assert!((dst.as_slice()[12] - center_val).abs() < 1e-3);
+        assert_eq!(dst.as_slice()[0], 0.0);
+
+        Ok(())
+    }
+
 }
