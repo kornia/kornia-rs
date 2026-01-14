@@ -337,7 +337,10 @@ pub fn pyrdown<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     // Fused Gaussian blur + downsample in a single pass.
     let src_data = src.as_slice();
     let dst_data = dst.as_slice_mut();
-    let (kernel_x, kernel_y) = get_pyramid_gaussian_kernel();
+
+    // Standard values for the 5x5 Gaussian kernel
+    let kernel_x = [0.0625, 0.25, 0.375, 0.25, 0.0625];
+    let kernel_y = [0.0625, 0.25, 0.375, 0.25, 0.0625];
 
     // Precompute flattened kernel
     let mut kernel_weights = [0.0f32; 25];
