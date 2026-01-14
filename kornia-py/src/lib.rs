@@ -173,7 +173,7 @@ pub fn write_image_deprecated(
         "kornia_rs.write_image is deprecated. Use kornia_rs.io.write_image.",
     )?;
 
-    iif mode == "auto" {
+    if mode == "auto" {
         let inferred_mode = if image.extract::<image::PyImage>().is_ok()
             || image.extract::<image::PyImageU16>().is_ok()
             || image.extract::<image::PyImageF32>().is_ok()
