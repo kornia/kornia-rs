@@ -1,9 +1,7 @@
-use crate::{
-    interpolation::{grid::meshgrid_from_fn, interpolate_pixel, InterpolationMode},
-    parallel,
-};
+use crate::interpolation::{interpolate_pixel, InterpolationMode};
 use fast_image_resize::{self as fr};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use rayon::prelude::*;
 
 /// Resize an image to a new size.
 ///
@@ -60,18 +58,12 @@ pub fn resize_native<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,
     interpolation: InterpolationMode,
-) -> Result<(), ImageError>
-where
-{
-    // check if the input and output images have the same size
-    // and copy the input image to the output image if they have the same size
+) -> Result<(), ImageError> {
     if src.size() == dst.size() {
         dst.as_slice_mut().copy_from_slice(src.as_slice());
         return Ok(());
     }
 
-    // create a grid of x and y coordinates for the output image
-    // and interpolate the values from the input image.
     let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
     let step_x = if dst.cols() > 1 {
         (src.cols() - 1) as f32 / (dst.cols() - 1) as f32

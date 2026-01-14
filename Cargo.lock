@@ -7806,6 +7806,7 @@ dependencies = [
 name = "kornia-imgproc"
 version = "0.1.11-rc.1"
 dependencies = [
+ "anyhow",
  "criterion",
  "fast_image_resize",
  "image 0.25.9",

@@ -23,22 +23,21 @@ pub enum InterpolationMode {
 /// * `image` - The input image container with shape (height, width, C).
 /// * `u` - The x coordinate of the pixel to interpolate.
 /// * `v` - The y coordinate of the pixel to interpolate.
-/// * `c` - The channel of the pixel to interpolate.
 /// * `interpolation` - The interpolation mode to use.
 ///
 /// # Returns
 ///
-/// The interpolated pixel value.
+/// The interpolated pixel values.
 pub fn interpolate_pixel<const C: usize, A: ImageAllocator>(
     image: &Image<f32, C, A>,
     u: f32,
     v: f32,
-    c: usize,
+
     interpolation: InterpolationMode,
-) -> f32 {
+) -> [f32; C] {
     match interpolation {
-        InterpolationMode::Bilinear => bilinear_interpolation(image, u, v, c),
-        InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v, c),
+        InterpolationMode::Bilinear => bilinear_interpolation(image, u, v),
+        InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v),
         InterpolationMode::Lanczos => {
             unimplemented!("Lanczos interpolation is not yet implemented")
         }
