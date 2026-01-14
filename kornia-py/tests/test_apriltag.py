@@ -70,8 +70,8 @@ def test_apriltag_decoder():
         (10.0, 10.0),
     ]
 
-    # Decode only - no resize or mode arguments
-    py_img = K.io.decode_image(TAG36H11_TAG)
+    # Read image file as-is (no resize or mode conversion)
+    py_img = K.io.read_image(TAG36H11_TAG)
     img = np.asarray(py_img)
 
     # The test image is already 60x60 mono
