@@ -173,8 +173,19 @@ pub fn write_image_deprecated(
         "kornia_rs.write_image is deprecated. Use kornia_rs.io.write_image.",
     )?;
 
-    if mode == "auto" {
-        io::functional::write_image_any(file_path, image, quality)
+    iif mode == "auto" {
+        let inferred_mode = if image.extract::<image::PyImage>().is_ok()
+            || image.extract::<image::PyImageU16>().is_ok()
+            || image.extract::<image::PyImageF32>().is_ok()
+        {
+            "rgb"
+        } else {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Cannot infer image mode. Please specify mode.",
+            ));
+        };
+
+        io::functional::write_image(file_path, image, inferred_mode, quality)
     } else {
         io::functional::write_image(file_path, image, mode, quality)
     }
