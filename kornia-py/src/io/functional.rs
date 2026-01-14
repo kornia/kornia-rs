@@ -59,15 +59,35 @@ pub fn write_image_any_deprecated(
 
 /// Helper to infer mode automatically
 fn infer_image_mode(image: &Bound<'_, PyAny>) -> PyResult<&'static str> {
-    if image.extract::<PyImage>().is_ok() {
-        Ok("rgb") // default for u8 images
-    } else if image.extract::<PyImageU16>().is_ok() {
-        Ok("rgb") // default for u16 images
-    } else if image.extract::<PyImageF32>().is_ok() {
-        Ok("rgb") // default for f32 images
+    // First, try to infer the mode from the image shape if available.
+    if let Ok(shape_obj) = image.getattr("shape") {
+        if let Ok(shape) = shape_obj.extract::<Vec<usize>>() {
+            let channels = match shape.len() {
+                // (H, W) -> single-channel image
+                2 => 1,
+                // (H, W, C) -> channel last
+                3 => shape[2],
+                _ => 0,
+            };
+
+            match channels {
+                1 => return Ok("mono"),
+                3 => return Ok("rgb"),
+                4 => return Ok("rgba"),
+                _ => {}
+            }
+        }
+    }
+
+    // Fallback: preserve previous behavior based on known wrapper types.
+    if image.extract::<PyImage>().is_ok()
+        || image.extract::<PyImageU16>().is_ok()
+        || image.extract::<PyImageF32>().is_ok()
+    {
+        Ok("rgb")
     } else {
         Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "Cannot infer image mode. Please specify mode.",
+            "Cannot infer image mode. Please specify mode explicitly.",
         ))
     }
 }
