@@ -10,9 +10,40 @@ use kornia_image::{
 use kornia_io::jpeg as jpeg_io;
 use kornia_io::png as png_io;
 use kornia_io::tiff as tiff_io;
+use numpy::{PyArrayDyn, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use std::fs;
 use std::path::Path;
+
+trait IntoKorniaImage<const C: usize> {
+    type Pixel;
+
+    fn into_kornia(self) -> Result<Image<Self::Pixel, C, CpuAllocator>, kornia_image::ImageError>;
+}
+
+impl<const C: usize> IntoKorniaImage<C> for PyImage {
+    type Pixel = u8;
+
+    fn into_kornia(self) -> Result<Image<u8, C, CpuAllocator>, kornia_image::ImageError> {
+        Image::<u8, C, _>::from_pyimage(self)
+    }
+}
+
+impl<const C: usize> IntoKorniaImage<C> for PyImageU16 {
+    type Pixel = u16;
+
+    fn into_kornia(self) -> Result<Image<u16, C, CpuAllocator>, kornia_image::ImageError> {
+        Image::<u16, C, _>::from_pyimage_u16(self)
+    }
+}
+
+impl<const C: usize> IntoKorniaImage<C> for PyImageF32 {
+    type Pixel = f32;
+
+    fn into_kornia(self) -> Result<Image<f32, C, CpuAllocator>, kornia_image::ImageError> {
+        Image::<f32, C, _>::from_pyimage_f32(self)
+    }
+}
 
 fn img_err(e: kornia_image::ImageError) -> PyErr {
     PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string())
@@ -59,22 +90,26 @@ pub fn write_image_any_deprecated(
 
 /// Helper to infer mode automatically
 fn infer_image_mode(image: &Bound<'_, PyAny>) -> PyResult<&'static str> {
-    // First, try to infer the mode from the image shape if available.
-    if let Ok(shape_obj) = image.getattr("shape") {
-        if let Ok(shape) = shape_obj.extract::<Vec<usize>>() {
-            let channels = match shape.len() {
-                // (H, W) -> single-channel image
-                2 => 1,
-                // (H, W, C) -> channel last
-                3 => shape[2],
-                _ => 0,
-            };
+    // First, try to infer the mode from a NumPy ndarray shape if available.
+    if let Ok(array) = image.cast::<PyArrayDyn<u8>>() {
+        let shape = array.shape();
 
-            match channels {
-                1 => return Ok("mono"),
-                3 => return Ok("rgb"),
-                4 => return Ok("rgba"),
-                _ => {}
+        let channels = match shape.len() {
+            // (H, W) -> single-channel image
+            2 => 1,
+            // (H, W, C) -> channel last
+            3 => shape[2],
+            _ => 0,
+        };
+
+        match channels {
+            1 => return Ok("mono"),
+            3 => return Ok("rgb"),
+            4 => return Ok("rgba"),
+            _ => {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    "Cannot infer image mode from NumPy array shape.",
+                ))
             }
         }
     }
@@ -201,11 +236,16 @@ pub fn write_image(
     }
 }
 
-/// Decode an image file from disk into a Python object.
+/// Decode an image from a file path.
+///
+/// Note: despite the name, this function reads the image from disk.
+/// Byte-level decoding APIs are format-specific (e.g. decode_image_png).
+///
+/// This function is an alias for `read_image` and exists for backward compatibility.
 ///
 /// Decoding behavior is determined by the file extension (e.g. `png`, `jpg`, `jpeg`).
-/// Despite the name, this function reads the image from a file path and does not
-/// decode from in-memory bytes.
+/// Despite the name, this function reads the image from a file path.
+/// For decoding from bytes, use format-specific decode_image_* functions
 ///
 /// # Parameters
 /// * `file_path` - A path-like object implementing `__fspath__` (for example a `str` or
@@ -236,6 +276,7 @@ pub fn write_image(
 /// all arguments directly to [`read_image`].
 #[pyfunction]
 pub fn decode_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    // Simply calls `read_image`. Exists for backward compatibility.
     read_image(file_path)
 }
 
@@ -363,18 +404,18 @@ fn write_image_png_dispatcher(
     if let Ok(img) = image.extract::<PyImage>() {
         match mode {
             "rgb" => {
-                let img = Image::<u8, 3, _>::from_pyimage(img).map_err(img_err)?;
+                let img = IntoKorniaImage::<3>::into_kornia(img).map_err(img_err)?;
                 png_io::write_image_png_rgb8(path, &img).map_err(io_err)?;
             }
             "rgba" => {
-                let img = Image::<u8, 4, _>::from_pyimage(img).map_err(img_err)?;
+                let img = IntoKorniaImage::<4>::into_kornia(img).map_err(img_err)?;
                 png_io::write_image_png_rgba8(path, &img).map_err(io_err)?;
             }
             "mono" => {
-                let img = Image::<u8, 1, _>::from_pyimage(img).map_err(img_err)?;
+                let img = IntoKorniaImage::<1>::into_kornia(img).map_err(img_err)?;
                 png_io::write_image_png_gray8(path, &img).map_err(io_err)?;
             }
-            _ => return invalid_png_mode_u8(),
+            _ => return invalid_mode(r#"Supported PNG u8 modes: "rgb", "rgba", "mono""#),
         }
         return Ok(());
     }
@@ -382,18 +423,18 @@ fn write_image_png_dispatcher(
     if let Ok(img) = image.extract::<PyImageU16>() {
         match mode {
             "rgb" => {
-                let img = Image::<u16, 3, _>::from_pyimage_u16(img).map_err(img_err)?;
+                let img = IntoKorniaImage::<3>::into_kornia(img).map_err(img_err)?;
                 png_io::write_image_png_rgb16(path, &img).map_err(io_err)?;
             }
             "rgba" => {
-                let img = Image::<u16, 4, _>::from_pyimage_u16(img).map_err(img_err)?;
+                let img = IntoKorniaImage::<4>::into_kornia(img).map_err(img_err)?;
                 png_io::write_image_png_rgba16(path, &img).map_err(io_err)?;
             }
             "mono" => {
-                let img = Image::<u16, 1, _>::from_pyimage_u16(img).map_err(img_err)?;
+                let img = IntoKorniaImage::<1>::into_kornia(img).map_err(img_err)?;
                 png_io::write_image_png_gray16(path, &img).map_err(io_err)?;
             }
-            _ => return invalid_png_mode_u16(),
+            _ => return invalid_mode(r#"Supported PNG u16 modes: "rgb", "rgba", "mono""#),
         }
         return Ok(());
     }
@@ -523,14 +564,14 @@ fn write_image_tiff_dispatcher(
     if let Ok(img) = image.extract::<PyImage>() {
         match mode {
             "rgb" => {
-                let img = Image::<u8, 3, _>::from_pyimage(img).map_err(img_err)?;
+                let img = IntoKorniaImage::<3>::into_kornia(img).map_err(img_err)?;
                 tiff_io::write_image_tiff_rgb8(path, &img).map_err(io_err)?;
             }
             "mono" => {
-                let img = Image::<u8, 1, _>::from_pyimage(img).map_err(img_err)?;
+                let img = IntoKorniaImage::<1>::into_kornia(img).map_err(img_err)?;
                 tiff_io::write_image_tiff_mono8(path, &img).map_err(io_err)?;
             }
-            _ => return invalid_tiff_mode_u8(),
+            _ => return invalid_mode(r#"Supported TIFF u8 modes: "rgb", "mono""#),
         }
         return Ok(());
     }
@@ -538,14 +579,14 @@ fn write_image_tiff_dispatcher(
     if let Ok(img) = image.extract::<PyImageU16>() {
         match mode {
             "rgb" => {
-                let img = Image::<u16, 3, _>::from_pyimage_u16(img).map_err(img_err)?;
+                let img = IntoKorniaImage::<3>::into_kornia(img).map_err(img_err)?;
                 tiff_io::write_image_tiff_rgb16(path, &img).map_err(io_err)?;
             }
             "mono" => {
-                let img = Image::<u16, 1, _>::from_pyimage_u16(img).map_err(img_err)?;
+                let img = IntoKorniaImage::<1>::into_kornia(img).map_err(img_err)?;
                 tiff_io::write_image_tiff_mono16(path, &img).map_err(io_err)?;
             }
-            _ => return invalid_tiff_mode_u16(),
+            _ => return invalid_mode(r#"Supported TIFF u16 modes: "rgb", "mono""#),
         }
         return Ok(());
     }
@@ -553,14 +594,14 @@ fn write_image_tiff_dispatcher(
     if let Ok(img) = image.extract::<PyImageF32>() {
         match mode {
             "mono" => {
-                let img = Image::<f32, 1, _>::from_pyimage_f32(img).map_err(img_err)?;
+                let img = IntoKorniaImage::<1>::into_kornia(img).map_err(img_err)?;
                 tiff_io::write_image_tiff_mono32f(path, &img).map_err(io_err)?;
             }
             "rgb" => {
-                let img = Image::<f32, 3, _>::from_pyimage_f32(img).map_err(img_err)?;
+                let img = IntoKorniaImage::<3>::into_kornia(img).map_err(img_err)?;
                 tiff_io::write_image_tiff_rgb32f(path, &img).map_err(io_err)?;
             }
-            _ => return invalid_tiff_mode_f32(),
+            _ => return invalid_mode(r#"Supported TIFF f32 modes: "mono", "rgb""#),
         }
         return Ok(());
     }
@@ -631,51 +672,19 @@ fn write_image_jpeg_dispatcher(
 
     match mode {
         "rgb" => {
-            let img = Image::<u8, 3, _>::from_pyimage(img).map_err(img_err)?;
+            let img = IntoKorniaImage::<3>::into_kornia(img).map_err(img_err)?;
             jpeg_io::write_image_jpeg_rgb8(path, &img, quality).map_err(io_err)?;
         }
         "mono" => {
-            let img = Image::<u8, 1, _>::from_pyimage(img).map_err(img_err)?;
+            let img = IntoKorniaImage::<1>::into_kornia(img).map_err(img_err)?;
             jpeg_io::write_image_jpeg_gray8(path, &img, quality).map_err(io_err)?;
         }
-        _ => return invalid_jpeg_mode(),
+        _ => return invalid_mode(r#"Supported JPEG modes: "rgb", "mono""#),
     }
 
     Ok(())
 }
 
-fn invalid_png_mode_u8() -> PyResult<()> {
-    Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-        r#"Supported PNG u8 modes: "rgb", "rgba", "mono""#,
-    ))
-}
-
-fn invalid_png_mode_u16() -> PyResult<()> {
-    Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-        r#"Supported PNG u16 modes: "rgb", "rgba", "mono""#,
-    ))
-}
-
-fn invalid_tiff_mode_u8() -> PyResult<()> {
-    Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-        r#"Supported TIFF u8 modes: "rgb", "mono""#,
-    ))
-}
-
-fn invalid_tiff_mode_u16() -> PyResult<()> {
-    Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-        r#"Supported TIFF u16 modes: "rgb", "mono""#,
-    ))
-}
-
-fn invalid_tiff_mode_f32() -> PyResult<()> {
-    Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-        r#"Supported TIFF f32 modes: "mono", "rgb""#,
-    ))
-}
-
-fn invalid_jpeg_mode() -> PyResult<()> {
-    Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-        r#"Supported JPEG modes: "rgb", "mono""#,
-    ))
+fn invalid_mode(message: &'static str) -> PyResult<()> {
+    Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(message))
 }
