@@ -174,6 +174,12 @@ pub fn write_image_deprecated(
     )?;
 
     if mode == "auto" {
+        warn_deprecation(
+            py,
+            "`mode='auto'` in kornia_rs.write_image is deprecated and always resolves to 'rgb'. \
+            Use kornia_rs.io.write_image for correct mode inference.",
+        )?;
+
         let inferred_mode = if image.extract::<image::PyImage>().is_ok()
             || image.extract::<image::PyImageU16>().is_ok()
             || image.extract::<image::PyImageF32>().is_ok()
@@ -203,6 +209,14 @@ pub fn decode_image_deprecated(
         py,
         "kornia_rs.decode_image is deprecated. Use kornia_rs.io.decode_image.",
     )?;
+
+    if mode.is_some() {
+        warn_deprecation(
+            py,
+            "`mode` argument is ignored and will be removed. \
+             Use kornia_rs.io.decode_image instead.",
+        )?;
+    }
 
     io::functional::decode_image(file_path)
 }

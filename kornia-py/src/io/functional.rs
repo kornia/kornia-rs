@@ -204,6 +204,8 @@ pub fn write_image(
 /// Decode an image file from disk into a Python object.
 ///
 /// Decoding behavior is determined by the file extension (e.g. `png`, `jpg`, `jpeg`).
+/// Despite the name, this function reads the image from a file path and does not
+/// decode from in-memory bytes.
 ///
 /// # Parameters
 /// * `file_path` - A path-like object implementing `__fspath__` (for example a `str` or
@@ -219,7 +221,7 @@ pub fn write_image(
 ///   a valid path.
 /// * `FileNotFoundError` if the file does not exist.
 /// * `ValueError` if the file extension cannot be determined or is not supported
-///   (`png`, `jpg`, `jpeg` are currently supported).
+///   (`png`, `jpg`, `jpeg`, `tiff` are currently supported).
 ///
 /// # Examples
 /// ```python
