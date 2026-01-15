@@ -1,12 +1,12 @@
 use crate::error::IoError;
-use image_webp::WebPDecoder;
+use image_webp::{WebPDecoder, WebPEncoder, ColorType};
 use kornia_image::{
     allocator::{CpuAllocator, ImageAllocator},
     color_spaces::{Gray8, Rgb8, Rgba8},
     Image, ImageLayout, ImageSize, PixelFormat,
 };
 
-use std::{fs, io::{BufReader, Cursor}, path::Path};
+use std::{fs, io::{BufReader, Cursor}, path::Path,};
 
 
 /// Read a WEBP image as grayscale (Gray8).
@@ -264,6 +264,145 @@ fn read_webp_impl<const N : usize>(file_path : impl AsRef<Path>)
     
 }
 
+/// Encodes the given RGB8 image to WEBP bytes (in-memory) using a provided buffer.
+///
+/// The encoder uses VP8L (Lossless Encoding)
+/// 
+/// # Arguments
+///
+/// - `image` - The RGB image to encode
+/// - `buffer` - A mutable buffer to write the WEBP bytes into
+///
+/// # Note
+///
+/// The caller is responsible for clearing the buffer if needed. The encoded data will be
+/// appended to any existing content in the buffer.
+pub fn encode_image_webp_rgb8<A: ImageAllocator>(
+    image: &Image<u8, 3, A>,
+    buffer: &mut Vec<u8>,
+) -> Result<(), IoError>{
+    let encoder = WebPEncoder::new(buffer);
+    encoder.encode(
+        image.as_slice(),
+        image.width() as u32,
+        image.height() as u32,
+        ColorType::Rgb8
+    )?;
+    Ok(())
+}
+
+
+/// Encodes the given RGBA8 image to WEBP bytes (in-memory) using a provided buffer.
+///
+/// The encoder uses VP8L (Lossless Encoding)
+/// 
+/// # Arguments
+///
+/// - `image` - The RGBA8 image to encode
+/// - `buffer` - A mutable buffer to write the WEBP bytes into
+///
+/// # Note
+///
+/// The caller is responsible for clearing the buffer if needed. The encoded data will be
+/// appended to any existing content in the buffer.
+pub fn encode_image_webp_rgba8<A: ImageAllocator>(
+    image: &Image<u8, 4, A>,
+    buffer: &mut Vec<u8>,
+) -> Result<(), IoError>{
+    let encoder = WebPEncoder::new(buffer);
+    encoder.encode(
+        image.as_slice(),
+        image.width() as u32,
+        image.height() as u32,
+        ColorType::Rgba8
+    )?;
+    Ok(())
+}
+
+/// Encodes the given GRAY8 image to WEBP bytes (in-memory) using a provided buffer.
+///
+/// The encoder uses VP8L (Lossless Encoding)
+/// 
+/// # Arguments
+///
+/// - `image` - The GRAY image to encode
+/// - `buffer` - A mutable buffer to write the WEBP bytes into
+///
+/// # Note
+///
+/// The caller is responsible for clearing the buffer if needed. The encoded data will be
+/// appended to any existing content in the buffer.
+pub fn encode_image_webp_gray8<A: ImageAllocator>(
+    image: &Image<u8, 1, A>,
+    buffer: &mut Vec<u8>,
+) -> Result<(), IoError>{
+    let encoder = WebPEncoder::new(buffer);
+    encoder.encode(
+        image.as_slice(),
+        image.width() as u32,
+        image.height() as u32,
+        ColorType::L8
+    )?;
+    Ok(())
+}
+
+/// Writes the given WEBP _(grayscale)_ data to the given file path.
+///
+/// # Arguments
+///
+/// - `file_path` - The path to the WEBP image.
+/// - `image` - The grayscale image to write
+pub fn write_image_webp_gray8<A: ImageAllocator>(
+    file_path: impl AsRef<Path>,
+    image: &Image<u8, 1, A>,
+) -> Result<(), IoError> {
+    write_image_webp_imp(file_path, image, ColorType::L8)
+}
+
+/// Writes the given WEBP _(rgb8)_ data to the given file path.
+///
+/// # Arguments
+///
+/// - `file_path` - The path to the WEBP image.
+/// - `image` - The rgb8 image to write
+pub fn write_image_webp_rgb8<A: ImageAllocator>(
+    file_path: impl AsRef<Path>,
+    image: &Image<u8, 3, A>,
+) -> Result<(), IoError> {
+    write_image_webp_imp(file_path, image, ColorType::Rgb8)
+}
+
+/// Writes the given WEBP _(rgba8)_ data to the given file path.
+///
+/// # Arguments
+///
+/// - `file_path` - The path to the WEBP image.
+/// - `image` - The rgba8 image to write
+pub fn write_image_webp_rgba8<A: ImageAllocator>(
+    file_path: impl AsRef<Path>,
+    image: &Image<u8, 4, A>,
+) -> Result<(), IoError> {
+    write_image_webp_imp(file_path, image, ColorType::Rgba8)
+}
+
+fn write_image_webp_imp<const N: usize, A: ImageAllocator>(
+    file_path: impl AsRef<Path>,
+    image: &Image<u8, N, A>,
+    color_type: ColorType,
+) -> Result<(), IoError> {
+
+    let file = fs::File::create(file_path).map_err(image_webp::EncodingError::IoError)?;
+    let writer = std::io::BufWriter::new(file);
+    let encoder = WebPEncoder::new(writer);
+    encoder.encode(
+        image.as_slice(),
+        image.width() as u32,
+        image.height() as u32,
+        color_type,
+    )?;
+    Ok(())
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -308,4 +447,24 @@ mod tests {
         assert_eq!(layout.channels, 3);
         Ok(())
     }
+
+    #[test]
+    fn read_write_webp_rgb8() -> Result<(), IoError> {
+        let tmp_dir = tempfile::tempdir()?;
+        fs::create_dir_all(tmp_dir.path())?;
+
+        let file_path = tmp_dir.path().join("fire_write_rgb8.webp");
+        let image_data = read_image_webp_rgb8("../../tests/data/fire.webp")?;
+        write_image_webp_rgb8(&file_path, &image_data)?;
+
+        let image_data_back = read_image_webp_rgb8(&file_path)?;
+        assert!(file_path.exists(), "File does not exist: {file_path:?}");
+
+        assert_eq!(image_data_back.cols(), 320);
+        assert_eq!(image_data_back.rows(), 235);
+        assert_eq!(image_data_back.num_channels(), 3);
+
+        Ok(())
+    }
+
 }
