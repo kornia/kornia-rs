@@ -56,4 +56,8 @@ pub enum ImageError {
     /// Error when the channel count is unsupported.
     #[error("Unsupported channel count {0}")]
     UnsupportedChannelCount(usize),
+
+    /// Error when parallel execution fails.
+    #[error("Parallel execution failed: {0}")]
+    Parallel(String),
 }
