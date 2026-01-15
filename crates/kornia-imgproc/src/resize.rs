@@ -1,9 +1,7 @@
-use crate::{
-    interpolation::{grid::meshgrid_from_fn, interpolate_pixel, InterpolationMode},
-    parallel,
-};
+use crate::interpolation::{interpolate_pixel, InterpolationMode};
 use fast_image_resize::{self as fr};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use rayon::prelude::*;
 
 /// Resize an image to a new size.
 ///
@@ -60,40 +58,55 @@ pub fn resize_native<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,
     interpolation: InterpolationMode,
-) -> Result<(), ImageError>
-where
-{
-    // check if the input and output images have the same size
-    // and copy the input image to the output image if they have the same size
+) -> Result<(), ImageError> {
     if src.size() == dst.size() {
         dst.as_slice_mut().copy_from_slice(src.as_slice());
         return Ok(());
     }
 
-    // create a grid of x and y coordinates for the output image
-    // and interpolate the values from the input image.
     let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
-    let step_x = if dst.cols() > 1 {
-        (src.cols() - 1) as f32 / (dst.cols() - 1) as f32
-    } else {
-        0.0
-    };
-    let step_y = if dst.rows() > 1 {
-        (src.rows() - 1) as f32 / (dst.rows() - 1) as f32
-    } else {
-        0.0
-    };
-    let (map_x, map_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| {
-        Ok((x as f32 * step_x, y as f32 * step_y))
-    })?;
 
-    // iterate over the output image and interpolate the pixel values
-    parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {
-        // interpolate the pixel values for each channel
-        dst_pixel.iter_mut().enumerate().for_each(|(k, pixel)| {
-            *pixel = interpolate_pixel(src, x, y, k, interpolation);
+    let step_x = if dst_cols > 1 {
+        (src.cols() - 1) as f32 / (dst_cols - 1) as f32
+    } else {
+        0.0
+    };
+
+    let step_y = if dst_rows > 1 {
+        (src.rows() - 1) as f32 / (dst_rows - 1) as f32
+    } else {
+        0.0
+    };
+
+    let row_stride = dst_cols * C;
+
+    dst.as_slice_mut()
+        .par_chunks_mut(row_stride)
+        .enumerate()
+        .for_each(|(y, row)| {
+            let v = y as f32 * step_y;
+
+            for (x, pixel) in row.chunks_exact_mut(C).enumerate() {
+                let u = x as f32 * step_x;
+
+                match interpolation {
+                    InterpolationMode::Nearest => {
+                        let val = interpolate_pixel(src, u, v, InterpolationMode::Nearest);
+                        pixel.copy_from_slice(&val);
+                    }
+                    InterpolationMode::Bilinear => {
+                        let val = interpolate_pixel(src, u, v, InterpolationMode::Bilinear);
+                        pixel.copy_from_slice(&val);
+                    }
+                    InterpolationMode::Lanczos => {
+                        unimplemented!("Lanczos interpolation is not yet implemented")
+                    }
+                    InterpolationMode::Bicubic => {
+                        unimplemented!("Bicubic interpolation is not yet implemented")
+                    }
+                }
+            }
         });
-    });
 
     Ok(())
 }
