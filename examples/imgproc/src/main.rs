@@ -31,25 +31,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ops::cast_and_scale(&gray, &mut gray_f32, 1.0 / 255.0)?;
 
     let new_size = ImageSize {
-        width: 128,
-        height: 128,
+        width: 512,
+        height: 512,
     };
-
-    let mut gray_resize = Image::<f32, 1, _>::from_size_val(new_size, 0.0, CpuAllocator)?;
-    imgproc::resize::resize_native(
-        &gray_f32,
-        &mut gray_resize,
-        imgproc::interpolation::InterpolationMode::Bilinear,
-    )?;
-
-    println!("gray_resize: {:?}", gray_resize.size());
 
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;
 
-    // log the images
+    // log the original images
     rec.log(
-        "image",
+        "image/original",
         &rerun::Image::from_elements(
             image.as_slice(),
             image.size().into(),
@@ -58,15 +49,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     rec.log(
-        "gray",
+        "gray/original",
         &rerun::Image::from_elements(gray.as_slice(), gray.size().into(), rerun::ColorModel::L),
     )?;
 
+    // Nearest neighbor
+    let mut gray_nearest = Image::<f32, 1, _>::from_size_val(new_size, 0.0, CpuAllocator)?;
+    imgproc::resize::resize_native(
+        &gray_f32,
+        &mut gray_nearest,
+        imgproc::interpolation::InterpolationMode::Nearest,
+    )?;
+
     rec.log(
-        "gray_resize",
+        "gray/nearest",
         &rerun::Image::from_elements(
-            gray_resize.as_slice(),
-            gray_resize.size().into(),
+            gray_nearest.as_slice(),
+            gray_nearest.size().into(),
+            rerun::ColorModel::L,
+        ),
+    )?;
+
+    // Bilinear
+    let mut gray_bilinear = Image::<f32, 1, _>::from_size_val(new_size, 0.0, CpuAllocator)?;
+    imgproc::resize::resize_native(
+        &gray_f32,
+        &mut gray_bilinear,
+        imgproc::interpolation::InterpolationMode::Bilinear,
+    )?;
+
+    rec.log(
+        "gray/bilinear",
+        &rerun::Image::from_elements(
+            gray_bilinear.as_slice(),
+            gray_bilinear.size().into(),
+            rerun::ColorModel::L,
+        ),
+    )?;
+
+    // Bicubic
+    let mut gray_bicubic = Image::<f32, 1, _>::from_size_val(new_size, 0.0, CpuAllocator)?;
+    imgproc::resize::resize_native(
+        &gray_f32,
+        &mut gray_bicubic,
+        imgproc::interpolation::InterpolationMode::Bicubic,
+    )?;
+
+    rec.log(
+        "gray/bicubic",
+        &rerun::Image::from_elements(
+            gray_bicubic.as_slice(),
+            gray_bicubic.size().into(),
             rerun::ColorModel::L,
         ),
     )?;
