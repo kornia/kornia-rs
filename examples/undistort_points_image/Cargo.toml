@@ -1,5 +1,5 @@
 [package]
-name = "undistort_image_points"
+name = "undistort_points"
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }

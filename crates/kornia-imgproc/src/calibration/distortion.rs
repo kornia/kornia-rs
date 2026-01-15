@@ -183,7 +183,7 @@ pub struct UndistortIterResult {
 /// Iteratively solves for the undistorted **normalized** point using the
 /// Brown–Conrady polynomial distortion model.
 ///
-/// This function compenstates for distortion using iterative fixed-point method
+/// This function compensates for distortion using iterative fixed-point method
 ///
 /// # Arguments
 ///
@@ -366,7 +366,7 @@ pub fn undistort_normalized_point_iter(
 ///     ```
 ///
 /// # Notes
-/// - If `p3_opt` and `p34_opt` are both provided p3_opt will be applied.
+/// - If `p3_opt` and `p34_opt` are both provided, `p3_opt` will be applied.
 /// - If `r_opt` is Some(3x3 R), this function compute v = R * [x,y,1]^T and normalize v.
 /// - If `p3_opt` is Some(3x3 P), this function compute p = P * [x,y,1]^T and normalize p.
 /// - Else if `p34_opt` is Some(4x4 P), we compute p = P * [x,y,1,1]^T and normalize p.
@@ -456,14 +456,14 @@ pub struct UndistortResults {
 /// * `criteria` - termination criteria for the iterative undistortion
 ///
 /// # Returns
-/// * Ok([`UndistortResults`]) if successfull computation of ideal(undistorted) coordinates.
+/// * Ok([`UndistortResults`]) if successful computation of ideal(undistorted) coordinates.
 ///
 ///     UndistortResults contains:
 ///     * `total_points` - Total number of points processed.
 ///     * `converged` - Number of points whose iterative solver converged within the specified [`TermCriteria`].
 ///     * `max_iterations_hit` - Number of points for which the solver terminated because `max_iter` was reached without satisfying the convergence threshold.
 ///
-/// * `Err(TensorError)` if dimesion mismatch is found for `src` and `dst`.
+/// * `Err(TensorError)` if dimension mismatch is found for `src` and `dst`.
 ///
 /// # Example:
 /// ```rust
