@@ -1,6 +1,10 @@
 An example showing how to use `undistort_points` function provided by `kornia-imgproc` crate for image undistortion.
+Reference dataset: OpenCV calibration samples
+Source: https://github.com/opencv/opencv/blob/master/samples/data/left12.jpg
+Calibration params: https://github.com/opencv/opencv/blob/master/samples/data/left_intrinsics.yml
 
 NOTE: Build release version first
+
 ```bash
 cargo build --release
 ```
