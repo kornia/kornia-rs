@@ -55,4 +55,8 @@ pub enum IoError {
     /// Error to decode the WEBP image.
     #[error(transparent)]
     WebpDecodingError(#[from] image_webp::DecodingError),
+
+    /// Error to encode the WEBP image.
+    #[error(transparent)]
+    WebpEncodingError(#[from] image_webp::EncodingError),
 }
