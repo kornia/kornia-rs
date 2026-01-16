@@ -1,6 +1,6 @@
 mod custom_rmsnorm;
 mod model;
-mod preprocessor;
+pub mod preprocessor;
 mod text_model;
 pub mod utils;
 mod vision_model;

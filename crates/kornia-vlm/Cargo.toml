@@ -25,10 +25,12 @@ kornia-tensor = { workspace = true }
 log = { workspace = true }
 minijinja = { version = "2.12.0", features = ["loader"] }
 num2words = "1.2.0"
+rayon.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokenizers = { workspace = true }
+wide = "0.7.33"
 
 [dev-dependencies]
 env_logger = { workspace = true }
