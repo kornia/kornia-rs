@@ -1,4 +1,5 @@
 pub mod paligemma;
+pub mod preprocessor;
 pub mod smolvlm;
 pub mod smolvlm2;
 

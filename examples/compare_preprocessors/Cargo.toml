@@ -1,0 +1,13 @@
+[package]
+name = "compare_preprocessors"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+candle-core = { workspace = true }
+kornia-image = { workspace = true }
+kornia-io = { workspace = true }
+kornia-vlm = { workspace = true }
+anyhow = "1.0"
+kornia-imgproc = { version = "0.1.11-rc.1", path = "../../crates/kornia-imgproc" }

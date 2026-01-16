@@ -1,0 +1,21 @@
+[package]
+name = "bench_preprocessors"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+candle-core = { workspace = true }
+kornia-image = { workspace = true }
+kornia-io = { workspace = true }
+kornia-vlm = { workspace = true }
+kornia-imgproc = { workspace = true }
+anyhow = "1.0"
+rayon = "1.10"
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "bench_preprocessors"
+harness = false
