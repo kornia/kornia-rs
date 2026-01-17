@@ -34,8 +34,8 @@ gstreamer-app = { version = "0.24", optional = true }
 jpeg-encoder = "0.6"
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
-log = { workspace = true }
 little_exif = "0.6"
+log = { workspace = true }
 png = "0.18"
 thiserror = { workspace = true }
 tiff = "0.10"
