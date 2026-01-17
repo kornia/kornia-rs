@@ -7861,11 +7861,13 @@ dependencies = [
  "fast_image_resize",
  "image 0.25.9",
  "imageproc",
+ "kornia-algebra",
  "kornia-image",
  "kornia-io",
  "kornia-tensor",
  "ndarray 0.15.6",
  "num-traits",
+ "opencv",
  "rand 0.9.2",
  "rayon",
  "thiserror 2.0.17",
@@ -16214,6 +16216,15 @@ dependencies = [
 
 [[package]]
 name = "undistort"
+version = "0.1.11-rc.1"
+dependencies = [
+ "argh",
+ "kornia",
+ "rerun",
+]
+
+[[package]]
+name = "undistort_image_points"
 version = "0.1.11-rc.1"
 dependencies = [
  "argh",

@@ -120,16 +120,13 @@ where
         ));
     }
 
+    let row_len = src.cols() * C;
+
     dst.as_slice_mut()
-        .par_chunks_exact_mut(src.cols() * C)
-        .zip_eq(src.as_slice().par_chunks_exact(src.cols() * C).rev())
+        .par_chunks_exact_mut(row_len)
+        .zip(src.as_slice().par_chunks_exact(row_len).rev())
         .for_each(|(dst_row, src_row)| {
-            dst_row
-                .chunks_exact_mut(C)
-                .zip(src_row.chunks_exact(C))
-                .for_each(|(dst_pixel, src_pixel)| {
-                    dst_pixel.copy_from_slice(src_pixel);
-                })
+            dst_row.copy_from_slice(src_row);
         });
 
     Ok(())
