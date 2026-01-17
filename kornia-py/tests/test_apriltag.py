@@ -53,22 +53,37 @@ def test_tag_family_into_family_kind():
 
 
 def test_apriltag_decoder():
+    if not TAG36H11_TAG.exists():
+        pytest.skip("AprilTag test image not available")
+
     kinds = [TagFamilyKind("tag36_h11")]
     config = K.apriltag.DecodeTagsConfig(kinds)
-    decoder = K.apriltag.AprilTagDecoder(config, K.image.ImageSize(60, 60))
+    decoder = K.apriltag.AprilTagDecoder(
+        config,
+        K.image.ImageSize(60, 60),
+    )
 
-    expected_quad = [(50.0, 10.0), (50.0, 50.0), (10.0, 50.0), (10.0, 10.0)]
+    expected_quad = [
+        (50.0, 10.0),
+        (50.0, 50.0),
+        (10.0, 50.0),
+        (10.0, 10.0),
+    ]
 
-    with open(TAG36H11_TAG, "rb") as f:
-        img_data = f.read()
-    img: np.ndarray = K.io.decode_image_png_u8(bytes(img_data), (60, 60), "mono")
+    # Read image file as-is (no resize or mode conversion)
+    py_img = K.io.read_image(TAG36H11_TAG)
+    img = np.asarray(py_img)
+
+    # The test image is already 60x60 mono
     assert img.shape == (60, 60, 1)
     assert img.dtype == np.uint8
 
-    detection = decoder.decode(img)
-    assert len(detection) == 1
-    assert detection[0].id == 5
+    detections = decoder.decode(img)
+    assert len(detections) == 1
 
-    for (ax, ay), (ex, ey) in zip(detection[0].quad.corners, expected_quad):
+    det = detections[0]
+    assert det.id == 5
+
+    for (ax, ay), (ex, ey) in zip(det.quad.corners, expected_quad):
         assert ax == pytest.approx(ex, abs=1e-3)
         assert ay == pytest.approx(ey, abs=1e-3)
