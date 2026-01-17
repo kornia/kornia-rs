@@ -1,3 +1,5 @@
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
 use crate::error::IoError;
@@ -11,7 +13,6 @@ pub struct ImageMetadata {
     /// EXIF `Orientation` tag (1..8) if present, otherwise `None`.
     pub exif_orientation: Option<u16>,
 }
-
 
 /// Read metadata from an image file without decoding pixels.
 ///
@@ -35,33 +36,44 @@ pub struct ImageMetadata {
 /// # Ok::<(), kornia_io::error::IoError>(())
 /// ```
 pub fn read_image_metadata<P: AsRef<Path>>(path: P) -> Result<ImageMetadata, IoError> {
-    let bytes = std::fs::read(path.as_ref()).map_err(IoError::FileError)?;
-    if let Some(v) = parse_exif_orientation(&bytes) {
+    let path = path.as_ref();
+    let mut file = File::open(path).map_err(IoError::FileError)?;
+
+    // Read the first 128KB to check for EXIF in the header.
+    // This covers most use cases without reading the full file.
+    let mut buffer = vec![0; 128 * 1024];
+    let n = file.read(&mut buffer).map_err(IoError::FileError)?;
+    buffer.truncate(n);
+
+    // Fast path: try to parse EXIF orientation from the header.
+    // This avoids the overhead of the full little_exif parser for the common case.
+    if let Some(v) = parse_exif_orientation(&buffer) {
         return Ok(ImageMetadata {
             exif_orientation: Some(v),
         });
     }
 
+    // Slow path: read the rest of the file if needed for little_exif.
+    if n == 128 * 1024 {
+        file.read_to_end(&mut buffer).map_err(IoError::FileError)?;
+    }
 
+    // File type must be determined from extension
     let ext = path
-        .as_ref()
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase());
 
     let file_type = match ext.as_deref() {
-        Some("jpg") | Some("jpeg") => Some(FileExtension::JPEG),
-        Some("tif") | Some("tiff") => Some(FileExtension::TIFF),
-        _ => None,
+        Some("jpg") | Some("jpeg") => FileExtension::JPEG,
+        Some("tif") | Some("tiff") => FileExtension::TIFF,
+        Some("png") => FileExtension::PNG {
+            as_zTXt_chunk: false,
+        },
+        _ => return Err(IoError::InvalidFileExtension(path.to_path_buf())),
     };
 
-
-    let metadata = file_type
-        .map(|ft| little_exif::metadata::Metadata::new_from_vec(&bytes, ft))
-        .unwrap_or_else(|| {
-            little_exif::metadata::Metadata::new_from_vec(&bytes, FileExtension::JPEG)
-        })
-        .ok();
+    let metadata = little_exif::metadata::Metadata::new_from_vec(&buffer, file_type).ok();
 
     let orientation = metadata.and_then(|m| {
         m.get_tag(&little_exif::exif_tag::ExifTag::Orientation(Vec::new()))
@@ -79,40 +91,16 @@ pub fn read_image_metadata<P: AsRef<Path>>(path: P) -> Result<ImageMetadata, IoE
     })
 }
 
-
-/// Minimal EXIF parser for Orientation tag.
-fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
-    // Locate EXIF header marker
-    let needle = b"Exif\0\0";
-    let pos = bytes.windows(needle.len()).position(|w| w == needle)?;
-    let mut offset = pos + needle.len();
-    if offset + 8 > bytes.len() {
-        return None;
-    }
-
-
-    // Determine byte order (II or MM)
-    let le = match &bytes[offset..offset + 2] {
-        b"II" => true,
-        b"MM" => false,
-        _ => return None,
-    };
-    offset += 2;
-
-    // Check TIFF magic number (42)
-    let magic = if le {
+fn read_u16(bytes: &[u8], offset: usize, le: bool) -> u16 {
+    if le {
         u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
     } else {
         u16::from_be_bytes([bytes[offset], bytes[offset + 1]])
-    };
-    if magic != 42 {
-        return None;
     }
-    offset += 2;
+}
 
-
-    // Offset to 0th IFD (relative to TIFF header start)
-    let ifd_offset = if le {
+fn read_u32(bytes: &[u8], offset: usize, le: bool) -> u32 {
+    if le {
         u32::from_le_bytes([
             bytes[offset],
             bytes[offset + 1],
@@ -126,7 +114,36 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
             bytes[offset + 2],
             bytes[offset + 3],
         ])
-    } as usize;
+    }
+}
+
+// Fast-path parser extracts orientation from first 128KB without full EXIF parsing
+fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
+    // Locate EXIF header marker
+    let needle = b"Exif\0\0";
+    let pos = bytes.windows(needle.len()).position(|w| w == needle)?;
+    let mut offset = pos + needle.len();
+    if offset + 8 > bytes.len() {
+        return None;
+    }
+
+    // Determine byte order (II or MM)
+    let le = match &bytes[offset..offset + 2] {
+        b"II" => true,
+        b"MM" => false,
+        _ => return None,
+    };
+    offset += 2;
+
+    // Check TIFF magic number (42)
+    let magic = read_u16(bytes, offset, le);
+
+    if magic != 42 {
+        return None;
+    }
+    offset += 2;
+
+    let ifd_offset = read_u32(bytes, offset, le) as usize;
 
     let tiff_start = pos + needle.len();
     let ifd_pos = tiff_start + ifd_offset;
@@ -134,11 +151,7 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
         return None;
     }
 
-    let num_entries = if le {
-        u16::from_le_bytes([bytes[ifd_pos], bytes[ifd_pos + 1]])
-    } else {
-        u16::from_be_bytes([bytes[ifd_pos], bytes[ifd_pos + 1]])
-    } as usize;
+    let num_entries = read_u16(bytes, ifd_pos, le) as usize;
 
     let mut entry_pos = ifd_pos + 2;
     for _ in 0..num_entries {
@@ -146,45 +159,13 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
             return None;
         }
 
+        let tag = read_u16(bytes, entry_pos, le);
+        let field_type = read_u16(bytes, entry_pos + 2, le);
+        let count = read_u32(bytes, entry_pos + 4, le);
 
-        let tag = if le {
-            u16::from_le_bytes([bytes[entry_pos], bytes[entry_pos + 1]])
-        } else {
-            u16::from_be_bytes([bytes[entry_pos], bytes[entry_pos + 1]])
-        };
-
-        let field_type = if le {
-            u16::from_le_bytes([bytes[entry_pos + 2], bytes[entry_pos + 3]])
-        } else {
-            u16::from_be_bytes([bytes[entry_pos + 2], bytes[entry_pos + 3]])
-        };
-
-        let count = if le {
-            u32::from_le_bytes([
-                bytes[entry_pos + 4],
-                bytes[entry_pos + 5],
-                bytes[entry_pos + 6],
-                bytes[entry_pos + 7],
-            ])
-        } else {
-            u32::from_be_bytes([
-                bytes[entry_pos + 4],
-                bytes[entry_pos + 5],
-                bytes[entry_pos + 6],
-                bytes[entry_pos + 7],
-            ])
-        };
-
-        // Orientation tag is short type
+        // Orientation tag is short type (3)
         if tag == 0x0112 && field_type == 3 && count >= 1 {
-
-            let v0 = bytes[entry_pos + 8];
-            let v1 = bytes[entry_pos + 9];
-            let val = if le {
-                u16::from_le_bytes([v0, v1])
-            } else {
-                u16::from_be_bytes([v0, v1])
-            };
+            let val = read_u16(bytes, entry_pos + 8, le);
             if (1..=8).contains(&val) {
                 return Some(val);
             } else {
@@ -202,50 +183,29 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
 mod tests {
     use super::*;
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-
-    /// Helper to write a unique temp file in the system temp dir.
-    fn write_temp_file(name_suffix: &str, data: &[u8]) -> std::path::PathBuf {
-        let mut path = std::env::temp_dir();
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-        path.push(format!("kornia_io_test_{}_{}.jpg", name_suffix, ts));
-        fs::write(&path, data).expect("write temp file");
-        path
-    }
 
     #[test]
     fn test_missing_exif_returns_none() {
         let repo_img = std::path::Path::new("../../tests/data/dog.jpeg");
-        if !repo_img.exists() {
-            eprintln!("skipping test_missing_exif_returns_none: test image not found");
-            return;
-        }
-
         let bytes = fs::read(repo_img).expect("read repo jpeg");
-        let tmp = write_temp_file("no_exif", &bytes);
 
-        let meta = read_image_metadata(&tmp).expect("read metadata");
+        let tmp_file = tempfile::Builder::new()
+            .suffix(".jpg")
+            .tempfile()
+            .expect("create temp file");
+
+        fs::write(tmp_file.path(), &bytes).expect("write temp file");
+
+        let meta = read_image_metadata(tmp_file.path()).expect("read metadata");
         assert!(meta.exif_orientation.is_none());
-
-        let _ = fs::remove_file(tmp);
     }
 
     #[test]
     fn test_write_and_read_orientation_values() {
         let repo_img = std::path::Path::new("../../tests/data/dog.jpeg");
-        if !repo_img.exists() {
-            eprintln!("skipping test_write_and_read_orientation_values: test image not found");
-            return;
-        }
-
         let original = fs::read(repo_img).expect("read repo jpeg");
 
         for &val in &[1u16, 6u16, 8u16] {
-
             // Create metadata with Orientation tag set
             let mut metadata = little_exif::metadata::Metadata::new();
             metadata.set_tag(little_exif::exif_tag::ExifTag::Orientation(vec![val]));
@@ -255,25 +215,23 @@ mod tests {
                 .write_to_vec(&mut buf, little_exif::filetype::FileExtension::JPEG)
                 .expect("embed exif");
 
-            let tmp = write_temp_file(&format!("orientation_{}", val), &buf);
-            let meta = read_image_metadata(&tmp).expect("read metadata");
-            assert_eq!(meta.exif_orientation, Some(val));
+            let tmp_file = tempfile::Builder::new()
+                .suffix(".jpg")
+                .tempfile()
+                .expect("create temp file");
 
-            let _ = fs::remove_file(tmp);
+            fs::write(tmp_file.path(), &buf).expect("write temp file");
+
+            let meta = read_image_metadata(tmp_file.path()).expect("read metadata");
+            assert_eq!(meta.exif_orientation, Some(val));
         }
     }
 
     #[test]
     fn test_all_orientation_values() {
         let repo_img = std::path::Path::new("../../tests/data/dog.jpeg");
-        if !repo_img.exists() {
-            eprintln!("skipping test_all_orientation_values: test image not found");
-            return;
-        }
-
         let original = fs::read(repo_img).expect("read repo jpeg");
 
-        
         for val in 1u16..=8 {
             let mut metadata = little_exif::metadata::Metadata::new();
             metadata.set_tag(little_exif::exif_tag::ExifTag::Orientation(vec![val]));
@@ -283,16 +241,20 @@ mod tests {
                 .write_to_vec(&mut buf, little_exif::filetype::FileExtension::JPEG)
                 .expect("embed exif");
 
-            let tmp = write_temp_file(&format!("all_orientations_{}", val), &buf);
-            let meta = read_image_metadata(&tmp).expect("read metadata");
+            let tmp_file = tempfile::Builder::new()
+                .suffix(".jpg")
+                .tempfile()
+                .expect("create temp file");
+
+            fs::write(tmp_file.path(), &buf).expect("write temp file");
+
+            let meta = read_image_metadata(tmp_file.path()).expect("read metadata");
             assert_eq!(
                 meta.exif_orientation,
                 Some(val),
                 "Failed to read orientation value {}",
                 val
             );
-
-            let _ = fs::remove_file(tmp);
         }
     }
 }
