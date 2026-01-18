@@ -275,14 +275,14 @@ mod tests {
         let kernel = Kernel::new(KernelShape::Cross { size: 3 });
         let data = kernel.data();
         // center row
-        assert_eq!(data[1 * 3 + 0], 1);
-        assert_eq!(data[1 * 3 + 1], 1);
-        assert_eq!(data[1 * 3 + 2], 1);
+        assert_eq!(data[3], 1);
+        assert_eq!(data[4], 1);
+        assert_eq!(data[5], 1);
         // center column
-        assert_eq!(data[0 * 3 + 1], 1);
-        assert_eq!(data[2 * 3 + 1], 1);
+        assert_eq!(data[1], 1);
+        assert_eq!(data[7], 1);
         // corners
-        assert_eq!(data[0 * 3 + 0], 0);
+        assert_eq!(data[0], 0);
     }
 
     #[test]
@@ -294,7 +294,7 @@ mod tests {
         assert_eq!(kernel.width(), 5);
         assert_eq!(kernel.height(), 5);
         // center
-        assert_eq!(kernel.data()[2 * 5 + 2], 1);
+        assert_eq!(kernel.data()[12], 1);
     }
 
     #[test]
