@@ -1,0 +1,31 @@
+[package]
+name = "kornia-bow"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+description = "High-Performance Hierarchical Bag of Words"
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+publish = true
+
+[dependencies]
+kornia-tensor = { workspace = true }
+num-traits = { workspace = true }
+thiserror = { workspace = true }
+rand = "0.8.5"
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3.3"
+rayon = "1.10"
+serde-big-array = "0.5"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[features]
+default = []
+
+[[bench]]
+name = "bow_bench"
+harness = false
