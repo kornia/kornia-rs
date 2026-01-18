@@ -17,3 +17,4 @@ Options:
 
 Output:
 This example will display all morphological operations in a [`rerun`](https://github.com/rerun-io/rerun) window:
+![](https://github.com/user-attachments/assets/da686172-ef76-4f88-a798-335a40cdc72c)
