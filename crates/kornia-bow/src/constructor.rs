@@ -328,7 +328,7 @@ mod tests {
         let training_data = generate_clustered_descriptors(5, 2);
         // B=10, data=5. Should still train successfully.
         let vocab = train::<10, Hamming<D>>(&training_data, 2).unwrap();
-        assert!(vocab.blocks.len() > 0);
+        assert!(!vocab.blocks.is_empty());
     }
 
     #[test]
@@ -336,7 +336,7 @@ mod tests {
         let feature = Feature([123u64; D]);
         let training_data = vec![feature; 100];
         let vocab = train::<B, Hamming<D>>(&training_data, 3).unwrap();
-        assert!(vocab.blocks.len() > 0);
+        assert!(!vocab.blocks.is_empty());
         let (_leaf_id, weight) = vocab.transform_one(&feature);
         // With IDF, if a word contains all features, ln(N/N) = 0.0
         assert!(weight >= 0.0);

@@ -73,11 +73,12 @@ mod tests {
     fn test_load_corrupted_vocabulary() {
         // Create a vocabulary with an invalid child index
         let mut blocks = Vec::new();
-        let mut block = BlockCluster::default();
-        // Point to index 100, but we will only have 1 block
-        block.content = BlockContent::Internal(InternalMeta {
-            children_base_idx: 100,
-        });
+        let block = BlockCluster {
+            content: BlockContent::Internal(InternalMeta {
+                children_base_idx: 100,
+            }),
+            ..Default::default()
+        };
         blocks.push(block);
 
         let vocab: Vocabulary<B, Hamming<D>> = Vocabulary {

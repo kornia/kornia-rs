@@ -308,7 +308,7 @@ mod tests {
         assert!(!bow.0.is_empty());
         assert!(!di.0.is_empty());
 
-        let total_features: usize = di.0.iter().map(|&(_, ref f)| f.len()).sum();
+        let total_features: usize = di.0.iter().map(|(_, f)| f.len()).sum();
         assert_eq!(total_features, 10);
     }
 }
