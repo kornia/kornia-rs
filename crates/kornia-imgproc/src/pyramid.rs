@@ -607,7 +607,7 @@ fn pyrup_horizontal_pass_u8<const C: usize, A>(
     let src_data = src.as_slice();
     let dst_stride = dst_width * C;
 
-    // Loop splitting logic: Process borders separately to keep the inner loop fast
+    //Process borders separately to keep the inner loop fast
     dst.par_chunks_mut(dst_stride)
         .enumerate()
         .for_each(|(y, dst_row)| {
@@ -618,7 +618,7 @@ fn pyrup_horizontal_pass_u8<const C: usize, A>(
                 process_pixel_pyrup_checked::<C>(src_data, dst_row, src_row_offset, 0, src_width, dst_stride);
             }
 
-            // Center body: Fast path without boundary checks
+            // Fast path without boundary checks
             if src_width > 2 {
                 for x in 1..src_width - 1 {
                     let idx_base = src_row_offset + x * C;
@@ -1111,15 +1111,71 @@ mod tests {
             0,
             CpuAllocator,
         )?;
-
+        
         pyrup_u8(&src, &mut dst)?;
-
+        
         assert_eq!(dst.width(), 4);
         assert_eq!(dst.height(), 4);
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_pyrup_u8_invalid_size() -> Result<(), ImageError> {
+        let src = Image::<u8, 1, _>::new(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            vec![0; 4],
+            CpuAllocator,
+        )?;
+
+        let mut dst = Image::<u8, 1, _>::from_size_val(
+            ImageSize {
+                width: 3, // Expected 4
+                height: 4,
+            },
+            0,
+            CpuAllocator,
+        )?;
+
+        let result = pyrup_u8(&src, &mut dst);
+        assert!(result.is_err());
 
         Ok(())
     }
 
+    #[test]
+    fn test_pyrup_u8_min_sizes() -> Result<(), ImageError> {
+         let src1 = Image::<u8, 1, _>::new(
+            ImageSize {
+                width: 1,
+                height: 1,
+            },
+            vec![100],
+            CpuAllocator,
+        )?;
+        let mut dst1 = Image::<u8, 1, _>::from_size_val(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            0,
+            CpuAllocator,
+        )?;
+        
+        pyrup_u8(&src1, &mut dst1)?;
+        assert_eq!(dst1.width(), 2);
+        assert_eq!(dst1.height(), 2);
+        
+        for &val in dst1.as_slice() {
+            assert_eq!(val, 100);
+        }
+        
+        Ok(())
+    }
+    
     #[test]
     fn test_pyrdown_u8_flat() -> Result<(), ImageError> {
         let val = 100u8;
