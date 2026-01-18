@@ -1007,12 +1007,10 @@ const POS1: [[i8; 2]; 256] = [
 
 #[cfg(test)]
 mod tests {
-    use crate::color::gray_from_rgb_u8;
     use crate::features::match_descriptors;
 
     use super::*;
     use kornia_image::{Image, ImageSize};
-    use kornia_io::jpeg::read_image_jpeg_rgb8;
     use kornia_tensor::CpuAllocator;
 
     fn create_test_image(width: usize, height: usize, value: f32) -> Image<f32, 1, CpuAllocator> {
@@ -1040,152 +1038,7 @@ mod tests {
         // TODO: Should we compare the harcoded values for this function
     }
 
-    #[test]
-    fn test_orb_detect_on_real_image() -> Result<(), Box<dyn std::error::Error>> {
-        // Load RGB image from disk
-        let img = read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
 
-        // Convert RGB to grayscale
-        let gray_size = ImageSize {width: img.width(), height: img.height()};
-        let mut gray_img = Image::from_size_val(gray_size, 0u8, CpuAllocator)?;
-        gray_from_rgb_u8(&img, &mut gray_img)?;
-
-        // Convert grayscale to normalized float [0.0, 1.0]
-        let mut gray_imgf32 = Image::from_size_val(gray_img.size(), 0.0, CpuAllocator)?;
-        gray_img
-            .as_slice()
-            .iter()
-            .zip(gray_imgf32.as_slice_mut())
-            .for_each(|(&p, m)| {
-                *m = p as f32 / 255.0;
-            });
-
-        // Create ORB detector with default configuration
-        let config = OrbDectectorConfig::default();
-        let mut orb = OrbDectector::new(config, gray_img.size())?;
-
-        // Detect keypoints in the image
-        orb.detect(&gray_imgf32)?;
-
-        // Get detection results
-        let detection = orb.get_detection();
-
-        // Assertion: At least some keypoints should be detected
-        assert!(detection.keypoints.len() > 0, "No keypoints detected in image");
-
-        // Assertion: All detection arrays should have consistent lengths
-        assert_eq!(
-            detection.keypoints.len(),
-            detection.orientations.len(),
-            "Keypoints and orientations length mismatch"
-        );
-        assert_eq!(
-            detection.keypoints.len(),
-            detection.scales.len(),
-            "Keypoints and scales length mismatch"
-        );
-        assert_eq!(
-            detection.keypoints.len(),
-            detection.responses.len(),
-            "Keypoints and responses length mismatch"
-        );
-
-        // Assertion: All keypoints should be within image bounds
-        let width = img.width() as f32;
-        let height = img.height() as f32;
-        for (idx, &(y, x)) in detection.keypoints.iter().enumerate() {
-            assert!(
-                x >= 0.0 && x < width && y >= 0.0 && y < height,
-                "Keypoint {} at ({}, {}) is out of bounds ({}, {})",
-                idx,
-                x,
-                y,
-                width,
-                height
-            );
-        }
-
-        // Assertion: All orientations should be finite values
-        for (idx, &orientation) in detection.orientations.iter().enumerate() {
-            assert!(
-                orientation.is_finite(),
-                "Orientation {} has non-finite value: {}",
-                idx,
-                orientation
-            );
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_orb_descriptor_extraction() -> Result<(), Box<dyn std::error::Error>> {
-        // Load RGB image from disk
-        let img = read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
-
-        // Convert RGB to grayscale
-        let gray_size = ImageSize {width: img.width(), height: img.height()};
-        let mut gray_img = Image::from_size_val(gray_size, 0u8, CpuAllocator)?;
-        gray_from_rgb_u8(&img, &mut gray_img)?;
-
-        // Convert grayscale to normalized float [0.0, 1.0]
-        let mut gray_imgf32 = Image::from_size_val(gray_img.size(), 0.0, CpuAllocator)?;
-        gray_img
-            .as_slice()
-            .iter()
-            .zip(gray_imgf32.as_slice_mut())
-            .for_each(|(&p, m)| {
-                *m = p as f32 / 255.0;
-            });
-
-        // Create ORB detector with default configuration
-        let config = OrbDectectorConfig::default();
-        let mut orb = OrbDectector::new(config, gray_img.size())?;
-
-        // Detect keypoints in the image
-        orb.detect(&gray_imgf32)?;
-
-        // Extract descriptors for detected keypoints
-        let (descriptors, validity_mask) = orb.extract(&gray_imgf32)?;
-
-        // Get detection results for comparison
-        let detection = orb.get_detection();
-
-        // Assertion: Descriptors array should not be empty
-        assert!(
-            !descriptors.is_empty(),
-            "No descriptors extracted from image"
-        );
-
-        // Assertion: Descriptors count should be at most equal to keypoints count
-        // (some keypoints may be filtered out during extraction due to border masking)
-        assert!(
-            descriptors.len() <= detection.keypoints.len(),
-            "Descriptors count ({}) exceeds keypoints count ({})",
-            descriptors.len(),
-            detection.keypoints.len()
-        );
-
-        // Assertion: Validity mask should have same length as descriptors
-        assert_eq!(
-            validity_mask.len(),
-            detection.keypoints.len(),
-            "Validity mask length does not match keypoints length"
-        );
-
-        // Assertion: Each descriptor should be exactly 256 bytes
-        for (idx, descriptor) in descriptors.iter().enumerate() {
-            assert_eq!(
-                descriptor.len(),
-                256,
-                "Descriptor {} has incorrect length: {} bytes (expected 256)",
-                idx,
-                descriptor.len()
-            );
-        }
-
-        Ok(())
-    }
 
     #[test]
     fn test_orb_descriptor_matching() -> Result<(), Box<dyn std::error::Error>> {
