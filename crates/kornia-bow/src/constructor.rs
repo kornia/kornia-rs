@@ -33,7 +33,7 @@ fn kmeans_plusplus<M: DistanceMetric>(data: &[M::Data], k_clusters: usize) -> Ve
         });
 
     for _iter in 1..k_clusters {
-        let last_centroid = *centroids.last().unwrap();
+        let last_centroid = centroids[centroids.len() - 1];
 
         distances
             .par_iter_mut()
@@ -140,14 +140,21 @@ fn train_recursive<const B: usize, M: DistanceMetric>(
             s.spawn(move |_| {
                 let mut node = train_recursive::<B, M>(child_data, depth + 1, max_depth);
                 node.centroid = centroid;
-                *res_slot.lock().unwrap() = Some(node);
+                let mut guard = match res_slot.lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                *guard = Some(node);
             });
         }
     });
 
     let children = results
         .into_iter()
-        .filter_map(|m| m.into_inner().unwrap())
+        .filter_map(|m| match m.into_inner() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        })
         .collect();
 
     BuilderNode {

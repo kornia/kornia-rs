@@ -97,4 +97,4 @@ let float_vocab = Vocabulary::<B, L2<D_FLOAT>>::train(&float_data, 3)?;
 The library uses a flat memory layout (`Vocabulary`) with `BlockCluster` structs. Each cluster contains descriptors and children indices packed contiguously.
 
 ## References
-kornia-bow is inspired by the Rust crate [abow](https://github.com/donkeyteethUX/abow) and the C++ visual BoW implemetations [DBoW2](https://github.com/dorian3d/DBoW2/) and [fbow](https://github.com/rmsalinas/fbow)
+kornia-bow is inspired by the Rust crate [abow](https://github.com/donkeyteethUX/abow) and the C++ visual BoW implementations [DBoW2](https://github.com/dorian3d/DBoW2/) and [fbow](https://github.com/rmsalinas/fbow)
