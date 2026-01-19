@@ -88,7 +88,7 @@ For floating-point descriptors (like SIFT or standard vectors), use `L2`.
 use kornia_bow::metric::L2;
 
 // 128-dimensional float descriptor
-const D_FLOAT: usize = 128; 
+const D_FLOAT: usize = 128;
 let float_vocab = Vocabulary::<B, L2<D_FLOAT>>::train(&float_data, 3)?;
 ```
 
