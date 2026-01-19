@@ -1,18 +1,22 @@
 [package]
 name = "kornia-bow"
 version = { workspace = true }
-authors = ["Siddharth Rambhia <siddharth.rambhia@gmail.com>", "kornia.org <edgar@kornia.org>"]
+authors = [
+  "Siddharth Rambhia <siddharth.rambhia@gmail.com>",
+  "kornia.org <edgar@kornia.org>"
+]
 edition = { workspace = true }
 rust-version = { workspace = true }
 description = "High-Performance Hierarchical Bag of Words"
 homepage = { workspace = true }
 repository = { workspace = true }
 license = { workspace = true }
-categories = ["computer-vision", "science::robotics", "algorithms"]
+categories = ["algorithms", "computer-vision", "science::robotics"]
 publish = true
 
-[features]
-default = []
+[[bench]]
+harness = false
+name = "bow_bench"
 
 [dependencies]
 bincode = "1.3.3"
@@ -25,6 +29,5 @@ thiserror = { workspace = true }
 [dev-dependencies]
 criterion = { workspace = true }
 
-[[bench]]
-name = "bow_bench"
-harness = false
+[features]
+default = []
