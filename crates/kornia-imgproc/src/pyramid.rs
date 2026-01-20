@@ -428,6 +428,9 @@ pub fn pyrdown<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 /// * `src` - The source image to be downsampled.
 /// * `dst` - The destination image to store the result (should be half the size of src).
 ///
+/// Uses BORDER_REFLECT_101 border mode (same as OpenCV default) for handling pixels
+/// near image boundaries.
+///
 /// # Returns
 ///
 /// * `Result<(), ImageError>` - Ok if successful, Err otherwise.
@@ -446,7 +449,7 @@ pub fn pyrdown_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
             dst.height(),
         ));
     }
-    
+
     let buffer_width = dst.width();
     let buffer_height = src.height();
     let mut buffer = vec![0u16; buffer_width * buffer_height * C];
@@ -479,7 +482,7 @@ fn pyrdown_horizontal_pass_u8<const C: usize, A>(
     let dst_stride = dst_width * C;
 
     // Kernel: [1, 4, 6, 4, 1]
-    
+
     dst.par_chunks_mut(dst_stride)
         .enumerate()
         .for_each(|(y, dst_row)| {
@@ -487,11 +490,21 @@ fn pyrdown_horizontal_pass_u8<const C: usize, A>(
 
             // Safe range for the central loop where the kernel fits completely
             let safe_start = 1;
-            let safe_end = if src_width > 2 { (src_width - 2) / 2 } else { 0 };
+            let safe_end = if src_width > 2 {
+                (src_width - 1) / 2
+            } else {
+                safe_start
+            };
 
             // Left border
             for dst_x in 0..safe_start.min(dst_width) {
-                process_pixel_pyrdown_checked::<C>(src_data, dst_row, src_row_offset, dst_x, src_width);
+                process_pixel_pyrdown_checked::<C>(
+                    src_data,
+                    dst_row,
+                    src_row_offset,
+                    dst_x,
+                    src_width,
+                );
             }
 
             // Ensure we don't exceed dst_width
@@ -500,12 +513,12 @@ fn pyrdown_horizontal_pass_u8<const C: usize, A>(
                 for dst_x in safe_start..loop_end {
                     let src_center_x = dst_x * 2;
                     let base_idx = src_row_offset + src_center_x * C;
-                    
+
                     for k in 0..C {
                         // Direct access without boundary checks
                         let v_m2 = src_data[base_idx - 2 * C + k] as u16;
                         let v_m1 = src_data[base_idx - 1 * C + k] as u16;
-                        let v_0  = src_data[base_idx + k] as u16;
+                        let v_0 = src_data[base_idx + k] as u16;
                         let v_p1 = src_data[base_idx + 1 * C + k] as u16;
                         let v_p2 = src_data[base_idx + 2 * C + k] as u16;
 
@@ -517,7 +530,13 @@ fn pyrdown_horizontal_pass_u8<const C: usize, A>(
 
             // Right border
             for dst_x in loop_end..dst_width {
-                process_pixel_pyrdown_checked::<C>(src_data, dst_row, src_row_offset, dst_x, src_width);
+                process_pixel_pyrdown_checked::<C>(
+                    src_data,
+                    dst_row,
+                    src_row_offset,
+                    dst_x,
+                    src_width,
+                );
             }
         });
 }
@@ -534,14 +553,14 @@ fn process_pixel_pyrdown_checked<const C: usize>(
     // Loop unrolled for kernel size 5
     let idx_m2 = (reflect_101(src_center_x - 2, src_width as i32) as usize) * C;
     let idx_m1 = (reflect_101(src_center_x - 1, src_width as i32) as usize) * C;
-    let idx_0  = (reflect_101(src_center_x,     src_width as i32) as usize) * C;
+    let idx_0 = (reflect_101(src_center_x, src_width as i32) as usize) * C;
     let idx_p1 = (reflect_101(src_center_x + 1, src_width as i32) as usize) * C;
     let idx_p2 = (reflect_101(src_center_x + 2, src_width as i32) as usize) * C;
 
     for k in 0..C {
         let v_m2 = src_data[src_row_offset + idx_m2 + k] as u16;
         let v_m1 = src_data[src_row_offset + idx_m1 + k] as u16;
-        let v_0  = src_data[src_row_offset + idx_0  + k] as u16;
+        let v_0 = src_data[src_row_offset + idx_0 + k] as u16;
         let v_p1 = src_data[src_row_offset + idx_p1 + k] as u16;
         let v_p2 = src_data[src_row_offset + idx_p2 + k] as u16;
 
@@ -569,26 +588,26 @@ fn pyrdown_vertical_pass_u8<const C: usize>(
             // Reflect 101 for y coordinates
             let y_m2 = reflect_101(src_center_y - 2, src_height as i32) as usize;
             let y_m1 = reflect_101(src_center_y - 1, src_height as i32) as usize;
-            let y_0  = reflect_101(src_center_y,     src_height as i32) as usize;
+            let y_0 = reflect_101(src_center_y, src_height as i32) as usize;
             let y_p1 = reflect_101(src_center_y + 1, src_height as i32) as usize;
             let y_p2 = reflect_101(src_center_y + 2, src_height as i32) as usize;
 
             let off_m2 = y_m2 * stride;
             let off_m1 = y_m1 * stride;
-            let off_0  = y_0  * stride;
+            let off_0 = y_0 * stride;
             let off_p1 = y_p1 * stride;
             let off_p2 = y_p2 * stride;
 
             for i in 0..dst_stride {
                 let v_m2 = src_buffer[off_m2 + i] as u32;
                 let v_m1 = src_buffer[off_m1 + i] as u32;
-                let v_0  = src_buffer[off_0  + i] as u32;
+                let v_0 = src_buffer[off_0 + i] as u32;
                 let v_p1 = src_buffer[off_p1 + i] as u32;
                 let v_p2 = src_buffer[off_p2 + i] as u32;
 
                 // Sum weights: 1, 4, 6, 4, 1. Total 16.
                 let sum = v_m2 + 4 * v_m1 + 6 * v_0 + 4 * v_p1 + v_p2;
-                
+
                 // Rounding: (sum + 128) >> 8
                 let val = (sum + 128) >> 8;
                 dst_row[i] = val.min(255) as u8;
@@ -615,14 +634,21 @@ fn pyrup_horizontal_pass_u8<const C: usize, A>(
 
             // Left border
             if src_width > 0 {
-                process_pixel_pyrup_checked::<C>(src_data, dst_row, src_row_offset, 0, src_width, dst_stride);
+                process_pixel_pyrup_checked::<C>(
+                    src_data,
+                    dst_row,
+                    src_row_offset,
+                    0,
+                    src_width,
+                    dst_stride,
+                );
             }
 
             // Fast path without boundary checks
             if src_width > 2 {
                 for x in 1..src_width - 1 {
                     let idx_base = src_row_offset + x * C;
-                    
+
                     for k in 0..C {
                         let p_prev = src_data[idx_base - C + k] as u16;
                         let p_curr = src_data[idx_base + k] as u16;
@@ -643,7 +669,14 @@ fn pyrup_horizontal_pass_u8<const C: usize, A>(
 
             // Right border
             if src_width > 1 {
-                process_pixel_pyrup_checked::<C>(src_data, dst_row, src_row_offset, src_width - 1, src_width, dst_stride);
+                process_pixel_pyrup_checked::<C>(
+                    src_data,
+                    dst_row,
+                    src_row_offset,
+                    src_width - 1,
+                    src_width,
+                    dst_stride,
+                );
             }
         });
 }
@@ -660,10 +693,8 @@ fn process_pixel_pyrup_checked<const C: usize>(
     let src_x = x as i32;
     let idx_base = src_row_offset + x * C;
 
-    let idx_prev = src_row_offset
-        + (reflect_101(src_x - 1, src_width as i32) as usize) * C;
-    let idx_next = src_row_offset
-        + (reflect_101(src_x + 1, src_width as i32) as usize) * C;
+    let idx_prev = src_row_offset + (reflect_101(src_x - 1, src_width as i32) as usize) * C;
+    let idx_next = src_row_offset + (reflect_101(src_x + 1, src_width as i32) as usize) * C;
 
     for k in 0..C {
         let p_curr = src_data[idx_base + k] as u16;
@@ -672,7 +703,7 @@ fn process_pixel_pyrup_checked<const C: usize>(
 
         let val_even = (p_prev + 6 * p_curr + p_next + 4) >> 3;
         dst_row[2 * x * C + k] = val_even as u8;
-        
+
         if (2 * x + 1) * C < dst_stride {
             let val_odd = (p_curr + p_next + 1) >> 1;
             dst_row[(2 * x + 1) * C + k] = val_odd as u8;
@@ -1059,12 +1090,7 @@ mod tests {
                 width: 4,
                 height: 4,
             },
-            vec![
-                0, 1, 2, 3,
-                4, 5, 6, 7,
-                8, 9, 10, 11,
-                12, 13, 14, 15
-            ],
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
             CpuAllocator,
         )?;
 
@@ -1078,7 +1104,7 @@ mod tests {
         )?;
 
         pyrdown_u8(&src, &mut dst)?;
-        
+
         assert_eq!(dst.width(), 2);
         assert_eq!(dst.height(), 2);
 
@@ -1096,10 +1122,7 @@ mod tests {
                 width: 2,
                 height: 2,
             },
-            vec![
-                0, 10,
-                20, 30
-            ],
+            vec![0, 10, 20, 30],
             CpuAllocator,
         )?;
 
@@ -1111,12 +1134,12 @@ mod tests {
             0,
             CpuAllocator,
         )?;
-        
+
         pyrup_u8(&src, &mut dst)?;
-        
+
         assert_eq!(dst.width(), 4);
         assert_eq!(dst.height(), 4);
-        
+
         Ok(())
     }
 
@@ -1148,7 +1171,7 @@ mod tests {
 
     #[test]
     fn test_pyrup_u8_min_sizes() -> Result<(), ImageError> {
-         let src1 = Image::<u8, 1, _>::new(
+        let src1 = Image::<u8, 1, _>::new(
             ImageSize {
                 width: 1,
                 height: 1,
@@ -1164,18 +1187,18 @@ mod tests {
             0,
             CpuAllocator,
         )?;
-        
+
         pyrup_u8(&src1, &mut dst1)?;
         assert_eq!(dst1.width(), 2);
         assert_eq!(dst1.height(), 2);
-        
+
         for &val in dst1.as_slice() {
             assert_eq!(val, 100);
         }
-        
+
         Ok(())
     }
-    
+
     #[test]
     fn test_pyrdown_u8_flat() -> Result<(), ImageError> {
         let val = 100u8;
@@ -1202,7 +1225,12 @@ mod tests {
         for &v in dst.as_slice() {
             // Gaussian kernel is normalized, so constant input should result in same constant output
             // potentially +/- 1 due to integer rounding
-            assert!((v as i32 - val as i32).abs() <= 1, "Expected {}, got {}", val, v);
+            assert!(
+                (v as i32 - val as i32).abs() <= 1,
+                "Expected {}, got {}",
+                val,
+                v
+            );
         }
 
         Ok(())
@@ -1257,7 +1285,7 @@ mod tests {
 
         assert_eq!(dst.width(), 3);
         assert_eq!(dst.height(), 4);
-        
+
         Ok(())
     }
 
@@ -1303,6 +1331,93 @@ mod tests {
         pyrdown_u8(&src2, &mut dst2)?;
         assert_eq!(dst2.width(), 1);
         assert_eq!(dst2.height(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pyrdown_u8_3c() -> Result<(), ImageError> {
+        // NOTE: verified with opencv
+        // src = np.arange(4*4*3, dtype=np.uint8).reshape(4,4,3)
+        // dst = cv2.pyrDown(src)
+        let src = Image::<u8, 3, _>::new(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            (0..48).map(|x| x as u8).collect(),
+            CpuAllocator,
+        )?;
+
+        let mut dst = Image::<u8, 3, _>::from_size_val(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            0,
+            CpuAllocator,
+        )?;
+
+        pyrdown_u8(&src, &mut dst)?;
+
+        let expected = [
+            11, 12, 13, // pixel (0,0)
+            15, 16, 17, // pixel (0,1)
+            25, 26, 27, // pixel (1,0)
+            28, 29, 30, // pixel (1,1)
+        ];
+
+        let actual = dst.as_slice();
+        for (idx, (act, exp)) in actual.iter().zip(expected.iter()).enumerate() {
+            // Allow small difference due to integer arithmetic differences (if any)
+            // But for small values and standard implementation, it should match exactly or be very close.
+            let diff = (*act as i32 - *exp as i32).abs();
+            assert!(
+                diff <= 1,
+                "Mismatch at index {}: expected {}, got {}, diff {}",
+                idx,
+                exp,
+                act,
+                diff
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pyrup_u8_3c() -> Result<(), ImageError> {
+        let src = Image::<u8, 3, _>::new(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            vec![
+                10, 20, 30, // (0,0)
+                40, 50, 60, // (0,1)
+                70, 80, 90, // (1,0)
+                100, 110, 120, // (1,1)
+            ],
+            CpuAllocator,
+        )?;
+
+        let mut dst = Image::<u8, 3, _>::from_size_val(
+            ImageSize {
+                width: 4,
+                height: 4,
+            },
+            0,
+            CpuAllocator,
+        )?;
+
+        pyrup_u8(&src, &mut dst)?;
+
+        assert_eq!(dst.width(), 4);
+        assert_eq!(dst.height(), 4);
+
+        for &val in dst.as_slice() {
+            assert!(val < 255);
+        }
 
         Ok(())
     }

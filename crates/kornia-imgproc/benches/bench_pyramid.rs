@@ -124,7 +124,7 @@ fn bench_pyramid_u8(c: &mut Criterion) {
                 })
             },
         );
-        
+
         // Multi-channel u8
         let small_image_data_u8_3c = (0..((*width / 2) * (*height / 2) * 3))
             .map(|x| (x % 256) as u8)
@@ -145,7 +145,9 @@ fn bench_pyramid_u8(c: &mut Criterion) {
         );
 
         let large_image_size = [*width, *height].into();
-        let large_image_data_u8 = (0..((*width) * (*height))).map(|x| (x % 256) as u8).collect();
+        let large_image_data_u8 = (0..((*width) * (*height)))
+            .map(|x| (x % 256) as u8)
+            .collect();
         let large_image_u8 =
             Image::<u8, 1, _>::new(large_image_size, large_image_data_u8, CpuAllocator).unwrap();
 
@@ -163,9 +165,11 @@ fn bench_pyramid_u8(c: &mut Criterion) {
                 })
             },
         );
-        
+
         // Multi-channel u8
-         let large_image_data_u8_3c = (0..((*width) * (*height) * 3)).map(|x| (x % 256) as u8).collect();
+        let large_image_data_u8_3c = (0..((*width) * (*height) * 3))
+            .map(|x| (x % 256) as u8)
+            .collect();
         let large_image_u8_3c =
             Image::<u8, 3, _>::new(large_image_size, large_image_data_u8_3c, CpuAllocator).unwrap();
         let down_image_u8_3c =
@@ -181,7 +185,6 @@ fn bench_pyramid_u8(c: &mut Criterion) {
                 })
             },
         );
-
     }
     group.finish();
 }
