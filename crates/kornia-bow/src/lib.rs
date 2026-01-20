@@ -12,7 +12,7 @@ use metric::{DistanceMetric, MetricType};
 
 /// Errors related to Bag of Words operations.
 #[derive(Debug, thiserror::Error)]
-pub enum BowErr {
+pub enum BowError {
     #[error("No features provided")]
     NoFeatures,
     #[error("Io error")]
@@ -30,7 +30,7 @@ pub enum BowErr {
     CorruptedVocabulary,
 }
 
-pub type BowResult<T> = Result<T, BowErr>;
+pub type BowResult<T> = Result<T, BowError>;
 
 /// A block representing a set of children in the vocabulary tree.
 #[derive(Clone, Serialize, Deserialize)]
@@ -148,7 +148,7 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
     /// Transforms a set of descriptors into a sparse BoW vector.
     pub fn transform(&self, features: &[M::Data]) -> BowResult<BoW> {
         if features.is_empty() {
-            return Err(BowErr::NoFeatures);
+            return Err(BowError::NoFeatures);
         }
 
         let tf_factor = 1.0 / (features.len() as f32);
@@ -197,7 +197,7 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
         level: usize,
     ) -> BowResult<(BoW, DirectIndex)> {
         if features.is_empty() {
-            return Err(BowErr::NoFeatures);
+            return Err(BowError::NoFeatures);
         }
 
         let tf_factor = 1.0 / (features.len() as f32);

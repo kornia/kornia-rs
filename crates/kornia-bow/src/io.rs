@@ -3,7 +3,7 @@ use std::io::{BufReader, BufWriter};
 
 use crate::{
     metric::{DistanceMetric, MetricType},
-    BlockContent, BowErr, BowResult, Vocabulary,
+    BlockContent, BowError, BowResult, Vocabulary,
 };
 
 impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
@@ -28,14 +28,14 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
         let loaded_metric: MetricType = bincode::deserialize_from(&mut reader)?;
 
         if loaded_b != B as u64 {
-            return Err(BowErr::VocabularyMismatch {
+            return Err(BowError::VocabularyMismatch {
                 expected_b: B,
                 found_b: loaded_b as usize,
             });
         }
 
         if loaded_metric != M::metric_type() {
-            return Err(BowErr::MetricMismatch {
+            return Err(BowError::MetricMismatch {
                 expected: M::metric_type(),
                 found: loaded_metric,
             });
@@ -50,7 +50,7 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
                 // We use u64 for calculation to avoid overflow before comparison
                 let end_idx = meta.children_base_idx as u64 + B as u64;
                 if end_idx > vocab.blocks.len() as u64 {
-                    return Err(BowErr::CorruptedVocabulary);
+                    return Err(BowError::CorruptedVocabulary);
                 }
             }
         }
@@ -92,13 +92,13 @@ mod tests {
         let result = Vocabulary::<B, Hamming<D>>::load(path);
         std::fs::remove_file(path).unwrap();
 
-        assert!(matches!(result, Err(BowErr::CorruptedVocabulary)));
+        assert!(matches!(result, Err(BowError::CorruptedVocabulary)));
     }
 
     #[test]
     fn test_load_non_existent_file() {
         let result = Vocabulary::<B, Hamming<D>>::load("non_existent_file.bow");
-        assert!(matches!(result, Err(BowErr::Io(_))));
+        assert!(matches!(result, Err(BowError::Io(_))));
     }
 
     #[test]
@@ -108,7 +108,7 @@ mod tests {
             root_idx: 0,
         };
         let result = vocab.save("/path/to/non/existent/directory/vocab.bow");
-        assert!(matches!(result, Err(BowErr::Io(_))));
+        assert!(matches!(result, Err(BowError::Io(_))));
     }
 
     #[test]
@@ -164,7 +164,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(BowErr::VocabularyMismatch {
+            Err(BowError::VocabularyMismatch {
                 expected_b: 8,
                 found_b: 10
             })
@@ -194,7 +194,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(BowErr::MetricMismatch {
+            Err(BowError::MetricMismatch {
                 expected: MetricType::L2,
                 found: MetricType::Hamming
             })

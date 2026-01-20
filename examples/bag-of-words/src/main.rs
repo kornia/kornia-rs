@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     bow1.normalize_l1();
     bow2.normalize_l1();
 
-    let s_l1 = bow1.l1(&bow2);
+    let s_l1 = bow1.l1_similarity(&bow2);
     let s_chi = bow1.chi_square(&bow2);
     let s_kl = bow1.kl_divergence(&bow2);
     let s_bhat = bow1.bhattacharyya(&bow2);

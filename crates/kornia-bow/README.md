@@ -46,7 +46,7 @@ let bow1 = vocab.transform(&features).unwrap();
 let bow2 = vocab.transform(&features).unwrap();
 
 // Compute similarity
-let score_l1 = bow1.l1(&bow2);
+let score_l1 = bow1.l1_similarity(&bow2);
 let score_chi = bow1.chi_square(&bow2);
 let score_kl = bow1.kl_divergence(&bow2);
 ```

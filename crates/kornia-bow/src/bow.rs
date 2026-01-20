@@ -27,7 +27,7 @@ impl BoW {
     }
 
     /// Computes L1 similarity score.
-    pub fn l1(&self, other: &Self) -> f32 {
+    pub fn l1_similarity(&self, other: &Self) -> f32 {
         let mut it1 = self.0.iter().peekable();
         let mut it2 = other.0.iter().peekable();
         let mut dist = 0.0;
@@ -189,28 +189,52 @@ mod tests {
         let bow1 = BoW(vec![(1, 0.4), (2, 0.6)]);
         let bow2 = BoW(vec![(1, 0.5), (3, 0.5)]);
 
-        let sim = bow1.l1(&bow2);
+        let sim = bow1.l1_similarity(&bow2);
         assert!((sim - 0.4).abs() < 1e-6);
 
-        assert!((bow1.l1(&bow1) - 1.0).abs() < 1e-6);
+        assert!((bow1.l1_similarity(&bow1) - 1.0).abs() < 1e-6);
     }
 
     #[test]
-    fn test_scoring_methods() {
+    fn test_dot_product_similarity() {
         let bow1 = BoW(vec![(1, 0.4), (2, 0.6)]);
         let bow2 = BoW(vec![(1, 0.5), (3, 0.5)]);
 
         let dot = bow1.dot_product(&bow2);
         assert!((dot - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_l2_similarity() {
+        let bow1 = BoW(vec![(1, 0.4), (2, 0.6)]);
+        let bow2 = BoW(vec![(1, 0.5), (3, 0.5)]);
 
         let l2 = bow1.l2(&bow2);
         assert!((l2 - 0.10557281).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_bhattacharyya_similarity() {
+        let bow1 = BoW(vec![(1, 0.4), (2, 0.6)]);
+        let bow2 = BoW(vec![(1, 0.5), (3, 0.5)]);
 
         let bhat = bow1.bhattacharyya(&bow2);
         assert!((bhat - 0.4472136).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_chi_square_similarity() {
+        let bow1 = BoW(vec![(1, 0.4), (2, 0.6)]);
+        let bow2 = BoW(vec![(1, 0.5), (3, 0.5)]);
 
         let chi = bow1.chi_square(&bow2);
         assert!((chi - 0.444444).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_kl_divergence_similarity() {
+        let bow1 = BoW(vec![(1, 0.4), (2, 0.6)]);
+        let bow2 = BoW(vec![(1, 0.5), (3, 0.5)]);
 
         let kl = bow1.kl_divergence(&bow2);
         assert!(kl > 9.0 && kl < 9.3);

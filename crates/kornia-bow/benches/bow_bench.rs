@@ -118,7 +118,7 @@ fn bench_bow_l1(c: &mut Criterion) {
 
     c.bench_function("bow_l1_similarity", |b| {
         b.iter(|| {
-            bow1.l1(&bow2);
+            bow1.l1_similarity(&bow2);
         })
     });
 }

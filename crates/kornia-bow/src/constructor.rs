@@ -1,5 +1,5 @@
 use crate::{
-    metric::DistanceMetric, BlockCluster, BlockContent, BowErr, BowResult, InternalMeta, LeafData,
+    metric::DistanceMetric, BlockCluster, BlockContent, BowError, BowResult, InternalMeta, LeafData,
     Vocabulary,
 };
 use rand::Rng;
@@ -170,7 +170,7 @@ pub fn train<const B: usize, M: DistanceMetric>(
     max_depth: usize,
 ) -> BowResult<Vocabulary<B, M>> {
     if data.is_empty() {
-        return Err(BowErr::NoFeatures);
+        return Err(BowError::NoFeatures);
     }
 
     let total_features = data.len();
@@ -300,7 +300,7 @@ mod tests {
     fn test_train_empty_features() {
         let empty_data: Vec<Feature<u64, D>> = Vec::new();
         let result = train::<B, Hamming<D>>(&empty_data, 3);
-        assert!(matches!(result, Err(BowErr::NoFeatures)));
+        assert!(matches!(result, Err(BowError::NoFeatures)));
     }
 
     #[test]
