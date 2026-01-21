@@ -32,7 +32,7 @@ pub enum KernelShape {
     /// An ellipse (or circle) shaped structuring element.
     ///
     /// Pixels inside the elliptical boundary are included, defined by the
-    /// equation: (x^2/ r*x^2) + (y^2 / r*y^2) <= 1.
+    /// equation: (x^2/ rx^2) + (y^2 / ry^2) <= 1.
     ///
     /// # Arguments
     ///
@@ -183,7 +183,7 @@ pub fn ellipse_kernel(width: usize, height: usize) -> Kernel {
         for j in 0..width {
             let x = j as f32 - cx;
             let y = i as f32 - cy;
-            // Ellipse equation: (x^2 / r*x^2) + (y^2 / r*y^2) <= 1
+            // Ellipse equation: (x^2 / rx^2) + (y^2 / ry^2) <= 1
             if (x * x) / (rx * rx) + (y * y) / (ry * ry) <= 1.0 {
                 data[i * width + j] = 1;
             }

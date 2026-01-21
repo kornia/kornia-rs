@@ -53,7 +53,7 @@ pub fn dilate<
         height: height + 2 * pad_h,
     };
     let padded_buffer = vec![T::default(); padded_size.width * padded_size.height * C];
-    let mut padded = Image::new(padded_size, padded_buffer.clone(), CpuAllocator)?;
+    let mut padded = Image::new(padded_size, padded_buffer, CpuAllocator)?;
 
     let padding = Padding2D {
         top: pad_h,
@@ -303,5 +303,100 @@ mod tests {
         let (pad_h, pad_w) = kernel.pad();
         assert_eq!(pad_h, 2);
         assert_eq!(pad_w, 2);
+    }
+
+    #[test]
+    fn test_dilate_3x3() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 3,
+            height: 3,
+        };
+        let data = vec![0u8, 0, 0, 0, 255, 0, 0, 0, 0];
+        let src = Image::new(size, data, CpuAllocator)?;
+        let mut dst = Image::new(size, vec![0u8; 9], CpuAllocator)?;
+
+        let kernel = Kernel::new(KernelShape::Box { size: 3 });
+        dilate(&src, &mut dst, &kernel, PaddingMode::Constant, [0])?;
+        let result = dst.as_slice();
+
+        assert!(
+            result.iter().all(|&x| x == 255),
+            "All pixels should be 255 after dilation"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_erode_3x3() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 3,
+            height: 3,
+        };
+        let src = Image::new(size, vec![255u8; 9], CpuAllocator)?;
+        let mut dst = Image::new(size, vec![0u8; 9], CpuAllocator)?;
+
+        let kernel = Kernel::new(KernelShape::Box { size: 3 });
+        erode(&src, &mut dst, &kernel, PaddingMode::Constant, [0])?;
+        let result = dst.as_slice();
+
+        assert_eq!(result[4], 255, "Center pixel should survive erosion");
+        assert_eq!(
+            result[0], 0,
+            "Corner pixel should be eroded due to zero padding"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_open_remove_noise() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 5,
+            height: 5,
+        };
+        let mut data = vec![0u8; 25];
+        data[6] = 255;
+
+        let src = Image::new(size, data, CpuAllocator)?;
+        let mut dst = Image::new(size, vec![0u8; 25], CpuAllocator)?;
+
+        let kernel = Kernel::new(KernelShape::Box { size: 3 });
+        open(&src, &mut dst, &kernel, PaddingMode::Constant, [0])?;
+        let result = dst.as_slice();
+
+        assert!(
+            result.iter().all(|&x| x == 0),
+            "Opening should remove the isolated noise pixel"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_close_fill_hole() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 5,
+            height: 5,
+        };
+        let mut data = vec![0u8; 25];
+        for y in 1..=3 {
+            for x in 1..=3 {
+                data[y * 5 + x] = 255;
+            }
+        }
+        data[12] = 0;
+
+        let src = Image::new(size, data, CpuAllocator)?;
+        let mut dst = Image::new(size, vec![0u8; 25], CpuAllocator)?;
+
+        let kernel = Kernel::new(KernelShape::Box { size: 3 });
+        close(&src, &mut dst, &kernel, PaddingMode::Constant, [0])?;
+        let result = dst.as_slice();
+
+        assert_eq!(
+            result[12], 255,
+            "Closing should fill the hole in the center"
+        );
+        assert_eq!(result[6], 255);
+        assert_eq!(result[18], 255);
+        Ok(())
     }
 }
