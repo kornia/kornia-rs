@@ -1,6 +1,6 @@
 use crate::{
-    metric::DistanceMetric, BlockCluster, BlockContent, BowError, BowResult, InternalMeta, LeafData,
-    Vocabulary,
+    metric::DistanceMetric, BlockCluster, BlockContent, BowError, BowResult, InternalMeta,
+    LeafData, Vocabulary,
 };
 use rand::Rng;
 use rayon::prelude::*;
