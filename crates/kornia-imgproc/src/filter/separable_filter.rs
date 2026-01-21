@@ -270,29 +270,23 @@ pub(crate) fn columnar_sat<const C: usize, A1: ImageAllocator, A2: ImageAllocato
     kernel_size: (usize, usize),
 ) -> Result<(), ImageError> {
     if src.size() != __dst__.size() {
-        return Err(ImageError::InvalidImageSize(
-            src.cols(),
-            src.rows(),
-            __dst__.cols(),
-            __dst__.rows(),
+        return Err(ImageError::InvalidKernelLength(
+            kernel_size.0,
+            kernel_size.1,
         ));
     }
 
     if kernel_size.0 == 0 || kernel_size.1 == 0 {
-        return Err(ImageError::InvalidImageSize(
+        return Err(ImageError::InvalidKernelLength(
             kernel_size.0,
             kernel_size.1,
-            src.cols(),
-            src.rows(),
         ));
     }
 
     if kernel_size.0 > src.cols() || kernel_size.1 > src.rows() {
-        return Err(ImageError::InvalidImageSize(
+        return Err(ImageError::InvalidKernelLength(
             kernel_size.0,
             kernel_size.1,
-            src.cols(),
-            src.rows(),
         ));
     }
 
@@ -314,9 +308,7 @@ pub(crate) fn columnar_sat<const C: usize, A1: ImageAllocator, A2: ImageAllocato
                 for c in 0..src.cols() {
                     let idx = (y * src.cols() + c) * C;
                     for ch in 0..C {
-                        __col_sums__[c * C + ch] += unsafe {
-                            *src_data.get_unchecked(idx + ch)
-                        };
+                        __col_sums__[c * C + ch] += unsafe { *src_data.get_unchecked(idx + ch) };
                     }
                 }
             }
@@ -326,9 +318,7 @@ pub(crate) fn columnar_sat<const C: usize, A1: ImageAllocator, A2: ImageAllocato
                 for c in 0..src.cols() {
                     let idx = (rm_y * src.cols() + c) * C;
                     for ch in 0..C {
-                        __col_sums__[c * C + ch] -= unsafe {
-                            *src_data.get_unchecked(idx + ch)
-                        };
+                        __col_sums__[c * C + ch] -= unsafe { *src_data.get_unchecked(idx + ch) };
                     }
                 }
             }
@@ -337,9 +327,7 @@ pub(crate) fn columnar_sat<const C: usize, A1: ImageAllocator, A2: ImageAllocato
                 for c in 0..src.cols() {
                     let idx = (add_y * src.cols() + c) * C;
                     for ch in 0..C {
-                        __col_sums__[c * C + ch] += unsafe {
-                            *src_data.get_unchecked(idx + ch)
-                        };
+                        __col_sums__[c * C + ch] += unsafe { *src_data.get_unchecked(idx + ch) };
                     }
                 }
             }
@@ -386,16 +374,15 @@ pub(crate) fn columnar_sat<const C: usize, A1: ImageAllocator, A2: ImageAllocato
 
                 let arr = v.to_array();
                 unsafe {
-                    *__dst_data__.get_unchecked_mut(out_idx + 0) = arr[0];
+                    *__dst_data__.get_unchecked_mut(out_idx) = arr[0];
                     *__dst_data__.get_unchecked_mut(out_idx + 1) = arr[1];
                     *__dst_data__.get_unchecked_mut(out_idx + 2) = arr[2];
                     *__dst_data__.get_unchecked_mut(out_idx + 3) = arr[3];
                 }
             } else {
-                for ch in 0..C {
+                for (ch, &acc) in __row_acc__.iter().enumerate().take(C) {
                     unsafe {
-                        *__dst_data__.get_unchecked_mut(out_idx + ch) =
-                            __row_acc__[ch] * inv_area;
+                        *__dst_data__.get_unchecked_mut(out_idx + ch) = acc * inv_area;
                     }
                 }
             }
@@ -404,7 +391,6 @@ pub(crate) fn columnar_sat<const C: usize, A1: ImageAllocator, A2: ImageAllocato
 
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -605,12 +591,11 @@ mod tests {
 
         let center_val = 255.0 / 9.0;
 
-        assert!((dst.as_slice()[6]  - center_val).abs() < 1e-3);
-        assert!((dst.as_slice()[7]  - center_val).abs() < 1e-3);
+        assert!((dst.as_slice()[6] - center_val).abs() < 1e-3);
+        assert!((dst.as_slice()[7] - center_val).abs() < 1e-3);
         assert!((dst.as_slice()[12] - center_val).abs() < 1e-3);
         assert_eq!(dst.as_slice()[0], 0.0);
 
         Ok(())
     }
-
 }
