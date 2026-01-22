@@ -51,22 +51,25 @@ pub fn gaussian_kernel_1d(kernel_size: usize, sigma: f32) -> Vec<f32> {
 ///
 /// # Returns
 ///
-/// A normalized 1D Gaussian derivative kernel.
+/// A 1D Gaussian derivative kernel with zero mean (no L1/L2 normalization).
 fn gaussian_derivative_1d(kernel_size: usize, sigma: f32) -> Vec<f32> {
-    let mut kernel = Vec::with_capacity(kernel_size);
-    let center = (kernel_size - 1) as f32 / 2.0;
+    // The derivative of a Gaussian is an odd function, so we construct the
+    // kernel explicitly as anti-symmetric around a zero center tap. This
+    // guarantees exact zero-mean without needing a post-hoc mean subtraction.
+    let mut kernel = vec![0.0f32; kernel_size];
+    let center = kernel_size / 2;
     let sigma_sq = sigma * sigma;
     
-    for i in 0..kernel_size {
-        let x = i as f32 - center;
+    for i in 1..=center {
+        let x = i as f32;
         // Derivative of Gaussian: -x/σ² * exp(-x²/2σ²)
         let gauss = (-x * x / (2.0 * sigma_sq)).exp();
-        kernel.push(-x / sigma_sq * gauss);
+        let value = -x / sigma_sq * gauss;
+        
+        // Enforce strict anti-symmetry: f(-x) = -f(x), with center exactly zero
+        kernel[center + i] = value;
+        kernel[center - i] = -value;
     }
-    
-    // Enforce zero-mean numerically (fixes floating-point symmetry drift)
-    let mean = kernel.iter().sum::<f32>() / kernel_size as f32;
-    kernel.iter_mut().for_each(|v| *v -= mean);
     
     kernel
 }
@@ -106,7 +109,13 @@ pub fn sobel_kernel_1d(kernel_size: usize) -> (Vec<f32>, Vec<f32>) {
             let sigma = (kernel_size as f32 - 1.0) / 6.0;
             let smooth = gaussian_kernel_1d(kernel_size, sigma);
             let deriv = gaussian_derivative_1d(kernel_size, sigma);
-            (deriv, smooth)
+            
+            // Match the binomial scale pattern of classic Sobel kernels
+            // Size 3: sum=2^2=4, Size 5: sum=2^4=16, Size 7: sum=2^6=64
+            let scale = 2_f32.powi((kernel_size - 1) as i32);
+            let scaled_smooth: Vec<f32> = smooth.into_iter().map(|v| v * scale).collect();
+            
+            (deriv, scaled_smooth)
         }
         
         _ => panic!(
@@ -203,6 +212,12 @@ mod tests {
         assert!((smooth7[0] - smooth7[6]).abs() < 1e-6);
         assert!((smooth7[1] - smooth7[5]).abs() < 1e-6);
         assert!((smooth7[2] - smooth7[4]).abs() < 1e-6);
+        
+        // Smoothing kernel should follow binomial (2^(size-1)) scaling pattern
+        let smooth_sum: f32 = smooth7.iter().sum();
+        let expected_sum = 2_f32.powi((7 - 1) as i32);  // 2^6 = 64.0
+        assert!((smooth_sum - expected_sum).abs() < 1e-5, 
+                "Smoothing kernel sum was {}, expected {}", smooth_sum, expected_sum);
     }
     
     #[test]
