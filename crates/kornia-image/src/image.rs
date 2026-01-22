@@ -782,8 +782,8 @@ mod tests {
             data,
             CpuAllocator,
         )?;
-        let image_f32 = image_u8.cast_and_scale::<f32>(1. / 255.0)?;
-        assert_eq!(image_f32.get([1, 0, 2]), Some(&1.0f32));
+        let image_f32 = image_u8.scale_and_cast::<f32>(1)?;
+        assert_eq!(image_f32.get([1, 0, 2]), Some(&255.0f32));
 
         Ok(())
     }
