@@ -1,6 +1,7 @@
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
+use bincode::{Encode, Decode};
 
 pub mod bow;
 pub mod constructor;
@@ -9,16 +10,17 @@ pub mod metric;
 
 pub use bow::{BoW, DirectIndex};
 use metric::{DistanceMetric, MetricType};
+use thiserror::Error;
 
 /// Errors related to Bag of Words operations.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Error)]
 pub enum BowError {
     #[error("No features provided")]
     NoFeatures,
     #[error("Io error")]
     Io(#[from] std::io::Error),
-    #[error("Bincode error")]
-    Bincode(#[from] Box<bincode::ErrorKind>),
+    #[error("Bincode error: {0}")]
+    Bincode(String),
     #[error("Vocabulary mismatch: expected B={expected_b}, but found B={found_b}")]
     VocabularyMismatch { expected_b: usize, found_b: usize },
     #[error("Metric mismatch: expected {expected:?}, but found {found:?}")]
@@ -40,6 +42,28 @@ pub struct BlockCluster<const B: usize, M: DistanceMetric> {
     pub content: BlockContent<B>,
 }
 
+impl<const B: usize, M: DistanceMetric> Encode for BlockCluster<B, M> {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        Encode::encode(&self.descriptors, encoder)?;
+        Encode::encode(&self.content, encoder)?;
+        Ok(())
+    }
+}
+
+impl<const B: usize, M: DistanceMetric> Decode<()> for BlockCluster<B, M> {
+    fn decode<D: bincode::de::Decoder<Context = ()>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Ok(Self {
+            descriptors: Decode::decode(decoder)?,
+            content: Decode::decode(decoder)?,
+        })
+    }
+}
+
 impl<const B: usize, M: DistanceMetric> Copy for BlockCluster<B, M> where M::Data: Copy {}
 
 impl<const B: usize, M: DistanceMetric> Default for BlockCluster<B, M> {
@@ -54,7 +78,7 @@ impl<const B: usize, M: DistanceMetric> Default for BlockCluster<B, M> {
 }
 
 /// The content of a block, either metadata for internal nodes or weights for leaves.
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize, Encode, Decode)]
 pub enum BlockContent<const B: usize> {
     Internal(InternalMeta),
     Leaf(LeafData<B>),
@@ -62,14 +86,14 @@ pub enum BlockContent<const B: usize> {
 
 /// Metadata for internal nodes pointing to the base index of their children.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Encode, Decode)]
 pub struct InternalMeta {
     pub children_base_idx: u32,
 }
 
 /// Data for leaf nodes containing weights for each word in the block.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Encode, Decode)]
 pub struct LeafData<const B: usize> {
     #[serde(with = "BigArray")]
     pub weights: [f32; B],
@@ -87,6 +111,28 @@ impl<const B: usize> Default for LeafData<B> {
 pub struct Vocabulary<const B: usize, M: DistanceMetric> {
     pub blocks: Vec<BlockCluster<B, M>>,
     pub root_idx: u32,
+}
+
+impl<const B: usize, M: DistanceMetric> Encode for Vocabulary<B, M> {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        Encode::encode(&self.blocks, encoder)?;
+        Encode::encode(&self.root_idx, encoder)?;
+        Ok(())
+    }
+}
+
+impl<const B: usize, M: DistanceMetric> Decode<()> for Vocabulary<B, M> {
+    fn decode<D: bincode::de::Decoder<Context = ()>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Ok(Self {
+            blocks: Decode::decode(decoder)?,
+            root_idx: Decode::decode(decoder)?,
+        })
+    }
 }
 
 impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
@@ -281,7 +327,7 @@ mod tests {
 
     fn generate_random_descriptors(count: usize) -> Vec<Feature<u64, D>> {
         let mut rng = StdRng::from_seed([42; 32]);
-        (0..count).map(|_| Feature(rng.gen())).collect()
+        (0..count).map(|_| Feature(rng.random())).collect()
     }
 
     #[test]

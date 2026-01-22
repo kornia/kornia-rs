@@ -15,7 +15,7 @@ fn generate_random_descriptors(count: usize) -> Vec<Feature<u64, D>> {
         .map(|_| {
             let mut descriptor = [0; D];
             for val in descriptor.iter_mut() {
-                *val = rng.gen();
+                *val = rng.random();
             }
             Feature(descriptor)
         })

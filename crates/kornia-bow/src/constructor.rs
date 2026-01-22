@@ -17,9 +17,9 @@ struct BuilderNode<M: DistanceMetric> {
 /// Computes centroids using the KMeans++ algorithm.
 fn kmeans_plusplus<M: DistanceMetric>(data: &[M::Data], k_clusters: usize) -> Vec<M::Data> {
     let mut centroids = Vec::with_capacity(k_clusters);
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
-    let first_centroid_idx = rng.gen_range(0..data.len());
+    let first_centroid_idx = rng.random_range(0..data.len());
     let first_centroid = data[first_centroid_idx];
     centroids.push(first_centroid);
 
@@ -48,11 +48,11 @@ fn kmeans_plusplus<M: DistanceMetric>(data: &[M::Data], k_clusters: usize) -> Ve
         let total_dist: f32 = distances.iter().map(|&d| M::to_f32(d) * M::to_f32(d)).sum();
 
         if total_dist == 0.0 {
-            centroids.push(data[rng.gen_range(0..data.len())]);
+            centroids.push(data[rng.random_range(0..data.len())]);
             continue;
         }
 
-        let mut rand_val = rng.gen_range(0.0..1.0) * total_dist;
+        let mut rand_val = rng.random_range(0.0..1.0) * total_dist;
         let mut chosen_idx = 0;
 
         for (i, &dist) in distances.iter().enumerate() {
@@ -277,18 +277,18 @@ mod tests {
             .map(|_| {
                 let mut desc = [0u64; D];
                 for val in desc.iter_mut() {
-                    *val = rng.gen();
+                    *val = rng.random();
                 }
                 desc
             })
             .collect();
 
         for _ in 0..count {
-            let center_idx = rng.gen_range(0..num_clusters);
+            let center_idx = rng.random_range(0..num_clusters);
             let mut point = centers[center_idx];
             for _ in 0..3 {
-                let word_idx = rng.gen_range(0..D);
-                let bit_idx = rng.gen_range(0..64);
+                let word_idx = rng.random_range(0..D);
+                let bit_idx = rng.random_range(0..64);
                 point[word_idx] ^= 1 << bit_idx;
             }
             data.push(Feature(point));
@@ -319,7 +319,7 @@ mod tests {
             .map(|_| {
                 let mut desc = [0.0f32; 128];
                 for val in desc.iter_mut() {
-                    *val = rng.gen();
+                    *val = rng.random();
                 }
                 Feature(desc)
             })

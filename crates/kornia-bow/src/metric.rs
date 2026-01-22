@@ -2,9 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
+use bincode::{Encode, Decode};
 
 /// A wrapper for fixed-size arrays to support Serde with const generics > 32.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Encode, Decode)]
 #[repr(transparent)]
 pub struct Feature<T, const N: usize>(pub [T; N]);
 
@@ -51,6 +52,7 @@ impl<'de, T: Deserialize<'de> + Copy + Default, const N: usize> Deserialize<'de>
 /// Distance metric abstraction for vocabulary tree operations.
 pub trait DistanceMetric:
     Clone + Copy + Debug + Send + Sync + 'static + Serialize + for<'de> Deserialize<'de>
+    + Encode + Decode<()>
 {
     /// The underlying descriptor data type.
     type Data: Copy
@@ -60,6 +62,8 @@ pub trait DistanceMetric:
         + Sync
         + Serialize
         + for<'de> Deserialize<'de>
+        + Encode
+        + Decode<()>
         + PartialEq;
 
     /// The resulting distance type.
@@ -82,14 +86,14 @@ pub trait DistanceMetric:
 }
 
 /// Supported distance metric types.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Encode, Decode)]
 pub enum MetricType {
     Hamming,
     L2,
 }
 
 /// Hamming distance for binary descriptors.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Encode, Decode)]
 pub struct Hamming<const D: usize>;
 
 impl<const D: usize> DistanceMetric for Hamming<D> {
@@ -135,7 +139,7 @@ impl<const D: usize> DistanceMetric for Hamming<D> {
 }
 
 /// Squared L2 (Euclidean) distance for floating-point descriptors.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Encode, Decode)]
 pub struct L2<const D: usize>;
 
 impl<const D: usize> DistanceMetric for L2<D> {

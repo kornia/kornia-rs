@@ -11,10 +11,14 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
     pub fn save(&self, path: &str) -> BowResult<()> {
         let file = File::create(path)?;
         let mut writer = BufWriter::new(file);
+        let config = bincode::config::standard();
 
-        bincode::serialize_into(&mut writer, &(B as u64))?;
-        bincode::serialize_into(&mut writer, &M::metric_type())?;
-        bincode::serialize_into(&mut writer, &self)?;
+        bincode::encode_into_std_write(&(B as u64), &mut writer, config)
+            .map_err(|e| BowError::Bincode(e.to_string()))?;
+        bincode::encode_into_std_write(&M::metric_type(), &mut writer, config)
+            .map_err(|e| BowError::Bincode(e.to_string()))?;
+        bincode::encode_into_std_write(self, &mut writer, config)
+            .map_err(|e| BowError::Bincode(e.to_string()))?;
 
         Ok(())
     }
@@ -23,9 +27,12 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
     pub fn load(path: &str) -> BowResult<Self> {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
+        let config = bincode::config::standard();
 
-        let loaded_b: u64 = bincode::deserialize_from(&mut reader)?;
-        let loaded_metric: MetricType = bincode::deserialize_from(&mut reader)?;
+        let loaded_b: u64 = bincode::decode_from_std_read(&mut reader, config)
+            .map_err(|e| BowError::Bincode(e.to_string()))?;
+        let loaded_metric: MetricType = bincode::decode_from_std_read(&mut reader, config)
+            .map_err(|e| BowError::Bincode(e.to_string()))?;
 
         if loaded_b != B as u64 {
             return Err(BowError::VocabularyMismatch {
@@ -41,7 +48,8 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
             });
         }
 
-        let vocab: Vocabulary<B, M> = bincode::deserialize_from(&mut reader)?;
+        let vocab: Vocabulary<B, M> = bincode::decode_from_std_read(&mut reader, config)
+            .map_err(|e| BowError::Bincode(e.to_string()))?;
 
         // Validate structure to ensure unsafe traversal is safe
         for block in &vocab.blocks {
@@ -114,7 +122,7 @@ mod tests {
     #[test]
     fn test_save_and_load() {
         let mut rng = StdRng::from_seed([42; 32]);
-        let data: Vec<Feature<u64, D>> = (0..100).map(|_| Feature(rng.gen())).collect();
+        let data: Vec<Feature<u64, D>> = (0..100).map(|_| Feature(rng.random())).collect();
         let vocab = Vocabulary::<B, Hamming<D>>::train(&data, 3).unwrap();
 
         let path = "test_vocab.bin";
@@ -133,7 +141,7 @@ mod tests {
             .map(|_| {
                 let mut desc = [0.0f32; 16];
                 for val in desc.iter_mut() {
-                    *val = rng.gen();
+                    *val = rng.random();
                 }
                 Feature(desc)
             })
@@ -152,7 +160,7 @@ mod tests {
     #[test]
     fn test_vocabulary_mismatch_b() {
         let mut rng = StdRng::from_seed([42; 32]);
-        let data: Vec<Feature<u64, D>> = (0..100).map(|_| Feature(rng.gen())).collect();
+        let data: Vec<Feature<u64, D>> = (0..100).map(|_| Feature(rng.random())).collect();
         let vocab = Vocabulary::<10, Hamming<D>>::train(&data, 3).unwrap();
 
         let path = "test_b_mismatch.bin";
@@ -178,7 +186,7 @@ mod tests {
             .map(|_| {
                 let mut d = [0u64; 16];
                 for v in d.iter_mut() {
-                    *v = rng.gen();
+                    *v = rng.random();
                 }
                 Feature(d)
             })
