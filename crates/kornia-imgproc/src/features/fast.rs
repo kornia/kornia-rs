@@ -521,7 +521,6 @@ mod tests {
             "NMS should significantly reduce the number of keypoints"
         );
 
-
         assert_eq!(
             kps_nms.len(),
             4,
