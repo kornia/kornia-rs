@@ -245,3 +245,60 @@ fn yuv_to_rgb_u8_bt601_limited(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
         b.clamp(0, 255) as u8,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kornia_image::ImageSize;
+    use kornia_tensor::CpuAllocator;
+
+    fn create_image(width: usize, height: usize) -> Image<u8, 3, CpuAllocator> {
+        Image::<_, 3, _>::from_size_val(ImageSize { width, height }, 0_u8, CpuAllocator).unwrap()
+    }
+
+    #[test]
+    fn test_invalid_buffer_size_too_small() {
+        let src = vec![0_u8; 10]; // too small. should be 16 bytes
+        let mut dst = create_image(4, 2);
+
+        let result = convert_uyvy_to_rgb_u8(&src, &mut dst, YuvToRgbMode::Bt601Full);
+
+        assert!(result.is_err());
+        if let Err(ImageError::InvalidImageSize(actual, w, h, expected)) = result {
+            assert_eq!(actual, 10);
+            assert_eq!(w, 4);
+            assert_eq!(h, 2);
+            assert_eq!(expected, 16);
+        } else {
+            panic!("Expected InvalidImageSize error");
+        }
+    }
+
+    #[test]
+    fn test_invalid_buffer_size_too_large() {
+        let src = vec![0_u8; 20]; // too large. should be 16 bytes
+        let mut dst = create_image(4, 2);
+
+        let result = convert_uyvy_to_rgb_u8(&src, &mut dst, YuvToRgbMode::Bt601Full);
+
+        assert!(result.is_err());
+        if let Err(ImageError::InvalidImageSize(actual, w, h, expected)) = result {
+            assert_eq!(actual, 20);
+            assert_eq!(w, 4);
+            assert_eq!(h, 2);
+            assert_eq!(expected, 16);
+        } else {
+            panic!("Expected InvalidImageSize error");
+        }
+    }
+
+    #[test]
+    fn test_correct_buffer_size() {
+        let mut dst = create_image(4, 2);
+        let src = vec![128u8; 16]; // correct size. 4*2*2 = 16 bytes
+
+        let result = convert_uyvy_to_rgb_u8(&src, &mut dst, YuvToRgbMode::Bt601Full);
+
+        assert!(result.is_ok());
+    }
+}
