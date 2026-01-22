@@ -2,21 +2,48 @@ use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use rayon::prelude::*;
 use wide::{i8x16, u8x16, CmpGt, CmpLt};
 
+/// Constants to be used.
+const MIN_IMAGE_WIDTH: usize = 19;
+const MIN_IMAGE_HEIGHT: usize = 6;
+
+/// The radius of the FAST Bresenham circle.
+const KERNEL_RADIUS: usize = 3;
+const PATTERN_LEN: usize = 16;
+const RING_BUFFER_LEN: usize = 25;
+const FAST9_OFFSETS: [(isize, isize); PATTERN_LEN] = [
+    (0, -3),
+    (1, -3),
+    (2, -2),
+    (3, -1),
+    (3, 0),
+    (3, 1),
+    (2, 2),
+    (1, 3),
+    (0, 3),
+    (-1, 3),
+    (-2, 2),
+    (-3, 1),
+    (-3, 0),
+    (-3, -1),
+    (-2, -2),
+    (-1, -3),
+];
+
 /// FAST-9 corner detector with optional non-maximum suppression and SIMD support.
 #[derive(Clone)]
 pub struct FastDetector {
     /// Intensity difference threshold.
     pub threshold: u8,
 
-    /// Enable or disable non-maximum suppression.  
+    /// Enable or disable non-maximum suppression.
     pub nonmax_suppression: bool,
 }
 
-/// Using this to reduce a u8x16 vector to its maximum element, because wide doesnt have it yet.
+/// Using this to reduce a u8x16 vector to its maximum element, because wide doesn't have it yet.
 #[inline(always)]
 fn reduce_max_u8x16(v: u8x16) -> u8 {
     let arr = v.to_array();
-    *arr.iter().max().unwrap()
+    arr.into_iter().fold(u8::MIN, |a, b| a.max(b))
 }
 
 impl FastDetector {
@@ -53,43 +80,25 @@ impl FastDetector {
         let img_ptr = image.as_ptr() as usize;
 
         // Early exit for small images
-        if width < 19 || height < 6 {
+        if width < MIN_IMAGE_WIDTH || height < MIN_IMAGE_HEIGHT {
             return Ok(vec![]);
         }
 
-        // Bresenham circle offsets for FAST-9
-        let pattern_offsets: [(isize, isize); 16] = [
-            (0, -3),
-            (1, -3),
-            (2, -2),
-            (3, -1),
-            (3, 0),
-            (3, 1),
-            (2, 2),
-            (1, 3),
-            (0, 3),
-            (-1, 3),
-            (-2, 2),
-            (-3, 1),
-            (-3, 0),
-            (-3, -1),
-            (-2, -2),
-            (-1, -3),
-        ];
+        // Calculate pixel offsets
+        let mut pixel_off = [0isize; RING_BUFFER_LEN];
 
-        let mut pixel_off = [0isize; 25];
-        for i in 0..16 {
-            pixel_off[i] = pattern_offsets[i].1 * stride as isize + pattern_offsets[i].0;
+        for i in 0..PATTERN_LEN {
+            pixel_off[i] = FAST9_OFFSETS[i].1 * stride as isize + FAST9_OFFSETS[i].0;
         }
 
         for i in 0..9 {
-            pixel_off[16 + i] = pixel_off[i];
+            pixel_off[PATTERN_LEN + i] = pixel_off[i];
         }
 
-        // parallelising over chunks of rows
-        let detect_start_y = 3;
-        let detect_end_y = height - 4;
-        let chunk_size = 64; //works well for me
+        // Parallelising over chunks of rows
+        let detect_start_y = KERNEL_RADIUS;
+        let detect_end_y = height - (KERNEL_RADIUS + 1);
+        let chunk_size = 64;
 
         let chunks: Vec<(usize, usize)> = (detect_start_y..detect_end_y)
             .step_by(chunk_size)
@@ -113,7 +122,7 @@ impl FastDetector {
                 let mut local_kps = Vec::new();
 
                 unsafe {
-                    if start_row > 3 {
+                    if start_row > KERNEL_RADIUS {
                         detect_row(
                             ptr,
                             start_row - 1,
@@ -193,10 +202,9 @@ impl FastDetector {
             .flatten()
             .collect();
 
-        // Handle last row separately as NMS cant be applied on it but fast still can.
-        let y_last = height - 4;
+        // Handle last row separately as NMS can't be applied on it but fast still can.
+        let y_last = height - (KERNEL_RADIUS + 1);
         let ptr = img_ptr as *const u8;
-
         let mut row_buf = [vec![0u8; width], vec![0u8; width]];
         let mut row_cp = [Vec::new(), Vec::new()];
 
@@ -245,8 +253,28 @@ impl FastDetector {
     }
 }
 
+/// Convenience wrapper for the FAST-9 detector using the legacy
+/// `fast_feature_detector` API.
+///
+///
+/// # Arguments
+///
+/// * `image` - Input image of type `Image<u8, 1, A>`.
+/// * `threshold` - Intensity difference threshold.
+/// * `nonmax_suppression` - Enable or disable non-maximum suppression.
+///
+/// # Returns
+///
+/// A vector of `(x, y)` coordinates representing detected keypoints.
+pub fn fast_feature_detector<A: ImageAllocator>(
+    image: &Image<u8, 1, A>,
+    threshold: u8,
+    nonmax_suppression: bool,
+) -> Result<Vec<[usize; 2]>, ImageError> {
+    FastDetector::new(threshold, nonmax_suppression).detect(image)
+}
+
 /// Detects FAST-9 corners in a single image row using SIMD.
-/// Have kept it unsafe as the calling code ensures safety.
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
 unsafe fn detect_row(
@@ -256,7 +284,7 @@ unsafe fn detect_row(
     stride: usize,
     threshold: u8,
     compute_score: bool,
-    offsets: &[isize; 25],
+    offsets: &[isize; RING_BUFFER_LEN],
     score_row: &mut [u8],
     corner_pos: &mut Vec<usize>,
 ) {
@@ -268,12 +296,14 @@ unsafe fn detect_row(
     let k8 = i8x16::splat(8);
     let max_u8 = u8x16::splat(255);
 
-    let mut x = 3;
-    let limit = width - 3 - 16;
+    let mut x = KERNEL_RADIUS;
+    let limit = width - KERNEL_RADIUS - 16;
 
     while x <= limit {
         let ptr = row_ptr.add(x);
-        let v = u8x16::new(std::slice::from_raw_parts(ptr, 16).try_into().unwrap());
+
+        let chunk = ptr.cast::<[u8; 16]>().read_unaligned();
+        let v = u8x16::new(chunk);
 
         let v_plus_t = v.min(max_u8 - t_val) + t_val;
         let v_minus_t = v.max(t_val) - t_val;
@@ -283,7 +313,8 @@ unsafe fn detect_row(
 
         let load_simd = |k: usize| -> i8x16 {
             let p = ptr.offset(offsets[k]);
-            let n = u8x16::new(std::slice::from_raw_parts(p, 16).try_into().unwrap());
+            let n_chunk = p.cast::<[u8; 16]>().read_unaligned();
+            let n = u8x16::new(n_chunk);
             std::mem::transmute(n ^ flip)
         };
 
@@ -311,7 +342,7 @@ unsafe fn detect_row(
             let mut max_b = u8x16::ZERO;
             let mut max_d = u8x16::ZERO;
 
-            for k in 0..25 {
+            for k in 0..RING_BUFFER_LEN {
                 let xn = load_simd(k);
                 let ib = v0.simd_lt(xn);
                 let id = xn.simd_lt(v1);
@@ -336,7 +367,7 @@ unsafe fn detect_row(
 
                     corner_pos.push(rx);
                     score_row[rx] = if compute_score {
-                        fast_score(row_ptr.add(rx), threshold, offsets)
+                        fast_score(row_ptr.add(rx), offsets)
                     } else {
                         1
                     };
@@ -347,9 +378,9 @@ unsafe fn detect_row(
         x += 16;
     }
 
-    // Scalar fallback for tail pixels as they dont line up for SIMD
+    // Scalar fallback for tail pixels as they don't line up for SIMD
     #[allow(clippy::needless_range_loop)]
-    for i in x..(width - 3) {
+    for i in x..(width - KERNEL_RADIUS) {
         let ptr = row_ptr.add(i);
         let v = *ptr as i16;
         let t = threshold as i16;
@@ -375,7 +406,7 @@ unsafe fn detect_row(
             let mut max_b = 0;
             let mut max_d = 0;
 
-            for k in 0..25 {
+            for k in 0..RING_BUFFER_LEN {
                 let pk = get(k);
                 if pk > v + t {
                     cb += 1;
@@ -394,7 +425,7 @@ unsafe fn detect_row(
             if max_b.max(cb) >= 9 || max_d.max(cd) >= 9 {
                 corner_pos.push(i);
                 score_row[i] = if compute_score {
-                    fast_score(ptr, threshold, offsets)
+                    fast_score(ptr, offsets)
                 } else {
                     1
                 };
@@ -405,13 +436,12 @@ unsafe fn detect_row(
 
 /// Computes the FAST-9 score for a pixel
 #[inline(always)]
-unsafe fn fast_score(center_ptr: *const u8, _threshold: u8, offsets: &[isize; 25]) -> u8 {
+unsafe fn fast_score(center_ptr: *const u8, offsets: &[isize; RING_BUFFER_LEN]) -> u8 {
     let v = *center_ptr;
-
     let mut d_bright = [0u8; 32];
     let mut d_dark = [0u8; 32];
 
-    for i in 0..25 {
+    for i in 0..RING_BUFFER_LEN {
         let p = *center_ptr.offset(offsets[i]);
         d_bright[i] = p.saturating_sub(v);
         d_dark[i] = v.saturating_sub(p);
@@ -419,7 +449,7 @@ unsafe fn fast_score(center_ptr: *const u8, _threshold: u8, offsets: &[isize; 25
 
     let load = |arr: &[u8; 32], k| -> u8x16 {
         let ptr = arr.as_ptr().add(k);
-        let chunk: [u8; 16] = std::slice::from_raw_parts(ptr, 16).try_into().unwrap();
+        let chunk = ptr.cast::<[u8; 16]>().read_unaligned();
         u8x16::new(chunk)
     };
 
@@ -461,7 +491,43 @@ mod tests {
 
         make_image(width, height, data).unwrap()
     }
+    #[test]
+    fn test_nms_suppression() {
+        let width = 50;
+        let height = 50;
+        let mut data = vec![50u8; width * height];
 
+        for y in 15..35 {
+            for x in 15..35 {
+                data[y * width + x] = 200;
+            }
+        }
+
+        data[15 * width + 15] = 255;
+        data[15 * width + 34] = 255;
+        data[34 * width + 15] = 255;
+        data[34 * width + 34] = 255;
+
+        let image = make_image(width, height, data).unwrap();
+
+        let detector_raw = FastDetector::new(50, false);
+        let kps_raw = detector_raw.detect(&image).unwrap();
+
+        let detector_nms = FastDetector::new(50, true);
+        let kps_nms = detector_nms.detect(&image).unwrap();
+
+        assert!(
+            kps_raw.len() > kps_nms.len(),
+            "NMS should significantly reduce the number of keypoints"
+        );
+
+
+        assert_eq!(
+            kps_nms.len(),
+            4,
+            "NMS should return exactly 4 corners for the boosted square"
+        );
+    }
     #[test]
     fn test_fast_detection() {
         let image = create_square_pattern();
