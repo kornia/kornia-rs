@@ -21,7 +21,7 @@ fn bench_image(c: &mut Criterion) {
 
     group.bench_function("cast_and_scale_f16", |b| {
         b.iter_batched(
-            || sample_image(),
+            sample_image,
             |image| {
                 black_box(image)
                     .cast_and_scale(f16::from_f32(1. / 255.))
@@ -33,7 +33,7 @@ fn bench_image(c: &mut Criterion) {
 
     group.bench_function("cast_and_scale_f32", |b| {
         b.iter_batched(
-            || sample_image(),
+            sample_image,
             |image| black_box(image).cast_and_scale(1.0f32 / 255.0f32).unwrap(),
             criterion::BatchSize::LargeInput,
         )
@@ -41,7 +41,7 @@ fn bench_image(c: &mut Criterion) {
 
     group.bench_function("cast_and_scale_f64", |b| {
         b.iter_batched(
-            || sample_image(),
+            sample_image,
             |image| black_box(image).cast_and_scale(1.0f64 / 255.0f64).unwrap(),
             criterion::BatchSize::LargeInput,
         )
@@ -49,7 +49,7 @@ fn bench_image(c: &mut Criterion) {
 
     group.bench_function("scale_and_cast_f16", |b| {
         b.iter_batched(
-            || sample_image(),
+            sample_image,
             |image| black_box(image).scale_and_cast::<f16>(1_u8).unwrap(),
             criterion::BatchSize::LargeInput,
         )
@@ -57,7 +57,7 @@ fn bench_image(c: &mut Criterion) {
 
     group.bench_function("scale_and_cast_f32", |b| {
         b.iter_batched(
-            || sample_image(),
+            sample_image,
             |image| black_box(image).scale_and_cast::<f32>(1_u8).unwrap(),
             criterion::BatchSize::LargeInput,
         )
@@ -65,7 +65,7 @@ fn bench_image(c: &mut Criterion) {
 
     group.bench_function("scale_and_cast_f64", |b| {
         b.iter_batched(
-            || sample_image(),
+            sample_image,
             |image| black_box(image).scale_and_cast::<f64>(1_u8).unwrap(),
             criterion::BatchSize::LargeInput,
         )
