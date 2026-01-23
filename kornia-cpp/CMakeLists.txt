@@ -32,16 +32,42 @@ add_custom_target(cargo_build ALL
 )
 
 # Create detail directory structure for cleaner includes during build
-add_custom_command(TARGET cargo_build POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h
-        ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/lib.rs.h
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h
-        ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/cxx.h
-    COMMENT "Organizing CXX bridge headers into kornia/detail/"
-)
+# Use CMake script to conditionally copy files (avoids shell quoting issues)
+set(COPY_HEADERS_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/copy_cxx_headers.cmake")
+file(WRITE ${COPY_HEADERS_SCRIPT}
+"# Auto-generated script to copy CXX bridge headers
+file(MAKE_DIRECTORY \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail\")
+
+# Define expected header locations
+set(LIB_RS_H_SRC \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h\")
+set(CXX_H_SRC \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h\")
+set(LIB_RS_H_DST \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/lib.rs.h\")
+set(CXX_H_DST \"${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia/detail/cxx.h\")
+
+# Copy lib.rs.h if found
+if(EXISTS \"${LIB_RS_H_SRC}\")
+  configure_file(
+    \"${LIB_RS_H_SRC}\"
+    \"${LIB_RS_H_DST}\"
+    COPYONLY
+  )
+  message(STATUS \"Copied lib.rs.h to kornia/detail/\")
+else()
+  message(FATAL_ERROR \"CXX bridge header not found: ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/kornia-cpp/src/lib.rs.h\\nCXX headers must be generated during Rust build. Check that build.rs is running correctly.\")
+endif()
+
+# Copy cxx.h if found
+if(EXISTS \"${CXX_H_SRC}\")
+  configure_file(
+    \"${CXX_H_SRC}\"
+    \"${CXX_H_DST}\"
+    COPYONLY
+  )
+  message(STATUS \"Copied cxx.h to kornia/detail/\")
+else()
+  message(FATAL_ERROR \"CXX header not found: ${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge/rust/cxx.h\\nCXX headers must be generated during Rust build. Check that build.rs is running correctly.\")
+endif()
+")
 
 # --- 3. Define Header Locations ---
 set(CXX_GEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge")
@@ -50,11 +76,41 @@ set(CXX_GEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/target/cxxbridge")
 set(MAIN_HEADER "${CXX_GEN_DIR}/kornia-cpp/src/lib.rs.h")
 set(RUST_CXX_HEADER "${CXX_GEN_DIR}/rust/cxx.h")
 
+# Output header files (organized into kornia/detail/)
+set(ORGANIZED_LIB_RS_H "${CXX_GEN_DIR}/kornia/detail/lib.rs.h")
+set(ORGANIZED_CXX_H "${CXX_GEN_DIR}/kornia/detail/cxx.h")
+
+# Create a command to organize headers - runs after cargo_build but before compilation
+# Use OUTPUT so CMake knows these files must exist before targets that depend on them
+# Note: We only depend on cargo_build, not the source headers, because they may not exist
+# and CMake will try to build them as targets if we list them as DEPENDS
+add_custom_command(
+    OUTPUT ${ORGANIZED_LIB_RS_H} ${ORGANIZED_CXX_H}
+    COMMAND ${CMAKE_COMMAND} -P ${COPY_HEADERS_SCRIPT}
+    COMMENT "Organizing CXX bridge headers into kornia/detail/"
+    DEPENDS cargo_build
+    VERBATIM
+)
+
+# Create a target that produces the organized headers
+add_custom_target(organize_cxx_headers ALL
+    DEPENDS ${ORGANIZED_LIB_RS_H} ${ORGANIZED_CXX_H}
+)
+
+# Also run it as POST_BUILD for cargo_build to ensure it happens
+add_custom_command(TARGET cargo_build POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -P ${COPY_HEADERS_SCRIPT}
+    COMMENT "Organizing CXX bridge headers into kornia/detail/"
+)
+
 # Create imported target for the Rust static library
+# The library file is created by cargo_build, so we mark it as a dependency
 add_library(kornia_rust_lib STATIC IMPORTED GLOBAL)
 set_target_properties(kornia_rust_lib PROPERTIES
     IMPORTED_LOCATION "${RUST_TARGET_DIR}/${RUST_LIB_NAME}"
 )
+# Ensure cargo_build completes before this imported library is used
+# This tells CMake the file will be created by cargo_build
 add_dependencies(kornia_rust_lib cargo_build)
 
 # Create kornia_cpp as INTERFACE library that wraps everything
@@ -66,6 +122,10 @@ target_include_directories(kornia_cpp INTERFACE
     $<INSTALL_INTERFACE:include>
     $<INSTALL_INTERFACE:include/kornia>
 )
+
+# Ensure headers are organized before any target uses kornia_cpp
+# Note: add_dependencies on INTERFACE libraries doesn't work as expected,
+# so we'll make individual targets depend on organize_cxx_headers directly
 
 # Link the Rust library
 target_link_libraries(kornia_cpp INTERFACE kornia_rust_lib)
