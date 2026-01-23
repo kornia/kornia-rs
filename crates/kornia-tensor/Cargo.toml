@@ -17,6 +17,7 @@ harness = false
 [dependencies]
 bincode = { workspace = true, optional = true }
 num-traits = { workspace = true }
+rayon = { workspace = true }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 
