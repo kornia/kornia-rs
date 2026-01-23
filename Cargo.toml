@@ -62,3 +62,4 @@ tempfile = "3.10"
 thiserror = "2"
 tokenizers = { version = "0.21.1", features = ["http"] }
 walkdir = "2.5"
+half = { version = "2.7", features = ["num-traits"] }
