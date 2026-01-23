@@ -453,6 +453,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
         let mut casted_data = Vec::with_capacity(slice.len());
         // SAFETY: Each element is written to with no reads beforehand.
         unsafe {
+            #[allow(clippy::uninit_vec)]
             casted_data.set_len(slice.len());
         }
 
@@ -487,6 +488,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
         let mut casted_data = Vec::with_capacity(slice.len());
         // SAFETY: Each element is written to with no reads beforehand.
         unsafe {
+            #[allow(clippy::uninit_vec)]
             casted_data.set_len(slice.len());
         }
 
