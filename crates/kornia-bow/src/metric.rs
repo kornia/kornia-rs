@@ -1,8 +1,8 @@
+use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
-use bincode::{Encode, Decode};
 
 /// A wrapper for fixed-size arrays to support Serde with const generics > 32.
 #[derive(Clone, Copy, Debug, PartialEq, Encode, Decode)]
@@ -51,8 +51,16 @@ impl<'de, T: Deserialize<'de> + Copy + Default, const N: usize> Deserialize<'de>
 
 /// Distance metric abstraction for vocabulary tree operations.
 pub trait DistanceMetric:
-    Clone + Copy + Debug + Send + Sync + 'static + Serialize + for<'de> Deserialize<'de>
-    + Encode + Decode<()>
+    Clone
+    + Copy
+    + Debug
+    + Send
+    + Sync
+    + 'static
+    + Serialize
+    + for<'de> Deserialize<'de>
+    + Encode
+    + Decode<()>
 {
     /// The underlying descriptor data type.
     type Data: Copy

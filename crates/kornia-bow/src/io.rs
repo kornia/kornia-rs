@@ -13,9 +13,9 @@ impl<const B: usize, M: DistanceMetric> Vocabulary<B, M> {
         let mut writer = BufWriter::new(file);
         let config = bincode::config::standard();
 
-        bincode::encode_into_std_write(&(B as u64), &mut writer, config)
+        bincode::encode_into_std_write(B as u64, &mut writer, config)
             .map_err(|e| BowError::Bincode(e.to_string()))?;
-        bincode::encode_into_std_write(&M::metric_type(), &mut writer, config)
+        bincode::encode_into_std_write(M::metric_type(), &mut writer, config)
             .map_err(|e| BowError::Bincode(e.to_string()))?;
         bincode::encode_into_std_write(self, &mut writer, config)
             .map_err(|e| BowError::Bincode(e.to_string()))?;

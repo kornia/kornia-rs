@@ -1,7 +1,7 @@
+use bincode::{Decode, Encode};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
-use bincode::{Encode, Decode};
 
 pub mod bow;
 pub mod constructor;
