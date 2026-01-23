@@ -11,15 +11,28 @@ fn bench_distance_transform(c: &mut Criterion) {
         group.throughput(criterion::Throughput::Elements((*width * *height) as u64));
         let parameter_string = format!("{width}x{height}");
 
-        // Rust Image 
+        // Rust Image
         let mut data = vec![0.0f32; width * height];
         for i in 0..(*width).min(*height) {
-            if i % 10 == 0 { data[i * width + i] = 1.0; }
+            if i % 10 == 0 {
+                data[i * width + i] = 1.0;
+            }
         }
-        let image = Image::new(ImageSize { width: *width, height: *height }, data.clone(), CpuAllocator).unwrap();
+        let image = Image::new(
+            ImageSize {
+                width: *width,
+                height: *height,
+            },
+            data.clone(),
+            CpuAllocator,
+        )
+        .unwrap();
 
         // -OpenCV Mat
-        let mut cv_src = core::Mat::zeros(*height as i32, *width as i32, core::CV_8UC1).unwrap().to_mat().unwrap();
+        let mut cv_src = core::Mat::zeros(*height as i32, *width as i32, core::CV_8UC1)
+            .unwrap()
+            .to_mat()
+            .unwrap();
         for i in 0..(*width).min(*height) {
             if i % 10 == 0 {
                 *cv_src.at_2d_mut::<u8>(i as i32, i as i32).unwrap() = 255;
@@ -50,7 +63,8 @@ fn bench_distance_transform(c: &mut Criterion) {
                     imgproc::DIST_L2,
                     imgproc::DIST_MASK_5,
                     core::CV_32F,
-                ).unwrap()
+                )
+                .unwrap()
             })
         });
     }
@@ -62,12 +76,25 @@ fn bench_distance_transform(c: &mut Criterion) {
         // Rust Setup
         let mut data = vec![0.0f32; width * height];
         for i in 0..(*width).min(*height) {
-            if i % 10 == 0 { data[i * width + i] = 1.0; }
+            if i % 10 == 0 {
+                data[i * width + i] = 1.0;
+            }
         }
-        let image = Image::new(ImageSize { width: *width, height: *height }, data, CpuAllocator).unwrap();
+        let image = Image::new(
+            ImageSize {
+                width: *width,
+                height: *height,
+            },
+            data,
+            CpuAllocator,
+        )
+        .unwrap();
 
         // OpenCV Setup
-        let mut cv_src = core::Mat::zeros(*height as i32, *width as i32, core::CV_8UC1).unwrap().to_mat().unwrap();
+        let mut cv_src = core::Mat::zeros(*height as i32, *width as i32, core::CV_8UC1)
+            .unwrap()
+            .to_mat()
+            .unwrap();
         for i in 0..(*width).min(*height) {
             if i % 10 == 0 {
                 *cv_src.at_2d_mut::<u8>(i as i32, i as i32).unwrap() = 255;
@@ -89,7 +116,8 @@ fn bench_distance_transform(c: &mut Criterion) {
                     imgproc::DIST_L2,
                     imgproc::DIST_MASK_5,
                     core::CV_32F,
-                ).unwrap()
+                )
+                .unwrap()
             })
         });
     }

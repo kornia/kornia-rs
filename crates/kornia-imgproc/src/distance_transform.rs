@@ -1,5 +1,6 @@
 use kornia_image::allocator::{CpuAllocator, ImageAllocator};
 use kornia_image::{Image, ImageError, ImageSize};
+use rayon::prelude::*;
 
 const INF: f32 = 1e20;
 
@@ -39,18 +40,10 @@ where
 
 /// Computes the Euclidean Distance Transform of a binary image.
 ///
-/// This implementation uses the linear-time algorithm O(N) by Felzenszwalb & Huttenlocher
-/// described in "Distance Transforms of Sampled Functions" (2012).
-///
-/// # Arguments
-///
-/// * `image` - Input binary image. Non-zero pixels are considered features (distance 0).
-///             Zero pixels are considered background.
-///
-/// # Returns
-///
-/// A float image where each pixel value is the Euclidean distance to the nearest feature.
-/// The output image is always allocated on the CPU.
+/// This implementation is highly optimized:
+/// 1. Uses the O(N) linear-time algorithm by Felzenszwalb & Huttenlocher.
+/// 2. Uses **Rayon** for multi-threading (processing rows in parallel).
+/// 3. Uses **Transposition** to ensure cache-friendly memory access.
 pub fn distance_transform<A>(
     image: &Image<f32, 1, A>,
 ) -> Result<Image<f32, 1, CpuAllocator>, ImageError>
@@ -65,51 +58,53 @@ where
     let mut grid = vec![INF; num_pixels];
     let slice = image.as_slice();
 
-    for (i, &val) in slice.iter().enumerate() {
-        if val > 0.0 {
-            grid[i] = 0.0;
-        }
-    }
+    // Parallel initialization
+    grid.par_iter_mut()
+        .zip(slice.par_iter())
+        .for_each(|(g, &s)| {
+            if s > 0.0 {
+                *g = 0.0;
+            }
+        });
 
-    // Transform along Columns
-    let mut f_col = vec![0.0; height];
-    let mut d_col = vec![0.0; height];
-    let mut v_col = vec![0usize; height];
-    let mut z_col = vec![0.0f32; height + 1];
+    // Transform along Rows (Parallel)
+    // We allocate thread-local scratch buffers to avoid repeated allocations.
+    grid.par_chunks_mut(width).for_each_init(
+        || (vec![0.0; width], vec![0usize; width], vec![0.0; width + 1]),
+        |(f, v, z), row| {
+            f.copy_from_slice(row);
+            distance_transform_1d(f, row, v, z);
+        },
+    );
 
-    for x in 0..width {
-        for y in 0..height {
-            f_col[y] = grid[y * width + x];
-        }
-        distance_transform_1d(&f_col, &mut d_col, &mut v_col, &mut z_col);
-        for y in 0..height {
-            grid[y * width + x] = d_col[y];
-        }
-    }
+    // Transpose Grid (Cache Optimization)
+    // This allows us to process "columns" as "rows", enabling SIMD/Cache benefits and Rayon parallelism.
+    let mut grid_t = transpose(&grid, width, height);
 
-    // Transform along Rows
-    let mut f_row = vec![0.0; width];
-    let mut d_row = vec![0.0; width];
-    let mut v_row = vec![0usize; width];
-    let mut z_row = vec![0.0f32; width + 1];
+    // Transform along "Rows" (which are actually Columns)
+    grid_t.par_chunks_mut(height).for_each_init(
+        || {
+            (
+                vec![0.0; height],
+                vec![0usize; height],
+                vec![0.0; height + 1],
+            )
+        },
+        |(f, v, z), row| {
+            f.copy_from_slice(row);
+            distance_transform_1d(f, row, v, z);
+        },
+    );
 
-    for y in 0..height {
-        let row_start = y * width;
-        for x in 0..width {
-            f_row[x] = grid[row_start + x];
-        }
-        distance_transform_1d(&f_row, &mut d_row, &mut v_row, &mut z_row);
-        for x in 0..width {
-            grid[row_start + x] = d_row[x];
-        }
-    }
+    //Transpose Back
+    let mut final_grid = transpose(&grid_t, height, width);
 
-    // Finalize
-    for val in grid.iter_mut() {
+    //Finalize: Square Root (Parallel)
+    final_grid.par_iter_mut().for_each(|val| {
         *val = val.sqrt();
-    }
+    });
 
-    Image::new(ImageSize { width, height }, grid, CpuAllocator)
+    Image::new(ImageSize { width, height }, final_grid, CpuAllocator)
 }
 
 /// Helper function - 1D distance transform using parabolic lower envelope
@@ -152,8 +147,26 @@ fn distance_transform_1d(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f32
             k += 1;
         }
         let r = v[k];
-        d[q] = (q as f32 - r as f32).powi(2) + f[r];
+        let dist = q as f32 - r as f32;
+        d[q] = dist * dist + f[r];
     }
+}
+
+/// Transpose a flat vector representing a 2D grid.
+/// This enables efficient memory access for column-wise operations.
+fn transpose<T: Copy + Send + Sync>(data: &[T], width: usize, height: usize) -> Vec<T> {
+    let mut output = vec![data[0]; data.len()];
+    // Parallel transpose
+    // We iterate over the rows of the output
+    output
+        .par_chunks_mut(height)
+        .enumerate()
+        .for_each(|(x, out_row)| {
+            for y in 0..height {
+                out_row[y] = data[y * width + x];
+            }
+        });
+    output
 }
 
 #[cfg(test)]
@@ -203,7 +216,5 @@ mod tests {
         .unwrap();
 
         let output = distance_transform(&image).unwrap();
-
-        println!("Output: {:?}", output.as_slice());
     }
 }
