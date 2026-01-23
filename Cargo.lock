@@ -7797,8 +7797,11 @@ name = "kornia-image"
 version = "0.1.11-rc.1"
 dependencies = [
  "arrow 57.1.0",
+ "criterion",
+ "half",
  "kornia-tensor",
  "num-traits",
+ "rayon",
  "thiserror 2.0.17",
 ]
 

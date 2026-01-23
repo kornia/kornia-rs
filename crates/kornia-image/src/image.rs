@@ -1,5 +1,6 @@
 use crate::{allocator::ImageAllocator, error::ImageError};
 use kornia_tensor::{Tensor, Tensor2, Tensor3};
+use rayon::prelude::*;
 
 /// Image size in pixels
 ///
@@ -445,20 +446,26 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// ```
     pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, C, A>, ImageError>
     where
-        U: num_traits::NumCast + std::ops::Mul<Output = U> + Clone + Copy,
-        T: num_traits::NumCast + Clone + Copy,
+        U: num_traits::NumCast + std::ops::Mul<Output = U> + Clone + Copy + Send + Sync,
+        T: num_traits::NumCast + Clone + Copy + Send + Sync,
     {
-        let casted_data = self
-            .as_slice()
-            .iter()
-            .map(|&x| {
+        let slice = self.as_slice();
+        let mut casted_data = Vec::with_capacity(slice.len());
+        // SAFETY: Each element is written to with no reads beforehand.
+        unsafe {
+            casted_data.set_len(slice.len());
+        }
+
+        slice
+            .par_iter()
+            .zip(casted_data.par_iter_mut())
+            .try_for_each(|(&x, out)| {
                 let xu = U::from(x).ok_or(ImageError::CastError)?;
-                Ok(xu * scale)
-            })
-            .collect::<Result<Vec<U>, ImageError>>()?;
+                *out = xu * scale;
+                Ok::<(), ImageError>(())
+            })?;
 
         let alloc = self.storage.alloc();
-
         Image::new(self.size(), casted_data, alloc.clone())
     }
 
@@ -473,20 +480,25 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// A new image with the pixel data cast to the new type and scaled.
     pub fn scale_and_cast<U>(&self, scale: T) -> Result<Image<U, C, A>, ImageError>
     where
-        U: num_traits::NumCast + Clone + Copy,
-        T: num_traits::NumCast + std::ops::Mul<Output = T> + Clone + Copy,
+        U: num_traits::NumCast + Clone + Copy + Send + Sync,
+        T: num_traits::NumCast + std::ops::Mul<Output = T> + Clone + Copy + Send + Sync,
     {
-        let casted_data = self
-            .as_slice()
-            .iter()
-            .map(|&x| {
-                let xu = U::from(x * scale).ok_or(ImageError::CastError)?;
-                Ok(xu)
-            })
-            .collect::<Result<Vec<U>, ImageError>>()?;
+        let slice = self.as_slice();
+        let mut casted_data = Vec::with_capacity(slice.len());
+        // SAFETY: Each element is written to with no reads beforehand.
+        unsafe {
+            casted_data.set_len(slice.len());
+        }
+
+        slice
+            .par_iter()
+            .zip(casted_data.par_iter_mut())
+            .try_for_each(|(&x, out)| {
+                *out = U::from(x * scale).ok_or(ImageError::CastError)?;
+                Ok::<(), ImageError>(())
+            })?;
 
         let alloc = self.storage.alloc();
-
         Image::new(self.size(), casted_data, alloc.clone())
     }
 
