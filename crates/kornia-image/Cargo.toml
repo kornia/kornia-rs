@@ -10,6 +10,11 @@ repository = { workspace = true }
 license = { workspace = true }
 publish = true
 
+[[bench]]
+harness = false
+name = "bench_image"
+
+
 [dependencies]
 arrow = { workspace = true, optional = true }
 kornia-tensor = { workspace = true }
@@ -24,7 +29,3 @@ half = { workspace = true }
 [features]
 default = []
 arrow = ["dep:arrow"]
-
-[[bench]]
-harness = false
-name = "bench_image"
