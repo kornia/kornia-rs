@@ -14,7 +14,6 @@ publish = true
 harness = false
 name = "bench_image"
 
-
 [dependencies]
 arrow = { workspace = true, optional = true }
 kornia-tensor = { workspace = true }
