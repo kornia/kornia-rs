@@ -11,8 +11,8 @@ license = { workspace = true }
 publish = true
 
 [[bench]]
-name = "bench_view"
 harness = false
+name = "bench_view"
 
 [dependencies]
 bincode = { workspace = true, optional = true }
