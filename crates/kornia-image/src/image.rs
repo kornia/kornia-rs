@@ -444,6 +444,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     ///
     /// assert_eq!(image_f32.get([1, 0, 2]), Some(&1.0f32));
     /// ```
+    #[allow(clippy::uninit_vec)]
     pub fn cast_and_scale<U>(self, scale: U) -> Result<Image<U, C, A>, ImageError>
     where
         U: num_traits::NumCast + std::ops::Mul<Output = U> + Clone + Copy + Send + Sync,
@@ -453,7 +454,6 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
         let mut casted_data = Vec::with_capacity(slice.len());
         // SAFETY: Each element is written to with no reads beforehand.
         unsafe {
-            #[allow(clippy::uninit_vec)]
             casted_data.set_len(slice.len());
         }
 
@@ -479,6 +479,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// # Returns
     ///
     /// A new image with the pixel data cast to the new type and scaled.
+    #[allow(clippy::uninit_vec)]
     pub fn scale_and_cast<U>(&self, scale: T) -> Result<Image<U, C, A>, ImageError>
     where
         U: num_traits::NumCast + Clone + Copy + Send + Sync,
@@ -488,7 +489,6 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
         let mut casted_data = Vec::with_capacity(slice.len());
         // SAFETY: Each element is written to with no reads beforehand.
         unsafe {
-            #[allow(clippy::uninit_vec)]
             casted_data.set_len(slice.len());
         }
 
