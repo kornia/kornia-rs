@@ -37,6 +37,7 @@ criterion = "0.8"
 ctrlc = "3.4"
 env_logger = "0.11"
 faer = "=0.20.1"
+half = { version = "2.7", features = ["num-traits"] }
 hf-hub = "0.4.2"
 indicatif = { version = "0.18.3", features = ["rayon"] }
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
@@ -62,4 +63,3 @@ tempfile = "3.10"
 thiserror = "2"
 tokenizers = { version = "0.21.1", features = ["http"] }
 walkdir = "2.5"
-half = { version = "2.7", features = ["num-traits"] }

@@ -14,8 +14,8 @@ publish = true
 arrow = { workspace = true, optional = true }
 kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
-thiserror = { workspace = true }
 rayon = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
