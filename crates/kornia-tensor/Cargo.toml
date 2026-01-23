@@ -10,6 +10,10 @@ repository = { workspace = true }
 license = { workspace = true }
 publish = true
 
+[[bench]]
+name = "bench_view"
+harness = false
+
 [dependencies]
 bincode = { workspace = true, optional = true }
 num-traits = { workspace = true }
@@ -17,6 +21,7 @@ serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 serde_json = { workspace = true }
 
 [features]
