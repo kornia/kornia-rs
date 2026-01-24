@@ -33,6 +33,20 @@ def test_all_tag_family_kind():
     assert all == all_expected
 
 
+def test_quick_decode_max_hamming():
+    # Test custom max_hamming in constructor
+    qd = K.apriltag.family.QuickDecode(4, [1, 2, 3, 4], max_hamming=1)
+    assert qd.max_hamming == 1
+
+    # Test setter
+    qd.max_hamming = 3
+    assert qd.max_hamming == 3
+
+    # Test invalid value (>3) raises error
+    with pytest.raises(Exception):
+        qd.max_hamming = 4
+
+
 def test_tag_family_into_family_kind():
     qd = K.apriltag.family.QuickDecode(4, [1, 2, 3, 4])
     sb = K.apriltag.family.SharpeningBuffer(10)
