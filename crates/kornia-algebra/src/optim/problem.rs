@@ -27,7 +27,7 @@ pub enum ProblemError {
 }
 
 /// An optimization problem containing variables and factors.
-#[derive(Debug)]
+#[derive(Default)]
 pub struct Problem {
     /// Variables in the problem, indexed by name
     variables: HashMap<String, Variable>,
@@ -38,10 +38,7 @@ pub struct Problem {
 impl Problem {
     /// Create a new empty problem.
     pub fn new() -> Self {
-        Self {
-            variables: HashMap::new(),
-            factors: Vec::new(),
-        }
+        Self::default()
     }
 
     /// Add a variable to the problem.
@@ -95,12 +92,56 @@ impl Problem {
         // Validate all variable names exist
         for name in &var_names {
             if !self.variables.contains_key(name) {
-                return Err(ProblemError::VariableNotFound {
-                    name: name.clone(),
-                });
+                return Err(ProblemError::VariableNotFound { name: name.clone() });
             }
         }
         self.factors.push((factor, var_names));
         Ok(())
+    }
+
+    /// Get all variables in the problem.
+    pub fn get_variables(&self) -> &HashMap<String, Variable> {
+        &self.variables
+    }
+
+    /// Get mutable access to all variables in the problem.
+    pub fn get_variables_mut(&mut self) -> &mut HashMap<String, Variable> {
+        &mut self.variables
+    }
+
+    /// Get all factors in the problem.
+    pub fn get_factors(&self) -> &[(Box<dyn Factor>, Vec<String>)] {
+        &self.factors
+    }
+
+    /// Compute the total squared cost (sum of squared residuals) for the current variable values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any factor evaluation fails.
+    pub fn compute_total_cost(&self) -> Result<f32, ProblemError> {
+        let mut total_cost = 0.0;
+
+        for (factor, var_names) in &self.factors {
+            // Get parameter slices for this factor's variables
+            let mut params = Vec::new();
+            for name in var_names {
+                let var = self
+                    .variables
+                    .get(name)
+                    .ok_or_else(|| ProblemError::VariableNotFound { name: name.clone() })?;
+                params.push(var.values.as_slice());
+            }
+
+            // Linearize the factor (only need residual, not Jacobian)
+            let result = factor.linearize(&params, false)?;
+
+            // Accumulate squared residuals
+            for r in &result.residual {
+                total_cost += r * r;
+            }
+        }
+
+        Ok(total_cost)
     }
 }

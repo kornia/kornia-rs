@@ -57,7 +57,9 @@ impl LinearizationResult {
 
     /// Get a specific Jacobian element (row-major order)
     pub fn jacobian_element(&self, row: usize, col: usize) -> Option<f32> {
-        self.jacobian.as_ref().map(|j| j[row * self.jacobian_cols + col])
+        self.jacobian
+            .as_ref()
+            .map(|j| j[row * self.jacobian_cols + col])
     }
 }
 
@@ -78,8 +80,6 @@ impl LinearizationResult {
 /// # Thread Safety
 ///
 /// Factors must be `Send + Sync` to enable parallel residual/Jacobian evaluation.
-///
-
 pub trait Factor: Send + Sync {
     /// Compute the residual and optionally the Jacobian at the given parameter values.
     ///
