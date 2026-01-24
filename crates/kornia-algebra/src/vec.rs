@@ -247,10 +247,10 @@ define_vector_type!(Vec4F64, glam::DVec4, f64, [f64; 4], [x, y, z, w]);
 
 // Dynamic-sized vectors from nalgebra (for optimization and large-scale operations)
 /// Dynamic-sized vector with f32 elements.
-pub type DVectorF32 = nalgebra::DVector<f32>;
+pub type DVecF32 = nalgebra::DVector<f32>;
 
 /// Dynamic-sized vector with f64 elements.
-pub type DVectorF64 = nalgebra::DVector<f64>;
+pub type DVecF64 = nalgebra::DVector<f64>;
 
 #[cfg(test)]
 mod tests {

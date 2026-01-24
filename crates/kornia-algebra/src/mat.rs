@@ -357,10 +357,10 @@ define_matrix_type!(
 
 // Dynamic-sized matrices from nalgebra (for optimization and large-scale operations)
 /// Dynamic-sized matrix with f32 elements.
-pub type DMatrixF32 = nalgebra::DMatrix<f32>;
+pub type DMatF32 = nalgebra::DMatrix<f32>;
 
 /// Dynamic-sized matrix with f64 elements.
-pub type DMatrixF64 = nalgebra::DMatrix<f64>;
+pub type DMatF64 = nalgebra::DMatrix<f64>;
 
 #[cfg(test)]
 mod tests {
