@@ -10,7 +10,7 @@ DATA_DIR = Path(__file__).parents[2] / "tests" / "data"
 def test_warp_affine():
     # load an image with libjpeg-turbo
     img_path: Path = DATA_DIR / "dog.jpeg"
-    img: np.ndarray = K.io.read_image_jpeg(str(img_path.absolute()), "rgb")
+    img: np.ndarray = K.io.read_image(str(img_path.absolute()))
 
     # check the image properties
     assert img.shape == (195, 258, 3)
@@ -25,7 +25,7 @@ def test_warp_affine():
 
 def test_warp_perspective():
     img_path: Path = DATA_DIR / "dog.jpeg"
-    img: np.ndarray = K.io.read_image_jpeg(str(img_path.absolute()), "rgb")
+    img: np.ndarray = K.io.read_image(str(img_path.absolute()))
 
     assert img.shape == (195, 258, 3)
 

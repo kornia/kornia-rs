@@ -61,6 +61,7 @@ pub fn read_image_png_u8(file_path: &str, mode: &str) -> PyResult<PyImage> {
     Ok(result)
 }
 
+#[allow(dead_code)]
 #[pyfunction]
 pub fn read_image_png_u16(file_path: &str, mode: &str) -> PyResult<PyImageU16> {
     let result = match mode {
@@ -152,6 +153,7 @@ pub fn write_image_png_u8(file_path: &str, image: PyImage, mode: &str) -> PyResu
     Ok(())
 }
 
+#[allow(dead_code)]
 #[pyfunction]
 pub fn write_image_png_u16(file_path: &str, image: PyImageU16, mode: &str) -> PyResult<()> {
     match mode {
@@ -205,6 +207,7 @@ pub fn write_image_png_u16(file_path: &str, image: PyImageU16, mode: &str) -> Py
 ///
 /// img = K.decode_image_png(bytes(img_data), (32, 32), "rgb8")
 /// ```
+#[allow(dead_code)]
 #[pyfunction]
 pub fn decode_image_png_u8(
     src: &[u8],
@@ -273,6 +276,7 @@ pub fn decode_image_png_u8(
     Ok(result)
 }
 
+#[allow(dead_code)]
 #[pyfunction]
 pub fn decode_image_png_u16(
     src: &[u8],

@@ -159,6 +159,68 @@ pub fn read_image_deprecated(py: Python<'_>, file_path: Bound<'_, PyAny>) -> PyR
     io::functional::read_image(file_path)
 }
 
+#[pyfunction(name = "write_image")]
+#[pyo3(signature = (file_path, image, mode="auto", quality=None))]
+pub fn write_image_deprecated(
+    py: Python<'_>,
+    file_path: Bound<'_, PyAny>,
+    image: Bound<'_, PyAny>,
+    mode: &str,
+    quality: Option<u8>,
+) -> PyResult<()> {
+    warn_deprecation(
+        py,
+        "kornia_rs.write_image is deprecated. Use kornia_rs.io.write_image.",
+    )?;
+
+    if mode == "auto" {
+        warn_deprecation(
+            py,
+            "`mode='auto'` in kornia_rs.write_image is deprecated and always resolves to 'rgb'. \
+            Use kornia_rs.io.write_image for correct mode inference.",
+        )?;
+
+        let inferred_mode = if image.extract::<image::PyImage>().is_ok()
+            || image.extract::<image::PyImageU16>().is_ok()
+            || image.extract::<image::PyImageF32>().is_ok()
+        {
+            "rgb"
+        } else {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Cannot infer image mode. Please specify mode.",
+            ));
+        };
+
+        io::functional::write_image(file_path, image, inferred_mode, quality)
+    } else {
+        io::functional::write_image(file_path, image, mode, quality)
+    }
+}
+
+#[pyfunction(name = "decode_image")]
+#[pyo3(signature = (file_path, mode=None))]
+#[allow(unused_variables)]
+pub fn decode_image_deprecated(
+    py: Python<'_>,
+    file_path: Bound<'_, PyAny>,
+    mode: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    warn_deprecation(
+        py,
+        "kornia_rs.decode_image is deprecated. Use kornia_rs.io.decode_image.",
+    )?;
+
+    if mode.is_some() {
+        warn_deprecation(
+            py,
+            "`mode` argument is ignored and will be removed. \
+             Use kornia_rs.io.decode_image instead.",
+        )?;
+    }
+
+    io::functional::decode_image(file_path)
+}
+
 // JPEG
 #[pyfunction(name = "read_image_jpeg")]
 pub fn read_image_jpeg_deprecated(
@@ -283,6 +345,16 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         io::functional::read_image_any_deprecated,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(write_image_deprecated, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        io::functional::write_image_any_deprecated,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(crate::decode_image_deprecated, m.py())?)?;
+    m.add_function(wrap_pyfunction!(
+        io::functional::decode_image_any_deprecated,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(read_image_jpeg_deprecated, m)?)?;
     m.add_function(wrap_pyfunction!(write_image_jpeg_deprecated, m)?)?;
     m.add_function(wrap_pyfunction!(read_image_png_u8_deprecated, m)?)?;
@@ -309,26 +381,19 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let io_mod = PyModule::new(py, "io")?;
 
     // NOTE:
-    // Some IO helpers (e.g. decode/enc helpers and TIFF internals)
-    // are now available only under `kornia_rs.io`.
-    // There are no deprecated root-scoped aliases among these functions.
+    // Some IO helpers (e.g. decode/encode helpers and TIFF internals)
+    // are available only under `kornia_rs.io`.
+    // The Python IO API is intentionally restricted to canonical entry points
+    // (`read_image`, `decode_image`, `write_image`).
+    // Other format-specific helpers remain internal and there are no root-scoped
+    // deprecated aliases; JPEG Turbo helpers are intentionally exposed here for
+    // performance-sensitive use cases.
     io_mod.add_function(wrap_pyfunction!(io::functional::read_image, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::png::decode_image_png_u8, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::png::decode_image_png_u16, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::png::read_image_png_u8, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::png::read_image_png_u16, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::png::write_image_png_u8, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::png::write_image_png_u16, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::jpeg::decode_image_jpeg, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::jpeg::read_image_jpeg, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::jpeg::write_image_jpeg, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::jpeg::encode_image_jpeg, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::tiff::read_image_tiff_f32, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::tiff::read_image_tiff_u8, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::tiff::read_image_tiff_u16, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::tiff::write_image_tiff_f32, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::tiff::write_image_tiff_u8, &io_mod)?)?;
-    io_mod.add_function(wrap_pyfunction!(io::tiff::write_image_tiff_u16, &io_mod)?)?;
+    io_mod.add_function(wrap_pyfunction!(io::functional::write_image, &io_mod)?)?;
+    io_mod.add_function(wrap_pyfunction!(
+        crate::io::functional::decode_image,
+        io_mod.py()
+    )?)?;
     io_mod.add_function(wrap_pyfunction!(
         io::jpegturbo::decode_image_jpegturbo,
         &io_mod

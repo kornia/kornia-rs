@@ -6,6 +6,7 @@ use kornia_image::Image;
 use kornia_io::tiff as k_tiff;
 use pyo3::prelude::*;
 
+#[allow(dead_code)]
 #[pyfunction]
 pub fn read_image_tiff_u8(file_path: &str, mode: &str) -> PyResult<PyImage> {
     let result = match mode {
@@ -47,6 +48,7 @@ pub fn read_image_tiff_u8(file_path: &str, mode: &str) -> PyResult<PyImage> {
     Ok(result)
 }
 
+#[allow(dead_code)]
 #[pyfunction]
 pub fn read_image_tiff_u16(file_path: &str, mode: &str) -> PyResult<PyImageU16> {
     let result = match mode {
@@ -87,6 +89,7 @@ pub fn read_image_tiff_u16(file_path: &str, mode: &str) -> PyResult<PyImageU16> 
     Ok(result)
 }
 
+#[allow(dead_code)]
 #[pyfunction]
 pub fn read_image_tiff_f32(file_path: &str, mode: &str) -> PyResult<PyImageF32> {
     let result = match mode {
@@ -127,6 +130,7 @@ pub fn read_image_tiff_f32(file_path: &str, mode: &str) -> PyResult<PyImageF32> 
     Ok(result)
 }
 
+#[allow(dead_code)]
 #[pyfunction]
 pub fn write_image_tiff_u8(file_path: &str, image: PyImage, mode: &str) -> PyResult<()> {
     match mode {
@@ -158,6 +162,7 @@ pub fn write_image_tiff_u8(file_path: &str, image: PyImage, mode: &str) -> PyRes
     Ok(())
 }
 
+#[allow(dead_code)]
 #[pyfunction]
 pub fn write_image_tiff_u16(file_path: &str, image: PyImageU16, mode: &str) -> PyResult<()> {
     match mode {
@@ -188,6 +193,7 @@ pub fn write_image_tiff_u16(file_path: &str, image: PyImageU16, mode: &str) -> P
     Ok(())
 }
 
+#[allow(dead_code)]
 #[pyfunction]
 pub fn write_image_tiff_f32(file_path: &str, image: PyImageF32, mode: &str) -> PyResult<()> {
     match mode {
