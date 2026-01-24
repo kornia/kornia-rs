@@ -157,6 +157,10 @@ pub mod optim;
 
 // Re-export types at crate root for convenience
 pub use lie::{RxSO3F32, Sim3F32, SE2F32, SE3F32, SO2F32, SO3F32};
-pub use mat::{DMatrixF32, DMatrixF64, Mat2F32, Mat2F64, Mat3AF32, Mat3F32, Mat3F64, Mat4F32, Mat4F64};
+pub use mat::{
+    DMatrixF32, DMatrixF64, Mat2F32, Mat2F64, Mat3AF32, Mat3F32, Mat3F64, Mat4F32, Mat4F64,
+};
 pub use quat::{QuatF32, QuatF64};
-pub use vec::{DVectorF32, DVectorF64, Vec2F32, Vec2F64, Vec3AF32, Vec3F32, Vec3F64, Vec4F32, Vec4F64};
+pub use vec::{
+    DVectorF32, DVectorF64, Vec2F32, Vec2F64, Vec3AF32, Vec3F32, Vec3F64, Vec4F32, Vec4F64,
+};
