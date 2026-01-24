@@ -19,7 +19,7 @@ const W_BORDER: f32 = 7.0;
 /// * `src` - The source image.
 /// * `dst` - The destination buffer for the horizontal pass.
 /// * `dst_width` - The width of the destination image.
-fn pyrup_horizontal_pass_par<const C: usize, A>(
+fn pyrup_horizontal_pass_f32<const C: usize, A>(
     src: &Image<f32, C, A>,
     dst: &mut [f32],
     dst_width: usize,
@@ -97,7 +97,7 @@ fn pyrup_horizontal_pass_par<const C: usize, A>(
 /// * `src_height` - The height of the original source image.
 /// * `dst_data` - The final destination buffer.
 /// * `dst_width` - The width of the destination image.
-fn pyrup_vertical_pass_par<const C: usize>(
+fn pyrup_vertical_pass_f32<const C: usize>(
     src_buffer: &[f32],
     src_buffer_width: usize,
     src_height: usize,
@@ -190,7 +190,7 @@ fn pyrup_vertical_pass_par<const C: usize>(
 /// ```
 /// use kornia_image::{Image, ImageSize};
 /// use kornia_image::allocator::CpuAllocator;
-/// use kornia_imgproc::pyramid::pyrup;
+/// use kornia_imgproc::pyramid::pyrup_f32;
 ///
 /// let image = Image::<f32, 1, _>::new(
 ///     ImageSize {
@@ -210,9 +210,9 @@ fn pyrup_vertical_pass_par<const C: usize>(
 ///     CpuAllocator
 /// ).unwrap();
 ///
-/// pyrup(&image, &mut upsampled).unwrap();
+/// pyrup_f32(&image, &mut upsampled).unwrap();
 /// ```
-pub fn pyrup<const C: usize, A1, A2>(
+pub fn pyrup_f32<const C: usize, A1, A2>(
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,
 ) -> Result<(), ImageError>
@@ -234,11 +234,11 @@ where
 
     // Intermediate buffer for horizontal pass, pyrup_horizontal writes here
     let mut buffer = vec![0.0f32; dst.width() * src.height() * C];
-    pyrup_horizontal_pass_par::<C, _>(src, &mut buffer, dst.width());
+    pyrup_horizontal_pass_f32::<C, _>(src, &mut buffer, dst.width());
 
     // Vertical pass reads from buffer and finally writes to dst
     let dst_width = dst.width();
-    pyrup_vertical_pass_par::<C>(
+    pyrup_vertical_pass_f32::<C>(
         &buffer,
         dst_width,
         src.height(),
@@ -272,7 +272,7 @@ fn reflect_101(mut p: i32, len: i32) -> i32 {
 /// Downsample an image by applying Gaussian blur and then subsampling.
 ///
 /// This function halves the size of the input image by first applying a Gaussian blur
-/// and then subsampling every other pixel. This is the inverse operation of [`pyrup`].
+/// and then subsampling every other pixel. This is the inverse operation of [`pyrup_f32`].
 ///
 /// Uses BORDER_REFLECT_101 border mode (same as OpenCV default) for handling pixels
 /// near image boundaries.
@@ -291,7 +291,7 @@ fn reflect_101(mut p: i32, len: i32) -> i32 {
 /// ```
 /// use kornia_image::{Image, ImageSize};
 /// use kornia_image::allocator::CpuAllocator;
-/// use kornia_imgproc::pyramid::pyrdown;
+/// use kornia_imgproc::pyramid::pyrdown_f32;
 ///
 /// let image = Image::<f32, 3, _>::new(
 ///     ImageSize {
@@ -311,9 +311,9 @@ fn reflect_101(mut p: i32, len: i32) -> i32 {
 ///     CpuAllocator,
 /// ).unwrap();
 ///
-/// pyrdown(&image, &mut downsampled).unwrap();
+/// pyrdown_f32(&image, &mut downsampled).unwrap();
 /// ```
-pub fn pyrdown<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+pub fn pyrdown_f32<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, C, A1>,
     dst: &mut Image<f32, C, A2>,
 ) -> Result<(), ImageError> {
@@ -832,7 +832,7 @@ mod tests {
             CpuAllocator,
         )?;
 
-        pyrup(&src, &mut dst)?;
+        pyrup_f32(&src, &mut dst)?;
 
         assert_eq!(dst.width(), 4);
         assert_eq!(dst.height(), 4);
@@ -868,7 +868,7 @@ mod tests {
             CpuAllocator,
         )?;
 
-        pyrdown(&src, &mut dst)?;
+        pyrdown_f32(&src, &mut dst)?;
 
         let expected = [3.75, 4.875, 8.25, 9.375];
 
@@ -907,7 +907,7 @@ mod tests {
             CpuAllocator,
         )?;
 
-        pyrdown(&src, &mut dst)?;
+        pyrdown_f32(&src, &mut dst)?;
 
         let expected = [
             11.25, 12.25, 13.25, // pixel (0,0)
@@ -950,7 +950,7 @@ mod tests {
             CpuAllocator,
         )?;
 
-        let result = pyrdown(&src, &mut dst);
+        let result = pyrdown_f32(&src, &mut dst);
         assert!(result.is_err());
 
         Ok(())
@@ -976,7 +976,7 @@ mod tests {
             CpuAllocator,
         )?;
 
-        pyrdown(&src, &mut dst)?;
+        pyrdown_f32(&src, &mut dst)?;
 
         assert_eq!(dst.width(), 3);
         assert_eq!(dst.height(), 4);
@@ -1005,7 +1005,7 @@ mod tests {
             0.0,
             CpuAllocator,
         )?;
-        pyrdown(&src1, &mut dst1)?;
+        pyrdown_f32(&src1, &mut dst1)?;
         assert_eq!(dst1.width(), 1);
         assert_eq!(dst1.height(), 1);
         assert!(dst1.as_slice().iter().all(|v| v.is_finite()));
@@ -1026,7 +1026,7 @@ mod tests {
             0.0,
             CpuAllocator,
         )?;
-        pyrdown(&src2, &mut dst2)?;
+        pyrdown_f32(&src2, &mut dst2)?;
         assert_eq!(dst2.width(), 1);
         assert_eq!(dst2.height(), 1);
         assert!(dst2.as_slice().iter().all(|v| v.is_finite()));
@@ -1047,7 +1047,7 @@ mod tests {
             0.0,
             CpuAllocator,
         )?;
-        pyrdown(&src3, &mut dst3)?;
+        pyrdown_f32(&src3, &mut dst3)?;
         assert_eq!(dst3.width(), 1);
         assert_eq!(dst3.height(), 1);
         eprintln!("dst3 values: {:?}", dst3.as_slice());
@@ -1075,7 +1075,7 @@ mod tests {
             0.0,
             CpuAllocator,
         )?;
-        pyrdown(&src, &mut dst)?;
+        pyrdown_f32(&src, &mut dst)?;
         for &v in dst.as_slice() {
             assert!(v.is_finite());
             assert!(v.abs() <= large_val);

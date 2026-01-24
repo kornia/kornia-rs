@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use kornia_image::Image;
-use kornia_imgproc::pyramid::{pyrdown, pyrdown_u8, pyrup, pyrup_u8};
+use kornia_imgproc::pyramid::{pyrdown_f32, pyrdown_u8, pyrup_f32, pyrup_u8};
 use kornia_tensor::CpuAllocator;
 
 fn bench_pyramid(c: &mut Criterion) {
@@ -24,12 +24,12 @@ fn bench_pyramid(c: &mut Criterion) {
         let up_image = Image::<f32, 1, _>::from_size_val(image_size, 0.0, CpuAllocator).unwrap();
 
         group.bench_with_input(
-            BenchmarkId::new("pyrup", &parameter_string),
+            BenchmarkId::new("pyrup_f32", &parameter_string),
             &(&small_image, &up_image),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
                 b.iter(|| {
-                    std::hint::black_box(pyrup(src, &mut dst)).unwrap();
+                    std::hint::black_box(pyrup_f32(src, &mut dst)).unwrap();
                 })
             },
         );
@@ -43,12 +43,12 @@ fn bench_pyramid(c: &mut Criterion) {
         let up_image_3c = Image::<f32, 3, _>::from_size_val(image_size, 0.0, CpuAllocator).unwrap();
 
         group.bench_with_input(
-            BenchmarkId::new("pyrup_3c", &parameter_string),
+            BenchmarkId::new("pyrup_f32_3c", &parameter_string),
             &(&small_image_3c, &up_image_3c),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
                 b.iter(|| {
-                    std::hint::black_box(pyrup(src, &mut dst)).unwrap();
+                    std::hint::black_box(pyrup_f32(src, &mut dst)).unwrap();
                 })
             },
         );
@@ -64,12 +64,12 @@ fn bench_pyramid(c: &mut Criterion) {
             Image::<f32, 1, _>::from_size_val(down_image_size, 0.0, CpuAllocator).unwrap();
 
         group.bench_with_input(
-            BenchmarkId::new("pyrdown", &parameter_string),
+            BenchmarkId::new("pyrdown_f32", &parameter_string),
             &(&large_image, &down_image),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
                 b.iter(|| {
-                    std::hint::black_box(pyrdown(src, &mut dst)).unwrap();
+                    std::hint::black_box(pyrdown_f32(src, &mut dst)).unwrap();
                 })
             },
         );
@@ -82,12 +82,12 @@ fn bench_pyramid(c: &mut Criterion) {
             Image::<f32, 3, _>::from_size_val(down_image_size, 0.0, CpuAllocator).unwrap();
 
         group.bench_with_input(
-            BenchmarkId::new("pyrdown_3c", &parameter_string),
+            BenchmarkId::new("pyrdown_f32_3c", &parameter_string),
             &(&large_image_3c, &down_image_3c),
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
                 b.iter(|| {
-                    std::hint::black_box(pyrdown(src, &mut dst)).unwrap();
+                    std::hint::black_box(pyrdown_f32(src, &mut dst)).unwrap();
                 })
             },
         );
