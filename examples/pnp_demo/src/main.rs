@@ -13,6 +13,9 @@ struct Args {
     /// use RANSAC (robust EPnP). If not set, use direct EPnP
     #[argh(switch)]
     use_ransac: bool,
+    /// enable LM refinement after initial EPnP solution
+    #[argh(switch)]
+    refine: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -152,6 +155,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Dataset: {} points", world_pts.len());
     println!("Using RANSAC: {}", args.use_ransac);
+    println!("Using LM refinement: {}", args.refine);
+
+    // Create EPnP parameters with optional refinement
+    let epnp_params = if args.refine {
+        kpnp::EPnPParams {
+            tol: kpnp::NumericTol::default(),
+            refine_lm: Some(kpnp::LMRefineParams::default()),
+        }
+    } else {
+        kpnp::EPnPParams::default()
+    };
 
     // Run pose estimation
     let result = if args.use_ransac {
@@ -169,7 +183,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &image_pts,
             &k,
             Some(&distortion),
-            kpnp::PnPMethod::EPnPDefault,
+            kpnp::PnPMethod::EPnP(epnp_params),
             &ransac_params,
         )?;
         println!("RANSAC EPnP:");
@@ -181,6 +195,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(rmse) = ransac_result.pose.reproj_rmse {
             println!("  RMSE: {rmse:.3} px");
         }
+        if let Some(iterations) = ransac_result.pose.num_iterations {
+            println!("  LM iterations: {}", iterations);
+        }
+        if let Some(converged) = ransac_result.pose.converged {
+            println!("  LM converged: {}", converged);
+        }
         ransac_result.pose
     } else {
         // Direct mode: standard EPnP
@@ -189,11 +209,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &image_pts,
             &k,
             Some(&distortion),
-            kpnp::PnPMethod::EPnPDefault,
+            kpnp::PnPMethod::EPnP(epnp_params),
         )?;
         println!("Direct EPnP:");
         if let Some(rmse) = direct_result.reproj_rmse {
             println!("  RMSE: {rmse:.3} px");
+        }
+        if let Some(iterations) = direct_result.num_iterations {
+            println!("  LM iterations: {}", iterations);
+        }
+        if let Some(converged) = direct_result.converged {
+            println!("  LM converged: {}", converged);
         }
         direct_result
     };
@@ -245,6 +271,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Configuration ===");
     println!("To use RANSAC: run with --use-ransac");
     println!("To use direct EPnP: run without --use-ransac");
+    println!("To enable LM refinement: run with --refine");
 
     println!("\n=== Visualization ===");
     println!("- Green points: Observed 2D points");
