@@ -18,7 +18,7 @@ where
 
     for y in 0..image.height() {
         for x in 0..image.width() {
-            let mut min_distance = std::f32::MAX;
+            let mut min_distance = f32::MAX;
             for j in 0..image.height() {
                 for i in 0..image.width() {
                     // image.data[[j, i, 0]] > 0.0
@@ -107,6 +107,51 @@ where
     Image::new(ImageSize { width, height }, final_grid, CpuAllocator)
 }
 
+// /// Helper function - 1D distance transform using parabolic lower envelope
+// fn distance_transform_1d(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f32]) {
+//     let n = f.len();
+//     if n == 0 {
+//         return;
+//     }
+
+//     let mut k = 0;
+//     v[0] = 0;
+//     z[0] = -INF;
+//     z[1] = INF;
+
+//     for q in 1..n {
+//         loop {
+//             let r = v[k];
+//             // Calculate intersection of parabola 'r' and 'q'
+//             let s =
+//                 ((f[q] + (q * q) as f32) - (f[r] + (r * r) as f32)) / (2.0 * (q as f32 - r as f32));
+
+//             if s <= z[k] {
+//                 if k == 0 {
+//                     break;
+//                 }
+//                 k -= 1;
+//             } else {
+//                 k += 1;
+//                 v[k] = q;
+//                 z[k] = s;
+//                 z[k + 1] = INF;
+//                 break;
+//             }
+//         }
+//     }
+
+//     k = 0;
+//     for (q, d_val) in d.iter_mut().enumerate().take(n) {
+//         while z[k + 1] < q as f32 {
+//             k += 1;
+//         }
+//         let r = v[k];
+//         let dist = q as f32 - r as f32;
+//         d[q] = dist * dist + f[r];
+//     }
+// }
+
 /// Helper function - 1D distance transform using parabolic lower envelope
 fn distance_transform_1d(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f32]) {
     let n = f.len();
@@ -142,13 +187,14 @@ fn distance_transform_1d(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f32
     }
 
     k = 0;
-    for q in 0..n {
+    // FIX: Replaced <item> with d_val
+    for (q, d_val) in d.iter_mut().enumerate().take(n) {
         while z[k + 1] < q as f32 {
             k += 1;
         }
         let r = v[k];
         let dist = q as f32 - r as f32;
-        d[q] = dist * dist + f[r];
+        *d_val = dist * dist + f[r];
     }
 }
 
@@ -215,6 +261,6 @@ mod tests {
         )
         .unwrap();
 
-        let output = distance_transform(&image).unwrap();
+        let _output = distance_transform(&image).unwrap();
     }
 }
