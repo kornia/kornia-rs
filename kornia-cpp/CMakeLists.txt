@@ -74,9 +74,9 @@ target_link_libraries(kornia_cpp INTERFACE kornia_rust_lib)
 # Note: Rust static library is built with libc++ on macOS by default.
 # We explicitly set the C++ stdlib flag for macOS to ensure compatibility.
 if(APPLE)
-    # macOS: Use libc++ (matches Rust default) and add compile/link flags
-    add_compile_options(-stdlib=libc++)
-    add_link_options(-stdlib=libc++)
+    # macOS: Use libc++ (matches Rust default) and add compile/link flags scoped to kornia_cpp
+    target_compile_options(kornia_cpp INTERFACE -stdlib=libc++)
+    target_link_options(kornia_cpp INTERFACE -stdlib=libc++)
     target_link_libraries(kornia_cpp INTERFACE pthread)
 elseif(UNIX)
     # Linux: needs both dl and pthread

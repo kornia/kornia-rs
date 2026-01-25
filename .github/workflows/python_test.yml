@@ -46,7 +46,7 @@ jobs:
           - python-version: "3.13"
             pixi-env: py313
           # Python 3.14 support deferred until conda-forge has stable packages
-          # See: https://github.com/kornia/kornia-rs/issues/XXX
+          # TODO: create a GitHub issue once Python 3.14 support work is planned
           - python-version: "3.14t"
             pixi-env: py314t
             threaded: true
