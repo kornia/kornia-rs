@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.12)
 project(KorniaCppLib VERSION 1.0 LANGUAGES CXX)
 
 # C++ Standard
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -71,12 +71,12 @@ target_include_directories(kornia_cpp INTERFACE
 target_link_libraries(kornia_cpp INTERFACE kornia_rust_lib)
 
 # --- 4. Link System Libraries ---
-# Note: We don't explicitly link stdc++ or libc++ here because:
-# - The consuming project (like Unreal Engine) provides its own C++ stdlib
-# - Unreal uses bundled libc++, explicitly linking stdc++ causes conflicts
-# - The C++ stdlib will be automatically linked by the final executable
+# Note: Rust static library is built with libc++ on macOS by default.
+# We explicitly set the C++ stdlib flag for macOS to ensure compatibility.
 if(APPLE)
-    # macOS: dl functions are part of the system, only pthread is needed
+    # macOS: Use libc++ (matches Rust default) and add compile/link flags
+    add_compile_options(-stdlib=libc++)
+    add_link_options(-stdlib=libc++)
     target_link_libraries(kornia_cpp INTERFACE pthread)
 elseif(UNIX)
     # Linux: needs both dl and pthread

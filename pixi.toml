@@ -108,8 +108,10 @@ python = "3.12.*"
 [feature.py313.dependencies]
 python = "3.13.*"
 
-[feature.py314.dependencies]
-python = "3.14.*"
+# Python 3.14/3.14t support: Deferred until conda-forge has stable packages
+# TODO: Re-enable py314 when conda-forge has python 3.14.* stable
+# [feature.py314.dependencies]
+# python = "3.14.*"
 
 # Python 3.14t (free-threaded) - uses uv to provide Python since conda-forge doesn't have 3.14t yet
 [feature.py314t.dependencies]
@@ -137,6 +139,7 @@ py-test-threaded = { cmd = "python -m pytest --parallel-threads=8 --iterations=5
 cmake = "*"
 cxx-compiler = "*"
 clang-format = "*"
+catch2 = "3.*"  # Pre-install Catch2 to avoid network-dependent FetchContent
 
 [feature.cpp.target.linux-64.dependencies]
 libstdcxx-ng = "*"  # C++ runtime for linking
