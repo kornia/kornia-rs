@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.15)
 
 # Use pre-installed Catch2 from pixi/system package manager
 # This avoids network-dependent FetchContent at build time
-find_package(Catch2 3 REQUIRED)
+find_package(Catch2 3 QUIET)
 
 # Fallback to FetchContent if Catch2 is not found (for developer builds)
 if(NOT Catch2_FOUND)

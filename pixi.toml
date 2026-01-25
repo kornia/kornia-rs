@@ -20,7 +20,7 @@ py310 = { features = ["rust", "python", "py310"] }
 py311 = { features = ["rust", "python", "py311"] }
 py312 = { features = ["rust", "python", "py312"] }
 py313 = { features = ["rust", "python", "py313"] }
-py314 = { features = ["rust", "python", "py314"] }
+# py314 environment deferred until conda-forge has stable packages
 py314t = { features = ["rust", "py314t"] }
 
 # ------------------------------------------------------------------------------
