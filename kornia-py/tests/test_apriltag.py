@@ -59,6 +59,7 @@ def test_tag_family_into_family_kind():
         bit_x=[0, 1, 2, 3],
         bit_y=[0, 1, 2, 3],
         code_data=[1, 2, 3, 4],
+        min_hamming=5,
         quick_decode=qd,
         sharpening_buffer=sb,
     )

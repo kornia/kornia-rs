@@ -22,6 +22,12 @@ pub struct TagFamily {
     pub bit_y: Vec<i8>,
     /// The code data for the tag family.
     pub code_data: Vec<usize>,
+    /// The minimum Hamming distance between any two valid codes in this family.
+    ///
+    /// This value determines the maximum `max_hamming` that can be safely used
+    /// for decoding. To avoid false positives where two different tags could be
+    /// confused, `max_hamming` must be less than `min_hamming / 2`.
+    pub min_hamming: u8,
     /// A table for fast lookup of decoded tag codes and their associated metadata.
     pub quick_decode: QuickDecode,
     /// Buffer used for storing intermediate values during the sharpening process.

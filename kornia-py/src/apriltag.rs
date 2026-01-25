@@ -326,6 +326,8 @@ pub mod family {
         pub bit_x: Vec<i8>,
         pub bit_y: Vec<i8>,
         pub code_data: Vec<usize>,
+        /// The minimum Hamming distance between any two valid codes in this family.
+        pub min_hamming: u8,
         pub quick_decode: Py<PyQuickDecode>,
         pub sharpening_buffer: Py<PySharpeningBuffer>,
     }
@@ -343,6 +345,7 @@ pub mod family {
             bit_x: Vec<i8>,
             bit_y: Vec<i8>,
             code_data: Vec<usize>,
+            min_hamming: u8,
             quick_decode: Py<PyQuickDecode>,
             sharpening_buffer: Py<PySharpeningBuffer>,
         ) -> Self {
@@ -355,6 +358,7 @@ pub mod family {
                 bit_x,
                 bit_y,
                 code_data,
+                min_hamming,
                 quick_decode,
                 sharpening_buffer,
             }
@@ -375,6 +379,7 @@ pub mod family {
                     bit_x: self.bit_x.clone(),
                     bit_y: self.bit_y.clone(),
                     code_data: self.code_data.clone(),
+                    min_hamming: self.min_hamming,
                     quick_decode: quick_decode.0,
                     sharpening_buffer: sharpening_buffer.0,
                 };
@@ -465,6 +470,17 @@ pub mod family {
                 TagFamilyKind::TagStandard52H13 => Ok("tagstandard52_h13"),
                 TagFamilyKind::Custom(family) => Ok(family.name.as_str()),
             }
+        }
+
+        /// The minimum Hamming distance between any two valid codes in this family.
+        #[getter]
+        pub fn min_hamming(&self) -> PyResult<u8> {
+            let family: TagFamily = self.0.clone().try_into().map_err(
+                |e: kornia_apriltag::errors::AprilTagError| {
+                    PyErr::new::<PyException, _>(e.to_string())
+                },
+            )?;
+            Ok(family.min_hamming)
         }
 
         #[staticmethod]
