@@ -517,9 +517,9 @@ fn pyrdown_horizontal_pass_u8<const C: usize, A>(
                     for k in 0..C {
                         // Direct access without boundary checks
                         let v_m2 = src_data[base_idx - 2 * C + k] as u16;
-                        let v_m1 = src_data[base_idx - 1 * C + k] as u16;
+                        let v_m1 = src_data[base_idx - C + k] as u16;
                         let v_0 = src_data[base_idx + k] as u16;
-                        let v_p1 = src_data[base_idx + 1 * C + k] as u16;
+                        let v_p1 = src_data[base_idx + C + k] as u16;
                         let v_p2 = src_data[base_idx + 2 * C + k] as u16;
 
                         let sum = v_m2 + 4 * v_m1 + 6 * v_0 + 4 * v_p1 + v_p2;
