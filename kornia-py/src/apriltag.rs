@@ -483,6 +483,35 @@ pub mod family {
             Ok(family.min_hamming)
         }
 
+        /// The maximum safe max_hamming value for this family.
+        ///
+        /// Calculated as (min_hamming - 1) / 2 to ensure two different tags
+        /// with bit errors cannot be confused with each other.
+        #[getter]
+        pub fn max_safe_hamming(&self) -> PyResult<u8> {
+            let family: TagFamily = self.0.clone().try_into().map_err(
+                |e: kornia_apriltag::errors::AprilTagError| {
+                    PyErr::new::<PyException, _>(e.to_string())
+                },
+            )?;
+            Ok(family.max_safe_hamming())
+        }
+
+        /// Returns a new TagFamilyKind with the specified max_hamming value.
+        ///
+        /// Raises an exception if max_hamming exceeds the safe limit for this family.
+        pub fn with_max_hamming(&self, max_hamming: u8) -> PyResult<Self> {
+            let family: TagFamily = self.0.clone().try_into().map_err(
+                |e: kornia_apriltag::errors::AprilTagError| {
+                    PyErr::new::<PyException, _>(e.to_string())
+                },
+            )?;
+            let updated = family
+                .with_max_hamming(max_hamming)
+                .map_err(|e| PyErr::new::<PyException, _>(e.to_string()))?;
+            Ok(Self(TagFamilyKind::Custom(Box::new(updated))))
+        }
+
         #[staticmethod]
         pub fn all() -> PyResult<Vec<Py<PyTagFamilyKind>>> {
             let all = TagFamilyKind::all();

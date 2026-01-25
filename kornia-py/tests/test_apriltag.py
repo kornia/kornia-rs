@@ -47,6 +47,25 @@ def test_quick_decode_max_hamming():
         qd.max_hamming = 4
 
 
+def test_tag_family_kind_min_hamming():
+    # tag16_h5 has min_hamming=5, so max_safe_hamming=(5-1)/2=2
+    tag16h5 = TagFamilyKind("tag16_h5")
+    assert tag16h5.min_hamming == 5
+    assert tag16h5.max_safe_hamming == 2
+
+    # Setting max_hamming=2 should work (at the limit)
+    tag16h5.with_max_hamming(2)
+
+    # Setting max_hamming=3 should fail (exceeds max_safe_hamming for this family)
+    with pytest.raises(Exception):
+        tag16h5.with_max_hamming(3)
+
+    # tag36_h11 has min_hamming=11, so max_safe_hamming=(11-1)/2=5
+    tag36h11 = TagFamilyKind("tag36_h11")
+    assert tag36h11.min_hamming == 11
+    assert tag36h11.max_safe_hamming == 5
+
+
 def test_tag_family_into_family_kind():
     qd = K.apriltag.family.QuickDecode(4, [1, 2, 3, 4])
     sb = K.apriltag.family.SharpeningBuffer(10)

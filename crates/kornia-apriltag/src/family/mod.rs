@@ -35,6 +35,14 @@ pub struct TagFamily {
 }
 
 impl TagFamily {
+    /// Returns the maximum safe `max_hamming` value for this tag family.
+    ///
+    /// This is calculated as `(min_hamming - 1) / 2` to ensure that two different
+    /// tags with bit errors cannot be confused with each other.
+    pub fn max_safe_hamming(&self) -> u8 {
+        (self.min_hamming - 1) / 2
+    }
+
     /// Sets the maximum allowed Hamming distance for decoding and returns self.
     ///
     /// The Hamming distance determines how many bit errors are tolerated when
@@ -43,11 +51,12 @@ impl TagFamily {
     ///
     /// # Arguments
     ///
-    /// * `max_hamming` - The maximum number of bit errors to tolerate (0-3).
+    /// * `max_hamming` - The maximum number of bit errors to tolerate.
     ///
     /// # Errors
     ///
-    /// Returns `AprilTagError::InvalidAllowedErrors` if `max_hamming` is greater than 3.
+    /// Returns `AprilTagError::MaxHammingTooLarge` if `max_hamming` exceeds the safe
+    /// limit for this tag family (which is `(min_hamming - 1) / 2`).
     ///
     /// # Example
     ///
@@ -58,8 +67,31 @@ impl TagFamily {
     /// # Ok::<(), kornia_apriltag::errors::AprilTagError>(())
     /// ```
     pub fn with_max_hamming(mut self, max_hamming: u8) -> Result<Self, AprilTagError> {
-        self.quick_decode.set_max_hamming(max_hamming)?;
+        self.set_max_hamming(max_hamming)?;
         Ok(self)
+    }
+
+    /// Sets the maximum allowed Hamming distance for decoding.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_hamming` - The maximum number of bit errors to tolerate.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AprilTagError::MaxHammingTooLarge` if `max_hamming` exceeds the safe
+    /// limit for this tag family (which is `(min_hamming - 1) / 2`).
+    pub fn set_max_hamming(&mut self, max_hamming: u8) -> Result<(), AprilTagError> {
+        let max_safe = self.max_safe_hamming();
+        if max_hamming > max_safe {
+            return Err(AprilTagError::MaxHammingTooLarge {
+                max_hamming,
+                min_hamming: self.min_hamming,
+                max_safe,
+            });
+        }
+        self.quick_decode.set_max_hamming(max_hamming)?;
+        Ok(())
     }
 
     /// Returns the current maximum allowed Hamming distance.
