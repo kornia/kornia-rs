@@ -807,7 +807,6 @@ where
 }
 
 #[cfg(test)]
-
 mod tests {
     use super::*;
     use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
@@ -1371,7 +1370,7 @@ mod tests {
         for (idx, (act, exp)) in actual.iter().zip(expected.iter()).enumerate() {
             // Allow small difference due to integer arithmetic differences (if any)
             // But for small values and standard implementation, it should match exactly or be very close.
-            let diff = (*act as i32 - *exp as i32).abs();
+            let diff = (*act as i32 - *exp).abs();
             assert!(
                 diff <= 1,
                 "Mismatch at index {}: expected {}, got {}, diff {}",
