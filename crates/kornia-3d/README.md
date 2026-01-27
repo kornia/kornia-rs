@@ -8,7 +8,7 @@
 
 ## 🚀 Overview
 
-`kornia-3d` focuses on processing 3D data, including point clouds and geometric transformations. It provides tools for loading 3D data, performing rigid body transformations, and solving geometric problems like Perspective-n-Point (PnP) and point cloud registration.
+`kornia-3d` focuses on processing 3D data, including point clouds and geometric transformations, and aims to encompass everything 3D, with a roadmap toward richer 3D and map representations for large-scale environments. It provides tools for loading 3D data, performing rigid body transformations, and solving geometric problems like Perspective-n-Point (PnP), point cloud registration, and large-scale mapping
 
 ## 🔑 Key Features
 
