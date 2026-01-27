@@ -152,6 +152,10 @@ mod vec;
 // Linear algebra operations
 pub mod linalg;
 
+//param module
+pub mod param;
+pub use param::{Param, ParamError};
+
 // Optimization module
 pub mod optim;
 

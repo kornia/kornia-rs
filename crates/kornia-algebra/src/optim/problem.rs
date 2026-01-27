@@ -41,18 +41,6 @@ impl Problem {
         Self::default()
     }
 
-    /// Add a variable to the problem.
-    ///
-    /// # Arguments
-    ///
-    /// * `var` - The variable to add
-    /// * `initial_values` - Initial parameter values for the variable
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - A variable with the same name already exists
-    /// - The initial values dimension doesn't match the variable's dimension
     pub fn add_variable(
         &mut self,
         mut var: Variable,
@@ -63,9 +51,9 @@ impl Problem {
                 name: var.name.clone(),
             });
         }
-        if initial_values.len() != var.dim() {
+        if initial_values.len() != var.global_dim() {
             return Err(ProblemError::DimensionMismatch {
-                expected: var.dim(),
+                expected: var.global_dim(),
                 actual: initial_values.len(),
             });
         }
@@ -74,22 +62,11 @@ impl Problem {
         Ok(())
     }
 
-    /// Add a factor to the problem.
-    ///
-    /// # Arguments
-    ///
-    /// * `factor` - The factor to add
-    /// * `var_names` - Names of variables this factor connects to
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any variable name doesn't exist.
     pub fn add_factor(
         &mut self,
         factor: Box<dyn Factor>,
         var_names: Vec<String>,
     ) -> Result<(), ProblemError> {
-        // Validate all variable names exist
         for name in &var_names {
             if !self.variables.contains_key(name) {
                 return Err(ProblemError::VariableNotFound { name: name.clone() });
@@ -99,26 +76,18 @@ impl Problem {
         Ok(())
     }
 
-    /// Get all variables in the problem.
     pub fn get_variables(&self) -> &HashMap<String, Variable> {
         &self.variables
     }
 
-    /// Get mutable access to all variables in the problem.
     pub fn get_variables_mut(&mut self) -> &mut HashMap<String, Variable> {
         &mut self.variables
     }
 
-    /// Get all factors in the problem.
     pub fn get_factors(&self) -> &[(Box<dyn Factor>, Vec<String>)] {
         &self.factors
     }
 
-    /// Compute the total squared cost (sum of squared residuals) for the current variable values.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any factor evaluation fails.
     pub fn compute_total_cost(&self) -> Result<f32, ProblemError> {
         let mut total_cost = 0.0;
 
@@ -143,5 +112,112 @@ impl Problem {
         }
 
         Ok(total_cost)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::optim::factor::PriorFactor;
+
+    #[test]
+    fn test_add_and_get_variable() {
+        let mut problem = Problem::new();
+        let var = Variable::euclidean("R", 2);
+        assert!(problem.add_variable(var.clone(), vec![1.0, 2.0]).is_ok());
+
+        let vars = problem.get_variables();
+        assert!(vars.contains_key("R"));
+        assert_eq!(vars["R"].values, vec![1.0, 2.0]);
+        assert_eq!(vars["R"].name, "R");
+    }
+
+    #[test]
+    fn test_add_variable_duplicate_should_fail() {
+        let mut problem = Problem::new();
+        let var = Variable::euclidean("R", 2);
+        assert!(problem.add_variable(var.clone(), vec![1.0, 2.0]).is_ok());
+        // Add same variable again with correct dim should fail due to duplicate name
+        assert!(problem.add_variable(var.clone(), vec![1.0, 2.0]).is_err());
+    }
+
+    #[test]
+    fn test_add_variable_wrong_dim_should_fail() {
+        let mut problem = Problem::new();
+        // Vec is length 3 but variable is dim 2, should fail
+        let var = Variable::euclidean("R", 2);
+        assert!(problem.add_variable(var, vec![1.0, 2.0, 3.0]).is_err());
+    }
+
+    #[test]
+    fn test_add_and_get_factor() {
+        let mut problem = Problem::new();
+        problem
+            .add_variable(Variable::euclidean("x", 2), vec![1.0, 2.0])
+            .unwrap();
+        let factor = PriorFactor::new(vec![1.5, 2.5]);
+        // Add factor referencing the variable
+        assert!(problem
+            .add_factor(Box::new(factor), vec!["x".to_string()])
+            .is_ok());
+        let factors = problem.get_factors();
+        assert_eq!(factors.len(), 1);
+        assert_eq!(factors[0].1, vec!["x".to_string()]);
+    }
+
+    #[test]
+    fn test_compute_total_cost() {
+        let mut problem = Problem::new();
+        problem
+            .add_variable(Variable::euclidean("foo", 2), vec![3.0, -2.0])
+            .unwrap();
+        let prior = PriorFactor::new(vec![4.0, -5.0]);
+        problem
+            .add_factor(Box::new(prior), vec!["foo".to_string()])
+            .unwrap();
+
+        // Cost is (3-4)^2 + (-2+5)^2 = 1^2 + 3^2 = 10
+        let cost = problem.compute_total_cost().unwrap();
+        assert!((cost - 10.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_compute_total_cost_with_multiple_factors() {
+        let mut problem = Problem::new();
+        problem
+            .add_variable(Variable::euclidean("x", 1), vec![2.0])
+            .unwrap();
+        problem
+            .add_variable(Variable::euclidean("y", 1), vec![-1.0])
+            .unwrap();
+        let fx = PriorFactor::new(vec![3.0]); // (2-3)^2 = 1
+        let fy = PriorFactor::new(vec![0.0]); // (-1-0)^2 = 1
+        problem
+            .add_factor(Box::new(fx), vec!["x".to_string()])
+            .unwrap();
+        problem
+            .add_factor(Box::new(fy), vec!["y".to_string()])
+            .unwrap();
+
+        let cost = problem.compute_total_cost().unwrap();
+        assert!((cost - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_compute_total_cost_error_on_missing_variable() {
+        let mut problem = Problem::new();
+        let prior = PriorFactor::new(vec![1.0, 1.0]);
+        // reference to a variable not present
+        problem
+            .add_factor(Box::new(prior), vec!["not_present".to_string()])
+            .unwrap();
+
+        let res = problem.compute_total_cost();
+        assert!(res.is_err());
+        if let Err(ProblemError::VariableNotFound { name }) = res {
+            assert_eq!(name, "not_present");
+        } else {
+            panic!("Expected VariableNotFound error");
+        }
     }
 }

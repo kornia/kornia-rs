@@ -1,5 +1,8 @@
 use super::so3::SO3F32;
-use crate::{Mat3AF32, Mat4F32, QuatF32, Vec3AF32};
+use crate::{
+    param::{Param, ParamError},
+    Mat3AF32, Mat4F32, QuatF32, Vec3AF32,
+};
 use rand::Rng;
 
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
@@ -61,6 +64,35 @@ impl SE3F32 {
             r: SO3F32::from_quaternion(quat),
             t: xyz,
         }
+    }
+
+    pub fn from_params(params: &[f32]) -> Self {
+        debug_assert!(
+            params.len() >= 7,
+            "SE3F32::from_params requires at least 7 elements"
+        );
+        // Input is [qw, qx, qy, qz, tx, ty, tz]
+        Self {
+            r: SO3F32::from_array([params[1], params[2], params[3], params[0]]),
+            t: Vec3AF32::new(params[4], params[5], params[6]),
+        }
+    }
+
+    pub fn to_params(&self) -> [f32; 7] {
+        let r = self.r.to_array();
+        let t = self.t.to_array();
+        // Return [qw, qx, qy, qz, tx, ty, tz] for optimizer compatibility
+        [r[3], r[0], r[1], r[2], t[0], t[1], t[2]]
+    }
+
+    pub fn retract(&self, delta: &[f32]) -> Self {
+        debug_assert!(
+            delta.len() >= 6,
+            "SE3F32::retract requires at least 6 elements"
+        );
+        let upsilon = Vec3AF32::new(delta[0], delta[1], delta[2]);
+        let omega = Vec3AF32::new(delta[3], delta[4], delta[5]);
+        self.rplus(upsilon, omega)
     }
 
     #[inline]
@@ -280,6 +312,38 @@ impl SE3F32 {
     /// Using Jᵣ(ρ,θ) = Jₗ(−ρ, −θ).
     pub fn right_jacobian(rho: Vec3AF32, omega: Vec3AF32) -> [[f32; 6]; 6] {
         Self::left_jacobian(-rho, -omega)
+    }
+}
+
+impl Param for SE3F32 {
+    const GLOBAL_SIZE: usize = 7;
+    const LOCAL_SIZE: usize = 6;
+
+    #[inline]
+    fn plus(x: &[f32], delta: &[f32], out: &mut [f32]) -> Result<(), ParamError> {
+        if x.len() < Self::GLOBAL_SIZE {
+            return Err(ParamError::WrongGlobalSize {
+                expected: Self::GLOBAL_SIZE,
+                got: x.len(),
+            });
+        }
+        if delta.len() < Self::LOCAL_SIZE {
+            return Err(ParamError::WrongLocalSize {
+                expected: Self::LOCAL_SIZE,
+                got: delta.len(),
+            });
+        }
+        if out.len() < Self::GLOBAL_SIZE {
+            return Err(ParamError::WrongOutSize {
+                expected: Self::GLOBAL_SIZE,
+                got: out.len(),
+            });
+        }
+
+        let se3 = SE3F32::from_params(x);
+        let se3_plus = se3.retract(delta);
+        out[..Self::GLOBAL_SIZE].copy_from_slice(&se3_plus.to_params());
+        Ok(())
     }
 }
 
@@ -801,6 +865,26 @@ mod tests {
         assert_relative_eq!(se3.t.x, se3_reconstructed.t.x);
         assert_relative_eq!(se3.t.y, se3_reconstructed.t.y);
         assert_relative_eq!(se3.t.z, se3_reconstructed.t.z);
+    }
+
+    #[test]
+    fn test_local_param_plus_matches_retract() {
+        let se3 = make_random_se3();
+        let params = se3.to_params();
+
+        let delta = Vec3AF32::new(0.01, -0.02, 0.03);
+        let omega = Vec3AF32::new(0.001, 0.002, -0.003);
+        let tangent = [delta.x, delta.y, delta.z, omega.x, omega.y, omega.z];
+
+        let se3_retract = se3.retract(&tangent);
+        let expected = se3_retract.to_params();
+
+        let mut out = [0.0_f32; SE3F32::GLOBAL_SIZE];
+        SE3F32::plus(&params, &tangent, &mut out).unwrap();
+
+        for i in 0..SE3F32::GLOBAL_SIZE {
+            assert_relative_eq!(out[i], expected[i], epsilon = EPSILON);
+        }
     }
 
     #[test]

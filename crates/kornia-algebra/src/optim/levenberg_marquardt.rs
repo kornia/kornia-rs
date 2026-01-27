@@ -4,13 +4,13 @@
 //! the advantages of gradient descent and Gauss-Newton methods. It solves
 //! the damped normal equations: (J^T J + λI) δ = -J^T r
 
-use std::collections::HashMap;
-
+use crate::param::ParamError;
 use crate::{DMatF32, DVecF32};
 use thiserror::Error;
 
 use super::factor::FactorError;
 use super::problem::{Problem, ProblemError};
+use super::system::{LinearSystemBuilder, VariableLayout};
 
 /// Errors that can occur during optimization.
 #[derive(Debug, Error)]
@@ -34,6 +34,10 @@ pub enum OptimizerError {
     /// Numerical instability detected
     #[error("Numerical instability: {0}")]
     NumericalInstability(String),
+
+    /// Parameter update failed
+    #[error("Parameter update failed: {0}")]
+    Param(#[from] ParamError),
 }
 
 /// Result of an optimization run.
@@ -99,20 +103,6 @@ impl LevenbergMarquardt {
         Self::default()
     }
 
-    /// Optimize the given problem.
-    ///
-    /// # Arguments
-    ///
-    /// * `problem` - The optimization problem to solve
-    ///
-    /// # Returns
-    ///
-    /// Optimization result containing final cost, iterations, and termination reason.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if optimization fails due to numerical issues, singular matrices,
-    /// or factor evaluation failures.
     pub fn optimize(&self, problem: &mut Problem) -> Result<OptimizerResult, OptimizerError> {
         let variables = problem.get_variables();
         let factors = problem.get_factors();
@@ -129,19 +119,10 @@ impl LevenbergMarquardt {
             ));
         }
 
-        // Build variable index mapping
-        let mut var_names: Vec<String> = variables.keys().cloned().collect();
-        var_names.sort(); // Ensure consistent ordering
-        let var_index_map: HashMap<String, usize> = var_names
-            .iter()
-            .enumerate()
-            .map(|(i, name)| (name.clone(), i))
-            .collect();
+        let layout = VariableLayout::from_problem(problem)?;
+        let var_names = &layout.var_names;
 
-        // Compute total parameter dimension
-        let total_dim: usize = var_names.iter().map(|name| variables[name].dim()).sum();
-
-        if total_dim == 0 {
+        if layout.total_local_dim == 0 {
             return Err(OptimizerError::NumericalInstability(
                 "Total parameter dimension is zero".to_string(),
             ));
@@ -163,8 +144,7 @@ impl LevenbergMarquardt {
             }
 
             // Build normal equations: J^T J and J^T r
-            let (jtj, jtr) =
-                self.build_normal_equations(problem, &var_names, &var_index_map, total_dim)?;
+            let (jtj, jtr) = LinearSystemBuilder::build(problem, &layout)?;
 
             // Check gradient convergence
             let gradient_norm = jtr.norm();
@@ -177,7 +157,7 @@ impl LevenbergMarquardt {
             }
 
             // Solve damped system: (J^T J + λI) δ = -J^T r
-            let delta = self.solve_damped_system(&jtj, &jtr, lambda, total_dim)?;
+            let delta = self.solve_damped_system(jtj, &jtr, lambda, layout.total_local_dim)?;
 
             // Compute step size
             let step_norm = delta.norm();
@@ -190,10 +170,9 @@ impl LevenbergMarquardt {
                 });
             }
 
-            // Apply step and compute new cost
-            let new_cost = self.apply_step(problem, &var_names, &delta, &var_index_map)?;
+            // Apply step and compute new cost (also returns snapshot for reverting)
+            let (new_cost, snapshot) = self.apply_step(problem, var_names, &delta)?;
 
-            // Compute cost change
             let cost_change = current_cost - new_cost;
             let relative_cost_change = if current_cost > 0.0 {
                 cost_change.abs() / current_cost
@@ -201,7 +180,6 @@ impl LevenbergMarquardt {
                 cost_change.abs()
             };
 
-            // Check cost convergence
             if relative_cost_change < self.cost_tolerance {
                 return Ok(OptimizerResult {
                     final_cost: new_cost,
@@ -210,7 +188,6 @@ impl LevenbergMarquardt {
                 });
             }
 
-            // Adapt lambda based on cost improvement
             if cost_change > 0.0 {
                 // Step improved cost: accept it and decrease lambda
                 current_cost = new_cost;
@@ -218,8 +195,7 @@ impl LevenbergMarquardt {
                 iterations += 1;
             } else {
                 // Step increased cost: reject it and increase lambda
-                // Revert the step
-                self.revert_step(problem, &var_names, &delta, &var_index_map)?;
+                self.revert_step(problem, var_names, snapshot)?;
                 lambda *= self.lambda_factor;
                 iterations += 1;
 
@@ -234,137 +210,23 @@ impl LevenbergMarquardt {
         }
     }
 
-    /// Build the normal equations J^T J and J^T r from all factors.
-    fn build_normal_equations(
-        &self,
-        problem: &Problem,
-        var_names: &[String],
-        var_index_map: &HashMap<String, usize>,
-        total_dim: usize,
-    ) -> Result<(DMatF32, DVecF32), OptimizerError> {
-        let variables = problem.get_variables();
-        let factors = problem.get_factors();
-
-        // Initialize J^T J (Hessian approximation) and J^T r (negative gradient)
-        let mut jtj = DMatF32::zeros(total_dim, total_dim);
-        let mut jtr = DVecF32::zeros(total_dim);
-
-        // Accumulate contributions from each factor
-        for (factor, factor_var_names) in factors {
-            // Get parameter slices for this factor's variables
-            let mut params = Vec::new();
-            for name in factor_var_names {
-                let var = variables
-                    .get(name)
-                    .ok_or_else(|| ProblemError::VariableNotFound { name: name.clone() })?;
-                params.push(var.values.as_slice());
-            }
-
-            // Linearize the factor
-            let result = factor.linearize(&params, true)?;
-
-            // Build the full Jacobian block for this factor
-            // The factor's Jacobian is w.r.t. its connected variables only
-            // We need to map it to the full parameter space
-            if let Some(jacobian) = &result.jacobian {
-                let residual_dim = result.residual_dim();
-                let jacobian_cols = result.jacobian_cols;
-
-                // Compute J^T J and J^T r for this factor
-                // Factor Jacobian shape: (residual_dim, jacobian_cols)
-                // where jacobian_cols is the total DOF of connected variables
-
-                // Map factor variable indices to global parameter indices
-                let mut global_col_starts = Vec::new();
-                let mut global_col_dims = Vec::new();
-
-                for var_name in factor_var_names {
-                    let var_idx = var_index_map[var_name];
-                    let mut global_col_start = 0;
-                    for i in 0..var_idx {
-                        global_col_start += variables[&var_names[i]].dim();
-                    }
-                    let var_dim = variables[var_name].dim();
-                    global_col_starts.push(global_col_start);
-                    global_col_dims.push(var_dim);
-                }
-
-                // Factor Jacobian columns are organized sequentially for connected variables
-                // Column layout: [var0_dim0, var0_dim1, ..., var0_dimN, var1_dim0, ...]
-                let mut factor_col_offset = 0;
-
-                // Accumulate J^T J block by block
-                for (local_i, _var_name_i) in factor_var_names.iter().enumerate() {
-                    let global_start_i = global_col_starts[local_i];
-                    let dim_i = global_col_dims[local_i];
-
-                    for (local_j, _var_name_j) in factor_var_names.iter().enumerate() {
-                        let global_start_j = global_col_starts[local_j];
-                        let dim_j = global_col_dims[local_j];
-
-                        // Compute block: J_i^T J_j
-                        // Factor Jacobian columns for var_i start at factor_col_offset
-                        // Factor Jacobian columns for var_j start at their offset
-                        let factor_col_offset_j: usize = global_col_dims.iter().take(local_j).sum();
-
-                        for row in 0..residual_dim {
-                            for di in 0..dim_i {
-                                let jac_i_val =
-                                    jacobian[row * jacobian_cols + factor_col_offset + di];
-                                for dj in 0..dim_j {
-                                    let jac_j_val =
-                                        jacobian[row * jacobian_cols + factor_col_offset_j + dj];
-                                    jtj[(global_start_i + di, global_start_j + dj)] +=
-                                        jac_i_val * jac_j_val;
-                                }
-                            }
-                        }
-                    }
-                    factor_col_offset += dim_i;
-                }
-
-                // Accumulate J^T r
-                factor_col_offset = 0;
-                for (local_i, _var_name_i) in factor_var_names.iter().enumerate() {
-                    let global_start_i = global_col_starts[local_i];
-                    let dim_i = global_col_dims[local_i];
-
-                    for row in 0..residual_dim {
-                        let residual_val = result.residual[row];
-                        for di in 0..dim_i {
-                            let jac_val = jacobian[row * jacobian_cols + factor_col_offset + di];
-                            jtr[global_start_i + di] += jac_val * residual_val;
-                        }
-                    }
-                    factor_col_offset += dim_i;
-                }
-            } else {
-                return Err(OptimizerError::Factor(FactorError::JacobianFailed(
-                    "Jacobian required for optimization".to_string(),
-                )));
-            }
-        }
-
-        Ok((jtj, jtr))
-    }
-
     /// Solve the damped system (J^T J + λI) δ = -J^T r.
     fn solve_damped_system(
         &self,
-        jtj: &DMatF32,
+        mut jtj: DMatF32,
         jtr: &DVecF32,
         lambda: f32,
         dim: usize,
     ) -> Result<DVecF32, OptimizerError> {
-        // Build damped Hessian: H = J^T J + λI
-        let mut h = jtj.clone();
+        // Build damped Hessian in-place: H = J^T J + λI
+        // Add lambda to diagonal elements
         for i in 0..dim {
-            h[(i, i)] += lambda;
+            jtj[(i, i)] += lambda;
         }
 
         // Solve H δ = -J^T r
         let rhs = -jtr;
-        let lu = h.lu();
+        let lu = jtj.lu();
         let delta = lu
             .solve(&rhs)
             .ok_or_else(|| OptimizerError::SolveFailed("LU solve failed".to_string()))?;
@@ -372,16 +234,17 @@ impl LevenbergMarquardt {
         Ok(delta)
     }
 
-    /// Apply a step to the problem variables.
     fn apply_step(
         &self,
         problem: &mut Problem,
         var_names: &[String],
         delta: &DVecF32,
-        _var_index_map: &HashMap<String, usize>,
-    ) -> Result<f32, OptimizerError> {
+    ) -> Result<(f32, Vec<Vec<f32>>), OptimizerError> {
         let variables = problem.get_variables_mut();
         let mut param_offset = 0;
+
+        // Snapshot current values so we can revert safely on manifolds.
+        let mut snapshot: Vec<Vec<f32>> = Vec::with_capacity(var_names.len());
 
         for var_name in var_names {
             let var =
@@ -391,40 +254,39 @@ impl LevenbergMarquardt {
                         name: var_name.clone(),
                     })?;
 
-            let dim = var.dim();
-            for i in 0..dim {
-                var.values[i] += delta[param_offset + i];
-            }
-            param_offset += dim;
+            snapshot.push(var.values.clone());
+
+            let local = var.local_dim();
+            let delta_block = &delta.as_slice()[param_offset..param_offset + local];
+
+            var.var_type.apply_plus(&mut var.values, delta_block)?;
+
+            param_offset += local;
         }
 
-        problem.compute_total_cost().map_err(OptimizerError::from)
+        let cost = problem.compute_total_cost().map_err(OptimizerError::from)?;
+        Ok((cost, snapshot))
     }
 
-    /// Revert a step (undo the last update).
+    /// Revert the step to the previous values.
     fn revert_step(
         &self,
         problem: &mut Problem,
         var_names: &[String],
-        delta: &DVecF32,
-        _var_index_map: &HashMap<String, usize>,
+        snapshot: Vec<Vec<f32>>,
     ) -> Result<(), OptimizerError> {
         let variables = problem.get_variables_mut();
-        let mut param_offset = 0;
 
-        for var_name in var_names {
+        debug_assert_eq!(var_names.len(), snapshot.len());
+
+        for (var_name, old_vals) in var_names.iter().zip(snapshot.into_iter()) {
             let var =
                 variables
                     .get_mut(var_name)
                     .ok_or_else(|| ProblemError::VariableNotFound {
                         name: var_name.clone(),
                     })?;
-
-            let dim = var.dim();
-            for i in 0..dim {
-                var.values[i] -= delta[param_offset + i];
-            }
-            param_offset += dim;
+            var.values = old_vals;
         }
 
         Ok(())

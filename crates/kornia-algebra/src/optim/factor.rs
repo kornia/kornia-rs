@@ -3,6 +3,12 @@
 //! Factors represent constraints or measurements in a factor graph. Each factor
 //! computes a residual (error) and optionally a Jacobian with respect to the
 //! connected variables.
+//!
+//! # References
+//!
+//! - [apex-solver](https://github.com/amin-abouee/apex-solver): A Rust-based library
+//!   for efficient non-linear least squares optimization with factor graph support
+//! - [ceres-solver](https://github.com/ceres-solver/ceres-solver): A C++ library for modeling and solving large, complicated optimization problems.
 
 use thiserror::Error;
 
@@ -34,9 +40,9 @@ pub struct LinearizationResult {
     /// Residual vector (error)
     pub residual: Vec<f32>,
     /// Jacobian matrix (row-major, flattened)
-    /// Shape: (residual_dim, total_param_dim)
+    /// Shape: (residual_dim, total_local_dim)
     pub jacobian: Option<Vec<f32>>,
-    /// Number of columns in the Jacobian (total parameter dimension)
+    /// Number of columns in the Jacobian (total local dimension)
     pub jacobian_cols: usize,
 }
 
@@ -85,14 +91,14 @@ pub trait Factor: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `params` - Slice of variable values (one slice per connected variable)
+    /// * `params` - Slice of variable values (one slice per connected variable, global storage)
     /// * `compute_jacobian` - Whether to compute the Jacobian matrix
     ///
     /// # Returns
     ///
     /// `LinearizationResult` containing:
     /// - `residual`: N-dimensional error vector
-    /// - `jacobian`: N × M flattened matrix where M is the total DOF of all variables
+    /// - `jacobian`: N × M flattened matrix where M is the total local DOF of all variables
     fn linearize(
         &self,
         params: &[&[f32]],
@@ -109,17 +115,17 @@ pub trait Factor: Send + Sync {
     /// Get the number of variables this factor connects.
     fn num_variables(&self) -> usize;
 
-    /// Get the dimension of a specific connected variable.
+    /// Get the local (tangent) dimension of a specific connected variable.
     ///
     /// # Arguments
     ///
     /// * `idx` - Index of the variable (0 to num_variables()-1)
-    fn variable_dim(&self, idx: usize) -> usize;
+    fn variable_local_dim(&self, idx: usize) -> usize;
 
-    /// Get the total dimension of all connected variables.
-    fn total_variable_dim(&self) -> usize {
+    /// Get the total local (tangent) dimension of all connected variables.
+    fn total_local_dim(&self) -> usize {
         (0..self.num_variables())
-            .map(|i| self.variable_dim(i))
+            .map(|i| self.variable_local_dim(i))
             .sum()
     }
 }
@@ -187,7 +193,7 @@ impl Factor for PriorFactor {
         1
     }
 
-    fn variable_dim(&self, _idx: usize) -> usize {
+    fn variable_local_dim(&self, _idx: usize) -> usize {
         self.target.len()
     }
 }
@@ -223,7 +229,7 @@ mod tests {
         let factor = PriorFactor::new(vec![1.0, 2.0, 3.0]);
         assert_eq!(factor.residual_dim(), 3);
         assert_eq!(factor.num_variables(), 1);
-        assert_eq!(factor.variable_dim(0), 3);
-        assert_eq!(factor.total_variable_dim(), 3);
+        assert_eq!(factor.variable_local_dim(0), 3);
+        assert_eq!(factor.total_local_dim(), 3);
     }
 }

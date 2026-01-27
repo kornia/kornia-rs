@@ -1,19 +1,21 @@
 //! Levenberg-Marquardt pose refinement for PnP solutions.
 //!
 //! This module provides LM-based nonlinear refinement for camera pose estimates,
-//! leveraging the optimization infrastructure from `kornia-algebra`.
+//! leveraging the optimization infrastructure from `kornia-algebra` using factor graph.
 
 use kornia_algebra::optim::{
     Factor, FactorError, FactorResult, LevenbergMarquardt, LinearizationResult, Problem, Variable,
     VariableType,
 };
-use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32, SE3F32, SO3F32};
+use kornia_algebra::{Mat3AF32, QuatF32, Vec2F32, Vec3AF32, SE3F32, SO3F32};
 use kornia_imgproc::calibration::{
     distortion::{distort_point_polynomial, PolynomialDistortion},
     CameraIntrinsic,
 };
 
 use super::{PnPError, PnPResult};
+
+const DEFAULT_MIN_Z_DEPTH: f32 = 1e-10;
 
 /// Parameters controlling the LM pose refinement.
 #[derive(Debug, Clone)]
@@ -46,27 +48,35 @@ impl LMRefineParams {
     }
 
     /// Set maximum iterations.
-    pub fn with_max_iterations(mut self, max_iters: usize) -> Self {
-        self.max_iterations = max_iters;
-        self
+    pub fn with_max_iterations(self, max_iters: usize) -> Self {
+        Self {
+            max_iterations: max_iters,
+            ..self
+        }
     }
 
     /// Set cost tolerance.
-    pub fn with_cost_tolerance(mut self, tol: f32) -> Self {
-        self.cost_tolerance = tol;
-        self
+    pub fn with_cost_tolerance(self, tol: f32) -> Self {
+        Self {
+            cost_tolerance: tol,
+            ..self
+        }
     }
 
     /// Set gradient tolerance.
-    pub fn with_gradient_tolerance(mut self, tol: f32) -> Self {
-        self.gradient_tolerance = tol;
-        self
+    pub fn with_gradient_tolerance(self, tol: f32) -> Self {
+        Self {
+            gradient_tolerance: tol,
+            ..self
+        }
     }
 
     /// Set initial lambda.
-    pub fn with_initial_lambda(mut self, lambda: f32) -> Self {
-        self.initial_lambda = lambda;
-        self
+    pub fn with_initial_lambda(self, lambda: f32) -> Self {
+        Self {
+            initial_lambda: lambda,
+            ..self
+        }
     }
 }
 
@@ -135,12 +145,12 @@ impl ReprojectionFactor {
         }
 
         // Normalize quaternion before creating SE3
-        use kornia_algebra::QuatF32;
+        // pose_params is [qw, qx, qy, qz, tx, ty, tz]
         let q = QuatF32::from_xyzw(
-            pose_params[0],
             pose_params[1],
             pose_params[2],
             pose_params[3],
+            pose_params[0],
         );
         let q_normalized = q.normalize();
         let t = Vec3AF32::new(pose_params[4], pose_params[5], pose_params[6]);
@@ -151,7 +161,7 @@ impl ReprojectionFactor {
         let pc = se3 * self.point_world; // camera-frame point
 
         let z = pc.z;
-        if z.abs() < 1e-10 {
+        if z.abs() < DEFAULT_MIN_Z_DEPTH {
             return Err(FactorError::InvalidParameters(
                 "Point behind or too close to camera".to_string(),
             ));
@@ -190,34 +200,38 @@ impl ReprojectionFactor {
     }
 
     /// Compute numerical Jacobian using central differences.
-    ///
-    /// The Jacobian is computed with respect to the 7D SE3 parameterization
-    /// [qx, qy, qz, qw, tx, ty, tz] by directly perturbing each parameter.
-    fn numerical_jacobian(&self, pose_params: &[f32]) -> Result<Vec<f32>, FactorError> {
+    fn numerical_jacobian(&self, pose_params: &[f32]) -> FactorResult<Vec<f32>> {
         const EPS: f32 = 1e-6;
-        const PARAM_DIM: usize = 7; // SE3 has 7 parameters
+        const DOF: usize = 6;
 
-        let mut jacobian = vec![0.0f32; 2 * PARAM_DIM]; // 2 residuals x 7 parameters
+        let mut jacobian = vec![0.0f32; 2 * DOF]; // 2 residuals x 6 DOF
 
-        // Compute Jacobian w.r.t. each parameter by direct perturbation
-        // Note: The project function will normalize the quaternion automatically
-        for i in 0..PARAM_DIM {
-            let mut params_plus = pose_params.to_vec();
-            let mut params_minus = pose_params.to_vec();
+        let (_u0, _v0, _) = self.project(pose_params)?;
 
-            // Perturb the i-th parameter
-            params_plus[i] += EPS;
-            params_minus[i] -= EPS;
+        // Compute Jacobian w.r.t. each tangent space dimension
+        for i in 0..DOF {
+            // Create perturbed poses using retraction
+            let mut delta_plus = [0.0f32; 6];
+            let mut delta_minus = [0.0f32; 6];
+            delta_plus[i] = EPS;
+            delta_minus[i] = -EPS;
+
+            let se3 = SE3F32::from_params(pose_params);
+            let se3_plus = se3.retract(&delta_plus);
+            let se3_minus = se3.retract(&delta_minus);
+
+            let params_plus = se3_plus.to_params();
+            let params_minus = se3_minus.to_params();
 
             let (u_plus, v_plus, _) = self.project(&params_plus)?;
             let (u_minus, v_minus, _) = self.project(&params_minus)?;
 
             // Central difference
             let inv_2eps = 1.0 / (2.0 * EPS);
-            // Jacobian of residual = predicted - observed
+            // Jacobian of residual = -(observed - projected) = projected - observed
             // d(residual)/d(param) = d(u_hat - u)/d(param) = d(u_hat)/d(param)
-            jacobian[i] = (u_plus - u_minus) * inv_2eps; // d(u_hat)/d(param_i)
-            jacobian[PARAM_DIM + i] = (v_plus - v_minus) * inv_2eps; // d(v_hat)/d(param_i)
+            jacobian[i] = (u_plus - u_minus) * inv_2eps; // d(u_hat)/d(delta_i)
+            jacobian[DOF + i] = (v_plus - v_minus) * inv_2eps; // d(v_hat)/d(delta_i)
         }
 
         Ok(jacobian)
@@ -264,7 +278,7 @@ impl Factor for ReprojectionFactor {
             None
         };
 
-        Ok(LinearizationResult::new(residual, jacobian, 7))
+        Ok(LinearizationResult::new(residual, jacobian, 6))
     }
 
     fn residual_dim(&self) -> usize {
@@ -275,8 +289,8 @@ impl Factor for ReprojectionFactor {
         1
     }
 
-    fn variable_dim(&self, _idx: usize) -> usize {
-        7 // SE3 has 7 parameters (qx, qy, qz, qw, tx, ty, tz)
+    fn variable_local_dim(&self, _idx: usize) -> usize {
+        6 // SE3 local tangent dimension
     }
 }
 
@@ -327,7 +341,7 @@ pub fn refine_pose_lm(
     // Convert initial pose to SE3 and then to parameter array
     let initial_so3 = SO3F32::from_matrix(initial_rotation);
     let initial_se3 = SE3F32::new(initial_so3, *initial_translation);
-    let initial_params = initial_se3.to_array().to_vec();
+    let initial_params = initial_se3.to_params().to_vec();
 
     // Create optimization problem
     let mut problem = Problem::new();
@@ -373,12 +387,12 @@ pub fn refine_pose_lm(
         .clone();
 
     // Normalize quaternion before creating SE3 (optimizer may have made it non-normalized)
-    use kornia_algebra::QuatF32;
+    // pose_values is [qw, qx, qy, qz, tx, ty, tz] from to_params()
     let q = QuatF32::from_xyzw(
-        pose_values[0],
         pose_values[1],
         pose_values[2],
         pose_values[3],
+        pose_values[0],
     );
     let q_normalized = q.normalize();
     let t = Vec3AF32::new(pose_values[4], pose_values[5], pose_values[6]);
@@ -475,4 +489,120 @@ fn compute_rmse(
     }
 
     Ok((sum_sq / valid_count as f32).sqrt())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kornia_algebra::optim::Factor;
+
+    fn k_default() -> Mat3AF32 {
+        Mat3AF32::from_cols(
+            Vec3AF32::new(800.0, 0.0, 0.0),
+            Vec3AF32::new(0.0, 800.0, 0.0),
+            Vec3AF32::new(640.0, 480.0, 1.0),
+        )
+    }
+
+    #[test]
+    fn test_reprojection_factor_linearize() {
+        let k = k_default();
+        let point_world = Vec3AF32::new(0.0, 0.0, 1.0);
+        let point_image = Vec2F32::new(640.0, 480.0);
+
+        let factor = ReprojectionFactor::new(point_world, point_image, &k, None);
+        let pose_params = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+        let params = vec![pose_params.as_slice()];
+
+        let result = factor.linearize(&params, false).unwrap();
+        assert_eq!(result.residual.len(), 2);
+        assert!(result.residual[0].abs() < 1e-5);
+        assert!(result.residual[1].abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_reprojection_factor_jacobian() {
+        let k = k_default();
+        let point_world = Vec3AF32::new(0.1, 0.1, 1.0);
+        let point_image = Vec2F32::new(720.0, 560.0);
+
+        let factor = ReprojectionFactor::new(point_world, point_image, &k, None);
+        let pose_params = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+        let params = vec![pose_params.as_slice()];
+
+        let result = factor.linearize(&params, true).unwrap();
+        let jacobian = result.jacobian.unwrap();
+
+        assert_eq!(jacobian.len(), 12); // 2 residuals x 6 tangent dimensions
+        assert!(jacobian.iter().all(|x| x.is_finite()));
+        let jacobian_norm: f32 = jacobian.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(jacobian_norm > 1e-6);
+    }
+
+    #[test]
+    fn test_refine_pose_lm_convergence() -> Result<(), PnPError> {
+        let points_world: [Vec3AF32; 6] = [
+            Vec3AF32::new(0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(-0.0315, 0.03333, -0.10409),
+            Vec3AF32::new(0.0, -0.00102, -0.12977),
+            Vec3AF32::new(0.02646, -0.03167, -0.1053),
+            Vec3AF32::new(-0.02646, -0.031667, -0.1053),
+            Vec3AF32::new(0.0, 0.04515, -0.11033),
+        ];
+
+        let points_image: [Vec2F32; 6] = [
+            Vec2F32::new(722.96466, 502.0828),
+            Vec2F32::new(669.88837, 498.61877),
+            Vec2F32::new(707.0025, 478.48975),
+            Vec2F32::new(728.05634, 447.56918),
+            Vec2F32::new(682.6069, 443.91776),
+            Vec2F32::new(696.4414, 511.96442),
+        ];
+
+        let k = k_default();
+        let initial_rotation = Mat3AF32::IDENTITY;
+        let initial_translation = Vec3AF32::new(0.0, 0.0, 1.0);
+
+        let params = LMRefineParams::default();
+        let result = refine_pose_lm(
+            &points_world,
+            &points_image,
+            &k,
+            &initial_rotation,
+            &initial_translation,
+            None,
+            &params,
+        )?;
+
+        assert!(result.converged.is_some());
+        assert!(result.reproj_rmse.is_some());
+        assert!(result.num_iterations.is_some());
+        assert!(result.reproj_rmse.unwrap().is_finite());
+        assert!(result.num_iterations.unwrap() > 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_refine_pose_lm_insufficient_correspondences() {
+        let k = k_default();
+        let points_world = vec![Vec3AF32::new(0.1, 0.0, 1.0)];
+        let points_image = vec![Vec2F32::new(720.0, 480.0)];
+
+        let result = refine_pose_lm(
+            &points_world,
+            &points_image,
+            &k,
+            &Mat3AF32::IDENTITY,
+            &Vec3AF32::new(0.0, 0.0, 1.0),
+            None,
+            &LMRefineParams::default(),
+        );
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(PnPError::InsufficientCorrespondences { .. })
+        ));
+    }
 }
