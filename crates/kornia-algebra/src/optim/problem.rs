@@ -208,11 +208,7 @@ mod tests {
         let mut problem = Problem::new();
         let prior = PriorFactor::new(vec![1.0, 1.0]);
         // reference to a variable not present
-        problem
-            .add_factor(Box::new(prior), vec!["not_present".to_string()])
-            .unwrap();
-
-        let res = problem.compute_total_cost();
+        let res = problem.add_factor(Box::new(prior), vec!["not_present".to_string()]);
         assert!(res.is_err());
         if let Err(ProblemError::VariableNotFound { name }) = res {
             assert_eq!(name, "not_present");

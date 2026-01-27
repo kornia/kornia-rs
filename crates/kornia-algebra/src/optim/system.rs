@@ -120,8 +120,7 @@ impl LinearSystemBuilder {
                     for row in 0..residual_dim {
                         let residual_val = result.residual[row];
                         for di in 0..*dim_i {
-                            let jac_val =
-                                jacobian[row * jacobian_cols + factor_col_offset_i + di];
+                            let jac_val = jacobian[row * jacobian_cols + factor_col_offset_i + di];
                             jtr[global_start_i + di] += jac_val * residual_val;
                         }
                     }
