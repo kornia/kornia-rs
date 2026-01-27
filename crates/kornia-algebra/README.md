@@ -8,7 +8,7 @@
 
 ## 🚀 Overview
 
-`kornia-algebra` is the mathematical backbone of the Kornia ecosystem. It provides robust, strongly-typed implementations of linear algebra and Lie groups tailored for robotics and computer vision. Built on top of `glam`, it ensures high performance while offering a clean, mathematically correct API for 2D and 3D transformations.
+`kornia-algebra` is the mathematical backbone of the Kornia ecosystem. It provides robust, strongly-typed implementations of core linear algebra, Lie groups, and (in the future) general numerical and non-linear optimization tools tailored for robotics and computer vision. Built on top of `glam` and its SIMD-accelerated primitives, it ensures high performance while offering a clean, mathematically correct API for 2D and 3D transformations and beyond.
 
 ## 🔑 Key Features
 
