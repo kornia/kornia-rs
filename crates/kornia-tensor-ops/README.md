@@ -51,6 +51,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 *   **`ops`**: High-level trait implementations for tensor operations.
 *   **`kernels`**: Low-level kernel implementations.
 
+## 💡 Related Examples
+
+You can find comprehensive examples in the `examples` folder of the repository:
+
+*   [`metrics`](../../examples/metrics): Calculating image metrics using tensor operations.
+
 ## 🤝 Contributing
 
 Contributions are welcome! This crate is part of the Kornia workspace. Please refer to the main repository for contribution guidelines.

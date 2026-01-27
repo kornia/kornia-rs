@@ -76,6 +76,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 *   **`quad`**: Low-level quad detection algorithms.
 *   **`segmentation`**: Image segmentation and clustering.
 
+## 💡 Related Examples
+
+You can find comprehensive examples in the `examples` folder of the repository:
+
+*   [`apriltag`](../../examples/apriltag): Demonstration of detecting AprilTags in images using `kornia-apriltag`.
+
 ## 🤝 Contributing
 
 Contributions are welcome! This crate is part of the Kornia workspace. Please refer to the main repository for contribution guidelines.

@@ -61,6 +61,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 *   **`registration`**: Point cloud alignment (ICP).
 *   **`pnp`**: Perspective-n-Point solvers.
 
+## 💡 Related Examples
+
+You can find comprehensive examples in the `examples` folder of the repository:
+
+*   [`pnp_demo`](../../examples/pnp_demo): Example of solving the Perspective-n-Point problem.
+*   [`icp_registration`](../../examples/icp_registration): Point cloud registration using ICP.
+
 ## 🤝 Contributing
 
 Contributions are welcome! This crate is part of the Kornia workspace. Please refer to the main repository for contribution guidelines.

@@ -79,6 +79,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 *   **`v4l`**: (Feature) Direct Video4Linux2 camera access.
 *   **`fps_counter`**: Utilities for measuring frame rates.
 
+## 💡 Related Examples
+
+You can find comprehensive examples in the `examples` folder of the repository:
+
+*   [`rtspcam`](../../examples/rtspcam): RTSP camera streaming using GStreamer.
+*   [`v4l`](../../examples/v4l): Video capture using V4L2.
+*   [`video_player`](../../examples/video_player): Simple video player example.
+*   [`video_write`](../../examples/video_write): Video recording and writing.
+*   [`foxglove`](../../examples/foxglove): Integration with Foxglove Studio for visualization.
+
 ## 🤝 Contributing
 
 Contributions are welcome! This crate is part of the Kornia workspace. Please refer to the main repository for contribution guidelines.

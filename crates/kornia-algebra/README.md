@@ -76,6 +76,13 @@ fn main() {
 *   **`quat`**: Quaternion types.
 *   **`linalg`**: General linear algebra helpers.
 
+## 💡 Related Examples
+
+You can find comprehensive examples in the `examples` folder of the repository:
+
+*   [`pnp_demo`](../../examples/pnp_demo): Uses algebraic types for PnP solving.
+*   [`rotate`](../../examples/rotate): Image rotation using geometric transformations.
+
 ## 🤝 Contributing
 
 Contributions are welcome! This crate is part of the Kornia workspace. Please refer to the main repository for contribution guidelines.

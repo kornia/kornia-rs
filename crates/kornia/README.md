@@ -22,6 +22,18 @@ This crate re-exports functionality from the following specialized crates:
 *   **`kornia-algebra`**: Linear algebra and Lie theory (vectors, matrices, SO3, SE3).
 *   **`kornia-vlm`**: Vision Language Models (PaliGemma, SmolVLM).
 
+## 💡 Related Examples
+
+The `examples` directory contains a wide range of examples demonstrating how to use different parts of the library. Here are a few to get you started:
+
+*   [`hello_world`](../../examples/hello_world): A minimal example to verify your setup.
+*   [`imgproc`](../../examples/imgproc): Basic image processing operations.
+*   [`video_player`](../../examples/video_player): Video playback using GStreamer.
+*   [`pnp_demo`](../../examples/pnp_demo): 3D pose estimation.
+*   [`smol_vlm`](../../examples/smol_vlm): Using Vision Language Models.
+
+Check the `examples` folder for many more!
+
 ## 📦 Installation
 
 Add `kornia` to your `Cargo.toml`. You can enable specific features to reduce build times and dependencies:

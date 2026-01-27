@@ -56,6 +56,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 *   **`smolvlm2`**: SmolVLM2 implementation.
 *   **`video`**: Utilities for video input processing for VLMs.
 
+## 💡 Related Examples
+
+You can find comprehensive examples in the `examples` folder of the repository:
+
+*   [`paligemma`](../../examples/paligemma): Example using the PaliGemma model.
+*   [`smol_vlm`](../../examples/smol_vlm): Example using the SmolVLM model.
+*   [`smol_vlm2`](../../examples/smol_vlm2): Example using the SmolVLM2 model.
+*   [`smol_vlm_convo`](../../examples/smol_vlm_convo): Conversational example with SmolVLM.
+*   [`smol_vlm_video`](../../examples/smol_vlm_video): Video processing with SmolVLM.
+*   [`smol_vlm2_video`](../../examples/smol_vlm2_video): Video processing with SmolVLM2.
+
 ## 🤝 Contributing
 
 Contributions are welcome! This crate is part of the Kornia workspace. Please refer to the main repository for contribution guidelines.

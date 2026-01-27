@@ -89,6 +89,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 *   **`histogram`**: Histogram computation.
 *   **`normalize`**: Image normalization utilities.
 
+## 💡 Related Examples
+
+You can find comprehensive examples in the `examples` folder of the repository:
+
+*   [`imgproc`](../../examples/imgproc): General image processing operations.
+*   [`rotate`](../../examples/rotate): Image rotation and warping.
+*   [`color_spaces`](../../examples/color_spaces): Color space conversion.
+*   [`filters`](../../examples/filters): Image filtering (e.g., Sobel, Gaussian).
+*   [`histogram`](../../examples/histogram): Histogram computation.
+*   [`normalize`](../../examples/normalize): Image normalization.
+*   [`normalize_ii`](../../examples/normalize_ii): Another normalization example.
+*   [`undistort_image`](../../examples/undistort_image): Lens distortion correction.
+*   [`undistort_points_image`](../../examples/undistort_points_image): Point undistortion.
+*   [`pnp_demo`](../../examples/pnp_demo): Uses image processing for PnP.
+*   [`ros-z-nodes`](../../examples/ros-z-nodes): ROS nodes using image processing.
+
 ## 🤝 Contributing
 
 Contributions are welcome! This crate is part of the Kornia workspace. Please refer to the main repository for contribution guidelines.

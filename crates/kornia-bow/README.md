@@ -65,6 +65,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 *   **`io`**: Input/Output utilities.
 *   **`metric`**: Distance metrics (e.g., L2, Hamming).
 
+## 💡 Related Examples
+
+You can find comprehensive examples in the `examples` folder of the repository:
+
+*   [`bag-of-words`](../../examples/bag-of-words): End-to-end example demonstrating vocabulary training and image retrieval using `kornia-bow`.
+
 ## 🤝 Contributing
 
 Contributions are welcome! This crate is part of the Kornia workspace. Please refer to the main repository for contribution guidelines.

@@ -63,6 +63,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 *   **`storage`**: Low-level buffer management.
 *   **`allocator`**: Traits and implementations for memory allocation.
 
+## 💡 Related Examples
+
+You can find comprehensive examples in the `examples` folder of the repository:
+
+*   [`onnx`](../../examples/onnx): Using tensors for ONNX model inference.
+*   [`smol_vlm`](../../examples/smol_vlm): Advanced usage of tensors in VLM inference.
+
 ## 🤝 Contributing
 
 Contributions are welcome! This crate is part of the Kornia workspace. Please refer to the main repository for contribution guidelines.

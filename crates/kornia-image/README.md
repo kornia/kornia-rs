@@ -66,6 +66,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 *   **`color_spaces`**: Typed wrappers for common color spaces.
 *   **`arrow`**: (Optional) Utilities for Apache Arrow integration.
 
+## 💡 Related Examples
+
+You can find comprehensive examples in the `examples` folder of the repository:
+
+*   [`image_api`](../../examples/image_api): Demonstration of the basic image API.
+*   [`color_spaces`](../../examples/color_spaces): Working with different color spaces.
+*   [`foxglove`](../../examples/foxglove): Using image types for visualization.
+*   [`ros-z-nodes`](../../examples/ros-z-nodes): Using images in a ROS 2 context.
+
 ## 🤝 Contributing
 
 Contributions are welcome! This crate is part of the Kornia workspace. Please refer to the main repository for contribution guidelines.
