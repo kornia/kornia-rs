@@ -1,0 +1,55 @@
+1. The Template
+You can copy and paste the raw markdown below into your crate's README.md.
+
+Markdown
+# Kornia: [Crate Name]
+
+[![Crates.io](https://img.shields.io/crates/v/kornia-[crate-name].svg)](https://crates.io/crates/kornia-[crate-name])
+[![Documentation](https://docs.rs/kornia-[crate-name]/badge.svg)](https://docs.rs/kornia-[crate-name])
+[![License](https://img.shields.io/crates/l/kornia-[crate-name].svg)](https://github.com/kornia/kornia/blob/main/LICENSE)
+
+> **Short, one-sentence value proposition of what this crate does.**
+> _Example: High-performance image resizing algorithms for the Kornia ecosystem._
+
+## 🚀 Overview
+
+`kornia-[crate-name]` provides [core functionality] for computer vision tasks. It is designed to be [fast/safe/easy-to-use] and integrates seamlessy with the wider Kornia ecosystem.
+
+**Key Features:**
+* **Feature A:** Brief explanation.
+* **Feature B:** Brief explanation.
+* **Feature C:** Brief explanation.
+
+## 📦 Installation
+
+Add the following to your `Cargo.toml`:
+
+```toml
+[dependencies]
+kornia-[crate-name] = "0.1.0"
+🛠️ Usage
+Here is a simple example of how to use [main function/struct]:
+
+Rust
+use kornia_[crate_name]::prelude::*;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Load or create data
+    let input = ...;
+
+    // 2. Perform operation
+    let result = kornia_[crate_name]::do_something(input)?;
+
+    println!("Result: {:?}", result);
+    Ok(())
+}
+🧩 Modules / Components
+module_a: Handles X logic.
+
+module_b: Handles Y transformations.
+
+🤝 Contributing
+Contributions are welcome! This crate is part of the Kornia workspace. Please refer to the main repository for contribution guidelines.
+
+📄 License
+This crate is licensed under the Apache-2.0 License.

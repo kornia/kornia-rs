@@ -1,100 +1,74 @@
-# kornia-bow
+# Kornia: kornia-bow
 
-High-performance, hierarchical Bag of Words (BoW) library for computer vision in Rust.
+[![Crates.io](https://img.shields.io/crates/v/kornia-bow.svg)](https://crates.io/crates/kornia-bow)
+[![Documentation](https://docs.rs/kornia-bow/badge.svg)](https://docs.rs/kornia-bow)
+[![License](https://img.shields.io/crates/l/kornia-bow.svg)](https://github.com/kornia/kornia/blob/main/LICENSE)
 
-`kornia-bow` provides a highly optimized implementation of vocabulary trees, designed for real-time visual place recognition, loop closure detection, and image retrieval.
+> **High-Performance Hierarchical Bag of Words (BoW) for Visual Place Recognition.**
 
-## Features
+## 🚀 Overview
 
-- **Blazing Fast Lookups**: Achieves ~80ns per descriptor lookup.
-- **TF-IDF Weighting**: Automatic IDF calculation during training.
-- **Parallel Processing**: Uses `Rayon` for parallel training and transforming.
-- **Universal Metrics**: Supports `Hamming` (binary) and `L2` (floating-point).
-- **Const Generics**: Branching factor and descriptor size are compile-time constants.
-- **Multiple Scoring Methods**: L1, L2, Chi-Square, KL Divergence, Bhattacharyya, Dot Product all for comparing Bow vectors.
-- **Safe I/O**: Validated serialization and deserialization.
+`kornia-bow` implements a hierarchical Bag of Words vocabulary tree, optimized for fast visual place recognition and image retrieval. It allows you to train a vocabulary from a set of descriptors (e.g., ORB, SIFT) and then transform new images into sparse BoW vectors for efficient matching.
 
-## Usage
+## 🔑 Key Features
 
-### 1. Training
+*   **Hierarchical Vocabulary:** Efficient tree structure (K-means based) for fast quantization of descriptors.
+*   **Fast Lookups:** Optimized traversal for transforming features into BoW vectors.
+*   **Direct Indexing:** Supports direct index generation for geometric verification.
+*   **Metric Agnostic:** Generic implementation supporting different distance metrics (e.g., Hamming distance for binary descriptors).
+*   **Serialization:** Built-in `serde` and `bincode` support for saving and loading vocabularies.
 
-```rust
-use kornia_bow::Vocabulary;
-use kornia_bow::metric::{Hamming, Feature};
+## 📦 Installation
 
-// Define branching factor (B) and descriptor size (D in u64s)
-const B: usize = 10;
-const D: usize = 4; // 256 bits
+Add the following to your `Cargo.toml`:
 
-// Prepare data
-let data: Vec<Feature<u64, D>> = load_descriptors();
-
-// Train (max_depth=3)
-let vocab = Vocabulary::<B, Hamming<D>>::train(&data, 3).expect("Training failed");
+```toml
+[dependencies]
+kornia-bow = "0.1.0"
 ```
 
-### 2. Lookup and Scoring
+## 🛠️ Usage
+
+### Training and Using a Vocabulary
 
 ```rust
-// Transform descriptor to word
-let feature = Feature([0u64; D]);
-let (word_id, weight) = vocab.transform_one(&feature);
+use kornia_bow::{Vocabulary, BoW, metric::{Hamming, Feature}};
 
-// Transform image features to BoW vector
-let features = vec![feature; 100];
-let bow1 = vocab.transform(&features).unwrap();
-let bow2 = vocab.transform(&features).unwrap();
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Train a vocabulary (offline step)
+    // Create dummy descriptors for demonstration
+    let descriptors = vec![Feature([0u64; 4]); 50];
+    let vocab = Vocabulary::<10, Hamming<4>>::train(&descriptors, 2)?;
 
-// Compute similarity
-let score_l1 = bow1.l1_similarity(&bow2);
-let score_chi = bow1.chi_square(&bow2);
-let score_kl = bow1.kl_divergence(&bow2);
-```
+    // 2. Save vocabulary
+    let bytes = bincode::encode_to_vec(&vocab, bincode::config::standard())?;
+    // std::fs::write("vocab.bin", bytes)?;
 
-### 3. Geometric Verification (Direct Index)
+    // 3. Load vocabulary
+    // let (loaded_vocab, _): (Vocabulary<10, Hamming<4>>, usize) = 
+    //     bincode::decode_from_slice(&bytes, bincode::config::standard())?;
 
-The direct index maps nodes in the vocabulary tree back to the original feature indices, which is crucial for geometric verification steps (like RANSAC) after retrieving candidate images.
+    // 4. Transform new image features to BoW vector
+    let query_descriptors = vec![Feature([0u64; 4]); 10];
+    let bow_vector = vocab.transform(&query_descriptors)?;
 
-```rust
-// Get BoW vector AND Direct Index (at depth level 2)
-let (bow, direct_index) = vocab.transform_with_direct_index(&features, 2).expect("Transform failed");
+    println!("BoW Vector size: {}", bow_vector.0.len());
 
-// Access features assigned to a specific node
-// DirectIndex is a sorted list of (NodeID, Vec<FeatureIndex>)
-if let Ok(idx) = direct_index.0.binary_search_by_key(&node_id, |&(id, _)| id) {
-    let feature_indices = &direct_index.0[idx].1;
-    for &idx in feature_indices {
-        println!("Feature {} is assigned to node {}", idx, node_id);
-    }
+    Ok(())
 }
 ```
 
-### 4. Save/Load
+## 🧩 Modules
 
-The library performs strict validation when loading to ensure the vocabulary matches your compile-time configuration (`B` and `D`) and is structurally sound.
+*   **`bow`**: Core `BoW` and `DirectIndex` types.
+*   **`constructor`**: Algorithms for training the vocabulary tree.
+*   **`io`**: Input/Output utilities.
+*   **`metric`**: Distance metrics (e.g., L2, Hamming).
 
-```rust
-vocab.save("vocab.bin").expect("Save failed");
+## 🤝 Contributing
 
-// Will return an error if B or MetricType doesn't match the file
-let loaded = Vocabulary::<B, Hamming<D>>::load("vocab.bin").expect("Load failed");
-```
+Contributions are welcome! This crate is part of the Kornia workspace. Please refer to the main repository for contribution guidelines.
 
-### 5. Using L2 Metric (Floating Point)
+## 📄 License
 
-For floating-point descriptors (like SIFT or standard vectors), use `L2`.
-
-```rust
-use kornia_bow::metric::L2;
-
-// 128-dimensional float descriptor
-const D_FLOAT: usize = 128;
-let float_vocab = Vocabulary::<B, L2<D_FLOAT>>::train(&float_data, 3)?;
-```
-
-## Architecture
-
-The library uses a flat memory layout (`Vocabulary`) with `BlockCluster` structs. Each cluster contains descriptors and children indices packed contiguously.
-
-## References
-kornia-bow is inspired by the Rust crate [abow](https://github.com/donkeyteethUX/abow) and the C++ visual BoW implementations [DBoW2](https://github.com/dorian3d/DBoW2/) and [fbow](https://github.com/rmsalinas/fbow)
+This crate is licensed under the Apache-2.0 License.
