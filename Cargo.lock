@@ -1556,6 +1556,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bag-of-words"
+version = "0.1.0"
+dependencies = [
+ "kornia-bow",
+ "rand 0.9.2",
+]
+
+[[package]]
 name = "base64"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7794,6 +7802,19 @@ dependencies = [
  "kornia-image",
  "kornia-imgproc",
  "kornia-io",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "kornia-bow"
+version = "0.1.11-rc.1"
+dependencies = [
+ "bincode 2.0.1",
+ "criterion",
+ "rand 0.9.2",
+ "rayon",
+ "serde",
+ "serde-big-array",
  "thiserror 2.0.17",
 ]
 
@@ -14180,6 +14201,15 @@ checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
  "serde_derive",
+]
+
+[[package]]
+name = "serde-big-array"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11fc7cc2c76d73e0f27ee52abbd64eec84d46f370c88371120433196934e4b7f"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
