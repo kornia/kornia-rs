@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // std::fs::write("vocab.bin", bytes)?;
 
     // 3. Load vocabulary
-    // let (loaded_vocab, _): (Vocabulary<10, Hamming<4>>, usize) = 
+    // let (loaded_vocab, _): (Vocabulary<10, Hamming<4>>, usize) =
     //     bincode::decode_from_slice(&bytes, bincode::config::standard())?;
 
     // 4. Transform new image features to BoW vector

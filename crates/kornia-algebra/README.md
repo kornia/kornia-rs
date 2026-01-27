@@ -37,17 +37,17 @@ use kornia_algebra::{SE3F32, SO3F32, Vec3AF32};
 fn main() {
     // 1. Define a rotation (90 deg around X)
     let rotation = SO3F32::exp(Vec3AF32::new(std::f32::consts::FRAC_PI_2, 0.0, 0.0));
-    
+
     // 2. Define a translation (1m in Y)
     let translation = Vec3AF32::new(0.0, 1.0, 0.0);
-    
+
     // 3. Create SE(3) pose
     let pose = SE3F32::new(rotation, translation);
-    
+
     // 4. Transform a point (0, 0, 0)
     let point = Vec3AF32::ZERO;
     let transformed = pose * point;
-    
+
     println!("Transformed point: {:?}", transformed);
 }
 ```
@@ -63,7 +63,7 @@ fn main() {
     
     // Interpolate halfway (t=0.5)
     let t = 0.5;
-    let (delta_trans, delta_rot) = start.rminus(&end); 
+    let (delta_trans, delta_rot) = start.rminus(&end);
     let interpolated = start.rplus(delta_trans * t, delta_rot * t);
 }
 ```

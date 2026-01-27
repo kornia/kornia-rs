@@ -39,11 +39,11 @@ use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Configure the decoder for Tag36h11
     let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11])?;
-    
+
     // 2. Load an image (grayscale required)
     // let image = F::read_image_any_rgb8("tag.jpg")?;
     // let gray_image = kornia_imgproc::color::rgb_to_gray(&image)?;
-    
+
     // Create dummy image for example
     let gray_image = Image::<u8, 1, _>::new(
         ImageSize { width: 100, height: 100 },

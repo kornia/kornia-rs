@@ -38,10 +38,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Element-wise addition
     let sum = t1.add(&t2)?;
-    
+
     assert_eq!(sum.get([0, 0]), Some(&11.0));
     println!("Sum: {:?}", sum.as_slice());
-    
+
     Ok(())
 }
 ```

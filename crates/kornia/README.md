@@ -52,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     resize_fast_rgb(&image, &mut resized, InterpolationMode::Bilinear)?;
 
     println!("Resized image: {:?}", resized.size());
-    
+
     Ok(())
 }
 ```

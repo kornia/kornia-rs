@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image = F::read_image_any_rgb8("path/to/image.jpg")?;
 
     println!("Image loaded: {}x{}", image.width(), image.height());
-    
+
     Ok(())
 }
 ```
