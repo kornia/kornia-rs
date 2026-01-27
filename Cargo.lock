@@ -7802,6 +7802,8 @@ dependencies = [
  "kornia-image",
  "kornia-imgproc",
  "kornia-io",
+ "serde",
+ "serde_json",
  "thiserror 2.0.17",
 ]
 
