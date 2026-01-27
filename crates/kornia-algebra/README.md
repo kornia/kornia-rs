@@ -60,7 +60,7 @@ use kornia_algebra::{SE3F32, SO3F32, Vec3AF32};
 fn main() {
     let start = SE3F32::IDENTITY;
     let end = SE3F32::new(SO3F32::IDENTITY, Vec3AF32::new(10.0, 0.0, 0.0));
-    
+
     // Interpolate halfway (t=0.5)
     let t = 0.5;
     let (delta_trans, delta_rot) = start.rminus(&end);
