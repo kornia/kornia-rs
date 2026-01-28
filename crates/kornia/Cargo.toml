@@ -5,7 +5,6 @@ authors = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
 description = "kornia - low-level 3D computer vision library in Rust"
-readme = "../../README.md"
 homepage = { workspace = true }
 repository = { workspace = true }
 license = { workspace = true }
