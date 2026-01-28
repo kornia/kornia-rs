@@ -152,7 +152,6 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// ```
     pub fn new(size: ImageSize, data: Vec<T>, alloc: A) -> Result<Self, ImageError>
     where
-        T: Clone, // TODO: remove this bound
     {
         // check if the data length matches the image size
         if data.len() != size.width * size.height * C {
