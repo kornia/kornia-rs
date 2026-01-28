@@ -1,3 +1,4 @@
+use super::bicubic::bicubic_interpolation;
 use super::bilinear::bilinear_interpolation;
 use super::nearest::nearest_neighbor_interpolation;
 use kornia_image::allocator::ImageAllocator;
@@ -39,11 +40,9 @@ pub fn interpolate_pixel<const C: usize, A: ImageAllocator>(
     match interpolation {
         InterpolationMode::Bilinear => bilinear_interpolation(image, u, v, c),
         InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v, c),
+        InterpolationMode::Bicubic => bicubic_interpolation(image, u, v, c, -0.5),
         InterpolationMode::Lanczos => {
             unimplemented!("Lanczos interpolation is not yet implemented")
-        }
-        InterpolationMode::Bicubic => {
-            unimplemented!("Bicubic interpolation is not yet implemented")
         }
     }
 }
