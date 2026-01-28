@@ -8,8 +8,8 @@ use crate::param::ParamError;
 use crate::{DMatF32, DVecF32};
 use thiserror::Error;
 
-use crate::optim::core::{FactorError, Problem, ProblemError};
 use super::linear_system::{LinearSystemBuilder, VariableLayout};
+use crate::optim::core::{FactorError, Problem, ProblemError};
 
 /// Errors that can occur during optimization.
 #[derive(Debug, Error)]
@@ -341,8 +341,8 @@ impl LevenbergMarquardt {
 
 #[cfg(test)]
 mod tests {
-    use crate::optim::{PriorFactor, Problem, Variable};
     use super::*;
+    use crate::optim::{PriorFactor, Problem, Variable};
 
     #[test]
     fn test_simple_1d_optimization() {
