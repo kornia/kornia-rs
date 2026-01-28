@@ -20,6 +20,9 @@ pub mod png;
 /// JPEG image encoding and decoding.
 pub mod jpeg;
 
+/// WEBP image encoding and decoding
+pub mod webp;
+
 /// GStreamer video module for real-time video processing.
 #[cfg(feature = "gstreamer")]
 pub mod gstreamer;
@@ -38,3 +41,5 @@ pub mod v4l;
 
 /// Internal utility functions for image bit depth conversion.
 mod conv_utils;
+
+
