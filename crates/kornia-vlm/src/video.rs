@@ -192,27 +192,91 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     /// use kornia_vlm::video::VideoSample;
     /// use kornia_tensor::CpuAllocator;
     /// use kornia_image::Image;
-    /// use candle_core::Device;
+    /// use candle_core::{Device, DType};
     /// let video = VideoSample::<32, CpuAllocator>::default();
     /// let device = Device::Cpu;
-    /// let tensor = video.into_tensor(candle_core::DType::F32, &device).unwrap();
+    /// let tensor = video.into_tensor(DType::F32, &device).unwrap();
     /// println!("Tensor shape: {:?}", tensor.dims()); // [N, 3, H, W]
     /// ```
     pub fn into_tensor(&self, dtype: DType, device: &Device) -> Result<Tensor, VideoError> {
-        let mut tensors = vec![];
-        for i in 0..self.frames.len() {
-            let tensor = Tensor::from_vec(
-                self.frames[i].to_vec(),
-                Shape::from_dims(&[self.frames[i].size().height, self.frames[i].size().width, 3]),
-                device,
-            )?
-            .permute(vec![2, 0, 1])?
-            .to_dtype(dtype)?;
-
-            tensors.push(tensor);
+        if self.frames.is_empty() {
+            return Err(VideoError::VideoReaderCreation(
+                "No frames available for tensor conversion".to_string(),
+            ));
         }
 
-        Ok(Tensor::stack(&tensors, 0)?)
+        // Get dimensions from the first frame
+        let n_frames = self.frames.len();
+        let height = self.frames[0].size().height;
+        let width = self.frames[0].size().width;
+        let channels = 3;
+
+        // Pre-allocate the final tensor buffer with target dtype
+        // Shape: [N, C, H, W]
+        let total_elements = n_frames * channels * height * width;
+
+        // Create the tensor by writing directly into a pre-allocated buffer
+        // This avoids intermediate allocations and the expensive stack operation
+        let tensor = match dtype {
+            DType::F32 => {
+                let mut data = Vec::with_capacity(total_elements);
+
+                // Process each frame: HWC u8 → CHW f32 in a single pass
+                for frame_idx in 0..n_frames {
+                    let frame = &self.frames[frame_idx];
+                    let frame_data = frame.as_slice(); // Zero-copy reference
+
+                    // Permute from HWC to CHW while casting to f32
+                    for c in 0..channels {
+                        for h in 0..height {
+                            for w in 0..width {
+                                let hwc_idx = (h * width + w) * channels + c;
+                                data.push(frame_data[hwc_idx] as f32);
+                            }
+                        }
+                    }
+                }
+
+                Tensor::from_vec(
+                    data,
+                    Shape::from_dims(&[n_frames, channels, height, width]),
+                    device,
+                )?
+            }
+            DType::U8 => {
+                let mut data = Vec::with_capacity(total_elements);
+
+                // Process each frame: HWC u8 → CHW u8 (no casting needed)
+                for frame_idx in 0..n_frames {
+                    let frame = &self.frames[frame_idx];
+                    let frame_data = frame.as_slice();
+
+                    // Permute from HWC to CHW
+                    for c in 0..channels {
+                        for h in 0..height {
+                            for w in 0..width {
+                                let hwc_idx = (h * width + w) * channels + c;
+                                data.push(frame_data[hwc_idx]);
+                            }
+                        }
+                    }
+                }
+
+                Tensor::from_vec(
+                    data,
+                    Shape::from_dims(&[n_frames, channels, height, width]),
+                    device,
+                )?
+            }
+            _ => {
+                return Err(VideoError::VideoReaderCreation(format!(
+                    "Unsupported dtype for video tensor conversion: {:?}",
+                    dtype
+                )))
+            }
+        };
+
+        Ok(tensor)
     }
 
     /// Get a reference to the video metadata.
@@ -242,5 +306,47 @@ impl<const N: usize, A: ImageAllocator + Clone> VideoSample<N, A> {
     /// ```
     pub fn metadata(&self) -> &VideoMetadata<N> {
         &self.meta
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candle_core::{Device, DType};
+    use kornia_image::{Image, ImageSize};
+    use kornia_tensor::CpuAllocator;
+
+    #[test]
+    fn test_into_tensor_f32_dtype() -> Result<(), VideoError> {
+        let mut video = VideoSample::<8, CpuAllocator>::new();
+        let size = ImageSize { width: 4, height: 4 };
+        let frame1 = Image::from_size_val(size, 0u8, CpuAllocator)?;
+        video.add_frame(frame1, 0);
+        let frame2 = Image::from_size_val(size, 1u8, CpuAllocator)?;
+        video.add_frame(frame2, 33);
+        let device = Device::Cpu;
+        let tensor = video.into_tensor(DType::F32, &device)?;
+        assert_eq!(tensor.dims(), &[2, 3, 4, 4]);
+        assert_eq!(tensor.dtype(), DType::F32);
+        let frame1_tensor = tensor.get(0)?;
+        let frame1_data = frame1_tensor.flatten_all()?.to_vec1::<f32>()?;
+        assert!(frame1_data.iter().all(|&x| x == 0.0));
+        let frame2_tensor = tensor.get(1)?;
+        let frame2_data = frame2_tensor.flatten_all()?.to_vec1::<f32>()?;
+        assert!(frame2_data.iter().all(|&x| x == 1.0));
+        Ok(())
+    }
+
+    #[test]
+    fn test_into_tensor_u8_dtype() -> Result<(), VideoError> {
+        let mut video = VideoSample::<8, CpuAllocator>::new();
+        let size = ImageSize { width: 2, height: 2 };
+        let frame = Image::from_size_val(size, 128u8, CpuAllocator)?;
+        video.add_frame(frame, 0);
+        let device = Device::Cpu;
+        let tensor = video.into_tensor(DType::U8, &device)?;
+        assert_eq!(tensor.dims(), &[1, 3, 2, 2]);
+        assert_eq!(tensor.dtype(), DType::U8);
+        Ok(())
     }
 }
