@@ -10,7 +10,8 @@ use rand::Rng;
 fn bench_fast_corner_detect(c: &mut Criterion) {
     let mut group = c.benchmark_group("FastCornerDetect");
 
-    let img_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/dog.jpeg");
+    let img_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/dog.jpeg");
     let img_rgb8 = io::read_image_any_rgb8(img_path).unwrap();
 
     let new_size = [1920, 1080].into();
@@ -102,7 +103,12 @@ fn bench_dog_response(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_fast_corner_detect, bench_harris_response, bench_dog_response);
+criterion_group!(
+    benches,
+    bench_fast_corner_detect,
+    bench_harris_response,
+    bench_dog_response
+);
 criterion_main!(benches);
 
 #[cfg(test)]
