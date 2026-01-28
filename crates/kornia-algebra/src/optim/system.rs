@@ -76,15 +76,15 @@ impl LinearSystemBuilder {
 
             if let Some(jacobian) = &result.jacobian {
                 let residual_dim = result.residual_dim();
-                let jacobian_cols = result.jacobian_cols;
+                let total_local_dim = result.total_local_dim;
                 let expected_cols: usize = factor_var_names
                     .iter()
                     .map(|name| layout.local_dims[layout.var_index_map[name]])
                     .sum();
-                if jacobian_cols != expected_cols {
+                if total_local_dim != expected_cols {
                     return Err(OptimizerError::Factor(FactorError::DimensionMismatch {
                         expected: expected_cols,
-                        actual: jacobian_cols,
+                        actual: total_local_dim,
                     }));
                 }
 
@@ -104,10 +104,10 @@ impl LinearSystemBuilder {
                         for row in 0..residual_dim {
                             for di in 0..*dim_i {
                                 let jac_i_val =
-                                    jacobian[row * jacobian_cols + factor_col_offset_i + di];
+                                    jacobian[row * total_local_dim + factor_col_offset_i + di];
                                 for dj in 0..*dim_j {
                                     let jac_j_val =
-                                        jacobian[row * jacobian_cols + factor_col_offset_j + dj];
+                                        jacobian[row * total_local_dim + factor_col_offset_j + dj];
                                     jtj[(global_start_i + di, global_start_j + dj)] +=
                                         jac_i_val * jac_j_val;
                                 }
@@ -120,7 +120,8 @@ impl LinearSystemBuilder {
                     for row in 0..residual_dim {
                         let residual_val = result.residual[row];
                         for di in 0..*dim_i {
-                            let jac_val = jacobian[row * jacobian_cols + factor_col_offset_i + di];
+                            let jac_val =
+                                jacobian[row * total_local_dim + factor_col_offset_i + di];
                             jtr[global_start_i + di] += jac_val * residual_val;
                         }
                     }

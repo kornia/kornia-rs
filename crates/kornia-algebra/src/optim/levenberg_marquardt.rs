@@ -62,6 +62,8 @@ pub enum TerminationReason {
     MaxIterations,
     /// Lambda exceeded maximum (likely numerical issues)
     LambdaMaxExceeded,
+    /// Optimization stopped early by user callback
+    Interrupted,
 }
 
 /// Levenberg-Marquardt optimizer configuration.
@@ -94,16 +96,31 @@ impl Default for LevenbergMarquardt {
     }
 }
 
+/// Snapshot of the optimizer state for callbacks.
+#[derive(Debug, Clone, Copy)]
+pub struct OptimizerState {
+    pub iteration: usize,
+    pub cost: f32,
+    pub lambda: f32,
+    pub last_step_accepted: Option<bool>,
+}
+
 impl LevenbergMarquardt {
     /// Minimum step norm threshold. Steps smaller than this are considered zero.
     const STEP_SIZE_TOLERANCE: f32 = 1e-12;
 
-    /// Create a new optimizer with default parameters.
-    pub fn new() -> Self {
-        Self::default()
+    pub fn optimize(&self, problem: &mut Problem) -> Result<OptimizerResult, OptimizerError> {
+        self.optimize_with_callback(problem, |_problem, _state| true)
     }
 
-    pub fn optimize(&self, problem: &mut Problem) -> Result<OptimizerResult, OptimizerError> {
+    pub fn optimize_with_callback<F>(
+        &self,
+        problem: &mut Problem,
+        mut callback: F,
+    ) -> Result<OptimizerResult, OptimizerError>
+    where
+        F: FnMut(&Problem, &OptimizerState) -> bool,
+    {
         let variables = problem.get_variables();
         let factors = problem.get_factors();
 
@@ -133,6 +150,20 @@ impl LevenbergMarquardt {
 
         let mut lambda = self.lambda_init;
         let mut iterations = 0;
+
+        let init_state = OptimizerState {
+            iteration: 0,
+            cost: current_cost,
+            lambda,
+            last_step_accepted: None,
+        };
+        if !callback(problem, &init_state) {
+            return Ok(OptimizerResult {
+                final_cost: current_cost,
+                iterations,
+                termination_reason: TerminationReason::Interrupted,
+            });
+        }
 
         loop {
             if iterations >= self.max_iterations {
@@ -188,10 +219,12 @@ impl LevenbergMarquardt {
                 });
             }
 
+            let mut last_step_accepted = false;
             if cost_change > 0.0 {
                 // Step improved cost: accept it and decrease lambda
                 current_cost = new_cost;
                 lambda = (lambda / self.lambda_factor).max(1e-10);
+                last_step_accepted = true;
                 iterations += 1;
             } else {
                 // Step increased cost: reject it and increase lambda
@@ -206,6 +239,20 @@ impl LevenbergMarquardt {
                         termination_reason: TerminationReason::LambdaMaxExceeded,
                     });
                 }
+            }
+
+            let state = OptimizerState {
+                iteration: iterations,
+                cost: current_cost,
+                lambda,
+                last_step_accepted: Some(last_step_accepted),
+            };
+            if !callback(problem, &state) {
+                return Ok(OptimizerResult {
+                    final_cost: current_cost,
+                    iterations,
+                    termination_reason: TerminationReason::Interrupted,
+                });
             }
         }
     }
@@ -310,7 +357,7 @@ mod tests {
             .add_factor(Box::new(factor), vec!["x".to_string()])
             .unwrap();
 
-        let optimizer = LevenbergMarquardt::new();
+        let optimizer = LevenbergMarquardt::default();
         let result = optimizer.optimize(&mut problem).unwrap();
 
         assert!(result.iterations > 0);
@@ -348,7 +395,7 @@ mod tests {
             .add_factor(Box::new(PriorFactor::new(vec![3.0])), vec!["z".to_string()])
             .unwrap();
 
-        let optimizer = LevenbergMarquardt::new();
+        let optimizer = LevenbergMarquardt::default();
         let result = optimizer.optimize(&mut problem).unwrap();
 
         assert!(result.final_cost < 1e-6);

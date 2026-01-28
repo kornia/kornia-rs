@@ -156,9 +156,9 @@ impl ReprojectionFactor {
         let t = Vec3AF32::new(pose_params[4], pose_params[5], pose_params[6]);
 
         // Create SE3 with normalized quaternion
-        let se3 = SE3F32::from_qxyz(q_normalized, t);
+        let camera_pose = SE3F32::from_qxyz(q_normalized, t);
 
-        let pc = se3 * self.point_world; // camera-frame point
+        let pc = camera_pose * self.point_world; // camera-frame point
 
         let z = pc.z;
         if z.abs() < DEFAULT_MIN_Z_DEPTH {
@@ -216,12 +216,12 @@ impl ReprojectionFactor {
             delta_plus[i] = EPS;
             delta_minus[i] = -EPS;
 
-            let se3 = SE3F32::from_params(pose_params);
-            let se3_plus = se3.retract(&delta_plus);
-            let se3_minus = se3.retract(&delta_minus);
+            let pose = SE3F32::from_params(pose_params);
+            let pose_plus = pose.retract(&delta_plus);
+            let pose_minus = pose.retract(&delta_minus);
 
-            let params_plus = se3_plus.to_params();
-            let params_minus = se3_minus.to_params();
+            let params_plus = pose_plus.to_params();
+            let params_minus = pose_minus.to_params();
 
             let (u_plus, v_plus, _) = self.project(&params_plus)?;
             let (u_minus, v_minus, _) = self.project(&params_minus)?;

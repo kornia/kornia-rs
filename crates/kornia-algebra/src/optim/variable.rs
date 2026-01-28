@@ -153,3 +153,103 @@ impl Variable {
         self.var_type.local_dim()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{param::ParamError, SE2F32};
+
+    #[test]
+    fn test_variable_type_dims() {
+        assert_eq!(VariableType::Euclidean(3).global_dim(), 3);
+        assert_eq!(VariableType::Euclidean(3).local_dim(), 3);
+        assert_eq!(VariableType::SE3.global_dim(), 7);
+        assert_eq!(VariableType::SE3.local_dim(), 6);
+        assert_eq!(VariableType::SE2.global_dim(), 4);
+        assert_eq!(VariableType::SE2.local_dim(), 3);
+        assert_eq!(VariableType::SO3.global_dim(), 4);
+        assert_eq!(VariableType::SO3.local_dim(), 3);
+        assert_eq!(VariableType::SO2.global_dim(), 2);
+        assert_eq!(VariableType::SO2.local_dim(), 1);
+    }
+
+    #[test]
+    fn test_euclidean_plus() {
+        let var_type = VariableType::Euclidean(3);
+        let x = [1.0f32, -2.0, 3.0];
+        let delta = [0.5f32, 1.5, -0.5];
+        let mut out = [0.0f32; 3];
+
+        var_type.plus(&x, &delta, &mut out).unwrap();
+        assert_eq!(out, [1.5, -0.5, 2.5]);
+    }
+
+    #[test]
+    fn test_euclidean_plus_size_errors() {
+        let var_type = VariableType::Euclidean(3);
+        let x = [0.0f32; 2];
+        let delta = [0.0f32; 3];
+        let mut out = [0.0f32; 3];
+        let err = var_type.plus(&x, &delta, &mut out).unwrap_err();
+        assert!(matches!(
+            err,
+            ParamError::WrongGlobalSize {
+                expected: 3,
+                got: 2
+            }
+        ));
+
+        let x = [0.0f32; 3];
+        let delta = [0.0f32; 2];
+        let err = var_type.plus(&x, &delta, &mut out).unwrap_err();
+        assert!(matches!(
+            err,
+            ParamError::WrongLocalSize {
+                expected: 3,
+                got: 2
+            }
+        ));
+
+        let delta = [0.0f32; 3];
+        let mut out = [0.0f32; 2];
+        let err = var_type.plus(&x, &delta, &mut out).unwrap_err();
+        assert!(matches!(
+            err,
+            ParamError::WrongOutSize {
+                expected: 3,
+                got: 2
+            }
+        ));
+    }
+
+    #[test]
+    fn test_apply_plus_euclidean_in_place() {
+        let var_type = VariableType::Euclidean(2);
+        let mut values = vec![1.0f32, -1.0];
+        let delta = [0.25f32, 0.75];
+
+        var_type.apply_plus(&mut values, &delta).unwrap();
+        assert_eq!(values, vec![1.25, -0.25]);
+    }
+
+    #[test]
+    fn test_apply_plus_se2_matches_plus() {
+        let var_type = VariableType::SE2;
+        let x = SE2F32::IDENTITY.to_array();
+        let delta = [0.1f32, -0.2, 0.05];
+        let mut expected = [0.0f32; 4];
+        SE2F32::plus(&x, &delta, &mut expected).unwrap();
+
+        let mut values = x.to_vec();
+        var_type.apply_plus(&mut values, &delta).unwrap();
+        assert_eq!(values, expected.to_vec());
+    }
+
+    #[test]
+    fn test_variable_helpers() {
+        let var = Variable::euclidean("foo", 4);
+        assert_eq!(var.name, "foo");
+        assert_eq!(var.global_dim(), 4);
+        assert_eq!(var.local_dim(), 4);
+    }
+}

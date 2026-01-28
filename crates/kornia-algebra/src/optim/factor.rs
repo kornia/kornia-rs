@@ -42,17 +42,17 @@ pub struct LinearizationResult {
     /// Jacobian matrix (row-major, flattened)
     /// Shape: (residual_dim, total_local_dim)
     pub jacobian: Option<Vec<f32>>,
-    /// Number of columns in the Jacobian (total local dimension)
-    pub jacobian_cols: usize,
+    /// Total local dimension (number of Jacobian columns)
+    pub total_local_dim: usize,
 }
 
 impl LinearizationResult {
     /// Create a new linearization result
-    pub fn new(residual: Vec<f32>, jacobian: Option<Vec<f32>>, jacobian_cols: usize) -> Self {
+    pub fn new(residual: Vec<f32>, jacobian: Option<Vec<f32>>, total_local_dim: usize) -> Self {
         Self {
             residual,
             jacobian,
-            jacobian_cols,
+            total_local_dim,
         }
     }
 
@@ -65,7 +65,7 @@ impl LinearizationResult {
     pub fn jacobian_element(&self, row: usize, col: usize) -> Option<f32> {
         self.jacobian
             .as_ref()
-            .map(|j| j[row * self.jacobian_cols + col])
+            .map(|j| j[row * self.total_local_dim + col])
     }
 }
 
