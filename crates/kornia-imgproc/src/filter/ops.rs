@@ -105,7 +105,7 @@ pub fn sobel<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     kernel_size: usize,
 ) -> Result<(), ImageError> {
     // get the sobel kernels
-    let (kernel_x, kernel_y) = kernels::sobel_kernel_1d(kernel_size);
+    let (kernel_x, kernel_y) = kernels::sobel_kernel_1d(kernel_size)?;
 
     // apply the sobel filter using separable filter
     let mut gx = Image::<f32, C, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
