@@ -1,14 +1,9 @@
-mod factor;
-mod levenberg_marquardt;
-mod problem;
-mod system;
-mod variable;
+pub mod core;
+pub mod solvers;
 
-// Re-exports
-pub use factor::{Factor, FactorError, FactorResult, LinearizationResult, PriorFactor};
-pub use levenberg_marquardt::{
-    LevenbergMarquardt, OptimizerError, OptimizerResult, OptimizerState, TerminationReason,
+pub use core::{Factor, FactorError, FactorResult, LinearizationResult, PriorFactor};
+pub use core::{Problem, ProblemError, Variable, VariableType};
+pub use solvers::{
+    LevenbergMarquardt, LinearSystemBuilder, OptimizerError, OptimizerResult, OptimizerState,
+    TerminationReason, VariableLayout,
 };
-pub use problem::{Problem, ProblemError};
-pub use system::{LinearSystemBuilder, VariableLayout};
-pub use variable::{Variable, VariableType};

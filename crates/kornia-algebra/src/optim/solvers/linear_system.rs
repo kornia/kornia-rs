@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use crate::{DMatF32, DVecF32};
 
-use super::factor::FactorError;
-use super::problem::{Problem, ProblemError};
+use crate::optim::core::FactorError;
+use crate::optim::core::{Problem, ProblemError};
 use super::OptimizerError;
 
 /// Precomputed variable ordering and dimension layout for optimization.

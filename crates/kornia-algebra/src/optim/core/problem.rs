@@ -118,7 +118,7 @@ impl Problem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::optim::factor::PriorFactor;
+    use crate::optim::PriorFactor;
 
     #[test]
     fn test_add_and_get_variable() {
