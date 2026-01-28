@@ -1,4 +1,7 @@
-use crate::{Mat3AF32, Mat4F32, QuatF32, Vec3AF32};
+use crate::{
+    param::{Param, ParamError},
+    Mat3AF32, Mat4F32, QuatF32, Vec3AF32,
+};
 use rand::Rng;
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 
@@ -192,6 +195,40 @@ impl std::ops::Mul<SO3F32> for SO3F32 {
 
     fn mul(self, rhs: Self) -> Self::Output {
         Self { q: self.q * rhs.q }
+    }
+}
+
+impl Param for SO3F32 {
+    const GLOBAL_SIZE: usize = 4;
+    const LOCAL_SIZE: usize = 3;
+
+    #[inline]
+    fn plus(x: &[f32], delta: &[f32], out: &mut [f32]) -> Result<(), ParamError> {
+        if x.len() < Self::GLOBAL_SIZE {
+            return Err(ParamError::WrongGlobalSize {
+                expected: Self::GLOBAL_SIZE,
+                got: x.len(),
+            });
+        }
+        if delta.len() < Self::LOCAL_SIZE {
+            return Err(ParamError::WrongLocalSize {
+                expected: Self::LOCAL_SIZE,
+                got: delta.len(),
+            });
+        }
+        if out.len() < Self::GLOBAL_SIZE {
+            return Err(ParamError::WrongOutSize {
+                expected: Self::GLOBAL_SIZE,
+                got: out.len(),
+            });
+        }
+
+        let q = QuatF32::from_array([x[0], x[1], x[2], x[3]]).normalize();
+        let so3 = SO3F32::new(q);
+        let tau = Vec3AF32::new(delta[0], delta[1], delta[2]);
+        let so3_plus = so3.rplus(tau);
+        out[..Self::GLOBAL_SIZE].copy_from_slice(&so3_plus.to_array());
+        Ok(())
     }
 }
 

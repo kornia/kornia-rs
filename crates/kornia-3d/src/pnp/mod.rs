@@ -6,12 +6,16 @@ pub mod epnp;
 /// RANSAC for robust PnP pose estimation.
 pub mod ransac;
 
+/// LM-based pose refinement.
+pub mod refine;
+
 mod ops;
 
 pub use epnp::{EPnP, EPnPParams};
 use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 pub use ransac::{solve_pnp_ransac, PnPRansacError, PnPRansacResult, RansacParams};
+pub use refine::{refine_pose_lm, LMRefineParams};
 use thiserror::Error;
 
 /// Error types for PnP solvers.
