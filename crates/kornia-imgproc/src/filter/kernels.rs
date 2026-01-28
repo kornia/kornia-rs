@@ -1,3 +1,5 @@
+use kornia_image::ImageError;
+
 /// Create a box blur kernel.
 ///
 /// # Arguments
@@ -59,18 +61,18 @@ fn gaussian_derivative_1d(kernel_size: usize, sigma: f32) -> Vec<f32> {
     let mut kernel = vec![0.0f32; kernel_size];
     let center = kernel_size / 2;
     let sigma_sq = sigma * sigma;
-    
+
     for i in 1..=center {
         let x = i as f32;
         // Derivative of Gaussian: -x/σ² * exp(-x²/2σ²)
         let gauss = (-x * x / (2.0 * sigma_sq)).exp();
         let value = -x / sigma_sq * gauss;
-        
+
         // Enforce strict anti-symmetry: f(-x) = -f(x), with center exactly zero
         kernel[center + i] = value;
         kernel[center - i] = -value;
     }
-    
+
     kernel
 }
 
@@ -91,10 +93,10 @@ fn gaussian_derivative_1d(kernel_size: usize, sigma: f32) -> Vec<f32> {
 ///
 /// A tuple of two vectors: `(derivative_kernel, smoothing_kernel)`.
 ///
-/// # Panics
+/// # Returns Errors
 ///
-/// Panics if `kernel_size` is even or less than 3.
-pub fn sobel_kernel_1d(kernel_size: usize) -> (Vec<f32>, Vec<f32>) {
+/// Returns `ImageError::InvalidKernelLength` if `kernel_size` is even or less than 3.
+pub fn sobel_kernel_1d(kernel_size: usize) -> Result<(Vec<f32>, Vec<f32>), ImageError> {
     let (kernel_x, kernel_y) = match kernel_size {
         // Classic Sobel kernels (exact definitions)
         3 => (vec![-1.0, 0.0, 1.0], vec![1.0, 2.0, 1.0]),
@@ -102,28 +104,25 @@ pub fn sobel_kernel_1d(kernel_size: usize) -> (Vec<f32>, Vec<f32>) {
             vec![-1.0, -2.0, 0.0, 2.0, 1.0],
             vec![1.0, 4.0, 6.0, 4.0, 1.0],
         ),
-        
+
         // Gaussian derivative approximation for larger kernels
         _ if kernel_size % 2 == 1 && kernel_size >= 7 => {
             // Auto compute sigma using the 3-sigma rule
             let sigma = (kernel_size as f32 - 1.0) / 6.0;
             let smooth = gaussian_kernel_1d(kernel_size, sigma);
             let deriv = gaussian_derivative_1d(kernel_size, sigma);
-            
+
             // Match the binomial scale pattern of classic Sobel kernels
             // Size 3: sum=2^2=4, Size 5: sum=2^4=16, Size 7: sum=2^6=64
             let scale = 2_f32.powi((kernel_size - 1) as i32);
             let scaled_smooth: Vec<f32> = smooth.into_iter().map(|v| v * scale).collect();
-            
+
             (deriv, scaled_smooth)
         }
-        
-        _ => panic!(
-            "Invalid Sobel kernel size: {}. Must be odd and >= 3.",
-            kernel_size
-        ),
+
+        _ => return Err(ImageError::InvalidKernelLength(kernel_size, kernel_size)),
     };
-    (kernel_x, kernel_y)
+    Ok((kernel_x, kernel_y))
 }
 
 /// Create a normalized 2d sobel kernel.
@@ -186,52 +185,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_sobel_kernel_1d() {
-        let kernel = sobel_kernel_1d(3);
+    fn test_sobel_kernel_1d() -> Result<(), ImageError> {
+        let kernel = sobel_kernel_1d(3)?;
         assert_eq!(kernel.0, vec![-1.0, 0.0, 1.0]);
         assert_eq!(kernel.1, vec![1.0, 2.0, 1.0]);
 
-        let kernel = sobel_kernel_1d(5);
+        let kernel = sobel_kernel_1d(5)?;
         assert_eq!(kernel.0, vec![-1.0, -2.0, 0.0, 2.0, 1.0]);
         assert_eq!(kernel.1, vec![1.0, 4.0, 6.0, 4.0, 1.0]);
-        
+
         // Test Gaussian derivative kernels (size 7)
-        let (deriv7, smooth7) = sobel_kernel_1d(7);
+        let (deriv7, smooth7) = sobel_kernel_1d(7)?;
         assert_eq!(deriv7.len(), 7);
         assert_eq!(smooth7.len(), 7);
-        
+
         // Derivative should be anti-symmetric
         assert!((deriv7[0] + deriv7[6]).abs() < 1e-6);
         assert!((deriv7[1] + deriv7[5]).abs() < 1e-6);
         assert!((deriv7[2] + deriv7[4]).abs() < 1e-6);
         assert!((deriv7[3]).abs() < 1e-6); // Center should be ~0
         let deriv_sum: f32 = deriv7.iter().sum();
-        assert!(deriv_sum.abs() < 1e-7, "Derivative kernel sum was {}, expected < 1e-7", deriv_sum);
-        
+        assert!(
+            deriv_sum.abs() < 1e-7,
+            "Derivative kernel sum was {}, expected < 1e-7",
+            deriv_sum
+        );
+
         // Smoothing should be symmetric
         assert!((smooth7[0] - smooth7[6]).abs() < 1e-6);
         assert!((smooth7[1] - smooth7[5]).abs() < 1e-6);
         assert!((smooth7[2] - smooth7[4]).abs() < 1e-6);
-        
+
         // Smoothing kernel should follow binomial (2^(size-1)) scaling pattern
         let smooth_sum: f32 = smooth7.iter().sum();
-        let expected_sum = 2_f32.powi((7 - 1) as i32);  // 2^6 = 64.0
-        assert!((smooth_sum - expected_sum).abs() < 1e-5, 
-                "Smoothing kernel sum was {}, expected {}", smooth_sum, expected_sum);
+        let expected_sum = 2_f32.powi(7 - 1); // 2^6 = 64.0
+        assert!(
+            (smooth_sum - expected_sum).abs() < 1e-5,
+            "Smoothing kernel sum was {}, expected {}",
+            smooth_sum,
+            expected_sum
+        );
+
+        Ok(())
     }
-    
+
     #[test]
-    #[should_panic(expected = "Invalid Sobel kernel size")]
     fn test_sobel_kernel_1d_even_size() {
-        // Even sizes should panic
-        sobel_kernel_1d(4);
+        // Even sizes should return error
+        let result = sobel_kernel_1d(4);
+        assert!(matches!(result, Err(ImageError::InvalidKernelLength(4, 4))));
     }
-    
+
     #[test]
-    #[should_panic(expected = "Invalid Sobel kernel size")]
     fn test_sobel_kernel_1d_too_small() {
-        // Size < 3 should panic
-        sobel_kernel_1d(1);
+        // Size < 3 should return error
+        let result = sobel_kernel_1d(1);
+        assert!(matches!(result, Err(ImageError::InvalidKernelLength(1, 1))));
     }
 
     #[test]
