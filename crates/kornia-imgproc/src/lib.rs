@@ -30,6 +30,9 @@ pub mod features;
 /// image filtering module.
 pub mod filter;
 
+/// image morphology module.
+pub mod morphology;
+
 /// image flipping module.
 pub mod flip;
 
