@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use kornia_image::{allocator::CpuAllocator, allocator::ImageAllocator, Image, ImageSize}; // Added ImageAllocator
+use kornia_image::{allocator::CpuAllocator, allocator::ImageAllocator, Image, ImageSize};
 use kornia_imgproc::distance_transform::distance_transform;
 use opencv::{core, imgproc, prelude::*};
 

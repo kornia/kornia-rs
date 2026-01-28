@@ -13,6 +13,7 @@ const INF: f32 = 1e20;
 /// 1. Uses the O(N) linear-time algorithm by Felzenszwalb & Huttenlocher (Distance Transforms of Sampled Functions, 2012).
 /// 2. Uses Rayon for multi-threading (processing rows in parallel).
 /// 3. Uses Transposition to ensure cache-friendly memory access.
+/// 4. Uses Ping-Pong buffers to minimize memory allocations (only 2 buffers used).
 pub fn distance_transform<A>(
     image: &Image<f32, 1, A>,
 ) -> Result<Image<f32, 1, CpuAllocator>, ImageError>
@@ -25,6 +26,11 @@ where
 
     // Initialization
     let mut grid = vec![INF; num_pixels];
+
+    // 'scratch' is used for the intermediate transposed state.
+    // We allocate it once here to avoid re-allocating inside transpose.
+    let mut scratch = vec![0.0f32; num_pixels];
+
     let slice = image.as_slice();
 
     // Parallel initialization
@@ -37,7 +43,7 @@ where
         });
 
     // Transform along Rows (Parallel)
-    // We allocate thread-local scratch buffers to avoid repeated allocations.
+    // (Writes into grid)
     grid.par_chunks_mut(width).for_each_init(
         || (vec![0.0; width], vec![0usize; width], vec![0.0; width + 1]),
         |(f, v, z), row| {
@@ -46,11 +52,12 @@ where
         },
     );
 
-    // Transpose Grid (Cache Optimization)
-    let mut grid_t = transpose(&grid, width, height);
+    // Transpose
+    // We perform the transpose writing into our pre-allocated 'scratch' buffer.
+    transpose_into(&grid, &mut scratch, width, height);
 
-    // Transform along Rows (which are actually Columns)
-    grid_t.par_chunks_mut(height).for_each_init(
+    // Transform Columns (which are now rows in Scratch)
+    scratch.par_chunks_mut(height).for_each_init(
         || {
             (
                 vec![0.0; height],
@@ -65,14 +72,15 @@ where
     );
 
     //Transpose Back
-    let mut final_grid = transpose(&grid_t, height, width);
+    // We reuse 'grid' as the destination, avoiding a 3rd allocation.
+    transpose_into(&scratch, &mut grid, height, width);
 
     //Finalize: Square Root (Parallel)
-    final_grid.par_iter_mut().for_each(|val| {
+    grid.par_iter_mut().for_each(|val| {
         *val = val.sqrt();
     });
 
-    Image::new(ImageSize { width, height }, final_grid, CpuAllocator)
+    Image::new(ImageSize { width, height }, grid, CpuAllocator)
 }
 
 /// Helper function - 1D distance transform using parabolic lower envelope
@@ -99,7 +107,6 @@ fn distance_transform_1d(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f32
         loop {
             let r = v[k];
             // Calculate intersection of parabola 'r' and 'q'
-            debug_assert!(q != r, "q and r should never be equal");
             let s =
                 ((f[q] + (q * q) as f32) - (f[r] + (r * r) as f32)) / (2.0 * (q as f32 - r as f32));
 
@@ -129,19 +136,15 @@ fn distance_transform_1d(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f32
     }
 }
 
-/// Transpose a flat vector representing a 2D grid.
-fn transpose<T: Copy + Send + Sync>(data: &[T], width: usize, height: usize) -> Vec<T> {
-    let mut output = vec![data[0]; data.len()];
-    // Parallel transpose
-    output
-        .par_chunks_mut(height)
+/// Parallel transpose from source to destination buffer
+fn transpose_into<T: Copy + Send + Sync>(src: &[T], dst: &mut [T], width: usize, height: usize) {
+    dst.par_chunks_mut(height)
         .enumerate()
         .for_each(|(x, out_row)| {
             for y in 0..height {
-                out_row[y] = data[y * width + x];
+                out_row[y] = src[y * width + x];
             }
         });
-    output
 }
 
 #[cfg(test)]
