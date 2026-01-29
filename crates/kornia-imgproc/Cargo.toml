@@ -52,6 +52,10 @@ name = "bench_gradient"
 
 [[bench]]
 harness = false
+name = "bench_draw"
+
+[[bench]]
+harness = false
 name = "bench_distortion"
 required-features = ["opencv_bench"]
 

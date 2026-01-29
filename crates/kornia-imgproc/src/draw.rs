@@ -2,6 +2,9 @@ use kornia_image::{allocator::ImageAllocator, Image};
 
 /// Draws a line on an image inplace.
 ///
+/// The line is drawn using a modified Bresenham algorithm with span optimization.
+/// it draws a single span (O(T)) of pixels perpendicular to the line's dominant direction.
+///
 /// # Arguments
 ///
 /// * `img` - The image to draw on.
@@ -10,6 +13,92 @@ use kornia_image::{allocator::ImageAllocator, Image};
 /// * `color` - The color of the line as an array of `C` elements.
 /// * `thickness` - The thickness of the line.
 pub fn draw_line<const C: usize, A: ImageAllocator>(
+    img: &mut Image<u8, C, A>,
+    p0: (i64, i64),
+    p1: (i64, i64),
+    color: [u8; C],
+    thickness: usize,
+) {
+    let (mut x0, mut y0) = p0;
+    let (x1, y1) = p1;
+
+    // Calculate deltas
+    let dx = if x0 > x1 { x0 - x1 } else { x1 - x0 };
+    let dy = if y0 > y1 { y0 - y1 } else { y1 - y0 };
+
+    // Calculate steps
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let sy = if y0 < y1 { 1 } else { -1 };
+
+    // Initialize error
+    let mut err = if dx > dy { dx } else { -dy } / 2;
+    let mut err2;
+
+    // Determine brush direction once outside the loop.
+    //if line is horizontal-ish (dx > dy), draw vertical strips (Vary Y).
+    //if line is vertical-ish (dy >= dx), draw horizontal strips (Vary X).
+    let horizontal_like = dx > dy;
+
+    // Cache dimensions to avoid calling functions in the hot loop
+    let img_cols = img.cols() as i64;
+    let img_rows = img.rows() as i64;
+    let slice = img.as_slice_mut();
+
+    let t_int = thickness as i64;
+    let t_offset = t_int / 2;
+
+    loop {
+        // Span Drawing O(T) instead of Square O(T^2)
+        for k in 0..t_int {
+            //calculate the pixels based on orientation
+            let (x, y) = if horizontal_like {
+                //if line is horizontal, do vertical span
+                (x0, y0 + k - t_offset)
+            } else {
+                //if line is vertical/diagonal, do horizontal span
+                (x0 + k - t_offset, y0)
+            };
+
+            //check the bounds
+            if x >= 0 && x < img_cols && y >= 0 && y < img_rows {
+                let pixel_index = ((y * img_cols + x) as usize) * C;
+
+                for (i, &c) in color.iter().enumerate() {
+                    if let Some(p) = slice.get_mut(pixel_index + i) {
+                        *p = c;
+                    }
+                }
+            }
+        }
+
+        //end condition
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
+
+        //standard bresenham step
+        err2 = 2 * err;
+        if err2 > -dx {
+            err -= dy;
+            x0 += sx;
+        }
+        if err2 < dy {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+
+/// Draws a line on an image inplace.
+///
+/// # Arguments
+///
+/// * `img` - The image to draw on.
+/// * `p0` - The start point of the line as a tuple of (x, y).
+/// * `p1` - The end point of the line as a tuple of (x, y).
+/// * `color` - The color of the line as an array of `C` elements.
+/// * `thickness` - The thickness of the line.
+pub fn draw_line_slow<const C: usize, A: ImageAllocator>(
     img: &mut Image<u8, C, A>,
     p0: (i64, i64),
     p1: (i64, i64),
