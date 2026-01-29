@@ -245,6 +245,13 @@ define_vector_type!(Vec3AF32, glam::Vec3A, f32, [f32; 3], [x, y, z]);
 define_vector_type!(Vec4F32, glam::Vec4, f32, [f32; 4], [x, y, z, w]);
 define_vector_type!(Vec4F64, glam::DVec4, f64, [f64; 4], [x, y, z, w]);
 
+// Dynamic-sized vectors from nalgebra (for optimization and large-scale operations)
+/// Dynamic-sized vector with f32 elements.
+pub type DVecF32 = nalgebra::DVector<f32>;
+
+/// Dynamic-sized vector with f64 elements.
+pub type DVecF64 = nalgebra::DVector<f64>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
