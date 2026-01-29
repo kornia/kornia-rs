@@ -82,7 +82,7 @@ fn gaussian_derivative_1d(kernel_size: usize, sigma: f32) -> Vec<f32> {
 ///
 /// # Kernel Types
 /// - **Size 3**: Classic Sobel 3×3 kernel (exact match with standard definition)
-/// - **Size 5**: Classic Sobel 5×5 kernel (exact match with standard definition)  
+/// - **Size 5**: Classic Sobel 5×5 kernel (exact match with standard definition)
 /// - **Size ≥ 7**: **Gaussian derivative approximation** (not classic Sobel)
 ///
 /// # Arguments
