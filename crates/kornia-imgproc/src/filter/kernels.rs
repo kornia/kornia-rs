@@ -249,7 +249,7 @@ mod tests {
         }
         // Derivative kernel must sum to <1e-5
         assert!(deriv.iter().sum::<f32>().abs() < 1e-5);
-        
+
         // Smoothing kernel must sum to 2^(size-1)
         let smooth_sum: f32 = smooth.iter().sum();
         let expected = 2_f32.powi((size - 1) as i32);
@@ -261,14 +261,20 @@ mod tests {
     fn test_sobel_kernel_1d_even_size() {
         // Even sizes should return error
         let result = sobel_kernel_1d(4);
-        assert!(matches!(result, Err(ImageError::InvalidKernelLength(4, 4))));
+        assert!(matches!(
+            result,
+            Err(ImageError::InvalidKernelSize(4, ref s)) if s == "must be odd and >= 3"
+        ));
     }
 
     #[test]
     fn test_sobel_kernel_1d_too_small() {
         // Size < 3 should return error
         let result = sobel_kernel_1d(1);
-        assert!(matches!(result, Err(ImageError::InvalidKernelLength(1, 1))));
+        assert!(matches!(
+            result,
+            Err(ImageError::InvalidKernelSize(1, ref s)) if s == "must be odd and >= 3"
+        ));
     }
 
     #[test]
