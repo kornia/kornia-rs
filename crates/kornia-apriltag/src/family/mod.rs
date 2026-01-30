@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use crate::{
     decoder::{QuickDecode, SharpeningBuffer},
     errors::AprilTagError,
@@ -50,8 +51,8 @@ pub enum TagFamilyKind {
     /// The TagStandard52H13 Family. [TagFamily::tagstandard52_h13]
     TagStandard52H13,
     /// A custom tag family, allowing users to supply a fully defined [`TagFamily`] instance.
-    // TODO: Currently, we are cloning TagFamily if it's custom. Look into optimizing this in the future.
-    Custom(Box<TagFamily>),
+    ///Use Arc for cloning
+    Custom(Arc<TagFamily>),
 }
 
 impl TagFamilyKind {
@@ -73,7 +74,19 @@ impl TagFamilyKind {
 
 impl From<TagFamily> for TagFamilyKind {
     fn from(value: TagFamily) -> Self {
-        to_tag_family_kind_impl(&value)
+        match value.name.as_str() {
+            "tag16_h5" => TagFamilyKind::Tag16H5,
+            "tag36_h11" => TagFamilyKind::Tag36H11,
+            "tag36_h10" => TagFamilyKind::Tag36H10,
+            "tag25_h9" => TagFamilyKind::Tag25H9,
+            "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
+            "tagcircle49_h12" => TagFamilyKind::TagCircle49H12,
+            "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
+            "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
+            "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
+            // Move value directly into Arc
+            _ => TagFamilyKind::Custom(Arc::new(value)),
+        }
     }
 }
 
@@ -100,7 +113,7 @@ fn to_tag_family_kind_impl(value: &TagFamily) -> TagFamilyKind {
         "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
         "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
         "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
-        _ => TagFamilyKind::Custom(Box::new(value.clone())),
+        _ => TagFamilyKind::Custom(Arc::new(value.clone())),
     }
 }
 
@@ -109,16 +122,12 @@ impl TryFrom<TagFamilyKind> for TagFamily {
 
     fn try_from(value: TagFamilyKind) -> Result<Self, Self::Error> {
         match value {
-            TagFamilyKind::Tag16H5 => TagFamily::tag16_h5(),
-            TagFamilyKind::Tag25H9 => TagFamily::tag25_h9(),
-            TagFamilyKind::Tag36H10 => TagFamily::tag36_h10(),
-            TagFamilyKind::Tag36H11 => TagFamily::tag36_h11(),
-            TagFamilyKind::TagCircle21H7 => TagFamily::tagcircle21_h7(),
-            TagFamilyKind::TagCircle49H12 => TagFamily::tagcircle49_h12(),
-            TagFamilyKind::TagCustom48H12 => TagFamily::tagcustom48_h12(),
-            TagFamilyKind::TagStandard41H12 => TagFamily::tagstandard41_h12(),
-            TagFamilyKind::TagStandard52H13 => TagFamily::tagstandard52_h13(),
-            TagFamilyKind::Custom(tag_family) => Ok(*tag_family),
+            // Keeping the Custom optimization
+            TagFamilyKind::Custom(tag_family) => {
+                Ok(Arc::try_unwrap(tag_family).unwrap_or_else(|arc| (*arc).clone()))
+            }
+            // Delegating everything else to the helper function
+            _ => to_tag_family_impl(&value),
         }
     }
 }
@@ -150,7 +159,7 @@ fn to_tag_family_impl(value: &TagFamilyKind) -> Result<TagFamily, AprilTagError>
         TagFamilyKind::TagCustom48H12 => TagFamily::tagcustom48_h12(),
         TagFamilyKind::TagStandard41H12 => TagFamily::tagstandard41_h12(),
         TagFamilyKind::TagStandard52H13 => TagFamily::tagstandard52_h13(),
-        TagFamilyKind::Custom(tag_family) => Ok(tag_family.as_ref().clone()),
+        TagFamilyKind::Custom(tag_family) => Ok((**tag_family).clone()),
     }
 }
 
@@ -180,3 +189,21 @@ pub mod tagstandard41h12;
 
 #[doc(hidden)]
 pub mod tagstandard52h13;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_custom_family_arc_sharing() {
+        let family = TagFamily::tag36_h11().unwrap();
+        let custom_kind = TagFamilyKind::Custom(Arc::new(family));
+        let custom_kind_clone = custom_kind.clone();
+
+        if let (TagFamilyKind::Custom(arc1), TagFamilyKind::Custom(arc2)) = (custom_kind, custom_kind_clone) {
+            assert!(Arc::ptr_eq(&arc1, &arc2), "Cloned Custom TagFamilyKind should share the same Arc pointer");
+        } else {
+            panic!("Expected Custom variants");
+        }
+    }
+}

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use kornia_apriltag::{
     decoder::Detection,
     family::TagFamilyKind,
@@ -37,7 +38,7 @@ impl PyDecodeTagsConfig {
         Python::attach(|py| {
             let py_family = family.borrow(py).into_tag_family_kind()?;
             let inner = match py_family.0 {
-                TagFamilyKind::Custom(inner) => *inner,
+                TagFamilyKind::Custom(inner) => Arc::try_unwrap(inner).unwrap_or_else(|a| (*a).clone()),
                 // The into_tag_family_kind always wraps every TagFamily into TagFamilyKind::Custom
                 _ => unreachable!(),
             };
@@ -310,6 +311,7 @@ impl From<Quad> for PyQuad {
 
 #[pymodule]
 pub mod family {
+    use std::sync::Arc;
     use kornia_apriltag::{
         decoder::{QuickDecode, SharpeningBuffer},
         family::{TagFamily, TagFamilyKind},
@@ -379,7 +381,7 @@ pub mod family {
                     sharpening_buffer: sharpening_buffer.0,
                 };
 
-                let kind = TagFamilyKind::Custom(Box::new(tag_family));
+                let kind = TagFamilyKind::Custom(Arc::new(tag_family));
                 Ok(PyTagFamilyKind(kind))
             })
         }
