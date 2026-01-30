@@ -200,10 +200,35 @@ mod tests {
         let custom_kind = TagFamilyKind::Custom(Arc::new(family));
         let custom_kind_clone = custom_kind.clone();
 
+        // Assert that both point to the same memory
         if let (TagFamilyKind::Custom(arc1), TagFamilyKind::Custom(arc2)) = (custom_kind, custom_kind_clone) {
             assert!(Arc::ptr_eq(&arc1, &arc2), "Cloned Custom TagFamilyKind should share the same Arc pointer");
         } else {
             panic!("Expected Custom variants");
+        }
+    }
+
+    #[test]
+    fn test_custom_family_try_unwrap_logic() {
+        let family = TagFamily::tag36_h11().unwrap();
+        let kind = TagFamilyKind::Custom(Arc::new(family));
+
+        // Unique Ownership: try_unwrap should succeed
+        let result = TagFamily::try_from(kind);
+        assert!(result.is_ok());
+
+        // Shared Ownership
+        let family2 = TagFamily::tag36_h11().unwrap();
+        let kind2 = TagFamilyKind::Custom(Arc::new(family2));
+        let kind_clone = kind2.clone();
+
+        // This triggers the .unwrap_or_else(|a| (*a).clone()) path
+        let result2 = TagFamily::try_from(kind2);
+        assert!(result2.is_ok());
+
+        // Verify the clone still exists and is valid
+        if let TagFamilyKind::Custom(arc) = kind_clone {
+            assert_eq!(arc.name, "tag36_h11");
         }
     }
 }
