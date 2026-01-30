@@ -114,13 +114,19 @@ pub fn sobel_kernel_1d(kernel_size: usize) -> Result<(Vec<f32>, Vec<f32>), Image
 
             // Match the binomial scale pattern of classic Sobel kernels
             // Size 3: sum=2^2=4, Size 5: sum=2^4=16, Size 7: sum=2^6=64
-            let scale = 2_f32.powi((kernel_size - 1) as i32);
+            let exp = (kernel_size - 1).min(126);
+            let scale = 2f64.powi(exp as i32) as f32;
             let scaled_smooth: Vec<f32> = smooth.into_iter().map(|v| v * scale).collect();
 
             (deriv, scaled_smooth)
         }
 
-        _ => return Err(ImageError::InvalidKernelLength(kernel_size, kernel_size)),
+        _ => {
+            return Err(ImageError::InvalidKernelSize(
+                kernel_size,
+                "must be odd and >= 3".to_string(),
+            ))
+        }
     };
     Ok((kernel_x, kernel_y))
 }
@@ -226,6 +232,28 @@ mod tests {
             expected_sum
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_sobel_kernel_1d_large() -> Result<(), ImageError> {
+        let size = 31;
+        let (deriv, smooth) = sobel_kernel_1d(size)?;
+        assert_eq!(deriv.len(), size);
+        assert_eq!(smooth.len(), size);
+        let center = size / 2;
+
+        for i in 1..=center {
+            assert!((deriv[center - i] + deriv[center + i]).abs() < 1e-5);
+            assert!((smooth[center - i] - smooth[center + i]).abs() < 1e-5);
+        }
+        // Derivative kernel must sum to <1e-5
+        assert!(deriv.iter().sum::<f32>().abs() < 1e-5);
+        
+        // Smoothing kernel must sum to 2^(size-1)
+        let smooth_sum: f32 = smooth.iter().sum();
+        let expected = 2_f32.powi((size - 1) as i32);
+        assert!((smooth_sum - expected).abs() / expected < 1e-4);
         Ok(())
     }
 
