@@ -3,6 +3,7 @@
 //! Reference: [OpenCV EPnP implementation](https://github.com/opencv/opencv/blob/4.x/modules/calib3d/src/epnp.cpp)
 
 use super::ops::{compute_centroid, gauss_newton, intrinsics_as_vectors};
+use super::refine::{refine_pose_lm, LMRefineParams};
 use super::{NumericTol, PnPError, PnPResult, PnPSolver};
 use kornia_algebra::linalg::rigid::umeyama;
 use kornia_algebra::linalg::svd::svd3;
@@ -35,6 +36,9 @@ impl PnPSolver for EPnP {
 pub struct EPnPParams {
     /// Shared numeric tolerances.
     pub tol: NumericTol,
+    /// Optional LM refinement parameters. If `Some`, the pose will be refined
+    /// after the initial EPnP solution.
+    pub refine_lm: Option<LMRefineParams>,
 }
 
 /// Solve Perspective-n-Point (EPnP).
@@ -145,6 +149,19 @@ pub fn solve_epnp(
     }
 
     let rvec = SO3F32::from_matrix(&best_r).log();
+
+    // Optionally refine pose using LM optimization
+    if let Some(ref lm_params) = params.refine_lm {
+        return refine_pose_lm(
+            points_world,
+            points_image,
+            k,
+            &best_r,
+            &best_t,
+            distortion,
+            lm_params,
+        );
+    }
 
     Ok(PnPResult {
         rotation: best_r,

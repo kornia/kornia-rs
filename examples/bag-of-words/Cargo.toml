@@ -1,0 +1,9 @@
+[package]
+name = "bag-of-words"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+kornia-bow = { workspace = true }
+rand = { workspace = true }
