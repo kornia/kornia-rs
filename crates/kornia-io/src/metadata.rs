@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::io::Read;
+use std::num::NonZeroU8;
 use std::path::Path;
 
 use crate::error::IoError;
@@ -11,7 +12,8 @@ use little_exif::filetype::FileExtension;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImageMetadata {
     /// EXIF `Orientation` tag (1..8) if present, otherwise `None`.
-    pub exif_orientation: Option<u16>,
+    /// Uses `NonZeroU8` to compress the value to a single byte.
+    pub exif_orientation: Option<NonZeroU8>,
 }
 
 /// Read metadata from an image file without decoding pixels.
@@ -31,7 +33,7 @@ pub struct ImageMetadata {
 ///
 /// let metadata = read_image_metadata("photo.jpg")?;
 /// if let Some(orientation) = metadata.exif_orientation {
-///     println!("Orientation: {}", orientation);
+///     println!("Orientation: {}", orientation.get());
 /// }
 /// # Ok::<(), kornia_io::error::IoError>(())
 /// ```
@@ -80,7 +82,13 @@ pub fn read_image_metadata<P: AsRef<Path>>(path: P) -> Result<ImageMetadata, IoE
             .into_iter()
             .find_map(|tag| {
                 if let little_exif::exif_tag::ExifTag::Orientation(values) = tag {
-                    values.first().copied().filter(|&v| (1..=8).contains(&v))
+                    values.first().and_then(|&v| {
+                        if (1..=8).contains(&v) {
+                            NonZeroU8::new(v as u8)
+                        } else {
+                            None
+                        }
+                    })
                 } else {
                     None
                 }
@@ -118,7 +126,7 @@ fn read_u32(bytes: &[u8], offset: usize, le: bool) -> u32 {
 }
 
 // Fast-path parser extracts orientation from first 128KB without full EXIF parsing
-fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
+fn parse_exif_orientation(bytes: &[u8]) -> Option<NonZeroU8> {
     // Locate EXIF header marker
     let needle = b"Exif\0\0";
     let pos = bytes.windows(needle.len()).position(|w| w == needle)?;
@@ -166,11 +174,12 @@ fn parse_exif_orientation(bytes: &[u8]) -> Option<u16> {
         // Orientation tag is short type (3)
         if tag == 0x0112 && field_type == 3 && count >= 1 {
             let val = read_u16(bytes, entry_pos + 8, le);
-            if (1..=8).contains(&val) {
-                return Some(val);
-            } else {
-                return None;
+            if let Some(nz) = NonZeroU8::new(val as u8) {
+                if (1..=8).contains(&nz.get()) {
+                    return Some(nz);
+                }
             }
+            return None;
         }
 
         entry_pos += 12;
@@ -223,7 +232,7 @@ mod tests {
             fs::write(tmp_file.path(), &buf).expect("write temp file");
 
             let meta = read_image_metadata(tmp_file.path()).expect("read metadata");
-            assert_eq!(meta.exif_orientation, Some(val));
+            assert_eq!(meta.exif_orientation, NonZeroU8::new(val as u8));
         }
     }
 
@@ -251,7 +260,7 @@ mod tests {
             let meta = read_image_metadata(tmp_file.path()).expect("read metadata");
             assert_eq!(
                 meta.exif_orientation,
-                Some(val),
+                NonZeroU8::new(val as u8),
                 "Failed to read orientation value {}",
                 val
             );
