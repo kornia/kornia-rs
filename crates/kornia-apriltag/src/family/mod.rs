@@ -51,7 +51,8 @@ pub enum TagFamilyKind {
     /// The TagStandard52H13 Family. [TagFamily::tagstandard52_h13]
     TagStandard52H13,
     /// A custom tag family, allowing users to supply a fully defined [`TagFamily`] instance.
-    ///Use Arc for cloning
+    /// The [`Arc`] allows cheap cloning and shared ownership of the underlying [`TagFamily`]
+    /// between multiple [`TagFamilyKind::Custom`] values without duplicating the tag data.
     Custom(Arc<TagFamily>),
 }
 
@@ -72,21 +73,28 @@ impl TagFamilyKind {
     }
 }
 
+// Maps names to variants
+fn builtin_tag(name: &str) -> Option<TagFamilyKind> {
+    match name {
+        "tag16_h5" => Some(TagFamilyKind::Tag16H5),
+        "tag36_h11" => Some(TagFamilyKind::Tag36H11),
+        "tag36_h10" => Some(TagFamilyKind::Tag36H10),
+        "tag25_h9" => Some(TagFamilyKind::Tag25H9),
+        "tagcircle21_h7" => Some(TagFamilyKind::TagCircle21H7),
+        "tagcircle49_h12" => Some(TagFamilyKind::TagCircle49H12),
+        "tagcustom48_h12" => Some(TagFamilyKind::TagCustom48H12),
+        "tagstandard41_h12" => Some(TagFamilyKind::TagStandard41H12),
+        "tagstandard52_h13" => Some(TagFamilyKind::TagStandard52H13),
+        _ => None,
+    }
+}
+
 impl From<TagFamily> for TagFamilyKind {
     fn from(value: TagFamily) -> Self {
-        match value.name.as_str() {
-            "tag16_h5" => TagFamilyKind::Tag16H5,
-            "tag36_h11" => TagFamilyKind::Tag36H11,
-            "tag36_h10" => TagFamilyKind::Tag36H10,
-            "tag25_h9" => TagFamilyKind::Tag25H9,
-            "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
-            "tagcircle49_h12" => TagFamilyKind::TagCircle49H12,
-            "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
-            "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
-            "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
-            // Move value directly into Arc
-            _ => TagFamilyKind::Custom(Arc::new(value)),
+        if let Some(kind) = builtin_tag(&value.name) {
+            return kind;
         }
+        TagFamilyKind::Custom(Arc::new(value))
     }
 }
 
@@ -103,18 +111,10 @@ impl From<&mut TagFamily> for TagFamilyKind {
 }
 
 fn to_tag_family_kind_impl(value: &TagFamily) -> TagFamilyKind {
-    match value.name.as_str() {
-        "tag16_h5" => TagFamilyKind::Tag16H5,
-        "tag36_h11" => TagFamilyKind::Tag36H11,
-        "tag36_h10" => TagFamilyKind::Tag36H10,
-        "tag25_h9" => TagFamilyKind::Tag25H9,
-        "tagcircle21_h7" => TagFamilyKind::TagCircle21H7,
-        "tagcircle49_h12" => TagFamilyKind::TagCircle49H12,
-        "tagcustom48_h12" => TagFamilyKind::TagCustom48H12,
-        "tagstandard41_h12" => TagFamilyKind::TagStandard41H12,
-        "tagstandard52_h13" => TagFamilyKind::TagStandard52H13,
-        _ => TagFamilyKind::Custom(Arc::new(value.clone())),
+    if let Some(kind) = builtin_tag(&value.name) {
+        return kind;
     }
+    TagFamilyKind::Custom(Arc::new(value.clone()))
 }
 
 impl TryFrom<TagFamilyKind> for TagFamily {
@@ -127,7 +127,7 @@ impl TryFrom<TagFamilyKind> for TagFamily {
                 Ok(Arc::try_unwrap(tag_family).unwrap_or_else(|arc| (*arc).clone()))
             }
             // Delegating everything else to the helper function
-            _ => to_tag_family_impl(&value),
+            other => to_tag_family_impl(&other),
         }
     }
 }
