@@ -7,10 +7,6 @@ pub enum KernelShape {
     /// A rectangular box structuring element.
     ///
     /// All pixels within the box are included in the morphological operation.
-    ///
-    /// # Arguments
-    ///
-    /// * `size` - The side length of the square kernel (size x size).
     Box {
         /// `size` - The side length of the square kernel (size x size).
         size: usize,
@@ -20,10 +16,6 @@ pub enum KernelShape {
     ///
     /// Only pixels along the horizontal and vertical center lines are included,
     /// forming a plus/cross pattern.
-    ///
-    /// # Arguments
-    ///
-    /// * `size` - The side length of the square kernel (size x size).
     Cross {
         /// `size` - The side length of the square cross kernel (size x size).
         size: usize,
@@ -33,11 +25,6 @@ pub enum KernelShape {
     ///
     /// Pixels inside the elliptical boundary are included, defined by the
     /// equation: (x^2/ rx^2) + (y^2 / ry^2) <= 1.
-    ///
-    /// # Arguments
-    ///
-    /// * `width` - The width of the ellipse.
-    /// * `height` - The height of the ellipse.
     Ellipse {
         /// * `width` - The width of the ellipse.
         width: usize,
