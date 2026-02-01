@@ -314,4 +314,47 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn test_line_strict_endpoint_boundary() {
+        let mut img = Image::<u8, 1, _>::from_size_val([10, 10].into(), 0, CpuAllocator).unwrap();
+
+        // Draw horizontal line (2,5) -> (7,5), thickness 5
+        draw_line(&mut img, (2, 5), (7, 5), [255], 5);
+
+        let slice = img.as_slice();
+        for y in 0..10 {
+            // Check bounds: x=1 (left) and x=8 (right) must be 0
+            assert_eq!(slice[y * 10 + 1], 0, "Overshoot left at (1, {})", y);
+            assert_eq!(slice[y * 10 + 8], 0, "Overshoot right at (8, {})", y);
+        }
+    }
+
+    #[test]
+    fn test_line_perpendicular_precision() {
+        let mut img = Image::<u8, 1, _>::from_size_val([20, 20].into(), 0, CpuAllocator).unwrap();
+
+        // Draw horizontal line at y=10 with thickness 4. Should occupy y=[8..11].
+        draw_line(&mut img, (5, 10), (15, 10), [255], 4);
+
+        let slice = img.as_slice();
+        for x in 5..=15 {
+            // Verify strict width: y=7 and y=13 rows must be 0
+            assert_eq!(slice[7 * 20 + x], 0, "Line too wide at x={}, y=7", x);
+            assert_eq!(slice[13 * 20 + x], 0, "Line too wide at x={}, y=13", x);
+        }
+    }
+
+    #[test]
+    fn test_diagonal_flat_cap() {
+        let mut img = Image::<u8, 1, _>::from_size_val([20, 20].into(), 0, CpuAllocator).unwrap();
+
+        // Diagonal line (0,0) -> (10,10), thickness 6
+        draw_line(&mut img, (0, 0), (10, 10), [255], 6);
+
+        let slice = img.as_slice();
+        // Verify span-based cap: no vertical overshoot at (10,11) or corner overshoot at (11,11)
+        assert_eq!(slice[11 * 20 + 10], 0, "Vertical overshoot at (10, 11)");
+        assert_eq!(slice[11 * 20 + 11], 0, "Corner overshoot at (11, 11)");
+    }
 }
