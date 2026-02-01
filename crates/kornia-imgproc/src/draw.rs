@@ -34,9 +34,8 @@ pub fn draw_line<const C: usize, A: ImageAllocator>(
     let mut err = if dx > dy { dx } else { -dy } / 2;
     let mut err2;
 
-    // Determine brush direction once outside the loop.
-    //if line is horizontal-ish (dx > dy), draw vertical strips (Vary Y).
-    //if line is vertical-ish (dy >= dx), draw horizontal strips (Vary X).
+    //if line is horizontal-like (dx > dy), draw vertical strips (Vary Y).
+    //if line is vertical-like (dy >= dx), draw horizontal strips (Vary X).
     let horizontal_like = dx > dy;
 
     // Cache dimensions to avoid calling functions in the hot loop
@@ -48,7 +47,7 @@ pub fn draw_line<const C: usize, A: ImageAllocator>(
     let t_offset = t_int / 2;
 
     loop {
-        // Span Drawing O(T) instead of Square O(T^2)
+        // Span Drawing O(T)
         for k in 0..t_int {
             //calculate the pixels based on orientation
             let (x, y) = if horizontal_like {
