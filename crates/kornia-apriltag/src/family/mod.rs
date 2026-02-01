@@ -1,8 +1,8 @@
-use std::sync::Arc;
 use crate::{
     decoder::{QuickDecode, SharpeningBuffer},
     errors::AprilTagError,
 };
+use std::sync::Arc;
 
 /// Represents the AprilTag Family
 #[derive(Debug, Clone, PartialEq)]
@@ -201,8 +201,13 @@ mod tests {
         let custom_kind_clone = custom_kind.clone();
 
         // Assert that both point to the same memory
-        if let (TagFamilyKind::Custom(arc1), TagFamilyKind::Custom(arc2)) = (custom_kind, custom_kind_clone) {
-            assert!(Arc::ptr_eq(&arc1, &arc2), "Cloned Custom TagFamilyKind should share the same Arc pointer");
+        if let (TagFamilyKind::Custom(arc1), TagFamilyKind::Custom(arc2)) =
+            (custom_kind, custom_kind_clone)
+        {
+            assert!(
+                Arc::ptr_eq(&arc1, &arc2),
+                "Cloned Custom TagFamilyKind should share the same Arc pointer"
+            );
         } else {
             panic!("Expected Custom variants");
         }
