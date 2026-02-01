@@ -15,6 +15,7 @@
 *   **Geometric Transformations:** Resize, crop, flip, rotate, and warp images.
 *   **Color Space Conversions:** Convert between RGB, BGR, Grayscale, HSV, YUV, and other color spaces.
 *   **Filtering:** Box blur, Gaussian blur, Median filter, Sobel, and custom kernels.
+*   **Morphological Operations:** Dilation, Erosion, Opening, and Closing for structure aware image transformations.
 *   **Calibration:** Camera calibration and image undistortion.
 *   **Normalization:** Min/max scaling, mean/std normalization.
 *   **Histograms:** Compute and manipulate image histograms.
@@ -84,6 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 *   **`resize`**: Image resizing with various interpolation methods.
 *   **`color`**: Color space conversions.
 *   **`filter`**: Convolutions and blurring.
+*   **`morphology`**: Morphological opertaions.
 *   **`warp`**: Affine and perspective transformations.
 *   **`calibration`**: Lens distortion correction.
 *   **`histogram`**: Histogram computation.
@@ -97,6 +99,7 @@ You can find comprehensive examples in the `examples` folder of the repository:
 *   [`rotate`](../../examples/rotate): Image rotation and warping.
 *   [`color_spaces`](../../examples/color_spaces): Color space conversion.
 *   [`filters`](../../examples/filters): Image filtering (e.g., Sobel, Gaussian).
+*   [`morphology`](../../examples/morphology/): Morphological operations (e.g., Dilation, Erosion, Opening, and Closing).
 *   [`histogram`](../../examples/histogram): Histogram computation.
 *   [`normalize`](../../examples/normalize): Image normalization.
 *   [`normalize_ii`](../../examples/normalize_ii): Another normalization example.
