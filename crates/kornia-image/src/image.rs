@@ -282,8 +282,8 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// A new image with the pixel data cast to the given type.
     pub fn cast<U>(&self) -> Result<Image<U, C, A>, ImageError>
     where
-        U: num_traits::NumCast + Copy, // TODO: remove this bound
-        T: num_traits::NumCast + Copy, // TODO: remove this bound
+        U: num_traits::NumCast + Copy,
+        T: num_traits::NumCast + Copy,
     {
         // TODO: this needs to be optimized and reuse Tensor::cast
         let casted_data = self
@@ -358,7 +358,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// ```
     pub fn split_channels(&self) -> Result<Vec<Image<T, 1, A>>, ImageError>
     where
-        T: Copy, // TODO: remove this bound
+        T: Copy,
     {
         let mut channels = Vec::with_capacity(C);
 
