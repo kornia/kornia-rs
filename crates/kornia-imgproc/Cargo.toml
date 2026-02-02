@@ -65,6 +65,7 @@ num-traits = { workspace = true }
 opencv = { version = "0.92", optional = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }
+wide = "1.1.1"
 
 [dev-dependencies]
 criterion = { workspace = true }
