@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use kornia_image::Image;
 use kornia_imgproc::draw::{draw_line, draw_polygon};
 use kornia_tensor::CpuAllocator;
@@ -28,11 +28,16 @@ fn bench_draw(c: &mut Criterion) {
                     BenchmarkId::new("Horizontal", &parameter_string),
                     &thickness,
                     |b, &t| {
-                        let mut img =
-                            Image::<u8, 1, _>::from_size_val(image_size, 0, CpuAllocator).unwrap();
-                        b.iter(|| {
-                            draw_line(&mut img, p0_h, p1_h, color, *t);
-                        })
+                        b.iter_batched(
+                            || {
+                                Image::<u8, 1, _>::from_size_val(image_size, 0, CpuAllocator)
+                                    .unwrap()
+                            },
+                            |mut img| {
+                                draw_line(&mut img, p0_h, p1_h, color, *t); // Routine
+                            },
+                            BatchSize::LargeInput, // Use LargeInput for image-sized buffers
+                        )
                     },
                 );
 
@@ -41,11 +46,14 @@ fn bench_draw(c: &mut Criterion) {
                     BenchmarkId::new("Diagonal", &parameter_string),
                     &thickness,
                     |b, &t| {
-                        let mut img =
-                            Image::<u8, 1, _>::from_size_val(image_size, 0, CpuAllocator).unwrap();
-                        b.iter(|| {
-                            draw_line(&mut img, p0_d, p1_d, color, *t);
-                        })
+                        b.iter_batched(
+                            || {
+                                Image::<u8, 1, _>::from_size_val(image_size, 0, CpuAllocator)
+                                    .unwrap()
+                            },
+                            |mut img| draw_line(&mut img, p0_d, p1_d, color, *t),
+                            BatchSize::LargeInput,
+                        )
                     },
                 );
             }
@@ -89,11 +97,14 @@ fn bench_draw(c: &mut Criterion) {
                     BenchmarkId::new("BBox", &parameter_string),
                     &thickness,
                     |b, &t| {
-                        let mut img =
-                            Image::<u8, 1, _>::from_size_val(image_size, 0, CpuAllocator).unwrap();
-                        b.iter(|| {
-                            draw_polygon(&mut img, &bbox_points, color, *t);
-                        })
+                        b.iter_batched(
+                            || {
+                                Image::<u8, 1, _>::from_size_val(image_size, 0, CpuAllocator)
+                                    .unwrap()
+                            },
+                            |mut img| draw_polygon(&mut img, &bbox_points, color, *t),
+                            BatchSize::LargeInput,
+                        )
                     },
                 );
 
@@ -102,11 +113,14 @@ fn bench_draw(c: &mut Criterion) {
                     BenchmarkId::new("Circle", &parameter_string),
                     &thickness,
                     |b, &t| {
-                        let mut img =
-                            Image::<u8, 1, _>::from_size_val(image_size, 0, CpuAllocator).unwrap();
-                        b.iter(|| {
-                            draw_polygon(&mut img, &circle_points, color, *t);
-                        })
+                        b.iter_batched(
+                            || {
+                                Image::<u8, 1, _>::from_size_val(image_size, 0, CpuAllocator)
+                                    .unwrap()
+                            },
+                            |mut img| draw_polygon(&mut img, &circle_points, color, *t),
+                            BatchSize::LargeInput,
+                        )
                     },
                 );
             }
