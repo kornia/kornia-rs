@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 *Requires `gstreamer` and `v4l` features.*
 
 ```rust
-use kornia_io::stream::{CameraCapture, V4L2CameraConfig};
+use kornia_io::gstreamer::{CameraCapture, V4L2CameraConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a camera capture object
@@ -73,10 +73,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 🧩 Modules
 
+*   **`error`**: Error types for the I/O module.
 *   **`functional`**: High-level helper functions like `read_image_any_rgb8`.
 *   **`jpeg` / `png` / `tiff`**: Format-specific implementations.
-*   **`gstreamer`**: (Feature) Video capture and streaming via GStreamer.
-*   **`v4l`**: (Feature) Direct Video4Linux2 camera access.
+*   **`jpegturbo`**: (Feature: `turbojpeg`) High-performance JPEG encoding and decoding via TurboJPEG.
+*   **`gstreamer`**: (Feature: `gstreamer`) Video capture and streaming via GStreamer.
+*   **`v4l`**: (Feature: `v4l`, Linux only) Direct Video4Linux2 camera access.
 *   **`fps_counter`**: Utilities for measuring frame rates.
 
 ## 💡 Related Examples

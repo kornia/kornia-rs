@@ -62,9 +62,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 *   **`image`**: Core `Image` struct, `ImageSize`, `ImageLayout`, and `PixelFormat`.
 *   **`allocator`**: Memory management utilities and the `ImageAllocator` trait.
+*   **`error`**: Error types for the image module.
 *   **`ops`**: Basic image operations.
 *   **`color_spaces`**: Typed wrappers for common color spaces.
-*   **`arrow`**: (Optional) Utilities for Apache Arrow integration.
+*   **`arrow`**: (Optional, feature: `arrow`) Utilities for Apache Arrow integration.
 
 ## 💡 Related Examples
 

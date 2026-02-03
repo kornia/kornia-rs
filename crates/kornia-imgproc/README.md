@@ -82,14 +82,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 🧩 Modules
 
-*   **`resize`**: Image resizing with various interpolation methods.
-*   **`color`**: Color space conversions.
-*   **`filter`**: Convolutions and blurring.
-*   **`morphology`**: Morphological opertaions.
-*   **`warp`**: Affine and perspective transformations.
 *   **`calibration`**: Lens distortion correction.
+*   **`color`**: Color space conversions.
+*   **`core`**: Basic image operations.
+*   **`crop`**: Image cropping.
+*   **`draw`**: Drawing utilities for images.
+*   **`enhance`**: Image enhancement.
+*   **`features`**: Feature detection.
+*   **`filter`**: Convolutions and blurring.
+*   **`flip`**: Image flipping operations.
 *   **`histogram`**: Histogram computation.
+*   **`interpolation`**: Interpolation utilities.
+*   **`metrics`**: Image processing metrics.
+*   **`morphology`**: Morphological operations.
 *   **`normalize`**: Image normalization utilities.
+*   **`padding`**: Image padding.
+*   **`parallel`**: Parallelization utilities.
+*   **`pyramid`**: Pyramid operations.
+*   **`resize`**: Image resizing with various interpolation methods.
+*   **`threshold`**: Image thresholding operations.
+*   **`warp`**: Affine and perspective transformations.
 
 ## 💡 Related Examples
 
