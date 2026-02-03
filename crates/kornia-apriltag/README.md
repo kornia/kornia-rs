@@ -71,10 +71,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## 🧩 Modules
 
 *   **`decoder`**: Main decoding logic and `AprilTagDecoder` struct.
+*   **`errors`**: Error types for AprilTag detection.
 *   **`family`**: Tag family definitions.
-*   **`config`**: Configuration options for the detection pipeline.
 *   **`quad`**: Low-level quad detection algorithms.
 *   **`segmentation`**: Image segmentation and clustering.
+*   **`threshold`**: Thresholding utilities for AprilTag detection.
+*   **`union_find`**: Union-find data structure for connected components.
+*   **`utils`**: Utility functions and types.
+
+**Note:** `DecodeTagsConfig` is a struct exported from the crate root (`lib.rs`), not a separate module.
 
 ## 💡 Related Examples
 

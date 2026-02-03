@@ -70,11 +70,17 @@ fn main() {
 
 ## 🧩 Modules
 
-*   **`lie`**: Lie group implementations (SO2, SE2, SO3, SE3).
-*   **`vec`**: Vector types (`Vec2`, `Vec3`, `Vec4`).
-*   **`mat`**: Matrix types (`Mat2`, `Mat3`, `Mat4`).
+*   **`lie`**: Lie group implementations (SO2, SE2, SO3, SE3, RxSO3, Sim3).
+*   **`vec`**: Vector types (`Vec2`, `Vec3`, `Vec4`, and dynamic `DVec`).
+*   **`mat`**: Matrix types (`Mat2`, `Mat3`, `Mat4`, and dynamic `DMat`).
 *   **`quat`**: Quaternion types.
 *   **`linalg`**: General linear algebra helpers.
+*   **`optim`**: Factor graph optimization module.
+*   **`param`**: Parameterization utilities.
+
+### Feature Flags
+
+*   **`approx`**: Enable approximate equality comparisons for algebraic types.
 
 ## 💡 Related Examples
 

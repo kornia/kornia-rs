@@ -16,6 +16,7 @@ This crate re-exports functionality from the following specialized crates:
 
 *   **`kornia-image`**: Strongly-typed image container and memory management.
 *   **`kornia-tensor`**: N-dimensional tensor library for low-level data manipulation.
+*   **`kornia-tensor-ops`**: Tensor operations.
 *   **`kornia-io`**: Image and video reading/writing (JPEG, PNG, GStreamer, V4L2).
 *   **`kornia-imgproc`**: Image processing algorithms (resize, color, filter, warp).
 *   **`kornia-3d`**: 3D vision, point clouds, and geometry.

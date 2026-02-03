@@ -56,10 +56,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## 🧩 Modules
 
 *   **`io`**: Input/Output for 3D file formats.
-*   **`transforms`**: Geometric transformations for 3D points.
+*   **`linalg`**: Linear algebra utilities.
+*   **`ops`**: Operations on 3D data processing.
 *   **`pointcloud`**: Point cloud data structures and operations.
-*   **`registration`**: Point cloud alignment (ICP).
 *   **`pnp`**: Perspective-n-Point solvers.
+*   **`pose`**: Pose estimation algorithms.
+*   **`registration`**: Point cloud alignment (ICP).
+*   **`transforms`**: Geometric transformations for 3D points.
 
 ## 💡 Related Examples
 
