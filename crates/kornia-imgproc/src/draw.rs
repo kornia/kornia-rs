@@ -19,6 +19,10 @@ pub fn draw_line<const C: usize, A: ImageAllocator>(
     color: [u8; C],
     thickness: usize,
 ) {
+    if thickness == 0 {
+        return;
+    }
+
     let (mut x0, mut y0) = p0;
     let (x1, y1) = p1;
 
@@ -60,7 +64,11 @@ pub fn draw_line<const C: usize, A: ImageAllocator>(
 
             //check the bounds
             if x >= 0 && x < img_cols && y >= 0 && y < img_rows {
-                let pixel_index = ((y * img_cols + x) as usize) * C;
+                let ux = x as usize;
+                let uy = y as usize;
+                let u_cols = img_cols as usize;
+
+                let pixel_index = (uy * u_cols + ux) * C;
 
                 for (i, &c) in color.iter().enumerate() {
                     if let Some(p) = slice.get_mut(pixel_index + i) {
