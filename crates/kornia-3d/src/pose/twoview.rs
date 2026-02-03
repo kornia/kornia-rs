@@ -125,8 +125,8 @@ pub fn ransac_fundamental(
     let mut rng = match params.random_seed {
         Some(seed) => StdRng::seed_from_u64(seed),
         None => {
-            let mut tr = rand::rng();
-            StdRng::from_rng(&mut tr)
+            let mut thread_rng = rand::rng();
+            StdRng::from_rng(&mut thread_rng)
         }
     };
 
@@ -195,8 +195,8 @@ pub fn ransac_homography(
     let mut rng = match params.random_seed {
         Some(seed) => StdRng::seed_from_u64(seed),
         None => {
-            let mut tr = rand::rng();
-            StdRng::from_rng(&mut tr)
+            let mut thread_rng = rand::rng();
+            StdRng::from_rng(&mut thread_rng)
         }
     };
 
@@ -349,7 +349,7 @@ fn triangulate_inliers(
         let x2n = normalize_point(params.k2_inv, &x2[i]);
         if let Some(x) = triangulate_point_linear(&x1n, &x2n, r, t) {
             let z1 = x.z;
-            let x2c = transform_point(r, t, &x);
+            let x2c = *r * x + *t;
             let z2 = x2c.z;
             if z1 > 0.0 && z2 > 0.0 && parallax_ok(&x, &x2c, params.min_parallax_deg) {
                 points.push(x);
@@ -377,10 +377,6 @@ fn normalize_point(k_inv: &Mat3F64, x: &Vec2F64) -> Vec2F64 {
     let xh = Vec3F64::new(x.x, x.y, 1.0);
     let xn = *k_inv * xh;
     Vec2F64::new(xn.x / xn.z, xn.y / xn.z)
-}
-
-fn transform_point(r: &Mat3F64, t: &Vec3F64, x: &Vec3F64) -> Vec3F64 {
-    *r * *x + *t
 }
 
 fn triangulate_point_linear(
@@ -417,12 +413,21 @@ fn triangulate_point_linear(
     Some(Vec3F64::new(xh[0] / w, xh[1] / w, xh[2] / w))
 }
 
+/// Write one row of the DLT linear system used for triangulation.
+///
+/// This fills row `row` of the matrix `a` with the coefficients of the
+/// homogeneous equation `(x * P_3 - P_i) X = 0`, where `x` is a single image
+/// coordinate, `P_3` (`p3`) is the third row of the camera projection matrix,
+/// and `P_i` (`p1`) is either its first or second row. The resulting 4-vector
+/// corresponds to one constraint on the 3D point `X` in the linear
+/// triangulation system.
 fn write_dlt_row(a: &mut faer::Mat<f64>, row: usize, x: f64, p3: &[f64; 4], p1: &[f64; 4]) {
     for j in 0..4 {
         a.write(row, j, x * p3[j] - p1[j]);
     }
 }
 
+/// Computes the squared reprojection error for mapping `x1` to `x2` via the homography `h`.
 fn homography_reproj_error(h: &Mat3F64, x1: &Vec2F64, x2: &Vec2F64) -> f64 {
     let x1h = Vec3F64::new(x1.x, x1.y, 1.0);
     let hx = *h * x1h;
@@ -436,11 +441,6 @@ fn homography_reproj_error(h: &Mat3F64, x1: &Vec2F64, x2: &Vec2F64) -> f64 {
     dx * dx + dy * dy
 }
 
-/// Approximate homography decomposition to recover a relative pose.
-///
-/// This provides a fast, single-plane approximation and returns two candidates
-/// with opposite translation directions. It is sufficient for initialization,
-/// but does not recover plane normals.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,5 +472,98 @@ mod tests {
         };
         let res = ransac_fundamental(&x1, &x2, &params).unwrap();
         assert!(res.inlier_count >= params.min_inliers);
+    }
+
+    #[test]
+    fn test_ransac_fundamental_invalid_input() {
+        let x1 = vec![Vec2F64::new(0.0, 0.0); 7];
+        let x2 = vec![Vec2F64::new(0.0, 0.0); 7];
+        let params = RansacParams::default();
+        let err = ransac_fundamental(&x1, &x2, &params).unwrap_err();
+        match err {
+            TwoViewError::InvalidInput { required } => assert_eq!(required, 8),
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        let x2 = vec![Vec2F64::new(0.0, 0.0); 8];
+        let err = ransac_fundamental(&x1, &x2, &params).unwrap_err();
+        match err {
+            TwoViewError::InvalidInput { required } => assert_eq!(required, 8),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_ransac_homography_basic() {
+        let h_true = Mat3F64::from_cols(
+            Vec3F64::new(1.2, 0.0, 0.001),
+            Vec3F64::new(0.1, 0.9, 0.002),
+            Vec3F64::new(5.0, -3.0, 1.0),
+        );
+
+        let mut x1 = Vec::new();
+        let mut x2 = Vec::new();
+        for i in 0..25 {
+            let xi = (i % 5) as f64 * 2.0 - 4.0;
+            let yi = (i / 5) as f64 * 1.5 - 3.0;
+            let p = Vec3F64::new(xi, yi, 1.0);
+            let hp = h_true * p;
+            let u = hp.x / hp.z;
+            let v = hp.y / hp.z;
+            x1.push(Vec2F64::new(xi, yi));
+            x2.push(Vec2F64::new(u, v));
+        }
+
+        let params = RansacParams {
+            max_iterations: 100,
+            threshold: 1e-6,
+            min_inliers: 12,
+            random_seed: Some(0),
+        };
+        let res = ransac_homography(&x1, &x2, &params).unwrap();
+        assert!(res.inlier_count >= params.min_inliers);
+    }
+
+    #[test]
+    fn test_ransac_homography_invalid_input() {
+        let x1 = vec![Vec2F64::new(0.0, 0.0); 3];
+        let x2 = vec![Vec2F64::new(0.0, 0.0); 3];
+        let params = RansacParams::default();
+        let err = ransac_homography(&x1, &x2, &params).unwrap_err();
+        match err {
+            TwoViewError::InvalidInput { required } => assert_eq!(required, 4),
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        let x2 = vec![Vec2F64::new(0.0, 0.0); 4];
+        let err = ransac_homography(&x1, &x2, &params).unwrap_err();
+        match err {
+            TwoViewError::InvalidInput { required } => assert_eq!(required, 4),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parallax_ok_thresholds() {
+        let x1 = Vec3F64::new(1.0, 0.0, 0.0);
+        let x2 = Vec3F64::new(1.0, 0.0, 0.0);
+        assert!(!parallax_ok(&x1, &x2, 1.0));
+
+        let x3 = Vec3F64::new(0.0, 1.0, 0.0);
+        assert!(parallax_ok(&x1, &x3, 30.0));
+    }
+
+    #[test]
+    fn test_normalize_point_identity_and_scaled() {
+        let k = Mat3F64::from_cols(
+            Vec3F64::new(2.0, 0.0, 0.0),
+            Vec3F64::new(0.0, 3.0, 0.0),
+            Vec3F64::new(0.0, 0.0, 1.0),
+        );
+        let k_inv = k.inverse();
+        let x = Vec2F64::new(4.0, 6.0);
+        let xn = normalize_point(&k_inv, &x);
+        assert!((xn.x - 2.0).abs() < 1e-12);
+        assert!((xn.y - 2.0).abs() < 1e-12);
     }
 }

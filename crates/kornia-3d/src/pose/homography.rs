@@ -1,6 +1,7 @@
-use faer::prelude::SpSolver;
-
 use crate::linalg;
+use crate::pose::utils::{mat3f32_to_mat3f64, mat3f64_to_mat3f32, vec3f32_to_vec3f64};
+use faer::prelude::SpSolver;
+use kornia_algebra::{Mat3F32, Mat3F64, Vec3F32, Vec3F64};
 
 /// Error type for homography estimation.
 #[derive(thiserror::Error, Debug)]
@@ -13,8 +14,6 @@ pub enum HomographyError {
     #[error("Cheirality check failed")]
     CheiralityCheckFailed,
 }
-use crate::pose::utils::{mat3f32_to_mat3f64, mat3f64_to_mat3f32, vec3f32_to_vec3f64};
-use kornia_algebra::{Mat3F32, Mat3F64, Vec3F32, Vec3F64};
 
 /// Compute the homography matrix from four 2d point correspondences.
 ///
