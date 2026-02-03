@@ -12,6 +12,7 @@ use crate::{
     resize::resize_native,
 };
 
+#[derive(Clone)]
 pub struct OrbDectectorConfig {
     pub n_keypoints: usize,
     pub fast_n: usize,
@@ -1006,6 +1007,8 @@ const POS1: [[i8; 2]; 256] = [
 
 #[cfg(test)]
 mod tests {
+    use crate::features::match_descriptors;
+
     use super::*;
     use kornia_image::{Image, ImageSize};
     use kornia_tensor::CpuAllocator;
@@ -1033,5 +1036,62 @@ mod tests {
         assert_eq!(pyramid.len(), 4);
 
         // TODO: Should we compare the harcoded values for this function
+    }
+
+
+
+    #[test]
+    fn test_orb_descriptor_matching() -> Result<(), Box<dyn std::error::Error>> {
+        // Create two descriptor sets for testing matching
+        // Descriptors are 32 bytes each (256 bits for ORB)
+        let descriptor_size = 32;
+        
+        // Create first set of descriptors (simulated from first detection)
+        let mut descriptors1: Vec<Vec<u8>> = Vec::new();
+        for i in 0..10 {
+            let mut desc = vec![0u8; descriptor_size];
+            // Create some pattern for each descriptor
+            for j in 0..descriptor_size {
+                desc[j] = ((i * 7 + j * 13) % 256) as u8;
+            }
+            descriptors1.push(desc);
+        }
+
+        // Create second set of descriptors (same pattern, simulating second detection)
+        let descriptors2 = descriptors1.clone();
+
+        // Call match_descriptors() using:
+        // - max_distance: None
+        // - cross_check: true
+        // - max_ratio: None
+        let matches = match_descriptors(&descriptors1, &descriptors2, None, true, None);
+
+        // Assertion: matches is not empty
+        assert!(
+            !matches.is_empty(),
+            "No matches found when matching identical descriptors"
+        );
+
+        // Assertion: For each (i, j) match:
+        //   - i < descriptors1.len()
+        //   - j < descriptors2.len()
+        for (idx, &(i, j)) in matches.iter().enumerate() {
+            assert!(
+                i < descriptors1.len(),
+                "Match {} has invalid first descriptor index: {} (descriptors1.len() = {})",
+                idx,
+                i,
+                descriptors1.len()
+            );
+            assert!(
+                j < descriptors2.len(),
+                "Match {} has invalid second descriptor index: {} (descriptors2.len() = {})",
+                idx,
+                j,
+                descriptors2.len()
+            );
+        }
+
+        Ok(())
     }
 }
