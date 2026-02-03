@@ -381,7 +381,7 @@ pub fn decode_image_jpeg_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
             width: image_info.width as usize,
             height: image_info.height as usize,
         },
-        image_info.components,
+        image_info.components as u8,
         PixelFormat::U8,
     ))
 }

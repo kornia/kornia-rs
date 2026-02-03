@@ -128,8 +128,7 @@ impl FastDetector {
                         };
                     }
 
-                    // Test for bright pixels
-                    let mut curr_response = corner_fast_response(
+                    let bright_response = corner_fast_response(
                         curr_pixel,
                         &circle_intensities,
                         &bins,
@@ -137,18 +136,15 @@ impl FastDetector {
                         self.arc_length,
                     );
 
-                    // Test for dark pixels
-                    if curr_response == 0.0 {
-                        curr_response = corner_fast_response(
-                            curr_pixel,
-                            &circle_intensities,
-                            &bins,
-                            PixelType::Darker,
-                            self.arc_length,
-                        );
-                    }
+                    let dark_response = corner_fast_response(
+                        curr_pixel,
+                        &circle_intensities,
+                        &bins,
+                        PixelType::Darker,
+                        self.arc_length,
+                    );
 
-                    row[ix] = curr_response;
+                    row[ix] = bright_response.max(dark_response);
                 }
             });
 
@@ -249,22 +245,25 @@ fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
     let src_size = src.size();
     let width = src_size.width;
     let height = src_size.height;
+    let src_slice = src.as_slice();
 
-    let coords_intensity: Vec<[usize; 2]> = mask
+    let mut coords_with_response: Vec<([usize; 2], f32)> = mask
         .as_slice()
-        .par_iter()
+        .iter()
         .enumerate()
         .filter(|&(_, &value)| value)
         .map(|(i, _)| {
             let y = i / width;
             let x = i % width;
-            [y, x]
+            ([y, x], src_slice[i])
         })
         .collect();
 
+    coords_with_response.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
     let mut result = Vec::new();
 
-    for coord in coords_intensity {
+    for (coord, _) in coords_with_response {
         let y = coord[0];
         let x = coord[1];
         let idx = y * width + x;
@@ -307,6 +306,7 @@ mod tests {
     use kornia_image::Image;
     use kornia_io::jpeg::read_image_jpeg_rgb8;
     use kornia_tensor::CpuAllocator;
+    use std::collections::HashSet;
 
     #[test]
     fn test_fast_feature_detector() -> Result<(), Box<dyn std::error::Error>> {
@@ -327,19 +327,17 @@ mod tests {
         let expected_keypoints = vec![
             [32, 86],
             [60, 75],
-            [63, 183],
+            [69, 184],
             [71, 84],
             [72, 169],
-            [106, 69],
+            [109, 69],
             [109, 125],
             [120, 64],
-            [125, 165],
-            [132, 94],
-            [135, 161],
+            [129, 162],
+            [134, 95],
             [141, 121],
-            [143, 99],
             [153, 104],
-            [161, 148],
+            [162, 148],
         ];
 
         const THRESHOLD: f32 = 0.15;
@@ -347,9 +345,10 @@ mod tests {
         let mut fast_detector = FastDetector::new(gray_img.size(), THRESHOLD, 12, 10)?;
         fast_detector.compute_corner_response(&gray_imgf32);
         let keypoints = fast_detector.extract_keypoints()?;
-
         assert_eq!(keypoints.len(), expected_keypoints.len());
-        assert_eq!(keypoints, expected_keypoints);
+        let expected: HashSet<[usize; 2]> = expected_keypoints.into_iter().collect();
+        let actual: HashSet<[usize; 2]> = keypoints.into_iter().collect();
+        assert_eq!(actual, expected);
         Ok(())
     }
 }
