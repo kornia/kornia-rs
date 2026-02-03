@@ -64,7 +64,8 @@ impl OrbDectector {
         &self,
         octave_image: &Image<f32, 1, A>,
     ) -> Result<(Vec<[usize; 2]>, Vec<f32>, Vec<f32>), ImageError> {
-        let mut fast_detector = FastDetector::new(octave_image.size(), self.fast_threshold, 12, 1)?;
+        let mut fast_detector =
+            FastDetector::new(octave_image.size(), self.fast_threshold, self.fast_n, 1)?;
         fast_detector.compute_corner_response(&octave_image);
         let keypoints = fast_detector.extract_keypoints()?;
 
@@ -84,6 +85,12 @@ impl OrbDectector {
         }
 
         let orientations = corner_orientations(octave_image, &keypoints);
+        let filtered_orientations: Vec<_> = keypoints
+            .iter()
+            .zip(orientations.iter())
+            .zip(mask.iter())
+            .filter_map(|((_, &ori), &m)| if m { Some(ori) } else { None })
+            .collect();
 
         let mut response = Image::from_size_val(octave_image.size(), 0f32, CpuAllocator)?;
         let mut harris_response = HarrisResponse::new(octave_image.size()).with_k(self.harris_k);
@@ -94,7 +101,11 @@ impl OrbDectector {
             .map(|&[r, c]| response.as_slice()[response.size().index(r, c)])
             .collect();
 
-        Ok((filtered_keypoints, orientations, filtered_responses))
+        Ok((
+            filtered_keypoints,
+            filtered_orientations,
+            filtered_responses,
+        ))
     }
 
     pub fn detect<A: ImageAllocator>(
@@ -310,11 +321,11 @@ fn corner_orientations<A: ImageAllocator>(
     corners: &[[usize; 2]],
 ) -> Vec<f32> {
     const M_SIZE: usize = 31; // NOTE: This must be uneven
-    let mask = vec![false; M_SIZE * M_SIZE];
     let src_slice = src.as_slice();
 
     let mrows2 = (M_SIZE as i32 - 1) / 2;
     let mcols2 = (M_SIZE as i32 - 1) / 2;
+    let radius2 = mrows2 * mrows2;
 
     let height = src.height() as i32;
     let width = src.width() as i32;
@@ -329,16 +340,18 @@ fn corner_orientations<A: ImageAllocator>(
             let mut m01_tmp = 0f32;
 
             for c in 0..M_SIZE as i32 {
-                let mask_idx = (r as usize) * M_SIZE + (c as usize);
-                if mask[mask_idx] != false {
-                    let rr = r0 as i32 + r - mrows2;
-                    let cc = c0 as i32 + c - mcols2;
+                let dr = r - mrows2;
+                let dc = c - mcols2;
+                if dr * dr + dc * dc > radius2 {
+                    continue;
+                }
 
-                    if rr >= 0 && rr < height && cc >= 0 && cc < width {
-                        let curr_pixel = src_slice[src.size().index(rr as usize, cc as usize)];
-                        m10 += curr_pixel * (c - mcols2) as f32;
-                        m01_tmp += curr_pixel;
-                    }
+                let rr = r0 as i32 + dr;
+                let cc = c0 as i32 + dc;
+                if rr >= 0 && rr < height && cc >= 0 && cc < width {
+                    let curr_pixel = src_slice[src.size().index(rr as usize, cc as usize)];
+                    m10 += curr_pixel * dc as f32;
+                    m01_tmp += curr_pixel;
                 }
             }
 
@@ -924,3 +937,142 @@ const POS1: [[i8; 2]; 256] = [
     [12, -2],
     [0, -11],
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kornia_image::Image;
+    use kornia_tensor::CpuAllocator;
+
+    fn make_gradient_x(size: usize) -> Image<f32, 1, CpuAllocator> {
+        let mut img = Image::from_size_val([size, size].into(), 0.0, CpuAllocator).unwrap();
+        let width = img.width();
+        let height = img.height();
+        let denom = (width.saturating_sub(1)).max(1) as f32;
+
+        for y in 0..height {
+            for x in 0..width {
+                img.as_slice_mut()[y * width + x] = x as f32 / denom;
+            }
+        }
+
+        img
+    }
+
+    fn make_gradient_y(size: usize) -> Image<f32, 1, CpuAllocator> {
+        let mut img = Image::from_size_val([size, size].into(), 0.0, CpuAllocator).unwrap();
+        let width = img.width();
+        let height = img.height();
+        let denom = (height.saturating_sub(1)).max(1) as f32;
+
+        for y in 0..height {
+            let value = y as f32 / denom;
+            for x in 0..width {
+                img.as_slice_mut()[y * width + x] = value;
+            }
+        }
+
+        img
+    }
+
+    #[test]
+    fn test_corner_orientations_gradient() {
+        let size = 31;
+        let center = [[size / 2, size / 2]];
+
+        let img_x = make_gradient_x(size);
+        let ori_x = corner_orientations(&img_x, &center)[0];
+        assert!(ori_x.abs() < 0.1, "expected ~0 rad, got {ori_x}");
+
+        let img_y = make_gradient_y(size);
+        let ori_y = corner_orientations(&img_y, &center)[0].abs();
+        let expected = std::f32::consts::FRAC_PI_2;
+        assert!(
+            (ori_y - expected).abs() < 0.1,
+            "expected ~pi/2 rad, got {ori_y}"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "opencv_bench"))]
+mod opencv_tests {
+    use super::*;
+    use opencv::{
+        core::{no_array, Mat, Vector},
+        features2d::{ORB_ScoreType, ORB},
+        imgcodecs,
+        prelude::*,
+    };
+
+    fn u8_to_f32_image(src: &Image<u8, 1, CpuAllocator>) -> Image<f32, 1, CpuAllocator> {
+        let mut dst = Image::from_size_val(src.size(), 0.0, CpuAllocator).unwrap();
+        src.as_slice()
+            .iter()
+            .zip(dst.as_slice_mut())
+            .for_each(|(&s, d)| *d = s as f32 / 255.0);
+        dst
+    }
+
+    fn keypoints_from_opencv(kps: &Vector<opencv::core::KeyPoint>) -> Vec<(f32, f32)> {
+        kps.iter().map(|kp| (kp.pt().y, kp.pt().x)).collect()
+    }
+
+    fn has_nearby_keypoint(kps: &[(f32, f32)], target: (f32, f32), radius: f32) -> bool {
+        let r2 = radius * radius;
+        kps.iter().any(|&(y, x)| {
+            let dy = y - target.0;
+            let dx = x - target.1;
+            dy * dy + dx * dx <= r2
+        })
+    }
+
+    #[test]
+    fn test_orb_compare_with_opencv() -> Result<(), Box<dyn std::error::Error>> {
+        let img_rgb = kornia_io::jpeg::read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
+        let mut img_gray = Image::from_size_val(img_rgb.size(), 0u8, CpuAllocator)?;
+        crate::color::gray_from_rgb_u8(&img_rgb, &mut img_gray)?;
+        let img_f32 = u8_to_f32_image(&img_gray);
+
+        // Kornia ORB.
+        let mut orb = OrbDectector::default();
+        orb.fast_threshold = 20.0 / 255.0; // align with OpenCV default
+        let (kps, scales, orientations, _responses) = orb.detect(&img_f32)?;
+        let (descriptors, _mask) = orb.extract(&img_f32, &kps, &scales, &orientations)?;
+
+        let mut kps_xy: Vec<(f32, f32)> = kps.iter().copied().collect();
+
+        // OpenCV ORB.
+        let mat = imgcodecs::imread("../../tests/data/dog.jpeg", imgcodecs::IMREAD_GRAYSCALE)?;
+
+        let mut orb_cv = ORB::create(500, 1.2, 8, 31, 0, 2, ORB_ScoreType::HARRIS_SCORE, 31, 20)?;
+        let mut kps_cv = Vector::<opencv::core::KeyPoint>::new();
+        let mut desc_cv = Mat::default();
+        orb_cv.detect_and_compute(&mat, &no_array(), &mut kps_cv, &mut desc_cv, false)?;
+
+        let kps_cv_xy = keypoints_from_opencv(&kps_cv);
+
+        assert!(kps_xy.len() >= 100, "kornia ORB found too few keypoints");
+        assert!(kps_cv_xy.len() >= 100, "OpenCV ORB found too few keypoints");
+
+        kps_xy.truncate(500);
+        let kps_cv_xy = &kps_cv_xy[..kps_cv_xy.len().min(1000)];
+
+        let mut overlap = 0usize;
+        for &kp in &kps_xy {
+            if has_nearby_keypoint(kps_cv_xy, kp, 3.0) {
+                overlap += 1;
+            }
+        }
+
+        let overlap_ratio = overlap as f32 / kps_xy.len() as f32;
+        assert!(overlap_ratio >= 0.15, "overlap too low: {overlap_ratio:.2}");
+
+        // Descriptor size comparison (OpenCV uses 32 bytes, Kornia uses 256 bits as bytes).
+        assert_eq!(desc_cv.cols(), 32);
+        if !descriptors.is_empty() {
+            assert_eq!(descriptors[0].len(), 256);
+        }
+
+        Ok(())
+    }
+}

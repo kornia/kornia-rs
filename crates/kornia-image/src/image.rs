@@ -18,12 +18,45 @@ use kornia_tensor::{Tensor, Tensor2, Tensor3};
 /// assert_eq!(image_size.width, 10);
 /// assert_eq!(image_size.height, 20);
 /// ```
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImageSize {
     /// Width of the image in pixels
     pub width: usize,
     /// Height of the image in pixels
     pub height: usize,
+}
+
+/// Pixel data type stored in an image buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PixelFormat {
+    /// Unsigned 8-bit integer pixels.
+    U8,
+    /// Unsigned 16-bit integer pixels.
+    U16,
+    /// 32-bit floating point pixels.
+    F32,
+}
+
+/// Image layout metadata (size, channels, pixel format).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageLayout {
+    /// Image size in pixels.
+    pub image_size: ImageSize,
+    /// Number of channels per pixel.
+    pub channels: u8,
+    /// Pixel data format.
+    pub pixel_format: PixelFormat,
+}
+
+impl ImageLayout {
+    /// Create a new image layout descriptor.
+    pub fn new(image_size: ImageSize, channels: u8, pixel_format: PixelFormat) -> Self {
+        Self {
+            image_size,
+            channels,
+            pixel_format,
+        }
+    }
 }
 
 impl std::fmt::Display for ImageSize {

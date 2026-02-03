@@ -257,7 +257,7 @@ pub fn decode_image_tiff_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
             tiff::TiffError::UnsupportedError(tiff::TiffUnsupportedError::UnknownInterpretation),
         ))?;
 
-    Ok(ImageLayout::new(size, num_channels, pixel_format))
+    Ok(ImageLayout::new(size, num_channels as u8, pixel_format))
 }
 
 /// Decodes a TIFF image with a three channel (rgb8) from Raw Bytes.
