@@ -20,11 +20,11 @@ pub fn match_descriptors(
     );
 
     let mut distance = vec![vec![0u32; n]; m];
-    for i in 0..m {
-        for j in 0..n {
-            distance[i][j] = descriptors1[i]
+    for (i, desc1) in descriptors1.iter().enumerate() {
+        for (j, desc2) in descriptors2.iter().enumerate() {
+            distance[i][j] = desc1
                 .iter()
-                .zip(&descriptors2[j])
+                .zip(desc2)
                 .map(|(&a, &b)| (a ^ b).count_ones())
                 .sum();
         }
@@ -43,7 +43,7 @@ pub fn match_descriptors(
         .collect();
 
     if cross_check {
-        let mut matches1: Vec<usize> = (0..n)
+        let matches1: Vec<usize> = (0..n)
             .map(|j| {
                 let (min_i, _) = (0..m)
                     .map(|i| (i, distance[i][j]))
@@ -104,7 +104,7 @@ pub fn match_descriptors(
 
                 let &second_best_dist = row.iter().min().unwrap();
                 let denom = if second_best_dist == 0 {
-                    std::f32::EPSILON
+                    f32::EPSILON
                 } else {
                     second_best_dist as f32
                 };
@@ -129,5 +129,5 @@ pub fn match_descriptors(
         }
     }
 
-    indices1.into_iter().zip(indices2.into_iter()).collect()
+    indices1.into_iter().zip(indices2).collect()
 }
