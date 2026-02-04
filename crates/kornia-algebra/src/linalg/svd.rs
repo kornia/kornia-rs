@@ -3,8 +3,10 @@ use crate::{Mat3AF32, Mat3F32, Mat3F64, QuatF32, QuatF64, Vec3F32, Vec3F64};
 
 // Re-export the SVD result types for public use
 // We keep 'svd3' and 'SVD3Set' pointing to f32 for backward compatibility
-pub use impl_f32::{svd3, svd3 as svd3_f32, SVD3Set, SVD3Set as SVD3SetF32};
-pub use impl_f64::{svd3 as svd3_f64, SVD3Set as SVD3SetF64};
+pub use impl_f32::{sort_singular_values, svd3, svd3 as svd3_f32, SVD3Set, SVD3Set as SVD3SetF32};
+pub use impl_f64::{
+    sort_singular_values as sort_singular_values_f64, svd3 as svd3_f64, SVD3Set as SVD3SetF64,
+};
 
 /// ----------------------------------------------------------------------------
 /// F32 Implementation
@@ -16,6 +18,7 @@ mod impl_f32 {
     const CSTAR: f32 = 0.923_879_5;
     const SSTAR: f32 = 0.382_683_43;
     const SVD3_EPSILON: f32 = 1e-6;
+    const JACOBI_TOLERANCE: f32 = 1e-6;
     const MAX_SWEEPS: usize = 4;
 
     #[derive(Debug, Clone)]
@@ -264,7 +267,7 @@ mod impl_f32 {
             conjugate_xz(&mut s, &mut q);
 
             let off_diag_norm_sq = s.m_10 * s.m_10 + s.m_20 * s.m_20 + s.m_21 * s.m_21;
-            if off_diag_norm_sq < 1e-6 {
+            if off_diag_norm_sq < JACOBI_TOLERANCE {
                 break;
             }
         }
@@ -383,84 +386,98 @@ mod impl_f32 {
         let mut y_axis = b_mat.y_axis();
         let mut z_axis = b_mat.z_axis();
         let g1 = qr_givens_quaternion(x_axis.x, x_axis.y);
-        let a1 = -2.0 * g1.sin_theta * g1.sin_theta + 1.0; // a1 = cos(theta1)
-        let b1 = 2.0 * g1.cos_theta * g1.sin_theta; // b1 = sin(theta1)
+        let rot_c = -2.0 * g1.sin_theta * g1.sin_theta + 1.0; // cos(2*theta)
+        let rot_s = 2.0 * g1.cos_theta * g1.sin_theta; // sin(2*theta)
 
-        // Apply Q1.T to B (row-wise operation)
-        let c0 = x_axis.x;
-        let c1 = x_axis.y;
-        x_axis.x = a1 * c0 + b1 * c1;
-        x_axis.y = -b1 * c0 + a1 * c1;
-        let c0 = y_axis.x;
-        let c1 = y_axis.y;
-        y_axis.x = a1 * c0 + b1 * c1;
-        y_axis.y = -b1 * c0 + a1 * c1;
-        let c0 = z_axis.x;
-        let c1 = z_axis.y;
-        z_axis.x = a1 * c0 + b1 * c1;
-        z_axis.y = -b1 * c0 + a1 * c1;
+        // Apply Q1.T to B (row-wise operation on rows 0 and 1)
+        let val_row0 = x_axis.x;
+        let val_row1 = x_axis.y;
+        x_axis.x = rot_c * val_row0 + rot_s * val_row1;
+        x_axis.y = -rot_s * val_row0 + rot_c * val_row1;
+        let val_row0 = y_axis.x;
+        let val_row1 = y_axis.y;
+        y_axis.x = rot_c * val_row0 + rot_s * val_row1;
+        y_axis.y = -rot_s * val_row0 + rot_c * val_row1;
+        let val_row0 = z_axis.x;
+        let val_row1 = z_axis.y;
+        z_axis.x = rot_c * val_row0 + rot_s * val_row1;
+        z_axis.y = -rot_s * val_row0 + rot_c * val_row1;
 
         // --- Second Givens rotation to zero out b[2][0] (affects rows 0 and 2) ---
         let g2 = qr_givens_quaternion(x_axis.x, x_axis.z);
-        let a2 = -2.0 * g2.sin_theta * g2.sin_theta + 1.0; // a2 = cos(theta2)
-        let b2 = 2.0 * g2.cos_theta * g2.sin_theta; // b2 = sin(theta2)
+        let rot_c = -2.0 * g2.sin_theta * g2.sin_theta + 1.0;
+        let rot_s = 2.0 * g2.cos_theta * g2.sin_theta;
 
         // Apply Q2.T to (Q1.T * B)
-        let c0 = x_axis.x;
-        let c2 = x_axis.z;
-        x_axis.x = a2 * c0 + b2 * c2;
-        x_axis.z = -b2 * c0 + a2 * c2;
-        let c0 = y_axis.x;
-        let c2 = y_axis.z;
-        y_axis.x = a2 * c0 + b2 * c2;
-        y_axis.z = -b2 * c0 + a2 * c2;
-        let c0 = z_axis.x;
-        let c2 = z_axis.z;
-        z_axis.x = a2 * c0 + b2 * c2;
-        z_axis.z = -b2 * c0 + a2 * c2;
+        let val_row0 = x_axis.x;
+        let val_row2 = x_axis.z;
+        x_axis.x = rot_c * val_row0 + rot_s * val_row2;
+        x_axis.z = -rot_s * val_row0 + rot_c * val_row2;
+        let val_row0 = y_axis.x;
+        let val_row2 = y_axis.z;
+        y_axis.x = rot_c * val_row0 + rot_s * val_row2;
+        y_axis.z = -rot_s * val_row0 + rot_c * val_row2;
+        let val_row0 = z_axis.x;
+        let val_row2 = z_axis.z;
+        z_axis.x = rot_c * val_row0 + rot_s * val_row2;
+        z_axis.z = -rot_s * val_row0 + rot_c * val_row2;
 
         // --- Third Givens rotation to zero out b[2][1] (affects rows 1 and 2) ---
         let g3 = qr_givens_quaternion(y_axis.y, y_axis.z);
-        let a3 = -2.0 * g3.sin_theta * g3.sin_theta + 1.0; // a3 = cos(theta3)
-        let b3 = 2.0 * g3.cos_theta * g3.sin_theta; // b3 = sin(theta3)
+        let rot_c = -2.0 * g3.sin_theta * g3.sin_theta + 1.0;
+        let rot_s = 2.0 * g3.cos_theta * g3.sin_theta;
 
         // Apply Q3.T to (Q2.T * Q1.T * B)
-        let c1 = x_axis.y;
-        let c2 = x_axis.z;
-        x_axis.y = a3 * c1 + b3 * c2;
-        x_axis.z = -b3 * c1 + a3 * c2;
-        let c1 = y_axis.y;
-        let c2 = y_axis.z;
-        y_axis.y = a3 * c1 + b3 * c2;
-        y_axis.z = -b3 * c1 + a3 * c2;
-        let c1 = z_axis.y;
-        let c2 = z_axis.z;
-        z_axis.y = a3 * c1 + b3 * c2;
-        z_axis.z = -b3 * c1 + a3 * c2;
+        let val_row1 = x_axis.y;
+        let val_row2 = x_axis.z;
+        x_axis.y = rot_c * val_row1 + rot_s * val_row2;
+        x_axis.z = -rot_s * val_row1 + rot_c * val_row2;
+        let val_row1 = y_axis.y;
+        let val_row2 = y_axis.z;
+        y_axis.y = rot_c * val_row1 + rot_s * val_row2;
+        y_axis.z = -rot_s * val_row1 + rot_c * val_row2;
+        let val_row1 = z_axis.y;
+        let val_row2 = z_axis.z;
+        z_axis.y = rot_c * val_row1 + rot_s * val_row2;
+        z_axis.z = -rot_s * val_row1 + rot_c * val_row2;
 
         let r = Mat3F32::from_cols(x_axis, y_axis, z_axis);
         *b_mat = r;
 
         // --- Construct Q = Q1 * Q2 * Q3 ---
+        // Recalculate rotation parameters for Q reconstruction
+        // Note: The previous variables are shadowed, so we recalculate.
+        // Ideally we should store them, but for code structure similarity we keep the pattern.
+        // Actually, we need the stored values.
+        // Let's re-compute them or store them. Recomputing is safer given the scope.
+        // Wait, the original code used a1, b1, a2, b2, a3, b3.
+        // We reused rot_c, rot_s. We need distinct variables to construct Q.
+        let rot_c1 = -2.0 * g1.sin_theta * g1.sin_theta + 1.0;
+        let rot_s1 = 2.0 * g1.cos_theta * g1.sin_theta;
+        let rot_c2 = -2.0 * g2.sin_theta * g2.sin_theta + 1.0;
+        let rot_s2 = 2.0 * g2.cos_theta * g2.sin_theta;
+        let rot_c3 = -2.0 * g3.sin_theta * g3.sin_theta + 1.0;
+        let rot_s3 = 2.0 * g3.cos_theta * g3.sin_theta;
+
         // Q1 = (Q1.T).T
         let q1 = Mat3F32::from_cols(
-            Vec3F32::new(a1, b1, 0.0),
-            Vec3F32::new(-b1, a1, 0.0),
+            Vec3F32::new(rot_c1, rot_s1, 0.0),
+            Vec3F32::new(-rot_s1, rot_c1, 0.0),
             Vec3F32::new(0.0, 0.0, 1.0),
         );
 
         // Q2 = (Q2.T).T
         let q2 = Mat3F32::from_cols(
-            Vec3F32::new(a2, 0.0, b2),
+            Vec3F32::new(rot_c2, 0.0, rot_s2),
             Vec3F32::new(0.0, 1.0, 0.0),
-            Vec3F32::new(-b2, 0.0, a2),
+            Vec3F32::new(-rot_s2, 0.0, rot_c2),
         );
 
         // Q3 = (Q3.T).T
         let q3 = Mat3F32::from_cols(
             Vec3F32::new(1.0, 0.0, 0.0),
-            Vec3F32::new(0.0, a3, b3),
-            Vec3F32::new(0.0, -b3, a3),
+            Vec3F32::new(0.0, rot_c3, rot_s3),
+            Vec3F32::new(0.0, -rot_s3, rot_c3),
         );
 
         let q = q1 * q2 * q3;
@@ -517,6 +534,7 @@ mod impl_f64 {
     const CSTAR: f64 = 0.923_879_532_511_286_7;
     const SSTAR: f64 = 0.382_683_432_365_089_8;
     const SVD3_EPSILON: f64 = 1e-12; // High precision epsilon
+    const JACOBI_TOLERANCE: f64 = 1e-12;
     const MAX_SWEEPS: usize = 4;
 
     #[derive(Debug, Clone)]
@@ -560,9 +578,9 @@ mod impl_f64 {
 
     #[derive(Debug)]
     pub struct SVD3Set {
-        pub u: Mat3F64,
-        pub s: Mat3F64,
-        pub v: Mat3F64,
+        u: Mat3F64,
+        s: Mat3F64,
+        v: Mat3F64,
     }
 
     impl SVD3Set {
@@ -713,7 +731,7 @@ mod impl_f64 {
             conjugate_yz(&mut s, &mut q);
             conjugate_xz(&mut s, &mut q);
             let off_diag_norm_sq = s.m_10 * s.m_10 + s.m_20 * s.m_20 + s.m_21 * s.m_21;
-            if off_diag_norm_sq < SVD3_EPSILON {
+            if off_diag_norm_sq < JACOBI_TOLERANCE {
                 break;
             }
         }
@@ -818,72 +836,81 @@ mod impl_f64 {
         let mut z_axis = b_mat.z_axis();
 
         let g1 = qr_givens_quaternion(x_axis.x, x_axis.y);
-        let a1 = -2.0 * g1.sin_theta * g1.sin_theta + 1.0;
-        let b1 = 2.0 * g1.cos_theta * g1.sin_theta;
+        let rot_c = -2.0 * g1.sin_theta * g1.sin_theta + 1.0;
+        let rot_s = 2.0 * g1.cos_theta * g1.sin_theta;
 
-        let c0 = x_axis.x;
-        let c1 = x_axis.y;
-        x_axis.x = a1 * c0 + b1 * c1;
-        x_axis.y = -b1 * c0 + a1 * c1;
-        let c0 = y_axis.x;
-        let c1 = y_axis.y;
-        y_axis.x = a1 * c0 + b1 * c1;
-        y_axis.y = -b1 * c0 + a1 * c1;
-        let c0 = z_axis.x;
-        let c1 = z_axis.y;
-        z_axis.x = a1 * c0 + b1 * c1;
-        z_axis.y = -b1 * c0 + a1 * c1;
+        let val_row0 = x_axis.x;
+        let val_row1 = x_axis.y;
+        x_axis.x = rot_c * val_row0 + rot_s * val_row1;
+        x_axis.y = -rot_s * val_row0 + rot_c * val_row1;
+        let val_row0 = y_axis.x;
+        let val_row1 = y_axis.y;
+        y_axis.x = rot_c * val_row0 + rot_s * val_row1;
+        y_axis.y = -rot_s * val_row0 + rot_c * val_row1;
+        let val_row0 = z_axis.x;
+        let val_row1 = z_axis.y;
+        z_axis.x = rot_c * val_row0 + rot_s * val_row1;
+        z_axis.y = -rot_s * val_row0 + rot_c * val_row1;
 
         let g2 = qr_givens_quaternion(x_axis.x, x_axis.z);
-        let a2 = -2.0 * g2.sin_theta * g2.sin_theta + 1.0;
-        let b2 = 2.0 * g2.cos_theta * g2.sin_theta;
+        let rot_c = -2.0 * g2.sin_theta * g2.sin_theta + 1.0;
+        let rot_s = 2.0 * g2.cos_theta * g2.sin_theta;
 
-        let c0 = x_axis.x;
-        let c2 = x_axis.z;
-        x_axis.x = a2 * c0 + b2 * c2;
-        x_axis.z = -b2 * c0 + a2 * c2;
-        let c0 = y_axis.x;
-        let c2 = y_axis.z;
-        y_axis.x = a2 * c0 + b2 * c2;
-        y_axis.z = -b2 * c0 + a2 * c2;
-        let c0 = z_axis.x;
-        let c2 = z_axis.z;
-        z_axis.x = a2 * c0 + b2 * c2;
-        z_axis.z = -b2 * c0 + a2 * c2;
+        let val_row0 = x_axis.x;
+        let val_row2 = x_axis.z;
+        x_axis.x = rot_c * val_row0 + rot_s * val_row2;
+        x_axis.z = -rot_s * val_row0 + rot_c * val_row2;
+        let val_row0 = y_axis.x;
+        let val_row2 = y_axis.z;
+        y_axis.x = rot_c * val_row0 + rot_s * val_row2;
+        y_axis.z = -rot_s * val_row0 + rot_c * val_row2;
+        let val_row0 = z_axis.x;
+        let val_row2 = z_axis.z;
+        z_axis.x = rot_c * val_row0 + rot_s * val_row2;
+        z_axis.z = -rot_s * val_row0 + rot_c * val_row2;
 
         let g3 = qr_givens_quaternion(y_axis.y, y_axis.z);
-        let a3 = -2.0 * g3.sin_theta * g3.sin_theta + 1.0;
-        let b3 = 2.0 * g3.cos_theta * g3.sin_theta;
+        let rot_c = -2.0 * g3.sin_theta * g3.sin_theta + 1.0;
+        let rot_s = 2.0 * g3.cos_theta * g3.sin_theta;
 
-        let c1 = x_axis.y;
-        let c2 = x_axis.z;
-        x_axis.y = a3 * c1 + b3 * c2;
-        x_axis.z = -b3 * c1 + a3 * c2;
-        let c1 = y_axis.y;
-        let c2 = y_axis.z;
-        y_axis.y = a3 * c1 + b3 * c2;
-        y_axis.z = -b3 * c1 + a3 * c2;
-        let c1 = z_axis.y;
-        let c2 = z_axis.z;
-        z_axis.y = a3 * c1 + b3 * c2;
-        z_axis.z = -b3 * c1 + a3 * c2;
+        let val_row1 = x_axis.y;
+        let val_row2 = x_axis.z;
+        x_axis.y = rot_c * val_row1 + rot_s * val_row2;
+        x_axis.z = -rot_s * val_row1 + rot_c * val_row2;
+        let val_row1 = y_axis.y;
+        let val_row2 = y_axis.z;
+        y_axis.y = rot_c * val_row1 + rot_s * val_row2;
+        y_axis.z = -rot_s * val_row1 + rot_c * val_row2;
+        let val_row1 = z_axis.y;
+        let val_row2 = z_axis.z;
+        z_axis.y = rot_c * val_row1 + rot_s * val_row2;
+        z_axis.z = -rot_s * val_row1 + rot_c * val_row2;
 
-        *b_mat = Mat3F64::from_cols(x_axis, y_axis, z_axis);
+        let r = Mat3F64::from_cols(x_axis, y_axis, z_axis);
+        *b_mat = r;
+
+        // Recalculate parameters for reconstruction
+        let rot_c1 = -2.0 * g1.sin_theta * g1.sin_theta + 1.0;
+        let rot_s1 = 2.0 * g1.cos_theta * g1.sin_theta;
+        let rot_c2 = -2.0 * g2.sin_theta * g2.sin_theta + 1.0;
+        let rot_s2 = 2.0 * g2.cos_theta * g2.sin_theta;
+        let rot_c3 = -2.0 * g3.sin_theta * g3.sin_theta + 1.0;
+        let rot_s3 = 2.0 * g3.cos_theta * g3.sin_theta;
 
         let q1 = Mat3F64::from_cols(
-            Vec3F64::new(a1, b1, 0.0),
-            Vec3F64::new(-b1, a1, 0.0),
+            Vec3F64::new(rot_c1, rot_s1, 0.0),
+            Vec3F64::new(-rot_s1, rot_c1, 0.0),
             Vec3F64::new(0.0, 0.0, 1.0),
         );
         let q2 = Mat3F64::from_cols(
-            Vec3F64::new(a2, 0.0, b2),
+            Vec3F64::new(rot_c2, 0.0, rot_s2),
             Vec3F64::new(0.0, 1.0, 0.0),
-            Vec3F64::new(-b2, 0.0, a2),
+            Vec3F64::new(-rot_s2, 0.0, rot_c2),
         );
         let q3 = Mat3F64::from_cols(
             Vec3F64::new(1.0, 0.0, 0.0),
-            Vec3F64::new(0.0, a3, b3),
-            Vec3F64::new(0.0, -b3, a3),
+            Vec3F64::new(0.0, rot_c3, rot_s3),
+            Vec3F64::new(0.0, -rot_s3, rot_c3),
         );
         QR3 {
             q: q1 * q2 * q3,
@@ -929,6 +956,10 @@ mod tests {
     use super::*;
     use crate::{Mat3F32, Mat3F64, Vec3F32, Vec3F64};
 
+    const TEST_EPSILON_F32: f32 = 1e-5;
+    const TEST_EPSILON_F32_STRICT: f32 = 1e-6;
+    const TEST_EPSILON_F64: f64 = 1e-10;
+
     fn verify_svd_properties_f32(a: &Mat3F32, svd: &SVD3SetF32, epsilon: f32) {
         let u = *svd.u();
         let s = *svd.s();
@@ -938,17 +969,51 @@ mod tests {
         let diff = *a - reconstruction;
         assert!(
             diff.x_axis().length() < epsilon,
-            "Reconstruction error: {:?}",
+            "Reconstruction error (x): {:?}",
             diff
         );
+        assert!(
+            diff.y_axis().length() < epsilon,
+            "Reconstruction error (y): {:?}",
+            diff
+        );
+        assert!(
+            diff.z_axis().length() < epsilon,
+            "Reconstruction error (z): {:?}",
+            diff
+        );
+
         // Check orthogonality U
         let u_t_u = u.transpose() * u;
         let diff_u = u_t_u - Mat3F32::IDENTITY;
-        assert!(diff_u.x_axis().length() < epsilon, "U orthogonality error");
+        assert!(
+            diff_u.x_axis().length() < epsilon,
+            "U orthogonality error (x)"
+        );
+        assert!(
+            diff_u.y_axis().length() < epsilon,
+            "U orthogonality error (y)"
+        );
+        assert!(
+            diff_u.z_axis().length() < epsilon,
+            "U orthogonality error (z)"
+        );
+
         // Check orthogonality V
         let v_t_v = v.transpose() * v;
         let diff_v = v_t_v - Mat3F32::IDENTITY;
-        assert!(diff_v.x_axis().length() < epsilon, "V orthogonality error");
+        assert!(
+            diff_v.x_axis().length() < epsilon,
+            "V orthogonality error (x)"
+        );
+        assert!(
+            diff_v.y_axis().length() < epsilon,
+            "V orthogonality error (y)"
+        );
+        assert!(
+            diff_v.z_axis().length() < epsilon,
+            "V orthogonality error (z)"
+        );
     }
 
     fn verify_svd_properties_f64(a: &Mat3F64, svd: &SVD3SetF64, epsilon: f64) {
@@ -960,40 +1025,74 @@ mod tests {
         let diff = *a - reconstruction;
         assert!(
             diff.x_axis().length() < epsilon,
-            "Reconstruction error: {:?}",
+            "Reconstruction error (x): {:?}",
             diff
         );
+        assert!(
+            diff.y_axis().length() < epsilon,
+            "Reconstruction error (y): {:?}",
+            diff
+        );
+        assert!(
+            diff.z_axis().length() < epsilon,
+            "Reconstruction error (z): {:?}",
+            diff
+        );
+
         // Check orthogonality U
         let u_t_u = u.transpose() * u;
         let diff_u = u_t_u - Mat3F64::IDENTITY;
-        assert!(diff_u.x_axis().length() < epsilon, "U orthogonality error");
+        assert!(
+            diff_u.x_axis().length() < epsilon,
+            "U orthogonality error (x)"
+        );
+        assert!(
+            diff_u.y_axis().length() < epsilon,
+            "U orthogonality error (y)"
+        );
+        assert!(
+            diff_u.z_axis().length() < epsilon,
+            "U orthogonality error (z)"
+        );
+
         // Check orthogonality V
         let v_t_v = v.transpose() * v;
         let diff_v = v_t_v - Mat3F64::IDENTITY;
-        assert!(diff_v.x_axis().length() < epsilon, "V orthogonality error");
+        assert!(
+            diff_v.x_axis().length() < epsilon,
+            "V orthogonality error (x)"
+        );
+        assert!(
+            diff_v.y_axis().length() < epsilon,
+            "V orthogonality error (y)"
+        );
+        assert!(
+            diff_v.z_axis().length() < epsilon,
+            "V orthogonality error (z)"
+        );
     }
 
     #[test]
     fn test_svd3_f32_simple() {
         let a = Mat3F32::from_diagonal(Vec3F32::new(3.0, 2.0, 1.0));
         let svd = svd3_f32(&a);
-        verify_svd_properties_f32(&a, &svd, 1e-5);
+        verify_svd_properties_f32(&a, &svd, TEST_EPSILON_F32);
     }
 
     #[test]
     fn test_svd3_f32_zero() {
         let a = Mat3F32::from_cols(Vec3F32::ZERO, Vec3F32::ZERO, Vec3F32::ZERO);
         let svd_result = svd3_f32(&a);
-        verify_svd_properties_f32(&a, &svd_result, 1e-6);
+        verify_svd_properties_f32(&a, &svd_result, TEST_EPSILON_F32_STRICT);
         let s_x = svd_result.s().x_axis();
-        assert!(s_x.x.abs() < 1e-6);
+        assert!(s_x.x.abs() < TEST_EPSILON_F32_STRICT);
     }
 
     #[test]
     fn test_svd3_f32_identity() {
         let a = Mat3F32::IDENTITY;
         let svd_result = svd3_f32(&a);
-        verify_svd_properties_f32(&a, &svd_result, 1e-6);
+        verify_svd_properties_f32(&a, &svd_result, TEST_EPSILON_F32_STRICT);
     }
 
     #[test]
@@ -1006,14 +1105,14 @@ mod tests {
             Vec3F32::new(-sin, 0.0, cos),
         );
         let svd_result = svd3_f32(&a);
-        verify_svd_properties_f32(&a, &svd_result, 1e-6);
+        verify_svd_properties_f32(&a, &svd_result, TEST_EPSILON_F32_STRICT);
     }
 
     #[test]
     fn test_svd3_f64_simple() {
         let a = Mat3F64::from_diagonal(Vec3F64::new(3.0, 2.0, 1.0));
         let svd = svd3_f64(&a);
-        verify_svd_properties_f64(&a, &svd, 1e-10);
+        verify_svd_properties_f64(&a, &svd, TEST_EPSILON_F64);
     }
 
     #[test]
@@ -1028,11 +1127,11 @@ mod tests {
             Vec3F64::new(0.0, 0.0, 1.0),
         );
         let svd = svd3_f64(&a);
-        verify_svd_properties_f64(&a, &svd, 1e-10);
+        verify_svd_properties_f64(&a, &svd, TEST_EPSILON_F64);
         let s = svd.s();
         let s_vec = Vec3F64::new(s.x_axis().x, s.y_axis().y, s.z_axis().z);
-        assert!((s_vec.x - 1.0).abs() < 1e-10);
-        assert!((s_vec.y - 1.0).abs() < 1e-10);
-        assert!((s_vec.z - 1.0).abs() < 1e-10);
+        assert!((s_vec.x - 1.0).abs() < TEST_EPSILON_F64);
+        assert!((s_vec.y - 1.0).abs() < TEST_EPSILON_F64);
+        assert!((s_vec.z - 1.0).abs() < TEST_EPSILON_F64);
     }
 }
