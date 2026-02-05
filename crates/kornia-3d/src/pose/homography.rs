@@ -1,7 +1,6 @@
 use crate::linalg;
-use crate::pose::utils::{mat3f32_to_mat3f64, mat3f64_to_mat3f32, vec3f32_to_vec3f64};
 use faer::prelude::SpSolver;
-use kornia_algebra::{Mat3F32, Mat3F64, Vec3F32, Vec3F64};
+use kornia_algebra::{linalg::svd::svd3_f64, Mat3F64, Vec3F64};
 
 /// Error type for homography estimation.
 #[derive(thiserror::Error, Debug)]
@@ -158,8 +157,7 @@ pub fn homography_4pt3d(
 /// up to 8 candidates (some can be invalid if singular values are near-degenerate).
 pub fn decompose_homography(h: &Mat3F64, k1: &Mat3F64, k2: &Mat3F64) -> Vec<(Mat3F64, Vec3F64)> {
     let a = k2.inverse() * *h * *k1;
-    let a32 = mat3f64_to_mat3f32(&a);
-    let svd = kornia_algebra::linalg::svd::svd3(&a32);
+    let svd = svd3_f64(&a);
     let u = *svd.u();
     let v = *svd.v();
     let vt = v.transpose();
@@ -185,21 +183,20 @@ pub fn decompose_homography(h: &Mat3F64, k1: &Mat3F64, k2: &Mat3F64) -> Vec<(Mat
 
     let mut out = Vec::with_capacity(8);
     for i in 0..4 {
-        let rp = Mat3F32::from_cols(
-            Vec3F32::new(ctheta, 0.0, stheta[i]),
-            Vec3F32::new(0.0, 1.0, 0.0),
-            Vec3F32::new(-stheta[i], 0.0, ctheta),
+        let rp = Mat3F64::from_cols(
+            Vec3F64::new(ctheta, 0.0, stheta[i]),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(-stheta[i], 0.0, ctheta),
         );
         let r = (u * rp * vt) * s;
-        let r64 = mat3f32_to_mat3f64(&r);
 
-        let mut tp = Vec3F32::new(x1[i], 0.0, -x3[i]);
+        let mut tp = Vec3F64::new(x1[i], 0.0, -x3[i]);
         tp *= d1 - d3;
         let mut t = u * tp;
         let t_norm = t.length();
         if t_norm > 1e-12 {
             t /= t_norm;
-            out.push((r64, vec3f32_to_vec3f64(&t)));
+            out.push((r, t));
         }
     }
 
@@ -208,21 +205,20 @@ pub fn decompose_homography(h: &Mat3F64, k1: &Mat3F64, k2: &Mat3F64) -> Vec<(Mat
     let sphi = [aux_sphi, -aux_sphi, -aux_sphi, aux_sphi];
 
     for i in 0..4 {
-        let rp = Mat3F32::from_cols(
-            Vec3F32::new(cphi, 0.0, sphi[i]),
-            Vec3F32::new(0.0, -1.0, 0.0),
-            Vec3F32::new(sphi[i], 0.0, -cphi),
+        let rp = Mat3F64::from_cols(
+            Vec3F64::new(cphi, 0.0, sphi[i]),
+            Vec3F64::new(0.0, -1.0, 0.0),
+            Vec3F64::new(sphi[i], 0.0, -cphi),
         );
         let r = (u * rp * vt) * s;
-        let r64 = mat3f32_to_mat3f64(&r);
 
-        let mut tp = Vec3F32::new(x1[i], 0.0, x3[i]);
+        let mut tp = Vec3F64::new(x1[i], 0.0, x3[i]);
         tp *= d1 + d3;
         let mut t = u * tp;
         let t_norm = t.length();
         if t_norm > 1e-12 {
             t /= t_norm;
-            out.push((r64, vec3f32_to_vec3f64(&t)));
+            out.push((r, t));
         }
     }
 

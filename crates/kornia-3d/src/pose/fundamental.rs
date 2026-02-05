@@ -1,5 +1,4 @@
-use crate::pose::utils::{mat3f32_to_mat3f64, mat3f64_to_mat3f32};
-use kornia_algebra::{linalg::svd::svd3, Mat3F64, Vec2F64, Vec3F64};
+use kornia_algebra::{linalg::svd::svd3_f64, Mat3F64, Vec2F64, Vec3F64};
 
 /// Error type for fundamental matrix estimation.
 #[derive(thiserror::Error, Debug)]
@@ -117,12 +116,11 @@ fn normalize_points_2d(x: &[Vec2F64]) -> (Vec<Vec2F64>, Mat3F64) {
 }
 
 fn enforce_rank2(f: &Mat3F64) -> Result<Mat3F64, FundamentalError> {
-    let f32 = mat3f64_to_mat3f32(f);
-    let svd = svd3(&f32);
+    let svd = svd3_f64(f);
     let mut s = *svd.s();
     s.z_axis.z = 0.0;
     let f_rank2 = *svd.u() * s * svd.v().transpose();
-    Ok(mat3f32_to_mat3f64(&f_rank2))
+    Ok(f_rank2)
 }
 
 #[cfg(test)]
@@ -160,8 +158,7 @@ mod tests {
 
         let f_est = fundamental_8point(&x1, &x2).unwrap();
 
-        let f32 = mat3f64_to_mat3f32(&f_est);
-        let svd = svd3(&f32);
+        let svd = svd3_f64(&f_est);
         let s = svd.s();
         assert!(s.z_axis.z.abs() < 1e-2);
         assert!(s.z_axis.z < 0.1 * s.x_axis.x);

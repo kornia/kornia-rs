@@ -1,5 +1,4 @@
-use crate::pose::utils::{mat3f32_to_mat3f64, mat3f64_to_mat3f32};
-use kornia_algebra::{linalg::svd::svd3, Mat3F32, Mat3F64, Vec3F32, Vec3F64};
+use kornia_algebra::{linalg::svd::svd3_f64, Mat3F64, Vec3F64};
 
 /// Build an essential matrix from a fundamental matrix and camera intrinsics.
 ///
@@ -10,22 +9,20 @@ pub fn essential_from_fundamental(f: &Mat3F64, k1: &Mat3F64, k2: &Mat3F64) -> Ma
 
 /// Enforce the (1,1,0) singular value constraint on an essential matrix.
 pub fn enforce_essential_constraints(e: &Mat3F64) -> Mat3F64 {
-    let e32 = mat3f64_to_mat3f32(e);
-    let svd = svd3(&e32);
+    let svd = svd3_f64(e);
     let mut s = *svd.s();
     s.x_axis.x = 1.0;
     s.y_axis.y = 1.0;
     s.z_axis.z = 0.0;
     let e_fixed = *svd.u() * s * svd.v().transpose();
-    mat3f32_to_mat3f64(&e_fixed)
+    e_fixed
 }
 
 /// Decompose an essential matrix into four possible (R, t) solutions.
 ///
 /// Returns a vector of candidate poses where R is 3x3 and t is a unit 3-vector.
 pub fn decompose_essential(e: &Mat3F64) -> Vec<(Mat3F64, Vec3F64)> {
-    let e32 = mat3f64_to_mat3f32(e);
-    let svd = svd3(&e32);
+    let svd = svd3_f64(e);
     let mut u = *svd.u();
     let mut v = *svd.v();
 
@@ -36,25 +33,20 @@ pub fn decompose_essential(e: &Mat3F64) -> Vec<(Mat3F64, Vec3F64)> {
         v.z_axis = -v.z_axis;
     }
 
-    let w = Mat3F32::from_cols(
-        Vec3F32::new(0.0, 1.0, 0.0),
-        Vec3F32::new(-1.0, 0.0, 0.0),
-        Vec3F32::new(0.0, 0.0, 1.0),
+    let w = Mat3F64::from_cols(
+        Vec3F64::new(0.0, 1.0, 0.0),
+        Vec3F64::new(-1.0, 0.0, 0.0),
+        Vec3F64::new(0.0, 0.0, 1.0),
     );
     let wt = w.transpose();
 
     let r1 = u * w * v.transpose();
     let r2 = u * wt * v.transpose();
 
-    let t = Vec3F64::new(u.z_axis.x as f64, u.z_axis.y as f64, u.z_axis.z as f64);
+    let t = u.z_axis();
     let t_neg = Vec3F64::new(-t.x, -t.y, -t.z);
 
-    vec![
-        (mat3f32_to_mat3f64(&r1), t),
-        (mat3f32_to_mat3f64(&r1), t_neg),
-        (mat3f32_to_mat3f64(&r2), t),
-        (mat3f32_to_mat3f64(&r2), t_neg),
-    ]
+    vec![(r1, t), (r1, t_neg), (r2, t), (r2, t_neg)]
 }
 
 #[cfg(test)]
@@ -109,8 +101,7 @@ mod tests {
             Vec3F64::new(-0.2, 0.5, 0.3),
         );
         let e_fixed = enforce_essential_constraints(&e);
-        let e32 = mat3f64_to_mat3f32(&e_fixed);
-        let svd = svd3(&e32);
+        let svd = svd3_f64(&e_fixed);
         let s = svd.s();
         assert!(s.z_axis.z.abs() < 1e-3);
         assert!((s.x_axis.x - s.y_axis.y).abs() < 1e-1);
