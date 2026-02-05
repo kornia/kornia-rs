@@ -1,7 +1,7 @@
 use crate::pose::fundamental::{fundamental_8point, sampson_distance, FundamentalError};
 use crate::pose::{
-    decompose_essential, decompose_homography, essential_from_fundamental, homography_4pt2d,
-    HomographyError,
+    decompose_essential, decompose_homography, enforce_essential_constraints,
+    essential_from_fundamental, homography_4pt2d, HomographyError,
 };
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use rand::prelude::*;
@@ -32,7 +32,7 @@ pub enum TwoViewError {
 pub struct RansacParams {
     /// Maximum number of RANSAC iterations.
     pub max_iterations: usize,
-    /// Inlier threshold (squared pixel error).
+    /// Inlier threshold (pixel error). Compared against squared errors internally.
     pub threshold: f64,
     /// Minimum number of inliers required for acceptance.
     pub min_inliers: usize,
@@ -284,6 +284,7 @@ pub fn two_view_initialize(
     } else {
         let f = res_f.model;
         let e = essential_from_fundamental(&f, k1, k2);
+        let e = enforce_essential_constraints(&e);
         (
             TwoViewModel::Fundamental(f),
             decompose_essential(&e),
