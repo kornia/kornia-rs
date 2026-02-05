@@ -2,7 +2,6 @@
 use crate::{Mat3AF32, Mat3F32, Mat3F64, QuatF32, QuatF64, Vec3F32, Vec3F64};
 
 // Re-export the SVD result types for public use
-// Strict typing: We explicitly export f32 and f64 variants only.
 pub use impl_f32::{sort_singular_values, svd3 as svd3_f32, SVD3Set as SVD3SetF32};
 pub use impl_f64::{
     sort_singular_values as sort_singular_values_f64, svd3 as svd3_f64, SVD3Set as SVD3SetF64,

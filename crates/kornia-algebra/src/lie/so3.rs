@@ -348,7 +348,7 @@ mod tests {
         let diff = x.rminus(&y); // Y ⊖ X → τ
         assert_relative_eq!(diff.x, tau.x, epsilon = EPSILON);
         assert_relative_eq!(diff.y, tau.y, epsilon = EPSILON);
-        assert_relative_eq!(diff.z, tau.z, epsilon = 1e-5);
+        assert_relative_eq!(diff.z, tau.z, epsilon = EPSILON);
     }
 
     #[test]
