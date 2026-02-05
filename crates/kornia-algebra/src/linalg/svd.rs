@@ -1084,6 +1084,22 @@ mod tests {
     }
 
     #[test]
+    fn test_svd3_f64_zero() {
+        let a = Mat3F64::from_cols(Vec3F64::ZERO, Vec3F64::ZERO, Vec3F64::ZERO);
+        let svd_result = svd3_f64(&a);
+        verify_svd_properties_f64(&a, &svd_result, TEST_EPSILON_F64);
+        let s_x = svd_result.s().x_axis();
+        assert!(s_x.x.abs() < TEST_EPSILON_F64);
+    }
+
+    #[test]
+    fn test_svd3_f64_identity() {
+        let a = Mat3F64::IDENTITY;
+        let svd_result = svd3_f64(&a);
+        verify_svd_properties_f64(&a, &svd_result, TEST_EPSILON_F64);
+    }
+
+    #[test]
     fn test_svd3_f64_random_rotation() {
         // Test with a known rotation matrix (should have singular values 1,1,1)
         let ang = std::f64::consts::PI / 4.0;
