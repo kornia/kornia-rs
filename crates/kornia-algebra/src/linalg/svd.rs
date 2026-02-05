@@ -2,15 +2,12 @@
 use crate::{Mat3AF32, Mat3F32, Mat3F64, QuatF32, QuatF64, Vec3F32, Vec3F64};
 
 // Re-export the SVD result types for public use
-// We keep 'svd3' and 'SVD3Set' pointing to f32 for backward compatibility
-pub use impl_f32::{sort_singular_values, svd3, svd3 as svd3_f32, SVD3Set, SVD3Set as SVD3SetF32};
+// Strict typing: We explicitly export f32 and f64 variants only.
+pub use impl_f32::{sort_singular_values, svd3 as svd3_f32, SVD3Set as SVD3SetF32};
 pub use impl_f64::{
     sort_singular_values as sort_singular_values_f64, svd3 as svd3_f64, SVD3Set as SVD3SetF64,
 };
 
-/// ----------------------------------------------------------------------------
-/// F32 Implementation
-/// ----------------------------------------------------------------------------
 mod impl_f32 {
     use super::*;
 
@@ -26,19 +23,14 @@ mod impl_f32 {
     struct Symmetric3x3 {
         /// The element at row 0, column 0, first diagonal element.
         m_00: f32,
-
         /// The element at row 1, column 0. equivalent to `m_01`.
         m_10: f32,
-
         /// The element at row 1, column 1, the second diagonal element.
         m_11: f32,
-
         /// The element at row 2, column 0. equivalent to `m_02`.
         m_20: f32,
-
         /// The element at row 2, column 1. equivalent to `m_12`.
         m_21: f32,
-
         /// The element at row 2, column 2, the third diagonal element.
         m_22: f32,
     }
@@ -65,7 +57,6 @@ mod impl_f32 {
     struct Givens {
         /// The cosine of the angle in the Givens rotation.
         cos_theta: f32,
-
         /// The sine of the angle in the Givens rotation.
         sin_theta: f32,
     }
@@ -75,7 +66,6 @@ mod impl_f32 {
     struct QR3 {
         /// The orthogonal matrix Q from the QR decomposition.
         q: Mat3F32,
-
         /// The upper triangular matrix R from the QR decomposition.
         r: Mat3F32,
     }
@@ -85,10 +75,8 @@ mod impl_f32 {
     pub struct SVD3Set {
         /// The matrix of left singular vectors.
         u: Mat3F32,
-
         /// The diagonal matrix of singular values.
         s: Mat3F32,
-
         /// The matrix of right singular vectors.
         v: Mat3F32,
     }
@@ -99,13 +87,11 @@ mod impl_f32 {
         pub fn u(&self) -> &Mat3F32 {
             &self.u
         }
-
         /// Get the diagonal matrix of singular values.
         #[inline]
         pub fn s(&self) -> &Mat3F32 {
             &self.s
         }
-
         /// Get the right singular vectors matrix.
         #[inline]
         pub fn v(&self) -> &Mat3F32 {
@@ -141,7 +127,6 @@ mod impl_f32 {
     fn conjugate_xy(s: &mut Symmetric3x3, q: &mut QuatF32) {
         // Compute Givens rotation parameters
         let mut g = approximate_givens_parameters(s.m_00, s.m_11, s.m_10);
-
         let cos_theta2 = g.cos_theta * g.cos_theta;
         let sin_theta2 = g.sin_theta * g.sin_theta;
         let scale = 1.0 / (cos_theta2 + sin_theta2);
@@ -181,8 +166,6 @@ mod impl_f32 {
     fn conjugate_yz(s: &mut Symmetric3x3, q: &mut QuatF32) {
         // Compute Givens rotation parameters
         let mut g = approximate_givens_parameters(s.m_11, s.m_22, s.m_21);
-
-        // Calculate rotation matrix elements 'a' and 'b'
         let cos_theta2 = g.cos_theta * g.cos_theta;
         let sin_theta2 = g.sin_theta * g.sin_theta;
         let scale = 1.0 / (cos_theta2 + sin_theta2);
@@ -222,8 +205,6 @@ mod impl_f32 {
     fn conjugate_xz(s: &mut Symmetric3x3, q: &mut QuatF32) {
         // Compute Givens rotation parameters
         let mut g = approximate_givens_parameters(s.m_00, s.m_22, s.m_20);
-
-        // Calculate rotation matrix elements 'a' and 'b'
         let cos_theta2 = g.cos_theta * g.cos_theta;
         let sin_theta2 = g.sin_theta * g.sin_theta;
         let scale = 1.0 / (cos_theta2 + sin_theta2);
@@ -445,13 +426,6 @@ mod impl_f32 {
         *b_mat = r;
 
         // --- Construct Q = Q1 * Q2 * Q3 ---
-        // Recalculate rotation parameters for Q reconstruction
-        // Note: The previous variables are shadowed, so we recalculate.
-        // Ideally we should store them, but for code structure similarity we keep the pattern.
-        // Actually, we need the stored values.
-        // Let's re-compute them or store them. Recomputing is safer given the scope.
-        // Wait, the original code used a1, b1, a2, b2, a3, b3.
-        // We reused rot_c, rot_s. We need distinct variables to construct Q.
         let rot_c1 = -2.0 * g1.sin_theta * g1.sin_theta + 1.0;
         let rot_s1 = 2.0 * g1.cos_theta * g1.sin_theta;
         let rot_c2 = -2.0 * g2.sin_theta * g2.sin_theta + 1.0;
@@ -459,21 +433,18 @@ mod impl_f32 {
         let rot_c3 = -2.0 * g3.sin_theta * g3.sin_theta + 1.0;
         let rot_s3 = 2.0 * g3.cos_theta * g3.sin_theta;
 
-        // Q1 = (Q1.T).T
         let q1 = Mat3F32::from_cols(
             Vec3F32::new(rot_c1, rot_s1, 0.0),
             Vec3F32::new(-rot_s1, rot_c1, 0.0),
             Vec3F32::new(0.0, 0.0, 1.0),
         );
 
-        // Q2 = (Q2.T).T
         let q2 = Mat3F32::from_cols(
             Vec3F32::new(rot_c2, 0.0, rot_s2),
             Vec3F32::new(0.0, 1.0, 0.0),
             Vec3F32::new(-rot_s2, 0.0, rot_c2),
         );
 
-        // Q3 = (Q3.T).T
         let q3 = Mat3F32::from_cols(
             Vec3F32::new(1.0, 0.0, 0.0),
             Vec3F32::new(0.0, rot_c3, rot_s3),
@@ -524,9 +495,6 @@ mod impl_f32 {
     }
 }
 
-/// ----------------------------------------------------------------------------
-/// F64 Implementation
-/// ----------------------------------------------------------------------------
 mod impl_f64 {
     use super::*;
 
@@ -735,8 +703,8 @@ mod impl_f64 {
                 break;
             }
         }
-        // Workaround: Mat3F64 doesn't have from_quat, so we use glam::DMat3
-        Mat3F64::from(glam::DMat3::from_quat(q.0))
+        // Use the method implemented in mat.rs
+        Mat3F64::from_quat(q)
     }
 
     #[inline(always)]
