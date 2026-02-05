@@ -1,17 +1,12 @@
 use kornia_apriltag::{
     decoder::Detection,
-    family::{TagFamily, TagFamilyKind},
     quad::{FitQuadConfig, Quad},
     AprilTagDecoder, DecodeTagsConfig,
 };
 use kornia_image::Image;
 use pyo3::{exceptions::PyException, prelude::*, PyResult};
-use std::sync::Arc;
 
-use crate::{
-    apriltag::family::PyTagFamily,
-    image::{FromPyImage, PyImage, PyImageSize},
-};
+use crate::image::{FromPyImage, PyImage, PyImageSize};
 
 #[pyclass(name = "DecodeTagsConfig")]
 pub struct PyDecodeTagsConfig(DecodeTagsConfig);
@@ -26,9 +21,9 @@ impl PyDecodeTagsConfig {
         for py_kind in kinds {
             tag_families.push(py_kind.0);
         }
-        Ok(Self(DecodeTagsConfig::new(Some(tag_families)).map_err(
-            |e| PyErr::new::<PyException, _>(e.to_string()),
-        )?))
+        Ok(Self(DecodeTagsConfig::new(tag_families).map_err(|e| {
+            PyErr::new::<PyException, _>(e.to_string())
+        })?))
     }
 
     pub fn add(&mut self, family_kind: family::PyTagFamilyKind) {
@@ -296,7 +291,6 @@ impl From<Quad> for PyQuad {
     }
 }
 
-#[pymodule]
 pub mod family {
     use kornia_apriltag::{
         decoder::{QuickDecode, SharpeningBuffer},
@@ -457,4 +451,16 @@ pub mod family {
             })
         }
     }
+}
+
+#[pymodule]
+fn apriltag(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyAprilTagDecoder>()?;
+    m.add_class::<PyApriltagDetection>()?;
+    m.add_class::<PyDecodeTagsConfig>()?;
+    m.add_class::<PyFitQuadConfig>()?;
+
+    m.add_class::<family::PyTagFamilyKind>()?;
+
+    Ok(())
 }
