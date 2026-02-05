@@ -21,20 +21,19 @@ impl PyDecodeTagsConfig {
     #[new]
     #[pyo3(signature = (tag_family_kinds=None))]
     pub fn new(tag_family_kinds: Option<Vec<family::PyTagFamilyKind>>) -> PyResult<Self> {
-
-            let kinds = tag_family_kinds.unwrap_or_default();
-            let mut tag_families = Vec::with_capacity(kinds.len());
-            for py_kind in kinds {
-                tag_families.push(py_kind.0);
-            }
-            Ok(Self(DecodeTagsConfig::new(Some(tag_families)).map_err(
-                |e| PyErr::new::<PyException, _>(e.to_string()),
-            )?))
+        let kinds = tag_family_kinds.unwrap_or_default();
+        let mut tag_families = Vec::with_capacity(kinds.len());
+        for py_kind in kinds {
+            tag_families.push(py_kind.0);
+        }
+        Ok(Self(DecodeTagsConfig::new(Some(tag_families)).map_err(
+            |e| PyErr::new::<PyException, _>(e.to_string()),
+        )?))
     }
 
     pub fn add(&mut self, family_kind: family::PyTagFamilyKind) {
-    self.0.add(family_kind.0);
-}
+        self.0.add(family_kind.0);
+    }
 
     // TODO: Add getter for tag_families
 
