@@ -131,6 +131,7 @@ pub fn ransac_fundamental(
     };
 
     let n = x1.len();
+    let thresh_sq = params.threshold * params.threshold;
     let mut best_model = None;
     let mut best_inliers = Vec::new();
     let mut best_count = 0usize;
@@ -154,7 +155,7 @@ pub fn ransac_fundamental(
         let mut score = 0.0f64;
         for i in 0..n {
             let d = sampson_distance(&f, &x1[i], &x2[i]);
-            if d <= params.threshold * params.threshold {
+            if d <= thresh_sq {
                 inliers[i] = true;
                 count += 1;
                 score += d;
@@ -166,6 +167,10 @@ pub fn ransac_fundamental(
             best_inliers = inliers;
             best_count = count;
             best_score = score;
+        }
+
+        if best_count == n {
+            break;
         }
     }
 
@@ -201,6 +206,7 @@ pub fn ransac_homography(
     };
 
     let n = x1.len();
+    let thresh_sq = params.threshold * params.threshold;
     let mut best_model = None;
     let mut best_inliers = Vec::new();
     let mut best_count = 0usize;
@@ -229,7 +235,7 @@ pub fn ransac_homography(
         let mut score = 0.0f64;
         for i in 0..n {
             let d = homography_reproj_error(&h, &x1[i], &x2[i]);
-            if d <= params.threshold * params.threshold {
+            if d <= thresh_sq {
                 inliers[i] = true;
                 count += 1;
                 score += d;
@@ -241,6 +247,10 @@ pub fn ransac_homography(
             best_inliers = inliers;
             best_count = count;
             best_score = score;
+        }
+
+        if best_count == n {
+            break;
         }
     }
 
@@ -274,42 +284,43 @@ pub fn two_view_initialize(
     let k1_inv = k1.inverse();
     let k2_inv = k2.inverse();
 
-    let (model, poses, inliers) = if use_h {
-        let h = res_h.model;
-        (
-            TwoViewModel::Homography(h),
-            decompose_homography(&h, k1, k2),
-            res_h.inliers,
-        )
-    } else {
-        let f = res_f.model;
-        let e = essential_from_fundamental(&f, k1, k2);
-        let e = enforce_essential_constraints(&e);
-        (
-            TwoViewModel::Fundamental(f),
-            decompose_essential(&e),
-            res_f.inliers,
-        )
-    };
-
-    let mut best_pose = None;
-    let mut best_count = 0usize;
-    let mut best_points = Vec::new();
-
     let tri_params = TriangulateParams {
         k1_inv: &k1_inv,
         k2_inv: &k2_inv,
         min_parallax_deg: config.min_parallax_deg,
     };
 
-    for (r, t) in poses {
-        let (count, points) = triangulate_inliers(x1, x2, &inliers, &r, &t, &tri_params);
-        if count > best_count {
-            best_count = count;
-            best_pose = Some((r, t));
-            best_points = points;
+    let mut best_pose = None;
+    let mut best_count = 0usize;
+    let mut best_points = Vec::new();
+
+    let (model, inliers) = if use_h {
+        let h = res_h.model;
+        let poses = decompose_homography(&h, k1, k2);
+        for (r, t) in &poses {
+            let (count, points) = triangulate_inliers(x1, x2, &res_h.inliers, r, t, &tri_params);
+            if count > best_count {
+                best_count = count;
+                best_pose = Some((*r, *t));
+                best_points = points;
+            }
         }
-    }
+        (TwoViewModel::Homography(h), res_h.inliers)
+    } else {
+        let f = res_f.model;
+        let e = essential_from_fundamental(&f, k1, k2);
+        let e = enforce_essential_constraints(&e);
+        let poses = decompose_essential(&e);
+        for (r, t) in &poses {
+            let (count, points) = triangulate_inliers(x1, x2, &res_f.inliers, r, t, &tri_params);
+            if count > best_count {
+                best_count = count;
+                best_pose = Some((*r, *t));
+                best_points = points;
+            }
+        }
+        (TwoViewModel::Fundamental(f), res_f.inliers)
+    };
 
     let (r, t) = match best_pose {
         Some(p) => p,
@@ -380,29 +391,35 @@ fn normalize_point(k_inv: &Mat3F64, x: &Vec2F64) -> Vec2F64 {
     Vec2F64::new(xn.x / xn.z, xn.y / xn.z)
 }
 
+/// Triangulate a single point from two views using the DLT method.
+///
+/// P1 = [I | 0] (first camera at origin), P2 = [R | t].
+/// Builds the 4x4 linear system `A * X = 0` and solves via SVD.
 fn triangulate_point_linear(
     x1: &Vec2F64,
     x2: &Vec2F64,
     r: &Mat3F64,
     t: &Vec3F64,
 ) -> Option<Vec3F64> {
-    let p1 = [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-    ];
     let r_arr: [f64; 9] = (*r).into();
-    let p2 = [
-        [r_arr[0], r_arr[1], r_arr[2], t.x],
-        [r_arr[3], r_arr[4], r_arr[5], t.y],
-        [r_arr[6], r_arr[7], r_arr[8], t.z],
-    ];
 
+    // P1 = [I|0], so rows of A for camera 1 simplify:
+    //   row 0: x1.x * P1_row3 - P1_row1 = [-1, 0, x1.x, 0]
+    //   row 1: x1.y * P1_row3 - P1_row2 = [0, -1, x1.y, 0]
     let mut a = faer::Mat::<f64>::zeros(4, 4);
-    write_dlt_row(&mut a, 0, x1.x, &p1[2], &p1[0]);
-    write_dlt_row(&mut a, 1, x1.y, &p1[2], &p1[1]);
-    write_dlt_row(&mut a, 2, x2.x, &p2[2], &p2[0]);
-    write_dlt_row(&mut a, 3, x2.y, &p2[2], &p2[1]);
+    a.write(0, 0, -1.0);
+    a.write(0, 2, x1.x);
+    a.write(1, 1, -1.0);
+    a.write(1, 2, x1.y);
+
+    // P2 rows: r0=[r0..r2, tx], r1=[r3..r5, ty], r2=[r6..r8, tz]
+    let p2_2 = [r_arr[6], r_arr[7], r_arr[8], t.z];
+    for j in 0..4 {
+        let p2_0j = if j < 3 { r_arr[j] } else { t.x };
+        let p2_1j = if j < 3 { r_arr[j + 3] } else { t.y };
+        a.write(2, j, x2.x * p2_2[j] - p2_0j);
+        a.write(3, j, x2.y * p2_2[j] - p2_1j);
+    }
 
     let svd = a.svd();
     let v = svd.v();
@@ -412,20 +429,6 @@ fn triangulate_point_linear(
         return None;
     }
     Some(Vec3F64::new(xh[0] / w, xh[1] / w, xh[2] / w))
-}
-
-/// Write one row of the DLT linear system used for triangulation.
-///
-/// This fills row `row` of the matrix `a` with the coefficients of the
-/// homogeneous equation `(x * P_3 - P_i) X = 0`, where `x` is a single image
-/// coordinate, `P_3` (`p3`) is the third row of the camera projection matrix,
-/// and `P_i` (`p1`) is either its first or second row. The resulting 4-vector
-/// corresponds to one constraint on the 3D point `X` in the linear
-/// triangulation system.
-fn write_dlt_row(a: &mut faer::Mat<f64>, row: usize, x: f64, p3: &[f64; 4], p1: &[f64; 4]) {
-    for j in 0..4 {
-        a.write(row, j, x * p3[j] - p1[j]);
-    }
 }
 
 /// Computes the squared reprojection error for mapping `x1` to `x2` via the homography `h`.

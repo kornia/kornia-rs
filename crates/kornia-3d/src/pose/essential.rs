@@ -14,14 +14,13 @@ pub fn enforce_essential_constraints(e: &Mat3F64) -> Mat3F64 {
     s.x_axis.x = 1.0;
     s.y_axis.y = 1.0;
     s.z_axis.z = 0.0;
-    let e_fixed = *svd.u() * s * svd.v().transpose();
-    e_fixed
+    *svd.u() * s * svd.v().transpose()
 }
 
 /// Decompose an essential matrix into four possible (R, t) solutions.
 ///
-/// Returns a vector of candidate poses where R is 3x3 and t is a unit 3-vector.
-pub fn decompose_essential(e: &Mat3F64) -> Vec<(Mat3F64, Vec3F64)> {
+/// Returns an array of candidate poses where R is 3x3 and t is a unit 3-vector.
+pub fn decompose_essential(e: &Mat3F64) -> [(Mat3F64, Vec3F64); 4] {
     let svd = svd3_f64(e);
     let mut u = *svd.u();
     let mut v = *svd.v();
@@ -38,15 +37,15 @@ pub fn decompose_essential(e: &Mat3F64) -> Vec<(Mat3F64, Vec3F64)> {
         Vec3F64::new(-1.0, 0.0, 0.0),
         Vec3F64::new(0.0, 0.0, 1.0),
     );
-    let wt = w.transpose();
+    let vt = v.transpose();
 
-    let r1 = u * w * v.transpose();
-    let r2 = u * wt * v.transpose();
+    let r1 = u * w * vt;
+    let r2 = u * w.transpose() * vt;
 
     let t = u.z_axis();
-    let t_neg = Vec3F64::new(-t.x, -t.y, -t.z);
+    let t_neg = -t;
 
-    vec![(r1, t), (r1, t_neg), (r2, t), (r2, t_neg)]
+    [(r1, t), (r1, t_neg), (r2, t), (r2, t_neg)]
 }
 
 #[cfg(test)]

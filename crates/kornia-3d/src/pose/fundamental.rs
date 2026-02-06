@@ -68,7 +68,7 @@ pub fn sampson_distance(f: &Mat3F64, x1: &Vec2F64, x2: &Vec2F64) -> f64 {
     let fx1 = *f * x1h;
     let ftx2 = f.transpose() * x2h;
 
-    let err = x2h.x * fx1.x + x2h.y * fx1.y + x2h.z * fx1.z;
+    let err = x2h.dot(fx1);
     let denom = fx1.x * fx1.x + fx1.y * fx1.y + ftx2.x * ftx2.x + ftx2.y * ftx2.y;
     if denom <= 1e-12 {
         return err * err;
@@ -96,7 +96,7 @@ fn normalize_points_2d(x: &[Vec2F64]) -> (Vec<Vec2F64>, Mat3F64) {
     mean_dist /= n;
 
     let scale = if mean_dist > 0.0 {
-        (2.0f64).sqrt() / mean_dist
+        std::f64::consts::SQRT_2 / mean_dist
     } else {
         1.0
     };
