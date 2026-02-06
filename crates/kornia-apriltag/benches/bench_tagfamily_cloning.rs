@@ -1,6 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use kornia_apriltag::family::{TagFamily, TagFamilyKind};
-use std::sync::Arc;
+use std::{hint::black_box, sync::Arc};
 
 fn bench_single_clone(c: &mut Criterion) {
     let heavy_family = TagFamily::tag36_h11().unwrap();
