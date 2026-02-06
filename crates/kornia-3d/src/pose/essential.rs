@@ -9,7 +9,7 @@ pub fn essential_from_fundamental(f: &Mat3F64, k1: &Mat3F64, k2: &Mat3F64) -> Ma
 
 /// Perform SVD of a 3x3 matrix using faer, returning (U, singular_values, V).
 /// TODO: temporary workaround until svd3_f64 is fixed to handle repeated
-/// singular values: https://github.com/kornia/kornia-rs/pull/688
+/// singular values: https://github.com/kornia/kornia-rs/issues/696
 fn svd3_robust(m: &Mat3F64) -> (Mat3F64, Vec3F64, Mat3F64) {
     let arr: [f64; 9] = (*m).into();
     let a = faer::Mat::<f64>::from_fn(3, 3, |i, j| arr[j * 3 + i]);
