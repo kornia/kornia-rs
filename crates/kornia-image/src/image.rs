@@ -715,6 +715,21 @@ mod tests {
     }
 
     #[test]
+    fn test_image_from_empty_vec() -> Result<(), ImageError> {
+        let image: Image<f32, 3, CpuAllocator> = Image::new(
+            ImageSize {
+                height: 0,
+                width: 0,
+            },
+            vec![0.0; 0],
+            CpuAllocator,
+        );
+        assert!(image.is_err(), "Image::new should have failed with empty vec");
+
+        Ok(())
+    }
+
+    #[test]
     fn test_image_cast() -> Result<(), ImageError> {
         let data = vec![0, 1, 2, 3, 4, 5];
         let image_u8 = Image::<_, 3, CpuAllocator>::new(
