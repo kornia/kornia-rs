@@ -87,35 +87,33 @@ impl SmolModel {
         image_hidden_states: &Tensor,
         inputs_embeds: &Tensor,
     ) -> Result<Tensor> {
-        let mask = image_token_mask.to_vec1::<u8>()?;
-        let mut chunks = Vec::new();
-        let mut img_ptr = 0;
-        let mut start = 0;
-        let mut current_type = mask[0];
+        let device = image_token_mask.device();
 
-        for i in 1..mask.len() {
-            let len = i - start;
-            if mask[i] != current_type {
-                if current_type == 0 {
-                    chunks.push(inputs_embeds.narrow(0, start, len)?);
-                } else {
-                    chunks.push(image_hidden_states.narrow(0, img_ptr, len)?);
-                    img_ptr += len;
-                }
-                start = i;
-                current_type = mask[start];
-            }
-        }
+        // Type conversion for GPU memory savings, cumsum() handling and - 1 handling
+        let mask_f32 = image_token_mask.to_dtype(candle_core::DType::F32)?;
+        let cumsum = mask_f32.cumsum(0)?;
 
-        // Check for Final Missed Chunk
-        let len = mask.len() - start;
-        if current_type == 0 {
-            chunks.push(inputs_embeds.narrow(0, start, len)?);
-        } else {
-            chunks.push(image_hidden_states.narrow(0, img_ptr, len)?);
-        }
+        // clamp() protects from -1 index underflow and max index overflows
+        let one = Tensor::new(&[1.0f32], device)?;
+        let max_index = (image_hidden_states.dim(0)? as f64) - 1.0;
 
-        Tensor::cat(&chunks, 0)
+        let image_indices = cumsum
+            .broadcast_sub(&one)?
+            .clamp(0.0, max_index)?
+            .to_dtype(candle_core::DType::U32)?;
+
+        // Stretching the image embeddings
+        let image_stretched = image_hidden_states.index_select(&image_indices, 0)?;
+
+        // Merging
+        let mask_bool = image_token_mask.ne(0.0)?;
+        let mask_broadcast = mask_bool
+            .unsqueeze(1)?
+            .broadcast_as(inputs_embeds.shape())?;
+
+        let merged_embeds = mask_broadcast.where_cond(&image_stretched, inputs_embeds)?;
+
+        Ok(merged_embeds)
     }
 
     pub fn forward(
