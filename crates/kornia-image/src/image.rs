@@ -151,7 +151,15 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// assert_eq!(image.size().height, 20);
     /// assert_eq!(image.num_channels(), 3);
     /// ```
-    pub fn new(size: ImageSize, data: Vec<T>, alloc: A) -> Result<Self, ImageError> {
+    pub fn new(size: ImageSize, data: Vec<T>, alloc: A) -> Result<Self, ImageError>
+    where
+        T: Clone, // TODO: remove this bound
+    {
+        // check if data vector size is bigger than zero
+        if data.is_empty() {
+            return Err(ImageDataNotInitialized());
+        }
+        
         // check if the data length matches the image size
         if data.len() != size.width * size.height * C {
             return Err(ImageError::InvalidChannelShape(
