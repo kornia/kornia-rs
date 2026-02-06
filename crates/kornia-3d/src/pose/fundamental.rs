@@ -46,11 +46,11 @@ pub fn fundamental_8point(x1: &[Vec2F64], x2: &[Vec2F64]) -> Result<Mat3F64, Fun
     if v.ncols() < 9 {
         return Err(FundamentalError::SvdFailure);
     }
-    let fvec = v.col(8);
+    let fvec = v.col(v.ncols() - 1);
     let f = Mat3F64::from_cols(
-        Vec3F64::new(fvec[0], fvec[1], fvec[2]),
-        Vec3F64::new(fvec[3], fvec[4], fvec[5]),
-        Vec3F64::new(fvec[6], fvec[7], fvec[8]),
+        Vec3F64::new(fvec[0], fvec[3], fvec[6]),
+        Vec3F64::new(fvec[1], fvec[4], fvec[7]),
+        Vec3F64::new(fvec[2], fvec[5], fvec[8]),
     );
 
     let f_rank2 = enforce_rank2(&f)?;
@@ -127,60 +127,158 @@ fn enforce_rank2(f: &Mat3F64) -> Result<Mat3F64, FundamentalError> {
 mod tests {
     use super::*;
 
+    /// Shared test setup: well-conditioned correspondences from a known two-camera geometry.
+    /// Returns (x1, x2, F_true) where x2^T * F_true * x1 = 0 for all pairs.
+    fn make_test_correspondences() -> (Vec<Vec2F64>, Vec<Vec2F64>, Mat3F64) {
+        let k = Mat3F64::from_cols(
+            Vec3F64::new(500.0, 0.0, 0.0),
+            Vec3F64::new(0.0, 500.0, 0.0),
+            Vec3F64::new(320.0, 240.0, 1.0),
+        );
+        let k_inv = k.inverse();
+
+        // Rotation ~5.7 deg around Y axis
+        let angle = 0.1_f64;
+        let r = Mat3F64::from_cols(
+            Vec3F64::new(angle.cos(), 0.0, -angle.sin()),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(angle.sin(), 0.0, angle.cos()),
+        );
+        let t = Vec3F64::new(1.0, 0.0, 0.2);
+        let t_len = t.length();
+        let t_unit = Vec3F64::new(t.x / t_len, t.y / t_len, t.z / t_len);
+
+        // E = [t]_x * R, F = K^{-T} E K^{-1}
+        let tx = Mat3F64::from_cols(
+            Vec3F64::new(0.0, t_unit.z, -t_unit.y),
+            Vec3F64::new(-t_unit.z, 0.0, t_unit.x),
+            Vec3F64::new(t_unit.y, -t_unit.x, 0.0),
+        );
+        let e = tx * r;
+        let f_true = k_inv.transpose() * e * k_inv;
+
+        // 3D points well-spread in front of both cameras
+        let pts = [
+            Vec3F64::new(-0.5, -0.3, 4.0),
+            Vec3F64::new(0.4, -0.2, 3.5),
+            Vec3F64::new(-0.3, 0.5, 5.0),
+            Vec3F64::new(0.6, 0.4, 4.5),
+            Vec3F64::new(-0.1, -0.6, 3.0),
+            Vec3F64::new(0.2, 0.3, 6.0),
+            Vec3F64::new(-0.4, 0.1, 3.8),
+            Vec3F64::new(0.5, -0.5, 4.2),
+            Vec3F64::new(0.0, 0.0, 5.5),
+            Vec3F64::new(-0.2, 0.4, 4.8),
+            Vec3F64::new(0.3, -0.1, 3.2),
+            Vec3F64::new(-0.6, 0.2, 5.8),
+        ];
+
+        let mut x1 = Vec::new();
+        let mut x2 = Vec::new();
+        for p in &pts {
+            let p1 = k * *p;
+            x1.push(Vec2F64::new(p1.x / p1.z, p1.y / p1.z));
+            let p2_cam = r * *p + t;
+            let p2 = k * p2_cam;
+            x2.push(Vec2F64::new(p2.x / p2.z, p2.y / p2.z));
+        }
+
+        (x1, x2, f_true)
+    }
+
     #[test]
     fn test_fundamental_8point_epipolar_constraint() {
-        let f_true = Mat3F64::from_cols(
-            Vec3F64::new(0.0, -0.001, 0.01),
-            Vec3F64::new(0.0015, 0.0, -0.02),
-            Vec3F64::new(-0.01, 0.02, 1.0),
-        );
-        let x1 = vec![
-            Vec2F64::new(10.0, 20.0),
-            Vec2F64::new(30.0, -5.0),
-            Vec2F64::new(-15.0, 12.0),
-            Vec2F64::new(7.0, 8.0),
-            Vec2F64::new(100.0, 50.0),
-            Vec2F64::new(-40.0, 70.0),
-            Vec2F64::new(60.0, -30.0),
-            Vec2F64::new(15.0, 15.0),
-        ];
-        let mut x2 = Vec::new();
-        for p in &x1 {
-            let x = Vec3F64::new(p.x, p.y, 1.0);
-            let l = f_true * x;
-            let xp = if l.x.abs() > 1e-12f64 {
-                -l.z / l.x
-            } else {
-                0.0
-            };
-            x2.push(Vec2F64::new(xp, 0.0));
-        }
+        let (x1, x2, _) = make_test_correspondences();
 
         let f_est = fundamental_8point(&x1, &x2).unwrap();
 
+        // Check rank-2 property
         let svd = svd3_f64(&f_est);
         let s = svd.s();
-        assert!(s.z_axis.z.abs() < 1e-2);
-        assert!(s.z_axis.z < 0.1 * s.x_axis.x);
+        assert!(s.z_axis.z.abs() < 1e-6);
+
+        // Check epipolar constraint: x2^T * F_est * x1 ≈ 0 for all correspondences.
+        // This would FAIL with large errors if F were transposed.
+        for i in 0..x1.len() {
+            let x1h = Vec3F64::new(x1[i].x, x1[i].y, 1.0);
+            let x2h = Vec3F64::new(x2[i].x, x2[i].y, 1.0);
+            let err = x2h.dot(f_est * x1h);
+            assert!(
+                err.abs() < 1e-8,
+                "epipolar constraint violated for point {i}: err = {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_fundamental_8point_sampson_distance_near_zero() {
+        let (x1, x2, _) = make_test_correspondences();
+
+        let f_est = fundamental_8point(&x1, &x2).unwrap();
+
+        // Sampson distance (first-order geometric error) should be near zero
+        // for all correspondences when F is correctly oriented.
+        for i in 0..x1.len() {
+            let d = sampson_distance(&f_est, &x1[i], &x2[i]);
+            assert!(
+                d < 1e-10,
+                "sampson distance too large for point {i}: d = {d}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_fundamental_8point_proportional_to_true() {
+        let (x1, x2, f_true) = make_test_correspondences();
+
+        let f_est = fundamental_8point(&x1, &x2).unwrap();
+
+        // Normalize both matrices by Frobenius norm, then check element-wise proportionality.
+        // This catches a transpose: F^T normalized differs from F normalized.
+        let f_true_arr: [f64; 9] = f_true.into();
+        let f_est_arr: [f64; 9] = f_est.into();
+
+        let norm_true: f64 = f_true_arr.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let norm_est: f64 = f_est_arr.iter().map(|v| v * v).sum::<f64>().sqrt();
+
+        // Find scale factor from a large element
+        let mut scale = 0.0;
+        for i in 0..9 {
+            let a = f_true_arr[i] / norm_true;
+            if a.abs() > 0.05 {
+                scale = (f_est_arr[i] / norm_est) / a;
+                break;
+            }
+        }
+        assert!(scale.abs() > 1e-6, "could not determine scale factor");
+
+        for i in 0..9 {
+            let a = f_true_arr[i] / norm_true;
+            let b = f_est_arr[i] / norm_est;
+            let diff = (b - scale * a).abs();
+            assert!(
+                diff < 1e-4,
+                "F_est not proportional to F_true at element {i}: expected {}, got {}, diff = {diff}",
+                scale * a, b
+            );
+        }
     }
 
     #[test]
     fn test_sampson_distance_zero_on_epipolar_line() {
-        let f_true = Mat3F64::from_cols(
-            Vec3F64::new(0.0, -0.001, 0.01),
-            Vec3F64::new(0.0015, 0.0, -0.02),
-            Vec3F64::new(-0.01, 0.02, 1.0),
-        );
-        let x1 = Vec2F64::new(12.0, -3.0);
-        let x = Vec3F64::new(x1.x, x1.y, 1.0);
-        let l = f_true * x;
-        let x2 = if l.x.abs() > 1e-12f64 {
-            Vec2F64::new(-l.z / l.x, 0.0f64)
-        } else {
-            Vec2F64::new(0.0f64, -l.z / l.y)
-        };
+        let (_, _, f_true) = make_test_correspondences();
+
+        // Pick an arbitrary point and find its match on the epipolar line
+        let x1 = Vec2F64::new(350.0, 200.0);
+        let x1h = Vec3F64::new(x1.x, x1.y, 1.0);
+        let l = f_true * x1h;
+        // Find x2 on line l: l.x * u + l.y * v + l.z = 0
+        // Choose u = 300, solve for v
+        let u = 300.0;
+        let v = -(l.x * u + l.z) / l.y;
+        let x2 = Vec2F64::new(u, v);
 
         let d = sampson_distance(&f_true, &x1, &x2);
-        assert!(d.abs() < 1e-8);
+        assert!(d < 1e-10, "sampson distance = {d}");
     }
 }

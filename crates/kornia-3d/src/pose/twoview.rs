@@ -139,11 +139,11 @@ pub fn ransac_fundamental(
 
     for _ in 0..params.max_iterations {
         let sample = rand::seq::index::sample(&mut rng, n, 8);
-        let mut s1 = Vec::with_capacity(8);
-        let mut s2 = Vec::with_capacity(8);
-        for idx in sample.iter() {
-            s1.push(x1[idx]);
-            s2.push(x2[idx]);
+        let mut s1 = [Vec2F64::ZERO; 8];
+        let mut s2 = [Vec2F64::ZERO; 8];
+        for (i, idx) in sample.iter().enumerate() {
+            s1[i] = x1[idx];
+            s2[i] = x2[idx];
         }
         let f = match fundamental_8point(&s1, &s2) {
             Ok(f) => f,
