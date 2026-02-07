@@ -12,9 +12,9 @@ license = { workspace = true }
 include = { workspace = true }
 
 [dependencies]
-candle-core = { workspace = true }
+candle-core = { workspace = true, features = ["cuda"]}
 candle-examples = { workspace = true }
-candle-nn = { workspace = true }
+candle-nn = { workspace = true, features = ["cuda"]}
 candle-transformers = { workspace = true }
 circular-buffer = { version = "1.1.0" }
 hf-hub = { workspace = true }
@@ -32,9 +32,14 @@ tokenizers = { workspace = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }
+criterion = { version = "0.8.2", features = ["html_reports"] }
 rand = "0.9.0"
 
 [features]
 default = []
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 flash-attn = ["candle-transformers/flash-attn"]
+
+[[bench]]
+name = "merger_benchmark"
+harness = false
