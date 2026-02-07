@@ -504,27 +504,27 @@ mod impl_f64 {
 
     #[derive(Debug, Clone, Copy)]
     struct Symmetric3x3 {
-        m00: f64,
-        m01: f64,
-        m02: f64,
-        m11: f64,
-        m12: f64,
-        m22: f64,
+        m_00: f64,
+        m_10: f64,
+        m_20: f64,
+        m_11: f64,
+        m_21: f64,
+        m_22: f64,
     }
 
     impl Symmetric3x3 {
-        fn from_mat3(m: &Mat3F64) -> Self {
+        fn from_mat3x3(m: &Mat3F64) -> Self {
             let c0 = m.x_axis;
             let c1 = m.y_axis;
             let c2 = m.z_axis;
 
             Self {
-                m00: c0.dot(c0),
-                m01: c0.dot(c1),
-                m02: c0.dot(c2),
-                m11: c1.dot(c1),
-                m12: c1.dot(c2),
-                m22: c2.dot(c2),
+                m_00: c0.dot(c0),
+                m_10: c0.dot(c1),
+                m_20: c0.dot(c2),
+                m_11: c1.dot(c1),
+                m_21: c1.dot(c2),
+                m_22: c2.dot(c2),
             }
         }
     }
@@ -555,30 +555,39 @@ mod impl_f64 {
     }
 
     impl SVD3Set {
-        pub fn u(&self) -> &Mat3F64 { &self.u }
-        pub fn s(&self) -> &Mat3F64 { &self.s }
-        pub fn v(&self) -> &Mat3F64 { &self.v }
+        #[inline]
+        pub fn u(&self) -> &Mat3F64 {
+            &self.u
+        }
+        #[inline]
+        pub fn s(&self) -> &Mat3F64 {
+            &self.s
+        }
+        #[inline]
+        pub fn v(&self) -> &Mat3F64 {
+            &self.v
+        }
     }
 
     pub fn svd3(mat: &Mat3F64) -> SVD3Set {
-        let mut s_mat = Symmetric3x3::from_mat3(mat);
+        let mut s_mat = Symmetric3x3::from_mat3x3(mat);
         let mut q_accum = QuatF64::IDENTITY;
 
         for _sweep in 0..MAX_SWEEPS {
             // Pair (0, 1)
             {
-                let (c, si) = exact_givens(s_mat.m00, s_mat.m11, s_mat.m01);
-                let s00 = s_mat.m00;
-                let s01 = s_mat.m01;
-                let s11 = s_mat.m11;
-                let s02 = s_mat.m02;
-                let s12 = s_mat.m12;
+                let (c, si) = exact_givens(s_mat.m_00, s_mat.m_11, s_mat.m_10);
+                let s00 = s_mat.m_00;
+                let s01 = s_mat.m_10;
+                let s11 = s_mat.m_11;
+                let s02 = s_mat.m_20;
+                let s12 = s_mat.m_21;
 
-                s_mat.m00 = c * c * s00 - 2.0 * c * si * s01 + si * si * s11;
-                s_mat.m11 = si * si * s00 + 2.0 * c * si * s01 + c * c * s11;
-                s_mat.m01 = 0.0;
-                s_mat.m02 = c * s02 - si * s12;
-                s_mat.m12 = si * s02 + c * s12;
+                s_mat.m_00 = c * c * s00 - 2.0 * c * si * s01 + si * si * s11;
+                s_mat.m_11 = si * si * s00 + 2.0 * c * si * s01 + c * c * s11;
+                s_mat.m_10 = 0.0;
+                s_mat.m_20 = c * s02 - si * s12;
+                s_mat.m_21 = si * s02 + c * s12;
 
                 let ch = ((1.0 + c) / 2.0).sqrt();
                 let sh = -si / (2.0 * ch);
@@ -588,23 +597,24 @@ mod impl_f64 {
                     q[1] * ch - q[0] * sh,
                     q[2] * ch + q[3] * sh,
                     q[3] * ch - q[2] * sh,
-                ).normalize();
+                )
+                .normalize();
             }
 
             // Pair (1, 2)
             {
-                let (c, si) = exact_givens(s_mat.m11, s_mat.m22, s_mat.m12);
-                let s11 = s_mat.m11;
-                let s12 = s_mat.m12;
-                let s22 = s_mat.m22;
-                let s01 = s_mat.m01;
-                let s02 = s_mat.m02;
+                let (c, si) = exact_givens(s_mat.m_11, s_mat.m_22, s_mat.m_21);
+                let s11 = s_mat.m_11;
+                let s12 = s_mat.m_21;
+                let s22 = s_mat.m_22;
+                let s01 = s_mat.m_10;
+                let s02 = s_mat.m_20;
 
-                s_mat.m11 = c * c * s11 - 2.0 * c * si * s12 + si * si * s22;
-                s_mat.m22 = si * si * s11 + 2.0 * c * si * s12 + c * c * s22;
-                s_mat.m12 = 0.0;
-                s_mat.m01 = c * s01 - si * s02;
-                s_mat.m02 = si * s01 + c * s02;
+                s_mat.m_11 = c * c * s11 - 2.0 * c * si * s12 + si * si * s22;
+                s_mat.m_22 = si * si * s11 + 2.0 * c * si * s12 + c * c * s22;
+                s_mat.m_21 = 0.0;
+                s_mat.m_10 = c * s01 - si * s02;
+                s_mat.m_20 = si * s01 + c * s02;
 
                 let ch = ((1.0 + c) / 2.0).sqrt();
                 let sh = -si / (2.0 * ch);
@@ -614,37 +624,40 @@ mod impl_f64 {
                     q[1] * ch + q[2] * sh,
                     q[2] * ch - q[1] * sh,
                     q[3] * ch - q[0] * sh,
-                ).normalize();
+                )
+                .normalize();
             }
 
             // Pair (0, 2)
             {
-                let (c, si) = exact_givens(s_mat.m00, s_mat.m22, s_mat.m02);
-                let s00 = s_mat.m00;
-                let s02 = s_mat.m02;
-                let s22 = s_mat.m22;
-                let s01 = s_mat.m01;
-                let s12 = s_mat.m12;
+                let (c, si) = exact_givens(s_mat.m_00, s_mat.m_22, s_mat.m_20);
+                let s00 = s_mat.m_00;
+                let s02 = s_mat.m_20;
+                let s22 = s_mat.m_22;
+                let s01 = s_mat.m_10;
+                let s12 = s_mat.m_21;
 
-                s_mat.m00 = c * c * s00 - 2.0 * c * si * s02 + si * si * s22;
-                s_mat.m22 = si * si * s00 + 2.0 * c * si * s02 + c * c * s22;
-                s_mat.m02 = 0.0;
-                s_mat.m01 = c * s01 - si * s12;
-                s_mat.m12 = si * s01 + c * s12;
+                s_mat.m_00 = c * c * s00 - 2.0 * c * si * s02 + si * si * s22;
+                s_mat.m_22 = si * si * s00 + 2.0 * c * si * s02 + c * c * s22;
+                s_mat.m_20 = 0.0;
+                s_mat.m_10 = c * s01 - si * s12;
+                s_mat.m_21 = si * s01 + c * s12;
 
                 let ch = ((1.0 + c) / 2.0).sqrt();
-                let sh = si / (2.0 * ch); 
+                let sh = si / (2.0 * ch);
                 let q = q_accum.to_array();
                 q_accum = QuatF64::from_xyzw(
                     q[0] * ch - q[2] * sh,
                     q[1] * ch + q[3] * sh,
                     q[2] * ch + q[0] * sh,
                     q[3] * ch - q[1] * sh,
-                ).normalize();
+                )
+                .normalize();
             }
 
-            // FIX: Convergence Check moved to END of loop
-            let off_diag_sq = s_mat.m01 * s_mat.m01 + s_mat.m02 * s_mat.m02 + s_mat.m12 * s_mat.m12;
+            // Convergence Check (using updated variable names)
+            let off_diag_sq =
+                s_mat.m_10 * s_mat.m_10 + s_mat.m_20 * s_mat.m_20 + s_mat.m_21 * s_mat.m_21;
             if off_diag_sq < JACOBI_TOLERANCE {
                 break;
             }
@@ -652,31 +665,53 @@ mod impl_f64 {
 
         let v = Mat3F64::from_quat(q_accum);
         let s_diag = Vec3F64::new(
-            s_mat.m00.abs().sqrt(),
-            s_mat.m11.abs().sqrt(),
-            s_mat.m22.abs().sqrt(),
+            s_mat.m_00.abs().sqrt(),
+            s_mat.m_11.abs().sqrt(),
+            s_mat.m_22.abs().sqrt(),
         );
 
-        let mut b = *mat * v; 
+        let mut b = *mat * v;
         let mut s_vec = s_diag;
         let mut v_mat = v;
 
-        // FIX: Using real sort implementation
         sort_singular_values(&mut b, &mut s_vec, &mut v_mat);
 
-        // Normalize U columns
-        let u_x = if s_vec.x > EPSILON { b.x_axis / s_vec.x } else { Mat3F64::IDENTITY.x_axis };
-        let u_y = if s_vec.y > EPSILON { b.y_axis / s_vec.y } else { Mat3F64::IDENTITY.y_axis };
-        let u_z = if s_vec.z > EPSILON { b.z_axis / s_vec.z } else { Mat3F64::IDENTITY.z_axis };
+        let u_x = if s_vec.x > EPSILON {
+            b.x_axis / s_vec.x
+        } else {
+            Mat3F64::IDENTITY.x_axis
+        };
+        let mut u_y = if s_vec.y > EPSILON {
+            b.y_axis / s_vec.y
+        } else {
+            Mat3F64::IDENTITY.y_axis
+        };
+        let mut u_z = if s_vec.z > EPSILON {
+            b.z_axis / s_vec.z
+        } else {
+            Mat3F64::IDENTITY.z_axis
+        };
 
-        // Re-orthogonalize (Gram-Schmidt) - Safe because U is rebuilt from B=AV
-        let u_y = (u_y - u_x * u_x.dot(u_y)).normalize();
-        let u_z = (u_z - u_x * u_x.dot(u_z) - u_y * u_y.dot(u_z)).normalize();
-        
+        // Safe Gram-Schmidt
+        u_y = u_y - u_x * u_x.dot(u_y);
+        if u_y.length_squared() < EPSILON {
+            u_y = u_x.cross(Mat3F64::IDENTITY.x_axis);
+            if u_y.length_squared() < EPSILON {
+                u_y = u_x.cross(Mat3F64::IDENTITY.y_axis);
+            }
+        }
+        u_y = u_y.normalize();
+
+        u_z = u_z - u_x * u_x.dot(u_z) - u_y * u_y.dot(u_z);
+        if u_z.length_squared() < EPSILON {
+            u_z = u_x.cross(u_y);
+        }
+        u_z = u_z.normalize();
+
         let mut final_u = Mat3F64::from_cols(u_x.into(), u_y.into(), u_z.into());
-        
+
         if final_u.determinant() < 0.0 {
-            final_u.z_axis = -final_u.z_axis; 
+            final_u.z_axis = -final_u.z_axis;
         }
 
         SVD3Set {
@@ -685,23 +720,34 @@ mod impl_f64 {
             v: v_mat,
         }
     }
-    
-    // FIX: Real implementation of sort (was empty)
+
     pub fn sort_singular_values(u_mat: &mut Mat3F64, s_vec: &mut Vec3F64, v_mat: &mut Mat3F64) {
         if s_vec.x < s_vec.y {
-             std::mem::swap(&mut s_vec.x, &mut s_vec.y);
-             let col0 = v_mat.x_axis; v_mat.x_axis = v_mat.y_axis; v_mat.y_axis = col0;
-             let col0 = u_mat.x_axis; u_mat.x_axis = u_mat.y_axis; u_mat.y_axis = col0;
+            std::mem::swap(&mut s_vec.x, &mut s_vec.y);
+            let col0 = v_mat.x_axis;
+            v_mat.x_axis = v_mat.y_axis;
+            v_mat.y_axis = col0;
+            let col0 = u_mat.x_axis;
+            u_mat.x_axis = u_mat.y_axis;
+            u_mat.y_axis = col0;
         }
         if s_vec.y < s_vec.z {
-             std::mem::swap(&mut s_vec.y, &mut s_vec.z);
-             let col1 = v_mat.y_axis; v_mat.y_axis = v_mat.z_axis; v_mat.z_axis = col1;
-             let col1 = u_mat.y_axis; u_mat.y_axis = u_mat.z_axis; u_mat.z_axis = col1;
+            std::mem::swap(&mut s_vec.y, &mut s_vec.z);
+            let col1 = v_mat.y_axis;
+            v_mat.y_axis = v_mat.z_axis;
+            v_mat.z_axis = col1;
+            let col1 = u_mat.y_axis;
+            u_mat.y_axis = u_mat.z_axis;
+            u_mat.z_axis = col1;
         }
         if s_vec.x < s_vec.y {
-             std::mem::swap(&mut s_vec.x, &mut s_vec.y);
-             let col0 = v_mat.x_axis; v_mat.x_axis = v_mat.y_axis; v_mat.y_axis = col0;
-             let col0 = u_mat.x_axis; u_mat.x_axis = u_mat.y_axis; u_mat.y_axis = col0;
+            std::mem::swap(&mut s_vec.x, &mut s_vec.y);
+            let col0 = v_mat.x_axis;
+            v_mat.x_axis = v_mat.y_axis;
+            v_mat.y_axis = col0;
+            let col0 = u_mat.x_axis;
+            u_mat.x_axis = u_mat.y_axis;
+            u_mat.y_axis = col0;
         }
     }
 
@@ -718,7 +764,6 @@ mod tests {
     const TEST_EPSILON_F32_STRICT: f32 = 1e-6;
     const TEST_EPSILON_F64: f64 = 1e-10;
     const TEST_TOLERANCE: f64 = 1e-3;
-
 
     fn verify_svd_properties_f32(a: &Mat3F32, svd: &SVD3SetF32, epsilon: f32) {
         let u = *svd.u();
@@ -912,8 +957,7 @@ mod tests {
     }
 
     #[test]
-    fn test_issue_696_repeated_singular_values() {
-        // Essential matrix E with repeated singular values (sigma, sigma, 0)
+    fn test_svd3_f64_essential_matrix_precision() {
         let e = Mat3F64::from_cols(
             Vec3F64::new(0.0, -2.552, 0.0),
             Vec3F64::new(1.708, 0.0, -8.540),
@@ -929,28 +973,30 @@ mod tests {
 
         println!("Computed Sigmas: ({}, {}, {})", sigma1, sigma2, sigma3);
 
-        // EXPECTATION: Sigma1 and Sigma2 should be ~8.709 and EQUAL.
         let diff = (sigma1 - sigma2).abs();
-        
+
         assert!(
-            diff < TEST_TOLERANCE, 
-            "FAILURE: Singular values should be equal! \nGot: {}, {}\nDiff: {}", 
-            sigma1, sigma2, diff
+            diff < TEST_TOLERANCE,
+            "FAILURE: Singular values should be equal! \nGot: {}, {}\nDiff: {}",
+            sigma1,
+            sigma2,
+            diff
         );
 
-        // FIX: Verify sigma3 is near zero (Bot Requirement 1)
+        // POINT 1 FIX: Assert sigma3 is zero
         assert!(
             sigma3.abs() < TEST_TOLERANCE,
             "FAILURE: Third singular value should be zero! Got: {}",
             sigma3
         );
 
-        // FIX: Verify absolute magnitude against reference (Bot Requirement 2)
+        // POINT 2 FIX: Assert magnitude matches reference
         let expected_sigma = 8.709;
         assert!(
             (sigma1 - expected_sigma).abs() < 1e-2,
-            "FAILURE: Incorrect magnitude. Expected ~{}, Got {}", 
-            expected_sigma, sigma1
+            "FAILURE: Incorrect magnitude. Expected ~{}, Got {}",
+            expected_sigma,
+            sigma1
         );
     }
 }
