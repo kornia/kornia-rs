@@ -3,7 +3,7 @@ name = "kornia-rs"
 description = "Low-level 3D computer vision library in Rust"
 authors = ["kornia.org <edgar@kornia.org>"]
 channels = ["conda-forge"]
-platforms = ["linux-64", "linux-aarch64", "osx-arm64", "osx-64"]
+platforms = ["linux-64", "linux-aarch64", "osx-arm64", "osx-64", "win-64"]
 
 # ------------------------------------------------------------------------------
 # Environments
