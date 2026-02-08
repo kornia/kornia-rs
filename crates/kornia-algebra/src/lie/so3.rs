@@ -30,6 +30,8 @@ impl SO3F32 {
         self.q.to_array()
     }
 
+    /// Create a new SO3F32 from a quaternion.
+    /// NOTE: quaternion should be normalized
     #[inline]
     pub fn from_quaternion(quat: QuatF32) -> Self {
         Self::new(quat)
@@ -102,9 +104,20 @@ impl SO3F32 {
     }
 
     pub fn exp(v: Vec3AF32) -> Self {
-        let v: glam::Vec3A = v.into();
+        let theta_sq = v.dot(v);
+        let theta = theta_sq.sqrt();
+        let theta_half = 0.5 * theta;
+
+        let (w, b) = if theta < SMALL_ANGLE_EPSILON {
+            (1.0 - theta_sq / 8.0, 0.5 - theta_sq / 48.0)
+        } else {
+            (theta_half.cos(), theta_half.sin() / theta)
+        };
+
+        // TODO: check if optimization is needed
+        let xyz = b * v;
         Self {
-            q: QuatF32(glam::Quat::from_scaled_axis(v.into())),
+            q: QuatF32::from_xyzw(xyz.x, xyz.y, xyz.z, w).normalize(),
         }
     }
 
@@ -352,6 +365,13 @@ mod tests {
         assert_relative_eq!(s.q.y, q_expected.y, epsilon = EPSILON);
         assert_relative_eq!(s.q.z, q_expected.z, epsilon = EPSILON);
         assert_relative_eq!(s.q.w, q_expected.w, epsilon = EPSILON);
+
+        // Test small angle
+        let v_small = Vec3AF32::new(1e-9, 0.0, 0.0);
+        let s_small = SO3F32::exp(v_small);
+        // exp(v_small) should be approx [0.5*1e-9, 0, 0, 1.0]
+        assert_relative_eq!(s_small.q.x, 0.5 * 1e-9, epsilon = 1e-10);
+        assert_relative_eq!(s_small.q.w, 1.0, epsilon = 1e-10);
     }
 
     #[test]

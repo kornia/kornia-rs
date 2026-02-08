@@ -7854,10 +7854,12 @@ dependencies = [
  "criterion",
  "faer 0.20.1",
  "glam",
+ "levenberg-marquardt",
  "nalgebra 0.32.6",
  "rand 0.9.2",
  "sophus",
  "thiserror 2.0.17",
+ "varpro",
 ]
 
 [[package]]
@@ -8079,6 +8081,18 @@ name = "lebe"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
+
+[[package]]
+name = "levenberg-marquardt"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1204bd21e2f239566fdebafcab83adfd0b8cb0977bb43e09abfe18041d48ad8"
+dependencies = [
+ "cfg-if",
+ "nalgebra 0.32.6",
+ "num-traits",
+ "rustc_version",
+]
 
 [[package]]
 name = "lexical-core"
@@ -16955,6 +16969,18 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
+
+[[package]]
+name = "varpro"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc789ac9597e84101b949bf2a1b71c22c40d5c7be375da2c1136004865d03951"
+dependencies = [
+ "levenberg-marquardt",
+ "nalgebra 0.32.6",
+ "num-traits",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "vcpkg"
