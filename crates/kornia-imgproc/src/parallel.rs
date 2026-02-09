@@ -3,6 +3,39 @@ use rayon::prelude::*;
 use kornia_image::{allocator::ImageAllocator, Image};
 use kornia_tensor::{CpuAllocator, Tensor2};
 
+/// Execution strategy for parallel operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecutionStrategy {
+    /// Run serially
+    Serial,
+    /// Run in parallel
+    Parallel,
+    /// Auto-detect
+    #[default]
+    Auto,
+}
+
+impl ExecutionStrategy {
+    /// Choose strategy based on image size
+    pub fn from_image_size(num_pixels: usize) -> Self {
+        const THRESHOLD: usize = 100_000;
+        if num_pixels >= THRESHOLD {
+            ExecutionStrategy::Parallel
+        } else {
+            ExecutionStrategy::Serial
+        }
+    }
+
+    /// Returns true if should execute in parallel.
+    pub fn is_parallel(self, num_pixels: usize) -> bool {
+        match self {
+            ExecutionStrategy::Serial => false,
+            ExecutionStrategy::Parallel => true,
+            ExecutionStrategy::Auto => num_pixels >= 100_000,
+        }
+    }
+}
+
 /// Apply a function to each pixel in the image in parallel.
 ///
 /// # Arguments

@@ -1,5 +1,6 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use num_traits::Zero;
+use rayon::prelude::*;
 
 /// Trait for floating point casting
 pub trait FloatConversion {
@@ -76,7 +77,7 @@ impl SeparableFilter {
         }
     }
 
-    /// Apply the filter to an image.
+    /// Apply the filter to an image with execution strategy control.
     ///
     /// Performs horizontal filtering followed by vertical filtering using a temporary buffer.
     ///
@@ -84,28 +85,47 @@ impl SeparableFilter {
     ///
     /// * `src` - The source image
     /// * `dst` - The destination image (must be same size as source)
+    /// * `strategy` - The execution strategy (Serial, Parallel, or Auto)
     fn apply<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
         &self,
         src: &Image<T, C, A1>,
         dst: &mut Image<T, C, A2>,
+        strategy: crate::parallel::ExecutionStrategy,
     ) -> Result<(), ImageError>
     where
-        T: FloatConversion + Clone + Zero,
+        T: FloatConversion + Clone + Zero + Send + Sync,
     {
         let rows = src.rows();
         let cols = src.cols();
+        let num_pixels = rows * cols;
 
         let src_data = src.as_slice();
         let dst_data = dst.as_slice_mut();
         let mut temp = vec![0.0f32; src_data.len()];
 
+        if strategy.is_parallel(num_pixels) {
+            self.apply_parallel::<T, C>(&mut temp, src_data, dst_data, rows, cols)
+        } else {
+            self.apply_serial::<T, C>(&mut temp, src_data, dst_data, rows, cols)
+        }
+    }
+
+    fn apply_serial<T, const C: usize>(
+        &self,
+        temp: &mut [f32],
+        src_data: &[T],
+        dst_data: &mut [T],
+        rows: usize,
+        cols: usize,
+    ) -> Result<(), ImageError>
+    where
+        T: FloatConversion + Clone + Zero,
+    {
         // Horizontal
         for r in 0..rows {
             let row_offset = r * cols * C;
-
             for c in 0..cols {
                 let mut acc = [0.0f32; C];
-
                 for (&k, &off) in self.kernel_x.iter().zip(self.offsets_x.iter()) {
                     let x = c as isize + off;
                     if x >= 0 && x < cols as isize {
@@ -153,9 +173,76 @@ impl SeparableFilter {
 
         Ok(())
     }
+
+    fn apply_parallel<T, const C: usize>(
+        &self,
+        temp: &mut [f32],
+        src_data: &[T],
+        dst_data: &mut [T],
+        rows: usize,
+        cols: usize,
+    ) -> Result<(), ImageError>
+    where
+        T: FloatConversion + Clone + Zero + Send + Sync,
+    {
+        // Horizontal (parallel)
+        temp.par_chunks_mut(cols * C)
+            .enumerate()
+            .for_each(|(r, row_temp)| {
+                let row_offset = r * cols * C;
+
+                for c in 0..cols {
+                    let mut acc = [0.0f32; C];
+                    for (&k, &off) in self.kernel_x.iter().zip(self.offsets_x.iter()) {
+                        let x = c as isize + off;
+                        if x >= 0 && x < cols as isize {
+                            let idx = row_offset + x as usize * C;
+                            for (ch, acc_val) in acc.iter_mut().enumerate().take(C) {
+                                *acc_val +=
+                                    unsafe { src_data.get_unchecked(idx + ch).to_f32() } * k;
+                            }
+                        }
+                    }
+
+                    let out_idx = c * C;
+                    for (ch, &acc_val) in acc.iter().enumerate().take(C) {
+                        unsafe {
+                            *row_temp.get_unchecked_mut(out_idx + ch) = acc_val;
+                        }
+                    }
+                }
+            });
+
+        // Vertical (parallel)
+        dst_data
+            .par_chunks_mut(cols * C)
+            .enumerate()
+            .for_each(|(r, row_dst)| {
+                for c in 0..cols {
+                    let mut acc = [0.0f32; C];
+                    for (&k, &off) in self.kernel_y.iter().zip(self.offsets_y.iter()) {
+                        let y = r as isize + off;
+                        if y >= 0 && y < rows as isize {
+                            let idx = y as usize * cols * C + c * C;
+                            for (ch, acc_val) in acc.iter_mut().enumerate().take(C) {
+                                *acc_val += unsafe { *temp.get_unchecked(idx + ch) } * k;
+                            }
+                        }
+                    }
+
+                    let out_idx = c * C;
+                    for (ch, &acc_val) in acc.iter().enumerate().take(C) {
+                        unsafe {
+                            *row_dst.get_unchecked_mut(out_idx + ch) = T::from_f32(acc_val);
+                        }
+                    }
+                }
+            });
+        Ok(())
+    }
 }
 
-/// Apply a separable filter to an image.
+/// Apply a separable filter with execution strategy control.
 ///
 /// # Arguments
 ///
@@ -163,14 +250,16 @@ impl SeparableFilter {
 /// * `dst` - The destination image with shape (H, W, C).
 /// * `kernel_x` - The horizontal kernel.
 /// * `kernel_y` - The vertical kernel.
-pub fn separable_filter<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+/// * `strategy` - Execution strategy: `Serial`, `Parallel`, or `Auto`.
+pub fn separable_filter_with_strategy<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<T, C, A1>,
     dst: &mut Image<T, C, A2>,
     kernel_x: &[f32],
     kernel_y: &[f32],
+    strategy: crate::parallel::ExecutionStrategy,
 ) -> Result<(), ImageError>
 where
-    T: FloatConversion + Clone + Zero,
+    T: FloatConversion + Clone + Zero + Send + Sync,
 {
     if kernel_x.is_empty() || kernel_y.is_empty() {
         return Err(ImageError::InvalidKernelLength(
@@ -189,7 +278,36 @@ where
     }
 
     let filter = SeparableFilter::new(kernel_x, kernel_y);
-    filter.apply(src, dst)
+    filter.apply(src, dst, strategy)
+}
+
+/// Apply a separable filter to an image.
+///
+/// Uses `ExecutionStrategy::Auto` (parallel for images ≥100K pixels, serial otherwise).
+/// For explicit control, use [`separable_filter_with_strategy`].
+///
+/// # Arguments
+///
+/// * `src` - The source image with shape (H, W, C).
+/// * `dst` - The destination image with shape (H, W, C).
+/// * `kernel_x` - The horizontal kernel.
+/// * `kernel_y` - The vertical kernel.
+pub fn separable_filter<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, C, A1>,
+    dst: &mut Image<T, C, A2>,
+    kernel_x: &[f32],
+    kernel_y: &[f32],
+) -> Result<(), ImageError>
+where
+    T: FloatConversion + Clone + Zero + Send + Sync,
+{
+    separable_filter_with_strategy(
+        src,
+        dst,
+        kernel_x,
+        kernel_y,
+        crate::parallel::ExecutionStrategy::Auto,
+    )
 }
 
 /// Apply a fast filter horizontally using cumulative kernel
@@ -425,6 +543,61 @@ mod tests {
         );
         let xsum = dst.as_slice().iter().sum::<f32>();
         assert_eq!(xsum, 9.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_separable_filter_with_strategy() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 5,
+            height: 5,
+        };
+        let kernel_x = vec![1.0, 1.0, 1.0];
+        let kernel_y = vec![1.0, 1.0, 1.0];
+
+        let mut img = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator)?;
+        img.as_slice_mut()[12] = 255;
+
+        let mut dst_serial = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator)?;
+        separable_filter_with_strategy(
+            &img,
+            &mut dst_serial,
+            &kernel_x,
+            &kernel_y,
+            crate::parallel::ExecutionStrategy::Serial,
+        )?;
+
+        let mut dst_parallel = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator)?;
+        separable_filter_with_strategy(
+            &img,
+            &mut dst_parallel,
+            &kernel_x,
+            &kernel_y,
+            crate::parallel::ExecutionStrategy::Parallel,
+        )?;
+
+        let mut dst_auto = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator)?;
+        separable_filter_with_strategy(
+            &img,
+            &mut dst_auto,
+            &kernel_x,
+            &kernel_y,
+            crate::parallel::ExecutionStrategy::Auto,
+        )?;
+
+        #[rustfmt::skip]
+        let expected = [
+            0, 0, 0, 0, 0,
+            0, 255, 255, 255, 0,
+            0, 255, 255, 255, 0,
+            0, 255, 255, 255, 0,
+            0, 0, 0, 0, 0,
+        ];
+
+        assert_eq!(dst_serial.as_slice(), &expected);
+        assert_eq!(dst_parallel.as_slice(), &expected);
+        assert_eq!(dst_auto.as_slice(), &expected);
 
         Ok(())
     }
