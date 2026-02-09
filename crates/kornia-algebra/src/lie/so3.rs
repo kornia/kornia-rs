@@ -138,6 +138,7 @@ impl SO3F32 {
             let scale = 2.0 * half_theta / theta;
             vec * scale
         } else {
+            // Small-angle approximation (Taylor series)
             let scale = 2.0 / w;
             vec * scale
         }
@@ -552,6 +553,7 @@ mod tests {
         assert_relative_eq!(double_inv.q.z, so3.q.z, epsilon = 1e-5);
         assert_relative_eq!(double_inv.q.w.abs(), so3.q.w.abs(), epsilon = 1e-5);
 
+        // Test matrix inverse
         let matrix_inv = so3.inverse().matrix();
         let matrix_expected = so3.matrix().transpose();
 

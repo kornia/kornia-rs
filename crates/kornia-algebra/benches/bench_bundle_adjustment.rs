@@ -6,15 +6,12 @@ use kornia_algebra::{
 };
 use rand::Rng;
 
-// --- REPROJECTION ERROR FACTOR ---
 // Projects a 3D point into a camera and compares with observation.
 // Simplified pinhole camera model (focal length = 1, principal point = 0)
-// Error = observed - projected
 struct ReprojectionFactor {
     observed_uv: Vec2F32,
 }
 
-// Implement Factor
 impl Factor for ReprojectionFactor {
     fn linearize(
         &self,
@@ -22,14 +19,10 @@ impl Factor for ReprojectionFactor {
         compute_jacobian: bool,
     ) -> FactorResult<LinearizationResult> {
         let cam_pose_se3 = SE3F32::from_params(params[0]);
-        // Point in world is Euclidean, optimize as simple Vec3F32 usually? 
-        // But SE3 * Vec needs Vec3AF32.
         let point_world = Vec3AF32::new(params[1][0], params[1][1], params[1][2]);
         
-        // Transform point to camera frame: P_c = T_wc^-1 * P_w 
         let point_cam = cam_pose_se3.inverse() * point_world;
         
-        // Avoid division by zero
         let z = if point_cam.z.abs() < 1e-6 { 1.0 } else { point_cam.z };
         let inv_z = 1.0 / z;
         
@@ -41,9 +34,8 @@ impl Factor for ReprojectionFactor {
             return Ok(LinearizationResult::new(residual, None, 9));
         }
 
-        // Dummy Jacobian with correct sparsity (full blocks)
-        // 2 rows, 9 cols (6 for pose, 3 for point)
-        // Just fill with 1.0s to ensure consistent floating point ops
+        // Use a fixed Jacobian pattern to benchmark the solver's linear algebra performance
+        // rather than the cost of Jacobian computation itself.
         let jacobian = vec![1.0; 2 * 9];
 
         Ok(LinearizationResult::new(residual, Some(jacobian), 9))
@@ -61,7 +53,6 @@ fn solve_bundle_adjustment() -> Result<(), Box<dyn std::error::Error>> {
     let num_cameras = 10;
     let num_points = 50;
     
-    // 1. Create Cameras (Variables)
     let mut rng = rand::rng();
     for i in 0..num_cameras {
         let t = Vec3AF32::new(i as f32, 0.0, 0.0);
@@ -72,7 +63,6 @@ fn solve_bundle_adjustment() -> Result<(), Box<dyn std::error::Error>> {
         )?;
     }
 
-    // 2. Create Points (Variables)
     for j in 0..num_points {
          let pt = vec![rng.random::<f32>() * 10.0, rng.random::<f32>() * 10.0, 5.0 + rng.random::<f32>()];
          problem.add_variable(
@@ -81,11 +71,10 @@ fn solve_bundle_adjustment() -> Result<(), Box<dyn std::error::Error>> {
          )?;
     }
 
-    // 3. Add Factors (All cameras see all points - dense connectivity)
     for i in 0..num_cameras {
         for j in 0..num_points {
             let factor = ReprojectionFactor {
-                observed_uv: Vec2F32::new(0.5, 0.5), // Dummy observation
+                observed_uv: Vec2F32::new(0.5, 0.5),
             };
             problem.add_factor(
                 Box::new(factor),

@@ -13,11 +13,9 @@ fn exponential_decay(t: &na::DVector<f64>, tau: f64, c: f64) -> na::DVector<f64>
 fn generate_data() -> (na::DVector<f64>, na::DVector<f64>) {
     let t = na::DVector::from_vec(vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
     let y = exponential_decay(&t, 2.0, 5.0) + exponential_decay(&t, 0.5, 2.0);
-    // No noise for benchmark purity
     (t, y)
 }
 
-// --- KORNIA ALGEBRA IMPLEMENTATION ---
 struct DoubleExpFactor {
     t: f64,
     y: f64,
@@ -29,9 +27,8 @@ impl Factor for DoubleExpFactor {
         params: &[&[f32]],
         compute_jacobian: bool,
     ) -> FactorResult<LinearizationResult> {
-        // Param layout: [tau1, c1, tau2, c2]
-        // Actually, let's keep it simple: params[0] = [tau1, c1, tau2, c2] ?
-        // No, usually variables are separate. Let's say one variable of dim 4.
+        // params[0] is [tau1, c1, tau2, c2]
+        // Usually variables are separate, but here we treat them as one variable of dim 4.
         
         // params[0] is [tau1, c1, tau2, c2]
         let p = params[0];
@@ -98,12 +95,8 @@ fn solve_kornia() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 
-// --- VARPRO IMPLEMENTATION ---
 // Separable model: f(t, alpha, c) = c1 * exp(-t/tau1) + c2 * exp(-t/tau2)
 // Basis functions: phi1 = exp(-t/tau1), phi2 = exp(-t/tau2)
-// Nonlinear params (alpha): tau1, tau2
-// Linear params (c): c1, c2
-
 fn solve_varpro() -> Result<(), Box<dyn std::error::Error>> {
     let (t, y) = generate_data();
 
