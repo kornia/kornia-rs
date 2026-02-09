@@ -77,6 +77,33 @@ impl SeparableFilter {
         }
     }
 
+    /// Apply the filter to an image using serial execution only
+    ///
+    /// # Arguments
+    ///
+    /// * `src` - The source image
+    /// * `dst` - The destination image (must be same size as source)
+    fn apply_serial_only<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+        &self,
+        src: &Image<T, C, A1>,
+        dst: &mut Image<T, C, A2>,
+    ) -> Result<(), ImageError>
+    where
+        T: FloatConversion + Clone + Zero,
+    {
+        let rows = src.rows();
+        let cols = src.cols();
+        if rows == 0 || cols == 0 {
+            return Ok(());
+        }
+
+        let src_data = src.as_slice();
+        let dst_data = dst.as_slice_mut();
+        let mut temp = vec![0.0f32; src_data.len()];
+
+        self.apply_serial::<T, C>(&mut temp, src_data, dst_data, rows, cols)
+    }
+
     /// Apply the filter to an image with execution strategy control.
     ///
     /// Performs horizontal filtering followed by vertical filtering using a temporary buffer.
@@ -97,6 +124,9 @@ impl SeparableFilter {
     {
         let rows = src.rows();
         let cols = src.cols();
+        if rows == 0 || cols == 0 {
+            return Ok(());
+        }
         let num_pixels = rows * cols;
 
         let src_data = src.as_slice();
@@ -121,6 +151,10 @@ impl SeparableFilter {
     where
         T: FloatConversion + Clone + Zero,
     {
+        if rows == 0 || cols == 0 {
+            return Ok(());
+        }
+
         // Horizontal
         for r in 0..rows {
             let row_offset = r * cols * C;
@@ -185,6 +219,10 @@ impl SeparableFilter {
     where
         T: FloatConversion + Clone + Zero + Send + Sync,
     {
+        if rows == 0 || cols == 0 {
+            return Ok(());
+        }
+
         // Horizontal (parallel)
         temp.par_chunks_mut(cols * C)
             .enumerate()
@@ -214,6 +252,7 @@ impl SeparableFilter {
             });
 
         // Vertical (parallel)
+        let temp_read: &[f32] = temp;
         dst_data
             .par_chunks_mut(cols * C)
             .enumerate()
@@ -225,7 +264,7 @@ impl SeparableFilter {
                         if y >= 0 && y < rows as isize {
                             let idx = y as usize * cols * C + c * C;
                             for (ch, acc_val) in acc.iter_mut().enumerate().take(C) {
-                                *acc_val += unsafe { *temp.get_unchecked(idx + ch) } * k;
+                                *acc_val += unsafe { *temp_read.get_unchecked(idx + ch) } * k;
                             }
                         }
                     }
@@ -299,15 +338,26 @@ pub fn separable_filter<T, const C: usize, A1: ImageAllocator, A2: ImageAllocato
     kernel_y: &[f32],
 ) -> Result<(), ImageError>
 where
-    T: FloatConversion + Clone + Zero + Send + Sync,
+    T: FloatConversion + Clone + Zero,
 {
-    separable_filter_with_strategy(
-        src,
-        dst,
-        kernel_x,
-        kernel_y,
-        crate::parallel::ExecutionStrategy::Auto,
-    )
+    if kernel_x.is_empty() || kernel_y.is_empty() {
+        return Err(ImageError::InvalidKernelLength(
+            kernel_x.len(),
+            kernel_y.len(),
+        ));
+    }
+
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    let filter = SeparableFilter::new(kernel_x, kernel_y);
+    filter.apply_serial_only(src, dst)
 }
 
 /// Apply a fast filter horizontally using cumulative kernel

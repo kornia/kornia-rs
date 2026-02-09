@@ -16,10 +16,10 @@ pub enum ExecutionStrategy {
 }
 
 impl ExecutionStrategy {
+    const PARALLEL_THRESHOLD: usize = 100_000;
     /// Choose strategy based on image size
     pub fn from_image_size(num_pixels: usize) -> Self {
-        const THRESHOLD: usize = 100_000;
-        if num_pixels >= THRESHOLD {
+        if num_pixels >= Self::PARALLEL_THRESHOLD {
             ExecutionStrategy::Parallel
         } else {
             ExecutionStrategy::Serial
@@ -31,7 +31,7 @@ impl ExecutionStrategy {
         match self {
             ExecutionStrategy::Serial => false,
             ExecutionStrategy::Parallel => true,
-            ExecutionStrategy::Auto => num_pixels >= 100_000,
+            ExecutionStrategy::Auto => num_pixels >= Self::PARALLEL_THRESHOLD,
         }
     }
 }
