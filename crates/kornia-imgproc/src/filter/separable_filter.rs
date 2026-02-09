@@ -322,9 +322,6 @@ where
 
 /// Apply a separable filter to an image.
 ///
-/// Uses `ExecutionStrategy::Auto` (parallel for images ≥100K pixels, serial otherwise).
-/// For explicit control, use [`separable_filter_with_strategy`].
-///
 /// # Arguments
 ///
 /// * `src` - The source image with shape (H, W, C).

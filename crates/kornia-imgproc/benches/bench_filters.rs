@@ -79,20 +79,22 @@ fn bench_filters(c: &mut Criterion) {
             );
 
             let kernel_1d = kernels::gaussian_kernel_1d(*kernel_size, 1.5);
-            
+
             group.bench_with_input(
                 BenchmarkId::new("separable_filter_parallel", &parameter_string),
                 &(&image_f32, &output_f32),
                 |b, i| {
                     let (src, mut dst) = (i.0, i.1.clone());
                     b.iter(|| {
-                        std::hint::black_box(kornia_imgproc::filter::separable_filter_with_strategy(
-                            src,
-                            &mut dst,
-                            &kernel_1d,
-                            &kernel_1d,
-                            kornia_imgproc::parallel::ExecutionStrategy::Parallel,
-                        ))
+                        std::hint::black_box(
+                            kornia_imgproc::filter::separable_filter_with_strategy(
+                                src,
+                                &mut dst,
+                                &kernel_1d,
+                                &kernel_1d,
+                                kornia_imgproc::parallel::ExecutionStrategy::Parallel,
+                            ),
+                        )
                     })
                 },
             );
@@ -103,13 +105,15 @@ fn bench_filters(c: &mut Criterion) {
                 |b, i| {
                     let (src, mut dst) = (i.0, i.1.clone());
                     b.iter(|| {
-                        std::hint::black_box(kornia_imgproc::filter::separable_filter_with_strategy(
-                            src,
-                            &mut dst,
-                            &kernel_1d,
-                            &kernel_1d,
-                            kornia_imgproc::parallel::ExecutionStrategy::Auto,
-                        ))
+                        std::hint::black_box(
+                            kornia_imgproc::filter::separable_filter_with_strategy(
+                                src,
+                                &mut dst,
+                                &kernel_1d,
+                                &kernel_1d,
+                                kornia_imgproc::parallel::ExecutionStrategy::Auto,
+                            ),
+                        )
                     })
                 },
             );
