@@ -1,7 +1,41 @@
-//! Quaternion types.
+//! # Quaternion types
 //!
-//! This module provides quaternion types for kornia-rs as thin newtype
-//! wrappers over `glam` quaternions.
+//! Thin newtype wrappers over `glam` quaternions.
+//!
+//! ## Mathematical context
+//!
+//! The set of **unit quaternions** (quaternions with |q| = 1) forms a Lie group that is
+//! isomorphic to **SU(2)**, the group of 2×2 unitary matrices with determinant 1.
+//! Topologically, the unit quaternions form **S³**, the 3-sphere in R⁴.
+//!
+//! This is a stronger statement than "quaternions represent rotations":
+//! - **Unit quaternions ≅ SU(2)** — isomorphic as Lie groups (same topology AND same
+//!   group multiplication). They are the same mathematical object.
+//! - **SU(2) ≠ SO(3)** — SU(2) is the **double cover** of SO(3). The quotient map
+//!   SU(2) → SO(3) sends both `q` and `-q` to the same rotation matrix. SO(3) is
+//!   topologically RP³ (the 3-sphere with antipodal points identified).
+//!
+//! The three levels of equivalence:
+//!
+//! | Level | Meaning | Unit quaternions ≅ SU(2)? |
+//! |-------|---------|---------------------------|
+//! | Topological | Same shape (homeomorphic) | Yes — both S³ |
+//! | Smooth | Same calculus (diffeomorphic) | Yes |
+//! | Lie group | Same shape AND same multiplication | Yes |
+//!
+//! ## Practical consequences
+//!
+//! - **`q` and `-q` are distinct quaternions that represent the same rotation.**
+//!   This is the 2:1 nature of the double cover, not a numerical artifact.
+//! - **SLERP is smooth** because it operates on S³ (simply connected), not on
+//!   RP³ = SO(3) (which has a non-contractible loop at 360°).
+//! - **`from_mat3` must choose a sign** — given a rotation matrix, there are two
+//!   quaternions that produce it. No continuous global section exists.
+//! - **Normalize after repeated multiplications** — floating point drift pushes
+//!   quaternions off S³ into the surrounding R⁴. Call [`QuatF32::normalize`] to
+//!   project back onto the unit sphere and stay in SU(2).
+//! - **Quaternion multiplication IS the SU(2) group operation.** The `Mul` impl
+//!   below is not just "convenient math" — it is the Lie group composition law.
 
 use crate::{Mat3AF32, Mat3F64, Mat4F32, Mat4F64};
 
