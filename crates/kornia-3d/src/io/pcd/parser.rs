@@ -11,9 +11,13 @@ pub enum PcdError {
     #[error("Failed to read PCD file")]
     Io(#[from] std::io::Error),
 
-    /// Unsupported or malformed PCD header
+    /// Unsupported header
     #[error("Unsupported PCD header")]
     UnsupportedProperty,
+    
+    /// Malformed PCD header
+    #[error("Malformed PCD header")]
+    MalformedHeader,
 
     /// Invalid PCD file extension
     #[error("Invalid PCD file extension. Got:{0}")]
@@ -27,7 +31,7 @@ struct PcdField {
     offset: usize, // byte offset within a point
     size: usize,   // size of one element (bytes)
     count: usize,  // number of elements
-    kind: char,    // 'F', 'U', or 'I'
+    kind: char, // PCD type: 'F' = float, 'U' = unsigned int, 'I' = signed int
 }
 
 #[derive(Debug)]
@@ -65,7 +69,7 @@ fn read_u32(buf: &[u8], offset: usize) -> Result<u32, PcdError> {
 }
 
 
-fn parse_pcd_header<R: BufRead>(reader: &mut R) -> Result<PcdLayout, PcdError> {
+fn parse_pcd_layout<R: BufRead>(reader: &mut R) -> Result<PcdLayout, PcdError> {
     let mut field_names: Vec<String> = Vec::new();
     let mut sizes = Vec::new();
     let mut types = Vec::new();
@@ -74,7 +78,10 @@ fn parse_pcd_header<R: BufRead>(reader: &mut R) -> Result<PcdLayout, PcdError> {
 
     loop {
         let mut line = String::new();
-        reader.read_line(&mut line)?;
+        let n = reader.read_line(&mut line)?;
+        if n == 0 {
+            return Err(PcdError::MalformedHeader);
+        }
         let line = line.trim();
 
         if line.starts_with("DATA") {
@@ -125,6 +132,7 @@ fn parse_pcd_header<R: BufRead>(reader: &mut R) -> Result<PcdLayout, PcdError> {
     let mut fields = HashMap::new();
 
     for i in 0..field_names.len() {
+        // If COUNT is omitted, PCD spec defines default count as 1
         let count = counts.get(i).copied().unwrap_or(1);
         let size = sizes[i];
         let field = PcdField {
@@ -136,7 +144,7 @@ fn parse_pcd_header<R: BufRead>(reader: &mut R) -> Result<PcdLayout, PcdError> {
         };
 
         match field_names[i].as_str() {
-            "x" | "y"| "z" | "normal_x" | "normal_y" | "normal_z" | "nx" | "ny" | "nz" => {
+            "x" | "y" | "z" | "normal_x" | "normal_y" | "normal_z" | "nx" | "ny" | "nz" => {
                 if !(size == 4 && count == 1 && types[i] == 'F') {
                     return Err(PcdError::UnsupportedProperty);
                 }
@@ -160,12 +168,23 @@ fn parse_pcd_header<R: BufRead>(reader: &mut R) -> Result<PcdLayout, PcdError> {
     })
 }
 
-/// Read a PCD file in binary format.
+/// Read a binary PCD file.
 ///
+/// # Arguments
+/// * `path` - Path to a `.pcd` file.
+///
+/// # Returns
+/// A [`PointCloud`] containing:
+/// - 3D points (always)
+/// - RGB colors (if present)
+/// - Normals (if present)
+///
+/// # Supported formats
 /// - XYZ
 /// - XYZRGB
 /// - XYZ + normals
 /// - XYZRGB + normals
+
 pub fn read_pcd_binary(path: impl AsRef<Path>) -> Result<PointCloud, PcdError> {
     let Some(file_ext) = path.as_ref().extension() else {
         return Err(PcdError::InvalidFileExtension("".into()));
@@ -181,8 +200,11 @@ pub fn read_pcd_binary(path: impl AsRef<Path>) -> Result<PointCloud, PcdError> {
     let file = std::fs::File::open(path)?;
     let mut reader = std::io::BufReader::new(file);
 
-    let layout = parse_pcd_header(&mut reader)?;
+    let layout = parse_pcd_layout(&mut reader)?;
 
+    if layout.num_points == 0 {
+        return Err(PcdError::MalformedHeader);
+    }
     // Required fields
     let fx = layout.get_field_offset("x")?;
     let fy = layout.get_field_offset("y")?;
@@ -211,7 +233,9 @@ pub fn read_pcd_binary(path: impl AsRef<Path>) -> Result<PointCloud, PcdError> {
     };
 
     // Read binary points
-    while reader.read_exact(&mut buffer).is_ok() {
+    for _ in 0..layout.num_points {
+        reader.read_exact(&mut buffer)?;
+
         let x = read_f32(&buffer, fx)?;
         let y = read_f32(&buffer, fy)?;
         let z = read_f32(&buffer, fz)?;
@@ -222,7 +246,7 @@ pub fn read_pcd_binary(path: impl AsRef<Path>) -> Result<PointCloud, PcdError> {
             colors.push([
                 ((rgb >> 16) & 0xFF) as u8,
                 ((rgb >> 8) & 0xFF) as u8,
-                rgb as u8,
+                (rgb & 0xFF) as u8,
             ]);
         }
 
@@ -256,7 +280,7 @@ COUNT 1 1 1
 POINTS 1
 DATA ascii";
         let mut reader = Cursor::new(&data[..]);
-        assert!(parse_pcd_header(&mut reader).is_err());
+        assert!(parse_pcd_layout(&mut reader).is_err());
     }
 
     #[test]
@@ -268,7 +292,7 @@ COUNT 1 1 1
 POINTS 10
 DATA binary";
         let mut reader = Cursor::new(&data[..]);
-        let layout = parse_pcd_header(&mut reader).unwrap();
+        let layout = parse_pcd_layout(&mut reader).unwrap();
         assert_eq!(layout.num_points, 10);
         assert!(layout.fields.contains_key("x"));
     }
@@ -282,7 +306,7 @@ COUNT 1 1 1
 POINTS 5
 DATA binary";
         let mut reader = Cursor::new(&data[..]);
-        assert!(parse_pcd_header(&mut reader).is_err());
+        assert!(parse_pcd_layout(&mut reader).is_err());
     }
 }
 
