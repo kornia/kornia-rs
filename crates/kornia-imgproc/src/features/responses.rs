@@ -319,11 +319,12 @@ pub fn dog_response<A1: ImageAllocator, A2: ImageAllocator>(
 
     let dst_data = dst.as_slice_mut();
     let gauss1_data = gauss1.as_slice();
-    
-    dst_data.iter_mut()
+
+    dst_data
+        .iter_mut()
         .zip(gauss1_data.iter())
         .for_each(|(d, g1)| {
-            *d -= *g1; 
+            *d -= *g1;
         });
 
     Ok(())
