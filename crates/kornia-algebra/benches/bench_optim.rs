@@ -94,21 +94,8 @@ impl Factor for BetweenFactorSE2 {
         }
 
         // Reorder for kornia optimizer layout: [J_i_col0, J_j_col0, J_i_col1, J_j_col1 ...]
-        // Wait, LinearizationResult expects a flat vector.
-        // Usually it's variable by variable? No, it's flat usually row-major or column-major.
-        // Kornia optimization assumes Jacobian is stored... let's check.
-        // It seems kornia expects a single flat vector.
-        // Based on `RosenbrockFactor`, it returns `vec![-1.0, 0.0, ...]`.
-        // We will assume it's simply concatenated Jacobians of variables.
-        // But variables have 3 params each in tangent space.
-        // Let's stick to simple numerical diff as above but transpose if needed.
-        // Assuming row-major for now: [dr/dTi, dr/dTj]
+        // We assume it's simply concatenated Jacobians of variables.
 
-        // Actually, kornia might expect column-major or flattened by variable.
-        // Let's check `levenberg_marquardt.rs` if needed.
-        // For now, let's just return the concatenated implementation.
-        // But above I implemented column-major-ish per variable?
-        // Let's fix loop to be row-major:
 
         let mut full_jacobian = vec![0.0; 3 * 6]; // 3 rows, 6 columns
 

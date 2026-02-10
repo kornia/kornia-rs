@@ -5,7 +5,6 @@ use nalgebra as na;
 use varpro::prelude::*;
 use varpro::solvers::levmar::{LevMarProblemBuilder, LevMarSolver};
 
-// --- DATA GENERATION ---
 fn exponential_decay(t: &na::DVector<f64>, tau: f64, c: f64) -> na::DVector<f64> {
     t.map(|t_val| c * (-t_val / tau).exp())
 }

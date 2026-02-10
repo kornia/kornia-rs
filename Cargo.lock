@@ -409,6 +409,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "apex-solver"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6168a2d9854d5644e7dcbe3a8a486c72d04a56eb0ac2b51058cf694e2b7cd10"
+dependencies = [
+ "chrono",
+ "clap",
+ "colored",
+ "faer 0.22.6",
+ "memmap2 0.9.9",
+ "nalgebra 0.33.2",
+ "num_cpus",
+ "rand 0.9.2",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -424,7 +446,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8df9c681cce0390b1a3c285d04bc5fc64d92efe59af52a36f85a77d798cb5b97"
 dependencies = [
  "faer 0.22.6",
- "glam",
+ "glam 0.30.10",
  "image 0.25.9",
  "imageproc",
  "itertools 0.14.0",
@@ -2569,6 +2591,16 @@ name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
+
+[[package]]
+name = "colored"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
+dependencies = [
+ "lazy_static",
+ "windows-sys 0.59.0",
+]
 
 [[package]]
 name = "combine"
@@ -6019,6 +6051,12 @@ dependencies = [
 
 [[package]]
 name = "glam"
+version = "0.29.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8babf46d4c1c9d92deac9f7be466f76dfc4482b6452fc5024b5e8daf6ffeb3ee"
+
+[[package]]
+name = "glam"
 version = "0.30.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19fc433e8437a212d1b6f1e68c7824af3aed907da60afa994e7f542d18d12aa9"
@@ -6861,7 +6899,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29a164ceff4500f2a72b1d21beaa8aa8ad83aec2b641844c659b190cb3ea2e0b"
 dependencies = [
  "constgebra",
- "glam",
+ "glam 0.30.10",
  "tinyvec",
 ]
 
@@ -7850,12 +7888,14 @@ dependencies = [
 name = "kornia-algebra"
 version = "0.1.11-rc.1"
 dependencies = [
+ "apex-solver",
  "approx",
  "criterion",
  "faer 0.20.1",
- "glam",
+ "glam 0.30.10",
  "levenberg-marquardt",
  "nalgebra 0.32.6",
+ "nalgebra 0.33.2",
  "rand 0.9.2",
  "sophus",
  "thiserror 2.0.17",
@@ -8380,7 +8420,7 @@ version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c96b82556b0d4aa25cd4771b64ef9bde7c120afb588a083fcb242bf01e4a09b"
 dependencies = [
- "glam",
+ "glam 0.30.10",
  "num-traits",
  "serde",
 ]
@@ -8851,6 +8891,7 @@ checksum = "26aecdf64b707efd1310e3544d709c5c0ac61c13756046aaaba41be5c4f66a3b"
 dependencies = [
  "approx",
  "bytemuck",
+ "glam 0.29.3",
  "matrixmultiply",
  "nalgebra-macros",
  "num-complex",
@@ -11673,7 +11714,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe6da1b9e0e644f1285f6f6a28cb317841c667a4cfdff1e1e2f5497d8b971d46"
 dependencies = [
  "arrow 56.1.0",
- "glam",
+ "glam 0.30.10",
  "half",
  "smallvec",
 ]
@@ -12546,7 +12587,7 @@ dependencies = [
  "ecolor 0.33.3",
  "enumset",
  "getrandom 0.3.4",
- "glam",
+ "glam 0.30.10",
  "gltf",
  "half",
  "itertools 0.14.0",
@@ -12652,7 +12693,7 @@ dependencies = [
  "ecolor 0.33.3",
  "egui_plot 0.34.0",
  "emath 0.33.3",
- "glam",
+ "glam 0.30.10",
  "half",
  "image 0.25.9",
  "indexmap 2.13.0",
@@ -12763,7 +12804,7 @@ dependencies = [
  "ahash",
  "arrow 56.1.0",
  "bitflags 2.10.0",
- "glam",
+ "glam 0.30.10",
  "itertools 0.14.0",
  "nohash-hasher",
  "parking_lot",
@@ -12952,7 +12993,7 @@ checksum = "15d1965ca1a87632136da185cddf7870380328a161bf9ff8c1fbb361bdab43ba"
 dependencies = [
  "ahash",
  "egui 0.33.3",
- "glam",
+ "glam 0.30.10",
  "itertools 0.14.0",
  "nohash-hasher",
  "re_chunk_store",
@@ -13050,7 +13091,7 @@ checksum = "c25a7f240bc04b668df6ef05cf525e104068c983ce43daa69e912d7b0ec2c4c0"
 dependencies = [
  "bytemuck",
  "egui 0.33.3",
- "glam",
+ "glam 0.30.10",
  "itertools 0.14.0",
  "macaw",
  "re_data_ui",
@@ -13080,7 +13121,7 @@ dependencies = [
  "bitflags 2.10.0",
  "bytemuck",
  "egui 0.33.3",
- "glam",
+ "glam 0.30.10",
  "hexasphere",
  "image 0.25.9",
  "itertools 0.14.0",
@@ -13222,7 +13263,7 @@ dependencies = [
  "egui_plot 0.34.0",
  "ehttp",
  "emath 0.33.3",
- "glam",
+ "glam 0.30.10",
  "image 0.25.9",
  "itertools 0.14.0",
  "jiff",
@@ -13314,7 +13355,7 @@ dependencies = [
  "egui-wgpu 0.33.3",
  "egui_tiles",
  "emath 0.33.3",
- "glam",
+ "glam 0.30.10",
  "half",
  "home",
  "image 0.25.9",

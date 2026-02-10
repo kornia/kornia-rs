@@ -39,12 +39,18 @@ approx = { workspace = true }
 criterion = { workspace = true }
 faer = { workspace = true }
 nalgebra = "0.32"
+nalgebra-033 = { package = "nalgebra", version = "0.33" }
 levenberg-marquardt = "0.13"
 varpro = "0.7"
 sophus = "0.15.0"
+apex-solver = "0.1.6"
 
 [features]
 approx = ["dep:approx"]
 [[bench]]
 harness = false
-name = "bench_bundle_adjustment" 
+name = "bench_bundle_adjustment"
+
+[[bench]]
+harness = false
+name = "bench_apex_ba" 
