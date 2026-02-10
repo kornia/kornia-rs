@@ -30,6 +30,9 @@ runs:
         restore-keys: |
           ${{ inputs.cache-prefix }}-${{ runner.os }}-${{ runner.arch }}-
 
+    - name: Install sccache
+      if: inputs.with-sccache == 'true'
+      uses: mozilla-actions/sccache-action@v0.0.9
     - name: Setup sccache environment
       if: inputs.with-sccache == 'true'
       shell: bash
@@ -40,6 +43,11 @@ runs:
         echo "SCCACHE_ERROR_LOG=/tmp/sccache_log.txt" >> $GITHUB_ENV
         echo "SCCACHE_LOG=info" >> $GITHUB_ENV
 
-    - name: Install sccache
+    - name: Ensure sccache server is running
       if: inputs.with-sccache == 'true'
-      uses: mozilla-actions/sccache-action@v0.0.9
+
+      shell: bash
+      run: |
+        sccache --stop-server 2>/dev/null || true
+        sccache --start-server || true
+        sccache --show-stats || echo "Warning: sccache server may not be running properly"
