@@ -1,23 +1,18 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 use kornia_imgproc::distance_transform::{
-    distance_transform_fastest, // Meijster (Fused)
-    distance_transform_vanilla, // Naive
-    DistanceTransformExecutor,  // Struct (Felzenszwalb)
+    distance_transform_vanilla, 
+    DistanceTransformExecutor,  
 };
 use opencv::{core, imgproc, prelude::*};
 
 fn bench_distance_transform(c: &mut Criterion) {
     let mut group = c.benchmark_group("DistanceTransform");
 
-    // -----------------------------------------------------------------------
-    // 1. Small Sizes
-    // -----------------------------------------------------------------------
     for (width, height) in [(64, 64)].iter() {
         group.throughput(Throughput::Elements((*width * *height) as u64));
         let parameter_string = format!("{width}x{height}");
 
-        // --- Setup Data ---
         let mut data = vec![0.0f32; width * height];
         for i in 0..(*width).min(*height) {
             if i % 10 == 0 {
@@ -47,7 +42,6 @@ fn bench_distance_transform(c: &mut Criterion) {
         }
         let mut cv_dst = core::Mat::default();
 
-        // --- Benchmarks ---
 
         // 1. Vanilla (Baseline)
         group.bench_with_input(
@@ -56,10 +50,9 @@ fn bench_distance_transform(c: &mut Criterion) {
             |b, i| b.iter(|| std::hint::black_box(distance_transform_vanilla(i))),
         );
 
-        // 2. Kornia: Felzenszwalb (STRUCT REUSE)
-        // We init the struct ONCE, and reuse it. This simulates video processing.
+        // 2. Felzenszwalb 
         group.bench_with_input(
-            BenchmarkId::new("kornia_felz_reuse", &parameter_string),
+            BenchmarkId::new("kornia_cpu", &parameter_string),
             &image,
             |b, i| {
                 let mut executor = DistanceTransformExecutor::new();
@@ -67,14 +60,8 @@ fn bench_distance_transform(c: &mut Criterion) {
             },
         );
 
-        // 3. Kornia: Meijster (Fastest Function)
-        group.bench_with_input(
-            BenchmarkId::new("kornia_fastest", &parameter_string),
-            &image,
-            |b, i| b.iter(|| distance_transform_fastest(i)),
-        );
-
-        // 4. OpenCV
+    
+        // 3. OpenCV
         group.bench_function(BenchmarkId::new("opencv", &parameter_string), |b| {
             b.iter(|| {
                 imgproc::distance_transform(
@@ -89,9 +76,7 @@ fn bench_distance_transform(c: &mut Criterion) {
         });
     }
 
-    // -----------------------------------------------------------------------
-    // 2. Large Sizes
-    // -----------------------------------------------------------------------
+
     for (width, height) in [(512, 512), (1024, 1024), (2048, 2048)].iter() {
         group.throughput(Throughput::Elements((*width * *height) as u64));
         let parameter_string = format!("{width}x{height}");
@@ -124,11 +109,10 @@ fn bench_distance_transform(c: &mut Criterion) {
         }
         let mut cv_dst = core::Mat::default();
 
-        // --- Benchmarks ---
 
-        // 1. Kornia: Felzenszwalb (STRUCT REUSE)
+        // 1.Felzenszwalb (STRUCT REUSE)
         group.bench_with_input(
-            BenchmarkId::new("kornia_felz_reuse", &parameter_string),
+            BenchmarkId::new("kornia_cpu", &parameter_string),
             &image,
             |b, i| {
                 let mut executor = DistanceTransformExecutor::new();
@@ -136,14 +120,8 @@ fn bench_distance_transform(c: &mut Criterion) {
             },
         );
 
-        // 2. Kornia: Meijster (Fastest Function)
-        group.bench_with_input(
-            BenchmarkId::new("kornia_fastest", &parameter_string),
-            &image,
-            |b, i| b.iter(|| distance_transform_fastest(i)),
-        );
-
-        // 3. OpenCV
+        
+        // 2. OpenCV
         group.bench_function(BenchmarkId::new("opencv", &parameter_string), |b| {
             b.iter(|| {
                 imgproc::distance_transform(
