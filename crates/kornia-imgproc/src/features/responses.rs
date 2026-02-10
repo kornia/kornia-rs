@@ -310,23 +310,20 @@ pub fn dog_response<A1: ImageAllocator, A2: ImageAllocator>(
         ));
     }
 
-    let mut gauss1 = Image::from_size_val(src.size(), 0.0, CpuAllocator)?;
-    let mut gauss2 = Image::from_size_val(src.size(), 0.0, CpuAllocator)?;
     let ks1 = _get_kernel_size(sigma1);
     let ks2 = _get_kernel_size(sigma2);
 
+    gaussian_blur(src, dst, (ks2, ks2), (sigma2, sigma2))?;
+    let mut gauss1 = Image::from_size_val(src.size(), 0.0, CpuAllocator)?;
     gaussian_blur(src, &mut gauss1, (ks1, ks1), (sigma1, sigma1))?;
-    gaussian_blur(src, &mut gauss2, (ks2, ks2), (sigma2, sigma2))?;
 
-    let gauss1_data = gauss1.as_slice();
-    let gauss2_data = gauss2.as_slice();
     let dst_data = dst.as_slice_mut();
-
-    dst_data
-        .iter_mut()
-        .zip(gauss2_data.iter().zip(gauss1_data.iter()))
-        .for_each(|(dst_pixel, (gauss2_pixel, gauss1_pixel))| {
-            *dst_pixel = gauss2_pixel - gauss1_pixel;
+    let gauss1_data = gauss1.as_slice();
+    
+    dst_data.iter_mut()
+        .zip(gauss1_data.iter())
+        .for_each(|(d, g1)| {
+            *d -= *g1; 
         });
 
     Ok(())
