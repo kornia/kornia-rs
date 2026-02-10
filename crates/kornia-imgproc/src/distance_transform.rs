@@ -1,5 +1,6 @@
 use kornia_image::allocator::{CpuAllocator, ImageAllocator};
 use kornia_image::{Image, ImageError, ImageSize};
+use rayon::prelude::*;
 
 const INF: f32 = 1e20;
 
@@ -17,10 +18,9 @@ where
 
     for y in 0..image.height() {
         for x in 0..image.width() {
-            let mut min_distance = std::f32::MAX;
+            let mut min_distance = f32::MAX;
             for j in 0..image.height() {
                 for i in 0..image.width() {
-                    // image.data[[j, i, 0]] > 0.0
                     if slice[j * image.width() + i] > 0.0 {
                         let distance =
                             euclidean_distance(vec![x as f32, y as f32], vec![i as f32, j as f32]);
@@ -37,82 +37,88 @@ where
     Image::new(image.size(), output, CpuAllocator).unwrap()
 }
 
-/// Computes the Euclidean Distance Transform of a binary image.
+/// Executor for computing the Euclidean Distance Transform.
 ///
-/// This implementation uses the linear-time algorithm O(N) by Felzenszwalb & Huttenlocher
-/// described in "Distance Transforms of Sampled Functions" (2012).
-///
-/// # Arguments
-///
-/// * `image` - Input binary image. Non-zero pixels are considered features (distance 0).
-///             Zero pixels are considered background.
-///
-/// # Returns
-///
-/// A float image where each pixel value is the Euclidean distance to the nearest feature.
-/// The output image is always allocated on the CPU.
-pub fn distance_transform<A>(
-    image: &Image<f32, 1, A>,
-) -> Result<Image<f32, 1, CpuAllocator>, ImageError>
-where
-    A: ImageAllocator,
-{
-    let width = image.width();
-    let height = image.height();
-    let num_pixels = width * height;
-
-    // Initialization
-    let mut grid = vec![INF; num_pixels];
-    let slice = image.as_slice();
-
-    for (i, &val) in slice.iter().enumerate() {
-        if val > 0.0 {
-            grid[i] = 0.0;
-        }
+/// This struct maintains internal buffers that can be reused across multiple
+/// calls to avoid the overhead of frequent memory allocations.
+pub struct DistanceTransformExecutor {
+    grid: Vec<f32>,
+    scratch: Vec<f32>,
+}
+impl Default for DistanceTransformExecutor {
+    fn default() -> Self {
+        Self::new()
     }
-
-    // Transform along Columns
-    let mut f_col = vec![0.0; height];
-    let mut d_col = vec![0.0; height];
-    let mut v_col = vec![0usize; height];
-    let mut z_col = vec![0.0f32; height + 1];
-
-    for x in 0..width {
-        for y in 0..height {
-            f_col[y] = grid[y * width + x];
-        }
-        distance_transform_1d(&f_col, &mut d_col, &mut v_col, &mut z_col);
-        for y in 0..height {
-            grid[y * width + x] = d_col[y];
-        }
-    }
-
-    // Transform along Rows
-    let mut f_row = vec![0.0; width];
-    let mut d_row = vec![0.0; width];
-    let mut v_row = vec![0usize; width];
-    let mut z_row = vec![0.0f32; width + 1];
-
-    for y in 0..height {
-        let row_start = y * width;
-        for x in 0..width {
-            f_row[x] = grid[row_start + x];
-        }
-        distance_transform_1d(&f_row, &mut d_row, &mut v_row, &mut z_row);
-        for x in 0..width {
-            grid[row_start + x] = d_row[x];
-        }
-    }
-
-    // Finalize
-    for val in grid.iter_mut() {
-        *val = val.sqrt();
-    }
-
-    Image::new(ImageSize { width, height }, grid, CpuAllocator)
 }
 
-/// Helper function - 1D distance transform using parabolic lower envelope
+impl DistanceTransformExecutor {
+    /// Creates a new `DistanceTransformExecutor` with empty buffers.
+    pub fn new() -> Self {
+        Self {
+            grid: Vec::new(),
+            scratch: Vec::new(),
+        }
+    }
+
+    /// Computes the Euclidean Distance Transform of a binary image.
+    pub fn execute<A>(
+        &mut self,
+        image: &Image<f32, 1, A>,
+    ) -> Result<Image<f32, 1, CpuAllocator>, ImageError>
+    where
+        A: ImageAllocator,
+    {
+        let width = image.width();
+        let height = image.height();
+        let num_pixels = width * height;
+
+        // Resize internal workspace if the image dimensions have changed.
+        if self.grid.len() != num_pixels {
+            self.grid.resize(num_pixels, 0.0);
+            self.scratch.resize(num_pixels, 0.0);
+        }
+
+        let src_slice = image.as_slice();
+
+        // Parallelize over rows and fuse binary-to-INF conversion with the transform.
+        self.grid
+            .par_chunks_mut(width)
+            .zip(src_slice.par_chunks(width))
+            .for_each_init(
+                || (vec![0.0; width], vec![0usize; width], vec![0.0; width + 1]),
+                |(f, v, z), (grid_row, src_row)| {
+                    for (i, &val) in src_row.iter().enumerate() {
+                        f[i] = if val > 0.0 { 0.0 } else { INF };
+                    }
+                    distance_transform_1d(f, grid_row, v, z);
+                },
+            );
+
+        transpose_map(&self.grid, &mut self.scratch, width, height, |x| x);
+
+        self.scratch.par_chunks_mut(height).for_each_init(
+            || {
+                (
+                    vec![0.0; height],
+                    vec![0usize; height],
+                    vec![0.0; height + 1],
+                )
+            },
+            |(f, v, z), row| {
+                f.copy_from_slice(row);
+                distance_transform_1d(f, row, v, z);
+            },
+        );
+
+        // create a fresh vector for the final Image to be returned.
+        let mut final_data = vec![0.0f32; num_pixels];
+        transpose_map(&self.scratch, &mut final_data, height, width, |x| x.sqrt());
+
+        Image::new(ImageSize { width, height }, final_data, CpuAllocator)
+    }
+}
+
+/// 1D Parabolic Distance Transform (Safe Rust)
 fn distance_transform_1d(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f32]) {
     let n = f.len();
     if n == 0 {
@@ -127,9 +133,9 @@ fn distance_transform_1d(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f32
     for q in 1..n {
         loop {
             let r = v[k];
-            // Calculate intersection of parabola 'r' and 'q'
-            let s =
-                ((f[q] + (q * q) as f32) - (f[r] + (r * r) as f32)) / (2.0 * (q as f32 - r as f32));
+            let numerator = (f[q] + (q * q) as f32) - (f[r] + (r * r) as f32);
+            let denominator = 2.0 * (q as f32 - r as f32);
+            let s = numerator / denominator;
 
             if s <= z[k] {
                 if k == 0 {
@@ -147,13 +153,28 @@ fn distance_transform_1d(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f32
     }
 
     k = 0;
-    for q in 0..n {
+    for (q, d_val) in d.iter_mut().enumerate().take(n) {
         while z[k + 1] < q as f32 {
             k += 1;
         }
         let r = v[k];
-        d[q] = (q as f32 - r as f32).powi(2) + f[r];
+        let dist = q as f32 - r as f32;
+        *d_val = dist * dist + f[r];
     }
+}
+
+/// Generic Parallel Transpose with Mapper
+fn transpose_map<F>(src: &[f32], dst: &mut [f32], width: usize, height: usize, op: F)
+where
+    F: Fn(f32) -> f32 + Sync + Send,
+{
+    dst.par_chunks_mut(height)
+        .enumerate()
+        .for_each(|(x, dst_row)| {
+            for y in 0..height {
+                dst_row[y] = op(src[y * width + x]);
+            }
+        });
 }
 
 #[cfg(test)]
@@ -171,26 +192,22 @@ mod tests {
         data[102] = 1.0;
         data[300] = 1.0;
 
-        let image = Image::new(ImageSize { width, height }, data, CpuAllocator).unwrap();
-
+        let image =
+            Image::<f32, 1, _>::new(ImageSize { width, height }, data, CpuAllocator).unwrap();
         let expected = distance_transform_vanilla(&image);
-        let actual = distance_transform(&image).unwrap();
+
+        let mut executor = DistanceTransformExecutor::new();
+        let actual = executor.execute(&image).unwrap();
 
         for i in 0..actual.as_slice().len() {
             let diff = (expected.as_slice()[i] - actual.as_slice()[i]).abs();
-            assert!(
-                diff < 1e-4,
-                "Mismatch at index {}: Vanilla={}, New={}",
-                i,
-                expected.as_slice()[i],
-                actual.as_slice()[i]
-            );
+            assert!(diff < 1e-4);
         }
     }
 
     #[test]
     fn distance_transform_smoke() {
-        let image = Image::new(
+        let image = Image::<f32, 1, _>::new(
             ImageSize {
                 width: 3,
                 height: 4,
@@ -202,8 +219,11 @@ mod tests {
         )
         .unwrap();
 
-        let output = distance_transform(&image).unwrap();
+        let mut executor = DistanceTransformExecutor::new();
+        let output = executor.execute(&image).unwrap();
 
-        println!("Output: {:?}", output.as_slice());
+        assert_eq!(output.size().width, 3);
+        assert_eq!(output.size().height, 4);
+        assert_eq!(output.as_slice()[2], 0.0);
     }
 }
