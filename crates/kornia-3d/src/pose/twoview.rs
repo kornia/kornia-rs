@@ -1,3 +1,37 @@
+//! # Two-View Initialization
+//!
+//! Recovers relative camera pose (R, t) and 3D structure from 2D correspondences.
+//!
+//! ## Pipeline
+//!
+//! ```text
+//! Correspondences (pixel space)
+//!     │
+//!     ├─→ RANSAC + 8-point → F (fundamental, pixel space)
+//!     │                         │
+//!     │                         ▼
+//!     │                       E = K2ᵀ F K1 (essential, metric space)
+//!     │                         │
+//!     │                         ▼ enforce (σ,σ,0), decompose → 4 (R,t) candidates
+//!     │
+//!     └─→ RANSAC + 4-point → H (homography, pixel space)
+//!                               │
+//!                               ▼ decompose → multiple (R,t,n) candidates
+//!     │
+//!     ▼
+//! Model selection: compare inlier ratios (H wins when scene is planar)
+//!     │
+//!     ▼
+//! Cheirality check: triangulate with each candidate, pick the one where
+//! points are in front of both cameras
+//!     │
+//!     ▼
+//! (R, t_direction, 3D points)   ← translation scale is lost (quotient of SE(3))
+//! ```
+//!
+//! The output translation is a **unit vector** (direction only). Scale is irrecoverable
+//! from two views alone — this is the SE(3) → essential manifold quotient in action.
+
 use crate::pose::fundamental::{fundamental_8point, sampson_distance, FundamentalError};
 use crate::pose::{
     decompose_essential, decompose_homography, enforce_essential_constraints,

@@ -1,8 +1,72 @@
+//! # Essential Matrix
+//!
+//! The essential matrix E encodes epipolar geometry in **normalized (metric) space**:
+//! `x̂2ᵀ E x̂1 = 0`, where x̂ = K⁻¹x are normalized image coordinates.
+//!
+//! - 5 DOF: 3 (rotation) + 2 (translation direction — scale is lost).
+//! - Singular values: always **(σ, σ, 0)**. The two equal non-zero values come from the
+//!   skew-symmetric factor `[t]×`, which treats both in-plane directions identically.
+//!   The zero is because `t × t = 0`.
+//! - `E = [t]× R`, where `[t]×` is the skew-symmetric matrix of t and R ∈ SO(3).
+//!
+//! ## The essential manifold
+//!
+//! The set of valid essential matrices `{[t]× R : R ∈ SO(3), ‖t‖ = 1}` is a
+//! **5-dimensional smooth manifold** embedded in the 9-dimensional space of 3×3 matrices.
+//!
+//! It is NOT a group:
+//! - No identity: t = 0 gives the zero matrix, which isn't on the manifold.
+//! - No closed binary operation: the product of two essential matrices isn't essential.
+//! - No Lie algebra (not a Lie group), though it has tangent spaces (it's a smooth manifold).
+//!
+//! It IS a **quotient of SE(3)**: the map `(R, t) → [t]× R` is surjective and many-to-one.
+//! It collapses all translations along the same direction into one point, losing:
+//! - **Scale**: (R, 2t) and (R, t) map to the same E (up to scale).
+//! - **Sign**: (R, t) and (R, -t) give the same E up to sign.
+//!
+//! This is the same pattern as the SU(2) → SO(3) double cover — a quotient that loses
+//! information recoverable only by additional constraints (triangulation for scale,
+//! cheirality for sign).
+//!
+//! ## The fundamental group and why quotients exist
+//!
+//! The **fundamental group** π₁(X) of a space X captures its "loops that can't be
+//! shrunk to a point." It explains why double covers and quotients arise:
+//!
+//! - **π₁(SO(3)) = Z₂**: there is exactly one non-trivial loop — a 360° rotation.
+//!   You can't continuously deform it to the identity, but doing it twice (720°)
+//!   IS contractible. This Z₂ is why the double cover SU(2) → SO(3) exists and
+//!   why `q` and `-q` represent the same rotation.
+//! - **π₁(SU(2)) = π₁(S³) = 0**: simply connected, every loop contracts. SU(2) is
+//!   the **universal cover** of SO(3) — the "maximally unwound" version.
+//! - **π₁(SO(2)) = Z**: the circle has infinitely many non-contractible loops
+//!   (wind around once, twice, ...). Its universal cover is R (the real line), and
+//!   `SO(2) ≅ R/2πZ` — another quotient.
+//!
+//! The essential manifold's quotient structure is analogous: SE(3) is "bigger" and
+//! the essential manifold is what you get after collapsing the fibers of translation
+//! scale and sign. The `enforce_essential_constraints` function projects back onto
+//! the manifold, just as quaternion normalization projects back onto S³ ≅ SU(2).
+//!
+//! ## Decomposition
+//!
+//! SVD of E gives U, S, V. The 90° rotation embedded in `[t]×` is captured by the W
+//! matrix. Decomposition yields 4 candidates: `R = U W Vᵀ` or `R = U Wᵀ Vᵀ`, each
+//! with `t = ±u3` (third column of U). The correct candidate is selected by cheirality
+//! check (triangulate, pick the one where points are in front of both cameras).
+//!
+//! ## Pitfalls
+//!
+//! - **Repeated singular values break Jacobi SVD**: essential matrices always have
+//!   (σ, σ, 0). The internal `svd3_robust` uses faer instead of `svd3_f64` for this reason.
+//! - **`enforce_essential_constraints`** projects onto the manifold by replacing singular
+//!   values with (1, 1, 0), keeping U and V.
+
 use kornia_algebra::{Mat3F64, Vec3F64};
 
 /// Build an essential matrix from a fundamental matrix and camera intrinsics.
 ///
-/// E = K2^T * F * K1
+/// `E = K2ᵀ F K1`
 pub fn essential_from_fundamental(f: &Mat3F64, k1: &Mat3F64, k2: &Mat3F64) -> Mat3F64 {
     k2.transpose() * *f * *k1
 }

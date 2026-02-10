@@ -1,3 +1,39 @@
+//! # Fundamental Matrix
+//!
+//! The fundamental matrix F encodes epipolar geometry in **pixel space**: for corresponding
+//! points x1, x2 across two views, `x2ᵀ F x1 = 0`.
+//!
+//! - 7 DOF: 3×3 matrix (9) minus scale (1) minus rank-2 constraint (1).
+//! - Singular values: (σ₁, σ₂, 0). The zero enforces rank 2.
+//! - Related to the essential matrix by camera intrinsics: `E = K2ᵀ F K1`,
+//!   equivalently `F = K2⁻ᵀ E K1⁻¹`.
+//!
+//! ## 8-point algorithm
+//!
+//! Build a design matrix A from ≥8 correspondences, take the null vector of A (last
+//! column of V from SVD), reshape into 3×3, enforce rank 2 by zeroing the smallest
+//! singular value. Hartley normalization (translate centroid to origin, scale mean
+//! distance to √2) is critical for numerical stability.
+//!
+//! ## Relationship to the essential manifold
+//!
+//! F and E encode the same geometry at different levels. F works in pixel space (depends
+//! on camera intrinsics K), E works in metric space (intrinsics removed). The conversion
+//! `E = K2ᵀ F K1` is invertible when K is known.
+//!
+//! F has 7 DOF; E has only 5 DOF because the essential manifold is a constrained subset
+//! (the (σ,σ,0) singular value structure) — those 2 extra DOF in F encode the intrinsics.
+//! The essential manifold is itself a quotient of SE(3), losing translation scale and sign
+//! (see the [`essential`](super::essential) module).
+//!
+//! ## Pitfalls
+//!
+//! - **Transpose bugs are silent**: F and Fᵀ both satisfy rank-2, both have the same
+//!   singular values. Only asymmetric tests (epipolar constraint direction, Sampson
+//!   distance) catch them.
+//! - **Column-major storage**: the SVD null vector is in row-major order. When using
+//!   `from_cols`, consecutive 3 elements give columns, not rows — grouping wrong gives Fᵀ.
+
 use kornia_algebra::{linalg::svd::svd3_f64, Mat3F64, Vec2F64, Vec3F64};
 
 /// Error type for fundamental matrix estimation.
