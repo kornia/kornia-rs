@@ -59,17 +59,13 @@ where
     }
 
     src.as_slice()
-        .execute_with(
-            strategy,
-            dst.as_slice_mut(),
-            |(src_pixel, dst_pixel)| {
-                *dst_pixel = if *src_pixel > threshold {
-                    max_value
-                } else {
-                    T::zero()
-                };
-            },
-        )
+        .execute_with(strategy, dst.as_slice_mut(), |(src_pixel, dst_pixel)| {
+            *dst_pixel = if *src_pixel > threshold {
+                max_value
+            } else {
+                T::zero()
+            };
+        })
         .map_err(|e| ImageError::Parallel(e.to_string()))?;
 
     Ok(())

@@ -287,11 +287,9 @@ mod tests {
     fn test_execute_auto_rows_invalid() {
         let src = vec![1];
         let mut dst = vec![0];
-        let res = src.as_slice().execute_with(
-            ExecutionStrategy::AutoRows(0),
-            &mut dst,
-            |(_, _)| {},
-        );
+        let res =
+            src.as_slice()
+                .execute_with(ExecutionStrategy::AutoRows(0), &mut dst, |(_, _)| {});
         assert!(matches!(res, Err(ParallelError::InvalidRowStride(0))));
     }
 
@@ -309,11 +307,9 @@ mod tests {
     fn test_execute_fixed_error() {
         let src = vec![1];
         let mut dst = vec![0];
-        let res = src.as_slice().execute_with(
-            ExecutionStrategy::Fixed(0),
-            &mut dst,
-            |(_, _)| {},
-        );
+        let res = src
+            .as_slice()
+            .execute_with(ExecutionStrategy::Fixed(0), &mut dst, |(_, _)| {});
         assert!(matches!(res, Err(ParallelError::InvalidThreadCount(0))));
     }
 }

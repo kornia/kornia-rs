@@ -1,14 +1,54 @@
 [package]
 name = "kornia-imgproc"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
 description = "Image processing operations in Rust"
-authors.workspace = true
-edition.workspace = true
-homepage.workspace = true
-license.workspace = true
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
 publish = true
-repository.workspace = true
-rust-version.workspace = true
-version.workspace = true
+
+[[bench]]
+harness = false
+name = "bench_color"
+
+[[bench]]
+harness = false
+name = "bench_resize"
+
+[[bench]]
+harness = false
+name = "bench_metrics"
+
+[[bench]]
+harness = false
+name = "bench_warp"
+
+[[bench]]
+harness = false
+name = "bench_flip"
+
+[[bench]]
+harness = false
+name = "bench_crop"
+
+[[bench]]
+harness = false
+name = "bench_filters"
+
+[[bench]]
+harness = false
+name = "bench_features"
+
+[[bench]]
+harness = false
+name = "bench_pyramid"
+
+[[bench]]
+harness = false
+name = "bench_gradient"
 
 [[bench]]
 harness = false
@@ -19,11 +59,15 @@ harness = false
 name = "bench_distortion"
 required-features = ["opencv_bench"]
 
+[[bench]]
+harness = false
+name = "bench_threshold"
+
 [dependencies]
 fast_image_resize = { version = "=5.1", features = ["rayon"] }
 kornia-algebra = { workspace = true }
-kornia-tensor = { workspace = true }
 kornia-image = { workspace = true }
+kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
 opencv = { version = "0.92", optional = true }
 rayon = { workspace = true }
@@ -37,50 +81,6 @@ imageproc = "0.25"
 kornia-io = { workspace = true }
 ndarray = { version = "0.15", features = ["rayon"] }
 rand = { workspace = true }
-
-[[bench]]
-name = "bench_color"
-harness = false
-
-[[bench]]
-name = "bench_resize"
-harness = false
-
-[[bench]]
-name = "bench_metrics"
-harness = false
-
-[[bench]]
-name = "bench_warp"
-harness = false
-
-[[bench]]
-name = "bench_flip"
-harness = false
-
-[[bench]]
-name = "bench_crop"
-harness = false
-
-[[bench]]
-name = "bench_filters"
-harness = false
-
-[[bench]]
-name = "bench_features"
-harness = false
-
-[[bench]]
-name = "bench_pyramid"
-harness = false
-
-[[bench]]
-name = "bench_gradient"
-harness = false
-
-[[bench]]
-name = "bench_threshold"
-harness = false
 
 [features]
 opencv_bench = ["dep:opencv"]
