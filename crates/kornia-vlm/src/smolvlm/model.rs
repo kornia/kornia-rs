@@ -87,6 +87,9 @@ impl SmolModel {
         image_hidden_states: &Tensor,
         inputs_embeds: &Tensor,
     ) -> Result<Tensor> {
+        if image_hidden_states.dim(0)? == 0 {
+            return Ok(inputs_embeds.clone());
+        }
         let device = image_token_mask.device();
 
         // Type conversion for GPU memory savings, cumsum() handling and - 1 handling
