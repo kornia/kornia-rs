@@ -1,5 +1,7 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use num_traits::Zero;
+use rayon::prelude::*;
+use crate::parallel::ExecutionStrategy;
 
 /// Trait for floating point casting
 pub trait FloatConversion {
@@ -49,6 +51,51 @@ struct SeparableFilter {
     offsets_y: Vec<isize>,
 }
 
+/// Macro for horizontal convolution pass
+macro_rules! run_horizontal {
+    ($self:expr, $r:expr, $out_row:expr, $src_data:expr, $cols:expr, $C:expr) => {{
+        let row_offset = $r * $cols * $C;
+        for c in 0..$cols {
+            let mut acc = [0.0f32; $C];
+            for (&k, &off) in $self.kernel_x.iter().zip($self.offsets_x.iter()) {
+                let x = c as isize + off;
+                if x >= 0 && x < $cols as isize {
+                    let idx = row_offset + x as usize * $C;
+                    for (ch, acc_val) in acc.iter_mut().enumerate().take($C) {
+                        *acc_val += unsafe { $src_data.get_unchecked(idx + ch).to_f32() } * k;
+                    }
+                }
+            }
+            let out_idx = c * $C;
+            for (ch, &acc_val) in acc.iter().enumerate().take($C) {
+                $out_row[out_idx + ch] = acc_val;
+            }
+        }
+    }};
+}
+
+/// Macro for vertical convolution pass
+macro_rules! run_vertical {
+    ($self:expr, $r:expr, $out_row:expr, $temp:expr, $rows:expr, $cols:expr, $C:expr, $T:ty) => {{
+        for c in 0..$cols {
+            let mut acc = [0.0f32; $C];
+            for (&k, &off) in $self.kernel_y.iter().zip($self.offsets_y.iter()) {
+                let y = $r as isize + off;
+                if y >= 0 && y < $rows as isize {
+                    let idx = y as usize * $cols * $C + c * $C;
+                    for (ch, acc_val) in acc.iter_mut().enumerate().take($C) {
+                        *acc_val += unsafe { *$temp.get_unchecked(idx + ch) } * k;
+                    }
+                }
+            }
+            let out_idx = c * $C;
+            for (ch, &acc_val) in acc.iter().enumerate().take($C) {
+                $out_row[out_idx + ch] = <$T>::from_f32(acc_val);
+            }
+        }
+    }};
+}
+
 impl SeparableFilter {
     /// Create a new separable filter with the given kernels.
     ///
@@ -76,15 +123,16 @@ impl SeparableFilter {
         }
     }
 
-    /// Apply the filter to an image.
+    /// Apply the filter serially (single-threaded).
     ///
-    /// Performs horizontal filtering followed by vertical filtering using a temporary buffer.
+    /// This version does not require `Send + Sync` bounds, making it suitable for
+    /// non-thread-safe types.
     ///
     /// # Arguments
     ///
     /// * `src` - The source image
     /// * `dst` - The destination image (must be same size as source)
-    fn apply<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    fn apply_serial<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
         &self,
         src: &Image<T, C, A1>,
         dst: &mut Image<T, C, A2>,
@@ -94,60 +142,139 @@ impl SeparableFilter {
     {
         let rows = src.rows();
         let cols = src.cols();
-
         let src_data = src.as_slice();
         let dst_data = dst.as_slice_mut();
         let mut temp = vec![0.0f32; src_data.len()];
 
-        // Horizontal
+        // Horizontal pass
         for r in 0..rows {
             let row_offset = r * cols * C;
-
-            for c in 0..cols {
-                let mut acc = [0.0f32; C];
-
-                for (&k, &off) in self.kernel_x.iter().zip(self.offsets_x.iter()) {
-                    let x = c as isize + off;
-                    if x >= 0 && x < cols as isize {
-                        let idx = row_offset + x as usize * C;
-                        for (ch, acc_val) in acc.iter_mut().enumerate().take(C) {
-                            *acc_val += unsafe { src_data.get_unchecked(idx + ch).to_f32() } * k;
-                        }
-                    }
-                }
-
-                let out_idx = row_offset + c * C;
-                for (ch, &acc_val) in acc.iter().enumerate().take(C) {
-                    unsafe {
-                        *temp.get_unchecked_mut(out_idx + ch) = acc_val;
-                    }
-                }
-            }
+            let out_row = &mut temp[row_offset..row_offset + cols * C];
+            run_horizontal!(self, r, out_row, src_data, cols, C);
         }
 
-        // Vertical
+        // Vertical pass
         for r in 0..rows {
             let row_offset = r * cols * C;
+            let out_row = &mut dst_data[row_offset..row_offset + cols * C];
+            run_vertical!(self, r, out_row, temp, rows, cols, C, T);
+        }
 
-            for c in 0..cols {
-                let mut acc = [0.0f32; C];
+        Ok(())
+    }
 
-                for (&k, &off) in self.kernel_y.iter().zip(self.offsets_y.iter()) {
-                    let y = r as isize + off;
-                    if y >= 0 && y < rows as isize {
-                        let idx = y as usize * cols * C + c * C;
-                        for (ch, acc_val) in acc.iter_mut().enumerate().take(C) {
-                            *acc_val += unsafe { *temp.get_unchecked(idx + ch) } * k;
+
+    /// Apply the filter to an image.
+    ///
+    /// Performs horizontal filtering followed by vertical filtering using a temporary buffer.
+    ///
+    /// # Arguments
+    ///
+    /// * `src` - The source image
+    /// * `dst` - The destination image (must be same size as source)
+    /// * `strategy` - The execution strategy to use
+    fn apply<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+        &self,
+        src: &Image<T, C, A1>,
+        dst: &mut Image<T, C, A2>,
+        strategy: ExecutionStrategy,
+    ) -> Result<(), ImageError>
+    where
+        T: FloatConversion + Clone + Zero + Send + Sync,
+    {
+        let rows = src.rows();
+        let cols = src.cols();
+        let src_data = src.as_slice();
+        let dst_data = dst.as_slice_mut();
+        let mut temp = vec![0.0f32; src_data.len()];
+
+        match strategy {
+            ExecutionStrategy::Serial => {
+                // Horizontal
+                for r in 0..rows {
+                    let row_offset = r * cols * C;
+                    let out_row = &mut temp[row_offset..row_offset + cols * C];
+                    run_horizontal!(self, r, out_row, src_data, cols, C);
+                }
+
+                // Vertical
+                for r in 0..rows {
+                    let row_offset = r * cols * C;
+                    let out_row = &mut dst_data[row_offset..row_offset + cols * C];
+                    run_vertical!(self, r, out_row, temp, rows, cols, C, T);
+                }
+            }
+            ExecutionStrategy::Fixed(n) => {
+                if n == 0 {
+                    return Err(ImageError::Parallel("thread count must be > 0".to_string()));
+                }
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(n)
+                    .build()
+                    .map_err(|e| ImageError::Parallel(e.to_string()))?;
+
+                pool.install(|| {
+                    // Horizontal
+                    temp.par_chunks_mut(cols * C)
+                        .enumerate()
+                        .for_each(|(r, row)| run_horizontal!(self, r, row, src_data, cols, C));
+
+                    // Vertical
+                    dst_data.par_chunks_mut(cols * C)
+                        .enumerate()
+                        .for_each(|(r, row)| run_vertical!(self, r, row, temp, rows, cols, C, T));
+                });
+            }
+
+            ExecutionStrategy::AutoRows(_) => {
+                // Horizontal
+                temp.par_chunks_mut(cols * C)
+                    .enumerate()
+                    .for_each(|(r, row)| run_horizontal!(self, r, row, src_data, cols, C));
+
+                // Vertical
+                dst_data.par_chunks_mut(cols * C)
+                    .enumerate()
+                    .for_each(|(r, row)| run_vertical!(self, r, row, temp, rows, cols, C, T));
+            }
+            
+            ExecutionStrategy::ParallelElements => {
+                temp.par_iter_mut()
+                    .enumerate()
+                    .for_each(|(i, temp_val)| {
+                        let r = i / (cols * C);
+                        let c = (i % (cols * C)) / C;
+                        let ch = i % C;
+
+                        let row_offset = r * cols * C;
+                        let mut acc = 0.0f32;
+                        for (&k, &off) in self.kernel_x.iter().zip(self.offsets_x.iter()) {
+                            let x = c as isize + off;
+                            if x >= 0 && x < cols as isize {
+                                let idx = row_offset + x as usize * C + ch;
+                                acc += unsafe { src_data.get_unchecked(idx).to_f32() } * k;
+                            }
                         }
-                    }
-                }
+                        *temp_val = acc;
+                    });
 
-                let out_idx = row_offset + c * C;
-                for (ch, &acc_val) in acc.iter().enumerate().take(C) {
-                    unsafe {
-                        *dst_data.get_unchecked_mut(out_idx + ch) = T::from_f32(acc_val);
-                    }
-                }
+                dst_data.par_iter_mut()
+                    .enumerate()
+                    .for_each(|(i, dst_val)| {
+                        let r = i / (cols * C);
+                        let c = (i % (cols * C)) / C;
+                        let ch = i % C;
+
+                        let mut acc = 0.0f32;
+                        for (&k, &off) in self.kernel_y.iter().zip(self.offsets_y.iter()) {
+                            let y = r as isize + off;
+                            if y >= 0 && y < rows as isize {
+                                let idx = y as usize * cols * C + c * C + ch;
+                                acc += unsafe { *temp.get_unchecked(idx) } * k;
+                            }
+                        }
+                        *dst_val = T::from_f32(acc);
+                    });
             }
         }
 
@@ -164,6 +291,46 @@ impl SeparableFilter {
 /// * `kernel_x` - The horizontal kernel.
 /// * `kernel_y` - The vertical kernel.
 pub fn separable_filter<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, C, A1>,
+    dst: &mut Image<T, C, A2>,
+    kernel_x: &[f32],
+    kernel_y: &[f32],
+    strategy: ExecutionStrategy,
+) -> Result<(), ImageError>
+where
+    T: FloatConversion + Clone + Zero + Send + Sync,
+{
+    if kernel_x.is_empty() || kernel_y.is_empty() {
+        return Err(ImageError::InvalidKernelLength(
+            kernel_x.len(),
+            kernel_y.len(),
+        ));
+    }
+
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    let filter = SeparableFilter::new(kernel_x, kernel_y);
+    filter.apply(src, dst, strategy)
+}
+
+/// Apply a 1D separable filter (serial execution only, no parallelism).
+///
+/// This version does not require `Send + Sync` bounds on the pixel type,
+///
+/// # Arguments
+///
+/// * `src` - Source image
+/// * `dst` - Destination image (must have same size as source)
+/// * `kernel_x` - Horizontal filter kernel  
+/// * `kernel_y` - Vertical filter kernel
+pub fn separable_filter_serial<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<T, C, A1>,
     dst: &mut Image<T, C, A2>,
     kernel_x: &[f32],
@@ -189,7 +356,7 @@ where
     }
 
     let filter = SeparableFilter::new(kernel_x, kernel_y);
-    filter.apply(src, dst)
+    filter.apply_serial(src, dst)
 }
 
 /// Apply a fast filter horizontally using cumulative kernel
@@ -285,7 +452,7 @@ mod tests {
         let mut dst = Image::<_, 1, _>::from_size_val(img.size(), 0f32, CpuAllocator)?;
         let kernel_x = vec![1.0, 1.0, 1.0];
         let kernel_y = vec![1.0, 1.0, 1.0];
-        separable_filter(&img, &mut dst, &kernel_x, &kernel_y)?;
+        separable_filter(&img, &mut dst, &kernel_x, &kernel_y, ExecutionStrategy::Serial)?;
 
         #[rustfmt::skip]
         assert_eq!(
@@ -328,7 +495,7 @@ mod tests {
         let mut dst = Image::<u8, 1, _>::from_size_val(img.size(), 0, CpuAllocator)?;
         let kernel_x = vec![1.0, 1.0, 1.0];
         let kernel_y = vec![1.0, 1.0, 1.0];
-        separable_filter(&img, &mut dst, &kernel_x, &kernel_y)?;
+        separable_filter(&img, &mut dst, &kernel_x, &kernel_y, ExecutionStrategy::Serial)?;
 
         #[rustfmt::skip]
         assert_eq!(
@@ -358,7 +525,7 @@ mod tests {
         img.as_slice_mut()[12] = 255;
 
         let mut dst = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator)?;
-        separable_filter(&img, &mut dst, &kernel_x, &kernel_y)?;
+        separable_filter(&img, &mut dst, &kernel_x, &kernel_y, ExecutionStrategy::Serial)?;
 
         #[rustfmt::skip]
         assert_eq!(
@@ -427,5 +594,97 @@ mod tests {
         assert_eq!(xsum, 9.0);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_parallel_strategies_consistency() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 10,
+            height: 10,
+        };
+
+        // Create test image with pattern
+        let mut data = vec![0.0f32; 100];
+        data[44] = 1.0; // Center pixel
+        data[33] = 0.5; // Another pixel
+        data[67] = 0.8;
+
+        let img = Image::new(size, data, CpuAllocator)?;
+        let kernel_x = vec![0.25, 0.5, 0.25];
+        let kernel_y = vec![0.25, 0.5, 0.25];
+
+        // Serial (reference)
+        let mut dst_serial = Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        separable_filter(&img, &mut dst_serial, &kernel_x, &kernel_y, ExecutionStrategy::Serial)?;
+
+        // Fixed(4)
+        let mut dst_fixed = Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        separable_filter(&img, &mut dst_fixed, &kernel_x, &kernel_y, ExecutionStrategy::Fixed(4))?;
+
+        // AutoRows
+        let mut dst_auto = Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        separable_filter(&img, &mut dst_auto, &kernel_x, &kernel_y, ExecutionStrategy::AutoRows(0))?;
+
+        // ParallelElements
+        let mut dst_elements = Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        separable_filter(&img, &mut dst_elements, &kernel_x, &kernel_y, ExecutionStrategy::ParallelElements)?;
+
+        // All strategies should produce identical results
+        assert_eq!(dst_serial.as_slice(), dst_fixed.as_slice(), "Fixed strategy mismatch");
+        assert_eq!(dst_serial.as_slice(), dst_auto.as_slice(), "AutoRows strategy mismatch");
+        assert_eq!(dst_serial.as_slice(), dst_elements.as_slice(), "ParallelElements strategy mismatch");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_parallel_strategies_u8() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 8,
+            height: 8,
+        };
+
+        let mut data = vec![0u8; 64];
+        data[27] = 255;
+        data[36] = 128;
+
+        let img = Image::new(size, data, CpuAllocator)?;
+        let kernel_x = vec![1.0, 1.0, 1.0];
+        let kernel_y = vec![1.0, 1.0, 1.0];
+
+        // Test strategies
+        let mut dst_serial = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator)?;
+        separable_filter(&img, &mut dst_serial, &kernel_x, &kernel_y, ExecutionStrategy::Serial)?;
+
+        let mut dst_fixed = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator)?;
+        separable_filter(&img, &mut dst_fixed, &kernel_x, &kernel_y, ExecutionStrategy::Fixed(2))?;
+
+        let mut dst_auto = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator)?;
+        separable_filter(&img, &mut dst_auto, &kernel_x, &kernel_y, ExecutionStrategy::AutoRows(0))?;
+
+        let mut dst_elements = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator)?;
+        separable_filter(&img, &mut dst_elements, &kernel_x, &kernel_y, ExecutionStrategy::ParallelElements)?;
+
+        assert_eq!(dst_serial.as_slice(), dst_fixed.as_slice());
+        assert_eq!(dst_serial.as_slice(), dst_auto.as_slice());
+        assert_eq!(dst_serial.as_slice(), dst_elements.as_slice());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fixed_threadpool_validation() {
+        let size = ImageSize {
+            width: 5,
+            height: 5,
+        };
+        let img = Image::<f32, 1, _>::from_size_val(size, 0.5, CpuAllocator).unwrap();
+        let mut dst = Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator).unwrap();
+        let kernel = vec![1.0];
+
+        // Fixed(0) should error
+        let result = separable_filter(&img, &mut dst, &kernel, &kernel, ExecutionStrategy::Fixed(0));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("thread count must be > 0"));
     }
 }

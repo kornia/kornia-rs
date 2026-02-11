@@ -4,6 +4,7 @@ use rayon::{
     iter::{IndexedParallelIterator, ParallelIterator},
     slice::ParallelSliceMut,
 };
+use crate::parallel::ExecutionStrategy;
 
 use super::{fast_horizontal_filter, kernels, separable_filter};
 
@@ -23,7 +24,7 @@ pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 ) -> Result<(), ImageError> {
     let kernel_x = kernels::box_blur_kernel_1d(kernel_size.0);
     let kernel_y = kernels::box_blur_kernel_1d(kernel_size.1);
-    separable_filter(src, dst, &kernel_x, &kernel_y)?;
+    separable_filter(src, dst, &kernel_x, &kernel_y, ExecutionStrategy::Serial)?;
     Ok(())
 }
 
@@ -85,7 +86,7 @@ pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 
     let kernel_x = kernels::gaussian_kernel_1d(kernel_x, sigma_x);
     let kernel_y = kernels::gaussian_kernel_1d(kernel_y, sigma_y);
-    separable_filter(src, dst, &kernel_x, &kernel_y)?;
+    separable_filter(src, dst, &kernel_x, &kernel_y, ExecutionStrategy::Serial)?;
 
     Ok(())
 }
@@ -109,10 +110,10 @@ pub fn sobel<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 
     // apply the sobel filter using separable filter
     let mut gx = Image::<f32, C, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
-    separable_filter(src, &mut gx, &kernel_x, &kernel_y)?;
+    separable_filter(src, &mut gx, &kernel_x, &kernel_y, ExecutionStrategy::Serial)?;
 
     let mut gy = Image::<f32, C, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
-    separable_filter(src, &mut gy, &kernel_y, &kernel_x)?;
+    separable_filter(src, &mut gy, &kernel_y, &kernel_x, ExecutionStrategy::Serial)?;
 
     // compute the magnitude in parallel by rows
     dst.as_slice_mut()
