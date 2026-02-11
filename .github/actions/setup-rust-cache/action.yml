@@ -27,11 +27,9 @@ runs:
         key: ${{ inputs.cache-prefix }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
           ${{ inputs.cache-prefix }}-${{ runner.os }}-${{ runner.arch }}-
-    
     - name: Install sccache
       if: inputs.with-sccache == 'true'
       uses: mozilla-actions/sccache-action@v0.0.9
-    
     - name: Setup sccache environment
       if: inputs.with-sccache == 'true'
       shell: bash
@@ -41,7 +39,6 @@ runs:
         echo "SCCACHE_CACHE_SIZE=6G" >> $GITHUB_ENV
         echo "SCCACHE_ERROR_LOG=/tmp/sccache_log.txt" >> $GITHUB_ENV
         echo "SCCACHE_LOG=info" >> $GITHUB_ENV
-    
     - name: Ensure sccache server is running
       if: inputs.with-sccache == 'true'
       shell: bash
