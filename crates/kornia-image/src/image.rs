@@ -156,7 +156,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     {
         // check if data vector size is bigger than zero
         if data.len() == 0 {
-            return Err(ImageDataNotInitialized());
+            return Err(ImageError::ImageDataNotInitialized());
         }
         
         // check if the data length matches the image size
