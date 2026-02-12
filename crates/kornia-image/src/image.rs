@@ -716,7 +716,7 @@ mod tests {
 
     #[test]
     fn test_image_from_empty_vec() -> Result<(), ImageError> {
-        let image: Image<f32, 3, CpuAllocator> = Image::new(
+        let image: Result<Image<f32, 1, CpuAllocator>, ImageError> = Image::new(
             ImageSize {
                 height: 0,
                 width: 0,
