@@ -189,19 +189,7 @@ impl SeparableFilter {
 
         match strategy {
             ExecutionStrategy::Serial => {
-                // Horizontal
-                for r in 0..rows {
-                    let row_offset = r * cols * C;
-                    let out_row = &mut temp[row_offset..row_offset + cols * C];
-                    run_horizontal!(self, r, out_row, src_data, cols, C);
-                }
-
-                // Vertical
-                for r in 0..rows {
-                    let row_offset = r * cols * C;
-                    let out_row = &mut dst_data[row_offset..row_offset + cols * C];
-                    run_vertical!(self, r, out_row, temp, rows, cols, C, T);
-                }
+                return self.apply_serial(src, dst);
             }
             ExecutionStrategy::Fixed(n) => {
                 if n == 0 {
@@ -769,9 +757,10 @@ mod tests {
             ExecutionStrategy::Fixed(0),
         );
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("thread count must be > 0"));
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("thread count must be > 0"),
+            "unexpected error: {err_msg}"
+        );
     }
 }
