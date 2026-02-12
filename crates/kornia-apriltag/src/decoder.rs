@@ -317,7 +317,7 @@ pub fn decode_tags<A: ImageAllocator>(
         .tag_families
         .iter()
         .filter_map(|kind| {
-            TagFamily::try_from(kind.clone())
+            TagFamily::try_from(kind)
                 .ok()
                 .map(|family| (kind.clone(), family))
         })
