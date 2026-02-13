@@ -181,6 +181,19 @@ impl SeparableFilter {
     where
         T: FloatConversion + Clone + Zero + Send + Sync,
     {
+        if src.size() != dst.size() {
+            return Err(ImageError::InvalidImageSize(
+                src.cols(),
+                src.rows(),
+                dst.cols(),
+                dst.rows(),
+            ));
+        }
+
+        if src.cols() == 0 || src.rows() == 0 {
+            return Ok(());
+        }
+
         let rows = src.rows();
         let cols = src.cols();
         let src_data = src.as_slice();
