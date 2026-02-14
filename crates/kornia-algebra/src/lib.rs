@@ -10,12 +10,17 @@
 //!
 //! - **Vectors**: `Vec2F32`, `Vec3F32`, `Vec3AF32`, `Vec4F32` (and `F64` variants) with arithmetic operations, dot products, and length calculations.
 //! - **Matrices**: `Mat2F32`, `Mat3F32`, `Mat3AF32`, `Mat4F32` (and `F64` variants) with matrix multiplication, transpose, inverse, and diagonal construction.
-//! - **Quaternions**: `QuatF32`/`QuatF64` for 3D rotations with quaternion multiplication.
-//! - **Lie Groups**: Comprehensive implementations of common Lie groups used in robotics and vision:
-//!   - **SO(2)**: 2D Rotations (`SO2F32`).
-//!   - **SE(2)**: 2D Rigid Body Transformations (`SE2F32`).
-//!   - **SO(3)**: 3D Rotations using unit quaternions (`SO3F32`).
-//!   - **SE(3)**: 3D Rigid Body Transformations (`SE3F32`).
+//! - **Quaternions**: `QuatF32`/`QuatF64` — unit quaternions are isomorphic to SU(2), the
+//!   double cover of SO(3). `q` and `-q` represent the same rotation. See the [`quat`] module
+//!   for the mathematical context.
+//! - **Lie Groups**: Implementations of Lie groups used in robotics and vision (see the
+//!   [`lie`] module for the full group hierarchy and the SU(2) → SO(3) double cover):
+//!   - **SO(2)**: 2D Rotations (`SO2F32`) — topology: S¹.
+//!   - **SE(2)**: 2D Rigid Body Transformations (`SE2F32`) — semi-direct product SO(2) ⋉ R².
+//!   - **SO(3)**: 3D Rotations (`SO3F32`) — stored as unit quaternions (SU(2)), topology: RP³.
+//!   - **SE(3)**: 3D Rigid Body Transformations (`SE3F32`) — semi-direct product SO(3) ⋉ R³.
+//!   - **RxSO(3)**: 3D Rotation + Scale (`RxSO3F32`) — direct product R⁺ × SO(3).
+//!   - **Sim(3)**: 3D Similarity Transforms (`Sim3F32`) — semi-direct product (R⁺ × SO(3)) ⋉ R³.
 //! - **Lie Algebra Operations**: Full support for manifold operations:
 //!   - Exponential (`exp`) and Logarithmic (`log`) maps.
 //!   - Adjoint representation (`adjoint`).

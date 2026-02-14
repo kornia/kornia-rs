@@ -1,3 +1,42 @@
+//! # SO(3) — The Special Orthogonal Group in 3D
+//!
+//! SO(3) is the group of 3D rotations: 3×3 orthogonal matrices with determinant +1.
+//! It has 3 degrees of freedom and is topologically **RP³** (real projective 3-space).
+//!
+//! ## Internal representation: unit quaternions (SU(2))
+//!
+//! [`SO3F32`] stores rotations as unit quaternions. Crucially, a unit quaternion is an
+//! element of **SU(2)**, which is the **double cover** of SO(3) — not SO(3) itself.
+//! The naming `SO3F32` reflects what the type *represents* (a 3D rotation), but the
+//! internal storage carries strictly more structure than SO(3).
+//!
+//! The double cover means:
+//! - Every rotation R ∈ SO(3) corresponds to **two** quaternions: `q` and `-q`.
+//! - SU(2) is topologically S³ (the 3-sphere, simply connected).
+//! - SO(3) is topologically RP³ = S³/{±1} (antipodal points identified, not simply connected).
+//! - A 360° rotation takes `q → -q` in SU(2) (different point). A 720° rotation
+//!   takes `q → -q → q` (back to start). Objects sensitive to this are **spinors**.
+//!
+//! ## The exp/log maps
+//!
+//! The Lie algebra **so(3)** is the space of 3×3 skew-symmetric matrices, isomorphic
+//! to R³ via the hat operator. A vector `v ∈ R³` represents an axis-angle rotation:
+//! the direction is the rotation axis, the magnitude is the angle in radians.
+//!
+//! - `exp(v)`: axis-angle vector → unit quaternion. This is `q = (cos(θ/2), sin(θ/2) · axis)`.
+//! - `log()`: unit quaternion → axis-angle vector. Inverse of exp.
+//!
+//! Note the **half-angle**: this is the SU(2) → SO(3) covering map in action. A full
+//! rotation of θ = 2π gives `q = (cos(π), sin(π) · axis) = (-1, 0, 0, 0) = -I`,
+//! which is the antipode of the identity in SU(2), but maps to the identity in SO(3).
+//!
+//! ## Jacobians
+//!
+//! The left and right Jacobians describe how the exponential map distorts
+//! infinitesimal tangent vectors. They are essential for optimization on the
+//! rotation manifold (Levenberg-Marquardt, Gauss-Newton). Both use Taylor series
+//! approximations for small angles (θ < 1e-8) to maintain numerical stability.
+
 use crate::{
     param::{Param, ParamError},
     Mat3AF32, Mat4F32, QuatF32, Vec3AF32,
@@ -5,6 +44,19 @@ use crate::{
 use rand::Rng;
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 
+/// A 3D rotation, stored as a unit quaternion.
+///
+/// Internally an element of SU(2) ≅ S³, projected to SO(3) ≅ RP³ via the 2:1
+/// covering map. See the [module-level documentation](self) for details.
+///
+/// # Important
+///
+/// - `q` and `-q` represent the **same rotation**. When comparing SO3F32 values,
+///   both signs must be checked.
+/// - [`from_matrix`](SO3F32::from_matrix) chooses one of the two possible quaternions.
+///   There is no globally continuous way to make this choice — discontinuities
+///   (quaternion sign flips) are unavoidable over the full rotation group.
+/// - After repeated multiplications, call `q.normalize()` to prevent drift off S³.
 #[derive(Debug, Clone, Copy)]
 pub struct SO3F32 {
     pub q: QuatF32,
