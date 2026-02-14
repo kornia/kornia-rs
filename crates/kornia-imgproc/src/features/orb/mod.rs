@@ -5,7 +5,7 @@ mod extractor;
 mod matcher;
 mod pattern;
 
-pub use extractor::OrbDectector;
+pub use extractor::OrbDetector;
 pub use matcher::{match_orb_descriptors, OrbMatchConfig};
 
 #[cfg(all(test, feature = "opencv_bench"))]
@@ -50,7 +50,7 @@ mod opencv_tests {
         let img_f32 = u8_to_f32_image(&img_gray);
 
         // Kornia ORB.
-        let orb = OrbDectector::default();
+        let orb = OrbDetector::default();
         let (kps, scales, orientations, _responses) = orb.detect(&img_f32)?;
         let (descriptors, _mask) = orb.extract(&img_f32, &kps, &scales, &orientations)?;
 

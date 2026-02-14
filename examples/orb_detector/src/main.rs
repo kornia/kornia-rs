@@ -6,7 +6,7 @@ use kornia::{
     imgproc::{
         self,
         color::gray_from_rgb_u8,
-        features::{match_descriptors, OrbDectector},
+        features::{match_descriptors, OrbDetector},
     },
     io::{
         functional::read_image_any_rgb8,
@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut webcam_frame_gray = Image::from_size_val(webcam_size, 0, CpuAllocator)?;
     let mut webcam_frame_grayf32 = Image::from_size_val(webcam_size, 0.0, CpuAllocator)?;
 
-    let webcam_orb_detector = OrbDectector::new();
+    let webcam_orb_detector = OrbDetector::new();
 
     println!("Webcam done");
 
@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         CpuAllocator,
     )?;
 
-    let img_orb_detector = OrbDectector::new();
+    let img_orb_detector = OrbDetector::new();
     let img_detection = img_orb_detector.detect(&img_grayf32)?;
     let img_extract = img_orb_detector.extract(
         &img_grayf32,
@@ -74,6 +74,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &img_detection.1,
         &img_detection.2,
     )?;
+
+    // Filter keypoints to only those with valid descriptors (border-filtered).
+    // extract() returns fewer descriptors than input keypoints; the mask tells us which survived.
+    let img_valid_kps: Vec<_> = img_detection
+        .0
+        .iter()
+        .zip(&img_extract.1)
+        .filter_map(|(&kp, &valid)| if valid { Some(kp) } else { None })
+        .collect();
 
     loop {
         let Some(frame) = webcam.grab_frame()? else {
@@ -117,13 +126,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &webcam_detection.2,
         )?;
 
+        // Filter webcam keypoints to match descriptor indices
+        let webcam_valid_kps: Vec<_> = webcam_detection
+            .0
+            .iter()
+            .zip(&webcam_extraction.1)
+            .filter_map(|(&kp, &valid)| if valid { Some(kp) } else { None })
+            .collect();
+
         let matches = match_descriptors(&webcam_extraction.0, &img_extract.0, None, true, None);
 
         // Converting keypoint coordinates to (W, H) for drawing match lines
         let mut coords = Vec::new();
         for &(i1, i2) in matches.iter() {
-            let kp1 = &webcam_detection.0[i1];
-            let kp2 = &img_detection.0[i2];
+            let kp1 = &webcam_valid_kps[i1];
+            let kp2 = &img_valid_kps[i2];
 
             let coords1 = (kp1.1, kp1.0);
             let coords2 = (kp2.1 + webcam_frame_grayf32.width() as f32, kp2.0);
@@ -133,9 +150,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         rec.log("image/matches", &rerun::LineStrips2D::new(coords))?;
 
-        let keypoints1: Vec<[f32; 2]> = webcam_detection.0.iter().map(|kp| [kp.1, kp.0]).collect();
-        let keypoints2: Vec<[f32; 2]> = img_detection
-            .0
+        let keypoints1: Vec<[f32; 2]> = webcam_valid_kps.iter().map(|kp| [kp.1, kp.0]).collect();
+        let keypoints2: Vec<[f32; 2]> = img_valid_kps
             .iter()
             .map(|kp| [kp.1 + webcam_frame.width() as f32, kp.0])
             .collect();

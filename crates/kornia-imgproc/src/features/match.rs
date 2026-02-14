@@ -1,8 +1,17 @@
 #![allow(missing_docs)]
 
-pub fn match_descriptors(
-    descriptors1: &[Vec<u8>],
-    descriptors2: &[Vec<u8>],
+/// Hamming distance between two fixed-size byte descriptors.
+#[inline]
+fn hamming_distance(a: &[u8], b: &[u8]) -> u32 {
+    a.iter()
+        .zip(b.iter())
+        .map(|(&x, &y)| (x ^ y).count_ones())
+        .sum()
+}
+
+pub fn match_descriptors<const N: usize>(
+    descriptors1: &[[u8; N]],
+    descriptors2: &[[u8; N]],
     max_distance: Option<u32>,
     cross_check: bool,
     max_ratio: Option<f32>,
@@ -13,20 +22,10 @@ pub fn match_descriptors(
         return vec![];
     }
 
-    let desc_len = descriptors1[0].len();
-    assert!(
-        descriptors2.iter().all(|d| d.len() == desc_len),
-        "Descriptor length mismatch"
-    );
-
     let mut distance = vec![vec![0u32; n]; m];
     for (i, desc1) in descriptors1.iter().enumerate() {
         for (j, desc2) in descriptors2.iter().enumerate() {
-            distance[i][j] = desc1
-                .iter()
-                .zip(desc2)
-                .map(|(&a, &b)| (a ^ b).count_ones())
-                .sum();
+            distance[i][j] = hamming_distance(desc1, desc2);
         }
     }
 

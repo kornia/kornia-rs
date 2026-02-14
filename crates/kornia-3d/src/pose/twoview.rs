@@ -41,7 +41,7 @@ use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use rand::prelude::*;
 use rand::SeedableRng;
 
-/// Errors returned by two-view initialization utilities.
+/// Errors returned by two-view estimation utilities.
 #[derive(thiserror::Error, Debug)]
 pub enum TwoViewError {
     /// Input correspondences are invalid or insufficient.
@@ -98,7 +98,7 @@ pub struct RansacResult<M> {
     pub score: f64,
 }
 
-/// Two-view model used during initialization.
+/// Two-view model selected during estimation.
 #[derive(Clone, Copy, Debug)]
 pub enum TwoViewModel {
     /// Fundamental matrix model.
@@ -107,9 +107,9 @@ pub enum TwoViewModel {
     Homography(Mat3F64),
 }
 
-/// Configuration for two-view initialization.
+/// Configuration for two-view pose estimation.
 #[derive(Clone, Debug)]
-pub struct TwoViewInitConfig {
+pub struct TwoViewConfig {
     /// RANSAC settings for the fundamental matrix.
     pub ransac_f: RansacParams,
     /// RANSAC settings for the homography.
@@ -120,7 +120,7 @@ pub struct TwoViewInitConfig {
     pub min_parallax_deg: f64,
 }
 
-impl Default for TwoViewInitConfig {
+impl Default for TwoViewConfig {
     fn default() -> Self {
         Self {
             ransac_f: RansacParams::default(),
@@ -131,9 +131,9 @@ impl Default for TwoViewInitConfig {
     }
 }
 
-/// Output of two-view initialization.
+/// Output of two-view pose estimation.
 #[derive(Clone, Debug)]
-pub struct TwoViewInitResult {
+pub struct TwoViewResult {
     /// Selected model.
     pub model: TwoViewModel,
     /// Relative rotation from view1 to view2.
@@ -142,7 +142,7 @@ pub struct TwoViewInitResult {
     pub translation: Vec3F64,
     /// Triangulated 3D points for inliers.
     pub points3d: Vec<Vec3F64>,
-    /// Inlier mask used for initialization.
+    /// Inlier mask from the selected model's RANSAC.
     pub inliers: Vec<bool>,
 }
 
@@ -301,14 +301,14 @@ pub fn ransac_homography(
     })
 }
 
-/// Initialize a two-view geometry with model selection and triangulation.
-pub fn two_view_initialize(
+/// Estimate a two-view relative pose with model selection and triangulation.
+pub fn two_view_estimate(
     x1: &[Vec2F64],
     x2: &[Vec2F64],
     k1: &Mat3F64,
     k2: &Mat3F64,
-    config: &TwoViewInitConfig,
-) -> Result<TwoViewInitResult, TwoViewError> {
+    config: &TwoViewConfig,
+) -> Result<TwoViewResult, TwoViewError> {
     let res_f = ransac_fundamental(x1, x2, &config.ransac_f)?;
     let res_h = ransac_homography(x1, x2, &config.ransac_h)?;
 
@@ -361,7 +361,7 @@ pub fn two_view_initialize(
         None => return Err(TwoViewError::RansacFailure),
     };
 
-    Ok(TwoViewInitResult {
+    Ok(TwoViewResult {
         model,
         rotation: r,
         translation: t,
@@ -589,6 +589,181 @@ mod tests {
 
         let x3 = Vec3F64::new(0.0, 1.0, 0.0);
         assert!(parallax_ok(&x1, &x3, 30.0));
+    }
+
+    /// End-to-end two-view pose estimation on real EuRoC MH_01_easy images.
+    ///
+    /// Reads two grayscale frames, runs ORB detection + matching, estimates
+    /// the relative pose via `two_view_estimate`, and compares against
+    /// ground truth camera-frame pose.
+    ///
+    /// Frame pair: 1403636633263555584 → 1403636634263555584 (20 frames apart).
+    /// Ground truth camera-frame relative pose:
+    ///   - Rotation: 2.698°
+    ///   - Translation: 659mm, direction [0.242, -0.233, 0.942]
+    #[test]
+    fn test_two_view_euroc_mh01() {
+        use kornia_imgproc::features::{match_orb_descriptors, OrbDetector, OrbMatchConfig};
+
+        // Load images.
+        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let data_dir = manifest
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("tests/data");
+
+        let img1_u8 =
+            kornia_io::png::read_image_png_mono8(data_dir.join("mh01_frame1.png")).unwrap();
+        let img2_u8 =
+            kornia_io::png::read_image_png_mono8(data_dir.join("mh01_frame2.png")).unwrap();
+
+        let img1 = u8_to_f32_image(&img1_u8);
+        let img2 = u8_to_f32_image(&img2_u8);
+
+        // ORB detect + extract.
+        let orb = OrbDetector::default();
+        let (kps1, scales1, ori1, _) = orb.detect(&img1).unwrap();
+        let (desc1, mask1) = orb.extract(&img1, &kps1, &scales1, &ori1).unwrap();
+        let (kps2, scales2, ori2, _) = orb.detect(&img2).unwrap();
+        let (desc2, mask2) = orb.extract(&img2, &kps2, &scales2, &ori2).unwrap();
+
+        // Filter by valid descriptors (border mask).
+        let (valid_kps1, valid_ori1, valid_desc1) = filter_by_mask(&kps1, &ori1, &desc1, &mask1);
+        let (valid_kps2, valid_ori2, valid_desc2) = filter_by_mask(&kps2, &ori2, &desc2, &mask2);
+
+        // Match descriptors.
+        let match_config = OrbMatchConfig {
+            nn_ratio: 0.6,
+            th_low: 50,
+            check_orientation: true,
+            histo_length: 30,
+        };
+        let matches = match_orb_descriptors(
+            &valid_ori1,
+            &valid_desc1,
+            &valid_ori2,
+            &valid_desc2,
+            match_config,
+        );
+        assert!(
+            matches.len() >= 15,
+            "too few ORB matches: {} (need >= 15)",
+            matches.len()
+        );
+
+        // Convert matched keypoints to Vec2F64 (x=col, y=row).
+        let pts1: Vec<Vec2F64> = matches
+            .iter()
+            .map(|&(i, _)| {
+                let (row, col) = valid_kps1[i];
+                Vec2F64::new(col as f64, row as f64)
+            })
+            .collect();
+        let pts2: Vec<Vec2F64> = matches
+            .iter()
+            .map(|&(_, j)| {
+                let (row, col) = valid_kps2[j];
+                Vec2F64::new(col as f64, row as f64)
+            })
+            .collect();
+
+        // EuRoC MH_01_easy cam0 intrinsics.
+        let k = Mat3F64::from_cols(
+            Vec3F64::new(458.654, 0.0, 0.0),
+            Vec3F64::new(0.0, 457.296, 0.0),
+            Vec3F64::new(367.215, 248.375, 1.0),
+        );
+
+        let config = TwoViewConfig {
+            ransac_f: RansacParams {
+                max_iterations: 2000,
+                threshold: 1.0,
+                min_inliers: 15,
+                random_seed: Some(42),
+            },
+            ransac_h: RansacParams {
+                max_iterations: 2000,
+                threshold: 1.0,
+                min_inliers: 8,
+                random_seed: Some(42),
+            },
+            homography_inlier_ratio: 0.8,
+            min_parallax_deg: 0.5,
+        };
+
+        let result = two_view_estimate(&pts1, &pts2, &k, &k, &config).unwrap();
+
+        // Should select fundamental model (general motion, not planar).
+        assert!(
+            matches!(result.model, TwoViewModel::Fundamental(_)),
+            "expected fundamental model"
+        );
+
+        // Check rotation angle: GT is 2.698°, allow 5° error.
+        let r = result.rotation;
+        let trace = r.col(0).x + r.col(1).y + r.col(2).z;
+        let est_angle_rad = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
+        let est_angle_deg = est_angle_rad.to_degrees();
+        let gt_angle_deg = 2.698;
+        assert!(
+            (est_angle_deg - gt_angle_deg).abs() < 5.0,
+            "rotation error too large: estimated {est_angle_deg:.2}°, GT {gt_angle_deg}°"
+        );
+
+        // Check translation direction: GT is [0.242, -0.233, 0.942].
+        // Translation can be recovered up to sign, so check both directions.
+        let t = result.translation.normalize();
+        let gt_t = Vec3F64::new(0.2422, -0.2330, 0.9418).normalize();
+        let cos_angle = t.dot(gt_t).clamp(-1.0, 1.0);
+        let t_err_deg = cos_angle.abs().acos().to_degrees();
+        assert!(
+            t_err_deg < 15.0,
+            "translation direction error too large: {t_err_deg:.2}°"
+        );
+
+        // Should have triangulated some points.
+        assert!(
+            !result.points3d.is_empty(),
+            "expected triangulated 3D points"
+        );
+    }
+
+    fn u8_to_f32_image(
+        src: &kornia_image::Image<u8, 1, kornia_tensor::CpuAllocator>,
+    ) -> kornia_image::Image<f32, 1, kornia_tensor::CpuAllocator> {
+        let mut dst =
+            kornia_image::Image::from_size_val(src.size(), 0.0, kornia_tensor::CpuAllocator)
+                .unwrap();
+        src.as_slice()
+            .iter()
+            .zip(dst.as_slice_mut())
+            .for_each(|(&s, d)| *d = s as f32 / 255.0);
+        dst
+    }
+
+    type OrbFiltered = (Vec<(f32, f32)>, Vec<f32>, Vec<[u8; 32]>);
+
+    fn filter_by_mask(
+        kps: &[(f32, f32)],
+        ori: &[f32],
+        desc: &[[u8; 32]],
+        mask: &[bool],
+    ) -> OrbFiltered {
+        let mut out_kps = Vec::new();
+        let mut out_ori = Vec::new();
+        let mut out_desc = Vec::new();
+        let mut desc_idx = 0;
+        for (i, &valid) in mask.iter().enumerate() {
+            if valid {
+                out_kps.push(kps[i]);
+                out_ori.push(ori[i]);
+                out_desc.push(desc[desc_idx]);
+                desc_idx += 1;
+            }
+        }
+        (out_kps, out_ori, out_desc)
     }
 
     #[test]
