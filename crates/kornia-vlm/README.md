@@ -48,6 +48,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+## 🏗️ Backend Architecture
+
+kornia-vlm currently uses the Candle ML framework for inference. We are working on multi-backend support to enable ONNX Runtime and TensorRT backends for improved performance, especially on embedded devices.
+
+See [`docs/BACKEND_ARCHITECTURE.md`](docs/BACKEND_ARCHITECTURE.md) for the proposed architecture and roadmap.
+
+**Planned backends:**
+- ✅ **Candle** (Current) - Pure Rust ML framework
+- 🚧 **ONNX Runtime** (Planned) - Cross-platform inference with CPU/CUDA support
+- 🚧 **TensorRT** (Planned) - NVIDIA-optimized inference for Jetson and datacenter GPUs
 
 ## 🧩 Modules
 
