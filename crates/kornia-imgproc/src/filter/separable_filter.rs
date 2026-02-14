@@ -227,17 +227,35 @@ impl SeparableFilter {
                 });
             }
 
-            ExecutionStrategy::AutoRows(_) => {
+            ExecutionStrategy::AutoRows(stride) => {
+                if stride == 0 {
+                    return Err(ImageError::Parallel("row stride must be > 0".to_string()));
+                }
+
                 // Horizontal
-                temp.par_chunks_mut(cols * C)
-                    .enumerate()
-                    .for_each(|(r, row)| run_horizontal!(self, r, row, src_data, cols, C));
+                temp.par_chunks_mut(stride * cols * C).enumerate().for_each(
+                    |(chunk_idx, chunk)| {
+                        chunk.chunks_exact_mut(cols * C).enumerate().for_each(
+                            |(r_in_chunk, row)| {
+                                let r = chunk_idx * stride + r_in_chunk;
+                                run_horizontal!(self, r, row, src_data, cols, C);
+                            },
+                        );
+                    },
+                );
 
                 // Vertical
                 dst_data
-                    .par_chunks_mut(cols * C)
+                    .par_chunks_mut(stride * cols * C)
                     .enumerate()
-                    .for_each(|(r, row)| run_vertical!(self, r, row, temp, rows, cols, C, T));
+                    .for_each(|(chunk_idx, chunk)| {
+                        chunk.chunks_exact_mut(cols * C).enumerate().for_each(
+                            |(r_in_chunk, row)| {
+                                let r = chunk_idx * stride + r_in_chunk;
+                                run_vertical!(self, r, row, temp, rows, cols, C, T);
+                            },
+                        );
+                    });
             }
 
             ExecutionStrategy::ParallelElements => {
@@ -291,6 +309,7 @@ impl SeparableFilter {
 /// * `dst` - The destination image with shape (H, W, C).
 /// * `kernel_x` - The horizontal kernel.
 /// * `kernel_y` - The vertical kernel.
+/// * `strategy` - The execution strategy.
 pub fn separable_filter<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<T, C, A1>,
     dst: &mut Image<T, C, A2>,
@@ -329,7 +348,7 @@ where
 ///
 /// * `src` - Source image
 /// * `dst` - Destination image (must have same size as source)
-/// * `kernel_x` - Horizontal filter kernel  
+/// * `kernel_x` - Horizontal filter kernel
 /// * `kernel_y` - Vertical filter kernel
 pub fn separable_filter_serial<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<T, C, A1>,
@@ -659,7 +678,7 @@ mod tests {
             &mut dst_auto,
             &kernel_x,
             &kernel_y,
-            ExecutionStrategy::AutoRows(0),
+            ExecutionStrategy::AutoRows(2),
         )?;
 
         // ParallelElements
@@ -732,7 +751,7 @@ mod tests {
             &mut dst_auto,
             &kernel_x,
             &kernel_y,
-            ExecutionStrategy::AutoRows(0),
+            ExecutionStrategy::AutoRows(2),
         )?;
 
         let mut dst_elements = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator)?;
@@ -752,13 +771,13 @@ mod tests {
     }
 
     #[test]
-    fn test_fixed_threadpool_validation() {
+    fn test_fixed_threadpool_validation() -> Result<(), ImageError> {
         let size = ImageSize {
             width: 5,
             height: 5,
         };
-        let img = Image::<f32, 1, _>::from_size_val(size, 0.5, CpuAllocator).unwrap();
-        let mut dst = Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator).unwrap();
+        let img = Image::<f32, 1, _>::from_size_val(size, 0.5, CpuAllocator)?;
+        let mut dst = Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator)?;
         let kernel = vec![1.0];
 
         // Fixed(0) should error
@@ -769,11 +788,18 @@ mod tests {
             &kernel,
             ExecutionStrategy::Fixed(0),
         );
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("thread count must be > 0"),
-            "unexpected error: {err_msg}"
-        );
+
+        match result {
+            Err(ImageError::Parallel(msg)) => {
+                assert!(
+                    msg.contains("thread count must be > 0"),
+                    "unexpected error message: {msg}"
+                );
+            }
+            Err(e) => panic!("unexpected error type: {e:?}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
+
+        Ok(())
     }
 }
