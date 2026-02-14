@@ -12,7 +12,7 @@ use crate::{
 
 use super::pattern::{POS0, POS1};
 
-pub struct OrbDectector {
+pub struct OrbDetector {
     pub n_keypoints: usize,
     pub fast_n: usize,
     /// Initial FAST threshold (higher, for speed). Used first in each grid cell.
@@ -103,7 +103,7 @@ impl ExtractorNode {
     }
 }
 
-impl Default for OrbDectector {
+impl Default for OrbDetector {
     fn default() -> Self {
         Self {
             downscale: 1.2,
@@ -119,7 +119,7 @@ impl Default for OrbDectector {
     }
 }
 
-impl OrbDectector {
+impl OrbDetector {
     pub fn new() -> Self {
         Self::default()
     }
