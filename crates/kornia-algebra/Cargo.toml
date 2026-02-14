@@ -15,6 +15,10 @@ version = { workspace = true }
 harness = false
 name = "bench_linalg"
 
+[[bench]]
+harness = false
+name = "bench_l2_line"
+
 [dependencies]
 approx = { workspace = true, optional = true }
 glam = "0.30.1"
@@ -26,6 +30,8 @@ thiserror = { workspace = true }
 approx = { workspace = true }
 criterion = { workspace = true }
 faer = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [features]
 approx = ["dep:approx"]
