@@ -73,4 +73,6 @@ jobs:
         run: pixi run -e ${{ matrix.pixi-env }} py-test-threaded
 
       - name: Show sccache stats
+        if: always()
+        continue-on-error: true
         run: sccache --show-stats

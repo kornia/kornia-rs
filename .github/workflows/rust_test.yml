@@ -56,4 +56,6 @@ jobs:
         run: pixi run ${{ matrix.command }}
 
       - name: Show sccache stats
+        if: always()
+        continue-on-error: true
         run: sccache --show-stats
