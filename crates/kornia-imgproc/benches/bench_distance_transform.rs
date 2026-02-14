@@ -1,9 +1,6 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
-use kornia_imgproc::distance_transform::{
-    distance_transform_vanilla, 
-    DistanceTransformExecutor,  
-};
+use kornia_imgproc::distance_transform::{distance_transform_vanilla, DistanceTransformExecutor};
 use opencv::{core, imgproc, prelude::*};
 
 fn bench_distance_transform(c: &mut Criterion) {
@@ -42,7 +39,6 @@ fn bench_distance_transform(c: &mut Criterion) {
         }
         let mut cv_dst = core::Mat::default();
 
-
         // 1. Vanilla (Baseline)
         group.bench_with_input(
             BenchmarkId::new("vanilla", &parameter_string),
@@ -50,7 +46,7 @@ fn bench_distance_transform(c: &mut Criterion) {
             |b, i| b.iter(|| std::hint::black_box(distance_transform_vanilla(i))),
         );
 
-        // 2. Felzenszwalb 
+        // 2. Felzenszwalb
         group.bench_with_input(
             BenchmarkId::new("kornia_cpu", &parameter_string),
             &image,
@@ -60,7 +56,6 @@ fn bench_distance_transform(c: &mut Criterion) {
             },
         );
 
-    
         // 3. OpenCV
         group.bench_function(BenchmarkId::new("opencv", &parameter_string), |b| {
             b.iter(|| {
@@ -75,7 +70,6 @@ fn bench_distance_transform(c: &mut Criterion) {
             })
         });
     }
-
 
     for (width, height) in [(512, 512), (1024, 1024), (2048, 2048)].iter() {
         group.throughput(Throughput::Elements((*width * *height) as u64));
@@ -109,7 +103,6 @@ fn bench_distance_transform(c: &mut Criterion) {
         }
         let mut cv_dst = core::Mat::default();
 
-
         // 1.Felzenszwalb (STRUCT REUSE)
         group.bench_with_input(
             BenchmarkId::new("kornia_cpu", &parameter_string),
@@ -120,7 +113,6 @@ fn bench_distance_transform(c: &mut Criterion) {
             },
         );
 
-        
         // 2. OpenCV
         group.bench_function(BenchmarkId::new("opencv", &parameter_string), |b| {
             b.iter(|| {
