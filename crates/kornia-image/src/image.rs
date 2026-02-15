@@ -159,7 +159,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
         if data.is_empty() {
             return Err(ImageDataNotInitialized());
         }
-        
+
         // check if the data length matches the image size
         if data.len() != size.width * size.height * C {
             return Err(ImageError::InvalidChannelShape(
@@ -724,7 +724,10 @@ mod tests {
             vec![0.0; 0],
             CpuAllocator,
         );
-        assert!(image.is_err(), "Image::new should have failed with empty vec");
+        assert!(
+            image.is_err(),
+            "Image::new should have failed with empty vec"
+        );
 
         Ok(())
     }
