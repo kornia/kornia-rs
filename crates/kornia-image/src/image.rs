@@ -155,7 +155,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
         T: Clone, // TODO: remove this bound
     {
         // check if data vector size is bigger than zero
-        if data.len() == 0 {
+        if data.is_empty() {
             return Err(ImageError::ImageDataNotInitialized);
         }
 
