@@ -25,7 +25,7 @@ Lightweight, zero-overhead C++ interface to kornia-rs. All functions are inline 
 
 int main() {
     // Read JPEG image with zero-copy data access
-    auto image = kornia::io::read_jpeg_rgb8("image.jpg");
+    auto image = kornia::io::jpeg::read_image_jpeg_rgb8("image.jpg");
 
     std::cout << "Loaded: " << image.width() << "x" << image.height()
               << " (" << image.channels() << " channels)\n";
@@ -48,16 +48,18 @@ cmake --build build
 cmake --install build --prefix ~/local  # optional
 ```
 
-### Using Just
+### Using Pixi
 
-> **Note:** If you are running commands from the `kornia-cpp` directory, use the local commands below. If running from the project root, use the `cpp-` prefixed commands (e.g., `just cpp-test`), which delegate to the local justfile.
+> **Note:** Run these commands from the project root.
 
 ```bash
-just test            # Build and run tests
-just build-examples  # Build examples
-just format          # Format code with clang-format
-just format-check    # Check format without modifying
-just clean           # Clean build artifacts
+pixi run cpp-test          # Build and run C++ tests
+pixi run cpp-build         # Build C++ library (debug)
+pixi run cpp-build-release # Build C++ library (release)
+pixi run cpp-build-examples # Build C++ examples
+pixi run cpp-fmt           # Format C++ code
+pixi run cpp-fmt-check     # Check C++ code formatting
+pixi run cpp-clean         # Clean C++ build artifacts
 ```
 
 ## API
@@ -80,7 +82,7 @@ Images can be constructed in multiple ways:
 
 ```cpp
 // 1. From I/O functions (zero-copy)
-auto image = kornia::io::jpeg::read_jpeg_rgb8("image.jpg");
+auto image = kornia::io::jpeg::read_image_jpeg_rgb8("image.jpg");
 
 // 2. Create filled with a value
 kornia::image::ImageU8C3 image(width, height, 255);  // All pixels = 255
@@ -99,7 +101,7 @@ kornia::image::ImageU8C4 image(width, height, pixels);
 All methods are `const` and thread-safe for concurrent reads:
 
 ```cpp
-auto image = kornia::io::jpeg::read_jpeg_rgb8("image.jpg");
+auto image = kornia::io::jpeg::read_image_jpeg_rgb8("image.jpg");
 
 size_t w = image.width();          // Image width in pixels
 size_t h = image.height();         // Image height in pixels
@@ -125,10 +127,10 @@ uint8_t value = data[idx];
 ```cpp
 namespace kornia::io::jpeg {
     // Read JPEG as RGB u8 (uses libjpeg-turbo)
-    ImageU8C3 read_jpeg_rgb8(const std::string& file_path);
+    ImageU8C3 read_image_jpeg_rgb8(const std::string& file_path);
 
     // Read JPEG as grayscale u8 (auto-converts if needed)
-    ImageU8C1 read_jpeg_mono8(const std::string& file_path);
+    ImageU8C1 read_image_jpeg_mono8(const std::string& file_path);
 }
 ```
 
@@ -197,7 +199,7 @@ target_link_libraries(myapp PRIVATE kornia::kornia_cpp)
 ### Move Semantics
 Image types support move but not copy:
 ```cpp
-auto img1 = kornia::io::read_jpeg_rgb8("a.jpg");
+auto img1 = kornia::io::jpeg::read_image_jpeg_rgb8("a.jpg");
 auto img2 = std::move(img1);  // ✅ OK - move
 // auto img3 = img2;           // ❌ Error - copy deleted
 ```
@@ -205,9 +207,9 @@ auto img2 = std::move(img1);  // ✅ OK - move
 ## Testing
 
 ```bash
-just cpp-test           # Run all tests (from project root)
-just test              # Run all tests (from kornia-cpp/)
-just test-sanitizers   # Run with ASAN/UBSAN enabled
+pixi run cpp-test              # Build and run C++ tests
+pixi run cpp-test-release      # Build and run C++ tests (release)
+pixi run cpp-test-sanitizers   # Run with ASAN/UBSAN enabled
 ```
 
 Tests use [Catch2](https://github.com/catchorg/Catch2) v3 framework.
@@ -272,11 +274,11 @@ See `examples/` directory for complete examples demonstrating:
 The project uses `.clang-format` (LLVM style, 100 column limit):
 
 ```bash
-just format        # Auto-format all C++ files
-just format-check  # Check format without modifying
+pixi run cpp-fmt        # Auto-format all C++ files
+pixi run cpp-fmt-check  # Check format without modifying
 ```
 
-CI enforces formatting - make sure to run `just format` before committing.
+CI enforces formatting - make sure to run `pixi run cpp-fmt` before committing.
 
 ## Design Principles
 

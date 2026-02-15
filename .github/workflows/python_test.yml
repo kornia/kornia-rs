@@ -73,4 +73,6 @@ jobs:
         run: pixi run -e ${{ matrix.pixi-env }} py-test-threaded
 
       - name: Show sccache stats
-        run: sccache --show-stats
+        if: always()
+        run: |
+          sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"

@@ -1,0 +1,33 @@
+[package]
+name = "kornia-bow"
+version = { workspace = true }
+authors = [
+  "Siddharth Rambhia <siddharth.rambhia@gmail.com>",
+  "kornia.org <edgar@kornia.org>"
+]
+edition = { workspace = true }
+rust-version = { workspace = true }
+description = "High-Performance Hierarchical Bag of Words"
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+categories = ["algorithms", "computer-vision", "science::robotics"]
+publish = true
+
+[[bench]]
+harness = false
+name = "bow_bench"
+
+[dependencies]
+bincode = { workspace = true }
+rand = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+serde-big-array = "0.5"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[features]
+default = []

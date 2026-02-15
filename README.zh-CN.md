@@ -107,7 +107,7 @@ kornia-imgproc = "0.1"
 kornia-3d = "0.1"
 kornia-apriltag = "0.1"
 kornia-vlm = "0.1"
-kornia-nn = "0.1"
+kornia-bow = "0.1"
 kornia-algebra = "0.1"
 ```
 
@@ -267,14 +267,9 @@ assert resized_img.shape == (128, 128, 3)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-安装 [`uv`](https://docs.astral.sh/uv/) 以管理 python 依赖
+安装 [`pixi`](https://pixi.sh) 用于包管理和环境管理
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-安装 [`just`](https://github.com/casey/just) 命令行工具，用于管理开发任务。
-```bash
-cargo install just
+curl -fsSL https://pixi.sh/install.sh | bash
 ```
 
 克隆仓库到本地目录
@@ -282,21 +277,26 @@ cargo install just
 git clone https://github.com/kornia/kornia-rs.git
 ```
 
-你可以在项目根目录下运行 `just` 查看可用命令。
+安装依赖
+```bash
+pixi install
+```
+
+可用命令：
 
 ```bash
-$ just
-Available recipes:
-    check-environment                 # 检查项目所需的二进制文件是否已安装
-    clean                             # 清理缓存和构建产物
-    clippy                            # 用所有特性运行 clippy
-    clippy-default                    # 用默认特性运行 clippy
-    fmt                               # 自动格式化和 lint
-    py-build py_version='3.9'         # 创建虚拟环境并构建 kornia-py
-    py-build-release py_version='3.9' # 创建虚拟环境并为发布构建 kornia-py
-    py-install py_version='3.9'       # 创建虚拟环境并安装开发依赖
-    py-test                           # 用 pytest 测试 kornia-py 代码
-    test name=''                      # 测试全部或指定测试
+pixi run rust-check        # 检查 Rust 编译（所有目标）
+pixi run rust-clippy       # 运行 clippy（所有目标，警告视为错误）
+pixi run rust-fmt          # 格式化 Rust 代码
+pixi run rust-lint         # 运行所有 Rust lint（fmt + clippy + check）
+pixi run rust-test         # 运行 Rust 测试
+pixi run rust-test-release # 运行 Rust 测试（release 模式）
+pixi run rust-clean        # 清理 Rust 构建产物
+pixi run py-build          # 构建 kornia-py（开发模式）
+pixi run py-build-release  # 构建 kornia-py（release 模式）
+pixi run py-test           # 运行 pytest
+pixi run cpp-build         # 构建 C++ 库（debug）
+pixi run cpp-test          # 构建并运行 C++ 测试
 ```
 ### 🐳 Devcontainer
 
@@ -319,13 +319,19 @@ Visual Studio Code 会构建容器并在其中打开项目。你可以在容器�
 编译项目并运行测试
 
 ```bash
-just test
+pixi run rust-test
 ```
 
-如需运行指定测试，可用如下命令：
+如需运行指定包的测试：
 
 ```bash
-just test image
+pixi run rust-test-package <package-name>
+```
+
+运行 clippy 检查：
+
+```bash
+pixi run rust-clippy
 ```
 
 ### 🐍 Python
@@ -333,13 +339,13 @@ just test image
 构建 Python wheel 包，需使用 `maturin` 包。使用如下命令构建 wheel：
 
 ```bash
-just py-build
+pixi run py-build
 ```
 
 运行测试：
 
 ```bash
-just py-test
+pixi run py-test
 ```
 
 ## 💜 贡献

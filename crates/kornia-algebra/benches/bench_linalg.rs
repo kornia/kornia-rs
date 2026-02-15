@@ -14,7 +14,7 @@ fn bench_svd3(c: &mut Criterion) {
 
     group.bench_function(BenchmarkId::new("svd3", ""), |b| {
         b.iter(|| {
-            svd::svd3(&a1);
+            svd::svd3_f32(&a1);
             std::hint::black_box(());
         })
     });

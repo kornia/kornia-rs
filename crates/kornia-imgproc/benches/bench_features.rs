@@ -10,7 +10,9 @@ use rand::Rng;
 fn bench_fast_corner_detect(c: &mut Criterion) {
     let mut group = c.benchmark_group("FastCornerDetect");
 
-    let img_rgb8 = io::read_image_any_rgb8("/home/edgar/Downloads/kodim08_grayscale.png").unwrap();
+    let img_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/dog.jpeg");
+    let img_rgb8 = io::read_image_any_rgb8(img_path).unwrap();
 
     let new_size = [1920, 1080].into();
     let mut img_resized = Image::from_size_val(new_size, 0, CpuAllocator).unwrap();
@@ -27,7 +29,7 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
         |b, i| {
             let src = i.clone();
             b.iter(|| {
-                let _res = std::hint::black_box(fast_feature_detector(&src, 60, 9)).unwrap();
+                let _res = std::hint::black_box(fast_feature_detector(&src, 60, false)).unwrap();
             })
         },
     );
@@ -102,9 +104,10 @@ fn bench_dog_response(c: &mut Criterion) {
 }
 
 criterion_group!(
-    name = benches;
-    config = Criterion::default().warm_up_time(std::time::Duration::new(10, 0));
-    targets = bench_harris_response, bench_dog_response, bench_fast_corner_detect
+    benches,
+    bench_fast_corner_detect,
+    bench_harris_response,
+    bench_dog_response
 );
 criterion_main!(benches);
 

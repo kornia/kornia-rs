@@ -25,7 +25,7 @@ endif()
 
 # --- 2. Build Rust ---
 add_custom_target(cargo_build ALL
-    COMMAND ${CARGO_CMD}
+    COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${CMAKE_CURRENT_SOURCE_DIR}/target ${CARGO_CMD}
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Building Kornia C++ Rust Crate..."
     BYPRODUCTS "${RUST_TARGET_DIR}/${RUST_LIB_NAME}"

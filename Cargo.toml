@@ -44,10 +44,10 @@ kornia = { path = "crates/kornia", version = "0.1.11-rc.1" }
 kornia-3d = { path = "crates/kornia-3d", version = "0.1.11-rc.1" }
 kornia-algebra = { path = "crates/kornia-algebra", version = "0.1.11-rc.1" }
 kornia-apriltag = { path = "crates/kornia-apriltag", version = "0.1.11-rc.1" }
+kornia-bow = { path = "crates/kornia-bow", version = "0.1.11-rc.1" }
 kornia-image = { path = "crates/kornia-image", version = "0.1.11-rc.1" }
 kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.11-rc.1" }
 kornia-io = { path = "crates/kornia-io", version = "0.1.11-rc.1" }
-kornia-nn = { path = "crates/kornia-nn", version = "0.1.11-rc.1" }
 kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.11-rc.1" }
 kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.11-rc.1" }
 kornia-vlm = { path = "crates/kornia-vlm", version = "0.1.11-rc.1" }
