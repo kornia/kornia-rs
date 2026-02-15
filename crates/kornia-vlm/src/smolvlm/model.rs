@@ -87,18 +87,21 @@ impl SmolModel {
         image_hidden_states: &Tensor,
         inputs_embeds: &Tensor,
     ) -> Result<Tensor> {
-        if image_hidden_states.dim(0)? == 0 {
+        const BATCH_OR_SEQ_DIM: usize = 0;
+        const CHANNEL_OR_EMBED_DIM: usize = 1;
+
+        if image_hidden_states.dim(BATCH_OR_SEQ_DIM)? == 0 {
             return Ok(inputs_embeds.clone());
         }
         let device = image_token_mask.device();
 
         // Type conversion for GPU memory savings, cumsum() handling and - 1 handling
         let mask_f32 = image_token_mask.to_dtype(candle_core::DType::F32)?;
-        let cumsum = mask_f32.cumsum(0)?;
+        let cumsum = mask_f32.cumsum(BATCH_OR_SEQ_DIM)?;
 
         // clamp() protects from -1 index underflow and max index overflows
         let one = Tensor::new(&[1.0f32], device)?;
-        let max_index = (image_hidden_states.dim(0)? as f64) - 1.0;
+        let max_index = (image_hidden_states.dim(BATCH_OR_SEQ_DIM)? as f64) - 1.0;
 
         let image_indices = cumsum
             .broadcast_sub(&one)?
@@ -106,12 +109,12 @@ impl SmolModel {
             .to_dtype(candle_core::DType::U32)?;
 
         // Stretching the image embeddings
-        let image_stretched = image_hidden_states.index_select(&image_indices, 0)?;
+        let image_stretched = image_hidden_states.index_select(&image_indices, BATCH_OR_SEQ_DIM)?;
 
         // Merging
         let mask_bool = image_token_mask.ne(0.0)?;
         let mask_broadcast = mask_bool
-            .unsqueeze(1)?
+            .unsqueeze(CHANNEL_OR_EMBED_DIM)?
             .broadcast_as(inputs_embeds.shape())?;
 
         let merged_embeds = mask_broadcast.where_cond(&image_stretched, inputs_embeds)?;
