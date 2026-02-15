@@ -19,9 +19,6 @@ name = "bench_linalg"
 harness = false
 name = "bench_twoview"
 
-[[example]]
-name = "two_view_euroc"
-
 [dependencies]
 bincode = { workspace = true }
 faer = { workspace = true }
@@ -40,4 +37,3 @@ criterion = { workspace = true }
 kornia-image = { workspace = true }
 kornia-io = { workspace = true }
 kornia-tensor = { workspace = true }
-rerun = { workspace = true }
