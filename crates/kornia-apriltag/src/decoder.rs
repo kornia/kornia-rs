@@ -65,9 +65,6 @@ impl GrayModel {
     fn solve(&mut self) {
         // Solve Ac = b for c.
         // A is symmetric positive definite (ideally).
-        // A = L * L^T
-        // L * L^T * c = b
-        // Let y = L^T * c -> L * y = b
 
         // We use the explicit inverse implementation to match legacy behavior exactly,
         // as the matrix can be ill-conditioned and substitution yields different results due to precision.

@@ -40,62 +40,22 @@ pub fn cholesky_3x3(mat: &Mat3F32) -> Option<Mat3F32> {
     Some(l)
 }
 
-/// Solves the system Lx = b where L is a lower triangular 3x3 matrix.
-///
-/// # Arguments
-///
-/// * `l` - The lower triangular matrix L.
-/// * `b` - The right-hand side vector b.
-///
-/// # Returns
-///
-/// The solution vector x.
-pub fn solve_lower_triangular_3x3(l: &Mat3F32, b: &Vec3F32) -> Vec3F32 {
-    let mut x = Vec3F32::ZERO;
-
-    // x1 = b1 / L11
-    x.x = b.x / l.x_axis.x;
-
-    // x2 = (b2 - L21*x1) / L22
-    x.y = (b.y - l.x_axis.y * x.x) / l.y_axis.y;
-
-    // x3 = (b3 - L31*x1 - L32*x2) / L33
-    x.z = (b.z - l.x_axis.z * x.x - l.y_axis.z * x.y) / l.z_axis.z;
-
-    x
-}
-
-/// Solves the system L^T x = b where L is a lower triangular 3x3 matrix.
-///
-/// # Arguments
-///
-/// * `l` - The lower triangular matrix L.
-/// * `b` - The right-hand side vector b.
-///
-/// # Returns
-///
-/// The solution vector x.
-pub fn solve_transpose_lower_triangular_3x3(l: &Mat3F32, b: &Vec3F32) -> Vec3F32 {
-    let mut x = Vec3F32::ZERO;
-
-    // x3 = b3 / L33
-    x.z = b.z / l.z_axis.z;
-
-    // x2 = (b2 - L32*x3) / L22
-    x.y = (b.y - l.y_axis.z * x.z) / l.y_axis.y;
-
-    // x1 = (b1 - L21*x2 - L31*x3) / L11
-    x.x = (b.x - l.x_axis.y * x.y - l.x_axis.z * x.z) / l.x_axis.x;
-
-    x
-}
-
 /// Solves the system A x = b where A is a symmetric positive definite matrix with Cholesky decomposition L.
 ///
 /// This uses an explicit inverse of L to solve the system, which can be more stable for
 /// ill-conditioned matrices compared to substitution.
+///
+/// # Arguments
+///
+/// * `l` - The lower triangular matrix L from Cholesky decomposition.
+/// * `b` - The right-hand side vector b.
+///
+/// # Returns
+///
+/// The solution vector x.
 pub fn cholesky_solve_3x3(l: &Mat3F32, b: &Vec3F32) -> Vec3F32 {
-    // We solve L * L^T * x = b by computing x = (L^-T * L^-1) * b = M^T * M * b
+    // We solve L * L^T * x = b
+    // x = (L^-T * L^-1) * b = M^T * M * b
     // where M = L^-1.
 
     //Compute M = L^-1 explicitly (M is lower triangular)
@@ -160,25 +120,7 @@ mod tests {
     }
 
     #[test]
-    fn test_solve_lower_triangular() {
-        let l = Mat3F32::from_cols(
-            Vec3F32::new(1.0, 2.0, 4.0),
-            Vec3F32::new(0.0, 3.0, 5.0),
-            Vec3F32::new(0.0, 0.0, 6.0),
-        );
-
-        let b = Vec3F32::new(1.0, 5.0, 32.0);
-
-        let x = solve_lower_triangular_3x3(&l, &b);
-
-        assert!((x.x - 1.0).abs() < 1e-6);
-        assert!((x.y - 1.0).abs() < 1e-6);
-        assert!((x.z - 3.833333).abs() < 1e-6);
-    }
-
-    #[test]
     fn test_matrix_3x3_cholesky_apriltag_data() {
-        // Data from kornia-apriltag utils.rs test
         let a = Mat3F32::from_cols(
             Vec3F32::new(6.0, 15.0, 55.0),
             Vec3F32::new(15.0, 55.0, 225.0),
@@ -187,7 +129,7 @@ mod tests {
 
         let l = cholesky_3x3(&a).unwrap();
 
-        // Expected results from apriltag test (transposed to standard L form)
+        // Expected results (transposed to standard L form)
         // r = [2.4495, 0.0, 0.0, 6.1237, 4.1833, 0.0, 22.4537, 20.9165, 6.1101]
         // L11=r[0], L21=r[3], L31=r[6]
         // L22=r[4], L32=r[7]
