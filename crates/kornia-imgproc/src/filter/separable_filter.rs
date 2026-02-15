@@ -1,5 +1,6 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use num_traits::Zero;
+use wide::f32x4;
 
 /// Trait for floating point casting
 pub trait FloatConversion {
@@ -256,6 +257,194 @@ pub(crate) fn fast_horizontal_filter<const C: usize, A1: ImageAllocator, A2: Ima
     Ok(())
 }
 
+#[inline(always)]
+unsafe fn load4(p: *const f32) -> f32x4 {
+    f32x4::new([*p, *p.add(1), *p.add(2), *p.add(3)])
+}
+
+#[inline(always)]
+unsafe fn store4(p: *mut f32, v: f32x4) {
+    let a = v.to_array();
+    *p = a[0];
+    *p.add(1) = a[1];
+    *p.add(2) = a[2];
+    *p.add(3) = a[3];
+}
+
+#[inline]
+fn update_row<const C: usize>(
+    row_idx: usize,
+    add: bool,
+    cols: usize,
+    src_data: &[f32],
+    col_sums: &mut [f32],
+) {
+    unsafe {
+        if C == 1 {
+            let base = row_idx * cols;
+            let mut c = 0usize;
+
+            while c + 4 <= cols {
+                let sv = load4(src_data.as_ptr().add(base + c));
+                let cv = load4(col_sums.as_ptr().add(c));
+                let r = if add { cv + sv } else { cv - sv };
+                store4(col_sums.as_mut_ptr().add(c), r);
+                c += 4;
+            }
+
+            while c < cols {
+                let v = *src_data.get_unchecked(base + c);
+                if add {
+                    *col_sums.get_unchecked_mut(c) += v;
+                } else {
+                    *col_sums.get_unchecked_mut(c) -= v;
+                }
+                c += 1;
+            }
+        } else if C == 4 {
+            let base = row_idx * cols * 4;
+            for c in 0..cols {
+                let src_p = src_data.as_ptr().add(base + c * 4);
+                let col_p = col_sums.as_mut_ptr().add(c * 4);
+                let sv = load4(src_p);
+                let cv = load4(col_p);
+                let r = if add { cv + sv } else { cv - sv };
+                store4(col_p, r);
+            }
+        } else {
+            for c in 0..cols {
+                let idx = (row_idx * cols + c) * C;
+                for ch in 0..C {
+                    let v = *src_data.get_unchecked(idx + ch);
+                    let out = col_sums.get_unchecked_mut(c * C + ch);
+                    if add {
+                        *out += v;
+                    } else {
+                        *out -= v;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Apply box blur using incremental column sums.
+///
+/// # Arguments
+///
+/// * `src` - The source image with shape (H, W, C).
+/// * `dst` - The destination image with shape (H, W, C).
+/// * `kernel_size` - The size of the kernel (kernel_x, kernel_y).
+pub(crate) fn columnar_sat<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, C, A1>,
+    __dst__: &mut Image<f32, C, A2>,
+    kernel_size: (usize, usize),
+) -> Result<(), ImageError> {
+    if src.size() != __dst__.size() {
+        return Err(ImageError::InvalidKernelLength(
+            kernel_size.0,
+            kernel_size.1,
+        ));
+    }
+    if kernel_size.0 == 0
+        || kernel_size.1 == 0
+        || kernel_size.0 > src.cols()
+        || kernel_size.1 > src.rows()
+    {
+        return Err(ImageError::InvalidKernelLength(
+            kernel_size.0,
+            kernel_size.1,
+        ));
+    }
+
+    let cols = src.cols();
+    let rows = src.rows();
+
+    let half_x = kernel_size.0 / 2;
+    let half_y = kernel_size.1 / 2;
+
+    let src_data = src.as_slice();
+    let __dst_data__ = __dst__.as_slice_mut();
+
+    let mut __col_sums__ = vec![0.0f32; cols * C];
+    let mut __row_acc__ = [0.0f32; C];
+
+    for r in 0..rows {
+        let y_start = r.saturating_sub(half_y);
+        let y_end = (r + half_y + 1).min(rows);
+        let row_offset = r * cols * C;
+
+        // vertical incremental update
+        if r == 0 {
+            for y in y_start..y_end {
+                update_row::<C>(y, true, cols, src_data, &mut __col_sums__);
+            }
+        } else {
+            if r > half_y {
+                update_row::<C>(r - half_y - 1, false, cols, src_data, &mut __col_sums__);
+            }
+            if r + half_y < rows {
+                update_row::<C>(r + half_y, true, cols, src_data, &mut __col_sums__);
+            }
+        }
+
+        // horizontal sliding window
+        for c in 0..cols {
+            let x_start = c.saturating_sub(half_x);
+            let x_end = (c + half_x + 1).min(cols);
+
+            if c == 0 {
+                __row_acc__.fill(0.0);
+                for x in x_start..x_end {
+                    let base = x * C;
+                    for (ch, acc) in __row_acc__.iter_mut().enumerate() {
+                        *acc += unsafe { *__col_sums__.get_unchecked(base + ch) };
+                    }
+                }
+            } else {
+                let prev_x_start = (c - 1).saturating_sub(half_x);
+                if x_start > prev_x_start {
+                    let base = prev_x_start * C;
+                    for (ch, acc) in __row_acc__.iter_mut().enumerate() {
+                        *acc -= unsafe { *__col_sums__.get_unchecked(base + ch) };
+                    }
+                }
+
+                let prev_x_end = (c + half_x).min(cols);
+                if x_end > prev_x_end {
+                    let base = (x_end - 1) * C;
+                    for (ch, acc) in __row_acc__.iter_mut().enumerate() {
+                        *acc += unsafe { *__col_sums__.get_unchecked(base + ch) };
+                    }
+                }
+            }
+
+            let inv_area = 1.0 / ((x_end - x_start) * (y_end - y_start)) as f32;
+            let out_idx = row_offset + c * C;
+
+            if C == 4 {
+                let v = f32x4::new([
+                    __row_acc__[0],
+                    __row_acc__[1],
+                    __row_acc__[2],
+                    __row_acc__[3],
+                ]) * f32x4::splat(inv_area);
+                unsafe {
+                    store4(__dst_data__.as_mut_ptr().add(out_idx), v);
+                }
+            } else {
+                for (ch, &acc) in __row_acc__.iter().enumerate() {
+                    unsafe {
+                        *__dst_data__.get_unchecked_mut(out_idx + ch) = acc * inv_area;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,6 +614,40 @@ mod tests {
         );
         let xsum = dst.as_slice().iter().sum::<f32>();
         assert_eq!(xsum, 9.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_columnar_sat_box_blur() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 5,
+            height: 5,
+        };
+
+        #[rustfmt::skip]
+        let img = Image::new(
+            size,
+            vec![
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 255.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+            CpuAllocator,
+        )?;
+
+        let mut dst = Image::<f32, 1, _>::from_size_val(img.size(), 0.0, CpuAllocator)?;
+
+        columnar_sat(&img, &mut dst, (3, 3))?;
+
+        let center_val = 255.0 / 9.0;
+
+        assert!((dst.as_slice()[6] - center_val).abs() < 1e-3);
+        assert!((dst.as_slice()[7] - center_val).abs() < 1e-3);
+        assert!((dst.as_slice()[12] - center_val).abs() < 1e-3);
+        assert_eq!(dst.as_slice()[0], 0.0);
 
         Ok(())
     }
