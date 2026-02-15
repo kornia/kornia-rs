@@ -655,16 +655,15 @@ fn orb_loop<A: ImageAllocator>(
 
     let mut descriptors = vec![[0u8; 32]; n_keypoints];
 
-    for i in 0..n_keypoints {
-        let angle = orientation[i];
+    for (desc, (&(kr, kc), &angle)) in descriptors
+        .iter_mut()
+        .zip(keypoints.iter().zip(orientation.iter()))
+    {
         let sin_a = angle.sin();
         let cos_a = angle.cos();
 
-        let kr = keypoints[i].0;
-        let kc = keypoints[i].1;
-
         // Process 8 bit comparisons at a time to pack into one byte
-        for byte_idx in 0..32 {
+        for (byte_idx, byte_out) in desc.iter_mut().enumerate() {
             let mut byte_val = 0u8;
             for bit_idx in 0..8 {
                 let j = byte_idx * 8 + bit_idx;
@@ -699,7 +698,7 @@ fn orb_loop<A: ImageAllocator>(
                     }
                 }
             }
-            descriptors[i][byte_idx] = byte_val;
+            *byte_out = byte_val;
         }
     }
 
