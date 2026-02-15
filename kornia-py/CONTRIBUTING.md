@@ -22,19 +22,18 @@
 
     Or you can use one of the dev docker images ([x86_64](../devel-x86_64.Dockerfile), [i686](../devel-i686.Dockerfile), [arch64](../devel-aarch64.Dockerfile)).
 
-    This will check and try to install if not available: [rust](https://rustup.rs/) and [uv](https://docs.astral.sh/uv/).
-    Then it will setup a `.venv` directory and install the kornia-py package
+    Then build the kornia-py package (from the project root):
     ```sh
-    just install
+    pixi run py-build
     ```
 
     Note:
-    - When setting up the kornia-py package, it will automatically build its backend, which is the kornia Rust package itself.
+    - When building the kornia-py package, it will automatically build its backend, which is the kornia Rust package itself.
 
 
 3. **Run tests to ensure everything is set up correctly:**
     ```sh
-    just test
+    pixi run py-test
     ```
 
 You are now ready to start contributing to the Kornia-py package!

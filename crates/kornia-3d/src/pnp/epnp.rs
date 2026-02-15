@@ -6,7 +6,7 @@ use super::ops::{compute_centroid, gauss_newton, intrinsics_as_vectors};
 use super::refine::{refine_pose_lm, LMRefineParams};
 use super::{NumericTol, PnPError, PnPResult, PnPSolver};
 use kornia_algebra::linalg::rigid::umeyama;
-use kornia_algebra::linalg::svd::svd3;
+use kornia_algebra::linalg::svd::svd3_f32;
 use kornia_algebra::{Mat3AF32, Mat3F32, Vec2F32, Vec3AF32, Vec3F32, SO3F32};
 use kornia_imgproc::calibration::{
     distortion::{distort_point_polynomial, PolynomialDistortion},
@@ -277,7 +277,7 @@ fn select_control_points(points_world: &[Vec3AF32]) -> [Vec3AF32; 4] {
     }
     cov_mat *= 1.0 / n as f32;
 
-    let svd = svd3(&cov_mat);
+    let svd = svd3_f32(&cov_mat);
     let v = svd.v();
     let s = svd.s(); // diagonal matrix of singular values (eigenvalues)
 
@@ -334,7 +334,7 @@ fn compute_barycentric(points_world: &[Vec3AF32], cw: &[Vec3AF32; 4], eps: f32) 
         b.inverse()
     } else {
         // Moore–Penrose pseudo-inverse: B⁺ = V Σ⁺ Uᵀ
-        let svd = svd3(&b);
+        let svd = svd3_f32(&b);
         let u = *svd.u();
         let v_mat = *svd.v();
         let s_mat = *svd.s();

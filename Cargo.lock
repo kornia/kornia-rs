@@ -8716,6 +8716,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "morphology"
+version = "0.1.11-rc.1"
+dependencies = [
+ "argh",
+ "kornia",
+ "rerun",
+]
+
+[[package]]
 name = "moxcms"
 version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
