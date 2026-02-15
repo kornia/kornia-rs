@@ -59,8 +59,11 @@ harness = false
 name = "bench_distortion"
 required-features = ["opencv_bench"]
 
+[[bench]]
+harness = false
+name = "bench_threshold"
+
 [dependencies]
-# TODO: update to version but it requires some changes in the codebase
 fast_image_resize = { version = "=5.1", features = ["rayon"] }
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }

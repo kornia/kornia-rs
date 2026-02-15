@@ -21,7 +21,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // binarize the image as u8
     let mut bin = Image::<u8, 3, _>::from_size_val(image.size(), 0, CpuAllocator)?;
-    imgproc::threshold::threshold_binary(&image, &mut bin, 127, 255)?;
+    imgproc::threshold::threshold_binary(
+        &image,
+        &mut bin,
+        127,
+        255,
+        imgproc::parallel::ExecutionStrategy::Serial,
+    )?;
 
     // normalize the image between 0 and 1
     let image_f32 = image.into_inner().cast_and_scale::<f32>(1.0 / 255.0)?;
@@ -32,7 +38,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // binarize the gray image as floating point
     let mut gray_bin = Image::<f32, 1, _>::from_size_val(gray.size(), 0.0, CpuAllocator)?;
-    imgproc::threshold::threshold_binary(&gray, &mut gray_bin, 0.5, 1.0)?;
+    imgproc::threshold::threshold_binary(
+        &gray,
+        &mut gray_bin,
+        0.5,
+        1.0,
+        imgproc::parallel::ExecutionStrategy::Serial,
+    )?;
 
     // create a Rerun recording stream
     let rec = rerun::RecordingStreamBuilder::new("Kornia App").spawn()?;
