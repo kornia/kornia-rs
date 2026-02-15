@@ -257,6 +257,77 @@ pub(crate) fn fast_horizontal_filter<const C: usize, A1: ImageAllocator, A2: Ima
     Ok(())
 }
 
+#[inline(always)]
+unsafe fn load4(p: *const f32) -> f32x4 {
+    f32x4::new([*p, *p.add(1), *p.add(2), *p.add(3)])
+}
+
+#[inline(always)]
+unsafe fn store4(p: *mut f32, v: f32x4) {
+    let a = v.to_array();
+    *p = a[0];
+    *p.add(1) = a[1];
+    *p.add(2) = a[2];
+    *p.add(3) = a[3];
+}
+
+#[inline]
+fn update_row<const C: usize>(
+    row_idx: usize,
+    add: bool,
+    cols: usize,
+    src_data: &[f32],
+    col_sums: &mut [f32],
+) {
+    unsafe {
+        if C == 1 {
+            let base = row_idx * cols;
+            let mut c = 0usize;
+
+            while c + 4 <= cols {
+                let sv = load4(src_data.as_ptr().add(base + c));
+                let cv = load4(col_sums.as_ptr().add(c));
+                let r = if add { cv + sv } else { cv - sv };
+                store4(col_sums.as_mut_ptr().add(c), r);
+                c += 4;
+            }
+
+            while c < cols {
+                let v = *src_data.get_unchecked(base + c);
+                if add {
+                    *col_sums.get_unchecked_mut(c) += v;
+                } else {
+                    *col_sums.get_unchecked_mut(c) -= v;
+                }
+                c += 1;
+            }
+        } else if C == 4 {
+            let base = row_idx * cols * 4;
+            for c in 0..cols {
+                let src_p = src_data.as_ptr().add(base + c * 4);
+                let col_p = col_sums.as_mut_ptr().add(c * 4);
+                let sv = load4(src_p);
+                let cv = load4(col_p);
+                let r = if add { cv + sv } else { cv - sv };
+                store4(col_p, r);
+            }
+        } else {
+            for c in 0..cols {
+                let idx = (row_idx * cols + c) * C;
+                for ch in 0..C {
+                    let v = *src_data.get_unchecked(idx + ch);
+                    let out = col_sums.get_unchecked_mut(c * C + ch);
+                    if add {
+                        *out += v;
+                    } else {
+                        *out -= v;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Apply box blur using incremental column sums.
 ///
 /// # Arguments
@@ -275,112 +346,94 @@ pub(crate) fn columnar_sat<const C: usize, A1: ImageAllocator, A2: ImageAllocato
             kernel_size.1,
         ));
     }
-
-    if kernel_size.0 == 0 || kernel_size.1 == 0 {
+    if kernel_size.0 == 0
+        || kernel_size.1 == 0
+        || kernel_size.0 > src.cols()
+        || kernel_size.1 > src.rows()
+    {
         return Err(ImageError::InvalidKernelLength(
             kernel_size.0,
             kernel_size.1,
         ));
     }
 
-    if kernel_size.0 > src.cols() || kernel_size.1 > src.rows() {
-        return Err(ImageError::InvalidKernelLength(
-            kernel_size.0,
-            kernel_size.1,
-        ));
-    }
+    let cols = src.cols();
+    let rows = src.rows();
 
     let half_x = kernel_size.0 / 2;
     let half_y = kernel_size.1 / 2;
 
     let src_data = src.as_slice();
     let __dst_data__ = __dst__.as_slice_mut();
-    let mut __col_sums__ = vec![0.0f32; src.cols() * C];
+
+    let mut __col_sums__ = vec![0.0f32; cols * C];
     let mut __row_acc__ = [0.0f32; C];
 
-    for r in 0..src.rows() {
+    for r in 0..rows {
         let y_start = r.saturating_sub(half_y);
-        let y_end = (r + half_y + 1).min(src.rows());
-        let row_offset = r * src.cols() * C;
+        let y_end = (r + half_y + 1).min(rows);
+        let row_offset = r * cols * C;
 
+        // vertical incremental update
         if r == 0 {
             for y in y_start..y_end {
-                for c in 0..src.cols() {
-                    let idx = (y * src.cols() + c) * C;
-                    for ch in 0..C {
-                        __col_sums__[c * C + ch] += unsafe { *src_data.get_unchecked(idx + ch) };
-                    }
-                }
+                update_row::<C>(y, true, cols, src_data, &mut __col_sums__);
             }
         } else {
             if r > half_y {
-                let rm_y = r - half_y - 1;
-                for c in 0..src.cols() {
-                    let idx = (rm_y * src.cols() + c) * C;
-                    for ch in 0..C {
-                        __col_sums__[c * C + ch] -= unsafe { *src_data.get_unchecked(idx + ch) };
-                    }
-                }
+                update_row::<C>(r - half_y - 1, false, cols, src_data, &mut __col_sums__);
             }
-            if r + half_y < src.rows() {
-                let add_y = r + half_y;
-                for c in 0..src.cols() {
-                    let idx = (add_y * src.cols() + c) * C;
-                    for ch in 0..C {
-                        __col_sums__[c * C + ch] += unsafe { *src_data.get_unchecked(idx + ch) };
-                    }
-                }
+            if r + half_y < rows {
+                update_row::<C>(r + half_y, true, cols, src_data, &mut __col_sums__);
             }
         }
 
-        for c in 0..src.cols() {
+        // horizontal sliding window
+        for c in 0..cols {
             let x_start = c.saturating_sub(half_x);
-            let x_end = (c + half_x + 1).min(src.cols());
+            let x_end = (c + half_x + 1).min(cols);
 
             if c == 0 {
                 __row_acc__.fill(0.0);
                 for x in x_start..x_end {
-                    for ch in 0..C {
-                        __row_acc__[ch] += __col_sums__[x * C + ch];
+                    let base = x * C;
+                    for (ch, acc) in __row_acc__.iter_mut().enumerate() {
+                        *acc += unsafe { *__col_sums__.get_unchecked(base + ch) };
                     }
                 }
             } else {
                 let prev_x_start = (c - 1).saturating_sub(half_x);
                 if x_start > prev_x_start {
-                    for ch in 0..C {
-                        __row_acc__[ch] -= __col_sums__[prev_x_start * C + ch];
+                    let base = prev_x_start * C;
+                    for (ch, acc) in __row_acc__.iter_mut().enumerate() {
+                        *acc -= unsafe { *__col_sums__.get_unchecked(base + ch) };
                     }
                 }
-                let prev_x_end = (c - 1 + half_x + 1).min(src.cols());
+
+                let prev_x_end = (c + half_x).min(cols);
                 if x_end > prev_x_end {
-                    for ch in 0..C {
-                        __row_acc__[ch] += __col_sums__[(x_end - 1) * C + ch];
+                    let base = (x_end - 1) * C;
+                    for (ch, acc) in __row_acc__.iter_mut().enumerate() {
+                        *acc += unsafe { *__col_sums__.get_unchecked(base + ch) };
                     }
                 }
             }
 
-            let area = ((x_end - x_start) * (y_end - y_start)) as f32;
-            let inv_area = 1.0 / area;
-
+            let inv_area = 1.0 / ((x_end - x_start) * (y_end - y_start)) as f32;
             let out_idx = row_offset + c * C;
 
             if C == 4 {
-                let v = f32x4::from([
+                let v = f32x4::new([
                     __row_acc__[0],
                     __row_acc__[1],
                     __row_acc__[2],
                     __row_acc__[3],
                 ]) * f32x4::splat(inv_area);
-
-                let arr = v.to_array();
                 unsafe {
-                    *__dst_data__.get_unchecked_mut(out_idx) = arr[0];
-                    *__dst_data__.get_unchecked_mut(out_idx + 1) = arr[1];
-                    *__dst_data__.get_unchecked_mut(out_idx + 2) = arr[2];
-                    *__dst_data__.get_unchecked_mut(out_idx + 3) = arr[3];
+                    store4(__dst_data__.as_mut_ptr().add(out_idx), v);
                 }
             } else {
-                for (ch, &acc) in __row_acc__.iter().enumerate().take(C) {
+                for (ch, &acc) in __row_acc__.iter().enumerate() {
                     unsafe {
                         *__dst_data__.get_unchecked_mut(out_idx + ch) = acc * inv_area;
                     }
