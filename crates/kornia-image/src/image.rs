@@ -154,6 +154,11 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     where
         T: Clone, // TODO: remove this bound
     {
+        // check if data vector size is bigger than zero
+        if data.is_empty() {
+            return Err(ImageError::ImageDataNotInitialized);
+        }
+
         // check if the data length matches the image size
         if data.len() != size.width * size.height * C {
             return Err(ImageError::InvalidChannelShape(
@@ -694,6 +699,24 @@ mod tests {
         assert_eq!(image.size().width, 2);
         assert_eq!(image.size().height, 3);
         assert_eq!(image.num_channels(), 3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_image_from_empty_vec() -> Result<(), ImageError> {
+        let image: Result<Image<f32, 1, CpuAllocator>, ImageError> = Image::new(
+            ImageSize {
+                height: 0,
+                width: 0,
+            },
+            vec![0.0; 0],
+            CpuAllocator,
+        );
+        assert!(
+            image.is_err(),
+            "Image::new should have failed with empty vec"
+        );
 
         Ok(())
     }
