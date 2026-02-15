@@ -8,3 +8,6 @@ pub mod rigid;
 
 /// Singular Value Decomposition for 3x3 matrices
 pub mod svd;
+
+/// Cholesky Decomposition for 3x3 matrices
+pub mod cholesky;

@@ -22,6 +22,7 @@ name = "bench_tagfamily"
 [dependencies]
 kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
+kornia-algebra = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

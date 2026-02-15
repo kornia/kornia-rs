@@ -303,7 +303,7 @@ impl From<Quad> for PyQuad {
                 (value.corners[3].x, value.corners[3].y),
             ],
             reversed_border: value.reversed_border,
-            homography: value.homography,
+            homography: value.homography.into(),
         }
     }
 }

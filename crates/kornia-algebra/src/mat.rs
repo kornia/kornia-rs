@@ -31,7 +31,7 @@ macro_rules! define_matrix_type {
         [$($col:ident),+]
     ) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq)]
+        #[derive(Debug, Clone, Copy, PartialEq, Default)]
         #[repr(transparent)]
         pub struct $name(pub $glam_type);
 
@@ -52,6 +52,9 @@ macro_rules! define_matrix_type {
 
             /// Identity matrix.
             pub const IDENTITY: Self = Self(<$glam_type>::IDENTITY);
+
+            /// Zero matrix.
+            pub const ZERO: Self = Self(<$glam_type>::ZERO);
 
             /// Transpose the matrix.
             #[inline]
