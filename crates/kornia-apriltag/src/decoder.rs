@@ -4,7 +4,7 @@ use crate::{
     errors::AprilTagError,
     family::{TagFamily, TagFamilyKind},
     quad::Quad,
-    utils::{value_for_pixel, Point2d},
+    utils::value_for_pixel,
     DecodeTagsConfig,
 };
 use kornia_algebra::Mat3F32;
@@ -680,16 +680,14 @@ fn quad_decode<A: ImageAllocator>(
                 return;
             }
 
-            let p = Point2d {
-                x: p.x as usize,
-                y: p.y as usize,
-            };
+            let px = p.x as usize;
+            let py = p.y as usize;
 
-            if p.x >= src.width() || p.y >= src.height() {
+            if px >= src.width() || py >= src.height() {
                 return;
             }
 
-            let v = src_slice[p.y * src.width() + p.x] as f32;
+            let v = src_slice[py * src.width() + px] as f32;
 
             if pattern.is_white {
                 gray_model_pair.white_model.add(tagx, tagy, v);

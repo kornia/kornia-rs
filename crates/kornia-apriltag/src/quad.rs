@@ -68,7 +68,7 @@ impl Quad {
     ///
     /// # Returns
     ///
-    /// A `Point2d<f32>` representing the projected point in image coordinates.
+    /// A `Vec2F32` representing the projected point in image coordinates.
     pub fn homography_project(&self, x: f32, y: f32) -> kornia_algebra::Vec2F32 {
         let p = self.homography * Vec3F32::new(x, y, 1.0);
         kornia_algebra::Vec2F32::new(p.x / p.z, p.y / p.z)
