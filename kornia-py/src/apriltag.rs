@@ -326,6 +326,8 @@ pub mod family {
         pub bit_x: Vec<i8>,
         pub bit_y: Vec<i8>,
         pub code_data: Vec<usize>,
+        /// The minimum Hamming distance between any two valid codes in this family.
+        pub min_hamming: u8,
         pub quick_decode: Py<PyQuickDecode>,
         pub sharpening_buffer: Py<PySharpeningBuffer>,
     }
@@ -343,6 +345,7 @@ pub mod family {
             bit_x: Vec<i8>,
             bit_y: Vec<i8>,
             code_data: Vec<usize>,
+            min_hamming: u8,
             quick_decode: Py<PyQuickDecode>,
             sharpening_buffer: Py<PySharpeningBuffer>,
         ) -> Self {
@@ -355,6 +358,7 @@ pub mod family {
                 bit_x,
                 bit_y,
                 code_data,
+                min_hamming,
                 quick_decode,
                 sharpening_buffer,
             }
@@ -375,6 +379,7 @@ pub mod family {
                     bit_x: self.bit_x.clone(),
                     bit_y: self.bit_y.clone(),
                     code_data: self.code_data.clone(),
+                    min_hamming: self.min_hamming,
                     quick_decode: quick_decode.0,
                     sharpening_buffer: sharpening_buffer.0,
                 };
@@ -392,10 +397,24 @@ pub mod family {
     #[pymethods]
     impl PyQuickDecode {
         #[new]
-        pub fn new(nbits: usize, code_data: Vec<usize>) -> PyResult<Self> {
-            Ok(Self(QuickDecode::new(nbits, &code_data, 2).map_err(
-                |e| PyErr::new::<PyException, _>(e.to_string()),
-            )?))
+        #[pyo3(signature = (nbits, code_data, max_hamming=2))]
+        pub fn new(nbits: usize, code_data: Vec<usize>, max_hamming: u8) -> PyResult<Self> {
+            Ok(Self(
+                QuickDecode::new(nbits, &code_data, max_hamming)
+                    .map_err(|e| PyErr::new::<PyException, _>(e.to_string()))?,
+            ))
+        }
+
+        #[getter]
+        pub fn get_max_hamming(&self) -> u8 {
+            self.0.max_hamming()
+        }
+
+        #[setter]
+        pub fn set_max_hamming(&mut self, value: u8) -> PyResult<()> {
+            self.0
+                .set_max_hamming(value)
+                .map_err(|e| PyErr::new::<PyException, _>(e.to_string()))
         }
     }
 
@@ -451,6 +470,46 @@ pub mod family {
                 TagFamilyKind::TagStandard52H13 => Ok("tagstandard52_h13"),
                 TagFamilyKind::Custom(family) => Ok(family.name.as_str()),
             }
+        }
+
+        /// The minimum Hamming distance between any two valid codes in this family.
+        #[getter]
+        pub fn min_hamming(&self) -> PyResult<u8> {
+            let family: TagFamily = self.0.clone().try_into().map_err(
+                |e: kornia_apriltag::errors::AprilTagError| {
+                    PyErr::new::<PyException, _>(e.to_string())
+                },
+            )?;
+            Ok(family.min_hamming)
+        }
+
+        /// The maximum safe max_hamming value for this family.
+        ///
+        /// Calculated as (min_hamming - 1) / 2 to ensure two different tags
+        /// with bit errors cannot be confused with each other.
+        #[getter]
+        pub fn max_safe_hamming(&self) -> PyResult<u8> {
+            let family: TagFamily = self.0.clone().try_into().map_err(
+                |e: kornia_apriltag::errors::AprilTagError| {
+                    PyErr::new::<PyException, _>(e.to_string())
+                },
+            )?;
+            Ok(family.max_safe_hamming())
+        }
+
+        /// Returns a new TagFamilyKind with the specified max_hamming value.
+        ///
+        /// Raises an exception if max_hamming exceeds the safe limit for this family.
+        pub fn with_max_hamming(&self, max_hamming: u8) -> PyResult<Self> {
+            let family: TagFamily = self.0.clone().try_into().map_err(
+                |e: kornia_apriltag::errors::AprilTagError| {
+                    PyErr::new::<PyException, _>(e.to_string())
+                },
+            )?;
+            let updated = family
+                .with_max_hamming(max_hamming)
+                .map_err(|e| PyErr::new::<PyException, _>(e.to_string()))?;
+            Ok(Self(TagFamilyKind::Custom(Box::new(updated))))
         }
 
         #[staticmethod]
