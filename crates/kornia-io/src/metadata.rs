@@ -39,26 +39,25 @@ pub struct ImageMetadata {
 /// ```
 pub fn read_image_metadata<P: AsRef<Path>>(path: P) -> Result<ImageMetadata, IoError> {
     let path = path.as_ref();
+    if !path.exists() {
+        return Err(IoError::FileDoesNotExist(path.to_path_buf()));
+    }
     let mut file = File::open(path).map_err(IoError::FileError)?;
 
     // Read the first 128KB to check for EXIF in the header.
-    // This covers most use cases without reading the full file.
     let mut buffer = vec![0; 128 * 1024];
     let n = file.read(&mut buffer).map_err(IoError::FileError)?;
     buffer.truncate(n);
 
     // Fast path: try to parse EXIF orientation from the header.
-    // This avoids the overhead of the full little_exif parser for the common case.
     if let Some(v) = parse_exif_orientation(&buffer) {
         return Ok(ImageMetadata {
             exif_orientation: Some(v),
         });
     }
 
-    // Slow path: read the rest of the file if needed for little_exif.
-    if n == 128 * 1024 {
-        file.read_to_end(&mut buffer).map_err(IoError::FileError)?;
-    }
+    // Always read the rest of the file for little_exif slow path.
+    file.read_to_end(&mut buffer).map_err(IoError::FileError)?;
 
     // File type must be determined from extension
     let ext = path
@@ -265,5 +264,36 @@ mod tests {
                 val
             );
         }
+    }
+
+    #[test]
+    fn test_png_slow_path_orientation() {
+        // This test forces the slow path by using a PNG file with an EXIF orientation tag.
+        // The fast path only works for JPEG, so PNG always triggers the slow path.
+        let repo_img = std::path::Path::new("../../tests/data/dog.jpeg");
+        let original = fs::read(repo_img).expect("read repo jpeg");
+
+        let mut metadata = little_exif::metadata::Metadata::new();
+        metadata.set_tag(little_exif::exif_tag::ExifTag::Orientation(vec![6]));
+
+        let mut buf = original.clone();
+        metadata
+            .write_to_vec(
+                &mut buf,
+                little_exif::filetype::FileExtension::PNG {
+                    as_zTXt_chunk: false,
+                },
+            )
+            .expect("embed exif in PNG");
+
+        let tmp_file = tempfile::Builder::new()
+            .suffix(".png")
+            .tempfile()
+            .expect("create temp file");
+
+        fs::write(tmp_file.path(), &buf).expect("write temp file");
+
+        let meta = read_image_metadata(tmp_file.path()).expect("read metadata");
+        assert_eq!(meta.exif_orientation, NonZeroU8::new(6));
     }
 }
