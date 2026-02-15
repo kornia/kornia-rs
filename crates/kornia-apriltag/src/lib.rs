@@ -48,10 +48,10 @@ pub mod quad;
 pub mod decoder;
 
 /// Configuration for decoding AprilTags.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct DecodeTagsConfig {
     /// List of tag families to detect.
-    pub tag_families: Vec<TagFamily>,
+    pub tag_families: Vec<TagFamilyKind>,
     /// Configuration for quad fitting.
     pub fit_quad_config: FitQuadConfig,
     /// Whether to enable edge refinement before decoding.
@@ -81,14 +81,18 @@ impl DecodeTagsConfig {
         let mut min_tag_width = usize::MAX;
 
         for family_kind in tag_family_kinds {
-            let family: TagFamily = family_kind.try_into()?;
+            let family: TagFamily = family_kind.clone().try_into()?;
             if family.width_at_border < min_tag_width {
                 min_tag_width = family.width_at_border;
             }
             normal_border |= !family.reversed_border;
             reversed_border |= family.reversed_border;
 
-            tag_families.push(family);
+            tag_families.push(family_kind);
+        }
+
+        if min_tag_width == usize::MAX {
+            min_tag_width = 9;
         }
 
         min_tag_width /= DEFAULT_DOWNSCALE_FACTOR;
@@ -116,14 +120,28 @@ impl DecodeTagsConfig {
     }
 
     /// Adds a tag family to the configuration.
-    pub fn add(&mut self, family: TagFamily) {
-        if family.width_at_border < self.min_tag_width {
-            self.min_tag_width = family.width_at_border;
-        }
-        self.normal_border |= !family.reversed_border;
-        self.reversed_border |= family.reversed_border;
+    pub fn add(&mut self, kind: TagFamilyKind) {
+        // Inspect properties
+        let (width, reversed) = match &kind {
+            TagFamilyKind::Custom(arc) => (arc.width_at_border, arc.reversed_border),
+            _ => {
+                // For standard tags, check defaults.
+                if let Ok(temp_fam) = TagFamily::try_from(kind.clone()) {
+                    (temp_fam.width_at_border, temp_fam.reversed_border)
+                } else {
+                    (9, false)
+                }
+            }
+        };
 
-        self.tag_families.push(family);
+        let search_width = (width / self.downscale_factor).max(3);
+        if search_width < self.min_tag_width {
+            self.min_tag_width = search_width;
+        }
+        self.normal_border |= !reversed;
+        self.reversed_border |= reversed;
+
+        self.tag_families.push(kind);
     }
 }
 
@@ -147,8 +165,8 @@ impl AprilTagDecoder {
 
     /// Adds a tag family to the decoder configuration.
     #[inline]
-    pub fn add(&mut self, family: TagFamily) {
-        self.config.add(family);
+    pub fn add(&mut self, kind: TagFamilyKind) {
+        self.config.add(kind);
     }
 
     /// Creates a new `AprilTagDecoder` with the given configuration and image size.
@@ -259,7 +277,7 @@ impl AprilTagDecoder {
     }
 
     /// Returns a slice of tag families configured for detection.
-    pub fn tag_families(&self) -> &[TagFamily] {
+    pub fn tag_families(&self) -> &[TagFamilyKind] {
         &self.config.tag_families
     }
 }

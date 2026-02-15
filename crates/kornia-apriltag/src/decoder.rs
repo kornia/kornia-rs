@@ -313,6 +313,16 @@ pub fn decode_tags<A: ImageAllocator>(
     // TODO: Avoid allocations on every call
     let mut detections = Vec::new();
 
+    let mut tag_families: Vec<(TagFamilyKind, TagFamily)> = config
+        .tag_families
+        .iter()
+        .filter_map(|kind| {
+            TagFamily::try_from(kind)
+                .ok()
+                .map(|family| (kind.clone(), family))
+        })
+        .collect();
+
     quads.iter_mut().for_each(|quad| {
         if config.refine_edges_enabled {
             refine_edges(src, quad);
@@ -322,7 +332,7 @@ pub fn decode_tags<A: ImageAllocator>(
             return;
         }
 
-        config.tag_families.iter_mut().for_each(|family| {
+        tag_families.iter_mut().for_each(|(kind, family)| {
             if family.reversed_border != quad.reversed_border {
                 return;
             }
@@ -356,7 +366,7 @@ pub fn decode_tags<A: ImageAllocator>(
                     let center = quad.homography_project(0.0, 0.0);
 
                     let detection = Detection {
-                        tag_family_kind: family.into(),
+                        tag_family_kind: kind.clone(),
                         id: entry.id,
                         hamming: entry.hamming,
                         decision_margin,
