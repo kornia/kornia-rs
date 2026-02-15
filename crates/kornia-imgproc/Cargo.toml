@@ -62,6 +62,7 @@ required-features = ["opencv_bench"]
 [dependencies]
 # TODO: update to version but it requires some changes in the codebase
 fast_image_resize = { version = "=5.1", features = ["rayon"] }
+kiddo = "5.0.2"
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
@@ -70,7 +71,6 @@ opencv = { version = "0.92", optional = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }
 wide = "1.1.1"
-kiddo = "5.0.2"
 
 [dev-dependencies]
 criterion = { workspace = true }
