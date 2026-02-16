@@ -160,7 +160,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
             return Err(ImageDataNotInitialized());
         }
 
-        // check if the data length matches the image size
+        // check if the data length matches t<he image size
         if data.len() != size.width * size.height * C {
             return Err(ImageError::InvalidChannelShape(
                 data.len(),
