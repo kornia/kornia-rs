@@ -7955,7 +7955,9 @@ name = "kornia-tensor"
 version = "0.1.11-rc.1"
 dependencies = [
  "bincode 2.0.1",
+ "criterion",
  "num-traits",
+ "rayon",
  "serde",
  "serde_json",
  "thiserror 2.0.17",
