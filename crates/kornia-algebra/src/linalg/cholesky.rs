@@ -58,7 +58,7 @@ pub fn cholesky_solve_3x3(l: &Mat3F32, b: &Vec3F32) -> Vec3F32 {
     // x = (L^-T * L^-1) * b = M^T * M * b
     // where M = L^-1.
 
-    //Compute M = L^-1 explicitly (M is lower triangular)
+    // Compute M = L^-1 explicitly (M is lower triangular)
     let l11 = l.x_axis.x;
     let l21 = l.x_axis.y;
     let l31 = l.x_axis.z;
@@ -73,12 +73,12 @@ pub fn cholesky_solve_3x3(l: &Mat3F32, b: &Vec3F32) -> Vec3F32 {
     let m32 = -l32 * m22 / l33;
     let m33 = 1.0 / l33;
 
-    //Compute tmp = M * b
+    // Compute tmp = M * b
     let tmp0 = m11 * b.x;
     let tmp1 = m21 * b.x + m22 * b.y;
     let tmp2 = m31 * b.x + m32 * b.y + m33 * b.z;
 
-    //Compute x = M^T * tmp
+    // Compute x = M^T * tmp
     let mut x = Vec3F32::ZERO;
     x.x = m11 * tmp0 + m21 * tmp1 + m31 * tmp2;
     x.y = m22 * tmp1 + m32 * tmp2;

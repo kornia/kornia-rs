@@ -11,7 +11,7 @@ use kornia_algebra::Mat3F32;
 use kornia_image::{allocator::ImageAllocator, Image};
 
 /// Represents a model for grayscale interpolation using a quadratic surface.
-/// The model fits a function of the form f(x, y) = c[0]*x + c[1]*y + c[2].
+/// The model fits a function of the form f(x, y) = c.x*x + c.y*y + c.z.
 #[derive(Debug, Clone, PartialEq)]
 struct GrayModel {
     /// The 3x3 matrix of accumulated quadratic terms.
@@ -983,10 +983,20 @@ mod tests {
         // Check A
         let diff_a = gm.a - expected_solve_gm.a;
         assert!(diff_a.x_axis.x.abs() < EPSILON);
+        assert!(diff_a.x_axis.y.abs() < EPSILON);
+        assert!(diff_a.x_axis.z.abs() < EPSILON);
+        assert!(diff_a.y_axis.x.abs() < EPSILON);
+        assert!(diff_a.y_axis.y.abs() < EPSILON);
+        assert!(diff_a.y_axis.z.abs() < EPSILON);
+        assert!(diff_a.z_axis.x.abs() < EPSILON);
+        assert!(diff_a.z_axis.y.abs() < EPSILON);
+        assert!(diff_a.z_axis.z.abs() < EPSILON);
 
         // Check B
         let diff_b = gm.b - expected_solve_gm.b;
         assert!(diff_b.x.abs() < EPSILON);
+        assert!(diff_b.y.abs() < EPSILON);
+        assert!(diff_b.z.abs() < EPSILON);
 
         // Check C
         assert!((gm.c.x - expected_solve_gm.c.x).abs() < EPSILON); // Account for precision errors
