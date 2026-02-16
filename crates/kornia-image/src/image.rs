@@ -151,10 +151,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// assert_eq!(image.size().height, 20);
     /// assert_eq!(image.num_channels(), 3);
     /// ```
-    pub fn new(size: ImageSize, data: Vec<T>, alloc: A) -> Result<Self, ImageError>
-    where
-        T: Clone, // TODO: remove this bound
-    {
+    pub fn new(size: ImageSize, data: Vec<T>, alloc: A) -> Result<Self, ImageError> {
         // check if the data length matches the image size
         if data.len() != size.width * size.height * C {
             return Err(ImageError::InvalidChannelShape(
@@ -205,7 +202,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// ```
     pub fn from_size_val(size: ImageSize, val: T, alloc: A) -> Result<Self, ImageError>
     where
-        T: Clone + Default,
+        T: Clone,
     {
         let data = vec![val; size.width * size.height * C];
         let image = Image::new(size, data, alloc)?;
@@ -273,10 +270,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// # Returns
     ///
     /// A new image with the pixel data mapped to the new type.
-    pub fn map<U>(&self, f: impl Fn(&T) -> U) -> Result<Image<U, C, A>, ImageError>
-    where
-        U: Clone,
-    {
+    pub fn map<U>(&self, f: impl Fn(&T) -> U) -> Result<Image<U, C, A>, ImageError> {
         let data = self.as_slice().iter().map(f).collect::<Vec<U>>();
         let alloc = self.storage.alloc();
         Image::<U, C, A>::new(self.size(), data, alloc.clone())
@@ -289,8 +283,8 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// A new image with the pixel data cast to the given type.
     pub fn cast<U>(&self) -> Result<Image<U, C, A>, ImageError>
     where
-        U: num_traits::NumCast + Clone + Copy, // TODO: remove this bound
-        T: num_traits::NumCast + Clone + Copy, // TODO: remove this bound
+        U: num_traits::NumCast + Copy,
+        T: num_traits::NumCast + Copy,
     {
         // TODO: this needs to be optimized and reuse Tensor::cast
         let casted_data = self
@@ -365,7 +359,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     /// ```
     pub fn split_channels(&self) -> Result<Vec<Image<T, 1, A>>, ImageError>
     where
-        T: Clone + Copy, // TODO: remove this bound
+        T: Copy,
     {
         let mut channels = Vec::with_capacity(C);
 
