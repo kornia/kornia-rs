@@ -571,7 +571,8 @@ fn distribute_octree(
     result
 }
 
-// TODO: Make a single function by keeping keypoints type same
+/// Check which keypoints fall outside the image border margin.
+/// Variant that accepts `(i32, i32)` keypoints (used by extract_octave).
 fn mask_border_keypoints_i32(
     size: ImageSize,
     keypoints: &[(i32, i32)],

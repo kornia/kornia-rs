@@ -16,10 +16,10 @@ use kornia::{
     tensor::CpuAllocator,
 };
 
-/// TODO
+/// ORB detector webcam demo: match a reference image against live webcam frames.
 #[derive(FromArgs)]
 struct Args {
-    /// TODO
+    /// path to the reference image
     #[argh(positional)]
     image_path: PathBuf,
 }

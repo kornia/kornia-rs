@@ -45,21 +45,21 @@ pub fn match_orb_descriptors(
     for i in 0..desc1.len() {
         let mut best = u32::MAX;
         let mut second = u32::MAX;
-        let mut best_idx = None;
+        let mut best_j = 0usize;
 
         for (j, d2) in desc2.iter().enumerate() {
             let d = hamming_distance(&desc1[i], d2);
             if d < best {
                 second = best;
                 best = d;
-                best_idx = Some(j);
+                best_j = j;
             } else if d < second {
                 second = d;
             }
         }
 
         if best <= config.th_low && (best as f32) < config.nn_ratio * (second as f32) {
-            let j = best_idx.unwrap();
+            let j = best_j;
             matches[i] = Some(j);
 
             if config.check_orientation {

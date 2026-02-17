@@ -259,7 +259,8 @@ fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
         })
         .collect();
 
-    coords_with_response.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    coords_with_response
+        .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut result = Vec::new();
 
