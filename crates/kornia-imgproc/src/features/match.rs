@@ -1,5 +1,3 @@
-#![allow(missing_docs)]
-
 /// Hamming distance between two fixed-size byte descriptors.
 #[inline]
 fn hamming_distance(a: &[u8], b: &[u8]) -> u32 {
@@ -9,6 +7,22 @@ fn hamming_distance(a: &[u8], b: &[u8]) -> u32 {
         .sum()
 }
 
+/// Match binary descriptors using brute-force Hamming distance.
+///
+/// For each descriptor in `descriptors1`, finds the nearest neighbor in `descriptors2`.
+/// Optionally filters matches by maximum distance, cross-check, and Lowe's ratio test.
+///
+/// # Arguments
+///
+/// * `descriptors1` - First set of N-byte binary descriptors.
+/// * `descriptors2` - Second set of N-byte binary descriptors.
+/// * `max_distance` - If set, discard matches with Hamming distance above this threshold.
+/// * `cross_check` - If true, keep only mutual nearest neighbors.
+/// * `max_ratio` - If set, apply Lowe's ratio test (best / second-best < ratio).
+///
+/// # Returns
+///
+/// Vector of `(i, j)` index pairs into `descriptors1` and `descriptors2`.
 pub fn match_descriptors<const N: usize>(
     descriptors1: &[[u8; N]],
     descriptors2: &[[u8; N]],
