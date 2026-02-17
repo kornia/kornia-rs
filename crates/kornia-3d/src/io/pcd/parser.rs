@@ -4,8 +4,12 @@ use std::path::Path;
 
 use crate::pointcloud::PointCloud;
 
+const MAX_POINT_STEP: usize = 1024;
+const MAX_POINTS: usize = 50_000_000;
+
 /// Error types for the PCD module.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum PcdError {
     /// Failed to read PCD file
     #[error("Failed to read PCD file")]
@@ -150,14 +154,28 @@ fn parse_pcd_layout<R: BufRead>(reader: &mut R) -> Result<PcdLayout, PcdError> {
                 }
             }
             "rgb" => {
-                if !(size == 4 && count == 1 && (types[i] == 'U' || types[i] == 'I')) {
+                if !(size == 4 && count == 1 && (types[i] == 'U' || types[i] == 'I' || types[i] == 'F')) {
                     return Err(PcdError::UnsupportedProperty);
                 }
             }
             _ => {}
         }
 
-        offset += size * count;
+        let field_bytes = size
+            .checked_mul(count)
+            .ok_or(PcdError::MalformedHeader)?;
+
+        offset = offset
+            .checked_add(field_bytes)
+            .ok_or(PcdError::MalformedHeader)?;
+
+        if offset > MAX_POINT_STEP {
+            return Err(PcdError::MalformedHeader);
+        }
+
+        if fields.contains_key(&field.name) {
+            return Err(PcdError::MalformedHeader);
+        }
         fields.insert(field.name.clone(), field);
     }
 
@@ -205,6 +223,11 @@ pub fn read_pcd_binary(path: impl AsRef<Path>) -> Result<PointCloud, PcdError> {
     if layout.num_points == 0 {
         return Err(PcdError::MalformedHeader);
     }
+
+    if layout.num_points > MAX_POINTS {
+        return Err(PcdError::MalformedHeader);
+    }
+
     // Required fields
     let fx = layout.get_field_offset("x")?;
     let fy = layout.get_field_offset("y")?;
@@ -216,6 +239,10 @@ pub fn read_pcd_binary(path: impl AsRef<Path>) -> Result<PointCloud, PcdError> {
     let fnx = layout.fields.get("normal_x").or_else(|| layout.fields.get("nx")).map(|f| f.offset);
     let fny = layout.fields.get("normal_y").or_else(|| layout.fields.get("ny")).map(|f| f.offset);
     let fnz = layout.fields.get("normal_z").or_else(|| layout.fields.get("nz")).map(|f| f.offset);
+
+    if layout.point_step == 0 || layout.point_step > MAX_POINT_STEP {
+        return Err(PcdError::MalformedHeader);
+    }
 
     let mut buffer = vec![0u8; layout.point_step];
 
@@ -292,7 +319,7 @@ COUNT 1 1 1
 POINTS 10
 DATA binary";
         let mut reader = Cursor::new(&data[..]);
-        let layout = parse_pcd_layout(&mut reader).unwrap();
+        let layout = parse_pcd_layout(&mut reader).expect("valid binary header should parse");
         assert_eq!(layout.num_points, 10);
         assert!(layout.fields.contains_key("x"));
     }
