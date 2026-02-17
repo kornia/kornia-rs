@@ -51,46 +51,33 @@ struct SeparableFilter {
     offsets_y: Vec<isize>,
 }
 
-/// Macro for horizontal convolution pass
-macro_rules! run_horizontal {
-    ($self:expr, $r:expr, $out_row:expr, $src_data:expr, $cols:expr, $C:expr) => {{
-        let row_offset = $r * $cols * $C;
-        for c in 0..$cols {
+/// Macro for generic convolution pass
+macro_rules! run_pass {
+    (
+        $out_row:expr, $src_data:expr, $cols:expr, $C:expr,
+        $kernels:expr, $offsets:expr,
+        $base_coord:expr, $limit:expr,
+        | $curr_c:ident, $offset:ident | $idx_calc:expr,
+        | $in_val:ident | $in_conv:expr,
+        | $out_val:ident | $out_conv:expr
+    ) => {{
+        for $curr_c in 0..$cols {
             let mut acc = [0.0f32; $C];
-            for (&k, &off) in $self.kernel_x.iter().zip($self.offsets_x.iter()) {
-                let x = c as isize + off;
-                if x >= 0 && x < $cols as isize {
-                    let idx = row_offset + x as usize * $C;
+            for (&k, &off) in $kernels.iter().zip($offsets.iter()) {
+                let coord = $base_coord as isize + off;
+                if coord >= 0 && coord < $limit as isize {
+                    let $offset = off;
+                    let idx = $idx_calc;
                     for (ch, acc_val) in acc.iter_mut().enumerate().take($C) {
-                        *acc_val += unsafe { $src_data.get_unchecked(idx + ch).to_f32() } * k;
+                        let $in_val = unsafe { $src_data.get_unchecked(idx + ch) };
+                        *acc_val += $in_conv * k;
                     }
                 }
             }
-            let out_idx = c * $C;
+            let out_idx = $curr_c * $C;
             for (ch, &acc_val) in acc.iter().enumerate().take($C) {
-                $out_row[out_idx + ch] = acc_val;
-            }
-        }
-    }};
-}
-
-/// Macro for vertical convolution pass
-macro_rules! run_vertical {
-    ($self:expr, $r:expr, $out_row:expr, $temp:expr, $rows:expr, $cols:expr, $C:expr, $T:ty) => {{
-        for c in 0..$cols {
-            let mut acc = [0.0f32; $C];
-            for (&k, &off) in $self.kernel_y.iter().zip($self.offsets_y.iter()) {
-                let y = $r as isize + off;
-                if y >= 0 && y < $rows as isize {
-                    let idx = y as usize * $cols * $C + c * $C;
-                    for (ch, acc_val) in acc.iter_mut().enumerate().take($C) {
-                        *acc_val += unsafe { *$temp.get_unchecked(idx + ch) } * k;
-                    }
-                }
-            }
-            let out_idx = c * $C;
-            for (ch, &acc_val) in acc.iter().enumerate().take($C) {
-                $out_row[out_idx + ch] = <$T>::from_f32(acc_val);
+                let $out_val = acc_val;
+                $out_row[out_idx + ch] = $out_conv;
             }
         }
     }};
@@ -150,14 +137,28 @@ impl SeparableFilter {
         for r in 0..rows {
             let row_offset = r * cols * C;
             let out_row = &mut temp[row_offset..row_offset + cols * C];
-            run_horizontal!(self, r, out_row, src_data, cols, C);
+            run_pass!(
+                out_row, src_data, cols, C,
+                self.kernel_x, self.offsets_x,
+                c, cols,
+                | c, off | (r * cols * C) + (c as isize + off) as usize * C,
+                | val | val.to_f32(),
+                | acc | acc
+            );
         }
 
         // Vertical pass
         for r in 0..rows {
             let row_offset = r * cols * C;
             let out_row = &mut dst_data[row_offset..row_offset + cols * C];
-            run_vertical!(self, r, out_row, temp, rows, cols, C, T);
+            run_pass!(
+                out_row, temp, cols, C,
+                self.kernel_y, self.offsets_y,
+                r, rows,
+                | c, off | (r as isize + off) as usize * cols * C + c * C,
+                | val | *val,
+                | acc | <T>::from_f32(acc)
+            );
         }
 
         Ok(())
@@ -217,13 +218,31 @@ impl SeparableFilter {
                     // Horizontal
                     temp.par_chunks_mut(cols * C)
                         .enumerate()
-                        .for_each(|(r, row)| run_horizontal!(self, r, row, src_data, cols, C));
+                        .for_each(|(r, row)| {
+                            run_pass!(
+                                row, src_data, cols, C,
+                                self.kernel_x, self.offsets_x,
+                                c, cols,
+                                | c, off | (r * cols * C) + (c as isize + off) as usize * C,
+                                | val | val.to_f32(),
+                                | acc | acc
+                            );
+                        });
 
                     // Vertical
                     dst_data
                         .par_chunks_mut(cols * C)
                         .enumerate()
-                        .for_each(|(r, row)| run_vertical!(self, r, row, temp, rows, cols, C, T));
+                        .for_each(|(r, row)| {
+                            run_pass!(
+                                row, temp, cols, C,
+                                self.kernel_y, self.offsets_y,
+                                r, rows,
+                                | c, off | (r as isize + off) as usize * cols * C + c * C,
+                                | val | *val,
+                                | acc | <T>::from_f32(acc)
+                            );
+                        });
                 });
             }
 
@@ -238,7 +257,14 @@ impl SeparableFilter {
                         chunk.chunks_exact_mut(cols * C).enumerate().for_each(
                             |(r_in_chunk, row)| {
                                 let r = chunk_idx * stride + r_in_chunk;
-                                run_horizontal!(self, r, row, src_data, cols, C);
+                                run_pass!(
+                                    row, src_data, cols, C,
+                                    self.kernel_x, self.offsets_x,
+                                    c, cols,
+                                    | c, off | (r * cols * C) + (c as isize + off) as usize * C,
+                                    | val | val.to_f32(),
+                                    | acc | acc
+                                );
                             },
                         );
                     },
@@ -252,7 +278,14 @@ impl SeparableFilter {
                         chunk.chunks_exact_mut(cols * C).enumerate().for_each(
                             |(r_in_chunk, row)| {
                                 let r = chunk_idx * stride + r_in_chunk;
-                                run_vertical!(self, r, row, temp, rows, cols, C, T);
+                                run_pass!(
+                                    row, temp, cols, C,
+                                    self.kernel_y, self.offsets_y,
+                                    r, rows,
+                                    | c, off | (r as isize + off) as usize * cols * C + c * C,
+                                    | val | *val,
+                                    | acc | <T>::from_f32(acc)
+                                );
                             },
                         );
                     });
