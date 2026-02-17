@@ -1,4 +1,3 @@
-// TODO: Remove Missing docs
 #![allow(missing_docs)]
 
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};

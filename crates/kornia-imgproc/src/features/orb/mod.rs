@@ -1,6 +1,3 @@
-// TODO: Remove Missing docs
-#![allow(missing_docs)]
-
 mod extractor;
 mod matcher;
 mod pattern;

@@ -1,6 +1,3 @@
-// TODO: Remove Missing docs
-#![allow(missing_docs)]
-
 /// Configuration for ORB-style descriptor matching.
 #[derive(Clone, Copy, Debug)]
 pub struct OrbMatchConfig {
@@ -110,6 +107,8 @@ fn hamming_distance(a: &[u8; 32], b: &[u8; 32]) -> u32 {
         .sum()
 }
 
+/// Return the indices of the three largest histogram bins, discarding any that
+/// fall below 10% of the largest bin.
 fn three_maxima(histo: &[Vec<usize>]) -> (Option<usize>, Option<usize>, Option<usize>) {
     let mut ind1 = None;
     let mut ind2 = None;
