@@ -138,12 +138,17 @@ impl SeparableFilter {
             let row_offset = r * cols * C;
             let out_row = &mut temp[row_offset..row_offset + cols * C];
             run_pass!(
-                out_row, src_data, cols, C,
-                self.kernel_x, self.offsets_x,
-                c, cols,
-                | c, off | (r * cols * C) + (c as isize + off) as usize * C,
-                | val | val.to_f32(),
-                | acc | acc
+                out_row,
+                src_data,
+                cols,
+                C,
+                self.kernel_x,
+                self.offsets_x,
+                c,
+                cols,
+                |c, off| (r * cols * C) + (c as isize + off) as usize * C,
+                |val| val.to_f32(),
+                |acc| acc
             );
         }
 
@@ -152,12 +157,17 @@ impl SeparableFilter {
             let row_offset = r * cols * C;
             let out_row = &mut dst_data[row_offset..row_offset + cols * C];
             run_pass!(
-                out_row, temp, cols, C,
-                self.kernel_y, self.offsets_y,
-                r, rows,
-                | c, off | (r as isize + off) as usize * cols * C + c * C,
-                | val | *val,
-                | acc | <T>::from_f32(acc)
+                out_row,
+                temp,
+                cols,
+                C,
+                self.kernel_y,
+                self.offsets_y,
+                r,
+                rows,
+                |c, off| (r as isize + off) as usize * cols * C + c * C,
+                |val| *val,
+                |acc| <T>::from_f32(acc)
             );
         }
 
@@ -220,12 +230,17 @@ impl SeparableFilter {
                         .enumerate()
                         .for_each(|(r, row)| {
                             run_pass!(
-                                row, src_data, cols, C,
-                                self.kernel_x, self.offsets_x,
-                                c, cols,
-                                | c, off | (r * cols * C) + (c as isize + off) as usize * C,
-                                | val | val.to_f32(),
-                                | acc | acc
+                                row,
+                                src_data,
+                                cols,
+                                C,
+                                self.kernel_x,
+                                self.offsets_x,
+                                c,
+                                cols,
+                                |c, off| (r * cols * C) + (c as isize + off) as usize * C,
+                                |val| val.to_f32(),
+                                |acc| acc
                             );
                         });
 
@@ -235,12 +250,17 @@ impl SeparableFilter {
                         .enumerate()
                         .for_each(|(r, row)| {
                             run_pass!(
-                                row, temp, cols, C,
-                                self.kernel_y, self.offsets_y,
-                                r, rows,
-                                | c, off | (r as isize + off) as usize * cols * C + c * C,
-                                | val | *val,
-                                | acc | <T>::from_f32(acc)
+                                row,
+                                temp,
+                                cols,
+                                C,
+                                self.kernel_y,
+                                self.offsets_y,
+                                r,
+                                rows,
+                                |c, off| (r as isize + off) as usize * cols * C + c * C,
+                                |val| *val,
+                                |acc| <T>::from_f32(acc)
                             );
                         });
                 });
@@ -258,12 +278,17 @@ impl SeparableFilter {
                             |(r_in_chunk, row)| {
                                 let r = chunk_idx * stride + r_in_chunk;
                                 run_pass!(
-                                    row, src_data, cols, C,
-                                    self.kernel_x, self.offsets_x,
-                                    c, cols,
-                                    | c, off | (r * cols * C) + (c as isize + off) as usize * C,
-                                    | val | val.to_f32(),
-                                    | acc | acc
+                                    row,
+                                    src_data,
+                                    cols,
+                                    C,
+                                    self.kernel_x,
+                                    self.offsets_x,
+                                    c,
+                                    cols,
+                                    |c, off| (r * cols * C) + (c as isize + off) as usize * C,
+                                    |val| val.to_f32(),
+                                    |acc| acc
                                 );
                             },
                         );
@@ -279,12 +304,17 @@ impl SeparableFilter {
                             |(r_in_chunk, row)| {
                                 let r = chunk_idx * stride + r_in_chunk;
                                 run_pass!(
-                                    row, temp, cols, C,
-                                    self.kernel_y, self.offsets_y,
-                                    r, rows,
-                                    | c, off | (r as isize + off) as usize * cols * C + c * C,
-                                    | val | *val,
-                                    | acc | <T>::from_f32(acc)
+                                    row,
+                                    temp,
+                                    cols,
+                                    C,
+                                    self.kernel_y,
+                                    self.offsets_y,
+                                    r,
+                                    rows,
+                                    |c, off| (r as isize + off) as usize * cols * C + c * C,
+                                    |val| *val,
+                                    |acc| <T>::from_f32(acc)
                                 );
                             },
                         );
