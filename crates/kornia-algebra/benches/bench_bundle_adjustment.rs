@@ -2,7 +2,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use kornia_algebra::{
     optim::core::{Factor, FactorResult, LinearizationResult, Problem, Variable},
     optim::solvers::LevenbergMarquardt,
-    SE3F32, Vec2F32, Vec3AF32, Vec3F32,
+    SE3F32, Vec2F32, Vec3AF32,
 };
 use rand::Rng;
 

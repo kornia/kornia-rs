@@ -73,39 +73,42 @@ fn bench_so3(c: &mut Criterion) {
         })
     });
 
-    let omegas_s: Vec<sophus::nalgebra::Vector3<f64>> = omegas
-        .iter()
-        .map(|v| sophus::nalgebra::Vector3::new(v.x as f64, v.y as f64, v.z as f64))
-        .collect();
+    #[cfg(feature = "bench_external")]
+    {
+        let omegas_s: Vec<sophus::nalgebra::Vector3<f64>> = omegas
+            .iter()
+            .map(|v| sophus::nalgebra::Vector3::new(v.x as f64, v.y as f64, v.z as f64))
+            .collect();
 
-    let rots_s: Vec<sophus::lie::Rotation3F64> = omegas_s
-        .iter()
-        .map(|&v| sophus::lie::Rotation3F64::exp(v))
-        .collect();
+        let rots_s: Vec<sophus::lie::Rotation3F64> = omegas_s
+            .iter()
+            .map(|&v| sophus::lie::Rotation3F64::exp(v))
+            .collect();
 
-    group.bench_function(BenchmarkId::new("exp_sophus", ""), |b| {
-        b.iter(|| {
-            for omega in omegas_s.iter() {
-                std::hint::black_box(sophus::lie::Rotation3F64::exp(std::hint::black_box(*omega)));
-            }
-        })
-    });
+        group.bench_function(BenchmarkId::new("exp_sophus", ""), |b| {
+            b.iter(|| {
+                for omega in omegas_s.iter() {
+                    std::hint::black_box(sophus::lie::Rotation3F64::exp(std::hint::black_box(*omega)));
+                }
+            })
+        });
 
-    group.bench_function(BenchmarkId::new("log_sophus", ""), |b| {
-        b.iter(|| {
-            for rot in rots_s.iter() {
-                std::hint::black_box(std::hint::black_box(*rot).log());
-            }
-        })
-    });
+        group.bench_function(BenchmarkId::new("log_sophus", ""), |b| {
+            b.iter(|| {
+                for rot in rots_s.iter() {
+                    std::hint::black_box(std::hint::black_box(*rot).log());
+                }
+            })
+        });
 
-    group.bench_function(BenchmarkId::new("inverse_sophus", ""), |b| {
-        b.iter(|| {
-            for rot in rots_s.iter() {
-                std::hint::black_box(std::hint::black_box(*rot).inverse());
-            }
-        })
-    });
+        group.bench_function(BenchmarkId::new("inverse_sophus", ""), |b| {
+            b.iter(|| {
+                for rot in rots_s.iter() {
+                    std::hint::black_box(std::hint::black_box(*rot).inverse());
+                }
+            })
+        });
+    }
 }
 
 fn bench_se3(c: &mut Criterion) {
@@ -169,63 +172,66 @@ fn bench_se3(c: &mut Criterion) {
         })
     });
 
-    let s_poses: Vec<sophus::lie::Isometry3F64> = iso_na
-        .iter()
-        .map(|iso| {
-            let t = sophus::nalgebra::Vector3::new(
-                iso.translation.vector.x as f64,
-                iso.translation.vector.y as f64,
-                iso.translation.vector.z as f64,
-            );
-            let q = sophus::nalgebra::Quaternion::new(
-                iso.rotation.quaternion().w as f64,
-                iso.rotation.quaternion().coords.x as f64,
-                iso.rotation.quaternion().coords.y as f64,
-                iso.rotation.quaternion().coords.z as f64,
-            );
-            sophus::lie::Isometry3F64::from_rotation_and_translation(
-                sophus::nalgebra::UnitQuaternion::from_quaternion(q).into(),
-                t,
-            )
-        })
-        .collect();
+    #[cfg(feature = "bench_external")]
+    {
+        let s_poses: Vec<sophus::lie::Isometry3F64> = iso_na
+            .iter()
+            .map(|iso| {
+                let t = sophus::nalgebra::Vector3::new(
+                    iso.translation.vector.x as f64,
+                    iso.translation.vector.y as f64,
+                    iso.translation.vector.z as f64,
+                );
+                let q = sophus::nalgebra::Quaternion::new(
+                    iso.rotation.quaternion().w as f64,
+                    iso.rotation.quaternion().coords.x as f64,
+                    iso.rotation.quaternion().coords.y as f64,
+                    iso.rotation.quaternion().coords.z as f64,
+                );
+                sophus::lie::Isometry3F64::from_rotation_and_translation(
+                    sophus::nalgebra::UnitQuaternion::from_quaternion(q).into(),
+                    t,
+                )
+            })
+            .collect();
 
-    let s_poses2: Vec<sophus::lie::Isometry3F64> = iso_na2
-        .iter()
-        .map(|iso| {
-            let t = sophus::nalgebra::Vector3::new(
-                iso.translation.vector.x as f64,
-                iso.translation.vector.y as f64,
-                iso.translation.vector.z as f64,
-            );
-            let q = sophus::nalgebra::Quaternion::new(
-                iso.rotation.quaternion().w as f64,
-                iso.rotation.quaternion().coords.x as f64,
-                iso.rotation.quaternion().coords.y as f64,
-                iso.rotation.quaternion().coords.z as f64,
-            );
-            sophus::lie::Isometry3F64::from_rotation_and_translation(
-                sophus::nalgebra::UnitQuaternion::from_quaternion(q).into(),
-                t,
-            )
-        })
-        .collect();
+        let s_poses2: Vec<sophus::lie::Isometry3F64> = iso_na2
+            .iter()
+            .map(|iso| {
+                let t = sophus::nalgebra::Vector3::new(
+                    iso.translation.vector.x as f64,
+                    iso.translation.vector.y as f64,
+                    iso.translation.vector.z as f64,
+                );
+                let q = sophus::nalgebra::Quaternion::new(
+                    iso.rotation.quaternion().w as f64,
+                    iso.rotation.quaternion().coords.x as f64,
+                    iso.rotation.quaternion().coords.y as f64,
+                    iso.rotation.quaternion().coords.z as f64,
+                );
+                sophus::lie::Isometry3F64::from_rotation_and_translation(
+                    sophus::nalgebra::UnitQuaternion::from_quaternion(q).into(),
+                    t,
+                )
+            })
+            .collect();
 
-    group.bench_function(BenchmarkId::new("mul_sophus_f64", ""), |b| {
-        b.iter(|| {
-            for (p1, p2) in s_poses.iter().zip(s_poses2.iter()) {
-                std::hint::black_box(std::hint::black_box(*p1) * std::hint::black_box(*p2));
-            }
-        })
-    });
+        group.bench_function(BenchmarkId::new("mul_sophus_f64", ""), |b| {
+            b.iter(|| {
+                for (p1, p2) in s_poses.iter().zip(s_poses2.iter()) {
+                    std::hint::black_box(std::hint::black_box(*p1) * std::hint::black_box(*p2));
+                }
+            })
+        });
 
-    group.bench_function(BenchmarkId::new("inverse_sophus", ""), |b| {
-        b.iter(|| {
-            for pose in s_poses.iter() {
-                std::hint::black_box(std::hint::black_box(*pose).inverse());
-            }
-        })
-    });
+        group.bench_function(BenchmarkId::new("inverse_sophus", ""), |b| {
+            b.iter(|| {
+                for pose in s_poses.iter() {
+                    std::hint::black_box(std::hint::black_box(*pose).inverse());
+                }
+            })
+        });
+    }
 }
 criterion_group!(benches, bench_so3, bench_se3);
 criterion_main!(benches);

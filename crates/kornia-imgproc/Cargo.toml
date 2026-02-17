@@ -74,7 +74,7 @@ wide = "1.1.1"
 [dev-dependencies]
 criterion = { workspace = true }
 image = "0.25"
-imageproc = "0.25"
+imageproc = "0.26"
 kornia-io = { workspace = true }
 ndarray = { version = "0.15", features = ["rayon"] }
 rand = { workspace = true }

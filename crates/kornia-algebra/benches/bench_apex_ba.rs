@@ -1,12 +1,14 @@
+#![cfg(feature = "bench_external")]
+
 use apex_solver::{
     core::problem::Problem,
     factors::Factor,
-    manifold::{se3::SE3, rn::Rn, ManifoldType},
-    optimizer::{LevenbergMarquardt, Solver},
+    manifold::ManifoldType,
+    optimizer::LevenbergMarquardt,
 };
-use nalgebra_033;
+use nalgebra;
 use criterion::{criterion_group, criterion_main, Criterion};
-use rand::Rng;
+// use rand::Rng;
 use std::collections::HashMap;
 
 // Reprojection factor implementation
@@ -24,9 +26,9 @@ impl ReprojectionFactor {
 impl Factor for ReprojectionFactor {
     fn linearize(
         &self,
-        params: &[nalgebra_033::DVector<f64>], // [camera_se3, point_rn]
+        params: &[nalgebra::DVector<f64>], // [camera_se3, point_rn]
         compute_jacobian: bool,
-    ) -> (nalgebra_033::DVector<f64>, Option<nalgebra_033::DMatrix<f64>>) {
+    ) -> (nalgebra::DVector<f64>, Option<nalgebra::DMatrix<f64>>) {
         // Param 0: Camera SE3 (7 params: tx, ty, tz, qw, qx, qy, qz)
         // Param 1: Point Rn (3 params: x, y, z)
         
@@ -34,14 +36,14 @@ impl Factor for ReprojectionFactor {
         let point_vec = &params[1]; 
         
         // Dummy residual logic for benchmarking
-        let residual = nalgebra_033::DVector::from_vec(vec![
+        let residual = nalgebra::DVector::from_vec(vec![
             cam_vec[0] - point_vec[0] - self.observed_u,
             cam_vec[1] - point_vec[1] - self.observed_v,
         ]);
         
         let jacobian = if compute_jacobian {
              // 2 rows (residual), 9 columns (6 for SE3 tangent + 3 for Point)
-             let mut j = nalgebra_033::DMatrix::zeros(2, 9);
+             let mut j = nalgebra::DMatrix::zeros(2, 9);
              j[(0, 0)] = 1.0; 
              j[(1, 1)] = 1.0;
              j[(0, 6)] = -1.0; 
@@ -72,13 +74,13 @@ fn solve_apex_ba() {
     for i in 0..num_cams {
         let key = format!("c{}", i);
         // SE3: [tx, ty, tz, qw, qx, qy, qz]
-        let val = nalgebra_033::DVector::from_vec(vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]); 
+        let val = nalgebra::DVector::from_vec(vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]); 
         initial_values.insert(key, (ManifoldType::SE3, val));
     }
     
     for j in 0..num_points {
         let key = format!("p{}", j);
-        let val = nalgebra_033::DVector::from_vec(vec![1.0, 1.0, 5.0]);
+        let val = nalgebra::DVector::from_vec(vec![1.0, 1.0, 5.0]);
         initial_values.insert(key, (ManifoldType::RN, val));
     }
     
@@ -107,6 +109,14 @@ fn bench_apex(c: &mut Criterion) {
         })
     });
 }
+#[cfg(not(feature = "bench_external"))]
+fn bench_apex_skip(c: &mut Criterion) {
+    // No-op if feature is disabled
+}
 
+#[cfg(feature = "bench_external")]
 criterion_group!(benches, bench_apex);
+#[cfg(not(feature = "bench_external"))]
+criterion_group!(benches, bench_apex_skip);
+
 criterion_main!(benches);
