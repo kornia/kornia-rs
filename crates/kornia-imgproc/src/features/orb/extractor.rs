@@ -1,5 +1,3 @@
-#![allow(missing_docs)]
-
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 use kornia_tensor::CpuAllocator;
 
@@ -11,15 +9,24 @@ use crate::{
 
 use super::pattern::{POS0, POS1};
 
+/// ORB (Oriented FAST and Rotated BRIEF) feature detector and descriptor extractor.
+///
+/// Detects keypoints using a multi-scale FAST detector with Harris response scoring
+/// and octree-based spatial distribution, then computes rotation-aware BRIEF descriptors.
 pub struct OrbDetector {
+    /// Maximum number of keypoints to retain (default 500).
     pub n_keypoints: usize,
+    /// Number of contiguous pixels required by the FAST detector (default 9).
     pub fast_n: usize,
     /// Initial FAST threshold (higher, for speed). Used first in each grid cell.
     pub ini_fast_threshold: f32,
     /// Minimum FAST threshold (lower, fallback). Used if no keypoints found with ini threshold.
     pub min_fast_threshold: f32,
+    /// Harris corner response sensitivity parameter (default 0.04).
     pub harris_k: f32,
+    /// Scale factor between pyramid levels (default 1.2).
     pub downscale: f32,
+    /// Number of pyramid levels (default 8).
     pub n_scales: usize,
     /// Grid cell size for two-tier FAST detection (default 35 like ORB-SLAM3).
     pub cell_size: usize,
@@ -119,6 +126,7 @@ impl Default for OrbDetector {
 }
 
 impl OrbDetector {
+    /// Create a new `OrbDetector` with default parameters.
     pub fn new() -> Self {
         Self::default()
     }
@@ -240,6 +248,10 @@ impl OrbDetector {
         ))
     }
 
+    /// Detect ORB keypoints in a grayscale image.
+    ///
+    /// Returns `(keypoints, scales, orientations, responses)` where each vector
+    /// has the same length and keypoints are in `(row, col)` coordinates.
     #[allow(clippy::type_complexity)]
     pub fn detect<A: ImageAllocator>(
         &self,
@@ -330,6 +342,10 @@ impl OrbDetector {
         Ok((descriptors, mask))
     }
 
+    /// Compute rotated BRIEF descriptors for previously detected keypoints.
+    ///
+    /// Returns `(descriptors, mask)` where `mask[i]` indicates whether descriptor `i`
+    /// was successfully computed (keypoints too close to the image border are skipped).
     pub fn extract<A: ImageAllocator>(
         &self,
         src: &Image<f32, 1, A>,
