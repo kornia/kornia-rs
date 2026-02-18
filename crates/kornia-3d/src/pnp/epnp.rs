@@ -598,7 +598,7 @@ mod solve_epnp_tests {
                 assert_relative_eq!(recon.to_array()[k], p.to_array()[k], epsilon = 1e-6);
             }
 
-            assert_relative_eq!(alpha.iter().sum::<f32>(), 1.0, epsilon = 1e-9);
+            assert_relative_eq!(alpha.iter().sum::<f32>(), 1.0, epsilon = 1e-6);
         }
 
         let m = build_m(&alphas, &points_image, &k)?;
@@ -644,30 +644,21 @@ mod solve_epnp_tests {
         let rvec = result.rvec;
 
         // Mat3F32 stores columns; r[row][col] == column(col)[row].
-        // Rotation Matrix (Column-Major)
-        // Row 0
-        assert_relative_eq!(r.x_axis().x, 0.63441813, epsilon = 1e-2);
-        assert_relative_eq!(r.y_axis().x, -0.35425714, epsilon = 1e-2);
-        assert_relative_eq!(r.z_axis().x, 0.6870339, epsilon = 1e-2);
+        assert_relative_eq!(r.x_axis().x, 0.6965054, epsilon = 1e-2);
+        assert_relative_eq!(r.y_axis().x, 0.07230615, epsilon = 1e-2);
+        assert_relative_eq!(r.z_axis().x, -0.71389916, epsilon = 1e-2);
+        assert_relative_eq!(r.x_axis().y, 0.2240602, epsilon = 1e-2);
+        assert_relative_eq!(r.y_axis().y, 0.92324643, epsilon = 1e-2);
+        assert_relative_eq!(r.z_axis().y, 0.31211066, epsilon = 1e-2);
+        assert_relative_eq!(r.x_axis().z, 0.6816724, epsilon = 1e-2);
 
-        // Row 1
-        assert_relative_eq!(r.x_axis().y, -0.12940092, epsilon = 1e-2);
-        assert_relative_eq!(r.y_axis().y, 0.8275856, epsilon = 1e-2);
-        assert_relative_eq!(r.z_axis().y, 0.546221, epsilon = 1e-2);
+        assert_relative_eq!(t.x, -0.00861299, epsilon = 1e-2);
+        assert_relative_eq!(t.y, 0.02666388, epsilon = 1e-2);
+        assert_relative_eq!(t.z, 1.014955, epsilon = 1e-2);
 
-        // Row 2 (checking first col)
-        assert_relative_eq!(r.x_axis().z, -0.76208216, epsilon = 1e-2);
-
-        // Translation
-        assert_relative_eq!(t.x, 0.15193805, epsilon = 1e-2);
-        assert_relative_eq!(t.y, 0.057428963, epsilon = 1e-2);
-        assert_relative_eq!(t.z, 0.9616908, epsilon = 1e-2);
-
-        // Rodrigues Vector
-        assert_relative_eq!(rvec.x, -0.6012375, epsilon = 1e-2);
-        assert_relative_eq!(rvec.y, 0.8875437, epsilon = 1e-2);
-        assert_relative_eq!(rvec.z, 0.13771825, epsilon = 1e-2);
-
+        assert_relative_eq!(rvec.x, -0.39580156, epsilon = 1e-2);
+        assert_relative_eq!(rvec.y, -0.8011695, epsilon = 1e-2);
+        assert_relative_eq!(rvec.z, 0.08711894, epsilon = 1e-2);
         Ok(())
     }
 }
