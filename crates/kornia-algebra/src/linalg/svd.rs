@@ -529,6 +529,7 @@ mod impl_f64 {
         }
     }
 
+    #[inline(always)]
     fn exact_givens(app: f64, aqq: f64, apq: f64) -> (f64, f64) {
         if apq.abs() < EPSILON {
             return (1.0, 0.0);
@@ -566,8 +567,9 @@ mod impl_f64 {
         }
     }
 
-    pub fn svd3(mat: &Mat3F64) -> SVD3Set {
-        let mut s_mat = Symmetric3x3::from_mat3x3(mat);
+    /// Helper to compute the right singular vectors (V) using Exact Givens sweeps
+    #[inline]
+    fn compute_v_quat(s_mat: &mut Symmetric3x3) -> QuatF64 {
         let mut q_accum = QuatF64::IDENTITY;
 
         for _sweep in 0..MAX_SWEEPS {
@@ -648,10 +650,15 @@ mod impl_f64 {
             }
         }
 
-        let mut v_mat = Mat3F64::from_quat(q_accum);
-        let b = *mat * v_mat;
+        q_accum
+    }
 
-        let mut s_vec = Vec3F64::new(b.x_axis.length(), b.y_axis.length(), b.z_axis.length());
+    /// Helper to extract U and the singular values from A and V
+    #[inline]
+    fn extract_u_and_s(mat: &Mat3F64, v_mat: &Mat3F64) -> (Mat3F64, Vec3F64) {
+        let b = *mat * *v_mat;
+
+        let s_vec = Vec3F64::new(b.x_axis.length(), b.y_axis.length(), b.z_axis.length());
 
         // Extract U directly, avoiding unstable Gram-Schmidt
         let u_x = if s_vec.x > EPSILON {
@@ -670,12 +677,28 @@ mod impl_f64 {
             Mat3F64::IDENTITY.z_axis
         };
 
-        let mut final_u = Mat3F64::from_cols(u_x.into(), u_y.into(), u_z.into());
+        let u_mat = Mat3F64::from_cols(u_x.into(), u_y.into(), u_z.into());
 
-        sort_singular_values(&mut final_u, &mut s_vec, &mut v_mat);
+        (u_mat, s_vec)
+    }
+
+    /// Computes the Singular Value Decomposition of a 3x3 f64 matrix.
+    pub fn svd3(mat: &Mat3F64) -> SVD3Set {
+        // 1. Initialize symmetric matrix (A^T A)
+        let mut s_mat = Symmetric3x3::from_mat3x3(&(mat.transpose() * *mat));
+
+        // 2. Compute V via Jacobi sweeps
+        let q = compute_v_quat(&mut s_mat);
+        let mut v_mat = Mat3F64::from_quat(q);
+
+        // 3. Extract U and Singular Values
+        let (mut u_mat, mut s_vec) = extract_u_and_s(mat, &v_mat);
+
+        // 4. Sort singular values and corresponding vectors
+        sort_singular_values(&mut u_mat, &mut s_vec, &mut v_mat);
 
         SVD3Set {
-            u: final_u,
+            u: u_mat,
             s: Mat3F64::from_diagonal(s_vec),
             v: v_mat,
         }
