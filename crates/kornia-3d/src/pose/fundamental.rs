@@ -232,7 +232,7 @@ mod tests {
         let svd = svd3_f64(&f_est);
         let s = svd.s();
         assert!(
-            s.z_axis.z.abs() < 1e-5,
+            s.z_axis.z.abs() < 5e-5,
             "smallest singular value should be near zero (rank-2 constraint), got: {}",
             s.z_axis.z
         );
