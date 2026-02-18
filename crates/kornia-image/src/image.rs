@@ -154,7 +154,7 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
     pub fn new(size: ImageSize, data: Vec<T>, alloc: A) -> Result<Self, ImageError> {
         // check if data vector size is bigger than zero
         if data.is_empty() {
-            return Err(ImageDataNotInitialized());
+            return Err(ImageError::ImageDataNotInitialized);
         }
 
         // check if the data length matches t<he image size
