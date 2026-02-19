@@ -24,4 +24,10 @@ pub enum AprilTagError {
     /// Allowed errors must be less than 4.
     #[error("Allowed errors must be less than 4, got {0}")]
     InvalidAllowedErrors(u8),
+
+    /// Cholesky decomposition failed for grayscale interpolation model.
+    /// This typically occurs when the sampled data is insufficient or
+    /// the matrix is not positive definite.
+    #[error("Cholesky decomposition failed for grayscale interpolation model")]
+    GrayModelUnderdetermined,
 }

@@ -62,7 +62,7 @@ impl GrayModel {
     }
 
     /// Solves the quadratic model to find the coefficients.
-    fn solve(&mut self) {
+    fn solve(&mut self) -> Result<(), AprilTagError> {
         // Solve Ac = b for c.
         // A is symmetric positive definite (ideally).
 
@@ -72,9 +72,11 @@ impl GrayModel {
         if let Some(l) = kornia_algebra::linalg::cholesky::cholesky_3x3(&self.a) {
             // Use the explicit inverse solver from algebra which matches legacy behavior
             self.c = kornia_algebra::linalg::cholesky::cholesky_solve_3x3(&l, &self.b);
+            Ok(())
         } else {
             // Matrix is undefined or not positive definite.
             self.c = kornia_algebra::Vec3F32::ZERO;
+            Err(AprilTagError::GrayModelUnderdetermined)
         }
     }
 
@@ -697,9 +699,9 @@ fn quad_decode<A: ImageAllocator>(
         });
     });
 
-    gray_model_pair.white_model.solve();
+    gray_model_pair.white_model.solve().ok()?;
     if tag_family.width_at_border > 1 {
-        gray_model_pair.black_model.solve();
+        gray_model_pair.black_model.solve().ok()?;
     } else {
         gray_model_pair.black_model.c.x = 0.0;
         gray_model_pair.black_model.c.y = 0.0;
@@ -967,7 +969,7 @@ mod tests {
         assert_eq!(gm.c, expected_add_gm.c);
 
         gm.add(7.0, 15.0, 3.0);
-        gm.solve();
+        let _ = gm.solve();
         let expected_solve_gm = GrayModel {
             a: Mat3F32::from_cols_array(&[
                 149.0, 205.0, 17.0, // col 0
@@ -1161,5 +1163,23 @@ mod tests {
     fn test_rotate_90() {
         assert_eq!(rotate_90(52087007497, 36), 5390865284);
         assert_eq!(rotate_90(42087007497, 36), 39351620409)
+    }
+
+    #[test]
+    fn test_gray_model_solve_failure() {
+        let mut model = GrayModel::default();
+
+        // Add redundant or insufficient points to create a singular matrix
+        // For example, adding the same point multiple times or points that are collinear
+        model.add(0.0, 0.0, 100.0);
+        model.add(0.0, 0.0, 100.0);
+        model.add(0.0, 0.0, 100.0);
+
+        let result = model.solve();
+        assert!(result.is_err());
+        match result {
+            Err(AprilTagError::GrayModelUnderdetermined) => {}
+            _ => panic!("Expected GrayModelUnderdetermined error"),
+        }
     }
 }

@@ -31,7 +31,7 @@ macro_rules! define_matrix_type {
         [$($col:ident),+]
     ) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Default)]
+        #[derive(Debug, Clone, Copy, PartialEq)]
         #[repr(transparent)]
         pub struct $name(pub $glam_type);
 

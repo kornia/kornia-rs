@@ -46,7 +46,7 @@ impl Default for FitQuadConfig {
 }
 
 /// Represents a detected quadrilateral in the image, corresponding to a tag candidate.
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Quad {
     /// The four corners of the quadrilateral, in image coordinates.
     ///
@@ -56,6 +56,16 @@ pub struct Quad {
     pub reversed_border: bool,
     /// The 3x3 homography matrix mapping tag coordinates to image coordinates.
     pub homography: Mat3F32,
+}
+
+impl Default for Quad {
+    fn default() -> Self {
+        Self {
+            corners: [kornia_algebra::Vec2F32::ZERO; 4],
+            reversed_border: false,
+            homography: Mat3F32::ZERO,
+        }
+    }
 }
 
 impl Quad {
