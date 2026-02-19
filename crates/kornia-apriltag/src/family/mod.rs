@@ -22,10 +22,82 @@ pub struct TagFamily {
     pub bit_y: Vec<i8>,
     /// The code data for the tag family.
     pub code_data: Vec<usize>,
+    /// The minimum Hamming distance between any two valid codes in this family.
+    ///
+    /// This value determines the maximum `max_hamming` that can be safely used
+    /// for decoding. To avoid false positives where two different tags could be
+    /// confused, `max_hamming` must be less than `min_hamming / 2`.
+    pub min_hamming: u8,
     /// A table for fast lookup of decoded tag codes and their associated metadata.
     pub quick_decode: QuickDecode,
     /// Buffer used for storing intermediate values during the sharpening process.
     pub sharpening_buffer: SharpeningBuffer,
+}
+
+impl TagFamily {
+    /// Returns the maximum safe `max_hamming` value for this tag family.
+    ///
+    /// This is calculated as `(min_hamming - 1) / 2` to ensure that two different
+    /// tags with bit errors cannot be confused with each other.
+    pub fn max_safe_hamming(&self) -> u8 {
+        (self.min_hamming - 1) / 2
+    }
+
+    /// Sets the maximum allowed Hamming distance for decoding and returns self.
+    ///
+    /// The Hamming distance determines how many bit errors are tolerated when
+    /// matching observed codes to valid tag codes. A lower value reduces false
+    /// positives but may miss detections in noisy images.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_hamming` - The maximum number of bit errors to tolerate.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AprilTagError::MaxHammingTooLarge` if `max_hamming` exceeds the safe
+    /// limit for this tag family (which is `(min_hamming - 1) / 2`).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_apriltag::family::TagFamily;
+    ///
+    /// let family = TagFamily::tag36_h11()?.with_max_hamming(1)?;
+    /// # Ok::<(), kornia_apriltag::errors::AprilTagError>(())
+    /// ```
+    pub fn with_max_hamming(mut self, max_hamming: u8) -> Result<Self, AprilTagError> {
+        self.set_max_hamming(max_hamming)?;
+        Ok(self)
+    }
+
+    /// Sets the maximum allowed Hamming distance for decoding.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_hamming` - The maximum number of bit errors to tolerate.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AprilTagError::MaxHammingTooLarge` if `max_hamming` exceeds the safe
+    /// limit for this tag family (which is `(min_hamming - 1) / 2`).
+    pub fn set_max_hamming(&mut self, max_hamming: u8) -> Result<(), AprilTagError> {
+        let max_safe = self.max_safe_hamming();
+        if max_hamming > max_safe {
+            return Err(AprilTagError::MaxHammingTooLarge {
+                max_hamming,
+                min_hamming: self.min_hamming,
+                max_safe,
+            });
+        }
+        self.quick_decode.set_max_hamming(max_hamming)?;
+        Ok(())
+    }
+
+    /// Returns the current maximum allowed Hamming distance.
+    pub fn max_hamming(&self) -> u8 {
+        self.quick_decode.max_hamming()
+    }
 }
 
 /// Represents a decoded AprilTag.

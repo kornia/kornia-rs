@@ -32,6 +32,9 @@ pub use gstreamer as stream;
 /// TIFF image encoding and decoding.
 pub mod tiff;
 
+/// Image metadata helpers (EXIF parsing)
+pub mod metadata;
+
 /// V4L2 video module for real-time video processing.
 #[cfg(all(feature = "v4l", target_os = "linux"))]
 pub mod v4l;
