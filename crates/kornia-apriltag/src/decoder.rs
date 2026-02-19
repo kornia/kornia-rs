@@ -1203,6 +1203,9 @@ mod tests {
             Err(AprilTagError::GrayModelUnderdetermined) => {}
             _ => panic!("Expected GrayModelUnderdetermined error"),
         }
+    }
+
+    #[test]
     fn test_configurable_max_hamming() -> Result<(), Box<dyn std::error::Error>> {
         // Get the valid code for tag id 0
         let family = TagFamily::tag36_h11()?;
