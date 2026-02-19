@@ -29,6 +29,7 @@ pub enum PcdError {
 }
 
 /// Describes a single field in a PCD point record
+#[allow(dead_code)] // TODO: this shoudnt be here maybe, look into it
 #[derive(Debug)]
 struct PcdField {
     name: String,
@@ -212,7 +213,6 @@ fn parse_pcd_layout<R: BufRead>(reader: &mut R) -> Result<PcdLayout, PcdError> {
 /// - XYZRGB
 /// - XYZ + normals
 /// - XYZRGB + normals
-
 pub fn read_pcd_binary(path: impl AsRef<Path>) -> Result<PointCloud, PcdError> {
     let Some(file_ext) = path.as_ref().extension() else {
         return Err(PcdError::InvalidFileExtension("".into()));
