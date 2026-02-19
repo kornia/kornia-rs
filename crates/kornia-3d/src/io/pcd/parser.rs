@@ -29,7 +29,7 @@ pub enum PcdError {
 }
 
 /// Describes a single field in a PCD point record
-#[allow(dead_code)]
+#[allow(dead_code)] // TODO: this shoudnt be here maybe, look into it
 #[derive(Debug)]
 struct PcdField {
     name: String,
