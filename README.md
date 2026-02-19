@@ -4,6 +4,8 @@ English | [简体中文](README.zh-CN.md)
 
 ![Crates.io Version](https://img.shields.io/crates/v/kornia)
 [![PyPI version](https://badge.fury.io/py/kornia-rs.svg)](https://badge.fury.io/py/kornia-rs)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/kornia-rs?label=PyPI%20downloads&logo=python&color=blue)](https://pypi.org/project/kornia-rs/)
+[![Crates.io Downloads](https://img.shields.io/crates/d/kornia?label=Crate%20downloads&logo=rust&color=orange)](https://crates.io/crates/kornia)
 [![Documentation](https://img.shields.io/badge/docs.rs-kornia-orange)](https://docs.rs/kornia)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/HfnywwpBnD)
