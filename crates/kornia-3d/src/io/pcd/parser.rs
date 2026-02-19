@@ -18,7 +18,7 @@ pub enum PcdError {
     /// Unsupported header
     #[error("Unsupported PCD header")]
     UnsupportedProperty,
-    
+
     /// Malformed PCD header
     #[error("Malformed PCD header")]
     MalformedHeader,
@@ -35,14 +35,14 @@ struct PcdField {
     offset: usize, // byte offset within a point
     size: usize,   // size of one element (bytes)
     count: usize,  // number of elements
-    kind: char, // PCD type: 'F' = float, 'U' = unsigned int, 'I' = signed int
+    kind: char,    // PCD type: 'F' = float, 'U' = unsigned int, 'I' = signed int
 }
 
 #[derive(Debug)]
 struct PcdLayout {
     fields: HashMap<String, PcdField>,
     point_step: usize, // total bytes per point
-    num_points: usize,     // number of points
+    num_points: usize, // number of points
 }
 
 impl PcdLayout {
@@ -57,7 +57,9 @@ impl PcdLayout {
 /// Read a little-endian f32 from a byte buffer
 #[inline]
 fn read_f32(buf: &[u8], offset: usize) -> Result<f32, PcdError> {
-    let slice = buf.get(offset..offset + 4).ok_or(PcdError::UnsupportedProperty)?;
+    let slice = buf
+        .get(offset..offset + 4)
+        .ok_or(PcdError::UnsupportedProperty)?;
     let mut bytes = [0u8; 4];
     bytes.copy_from_slice(slice);
     Ok(f32::from_le_bytes(bytes))
@@ -66,12 +68,13 @@ fn read_f32(buf: &[u8], offset: usize) -> Result<f32, PcdError> {
 /// Read a little-endian u32 from a byte buffer
 #[inline]
 fn read_u32(buf: &[u8], offset: usize) -> Result<u32, PcdError> {
-    let slice = buf.get(offset..offset + 4).ok_or(PcdError::UnsupportedProperty)?;
+    let slice = buf
+        .get(offset..offset + 4)
+        .ok_or(PcdError::UnsupportedProperty)?;
     let mut bytes = [0u8; 4];
     bytes.copy_from_slice(slice);
     Ok(u32::from_le_bytes(bytes))
 }
-
 
 fn parse_pcd_layout<R: BufRead>(reader: &mut R) -> Result<PcdLayout, PcdError> {
     let mut field_names: Vec<String> = Vec::new();
@@ -99,7 +102,10 @@ fn parse_pcd_layout<R: BufRead>(reader: &mut R) -> Result<PcdLayout, PcdError> {
         match it.next() {
             Some("SIZE") => {
                 sizes = it
-                    .map(|v| v.parse::<usize>().map_err(|_| PcdError::UnsupportedProperty))
+                    .map(|v| {
+                        v.parse::<usize>()
+                            .map_err(|_| PcdError::UnsupportedProperty)
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
             }
             Some("TYPE") => {
@@ -109,7 +115,10 @@ fn parse_pcd_layout<R: BufRead>(reader: &mut R) -> Result<PcdLayout, PcdError> {
             }
             Some("COUNT") => {
                 counts = it
-                    .map(|v| v.parse::<usize>().map_err(|_| PcdError::UnsupportedProperty))
+                    .map(|v| {
+                        v.parse::<usize>()
+                            .map_err(|_| PcdError::UnsupportedProperty)
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
             }
             Some("POINTS") => {
@@ -154,16 +163,17 @@ fn parse_pcd_layout<R: BufRead>(reader: &mut R) -> Result<PcdLayout, PcdError> {
                 }
             }
             "rgb" => {
-                if !(size == 4 && count == 1 && (types[i] == 'U' || types[i] == 'I' || types[i] == 'F')) {
+                if !(size == 4
+                    && count == 1
+                    && (types[i] == 'U' || types[i] == 'I' || types[i] == 'F'))
+                {
                     return Err(PcdError::UnsupportedProperty);
                 }
             }
             _ => {}
         }
 
-        let field_bytes = size
-            .checked_mul(count)
-            .ok_or(PcdError::MalformedHeader)?;
+        let field_bytes = size.checked_mul(count).ok_or(PcdError::MalformedHeader)?;
 
         offset = offset
             .checked_add(field_bytes)
@@ -233,12 +243,23 @@ pub fn read_pcd_binary(path: impl AsRef<Path>) -> Result<PointCloud, PcdError> {
     let fy = layout.get_field_offset("y")?;
     let fz = layout.get_field_offset("z")?;
 
-
     // Optional fields
     let frgb = layout.fields.get("rgb").map(|f| f.offset);
-    let fnx = layout.fields.get("normal_x").or_else(|| layout.fields.get("nx")).map(|f| f.offset);
-    let fny = layout.fields.get("normal_y").or_else(|| layout.fields.get("ny")).map(|f| f.offset);
-    let fnz = layout.fields.get("normal_z").or_else(|| layout.fields.get("nz")).map(|f| f.offset);
+    let fnx = layout
+        .fields
+        .get("normal_x")
+        .or_else(|| layout.fields.get("nx"))
+        .map(|f| f.offset);
+    let fny = layout
+        .fields
+        .get("normal_y")
+        .or_else(|| layout.fields.get("ny"))
+        .map(|f| f.offset);
+    let fnz = layout
+        .fields
+        .get("normal_z")
+        .or_else(|| layout.fields.get("nz"))
+        .map(|f| f.offset);
 
     if layout.point_step == 0 || layout.point_step > MAX_POINT_STEP {
         return Err(PcdError::MalformedHeader);
@@ -336,4 +357,3 @@ DATA binary";
         assert!(parse_pcd_layout(&mut reader).is_err());
     }
 }
-
