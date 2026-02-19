@@ -88,7 +88,9 @@ fn bench_so3(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("exp_sophus", ""), |b| {
             b.iter(|| {
                 for omega in omegas_s.iter() {
-                    std::hint::black_box(sophus::lie::Rotation3F64::exp(std::hint::black_box(*omega)));
+                    std::hint::black_box(sophus::lie::Rotation3F64::exp(std::hint::black_box(
+                        *omega,
+                    )));
                 }
             })
         });

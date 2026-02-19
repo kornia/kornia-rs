@@ -15,6 +15,7 @@ impl SO3F32 {
         q: QuatF32::IDENTITY,
     };
 
+    /// Create a new SO3F32 from a quaternion.
     #[inline]
     pub fn new(quat: QuatF32) -> Self {
         Self { q: quat }
