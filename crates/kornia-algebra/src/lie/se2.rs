@@ -1,5 +1,8 @@
 use super::so2::SO2F32;
-use crate::{Mat2F32, Mat3AF32, Vec2F32, Vec3AF32};
+use crate::{
+    param::{Param, ParamError},
+    Mat2F32, Mat3AF32, Vec2F32, Vec3AF32,
+};
 use rand::Rng;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -259,6 +262,41 @@ impl std::ops::Mul<SE2F32> for SE2F32 {
 
     fn mul(self, other: SE2F32) -> SE2F32 {
         SE2F32::new(self.r * other.r, self.r * other.t + self.t)
+    }
+}
+
+impl Param for SE2F32 {
+    const GLOBAL_SIZE: usize = 4;
+    const LOCAL_SIZE: usize = 3;
+
+    #[inline]
+    fn plus(x: &[f32], delta: &[f32], out: &mut [f32]) -> Result<(), ParamError> {
+        if x.len() < Self::GLOBAL_SIZE {
+            return Err(ParamError::WrongGlobalSize {
+                expected: Self::GLOBAL_SIZE,
+                got: x.len(),
+            });
+        }
+        if delta.len() < Self::LOCAL_SIZE {
+            return Err(ParamError::WrongLocalSize {
+                expected: Self::LOCAL_SIZE,
+                got: delta.len(),
+            });
+        }
+        if out.len() < Self::GLOBAL_SIZE {
+            return Err(ParamError::WrongOutSize {
+                expected: Self::GLOBAL_SIZE,
+                got: out.len(),
+            });
+        }
+
+        let se2 = SE2F32::from_array([x[0], x[1], x[2], x[3]]);
+        let r = SO2F32::new(se2.r.z.normalize());
+        let se2 = SE2F32::new(r, se2.t);
+        let tau = Vec3AF32::new(delta[0], delta[1], delta[2]);
+        let se2_plus = se2.rplus(tau);
+        out[..Self::GLOBAL_SIZE].copy_from_slice(&se2_plus.to_array());
+        Ok(())
     }
 }
 

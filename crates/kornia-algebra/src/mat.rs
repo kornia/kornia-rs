@@ -17,7 +17,7 @@
 //! * `cols`        - The column parameters (e.g. `[x_axis, y_axis]`).
 //!
 
-use crate::{QuatF32, Vec2F32, Vec2F64, Vec3AF32, Vec3F32, Vec3F64, Vec4F32, Vec4F64};
+use crate::{QuatF32, QuatF64, Vec2F32, Vec2F64, Vec3AF32, Vec3F32, Vec3F64, Vec4F32, Vec4F64};
 
 macro_rules! define_matrix_type {
     (
@@ -315,6 +315,14 @@ define_matrix_type!(
     [x_axis, y_axis, z_axis]
 );
 
+impl Mat3F64 {
+    /// Create a 3x3 rotation matrix from a quaternion.
+    #[inline]
+    pub fn from_quat(quat: QuatF64) -> Self {
+        Self(glam::DMat3::from_quat(quat.0))
+    }
+}
+
 // 3x3 matrix (aligned, single precision).
 define_matrix_type!(
     Mat3AF32,
@@ -354,6 +362,13 @@ define_matrix_type!(
     glam::DVec4,
     [x_axis, y_axis, z_axis, w_axis]
 );
+
+// Dynamic-sized matrices from nalgebra (for optimization and large-scale operations)
+/// Dynamic-sized matrix with f32 elements.
+pub type DMatF32 = nalgebra::DMatrix<f32>;
+
+/// Dynamic-sized matrix with f64 elements.
+pub type DMatF64 = nalgebra::DMatrix<f64>;
 
 #[cfg(test)]
 mod tests {

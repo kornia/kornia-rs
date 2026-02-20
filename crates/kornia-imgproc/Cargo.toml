@@ -52,6 +52,10 @@ name = "bench_gradient"
 
 [[bench]]
 harness = false
+name = "bench_draw"
+
+[[bench]]
+harness = false
 name = "bench_distortion"
 required-features = ["opencv_bench"]
 
@@ -65,6 +69,7 @@ num-traits = { workspace = true }
 opencv = { version = "0.92", optional = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }
+wide = "1.1.1"
 
 [dev-dependencies]
 criterion = { workspace = true }

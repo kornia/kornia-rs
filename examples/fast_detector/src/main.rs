@@ -3,27 +3,27 @@ use std::path::PathBuf;
 
 use kornia::{image::Image, imgproc, io::functional as F, tensor::CpuAllocator};
 
-/// Detect FAST features on an image.
+/// Detect FAST-9 features on an image.
 #[derive(FromArgs)]
 struct Args {
     /// path to the image to detect FAST features on
     #[argh(option)]
     image_path: PathBuf,
 
-    /// threshold for the FAST detector
+    /// intensity threshold for the FAST-9 detector
     #[argh(option, default = "10")]
     threshold: u8,
 
-    /// arc length for the FAST detector
-    #[argh(option, default = "5")]
-    arc_length: u8,
+    /// enable non-maximum suppression
+    #[argh(option, default = "true")]
+    nonmax_suppression: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
 
     // start the recording stream
-    let rec = rerun::RecordingStreamBuilder::new("Kornia Fast Detector App").spawn()?;
+    let rec = rerun::RecordingStreamBuilder::new("Kornia FAST-9 Detector App").spawn()?;
 
     // read the image
     let img_rgb8 = F::read_image_any_rgb8(args.image_path)?;
@@ -32,9 +32,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut img_gray8 = Image::from_size_val(img_rgb8.size(), 0u8, CpuAllocator)?;
     imgproc::color::gray_from_rgb_u8(&img_rgb8, &mut img_gray8)?;
 
-    // detect the fast features
-    let keypoints =
-        imgproc::features::fast_feature_detector(&img_gray8, args.threshold, args.arc_length)?;
+    // detect FAST-9 features
+    let keypoints = imgproc::features::fast_feature_detector(
+        &img_gray8,
+        args.threshold,
+        args.nonmax_suppression,
+    )?;
+
     println!("Found {} keypoints", keypoints.len());
 
     // log the image

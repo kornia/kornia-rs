@@ -1,4 +1,7 @@
-use crate::{Mat2F32, Mat3AF32, Vec2F32};
+use crate::{
+    param::{Param, ParamError},
+    Mat2F32, Mat3AF32, Vec2F32,
+};
 use rand::Rng;
 use std::f32::consts::TAU; // <-- Added this import
 
@@ -131,6 +134,38 @@ impl std::ops::Mul<SO2F32> for SO2F32 {
         let real = self.z.x * other.z.x - self.z.y * other.z.y;
         let imag = self.z.x * other.z.y + self.z.y * other.z.x;
         SO2F32::new(Vec2F32::new(real, imag))
+    }
+}
+
+impl Param for SO2F32 {
+    const GLOBAL_SIZE: usize = 2;
+    const LOCAL_SIZE: usize = 1;
+
+    #[inline]
+    fn plus(x: &[f32], delta: &[f32], out: &mut [f32]) -> Result<(), ParamError> {
+        if x.len() < Self::GLOBAL_SIZE {
+            return Err(ParamError::WrongGlobalSize {
+                expected: Self::GLOBAL_SIZE,
+                got: x.len(),
+            });
+        }
+        if delta.len() < Self::LOCAL_SIZE {
+            return Err(ParamError::WrongLocalSize {
+                expected: Self::LOCAL_SIZE,
+                got: delta.len(),
+            });
+        }
+        if out.len() < Self::GLOBAL_SIZE {
+            return Err(ParamError::WrongOutSize {
+                expected: Self::GLOBAL_SIZE,
+                got: out.len(),
+            });
+        }
+
+        let so2 = SO2F32::new(Vec2F32::new(x[0], x[1]).normalize());
+        let so2_plus = so2.rplus(delta[0]);
+        out[..Self::GLOBAL_SIZE].copy_from_slice(&so2_plus.to_array());
+        Ok(())
     }
 }
 

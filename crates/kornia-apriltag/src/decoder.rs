@@ -197,6 +197,28 @@ impl QuickDecode {
         })
     }
 
+    /// Sets the maximum allowed Hamming distance for decoding.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_hamming` - The maximum number of bit errors to tolerate (0-3).
+    ///
+    /// # Errors
+    ///
+    /// Returns `AprilTagError::InvalidAllowedErrors` if `max_hamming` is greater than 3.
+    pub fn set_max_hamming(&mut self, max_hamming: u8) -> Result<(), AprilTagError> {
+        if max_hamming > 3 {
+            return Err(AprilTagError::InvalidAllowedErrors(max_hamming));
+        }
+        self.max_hamming = max_hamming as u32;
+        Ok(())
+    }
+
+    /// Returns the current maximum allowed Hamming distance.
+    pub fn max_hamming(&self) -> u8 {
+        self.max_hamming as u8
+    }
+
     /// Decodes an observed code using the quick decode table.
     ///
     /// # Arguments
@@ -1153,5 +1175,48 @@ mod tests {
     fn test_rotate_90() {
         assert_eq!(rotate_90(52087007497, 36), 5390865284);
         assert_eq!(rotate_90(42087007497, 36), 39351620409)
+    }
+
+    #[test]
+    fn test_configurable_max_hamming() -> Result<(), Box<dyn std::error::Error>> {
+        // Get the valid code for tag id 0
+        let family = TagFamily::tag36_h11()?;
+        let valid_code = family.code_data[0];
+
+        // Flip 2 bits to create a code with hamming distance 2
+        let code_with_2_errors = valid_code ^ 0b11;
+
+        // With max_hamming=1, it should not decode
+        let family = TagFamily::tag36_h11()?.with_max_hamming(1)?;
+        assert_eq!(family.max_hamming(), 1);
+        let mut entry = QuickDecodeEntry::default();
+        quick_decode_codeword(&family, code_with_2_errors, &mut entry);
+        assert_eq!(entry.id, u16::MAX); // Not found
+
+        // With max_hamming=2 (default), it should decode
+        let family = TagFamily::tag36_h11()?;
+        assert_eq!(family.max_hamming(), 2);
+        quick_decode_codeword(&family, code_with_2_errors, &mut entry);
+        assert_eq!(entry.id, 0);
+        assert_eq!(entry.hamming, 2);
+
+        // Flip 1 bit - should decode with both max_hamming=1 and max_hamming=2
+        let code_with_1_error = valid_code ^ 0b1;
+
+        let family = TagFamily::tag36_h11()?.with_max_hamming(1)?;
+        quick_decode_codeword(&family, code_with_1_error, &mut entry);
+        assert_eq!(entry.id, 0);
+        assert_eq!(entry.hamming, 1);
+
+        let family = TagFamily::tag36_h11()?;
+        quick_decode_codeword(&family, code_with_1_error, &mut entry);
+        assert_eq!(entry.id, 0);
+        assert_eq!(entry.hamming, 1);
+
+        // Invalid max_hamming should return an error
+        let result = TagFamily::tag36_h11()?.with_max_hamming(4);
+        assert!(result.is_err());
+
+        Ok(())
     }
 }

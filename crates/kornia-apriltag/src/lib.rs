@@ -300,8 +300,7 @@ impl AprilTagDecoder {
     }
 }
 
-/// Running the test on aarch64 crashes the CI
-#[cfg(all(test, not(target_arch = "aarch64")))]
+#[cfg(test)]
 mod tests {
     use kornia_io::png::read_image_png_mono8;
 

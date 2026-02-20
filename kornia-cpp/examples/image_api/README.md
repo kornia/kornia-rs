@@ -18,12 +18,11 @@ cmake --build build
 ./build/examples/image_api/image_api_example
 ```
 
-Or use just:
+Or use pixi:
 
 ```bash
-cd kornia-cpp
-just build-examples
-./build/examples/image_api/image_api_example
+pixi run cpp-build-examples
+./kornia-cpp/build/examples/image_api/image_api_example
 ```
 
 ## Example Output

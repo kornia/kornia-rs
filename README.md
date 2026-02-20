@@ -4,6 +4,8 @@ English | [简体中文](README.zh-CN.md)
 
 ![Crates.io Version](https://img.shields.io/crates/v/kornia)
 [![PyPI version](https://badge.fury.io/py/kornia-rs.svg)](https://badge.fury.io/py/kornia-rs)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/kornia-rs?label=PyPI%20downloads&logo=python&color=blue)](https://pypi.org/project/kornia-rs/)
+[![Crates.io Downloads](https://img.shields.io/crates/d/kornia?label=Crate%20downloads&logo=rust&color=orange)](https://crates.io/crates/kornia)
 [![Documentation](https://img.shields.io/badge/docs.rs-kornia-orange)](https://docs.rs/kornia)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/HfnywwpBnD)
@@ -96,7 +98,7 @@ kornia-imgproc = "0.1"
 kornia-3d = "0.1"
 kornia-apriltag = "0.1"
 kornia-vlm = "0.1"
-kornia-nn = "0.1"
+kornia-bow = "0.1"
 kornia-algebra = "0.1"
 ```
 
@@ -298,38 +300,39 @@ Before you begin, ensure you have `rust` and `python3` installed on your system.
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    ```
 
-2. **Install [`uv`](https://docs.astral.sh/uv/)** to manage Python dependencies:
+2. **Install [`pixi`](https://pixi.sh)** for package and environment management:
    ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
+   curl -fsSL https://pixi.sh/install.sh | bash
    ```
 
-3. **Install [`just`](https://github.com/casey/just)** command runner for managing development tasks:
-   ```bash
-   cargo install just
-   ```
-
-4. **Clone the repository** to your local directory:
+3. **Clone the repository** to your local directory:
    ```bash
    git clone https://github.com/kornia/kornia-rs.git
    ```
 
+4. **Install dependencies** using pixi:
+   ```bash
+   pixi install
+   ```
+
 ### Available Commands
 
-You can check all available development commands by running `just` in the root directory of the project:
+You can check all available development commands via `pixi task list`:
 
 ```bash
-$ just
-Available recipes:
-    check-environment                 # Check if the required binaries for the project are installed
-    clean                             # Clean up caches and build artifacts
-    clippy                            # Run clippy with all features
-    clippy-default                    # Run clippy with default features
-    fmt                               # Run autoformatting and linting
-    py-build py_version='3.9'         # Create virtual environment, and build kornia-py
-    py-build-release py_version='3.9' # Create virtual environment, and build kornia-py for release
-    py-install py_version='3.9'       # Create virtual environment, and install dev requirements
-    py-test                           # Test the kornia-py code with pytest
-    test name=''                      # Test the code or a specific test
+pixi run rust-check        # Check Rust compilation (all targets)
+pixi run rust-clippy       # Run clippy (all targets, warnings as errors)
+pixi run rust-fmt          # Format Rust code
+pixi run rust-fmt-check    # Check Rust formatting
+pixi run rust-lint         # Run all Rust lints (fmt + clippy + check)
+pixi run rust-test         # Run Rust tests
+pixi run rust-test-release # Run Rust tests (release mode)
+pixi run rust-clean        # Clean Rust build artifacts
+pixi run py-build          # Build kornia-py for development
+pixi run py-build-release  # Build kornia-py for release
+pixi run py-test           # Run pytest
+pixi run cpp-build         # Build C++ library (debug)
+pixi run cpp-test          # Build and run C++ tests
 ```
 ### 🐳 Development Container
 
@@ -349,19 +352,19 @@ The devcontainer includes all necessary dependencies and tools for building and 
 Compile the project and run all tests:
 
 ```bash
-just test
+pixi run rust-test
 ```
 
-To run specific tests:
+To run tests for a specific package:
 
 ```bash
-just test image
+pixi run rust-test-package <package-name>
 ```
 
 To run clippy linting:
 
 ```bash
-just clippy
+pixi run rust-clippy
 ```
 
 ### 🐍 Python Development
@@ -369,13 +372,13 @@ just clippy
 Build Python wheels using `maturin`:
 
 ```bash
-just py-build
+pixi run py-build
 ```
 
 Run Python tests:
 
 ```bash
-just py-test
+pixi run py-test
 ```
 
 ## 💜 Contributing
