@@ -8,7 +8,6 @@ use crate::{
         matrix_3x3_cholesky, matrix_3x3_lower_triangle_inverse, matrix_3x3_mul, value_for_pixel,
         Point2d,
     },
-    DecodeTagsConfig,
 };
 use kornia_image::{allocator::ImageAllocator, Image};
 
@@ -913,6 +912,7 @@ mod tests {
         threshold::{adaptive_threshold, TileMinMax},
         union_find::UnionFind,
         utils::Pixel,
+        DecodeTagsConfig,
     };
     use kornia_image::allocator::CpuAllocator;
     use kornia_io::png::read_image_png_mono8;
