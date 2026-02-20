@@ -147,8 +147,7 @@ pub fn icp_vanilla(
 mod tests {
     use super::{icp_vanilla, ICPConvergenceCriteria};
     use crate::{
-        linalg::transform_points3d, 
-        pointcloud::PointCloud,
+        linalg::transform_points3d, pointcloud::PointCloud,
         transforms::axis_angle_to_rotation_matrix,
     };
     #[test]
@@ -205,11 +204,10 @@ mod tests {
         let angular_error = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
 
         // Compute L2 translation error
-        let translation_error = (
-            (result.translation[0] - dst_t_src[0]).powi(2) +
-            (result.translation[1] - dst_t_src[1]).powi(2) +
-            (result.translation[2] - dst_t_src[2]).powi(2)
-        ).sqrt();
+        let translation_error = ((result.translation[0] - dst_t_src[0]).powi(2)
+            + (result.translation[1] - dst_t_src[1]).powi(2)
+            + (result.translation[2] - dst_t_src[2]).powi(2))
+        .sqrt();
 
         // Assert using meaningful geometric metrics
         assert!(
