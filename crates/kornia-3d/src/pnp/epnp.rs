@@ -598,7 +598,7 @@ mod solve_epnp_tests {
                 assert_relative_eq!(recon.to_array()[k], p.to_array()[k], epsilon = 1e-6);
             }
 
-            assert_relative_eq!(alpha.iter().sum::<f32>(), 1.0, epsilon = 1e-6);
+            assert_relative_eq!(alpha.iter().sum::<f32>(), 1.0, epsilon = 1e-9);
         }
 
         let m = build_m(&alphas, &points_image, &k)?;
