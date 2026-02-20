@@ -492,7 +492,7 @@ pub mod family {
             let updated = family
                 .with_max_hamming(max_hamming)
                 .map_err(|e| PyErr::new::<PyException, _>(e.to_string()))?;
-            Ok(Self(TagFamilyKind::Custom(Box::new(updated))))
+            Ok(Self(TagFamilyKind::Custom(Arc::new(updated))))
         }
 
         #[staticmethod]
