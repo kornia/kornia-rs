@@ -144,6 +144,11 @@ impl Variable {
     }
 
     #[inline]
+    pub fn se2(name: impl Into<String>, values: Vec<f32>) -> Self {
+        Self::new(name, VariableType::SE2, values)
+    }
+
+    #[inline]
     pub fn global_dim(&self) -> usize {
         self.var_type.global_dim()
     }
