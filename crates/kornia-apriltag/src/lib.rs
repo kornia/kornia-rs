@@ -148,6 +148,7 @@ impl DecodeTagsConfig {
 /// Decoder for AprilTag detection and decoding.
 pub struct AprilTagDecoder {
     config: DecodeTagsConfig,
+    cached_families: Vec<(TagFamilyKind, TagFamily)>,
     downscale_img: Option<Image<u8, 1, CpuAllocator>>,
     bin_img: Image<Pixel, 1, CpuAllocator>,
     tile_min_max: TileMinMax,
@@ -163,9 +164,12 @@ impl AprilTagDecoder {
         &self.config
     }
 
-    /// Adds a tag family to the decoder configuration.
+    /// Adds a tag family to the decoder configuration and cached families.
     #[inline]
     pub fn add(&mut self, kind: TagFamilyKind) {
+        if let Ok(family) = TagFamily::try_from(&kind) {
+            self.cached_families.push((kind.clone(), family));
+        }
         self.config.add(kind);
     }
 
@@ -194,12 +198,24 @@ impl AprilTagDecoder {
             )
         };
 
+        // Build the tag family cache once
+        let cached_families: Vec<(TagFamilyKind, TagFamily)> = config
+            .tag_families
+            .iter()
+            .filter_map(|kind| {
+                TagFamily::try_from(kind)
+                    .ok()
+                    .map(|family| (kind.clone(), family))
+            })
+            .collect();
+
         let bin_img = Image::from_size_val(img_size, Pixel::Skip, CpuAllocator)?;
         let tile_min_max = TileMinMax::new(img_size, 4);
         let uf = UnionFind::new(img_size.width * img_size.height);
 
         Ok(Self {
             config,
+            cached_families,
             downscale_img,
             bin_img,
             tile_min_max,
@@ -264,7 +280,9 @@ impl AprilTagDecoder {
         Ok(decode_tags(
             src,
             &mut quads,
-            &mut self.config,
+            &mut self.cached_families,
+            self.config.refine_edges_enabled,
+            self.config.decode_sharpening,
             &mut self.gray_model_pair,
         ))
     }

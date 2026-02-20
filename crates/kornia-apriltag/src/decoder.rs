@@ -297,9 +297,10 @@ impl SharpeningBuffer {
 ///
 /// * `src` - Reference to the grayscale source image.
 /// * `quads` - Mutable slice of detected quadrilaterals to process.
-/// * `config` - Reference to the tag decoding configuration.
+/// * `tag_families` - Mutable slice of pre built tag family pairs.
+/// * `refine_edges_enabled` - Edge refinement before decoding.
+/// * `decode_sharpening` - Sharpening factor applied during decoding.
 /// * `gray_model_pair` - Mutable reference to a pair of grayscale models for white and black regions.
-/// * `sharpening_buffer` - Mutable reference to a buffer used for sharpening intermediate values.
 ///
 /// # Returns
 ///
@@ -307,24 +308,15 @@ impl SharpeningBuffer {
 pub fn decode_tags<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     quads: &mut [Quad],
-    config: &mut DecodeTagsConfig,
+    tag_families: &mut [(TagFamilyKind, TagFamily)],
+    refine_edges_enabled: bool,
+    decode_sharpening: f32,
     gray_model_pair: &mut GrayModelPair,
 ) -> Vec<Detection> {
-    // TODO: Avoid allocations on every call
     let mut detections = Vec::new();
 
-    let mut tag_families: Vec<(TagFamilyKind, TagFamily)> = config
-        .tag_families
-        .iter()
-        .filter_map(|kind| {
-            TagFamily::try_from(kind)
-                .ok()
-                .map(|family| (kind.clone(), family))
-        })
-        .collect();
-
     quads.iter_mut().for_each(|quad| {
-        if config.refine_edges_enabled {
+        if refine_edges_enabled {
             refine_edges(src, quad);
         }
 
@@ -343,7 +335,7 @@ pub fn decode_tags<A: ImageAllocator>(
                 src,
                 family,
                 quad,
-                config.decode_sharpening,
+                decode_sharpening,
                 &mut entry,
                 gray_model_pair,
             );
@@ -930,7 +922,24 @@ mod tests {
             }
         }
 
-        let tags = decode_tags(&src, &mut quads, &mut config, &mut gray_model_pair);
+        let mut tag_families: Vec<(TagFamilyKind, TagFamily)> = config
+            .tag_families
+            .iter()
+            .filter_map(|kind| {
+                TagFamily::try_from(kind)
+                    .ok()
+                    .map(|family| (kind.clone(), family))
+            })
+            .collect();
+
+        let tags = decode_tags(
+            &src,
+            &mut quads,
+            &mut tag_families,
+            config.refine_edges_enabled,
+            config.decode_sharpening,
+            &mut gray_model_pair,
+        );
 
         assert_eq!(tags.len(), 1);
         assert_eq!(tags[0].id, 23);
