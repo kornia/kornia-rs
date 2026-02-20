@@ -20,9 +20,9 @@ harness = false
 name = "bench_tagfamily"
 
 [dependencies]
+kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
-kornia-algebra = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
