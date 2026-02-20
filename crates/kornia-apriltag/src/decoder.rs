@@ -8,7 +8,6 @@ use crate::{
         matrix_3x3_cholesky, matrix_3x3_lower_triangle_inverse, matrix_3x3_mul, value_for_pixel,
         Point2d,
     },
-    DecodeTagsConfig,
 };
 use kornia_image::{allocator::ImageAllocator, Image};
 
@@ -319,9 +318,10 @@ impl SharpeningBuffer {
 ///
 /// * `src` - Reference to the grayscale source image.
 /// * `quads` - Mutable slice of detected quadrilaterals to process.
-/// * `config` - Reference to the tag decoding configuration.
+/// * `tag_families` - Mutable slice of pre built tag family pairs.
+/// * `refine_edges_enabled` - Edge refinement before decoding.
+/// * `decode_sharpening` - Sharpening factor applied during decoding.
 /// * `gray_model_pair` - Mutable reference to a pair of grayscale models for white and black regions.
-/// * `sharpening_buffer` - Mutable reference to a buffer used for sharpening intermediate values.
 ///
 /// # Returns
 ///
@@ -329,14 +329,15 @@ impl SharpeningBuffer {
 pub fn decode_tags<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     quads: &mut [Quad],
-    config: &mut DecodeTagsConfig,
+    tag_families: &mut [(TagFamilyKind, TagFamily)],
+    refine_edges_enabled: bool,
+    decode_sharpening: f32,
     gray_model_pair: &mut GrayModelPair,
 ) -> Vec<Detection> {
-    // TODO: Avoid allocations on every call
     let mut detections = Vec::new();
 
     quads.iter_mut().for_each(|quad| {
-        if config.refine_edges_enabled {
+        if refine_edges_enabled {
             refine_edges(src, quad);
         }
 
@@ -344,7 +345,7 @@ pub fn decode_tags<A: ImageAllocator>(
             return;
         }
 
-        config.tag_families.iter_mut().for_each(|family| {
+        tag_families.iter_mut().for_each(|(kind, family)| {
             if family.reversed_border != quad.reversed_border {
                 return;
             }
@@ -355,7 +356,7 @@ pub fn decode_tags<A: ImageAllocator>(
                 src,
                 family,
                 quad,
-                config.decode_sharpening,
+                decode_sharpening,
                 &mut entry,
                 gray_model_pair,
             );
@@ -378,7 +379,7 @@ pub fn decode_tags<A: ImageAllocator>(
                     let center = quad.homography_project(0.0, 0.0);
 
                     let detection = Detection {
-                        tag_family_kind: family.into(),
+                        tag_family_kind: kind.clone(),
                         id: entry.id,
                         hamming: entry.hamming,
                         decision_margin,
@@ -911,6 +912,7 @@ mod tests {
         threshold::{adaptive_threshold, TileMinMax},
         union_find::UnionFind,
         utils::Pixel,
+        DecodeTagsConfig,
     };
     use kornia_image::allocator::CpuAllocator;
     use kornia_io::png::read_image_png_mono8;
@@ -942,7 +944,24 @@ mod tests {
             }
         }
 
-        let tags = decode_tags(&src, &mut quads, &mut config, &mut gray_model_pair);
+        let mut tag_families: Vec<(TagFamilyKind, TagFamily)> = config
+            .tag_families
+            .iter()
+            .filter_map(|kind| {
+                TagFamily::try_from(kind)
+                    .ok()
+                    .map(|family| (kind.clone(), family))
+            })
+            .collect();
+
+        let tags = decode_tags(
+            &src,
+            &mut quads,
+            &mut tag_families,
+            config.refine_edges_enabled,
+            config.decode_sharpening,
+            &mut gray_model_pair,
+        );
 
         assert_eq!(tags.len(), 1);
         assert_eq!(tags[0].id, 23);
