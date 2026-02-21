@@ -4,6 +4,7 @@ use std::cmp::PartialOrd;
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
 use crate::parallel;
+use crate::parallel::{ExecuteExt, ExecutionStrategy};
 
 /// Apply a binary threshold to an image.
 ///
@@ -13,6 +14,7 @@ use crate::parallel;
 /// * `dst` - The output image of an arbitrary number of channels and type.
 /// * `threshold` - The threshold value. Must be the same type as the image.
 /// * `max_value` - The maximum value to use when the input value is greater than the threshold.
+/// * `strategy` - The execution strategy.
 ///
 /// # Returns
 ///
@@ -24,13 +26,15 @@ use crate::parallel;
 /// use kornia_image::{Image, ImageSize};
 /// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::threshold::threshold_binary;
+/// use kornia_imgproc::parallel::ExecutionStrategy;
 ///
 /// let data = vec![100u8, 200, 50, 150, 200, 250];
 /// let image = Image::<_, 1, _>::new(ImageSize { width: 2, height: 3 }, data, CpuAllocator).unwrap();
 ///
 /// let mut thresholded = Image::<_, 1, _>::from_size_val(image.size(), 0, CpuAllocator).unwrap();
 ///
-/// threshold_binary(&image, &mut thresholded, 100, 255).unwrap();
+/// // Use Serial strategy for small images
+/// threshold_binary(&image, &mut thresholded, 100, 255, ExecutionStrategy::Serial).unwrap();
 /// assert_eq!(thresholded.num_channels(), 1);
 /// assert_eq!(thresholded.size().width, 2);
 /// assert_eq!(thresholded.size().height, 3);
@@ -40,6 +44,7 @@ pub fn threshold_binary<T, const C: usize, A1: ImageAllocator, A2: ImageAllocato
     dst: &mut Image<T, C, A2>,
     threshold: T,
     max_value: T,
+    strategy: ExecutionStrategy,
 ) -> Result<(), ImageError>
 where
     T: Copy + Send + Sync + PartialOrd + Zero,
@@ -53,14 +58,15 @@ where
         ));
     }
 
-    // run the thresholding operation in parallel
-    parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
-        *dst_pixel = if *src_pixel > threshold {
-            max_value
-        } else {
-            T::zero()
-        };
-    });
+    src.as_slice()
+        .execute_with(strategy, dst.as_slice_mut(), |(src_pixel, dst_pixel)| {
+            *dst_pixel = if *src_pixel > threshold {
+                max_value
+            } else {
+                T::zero()
+            };
+        })
+        .map_err(|e| ImageError::Parallel(e.to_string()))?;
 
     Ok(())
 }
@@ -113,7 +119,6 @@ where
         ));
     }
 
-    // run the thresholding operation in parallel
     parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
         *dst_pixel = if *src_pixel > threshold {
             T::zero()
@@ -170,7 +175,6 @@ where
         ));
     }
 
-    // run the thresholding operation in parallel
     parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
         *dst_pixel = if *src_pixel > threshold {
             threshold
@@ -227,7 +231,6 @@ where
         ));
     }
 
-    // run the thresholding operation in parallel
     parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
         *dst_pixel = if *src_pixel > threshold {
             *src_pixel
@@ -284,7 +287,6 @@ where
         ));
     }
 
-    // run the thresholding operation in parallel
     parallel::par_iter_rows_val(src, dst, |src_pixel, dst_pixel| {
         *dst_pixel = if *src_pixel > threshold {
             T::zero()
@@ -357,7 +359,6 @@ where
         ));
     }
 
-    // parallelize the operation by rows
     parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
         let mut is_in_range = true;
         src_pixel
@@ -371,8 +372,6 @@ where
 
     Ok(())
 }
-
-// TODO: outsu, triangle
 
 #[cfg(test)]
 mod tests {
@@ -394,7 +393,7 @@ mod tests {
 
         let mut thresholded = Image::<_, 1, _>::from_size_val(image.size(), 0, CpuAllocator)?;
 
-        super::threshold_binary(&image, &mut thresholded, 100, 255)?;
+        super::threshold_binary(&image, &mut thresholded, 100, 255, Default::default())?;
 
         assert_eq!(thresholded.num_channels(), 1);
         assert_eq!(thresholded.size().width, 2);

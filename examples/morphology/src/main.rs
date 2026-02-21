@@ -47,7 +47,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vec![0u8; width * height],
         CpuAllocator,
     )?;
-    threshold::threshold_binary(&gray_single, &mut binary, 128u8, 255u8)?;
+    threshold::threshold_binary(
+        &gray_single,
+        &mut binary,
+        128u8,
+        255u8,
+        kornia::imgproc::parallel::ExecutionStrategy::Serial,
+    )?;
 
     let kernel_shape = match args.kernel_shape.as_str() {
         "cross" => morphology::KernelShape::Cross {

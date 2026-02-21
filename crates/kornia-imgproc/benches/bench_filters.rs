@@ -15,13 +15,70 @@ fn gaussian_blur_u8<const C: usize>(
 ) -> Result<(), ImageError> {
     let kernel_x = kernels::gaussian_kernel_1d(kernel_size, sigma);
     let kernel_y = kernels::gaussian_kernel_1d(kernel_size, sigma);
-    separable_filter(src, dst, &kernel_x, &kernel_y)
+    separable_filter(
+        src,
+        dst,
+        &kernel_x,
+        &kernel_y,
+        kornia_imgproc::parallel::ExecutionStrategy::Serial,
+    )
+}
+
+fn gaussian_blur_u8_parallel<const C: usize>(
+    src: &Image<u8, C, CpuAllocator>,
+    dst: &mut Image<u8, C, CpuAllocator>,
+    kernel_size: usize,
+    sigma: f32,
+) -> Result<(), ImageError> {
+    let kernel_x = kernels::gaussian_kernel_1d(kernel_size, sigma);
+    let kernel_y = kernels::gaussian_kernel_1d(kernel_size, sigma);
+    separable_filter(
+        src,
+        dst,
+        &kernel_x,
+        &kernel_y,
+        kornia_imgproc::parallel::ExecutionStrategy::ParallelElements,
+    )
+}
+
+fn gaussian_blur_u8_autorows<const C: usize>(
+    src: &Image<u8, C, CpuAllocator>,
+    dst: &mut Image<u8, C, CpuAllocator>,
+    kernel_size: usize,
+    sigma: f32,
+) -> Result<(), ImageError> {
+    let kernel_x = kernels::gaussian_kernel_1d(kernel_size, sigma);
+    let kernel_y = kernels::gaussian_kernel_1d(kernel_size, sigma);
+    separable_filter(
+        src,
+        dst,
+        &kernel_x,
+        &kernel_y,
+        kornia_imgproc::parallel::ExecutionStrategy::AutoRows(src.width() * C),
+    )
+}
+
+fn gaussian_blur_u8_fixed<const C: usize>(
+    src: &Image<u8, C, CpuAllocator>,
+    dst: &mut Image<u8, C, CpuAllocator>,
+    kernel_size: usize,
+    sigma: f32,
+) -> Result<(), ImageError> {
+    let kernel_x = kernels::gaussian_kernel_1d(kernel_size, sigma);
+    let kernel_y = kernels::gaussian_kernel_1d(kernel_size, sigma);
+    separable_filter(
+        src,
+        dst,
+        &kernel_x,
+        &kernel_y,
+        kornia_imgproc::parallel::ExecutionStrategy::Fixed(8),
+    )
 }
 
 fn bench_filters(c: &mut Criterion) {
     let mut group = c.benchmark_group("Gaussian Blur");
 
-    for (width, height) in [(256, 224), (512, 448), (1024, 896)].iter() {
+    for (width, height) in [(256, 224), (512, 448), (1024, 896), (1920, 1080)].iter() {
         for kernel_size in [3, 5, 7, 9, 11, 17].iter() {
             group.throughput(criterion::Throughput::Elements(
                 (*width * *height * *kernel_size) as u64,
@@ -58,12 +115,60 @@ fn bench_filters(c: &mut Criterion) {
             );
 
             group.bench_with_input(
-                BenchmarkId::new("gaussian_blur_native_u8", &parameter_string),
+                BenchmarkId::new("gaussian_blur_native_u8_serial", &parameter_string),
                 &(&image_u8, &output_u8),
                 |b, i| {
                     let (src, mut dst) = (i.0, i.1.clone());
                     b.iter(|| {
                         std::hint::black_box(gaussian_blur_u8(src, &mut dst, *kernel_size, 1.5))
+                    })
+                },
+            );
+
+            group.bench_with_input(
+                BenchmarkId::new("gaussian_blur_native_u8_parallel", &parameter_string),
+                &(&image_u8, &output_u8),
+                |b, i| {
+                    let (src, mut dst) = (i.0, i.1.clone());
+                    b.iter(|| {
+                        std::hint::black_box(gaussian_blur_u8_parallel(
+                            src,
+                            &mut dst,
+                            *kernel_size,
+                            1.5,
+                        ))
+                    })
+                },
+            );
+
+            group.bench_with_input(
+                BenchmarkId::new("gaussian_blur_native_u8_autorows", &parameter_string),
+                &(&image_u8, &output_u8),
+                |b, i| {
+                    let (src, mut dst) = (i.0, i.1.clone());
+                    b.iter(|| {
+                        std::hint::black_box(gaussian_blur_u8_autorows(
+                            src,
+                            &mut dst,
+                            *kernel_size,
+                            1.5,
+                        ))
+                    })
+                },
+            );
+
+            group.bench_with_input(
+                BenchmarkId::new("gaussian_blur_native_u8_fixed", &parameter_string),
+                &(&image_u8, &output_u8),
+                |b, i| {
+                    let (src, mut dst) = (i.0, i.1.clone());
+                    b.iter(|| {
+                        std::hint::black_box(gaussian_blur_u8_fixed(
+                            src,
+                            &mut dst,
+                            *kernel_size,
+                            1.5,
+                        ))
                     })
                 },
             );
