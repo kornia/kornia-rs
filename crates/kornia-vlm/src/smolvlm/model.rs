@@ -89,6 +89,9 @@ impl SmolModel {
     ) -> Result<Tensor> {
         const BATCH_OR_SEQ_DIM: usize = 0;
         const CHANNEL_OR_EMBED_DIM: usize = 1;
+        let (seq_len, _) = inputs_embeds.dims2()?;
+        let chunk_size = 1024;
+        let mut chunks = Vec::new();
 
         if image_hidden_states.dim(BATCH_OR_SEQ_DIM)? == 0 {
             return Ok(inputs_embeds.clone());
@@ -108,18 +111,41 @@ impl SmolModel {
             .clamp(0.0, max_index)?
             .to_dtype(candle_core::DType::U32)?;
 
+        // Chunk based merging
+        for start in (0..seq_len).step_by(chunk_size) {
+            // safety check for final chunk
+            let len = usize::min(chunk_size, seq_len - start);
+
+            let mask_chunk = image_token_mask.narrow(0, start, len)?;
+            let text_chunk = inputs_embeds.narrow(0, start, len)?;
+            let image_indices_chunk = image_indices.narrow(0, start, len)?;
+
+            // Stretch the image embeddings chunk
+            let image_chunk_stretched =
+                image_hidden_states.index_select(&image_indices_chunk, BATCH_OR_SEQ_DIM)?;
+
+            // Merging
+            let mask_chunk_bool = mask_chunk.ne(0.0)?;
+            let mask_chunk_broad = mask_chunk_bool
+                .unsqueeze(CHANNEL_OR_EMBED_DIM)?
+                .broadcast_as(text_chunk.shape())?;
+            let merged_chunk = mask_chunk_broad.where_cond(&image_chunk_stretched, &text_chunk)?;
+            chunks.push(merged_chunk);
+        }
+
+        Tensor::cat(&chunks, 0)
         // Stretching the image embeddings
-        let image_stretched = image_hidden_states.index_select(&image_indices, BATCH_OR_SEQ_DIM)?;
+        // let image_stretched = image_hidden_states.index_select(&image_indices, BATCH_OR_SEQ_DIM)?;
 
-        // Merging
-        let mask_bool = image_token_mask.ne(0.0)?;
-        let mask_broadcast = mask_bool
-            .unsqueeze(CHANNEL_OR_EMBED_DIM)?
-            .broadcast_as(inputs_embeds.shape())?;
+        // // Merging
+        // let mask_bool = image_token_mask.ne(0.0)?;
+        // let mask_broadcast = mask_bool
+        //     .unsqueeze(CHANNEL_OR_EMBED_DIM)?
+        //     .broadcast_as(inputs_embeds.shape())?;
 
-        let merged_embeds = mask_broadcast.where_cond(&image_stretched, inputs_embeds)?;
+        // let merged_embeds = mask_broadcast.where_cond(&image_stretched, inputs_embeds)?;
 
-        Ok(merged_embeds)
+        // Ok(merged_embeds)
     }
 
     pub fn forward(
