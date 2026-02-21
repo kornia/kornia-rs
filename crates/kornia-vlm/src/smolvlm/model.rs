@@ -134,18 +134,6 @@ impl SmolModel {
         }
 
         Tensor::cat(&chunks, 0)
-        // Stretching the image embeddings
-        // let image_stretched = image_hidden_states.index_select(&image_indices, BATCH_OR_SEQ_DIM)?;
-
-        // // Merging
-        // let mask_bool = image_token_mask.ne(0.0)?;
-        // let mask_broadcast = mask_bool
-        //     .unsqueeze(CHANNEL_OR_EMBED_DIM)?
-        //     .broadcast_as(inputs_embeds.shape())?;
-
-        // let merged_embeds = mask_broadcast.where_cond(&image_stretched, inputs_embeds)?;
-
-        // Ok(merged_embeds)
     }
 
     pub fn forward(
