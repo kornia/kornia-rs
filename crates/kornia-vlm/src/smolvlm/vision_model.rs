@@ -291,12 +291,12 @@ impl SmolVision {
                 inverted_mask.where_cond(&neg_infs, &inverted_mask.to_dtype(DType::F32)?)?
             };
 
-        ctx.vis_introspector.start_tracking_depth();
+        let _ = ctx.vis_introspector.start_tracking_depth();
         for block in &self.blocks {
             hidden_states = block.forward(&hidden_states, &patch_attention_masks, ctx)?;
             ctx.vis_introspector.increment_depth();
         }
-        ctx.vis_introspector.stop_tracking_depth();
+        let _ = ctx.vis_introspector.stop_tracking_depth();
 
         self.post_layernorm.forward(&hidden_states)
     }

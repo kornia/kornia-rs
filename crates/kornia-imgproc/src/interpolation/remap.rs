@@ -47,10 +47,11 @@ pub fn remap<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     // parallelize the remap operation by rows
     parallel::par_iter_rows_resample(dst, map_x, map_y, |&x, &y, dst_pixel| {
         // interpolate the pixel value
-        dst_pixel.iter_mut().enumerate().for_each(|(c, pixel)| {
-            *pixel = interpolate_pixel(src, x, y, c, interpolation);
-        });
-    });
+        for (c, pixel) in dst_pixel.iter_mut().enumerate() {
+            *pixel = interpolate_pixel(src, x, y, c, interpolation)?;
+        }
+        Ok::<(), ImageError>(())
+    })?;
 
     Ok(())
 }

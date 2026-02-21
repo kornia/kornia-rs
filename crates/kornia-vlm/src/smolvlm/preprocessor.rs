@@ -131,22 +131,18 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
             }
         }
 
-        let img_padded = self
-            .buf_padded_img
-            .take()
-            .expect("Tried taking a None image");
-        let mask = self
-            .buf_padded_mask
-            .take()
-            .expect("Tried taking a None mask");
-        let global_img = self
-            .buf_global_padded_img
-            .take()
-            .expect("Tried taking a None global image");
-        let global_mask = self
-            .buf_global_padded_mask
-            .take()
-            .expect("Tried taking a None global mask");
+        let img_padded = self.buf_padded_img.take().ok_or_else(|| {
+            SmolVlmError::ImageProcessError("Tried taking a None image".to_string())
+        })?;
+        let mask = self.buf_padded_mask.take().ok_or_else(|| {
+            SmolVlmError::ImageProcessError("Tried taking a None mask".to_string())
+        })?;
+        let global_img = self.buf_global_padded_img.take().ok_or_else(|| {
+            SmolVlmError::ImageProcessError("Tried taking a None global image".to_string())
+        })?;
+        let global_mask = self.buf_global_padded_mask.take().ok_or_else(|| {
+            SmolVlmError::ImageProcessError("Tried taking a None global mask".to_string())
+        })?;
 
         // convert to tensors and normalize
         let mask_tensor = self.mask_to_tensor(mask, device)?;
@@ -200,9 +196,9 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
                 )?);
             }
 
-            let buf = buffer
-                .as_mut()
-                .expect("Tried to resize a None image buffer");
+            let buf = buffer.as_mut().ok_or_else(|| {
+                SmolVlmError::ImageProcessError("Tried to resize a None image buffer".to_string())
+            })?;
             resize_fast_rgb(img, buf, InterpolationMode::Lanczos)?;
 
             Ok(Cow::Borrowed(buf))
@@ -260,9 +256,9 @@ impl<A: ImageAllocator> SmolVlmImagePreprocessor<A> {
             )?);
         }
 
-        let padded_img = img_buffer
-            .as_mut()
-            .expect("Tried to pad a None image buffer");
+        let padded_img = img_buffer.as_mut().ok_or_else(|| {
+            SmolVlmError::ImageProcessError("Tried to pad a None image buffer".to_string())
+        })?;
 
         padded_img.as_slice_mut().fill(0);
 

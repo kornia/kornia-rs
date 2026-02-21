@@ -49,13 +49,13 @@ impl FpsCounter {
             return 0.0;
         }
 
-        let duration = self
-            .frame_times
-            .back()
-            .unwrap()
-            .duration_since(*self.frame_times.front().unwrap());
-
-        (self.frame_times.len() - 1) as f32 / duration.as_secs_f32()
+        if let (Some(first), Some(last)) = (self.frame_times.front(), self.frame_times.back()) {
+            let duration = last.duration_since(*first);
+            if duration.as_secs_f32() > 0.0 {
+                return (self.frame_times.len() - 1) as f32 / duration.as_secs_f32();
+            }
+        }
+        0.0
     }
 }
 

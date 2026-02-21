@@ -35,15 +35,11 @@ pub fn interpolate_pixel<const C: usize, A: ImageAllocator>(
     v: f32,
     c: usize,
     interpolation: InterpolationMode,
-) -> f32 {
+) -> Result<f32, kornia_image::ImageError> {
     match interpolation {
-        InterpolationMode::Bilinear => bilinear_interpolation(image, u, v, c),
-        InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v, c),
-        InterpolationMode::Lanczos => {
-            unimplemented!("Lanczos interpolation is not yet implemented")
-        }
-        InterpolationMode::Bicubic => {
-            unimplemented!("Bicubic interpolation is not yet implemented")
-        }
+        InterpolationMode::Bilinear => Ok(bilinear_interpolation(image, u, v, c)),
+        InterpolationMode::Nearest => Ok(nearest_neighbor_interpolation(image, u, v, c)),
+        InterpolationMode::Lanczos => Err(kornia_image::ImageError::UnsupportedInterpolation),
+        InterpolationMode::Bicubic => Err(kornia_image::ImageError::UnsupportedInterpolation),
     }
 }

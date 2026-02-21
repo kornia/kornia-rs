@@ -282,12 +282,12 @@ impl SmolText {
         index_pos: usize,
         ctx: &mut InferenceContext,
     ) -> Result<Tensor> {
-        ctx.text_introspector.start_tracking_depth();
+        let _ = ctx.text_introspector.start_tracking_depth();
         for block in &mut self.blocks {
             x = block.forward(&x, index_pos, ctx)?;
             ctx.text_introspector.increment_depth();
         }
-        ctx.text_introspector.stop_tracking_depth();
+        let _ = ctx.text_introspector.stop_tracking_depth();
 
         let x = self.norm.forward(&x)?;
         let logits = self.lm_head.forward(&x)?;

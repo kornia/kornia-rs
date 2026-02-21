@@ -34,7 +34,7 @@ pub fn distance_transform_vanilla(image: &Image<f32, 1>) -> Image<f32, 1> {
 //pub fn distance_transform(image: &Image<f32>) -> Image<f32> {
 pub fn distance_transform(image: &Image<f32, 1>) -> Result<Image<f32, 1>> {
     //let mut distance = ndarray::Array3::<f32>::zeros(image.data.dim());
-    let mut distance = Image::from_size_val(image.size(), 0.0f32).unwrap();
+    let mut distance = Image::from_size_val(image.size(), 0.0f32)?;
 
     // forwards pass
 

@@ -49,16 +49,23 @@ pub fn gaussian_kernel_1d(kernel_size: usize, sigma: f32) -> Vec<f32> {
 /// # Returns
 ///
 /// A vector of the kernel.
-pub fn sobel_kernel_1d(kernel_size: usize) -> (Vec<f32>, Vec<f32>) {
+pub fn sobel_kernel_1d(
+    kernel_size: usize,
+) -> Result<(Vec<f32>, Vec<f32>), kornia_image::ImageError> {
     let (kernel_x, kernel_y) = match kernel_size {
         3 => (vec![-1.0, 0.0, 1.0], vec![1.0, 2.0, 1.0]),
         5 => (
             vec![1.0, 4.0, 6.0, 4.0, 1.0],
             vec![-1.0, -2.0, 0.0, 2.0, 1.0],
         ),
-        _ => panic!("Invalid kernel size for sobel kernel"),
+        _ => {
+            return Err(kornia_image::ImageError::InvalidKernelLength(
+                kernel_size,
+                kernel_size,
+            ))
+        }
     };
-    (kernel_x, kernel_y)
+    Ok((kernel_x, kernel_y))
 }
 
 /// Create a normalized 2d sobel kernel.
@@ -122,11 +129,11 @@ mod tests {
 
     #[test]
     fn test_sobel_kernel_1d() {
-        let kernel = sobel_kernel_1d(3);
+        let kernel = sobel_kernel_1d(3).unwrap();
         assert_eq!(kernel.0, vec![-1.0, 0.0, 1.0]);
         assert_eq!(kernel.1, vec![1.0, 2.0, 1.0]);
 
-        let kernel = sobel_kernel_1d(5);
+        let kernel = sobel_kernel_1d(5).unwrap();
         assert_eq!(kernel.0, vec![1.0, 4.0, 6.0, 4.0, 1.0]);
         assert_eq!(kernel.1, vec![-1.0, -2.0, 0.0, 2.0, 1.0]);
     }

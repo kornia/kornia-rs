@@ -1027,7 +1027,7 @@ where
             .iter()
             .map(|v| format!("{v:.4}").len())
             .max()
-            .unwrap();
+            .unwrap_or(0);
 
         let scientific = width > 8;
 
@@ -1074,7 +1074,7 @@ where
             if value.is_empty() {
                 value = if scientific {
                     let num = format!("{v:.4e}");
-                    let (before, after) = num.split_once('e').unwrap();
+                    let (before, after) = num.split_once('e').unwrap_or((num.as_str(), ""));
                     let after = if let Some(stripped) = after.strip_prefix('-') {
                         format!("-{:0>2}", &stripped)
                     } else {

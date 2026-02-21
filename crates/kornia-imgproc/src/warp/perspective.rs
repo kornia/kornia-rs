@@ -118,12 +118,14 @@ pub fn warp_perspective<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     // apply affine transformation
     parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {
         if x >= 0.0f32 && x < src.cols() as f32 && y >= 0.0f32 && y < src.rows() as f32 {
-            dst_pixel
-                .iter_mut()
-                .enumerate()
-                .for_each(|(k, pixel)| *pixel = interpolate_pixel(src, x, y, k, interpolation));
+            dst_pixel.iter_mut().enumerate().try_for_each(|(k, pixel)| {
+                *pixel = interpolate_pixel(src, x, y, k, interpolation)?;
+                Ok::<(), ImageError>(())
+            })
+        } else {
+            Ok(())
         }
-    });
+    })?;
 
     Ok(())
 }

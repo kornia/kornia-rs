@@ -130,14 +130,12 @@ impl SmolModel {
             agg_image_hidden_states.push(image_hidden_states);
 
             if ctx.debug {
-                debug!(
-                    "[Sub-image] image_hidden_states length: {}",
-                    agg_image_hidden_states
-                        .last()
-                        .expect("No image hidden states")
-                        .dims2()?
-                        .0
-                );
+                if let Some(last) = agg_image_hidden_states.last() {
+                    debug!(
+                        "[Sub-image] image_hidden_states length: {}",
+                        last.dims2()?.0
+                    );
+                }
             }
 
             ctx.vis_introspector.increment_batch_pos();

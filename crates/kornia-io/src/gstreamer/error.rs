@@ -73,6 +73,10 @@ pub enum StreamCaptureError {
     /// An error occurred when the image is not valid.
     #[error(transparent)]
     ImageError(#[from] kornia_image::ImageError),
+
+    /// An error occurred when joining a thread.
+    #[error("Failed to join thread")]
+    JoinThreadError,
 }
 
 /// Error type for video reader

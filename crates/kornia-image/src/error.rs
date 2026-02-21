@@ -56,4 +56,8 @@ pub enum ImageError {
     /// Error when the channel count is unsupported.
     #[error("Unsupported channel count {0}")]
     UnsupportedChannelCount(usize),
+
+    /// Error when interpolation mode is unsupported.
+    #[error("Unsupported interpolation mode")]
+    UnsupportedInterpolation,
 }

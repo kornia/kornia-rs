@@ -104,12 +104,12 @@ pub fn par_iter_rows_val_two<
 }
 
 /// Apply a function to each pixel for grid sampling in parallel.
-pub fn par_iter_rows_resample<const C: usize, A: ImageAllocator>(
+pub fn par_iter_rows_resample<const C: usize, A: ImageAllocator, E: Send>(
     dst: &mut Image<f32, C, A>,
     map_x: &Tensor2<f32, CpuAllocator>,
     map_y: &Tensor2<f32, CpuAllocator>,
-    f: impl Fn(&f32, &f32, &mut [f32]) + Send + Sync,
-) {
+    f: impl Fn(&f32, &f32, &mut [f32]) -> Result<(), E> + Send + Sync,
+) -> Result<(), E> {
     let cols = dst.cols();
     let dst_slice = dst.as_slice_mut();
     let map_x_slice = map_x.as_slice();
@@ -119,12 +119,10 @@ pub fn par_iter_rows_resample<const C: usize, A: ImageAllocator>(
         .par_chunks_exact_mut(C * cols)
         .zip(map_x_slice.par_chunks_exact(cols))
         .zip(map_y_slice.par_chunks_exact(cols))
-        .for_each(|((dst_chunk, map_x_chunk), map_y_chunk)| {
+        .try_for_each(|((dst_chunk, map_x_chunk), map_y_chunk)| {
             dst_chunk
                 .chunks_exact_mut(C)
                 .zip(map_x_chunk.iter().zip(map_y_chunk.iter()))
-                .for_each(|(dst_pixel, (x, y))| {
-                    f(x, y, dst_pixel);
-                });
-        });
+                .try_for_each(|(dst_pixel, (x, y))| f(x, y, dst_pixel))
+        })
 }
