@@ -147,8 +147,7 @@ pub fn icp_vanilla(
 mod tests {
     use super::{icp_vanilla, ICPConvergenceCriteria};
     use crate::{
-        linalg::transform_points3d, 
-        pointcloud::PointCloud,
+        linalg::transform_points3d, pointcloud::PointCloud,
         transforms::axis_angle_to_rotation_matrix,
     };
     #[test]
@@ -192,9 +191,9 @@ mod tests {
         // Compute angular rotation error
         // R_error = R_estimated^T * R_ground_truth
         let mut r_error = [[0.0; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                r_error[i][j] = result.rotation[0][i] * dst_r_src[0][j]
+        for (i, r_error_row) in r_error.iter_mut().enumerate() {
+            for (j, r_error_cell) in r_error_row.iter_mut().enumerate() {
+                *r_error_cell = result.rotation[0][i] * dst_r_src[0][j]
                     + result.rotation[1][i] * dst_r_src[1][j]
                     + result.rotation[2][i] * dst_r_src[2][j];
             }
@@ -205,11 +204,10 @@ mod tests {
         let angular_error = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
 
         // Compute L2 translation error
-        let translation_error = (
-            (result.translation[0] - dst_t_src[0]).powi(2) +
-            (result.translation[1] - dst_t_src[1]).powi(2) +
-            (result.translation[2] - dst_t_src[2]).powi(2)
-        ).sqrt();
+        let translation_error = ((result.translation[0] - dst_t_src[0]).powi(2)
+            + (result.translation[1] - dst_t_src[1]).powi(2)
+            + (result.translation[2] - dst_t_src[2]).powi(2))
+        .sqrt();
 
         // Assert using meaningful geometric metrics
         assert!(
