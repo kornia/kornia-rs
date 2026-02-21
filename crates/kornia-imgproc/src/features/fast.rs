@@ -1,575 +1,355 @@
-use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use std::ops::ControlFlow;
+
+use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
+use kornia_tensor::CpuAllocator;
 use rayon::prelude::*;
-use wide::{i8x16, u8x16, CmpGt, CmpLt};
 
-/// Constants to be used.
-const MIN_IMAGE_WIDTH: usize = 19;
-const MIN_IMAGE_HEIGHT: usize = 6;
-
-/// The radius of the FAST Bresenham circle.
-const KERNEL_RADIUS: usize = 3;
-const PATTERN_LEN: usize = 16;
-const RING_BUFFER_LEN: usize = 25;
-const FAST9_OFFSETS: [(isize, isize); PATTERN_LEN] = [
-    (0, -3),
-    (1, -3),
-    (2, -2),
-    (3, -1),
-    (3, 0),
-    (3, 1),
-    (2, 2),
-    (1, 3),
-    (0, 3),
-    (-1, 3),
-    (-2, 2),
-    (-3, 1),
-    (-3, 0),
-    (-3, -1),
-    (-2, -2),
-    (-1, -3),
-];
-
-/// FAST-9 corner detector with optional non-maximum suppression and SIMD support.
-#[derive(Clone)]
-pub struct FastDetector {
-    /// Intensity difference threshold.
-    pub threshold: u8,
-
-    /// Enable or disable non-maximum suppression.
-    pub nonmax_suppression: bool,
+#[derive(Clone, Copy, PartialEq)]
+enum PixelType {
+    Brighter,
+    Darker,
+    Similar,
 }
 
-/// Using this to reduce a u8x16 vector to its maximum element, because wide doesn't have it yet.
-#[inline(always)]
-fn reduce_max_u8x16(v: u8x16) -> u8 {
-    let arr = v.to_array();
-    arr.into_iter().fold(u8::MIN, |a, b| a.max(b))
+/// A FAST (Features from Accelerated Segment Test) feature detector for corner detection in images.
+#[derive(Clone)]
+pub struct FastDetector {
+    /// The intensity threshold for detecting corners.
+    pub threshold: f32,
+    /// The minimum distance between detected keypoints.
+    pub min_distance: usize,
+    /// The minimum arc length for a sequence of contiguous pixels to be considered a corner.
+    pub arc_length: usize,
+    corner_response: Image<f32, 1, CpuAllocator>,
+    mask: Image<bool, 1, CpuAllocator>,
+    taken: Vec<bool>,
 }
 
 impl FastDetector {
-    /// Creates a new FAST detector instance.
+    /// Creates a new `FastDetector` with the specified parameters.
     ///
     /// # Arguments
     ///
-    /// * `threshold` - Intensity difference threshold.
-    /// * `nonmax_suppression` - Enable or disable non-maximum suppression.
-    pub fn new(threshold: u8, nonmax_suppression: bool) -> Self {
-        Self {
-            threshold,
-            nonmax_suppression,
-        }
-    }
-
-    /// Detects FAST-9 keypoints in a grayscale image.
-    ///
-    /// # Arguments
-    ///
-    /// * `image` - Input image of type `Image<u8, 1, A>`.
+    /// * `image_size` - The size of the image to process.
+    /// * `threshold` - The intensity threshold for detecting corners.
+    /// * `arc_length` - The minimum arc length for a sequence of contiguous pixels to be considered a corner.
+    /// * `min_distance` - The minimum distance between detected keypoints.
     ///
     /// # Returns
     ///
-    /// A vector of `(x, y)` coordinates representing detected keypoints.
+    /// Returns a `Result` containing the new `FastDetector` or an `ImageError`.
+    pub fn new(
+        image_size: ImageSize,
+        threshold: f32,
+        arc_length: usize,
+        min_distance: usize,
+    ) -> Result<Self, ImageError> {
+        Ok(Self {
+            threshold,
+            min_distance,
+            arc_length,
+            corner_response: Image::from_size_val(image_size, 0.0, CpuAllocator)?,
+            mask: Image::from_size_val(image_size, false, CpuAllocator)?,
+            taken: vec![false; image_size.height * image_size.width],
+        })
+    }
+
+    /// Clears the internal state of the detector, marking it ready to detect again.
+    pub fn clear(&mut self) {
+        self.taken.par_iter_mut().for_each(|px| *px = false);
+    }
+
+    /// Computes the corner response for the input image.
     ///
-    pub fn detect<A: ImageAllocator>(
-        &self,
-        image: &Image<u8, 1, A>,
-    ) -> Result<Vec<[usize; 2]>, ImageError> {
-        let width = image.width();
-        let height = image.height();
-        let stride = width; // assuming there is no padding
-        let img_ptr = image.as_ptr() as usize;
+    /// # Arguments
+    ///
+    /// * `src` - The source grayscale image.
+    ///
+    /// # Returns
+    ///
+    /// Returns a reference to the image containing the corner response.
+    pub fn compute_corner_response<A: ImageAllocator>(
+        &mut self,
+        src: &Image<f32, 1, A>,
+    ) -> &Image<f32, 1, CpuAllocator> {
+        let src_slice = src.as_slice();
 
-        // Early exit for small images
-        if width < MIN_IMAGE_WIDTH || height < MIN_IMAGE_HEIGHT {
-            return Ok(vec![]);
-        }
+        let width = src.width();
+        let height = src.height();
 
-        // Calculate pixel offsets
-        let mut pixel_off = [0isize; RING_BUFFER_LEN];
+        let corner_response = self.corner_response.as_slice_mut();
 
-        for i in 0..PATTERN_LEN {
-            pixel_off[i] = FAST9_OFFSETS[i].1 * stride as isize + FAST9_OFFSETS[i].0;
-        }
+        const RP: [isize; 16] = [0, 1, 2, 3, 3, 3, 2, 1, 0, -1, -2, -3, -3, -3, -2, -1];
+        const CP: [isize; 16] = [3, 3, 2, 1, 0, -1, -2, -3, -3, -3, -2, -1, 0, 1, 2, 3];
 
-        for i in 0..9 {
-            pixel_off[PATTERN_LEN + i] = pixel_off[i];
-        }
+        corner_response[3 * width..(height - 3) * width]
+            .par_chunks_mut(width)
+            .enumerate()
+            .for_each(|(row_idx, row)| {
+                let y = row_idx + 3;
+                let mut bins = [PixelType::Similar; 16];
+                let mut circle_intensities = [0f32; 16];
 
-        // Parallelising over chunks of rows
-        let detect_start_y = KERNEL_RADIUS;
-        let detect_end_y = height - (KERNEL_RADIUS + 1);
-        let chunk_size = 64;
+                for x in 3..width - 3 {
+                    let ix = x;
+                    let src_ix = y * width + x;
+                    let curr_pixel = src_slice[src_ix];
+                    let lower_threshold = curr_pixel - self.threshold;
+                    let upper_threshold = curr_pixel + self.threshold;
 
-        let chunks: Vec<(usize, usize)> = (detect_start_y..detect_end_y)
-            .step_by(chunk_size)
-            .map(|s| (s, (s + chunk_size).min(detect_end_y)))
-            .collect();
+                    let mut speed_sum_b = 0;
+                    let mut speed_sum_d = 0;
 
-        let mut keypoints: Vec<[usize; 2]> = chunks
-            .into_par_iter()
-            .map(|(start_row, end_row)| {
-                let ptr = img_ptr as *const u8;
-
-                // Buffers for fast scores.
-                let mut buf = [vec![0u8; width], vec![0u8; width], vec![0u8; width]];
-
-                let mut cpbuf = [
-                    Vec::<usize>::with_capacity(128),
-                    Vec::<usize>::with_capacity(128),
-                    Vec::<usize>::with_capacity(128),
-                ];
-
-                let mut local_kps = Vec::new();
-
-                unsafe {
-                    if start_row > KERNEL_RADIUS {
-                        detect_row(
-                            ptr,
-                            start_row - 1,
-                            width,
-                            stride,
-                            self.threshold,
-                            self.nonmax_suppression,
-                            &pixel_off,
-                            &mut buf[0],
-                            &mut cpbuf[0],
-                        );
-                    }
-
-                    detect_row(
-                        ptr,
-                        start_row,
-                        width,
-                        stride,
-                        self.threshold,
-                        self.nonmax_suppression,
-                        &pixel_off,
-                        &mut buf[1],
-                        &mut cpbuf[1],
-                    );
-
-                    // NMS
-                    for y in start_row..end_row {
-                        let i_top = (y - start_row) % 3;
-                        let i_mid = (y - start_row + 1) % 3;
-                        let i_bot = (y - start_row + 2) % 3;
-
-                        buf[i_bot].fill(0);
-                        cpbuf[i_bot].clear();
-
-                        detect_row(
-                            ptr,
-                            y + 1,
-                            width,
-                            stride,
-                            self.threshold,
-                            self.nonmax_suppression,
-                            &pixel_off,
-                            &mut buf[i_bot],
-                            &mut cpbuf[i_bot],
-                        );
-
-                        let candidates = &cpbuf[i_mid];
-                        let top = &buf[i_top];
-                        let mid = &buf[i_mid];
-                        let bot = &buf[i_bot];
-
-                        for &x in candidates {
-                            let s = mid[x];
-
-                            if !self.nonmax_suppression {
-                                local_kps.push([x, y]);
-                                continue;
-                            }
-
-                            if s > top[x - 1]
-                                && s > top[x]
-                                && s > top[x + 1]
-                                && s > mid[x - 1]
-                                && s > mid[x + 1]
-                                && s > bot[x - 1]
-                                && s > bot[x]
-                                && s > bot[x + 1]
-                            {
-                                local_kps.push([x, y]);
-                            }
+                    for &k in &[0, 4, 8, 12] {
+                        let ik =
+                            ((y as isize + RP[k]) * width as isize + (x as isize + CP[k])) as usize;
+                        let ring_pixel = src_slice[ik];
+                        if ring_pixel > upper_threshold {
+                            speed_sum_b += 1;
+                        } else if ring_pixel < lower_threshold {
+                            speed_sum_d += 1;
                         }
                     }
+                    if speed_sum_d < 3 && speed_sum_b < 3 {
+                        row[ix] = 0.0;
+                        continue;
+                    }
+
+                    for k in 0..16 {
+                        let ik =
+                            ((y as isize + RP[k]) * width as isize + (x as isize + CP[k])) as usize;
+                        circle_intensities[k] = src_slice[ik];
+                        bins[k] = if circle_intensities[k] > upper_threshold {
+                            PixelType::Brighter
+                        } else if circle_intensities[k] < lower_threshold {
+                            PixelType::Darker
+                        } else {
+                            PixelType::Similar
+                        };
+                    }
+
+                    let bright_response = corner_fast_response(
+                        curr_pixel,
+                        &circle_intensities,
+                        &bins,
+                        PixelType::Brighter,
+                        self.arc_length,
+                    );
+
+                    let dark_response = corner_fast_response(
+                        curr_pixel,
+                        &circle_intensities,
+                        &bins,
+                        PixelType::Darker,
+                        self.arc_length,
+                    );
+
+                    row[ix] = bright_response.max(dark_response);
                 }
+            });
 
-                local_kps
-            })
-            .flatten()
-            .collect();
+        &self.corner_response
+    }
 
-        // Handle last row separately as NMS can't be applied on it but fast still can.
-        let y_last = height - (KERNEL_RADIUS + 1);
-        let ptr = img_ptr as *const u8;
-        let mut row_buf = [vec![0u8; width], vec![0u8; width]];
-        let mut row_cp = [Vec::new(), Vec::new()];
+    /// Extracts keypoints from the computed corner response.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing a vector of keypoint coordinates or an `ImageError`.
+    pub fn extract_keypoints(&mut self) -> Result<Vec<[usize; 2]>, ImageError> {
+        get_peak_mask(&self.corner_response, &mut self.mask, self.threshold);
+        exclude_border(&mut self.mask, self.min_distance);
 
-        unsafe {
-            detect_row(
-                ptr,
-                y_last - 1,
-                width,
-                stride,
-                self.threshold,
-                self.nonmax_suppression,
-                &pixel_off,
-                &mut row_buf[0],
-                &mut row_cp[0],
-            );
-            detect_row(
-                ptr,
-                y_last,
-                width,
-                stride,
-                self.threshold,
-                self.nonmax_suppression,
-                &pixel_off,
-                &mut row_buf[1],
-                &mut row_cp[1],
-            );
-        }
-
-        let top = &row_buf[0];
-        let mid = &row_buf[1];
-
-        for &x in &row_cp[1] {
-            let s = mid[x];
-
-            if !self.nonmax_suppression {
-                keypoints.push([x, y_last]);
-                continue;
-            }
-
-            if s > top[x - 1] && s > top[x] && s > top[x + 1] && s > mid[x - 1] && s > mid[x + 1] {
-                keypoints.push([x, y_last]);
-            }
-        }
-
-        Ok(keypoints)
+        let coordinates = get_high_intensity_peaks(
+            &self.corner_response,
+            &self.mask,
+            self.min_distance,
+            &mut self.taken,
+        );
+        Ok(coordinates)
     }
 }
 
-/// Convenience wrapper for the FAST-9 detector using the legacy
-/// `fast_feature_detector` API.
-///
-///
-/// # Arguments
-///
-/// * `image` - Input image of type `Image<u8, 1, A>`.
-/// * `threshold` - Intensity difference threshold.
-/// * `nonmax_suppression` - Enable or disable non-maximum suppression.
-///
-/// # Returns
-///
-/// A vector of `(x, y)` coordinates representing detected keypoints.
-pub fn fast_feature_detector<A: ImageAllocator>(
-    image: &Image<u8, 1, A>,
-    threshold: u8,
-    nonmax_suppression: bool,
-) -> Result<Vec<[usize; 2]>, ImageError> {
-    FastDetector::new(threshold, nonmax_suppression).detect(image)
+fn corner_fast_response(
+    curr_pixel: f32,
+    circle_intensities: &[f32; 16],
+    bins: &[PixelType; 16],
+    state: PixelType,
+    n: usize,
+) -> f32 {
+    let mut consecutive_count = 0;
+    let mut curr_response = 0.0;
+
+    if let ControlFlow::Break(_) = (0..15 + n).try_for_each(|l| {
+        if bins[l % 16] == state {
+            consecutive_count += 1;
+            if consecutive_count == n {
+                curr_response = 0.0;
+                circle_intensities.iter().for_each(|m| {
+                    curr_response += (m - curr_pixel).abs();
+                });
+
+                return ControlFlow::Break(());
+            }
+        } else {
+            consecutive_count = 0;
+        }
+
+        ControlFlow::Continue(())
+    }) {
+        return curr_response;
+    }
+
+    0.0
 }
 
-/// Detects FAST-9 corners in a single image row using SIMD.
-#[allow(clippy::too_many_arguments)]
-#[inline(always)]
-unsafe fn detect_row(
-    img_base: *const u8,
-    y: usize,
-    width: usize,
-    stride: usize,
-    threshold: u8,
-    compute_score: bool,
-    offsets: &[isize; RING_BUFFER_LEN],
-    score_row: &mut [u8],
-    corner_pos: &mut Vec<usize>,
+fn get_peak_mask<A: ImageAllocator>(
+    src: &Image<f32, 1, A>,
+    mask: &mut Image<bool, 1, A>,
+    threshold: f32,
 ) {
-    let row_ptr = img_base.add(y * stride);
+    let src_slice = src.as_slice();
+    let mask_slice = mask.as_slice_mut();
 
-    // SIMD constants
-    let flip = u8x16::splat(0x80);
-    let t_val = u8x16::splat(threshold);
-    let k8 = i8x16::splat(8);
-    let max_u8 = u8x16::splat(255);
-
-    let mut x = KERNEL_RADIUS;
-    let limit = width - KERNEL_RADIUS - 16;
-
-    while x <= limit {
-        let ptr = row_ptr.add(x);
-
-        let chunk = ptr.cast::<[u8; 16]>().read_unaligned();
-        let v = u8x16::new(chunk);
-
-        let v_plus_t = v.min(max_u8 - t_val) + t_val;
-        let v_minus_t = v.max(t_val) - t_val;
-
-        let v0: i8x16 = std::mem::transmute(v_plus_t ^ flip);
-        let v1: i8x16 = std::mem::transmute(v_minus_t ^ flip);
-
-        let load_simd = |k: usize| -> i8x16 {
-            let p = ptr.offset(offsets[k]);
-            let n_chunk = p.cast::<[u8; 16]>().read_unaligned();
-            let n = u8x16::new(n_chunk);
-            std::mem::transmute(n ^ flip)
-        };
-
-        let x0 = load_simd(0);
-        let x4 = load_simd(4);
-        let x8 = load_simd(8);
-        let x12 = load_simd(12);
-
-        let mb0 = v0.simd_lt(x0);
-        let mb4 = v0.simd_lt(x4);
-        let mb8 = v0.simd_lt(x8);
-        let mb12 = v0.simd_lt(x12);
-
-        let md0 = x0.simd_lt(v1);
-        let md4 = x4.simd_lt(v1);
-        let md8 = x8.simd_lt(v1);
-        let md12 = x12.simd_lt(v1);
-
-        let cross_bright = (mb0 & mb4) | (mb4 & mb8) | (mb8 & mb12) | (mb12 & mb0);
-        let cross_dark = (md0 & md4) | (md4 & md8) | (md8 & md12) | (md12 & md0);
-
-        if (cross_bright | cross_dark).any() {
-            let mut cb = i8x16::ZERO;
-            let mut cd = i8x16::ZERO;
-            let mut max_b = u8x16::ZERO;
-            let mut max_d = u8x16::ZERO;
-
-            for k in 0..RING_BUFFER_LEN {
-                let xn = load_simd(k);
-                let ib = v0.simd_lt(xn);
-                let id = xn.simd_lt(v1);
-
-                cb = (cb - ib) & ib;
-                cd = (cd - id) & id;
-
-                max_b = max_b.max(std::mem::transmute::<i8x16, u8x16>(cb));
-                max_d = max_d.max(std::mem::transmute::<i8x16, u8x16>(cd));
-            }
-
-            let mb_i: i8x16 = std::mem::transmute(max_b);
-            let md_i: i8x16 = std::mem::transmute(max_d);
-
-            let mask = (mb_i.simd_gt(k8) | md_i.simd_gt(k8)).to_bitmask();
-
-            if mask != 0 {
-                let mut m = mask;
-                while m != 0 {
-                    let i = m.trailing_zeros() as usize;
-                    let rx = x + i;
-
-                    corner_pos.push(rx);
-                    score_row[rx] = if compute_score {
-                        fast_score(row_ptr.add(rx), offsets)
-                    } else {
-                        1
-                    };
-                    m &= !(1 << i);
-                }
-            }
-        }
-        x += 16;
-    }
-
-    // Scalar fallback for tail pixels as they don't line up for SIMD
-    #[allow(clippy::needless_range_loop)]
-    for i in x..(width - KERNEL_RADIUS) {
-        let ptr = row_ptr.add(i);
-        let v = *ptr as i16;
-        let t = threshold as i16;
-
-        let get = |idx| *ptr.offset(offsets[idx]) as i16;
-        let p0 = get(0);
-        let p4 = get(4);
-        let p8 = get(8);
-        let p12 = get(12);
-
-        let b0 = p0 > v + t;
-        let d0 = p0 < v - t;
-        let b4 = p4 > v + t;
-        let d4 = p4 < v - t;
-        let b8 = p8 > v + t;
-        let d8 = p8 < v - t;
-        let b12 = p12 > v + t;
-        let d12 = p12 < v - t;
-
-        if (b12 || b4) && (b8 || b0) || (d12 || d4) && (d8 || d0) {
-            let mut cb = 0;
-            let mut cd = 0;
-            let mut max_b = 0;
-            let mut max_d = 0;
-
-            for k in 0..RING_BUFFER_LEN {
-                let pk = get(k);
-                if pk > v + t {
-                    cb += 1;
-                } else {
-                    max_b = max_b.max(cb);
-                    cb = 0;
-                }
-                if pk < v - t {
-                    cd += 1;
-                } else {
-                    max_d = max_d.max(cd);
-                    cd = 0;
-                }
-            }
-
-            if max_b.max(cb) >= 9 || max_d.max(cd) >= 9 {
-                corner_pos.push(i);
-                score_row[i] = if compute_score {
-                    fast_score(ptr, offsets)
-                } else {
-                    1
-                };
-            }
-        }
-    }
+    src_slice
+        .par_iter()
+        .zip(mask_slice)
+        .for_each(|(src, mask)| *mask = *src > threshold);
 }
 
-/// Computes the FAST-9 score for a pixel
-#[inline(always)]
-unsafe fn fast_score(center_ptr: *const u8, offsets: &[isize; RING_BUFFER_LEN]) -> u8 {
-    let v = *center_ptr;
-    let mut d_bright = [0u8; 32];
-    let mut d_dark = [0u8; 32];
+fn exclude_border<A: ImageAllocator>(label: &mut Image<bool, 1, A>, border_width: usize) {
+    let label_size = label.size();
+    let label_slice = label.as_slice_mut();
 
-    for i in 0..RING_BUFFER_LEN {
-        let p = *center_ptr.offset(offsets[i]);
-        d_bright[i] = p.saturating_sub(v);
-        d_dark[i] = v.saturating_sub(p);
+    (0..label_size.height).for_each(|y| {
+        let iy = y * label_size.width;
+
+        (0..label_size.width).for_each(|x| {
+            if x < border_width
+                || x >= label_size.width.saturating_sub(border_width)
+                || y < border_width
+                || y >= label_size.height.saturating_sub(border_width)
+            {
+                label_slice[iy + x] = false;
+            }
+        });
+    });
+}
+
+fn get_high_intensity_peaks<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, 1, A1>,
+    mask: &Image<bool, 1, A2>,
+    min_distance: usize,
+    taken: &mut [bool],
+) -> Vec<[usize; 2]> {
+    let src_size = src.size();
+    let width = src_size.width;
+    let height = src_size.height;
+    let src_slice = src.as_slice();
+
+    let mut coords_with_response: Vec<([usize; 2], f32)> = mask
+        .as_slice()
+        .iter()
+        .enumerate()
+        .filter(|&(_, &value)| value)
+        .map(|(i, _)| {
+            let y = i / width;
+            let x = i % width;
+            ([y, x], src_slice[i])
+        })
+        .collect();
+
+    coords_with_response
+        .sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut result = Vec::new();
+
+    for (coord, _) in coords_with_response {
+        let y = coord[0];
+        let x = coord[1];
+        let idx = y * width + x;
+
+        // If this location is already suppressed, skip
+        if taken[idx] {
+            continue;
+        }
+
+        // Accept this peak
+        result.push([y, x]);
+
+        // Suppress all within min_distance
+        let y0 = y.saturating_sub(min_distance);
+        let y1 = (y + min_distance + 1).min(height);
+        let x0 = x.saturating_sub(min_distance);
+        let x1 = (x + min_distance + 1).min(width);
+
+        (y0..y1)
+            .flat_map(|yy| (x0..x1).map(move |xx| (yy, xx)))
+            .filter(|&(yy, xx)| {
+                (yy as isize - y as isize)
+                    .abs()
+                    .max((xx as isize - x as isize).abs())
+                    < min_distance as isize
+            })
+            .for_each(|(yy, xx)| {
+                taken[yy * width + xx] = true;
+            });
     }
 
-    let load = |arr: &[u8; 32], k| -> u8x16 {
-        let ptr = arr.as_ptr().add(k);
-        let chunk = ptr.cast::<[u8; 16]>().read_unaligned();
-        u8x16::new(chunk)
-    };
-
-    let solve_max_arc = |arr: &[u8; 32]| -> u8 {
-        let m01 = load(arr, 0).min(load(arr, 1));
-        let m23 = load(arr, 2).min(load(arr, 3));
-        let m45 = load(arr, 4).min(load(arr, 5));
-        let m67 = load(arr, 6).min(load(arr, 7));
-
-        let min_arc = m01.min(m23).min(m45.min(m67)).min(load(arr, 8));
-        reduce_max_u8x16(min_arc)
-    };
-
-    solve_max_arc(&d_bright).max(solve_max_arc(&d_dark))
+    result
 }
+
 #[cfg(test)]
 mod tests {
+    use crate::color::gray_from_rgb_u8;
+
     use super::*;
-    use kornia_image::{allocator::CpuAllocator, Image, ImageError};
-
-    fn make_image(
-        width: usize,
-        height: usize,
-        data: Vec<u8>,
-    ) -> Result<Image<u8, 1, CpuAllocator>, ImageError> {
-        Image::new([width, height].into(), data, CpuAllocator)
-    }
-
-    fn create_square_pattern() -> Image<u8, 1, CpuAllocator> {
-        let width = 50;
-        let height = 50;
-        let mut data = vec![50u8; width * height];
-
-        for y in 15..35 {
-            for x in 15..35 {
-                data[y * width + x] = 200;
-            }
-        }
-
-        make_image(width, height, data).unwrap()
-    }
-    #[test]
-    fn test_nms_suppression() {
-        let width = 50;
-        let height = 50;
-        let mut data = vec![50u8; width * height];
-
-        for y in 15..35 {
-            for x in 15..35 {
-                data[y * width + x] = 200;
-            }
-        }
-
-        data[15 * width + 15] = 255;
-        data[15 * width + 34] = 255;
-        data[34 * width + 15] = 255;
-        data[34 * width + 34] = 255;
-
-        let image = make_image(width, height, data).unwrap();
-
-        let detector_raw = FastDetector::new(50, false);
-        let kps_raw = detector_raw.detect(&image).unwrap();
-
-        let detector_nms = FastDetector::new(50, true);
-        let kps_nms = detector_nms.detect(&image).unwrap();
-
-        assert!(
-            kps_raw.len() > kps_nms.len(),
-            "NMS should significantly reduce the number of keypoints"
-        );
-
-        assert_eq!(
-            kps_nms.len(),
-            4,
-            "NMS should return exactly 4 corners for the boosted square"
-        );
-    }
-    #[test]
-    fn test_fast_detection() {
-        let image = create_square_pattern();
-        let detector = FastDetector::new(50, false);
-
-        let keypoints = detector.detect(&image).unwrap();
-
-        assert!(
-            keypoints.len() > 4,
-            "Without NMS, expected clusters (>4), found {}",
-            keypoints.len()
-        );
-    }
+    use kornia_image::Image;
+    use kornia_io::jpeg::read_image_jpeg_rgb8;
+    use kornia_tensor::CpuAllocator;
+    use std::collections::HashSet;
 
     #[test]
-    fn test_flat_color_image() {
-        let width = 64;
-        let height = 64;
-        let data = vec![128u8; width * height];
-        let image = make_image(width, height, data).unwrap();
+    fn test_fast_feature_detector() -> Result<(), Box<dyn std::error::Error>> {
+        #[rustfmt::skip]
+        let img = read_image_jpeg_rgb8("../../tests/data/dog.jpeg")?;
+        let mut gray_img = Image::from_size_val(img.size(), 0, CpuAllocator)?;
+        gray_from_rgb_u8(&img, &mut gray_img)?;
 
-        let detector = FastDetector::new(5, true);
-        let keypoints = detector.detect(&image).unwrap();
+        let mut gray_imgf32 = Image::from_size_val(img.size(), 0.0, CpuAllocator)?;
+        gray_img
+            .as_slice()
+            .iter()
+            .zip(gray_imgf32.as_slice_mut())
+            .for_each(|(&p, m)| {
+                *m = p as f32 / 255.0;
+            });
 
-        assert!(
-            keypoints.is_empty(),
-            "Flat image should contain no keypoints"
-        );
-    }
+        let expected_keypoints = vec![
+            [32, 86],
+            [60, 75],
+            [69, 184],
+            [71, 84],
+            [72, 169],
+            [109, 69],
+            [109, 125],
+            [120, 64],
+            [129, 162],
+            [134, 95],
+            [141, 121],
+            [153, 104],
+            [162, 148],
+        ];
 
-    #[test]
-    fn test_image_too_small() {
-        let width = 18;
-        let height = 20;
-        let data = vec![0u8; width * height];
-        let image = make_image(width, height, data).unwrap();
+        const THRESHOLD: f32 = 0.15;
 
-        let detector = FastDetector::new(10, true);
-        let keypoints = detector.detect(&image).unwrap();
-
-        assert!(
-            keypoints.is_empty(),
-            "Image width < 19 should return empty result immediately"
-        );
+        let mut fast_detector = FastDetector::new(gray_img.size(), THRESHOLD, 12, 10)?;
+        fast_detector.compute_corner_response(&gray_imgf32);
+        let keypoints = fast_detector.extract_keypoints()?;
+        assert_eq!(keypoints.len(), expected_keypoints.len());
+        let expected: HashSet<[usize; 2]> = expected_keypoints.into_iter().collect();
+        let actual: HashSet<[usize; 2]> = keypoints.into_iter().collect();
+        assert_eq!(actual, expected);
+        Ok(())
     }
 }

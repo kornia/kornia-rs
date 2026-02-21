@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::Image;
 use kornia_imgproc::{
@@ -11,7 +13,7 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
     let mut group = c.benchmark_group("FastCornerDetect");
 
     let img_path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/dog.jpeg");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/apriltags_tag36h11.jpg");
     let img_rgb8 = io::read_image_any_rgb8(img_path).unwrap();
 
     let new_size = [1920, 1080].into();
@@ -21,15 +23,29 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
     let mut img_gray8 = Image::from_size_val(new_size, 0, CpuAllocator).unwrap();
     gray_from_rgb_u8(&img_resized, &mut img_gray8).unwrap();
 
+    let mut img_grayf32 = Image::from_size_val(new_size, 0.0, CpuAllocator).unwrap();
+    img_gray8
+        .as_slice()
+        .iter()
+        .zip(img_grayf32.as_slice_mut())
+        .for_each(|(&p, m)| {
+            *m = p as f32 / 255.0;
+        });
+
+    let mut fast_detector = FastDetector::new(new_size, 0.23, 9, 1).unwrap();
+
     let parameter_string = format!("{}x{}", new_size.width, new_size.height);
 
     group.bench_with_input(
         BenchmarkId::new("fast_native_cpu", &parameter_string),
-        &(img_gray8),
+        &(img_grayf32),
         |b, i| {
             let src = i.clone();
             b.iter(|| {
-                let _res = std::hint::black_box(fast_feature_detector(&src, 60, false)).unwrap();
+                fast_detector.compute_corner_response(&src);
+                let _res = std::hint::black_box(fast_detector.extract_keypoints()).unwrap();
+
+                fast_detector.clear();
             })
         },
     );
@@ -104,10 +120,9 @@ fn bench_dog_response(c: &mut Criterion) {
 }
 
 criterion_group!(
-    benches,
-    bench_fast_corner_detect,
-    bench_harris_response,
-    bench_dog_response
+    name = benches;
+    config = Criterion::default().warm_up_time(std::time::Duration::new(10, 0));
+    targets = bench_harris_response, bench_dog_response, bench_fast_corner_detect
 );
 criterion_main!(benches);
 

@@ -34,3 +34,6 @@ thiserror = { workspace = true }
 [dev-dependencies]
 approx = { workspace = true }
 criterion = { workspace = true }
+kornia-image = { workspace = true }
+kornia-io = { workspace = true }
+kornia-tensor = { workspace = true }
