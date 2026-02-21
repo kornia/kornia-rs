@@ -1,8 +1,9 @@
 use crate::{
     segmentation::GradientInfo,
-    utils::{homography_compute, Pixel, Point2d},
+    utils::{homography_compute, Pixel},
     DecodeTagsConfig,
 };
+use kornia_algebra::{Mat3F32, Vec3F32};
 use kornia_image::{allocator::ImageAllocator, Image};
 use kornia_imgproc::filter::kernels::gaussian_kernel_1d;
 use std::{
@@ -45,17 +46,26 @@ impl Default for FitQuadConfig {
 }
 
 /// Represents a detected quadrilateral in the image, corresponding to a tag candidate.
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Quad {
     /// The four corners of the quadrilateral, in image coordinates.
     ///
     /// Order: [Bottom-left, Bottom-right, Top-right, Top-left]
-    pub corners: [Point2d<f32>; 4],
+    pub corners: [kornia_algebra::Vec2F32; 4],
     /// Indicates whether the border is reversed (black border inside white border).
     pub reversed_border: bool,
-    /// The 3x3 homography matrix (row-major order) mapping tag coordinates to image coordinates.
-    // TODO: Use glam 3x3 mat representation
-    pub homography: [f32; 9],
+    /// The 3x3 homography matrix mapping tag coordinates to image coordinates.
+    pub homography: Mat3F32,
+}
+
+impl Default for Quad {
+    fn default() -> Self {
+        Self {
+            corners: [kornia_algebra::Vec2F32::ZERO; 4],
+            reversed_border: false,
+            homography: Mat3F32::ZERO,
+        }
+    }
 }
 
 impl Quad {
@@ -68,16 +78,10 @@ impl Quad {
     ///
     /// # Returns
     ///
-    /// A `Point2d<f32>` representing the projected point in image coordinates.
-    pub fn homography_project(&self, x: f32, y: f32) -> Point2d<f32> {
-        let xx = self.homography[0] * x + self.homography[1] * y + self.homography[2];
-        let yy = self.homography[3] * x + self.homography[4] * y + self.homography[5];
-        let zz = self.homography[6] * x + self.homography[7] * y + self.homography[8];
-
-        Point2d {
-            x: xx / zz,
-            y: yy / zz,
-        }
+    /// A `Vec2F32` representing the projected point in image coordinates.
+    pub fn homography_project(&self, x: f32, y: f32) -> kornia_algebra::Vec2F32 {
+        let p = self.homography * Vec3F32::new(x, y, 1.0);
+        kornia_algebra::Vec2F32::new(p.x / p.z, p.y / p.z)
     }
 
     /// Updates the homography matrix for the quad based on its current corner positions.

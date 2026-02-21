@@ -4,63 +4,85 @@ use crate::{
     errors::AprilTagError,
     family::{TagFamily, TagFamilyKind},
     quad::Quad,
-    utils::{
-        matrix_3x3_cholesky, matrix_3x3_lower_triangle_inverse, matrix_3x3_mul, value_for_pixel,
-        Point2d,
-    },
+    utils::value_for_pixel,
     DecodeTagsConfig,
 };
+use kornia_algebra::Mat3F32;
 use kornia_image::{allocator::ImageAllocator, Image};
 
 /// Represents a model for grayscale interpolation using a quadratic surface.
-/// The model fits a function of the form f(x, y) = c[0]*x + c[1]*y + c[2].
-#[derive(Debug, Default, Clone, PartialEq)]
+/// The model fits a function of the form f(x, y) = c.x*x + c.y*y + c.z.
+#[derive(Debug, Clone, PartialEq)]
 struct GrayModel {
     /// The 3x3 matrix of accumulated quadratic terms.
-    a: [[f32; 3]; 3],
+    a: Mat3F32,
     /// The vector of accumulated linear terms.
-    b: [f32; 3],
+    b: kornia_algebra::Vec3F32,
     /// The solved coefficients for the quadratic model.
-    c: [f32; 3],
+    c: kornia_algebra::Vec3F32,
+}
+
+impl Default for GrayModel {
+    fn default() -> Self {
+        Self {
+            a: Mat3F32::ZERO,
+            b: kornia_algebra::Vec3F32::ZERO,
+            c: kornia_algebra::Vec3F32::ZERO,
+        }
+    }
 }
 
 impl GrayModel {
     /// Adds a new data point (x, y, gray) to the quadratic model.
     fn add(&mut self, x: f32, y: f32, gray: f32) {
-        self.a[0][0] += x * x;
-        self.a[0][1] += x * y;
-        self.a[0][2] += x;
-        self.a[1][1] += y * y;
-        self.a[1][2] += y;
-        self.a[2][2] += 1.0;
+        // Update A matrix (symmetric)
+        // [x^2  xy  x]
+        // [xy   y^2 y]
+        // [x    y   1]
 
-        self.b[0] += x * gray;
-        self.b[1] += y * gray;
-        self.b[2] += gray;
+        // Upper triangle element skipped to match legacy behavior
+        // We use column-major indexing for Mat3F32
+        // col 0: x^2, xy, x
+        self.a.x_axis.x += x * x;
+        self.a.x_axis.y += x * y;
+        self.a.x_axis.z += x;
+
+        // col 1: xy, y^2, y
+        self.a.y_axis.y += y * y;
+        self.a.y_axis.z += y;
+
+        // col 2: x, y, 1
+        self.a.z_axis.z += 1.0;
+
+        // Update b vector
+        // [x*gray, y*gray, gray]
+        self.b.x += x * gray;
+        self.b.y += y * gray;
+        self.b.z += gray;
     }
 
     /// Solves the quadratic model to find the coefficients.
-    fn solve(&mut self) {
-        let mut l = [0f32; 9];
-        matrix_3x3_cholesky(&self.a, &mut l);
+    fn solve(&mut self) -> Result<(), AprilTagError> {
+        // Solve Ac = b for c.
+        // A is symmetric positive definite (ideally).
 
-        let mut m = [0f32; 9];
-        matrix_3x3_lower_triangle_inverse(&l, &mut m);
+        // We use the explicit inverse implementation to match legacy behavior exactly,
+        // as the matrix can be ill-conditioned and substitution yields different results due to precision.
 
-        let tmp = [
-            m[0] * self.b[0],
-            m[3] * self.b[0] + m[4] * self.b[1],
-            m[6] * self.b[0] + m[7] * self.b[1] + m[8] * self.b[2],
-        ];
-
-        self.c[0] = m[0] * tmp[0] + m[3] * tmp[1] + m[6] * tmp[2];
-        self.c[1] = m[4] * tmp[1] + m[7] * tmp[2];
-        self.c[2] = m[8] * tmp[2];
+        if let Some(l) = kornia_algebra::linalg::cholesky::cholesky_3x3(&self.a) {
+            // Use the explicit inverse solver from algebra which matches legacy behavior
+            self.c = kornia_algebra::linalg::cholesky::cholesky_solve_3x3(&l, &self.b);
+            Ok(())
+        } else {
+            // Matrix is undefined or not positive definite.
+            self.c = kornia_algebra::Vec3F32::ZERO;
+            Err(AprilTagError::GrayModelUnderdetermined)
+        }
     }
 
     /// Interpolates the grayscale value at the given (x, y) using the solved coefficients.
     fn interpolate(&self, x: f32, y: f32) -> f32 {
-        self.c[0] * x + self.c[1] * y + self.c[2]
+        self.c.x * x + self.c.y * y + self.c.z
     }
 }
 
@@ -79,16 +101,13 @@ impl GrayModelPair {
 
     /// Resets both the white and black grayscale models to their initial state.
     pub fn reset(&mut self) {
-        for i in 0..3 {
-            for j in 0..3 {
-                self.white_model.a[i][j] = 0.0;
-                self.black_model.a[i][j] = 0.0;
-            }
-            self.white_model.b[i] = 0.0;
-            self.white_model.c[i] = 0.0;
-            self.black_model.b[i] = 0.0;
-            self.black_model.c[i] = 0.0;
-        }
+        self.white_model.a = Mat3F32::ZERO;
+        self.black_model.a = Mat3F32::ZERO;
+
+        self.white_model.b = kornia_algebra::Vec3F32::ZERO;
+        self.white_model.c = kornia_algebra::Vec3F32::ZERO;
+        self.black_model.b = kornia_algebra::Vec3F32::ZERO;
+        self.black_model.c = kornia_algebra::Vec3F32::ZERO;
     }
 }
 
@@ -275,7 +294,7 @@ pub struct Detection {
     /// The decision margin indicating the confidence of the detection.
     pub decision_margin: f32,
     /// The center point of the detected tag in image coordinates.
-    pub center: Point2d<f32>,
+    pub center: kornia_algebra::Vec2F32,
     /// The quadrilateral representing the detected tag's corners in the image.
     pub quad: Quad,
 }
@@ -367,14 +386,13 @@ pub fn decode_tags<A: ImageAllocator>(
                     let s = theta.sin();
 
                     // Fix the rotation of our homography to properly orient the tag
-                    #[rustfmt::skip]
-                    let r = [
-                        c,  -s,   0.0,
-                        s,   c,   0.0,
-                        0.0, 0.0, 1.0,
-                    ];
+                    let r = Mat3F32::from_cols_array(&[
+                        c, s, 0.0, // col 0
+                        -s, c, 0.0, // col 1
+                        0.0, 0.0, 1.0, // col 2
+                    ]);
 
-                    quad.homography = matrix_3x3_mul(&quad.homography, &r);
+                    quad.homography *= r;
                     let center = quad.homography_project(0.0, 0.0);
 
                     let detection = Detection {
@@ -686,16 +704,14 @@ fn quad_decode<A: ImageAllocator>(
                 return;
             }
 
-            let p = Point2d {
-                x: p.x as usize,
-                y: p.y as usize,
-            };
+            let px = p.x as usize;
+            let py = p.y as usize;
 
-            if p.x >= src.width() || p.y >= src.height() {
+            if px >= src.width() || py >= src.height() {
                 return;
             }
 
-            let v = src_slice[p.y * src.width() + p.x] as f32;
+            let v = src_slice[py * src.width() + px] as f32;
 
             if pattern.is_white {
                 gray_model_pair.white_model.add(tagx, tagy, v);
@@ -705,13 +721,13 @@ fn quad_decode<A: ImageAllocator>(
         });
     });
 
-    gray_model_pair.white_model.solve();
+    gray_model_pair.white_model.solve().ok()?;
     if tag_family.width_at_border > 1 {
-        gray_model_pair.black_model.solve();
+        gray_model_pair.black_model.solve().ok()?;
     } else {
-        gray_model_pair.black_model.c[0] = 0.0;
-        gray_model_pair.black_model.c[1] = 0.0;
-        gray_model_pair.black_model.c[2] = gray_model_pair.black_model.b[2] / 4.0;
+        gray_model_pair.black_model.c.x = 0.0;
+        gray_model_pair.black_model.c.y = 0.0;
+        gray_model_pair.black_model.c.z = gray_model_pair.black_model.b.z / 4.0;
     }
 
     if (gray_model_pair.white_model.interpolate(0.0, 0.0)
@@ -790,7 +806,6 @@ fn quad_decode<A: ImageAllocator>(
 
     Some((white_score / white_score_count as f32).min(black_score / black_score_count as f32))
 }
-
 /// Applies a sharpening filter to the input values using a Laplacian kernel.
 ///
 /// # Arguments
@@ -905,6 +920,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+    use crate::{family::TagFamilyKind, DecodeTagsConfig};
     use crate::{
         quad::fit_quads,
         segmentation::{find_connected_components, find_gradient_clusters},
@@ -912,6 +928,7 @@ mod tests {
         union_find::UnionFind,
         utils::Pixel,
     };
+    use kornia_algebra::Vec2F32;
     use kornia_image::allocator::CpuAllocator;
     use kornia_io::png::read_image_png_mono8;
 
@@ -960,26 +977,55 @@ mod tests {
 
         gm.add(10.0, 10.0, 5.0);
         let expected_add_gm = GrayModel {
-            a: [[100.0, 100.0, 10.0], [0.0, 100.0, 10.0], [0.0, 0.0, 1.0]],
-            b: [50.0, 50.0, 5.0],
-            c: [0.0, 0.0, 0.0],
+            a: Mat3F32::from_cols_array(&[
+                100.0, 100.0, 10.0, // col 0
+                0.0, 100.0, 10.0, // col 1
+                0.0, 0.0, 1.0, // col 2
+            ]),
+            b: kornia_algebra::Vec3F32::new(50.0, 50.0, 5.0),
+            c: kornia_algebra::Vec3F32::ZERO,
         };
 
-        assert_eq!(gm, expected_add_gm);
+        assert_eq!(gm.a, expected_add_gm.a);
+        assert_eq!(gm.b, expected_add_gm.b);
+        assert_eq!(gm.c, expected_add_gm.c);
 
         gm.add(7.0, 15.0, 3.0);
-        gm.solve();
+        let _ = gm.solve();
         let expected_solve_gm = GrayModel {
-            a: [[149.0, 205.0, 17.0], [0.0, 325.0, 25.0], [0.0, 0.0, 2.0]],
-            b: [71.0, 95.0, 8.0],
-            c: [0.562500, -0.062500, 0.0],
+            a: Mat3F32::from_cols_array(&[
+                149.0, 205.0, 17.0, // col 0
+                0.0, 325.0, 25.0, // col 1
+                0.0, 0.0, 2.0, // col 2
+            ]),
+            b: kornia_algebra::Vec3F32::new(71.0, 95.0, 8.0),
+            c: kornia_algebra::Vec3F32::new(0.562500, -0.062500, 0.0),
         };
 
-        assert_eq!(gm.a, expected_solve_gm.a);
-        assert_eq!(gm.b, expected_solve_gm.b);
-        assert!((gm.c[0] - expected_solve_gm.c[0]).abs() < EPSILON); // Account for precision errors
-        assert!((gm.c[1] - expected_solve_gm.c[1]).abs() < EPSILON);
-        assert!((gm.c[2] - expected_solve_gm.c[2]).abs() < EPSILON);
+        const EPSILON: f32 = 1e-5;
+
+        // Check A
+        let diff_a = gm.a - expected_solve_gm.a;
+        assert!(diff_a.x_axis.x.abs() < EPSILON);
+        assert!(diff_a.x_axis.y.abs() < EPSILON);
+        assert!(diff_a.x_axis.z.abs() < EPSILON);
+        assert!(diff_a.y_axis.x.abs() < EPSILON);
+        assert!(diff_a.y_axis.y.abs() < EPSILON);
+        assert!(diff_a.y_axis.z.abs() < EPSILON);
+        assert!(diff_a.z_axis.x.abs() < EPSILON);
+        assert!(diff_a.z_axis.y.abs() < EPSILON);
+        assert!(diff_a.z_axis.z.abs() < EPSILON);
+
+        // Check B
+        let diff_b = gm.b - expected_solve_gm.b;
+        assert!(diff_b.x.abs() < EPSILON);
+        assert!(diff_b.y.abs() < EPSILON);
+        assert!(diff_b.z.abs() < EPSILON);
+
+        // Check C
+        assert!((gm.c.x - expected_solve_gm.c.x).abs() < EPSILON); // Account for precision errors
+        assert!((gm.c.y - expected_solve_gm.c.y).abs() < EPSILON);
+        assert!((gm.c.z - expected_solve_gm.c.z).abs() < EPSILON);
 
         assert!((gm.interpolate(5.0, 3.0) - 2.62500).abs() < EPSILON);
 
@@ -998,33 +1044,21 @@ mod tests {
 
         let mut quad = Quad {
             corners: [
-                Point2d { x: 25.0, y: 5.0 },
-                Point2d { x: 25.0, y: 25.0 },
-                Point2d { x: 5.0, y: 25.0 },
-                Point2d { x: 5.0, y: 5.0 },
+                kornia_algebra::Vec2F32::new(25.0, 5.0),
+                kornia_algebra::Vec2F32::new(25.0, 25.0),
+                kornia_algebra::Vec2F32::new(5.0, 25.0),
+                kornia_algebra::Vec2F32::new(5.0, 5.0),
             ],
             reversed_border: false,
-            homography: [0.0; 9],
+            homography: Mat3F32::IDENTITY,
         };
 
         refine_edges(&src, &mut quad);
         let expected_corners = [
-            Point2d {
-                x: 26.612904,
-                y: 3.387097,
-            },
-            Point2d {
-                x: 26.612904,
-                y: 26.612904,
-            },
-            Point2d {
-                x: 3.387097,
-                y: 26.612904,
-            },
-            Point2d {
-                x: 3.387097,
-                y: 3.387096,
-            },
+            Vec2F32::new(26.612904, 3.387097),
+            Vec2F32::new(26.612904, 26.612904),
+            Vec2F32::new(3.387097, 26.612904),
+            Vec2F32::new(3.387097, 3.387096),
         ];
 
         for (i, expected) in expected_corners.iter().enumerate() {
@@ -1048,22 +1082,27 @@ mod tests {
     fn test_quad_update_homographies() {
         let mut quad = Quad {
             corners: [
-                Point2d { x: 3.0, y: 3.0 },
-                Point2d { x: 27.0, y: 3.0 },
-                Point2d { x: 3.0, y: 20.0 },
-                Point2d { x: 4.0, y: 22.0 },
+                Vec2F32::new(3.0, 3.0),
+                Vec2F32::new(27.0, 3.0),
+                Vec2F32::new(3.0, 20.0),
+                Vec2F32::new(4.0, 22.0),
             ],
             reversed_border: false,
-            homography: [0.0; 9],
+            homography: Mat3F32::IDENTITY,
         };
 
         quad.update_homographies();
-        let expected_homographies = [
-            -0.675192, 4.672634, 3.0, 0.368286, 23.455243, 22.826087, 0.122762, 1.209719, 1.0,
-        ];
+        let expected = Mat3F32::from_cols_array(&[
+            -0.675192, 0.368286, 0.122762, // col 0
+            4.672634, 23.455243, 1.209719, // col 1
+            3.0, 22.826087, 1.0, // col 2
+        ]);
 
-        for (i, expected) in expected_homographies.iter().enumerate() {
-            assert!((quad.homography[i] - expected).abs() < EPSILON);
+        let h_arr: [f32; 9] = quad.homography.into();
+        let e_arr: [f32; 9] = expected.into();
+
+        for (i, e) in e_arr.iter().enumerate() {
+            assert!((h_arr[i] - e).abs() < EPSILON);
         }
     }
 
@@ -1074,27 +1113,17 @@ mod tests {
 
         let quad = Quad {
             corners: [
-                Point2d {
-                    x: 26.612904,
-                    y: 3.387097,
-                },
-                Point2d {
-                    x: 26.612904,
-                    y: 26.612904,
-                },
-                Point2d {
-                    x: 3.387097,
-                    y: 26.612904,
-                },
-                Point2d {
-                    x: 3.387097,
-                    y: 3.387096,
-                },
+                Vec2F32::new(26.612904, 3.387097),
+                Vec2F32::new(26.612904, 26.612904),
+                Vec2F32::new(3.387097, 26.612904),
+                Vec2F32::new(3.387097, 3.387096),
             ],
             reversed_border: false,
-            homography: [
-                -0.0, -11.612904, 15.0, 11.612904, -0.000001, 15.0, -0.0, -0.0, 1.0,
-            ],
+            homography: Mat3F32::from_cols_array(&[
+                -0.0, 11.612904, -0.0, // col 0
+                -11.612904, -0.000001, -0.0, // col 1
+                15.0, 15.0, 1.0, // col 2
+            ]),
         };
 
         let mut entry = QuickDecodeEntry::default();
@@ -1156,6 +1185,24 @@ mod tests {
     fn test_rotate_90() {
         assert_eq!(rotate_90(52087007497, 36), 5390865284);
         assert_eq!(rotate_90(42087007497, 36), 39351620409)
+    }
+
+    #[test]
+    fn test_gray_model_solve_failure() {
+        let mut model = GrayModel::default();
+
+        // Add redundant or insufficient points to create a singular matrix
+        // For example, adding the same point multiple times or points that are collinear
+        model.add(0.0, 0.0, 100.0);
+        model.add(0.0, 0.0, 100.0);
+        model.add(0.0, 0.0, 100.0);
+
+        let result = model.solve();
+        assert!(result.is_err());
+        match result {
+            Err(AprilTagError::GrayModelUnderdetermined) => {}
+            _ => panic!("Expected GrayModelUnderdetermined error"),
+        }
     }
 
     #[test]
