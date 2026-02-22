@@ -1,5 +1,7 @@
 //! Robust loss functions for least squares optimization.
 
+use crate::optim::FactorError;
+
 /// Trait for robust loss functions that scale residuals by weight.
 pub trait RobustLoss: Send + Sync {
     /// Compute loss weight for a squared residual norm.
@@ -19,14 +21,18 @@ impl RobustLoss for IdentityLoss {
 /// Huber loss: smooth transition from quadratic to linear weighting.
 #[derive(Debug, Clone, Copy)]
 pub struct HuberLoss {
-    pub delta: f32,
+    delta: f32,
 }
 
 impl HuberLoss {
-    /// Create new Huber loss. Panics if delta <= 0.
-    pub fn new(delta: f32) -> Self {
-        assert!(delta > 0.0, "Huber delta must be positive, got {}", delta);
-        HuberLoss { delta }
+    /// Create new Huber loss. Returns error if delta <= 0.
+    pub fn new(delta: f32) -> Result<Self, FactorError> {
+        if delta <= 0.0 {
+            return Err(FactorError::InvalidParameters(
+                "Huber delta must be positive".into(),
+            ));
+        }
+        Ok(HuberLoss { delta })
     }
 }
 
@@ -44,14 +50,18 @@ impl RobustLoss for HuberLoss {
 /// Cauchy loss: aggressive outlier rejection via 1/(1 + s/σ²).
 #[derive(Debug, Clone, Copy)]
 pub struct CauchyLoss {
-    pub scale: f32,
+    scale: f32,
 }
 
 impl CauchyLoss {
-    /// Create new Cauchy loss. Panics if scale <= 0.
-    pub fn new(scale: f32) -> Self {
-        assert!(scale > 0.0, "Cauchy scale must be positive, got {}", scale);
-        CauchyLoss { scale }
+    /// Create new Cauchy loss. Returns error if scale <= 0.
+    pub fn new(scale: f32) -> Result<Self, FactorError> {
+        if scale <= 0.0 {
+            return Err(FactorError::InvalidParameters(
+                "Cauchy scale must be positive".into(),
+            ));
+        }
+        Ok(CauchyLoss { scale })
     }
 }
 
@@ -76,7 +86,7 @@ mod tests {
 
     #[test]
     fn test_huber_loss_weights() {
-        let huber = HuberLoss::new(1.0);
+        let huber = HuberLoss::new(1.0).unwrap();
         assert_eq!(huber.weight(0.0), 1.0); // Zero: quadratic region
         assert_eq!(huber.weight(1.0), 1.0); // At threshold
         assert!((huber.weight(4.0) - 0.5).abs() < 1e-6); // Large: 1/sqrt(4)
@@ -85,25 +95,23 @@ mod tests {
 
     #[test]
     fn test_huber_loss_parameter_validation() {
-        assert!(HuberLoss::new(0.5).delta > 0.0);
-        assert!(HuberLoss::new(2.0).delta > 0.0);
+        assert!(HuberLoss::new(0.5).is_ok());
+        assert!(HuberLoss::new(2.0).is_ok());
     }
 
     #[test]
-    #[should_panic(expected = "Huber delta must be positive")]
-    fn test_huber_loss_zero_delta_panics() {
-        HuberLoss::new(0.0);
+    fn test_huber_loss_zero_delta_error() {
+        assert!(HuberLoss::new(0.0).is_err());
     }
 
     #[test]
-    #[should_panic(expected = "Huber delta must be positive")]
-    fn test_huber_loss_negative_delta_panics() {
-        HuberLoss::new(-1.0);
+    fn test_huber_loss_negative_delta_error() {
+        assert!(HuberLoss::new(-1.0).is_err());
     }
 
     #[test]
     fn test_cauchy_loss_weights() {
-        let cauchy = CauchyLoss::new(1.0);
+        let cauchy = CauchyLoss::new(1.0).unwrap();
         assert_eq!(cauchy.weight(0.0), 1.0); // Zero: max weight
         assert!((cauchy.weight(0.01) - (1.0 / 1.01)).abs() < 1e-4); // Small
         assert!((cauchy.weight(10.0) - (1.0 / 11.0)).abs() < 1e-4); // Large
@@ -113,27 +121,25 @@ mod tests {
 
     #[test]
     fn test_cauchy_loss_scales() {
-        let c1 = CauchyLoss::new(1.0);
-        let c2 = CauchyLoss::new(2.0);
+        let c1 = CauchyLoss::new(1.0).unwrap();
+        let c2 = CauchyLoss::new(2.0).unwrap();
         assert!(c2.weight(4.0) > c1.weight(4.0)); // Larger scale → larger weight
     }
 
     #[test]
-    #[should_panic(expected = "Cauchy scale must be positive")]
-    fn test_cauchy_loss_zero_scale_panics() {
-        CauchyLoss::new(0.0);
+    fn test_cauchy_loss_zero_scale_error() {
+        assert!(CauchyLoss::new(0.0).is_err());
     }
 
     #[test]
-    #[should_panic(expected = "Cauchy scale must be positive")]
-    fn test_cauchy_loss_negative_scale_panics() {
-        CauchyLoss::new(-1.0);
+    fn test_cauchy_loss_negative_scale_error() {
+        assert!(CauchyLoss::new(-1.0).is_err());
     }
 
     #[test]
     fn test_huber_vs_cauchy_outlier_behavior() {
-        let huber = HuberLoss::new(1.0);
-        let cauchy = CauchyLoss::new(1.0);
+        let huber = HuberLoss::new(1.0).unwrap();
+        let cauchy = CauchyLoss::new(1.0).unwrap();
         let squared_norm = 100.0;
         let w_huber = huber.weight(squared_norm);
         let w_cauchy = cauchy.weight(squared_norm);

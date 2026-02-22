@@ -3,8 +3,8 @@
 #[cfg(test)]
 mod tests {
     use crate::optim::{
-        CauchyLoss, Factor, FactorError, HuberLoss, IdentityLoss, LinearizationResult, Problem,
-        RobustLoss, Variable,
+        CauchyLoss, Factor, FactorError, HuberLoss, IdentityLoss, LinearizationResult,
+        OptimizerError, Problem, RobustLoss, Variable,
     };
     use std::f32::consts::PI;
 
@@ -23,20 +23,20 @@ mod tests {
             }
         }
 
-        fn with_huber_loss(x: f32, observed_y: f32, delta: f32) -> Self {
-            Self {
+        fn with_huber_loss(x: f32, observed_y: f32, delta: f32) -> Result<Self, FactorError> {
+            Ok(Self {
                 x,
                 observed_y,
-                loss: Some(Box::new(HuberLoss::new(delta))),
-            }
+                loss: Some(Box::new(HuberLoss::new(delta)?)),
+            })
         }
 
-        fn with_cauchy_loss(x: f32, observed_y: f32, scale: f32) -> Self {
-            Self {
+        fn with_cauchy_loss(x: f32, observed_y: f32, scale: f32) -> Result<Self, FactorError> {
+            Ok(Self {
                 x,
                 observed_y,
-                loss: Some(Box::new(CauchyLoss::new(scale))),
-            }
+                loss: Some(Box::new(CauchyLoss::new(scale)?)),
+            })
         }
     }
 
@@ -122,60 +122,48 @@ mod tests {
     }
 
     #[test]
-    fn test_robust_losses_improve_outlier_estimation() {
+    fn test_robust_losses_improve_outlier_estimation() -> Result<(), OptimizerError> {
         let data = generate_outlier_line_data(50, 0.1, 0.3);
         let optimizer = crate::optim::LevenbergMarquardt::default();
 
         // L2 baseline
         let mut l2_problem = Problem::new();
-        l2_problem
-            .add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])
-            .unwrap();
+        l2_problem.add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])?;
         for (x, y) in &data {
-            l2_problem
-                .add_factor(
-                    Box::new(LineFactorWithLoss::with_identity_loss(*x, *y)),
-                    vec!["line".to_string()],
-                )
-                .unwrap();
+            l2_problem.add_factor(
+                Box::new(LineFactorWithLoss::with_identity_loss(*x, *y)),
+                vec!["line".to_string()],
+            )?;
         }
-        let l2_result = optimizer.optimize(&mut l2_problem).unwrap();
+        let l2_result = optimizer.optimize(&mut l2_problem)?;
         let l2_m = l2_problem.get_variables()["line"].values[0];
         let l2_b = l2_problem.get_variables()["line"].values[1];
         let l2_error = (l2_m - 2.0).abs() + (l2_b - 1.0).abs();
 
         // Huber
         let mut huber_problem = Problem::new();
-        huber_problem
-            .add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])
-            .unwrap();
+        huber_problem.add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])?;
         for (x, y) in &data {
-            huber_problem
-                .add_factor(
-                    Box::new(LineFactorWithLoss::with_huber_loss(*x, *y, 0.25)),
-                    vec!["line".to_string()],
-                )
-                .unwrap();
+            huber_problem.add_factor(
+                Box::new(LineFactorWithLoss::with_huber_loss(*x, *y, 0.25)?),
+                vec!["line".to_string()],
+            )?;
         }
-        let huber_result = optimizer.optimize(&mut huber_problem).unwrap();
+        let huber_result = optimizer.optimize(&mut huber_problem)?;
         let huber_m = huber_problem.get_variables()["line"].values[0];
         let huber_b = huber_problem.get_variables()["line"].values[1];
         let huber_error = (huber_m - 2.0).abs() + (huber_b - 1.0).abs();
 
         // Cauchy
         let mut cauchy_problem = Problem::new();
-        cauchy_problem
-            .add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])
-            .unwrap();
+        cauchy_problem.add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])?;
         for (x, y) in &data {
-            cauchy_problem
-                .add_factor(
-                    Box::new(LineFactorWithLoss::with_cauchy_loss(*x, *y, 0.25)),
-                    vec!["line".to_string()],
-                )
-                .unwrap();
+            cauchy_problem.add_factor(
+                Box::new(LineFactorWithLoss::with_cauchy_loss(*x, *y, 0.25)?),
+                vec!["line".to_string()],
+            )?;
         }
-        let cauchy_result = optimizer.optimize(&mut cauchy_problem).unwrap();
+        let cauchy_result = optimizer.optimize(&mut cauchy_problem)?;
         let cauchy_m = cauchy_problem.get_variables()["line"].values[0];
         let cauchy_b = cauchy_problem.get_variables()["line"].values[1];
         let cauchy_error = (cauchy_m - 2.0).abs() + (cauchy_b - 1.0).abs();
@@ -192,64 +180,54 @@ mod tests {
             cauchy_error < l2_error,
             "Cauchy should outperform L2 with outliers"
         );
+
+        Ok(())
     }
 
     #[test]
-    fn test_robust_losses_do_not_degrade_clean_data() {
+    fn test_robust_losses_do_not_degrade_clean_data() -> Result<(), OptimizerError> {
         let data = generate_outlier_line_data(50, 0.1, 0.0);
         let optimizer = crate::optim::LevenbergMarquardt::default();
         let epsilon = 0.05;
 
         // L2 baseline
         let mut l2_problem = Problem::new();
-        l2_problem
-            .add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])
-            .unwrap();
+        l2_problem.add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])?;
         for (x, y) in &data {
-            l2_problem
-                .add_factor(
-                    Box::new(LineFactorWithLoss::with_identity_loss(*x, *y)),
-                    vec!["line".to_string()],
-                )
-                .unwrap();
+            l2_problem.add_factor(
+                Box::new(LineFactorWithLoss::with_identity_loss(*x, *y)),
+                vec!["line".to_string()],
+            )?;
         }
-        let l2_result = optimizer.optimize(&mut l2_problem).unwrap();
+        let l2_result = optimizer.optimize(&mut l2_problem)?;
         let l2_m = l2_problem.get_variables()["line"].values[0];
         let l2_b = l2_problem.get_variables()["line"].values[1];
         let l2_error = (l2_m - 2.0).abs() + (l2_b - 1.0).abs();
 
         // Huber
         let mut huber_problem = Problem::new();
-        huber_problem
-            .add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])
-            .unwrap();
+        huber_problem.add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])?;
         for (x, y) in &data {
-            huber_problem
-                .add_factor(
-                    Box::new(LineFactorWithLoss::with_huber_loss(*x, *y, 0.25)),
-                    vec!["line".to_string()],
-                )
-                .unwrap();
+            huber_problem.add_factor(
+                Box::new(LineFactorWithLoss::with_huber_loss(*x, *y, 0.25)?),
+                vec!["line".to_string()],
+            )?;
         }
-        let huber_result = optimizer.optimize(&mut huber_problem).unwrap();
+        let huber_result = optimizer.optimize(&mut huber_problem)?;
         let huber_m = huber_problem.get_variables()["line"].values[0];
         let huber_b = huber_problem.get_variables()["line"].values[1];
         let huber_error = (huber_m - 2.0).abs() + (huber_b - 1.0).abs();
 
         // Cauchy
         let mut cauchy_problem = Problem::new();
-        cauchy_problem
-            .add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])
-            .unwrap();
+        cauchy_problem.add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])?;
         for (x, y) in &data {
-            cauchy_problem
-                .add_factor(
-                    Box::new(LineFactorWithLoss::with_cauchy_loss(*x, *y, 0.25)),
-                    vec!["line".to_string()],
-                )
-                .unwrap();
+            cauchy_problem.add_factor(
+                Box::new(LineFactorWithLoss::with_cauchy_loss(*x, *y, 0.25)?),
+                vec!["line".to_string()],
+            )?;
         }
-        let cauchy_result = optimizer.optimize(&mut cauchy_problem).unwrap();
+        let cauchy_result = optimizer.optimize(&mut cauchy_problem)?;
         let cauchy_m = cauchy_problem.get_variables()["line"].values[0];
         let cauchy_b = cauchy_problem.get_variables()["line"].values[1];
         let cauchy_error = (cauchy_m - 2.0).abs() + (cauchy_b - 1.0).abs();
@@ -266,5 +244,7 @@ mod tests {
             (cauchy_error - l2_error).abs() < epsilon,
             "Cauchy should match L2 on clean data"
         );
+
+        Ok(())
     }
 }

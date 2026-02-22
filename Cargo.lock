@@ -7788,8 +7788,6 @@ dependencies = [
  "glam",
  "nalgebra",
  "rand 0.9.2",
- "serde",
- "serde_json",
  "thiserror 2.0.17",
 ]
 

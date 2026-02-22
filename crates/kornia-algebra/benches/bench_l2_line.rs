@@ -3,9 +3,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_algebra::optim::{Factor, FactorError, LinearizationResult, Problem, Variable};
 use std::f32::consts::PI;
-use std::fs::create_dir_all;
 use std::hint::black_box;
-use std::path::Path;
 
 /// Simple 2D line fitting factor: y = mx + b
 struct LineResidualFactor {
@@ -105,18 +103,6 @@ fn generate_line_data(
     data
 }
 
-/// Benchmark result to be saved as JSON
-#[derive(serde::Serialize)]
-struct BenchmarkResult {
-    scenario: String,
-    num_points: usize,
-    noise_std: f32,
-    outlier_fraction: f32,
-    final_cost: f32,
-    iterations: usize,
-    convergence_reason: String,
-}
-
 fn l2_baseline_benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("l2_line_fitting");
     group.sample_size(10);
@@ -129,7 +115,6 @@ fn l2_baseline_benchmarks(c: &mut Criterion) {
         ("outliers_30_large", 100, 0.1, 0.3),
     ];
 
-    let mut results = Vec::new();
     let optimizer = kornia_algebra::optim::LevenbergMarquardt::default();
 
     for (scenario_name, num_points, noise_std, outlier_fraction) in scenarios {
@@ -145,7 +130,7 @@ fn l2_baseline_benchmarks(c: &mut Criterion) {
         group.bench_with_input(
             benchmark_id,
             &(scenario_name, num_points, noise_std, outlier_fraction),
-            |b, &(scenario_name, num_points, noise_std, outlier_fraction)| {
+            |b, &(_scenario_name, _num_points, _noise_std, _outlier_fraction)| {
                 let data_clone = data.clone();
                 b.iter(|| {
                     let data = black_box(data_clone.clone());
@@ -164,18 +149,6 @@ fn l2_baseline_benchmarks(c: &mut Criterion) {
 
                     let result = optimizer.optimize(&mut problem).unwrap();
 
-                    // Collect result for JSON export
-                    let convergence_reason = format!("{:?}", result.termination_reason);
-                    results.push(BenchmarkResult {
-                        scenario: scenario_name.to_string(),
-                        num_points,
-                        noise_std,
-                        outlier_fraction,
-                        final_cost: result.final_cost,
-                        iterations: result.iterations,
-                        convergence_reason,
-                    });
-
                     result.final_cost
                 });
             },
@@ -183,22 +156,6 @@ fn l2_baseline_benchmarks(c: &mut Criterion) {
     }
 
     group.finish();
-
-    // Save results to JSON
-    if !results.is_empty() {
-        save_benchmark_results(&results).expect("Failed to save benchmark results");
-    }
-}
-
-fn save_benchmark_results(results: &[BenchmarkResult]) -> Result<(), Box<dyn std::error::Error>> {
-    let results_dir = Path::new("target/criterion-l2");
-    create_dir_all(results_dir)?;
-
-    let json_path = results_dir.join("l2_baseline_results.json");
-    let json_data = serde_json::to_string_pretty(results)?;
-    std::fs::write(json_path, json_data)?;
-
-    Ok(())
 }
 
 criterion_group!(benches, l2_baseline_benchmarks);
