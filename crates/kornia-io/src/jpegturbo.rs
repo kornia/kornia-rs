@@ -20,6 +20,10 @@ pub enum JpegTurboError {
     /// Error to create the image.
     #[error("Failed to create image")]
     ImageCreationError(#[from] ImageError),
+
+    /// Error when a mutex lock is poisoned.
+    #[error("Mutex lock was poisoned")]
+    MutexPoisoned,
 }
 
 /// A JPEG decoder using the turbojpeg library.
@@ -53,10 +57,6 @@ impl JpegTurboEncoder {
     /// # Returns
     ///
     /// A new `ImageEncoder` instance.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the compressor cannot be created.
     pub fn new() -> Result<Self, JpegTurboError> {
         let compressor = turbojpeg::Compressor::new()?;
         Ok(Self(Mutex::new(compressor)))
@@ -91,7 +91,7 @@ impl JpegTurboEncoder {
         Ok(self
             .0
             .lock()
-            .expect("Failed to lock the compressor")
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
             .compress_to_vec(buf)?)
     }
 
@@ -104,7 +104,7 @@ impl JpegTurboEncoder {
         Ok(self
             .0
             .lock()
-            .expect("Failed to lock the compressor")
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
             .set_quality(quality)?)
     }
 }
@@ -130,16 +130,12 @@ impl JpegTurboDecoder {
     /// # Returns
     ///
     /// The image size.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the header cannot be read.
     pub fn read_header(&self, jpeg_data: &[u8]) -> Result<ImageSize, JpegTurboError> {
         // read the JPEG header with image size
         let header = self
             .0
             .lock()
-            .expect("Failed to lock the decompressor")
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
             .read_header(jpeg_data)?;
 
         Ok(ImageSize {
@@ -203,7 +199,7 @@ impl JpegTurboDecoder {
         // decompress the JPEG data
         self.0
             .lock()
-            .expect("Failed to lock the decompressor")
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
             .decompress(jpeg_data, buf)?;
 
         Ok(Image::new(image_size, pixels, CpuAllocator)?)
