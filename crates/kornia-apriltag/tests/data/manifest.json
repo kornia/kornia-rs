@@ -1,17 +1,22 @@
 [
     {
-        "filename": "tag36h11/tag36_11_00000.jpg",
+        "filename": "../../tests/data/apriltags_tag36h11.jpg",
         "family": "tag36h11",
         "type": "golden",
-        "expect_ids": [
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
+        "expect_ids": [0, 0, 0, 0, 0, 0, 0],
+        "expect_detections": [
+            {
+                "id": 0,
+                "center": [427.3, 262.0],
+                "corners": [[445.1, 246.4], [450.9, 281.6], [409.4, 277.7], [404.0, 242.6]]
+            },
+            {
+                "id": 0,
+                "center": [596.7, 409.5],
+                "corners": [[606.6, 391.0], [608.2, 435.6], [587.2, 427.4], [585.4, 383.6]]
+            }
         ],
-        "description": "Perfect image of tag 36h11 id 0"
+        "tolerance_px": 5.0,
+        "description": "Real-world tag36h11 scene with 7 visible tags, geometric check on 2 most prominent"
     }
 ]
