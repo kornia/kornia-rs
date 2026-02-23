@@ -547,9 +547,9 @@ mod impl_f64 {
 
     #[derive(Debug, Clone)]
     pub struct SVD3Set {
-        pub u: Mat3F64,
-        pub s: Mat3F64,
-        pub v: Mat3F64,
+        u: Mat3F64,
+        s: Mat3F64,
+        v: Mat3F64,
     }
 
     impl SVD3Set {
@@ -653,85 +653,200 @@ mod impl_f64 {
         q_accum
     }
 
-    /// Helper to extract U and the singular values from A and V
-    #[inline]
-    fn extract_u_and_s(mat: &Mat3F64, v_mat: &Mat3F64) -> (Mat3F64, Vec3F64) {
-        let b = *mat * *v_mat;
-
-        let s_vec = Vec3F64::new(b.x_axis.length(), b.y_axis.length(), b.z_axis.length());
-
-        // Extract U directly, avoiding unstable Gram-Schmidt
-        let u_x = if s_vec.x > EPSILON {
-            b.x_axis / s_vec.x
-        } else {
-            Mat3F64::IDENTITY.x_axis
-        };
-        let u_y = if s_vec.y > EPSILON {
-            b.y_axis / s_vec.y
-        } else {
-            Mat3F64::IDENTITY.y_axis
-        };
-        let u_z = if s_vec.z > EPSILON {
-            b.z_axis / s_vec.z
-        } else {
-            Mat3F64::IDENTITY.z_axis
-        };
-
-        let u_mat = Mat3F64::from_cols(u_x.into(), u_y.into(), u_z.into());
-
-        (u_mat, s_vec)
+    #[derive(Debug)]
+    struct GivensF64 {
+        cos_theta: f64,
+        sin_theta: f64,
     }
 
-    /// Computes the Singular Value Decomposition of a 3x3 f64 matrix.
-    pub fn svd3(mat: &Mat3F64) -> SVD3Set {
-        // 1. Initialize symmetric matrix (A^T A)
-        let mut s_mat = Symmetric3x3::from_mat3x3(&(mat.transpose() * *mat));
+    #[derive(Debug)]
+    struct QR3F64 {
+        q: Mat3F64,
+        r: Mat3F64,
+    }
 
-        // 2. Compute V via Jacobi sweeps
+    #[inline(always)]
+    fn qr_givens_quaternion(a1: f64, a2: f64) -> GivensF64 {
+        let rho = (a1 * a1 + a2 * a2).sqrt();
+        let mut g = GivensF64 {
+            cos_theta: a1.abs() + f64::max(rho, EPSILON),
+            sin_theta: if rho > EPSILON { a2 } else { 0.0 },
+        };
+
+        if a1 < 0.0 {
+            std::mem::swap(&mut g.sin_theta, &mut g.cos_theta);
+        }
+
+        let w = (g.cos_theta * g.cos_theta + g.sin_theta * g.sin_theta)
+            .sqrt()
+            .recip();
+        g.cos_theta *= w;
+        g.sin_theta *= w;
+        g
+    }
+
+    fn qr_decomposition(b_mat: &mut Mat3F64) -> QR3F64 {
+        let mut x_axis = b_mat.x_axis;
+        let mut y_axis = b_mat.y_axis;
+        let mut z_axis = b_mat.z_axis;
+
+        // First Givens rotation to zero out b[1][0]
+        let g1 = qr_givens_quaternion(x_axis.x, x_axis.y);
+        let rot_c = -2.0 * g1.sin_theta * g1.sin_theta + 1.0;
+        let rot_s = 2.0 * g1.cos_theta * g1.sin_theta;
+
+        let val_row0 = x_axis.x;
+        let val_row1 = x_axis.y;
+        x_axis.x = rot_c * val_row0 + rot_s * val_row1;
+        x_axis.y = -rot_s * val_row0 + rot_c * val_row1;
+        let val_row0 = y_axis.x;
+        let val_row1 = y_axis.y;
+        y_axis.x = rot_c * val_row0 + rot_s * val_row1;
+        y_axis.y = -rot_s * val_row0 + rot_c * val_row1;
+        let val_row0 = z_axis.x;
+        let val_row1 = z_axis.y;
+        z_axis.x = rot_c * val_row0 + rot_s * val_row1;
+        z_axis.y = -rot_s * val_row0 + rot_c * val_row1;
+
+        // Second Givens rotation to zero out b[2][0]
+        let g2 = qr_givens_quaternion(x_axis.x, x_axis.z);
+        let rot_c = -2.0 * g2.sin_theta * g2.sin_theta + 1.0;
+        let rot_s = 2.0 * g2.cos_theta * g2.sin_theta;
+
+        let val_row0 = x_axis.x;
+        let val_row2 = x_axis.z;
+        x_axis.x = rot_c * val_row0 + rot_s * val_row2;
+        x_axis.z = -rot_s * val_row0 + rot_c * val_row2;
+        let val_row0 = y_axis.x;
+        let val_row2 = y_axis.z;
+        y_axis.x = rot_c * val_row0 + rot_s * val_row2;
+        y_axis.z = -rot_s * val_row0 + rot_c * val_row2;
+        let val_row0 = z_axis.x;
+        let val_row2 = z_axis.z;
+        z_axis.x = rot_c * val_row0 + rot_s * val_row2;
+        z_axis.z = -rot_s * val_row0 + rot_c * val_row2;
+
+        // Third Givens rotation to zero out b[2][1]
+        let g3 = qr_givens_quaternion(y_axis.y, y_axis.z);
+        let rot_c = -2.0 * g3.sin_theta * g3.sin_theta + 1.0;
+        let rot_s = 2.0 * g3.cos_theta * g3.sin_theta;
+
+        let val_row1 = x_axis.y;
+        let val_row2 = x_axis.z;
+        x_axis.y = rot_c * val_row1 + rot_s * val_row2;
+        x_axis.z = -rot_s * val_row1 + rot_c * val_row2;
+        let val_row1 = y_axis.y;
+        let val_row2 = y_axis.z;
+        y_axis.y = rot_c * val_row1 + rot_s * val_row2;
+        y_axis.z = -rot_s * val_row1 + rot_c * val_row2;
+        let val_row1 = z_axis.y;
+        let val_row2 = z_axis.z;
+        z_axis.y = rot_c * val_row1 + rot_s * val_row2;
+        z_axis.z = -rot_s * val_row1 + rot_c * val_row2;
+
+        let r = Mat3F64::from_cols(x_axis.into(), y_axis.into(), z_axis.into());
+        *b_mat = r;
+
+        let rot_c1 = -2.0 * g1.sin_theta * g1.sin_theta + 1.0;
+        let rot_s1 = 2.0 * g1.cos_theta * g1.sin_theta;
+        let rot_c2 = -2.0 * g2.sin_theta * g2.sin_theta + 1.0;
+        let rot_s2 = 2.0 * g2.cos_theta * g2.sin_theta;
+        let rot_c3 = -2.0 * g3.sin_theta * g3.sin_theta + 1.0;
+        let rot_s3 = 2.0 * g3.cos_theta * g3.sin_theta;
+
+        let q1 = Mat3F64::from_cols(
+            Vec3F64::new(rot_c1, rot_s1, 0.0),
+            Vec3F64::new(-rot_s1, rot_c1, 0.0),
+            Vec3F64::new(0.0, 0.0, 1.0),
+        );
+        let q2 = Mat3F64::from_cols(
+            Vec3F64::new(rot_c2, 0.0, rot_s2),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(-rot_s2, 0.0, rot_c2),
+        );
+        let q3 = Mat3F64::from_cols(
+            Vec3F64::new(1.0, 0.0, 0.0),
+            Vec3F64::new(0.0, rot_c3, rot_s3),
+            Vec3F64::new(0.0, -rot_s3, rot_c3),
+        );
+
+        QR3F64 { q: q1 * q2 * q3, r }
+    }
+
+    pub fn sort_singular_values(b: &mut Mat3F64, v: &mut Mat3F64) {
+        let mut b_x = b.x_axis;
+        let mut b_y = b.y_axis;
+        let mut b_z = b.z_axis;
+        let mut v_x = v.x_axis;
+        let mut v_y = v.y_axis;
+        let mut v_z = v.z_axis;
+        let mut rho1 = b_x.dot(b_x);
+        let mut rho2 = b_y.dot(b_y);
+        let mut rho3 = b_z.dot(b_z);
+
+        if rho1 < rho2 {
+            std::mem::swap(&mut rho1, &mut rho2);
+            std::mem::swap(&mut b_x, &mut b_y);
+            std::mem::swap(&mut v_x, &mut v_y);
+            b_y = -b_y;
+            v_y = -v_y;
+        }
+        if rho1 < rho3 {
+            std::mem::swap(&mut rho1, &mut rho3);
+            std::mem::swap(&mut b_x, &mut b_z);
+            std::mem::swap(&mut v_x, &mut v_z);
+            b_z = -b_z;
+            v_z = -v_z;
+        }
+        if rho2 < rho3 {
+            std::mem::swap(&mut b_y, &mut b_z);
+            std::mem::swap(&mut v_y, &mut v_z);
+            b_z = -b_z;
+            v_z = -v_z;
+        }
+        *b = Mat3F64::from_cols(b_x.into(), b_y.into(), b_z.into());
+        *v = Mat3F64::from_cols(v_x.into(), v_y.into(), v_z.into());
+    }
+
+    pub fn svd3(mat: &Mat3F64) -> SVD3Set {
+        let mut s_mat = Symmetric3x3::from_mat3x3(&(mat.transpose() * *mat));
         let q = compute_v_quat(&mut s_mat);
         let mut v_mat = Mat3F64::from_quat(q);
 
-        // 3. Extract U and Singular Values
-        let (mut u_mat, mut s_vec) = extract_u_and_s(mat, &v_mat);
+        let mut b = *mat * v_mat;
+        sort_singular_values(&mut b, &mut v_mat);
 
-        // 4. Sort singular values and corresponding vectors
-        sort_singular_values(&mut u_mat, &mut s_vec, &mut v_mat);
+        // Exact QR Decomposition instead of arbitrary extraction
+        let qr = qr_decomposition(&mut b);
 
-        SVD3Set {
-            u: u_mat,
-            s: Mat3F64::from_diagonal(s_vec),
-            v: v_mat,
-        }
-    }
+        let mut u = qr.q;
+        let mut s = qr.r;
 
-    pub fn sort_singular_values(u_mat: &mut Mat3F64, s_vec: &mut Vec3F64, v_mat: &mut Mat3F64) {
-        if s_vec.x < s_vec.y {
-            std::mem::swap(&mut s_vec.x, &mut s_vec.y);
-            let col0 = v_mat.x_axis;
-            v_mat.x_axis = v_mat.y_axis;
-            v_mat.y_axis = col0;
-            let col0 = u_mat.x_axis;
-            u_mat.x_axis = u_mat.y_axis;
-            u_mat.y_axis = col0;
+        let s_x = s.x_axis;
+        let s_y = s.y_axis;
+        let s_z = s.z_axis;
+        let mut u_x = u.x_axis;
+        let mut u_y = u.y_axis;
+        let mut u_z = u.z_axis;
+
+        if s_x.x < 0.0 {
+            u_x = -u_x;
         }
-        if s_vec.y < s_vec.z {
-            std::mem::swap(&mut s_vec.y, &mut s_vec.z);
-            let col1 = v_mat.y_axis;
-            v_mat.y_axis = v_mat.z_axis;
-            v_mat.z_axis = col1;
-            let col1 = u_mat.y_axis;
-            u_mat.y_axis = u_mat.z_axis;
-            u_mat.z_axis = col1;
+        if s_y.y < 0.0 {
+            u_y = -u_y;
         }
-        if s_vec.x < s_vec.y {
-            std::mem::swap(&mut s_vec.x, &mut s_vec.y);
-            let col0 = v_mat.x_axis;
-            v_mat.x_axis = v_mat.y_axis;
-            v_mat.y_axis = col0;
-            let col0 = u_mat.x_axis;
-            u_mat.x_axis = u_mat.y_axis;
-            u_mat.y_axis = col0;
+        if s_z.z < 0.0 {
+            u_z = -u_z;
         }
+
+        u = Mat3F64::from_cols(u_x.into(), u_y.into(), u_z.into());
+        s = Mat3F64::from_cols(
+            Vec3F64::new(s_x.x.abs(), s_y.x, s_z.x),
+            Vec3F64::new(s_x.y, s_y.y.abs(), s_z.y),
+            Vec3F64::new(s_x.z, s_y.z, s_z.z.abs()),
+        );
+
+        SVD3Set { u, s, v: v_mat }
     }
 }
 
@@ -936,7 +1051,7 @@ mod tests {
     }
 
     #[test]
-    fn test_issue_696_repeated_singular_values() {
+    fn test_svd3_f64_degenerate_essential_matrix() {
         // Essential matrix E with repeated singular values (sigma, sigma, 0)
         let e = Mat3F64::from_cols(
             Vec3F64::new(0.0, -2.552, 0.0),
@@ -944,6 +1059,10 @@ mod tests {
             Vec3F64::new(0.0, 8.327, 0.0),
         );
         let svd = svd3_f64(&e);
+
+        // Verify full SVD properties: orthogonality and reconstruction
+        verify_svd_properties_f64(&e, &svd, TEST_EPSILON_F64);
+
         let s = svd.s();
         let sigma1 = s.x_axis.x;
         let sigma2 = s.y_axis.y;
