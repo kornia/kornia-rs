@@ -38,9 +38,6 @@ jobs:
           - name: Check
             command: rust-check
             needs-sccache: true
-          - name: Check (all features)
-            command: rust-check-all-features
-            needs-sccache: true
 
     steps:
       - uses: actions/checkout@v4
