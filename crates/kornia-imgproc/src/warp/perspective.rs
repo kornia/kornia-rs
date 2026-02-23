@@ -27,7 +27,6 @@ fn adjugate3x3(m: &[f32; 9]) -> [f32; 9] {
     ]
 }
 
-// TODO: use TensorError
 fn inverse_perspective_matrix(m: &[f32; 9]) -> Result<[f32; 9], ImageError> {
     let det = determinant3x3(m);
 
