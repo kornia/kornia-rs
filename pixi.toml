@@ -51,6 +51,7 @@ libunwind = "*"  # Linux-only
 
 [feature.rust.tasks]
 rust-check = { cmd = "cargo check --workspace --all-targets --features ci", description = "Check Rust compilation (all targets)" }
+rust-check-all-features = { cmd = "cargo check --workspace --all-targets --all-features", description = "Check Rust compilation (all targets, all features)" }
 rust-clippy = { cmd = "cargo clippy --workspace --no-deps --all-targets --features ci -- -D warnings", description = "Run clippy (all targets)" }
 rust-fmt = { cmd = "cargo fmt --all", description = "Format Rust code" }
 rust-fmt-check = { cmd = "cargo fmt --all -- --check", description = "Check Rust formatting" }
