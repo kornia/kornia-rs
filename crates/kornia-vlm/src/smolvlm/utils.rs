@@ -44,8 +44,4 @@ pub enum SmolVlmError {
 
     #[error("Invalid logits detected: {0}")]
     InvalidLogits(String),
-
-    // TODO: not used right now (currently, the end token is handled via if/else, which might be preferred)
-    #[error("Cannot find the <end_of_utterance> token")]
-    EosTokenNotFound,
 }
