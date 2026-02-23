@@ -10,11 +10,20 @@ repository = { workspace = true }
 license = { workspace = true }
 publish = true
 
+[[bench]]
+harness = false
+name = "bench_image"
+
 [dependencies]
 arrow = { workspace = true, optional = true }
 kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
+rayon = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+half = { workspace = true }
 
 [features]
 default = []

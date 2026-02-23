@@ -24,4 +24,20 @@ pub enum AprilTagError {
     /// Allowed errors must be less than 4.
     #[error("Allowed errors must be less than 4, got {0}")]
     InvalidAllowedErrors(u8),
+
+    /// Cholesky decomposition failed for grayscale interpolation model.
+    /// This typically occurs when the sampled data is insufficient or
+    /// the matrix is not positive definite.
+    #[error("Cholesky decomposition failed for grayscale interpolation model")]
+    GrayModelUnderdetermined,
+    /// max_hamming exceeds safe limit for this tag family.
+    #[error("max_hamming {max_hamming} exceeds safe limit for this tag family (min_hamming={min_hamming}, max safe value is {max_safe})")]
+    MaxHammingTooLarge {
+        /// The requested max_hamming value.
+        max_hamming: u8,
+        /// The minimum Hamming distance between codes in this family.
+        min_hamming: u8,
+        /// The maximum safe max_hamming value for this family.
+        max_safe: u8,
+    },
 }

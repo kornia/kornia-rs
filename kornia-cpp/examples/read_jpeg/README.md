@@ -5,9 +5,8 @@ Simple example demonstrating JPEG image reading with kornia-cpp.
 ## Building
 
 ```bash
-cd kornia-cpp
-just build-examples
-./build/examples/read_jpeg/read_jpeg_example path/to/image.jpg
+pixi run cpp-build-examples
+./kornia-cpp/build/examples/read_jpeg/read_jpeg_example path/to/image.jpg
 ```
 
 ## Usage
@@ -36,7 +35,7 @@ The example demonstrates:
 
 1. Loading a JPEG image
    ```cpp
-   auto image = kornia::io::read_jpeg_rgb8(file_path);
+   auto image = kornia::io::jpeg::read_image_jpeg_rgb8(file_path);
    ```
 
 2. Accessing image properties

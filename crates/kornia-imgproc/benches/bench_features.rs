@@ -29,7 +29,7 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
         |b, i| {
             let src = i.clone();
             b.iter(|| {
-                let _res = std::hint::black_box(fast_feature_detector(&src, 60, 9)).unwrap();
+                let _res = std::hint::black_box(fast_feature_detector(&src, 60, false)).unwrap();
             })
         },
     );

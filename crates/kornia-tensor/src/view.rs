@@ -1,6 +1,7 @@
 use crate::{
     get_strides_from_shape, storage::TensorStorage, CpuAllocator, Tensor, TensorAllocator,
 };
+use rayon::prelude::*;
 
 /// A non-owning view into tensor data.
 ///
@@ -62,7 +63,7 @@ pub struct TensorView<'a, T, const N: usize, A: TensorAllocator> {
     pub strides: [usize; N],
 }
 
-impl<T, const N: usize, A: TensorAllocator> TensorView<'_, T, N, A> {
+impl<T: Send, const N: usize, A: TensorAllocator> TensorView<'_, T, N, A> {
     /// Returns a slice view of the underlying storage.
     ///
     /// Note: This returns the entire underlying storage slice, not just the elements
@@ -168,32 +169,32 @@ impl<T, const N: usize, A: TensorAllocator> TensorView<'_, T, N, A> {
     where
         T: Clone,
     {
-        let mut data = Vec::<T>::with_capacity(self.numel());
-        let mut index = [0; N];
+        let numel = self.numel();
 
-        loop {
-            let val = self.get_unchecked(index);
-            data.push(val.clone());
-
-            // Increment index
-            let mut i = N - 1;
-            while i > 0 && index[i] == self.shape[i] - 1 {
-                index[i] = 0;
-                i -= 1;
-            }
-            if i == 0 && index[0] == self.shape[0] - 1 {
-                break;
-            }
-            index[i] += 1;
-        }
+        let data: Vec<T> = (0..numel)
+            .into_par_iter()
+            .map(|flat_idx| {
+                let index = self.flat_index_to_multi_index(flat_idx);
+                self.get_unchecked(index).clone()
+            })
+            .collect();
 
         let strides = get_strides_from_shape(self.shape);
-
         Tensor {
             storage: TensorStorage::from_vec(data, CpuAllocator),
             shape: self.shape,
             strides,
         }
+    }
+
+    /// Convert 1D to N-dimensional index for retrieving elements.
+    pub(super) fn flat_index_to_multi_index(&self, mut flat_idx: usize) -> [usize; N] {
+        let mut index = [0; N];
+        for i in (0..N).rev() {
+            index[i] = flat_idx % self.shape[i];
+            flat_idx /= self.shape[i];
+        }
+        index
     }
 }
 
@@ -239,5 +240,27 @@ mod tests {
         assert_eq!(view.get_unchecked([7]), &8);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_flat_index_to_multi_index_2d() {
+        let vec: Vec<u8> = (0..12).collect();
+        let storage = TensorStorage::from_vec(vec, CpuAllocator);
+
+        let view = TensorView::<u8, 2, _> {
+            storage: &storage,
+            shape: [3, 4],
+            strides: [4, 1],
+        };
+
+        // Test each flat index
+        assert_eq!(view.flat_index_to_multi_index(0), [0, 0]);
+        assert_eq!(view.flat_index_to_multi_index(1), [0, 1]);
+        assert_eq!(view.flat_index_to_multi_index(2), [0, 2]);
+        assert_eq!(view.flat_index_to_multi_index(3), [0, 3]);
+        assert_eq!(view.flat_index_to_multi_index(4), [1, 0]);
+        assert_eq!(view.flat_index_to_multi_index(5), [1, 1]);
+        assert_eq!(view.flat_index_to_multi_index(9), [2, 1]);
+        assert_eq!(view.flat_index_to_multi_index(11), [2, 3]);
     }
 }

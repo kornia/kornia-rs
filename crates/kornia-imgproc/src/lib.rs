@@ -30,6 +30,9 @@ pub mod features;
 /// image filtering module.
 pub mod filter;
 
+/// image morphology module.
+pub mod morphology;
+
 /// image flipping module.
 pub mod flip;
 
@@ -59,3 +62,6 @@ pub mod warp;
 
 /// Pyramid operations
 pub mod pyramid;
+
+/// distance transform
+pub mod distance_transform;

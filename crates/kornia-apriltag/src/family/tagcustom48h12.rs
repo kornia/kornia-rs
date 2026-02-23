@@ -19,6 +19,7 @@ impl TagFamily {
                 7, 7, 7, 7, 7, 7, 7, 7, 7, 4, 4, 4, 7, 6, 5, 4, 3, 2, 1, 0, -1, 4, 3, 2,
             ],
             code_data: CODE_DATA.into(),
+            min_hamming: 12,
             quick_decode: QuickDecode::new(48, &CODE_DATA, 2)?,
             sharpening_buffer: SharpeningBuffer::new(100),
         })
