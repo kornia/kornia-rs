@@ -25,7 +25,7 @@ jobs:
   test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -33,30 +33,30 @@ jobs:
           # Default feature tests
           - name: Test Debug (default) - x86_64
             runner: ubuntu-latest
-            command: rust-test
-            features: ""
+            mode: default
+            release: false
 
           - name: Test Release (default) - x86_64
             runner: ubuntu-latest
-            command: rust-test-release
-            features: ""
+            mode: default
+            release: true
 
           - name: Test Debug (default) - aarch64
             runner: ubuntu-24.04-arm
-            command: rust-test
-            features: ""
+            mode: default
+            release: false
 
           # All-features tests
           - name: Test Debug (all-features) - x86_64
             runner: ubuntu-latest
-            command: rust-test
-            features: "--all-features"
+            mode: all-features
+            release: false
 
           # Minimal tests
           - name: Test Debug (no-default-features) - x86_64
             runner: ubuntu-latest
-            command: rust-test
-            features: "--no-default-features"
+            mode: no-default-features
+            release: false
 
     steps:
       - uses: actions/checkout@v4
@@ -70,14 +70,29 @@ jobs:
           pixi-version: v0.40.0
           cache: true
 
-      - name: Run ${{ matrix.command }}
+      - name: Install cargo-hack
+        run: pixi run cargo install cargo-hack
+
+      - name: Run tests
         run: |
-          if [ -z "${{ matrix.features }}" ]; then
-            pixi run ${{ matrix.command }}
+          if [ "${{ matrix.release }}" = "true" ]; then
+            if [ "${{ matrix.mode }}" = "default" ]; then
+              pixi run cargo test --workspace --release
+            else
+              pixi run cargo hack test --workspace --release \
+                $([ "${{ matrix.mode }}" = "all-features" ] && echo "--all-features") \
+                $([ "${{ matrix.mode }}" = "no-default-features" ] && echo "--no-default-features")
+            fi
           else
-            pixi run ${{ matrix.command }} -- ${{ matrix.features }}
+            if [ "${{ matrix.mode }}" = "default" ]; then
+              pixi run cargo test --workspace
+            else
+              pixi run cargo hack test --workspace \
+                $([ "${{ matrix.mode }}" = "all-features" ] && echo "--all-features") \
+                $([ "${{ matrix.mode }}" = "no-default-features" ] && echo "--no-default-features")
+            fi
           fi
-          
+
       - name: Show sccache stats
         if: always()
         run: |
