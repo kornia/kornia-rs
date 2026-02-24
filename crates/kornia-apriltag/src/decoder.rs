@@ -401,7 +401,7 @@ pub fn decode_tags<A: ImageAllocator>(
                         hamming: entry.hamming,
                         decision_margin,
                         center,
-                        quad: std::mem::take(quad), // TODO: Should we take or copy the value? Benchmark it
+                        quad: std::mem::take(quad),
                     };
 
                     detections.push(detection);

@@ -26,7 +26,11 @@ use super::so3::SO3F32;
 /// - R³ is the 3D Euclidean vector space (translation)
 ///
 /// 7 degrees of freedom: 3 for rotation, 1 for scale, 3 for translation
-#[derive(Debug, Clone, Copy)]
+/// Note regarding `PartialEq`:
+/// This struct derives `PartialEq` which performs an exact element-wise comparison.
+/// Because quaternions form a double cover for SO3 (`q` and `-q` represent the same rotation),
+/// this means that two `Sim3F32` instances representing the same transformation may evaluate as not equal.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sim3F32 {
     /// Scaling and rotation component
     pub rxso3: RxSO3F32,
