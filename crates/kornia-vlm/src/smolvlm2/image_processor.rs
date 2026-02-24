@@ -3,7 +3,6 @@ use candle_core::{DType, Device, Shape, Tensor};
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
 use log::trace;
-use std::borrow::Cow;
 
 pub struct ImageProcessorConfig {
     pub size_longest_edge: u32,           // max size
@@ -156,26 +155,13 @@ impl<A: ImageAllocator> ImageProcessor<A> {
                 self.config.size_longest_edge,
                 alloc.clone(),
             )?;
-            match img_resized {
-                Cow::Borrowed(img_ref) => {
-                    Self::pad_image_in_place(
-                        img_ref,
-                        &mut self.buf_padded_img,
-                        &mut self.buf_padded_mask,
-                        self.config.max_image_size_longest_edge,
-                        alloc.clone(),
-                    )?;
-                }
-                Cow::Owned(img_owned) => {
-                    Self::pad_image_in_place(
-                        &img_owned,
-                        &mut self.buf_padded_img,
-                        &mut self.buf_padded_mask,
-                        self.config.max_image_size_longest_edge,
-                        alloc.clone(),
-                    )?;
-                }
-            }
+            Self::pad_image_in_place(
+                img_resized,
+                &mut self.buf_padded_img,
+                &mut self.buf_padded_mask,
+                self.config.max_image_size_longest_edge,
+                alloc.clone(),
+            )?;
         }
 
         {
@@ -192,26 +178,13 @@ impl<A: ImageAllocator> ImageProcessor<A> {
                 self.config.max_image_size_longest_edge,
                 alloc.clone(),
             )?;
-            match global_resized {
-                Cow::Borrowed(img_ref) => {
-                    Self::pad_image_in_place(
-                        img_ref,
-                        &mut self.buf_global_padded_img,
-                        &mut self.buf_global_padded_mask,
-                        self.config.max_image_size_longest_edge,
-                        alloc.clone(),
-                    )?;
-                }
-                Cow::Owned(img_owned) => {
-                    Self::pad_image_in_place(
-                        &img_owned,
-                        &mut self.buf_global_padded_img,
-                        &mut self.buf_global_padded_mask,
-                        self.config.max_image_size_longest_edge,
-                        alloc.clone(),
-                    )?;
-                }
-            }
+            Self::pad_image_in_place(
+                global_resized,
+                &mut self.buf_global_padded_img,
+                &mut self.buf_global_padded_mask,
+                self.config.max_image_size_longest_edge,
+                alloc.clone(),
+            )?;
         }
 
         let img_padded = self
@@ -255,14 +228,12 @@ impl<A: ImageAllocator> ImageProcessor<A> {
         buffer: &'a mut Option<Image<u8, 3, A>>,
         target_size: u32,
         alloc: A,
-    ) -> Result<Cow<'a, Image<u8, 3, A>>, SmolVlm2Error> {
+    ) -> Result<&'a Image<u8, 3, A>, SmolVlm2Error> {
         let (width, height) = (img.width() as u32, img.height() as u32);
         let longest_edge = width.max(height);
 
         if longest_edge <= target_size {
-            Ok(Cow::Borrowed(unsafe {
-                std::mem::transmute::<&Image<u8, 3, A>, &Image<u8, 3, A>>(img)
-            }))
+            Ok(img)
         } else {
             let scale_factor = target_size as f32 / longest_edge as f32;
             let new_width = (width as f32 * scale_factor) as usize;
@@ -288,7 +259,7 @@ impl<A: ImageAllocator> ImageProcessor<A> {
                 .expect("Tried to resize a None image buffer");
             resize_fast_rgb(img, buf, InterpolationMode::Lanczos)?;
 
-            Ok(Cow::Borrowed(buf))
+            Ok(buf)
         }
     }
 
