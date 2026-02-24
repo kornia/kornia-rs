@@ -332,9 +332,9 @@ pub fn dog_response<A1: ImageAllocator, A2: ImageAllocator>(
     Ok(())
 }
 
-/// Apply 3×3 Non-Maximum Suppression (NMS) to a floating point response map using dilation.
+/// Apply 3x3 Non-Maximum Suppression (NMS) to a floating point response map using dilation.
 ///
-/// This function retains only spatial local maxima within a 3×3 neighborhood.
+/// This function retains only spatial local maxima within a 3x3 neighborhood.
 ///
 /// # Arguments
 ///
