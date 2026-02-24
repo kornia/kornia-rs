@@ -30,15 +30,33 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Test Debug - x86_64
+          # Default feature tests
+          - name: Test Debug (default) - x86_64
             runner: ubuntu-latest
             command: rust-test
-          - name: Test Release - x86_64
+            features: ""
+
+          - name: Test Release (default) - x86_64
             runner: ubuntu-latest
             command: rust-test-release
-          - name: Test Debug - aarch64
+            features: ""
+
+          - name: Test Debug (default) - aarch64
             runner: ubuntu-24.04-arm
             command: rust-test
+            features: ""
+
+          # All-features tests
+          - name: Test Debug (all-features) - x86_64
+            runner: ubuntu-latest
+            command: rust-test
+            features: "--all-features"
+
+          # Minimal tests
+          - name: Test Debug (no-default-features) - x86_64
+            runner: ubuntu-latest
+            command: rust-test
+            features: "--no-default-features"
 
     steps:
       - uses: actions/checkout@v4
@@ -53,8 +71,13 @@ jobs:
           cache: true
 
       - name: Run ${{ matrix.command }}
-        run: pixi run ${{ matrix.command }}
-
+        run: |
+          if [ -z "${{ matrix.features }}" ]; then
+            pixi run ${{ matrix.command }}
+          else
+            pixi run ${{ matrix.command }} -- ${{ matrix.features }}
+          fi
+          
       - name: Show sccache stats
         if: always()
         run: |
