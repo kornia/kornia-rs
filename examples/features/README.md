@@ -10,4 +10,4 @@ cargo build --release
 Usage: cargo run --release -- -i <IMAGE_PATH>
 ```
 
-![Screenshot from 2024-12-26 12-23-18](https://github.com/user-attachments/assets/aab6d989-41a8-4ad8-ac5f-857eb3ae76a0)
+![](https://github.com/user-attachments/assets/fd4103e5-7cb1-4c1f-bfbb-f6362ce892e6)
