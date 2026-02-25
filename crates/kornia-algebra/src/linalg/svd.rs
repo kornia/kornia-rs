@@ -515,16 +515,16 @@ mod impl_f64 {
 
     impl Symmetric3x3 {
         fn from_mat3x3(m: &Mat3F64) -> Self {
-            let c0 = m.x_axis;
-            let c1 = m.y_axis;
-            let c2 = m.z_axis;
+            let x_axis = m.x_axis;
+            let y_axis = m.y_axis;
+            let z_axis = m.z_axis;
             Self {
-                m_00: c0.dot(c0),
-                m_10: c0.dot(c1),
-                m_20: c0.dot(c2),
-                m_11: c1.dot(c1),
-                m_21: c1.dot(c2),
-                m_22: c2.dot(c2),
+                m_00: x_axis.dot(x_axis),
+                m_10: x_axis.dot(y_axis),
+                m_20: x_axis.dot(z_axis),
+                m_11: y_axis.dot(y_axis),
+                m_21: y_axis.dot(z_axis),
+                m_22: z_axis.dot(z_axis),
             }
         }
     }
@@ -536,11 +536,11 @@ mod impl_f64 {
         }
         let tau = (aqq - app) / (2.0 * apq);
         let t = if tau >= 0.0 {
-            1.0 / (tau + (1.0 + tau * tau).sqrt())
+            1.0 / (tau + tau.hypot(1.0))
         } else {
-            -1.0 / (-tau + (1.0 + tau * tau).sqrt())
+            -1.0 / (-tau + tau.hypot(1.0))
         };
-        let c = 1.0 / (1.0 + t * t).sqrt();
+        let c = 1.0 / t.hypot(1.0);
         let s = c * t;
         (c, s)
     }
