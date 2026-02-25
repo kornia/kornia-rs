@@ -204,7 +204,7 @@ impl TryFrom<TagFamilyKind> for TagFamily {
 
     fn try_from(value: TagFamilyKind) -> Result<Self, Self::Error> {
         match value {
-            // Keeping the Custom optimization
+            // Avoid cloning when the Arc has sole ownership
             TagFamilyKind::Custom(tag_family) => {
                 Ok(Arc::try_unwrap(tag_family).unwrap_or_else(|arc| (*arc).clone()))
             }
