@@ -41,3 +41,5 @@ pub mod v4l;
 
 /// Internal utility functions for image bit depth conversion.
 mod conv_utils;
+
+pub use crate::metadata::{apply_exif_orientation, read_image_jpeg_auto_orient};
