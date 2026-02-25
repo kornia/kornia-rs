@@ -9,6 +9,17 @@ use crate::{
 
 use super::pattern::{POS0, POS1};
 
+/// ORB features extracted from a single frame.
+#[derive(Debug, Clone)]
+pub struct OrbFeatures {
+    /// Keypoints as `[col, row]` in pixel coordinates.
+    pub keypoints_xy: Vec<[f32; 2]>,
+    /// Keypoint orientation angles (radians).
+    pub orientations: Vec<f32>,
+    /// Binary descriptors (256-bit, packed as 32 bytes each).
+    pub descriptors: Vec<[u8; 32]>,
+}
+
 /// ORB (Oriented FAST and Rotated BRIEF) feature detector and descriptor extractor.
 ///
 /// Detects keypoints using a multi-scale FAST detector with Harris response scoring
@@ -392,6 +403,41 @@ impl OrbDetector {
         }
 
         Ok((descriptors_list, mask_list))
+    }
+
+    /// Detect keypoints and compute descriptors in one call.
+    ///
+    /// Equivalent to calling [`detect`](Self::detect) then [`extract`](Self::extract),
+    /// but filters out border keypoints and returns an [`OrbFeatures`] with matching
+    /// `keypoints_xy`, `orientations`, and `descriptors` vectors.
+    pub fn detect_and_extract<A: ImageAllocator>(
+        &self,
+        src: &Image<f32, 1, A>,
+    ) -> Result<OrbFeatures, ImageError> {
+        let (kps_rc, scales, orientations, _responses) = self.detect(src)?;
+        let (descriptors, mask) = self.extract(src, &kps_rc, &scales, &orientations)?;
+
+        let mut keypoints_xy = Vec::with_capacity(descriptors.len());
+        let mut valid_orientations = Vec::with_capacity(descriptors.len());
+        let mut valid_descriptors = Vec::with_capacity(descriptors.len());
+
+        // `mask` has one entry per keypoint; `descriptors` has entries only
+        // for keypoints where mask is true, so we track a separate index.
+        let mut desc_idx = 0;
+        for (i, ((row, col), &ori)) in kps_rc.iter().zip(orientations.iter()).enumerate() {
+            if mask.get(i).copied().unwrap_or(false) {
+                keypoints_xy.push([*col, *row]);
+                valid_orientations.push(ori);
+                valid_descriptors.push(descriptors[desc_idx]);
+                desc_idx += 1;
+            }
+        }
+
+        Ok(OrbFeatures {
+            keypoints_xy,
+            orientations: valid_orientations,
+            descriptors: valid_descriptors,
+        })
     }
 }
 
