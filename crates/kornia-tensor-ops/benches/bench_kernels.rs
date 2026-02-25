@@ -17,15 +17,6 @@ fn bench_product1_float_kernel(c: &mut Criterion) {
         });
     }
 
-    for size in test_sizes.clone() {
-        let a: Vec<i8> = (0..size).map(|_| rng.random::<i8>()).collect();
-        let b: Vec<i8> = (0..size).map(|_| rng.random::<i8>()).collect();
-
-        group.bench_function(format!("i8_size_{size}"), |bencher| {
-            bencher.iter(|| std::hint::black_box(dot_product1_kernel(&a, &b).unwrap()))
-        });
-    }
-
     group.finish();
 }
 
