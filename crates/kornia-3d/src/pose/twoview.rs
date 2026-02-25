@@ -142,6 +142,8 @@ pub struct TwoViewResult {
     pub translation: Vec3F64,
     /// Triangulated 3D points for inliers.
     pub points3d: Vec<Vec3F64>,
+    /// Index into the input `x1`/`x2` arrays for each point in `points3d`.
+    pub inlier_indices: Vec<usize>,
     /// Inlier mask from the selected model's RANSAC.
     pub inliers: Vec<bool>,
 }
@@ -327,16 +329,19 @@ pub fn two_view_estimate(
     let mut best_pose = None;
     let mut best_count = 0usize;
     let mut best_points = Vec::new();
+    let mut best_indices = Vec::new();
 
     let (model, inliers) = if use_h {
         let h = res_h.model;
         let poses = decompose_homography(&h, k1, k2);
         for (r, t) in &poses {
-            let (count, points) = triangulate_inliers(x1, x2, &res_h.inliers, r, t, &tri_params);
+            let (count, points, indices) =
+                triangulate_inliers(x1, x2, &res_h.inliers, r, t, &tri_params);
             if count > best_count {
                 best_count = count;
                 best_pose = Some((*r, *t));
                 best_points = points;
+                best_indices = indices;
             }
         }
         (TwoViewModel::Homography(h), res_h.inliers)
@@ -346,11 +351,13 @@ pub fn two_view_estimate(
         let e = enforce_essential_constraints(&e);
         let poses = decompose_essential(&e);
         for (r, t) in &poses {
-            let (count, points) = triangulate_inliers(x1, x2, &res_f.inliers, r, t, &tri_params);
+            let (count, points, indices) =
+                triangulate_inliers(x1, x2, &res_f.inliers, r, t, &tri_params);
             if count > best_count {
                 best_count = count;
                 best_pose = Some((*r, *t));
                 best_points = points;
+                best_indices = indices;
             }
         }
         (TwoViewModel::Fundamental(f), res_f.inliers)
@@ -366,6 +373,7 @@ pub fn two_view_estimate(
         rotation: r,
         translation: t,
         points3d: best_points,
+        inlier_indices: best_indices,
         inliers,
     })
 }
@@ -383,9 +391,10 @@ fn triangulate_inliers(
     r: &Mat3F64,
     t: &Vec3F64,
     params: &TriangulateParams<'_>,
-) -> (usize, Vec<Vec3F64>) {
+) -> (usize, Vec<Vec3F64>, Vec<usize>) {
     let mut count = 0usize;
     let mut points = Vec::new();
+    let mut indices = Vec::new();
 
     for i in 0..x1.len() {
         if !inliers[i] {
@@ -397,14 +406,21 @@ fn triangulate_inliers(
             let z1 = x.z;
             let x2c = *r * x + *t;
             let z2 = x2c.z;
-            if z1 > 0.0 && z2 > 0.0 && parallax_ok(&x, &x2c, params.min_parallax_deg) {
+            // True parallax: angle between the two viewing rays in the WORLD frame.
+            // Ray from cam1 (at origin): x / |x|
+            // Ray from cam2 (at C2 = -Rᵀt) toward x: (x - C2) / |x - C2| = Rᵀ * x2c (unnorm)
+            // Using Rᵀ·x2c = x + Rᵀt removes the rotation-induced component that
+            // would otherwise make this angle ≈ rotation_angle regardless of depth.
+            let d2_world = r.transpose() * x2c;
+            if z1 > 0.0 && z2 > 0.0 && parallax_ok(&x, &d2_world, params.min_parallax_deg) {
                 points.push(x);
+                indices.push(i);
                 count += 1;
             }
         }
     }
 
-    (count, points)
+    (count, points, indices)
 }
 
 fn parallax_ok(x1: &Vec3F64, x2: &Vec3F64, min_parallax_deg: f64) -> bool {
@@ -446,11 +462,15 @@ fn triangulate_point_linear(
     a.write(1, 1, -1.0);
     a.write(1, 2, x1.y);
 
-    // P2 rows: r0=[r0..r2, tx], r1=[r3..r5, ty], r2=[r6..r8, tz]
-    let p2_2 = [r_arr[6], r_arr[7], r_arr[8], t.z];
+    // r_arr is column-major: r_arr[j*3 + i] = R[i,j].
+    // P2 = [R | t], so P2[row, col] = R[row, col] for col < 3, t[row] for col = 3.
+    // P2 row 0: [R[0,0], R[0,1], R[0,2], tx] = [r_arr[0], r_arr[3], r_arr[6], tx]
+    // P2 row 1: [R[1,0], R[1,1], R[1,2], ty] = [r_arr[1], r_arr[4], r_arr[7], ty]
+    // P2 row 2: [R[2,0], R[2,1], R[2,2], tz] = [r_arr[2], r_arr[5], r_arr[8], tz]
+    let p2_2 = [r_arr[2], r_arr[5], r_arr[8], t.z];
     for j in 0..4 {
-        let p2_0j = if j < 3 { r_arr[j] } else { t.x };
-        let p2_1j = if j < 3 { r_arr[j + 3] } else { t.y };
+        let p2_0j = if j < 3 { r_arr[j * 3] } else { t.x };
+        let p2_1j = if j < 3 { r_arr[j * 3 + 1] } else { t.y };
         a.write(2, j, x2.x * p2_2[j] - p2_0j);
         a.write(3, j, x2.y * p2_2[j] - p2_1j);
     }
