@@ -498,7 +498,7 @@ mod impl_f64 {
     use super::*;
 
     const EPSILON: f64 = 1e-15;
-    const JACOBI_TOLERANCE: f64 = 1e-15;
+    const JACOBI_TOLERANCE: f64 = 1e-12;
     // Standard Jacobi rotation requires more sweeps for f64 Exact Givens
     // to ensure convergence without hitting the limit prematurely.
     const MAX_SWEEPS: usize = 20;
@@ -641,6 +641,12 @@ mod impl_f64 {
             }
 
             // Normalize quaternion once per sweep to balance orthogonality and performance
+            let len = q_accum.length();
+            debug_assert!(
+                (len - 1.0).abs() < 0.1,
+                "Quaternion drift detected in compute_v_quat: length={}",
+                len
+            );
             q_accum = q_accum.normalize();
 
             let off_diag_sq =
@@ -816,7 +822,8 @@ mod impl_f64 {
         let mut b = *mat * v_mat;
         sort_singular_values(&mut b, &mut v_mat);
 
-        // Exact QR Decomposition instead of arbitrary extraction
+        // Use QR decomposition of B to obtain an orthonormal U and upper-triangular S,
+        // instead of inferring U directly from B's columns via ad-hoc normalization.
         let qr = qr_decomposition(&mut b);
 
         let mut u = qr.q;
