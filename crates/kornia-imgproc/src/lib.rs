@@ -65,3 +65,6 @@ pub mod pyramid;
 
 /// distance transform
 pub mod distance_transform;
+
+/// contours
+pub mod contours;
