@@ -387,11 +387,16 @@ mod tests {
     #[test]
     fn test_for_each_row_parallel() {
         let mut data = vec![1, 2, 3, 4, 5, 6];
-        for_each_row(&mut data, 2, ExecutionStrategy::ParallelElements, |_r, row| {
-            for v in row.iter_mut() {
-                *v *= 10;
-            }
-        })
+        for_each_row(
+            &mut data,
+            2,
+            ExecutionStrategy::ParallelElements,
+            |_r, row| {
+                for v in row.iter_mut() {
+                    *v *= 10;
+                }
+            },
+        )
         .unwrap();
         assert_eq!(data, vec![10, 20, 30, 40, 50, 60]);
     }
