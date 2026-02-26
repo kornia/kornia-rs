@@ -145,13 +145,11 @@ pub fn icp_vanilla(
 
 #[cfg(test)]
 mod tests {
-
     use super::{icp_vanilla, ICPConvergenceCriteria};
     use crate::{
         linalg::transform_points3d, pointcloud::PointCloud,
         transforms::axis_angle_to_rotation_matrix,
     };
-
     #[test]
     fn test_icp_vanilla() -> Result<(), Box<dyn std::error::Error>> {
         let num_points = 100;
@@ -190,14 +188,46 @@ mod tests {
 
         println!("result: {result:?}");
 
-        // TODO: fixme
-        // for i in 0..3 {
-        //     assert_relative_eq!(result.translation[i], dst_t_src[i], epsilon = 1e-1);
-        //     for j in 0..3 {
-        //         // TODO: implement convert back to axis angle
-        //         assert_relative_eq!(result.rotation[i][j], dst_r_src[i][j], epsilon = 1e-2);
-        //     }
-        // }
+        // Compute angular rotation error
+        // R_error = R_estimated^T * R_ground_truth
+        let mut r_error = [[0.0; 3]; 3];
+        for (i, r_error_row) in r_error.iter_mut().enumerate() {
+            for (j, r_error_cell) in r_error_row.iter_mut().enumerate() {
+                *r_error_cell = result.rotation[0][i] * dst_r_src[0][j]
+                    + result.rotation[1][i] * dst_r_src[1][j]
+                    + result.rotation[2][i] * dst_r_src[2][j];
+            }
+        }
+
+        // Compute angle from rotation matrix: angle = acos((trace(R) - 1) / 2)
+        let trace = r_error[0][0] + r_error[1][1] + r_error[2][2];
+        let angular_error = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
+
+        // Compute L2 translation error
+        let translation_error = ((result.translation[0] - dst_t_src[0]).powi(2)
+            + (result.translation[1] - dst_t_src[1]).powi(2)
+            + (result.translation[2] - dst_t_src[2]).powi(2))
+        .sqrt();
+
+        // Assert using meaningful geometric metrics
+        assert!(
+            angular_error < 0.1,
+            "Angular rotation error too large: {} rad (expected < 0.1 rad)",
+            angular_error
+        );
+
+        assert!(
+            translation_error < 0.1,
+            "Translation error too large: {} (expected < 0.1)",
+            translation_error
+        );
+
+        // Verify convergence
+        assert!(
+            result.rmse < 1e-8,
+            "ICP did not converge to low error: RMSE = {}",
+            result.rmse
+        );
 
         Ok(())
     }

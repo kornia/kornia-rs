@@ -268,12 +268,13 @@ impl AprilTagDecoder {
 mod tests {
     use kornia_io::png::read_image_png_mono8;
 
-    use crate::{family::TagFamilyKind, utils::Point2d, AprilTagDecoder, DecodeTagsConfig};
+    use crate::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
+    use kornia_algebra::Vec2F32;
 
     fn test_tags(
         decoder: &mut AprilTagDecoder,
         expected_tag: TagFamilyKind,
-        expected_quads: [Point2d<f32>; 4],
+        expected_quads: [Vec2F32; 4],
         images_dir: &str,
         file_name_starts_with: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -340,10 +341,10 @@ mod tests {
         let mut decoder = AprilTagDecoder::new(config, [50, 50].into())?;
 
         let expected_quad = [
-            Point2d { x: 40.0, y: 10.0 },
-            Point2d { x: 40.0, y: 40.0 },
-            Point2d { x: 10.0, y: 40.0 },
-            Point2d { x: 10.0, y: 10.0 },
+            Vec2F32::new(40.0, 10.0),
+            Vec2F32::new(40.0, 40.0),
+            Vec2F32::new(10.0, 40.0),
+            Vec2F32::new(10.0, 10.0),
         ];
 
         test_tags(
@@ -363,10 +364,10 @@ mod tests {
         let mut decoder = AprilTagDecoder::new(config, [55, 55].into())?;
 
         let expected_quad = [
-            Point2d { x: 45.0, y: 10.0 },
-            Point2d { x: 45.0, y: 45.0 },
-            Point2d { x: 10.0, y: 45.0 },
-            Point2d { x: 10.0, y: 10.0 },
+            Vec2F32::new(45.0, 10.0),
+            Vec2F32::new(45.0, 45.0),
+            Vec2F32::new(10.0, 45.0),
+            Vec2F32::new(10.0, 10.0),
         ];
 
         test_tags(
@@ -386,10 +387,10 @@ mod tests {
         let mut decoder = AprilTagDecoder::new(config, [60, 60].into())?;
 
         let expected_quad = [
-            Point2d { x: 50.0, y: 10.0 },
-            Point2d { x: 50.0, y: 50.0 },
-            Point2d { x: 10.0, y: 50.0 },
-            Point2d { x: 10.0, y: 10.0 },
+            Vec2F32::new(50.0, 10.0),
+            Vec2F32::new(50.0, 50.0),
+            Vec2F32::new(10.0, 50.0),
+            Vec2F32::new(10.0, 10.0),
         ];
 
         test_tags(
@@ -409,10 +410,10 @@ mod tests {
         let mut decoder = AprilTagDecoder::new(config, [55, 55].into())?;
 
         let expected_quad = [
-            Point2d { x: 40.0, y: 15.0 },
-            Point2d { x: 40.0, y: 40.0 },
-            Point2d { x: 15.0, y: 40.0 },
-            Point2d { x: 15.0, y: 15.0 },
+            Vec2F32::new(40.0, 15.0),
+            Vec2F32::new(40.0, 40.0),
+            Vec2F32::new(15.0, 40.0),
+            Vec2F32::new(15.0, 15.0),
         ];
 
         test_tags(
@@ -432,10 +433,10 @@ mod tests {
         let mut decoder = AprilTagDecoder::new(config, [65, 65].into())?;
 
         let expected_quad = [
-            Point2d { x: 45.0, y: 20.0 },
-            Point2d { x: 45.0, y: 45.0 },
-            Point2d { x: 20.0, y: 45.0 },
-            Point2d { x: 20.0, y: 20.0 },
+            Vec2F32::new(45.0, 20.0),
+            Vec2F32::new(45.0, 45.0),
+            Vec2F32::new(20.0, 45.0),
+            Vec2F32::new(20.0, 20.0),
         ];
 
         test_tags(
@@ -455,10 +456,10 @@ mod tests {
         let mut decoder = AprilTagDecoder::new(config, [60, 60].into())?;
 
         let expected_quad = [
-            Point2d { x: 45.0, y: 15.0 },
-            Point2d { x: 45.0, y: 45.0 },
-            Point2d { x: 15.0, y: 45.0 },
-            Point2d { x: 15.0, y: 15.0 },
+            Vec2F32::new(45.0, 15.0),
+            Vec2F32::new(45.0, 45.0),
+            Vec2F32::new(15.0, 45.0),
+            Vec2F32::new(15.0, 15.0),
         ];
 
         test_tags(
@@ -478,10 +479,10 @@ mod tests {
         let mut decoder = AprilTagDecoder::new(config, [55, 55].into())?;
 
         let expected_quad = [
-            Point2d { x: 40.0, y: 15.0 },
-            Point2d { x: 40.0, y: 40.0 },
-            Point2d { x: 15.0, y: 40.0 },
-            Point2d { x: 15.0, y: 15.0 },
+            Vec2F32::new(40.0, 15.0),
+            Vec2F32::new(40.0, 40.0),
+            Vec2F32::new(15.0, 40.0),
+            Vec2F32::new(15.0, 15.0),
         ];
 
         test_tags(
@@ -501,10 +502,10 @@ mod tests {
         let mut decoder = AprilTagDecoder::new(config, [60, 60].into())?;
 
         let expected_quad = [
-            Point2d { x: 45.0, y: 15.0 },
-            Point2d { x: 45.0, y: 45.0 },
-            Point2d { x: 15.0, y: 45.0 },
-            Point2d { x: 15.0, y: 15.0 },
+            Vec2F32::new(45.0, 15.0),
+            Vec2F32::new(45.0, 45.0),
+            Vec2F32::new(15.0, 45.0),
+            Vec2F32::new(15.0, 15.0),
         ];
 
         test_tags(

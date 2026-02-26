@@ -254,8 +254,11 @@ impl<T, A: TensorAllocator> Drop for TensorStorage<T, A> {
     ///
     /// This uses the storage's allocator to properly free the memory.
     fn drop(&mut self) {
-        self.alloc
-            .dealloc(self.ptr.as_ptr() as *mut u8, self.layout);
+        // Only deallocate if there is actual heap memory to free
+        if self.layout.size() > 0 {
+            self.alloc
+                .dealloc(self.ptr.as_ptr() as *mut u8, self.layout);
+        }
     }
 }
 
@@ -441,6 +444,34 @@ mod tests {
             assert_eq!(data.get_unchecked(4), &5);
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_tensor_buffer_from_empty_vec() -> Result<(), TensorAllocatorError> {
+        // This test checks if an empty vector can be handled correct
+        // There was in issue in the Drop function which tried to dealloc an empty vector
+        // which does not allocate memory, which lead to a segfault when Drop was called.
+        let vec: Vec<i32> = vec![];
+        let vec_ptr = vec.as_ptr();
+        let vec_len = vec.len();
+
+        let buffer = TensorStorage::<_, CpuAllocator>::from_vec(vec, CpuAllocator);
+
+        // check NO copy
+        let buffer_ptr = buffer.as_ptr();
+        assert!(std::ptr::eq(buffer_ptr, vec_ptr));
+
+        // check alignment
+        let buffer_ptr = buffer.as_ptr() as usize;
+        let alignment = std::mem::align_of::<i32>();
+        assert_eq!(buffer_ptr % alignment, 0);
+
+        // check accessors
+        let data = buffer.as_slice();
+        assert_eq!(data.len(), vec_len);
+
+        // At the end it is dropped and test should not crash with seg fault
         Ok(())
     }
 

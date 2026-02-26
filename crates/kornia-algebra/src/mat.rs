@@ -53,6 +53,9 @@ macro_rules! define_matrix_type {
             /// Identity matrix.
             pub const IDENTITY: Self = Self(<$glam_type>::IDENTITY);
 
+            /// Zero matrix.
+            pub const ZERO: Self = Self(<$glam_type>::ZERO);
+
             /// Transpose the matrix.
             #[inline]
             pub fn transpose(self) -> Self {

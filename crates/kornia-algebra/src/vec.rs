@@ -11,7 +11,7 @@
 macro_rules! define_vector_type {
     ($(#[$meta:meta])* $name:ident, $glam_type:ty, $scalar:ty, $array:ty, [$($field:ident),+]) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq)]
+        #[derive(Debug, Clone, Copy, PartialEq, Default)]
         pub struct $name {
             $(pub $field: $scalar),+
         }

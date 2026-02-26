@@ -14,7 +14,7 @@ use tokenizers::Tokenizer;
 
 use crate::smolvlm2::{SmolVlm2Config, SmolVlm2Error};
 
-#[allow(dead_code)] // TODO: remove
+#[allow(dead_code)] // TODO: implement System role support
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -23,7 +23,7 @@ pub enum Role {
     System,
 }
 
-#[allow(dead_code)] // TODO: remove
+#[allow(dead_code)] // TODO: implement Video line type support
 #[derive(Serialize, Debug, Clone)]
 #[serde(tag = "type")]
 #[serde(rename_all = "lowercase")]

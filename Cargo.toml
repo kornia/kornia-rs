@@ -10,7 +10,7 @@ exclude = ["examples/dora"]
 default-members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.11-rc.1"
+version = "0.1.11"
 authors = ["kornia.org <edgar@kornia.org>"]
 edition = "2021"
 rust-version = "1.82"
@@ -41,17 +41,17 @@ half = { version = "2.7", features = ["num-traits"] }
 hf-hub = "0.4.2"
 indicatif = { version = "0.18.3", features = ["rayon"] }
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
-kornia = { path = "crates/kornia", version = "0.1.11-rc.1" }
-kornia-3d = { path = "crates/kornia-3d", version = "0.1.11-rc.1" }
-kornia-algebra = { path = "crates/kornia-algebra", version = "0.1.11-rc.1" }
-kornia-apriltag = { path = "crates/kornia-apriltag", version = "0.1.11-rc.1" }
-kornia-bow = { path = "crates/kornia-bow", version = "0.1.11-rc.1" }
-kornia-image = { path = "crates/kornia-image", version = "0.1.11-rc.1" }
-kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.11-rc.1" }
-kornia-io = { path = "crates/kornia-io", version = "0.1.11-rc.1" }
-kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.11-rc.1" }
-kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.11-rc.1" }
-kornia-vlm = { path = "crates/kornia-vlm", version = "0.1.11-rc.1" }
+kornia = { path = "crates/kornia", version = "0.1.11" }
+kornia-3d = { path = "crates/kornia-3d", version = "0.1.11" }
+kornia-algebra = { path = "crates/kornia-algebra", version = "0.1.11" }
+kornia-apriltag = { path = "crates/kornia-apriltag", version = "0.1.11" }
+kornia-bow = { path = "crates/kornia-bow", version = "0.1.11" }
+kornia-image = { path = "crates/kornia-image", version = "0.1.11" }
+kornia-imgproc = { path = "crates/kornia-imgproc", version = "0.1.11" }
+kornia-io = { path = "crates/kornia-io", version = "0.1.11" }
+kornia-tensor = { path = "crates/kornia-tensor", version = "0.1.11" }
+kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.11" }
+kornia-vlm = { path = "crates/kornia-vlm", version = "0.1.11" }
 log = "0.4"
 num-traits = "0.2"
 rand = "0.9"

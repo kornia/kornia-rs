@@ -56,6 +56,11 @@ name = "bench_draw"
 
 [[bench]]
 harness = false
+name = "bench_distance_transform"
+required-features = ["opencv_bench"]
+
+[[bench]]
+harness = false
 name = "bench_distortion"
 required-features = ["opencv_bench"]
 
