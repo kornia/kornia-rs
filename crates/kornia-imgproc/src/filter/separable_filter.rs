@@ -1,4 +1,4 @@
-use crate::parallel::ExecutionStrategy;
+use crate::parallel::{for_each_row, ExecutionStrategy};
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use num_traits::Zero;
 use rayon::prelude::*;
@@ -215,112 +215,6 @@ impl SeparableFilter {
             ExecutionStrategy::Serial => {
                 return self.apply_serial(src, dst);
             }
-            ExecutionStrategy::Fixed(n) => {
-                if n == 0 {
-                    return Err(ImageError::Parallel("thread count must be > 0".to_string()));
-                }
-                let pool = rayon::ThreadPoolBuilder::new()
-                    .num_threads(n)
-                    .build()
-                    .map_err(|e| ImageError::Parallel(e.to_string()))?;
-
-                pool.install(|| {
-                    // Horizontal
-                    temp.par_chunks_mut(cols * C)
-                        .enumerate()
-                        .for_each(|(r, row)| {
-                            run_pass!(
-                                row,
-                                src_data,
-                                cols,
-                                C,
-                                self.kernel_x,
-                                self.offsets_x,
-                                c,
-                                cols,
-                                |c, off| (r * cols * C) + (c as isize + off) as usize * C,
-                                |val| val.to_f32(),
-                                |acc| acc
-                            );
-                        });
-
-                    // Vertical
-                    dst_data
-                        .par_chunks_mut(cols * C)
-                        .enumerate()
-                        .for_each(|(r, row)| {
-                            run_pass!(
-                                row,
-                                temp,
-                                cols,
-                                C,
-                                self.kernel_y,
-                                self.offsets_y,
-                                r,
-                                rows,
-                                |c, off| (r as isize + off) as usize * cols * C + c * C,
-                                |val| *val,
-                                |acc| <T>::from_f32(acc)
-                            );
-                        });
-                });
-            }
-
-            ExecutionStrategy::AutoRows(stride) => {
-                if stride == 0 {
-                    return Err(ImageError::Parallel("row stride must be > 0".to_string()));
-                }
-
-                // Horizontal
-                temp.par_chunks_mut(stride * cols * C).enumerate().for_each(
-                    |(chunk_idx, chunk)| {
-                        chunk.chunks_exact_mut(cols * C).enumerate().for_each(
-                            |(r_in_chunk, row)| {
-                                let r = chunk_idx * stride + r_in_chunk;
-                                run_pass!(
-                                    row,
-                                    src_data,
-                                    cols,
-                                    C,
-                                    self.kernel_x,
-                                    self.offsets_x,
-                                    c,
-                                    cols,
-                                    |c, off| (r * cols * C) + (c as isize + off) as usize * C,
-                                    |val| val.to_f32(),
-                                    |acc| acc
-                                );
-                            },
-                        );
-                    },
-                );
-
-                // Vertical
-                dst_data
-                    .par_chunks_mut(stride * cols * C)
-                    .enumerate()
-                    .for_each(|(chunk_idx, chunk)| {
-                        chunk.chunks_exact_mut(cols * C).enumerate().for_each(
-                            |(r_in_chunk, row)| {
-                                let r = chunk_idx * stride + r_in_chunk;
-                                run_pass!(
-                                    row,
-                                    temp,
-                                    cols,
-                                    C,
-                                    self.kernel_y,
-                                    self.offsets_y,
-                                    r,
-                                    rows,
-                                    |c, off| (r as isize + off) as usize * cols * C + c * C,
-                                    |val| *val,
-                                    |acc| <T>::from_f32(acc)
-                                );
-                            },
-                        );
-                    });
-            }
-
             ExecutionStrategy::ParallelElements => {
                 temp.par_iter_mut().enumerate().for_each(|(i, temp_val)| {
                     let r = i / (cols * C);
@@ -357,6 +251,43 @@ impl SeparableFilter {
                         }
                         *dst_val = T::from_f32(acc);
                     });
+            }
+            other => {
+                // Horizontal pass
+                for_each_row(&mut temp, cols * C, other, |r, row| {
+                    run_pass!(
+                        row,
+                        src_data,
+                        cols,
+                        C,
+                        self.kernel_x,
+                        self.offsets_x,
+                        c,
+                        cols,
+                        |c, off| (r * cols * C) + (c as isize + off) as usize * C,
+                        |val| val.to_f32(),
+                        |acc| acc
+                    );
+                })
+                .map_err(|e| ImageError::Parallel(e.to_string()))?;
+
+                // Vertical pass
+                for_each_row(dst_data, cols * C, other, |r, row| {
+                    run_pass!(
+                        row,
+                        temp,
+                        cols,
+                        C,
+                        self.kernel_y,
+                        self.offsets_y,
+                        r,
+                        rows,
+                        |c, off| (r as isize + off) as usize * cols * C + c * C,
+                        |val| *val,
+                        |acc| <T>::from_f32(acc)
+                    );
+                })
+                .map_err(|e| ImageError::Parallel(e.to_string()))?;
             }
         }
 

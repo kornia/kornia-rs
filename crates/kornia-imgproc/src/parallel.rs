@@ -173,6 +173,65 @@ pub fn par_iter_rows_resample<const C: usize, A: ImageAllocator>(
         });
 }
 
+/// Execute `op(row_index, row_chunk)` over mutable row sized chunks of a buffer
+pub fn for_each_row<T, F>(
+    data: &mut [T],
+    row_size: usize,
+    strategy: ExecutionStrategy,
+    op: F,
+) -> Result<(), ParallelError>
+where
+    T: Send + Sync,
+    F: Fn(usize, &mut [T]) + Send + Sync,
+{
+    if row_size == 0 {
+        return Err(ParallelError::InvalidRowStride(row_size));
+    }
+
+    match strategy {
+        ExecutionStrategy::Serial => {
+            data.chunks_exact_mut(row_size)
+                .enumerate()
+                .for_each(|(r, row)| op(r, row));
+        }
+        ExecutionStrategy::ParallelElements => {
+            data.par_chunks_exact_mut(row_size)
+                .enumerate()
+                .for_each(|(r, row)| op(r, row));
+        }
+        ExecutionStrategy::AutoRows(stride) => {
+            if stride == 0 {
+                return Err(ParallelError::InvalidRowStride(stride));
+            }
+            data.par_chunks_mut(stride * row_size)
+                .enumerate()
+                .for_each(|(chunk_idx, chunk)| {
+                    chunk
+                        .chunks_exact_mut(row_size)
+                        .enumerate()
+                        .for_each(|(r_in, row)| {
+                            op(chunk_idx * stride + r_in, row);
+                        });
+                });
+        }
+        ExecutionStrategy::Fixed(n) => {
+            if n == 0 {
+                return Err(ParallelError::InvalidThreadCount(n));
+            }
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .build()
+                .map_err(|e| ParallelError::BuildError(e.to_string()))?;
+            pool.install(|| {
+                data.par_chunks_exact_mut(row_size)
+                    .enumerate()
+                    .for_each(|(r, row)| op(r, row));
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Trait to execute operations on a slice with a given strategy.
 pub trait ExecuteExt<T> {
     /// Execute an operation on the slice with the given strategy.
@@ -311,5 +370,65 @@ mod tests {
             .as_slice()
             .execute_with(ExecutionStrategy::Fixed(0), &mut dst, |(_, _)| {});
         assert!(matches!(res, Err(ParallelError::InvalidThreadCount(0))));
+    }
+
+    #[test]
+    fn test_for_each_row_serial() {
+        let mut data = vec![1, 2, 3, 4, 5, 6];
+        for_each_row(&mut data, 2, ExecutionStrategy::Serial, |_r, row| {
+            for v in row.iter_mut() {
+                *v *= 10;
+            }
+        })
+        .unwrap();
+        assert_eq!(data, vec![10, 20, 30, 40, 50, 60]);
+    }
+
+    #[test]
+    fn test_for_each_row_parallel() {
+        let mut data = vec![1, 2, 3, 4, 5, 6];
+        for_each_row(&mut data, 2, ExecutionStrategy::ParallelElements, |_r, row| {
+            for v in row.iter_mut() {
+                *v *= 10;
+            }
+        })
+        .unwrap();
+        assert_eq!(data, vec![10, 20, 30, 40, 50, 60]);
+    }
+
+    #[test]
+    fn test_for_each_row_auto_rows() {
+        let mut data = vec![1, 2, 3, 4, 5, 6];
+        for_each_row(&mut data, 2, ExecutionStrategy::AutoRows(2), |_r, row| {
+            for v in row.iter_mut() {
+                *v *= 10;
+            }
+        })
+        .unwrap();
+        assert_eq!(data, vec![10, 20, 30, 40, 50, 60]);
+    }
+
+    #[test]
+    fn test_for_each_row_fixed() {
+        let mut data = vec![1, 2, 3, 4, 5, 6];
+        for_each_row(&mut data, 2, ExecutionStrategy::Fixed(2), |_r, row| {
+            for v in row.iter_mut() {
+                *v *= 10;
+            }
+        })
+        .unwrap();
+        assert_eq!(data, vec![10, 20, 30, 40, 50, 60]);
+    }
+
+    #[test]
+    fn test_for_each_row_index() {
+        let mut data = vec![0i32; 6];
+        for_each_row(&mut data, 2, ExecutionStrategy::Serial, |r, row| {
+            for v in row.iter_mut() {
+                *v = r as i32;
+            }
+        })
+        .unwrap();
+        assert_eq!(data, vec![0, 0, 1, 1, 2, 2]);
     }
 }

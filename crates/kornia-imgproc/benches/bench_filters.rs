@@ -54,7 +54,7 @@ fn gaussian_blur_u8_autorows<const C: usize>(
         dst,
         &kernel_x,
         &kernel_y,
-        kornia_imgproc::parallel::ExecutionStrategy::AutoRows(src.width() * C),
+        kornia_imgproc::parallel::ExecutionStrategy::AutoRows(4),
     )
 }
 
