@@ -451,7 +451,6 @@ pub(crate) fn columnar_sat<const C: usize, A1: ImageAllocator, A2: ImageAllocato
             let inv_area = 1.0 / ((x_end - x_start) * (y_end - y_start)) as f32;
             let out_idx = row_offset + c * C;
 
-            // vectorized output for channel counts
             if C == 8 {
                 let v = f32x8::new([
                     row_acc[0], row_acc[1], row_acc[2], row_acc[3], row_acc[4], row_acc[5],
@@ -589,7 +588,6 @@ pub(crate) fn columnar_sat<const C: usize, A1: ImageAllocator, A2: ImageAllocato
             let inv_area = 1.0 / ((x_end - x_start) * (y_end - y_start)) as f32;
             let out_idx = row_offset + c * C;
 
-            // vectorized output for channel counts
             if C == 8 {
                 let v = f32x8::new([
                     row_acc[0], row_acc[1], row_acc[2], row_acc[3], row_acc[4], row_acc[5],
