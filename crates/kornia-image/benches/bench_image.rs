@@ -1,9 +1,14 @@
+// Benchmark tests for Kornia Image operations
+// This file measures performance of cast_and_scale and scale_and_cast methods
+// Contribution by ItsmeVishwa for GSoC 2025 learning
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use half::f16;
 use kornia_image::{Image, ImageSize};
 use kornia_tensor::CpuAllocator;
 use std::hint::black_box;
 
+// Creates a sample image for benchmarking
 fn sample_image() -> Image<u8, 3, CpuAllocator> {
     Image::from_size_val(
         ImageSize {
@@ -16,6 +21,7 @@ fn sample_image() -> Image<u8, 3, CpuAllocator> {
     .unwrap()
 }
 
+// Runs benchmark tests for image operations
 fn bench_image(c: &mut Criterion) {
     let mut group = c.benchmark_group("Image");
 
@@ -74,3 +80,6 @@ fn bench_image(c: &mut Criterion) {
 
 criterion_group!(benches, bench_image);
 criterion_main!(benches);
+
+
+Added documentation comments in benchmark image file
