@@ -9,45 +9,32 @@ use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
 /// This function resizes an RGB image to the specified dimensions using
 /// one of the supported interpolation methods.
 ///
-/// Parameters
-/// ----------
-/// image : PyImage
-///     Input RGB image as a PyImage object (HxWx3 numpy array).
-/// new_size : Tuple[int, int]
-///     Target size as (height, width).
-/// interpolation : str
-///     Interpolation method. Supported values:
+/// # Arguments
+///
+/// * `image` - Input RGB image as a PyImage object (HxWx3 numpy array).
+/// * `new_size` - Target size as (height, width).
+/// * `interpolation` - Interpolation method:
 ///     - "nearest": Nearest neighbor interpolation (fastest, lowest quality)
-///     - "bilinear": Bilinear interpolation (default, good balance)
+///     - "bilinear": Bilinear interpolation (good balance)
 ///
-/// Returns
-/// -------
-/// PyImage
-///     Resized RGB image as a PyImage object.
+/// # Returns
 ///
-/// Raises
-/// ------
-/// PyValueError
-///     If interpolation mode is not supported.
+/// Returns a `PyImage` containing the resized RGB image.
 ///
-/// Examples
-/// --------
-/// >>> import kornia_rs
-/// >>> import numpy as np
-/// >>>
-/// >>> # Create a small test image
-/// >>> img = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
+/// # Errors
 ///
-/// >>> # Resize to 50x50 using bilinear interpolation
-/// >>> resized = kornia_rs.resize(img, (50, 50), interpolation="bilinear")
-/// >>> print(resized.shape)
-/// (50, 50, 3)
+/// Returns `PyValueError` if interpolation mode is not supported.
 ///
-/// >>> # Resize using nearest neighbor (faster)
-/// >>> resized = kornia_rs.resize(img, (200, 200), interpolation="nearest")
-/// >>> print(resized.shape)
-/// (200, 200, 3)
+/// # Examples
 ///
+/// ```python
+/// import kornia_rs
+/// import numpy as np
+///
+/// img = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
+/// resized = kornia_rs.imgproc.resize(img, (50, 50), interpolation="bilinear")
+/// print(resized.shape)
+/// ```
 #[pyfunction]
 pub fn resize(image: PyImage, new_size: (usize, usize), interpolation: &str) -> PyResult<PyImage> {
     let image = Image::from_pyimage(image)
