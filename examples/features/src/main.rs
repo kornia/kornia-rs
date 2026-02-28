@@ -6,6 +6,7 @@ use std::sync::{
 use kornia::{
     image::{ops, Image},
     imgproc,
+    imgproc::parallel::ExecutionStrategy,
     io::stream::V4L2CameraConfig,
     tensor::CpuAllocator,
 };
@@ -55,7 +56,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         imgproc::features::hessian_response(&gray, &mut hessian)?;
 
         // compute the corners
-        imgproc::threshold::threshold_binary(&hessian, &mut corners, 0.01, 1.0)?;
+        imgproc::threshold::threshold_binary(
+            &hessian,
+            &mut corners,
+            0.01,
+            1.0,
+            ExecutionStrategy::Serial,
+        )?;
 
         // log the image
         rec.log_static(

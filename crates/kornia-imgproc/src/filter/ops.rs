@@ -1,3 +1,4 @@
+use crate::parallel::ExecutionStrategy;
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 use kornia_tensor::CpuAllocator;
 use rayon::{
@@ -7,7 +8,7 @@ use rayon::{
 
 use super::{fast_horizontal_filter, kernels, separable_filter};
 
-/// Blur an image using a box blur filter
+/// Blur an image using a box blur filter (serial execution).
 ///
 /// # Arguments
 ///
@@ -21,13 +22,30 @@ pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     dst: &mut Image<f32, C, A2>,
     kernel_size: (usize, usize),
 ) -> Result<(), ImageError> {
+    box_blur_with_strategy(src, dst, kernel_size, ExecutionStrategy::Serial)
+}
+
+/// Blur an image using a box blur filter with a given execution strategy.
+///
+/// # Arguments
+///
+/// * `src` - Source image (H, W, C)
+/// * `dst` - Destination image (H, W, C)
+/// * `kernel_size` - Kernel size (x, y)
+/// * `strategy` - Execution strategy
+pub fn box_blur_with_strategy<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, C, A1>,
+    dst: &mut Image<f32, C, A2>,
+    kernel_size: (usize, usize),
+    strategy: ExecutionStrategy,
+) -> Result<(), ImageError> {
     let kernel_x = kernels::box_blur_kernel_1d(kernel_size.0);
     let kernel_y = kernels::box_blur_kernel_1d(kernel_size.1);
-    separable_filter(src, dst, &kernel_x, &kernel_y)?;
+    separable_filter(src, dst, &kernel_x, &kernel_y, strategy)?;
     Ok(())
 }
 
-/// Blur an image using a gaussian blur filter
+/// Blur an image using a gaussian blur filter (serial execution).
 ///
 /// # Arguments
 ///
@@ -49,6 +67,25 @@ pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     dst: &mut Image<f32, C, A2>,
     kernel_size: (usize, usize),
     sigma: (f32, f32),
+) -> Result<(), ImageError> {
+    gaussian_blur_with_strategy(src, dst, kernel_size, sigma, ExecutionStrategy::Serial)
+}
+
+/// Blur an image using a gaussian blur filter with a given execution strategy.
+///
+/// # Arguments
+///
+/// * `src` - Source image (H, W, C)
+/// * `dst` - Destination image (H, W, C)
+/// * `kernel_size` - Kernel size (x, y). Must be positive and odd, or 0 to auto-compute from sigma
+/// * `sigma` - Gaussian sigma (x, y). If 0, auto-computed from kernel_size
+/// * `strategy` - Execution strategy
+pub fn gaussian_blur_with_strategy<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, C, A1>,
+    dst: &mut Image<f32, C, A2>,
+    kernel_size: (usize, usize),
+    sigma: (f32, f32),
+    strategy: ExecutionStrategy,
 ) -> Result<(), ImageError> {
     let (mut kernel_x, mut kernel_y) = kernel_size;
     let (mut sigma_x, mut sigma_y) = sigma;
@@ -85,12 +122,12 @@ pub fn gaussian_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 
     let kernel_x = kernels::gaussian_kernel_1d(kernel_x, sigma_x);
     let kernel_y = kernels::gaussian_kernel_1d(kernel_y, sigma_y);
-    separable_filter(src, dst, &kernel_x, &kernel_y)?;
+    separable_filter(src, dst, &kernel_x, &kernel_y, strategy)?;
 
     Ok(())
 }
 
-/// Computer sobel filter
+/// Compute sobel filter (serial execution).
 ///
 /// # Arguments
 ///
@@ -104,15 +141,32 @@ pub fn sobel<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     dst: &mut Image<f32, C, A2>,
     kernel_size: usize,
 ) -> Result<(), ImageError> {
+    sobel_with_strategy(src, dst, kernel_size, ExecutionStrategy::Serial)
+}
+
+/// Compute sobel filter with a given execution strategy.
+///
+/// # Arguments
+///
+/// * `src` - Source image (H, W, C)
+/// * `dst` - Destination image (H, W, C)
+/// * `kernel_size` - Kernel size
+/// * `strategy` - Execution strategy
+pub fn sobel_with_strategy<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, C, A1>,
+    dst: &mut Image<f32, C, A2>,
+    kernel_size: usize,
+    strategy: ExecutionStrategy,
+) -> Result<(), ImageError> {
     // get the sobel kernels
     let (kernel_x, kernel_y) = kernels::sobel_kernel_1d(kernel_size);
 
     // apply the sobel filter using separable filter
     let mut gx = Image::<f32, C, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
-    separable_filter(src, &mut gx, &kernel_x, &kernel_y)?;
+    separable_filter(src, &mut gx, &kernel_x, &kernel_y, strategy)?;
 
     let mut gy = Image::<f32, C, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
-    separable_filter(src, &mut gy, &kernel_y, &kernel_x)?;
+    separable_filter(src, &mut gy, &kernel_y, &kernel_x, strategy)?;
 
     // compute the magnitude in parallel by rows
     dst.as_slice_mut()

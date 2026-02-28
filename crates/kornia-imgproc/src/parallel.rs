@@ -1,15 +1,59 @@
 use rayon::prelude::*;
+use thiserror::Error;
 
 use kornia_image::{allocator::ImageAllocator, Image};
 use kornia_tensor::{CpuAllocator, Tensor2};
 
+/// Errors that can occur during parallel execution.
+#[derive(Error, Debug, PartialEq)]
+pub enum ParallelError {
+    /// The thread pool failed to build.
+    #[error("failed to build thread pool: {0}")]
+    BuildError(String),
+
+    /// The requested thread count is invalid.
+    #[error("thread count must be > 0, got {0}")]
+    InvalidThreadCount(usize),
+
+    /// The row stride for AutoRows must be valid.
+    #[error("row stride must be > 0 for AutoRows strategy")]
+    InvalidRowStride(usize),
+
+    /// Input and output sizes do not match.
+    #[error("source and destination slices must have the same length")]
+    SizeMismatch,
+}
+
+/// Controls how parallel operations are executed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecutionStrategy {
+    /// Use the global Rayon thread pool to process every element in parallel.
+    ///
+    /// This maximizes parallelism but may have overhead for small operations.
+    #[default]
+    ParallelElements,
+
+    /// Use the global Rayon thread pool to process rows (chunks) in parallel.
+    ///
+    /// You must provide the row stride (width * channels).
+    /// This is often more cache-friendly than [`ExecutionStrategy::ParallelElements`].
+    AutoRows(usize),
+
+    /// Run sequentially on the current thread.
+    ///
+    /// Useful for small images, debugging, or when the overhead of parallelization
+    /// outweighs the benefits.
+    Serial,
+
+    /// Run on a local thread pool with `n` threads.
+    ///
+    /// # Warning
+    /// Creates a new thread pool on every call, which has significant overhead.
+    /// Use this primarily for benchmarking or specific isolation needs.
+    Fixed(usize),
+}
+
 /// Apply a function to each pixel in the image in parallel.
-///
-/// # Arguments
-///
-/// * `src` - The input image.
-/// * `dst` - The output image.
-/// * `f` - The function to apply to each pixel.
 pub fn par_iter_rows<
     T1,
     const C1: usize,
@@ -127,4 +171,269 @@ pub fn par_iter_rows_resample<const C: usize, A: ImageAllocator>(
                     f(x, y, dst_pixel);
                 });
         });
+}
+
+/// Execute `op(row_index, row_chunk)` over mutable row sized chunks of a buffer
+pub fn for_each_row<T, F>(
+    data: &mut [T],
+    row_size: usize,
+    strategy: ExecutionStrategy,
+    op: F,
+) -> Result<(), ParallelError>
+where
+    T: Send + Sync,
+    F: Fn(usize, &mut [T]) + Send + Sync,
+{
+    if row_size == 0 {
+        return Err(ParallelError::InvalidRowStride(row_size));
+    }
+
+    match strategy {
+        ExecutionStrategy::Serial => {
+            data.chunks_exact_mut(row_size)
+                .enumerate()
+                .for_each(|(r, row)| op(r, row));
+        }
+        ExecutionStrategy::ParallelElements => {
+            data.par_chunks_exact_mut(row_size)
+                .enumerate()
+                .for_each(|(r, row)| op(r, row));
+        }
+        ExecutionStrategy::AutoRows(stride) => {
+            if stride == 0 {
+                return Err(ParallelError::InvalidRowStride(stride));
+            }
+            data.par_chunks_mut(stride * row_size)
+                .enumerate()
+                .for_each(|(chunk_idx, chunk)| {
+                    chunk
+                        .chunks_exact_mut(row_size)
+                        .enumerate()
+                        .for_each(|(r_in, row)| {
+                            op(chunk_idx * stride + r_in, row);
+                        });
+                });
+        }
+        ExecutionStrategy::Fixed(n) => {
+            if n == 0 {
+                return Err(ParallelError::InvalidThreadCount(n));
+            }
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .build()
+                .map_err(|e| ParallelError::BuildError(e.to_string()))?;
+            pool.install(|| {
+                data.par_chunks_exact_mut(row_size)
+                    .enumerate()
+                    .for_each(|(r, row)| op(r, row));
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Trait to execute operations on a slice with a given strategy.
+pub trait ExecuteExt<T> {
+    /// Execute an operation on the slice with the given strategy.
+    ///
+    /// # Arguments
+    ///
+    /// * `strategy` - The execution strategy.
+    /// * `dst` - The destination slice.
+    /// * `op` - The operation to perform on each (source, destination) element pair.
+    ///
+    /// # Returns
+    ///
+    /// A result indicating success or failure.
+    fn execute_with<F>(
+        &self,
+        strategy: ExecutionStrategy,
+        dst: &mut [T],
+        op: F,
+    ) -> Result<(), ParallelError>
+    where
+        F: Fn((&T, &mut T)) + Sync + Send;
+}
+
+impl<T: Sync + Send> ExecuteExt<T> for &[T] {
+    fn execute_with<F>(
+        &self,
+        strategy: ExecutionStrategy,
+        dst: &mut [T],
+        op: F,
+    ) -> Result<(), ParallelError>
+    where
+        F: Fn((&T, &mut T)) + Sync + Send,
+    {
+        if self.len() != dst.len() {
+            return Err(ParallelError::SizeMismatch);
+        }
+
+        match strategy {
+            ExecutionStrategy::Serial => {
+                self.iter().zip(dst.iter_mut()).for_each(op);
+            }
+            ExecutionStrategy::ParallelElements => {
+                self.par_iter().zip(dst.par_iter_mut()).for_each(op);
+            }
+            ExecutionStrategy::AutoRows(stride) => {
+                if stride == 0 {
+                    return Err(ParallelError::InvalidRowStride(stride));
+                }
+                self.par_chunks(stride)
+                    .zip(dst.par_chunks_mut(stride))
+                    .for_each(|(src_row, dst_row)| {
+                        src_row.iter().zip(dst_row.iter_mut()).for_each(&op);
+                    });
+            }
+            ExecutionStrategy::Fixed(n) => {
+                if n == 0 {
+                    return Err(ParallelError::InvalidThreadCount(n));
+                }
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(n)
+                    .build()
+                    .map_err(|e| ParallelError::BuildError(e.to_string()))?;
+
+                pool.install(|| {
+                    self.par_iter().zip(dst.par_iter_mut()).for_each(op);
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_execute_serial() {
+        let src = vec![1, 2, 3, 4];
+        let mut dst = vec![0; 4];
+        src.as_slice()
+            .execute_with(ExecutionStrategy::Serial, &mut dst, |(s, d)| *d = *s * 2)
+            .unwrap();
+        assert_eq!(dst, vec![2, 4, 6, 8]);
+    }
+
+    #[test]
+    fn test_execute_parallel_elements() {
+        let src = vec![1, 2, 3, 4];
+        let mut dst = vec![0; 4];
+        src.as_slice()
+            .execute_with(ExecutionStrategy::ParallelElements, &mut dst, |(s, d)| {
+                *d = *s * 2
+            })
+            .unwrap();
+        assert_eq!(dst, vec![2, 4, 6, 8]);
+    }
+
+    #[test]
+    fn test_execute_auto_rows() {
+        let src = vec![1, 2, 3, 4];
+        let mut dst = vec![0; 4];
+        src.as_slice()
+            .execute_with(ExecutionStrategy::AutoRows(2), &mut dst, |(s, d)| {
+                *d = *s * 2
+            })
+            .unwrap();
+        assert_eq!(dst, vec![2, 4, 6, 8]);
+    }
+
+    #[test]
+    fn test_execute_auto_rows_invalid() {
+        let src = vec![1];
+        let mut dst = vec![0];
+        let res =
+            src.as_slice()
+                .execute_with(ExecutionStrategy::AutoRows(0), &mut dst, |(_, _)| {});
+        assert!(matches!(res, Err(ParallelError::InvalidRowStride(0))));
+    }
+
+    #[test]
+    fn test_execute_fixed_success() {
+        let src = vec![1, 2, 3, 4];
+        let mut dst = vec![0; 4];
+        src.as_slice()
+            .execute_with(ExecutionStrategy::Fixed(2), &mut dst, |(s, d)| *d = *s * 2)
+            .unwrap();
+        assert_eq!(dst, vec![2, 4, 6, 8]);
+    }
+
+    #[test]
+    fn test_execute_fixed_error() {
+        let src = vec![1];
+        let mut dst = vec![0];
+        let res = src
+            .as_slice()
+            .execute_with(ExecutionStrategy::Fixed(0), &mut dst, |(_, _)| {});
+        assert!(matches!(res, Err(ParallelError::InvalidThreadCount(0))));
+    }
+
+    #[test]
+    fn test_for_each_row_serial() {
+        let mut data = vec![1, 2, 3, 4, 5, 6];
+        for_each_row(&mut data, 2, ExecutionStrategy::Serial, |_r, row| {
+            for v in row.iter_mut() {
+                *v *= 10;
+            }
+        })
+        .unwrap();
+        assert_eq!(data, vec![10, 20, 30, 40, 50, 60]);
+    }
+
+    #[test]
+    fn test_for_each_row_parallel() {
+        let mut data = vec![1, 2, 3, 4, 5, 6];
+        for_each_row(
+            &mut data,
+            2,
+            ExecutionStrategy::ParallelElements,
+            |_r, row| {
+                for v in row.iter_mut() {
+                    *v *= 10;
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(data, vec![10, 20, 30, 40, 50, 60]);
+    }
+
+    #[test]
+    fn test_for_each_row_auto_rows() {
+        let mut data = vec![1, 2, 3, 4, 5, 6];
+        for_each_row(&mut data, 2, ExecutionStrategy::AutoRows(2), |_r, row| {
+            for v in row.iter_mut() {
+                *v *= 10;
+            }
+        })
+        .unwrap();
+        assert_eq!(data, vec![10, 20, 30, 40, 50, 60]);
+    }
+
+    #[test]
+    fn test_for_each_row_fixed() {
+        let mut data = vec![1, 2, 3, 4, 5, 6];
+        for_each_row(&mut data, 2, ExecutionStrategy::Fixed(2), |_r, row| {
+            for v in row.iter_mut() {
+                *v *= 10;
+            }
+        })
+        .unwrap();
+        assert_eq!(data, vec![10, 20, 30, 40, 50, 60]);
+    }
+
+    #[test]
+    fn test_for_each_row_index() {
+        let mut data = vec![0i32; 6];
+        for_each_row(&mut data, 2, ExecutionStrategy::Serial, |r, row| {
+            for v in row.iter_mut() {
+                *v = r as i32;
+            }
+        })
+        .unwrap();
+        assert_eq!(data, vec![0, 0, 1, 1, 2, 2]);
+    }
 }
