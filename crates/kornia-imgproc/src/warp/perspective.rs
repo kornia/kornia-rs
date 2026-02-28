@@ -1,5 +1,5 @@
 use crate::{
-    interpolation::{interpolate_pixel, InterpolationMode},
+    interpolation::{interpolate_pixel, validate_interpolation, InterpolationMode},
     parallel,
 };
 
@@ -103,6 +103,8 @@ pub fn warp_perspective<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     m: &[f32; 9],
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
+    validate_interpolation(interpolation)?;
+
     // inverse perspective matrix
     // TODO: allow later to skip the inverse calculation if user provides it
     let inv_m = inverse_perspective_matrix(m)?;
@@ -180,6 +182,31 @@ mod tests {
         assert_eq!(image_transformed.size().height, 3);
 
         Ok(())
+    }
+
+    #[test]
+    fn warp_perspective_unsupported_interpolation() {
+        let src = Image::<f32, 1, _>::from_size_val(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            0.0,
+            CpuAllocator,
+        )
+        .unwrap();
+        let mut dst = Image::<f32, 1, _>::from_size_val(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            0.0,
+            CpuAllocator,
+        )
+        .unwrap();
+        let m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let err = super::warp_perspective(&src, &mut dst, &m, super::InterpolationMode::Lanczos);
+        assert!(err.is_err());
     }
 
     #[test]

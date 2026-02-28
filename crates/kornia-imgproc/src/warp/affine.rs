@@ -3,7 +3,7 @@ use std::f32::consts::PI;
 use kornia_image::allocator::ImageAllocator;
 use kornia_image::{Image, ImageError};
 
-use crate::interpolation::{interpolate_pixel, InterpolationMode};
+use crate::interpolation::{interpolate_pixel, validate_interpolation, InterpolationMode};
 use crate::parallel;
 
 /// Inverts a 2x3 affine transformation matrix.
@@ -134,6 +134,8 @@ pub fn warp_affine<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     m: &[f32; 6],
     interpolation: InterpolationMode,
 ) -> Result<(), ImageError> {
+    validate_interpolation(interpolation)?;
+
     // invert affine transform matrix to find corresponding positions in src from dst
     let m_inv = invert_affine_transform(m);
 
@@ -191,6 +193,31 @@ mod tests {
         assert_eq!(image_transformed.size().height, 3);
 
         Ok(())
+    }
+
+    #[test]
+    fn warp_affine_unsupported_interpolation() {
+        let src = Image::<_, 1, _>::from_size_val(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            0.0f32,
+            CpuAllocator,
+        )
+        .unwrap();
+        let mut dst = Image::<_, 1, _>::from_size_val(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            0.0f32,
+            CpuAllocator,
+        )
+        .unwrap();
+        let m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let err = super::warp_affine(&src, &mut dst, &m, super::InterpolationMode::Bicubic);
+        assert!(err.is_err());
     }
 
     #[test]

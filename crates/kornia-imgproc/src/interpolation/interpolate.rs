@@ -1,7 +1,7 @@
 use super::bilinear::bilinear_interpolation;
 use super::nearest::nearest_neighbor_interpolation;
 use kornia_image::allocator::ImageAllocator;
-use kornia_image::Image;
+use kornia_image::{Image, ImageError};
 
 /// Interpolation mode for the resize operation
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -14,6 +14,17 @@ pub enum InterpolationMode {
     Lanczos,
     /// Bicubic interpolation
     Bicubic,
+}
+
+/// Validate that the given interpolation mode is supported by `interpolate_pixel`.
+///
+/// Returns `Ok(())` if the mode is supported, or `Err` with a descriptive message.
+/// Call this before entering parallel dispatch loops to catch unsupported modes early.
+pub fn validate_interpolation(interpolation: InterpolationMode) -> Result<(), ImageError> {
+    match interpolation {
+        InterpolationMode::Bilinear | InterpolationMode::Nearest => Ok(()),
+        mode => Err(ImageError::UnsupportedInterpolation(format!("{mode:?}"))),
+    }
 }
 
 /// Kernel for interpolating a pixel value
@@ -29,6 +40,11 @@ pub enum InterpolationMode {
 /// # Returns
 ///
 /// The interpolated pixel value.
+///
+/// # Panics
+///
+/// Callers must validate the interpolation mode via [`validate_interpolation`] before
+/// calling this function. Passing an unsupported mode is a logic error and will panic.
 pub fn interpolate_pixel<const C: usize, A: ImageAllocator>(
     image: &Image<f32, C, A>,
     u: f32,
@@ -39,11 +55,9 @@ pub fn interpolate_pixel<const C: usize, A: ImageAllocator>(
     match interpolation {
         InterpolationMode::Bilinear => bilinear_interpolation(image, u, v, c),
         InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v, c),
-        InterpolationMode::Lanczos => {
-            unimplemented!("Lanczos interpolation is not yet implemented")
-        }
-        InterpolationMode::Bicubic => {
-            unimplemented!("Bicubic interpolation is not yet implemented")
-        }
+        _ => unreachable!(
+            "unsupported interpolation mode {:?} — call validate_interpolation() first",
+            interpolation
+        ),
     }
 }

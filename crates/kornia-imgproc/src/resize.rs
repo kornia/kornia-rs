@@ -1,5 +1,7 @@
 use crate::{
-    interpolation::{grid::meshgrid_from_fn, interpolate_pixel, InterpolationMode},
+    interpolation::{
+        grid::meshgrid_from_fn, interpolate_pixel, validate_interpolation, InterpolationMode,
+    },
     parallel,
 };
 use fast_image_resize::{self as fr};
@@ -63,6 +65,8 @@ pub fn resize_native<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 ) -> Result<(), ImageError>
 where
 {
+    validate_interpolation(interpolation)?;
+
     // check if the input and output images have the same size
     // and copy the input image to the output image if they have the same size
     if src.size() == dst.size() {
@@ -327,6 +331,37 @@ mod tests {
         assert_eq!(map_y.get([2, 0]), Some(&2.0));
 
         Ok(())
+    }
+
+    #[test]
+    fn resize_native_unsupported_interpolation() {
+        let image = Image::<_, 1, _>::new(
+            ImageSize {
+                width: 2,
+                height: 2,
+            },
+            vec![0.0f32; 4],
+            CpuAllocator,
+        )
+        .unwrap();
+
+        let mut dst = Image::<_, 1, _>::from_size_val(
+            ImageSize {
+                width: 1,
+                height: 1,
+            },
+            0.0f32,
+            CpuAllocator,
+        )
+        .unwrap();
+
+        let err = super::resize_native(&image, &mut dst, super::InterpolationMode::Bicubic);
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("Unsupported interpolation mode"));
+
+        let err = super::resize_native(&image, &mut dst, super::InterpolationMode::Lanczos);
+        assert!(err.is_err());
     }
 
     #[test]
