@@ -90,6 +90,7 @@ You can find comprehensive examples in the `examples` folder of the repository:
 *   [`video_player`](../../examples/video_player): Simple video player example.
 *   [`video_write`](../../examples/video_write): Video recording and writing.
 *   [`foxglove`](../../examples/foxglove): Integration with Foxglove Studio for visualization.
+*   [`exif_auto_orient`](../../examples/exif_auto_orient): Compare raw JPEG decode vs EXIF auto-oriented output.
 
 ## 🤝 Contributing
 

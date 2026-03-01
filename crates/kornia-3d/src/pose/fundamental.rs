@@ -231,7 +231,11 @@ mod tests {
         // Check rank-2 property
         let svd = svd3_f64(&f_est);
         let s = svd.s();
-        assert!(s.z_axis.z.abs() < 1e-6);
+        assert!(
+            s.z_axis.z.abs() < 1e-6,
+            "smallest singular value should be near zero (rank-2 constraint), got: {}",
+            s.z_axis.z
+        );
 
         // Check epipolar constraint: x2^T * F_est * x1 ≈ 0 for all correspondences.
         // This would FAIL with large errors if F were transposed.

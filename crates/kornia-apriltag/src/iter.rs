@@ -4,10 +4,137 @@ use crate::{
 };
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 
+/// A lightweight, zero-allocation view into a rectangular sub-region of image data.
+///
+/// `TileView` borrows the underlying flat image slice and computes row slices
+/// on-the-fly, eliminating the need for any intermediate buffer or unsafe code.
+pub struct TileView<'a, T> {
+    img_data: &'a [T],
+    img_width: usize,
+    tile_x_start: usize,
+    tile_y_start: usize,
+    tile_width: usize,
+    tile_height: usize,
+}
+
+// Manual Copy/Clone to avoid requiring T: Copy/Clone (all fields are Copy regardless of T).
+impl<'a, T> Copy for TileView<'a, T> {}
+impl<'a, T> Clone for TileView<'a, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, T> TileView<'a, T> {
+    /// Returns the number of rows (height) of this tile.
+    pub fn len(&self) -> usize {
+        self.tile_height
+    }
+
+    /// Returns `true` if the tile has zero rows.
+    pub fn is_empty(&self) -> bool {
+        self.tile_height == 0
+    }
+
+    /// Returns the row at the given y-offset within the tile.
+    pub fn row(&self, y: usize) -> &'a [T] {
+        let start = (self.tile_y_start + y) * self.img_width + self.tile_x_start;
+        &self.img_data[start..start + self.tile_width]
+    }
+
+    /// Returns an iterator over the rows of this tile.
+    pub fn iter(&self) -> TileViewRows<'a, T> {
+        TileViewRows {
+            view: *self,
+            current_row: 0,
+        }
+    }
+}
+
+impl<'a, T> std::ops::Index<usize> for TileView<'a, T> {
+    type Output = [T];
+
+    fn index(&self, y: usize) -> &Self::Output {
+        self.row(y)
+    }
+}
+
+impl<'a, T: PartialEq> PartialEq for TileView<'a, T> {
+    fn eq(&self, other: &Self) -> bool {
+        if self.tile_height != other.tile_height || self.tile_width != other.tile_width {
+            return false;
+        }
+        (0..self.tile_height).all(|y| self.row(y) == other.row(y))
+    }
+}
+
+impl<'a, T: PartialEq> PartialEq<&[&[T]]> for TileView<'a, T> {
+    fn eq(&self, other: &&[&[T]]) -> bool {
+        if self.tile_height != other.len() {
+            return false;
+        }
+        (0..self.tile_height).all(|y| self.row(y) == other[y])
+    }
+}
+
+impl<'a, T: std::fmt::Debug> std::fmt::Debug for TileView<'a, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let rows: Vec<&[T]> = (0..self.tile_height).map(|y| self.row(y)).collect();
+        f.debug_list().entries(rows.iter()).finish()
+    }
+}
+
+/// An iterator over the rows of a [`TileView`].
+pub struct TileViewRows<'a, T> {
+    view: TileView<'a, T>,
+    current_row: usize,
+}
+
+impl<'a, T> Iterator for TileViewRows<'a, T> {
+    type Item = &'a [T];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current_row >= self.view.tile_height {
+            return None;
+        }
+        let row = self.view.row(self.current_row);
+        self.current_row += 1;
+        Some(row)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.view.tile_height - self.current_row;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<'a, T> ExactSizeIterator for TileViewRows<'a, T> {}
+
+impl<'a, T> IntoIterator for TileView<'a, T> {
+    type Item = &'a [T];
+    type IntoIter = TileViewRows<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        TileViewRows {
+            view: self,
+            current_row: 0,
+        }
+    }
+}
+
+impl<'a, T> IntoIterator for &TileView<'a, T> {
+    type Item = &'a [T];
+    type IntoIter = TileViewRows<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 /// Contains metadata and data for a single tile of an image.
 ///
-/// `TileInfo` holds the position, indices, and a borrowed slice of pixel data for a tile.
-/// The `data` field is a borrowed slice of rows, where each row is a slice of pixel data.
+/// `TileInfo` holds the position, indices, and a [`TileView`] that provides
+/// zero-allocation access to the tile's pixel data.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TileInfo<'a, T> {
     /// The 2D position (x, y) of the tile in tile coordinates.
@@ -16,14 +143,12 @@ pub struct TileInfo<'a, T> {
     pub index: usize,
     /// The index among full (non-partial) tiles.
     pub full_index: usize,
-    /// A borrowed slice of rows, where each row is a slice of pixel data.
-    pub data: &'a [&'a [T]],
+    /// A zero-allocation view into the tile's pixel data.
+    pub data: TileView<'a, T>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
 /// Represents a tile of an image, which can be either a full-sized tile or a partial tile at the image edge.
-///
-/// Each variant contains a slice of rows, where each row is a slice of pixel data.
+#[derive(Debug, Clone, PartialEq)]
 pub enum ImageTile<'a, T> {
     /// A full-sized tile with dimensions equal to the specified tile size.
     FullTile(TileInfo<'a, T>),
@@ -31,21 +156,13 @@ pub enum ImageTile<'a, T> {
     PartialTile(TileInfo<'a, T>),
 }
 
-/// An iterator over tiles of an image, yielding non-overlapping rectangular regions as slices.
+/// An iterator over tiles of an image, yielding non-overlapping rectangular regions.
 ///
-/// Each item yielded by the iterator is a slice of rows, where each row is a slice of pixel data.
+/// Each item yielded by the iterator contains a [`TileView`] that computes row slices
+/// on-the-fly from the underlying image data, with zero intermediate allocation.
 /// The tile size is specified at construction, and the iterator will yield tiles of the given size,
 /// except for tiles at the image edges, which may be smaller if the image dimensions are not
 /// multiples of the tile size.
-///
-/// # SAFETY
-///
-/// The slice of row references (`&[&[T]]`) returned by each call to [`next()`](TileIterator::next)
-/// is only valid until the next call to `next()` or until the iterator is dropped.
-///
-/// After calling `next()` again, or dropping the iterator, any previously returned slice
-/// may point to invalid memory and must not be accessed. Do not store or use these slices
-/// beyond the lifetime of the iterator or across calls to `next()`.
 pub struct TileIterator<'a, T> {
     img_data: &'a [T],
     img_size: ImageSize,
@@ -57,7 +174,6 @@ pub struct TileIterator<'a, T> {
     next_index: usize,
     /// The index of the next full (non-partial) tile to be yielded by the iterator.
     next_full_index: usize,
-    buffer: Vec<&'a [T]>,
 }
 
 impl<'a, T> TileIterator<'a, T> {
@@ -104,7 +220,6 @@ impl<'a, T> TileIterator<'a, T> {
             next_tile_index: Point2d::default(),
             next_index: 0,
             next_full_index: 0,
-            buffer: Vec::with_capacity(tile_size),
         })
     }
 }
@@ -132,15 +247,14 @@ impl<'a, T> Iterator for TileIterator<'a, T> {
             self.tile_size
         };
 
-        self.buffer.clear();
-        for y_px in 0..tile_y_px {
-            let row = ((self.next_tile_index.y * self.tile_size) + y_px) * self.img_size.width;
-            let start_index = row + (self.next_tile_index.x * self.tile_size);
-            let end_index = start_index + tile_x_px;
-
-            let row_pxs = &self.img_data[start_index..end_index];
-            self.buffer.push(row_pxs);
-        }
+        let data = TileView {
+            img_data: self.img_data,
+            img_width: self.img_size.width,
+            tile_x_start: self.next_tile_index.x * self.tile_size,
+            tile_y_start: self.next_tile_index.y * self.tile_size,
+            tile_width: tile_x_px,
+            tile_height: tile_y_px,
+        };
 
         let next_tile_index = self.next_tile_index;
         let index = self.next_index;
@@ -153,8 +267,6 @@ impl<'a, T> Iterator for TileIterator<'a, T> {
         }
 
         self.next_index += 1;
-        // TODO: Check the safety of this usage of from_raw_parts more deeply.
-        let data = unsafe { std::slice::from_raw_parts(self.buffer.as_ptr(), tile_y_px) };
 
         let tile = if data.len() == self.tile_size && data[0].len() == self.tile_size {
             self.next_full_index += 1;
@@ -204,7 +316,6 @@ mod tests {
             };
 
             for tile_row in tile.data {
-                let tile_row = tile_row as &[u8];
                 for px in tile_row {
                     assert_eq!(*px, 127);
                     counter += 1;
@@ -242,16 +353,23 @@ mod tests {
 
         macro_rules! test_iter_next {
             ($variant:ident, $x:expr, $y:expr, $index:expr, $full_index:expr, $rows:expr) => {
-                assert_eq!(
-                    iter.next()
-                        .ok_or("Failed to get the next value from iterator")?,
-                    ImageTile::$variant(TileInfo {
-                        data: $rows,
-                        pos: Point2d { x: $x, y: $y },
-                        index: $index,
-                        full_index: $full_index,
-                    })
-                );
+                let next = iter
+                    .next()
+                    .ok_or("Failed to get the next value from iterator")?;
+                match next {
+                    ImageTile::$variant(ref info) => {
+                        assert_eq!(info.pos, Point2d { x: $x, y: $y });
+                        assert_eq!(info.index, $index);
+                        assert_eq!(info.full_index, $full_index);
+                        let expected: &[&[u8]] = $rows;
+                        assert_eq!(info.data, expected);
+                    }
+                    _ => panic!(
+                        "Expected ImageTile::{}, got {:?}",
+                        stringify!($variant),
+                        next
+                    ),
+                }
             };
         }
 

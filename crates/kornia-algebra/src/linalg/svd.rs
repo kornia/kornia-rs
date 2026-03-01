@@ -497,53 +497,55 @@ mod impl_f32 {
 mod impl_f64 {
     use super::*;
 
-    const GAMMA: f64 = 5.828_427_124_746_19;
-    const CSTAR: f64 = 0.923_879_532_511_286_7;
-    const SSTAR: f64 = 0.382_683_432_365_089_8;
-    const SVD3_EPSILON: f64 = 1e-12; // High precision epsilon
+    const EPSILON: f64 = 1e-15;
     const JACOBI_TOLERANCE: f64 = 1e-12;
-    const MAX_SWEEPS: usize = 4;
+    // Standard Jacobi rotation requires more sweeps for f64 Exact Givens
+    // to ensure convergence without hitting the limit prematurely.
+    const MAX_SWEEPS: usize = 20;
 
-    #[derive(Debug, Clone)]
-    /// A simple symmetric 3x3 Matrix class
+    #[derive(Debug, Clone, Copy)]
     struct Symmetric3x3 {
         m_00: f64,
         m_10: f64,
-        m_11: f64,
         m_20: f64,
+        m_11: f64,
         m_21: f64,
         m_22: f64,
     }
 
     impl Symmetric3x3 {
-        fn from_mat3x3(mat: &Mat3F64) -> Self {
-            let x_axis = mat.x_axis();
-            let y_axis = mat.y_axis();
-            let z_axis = mat.z_axis();
-            Symmetric3x3 {
-                m_00: x_axis.x,
-                m_10: y_axis.x,
-                m_11: y_axis.y,
-                m_20: x_axis.z,
-                m_21: y_axis.z,
-                m_22: z_axis.z,
+        fn from_mat3x3(m: &Mat3F64) -> Self {
+            let x_axis = m.x_axis;
+            let y_axis = m.y_axis;
+            let z_axis = m.z_axis;
+            Self {
+                m_00: x_axis.dot(x_axis),
+                m_10: x_axis.dot(y_axis),
+                m_20: x_axis.dot(z_axis),
+                m_11: y_axis.dot(y_axis),
+                m_21: y_axis.dot(z_axis),
+                m_22: z_axis.dot(z_axis),
             }
         }
     }
 
-    #[derive(Debug)]
-    struct Givens {
-        cos_theta: f64,
-        sin_theta: f64,
+    #[inline(always)]
+    fn exact_givens(app: f64, aqq: f64, apq: f64) -> (f64, f64) {
+        if apq.abs() < EPSILON {
+            return (1.0, 0.0);
+        }
+        let tau = (aqq - app) / (2.0 * apq);
+        let t = if tau >= 0.0 {
+            1.0 / (tau + tau.hypot(1.0))
+        } else {
+            -1.0 / (-tau + tau.hypot(1.0))
+        };
+        let c = 1.0 / t.hypot(1.0);
+        let s = c * t;
+        (c, s)
     }
 
-    #[derive(Debug)]
-    struct QR3 {
-        q: Mat3F64,
-        r: Mat3F64,
-    }
-
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct SVD3Set {
         u: Mat3F64,
         s: Mat3F64,
@@ -565,230 +567,122 @@ mod impl_f64 {
         }
     }
 
-    #[inline(always)]
-    fn approximate_givens_parameters(s_pp: f64, s_qq: f64, s_pq: f64) -> Givens {
-        let cos_theta_val = 2.0 * (s_pp - s_qq);
-        let sin_theta_val = s_pq;
-        let cos_theta2 = cos_theta_val * cos_theta_val;
-        let sin_theta2 = sin_theta_val * sin_theta_val;
+    /// Helper to compute the right singular vectors (V) using Exact Givens sweeps
+    #[inline]
+    fn compute_v_quat(s_mat: &mut Symmetric3x3) -> QuatF64 {
+        let mut q_accum = QuatF64::IDENTITY;
 
-        if GAMMA * sin_theta2 < cos_theta2 {
-            let w = 1.0 / ((cos_theta2 + sin_theta2).sqrt());
-            Givens {
-                cos_theta: w * cos_theta_val,
-                sin_theta: w * sin_theta_val,
+        for _sweep in 0..MAX_SWEEPS {
+            {
+                let (c, si) = exact_givens(s_mat.m_00, s_mat.m_11, s_mat.m_10);
+                let s00 = s_mat.m_00;
+                let s01 = s_mat.m_10;
+                let s11 = s_mat.m_11;
+                let s02 = s_mat.m_20;
+                let s12 = s_mat.m_21;
+                s_mat.m_00 = c * c * s00 - 2.0 * c * si * s01 + si * si * s11;
+                s_mat.m_11 = si * si * s00 + 2.0 * c * si * s01 + c * c * s11;
+                s_mat.m_10 = 0.0;
+                s_mat.m_20 = c * s02 - si * s12;
+                s_mat.m_21 = si * s02 + c * s12;
+                let ch = ((1.0 + c) / 2.0).sqrt();
+                let sh = -si / (2.0 * ch);
+                let q = q_accum.to_array();
+                q_accum = QuatF64::from_xyzw(
+                    q[0] * ch + q[1] * sh,
+                    q[1] * ch - q[0] * sh,
+                    q[2] * ch + q[3] * sh,
+                    q[3] * ch - q[2] * sh,
+                );
             }
-        } else {
-            Givens {
-                cos_theta: CSTAR,
-                sin_theta: SSTAR,
+            {
+                let (c, si) = exact_givens(s_mat.m_11, s_mat.m_22, s_mat.m_21);
+                let s11 = s_mat.m_11;
+                let s12 = s_mat.m_21;
+                let s22 = s_mat.m_22;
+                let s01 = s_mat.m_10;
+                let s02 = s_mat.m_20;
+                s_mat.m_11 = c * c * s11 - 2.0 * c * si * s12 + si * si * s22;
+                s_mat.m_22 = si * si * s11 + 2.0 * c * si * s12 + c * c * s22;
+                s_mat.m_21 = 0.0;
+                s_mat.m_10 = c * s01 - si * s02;
+                s_mat.m_20 = si * s01 + c * s02;
+                let ch = ((1.0 + c) / 2.0).sqrt();
+                let sh = -si / (2.0 * ch);
+                let q = q_accum.to_array();
+                q_accum = QuatF64::from_xyzw(
+                    q[0] * ch + q[3] * sh,
+                    q[1] * ch + q[2] * sh,
+                    q[2] * ch - q[1] * sh,
+                    q[3] * ch - q[0] * sh,
+                );
             }
-        }
-    }
+            {
+                let (c, si) = exact_givens(s_mat.m_00, s_mat.m_22, s_mat.m_20);
+                let s00 = s_mat.m_00;
+                let s02 = s_mat.m_20;
+                let s22 = s_mat.m_22;
+                let s01 = s_mat.m_10;
+                let s12 = s_mat.m_21;
+                s_mat.m_00 = c * c * s00 - 2.0 * c * si * s02 + si * si * s22;
+                s_mat.m_22 = si * si * s00 + 2.0 * c * si * s02 + c * c * s22;
+                s_mat.m_20 = 0.0;
+                s_mat.m_10 = c * s01 - si * s12;
+                s_mat.m_21 = si * s01 + c * s12;
+                let ch = ((1.0 + c) / 2.0).sqrt();
+                let sh = si / (2.0 * ch);
+                let q = q_accum.to_array();
+                q_accum = QuatF64::from_xyzw(
+                    q[0] * ch - q[2] * sh,
+                    q[1] * ch + q[3] * sh,
+                    q[2] * ch + q[0] * sh,
+                    q[3] * ch - q[1] * sh,
+                );
+            }
 
-    #[inline(always)]
-    fn conjugate_xy(s: &mut Symmetric3x3, q: &mut QuatF64) {
-        let mut g = approximate_givens_parameters(s.m_00, s.m_11, s.m_10);
-        let cos_theta2 = g.cos_theta * g.cos_theta;
-        let sin_theta2 = g.sin_theta * g.sin_theta;
-        let scale = 1.0 / (cos_theta2 + sin_theta2);
-        let a = (cos_theta2 - sin_theta2) * scale;
-        let b = 2.0 * g.sin_theta * g.cos_theta * scale;
+            // Normalize quaternion once per sweep to balance orthogonality and performance
+            let len = q_accum.length();
+            debug_assert!(
+                (len - 1.0).abs() < 0.1,
+                "Quaternion drift detected in compute_v_quat: length={}",
+                len
+            );
+            q_accum = q_accum.normalize();
 
-        let s00 = s.m_00;
-        let s10 = s.m_10;
-        let s11 = s.m_11;
-        let s20 = s.m_20;
-        let s21 = s.m_21;
-
-        s.m_00 = a * (a * s00 + b * s10) + b * (a * s10 + b * s11);
-        s.m_10 = a * (-b * s00 + a * s10) + b * (-b * s10 + a * s11);
-        s.m_11 = -b * (-b * s00 + a * s10) + a * (-b * s10 + a * s11);
-        s.m_20 = a * s20 + b * s21;
-        s.m_21 = -b * s20 + a * s21;
-
-        let q_arr = q.to_array();
-        let tmp_x = q_arr[0] * g.sin_theta;
-        let tmp_y = q_arr[1] * g.sin_theta;
-        let tmp_z = q_arr[2] * g.sin_theta;
-        g.sin_theta *= q_arr[3];
-
-        *q = QuatF64::from_xyzw(
-            q_arr[0] * g.cos_theta + tmp_y,
-            q_arr[1] * g.cos_theta - tmp_x,
-            q_arr[2] * g.cos_theta + g.sin_theta,
-            q_arr[3] * g.cos_theta - tmp_z,
-        );
-    }
-
-    #[inline(always)]
-    fn conjugate_yz(s: &mut Symmetric3x3, q: &mut QuatF64) {
-        let mut g = approximate_givens_parameters(s.m_11, s.m_22, s.m_21);
-        let cos_theta2 = g.cos_theta * g.cos_theta;
-        let sin_theta2 = g.sin_theta * g.sin_theta;
-        let scale = 1.0 / (cos_theta2 + sin_theta2);
-        let a = (cos_theta2 - sin_theta2) * scale;
-        let b = 2.0 * g.sin_theta * g.cos_theta * scale;
-
-        let s11 = s.m_11;
-        let s21 = s.m_21;
-        let s22 = s.m_22;
-        let s10 = s.m_10;
-        let s20 = s.m_20;
-
-        s.m_11 = a * (a * s11 + b * s21) + b * (a * s21 + b * s22);
-        s.m_21 = a * (-b * s11 + a * s21) + b * (-b * s21 + a * s22);
-        s.m_22 = -b * (-b * s11 + a * s21) + a * (-b * s21 + a * s22);
-        s.m_10 = a * s10 + b * s20;
-        s.m_20 = -b * s10 + a * s20;
-
-        let q_arr = q.to_array();
-        let tmp_x = q_arr[0] * g.sin_theta;
-        let tmp_y = q_arr[1] * g.sin_theta;
-        let tmp_z = q_arr[2] * g.sin_theta;
-        g.sin_theta *= q_arr[3];
-
-        *q = QuatF64::from_xyzw(
-            q_arr[0] * g.cos_theta + g.sin_theta,
-            q_arr[1] * g.cos_theta + tmp_z,
-            q_arr[2] * g.cos_theta - tmp_y,
-            q_arr[3] * g.cos_theta - tmp_x,
-        );
-    }
-
-    #[inline(always)]
-    fn conjugate_xz(s: &mut Symmetric3x3, q: &mut QuatF64) {
-        let mut g = approximate_givens_parameters(s.m_00, s.m_22, s.m_20);
-        let cos_theta2 = g.cos_theta * g.cos_theta;
-        let sin_theta2 = g.sin_theta * g.sin_theta;
-        let scale = 1.0 / (cos_theta2 + sin_theta2);
-        let a = (cos_theta2 - sin_theta2) * scale;
-        let b = 2.0 * g.sin_theta * g.cos_theta * scale;
-
-        let s00 = s.m_00;
-        let s20 = s.m_20;
-        let s22 = s.m_22;
-        let s10 = s.m_10;
-        let s21 = s.m_21;
-
-        s.m_00 = a * (a * s00 + b * s20) + b * (a * s20 + b * s22);
-        s.m_20 = a * (-b * s00 + a * s20) + b * (-b * s20 + a * s22);
-        s.m_22 = -b * (-b * s00 + a * s20) + a * (-b * s20 + a * s22);
-        s.m_10 = a * s10 + b * s21;
-        s.m_21 = -b * s10 + a * s21;
-
-        let q_arr = q.to_array();
-        let tmp_x = q_arr[0] * g.sin_theta;
-        let tmp_y = q_arr[1] * g.sin_theta;
-        let tmp_z = q_arr[2] * g.sin_theta;
-        g.sin_theta *= q_arr[3];
-
-        *q = QuatF64::from_xyzw(
-            q_arr[0] * g.cos_theta - tmp_z,
-            q_arr[1] * g.cos_theta + g.sin_theta,
-            q_arr[2] * g.cos_theta + tmp_x,
-            q_arr[3] * g.cos_theta - tmp_y,
-        );
-    }
-
-    fn jacobi_eigenanalysis(mut s: Symmetric3x3) -> Mat3F64 {
-        let mut q = QuatF64::from_xyzw(0.0, 0.0, 0.0, 1.0);
-        for _i in 0..MAX_SWEEPS {
-            conjugate_xy(&mut s, &mut q);
-            conjugate_yz(&mut s, &mut q);
-            conjugate_xz(&mut s, &mut q);
-            let off_diag_norm_sq = s.m_10 * s.m_10 + s.m_20 * s.m_20 + s.m_21 * s.m_21;
-            if off_diag_norm_sq < JACOBI_TOLERANCE {
+            let off_diag_sq =
+                s_mat.m_10 * s_mat.m_10 + s_mat.m_20 * s_mat.m_20 + s_mat.m_21 * s_mat.m_21;
+            if off_diag_sq < JACOBI_TOLERANCE {
                 break;
             }
         }
-        // Use the method implemented in mat.rs
-        Mat3F64::from_quat(q)
+
+        q_accum
+    }
+
+    #[derive(Debug)]
+    struct GivensF64 {
+        cos_theta: f64,
+        sin_theta: f64,
+    }
+
+    #[derive(Debug)]
+    struct QR3F64 {
+        q: Mat3F64,
+        r: Mat3F64,
     }
 
     #[inline(always)]
-    fn cond_swap(c: bool, x: &mut f64, y: &mut f64) {
-        let z = *x;
-        if c {
-            *x = *y;
-            *y = z;
-        }
-    }
-
-    #[inline(always)]
-    fn cond_swap_vec3(c: bool, x: &mut Vec3F64, y: &mut Vec3F64) {
-        let z = *x;
-        if c {
-            *x = *y;
-            *y = z;
-        }
-    }
-
-    #[inline(always)]
-    fn cond_negate_vec3(c: bool, v: &mut Vec3F64) {
-        let mask = 0_i64.wrapping_sub(c as i64) as u64;
-        let sign_mask = 0x8000_0000_0000_0000u64;
-        let neg_mask = mask & sign_mask;
-        *v = Vec3F64::new(
-            f64::from_bits(v.x.to_bits() ^ neg_mask),
-            f64::from_bits(v.y.to_bits() ^ neg_mask),
-            f64::from_bits(v.z.to_bits() ^ neg_mask),
-        );
-    }
-
-    #[inline(always)]
-    pub fn sort_singular_values(b: &mut Mat3F64, v: &mut Mat3F64) {
-        let mut b_x = b.x_axis();
-        let mut b_y = b.y_axis();
-        let mut b_z = b.z_axis();
-        let mut v_x = v.x_axis();
-        let mut v_y = v.y_axis();
-        let mut v_z = v.z_axis();
-        // Use length() * length() instead of length_squared() because the wrapper
-        // doesn't expose length_squared().
-        let mut rho1 = b_x.length() * b_x.length();
-        let mut rho2 = b_y.length() * b_y.length();
-        let mut rho3 = b_z.length() * b_z.length();
-
-        // First comparison (rho1, rho2)
-        let c1 = rho1 < rho2;
-        cond_swap(c1, &mut rho1, &mut rho2);
-        cond_swap_vec3(c1, &mut b_x, &mut b_y);
-        cond_swap_vec3(c1, &mut v_x, &mut v_y);
-        cond_negate_vec3(c1, &mut b_y);
-        cond_negate_vec3(c1, &mut v_y);
-
-        // Second comparison (rho1, rho3)
-        let c2 = rho1 < rho3;
-        cond_swap(c2, &mut rho1, &mut rho3);
-        cond_swap_vec3(c2, &mut b_x, &mut b_z);
-        cond_swap_vec3(c2, &mut v_x, &mut v_z);
-        cond_negate_vec3(c2, &mut b_z);
-        cond_negate_vec3(c2, &mut v_z);
-
-        // Third comparison (rho2, rho3)
-        let c3 = rho2 < rho3;
-        cond_swap_vec3(c3, &mut b_y, &mut b_z);
-        cond_swap_vec3(c3, &mut v_y, &mut v_z);
-        cond_negate_vec3(c3, &mut b_z);
-        cond_negate_vec3(c3, &mut v_z);
-
-        // Update matrices with swapped vectors
-        *b = Mat3F64::from_cols(b_x, b_y, b_z);
-        *v = Mat3F64::from_cols(v_x, v_y, v_z);
-    }
-
-    #[inline(always)]
-    fn qr_givens_quaternion(a1: f64, a2: f64) -> Givens {
-        let epsilon = SVD3_EPSILON;
+    fn qr_givens_quaternion(a1: f64, a2: f64) -> GivensF64 {
         let rho = (a1 * a1 + a2 * a2).sqrt();
-
-        let mut g = Givens {
-            cos_theta: a1.abs() + f64::max(rho, epsilon),
-            sin_theta: if rho > epsilon { a2 } else { 0.0 },
+        let mut g = GivensF64 {
+            cos_theta: a1.abs() + f64::max(rho, EPSILON),
+            sin_theta: if rho > EPSILON { a2 } else { 0.0 },
         };
-        let b = a1 < 0.0;
-        cond_swap(b, &mut g.sin_theta, &mut g.cos_theta);
+
+        if a1 < 0.0 {
+            std::mem::swap(&mut g.sin_theta, &mut g.cos_theta);
+        }
+
         let w = (g.cos_theta * g.cos_theta + g.sin_theta * g.sin_theta)
             .sqrt()
             .recip();
@@ -797,11 +691,12 @@ mod impl_f64 {
         g
     }
 
-    fn qr_decomposition(b_mat: &mut Mat3F64) -> QR3 {
-        let mut x_axis = b_mat.x_axis();
-        let mut y_axis = b_mat.y_axis();
-        let mut z_axis = b_mat.z_axis();
+    fn qr_decomposition(b_mat: &mut Mat3F64) -> QR3F64 {
+        let mut x_axis = b_mat.x_axis;
+        let mut y_axis = b_mat.y_axis;
+        let mut z_axis = b_mat.z_axis;
 
+        // First Givens rotation to zero out b[1][0]
         let g1 = qr_givens_quaternion(x_axis.x, x_axis.y);
         let rot_c = -2.0 * g1.sin_theta * g1.sin_theta + 1.0;
         let rot_s = 2.0 * g1.cos_theta * g1.sin_theta;
@@ -819,6 +714,7 @@ mod impl_f64 {
         z_axis.x = rot_c * val_row0 + rot_s * val_row1;
         z_axis.y = -rot_s * val_row0 + rot_c * val_row1;
 
+        // Second Givens rotation to zero out b[2][0]
         let g2 = qr_givens_quaternion(x_axis.x, x_axis.z);
         let rot_c = -2.0 * g2.sin_theta * g2.sin_theta + 1.0;
         let rot_s = 2.0 * g2.cos_theta * g2.sin_theta;
@@ -836,6 +732,7 @@ mod impl_f64 {
         z_axis.x = rot_c * val_row0 + rot_s * val_row2;
         z_axis.z = -rot_s * val_row0 + rot_c * val_row2;
 
+        // Third Givens rotation to zero out b[2][1]
         let g3 = qr_givens_quaternion(y_axis.y, y_axis.z);
         let rot_c = -2.0 * g3.sin_theta * g3.sin_theta + 1.0;
         let rot_s = 2.0 * g3.cos_theta * g3.sin_theta;
@@ -853,10 +750,9 @@ mod impl_f64 {
         z_axis.y = rot_c * val_row1 + rot_s * val_row2;
         z_axis.z = -rot_s * val_row1 + rot_c * val_row2;
 
-        let r = Mat3F64::from_cols(x_axis, y_axis, z_axis);
+        let r = Mat3F64::from_cols(x_axis.into(), y_axis.into(), z_axis.into());
         *b_mat = r;
 
-        // Recalculate parameters for reconstruction
         let rot_c1 = -2.0 * g1.sin_theta * g1.sin_theta + 1.0;
         let rot_s1 = 2.0 * g1.cos_theta * g1.sin_theta;
         let rot_c2 = -2.0 * g2.sin_theta * g2.sin_theta + 1.0;
@@ -879,42 +775,85 @@ mod impl_f64 {
             Vec3F64::new(0.0, rot_c3, rot_s3),
             Vec3F64::new(0.0, -rot_s3, rot_c3),
         );
-        QR3 {
-            q: q1 * q2 * q3,
-            r: *b_mat,
-        }
+
+        QR3F64 { q: q1 * q2 * q3, r }
     }
 
-    pub fn svd3(a: &Mat3F64) -> SVD3Set {
-        let at_a = a.transpose() * *a;
-        let mut v = jacobi_eigenanalysis(Symmetric3x3::from_mat3x3(&at_a));
-        let mut b = *a * v;
-        sort_singular_values(&mut b, &mut v);
+    pub fn sort_singular_values(b: &mut Mat3F64, v: &mut Mat3F64) {
+        let mut b_x = b.x_axis;
+        let mut b_y = b.y_axis;
+        let mut b_z = b.z_axis;
+        let mut v_x = v.x_axis;
+        let mut v_y = v.y_axis;
+        let mut v_z = v.z_axis;
+        let mut rho1 = b_x.dot(b_x);
+        let mut rho2 = b_y.dot(b_y);
+        let mut rho3 = b_z.dot(b_z);
+
+        if rho1 < rho2 {
+            std::mem::swap(&mut rho1, &mut rho2);
+            std::mem::swap(&mut b_x, &mut b_y);
+            std::mem::swap(&mut v_x, &mut v_y);
+            b_y = -b_y;
+            v_y = -v_y;
+        }
+        if rho1 < rho3 {
+            std::mem::swap(&mut rho1, &mut rho3);
+            std::mem::swap(&mut b_x, &mut b_z);
+            std::mem::swap(&mut v_x, &mut v_z);
+            b_z = -b_z;
+            v_z = -v_z;
+        }
+        if rho2 < rho3 {
+            std::mem::swap(&mut b_y, &mut b_z);
+            std::mem::swap(&mut v_y, &mut v_z);
+            b_z = -b_z;
+            v_z = -v_z;
+        }
+        *b = Mat3F64::from_cols(b_x.into(), b_y.into(), b_z.into());
+        *v = Mat3F64::from_cols(v_x.into(), v_y.into(), v_z.into());
+    }
+
+    pub fn svd3(mat: &Mat3F64) -> SVD3Set {
+        let mut s_mat = Symmetric3x3::from_mat3x3(&(mat.transpose() * *mat));
+        let q = compute_v_quat(&mut s_mat);
+        let mut v_mat = Mat3F64::from_quat(q);
+
+        let mut b = *mat * v_mat;
+        sort_singular_values(&mut b, &mut v_mat);
+
+        // Use QR decomposition of B to obtain an orthonormal U and upper-triangular S,
+        // instead of inferring U directly from B's columns via ad-hoc normalization.
         let qr = qr_decomposition(&mut b);
 
         let mut u = qr.q;
         let mut s = qr.r;
 
-        let mut s_x = s.x_axis();
-        let mut s_y = s.y_axis();
-        let mut s_z = s.z_axis();
-        let cond_x = s_x.x < 0.0;
-        let cond_y = s_y.y < 0.0;
-        let cond_z = s_z.z < 0.0;
+        let s_x = s.x_axis;
+        let s_y = s.y_axis;
+        let s_z = s.z_axis;
+        let mut u_x = u.x_axis;
+        let mut u_y = u.y_axis;
+        let mut u_z = u.z_axis;
 
-        let mut u_x = u.x_axis();
-        let mut u_y = u.y_axis();
-        let mut u_z = u.z_axis();
-        cond_negate_vec3(cond_x, &mut u_x);
-        cond_negate_vec3(cond_y, &mut u_y);
-        cond_negate_vec3(cond_z, &mut u_z);
-        u = Mat3F64::from_cols(u_x, u_y, u_z);
+        if s_x.x < 0.0 {
+            u_x = -u_x;
+        }
+        if s_y.y < 0.0 {
+            u_y = -u_y;
+        }
+        if s_z.z < 0.0 {
+            u_z = -u_z;
+        }
 
-        s_x.x = s_x.x.abs();
-        s_y.y = s_y.y.abs();
-        s_z.z = s_z.z.abs();
-        s = Mat3F64::from_cols(s_x, s_y, s_z);
-        SVD3Set { u, s, v }
+        u = Mat3F64::from_cols(u_x.into(), u_y.into(), u_z.into());
+        s = Mat3F64::from_cols(
+            Vec3F64::new(s_x.x.abs(), s_y.x, s_z.x),
+            Vec3F64::new(s_x.y, s_y.y.abs(), s_z.y),
+            Vec3F64::new(s_x.z, s_y.z, s_z.z.abs()),
+        );
+
+        SVD3Set { u, s, v: v_mat }
     }
 }
 
@@ -1116,5 +1055,40 @@ mod tests {
         assert!((s_vec.x - 1.0).abs() < TEST_EPSILON_F64);
         assert!((s_vec.y - 1.0).abs() < TEST_EPSILON_F64);
         assert!((s_vec.z - 1.0).abs() < TEST_EPSILON_F64);
+    }
+
+    #[test]
+    fn test_svd3_f64_degenerate_essential_matrix() {
+        // Essential matrix E with repeated singular values (sigma, sigma, 0)
+        let e = Mat3F64::from_cols(
+            Vec3F64::new(0.0, -2.552, 0.0),
+            Vec3F64::new(1.708, 0.0, -8.540),
+            Vec3F64::new(0.0, 8.327, 0.0),
+        );
+        let svd = svd3_f64(&e);
+
+        // Verify full SVD properties: orthogonality and reconstruction
+        verify_svd_properties_f64(&e, &svd, TEST_EPSILON_F64);
+
+        let s = svd.s();
+        let sigma1 = s.x_axis.x;
+        let sigma2 = s.y_axis.y;
+        let sigma3 = s.z_axis.z;
+
+        let diff = (sigma1 - sigma2).abs();
+        assert!(
+            diff < 1e-3,
+            "FAILURE: Singular values should be equal! Diff: {}",
+            diff
+        );
+        assert!(
+            sigma3.abs() < 1e-3,
+            "FAILURE: Third singular value should be zero! Got: {}",
+            sigma3
+        );
+        assert!(
+            (sigma1 - 8.709).abs() < 1e-2,
+            "FAILURE: Incorrect magnitude. Expected ~8.709"
+        );
     }
 }
