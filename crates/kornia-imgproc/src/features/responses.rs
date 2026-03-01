@@ -347,6 +347,15 @@ pub fn non_max_suppression<A1: ImageAllocator, A2: ImageAllocator>(
     dst: &mut Image<f32, 1, A2>,
     eps: f32,
 ) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.height(),
+            src.width(),
+            dst.height(),
+            dst.width(),
+        ));
+    }
+
     let size = src.size();
 
     let mut src_u32: Image<u32, 1, _> = Image::from_size_val(size, 0u32, CpuAllocator)?;
@@ -426,6 +435,15 @@ pub fn gftt_response<A1: ImageAllocator, A2: ImageAllocator>(
     window_size: usize,
     apply_nms: bool,
 ) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.height(),
+            src.width(),
+            dst.height(),
+            dst.width(),
+        ));
+    }
+
     let image_size = src.size();
     let rows = src.rows();
     let cols = src.cols();
@@ -513,22 +531,7 @@ pub fn gftt_response<A1: ImageAllocator, A2: ImageAllocator>(
             }
         });
 
-    // zero borders (original doesn't compute at edges)
-    let rows = dst.rows();
-    let cols = dst.cols();
-    let data = dst.as_slice_mut();
-
-    for c in 0..cols {
-        data[c] = 0.0;
-        data[(rows - 1) * cols + c] = 0.0;
-    }
-
-    for r in 0..rows {
-        data[r * cols] = 0.0;
-        data[r * cols + (cols - 1)] = 0.0;
-    }
-
-    // conditionally apply non-maximum suppression using morphological dialation
+    // conditionally apply non-maximum suppression using morphological dilation
     if apply_nms {
         let mut tmp = Image::from_size_val(image_size, 0.0f32, CpuAllocator)?;
         non_max_suppression(dst, &mut tmp, 1e-6)?;
@@ -770,6 +773,33 @@ mod tests {
             0.0, 0.5624999, 0.70894647, 0.7534828, 0.8124998, 0.7534828, 0.7089465, 0.5624999, 0.0,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_gftt_response_with_nms() -> Result<(), ImageError> {
+        let src = Image::from_size_slice(
+            [9, 9].into(),
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0,
+                1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0,
+            ],
+            CpuAllocator,
+        )?;
+
+        let mut dst = Image::from_size_val([9, 9].into(), 0.0, CpuAllocator)?;
+        gftt_response(&src, &mut dst, 3, 5, true)?;
+
+        let data = dst.as_slice();
+
+        assert!(data[40] > 2.0);
+        assert_eq!(data[31], 0.0);
+        assert_eq!(data[0], 0.0);
 
         Ok(())
     }
