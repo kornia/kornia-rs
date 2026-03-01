@@ -451,7 +451,7 @@ pub fn gftt_response<A1: ImageAllocator, A2: ImageAllocator>(
     let mut dx = Image::from_size_val(image_size, 0.0f32, CpuAllocator)?;
     let mut dy = Image::from_size_val(image_size, 0.0f32, CpuAllocator)?;
 
-    let (kernel_deriv, kernel_smooth) = sobel_kernel_1d(sobel_size);
+    let (kernel_deriv, kernel_smooth) = sobel_kernel_1d(sobel_size)?;
 
     // apply sqrt normalization
     let deriv_sum: f32 = kernel_deriv.iter().map(|x| x.abs()).sum();
