@@ -131,7 +131,7 @@ mod tests {
         let (d5, s5) = sobel_kernel_1d(5)?;
         assert_eq!(d5, vec![-1.0, -2.0, 0.0, 2.0, 1.0]);
         assert_eq!(s5, vec![1.0, 4.0, 6.0, 4.0, 1.0]);
-        
+
         assert!(sobel_kernel_1d(7).is_err());
 
         Ok(())
