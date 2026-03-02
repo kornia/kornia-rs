@@ -163,7 +163,7 @@ fn register_variants(
 fn bench_filled_square(c: &mut Criterion) {
     let mut group = c.benchmark_group("contours_filled_square");
 
-    for (width, height) in [(64, 64)].iter() {
+    for (width, height) in [(128, 128), (256, 256), (512, 512), (1024, 1024)].iter() {
         group.throughput(Throughput::Elements((*width * *height) as u64));
         let parameter_string = format!("{width}x{height}");
 
@@ -180,7 +180,7 @@ fn bench_filled_square(c: &mut Criterion) {
 fn bench_hollow_square(c: &mut Criterion) {
     let mut group = c.benchmark_group("contours_hollow_square");
 
-    for (width, height) in [(64, 64)].iter() {
+    for (width, height) in [(128, 128), (256, 256), (512, 512), (1024, 1024)].iter() {
         group.throughput(Throughput::Elements((*width * *height) as u64));
         let parameter_string = format!("{width}x{height}");
 
@@ -197,7 +197,7 @@ fn bench_hollow_square(c: &mut Criterion) {
 fn bench_sparse_noise(c: &mut Criterion) {
     let mut group = c.benchmark_group("contours_sparse_noise");
 
-    for (width, height) in [(64, 64)].iter() {
+    for (width, height) in [(128, 128), (256, 256), (512, 512), (1024, 1024)].iter() {
         group.throughput(Throughput::Elements((*width * *height) as u64));
         let parameter_string = format!("{width}x{height}");
 

@@ -34,10 +34,18 @@ enum BorderType {
     Hole,
 }
 
-/// A single contour: an ordered list of [x, y] pixel coordinates.
+/// A single contour: an ordered list of [x, y] pixel coordinates
 pub type Contour = Vec<[i32; 2]>;
-/// `next, prev, first_child, parent` indices into the contours array, or -1.
+/// `next, prev, first_child, parent` indices into the contours array, or -1
 pub type HierarchyEntry = [i32; 4];
+
+/// Error type returned by contour-finding functions
+#[derive(Debug, thiserror::Error)]
+pub enum ContoursError {
+    /// Returned when the number of distinct borders exceeds [`i16::MAX`]
+    #[error("find_contours: too many borders (nbd overflow)")]
+    NbdOverflow,
+}
 
 /// Output of find_contours and FindContoursExecutor::find_contours.
 pub struct ContoursResult {
@@ -77,8 +85,10 @@ struct TracerStart {
 const ALL_ONES_I16: u64 = 0x0001_0001_0001_0001;
 
 /// Reusable executor for running find_contours on successive frames
-/// Both the working image buffer and the coordinate arena are reused across calls,
-/// so the OS allocator is never touched after the first warm-up frame
+/// reused across calls, avoiding repeated heap allocation for those buffers
+/// after the first warm-up frame, per-call bookkeeping (ranges, hierarchy,
+/// border_types) and the output contour vectors are still freshly allocated
+/// on each call
 /// For multi-stream workloads, use one executor per rayon thread
 pub struct FindContoursExecutor {
     img: Vec<i16>,
@@ -100,7 +110,7 @@ impl FindContoursExecutor {
         src: &Image<u8, 1, A>,
         mode: RetrievalMode,
         method: ContourApproximationMode,
-    ) -> Result<ContoursResult, String> {
+    ) -> Result<ContoursResult, ContoursError> {
         self.arena.clear();
         find_contours_impl(src, mode, method, &mut self.img, &mut self.arena)
     }
@@ -124,7 +134,7 @@ pub fn find_contours<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     mode: RetrievalMode,
     method: ContourApproximationMode,
-) -> Result<ContoursResult, String> {
+) -> Result<ContoursResult, ContoursError> {
     let mut img = Vec::new();
     let mut arena = Vec::new();
     find_contours_impl(src, mode, method, &mut img, &mut arena)
@@ -136,7 +146,7 @@ fn find_contours_impl<A: ImageAllocator>(
     method: ContourApproximationMode,
     img: &mut Vec<i16>,
     arena: &mut Vec<[i32; 2]>,
-) -> Result<ContoursResult, String> {
+) -> Result<ContoursResult, ContoursError> {
     let height = src.height();
     let width = src.width();
     let padded_w = width + 2;
@@ -240,7 +250,7 @@ fn find_contours_impl<A: ImageAllocator>(
 
             if is_outer || is_hole {
                 if nbd == i16::MAX {
-                    return Err("find_contours: too many borders (nbd overflow)".into());
+                    return Err(ContoursError::NbdOverflow);
                 }
                 nbd += 1;
 
@@ -533,7 +543,7 @@ fn filter_by_mode(
                 let parent = fh[i][3];
                 let is_outer_inside_hole = parent > 0
                     && matches!(border_types[i + 1], BorderType::Outer)
-                    && matches!(border_types[parent as usize], BorderType::Hole);
+                    && matches!(border_types[(parent - 1) as usize], BorderType::Hole);
                 if is_outer_inside_hole {
                     fh[i][3] = -1; // re-root: outer-inside-hole -> top level
                 }
@@ -556,7 +566,7 @@ fn filter_by_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kornia_tensor::allocator::CpuAllocator;
+    use kornia_image::allocator::CpuAllocator;
     use kornia_tensor::Tensor3;
 
     fn make_img(w: usize, h: usize, data: Vec<u8>) -> Image<u8, 1, CpuAllocator> {
