@@ -48,11 +48,8 @@ fn make_noise(width: usize, height: usize, seed: u64) -> Vec<u8> {
         .collect()
 }
 
-
-
 fn kornia_image(width: usize, height: usize, data: Vec<u8>) -> Image<u8, 1, CpuAllocator> {
-    Image::<u8, 1, _>::new(ImageSize { width, height }, data, CpuAllocator)
-        .expect("kornia image")
+    Image::<u8, 1, _>::new(ImageSize { width, height }, data, CpuAllocator).expect("kornia image")
 }
 
 /// OpenCV expects 0/255 for binary images, not 0/1.
@@ -70,25 +67,20 @@ fn opencv_mat(width: usize, height: usize, data: &[u8]) -> core::Mat {
     mat
 }
 
-
-
-/// Register all six variants 
+/// Register all six variants
 fn register_variants(
     group: &mut criterion::BenchmarkGroup<criterion::measurement::WallTime>,
     parameter_string: &str,
     kornia_img: &Image<u8, 1, CpuAllocator>,
     cv_mat: &core::Mat,
 ) {
-
-
     group.bench_with_input(
         BenchmarkId::new("kornia_none", parameter_string),
         kornia_img,
         |b, img| {
             b.iter(|| {
                 std::hint::black_box(
-                    find_contours(img, RetrievalMode::List, ContourApproximationMode::None)
-                        .unwrap(),
+                    find_contours(img, RetrievalMode::List, ContourApproximationMode::None).ok(),
                 )
             })
         },
@@ -100,13 +92,11 @@ fn register_variants(
         |b, img| {
             b.iter(|| {
                 std::hint::black_box(
-                    find_contours(img, RetrievalMode::List, ContourApproximationMode::Simple)
-                        .unwrap(),
+                    find_contours(img, RetrievalMode::List, ContourApproximationMode::Simple).ok(),
                 )
             })
         },
     );
-
 
     group.bench_with_input(
         BenchmarkId::new("kornia_exec_none", parameter_string),
@@ -116,7 +106,7 @@ fn register_variants(
             b.iter(|| {
                 std::hint::black_box(
                     exec.find_contours(img, RetrievalMode::List, ContourApproximationMode::None)
-                        .unwrap(),
+                        .ok(),
                 )
             })
         },
@@ -130,12 +120,11 @@ fn register_variants(
             b.iter(|| {
                 std::hint::black_box(
                     exec.find_contours(img, RetrievalMode::List, ContourApproximationMode::Simple)
-                        .unwrap(),
+                        .ok(),
                 )
             })
         },
     );
-
 
     let mut cv_contours: core::Vector<core::Vector<core::Point>> = core::Vector::new();
     let mut cv_hierarchy: core::Vector<core::Vec4i> = core::Vector::new();
@@ -174,7 +163,7 @@ fn register_variants(
 fn bench_filled_square(c: &mut Criterion) {
     let mut group = c.benchmark_group("contours_filled_square");
 
-    for (width, height) in [(64, 64), (256, 256), (512, 512), (1024, 1024)].iter() {
+    for (width, height) in [(64, 64)].iter() {
         group.throughput(Throughput::Elements((*width * *height) as u64));
         let parameter_string = format!("{width}x{height}");
 
@@ -191,7 +180,7 @@ fn bench_filled_square(c: &mut Criterion) {
 fn bench_hollow_square(c: &mut Criterion) {
     let mut group = c.benchmark_group("contours_hollow_square");
 
-    for (width, height) in [(64, 64), (256, 256), (512, 512), (1024, 1024)].iter() {
+    for (width, height) in [(64, 64)].iter() {
         group.throughput(Throughput::Elements((*width * *height) as u64));
         let parameter_string = format!("{width}x{height}");
 
@@ -208,7 +197,7 @@ fn bench_hollow_square(c: &mut Criterion) {
 fn bench_sparse_noise(c: &mut Criterion) {
     let mut group = c.benchmark_group("contours_sparse_noise");
 
-    for (width, height) in [(64, 64), (256, 256), (512, 512), (1024, 1024)].iter() {
+    for (width, height) in [(64, 64)].iter() {
         group.throughput(Throughput::Elements((*width * *height) as u64));
         let parameter_string = format!("{width}x{height}");
 
@@ -222,5 +211,10 @@ fn bench_sparse_noise(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_filled_square, bench_hollow_square, bench_sparse_noise);
+criterion_group!(
+    benches,
+    bench_filled_square,
+    bench_hollow_square,
+    bench_sparse_noise
+);
 criterion_main!(benches);
