@@ -21,9 +21,9 @@ use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
 ///
 /// Returns a `PyImage` containing the resized RGB image.
 ///
-/// # Errors
+/// # Exceptions
 ///
-/// Returns `PyValueError` if interpolation mode is not supported.
+/// Raises `PyValueError` if interpolation mode is not supported.
 ///
 /// # Examples
 ///
