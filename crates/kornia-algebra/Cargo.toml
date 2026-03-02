@@ -17,8 +17,8 @@ name = "bench_linalg"
 
 [dependencies]
 approx = { workspace = true, optional = true }
-glam = "0.30.1"
-nalgebra = "0.32"
+glam = "0.32.0"
+nalgebra = "0.34"
 rand = { workspace = true }
 thiserror = { workspace = true }
 

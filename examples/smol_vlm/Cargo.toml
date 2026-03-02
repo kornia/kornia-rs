@@ -18,7 +18,7 @@ kornia-image = { workspace = true }
 kornia-io = { workspace = true }
 kornia-tensor = { workspace = true }
 kornia-vlm = { workspace = true }
-reqwest = { version = "0.12.15", features = ["blocking"] }
+reqwest = { version = "0.13.2", features = ["blocking"] }
 
 [features]
 cuda = ["kornia-vlm/cuda"]
