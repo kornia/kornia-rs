@@ -147,10 +147,9 @@ pub fn warp_affine<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
             // check if the position is within the bounds of the src image
             if x >= 0.0f32 && x < src.cols() as f32 && y >= 0.0f32 && y < src.rows() as f32 {
                 // interpolate the pixel value for each channel
-                dst_pixel
-                    .iter_mut()
-                    .enumerate()
-                    .for_each(|(k, pixel)| *pixel = interpolate_pixel(src, x, y, k, interpolation));
+                dst_pixel.iter_mut().enumerate().for_each(|(k, pixel)| {
+                    *pixel = interpolate_pixel(src, x, y, k, interpolation).unwrap_or(0.0)
+                });
             }
         },
     );
@@ -196,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn warp_affine_unsupported_interpolation() {
+    fn warp_affine_unsupported_interpolation() -> Result<(), ImageError> {
         let src = Image::<_, 1, _>::from_size_val(
             ImageSize {
                 width: 2,
@@ -204,8 +203,7 @@ mod tests {
             },
             0.0f32,
             CpuAllocator,
-        )
-        .unwrap();
+        )?;
         let mut dst = Image::<_, 1, _>::from_size_val(
             ImageSize {
                 width: 2,
@@ -213,11 +211,11 @@ mod tests {
             },
             0.0f32,
             CpuAllocator,
-        )
-        .unwrap();
+        )?;
         let m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
         let err = super::warp_affine(&src, &mut dst, &m, super::InterpolationMode::Bicubic);
         assert!(err.is_err());
+        Ok(())
     }
 
     #[test]

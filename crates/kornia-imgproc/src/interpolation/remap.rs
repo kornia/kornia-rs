@@ -50,7 +50,7 @@ pub fn remap<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     parallel::par_iter_rows_resample(dst, map_x, map_y, |&x, &y, dst_pixel| {
         // interpolate the pixel value
         dst_pixel.iter_mut().enumerate().for_each(|(c, pixel)| {
-            *pixel = interpolate_pixel(src, x, y, c, interpolation);
+            *pixel = interpolate_pixel(src, x, y, c, interpolation).unwrap_or(0.0);
         });
     });
 
@@ -63,7 +63,7 @@ mod tests {
     use kornia_tensor::{CpuAllocator, Tensor2};
 
     #[test]
-    fn remap_unsupported_interpolation() {
+    fn remap_unsupported_interpolation() -> Result<(), ImageError> {
         let image = Image::<_, 1, _>::new(
             ImageSize {
                 width: 2,
@@ -71,12 +71,9 @@ mod tests {
             },
             vec![0f32; 4],
             CpuAllocator,
-        )
-        .unwrap();
-        let map_x =
-            Tensor2::from_shape_vec([2, 2], vec![0.0, 1.0, 0.0, 1.0], CpuAllocator).unwrap();
-        let map_y =
-            Tensor2::from_shape_vec([2, 2], vec![0.0, 0.0, 1.0, 1.0], CpuAllocator).unwrap();
+        )?;
+        let map_x = Tensor2::from_shape_vec([2, 2], vec![0.0, 1.0, 0.0, 1.0], CpuAllocator)?;
+        let map_y = Tensor2::from_shape_vec([2, 2], vec![0.0, 0.0, 1.0, 1.0], CpuAllocator)?;
         let mut dst = Image::<_, 1, _>::from_size_val(
             ImageSize {
                 width: 2,
@@ -84,8 +81,7 @@ mod tests {
             },
             0.0,
             CpuAllocator,
-        )
-        .unwrap();
+        )?;
         let err = super::remap(
             &image,
             &mut dst,
@@ -94,6 +90,7 @@ mod tests {
             super::InterpolationMode::Lanczos,
         );
         assert!(err.is_err());
+        Ok(())
     }
 
     #[test]

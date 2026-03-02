@@ -39,25 +39,17 @@ pub fn validate_interpolation(interpolation: InterpolationMode) -> Result<(), Im
 ///
 /// # Returns
 ///
-/// The interpolated pixel value.
-///
-/// # Panics
-///
-/// Callers must validate the interpolation mode via [`validate_interpolation`] before
-/// calling this function. Passing an unsupported mode is a logic error and will panic.
+/// The interpolated pixel value, or an error if the interpolation mode is not supported.
 pub fn interpolate_pixel<const C: usize, A: ImageAllocator>(
     image: &Image<f32, C, A>,
     u: f32,
     v: f32,
     c: usize,
     interpolation: InterpolationMode,
-) -> f32 {
+) -> Result<f32, ImageError> {
     match interpolation {
-        InterpolationMode::Bilinear => bilinear_interpolation(image, u, v, c),
-        InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v, c),
-        _ => unreachable!(
-            "unsupported interpolation mode {:?} — call validate_interpolation() first",
-            interpolation
-        ),
+        InterpolationMode::Bilinear => Ok(bilinear_interpolation(image, u, v, c)),
+        InterpolationMode::Nearest => Ok(nearest_neighbor_interpolation(image, u, v, c)),
+        mode => Err(ImageError::UnsupportedInterpolation(format!("{mode:?}"))),
     }
 }
