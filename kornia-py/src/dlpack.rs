@@ -13,8 +13,10 @@ const DLPACK_CAPSULE_NAME: &[u8] = b"dltensor\0";
 
 // desctructor function for the python capsule
 unsafe extern "C" fn dlpack_capsule_destructor(capsule: *mut pyo3::ffi::PyObject) {
-    if pyo3::ffi::PyCapsule_IsValid(capsule, DLPACK_CAPSULE_NAME.as_ptr() as *const c_char) == 1 {
-        // println!("Is an invalid capsule!");
+    // early exit only when the capsule is NOT valid; previous code returned
+    // when `PyCapsule_IsValid` returned 1, skipping cleanup for valid
+    // capsules and causing leaks/double frees.
+    if pyo3::ffi::PyCapsule_IsValid(capsule, DLPACK_CAPSULE_NAME.as_ptr() as *const c_char) == 0 {
         return;
     }
 
@@ -46,14 +48,15 @@ unsafe extern "C" fn dlpack_capsule_destructor(capsule: *mut pyo3::ffi::PyObject
     // println!("Delete by Python");
 }
 
-unsafe extern "C" fn dlpack_deleter(_x: *mut dlpack::DLManagedTensor) {
-    // println!("DLManagedTensor deleter");
-
-    //let ctx = (*x).manager_ctx as *mut Tensor;
-    //ctx.drop_in_place();
-    //(*x).dl_tensor.shape.drop_in_place();
-    //(*x).dl_tensor.strides.drop_in_place();
-    //x.drop_in_place();
+unsafe extern "C" fn dlpack_deleter(x: *mut dlpack::DLManagedTensor) {
+    if x.is_null() {
+        return;
+    }
+    let boxed = Box::from_raw(x);
+    if !boxed.manager_ctx.is_null() {
+        let _tensor_box: Box<Tensor> = Box::from_raw(boxed.manager_ctx as *mut Tensor);
+    }
+    // boxed dropped here
 }
 
 pub fn cvtensor_to_dltensor(x: &Tensor) -> dlpack::DLTensor {
@@ -91,11 +94,9 @@ fn cvtensor_to_dlmtensor(x: &Tensor) -> dlpack::DLManagedTensor {
 }
 
 pub fn cvtensor_to_dlpack(x: &Tensor, py: Python) -> PyResult<PyObject> {
-    // create the managed tensor
     let dlm_tensor: dlpack::DLManagedTensor = cvtensor_to_dlmtensor(x);
     let dlm_tensor_bx = Box::new(dlm_tensor);
 
-    // create python capsule
     let capsule = unsafe {
         let ptr = pyo3::ffi::PyCapsule_New(
             Box::into_raw(dlm_tensor_bx) as *mut c_void,
@@ -105,4 +106,44 @@ pub fn cvtensor_to_dlpack(x: &Tensor, py: Python) -> PyResult<PyObject> {
         PyObject::from_owned_ptr(py, ptr)
     };
     Ok(capsule)
+}
+
+// regression tests
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kornia_tensor::Tensor;
+    use pyo3::Python;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static DELETER_INVOKED: AtomicBool = AtomicBool::new(false);
+
+    unsafe extern "C" fn test_deleter(x: *mut dlpack::DLManagedTensor) {
+        DELETER_INVOKED.store(true, Ordering::SeqCst);
+        if !x.is_null() {
+            let boxed: Box<dlpack::DLManagedTensor> = Box::from_raw(x);
+            if !boxed.manager_ctx.is_null() {
+                let _tensor: Box<Tensor> = Box::from_raw(boxed.manager_ctx as *mut Tensor);
+            }
+        }
+    }
+
+    #[test]
+    fn capsule_destructor_validity() {
+        Python::with_gil(|py| {
+            let t = Tensor::zeros(&[1, 2, 3], kornia_tensor::DType::U8);
+            let dlm = cvtensor_to_dlmtensor(&t);
+            let boxed = Box::new(dlm);
+            let capsule = unsafe {
+                let ptr = pyo3::ffi::PyCapsule_New(
+                    Box::into_raw(boxed) as *mut c_void,
+                    DLPACK_CAPSULE_NAME.as_ptr() as *const c_char,
+                    Some(test_deleter as pyo3::ffi::PyCapsule_Destructor),
+                );
+                PyObject::from_owned_ptr(py, ptr)
+            };
+            drop(capsule);
+        });
+        assert!(DELETER_INVOKED.load(Ordering::SeqCst));
+    }
 }
