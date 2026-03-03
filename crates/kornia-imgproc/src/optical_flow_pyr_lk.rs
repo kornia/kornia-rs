@@ -1,5 +1,6 @@
 /// Lucas–Kanade optical flow with pyramids.
-use crate::filter::spatial_gradient_float_parallel_row;
+use crate::filter::scharr_spatial_gradient_float;
+use crate::interpolation::{interpolate_pixel, InterpolationMode};
 use crate::pyramid::pyrdown_f32;
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 use rayon::prelude::*;
@@ -32,7 +33,9 @@ pub enum BorderMode {
 /// Parameters for LK optical flow
 #[derive(Debug, Clone)]
 pub struct PyrLKParams {
-    /// LK integration window size in pixels (OpenCV default: 21).
+    /// LK integration window size in pixels.
+    ///
+    /// Currently, only a window size of exactly `21` is supported.
     pub win_size: usize,
     /// Maximum pyramid level (0 means single-scale tracking).
     pub max_level: usize,
@@ -92,8 +95,8 @@ pub struct PyrLKPrecomputed<A: ImageAllocator> {
 /// Error type for sparse pyramidal Lucas–Kanade optical flow.
 #[derive(Debug, Error)]
 pub enum PyrLKError {
-    /// The window size must be a positive odd number.
-    #[error("invalid LK window size: {0}. It must be a positive odd number")]
+    /// The window size is unsupported.
+    #[error("invalid LK window size: {0}. Currently, only window size 21 is supported")]
     InvalidWindowSize(usize),
     /// Input image sizes must match.
     #[error(
@@ -134,6 +137,20 @@ pub enum PyrLKError {
         /// Y-gradient pyramid levels.
         grad_y_levels: usize,
     },
+    /// Precomputed pyramids have mismatched image dimensions at a specific level.
+    #[error("precomputed pyramid size mismatch at level {level}: prev={prev_size:?}, next={next_size:?}, grad_x={grad_x_size:?}, grad_y={grad_y_size:?}")]
+    InvalidPrecomputedSizes {
+        /// The pyramid level index where the mismatch occurred.
+        level: usize,
+        /// Size of the previous image at this level.
+        prev_size: ImageSize,
+        /// Size of the next image at this level.
+        next_size: ImageSize,
+        /// Size of the X-gradient image at this level.
+        grad_x_size: ImageSize,
+        /// Size of the Y-gradient image at this level.
+        grad_y_size: ImageSize,
+    },
 }
 
 fn mirror_coord(x: f32, max: f32) -> f32 {
@@ -149,38 +166,15 @@ fn mirror_coord(x: f32, max: f32) -> f32 {
 }
 
 #[inline]
-fn bilinear_sample_from_slice(data: &[f32], width: usize, height: usize, x: f32, y: f32) -> f32 {
-    let x0 = x.floor() as usize;
-    let y0 = y.floor() as usize;
-    let x1 = (x0 + 1).min(width - 1);
-    let y1 = (y0 + 1).min(height - 1);
-
-    let alpha = x - x0 as f32;
-    let beta = y - y0 as f32;
-
-    let i00 = data[y0 * width + x0];
-    let i10 = data[y0 * width + x1];
-    let i01 = data[y1 * width + x0];
-    let i11 = data[y1 * width + x1];
-
-    (1.0 - alpha) * (1.0 - beta) * i00
-        + alpha * (1.0 - beta) * i10
-        + (1.0 - alpha) * beta * i01
-        + alpha * beta * i11
-}
-
-#[inline]
-fn sample_clamp(data: &[f32], width: usize, height: usize, x: f32, y: f32) -> f32 {
-    let xf = x.max(0.0).min((width - 1) as f32);
-    let yf = y.max(0.0).min((height - 1) as f32);
-    bilinear_sample_from_slice(data, width, height, xf, yf)
-}
-
-#[inline]
-fn sample_mirror(data: &[f32], width: usize, height: usize, x: f32, y: f32) -> f32 {
-    let xf = mirror_coord(x, (width - 1) as f32);
-    let yf = mirror_coord(y, (height - 1) as f32);
-    bilinear_sample_from_slice(data, width, height, xf, yf)
+fn sample_at<A: ImageAllocator>(img: &Image<f32, 1, A>, x: f32, y: f32, mode: BorderMode) -> f32 {
+    let max_x = img.cols() as f32 - 1.0;
+    let max_y = img.rows() as f32 - 1.0;
+    let (xf, yf) = match mode {
+        BorderMode::Clamp => (x.clamp(0.0, max_x), y.clamp(0.0, max_y)),
+        BorderMode::Mirror => (mirror_coord(x, max_x), mirror_coord(y, max_y)),
+        BorderMode::Reject => (x, y),
+    };
+    interpolate_pixel(img, xf, yf, 0, InterpolationMode::Bilinear)
 }
 
 fn track_feature<A: ImageAllocator>(
@@ -188,21 +182,18 @@ fn track_feature<A: ImageAllocator>(
     initial_flow: Option<[f32; 2]>,
     precomputed: &PyrLKPrecomputed<A>,
     params: &PyrLKParams,
-) -> ([f32; 2], u8, f32) {
+) -> Option<([f32; 2], f32)> {
     const WIN_SIZE: usize = 21;
     const HALF_WIN: i32 = 10;
     const WIN_PIXELS: usize = WIN_SIZE * WIN_SIZE;
 
-    let mut dx = initial_flow.map_or(0.0, |d| d[0]);
-    let mut dy = initial_flow.map_or(0.0, |d| d[1]);
-    let mut valid = true;
+    let initial_scale = 1.0 / 2.0_f32.powi(params.max_level as i32);
+    let mut dx = initial_flow.map_or(0.0, |d| d[0] * initial_scale);
+    let mut dy = initial_flow.map_or(0.0, |d| d[1] * initial_scale);
     let mut tracking_error = 0.0f32;
-    if params.win_size != WIN_SIZE {
-        return (pt, 0, 0.0);
-    }
 
     for lvl in (0..=params.max_level).rev() {
-        let scale = 1.0 / (1 << lvl) as f32;
+        let scale = 1.0 / 2.0_f32.powi(lvl as i32);
         let xc = pt[0] * scale;
         let yc = pt[1] * scale;
 
@@ -215,19 +206,15 @@ fn track_feature<A: ImageAllocator>(
         let next = &precomputed.next_pyr[lvl];
         let ix = &precomputed.grad_x_pyr[lvl];
         let iy = &precomputed.grad_y_pyr[lvl];
-        let width = prev.cols();
-        let height = prev.rows();
-        let prev_data = prev.as_slice();
-        let next_data = next.as_slice();
-        let ix_data = ix.as_slice();
-        let iy_data = iy.as_slice();
 
         let hw = HALF_WIN as f32;
         if params.border_mode == BorderMode::Reject
-            && !(xc >= hw && yc >= hw && xc < (width as f32 - hw) && yc < (height as f32 - hw))
+            && !(xc >= hw
+                && yc >= hw
+                && xc < (prev.cols() as f32 - hw)
+                && yc < (prev.rows() as f32 - hw))
         {
-            valid = false;
-            break;
+            return None;
         }
 
         let mut prev_patch = [0.0f32; WIN_PIXELS];
@@ -237,77 +224,33 @@ fn track_feature<A: ImageAllocator>(
         let mut b = 0.0f32;
         let mut c = 0.0f32;
 
-        match params.border_mode {
-            BorderMode::Clamp => {
-                let mut idx = 0usize;
-                for wy in -HALF_WIN..=HALF_WIN {
-                    for wx in -HALF_WIN..=HALF_WIN {
-                        let px = xc + wx as f32;
-                        let py = yc + wy as f32;
-                        let i0 = sample_clamp(prev_data, width, height, px, py);
-                        let ixv = sample_clamp(ix_data, width, height, px, py);
-                        let iyv = sample_clamp(iy_data, width, height, px, py);
-                        prev_patch[idx] = i0;
-                        ix_patch[idx] = ixv;
-                        iy_patch[idx] = iyv;
-                        a += ixv * ixv;
-                        b += ixv * iyv;
-                        c += iyv * iyv;
-                        idx += 1;
-                    }
-                }
-            }
-            BorderMode::Mirror => {
-                let mut idx = 0usize;
-                for wy in -HALF_WIN..=HALF_WIN {
-                    for wx in -HALF_WIN..=HALF_WIN {
-                        let px = xc + wx as f32;
-                        let py = yc + wy as f32;
-                        let i0 = sample_mirror(prev_data, width, height, px, py);
-                        let ixv = sample_mirror(ix_data, width, height, px, py);
-                        let iyv = sample_mirror(iy_data, width, height, px, py);
-                        prev_patch[idx] = i0;
-                        ix_patch[idx] = ixv;
-                        iy_patch[idx] = iyv;
-                        a += ixv * ixv;
-                        b += ixv * iyv;
-                        c += iyv * iyv;
-                        idx += 1;
-                    }
-                }
-            }
-            BorderMode::Reject => {
-                let mut idx = 0usize;
-                for wy in -HALF_WIN..=HALF_WIN {
-                    for wx in -HALF_WIN..=HALF_WIN {
-                        let px = xc + wx as f32;
-                        let py = yc + wy as f32;
-                        let i0 = bilinear_sample_from_slice(prev_data, width, height, px, py);
-                        let ixv = bilinear_sample_from_slice(ix_data, width, height, px, py);
-                        let iyv = bilinear_sample_from_slice(iy_data, width, height, px, py);
-                        prev_patch[idx] = i0;
-                        ix_patch[idx] = ixv;
-                        iy_patch[idx] = iyv;
-                        a += ixv * ixv;
-                        b += ixv * iyv;
-                        c += iyv * iyv;
-                        idx += 1;
-                    }
-                }
+        let mut idx = 0usize;
+        for wy in -HALF_WIN..=HALF_WIN {
+            for wx in -HALF_WIN..=HALF_WIN {
+                let px = xc + wx as f32;
+                let py = yc + wy as f32;
+                let i0 = sample_at(prev, px, py, params.border_mode);
+                let ixv = sample_at(ix, px, py, params.border_mode);
+                let iyv = sample_at(iy, px, py, params.border_mode);
+                prev_patch[idx] = i0;
+                ix_patch[idx] = ixv;
+                iy_patch[idx] = iyv;
+                a += ixv * ixv;
+                b += ixv * iyv;
+                c += iyv * iyv;
+                idx += 1;
             }
         }
 
         let det = a * c - b * b;
         if det.abs() < 1e-7 {
-            valid = false;
-            break;
+            return None;
         }
         let trace = a + c;
         let delta = a - c;
         let lambda_min = (trace - ((delta * delta + 4.0 * b * b).sqrt())) * 0.5;
         if lambda_min < params.min_eigen_threshold {
-            valid = false;
-            break;
+            return None;
         }
         let inv_det = 1.0 / det;
 
@@ -318,57 +261,24 @@ fn track_feature<A: ImageAllocator>(
             if params.border_mode == BorderMode::Reject
                 && !(xnc >= hw
                     && ync >= hw
-                    && xnc < (width as f32 - hw)
-                    && ync < (height as f32 - hw))
+                    && xnc < (next.cols() as f32 - hw)
+                    && ync < (next.rows() as f32 - hw))
             {
-                valid = false;
-                break;
+                return None;
             }
 
             let mut d = 0.0f32;
             let mut e = 0.0f32;
-            match params.border_mode {
-                BorderMode::Clamp => {
-                    let mut idx = 0usize;
-                    for wy in -HALF_WIN..=HALF_WIN {
-                        for wx in -HALF_WIN..=HALF_WIN {
-                            let qx = xnc + wx as f32;
-                            let qy = ync + wy as f32;
-                            let i1 = sample_clamp(next_data, width, height, qx, qy);
-                            let it = i1 - prev_patch[idx];
-                            d -= ix_patch[idx] * it;
-                            e -= iy_patch[idx] * it;
-                            idx += 1;
-                        }
-                    }
-                }
-                BorderMode::Mirror => {
-                    let mut idx = 0usize;
-                    for wy in -HALF_WIN..=HALF_WIN {
-                        for wx in -HALF_WIN..=HALF_WIN {
-                            let qx = xnc + wx as f32;
-                            let qy = ync + wy as f32;
-                            let i1 = sample_mirror(next_data, width, height, qx, qy);
-                            let it = i1 - prev_patch[idx];
-                            d -= ix_patch[idx] * it;
-                            e -= iy_patch[idx] * it;
-                            idx += 1;
-                        }
-                    }
-                }
-                BorderMode::Reject => {
-                    let mut idx = 0usize;
-                    for wy in -HALF_WIN..=HALF_WIN {
-                        for wx in -HALF_WIN..=HALF_WIN {
-                            let qx = xnc + wx as f32;
-                            let qy = ync + wy as f32;
-                            let i1 = bilinear_sample_from_slice(next_data, width, height, qx, qy);
-                            let it = i1 - prev_patch[idx];
-                            d -= ix_patch[idx] * it;
-                            e -= iy_patch[idx] * it;
-                            idx += 1;
-                        }
-                    }
+            let mut idx = 0usize;
+            for wy in -HALF_WIN..=HALF_WIN {
+                for wx in -HALF_WIN..=HALF_WIN {
+                    let qx = xnc + wx as f32;
+                    let qy = ync + wy as f32;
+                    let i1 = sample_at(next, qx, qy, params.border_mode);
+                    let it = i1 - prev_patch[idx];
+                    d -= ix_patch[idx] * it;
+                    e -= iy_patch[idx] * it;
+                    idx += 1;
                 }
             }
 
@@ -384,10 +294,6 @@ fn track_feature<A: ImageAllocator>(
             }
         }
 
-        if !valid {
-            break;
-        }
-
         if lvl == 0 {
             let mut err_sum = 0.0f32;
             let mut idx = 0usize;
@@ -395,13 +301,7 @@ fn track_feature<A: ImageAllocator>(
                 for wx in -HALF_WIN..=HALF_WIN {
                     let qx = pt[0] + dx + wx as f32;
                     let qy = pt[1] + dy + wy as f32;
-                    let i1 = match params.border_mode {
-                        BorderMode::Clamp => sample_clamp(next_data, width, height, qx, qy),
-                        BorderMode::Mirror => sample_mirror(next_data, width, height, qx, qy),
-                        BorderMode::Reject => {
-                            bilinear_sample_from_slice(next_data, width, height, qx, qy)
-                        }
-                    };
+                    let i1 = sample_at(next, qx, qy, params.border_mode);
                     err_sum += (i1 - prev_patch[idx]).abs();
                     idx += 1;
                 }
@@ -410,11 +310,7 @@ fn track_feature<A: ImageAllocator>(
         }
     }
 
-    if valid {
-        ([pt[0] + dx, pt[1] + dy], 1, tracking_error)
-    } else {
-        (pt, 0, 0.0)
-    }
+    Some(([pt[0] + dx, pt[1] + dy], tracking_error))
 }
 
 /// Build Gaussian pyramids and gradients required by sparse LK.
@@ -423,6 +319,14 @@ pub fn build_lk_precomputed<A: ImageAllocator>(
     next_img: &Image<f32, 1, A>,
     max_level: usize,
 ) -> Result<PyrLKPrecomputed<A>, PyrLKError> {
+    if prev_img.size() != next_img.size() {
+        return Err(PyrLKError::ImageSizeMismatch {
+            prev_width: prev_img.width(),
+            prev_height: prev_img.height(),
+            next_width: next_img.width(),
+            next_height: next_img.height(),
+        });
+    }
     let mut prev_pyr = Vec::with_capacity(max_level + 1);
     let mut next_pyr = Vec::with_capacity(max_level + 1);
     prev_pyr.push(prev_img.clone());
@@ -454,7 +358,7 @@ pub fn build_lk_precomputed<A: ImageAllocator>(
     for img in prev_pyr.iter().take(max_level + 1) {
         let mut ix = Image::from_size_val(img.size(), 0.0f32, prev_img.storage.alloc().clone())?;
         let mut iy = Image::from_size_val(img.size(), 0.0f32, prev_img.storage.alloc().clone())?;
-        spatial_gradient_float_parallel_row(img, &mut ix, &mut iy)?;
+        scharr_spatial_gradient_float(img, &mut ix, &mut iy)?;
         grad_x_pyr.push(ix);
         grad_y_pyr.push(iy);
     }
@@ -485,7 +389,7 @@ pub fn calc_optical_flow_pyr_lk<A: ImageAllocator>(
     next_pts_in: Option<&[[f32; 2]]>,
     params: &PyrLKParams,
 ) -> Result<PyrLKResult, PyrLKError> {
-    if params.win_size == 0 || params.win_size % 2 == 0 {
+    if params.win_size != 21 {
         return Err(PyrLKError::InvalidWindowSize(params.win_size));
     }
     if prev_img.size() != next_img.size() {
@@ -517,6 +421,10 @@ pub fn calc_optical_flow_pyr_lk_with_precomputed<A: ImageAllocator>(
     next_pts_in: Option<&[[f32; 2]]>,
     params: &PyrLKParams,
 ) -> Result<PyrLKResult, PyrLKError> {
+    if params.win_size != 21 {
+        return Err(PyrLKError::InvalidWindowSize(params.win_size));
+    }
+
     let expected_levels = params.max_level + 1;
     if precomputed.prev_pyr.len() != expected_levels
         || precomputed.next_pyr.len() != expected_levels
@@ -530,6 +438,23 @@ pub fn calc_optical_flow_pyr_lk_with_precomputed<A: ImageAllocator>(
             grad_x_levels: precomputed.grad_x_pyr.len(),
             grad_y_levels: precomputed.grad_y_pyr.len(),
         });
+    }
+
+    for level in 0..expected_levels {
+        let prev_size = precomputed.prev_pyr[level].size();
+        let next_size = precomputed.next_pyr[level].size();
+        let grad_x_size = precomputed.grad_x_pyr[level].size();
+        let grad_y_size = precomputed.grad_y_pyr[level].size();
+
+        if next_size != prev_size || grad_x_size != prev_size || grad_y_size != prev_size {
+            return Err(PyrLKError::InvalidPrecomputedSizes {
+                level,
+                prev_size,
+                next_size,
+                grad_x_size,
+                grad_y_size,
+            });
+        }
     }
 
     if params.use_initial_flow
@@ -564,10 +489,15 @@ pub fn calc_optical_flow_pyr_lk_with_precomputed<A: ImageAllocator>(
             } else {
                 None
             };
-            let (np, s, e) = track_feature(prev_pts[i], initial_flow, precomputed, params);
-            *next_pt = np;
-            *st = s;
-            *err = e;
+            if let Some((np, e)) = track_feature(prev_pts[i], initial_flow, precomputed, params) {
+                *next_pt = np;
+                *st = 1;
+                *err = e;
+            } else {
+                *next_pt = prev_pts[i];
+                *st = 0;
+                *err = 0.0;
+            }
         });
 
     Ok(PyrLKResult {
@@ -773,6 +703,43 @@ mod tests {
             est_dy,
             dy
         );
+    }
+
+    #[test]
+    fn test_lk_invalid_window_size() {
+        let size = 64;
+        let img = make_circle_image(size, 32.0, 32.0, 10.0);
+        let pts = vec![[32.0, 32.0]];
+        let mut params = default_params();
+
+        // Unsupported window size
+        params.win_size = 15;
+        let result = calc_optical_flow_pyr_lk(&img, &img, &pts, None, &params);
+        assert!(matches!(result, Err(PyrLKError::InvalidWindowSize(15))));
+    }
+
+    #[test]
+    fn test_lk_invalid_precomputed_sizes() {
+        let size = 64;
+        let img1 = make_circle_image(size, 32.0, 32.0, 10.0);
+        let img2 = make_circle_image(size, 32.0, 32.0, 10.0);
+        let params = default_params();
+
+        let mut precomputed = build_lk_precomputed(&img1, &img2, params.max_level).unwrap();
+
+        // Corrupt the size of one of the levels
+        let bad_img = make_circle_image(size + 1, 32.0, 32.0, 10.0);
+        precomputed.next_pyr[1] = bad_img;
+
+        let pts = vec![[32.0, 32.0]];
+        let result = calc_optical_flow_pyr_lk_with_precomputed(&precomputed, &pts, None, &params);
+
+        match result {
+            Err(PyrLKError::InvalidPrecomputedSizes { level, .. }) => {
+                assert_eq!(level, 1, "Should fail at the corrupted level");
+            }
+            _ => panic!("Expected InvalidPrecomputedSizes error"),
+        }
     }
 
     #[test]

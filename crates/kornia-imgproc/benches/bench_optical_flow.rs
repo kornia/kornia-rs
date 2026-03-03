@@ -110,6 +110,24 @@ fn bench_optical_flow(c: &mut Criterion) {
         );
     }
 
+    // 512x512 800 points case.
+    {
+        let size = 512usize;
+        let n_points = 800usize;
+        let (img1, img2, pts) = make_synthetic_pair(size, 5.0, -3.0, n_points);
+        let params = PyrLKParams::default();
+        group.throughput(Throughput::Elements(n_points as u64));
+        group.bench_with_input(
+            BenchmarkId::new("kornia_cpu/points", format!("{size}x{size}/{n_points}")),
+            &pts,
+            |b, pts| {
+                b.iter(|| {
+                    let _ = calc_optical_flow_pyr_lk(&img1, &img2, pts, None, &params).unwrap();
+                });
+            },
+        );
+    }
+
     // Scale over pyramid levels.
     for max_level in [0usize, 1, 2, 3] {
         let size = 256usize;

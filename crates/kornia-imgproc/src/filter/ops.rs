@@ -126,6 +126,39 @@ pub fn sobel<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     Ok(())
 }
 
+/// Computer scharr filter
+///
+/// # Arguments
+///
+/// * `src` - The source image with shape (H, W, C).
+/// * `dst` - The destination image with shape (H, W, C).
+/// * `kernel_size` - The size of the kernel (kernel_x, kernel_y).
+///
+/// PRECONDITION: `src` and `dst` must have the same shape.
+pub fn scharr<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, C, A1>,
+    dst: &mut Image<f32, C, A2>,
+    kernel_size: usize,
+) -> Result<(), ImageError> {
+    let (kernel_x, kernel_y) = kernels::scharr_kernel_1d(kernel_size);
+
+    let mut gx = Image::<f32, C, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+    separable_filter(src, &mut gx, &kernel_x, &kernel_y)?;
+
+    let mut gy = Image::<f32, C, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+    separable_filter(src, &mut gy, &kernel_y, &kernel_x)?;
+
+    dst.as_slice_mut()
+        .iter_mut()
+        .zip(gx.as_slice().iter())
+        .zip(gy.as_slice().iter())
+        .for_each(|((dst, &gx), &gy)| {
+            *dst = (gx * gx + gy * gy).sqrt();
+        });
+
+    Ok(())
+}
+
 /// Blur an image using a box blur filter multiple times to achieve a near gaussian blur
 ///
 /// # Arguments
@@ -168,8 +201,9 @@ pub fn box_blur_fast<const C: usize, A: ImageAllocator>(
 ///
 /// # Arguments
 ///
-/// * `src` - The source image with shape (H, W).
-/// * `dst` - The destination image with shape (H, W, 2).
+/// * `src` - The source image with shape (H, W, C).
+/// * `dx` - The destination image for x-derivative with shape (H, W, C).
+/// * `dy` - The destination image for y-derivative with shape (H, W, C).
 pub fn spatial_gradient_float<
     const C: usize,
     A1: ImageAllocator,
@@ -240,8 +274,9 @@ pub fn spatial_gradient_float<
 ///
 /// # Arguments
 ///
-/// * `src` - The source image with shape (H, W).
-/// * `dst` - The destination image with shape (H, W, 2).
+/// * `src` - The source image with shape (H, W, C).
+/// * `dx` - The destination image for x-derivative with shape (H, W, C).
+/// * `dy` - The destination image for y-derivative with shape (H, W, C).
 pub fn spatial_gradient_float_parallel_row<
     const C: usize,
     A1: ImageAllocator,
@@ -287,15 +322,36 @@ pub fn spatial_gradient_float_parallel_row<
                 .for_each(|(c, (dx_c, dy_c))| {
                     let mut sum_x = [0.0; C];
                     let mut sum_y = [0.0; C];
-                    for dy in 0..3 {
-                        for dx in 0..3 {
-                            let row = (r + dy).min(src.rows()).max(1) - 1;
-                            let col = (c + dx).min(src.cols()).max(1) - 1;
-                            for ch in 0..C {
-                                let src_pix_offset = (row * src.cols() + col) * C + ch;
-                                let val = unsafe { src_data.get_unchecked(src_pix_offset) };
-                                sum_x[ch] += val * sobel_x[dy][dx];
-                                sum_y[ch] += val * sobel_y[dy][dx];
+                    if src.rows() >= 2
+                        && src.cols() >= 2
+                        && r > 0
+                        && r < src.rows() - 1
+                        && c > 0
+                        && c < src.cols() - 1
+                    {
+                        for dy in 0..3 {
+                            let row = r + dy - 1;
+                            for dx in 0..3 {
+                                let col = c + dx - 1;
+                                for ch in 0..C {
+                                    let src_pix_offset = (row * src.cols() + col) * C + ch;
+                                    let val = unsafe { *src_data.get_unchecked(src_pix_offset) };
+                                    sum_x[ch] += val * sobel_x[dy][dx];
+                                    sum_y[ch] += val * sobel_y[dy][dx];
+                                }
+                            }
+                        }
+                    } else {
+                        for dy in 0..3 {
+                            for dx in 0..3 {
+                                let row = (r + dy).min(src.rows()).max(1) - 1;
+                                let col = (c + dx).min(src.cols()).max(1) - 1;
+                                for ch in 0..C {
+                                    let src_pix_offset = (row * src.cols() + col) * C + ch;
+                                    let val = unsafe { *src_data.get_unchecked(src_pix_offset) };
+                                    sum_x[ch] += val * sobel_x[dy][dx];
+                                    sum_y[ch] += val * sobel_y[dy][dx];
+                                }
                             }
                         }
                     }
@@ -312,8 +368,9 @@ pub fn spatial_gradient_float_parallel_row<
 ///
 /// # Arguments
 ///
-/// * `src` - The source image with shape (H, W).
-/// * `dst` - The destination image with shape (H, W, 2).
+/// * `src` - The source image with shape (H, W, C).
+/// * `dx` - The destination image for x-derivative with shape (H, W, C).
+/// * `dy` - The destination image for y-derivative with shape (H, W, C).
 pub fn spatial_gradient_float_parallel<
     const C: usize,
     A1: ImageAllocator,
@@ -368,6 +425,99 @@ pub fn spatial_gradient_float_parallel<
                                 let val = unsafe { src_data.get_unchecked(src_pix_offset) };
                                 sum_x[ch] += val * sobel_x[dy][dx];
                                 sum_y[ch] += val * sobel_y[dy][dx];
+                            }
+                        }
+                    }
+                    dx_c.copy_from_slice(&sum_x);
+                    dy_c.copy_from_slice(&sum_y);
+                });
+        });
+
+    Ok(())
+}
+
+/// Compute the first order image derivative in both x and y using a Scharr operator.
+///
+/// # Arguments
+///
+/// * `src` - The source image with shape (H, W, C).
+/// * `dx` - The destination image for x-derivative with shape (H, W, C).
+/// * `dy` - The destination image for y-derivative with shape (H, W, C).
+pub fn scharr_spatial_gradient_float<
+    const C: usize,
+    A1: ImageAllocator,
+    A2: ImageAllocator,
+    A3: ImageAllocator,
+>(
+    src: &Image<f32, C, A1>,
+    dx: &mut Image<f32, C, A2>,
+    dy: &mut Image<f32, C, A3>,
+) -> Result<(), ImageError> {
+    if src.size() != dx.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dx.cols(),
+            dx.rows(),
+        ));
+    }
+
+    if src.size() != dy.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dy.cols(),
+            dy.rows(),
+        ));
+    }
+
+    let (scharr_x, scharr_y) = kernels::normalized_scharr_kernel3();
+    let cols = src.cols();
+
+    let src_data = src.as_slice();
+
+    dx.as_slice_mut()
+        .par_chunks_mut(cols * C)
+        .zip(dy.as_slice_mut().par_chunks_mut(cols * C))
+        .enumerate()
+        .for_each(|(r, (dx_row, dy_row))| {
+            dx_row
+                .chunks_mut(C)
+                .zip(dy_row.chunks_mut(C))
+                .enumerate()
+                .for_each(|(c, (dx_c, dy_c))| {
+                    let mut sum_x = [0.0; C];
+                    let mut sum_y = [0.0; C];
+                    if src.rows() >= 2
+                        && src.cols() >= 2
+                        && r > 0
+                        && r < src.rows() - 1
+                        && c > 0
+                        && c < src.cols() - 1
+                    {
+                        for dy in 0..3 {
+                            let row = r + dy - 1;
+                            for dx in 0..3 {
+                                let col = c + dx - 1;
+                                for ch in 0..C {
+                                    let src_pix_offset = (row * src.cols() + col) * C + ch;
+                                    let val = unsafe { *src_data.get_unchecked(src_pix_offset) };
+                                    sum_x[ch] += val * scharr_x[dy][dx];
+                                    sum_y[ch] += val * scharr_y[dy][dx];
+                                }
+                            }
+                        }
+                    } else {
+                        for dy in 0..3 {
+                            for dx in 0..3 {
+                                let row = (r + dy).min(src.rows()).max(1) - 1;
+                                let col = (c + dx).min(src.cols()).max(1) - 1;
+                                for ch in 0..C {
+                                    let src_pix_offset = (row * src.cols() + col) * C + ch;
+                                    let val = unsafe { *src_data.get_unchecked(src_pix_offset) };
+                                    sum_x[ch] += val * scharr_x[dy][dx];
+                                    sum_y[ch] += val * scharr_y[dy][dx];
+                                }
                             }
                         }
                     }
@@ -582,6 +732,30 @@ mod tests {
                 "{fn_name} dy channel(1)",
             );
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_scharr_spatial_gradient() -> Result<(), ImageError> {
+        let size = ImageSize {
+            width: 5,
+            height: 5,
+        };
+
+        let img = Image::<f32, 2, _>::new(
+            size,
+            (0..25).flat_map(|x| [x as f32, x as f32 + 25.0]).collect(),
+            CpuAllocator,
+        )?;
+
+        let mut dx = Image::<_, 2, _>::from_size_val(size, 0.0, CpuAllocator)?;
+        let mut dy = Image::<_, 2, _>::from_size_val(size, 0.0, CpuAllocator)?;
+
+        scharr_spatial_gradient_float(&img, &mut dx, &mut dy)?;
+
+        assert_eq!(dx.channel(0)?.as_slice()[12], 1.0000); // 1.0 change per x-pixel
+        assert_eq!(dy.channel(0)?.as_slice()[12], 5.0000); // 5.0 change per y-pixel (width=5)
 
         Ok(())
     }
