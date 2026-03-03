@@ -39,6 +39,7 @@ gstreamer = "*"
 gst-plugins-base = "*"
 gst-plugins-good = "*"
 nasm = "*"
+cargo-hack = "*"
 
 [feature.rust.activation]
 scripts = ["scripts/activate-rust.sh"]
