@@ -33,7 +33,9 @@ pub enum BorderMode {
 /// Parameters for LK optical flow
 #[derive(Debug, Clone)]
 pub struct PyrLKParams {
-    /// LK integration window size in pixels (OpenCV default: 21).
+    /// LK integration window size in pixels.
+    ///
+    /// Currently, only a window size of exactly `21` is supported.
     pub win_size: usize,
     /// Maximum pyramid level (0 means single-scale tracking).
     pub max_level: usize,
@@ -93,8 +95,8 @@ pub struct PyrLKPrecomputed<A: ImageAllocator> {
 /// Error type for sparse pyramidal Lucas–Kanade optical flow.
 #[derive(Debug, Error)]
 pub enum PyrLKError {
-    /// The window size must be a positive odd number.
-    #[error("invalid LK window size: {0}. It must be a positive odd number")]
+    /// The window size is unsupported.
+    #[error("invalid LK window size: {0}. Currently, only window size 21 is supported")]
     InvalidWindowSize(usize),
     /// Input image sizes must match.
     #[error(
@@ -134,6 +136,20 @@ pub enum PyrLKError {
         grad_x_levels: usize,
         /// Y-gradient pyramid levels.
         grad_y_levels: usize,
+    },
+    /// Precomputed pyramids have mismatched image dimensions at a specific level.
+    #[error("precomputed pyramid size mismatch at level {level}: prev={prev_size:?}, next={next_size:?}, grad_x={grad_x_size:?}, grad_y={grad_y_size:?}")]
+    InvalidPrecomputedSizes {
+        /// The pyramid level index where the mismatch occurred.
+        level: usize,
+        /// Size of the previous image at this level.
+        prev_size: ImageSize,
+        /// Size of the next image at this level.
+        next_size: ImageSize,
+        /// Size of the X-gradient image at this level.
+        grad_x_size: ImageSize,
+        /// Size of the Y-gradient image at this level.
+        grad_y_size: ImageSize,
     },
 }
 
@@ -424,19 +440,19 @@ pub fn calc_optical_flow_pyr_lk_with_precomputed<A: ImageAllocator>(
         });
     }
 
-    // Validate that per-level image sizes match across the precomputed pyramids.
     for level in 0..expected_levels {
         let prev_size = precomputed.prev_pyr[level].size();
-        if precomputed.next_pyr[level].size() != prev_size
-            || precomputed.grad_x_pyr[level].size() != prev_size
-            || precomputed.grad_y_pyr[level].size() != prev_size
-        {
-            return Err(PyrLKError::InvalidPrecomputedLevels {
-                expected_levels,
-                prev_levels: precomputed.prev_pyr.len(),
-                next_levels: precomputed.next_pyr.len(),
-                grad_x_levels: precomputed.grad_x_pyr.len(),
-                grad_y_levels: precomputed.grad_y_pyr.len(),
+        let next_size = precomputed.next_pyr[level].size();
+        let grad_x_size = precomputed.grad_x_pyr[level].size();
+        let grad_y_size = precomputed.grad_y_pyr[level].size();
+
+        if next_size != prev_size || grad_x_size != prev_size || grad_y_size != prev_size {
+            return Err(PyrLKError::InvalidPrecomputedSizes {
+                level,
+                prev_size,
+                next_size,
+                grad_x_size,
+                grad_y_size,
             });
         }
     }
@@ -687,6 +703,43 @@ mod tests {
             est_dy,
             dy
         );
+    }
+
+    #[test]
+    fn test_lk_invalid_window_size() {
+        let size = 64;
+        let img = make_circle_image(size, 32.0, 32.0, 10.0);
+        let pts = vec![[32.0, 32.0]];
+        let mut params = default_params();
+
+        // Unsupported window size
+        params.win_size = 15;
+        let result = calc_optical_flow_pyr_lk(&img, &img, &pts, None, &params);
+        assert!(matches!(result, Err(PyrLKError::InvalidWindowSize(15))));
+    }
+
+    #[test]
+    fn test_lk_invalid_precomputed_sizes() {
+        let size = 64;
+        let img1 = make_circle_image(size, 32.0, 32.0, 10.0);
+        let img2 = make_circle_image(size, 32.0, 32.0, 10.0);
+        let params = default_params();
+
+        let mut precomputed = build_lk_precomputed(&img1, &img2, params.max_level).unwrap();
+
+        // Corrupt the size of one of the levels
+        let bad_img = make_circle_image(size + 1, 32.0, 32.0, 10.0);
+        precomputed.next_pyr[1] = bad_img;
+
+        let pts = vec![[32.0, 32.0]];
+        let result = calc_optical_flow_pyr_lk_with_precomputed(&precomputed, &pts, None, &params);
+
+        match result {
+            Err(PyrLKError::InvalidPrecomputedSizes { level, .. }) => {
+                assert_eq!(level, 1, "Should fail at the corrupted level");
+            }
+            _ => panic!("Expected InvalidPrecomputedSizes error"),
+        }
     }
 
     #[test]

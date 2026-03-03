@@ -431,17 +431,15 @@ pub fn build_pyramid<const C: usize>(
     let mut pyramid = Vec::with_capacity(max_level + 1);
     pyramid.push(src.clone());
 
-    let mut current_img = src.clone();
-
-    for _ in 0..max_level {
+    for l in 0..max_level {
+        let current_img = &pyramid[l];
         let new_size = ImageSize {
             width: current_img.cols().div_ceil(2),
             height: current_img.rows().div_ceil(2),
         };
         let mut downsampled = Image::from_size_val(new_size, 0.0, kornia_tensor::CpuAllocator)?;
-        pyrdown_f32(&current_img, &mut downsampled)?;
-        pyramid.push(downsampled.clone());
-        current_img = downsampled;
+        pyrdown_f32(current_img, &mut downsampled)?;
+        pyramid.push(downsampled);
     }
 
     Ok(pyramid)
@@ -839,6 +837,41 @@ where
 mod tests {
     use super::*;
     use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+
+    #[test]
+    fn test_build_pyramid_levels_and_sizes_odd_dimensions() {
+        // Create a 7x5 image (height x width) so that div_ceil(2) behavior is exercised.
+        let size = ImageSize {
+            width: 5,
+            height: 7,
+        };
+        let src: Image<f32, 1, CpuAllocator> =
+            Image::from_size_val(size, 1.0_f32, CpuAllocator).unwrap();
+
+        let max_level = 3;
+        let pyramid = build_pyramid::<1>(&src, max_level).unwrap();
+
+        // Check the number of levels: original + max_level downsamples.
+        assert_eq!(pyramid.len(), max_level + 1);
+
+        // Expected sizes after repeatedly applying div_ceil(2).
+        let expected_sizes = [
+            (7_usize, 5_usize), // level 0
+            (4_usize, 3_usize), // level 1
+            (2_usize, 2_usize), // level 2
+            (1_usize, 1_usize), // level 3
+        ];
+
+        for (level, (expected_rows, expected_cols)) in expected_sizes.iter().enumerate() {
+            let img = &pyramid[level];
+            assert_eq!(
+                (img.rows(), img.cols()),
+                (*expected_rows, *expected_cols),
+                "Mismatch at pyramid level {}",
+                level
+            );
+        }
+    }
 
     #[test]
     fn test_pyrup() -> Result<(), ImageError> {

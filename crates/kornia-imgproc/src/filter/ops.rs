@@ -201,8 +201,9 @@ pub fn box_blur_fast<const C: usize, A: ImageAllocator>(
 ///
 /// # Arguments
 ///
-/// * `src` - The source image with shape (H, W).
-/// * `dst` - The destination image with shape (H, W, 2).
+/// * `src` - The source image with shape (H, W, C).
+/// * `dx` - The destination image for x-derivative with shape (H, W, C).
+/// * `dy` - The destination image for y-derivative with shape (H, W, C).
 pub fn spatial_gradient_float<
     const C: usize,
     A1: ImageAllocator,
@@ -273,8 +274,9 @@ pub fn spatial_gradient_float<
 ///
 /// # Arguments
 ///
-/// * `src` - The source image with shape (H, W).
-/// * `dst` - The destination image with shape (H, W, 2).
+/// * `src` - The source image with shape (H, W, C).
+/// * `dx` - The destination image for x-derivative with shape (H, W, C).
+/// * `dy` - The destination image for y-derivative with shape (H, W, C).
 pub fn spatial_gradient_float_parallel_row<
     const C: usize,
     A1: ImageAllocator,
@@ -320,7 +322,13 @@ pub fn spatial_gradient_float_parallel_row<
                 .for_each(|(c, (dx_c, dy_c))| {
                     let mut sum_x = [0.0; C];
                     let mut sum_y = [0.0; C];
-                    if r > 0 && r < src.rows() - 1 && c > 0 && c < src.cols() - 1 {
+                    if src.rows() >= 2
+                        && src.cols() >= 2
+                        && r > 0
+                        && r < src.rows() - 1
+                        && c > 0
+                        && c < src.cols() - 1
+                    {
                         for dy in 0..3 {
                             let row = r + dy - 1;
                             for dx in 0..3 {
@@ -360,8 +368,9 @@ pub fn spatial_gradient_float_parallel_row<
 ///
 /// # Arguments
 ///
-/// * `src` - The source image with shape (H, W).
-/// * `dst` - The destination image with shape (H, W, 2).
+/// * `src` - The source image with shape (H, W, C).
+/// * `dx` - The destination image for x-derivative with shape (H, W, C).
+/// * `dy` - The destination image for y-derivative with shape (H, W, C).
 pub fn spatial_gradient_float_parallel<
     const C: usize,
     A1: ImageAllocator,
@@ -431,8 +440,9 @@ pub fn spatial_gradient_float_parallel<
 ///
 /// # Arguments
 ///
-/// * `src` - The source image with shape (H, W).
-/// * `dst` - The destination image with shape (H, W, 2).
+/// * `src` - The source image with shape (H, W, C).
+/// * `dx` - The destination image for x-derivative with shape (H, W, C).
+/// * `dy` - The destination image for y-derivative with shape (H, W, C).
 pub fn scharr_spatial_gradient_float<
     const C: usize,
     A1: ImageAllocator,
@@ -478,7 +488,13 @@ pub fn scharr_spatial_gradient_float<
                 .for_each(|(c, (dx_c, dy_c))| {
                     let mut sum_x = [0.0; C];
                     let mut sum_y = [0.0; C];
-                    if r > 0 && r < src.rows() - 1 && c > 0 && c < src.cols() - 1 {
+                    if src.rows() >= 2
+                        && src.cols() >= 2
+                        && r > 0
+                        && r < src.rows() - 1
+                        && c > 0
+                        && c < src.cols() - 1
+                    {
                         for dy in 0..3 {
                             let row = r + dy - 1;
                             for dx in 0..3 {

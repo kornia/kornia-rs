@@ -65,7 +65,7 @@ pub fn sobel_kernel_1d(kernel_size: usize) -> (Vec<f32>, Vec<f32>) {
 /// # Arguments
 /// * `kernel_size` - The size of the kernel.
 /// # Returns
-/// A vector of the kernel.
+/// A tuple of two vectors: (dx_kernel, dy_kernel).
 pub fn scharr_kernel_1d(kernel_size: usize) -> (Vec<f32>, Vec<f32>) {
     let (kernel_x, kernel_y) = match kernel_size {
         3 => (vec![-1.0, 0.0, 1.0], vec![3.0, 10.0, 3.0]),
@@ -74,7 +74,7 @@ pub fn scharr_kernel_1d(kernel_size: usize) -> (Vec<f32>, Vec<f32>) {
     (kernel_x, kernel_y)
 }
 
-/// Create a normalized 2d scharr kernel (3×3).
+/// Create a normalized 2d sobel kernel (3×3).
 ///
 /// # Returns
 ///
@@ -95,10 +95,8 @@ pub fn normalized_sobel_kernel3() -> ([[f32; 3]; 3], [[f32; 3]; 3]) {
 }
 
 /// Create a normalized 2d scharr kernel.
-/// # Arguments
-/// * `kernel_size` - The size of the kernel.
 /// # Returns
-/// A tuple of two array of the kernel. (dx_kernel, dy_kernel)
+/// A tuple of two 3x3 arrays: (dx_kernel, dy_kernel).
 pub fn normalized_scharr_kernel3() -> ([[f32; 3]; 3], [[f32; 3]; 3]) {
     (
         [
