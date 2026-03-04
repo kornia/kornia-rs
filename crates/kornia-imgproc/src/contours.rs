@@ -103,38 +103,78 @@ const ALL_ONES_I16: u64 = {
     ])
 };
 
+/// All heap buffers used by find_contours_impl, grouped to avoid a
+/// `too_many_arguments` clippy warning and to make the allocation boundary explicit.
+/// When held inside [FindContoursExecutor] the buffers are reused across calls
+/// via clear(), retaining capacity so the OS allocator is not touched after the
+/// first warm-up frame. When created inside the convenience find_contours
+/// function they are allocated and freed on every call.
+struct WorkBuffers {
+    img: Vec<i16>,
+    arena: Vec<[i32; 2]>,
+    ranges: Vec<Range<usize>>,
+    hierarchy: Vec<HierarchyEntry>,
+    border_types: Vec<BorderType>,
+}
+
+impl WorkBuffers {
+    fn new() -> Self {
+        Self {
+            img: Vec::new(),
+            arena: Vec::new(),
+            ranges: Vec::new(),
+            hierarchy: Vec::new(),
+            border_types: Vec::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        // img is NOT cleared here: find_contours_impl zero-fills exactly the
+        // padded_n elements it needs after growing the vec to that size.
+        // Clearing the full vec here would waste time re-zeroing any excess
+        // capacity beyond padded_n.
+        self.arena.clear();
+        self.ranges.clear();
+        self.hierarchy.clear();
+        self.border_types.clear();
+    }
+}
+
 /// Reusable executor for running find_contours on successive frames.
 ///
-/// The working image buffer (img) and the contour-point arena (arena) are
-/// reused across calls, avoiding repeated heap allocation for those two
-/// typically large buffers after the first warm-up frame, Per-call
-/// bookkeeping (ranges, hierarchy, border_types) and the final output
-/// contour vectors are still freshly allocated on each call
+/// All working buffers (img, arena, ranges, hierarchy, border_types)
+/// are reused across calls, retaining their capacity so the OS allocator is not
+/// touched after the first warm-up frame. The four bookkeeping buffers (arena,
+/// ranges, hierarchy, border_types) are reset via clear() before each
+/// call. img is not cleared but instead zero-filled in-place after being grown
+/// to the required size. The only unavoidable per-call allocation is the
+/// ContoursResult output itself, since ownership of the contour vectors
+/// transfers to the caller.
 ///
 /// For multi-stream workloads, use one executor per rayon thread.
 pub struct FindContoursExecutor {
-    img: Vec<i16>,
-    arena: Vec<[i32; 2]>,
+    buffers: WorkBuffers,
 }
 
 impl FindContoursExecutor {
     /// Create a new executor with empty internal buffers.
     pub fn new() -> Self {
         Self {
-            img: Vec::new(),
-            arena: Vec::new(),
+            buffers: WorkBuffers::new(),
         }
     }
 
-    /// Equivalent to find_contours but avoids repeated heap allocation
+    /// Equivalent to find_contours but reuses all internal scratch buffers
+    /// across calls. After the first warm-up frame the OS allocator is only
+    /// touched to allocate the returned ContoursResult.
     pub fn find_contours<A: ImageAllocator>(
         &mut self,
         src: &Image<u8, 1, A>,
         mode: RetrievalMode,
         method: ContourApproximationMode,
     ) -> Result<ContoursResult, ContoursError> {
-        self.arena.clear();
-        find_contours_impl(src, mode, method, &mut self.img, &mut self.arena)
+        self.buffers.clear();
+        find_contours_impl(src, mode, method, &mut self.buffers)
     }
 }
 
@@ -157,32 +197,30 @@ pub fn find_contours<A: ImageAllocator>(
     mode: RetrievalMode,
     method: ContourApproximationMode,
 ) -> Result<ContoursResult, ContoursError> {
-    let mut img = Vec::new();
-    let mut arena = Vec::new();
-    find_contours_impl(src, mode, method, &mut img, &mut arena)
+    let mut buffers = WorkBuffers::new();
+    find_contours_impl(src, mode, method, &mut buffers)
 }
 
 /// Parameters
-///  src    - Single-channel binary image, any non-zero pixel is treated as foreground
-///  mode   - Controls which contours are returned and whether hierarchy is built
-///  method - Controls how contour points are stored (None keeps every pixel,
-///           Simple compresses collinear runs to their endpoints)
-///  img    - Caller-supplied scratch buffer reused across calls. Grown as needed and
-///           zero-filled at the start of each call, Holds the padded, labelled working
-///           copy of the image (i16 per pixel, 0 = background, 1 = unlabelled
-///           foreground, +-nbd = labelled border pixel)
-///  arena  - Caller-supplied flat point store reused across calls. All contour points
-///           are appended here; ranges records each contour's slice into this vec
+///  src     - Single-channel binary image, any non-zero pixel is treated as foreground
+///  mode    - Controls which contours are returned and whether hierarchy is built
+///  method  - Controls how contour points are stored (None keeps every pixel,
+///            Simple compresses collinear runs to their endpoints)
+///  buffers - Caller-supplied scratch buffers. img is grown as needed and
+///            zero-filled at the start of each call. arena, ranges,
+///            hierarchy, and border_types must be cleared by the caller
+///            before this function is called; this function only appends to them.
+///            All five retain their capacity between calls when the caller is
+///            FindContoursExecutor
 ///
 /// Returns
 /// A ContoursResult containing the detected contours and their hierarchy, filtered
-// according to mode
+/// according to mode
 fn find_contours_impl<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     mode: RetrievalMode,
     method: ContourApproximationMode,
-    img: &mut Vec<i16>,
-    arena: &mut Vec<[i32; 2]>,
+    buffers: &mut WorkBuffers,
 ) -> Result<ContoursResult, ContoursError> {
     let height = src.height();
     let width = src.width();
@@ -191,10 +229,10 @@ fn find_contours_impl<A: ImageAllocator>(
     let padded_n = padded_h * padded_w;
 
     // Grow or reuse the working image buffer
-    if img.len() < padded_n {
-        img.resize(padded_n, 0);
+    if buffers.img.len() < padded_n {
+        buffers.img.resize(padded_n, 0);
     }
-    let img_slice = &mut img[..padded_n];
+    let img_slice = &mut buffers.img[..padded_n];
     img_slice.fill(0i16);
 
     // Binarise: parallel for >= PARALLEL_THRESHOLD, sequential below
@@ -229,13 +267,9 @@ fn find_contours_impl<A: ImageAllocator>(
     }
     let toff = TracerOffsets { o8, o16 };
 
-    let mut ranges: Vec<Range<usize>> = Vec::new();
-    let mut hierarchy: Vec<HierarchyEntry> = Vec::new();
-    let mut border_types: Vec<BorderType> = Vec::new();
-
     let mut nbd: i16 = 1;
-    hierarchy.push([-1, -1, -1, -1]);
-    border_types.push(BorderType::Outer); // frame sentinel
+    buffers.hierarchy.push([-1, -1, -1, -1]);
+    buffers.border_types.push(BorderType::Outer); // frame sentinel
 
     let img_ptr = img_slice.as_mut_ptr();
 
@@ -296,7 +330,12 @@ fn find_contours_impl<A: ImageAllocator>(
                 } else {
                     BorderType::Hole
                 };
-                let parent = determine_parent(lnbd as i32, border_type, &hierarchy, &border_types);
+                let parent = determine_parent(
+                    lnbd as i32,
+                    border_type,
+                    &buffers.hierarchy,
+                    &buffers.border_types,
+                );
                 let start_dir: usize = if is_outer { 0 } else { 4 };
                 let ts = TracerStart {
                     idx,
@@ -306,12 +345,12 @@ fn find_contours_impl<A: ImageAllocator>(
                     nbd,
                     method,
                 };
-                let range = trace_border(img_ptr, ts, &toff, arena);
+                let range = trace_border(img_ptr, ts, &toff, &mut buffers.arena);
 
-                let hier_entry = update_hierarchy(&mut hierarchy, nbd as usize, parent);
-                hierarchy.push(hier_entry);
-                border_types.push(border_type);
-                ranges.push(range);
+                let hier_entry = update_hierarchy(&mut buffers.hierarchy, nbd as usize, parent);
+                buffers.hierarchy.push(hier_entry);
+                buffers.border_types.push(border_type);
+                buffers.ranges.push(range);
                 // Suzuki-Abe: lnbd must track the most recently encountered
                 // border, whether it was just traced or previously labelled
                 lnbd = nbd;
@@ -348,9 +387,18 @@ fn find_contours_impl<A: ImageAllocator>(
     }
 
     // Materialise contours from the flat arena (rayon overhead outweighs benefit here)
-    let raw_contours: Vec<Contour> = ranges.iter().map(|r| arena[r.clone()].to_vec()).collect();
+    let raw_contours: Vec<Contour> = buffers
+        .ranges
+        .iter()
+        .map(|r| buffers.arena[r.clone()].to_vec())
+        .collect();
 
-    Ok(filter_by_mode(raw_contours, hierarchy, border_types, mode))
+    Ok(filter_by_mode(
+        raw_contours,
+        &buffers.hierarchy,
+        &buffers.border_types,
+        mode,
+    ))
 }
 
 // Parameters
@@ -510,11 +558,11 @@ fn trace_border(
 
 // Parameters
 // - lnbd         - Label of the most recently encountered border on the current scan
-//                  line (1 = frame sentinel, >=2 = a previously traced border).
-// - border_type  - Whether the new border is an outer border or a hole.
-// - hierarchy    - Hierarchy entries built so far; indexed via [nbd_to_idx].
+//                  line (1 = frame sentinel, >=2 = a previously traced border)
+// - border_type  - Whether the new border is an outer border or a hole
+// - hierarchy    - Hierarchy entries built so far; indexed via [nbd_to_idx]
 // - border_types - Border type of each previously traced border, parallel to
-//                  hierarchy with the frame sentinel at index 0.
+//                  hierarchy with the frame sentinel at index 0
 //
 // Returns
 // The nbd label of the parent border, or -1 if the new border has no parent
@@ -551,15 +599,15 @@ fn determine_parent(
 
 // Parameters
 // - hierarchy - Hierarchy entries built so far, mutated in-place to wire the new
-//               border into the tree. Each entry is [next, prev, first_child, parent].
+//               border into the tree. Each entry is [next, prev, first_child, parent]
 // - nbd       - The label of the newly traced border (1-based); used as the index
-//               into hierarchy via [nbd_to_idx].
+//               into hierarchy via [nbd_to_idx]
 // - parent    - The nbd label of the parent border as returned by
-//               [determine_parent], or -1 for a top-level border.
+//               [determine_parent], or -1 for a top-level border
 //
 // Returns
 // The [HierarchyEntry] for the new border with next, prev, and parent already
-// filled in. first_child is left as -1 since no children exist yet at insertion time.
+// filled in. first_child is left as -1 since no children exist yet at insertion time
 #[inline(always)]
 fn update_hierarchy(hierarchy: &mut [HierarchyEntry], nbd: usize, parent: i32) -> HierarchyEntry {
     let mut entry = [-1i32, -1, -1, parent];
@@ -576,10 +624,10 @@ fn update_hierarchy(hierarchy: &mut [HierarchyEntry], nbd: usize, parent: i32) -
                 hierarchy[pidx][2] = nbd as i32;
             } else {
                 let mut sib = hierarchy[pidx][2] as usize;
-                // Walk to the last sibling, Termination is guaranteed because
+                // Walk to the last sibling. Termination is guaranteed because
                 // nbd is strictly monotonically increasing: every next pointer
                 // (hierarchy[x][0]) points to a border traced *after* x, so it
-                // always has a strictly larger index, Cycles are impossible
+                // always has a strictly larger index. Cycles are impossible.
                 while hierarchy[sib - 1][0] != -1 {
                     sib = hierarchy[sib - 1][0] as usize;
                 }
@@ -592,23 +640,25 @@ fn update_hierarchy(hierarchy: &mut [HierarchyEntry], nbd: usize, parent: i32) -
 }
 
 // Parameters
-// - contours     – Raw contours in tracing order, one per detected border.
-// - hierarchy    – Full hierarchy including the frame sentinel at index 0.
-// - border_types – Border type (Outer/Hole) for each entry in hierarchy,
-//                    parallel to it with the sentinel at index 0.
-// - mode         – Controls which contours are kept and how hierarchy links are set.
-//                    External returns only top-level outer contours with no hierarchy,
-//                    List returns all contours with hierarchy discarded,
-//                    CComp returns all contours with a two-level hierarchy,
-//                    Tree returns all contours with the full hierarchy.
+// - contours     - Raw contours in tracing order, one per detected border
+// - hierarchy    - Full hierarchy including the frame sentinel at index 0;
+//                  passed as a slice so the caller retains ownership for reuse
+// - border_types - Border type (Outer/Hole) for each entry in hierarchy,
+//                  parallel to it with the sentinel at index 0;
+//                  passed as a slice so the caller retains ownership for reuse
+// - mode         - Controls which contours are kept and how hierarchy links are set:
+//                  External returns only top-level outer contours with no hierarchy,
+//                  List returns all contours with hierarchy discarded,
+//                  CComp returns all contours with a two-level hierarchy,
+//                  Tree returns all contours with the full hierarchy
 //
 // Returns
 // A [ContoursResult] with contours and hierarchy entries matching the requested mode.
-// Hierarchy entries for discarded links are set to [-1, -1, -1, -1].
+// Hierarchy entries for discarded links are set to [-1, -1, -1, -1]
 fn filter_by_mode(
     contours: Vec<Contour>,
-    hierarchy: Vec<HierarchyEntry>,
-    border_types: Vec<BorderType>,
+    hierarchy: &[HierarchyEntry],
+    border_types: &[BorderType],
     mode: RetrievalMode,
 ) -> ContoursResult {
     match mode {
