@@ -184,7 +184,6 @@ Err(KorniaError::SizeMismatch {
 - Prefer iterators over index-based loops for cache-friendly access
 - Do not clone images or tensors unnecessarily — pass references
 - Benchmark before and after any change to a core algorithm using `cargo bench`
-- SIMD or platform-specific optimisations must be gated behind a feature flag and have a scalar fallback
 
 ---
 
