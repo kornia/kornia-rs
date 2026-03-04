@@ -99,10 +99,7 @@ struct TracerStart {
 const ALL_ONES_I16: u64 = {
     let one = 1i16.to_ne_bytes();
     u64::from_ne_bytes([
-        one[0], one[1],
-        one[0], one[1],
-        one[0], one[1],
-        one[0], one[1],
+        one[0], one[1], one[0], one[1], one[0], one[1], one[0], one[1],
     ])
 };
 
@@ -745,8 +742,7 @@ mod tests {
             ContourApproximationMode::Simple,
         )?;
         assert_eq!(ext.contours.len(), 1);
-        let list =
-            find_contours(&img, RetrievalMode::List, ContourApproximationMode::Simple)?;
+        let list = find_contours(&img, RetrievalMode::List, ContourApproximationMode::Simple)?;
         assert_eq!(list.contours.len(), 2);
         Ok(())
     }
@@ -762,8 +758,7 @@ mod tests {
                 1, 0, 0, 0, 0, 0, 0, 0,
             ],
         );
-        let r =
-            find_contours(&img, RetrievalMode::CComp, ContourApproximationMode::Simple)?;
+        let r = find_contours(&img, RetrievalMode::CComp, ContourApproximationMode::Simple)?;
         assert_eq!(r.contours.len(), 2, "CComp should return both contours");
         assert!(
             r.hierarchy.iter().any(|h| h[3] >= 0),
@@ -789,12 +784,9 @@ mod tests {
             RetrievalMode::External,
             ContourApproximationMode::Simple,
         )?;
-        let list =
-            find_contours(&img, RetrievalMode::List, ContourApproximationMode::Simple)?;
-        let ccomp =
-            find_contours(&img, RetrievalMode::CComp, ContourApproximationMode::Simple)?;
-        let tree =
-            find_contours(&img, RetrievalMode::Tree, ContourApproximationMode::Simple)?;
+        let list = find_contours(&img, RetrievalMode::List, ContourApproximationMode::Simple)?;
+        let ccomp = find_contours(&img, RetrievalMode::CComp, ContourApproximationMode::Simple)?;
+        let tree = find_contours(&img, RetrievalMode::Tree, ContourApproximationMode::Simple)?;
 
         assert_eq!(ext.contours.len(), 1, "External: outermost only");
         assert_eq!(list.contours.len(), 3, "List: all 3");
@@ -885,11 +877,21 @@ mod tests {
         let img_b = make_img(
             5,
             5,
-            vec![0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+            vec![
+                0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0,
+            ],
         ); // 3×3 square
         let mut exec = FindContoursExecutor::new();
-        let ra = exec.find_contours(&img_a, RetrievalMode::External, ContourApproximationMode::None)?;
-        let rb = exec.find_contours(&img_b, RetrievalMode::External, ContourApproximationMode::None)?;
+        let ra = exec.find_contours(
+            &img_a,
+            RetrievalMode::External,
+            ContourApproximationMode::None,
+        )?;
+        let rb = exec.find_contours(
+            &img_b,
+            RetrievalMode::External,
+            ContourApproximationMode::None,
+        )?;
         assert_eq!(ra.contours.len(), 1);
         assert_eq!(ra.contours[0], vec![[1, 1]], "first call: single pixel");
         assert_eq!(rb.contours.len(), 1);
@@ -911,15 +913,21 @@ mod tests {
             5,
             4,
             vec![
-                0, 0, 0, 0, 0,
-                0, 1, 0, 0, 0,
-                0, 1, 0, 0, 0,
-                0, 1, 1, 1, 0,
+                0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1,
+                0,
                 // no 5th row, height is 4
             ],
         );
-        let none = find_contours(&img, RetrievalMode::External, ContourApproximationMode::None)?;
-        let simp = find_contours(&img, RetrievalMode::External, ContourApproximationMode::Simple)?;
+        let none = find_contours(
+            &img,
+            RetrievalMode::External,
+            ContourApproximationMode::None,
+        )?;
+        let simp = find_contours(
+            &img,
+            RetrievalMode::External,
+            ContourApproximationMode::Simple,
+        )?;
         // Simple must produce fewer points than None on a shape with straight runs
         assert!(
             simp.contours[0].len() < none.contours[0].len(),

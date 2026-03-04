@@ -215,8 +215,8 @@ fn bench_real_data(c: &mut Criterion) {
     let mut group = c.benchmark_group("contours_real_data");
 
     for img_name in ["dog.jpeg", "apriltags_tag36h11.jpg"].iter() {
-        let img_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../tests/data/{img_name}"));
+        let img_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../tests/data/{img_name}"));
         let img_rgb8 = kornia_io::functional::read_image_any_rgb8(&img_path)
             .unwrap_or_else(|_| panic!("Failed to load {img_name}"));
 
@@ -226,7 +226,7 @@ fn bench_real_data(c: &mut Criterion) {
 
         let mut img_gray8 = Image::from_size_val(new_size, 0u8, CpuAllocator).unwrap();
         kornia_imgproc::color::gray_from_rgb_u8(&img_rgb8, &mut img_gray8).unwrap();
-        
+
         let mut img_bin8 = Image::from_size_val(new_size, 0u8, CpuAllocator).unwrap();
         kornia_imgproc::threshold::threshold_binary(&img_gray8, &mut img_bin8, 127, 255).unwrap();
 
