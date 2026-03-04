@@ -1,124 +1,235 @@
+# AGENTS.md
+
+Guidance for AI AGENTS and human contributors working in this repository.
+
 ## Project Overview
-`kornia-rs` is a low-level computer vision library written in Rust. It serves as a backend for image I/O, visualization, and operations, designed to be thread-safe and efficient. It provides bindings for Python (`kornia-py`) and C++ (`kornia-cpp`).
 
-**Key Technologies:**
-*   **Rust:** Core implementation (workspace with multiple crates).
-*   **Python:** Bindings via `PyO3` and `maturin`.
-*   **C++:** Bindings via `CMake`.
-*   **Pixi:** Development environment and task management.
+**kornia-rs** is a low-level 3D computer vision library written in Rust, with Python bindings (PyO3/Maturin) and C++ bindings. Part of the [Kornia](https://github.com/kornia/kornia) ecosystem.
 
-## Project Structure
-*   `crates/`: Contains the core Rust crates (`kornia-image`, `kornia-io`, `kornia-tensor`, etc.).
-*   `examples/`: Standalone Rust examples demonstrating various capabilities.
-*   `kornia-py/`: Python bindings and tests.
-*   `kornia-cpp/`: C++ bindings and tests.
-*   `pixi.toml`: Defines the development environment and tasks.
-*   `Cargo.toml`: Rust workspace configuration.
+---
 
-## Crates Overview
+## Build & Development Commands
 
-The functionality is distributed across multiple crates in the `crates/` directory:
+The project uses [pixi](https://pixi.sh) for environment management.
 
-*   **`kornia`**: The main umbrella crate that re-exports functionality from sub-crates. Use this for general usage.
-*   **`kornia-image`**: Defines core image types (`Image`, `ImageSize`) and traits for image manipulation.
-*   **`kornia-io`**: Handles Image and Video I/O. Supports `turbojpeg`, `gstreamer`, and `v4l` (Video4Linux) via feature flags.
-*   **`kornia-tensor`**: A lightweight tensor library designed for computer vision tasks.
-*   **`kornia-tensor-ops`**: Provides operations and kernels for `kornia-tensor`.
-*   **`kornia-imgproc`**: Image processing algorithms (color conversion, resizing, warping, filtering, edge detection, etc.).
-*   **`kornia-3d`**: 3D computer vision algorithms and point cloud processing.
-*   **`kornia-algebra`**: Algebraic types and utilities, interfacing with `nalgebra` and `glam`.
-*   **`kornia-apriltag`**: Implementation of AprilTag marker detection and decoding.
-*   **`kornia-bow`**: High-performance Hierarchical Bag of Words implementation.
-*   **`kornia-vlm`**: Integration with Vision Language Models (VLM) using `candle`.
+### Rust
 
-## Core Architecture & Concepts
-
-### Image vs. Tensor
-*   **`Tensor<T, N, A>` (`kornia-tensor`)**: The foundational data structure. It represents an N-dimensional array with owned storage, shape, and strides. It is generic over:
-    *   `T`: Element type (e.g., `u8`, `f32`).
-    *   `N`: Number of dimensions (const generic).
-    *   `A`: Allocator (e.g., `CpuAllocator`).
-    *   **Layout:** Defaults to row-major (C-contiguous).
-*   **`Image<T, C, A>` (`kornia-image`)**: A wrapper around `Tensor<T, 3, A>`. It strictly enforces a 3D structure: `(Height, Width, Channels)`.
-    *   **`ImageSize`**: Helper struct for `width` and `height`.
-    *   **`ImageLayout`**: Metadata including size, channels, and pixel format.
-    *   **Data Access:** Provides convenience methods like `get_pixel(x, y, ch)` but underlying data is accessible via `.as_slice()` or the inner tensor.
-
-### Memory Management
-*   **Allocators**: The library uses an `Allocator` trait. `CpuAllocator` is the standard default.
-*   **Ownership**: `Tensor` and `Image` own their data.
-*   **Views**: `TensorView` provides a non-owning window into tensor data, useful for reshaping or permuting without copying.
-
-### Image Processing (`kornia-imgproc`)
-*   Algorithms are organized by domain (e.g., `color`, `resize`, `features`).
-*   **API Style**: Functions typically take input and mutable output buffers (destination passing style) to minimize allocations.
-    *   Example: `imgproc::resize::resize_native(&src, &mut dst, ...)`
-
-
-## Testing & Benchmarking
-
-### Testing
-*   **Unit Tests:** Located within `src/` files inside `#[cfg(test)]` modules. These focus on individual function logic.
-*   **Integration Tests:** Located in the `tests/` directory at the root or within crates. These test higher-level workflows and API interactions.
-*   **Commands:**
-    *   Run all tests: `pixi run rust-test`
-    *   Run tests for a package: `pixi run rust-test-package <package_name>`
-    *   Run Python tests: `pixi run py-test`
-    *   Run C++ tests: `pixi run cpp-test`
-
-### Benchmarking
-*   The project uses `criterion` for benchmarking performance.
-*   **Location:** Benchmark files are found in `benches/` directories within each crate (e.g., `crates/kornia-imgproc/benches/`).
-*   **Implementation:** Benchmarks compare `kornia-rs` performance against other libraries (like `image` crate or `ndarray`) and different implementation strategies (e.g., sequential vs. parallel).
-*   **Commands:**
-    *   Run all benchmarks: `cargo bench`
-    *   Run benchmarks for a specific crate: `cargo bench -p <package_name>`
-    *   Run a specific benchmark: `cargo bench --bench <bench_name>`
-
-## Building and Development
-
-### Environment Setup
-The project uses `pixi` for environment management.
 ```bash
-pixi install           # Install default dependencies
-pixi install -e dev    # Install dev tools
-pixi install -e cuda   # Install CUDA dependencies (Linux only)
+pixi run rust-test                    # Run all Rust tests (with CI features)
+pixi run rust-test-package <package>  # Test a specific crate
+pixi run rust-lint                    # Format + clippy + check (run before PRs)
+pixi run rust-clippy                  # Clippy with -D warnings, all targets, CI features
+pixi run rust-fmt                     # Format with rustfmt
+pixi run rust-check                   # Check compilation
+
+# Without pixi (direct cargo)
+cargo test --features ci
+cargo test -p kornia-imgproc
+cargo clippy --workspace --no-deps --all-targets --features ci -- -D warnings
 ```
 
-### Rust (Core)
-*   **Test:** `pixi run rust-test` (or `cargo test --features ci`)
-*   **Lint:** `pixi run rust-clippy` (or `cargo clippy --workspace --no-deps --all-targets --features ci -- -D warnings`)
-*   **Format:** `pixi run rust-fmt`
-*   **Build Examples:** `pixi run rust-build-examples`
-
 ### Python Bindings
-*   **Build (Dev):** `pixi run py-build` (runs `maturin develop` in `kornia-py`)
-*   **Test:** `pixi run py-test` (runs `pytest`)
+
+```bash
+pixi run py-build   # Build kornia-py (dev mode via maturin)
+pixi run py-test    # Run pytest (auto-builds first)
+```
 
 ### C++ Bindings
-*   **Build:** `pixi run cpp-build`
-*   **Test:** `pixi run cpp-test`
 
-## Development Conventions
+```bash
+pixi run cpp-test   # Build and run C++ tests
+```
 
-### Coding Standards
-*   **Rust Edition:** 2021.
-*   **Formatting:** Enforced via `rustfmt`. Run `pixi run rust-fmt` before committing.
-*   **Linting:** Enforced via `clippy`. No warnings allowed. Run `pixi run rust-clippy`.
-*   **Error Handling:** Use `Result<T, E>` with descriptive errors. Avoid `unwrap()`/`expect()` in library code.
-*   **Testing:**
-    *   Unit tests in `#[cfg(test)]` modules within the same file.
-    *   Integration tests in `tests/` directories.
-    *   **Verification:** PRs *must* include proof of local test execution (logs).
+---
 
-### AI Policy (Strict)
-*   **Authorship:** Contributors must be the sole responsible author. AI-generated code where the submitter acts merely as a proxy is **rejected**.
-*   **Verification:** You must understand and be able to explain every line of code.
-*   **Redundancy:** Use existing utilities; do not reinvent the wheel.
-*   **See `AI_POLICY.md` for full details.**
+## Architecture
 
-### Workflow
-1.  **Issue:** Every PR must be linked to an approved and assigned GitHub issue.
-2.  **Branches:** Create feature branches (e.g., `feat/foo`, `fix/bar`) from `main`.
-3.  **Commits:** Use clear, conventional commit messages.
-4.  **PRs:** Keep them small and focused.
+### Workspace Structure
+
+```
+Cargo.toml          ← workspace root
+crates/*            ← core library crates (default members)
+examples/*          ← standalone example binaries
+kornia-py/          ← Python bindings (PyO3/Maturin)
+kornia-cpp/         ← C++ bindings
+```
+
+### Core Crates
+
+| Crate | Re-exported as | Purpose |
+|---|---|---|
+| `kornia-tensor` | `kornia::tensor` | N-dimensional tensor type |
+| `kornia-tensor-ops` | `kornia::tensor_ops` | Tensor operations |
+| `kornia-image` | `kornia::image` | Image type built on tensors (`Image<T, C, _>`) |
+| `kornia-imgproc` | `kornia::imgproc` | Image processing (resize, color, filters) |
+| `kornia-io` | `kornia::io` | Image/video I/O (turbojpeg, gstreamer, v4l) |
+| `kornia-3d` | `kornia::k3d` | 3D vision (ICP, point clouds) |
+| `kornia-algebra` | `kornia::linalg` | Linear algebra |
+| `kornia-vlm` | (direct) | Visual language model integration (candle) |
+| `kornia-apriltag` | (standalone) | AprilTag detection |
+| `kornia-bow` | (standalone) | Bag of words |
+
+### Feature Flags
+
+| Flag | Description | Notes |
+|---|---|---|
+| `turbojpeg` | libjpeg-turbo I/O | Requires `nasm` |
+| `gstreamer` | GStreamer video | — |
+| `v4l` | Video4Linux camera | Requires `clang` |
+| `cuda` | CUDA for VLM | — |
+| `ci` | All CI-compatible features | Excludes `cuda` |
+| `serde`, `bincode`, `arrow` | Serialization formats | — |
+
+### Key Patterns
+
+- **Image type**: `Image<T, C, Alloc>` — `T` is pixel type (`u8`, `f32`), `C` is channel count (`1`, `3`)
+- **Operations**: Many `imgproc` functions take `&source` and `&mut destination` (pre-allocated output)
+- **I/O**: `kornia::io::functional` provides top-level read/write functions
+
+---
+
+## Code Conventions
+
+### General
+
+- Rust edition **2021**, MSRV **1.82**
+- Run `rustfmt` and `clippy` before every commit — **warnings are denied**
+- Prefer **borrowing over cloning**, especially for images and tensors
+- No `unwrap()` or `expect()` in library code — always propagate errors with `?`
+- Tests live in `#[cfg(test)]` modules; run per-crate with `cargo test -p <crate>`
+- Use [Conventional Commits](https://www.conventionalcommits.org): `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`
+
+### Documentation
+
+Every public item **must** have a doc comment. Follow this structure:
+
+```rust
+/// One-line summary of what this does.
+///
+/// Longer explanation if needed — describe the algorithm, coordinate system,
+/// units, or any non-obvious behavior. Keep it factual, not conversational.
+///
+/// # Arguments
+///
+/// * `src` - Input image. Must be RGB with `u8` pixels.
+/// * `dst` - Pre-allocated output image. Must match `src` dimensions.
+///
+/// # Returns
+///
+/// `Ok(())` on success, or a [`KorniaError`] if dimensions mismatch.
+///
+/// # Errors
+///
+/// Returns [`KorniaError::InvalidChannels`] if `src` does not have 3 channels.
+/// Returns [`KorniaError::SizeMismatch`] if `src` and `dst` dimensions differ.
+///
+/// # Example
+///
+/// ```rust
+/// use kornia::image::Image;
+/// use kornia::imgproc;
+///
+/// let src = Image::<u8, 3>::new(...)?;
+/// let mut dst = Image::<u8, 1>::new(...)?;
+/// imgproc::color::rgb_to_grayscale(&src, &mut dst)?;
+/// ```
+pub fn rgb_to_grayscale(src: &Image<u8, 3>, dst: &mut Image<u8, 1>) -> Result<(), KorniaError> {
+    // ...
+}
+```
+
+**Rules:**
+- Document all `pub` functions, structs, enums, and traits — no exceptions
+- `# Arguments`, `# Returns`, and `# Errors` sections are **required** on all public functions
+- Include at least one `# Example` for non-trivial public APIs
+- Keep examples compilable (they run as doctests)
+
+### Safety
+
+- Avoid `unsafe` unless strictly necessary
+- Every `unsafe` block **must** be preceded by a `// SAFETY:` comment explaining exactly why it is sound:
+
+```rust
+// SAFETY: `ptr` is non-null and aligned, and `len` bytes have been
+// initialised by the preceding call to `init_buffer`. No other references
+// to this memory exist at this point.
+let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+```
+
+- Never cast away `const` or use `transmute` without an explicit soundness proof in the comment
+- Prefer safe abstractions (e.g., `bytemuck`, `zerocopy`) over raw pointer arithmetic where possible
+
+### Error Handling
+
+- Use `thiserror` for all library error types — no `anyhow` in library crates
+- Never use `.unwrap()`, `.expect()`, or `panic!()` in library code
+- In test code, `.unwrap()` is acceptable but prefer `?` with `#[test] -> Result<(), Box<dyn Error>>`
+- Error variants should be descriptive and carry context:
+
+```rust
+// Bad
+Err(KorniaError::Generic("failed".into()))
+
+// Good
+Err(KorniaError::SizeMismatch {
+    expected: src.size(),
+    got: dst.size(),
+})
+```
+
+### Performance
+
+- Avoid allocations in hot paths — use pre-allocated `&mut` output buffers (established pattern)
+- Prefer iterators over index-based loops for cache-friendly access
+- Do not clone images or tensors unnecessarily — pass references
+- Benchmark before and after any change to a core algorithm using `cargo bench`
+- SIMD or platform-specific optimisations must be gated behind a feature flag and have a scalar fallback
+
+---
+
+## Contributing
+
+### Pull Requests
+
+1. **Keep PRs focused** — one concern per PR. Multiple features → multiple PRs.
+2. **Test locally first** — all of the following must pass before opening a PR:
+
+   ```bash
+   pixi run rust-lint   # formatting + clippy
+   pixi run rust-test   # full test suite
+   pixi run py-test     # Python binding tests (if py code changed)
+   pixi run cpp-test    # C++ binding tests (if C++ code changed)
+   ```
+
+3. **Update documentation** — any new or changed public API must have updated doc comments. New features need an entry in the relevant crate's `README.md` or module-level doc.
+
+4. **Write tests** — new functionality requires unit tests. Bug fixes require a regression test that would have caught the bug.
+
+5. **PR description** — include:
+   - What changed and why
+   - Any breaking changes
+   - Benchmarks or profiling data for performance-sensitive changes
+   - What use case does this pr address which you use yourself
+
+### Contributing to Documentation
+
+- Doc comments live alongside the code — edit the `.rs` source file directly
+- Verify doctests compile and pass: `cargo test --doc -p <crate>`
+- For larger documentation (guides, architecture docs), add or update Markdown files under `docs/`
+
+### Commit Style
+
+Follow [Conventional Commits](https://www.conventionalcommits.org)
+
+---
+
+## Quick Reference Checklist (before every PR)
+
+- [ ] `pixi run rust-lint` passes with zero warnings
+- [ ] `pixi run rust-test` passes
+- [ ] All new/changed `pub` items have complete doc comments (args, errors, panics, example)
+- [ ] Every `unsafe` block has a `// SAFETY:` comment
+- [ ] No `unwrap()`/`expect()` added to library code
+- [ ] New functionality has unit tests; bug fixes have regression tests
+- [ ] Commit messages follow Conventional Commits
