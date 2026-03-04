@@ -21,7 +21,7 @@ pub enum RetrievalMode {
 /// Controls how contour points are stored after tracing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContourApproximationMode {
-    /// Store every border pixel — no compression.
+    /// Store every border pixel, no compression.
     None,
     /// Store only the endpoints of horizontal, vertical, and diagonal segments,
     /// compressing straight runs into two points.
@@ -60,6 +60,19 @@ const DIR_LUT: [usize; 9] = [1, 2, 3, 0, 0, 4, 7, 6, 5];
 const DIR_DR: [i32; 8] = [0, -1, -1, -1, 0, 1, 1, 1];
 const DIR_DC: [i32; 8] = [-1, -1, 0, 1, 1, 1, 0, -1];
 
+/// Minimum image area in pixels above which binarisation is parallelised via Rayon
+/// Below this threshold the thread-dispatch overhead outweighs the benefit
+const PARALLEL_THRESHOLD: usize = 512 * 512;
+
+/// Convert an NBD label (starting at 1 for the frame sentinel, 2 for the first
+/// real border) to the corresponding index in hierarchy / border_types
+/// The frame sentinel lives at index 0; the first real border at index 1
+#[inline(always)]
+fn nbd_to_idx(nbd: i32) -> usize {
+    debug_assert!(nbd >= 1, "nbd must be >= 1, got {nbd}");
+    (nbd - 1) as usize
+}
+
 /// Neighbour offsets pre-computed from the padded-image stride.
 /// Kept in a single struct so trace_border stays within clippy's
 /// `too_many_arguments` limit (7)
@@ -80,16 +93,28 @@ struct TracerStart {
     method: ContourApproximationMode,
 }
 
-// Four i16 values equal to 1 packed into a u64
-// NOTE: assumes little-endian byte order
-const ALL_ONES_I16: u64 = 0x0001_0001_0001_0001;
+// Four i16 values equal to 1 packed into a u64, computed from native byte order
+// This is endian-agnostic: on little-endian 1i16 = [0x01, 0x00],
+// on big-endian 1i16 = [0x00, 0x01], so the packed u64 differs by target
+const ALL_ONES_I16: u64 = {
+    let one = 1i16.to_ne_bytes();
+    u64::from_ne_bytes([
+        one[0], one[1],
+        one[0], one[1],
+        one[0], one[1],
+        one[0], one[1],
+    ])
+};
 
-/// Reusable executor for running find_contours on successive frames
-/// reused across calls, avoiding repeated heap allocation for those buffers
-/// after the first warm-up frame, per-call bookkeeping (ranges, hierarchy,
-/// border_types) and the output contour vectors are still freshly allocated
-/// on each call
-/// For multi-stream workloads, use one executor per rayon thread
+/// Reusable executor for running find_contours on successive frames.
+///
+/// The working image buffer and the contour-point arena are
+/// reused across calls, the OS allocator is not touched after the first
+/// warm-up frame for those two buffers.  Per-call bookkeeping (ranges,
+/// hierarchy, border_types) and the output contour vectors are still
+/// freshly allocated on each call.
+///
+/// For multi-stream workloads, use one executor per rayon thread.
 pub struct FindContoursExecutor {
     img: Vec<i16>,
     arena: Vec<[i32; 2]>,
@@ -160,10 +185,10 @@ fn find_contours_impl<A: ImageAllocator>(
     let img_slice = &mut img[..padded_n];
     img_slice.fill(0i16);
 
-    // Binarise: parallel for ≥ 512×512 (amortises rayon overhead), sequential below
+    // Binarise: parallel for >= PARALLEL_THRESHOLD, sequential below
     let src_data = src.as_slice();
     let interior = &mut img_slice[padded_w..padded_w + height * padded_w];
-    if width * height >= 512 * 512 {
+    if width * height >= PARALLEL_THRESHOLD {
         interior
             .par_chunks_mut(padded_w)
             .enumerate()
@@ -275,6 +300,9 @@ fn find_contours_impl<A: ImageAllocator>(
                 hierarchy.push(hier_entry);
                 border_types.push(border_type);
                 ranges.push(range);
+                // Suzuki-Abe: lnbd must track the most recently encountered
+                // border, whether it was just traced or previously labelled
+                lnbd = nbd;
             } else if pixel == 1 {
                 // All-1 SWAR skip: interior pixels (both neighbours nonzero) can
                 // never be a contour start.  Guard the last chunk element against
@@ -361,6 +389,9 @@ fn trace_border(
     let mut dir_out_final = dir_in;
 
     loop {
+        // SAFETY: i2 is always an interior pixel (never on the padding border),
+        // so i2_idx >= 1 and i2_idx + 1 < padded_n, debug_assert catches regressions
+        debug_assert!(i2_idx > 0, "i2_idx underflow: tracer reached left padding");
         let cur = unsafe { *img.add(i2_idx) };
         let left_nb = unsafe { *img.add(i2_idx - 1) };
         let right_nb = unsafe { *img.add(i2_idx + 1) };
@@ -381,10 +412,16 @@ fn trace_border(
 
         for k in 0..8usize {
             let s = scan_start + k;
-            // SAFETY: s & 7 is always in 0..8, so offsets.get_unchecked(s & 7)
-            // is always in bounds, Using get_unchecked avoids a redundant bounds
-            // check that the compiler cannot eliminate inside the hot inner loop
-            let nb = unsafe { (i2_idx as isize + *toff.o8.get_unchecked(s & 7)) as usize };
+            // s & 7 is provably in 0..8 and o8 has exactly 8 elements
+            // LLVM eliminates the bounds check via the mask in release builds
+            let nb = (i2_idx as isize + toff.o8[s & 7]) as usize;
+            // nb wrapping to a huge usize means the offset pushed us outside
+            // the padded buffer, padding invariant violated
+            debug_assert!(
+                (nb as isize) >= 0 && nb < usize::MAX / 2,
+                "nb wrapped: i2_idx={i2_idx} offset={}",
+                toff.o8[s & 7]
+            );
             if unsafe { *img.add(nb) } != 0 {
                 i3_idx = nb;
                 i3_row = i2_row + DIR_DR[s & 7];
@@ -452,7 +489,7 @@ fn determine_parent(
     hierarchy: &[HierarchyEntry],
     border_types: &[BorderType],
 ) -> i32 {
-    let lnbd_idx = (lnbd - 1) as usize;
+    let lnbd_idx = nbd_to_idx(lnbd);
     // lnbd is always set from a pixel value we previously wrote (nbd >= 2),
     // so lnbd_idx is always valid
     debug_assert!(
@@ -480,7 +517,7 @@ fn determine_parent(
 fn update_hierarchy(hierarchy: &mut [HierarchyEntry], nbd: usize, parent: i32) -> HierarchyEntry {
     let mut entry = [-1i32, -1, -1, parent];
     if parent >= 0 {
-        let pidx = (parent - 1) as usize;
+        let pidx = nbd_to_idx(parent);
         // parent is always a previously-traced nbd, so pidx < hierarchy.len()
         debug_assert!(
             pidx < hierarchy.len(),
@@ -517,11 +554,21 @@ fn filter_by_mode(
         RetrievalMode::External => {
             let mut fc = Vec::new();
             let mut fh = Vec::new();
-            for (i, h) in hierarchy.iter().enumerate().skip(1) {
-                if matches!(border_types[i], BorderType::Outer) && h[3] <= 0 {
-                    fc.push(contours[i - 1].clone());
-                    fh.push([-1i32, -1, -1, -1]);
-                }
+            // consume contours by index to avoid cloning; collect qualifying
+            // indices first, then drain in reverse so indices stay valid.
+            let indices: Vec<usize> = hierarchy
+                .iter()
+                .enumerate()
+                .skip(1)
+                .filter(|(i, h)| matches!(border_types[*i], BorderType::Outer) && h[3] <= 0)
+                .map(|(i, _)| i - 1)
+                .collect();
+            // contours is indexed as contours[nbd-2] = contours[hierarchy_i - 1]
+            // We need them in original order in the output, so collect then move
+            let mut contours = contours;
+            for idx in &indices {
+                fc.push(std::mem::take(&mut contours[*idx]));
+                fh.push([-1i32, -1, -1, -1]);
             }
             ContoursResult {
                 contours: fc,
@@ -543,7 +590,7 @@ fn filter_by_mode(
                 let parent = fh[i][3];
                 let is_outer_inside_hole = parent > 0
                     && matches!(border_types[i + 1], BorderType::Outer)
-                    && matches!(border_types[(parent - 1) as usize], BorderType::Hole);
+                    && matches!(border_types[nbd_to_idx(parent)], BorderType::Hole);
                 if is_outer_inside_hole {
                     fh[i][3] = -1; // re-root: outer-inside-hole -> top level
                 }
@@ -575,7 +622,7 @@ mod tests {
 
     /// 3×3 filled square: 8 border pixels, None approx keeps all
     #[test]
-    fn test_simple_square_no_approx() {
+    fn test_simple_square_no_approx() -> Result<(), ContoursError> {
         let img = make_img(
             5,
             5,
@@ -587,15 +634,15 @@ mod tests {
             &img,
             RetrievalMode::External,
             ContourApproximationMode::None,
-        )
-        .unwrap();
+        )?;
         assert_eq!(r.contours.len(), 1);
         assert_eq!(r.contours[0].len(), 8);
+        Ok(())
     }
 
     /// Simple approx collapses the same square to its 4 corners
     #[test]
-    fn test_simple_square_simple_approx() {
+    fn test_simple_square_simple_approx() -> Result<(), ContoursError> {
         let img = make_img(
             5,
             5,
@@ -607,15 +654,15 @@ mod tests {
             &img,
             RetrievalMode::External,
             ContourApproximationMode::Simple,
-        )
-        .unwrap();
+        )?;
         assert_eq!(r.contours.len(), 1);
         assert_eq!(r.contours[0].len(), 4);
+        Ok(())
     }
 
     /// The 4 corners of a 3×3 square must be the pixels at (1,1),(3,1),(3,3),(1,3)
     #[test]
-    fn test_simple_square_corner_coordinates() {
+    fn test_simple_square_corner_coordinates() -> Result<(), ContoursError> {
         let img = make_img(
             5,
             5,
@@ -627,8 +674,7 @@ mod tests {
             &img,
             RetrievalMode::External,
             ContourApproximationMode::Simple,
-        )
-        .unwrap();
+        )?;
         let pts = &r.contours[0];
         // All points should be on the boundary of the 3×3 block (cols 1-3, rows 1-3)
         for &[x, y] in pts {
@@ -640,25 +686,26 @@ mod tests {
         // Must include top-left corner (1,1) and bottom-right (3,3)
         assert!(pts.contains(&[1, 1]), "missing top-left corner");
         assert!(pts.contains(&[3, 3]), "missing bottom-right corner");
+        Ok(())
     }
 
     /// Isolated single pixel -> 1-point contour at the exact pixel coordinate
     #[test]
-    fn test_isolated_pixel_coordinates() {
+    fn test_isolated_pixel_coordinates() -> Result<(), ContoursError> {
         let img = make_img(3, 3, vec![0, 0, 0, 0, 1, 0, 0, 0, 0]);
         let r = find_contours(
             &img,
             RetrievalMode::External,
             ContourApproximationMode::None,
-        )
-        .unwrap();
+        )?;
         assert_eq!(r.contours.len(), 1);
         assert_eq!(r.contours[0], vec![[1, 1]]);
+        Ok(())
     }
 
     /// Simple approx on a horizontal strip produces fewer points than None
     #[test]
-    fn test_simple_approx_fewer_points_than_none() {
+    fn test_simple_approx_fewer_points_than_none() -> Result<(), ContoursError> {
         let img = make_img(
             9,
             3,
@@ -670,21 +717,20 @@ mod tests {
             &img,
             RetrievalMode::External,
             ContourApproximationMode::None,
-        )
-        .unwrap();
+        )?;
         let simp = find_contours(
             &img,
             RetrievalMode::External,
             ContourApproximationMode::Simple,
-        )
-        .unwrap();
+        )?;
         assert!(none.contours[0].len() > simp.contours[0].len());
         assert!(simp.contours[0].len() >= 2);
+        Ok(())
     }
 
     /// Hollow square: External sees only the outer ring; List sees outer + hole
     #[test]
-    fn test_hollow_square_external_vs_list() {
+    fn test_hollow_square_external_vs_list() -> Result<(), ContoursError> {
         let img = make_img(
             6,
             6,
@@ -697,17 +743,17 @@ mod tests {
             &img,
             RetrievalMode::External,
             ContourApproximationMode::Simple,
-        )
-        .unwrap();
+        )?;
         assert_eq!(ext.contours.len(), 1);
         let list =
-            find_contours(&img, RetrievalMode::List, ContourApproximationMode::Simple).unwrap();
+            find_contours(&img, RetrievalMode::List, ContourApproximationMode::Simple)?;
         assert_eq!(list.contours.len(), 2);
+        Ok(())
     }
 
     /// Hollow square with CComp: hole contour must have a valid parent index
     #[test]
-    fn test_hollow_square_ccomp_hierarchy() {
+    fn test_hollow_square_ccomp_hierarchy() -> Result<(), ContoursError> {
         let img = make_img(
             6,
             6,
@@ -717,17 +763,18 @@ mod tests {
             ],
         );
         let r =
-            find_contours(&img, RetrievalMode::CComp, ContourApproximationMode::Simple).unwrap();
+            find_contours(&img, RetrievalMode::CComp, ContourApproximationMode::Simple)?;
         assert_eq!(r.contours.len(), 2, "CComp should return both contours");
         assert!(
             r.hierarchy.iter().any(|h| h[3] >= 0),
             "hole must have a parent"
         );
+        Ok(())
     }
 
     /// Outer ring + hole + inner square: verifies all four retrieval modes simultaneously
     #[test]
-    fn test_all_retrieval_modes_nested_image() {
+    fn test_all_retrieval_modes_nested_image() -> Result<(), ContoursError> {
         let img = make_img(
             8,
             8,
@@ -741,14 +788,13 @@ mod tests {
             &img,
             RetrievalMode::External,
             ContourApproximationMode::Simple,
-        )
-        .unwrap();
+        )?;
         let list =
-            find_contours(&img, RetrievalMode::List, ContourApproximationMode::Simple).unwrap();
+            find_contours(&img, RetrievalMode::List, ContourApproximationMode::Simple)?;
         let ccomp =
-            find_contours(&img, RetrievalMode::CComp, ContourApproximationMode::Simple).unwrap();
+            find_contours(&img, RetrievalMode::CComp, ContourApproximationMode::Simple)?;
         let tree =
-            find_contours(&img, RetrievalMode::Tree, ContourApproximationMode::Simple).unwrap();
+            find_contours(&img, RetrievalMode::Tree, ContourApproximationMode::Simple)?;
 
         assert_eq!(ext.contours.len(), 1, "External: outermost only");
         assert_eq!(list.contours.len(), 3, "List: all 3");
@@ -761,31 +807,33 @@ mod tests {
         assert_eq!(ccomp.hierarchy.len(), 3);
         assert_eq!(tree.hierarchy.len(), 3);
         assert!(ccomp.hierarchy.iter().any(|h| h[3] >= 0));
+        Ok(())
     }
 
     // Edge cases
 
     /// All-zero image -> no contours and empty hierarchy
     #[test]
-    fn test_all_zeros_no_contours() {
+    fn test_all_zeros_no_contours() -> Result<(), ContoursError> {
         let img = make_img(10, 10, vec![0u8; 100]);
-        let r = find_contours(&img, RetrievalMode::List, ContourApproximationMode::None).unwrap();
+        let r = find_contours(&img, RetrievalMode::List, ContourApproximationMode::None)?;
         assert!(r.contours.is_empty());
         assert!(r.hierarchy.is_empty());
+        Ok(())
     }
 
     /// 1×1 foreground image -> 1 contour with the single point at (0,0)
     #[test]
-    fn test_single_pixel_image() {
+    fn test_single_pixel_image() -> Result<(), ContoursError> {
         let img = make_img(1, 1, vec![1]);
         let r = find_contours(
             &img,
             RetrievalMode::External,
             ContourApproximationMode::None,
-        )
-        .unwrap();
+        )?;
         assert_eq!(r.contours.len(), 1);
         assert_eq!(r.contours[0], vec![[0, 0]]);
+        Ok(())
     }
 
     // SWAR code path coverage
@@ -793,7 +841,7 @@ mod tests {
     /// 48×48 block inside a 64×64 image: the all-1 SWAR skip must not miss the
     /// outer contour, Perimeter of a 48×48 block = 4 × 47 = 188 pixels
     #[test]
-    fn test_large_filled_block_swar_all_ones_path() {
+    fn test_large_filled_block_swar_all_ones_path() -> Result<(), ContoursError> {
         const S: usize = 64;
         let mut data = vec![0u8; S * S];
         for r in 8..56 {
@@ -806,15 +854,15 @@ mod tests {
             &img,
             RetrievalMode::External,
             ContourApproximationMode::None,
-        )
-        .unwrap();
+        )?;
         assert_eq!(r.contours.len(), 1, "exactly one outer contour");
         assert_eq!(r.contours[0].len(), 4 * 47, "perimeter of 48×48 block");
+        Ok(())
     }
 
     /// 199-zero prefix then one foreground pixel: exercises the zero-skip SWAR path
     #[test]
-    fn test_long_zero_run_swar_zero_skip_path() {
+    fn test_long_zero_run_swar_zero_skip_path() -> Result<(), ContoursError> {
         let mut data = vec![0u8; 400];
         data[200] = 1;
         let img = make_img(400, 1, data);
@@ -822,9 +870,66 @@ mod tests {
             &img,
             RetrievalMode::External,
             ContourApproximationMode::None,
-        )
-        .unwrap();
+        )?;
         assert_eq!(r.contours.len(), 1);
         assert_eq!(r.contours[0], vec![[200, 0]]);
+        Ok(())
+    }
+
+    /// Executor run on two *different* images back-to-back must return correct
+    /// results for both, catches buffer-reuse bugs where stale data from the
+    /// first call pollutes the second.
+    #[test]
+    fn test_executor_different_images_back_to_back() -> Result<(), ContoursError> {
+        let img_a = make_img(3, 3, vec![0, 0, 0, 0, 1, 0, 0, 0, 0]); // single pixel
+        let img_b = make_img(
+            5,
+            5,
+            vec![0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+        ); // 3×3 square
+        let mut exec = FindContoursExecutor::new();
+        let ra = exec.find_contours(&img_a, RetrievalMode::External, ContourApproximationMode::None)?;
+        let rb = exec.find_contours(&img_b, RetrievalMode::External, ContourApproximationMode::None)?;
+        assert_eq!(ra.contours.len(), 1);
+        assert_eq!(ra.contours[0], vec![[1, 1]], "first call: single pixel");
+        assert_eq!(rb.contours.len(), 1);
+        assert_eq!(rb.contours[0].len(), 8, "second call: 3×3 square perimeter");
+        Ok(())
+    }
+
+    /// Simple approx on an L-shaped contour: direction changes at the corner
+    /// must be emitted, straight runs must be suppressed.
+    #[test]
+    fn test_simple_approx_l_shape() -> Result<(), ContoursError> {
+        // L-shape (4 wide, 3 tall, bottom-right 2×2 missing):
+        //   . . . . . .
+        //   . 1 . . . .
+        //   . 1 . . . .
+        //   . 1 1 1 . .
+        //   . . . . . .
+        let img = make_img(
+            5,
+            4,
+            vec![
+                0, 0, 0, 0, 0,
+                0, 1, 0, 0, 0,
+                0, 1, 0, 0, 0,
+                0, 1, 1, 1, 0,
+                // no 5th row, height is 4
+            ],
+        );
+        let none = find_contours(&img, RetrievalMode::External, ContourApproximationMode::None)?;
+        let simp = find_contours(&img, RetrievalMode::External, ContourApproximationMode::Simple)?;
+        // Simple must produce fewer points than None on a shape with straight runs
+        assert!(
+            simp.contours[0].len() < none.contours[0].len(),
+            "Simple should compress straight runs"
+        );
+        // The corner pixel (1,3), bottom-left of the L, must be present in Simple
+        assert!(
+            simp.contours[0].contains(&[1, 3]),
+            "corner pixel missing from Simple contour"
+        );
+        Ok(())
     }
 }
