@@ -105,11 +105,11 @@ const ALL_ONES_I16: u64 = {
 
 /// Reusable executor for running find_contours on successive frames.
 ///
-/// The working image buffer and the contour-point arena are
-/// reused across calls, the OS allocator is not touched after the first
-/// warm-up frame for those two buffers.  Per-call bookkeeping (ranges,
-/// hierarchy, border_types) and the output contour vectors are still
-/// freshly allocated on each call.
+/// The working image buffer (img) and the contour-point arena (arena) are
+/// reused across calls, avoiding repeated heap allocation for those two
+/// typically large buffers after the first warm-up frame, Per-call
+/// bookkeeping (ranges, hierarchy, border_types) and the final output
+/// contour vectors are still freshly allocated on each call
 ///
 /// For multi-stream workloads, use one executor per rayon thread.
 pub struct FindContoursExecutor {
