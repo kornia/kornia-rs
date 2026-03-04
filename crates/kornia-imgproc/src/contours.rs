@@ -162,6 +162,21 @@ pub fn find_contours<A: ImageAllocator>(
     find_contours_impl(src, mode, method, &mut img, &mut arena)
 }
 
+/// Parameters
+///  src    - Single-channel binary image, any non-zero pixel is treated as foreground
+///  mode   - Controls which contours are returned and whether hierarchy is built
+///  method - Controls how contour points are stored (None keeps every pixel,
+///           Simple compresses collinear runs to their endpoints)
+///  img    - Caller-supplied scratch buffer reused across calls. Grown as needed and
+///           zero-filled at the start of each call, Holds the padded, labelled working
+///           copy of the image (i16 per pixel, 0 = background, 1 = unlabelled
+///           foreground, +-nbd = labelled border pixel)
+///  arena  - Caller-supplied flat point store reused across calls. All contour points
+///           are appended here; ranges records each contour's slice into this vec
+///
+/// Returns
+/// A ContoursResult containing the detected contours and their hierarchy, filtered
+// according to mode
 fn find_contours_impl<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     mode: RetrievalMode,
@@ -338,6 +353,20 @@ fn find_contours_impl<A: ImageAllocator>(
     Ok(filter_by_mode(raw_contours, hierarchy, border_types, mode))
 }
 
+// Parameters
+// img   - Raw pointer to the padded working image. Pixels are labelled in-place
+//             with +-nbd as the border is walked.
+// ts    - TracerStart bundling the start pixel index, its (row, col) in padded
+//             coordinates, the initial scan direction, the current border label `nbd`,
+//             and the approximation method.
+// toff  - Precomputed 8-directional flat offsets into the padded image (`o8` for
+//             the main scan, `o16` for the modulo-free initial neighbour search).
+// arena - Flat point store to which contour points are appended. The returned
+//             range indexes the slice of points belonging to this border.
+//
+// Returns
+// A Range<usize> into arena covering the points of this contour in traversal order
+
 #[inline(always)]
 fn trace_border(
     img: *mut i16,
@@ -479,6 +508,16 @@ fn trace_border(
     arena_start..arena.len()
 }
 
+// Parameters
+// - lnbd         - Label of the most recently encountered border on the current scan
+//                  line (1 = frame sentinel, >=2 = a previously traced border).
+// - border_type  - Whether the new border is an outer border or a hole.
+// - hierarchy    - Hierarchy entries built so far; indexed via [nbd_to_idx].
+// - border_types - Border type of each previously traced border, parallel to
+//                  hierarchy with the frame sentinel at index 0.
+//
+// Returns
+// The nbd label of the parent border, or -1 if the new border has no parent
 #[inline(always)]
 fn determine_parent(
     lnbd: i32,
@@ -510,6 +549,17 @@ fn determine_parent(
     }
 }
 
+// Parameters
+// - hierarchy - Hierarchy entries built so far, mutated in-place to wire the new
+//               border into the tree. Each entry is [next, prev, first_child, parent].
+// - nbd       - The label of the newly traced border (1-based); used as the index
+//               into hierarchy via [nbd_to_idx].
+// - parent    - The nbd label of the parent border as returned by
+//               [determine_parent], or -1 for a top-level border.
+//
+// Returns
+// The [HierarchyEntry] for the new border with next, prev, and parent already
+// filled in. first_child is left as -1 since no children exist yet at insertion time.
 #[inline(always)]
 fn update_hierarchy(hierarchy: &mut [HierarchyEntry], nbd: usize, parent: i32) -> HierarchyEntry {
     let mut entry = [-1i32, -1, -1, parent];
@@ -541,6 +591,20 @@ fn update_hierarchy(hierarchy: &mut [HierarchyEntry], nbd: usize, parent: i32) -
     entry
 }
 
+// Parameters
+// - contours     – Raw contours in tracing order, one per detected border.
+// - hierarchy    – Full hierarchy including the frame sentinel at index 0.
+// - border_types – Border type (Outer/Hole) for each entry in hierarchy,
+//                    parallel to it with the sentinel at index 0.
+// - mode         – Controls which contours are kept and how hierarchy links are set.
+//                    External returns only top-level outer contours with no hierarchy,
+//                    List returns all contours with hierarchy discarded,
+//                    CComp returns all contours with a two-level hierarchy,
+//                    Tree returns all contours with the full hierarchy.
+//
+// Returns
+// A [ContoursResult] with contours and hierarchy entries matching the requested mode.
+// Hierarchy entries for discarded links are set to [-1, -1, -1, -1].
 fn filter_by_mode(
     contours: Vec<Contour>,
     hierarchy: Vec<HierarchyEntry>,
