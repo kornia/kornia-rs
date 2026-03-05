@@ -3,7 +3,7 @@ use std::f32::consts::PI;
 use kornia_image::allocator::ImageAllocator;
 use kornia_image::{Image, ImageError};
 
-use crate::interpolation::{grid::meshgrid_from_fn, interpolate_pixel, InterpolationMode};
+use crate::interpolation::{interpolate_pixel, InterpolationMode};
 use crate::parallel;
 
 /// Inverts a 2x3 affine transformation matrix.
@@ -137,24 +137,21 @@ pub fn warp_affine<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     // invert affine transform matrix to find corresponding positions in src from dst
     let m_inv = invert_affine_transform(m);
 
-    // create meshgrid to find corresponding positions in dst from src
-    let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
-    let (map_x, map_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| {
-        let (u_src, v_src) = transform_point(x as f32, y as f32, &m_inv);
-        Ok((u_src, v_src))
-    })?;
-
-    // apply affine transformation
-    parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {
-        // check if the position is within the bounds of the src image
-        if x >= 0.0f32 && x < src.cols() as f32 && y >= 0.0f32 && y < src.rows() as f32 {
-            // interpolate the pixel value for each channel
-            dst_pixel
-                .iter_mut()
-                .enumerate()
-                .for_each(|(k, pixel)| *pixel = interpolate_pixel(src, x, y, k, interpolation));
-        }
-    });
+    // apply affine transformation without pre-allocating coordinate maps
+    parallel::par_iter_rows_spatial_mapping(
+        dst,
+        |x, y| transform_point(x as f32, y as f32, &m_inv),
+        |x, y, dst_pixel| {
+            // check if the position is within the bounds of the src image
+            if x >= 0.0f32 && x < src.cols() as f32 && y >= 0.0f32 && y < src.rows() as f32 {
+                // interpolate the pixel value for each channel
+                dst_pixel
+                    .iter_mut()
+                    .enumerate()
+                    .for_each(|(k, pixel)| *pixel = interpolate_pixel(src, x, y, k, interpolation));
+            }
+        },
+    );
 
     Ok(())
 }

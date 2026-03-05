@@ -1,5 +1,5 @@
 use crate::{
-    interpolation::{grid::meshgrid_from_fn, interpolate_pixel, InterpolationMode},
+    interpolation::{interpolate_pixel, InterpolationMode},
     parallel,
 };
 
@@ -107,22 +107,19 @@ pub fn warp_perspective<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     // TODO: allow later to skip the inverse calculation if user provides it
     let inv_m = inverse_perspective_matrix(m)?;
 
-    // create meshgrid to find corresponding positions in dst from src
-    let (dst_rows, dst_cols) = (dst.rows(), dst.cols());
-    let (map_x, map_y) = meshgrid_from_fn(dst_cols, dst_rows, |x, y| {
-        let (xdst, ydst) = transform_point(x as f32, y as f32, &inv_m);
-        Ok((xdst, ydst))
-    })?;
-
-    // apply affine transformation
-    parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {
-        if x >= 0.0f32 && x < src.cols() as f32 && y >= 0.0f32 && y < src.rows() as f32 {
-            dst_pixel
-                .iter_mut()
-                .enumerate()
-                .for_each(|(k, pixel)| *pixel = interpolate_pixel(src, x, y, k, interpolation));
-        }
-    });
+    // apply perspective transformation without pre-allocating coordinate maps
+    parallel::par_iter_rows_spatial_mapping(
+        dst,
+        |x, y| transform_point(x as f32, y as f32, &inv_m),
+        |x, y, dst_pixel| {
+            if x >= 0.0f32 && x < src.cols() as f32 && y >= 0.0f32 && y < src.rows() as f32 {
+                dst_pixel
+                    .iter_mut()
+                    .enumerate()
+                    .for_each(|(k, pixel)| *pixel = interpolate_pixel(src, x, y, k, interpolation));
+            }
+        },
+    );
 
     Ok(())
 }

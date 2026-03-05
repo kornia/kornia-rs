@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::Image;
 use kornia_imgproc::{
@@ -11,7 +13,7 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
     let mut group = c.benchmark_group("FastCornerDetect");
 
     let img_path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/dog.jpeg");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/apriltags_tag36h11.jpg");
     let img_rgb8 = io::read_image_any_rgb8(img_path).unwrap();
 
     let new_size = [1920, 1080].into();
@@ -21,15 +23,29 @@ fn bench_fast_corner_detect(c: &mut Criterion) {
     let mut img_gray8 = Image::from_size_val(new_size, 0, CpuAllocator).unwrap();
     gray_from_rgb_u8(&img_resized, &mut img_gray8).unwrap();
 
+    let mut img_grayf32 = Image::from_size_val(new_size, 0.0, CpuAllocator).unwrap();
+    img_gray8
+        .as_slice()
+        .iter()
+        .zip(img_grayf32.as_slice_mut())
+        .for_each(|(&p, m)| {
+            *m = p as f32 / 255.0;
+        });
+
+    let mut fast_detector = FastDetector::new(new_size, 0.23, 9, 1).unwrap();
+
     let parameter_string = format!("{}x{}", new_size.width, new_size.height);
 
     group.bench_with_input(
         BenchmarkId::new("fast_native_cpu", &parameter_string),
-        &(img_gray8),
+        &(img_grayf32),
         |b, i| {
             let src = i.clone();
             b.iter(|| {
-                let _res = std::hint::black_box(fast_feature_detector(&src, 60, false)).unwrap();
+                fast_detector.compute_corner_response(&src);
+                let _res = std::hint::black_box(fast_detector.extract_keypoints()).unwrap();
+
+                fast_detector.clear();
             })
         },
     );
@@ -103,11 +119,76 @@ fn bench_dog_response(c: &mut Criterion) {
     group.finish();
 }
 
+fn load_mh01_gray_f32(name: &str) -> Image<f32, 1, CpuAllocator> {
+    let img_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../tests/data/{name}"));
+    let img = kornia_io::png::read_image_png_mono8(&img_path).expect("failed to read test PNG");
+    let mut dst = Image::from_size_val(img.0.size(), 0.0f32, CpuAllocator).expect("alloc failed");
+    img.0
+        .as_slice()
+        .iter()
+        .zip(dst.as_slice_mut())
+        .for_each(|(&s, d)| *d = s as f32 / 255.0);
+    dst
+}
+
+fn bench_orb_detect_extract(c: &mut Criterion) {
+    let frame = load_mh01_gray_f32("mh01_frame1.png");
+    let mut group = c.benchmark_group("orb_detect_extract");
+    group.sample_size(20);
+
+    for &n_kp in &[500, 1000, 2000] {
+        group.bench_with_input(BenchmarkId::new("n_keypoints", n_kp), &n_kp, |b, &n_kp| {
+            let orb = OrbDetector {
+                n_keypoints: n_kp,
+                ..Default::default()
+            };
+            b.iter(|| std::hint::black_box(orb.detect_and_extract(&frame).unwrap()));
+        });
+    }
+    group.finish();
+}
+
+fn bench_descriptor_matching(c: &mut Criterion) {
+    let frame0 = load_mh01_gray_f32("mh01_frame1.png");
+    let frame1 = load_mh01_gray_f32("mh01_frame2.png");
+
+    let mut group = c.benchmark_group("descriptor_matching");
+    group.sample_size(20);
+
+    for &n_kp in &[500, 1000, 2000] {
+        group.bench_with_input(BenchmarkId::new("n_keypoints", n_kp), &n_kp, |b, &n_kp| {
+            let orb = OrbDetector {
+                n_keypoints: n_kp,
+                ..Default::default()
+            };
+            let feat0 = orb.detect_and_extract(&frame0).unwrap();
+            let feat1 = orb.detect_and_extract(&frame1).unwrap();
+            let config = OrbMatchConfig {
+                nn_ratio: 0.6,
+                th_low: 50,
+                check_orientation: true,
+                histo_length: 30,
+            };
+            b.iter(|| {
+                std::hint::black_box(match_orb_descriptors(
+                    &feat0.orientations,
+                    &feat0.descriptors,
+                    &feat1.orientations,
+                    &feat1.descriptors,
+                    config,
+                ))
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
-    benches,
-    bench_fast_corner_detect,
-    bench_harris_response,
-    bench_dog_response
+    name = benches;
+    config = Criterion::default().warm_up_time(std::time::Duration::new(10, 0));
+    targets = bench_harris_response, bench_dog_response, bench_fast_corner_detect,
+              bench_orb_detect_extract, bench_descriptor_matching
 );
 criterion_main!(benches);
 

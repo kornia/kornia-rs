@@ -4,18 +4,23 @@
 [![Documentation](https://docs.rs/kornia-tensor-ops/badge.svg)](https://docs.rs/kornia-tensor-ops)
 [![License](https://img.shields.io/crates/l/kornia-tensor-ops.svg)](https://github.com/kornia/kornia/blob/main/LICENSE)
 
-> **Core tensor operations and kernels for kornia-rs.**
+> **Extension crate for higher-level tensor operations in kornia-rs.**
 
 ## 🚀 Overview
 
-`kornia-tensor-ops` provides essential mathematical operations for `kornia-tensor`. It implements element-wise arithmetic, reductions, and other low-level kernels required for building complex computer vision algorithms.
+`kornia-tensor-ops` is an extension layer on top of [`kornia-tensor`](https://crates.io/crates/kornia-tensor).
+While `kornia-tensor` provides the minimal, core tensor abstractions (storage, views, allocators, and memory layout), this crate houses higher-level and composite operations that build on those primitives.
+
+This separation keeps the core tensor crate lean and composable, while providing a clear home for operations that involve more complex logic, additional trait bounds, or domain-specific computation.
 
 ## 🔑 Key Features
 
-*   **Arithmetic Operations:** Add, subtract, multiply, divide tensors efficiently.
-*   **Broadcasting:** (Planned/Partial) Support for broadcasting operations across dimensions.
-*   **Kernels:** Optimized low-level implementations of common mathematical functions.
-*   **Safe API:** Trait-based operator overloading for intuitive usage with `kornia-tensor`.
+*   **Element-wise Arithmetic:** Add, subtract, multiply, divide tensors.
+*   **Scalar Operations:** Multiply by scalar, raise to power (float and integer).
+*   **Reductions:** Sum along a dimension, compute mean, find minimum.
+*   **Similarity Metrics:** Dot product, cosine similarity, cosine distance.
+*   **Low-level Kernels:** Standalone functions operating directly on slices for use outside the `Tensor` abstraction.
+*   **Safe API:** Trait-based `TensorOps` interface for intuitive usage with `kornia-tensor`.
 
 ## 📦 Installation
 
@@ -48,8 +53,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 🧩 Modules
 
-*   **`ops`**: High-level trait implementations for tensor operations.
-*   **`kernels`**: Low-level kernel implementations.
+*   **`ops`**: High-level trait implementations for tensor operations (`TensorOps`).
+*   **`kernels`**: Low-level kernel functions (e.g. dot product, cosine similarity) operating on slices.
+*   **`error`**: Error types for tensor operation failures.
+
+## 🏗️ Architecture Note
+
+New tensor operations that go beyond basic storage or view manipulation should be added to this crate rather than to `kornia-tensor`. If an operation requires additional trait bounds (e.g. `num_traits::Float`) or combines multiple lower-level steps, it belongs here.
 
 ## 💡 Related Examples
 
