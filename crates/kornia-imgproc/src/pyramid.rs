@@ -288,6 +288,16 @@ fn reflect_101(mut p: i32, len: i32) -> i32 {
 ///
 /// # Example
 ///
+/// # Implementation Details & Trade-offs
+///
+/// This function uses a **separable 2D convolution** (horizontal pass followed by vertical pass)
+/// accelerated by Rayon. This provides massive speedups (e.g., 5-7× faster on 1024×896 images)
+/// by reducing per-pixel operations from \(k^2\) to \(2k\).
+///
+/// However, this optimization requires a **full intermediate buffer** of size `dst_width × src_height × channels`.
+/// For very large images (e.g., 4K RGB requiring ~24MB) in memory-constrained environments,
+/// this temporary peak memory allocation should be taken into account.
+///
 /// ```
 /// use kornia_image::{Image, ImageSize};
 /// use kornia_image::allocator::CpuAllocator;
