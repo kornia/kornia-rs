@@ -361,11 +361,27 @@ pub fn pyrdown_f32<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     Ok(())
 }
 
+const K_EDGE: f32 = 0.0625; // 1.0 / 16.0
+const K_NEAR: f32 = 0.25; // 4.0 / 16.0
+const K_CENTER: f32 = 0.375; // 6.0 / 16.0
+
+/// Computes the 5-point Gaussian blur using fixed weights.
+#[inline(always)]
+fn gaussian5(a: f32, b: f32, c: f32, d: f32, e: f32) -> f32 {
+    K_EDGE * a + K_NEAR * b + K_CENTER * c + K_NEAR * d + K_EDGE * e
+}
+
 /// Horizontal pass for pyrdown.
 ///
 /// Applies the 1D Gaussian kernel `[1/16, 4/16, 6/16, 4/16, 1/16]` across the X-axis
 /// and downsamples horizontally by a factor of 2.
 /// Uses `reflect_101` border mode for boundary pixels.
+///
+/// # Arguments
+///
+/// * `src` - The source image.
+/// * `dst` - The destination buffer for the horizontal pass.
+/// * `dst_width` - The width of the destination image (number of columns).
 fn pyrdown_horizontal_pass_f32<const C: usize, A>(
     src: &Image<f32, C, A>,
     dst: &mut [f32],
@@ -382,7 +398,10 @@ fn pyrdown_horizontal_pass_f32<const C: usize, A>(
         .for_each(|(y, dst_row)| {
             let src_row_offset = y * src_width * C;
 
-            // Calculate safe regions for iteration, avoiding boundaries where the kernel would access out of bounds
+            // Calculate safe regions for iteration, avoiding boundaries where the kernel would access out of bounds.
+            // For a 5-tap kernel (radius 2), we need `src_center_x + 2 < src_width`.
+            // Since `src_center_x = dst_x * 2`, we want `dst_x * 2 + 2 <= src_width - 1`.
+            // Solving for `dst_x` (safe range) gives an exclusive upper bound of `(src_width - 1) / 2`.
             let safe_start = 1;
             let safe_end = if src_width > 2 {
                 (src_width - 1) / 2
@@ -415,8 +434,7 @@ fn pyrdown_horizontal_pass_f32<const C: usize, A>(
                         let v_p1 = src_data[base_idx + C + k];
                         let v_p2 = src_data[base_idx + 2 * C + k];
 
-                        let sum =
-                            0.0625 * v_m2 + 0.25 * v_m1 + 0.375 * v_0 + 0.25 * v_p1 + 0.0625 * v_p2;
+                        let sum = gaussian5(v_m2, v_m1, v_0, v_p1, v_p2);
                         dst_row[dst_x * C + k] = sum;
                     }
                 }
@@ -436,6 +454,14 @@ fn pyrdown_horizontal_pass_f32<const C: usize, A>(
 }
 
 /// Helper function to process a single pixel using the `reflect_101` border mode.
+///
+/// # Arguments
+///
+/// * `src_data` - The flattened source image data slice.
+/// * `dst_row` - The destination row slice to write the result to.
+/// * `src_row_offset` - The start index of the current row in `src_data`.
+/// * `dst_x` - The column index in the destination image.
+/// * `src_width` - The width of the source image.
 #[inline(always)]
 fn process_pixel_pyrdown_checked_f32<const C: usize>(
     src_data: &[f32],
@@ -458,7 +484,7 @@ fn process_pixel_pyrdown_checked_f32<const C: usize>(
         let v_p1 = src_data[src_row_offset + idx_p1 + k];
         let v_p2 = src_data[src_row_offset + idx_p2 + k];
 
-        let sum = 0.0625 * v_m2 + 0.25 * v_m1 + 0.375 * v_0 + 0.25 * v_p1 + 0.0625 * v_p2;
+        let sum = gaussian5(v_m2, v_m1, v_0, v_p1, v_p2);
         dst_row[dst_x * C + k] = sum;
     }
 }
@@ -468,6 +494,14 @@ fn process_pixel_pyrdown_checked_f32<const C: usize>(
 /// Applies the 1D Gaussian kernel `[1/16, 4/16, 6/16, 4/16, 1/16]` across the Y-axis
 /// and downsamples vertically by a factor of 2.
 /// Uses `reflect_101` border mode for boundary pixels.
+///
+/// # Arguments
+///
+/// * `src_buffer` - The intermediate buffer produced by the horizontal pass.
+/// * `src_buffer_width` - The width of the intermediate buffer (same as destination width).
+/// * `src_height` - The height of the original source image.
+/// * `dst_data` - The final destination buffer.
+/// * `dst_width` - The width of the destination image.
 fn pyrdown_vertical_pass_f32<const C: usize>(
     src_buffer: &[f32],
     src_buffer_width: usize,
@@ -479,7 +513,9 @@ fn pyrdown_vertical_pass_f32<const C: usize>(
     let dst_stride = dst_width * C;
     let dst_height = dst_data.len() / dst_stride;
 
-    // Calculate safe rows to avoid vertical boundary checks
+    // Calculate safe rows to avoid vertical boundary checks.
+    // Similar to the horizontal pass, we need `src_center_y + 2 < src_height`,
+    // which results in an exclusive upper bound of `safe_end_y = (src_height - 1) / 2`.
     let safe_start_y = 1;
     let safe_end_y = if src_height > 2 {
         ((src_height - 1) / 2).min(dst_height)
@@ -509,8 +545,7 @@ fn pyrdown_vertical_pass_f32<const C: usize>(
                     let v_p1 = src_buffer[off_p1 + i];
                     let v_p2 = src_buffer[off_p2 + i];
 
-                    let sum =
-                        0.0625 * v_m2 + 0.25 * v_m1 + 0.375 * v_0 + 0.25 * v_p1 + 0.0625 * v_p2;
+                    let sum = gaussian5(v_m2, v_m1, v_0, v_p1, v_p2);
                     dst_row[i] = sum;
                 }
             } else {
@@ -534,8 +569,7 @@ fn pyrdown_vertical_pass_f32<const C: usize>(
                     let v_p1 = src_buffer[off_p1 + i];
                     let v_p2 = src_buffer[off_p2 + i];
 
-                    let sum =
-                        0.0625 * v_m2 + 0.25 * v_m1 + 0.375 * v_0 + 0.25 * v_p1 + 0.0625 * v_p2;
+                    let sum = gaussian5(v_m2, v_m1, v_0, v_p1, v_p2);
                     dst_row[i] = sum;
                 }
             }
