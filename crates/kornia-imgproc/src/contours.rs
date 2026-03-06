@@ -62,7 +62,7 @@ const DIR_DC: [i32; 8] = [-1, -1, 0, 1, 1, 1, 0, -1];
 
 /// Minimum image area in pixels above which binarisation is parallelised via Rayon
 /// Below this threshold the thread-dispatch overhead outweighs the benefit
-const PARALLEL_THRESHOLD: usize = 512 * 512;
+const PARALLEL_THRESHOLD: usize = 1920 * 1080;
 
 /// Convert an NBD label (starting at 1 for the frame sentinel, 2 for the first
 /// real border) to the corresponding index in hierarchy / border_types
