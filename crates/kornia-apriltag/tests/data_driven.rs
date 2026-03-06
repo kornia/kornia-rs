@@ -122,9 +122,7 @@ fn run_data_driven_tests() -> Result<(), Box<dyn std::error::Error>> {
         let image_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(&case.filename);
 
         if !image_path.exists() {
-            return Err(
-                format!("Test image not found at {:?}", image_path).into()
-            );
+            return Err(format!("Test image not found at {:?}", image_path).into());
         }
 
         let image = load_image_mono8(&image_path)
