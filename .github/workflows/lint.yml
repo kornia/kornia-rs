@@ -34,4 +34,3 @@ jobs:
 
       - name: Check TOML formatting
         run: pixi run -e dev toml-fmt-check
-
