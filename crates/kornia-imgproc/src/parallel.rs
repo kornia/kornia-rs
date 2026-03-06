@@ -128,3 +128,26 @@ pub fn par_iter_rows_resample<const C: usize, A: ImageAllocator>(
                 });
         });
 }
+
+/// Apply a spatial mapping function to each pixel in parallel without pre-allocating coordinate tensors.
+pub fn par_iter_rows_spatial_mapping<const C: usize, A: ImageAllocator>(
+    dst: &mut Image<f32, C, A>,
+    map_coord: impl Fn(usize, usize) -> (f32, f32) + Send + Sync,
+    f: impl Fn(f32, f32, &mut [f32]) + Send + Sync,
+) {
+    let cols = dst.cols();
+    let dst_slice = dst.as_slice_mut();
+
+    dst_slice
+        .par_chunks_exact_mut(C * cols)
+        .enumerate()
+        .for_each(|(r, dst_chunk)| {
+            dst_chunk
+                .chunks_exact_mut(C)
+                .enumerate()
+                .for_each(|(c, dst_pixel)| {
+                    let (x, y) = map_coord(c, r);
+                    f(x, y, dst_pixel);
+                });
+        });
+}

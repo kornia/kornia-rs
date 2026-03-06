@@ -217,7 +217,7 @@ pub fn decode_image_png_layout(src: &[u8]) -> Result<ImageLayout, IoError> {
         height: info.height as usize,
     };
 
-    let channels = match info.color_type {
+    let channels: u8 = match info.color_type {
         ColorType::Grayscale => 1,
         ColorType::Rgb => 3,
         ColorType::Rgba => 4,

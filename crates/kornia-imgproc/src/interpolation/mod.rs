@@ -7,6 +7,7 @@ pub(crate) mod interpolate;
 mod nearest;
 mod remap;
 
+pub use interpolate::validate_interpolation;
 pub use interpolate::InterpolationMode;
 pub use remap::remap;
 
