@@ -148,8 +148,7 @@ impl Paligemma {
 
         let response = self
             .pipeline
-            .run(&image_t, prompt, sample_len, stdout_debug)
-            .expect("Failed to generate text");
+            .run(&image_t, prompt, sample_len, stdout_debug)?;
 
         Ok(response)
     }

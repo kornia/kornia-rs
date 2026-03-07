@@ -3,8 +3,10 @@ mod video_demo;
 #[cfg(target_os = "linux")]
 mod video_file_demo;
 
+#[cfg(target_os = "linux")]
 use argh::FromArgs;
 
+#[cfg(target_os = "linux")]
 #[derive(FromArgs)]
 /// Capture frames from a webcam or video file and log to Rerun
 struct Args {

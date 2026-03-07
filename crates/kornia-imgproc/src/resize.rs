@@ -1,6 +1,6 @@
 use crate::{
     interpolation::{
-        grid::meshgrid_from_fn, interpolate_pixel, validate_interpolation, InterpolationMode,
+        grid::meshgrid_from_fn, interpolate_pixel_fast, validate_interpolation, InterpolationMode,
     },
     parallel,
 };
@@ -94,9 +94,9 @@ where
     // iterate over the output image and interpolate the pixel values
     parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {
         // interpolate the pixel values for each channel
-        dst_pixel.iter_mut().enumerate().for_each(|(k, pixel)| {
-            *pixel = interpolate_pixel(src, x, y, k, interpolation).unwrap_or(0.0);
-        });
+        for (k, pixel) in dst_pixel.iter_mut().enumerate() {
+            *pixel = interpolate_pixel_fast(src, x, y, k, interpolation);
+        }
     });
 
     Ok(())

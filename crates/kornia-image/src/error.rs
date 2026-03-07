@@ -57,7 +57,7 @@ pub enum ImageError {
     #[error("Unsupported channel count {0}")]
     UnsupportedChannelCount(usize),
 
-    /// Error when an interpolation mode is not implemented.
-    #[error("Unsupported interpolation mode: {0}")]
-    UnsupportedInterpolation(String),
+    /// Error when interpolation mode is unsupported.
+    #[error("Unsupported interpolation mode: {0:?}")]
+    UnsupportedInterpolation(crate::image::InterpolationMode),
 }

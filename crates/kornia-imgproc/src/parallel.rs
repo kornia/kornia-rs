@@ -123,9 +123,7 @@ pub fn par_iter_rows_resample<const C: usize, A: ImageAllocator>(
             dst_chunk
                 .chunks_exact_mut(C)
                 .zip(map_x_chunk.iter().zip(map_y_chunk.iter()))
-                .for_each(|(dst_pixel, (x, y))| {
-                    f(x, y, dst_pixel);
-                });
+                .for_each(|(dst_pixel, (x, y))| f(x, y, dst_pixel))
         });
 }
 
@@ -147,7 +145,7 @@ pub fn par_iter_rows_spatial_mapping<const C: usize, A: ImageAllocator>(
                 .enumerate()
                 .for_each(|(c, dst_pixel)| {
                     let (x, y) = map_coord(c, r);
-                    f(x, y, dst_pixel);
-                });
+                    f(x, y, dst_pixel)
+                })
         });
 }

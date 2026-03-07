@@ -20,6 +20,10 @@ pub enum JpegTurboError {
     /// Error to create the image.
     #[error("Failed to create image")]
     ImageCreationError(#[from] ImageError),
+
+    /// Error when mutex is poisoned.
+    #[error("Mutex is poisoned")]
+    MutexPoisoned,
 }
 
 /// A JPEG decoder using the turbojpeg library.
@@ -28,23 +32,7 @@ pub struct JpegTurboDecoder(Mutex<turbojpeg::Decompressor>);
 /// A JPEG encoder using the turbojpeg library.
 pub struct JpegTurboEncoder(Mutex<turbojpeg::Compressor>);
 
-impl Default for JpegTurboDecoder {
-    fn default() -> Self {
-        match Self::new() {
-            Ok(decoder) => decoder,
-            Err(e) => panic!("Failed to create ImageDecoder: {e}"),
-        }
-    }
-}
-
-impl Default for JpegTurboEncoder {
-    fn default() -> Self {
-        match Self::new() {
-            Ok(encoder) => encoder,
-            Err(e) => panic!("Failed to create ImageEncoder: {e}"),
-        }
-    }
-}
+// Implementations for ImageDecoder and ImageEncoder
 
 /// Implementation of the ImageEncoder struct.
 impl JpegTurboEncoder {
@@ -91,7 +79,7 @@ impl JpegTurboEncoder {
         Ok(self
             .0
             .lock()
-            .expect("Failed to lock the compressor")
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
             .compress_to_vec(buf)?)
     }
 
@@ -104,7 +92,7 @@ impl JpegTurboEncoder {
         Ok(self
             .0
             .lock()
-            .expect("Failed to lock the compressor")
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
             .set_quality(quality)?)
     }
 }
@@ -139,7 +127,7 @@ impl JpegTurboDecoder {
         let header = self
             .0
             .lock()
-            .expect("Failed to lock the decompressor")
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
             .read_header(jpeg_data)?;
 
         Ok(ImageSize {
@@ -203,7 +191,7 @@ impl JpegTurboDecoder {
         // decompress the JPEG data
         self.0
             .lock()
-            .expect("Failed to lock the decompressor")
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
             .decompress(jpeg_data, buf)?;
 
         Ok(Image::new(image_size, pixels, CpuAllocator)?)

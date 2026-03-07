@@ -1,5 +1,3 @@
-use kornia_image::ImageError;
-
 /// Create a box blur kernel.
 ///
 /// # Arguments
@@ -49,18 +47,28 @@ pub fn gaussian_kernel_1d(kernel_size: usize, sigma: f32) -> Vec<f32> {
 /// * `kernel_size` - The size of the kernel (supports 3 and 5).
 ///
 /// # Returns
+/// A tuple `(kernel_x, kernel_y)` containing the derivative and smoothing kernels.
 ///
-/// A tuple containing `(derivative_kernel, smoothing_kernel)`.
-pub fn sobel_kernel_1d(kernel_size: usize) -> Result<(Vec<f32>, Vec<f32>), ImageError> {
-    let (kernel_deriv, kernel_smooth) = match kernel_size {
+/// # Errors
+///
+/// Returns `ImageError::InvalidKernelLength` when `kernel_size` is not 3 or 5.
+pub fn sobel_kernel_1d(
+    kernel_size: usize,
+) -> Result<(Vec<f32>, Vec<f32>), kornia_image::ImageError> {
+    let (kernel_x, kernel_y) = match kernel_size {
         3 => (vec![-1.0, 0.0, 1.0], vec![1.0, 2.0, 1.0]),
         5 => (
             vec![-1.0, -2.0, 0.0, 2.0, 1.0],
             vec![1.0, 4.0, 6.0, 4.0, 1.0],
         ),
-        _ => return Err(ImageError::InvalidKernelLength(1, kernel_size)),
+        _ => {
+            return Err(kornia_image::ImageError::InvalidKernelLength(
+                kernel_size,
+                kernel_size,
+            ))
+        }
     };
-    Ok((kernel_deriv, kernel_smooth))
+    Ok((kernel_x, kernel_y))
 }
 
 /// Create a normalized 2d sobel kernel.
@@ -121,6 +129,7 @@ pub fn box_blur_fast_kernels_1d(sigma: f32, kernels: u8) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kornia_image::ImageError;
 
     #[test]
     fn test_sobel_kernel_1d() -> Result<(), ImageError> {

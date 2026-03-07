@@ -1,6 +1,9 @@
+#[cfg(target_os = "linux")]
 use argh::FromArgs;
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 
+#[cfg(target_os = "linux")]
 use kornia::{
     image::{Image, ImageSize},
     imgproc::{
@@ -8,15 +11,15 @@ use kornia::{
         color::gray_from_rgb_u8,
         features::{match_descriptors, OrbDetector},
     },
-    io::{
-        functional::read_image_any_rgb8,
-        jpeg,
-        v4l::{PixelFormat, V4LCameraConfig, V4lVideoCapture},
-    },
+    io::{functional::read_image_any_rgb8, jpeg},
     tensor::CpuAllocator,
 };
 
+#[cfg(target_os = "linux")]
+use kornia::io::v4l::{PixelFormat, V4LCameraConfig, V4lVideoCapture};
+
 /// ORB detector webcam demo: match a reference image against live webcam frames.
+#[cfg(target_os = "linux")]
 #[derive(FromArgs)]
 struct Args {
     /// path to the reference image
@@ -24,6 +27,7 @@ struct Args {
     image_path: PathBuf,
 }
 
+#[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
 
@@ -161,6 +165,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn join_images_inplace(
     image1: &Image<u8, 1, CpuAllocator>,
     image2: &Image<u8, 1, CpuAllocator>,
@@ -196,6 +201,7 @@ fn join_images_inplace(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn u8_to_f32_image(src: &Image<u8, 1, CpuAllocator>, dst: &mut Image<f32, 1, CpuAllocator>) {
     src.as_slice()
         .iter()
@@ -203,4 +209,9 @@ fn u8_to_f32_image(src: &Image<u8, 1, CpuAllocator>, dst: &mut Image<f32, 1, Cpu
         .for_each(|(&s, d)| {
             *d = s as f32 / 255.0;
         });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn main() {
+    println!("This example requires Linux (v4l).");
 }
