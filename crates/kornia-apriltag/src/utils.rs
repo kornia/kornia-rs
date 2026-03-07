@@ -193,27 +193,7 @@ mod tests {
         assert_eq!(mul, expected);
     }
 
-    #[test]
-    fn test_homography_compute() {
-        #[rustfmt::skip]
-        let corr_arr = [
-            [-1.0, -1.0, 27.0,  3.0],
-            [ 1.0, -1.0, 27.0, 27.0],
-            [ 1.0,  1.0,  3.0, 27.0],
-            [-1.0,  1.0,  3.0,  3.0],
-        ];
 
-        let h = kornia_algebra::linalg::homography::dlt_gauss_elim_f32(&corr_arr).unwrap();
-        // glam::Mat3 is column-major: [h11, h21, h31, h12, h22, h32, h13, h23, h33]
-        // expected results from original row-major: [-0.0, -12.0, 15.0, 12.0, -0.0, 15.0, -0.0, 0.0, 1.0]
-        let expected = Mat3F32::from_cols_array(&[
-            -0.0, 12.0, -0.0, // col 0: h11, h21, h31
-            -12.0, -0.0, 0.0, // col 1: h12, h22, h32
-            15.0, 15.0, 1.0, // col 2: h13, h23, h33
-        ]);
-
-        assert_eq!(h, expected);
-    }
 
     #[test]
     fn test_value_for_pixel() -> Result<(), Box<dyn std::error::Error>> {

@@ -171,3 +171,128 @@ pub fn dlt_lu_f64(x1: &[[f64; 3]; 4], x2: &[[f64; 3]; 4]) -> Option<Mat3F64> {
         h_mat[2], h_mat[5], 1.0,      // col 2
     ]))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn test_dlt_gauss_elim_f32() {
+        #[rustfmt::skip]
+        let corr_arr = [
+            [-1.0, -1.0, 27.0,  3.0],
+            [ 1.0, -1.0, 27.0, 27.0],
+            [ 1.0,  1.0,  3.0, 27.0],
+            [-1.0,  1.0,  3.0,  3.0],
+        ];
+
+        let h = dlt_gauss_elim_f32(&corr_arr).unwrap();
+        // glam::Mat3 is column-major: [h11, h21, h31, h12, h22, h32, h13, h23, h33]
+        let expected = Mat3F32::from_cols_array(&[
+            -0.0, 12.0, -0.0, // col 0
+            -12.0, -0.0, 0.0, // col 1
+            15.0, 15.0, 1.0,  // col 2
+        ]);
+
+        assert_eq!(h, expected);
+    }
+
+    #[test]
+    fn test_dlt_svd_f64_identity() {
+        let x1 = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+        let x2 = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+        
+        let mut h = dlt_svd_f64(&x1, &x2).unwrap();
+        h.0 /= h.z_axis.z;
+
+        let h_arr = h.to_cols_array();
+        let exp_arr = Mat3F64::IDENTITY.to_cols_array();
+        for i in 0..9 {
+            assert_relative_eq!(h_arr[i], exp_arr[i], epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_dlt_svd_f64_transform() {
+        let x1 = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+        let (tx, ty) = (1.0, 1.0);
+        let expected_h = Mat3F64::from_cols_array(&[
+            1.0, 0.0, 0.0, 
+            0.0, 1.0, 0.0, 
+            tx, ty, 1.0
+        ]);
+
+        let mut x2 = [[0.0; 2]; 4];
+        for i in 0..4 {
+            let p = expected_h * crate::Vec3F64::new(x1[i][0], x1[i][1], 1.0);
+            x2[i] = [p.x / p.z, p.y / p.z];
+        }
+
+        let mut h = dlt_svd_f64(&x1, &x2).unwrap();
+        h.0 /= h.z_axis.z;
+
+        let h_arr = h.to_cols_array();
+        let exp_arr = expected_h.to_cols_array();
+        for i in 0..9 {
+            assert_relative_eq!(h_arr[i], exp_arr[i], epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_dlt_lu_f64_identity() {
+        let x1 = [
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ];
+        let x2 = [
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ];
+        
+        let mut h = dlt_lu_f64(&x1, &x2).unwrap();
+        h.0 /= h.z_axis.z;
+        
+        let h_arr = h.to_cols_array();
+        let exp_arr = Mat3F64::IDENTITY.to_cols_array();
+        for i in 0..9 {
+            assert_relative_eq!(h_arr[i], exp_arr[i], epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_dlt_lu_f64_transform() {
+        let x1 = [
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ];
+
+        let (tx, ty) = (1.0, 1.0);
+        let expected_h = Mat3F64::from_cols_array(&[
+            1.0, 0.0, 0.0, 
+            0.0, 1.0, 0.0, 
+            tx, ty, 1.0
+        ]);
+
+        let mut x2 = [[0.0; 3]; 4];
+        for i in 0..4 {
+            let p = expected_h * crate::Vec3F64::new(x1[i][0], x1[i][1], x1[i][2]);
+            x2[i] = [p.x, p.y, p.z];
+        }
+
+        let mut h = dlt_lu_f64(&x1, &x2).unwrap();
+        h.0 /= h.z_axis.z;
+
+        let h_arr = h.to_cols_array();
+        let exp_arr = expected_h.to_cols_array();
+        for i in 0..9 {
+            assert_relative_eq!(h_arr[i], exp_arr[i], epsilon = 1e-6);
+        }
+    }
+}
