@@ -168,6 +168,15 @@ impl HarrisResponse {
             ));
         }
 
+        if src.cols() < 2 || src.rows() < 2 {
+            return Err(ImageError::InvalidImageSize(
+                src.size().width,
+                src.size().height,
+                2,
+                2,
+            ));
+        }
+
         let src_data = src.as_slice();
         let col_slice = src.cols()..src_data.len() - src.cols();
         let row_slice = 1..src.cols() - 1;

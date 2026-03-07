@@ -163,14 +163,13 @@ impl VideoWriter {
     pub fn close(&mut self) -> Result<(), StreamCaptureError> {
         // send end of stream to the appsrc
         self.appsrc.end_of_stream()?;
+        self.pipeline.set_state(gstreamer::State::Null)?;
 
         if let Some(handle) = self.handle.take() {
             if handle.join().is_err() {
                 return Err(StreamCaptureError::JoinThreadError);
             }
         }
-
-        self.pipeline.set_state(gstreamer::State::Null)?;
 
         Ok(())
     }
@@ -226,7 +225,9 @@ impl VideoWriter {
 impl Drop for VideoWriter {
     fn drop(&mut self) {
         if self.handle.is_some() {
-            let _ = self.close();
+            if let Err(e) = self.close() {
+                log::warn!("Failed to close video writer safely on drop: {:?}", e);
+            }
         }
     }
 }

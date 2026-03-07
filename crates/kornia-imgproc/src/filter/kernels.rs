@@ -47,8 +47,11 @@ pub fn gaussian_kernel_1d(kernel_size: usize, sigma: f32) -> Vec<f32> {
 /// * `kernel_size` - The size of the kernel (supports 3 and 5).
 ///
 /// # Returns
+/// A tuple `(kernel_x, kernel_y)` containing the derivative and smoothing kernels.
 ///
-/// A vector of the kernel.
+/// # Errors
+///
+/// Returns `ImageError::InvalidKernelLength` when `kernel_size` is not 3 or 5.
 pub fn sobel_kernel_1d(
     kernel_size: usize,
 ) -> Result<(Vec<f32>, Vec<f32>), kornia_image::ImageError> {
