@@ -37,13 +37,13 @@ const DETERMINANT_THRESHOLD: f64 = 1e-8;
 ///
 /// ```rust
 /// use kornia_algebra::{Vec2F32, Mat3F32};
-/// use kornia_algebra::linalg::homography::{homography_2d_dlt_gauss_elim_f32};
+/// use kornia_algebra::linalg::homography::{homography_4pt2d_gauss_elim_f32};
 ///
 /// let x1 = [Vec2F32::new(0.0, 0.0), Vec2F32::new(1.0, 0.0), Vec2F32::new(1.0, 1.0), Vec2F32::new(0.0, 1.0)];
 /// let x2 = [Vec2F32::new(1.0, 1.0), Vec2F32::new(2.0, 1.0), Vec2F32::new(2.0, 2.0), Vec2F32::new(1.0, 2.0)];
-/// let h = homography_2d_dlt_gauss_elim_f32(&x1, &x2).unwrap();
+/// let h = homography_4pt2d_gauss_elim_f32(&x1, &x2).unwrap();
 /// ```
-pub fn homography_2d_dlt_gauss_elim_f32(
+pub fn homography_4pt2d_gauss_elim_f32(
     x1: &[Vec2F32; 4],
     x2: &[Vec2F32; 4],
 ) -> Result<Mat3F32, HomographyError> {
@@ -146,13 +146,13 @@ pub fn homography_2d_dlt_gauss_elim_f32(
 ///
 /// ```rust
 /// use kornia_algebra::{Vec2F64, Mat3F64};
-/// use kornia_algebra::linalg::homography::{homography_2d_dlt_svd_f64};
+/// use kornia_algebra::linalg::homography::{homography_4pt2d_svd_f64};
 ///
 /// let x1 = [Vec2F64::new(0.0, 0.0), Vec2F64::new(1.0, 0.0), Vec2F64::new(1.0, 1.0), Vec2F64::new(0.0, 1.0)];
 /// let x2 = [Vec2F64::new(0.0, 0.0), Vec2F64::new(1.0, 0.0), Vec2F64::new(1.0, 1.0), Vec2F64::new(0.0, 1.0)];
-/// let h = homography_2d_dlt_svd_f64(&x1, &x2).unwrap();
+/// let h = homography_4pt2d_svd_f64(&x1, &x2).unwrap();
 /// ```
-pub fn homography_2d_dlt_svd_f64(
+pub fn homography_4pt2d_svd_f64(
     x1: &[Vec2F64; 4],
     x2: &[Vec2F64; 4],
 ) -> Result<Mat3F64, HomographyError> {
@@ -218,13 +218,13 @@ pub fn homography_2d_dlt_svd_f64(
 ///
 /// ```rust
 /// use kornia_algebra::{Vec3F64, Mat3F64};
-/// use kornia_algebra::linalg::homography::{homography_3d_dlt_lu_f64};
+/// use kornia_algebra::linalg::homography::{homography_4pt3d_lu_f64};
 ///
 /// let x1 = [Vec3F64::new(0.0, 0.0, 1.0), Vec3F64::new(1.0, 0.0, 1.0), Vec3F64::new(1.0, 1.0, 1.0), Vec3F64::new(0.0, 1.0, 1.0)];
 /// let x2 = [Vec3F64::new(0.0, 0.0, 1.0), Vec3F64::new(1.0, 0.0, 1.0), Vec3F64::new(1.0, 1.0, 1.0), Vec3F64::new(0.0, 1.0, 1.0)];
-/// let h = homography_3d_dlt_lu_f64(&x1, &x2, true).unwrap();
+/// let h = homography_4pt3d_lu_f64(&x1, &x2, true).unwrap();
 /// ```
-pub fn homography_3d_dlt_lu_f64(
+pub fn homography_4pt3d_lu_f64(
     x1: &[Vec3F64; 4],
     x2: &[Vec3F64; 4],
     check_cheirality: bool,
@@ -299,7 +299,7 @@ mod tests {
     use approx::assert_relative_eq;
 
     #[test]
-    fn test_homography_2d_dlt_gauss_elim_f32() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_homography_4pt2d_gauss_elim_f32() -> Result<(), Box<dyn std::error::Error>> {
         let x1 = [
             Vec2F32::new(-1.0, -1.0),
             Vec2F32::new(1.0, -1.0),
@@ -313,7 +313,7 @@ mod tests {
             Vec2F32::new(3.0, 3.0),
         ];
 
-        let h = homography_2d_dlt_gauss_elim_f32(&x1, &x2)?;
+        let h = homography_4pt2d_gauss_elim_f32(&x1, &x2)?;
         // glam::Mat3 is column-major: [h11, h21, h31, h12, h22, h32, h13, h23, h33]
         let expected = Mat3F32::from_cols_array(&[
             -0.0, 12.0, -0.0, // col 0
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn test_homography_2d_dlt_svd_f64_identity() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_homography_4pt2d_identity() -> Result<(), Box<dyn std::error::Error>> {
         let x1 = [
             Vec2F64::new(0.0, 0.0),
             Vec2F64::new(1.0, 0.0),
@@ -340,7 +340,7 @@ mod tests {
             Vec2F64::new(1.0, 1.0),
         ];
 
-        let mut h = homography_2d_dlt_svd_f64(&x1, &x2)?;
+        let mut h = homography_4pt2d_svd_f64(&x1, &x2)?;
         h.0 /= h.z_axis.z;
 
         let h_arr = h.to_cols_array();
@@ -352,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn test_homography_2d_dlt_svd_f64_transform() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_homography_4pt2d_transform() -> Result<(), Box<dyn std::error::Error>> {
         let x1 = [
             Vec2F64::new(0.0, 0.0),
             Vec2F64::new(1.0, 0.0),
@@ -368,7 +368,7 @@ mod tests {
             x2[i] = Vec2F64::new(p.x / p.z, p.y / p.z);
         }
 
-        let mut h = homography_2d_dlt_svd_f64(&x1, &x2)?;
+        let mut h = homography_4pt2d_svd_f64(&x1, &x2)?;
         h.0 /= h.z_axis.z;
 
         let h_arr = h.to_cols_array();
@@ -380,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn test_homography_3d_dlt_lu_f64_identity() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_homography_4pt3d_identity() -> Result<(), Box<dyn std::error::Error>> {
         let x1 = [
             Vec3F64::new(0.0, 0.0, 1.0),
             Vec3F64::new(1.0, 0.0, 1.0),
@@ -394,7 +394,7 @@ mod tests {
             Vec3F64::new(1.0, 1.0, 1.0),
         ];
 
-        let mut h = homography_3d_dlt_lu_f64(&x1, &x2, true)?;
+        let mut h = homography_4pt3d_lu_f64(&x1, &x2, true)?;
         h.0 /= h.z_axis.z;
 
         let h_arr = h.to_cols_array();
@@ -406,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn test_homography_3d_dlt_lu_f64_transform() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_homography_4pt3d_transform() -> Result<(), Box<dyn std::error::Error>> {
         let x1 = [
             Vec3F64::new(0.0, 0.0, 1.0),
             Vec3F64::new(1.0, 0.0, 1.0),
@@ -422,7 +422,7 @@ mod tests {
             x2[i] = expected_h * x1[i];
         }
 
-        let mut h = homography_3d_dlt_lu_f64(&x1, &x2, true)?;
+        let mut h = homography_4pt3d_lu_f64(&x1, &x2, true)?;
         h.0 /= h.z_axis.z;
 
         let h_arr = h.to_cols_array();

@@ -35,8 +35,9 @@
 use crate::pose::fundamental::{fundamental_8point, sampson_distance, FundamentalError};
 use crate::pose::{
     decompose_essential, decompose_homography, enforce_essential_constraints,
-    essential_from_fundamental, homography_4pt2d, HomographyError,
+    essential_from_fundamental,
 };
+use kornia_algebra::linalg::homography::{homography_4pt2d_svd_f64, HomographyError};
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use rand::prelude::*;
 use rand::SeedableRng;
@@ -256,10 +257,10 @@ pub fn ransac_homography(
             s1[i] = x1[idx];
             s2[i] = x2[idx];
         }
-        let mut h = Mat3F64::IDENTITY;
-        if homography_4pt2d(&s1, &s2, &mut h).is_err() {
-            continue;
-        }
+        let h = match homography_4pt2d_svd_f64(&s1, &s2) {
+            Ok(h) => h,
+            Err(_) => continue,
+        };
 
         let mut inliers = vec![false; n];
         let mut count = 0usize;
