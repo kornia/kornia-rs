@@ -35,6 +35,7 @@ jobs:
             flags: ""
           - mode: all-features
             flags: "--all-features"
+            env_name: cuda
           - mode: no-default-features
             flags: "--no-default-features"
           - release: true
