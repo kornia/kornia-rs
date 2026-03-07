@@ -1,5 +1,5 @@
 use crate::{
-    interpolation::{interpolate_pixel, validate_interpolation, InterpolationMode},
+    interpolation::{interpolate_pixel_fast, validate_interpolation, InterpolationMode},
     parallel,
 };
 
@@ -116,7 +116,7 @@ pub fn warp_perspective<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
         |x, y, dst_pixel| {
             if x >= 0.0f32 && x < src.cols() as f32 && y >= 0.0f32 && y < src.rows() as f32 {
                 dst_pixel.iter_mut().enumerate().for_each(|(k, pixel)| {
-                    *pixel = interpolate_pixel(src, x, y, k, interpolation);
+                    *pixel = interpolate_pixel_fast(src, x, y, k, interpolation);
                 });
             }
         },

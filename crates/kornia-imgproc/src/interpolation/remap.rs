@@ -1,6 +1,6 @@
 use crate::parallel;
 
-use super::interpolate::{interpolate_pixel, validate_interpolation};
+use super::interpolate::{interpolate_pixel_fast, validate_interpolation};
 use super::InterpolationMode;
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 use kornia_tensor::{CpuAllocator, Tensor2};
@@ -50,7 +50,7 @@ pub fn remap<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     parallel::par_iter_rows_resample(dst, map_x, map_y, |&x, &y, dst_pixel| {
         // interpolate the pixel value
         for (c, pixel) in dst_pixel.iter_mut().enumerate() {
-            *pixel = interpolate_pixel(src, x, y, c, interpolation);
+            *pixel = interpolate_pixel_fast(src, x, y, c, interpolation);
         }
     });
 

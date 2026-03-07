@@ -27,9 +27,20 @@ pub fn validate_interpolation(interpolation: InterpolationMode) -> Result<(), Im
 /// * `interpolation` - The interpolation mode to use.
 ///
 /// # Returns
-///
-/// The interpolated pixel value. Panics if an unsupported mode is passed (must be validated first).
+/// The interpolated pixel value, or an error if the interpolation mode is unsupported.
 pub fn interpolate_pixel<const C: usize, A: ImageAllocator>(
+    image: &Image<f32, C, A>,
+    u: f32,
+    v: f32,
+    c: usize,
+    interpolation: InterpolationMode,
+) -> Result<f32, ImageError> {
+    validate_interpolation(interpolation)?;
+    Ok(interpolate_pixel_fast(image, u, v, c, interpolation))
+}
+
+/// Fallible-free internal kernel for fast pixel interpolation (must be validated first)
+pub(crate) fn interpolate_pixel_fast<const C: usize, A: ImageAllocator>(
     image: &Image<f32, C, A>,
     u: f32,
     v: f32,
