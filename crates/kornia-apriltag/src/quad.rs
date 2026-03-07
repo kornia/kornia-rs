@@ -1,8 +1,4 @@
-use crate::{
-    segmentation::GradientInfo,
-    utils::Pixel,
-    DecodeTagsConfig,
-};
+use crate::{segmentation::GradientInfo, utils::Pixel, DecodeTagsConfig};
 use kornia_algebra::{Mat3F32, Vec3F32};
 use kornia_image::{allocator::ImageAllocator, Image};
 use kornia_imgproc::filter::kernels::gaussian_kernel_1d;
@@ -97,7 +93,9 @@ impl Quad {
             [-1.0, 1.0, self.corners[3].x, self.corners[3].y],
         ];
 
-        if let Some(h) = kornia_algebra::linalg::homography::dlt_gauss_elim_f32(&corr_arr) {
+        if let Some(h) =
+            kornia_algebra::linalg::homography::homography_2d_dlt_gauss_elim_f32(&corr_arr)
+        {
             self.homography = h;
             return true;
         }

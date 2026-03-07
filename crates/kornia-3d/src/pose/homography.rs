@@ -23,7 +23,7 @@ pub fn homography_4pt2d(
     x2: &[[f64; 2]; 4],
     homo: &mut [[f64; 3]; 3],
 ) -> Result<(), HomographyError> {
-    if let Some(h) = kornia_algebra::linalg::homography::dlt_svd_f64(x1, x2) {
+    if let Some(h) = kornia_algebra::linalg::homography::homography_2d_dlt_svd_f64(x1, x2) {
         // copy to homography matrix
         homo[0] = [h.x_axis().x, h.y_axis().x, h.z_axis().x];
         homo[1] = [h.x_axis().y, h.y_axis().y, h.z_axis().y];
@@ -87,7 +87,7 @@ pub fn homography_4pt3d(
         }
     }
 
-    if let Some(h) = kornia_algebra::linalg::homography::dlt_lu_f64(x1, x2) {
+    if let Some(h) = kornia_algebra::linalg::homography::homography_3d_dlt_lu_f64(x1, x2) {
         // copy to homography matrix
         homo[0] = [h.x_axis().x, h.y_axis().x, h.z_axis().x];
         homo[1] = [h.x_axis().y, h.y_axis().y, h.z_axis().y];
@@ -177,5 +177,3 @@ pub fn decompose_homography(h: &Mat3F64, k1: &Mat3F64, k2: &Mat3F64) -> Vec<(Mat
 
     out
 }
-
-

@@ -3,7 +3,7 @@ use nalgebra::{SMatrix, SVector};
 
 /// Computes the homography matrix from four 2D point correspondences using Gaussian elimination.
 /// This matches the behavior of the solver historically used in kornia-apriltag.
-/// 
+///
 /// # Arguments
 ///
 /// * `c` - A 4x4 array where each row contains the coordinates of a correspondence:
@@ -12,7 +12,7 @@ use nalgebra::{SMatrix, SVector};
 /// # Returns
 ///
 /// An `Option<Mat3F32>` containing the 3x3 homography matrix if successful, or `None` if the matrix is singular.
-pub fn dlt_gauss_elim_f32(c: &[[f32; 4]; 4]) -> Option<Mat3F32> {
+pub fn homography_2d_dlt_gauss_elim_f32(c: &[[f32; 4]; 4]) -> Option<Mat3F32> {
     #[rustfmt::skip]
     let mut a = [
         c[0][0], c[0][1], 1.0, 0.0,     0.0,     0.0, -c[0][0]*c[0][2], -c[0][1]*c[0][2], c[0][2],
@@ -93,7 +93,7 @@ pub fn dlt_gauss_elim_f32(c: &[[f32; 4]; 4]) -> Option<Mat3F32> {
 /// * `x2` - The destination 2d points with shape (4, 2).
 ///
 /// Returns the 3x3 homography matrix.
-pub fn dlt_svd_f64(x1: &[[f64; 2]; 4], x2: &[[f64; 2]; 4]) -> Option<Mat3F64> {
+pub fn homography_2d_dlt_svd_f64(x1: &[[f64; 2]; 4], x2: &[[f64; 2]; 4]) -> Option<Mat3F64> {
     // construct matrix A (9x9) to get a full 9x9 V matrix from SVD
     let mut mat_a = SMatrix::<f64, 9, 9>::zeros();
     for i in 0..4 {
@@ -128,7 +128,7 @@ pub fn dlt_svd_f64(x1: &[[f64; 2]; 4], x2: &[[f64; 2]; 4]) -> Option<Mat3F64> {
 }
 
 /// Compute the homography matrix from four 3d point correspondences using LU decomposition.
-/// 
+///
 /// Note: The points supplied are often assumed to be structured such that the matrix is solvable.
 ///
 /// # Arguments
@@ -139,7 +139,7 @@ pub fn dlt_svd_f64(x1: &[[f64; 2]; 4], x2: &[[f64; 2]; 4]) -> Option<Mat3F64> {
 /// # Returns
 ///
 /// The output homography matrix from src to dst.
-pub fn dlt_lu_f64(x1: &[[f64; 3]; 4], x2: &[[f64; 3]; 4]) -> Option<Mat3F64> {
+pub fn homography_3d_dlt_lu_f64(x1: &[[f64; 3]; 4], x2: &[[f64; 3]; 4]) -> Option<Mat3F64> {
     let mut mat_a = SMatrix::<f64, 8, 8>::zeros();
     let mut vec_b = SVector::<f64, 8>::zeros();
 
@@ -168,7 +168,7 @@ pub fn dlt_lu_f64(x1: &[[f64; 3]; 4], x2: &[[f64; 3]; 4]) -> Option<Mat3F64> {
     Some(Mat3F64::from_cols_array(&[
         h_mat[0], h_mat[3], h_mat[6], // col 0
         h_mat[1], h_mat[4], h_mat[7], // col 1
-        h_mat[2], h_mat[5], 1.0,      // col 2
+        h_mat[2], h_mat[5], 1.0, // col 2
     ]))
 }
 
@@ -178,7 +178,7 @@ mod tests {
     use approx::assert_relative_eq;
 
     #[test]
-    fn test_dlt_gauss_elim_f32() {
+    fn test_homography_2d_dlt_gauss_elim_f32() {
         #[rustfmt::skip]
         let corr_arr = [
             [-1.0, -1.0, 27.0,  3.0],
@@ -187,23 +187,23 @@ mod tests {
             [-1.0,  1.0,  3.0,  3.0],
         ];
 
-        let h = dlt_gauss_elim_f32(&corr_arr).unwrap();
+        let h = homography_2d_dlt_gauss_elim_f32(&corr_arr).unwrap();
         // glam::Mat3 is column-major: [h11, h21, h31, h12, h22, h32, h13, h23, h33]
         let expected = Mat3F32::from_cols_array(&[
             -0.0, 12.0, -0.0, // col 0
             -12.0, -0.0, 0.0, // col 1
-            15.0, 15.0, 1.0,  // col 2
+            15.0, 15.0, 1.0, // col 2
         ]);
 
         assert_eq!(h, expected);
     }
 
     #[test]
-    fn test_dlt_svd_f64_identity() {
+    fn test_homography_2d_dlt_svd_f64_identity() {
         let x1 = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
         let x2 = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
-        
-        let mut h = dlt_svd_f64(&x1, &x2).unwrap();
+
+        let mut h = homography_2d_dlt_svd_f64(&x1, &x2).unwrap();
         h.0 /= h.z_axis.z;
 
         let h_arr = h.to_cols_array();
@@ -214,14 +214,10 @@ mod tests {
     }
 
     #[test]
-    fn test_dlt_svd_f64_transform() {
+    fn test_homography_2d_dlt_svd_f64_transform() {
         let x1 = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
         let (tx, ty) = (1.0, 1.0);
-        let expected_h = Mat3F64::from_cols_array(&[
-            1.0, 0.0, 0.0, 
-            0.0, 1.0, 0.0, 
-            tx, ty, 1.0
-        ]);
+        let expected_h = Mat3F64::from_cols_array(&[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, tx, ty, 1.0]);
 
         let mut x2 = [[0.0; 2]; 4];
         for i in 0..4 {
@@ -229,7 +225,7 @@ mod tests {
             x2[i] = [p.x / p.z, p.y / p.z];
         }
 
-        let mut h = dlt_svd_f64(&x1, &x2).unwrap();
+        let mut h = homography_2d_dlt_svd_f64(&x1, &x2).unwrap();
         h.0 /= h.z_axis.z;
 
         let h_arr = h.to_cols_array();
@@ -240,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dlt_lu_f64_identity() {
+    fn test_homography_3d_dlt_lu_f64_identity() {
         let x1 = [
             [0.0, 0.0, 1.0],
             [1.0, 0.0, 1.0],
@@ -253,10 +249,10 @@ mod tests {
             [0.0, 1.0, 1.0],
             [1.0, 1.0, 1.0],
         ];
-        
-        let mut h = dlt_lu_f64(&x1, &x2).unwrap();
+
+        let mut h = homography_3d_dlt_lu_f64(&x1, &x2).unwrap();
         h.0 /= h.z_axis.z;
-        
+
         let h_arr = h.to_cols_array();
         let exp_arr = Mat3F64::IDENTITY.to_cols_array();
         for i in 0..9 {
@@ -265,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dlt_lu_f64_transform() {
+    fn test_homography_3d_dlt_lu_f64_transform() {
         let x1 = [
             [0.0, 0.0, 1.0],
             [1.0, 0.0, 1.0],
@@ -274,11 +270,7 @@ mod tests {
         ];
 
         let (tx, ty) = (1.0, 1.0);
-        let expected_h = Mat3F64::from_cols_array(&[
-            1.0, 0.0, 0.0, 
-            0.0, 1.0, 0.0, 
-            tx, ty, 1.0
-        ]);
+        let expected_h = Mat3F64::from_cols_array(&[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, tx, ty, 1.0]);
 
         let mut x2 = [[0.0; 3]; 4];
         for i in 0..4 {
@@ -286,7 +278,7 @@ mod tests {
             x2[i] = [p.x, p.y, p.z];
         }
 
-        let mut h = dlt_lu_f64(&x1, &x2).unwrap();
+        let mut h = homography_3d_dlt_lu_f64(&x1, &x2).unwrap();
         h.0 /= h.z_axis.z;
 
         let h_arr = h.to_cols_array();

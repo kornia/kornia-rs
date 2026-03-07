@@ -1,7 +1,6 @@
 // NOTE: Consider whether to place these utilities under a more general-purpose crate,
 // such as kornia-linalg, or another location we decide on later.
 
-use kornia_algebra::Mat3F32;
 use kornia_image::{allocator::ImageAllocator, Image, ImageSize};
 
 /// Calculates the total number of tiles needed to cover an image of the given size,
@@ -79,8 +78,6 @@ impl PartialEq<u8> for Pixel {
     }
 }
 
-
-
 /// Returns the interpolated value for a given floating-point pixel coordinate in a grayscale image.
 ///
 /// # Arguments
@@ -127,6 +124,7 @@ pub(crate) fn value_for_pixel<A: ImageAllocator>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kornia_algebra::Mat3F32;
     use kornia_io::png::read_image_png_mono8;
 
     #[test]
@@ -192,8 +190,6 @@ mod tests {
         let mul = a * b;
         assert_eq!(mul, expected);
     }
-
-
 
     #[test]
     fn test_value_for_pixel() -> Result<(), Box<dyn std::error::Error>> {
