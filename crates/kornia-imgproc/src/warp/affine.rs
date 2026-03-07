@@ -148,7 +148,7 @@ pub fn warp_affine<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
             if x >= 0.0f32 && x < src.cols() as f32 && y >= 0.0f32 && y < src.rows() as f32 {
                 // interpolate the pixel value for each channel
                 dst_pixel.iter_mut().enumerate().for_each(|(k, pixel)| {
-                    *pixel = interpolate_pixel(src, x, y, k, interpolation).unwrap_or(0.0)
+                    *pixel = interpolate_pixel(src, x, y, k, interpolation);
                 });
             }
         },

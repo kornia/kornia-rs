@@ -95,10 +95,9 @@ where
     parallel::par_iter_rows_resample(dst, &map_x, &map_y, |&x, &y, dst_pixel| {
         // interpolate the pixel values for each channel
         for (k, pixel) in dst_pixel.iter_mut().enumerate() {
-            *pixel = interpolate_pixel(src, x, y, k, interpolation)?;
+            *pixel = interpolate_pixel(src, x, y, k, interpolation);
         }
-        Ok::<(), ImageError>(())
-    })?;
+    });
 
     Ok(())
 }

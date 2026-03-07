@@ -129,6 +129,16 @@ impl HarrisResponse {
         Self { k, ..self }
     }
 
+    #[inline]
+    fn row_bounds_err(cols: usize, rows: usize) -> ImageError {
+        ImageError::PixelIndexOutOfBounds(0, rows.saturating_sub(1), cols, rows)
+    }
+
+    #[inline]
+    fn col_bounds_err(cols: usize, rows: usize, row_idx: usize) -> ImageError {
+        ImageError::PixelIndexOutOfBounds(cols.saturating_sub(1), row_idx + 1, cols, rows)
+    }
+
     /// Computes the harris response of an image.
     ///
     /// The Harris response is computed by the determinant minus the trace squared.
@@ -165,26 +175,20 @@ impl HarrisResponse {
         self.dx2_data
             .as_mut_slice()
             .get_mut(col_slice.clone())
-            .ok_or_else(|| {
-                ImageError::PixelIndexOutOfBounds(0, src.rows() - 1, src.cols(), src.rows())
-            })?
+            .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
             .par_chunks_exact_mut(src.cols())
             .zip(
                 self.dy2_data
                     .as_mut_slice()
                     .get_mut(col_slice.clone())
-                    .ok_or_else(|| {
-                        ImageError::PixelIndexOutOfBounds(0, src.rows() - 1, src.cols(), src.rows())
-                    })?
+                    .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
                     .par_chunks_exact_mut(src.cols()),
             )
             .zip(
                 self.dxy_data
                     .as_mut_slice()
                     .get_mut(col_slice.clone())
-                    .ok_or_else(|| {
-                        ImageError::PixelIndexOutOfBounds(0, src.rows() - 1, src.cols(), src.rows())
-                    })?
+                    .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
                     .par_chunks_exact_mut(src.cols()),
             )
             .enumerate()
@@ -193,39 +197,18 @@ impl HarrisResponse {
 
                 dx2_chunk
                     .get_mut(row_slice.clone())
-                    .ok_or_else(|| {
-                        ImageError::PixelIndexOutOfBounds(
-                            src.cols() - 1,
-                            row_idx + 1,
-                            src.cols(),
-                            src.rows(),
-                        )
-                    })?
+                    .ok_or_else(|| Self::col_bounds_err(src.cols(), src.rows(), row_idx))?
                     .iter_mut()
                     .zip(
                         dy2_chunk
                             .get_mut(row_slice.clone())
-                            .ok_or_else(|| {
-                                ImageError::PixelIndexOutOfBounds(
-                                    src.cols() - 1,
-                                    row_idx + 1,
-                                    src.cols(),
-                                    src.rows(),
-                                )
-                            })?
+                            .ok_or_else(|| Self::col_bounds_err(src.cols(), src.rows(), row_idx))?
                             .iter_mut(),
                     )
                     .zip(
                         dxy_chunk
                             .get_mut(row_slice.clone())
-                            .ok_or_else(|| {
-                                ImageError::PixelIndexOutOfBounds(
-                                    src.cols() - 1,
-                                    row_idx + 1,
-                                    src.cols(),
-                                    src.rows(),
-                                )
-                            })?
+                            .ok_or_else(|| Self::col_bounds_err(src.cols(), src.rows(), row_idx))?
                             .iter_mut(),
                     )
                     .enumerate()
@@ -262,9 +245,7 @@ impl HarrisResponse {
 
         dst.as_slice_mut()
             .get_mut(col_slice.clone())
-            .ok_or_else(|| {
-                ImageError::PixelIndexOutOfBounds(0, src.rows() - 1, src.cols(), src.rows())
-            })?
+            .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
             .par_chunks_exact_mut(src.cols())
             .enumerate()
             .try_for_each(|(row_idx, dst_chunk)| {
@@ -272,14 +253,7 @@ impl HarrisResponse {
 
                 dst_chunk
                     .get_mut(row_slice.clone())
-                    .ok_or_else(|| {
-                        ImageError::PixelIndexOutOfBounds(
-                            src.cols() - 1,
-                            row_idx + 1,
-                            src.cols(),
-                            src.rows(),
-                        )
-                    })?
+                    .ok_or_else(|| Self::col_bounds_err(src.cols(), src.rows(), row_idx))?
                     .iter_mut()
                     .enumerate()
                     .for_each(|(col_idx, dst_pixel)| {

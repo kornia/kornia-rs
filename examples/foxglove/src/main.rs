@@ -1,15 +1,21 @@
+#[cfg(target_os = "linux")]
 use argh::FromArgs;
+#[cfg(target_os = "linux")]
 use foxglove::{
     schemas::{CompressedImage, Timestamp},
     WebSocketServer,
 };
+#[cfg(target_os = "linux")]
 use kornia_image::ImageSize;
+#[cfg(target_os = "linux")]
 use kornia_io::v4l::{PixelFormat, V4LCameraConfig, V4lVideoCapture};
+#[cfg(target_os = "linux")]
 use std::{
     sync::atomic::{AtomicBool, Ordering},
     sync::Arc,
 };
 
+#[cfg(target_os = "linux")]
 #[derive(FromArgs)]
 /// Foxglove demo application
 struct Args {

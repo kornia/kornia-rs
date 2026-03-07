@@ -71,12 +71,11 @@ fn resize_ndarray_zip(src: &Image<f32, 3, CpuAllocator>, dst: &mut Image<f32, 3,
                     k,
                     InterpolationMode::Nearest,
                 )
-                .unwrap()
             });
 
             // write the pixel values to the output image
             for (k, pixel) in pixels.enumerate() {
-                out[k] = pixel.unwrap_or(0.0);
+                out[k] = pixel;
             }
         });
 }

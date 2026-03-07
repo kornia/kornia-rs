@@ -1,12 +1,16 @@
 use argh::FromArgs;
+#[cfg(target_os = "linux")]
 use ros_z::{context::ZContextBuilder, Builder, Result as ZResult};
+#[cfg(target_os = "linux")]
 use std::sync::Arc;
 
+#[cfg(target_os = "linux")]
 use ros_z_nodes::{
     camera_node::V4lCameraNode, compute_node::ComputeNode, decoder_node::DecoderNode,
     foxglove_node::FoxgloveNode, logger_node::LoggerNode,
 };
 
+#[cfg(target_os = "linux")]
 #[derive(FromArgs)]
 /// ROS2-style camera publisher using ros-z
 struct Args {
