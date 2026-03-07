@@ -20,6 +20,7 @@
 *   **Normalization:** Min/max scaling, mean/std normalization.
 *   **Histograms:** Compute and manipulate image histograms.
 *   **Feature Detection:** (Experimental) Corner detection and feature extraction.
+*   **Contours:** Find image contours and compute their properties.
 
 ## 📦 Installation
 
@@ -84,6 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 *   **`calibration`**: Lens distortion correction.
 *   **`color`**: Color space conversions.
+*   **`contours`**: Contour finding and properties.
 *   **`core`**: Basic image operations.
 *   **`crop`**: Image cropping.
 *   **`draw`**: Drawing utilities for images.
