@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use candle_core::{IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Linear, Module};
-use log::debug;
 
 use crate::{context::InferenceContext, smolvlm::text_model::SmolText};
 

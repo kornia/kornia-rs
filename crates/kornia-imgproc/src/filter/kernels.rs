@@ -126,6 +126,7 @@ pub fn box_blur_fast_kernels_1d(sigma: f32, kernels: u8) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kornia_image::ImageError;
 
     #[test]
     fn test_sobel_kernel_1d() -> Result<(), ImageError> {
