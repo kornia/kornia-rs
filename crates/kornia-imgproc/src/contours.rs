@@ -694,16 +694,38 @@ fn filter_by_mode(
             }
         }
         RetrievalMode::CComp => {
-            // Two-level hierarchy: outer contours at level 1, holes at level 2
-            // Outer contours inside holes are re-rooted to level 1
+            // Two-level hierarchy: outer contours at level 1, holes at level 2.
+            // Outer contours inside holes are re-rooted to level 1.
             let mut fh: Vec<HierarchyEntry> = hierarchy[1..].to_vec();
+            // A hole whose enclosing outer was detected on a previous row has
+            // parent=1 (the frame sentinel) because lnbd resets each row.
+            // Walk backwards to find the nearest preceding outer and use its
+            // nbd label as the true parent before remapping.
+            for i in 0..fh.len() {
+                if fh[i][3] == 1 && matches!(border_types[i + 1], BorderType::Hole) {
+                    fh[i][3] = (0..i)
+                        .rev()
+                        .find(|&j| matches!(border_types[j + 1], BorderType::Outer))
+                        .map(|j| (j + 2) as i32) // fh index j -> nbd label j+2
+                        .unwrap_or(-1);
+                }
+            }
+            // Any outer that sits inside a hole is re-rooted to the top level.
+            // Must run before the remap while parent values are still nbd labels.
             for i in 0..fh.len() {
                 let parent = fh[i][3];
                 let is_outer_inside_hole = parent > 0
                     && matches!(border_types[i + 1], BorderType::Outer)
                     && matches!(border_types[nbd_to_idx(parent)], BorderType::Hole);
                 if is_outer_inside_hole {
-                    fh[i][3] = -1; // re-root: outer-inside-hole -> top level
+                    fh[i][3] = -1;
+                }
+            }
+            // Convert nbd labels to 0-based contour indices: nbd=2 -> 0, nbd=3 -> 1.
+            // Values < 2 (sentinel or no-link) become -1.
+            for entry in fh.iter_mut() {
+                for field in entry.iter_mut() {
+                    *field = if *field >= 2 { *field - 2 } else { -1 };
                 }
             }
             ContoursResult {
@@ -712,10 +734,29 @@ fn filter_by_mode(
             }
         }
         RetrievalMode::Tree => {
-            // Full hierarchy as computed, frame sentinel (index 0) stripped
+            // Full hierarchy, frame sentinel stripped.
+            let mut fh: Vec<HierarchyEntry> = hierarchy[1..].to_vec();
+            // Same parent=1 fix as CComp: resolve holes whose outer was on a
+            // previous row to the nearest preceding outer.
+            for i in 0..fh.len() {
+                if fh[i][3] == 1 && matches!(border_types[i + 1], BorderType::Hole) {
+                    fh[i][3] = (0..i)
+                        .rev()
+                        .find(|&j| matches!(border_types[j + 1], BorderType::Outer))
+                        .map(|j| (j + 2) as i32)
+                        .unwrap_or(-1);
+                }
+            }
+            // Convert nbd labels to 0-based contour indices: nbd=2 -> 0, nbd=3 -> 1.
+            // Values < 2 (sentinel or no-link) become -1.
+            for entry in fh.iter_mut() {
+                for field in entry.iter_mut() {
+                    *field = if *field >= 2 { *field - 2 } else { -1 };
+                }
+            }
             ContoursResult {
                 contours,
-                hierarchy: hierarchy[1..].to_vec(),
+                hierarchy: fh,
             }
         }
     }
@@ -1052,6 +1093,39 @@ mod tests {
             simp.contours[0].contains(&[1, 3]),
             "corner pixel missing from Simple contour"
         );
+        Ok(())
+    }
+
+    /// Hierarchy link fields must be 0-based indices into the contours vec, not
+    /// raw nbd labels. Verifies both Tree and CComp modes.
+    #[test]
+    fn test_hierarchy_indices_are_zero_based() -> Result<(), ContoursError> {
+        // Hollow square: outer border is contour 0, hole is contour 1.
+        let img = make_img(
+            6,
+            6,
+            vec![
+                0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 1,
+                1, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        );
+        let tree = find_contours(&img, RetrievalMode::Tree, ContourApproximationMode::Simple)?;
+        assert_eq!(tree.contours.len(), 2);
+        // hole's parent must be index 0, not raw nbd label 2
+        let hole = tree
+            .hierarchy
+            .iter()
+            .find(|h| h[3] >= 0)
+            .ok_or(ContoursError::NbdOverflow)?;
+        assert_eq!(hole[3], 0, "Tree: parent must be 0-based contour index");
+
+        let ccomp = find_contours(&img, RetrievalMode::CComp, ContourApproximationMode::Simple)?;
+        let hole = ccomp
+            .hierarchy
+            .iter()
+            .find(|h| h[3] >= 0)
+            .ok_or(ContoursError::NbdOverflow)?;
+        assert_eq!(hole[3], 0, "CComp: parent must be 0-based contour index");
         Ok(())
     }
 }
