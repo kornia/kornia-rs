@@ -2,8 +2,8 @@
 name = "kornia-rs"
 description = "Low-level 3D computer vision library in Rust"
 authors = ["kornia.org <edgar@kornia.org>"]
-channels = ["conda-forge"]
-platforms = ["linux-64", "linux-aarch64", "osx-arm64", "osx-64"]
+channels = ["conda-forge", "pypi"]
+platforms = ["linux-64", "osx-arm64", "osx-64", "linux-aarch64"]
 
 # ------------------------------------------------------------------------------
 # Environments
@@ -39,7 +39,6 @@ gstreamer = "*"
 gst-plugins-base = "*"
 gst-plugins-good = "*"
 nasm = "*"
-cargo-hack = "*"
 
 [feature.rust.activation]
 scripts = ["scripts/activate-rust.sh"]
@@ -51,6 +50,7 @@ libunwind = "*"  # Linux-only
 libunwind = "*"  # Linux-only
 
 [feature.rust.tasks]
+setup-cargo-hack = { cmd = "cargo install cargo-hack", description = "Install cargo-hack via cargo" }
 rust-check = { cmd = "cargo check --workspace --all-targets --features ci", description = "Check Rust compilation (all targets)" }
 rust-clippy = { cmd = "cargo clippy --workspace --no-deps --all-targets --features ci -- -D warnings", description = "Run clippy (all targets)" }
 rust-fmt = { cmd = "cargo fmt --all", description = "Format Rust code" }
