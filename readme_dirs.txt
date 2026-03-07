@@ -1,0 +1,14 @@
+.
+./crates/kornia
+./crates/kornia-3d
+./crates/kornia-algebra
+./crates/kornia-apriltag
+./crates/kornia-bow
+./crates/kornia-image
+./crates/kornia-imgproc
+./crates/kornia-io
+./crates/kornia-tensor
+./crates/kornia-tensor-ops
+./crates/kornia-vlm
+./kornia-cpp
+./kornia-py

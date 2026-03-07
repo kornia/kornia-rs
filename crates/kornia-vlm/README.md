@@ -4,73 +4,32 @@
 [![Documentation](https://docs.rs/kornia-vlm/badge.svg)](https://docs.rs/kornia-vlm)
 [![License](https://img.shields.io/crates/l/kornia-vlm.svg)](https://github.com/kornia/kornia/blob/main/LICENSE)
 
-> **Vision Language Models (VLM) inference in Rust.**
+> **Vision Language Model (VLM) utilities for Rust.**
 
 ## 🚀 Overview
-
-`kornia-vlm` enables the use of state-of-the-art Vision Language Models directly in Rust. Built on top of the `candle` ML framework, it provides easy-to-use interfaces for models that can "see" and "understand" images, allowing for tasks like image captioning, visual question answering, and object detection.
+`kornia-vlm` provides tools to integrate vision-language models, enabling image captioning, visual question answering, and multimodal embeddings within the Kornia ecosystem.
 
 ## 🔑 Key Features
-
-*   **Model Support:** Implementations for **PaliGemma**, **SmolVLM**, and **SmolVLM2**.
-*   **Inference Pipeline:** Simplified API for loading models, processing images, and generating text.
-*   **Efficient:** Leverages `candle` for hardware-accelerated inference (CUDA support via features).
-*   **Video Understanding:** (Experimental) Support for processing video frames.
+- Pre‑trained VLM inference wrappers (e.g., CLIP, BLIP)
+- Tokenization and text encoding utilities
+- Image‑text similarity scoring
+- Easy integration with `kornia-tensor` for tensor‑based processing
 
 ## 📦 Installation
-
-Add the following to your `Cargo.toml`. Enable `cuda` for GPU support:
-
 ```toml
 [dependencies]
-kornia-vlm = { version = "0.1.0", features = ["cuda"] }
+kornia-vlm = "0.1.11"
 ```
 
 ## 🛠️ Usage
-
-### Image Captioning (Pseudo-code)
-
 ```rust
-use kornia_vlm::paligemma::{Paligemma, PaligemmaConfig};
-// use kornia_io::functional as F;
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Load the model
-    // let mut model = Paligemma::new(PaligemmaConfig::default())?;
-
-    // 2. Load an image
-    // let image = F::read_image_any_rgb8("image.jpg")?;
-
-    // 3. Run inference with a prompt
-    // let caption = model.inference(&image, "Describe this image.", 128, false)?;
-
-    // println!("Caption: {}", caption);
-    Ok(())
-}
+use kornia_vlm::model::ClipModel;
+let model = ClipModel::new()?;
+let embedding = model.encode_image(&image)?;
 ```
 
-## 🧩 Modules
-
-*   **`paligemma`**: Google's PaliGemma model implementation.
-*   **`smolvlm`**: HuggingFace's SmolVLM implementation.
-*   **`smolvlm2`**: SmolVLM2 implementation.
-*   **`video`**: Utilities for video input processing for VLMs.
-
-## 💡 Related Examples
-
-You can find comprehensive examples in the `examples` folder of the repository:
-
-*   [`paligemma`](../../examples/paligemma): Example using the PaliGemma model.
-*   [`smol_vlm`](../../examples/smol_vlm): Example using the SmolVLM model.
-*   [`smol_vlm2`](../../examples/smol_vlm2): Example using the SmolVLM2 model.
-*   [`smol_vlm_convo`](../../examples/smol_vlm_convo): Conversational example with SmolVLM.
-*   [`smol_vlm_video`](../../examples/smol_vlm_video): Video processing with SmolVLM.
-*   [`smol_vlm2_video`](../../examples/smol_vlm2_video): Video processing with SmolVLM2.
-
 ## 🤝 Contributing
-
-Contributions are welcome! This crate is part of the Kornia workspace. Please refer to the main repository for contribution guidelines.
+Contributions are welcome! See our [Contributing Guidelines](CONTRIBUTING.md).
 
 ## 📄 License
-
-This crate is licensed under the Apache-2.0 License.
+Apache-2.0
