@@ -32,6 +32,15 @@ pub enum TensorError {
     /// Unsupported operation for the given data type or tensor configuration.
     #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),
+
+    /// Overflow while computing the tensor size for a shape.
+    /// Note: 'TensorError' is a public enum, adding variants like 'SizeOverflow' is a
+    /// breaking API change for downstream crates that match exhaustively.
+    #[error("Shape multiplication overflow for shape {shape:?}")]
+    SizeOverflow {
+        /// Shape whose multiplication overflowed.
+        shape: Vec<usize>,
+    },
 }
 
 /// Computes the strides for a row-major (C-contiguous) tensor layout.
@@ -47,6 +56,10 @@ pub enum TensorError {
 /// # Returns
 ///
 /// An array of strides corresponding to each dimension.
+///
+/// # Panics
+///
+/// Panics if shape multiplication overflows while computing row-major strides.
 ///
 /// # Examples
 ///
@@ -66,9 +79,46 @@ pub fn get_strides_from_shape<const N: usize>(shape: [usize; N]) -> [usize; N] {
     let mut stride = 1;
     for i in (0..shape.len()).rev() {
         strides[i] = stride;
-        stride *= shape[i];
+        stride = match stride.checked_mul(shape[i]) {
+            Some(next_stride) => next_stride,
+            // TODO: Replace this panic with a fallible API once `get_strides_from_shape` can
+            // return a `TensorError`, kept for compatibility in this PR.
+            None => panic!(
+                "Shape multiplication overflow while computing row-major strides for shape {:?}",
+                shape
+            ),
+        };
     }
     strides
+}
+
+// Computes the total number of elements using checked multiplication.
+fn checked_numel<const N: usize>(shape: &[usize; N]) -> Result<usize, TensorError> {
+    shape
+        .iter()
+        .try_fold(1usize, |acc, &d| acc.checked_mul(d))
+        .ok_or_else(|| TensorError::SizeOverflow {
+            shape: shape.to_vec(),
+        })
+}
+
+// Computes row-major strides using checked multiplication to avoid overflow differences
+// between debug and release builds.
+fn checked_strides_from_shape<const N: usize>(
+    shape: [usize; N],
+) -> Result<[usize; N], TensorError> {
+    let mut strides = [0; N];
+    let mut stride = 1usize;
+
+    for i in (0..N).rev() {
+        strides[i] = stride;
+        stride = stride
+            .checked_mul(shape[i])
+            .ok_or_else(|| TensorError::SizeOverflow {
+                shape: shape.to_vec(),
+            })?;
+    }
+    Ok(strides)
 }
 
 /// A multi-dimensional array (tensor) with owned data.
@@ -206,6 +256,8 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Errors
     ///
     /// If the number of elements in the data does not match the shape of the tensor, an error is returned.
+    /// An error is also returned if shape multiplication overflows while computing the tensor size
+    /// or row-major strides.
     ///
     /// # Example
     ///
@@ -217,12 +269,12 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// assert_eq!(t.shape, [2, 2]);
     /// ```
     pub fn from_shape_vec(shape: [usize; N], data: Vec<T>, alloc: A) -> Result<Self, TensorError> {
-        let numel = shape.iter().product::<usize>();
+        let numel = checked_numel(&shape)?;
         if numel != data.len() {
             return Err(TensorError::InvalidShape(numel));
         }
         let storage = TensorStorage::from_vec(data, alloc);
-        let strides = get_strides_from_shape(shape);
+        let strides = checked_strides_from_shape(shape)?;
         Ok(Self {
             storage,
             shape,
@@ -245,16 +297,18 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Errors
     ///
     /// If the number of elements in the data does not match the shape of the tensor, an error is returned.
+    /// An error is also returned if shape multiplication overflows while computing the tensor size
+    /// or row-major strides.
     pub fn from_shape_slice(shape: [usize; N], data: &[T], alloc: A) -> Result<Self, TensorError>
     where
         T: Clone,
     {
-        let numel = shape.iter().product::<usize>();
+        let numel = checked_numel(&shape)?;
         if numel != data.len() {
             return Err(TensorError::InvalidShape(numel));
         }
         let storage = TensorStorage::from_vec(data.to_vec(), alloc);
-        let strides = get_strides_from_shape(shape);
+        let strides = checked_strides_from_shape(shape)?;
         Ok(Self {
             storage,
             shape,
@@ -274,6 +328,10 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Safety
     ///
     /// The pointer must be non-null and the length must be valid.
+    ///
+    /// # Errors
+    ///
+    /// If shape multiplication overflows while computing row-major strides, an error is returned.
     pub unsafe fn from_raw_parts(
         shape: [usize; N],
         data: *const T,
@@ -284,7 +342,7 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
         T: Clone,
     {
         let storage = TensorStorage::from_raw_parts(data, len, alloc);
-        let strides = get_strides_from_shape(shape);
+        let strides = checked_strides_from_shape(shape)?;
         Ok(Self {
             storage,
             shape,
@@ -292,7 +350,6 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
         })
     }
 
-    /// Creates a new `Tensor` with the given shape and a default value.
     /// Creates a new `Tensor` with the given shape and a default value.
     ///
     /// # Arguments
@@ -303,6 +360,11 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     /// # Returns
     ///
     /// A new `Tensor` instance.
+    ///
+    /// # Panics
+    ///
+    /// Panics if shape multiplication overflows while computing the tensor size or row-major
+    /// strides.
     ///
     /// # Example
     ///
@@ -322,10 +384,44 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     where
         T: Clone,
     {
-        let numel = shape.iter().product::<usize>();
+        let numel = match checked_numel(&shape) {
+            Ok(numel) => numel,
+            Err(TensorError::SizeOverflow {
+                shape: overflow_shape,
+            }) => {
+                // TODO: Replace this panic with a fallible constructor variant, kept for API
+                // compatibility in this PR.
+                panic!(
+                    "Shape multiplication overflow while computing tensor size for shape {:?}",
+                    overflow_shape
+                )
+            }
+            Err(err) => {
+                // TODO: Replace this panic with structured error propagation when introducing a
+                // fallible constructor variant, behavior is unchanged in this PR.
+                panic!("Unexpected error while computing tensor size: {err}")
+            }
+        };
         let data = vec![value; numel];
         let storage = TensorStorage::from_vec(data, alloc);
-        let strides = get_strides_from_shape(shape);
+        let strides = match checked_strides_from_shape(shape) {
+            Ok(strides) => strides,
+            Err(TensorError::SizeOverflow {
+                shape: overflow_shape,
+            }) => {
+                // TODO: Replace this panic with a fallible constructor variant, kept for API
+                // compatibility in this PR.
+                panic!(
+                    "Shape multiplication overflow while computing row-major strides for shape {:?}",
+                    overflow_shape
+                )
+            }
+            Err(err) => {
+                // TODO: Replace this panic with structured error propagation when introducing a
+                // fallible constructor variant, behavior is unchanged in this PR.
+                panic!("Unexpected error while computing row-major strides: {err}")
+            }
+        };
         Self {
             storage,
             shape,
@@ -346,6 +442,11 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     ///
     /// A new `Tensor` instance.
     ///
+    /// # Panics
+    ///
+    /// Panics if shape multiplication overflows while computing the tensor size or row-major
+    /// strides.
+    ///
     /// # Example
     ///
     /// ```
@@ -361,7 +462,24 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     where
         F: Fn([usize; N]) -> T,
     {
-        let numel = shape.iter().product::<usize>();
+        let numel = match checked_numel(&shape) {
+            Ok(numel) => numel,
+            Err(TensorError::SizeOverflow {
+                shape: overflow_shape,
+            }) => {
+                // TODO: Replace this panic with a fallible constructor variant, kept for API
+                // compatibility in this PR.
+                panic!(
+                    "Shape multiplication overflow while computing tensor size for shape {:?}",
+                    overflow_shape
+                )
+            }
+            Err(err) => {
+                // TODO: Replace this panic with structured error propagation when introducing a
+                // fallible constructor variant, behavior is unchanged in this PR.
+                panic!("Unexpected error while computing tensor size: {err}")
+            }
+        };
         let data: Vec<T> = (0..numel)
             .map(|i| {
                 let mut index = [0; N];
@@ -374,7 +492,24 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
             })
             .collect();
         let storage = TensorStorage::from_vec(data, alloc);
-        let strides = get_strides_from_shape(shape);
+        let strides = match checked_strides_from_shape(shape) {
+            Ok(strides) => strides,
+            Err(TensorError::SizeOverflow {
+                shape: overflow_shape,
+            }) => {
+                // TODO: Replace this panic with a fallible constructor variant, kept for API
+                // compatibility in this PR.
+                panic!(
+                    "Shape multiplication overflow while computing row-major strides for shape {:?}",
+                    overflow_shape
+                )
+            }
+            Err(err) => {
+                // TODO: Replace this panic with structured error propagation when introducing a
+                // fallible constructor variant, behavior is unchanged in this PR.
+                panic!("Unexpected error while computing row-major strides: {err}")
+            }
+        };
         Self {
             storage,
             shape,
@@ -402,12 +537,13 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     ///
     /// The offset of the element at the given index.
     pub fn get_iter_offset(&self, index: [usize; N]) -> Option<usize> {
-        let mut offset = 0;
+        let mut offset = 0usize;
         for ((&idx, dim_size), stride) in index.iter().zip(self.shape).zip(self.strides) {
             if idx >= dim_size {
                 return None;
             }
-            offset += idx * stride;
+            let term = idx.checked_mul(stride)?;
+            offset = offset.checked_add(term)?;
         }
         Some(offset)
     }
@@ -546,7 +682,9 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
     ///
     /// # Errors
     ///
-    /// If the number of elements in the new shape does not match the number of elements in the tensor, an error is returned.
+    /// If the number of elements in the new shape does not match the number of elements in the tensor,
+    /// an error is returned. An error is also returned if shape multiplication overflows while
+    /// computing the tensor size or row-major strides.
     ///
     /// # Example
     ///
@@ -566,7 +704,7 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
         &self,
         shape: [usize; M],
     ) -> Result<TensorView<'_, T, M, A>, TensorError> {
-        let numel = shape.iter().product::<usize>();
+        let numel = checked_numel(&shape)?;
         if numel != self.numel() {
             return Err(TensorError::DimensionMismatch(format!(
                 "Cannot reshape tensor of shape {:?} with {} elements to shape {:?} with {} elements",
@@ -574,7 +712,7 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
             )));
         }
 
-        let strides = get_strides_from_shape(shape);
+        let strides = checked_strides_from_shape(shape)?;
 
         Ok(TensorView {
             storage: &self.storage,
@@ -868,17 +1006,27 @@ impl<T, const N: usize, A: TensorAllocator> Tensor<T, N, A> {
             return Ok(self.clone());
         }
 
-        let total_elems: usize = self.shape.iter().product();
+        let overflow_shape = self.shape;
+        let total_elems: usize = checked_numel(&self.shape)?;
         let mut flat = Vec::with_capacity(total_elems);
-        let mut idx = [0; N];
+        let mut idx = [0usize; N];
         let slice = self.storage.as_slice();
 
         for _ in 0..total_elems {
             let offset = idx
                 .iter()
                 .zip(self.strides.iter())
-                .map(|(&i, &s)| i * s)
-                .sum::<usize>();
+                .try_fold(0usize, |acc, (i, s)| {
+                    let term = (*i)
+                        .checked_mul(*s)
+                        .ok_or_else(|| TensorError::SizeOverflow {
+                            shape: overflow_shape.to_vec(),
+                        })?;
+                    acc.checked_add(term)
+                        .ok_or_else(|| TensorError::SizeOverflow {
+                            shape: overflow_shape.to_vec(),
+                        })
+                })?;
 
             flat.push(slice[offset].clone());
 
@@ -1663,6 +1811,72 @@ mod tests {
             }
             Err(e) => return Err(e),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn from_shape_vec_rejects_overflowing_shape() {
+        let shape = [usize::MAX, 2, 3];
+        let data: Vec<u8> = vec![];
+
+        let result = Tensor::<u8, 3, _>::from_shape_vec(shape, data, CpuAllocator);
+        assert!(matches!(
+            result,
+            Err(TensorError::SizeOverflow { shape: overflow_shape }) if overflow_shape == shape.to_vec()
+        ));
+    }
+
+    #[test]
+    fn from_shape_slice_rejects_overflowing_shape() {
+        let shape = [usize::MAX, 2, 3];
+        let data: [u8; 0] = [];
+
+        let result = Tensor::<u8, 3, _>::from_shape_slice(shape, &data, CpuAllocator);
+        assert!(matches!(
+            result,
+            Err(TensorError::SizeOverflow { shape: overflow_shape }) if overflow_shape == shape.to_vec()
+        ));
+    }
+
+    #[test]
+    fn reshape_rejects_overflowing_shape() -> Result<(), TensorError> {
+        let data: Vec<u8> = vec![1, 2, 3, 4];
+        let t = Tensor::<u8, 1, _>::from_shape_vec([4], data, CpuAllocator)?;
+
+        let result = t.reshape([usize::MAX, 2]);
+        assert!(matches!(
+            result,
+            Err(TensorError::SizeOverflow { shape: overflow_shape }) if overflow_shape == [usize::MAX, 2].to_vec()
+        ));
+        Ok(())
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Shape multiplication overflow while computing tensor size for shape"
+    )]
+    fn from_shape_val_panics_on_overflow() {
+        // Any shape whose product overflows usize should panic in infallible constructors.
+        let _ = Tensor::<u8, 3, _>::from_shape_val([usize::MAX, 2, 3], 0, CpuAllocator);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "Shape multiplication overflow while computing tensor size for shape"
+    )]
+    fn from_shape_fn_panics_on_overflow() {
+        let _ = Tensor::<u8, 3, _>::from_shape_fn([usize::MAX, 2, 3], CpuAllocator, |_idx| 0);
+    }
+
+    #[test]
+    fn get_iter_offset_returns_none_on_overflow() -> Result<(), TensorError> {
+        let data = vec![0u8; 4];
+        let mut t = Tensor::<u8, 2, _>::from_shape_vec([2, 2], data, CpuAllocator)?;
+
+        // Corrupt strides to force overflow.
+        t.strides = [usize::MAX, usize::MAX];
+
+        assert_eq!(t.get_iter_offset([1, 1]), None);
         Ok(())
     }
 }
