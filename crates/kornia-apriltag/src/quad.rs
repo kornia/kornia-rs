@@ -75,6 +75,16 @@ impl Quad {
     /// # Returns
     ///
     /// A `Vec2F32` representing the projected point in image coordinates.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_algebra::Vec2F32;
+    /// use kornia_apriltag::quad::Quad;
+    ///
+    /// let mut quad = Quad::default();
+    /// let p = quad.homography_project(0.0, 0.0);
+    /// ```
     pub fn homography_project(&self, x: f32, y: f32) -> kornia_algebra::Vec2F32 {
         let p = self.homography * Vec3F32::new(x, y, 1.0);
         kornia_algebra::Vec2F32::new(p.x / p.z, p.y / p.z)
@@ -82,19 +92,35 @@ impl Quad {
 
     /// Updates the homography matrix for the quad based on its current corner positions.
     ///
+    /// The tag coordinates are assumed to be in the range [-1.0, 1.0].
+    ///
     /// # Returns
     ///
     /// `true` if the homography was successfully computed and updated, `false` otherwise.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_algebra::Vec2F32;
+    /// use kornia_apriltag::quad::Quad;
+    ///
+    /// let mut quad = Quad::default();
+    /// quad.corners = [
+    ///    Vec2F32::new(0.0, 0.0), Vec2F32::new(10.0, 0.0),
+    ///    Vec2F32::new(10.0, 10.0), Vec2F32::new(0.0, 10.0)
+    /// ];
+    /// assert!(quad.update_homographies());
+    /// ```
     pub fn update_homographies(&mut self) -> bool {
-        let corr_arr = [
-            [-1.0, -1.0, self.corners[0].x, self.corners[0].y],
-            [1.0, -1.0, self.corners[1].x, self.corners[1].y],
-            [1.0, 1.0, self.corners[2].x, self.corners[2].y],
-            [-1.0, 1.0, self.corners[3].x, self.corners[3].y],
+        let src = [
+            kornia_algebra::Vec2F32::new(-1.0, -1.0),
+            kornia_algebra::Vec2F32::new(1.0, -1.0),
+            kornia_algebra::Vec2F32::new(1.0, 1.0),
+            kornia_algebra::Vec2F32::new(-1.0, 1.0),
         ];
 
-        if let Some(h) =
-            kornia_algebra::linalg::homography::homography_2d_dlt_gauss_elim_f32(&corr_arr)
+        if let Ok(h) =
+            kornia_algebra::linalg::homography::homography_2d_dlt_gauss_elim_f32(&src, &self.corners)
         {
             self.homography = h;
             return true;

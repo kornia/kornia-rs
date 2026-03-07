@@ -250,21 +250,16 @@ pub fn ransac_homography(
 
     for _ in 0..params.max_iterations {
         let sample = rand::seq::index::sample(&mut rng, n, 4);
-        let mut s1 = [[0.0; 2]; 4];
-        let mut s2 = [[0.0; 2]; 4];
+        let mut s1 = [Vec2F64::ZERO; 4];
+        let mut s2 = [Vec2F64::ZERO; 4];
         for (i, idx) in sample.iter().enumerate() {
-            s1[i] = [x1[idx].x, x1[idx].y];
-            s2[i] = [x2[idx].x, x2[idx].y];
+            s1[i] = x1[idx];
+            s2[i] = x2[idx];
         }
-        let mut h = [[0.0; 3]; 3];
+        let mut h = Mat3F64::IDENTITY;
         if homography_4pt2d(&s1, &s2, &mut h).is_err() {
             continue;
         }
-        let h = Mat3F64::from_cols(
-            Vec3F64::new(h[0][0], h[1][0], h[2][0]),
-            Vec3F64::new(h[0][1], h[1][1], h[2][1]),
-            Vec3F64::new(h[0][2], h[1][2], h[2][2]),
-        );
 
         let mut inliers = vec![false; n];
         let mut count = 0usize;

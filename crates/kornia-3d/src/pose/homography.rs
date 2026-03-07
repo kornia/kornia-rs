@@ -1,107 +1,82 @@
-use crate::linalg;
-use kornia_algebra::{linalg::svd::svd3_f64, Mat3F64, Vec3F64};
+pub use kornia_algebra::linalg::homography::HomographyError;
+use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 
-/// Error type for homography estimation.
-#[derive(thiserror::Error, Debug)]
-pub enum HomographyError {
-    /// Homography matrix is singular or near-singular.
-    #[error("Homography determinant too small (near-singular matrix)")]
-    SingularMatrix,
-
-    /// Cheirality constraint violated.
-    #[error("Cheirality check failed")]
-    CheiralityCheckFailed,
-}
-
-/// Compute the homography matrix from four 2d point correspondences.
-///
-/// * `x1` - The source 2d points with shape (4, 2).
-/// * `x2` - The destination 2d points with shape (4, 2).
-/// * `homo` - The output homography matrix from src to dst with shape (3, 3).
-pub fn homography_4pt2d(
-    x1: &[[f64; 2]; 4],
-    x2: &[[f64; 2]; 4],
-    homo: &mut [[f64; 3]; 3],
-) -> Result<(), HomographyError> {
-    if let Some(h) = kornia_algebra::linalg::homography::homography_2d_dlt_svd_f64(x1, x2) {
-        // copy to homography matrix
-        homo[0] = [h.x_axis().x, h.y_axis().x, h.z_axis().x];
-        homo[1] = [h.x_axis().y, h.y_axis().y, h.z_axis().y];
-        homo[2] = [h.x_axis().z, h.y_axis().z, h.z_axis().z];
-
-        // normalize the homography matrix
-        linalg::normalize_mat33_inplace(homo);
-
-        if linalg::det_mat33(homo).abs() < 1e-8 {
-            return Err(HomographyError::SingularMatrix);
-        }
-
-        Ok(())
-    } else {
-        Err(HomographyError::SingularMatrix)
-    }
-}
-
-/// Compute the homography matrix from four 3d point correspondences.
-///
-/// Inspired by: <https://github.com/PoseLib/PoseLib/blob/56d158f744d3561b0b70174e6d8ca9a7fc9bd9c1/PoseLib/solvers/homography_4pt.cc#L73C4-L76C20>
-///
-/// The homography matrix is computed by solving the linear system of equations.
+/// Compute the homography matrix from four 2D point correspondences using SVD.
 ///
 /// # Arguments
 ///
-/// * `x1` - The source 3d points with shape (4, 3).
-/// * `x2` - The destination 3d points with shape (4, 3).
-/// * `homo` - The output homography matrix from src to dst with shape (3, 3).
+/// * `x1` - The source 2D points.
+/// * `x2` - The destination 2D points.
+/// * `homo` - Pre-allocated 3x3 homography matrix.
+///
+/// # Returns
+///
+/// `Ok(())` on success, or a [`HomographyError`] if the matrix is singular.
+///
+/// # Errors
+///
+/// Returns [`HomographyError::SingularMatrix`] if the points are collinear or the system is degenerate.
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_algebra::{Vec2F64, Mat3F64};
+/// use kornia_3d::pose::homography_4pt2d;
+///
+/// let x1 = [Vec2F64::new(0.0, 0.0), Vec2F64::new(1.0, 0.0), Vec2F64::new(1.0, 1.0), Vec2F64::new(0.0, 1.0)];
+/// let x2 = [Vec2F64::new(0.0, 0.0), Vec2F64::new(1.0, 0.0), Vec2F64::new(1.0, 1.0), Vec2F64::new(0.0, 1.0)];
+/// let mut h = Mat3F64::IDENTITY;
+/// homography_4pt2d(&x1, &x2, &mut h).unwrap();
+/// ```
+pub fn homography_4pt2d(
+    x1: &[Vec2F64; 4],
+    x2: &[Vec2F64; 4],
+    homo: &mut Mat3F64,
+) -> Result<(), HomographyError> {
+    *homo = kornia_algebra::linalg::homography::homography_2d_dlt_svd_f64(x1, x2)?;
+    Ok(())
+}
+
+/// Compute the homography matrix from four 3D point correspondences using LU decomposition.
+///
+/// Inspired by: <https://github.com/PoseLib/PoseLib/blob/56d158f744d3561b0b70174e6d8ca9a7fc9bd9c1/PoseLib/solvers/homography_4pt.cc#L73C4-L76C20>
+///
+/// # Arguments
+///
+/// * `x1` - The source 3D points.
+/// * `x2` - The destination 3D points.
+/// * `homo` - Pre-allocated 3x3 homography matrix.
 /// * `check_cheirality` - Whether to check the cheirality condition.
+///
+/// # Returns
+///
+/// `Ok(())` on success, or a [`HomographyError`] if singular or cheirality check fails.
+///
+/// # Errors
+///
+/// Returns [`HomographyError::SingularMatrix`] if the linear system is unsolvable.
+/// Returns [`HomographyError::CheiralityCheckFailed`] if `check_cheirality` is true and the constraint is violated.
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_algebra::{Vec3F64, Mat3F64};
+/// use kornia_3d::pose::homography_4pt3d;
+///
+/// let x1 = [Vec3F64::new(0.0, 0.0, 1.0), Vec3F64::new(1.0, 0.0, 1.0), Vec3F64::new(1.0, 1.0, 1.0), Vec3F64::new(0.0, 1.0, 1.0)];
+/// let x2 = [Vec3F64::new(0.0, 0.0, 1.0), Vec3F64::new(1.0, 0.0, 1.0), Vec3F64::new(1.0, 1.0, 1.0), Vec3F64::new(0.0, 1.0, 1.0)];
+/// let mut h = Mat3F64::IDENTITY;
+/// homography_4pt3d(&x1, &x2, &mut h, true).unwrap();
+/// ```
 pub fn homography_4pt3d(
-    x1: &[[f64; 3]; 4],
-    x2: &[[f64; 3]; 4],
-    homo: &mut [[f64; 3]; 3],
+    x1: &[Vec3F64; 4],
+    x2: &[Vec3F64; 4],
+    homo: &mut Mat3F64,
     check_cheirality: bool,
 ) -> Result<(), HomographyError> {
-    if check_cheirality {
-        let mut p = [0.0; 3];
-        linalg::cross_vec3(&x1[0], &x1[1], &mut p);
-
-        let mut q = [0.0; 3];
-        linalg::cross_vec3(&x2[0], &x2[1], &mut q);
-
-        if (linalg::dot_product3(&p, &x1[2]) * linalg::dot_product3(&q, &x2[2])) < 0.0 {
-            return Err(HomographyError::CheiralityCheckFailed);
-        }
-
-        if linalg::dot_product3(&p, &x1[3]) * linalg::dot_product3(&q, &x2[3]) < 0.0 {
-            return Err(HomographyError::CheiralityCheckFailed);
-        }
-
-        linalg::cross_vec3(&x1[2], &x1[3], &mut p);
-        linalg::cross_vec3(&x2[2], &x2[3], &mut q);
-
-        if (linalg::dot_product3(&p, &x1[0]) * linalg::dot_product3(&q, &x2[0])) < 0.0 {
-            return Err(HomographyError::CheiralityCheckFailed);
-        }
-
-        if (linalg::dot_product3(&p, &x1[1]) * linalg::dot_product3(&q, &x2[1])) < 0.0 {
-            return Err(HomographyError::CheiralityCheckFailed);
-        }
-    }
-
-    if let Some(h) = kornia_algebra::linalg::homography::homography_3d_dlt_lu_f64(x1, x2) {
-        // copy to homography matrix
-        homo[0] = [h.x_axis().x, h.y_axis().x, h.z_axis().x];
-        homo[1] = [h.x_axis().y, h.y_axis().y, h.z_axis().y];
-        homo[2] = [h.x_axis().z, h.y_axis().z, h.z_axis().z];
-
-        let det = linalg::det_mat33(homo);
-        if det.abs() < 1e-8 {
-            return Err(HomographyError::SingularMatrix);
-        }
-
-        Ok(())
-    } else {
-        Err(HomographyError::SingularMatrix)
-    }
+    *homo =
+        kornia_algebra::linalg::homography::homography_3d_dlt_lu_f64(x1, x2, check_cheirality)?;
+    Ok(())
 }
 
 /// Decompose a homography into candidate (R, t) pairs using a full 8-solution method.
@@ -110,7 +85,7 @@ pub fn homography_4pt3d(
 /// up to 8 candidates (some can be invalid if singular values are near-degenerate).
 pub fn decompose_homography(h: &Mat3F64, k1: &Mat3F64, k2: &Mat3F64) -> Vec<(Mat3F64, Vec3F64)> {
     let a = k2.inverse() * *h * *k1;
-    let svd = svd3_f64(&a);
+    let svd = kornia_algebra::linalg::svd::svd3_f64(&a);
     let u = *svd.u();
     let v = *svd.v();
     let vt = v.transpose();
