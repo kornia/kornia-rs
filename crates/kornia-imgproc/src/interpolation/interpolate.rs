@@ -50,6 +50,6 @@ pub(crate) fn interpolate_pixel_fast<const C: usize, A: ImageAllocator>(
     match interpolation {
         InterpolationMode::Bilinear => bilinear_interpolation(image, u, v, c),
         InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v, c),
-        _ => 0.0,
+        InterpolationMode::Lanczos | InterpolationMode::Bicubic => 0.0,
     }
 }
