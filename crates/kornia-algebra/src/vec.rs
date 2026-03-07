@@ -238,8 +238,38 @@ define_vector_type!(Vec2F64, glam::DVec2, f64, [f64; 2], [x, y]);
 define_vector_type!(Vec3F32, glam::Vec3, f32, [f32; 3], [x, y, z]);
 define_vector_type!(Vec3F64, glam::DVec3, f64, [f64; 3], [x, y, z]);
 
+impl Vec3F32 {
+    /// Cross product between two 3D vectors.
+    #[inline]
+    pub fn cross(self, rhs: Self) -> Self {
+        let a: glam::Vec3 = self.into();
+        let b: glam::Vec3 = rhs.into();
+        Self::from(a.cross(b))
+    }
+}
+
+impl Vec3F64 {
+    /// Cross product between two 3D vectors.
+    #[inline]
+    pub fn cross(self, rhs: Self) -> Self {
+        let a: glam::DVec3 = self.into();
+        let b: glam::DVec3 = rhs.into();
+        Self::from(a.cross(b))
+    }
+}
+
 // 3D vector (aligned, single precision).
 define_vector_type!(Vec3AF32, glam::Vec3A, f32, [f32; 3], [x, y, z]);
+
+impl Vec3AF32 {
+    /// Cross product between two 3D vectors.
+    #[inline]
+    pub fn cross(self, rhs: Self) -> Self {
+        let a: glam::Vec3A = self.into();
+        let b: glam::Vec3A = rhs.into();
+        Self::from(a.cross(b))
+    }
+}
 
 // 4D vector types (single and double precision).
 define_vector_type!(Vec4F32, glam::Vec4, f32, [f32; 4], [x, y, z, w]);

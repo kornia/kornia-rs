@@ -35,8 +35,9 @@
 use crate::pose::fundamental::{fundamental_8point, sampson_distance, FundamentalError};
 use crate::pose::{
     decompose_essential, decompose_homography, enforce_essential_constraints,
-    essential_from_fundamental, homography_4pt2d, HomographyError,
+    essential_from_fundamental,
 };
+use kornia_algebra::linalg::homography::{homography_4pt2d_svd_f64, HomographyError};
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use rand::prelude::*;
 use rand::SeedableRng;
@@ -250,21 +251,16 @@ pub fn ransac_homography(
 
     for _ in 0..params.max_iterations {
         let sample = rand::seq::index::sample(&mut rng, n, 4);
-        let mut s1 = [[0.0; 2]; 4];
-        let mut s2 = [[0.0; 2]; 4];
+        let mut s1 = [Vec2F64::ZERO; 4];
+        let mut s2 = [Vec2F64::ZERO; 4];
         for (i, idx) in sample.iter().enumerate() {
-            s1[i] = [x1[idx].x, x1[idx].y];
-            s2[i] = [x2[idx].x, x2[idx].y];
+            s1[i] = x1[idx];
+            s2[i] = x2[idx];
         }
-        let mut h = [[0.0; 3]; 3];
-        if homography_4pt2d(&s1, &s2, &mut h).is_err() {
-            continue;
-        }
-        let h = Mat3F64::from_cols(
-            Vec3F64::new(h[0][0], h[1][0], h[2][0]),
-            Vec3F64::new(h[0][1], h[1][1], h[2][1]),
-            Vec3F64::new(h[0][2], h[1][2], h[2][2]),
-        );
+        let h = match homography_4pt2d_svd_f64(&s1, &s2) {
+            Ok(h) => h,
+            Err(_) => continue,
+        };
 
         let mut inliers = vec![false; n];
         let mut count = 0usize;
