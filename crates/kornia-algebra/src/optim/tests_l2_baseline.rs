@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::optim::OptimizerError;
     use crate::optim::{Factor, FactorError, LinearizationResult, Problem, Variable};
     use std::f32::consts::PI;
 
@@ -112,24 +113,20 @@ mod tests {
     }
 
     #[test]
-    fn test_line_fitting_l2_baseline_no_outliers() {
+    fn test_line_fitting_l2_baseline_no_outliers() -> Result<(), OptimizerError> {
         // Fit a line to clean data (no outliers)
         let data = generate_noisy_line_data(20, 0.1, 0.0);
 
         let mut problem = Problem::new();
-        problem
-            .add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])
-            .unwrap();
+        problem.add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])?;
 
         for (x, y) in &data {
             let factor = LineResidualFactor::new(*x, *y);
-            problem
-                .add_factor(Box::new(factor), vec!["line".to_string()])
-                .unwrap();
+            problem.add_factor(Box::new(factor), vec!["line".to_string()])?;
         }
 
         let optimizer = crate::optim::LevenbergMarquardt::default();
-        let result = optimizer.optimize(&mut problem).unwrap();
+        let result = optimizer.optimize(&mut problem)?;
 
         let line_vars = problem.get_variables();
         let m = line_vars["line"].values[0];
@@ -155,10 +152,11 @@ mod tests {
             "Intercept should converge to ~1.0, got {:.4}",
             b
         );
+        Ok(())
     }
 
     #[test]
-    fn test_line_fitting_l2_baseline_with_outliers() {
+    fn test_line_fitting_l2_baseline_with_outliers() -> Result<(), OptimizerError> {
         // Fit a line to data with 30% strong outliers
         // L2 minimization will be influenced by outliers (expected behavior for L2)
         // This test establishes the baseline cost to compare against robust losses later
@@ -167,35 +165,27 @@ mod tests {
 
         // Compute clean baseline
         let mut clean_problem = Problem::new();
-        clean_problem
-            .add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])
-            .unwrap();
+        clean_problem.add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])?;
 
         for (x, y) in &clean_data {
             let factor = LineResidualFactor::new(*x, *y);
-            clean_problem
-                .add_factor(Box::new(factor), vec!["line".to_string()])
-                .unwrap();
+            clean_problem.add_factor(Box::new(factor), vec!["line".to_string()])?;
         }
 
         let optimizer = crate::optim::LevenbergMarquardt::default();
-        let clean_result = optimizer.optimize(&mut clean_problem).unwrap();
+        let clean_result = optimizer.optimize(&mut clean_problem)?;
         let clean_cost = clean_result.final_cost;
 
         // Optimize with outliers
         let mut outlier_problem = Problem::new();
-        outlier_problem
-            .add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])
-            .unwrap();
+        outlier_problem.add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])?;
 
         for (x, y) in &outlier_data {
             let factor = LineResidualFactor::new(*x, *y);
-            outlier_problem
-                .add_factor(Box::new(factor), vec!["line".to_string()])
-                .unwrap();
+            outlier_problem.add_factor(Box::new(factor), vec!["line".to_string()])?;
         }
 
-        let outlier_result = optimizer.optimize(&mut outlier_problem).unwrap();
+        let outlier_result = optimizer.optimize(&mut outlier_problem)?;
 
         let outlier_vars = outlier_problem.get_variables();
         let _m = outlier_vars["line"].values[0];
@@ -222,27 +212,24 @@ mod tests {
             ),
             "Should converge despite outliers"
         );
+        Ok(())
     }
 
     #[test]
-    fn test_residual_jacobian_assembly() {
+    fn test_residual_jacobian_assembly() -> Result<(), OptimizerError> {
         // Validate that residuals and Jacobians are correctly assembled
         let data = vec![(0.0, 1.0), (1.0, 3.0), (2.0, 5.0)];
 
         let mut problem = Problem::new();
-        problem
-            .add_variable(Variable::euclidean("line", 2), vec![0.5, 0.5])
-            .unwrap();
+        problem.add_variable(Variable::euclidean("line", 2), vec![0.5, 0.5])?;
 
         for (x, y) in &data {
             let factor = LineResidualFactor::new(*x, *y);
-            problem
-                .add_factor(Box::new(factor), vec!["line".to_string()])
-                .unwrap();
+            problem.add_factor(Box::new(factor), vec!["line".to_string()])?;
         }
 
         // Compute initial cost to validate assembly
-        let initial_cost = problem.compute_total_cost().unwrap();
+        let initial_cost = problem.compute_total_cost()?;
 
         // Expected residuals for (m=0.5, b=0.5):
         // Point (0, 1): r = 1 - (0.5*0 + 0.5) = 0.5
@@ -260,7 +247,7 @@ mod tests {
 
         // Optimize to true parameters (m=2, b=1)
         let optimizer = crate::optim::LevenbergMarquardt::default();
-        let result = optimizer.optimize(&mut problem).unwrap();
+        let result = optimizer.optimize(&mut problem)?;
 
         let line_vars = problem.get_variables();
         let m = line_vars["line"].values[0];
@@ -273,28 +260,25 @@ mod tests {
             b
         );
         assert!(result.final_cost < 1e-6, "Final cost should be near zero");
+        Ok(())
     }
 
     #[test]
-    fn test_convergence_with_increasing_noise() {
+    fn test_convergence_with_increasing_noise() -> Result<(), OptimizerError> {
         // Test convergence across different noise levels
         for noise_std in &[0.01, 0.1, 0.5] {
             let data = generate_noisy_line_data(50, *noise_std, 0.0);
 
             let mut problem = Problem::new();
-            problem
-                .add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])
-                .unwrap();
+            problem.add_variable(Variable::euclidean("line", 2), vec![0.0, 0.0])?;
 
             for (x, y) in &data {
                 let factor = LineResidualFactor::new(*x, *y);
-                problem
-                    .add_factor(Box::new(factor), vec!["line".to_string()])
-                    .unwrap();
+                problem.add_factor(Box::new(factor), vec!["line".to_string()])?;
             }
 
             let optimizer = crate::optim::LevenbergMarquardt::default();
-            let result = optimizer.optimize(&mut problem).unwrap();
+            let result = optimizer.optimize(&mut problem)?;
 
             assert!(result.iterations > 0);
             assert!(
@@ -307,27 +291,24 @@ mod tests {
                 noise_std
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn test_normal_equations_structure() {
+    fn test_normal_equations_structure() -> Result<(), OptimizerError> {
         // Validate that normal equations (J^T J and J^T r) are properly formed
         let data = vec![(1.0, 2.0), (2.0, 4.0), (3.0, 6.0)];
 
         let mut problem = Problem::new();
-        problem
-            .add_variable(Variable::euclidean("line", 2), vec![1.0, 0.0])
-            .unwrap();
+        problem.add_variable(Variable::euclidean("line", 2), vec![1.0, 0.0])?;
 
         for (x, y) in &data {
             let factor = LineResidualFactor::new(*x, *y);
-            problem
-                .add_factor(Box::new(factor), vec!["line".to_string()])
-                .unwrap();
+            problem.add_factor(Box::new(factor), vec!["line".to_string()])?;
         }
 
         let optimizer = crate::optim::LevenbergMarquardt::default();
-        let result = optimizer.optimize(&mut problem).unwrap();
+        let result = optimizer.optimize(&mut problem)?;
 
         let line_vars = problem.get_variables();
         let m = line_vars["line"].values[0];
@@ -338,5 +319,6 @@ mod tests {
         assert!(b.abs() < 1e-4);
         // With perfect data, cost should be near zero
         assert!(result.final_cost < 1e-8);
+        Ok(())
     }
 }
