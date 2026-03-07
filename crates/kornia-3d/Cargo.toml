@@ -26,7 +26,7 @@ kiddo = "5.0.2"
 kornia-algebra = { workspace = true }
 kornia-imgproc = { workspace = true }
 log = { workspace = true }
-nalgebra = "0.32"
+nalgebra = "0.34"
 rand = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
