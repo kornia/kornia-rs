@@ -1,5 +1,4 @@
 use crate::linalg;
-use faer::prelude::SpSolver;
 use kornia_algebra::{linalg::svd::svd3_f64, Mat3F64, Vec3F64};
 
 /// Error type for homography estimation.
@@ -24,44 +23,23 @@ pub fn homography_4pt2d(
     x2: &[[f64; 2]; 4],
     homo: &mut [[f64; 3]; 3],
 ) -> Result<(), HomographyError> {
-    // construct matrix A
-    let mut mat_a = faer::Mat::<f64>::zeros(8, 9);
-    for i in 0..4 {
-        let (x1_i, x2_i) = (x1[i], x2[i]);
-        unsafe {
-            mat_a.write_unchecked(2 * i, 0, x1_i[0]);
-            mat_a.write_unchecked(2 * i, 1, x1_i[1]);
-            mat_a.write_unchecked(2 * i, 2, 1.0);
-            mat_a.write_unchecked(2 * i, 6, -x2_i[0] * x1_i[0]);
-            mat_a.write_unchecked(2 * i, 7, -x2_i[0] * x1_i[1]);
-            mat_a.write_unchecked(2 * i, 8, -x2_i[0]);
+    if let Some(h) = kornia_algebra::linalg::homography::dlt_svd_f64(x1, x2) {
+        // copy to homography matrix
+        homo[0] = [h.x_axis().x, h.y_axis().x, h.z_axis().x];
+        homo[1] = [h.x_axis().y, h.y_axis().y, h.z_axis().y];
+        homo[2] = [h.x_axis().z, h.y_axis().z, h.z_axis().z];
 
-            mat_a.write_unchecked(2 * i + 1, 3, x1_i[0]);
-            mat_a.write_unchecked(2 * i + 1, 4, x1_i[1]);
-            mat_a.write_unchecked(2 * i + 1, 5, 1.0);
-            mat_a.write_unchecked(2 * i + 1, 6, -x2_i[1] * x1_i[0]);
-            mat_a.write_unchecked(2 * i + 1, 7, -x2_i[1] * x1_i[1]);
-            mat_a.write_unchecked(2 * i + 1, 8, -x2_i[1]);
+        // normalize the homography matrix
+        linalg::normalize_mat33_inplace(homo);
+
+        if linalg::det_mat33(homo).abs() < 1e-8 {
+            return Err(HomographyError::SingularMatrix);
         }
+
+        Ok(())
+    } else {
+        Err(HomographyError::SingularMatrix)
     }
-
-    // solve -> h_mat: 8x1 and take the smallest singular value
-    let svd = mat_a.svd();
-    let h = svd.v().col(8);
-
-    // copy to homography matrix
-    homo[0] = [h[0], h[1], h[2]];
-    homo[1] = [h[3], h[4], h[5]];
-    homo[2] = [h[6], h[7], h[8]];
-
-    // normalize the homography matrix
-    linalg::normalize_mat33_inplace(homo);
-
-    if linalg::det_mat33(homo).abs() < 1e-8 {
-        return Err(HomographyError::SingularMatrix);
-    }
-
-    Ok(())
 }
 
 /// Compute the homography matrix from four 3d point correspondences.
@@ -109,46 +87,21 @@ pub fn homography_4pt3d(
         }
     }
 
-    let mut m_mat = faer::Mat::<f64>::zeros(8, 9);
-    for i in 0..4 {
-        let (x1_0, x1_1, x1_2) = (x1[i][0], x1[i][1], x1[i][2]);
-        let (x2_0, x2_1, x2_2) = (x2[i][0], x2[i][1], x2[i][2]);
-        unsafe {
-            m_mat.write_unchecked(2 * i, 0, x2_2 * x1_0);
-            m_mat.write_unchecked(2 * i, 1, x2_2 * x1_1);
-            m_mat.write_unchecked(2 * i, 2, x2_2 * x1_2);
-            m_mat.write_unchecked(2 * i, 6, -x2_0 * x1_0);
-            m_mat.write_unchecked(2 * i, 7, -x2_0 * x1_1);
-            m_mat.write_unchecked(2 * i, 8, -x2_0 * x1_2);
+    if let Some(h) = kornia_algebra::linalg::homography::dlt_lu_f64(x1, x2) {
+        // copy to homography matrix
+        homo[0] = [h.x_axis().x, h.y_axis().x, h.z_axis().x];
+        homo[1] = [h.x_axis().y, h.y_axis().y, h.z_axis().y];
+        homo[2] = [h.x_axis().z, h.y_axis().z, h.z_axis().z];
 
-            m_mat.write_unchecked(2 * i + 1, 3, x2_2 * x1_0);
-            m_mat.write_unchecked(2 * i + 1, 4, x2_2 * x1_1);
-            m_mat.write_unchecked(2 * i + 1, 5, x2_2 * x1_2);
-            m_mat.write_unchecked(2 * i + 1, 6, -x2_1 * x1_0);
-            m_mat.write_unchecked(2 * i + 1, 7, -x2_1 * x1_1);
-            m_mat.write_unchecked(2 * i + 1, 8, -x2_1 * x1_2);
+        let det = linalg::det_mat33(homo);
+        if det.abs() < 1e-8 {
+            return Err(HomographyError::SingularMatrix);
         }
+
+        Ok(())
+    } else {
+        Err(HomographyError::SingularMatrix)
     }
-
-    // solve -> h_mat: 8x1
-    let h_mat = m_mat
-        .submatrix(0, 0, 8, 8)
-        .partial_piv_lu()
-        .solve(-m_mat.submatrix(0, 8, 8, 1));
-    let h = h_mat.col(0);
-
-    // copy to homography matrix
-    // NOTE: it contains 8 elements as transposed
-    homo[0] = [h[0], h[1], h[2]];
-    homo[1] = [h[3], h[4], h[5]];
-    homo[2] = [h[6], h[7], 1.0];
-
-    let det = linalg::det_mat33(homo);
-    if det.abs() < 1e-8 {
-        return Err(HomographyError::SingularMatrix);
-    }
-
-    Ok(())
 }
 
 /// Decompose a homography into candidate (R, t) pairs using a full 8-solution method.

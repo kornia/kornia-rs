@@ -1,6 +1,6 @@
 use crate::{
     segmentation::GradientInfo,
-    utils::{homography_compute, Pixel},
+    utils::Pixel,
     DecodeTagsConfig,
 };
 use kornia_algebra::{Mat3F32, Vec3F32};
@@ -97,7 +97,7 @@ impl Quad {
             [-1.0, 1.0, self.corners[3].x, self.corners[3].y],
         ];
 
-        if let Some(h) = homography_compute(corr_arr) {
+        if let Some(h) = kornia_algebra::linalg::homography::dlt_gauss_elim_f32(&corr_arr) {
             self.homography = h;
             return true;
         }
