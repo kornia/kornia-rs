@@ -128,6 +128,14 @@ pub trait Factor: Send + Sync {
             .map(|i| self.variable_local_dim(i))
             .sum()
     }
+
+    /// Optionally get a robust loss function for this factor.
+    ///
+    /// Default implementation returns None (standard L2 least squares).
+    /// Factors can override this to apply robust loss weighting.
+    fn get_loss(&self) -> Option<&dyn crate::optim::RobustLoss> {
+        None
+    }
 }
 
 /// A simple prior factor that penalizes deviation from a target value.
