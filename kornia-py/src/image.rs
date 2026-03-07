@@ -155,6 +155,12 @@ impl_pyarray_to_image!(u8, FromPyImage, from_pyimage, PyImage);
 impl_pyarray_to_image!(u16, FromPyImageU16, from_pyimage_u16, PyImageU16);
 impl_pyarray_to_image!(f32, FromPyImageF32, from_pyimage_f32, PyImageF32);
 
+/// Represents the dimensions of an image.
+///
+/// # Fields
+///
+/// * `width` - The width of the image.
+/// * `height` - The height of the image.
 #[pyclass(name = "ImageSize", frozen)]
 #[derive(Clone)]
 pub struct PyImageSize {
@@ -163,17 +169,25 @@ pub struct PyImageSize {
 
 #[pymethods]
 impl PyImageSize {
+    /// Creates a new ImageSize instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `width` - The width of the image.
+    /// * `height` - The height of the image.
     #[new]
     pub fn new(width: usize, height: usize) -> PyResult<PyImageSize> {
         let inner = ImageSize { width, height };
         Ok(PyImageSize { inner })
     }
 
+    /// Returns the width of the image.
     #[getter]
     pub fn width(&self) -> usize {
         self.inner.width
     }
 
+    /// Returns the height of the image.
     #[getter]
     pub fn height(&self) -> usize {
         self.inner.height
@@ -206,6 +220,10 @@ impl From<PyImageSize> for ImageSize {
     }
 }
 
+/// Represents the data type of the image pixels.
+///
+/// Supports standard unsigned 8-bit (U8), unsigned 16-bit (U16),
+/// and 32-bit floating point (F32) formats.
 #[pyclass(name = "PixelFormat")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PyPixelFormat {
@@ -234,6 +252,16 @@ impl From<PyPixelFormat> for PixelFormat {
     }
 }
 
+/// Represents the memory layout and format of an image.
+///
+/// Defines the physical dimensions, number of channels, and pixel
+/// data type required to correctly interpret an image buffer.
+///
+/// # Fields
+///
+/// * `image_size` - The dimensions of the image.
+/// * `channels` - The number of channels (e.g., 3 for RGB).
+/// * `pixel_format` - The data type of the pixels.
 #[pyclass(name = "ImageLayout", frozen)]
 #[derive(Clone)]
 pub struct PyImageLayout {
@@ -242,6 +270,13 @@ pub struct PyImageLayout {
 
 #[pymethods]
 impl PyImageLayout {
+    /// Creates a new ImageLayout instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `image_size` - The dimensions of the image.
+    /// * `channels` - The number of channels in the image.
+    /// * `pixel_format` - The data type of the pixels.
     #[new]
     pub fn new(
         image_size: PyImageSize,
@@ -257,16 +292,19 @@ impl PyImageLayout {
         })
     }
 
+    /// Returns the dimensions of the image.
     #[getter]
     pub fn image_size(&self) -> PyImageSize {
         self.inner.image_size.into()
     }
 
+    /// Returns the number of channels in the image.
     #[getter]
     pub fn channels(&self) -> u8 {
         self.inner.channels
     }
 
+    /// Returns the pixel format of the image.
     #[getter]
     pub fn pixel_format(&self) -> PyPixelFormat {
         self.inner.pixel_format.into()

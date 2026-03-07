@@ -4,6 +4,37 @@ use crate::image::{FromPyImage, PyImage, ToPyImage};
 use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
 
+/// Resize an image to a new size using the specified interpolation mode.
+///
+/// This function resizes an RGB image to the specified dimensions using
+/// one of the supported interpolation methods.
+///
+/// # Arguments
+///
+/// * `image` - Input RGB image as a PyImage object (HxWx3 numpy array).
+/// * `new_size` - Target size as (height, width).
+/// * `interpolation` - Interpolation method:
+///     - "nearest": Nearest neighbor interpolation (fastest, lowest quality)
+///     - "bilinear": Bilinear interpolation (good balance)
+///
+/// # Returns
+///
+/// Returns a `PyImage` containing the resized RGB image.
+///
+/// # Exceptions
+///
+/// Raises `PyValueError` if interpolation mode is not supported.
+///
+/// # Examples
+///
+/// ```python
+/// import kornia_rs
+/// import numpy as np
+///
+/// img = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
+/// resized = kornia_rs.imgproc.resize(img, (50, 50), interpolation="bilinear")
+/// print(resized.shape)
+/// ```
 #[pyfunction]
 pub fn resize(image: PyImage, new_size: (usize, usize), interpolation: &str) -> PyResult<PyImage> {
     let image = Image::from_pyimage(image)
