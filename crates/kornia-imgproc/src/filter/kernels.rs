@@ -1,4 +1,3 @@
-use kornia_image::ImageError;
 /// Create a box blur kernel.
 ///
 /// # Arguments
