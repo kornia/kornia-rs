@@ -39,6 +39,6 @@ pub fn interpolate_pixel<const C: usize, A: ImageAllocator>(
     match interpolation {
         InterpolationMode::Bilinear => bilinear_interpolation(image, u, v, c),
         InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v, c),
-        _ => unreachable!("Unsupported interpolation mode should be validated upfront"),
+        _ => 0.0,
     }
 }

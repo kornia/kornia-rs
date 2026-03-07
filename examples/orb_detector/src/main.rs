@@ -1,6 +1,9 @@
+#[cfg(target_os = "linux")]
 use argh::FromArgs;
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 
+#[cfg(target_os = "linux")]
 use kornia::{
     image::{Image, ImageSize},
     imgproc::{
@@ -16,6 +19,7 @@ use kornia::{
 use kornia::io::v4l::{PixelFormat, V4LCameraConfig, V4lVideoCapture};
 
 /// ORB detector webcam demo: match a reference image against live webcam frames.
+#[cfg(target_os = "linux")]
 #[derive(FromArgs)]
 struct Args {
     /// path to the reference image
@@ -161,6 +165,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn join_images_inplace(
     image1: &Image<u8, 1, CpuAllocator>,
     image2: &Image<u8, 1, CpuAllocator>,
@@ -196,6 +201,7 @@ fn join_images_inplace(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn u8_to_f32_image(src: &Image<u8, 1, CpuAllocator>, dst: &mut Image<f32, 1, CpuAllocator>) {
     src.as_slice()
         .iter()

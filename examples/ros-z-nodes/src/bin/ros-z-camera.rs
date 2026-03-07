@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 use argh::FromArgs;
 #[cfg(target_os = "linux")]
 use ros_z::{context::ZContextBuilder, Builder, Result as ZResult};

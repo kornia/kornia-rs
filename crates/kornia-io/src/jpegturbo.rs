@@ -29,20 +29,8 @@ pub enum JpegTurboError {
 /// A JPEG decoder using the turbojpeg library.
 pub struct JpegTurboDecoder(Mutex<turbojpeg::Decompressor>);
 
-impl Default for JpegTurboDecoder {
-    fn default() -> Self {
-        Self::new().expect("Failed to initialize turbojpeg decompressor")
-    }
-}
-
 /// A JPEG encoder using the turbojpeg library.
 pub struct JpegTurboEncoder(Mutex<turbojpeg::Compressor>);
-
-impl Default for JpegTurboEncoder {
-    fn default() -> Self {
-        Self::new().expect("Failed to initialize turbojpeg compressor")
-    }
-}
 
 // Implementations for ImageDecoder and ImageEncoder
 
