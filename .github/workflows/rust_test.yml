@@ -29,7 +29,7 @@ jobs:
       fail-fast: false
       matrix:
         mode: [default, all-features, no-default-features]
-        release: [true,false]
+        release: [true, false]
         include:
           - mode: default
             flags: ""
@@ -53,13 +53,17 @@ jobs:
         with:
           pixi-version: v0.40.0
           cache: true
+          environments: dev
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
 
       - name: Run tests (${{ matrix.mode }}, release=${{ matrix.release }})
         run: |
             pixi run cargo hack test --workspace ${{ matrix.flags }} ${{ matrix.rel_flag }}
 
-
       - name: Show sccache stats
         if: always()
         run: |
-          sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
+            sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
