@@ -74,8 +74,7 @@ pub fn homography_4pt3d(
     homo: &mut Mat3F64,
     check_cheirality: bool,
 ) -> Result<(), HomographyError> {
-    *homo =
-        kornia_algebra::linalg::homography::homography_3d_dlt_lu_f64(x1, x2, check_cheirality)?;
+    *homo = kornia_algebra::linalg::homography::homography_3d_dlt_lu_f64(x1, x2, check_cheirality)?;
     Ok(())
 }
 

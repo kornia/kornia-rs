@@ -274,7 +274,10 @@ pub fn homography_3d_dlt_lu_f64(
         vec_b[2 * i + 1] = x2_i.y * x1_i.z;
     }
 
-    let h_mat = mat_a.lu().solve(&vec_b).ok_or(HomographyError::SingularMatrix)?;
+    let h_mat = mat_a
+        .lu()
+        .solve(&vec_b)
+        .ok_or(HomographyError::SingularMatrix)?;
 
     // column-major array
     let h = Mat3F64::from_cols_array(&[
