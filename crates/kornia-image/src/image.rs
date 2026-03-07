@@ -27,6 +27,39 @@ pub struct ImageSize {
     pub height: usize,
 }
 
+/// Pixel data type stored in an image buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PixelFormat {
+    /// Unsigned 8-bit integer pixels.
+    U8,
+    /// Unsigned 16-bit integer pixels.
+    U16,
+    /// 32-bit floating point pixels.
+    F32,
+}
+
+/// Image layout metadata (size, channels, pixel format).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageLayout {
+    /// Image size in pixels.
+    pub image_size: ImageSize,
+    /// Number of channels per pixel.
+    pub channels: u8,
+    /// Pixel data format.
+    pub pixel_format: PixelFormat,
+}
+
+impl ImageLayout {
+    /// Create a new image layout descriptor.
+    pub fn new(image_size: ImageSize, channels: u8, pixel_format: PixelFormat) -> Self {
+        Self {
+            image_size,
+            channels,
+            pixel_format,
+        }
+    }
+}
+
 impl std::fmt::Display for ImageSize {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
@@ -52,42 +85,19 @@ impl From<ImageSize> for [u32; 2] {
     }
 }
 
-/// Pixel data type format.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PixelFormat {
-    /// Unsigned 8-bit samples (0-255).
-    U8,
-    /// Unsigned 16-bit samples (0-65535).
-    U16,
-    /// 32-bit floating point samples.
-    F32,
-}
+impl ImageSize {
+    /// Converts (y, x) coordinates to a flat index (row-major order).
+    #[inline]
+    pub fn index(&self, y: usize, x: usize) -> usize {
+        y * self.width + x
+    }
 
-/// Metadata describing the layout of an image including dimensions, channels, and pixel format.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ImageLayout {
-    /// Spatial size of the image (width and height).
-    pub image_size: ImageSize,
-    /// Number of color channels.
-    pub channels: u8,
-    /// Scalar data type for pixel values.
-    pub pixel_format: PixelFormat,
-}
-
-impl ImageLayout {
-    /// Creates a new `ImageLayout` with the given size, channel count, and pixel format.
-    ///
-    /// # Arguments
-    ///
-    /// * `image_size` - The width and height of the image
-    /// * `channels` - Number of color channels
-    /// * `pixel_format` - The data type for pixel values
-    pub fn new(image_size: ImageSize, channels: u8, pixel_format: PixelFormat) -> Self {
-        Self {
-            image_size,
-            channels,
-            pixel_format,
-        }
+    /// Converts a flat index to (y, x) coordinates (row-major order).
+    #[inline]
+    pub fn coords(&self, idx: usize) -> (usize, usize) {
+        let y = idx / self.width;
+        let x = idx % self.width;
+        (y, x)
     }
 }
 
@@ -626,7 +636,7 @@ impl<T, const C: usize, A: ImageAllocator> TryInto<Tensor3<T, A>> for Image<T, C
 
 #[cfg(test)]
 mod tests {
-    use crate::image::{Image, ImageError, ImageLayout, ImageSize, PixelFormat};
+    use crate::image::{Image, ImageError, ImageSize};
     use kornia_tensor::{CpuAllocator, Tensor};
 
     #[test]
@@ -640,36 +650,22 @@ mod tests {
     }
 
     #[test]
-    fn test_image_layout_creation() {
+    fn test_image_size_index_coords() {
         let size = ImageSize {
-            width: 258,
-            height: 195,
+            width: 8,
+            height: 6,
         };
+        // Test (y, x) -> idx
+        assert_eq!(size.index(0, 0), 0);
+        assert_eq!(size.index(1, 0), 8);
+        assert_eq!(size.index(2, 3), 2 * 8 + 3);
+        assert_eq!(size.index(5, 7), 5 * 8 + 7);
 
-        let layout = ImageLayout::new(size, 3, PixelFormat::U8);
-
-        assert_eq!(layout.image_size.width, 258);
-        assert_eq!(layout.image_size.height, 195);
-        assert_eq!(layout.channels, 3);
-        assert_eq!(layout.pixel_format, PixelFormat::U8);
-    }
-
-    #[test]
-    fn test_image_layout_pixel_formats() {
-        let size = ImageSize {
-            width: 100,
-            height: 100,
-        };
-
-        let layout_u8 = ImageLayout::new(size, 1, PixelFormat::U8);
-        assert_eq!(layout_u8.pixel_format, PixelFormat::U8);
-
-        let layout_u16 = ImageLayout::new(size, 1, PixelFormat::U16);
-        assert_eq!(layout_u16.pixel_format, PixelFormat::U16);
-
-        let layout_f32 = ImageLayout::new(size, 4, PixelFormat::F32);
-        assert_eq!(layout_f32.pixel_format, PixelFormat::F32);
-        assert_eq!(layout_f32.channels, 4);
+        // Test idx -> (y, x)
+        assert_eq!(size.coords(0), (0, 0));
+        assert_eq!(size.coords(8), (1, 0));
+        assert_eq!(size.coords(19), (2, 3));
+        assert_eq!(size.coords(47), (5, 7));
     }
 
     #[test]
@@ -808,8 +804,8 @@ mod tests {
             data,
             CpuAllocator,
         )?;
-        let image_f32 = image_u8.scale_and_cast::<f32>(1)?;
-        assert_eq!(image_f32.get([1, 0, 2]), Some(&255.0f32));
+        let image_f32 = image_u8.cast_and_scale::<f32>(1. / 255.0)?;
+        assert_eq!(image_f32.get([1, 0, 2]), Some(&1.0f32));
 
         Ok(())
     }

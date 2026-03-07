@@ -1,3 +1,5 @@
+use kornia_image::ImageError;
+
 /// Create a box blur kernel.
 ///
 /// # Arguments
@@ -40,11 +42,11 @@ pub fn gaussian_kernel_1d(kernel_size: usize, sigma: f32) -> Vec<f32> {
     kernel
 }
 
-/// Create a sobel kernel.
+/// Create separated 1d sobel kernels (derivative and smoothing).
 ///
 /// # Arguments
 ///
-/// * `kernel_size` - The size of the kernel.
+/// * `kernel_size` - The size of the kernel (supports 3 and 5).
 ///
 /// # Returns
 ///
@@ -55,8 +57,8 @@ pub fn sobel_kernel_1d(
     let (kernel_x, kernel_y) = match kernel_size {
         3 => (vec![-1.0, 0.0, 1.0], vec![1.0, 2.0, 1.0]),
         5 => (
-            vec![1.0, 4.0, 6.0, 4.0, 1.0],
             vec![-1.0, -2.0, 0.0, 2.0, 1.0],
+            vec![1.0, 4.0, 6.0, 4.0, 1.0],
         ),
         _ => {
             return Err(kornia_image::ImageError::InvalidKernelLength(
@@ -128,14 +130,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_sobel_kernel_1d() {
-        let kernel = sobel_kernel_1d(3).unwrap();
-        assert_eq!(kernel.0, vec![-1.0, 0.0, 1.0]);
-        assert_eq!(kernel.1, vec![1.0, 2.0, 1.0]);
+    fn test_sobel_kernel_1d() -> Result<(), ImageError> {
+        let (d3, s3) = sobel_kernel_1d(3)?;
+        assert_eq!(d3, vec![-1.0, 0.0, 1.0]);
+        assert_eq!(s3, vec![1.0, 2.0, 1.0]);
 
-        let kernel = sobel_kernel_1d(5).unwrap();
-        assert_eq!(kernel.0, vec![1.0, 4.0, 6.0, 4.0, 1.0]);
-        assert_eq!(kernel.1, vec![-1.0, -2.0, 0.0, 2.0, 1.0]);
+        let (d5, s5) = sobel_kernel_1d(5)?;
+        assert_eq!(d5, vec![-1.0, -2.0, 0.0, 2.0, 1.0]);
+        assert_eq!(s5, vec![1.0, 4.0, 6.0, 4.0, 1.0]);
+
+        assert!(sobel_kernel_1d(7).is_err());
+
+        Ok(())
     }
 
     #[test]

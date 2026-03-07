@@ -472,7 +472,7 @@ fn quad_segment_maxima(
     indices: &mut [usize; 4],
     config: &FitQuadConfig,
 ) -> bool {
-    // TODO: check if the length of gradient_infos and lfps is same
+    debug_assert_eq!(gradient_infos.len(), lfps.len());
     let len = gradient_infos.len();
     let window_size = 20.min(len / 12);
 

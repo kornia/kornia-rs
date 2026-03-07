@@ -57,7 +57,12 @@ const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 ///   There is no globally continuous way to make this choice — discontinuities
 ///   (quaternion sign flips) are unavoidable over the full rotation group.
 /// - After repeated multiplications, call `q.normalize()` to prevent drift off S³.
-#[derive(Debug, Clone, Copy)]
+///
+/// Note regarding `PartialEq`:
+///   Quaternions form a double cover for SO3, meaning `q` and `-q` represent the
+///   same rotation. However, `PartialEq` performs an exact, member-wise comparison
+///   and will return `false` for `q` and `-q`.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SO3F32 {
     pub q: QuatF32,
 }

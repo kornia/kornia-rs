@@ -47,8 +47,4 @@ pub enum SmolVlmError {
 
     #[error("Image process error: {0}")]
     ImageProcessError(String),
-
-    // TODO: not used right now (currently, the end token is handled via if/else, which might be preferred)
-    #[error("Cannot find the <end_of_utterance> token")]
-    EosTokenNotFound,
 }
