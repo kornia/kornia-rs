@@ -65,3 +65,6 @@ pub mod pyramid;
 
 /// distance transform
 pub mod distance_transform;
+
+/// optical flow module
+pub mod optical_flow_pyr_lk;
