@@ -12,6 +12,9 @@ pub mod core;
 /// image cropping module.
 pub mod crop;
 
+/// contour extraction module.
+pub mod contours;
+
 /// image padding module.
 pub mod padding;
 
