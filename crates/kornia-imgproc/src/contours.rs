@@ -58,6 +58,7 @@ const DIRS_8: [(i32, i32); 8] = [
     (0, -1),
     (1, -1),
 ];
+const BOUNDARY_TRACE_SAFETY_MULTIPLIER: usize = 16;
 
 /// Find contours in a binary image.
 ///
@@ -113,11 +114,7 @@ pub fn find_contours<A: ImageAllocator>(
 
     let fg_mask: Vec<bool> = src.as_slice().iter().map(|&v| v != 0).collect();
     let fg_labels = label_components(&fg_mask, width, height);
-    let fg_count = fg_labels
-        .iter()
-        .copied()
-        .max()
-        .map_or(0usize, |m| (m as usize) + 1);
+    let fg_count = component_count(&fg_labels);
 
     let mut entries = Vec::<ContourEntry>::new();
     let mut fg_comp_to_entry = vec![None; fg_count];
@@ -149,11 +146,15 @@ pub fn find_contours<A: ImageAllocator>(
     ) {
         let bg_mask: Vec<bool> = fg_mask.iter().map(|&is_fg| !is_fg).collect();
         bg_labels = label_components(&bg_mask, width, height);
-        let bg_count = bg_labels
-            .iter()
-            .copied()
-            .max()
-            .map_or(0usize, |m| (m as usize) + 1);
+        let bg_count = component_count(&bg_labels);
+        let mut bg_sizes = vec![0usize; bg_count];
+        for &label in &bg_labels {
+            if let Ok(idx) = usize::try_from(label) {
+                if idx < bg_sizes.len() {
+                    bg_sizes[idx] += 1;
+                }
+            }
+        }
         bg_touches_border = (0..bg_count)
             .map(|id| component_touches_border(&bg_labels, width, height, id as i32))
             .collect();
@@ -217,12 +218,14 @@ pub fn find_contours<A: ImageAllocator>(
                         parent[idx] = e.parent_hint;
                     }
                     ContourKind::Foreground => {
-                        if let Some(bg_comp_id) = find_adjacent_background_component(
+                        if let Some(bg_comp_id) = find_enclosing_background_component(
                             &fg_labels,
                             &bg_labels,
                             width,
                             height,
                             e.component_id,
+                            &bg_touches_border,
+                            &bg_sizes,
                         ) {
                             let bg_id = bg_comp_id as usize;
                             if bg_id < bg_touches_border.len()
@@ -303,6 +306,15 @@ fn label_components(mask: &[bool], width: usize, height: usize) -> Vec<i32> {
     labels
 }
 
+fn component_count(labels: &[i32]) -> usize {
+    labels
+        .iter()
+        .copied()
+        .max()
+        .and_then(|m| usize::try_from(m).ok())
+        .map_or(0usize, |m| m + 1)
+}
+
 fn find_boundary_start(labels: &[i32], width: usize, height: usize, comp_id: i32) -> Option<usize> {
     for y in 0..height {
         for x in 0..width {
@@ -352,7 +364,7 @@ fn trace_component_boundary(
     let mut prev = (start_x - 1, start_y);
     let start_prev = prev;
     let mut safety = 0usize;
-    let safety_limit = width * height * 16;
+    let safety_limit = width * height * BOUNDARY_TRACE_SAFETY_MULTIPLIER;
 
     loop {
         safety += 1;
@@ -480,13 +492,22 @@ fn find_adjacent_foreground_component(
     None
 }
 
-fn find_adjacent_background_component(
+fn find_enclosing_background_component(
     fg_labels: &[i32],
     bg_labels: &[i32],
     width: usize,
     height: usize,
     fg_comp_id: i32,
+    bg_touches_border: &[bool],
+    bg_sizes: &[usize],
 ) -> Option<i32> {
+    if bg_touches_border.is_empty() {
+        return None;
+    }
+
+    let mut seen = vec![false; bg_touches_border.len()];
+    let mut best: Option<(usize, bool, usize)> = None;
+
     for y in 0..height {
         for x in 0..width {
             let idx = y * width + x;
@@ -501,12 +522,30 @@ fn find_adjacent_background_component(
                 }
                 let nidx = ny as usize * width + nx as usize;
                 if bg_labels[nidx] >= 0 {
-                    return Some(bg_labels[nidx]);
+                    let bg_id = bg_labels[nidx] as usize;
+                    if bg_id >= seen.len() || seen[bg_id] {
+                        continue;
+                    }
+                    seen[bg_id] = true;
+
+                    let touches_border = bg_touches_border[bg_id];
+                    let area = bg_sizes.get(bg_id).copied().unwrap_or(0);
+
+                    if let Some((best_id, best_border, best_area)) = best {
+                        if (!best_border && touches_border)
+                            || (best_border == touches_border
+                                && (area > best_area || (area == best_area && bg_id < best_id)))
+                        {
+                            best = Some((bg_id, touches_border, area));
+                        }
+                    } else {
+                        best = Some((bg_id, touches_border, area));
+                    }
                 }
             }
         }
     }
-    None
+    best.map(|(bg_id, _, _)| bg_id as i32)
 }
 
 fn build_hierarchy_external_like(num: usize, parent: &[Option<usize>]) -> Vec<[i32; 4]> {
@@ -698,6 +737,66 @@ mod tests {
             .max()
             .unwrap_or(0);
         assert!(max_depth >= 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_contours_all_background_no_panic() -> Result<(), ImageError> {
+        let data = vec![
+            0u8, 0, 0, 0, //
+            0, 0, 0, 0, //
+            0, 0, 0, 0,
+        ];
+        let img = Image::<u8, 1, _>::new(
+            ImageSize {
+                width: 4,
+                height: 3,
+            },
+            data,
+            CpuAllocator,
+        )?;
+
+        let out = find_contours(&img, RetrievalMode::Tree, ContourApproximationMode::Simple)?;
+        assert!(out.contours.is_empty());
+        assert!(out.hierarchy.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_contours_tree_no_parent_cycle_border_touching_fg_with_hole(
+    ) -> Result<(), ImageError> {
+        let data = vec![
+            255u8, 255, 255, 255, 255, 255, //
+            255, 0, 0, 0, 255, 255, //
+            255, 0, 255, 0, 255, 255, //
+            255, 0, 0, 0, 255, 255, //
+            255, 255, 255, 255, 255, 255,
+        ];
+        let img = Image::<u8, 1, _>::new(
+            ImageSize {
+                width: 6,
+                height: 5,
+            },
+            data,
+            CpuAllocator,
+        )?;
+
+        let out = find_contours(&img, RetrievalMode::Tree, ContourApproximationMode::Simple)?;
+        assert!(!out.contours.is_empty());
+
+        for i in 0..out.hierarchy.len() {
+            let mut seen = vec![false; out.hierarchy.len()];
+            let mut p = out.hierarchy[i][3];
+            while p >= 0 {
+                let pidx = p as usize;
+                assert!(
+                    !seen[pidx],
+                    "detected parent cycle starting at contour index {i}"
+                );
+                seen[pidx] = true;
+                p = out.hierarchy[pidx][3];
+            }
+        }
         Ok(())
     }
 }

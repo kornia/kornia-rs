@@ -86,6 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 *   **`color`**: Color space conversions.
 *   **`core`**: Basic image operations.
 *   **`crop`**: Image cropping.
+*   **`contours`**: Contour extraction and hierarchy reconstruction for binary images.
 *   **`draw`**: Drawing utilities for images.
 *   **`enhance`**: Image enhancement.
 *   **`features`**: Feature detection.
