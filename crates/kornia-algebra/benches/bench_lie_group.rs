@@ -146,34 +146,43 @@ fn bench_se3(c: &mut Criterion) {
         })
         .collect();
 
-    // Build sophus Isometry3F64 from kornia poses (cast to f64).
-    // All SVectors here use nalgebra33 (0.33) as required by sophus_lie.
-    let poses_sp: Vec<Isometry3F64> = poses_kornia
-        .iter()
-        .map(|p| {
+    // Build sophus Isometry3F64 independently from random axis-angle vectors.
+    // Feeding quaternion vector parts (q.x, q.y, q.z) into Rotation3F64::exp() is wrong:
+    // those are NOT the SO(3) Lie algebra vector. exp() expects an axis-angle vector.
+    // Generate fresh random poses so all three libraries use valid, representative inputs.
+    let mut rng2 = rand::rng();
+    let poses_sp: Vec<Isometry3F64> = (0..data_size)
+        .map(|_| {
             let rot = Rotation3F64::exp(SVec64::<f64, 3>::new(
-                p.r.q.x as f64,
-                p.r.q.y as f64,
-                p.r.q.z as f64,
+                rng2.random::<f64>() * 2.0 - 1.0,
+                rng2.random::<f64>() * 2.0 - 1.0,
+                rng2.random::<f64>() * 2.0 - 1.0,
             ));
             Isometry3F64::from_rotation_and_translation(
                 rot,
-                SVec64::<f64, 3>::new(p.t.x as f64, p.t.y as f64, p.t.z as f64),
+                SVec64::<f64, 3>::new(
+                    rng2.random::<f64>() * 2.0 - 1.0,
+                    rng2.random::<f64>() * 2.0 - 1.0,
+                    rng2.random::<f64>() * 2.0 - 1.0,
+                ),
             )
         })
         .collect();
 
-    let poses2_sp: Vec<Isometry3F64> = poses2_kornia
-        .iter()
-        .map(|p| {
+    let poses2_sp: Vec<Isometry3F64> = (0..data_size)
+        .map(|_| {
             let rot = Rotation3F64::exp(SVec64::<f64, 3>::new(
-                p.r.q.x as f64,
-                p.r.q.y as f64,
-                p.r.q.z as f64,
+                rng2.random::<f64>() * 2.0 - 1.0,
+                rng2.random::<f64>() * 2.0 - 1.0,
+                rng2.random::<f64>() * 2.0 - 1.0,
             ));
             Isometry3F64::from_rotation_and_translation(
                 rot,
-                SVec64::<f64, 3>::new(p.t.x as f64, p.t.y as f64, p.t.z as f64),
+                SVec64::<f64, 3>::new(
+                    rng2.random::<f64>() * 2.0 - 1.0,
+                    rng2.random::<f64>() * 2.0 - 1.0,
+                    rng2.random::<f64>() * 2.0 - 1.0,
+                ),
             )
         })
         .collect();

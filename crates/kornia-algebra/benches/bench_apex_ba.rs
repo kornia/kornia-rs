@@ -52,33 +52,48 @@ impl Factor for ReprojectionFD {
             return Ok(LinearizationResult::new(residual, None, 9));
         }
 
-        // Finite-difference Jacobian (2 × 9, row-major)
-        const EPS: f32 = 1e-6;
+        // Finite-difference Jacobian (2 × 9, row-major).
+        
+        const EPS: f32 = 1e-5;
         let mut jac = vec![0.0f32; 2 * 9];
 
-        // Columns 0..6 — pose parameters (SE3, 7 stored but 6 DOF; we perturb all 7)
-        for k in 0..7 {
-            let mut p = params[0].to_vec();
-            p[k] += EPS;
-            let pose_p = SE3F32::from_params(&p);
-            let pc = pose_p.inverse() * pw;
-            let z = if pc.z.abs() < 1e-6 { 1e-6 } else { pc.z };
-            let (up, vp) = (pc.x / z, pc.y / z);
-            // Only fill the first 6 columns (tangent-space); skip the 7th (redundant)
-            if k < 6 {
-                jac[k]     = (up - u) / EPS; // row 0
-                jac[9 + k] = (vp - v) / EPS; // row 1
+        // Translation DOFs (columns 0, 1, 2): perturb T by adding δt to translation
+        for k in 0..3 {
+            let mut delta_t = kornia_algebra::Vec3AF32::ZERO;
+            match k {
+                0 => delta_t.x = EPS,
+                1 => delta_t.y = EPS,
+                _ => delta_t.z = EPS,
             }
+            let pose_p = SE3F32::new(pose.r, pose.t + delta_t);
+            let (up, vp) = project(&pose_p, &pw).unwrap_or((u, v));
+            jac[k]     = (up - u) / EPS; // row 0
+            jac[9 + k] = (vp - v) / EPS; // row 1
         }
 
-        // Columns 6..9 — 3-D point parameters
+        // Rotation DOFs (columns 3, 4, 5): right-perturb rotation via SO3::exp
+        for k in 0..3 {
+            let mut omega = kornia_algebra::Vec3AF32::ZERO;
+            match k {
+                0 => omega.x = EPS,
+                1 => omega.y = EPS,
+                _ => omega.z = EPS,
+            }
+            let delta_r = kornia_algebra::SO3F32::exp(omega);
+            let pose_p = SE3F32::new(pose.r * delta_r, pose.t);
+            let (up, vp) = project(&pose_p, &pw).unwrap_or((u, v));
+            jac[3 + k]      = (up - u) / EPS; // row 0
+            jac[9 + 3 + k]  = (vp - v) / EPS; // row 1
+        }
+
+        // Point DOFs (columns 6, 7, 8): perturb p_world directly
         for k in 0..3 {
             let mut pt = [params[1][0], params[1][1], params[1][2]];
             pt[k] += EPS;
             let pw_p = Vec3AF32::new(pt[0], pt[1], pt[2]);
             let (up, vp) = project(&pose, &pw_p).unwrap_or((u, v));
-            jac[6 + k]      = (up - u) / EPS; // row 0
-            jac[9 + 6 + k]  = (vp - v) / EPS; // row 1
+            jac[6 + k]     = (up - u) / EPS; // row 0
+            jac[9 + 6 + k] = (vp - v) / EPS; // row 1
         }
 
         Ok(LinearizationResult::new(residual, Some(jac), 9))
@@ -117,12 +132,21 @@ impl Factor for ReprojectionAnalytical {
             return Ok(LinearizationResult::new(residual, None, 9));
         }
 
-        // SE3 tangent Jacobian (right perturbation): ∂r/∂ξ  (2×6)
         let j_se3_row0 = [
-             x * y * inv_z2, -(1.0 + x * x * inv_z2),  y * inv_z, -inv_z, 0.0,  x * inv_z2,
+            -inv_z,                      
+            0.0,                         
+            x * inv_z2,                  
+            x * y * inv_z2,            
+            -(1.0 + x * x * inv_z2),    
+            y * inv_z,                   
         ];
         let j_se3_row1 = [
-             1.0 + y * y * inv_z2, -x * y * inv_z2, -x * inv_z,  0.0, -inv_z, y * inv_z2,
+            0.0,                         
+            -inv_z,                      
+            y * inv_z2,                  
+            1.0 + y * y * inv_z2,      
+            -x * y * inv_z2,             
+            -x * inv_z,                  
         ];
 
         // Point Jacobian: ∂r/∂p_world = J_proj · R^T  (2×3)
@@ -194,7 +218,7 @@ where
     Ok(problem)
 }
 
-// Benchmarks
+// Benchmarks 
 
 fn bench_fd_vs_analytical(c: &mut Criterion) {
     let mut group = c.benchmark_group("bundle_adjustment_jacobian");

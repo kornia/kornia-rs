@@ -40,23 +40,22 @@ impl Factor for ReprojectionFactor {
         }
 
         let j_se3_row0 = [
-            x * y * inv_z2,
-            -(1.0 + x * x * inv_z2),
-            y * inv_z,
-            -inv_z,
-            0.0,
-            x * inv_z2,
+            -inv_z,                      
+            0.0,                         
+            x * inv_z2,                  
+            x * y * inv_z2,              
+            -(1.0 + x * x * inv_z2),   
+            y * inv_z,                  
         ];
         let j_se3_row1 = [
-            1.0 + y * y * inv_z2,
-            -x * y * inv_z2,
-            -x * inv_z,
-            0.0,
-            -inv_z,
-            y * inv_z2,
+            0.0,                         
+            -inv_z,                      
+            y * inv_z2,                  
+            1.0 + y * y * inv_z2,       
+            -x * y * inv_z2,             
+            -x * inv_z,                 
         ];
 
-     
         let qw = cam_pose_se3.r.q.w;
         let qx = cam_pose_se3.r.q.x;
         let qy = cam_pose_se3.r.q.y;
@@ -69,14 +68,14 @@ impl Factor for ReprojectionFactor {
 
         // J_proj · R^T: J_proj = [[1/z, 0, −x/z²], [0, 1/z, −y/z²]]
         let j_pt_row0 = [
-            inv_z * rt_row0[0] - x * inv_z2 * rt_row2[0], // ∂u/∂p_x
-            inv_z * rt_row0[1] - x * inv_z2 * rt_row2[1], // ∂u/∂p_y
-            inv_z * rt_row0[2] - x * inv_z2 * rt_row2[2], // ∂u/∂p_z
+            inv_z * rt_row0[0] - x * inv_z2 * rt_row2[0], 
+            inv_z * rt_row0[1] - x * inv_z2 * rt_row2[1], 
+            inv_z * rt_row0[2] - x * inv_z2 * rt_row2[2], 
         ];
         let j_pt_row1 = [
-            inv_z * rt_row1[0] - y * inv_z2 * rt_row2[0], // ∂v/∂p_x
-            inv_z * rt_row1[1] - y * inv_z2 * rt_row2[1], // ∂v/∂p_y
-            inv_z * rt_row1[2] - y * inv_z2 * rt_row2[2], // ∂v/∂p_z
+            inv_z * rt_row1[0] - y * inv_z2 * rt_row2[0], 
+            inv_z * rt_row1[1] - y * inv_z2 * rt_row2[1], 
+            inv_z * rt_row1[2] - y * inv_z2 * rt_row2[2], 
         ];
 
         // Assemble [J_se3 | J_point] row-major, shape (2, 9)
@@ -115,9 +114,9 @@ fn solve_bundle_adjustment() -> Result<(), Box<dyn std::error::Error>> {
 
     for j in 0..num_points {
         let pt = vec![
-            rng.random::<f32>() * 4.0 - 2.0, // x ∈ [−2, 2]
-            rng.random::<f32>() * 4.0 - 2.0, // y ∈ [−2, 2]
-            4.0 + rng.random::<f32>(),        // z > 0 (in front of all cameras)
+            rng.random::<f32>() * 4.0 - 2.0,
+            rng.random::<f32>() * 4.0 - 2.0,
+            4.0 + rng.random::<f32>(),      
         ];
         problem.add_variable(Variable::euclidean(format!("p{}", j), 3), pt)?;
     }
