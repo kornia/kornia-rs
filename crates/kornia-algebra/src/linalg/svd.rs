@@ -537,11 +537,11 @@ mod impl_f64 {
         }
         let tau = (aqq - app) / (2.0 * apq);
         let t = if tau >= 0.0 {
-            1.0 / (tau + (1.0 + tau * tau).sqrt())
+            1.0 / (tau + tau.hypot(1.0))
         } else {
-            -1.0 / (-tau + (1.0 + tau * tau).sqrt())
+            -1.0 / (-tau + tau.hypot(1.0))
         };
-        let c = 1.0 / (1.0 + t * t).sqrt();
+        let c = 1.0 / t.hypot(1.0);
         let s = c * t;
         (c, s)
     }
@@ -847,42 +847,45 @@ mod impl_f64 {
         }
     }
 
-    /// Sort singular values in descending order.
-    /// Swapped columns are negated to preserve matrix orientation.
-    pub fn sort_singular_values(u_mat: &mut Mat3F64, s_vec: &mut Vec3F64, v_mat: &mut Mat3F64) {
-        if s_vec.x < s_vec.y {
-            std::mem::swap(&mut s_vec.x, &mut s_vec.y);
-            let v0 = v_mat.x_axis;
-            v_mat.x_axis = v_mat.y_axis;
-            v_mat.y_axis = v0;
-            let u0 = u_mat.x_axis;
-            u_mat.x_axis = u_mat.y_axis;
-            u_mat.y_axis = u0;
-            v_mat.y_axis = -v_mat.y_axis;
-            u_mat.y_axis = -u_mat.y_axis;
+    /// Sorts the singular values in descending order and adjusts the corresponding singular vectors.
+    /// Swapped columns are negated to preserve matrix orientation (determinant).
+    #[inline(always)]
+    pub fn sort_singular_values(b: &mut Mat3F64, v: &mut Mat3F64) {
+        let mut b_x = b.x_axis;
+        let mut b_y = b.y_axis;
+        let mut b_z = b.z_axis;
+        let mut v_x = v.x_axis;
+        let mut v_y = v.y_axis;
+        let mut v_z = v.z_axis;
+        let mut rho1 = b_x.length_squared();
+        let mut rho2 = b_y.length_squared();
+        let mut rho3 = b_z.length_squared();
+
+        if rho1 < rho2 {
+            std::mem::swap(&mut rho1, &mut rho2);
+            std::mem::swap(&mut b_x, &mut b_y);
+            std::mem::swap(&mut v_x, &mut v_y);
+            b_y = -b_y;
+            v_y = -v_y;
         }
-        if s_vec.y < s_vec.z {
-            std::mem::swap(&mut s_vec.y, &mut s_vec.z);
-            let v1 = v_mat.y_axis;
-            v_mat.y_axis = v_mat.z_axis;
-            v_mat.z_axis = v1;
-            let u1 = u_mat.y_axis;
-            u_mat.y_axis = u_mat.z_axis;
-            u_mat.z_axis = u1;
-            v_mat.z_axis = -v_mat.z_axis;
-            u_mat.z_axis = -u_mat.z_axis;
+
+        if rho1 < rho3 {
+            std::mem::swap(&mut rho1, &mut rho3);
+            std::mem::swap(&mut b_x, &mut b_z);
+            std::mem::swap(&mut v_x, &mut v_z);
+            b_z = -b_z;
+            v_z = -v_z;
         }
-        if s_vec.x < s_vec.y {
-            std::mem::swap(&mut s_vec.x, &mut s_vec.y);
-            let v0 = v_mat.x_axis;
-            v_mat.x_axis = v_mat.y_axis;
-            v_mat.y_axis = v0;
-            let u0 = u_mat.x_axis;
-            u_mat.x_axis = u_mat.y_axis;
-            u_mat.y_axis = u0;
-            v_mat.y_axis = -v_mat.y_axis;
-            u_mat.y_axis = -u_mat.y_axis;
+
+        if rho2 < rho3 {
+            std::mem::swap(&mut b_y, &mut b_z);
+            std::mem::swap(&mut v_y, &mut v_z);
+            b_z = -b_z;
+            v_z = -v_z;
         }
+
+        *b = Mat3F64::from_cols(b_x.into(), b_y.into(), b_z.into());
+        *v = Mat3F64::from_cols(v_x.into(), v_y.into(), v_z.into());
     }
 }
 
@@ -1115,5 +1118,30 @@ mod tests {
             (sigma1 - 8.709).abs() < 1e-2,
             "FAILURE: Incorrect magnitude. Expected ~8.709"
         );
+    }
+
+    #[test]
+    fn test_svd3_f64_orientation_preservation() {
+        // Matrix with out-of-order singular values (1.0, 3.0, 2.0) to force sorting swaps
+        let a = Mat3F64::from_diagonal(Vec3F64::new(1.0, 3.0, 2.0));
+        let svd = svd3_f64(&a);
+
+        // U and V must be pure rotations (det > 0). If det < 0, they are invalid reflections.
+        assert!(
+            svd.u().determinant() > 0.0,
+            "U became a reflection during sort!"
+        );
+        assert!(
+            svd.v().determinant() > 0.0,
+            "V became a reflection during sort!"
+        );
+
+        // Verify reconstruction (dereference u and s)
+        let recon = *svd.u() * *svd.s() * svd.v().transpose();
+        let diff = a - recon;
+
+        assert!(diff.x_axis.length() < 1e-10);
+        assert!(diff.y_axis.length() < 1e-10);
+        assert!(diff.z_axis.length() < 1e-10);
     }
 }

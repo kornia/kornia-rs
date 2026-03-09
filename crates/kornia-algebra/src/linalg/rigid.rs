@@ -12,6 +12,8 @@ pub enum UmeyamaError {
     /// Source and destination arrays must have the same length
     #[error("Source and destination arrays must have the same length")]
     MismatchedInputLengths,
+    #[error("Input arrays must not be empty")]
+    EmptyInput,
 }
 
 /// Result type alias for Umeyama.
@@ -20,6 +22,10 @@ pub type UmeyamaResult = Result<UmeyamaOutput, UmeyamaError>;
 /// Umeyama/Kabsch algorithm without scale.
 /// Returns (R, t, s) where s == 1.0.
 pub fn umeyama(src: &[Vec3AF32], dst: &[Vec3AF32]) -> UmeyamaResult {
+    if src.is_empty() {
+        return Err(UmeyamaError::EmptyInput);
+    }
+
     if src.len() != dst.len() {
         return Err(UmeyamaError::MismatchedInputLengths);
     }
