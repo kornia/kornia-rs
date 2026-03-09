@@ -46,21 +46,36 @@ impl<A: ImageAllocator> SmolVlm<A> {
     /// * `config` - The configuration for the SmolVlm model
     ///
     /// # Returns
-    pub fn new(config: SmolVlmConfig) -> Result<Self, SmolVlmError> {
+    fn select_device() -> Device {
         #[cfg(feature = "cuda")]
-        let (device, dtype) = match Device::cuda_if_available(0) {
-            Ok(device) => (device, DType::BF16),
-            Err(e) => {
-                log::warn!("CUDA not available, defaulting to CPU: {e:?}");
-                (Device::Cpu, DType::F32)
-            }
+        match Device::cuda_if_available(0) {
+            Ok(device) => return device,
+            Err(e) => log::warn!("CUDA not available, defaulting to CPU: {e:?}"),
+        }
+        Device::Cpu
+    }
+    fn cuda_supports_bf16(device: &Device) -> bool {
+    // BF16 is supported on Ampere (compute capability 8.0+) and newer
+    device.compute_capability()
+        .map(|(major, _)| major >= 8)
+        .unwrap_or(false)
+    }
+
+    fn select_dtype(device: &Device) -> DType {
+    #[cfg(feature = "cuda")]
+    if device.is_cuda() {
+        return Self::match cuda_supports_bf16(device) {
+            true  => DType::BF16,
+            false => DType::F16,  // older GPUs: Turing, Volta, Pascal
         };
+    }
+    DType::F32
+    }
 
-        #[cfg(not(feature = "cuda"))]
-        let (device, dtype) = (Device::Cpu, DType::F32);
-
-        // TODO: find a way to use FP32 if cuda is not available
-
+    pub fn new(config: SmolVlmConfig) -> Result<Self, SmolVlmError> {
+        let device = Self::select_device();
+        let dtype = Self::select_dtype(&device);
+ 
         let (model, tokenizer) = Self::load_model(dtype, &device)?;
         let image_token = tokenizer.encode("<image>", false)?;
         let image_token_tensor = Tensor::from_slice(image_token.get_ids(), &[1], &device)?;
