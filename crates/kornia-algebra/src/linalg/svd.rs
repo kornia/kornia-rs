@@ -662,46 +662,6 @@ mod impl_f64 {
         q_accum
     }
 
-    /// Sort singular values by descending column norm, updating both B and V.
-    #[inline(always)]
-    fn sort_singular_values_bv(b: &mut Mat3F64, v: &mut Mat3F64) {
-        let mut b_x = b.x_axis;
-        let mut b_y = b.y_axis;
-        let mut b_z = b.z_axis;
-        let mut v_x = v.x_axis;
-        let mut v_y = v.y_axis;
-        let mut v_z = v.z_axis;
-        let mut rho1 = b_x.length_squared();
-        let mut rho2 = b_y.length_squared();
-        let mut rho3 = b_z.length_squared();
-
-        if rho1 < rho2 {
-            std::mem::swap(&mut rho1, &mut rho2);
-            std::mem::swap(&mut b_x, &mut b_y);
-            std::mem::swap(&mut v_x, &mut v_y);
-            b_y = -b_y;
-            v_y = -v_y;
-        }
-
-        if rho1 < rho3 {
-            std::mem::swap(&mut rho1, &mut rho3);
-            std::mem::swap(&mut b_x, &mut b_z);
-            std::mem::swap(&mut v_x, &mut v_z);
-            b_z = -b_z;
-            v_z = -v_z;
-        }
-
-        if rho2 < rho3 {
-            std::mem::swap(&mut b_y, &mut b_z);
-            std::mem::swap(&mut v_y, &mut v_z);
-            b_z = -b_z;
-            v_z = -v_z;
-        }
-
-        *b = Mat3F64::from_cols(b_x.into(), b_y.into(), b_z.into());
-        *v = Mat3F64::from_cols(v_x.into(), v_y.into(), v_z.into());
-    }
-
     #[inline(always)]
     fn qr_givens_quaternion(a1: f64, a2: f64) -> (f64, f64) {
         let rho = (a1 * a1 + a2 * a2).sqrt();
@@ -816,7 +776,7 @@ mod impl_f64 {
 
         // 3. Compute B = A * V and sort singular values by descending norm.
         let mut b = *mat * v_mat;
-        sort_singular_values_bv(&mut b, &mut v_mat);
+        sort_singular_values(&mut b, &mut v_mat);
 
         // 4. QR decomposition on B gives U (Q) and S (R).
         let (mut u_mat, mut s_mat) = qr_decomposition(&mut b);

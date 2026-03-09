@@ -133,7 +133,7 @@ pub fn umeyama(src: &[Vec3AF32], dst: &[Vec3AF32]) -> UmeyamaResult {
 
 #[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
+    #[cfg(feature = "approx")]
     use super::*;
 
     #[test]
@@ -214,8 +214,8 @@ mod tests {
         }
 
         let (r_est, t_est, _s) = umeyama(&src, &dst)?;
-        assert_relative_eq!(r_est, r, epsilon = 1e-5);
-        assert_relative_eq!(t_est, t, epsilon = 1e-5);
+        assert_relative_eq!(r_est, r, epsilon = 1e-6);
+        assert_relative_eq!(t_est, t, epsilon = 1e-6);
         Ok(())
     }
 }
