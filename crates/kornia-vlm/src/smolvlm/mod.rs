@@ -54,22 +54,13 @@ impl<A: ImageAllocator> SmolVlm<A> {
         }
         Device::Cpu
     }
-    fn cuda_supports_bf16(device: &Device) -> bool {
-    // BF16 is supported on Ampere (compute capability 8.0+) and newer
-    device.compute_capability()
-        .map(|(major, _)| major >= 8)
-        .unwrap_or(false)
-    }
 
     fn select_dtype(device: &Device) -> DType {
-    #[cfg(feature = "cuda")]
-    if device.is_cuda() {
-        return Self::match cuda_supports_bf16(device) {
-            true  => DType::BF16,
-            false => DType::F16,  // older GPUs: Turing, Volta, Pascal
-        };
-    }
-    DType::F32
+        #[cfg(feature = "cuda")]
+        if device.is_cuda() {
+            return DType::F16;
+        }
+        DType::F32
     }
 
     pub fn new(config: SmolVlmConfig) -> Result<Self, SmolVlmError> {
