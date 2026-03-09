@@ -1,4 +1,4 @@
-use kornia_image::{allocator::ImageAllocator, Image, ImageError};
+use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 use rayon::prelude::*;
 
 // Gaussian kernel weights
@@ -418,6 +418,33 @@ pub fn pyrdown_f32<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     Ok(())
 }
 
+/// Build a Gaussian pyramid from an image.
+/// # Arguments
+/// * `src` - The source image with shape (H, W, C).
+/// * `max_level` - The maximum level of the pyramid (0 means just the original image).
+/// # Returns
+/// A vector of images representing the Gaussian pyramid.
+pub fn build_pyramid<const C: usize>(
+    src: &Image<f32, C, kornia_tensor::CpuAllocator>,
+    max_level: usize,
+) -> Result<Vec<Image<f32, C, kornia_tensor::CpuAllocator>>, ImageError> {
+    let mut pyramid = Vec::with_capacity(max_level + 1);
+    pyramid.push(src.clone());
+
+    for l in 0..max_level {
+        let current_img = &pyramid[l];
+        let new_size = ImageSize {
+            width: current_img.cols().div_ceil(2),
+            height: current_img.rows().div_ceil(2),
+        };
+        let mut downsampled = Image::from_size_val(new_size, 0.0, kornia_tensor::CpuAllocator)?;
+        pyrdown_f32(current_img, &mut downsampled)?;
+        pyramid.push(downsampled);
+    }
+
+    Ok(pyramid)
+}
+
 /// Downsample a u8 image by applying Gaussian blur and then subsampling.
 ///
 /// This function halves the size of the input image by first applying a Gaussian blur
@@ -810,6 +837,41 @@ where
 mod tests {
     use super::*;
     use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+
+    #[test]
+    fn test_build_pyramid_levels_and_sizes_odd_dimensions() {
+        // Create a 7x5 image (height x width) so that div_ceil(2) behavior is exercised.
+        let size = ImageSize {
+            width: 5,
+            height: 7,
+        };
+        let src: Image<f32, 1, CpuAllocator> =
+            Image::from_size_val(size, 1.0_f32, CpuAllocator).unwrap();
+
+        let max_level = 3;
+        let pyramid = build_pyramid::<1>(&src, max_level).unwrap();
+
+        // Check the number of levels: original + max_level downsamples.
+        assert_eq!(pyramid.len(), max_level + 1);
+
+        // Expected sizes after repeatedly applying div_ceil(2).
+        let expected_sizes = [
+            (7_usize, 5_usize), // level 0
+            (4_usize, 3_usize), // level 1
+            (2_usize, 2_usize), // level 2
+            (1_usize, 1_usize), // level 3
+        ];
+
+        for (level, (expected_rows, expected_cols)) in expected_sizes.iter().enumerate() {
+            let img = &pyramid[level];
+            assert_eq!(
+                (img.rows(), img.cols()),
+                (*expected_rows, *expected_cols),
+                "Mismatch at pyramid level {}",
+                level
+            );
+        }
+    }
 
     #[test]
     fn test_pyrup() -> Result<(), ImageError> {
