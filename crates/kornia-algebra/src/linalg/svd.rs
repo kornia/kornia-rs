@@ -498,7 +498,7 @@ mod impl_f64 {
     use super::*;
 
     const EPSILON: f64 = 1e-15;
-    const JACOBI_TOLERANCE: f64 = 1e-15;
+    const JACOBI_TOLERANCE: f64 = 1e-12;
     // Standard Jacobi rotation requires more sweeps for f64 Exact Givens
     // to ensure convergence without hitting the limit prematurely.
     const MAX_SWEEPS: usize = 20;
@@ -515,21 +515,23 @@ mod impl_f64 {
 
     impl Symmetric3x3 {
         fn from_mat3x3(m: &Mat3F64) -> Self {
-            let c0 = m.x_axis;
-            let c1 = m.y_axis;
-            let c2 = m.z_axis;
+            let x_axis = m.x_axis;
+            let y_axis = m.y_axis;
+            let z_axis = m.z_axis;
             Self {
                 // Input is already symmetric (A^T A); store its unique entries directly.
-                m_00: c0.x,
-                m_10: c1.x,
-                m_20: c0.z,
-                m_11: c1.y,
-                m_21: c1.z,
-                m_22: c2.z,
+                m_00: x_axis.x,
+                m_10: y_axis.x,
+                m_11: y_axis.y,
+                m_20: x_axis.z,
+                m_21: y_axis.z,
+                m_22: z_axis.z,
             }
         }
     }
 
+    /// Computes the exact Givens rotation to zero out the off-diagonal element apq.
+    /// Based on Golub & Van Loan, Matrix Computations, Algorithm 8.4.1.
     #[inline(always)]
     fn exact_givens(app: f64, aqq: f64, apq: f64) -> (f64, f64) {
         if apq.abs() < EPSILON {
@@ -548,9 +550,9 @@ mod impl_f64 {
 
     #[derive(Debug, Clone)]
     pub struct SVD3Set {
-        pub u: Mat3F64,
-        pub s: Mat3F64,
-        pub v: Mat3F64,
+        u: Mat3F64,
+        s: Mat3F64,
+        v: Mat3F64,
     }
 
     impl SVD3Set {
@@ -642,6 +644,12 @@ mod impl_f64 {
             }
 
             // Normalize quaternion once per sweep to balance orthogonality and performance
+            let len = q_accum.length();
+            debug_assert!(
+                (len - 1.0).abs() < 0.1,
+                "Quaternion drift detected in compute_v_quat: length={}",
+                len
+            );
             q_accum = q_accum.normalize();
 
             let off_diag_sq =
@@ -1090,7 +1098,7 @@ mod tests {
     }
 
     #[test]
-    fn test_issue_696_repeated_singular_values() {
+    fn test_svd3_f64_degenerate_essential_matrix() {
         // Essential matrix E with repeated singular values (sigma, sigma, 0)
         let e = Mat3F64::from_cols(
             Vec3F64::new(0.0, -2.552, 0.0),

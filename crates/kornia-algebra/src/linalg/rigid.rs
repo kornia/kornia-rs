@@ -95,8 +95,11 @@ pub fn umeyama(src: &[Vec3AF32], dst: &[Vec3AF32]) -> UmeyamaResult {
 
     // 3. Internal f64 SVD path.
     let svd = svd3_f64(&h);
-    let u = svd.u;
-    let v = svd.v;
+
+    // Use getter methods instead of private fields.
+    // We use * to dereference because the methods return &Mat3F64.
+    let u = *svd.u();
+    let v = *svd.v();
 
     // Keep behavior consistent with existing EPnP regression expectations:
     // if det(R) < 0, flip the third column of R.
