@@ -9,11 +9,19 @@ pub type UmeyamaOutput = (Mat3AF32, Vec3AF32, f32);
 /// Error type for Umeyama rigid alignment operations.
 #[derive(Debug, Error)]
 pub enum UmeyamaError {
-    /// Source and destination arrays must have the same length
     #[error("Source and destination arrays must have the same length")]
     MismatchedInputLengths,
+
     #[error("Input arrays must not be empty")]
     EmptyInput,
+
+    #[deprecated(note = "Internal SVD implementation no longer fails. This variant is obsolete.")]
+    #[error("Failed to compute U in SVD")]
+    SvdU,
+
+    #[deprecated(note = "Internal SVD implementation no longer fails. This variant is obsolete.")]
+    #[error("Failed to compute V^T in SVD")]
+    SvdVT,
 }
 
 /// Result type alias for Umeyama.
