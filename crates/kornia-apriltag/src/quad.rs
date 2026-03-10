@@ -119,9 +119,7 @@ impl Quad {
             kornia_algebra::Vec2F32::new(-1.0, 1.0),
         ];
 
-        if let Ok(h) =
-            kornia_algebra::linalg::homography::homography_4pt2d_gauss_elim_f32(&src, &self.corners)
-        {
+        if let Ok(h) = kornia_3d::pose::homography_4pt2d_gauss_elim_f32(&src, &self.corners) {
             self.homography = h;
             return true;
         }

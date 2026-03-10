@@ -11,6 +11,3 @@ pub mod svd;
 
 /// Cholesky Decomposition for 3x3 matrices
 pub mod cholesky;
-
-/// Homography estimators
-pub mod homography;

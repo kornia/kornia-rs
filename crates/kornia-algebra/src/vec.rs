@@ -239,7 +239,25 @@ define_vector_type!(Vec3F32, glam::Vec3, f32, [f32; 3], [x, y, z]);
 define_vector_type!(Vec3F64, glam::DVec3, f64, [f64; 3], [x, y, z]);
 
 impl Vec3F32 {
-    /// Cross product between two 3D vectors.
+    /// Computes the cross product between two 3D vectors.
+    ///
+    /// # Arguments
+    ///
+    /// * `rhs` - The other 3D vector.
+    ///
+    /// # Returns
+    ///
+    /// A new 3D vector that is the cross product of `self` and `rhs`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_algebra::Vec3F32;
+    /// let v1 = Vec3F32::new(1.0, 0.0, 0.0);
+    /// let v2 = Vec3F32::new(0.0, 1.0, 0.0);
+    /// let v3 = v1.cross(v2);
+    /// assert_eq!(v3, Vec3F32::new(0.0, 0.0, 1.0));
+    /// ```
     #[inline]
     pub fn cross(self, rhs: Self) -> Self {
         let a: glam::Vec3 = self.into();
@@ -249,7 +267,25 @@ impl Vec3F32 {
 }
 
 impl Vec3F64 {
-    /// Cross product between two 3D vectors.
+    /// Computes the cross product between two 3D vectors.
+    ///
+    /// # Arguments
+    ///
+    /// * `rhs` - The other 3D vector.
+    ///
+    /// # Returns
+    ///
+    /// A new 3D vector that is the cross product of `self` and `rhs`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_algebra::Vec3F64;
+    /// let v1 = Vec3F64::new(1.0, 0.0, 0.0);
+    /// let v2 = Vec3F64::new(0.0, 1.0, 0.0);
+    /// let v3 = v1.cross(v2);
+    /// assert_eq!(v3, Vec3F64::new(0.0, 0.0, 1.0));
+    /// ```
     #[inline]
     pub fn cross(self, rhs: Self) -> Self {
         let a: glam::DVec3 = self.into();
@@ -262,7 +298,25 @@ impl Vec3F64 {
 define_vector_type!(Vec3AF32, glam::Vec3A, f32, [f32; 3], [x, y, z]);
 
 impl Vec3AF32 {
-    /// Cross product between two 3D vectors.
+    /// Computes the cross product between two 3D vectors.
+    ///
+    /// # Arguments
+    ///
+    /// * `rhs` - The other 3D vector.
+    ///
+    /// # Returns
+    ///
+    /// A new 3D vector that is the cross product of `self` and `rhs`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_algebra::Vec3AF32;
+    /// let v1 = Vec3AF32::new(1.0, 0.0, 0.0);
+    /// let v2 = Vec3AF32::new(0.0, 1.0, 0.0);
+    /// let v3 = v1.cross(v2);
+    /// assert_eq!(v3, Vec3AF32::new(0.0, 0.0, 1.0));
+    /// ```
     #[inline]
     pub fn cross(self, rhs: Self) -> Self {
         let a: glam::Vec3A = self.into();

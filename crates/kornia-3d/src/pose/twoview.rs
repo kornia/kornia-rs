@@ -35,9 +35,8 @@
 use crate::pose::fundamental::{fundamental_8point, sampson_distance, FundamentalError};
 use crate::pose::{
     decompose_essential, decompose_homography, enforce_essential_constraints,
-    essential_from_fundamental,
+    essential_from_fundamental, homography_4pt2d_svd_f64, HomographyError,
 };
-use kornia_algebra::linalg::homography::{homography_4pt2d_svd_f64, HomographyError};
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use rand::prelude::*;
 use rand::SeedableRng;
