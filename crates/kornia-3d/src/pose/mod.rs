@@ -21,3 +21,6 @@ pub use essential::*;
 
 mod twoview;
 pub use twoview::*;
+
+mod pose3d;
+pub use pose3d::*;
