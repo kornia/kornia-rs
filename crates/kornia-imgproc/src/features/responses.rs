@@ -369,7 +369,7 @@ pub fn non_max_suppression<A1: ImageAllocator, A2: ImageAllocator>(
         });
 
     let mut dilated_u32: Image<u32, 1, _> = Image::from_size_val(size, 0u32, CpuAllocator)?;
-    let kernel = Kernel::new(KernelShape::Box { size: 3 });
+    let kernel = Kernel::try_new(KernelShape::Box { size: 3 })?;
     dilate(
         &src_u32,
         &mut dilated_u32,
