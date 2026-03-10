@@ -1,6 +1,9 @@
 #![deny(missing_docs)]
 #![doc = env!("CARGO_PKG_DESCRIPTION")]
 
+/// Bundle adjustment solver.
+pub mod ba;
+
 /// Pinhole camera model with Brown-Conrady distortion.
 pub mod camera;
 
