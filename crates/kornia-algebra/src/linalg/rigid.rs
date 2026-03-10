@@ -22,13 +22,14 @@ pub type UmeyamaResult = Result<UmeyamaOutput, UmeyamaError>;
 /// Umeyama/Kabsch algorithm without scale.
 /// Returns (R, t, s) where s == 1.0.
 pub fn umeyama(src: &[Vec3AF32], dst: &[Vec3AF32]) -> UmeyamaResult {
+    if src.len() != dst.len() {
+        return Err(UmeyamaError::MismatchedInputLengths);
+    }
+
     if src.is_empty() {
         return Err(UmeyamaError::EmptyInput);
     }
 
-    if src.len() != dst.len() {
-        return Err(UmeyamaError::MismatchedInputLengths);
-    }
     let n = src.len() as f64;
 
     // 1. Calculate Centroids using raw f64 to bypass missing wrapper traits

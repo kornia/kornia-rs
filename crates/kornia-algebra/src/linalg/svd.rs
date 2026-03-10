@@ -515,18 +515,21 @@ mod impl_f64 {
 
     impl Symmetric3x3 {
         /// Constructor from a regular Mat3x3.
-        /// Extracts elements directly to represent the upper-triangular entries of a symmetric matrix.
+        /// Explicitly symmetrizes the matrix by averaging off-diagonal pairs
+        /// to correct any floating-point rounding errors from A^T * A.
         fn from_mat3x3(m: &Mat3F64) -> Self {
             let x_axis = m.x_axis;
             let y_axis = m.y_axis;
             let z_axis = m.z_axis;
             Self {
-                // Input is already symmetric (A^T A); store its unique entries directly.
                 m_00: x_axis.x,
-                m_10: y_axis.x,
+                // Average (0,1) and (1,0)
+                m_10: 0.5 * (y_axis.x + x_axis.y),
                 m_11: y_axis.y,
-                m_20: x_axis.z,
-                m_21: y_axis.z,
+                // Average (0,2) and (2,0)
+                m_20: 0.5 * (z_axis.x + x_axis.z),
+                // Average (1,2) and (2,1)
+                m_21: 0.5 * (z_axis.y + y_axis.z),
                 m_22: z_axis.z,
             }
         }
