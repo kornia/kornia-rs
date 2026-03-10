@@ -148,6 +148,38 @@ pub struct TwoViewResult {
     pub inliers: Vec<bool>,
 }
 
+impl TwoViewResult {
+    /// Median parallax angle in degrees between inlier bearing vectors.
+    ///
+    /// Converts each inlier point pair to normalized bearing vectors using the
+    /// camera intrinsics, then computes the angle between them. Returns the
+    /// median of these angles, or 0.0 if there are no valid inliers.
+    pub fn median_parallax_deg(
+        &self,
+        x1: &[Vec2F64],
+        x2: &[Vec2F64],
+        camera: &crate::camera::PinholeCamera,
+    ) -> f64 {
+        let (fx, fy, cx, cy) = camera.intrinsics();
+        let mut angles: Vec<f64> = self
+            .inlier_indices
+            .iter()
+            .filter(|&&i| i < x1.len() && i < x2.len())
+            .map(|&i| {
+                let b1 = Vec3F64::new((x1[i].x - cx) / fx, (x1[i].y - cy) / fy, 1.0).normalize();
+                let b2 = Vec3F64::new((x2[i].x - cx) / fx, (x2[i].y - cy) / fy, 1.0).normalize();
+                b1.dot(b2).clamp(-1.0, 1.0).acos().to_degrees()
+            })
+            .collect();
+        if angles.is_empty() {
+            return 0.0;
+        }
+        let mid = angles.len() / 2;
+        angles.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
+        angles[mid]
+    }
+}
+
 /// Estimate a fundamental matrix with RANSAC using the 8-point solver.
 pub fn ransac_fundamental(
     x1: &[Vec2F64],
@@ -384,6 +416,50 @@ struct TriangulateParams<'a> {
     min_parallax_deg: f64,
 }
 
+/// Triangulates a 3D point by midpoint between two rays with known relative pose.
+///
+/// This assumes a relative transform from camera 1 to camera 2:
+/// `p_cam2 = r21 * p_cam1 + t21`.
+///
+/// `ray1_cam1` is a viewing ray in camera-1 coordinates and `ray2_cam2` is a
+/// viewing ray in camera-2 coordinates. The returned point is expressed in the
+/// camera-1 frame together with the distance (gap) between the closest points
+/// on the two rays.
+///
+/// Returns `None` if the geometry is degenerate (parallel rays or invalid depth).
+pub fn triangulate_midpoint_known_pose(
+    ray1_cam1: &Vec3F64,
+    ray2_cam2: &Vec3F64,
+    r21: &Mat3F64,
+    t21: &Vec3F64,
+) -> Option<(Vec3F64, f64)> {
+    let r21_t = r21.transpose();
+    let d1 = ray1_cam1.normalize();
+    let d2 = (r21_t * *ray2_cam2).normalize();
+    let c2 = -(r21_t * *t21);
+
+    let b = d1.dot(d2);
+    let denom = 1.0 - b * b;
+    if denom.abs() < 1e-8 {
+        return None;
+    }
+
+    let w0 = -c2;
+    let d = d1.dot(w0);
+    let e = d2.dot(w0);
+    let s1 = (b * e - d) / denom;
+    let s2 = (e - b * d) / denom;
+    if s1 <= 1e-8 || s2 <= 1e-8 {
+        return None;
+    }
+
+    let p1 = d1 * s1;
+    let p2 = c2 + d2 * s2;
+    let gap = (p1 - p2).length();
+    let p_cam1 = (p1 + p2) * 0.5;
+    Some((p_cam1, gap))
+}
+
 fn triangulate_inliers(
     x1: &[Vec2F64],
     x2: &[Vec2F64],
@@ -502,6 +578,37 @@ fn homography_reproj_error(h: &Mat3F64, x1: &Vec2F64, x2: &Vec2F64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_triangulate_midpoint_known_pose_simple() {
+        // Camera-2 center at (1, 0, 0) in camera-1 coordinates:
+        // p2 = R * p1 + t with R=I, t=(-1, 0, 0).
+        let r21 = Mat3F64::IDENTITY;
+        let t21 = Vec3F64::new(-1.0, 0.0, 0.0);
+
+        // True point in camera-1 frame.
+        let p_true = Vec3F64::new(0.0, 0.0, 5.0);
+        let ray1 = p_true.normalize();
+
+        // Same point expressed in camera-2 frame.
+        let p_cam2 = r21 * p_true + t21;
+        let ray2 = p_cam2.normalize();
+
+        let (p_est, gap) = triangulate_midpoint_known_pose(&ray1, &ray2, &r21, &t21).unwrap();
+        assert!((p_est - p_true).length() < 1e-6);
+        assert!(gap < 1e-6);
+    }
+
+    #[test]
+    fn test_triangulate_midpoint_known_pose_parallel_rays() {
+        let r21 = Mat3F64::IDENTITY;
+        let t21 = Vec3F64::new(-1.0, 0.0, 0.0);
+
+        // Parallel forward rays should be degenerate.
+        let ray1 = Vec3F64::new(0.0, 0.0, 1.0);
+        let ray2 = Vec3F64::new(0.0, 0.0, 1.0);
+        assert!(triangulate_midpoint_known_pose(&ray1, &ray2, &r21, &t21).is_none());
+    }
 
     #[test]
     fn test_ransac_fundamental_basic() {
