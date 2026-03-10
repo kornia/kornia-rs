@@ -5,11 +5,16 @@ use kornia_io::jpegturbo::{
 };
 use pyo3::prelude::*;
 
+/// Hardware-accelerated JPEG decoder using libjpeg-turbo.
 #[pyclass(name = "ImageDecoder", frozen)]
 pub struct PyImageDecoder(JpegTurboDecoder);
 
 #[pymethods]
 impl PyImageDecoder {
+    /// Creates a new instance of the ImageDecoder.
+    ///
+    /// # Returns
+    /// * `ImageDecoder`: A new decoder instance.
     #[new]
     pub fn new() -> PyResult<PyImageDecoder> {
         let decoder = JpegTurboDecoder::new()
@@ -17,6 +22,16 @@ impl PyImageDecoder {
         Ok(PyImageDecoder(decoder))
     }
 
+    /// Reads the header of a JPEG image to extract its dimensions.
+    ///
+    /// # Arguments
+    /// * `jpeg_data` (bytes): Raw bytes containing the JPEG encoded data.
+    ///
+    /// # Returns
+    /// * `ImageSize`: The dimensions of the image.
+    ///
+    /// # Exceptions
+    /// * `Exception`: If reading the header fails.
     pub fn read_header(&self, jpeg_data: &[u8]) -> PyResult<PyImageSize> {
         let image_size = self
             .0
@@ -25,6 +40,16 @@ impl PyImageDecoder {
         Ok(image_size.into())
     }
 
+    /// Decodes a JPEG image into an 8-bit RGB tensor.
+    ///
+    /// # Arguments
+    /// * `jpeg_data` (bytes): Raw bytes containing the JPEG encoded data.
+    ///
+    /// # Returns
+    /// * `Image`: The decoded RGB image tensor.
+    ///
+    /// # Exceptions
+    /// * `Exception`: If decoding fails.
     pub fn decode(&self, jpeg_data: &[u8]) -> PyResult<PyImage> {
         let image = self
             .0
@@ -39,6 +64,16 @@ impl PyImageDecoder {
         Ok(pyimage)
     }
 
+    /// Decodes a JPEG image into an 8-bit grayscale tensor.
+    ///
+    /// # Arguments
+    /// * `jpeg_data` (bytes): Raw bytes containing the JPEG encoded data.
+    ///
+    /// # Returns
+    /// * `Image`: The decoded grayscale image tensor.
+    ///
+    /// # Exceptions
+    /// * `Exception`: If decoding fails.
     pub fn decode_gray8(&self, jpeg_data: &[u8]) -> PyResult<PyImage> {
         let image = self
             .0
@@ -54,11 +89,16 @@ impl PyImageDecoder {
     }
 }
 
+/// Hardware-accelerated JPEG encoder using libjpeg-turbo.
 #[pyclass(name = "ImageEncoder", frozen)]
 pub struct PyImageEncoder(JpegTurboEncoder);
 
 #[pymethods]
 impl PyImageEncoder {
+    /// Creates a new instance of the ImageEncoder.
+    ///
+    /// # Returns
+    /// * `ImageEncoder`: A new encoder instance.
     #[new]
     pub fn new() -> PyResult<PyImageEncoder> {
         let encoder = JpegTurboEncoder::new()
@@ -66,6 +106,16 @@ impl PyImageEncoder {
         Ok(PyImageEncoder(encoder))
     }
 
+    /// Encodes an image tensor into JPEG bytes.
+    ///
+    /// # Arguments
+    /// * `image` (Image): The image tensor to encode.
+    ///
+    /// # Returns
+    /// * `bytes`: A byte array containing the JPEG-encoded image data.
+    ///
+    /// # Exceptions
+    /// * `Exception`: If encoding fails or the image format is incompatible.
     pub fn encode(&self, image: PyImage) -> PyResult<Vec<u8>> {
         let image = Image::from_pyimage(image)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
@@ -76,6 +126,13 @@ impl PyImageEncoder {
         Ok(jpeg_data)
     }
 
+    /// Sets the encoding quality for the encoder.
+    ///
+    /// # Arguments
+    /// * `quality` (int): The JPEG encoding quality.
+    ///
+    /// # Exceptions
+    /// * `Exception`: If setting the quality fails.
     pub fn set_quality(&self, quality: i32) -> PyResult<()> {
         self.0
             .set_quality(quality)
@@ -84,6 +141,17 @@ impl PyImageEncoder {
     }
 }
 
+/// Reads an 8-bit RGB JPEG image from a file path using libjpeg-turbo.
+///
+/// # Arguments
+/// * `file_path` (str): The path to the JPEG file to read.
+///
+/// # Returns
+/// * `Image`: The decoded 8-bit RGB image tensor.
+///
+/// # Exceptions
+/// * `FileExistsError`: If the read operation fails (Note: mapped from upstream error).
+/// * `Exception`: If the image fails to convert.
 #[pyfunction]
 pub fn read_image_jpegturbo(file_path: &str) -> PyResult<PyImage> {
     let image = read_image_jpegturbo_rgb8(file_path)
@@ -94,6 +162,15 @@ pub fn read_image_jpegturbo(file_path: &str) -> PyResult<PyImage> {
     Ok(pyimage)
 }
 
+/// Writes an image tensor to a JPEG file using libjpeg-turbo.
+///
+/// # Arguments
+/// * `file_path` (str): The path where the JPEG file will be saved.
+/// * `image` (Image): The image tensor to write.
+/// * `quality` (int): The JPEG encoding quality (0-100).
+///
+/// # Exceptions
+/// * `Exception`: If writing or encoding fails.
 #[pyfunction]
 pub fn write_image_jpegturbo(file_path: &str, image: PyImage, quality: u8) -> PyResult<()> {
     let image = Image::from_pyimage(image)
@@ -103,18 +180,20 @@ pub fn write_image_jpegturbo(file_path: &str, image: PyImage, quality: u8) -> Py
     Ok(())
 }
 
+/// Decodes a JPEG image from raw bytes using libjpeg-turbo.
+///
+/// # Arguments
+/// * `jpeg_data` (bytes): Raw bytes containing the JPEG encoded data.
+/// * `mode` (str): The color mode to decode the image into.
+///   Supported values are strictly lowercase `"rgb"` (8-bit RGB) or `"mono"` (8-bit Grayscale).
+///
+/// # Returns
+/// * `Image`: The decoded image tensor.
+///
+/// # Exceptions
+/// * `ValueError`: If the mode is unsupported (case-sensitive).
+/// * `Exception`: If decoding or image conversion fails.
 #[pyfunction]
-/// Decodes the JPEG Image from raw bytes.
-///
-/// The following modes are supported:
-/// 1. "rgb" -> 8-bit RGB
-/// 2. "mono" -> 8-bit Monochrome
-///
-/// ```py
-/// import kornia_rs as K
-///
-/// img = K.decode_image_jpegturbo(bytes(img_data), "rgb")
-/// ```
 pub fn decode_image_jpegturbo(jpeg_data: &[u8], mode: &str) -> PyResult<PyImage> {
     let image = match mode {
         "rgb" => JpegTurboDecoder::new()
