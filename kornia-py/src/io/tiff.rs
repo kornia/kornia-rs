@@ -68,7 +68,7 @@ pub fn read_image_tiff_u8(file_path: &str, mode: &str) -> PyResult<PyImage> {
 ///   Must be strictly lowercase: `"rgb"` or `"mono"`.
 ///
 /// # Returns
-/// * `ImageU16`: The decoded 16-bit image tensor.
+/// * `numpy.ndarray`: The decoded 16-bit image tensor with dtype `uint16`.
 ///
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive) or the file fails to read.
@@ -121,7 +121,7 @@ pub fn read_image_tiff_u16(file_path: &str, mode: &str) -> PyResult<PyImageU16> 
 ///   Must be strictly lowercase: `"rgb"` or `"mono"`.
 ///
 /// # Returns
-/// * `ImageF32`: The decoded 32-bit float image tensor.
+/// * `numpy.ndarray`: The decoded 32-bit float image tensor with dtype `float32`.
 ///
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive) or the file fails to read.
@@ -212,7 +212,7 @@ pub fn write_image_tiff_u8(file_path: &str, image: PyImage, mode: &str) -> PyRes
 ///
 /// # Arguments
 /// * `file_path` (str): The path where the TIFF file will be saved.
-/// * `image` (ImageU16): The 16-bit image tensor to write.
+/// * `image` (numpy.ndarray): The 16-bit image tensor to write, with dtype `uint16`.
 /// * `mode` (str): The color mode of the image.
 ///   Must be strictly lowercase: `"rgb"` or `"mono"`.
 ///
@@ -253,9 +253,9 @@ pub fn write_image_tiff_u16(file_path: &str, image: PyImageU16, mode: &str) -> P
 ///
 /// # Arguments
 /// * `file_path` (str): The path where the TIFF file will be saved.
-/// * `image` (ImageF32): The 32-bit float image tensor to write.
+/// * `image` (numpy.ndarray): The 32-bit float image tensor to write, with dtype `float32`.
+///   For `"mono"` mode, the expected shape is (H, W); for `"rgb"` mode, the expected shape is (H, W, 3).
 /// * `mode` (str): The color mode of the image.
-///   Must be strictly lowercase: `"rgb"` or `"mono"`.
 ///
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive).

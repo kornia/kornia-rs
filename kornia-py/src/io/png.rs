@@ -82,7 +82,7 @@ pub fn read_image_png_u8(file_path: &str, mode: &str) -> PyResult<PyImage> {
 ///   Must be strictly lowercase: `"rgb"`, `"rgba"`, or `"mono"`.
 ///
 /// # Returns
-/// * `ImageU16`: The decoded 16-bit image tensor.
+/// * `numpy.ndarray`: The decoded 16-bit image tensor with dtype `uint16`.
 ///
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive) or the file fails to read.
@@ -193,7 +193,7 @@ pub fn write_image_png_u8(file_path: &str, image: PyImage, mode: &str) -> PyResu
 ///
 /// # Arguments
 /// * `file_path` (str): The path where the PNG file will be saved.
-/// * `image` (ImageU16): The 16-bit image tensor to write.
+/// * `image` (numpy.ndarray): The 16-bit image tensor to write, with dtype `uint16`.
 /// * `mode` (str): The color mode of the image.
 ///   Must be strictly lowercase: `"rgb"`, `"rgba"`, or `"mono"`.
 ///
@@ -331,7 +331,7 @@ pub fn decode_image_png_u8(
 ///   Must be strictly lowercase: `"rgb"`, `"rgba"`, or `"mono"`.
 ///
 /// # Returns
-/// * `ImageU16`: The decoded 16-bit image tensor.
+/// * `numpy.ndarray`: The decoded 16-bit image tensor with dtype `uint16`.
 ///
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive) or decoding fails.
