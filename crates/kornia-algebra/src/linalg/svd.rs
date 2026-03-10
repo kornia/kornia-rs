@@ -1104,6 +1104,9 @@ mod tests {
         let a = Mat3F64::from_diagonal(Vec3F64::new(1.0, 3.0, 2.0));
         let svd = svd3_f64(&a);
 
+        // Verify full SVD properties (reconstruction and orthogonality) using shared epsilon
+        verify_svd_properties_f64(&a, &svd, TEST_EPSILON_F64);
+
         // U and V must be pure rotations (det > 0). If det < 0, they are invalid reflections.
         assert!(
             svd.u().determinant() > 0.0,
@@ -1113,13 +1116,5 @@ mod tests {
             svd.v().determinant() > 0.0,
             "V became a reflection during sort!"
         );
-
-        // Verify reconstruction (dereference u and s)
-        let recon = *svd.u() * *svd.s() * svd.v().transpose();
-        let diff = a - recon;
-
-        assert!(diff.x_axis.length() < 1e-10);
-        assert!(diff.y_axis.length() < 1e-10);
-        assert!(diff.z_axis.length() < 1e-10);
     }
 }
