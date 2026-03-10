@@ -63,7 +63,7 @@ pub fn read_image_jpeg(file_path: &str, mode: &str) -> PyResult<PyImage> {
 /// * `image` (Image): The image tensor to write.
 /// * `mode` (str): The color mode of the image.
 ///   Supported values are strictly lowercase `"rgb"` (8-bit RGB) or `"mono"` (8-bit Grayscale).
-/// * `quality` (int): The JPEG encoding quality. Must be in the range 0 to 100 inclusive 
+/// * `quality` (int): The JPEG encoding quality. Must be in the range 0 to 100 inclusive
 ///   (where 0 is the lowest quality and 100 is the highest quality).
 ///
 /// # Exceptions
