@@ -111,17 +111,17 @@ pub fn umeyama(src: &[Vec3AF32], dst: &[Vec3AF32]) -> UmeyamaResult {
     let ty = mu_d_y - (r.x_axis.y * mu_s_x + r.y_axis.y * mu_s_y + r.z_axis.y * mu_s_z);
     let tz = mu_d_z - (r.x_axis.z * mu_s_x + r.y_axis.z * mu_s_y + r.z_axis.z * mu_s_z);
 
-    // 6. Cast back to f32 for the output
+    // Cast back to f32 for the output
     let r_cols = [
         r.x_axis.x as f32,
         r.x_axis.y as f32,
-        r.x_axis.z as f32, // Col 1
+        r.x_axis.z as f32, // Col 0
         r.y_axis.x as f32,
         r.y_axis.y as f32,
-        r.y_axis.z as f32, // Col 2
+        r.y_axis.z as f32, // Col 1
         r.z_axis.x as f32,
         r.z_axis.y as f32,
-        r.z_axis.z as f32, // Col 3
+        r.z_axis.z as f32, // Col 2
     ];
 
     Ok((

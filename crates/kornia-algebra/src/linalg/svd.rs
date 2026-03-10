@@ -514,6 +514,8 @@ mod impl_f64 {
     }
 
     impl Symmetric3x3 {
+        /// Constructor from a regular Mat3x3.
+        /// Extracts elements directly to represent the upper-triangular entries of a symmetric matrix.
         fn from_mat3x3(m: &Mat3F64) -> Self {
             let x_axis = m.x_axis;
             let y_axis = m.y_axis;
@@ -816,7 +818,8 @@ mod impl_f64 {
     }
 
     /// Sorts the singular values in descending order and adjusts the corresponding singular vectors.
-    /// Swapped columns are negated to preserve matrix orientation (determinant).
+    /// Swapped columns are negated to preserve matrix orientation (determinant),
+    /// ensuring pure rotations do not turn into reflections.
     #[inline(always)]
     pub fn sort_singular_values(b: &mut Mat3F64, v: &mut Mat3F64) {
         let mut b_x = b.x_axis;
@@ -1066,6 +1069,10 @@ mod tests {
             Vec3F64::new(0.0, 8.327, 0.0),
         );
         let svd = svd3_f64(&e);
+
+        // Verify full SVD properties: orthogonality and reconstruction
+        verify_svd_properties_f64(&e, &svd, TEST_EPSILON_F64);
+
         let s = svd.s();
         let sigma1 = s.x_axis.x;
         let sigma2 = s.y_axis.y;
