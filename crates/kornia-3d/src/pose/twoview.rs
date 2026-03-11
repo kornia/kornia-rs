@@ -33,6 +33,7 @@
 //! from two views alone — this is the SE(3) → essential manifold quotient in action.
 
 use crate::pose::fundamental::{fundamental_8point, sampson_distance, FundamentalError};
+use crate::pose::triangulation::{triangulate_inliers, TriangulateParams};
 use crate::pose::{
     decompose_essential, decompose_homography, enforce_essential_constraints,
     essential_from_fundamental, homography_4pt2d, HomographyError,
@@ -410,157 +411,6 @@ pub fn two_view_estimate(
     })
 }
 
-struct TriangulateParams<'a> {
-    k1_inv: &'a Mat3F64,
-    k2_inv: &'a Mat3F64,
-    min_parallax_deg: f64,
-}
-
-/// Triangulates a 3D point by midpoint between two rays with known relative pose.
-///
-/// This assumes a relative transform from camera 1 to camera 2:
-/// `p_cam2 = r21 * p_cam1 + t21`.
-///
-/// `ray1_cam1` is a viewing ray in camera-1 coordinates and `ray2_cam2` is a
-/// viewing ray in camera-2 coordinates. The returned point is expressed in the
-/// camera-1 frame together with the distance (gap) between the closest points
-/// on the two rays.
-///
-/// Returns `None` if the geometry is degenerate (parallel rays or invalid depth).
-pub fn triangulate_midpoint_known_pose(
-    ray1_cam1: &Vec3F64,
-    ray2_cam2: &Vec3F64,
-    r21: &Mat3F64,
-    t21: &Vec3F64,
-) -> Option<(Vec3F64, f64)> {
-    let r21_t = r21.transpose();
-    let d1 = ray1_cam1.normalize();
-    let d2 = (r21_t * *ray2_cam2).normalize();
-    let c2 = -(r21_t * *t21);
-
-    let b = d1.dot(d2);
-    let denom = 1.0 - b * b;
-    if denom.abs() < 1e-8 {
-        return None;
-    }
-
-    let w0 = -c2;
-    let d = d1.dot(w0);
-    let e = d2.dot(w0);
-    let s1 = (b * e - d) / denom;
-    let s2 = (e - b * d) / denom;
-    if s1 <= 1e-8 || s2 <= 1e-8 {
-        return None;
-    }
-
-    let p1 = d1 * s1;
-    let p2 = c2 + d2 * s2;
-    let gap = (p1 - p2).length();
-    let p_cam1 = (p1 + p2) * 0.5;
-    Some((p_cam1, gap))
-}
-
-fn triangulate_inliers(
-    x1: &[Vec2F64],
-    x2: &[Vec2F64],
-    inliers: &[bool],
-    r: &Mat3F64,
-    t: &Vec3F64,
-    params: &TriangulateParams<'_>,
-) -> (usize, Vec<Vec3F64>, Vec<usize>) {
-    let mut count = 0usize;
-    let mut points = Vec::new();
-    let mut indices = Vec::new();
-
-    for i in 0..x1.len() {
-        if !inliers[i] {
-            continue;
-        }
-        let x1n = normalize_point(params.k1_inv, &x1[i]);
-        let x2n = normalize_point(params.k2_inv, &x2[i]);
-        if let Some(x) = triangulate_point_linear(&x1n, &x2n, r, t) {
-            let z1 = x.z;
-            let x2c = *r * x + *t;
-            let z2 = x2c.z;
-            // True parallax: angle between the two viewing rays in the WORLD frame.
-            // Ray from cam1 (at origin): x / |x|
-            // Ray from cam2 (at C2 = -Rᵀt) toward x: (x - C2) / |x - C2| = Rᵀ * x2c (unnorm)
-            // Using Rᵀ·x2c = x + Rᵀt removes the rotation-induced component that
-            // would otherwise make this angle ≈ rotation_angle regardless of depth.
-            let d2_world = r.transpose() * x2c;
-            if z1 > 0.0 && z2 > 0.0 && parallax_ok(&x, &d2_world, params.min_parallax_deg) {
-                points.push(x);
-                indices.push(i);
-                count += 1;
-            }
-        }
-    }
-
-    (count, points, indices)
-}
-
-fn parallax_ok(x1: &Vec3F64, x2: &Vec3F64, min_parallax_deg: f64) -> bool {
-    let dot = x1.dot(*x2);
-    let n1 = x1.length();
-    let n2 = x2.length();
-    if n1 <= 1e-12 || n2 <= 1e-12 {
-        return false;
-    }
-    let cos_angle = (dot / (n1 * n2)).clamp(-1.0, 1.0);
-    let angle = cos_angle.acos().to_degrees();
-    angle >= min_parallax_deg
-}
-
-fn normalize_point(k_inv: &Mat3F64, x: &Vec2F64) -> Vec2F64 {
-    let xh = Vec3F64::new(x.x, x.y, 1.0);
-    let xn = *k_inv * xh;
-    Vec2F64::new(xn.x / xn.z, xn.y / xn.z)
-}
-
-/// Triangulate a single point from two views using the DLT method.
-///
-/// P1 = [I | 0] (first camera at origin), P2 = [R | t].
-/// Builds the 4x4 linear system `A * X = 0` and solves via SVD.
-fn triangulate_point_linear(
-    x1: &Vec2F64,
-    x2: &Vec2F64,
-    r: &Mat3F64,
-    t: &Vec3F64,
-) -> Option<Vec3F64> {
-    let r_arr: [f64; 9] = (*r).into();
-
-    // P1 = [I|0], so rows of A for camera 1 simplify:
-    //   row 0: x1.x * P1_row3 - P1_row1 = [-1, 0, x1.x, 0]
-    //   row 1: x1.y * P1_row3 - P1_row2 = [0, -1, x1.y, 0]
-    let mut a = faer::Mat::<f64>::zeros(4, 4);
-    a.write(0, 0, -1.0);
-    a.write(0, 2, x1.x);
-    a.write(1, 1, -1.0);
-    a.write(1, 2, x1.y);
-
-    // r_arr is column-major: r_arr[j*3 + i] = R[i,j].
-    // P2 = [R | t], so P2[row, col] = R[row, col] for col < 3, t[row] for col = 3.
-    // P2 row 0: [R[0,0], R[0,1], R[0,2], tx] = [r_arr[0], r_arr[3], r_arr[6], tx]
-    // P2 row 1: [R[1,0], R[1,1], R[1,2], ty] = [r_arr[1], r_arr[4], r_arr[7], ty]
-    // P2 row 2: [R[2,0], R[2,1], R[2,2], tz] = [r_arr[2], r_arr[5], r_arr[8], tz]
-    let p2_2 = [r_arr[2], r_arr[5], r_arr[8], t.z];
-    for j in 0..4 {
-        let p2_0j = if j < 3 { r_arr[j * 3] } else { t.x };
-        let p2_1j = if j < 3 { r_arr[j * 3 + 1] } else { t.y };
-        a.write(2, j, x2.x * p2_2[j] - p2_0j);
-        a.write(3, j, x2.y * p2_2[j] - p2_1j);
-    }
-
-    let svd = a.svd();
-    let v = svd.v();
-    let xh = v.col(3);
-    let w = xh[3];
-    if w.abs() < 1e-12 {
-        return None;
-    }
-    Some(Vec3F64::new(xh[0] / w, xh[1] / w, xh[2] / w))
-}
-
 /// Computes the squared reprojection error for mapping `x1` to `x2` via the homography `h`.
 fn homography_reproj_error(h: &Mat3F64, x1: &Vec2F64, x2: &Vec2F64) -> f64 {
     let x1h = Vec3F64::new(x1.x, x1.y, 1.0);
@@ -578,37 +428,6 @@ fn homography_reproj_error(h: &Mat3F64, x1: &Vec2F64, x2: &Vec2F64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_triangulate_midpoint_known_pose_simple() {
-        // Camera-2 center at (1, 0, 0) in camera-1 coordinates:
-        // p2 = R * p1 + t with R=I, t=(-1, 0, 0).
-        let r21 = Mat3F64::IDENTITY;
-        let t21 = Vec3F64::new(-1.0, 0.0, 0.0);
-
-        // True point in camera-1 frame.
-        let p_true = Vec3F64::new(0.0, 0.0, 5.0);
-        let ray1 = p_true.normalize();
-
-        // Same point expressed in camera-2 frame.
-        let p_cam2 = r21 * p_true + t21;
-        let ray2 = p_cam2.normalize();
-
-        let (p_est, gap) = triangulate_midpoint_known_pose(&ray1, &ray2, &r21, &t21).unwrap();
-        assert!((p_est - p_true).length() < 1e-6);
-        assert!(gap < 1e-6);
-    }
-
-    #[test]
-    fn test_triangulate_midpoint_known_pose_parallel_rays() {
-        let r21 = Mat3F64::IDENTITY;
-        let t21 = Vec3F64::new(-1.0, 0.0, 0.0);
-
-        // Parallel forward rays should be degenerate.
-        let ray1 = Vec3F64::new(0.0, 0.0, 1.0);
-        let ray2 = Vec3F64::new(0.0, 0.0, 1.0);
-        assert!(triangulate_midpoint_known_pose(&ray1, &ray2, &r21, &t21).is_none());
-    }
 
     #[test]
     fn test_ransac_fundamental_basic() {
@@ -706,16 +525,6 @@ mod tests {
             TwoViewError::InvalidInput { required } => assert_eq!(required, 4),
             other => panic!("unexpected error: {other:?}"),
         }
-    }
-
-    #[test]
-    fn test_parallax_ok_thresholds() {
-        let x1 = Vec3F64::new(1.0, 0.0, 0.0);
-        let x2 = Vec3F64::new(1.0, 0.0, 0.0);
-        assert!(!parallax_ok(&x1, &x2, 1.0));
-
-        let x3 = Vec3F64::new(0.0, 1.0, 0.0);
-        assert!(parallax_ok(&x1, &x3, 30.0));
     }
 
     /// End-to-end two-view pose estimation on real EuRoC MH_01_easy images.
@@ -891,19 +700,5 @@ mod tests {
             }
         }
         (out_kps, out_ori, out_desc)
-    }
-
-    #[test]
-    fn test_normalize_point_identity_and_scaled() {
-        let k = Mat3F64::from_cols(
-            Vec3F64::new(2.0, 0.0, 0.0),
-            Vec3F64::new(0.0, 3.0, 0.0),
-            Vec3F64::new(0.0, 0.0, 1.0),
-        );
-        let k_inv = k.inverse();
-        let x = Vec2F64::new(4.0, 6.0);
-        let xn = normalize_point(&k_inv, &x);
-        assert!((xn.x - 2.0).abs() < 1e-12);
-        assert!((xn.y - 2.0).abs() < 1e-12);
     }
 }
