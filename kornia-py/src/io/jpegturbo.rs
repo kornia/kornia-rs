@@ -46,7 +46,7 @@ impl PyImageDecoder {
     /// * `jpeg_data` (bytes): Raw bytes containing the JPEG encoded data.
     ///
     /// # Returns
-    /// * `Image`: The decoded RGB image tensor.
+    /// * `numpy.ndarray`: The decoded RGB image tensor with shape `(H, W, 3)` and dtype `uint8`.
     ///
     /// # Exceptions
     /// * `Exception`: If decoding fails.
@@ -70,7 +70,7 @@ impl PyImageDecoder {
     /// * `jpeg_data` (bytes): Raw bytes containing the JPEG encoded data.
     ///
     /// # Returns
-    /// * `Image`: The decoded grayscale image tensor.
+    /// * `numpy.ndarray`: The decoded grayscale image tensor with dtype `uint8`.
     ///
     /// # Exceptions
     /// * `Exception`: If decoding fails.
@@ -109,7 +109,7 @@ impl PyImageEncoder {
     /// Encodes an image tensor into JPEG bytes.
     ///
     /// # Arguments
-    /// * `image` (Image): The image tensor to encode.
+    /// * `image` (numpy.ndarray): RGB image data with dtype `uint8` and shape `(H, W, 3)`.
     ///
     /// # Returns
     /// * `bytes`: A byte array containing the JPEG-encoded image data.
@@ -147,7 +147,7 @@ impl PyImageEncoder {
 /// * `file_path` (str): The path to the JPEG file to read.
 ///
 /// # Returns
-/// * `Image`: The decoded 8-bit RGB image tensor.
+/// * `numpy.ndarray`: The decoded 8-bit RGB image tensor with dtype `uint8`.
 ///
 /// # Exceptions
 /// * `FileExistsError`: If the read operation fails (Note: mapped from upstream error).
@@ -166,7 +166,7 @@ pub fn read_image_jpegturbo(file_path: &str) -> PyResult<PyImage> {
 ///
 /// # Arguments
 /// * `file_path` (str): The path where the JPEG file will be saved.
-/// * `image` (Image): The image tensor to write.
+/// * `image` (numpy.ndarray): The image tensor to write (dtype `uint8`, shape `(H, W, 3)`).
 /// * `quality` (int): The JPEG encoding quality (0-100).
 ///
 /// # Exceptions
@@ -188,7 +188,7 @@ pub fn write_image_jpegturbo(file_path: &str, image: PyImage, quality: u8) -> Py
 ///   Supported values are strictly lowercase `"rgb"` (8-bit RGB) or `"mono"` (8-bit Grayscale).
 ///
 /// # Returns
-/// * `Image`: The decoded image tensor.
+/// * `numpy.ndarray`: The decoded image as a NumPy `ndarray` of `uint8`.
 ///
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive).

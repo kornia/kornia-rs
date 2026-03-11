@@ -11,7 +11,7 @@ use pyo3::prelude::*;
 ///   Supported values are strictly lowercase `"rgb"` (8-bit RGB) or `"mono"` (8-bit Grayscale).
 ///
 /// # Returns
-/// * `Image`: The decoded image tensor.
+/// * `numpy.ndarray`: The decoded image as a NumPy array (dtype `uint8`, shape `(H, W, C)` for `"rgb"` or `(H, W)` for `"mono"`).
 ///
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive) or if the image fails to decode.
@@ -60,7 +60,7 @@ pub fn read_image_jpeg(file_path: &str, mode: &str) -> PyResult<PyImage> {
 ///
 /// # Arguments
 /// * `file_path` (str): The path where the JPEG file will be saved.
-/// * `image` (Image): The image tensor to write.
+/// * `image` (numpy.ndarray): Image data as a contiguous NumPy array (dtype `uint8`). For `"rgb"` mode, expected shape is (H, W, 3). For `"mono"` mode, expected shape is (H, W) or (H, W, 1).
 /// * `mode` (str): The color mode of the image.
 ///   Supported values are strictly lowercase `"rgb"` (8-bit RGB) or `"mono"` (8-bit Grayscale).
 /// * `quality` (int): The JPEG encoding quality. Must be in the range 0 to 100 inclusive
@@ -105,7 +105,7 @@ pub fn write_image_jpeg(file_path: &str, image: PyImage, mode: &str, quality: u8
 /// * `src` (bytes): Raw bytes containing the JPEG encoded data.
 ///
 /// # Returns
-/// * `Image`: The decoded image tensor.
+/// * numpy.ndarray: The decoded image tensor with dtype uint8.
 ///
 /// # Exceptions
 /// * `ValueError`: If the byte data is invalid, decoding fails, or the
@@ -161,7 +161,7 @@ pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
 /// Encodes an RGB u8 image to JPEG bytes.
 ///
 /// # Arguments
-/// * `image` (Image): RGB image tensor (H, W, 3) with dtype uint8.
+/// * `image` (numpy.ndarray): RGB image array with shape (H, W, 3) and dtype `uint8`.
 /// * `quality` (int): JPEG encoding quality (0-100, where 100 is highest quality).
 ///
 /// # Returns

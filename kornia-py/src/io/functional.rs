@@ -20,7 +20,7 @@ use std::path::Path;
 /// * `file_path` (Union[str, os.PathLike]): The path to the image file to read.
 ///
 /// # Returns
-/// * The decoded image tensor.
+/// * `numpy.ndarray`: The decoded image tensor.
 #[pyfunction(name = "read_image_any")]
 pub fn read_image_any_deprecated(
     py: Python<'_>,
@@ -48,13 +48,14 @@ pub fn read_image_any_deprecated(
 /// * `file_path` (Union[str, os.PathLike]): The path to the image file.
 ///
 /// # Returns
-/// * `Image`: An image tensor representing the decoded image.
+/// * `numpy.ndarray`: An image array representing the decoded image.
 ///
 /// # Exceptions
 /// * `TypeError`: If the provided path does not implement `__fspath__` or isn't a string.
 /// * `FileNotFoundError`: If the file cannot be found at the given path.
 /// * `ValueError`: If the file extension is unsupported or decoding fails.
 /// * `IOError`: If an error occurs reading the file from disk.
+/// * `Exception`: If an unexpected error occurs while decoding the image or converting it into a Python tensor.
 #[pyfunction]
 pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     // Attempt to obtain a path-like object via PEP 519 (`__fspath__`)

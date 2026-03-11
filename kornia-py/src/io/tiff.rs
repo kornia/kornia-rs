@@ -14,7 +14,7 @@ use pyo3::prelude::*;
 ///   Must be strictly lowercase: `"rgb"` or `"mono"`.
 ///
 /// # Returns
-/// * `Image`: The decoded 8-bit image tensor.
+/// * `numpy.ndarray`: The decoded 8-bit image tensor with dtype `uint8` and shape `(H, W, 3)` for `"rgb"` or `(H, W)` for `"mono"`.
 ///
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive) or the file fails to read.
@@ -170,7 +170,7 @@ pub fn read_image_tiff_f32(file_path: &str, mode: &str) -> PyResult<PyImageF32> 
 ///
 /// # Arguments
 /// * `file_path` (str): The path where the TIFF file will be saved.
-/// * `image` (Image): The 8-bit image tensor to write.
+/// * `image` (numpy.ndarray): The 8-bit image tensor to write with dtype `uint8`.
 /// * `mode` (str): The color mode of the image.
 ///   Must be strictly lowercase: `"rgb"` or `"mono"`.
 ///
@@ -255,7 +255,7 @@ pub fn write_image_tiff_u16(file_path: &str, image: PyImageU16, mode: &str) -> P
 /// * `file_path` (str): The path where the TIFF file will be saved.
 /// * `image` (numpy.ndarray): The 32-bit float image tensor to write, with dtype `float32`.
 ///   For `"mono"` mode, the expected shape is (H, W); for `"rgb"` mode, the expected shape is (H, W, 3).
-/// * `mode` (str): The color mode of the image.
+/// * `mode` (str): The color mode of the image. Must be strictly lowercase: `"rgb"` or `"mono"`.
 ///
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive).
