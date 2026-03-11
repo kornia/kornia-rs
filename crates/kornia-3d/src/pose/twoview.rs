@@ -33,7 +33,7 @@
 //! from two views alone — this is the SE(3) → essential manifold quotient in action.
 
 use crate::pose::fundamental::{fundamental_8point, sampson_distance, FundamentalError};
-use crate::pose::triangulation::{triangulate_inliers, TriangulateParams};
+use crate::pose::triangulation::{triangulate_inliers, TriangulateParams, TriangulationConfig};
 use crate::pose::{
     decompose_essential, decompose_homography, enforce_essential_constraints,
     essential_from_fundamental, homography_4pt2d, HomographyError,
@@ -117,8 +117,8 @@ pub struct TwoViewConfig {
     pub ransac_h: RansacParams,
     /// Prefer homography when it has this ratio of inliers vs fundamental.
     pub homography_inlier_ratio: f64,
-    /// Minimum parallax angle (degrees) for triangulated points.
-    pub min_parallax_deg: f64,
+    /// Triangulation-backed candidate-pose validation settings.
+    pub triangulation: TriangulationConfig,
 }
 
 impl Default for TwoViewConfig {
@@ -127,7 +127,7 @@ impl Default for TwoViewConfig {
             ransac_f: RansacParams::default(),
             ransac_h: RansacParams::default(),
             homography_inlier_ratio: 0.8,
-            min_parallax_deg: 1.0,
+            triangulation: TriangulationConfig::default(),
         }
     }
 }
@@ -354,9 +354,11 @@ pub fn two_view_estimate(
     let k2_inv = k2.inverse();
 
     let tri_params = TriangulateParams {
+        k1,
+        k2,
         k1_inv: &k1_inv,
         k2_inv: &k2_inv,
-        min_parallax_deg: config.min_parallax_deg,
+        config: &config.triangulation,
     };
 
     let mut best_pose = None;
@@ -370,7 +372,7 @@ pub fn two_view_estimate(
         for (r, t) in &poses {
             let (count, points, indices) =
                 triangulate_inliers(x1, x2, &res_h.inliers, r, t, &tri_params);
-            if count > best_count {
+            if count >= config.triangulation.min_cheirality_count && count > best_count {
                 best_count = count;
                 best_pose = Some((*r, *t));
                 best_points = points;
@@ -386,7 +388,7 @@ pub fn two_view_estimate(
         for (r, t) in &poses {
             let (count, points, indices) =
                 triangulate_inliers(x1, x2, &res_f.inliers, r, t, &tri_params);
-            if count > best_count {
+            if count >= config.triangulation.min_cheirality_count && count > best_count {
                 best_count = count;
                 best_pose = Some((*r, *t));
                 best_points = points;
@@ -527,6 +529,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_two_view_config_default_nests_triangulation_defaults() {
+        let config = TwoViewConfig::default();
+        assert_eq!(config.triangulation.min_parallax_deg, 1.0);
+        assert_eq!(config.triangulation.max_midpoint_gap, 1.0);
+        assert_eq!(config.triangulation.max_reprojection_error, 2.0);
+        assert_eq!(config.triangulation.min_cheirality_count, 1);
+    }
+
     /// End-to-end two-view pose estimation on real EuRoC MH_01_easy images.
     ///
     /// Reads two grayscale frames, runs ORB detection + matching, estimates
@@ -626,7 +637,10 @@ mod tests {
                 random_seed: Some(42),
             },
             homography_inlier_ratio: 0.8,
-            min_parallax_deg: 0.5,
+            triangulation: TriangulationConfig {
+                min_parallax_deg: 0.5,
+                ..TriangulationConfig::default()
+            },
         };
 
         let result = two_view_estimate(&pts1, &pts2, &k, &k, &config).unwrap();

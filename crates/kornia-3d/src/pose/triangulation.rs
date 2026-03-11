@@ -25,9 +25,11 @@ impl Default for TriangulationConfig {
 }
 
 pub(crate) struct TriangulateParams<'a> {
+    pub k1: &'a Mat3F64,
+    pub k2: &'a Mat3F64,
     pub k1_inv: &'a Mat3F64,
     pub k2_inv: &'a Mat3F64,
-    pub min_parallax_deg: f64,
+    pub config: &'a TriangulationConfig,
 }
 
 /// Triangulates a 3D point by midpoint between two rays with known relative pose.
@@ -92,12 +94,30 @@ pub(crate) fn triangulate_inliers(
         }
         let x1n = normalize_point(params.k1_inv, &x1[i]);
         let x2n = normalize_point(params.k2_inv, &x2[i]);
+        let ray1 = Vec3F64::new(x1n.x, x1n.y, 1.0).normalize();
+        let ray2 = Vec3F64::new(x2n.x, x2n.y, 1.0).normalize();
+        let Some((_, midpoint_gap)) = triangulate_midpoint_known_pose(&ray1, &ray2, r, t) else {
+            continue;
+        };
+        if midpoint_gap > params.config.max_midpoint_gap {
+            continue;
+        }
+
         if let Some(x) = triangulate_point_linear(&x1n, &x2n, r, t) {
             let z1 = x.z;
             let x2c = *r * x + *t;
             let z2 = x2c.z;
             let d2_world = r.transpose() * x2c;
-            if z1 > 0.0 && z2 > 0.0 && parallax_ok(&x, &d2_world, params.min_parallax_deg) {
+            let reproj_th_sq =
+                params.config.max_reprojection_error * params.config.max_reprojection_error;
+            let err1 = reprojection_error_sq(params.k1, &x, &x1[i]);
+            let err2 = reprojection_error_sq(params.k2, &x2c, &x2[i]);
+            if z1 > 0.0
+                && z2 > 0.0
+                && parallax_ok(&x, &d2_world, params.config.min_parallax_deg)
+                && err1 <= reproj_th_sq
+                && err2 <= reproj_th_sq
+            {
                 points.push(x);
                 indices.push(i);
                 count += 1;
@@ -160,6 +180,16 @@ pub(crate) fn triangulate_point_linear(
         return None;
     }
     Some(Vec3F64::new(xh[0] / w, xh[1] / w, xh[2] / w))
+}
+
+fn reprojection_error_sq(k: &Mat3F64, p_cam: &Vec3F64, x: &Vec2F64) -> f64 {
+    let px = *k * *p_cam;
+    if px.z.abs() < 1e-12 {
+        return f64::INFINITY;
+    }
+    let dx = px.x / px.z - x.x;
+    let dy = px.y / px.z - x.y;
+    dx * dx + dy * dy
 }
 
 #[cfg(test)]
