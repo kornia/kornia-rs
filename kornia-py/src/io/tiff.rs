@@ -254,7 +254,7 @@ pub fn write_image_tiff_u16(file_path: &str, image: PyImageU16, mode: &str) -> P
 /// # Arguments
 /// * `file_path` (str): The path where the TIFF file will be saved.
 /// * `image` (numpy.ndarray): The 32-bit float image tensor to write, with dtype `float32`.
-///   For `"mono"` mode, the expected shape is (H, W); for `"rgb"` mode, the expected shape is (H, W, 3).
+///   For `"mono"` mode, the expected shape is (H, W, 1); for `"rgb"` mode, the expected shape is (H, W, 3).
 /// * `mode` (str): The color mode of the image. Must be strictly lowercase: `"rgb"` or `"mono"`.
 ///
 /// # Exceptions

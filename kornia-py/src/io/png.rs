@@ -144,7 +144,7 @@ pub fn read_image_png_u16(file_path: &str, mode: &str) -> PyResult<PyImageU16> {
 ///
 /// # Arguments
 /// * `file_path` (str): The path where the PNG file will be saved.
-/// * `image` (numpy.ndarray): The 8-bit image tensor to write with dtype `uint8`. For `"rgb"` mode, expected shape is `(H, W, 3)`. For `"rgba"` mode, expected shape is `(H, W, 4)`. For `"mono"` mode, expected shape is `(H, W)` or `(H, W, 1)`.
+/// * `image` (numpy.ndarray): The 8-bit image tensor to write with dtype `uint8`. For `"rgb"` mode, expected shape is `(H, W, 3)`. For `"rgba"` mode, expected shape is `(H, W, 4)`. For `"mono"` mode, expected shape is `(H, W, 1)`.
 /// * `mode` (str): The color mode of the image.
 ///   Must be strictly lowercase: `"rgb"`, `"rgba"`, or `"mono"`.
 ///
@@ -193,7 +193,7 @@ pub fn write_image_png_u8(file_path: &str, image: PyImage, mode: &str) -> PyResu
 ///
 /// # Arguments
 /// * `file_path` (str): The path where the PNG file will be saved.
-/// * `image` (numpy.ndarray): The 16-bit image tensor to write with dtype `uint16`. For `"rgb"` mode, expected shape is `(H, W, 3)`. For `"rgba"` mode, expected shape is `(H, W, 4)`. For `"mono"` mode, expected shape is `(H, W)` or `(H, W, 1)`.
+/// * `image` (numpy.ndarray): The 16-bit image tensor to write with dtype `uint16`. For `"rgb"` mode, expected shape is `(H, W, 3)`. For `"rgba"` mode, expected shape is `(H, W, 4)`. For `"mono"` mode, expected shape is `(H, W, 1)`.
 /// * `mode` (str): The color mode of the image.
 ///   Must be strictly lowercase: `"rgb"`, `"rgba"`, or `"mono"`.
 ///

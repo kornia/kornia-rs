@@ -60,7 +60,7 @@ pub fn read_image_jpeg(file_path: &str, mode: &str) -> PyResult<PyImage> {
 ///
 /// # Arguments
 /// * `file_path` (str): The path where the JPEG file will be saved.
-/// * `image` (numpy.ndarray): Image data as a contiguous NumPy array (dtype `uint8`). For `"rgb"` mode, expected shape is (H, W, 3). For `"mono"` mode, expected shape is (H, W) or (H, W, 1).
+/// * `image` (numpy.ndarray): Image data as a contiguous NumPy array (dtype `uint8`). For `"rgb"` mode, expected shape is (H, W, 3). For `"mono"` mode, expected shape is (H, W, 1).
 /// * `mode` (str): The color mode of the image.
 ///   Supported values are strictly lowercase `"rgb"` (8-bit RGB) or `"mono"` (8-bit Grayscale).
 /// * `quality` (int): The JPEG encoding quality. Must be in the range 0 to 100 inclusive
