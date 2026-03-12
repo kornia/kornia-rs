@@ -354,8 +354,6 @@ pub fn two_view_estimate(
     let k2_inv = k2.inverse();
 
     let tri_params = TriangulateParams {
-        k1,
-        k2,
         k1_inv: &k1_inv,
         k2_inv: &k2_inv,
         config: &config.triangulation,
