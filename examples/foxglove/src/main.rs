@@ -1,21 +1,15 @@
-#[cfg(target_os = "linux")]
 use argh::FromArgs;
-#[cfg(target_os = "linux")]
 use foxglove::{
     schemas::{CompressedImage, Timestamp},
     WebSocketServer,
 };
-#[cfg(target_os = "linux")]
 use kornia_image::ImageSize;
-#[cfg(target_os = "linux")]
 use kornia_io::v4l::{PixelFormat, V4LCameraConfig, V4lVideoCapture};
-#[cfg(target_os = "linux")]
 use std::{
     sync::atomic::{AtomicBool, Ordering},
     sync::Arc,
 };
 
-#[cfg(target_os = "linux")]
 #[derive(FromArgs)]
 /// Foxglove demo application
 struct Args {
@@ -28,7 +22,6 @@ struct Args {
     fps: u32,
 }
 
-#[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let env = env_logger::Env::default().default_filter_or("debug");
     env_logger::init_from_env(env);
@@ -87,9 +80,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     server.stop().wait_blocking();
 
     Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn main() {
-    panic!("This example is only supported on Linux due to V4L dependency.");
 }

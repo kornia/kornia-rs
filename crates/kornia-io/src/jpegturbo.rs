@@ -27,9 +27,11 @@ pub enum JpegTurboError {
 }
 
 /// A JPEG decoder using the turbojpeg library.
+/// **Note on migration:** The `Default` trait implementation was removed. Please use [`JpegTurboDecoder::new()`] instead.
 pub struct JpegTurboDecoder(Mutex<turbojpeg::Decompressor>);
 
 /// A JPEG encoder using the turbojpeg library.
+/// **Note on migration:** The `Default` trait implementation was removed. Please use [`JpegTurboEncoder::new()`] instead.
 pub struct JpegTurboEncoder(Mutex<turbojpeg::Compressor>);
 
 // Implementations for ImageDecoder and ImageEncoder

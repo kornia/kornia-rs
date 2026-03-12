@@ -1,12 +1,8 @@
-#[cfg(target_os = "linux")]
 mod video_demo;
-#[cfg(target_os = "linux")]
 mod video_file_demo;
 
-#[cfg(target_os = "linux")]
 use argh::FromArgs;
 
-#[cfg(target_os = "linux")]
 #[derive(FromArgs)]
 /// Capture frames from a webcam or video file and log to Rerun
 struct Args {
@@ -42,7 +38,6 @@ struct Args {
     debug: bool,
 }
 
-#[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
     let _pixel_format = args.pixel_format.as_deref().unwrap_or("MJPG");
@@ -51,9 +46,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         video_demo::video_demo(&args)
     }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn main() {
-    panic!("This example is only supported on Linux due to V4L dep.");
 }

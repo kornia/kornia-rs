@@ -1,17 +1,12 @@
-#[cfg(target_os = "linux")]
 use argh::FromArgs;
-#[cfg(target_os = "linux")]
 use ros_z::{context::ZContextBuilder, Builder, Result as ZResult};
-#[cfg(target_os = "linux")]
 use std::sync::Arc;
 
-#[cfg(target_os = "linux")]
 use ros_z_nodes::{
     camera_node::V4lCameraNode, compute_node::ComputeNode, decoder_node::DecoderNode,
     foxglove_node::FoxgloveNode, logger_node::LoggerNode,
 };
 
-#[cfg(target_os = "linux")]
 #[derive(FromArgs)]
 /// ROS2-style camera publisher using ros-z
 struct Args {
@@ -28,7 +23,6 @@ struct Args {
     fps: u32,
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::main]
 async fn main() -> ZResult<()> {
     let env = env_logger::Env::default().default_filter_or("info");
@@ -74,13 +68,4 @@ async fn main() -> ZResult<()> {
     }
 
     Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn main() {
-    let env = env_logger::Env::default().default_filter_or("info");
-    env_logger::init_from_env(env);
-
-    log::error!("This example is only supported on Linux due to V4L dependency.");
-    std::process::exit(1);
 }
