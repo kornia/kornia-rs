@@ -9,5 +9,8 @@ publish = false
 [dependencies]
 argh = { workspace = true }
 ctrlc = { workspace = true }
-kornia = { workspace = true, features = ["v4l"] }
+kornia = { workspace = true }
 rerun = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+kornia = { workspace = true, features = ["v4l"] }
