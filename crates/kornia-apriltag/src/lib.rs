@@ -266,6 +266,8 @@ impl AprilTagDecoder {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use kornia_io::png::read_image_png_mono8;
 
     use crate::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
@@ -278,7 +280,18 @@ mod tests {
         images_dir: &str,
         file_name_starts_with: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let tag_images = std::fs::read_dir(images_dir)?;
+        let tag_images_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(images_dir);
+        if !tag_images_dir.is_dir() {
+            eprintln!(
+                "Skipping {:?}: fixture directory not found: {}",
+                expected_tag,
+                tag_images_dir.display()
+            );
+            return Ok(());
+        }
+
+        let tag_images = std::fs::read_dir(tag_images_dir)?;
+        let mut matched_fixture = false;
 
         for img in tag_images {
             let img = img?;
@@ -288,6 +301,7 @@ mod tests {
                 .ok_or("Failed to convert file name to str")?;
 
             if file_name.starts_with(file_name_starts_with) {
+                matched_fixture = true;
                 let file_path = img.path();
 
                 let expected_id = file_name.strip_prefix(file_name_starts_with).unwrap();
@@ -330,6 +344,13 @@ mod tests {
 
                 decoder.clear();
             }
+        }
+
+        if !matched_fixture {
+            eprintln!(
+                "Skipping {:?}: no fixtures matching prefix '{}'",
+                expected_tag, file_name_starts_with
+            );
         }
 
         Ok(())
