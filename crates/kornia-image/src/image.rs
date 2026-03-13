@@ -38,6 +38,19 @@ pub enum PixelFormat {
     F32,
 }
 
+/// Interpolation mode for the image operations
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterpolationMode {
+    /// Bilinear interpolation
+    Bilinear,
+    /// Nearest neighbor interpolation
+    Nearest,
+    /// Lanczos interpolation
+    Lanczos,
+    /// Bicubic interpolation
+    Bicubic,
+}
+
 /// Image layout metadata (size, channels, pixel format).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImageLayout {
