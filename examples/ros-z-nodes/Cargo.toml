@@ -27,8 +27,8 @@ serde = { workspace = true, features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 zenoh = { version = "1.7", features = ["shared-memory"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-kornia-io = { workspace = true, features = ["v4l"] }
-
 [build-dependencies]
 prost-build = "0.14.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+kornia-io = { workspace = true, features = ["v4l"] }
