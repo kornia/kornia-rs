@@ -1,0 +1,24 @@
+[package]
+name = "onnx-siglip2"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+description = { workspace = true }
+readme = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+categories = { workspace = true }
+include = { workspace = true }
+
+[dependencies]
+argh = { workspace = true }
+env_logger = { workspace = true }
+kornia = { workspace = true }
+kornia-imgproc = { workspace = true }
+kornia-tensor = { workspace = true }
+log = { workspace = true }
+ort = { version = "2.0.0-rc.10", default-features = false, features = [
+  "load-dynamic",
+] }
