@@ -84,8 +84,11 @@ fn basic_usage() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Process two frames with a single FindContoursExecutor
 ///
-/// Scratch buffers are allocated on the first call and reused on every
-/// subsequent call, only the returned contours are newly allocated each time
+/// Internal scratch buffers (img, arena, ranges, hierarchy, border_types) are
+/// allocated on the first call and reused on every subsequent call, retaining
+/// their capacity so the OS allocator is not touched again. The returned
+/// ContoursResult is newly allocated on every call because ownership of the
+/// contour and hierarchy vecs transfers to the caller
 /// This is the recommended pattern for video pipelines or batch processing
 fn buffer_reuse_across_frames() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== 2. Buffer reuse across frames ===");
