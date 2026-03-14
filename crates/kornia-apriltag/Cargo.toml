@@ -31,3 +31,5 @@ apriltag = "0.4"
 criterion = { workspace = true }
 image = "0.25"
 kornia-io = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
