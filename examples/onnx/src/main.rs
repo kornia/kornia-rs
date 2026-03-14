@@ -26,6 +26,14 @@ pub struct Detection {
     pub h: f32,
 }
 
+fn parse_device(device: &str) -> Result<String, String> {
+    let d = device.to_lowercase();
+    match d.as_str() {
+        "cpu" | "cuda" | "tensorrt" => Ok(d),
+        _ => Err(format!("invalid device '{}'; expected one of: cpu, cuda, tensorrt", device)),
+    }
+}
+
 #[derive(FromArgs)]
 /// Perform object detection using ONNX Runtime and log it to Rerun
 struct Args {
@@ -41,8 +49,13 @@ struct Args {
     #[argh(option)]
     ort_dylib_path: PathBuf,
 
-    ///target device for the execution provider ('cpu', 'cuda', or 'tensorrt')
-    #[argh(option, short = 'd', default = "String::from(\"cpu\")")]
+    /// target device for the execution provider ('cpu', 'cuda', or 'tensorrt')
+    #[argh(
+        option,
+        short = 'd',
+        default = "String::from(\"cpu\")",
+        from_str_fn(parse_device)
+    )]
     device: String,
 }
 
@@ -56,33 +69,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image = F::read_image_any_rgb8(&args.image_path)?;
 
     // read the onnx model
-
-    // // initialize the base session builder
-    let mut builder = Session::builder()?
-        .with_optimization_level(GraphOptimizationLevel::Level3)?
-        .with_intra_threads(4)?;
-
     // configure execution providers based on the selected device
     let device_arg = args.device.to_lowercase();
-    builder = match device_arg.as_str() {
+
+    let builder = match device_arg.as_str() {
         "tensorrt" => {
-            println!("🚀 [Kornia-RS] Initializing TensorRT Execution Provider...");
-            builder.with_execution_providers([
+            println!("Using TensorRT Execution Provider...");
+            let b = Session::builder()?
+                .with_optimization_level(GraphOptimizationLevel::Level3)?
+                .with_intra_threads(4)?;
+            // Fallback to CPU if hardware execution provider registration fails
+            match b.with_execution_providers([
                 ort::execution_providers::TensorRTExecutionProvider::default().build(),
-                ort::execution_providers::CUDAExecutionProvider::default().build(),
-            ])?
-        }
+                ort::execution_providers::CUDAExecutionProvider::default().build()
+            ]) {
+                Ok(ep_builder) => ep_builder,
+                Err(e) => {
+                    println!("⚠️ TensorRT/CUDA registration failed: {}. Falling back to CPU...", e);
+                    Session::builder()?
+                        .with_optimization_level(GraphOptimizationLevel::Level3)?
+                        .with_intra_threads(4)?
+                }
+            }
+        },
         "cuda" => {
-            println!("🚀 [Kornia-RS] Initializing CUDA Execution Provider...");
-            builder.with_execution_providers([
-                ort::execution_providers::CUDAExecutionProvider::default().build(),
-            ])?
-        }
+            println!("Using CUDA Execution Provider...");
+            let b = Session::builder()?
+                .with_optimization_level(GraphOptimizationLevel::Level3)?
+                .with_intra_threads(4)?;
+            match b.with_execution_providers([
+                ort::execution_providers::CUDAExecutionProvider::default().build()
+            ]) {
+                Ok(ep_builder) => ep_builder,
+                Err(e) => {
+                    println!("⚠️ CUDA registration failed: {}. Falling back to CPU...", e);
+                    Session::builder()?
+                        .with_optimization_level(GraphOptimizationLevel::Level3)?
+                        .with_intra_threads(4)?
+                }
+            }
+        },
         "cpu" | _ => {
-            println!("🐌 [Kornia-RS] Using default CPU Execution Provider.");
-            builder
+            println!("Using default CPU Execution Provider.");
+            Session::builder()?
+                .with_optimization_level(GraphOptimizationLevel::Level3)?
+                .with_intra_threads(4)?
         }
     };
+
+    
 
     //commit the session and load the model
     let mut model = builder.commit_from_file(&args.onnx_model_path)?;
