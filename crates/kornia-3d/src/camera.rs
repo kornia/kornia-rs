@@ -2,15 +2,7 @@
 
 use crate::pose::Pose3d;
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
-
-/// Image size used for image-bounds projection checks.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ImageSize {
-    /// Image width in pixels.
-    pub width: f64,
-    /// Image height in pixels.
-    pub height: f64,
-}
+use kornia_image::ImageSize;
 
 /// Normal projection rejection reasons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,8 +96,8 @@ impl PinholeCamera {
             .ok_or(ProjectionReject::BelowMinDepth)?;
         if pixel.x < 0.0
             || pixel.y < 0.0
-            || pixel.x >= image_size.width
-            || pixel.y >= image_size.height
+            || pixel.x >= image_size.width as f64
+            || pixel.y >= image_size.height as f64
         {
             return Err(ProjectionReject::OutOfImage);
         }
@@ -217,8 +209,26 @@ mod tests {
                 &p,
                 1e-8,
                 ImageSize {
-                    width: 640.0,
-                    height: 480.0,
+                    width: 640,
+                    height: 480,
+                },
+            )
+            .unwrap();
+        assert!((uv.x - 320.0).abs() < 1e-12);
+        assert!((uv.y - 240.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_project_to_image_accepts_kornia_image_size() {
+        let cam = camera();
+        let p = Vec3F64::new(0.0, 0.0, 5.0);
+        let uv = cam
+            .project_to_image(
+                &p,
+                1e-8,
+                ImageSize {
+                    width: 640,
+                    height: 480,
                 },
             )
             .unwrap();
@@ -235,8 +245,8 @@ mod tests {
                 &p,
                 1e-8,
                 ImageSize {
-                    width: 640.0,
-                    height: 480.0,
+                    width: 640,
+                    height: 480,
                 },
             )
             .unwrap_err();
@@ -252,8 +262,8 @@ mod tests {
                 &p,
                 1.0,
                 ImageSize {
-                    width: 640.0,
-                    height: 480.0,
+                    width: 640,
+                    height: 480,
                 },
             )
             .unwrap_err();
