@@ -40,6 +40,10 @@ struct Args {
     /// path to the ORT dylib
     #[argh(option)]
     ort_dylib_path: PathBuf,
+
+    ///target device for the execution provider ('cpu', 'cuda', or 'tensorrt')
+    #[argh(option, short = 'd', default = "String::from(\"cpu\")")]
+    device: String,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -53,11 +57,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // read the onnx model
 
-    let mut model = Session::builder()?
+    // // initialize the base session builder
+    let mut builder = Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
-        .with_intra_threads(4)?
-        .commit_from_file(&args.onnx_model_path)?;
+        .with_intra_threads(4)?;
 
+    // configure execution providers based on the selected device
+    let device_arg = args.device.to_lowercase();
+    builder = match device_arg.as_str() {
+        "tensorrt" => {
+            println!("🚀 [Kornia-RS] Initializing TensorRT Execution Provider...");
+            builder.with_execution_providers([
+                ort::execution_providers::TensorRTExecutionProvider::default().build(),
+                ort::execution_providers::CUDAExecutionProvider::default().build(),
+            ])?
+        }
+        "cuda" => {
+            println!("🚀 [Kornia-RS] Initializing CUDA Execution Provider...");
+            builder.with_execution_providers([
+                ort::execution_providers::CUDAExecutionProvider::default().build(),
+            ])?
+        }
+        "cpu" | _ => {
+            println!("🐌 [Kornia-RS] Using default CPU Execution Provider.");
+            builder
+        }
+    };
+
+    //commit the session and load the model
+    let mut model = builder.commit_from_file(&args.onnx_model_path)?;
     // cast and scale the image to f32
     let mut image_hwc_f32 = Image::from_size_val(image.size(), 0.0f32, CpuAllocator)?;
     kornia::image::ops::cast_and_scale(&image, &mut image_hwc_f32, 1.0 / 255.0)?;
