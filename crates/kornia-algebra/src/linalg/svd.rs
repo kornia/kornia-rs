@@ -1117,4 +1117,36 @@ mod tests {
             "V became a reflection during sort!"
         );
     }
+
+    #[test]
+    fn test_svd3_f32_orientation_preservation() {
+        let a = Mat3F32::from_diagonal(Vec3F32::new(1.0, 3.0, 2.0));
+        let svd = svd3_f32(&a);
+
+        verify_svd_properties_f32(&a, &svd, TEST_EPSILON_F32);
+
+        assert!(
+            svd.u().determinant() > 0.0,
+            "U became a reflection during sort!"
+        );
+        assert!(
+            svd.v().determinant() > 0.0,
+            "V became a reflection during sort!"
+        );
+    }
+
+    #[test]
+    fn test_svd3_f64_dense_unstructured() {
+        // Arbitrary dense matrix with no special structure
+        let a = Mat3F64::from_cols(
+            Vec3F64::new(8.0, 2.0, 3.0),
+            Vec3F64::new(4.0, 5.0, 6.0),
+            Vec3F64::new(7.0, 8.0, 9.0),
+        );
+
+        let svd = svd3_f64(&a);
+
+        // This helper should verify A ≈ U * S * V^T, and U^T U ≈ I, V^T V ≈ I
+        verify_svd_properties_f64(&a, &svd, TEST_EPSILON_F64);
+    }
 }

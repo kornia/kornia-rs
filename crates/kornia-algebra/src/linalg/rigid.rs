@@ -40,86 +40,48 @@ pub fn umeyama(src: &[Vec3AF32], dst: &[Vec3AF32]) -> UmeyamaResult {
 
     let n = src.len() as f64;
 
-    // 1. Calculate Centroids using raw f64 to bypass missing wrapper traits
-    let mut mu_s_x = 0.0;
-    let mut mu_s_y = 0.0;
-    let mut mu_s_z = 0.0;
-    let mut mu_d_x = 0.0;
-    let mut mu_d_y = 0.0;
-    let mut mu_d_z = 0.0;
+    // 1. Calculate Centroids using vector accumulation
+    let mut mu_s = Vec3F64::ZERO;
+    let mut mu_d = Vec3F64::ZERO;
 
     for i in 0..src.len() {
-        mu_s_x += src[i].x as f64;
-        mu_s_y += src[i].y as f64;
-        mu_s_z += src[i].z as f64;
-        mu_d_x += dst[i].x as f64;
-        mu_d_y += dst[i].y as f64;
-        mu_d_z += dst[i].z as f64;
+        mu_s += Vec3F64::new(src[i].x as f64, src[i].y as f64, src[i].z as f64);
+        mu_d += Vec3F64::new(dst[i].x as f64, dst[i].y as f64, dst[i].z as f64);
     }
 
-    mu_s_x /= n;
-    mu_s_y /= n;
-    mu_s_z /= n;
-    mu_d_x /= n;
-    mu_d_y /= n;
-    mu_d_z /= n;
+    mu_s /= n;
+    mu_d /= n;
 
-    // 2. Compute Covariance matrix H in raw f64
-    let mut h_00 = 0.0;
-    let mut h_01 = 0.0;
-    let mut h_02 = 0.0;
-    let mut h_10 = 0.0;
-    let mut h_11 = 0.0;
-    let mut h_12 = 0.0;
-    let mut h_20 = 0.0;
-    let mut h_21 = 0.0;
-    let mut h_22 = 0.0;
+    // 2. Compute Covariance matrix H
+    let mut h = Mat3F64::ZERO;
 
     for i in 0..src.len() {
-        let sc_x = src[i].x as f64 - mu_s_x;
-        let sc_y = src[i].y as f64 - mu_s_y;
-        let sc_z = src[i].z as f64 - mu_s_z;
+        let sc = Vec3F64::new(src[i].x as f64, src[i].y as f64, src[i].z as f64) - mu_s;
+        let dc = Vec3F64::new(dst[i].x as f64, dst[i].y as f64, dst[i].z as f64) - mu_d;
 
-        let dc_x = dst[i].x as f64 - mu_d_x;
-        let dc_y = dst[i].y as f64 - mu_d_y;
-        let dc_z = dst[i].z as f64 - mu_d_z;
-
-        // Outer product H = dc * sc^T
-        h_00 += dc_x * sc_x;
-        h_01 += dc_x * sc_y;
-        h_02 += dc_x * sc_z;
-        h_10 += dc_y * sc_x;
-        h_11 += dc_y * sc_y;
-        h_12 += dc_y * sc_z;
-        h_20 += dc_z * sc_x;
-        h_21 += dc_z * sc_y;
-        h_22 += dc_z * sc_z;
+        // Outer product H += dc * sc^T
+        h += Mat3F64::from_cols(dc * sc.x, dc * sc.y, dc * sc.z);
     }
 
-    let h = Mat3F64::from_cols(
-        Vec3F64::new(h_00 / n, h_10 / n, h_20 / n), // Col 0
-        Vec3F64::new(h_01 / n, h_11 / n, h_21 / n), // Col 1
-        Vec3F64::new(h_02 / n, h_12 / n, h_22 / n), // Col 2
-    );
+    *h /= n;
 
     // 3. Internal f64 SVD path.
     let svd = svd3_f64(&h);
 
-    // Use getter methods instead of private fields.
-    // We use * to dereference because the methods return &Mat3F64.
     let u = *svd.u();
     let v = *svd.v();
 
-    // Keep behavior consistent with existing EPnP regression expectations:
-    // if det(R) < 0, flip the third column of R.
+    // Enforce the rotation matrix to belong to the Special Orthogonal group SO(3).
+    // SVD can yield a valid decomposition but result in a reflection matrix (det = -1).
+    // By negating the 3rd column (associated with the smallest singular value),
+    // we flip the determinant to +1, ensuring a valid rigid rotation in 3D space.
     let mut r = u * v.transpose();
     if r.determinant() < 0.0 {
         r.z_axis = -r.z_axis;
     }
-    let tx = mu_d_x - (r.x_axis.x * mu_s_x + r.y_axis.x * mu_s_y + r.z_axis.x * mu_s_z);
-    let ty = mu_d_y - (r.x_axis.y * mu_s_x + r.y_axis.y * mu_s_y + r.z_axis.y * mu_s_z);
-    let tz = mu_d_z - (r.x_axis.z * mu_s_x + r.y_axis.z * mu_s_y + r.z_axis.z * mu_s_z);
 
+    // Translation: t = mu_d - R * mu_s
+    let t = mu_d - (r * mu_s);
     // Cast back to f32 for the output
     let r_cols = [
         r.x_axis.x as f32,
@@ -135,7 +97,7 @@ pub fn umeyama(src: &[Vec3AF32], dst: &[Vec3AF32]) -> UmeyamaResult {
 
     Ok((
         Mat3AF32::from_cols_array(&r_cols),
-        Vec3AF32::new(tx as f32, ty as f32, tz as f32),
+        Vec3AF32::new(t.x as f32, t.y as f32, t.z as f32),
         1.0,
     ))
 }
@@ -226,5 +188,94 @@ mod tests {
         assert_relative_eq!(r_est, r, epsilon = 1e-6);
         assert_relative_eq!(t_est, t, epsilon = 1e-6);
         Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "approx")]
+    fn test_umeyama_errors() {
+        let src = vec![Vec3AF32::ZERO, Vec3AF32::X];
+        let dst = vec![Vec3AF32::ZERO];
+
+        // Test mismatched lengths
+        assert!(matches!(
+            umeyama(&src, &dst),
+            Err(UmeyamaError::MismatchedInputLengths)
+        ));
+
+        // Test empty input
+        let empty_src: Vec<Vec3AF32> = vec![];
+        let empty_dst: Vec<Vec3AF32> = vec![];
+        assert!(matches!(
+            umeyama(&empty_src, &empty_dst),
+            Err(UmeyamaError::EmptyInput)
+        ));
+    }
+
+    #[test]
+    #[cfg(feature = "approx")]
+    fn test_umeyama_handles_reflection() {
+        let src = vec![
+            Vec3AF32::new(0.0, 0.0, 0.0),
+            Vec3AF32::new(1.0, 0.0, 0.0),
+            Vec3AF32::new(0.0, 1.0, 0.0),
+        ];
+
+        // Reflected across the Z axis (z * -1)
+        let dst = vec![
+            Vec3AF32::new(0.0, 0.0, 0.0),
+            Vec3AF32::new(1.0, 0.0, 0.0),
+            Vec3AF32::new(0.0, -1.0, 0.0),
+        ];
+
+        let (r_est, _, _) = umeyama(&src, &dst).unwrap();
+
+        // The determinant of the rotation part MUST be +1 (a valid rotation, not a reflection)
+        // Convert to f64 to use the determinant method safely
+        let rot = Mat3F64::from_cols(
+            Vec3F64::new(
+                r_est.x_axis.x as f64,
+                r_est.x_axis.y as f64,
+                r_est.x_axis.z as f64,
+            ),
+            Vec3F64::new(
+                r_est.y_axis.x as f64,
+                r_est.y_axis.y as f64,
+                r_est.y_axis.z as f64,
+            ),
+            Vec3F64::new(
+                r_est.z_axis.x as f64,
+                r_est.z_axis.y as f64,
+                r_est.z_axis.z as f64,
+            ),
+        );
+        assert!(
+            rot.determinant() > 0.0,
+            "Umeyama failed to correct reflection to a valid rotation"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "approx")]
+    fn test_umeyama_noisy_data() {
+        let src = vec![
+            Vec3AF32::new(0.0, 0.0, 0.0),
+            Vec3AF32::new(1.0, 0.0, 0.0),
+            Vec3AF32::new(0.0, 1.0, 0.0),
+        ];
+
+        // Translated by (1, 1, 1) and added a tiny bit of noise
+        let noise = 1e-4;
+        let dst = vec![
+            Vec3AF32::new(1.0 + noise, 1.0 - noise, 1.0),
+            Vec3AF32::new(2.0, 1.0 + noise, 1.0),
+            Vec3AF32::new(1.0 - noise, 2.0, 1.0 - noise),
+        ];
+
+        let (_, t_est, _) = umeyama(&src, &dst).unwrap();
+
+        // Verify the translation is approximately (1,1,1) despite the noise
+        assert!((t_est.x - 1.0).abs() < 1e-2);
+        assert!((t_est.y - 1.0).abs() < 1e-2);
+        assert!((t_est.z - 1.0).abs() < 1e-2);
     }
 }
