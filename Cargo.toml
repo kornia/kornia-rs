@@ -39,6 +39,7 @@ env_logger = "0.11"
 faer = "=0.20.1"
 half = { version = "2.7", features = ["num-traits"] }
 hf-hub = "0.4.2"
+ort = { version = "=2.0.0-rc.11", default-features = false }
 indicatif = { version = "0.18.3", features = ["rayon"] }
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
 kornia = { path = "crates/kornia", version = "0.1.11" }
