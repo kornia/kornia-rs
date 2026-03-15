@@ -105,13 +105,48 @@ pub fn umeyama(src: &[Vec3AF32], dst: &[Vec3AF32]) -> UmeyamaResult {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "approx")]
     use super::*;
 
+    // Custom helper to bypass the `approx` crate dependency in CI
+    fn assert_vec3_approx(a: &Vec3AF32, b: &Vec3AF32, eps: f32) {
+        assert!(
+            (a.x - b.x).abs() <= eps,
+            "Vec3 x mismatch: {} vs {}",
+            a.x,
+            b.x
+        );
+        assert!(
+            (a.y - b.y).abs() <= eps,
+            "Vec3 y mismatch: {} vs {}",
+            a.y,
+            b.y
+        );
+        assert!(
+            (a.z - b.z).abs() <= eps,
+            "Vec3 z mismatch: {} vs {}",
+            a.z,
+            b.z
+        );
+    }
+
+    // Custom helper to bypass the `approx` crate dependency in CI
+    fn assert_mat3_approx(a: &Mat3AF32, b: &Mat3AF32, eps: f32) {
+        // x_axis
+        assert!((a.x_axis.x - b.x_axis.x).abs() <= eps, "x_axis.x mismatch");
+        assert!((a.x_axis.y - b.x_axis.y).abs() <= eps, "x_axis.y mismatch");
+        assert!((a.x_axis.z - b.x_axis.z).abs() <= eps, "x_axis.z mismatch");
+        // y_axis
+        assert!((a.y_axis.x - b.y_axis.x).abs() <= eps, "y_axis.x mismatch");
+        assert!((a.y_axis.y - b.y_axis.y).abs() <= eps, "y_axis.y mismatch");
+        assert!((a.y_axis.z - b.y_axis.z).abs() <= eps, "y_axis.z mismatch");
+        // z_axis
+        assert!((a.z_axis.x - b.z_axis.x).abs() <= eps, "z_axis.x mismatch");
+        assert!((a.z_axis.y - b.z_axis.y).abs() <= eps, "z_axis.y mismatch");
+        assert!((a.z_axis.z - b.z_axis.z).abs() <= eps, "z_axis.z mismatch");
+    }
+
     #[test]
-    #[cfg(feature = "approx")]
     fn test_umeyama_translation_only() -> Result<(), UmeyamaError> {
-        use approx::assert_relative_eq;
         let src: [Vec3AF32; 4] = [
             Vec3AF32::new(0.0, 0.0, 0.0),
             Vec3AF32::new(1.0, 0.0, 0.0),
@@ -128,15 +163,13 @@ mod tests {
         }
 
         let (r_est, t_est, _s) = umeyama(&src, &dst)?;
-        assert_relative_eq!(r_est, r, epsilon = 1e-5);
-        assert_relative_eq!(t_est, t, epsilon = 1e-5);
+        assert_mat3_approx(&r_est, &r, 1e-5);
+        assert_vec3_approx(&t_est, &t, 1e-5);
         Ok(())
     }
 
     #[test]
-    #[cfg(feature = "approx")]
     fn test_umeyama_synthetic_z90() -> Result<(), UmeyamaError> {
-        use approx::assert_relative_eq;
         // Source points (square in XY plane, z=0)
         let src: [Vec3AF32; 4] = [
             Vec3AF32::new(0.0, 0.0, 0.0),
@@ -154,15 +187,13 @@ mod tests {
         }
 
         let (r_est, t_est, _s) = umeyama(&src, &dst)?;
-        assert_relative_eq!(r_est, r, epsilon = 1e-5);
-        assert_relative_eq!(t_est, t, epsilon = 1e-5);
+        assert_mat3_approx(&r_est, &r, 1e-5);
+        assert_vec3_approx(&t_est, &t, 1e-5);
         Ok(())
     }
 
     #[test]
-    #[cfg(feature = "approx")]
     fn test_umeyama_complex_transform() -> Result<(), UmeyamaError> {
-        use approx::assert_relative_eq;
         // Arbitrary 3D point cloud
         let src: [Vec3AF32; 5] = [
             Vec3AF32::new(0.0, 0.0, 0.0),
@@ -173,9 +204,6 @@ mod tests {
         ];
 
         // True transform: A valid orthonormal rotation matrix across all 3 axes
-        // Col 1: [0.36, 0.48, 0.8]
-        // Col 2: [-0.80, 0.60, 0.0]
-        // Col 3: [-0.48, -0.64, 0.60]
         let r =
             Mat3AF32::from_cols_array(&[0.36, 0.48, 0.80, -0.80, 0.60, 0.00, -0.48, -0.64, 0.60]);
         let t = Vec3AF32::new(-10.5, 20.2, -5.5);
@@ -186,15 +214,14 @@ mod tests {
         }
 
         let (r_est, t_est, _s) = umeyama(&src, &dst)?;
-        assert_relative_eq!(r_est, r, epsilon = 1e-6);
-        assert_relative_eq!(t_est, t, epsilon = 1e-6);
+        assert_mat3_approx(&r_est, &r, 1e-6);
+        assert_vec3_approx(&t_est, &t, 1e-6);
         Ok(())
     }
 
     #[test]
-    #[cfg(feature = "approx")]
     fn test_umeyama_errors() {
-        let src = vec![Vec3AF32::ZERO, Vec3AF32::X];
+        let src = vec![Vec3AF32::ZERO, Vec3AF32::new(1.0, 0.0, 0.0)];
         let dst = vec![Vec3AF32::ZERO];
 
         // Test mismatched lengths
@@ -213,7 +240,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "approx")]
     fn test_umeyama_handles_reflection() {
         let src = vec![
             Vec3AF32::new(0.0, 0.0, 0.0),
@@ -256,7 +282,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "approx")]
     fn test_umeyama_noisy_data() {
         let src = vec![
             Vec3AF32::new(0.0, 0.0, 0.0),
