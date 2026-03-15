@@ -15,11 +15,13 @@ pub enum UmeyamaError {
     #[error("Input arrays must not be empty")]
     EmptyInput,
 
-    #[deprecated(note = "Internal SVD implementation no longer fails. This variant is obsolete.")]
+    /// Obsolete: Internal SVD implementation no longer fails.
+    /// Retained for backward compatibility.
     #[error("Failed to compute U in SVD")]
     SvdU,
 
-    #[deprecated(note = "Internal SVD implementation no longer fails. This variant is obsolete.")]
+    /// Obsolete: Internal SVD implementation no longer fails.
+    /// Retained for backward compatibility.
     #[error("Failed to compute V^T in SVD")]
     SvdVT,
 }
