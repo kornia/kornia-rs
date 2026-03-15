@@ -155,7 +155,7 @@ mod tests {
         ];
         // True transform: Identity rotation, only translation
         let r = Mat3AF32::IDENTITY;
-        let t = Vec3AF32::new(10.5, -5.2, 3.14);
+        let t = Vec3AF32::new(10.5, -5.2, std::f32::consts::PI);
 
         let mut dst = [Vec3AF32::ZERO; 4];
         for i in 0..4 {
