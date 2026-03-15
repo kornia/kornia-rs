@@ -63,7 +63,7 @@ pub fn umeyama(src: &[Vec3AF32], dst: &[Vec3AF32]) -> UmeyamaResult {
         h += Mat3F64::from_cols(dc * sc.x, dc * sc.y, dc * sc.z);
     }
 
-    *h /= n;
+    h *= 1.0 / n;
 
     // 3. Internal f64 SVD path.
     let svd = svd3_f64(&h);
@@ -72,9 +72,10 @@ pub fn umeyama(src: &[Vec3AF32], dst: &[Vec3AF32]) -> UmeyamaResult {
     let v = *svd.v();
 
     // Enforce the rotation matrix to belong to the Special Orthogonal group SO(3).
-    // SVD can yield a valid decomposition but result in a reflection matrix (det = -1).
-    // By negating the 3rd column (associated with the smallest singular value),
-    // we flip the determinant to +1, ensuring a valid rigid rotation in 3D space.
+    // SVD can yield a valid decomposition but result in a reflection matrix (det(R) = -1)
+    // when we directly form R = U * V^T. In that case, we use a legacy convention of
+    // flipping the third column of R to change the determinant to +1, yielding a proper
+    // rotation. This operates on R itself (not on U or V) and preserves the existing API.
     let mut r = u * v.transpose();
     if r.determinant() < 0.0 {
         r.z_axis = -r.z_axis;
