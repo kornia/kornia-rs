@@ -239,7 +239,7 @@ fn rgb_to_grayscale_kernel(input: &Array<f32>, output: &mut Array<f32>, out_len:
 /// # Errors
 ///
 /// * Returns `ImageError::InvalidImageSize` if the source and destination sizes do not match.
-/// * Returns `ImageError::Other` if the CubeCL kernel fails to compile or launch on the device.
+/// * Returns `ImageError::GpuError` if the CubeCL kernel fails to compile or launch on the device.
 #[cfg(feature = "gpu")]
 pub fn gray_from_rgb_cubecl<A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, 3, A1>,
