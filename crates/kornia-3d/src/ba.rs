@@ -390,10 +390,8 @@ pub fn bundle_adjust(
     // Track which poses are only used as fixed (never as free).
     let mut pose_is_free = vec![false; poses.len()];
     for obs in observations {
-        if !obs.fixed_pose {
-            if obs.pose_idx < poses.len() {
-                pose_is_free[obs.pose_idx] = true;
-            }
+        if !obs.fixed_pose && obs.pose_idx < poses.len() {
+            pose_is_free[obs.pose_idx] = true;
         }
     }
 
@@ -425,7 +423,7 @@ pub fn bundle_adjust(
 
     // Add point variables.
     for (i, pt) in points.iter().enumerate() {
-        let var = Variable::euclidean(&format!("pt_{i}"), 3);
+        let var = Variable::euclidean(format!("pt_{i}"), 3);
         let init = vec![pt.x as f32, pt.y as f32, pt.z as f32];
         problem
             .add_variable(var, init)
@@ -682,7 +680,7 @@ mod tests {
         let pose0 = Pose3d::new(Mat3F64::IDENTITY, Vec3F64::ZERO);
         let pose1 = Pose3d::new(Mat3F64::IDENTITY, Vec3F64::new(0.5, 0.0, 0.0));
 
-        let true_points = vec![
+        let true_points = [
             Vec3F64::new(-1.0, -1.0, 5.0),
             Vec3F64::new(1.0, -1.0, 5.0),
             Vec3F64::new(1.0, 1.0, 5.0),
