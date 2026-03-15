@@ -203,6 +203,103 @@ where
     Ok(())
 }
 
+#[cfg(feature = "gpu")]
+use bytemuck::cast_slice;
+#[cfg(feature = "gpu")]
+use cubecl::bytes::Bytes;
+#[cfg(feature = "gpu")]
+use cubecl::prelude::*;
+
+#[cfg(feature = "gpu")]
+#[cube(launch)]
+fn rgb_to_grayscale_kernel(input: &Array<f32>, output: &mut Array<f32>, out_len: u32) {
+    let pixel_idx = ABSOLUTE_POS_X;
+
+    if pixel_idx < out_len {
+        let start_idx: usize = pixel_idx as usize * 3;
+        let r = input[start_idx];
+        let g = input[start_idx + 1];
+        let b = input[start_idx + 2];
+
+        output[pixel_idx as usize] = (r * 0.299) + (g * 0.587) + (b * 0.114);
+    }
+}
+
+/// Convert an RGB image to grayscale using CubeCL GPU acceleration.
+///
+/// # Arguments
+///
+/// * `src` - The input RGB image. Must have 3 channels.
+/// * `dst` - The output grayscale image. Must have 1 channel.
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the conversion is successful.
+///
+/// # Errors
+///
+/// * Returns `ImageError::InvalidImageSize` if the source and destination sizes do not match.
+/// * Returns `ImageError::GpuError` if the CubeCL kernel fails to compile or launch on the device.
+#[cfg(feature = "gpu")]
+pub fn gray_from_rgb_cubecl<A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<f32, 3, A1>,
+    dst: &mut Image<f32, 1, A2>,
+) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    type Runtime = cubecl::wgpu::WgpuRuntime;
+    let device = Default::default();
+    let client = Runtime::client(&device);
+
+    let src_slice = src.as_slice();
+    let dst_slice = dst.as_slice_mut();
+    let out_len = dst_slice.len();
+
+    let input_bytes = Bytes::from_bytes_vec(cast_slice(src_slice).to_vec());
+    let input = client.create(input_bytes);
+    let output = client.empty(std::mem::size_of_val(dst_slice));
+
+    let block_size: u32 = 256;
+    let grid_size = (out_len as u32).div_ceil(block_size);
+
+    // SAFETY: The `input` and `output` buffers are valid device allocations tied to `client`.
+    // The lengths provided to `ArrayArg` match the exact host slice dimensions, ensuring
+    // the kernel does not perform out-of-bounds memory access on the GPU.
+    let launch_result = unsafe {
+        rgb_to_grayscale_kernel::launch::<Runtime>(
+            &client,
+            CubeCount::Static(grid_size, 1, 1),
+            CubeDim {
+                x: block_size,
+                y: 1,
+                z: 1,
+            },
+            ArrayArg::from_raw_parts::<f32>(&input, src_slice.len(), 1),
+            ArrayArg::from_raw_parts::<f32>(&output, out_len, 1),
+            cubecl::frontend::ScalarArg::new(out_len as u32),
+        )
+    };
+
+    if let Err(e) = launch_result {
+        return Err(ImageError::GpuError(format!(
+            "CubeCL kernel launch failed: {e}"
+        )));
+    }
+
+    let bytes = client.read_one(output);
+    let result: &[f32] = bytemuck::cast_slice(&bytes);
+    dst_slice.copy_from_slice(result);
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use kornia_image::{ops, Image, ImageSize};
@@ -357,6 +454,47 @@ mod tests {
         super::gray_from_rgb_u8(&image, &mut gray)?;
 
         assert_eq!(gray.as_slice(), &[103, 53]);
+
+        Ok(())
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore = "GPU-backed test: requires local hardware/Vulkan drivers. Ignored in headless CI."]
+    fn test_gray_from_rgb_cubecl() -> Result<(), Box<dyn std::error::Error>> {
+        use kornia_image::{Image, ImageSize};
+        use kornia_tensor::CpuAllocator;
+
+        #[rustfmt::skip]
+        let image = Image::new(
+            ImageSize { width: 2, height: 3 },
+            vec![
+                1.0, 0.0, 0.0, 
+                0.0, 1.0, 0.0, 
+                0.0, 0.0, 1.0, 
+                0.0, 0.0, 0.0, 
+                0.0, 0.0, 0.0, 
+                0.0, 0.0, 0.0, 
+            ],
+            CpuAllocator
+        )?;
+
+        let mut gray = Image::<f32, 1, _>::from_size_val(image.size(), 0.0, CpuAllocator)?;
+
+        super::gray_from_rgb_cubecl(&image, &mut gray)?;
+
+        let expected: Image<f32, 1, _> = Image::new(
+            ImageSize {
+                width: 2,
+                height: 3,
+            },
+            vec![0.299, 0.587, 0.114, 0.0, 0.0, 0.0],
+            CpuAllocator,
+        )?;
+
+        for (a, b) in gray.as_slice().iter().zip(expected.as_slice().iter()) {
+            assert!((a - b).abs() < 1e-6);
+        }
 
         Ok(())
     }

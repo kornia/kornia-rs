@@ -60,4 +60,8 @@ pub enum ImageError {
     /// Error when interpolation mode is unsupported.
     #[error("Unsupported interpolation mode: {0:?}")]
     UnsupportedInterpolation(crate::image::InterpolationMode),
+
+    /// Error from the GPU backend execution.
+    #[error("GPU backend error: {0}")]
+    GpuError(String),
 }

@@ -1,5 +1,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use kornia_image::Image;
+#[cfg(feature = "gpu")]
+use kornia_imgproc::color::gray_from_rgb_cubecl;
 use kornia_imgproc::color::{gray_from_rgb, gray_from_rgb_u8};
 use kornia_tensor::CpuAllocator;
 
@@ -70,7 +72,7 @@ fn gray_image_crate(image: &Image<u8, 3, CpuAllocator>) -> Image<u8, 1, CpuAlloc
 fn bench_grayscale(c: &mut Criterion) {
     let mut group = c.benchmark_group("Grayscale");
 
-    for (width, height) in [(256, 224), (512, 448), (1024, 896)].iter() {
+    for (width, height) in [(256, 224), (512, 448), (1024, 896), (3840, 2160)].iter() {
         group.throughput(criterion::Throughput::Elements((*width * *height) as u64));
 
         let parameter_string = format!("{width}x{height}");
@@ -116,6 +118,15 @@ fn bench_grayscale(c: &mut Criterion) {
             |b, i| {
                 let (src, mut dst) = (i.0, i.1.clone());
                 b.iter(|| std::hint::black_box(gray_from_rgb(src, &mut dst)))
+            },
+        );
+        #[cfg(feature = "gpu")]
+        group.bench_with_input(
+            BenchmarkId::new("gray_from_rgb_cubecl", &parameter_string),
+            &(&image_f32, &gray_f32),
+            |b, i| {
+                let (src, mut dst) = (i.0, i.1.clone());
+                b.iter(|| std::hint::black_box(gray_from_rgb_cubecl(src, &mut dst)))
             },
         );
 
