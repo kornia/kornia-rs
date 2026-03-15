@@ -45,11 +45,9 @@ impl OnnxSession {
             }
             VlmBackend::OnnxCuda { device_id } => {
                 log::info!("[kornia-vlm] ONNX Runtime: CUDA EP (device {})", device_id);
-                builder = builder.with_execution_providers([
-                    CUDAExecutionProvider::default()
-                        .with_device_id(*device_id)
-                        .build(),
-                ])?;
+                builder = builder.with_execution_providers([CUDAExecutionProvider::default()
+                    .with_device_id(*device_id)
+                    .build()])?;
             }
             VlmBackend::TensorRt { device_id } => {
                 // Full TensorRT EP tracked in https://github.com/kornia/kornia-rs/issues/634
@@ -57,11 +55,9 @@ impl OnnxSession {
                     "[kornia-vlm] TensorRT EP (device {}) not yet wired — using CUDA EP. See #634",
                     device_id
                 );
-                builder = builder.with_execution_providers([
-                    CUDAExecutionProvider::default()
-                        .with_device_id(*device_id)
-                        .build(),
-                ])?;
+                builder = builder.with_execution_providers([CUDAExecutionProvider::default()
+                    .with_device_id(*device_id)
+                    .build()])?;
             }
             VlmBackend::Candle => unreachable!("filtered above"),
         }
@@ -74,16 +70,27 @@ impl OnnxSession {
             session.outputs.len(),
         );
 
-        Ok(Self { session, backend: backend.clone() })
+        Ok(Self {
+            session,
+            backend: backend.clone(),
+        })
     }
 
     /// Names of all model inputs.
     pub fn input_names(&self) -> Vec<&str> {
-        self.session.inputs.iter().map(|i| i.name.as_str()).collect()
+        self.session
+            .inputs
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect()
     }
 
     /// Names of all model outputs.
     pub fn output_names(&self) -> Vec<&str> {
-        self.session.outputs.iter().map(|o| o.name.as_str()).collect()
+        self.session
+            .outputs
+            .iter()
+            .map(|o| o.name.as_str())
+            .collect()
     }
 }

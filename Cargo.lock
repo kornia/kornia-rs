@@ -8005,6 +8005,7 @@ dependencies = [
  "log",
  "minijinja",
  "num2words",
+ "ort",
  "rand 0.9.2",
  "serde",
  "serde_json",
