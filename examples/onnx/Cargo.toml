@@ -16,11 +16,6 @@ include = { workspace = true }
 argh = { workspace = true }
 kornia = { workspace = true }
 kornia-tensor = { workspace = true }
-ort = { version = "2.0.0-rc.10", default-features = false, features = [
-    "half",
-    "load-dynamic",
-    "cuda",
-    "tensorrt"
-] }
+ort = { version = "2.0.0-rc.10", default-features = false, features = ["cuda", "half", "load-dynamic", "tensorrt"] }
 ort-sys = { version = "2.0.0-rc.10" }
 rerun = { workspace = true }

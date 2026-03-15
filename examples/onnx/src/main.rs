@@ -30,7 +30,10 @@ fn parse_device(device: &str) -> Result<String, String> {
     let d = device.to_lowercase();
     match d.as_str() {
         "cpu" | "cuda" | "tensorrt" => Ok(d),
-        _ => Err(format!("invalid device '{}'; expected one of: cpu, cuda, tensorrt", device)),
+        _ => Err(format!(
+            "invalid device '{}'; expected one of: cpu, cuda, tensorrt",
+            device
+        )),
     }
 }
 
@@ -81,24 +84,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Fallback to CPU if hardware execution provider registration fails
             match b.with_execution_providers([
                 ort::execution_providers::TensorRTExecutionProvider::default().build(),
-                ort::execution_providers::CUDAExecutionProvider::default().build()
+                ort::execution_providers::CUDAExecutionProvider::default().build(),
             ]) {
                 Ok(ep_builder) => ep_builder,
                 Err(e) => {
-                    println!("⚠️ TensorRT/CUDA registration failed: {}. Falling back to CPU...", e);
+                    println!(
+                        "⚠️ TensorRT/CUDA registration failed: {}. Falling back to CPU...",
+                        e
+                    );
                     Session::builder()?
                         .with_optimization_level(GraphOptimizationLevel::Level3)?
                         .with_intra_threads(4)?
                 }
             }
-        },
+        }
         "cuda" => {
             println!("Using CUDA Execution Provider...");
             let b = Session::builder()?
                 .with_optimization_level(GraphOptimizationLevel::Level3)?
                 .with_intra_threads(4)?;
             match b.with_execution_providers([
-                ort::execution_providers::CUDAExecutionProvider::default().build()
+                ort::execution_providers::CUDAExecutionProvider::default().build(),
             ]) {
                 Ok(ep_builder) => ep_builder,
                 Err(e) => {
@@ -108,16 +114,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .with_intra_threads(4)?
                 }
             }
-        },
-        "cpu" | _ => {
+        }
+        _ => {
             println!("Using default CPU Execution Provider.");
             Session::builder()?
                 .with_optimization_level(GraphOptimizationLevel::Level3)?
                 .with_intra_threads(4)?
         }
     };
-
-    
 
     //commit the session and load the model
     let mut model = builder.commit_from_file(&args.onnx_model_path)?;
