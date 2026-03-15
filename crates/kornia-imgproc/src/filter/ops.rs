@@ -5,7 +5,7 @@ use rayon::{
     slice::ParallelSliceMut,
 };
 
-use super::{fast_horizontal_filter, kernels, separable_filter};
+use super::{columnar_sat, fast_horizontal_filter, kernels, separable_filter};
 
 /// Blur an image using a box blur filter
 ///
@@ -21,10 +21,7 @@ pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     dst: &mut Image<f32, C, A2>,
     kernel_size: (usize, usize),
 ) -> Result<(), ImageError> {
-    let kernel_x = kernels::box_blur_kernel_1d(kernel_size.0);
-    let kernel_y = kernels::box_blur_kernel_1d(kernel_size.1);
-    separable_filter(src, dst, &kernel_x, &kernel_y)?;
-    Ok(())
+    columnar_sat(src, dst, kernel_size)
 }
 
 /// Blur an image using a gaussian blur filter
