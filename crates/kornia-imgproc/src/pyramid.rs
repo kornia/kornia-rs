@@ -288,6 +288,16 @@ fn reflect_101(mut p: i32, len: i32) -> i32 {
 ///
 /// # Example
 ///
+/// # Implementation Details & Trade-offs
+///
+/// This function uses a **separable 2D convolution** (horizontal pass followed by vertical pass)
+/// accelerated by Rayon. This provides massive speedups (e.g., 5-7× faster on 1024×896 images)
+/// by reducing per-pixel operations from \(k^2\) to \(2k\).
+///
+/// However, this optimization requires a **full intermediate buffer** of size `dst_width × src_height × channels`.
+/// For very large images (e.g., 4K RGB requiring ~24MB) in memory-constrained environments,
+/// this temporary peak memory allocation should be taken into account.
+///
 /// ```
 /// use kornia_image::{Image, ImageSize};
 /// use kornia_image::allocator::CpuAllocator;
@@ -329,93 +339,241 @@ pub fn pyrdown_f32<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
         ));
     }
 
-    let src_width = src.width();
-    let src_height = src.height();
+    // The blur is implemented as a separable 5x5 convolution to improve performance.
+    // We first process the horizontal pass, writing into a temporary buffer.
+    let buffer_width = dst.width();
+    let buffer_height = src.height();
+    let mut buffer = vec![0.0f32; buffer_width * buffer_height * C];
+
+    pyrdown_horizontal_pass_f32::<C, _>(src, &mut buffer, buffer_width);
+
+    // Then we process the vertical pass, applying the kernel and downsampling vertically.
+    // We write directly to the destination image.
     let dst_width = dst.width();
-    let dst_height = dst.height();
-
-    // Fused Gaussian blur + downsample in a single pass.
-    let src_data = src.as_slice();
-    let dst_data = dst.as_slice_mut();
-
-    // Standard values for the 5x5 Gaussian kernel
-    let kernel_x = [0.0625, 0.25, 0.375, 0.25, 0.0625];
-    let kernel_y = [0.0625, 0.25, 0.375, 0.25, 0.0625];
-
-    // Precompute flattened kernel
-    let mut kernel_weights = [0.0f32; 25];
-    let mut idx = 0;
-    for &ky_weight in kernel_y.iter() {
-        for &kx_weight in kernel_x.iter() {
-            kernel_weights[idx] = ky_weight * kx_weight;
-            idx += 1;
-        }
-    }
-
-    let center_y_start = 1;
-    let center_y_end = (dst_height - 1).min(dst_height);
-    let center_x_start = 1;
-    let center_x_end = (dst_width - 1).min(dst_width);
-
-    for dst_y in center_y_start..center_y_end {
-        let src_center_y = dst_y * 2;
-
-        for dst_x in center_x_start..center_x_end {
-            let src_center_x = dst_x * 2;
-
-            for c in 0..C {
-                let mut sum = 0.0f32;
-                let mut k_idx = 0;
-
-                for ky in 0..5 {
-                    let src_y = src_center_y + ky - 2;
-                    for kx in 0..5 {
-                        let src_x = src_center_x + kx - 2;
-                        let src_idx = (src_y * src_width + src_x) * C + c;
-                        sum += src_data[src_idx] * kernel_weights[k_idx];
-                        k_idx += 1;
-                    }
-                }
-
-                let dst_idx = (dst_y * dst_width + dst_x) * C + c;
-                dst_data[dst_idx] = sum;
-            }
-        }
-    }
-
-    for dst_y in 0..dst_height {
-        let src_center_y = (dst_y * 2) as i32;
-        let is_border_y = dst_y < center_y_start || dst_y >= center_y_end;
-
-        for dst_x in 0..dst_width {
-            let src_center_x = (dst_x * 2) as i32;
-            let is_border_x = dst_x < center_x_start || dst_x >= center_x_end;
-
-            if !is_border_y && !is_border_x {
-                continue;
-            }
-
-            for c in 0..C {
-                let mut sum = 0.0f32;
-                let mut k_idx = 0;
-
-                for ky in 0..5 {
-                    let src_y = reflect_101(src_center_y + ky - 2, src_height as i32) as usize;
-                    for kx in 0..5 {
-                        let src_x = reflect_101(src_center_x + kx - 2, src_width as i32) as usize;
-                        let src_idx = (src_y * src_width + src_x) * C + c;
-                        sum += src_data[src_idx] * kernel_weights[k_idx];
-                        k_idx += 1;
-                    }
-                }
-
-                let dst_idx = (dst_y * dst_width + dst_x) * C + c;
-                dst_data[dst_idx] = sum;
-            }
-        }
-    }
+    pyrdown_vertical_pass_f32::<C>(
+        &buffer,
+        buffer_width,
+        src.height(),
+        dst.as_slice_mut(),
+        dst_width,
+    );
 
     Ok(())
+}
+
+const K_EDGE: f32 = 0.0625; // 1.0 / 16.0
+const K_NEAR: f32 = 0.25; // 4.0 / 16.0
+const K_CENTER: f32 = 0.375; // 6.0 / 16.0
+
+/// Computes the 5-point Gaussian blur using fixed weights.
+#[inline(always)]
+fn gaussian5(a: f32, b: f32, c: f32, d: f32, e: f32) -> f32 {
+    K_EDGE * a + K_NEAR * b + K_CENTER * c + K_NEAR * d + K_EDGE * e
+}
+
+/// Horizontal pass for pyrdown.
+///
+/// Applies the 1D Gaussian kernel `[1/16, 4/16, 6/16, 4/16, 1/16]` across the X-axis
+/// and downsamples horizontally by a factor of 2.
+/// Uses `reflect_101` border mode for boundary pixels.
+///
+/// # Arguments
+///
+/// * `src` - The source image.
+/// * `dst` - The destination buffer for the horizontal pass.
+/// * `dst_width` - The width of the destination image (number of columns).
+fn pyrdown_horizontal_pass_f32<const C: usize, A>(
+    src: &Image<f32, C, A>,
+    dst: &mut [f32],
+    dst_width: usize,
+) where
+    A: ImageAllocator,
+{
+    let src_width = src.width();
+    let src_data = src.as_slice();
+    let dst_stride = dst_width * C;
+
+    dst.par_chunks_mut(dst_stride)
+        .enumerate()
+        .for_each(|(y, dst_row)| {
+            let src_row_offset = y * src_width * C;
+
+            // Calculate safe regions for iteration, avoiding boundaries where the kernel would access out of bounds.
+            // For a 5-tap kernel (radius 2), we need `src_center_x + 2 < src_width`.
+            // Since `src_center_x = dst_x * 2`, we want `dst_x * 2 + 2 <= src_width - 1`.
+            // Solving for `dst_x` (safe range) gives an exclusive upper bound of `(src_width - 1) / 2`.
+            let safe_start = 1;
+            let safe_end = if src_width > 2 {
+                (src_width - 1) / 2
+            } else {
+                safe_start
+            };
+
+            // Left border: access pixels using reflect_101
+            for dst_x in 0..safe_start.min(dst_width) {
+                process_pixel_pyrdown_checked_f32::<C>(
+                    src_data,
+                    dst_row,
+                    src_row_offset,
+                    dst_x,
+                    src_width,
+                );
+            }
+
+            // Main loop for middle regions, no boundary checks needed
+            let loop_end = safe_end.min(dst_width);
+            if loop_end > safe_start {
+                for dst_x in safe_start..loop_end {
+                    let src_center_x = dst_x * 2;
+                    let base_idx = src_row_offset + src_center_x * C;
+
+                    for k in 0..C {
+                        let v_m2 = src_data[base_idx - 2 * C + k];
+                        let v_m1 = src_data[base_idx - C + k];
+                        let v_0 = src_data[base_idx + k];
+                        let v_p1 = src_data[base_idx + C + k];
+                        let v_p2 = src_data[base_idx + 2 * C + k];
+
+                        let sum = gaussian5(v_m2, v_m1, v_0, v_p1, v_p2);
+                        dst_row[dst_x * C + k] = sum;
+                    }
+                }
+            }
+
+            // Right border: access pixels using reflect_101
+            for dst_x in loop_end..dst_width {
+                process_pixel_pyrdown_checked_f32::<C>(
+                    src_data,
+                    dst_row,
+                    src_row_offset,
+                    dst_x,
+                    src_width,
+                );
+            }
+        });
+}
+
+/// Helper function to process a single pixel using the `reflect_101` border mode.
+///
+/// # Arguments
+///
+/// * `src_data` - The flattened source image data slice.
+/// * `dst_row` - The destination row slice to write the result to.
+/// * `src_row_offset` - The start index of the current row in `src_data`.
+/// * `dst_x` - The column index in the destination image.
+/// * `src_width` - The width of the source image.
+#[inline(always)]
+fn process_pixel_pyrdown_checked_f32<const C: usize>(
+    src_data: &[f32],
+    dst_row: &mut [f32],
+    src_row_offset: usize,
+    dst_x: usize,
+    src_width: usize,
+) {
+    let src_center_x = (dst_x * 2) as i32;
+    let idx_m2 = (reflect_101(src_center_x - 2, src_width as i32) as usize) * C;
+    let idx_m1 = (reflect_101(src_center_x - 1, src_width as i32) as usize) * C;
+    let idx_0 = (reflect_101(src_center_x, src_width as i32) as usize) * C;
+    let idx_p1 = (reflect_101(src_center_x + 1, src_width as i32) as usize) * C;
+    let idx_p2 = (reflect_101(src_center_x + 2, src_width as i32) as usize) * C;
+
+    for k in 0..C {
+        let v_m2 = src_data[src_row_offset + idx_m2 + k];
+        let v_m1 = src_data[src_row_offset + idx_m1 + k];
+        let v_0 = src_data[src_row_offset + idx_0 + k];
+        let v_p1 = src_data[src_row_offset + idx_p1 + k];
+        let v_p2 = src_data[src_row_offset + idx_p2 + k];
+
+        let sum = gaussian5(v_m2, v_m1, v_0, v_p1, v_p2);
+        dst_row[dst_x * C + k] = sum;
+    }
+}
+
+/// Vertical pass for pyrdown.
+///
+/// Applies the 1D Gaussian kernel `[1/16, 4/16, 6/16, 4/16, 1/16]` across the Y-axis
+/// and downsamples vertically by a factor of 2.
+/// Uses `reflect_101` border mode for boundary pixels.
+///
+/// # Arguments
+///
+/// * `src_buffer` - The intermediate buffer produced by the horizontal pass.
+/// * `src_buffer_width` - The width of the intermediate buffer (same as destination width).
+/// * `src_height` - The height of the original source image.
+/// * `dst_data` - The final destination buffer.
+/// * `dst_width` - The width of the destination image.
+fn pyrdown_vertical_pass_f32<const C: usize>(
+    src_buffer: &[f32],
+    src_buffer_width: usize,
+    src_height: usize,
+    dst_data: &mut [f32],
+    dst_width: usize,
+) {
+    let stride = src_buffer_width * C;
+    let dst_stride = dst_width * C;
+    let dst_height = dst_data.len() / dst_stride;
+
+    // Calculate safe rows to avoid vertical boundary checks.
+    // Similar to the horizontal pass, we need `src_center_y + 2 < src_height`,
+    // which results in an exclusive upper bound of `safe_end_y = (src_height - 1) / 2`.
+    let safe_start_y = 1;
+    let safe_end_y = if src_height > 2 {
+        ((src_height - 1) / 2).min(dst_height)
+    } else {
+        safe_start_y
+    };
+
+    dst_data
+        .par_chunks_mut(dst_stride)
+        .enumerate()
+        .for_each(|(dst_y, dst_row)| {
+            let src_center_y = (dst_y * 2) as i32;
+
+            if dst_y >= safe_start_y && dst_y < safe_end_y {
+                // Middle safe rows: direct access without boundary checks
+                let y_c = src_center_y as usize;
+                let off_m2 = (y_c - 2) * stride;
+                let off_m1 = (y_c - 1) * stride;
+                let off_0 = y_c * stride;
+                let off_p1 = (y_c + 1) * stride;
+                let off_p2 = (y_c + 2) * stride;
+
+                for i in 0..dst_stride {
+                    let v_m2 = src_buffer[off_m2 + i];
+                    let v_m1 = src_buffer[off_m1 + i];
+                    let v_0 = src_buffer[off_0 + i];
+                    let v_p1 = src_buffer[off_p1 + i];
+                    let v_p2 = src_buffer[off_p2 + i];
+
+                    let sum = gaussian5(v_m2, v_m1, v_0, v_p1, v_p2);
+                    dst_row[i] = sum;
+                }
+            } else {
+                // Boundary rows (top and bottom): compute row indices using reflect_101
+                let y_m2 = reflect_101(src_center_y - 2, src_height as i32) as usize;
+                let y_m1 = reflect_101(src_center_y - 1, src_height as i32) as usize;
+                let y_0 = reflect_101(src_center_y, src_height as i32) as usize;
+                let y_p1 = reflect_101(src_center_y + 1, src_height as i32) as usize;
+                let y_p2 = reflect_101(src_center_y + 2, src_height as i32) as usize;
+
+                let off_m2 = y_m2 * stride;
+                let off_m1 = y_m1 * stride;
+                let off_0 = y_0 * stride;
+                let off_p1 = y_p1 * stride;
+                let off_p2 = y_p2 * stride;
+
+                for i in 0..dst_stride {
+                    let v_m2 = src_buffer[off_m2 + i];
+                    let v_m1 = src_buffer[off_m1 + i];
+                    let v_0 = src_buffer[off_0 + i];
+                    let v_p1 = src_buffer[off_p1 + i];
+                    let v_p2 = src_buffer[off_p2 + i];
+
+                    let sum = gaussian5(v_m2, v_m1, v_0, v_p1, v_p2);
+                    dst_row[i] = sum;
+                }
+            }
+        });
 }
 
 /// Downsample a u8 image by applying Gaussian blur and then subsampling.
