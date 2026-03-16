@@ -78,64 +78,23 @@ impl SmolModel {
     /// image features at positions marked by the image token mask. This allows the language
     /// model to process both modalities in a unified manner.
     ///
-    /// This is a wrapper around the static `merge_tensors_impl`.
+    /// Maps the `image_token_mask` to corresponding 0-based indices in `image_hidden_states`
+    /// using a clamped cumulative sum. To maintain a constant memory footprint, the sequence
+    /// is processed and reassembled in 1024-token chunks using zero-copy views (`.narrow()`)
+    /// and vectorized conditional selection (`.where_cond()`).
+    ///
+    /// # Complexity
+    /// * Time: `O(N)` where `N` is the total sequence length.
+    /// * Space: `O(C * D)` where `C` is the chunk size and `D` is the embedding dimension.
     ///
     /// # Arguments
     /// * `image_token_mask` - A 1D tensor mapping text tokens (0.0) and image tokens (1.0).
     /// * `image_hidden_states` - The visual features from the vision encoder.
     /// * `inputs_embeds` - The base text embeddings from the language model.
-    fn inputs_merger(
-        &mut self,
-        image_token_mask: &Tensor,
-        image_hidden_states: &Tensor,
-        inputs_embeds: &Tensor,
-    ) -> Result<Tensor> {
-        Self::merge_tensors_impl(image_token_mask, image_hidden_states, inputs_embeds)
-    }
-
-    /// Core implementation for multi-modal tensor merging using chunked vectorization.
-    ///
-    /// Interleaves visual features into the text embedding sequence by mapping the
-    /// `image_token_mask` to the corresponding indices in `image_hidden_states`.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing the merged embedding sequence ($L \times D$) ready for
-    /// language model processing.
-    ///
-    /// # Process Pipeline
-    ///
-    /// 1. **Early Exit**: Returns a clone of `inputs_embeds` if `image_hidden_states` is empty,
-    ///    bypassing all further computation for text-only prompts.
-    ///
-    /// 2. **Index Generation**:
-    ///    * **Transformation**: Calculates the `cumsum` of the binary `image_token_mask`.
-    ///      This converts spatial positions into a running count of image tokens.
-    ///    * **Alignment**: Subtracts `1.0` to align the 1-based count with the 0-based
-    ///      indexing required for `image_hidden_states`.
-    ///    * **Safety Bounds**: Applies `.clamp(0, max)` to prevent underflow from leading
-    ///      text tokens and to ensure all indices fall within the image feature bounds.
-    ///
-    /// 3. **Memory-Efficient Merging (Chunking)**:
-    ///    * Iterates through the sequence in windows of 1024 tokens.
-    ///    * Uses `.narrow()` to create zero-copy views, minimizing intermediate allocations.
-    ///    * Performs a vectorized `.where_cond()` within each chunk to swap text embeddings
-    ///      for visual features where the mask is active.
-    ///
-    /// 4. **Reassembly**: Concatenates all processed chunks into a single contiguous
-    ///    tensor along the sequence dimension.
-    ///
-    /// # Complexity
-    /// * **Time:** `O(N)` where `N` is the total sequence length.
-    /// * **Space:** Peak auxiliary memory is bounded to `O(C * D)` where `C` is the
-    ///   chunk size and `D` is the embedding dimension. This ensures a constant memory
-    ///   ceiling regardless of how large the input context becomes.
     ///
     /// # Errors
-    ///
-    /// Returns an error if tensor dimensions do not match, if broadcasting fails,
-    /// or if the underlying device (e.g., GPU) runs out of memory during operations.
-    fn merge_tensors_impl(
+    /// Returns an error on tensor dimension mismatches, broadcasting failures, or device memory exhaustion.
+    fn inputs_merger(
         image_token_mask: &Tensor,
         image_hidden_states: &Tensor,
         inputs_embeds: &Tensor,
@@ -144,42 +103,33 @@ impl SmolModel {
         const CHANNEL_OR_EMBED_DIM: usize = 1;
         let (seq_len, _) = inputs_embeds.dims2()?;
 
-        // Chunk size of 1024 balances kernel launch overhead with strict memory ceilings.
         let chunk_size = 1024;
         let mut chunks = Vec::new();
 
-        // 1. Early Exit: If there are no images in the prompt, return text embeddings.
         if image_hidden_states.dim(BATCH_OR_SEQ_DIM)? == 0 {
             return Ok(inputs_embeds.clone());
         }
         let device = image_token_mask.device();
 
-        // 2. Index Generation & Safety:
-        // Transform the binary mask into a cumulative sum to map sequence positions.
+        // Cumsum from binary mask
         let mask_f32 = image_token_mask.to_dtype(candle_core::DType::F32)?;
         let cumsum = mask_f32.cumsum(BATCH_OR_SEQ_DIM)?;
 
         let one = Tensor::new(&[1.0f32], device)?;
-        let max_index = (image_hidden_states.dim(BATCH_OR_SEQ_DIM)? as f64) - 1.0;
 
-        // Align to 0-based indexing by subtracting 1.
-        // Clamp prevents underflow (-1) for leading text tokens and overflow at the tail.
         let image_indices = cumsum
             .broadcast_sub(&one)?
-            .clamp(0.0, max_index)?
+            .clamp(0.0, f64::MAX)? // Protects from -1.0 but allows out-of-bounds to fail downstream.
             .to_dtype(candle_core::DType::U32)?;
 
-        // 3. Chunk-Based Merging:
+        // Chunk-Based Merging
         for start in (0..seq_len).step_by(chunk_size) {
-            // Safety check for final chunk
             let len = usize::min(chunk_size, seq_len - start);
 
-            // `.narrow()` creates zero-copy views.
             let mask_chunk = image_token_mask.narrow(0, start, len)?;
             let text_chunk = inputs_embeds.narrow(0, start, len)?;
             let image_indices_chunk = image_indices.narrow(0, start, len)?;
 
-            // Gather the specific image tokens needed for this chunk.
             let image_chunk_stretched =
                 image_hidden_states.index_select(&image_indices_chunk, BATCH_OR_SEQ_DIM)?;
 
@@ -189,13 +139,13 @@ impl SmolModel {
                 .unsqueeze(CHANNEL_OR_EMBED_DIM)?
                 .broadcast_as(text_chunk.shape())?;
 
-            // Conditionally select from image_features if mask is true, otherwise text_features.
+            // Select from image_features if mask == true, else text_features.
             let merged_chunk = mask_chunk_broad.where_cond(&image_chunk_stretched, &text_chunk)?;
 
             chunks.push(merged_chunk);
         }
 
-        // Recombine all chunks back into the full sequence.
+        // Recombine the chunks
         Tensor::cat(&chunks, 0)
     }
 
@@ -240,7 +190,7 @@ impl SmolModel {
 
         let inputs_embeds = if !agg_image_hidden_states.is_empty() {
             let image_hidden = Tensor::cat(&agg_image_hidden_states, 0)?;
-            self.inputs_merger(image_token_mask, &image_hidden, &inputs_embeds)?
+            Self::inputs_merger(image_token_mask, &image_hidden, &inputs_embeds)?
         } else {
             // No images to process, return original embeddings
             inputs_embeds
@@ -280,7 +230,7 @@ mod tests {
     #[test]
     fn test_sandwich_merge() -> Result<()> {
         let (mask, text_embeds, img_embeds) = create_data(vec![0, 1, 1, 0], 2, &Device::Cpu)?;
-        let result = SmolModel::merge_tensors_impl(&mask, &img_embeds, &text_embeds)?;
+        let result = SmolModel::inputs_merger(&mask, &img_embeds, &text_embeds)?;
         let result_vec: Vec<f32> = result.flatten_all()?.to_vec1()?;
         assert_eq!(result_vec, vec![1.0, 2.0, 2.0, 1.0]);
         Ok(())
@@ -289,7 +239,7 @@ mod tests {
     #[test]
     fn test_img_only_merge() -> Result<()> {
         let (mask, text_embeds, img_embeds) = create_data(vec![1, 1, 1, 1], 4, &Device::Cpu)?;
-        let result = SmolModel::merge_tensors_impl(&mask, &img_embeds, &text_embeds)?;
+        let result = SmolModel::inputs_merger(&mask, &img_embeds, &text_embeds)?;
         let result_vec: Vec<f32> = result.flatten_all()?.to_vec1()?;
         assert_eq!(result_vec, vec![2.0, 2.0, 2.0, 2.0]);
         Ok(())
@@ -298,7 +248,7 @@ mod tests {
     #[test]
     fn test_text_only_merge() -> Result<()> {
         let (mask, text_embeds, img_embeds) = create_data(vec![0, 0, 0, 0], 4, &Device::Cpu)?;
-        let result = SmolModel::merge_tensors_impl(&mask, &img_embeds, &text_embeds)?;
+        let result = SmolModel::inputs_merger(&mask, &img_embeds, &text_embeds)?;
         let result_vec = result.flatten_all()?.to_vec1::<f32>()?;
         assert_eq!(result_vec, vec![1.0, 1.0, 1.0, 1.0]);
         Ok(())
@@ -307,7 +257,7 @@ mod tests {
     #[test]
     fn test_no_image() -> Result<()> {
         let (mask, text_embeds, img_embeds) = create_data(vec![0, 0, 0, 0], 0, &Device::Cpu)?;
-        let result = SmolModel::merge_tensors_impl(&mask, &img_embeds, &text_embeds)?;
+        let result = SmolModel::inputs_merger(&mask, &img_embeds, &text_embeds)?;
         let result_vec = result.flatten_all()?.to_vec1::<f32>()?;
         assert_eq!(result_vec, vec![1.0, 1.0, 1.0, 1.0]);
 
@@ -315,18 +265,9 @@ mod tests {
     }
 
     #[test]
-    fn test_all_images() -> Result<()> {
-        let (mask, text_embeds, img_embeds) = create_data(vec![1, 1, 1, 1], 4, &Device::Cpu)?;
-        let result = SmolModel::merge_tensors_impl(&mask, &img_embeds, &text_embeds)?;
-        let result_vec = result.flatten_all()?.to_vec1::<f32>()?;
-        assert_eq!(result_vec, vec![2.0, 2.0, 2.0, 2.0]);
-        Ok(())
-    }
-
-    #[test]
     fn test_alternate_embedding() -> Result<()> {
         let (mask, text_embeds, img_embeds) = create_data(vec![1, 0, 1, 0], 2, &Device::Cpu)?;
-        let result = SmolModel::merge_tensors_impl(&mask, &img_embeds, &text_embeds)?;
+        let result = SmolModel::inputs_merger(&mask, &img_embeds, &text_embeds)?;
         let result_vec = result.flatten_all()?.to_vec1::<f32>()?;
         assert_eq!(result_vec, vec![2.0, 1.0, 2.0, 1.0]);
         Ok(())
