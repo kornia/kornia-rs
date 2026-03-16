@@ -58,3 +58,21 @@ jobs:
         if: always() && matrix.needs-sccache
         run: |
           sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
+
+  cross-platform-check:
+    name: Check - ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macOS
+            runner: macos-latest
+          - os: Windows
+            runner: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: cargo check --workspace
