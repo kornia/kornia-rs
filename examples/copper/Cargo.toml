@@ -14,8 +14,8 @@ include = { workspace = true }
 
 [dependencies]
 bincode = { workspace = true }
-cu29 = "0.8.0"
-cu29-helpers = "0.8.0"
+cu29 = "0.13.0"
+cu29-helpers = "0.13.0"
 kornia = { workspace = true, features = ["gstreamer"] }
 rerun = { workspace = true }
-tempfile = "3.19"
+tempfile = "3.27"
