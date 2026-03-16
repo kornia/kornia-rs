@@ -81,6 +81,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### Morphological Opening
+
+```rust
+use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use kornia_imgproc::morphology::{open, Kernel, KernelShape};
+use kornia_imgproc::padding::PaddingMode;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let src = Image::<u8, 1, _>::new(
+        ImageSize { width: 5, height: 5 },
+        vec![
+            0, 0, 0, 0, 0,
+            0, 255, 0, 0, 0,
+            0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0,
+        ],
+        CpuAllocator,
+    )?;
+
+    let kernel = Kernel::try_new(KernelShape::Box { size: 3 })?;
+    let mut dst = Image::<u8, 1, _>::from_size_val(src.size(), 0, CpuAllocator)?;
+
+    open(&src, &mut dst, &kernel, PaddingMode::Constant, [0])?;
+
+    assert!(dst.as_slice().iter().all(|&value| value == 0));
+    Ok(())
+}
+```
+
 ## 🧩 Modules
 
 *   **`calibration`**: Lens distortion correction.

@@ -1,3 +1,5 @@
+use kornia_image::ImageError;
+
 /// Shapes of morphological `Kernels`.
 ///
 /// Defines the geometry of the kernel used in morphological operations.
@@ -51,7 +53,7 @@ pub enum KernelShape {
 /// use kornia_imgproc::morphology::{Kernel, KernelShape};
 ///
 /// // Create a 3x3 box kernel
-/// let kernel = Kernel::new(KernelShape::Box { size: 3 });
+/// let kernel = Kernel::try_new(KernelShape::Box { size: 3 }).unwrap();
 /// assert_eq!(kernel.width(), 3);
 /// assert_eq!(kernel.height(), 3);
 /// assert_eq!(kernel.pad(), (1, 1));
@@ -72,32 +74,137 @@ impl Kernel {
     /// # Returns
     ///
     /// A [`Kernel`] struct with the appropriate data.
-    pub fn new(shape: KernelShape) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::InvalidKernelShape`] if the kernel dimensions are
+    /// zero, even-sized, or if the generated kernel does not contain any active
+    /// elements.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_imgproc::morphology::{Kernel, KernelShape};
+    ///
+    /// let kernel = Kernel::try_new(KernelShape::Cross { size: 3 }).unwrap();
+    /// assert_eq!(kernel.pad(), (1, 1));
+    /// ```
+    pub fn try_new(shape: KernelShape) -> Result<Self, ImageError> {
         match shape {
-            KernelShape::Box { size } => box_kernel(size),
-            KernelShape::Cross { size } => cross_kernel(size),
-            KernelShape::Ellipse { width, height } => ellipse_kernel(width, height),
+            KernelShape::Box { size } => try_box_kernel(size),
+            KernelShape::Cross { size } => try_cross_kernel(size),
+            KernelShape::Ellipse { width, height } => try_ellipse_kernel(width, height),
         }
     }
 
     /// Get a reference to the kernel data.
+    ///
+    /// # Returns
+    ///
+    /// The flattened binary mask of the structuring element.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_imgproc::morphology::{Kernel, KernelShape};
+    ///
+    /// let kernel = Kernel::try_new(KernelShape::Box { size: 3 }).unwrap();
+    /// assert_eq!(kernel.data().len(), 9);
+    /// ```
     pub fn data(&self) -> &[u8] {
         &self.data
     }
 
     /// Get the width of the kernel.
+    ///
+    /// # Returns
+    ///
+    /// The kernel width in pixels.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_imgproc::morphology::{Kernel, KernelShape};
+    ///
+    /// let kernel = Kernel::try_new(KernelShape::Box { size: 5 }).unwrap();
+    /// assert_eq!(kernel.width(), 5);
+    /// ```
     pub fn width(&self) -> usize {
         self.width
     }
 
     /// Get the height of the kernel.
+    ///
+    /// # Returns
+    ///
+    /// The kernel height in pixels.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_imgproc::morphology::{Kernel, KernelShape};
+    ///
+    /// let kernel = Kernel::try_new(KernelShape::Ellipse { width: 3, height: 5 }).unwrap();
+    /// assert_eq!(kernel.height(), 5);
+    /// ```
     pub fn height(&self) -> usize {
         self.height
     }
 
     /// Get the padding for the kernel (offset from center).
+    ///
+    /// # Returns
+    ///
+    /// The symmetric `(pad_h, pad_w)` padding required around the source image.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_imgproc::morphology::{Kernel, KernelShape};
+    ///
+    /// let kernel = Kernel::try_new(KernelShape::Box { size: 7 }).unwrap();
+    /// assert_eq!(kernel.pad(), (3, 3));
+    /// ```
     pub fn pad(&self) -> (usize, usize) {
         (self.height / 2, self.width / 2)
+    }
+
+    /// Validate that the kernel is well-formed for morphological operations.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the kernel can be used by morphology operators.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::InvalidKernelShape`] if the kernel has zero-sized
+    /// dimensions, even-sized dimensions, inconsistent storage, or no active
+    /// elements.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use kornia_imgproc::morphology::{Kernel, KernelShape};
+    ///
+    /// let kernel = Kernel::try_new(KernelShape::Box { size: 3 }).unwrap();
+    /// kernel.validate().unwrap();
+    /// ```
+    pub fn validate(&self) -> Result<(), ImageError> {
+        validate_kernel_dimensions(self.width, self.height)?;
+
+        if self.data.len() != self.width * self.height {
+            return Err(ImageError::InvalidKernelShape(
+                "kernel storage does not match its dimensions".to_string(),
+            ));
+        }
+
+        if !self.data.iter().any(|&value| value != 0) {
+            return Err(ImageError::InvalidKernelShape(
+                "kernel must contain at least one active element".to_string(),
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -110,13 +217,27 @@ impl Kernel {
 /// # Returns
 ///
 /// A [`Kernel`] filled with 1s.
-pub fn box_kernel(size: usize) -> Kernel {
+///
+/// # Errors
+///
+/// Returns [`ImageError::InvalidKernelShape`] if `size` is zero or even.
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_imgproc::morphology::try_box_kernel;
+///
+/// let kernel = try_box_kernel(3).unwrap();
+/// assert_eq!(kernel.data(), &[1, 1, 1, 1, 1, 1, 1, 1, 1]);
+/// ```
+pub fn try_box_kernel(size: usize) -> Result<Kernel, ImageError> {
+    validate_kernel_dimensions(size, size)?;
     let data = vec![1u8; size * size];
-    Kernel {
+    Ok(Kernel {
         data,
         width: size,
         height: size,
-    }
+    })
 }
 
 /// Create a cross structuring element.
@@ -128,7 +249,21 @@ pub fn box_kernel(size: usize) -> Kernel {
 /// # Returns
 ///
 /// A [`Kernel`] with 1s along the horizontal and vertical center lines.
-pub fn cross_kernel(size: usize) -> Kernel {
+///
+/// # Errors
+///
+/// Returns [`ImageError::InvalidKernelShape`] if `size` is zero or even.
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_imgproc::morphology::try_cross_kernel;
+///
+/// let kernel = try_cross_kernel(3).unwrap();
+/// assert_eq!(kernel.data(), &[0, 1, 0, 1, 1, 1, 0, 1, 0]);
+/// ```
+pub fn try_cross_kernel(size: usize) -> Result<Kernel, ImageError> {
+    validate_kernel_dimensions(size, size)?;
     let mut data = vec![0u8; size * size];
     let mid = size / 2;
 
@@ -142,11 +277,11 @@ pub fn cross_kernel(size: usize) -> Kernel {
         data[i * size + mid] = 1;
     }
 
-    Kernel {
+    Ok(Kernel {
         data,
         width: size,
         height: size,
-    }
+    })
 }
 
 /// Create an ellipse structuring element.
@@ -159,12 +294,28 @@ pub fn cross_kernel(size: usize) -> Kernel {
 /// # Returns
 ///
 /// A [`Kernel`] with 1s inside the ellipse boundary.
-pub fn ellipse_kernel(width: usize, height: usize) -> Kernel {
+///
+/// # Errors
+///
+/// Returns [`ImageError::InvalidKernelShape`] if either dimension is zero,
+/// even-sized, or if the generated ellipse contains no active elements.
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_imgproc::morphology::try_ellipse_kernel;
+///
+/// let kernel = try_ellipse_kernel(5, 5).unwrap();
+/// assert_eq!(kernel.width(), 5);
+/// assert_eq!(kernel.height(), 5);
+/// ```
+pub fn try_ellipse_kernel(width: usize, height: usize) -> Result<Kernel, ImageError> {
+    validate_kernel_dimensions(width, height)?;
     let mut data = vec![0u8; width * height];
-    let cx = width as f32 / 2.0;
-    let cy = height as f32 / 2.0;
-    let rx = width as f32 / 2.0;
-    let ry = height as f32 / 2.0;
+    let cx = (width / 2) as f32;
+    let cy = (height / 2) as f32;
+    let rx = cx.max(1.0);
+    let ry = cy.max(1.0);
 
     for i in 0..height {
         for j in 0..width {
@@ -177,9 +328,27 @@ pub fn ellipse_kernel(width: usize, height: usize) -> Kernel {
         }
     }
 
-    Kernel {
+    let kernel = Kernel {
         data,
         width,
         height,
+    };
+    kernel.validate()?;
+    Ok(kernel)
+}
+
+fn validate_kernel_dimensions(width: usize, height: usize) -> Result<(), ImageError> {
+    if width == 0 || height == 0 {
+        return Err(ImageError::InvalidKernelShape(
+            "kernel dimensions must be greater than zero".to_string(),
+        ));
     }
+
+    if width % 2 == 0 || height % 2 == 0 {
+        return Err(ImageError::InvalidKernelShape(
+            "kernel dimensions must be odd so the anchor is centered".to_string(),
+        ));
+    }
+
+    Ok(())
 }
