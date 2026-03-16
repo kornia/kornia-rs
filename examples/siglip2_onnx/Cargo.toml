@@ -1,0 +1,37 @@
+[package]
+name = "siglip2_onnx"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+description = "SigLIP2 ONNX inference example using ONNX Runtime"
+readme = "README.md"
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+categories = { workspace = true }
+include = { workspace = true }
+
+[[bin]]
+name = "siglip2_onnx"
+path = "src/main.rs"
+
+[dependencies]
+# Kornia core
+kornia = { workspace = true }
+kornia-image = { workspace = true }
+kornia-imgproc = { workspace = true }
+kornia-tensor = { workspace = true }
+kornia-io = { workspace = true }
+
+# ONNX Runtime - following examples/onnx pattern
+ort = { version = "2.0.0-rc.10", default-features = false, features = [
+  "half",
+  "load-dynamic",
+] }
+
+# CLI args
+argh = { workspace = true }
+
+# Visualization
+rerun = { workspace = true }
