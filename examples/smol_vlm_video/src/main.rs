@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 mod video_demo;
 mod video_file_demo;
 
@@ -44,6 +45,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.video_file.is_some() {
         video_file_demo::video_file_demo(&args)
     } else {
-        video_demo::video_demo(&args)
+        #[cfg(target_os = "linux")]
+        {
+            video_demo::video_demo(&args)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            eprintln!(
+                "error: webcam capture (camera_id={}, fps={}) requires Video4Linux and is only supported on Linux.",
+                args.camera_id, args.fps
+            );
+            eprintln!("hint: use --video-file to process a video file instead.");
+            std::process::exit(1);
+        }
     }
 }
