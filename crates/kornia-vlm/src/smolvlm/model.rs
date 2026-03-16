@@ -72,28 +72,11 @@ impl SmolModel {
         })
     }
 
-    /// Merges image hidden states into the text input embeddings using a boolean mask.
+    /// Interleaves image features into text embeddings at positions marked by the boolean mask.
     ///
-    /// This method combines visual and textual embeddings into a single sequence by inserting
-    /// image features at positions marked by the image token mask. This allows the language
-    /// model to process both modalities in a unified manner.
-    ///
-    /// Maps the `image_token_mask` to corresponding 0-based indices in `image_hidden_states`
-    /// using a clamped cumulative sum. To maintain a constant memory footprint, the sequence
-    /// is processed and reassembled in 1024-token chunks using zero-copy views (`.narrow()`)
-    /// and vectorized conditional selection (`.where_cond()`).
-    ///
-    /// # Complexity
-    /// * Time: `O(N)` where `N` is the total sequence length.
-    /// * Space: `O(C * D)` where `C` is the chunk size and `D` is the embedding dimension.
-    ///
-    /// # Arguments
-    /// * `image_token_mask` - A 1D tensor mapping text tokens (0.0) and image tokens (1.0).
-    /// * `image_hidden_states` - The visual features from the vision encoder.
-    /// * `inputs_embeds` - The base text embeddings from the language model.
-    ///
-    /// # Errors
-    /// Returns an error on tensor dimension mismatches, broadcasting failures, or device memory exhaustion.
+    /// Image indices are derived using a clamped cumulative sum of the mask. To maintain a
+    /// constant memory footprint, the sequence is processed and reassembled in 1024-token chunks
+    /// using zero-copy views (`.narrow()`) and vectorized conditional selection (`.where_cond()`).
     fn inputs_merger(
         image_token_mask: &Tensor,
         image_hidden_states: &Tensor,
@@ -260,7 +243,6 @@ mod tests {
         let result = SmolModel::inputs_merger(&mask, &img_embeds, &text_embeds)?;
         let result_vec = result.flatten_all()?.to_vec1::<f32>()?;
         assert_eq!(result_vec, vec![1.0, 1.0, 1.0, 1.0]);
-
         Ok(())
     }
 
@@ -270,6 +252,74 @@ mod tests {
         let result = SmolModel::inputs_merger(&mask, &img_embeds, &text_embeds)?;
         let result_vec = result.flatten_all()?.to_vec1::<f32>()?;
         assert_eq!(result_vec, vec![2.0, 1.0, 2.0, 1.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_alternate_embeddings_multichunk_2049() -> Result<()> {
+        let seq_len = 2049;
+        let mask_vec: Vec<u8> = (0..seq_len)
+            .map(|i| if i % 2 == 0 { 1 } else { 0 })
+            .collect();
+        let img_count = mask_vec.iter().map(|&x| x as usize).sum::<usize>();
+
+        let (mask, text_embeds, img_embeds) = create_data(mask_vec, img_count, &Device::Cpu)?;
+
+        let result = SmolModel::inputs_merger(&mask, &img_embeds, &text_embeds)?;
+        let result_vec = result.flatten_all()?.to_vec1::<f32>()?;
+        let expected_vec: Vec<f32> = (0..seq_len)
+            .map(|i| if i % 2 == 0 { 2.0 } else { 1.0 })
+            .collect();
+
+        assert_eq!(result_vec, expected_vec);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_contiguous_spanning_boundary_2049() -> Result<()> {
+        let seq_len = 2049;
+        let mut mask_vec: Vec<u8> = vec![0; seq_len]; // Start with all text (0)
+
+        mask_vec[1000..1050].fill(1);
+        mask_vec[2040..2049].fill(1);
+
+        let img_count = mask_vec.iter().map(|&x| x as usize).sum::<usize>();
+        let (mask, text_embeds, img_embeds) =
+            create_data(mask_vec, img_count, &candle_core::Device::Cpu)?;
+
+        let result = SmolModel::inputs_merger(&mask, &img_embeds, &text_embeds)?;
+        let result_vec = result.flatten_all()?.to_vec1::<f32>()?;
+
+        let expected_vec: Vec<f32> = (0..seq_len)
+            .map(|i| {
+                if (1000..1050).contains(&i) || (2040..2049).contains(&i) {
+                    2.0
+                } else {
+                    1.0
+                }
+            })
+            .collect();
+
+        assert_eq!(result_vec, expected_vec);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_out_of_bounds_image_tokens() -> Result<()> {
+        let mask_pattern = vec![1, 1, 1, 0];
+        let (mask, text_embeds, img_embeds) = create_data(mask_pattern, 2, &Device::Cpu)?;
+        let result = SmolModel::inputs_merger(&mask, &img_embeds, &text_embeds);
+        assert!(result.is_err(),);
+        Ok(())
+    }
+
+    #[test]
+    fn test_empty_sequence() -> Result<()> {
+        let (mask, text_embeds, img_embeds) = create_data(vec![], 0, &Device::Cpu)?;
+        let result = SmolModel::inputs_merger(&mask, &img_embeds, &text_embeds)?;
+        assert_eq!(result.dims2()?, (0, 1));
         Ok(())
     }
 }
