@@ -376,6 +376,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     apriltag_mod.add_class::<apriltag::PyAprilTagDecoder>()?;
     apriltag_mod.add_class::<apriltag::PyApriltagDetection>()?;
     apriltag_mod.add_class::<apriltag::PyQuad>()?;
+    apriltag_mod.add_class::<apriltag::family::PyTagFamilyKind>()?;
 
     let apriltag_family_mod = PyModule::new(py, "family")?;
     apriltag_family_mod.add_class::<apriltag::family::PyTagFamily>()?;
