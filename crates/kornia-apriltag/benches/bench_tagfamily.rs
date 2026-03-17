@@ -1,15 +1,22 @@
+#[cfg(not(windows))]
 use apriltag::DetectorBuilder;
+#[cfg(not(windows))]
 use criterion::{criterion_group, criterion_main, Criterion};
+#[cfg(not(windows))]
 use kornia_apriltag::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
+#[cfg(not(windows))]
 use kornia_image::ImageSize;
 
+#[cfg(not(windows))]
 const IMG_SIZE: ImageSize = ImageSize {
     width: 799,
     height: 533,
 };
 
+#[cfg(not(windows))]
 const BITS_CORRECTED: usize = 2;
 
+#[cfg(not(windows))]
 fn bench_tagfamily(c: &mut Criterion) {
     {
         let mut group = c.benchmark_group("Tag16H5");
@@ -174,5 +181,10 @@ fn bench_tagfamily(c: &mut Criterion) {
     }
 }
 
+#[cfg(not(windows))]
 criterion_group!(benches, bench_tagfamily);
+#[cfg(not(windows))]
 criterion_main!(benches);
+
+#[cfg(windows)]
+fn main() {}
