@@ -2,13 +2,13 @@
 //!
 //! This module provides:
 //! - [`PinholeCamera`] — pinhole model with Brown-Conrady distortion.
-//! - [`KannalaBrandtCamera`] — Kannala-Brandt equidistant fisheye model.
+//! - [`FisheyeCamera`] — Kannala-Brandt equidistant fisheye model.
 
-mod kannala_brandt;
+mod fisheye;
 mod pinhole;
 
-pub use kannala_brandt::KannalaBrandtCamera;
+pub use fisheye::FisheyeCamera;
 pub use pinhole::{PinholeCamera, ProjectionReject};
 
-pub use kannala_brandt::project_point_kb;
+pub use fisheye::project_point_fisheye;
 pub use pinhole::project_point;

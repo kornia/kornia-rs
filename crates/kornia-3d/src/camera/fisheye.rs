@@ -3,11 +3,11 @@
 use crate::pose::Pose3d;
 use kornia_algebra::{Vec2F64, Vec3F64};
 
-/// Project a world point through a pose and Kannala-Brandt camera.
+/// Project a world point through a pose and Fisheye camera.
 ///
 /// Returns `(u, v, z_cam)` or `None` if the point is at the optical center.
-pub fn project_point_kb(
-    camera: &KannalaBrandtCamera,
+pub fn project_point_fisheye(
+    camera: &FisheyeCamera,
     pose: &Pose3d,
     point_world: &Vec3F64,
 ) -> Option<(f64, f64, f64)> {
@@ -25,7 +25,7 @@ pub fn project_point_kb(
 ///   u = fx * theta_d * (x/r) + cx
 ///   v = fy * theta_d * (y/r) + cy
 #[derive(Debug, Clone)]
-pub struct KannalaBrandtCamera {
+pub struct FisheyeCamera {
     /// Focal length in x (pixels).
     pub fx: f64,
     /// Focal length in y (pixels).
@@ -50,7 +50,27 @@ const NEWTON_MAX_ITER: usize = 10;
 /// Convergence tolerance for Newton-Raphson in unproject.
 const NEWTON_EPS: f64 = 1e-12;
 
-impl KannalaBrandtCamera {
+impl FisheyeCamera {
+    /// Evaluates the distortion polynomial theta_d and its derivative f_prime with respect to theta.
+    /// Returns `(theta_d, f_prime)`.
+    fn distortion(&self, theta: f64) -> (f64, f64) {
+        let theta2 = theta * theta;
+        let theta4 = theta2 * theta2;
+        let theta6 = theta4 * theta2;
+        let theta8 = theta4 * theta4;
+        let theta_d = theta
+            + self.k1 * theta2 * theta
+            + self.k2 * theta4 * theta
+            + self.k3 * theta6 * theta
+            + self.k4 * theta8 * theta;
+        let f_prime = 1.0
+            + 3.0 * self.k1 * theta2
+            + 5.0 * self.k2 * theta4
+            + 7.0 * self.k3 * theta6
+            + 9.0 * self.k4 * theta8;
+        (theta_d, f_prime)
+    }
+
     /// Project a 3D camera-frame point to pixel coordinates.
     ///
     /// Returns `Some((pixel, z))` where `z` is the depth in camera frame.
@@ -69,17 +89,13 @@ impl KannalaBrandtCamera {
         if r < 1e-12 && z.abs() < 1e-12 {
             return None;
         }
+        // Points on the negative optical axis have undefined azimuth.
+        if r < 1e-12 && z < 0.0 {
+            return None;
+        }
 
         let theta = r.atan2(z);
-        let theta2 = theta * theta;
-        let theta4 = theta2 * theta2;
-        let theta6 = theta4 * theta2;
-        let theta8 = theta4 * theta4;
-        let theta_d = theta
-            + self.k1 * theta2 * theta
-            + self.k2 * theta4 * theta
-            + self.k3 * theta6 * theta
-            + self.k4 * theta8 * theta;
+        let (theta_d, _) = self.distortion(theta);
 
         // On the optical axis: r ≈ 0, theta ≈ 0, theta_d ≈ 0 → principal point.
         if r < 1e-12 {
@@ -139,21 +155,11 @@ impl KannalaBrandtCamera {
         // Newton-Raphson: solve f(theta) = theta + k1·θ³ + k2·θ⁵ + k3·θ⁷ + k4·θ⁹ - theta_d = 0
         let mut theta = theta_d;
         for _ in 0..NEWTON_MAX_ITER {
-            let theta2 = theta * theta;
-            let theta4 = theta2 * theta2;
-            let theta6 = theta4 * theta2;
-            let theta8 = theta4 * theta4;
-            let f = theta
-                + self.k1 * theta2 * theta
-                + self.k2 * theta4 * theta
-                + self.k3 * theta6 * theta
-                + self.k4 * theta8 * theta
-                - theta_d;
-            let f_prime = 1.0
-                + 3.0 * self.k1 * theta2
-                + 5.0 * self.k2 * theta4
-                + 7.0 * self.k3 * theta6
-                + 9.0 * self.k4 * theta8;
+            let (theta_d_calc, f_prime) = self.distortion(theta);
+            if f_prime.abs() < 1e-12 {
+                break;
+            }
+            let f = theta_d_calc - theta_d;
             let delta = f / f_prime;
             theta -= delta;
             if delta.abs() < NEWTON_EPS {
@@ -175,8 +181,8 @@ mod tests {
     use kornia_algebra::Mat3F64;
 
     /// Fisheye camera with zero distortion (pure equidistant model).
-    fn kb_camera_zero_distortion() -> KannalaBrandtCamera {
-        KannalaBrandtCamera {
+    fn fisheye_camera_zero_distortion() -> FisheyeCamera {
+        FisheyeCamera {
             fx: 200.0,
             fy: 200.0,
             cx: 736.0,
@@ -189,8 +195,8 @@ mod tests {
     }
 
     /// Fisheye camera with typical distortion coefficients.
-    fn kb_camera_with_distortion() -> KannalaBrandtCamera {
-        KannalaBrandtCamera {
+    fn fisheye_camera_with_distortion() -> FisheyeCamera {
+        FisheyeCamera {
             fx: 200.0,
             fy: 200.0,
             cx: 736.0,
@@ -203,8 +209,8 @@ mod tests {
     }
 
     #[test]
-    fn test_kb_project_on_axis() {
-        let cam = kb_camera_zero_distortion();
+    fn test_fisheye_project_on_axis() {
+        let cam = fisheye_camera_zero_distortion();
         // Point on the optical axis → should project to principal point.
         let p = Vec3F64::new(0.0, 0.0, 5.0);
         let (uv, z) = cam.project(&p).unwrap();
@@ -214,16 +220,24 @@ mod tests {
     }
 
     #[test]
-    fn test_kb_project_optical_center_returns_none() {
-        let cam = kb_camera_zero_distortion();
+    fn test_fisheye_project_optical_center_returns_none() {
+        let cam = fisheye_camera_zero_distortion();
         // Point at the optical center → undefined, returns None.
         let p = Vec3F64::new(0.0, 0.0, 0.0);
         assert!(cam.project(&p).is_none());
     }
 
     #[test]
-    fn test_kb_project_zero_distortion_45_deg() {
-        let cam = kb_camera_zero_distortion();
+    fn test_fisheye_project_negative_z_axis_returns_none() {
+        let cam = fisheye_camera_zero_distortion();
+        // Point on the negative optical axis → undefined azimuth, returns None.
+        let p = Vec3F64::new(0.0, 0.0, -5.0);
+        assert!(cam.project(&p).is_none());
+    }
+
+    #[test]
+    fn test_fisheye_project_zero_distortion_45_deg() {
+        let cam = fisheye_camera_zero_distortion();
         // Point at 45° in the x-z plane: theta = pi/4.
         // With zero distortion: theta_d = theta = pi/4.
         // r = 1.0, x = 1.0, y = 0.0 → scale = theta_d / r = pi/4.
@@ -237,8 +251,8 @@ mod tests {
     }
 
     #[test]
-    fn test_kb_unproject_principal_point() {
-        let cam = kb_camera_zero_distortion();
+    fn test_fisheye_unproject_principal_point() {
+        let cam = fisheye_camera_zero_distortion();
         // Principal point → on-axis bearing ray (0, 0, 1).
         let ray = cam.unproject(&Vec2F64::new(cam.cx, cam.cy));
         assert!((ray.x).abs() < 1e-12);
@@ -247,8 +261,8 @@ mod tests {
     }
 
     #[test]
-    fn test_kb_roundtrip_zero_distortion() {
-        let cam = kb_camera_zero_distortion();
+    fn test_fisheye_roundtrip_zero_distortion() {
+        let cam = fisheye_camera_zero_distortion();
         // Test multiple 3D points at various angles.
         let points = [
             Vec3F64::new(1.0, 0.0, 1.0),  // 45° in x-z
@@ -282,8 +296,8 @@ mod tests {
     }
 
     #[test]
-    fn test_kb_roundtrip_with_distortion() {
-        let cam = kb_camera_with_distortion();
+    fn test_fisheye_roundtrip_with_distortion() {
+        let cam = fisheye_camera_with_distortion();
         let points = [
             Vec3F64::new(1.0, 0.0, 1.0),
             Vec3F64::new(0.0, 1.0, 1.0),
@@ -315,8 +329,8 @@ mod tests {
     }
 
     #[test]
-    fn test_kb_project_near_optical_axis() {
-        let cam = kb_camera_with_distortion();
+    fn test_fisheye_project_near_optical_axis() {
+        let cam = fisheye_camera_with_distortion();
         // Very small r, positive z → should be near principal point and stable.
         let p = Vec3F64::new(1e-10, 1e-10, 5.0);
         let (uv, _) = cam.project(&p).unwrap();
@@ -325,8 +339,8 @@ mod tests {
     }
 
     #[test]
-    fn test_kb_roundtrip_wide_angle() {
-        let cam = kb_camera_zero_distortion();
+    fn test_fisheye_roundtrip_wide_angle() {
+        let cam = fisheye_camera_zero_distortion();
         // Point at ~80° from the optical axis.
         let p = Vec3F64::new(5.0, 0.0, 1.0);
         let (pixel, _) = cam.project(&p).unwrap();
@@ -339,8 +353,8 @@ mod tests {
     }
 
     #[test]
-    fn test_kb_project_behind_camera() {
-        let cam = kb_camera_zero_distortion();
+    fn test_fisheye_project_behind_camera() {
+        let cam = fisheye_camera_zero_distortion();
         // Point behind camera: z = -1.0, r = 1.0. theta = 3*pi/4.
         let p = Vec3F64::new(1.0, 0.0, -1.0);
         let (uv, z) = cam.project(&p).unwrap();
@@ -350,11 +364,11 @@ mod tests {
     }
 
     #[test]
-    fn test_project_point_kb() {
-        let cam = kb_camera_zero_distortion();
+    fn test_project_point_fisheye() {
+        let cam = fisheye_camera_zero_distortion();
         let pose = crate::pose::Pose3d::new(Mat3F64::IDENTITY, Vec3F64::ZERO);
         let p_world = Vec3F64::new(1.0, 0.0, 1.0);
-        let (u, v, z) = project_point_kb(&cam, &pose, &p_world).unwrap();
+        let (u, v, z) = project_point_fisheye(&cam, &pose, &p_world).unwrap();
         let expected_u = cam.fx * std::f64::consts::FRAC_PI_4 + cam.cx;
         assert!((u - expected_u).abs() < 1e-10);
         assert!((v - cam.cy).abs() < 1e-10);
@@ -362,8 +376,8 @@ mod tests {
     }
 
     #[test]
-    fn test_reprojection_error_sq_kb() {
-        let cam = kb_camera_zero_distortion();
+    fn test_reprojection_error_sq_fisheye() {
+        let cam = fisheye_camera_zero_distortion();
         let p = Vec3F64::new(1.0, 0.0, 1.0);
         let (uv, _) = cam.project(&p).unwrap();
         let err = cam.reprojection_error_sq_cam(&p, uv.x, uv.y).unwrap();
