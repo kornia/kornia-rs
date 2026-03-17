@@ -1,5 +1,8 @@
-#![deny(missing_docs)]
-#![doc = env!("CARGO_PKG_DESCRIPTION")]
+#[cfg(feature = "gpu")]
+pub mod gpu;
+
+pub mod device;
+pub use device::KorniaDevice;
 /// image undistortion module.
 pub mod calibration;
 

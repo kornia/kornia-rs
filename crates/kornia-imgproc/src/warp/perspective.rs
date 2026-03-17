@@ -1,7 +1,13 @@
+use crate::device::KorniaDevice;
 use crate::{
     interpolation::{interpolate_pixel_fast, validate_interpolation, InterpolationMode},
     parallel,
 };
+
+#[cfg(feature = "gpu")]
+use crate::gpu::warp::warp_perspective_kernel;
+#[cfg(feature = "gpu")]
+use cubecl::{client::ComputeClient, prelude::*};
 
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
@@ -59,10 +65,16 @@ fn transform_point(x: f32, y: f32, m: &[f32; 9]) -> (f32, f32) {
 /// * `dst` - The output image with shape (height, width, channels).
 /// * `m` - The 3x3 perspective transformation matrix src -> dst.
 /// * `interpolation` - The interpolation mode to use.
+/// * `device` - The target computation device `KorniaDevice`.
 ///
 /// # Returns
 ///
 /// The output image with shape (new_height, new_width, channels).
+///
+/// # Errors
+///
+/// Returns [`ImageError::InvalidInterpolation`] if the requested interpolation algorithm isn't supported.
+/// Returns [`ImageError::CannotComputeDeterminant`] if the transformation matrix uses an invalid configuration and fails determinant checks.
 ///
 /// # Example
 ///
@@ -71,6 +83,7 @@ fn transform_point(x: f32, y: f32, m: &[f32; 9]) -> (f32, f32) {
 /// use kornia_image::allocator::CpuAllocator;
 /// use kornia_imgproc::interpolation::InterpolationMode;
 /// use kornia_imgproc::warp::warp_perspective;
+/// use kornia_imgproc::KorniaDevice;
 ///
 /// let src = Image::<f32, 1, _>::new(
 ///   ImageSize {
@@ -92,7 +105,7 @@ fn transform_point(x: f32, y: f32, m: &[f32; 9]) -> (f32, f32) {
 ///   CpuAllocator
 /// ).unwrap();
 ///
-/// warp_perspective(&src, &mut dst, &m, InterpolationMode::Bilinear).unwrap();
+/// warp_perspective(&src, &mut dst, &m, InterpolationMode::Bilinear, KorniaDevice::Cpu).unwrap();
 ///
 /// assert_eq!(dst.size().width, 2);
 /// assert_eq!(dst.size().height, 3);
@@ -102,6 +115,7 @@ pub fn warp_perspective<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     dst: &mut Image<f32, C, A2>,
     m: &[f32; 9],
     interpolation: InterpolationMode,
+    device: KorniaDevice,
 ) -> Result<(), ImageError> {
     validate_interpolation(interpolation)?;
 
@@ -109,18 +123,72 @@ pub fn warp_perspective<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     // TODO: allow later to skip the inverse calculation if user provides it
     let inv_m = inverse_perspective_matrix(m)?;
 
-    // apply perspective transformation without pre-allocating coordinate maps
-    parallel::par_iter_rows_spatial_mapping(
-        dst,
-        |x, y| transform_point(x as f32, y as f32, &inv_m),
-        |x, y, dst_pixel| {
-            if x >= 0.0f32 && x < src.cols() as f32 && y >= 0.0f32 && y < src.rows() as f32 {
-                dst_pixel.iter_mut().enumerate().for_each(|(k, pixel)| {
-                    *pixel = interpolate_pixel_fast(src, x, y, k, interpolation);
-                });
+    match device {
+        KorniaDevice::Cpu => {
+            // apply perspective transformation without pre-allocating coordinate maps
+            parallel::par_iter_rows_spatial_mapping(
+                dst,
+                |x, y| transform_point(x as f32, y as f32, &inv_m),
+                |x, y, dst_pixel| {
+                    if x >= 0.0f32 && x < src.cols() as f32 && y >= 0.0f32 && y < src.rows() as f32
+                    {
+                        dst_pixel.iter_mut().enumerate().for_each(|(k, pixel)| {
+                            *pixel = interpolate_pixel_fast(src, x, y, k, interpolation);
+                        });
+                    }
+                },
+            );
+        }
+        #[cfg(feature = "gpu")]
+        KorniaDevice::Gpu(device_id) => {
+            use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+            let client = cubecl::Runtime::client(&WgpuDevice::default());
+
+            // Allocate tensors on the GPU
+            let src_handle = client.create(src.as_slice());
+            // Need a mutable slice to overwrite data
+            let mut dst_vec =
+                vec![0.0f32; dst.size().width * dst.size().height * dst.num_channels()];
+            let dst_handle = client.create(&dst_vec);
+            let m_inv_handle = client.create(&inv_m);
+
+            // SAFETY: The WGPU buffers created match the sizes and strides of the source and destination images.
+            // The GPU kernel inherently bounds-checks ABSOLUTE_POS coordinates before executing reads and writes.
+            unsafe {
+                warp_perspective_kernel::launch::<f32, WgpuRuntime>(
+                    &client,
+                    CubeCount::Static(1, 1, 1),
+                    CubeDim::default(),
+                    TensorArg::from_raw_parts(
+                        src_handle.clone(),
+                        vec![1, src.rows(), src.cols(), C],
+                        vec![src.rows() * src.cols() * C, src.cols() * C, C, 1],
+                        1,
+                    ),
+                    TensorArg::from_raw_parts(
+                        dst_handle.clone(),
+                        vec![1, dst.rows(), dst.cols(), C],
+                        vec![dst.rows() * dst.cols() * C, dst.cols() * C, C, 1],
+                        1,
+                    ),
+                    TensorArg::from_raw_parts(m_inv_handle, vec![9], vec![1], 1),
+                    src.cols() as u32,
+                    src.rows() as u32,
+                    dst.cols() as u32,
+                    dst.rows() as u32,
+                    C as u32,
+                );
             }
-        },
-    );
+
+            let dst_bytes = client.read(dst_handle.binding());
+            let dst_data: &[f32] = bytemuck::cast_slice(&dst_bytes);
+            dst.as_mut_slice().copy_from_slice(dst_data);
+        }
+        #[cfg(not(feature = "gpu"))]
+        KorniaDevice::Gpu(_) => {
+            panic!("Please enable the `gpu` feature flag to compute on GPU.");
+        }
+    }
 
     Ok(())
 }
@@ -174,6 +242,7 @@ mod tests {
             &mut image_transformed,
             &m,
             super::InterpolationMode::Bilinear,
+            crate::KorniaDevice::Cpu,
         )?;
 
         assert_eq!(image_transformed.num_channels(), 3);
@@ -202,7 +271,13 @@ mod tests {
             CpuAllocator,
         )?;
         let m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-        let err = super::warp_perspective(&src, &mut dst, &m, super::InterpolationMode::Lanczos);
+        let err = super::warp_perspective(
+            &src,
+            &mut dst,
+            &m,
+            super::InterpolationMode::Lanczos,
+            crate::KorniaDevice::Cpu,
+        );
         assert!(err.is_err());
         Ok(())
     }
@@ -235,6 +310,7 @@ mod tests {
             &mut image_transformed,
             &m,
             super::InterpolationMode::Bilinear,
+            crate::KorniaDevice::Cpu,
         )?;
 
         assert_eq!(image_transformed.num_channels(), 1);
@@ -277,6 +353,7 @@ mod tests {
             &mut image_transformed,
             &m,
             super::InterpolationMode::Bilinear,
+            crate::KorniaDevice::Cpu,
         )?;
 
         let mut image_resized = Image::<_, 1, _>::from_size_val(new_size, 0.0, CpuAllocator)?;
@@ -331,6 +408,7 @@ mod tests {
             &mut image_transformed,
             &m,
             super::InterpolationMode::Bilinear,
+            crate::KorniaDevice::Cpu,
         )?;
 
         assert_eq!(image_transformed.num_channels(), 1);
