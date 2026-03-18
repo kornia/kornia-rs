@@ -50,6 +50,7 @@ impl<A: ImageAllocator> SmolVlm<A> {
             }
         }
         false
+        
     }
 
     /// Create a new SmolVlm model
