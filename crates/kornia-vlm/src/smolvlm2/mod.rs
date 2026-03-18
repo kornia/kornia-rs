@@ -57,6 +57,9 @@ pub enum SmolVlm2Error {
     #[error("Invalid encoding detected: {0}")]
     InvalidEncoding(String),
 
+    #[error("Image process error: {0}")]
+    ImageProcessError(String),
+
     #[error("Missing chat template: {0}")]
     MissingChatTemplate(String),
 

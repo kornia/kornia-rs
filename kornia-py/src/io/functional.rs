@@ -11,6 +11,16 @@ use pyo3::prelude::*;
 use std::fs;
 use std::path::Path;
 
+/// Deprecated: Reads an image from a file path.
+///
+/// .. warning::
+///    `read_image_any` is deprecated. Please use `kornia_rs.io.read_image` instead.
+///
+/// # Arguments
+/// * `file_path` (Union[str, os.PathLike]): The path to the image file to read.
+///
+/// # Returns
+/// * `numpy.ndarray`: The decoded image tensor.
 #[pyfunction(name = "read_image_any")]
 pub fn read_image_any_deprecated(
     py: Python<'_>,
@@ -24,6 +34,28 @@ pub fn read_image_any_deprecated(
     read_image(file_path)
 }
 
+/// Reads an image from a file path and returns it as a Python tensor.
+///
+/// This function reads the file at the given path, automatically determines
+/// the image format from the file extension, and decodes it into a Kornia image tensor.
+///
+/// Supported formats and bit depths:
+/// - **PNG**: 8-bit, 16-bit (Mono, RGB, RGBA)
+/// - **TIFF**: 8-bit, 16-bit, 32-bit float (Mono, RGB)
+/// - **JPEG**: 8-bit (Mono, RGB)
+///
+/// # Arguments
+/// * `file_path` (Union[str, os.PathLike]): The path to the image file.
+///
+/// # Returns
+/// * `numpy.ndarray`: An image array representing the decoded image.
+///
+/// # Exceptions
+/// * `TypeError`: If the provided path does not implement `__fspath__` or isn't a string.
+/// * `FileNotFoundError`: If the file cannot be found at the given path.
+/// * `ValueError`: If the file extension is unsupported or decoding fails.
+/// * `IOError`: If an error occurs reading the file from disk.
+/// * `Exception`: If an unexpected error occurs while decoding the image or converting it into a Python tensor.
 #[pyfunction]
 pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     // Attempt to obtain a path-like object via PEP 519 (`__fspath__`)
@@ -68,6 +100,7 @@ pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     }
 }
 
+/// Internal dispatcher for decoding PNG images.
 fn read_image_png_dispatcher(file_path: &Path) -> PyResult<Py<PyAny>> {
     // Read file once
     let png_data = fs::read(file_path)
@@ -180,6 +213,7 @@ fn read_image_png_dispatcher(file_path: &Path) -> PyResult<Py<PyAny>> {
     }
 }
 
+/// Internal dispatcher for decoding TIFF images.
 fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<Py<PyAny>> {
     let tiff_data = fs::read(file_path)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
@@ -288,6 +322,7 @@ fn read_image_tiff_dispatcher(file_path: &Path) -> PyResult<Py<PyAny>> {
     }
 }
 
+/// Internal dispatcher for decoding JPEG images.
 fn read_image_jpeg_dispatcher(file_path: &Path) -> PyResult<Py<PyAny>> {
     // Read file once
     let jpeg_data = fs::read(file_path)
