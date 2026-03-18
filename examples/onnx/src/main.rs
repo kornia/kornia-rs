@@ -75,6 +75,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // configure execution providers based on the selected device
     let device_arg = args.device.to_lowercase();
 
+    let create_base_builder = || -> Result<ort::session::builder::SessionBuilder, ort::Error> {
+        ort::session::Session::builder()?
+            .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)?
+            .with_intra_threads(4)
+    };
+
     let builder = match device_arg.as_str() {
         "tensorrt" => {
             println!("Using TensorRT Execution Provider...");
@@ -92,9 +98,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "⚠️ TensorRT/CUDA registration failed: {}. Falling back to CPU...",
                         e
                     );
-                    Session::builder()?
-                        .with_optimization_level(GraphOptimizationLevel::Level3)?
-                        .with_intra_threads(4)?
+                    create_base_builder()?
                 }
             }
         }
@@ -109,17 +113,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(ep_builder) => ep_builder,
                 Err(e) => {
                     println!("⚠️ CUDA registration failed: {}. Falling back to CPU...", e);
-                    Session::builder()?
-                        .with_optimization_level(GraphOptimizationLevel::Level3)?
-                        .with_intra_threads(4)?
+                    create_base_builder()?
                 }
             }
         }
         _ => {
             println!("Using default CPU Execution Provider.");
-            Session::builder()?
-                .with_optimization_level(GraphOptimizationLevel::Level3)?
-                .with_intra_threads(4)?
+            create_base_builder()?
         }
     };
 
