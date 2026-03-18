@@ -46,7 +46,7 @@ impl<A: ImageAllocator> SmolVlm<A> {
     /// * `config` - The configuration for the SmolVlm model
     ///
     /// # Returns
-    pub fn new(config: SmolVlmConfig) -> Result<Self, SmolVlmError> {
+    fn select_device() -> Device {
         #[cfg(feature = "cuda")]
         let (device, dtype) = match Device::cuda_if_available(0) {
             Ok(device) => (device, DType::BF16),
