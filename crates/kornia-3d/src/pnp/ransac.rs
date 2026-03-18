@@ -1,7 +1,7 @@
 //! RANSAC-based robust wrapper for PnP solvers.
 
 use super::ops::{intrinsics_as_vectors, project_sq_error};
-use super::{solve_pnp, PnPMethod};
+use super::{solve_pnp, solve_pnp_multi, PnPMethod};
 use super::{PnPError, PnPResult};
 use kornia_algebra::{Mat3AF32, Vec2F32, Vec3AF32};
 use kornia_imgproc::calibration::distortion::PolynomialDistortion;
@@ -9,7 +9,6 @@ use rand::seq::SliceRandom;
 use rand::{rngs::StdRng, SeedableRng};
 use thiserror::Error;
 
-const MIN_CORRESPONDENCES: usize = 4; // Minimum 2D-3D pairs required by PnP
 const EPNP_MIN_SAMPLE_SIZE: usize = 5; // Minimal sample size for EPnP (unless only 4 points available)
 
 const DEFAULT_MAX_ITERATIONS: usize = 100;
@@ -99,20 +98,21 @@ pub fn solve_pnp_ransac(
         }
         .into());
     }
-    if n < MIN_CORRESPONDENCES {
+    let (min_correspondences, sample_size) = match base {
+        PnPMethod::EPnP(_) | PnPMethod::EPnPDefault => {
+            let sc = if n == 4 { 4 } else { EPNP_MIN_SAMPLE_SIZE };
+            (4, sc)
+        }
+        PnPMethod::UP2P(_) => (2, 2),
+    };
+
+    if n < min_correspondences {
         return Err(PnPError::InsufficientCorrespondences {
-            required: MIN_CORRESPONDENCES,
+            required: min_correspondences,
             actual: n,
         }
         .into());
     }
-
-    // Minimal set size: EPnP uses 5 points (unless only 4 points available)
-    let sample_size: usize = if n == MIN_CORRESPONDENCES {
-        MIN_CORRESPONDENCES
-    } else {
-        EPNP_MIN_SAMPLE_SIZE
-    };
 
     // Precompute intrinsics vectors
     let (intr_x, intr_y) = intrinsics_as_vectors(k);
@@ -157,66 +157,69 @@ pub fn solve_pnp_ransac(
             i_min.push(image[idx]);
         }
 
-        // Estimate pose on minimal set
-        let pose_maybe = solve_pnp(&w_min, &i_min, k, distortion, base.clone());
-        let pose_min = match pose_maybe {
+        // Estimate pose(s) on minimal set
+        let poses_maybe = solve_pnp_multi(&w_min, &i_min, k, distortion, base.clone());
+        let poses_min = match poses_maybe {
             Ok(p) => p,
             Err(_e) => {
-                log::debug!("EPnP failed on minimal set");
+                log::debug!("Solver failed on minimal set");
                 continue;
             }
         };
 
-        // Optional cheirality check on minimal set (all positive depths)
-        if !sample_all_positive_depths(&pose_min.rotation, &pose_min.translation, &w_min) {
-            log::debug!("Cheirality check failed on iteration {iter}");
-            continue;
-        }
+        for pose_min in poses_min {
+            // Optional cheirality check on minimal set (all positive depths)
+            if !sample_all_positive_depths(&pose_min.rotation, &pose_min.translation, &w_min) {
+                log::debug!("Cheirality check failed on iteration {iter}");
+                continue;
+            }
 
-        // Score model on all points
-        let (inliers, _total_squared_error) = classify_points(
-            world,
-            image,
-            None,
-            None,
-            ClassificationParams {
-                rotation_matrix: &pose_min.rotation,
-                translation_vector: &pose_min.translation,
-                camera_intrinsics_x: &intr_x,
-                camera_intrinsics_y: &intr_y,
-                threshold: Some(params.reproj_threshold_px),
-            },
-        );
+            // Score model on all points
+            let (inliers, _total_squared_error) = classify_points(
+                world,
+                image,
+                None,
+                None,
+                ClassificationParams {
+                    rotation_matrix: &pose_min.rotation,
+                    translation_vector: &pose_min.translation,
+                    camera_intrinsics_x: &intr_x,
+                    camera_intrinsics_y: &intr_y,
+                    threshold: Some(params.reproj_threshold_px),
+                },
+            );
 
-        if inliers.len() > best_inliers.len() {
-            best_inliers = inliers;
-            best_pose = Some(pose_min);
+            if inliers.len() > best_inliers.len() {
+                // This is a Rust ownership requirement introduced by the loop.
+                best_inliers = inliers.clone();
+                best_pose = Some(pose_min);
 
-            // Update required iterations based on current inlier ratio and sample size
-            if best_inliers.len() >= sample_size {
-                let w = best_inliers.len() as f32 / n as f32;
-                let s = sample_size as f32;
+                // Update required iterations based on current inlier ratio and sample size
+                if best_inliers.len() >= sample_size {
+                    let w = best_inliers.len() as f32 / n as f32;
+                    let s = sample_size as f32;
 
-                // Avoid numerical issues with very small w
-                if w > EPS_PROB_MIN && w < 1.0 {
-                    let ws = w.powf(s);
-                    if ws < 1.0 - EPS_LOG_GUARD && ws > EPS_LOG_GUARD {
-                        // Avoid log(0) and log(1)
-                        let log_conf = (1.0 - params.confidence).max(EPS_LOG_GUARD).ln();
-                        let log_denom = (1.0 - ws).ln();
-                        if log_denom.is_finite() && log_denom.abs() > EPS_LOG_GUARD {
-                            let est = (log_conf / log_denom).ceil();
+                    // Avoid numerical issues with very small w
+                    if w > EPS_PROB_MIN && w < 1.0 {
+                        let ws = w.powf(s);
+                        if ws < 1.0 - EPS_LOG_GUARD && ws > EPS_LOG_GUARD {
+                            // Avoid log(0) and log(1)
+                            let log_conf = (1.0 - params.confidence).max(EPS_LOG_GUARD).ln();
+                            let log_denom = (1.0 - ws).ln();
+                            if log_denom.is_finite() && log_denom.abs() > EPS_LOG_GUARD {
+                                let est = (log_conf / log_denom).ceil();
 
-                            if est.is_finite() && est > 0.0 {
-                                let est_usize = est.min(params.max_iterations as f32) as usize;
-                                if est_usize < required_iters {
-                                    required_iters = est_usize;
+                                if est.is_finite() && est > 0.0 {
+                                    let est_usize = est.min(params.max_iterations as f32) as usize;
+                                    if est_usize < required_iters {
+                                        required_iters = est_usize;
+                                    }
                                 }
                             }
+                        } else if w >= HIGH_INLIER_RATIO_STOP {
+                            // Very high inlier ratio (≥95%), we can stop early
+                            required_iters = iter;
                         }
-                    } else if w >= HIGH_INLIER_RATIO_STOP {
-                        // Very high inlier ratio (≥95%), we can stop early
-                        required_iters = iter;
                     }
                 }
             }
@@ -224,23 +227,39 @@ pub fn solve_pnp_ransac(
     }
 
     // Validate and optionally refine
-    if best_inliers.len() < MIN_CORRESPONDENCES {
+    if best_inliers.len() < min_correspondences {
         let err = PnPRansacError::InsufficientInliers {
-            required: MIN_CORRESPONDENCES,
+            required: min_correspondences,
             actual: best_inliers.len(),
         };
         return Err(err);
     }
 
     let mut final_pose = if params.refine {
-        // Refit on all inliers using the base solver.
+        // Refit on all inliers
         let mut w_all = Vec::with_capacity(best_inliers.len());
         let mut i_all = Vec::with_capacity(best_inliers.len());
         for &idx in &best_inliers {
             w_all.push(world[idx]);
             i_all.push(image[idx]);
         }
-        solve_pnp(&w_all, &i_all, k, distortion, base.clone())?
+
+        match base {
+            PnPMethod::UP2P(_) => {
+                // UP2P is a minimal solver. We cannot run it on N points natively.
+                // We could run unconstrained LM refinement starting from best_pose.
+                // For now, we'll fall back to EPnP if enough points are available,
+                // otherwise just return the minimal pose (since it's better than failing).
+                if w_all.len() >= 4 {
+                    // Try EPnP with default parameters to least-squares fit all inliers
+                    solve_pnp(&w_all, &i_all, k, distortion, PnPMethod::EPnPDefault)
+                        .unwrap_or_else(|_| best_pose.unwrap())
+                } else {
+                    best_pose.unwrap()
+                }
+            }
+            _ => solve_pnp(&w_all, &i_all, k, distortion, base.clone())?,
+        }
     } else {
         match best_pose {
             Some(p) => p,
