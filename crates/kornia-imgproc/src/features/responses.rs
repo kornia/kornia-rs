@@ -129,6 +129,16 @@ impl HarrisResponse {
         Self { k, ..self }
     }
 
+    #[inline]
+    fn row_bounds_err(cols: usize, rows: usize) -> ImageError {
+        ImageError::PixelIndexOutOfBounds(0, rows.saturating_sub(1), cols, rows)
+    }
+
+    #[inline]
+    fn col_bounds_err(cols: usize, rows: usize, row_idx: usize) -> ImageError {
+        ImageError::PixelIndexOutOfBounds(cols.saturating_sub(1), row_idx + 1, cols, rows)
+    }
+
     /// Computes the harris response of an image.
     ///
     /// The Harris response is computed by the determinant minus the trace squared.
@@ -158,6 +168,15 @@ impl HarrisResponse {
             ));
         }
 
+        if src.cols() < 2 || src.rows() < 2 {
+            return Err(ImageError::InvalidImageSize(
+                src.size().width,
+                src.size().height,
+                2,
+                2,
+            ));
+        }
+
         let src_data = src.as_slice();
         let col_slice = src.cols()..src_data.len() - src.cols();
         let row_slice = 1..src.cols() - 1;
@@ -165,42 +184,42 @@ impl HarrisResponse {
         self.dx2_data
             .as_mut_slice()
             .get_mut(col_slice.clone())
-            // SAFETY: we ranges is valid
-            .unwrap()
+            .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
             .par_chunks_exact_mut(src.cols())
             .zip(
                 self.dy2_data
                     .as_mut_slice()
                     .get_mut(col_slice.clone())
-                    // SAFETY: we ranges is valid
-                    .unwrap()
+                    .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
                     .par_chunks_exact_mut(src.cols()),
             )
             .zip(
                 self.dxy_data
                     .as_mut_slice()
                     .get_mut(col_slice.clone())
-                    // SAFETY: we ranges is valid
-                    .unwrap()
+                    .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
                     .par_chunks_exact_mut(src.cols()),
             )
             .enumerate()
-            .for_each(|(row_idx, ((dx2_chunk, dy2_chunk), dxy_chunk))| {
+            .try_for_each(|(row_idx, ((dx2_chunk, dy2_chunk), dxy_chunk))| {
                 let row_offset = (row_idx + 1) * src.cols();
 
                 dx2_chunk
                     .get_mut(row_slice.clone())
-                    // SAFETY: we ranges is valid
-                    .unwrap()
+                    .ok_or_else(|| Self::col_bounds_err(src.cols(), src.rows(), row_idx))?
                     .iter_mut()
                     .zip(
                         dy2_chunk
                             .get_mut(row_slice.clone())
-                            // SAFETY: we ranges is valid
-                            .unwrap()
+                            .ok_or_else(|| Self::col_bounds_err(src.cols(), src.rows(), row_idx))?
                             .iter_mut(),
                     )
-                    .zip(dxy_chunk.get_mut(row_slice.clone()).unwrap().iter_mut())
+                    .zip(
+                        dxy_chunk
+                            .get_mut(row_slice.clone())
+                            .ok_or_else(|| Self::col_bounds_err(src.cols(), src.rows(), row_idx))?
+                            .iter_mut(),
+                    )
                     .enumerate()
                     .for_each(|(col_idx, ((dx2_pixel, dy2_pixel), dxy_pixel))| {
                         let current_idx = row_offset + col_idx + 1;
@@ -230,21 +249,20 @@ impl HarrisResponse {
                         *dy2_pixel = dy * dy;
                         *dxy_pixel = dx * dy;
                     });
-            });
+                Ok::<(), ImageError>(())
+            })?;
 
         dst.as_slice_mut()
             .get_mut(col_slice.clone())
-            // SAFETY: we ranges is valid
-            .unwrap()
+            .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
             .par_chunks_exact_mut(src.cols())
             .enumerate()
-            .for_each(|(row_idx, dst_chunk)| {
+            .try_for_each(|(row_idx, dst_chunk)| {
                 let row_offset = (row_idx + 1) * src.cols();
 
                 dst_chunk
                     .get_mut(row_slice.clone())
-                    // SAFETY: we ranges is valid
-                    .unwrap()
+                    .ok_or_else(|| Self::col_bounds_err(src.cols(), src.rows(), row_idx))?
                     .iter_mut()
                     .enumerate()
                     .for_each(|(col_idx, dst_pixel)| {
@@ -282,7 +300,8 @@ impl HarrisResponse {
 
                         *dst_pixel = f32::max(0.0, response);
                     });
-            });
+                Ok::<(), ImageError>(())
+            })?;
 
         Ok(())
     }

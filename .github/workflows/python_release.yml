@@ -17,7 +17,7 @@ jobs:
 
     steps:
       - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: messense/maturin-action@v1
         with:
           target: ${{ matrix.target }}
@@ -28,7 +28,7 @@ jobs:
             if command -v cmake3 &> /dev/null; then export CMAKE=cmake3; fi
           args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml --sdist
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-${{ matrix.target }}-${{ matrix.python-version }}-wheels
           path: dist
@@ -100,8 +100,8 @@ jobs:
             target: aarch64
     steps:
       - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           architecture: x64
@@ -117,7 +117,7 @@ jobs:
           maturin-version: latest
           args: --release --target ${{ matrix.target }}-apple-darwin --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-${{ matrix.target }}-${{ matrix.python-version }}-wheels
           path: dist
@@ -130,8 +130,8 @@ jobs:
         target: [x64, x86]
     steps:
       - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           # x86 python needs to be available for the win32 wheel
@@ -149,7 +149,7 @@ jobs:
           maturin-version: latest
           args: --release --out dist -i python${{ matrix.python-version }} -m kornia-py/Cargo.toml
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-${{ matrix.target }}-${{ matrix.python-version }}-wheels
           path: dist
@@ -160,8 +160,8 @@ jobs:
     needs: [macos, windows, linux]
     steps:
       - run: sudo apt-get update
-      - uses: actions/download-artifact@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/download-artifact@v8
+      - uses: actions/setup-python@v6
         with:
           python-version: 3.9
       - name: Publish to PyPi

@@ -8,13 +8,11 @@ use kornia::{
         color::gray_from_rgb_u8,
         features::{match_descriptors, OrbDetector},
     },
-    io::{
-        functional::read_image_any_rgb8,
-        jpeg,
-        v4l::{PixelFormat, V4LCameraConfig, V4lVideoCapture},
-    },
+    io::{functional::read_image_any_rgb8, jpeg},
     tensor::CpuAllocator,
 };
+
+use kornia::io::v4l::{PixelFormat, V4LCameraConfig, V4lVideoCapture};
 
 /// ORB detector webcam demo: match a reference image against live webcam frames.
 #[derive(FromArgs)]

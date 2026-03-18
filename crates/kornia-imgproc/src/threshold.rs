@@ -372,7 +372,7 @@ where
     Ok(())
 }
 
-// TODO: outsu, triangle
+// TODO: otsu, triangle
 
 #[cfg(test)]
 mod tests {
