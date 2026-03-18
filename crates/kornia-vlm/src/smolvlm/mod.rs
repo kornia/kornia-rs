@@ -59,7 +59,6 @@ impl<A: ImageAllocator> SmolVlm<A> {
         #[cfg(not(feature = "cuda"))]
         let (device, dtype) = (Device::Cpu, DType::F32);
 
-        // TODO: find a way to use FP32 if cuda is not available
 
         let (model, tokenizer) = Self::load_model(dtype, &device)?;
         let image_token = tokenizer.encode("<image>", false)?;
