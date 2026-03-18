@@ -39,6 +39,20 @@ pub struct SmolVlm<A: ImageAllocator> {
 }
 
 impl<A: ImageAllocator> SmolVlm<A> {
+    #[cfg(feature = "cuda")]
+    fn cuda_supports_bf16(device_id: usize) -> bool {
+        use cudarc::driver::{sys::CUdevice_attribute, CudaDevice};
+        if let Ok(dev) = CudaDevice::new(device_id) {
+            if let Ok(major) =
+                dev.attribute(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR)
+            {
+                return major >= 8;
+            }
+        }
+        false
+        
+    }
+
     /// Create a new SmolVlm model
     ///
     /// # Arguments
@@ -49,7 +63,16 @@ impl<A: ImageAllocator> SmolVlm<A> {
     pub fn new(config: SmolVlmConfig) -> Result<Self, SmolVlmError> {
         #[cfg(feature = "cuda")]
         let (device, dtype) = match Device::cuda_if_available(0) {
-            Ok(device) => (device, DType::BF16),
+            Ok(device) => {
+                let dtype = if Self::cuda_supports_bf16(0) {
+                    log::info!("GPU supports BF16, using BF16");
+                    DType::BF16
+                } else {
+                    log::warn!("GPU does not support BF16, falling back to FP16");
+                    DType::F16
+                };
+                (device, dtype)
+            }
             Err(e) => {
                 log::warn!("CUDA not available, defaulting to CPU: {e:?}");
                 (Device::Cpu, DType::F32)
@@ -58,8 +81,6 @@ impl<A: ImageAllocator> SmolVlm<A> {
 
         #[cfg(not(feature = "cuda"))]
         let (device, dtype) = (Device::Cpu, DType::F32);
-
-        // TODO: find a way to use FP32 if cuda is not available
 
         let (model, tokenizer) = Self::load_model(dtype, &device)?;
         let image_token = tokenizer.encode("<image>", false)?;
