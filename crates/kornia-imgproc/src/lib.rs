@@ -42,7 +42,7 @@ pub mod histogram;
 /// utilities for interpolation.
 pub mod interpolation;
 
-/// module containing parallization utilities.
+/// module containing parallelization utilities.
 pub mod parallel;
 
 /// image processing metrics module.
@@ -65,3 +65,6 @@ pub mod pyramid;
 
 /// distance transform
 pub mod distance_transform;
+
+/// contours
+pub mod contours;

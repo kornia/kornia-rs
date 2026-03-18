@@ -3,18 +3,7 @@ use super::nearest::nearest_neighbor_interpolation;
 use kornia_image::allocator::ImageAllocator;
 use kornia_image::{Image, ImageError};
 
-/// Interpolation mode for the resize operation
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum InterpolationMode {
-    /// Bilinear interpolation
-    Bilinear,
-    /// Nearest neighbor interpolation
-    Nearest,
-    /// Lanczos interpolation
-    Lanczos,
-    /// Bicubic interpolation
-    Bicubic,
-}
+pub use kornia_image::InterpolationMode;
 
 /// Validate that the given interpolation mode is supported by `interpolate_pixel`.
 ///
@@ -23,7 +12,7 @@ pub enum InterpolationMode {
 pub fn validate_interpolation(interpolation: InterpolationMode) -> Result<(), ImageError> {
     match interpolation {
         InterpolationMode::Bilinear | InterpolationMode::Nearest => Ok(()),
-        mode => Err(ImageError::UnsupportedInterpolation(format!("{mode:?}"))),
+        mode => Err(ImageError::UnsupportedInterpolation(mode)),
     }
 }
 
@@ -38,8 +27,7 @@ pub fn validate_interpolation(interpolation: InterpolationMode) -> Result<(), Im
 /// * `interpolation` - The interpolation mode to use.
 ///
 /// # Returns
-///
-/// The interpolated pixel value, or an error if the interpolation mode is not supported.
+/// The interpolated pixel value, or an error if the interpolation mode is unsupported.
 pub fn interpolate_pixel<const C: usize, A: ImageAllocator>(
     image: &Image<f32, C, A>,
     u: f32,
@@ -47,9 +35,27 @@ pub fn interpolate_pixel<const C: usize, A: ImageAllocator>(
     c: usize,
     interpolation: InterpolationMode,
 ) -> Result<f32, ImageError> {
+    validate_interpolation(interpolation)?;
+    Ok(interpolate_pixel_fast(image, u, v, c, interpolation))
+}
+
+/// Fallible-free internal kernel for fast pixel interpolation (must be validated first)
+pub(crate) fn interpolate_pixel_fast<const C: usize, A: ImageAllocator>(
+    image: &Image<f32, C, A>,
+    u: f32,
+    v: f32,
+    c: usize,
+    interpolation: InterpolationMode,
+) -> f32 {
     match interpolation {
-        InterpolationMode::Bilinear => Ok(bilinear_interpolation(image, u, v, c)),
-        InterpolationMode::Nearest => Ok(nearest_neighbor_interpolation(image, u, v, c)),
-        mode => Err(ImageError::UnsupportedInterpolation(format!("{mode:?}"))),
+        InterpolationMode::Bilinear => bilinear_interpolation(image, u, v, c),
+        InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v, c),
+        InterpolationMode::Lanczos | InterpolationMode::Bicubic => {
+            debug_assert!(
+                false,
+                "unsupported mode should have been caught by validate_interpolation"
+            );
+            0.0
+        }
     }
 }

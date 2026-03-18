@@ -12,3 +12,4 @@ pub use interpolate::InterpolationMode;
 pub use remap::remap;
 
 pub use interpolate::interpolate_pixel;
+pub(crate) use interpolate::interpolate_pixel_fast;

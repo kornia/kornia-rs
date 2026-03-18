@@ -4,6 +4,19 @@ use crate::image::{FromPyImage, PyImage, ToPyImage};
 use kornia_image::{allocator::CpuAllocator, Image};
 use kornia_imgproc::color;
 
+/// Converts a grayscale image to RGB.
+///
+/// # Arguments
+///
+/// * `image` - The input grayscale image (1 channel).
+///
+/// # Returns
+///
+/// * The converted RGB image (3 channels).
+///
+/// # Errors
+///
+/// * `PyException` - If the image conversion or allocation fails.
 #[pyfunction]
 pub fn rgb_from_gray(image: PyImage) -> PyResult<PyImage> {
     let image_gray = Image::from_pyimage(image)
@@ -23,6 +36,19 @@ pub fn rgb_from_gray(image: PyImage) -> PyResult<PyImage> {
     Ok(pyimage_rgb)
 }
 
+/// Converts an RGB image to BGR format.
+///
+/// # Arguments
+///
+/// * `image` - The input RGB image (3 channels).
+///
+/// # Returns
+///
+/// * The converted BGR image (3 channels).
+///
+/// # Errors
+///
+/// * `PyException` - If the image conversion or allocation fails.
 #[pyfunction]
 pub fn bgr_from_rgb(image: PyImage) -> PyResult<PyImage> {
     let image_rgb = Image::from_pyimage(image)
@@ -42,6 +68,19 @@ pub fn bgr_from_rgb(image: PyImage) -> PyResult<PyImage> {
     Ok(pyimage_bgr)
 }
 
+/// Converts an RGB image to grayscale.
+///
+/// # Arguments
+///
+/// * `image` - The input RGB image (3 channels).
+///
+/// # Returns
+///
+/// * The converted grayscale image (1 channel).
+///
+/// # Errors
+///
+/// * `PyException` - If the image conversion or allocation fails.
 #[pyfunction]
 pub fn gray_from_rgb(image: PyImage) -> PyResult<PyImage> {
     let image_rgb = Image::from_pyimage(image)
@@ -69,6 +108,20 @@ pub fn gray_from_rgb(image: PyImage) -> PyResult<PyImage> {
     Ok(pyimage_gray)
 }
 
+/// Converts an RGBA image to RGB.
+///
+/// # Arguments
+///
+/// * `image` - The input RGBA image (4 channels).
+/// * `background` - An optional RGB background color to blend with the alpha channel. Defaults to None.
+///
+/// # Returns
+///
+/// * The converted RGB image (3 channels).
+///
+/// # Errors
+///
+/// * `PyException` - If the image conversion or allocation fails.
 #[pyfunction]
 #[pyo3(signature = (image, background=None))]
 pub fn rgb_from_rgba(image: PyImage, background: Option<[u8; 3]>) -> PyResult<PyImage> {
@@ -89,6 +142,20 @@ pub fn rgb_from_rgba(image: PyImage, background: Option<[u8; 3]>) -> PyResult<Py
     Ok(pyimage_rgb)
 }
 
+/// Converts a BGRA image to RGB.
+///
+/// # Arguments
+///
+/// * `image` - The input BGRA image (4 channels).
+/// * `background` - An optional RGB background color to blend with the alpha channel. Defaults to None.
+///
+/// # Returns
+///
+/// * The converted RGB image (3 channels).
+///
+/// # Errors
+///
+/// * `PyException` - If the image conversion or allocation fails.
 #[pyfunction]
 #[pyo3(signature = (image, background=None))]
 pub fn rgb_from_bgra(image: PyImage, background: Option<[u8; 3]>) -> PyResult<PyImage> {
