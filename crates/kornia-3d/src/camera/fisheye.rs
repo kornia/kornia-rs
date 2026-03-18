@@ -5,7 +5,7 @@ use kornia_algebra::{Vec2F64, Vec3F64};
 
 /// Project a world point through a pose and Fisheye camera.
 ///
-/// Returns `(u, v, z_cam)` or `None` if the point is at the optical center.
+/// Returns `(u, v, z_cam)` or `None` if the point projection is rejected.
 pub fn project_point_fisheye(
     camera: &FisheyeCamera,
     pose: &Pose3d,
@@ -14,6 +14,15 @@ pub fn project_point_fisheye(
     let p_cam = pose.transform_point(point_world);
     let (pixel, z_cam) = camera.project(&p_cam)?;
     Some((pixel.x, pixel.y, z_cam))
+}
+
+/// Fisheye projection rejection reasons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectionReject {
+    /// Point is invalid (e.g. at the optical center) or rejected.
+    InvalidProjection,
+    /// Projection lies outside image bounds.
+    OutOfImage,
 }
 
 /// Kannala-Brandt equidistant fisheye projection model.
@@ -50,6 +59,9 @@ const NEWTON_MAX_ITER: usize = 10;
 /// Convergence tolerance for Newton-Raphson in unproject.
 const NEWTON_EPS: f64 = 1e-12;
 
+/// Epsilon threshold for zero-checks to avoid singularities.
+const EPSILON: f64 = 1e-12;
+
 impl FisheyeCamera {
     /// Evaluates the distortion polynomial theta_d and its derivative f_prime with respect to theta.
     /// Returns `(theta_d, f_prime)`.
@@ -74,8 +86,7 @@ impl FisheyeCamera {
     /// Project a 3D camera-frame point to pixel coordinates.
     ///
     /// Returns `Some((pixel, z))` where `z` is the depth in camera frame.
-    /// Returns `None` if the point is at the optical center
-    /// (both `r` and `z` are near zero).
+    /// Returns `None` if the point cannot be projected (e.g., exactly at optical center).
     ///
     /// The projection supports points behind the camera (`z < 0`) as long as
     /// the distortion model is valid (standard for fisheye lenses with >180° FoV).
@@ -86,11 +97,11 @@ impl FisheyeCamera {
 
         let r = (x * x + y * y).sqrt();
         // Point at the optical center — undefined projection.
-        if r < 1e-12 && z.abs() < 1e-12 {
+        if r < EPSILON && z.abs() < EPSILON {
             return None;
         }
         // Points on the negative optical axis have undefined azimuth.
-        if r < 1e-12 && z < 0.0 {
+        if r < EPSILON && z < 0.0 {
             return None;
         }
 
@@ -98,7 +109,7 @@ impl FisheyeCamera {
         let (theta_d, _) = self.distortion(theta);
 
         // On the optical axis: r ≈ 0, theta ≈ 0, theta_d ≈ 0 → principal point.
-        if r < 1e-12 {
+        if r < EPSILON {
             return Some((Vec2F64::new(self.cx, self.cy), z));
         }
 
@@ -107,6 +118,26 @@ impl FisheyeCamera {
         let v = self.fy * scale * y + self.cy;
 
         Some((Vec2F64::new(u, v), z))
+    }
+
+    /// Projects a camera-frame 3D point and checks image bounds.
+    pub fn project_to_image(
+        &self,
+        p_cam: &Vec3F64,
+        image_size: kornia_image::ImageSize,
+    ) -> Result<Vec2F64, ProjectionReject> {
+        let (pixel, _) = self
+            .project(p_cam)
+            .ok_or(ProjectionReject::InvalidProjection)?;
+
+        if pixel.x < 0.0
+            || pixel.y < 0.0
+            || pixel.x >= image_size.width as f64
+            || pixel.y >= image_size.height as f64
+        {
+            return Err(ProjectionReject::OutOfImage);
+        }
+        Ok(pixel)
     }
 
     /// Computes squared reprojection error for a camera-frame 3D point.
@@ -148,7 +179,7 @@ impl FisheyeCamera {
         let theta_d = (mx * mx + my * my).sqrt();
 
         // Pixel is at the principal point → on-axis ray.
-        if theta_d < 1e-12 {
+        if theta_d < EPSILON {
             return Vec3F64::new(0.0, 0.0, 1.0);
         }
 
@@ -156,7 +187,7 @@ impl FisheyeCamera {
         let mut theta = theta_d;
         for _ in 0..NEWTON_MAX_ITER {
             let (theta_d_calc, f_prime) = self.distortion(theta);
-            if f_prime.abs() < 1e-12 {
+            if f_prime.abs() < EPSILON {
                 break;
             }
             let f = theta_d_calc - theta_d;
@@ -385,5 +416,23 @@ mod tests {
 
         let err_offset = cam.reprojection_error_sq_cam(&p, uv.x + 1.0, uv.y).unwrap();
         assert!((err_offset - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_fisheye_project_to_image() {
+        let cam = fisheye_camera_zero_distortion();
+        let size = kornia_image::ImageSize {
+            width: 800,
+            height: 800,
+        };
+
+        let p_in = Vec3F64::new(0.0, 0.0, 5.0);
+        assert!(cam.project_to_image(&p_in, size).is_ok());
+
+        let p_out = Vec3F64::new(10.0, 10.0, 0.5); // Very wide, outside 640x480 bounds
+        assert_eq!(
+            cam.project_to_image(&p_out, size).unwrap_err(),
+            ProjectionReject::OutOfImage
+        );
     }
 }
