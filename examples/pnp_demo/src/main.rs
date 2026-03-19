@@ -6,6 +6,7 @@ use kornia_imgproc::calibration::{
     CameraIntrinsic,
 };
 use rand::Rng;
+use kpnp::ransac::RobustMethod;
 
 #[derive(FromArgs, Debug)]
 /// PnP demo application
@@ -140,7 +141,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fy = k.y_axis().y;
     let cx = k.z_axis().x;
     let cy = k.z_axis().y;
-    let image_pts: Vec<Vec2F32> = world_pts
+    let mut image_pts: Vec<Vec2F32> = world_pts
         .iter()
         .map(|p| {
             let pc = gt_r * *p + gt_t;
@@ -155,7 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Dataset: {} points", world_pts.len());
     println!("Using RANSAC: {}", args.use_ransac);
-    println!("Using LM refinement: {}", args.refine);
+        println!("Using LM refinement: {}", args.refine);
 
     // Create EPnP parameters with optional refinement
     let epnp_params = if args.refine {
@@ -167,6 +168,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         kpnp::EPnPParams::default()
     };
 
+    let outlier_ratio = 0.4;   // 40% wrong matches
+    let num_outliers = (world_pts.len() as f32 * outlier_ratio) as usize;
+
+    for _ in 0..num_outliers {
+        let idx = rng.random_range(0..image_pts.len());
+
+        // random image location (completely wrong correspondence)
+        image_pts[idx] = [
+            rng.random::<f32>() * 1280.0,
+            rng.random::<f32>() * 960.0,
+        ];
+    }
     // Run pose estimation
     let result = if args.use_ransac {
         // RANSAC mode: robust estimation
@@ -176,6 +189,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             confidence: 0.99,
             random_seed: Some(42),
             refine: true,
+            robust_method: RobustMethod::Ransac,
+            lo_iters: 10,
+            lo_sample_size: 12,
         };
 
         let ransac_result = kpnp::solve_pnp_ransac(
