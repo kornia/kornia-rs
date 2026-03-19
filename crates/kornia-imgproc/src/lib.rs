@@ -68,3 +68,6 @@ pub mod distance_transform;
 
 /// contours
 pub mod contours;
+
+/// vegetation index computation module.
+pub mod vegetation;
