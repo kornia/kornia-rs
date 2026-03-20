@@ -1,7 +1,7 @@
 use numpy::PyArray3;
 use pyo3::prelude::*;
 
-use crate::image_api::PyImageApi;
+use crate::image::{PyImageApi, LUMINANCE_WEIGHTS};
 
 /// Randomly change brightness, contrast, saturation, and hue.
 #[pyclass(name = "ColorJitter", module = "kornia_rs")]
@@ -54,7 +54,7 @@ impl PyColorJitter {
 
         // Build ops list: (op_id, factor)
         // 0=brightness, 1=contrast, 2=saturation, 3=hue
-        let mut ops: Vec<(u8, f64)> = Vec::new();
+        let mut ops: Vec<(u8, f64)> = Vec::with_capacity(4);
 
         if self.brightness.0 != 1.0 || self.brightness.1 != 1.0 {
             let factor: f64 = random
@@ -119,7 +119,7 @@ impl PyColorJitter {
                     // Saturation
                     let float_data = arr.bind(py).call_method1("astype", ("float32",))?;
                     let weights =
-                        numpy::PyArray::from_vec(py, vec![0.299f64, 0.587, 0.114]);
+                        numpy::PyArray::from_vec(py, LUMINANCE_WEIGHTS.to_vec());
                     let gray = np.call_method1("dot", (&float_data, weights))?;
                     let gray = np.call_method1("expand_dims", (&gray, 2i32))?;
                     let diff = np.call_method1("subtract", (&float_data, &gray))?;
