@@ -194,8 +194,109 @@ class TestZeroCopy:
         assert img.data[0, 0, 0] == 55
 
 
+class TestMemoryZeroCopy:
+    """Exhaustive zero-copy and memory isolation tests."""
+
+    # --- Constructor zero-copy ---
+
+    def test_image_constructor_shares_memory(self):
+        """Image(numpy_array) must be zero-copy for 3D arrays."""
+        arr = np.random.randint(0, 255, (50, 50, 3), dtype=np.uint8)
+        img = Image(arr)
+        assert np.shares_memory(img.data, arr)
+
+    def test_image_constructor_2d_shares_memory(self):
+        """Image(2D_array) expands dims via view — should share memory."""
+        arr = np.random.randint(0, 255, (50, 50), dtype=np.uint8)
+        img = Image(arr)
+        assert img.channels == 1
+        assert np.shares_memory(img.data, arr)
+
+    def test_image_constructor_mutation_roundtrip(self):
+        """Mutating source array must be visible through Image (zero-copy proof)."""
+        arr = np.zeros((10, 10, 3), dtype=np.uint8)
+        img = Image(arr)
+        arr[3, 3, 0] = 200
+        assert img.data[3, 3, 0] == 200
+        img.data[7, 7, 2] = 150
+        assert arr[7, 7, 2] == 150
+
+    def test_frombytes_numpy_shares_memory(self):
+        """frombytes(numpy_arr) must be zero-copy."""
+        arr = np.random.randint(0, 255, (50, 50, 3), dtype=np.uint8)
+        img = Image.frombytes(arr)
+        assert np.shares_memory(img.data, arr)
+
+    def test_frombytes_2d_shares_memory(self):
+        """frombytes(2D_array) should share memory."""
+        arr = np.random.randint(0, 255, (50, 50), dtype=np.uint8)
+        img = Image.frombytes(arr)
+        assert img.channels == 1
+        assert np.shares_memory(img.data, arr)
+
+    def test_frombytes_raw_bytes_owns_copy(self):
+        """frombytes(raw_bytes) creates its own buffer (can't share with immutable bytes)."""
+        raw = bytes([55] * (4 * 4 * 3))
+        img = Image.frombytes(raw, width=4, height=4, channels=3)
+        assert np.all(img.data == 55)
+
+    def test_frombytes_bytearray_roundtrip(self):
+        """frombytes(bytearray) — verify data is accessible."""
+        ba = bytearray([100] * (8 * 6 * 3))
+        img = Image.frombytes(ba, width=8, height=6, channels=3)
+        assert img.width == 8
+        assert np.all(img.data == 100)
+
+    # --- __array__ protocol ---
+
+    def test_array_protocol_no_copy_shares_memory(self):
+        """np.asarray(img) should share memory (zero-copy)."""
+        arr = np.random.randint(0, 255, (30, 30, 3), dtype=np.uint8)
+        img = Image(arr)
+        out = np.asarray(img)
+        assert np.shares_memory(out, arr)
+
+    def test_array_protocol_copy_isolates(self):
+        """np.array(img, copy=True) must NOT share memory."""
+        arr = np.random.randint(0, 255, (30, 30, 3), dtype=np.uint8)
+        img = Image(arr)
+        out = np.array(img, copy=True)
+        assert not np.shares_memory(out, arr)
+
+    # --- data property ---
+
+    def test_data_getter_shares_memory(self):
+        """img.data must return the backing buffer, not a copy."""
+        arr = np.random.randint(0, 255, (20, 20, 3), dtype=np.uint8)
+        img = Image(arr)
+        d1 = img.data
+        d2 = img.data
+        assert np.shares_memory(d1, d2)
+        assert np.shares_memory(d1, arr)
+
+    # --- copy/to_numpy isolation ---
+
+    def test_copy_does_not_share_memory(self):
+        """copy() must produce fully independent memory."""
+        arr = np.full((20, 20, 3), 50, dtype=np.uint8)
+        img = Image(arr)
+        img2 = img.copy()
+        assert not np.shares_memory(img.data, img2.data)
+        img2.data[0, 0, 0] = 255
+        assert img.data[0, 0, 0] == 50
+
+    def test_to_numpy_does_not_share_memory(self):
+        """to_numpy() must return an independent copy."""
+        arr = np.full((20, 20, 3), 50, dtype=np.uint8)
+        img = Image(arr)
+        out = img.to_numpy()
+        assert not np.shares_memory(out, arr)
+        out[0, 0, 0] = 255
+        assert img.data[0, 0, 0] == 50
+
+
 class TestImmutableTransforms:
-    """Verify transforms return new Images and never mutate the source."""
+    """Verify ALL transforms return new Images with independent memory."""
 
     def setup_method(self):
         self.original_data = np.random.randint(0, 255, (100, 80, 3), dtype=np.uint8)
@@ -206,43 +307,68 @@ class TestImmutableTransforms:
         assert np.array_equal(self.img.data, self.snapshot), \
             "Transform mutated the source Image!"
 
-    def test_resize_does_not_mutate(self):
+    def _assert_isolated(self, result):
+        """Assert result has independent memory from source."""
+        self._assert_original_unchanged()
+        assert not np.shares_memory(result.data, self.img.data), \
+            "Transform result shares memory with source!"
+
+    def test_resize_isolates(self):
         result = self.img.resize(50, 40)
-        self._assert_original_unchanged()
-        assert result is not self.img
-        assert not np.shares_memory(result.data, self.img.data)
+        self._assert_isolated(result)
 
-    def test_flip_horizontal_does_not_mutate(self):
+    def test_flip_horizontal_isolates(self):
         result = self.img.flip_horizontal()
-        self._assert_original_unchanged()
-        assert not np.shares_memory(result.data, self.img.data)
+        self._assert_isolated(result)
 
-    def test_flip_vertical_does_not_mutate(self):
+    def test_flip_vertical_isolates(self):
         result = self.img.flip_vertical()
-        self._assert_original_unchanged()
-        assert not np.shares_memory(result.data, self.img.data)
+        self._assert_isolated(result)
 
-    def test_crop_does_not_mutate(self):
+    def test_crop_isolates(self):
         result = self.img.crop(10, 10, 30, 30)
-        self._assert_original_unchanged()
-        assert not np.shares_memory(result.data, self.img.data)
+        self._assert_isolated(result)
 
-    def test_gaussian_blur_does_not_mutate(self):
+    def test_gaussian_blur_isolates(self):
         result = self.img.gaussian_blur(3, 1.0)
-        self._assert_original_unchanged()
-        assert not np.shares_memory(result.data, self.img.data)
+        self._assert_isolated(result)
 
-    def test_adjust_brightness_does_not_mutate(self):
+    def test_box_blur_isolates(self):
+        result = self.img.box_blur(3)
+        self._assert_isolated(result)
+
+    def test_adjust_brightness_isolates(self):
         result = self.img.adjust_brightness(0.1)
-        self._assert_original_unchanged()
-        assert not np.shares_memory(result.data, self.img.data)
+        self._assert_isolated(result)
 
-    def test_to_grayscale_does_not_mutate(self):
+    def test_adjust_contrast_isolates(self):
+        result = self.img.adjust_contrast(1.5)
+        self._assert_isolated(result)
+
+    def test_adjust_saturation_isolates(self):
+        result = self.img.adjust_saturation(1.5)
+        self._assert_isolated(result)
+
+    def test_adjust_hue_isolates(self):
+        result = self.img.adjust_hue(0.1)
+        self._assert_isolated(result)
+
+    def test_rotate_isolates(self):
+        result = self.img.rotate(45.0)
+        self._assert_isolated(result)
+
+    def test_to_grayscale_isolates(self):
         result = self.img.to_grayscale()
-        self._assert_original_unchanged()
-        assert not np.shares_memory(result.data, self.img.data)
+        self._assert_isolated(result)
 
-    def test_chain_does_not_mutate(self):
+    def test_to_rgb_from_gray_isolates(self):
+        gray = self.img.to_grayscale()
+        snapshot = gray.data.copy()
+        result = gray.to_rgb()
+        assert np.array_equal(gray.data, snapshot)
+        assert not np.shares_memory(result.data, gray.data)
+
+    def test_chain_isolates(self):
         """A full chain of transforms must not touch the original."""
         result = (
             self.img
@@ -252,9 +378,41 @@ class TestImmutableTransforms:
             .adjust_brightness(0.1)
             .gaussian_blur(3, 1.0)
         )
-        self._assert_original_unchanged()
+        self._assert_isolated(result)
         assert result.shape == (20, 20, 3)
-        assert not np.shares_memory(result.data, self.img.data)
+
+    def test_augmentation_colorjitter_isolates(self):
+        """ColorJitter must not mutate the source Image."""
+        jitter = ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1)
+        result = jitter(self.img)
+        self._assert_isolated(result)
+
+    def test_augmentation_random_hflip_isolates(self):
+        """RandomHorizontalFlip must not mutate source."""
+        flip = RandomHorizontalFlip(p=1.0)
+        result = flip(self.img)
+        self._assert_isolated(result)
+
+    def test_augmentation_random_vflip_isolates(self):
+        """RandomVerticalFlip must not mutate source."""
+        flip = RandomVerticalFlip(p=1.0)
+        result = flip(self.img)
+        self._assert_isolated(result)
+
+    def test_augmentation_random_crop_isolates(self):
+        """RandomCrop must not mutate source."""
+        crop = RandomCrop((50, 50))
+        result = crop(self.img)
+        self._assert_isolated(result)
+
+    def test_compose_isolates(self):
+        """Compose pipeline must not mutate the source Image."""
+        transform = Compose([
+            RandomHorizontalFlip(p=1.0),
+            ColorJitter(brightness=0.2),
+        ])
+        result = transform(self.img)
+        self._assert_isolated(result)
 
 
 class TestScopedLifetime:
