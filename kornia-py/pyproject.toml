@@ -62,5 +62,8 @@ dev = [
 requires = ["maturin>=1.9,<2"]
 build-backend = "maturin"
 
+[tool.maturin]
+python-source = "python"
+
 [tool.uv]
 extra-index-url = ["https://download.pytorch.org/whl/cpu"]

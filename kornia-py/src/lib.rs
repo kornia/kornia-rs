@@ -1,10 +1,15 @@
 mod apriltag;
+mod blur;
+mod brightness;
 mod color;
+mod crop;
 mod enhance;
+mod flip;
 mod histogram;
 mod icp;
 mod image;
 mod io;
+mod normalize;
 mod pointcloud;
 mod resize;
 mod warp;
@@ -369,6 +374,13 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     imgproc_mod.add_function(wrap_pyfunction!(resize::resize, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(warp::warp_affine, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(warp::warp_perspective, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(flip::horizontal_flip, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(flip::vertical_flip, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(crop::crop, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(blur::gaussian_blur, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(blur::box_blur, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(brightness::adjust_brightness_py, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(normalize::normalize_mean_std, &imgproc_mod)?)?;
     m.add_submodule(&imgproc_mod)?;
 
     // K3D submodule
