@@ -49,7 +49,7 @@ class TestImage:
         img = _make_test_image()
         copy = img.copy()
         assert img == copy
-        copy._data[0, 0, 0] = 255
+        copy.data[0, 0, 0] = 255
         assert img != copy
 
     def test_context_manager(self):
@@ -123,10 +123,10 @@ class TestImageSerialize:
         assert img == reconstructed
 
     def test_getstate_setstate(self):
+        """Test serialization roundtrip via reduce/reconstruct."""
         img = _make_test_image(fill=42)
-        state = img.__getstate__()
-        img2 = Image.__new__(Image)
-        img2.__setstate__(state)
+        constructor, args = img.__reduce__()
+        img2 = constructor(*args)
         assert np.array_equal(img.data, img2.data)
 
 

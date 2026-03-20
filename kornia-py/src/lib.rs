@@ -1,4 +1,5 @@
 mod apriltag;
+pub(crate) mod augmentations;
 mod blur;
 mod brightness;
 mod color;
@@ -8,6 +9,7 @@ mod flip;
 mod histogram;
 mod icp;
 mod image;
+pub(crate) mod image_api;
 mod io;
 mod normalize;
 mod pointcloud;
@@ -303,11 +305,15 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyICPConvergenceCriteria>()?;
     m.add_class::<PyICPResult>()?;
 
+    // Register Image at root level for serialization/import convenience
+    m.add_class::<image_api::PyImageApi>()?;
+
     // Image submodule
     let image_mod = PyModule::new(py, "image")?;
     image_mod.add_class::<PyImageSize>()?;
     image_mod.add_class::<PyPixelFormat>()?;
     image_mod.add_class::<PyImageLayout>()?;
+    image_mod.add_class::<image_api::PyImageApi>()?;
     m.add_submodule(&image_mod)?;
 
     // ---------------------------------------------------------------------------
@@ -383,6 +389,16 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     imgproc_mod.add_function(wrap_pyfunction!(normalize::normalize_mean_std, &imgproc_mod)?)?;
     m.add_submodule(&imgproc_mod)?;
 
+    // Augmentations submodule
+    let aug_mod = PyModule::new(py, "augmentations")?;
+    aug_mod.add_class::<augmentations::PyColorJitter>()?;
+    aug_mod.add_class::<augmentations::PyRandomHorizontalFlip>()?;
+    aug_mod.add_class::<augmentations::PyRandomVerticalFlip>()?;
+    aug_mod.add_class::<augmentations::PyRandomCrop>()?;
+    aug_mod.add_class::<augmentations::PyRandomRotation>()?;
+    aug_mod.add_class::<augmentations::PyCompose>()?;
+    m.add_submodule(&aug_mod)?;
+
     // K3D submodule
     let k3d_mod = PyModule::new(py, "k3d")?;
     k3d_mod.add_function(wrap_pyfunction!(icp::icp_vanilla, &k3d_mod)?)?;
@@ -406,6 +422,20 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     apriltag_mod.add_submodule(&apriltag_family_mod)?;
 
     m.add_submodule(&apriltag_mod)?;
+
+    // Register submodules in sys.modules so `from kornia_rs.image import Image` works
+    let sys = py.import("sys")?;
+    let modules = sys.getattr("modules")?;
+    for (name, submod) in [
+        ("kornia_rs.image", &image_mod),
+        ("kornia_rs.io", &io_mod),
+        ("kornia_rs.imgproc", &imgproc_mod),
+        ("kornia_rs.k3d", &k3d_mod),
+        ("kornia_rs.apriltag", &apriltag_mod),
+        ("kornia_rs.augmentations", &aug_mod),
+    ] {
+        modules.set_item(name, submod)?;
+    }
 
     Ok(())
 }
