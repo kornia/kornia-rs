@@ -9,7 +9,6 @@ mod flip;
 mod histogram;
 mod icp;
 mod image;
-pub(crate) mod image_api;
 mod io;
 mod normalize;
 mod pointcloud;
@@ -305,15 +304,12 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyICPConvergenceCriteria>()?;
     m.add_class::<PyICPResult>()?;
 
-    // Register Image at root level for serialization/import convenience
-    m.add_class::<image_api::PyImageApi>()?;
-
     // Image submodule
     let image_mod = PyModule::new(py, "image")?;
     image_mod.add_class::<PyImageSize>()?;
     image_mod.add_class::<PyPixelFormat>()?;
     image_mod.add_class::<PyImageLayout>()?;
-    image_mod.add_class::<image_api::PyImageApi>()?;
+    image_mod.add_class::<image::PyImageApi>()?;
     m.add_submodule(&image_mod)?;
 
     // ---------------------------------------------------------------------------
