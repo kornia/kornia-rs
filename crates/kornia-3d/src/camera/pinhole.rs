@@ -4,14 +4,7 @@ use crate::pose::Pose3d;
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use kornia_image::ImageSize;
 
-/// Normal projection rejection reasons.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectionReject {
-    /// Point depth is below or equal to the requested minimum.
-    BelowMinDepth,
-    /// Projection lies outside image bounds.
-    OutOfImage,
-}
+use crate::camera::{CameraModel, ProjectionReject};
 
 /// Pinhole camera with Brown-Conrady radial-tangential distortion.
 #[derive(Debug, Clone)]
@@ -34,21 +27,27 @@ pub struct PinholeCamera {
     pub p2: f64,
 }
 
-/// Project a world point through a pose and pinhole camera.
-///
-/// Returns `(u, v, z_cam)` or `None` if the point is behind the camera.
-pub fn project_point(
-    camera: &PinholeCamera,
-    pose: &Pose3d,
-    point_world: &Vec3F64,
-) -> Option<(f64, f64, f64)> {
-    let p_cam = pose.transform_point(point_world);
-    if p_cam.z <= 1e-8 {
-        return None;
+impl CameraModel for PinholeCamera {
+    fn intrinsics(&self) -> (f64, f64, f64, f64) {
+        (self.fx, self.fy, self.cx, self.cy)
     }
-    let u = camera.fx * p_cam.x / p_cam.z + camera.cx;
-    let v = camera.fy * p_cam.y / p_cam.z + camera.cy;
-    Some((u, v, p_cam.z))
+
+    fn project(&self, p_cam: &Vec3F64) -> Option<Vec2F64> {
+        self.project_to_pixel(p_cam, 1e-8)
+    }
+
+    fn project_to_image(
+        &self,
+        p_cam: &Vec3F64,
+        image_size: ImageSize,
+    ) -> Result<Vec2F64, ProjectionReject> {
+        self.project_to_image_with_depth(p_cam, 1e-8, image_size)
+    }
+
+    fn unproject(&self, pixel: &Vec2F64) -> Option<Vec3F64> {
+        let undistorted = self.undistort(pixel.x, pixel.y);
+        Some(Vec3F64::new(undistorted.x, undistorted.y, 1.0))
+    }
 }
 
 impl PinholeCamera {
@@ -85,7 +84,7 @@ impl PinholeCamera {
     }
 
     /// Projects a camera-frame 3D point and checks image bounds.
-    pub fn project_to_image(
+    pub fn project_to_image_with_depth(
         &self,
         p_cam: &Vec3F64,
         min_depth: f64,
@@ -141,11 +140,6 @@ impl PinholeCamera {
             Vec3F64::new(0.0, self.fy, 0.0),
             Vec3F64::new(self.cx, self.cy, 1.0),
         )
-    }
-
-    /// Returns `(fx, fy, cx, cy)`.
-    pub fn intrinsics(&self) -> (f64, f64, f64, f64) {
-        (self.fx, self.fy, self.cx, self.cy)
     }
 
     /// Undistort matched keypoint pairs, skipping out-of-bounds indices.
@@ -207,7 +201,6 @@ mod tests {
         let uv = cam
             .project_to_image(
                 &p,
-                1e-8,
                 ImageSize {
                     width: 640,
                     height: 480,
@@ -225,7 +218,6 @@ mod tests {
         let uv = cam
             .project_to_image(
                 &p,
-                1e-8,
                 ImageSize {
                     width: 640,
                     height: 480,
@@ -243,7 +235,6 @@ mod tests {
         let err = cam
             .project_to_image(
                 &p,
-                1e-8,
                 ImageSize {
                     width: 640,
                     height: 480,
@@ -260,7 +251,6 @@ mod tests {
         let err = cam
             .project_to_image(
                 &p,
-                1.0,
                 ImageSize {
                     width: 640,
                     height: 480,

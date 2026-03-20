@@ -6,9 +6,8 @@
 
 mod fisheye;
 mod pinhole;
+mod traits;
 
 pub use fisheye::FisheyeCamera;
-pub use pinhole::{PinholeCamera, ProjectionReject};
-
-pub use fisheye::project_point_fisheye;
-pub use pinhole::project_point;
+pub use pinhole::PinholeCamera;
+pub use traits::{project_point, CameraModel, ProjectionReject};

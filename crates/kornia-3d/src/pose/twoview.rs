@@ -32,6 +32,7 @@
 //! The output translation is a **unit vector** (direction only). Scale is irrecoverable
 //! from two views alone — this is the SE(3) → essential manifold quotient in action.
 
+use crate::camera::CameraModel;
 use crate::pose::fundamental::{fundamental_8point, sampson_distance, FundamentalError};
 use crate::pose::triangulation::{triangulate_inliers, TriangulateParams, TriangulationConfig};
 use crate::pose::{
