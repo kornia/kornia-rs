@@ -9,7 +9,7 @@ import pytest
 from kornia_rs.image import Image
 from kornia_rs.augmentations import (
     ColorJitter, RandomHorizontalFlip, RandomVerticalFlip,
-    RandomCrop, Compose,
+    RandomCrop, RandomRotation, Compose, set_seed,
 )
 
 
@@ -405,6 +405,12 @@ class TestImmutableTransforms:
         result = crop(self.img)
         self._assert_isolated(result)
 
+    def test_augmentation_random_rotation_isolates(self):
+        """RandomRotation must not mutate source."""
+        rot = RandomRotation(30.0)
+        result = rot(self.img)
+        self._assert_isolated(result)
+
     def test_compose_isolates(self):
         """Compose pipeline must not mutate the source Image."""
         transform = Compose([
@@ -622,6 +628,29 @@ class TestRandomCrop:
             crop(img)
 
 
+class TestRandomRotation:
+    def test_basic(self):
+        img = _make_test_image(width=100, height=80, channels=3, fill=128)
+        rot = RandomRotation(30.0)
+        result = rot(img)
+        assert result.shape == img.shape
+
+    def test_repr(self):
+        rot = RandomRotation(45.0)
+        r = repr(rot)
+        assert "RandomRotation" in r
+        assert "-45" in r
+        assert "45" in r
+
+    def test_does_not_mutate(self):
+        img = _make_test_image(width=100, height=80, channels=3, fill=128)
+        snapshot = img.data.copy()
+        rot = RandomRotation(30.0)
+        result = rot(img)
+        assert np.array_equal(img.data, snapshot)
+        assert not np.shares_memory(result.data, img.data)
+
+
 class TestCompose:
     def test_basic(self):
         img = _make_test_image(width=100, height=80, channels=3, fill=128)
@@ -635,6 +664,114 @@ class TestCompose:
     def test_repr(self):
         transform = Compose([RandomHorizontalFlip(), ColorJitter()])
         assert "Compose" in repr(transform)
+
+
+class TestSetSeed:
+    """Test set_seed for reproducible augmentations."""
+
+    def teardown_method(self):
+        """Reset to non-deterministic after each test."""
+        set_seed(None)
+
+    def test_seed_reproducible_colorjitter(self):
+        """Same seed produces identical ColorJitter results."""
+        img = _make_test_image(width=50, height=50, channels=3, fill=128)
+        jitter = ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1)
+
+        set_seed(42)
+        result1 = jitter(img)
+
+        set_seed(42)
+        result2 = jitter(img)
+
+        assert np.array_equal(result1.data, result2.data)
+
+    def test_seed_reproducible_random_flip(self):
+        """Same seed produces identical flip decisions."""
+        img = _make_test_image(width=50, height=50, channels=3, fill=128)
+        flip = RandomHorizontalFlip(p=0.5)
+
+        set_seed(123)
+        results1 = [np.array(flip(img).data) for _ in range(10)]
+
+        set_seed(123)
+        results2 = [np.array(flip(img).data) for _ in range(10)]
+
+        for r1, r2 in zip(results1, results2):
+            assert np.array_equal(r1, r2)
+
+    def test_seed_reproducible_random_crop(self):
+        """Same seed produces identical crop positions."""
+        img = _make_test_image(width=100, height=80, channels=3, fill=128)
+        # Use non-uniform image so different crops give different data
+        img_data = np.random.RandomState(0).randint(0, 255, (80, 100, 3), dtype=np.uint8)
+        img = Image(img_data)
+        crop = RandomCrop((50, 50))
+
+        set_seed(99)
+        result1 = crop(img)
+
+        set_seed(99)
+        result2 = crop(img)
+
+        assert np.array_equal(result1.data, result2.data)
+
+    def test_seed_reproducible_compose(self):
+        """Same seed produces identical Compose pipeline results."""
+        img_data = np.random.RandomState(0).randint(0, 255, (80, 100, 3), dtype=np.uint8)
+        img = Image(img_data)
+        transform = Compose([
+            RandomHorizontalFlip(p=0.5),
+            RandomCrop((50, 60)),
+            ColorJitter(brightness=0.2, contrast=0.2),
+        ])
+
+        set_seed(77)
+        result1 = transform(img)
+
+        set_seed(77)
+        result2 = transform(img)
+
+        assert np.array_equal(result1.data, result2.data)
+
+    def test_different_seeds_differ(self):
+        """Different seeds produce different results (with high probability)."""
+        img_data = np.random.RandomState(0).randint(0, 255, (80, 100, 3), dtype=np.uint8)
+        img = Image(img_data)
+        jitter = ColorJitter(brightness=0.5, contrast=0.5)
+
+        set_seed(1)
+        result1 = jitter(img)
+
+        set_seed(2)
+        result2 = jitter(img)
+
+        assert not np.array_equal(result1.data, result2.data)
+
+    def test_reset_seed_none(self):
+        """set_seed(None) resets to non-deterministic mode."""
+        set_seed(42)
+        set_seed(None)
+        # Just verify it doesn't crash — non-deterministic means we can't
+        # assert exact values, just that it runs
+        img = _make_test_image(width=50, height=50, channels=3, fill=128)
+        flip = RandomHorizontalFlip(p=0.5)
+        result = flip(img)
+        assert result.shape == img.shape
+
+    def test_seed_reproducible_random_rotation(self):
+        """Same seed produces identical rotation results."""
+        img_data = np.random.RandomState(0).randint(0, 255, (80, 100, 3), dtype=np.uint8)
+        img = Image(img_data)
+        rot = RandomRotation(30.0)
+
+        set_seed(55)
+        result1 = rot(img)
+
+        set_seed(55)
+        result2 = rot(img)
+
+        assert np.array_equal(result1.data, result2.data)
 
 
 # --- Decode tests ---
