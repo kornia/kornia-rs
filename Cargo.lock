@@ -7978,6 +7978,7 @@ dependencies = [
  "kornia-io",
  "numpy",
  "pyo3",
+ "rand 0.9.2",
 ]
 
 [[package]]
