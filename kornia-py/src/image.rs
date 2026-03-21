@@ -572,15 +572,10 @@ impl PyImageApi {
 
         let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
         match ext.as_str() {
-            "jpg" | "jpeg" => crate::io::jpeg::write_image_jpeg(
-                path,
-                self.data.clone_ref(py),
-                "rgb",
-                quality,
-            ),
-            "png" => {
-                crate::io::png::write_image_png_u8(path, self.data.clone_ref(py), "rgb")
+            "jpg" | "jpeg" => {
+                crate::io::jpeg::write_image_jpeg(path, self.data.clone_ref(py), "rgb", quality)
             }
+            "png" => crate::io::png::write_image_png_u8(path, self.data.clone_ref(py), "rgb"),
             _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
                 "Unsupported format: .{}. Supported: .jpg, .jpeg, .png",
                 ext
@@ -636,9 +631,7 @@ impl PyImageApi {
                 .call_method1("astype", ("int",))?;
 
             let ix = np.call_method1("ix_", (&row_idx, &col_idx))?;
-            let result = arr
-                .get_item(ix)?
-                .extract::<Py<PyArray3<u8>>>()?;
+            let result = arr.get_item(ix)?.extract::<Py<PyArray3<u8>>>()?;
             Ok(Self::wrap(py, result, Some(self.mode.clone())))
         }
     }
@@ -743,8 +736,7 @@ impl PyImageApi {
     fn adjust_brightness(&self, py: Python<'_>, factor: f32) -> PyResult<Self> {
         let c = self.data.bind(py).shape()[2];
         if c == 3 {
-            let result =
-                crate::brightness::adjust_brightness_py(self.data.clone_ref(py), factor)?;
+            let result = crate::brightness::adjust_brightness_py(self.data.clone_ref(py), factor)?;
             Ok(Self::wrap(py, result, Some(self.mode.clone())))
         } else {
             let np = py.import("numpy")?;
@@ -755,10 +747,7 @@ impl PyImageApi {
                     (
                         np.call_method1(
                             "add",
-                            (
-                                arr.call_method1("astype", ("float32",))?,
-                                factor * 255.0,
-                            ),
+                            (arr.call_method1("astype", ("float32",))?, factor * 255.0),
                         )?,
                         0i32,
                         255i32,
@@ -861,9 +850,7 @@ _result = np.clip(_result * 255, 0, 255).astype(np.uint8)
 
         let result = locals
             .get_item("_result")?
-            .ok_or_else(|| {
-                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("adjust_hue failed")
-            })?
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("adjust_hue failed"))?
             .extract::<Py<PyArray3<u8>>>()?;
         Ok(Self::wrap(py, result, Some(self.mode.clone())))
     }
@@ -953,12 +940,8 @@ _result = np.clip(_result * 255, 0, 255).astype(np.uint8)
             let tx = (cx - cos_a as f64 * cx + sin_a as f64 * cy) as f32;
             let ty = (cy - sin_a as f64 * cx - cos_a as f64 * cy) as f32;
             let m = [cos_a, -sin_a, tx, sin_a, cos_a, ty];
-            let result = crate::warp::warp_affine(
-                self.data.clone_ref(py),
-                m,
-                (s[0], s[1]),
-                "bilinear",
-            )?;
+            let result =
+                crate::warp::warp_affine(self.data.clone_ref(py), m, (s[0], s[1]), "bilinear")?;
             Ok(Self::wrap(py, result, Some(self.mode.clone())))
         } else {
             // Numpy fallback: 90-degree multiples
@@ -978,10 +961,7 @@ _result = np.clip(_result * 255, 0, 255).astype(np.uint8)
     // --- Serialization for multiprocess (Ray Data, etc.) ---
 
     fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-        let cls = py
-            .import("kornia_rs.image")?
-            .getattr("Image")?
-            .unbind();
+        let cls = py.import("kornia_rs.image")?.getattr("Image")?.unbind();
         let args = pyo3::types::PyTuple::new(
             py,
             &[

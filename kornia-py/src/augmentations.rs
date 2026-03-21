@@ -1,7 +1,57 @@
 use numpy::PyArray3;
 use pyo3::prelude::*;
+use rand::prelude::*;
+use rand::rngs::StdRng;
+use std::cell::RefCell;
+use std::sync::Mutex;
 
 use crate::image::{PyImageApi, LUMINANCE_WEIGHTS};
+
+// Global seed. When set, each augmentation call creates a seeded RNG.
+// When None, thread_rng() is used.
+static GLOBAL_SEED: Mutex<Option<u64>> = Mutex::new(None);
+
+thread_local! {
+    static SEEDED_RNG: RefCell<Option<StdRng>> = const { RefCell::new(None) };
+}
+
+fn with_rng<T>(f: impl FnOnce(&mut dyn RngCore) -> T) -> T {
+    // Check if a global seed was set and we need to initialize
+    let seed = GLOBAL_SEED.lock().unwrap();
+    if let Some(s) = *seed {
+        drop(seed);
+        SEEDED_RNG.with(|cell| {
+            let mut rng_opt = cell.borrow_mut();
+            if rng_opt.is_none() {
+                *rng_opt = Some(StdRng::seed_from_u64(s));
+            }
+            f(rng_opt.as_mut().unwrap())
+        })
+    } else {
+        drop(seed);
+        f(&mut rand::rng())
+    }
+}
+
+/// Set the random seed for all augmentation operations.
+///
+/// After calling this, augmentations will produce reproducible results.
+/// Pass None to reset to non-deterministic mode.
+#[pyfunction]
+#[pyo3(signature = (seed=None))]
+pub fn set_seed(seed: Option<u64>) {
+    let mut global = GLOBAL_SEED.lock().unwrap();
+    *global = seed;
+    // Reset thread-local RNG so it picks up the new seed
+    SEEDED_RNG.with(|cell| {
+        let mut rng_opt = cell.borrow_mut();
+        if let Some(s) = seed {
+            *rng_opt = Some(StdRng::seed_from_u64(s));
+        } else {
+            *rng_opt = None;
+        }
+    });
+}
 
 /// Randomly change brightness, contrast, saturation, and hue.
 #[pyclass(name = "ColorJitter", module = "kornia_rs")]
@@ -12,7 +62,12 @@ pub struct PyColorJitter {
     hue: (f64, f64),
 }
 
-fn check_input(value: f64, name: &str, center: f64, bound: Option<(f64, f64)>) -> PyResult<(f64, f64)> {
+fn check_input(
+    value: f64,
+    name: &str,
+    center: f64,
+    bound: Option<(f64, f64)>,
+) -> PyResult<(f64, f64)> {
     if value < 0.0 {
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
             "{} must be non-negative, got {}",
@@ -49,45 +104,30 @@ impl PyColorJitter {
     }
 
     fn __call__(&self, py: Python<'_>, img: PyRef<'_, PyImageApi>) -> PyResult<PyImageApi> {
-        let random = py.import("random")?;
         let np = py.import("numpy")?;
 
-        // Build ops list: (op_id, factor)
-        // 0=brightness, 1=contrast, 2=saturation, 3=hue
+        // Build ops list and shuffle using Rust RNG
         let mut ops: Vec<(u8, f64)> = Vec::with_capacity(4);
 
-        if self.brightness.0 != 1.0 || self.brightness.1 != 1.0 {
-            let factor: f64 = random
-                .call_method1("uniform", (self.brightness.0, self.brightness.1))?
-                .extract()?;
-            ops.push((0, factor));
-        }
-        if self.contrast.0 != 1.0 || self.contrast.1 != 1.0 {
-            let factor: f64 = random
-                .call_method1("uniform", (self.contrast.0, self.contrast.1))?
-                .extract()?;
-            ops.push((1, factor));
-        }
-        if self.saturation.0 != 1.0 || self.saturation.1 != 1.0 {
-            let factor: f64 = random
-                .call_method1("uniform", (self.saturation.0, self.saturation.1))?
-                .extract()?;
-            ops.push((2, factor));
-        }
-        if self.hue.0 != 0.0 || self.hue.1 != 0.0 {
-            let factor: f64 = random
-                .call_method1("uniform", (self.hue.0, self.hue.1))?
-                .extract()?;
-            ops.push((3, factor));
-        }
-
-        // Shuffle order (Fisher-Yates using Python's random)
-        for i in (1..ops.len()).rev() {
-            let j: usize = random
-                .call_method1("randint", (0i32, i as i32))?
-                .extract()?;
-            ops.swap(i, j);
-        }
+        with_rng(|rng| {
+            if self.brightness.0 != 1.0 || self.brightness.1 != 1.0 {
+                let factor = rng.random_range(self.brightness.0..=self.brightness.1);
+                ops.push((0, factor));
+            }
+            if self.contrast.0 != 1.0 || self.contrast.1 != 1.0 {
+                let factor = rng.random_range(self.contrast.0..=self.contrast.1);
+                ops.push((1, factor));
+            }
+            if self.saturation.0 != 1.0 || self.saturation.1 != 1.0 {
+                let factor = rng.random_range(self.saturation.0..=self.saturation.1);
+                ops.push((2, factor));
+            }
+            if self.hue.0 != 0.0 || self.hue.1 != 0.0 {
+                let factor = rng.random_range(self.hue.0..=self.hue.1);
+                ops.push((3, factor));
+            }
+            ops.shuffle(rng);
+        });
 
         // Start with a copy of the data as numpy array
         let mut arr: Py<PyArray3<u8>> = img.data(py).bind(py).call_method0("copy")?.extract()?;
@@ -99,9 +139,7 @@ impl PyColorJitter {
                     let float_data = arr.bind(py).call_method1("astype", ("float32",))?;
                     let scaled = np.call_method1("multiply", (&float_data, *factor))?;
                     let clipped = np.call_method1("clip", (&scaled, 0.0f64, 255.0f64))?;
-                    arr = clipped
-                        .call_method1("astype", ("uint8",))?
-                        .extract()?;
+                    arr = clipped.call_method1("astype", ("uint8",))?.extract()?;
                 }
                 1 => {
                     // Contrast
@@ -111,25 +149,19 @@ impl PyColorJitter {
                     let scaled = np.call_method1("multiply", (&centered, *factor))?;
                     let shifted = np.call_method1("add", (&scaled, mean))?;
                     let clipped = np.call_method1("clip", (&shifted, 0.0f64, 255.0f64))?;
-                    arr = clipped
-                        .call_method1("astype", ("uint8",))?
-                        .extract()?;
+                    arr = clipped.call_method1("astype", ("uint8",))?.extract()?;
                 }
                 2 => {
                     // Saturation
                     let float_data = arr.bind(py).call_method1("astype", ("float32",))?;
-                    let weights =
-                        numpy::PyArray::from_vec(py, LUMINANCE_WEIGHTS.to_vec());
+                    let weights = numpy::PyArray::from_vec(py, LUMINANCE_WEIGHTS.to_vec());
                     let gray = np.call_method1("dot", (&float_data, weights))?;
                     let gray = np.call_method1("expand_dims", (&gray, 2i32))?;
                     let diff = np.call_method1("subtract", (&float_data, &gray))?;
                     let scaled = np.call_method1("multiply", (&diff, *factor))?;
                     let result_f = np.call_method1("add", (&gray, &scaled))?;
-                    let clipped =
-                        np.call_method1("clip", (&result_f, 0.0f64, 255.0f64))?;
-                    arr = clipped
-                        .call_method1("astype", ("uint8",))?
-                        .extract()?;
+                    let clipped = np.call_method1("clip", (&result_f, 0.0f64, 255.0f64))?;
+                    arr = clipped.call_method1("astype", ("uint8",))?.extract()?;
                 }
                 3 => {
                     // Hue (use Image method via a temporary)
@@ -167,8 +199,7 @@ impl PyRandomHorizontalFlip {
     }
 
     fn __call__(&self, py: Python<'_>, img: PyRef<'_, PyImageApi>) -> PyResult<PyImageApi> {
-        let random = py.import("random")?;
-        let val: f64 = random.call_method0("random")?.extract()?;
+        let val: f64 = with_rng(|rng| rng.random());
         if val < self.p {
             img.flip_horizontal(py)
         } else {
@@ -196,8 +227,7 @@ impl PyRandomVerticalFlip {
     }
 
     fn __call__(&self, py: Python<'_>, img: PyRef<'_, PyImageApi>) -> PyResult<PyImageApi> {
-        let random = py.import("random")?;
-        let val: f64 = random.call_method0("random")?.extract()?;
+        let val: f64 = with_rng(|rng| rng.random());
         if val < self.p {
             img.flip_vertical(py)
         } else {
@@ -238,13 +268,11 @@ impl PyRandomCrop {
             )));
         }
 
-        let random = py.import("random")?;
-        let x: usize = random
-            .call_method1("randint", (0i32, (img_w - self.width) as i32))?
-            .extract()?;
-        let y: usize = random
-            .call_method1("randint", (0i32, (img_h - self.height) as i32))?
-            .extract()?;
+        let (x, y) = with_rng(|rng| {
+            let x = rng.random_range(0..=(img_w - self.width));
+            let y = rng.random_range(0..=(img_h - self.height));
+            (x, y)
+        });
 
         img.crop(py, x, y, self.width, self.height)
     }
@@ -270,10 +298,7 @@ impl PyRandomRotation {
     }
 
     fn __call__(&self, py: Python<'_>, img: PyRef<'_, PyImageApi>) -> PyResult<PyImageApi> {
-        let random = py.import("random")?;
-        let angle: f64 = random
-            .call_method1("uniform", (self.degrees.0, self.degrees.1))?
-            .extract()?;
+        let angle: f64 = with_rng(|rng| rng.random_range(self.degrees.0..=self.degrees.1));
         img.rotate(py, angle)
     }
 
