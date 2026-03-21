@@ -108,11 +108,9 @@ pub fn umeyama(src: &[Vec3AF32], dst: &[Vec3AF32]) -> UmeyamaResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "approx")]
     use approx::assert_relative_eq;
 
     #[test]
-    #[cfg(feature = "approx")]
     fn test_umeyama_translation_only() -> Result<(), UmeyamaError> {
         let src: [Vec3AF32; 4] = [
             Vec3AF32::new(0.0, 0.0, 0.0),
@@ -130,13 +128,18 @@ mod tests {
         }
 
         let (r_est, t_est, _s) = umeyama(&src, &dst)?;
-        assert_relative_eq!(r_est, r, epsilon = 1e-5);
-        assert_relative_eq!(t_est, t, epsilon = 1e-5);
+
+        let r_est_arr: [f32; 9] = r_est.into();
+        let r_arr: [f32; 9] = r.into();
+        assert_relative_eq!(&r_est_arr[..], &r_arr[..], epsilon = 1e-5);
+
+        let t_est_arr: [f32; 3] = t_est.into();
+        let t_arr: [f32; 3] = t.into();
+        assert_relative_eq!(&t_est_arr[..], &t_arr[..], epsilon = 1e-5);
         Ok(())
     }
 
     #[test]
-    #[cfg(feature = "approx")]
     fn test_umeyama_synthetic_z90() -> Result<(), UmeyamaError> {
         // Source points (square in XY plane, z=0)
         let src: [Vec3AF32; 4] = [
@@ -155,13 +158,18 @@ mod tests {
         }
 
         let (r_est, t_est, _s) = umeyama(&src, &dst)?;
-        assert_relative_eq!(r_est, r, epsilon = 1e-6);
-        assert_relative_eq!(t_est, t, epsilon = 1e-6);
+
+        let r_est_arr: [f32; 9] = r_est.into();
+        let r_arr: [f32; 9] = r.into();
+        assert_relative_eq!(&r_est_arr[..], &r_arr[..], epsilon = 1e-5);
+
+        let t_est_arr: [f32; 3] = t_est.into();
+        let t_arr: [f32; 3] = t.into();
+        assert_relative_eq!(&t_est_arr[..], &t_arr[..], epsilon = 1e-5);
         Ok(())
     }
 
     #[test]
-    #[cfg(feature = "approx")]
     fn test_umeyama_complex_transform() -> Result<(), UmeyamaError> {
         // Arbitrary 3D point cloud
         let src: [Vec3AF32; 5] = [
@@ -183,8 +191,14 @@ mod tests {
         }
 
         let (r_est, t_est, _s) = umeyama(&src, &dst)?;
-        assert_relative_eq!(r_est, r, epsilon = 1e-5);
-        assert_relative_eq!(t_est, t, epsilon = 1e-5);
+
+        let r_est_arr: [f32; 9] = r_est.into();
+        let r_arr: [f32; 9] = r.into();
+        assert_relative_eq!(&r_est_arr[..], &r_arr[..], epsilon = 1e-6);
+
+        let t_est_arr: [f32; 3] = t_est.into();
+        let t_arr: [f32; 3] = t.into();
+        assert_relative_eq!(&t_est_arr[..], &t_arr[..], epsilon = 1e-6);
         Ok(())
     }
 
