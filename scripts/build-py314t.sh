@@ -3,11 +3,11 @@ set -euo pipefail
 
 # Build script for Python 3.14t (free-threaded) environment.
 #
-# maturin 1.10.x can falsely detect cross-compilation when the conda-forge
-# rust package's activation scripts set CARGO_BUILD_TARGET or
-# CARGO_TARGET_*_LINKER variables. This causes it to reject the uv-provided
-# Python 3.14t interpreter. We clear these variables and pin PYO3_PYTHON
-# before invoking maturin to ensure a native build.
+# maturin 1.10.x cannot reliably detect the platform for uv-provided
+# Python 3.14t (free-threaded), causing it to enter its cross-compilation
+# code path and reject the interpreter. Using `maturin build` with an
+# explicit --interpreter flag followed by pip install avoids the
+# `maturin develop` interpreter discovery entirely.
 
 # Clear cargo cross-compilation variables set by conda-forge rust
 unset CARGO_BUILD_TARGET 2>/dev/null || true
@@ -18,6 +18,9 @@ while IFS='=' read -r key _; do
 done < <(env)
 
 # Pin the interpreter explicitly
-export PYO3_PYTHON="${VIRTUAL_ENV}/bin/python"
+PYTHON="${VIRTUAL_ENV}/bin/python"
+export PYO3_PYTHON="$PYTHON"
 
-exec maturin develop -m Cargo.toml --extras dev
+# Build wheel with explicit interpreter, then install it
+maturin build -m Cargo.toml -i "$PYTHON"
+"$PYTHON" -m pip install --force-reinstall --no-deps target/wheels/*.whl
