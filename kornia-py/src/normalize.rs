@@ -5,11 +5,7 @@ use kornia_image::{allocator::CpuAllocator, Image};
 use kornia_imgproc::normalize;
 
 #[pyfunction]
-pub fn normalize_mean_std(
-    image: PyImage,
-    mean: [f32; 3],
-    std: [f32; 3],
-) -> PyResult<PyImageF32> {
+pub fn normalize_mean_std(image: PyImage, mean: [f32; 3], std: [f32; 3]) -> PyResult<PyImageF32> {
     let image: Image<u8, 3, _> = Image::from_pyimage(image)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
