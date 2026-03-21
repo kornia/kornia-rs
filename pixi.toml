@@ -121,7 +121,7 @@ pytest = "*"
 scripts = ["scripts/activate-py314t.sh"]
 
 [feature.py314t.tasks]
-py-build = { cmd = "maturin develop -m Cargo.toml --extras dev", cwd = "kornia-py", description = "Build kornia-py with Python 3.14t" }
+py-build = { cmd = "bash ../scripts/build-py314t.sh", cwd = "kornia-py", description = "Build kornia-py with Python 3.14t" }
 py-test = { cmd = "python -m pytest", cwd = "kornia-py", depends-on = [
   "py-build"
 ], description = "Test kornia-py with Python 3.14t" }
