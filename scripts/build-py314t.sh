@@ -30,4 +30,4 @@ export PYO3_PYTHON="$PYTHON"
 # Use maturin build with explicit interpreter (not develop, which lacks
 # --interpreter support) and install the resulting wheel
 maturin build -m Cargo.toml -i "$PYTHON"
-"$PYTHON" -m pip install --force-reinstall --no-deps target/wheels/*.whl
+uv pip install --python "$PYTHON" --force-reinstall --no-deps target/wheels/*.whl
