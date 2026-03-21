@@ -381,8 +381,14 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     imgproc_mod.add_function(wrap_pyfunction!(crop::crop, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(blur::gaussian_blur, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(blur::box_blur, &imgproc_mod)?)?;
-    imgproc_mod.add_function(wrap_pyfunction!(brightness::adjust_brightness_py, &imgproc_mod)?)?;
-    imgproc_mod.add_function(wrap_pyfunction!(normalize::normalize_mean_std, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(
+        brightness::adjust_brightness_py,
+        &imgproc_mod
+    )?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(
+        normalize::normalize_mean_std,
+        &imgproc_mod
+    )?)?;
     m.add_submodule(&imgproc_mod)?;
 
     // Augmentations submodule
@@ -393,6 +399,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     aug_mod.add_class::<augmentations::PyRandomCrop>()?;
     aug_mod.add_class::<augmentations::PyRandomRotation>()?;
     aug_mod.add_class::<augmentations::PyCompose>()?;
+    aug_mod.add_function(wrap_pyfunction!(augmentations::set_seed, &aug_mod)?)?;
     m.add_submodule(&aug_mod)?;
 
     // K3D submodule

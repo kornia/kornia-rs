@@ -15,9 +15,8 @@ pub fn adjust_brightness_py(image: PyImage, factor: f32) -> PyResult<PyImage> {
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
     // Normalize to [0,1] range
-    let mut normalized: Image<f32, 3, _> =
-        Image::from_size_val(image.size(), 0.0f32, CpuAllocator)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+    let mut normalized: Image<f32, 3, _> = Image::from_size_val(image.size(), 0.0f32, CpuAllocator)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
 
     normalized
         .as_slice_mut()
