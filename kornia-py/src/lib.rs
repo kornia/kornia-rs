@@ -1,10 +1,16 @@
 mod apriltag;
+pub(crate) mod augmentations;
+mod blur;
+mod brightness;
 mod color;
+mod crop;
 mod enhance;
+mod flip;
 mod histogram;
 mod icp;
 mod image;
 mod io;
+mod normalize;
 mod pointcloud;
 mod resize;
 mod warp;
@@ -303,6 +309,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     image_mod.add_class::<PyImageSize>()?;
     image_mod.add_class::<PyPixelFormat>()?;
     image_mod.add_class::<PyImageLayout>()?;
+    image_mod.add_class::<image::PyImageApi>()?;
     m.add_submodule(&image_mod)?;
 
     // IO submodule
@@ -360,7 +367,31 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     imgproc_mod.add_function(wrap_pyfunction!(resize::resize, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(warp::warp_affine, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(warp::warp_perspective, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(flip::horizontal_flip, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(flip::vertical_flip, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(crop::crop, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(blur::gaussian_blur, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(blur::box_blur, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(
+        brightness::adjust_brightness_py,
+        &imgproc_mod
+    )?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(
+        normalize::normalize_mean_std,
+        &imgproc_mod
+    )?)?;
     m.add_submodule(&imgproc_mod)?;
+
+    // Augmentations submodule
+    let aug_mod = PyModule::new(py, "augmentations")?;
+    aug_mod.add_class::<augmentations::PyColorJitter>()?;
+    aug_mod.add_class::<augmentations::PyRandomHorizontalFlip>()?;
+    aug_mod.add_class::<augmentations::PyRandomVerticalFlip>()?;
+    aug_mod.add_class::<augmentations::PyRandomCrop>()?;
+    aug_mod.add_class::<augmentations::PyRandomRotation>()?;
+    aug_mod.add_class::<augmentations::PyCompose>()?;
+    aug_mod.add_function(wrap_pyfunction!(augmentations::set_seed, &aug_mod)?)?;
+    m.add_submodule(&aug_mod)?;
 
     // K3D submodule
     let k3d_mod = PyModule::new(py, "k3d")?;
@@ -385,6 +416,20 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     apriltag_mod.add_submodule(&apriltag_family_mod)?;
 
     m.add_submodule(&apriltag_mod)?;
+
+    // Register submodules in sys.modules so `from kornia_rs.image import Image` works
+    let sys = py.import("sys")?;
+    let modules = sys.getattr("modules")?;
+    for (name, submod) in [
+        ("kornia_rs.image", &image_mod),
+        ("kornia_rs.io", &io_mod),
+        ("kornia_rs.imgproc", &imgproc_mod),
+        ("kornia_rs.k3d", &k3d_mod),
+        ("kornia_rs.apriltag", &apriltag_mod),
+        ("kornia_rs.augmentations", &aug_mod),
+    ] {
+        modules.set_item(name, submod)?;
+    }
 
     Ok(())
 }
