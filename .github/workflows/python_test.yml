@@ -47,9 +47,6 @@ jobs:
             pixi-env: py313
           - python-version: "3.14"
             pixi-env: py314
-          - python-version: "3.14t"
-            pixi-env: py314t
-            threaded: true
 
     steps:
       - uses: actions/checkout@v6
@@ -65,12 +62,43 @@ jobs:
           environments: ${{ matrix.pixi-env }}
 
       - name: Run tests
-        if: ${{ !matrix.threaded }}
         run: pixi run -e ${{ matrix.pixi-env }} py-test
 
-      - name: Run multithreaded tests
-        if: ${{ matrix.threaded }}
-        run: pixi run -e ${{ matrix.pixi-env }} py-test-threaded
+      - name: Show sccache stats
+        if: always()
+        run: |
+          sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
+
+  # Python 3.14t (free-threaded) needs a standalone job because pixi's
+  # conda-forge rust package sets environment variables that cause maturin
+  # to falsely detect cross-compilation and reject the uv-provided interpreter.
+  test-free-threaded:
+    name: py3.14t-linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: ./.github/actions/setup-rust-cache
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm libunwind-dev
+
+      - name: Setup Python 3.14t environment
+        run: |
+          uv venv -p 3.14t .venv
+          source .venv/bin/activate
+          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
+          echo "$VIRTUAL_ENV/bin" >> $GITHUB_PATH
+
+      - name: Build and test
+        run: |
+          cd kornia-py
+          maturin develop -m Cargo.toml
+          python -m pytest --parallel-threads=8 --iterations=50
 
       - name: Show sccache stats
         if: always()
