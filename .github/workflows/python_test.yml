@@ -75,6 +75,7 @@ jobs:
   test-free-threaded:
     name: py3.14t-linux
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
         with:
@@ -93,11 +94,19 @@ jobs:
           source .venv/bin/activate
           echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
           echo "$VIRTUAL_ENV/bin" >> $GITHUB_PATH
+          echo "PYTHON_GIL=0" >> $GITHUB_ENV
+
+      - name: Verify free-threaded interpreter
+        run: |
+          python --version --version
+          python -c "import sys; print('GIL enabled:', sys._is_gil_enabled())"
+          python -c "import sysconfig; print('Py_GIL_DISABLED:', sysconfig.get_config_var('Py_GIL_DISABLED'))"
 
       - name: Build and test
         run: |
           cd kornia-py
           maturin develop -m Cargo.toml
+          python -c "import sys; assert not sys._is_gil_enabled(), 'GIL was re-enabled after import!'"
           python -m pytest --parallel-threads=8 --iterations=50
 
       - name: Show sccache stats
