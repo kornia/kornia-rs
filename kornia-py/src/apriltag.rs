@@ -318,7 +318,7 @@ impl From<Quad> for PyQuad {
     }
 }
 
-#[pymodule]
+#[pymodule(gil_used = false)]
 pub mod family {
     use kornia_apriltag::{
         decoder::{QuickDecode, SharpeningBuffer},
