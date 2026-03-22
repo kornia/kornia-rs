@@ -1,3 +1,4 @@
+use super::bicubic::bicubic_interpolation;
 use super::bilinear::bilinear_interpolation;
 use super::nearest::nearest_neighbor_interpolation;
 use kornia_image::allocator::ImageAllocator;
@@ -11,7 +12,9 @@ pub use kornia_image::InterpolationMode;
 /// Call this before entering parallel dispatch loops to catch unsupported modes early.
 pub fn validate_interpolation(interpolation: InterpolationMode) -> Result<(), ImageError> {
     match interpolation {
-        InterpolationMode::Bilinear | InterpolationMode::Nearest => Ok(()),
+        InterpolationMode::Bilinear
+        | InterpolationMode::Nearest
+        | InterpolationMode::Bicubic => Ok(()),
         mode => Err(ImageError::UnsupportedInterpolation(mode)),
     }
 }
@@ -50,7 +53,8 @@ pub(crate) fn interpolate_pixel_fast<const C: usize, A: ImageAllocator>(
     match interpolation {
         InterpolationMode::Bilinear => bilinear_interpolation(image, u, v, c),
         InterpolationMode::Nearest => nearest_neighbor_interpolation(image, u, v, c),
-        InterpolationMode::Lanczos | InterpolationMode::Bicubic => {
+        InterpolationMode::Bicubic => bicubic_interpolation(image, u, v, c),
+        InterpolationMode::Lanczos => {
             debug_assert!(
                 false,
                 "unsupported mode should have been caught by validate_interpolation"
