@@ -1,7 +1,7 @@
-use crate::iter::ImageTile;
 use crate::utils::{find_full_tiles, Pixel, Point2d};
-use crate::{errors::AprilTagError, iter::TileIterator};
+use crate::errors::AprilTagError;
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
+use rayon::prelude::*;
 
 /// Stores the minimum and maximum pixel values for each tile for [adaptive_threshold]
 ///
@@ -182,7 +182,6 @@ impl TileMinMax {
 /// adaptive_threshold(&src, &mut dst, &mut tile_buffers, 20).unwrap();
 /// assert_eq!(dst.as_slice(), &[0, 0, 255, 255, 255, 255]);
 /// ```
-// TODO: Add support for parallelism
 pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<u8, 1, A1>,
     dst: &mut Image<Pixel, 1, A2>,
@@ -199,7 +198,6 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
         return Err(AprilTagError::InvalidImageSize);
     }
 
-    let tile_iterator = TileIterator::from_image(src, tile_min_max.tile_size)?;
     let tiles_full_len = find_full_tiles(src.size(), tile_min_max.tile_size);
 
     if tile_min_max.min.len() != tiles_full_len.x * tiles_full_len.y {
@@ -208,107 +206,199 @@ pub fn adaptive_threshold<A1: ImageAllocator, A2: ImageAllocator>(
         return Err(AprilTagError::ImageTileSizeMismatch);
     }
 
-    let dst_data = dst.as_slice_mut();
+    let src_data = src.as_slice();
+    let width = src.width();
+    let height = src.height();
+    let tile_size = tile_min_max.tile_size;
 
-    // Calculate extrema (i.e. min & max grayscale value) of each tile
-    tile_iterator.for_each(|tile| {
-        let ImageTile::FullTile(tile) = tile else {
-            // Skip non-full tiles
-            return;
-        };
+    // Phase 1: compute min/max for each full tile in parallel.
+    //
+    // Each tile index i maps to row (i / tiles_full_len.x) and col (i % tiles_full_len.x).
+    // Each thread writes to a unique (min[i], max[i]) pair -- no data races.
+    // src_data is a shared read-only slice and is Sync.
+    tile_min_max
+        .min
+        .par_iter_mut()
+        .zip(tile_min_max.max.par_iter_mut())
+        .enumerate()
+        .for_each(|(tile_idx, (tile_min, tile_max))| {
+            let tile_y = tile_idx / tiles_full_len.x;
+            let tile_x = tile_idx % tiles_full_len.x;
+            let py_start = tile_y * tile_size;
+            let px_start = tile_x * tile_size;
 
-        let mut local_min = 255;
-        let mut local_max = 0;
+            let mut local_min = u8::MAX;
+            let mut local_max = 0u8;
 
-        for row in tile.data {
-            for px in row {
-                if px < &local_min {
-                    local_min = *px;
-                }
-
-                if px > &local_max {
-                    local_max = *px;
+            for py in py_start..py_start + tile_size {
+                let row_start = py * width + px_start;
+                for &val in &src_data[row_start..row_start + tile_size] {
+                    if val < local_min {
+                        local_min = val;
+                    }
+                    if val > local_max {
+                        local_max = val;
+                    }
                 }
             }
-        }
 
-        tile_min_max.min[tile.full_index] = local_min;
-        tile_min_max.max[tile.full_index] = local_max;
-    });
+            *tile_min = local_min;
+            *tile_max = local_max;
+        });
 
-    // Binarize the image
-    TileIterator::from_image(src, tile_min_max.tile_size)?.for_each(|tile| {
-        let (neighbor_min, neighbor_max, tile) = match tile {
-            ImageTile::FullTile(tile) => {
-                let (min, max) =
-                    tile_min_max.neighbor_blur(tile.pos, tile.full_index, tiles_full_len);
+    // Phase 2: binarize the image.
+    //
+    // Full tile rows are processed in parallel via par_chunks_mut. Each strip is an
+    // independent &mut [Pixel] slice of length tile_size * width -- no overlaps.
+    // tile_min_max is accessed read-only (&TileMinMax is Sync) and src_data is &[u8] (Sync).
+    // Partial rows at the bottom edge (height % tile_size != 0) are handled sequentially after
+    // the parallel block, matching the behavior of the sequential PartialTile path.
+    let tile_min_max_ref: &TileMinMax = tile_min_max;
+    let dst_data = dst.as_slice_mut();
 
-                if max - min < min_white_black_diff {
-                    for y_px in 0..tile.data.len() {
-                        let row = ((tile.pos.y * tile_min_max.tile_size) + y_px) * src.width();
-                        let start_index = row + (tile.pos.x * tile_min_max.tile_size);
-                        let end_index = start_index + tile.data[0].len();
+    let full_strip_len = tile_size * width;
+    let full_rows_data_len = tiles_full_len.y * full_strip_len;
 
-                        for px in dst_data.iter_mut().take(end_index).skip(start_index) {
+    dst_data[..full_rows_data_len]
+        .par_chunks_mut(full_strip_len)
+        .enumerate()
+        .for_each(|(tile_row, strip)| {
+            // Full tile columns within this tile row.
+            for tile_col in 0..tiles_full_len.x {
+                let tile_idx = tile_row * tiles_full_len.x + tile_col;
+                let pos = Point2d {
+                    x: tile_col,
+                    y: tile_row,
+                };
+                let (neighbor_min, neighbor_max) =
+                    tile_min_max_ref.neighbor_blur(pos, tile_idx, tiles_full_len);
+
+                let px_start = tile_col * tile_size;
+
+                if neighbor_max - neighbor_min < min_white_black_diff {
+                    for py in 0..tile_size {
+                        let strip_row_start = py * width + px_start;
+                        for px in &mut strip[strip_row_start..strip_row_start + tile_size] {
                             *px = Pixel::Skip;
                         }
                     }
-
-                    return;
+                } else {
+                    let thresh = neighbor_min + (neighbor_max - neighbor_min) / 2;
+                    for py in 0..tile_size {
+                        let strip_row_start = py * width + px_start;
+                        let src_row_start = (tile_row * tile_size + py) * width + px_start;
+                        for (off, pixel) in strip
+                            [strip_row_start..strip_row_start + tile_size]
+                            .iter_mut()
+                            .enumerate()
+                        {
+                            *pixel = if src_data[src_row_start + off] > thresh {
+                                Pixel::White
+                            } else {
+                                Pixel::Black
+                            };
+                        }
+                    }
                 }
-
-                (min, max, tile)
             }
-            ImageTile::PartialTile(tile) => {
-                let is_partial_y = tile.data.len() < tile_min_max.tile_size;
-                let is_partial_x = tile.data[0].len() < tile_min_max.tile_size;
 
-                let (pos, full_index) = if is_partial_y && is_partial_x {
-                    (
-                        Point2d {
-                            x: tile.pos.x - 1,
-                            y: tile.pos.y - 1,
-                        },
-                        tile.full_index,
-                    )
-                } else if is_partial_x {
-                    (
-                        Point2d {
-                            x: tile.pos.x - 1,
-                            y: tile.pos.y,
-                        },
-                        tile.full_index,
-                    )
-                } else {
-                    (
-                        Point2d {
-                            x: tile.pos.x,
-                            y: tile.pos.y - 1,
-                        },
-                        tile.full_index + tile.pos.x + 1 - tiles_full_len.x,
-                    )
+            // Right-edge partial column (width % tile_size != 0).
+            // Mirrors the PartialTile(partial_x) path: use the rightmost full tile column's
+            // neighbor blur and always threshold (no min_white_black_diff skip).
+            let partial_x_start = tiles_full_len.x * tile_size;
+            if partial_x_start < width {
+                let partial_width = width - partial_x_start;
+                let last_col = tiles_full_len.x.saturating_sub(1);
+                let tile_idx = tile_row * tiles_full_len.x + last_col;
+                let pos = Point2d {
+                    x: last_col,
+                    y: tile_row,
                 };
+                let (neighbor_min, neighbor_max) =
+                    tile_min_max_ref.neighbor_blur(pos, tile_idx, tiles_full_len);
+                let thresh = neighbor_min + (neighbor_max - neighbor_min) / 2;
 
-                let (min, max) = tile_min_max.neighbor_blur(pos, full_index, tiles_full_len);
-                (min, max, tile)
+                for py in 0..tile_size {
+                    let strip_row_start = py * width + partial_x_start;
+                    let src_row_start = (tile_row * tile_size + py) * width + partial_x_start;
+                    for (off, pixel) in strip[strip_row_start..strip_row_start + partial_width]
+                        .iter_mut()
+                        .enumerate()
+                    {
+                        *pixel = if src_data[src_row_start + off] > thresh {
+                            Pixel::White
+                        } else {
+                            Pixel::Black
+                        };
+                    }
+                }
             }
-        };
+        });
 
-        let thresh = neighbor_min + (neighbor_max - neighbor_min) / 2;
+    // Partial rows at the bottom edge (height % tile_size != 0).
+    // Mirrors the PartialTile(partial_y / partial_xy) path: always threshold, no Skip check.
+    let partial_y_start = tiles_full_len.y * tile_size;
+    if partial_y_start < height {
+        let partial_height = height - partial_y_start;
+        let last_row = tiles_full_len.y.saturating_sub(1);
 
-        for (y_px, row) in tile.data.iter().enumerate() {
-            let row_index = ((tile.pos.y * tile_min_max.tile_size) + y_px) * src.width()
-                + tile.pos.x * tile_min_max.tile_size;
+        // Full columns in the bottom partial row.
+        for tile_col in 0..tiles_full_len.x {
+            // PartialTile(partial_y) path: pos = (tile_col, pos.y - 1), same full_index logic.
+            let full_idx = last_row * tiles_full_len.x + tile_col;
+            let pos = Point2d {
+                x: tile_col,
+                y: last_row,
+            };
+            let (neighbor_min, neighbor_max) =
+                tile_min_max_ref.neighbor_blur(pos, full_idx, tiles_full_len);
+            let thresh = neighbor_min + (neighbor_max - neighbor_min) / 2;
 
-            for (x_px, px) in row.iter().enumerate() {
-                dst_data[row_index + x_px] = if px > &thresh {
-                    Pixel::White
-                } else {
-                    Pixel::Black
-                };
+            let px_start = tile_col * tile_size;
+            for py in 0..partial_height {
+                let abs_row = partial_y_start + py;
+                let dst_start = abs_row * width + px_start;
+                for (off, pixel) in
+                    dst_data[dst_start..dst_start + tile_size].iter_mut().enumerate()
+                {
+                    *pixel = if src_data[dst_start + off] > thresh {
+                        Pixel::White
+                    } else {
+                        Pixel::Black
+                    };
+                }
             }
         }
-    });
+
+        // Bottom-right partial corner (partial_xy): pos = (last_col, last_row).
+        let partial_x_start = tiles_full_len.x * tile_size;
+        if partial_x_start < width {
+            let partial_width = width - partial_x_start;
+            let last_col = tiles_full_len.x.saturating_sub(1);
+            let full_idx = last_row * tiles_full_len.x + last_col;
+            let pos = Point2d {
+                x: last_col,
+                y: last_row,
+            };
+            let (neighbor_min, neighbor_max) =
+                tile_min_max_ref.neighbor_blur(pos, full_idx, tiles_full_len);
+            let thresh = neighbor_min + (neighbor_max - neighbor_min) / 2;
+
+            for py in 0..partial_height {
+                let abs_row = partial_y_start + py;
+                let dst_start = abs_row * width + partial_x_start;
+                for (off, pixel) in
+                    dst_data[dst_start..dst_start + partial_width].iter_mut().enumerate()
+                {
+                    *pixel = if src_data[dst_start + off] > thresh {
+                        Pixel::White
+                    } else {
+                        Pixel::Black
+                    };
+                }
+            }
+        }
+    }
 
     Ok(())
 }
