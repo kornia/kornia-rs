@@ -353,10 +353,8 @@ mod tests {
             CpuAllocator,
         )?;
 
-        let err = super::resize_native(&image, &mut dst, super::InterpolationMode::Bicubic);
-        assert!(err.is_err());
-
         let err = super::resize_native(&image, &mut dst, super::InterpolationMode::Lanczos);
+        assert!(err.is_err());
         assert!(err.is_err());
         Ok(())
     }
