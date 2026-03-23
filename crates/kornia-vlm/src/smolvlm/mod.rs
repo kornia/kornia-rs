@@ -68,7 +68,10 @@ impl<A: ImageAllocator> SmolVlm<A> {
                     log::info!("GPU supports BF16, using BF16");
                     DType::BF16
                 } else {
-                    log::warn!("GPU does not support BF16, falling back to FP16");
+                    log::warn!(
+                        "GPU does not support BF16, falling back to FP16. \
+                        Note: FP16 may overflow in attention logits and produce lower-quality results."
+                    );
                     DType::F16
                 };
                 (device, dtype)
