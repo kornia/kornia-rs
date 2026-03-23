@@ -49,8 +49,7 @@ impl<A: ImageAllocator> SmolVlm<A> {
                 return major >= 8;
             }
         }
-        false
-        
+        false     
     }
 
     /// Create a new SmolVlm model
