@@ -13,7 +13,7 @@ use crate::{
     decoder::{decode_tags, Detection, GrayModelPair},
     errors::AprilTagError,
     family::{TagFamily, TagFamilyKind},
-    quad::{fit_quads, FitQuadConfig},
+    quad::{fit_quads, Quad, QuadBuffers, FitQuadConfig},
     segmentation::{find_connected_components, find_gradient_clusters, GradientInfo},
     threshold::{adaptive_threshold, TileMinMax},
     union_find::UnionFind,
@@ -133,6 +133,8 @@ pub struct AprilTagDecoder {
     downscale_img: Option<Image<u8, 1, CpuAllocator>>,
     bin_img: Image<Pixel, 1, CpuAllocator>,
     tile_min_max: TileMinMax,
+    /// Reusable buffers for quad fitting.
+    quad_buffers: QuadBuffers,
     uf: UnionFind,
     clusters: HashMap<(usize, usize), Vec<GradientInfo>>,
     gray_model_pair: GrayModelPair,
@@ -185,6 +187,7 @@ impl AprilTagDecoder {
             downscale_img,
             bin_img,
             tile_min_max,
+            quad_buffers: QuadBuffers::default(),
             uf,
             clusters: HashMap::new(),
             gray_model_pair: GrayModelPair::new(),
@@ -240,7 +243,12 @@ impl AprilTagDecoder {
         find_gradient_clusters(&self.bin_img, &mut self.uf, &mut self.clusters);
 
         // Step 3: Quad Fitting
-        let mut quads = fit_quads(&self.bin_img, &mut self.clusters, &self.config);
+        let mut quads = fit_quads(
+            &self.bin_img,
+            &mut self.clusters,
+            &self.config,
+            &mut self.quad_buffers,
+        );
 
         // Step 4: Tag Decoding
         Ok(decode_tags(
@@ -275,10 +283,12 @@ mod tests {
         decoder: &mut AprilTagDecoder,
         expected_tag: TagFamilyKind,
         expected_quads: [Vec2F32; 4],
-        images_dir: &str,
+        images_dir_rel: &str,
         file_name_starts_with: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let tag_images = std::fs::read_dir(images_dir)?;
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")?;
+        let images_dir = std::path::Path::new(&manifest_dir).join(images_dir_rel);
+        let tag_images = std::fs::read_dir(&images_dir)?;
 
         for img in tag_images {
             let img = img?;

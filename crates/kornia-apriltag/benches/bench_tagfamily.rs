@@ -1,3 +1,4 @@
+#[cfg(feature = "compare-c")]
 use apriltag::DetectorBuilder;
 use criterion::{criterion_group, criterion_main, Criterion};
 use kornia_apriltag::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
@@ -19,6 +20,7 @@ fn bench_tagfamily(c: &mut Criterion) {
                 std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
             });
         });
+        #[cfg(feature = "compare-c")]
         group.bench_function("apriltag-c", |b| {
             b.iter(|| {
                 std::hint::black_box(
@@ -39,6 +41,7 @@ fn bench_tagfamily(c: &mut Criterion) {
                 std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
             });
         });
+        #[cfg(feature = "compare-c")]
         group.bench_function("apriltag-c", |b| {
             b.iter(|| {
                 std::hint::black_box(
@@ -61,6 +64,7 @@ fn bench_tagfamily(c: &mut Criterion) {
                 std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
             });
         });
+        #[cfg(feature = "compare-c")]
         group.bench_function("apriltag-c", |b| {
             b.iter(|| {
                 std::hint::black_box(
@@ -81,6 +85,7 @@ fn bench_tagfamily(c: &mut Criterion) {
                 std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
             });
         });
+        #[cfg(feature = "compare-c")]
         group.bench_function("apriltag-c", |b| {
             b.iter(|| {
                 std::hint::black_box(
@@ -101,6 +106,7 @@ fn bench_tagfamily(c: &mut Criterion) {
                 std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
             });
         });
+        #[cfg(feature = "compare-c")]
         group.bench_function("apriltag-c", |b| {
             b.iter(|| {
                 std::hint::black_box(
@@ -121,6 +127,7 @@ fn bench_tagfamily(c: &mut Criterion) {
                 std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
             });
         });
+        #[cfg(feature = "compare-c")]
         group.bench_function("apriltag-c", |b| {
             b.iter(|| {
                 std::hint::black_box(
@@ -141,6 +148,7 @@ fn bench_tagfamily(c: &mut Criterion) {
                 std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
             });
         });
+        #[cfg(feature = "compare-c")]
         group.bench_function("apriltag-c", |b| {
             b.iter(|| {
                 std::hint::black_box(
@@ -161,6 +169,7 @@ fn bench_tagfamily(c: &mut Criterion) {
                 std::hint::black_box(AprilTagDecoder::new(config, IMG_SIZE).unwrap());
             });
         });
+        #[cfg(feature = "compare-c")]
         group.bench_function("apriltag-c", |b| {
             b.iter(|| {
                 std::hint::black_box(

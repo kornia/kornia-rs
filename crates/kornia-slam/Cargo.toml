@@ -1,0 +1,26 @@
+[package]
+name = "kornia-slam"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+description = "Robust visual-inertial SLAM with odometry, mapping, and relocalization"
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+categories = { workspace = true }
+publish = true
+
+[dependencies]
+kornia-3d = { workspace = true }
+kornia-imgproc = { workspace = true }
+kornia-algebra = { workspace = true }
+kornia-io = { workspace = true }
+kornia-tensor = { workspace = true }
+serde = { workspace = true }
+serde_yaml = "0.9"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+serde_json = { workspace = true }

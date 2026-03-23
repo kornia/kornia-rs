@@ -1,3 +1,4 @@
+#[cfg(feature = "compare-c")]
 use apriltag::DetectorBuilder;
 use criterion::{criterion_group, criterion_main, Criterion};
 use kornia_apriltag::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
@@ -20,9 +21,11 @@ fn bench_decoding(c: &mut Criterion) {
         AprilTagDecoder::new(kornia_detector_config, gray_img.size()).unwrap();
 
     // AprilTag C
+    #[cfg(feature = "compare-c")]
     let mut apriltag_c_img =
         apriltag::Image::zeros_with_stride(gray_img.width(), gray_img.height(), gray_img.width())
             .unwrap();
+    #[cfg(feature = "compare-c")]
     gray_img
         .as_slice()
         .iter()
@@ -31,19 +34,23 @@ fn bench_decoding(c: &mut Criterion) {
             *dst = *src;
         });
 
+    #[cfg(feature = "compare-c")]
     let mut apriltag_c_detector = DetectorBuilder::new()
         .add_family_bits(apriltag::Family::tag_36h11(), 2)
         .build()
         .unwrap();
 
+    #[cfg(feature = "compare-c")]
     apriltag_c_detector.set_decimation(2.0);
 
     // AprilGrid-rs
-    let aprilgrid_img: image::DynamicImage =
+    #[cfg(feature = "compare-c")]
+    let aprilgrid_img: DynamicImage =
         image::GrayImage::from_vec(img.width() as u32, img.height() as u32, img.to_vec())
             .unwrap()
             .into();
 
+    #[cfg(feature = "compare-c")]
     let aprilgrid_detector =
         aprilgrid::detector::TagDetector::new(&aprilgrid::TagFamily::T36H11, None);
 
@@ -54,10 +61,12 @@ fn bench_decoding(c: &mut Criterion) {
         });
     });
 
+    #[cfg(feature = "compare-c")]
     c.bench_function("apriltag-c", |b| {
         b.iter(|| std::hint::black_box(apriltag_c_detector.detect(&apriltag_c_img)));
     });
 
+    #[cfg(feature = "compare-c")]
     c.bench_function("aprilgrid-rs", |b| {
         b.iter(|| std::hint::black_box(aprilgrid_detector.detect(&aprilgrid_img)));
     });

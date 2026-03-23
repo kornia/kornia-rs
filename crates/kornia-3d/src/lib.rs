@@ -4,6 +4,9 @@
 /// I/O utilities for reading and writing 3D data.
 pub mod io;
 
+/// Camera models for 3D computer vision.
+pub mod camera;
+
 /// Linear algebra utilities.
 pub mod linalg;
 

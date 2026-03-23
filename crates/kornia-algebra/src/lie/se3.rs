@@ -4,6 +4,7 @@ use crate::{
     Mat3AF32, Mat4F32, QuatF32, Vec3AF32,
 };
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 
 const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 
@@ -11,7 +12,7 @@ const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 /// This struct derives `PartialEq` which performs an exact element-wise comparison.
 /// Because quaternions form a double cover for SO3 (`q` and `-q` represent the same rotation),
 /// this means that two `SE3F32` instances representing the same transformation may evaluate as not equal.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SE3F32 {
     pub r: SO3F32,
     pub t: Vec3AF32,

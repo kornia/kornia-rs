@@ -62,7 +62,7 @@ const SMALL_ANGLE_EPSILON: f32 = 1.0e-8;
 ///   Quaternions form a double cover for SO3, meaning `q` and `-q` represent the
 ///   same rotation. However, `PartialEq` performs an exact, member-wise comparison
 ///   and will return `false` for `q` and `-q`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SO3F32 {
     pub q: QuatF32,
 }

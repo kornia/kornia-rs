@@ -8,10 +8,12 @@
 //! * `array` - The array type.
 //! * `fields` - The fields of the vector.
 //!
+use serde::{Deserialize, Serialize};
+
 macro_rules! define_vector_type {
     ($(#[$meta:meta])* $name:ident, $glam_type:ty, $scalar:ty, $array:ty, [$($field:ident),+]) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Default)]
+        #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
         pub struct $name {
             $(pub $field: $scalar),+
         }

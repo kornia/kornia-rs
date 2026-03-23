@@ -25,9 +25,15 @@ kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
 thiserror = { workspace = true }
 
+# Optional C-based dependencies for comparison
+aprilgrid = { version = "0.6", optional = true }
+apriltag = { version = "0.4", optional = true }
+
 [dev-dependencies]
-aprilgrid = "0.6"
-apriltag = "0.4"
 criterion = { workspace = true }
 image = "0.25"
 kornia-io = { workspace = true }
+
+[features]
+default = []
+compare-c = ["dep:apriltag", "dep:aprilgrid"]

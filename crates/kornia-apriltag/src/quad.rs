@@ -45,6 +45,18 @@ impl Default for FitQuadConfig {
     }
 }
 
+
+
+/// Reusable buffers for quad fitting to avoid redundant allocations.
+#[derive(Debug, Clone, Default)]
+pub struct QuadBuffers {
+    pub lfps: Vec<LineFit>,
+    pub errors: Vec<f32>,
+    pub smoothed_errors: Vec<f32>,
+    pub maxima: Vec<usize>,
+    pub maxima_errs: Vec<f32>,
+}
+
 /// Represents a detected quadrilateral in the image, corresponding to a tag candidate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Quad {
@@ -122,6 +134,7 @@ pub fn fit_quads<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     clusters: &mut HashMap<(usize, usize), Vec<GradientInfo>>,
     config: &DecodeTagsConfig,
+    buffers: &mut QuadBuffers,
 ) -> Vec<Quad> {
     // TODO: Avoid this allocation every time
     let mut quads = Vec::new();
@@ -145,6 +158,7 @@ pub fn fit_quads<A: ImageAllocator>(
             config.normal_border,
             config.reversed_border,
             &config.fit_quad_config,
+            buffers,
         ) {
             if config.downscale_factor > 1 {
                 let downscale_factor = config.downscale_factor as f32;
@@ -182,6 +196,7 @@ fn fit_single_quad<A: ImageAllocator>(
     normal_border: bool,
     reversed_border: bool,
     config: &FitQuadConfig,
+    buffers: &mut QuadBuffers,
 ) -> Option<Quad> {
     if cluster.len() < 24 {
         return None;
@@ -261,12 +276,13 @@ fn fit_single_quad<A: ImageAllocator>(
     }
 
     cluster.sort_by(|a, b| a.slope.total_cmp(&b.slope));
+    compute_line_fit_prefix_sums(src, cluster, &mut buffers.lfps);
 
-    let lfps = compute_line_fit_prefix_sums(src, cluster);
+    let lfps = &buffers.lfps;
 
     let mut indices = [0usize; 4];
 
-    if !quad_segment_maxima(cluster, &lfps, &mut indices, config) {
+    if !quad_segment_maxima(cluster, lfps, &mut indices, config, buffers) {
         return None;
     }
 
@@ -381,7 +397,7 @@ fn fit_single_quad<A: ImageAllocator>(
 
 /// Stores prefix sums for weighted line fitting over a set of points.
 #[derive(Default, Debug, Clone)]
-struct LineFit {
+pub struct LineFit {
     /// Weighted sum of x coordinates ($\sum_i w_i x_i$)
     mx: f32,
     /// Weighted sum of y coordinates ($\sum_i w_i y_i$)
@@ -409,10 +425,10 @@ struct LineFit {
 fn compute_line_fit_prefix_sums<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     gradient_infos: &[GradientInfo],
-) -> Vec<LineFit> {
+    lfps: &mut Vec<LineFit>,
+) {
     let src_slice = src.as_slice();
-    // TODO: Find a way to avoid allocation
-    let mut lfps = vec![LineFit::default(); gradient_infos.len()];
+    lfps.resize(gradient_infos.len(), LineFit::default());
 
     gradient_infos.iter().enumerate().for_each(|(i, cluster)| {
         if i > 0 {
@@ -446,8 +462,6 @@ fn compute_line_fit_prefix_sums<A: ImageAllocator>(
         lfps[i].myy += w * fy * fy;
         lfps[i].w += w;
     });
-
-    lfps
 }
 
 /// Segments the gradient information into four maxima corresponding to the corners of a quadrilateral.
@@ -471,6 +485,7 @@ fn quad_segment_maxima(
     lfps: &[LineFit],
     indices: &mut [usize; 4],
     config: &FitQuadConfig,
+    buffers: &mut QuadBuffers,
 ) -> bool {
     debug_assert_eq!(gradient_infos.len(), lfps.len());
     let len = gradient_infos.len();
@@ -481,7 +496,8 @@ fn quad_segment_maxima(
         return false;
     }
 
-    let mut errors = vec![0.0f32; len];
+    let mut errors = &mut buffers.errors;
+    errors.resize(len, 0.0f32);
 
     (0..len).for_each(|i| {
         fit_line(
@@ -498,7 +514,8 @@ fn quad_segment_maxima(
     const CUTOFF: f32 = 0.05;
 
     let filter_size = (2.0 * ((-(CUTOFF.ln()) * 2.0 * SIGMA * SIGMA).sqrt() + 1.0) + 1.0) as usize;
-    let mut smoothed_errors = vec![0.0f32; len];
+    let mut smoothed_errors = &mut buffers.smoothed_errors;
+    smoothed_errors.resize(len, 0.0f32);
 
     let gaussian_kernel = gaussian_kernel_1d(filter_size, SIGMA);
 
@@ -516,8 +533,10 @@ fn quad_segment_maxima(
 
     errors = smoothed_errors;
 
-    let mut maxima = vec![0usize; len];
-    let mut maxima_errs = vec![0.0f32; len];
+    let mut maxima = &mut buffers.maxima;
+    maxima.resize(len, 0usize);
+    let mut maxima_errs = &mut buffers.maxima_errs;
+    maxima_errs.resize(len, 0.0f32);
     let mut nmaxima = 0usize;
 
     (0..gradient_infos.len()).for_each(|i| {
