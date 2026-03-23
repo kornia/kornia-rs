@@ -19,12 +19,25 @@ name = "bench_decoding"
 harness = false
 name = "bench_tagfamily"
 
+[[bench]]
+harness = false
+name = "bench_threshold"
+required-features = []
+
+[features]
+# Enable OpenCV comparison in bench_threshold.
+# Requires the OpenCV C++ libraries (libopencv-dev) to be installed.
+# Usage: cargo bench -p kornia-apriltag --bench bench_threshold --features opencv
+opencv = ["dep:opencv"]
+
 [dependencies]
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 rayon = { workspace = true }
 kornia-imgproc = { workspace = true }
 thiserror = { workspace = true }
+# Optional: enable with --features opencv for benchmark comparisons.
+opencv = { version = "0.93", optional = true, default-features = false, features = ["imgproc"] }
 
 [dev-dependencies]
 aprilgrid = "0.6"
