@@ -3,16 +3,12 @@ use crate::errors::AprilTagError;
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 use rayon::prelude::*;
 
-/// Pixel-count threshold below which serial execution is used instead of rayon.
+/// Pixel count below which [`adaptive_threshold`] uses the serial path.
 ///
-/// For images smaller than this many pixels the rayon thread-pool dispatch
-/// overhead outweighs the parallelism benefit.  The value was determined
-/// empirically by running `bench_threshold` across common image sizes on a
-/// typical 8-core desktop and observing where the parallel and serial lines
-/// cross.  Users on machines with very different core counts or cache
-/// hierarchies can tune this constant or call [`adaptive_threshold_serial`] /
-/// [`adaptive_threshold_parallel`] directly to override the heuristic.
-pub const PARALLEL_PIXEL_THRESHOLD: usize = 320 * 240; // ~76 800 pixels
+/// Rayon's thread-pool overhead outweighs the speedup for small images.
+/// Call [`adaptive_threshold_serial`] or [`adaptive_threshold_parallel`]
+/// directly to bypass this heuristic.
+pub const PARALLEL_PIXEL_THRESHOLD: usize = 320 * 240;
 
 /// Stores the minimum and maximum pixel values for each tile for [adaptive_threshold]
 ///
@@ -138,11 +134,7 @@ impl TileMinMax {
     }
 }
 
-// ─── shared binarisation helpers ─────────────────────────────────────────────
-
-/// Fills `tile_min_max` (Phase 1) using *sequential* iteration.
-///
-/// Call this instead of the `rayon` version when the image is small.
+// Phase 1: sequential tile min/max fill
 fn fill_tile_min_max_serial(
     src_data: &[u8],
     width: usize,
@@ -181,7 +173,7 @@ fn fill_tile_min_max_serial(
     }
 }
 
-/// Binarises the full-tile rows (Phase 2) using *sequential* iteration.
+// Phase 2: sequential binarization
 fn binarize_serial(
     src_data: &[u8],
     dst_data: &mut [Pixel],
@@ -332,8 +324,6 @@ fn binarize_serial(
         }
     }
 }
-
-// ─── public API ──────────────────────────────────────────────────────────────
 
 /// Validates that `src`, `dst`, and `tile_min_max` are mutually consistent.
 fn validate_inputs<A1: ImageAllocator, A2: ImageAllocator>(

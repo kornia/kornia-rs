@@ -1,13 +1,13 @@
-//! Benchmark: adaptive_threshold – serial vs parallel vs OpenCV
+//! Benchmark: adaptive_threshold (serial vs parallel vs OpenCV)
 //!
 //! Run with:
 //!   cargo bench -p kornia-apriltag --bench bench_threshold
 //!
-//! To include the OpenCV comparison enable the `opencv` feature:
+//! To include the OpenCV comparison, enable the `opencv` feature:
 //!   cargo bench -p kornia-apriltag --bench bench_threshold --features opencv
 //!
-//! Results are written to `target/criterion/`.  The cross-over point where
-//! parallel becomes faster than serial can be read from the per-size groups.
+//! Results are written to target/criterion/. The crossover point where
+//! parallel becomes faster than serial is visible in the per-size groups.
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use kornia_apriltag::threshold::{
@@ -17,9 +17,7 @@ use kornia_apriltag::threshold::TileMinMax;
 use kornia_apriltag::utils::Pixel;
 use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 
-// ─── image sizes to sweep ─────────────────────────────────────────────────────
-
-/// (label, width, height)
+// (label, width, height)
 const SIZES: &[(&str, usize, usize)] = &[
     ("32x32", 32, 32),
     ("64x64", 64, 64),
@@ -36,10 +34,8 @@ const SIZES: &[(&str, usize, usize)] = &[
 const TILE_SIZE: usize = 4;
 const MIN_DIFF: u8 = 20;
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
-
 fn make_src(width: usize, height: usize) -> Image<u8, 1, CpuAllocator> {
-    // Checkerboard gradient so no tile is uniform (exercises the threshold path).
+    // XOR-based pattern ensures no tile is uniform, so the threshold branch is exercised.
     let data: Vec<u8> = (0..width * height)
         .map(|i| (((i / width) ^ (i % width)) & 0xFF) as u8)
         .collect();
@@ -49,8 +45,6 @@ fn make_src(width: usize, height: usize) -> Image<u8, 1, CpuAllocator> {
 fn make_dst(width: usize, height: usize) -> Image<Pixel, 1, CpuAllocator> {
     Image::from_size_val(ImageSize { width, height }, Pixel::Skip, CpuAllocator).unwrap()
 }
-
-// ─── benchmark groups ────────────────────────────────────────────────────────
 
 fn bench_serial(c: &mut Criterion) {
     let mut group = c.benchmark_group("adaptive_threshold/serial");
@@ -144,27 +138,18 @@ fn bench_crossover(c: &mut Criterion) {
     }
 }
 
-// ─── optional OpenCV comparison ───────────────────────────────────────────────
-//
-// Enable with:  cargo bench ... --features opencv
-//
-// OpenCV's `adaptive_threshold` uses a Gaussian or mean blur over a block
-// neighbourhood (ADAPTIVE_THRESH_MEAN_C / ADAPTIVE_THRESH_GAUSSIAN_C) which
-// differs slightly from kornia's tile-min-max approach, but the throughput
-// numbers are still a meaningful reference point.
-//
-// If the feature is absent these functions compile to nothing.
-
+// OpenCV comparison -- enable with --features opencv.
+// ADAPTIVE_THRESH_MEAN_C uses a different neighbourhood strategy than our
+// tile-min-max, but throughput numbers are still a useful reference.
 #[cfg(feature = "opencv")]
 mod opencv_bench {
     use super::*;
     use opencv::{
-        core::{Mat, Size},
+        core::Mat,
         imgproc,
         prelude::*,
     };
 
-    /// Convert our Image to an OpenCV Mat (grayscale u8, single channel).
     fn to_cv_mat(img: &Image<u8, 1, CpuAllocator>) -> Mat {
         let (h, w) = (img.height() as i32, img.width() as i32);
         let mut mat =
@@ -213,8 +198,6 @@ mod opencv_bench {
         group.finish();
     }
 }
-
-// ─── criterion wiring ─────────────────────────────────────────────────────────
 
 #[cfg(not(feature = "opencv"))]
 criterion_group!(benches, bench_serial, bench_parallel, bench_crossover);
