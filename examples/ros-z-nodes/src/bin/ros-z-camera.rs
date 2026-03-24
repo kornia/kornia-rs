@@ -77,9 +77,6 @@ async fn main() -> ZResult<()> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn main() {
-    eprintln!(
-        "error: the ros-z-camera example requires Video4Linux and is only supported on Linux."
-    );
-    std::process::exit(1);
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Err("the ros-z-camera example requires Video4Linux and is only supported on Linux.".into())
 }

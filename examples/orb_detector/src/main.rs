@@ -212,9 +212,6 @@ fn u8_to_f32_image(src: &Image<u8, 1, CpuAllocator>, dst: &mut Image<f32, 1, Cpu
 }
 
 #[cfg(not(target_os = "linux"))]
-fn main() {
-    eprintln!(
-        "error: the orb_detector example requires Video4Linux and is only supported on Linux."
-    );
-    std::process::exit(1);
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Err("the orb_detector example requires Video4Linux and is only supported on Linux.".into())
 }
