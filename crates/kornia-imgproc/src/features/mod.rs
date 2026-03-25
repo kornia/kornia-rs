@@ -9,3 +9,6 @@ pub use orb::*;
 
 mod r#match;
 pub use r#match::*;
+
+mod hough;
+pub use hough::*;
