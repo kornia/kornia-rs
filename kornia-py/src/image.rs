@@ -1015,7 +1015,7 @@ impl PyImageApi {
     }
 
     /// Adjust brightness. Factor is additive in [0,1] range.
-    fn adjust_brightness(&self, py: Python<'_>, factor: f32) -> PyResult<Self> {
+    pub fn adjust_brightness(&self, py: Python<'_>, factor: f32) -> PyResult<Self> {
         let arr = self.data.bind(py);
         let c = arr.shape()[2];
         if c == 3 {
@@ -1033,7 +1033,7 @@ impl PyImageApi {
     }
 
     /// Adjust contrast. factor=1.0 is identity, >1 increases contrast.
-    fn adjust_contrast(&self, py: Python<'_>, factor: f64) -> PyResult<Self> {
+    pub fn adjust_contrast(&self, py: Python<'_>, factor: f64) -> PyResult<Self> {
         let arr = self.data.bind(py);
         let (src, h, w, c) = pyarray_data(&arr);
         let out = adjust_contrast_generic(src, factor);
@@ -1041,7 +1041,7 @@ impl PyImageApi {
     }
 
     /// Adjust saturation. factor=1.0 is identity, 0.0 is grayscale.
-    fn adjust_saturation(&self, py: Python<'_>, factor: f64) -> PyResult<Self> {
+    pub fn adjust_saturation(&self, py: Python<'_>, factor: f64) -> PyResult<Self> {
         let arr = self.data.bind(py);
         let s = arr.shape();
         let c = s[2];

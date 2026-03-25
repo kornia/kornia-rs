@@ -1,13 +1,10 @@
-use numpy::PyArray3;
 use pyo3::prelude::*;
 use rand::prelude::*;
 use rand::rngs::StdRng;
 use std::cell::RefCell;
 use std::sync::Mutex;
 
-use crate::image::{
-    adjust_contrast_generic, adjust_saturation_generic, pyarray_data, vec_to_pyarray, PyImageApi,
-};
+use crate::image::{pyarray_data, vec_to_pyarray, PyImageApi};
 
 // Global seed. When set, each augmentation call creates a seeded RNG.
 // When None, thread_rng() is used.
@@ -129,38 +126,29 @@ impl PyColorJitter {
             ops.shuffle(rng);
         });
 
-        // Start with a copy of the data
-        let mut arr: Py<PyArray3<u8>> = img.data(py).bind(py).call_method0("copy")?.extract()?;
+        let mut current = img.copy(py)?;
 
         for (op, factor) in &ops {
-            match op {
-                0 | 1 | 2 => {
-                    let (out, h, w, c) = {
-                        let bound = arr.bind(py);
-                        let (src, h, w, c) = pyarray_data(&bound);
-                        let out = match op {
-                            0 => src
-                                .iter()
-                                .map(|&v| (v as f64 * factor).clamp(0.0, 255.0) as u8)
-                                .collect(),
-                            1 => adjust_contrast_generic(src, *factor),
-                            2 if c == 3 => adjust_saturation_generic(src, h * w, *factor),
-                            _ => continue,
-                        };
-                        (out, h, w, c)
-                    };
-                    arr = vec_to_pyarray(py, out, h, w, c);
+            current = match op {
+                0 => {
+                    // Brightness: multiplicative (torchvision convention)
+                    let arr = current.data(py);
+                    let bound = arr.bind(py);
+                    let (src, h, w, c) = pyarray_data(&bound);
+                    let out: Vec<u8> = src
+                        .iter()
+                        .map(|&v| (v as f64 * factor).clamp(0.0, 255.0) as u8)
+                        .collect();
+                    PyImageApi::wrap(py, vec_to_pyarray(py, out, h, w, c), Some(current.mode().to_string()))
                 }
-                3 => {
-                    let tmp = PyImageApi::wrap(py, arr, Some("RGB".to_string()));
-                    let result = tmp.adjust_hue(py, *factor)?;
-                    arr = result.data(py);
-                }
-                _ => {}
-            }
+                1 => current.adjust_contrast(py, *factor)?,
+                2 => current.adjust_saturation(py, *factor)?,
+                3 => current.adjust_hue(py, *factor)?,
+                _ => current,
+            };
         }
 
-        Ok(PyImageApi::wrap(py, arr, Some(img.mode().to_string())))
+        Ok(current)
     }
 
     fn __repr__(&self) -> String {
@@ -190,7 +178,7 @@ impl PyRandomHorizontalFlip {
         if val < self.p {
             img.flip_horizontal(py)
         } else {
-            img.copy(py)
+            Ok(PyImageApi::wrap(py, img.data(py), Some(img.mode().to_string())))
         }
     }
 
@@ -218,7 +206,7 @@ impl PyRandomVerticalFlip {
         if val < self.p {
             img.flip_vertical(py)
         } else {
-            img.copy(py)
+            Ok(PyImageApi::wrap(py, img.data(py), Some(img.mode().to_string())))
         }
     }
 
