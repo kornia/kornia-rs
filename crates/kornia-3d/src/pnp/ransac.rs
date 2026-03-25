@@ -235,6 +235,12 @@ pub fn solve_pnp_ransac(
         return Err(err);
     }
 
+    let best_pose = best_pose.ok_or_else(|| {
+        PnPRansacError::Base(PnPError::SvdFailed(
+            "RANSAC failed to produce a pose despite sufficient inliers".to_string(),
+        ))
+    })?;
+
     let mut final_pose = if params.refine {
         // Refit on all inliers
         let mut w_all = Vec::with_capacity(best_inliers.len());
@@ -253,23 +259,15 @@ pub fn solve_pnp_ransac(
                 if w_all.len() >= 4 {
                     // Try EPnP with default parameters to least-squares fit all inliers
                     solve_pnp(&w_all, &i_all, k, distortion, PnPMethod::EPnPDefault)
-                        .unwrap_or_else(|_| best_pose.unwrap())
+                        .unwrap_or_else(|_| best_pose.clone())
                 } else {
-                    best_pose.unwrap()
+                    best_pose
                 }
             }
             _ => solve_pnp(&w_all, &i_all, k, distortion, base.clone())?,
         }
     } else {
-        match best_pose {
-            Some(p) => p,
-            None => {
-                return Err(PnPError::SvdFailed(
-                    "RANSAC failed to produce a pose despite sufficient inliers".to_string(),
-                )
-                .into());
-            }
-        }
+        best_pose
     };
 
     // Recompute reprojection error on inliers only
