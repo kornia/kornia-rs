@@ -50,19 +50,20 @@ pub struct Line {
 
 /// Detect straight lines in a binary edge map.
 ///
-/// Feed in the output of [`canny`](crate::filter::canny) (or any `u8` image
-/// where non-zero means "edge") and this function returns every line that
-/// received at least `threshold` votes in the Hough accumulator, sorted from
-/// strongest to weakest.
+/// Feed in the output of [`crate::filter::canny`] (or any `u8` image where
+/// non-zero means "edge") and this function returns every line that received
+/// at least `threshold` votes in the Hough accumulator, sorted from strongest
+/// to weakest.
 ///
 /// # Arguments
 ///
 /// * `edge_map` - Single-channel `u8` edge image (`255` = edge, `0` = background).
 /// * `threshold` - How many edge pixels must agree before a line is reported.
-///   Higher values give fewer, more confident lines.
+///   Must be `>= 1`. Higher values give fewer, more confident lines.
 /// * `rho_resolution` - Distance bucket size in pixels (typically `1.0`).
+///   Must be positive and finite.
 /// * `theta_resolution` - Angle bucket size in radians (typically `π / 180`,
-///   i.e. 1° steps).
+///   i.e. 1° steps). Must be positive and finite.
 ///
 /// # Returns
 ///
@@ -70,7 +71,10 @@ pub struct Line {
 ///
 /// # Errors
 ///
-/// Returns [`ImageError::InvalidImageSize`] if the image has zero width or height.
+/// * [`ImageError::InvalidImageSize`] if the image has zero width or height.
+/// * [`ImageError::InvalidSigmaValue`] if `rho_resolution` or `theta_resolution`
+///   is not positive and finite.
+/// * [`ImageError::InvalidHistogramBins`] if `threshold` is zero.
 pub fn hough_lines<A: ImageAllocator>(
     edge_map: &Image<u8, 1, A>,
     threshold: u32,
@@ -84,9 +88,22 @@ pub fn hough_lines<A: ImageAllocator>(
         return Err(ImageError::InvalidImageSize(cols, rows, 0, 0));
     }
 
-    // Maximum possible rho value is the image diagonal.
-    let diag = ((rows * rows + cols * cols) as f32).sqrt();
-    let max_rho = diag;
+    // Validate resolution parameters to avoid NaN/inf accumulator dimensions.
+    if !rho_resolution.is_finite() || rho_resolution <= 0.0 {
+        return Err(ImageError::InvalidSigmaValue(rho_resolution, 0.0));
+    }
+    if !theta_resolution.is_finite() || theta_resolution <= 0.0 {
+        return Err(ImageError::InvalidSigmaValue(0.0, theta_resolution));
+    }
+
+    // Reject threshold == 0 to avoid returning every accumulator cell.
+    if threshold == 0 {
+        return Err(ImageError::InvalidHistogramBins(0));
+    }
+
+    // Compute the image diagonal using f64 to avoid usize overflow on
+    // large images (especially on 32-bit targets).
+    let max_rho = ((rows as f64 * rows as f64 + cols as f64 * cols as f64).sqrt()) as f32;
 
     // Accumulator dimensions
     let num_rho = (2.0 * max_rho / rho_resolution).ceil() as usize + 1;
