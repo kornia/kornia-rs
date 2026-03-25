@@ -12,13 +12,32 @@ impl PnPSolver for UP2P {
         points_world: &[Vec3AF32],
         points_image: &[Vec2F32],
         k: &Mat3AF32,
-        _distortion: Option<&PolynomialDistortion>,
+        distortion: Option<&PolynomialDistortion>,
         gravity: &Self::Param,
     ) -> Result<PnPResult, PnPError> {
-        let multi = solve_up2p_multi(points_world, points_image, k, _distortion, gravity)?;
-        // Just return the first solution for now. RANSAC will use solve_multi directly.
-        multi.into_iter().next().ok_or_else(|| {
-            PnPError::SvdFailed("UP2P failed to find any valid solution".to_string())
+        let multi = solve_up2p_multi(points_world, points_image, k, distortion, gravity)?;
+
+        // Filter hypotheses using cheirality check (all points must be in front of the camera).
+        let mut best_sol = None;
+        for sol in multi {
+            let mut all_positive = true;
+            for pw in points_world {
+                let pc = sol.rotation * *pw + sol.translation;
+                if pc.z <= 0.0 {
+                    all_positive = false;
+                    break;
+                }
+            }
+            if all_positive {
+                best_sol = Some(sol);
+                break;
+            }
+        }
+
+        best_sol.ok_or_else(|| {
+            PnPError::SvdFailed(
+                "UP2P failed to find any valid solution with positive depths".to_string(),
+            )
         })
     }
 }
@@ -27,14 +46,30 @@ pub(crate) fn solve_up2p_multi(
     points_world: &[Vec3AF32],
     points_image: &[Vec2F32],
     k: &Mat3AF32,
-    _distortion: Option<&PolynomialDistortion>,
+    distortion: Option<&PolynomialDistortion>,
     gravity: &Vec3AF32,
 ) -> Result<Vec<PnPResult>, PnPError> {
-    if points_world.len() < 2 || points_image.len() < 2 {
+    if points_world.len() != points_image.len() {
+        return Err(PnPError::MismatchedArrayLengths {
+            left_name: "world points",
+            left_len: points_world.len(),
+            right_name: "image points",
+            right_len: points_image.len(),
+        });
+    }
+
+    if points_world.len() != 2 {
         return Err(PnPError::InsufficientCorrespondences {
             required: 2,
-            actual: points_world.len().min(points_image.len()),
+            actual: points_world.len(),
         });
+    }
+
+    if distortion.is_some() {
+        return Err(PnPError::SvdFailed(
+            "UP2P solver does not support distortion models natively. Undistort points first."
+                .to_string(),
+        ));
     }
 
     // Prepare inputs as f64
@@ -111,16 +146,22 @@ pub(crate) fn solve_up2p_multi(
 /// Solve absolute pose from 2 point correspondences with known gravity direction.
 /// Gravity constrains roll and pitch, leaving yaw + translation (4 DOF).
 /// Returns up to 2 solutions.
+///
+/// **Coordinate System Convention:**
+/// This implementation assumes a standard OpenCV-like right-handed coordinate system
+/// where the Y axis points DOWN. Therefore, the world gravity vector is assumed to be
+/// `[0.0, 1.0, 0.0]`. The `gravity` vector provided as an argument must be the downward
+/// gravity direction observed in the camera frame.
 pub fn solve_up2p(
     points_world: &[[f64; 3]; 2],
     bearing_vectors: &[[f64; 3]; 2],
-    gravity: &[f64; 3], // unit gravity vector in camera frame
+    gravity: &[f64; 3], // downward unit gravity vector in camera frame
 ) -> Vec<(Mat3F64, Vec3F64)> {
     let g_cam = Vec3F64::new(gravity[0], gravity[1], gravity[2]);
-    let g_world = Vec3F64::new(0.0, 1.0, 0.0); // Assume upright world is Y-up
+    let g_world = Vec3F64::new(0.0, 1.0, 0.0); // OpenCV convention: Y is down, so gravity is +Y
 
     let r_c = rotation_between(&g_cam, &g_world);
-    let r_w = Mat3F64::IDENTITY; // world is already assumed to be Y-up. If not, from_two_vectors(g_world, [0,1,0])
+    let r_w = Mat3F64::IDENTITY; // world is already assumed to be Y-down. If not, from_two_vectors(g_world, [0,1,0])
 
     let mut x_upright = [Vec3F64::ZERO; 2];
     let mut x_upright_world = [Vec3F64::ZERO; 2];
@@ -354,14 +395,7 @@ mod tests {
         let sols = solve_up2p(&pw, &bv, &gravity);
         assert!(!sols.is_empty());
 
-        let mut found = false;
-        for (r, t) in sols {
-            if (r.x_axis().x - r_gt.x_axis().x).abs() < 1e-4 && (t.x - t_gt.x).abs() < 1e-4 {
-                found = true;
-                break;
-            }
-        }
-        assert!(found, "Ground truth solution not found in up2p output");
+        assert_solution_found(&sols, &r_gt, &t_gt, 1e-4);
     }
 
     /// Helper: given a ground-truth R, t and world points, synthesise bearing vectors.

@@ -143,9 +143,7 @@ pub fn solve_pnp(
 ///
 /// Unlike [solve_pnp], which returns a single best result, this function
 /// returns every valid pose hypothesis produced by the solver. This is used
-/// by RANSAC to evaluate all candidates from minimal solvers like UP2P that
-/// may yield more than one solution.
-pub fn solve_pnp_multi(
+pub(crate) fn solve_pnp_multi(
     world: &[Vec3AF32],
     image: &[Vec2F32],
     k: &Mat3AF32,

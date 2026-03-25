@@ -190,8 +190,7 @@ pub fn solve_pnp_ransac(
             );
 
             if inliers.len() > best_inliers.len() {
-                // This is a Rust ownership requirement introduced by the loop.
-                best_inliers = inliers.clone();
+                best_inliers = inliers;
                 best_pose = Some(pose_min);
 
                 // Update required iterations based on current inlier ratio and sample size
@@ -515,6 +514,56 @@ mod tests {
         let base = PnPMethod::EPnP(EPnPParams::default());
         let res = solve_pnp_ransac(&points_world, &points_image, &k, None, base, &params)?;
         assert!(res.inliers.len() >= 4);
+        Ok(())
+    }
+
+    #[test]
+    fn test_ransac_up2p() -> Result<(), PnPRansacError> {
+        // Identity rotation and some translation
+        let r_gt = Mat3AF32::IDENTITY;
+        let t_gt = Vec3AF32::new(0.1, -0.2, 0.5);
+        let k = k_default();
+
+        // 6 inliers
+        let mut world = vec![
+            Vec3AF32::new(0.5, 0.5, 2.0),
+            Vec3AF32::new(-0.5, 0.5, 2.5),
+            Vec3AF32::new(0.0, -0.2, 1.8),
+            Vec3AF32::new(0.3, -0.5, 3.0),
+            Vec3AF32::new(-0.2, 0.1, 2.2),
+            Vec3AF32::new(0.8, 0.0, 4.0),
+        ];
+
+        let mut image = Vec::new();
+        for pw in &world {
+            let pc = r_gt * *pw + t_gt;
+            let p_img = Vec2F32::new(
+                k.x_axis().x * (pc.x / pc.z) + k.z_axis().x,
+                k.y_axis().y * (pc.y / pc.z) + k.z_axis().y,
+            );
+            image.push(p_img);
+        }
+
+        // Add 2 outliers
+        world.push(Vec3AF32::new(1.0, 1.0, 1.0));
+        image.push(Vec2F32::new(0.0, 0.0));
+        world.push(Vec3AF32::new(-1.0, -1.0, 1.0));
+        image.push(Vec2F32::new(1000.0, 1000.0));
+
+        let gravity = Vec3AF32::new(0.0, 1.0, 0.0);
+        let params = RansacParams {
+            max_iterations: 20,
+            reproj_threshold_px: 5.0,
+            confidence: 0.99,
+            random_seed: Some(42),
+            refine: false,
+        };
+
+        let base = PnPMethod::UP2P(gravity);
+
+        let res = solve_pnp_ransac(&world, &image, &k, None, base, &params)?;
+        assert_eq!(res.inliers.len(), 6);
+        assert!(res.pose.reproj_rmse.unwrap() < 5.0);
         Ok(())
     }
 
