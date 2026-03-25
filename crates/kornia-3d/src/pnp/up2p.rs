@@ -480,8 +480,8 @@ mod tests {
         // but gravity in camera frame is tilted
         let gravity_cam = [
             0.0,
-            std::f32::consts::FRAC_1_SQRT_2,
-            std::f32::consts::FRAC_1_SQRT_2,
+            std::f64::consts::FRAC_1_SQRT_2,
+            std::f64::consts::FRAC_1_SQRT_2,
         ]; // 45° tilt from Y toward Z
 
         // Build R_gt that is the composition: R_c^T * R_yaw * R_w
