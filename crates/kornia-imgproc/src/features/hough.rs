@@ -71,9 +71,9 @@ pub struct Line {
 ///
 /// # Errors
 ///
-/// * [`ImageError::InvalidImageSize`] if the image has zero width or height.
 /// * [`ImageError::InvalidSigmaValue`] if `rho_resolution` or `theta_resolution`
-///   is not positive and finite.
+///   is not positive and finite, or if the resulting accumulator size would
+///   exceed reasonable memory limits.
 /// * [`ImageError::InvalidHistogramBins`] if `threshold` is zero.
 pub fn hough_lines<A: ImageAllocator>(
     edge_map: &Image<u8, 1, A>,
@@ -106,22 +106,16 @@ pub fn hough_lines<A: ImageAllocator>(
     // large images (especially on 32-bit targets).
     let max_rho = ((rows as f64 * rows as f64 + cols as f64 * cols as f64).sqrt()) as f32;
 
-    // Accumulator dimensions — cap at a sane upper bound to prevent
-    // excessive memory usage from pathologically small resolutions.
-    const MAX_ACCUMULATOR_DIM: usize = 10_000;
+    // Accumulator dimensions
     let num_rho = (2.0 * max_rho / rho_resolution).ceil() as usize + 1;
     let num_theta = (std::f32::consts::PI / theta_resolution).ceil() as usize;
 
-    if num_rho > MAX_ACCUMULATOR_DIM || num_theta > MAX_ACCUMULATOR_DIM {
-        return Err(ImageError::InvalidSigmaValue(
-            rho_resolution,
-            theta_resolution,
-        ));
-    }
-
-    // Guard against usize overflow when computing the total accumulator size.
+    // Guard against usize overflow and excessively large accumulator allocations
+    // (limit to 10 million bins, which is ~40MB).
+    const MAX_ACCUMULATOR_BINS: usize = 10_000_000;
     let accumulator_size = num_rho
         .checked_mul(num_theta)
+        .filter(|&size| size <= MAX_ACCUMULATOR_BINS)
         .ok_or(ImageError::InvalidSigmaValue(
             rho_resolution,
             theta_resolution,
