@@ -58,7 +58,7 @@ pub fn rgb_from_gray_deprecated(py: Python<'_>, image: image::PyImage) -> PyResu
         py,
         "kornia_rs.rgb_from_gray is deprecated. Use kornia_rs.imgproc.rgb_from_gray.",
     )?;
-    color::rgb_from_gray(image)
+    color::rgb_from_gray(py, image)
 }
 
 #[pyfunction(name = "rgb_from_rgba")]
@@ -72,7 +72,7 @@ pub fn rgb_from_rgba_deprecated(
         py,
         "kornia_rs.rgb_from_rgba is deprecated. Use kornia_rs.imgproc.rgb_from_rgba.",
     )?;
-    color::rgb_from_rgba(image, background)
+    color::rgb_from_rgba(py, image, background)
 }
 
 #[pyfunction(name = "rgb_from_bgra")]
@@ -86,7 +86,7 @@ pub fn rgb_from_bgra_deprecated(
         py,
         "kornia_rs.rgb_from_bgra is deprecated. Use kornia_rs.imgproc.rgb_from_bgra.",
     )?;
-    color::rgb_from_bgra(image, background)
+    color::rgb_from_bgra(py, image, background)
 }
 
 #[pyfunction(name = "bgr_from_rgb")]
@@ -95,7 +95,7 @@ pub fn bgr_from_rgb_deprecated(py: Python<'_>, image: image::PyImage) -> PyResul
         py,
         "kornia_rs.bgr_from_rgb is deprecated. Use kornia_rs.imgproc.bgr_from_rgb.",
     )?;
-    color::bgr_from_rgb(image)
+    color::bgr_from_rgb(py, image)
 }
 
 #[pyfunction(name = "gray_from_rgb")]
@@ -104,7 +104,7 @@ pub fn gray_from_rgb_deprecated(py: Python<'_>, image: image::PyImage) -> PyResu
         py,
         "kornia_rs.gray_from_rgb is deprecated. Use kornia_rs.imgproc.gray_from_rgb.",
     )?;
-    color::gray_from_rgb(image)
+    color::gray_from_rgb(py, image)
 }
 
 // Enhance / Histogram
@@ -121,7 +121,7 @@ pub fn add_weighted_deprecated(
         py,
         "kornia_rs.add_weighted is deprecated. Use kornia_rs.imgproc.add_weighted.",
     )?;
-    enhance::add_weighted(src1, alpha, src2, beta, gamma)
+    enhance::add_weighted(py, src1, alpha, src2, beta, gamma)
 }
 
 #[pyfunction(name = "compute_histogram")]
@@ -134,7 +134,7 @@ pub fn compute_histogram_deprecated(
         py,
         "kornia_rs.compute_histogram is deprecated. Use kornia_rs.imgproc.compute_histogram.",
     )?;
-    histogram::compute_histogram(image, nbins)
+    histogram::compute_histogram(py, image, nbins)
 }
 
 // ICP
@@ -234,7 +234,7 @@ pub fn resize_deprecated(
         py,
         "kornia_rs.resize is deprecated. Use kornia_rs.imgproc.resize.",
     )?;
-    resize::resize(image, new_size, interpolation)
+    resize::resize(py, image, new_size, interpolation)
 }
 
 // Warp
@@ -250,7 +250,7 @@ pub fn warp_affine_deprecated(
         py,
         "kornia_rs.warp_affine is deprecated. Use kornia_rs.imgproc.warp_affine.",
     )?;
-    warp::warp_affine(image, m, new_size, interpolation)
+    warp::warp_affine(py, image, m, new_size, interpolation)
 }
 
 #[pyfunction(name = "warp_perspective")]
@@ -265,7 +265,7 @@ pub fn warp_perspective_deprecated(
         py,
         "kornia_rs.warp_perspective is deprecated. Use kornia_rs.imgproc.warp_perspective.",
     )?;
-    warp::warp_perspective(image, m, new_size, interpolation)
+    warp::warp_perspective(py, image, m, new_size, interpolation)
 }
 
 // Main Python Module Definition
@@ -418,8 +418,9 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_submodule(&apriltag_mod)?;
 
     // Register submodules in sys.modules so `from kornia_rs.image import Image` works
-    let sys = py.import("sys")?;
-    let modules = sys.getattr("modules")?;
+    let modules = unsafe {
+        pyo3::Bound::from_borrowed_ptr(py, pyo3::ffi::PyImport_GetModuleDict())
+    };
     for (name, submod) in [
         ("kornia_rs.image", &image_mod),
         ("kornia_rs.io", &io_mod),

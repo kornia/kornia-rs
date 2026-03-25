@@ -1,61 +1,46 @@
 use pyo3::prelude::*;
 
-use crate::image::{FromPyImage, PyImage, ToPyImage};
-use kornia_image::{allocator::CpuAllocator, Image};
+use crate::image::{alloc_output_pyarray, numpy_to_f32_image, to_pyerr, PyImage};
+use kornia_image::{allocator::CpuAllocator, Image, ImageError};
 use kornia_imgproc::filter;
 
 #[pyfunction]
 pub fn gaussian_blur(
+    py: Python<'_>,
     image: PyImage,
     kernel_size: (usize, usize),
     sigma: (f32, f32),
 ) -> PyResult<PyImage> {
-    let image: Image<u8, 3, _> = Image::from_pyimage(image)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+    let src_f32 = numpy_to_f32_image::<3>(py, &image)?;
+    let size = src_f32.size();
+    let (mut dst_u8, out) = unsafe { alloc_output_pyarray::<3>(py, size)? };
 
-    let image = image
-        .cast::<f32>()
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+    py.detach(|| -> Result<(), ImageError> {
+        let mut dst_f32 = Image::from_size_val(size, 0.0f32, CpuAllocator)?;
+        filter::gaussian_blur(&src_f32, &mut dst_f32, kernel_size, sigma)?;
+        dst_u8.as_slice_mut().iter_mut()
+            .zip(dst_f32.as_slice().iter())
+            .for_each(|(d, &s)| *d = s as u8);
+        Ok(())
+    }).map_err(to_pyerr)?;
 
-    let mut dst: Image<f32, 3, _> = Image::from_size_val(image.size(), 0.0f32, CpuAllocator)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    filter::gaussian_blur(&image, &mut dst, kernel_size, sigma)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    let dst = dst
-        .cast::<u8>()
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    let pyimage = dst.to_pyimage().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    Ok(pyimage)
+    Ok(out)
 }
 
 #[pyfunction]
-pub fn box_blur(image: PyImage, kernel_size: (usize, usize)) -> PyResult<PyImage> {
-    let image: Image<u8, 3, _> = Image::from_pyimage(image)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+pub fn box_blur(py: Python<'_>, image: PyImage, kernel_size: (usize, usize)) -> PyResult<PyImage> {
+    let src_f32 = numpy_to_f32_image::<3>(py, &image)?;
+    let size = src_f32.size();
+    let (mut dst_u8, out) = unsafe { alloc_output_pyarray::<3>(py, size)? };
 
-    let image = image
-        .cast::<f32>()
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+    py.detach(|| -> Result<(), ImageError> {
+        let mut dst_f32 = Image::from_size_val(size, 0.0f32, CpuAllocator)?;
+        filter::box_blur(&src_f32, &mut dst_f32, kernel_size)?;
+        dst_u8.as_slice_mut().iter_mut()
+            .zip(dst_f32.as_slice().iter())
+            .for_each(|(d, &s)| *d = s as u8);
+        Ok(())
+    }).map_err(to_pyerr)?;
 
-    let mut dst: Image<f32, 3, _> = Image::from_size_val(image.size(), 0.0f32, CpuAllocator)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    filter::box_blur(&image, &mut dst, kernel_size)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    let dst = dst
-        .cast::<u8>()
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    let pyimage = dst.to_pyimage().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    Ok(pyimage)
+    Ok(out)
 }
