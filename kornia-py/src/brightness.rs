@@ -1,51 +1,30 @@
 use pyo3::prelude::*;
 
-use crate::image::{FromPyImage, PyImage, ToPyImage};
-use kornia_image::{allocator::CpuAllocator, Image};
+use crate::image::{alloc_output_pyarray, numpy_to_f32_image, to_pyerr, PyImage};
+use kornia_image::{allocator::CpuAllocator, Image, ImageError};
 use kornia_imgproc::enhance;
 
 #[pyfunction]
 #[pyo3(name = "adjust_brightness")]
-pub fn adjust_brightness_py(image: PyImage, factor: f32) -> PyResult<PyImage> {
-    let image: Image<u8, 3, _> = Image::from_pyimage(image)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+pub fn adjust_brightness_py(py: Python<'_>, image: PyImage, factor: f32) -> PyResult<PyImage> {
+    let src_f32 = numpy_to_f32_image::<3>(py, &image)?;
+    let size = src_f32.size();
+    let (mut dst_u8, out) = unsafe { alloc_output_pyarray::<3>(py, size)? };
 
-    let image = image
-        .cast::<f32>()
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+    py.detach(|| -> Result<(), ImageError> {
+        let mut normalized: Image<f32, 3, _> = Image::from_size_val(size, 0.0f32, CpuAllocator)?;
+        normalized.as_slice_mut().iter_mut()
+            .zip(src_f32.as_slice().iter())
+            .for_each(|(d, &s)| *d = s / 255.0);
 
-    // Normalize to [0,1] range
-    let mut normalized: Image<f32, 3, _> = Image::from_size_val(image.size(), 0.0f32, CpuAllocator)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+        let mut dst_f32 = Image::from_size_val(size, 0.0f32, CpuAllocator)?;
+        enhance::adjust_brightness(&normalized, &mut dst_f32, factor, true)?;
 
-    normalized
-        .as_slice_mut()
-        .iter_mut()
-        .zip(image.as_slice().iter())
-        .for_each(|(dst, &src)| {
-            *dst = src / 255.0;
-        });
+        dst_u8.as_slice_mut().iter_mut()
+            .zip(dst_f32.as_slice().iter())
+            .for_each(|(d, &s)| *d = (s * 255.0) as u8);
+        Ok(())
+    }).map_err(to_pyerr)?;
 
-    // Apply brightness adjustment (clamped to [0,1])
-    let mut dst: Image<f32, 3, _> =
-        Image::from_size_val(normalized.size(), 0.0f32, CpuAllocator)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    enhance::adjust_brightness(&normalized, &mut dst, factor, true)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    // Scale back to [0,255]
-    dst.as_slice_mut().iter_mut().for_each(|v| {
-        *v *= 255.0;
-    });
-
-    let dst = dst
-        .cast::<u8>()
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    let pyimage = dst.to_pyimage().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    Ok(pyimage)
+    Ok(out)
 }

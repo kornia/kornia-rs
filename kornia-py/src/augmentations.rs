@@ -5,7 +5,9 @@ use rand::rngs::StdRng;
 use std::cell::RefCell;
 use std::sync::Mutex;
 
-use crate::image::{PyImageApi, LUMINANCE_WEIGHTS};
+use crate::image::{
+    adjust_contrast_generic, adjust_saturation_generic, pyarray_data, vec_to_pyarray, PyImageApi,
+};
 
 // Global seed. When set, each augmentation call creates a seeded RNG.
 // When None, thread_rng() is used.
@@ -104,8 +106,6 @@ impl PyColorJitter {
     }
 
     fn __call__(&self, py: Python<'_>, img: PyRef<'_, PyImageApi>) -> PyResult<PyImageApi> {
-        let np = py.import("numpy")?;
-
         // Build ops list and shuffle using Rust RNG
         let mut ops: Vec<(u8, f64)> = Vec::with_capacity(4);
 
@@ -129,42 +129,29 @@ impl PyColorJitter {
             ops.shuffle(rng);
         });
 
-        // Start with a copy of the data as numpy array
+        // Start with a copy of the data
         let mut arr: Py<PyArray3<u8>> = img.data(py).bind(py).call_method0("copy")?.extract()?;
 
         for (op, factor) in &ops {
             match op {
-                0 => {
-                    // Brightness: multiplicative (torchvision convention)
-                    let float_data = arr.bind(py).call_method1("astype", ("float32",))?;
-                    let scaled = np.call_method1("multiply", (&float_data, *factor))?;
-                    let clipped = np.call_method1("clip", (&scaled, 0.0f64, 255.0f64))?;
-                    arr = clipped.call_method1("astype", ("uint8",))?.extract()?;
-                }
-                1 => {
-                    // Contrast
-                    let mean: f64 = arr.bind(py).call_method0("mean")?.extract()?;
-                    let float_data = arr.bind(py).call_method1("astype", ("float32",))?;
-                    let centered = np.call_method1("subtract", (&float_data, mean))?;
-                    let scaled = np.call_method1("multiply", (&centered, *factor))?;
-                    let shifted = np.call_method1("add", (&scaled, mean))?;
-                    let clipped = np.call_method1("clip", (&shifted, 0.0f64, 255.0f64))?;
-                    arr = clipped.call_method1("astype", ("uint8",))?.extract()?;
-                }
-                2 => {
-                    // Saturation
-                    let float_data = arr.bind(py).call_method1("astype", ("float32",))?;
-                    let weights = numpy::PyArray::from_vec(py, LUMINANCE_WEIGHTS.to_vec());
-                    let gray = np.call_method1("dot", (&float_data, weights))?;
-                    let gray = np.call_method1("expand_dims", (&gray, 2i32))?;
-                    let diff = np.call_method1("subtract", (&float_data, &gray))?;
-                    let scaled = np.call_method1("multiply", (&diff, *factor))?;
-                    let result_f = np.call_method1("add", (&gray, &scaled))?;
-                    let clipped = np.call_method1("clip", (&result_f, 0.0f64, 255.0f64))?;
-                    arr = clipped.call_method1("astype", ("uint8",))?.extract()?;
+                0 | 1 | 2 => {
+                    let (out, h, w, c) = {
+                        let bound = arr.bind(py);
+                        let (src, h, w, c) = pyarray_data(&bound);
+                        let out = match op {
+                            0 => src
+                                .iter()
+                                .map(|&v| (v as f64 * factor).clamp(0.0, 255.0) as u8)
+                                .collect(),
+                            1 => adjust_contrast_generic(src, *factor),
+                            2 if c == 3 => adjust_saturation_generic(src, h * w, *factor),
+                            _ => continue,
+                        };
+                        (out, h, w, c)
+                    };
+                    arr = vec_to_pyarray(py, out, h, w, c);
                 }
                 3 => {
-                    // Hue (use Image method via a temporary)
                     let tmp = PyImageApi::wrap(py, arr, Some("RGB".to_string()));
                     let result = tmp.adjust_hue(py, *factor)?;
                     arr = result.data(py);

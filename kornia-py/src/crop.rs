@@ -1,25 +1,13 @@
 use pyo3::prelude::*;
 
-use crate::image::{FromPyImage, PyImage, ToPyImage};
-use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
+use crate::image::{alloc_output_pyarray, numpy_as_image, to_pyerr, PyImage};
+use kornia_image::ImageSize;
 use kornia_imgproc::crop::crop_image;
 
 #[pyfunction]
-pub fn crop(image: PyImage, x: usize, y: usize, width: usize, height: usize) -> PyResult<PyImage> {
-    let image: Image<u8, 3, _> = Image::from_pyimage(image)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    let crop_size = ImageSize { width, height };
-
-    let mut dst = Image::from_size_val(crop_size, 0u8, CpuAllocator)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    crop_image(&image, &mut dst, x, y)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    let pyimage = dst.to_pyimage().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    Ok(pyimage)
+pub fn crop(py: Python<'_>, image: PyImage, x: usize, y: usize, width: usize, height: usize) -> PyResult<PyImage> {
+    let src = unsafe { numpy_as_image::<3>(py, &image)? };
+    let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, ImageSize { width, height })? };
+    py.detach(|| crop_image(&src, &mut dst, x, y)).map_err(to_pyerr)?;
+    Ok(out)
 }

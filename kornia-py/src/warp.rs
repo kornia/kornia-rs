@@ -1,103 +1,64 @@
-use kornia_image::allocator::CpuAllocator;
 use pyo3::prelude::*;
 
-use crate::image::{FromPyImage, PyImage, ToPyImage};
-use kornia_image::{Image, ImageSize};
+use crate::image::{alloc_output_pyarray, numpy_to_f32_image, to_pyerr, PyImage};
+use kornia_image::{allocator::CpuAllocator, Image, ImageError, ImageSize};
 use kornia_imgproc::interpolation::InterpolationMode;
 use kornia_imgproc::warp;
 
+fn parse_interpolation(s: &str) -> PyResult<InterpolationMode> {
+    match s.to_lowercase().as_str() {
+        "nearest" => Ok(InterpolationMode::Nearest),
+        "bilinear" => Ok(InterpolationMode::Bilinear),
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid interpolation mode")),
+    }
+}
+
 #[pyfunction]
 pub fn warp_affine(
+    py: Python<'_>,
     image: PyImage,
     m: [f32; 6],
     new_size: (usize, usize),
     interpolation: &str,
 ) -> PyResult<PyImage> {
-    // have to add annotation Image<u8, 3>, otherwise the compiler will complain
-    // NOTE: do we support images with channels != 3?
-    let image: Image<u8, 3, _> = Image::from_pyimage(image)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+    let new_size = ImageSize { height: new_size.0, width: new_size.1 };
+    let interpolation = parse_interpolation(interpolation)?;
+    let src_f32 = numpy_to_f32_image::<3>(py, &image)?;
+    let (mut dst_u8, out) = unsafe { alloc_output_pyarray::<3>(py, new_size)? };
 
-    let new_size = ImageSize {
-        height: new_size.0,
-        width: new_size.1,
-    };
+    py.detach(|| -> Result<(), ImageError> {
+        let mut dst_f32 = Image::from_size_val(new_size, 0f32, CpuAllocator)?;
+        warp::warp_affine(&src_f32, &mut dst_f32, &m, interpolation)?;
+        dst_u8.as_slice_mut().iter_mut()
+            .zip(dst_f32.as_slice().iter())
+            .for_each(|(d, &s)| *d = s as u8);
+        Ok(())
+    }).map_err(to_pyerr)?;
 
-    let interpolation = match interpolation.to_lowercase().as_str() {
-        "nearest" => InterpolationMode::Nearest,
-        "bilinear" => InterpolationMode::Bilinear,
-        _ => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Invalid interpolation mode",
-            ))
-        }
-    };
-
-    // we need to cast to f32 for now since kornia-rs interpolation function only works with f32
-    let image = image
-        .cast::<f32>()
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    let mut image_warped = Image::from_size_val(new_size, 0f32, CpuAllocator)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    warp::warp_affine(&image, &mut image_warped, &m, interpolation)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    // NOTE: for bicubic interpolation (not implemented yet), f32 may overshoot 255
-    let image_warped = image_warped
-        .cast::<u8>()
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    let pyimage_warped = image_warped.to_pyimage().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    Ok(pyimage_warped)
+    Ok(out)
 }
 
 #[pyfunction]
 pub fn warp_perspective(
+    py: Python<'_>,
     image: PyImage,
     m: [f32; 9],
     new_size: (usize, usize),
     interpolation: &str,
 ) -> PyResult<PyImage> {
-    let image: Image<u8, 3, _> = Image::from_pyimage(image)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
+    let new_size = ImageSize { height: new_size.0, width: new_size.1 };
+    let interpolation = parse_interpolation(interpolation)?;
+    let src_f32 = numpy_to_f32_image::<3>(py, &image)?;
+    let (mut dst_u8, out) = unsafe { alloc_output_pyarray::<3>(py, new_size)? };
 
-    let new_size = ImageSize {
-        height: new_size.0,
-        width: new_size.1,
-    };
+    py.detach(|| -> Result<(), ImageError> {
+        let mut dst_f32 = Image::from_size_val(new_size, 0f32, CpuAllocator)?;
+        warp::warp_perspective(&src_f32, &mut dst_f32, &m, interpolation)?;
+        dst_u8.as_slice_mut().iter_mut()
+            .zip(dst_f32.as_slice().iter())
+            .for_each(|(d, &s)| *d = s as u8);
+        Ok(())
+    }).map_err(to_pyerr)?;
 
-    let interpolation = match interpolation.to_lowercase().as_str() {
-        "nearest" => InterpolationMode::Nearest,
-        "bilinear" => InterpolationMode::Bilinear,
-        _ => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Invalid interpolation mode",
-            ))
-        }
-    };
-
-    let image = image
-        .cast::<f32>()
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    let mut image_warped = Image::from_size_val(new_size, 0f32, CpuAllocator)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    warp::warp_perspective(&image, &mut image_warped, &m, interpolation)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    let image_warped = image_warped
-        .cast::<u8>()
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e)))?;
-
-    let pyimage_warped = image_warped.to_pyimage().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    Ok(pyimage_warped)
+    Ok(out)
 }

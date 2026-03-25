@@ -1,177 +1,57 @@
 use pyo3::prelude::*;
 
-use crate::image::{FromPyImage, PyImage, ToPyImage};
-use kornia_image::{allocator::CpuAllocator, Image};
+use crate::image::{alloc_output_pyarray, numpy_as_image, numpy_to_f32_image, to_pyerr, PyImage};
+use kornia_image::{allocator::CpuAllocator, Image, ImageError};
 use kornia_imgproc::color;
 
-/// Converts a grayscale image to RGB.
-///
-/// # Arguments
-///
-/// * `image` - The input grayscale image (1 channel).
-///
-/// # Returns
-///
-/// * The converted RGB image (3 channels).
-///
-/// # Errors
-///
-/// * `PyException` - If the image conversion or allocation fails.
 #[pyfunction]
-pub fn rgb_from_gray(image: PyImage) -> PyResult<PyImage> {
-    let image_gray = Image::from_pyimage(image)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("src image: {}", e)))?;
-
-    let mut image_rgb = Image::from_size_val(image_gray.size(), 0u8, CpuAllocator)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("dst image: {}", e)))?;
-
-    color::rgb_from_gray(&image_gray, &mut image_rgb).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    let pyimage_rgb = image_rgb.to_pyimage().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    Ok(pyimage_rgb)
+pub fn rgb_from_gray(py: Python<'_>, image: PyImage) -> PyResult<PyImage> {
+    let src = unsafe { numpy_as_image::<1>(py, &image)? };
+    let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+    py.detach(|| color::rgb_from_gray(&src, &mut dst)).map_err(to_pyerr)?;
+    Ok(out)
 }
 
-/// Converts an RGB image to BGR format.
-///
-/// # Arguments
-///
-/// * `image` - The input RGB image (3 channels).
-///
-/// # Returns
-///
-/// * The converted BGR image (3 channels).
-///
-/// # Errors
-///
-/// * `PyException` - If the image conversion or allocation fails.
 #[pyfunction]
-pub fn bgr_from_rgb(image: PyImage) -> PyResult<PyImage> {
-    let image_rgb = Image::from_pyimage(image)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("src image: {}", e)))?;
-
-    let mut image_bgr = Image::from_size_val(image_rgb.size(), 0u8, CpuAllocator)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("dst image: {}", e)))?;
-
-    color::bgr_from_rgb(&image_rgb, &mut image_bgr).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    let pyimage_bgr = image_bgr.to_pyimage().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    Ok(pyimage_bgr)
+pub fn bgr_from_rgb(py: Python<'_>, image: PyImage) -> PyResult<PyImage> {
+    let src = unsafe { numpy_as_image::<3>(py, &image)? };
+    let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+    py.detach(|| color::bgr_from_rgb(&src, &mut dst)).map_err(to_pyerr)?;
+    Ok(out)
 }
 
-/// Converts an RGB image to grayscale.
-///
-/// # Arguments
-///
-/// * `image` - The input RGB image (3 channels).
-///
-/// # Returns
-///
-/// * The converted grayscale image (1 channel).
-///
-/// # Errors
-///
-/// * `PyException` - If the image conversion or allocation fails.
 #[pyfunction]
-pub fn gray_from_rgb(image: PyImage) -> PyResult<PyImage> {
-    let image_rgb = Image::from_pyimage(image)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("src image: {}", e)))?;
+pub fn gray_from_rgb(py: Python<'_>, image: PyImage) -> PyResult<PyImage> {
+    let src_f32 = numpy_to_f32_image::<3>(py, &image)?;
+    let size = src_f32.size();
+    let (mut dst_u8, out) = unsafe { alloc_output_pyarray::<1>(py, size)? };
 
-    let image_rgb = image_rgb.cast::<f32>().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
+    py.detach(|| -> Result<(), ImageError> {
+        let mut dst_f32 = Image::from_size_val(size, 0f32, CpuAllocator)?;
+        color::gray_from_rgb(&src_f32, &mut dst_f32)?;
+        dst_u8.as_slice_mut().iter_mut()
+            .zip(dst_f32.as_slice().iter())
+            .for_each(|(d, &s)| *d = s as u8);
+        Ok(())
+    }).map_err(to_pyerr)?;
 
-    let mut image_gray = Image::from_size_val(image_rgb.size(), 0f32, CpuAllocator)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("dst image: {}", e)))?;
-
-    color::gray_from_rgb(&image_rgb, &mut image_gray).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    let image_gray = image_gray.cast::<u8>().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    let pyimage_gray = image_gray.to_pyimage().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    Ok(pyimage_gray)
+    Ok(out)
 }
 
-/// Converts an RGBA image to RGB.
-///
-/// # Arguments
-///
-/// * `image` - The input RGBA image (4 channels).
-/// * `background` - An optional RGB background color to blend with the alpha channel. Defaults to None.
-///
-/// # Returns
-///
-/// * The converted RGB image (3 channels).
-///
-/// # Errors
-///
-/// * `PyException` - If the image conversion or allocation fails.
 #[pyfunction]
 #[pyo3(signature = (image, background=None))]
-pub fn rgb_from_rgba(image: PyImage, background: Option<[u8; 3]>) -> PyResult<PyImage> {
-    let image_rgba = Image::from_pyimage(image)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("src image: {}", e)))?;
-
-    let mut image_rgb = Image::from_size_val(image_rgba.size(), 0u8, CpuAllocator)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("dst image: {}", e)))?;
-
-    color::rgb_from_rgba(&image_rgba, &mut image_rgb, background).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    let pyimage_rgb = image_rgb.to_pyimage().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    Ok(pyimage_rgb)
+pub fn rgb_from_rgba(py: Python<'_>, image: PyImage, background: Option<[u8; 3]>) -> PyResult<PyImage> {
+    let src = unsafe { numpy_as_image::<4>(py, &image)? };
+    let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+    py.detach(|| color::rgb_from_rgba(&src, &mut dst, background)).map_err(to_pyerr)?;
+    Ok(out)
 }
 
-/// Converts a BGRA image to RGB.
-///
-/// # Arguments
-///
-/// * `image` - The input BGRA image (4 channels).
-/// * `background` - An optional RGB background color to blend with the alpha channel. Defaults to None.
-///
-/// # Returns
-///
-/// * The converted RGB image (3 channels).
-///
-/// # Errors
-///
-/// * `PyException` - If the image conversion or allocation fails.
 #[pyfunction]
 #[pyo3(signature = (image, background=None))]
-pub fn rgb_from_bgra(image: PyImage, background: Option<[u8; 3]>) -> PyResult<PyImage> {
-    let image_bgra = Image::from_pyimage(image)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("src image: {}", e)))?;
-
-    let mut image_rgb = Image::from_size_val(image_bgra.size(), 0u8, CpuAllocator)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyException, _>(format!("dst image: {}", e)))?;
-
-    color::rgb_from_bgra(&image_bgra, &mut image_rgb, background).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    let pyimage_rgb = image_rgb.to_pyimage().map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyException, _>(format!("failed to convert image: {}", e))
-    })?;
-
-    Ok(pyimage_rgb)
+pub fn rgb_from_bgra(py: Python<'_>, image: PyImage, background: Option<[u8; 3]>) -> PyResult<PyImage> {
+    let src = unsafe { numpy_as_image::<4>(py, &image)? };
+    let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
+    py.detach(|| color::rgb_from_bgra(&src, &mut dst, background)).map_err(to_pyerr)?;
+    Ok(out)
 }
