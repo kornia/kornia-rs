@@ -84,8 +84,9 @@ pub fn hough_lines<A: ImageAllocator>(
     let rows = edge_map.rows();
     let cols = edge_map.cols();
 
+    // An empty image trivially has no lines.
     if rows == 0 || cols == 0 {
-        return Err(ImageError::InvalidImageSize(cols, rows, 0, 0));
+        return Ok(Vec::new());
     }
 
     // Validate resolution parameters to avoid NaN/inf accumulator dimensions.
@@ -105,9 +106,26 @@ pub fn hough_lines<A: ImageAllocator>(
     // large images (especially on 32-bit targets).
     let max_rho = ((rows as f64 * rows as f64 + cols as f64 * cols as f64).sqrt()) as f32;
 
-    // Accumulator dimensions
+    // Accumulator dimensions — cap at a sane upper bound to prevent
+    // excessive memory usage from pathologically small resolutions.
+    const MAX_ACCUMULATOR_DIM: usize = 10_000;
     let num_rho = (2.0 * max_rho / rho_resolution).ceil() as usize + 1;
     let num_theta = (std::f32::consts::PI / theta_resolution).ceil() as usize;
+
+    if num_rho > MAX_ACCUMULATOR_DIM || num_theta > MAX_ACCUMULATOR_DIM {
+        return Err(ImageError::InvalidSigmaValue(
+            rho_resolution,
+            theta_resolution,
+        ));
+    }
+
+    // Guard against usize overflow when computing the total accumulator size.
+    let accumulator_size = num_rho
+        .checked_mul(num_theta)
+        .ok_or(ImageError::InvalidSigmaValue(
+            rho_resolution,
+            theta_resolution,
+        ))?;
 
     // Precompute sin/cos lookup tables
     let mut cos_table = vec![0.0f32; num_theta];
@@ -119,7 +137,7 @@ pub fn hough_lines<A: ImageAllocator>(
     }
 
     // Allocate and fill the accumulator
-    let mut accumulator = vec![0u32; num_rho * num_theta];
+    let mut accumulator = vec![0u32; accumulator_size];
 
     let data = edge_map.as_slice();
     for r in 0..rows {
