@@ -571,6 +571,183 @@ mod tests {
     }
 
     #[test]
+    fn test_ransac_up2p_complex() -> Result<(), PnPRansacError> {
+        // Yaw rotation of 30 degrees around Y axis (gravity axis)
+        let yaw = std::f32::consts::FRAC_PI_6;
+        let r_gt = Mat3AF32::from_cols_array(&[
+            yaw.cos(),
+            0.0,
+            -yaw.sin(),
+            0.0,
+            1.0,
+            0.0,
+            yaw.sin(),
+            0.0,
+            yaw.cos(),
+        ]);
+        let t_gt = Vec3AF32::new(1.5, -0.2, 3.0);
+        let k = k_default();
+
+        // 10 inliers, spread out
+        let mut world = vec![
+            Vec3AF32::new(1.0, 0.5, 2.0),
+            Vec3AF32::new(-1.0, 0.5, 2.5),
+            Vec3AF32::new(0.0, -0.2, 1.8),
+            Vec3AF32::new(0.5, -0.5, 3.0),
+            Vec3AF32::new(-0.2, 0.1, 2.2),
+            Vec3AF32::new(0.8, 0.0, 4.0),
+            Vec3AF32::new(2.0, -1.0, 3.5),
+            Vec3AF32::new(-1.5, 1.0, 5.0),
+            Vec3AF32::new(0.0, 2.0, 2.0),
+            Vec3AF32::new(0.3, -1.5, 3.1),
+        ];
+
+        let mut image = Vec::new();
+        for (i, pw) in world.iter().enumerate() {
+            let pc = r_gt * *pw + t_gt;
+            let mut p_img = Vec2F32::new(
+                k.x_axis().x * (pc.x / pc.z) + k.z_axis().x,
+                k.y_axis().y * (pc.y / pc.z) + k.z_axis().y,
+            );
+            // Add slight noise to inliers to test refinement step
+            let noise_x = if i % 2 == 0 { 1.5 } else { -1.5 };
+            let noise_y = if i % 3 == 0 { -1.5 } else { 1.5 };
+            p_img.x += noise_x;
+            p_img.y += noise_y;
+            image.push(p_img);
+        }
+
+        // Add 5 severe outliers
+        world.push(Vec3AF32::new(1.0, 1.0, 1.0));
+        image.push(Vec2F32::new(0.0, 0.0));
+        world.push(Vec3AF32::new(-1.0, -1.0, 1.0));
+        image.push(Vec2F32::new(1000.0, 1000.0));
+        world.push(Vec3AF32::new(0.0, 0.0, 1.0));
+        image.push(Vec2F32::new(500.0, -500.0));
+        world.push(Vec3AF32::new(2.0, 2.0, 2.0));
+        image.push(Vec2F32::new(-200.0, 400.0));
+        world.push(Vec3AF32::new(-2.0, 2.0, 2.0));
+        image.push(Vec2F32::new(800.0, 1200.0));
+
+        let gravity = Vec3AF32::new(0.0, 1.0, 0.0);
+        let params = RansacParams {
+            max_iterations: 50,
+            reproj_threshold_px: 5.0, // Should be large enough to tolerate the +/- 1.5px noise
+            confidence: 0.99,
+            random_seed: Some(42),
+            refine: true, // Tests the previously fixed refinement fallback path
+        };
+
+        let base = PnPMethod::UP2P(gravity);
+
+        let res = solve_pnp_ransac(&world, &image, &k, None, base, &params)?;
+
+        assert_eq!(res.inliers.len(), 10);
+
+        let rmse = res.pose.reproj_rmse.unwrap();
+        assert!(rmse > 0.0 && rmse < 10.0, "Actual RMSE: {}", rmse);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_ransac_up2p_high_outliers() -> Result<(), PnPRansacError> {
+        // Identity rotation and some translation
+        let r_gt = Mat3AF32::IDENTITY;
+        let t_gt = Vec3AF32::new(0.5, -0.5, 2.0);
+        let k = k_default();
+
+        let mut world = Vec::new();
+        let mut image = Vec::new();
+
+        // 8 Inliers
+        for i in 0..8 {
+            let pw = Vec3AF32::new(
+                i as f32 * 0.2 - 0.8,
+                (i % 3) as f32 * 0.4 - 0.4,
+                2.0 + i as f32 * 0.1,
+            );
+            world.push(pw);
+            let pc = r_gt * pw + t_gt;
+            image.push(Vec2F32::new(
+                k.x_axis().x * (pc.x / pc.z) + k.z_axis().x,
+                k.y_axis().y * (pc.y / pc.z) + k.z_axis().y,
+            ));
+        }
+
+        // 32 Outliers (80% outliers)
+        for i in 0..32 {
+            world.push(Vec3AF32::new(i as f32 * 0.5, -i as f32 * 0.2, 1.0));
+            image.push(Vec2F32::new(i as f32 * 40.0, i as f32 * 30.0 + 100.0));
+        }
+
+        let gravity = Vec3AF32::new(0.0, 1.0, 0.0);
+        let params = RansacParams {
+            max_iterations: 1000, // Large number of max iterations needed for 20% inlier ratio
+            reproj_threshold_px: 3.0,
+            confidence: 0.99, // 99% confidence requires ~113 iterations
+            random_seed: Some(42),
+            refine: true,
+        };
+
+        let base = PnPMethod::UP2P(gravity);
+
+        let res = solve_pnp_ransac(&world, &image, &k, None, base, &params)?;
+
+        // RANSAC should successfully find all 8 inliers despite 80% outliers
+        assert_eq!(res.inliers.len(), 8);
+        Ok(())
+    }
+
+    #[test]
+    fn test_ransac_up2p_minimal_inliers() -> Result<(), PnPRansacError> {
+        // Tests the logic where UP2P finds <4 inliers, exercising the fallback
+        // unrefined behavior when refine=true is requested but EPnP has insufficient points
+        let r_gt = Mat3AF32::IDENTITY;
+        let t_gt = Vec3AF32::new(-0.2, 0.1, 1.5);
+        let k = k_default();
+
+        let mut world = vec![
+            Vec3AF32::new(0.5, 0.5, 2.0),
+            Vec3AF32::new(-0.5, 0.5, 2.5),
+            Vec3AF32::new(0.0, -0.2, 1.8),
+        ];
+
+        let mut image = Vec::new();
+        for pw in &world {
+            let pc = r_gt * *pw + t_gt;
+            image.push(Vec2F32::new(
+                k.x_axis().x * (pc.x / pc.z) + k.z_axis().x,
+                k.y_axis().y * (pc.y / pc.z) + k.z_axis().y,
+            ));
+        }
+
+        // Add 5 Outliers
+        for i in 0..5 {
+            world.push(Vec3AF32::new(1.0, 1.0, 1.0));
+            image.push(Vec2F32::new(100.0 * i as f32, 200.0 * i as f32));
+        }
+
+        let gravity = Vec3AF32::new(0.0, 1.0, 0.0);
+        let params = RansacParams {
+            max_iterations: 20,
+            reproj_threshold_px: 3.0,
+            confidence: 0.99,
+            random_seed: Some(42),
+            refine: true,
+        };
+
+        let base = PnPMethod::UP2P(gravity);
+        let res = solve_pnp_ransac(&world, &image, &k, None, base, &params)?;
+
+        // UP2P only needs 2 points, so finding 3 is valid
+        assert_eq!(res.inliers.len(), 3);
+        assert!(res.pose.reproj_rmse.unwrap() < 3.0);
+
+        Ok(())
+    }
+
+    #[test]
     fn test_ransac_error_cases() {
         let points_world: [Vec3AF32; 3] = [
             Vec3AF32::new(0.0, 0.0, 1.0),
