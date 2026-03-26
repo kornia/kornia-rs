@@ -62,5 +62,13 @@ dev = [
 requires = ["maturin>=1,<2"]
 build-backend = "maturin"
 
+[tool.maturin]
+# Include the workspace Cargo.lock in the source distribution (sdist)
+# to ensure reproducible builds from the PyPI tarball.
+# See: https://github.com/kornia/kornia-rs/issues/827
+locked = true
+sdist-include = ["../Cargo.lock"]
+
+
 [tool.uv]
 extra-index-url = ["https://download.pytorch.org/whl/cpu"]
