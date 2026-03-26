@@ -258,7 +258,10 @@ pub fn solve_pnp_ransac(
                 if w_all.len() >= 4 {
                     // Try EPnP with default parameters to least-squares fit all inliers
                     solve_pnp(&w_all, &i_all, k, distortion, PnPMethod::EPnPDefault)
-                        .unwrap_or_else(|_| best_pose.clone())
+                        .unwrap_or_else(|e| {
+                            log::warn!("EPnP refinement on UP2P inliers failed! Falling back to unrefined minimal pose. Error: {}", e);
+                            best_pose.clone()
+                        })
                 } else {
                     best_pose
                 }
