@@ -31,7 +31,6 @@
 //! ```
 
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
-use kornia_tensor::CpuAllocator;
 
 use super::spatial_gradient_float;
 
@@ -96,8 +95,9 @@ pub fn canny<A1: ImageAllocator, A2: ImageAllocator>(
     }
 
     // 1. Compute Sobel gradients dx, dy
-    let mut dx = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
-    let mut dy = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+    let alloc = src.storage.alloc().clone();
+    let mut dx = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, alloc.clone())?;
+    let mut dy = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, alloc)?;
     spatial_gradient_float(src, &mut dx, &mut dy)?;
 
     let dx_data = dx.as_slice();
@@ -125,22 +125,31 @@ pub fn canny<A1: ImageAllocator, A2: ImageAllocator>(
             let angle = direction[idx];
 
             // Quantise the angle to one of four directions (0°, 45°, 90°, 135°).
-            // We map the continuous angle to the nearest neighbour pair.
-            let angle_deg = angle.to_degrees();
-            // Normalise into [0, 180)
-            let angle_norm = ((angle_deg % 180.0) + 180.0) % 180.0;
+            // Normalise angle to [0, PI)
+            let mut angle_norm = angle;
+            if angle_norm < 0.0 {
+                angle_norm += std::f32::consts::PI;
+            }
+            if angle_norm >= std::f32::consts::PI {
+                angle_norm -= std::f32::consts::PI;
+            }
 
-            let (n1, n2) = if !(22.5..157.5).contains(&angle_norm) {
+            let pi_8 = std::f32::consts::PI / 8.0;
+            let pi_3_8 = 3.0 * std::f32::consts::PI / 8.0;
+            let pi_5_8 = 5.0 * std::f32::consts::PI / 8.0;
+            let pi_7_8 = 7.0 * std::f32::consts::PI / 8.0;
+
+            let (n1, n2) = if angle_norm < pi_8 || angle_norm >= pi_7_8 {
                 // 0° direction → compare East / West
                 (magnitude[idx - 1], magnitude[idx + 1])
-            } else if angle_norm < 67.5 {
+            } else if angle_norm < pi_3_8 {
                 // 45° direction (gradient points South-East to North-West since image Y is down)
                 // Compare NW / SE
                 (
                     magnitude[(r - 1) * cols + (c - 1)],
                     magnitude[(r + 1) * cols + (c + 1)],
                 )
-            } else if angle_norm < 112.5 {
+            } else if angle_norm < pi_5_8 {
                 // 90° direction → compare North / South
                 (magnitude[(r - 1) * cols + c], magnitude[(r + 1) * cols + c])
             } else {
@@ -167,41 +176,40 @@ pub fn canny<A1: ImageAllocator, A2: ImageAllocator>(
 
     let dst_data = dst.as_slice_mut();
 
-    // Classify pixels
-    for i in 0..num_pixels {
-        if nms[i] >= high_threshold {
-            dst_data[i] = STRONG;
-        } else if nms[i] >= low_threshold {
-            dst_data[i] = WEAK;
-        } else {
-            dst_data[i] = 0;
+    // Classify pixels and seed the DFS stack with STRONG pixels
+    dst_data.fill(0);
+
+    let mut stack = Vec::new();
+    for r in 1..rows - 1 {
+        for c in 1..cols - 1 {
+            let idx = r * cols + c;
+            if nms[idx] >= high_threshold {
+                dst_data[idx] = STRONG;
+                stack.push(idx);
+            } else if nms[idx] >= low_threshold {
+                dst_data[idx] = WEAK;
+            }
         }
     }
 
-    // Hysteresis: iteratively promote WEAK pixels that are 8-connected to STRONG ones.
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for r in 1..rows - 1 {
-            for c in 1..cols - 1 {
-                let idx = r * cols + c;
-                if dst_data[idx] != WEAK {
-                    continue;
-                }
-                // Check 8-connected neighbours for a STRONG pixel.
-                let has_strong = dst_data[(r - 1) * cols + (c - 1)] == STRONG
-                    || dst_data[(r - 1) * cols + c] == STRONG
-                    || dst_data[(r - 1) * cols + (c + 1)] == STRONG
-                    || dst_data[r * cols + (c - 1)] == STRONG
-                    || dst_data[r * cols + (c + 1)] == STRONG
-                    || dst_data[(r + 1) * cols + (c - 1)] == STRONG
-                    || dst_data[(r + 1) * cols + c] == STRONG
-                    || dst_data[(r + 1) * cols + (c + 1)] == STRONG;
+    // Hysteresis: single-pass DFS to propagate STRONG edges to 8-connected WEAK pixels
+    let neighbor_offsets = [
+        -(cols as isize) - 1,
+        -(cols as isize),
+        -(cols as isize) + 1,
+        -1,
+        1,
+        (cols as isize) - 1,
+        (cols as isize),
+        (cols as isize) + 1,
+    ];
 
-                if has_strong {
-                    dst_data[idx] = STRONG;
-                    changed = true;
-                }
+    while let Some(idx) = stack.pop() {
+        for &offset in &neighbor_offsets {
+            let n_idx = (idx as isize + offset) as usize;
+            if dst_data[n_idx] == WEAK {
+                dst_data[n_idx] = STRONG;
+                stack.push(n_idx);
             }
         }
     }
