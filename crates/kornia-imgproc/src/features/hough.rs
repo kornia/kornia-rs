@@ -74,7 +74,7 @@ pub struct Line {
 /// * [`ImageError::InvalidSigmaValue`] if `rho_resolution` or `theta_resolution`
 ///   is not positive and finite, or if the resulting accumulator size would
 ///   exceed reasonable memory limits.
-/// * [`ImageError::InvalidHistogramBins`] if `threshold` is zero.
+/// * [`ImageError::InvalidThreshold`] if `threshold` is zero.
 pub fn hough_lines<A: ImageAllocator>(
     edge_map: &Image<u8, 1, A>,
     threshold: u32,
@@ -99,7 +99,9 @@ pub fn hough_lines<A: ImageAllocator>(
 
     // Reject threshold == 0 to avoid returning every accumulator cell.
     if threshold == 0 {
-        return Err(ImageError::InvalidHistogramBins(0));
+        return Err(ImageError::InvalidThreshold(
+            "Hough threshold must be > 0".into(),
+        ));
     }
 
     // Compute the image diagonal using f64 to avoid usize overflow on

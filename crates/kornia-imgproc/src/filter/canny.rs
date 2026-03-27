@@ -1,6 +1,6 @@
 //! Canny edge detection.
 //!
-//! Finds the edges in a grayscale image using the classic Canny algorithm
+//! Finds the edges in a grayscale image using the Canny algorithm
 //! (J. Canny, 1986). Under the hood it:
 //!
 //! 1. Computes horizontal and vertical gradients with a normalised Sobel filter
@@ -8,6 +8,12 @@
 //! 2. Thins edges to one-pixel width through non-maximum suppression.
 //! 3. Links edges using double-threshold hysteresis — strong edges are kept
 //!    immediately, and weak edges are promoted only if they touch a strong one.
+//!
+//! ## Pre-smoothing
+//!
+//! This implementation does **not** include an initial Gaussian blur stage.
+//! For noisy inputs the caller should apply a Gaussian blur (e.g.
+//! [`kornia_imgproc::filter::gaussian_blur`]) before calling [`canny`].
 //!
 //! ## Choosing thresholds
 //!
@@ -55,8 +61,9 @@ use super::spatial_gradient_float;
 ///
 /// # Errors
 ///
-/// Returns [`ImageError::InvalidImageSize`] when `src` and `dst` have different
-/// dimensions.
+/// * [`ImageError::InvalidImageSize`] — `src` and `dst` have different dimensions.
+/// * [`ImageError::InvalidThreshold`] — thresholds are non-finite, negative,
+///   or `low_threshold > high_threshold`.
 ///
 /// # Example
 ///
@@ -76,6 +83,23 @@ pub fn canny<A1: ImageAllocator, A2: ImageAllocator>(
     low_threshold: f32,
     high_threshold: f32,
 ) -> Result<(), ImageError> {
+    // Validate thresholds
+    if !low_threshold.is_finite() || !high_threshold.is_finite() {
+        return Err(ImageError::InvalidThreshold(
+            "thresholds must be finite".into(),
+        ));
+    }
+    if low_threshold < 0.0 || high_threshold < 0.0 {
+        return Err(ImageError::InvalidThreshold(
+            "thresholds must be non-negative".into(),
+        ));
+    }
+    if low_threshold > high_threshold {
+        return Err(ImageError::InvalidThreshold(format!(
+            "low_threshold ({low_threshold}) must be <= high_threshold ({high_threshold})"
+        )));
+    }
+
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
             src.cols(),
@@ -228,6 +252,7 @@ pub fn canny<A1: ImageAllocator, A2: ImageAllocator>(
 mod tests {
     use super::*;
     use kornia_image::ImageSize;
+    use kornia_tensor::CpuAllocator;
 
     /// A white square on a black background should produce edges exactly on the perimeter.
     #[test]
