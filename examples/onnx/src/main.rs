@@ -26,6 +26,17 @@ pub struct Detection {
     pub h: f32,
 }
 
+fn parse_device(device: &str) -> Result<String, String> {
+    let d = device.to_lowercase();
+    match d.as_str() {
+        "cpu" | "cuda" | "tensorrt" => Ok(d),
+        _ => Err(format!(
+            "invalid device '{}'; expected one of: cpu, cuda, tensorrt",
+            device
+        )),
+    }
+}
+
 #[derive(FromArgs)]
 /// Perform object detection using ONNX Runtime and log it to Rerun
 struct Args {
@@ -40,6 +51,15 @@ struct Args {
     /// path to the ORT dylib
     #[argh(option)]
     ort_dylib_path: PathBuf,
+
+    /// target device for the execution provider ('cpu', 'cuda', or 'tensorrt')
+    #[argh(
+        option,
+        short = 'd',
+        default = "String::from(\"cpu\")",
+        from_str_fn(parse_device)
+    )]
+    device: String,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,12 +72,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image = F::read_image_any_rgb8(&args.image_path)?;
 
     // read the onnx model
+    // configure execution providers based on the selected device
+    let device_arg = args.device.to_lowercase();
 
-    let mut model = Session::builder()?
-        .with_optimization_level(GraphOptimizationLevel::Level3)?
-        .with_intra_threads(4)?
-        .commit_from_file(&args.onnx_model_path)?;
+    let create_base_builder = || -> Result<ort::session::builder::SessionBuilder, ort::Error> {
+        ort::session::Session::builder()?
+            .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)?
+            .with_intra_threads(4)
+    };
 
+    let builder = match device_arg.as_str() {
+        "tensorrt" => {
+            println!("Using TensorRT Execution Provider...");
+            let b = Session::builder()?
+                .with_optimization_level(GraphOptimizationLevel::Level3)?
+                .with_intra_threads(4)?;
+            // Fallback to CPU if hardware execution provider registration fails
+            match b.with_execution_providers([
+                ort::execution_providers::TensorRTExecutionProvider::default().build(),
+                ort::execution_providers::CUDAExecutionProvider::default().build(),
+            ]) {
+                Ok(ep_builder) => ep_builder,
+                Err(e) => {
+                    println!(
+                        "⚠️ TensorRT/CUDA registration failed: {}. Falling back to CPU...",
+                        e
+                    );
+                    create_base_builder()?
+                }
+            }
+        }
+        "cuda" => {
+            println!("Using CUDA Execution Provider...");
+            let b = Session::builder()?
+                .with_optimization_level(GraphOptimizationLevel::Level3)?
+                .with_intra_threads(4)?;
+            match b.with_execution_providers([
+                ort::execution_providers::CUDAExecutionProvider::default().build(),
+            ]) {
+                Ok(ep_builder) => ep_builder,
+                Err(e) => {
+                    println!("⚠️ CUDA registration failed: {}. Falling back to CPU...", e);
+                    create_base_builder()?
+                }
+            }
+        }
+        _ => {
+            println!("Using default CPU Execution Provider.");
+            create_base_builder()?
+        }
+    };
+
+    //commit the session and load the model
+    let mut model = builder.commit_from_file(&args.onnx_model_path)?;
     // cast and scale the image to f32
     let mut image_hwc_f32 = Image::from_size_val(image.size(), 0.0f32, CpuAllocator)?;
     kornia::image::ops::cast_and_scale(&image, &mut image_hwc_f32, 1.0 / 255.0)?;
