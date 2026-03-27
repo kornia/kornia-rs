@@ -1,11 +1,19 @@
+#[cfg(not(windows))]
 use apriltag::DetectorBuilder;
+#[cfg(not(windows))]
 use criterion::{criterion_group, criterion_main, Criterion};
+#[cfg(not(windows))]
 use kornia_apriltag::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
+#[cfg(not(windows))]
 use kornia_image::{allocator::CpuAllocator, Image};
+#[cfg(not(windows))]
 use kornia_imgproc::color::gray_from_rgb_u8;
+#[cfg(not(windows))]
 use kornia_io::jpeg::read_image_jpeg_rgb8;
+#[cfg(not(windows))]
 use std::path::PathBuf;
 
+#[cfg(not(windows))]
 fn bench_decoding(c: &mut Criterion) {
     let img_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/data/apriltags_tag36h11.jpg");
@@ -63,5 +71,10 @@ fn bench_decoding(c: &mut Criterion) {
     });
 }
 
+#[cfg(not(windows))]
 criterion_group!(benches, bench_decoding);
+#[cfg(not(windows))]
 criterion_main!(benches);
+
+#[cfg(windows)]
+fn main() {}

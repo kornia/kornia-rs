@@ -266,6 +266,8 @@ impl AprilTagDecoder {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use kornia_io::png::read_image_png_mono8;
 
     use crate::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
@@ -275,10 +277,14 @@ mod tests {
         decoder: &mut AprilTagDecoder,
         expected_tag: TagFamilyKind,
         expected_quads: [Vec2F32; 4],
-        images_dir: &str,
+        // Path relative to the crate root (`CARGO_MANIFEST_DIR`).
+        images_dir_relative_to_crate_root: &str,
         file_name_starts_with: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let tag_images = std::fs::read_dir(images_dir)?;
+        let tag_images_dir =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(images_dir_relative_to_crate_root);
+        let tag_images = std::fs::read_dir(tag_images_dir)?;
+        let mut matched_fixture = false;
 
         for img in tag_images {
             let img = img?;
@@ -288,6 +294,7 @@ mod tests {
                 .ok_or("Failed to convert file name to str")?;
 
             if file_name.starts_with(file_name_starts_with) {
+                matched_fixture = true;
                 let file_path = img.path();
 
                 let expected_id = file_name.strip_prefix(file_name_starts_with).unwrap();
@@ -332,9 +339,16 @@ mod tests {
             }
         }
 
+        assert!(
+            matched_fixture,
+            "No fixtures matching prefix '{}' for {:?}",
+            file_name_starts_with, expected_tag
+        );
+
         Ok(())
     }
 
+    #[cfg_attr(windows, ignore = "apriltag fixtures not available on Windows")]
     #[test]
     fn test_tag16_h5() -> Result<(), Box<dyn std::error::Error>> {
         let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag16H5])?;
@@ -358,6 +372,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg_attr(windows, ignore = "apriltag fixtures not available on Windows")]
     #[test]
     fn test_tag25_h9() -> Result<(), Box<dyn std::error::Error>> {
         let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag25H9])?;
@@ -381,6 +396,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg_attr(windows, ignore = "apriltag fixtures not available on Windows")]
     #[test]
     fn test_tag36_h11() -> Result<(), Box<dyn std::error::Error>> {
         let config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11])?;
@@ -404,6 +420,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg_attr(windows, ignore = "apriltag fixtures not available on Windows")]
     #[test]
     fn test_tagcircle21h7() -> Result<(), Box<dyn std::error::Error>> {
         let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCircle21H7])?;
@@ -427,6 +444,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg_attr(windows, ignore = "apriltag fixtures not available on Windows")]
     #[test]
     fn test_tagcircle49h12() -> Result<(), Box<dyn std::error::Error>> {
         let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCircle49H12])?;
@@ -450,6 +468,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg_attr(windows, ignore = "apriltag fixtures not available on Windows")]
     #[test]
     fn test_tagcustom48_h12() -> Result<(), Box<dyn std::error::Error>> {
         let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagCustom48H12])?;
@@ -473,6 +492,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg_attr(windows, ignore = "apriltag fixtures not available on Windows")]
     #[test]
     fn test_tagstandard41_h12() -> Result<(), Box<dyn std::error::Error>> {
         let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard41H12])?;
@@ -496,6 +516,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg_attr(windows, ignore = "apriltag fixtures not available on Windows")]
     #[test]
     fn test_tagstandard52_h13() -> Result<(), Box<dyn std::error::Error>> {
         let config = DecodeTagsConfig::new(vec![TagFamilyKind::TagStandard52H13])?;
