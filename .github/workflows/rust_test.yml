@@ -23,22 +23,25 @@ on:
 
 jobs:
   test:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
+        mode: [default, all-features, no-default-features]
+        release: [true, false]
         include:
-          - name: Test Debug - x86_64
-            runner: ubuntu-latest
-            command: rust-test
-          - name: Test Release - x86_64
-            runner: ubuntu-latest
-            command: rust-test-release
-          - name: Test Debug - aarch64
-            runner: ubuntu-24.04-arm
-            command: rust-test
+          - mode: default
+            flags: ""
+          - mode: all-features
+            flags: "--all-features"
+            env_name: cuda
+          - mode: no-default-features
+            flags: "--no-default-features"
+          - release: true
+            rel_flag: "--release"
+          - release: false
+            rel_flag: ""
 
     steps:
       - uses: actions/checkout@v6
@@ -51,11 +54,17 @@ jobs:
         with:
           pixi-version: v0.40.0
           cache: true
+          environments: dev
 
-      - name: Run ${{ matrix.command }}
-        run: pixi run ${{ matrix.command }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+
+      - name: Run tests (${{ matrix.mode }}, release=${{ matrix.release }})
+        run: |
+            pixi run cargo hack test --workspace ${{ matrix.flags }} ${{ matrix.rel_flag }}
 
       - name: Show sccache stats
         if: always()
         run: |
-          sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
+            sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
