@@ -157,9 +157,43 @@ pub fn hough_lines<A: ImageAllocator>(
         for t in 0..num_theta {
             let votes = accumulator[rho_idx * num_theta + t];
             if votes >= threshold {
-                let rho = rho_idx as f32 * rho_resolution - max_rho;
-                let theta = t as f32 * theta_resolution;
-                peaks.push((votes, rho, theta));
+                // 9x9 local Non-Maximum Suppression (NMS) to heavily deduplicate thick noisy edges
+                let mut is_local_max = true;
+                let nms_radius = 4;
+                for dr in -nms_radius..=nms_radius {
+                    for dt in -nms_radius..=nms_radius {
+                        if dr == 0 && dt == 0 {
+                            continue;
+                        }
+                        let nr = rho_idx as isize + dr;
+                        let nt = t as isize + dt;
+
+                        // Check bounds. For theta, a strict implementation could wrap around,
+                        // but a simple margin ignore is standard and sufficient here.
+                        if nr >= 0 && nr < num_rho as isize && nt >= 0 && nt < num_theta as isize {
+                            let neighbor_votes = accumulator[nr as usize * num_theta + nt as usize];
+
+                            // If a neighbor has strictly more votes, this is not a peak.
+                            // If it holds equal votes, use an asymmetric tie-break to prevent
+                            // returning the exact same plateau multiple times.
+                            if neighbor_votes > votes
+                                || (neighbor_votes == votes && (dr > 0 || (dr == 0 && dt > 0)))
+                            {
+                                is_local_max = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !is_local_max {
+                        break;
+                    }
+                }
+
+                if is_local_max {
+                    let rho = rho_idx as f32 * rho_resolution - max_rho;
+                    let theta = t as f32 * theta_resolution;
+                    peaks.push((votes, rho, theta));
+                }
             }
         }
     }

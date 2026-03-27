@@ -17,14 +17,18 @@ fn u8_to_f32(src: &Image<u8, 1, CpuAllocator>) -> Image<f32, 1, CpuAllocator> {
     dst
 }
 
+fn data_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tests/data")
+}
+
 #[test]
 fn test_canny_hough_euroc() {
-    let data_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("tests/data");
+    let data_dir = data_dir();
 
     // EuRoC MH01 Frame 1 (already grayscale mono8)
     let img_gray = kornia_io::png::read_image_png_mono8(data_dir.join("mh01_frame1.png")).unwrap();
@@ -32,7 +36,6 @@ fn test_canny_hough_euroc() {
 
     // Note: spatial_gradient_float uses a normalized Sobel kernel, so
     // gradient magnitudes are in the range [0, ~125] for 0-255 input.
-    // Thresholds must be chosen accordingly.
     let mut edges = Image::<u8, 1, _>::from_size_val(img_f32.size(), 0, CpuAllocator).unwrap();
     canny(&img_f32, &mut edges, 10.0, 40.0).unwrap();
 
@@ -61,6 +64,12 @@ fn test_canny_hough_euroc() {
             line.theta.to_degrees()
         );
     }
+
+    assert!(
+        !lines.is_empty(),
+        "expected at least one Hough line for EuRoC frame"
+    );
+
     assert!(
         edge_count > 100,
         "expected many edges on a real scene, got {edge_count}"
@@ -69,12 +78,7 @@ fn test_canny_hough_euroc() {
 
 #[test]
 fn test_canny_hough_dog_rgb() {
-    let data_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("tests/data");
+    let data_dir = data_dir();
 
     // Dog image (RGB) → convert to grayscale first
     let img_rgb = kornia_io::png::read_image_png_rgb8(data_dir.join("dog-rgb8.png")).unwrap();
@@ -106,6 +110,12 @@ fn test_canny_hough_dog_rgb() {
             line.theta.to_degrees()
         );
     }
+
+    assert!(
+        !lines.is_empty(),
+        "expected at least one Hough line for dog image"
+    );
+
     assert!(
         edge_count > 50,
         "expected edges on the dog image, got {edge_count}"

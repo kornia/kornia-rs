@@ -58,6 +58,19 @@ use super::spatial_gradient_float;
 ///
 /// Returns [`ImageError::InvalidImageSize`] when `src` and `dst` have different
 /// dimensions.
+///
+/// # Example
+///
+/// ```rust
+/// use kornia_imgproc::filter::canny;
+/// use kornia_image::{Image, ImageSize};
+/// use kornia_tensor::CpuAllocator;
+///
+/// let size = ImageSize { width: 64, height: 64 };
+/// let src = Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator).unwrap();
+/// let mut dst = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator).unwrap();
+/// canny(&src, &mut dst, 10.0, 40.0).unwrap();
+/// ```
 pub fn canny<A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<f32, 1, A1>,
     dst: &mut Image<u8, 1, A2>,
@@ -75,6 +88,12 @@ pub fn canny<A1: ImageAllocator, A2: ImageAllocator>(
 
     let rows = src.rows();
     let cols = src.cols();
+
+    // Prevent underflow since algorithms ignore 1-pixel borders
+    if rows < 3 || cols < 3 {
+        dst.as_slice_mut().fill(0);
+        return Ok(());
+    }
 
     // 1. Compute Sobel gradients dx, dy
     let mut dx = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
@@ -115,19 +134,21 @@ pub fn canny<A1: ImageAllocator, A2: ImageAllocator>(
                 // 0° direction → compare East / West
                 (magnitude[idx - 1], magnitude[idx + 1])
             } else if angle_norm < 67.5 {
-                // 45° direction → compare NE / SW
+                // 45° direction (gradient points South-East to North-West since image Y is down)
+                // Compare NW / SE
                 (
-                    magnitude[(r - 1) * cols + (c + 1)],
-                    magnitude[(r + 1) * cols + (c - 1)],
+                    magnitude[(r - 1) * cols + (c - 1)],
+                    magnitude[(r + 1) * cols + (c + 1)],
                 )
             } else if angle_norm < 112.5 {
                 // 90° direction → compare North / South
                 (magnitude[(r - 1) * cols + c], magnitude[(r + 1) * cols + c])
             } else {
-                // 135° direction → compare NW / SE
+                // 135° direction (gradient points South-West to North-East since image Y is down)
+                // Compare NE / SW
                 (
-                    magnitude[(r - 1) * cols + (c - 1)],
-                    magnitude[(r + 1) * cols + (c + 1)],
+                    magnitude[(r - 1) * cols + (c + 1)],
+                    magnitude[(r + 1) * cols + (c - 1)],
                 )
             };
 
