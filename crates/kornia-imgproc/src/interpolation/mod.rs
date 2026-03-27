@@ -1,3 +1,4 @@
+mod bicubic;
 mod bilinear;
 
 /// Utility functions to generate meshgrid and remap images

@@ -213,7 +213,7 @@ mod tests {
             CpuAllocator,
         )?;
         let m = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
-        let err = super::warp_affine(&src, &mut dst, &m, super::InterpolationMode::Bicubic);
+        let err = super::warp_affine(&src, &mut dst, &m, super::InterpolationMode::Lanczos);
         assert!(err.is_err());
         Ok(())
     }
