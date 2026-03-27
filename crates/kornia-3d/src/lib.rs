@@ -1,6 +1,12 @@
 #![deny(missing_docs)]
 #![doc = env!("CARGO_PKG_DESCRIPTION")]
 
+/// Bundle adjustment solver.
+pub mod ba;
+
+/// Pinhole camera model with Brown-Conrady distortion and Kannala-Brandt fisheye model.
+pub mod camera;
+
 /// I/O utilities for reading and writing 3D data.
 pub mod io;
 
