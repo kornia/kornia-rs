@@ -58,3 +58,28 @@ jobs:
         if: always() && matrix.needs-sccache
         run: |
           sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
+
+  cross-platform-check-macos:
+    name: Check - macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          pixi-version: v0.40.0
+          cache: true
+
+      - name: Run cargo check
+        run: pixi run rust-check
+
+  cross-platform-check-windows:
+    name: Check - Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run cargo check (core crates)
+        run: cargo check
