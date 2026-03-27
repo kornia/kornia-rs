@@ -9,6 +9,9 @@ pub mod ransac;
 /// LM-based pose refinement.
 pub mod refine;
 
+/// Upright 2-Point Perspective (UP2P) solver.
+pub mod up2p;
+
 mod ops;
 
 pub use epnp::{EPnP, EPnPParams};
@@ -17,6 +20,7 @@ use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 pub use ransac::{solve_pnp_ransac, PnPRansacError, PnPRansacResult, RansacParams};
 pub use refine::{refine_pose_lm, LMRefineParams};
 use thiserror::Error;
+pub use up2p::{solve_up2p, UP2P};
 
 /// Error types for PnP solvers.
 #[derive(Debug, Error)]
@@ -115,6 +119,8 @@ pub enum PnPMethod {
     EPnP(EPnPParams),
     /// Efficient PnP solver with the module's default parameters.
     EPnPDefault,
+    /// Upright 2-Point Perspective solver. The argument is the unit gravity vector in the camera frame.
+    UP2P(Vec3AF32),
     // Placeholder for future solvers such as P3P, DLS, etc.
 }
 
@@ -129,5 +135,26 @@ pub fn solve_pnp(
     match method {
         PnPMethod::EPnP(params) => EPnP::solve(world, image, k, distortion, &params),
         PnPMethod::EPnPDefault => EPnP::solve(world, image, k, distortion, &EPnPParams::default()),
+        PnPMethod::UP2P(gravity) => UP2P::solve(world, image, k, distortion, &gravity),
+    }
+}
+
+/// Routes to the chosen PnP solver and returns all candidate poses.
+///
+/// Unlike [solve_pnp], which returns a single best result, this function
+/// returns every valid pose hypothesis produced by the solver. This is used
+pub(crate) fn solve_pnp_multi(
+    world: &[Vec3AF32],
+    image: &[Vec2F32],
+    k: &Mat3AF32,
+    distortion: Option<&PolynomialDistortion>,
+    method: PnPMethod,
+) -> Result<Vec<PnPResult>, PnPError> {
+    match method {
+        PnPMethod::UP2P(gravity) => up2p::solve_up2p_multi(world, image, k, distortion, &gravity),
+        _ => {
+            let res = solve_pnp(world, image, k, distortion, method)?;
+            Ok(vec![res])
+        }
     }
 }
