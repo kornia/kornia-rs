@@ -85,6 +85,36 @@ impl JpegTurboEncoder {
             .compress_to_vec(buf)?)
     }
 
+    /// Encodes the given Gray/Mono8 image into a JPEG image.
+    ///
+    /// # Arguments
+    ///
+    /// * `image` - The image to encode.
+    ///
+    /// # Returns
+    ///
+    /// The encoded data as `Vec<u8>`.
+    pub fn encode_gray8<A: ImageAllocator>(
+        &self,
+        image: &Image<u8, 1, A>,
+    ) -> Result<Vec<u8>, JpegTurboError> {
+        let image_data = image.as_slice();
+
+        let buf = turbojpeg::Image {
+            pixels: image_data,
+            width: image.width(),
+            pitch: image.width(),
+            height: image.height(),
+            format: turbojpeg::PixelFormat::GRAY,
+        };
+
+        Ok(self
+            .0
+            .lock()
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
+            .compress_to_vec(buf)?)
+    }
+
     /// Sets the quality of the encoder.
     ///
     /// # Arguments
@@ -166,7 +196,7 @@ impl JpegTurboDecoder {
     pub fn decode_gray8(
         &self,
         jpeg_data: &[u8],
-    ) -> Result<Image<u8, 3, CpuAllocator>, JpegTurboError> {
+    ) -> Result<Image<u8, 1, CpuAllocator>, JpegTurboError> {
         self.decode(jpeg_data, turbojpeg::PixelFormat::GRAY)
     }
 
@@ -185,7 +215,7 @@ impl JpegTurboDecoder {
         let buf = turbojpeg::Image {
             pixels: pixels.as_mut_slice(),
             width: image_size.width,
-            pitch: 3 * image_size.width, // we use no padding between rows
+            pitch: C * image_size.width, // we use no padding between rows
             height: image_size.height,
             format,
         };
