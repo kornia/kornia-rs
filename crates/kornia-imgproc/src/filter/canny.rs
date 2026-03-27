@@ -128,10 +128,10 @@ pub fn canny<A1: ImageAllocator, A2: ImageAllocator>(
     let dy_data = dy.as_slice();
 
     // 2. Compute magnitude and direction
-    let num_pixels = rows.checked_mul(cols).ok_or_else(|| {
+    let num_pixels = rows.checked_mul(cols).ok_or(
         // Image is too large to safely process (rows * cols overflowed usize).
-        ImageError::InvalidImageSize(cols, rows, cols, rows)
-    })?;
+        ImageError::InvalidImageSize(cols, rows, cols, rows),
+    )?;
     let mut magnitude = vec![0.0f32; num_pixels];
     let mut direction = vec![0.0f32; num_pixels];
 
