@@ -85,19 +85,17 @@ pub fn canny<A1: ImageAllocator, A2: ImageAllocator>(
 ) -> Result<(), ImageError> {
     // Validate thresholds
     if !low_threshold.is_finite() || !high_threshold.is_finite() {
-        return Err(ImageError::InvalidThreshold(
-            "thresholds must be finite".into(),
-        ));
+        return Err(ImageError::InvalidThreshold("thresholds must be finite"));
     }
     if low_threshold < 0.0 || high_threshold < 0.0 {
         return Err(ImageError::InvalidThreshold(
-            "thresholds must be non-negative".into(),
+            "thresholds must be non-negative",
         ));
     }
     if low_threshold > high_threshold {
-        return Err(ImageError::InvalidThreshold(format!(
-            "low_threshold ({low_threshold}) must be <= high_threshold ({high_threshold})"
-        )));
+        return Err(ImageError::InvalidThreshold(
+            "low_threshold must be <= high_threshold",
+        ));
     }
 
     if src.size() != dst.size() {
@@ -130,7 +128,7 @@ pub fn canny<A1: ImageAllocator, A2: ImageAllocator>(
     // 2. Compute magnitude and direction
     let num_pixels = rows.checked_mul(cols).ok_or(
         // Image is too large to safely process (rows * cols overflowed usize).
-        ImageError::InvalidImageSize(cols, rows, cols, rows),
+        ImageError::ImageTooLarge(rows, cols),
     )?;
     let mut magnitude = vec![0.0f32; num_pixels];
     let mut direction = vec![0.0f32; num_pixels];
@@ -144,6 +142,12 @@ pub fn canny<A1: ImageAllocator, A2: ImageAllocator>(
 
     // 3. Non-maximum suppression
     let mut nms = vec![0.0f32; num_pixels];
+
+    // Precomputed radian thresholds for 4-direction NMS quantisation.
+    let pi_8 = std::f32::consts::PI / 8.0;
+    let pi_3_8 = 3.0 * std::f32::consts::PI / 8.0;
+    let pi_5_8 = 5.0 * std::f32::consts::PI / 8.0;
+    let pi_7_8 = 7.0 * std::f32::consts::PI / 8.0;
 
     for r in 1..rows - 1 {
         for c in 1..cols - 1 {
@@ -160,11 +164,6 @@ pub fn canny<A1: ImageAllocator, A2: ImageAllocator>(
             if angle_norm >= std::f32::consts::PI {
                 angle_norm -= std::f32::consts::PI;
             }
-
-            let pi_8 = std::f32::consts::PI / 8.0;
-            let pi_3_8 = 3.0 * std::f32::consts::PI / 8.0;
-            let pi_5_8 = 5.0 * std::f32::consts::PI / 8.0;
-            let pi_7_8 = 7.0 * std::f32::consts::PI / 8.0;
 
             let (n1, n2) = if angle_norm < pi_8 || angle_norm >= pi_7_8 {
                 // 0° direction → compare East / West
@@ -338,5 +337,45 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    /// Non-finite thresholds should be rejected.
+    #[test]
+    fn test_canny_rejects_nan_threshold() {
+        let size = ImageSize {
+            width: 16,
+            height: 16,
+        };
+        let src = Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator).unwrap();
+        let mut dst = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator).unwrap();
+
+        assert!(canny(&src, &mut dst, f32::NAN, 40.0).is_err());
+        assert!(canny(&src, &mut dst, 10.0, f32::INFINITY).is_err());
+    }
+
+    /// Negative thresholds should be rejected.
+    #[test]
+    fn test_canny_rejects_negative_threshold() {
+        let size = ImageSize {
+            width: 16,
+            height: 16,
+        };
+        let src = Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator).unwrap();
+        let mut dst = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator).unwrap();
+
+        assert!(canny(&src, &mut dst, -1.0, 40.0).is_err());
+    }
+
+    /// low > high should be rejected.
+    #[test]
+    fn test_canny_rejects_misordered_thresholds() {
+        let size = ImageSize {
+            width: 16,
+            height: 16,
+        };
+        let src = Image::<f32, 1, _>::from_size_val(size, 0.0, CpuAllocator).unwrap();
+        let mut dst = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator).unwrap();
+
+        assert!(canny(&src, &mut dst, 50.0, 10.0).is_err());
     }
 }

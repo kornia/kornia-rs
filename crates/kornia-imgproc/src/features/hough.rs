@@ -91,21 +91,19 @@ pub fn hough_lines<A: ImageAllocator>(
 
     // Validate resolution parameters to avoid NaN/inf accumulator dimensions.
     if !rho_resolution.is_finite() || rho_resolution <= 0.0 {
-        return Err(ImageError::InvalidResolution(format!(
-            "rho_resolution must be positive and finite, got {rho_resolution}"
-        )));
+        return Err(ImageError::InvalidResolution(
+            "rho_resolution must be positive and finite",
+        ));
     }
     if !theta_resolution.is_finite() || theta_resolution <= 0.0 {
-        return Err(ImageError::InvalidResolution(format!(
-            "theta_resolution must be positive and finite, got {theta_resolution}"
-        )));
+        return Err(ImageError::InvalidResolution(
+            "theta_resolution must be positive and finite",
+        ));
     }
 
     // Reject threshold == 0 to avoid returning every accumulator cell.
     if threshold == 0 {
-        return Err(ImageError::InvalidThreshold(
-            "Hough threshold must be > 0".into(),
-        ));
+        return Err(ImageError::InvalidThreshold("Hough threshold must be > 0"));
     }
 
     // Compute the image diagonal using f64 to avoid usize overflow on
@@ -122,9 +120,9 @@ pub fn hough_lines<A: ImageAllocator>(
     let accumulator_size = num_rho
         .checked_mul(num_theta)
         .filter(|&size| size <= MAX_ACCUMULATOR_BINS)
-        .ok_or(ImageError::InvalidResolution(format!(
-            "accumulator too large for rho_resolution={rho_resolution}, theta_resolution={theta_resolution}"
-        )))?;
+        .ok_or(ImageError::InvalidResolution(
+            "accumulator too large for given rho/theta resolution",
+        ))?;
 
     // Precompute sin/cos lookup tables
     let mut cos_table = vec![0.0f32; num_theta];
@@ -303,5 +301,41 @@ mod tests {
 
         assert!(lines.is_empty(), "empty image should have no lines");
         Ok(())
+    }
+
+    /// threshold == 0 should be rejected.
+    #[test]
+    fn test_hough_rejects_zero_threshold() {
+        let size = ImageSize {
+            width: 16,
+            height: 16,
+        };
+        let edge_map = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator).unwrap();
+        assert!(hough_lines(&edge_map, 0, 1.0, std::f32::consts::PI / 180.0).is_err());
+    }
+
+    /// Non-positive rho_resolution should be rejected.
+    #[test]
+    fn test_hough_rejects_bad_rho_resolution() {
+        let size = ImageSize {
+            width: 16,
+            height: 16,
+        };
+        let edge_map = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator).unwrap();
+        assert!(hough_lines(&edge_map, 10, 0.0, std::f32::consts::PI / 180.0).is_err());
+        assert!(hough_lines(&edge_map, 10, -1.0, std::f32::consts::PI / 180.0).is_err());
+        assert!(hough_lines(&edge_map, 10, f32::NAN, std::f32::consts::PI / 180.0).is_err());
+    }
+
+    /// Non-positive theta_resolution should be rejected.
+    #[test]
+    fn test_hough_rejects_bad_theta_resolution() {
+        let size = ImageSize {
+            width: 16,
+            height: 16,
+        };
+        let edge_map = Image::<u8, 1, _>::from_size_val(size, 0, CpuAllocator).unwrap();
+        assert!(hough_lines(&edge_map, 10, 1.0, 0.0).is_err());
+        assert!(hough_lines(&edge_map, 10, 1.0, f32::INFINITY).is_err());
     }
 }

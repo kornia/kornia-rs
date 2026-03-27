@@ -63,9 +63,13 @@ pub enum ImageError {
 
     /// Error when a resolution parameter is invalid (non-finite, non-positive, or too small).
     #[error("Invalid resolution: {0}")]
-    InvalidResolution(String),
+    InvalidResolution(&'static str),
 
     /// Error when a threshold value is invalid (non-finite, negative, or misordered).
     #[error("Invalid threshold: {0}")]
-    InvalidThreshold(String),
+    InvalidThreshold(&'static str),
+
+    /// Error when the image dimensions are too large to process safely.
+    #[error("Image too large: {0} rows × {1} cols overflows index arithmetic")]
+    ImageTooLarge(usize, usize),
 }
