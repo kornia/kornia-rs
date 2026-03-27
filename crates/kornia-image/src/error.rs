@@ -1,6 +1,5 @@
 /// An error type for the image module.
 #[derive(thiserror::Error, Debug)]
-#[non_exhaustive]
 pub enum ImageError {
     /// Error when the pixels type are not compatible.
     #[error("Incompatible pixel types")]
