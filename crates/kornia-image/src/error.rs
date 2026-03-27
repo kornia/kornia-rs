@@ -1,5 +1,6 @@
 /// An error type for the image module.
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum ImageError {
     /// Error when the pixels type are not compatible.
     #[error("Incompatible pixel types")]
@@ -57,11 +58,15 @@ pub enum ImageError {
     #[error("Unsupported channel count {0}")]
     UnsupportedChannelCount(usize),
 
-    /// Error when a threshold value is invalid (non-finite, negative, or misordered).
-    #[error("Invalid threshold: {0}")]
-    InvalidThreshold(String),
-
     /// Error when interpolation mode is unsupported.
     #[error("Unsupported interpolation mode: {0:?}")]
     UnsupportedInterpolation(crate::image::InterpolationMode),
+
+    /// Error when a resolution parameter is invalid (non-finite, non-positive, or too small).
+    #[error("Invalid resolution: {0}")]
+    InvalidResolution(String),
+
+    /// Error when a threshold value is invalid (non-finite, negative, or misordered).
+    #[error("Invalid threshold: {0}")]
+    InvalidThreshold(String),
 }
