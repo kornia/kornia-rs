@@ -323,6 +323,56 @@ where
     Ok(())
 }
 
+/// Pads an image to a square shape by computing symmetric padding
+/// and applying `spatial_padding` internally.
+///
+/// The image is centered in the output, and padding is applied equally
+/// on both sides (with a 1-pixel difference if dimensions are odd).
+///
+/// # Arguments
+/// * `src` - Input image
+/// * `dst` - Output image (must be square)
+/// * `padding_mode` - Padding mode (Constant, Reflect, etc.)
+/// * `constant_value` - Fill value for constant padding
+///
+/// # Errors
+/// Returns an error if `dst` is not square or does not match expected size.
+pub fn pad_to_square<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, C, A1>,
+    dst: &mut Image<T, C, A2>,
+    padding_mode: PaddingMode,
+    constant_value: [T; C],
+) -> Result<(), ImageError>
+where
+    T: Copy + Default + Send + Sync,
+{
+    let width = src.width();
+    let height = src.height();
+
+    let size = width.max(height);
+
+    let pad_w = size - width;
+    let pad_h = size - height;
+
+    let padding = Padding2D {
+        left: pad_w / 2,
+        right: pad_w - pad_w / 2,
+        top: pad_h / 2,
+        bottom: pad_h - pad_h / 2,
+    };
+
+    if dst.width() != size || dst.height() != size {
+        return Err(ImageError::InvalidImageSize(
+            dst.width(),
+            dst.height(),
+            size,
+            size,
+        ));
+    }
+
+    spatial_padding(src, dst, padding, padding_mode, constant_value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,6 +399,48 @@ mod tests {
             vec![0u8; 48],
             CpuAllocator,
         )
+    }
+
+
+    #[test]
+    fn test_pad_to_square_non_square() -> Result<(), ImageError> {
+        // non-square image: width != height
+        let src = Image::<u8, 3, _>::new(
+            ImageSize { width: 4, height: 2 },
+            vec![1u8; 24],
+            CpuAllocator,
+        )?;
+
+        let mut dst = Image::<u8, 3, _>::new(
+            ImageSize { width: 4, height: 4 },
+            vec![0u8; 48],
+            CpuAllocator,
+        )?;
+
+        pad_to_square(&src, &mut dst, PaddingMode::Constant, [0, 0, 0])?;
+
+        assert_eq!(dst.size().width, 4);
+        assert_eq!(dst.size().height, 4);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pad_to_square_square_input() -> Result<(), ImageError> {
+        let src = make_src_2x2_rgb()?;
+
+        let mut dst = Image::<u8, 3, _>::new(
+            ImageSize { width: 2, height: 2 },
+            vec![0u8; 12],
+            CpuAllocator,
+        )?;
+
+        pad_to_square(&src, &mut dst, PaddingMode::Constant, [0, 0, 0])?;
+
+        assert_eq!(dst.size().width, 2);
+        assert_eq!(dst.size().height, 2);
+
+        Ok(())
     }
 
     const PAD_1: Padding2D = Padding2D {
