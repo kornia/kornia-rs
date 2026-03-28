@@ -351,7 +351,6 @@ where
 
     let size = width.max(height);
 
-    // compute symmetric padding
     let pad_w = size - width;
     let pad_h = size - height;
 
@@ -362,7 +361,6 @@ where
         bottom: pad_h - pad_h / 2,
     };
 
-    // validate dst size
     if dst.width() != size || dst.height() != size {
         return Err(ImageError::InvalidImageSize(
             dst.width(),
@@ -403,9 +401,15 @@ mod tests {
         )
     }
 
+
     #[test]
     fn test_pad_to_square_non_square() -> Result<(), ImageError> {
-        let src = make_src_2x2_rgb()?;
+        // non-square image: width != height
+        let src = Image::<u8, 3, _>::new(
+            ImageSize { width: 4, height: 2 },
+            vec![1u8; 24],
+            CpuAllocator,
+        )?;
 
         let mut dst = Image::<u8, 3, _>::new(
             ImageSize { width: 4, height: 4 },
@@ -417,6 +421,24 @@ mod tests {
 
         assert_eq!(dst.size().width, 4);
         assert_eq!(dst.size().height, 4);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pad_to_square_square_input() -> Result<(), ImageError> {
+        let src = make_src_2x2_rgb()?;
+
+        let mut dst = Image::<u8, 3, _>::new(
+            ImageSize { width: 2, height: 2 },
+            vec![0u8; 12],
+            CpuAllocator,
+        )?;
+
+        pad_to_square(&src, &mut dst, PaddingMode::Constant, [0, 0, 0])?;
+
+        assert_eq!(dst.size().width, 2);
+        assert_eq!(dst.size().height, 2);
 
         Ok(())
     }
