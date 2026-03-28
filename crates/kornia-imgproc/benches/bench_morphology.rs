@@ -16,7 +16,7 @@ fn bench_morphology(c: &mut Criterion) {
             let image = Image::<u8, 1, _>::from_size_val(image_size, 128, CpuAllocator).unwrap();
             let dst = Image::<u8, 1, _>::from_size_val(image_size, 0, CpuAllocator).unwrap();
 
-            let kernel = Kernel::new(KernelShape::Box { size: *kernel_size });
+            let kernel = Kernel::try_new(KernelShape::Box { size: *kernel_size }).unwrap();
 
             group.bench_with_input(
                 BenchmarkId::new("dilate", &parameter_string),
