@@ -8,6 +8,7 @@ use kornia_imgproc::calibration::distortion::PolynomialDistortion;
 use rand::seq::SliceRandom;
 use rand::{rngs::StdRng, SeedableRng};
 use thiserror::Error;
+use rand::prelude::IndexedRandom;
 
 const MIN_CORRESPONDENCES: usize = 4; // Minimum 2D-3D pairs required by PnP
 const EPNP_MIN_SAMPLE_SIZE: usize = 5; // Minimal sample size for EPnP (unless only 4 points available)
@@ -19,6 +20,15 @@ const DEFAULT_CONFIDENCE: f32 = 0.99;
 const EPS_PROB_MIN: f32 = 1e-6; // Guard for tiny probabilities
 const EPS_LOG_GUARD: f32 = 1e-12; // Guard to avoid log(0) and log(1)
 const HIGH_INLIER_RATIO_STOP: f32 = 0.95; // Early stop when inlier ratio is very high
+
+/// Method types for RANSAC
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RobustMethod {
+    /// Vanilla RANSAC
+    Ransac,
+    /// Locally Optimized RANSAC
+    LoRansac,
+}
 
 /// Error type for the RANSAC-based PnP solver.
 ///
@@ -53,6 +63,12 @@ pub struct RansacParams {
     pub random_seed: Option<u64>,
     /// Whether to refit on all inliers using the base solver.
     pub refine: bool,
+    /// RANSAC method to be used
+    pub robust_method: RobustMethod,
+    /// Number of local optimization iters
+    pub lo_iters: usize,
+    /// Non-minimal subset size
+    pub lo_sample_size: usize,
 }
 
 impl Default for RansacParams {
@@ -63,6 +79,9 @@ impl Default for RansacParams {
             confidence: DEFAULT_CONFIDENCE,
             random_seed: None,
             refine: true,
+            robust_method: RobustMethod::Ransac,
+            lo_iters: 10,
+            lo_sample_size: 12,
         }
     }
 }
@@ -189,9 +208,28 @@ pub fn solve_pnp_ransac(
         );
 
         if inliers.len() > best_inliers.len() {
-            best_inliers = inliers;
-            best_pose = Some(pose_min);
-
+            
+            if params.robust_method == RobustMethod::LoRansac {
+                match run_lo_ransac(
+                    world, image, k, distortion, &base,
+                    &intr_x, &intr_y,
+                    &inliers, params, &mut rng,
+                ) {
+                    Ok((pose_lo, inliers_lo)) => {
+                        best_inliers = inliers_lo;
+                        best_pose = Some(pose_lo);
+                    }
+                    Err(e) => {
+                        log::debug!("LO-RANSAC inner step failed: {e}");
+                        // Fall back to the plain RANSAC result for this iteration
+                        best_inliers = inliers;
+                        best_pose = Some(pose_min);
+                    }
+                }
+            } else {
+                best_inliers = inliers;
+                best_pose = Some(pose_min);
+            }
             // Update required iterations based on current inlier ratio and sample size
             if best_inliers.len() >= sample_size {
                 let w = best_inliers.len() as f32 / n as f32;
@@ -232,8 +270,8 @@ pub fn solve_pnp_ransac(
         return Err(err);
     }
 
-    let mut final_pose = if params.refine {
-        // Refit on all inliers using the base solver.
+    let mut final_pose = if params.refine && params.robust_method != RobustMethod::LoRansac {
+        // Plain RANSAC path: best_pose came from a minimal set, so refit on all inliers
         let mut w_all = Vec::with_capacity(best_inliers.len());
         let mut i_all = Vec::with_capacity(best_inliers.len());
         for &idx in &best_inliers {
@@ -280,9 +318,143 @@ pub fn solve_pnp_ransac(
     })
 }
 
-fn sample_all_positive_depths(r: &Mat3AF32, t: &Vec3AF32, world: &[Vec3AF32]) -> bool {
-    world.iter().all(|&pw| {
-        let pc = *r * pw + *t;
+/// K multiplier for the expanded threshold in Method 3 / Method 5.
+/// Paper uses K·θ as the starting threshold for the iterative scheme.
+const LO_THRESHOLD_MULTIPLIER: f32 = 3.0;
+/// Steps to reduce K·θ → θ in the iterative inner loop (Method 3).
+const LO_INNER_THRESHOLD_STEPS: usize = 4;
+fn run_lo_ransac(
+    world: &[[f32; 3]],
+    image: &[[f32; 2]],
+    k: &[[f32; 3]; 3],
+    distortion: Option<&PolynomialDistortion>,
+    base: &PnPMethod,
+    intr_x: &Vec3F32,
+    intr_y: &Vec3F32,
+    initial_inliers: &[usize],
+    params: &RansacParams,
+    rng: &mut StdRng,
+) -> Result<(PnPResult, Vec<usize>), PnPRansacError> {
+    let m = initial_inliers.len();
+    if m < MIN_CORRESPONDENCES {
+        return Err(PnPRansacError::InsufficientInliers {
+            required: MIN_CORRESPONDENCES,
+            actual: m,
+        });
+    }
+
+    // Seed best from pose already fitted on initial_inliers.
+    let w_init: Vec<[f32; 3]> = initial_inliers.iter().map(|&i| world[i]).collect();
+    let i_init: Vec<[f32; 2]> = initial_inliers.iter().map(|&i| image[i]).collect();
+    let baseline_pose = solve_pnp(&w_init, &i_init, k, distortion, base.clone())?;
+
+    let mut best_inliers = initial_inliers.to_vec();
+    let mut best_pose = baseline_pose;
+
+    // Precompute the geometric threshold schedule
+    let theta = params.reproj_threshold_px;
+    let steps = LO_INNER_THRESHOLD_STEPS;
+    let threshold_schedule: Vec<f32> = (0..steps)
+        .map(|i| {
+            // Geometric interpolation in log space from K·θ to θ
+            let t = i as f32 / (steps - 1) as f32;
+            theta * LO_THRESHOLD_MULTIPLIER.powf(1.0 - t)
+            // i=0: θ·K^1 = K·θ  (widest)
+            // i=steps-1: θ·K^0 = θ  (exact)
+        })
+        .collect();
+
+    for _ in 0..params.lo_iters {
+        let current_m = best_inliers.len();
+        let sample_size = (current_m / 2)
+            .min(params.lo_sample_size)
+            .max(EPNP_MIN_SAMPLE_SIZE);
+
+        if current_m < sample_size {
+            break;
+        }
+
+        let subset: Vec<usize> = best_inliers
+            .choose_multiple(rng, sample_size)
+            .cloned()
+            .collect();
+
+        let w_sub: Vec<[f32; 3]> = subset.iter().map(|&i| world[i]).collect();
+        let i_sub: Vec<[f32; 2]> = subset.iter().map(|&i| image[i]).collect();
+
+        let pose_sub = match solve_pnp(&w_sub, &i_sub, k, distortion, base.clone()) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        if !sample_all_positive_depths(&pose_sub.rotation, &pose_sub.translation, &w_sub) {
+            continue;
+        }
+
+        let mut inner_pose = pose_sub;
+
+        for &current_thresh in &threshold_schedule {
+            let (candidate_inliers, _) = classify_points(
+                world,
+                image,
+                None,
+                None,
+                ClassificationParams {
+                    rotation_matrix: &inner_pose.rotation,
+                    translation_vector: &inner_pose.translation,
+                    camera_intrinsics_x: intr_x,
+                    camera_intrinsics_y: intr_y,
+                    threshold: Some(current_thresh),
+                },
+            );
+
+            if candidate_inliers.len() < MIN_CORRESPONDENCES {
+                break;
+            }
+
+            let w_inner: Vec<[f32; 3]> =
+                candidate_inliers.iter().map(|&i| world[i]).collect();
+            let i_inner: Vec<[f32; 2]> =
+                candidate_inliers.iter().map(|&i| image[i]).collect();
+
+            match solve_pnp(&w_inner, &i_inner, k, distortion, base.clone()) {
+                Ok(p) => inner_pose = p,
+                Err(_) => break,
+            }
+        }
+
+        let (verified_inliers, _) = classify_points(
+            world,
+            image,
+            None,
+            None,
+            ClassificationParams {
+                rotation_matrix: &inner_pose.rotation,
+                translation_vector: &inner_pose.translation,
+                camera_intrinsics_x: intr_x,
+                camera_intrinsics_y: intr_y,
+                threshold: Some(theta), 
+            },
+        );
+
+        if verified_inliers.len() > best_inliers.len() {
+            best_inliers = verified_inliers;
+            best_pose = inner_pose;
+        }
+    }
+
+    Ok((best_pose, best_inliers))
+}
+
+fn sample_all_positive_depths(r: &[[f32; 3]; 3], t: &[f32; 3], world: &[[f32; 3]]) -> bool {
+    let r_mat = Mat3F32::from_cols(
+        Vec3F32::new(r[0][0], r[1][0], r[2][0]),
+        Vec3F32::new(r[0][1], r[1][1], r[2][1]),
+        Vec3F32::new(r[0][2], r[1][2], r[2][2]),
+    );
+    let t_vec = Vec3F32::new(t[0], t[1], t[2]);
+    world.iter().all(|pw| {
+        let pc = r_mat * Vec3F32::from_array(*pw) + t_vec;
         pc.z > 0.0
     })
 }
@@ -415,6 +587,9 @@ mod tests {
             confidence: 0.99,
             random_seed: Some(42),
             refine: false,
+            robust_method: RobustMethod::Ransac,
+            lo_iters: 10,
+            lo_sample_size: 12,
         };
 
         let base = PnPMethod::EPnP(EPnPParams::default());
@@ -456,6 +631,9 @@ mod tests {
             confidence: 0.99,
             random_seed: Some(42),
             refine: true,
+            robust_method: RobustMethod::Ransac,
+            lo_iters: 10,
+            lo_sample_size: 12,
         };
 
         let base = PnPMethod::EPnP(EPnPParams::default());
@@ -493,6 +671,9 @@ mod tests {
             confidence: 0.99,
             random_seed: Some(42),
             refine: true,
+            robust_method: RobustMethod::Ransac,
+            lo_iters: 10,
+            lo_sample_size: 12,
         };
 
         let base = PnPMethod::EPnP(EPnPParams::default());
