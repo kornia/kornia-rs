@@ -1,17 +1,15 @@
-use candle_core::{Device, DType};
+use candle_core::{DType, Device};
 
 #[cfg(feature = "cuda")]
 fn cuda_supports_bf16(device_id: usize) -> bool {
     use cudarc::driver::{sys::CUdevice_attribute, CudaDevice};
 
-    if let Ok(dev) = CudaDevice::new(device_id) {
-        if let Ok(major) =
+    CudaDevice::new(device_id)
+        .and_then(|dev| {
             dev.attribute(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR)
-        {
-            return major >= 8;
-        }
-    }
-    false
+        })
+        .map(|major| major >= 8)
+        .unwrap_or(false)
 }
 
 pub fn get_device_and_dtype() -> (Device, DType) {
@@ -29,14 +27,13 @@ pub fn get_device_and_dtype() -> (Device, DType) {
                     );
                     DType::F16
                 };
-                return (device, dtype);
+                (device, dtype)
             }
             Err(e) => {
-                log::warn!("CUDA not available, defaulting to CPU: {e:?}");
+                log::warn!("CUDA not available, defaulting to CPU: {:?}", e);
             }
         }
     }
 
-    // CPU fallback (covers both: no CUDA feature OR CUDA not available)
     (Device::Cpu, DType::F32)
 }

@@ -39,7 +39,7 @@ pub struct SmolVlm<A: ImageAllocator> {
 }
 
 impl<A: ImageAllocator> SmolVlm<A> {
-
+    
     /// Create a new SmolVlm model
     ///
     /// # Arguments
@@ -50,7 +50,7 @@ impl<A: ImageAllocator> SmolVlm<A> {
     pub fn new(config: SmolVlmConfig) -> Result<Self, SmolVlmError> {
         use crate::device::get_device_and_dtype;
         let (device, dtype) = get_device_and_dtype();
-        
+
         let (model, tokenizer) = Self::load_model(dtype, &device)?;
         let image_token = tokenizer.encode("<image>", false)?;
         let image_token_tensor = Tensor::from_slice(image_token.get_ids(), &[1], &device)?;
