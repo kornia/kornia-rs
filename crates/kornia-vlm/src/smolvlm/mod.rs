@@ -39,7 +39,6 @@ pub struct SmolVlm<A: ImageAllocator> {
 }
 
 impl<A: ImageAllocator> SmolVlm<A> {
-    
     /// Create a new SmolVlm model
     ///
     /// # Arguments
