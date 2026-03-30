@@ -1,4 +1,4 @@
-use candle_core::{Device, DType};
+use candle_core::{DType, Device};
 pub fn get_device_and_dtype() -> (Device, DType) {
     #[cfg(feature = "cuda")]
     {
