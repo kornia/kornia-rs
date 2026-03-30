@@ -1,0 +1,17 @@
+[package]
+name = "edge-detect-cli"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "edge-detect-cli"
+path = "src/main.rs"
+
+[dependencies]
+kornia = { path = "../../crates/kornia" }
+kornia-image = { path = "../../crates/kornia-image" }
+kornia-imgproc = { path = "../../crates/kornia-imgproc" }
+kornia-io = { path = "../../crates/kornia-io" }
+clap = { version = "4.4", features = ["derive"] }
+anyhow = "1.0"
