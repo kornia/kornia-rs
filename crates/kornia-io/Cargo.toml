@@ -31,21 +31,21 @@ required-features = ["gstreamer"]
 circular-buffer = { version = "1.1.0", optional = true }
 gstreamer = { version = "0.24", optional = true }
 gstreamer-app = { version = "0.24", optional = true }
-jpeg-encoder = "0.6"
+jpeg-encoder = "0.7"
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
 little_exif = "0.6"
 log = { workspace = true }
 png = "0.18"
 thiserror = { workspace = true }
-tiff = "0.10"
+tiff = "0.11"
 # for fast jpeg encoding/decoding
-turbojpeg = { version = "1.2", optional = true }
+turbojpeg = { version = "1.4", optional = true }
 zune-jpeg = "0.5"
 
 [dev-dependencies]
 criterion = { workspace = true }
-reqwest = { version = "0.12", features = ["blocking"] }
+reqwest = { version = "0.13", features = ["blocking"] }
 tempfile = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
