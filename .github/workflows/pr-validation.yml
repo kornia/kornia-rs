@@ -1,12 +1,12 @@
 name: PR Validation
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize]
 
 permissions:
   pull-requests: write
-  issues: read
+  issues: write
   contents: read
 
 jobs:
