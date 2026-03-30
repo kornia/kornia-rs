@@ -4364,6 +4364,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "18aade80d5e09429040243ce1143ddc08a92d7a22820ac512610410a4dd5214f"
 
 [[package]]
+name = "edge-detect-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "kornia",
+ "kornia-image",
+ "kornia-imgproc",
+ "kornia-io",
+]
+
+[[package]]
 name = "eframe"
 version = "0.31.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
