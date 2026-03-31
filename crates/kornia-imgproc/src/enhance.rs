@@ -115,6 +115,46 @@ where
     Ok(())
 }
 
+/// Invert the colors of an image.
+///
+/// dst(x,y,c) = 1.0 - src(x,y,c)
+///
+/// # Arguments
+///
+/// * `src` - The input image.
+/// * `dst` - The output image to store the result.
+///
+/// # Returns
+///
+/// Returns Ok(()) if the operation is successful.
+///
+/// # Errors
+///
+/// Returns an [ImageError::InvalidImageSize] if the sizes of `src` and `dst` do not match.
+pub fn invert_image<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, C, A1>,
+    dst: &mut Image<T, C, A2>,
+) -> Result<(), ImageError>
+where
+    T: Float + std::fmt::Debug + Send + Sync + Copy,
+{
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    let one = T::one();
+    parallel::par_iter_rows_val(src, dst, |&src_pixel, dst_pixel| {
+        *dst_pixel = one - src_pixel;
+    });
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use kornia_image::{allocator::CpuAllocator, Image, ImageError, ImageSize};
@@ -172,6 +212,30 @@ mod tests {
         )?;
         let dst = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
         Ok((src, dst))
+    }
+
+    #[test]
+    fn test_invert_image() -> Result<(), ImageError> {
+        let src_data = vec![0.2f32, 0.8];
+        let src = Image::<f32, 1, _>::new(
+            ImageSize {
+                width: 2,
+                height: 1,
+            },
+            src_data,
+            CpuAllocator,
+        )?;
+        let mut dst = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator)?;
+        let expected = [0.8f32, 0.2];
+        super::invert_image(&src, &mut dst)?;
+
+        dst.as_slice()
+            .iter()
+            .zip(expected.iter())
+            .for_each(|(a, b)| {
+                assert!((a - b).abs() < 1e-6);
+            });
+        Ok(())
     }
 
     #[test]
