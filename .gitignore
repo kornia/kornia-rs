@@ -8,3 +8,4 @@ kornia-py/Cargo.lock
 .idea/
 .pixi/
 build/
+.omc/
