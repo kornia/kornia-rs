@@ -103,7 +103,7 @@ jobs:
           python -c "import sysconfig; print('Py_GIL_DISABLED:', sysconfig.get_config_var('Py_GIL_DISABLED'))"
 
       - name: Install maturin and test deps
-        run: uv pip install maturin pytest pytest-run-parallel numpy torch --index-url https://download.pytorch.org/whl/cpu
+        run: uv pip install maturin pytest pytest-run-parallel numpy torch --extra-index-url https://download.pytorch.org/whl/cpu
 
       - name: Build and test
         run: |
