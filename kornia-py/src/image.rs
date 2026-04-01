@@ -381,7 +381,10 @@ pub(crate) unsafe fn numpy_as_image<const C: usize>(
         )));
     }
     let (h, w) = (shape[0], shape[1]);
-    let size = ImageSize { width: w, height: h };
+    let size = ImageSize {
+        width: w,
+        height: h,
+    };
     Image::from_raw_parts(size, arr.data() as *const u8, h * w * C, ForeignAllocator)
         .map_err(to_pyerr)
 }
@@ -423,10 +426,17 @@ pub(crate) fn numpy_to_f32_image<const C: usize>(
 }
 
 /// Get raw u8 data and dimensions from a PyArray3.
-pub(crate) fn pyarray_data<'py>(arr: &Bound<'py, PyArray3<u8>>) -> (&'py [u8], usize, usize, usize) {
+pub(crate) fn pyarray_data<'py>(
+    arr: &Bound<'py, PyArray3<u8>>,
+) -> (&'py [u8], usize, usize, usize) {
     let s = arr.shape();
     let (h, w, c) = (s[0], s[1], s[2]);
-    (unsafe { std::slice::from_raw_parts(arr.data(), h * w * c) }, h, w, c)
+    (
+        unsafe { std::slice::from_raw_parts(arr.data(), h * w * c) },
+        h,
+        w,
+        c,
+    )
 }
 
 /// Create a PyArray3<u8> from a Vec with given dimensions.
@@ -721,7 +731,6 @@ impl PyImageApi {
                     if let Ok(arr) = data
                         .call_method1("reshape", ((shape[0], shape[1], 1usize),))
                         .and_then(|r| Ok(r.extract::<Py<PyArray3<u8>>>()?))
-
                     {
                         return Ok(Self::wrap(py, arr, mode));
                     }
@@ -762,7 +771,11 @@ impl PyImageApi {
         if bytes.len() != expected {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
                 "Expected {} bytes ({}x{}x{}), got {}",
-                expected, h, w, c, bytes.len()
+                expected,
+                h,
+                w,
+                c,
+                bytes.len()
             )));
         }
 
@@ -927,7 +940,11 @@ impl PyImageApi {
         } else {
             let (src, src_h, src_w, _) = pyarray_data(&arr);
             let out = resize_nearest(src, src_h, src_w, height, width, c);
-            Ok(Self::wrap(py, vec_to_pyarray(py, out, height, width, c), Some(self.mode.clone())))
+            Ok(Self::wrap(
+                py,
+                vec_to_pyarray(py, out, height, width, c),
+                Some(self.mode.clone()),
+            ))
         }
     }
 
@@ -941,7 +958,11 @@ impl PyImageApi {
         } else {
             let (src, h, w, _) = pyarray_data(&arr);
             let out = flip_h_generic(src, h, w, c);
-            Ok(Self::wrap(py, vec_to_pyarray(py, out, h, w, c), Some(self.mode.clone())))
+            Ok(Self::wrap(
+                py,
+                vec_to_pyarray(py, out, h, w, c),
+                Some(self.mode.clone()),
+            ))
         }
     }
 
@@ -955,7 +976,11 @@ impl PyImageApi {
         } else {
             let (src, h, w, _) = pyarray_data(&arr);
             let out = flip_v_generic(src, h, w, c);
-            Ok(Self::wrap(py, vec_to_pyarray(py, out, h, w, c), Some(self.mode.clone())))
+            Ok(Self::wrap(
+                py,
+                vec_to_pyarray(py, out, h, w, c),
+                Some(self.mode.clone()),
+            ))
         }
     }
 
@@ -1019,7 +1044,8 @@ impl PyImageApi {
         let arr = self.data.bind(py);
         let c = arr.shape()[2];
         if c == 3 {
-            let result = crate::brightness::adjust_brightness_py(py, self.data.clone_ref(py), factor)?;
+            let result =
+                crate::brightness::adjust_brightness_py(py, self.data.clone_ref(py), factor)?;
             Ok(Self::wrap(py, result, Some(self.mode.clone())))
         } else {
             let (src, h, w, _) = pyarray_data(&arr);
@@ -1028,7 +1054,11 @@ impl PyImageApi {
                 .iter()
                 .map(|&v| (v as f32 + offset).clamp(0.0, 255.0) as u8)
                 .collect();
-            Ok(Self::wrap(py, vec_to_pyarray(py, out, h, w, c), Some(self.mode.clone())))
+            Ok(Self::wrap(
+                py,
+                vec_to_pyarray(py, out, h, w, c),
+                Some(self.mode.clone()),
+            ))
         }
     }
 
@@ -1037,7 +1067,11 @@ impl PyImageApi {
         let arr = self.data.bind(py);
         let (src, h, w, c) = pyarray_data(&arr);
         let out = adjust_contrast_generic(src, factor);
-        Ok(Self::wrap(py, vec_to_pyarray(py, out, h, w, c), Some(self.mode.clone())))
+        Ok(Self::wrap(
+            py,
+            vec_to_pyarray(py, out, h, w, c),
+            Some(self.mode.clone()),
+        ))
     }
 
     /// Adjust saturation. factor=1.0 is identity, 0.0 is grayscale.
@@ -1050,7 +1084,11 @@ impl PyImageApi {
         }
         let (src, h, w, _) = pyarray_data(&arr);
         let out = adjust_saturation_generic(src, h * w, factor);
-        Ok(Self::wrap(py, vec_to_pyarray(py, out, h, w, 3), Some(self.mode.clone())))
+        Ok(Self::wrap(
+            py,
+            vec_to_pyarray(py, out, h, w, 3),
+            Some(self.mode.clone()),
+        ))
     }
 
     /// Adjust hue. factor is in [-0.5, 0.5], fraction of hue wheel.
@@ -1063,7 +1101,11 @@ impl PyImageApi {
         }
         let (src, h, w, _) = pyarray_data(&arr);
         let out = adjust_hue_generic(src, h * w, factor);
-        Ok(Self::wrap(py, vec_to_pyarray(py, out, h, w, 3), Some(self.mode.clone())))
+        Ok(Self::wrap(
+            py,
+            vec_to_pyarray(py, out, h, w, 3),
+            Some(self.mode.clone()),
+        ))
     }
 
     /// Normalize image to float32 using mean and std per channel.

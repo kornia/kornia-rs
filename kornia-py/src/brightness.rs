@@ -13,18 +13,23 @@ pub fn adjust_brightness_py(py: Python<'_>, image: PyImage, factor: f32) -> PyRe
 
     py.detach(|| -> Result<(), ImageError> {
         let mut normalized: Image<f32, 3, _> = Image::from_size_val(size, 0.0f32, CpuAllocator)?;
-        normalized.as_slice_mut().iter_mut()
+        normalized
+            .as_slice_mut()
+            .iter_mut()
             .zip(src_f32.as_slice().iter())
             .for_each(|(d, &s)| *d = s / 255.0);
 
         let mut dst_f32 = Image::from_size_val(size, 0.0f32, CpuAllocator)?;
         enhance::adjust_brightness(&normalized, &mut dst_f32, factor, true)?;
 
-        dst_u8.as_slice_mut().iter_mut()
+        dst_u8
+            .as_slice_mut()
+            .iter_mut()
             .zip(dst_f32.as_slice().iter())
             .for_each(|(d, &s)| *d = (s * 255.0) as u8);
         Ok(())
-    }).map_err(to_pyerr)?;
+    })
+    .map_err(to_pyerr)?;
 
     Ok(out)
 }

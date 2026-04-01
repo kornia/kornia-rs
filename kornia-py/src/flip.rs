@@ -7,7 +7,8 @@ use kornia_imgproc::flip;
 pub fn horizontal_flip(py: Python<'_>, image: PyImage) -> PyResult<PyImage> {
     let src = unsafe { numpy_as_image::<3>(py, &image)? };
     let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
-    py.detach(|| flip::horizontal_flip(&src, &mut dst)).map_err(to_pyerr)?;
+    py.detach(|| flip::horizontal_flip(&src, &mut dst))
+        .map_err(to_pyerr)?;
     Ok(out)
 }
 
@@ -15,6 +16,7 @@ pub fn horizontal_flip(py: Python<'_>, image: PyImage) -> PyResult<PyImage> {
 pub fn vertical_flip(py: Python<'_>, image: PyImage) -> PyResult<PyImage> {
     let src = unsafe { numpy_as_image::<3>(py, &image)? };
     let (mut dst, out) = unsafe { alloc_output_pyarray::<3>(py, src.size())? };
-    py.detach(|| flip::vertical_flip(&src, &mut dst)).map_err(to_pyerr)?;
+    py.detach(|| flip::vertical_flip(&src, &mut dst))
+        .map_err(to_pyerr)?;
     Ok(out)
 }

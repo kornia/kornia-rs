@@ -228,7 +228,10 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
     ///
     /// The returned vector will have the same capacity as the storage's allocated memory.
     pub fn into_vec(self) -> Vec<T> {
-        assert!(self.owns_memory, "cannot convert foreign-memory-backed storage into Vec");
+        assert!(
+            self.owns_memory,
+            "cannot convert foreign-memory-backed storage into Vec"
+        );
         // TODO: check if the buffer is a cpu buffer or comes from a custom allocator
         let _layout = &self.layout;
 
