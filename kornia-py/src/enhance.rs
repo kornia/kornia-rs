@@ -21,11 +21,14 @@ pub fn add_weighted(
     py.detach(|| -> Result<(), ImageError> {
         let mut dst_f32 = Image::from_size_val(size, 0.0f32, CpuAllocator)?;
         enhance::add_weighted(&image1, alpha, &image2, beta, gamma, &mut dst_f32)?;
-        dst_u8.as_slice_mut().iter_mut()
+        dst_u8
+            .as_slice_mut()
+            .iter_mut()
             .zip(dst_f32.as_slice().iter())
             .for_each(|(d, &s)| *d = s as u8);
         Ok(())
-    }).map_err(to_pyerr)?;
+    })
+    .map_err(to_pyerr)?;
 
     Ok(out)
 }

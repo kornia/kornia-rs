@@ -18,11 +18,14 @@ pub fn gaussian_blur(
     py.detach(|| -> Result<(), ImageError> {
         let mut dst_f32 = Image::from_size_val(size, 0.0f32, CpuAllocator)?;
         filter::gaussian_blur(&src_f32, &mut dst_f32, kernel_size, sigma)?;
-        dst_u8.as_slice_mut().iter_mut()
+        dst_u8
+            .as_slice_mut()
+            .iter_mut()
             .zip(dst_f32.as_slice().iter())
             .for_each(|(d, &s)| *d = s as u8);
         Ok(())
-    }).map_err(to_pyerr)?;
+    })
+    .map_err(to_pyerr)?;
 
     Ok(out)
 }
@@ -36,11 +39,14 @@ pub fn box_blur(py: Python<'_>, image: PyImage, kernel_size: (usize, usize)) -> 
     py.detach(|| -> Result<(), ImageError> {
         let mut dst_f32 = Image::from_size_val(size, 0.0f32, CpuAllocator)?;
         filter::box_blur(&src_f32, &mut dst_f32, kernel_size)?;
-        dst_u8.as_slice_mut().iter_mut()
+        dst_u8
+            .as_slice_mut()
+            .iter_mut()
             .zip(dst_f32.as_slice().iter())
             .for_each(|(d, &s)| *d = s as u8);
         Ok(())
-    }).map_err(to_pyerr)?;
+    })
+    .map_err(to_pyerr)?;
 
     Ok(out)
 }
