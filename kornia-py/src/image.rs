@@ -8,13 +8,8 @@ use kornia_image::{
 };
 use pyo3::prelude::*;
 
-// type alias for a 3D numpy array of u8
 pub type PyImage = Py<PyArray3<u8>>;
-
-// type alias for a 3D numpy array of u16
 pub type PyImageU16 = Py<PyArray3<u16>>;
-
-// type alias for a 3D numpy array of f32
 pub type PyImageF32 = Py<PyArray3<f32>>;
 
 // TODO: Replace FromPyImage/ToPyImage with zero-copy ForeignAllocator helpers in IO code.
@@ -38,7 +33,6 @@ pub trait ToPyImageF32 {
     fn to_pyimage_f32(self) -> Result<PyImageF32, ImageError>;
 }
 
-// Macro to implement image to numpy array conversion
 macro_rules! impl_image_to_pyarray {
     ($dtype:ty, $trait:ident, $method:ident, $array_type:ty) => {
         impl<const C: usize> $trait for Image<$dtype, C, CpuAllocator> {
@@ -70,7 +64,6 @@ impl_image_to_pyarray!(u8, ToPyImage, to_pyimage, PyImage);
 impl_image_to_pyarray!(u16, ToPyImageU16, to_pyimage_u16, PyImageU16);
 impl_image_to_pyarray!(f32, ToPyImageF32, to_pyimage_f32, PyImageF32);
 
-// Macro to implement trait for typed color spaces (delegates to inner Image)
 macro_rules! impl_colorspace_to_pyarray {
     ($trait:ident, $method:ident, $return_type:ty, $($type:ty),+ $(,)?) => {
         $(
@@ -83,7 +76,6 @@ macro_rules! impl_colorspace_to_pyarray {
     };
 }
 
-// u8 color spaces
 impl_colorspace_to_pyarray!(
     ToPyImage,
     to_pyimage,
@@ -95,7 +87,6 @@ impl_colorspace_to_pyarray!(
     Gray8<CpuAllocator>,
 );
 
-// u16 color spaces
 impl_colorspace_to_pyarray!(
     ToPyImageU16,
     to_pyimage_u16,
@@ -107,7 +98,6 @@ impl_colorspace_to_pyarray!(
     Gray16<CpuAllocator>,
 );
 
-// f32 color spaces
 impl_colorspace_to_pyarray!(
     ToPyImageF32,
     to_pyimage_f32,
@@ -132,7 +122,6 @@ pub trait FromPyImageF32<const C: usize> {
     fn from_pyimage_f32(image: PyImageF32) -> Result<Image<f32, C, CpuAllocator>, ImageError>;
 }
 
-// Macro to implement numpy array to image conversion
 macro_rules! impl_pyarray_to_image {
     ($dtype:ty, $trait:ident, $method:ident, $array_type:ty) => {
         impl<const C: usize> $trait<C> for Image<$dtype, C, CpuAllocator> {
@@ -203,18 +192,15 @@ impl PyImageSize {
         self.inner.height
     }
 
-    fn __str__(&self) -> PyResult<String> {
-        Ok(format!(
+    fn __repr__(&self) -> String {
+        format!(
             "ImageSize(width: {}, height: {})",
             self.inner.width, self.inner.height
-        ))
+        )
     }
 
-    fn __repr__(&self) -> PyResult<String> {
-        Ok(format!(
-            "ImageSize(width: {}, height: {})",
-            self.inner.width, self.inner.height
-        ))
+    fn __str__(&self) -> String {
+        self.__repr__()
     }
 }
 
@@ -295,7 +281,7 @@ impl PyImageLayout {
     ) -> PyResult<Self> {
         Ok(Self {
             inner: ImageLayout {
-                image_size: image_size.clone().into(),
+                image_size: image_size.into(),
                 channels,
                 pixel_format: pixel_format.into(),
             },
@@ -355,6 +341,19 @@ impl From<PyImageLayout> for ImageLayout {
 
 pub(crate) const LUMINANCE_WEIGHTS: [f64; 3] = [0.299, 0.587, 0.114];
 
+pub(crate) fn parse_interpolation(
+    s: &str,
+) -> PyResult<kornia_imgproc::interpolation::InterpolationMode> {
+    use kornia_imgproc::interpolation::InterpolationMode;
+    match s.to_lowercase().as_str() {
+        "nearest" => Ok(InterpolationMode::Nearest),
+        "bilinear" => Ok(InterpolationMode::Bilinear),
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "Invalid interpolation mode",
+        )),
+    }
+}
+
 /// Convert any Display error into a PyException.
 pub(crate) fn to_pyerr(e: impl std::fmt::Display) -> PyErr {
     PyErr::new::<pyo3::exceptions::PyException, _>(format!("{}", e))
@@ -389,11 +388,12 @@ pub(crate) unsafe fn numpy_as_image<const C: usize>(
         .map_err(to_pyerr)
 }
 
-/// Allocate a PyArray3<u8> and wrap its buffer as a mutable Rust Image for writing.
+pub(crate) type AllocOutput<T, const C: usize, P> = (Image<T, C, ForeignAllocator>, Py<P>);
+
 pub(crate) unsafe fn alloc_output_pyarray<const C: usize>(
     py: Python<'_>,
     size: ImageSize,
-) -> PyResult<(Image<u8, C, ForeignAllocator>, Py<PyArray3<u8>>)> {
+) -> PyResult<AllocOutput<u8, C, PyArray3<u8>>> {
     let arr = PyArray::<u8, _>::new(py, [size.height, size.width, C], false);
     let len = size.height * size.width * C;
     let img = Image::from_raw_parts(size, arr.data() as *const u8, len, ForeignAllocator)
@@ -401,11 +401,10 @@ pub(crate) unsafe fn alloc_output_pyarray<const C: usize>(
     Ok((img, arr.unbind()))
 }
 
-/// Allocate a PyArray3<f32> and wrap its buffer as a mutable Rust Image for writing.
 pub(crate) unsafe fn alloc_output_pyarray_f32<const C: usize>(
     py: Python<'_>,
     size: ImageSize,
-) -> PyResult<(Image<f32, C, ForeignAllocator>, Py<PyArray3<f32>>)> {
+) -> PyResult<AllocOutput<f32, C, PyArray3<f32>>> {
     let arr = PyArray::<f32, _>::new(py, [size.height, size.width, C], false);
     let len = size.height * size.width * C * std::mem::size_of::<f32>();
     let img = Image::from_raw_parts(size, arr.data() as *const f32, len, ForeignAllocator)
@@ -671,16 +670,10 @@ pub struct PyImageApi {
 }
 
 impl PyImageApi {
-    /// Internal: wrap a Py<PyArray3<u8>> with auto-detected mode
     pub fn wrap(py: Python<'_>, data: Py<PyArray3<u8>>, mode: Option<String>) -> Self {
         let channels = data.bind(py).shape()[2];
         let mode = mode.unwrap_or_else(|| mode_from_channels(channels));
         Self { data, mode }
-    }
-
-    /// Internal: wrap a PyImage from other bindings
-    pub fn from_pyimage(py: Python<'_>, image: PyImage, mode: Option<String>) -> Self {
-        Self::wrap(py, image, mode)
     }
 }
 
@@ -938,7 +931,7 @@ impl PyImageApi {
                 crate::resize::resize(py, self.data.clone_ref(py), (height, width), interpolation)?;
             Ok(Self::wrap(py, result, Some(self.mode.clone())))
         } else {
-            let (src, src_h, src_w, _) = pyarray_data(&arr);
+            let (src, src_h, src_w, _) = pyarray_data(arr);
             let out = resize_nearest(src, src_h, src_w, height, width, c);
             Ok(Self::wrap(
                 py,
@@ -956,7 +949,7 @@ impl PyImageApi {
             let result = crate::flip::horizontal_flip(py, self.data.clone_ref(py))?;
             Ok(Self::wrap(py, result, Some(self.mode.clone())))
         } else {
-            let (src, h, w, _) = pyarray_data(&arr);
+            let (src, h, w, _) = pyarray_data(arr);
             let out = flip_h_generic(src, h, w, c);
             Ok(Self::wrap(
                 py,
@@ -974,7 +967,7 @@ impl PyImageApi {
             let result = crate::flip::vertical_flip(py, self.data.clone_ref(py))?;
             Ok(Self::wrap(py, result, Some(self.mode.clone())))
         } else {
-            let (src, h, w, _) = pyarray_data(&arr);
+            let (src, h, w, _) = pyarray_data(arr);
             let out = flip_v_generic(src, h, w, c);
             Ok(Self::wrap(
                 py,
@@ -999,7 +992,7 @@ impl PyImageApi {
             let result = crate::crop::crop(py, self.data.clone_ref(py), x, y, width, height)?;
             Ok(Self::wrap(py, result, Some(self.mode.clone())))
         } else {
-            let (src, _, src_w, _) = pyarray_data(&arr);
+            let (src, _, src_w, _) = pyarray_data(arr);
             let out = crop_generic(src, src_w, x, y, width, height, c);
             Ok(Self::wrap(
                 py,
@@ -1048,7 +1041,7 @@ impl PyImageApi {
                 crate::brightness::adjust_brightness_py(py, self.data.clone_ref(py), factor)?;
             Ok(Self::wrap(py, result, Some(self.mode.clone())))
         } else {
-            let (src, h, w, _) = pyarray_data(&arr);
+            let (src, h, w, _) = pyarray_data(arr);
             let offset = factor * 255.0;
             let out: Vec<u8> = src
                 .iter()
@@ -1065,7 +1058,7 @@ impl PyImageApi {
     /// Adjust contrast. factor=1.0 is identity, >1 increases contrast.
     pub fn adjust_contrast(&self, py: Python<'_>, factor: f64) -> PyResult<Self> {
         let arr = self.data.bind(py);
-        let (src, h, w, c) = pyarray_data(&arr);
+        let (src, h, w, c) = pyarray_data(arr);
         let out = adjust_contrast_generic(src, factor);
         Ok(Self::wrap(
             py,
@@ -1082,7 +1075,7 @@ impl PyImageApi {
         if c != 3 {
             return self.copy(py);
         }
-        let (src, h, w, _) = pyarray_data(&arr);
+        let (src, h, w, _) = pyarray_data(arr);
         let out = adjust_saturation_generic(src, h * w, factor);
         Ok(Self::wrap(
             py,
@@ -1099,7 +1092,7 @@ impl PyImageApi {
         if c != 3 || factor == 0.0 {
             return self.copy(py);
         }
-        let (src, h, w, _) = pyarray_data(&arr);
+        let (src, h, w, _) = pyarray_data(arr);
         let out = adjust_hue_generic(src, h * w, factor);
         Ok(Self::wrap(
             py,
@@ -1126,7 +1119,7 @@ impl PyImageApi {
                 [std.0, std.1, std.2],
             )
         } else {
-            let (src, h, w, _) = pyarray_data(&arr);
+            let (src, h, w, _) = pyarray_data(arr);
             let mean_arr = [mean.0, mean.1, mean.2];
             let std_arr = [std.0, std.1, std.2];
             let out: Vec<f32> = src
@@ -1203,7 +1196,7 @@ impl PyImageApi {
                 return self.copy(py);
             }
             let arr = self.data.bind(py);
-            let (src, h, w, _) = pyarray_data(&arr);
+            let (src, h, w, _) = pyarray_data(arr);
             let (out, new_h, new_w) = rot90_generic(src, h, w, c, k);
             Ok(Self::wrap(
                 py,
@@ -1219,7 +1212,7 @@ impl PyImageApi {
         let cls = Self::type_object(py).unbind().into_any();
         let args = pyo3::types::PyTuple::new(
             py,
-            &[
+            [
                 self.data.bind(py).as_any(),
                 pyo3::types::PyString::new(py, &self.mode).as_any(),
             ],

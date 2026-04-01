@@ -1,19 +1,10 @@
 use pyo3::prelude::*;
 
-use crate::image::{alloc_output_pyarray, numpy_to_f32_image, to_pyerr, PyImage};
+use crate::image::{
+    alloc_output_pyarray, numpy_to_f32_image, parse_interpolation, to_pyerr, PyImage,
+};
 use kornia_image::{allocator::CpuAllocator, Image, ImageError, ImageSize};
-use kornia_imgproc::interpolation::InterpolationMode;
 use kornia_imgproc::warp;
-
-fn parse_interpolation(s: &str) -> PyResult<InterpolationMode> {
-    match s.to_lowercase().as_str() {
-        "nearest" => Ok(InterpolationMode::Nearest),
-        "bilinear" => Ok(InterpolationMode::Bilinear),
-        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "Invalid interpolation mode",
-        )),
-    }
-}
 
 #[pyfunction]
 pub fn warp_affine(
