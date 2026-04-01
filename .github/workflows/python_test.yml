@@ -102,6 +102,9 @@ jobs:
           python -c "import sys; print('GIL enabled:', sys._is_gil_enabled())"
           python -c "import sysconfig; print('Py_GIL_DISABLED:', sysconfig.get_config_var('Py_GIL_DISABLED'))"
 
+      - name: Install maturin and test deps
+        run: uv pip install maturin pytest pytest-parallel-threads numpy
+
       - name: Build and test
         run: |
           cd kornia-py
