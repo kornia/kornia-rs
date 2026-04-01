@@ -422,3 +422,18 @@ Year = {2025},
 Eprint = {arXiv:2505.12425},
 }
 ```
+## Benchmark Results
+
+Kornia provides high-performance image processing operations. The following benchmark compares the performance of image resizing across different libraries.
+
+### Resize Benchmark
+
+This benchmark evaluates the time taken to resize an image to 128×128 using:
+
+- OpenCV (`cv2.resize`)
+- PIL (`Image.resize`)
+- Kornia (`kornia_rs.image.resize`)
+
+Each method is executed multiple times (N = 5000), and the average time per operation is measured in milliseconds.
+
+### Example Benchmark Output
