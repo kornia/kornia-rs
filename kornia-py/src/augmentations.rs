@@ -139,7 +139,11 @@ impl PyColorJitter {
                         .iter()
                         .map(|&v| (v as f64 * factor).clamp(0.0, 255.0) as u8)
                         .collect();
-                    PyImageApi::wrap(py, vec_to_pyarray(py, out, h, w, c), Some(current.mode().to_string()))
+                    PyImageApi::wrap(
+                        py,
+                        vec_to_pyarray(py, out, h, w, c),
+                        Some(current.mode().to_string()),
+                    )
                 }
                 1 => current.adjust_contrast(py, *factor)?,
                 2 => current.adjust_saturation(py, *factor)?,
@@ -178,7 +182,11 @@ impl PyRandomHorizontalFlip {
         if val < self.p {
             img.flip_horizontal(py)
         } else {
-            Ok(PyImageApi::wrap(py, img.data(py), Some(img.mode().to_string())))
+            Ok(PyImageApi::wrap(
+                py,
+                img.data(py),
+                Some(img.mode().to_string()),
+            ))
         }
     }
 
@@ -206,7 +214,11 @@ impl PyRandomVerticalFlip {
         if val < self.p {
             img.flip_vertical(py)
         } else {
-            Ok(PyImageApi::wrap(py, img.data(py), Some(img.mode().to_string())))
+            Ok(PyImageApi::wrap(
+                py,
+                img.data(py),
+                Some(img.mode().to_string()),
+            ))
         }
     }
 

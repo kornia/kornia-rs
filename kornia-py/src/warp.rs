@@ -9,7 +9,9 @@ fn parse_interpolation(s: &str) -> PyResult<InterpolationMode> {
     match s.to_lowercase().as_str() {
         "nearest" => Ok(InterpolationMode::Nearest),
         "bilinear" => Ok(InterpolationMode::Bilinear),
-        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid interpolation mode")),
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "Invalid interpolation mode",
+        )),
     }
 }
 
@@ -21,7 +23,10 @@ pub fn warp_affine(
     new_size: (usize, usize),
     interpolation: &str,
 ) -> PyResult<PyImage> {
-    let new_size = ImageSize { height: new_size.0, width: new_size.1 };
+    let new_size = ImageSize {
+        height: new_size.0,
+        width: new_size.1,
+    };
     let interpolation = parse_interpolation(interpolation)?;
     let src_f32 = numpy_to_f32_image::<3>(py, &image)?;
     let (mut dst_u8, out) = unsafe { alloc_output_pyarray::<3>(py, new_size)? };
@@ -29,11 +34,14 @@ pub fn warp_affine(
     py.detach(|| -> Result<(), ImageError> {
         let mut dst_f32 = Image::from_size_val(new_size, 0f32, CpuAllocator)?;
         warp::warp_affine(&src_f32, &mut dst_f32, &m, interpolation)?;
-        dst_u8.as_slice_mut().iter_mut()
+        dst_u8
+            .as_slice_mut()
+            .iter_mut()
             .zip(dst_f32.as_slice().iter())
             .for_each(|(d, &s)| *d = s as u8);
         Ok(())
-    }).map_err(to_pyerr)?;
+    })
+    .map_err(to_pyerr)?;
 
     Ok(out)
 }
@@ -46,7 +54,10 @@ pub fn warp_perspective(
     new_size: (usize, usize),
     interpolation: &str,
 ) -> PyResult<PyImage> {
-    let new_size = ImageSize { height: new_size.0, width: new_size.1 };
+    let new_size = ImageSize {
+        height: new_size.0,
+        width: new_size.1,
+    };
     let interpolation = parse_interpolation(interpolation)?;
     let src_f32 = numpy_to_f32_image::<3>(py, &image)?;
     let (mut dst_u8, out) = unsafe { alloc_output_pyarray::<3>(py, new_size)? };
@@ -54,11 +65,14 @@ pub fn warp_perspective(
     py.detach(|| -> Result<(), ImageError> {
         let mut dst_f32 = Image::from_size_val(new_size, 0f32, CpuAllocator)?;
         warp::warp_perspective(&src_f32, &mut dst_f32, &m, interpolation)?;
-        dst_u8.as_slice_mut().iter_mut()
+        dst_u8
+            .as_slice_mut()
+            .iter_mut()
             .zip(dst_f32.as_slice().iter())
             .for_each(|(d, &s)| *d = s as u8);
         Ok(())
-    }).map_err(to_pyerr)?;
+    })
+    .map_err(to_pyerr)?;
 
     Ok(out)
 }

@@ -427,9 +427,8 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_submodule(&apriltag_mod)?;
 
     // Register submodules in sys.modules so `from kornia_rs.image import Image` works
-    let modules = unsafe {
-        pyo3::Bound::from_borrowed_ptr(py, pyo3::ffi::PyImport_GetModuleDict())
-    };
+    let modules =
+        unsafe { pyo3::Bound::from_borrowed_ptr(py, pyo3::ffi::PyImport_GetModuleDict()) };
     for (name, submod) in [
         ("kornia_rs.image", &image_mod),
         ("kornia_rs.io", &io_mod),
