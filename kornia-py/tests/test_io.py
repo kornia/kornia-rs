@@ -59,7 +59,7 @@ def test_read_image_jpeg():
     assert img.dtype == np.uint8
 
     img_t = torch.from_numpy(img)
-        assert img_t.shape == (195, 258, 3)
+    assert img_t.shape == (195, 258, 3)
 
 
 def test_decode_image_jpeg():
@@ -74,7 +74,7 @@ def test_decode_image_jpeg():
     assert img.dtype == np.uint8
 
     img_t = torch.from_numpy(img)
-        assert img_t.shape == (195, 258, 3)
+    assert img_t.shape == (195, 258, 3)
 
 
 def test_decode_image_jpegturbo():
@@ -88,7 +88,7 @@ def test_decode_image_jpegturbo():
     assert img.dtype == np.uint8
 
     img_t = torch.from_numpy(img)
-        assert img_t.shape == (195, 258, 3)
+    assert img_t.shape == (195, 258, 3)
 
 
 def test_decode_image_png_u8():
@@ -102,7 +102,7 @@ def test_decode_image_png_u8():
     assert img.dtype == np.uint8
 
     img_t = torch.from_numpy(img)
-        assert img_t.shape == (195, 258, 3)
+    assert img_t.shape == (195, 258, 3)
 
 
 def test_decode_image_png_u16():
@@ -116,7 +116,7 @@ def test_decode_image_png_u16():
     assert img.dtype == np.uint16
 
     img_t = torch.from_numpy(img)
-        assert img_t.shape == (32, 32, 3)
+    assert img_t.shape == (32, 32, 3)
 
 
 def test_read_image_png_grayscale():
