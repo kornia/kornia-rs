@@ -4,8 +4,13 @@ from pathlib import Path
 from typing import Callable
 import kornia_rs as K
 
-import torch
 import numpy as np
+
+torch = None
+try:
+    import torch
+except ImportError:
+    pass
 
 # TODO: inject this from elsewhere
 DATA_DIR = Path(__file__).parents[2] / "tests" / "data"
@@ -58,8 +63,9 @@ def test_read_image_jpeg():
     assert img.shape == (195, 258, 3)
     assert img.dtype == np.uint8
 
-    img_t = torch.from_numpy(img)
-    assert img_t.shape == (195, 258, 3)
+    if torch is not None:
+        img_t = torch.from_numpy(img)
+        assert img_t.shape == (195, 258, 3)
 
 
 def test_decode_image_jpeg():
@@ -73,8 +79,9 @@ def test_decode_image_jpeg():
     assert img.shape == (195, 258, 3)
     assert img.dtype == np.uint8
 
-    img_t = torch.from_numpy(img)
-    assert img_t.shape == (195, 258, 3)
+    if torch is not None:
+        img_t = torch.from_numpy(img)
+        assert img_t.shape == (195, 258, 3)
 
 
 def test_decode_image_jpegturbo():
@@ -87,8 +94,9 @@ def test_decode_image_jpegturbo():
     assert img.shape == (195, 258, 3)
     assert img.dtype == np.uint8
 
-    img_t = torch.from_numpy(img)
-    assert img_t.shape == (195, 258, 3)
+    if torch is not None:
+        img_t = torch.from_numpy(img)
+        assert img_t.shape == (195, 258, 3)
 
 
 def test_decode_image_png_u8():
@@ -101,8 +109,9 @@ def test_decode_image_png_u8():
     assert img.shape == (195, 258, 3)
     assert img.dtype == np.uint8
 
-    img_t = torch.from_numpy(img)
-    assert img_t.shape == (195, 258, 3)
+    if torch is not None:
+        img_t = torch.from_numpy(img)
+        assert img_t.shape == (195, 258, 3)
 
 
 def test_decode_image_png_u16():
@@ -115,8 +124,9 @@ def test_decode_image_png_u16():
     assert img.shape == (32, 32, 3)
     assert img.dtype == np.uint16
 
-    img_t = torch.from_numpy(img)
-    assert img_t.shape == (32, 32, 3)
+    if torch is not None:
+        img_t = torch.from_numpy(img)
+        assert img_t.shape == (32, 32, 3)
 
 
 def test_read_image_png_grayscale():
