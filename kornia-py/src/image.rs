@@ -654,7 +654,7 @@ fn mode_from_channels(channels: usize) -> String {
 ///
 /// Thread-safe and serialization-friendly for use with Ray Data,
 /// multiprocessing, and other parallel execution frameworks.
-#[pyclass(name = "Image", module = "kornia_rs", weakref)]
+#[pyclass(name = "Image", weakref)]
 pub struct PyImageApi {
     data: Py<PyArray3<u8>>,
     mode: String,
