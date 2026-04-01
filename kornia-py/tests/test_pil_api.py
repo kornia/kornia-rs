@@ -67,7 +67,7 @@ class TestImage:
         img = Image.frombytes(data)
         out = img.to_numpy()
         assert np.array_equal(out, data)
-        out[0, 0, 0] = 0
+        out[0, 0, 0] = 255 - out[0, 0, 0]
         assert not np.array_equal(out, img.data)
 
     def test_array_protocol(self):
