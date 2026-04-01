@@ -53,7 +53,7 @@ pub fn set_seed(seed: Option<u64>) {
 }
 
 /// Randomly change brightness, contrast, saturation, and hue.
-#[pyclass(name = "ColorJitter", module = "kornia_rs")]
+#[pyclass(name = "ColorJitter")]
 pub struct PyColorJitter {
     brightness: (f64, f64),
     contrast: (f64, f64),
@@ -160,7 +160,7 @@ impl PyColorJitter {
 }
 
 /// Randomly flip image horizontally with probability p.
-#[pyclass(name = "RandomHorizontalFlip", module = "kornia_rs")]
+#[pyclass(name = "RandomHorizontalFlip")]
 pub struct PyRandomHorizontalFlip {
     p: f64,
 }
@@ -188,7 +188,7 @@ impl PyRandomHorizontalFlip {
 }
 
 /// Randomly flip image vertically with probability p.
-#[pyclass(name = "RandomVerticalFlip", module = "kornia_rs")]
+#[pyclass(name = "RandomVerticalFlip")]
 pub struct PyRandomVerticalFlip {
     p: f64,
 }
@@ -216,7 +216,7 @@ impl PyRandomVerticalFlip {
 }
 
 /// Randomly crop image to given size.
-#[pyclass(name = "RandomCrop", module = "kornia_rs")]
+#[pyclass(name = "RandomCrop")]
 pub struct PyRandomCrop {
     height: usize,
     width: usize,
@@ -258,7 +258,7 @@ impl PyRandomCrop {
 }
 
 /// Randomly rotate image within degree range.
-#[pyclass(name = "RandomRotation", module = "kornia_rs")]
+#[pyclass(name = "RandomRotation")]
 pub struct PyRandomRotation {
     degrees: (f64, f64),
 }
@@ -283,7 +283,7 @@ impl PyRandomRotation {
 }
 
 /// Compose several transforms together.
-#[pyclass(name = "Compose", module = "kornia_rs")]
+#[pyclass(name = "Compose")]
 pub struct PyCompose {
     transforms: Vec<Py<PyAny>>,
 }
