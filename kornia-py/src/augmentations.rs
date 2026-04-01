@@ -6,8 +6,6 @@ use std::sync::Mutex;
 
 use crate::image::{pyarray_data, vec_to_pyarray, PyImageApi};
 
-// Global seed. When set, each augmentation call creates a seeded RNG.
-// When None, thread_rng() is used.
 static GLOBAL_SEED: Mutex<Option<u64>> = Mutex::new(None);
 
 thread_local! {
@@ -15,7 +13,6 @@ thread_local! {
 }
 
 fn with_rng<T>(f: impl FnOnce(&mut dyn RngCore) -> T) -> T {
-    // Check if a global seed was set and we need to initialize
     let seed = GLOBAL_SEED.lock().unwrap();
     if let Some(s) = *seed {
         drop(seed);
@@ -41,14 +38,8 @@ fn with_rng<T>(f: impl FnOnce(&mut dyn RngCore) -> T) -> T {
 pub fn set_seed(seed: Option<u64>) {
     let mut global = GLOBAL_SEED.lock().unwrap();
     *global = seed;
-    // Reset thread-local RNG so it picks up the new seed
     SEEDED_RNG.with(|cell| {
-        let mut rng_opt = cell.borrow_mut();
-        if let Some(s) = seed {
-            *rng_opt = Some(StdRng::seed_from_u64(s));
-        } else {
-            *rng_opt = None;
-        }
+        *cell.borrow_mut() = seed.map(StdRng::seed_from_u64);
     });
 }
 
@@ -103,7 +94,6 @@ impl PyColorJitter {
     }
 
     fn __call__(&self, py: Python<'_>, img: PyRef<'_, PyImageApi>) -> PyResult<PyImageApi> {
-        // Build ops list and shuffle using Rust RNG
         let mut ops: Vec<(u8, f64)> = Vec::with_capacity(4);
 
         with_rng(|rng| {
@@ -131,10 +121,9 @@ impl PyColorJitter {
         for (op, factor) in &ops {
             current = match op {
                 0 => {
-                    // Brightness: multiplicative (torchvision convention)
                     let arr = current.data(py);
                     let bound = arr.bind(py);
-                    let (src, h, w, c) = pyarray_data(&bound);
+                    let (src, h, w, c) = pyarray_data(bound);
                     let out: Vec<u8> = src
                         .iter()
                         .map(|&v| (v as f64 * factor).clamp(0.0, 255.0) as u8)

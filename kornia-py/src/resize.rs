@@ -1,8 +1,8 @@
 use pyo3::prelude::*;
 
-use crate::image::{alloc_output_pyarray, numpy_as_image, to_pyerr, PyImage};
+use crate::image::{alloc_output_pyarray, numpy_as_image, parse_interpolation, to_pyerr, PyImage};
 use kornia_image::ImageSize;
-use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
+use kornia_imgproc::resize::resize_fast_rgb;
 
 #[pyfunction]
 pub fn resize(
@@ -11,15 +11,7 @@ pub fn resize(
     new_size: (usize, usize),
     interpolation: &str,
 ) -> PyResult<PyImage> {
-    let interpolation = match interpolation.to_lowercase().as_str() {
-        "nearest" => InterpolationMode::Nearest,
-        "bilinear" => InterpolationMode::Bilinear,
-        _ => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Invalid interpolation mode",
-            ))
-        }
-    };
+    let interpolation = parse_interpolation(interpolation)?;
     let new_size = ImageSize {
         height: new_size.0,
         width: new_size.1,

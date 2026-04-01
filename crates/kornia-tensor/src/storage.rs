@@ -232,18 +232,10 @@ impl<T, A: TensorAllocator> TensorStorage<T, A> {
             self.owns_memory,
             "cannot convert foreign-memory-backed storage into Vec"
         );
-        // TODO: check if the buffer is a cpu buffer or comes from a custom allocator
-        let _layout = &self.layout;
 
         let vec_capacity = self.layout.size() / std::mem::size_of::<T>();
-        //match Layout::array::<T>(vec_capacity) {
-        //    Ok(expected) if layout == &expected => {}
-        //    e => return Err(TensorAllocatorError::LayoutError(e.unwrap_err())),
-        //}
-
-        let length = self.len;
+        let vec_len = self.len / std::mem::size_of::<T>();
         let ptr = self.ptr;
-        let vec_len = length / std::mem::size_of::<T>();
 
         // Safety
         std::mem::forget(self);

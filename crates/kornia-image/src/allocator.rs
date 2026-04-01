@@ -8,13 +8,8 @@ pub trait ImageAllocator: TensorAllocator {}
 
 impl ImageAllocator for CpuAllocator {}
 
-/// A no-op allocator for wrapping foreign-owned memory as Rust Image objects.
-///
-/// This allocator is used when Rust code needs to view memory owned by an
-/// external system (numpy, CUDA, mmap, etc.) without taking ownership.
-/// `alloc` panics because this allocator is only meant to wrap foreign memory;
-/// new allocations should never be requested through it. `dealloc` is a no-op
-/// because the foreign system retains ownership of the underlying buffer.
+/// A no-op allocator for wrapping foreign-owned memory (numpy, CUDA, mmap, etc.)
+/// as Rust Image objects without taking ownership.
 #[derive(Clone)]
 pub struct ForeignAllocator;
 
@@ -23,9 +18,7 @@ impl TensorAllocator for ForeignAllocator {
         panic!("ForeignAllocator: alloc called on foreign-memory allocator");
     }
 
-    fn dealloc(&self, _ptr: *mut u8, _layout: std::alloc::Layout) {
-        // no-op: foreign system owns the memory
-    }
+    fn dealloc(&self, _ptr: *mut u8, _layout: std::alloc::Layout) {}
 }
 
 impl ImageAllocator for ForeignAllocator {}
