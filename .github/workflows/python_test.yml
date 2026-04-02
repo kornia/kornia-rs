@@ -47,9 +47,6 @@ jobs:
             pixi-env: py313
           - python-version: "3.14"
             pixi-env: py314
-          - python-version: "3.14t"
-            pixi-env: py314t
-            threaded: true
 
     steps:
       - uses: actions/checkout@v6
@@ -65,12 +62,55 @@ jobs:
           environments: ${{ matrix.pixi-env }}
 
       - name: Run tests
-        if: ${{ !matrix.threaded }}
         run: pixi run -e ${{ matrix.pixi-env }} py-test
 
-      - name: Run multithreaded tests
-        if: ${{ matrix.threaded }}
-        run: pixi run -e ${{ matrix.pixi-env }} py-test-threaded
+      - name: Show sccache stats
+        if: always()
+        run: |
+          sccache --show-stats 2>&1 || echo "::warning::sccache stats unavailable - server may have exited"
+
+  # Python 3.14t (free-threaded) needs a standalone job because pixi's
+  # conda-forge rust package sets environment variables that cause maturin
+  # to falsely detect cross-compilation and reject the uv-provided interpreter.
+  test-free-threaded:
+    name: py3.14t-linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: ./.github/actions/setup-rust-cache
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm libunwind-dev
+
+      - name: Setup Python 3.14t environment
+        run: |
+          uv venv -p 3.14t .venv
+          source .venv/bin/activate
+          echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> $GITHUB_ENV
+          echo "$VIRTUAL_ENV/bin" >> $GITHUB_PATH
+          echo "PYTHON_GIL=0" >> $GITHUB_ENV
+
+      - name: Verify free-threaded interpreter
+        run: |
+          python --version --version
+          python -c "import sys; print('GIL enabled:', sys._is_gil_enabled())"
+          python -c "import sysconfig; print('Py_GIL_DISABLED:', sysconfig.get_config_var('Py_GIL_DISABLED'))"
+
+      - name: Install maturin and test deps
+        run: uv pip install maturin pytest pytest-run-parallel numpy torch --extra-index-url https://download.pytorch.org/whl/cpu
+
+      - name: Build and test
+        run: |
+          cd kornia-py
+          maturin develop -m Cargo.toml
+          python -c "import sys; assert not sys._is_gil_enabled(), 'GIL was re-enabled after import!'"
+          python -m pytest --parallel-threads=8 --iterations=50
 
       - name: Show sccache stats
         if: always()
