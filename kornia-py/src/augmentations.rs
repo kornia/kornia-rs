@@ -4,7 +4,7 @@ use rand::rngs::StdRng;
 use std::cell::RefCell;
 use std::sync::Mutex;
 
-use crate::image::{pyarray_data, vec_to_pyarray, PyImageApi};
+use crate::image::PyImageApi;
 
 static GLOBAL_SEED: Mutex<Option<u64>> = Mutex::new(None);
 
@@ -64,7 +64,7 @@ fn check_input(
             name, value
         )));
     }
-    let range = if name == "hue" {
+    let range = if center == 0.0 {
         (-value, value)
     } else {
         (f64::max(0.0, center - value), center + value)
@@ -86,7 +86,7 @@ impl PyColorJitter {
     #[pyo3(signature = (brightness=0.0, contrast=0.0, saturation=0.0, hue=0.0))]
     fn new(brightness: f64, contrast: f64, saturation: f64, hue: f64) -> PyResult<Self> {
         Ok(Self {
-            brightness: check_input(brightness, "brightness", 1.0, None)?,
+            brightness: check_input(brightness, "brightness", 0.0, Some((-1.0, 1.0)))?,
             contrast: check_input(contrast, "contrast", 1.0, None)?,
             saturation: check_input(saturation, "saturation", 1.0, None)?,
             hue: check_input(hue, "hue", 0.0, Some((-0.5, 0.5)))?,
@@ -97,7 +97,7 @@ impl PyColorJitter {
         let mut ops: Vec<(u8, f64)> = Vec::with_capacity(4);
 
         with_rng(|rng| {
-            if self.brightness.0 != 1.0 || self.brightness.1 != 1.0 {
+            if self.brightness.0 != 0.0 || self.brightness.1 != 0.0 {
                 let factor = rng.random_range(self.brightness.0..=self.brightness.1);
                 ops.push((0, factor));
             }
@@ -120,20 +120,7 @@ impl PyColorJitter {
 
         for (op, factor) in &ops {
             current = match op {
-                0 => {
-                    let arr = current.data(py);
-                    let bound = arr.bind(py);
-                    let (src, h, w, c) = pyarray_data(bound);
-                    let out: Vec<u8> = src
-                        .iter()
-                        .map(|&v| (v as f64 * factor).clamp(0.0, 255.0) as u8)
-                        .collect();
-                    PyImageApi::wrap(
-                        py,
-                        vec_to_pyarray(py, out, h, w, c),
-                        Some(current.mode().to_string()),
-                    )
-                }
+                0 => current.adjust_brightness(py, *factor as f32)?,
                 1 => current.adjust_contrast(py, *factor)?,
                 2 => current.adjust_saturation(py, *factor)?,
                 3 => current.adjust_hue(py, *factor)?,
