@@ -1,5 +1,5 @@
 mod apriltag;
-pub(crate) mod augmentations;
+mod augmentations;
 mod blur;
 mod brightness;
 mod color;

@@ -700,27 +700,27 @@ impl PyImageApi {
 
     // --- Static constructors ---
 
-    /// Create an Image from raw pixel data or numpy array. Zero-copy for numpy.
+    /// Create a zero-copy Image from a numpy array or array-like object.
+    ///
+    /// The Image shares memory with the input array — mutations to either
+    /// are visible in both. Accepts 2D (H, W) or 3D (H, W, C) arrays.
+    ///
+    /// Args:
+    ///     data: numpy array (uint8), 2D or 3D in HWC layout.
+    ///     mode: color mode string (e.g. "RGB", "L"). Auto-inferred if omitted.
+    ///
+    /// Returns:
+    ///     Image wrapping the array data without copying.
     #[staticmethod]
-    #[pyo3(signature = (data, width=None, height=None, channels=3, mode=None))]
-    fn frombytes(
-        py: Python<'_>,
-        data: &Bound<'_, PyAny>,
-        width: Option<usize>,
-        height: Option<usize>,
-        channels: Option<usize>,
-        mode: Option<String>,
-    ) -> PyResult<Self> {
-        // Try as 3D numpy array (zero-copy)
+    #[pyo3(signature = (data, mode=None))]
+    fn frombuffer(py: Python<'_>, data: &Bound<'_, PyAny>, mode: Option<String>) -> PyResult<Self> {
         if let Ok(arr) = data.extract::<Py<PyArray3<u8>>>() {
             return Ok(Self::wrap(py, arr, mode));
         }
 
-        // Try shape attribute for 2D arrays or array-like objects
         if let Ok(shape_attr) = data.getattr("shape") {
             if let Ok(shape) = shape_attr.extract::<Vec<usize>>() {
                 if shape.len() == 2 {
-                    // 2D: reshape to (H, W, 1) — zero-copy view for numpy arrays
                     if let Ok(arr) = data
                         .call_method1("reshape", ((shape[0], shape[1], 1usize),))
                         .and_then(|r| Ok(r.extract::<Py<PyArray3<u8>>>()?))
@@ -736,21 +736,39 @@ impl PyImageApi {
             }
         }
 
-        // Raw bytes/bytearray/memoryview — need explicit dimensions
-        let w = width.ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "width and height are required for raw bytes input",
-            )
-        })?;
-        let h = height.ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "width and height are required for raw bytes input",
-            )
-        })?;
-        let c = channels.unwrap_or(3);
-        let expected = h * w * c;
+        Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+            "frombuffer requires a numpy array or array-like object with .shape",
+        ))
+    }
 
-        // Extract bytes from various sources
+    /// Create an Image by copying raw pixel data into a new buffer.
+    ///
+    /// Accepts bytes, bytearray, memoryview, or any object with a
+    /// .tobytes() method. Width, height, and channels must be specified
+    /// so the flat data can be reshaped to (H, W, C).
+    ///
+    /// Args:
+    ///     data: raw pixel data (bytes, bytearray, memoryview, or .tobytes()-capable).
+    ///     width: image width in pixels.
+    ///     height: image height in pixels.
+    ///     channels: number of channels (default 3).
+    ///     mode: color mode string (e.g. "RGB", "L"). Auto-inferred if omitted.
+    ///
+    /// Returns:
+    ///     Image owning a copy of the data.
+    #[staticmethod]
+    #[pyo3(signature = (data, width, height, channels=3, mode=None))]
+    fn frombytes(
+        py: Python<'_>,
+        data: &Bound<'_, PyAny>,
+        width: usize,
+        height: usize,
+        channels: Option<usize>,
+        mode: Option<String>,
+    ) -> PyResult<Self> {
+        let c = channels.unwrap_or(3);
+        let expected = height * width * c;
+
         let bytes: Vec<u8> = if let Ok(v) = data.extract::<Vec<u8>>() {
             v
         } else if let Ok(tobytes) = data.call_method0("tobytes") {
@@ -764,15 +782,12 @@ impl PyImageApi {
         if bytes.len() != expected {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
                 "Expected {} bytes ({}x{}x{}), got {}",
-                expected,
-                h,
-                w,
-                c,
+                expected, height, width, c,
                 bytes.len()
             )));
         }
 
-        let arr = vec_to_pyarray(py, bytes, h, w, c);
+        let arr = vec_to_pyarray(py, bytes, height, width, c);
         Ok(Self::wrap(py, arr, mode))
     }
 
@@ -1035,24 +1050,17 @@ impl PyImageApi {
     /// Adjust brightness. Factor is additive in [0,1] range.
     pub fn adjust_brightness(&self, py: Python<'_>, factor: f32) -> PyResult<Self> {
         let arr = self.data.bind(py);
-        let c = arr.shape()[2];
-        if c == 3 {
-            let result =
-                crate::brightness::adjust_brightness_py(py, self.data.clone_ref(py), factor)?;
-            Ok(Self::wrap(py, result, Some(self.mode.clone())))
-        } else {
-            let (src, h, w, _) = pyarray_data(arr);
-            let offset = factor * 255.0;
-            let out: Vec<u8> = src
-                .iter()
-                .map(|&v| (v as f32 + offset).clamp(0.0, 255.0) as u8)
-                .collect();
-            Ok(Self::wrap(
-                py,
-                vec_to_pyarray(py, out, h, w, c),
-                Some(self.mode.clone()),
-            ))
-        }
+        let (src, h, w, c) = pyarray_data(arr);
+        let offset = factor * 255.0;
+        let out: Vec<u8> = src
+            .iter()
+            .map(|&v| (v as f32 + offset).clamp(0.0, 255.0) as u8)
+            .collect();
+        Ok(Self::wrap(
+            py,
+            vec_to_pyarray(py, out, h, w, c),
+            Some(self.mode.clone()),
+        ))
     }
 
     /// Adjust contrast. factor=1.0 is identity, >1 increases contrast.
