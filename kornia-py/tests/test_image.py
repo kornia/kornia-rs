@@ -695,6 +695,116 @@ class TestSetSeed:
         assert np.array_equal(result1.data, result2.data)
 
 
+# --- Cached params tests ---
+
+class TestCachedParams:
+    """Test sample(), last_params, and passing params to __call__."""
+
+    def setup_method(self):
+        self.img = _make_test_image(width=50, height=40, channels=3, fill=128)
+
+    def test_color_jitter_sample_and_apply(self):
+        jitter = ColorJitter(brightness=0.5, contrast=0.3, saturation=0.2, hue=0.1)
+        params = jitter.sample()
+        assert "brightness" in params
+        assert "contrast" in params
+        assert "saturation" in params
+        assert "hue" in params
+        assert "order" in params
+        # Apply same params to two copies
+        r1 = jitter(self.img, params=params)
+        r2 = jitter(self.img, params=params)
+        assert np.array_equal(r1.data, r2.data)
+
+    def test_color_jitter_last_params(self):
+        jitter = ColorJitter(brightness=0.5)
+        assert jitter.last_params is None
+        jitter(self.img)
+        assert jitter.last_params is not None
+        assert "brightness" in jitter.last_params
+
+    def test_hflip_sample_and_apply(self):
+        flip = RandomHorizontalFlip(p=0.5)
+        params = flip.sample()
+        assert "flip" in params
+        r1 = flip(self.img, params=params)
+        r2 = flip(self.img, params=params)
+        assert np.array_equal(r1.data, r2.data)
+
+    def test_hflip_last_params(self):
+        flip = RandomHorizontalFlip(p=1.0)
+        assert flip.last_params is None
+        flip(self.img)
+        assert flip.last_params is not None
+        assert flip.last_params["flip"] is True
+
+    def test_vflip_sample_and_apply(self):
+        flip = RandomVerticalFlip(p=0.5)
+        params = flip.sample()
+        assert "flip" in params
+        r1 = flip(self.img, params=params)
+        r2 = flip(self.img, params=params)
+        assert np.array_equal(r1.data, r2.data)
+
+    def test_vflip_last_params(self):
+        flip = RandomVerticalFlip(p=1.0)
+        assert flip.last_params is None
+        flip(self.img)
+        assert flip.last_params is not None
+        assert flip.last_params["flip"] is True
+
+    def test_random_crop_sample_and_apply(self):
+        crop = RandomCrop((20, 30))
+        params = crop.sample(self.img)
+        assert "x" in params
+        assert "y" in params
+        r1 = crop(self.img, params=params)
+        r2 = crop(self.img, params=params)
+        assert np.array_equal(r1.data, r2.data)
+        assert r1.width == 30
+        assert r1.height == 20
+
+    def test_random_crop_last_params(self):
+        crop = RandomCrop((20, 30))
+        assert crop.last_params is None
+        crop(self.img)
+        assert crop.last_params is not None
+        assert "x" in crop.last_params
+        assert "y" in crop.last_params
+
+    def test_random_rotation_sample_and_apply(self):
+        rot = RandomRotation(30.0)
+        params = rot.sample()
+        assert "angle" in params
+        r1 = rot(self.img, params=params)
+        r2 = rot(self.img, params=params)
+        assert np.array_equal(r1.data, r2.data)
+
+    def test_random_rotation_last_params(self):
+        rot = RandomRotation(30.0)
+        assert rot.last_params is None
+        rot(self.img)
+        assert rot.last_params is not None
+        assert "angle" in rot.last_params
+
+    def test_apply_same_augmentation_to_image_and_mask(self):
+        """Realistic use case: apply same transform to image and its mask."""
+        img = _make_test_image(width=50, height=40, channels=3, fill=100)
+        mask = _make_test_image(width=50, height=40, channels=3, fill=200)
+
+        flip = RandomHorizontalFlip(p=0.5)
+        params = flip.sample()
+        img_out = flip(img, params=params)
+        mask_out = flip(mask, params=params)
+
+        if params["flip"]:
+            assert np.array_equal(img_out.data, img.flip_horizontal().data)
+            assert np.array_equal(mask_out.data, mask.flip_horizontal().data)
+        else:
+            assert np.array_equal(img_out.data, img.data)
+            assert np.array_equal(mask_out.data, mask.data)
+
+
 # --- Decode tests ---
 
 class TestDecode:
