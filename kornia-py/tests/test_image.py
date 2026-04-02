@@ -1,4 +1,4 @@
-"""Tests for the PIL-like Image API and augmentations."""
+"""Tests for the Image API and augmentations."""
 
 import multiprocessing
 import tempfile
@@ -14,17 +14,17 @@ from kornia_rs.augmentations import (
 
 
 def _make_test_image(width=8, height=6, channels=3, fill=42):
-    """Create a test Image using frombytes."""
+    """Create a test Image via frombuffer (zero-copy from numpy)."""
     data = np.full((height, width, channels), fill, dtype=np.uint8)
-    return Image.frombytes(data)
+    return Image.frombuffer(data)
 
 
 # --- Image class tests ---
 
 class TestImage:
-    def test_frombytes_numpy(self):
+    def test_constructor_numpy(self):
         data = np.random.randint(0, 255, (100, 80, 3), dtype=np.uint8)
-        img = Image.frombytes(data)
+        img = Image(data)
         assert img.width == 80
         assert img.height == 100
         assert img.channels == 3
@@ -33,17 +33,8 @@ class TestImage:
 
     def test_create_grayscale_2d(self):
         data = np.random.randint(0, 255, (50, 60), dtype=np.uint8)
-        img = Image.frombytes(data)
+        img = Image(data)
         assert img.channels == 1
-
-    def test_frombytes_raw_bytes(self):
-        width, height, channels = 10, 5, 3
-        raw = bytes([128] * (width * height * channels))
-        img = Image.frombytes(raw, width=width, height=height, channels=channels)
-        assert img.width == width
-        assert img.height == height
-        assert img.channels == channels
-        assert np.all(img.data == 128)
 
     def test_copy(self):
         img = _make_test_image()
@@ -64,7 +55,7 @@ class TestImage:
 
     def test_to_numpy_is_copy(self):
         data = np.random.randint(0, 255, (10, 10, 3), dtype=np.uint8)
-        img = Image.frombytes(data)
+        img = Image.frombuffer(data)
         out = img.to_numpy()
         assert np.array_equal(out, data)
         out[0, 0, 0] = 255 - out[0, 0, 0]
@@ -72,19 +63,19 @@ class TestImage:
 
     def test_array_protocol(self):
         data = np.random.randint(0, 255, (10, 10, 3), dtype=np.uint8)
-        img = Image.frombytes(data)
+        img = Image.frombuffer(data)
         arr = np.array(img)
         assert np.array_equal(arr, data)
 
     def test_eq(self):
         data = np.random.randint(0, 255, (10, 10, 3), dtype=np.uint8)
-        img1 = Image.frombytes(data.copy())
-        img2 = Image.frombytes(data.copy())
+        img1 = Image.frombuffer(data.copy())
+        img2 = Image.frombuffer(data.copy())
         assert img1 == img2
 
     def test_invalid_dims(self):
-        with pytest.raises(ValueError):
-            Image.frombytes(np.zeros((10,), dtype=np.uint8))
+        with pytest.raises((ValueError, TypeError)):
+            Image.frombuffer(np.zeros((10,), dtype=np.uint8))
 
     def test_nbytes(self):
         img = _make_test_image(width=100, height=50, channels=3)
@@ -94,20 +85,92 @@ class TestImage:
         img = _make_test_image(width=100, height=50)
         assert len(img) == 50  # height
 
-    def test_frombytes_memoryview(self):
-        """frombytes from a memoryview should be zero-copy."""
+
+class TestFrombuffer:
+    """Test Image.frombuffer() — zero-copy from numpy arrays."""
+
+    def test_3d_array(self):
+        arr = np.random.randint(0, 255, (100, 80, 3), dtype=np.uint8)
+        img = Image.frombuffer(arr)
+        assert img.width == 80
+        assert img.height == 100
+        assert img.channels == 3
+        assert np.shares_memory(img.data, arr)
+
+    def test_2d_array(self):
+        arr = np.random.randint(0, 255, (50, 60), dtype=np.uint8)
+        img = Image.frombuffer(arr)
+        assert img.channels == 1
+        assert np.shares_memory(img.data, arr)
+
+    def test_mutation_visible_both_ways(self):
+        arr = np.zeros((10, 10, 3), dtype=np.uint8)
+        img = Image.frombuffer(arr)
+        arr[0, 0, 0] = 42
+        assert img.data[0, 0, 0] == 42
+        img.data[5, 5, 1] = 99
+        assert arr[5, 5, 1] == 99
+
+    def test_with_mode(self):
+        arr = np.zeros((10, 10, 3), dtype=np.uint8)
+        img = Image.frombuffer(arr, mode="BGR")
+        assert img.mode == "BGR"
+
+    def test_rejects_raw_bytes(self):
+        with pytest.raises(TypeError):
+            Image.frombuffer(bytes([0] * 24))
+
+    def test_rejects_1d(self):
+        with pytest.raises((ValueError, TypeError)):
+            Image.frombuffer(np.zeros((10,), dtype=np.uint8))
+
+
+class TestFrombytes:
+    """Test Image.frombytes() — copies raw bytes into a new buffer."""
+
+    def test_bytes(self):
+        width, height, channels = 10, 5, 3
+        raw = bytes([128] * (width * height * channels))
+        img = Image.frombytes(raw, width, height, channels)
+        assert img.width == width
+        assert img.height == height
+        assert img.channels == channels
+        assert np.all(img.data == 128)
+
+    def test_bytearray(self):
+        ba = bytearray([100] * (8 * 6 * 3))
+        img = Image.frombytes(ba, 8, 6, 3)
+        assert img.width == 8
+        assert np.all(img.data == 100)
+
+    def test_memoryview(self):
         arr = np.full((6, 8, 3), 77, dtype=np.uint8)
         mv = memoryview(arr)
-        img = Image.frombytes(mv, width=8, height=6, channels=3)
+        img = Image.frombytes(mv, 8, 6, 3)
         assert img.width == 8
         assert img.height == 6
-        assert img.channels == 3
         assert np.all(img.data == 77)
 
-    def test_frombytes_requires_dims(self):
-        """Raw bytes without width/height should raise ValueError."""
+    def test_owns_data(self):
+        """frombytes creates its own buffer — can't share with immutable bytes."""
+        raw = bytes([55] * (4 * 4 * 3))
+        img = Image.frombytes(raw, 4, 4, 3)
+        assert np.all(img.data == 55)
+
+    def test_wrong_size_raises(self):
+        raw = bytes([0] * 10)
+        with pytest.raises(ValueError):
+            Image.frombytes(raw, 4, 4, 3)
+
+    def test_with_mode(self):
+        raw = bytes([0] * (4 * 4 * 1))
+        img = Image.frombytes(raw, 4, 4, 1, mode="L")
+        assert img.mode == "L"
+
+    def test_requires_dimensions(self):
+        """Raw bytes without width/height should raise TypeError."""
         raw = bytes([0] * 24)
-        with pytest.raises((ValueError, TypeError)):
+        with pytest.raises(TypeError):
             Image.frombytes(raw)
 
 
@@ -115,7 +178,6 @@ class TestImageSerialize:
     """Test serialization for Ray Data / multiprocessing compatibility."""
 
     def test_reduce(self):
-        """Image.__reduce__ returns (Image, (data,)) for serialization."""
         img = _make_test_image(fill=42)
         constructor, args = img.__reduce__()
         assert constructor is Image
@@ -123,7 +185,6 @@ class TestImageSerialize:
         assert img == reconstructed
 
     def test_getstate_setstate(self):
-        """Test serialization roundtrip via reduce/reconstruct."""
         img = _make_test_image(fill=42)
         constructor, args = img.__reduce__()
         img2 = constructor(*args)
@@ -135,85 +196,18 @@ class TestImageSerialize:
 class TestZeroCopy:
     """Verify zero-copy behavior and memory ownership semantics."""
 
-    def test_frombytes_shares_memory(self):
-        """frombytes(numpy_arr) must NOT copy — same memory as source array."""
-        arr = np.random.randint(0, 255, (50, 50, 3), dtype=np.uint8)
-        img = Image.frombytes(arr)
-        assert np.shares_memory(img.data, arr)
-
-    def test_frombytes_mutation_visible(self):
-        """Mutating the source array is visible through the Image (shared memory)."""
-        arr = np.zeros((10, 10, 3), dtype=np.uint8)
-        img = Image.frombytes(arr)
-        arr[0, 0, 0] = 42
-        assert img.data[0, 0, 0] == 42
-
-    def test_frombytes_mutation_from_image_visible(self):
-        """Mutating via img.data is visible in the original array."""
-        arr = np.zeros((10, 10, 3), dtype=np.uint8)
-        img = Image.frombytes(arr)
-        img.data[5, 5, 1] = 99
-        assert arr[5, 5, 1] == 99
-
-    def test_data_property_is_backing_buffer(self):
-        """img.data returns the backing buffer (zero-copy access)."""
-        arr = np.full((20, 20, 3), 100, dtype=np.uint8)
-        img = Image.frombytes(arr)
-        assert np.shares_memory(img.data, arr)
-
-    def test_data_mutation_visible(self):
-        """Mutations via img.data are visible (it's the real buffer)."""
-        arr = np.full((20, 20, 3), 100, dtype=np.uint8)
-        img = Image.frombytes(arr)
-        img.data[0, 0, 0] = 42
-        assert arr[0, 0, 0] == 42
-
-    def test_to_numpy_isolates(self):
-        """to_numpy() must copy — mutations must NOT affect original Image."""
-        img = _make_test_image(fill=50)
-        arr = img.to_numpy()
-        arr[0, 0, 0] = 255
-        assert img.data[0, 0, 0] == 50
-
-    def test_copy_isolates(self):
-        """copy() must produce a fully independent Image."""
-        img = _make_test_image(fill=50)
-        img2 = img.copy()
-        img2.data[0, 0, 0] = 255
-        assert img.data[0, 0, 0] == 50
-
-    def test_frombytes_raw_bytes_owns_data(self):
-        """frombytes from raw bytes (not numpy) creates its own buffer."""
-        width, height, channels = 4, 4, 3
-        raw = bytes([55] * (width * height * channels))
-        img = Image.frombytes(raw, width=width, height=height, channels=channels)
-        assert img.width == width
-        assert img.height == height
-        assert np.all(img.data == 55)
-        # Raw bytes input: Image owns its copy, mutations to 'raw' won't matter
-        assert img.data[0, 0, 0] == 55
-
-
-class TestMemoryZeroCopy:
-    """Exhaustive zero-copy and memory isolation tests."""
-
-    # --- Constructor zero-copy ---
-
-    def test_image_constructor_shares_memory(self):
-        """Image(numpy_array) must be zero-copy for 3D arrays."""
+    def test_constructor_shares_memory(self):
         arr = np.random.randint(0, 255, (50, 50, 3), dtype=np.uint8)
         img = Image(arr)
         assert np.shares_memory(img.data, arr)
 
-    def test_image_constructor_2d_shares_memory(self):
-        """Image(2D_array) expands dims via view — should share memory."""
+    def test_constructor_2d_shares_memory(self):
         arr = np.random.randint(0, 255, (50, 50), dtype=np.uint8)
         img = Image(arr)
         assert img.channels == 1
         assert np.shares_memory(img.data, arr)
 
-    def test_image_constructor_mutation_roundtrip(self):
-        """Mutating source array must be visible through Image (zero-copy proof)."""
+    def test_constructor_mutation_roundtrip(self):
         arr = np.zeros((10, 10, 3), dtype=np.uint8)
         img = Image(arr)
         arr[3, 3, 0] = 200
@@ -221,52 +215,7 @@ class TestMemoryZeroCopy:
         img.data[7, 7, 2] = 150
         assert arr[7, 7, 2] == 150
 
-    def test_frombytes_numpy_shares_memory(self):
-        """frombytes(numpy_arr) must be zero-copy."""
-        arr = np.random.randint(0, 255, (50, 50, 3), dtype=np.uint8)
-        img = Image.frombytes(arr)
-        assert np.shares_memory(img.data, arr)
-
-    def test_frombytes_2d_shares_memory(self):
-        """frombytes(2D_array) should share memory."""
-        arr = np.random.randint(0, 255, (50, 50), dtype=np.uint8)
-        img = Image.frombytes(arr)
-        assert img.channels == 1
-        assert np.shares_memory(img.data, arr)
-
-    def test_frombytes_raw_bytes_owns_copy(self):
-        """frombytes(raw_bytes) creates its own buffer (can't share with immutable bytes)."""
-        raw = bytes([55] * (4 * 4 * 3))
-        img = Image.frombytes(raw, width=4, height=4, channels=3)
-        assert np.all(img.data == 55)
-
-    def test_frombytes_bytearray_roundtrip(self):
-        """frombytes(bytearray) — verify data is accessible."""
-        ba = bytearray([100] * (8 * 6 * 3))
-        img = Image.frombytes(ba, width=8, height=6, channels=3)
-        assert img.width == 8
-        assert np.all(img.data == 100)
-
-    # --- __array__ protocol ---
-
-    def test_array_protocol_no_copy_shares_memory(self):
-        """np.asarray(img) should share memory (zero-copy)."""
-        arr = np.random.randint(0, 255, (30, 30, 3), dtype=np.uint8)
-        img = Image(arr)
-        out = np.asarray(img)
-        assert np.shares_memory(out, arr)
-
-    def test_array_protocol_copy_isolates(self):
-        """np.array(img, copy=True) must NOT share memory."""
-        arr = np.random.randint(0, 255, (30, 30, 3), dtype=np.uint8)
-        img = Image(arr)
-        out = np.array(img, copy=True)
-        assert not np.shares_memory(out, arr)
-
-    # --- data property ---
-
     def test_data_getter_shares_memory(self):
-        """img.data must return the backing buffer, not a copy."""
         arr = np.random.randint(0, 255, (20, 20, 3), dtype=np.uint8)
         img = Image(arr)
         d1 = img.data
@@ -274,10 +223,19 @@ class TestMemoryZeroCopy:
         assert np.shares_memory(d1, d2)
         assert np.shares_memory(d1, arr)
 
-    # --- copy/to_numpy isolation ---
+    def test_asarray_shares_memory(self):
+        arr = np.random.randint(0, 255, (30, 30, 3), dtype=np.uint8)
+        img = Image(arr)
+        out = np.asarray(img)
+        assert np.shares_memory(out, arr)
+
+    def test_array_copy_isolates(self):
+        arr = np.random.randint(0, 255, (30, 30, 3), dtype=np.uint8)
+        img = Image(arr)
+        out = np.array(img, copy=True)
+        assert not np.shares_memory(out, arr)
 
     def test_copy_does_not_share_memory(self):
-        """copy() must produce fully independent memory."""
         arr = np.full((20, 20, 3), 50, dtype=np.uint8)
         img = Image(arr)
         img2 = img.copy()
@@ -286,7 +244,6 @@ class TestMemoryZeroCopy:
         assert img.data[0, 0, 0] == 50
 
     def test_to_numpy_does_not_share_memory(self):
-        """to_numpy() must return an independent copy."""
         arr = np.full((20, 20, 3), 50, dtype=np.uint8)
         img = Image(arr)
         out = img.to_numpy()
@@ -300,7 +257,7 @@ class TestImmutableTransforms:
 
     def setup_method(self):
         self.original_data = np.random.randint(0, 255, (100, 80, 3), dtype=np.uint8)
-        self.img = Image.frombytes(self.original_data.copy())
+        self.img = Image.frombuffer(self.original_data.copy())
         self.snapshot = self.img.data.copy()
 
     def _assert_original_unchanged(self):
@@ -308,7 +265,6 @@ class TestImmutableTransforms:
             "Transform mutated the source Image!"
 
     def _assert_isolated(self, result):
-        """Assert result has independent memory from source."""
         self._assert_original_unchanged()
         assert not np.shares_memory(result.data, self.img.data), \
             "Transform result shares memory with source!"
@@ -369,7 +325,6 @@ class TestImmutableTransforms:
         assert not np.shares_memory(result.data, gray.data)
 
     def test_chain_isolates(self):
-        """A full chain of transforms must not touch the original."""
         result = (
             self.img
             .resize(50, 40)
@@ -382,37 +337,31 @@ class TestImmutableTransforms:
         assert result.shape == (20, 20, 3)
 
     def test_augmentation_colorjitter_isolates(self):
-        """ColorJitter must not mutate the source Image."""
         jitter = ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1)
         result = jitter(self.img)
         self._assert_isolated(result)
 
     def test_augmentation_random_hflip_isolates(self):
-        """RandomHorizontalFlip must not mutate source."""
         flip = RandomHorizontalFlip(p=1.0)
         result = flip(self.img)
         self._assert_isolated(result)
 
     def test_augmentation_random_vflip_isolates(self):
-        """RandomVerticalFlip must not mutate source."""
         flip = RandomVerticalFlip(p=1.0)
         result = flip(self.img)
         self._assert_isolated(result)
 
     def test_augmentation_random_crop_isolates(self):
-        """RandomCrop must not mutate source."""
         crop = RandomCrop((50, 50))
         result = crop(self.img)
         self._assert_isolated(result)
 
     def test_augmentation_random_rotation_isolates(self):
-        """RandomRotation must not mutate source."""
         rot = RandomRotation(30.0)
         result = rot(self.img)
         self._assert_isolated(result)
 
     def test_compose_isolates(self):
-        """Compose pipeline must not mutate the source Image."""
         transform = Compose([
             RandomHorizontalFlip(p=1.0),
             ColorJitter(brightness=0.2),
@@ -425,39 +374,30 @@ class TestScopedLifetime:
     """Verify Image data survives or is properly isolated across scopes."""
 
     def test_data_survives_image_going_out_of_scope(self):
-        """np.array(img) should keep data alive even after Image is deleted."""
         img = _make_test_image(fill=42)
-        arr = img.data  # get backing buffer
-        del img  # Image goes out of scope
-        # arr should still be valid (numpy owns the memory)
+        arr = img.data
+        del img
         assert arr[0, 0, 0] == 42
         assert arr.shape == (6, 8, 3)
 
-    def test_frombytes_data_lifetime(self):
-        """frombytes Image depends on source array lifetime."""
+    def test_frombuffer_data_lifetime(self):
         arr = np.full((10, 10, 3), 77, dtype=np.uint8)
-        img = Image.frombytes(arr)
+        img = Image.frombuffer(arr)
         assert img.data[0, 0, 0] == 77
-        # arr still alive, so img.data is valid
         arr[0, 0, 0] = 88
         assert img.data[0, 0, 0] == 88
 
     def test_transform_result_independent_of_source_scope(self):
-        """Transform results must be valid even if source Image is deleted."""
         def create_and_transform():
             img = _make_test_image(width=100, height=80, fill=128)
             return img.resize(50, 40).flip_horizontal()
 
         result = create_and_transform()
-        # Original img is out of scope, result should still work
         assert result.width == 50
         assert result.height == 40
-        assert result.data[0, 0, 0] is not None  # data accessible
+        assert result.data[0, 0, 0] is not None
 
     def test_augmentation_result_independent(self):
-        """Augmentation results must be valid after source is deleted."""
-        from kornia_rs.augmentations import RandomHorizontalFlip
-
         def augment():
             img = _make_test_image(width=50, height=50, fill=100)
             flip = RandomHorizontalFlip(p=1.0)
@@ -468,23 +408,16 @@ class TestScopedLifetime:
         assert result.data.sum() > 0
 
     def test_chained_intermediate_gc(self):
-        """Intermediate Images in a chain should be GC-able."""
         import gc
         import weakref
 
         img = _make_test_image(width=100, height=80, fill=128)
-
-        # Create intermediate and track it
         intermediate = img.resize(50, 40)
         weak_ref = weakref.ref(intermediate)
-
-        # Chain further, dropping intermediate reference
         result = intermediate.flip_horizontal()
         del intermediate
         gc.collect()
 
-        # Intermediate may or may not be collected (GC is non-deterministic)
-        # But result must be fully valid regardless
         assert result.width == 50
         assert result.height == 40
         assert result.data.shape == (40, 50, 3)
@@ -503,14 +436,14 @@ class TestTransforms:
 
     def test_flip_horizontal(self):
         data = np.arange(12, dtype=np.uint8).reshape(2, 2, 3)
-        img = Image.frombytes(data)
+        img = Image.frombuffer(data)
         flipped = img.flip_horizontal()
         assert np.array_equal(flipped.data[0, 0], data[0, 1])
         assert np.array_equal(flipped.data[0, 1], data[0, 0])
 
     def test_flip_vertical(self):
         data = np.arange(12, dtype=np.uint8).reshape(2, 2, 3)
-        img = Image.frombytes(data)
+        img = Image.frombuffer(data)
         flipped = img.flip_vertical()
         assert np.array_equal(flipped.data[0], data[1])
         assert np.array_equal(flipped.data[1], data[0])
@@ -595,7 +528,7 @@ class TestColorJitter:
 
 class TestRandomFlips:
     def test_horizontal_flip_always(self):
-        img = Image.frombytes(np.random.randint(0, 255, (10, 10, 3), dtype=np.uint8))
+        img = Image.frombuffer(np.random.randint(0, 255, (10, 10, 3), dtype=np.uint8))
         flip = RandomHorizontalFlip(p=1.0)
         result = flip(img)
         assert result.shape == img.shape
@@ -670,11 +603,9 @@ class TestSetSeed:
     """Test set_seed for reproducible augmentations."""
 
     def teardown_method(self):
-        """Reset to non-deterministic after each test."""
         set_seed(None)
 
     def test_seed_reproducible_colorjitter(self):
-        """Same seed produces identical ColorJitter results."""
         img = _make_test_image(width=50, height=50, channels=3, fill=128)
         jitter = ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1)
 
@@ -687,7 +618,6 @@ class TestSetSeed:
         assert np.array_equal(result1.data, result2.data)
 
     def test_seed_reproducible_random_flip(self):
-        """Same seed produces identical flip decisions."""
         img = _make_test_image(width=50, height=50, channels=3, fill=128)
         flip = RandomHorizontalFlip(p=0.5)
 
@@ -701,9 +631,6 @@ class TestSetSeed:
             assert np.array_equal(r1, r2)
 
     def test_seed_reproducible_random_crop(self):
-        """Same seed produces identical crop positions."""
-        img = _make_test_image(width=100, height=80, channels=3, fill=128)
-        # Use non-uniform image so different crops give different data
         img_data = np.random.RandomState(0).randint(0, 255, (80, 100, 3), dtype=np.uint8)
         img = Image(img_data)
         crop = RandomCrop((50, 50))
@@ -717,7 +644,6 @@ class TestSetSeed:
         assert np.array_equal(result1.data, result2.data)
 
     def test_seed_reproducible_compose(self):
-        """Same seed produces identical Compose pipeline results."""
         img_data = np.random.RandomState(0).randint(0, 255, (80, 100, 3), dtype=np.uint8)
         img = Image(img_data)
         transform = Compose([
@@ -735,7 +661,6 @@ class TestSetSeed:
         assert np.array_equal(result1.data, result2.data)
 
     def test_different_seeds_differ(self):
-        """Different seeds produce different results (with high probability)."""
         img_data = np.random.RandomState(0).randint(0, 255, (80, 100, 3), dtype=np.uint8)
         img = Image(img_data)
         jitter = ColorJitter(brightness=0.5, contrast=0.5)
@@ -749,18 +674,14 @@ class TestSetSeed:
         assert not np.array_equal(result1.data, result2.data)
 
     def test_reset_seed_none(self):
-        """set_seed(None) resets to non-deterministic mode."""
         set_seed(42)
         set_seed(None)
-        # Just verify it doesn't crash — non-deterministic means we can't
-        # assert exact values, just that it runs
         img = _make_test_image(width=50, height=50, channels=3, fill=128)
         flip = RandomHorizontalFlip(p=0.5)
         result = flip(img)
         assert result.shape == img.shape
 
     def test_seed_reproducible_random_rotation(self):
-        """Same seed produces identical rotation results."""
         img_data = np.random.RandomState(0).randint(0, 255, (80, 100, 3), dtype=np.uint8)
         img = Image(img_data)
         rot = RandomRotation(30.0)
@@ -780,9 +701,8 @@ class TestDecode:
     """Test Image.decode() for JPEG and PNG byte streams."""
 
     def _make_jpeg_bytes(self, width=16, height=16, channels=3, fill=100):
-        """Save a small image to a temp file and read back as JPEG bytes."""
         arr = np.full((height, width, channels), fill, dtype=np.uint8)
-        img = Image.frombytes(arr)
+        img = Image.frombuffer(arr)
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
             tmp_path = f.name
         try:
@@ -793,9 +713,8 @@ class TestDecode:
             os.unlink(tmp_path)
 
     def _make_png_bytes(self, width=16, height=16, channels=3, fill=100):
-        """Save a small image to a temp file and read back as PNG bytes."""
         arr = np.full((height, width, channels), fill, dtype=np.uint8)
-        img = Image.frombytes(arr)
+        img = Image.frombuffer(arr)
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             tmp_path = f.name
         try:
@@ -833,7 +752,7 @@ def _worker_process_image(data_tuple):
     """Worker function that runs in a separate process."""
     from kornia_rs.image import Image
     data, width, height = data_tuple
-    img = Image.frombytes(data)
+    img = Image.frombuffer(data)
     result = img.resize(width, height).flip_horizontal()
     return result.data
 
@@ -842,11 +761,9 @@ class TestMultiprocessing:
     """Verify Image works safely across process boundaries."""
 
     def test_spawn_pool(self):
-        """Image can be processed in a multiprocessing Pool with spawn context."""
         data = np.random.randint(0, 255, (100, 80, 3), dtype=np.uint8)
         tasks = [(data.copy(), 50, 40) for _ in range(2)]
 
-        # Use 'spawn' — safer for PyO3 extensions (avoids fork+GIL issues)
         ctx = multiprocessing.get_context('spawn')
         with ctx.Pool(2) as pool:
             results = pool.map(_worker_process_image, tasks)
@@ -857,7 +774,6 @@ class TestMultiprocessing:
             assert r.dtype == np.uint8
 
     def test_concurrent_futures(self):
-        """Image works with concurrent.futures ProcessPoolExecutor."""
         from concurrent.futures import ProcessPoolExecutor
         data = np.random.randint(0, 255, (100, 80, 3), dtype=np.uint8)
         tasks = [(data.copy(), 50, 40) for _ in range(2)]
