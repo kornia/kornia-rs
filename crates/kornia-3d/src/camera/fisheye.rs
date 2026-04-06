@@ -1,5 +1,6 @@
 //! Kannala-Brandt equidistant fisheye projection model.
 
+use super::ProjectionReject;
 use crate::pose::Pose3d;
 use kornia_algebra::{Vec2F64, Vec3F64};
 
@@ -14,15 +15,6 @@ pub fn project_point_fisheye(
     let p_cam = pose.transform_point(point_world);
     let (pixel, z_cam) = camera.project(&p_cam)?;
     Some((pixel.x, pixel.y, z_cam))
-}
-
-/// Fisheye projection rejection reasons.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProjectionReject {
-    /// Point is invalid (e.g. at the optical center) or rejected.
-    InvalidProjection,
-    /// Projection lies outside image bounds.
-    OutOfImage,
 }
 
 /// Kannala-Brandt equidistant fisheye projection model.

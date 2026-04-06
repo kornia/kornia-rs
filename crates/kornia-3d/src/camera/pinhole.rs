@@ -4,11 +4,13 @@ use crate::pose::Pose3d;
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use kornia_image::ImageSize;
 
-/// Normal projection rejection reasons.
+/// Projection rejection reasons shared by all camera models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectionReject {
     /// Point depth is below or equal to the requested minimum.
     BelowMinDepth,
+    /// Point is invalid (e.g. at the optical center) or cannot be projected.
+    InvalidProjection,
     /// Projection lies outside image bounds.
     OutOfImage,
 }

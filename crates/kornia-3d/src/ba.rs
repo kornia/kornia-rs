@@ -3,6 +3,11 @@
 //! Provides [`bundle_adjust`] which jointly optimizes camera poses and 3D point
 //! positions by minimizing reprojection error using Levenberg-Marquardt with
 //! analytical Jacobians.
+//!
+//! **Note:** The reprojection model uses only the pinhole parameters
+//! (`fx`, `fy`, `cx`, `cy`). Distortion coefficients on [`PinholeCamera`] are
+//! ignored. Pixel observations must be **undistorted** before being passed in,
+//! otherwise the optimizer will minimize the wrong objective.
 
 use kornia_algebra::optim::{
     Factor, FactorError, FactorResult, LevenbergMarquardt, LinearizationResult, OptimizerError,
@@ -35,7 +40,7 @@ pub struct BaObservation {
     pub pose_idx: usize,
     /// Index into the points slice.
     pub point_idx: usize,
-    /// Observed pixel `[u, v]`.
+    /// Observed pixel `[u, v]` (**must be undistorted**).
     pub pixel: [f32; 2],
     /// If true, this observation's pose is held fixed during optimization.
     pub fixed_pose: bool,
@@ -392,6 +397,10 @@ impl Factor for ReprojFactor {
 ///
 /// Jointly optimizes camera poses (SE3) and 3D point positions by minimizing
 /// reprojection error using Levenberg-Marquardt with analytical Jacobians.
+///
+/// Only the pinhole intrinsics (`fx`, `fy`, `cx`, `cy`) are used for
+/// projection; distortion coefficients are **ignored**. All pixel observations
+/// in [`BaObservation::pixel`] must therefore be undistorted.
 ///
 /// Observations with `fixed_pose = true` hold the referenced pose constant.
 pub fn bundle_adjust(
