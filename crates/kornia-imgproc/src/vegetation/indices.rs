@@ -1,3 +1,4 @@
+use crate::parallel;
 use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 
 /// Computes the Excess Green Index (ExG) for each pixel in an RGB image.
@@ -8,7 +9,7 @@ use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 ///
 /// # Arguments
 ///
-/// * `src` - Input RGB image with f32 pixel values normalized to [0.0, 1.0].
+/// * `src` - Input RGB image with pixel values normalized to [0.0, 1.0].
 /// * `dst` - Output single-channel image where each pixel contains the ExG value.
 ///
 /// # Errors
@@ -19,27 +20,26 @@ use kornia_image::{allocator::ImageAllocator, Image, ImageError};
 ///
 /// ```rust
 /// use kornia_image::{Image, ImageSize};
-/// use kornia_imgproc::vegetation::excess_green;
 /// use kornia_image::allocator::CpuAllocator;
+/// use kornia_imgproc::vegetation::excess_green;
 ///
-/// let src = Image::<f32, 3, CpuAllocator>::new(
-///     ImageSize { width: 1, height: 1 },
-///     vec![0.2, 0.6, 0.1],
+/// let src = Image::<f32, 3, _>::new(
+///     ImageSize { width: 2, height: 2 },
+///     vec![0.2, 0.6, 0.1,  0.5, 0.3, 0.4,
+///          0.1, 0.8, 0.2,  0.9, 0.4, 0.3],
 ///     CpuAllocator,
 /// ).unwrap();
 ///
-/// let mut dst = Image::<f32, 1, CpuAllocator>::new(
-///     ImageSize { width: 1, height: 1 },
-///     vec![0.0],
-///     CpuAllocator,
-/// ).unwrap();
-///
+/// let mut dst = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator).unwrap();
 /// excess_green(&src, &mut dst).unwrap();
 /// ```
-pub fn excess_green<A: ImageAllocator>(
-    src: &Image<f32, 3, A>,
-    dst: &mut Image<f32, 1, A>,
-) -> Result<(), ImageError> {
+pub fn excess_green<T, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<T, 3, A1>,
+    dst: &mut Image<T, 1, A2>,
+) -> Result<(), ImageError>
+where
+    T: Send + Sync + num_traits::Float,
+{
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
             src.cols(),
@@ -49,15 +49,17 @@ pub fn excess_green<A: ImageAllocator>(
         ));
     }
 
-    let src_data = src.as_slice();
-    let dst_data = dst.as_slice_mut();
+    let two = T::from(2.0).ok_or(ImageError::CastError)?;
+    let zero = T::zero();
+    let one = T::one();
 
-    for (i, pixel) in dst_data.iter_mut().enumerate() {
-        let r = src_data[i * 3];
-        let g = src_data[i * 3 + 1];
-        let b = src_data[i * 3 + 2];
-        *pixel = (2.0 * g - r - b).clamp(0.0, 1.0);
-    }
+    // parallelize the ExG computation by rows
+    parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
+        let r = src_pixel[0];
+        let g = src_pixel[1];
+        let b = src_pixel[2];
+        dst_pixel[0] = (two * g - r - b).clamp(zero, one);
+    });
 
     Ok(())
 }
@@ -69,41 +71,28 @@ mod tests {
 
     #[test]
     fn test_excess_green_basic() {
-        // healthy vegetation pixel: high green, low red and blue
         let src = Image::<f32, 3, CpuAllocator>::new(
             ImageSize { width: 1, height: 1 },
             vec![0.2, 0.6, 0.1],
             CpuAllocator,
         ).unwrap();
 
-        let mut dst = Image::<f32, 1, CpuAllocator>::new(
-            ImageSize { width: 1, height: 1 },
-            vec![0.0],
-            CpuAllocator,
-        ).unwrap();
-
+        let mut dst = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator).unwrap();
         excess_green(&src, &mut dst).unwrap();
 
         // ExG = 2*0.6 - 0.2 - 0.1 = 0.9
-        let result = dst.as_slice()[0];
-        assert!((result - 0.9).abs() < 1e-6, "Expected 0.9, got {}", result);
+        assert!((dst.as_slice()[0] - 0.9).abs() < 1e-6);
     }
 
     #[test]
     fn test_excess_green_clamp_min() {
-        // non-vegetation pixel: result should be clamped to 0.0
         let src = Image::<f32, 3, CpuAllocator>::new(
             ImageSize { width: 1, height: 1 },
             vec![0.8, 0.1, 0.6],
             CpuAllocator,
         ).unwrap();
 
-        let mut dst = Image::<f32, 1, CpuAllocator>::new(
-            ImageSize { width: 1, height: 1 },
-            vec![0.0],
-            CpuAllocator,
-        ).unwrap();
-
+        let mut dst = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator).unwrap();
         excess_green(&src, &mut dst).unwrap();
 
         // ExG = 2*0.1 - 0.8 - 0.6 = -1.2 → clamped to 0.0
@@ -112,19 +101,13 @@ mod tests {
 
     #[test]
     fn test_excess_green_clamp_max() {
-        // pure green pixel: result should be clamped to 1.0
         let src = Image::<f32, 3, CpuAllocator>::new(
             ImageSize { width: 1, height: 1 },
             vec![0.0, 1.0, 0.0],
             CpuAllocator,
         ).unwrap();
 
-        let mut dst = Image::<f32, 1, CpuAllocator>::new(
-            ImageSize { width: 1, height: 1 },
-            vec![0.0],
-            CpuAllocator,
-        ).unwrap();
-
+        let mut dst = Image::<f32, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator).unwrap();
         excess_green(&src, &mut dst).unwrap();
 
         // ExG = 2*1.0 - 0.0 - 0.0 = 2.0 → clamped to 1.0
@@ -133,19 +116,31 @@ mod tests {
 
     #[test]
     fn test_excess_green_size_mismatch() {
-        // src and dst have different sizes — should return error
         let src = Image::<f32, 3, CpuAllocator>::new(
             ImageSize { width: 2, height: 1 },
             vec![0.2, 0.6, 0.1, 0.2, 0.6, 0.1],
             CpuAllocator,
         ).unwrap();
 
-        let mut dst = Image::<f32, 1, CpuAllocator>::new(
-            ImageSize { width: 1, height: 1 },
-            vec![0.0],
-            CpuAllocator,
+        let mut dst = Image::<f32, 1, _>::from_size_val(
+            ImageSize { width: 1, height: 1 }, 0.0, CpuAllocator
         ).unwrap();
 
         assert!(excess_green(&src, &mut dst).is_err());
+    }
+
+    #[test]
+    fn test_excess_green_f64() {
+        // test that the function works with f64 as well
+        let src = Image::<f64, 3, CpuAllocator>::new(
+            ImageSize { width: 1, height: 1 },
+            vec![0.2_f64, 0.6_f64, 0.1_f64],
+            CpuAllocator,
+        ).unwrap();
+
+        let mut dst = Image::<f64, 1, _>::from_size_val(src.size(), 0.0, CpuAllocator).unwrap();
+        excess_green(&src, &mut dst).unwrap();
+
+        assert!((dst.as_slice()[0] - 0.9).abs() < 1e-10);
     }
 }
