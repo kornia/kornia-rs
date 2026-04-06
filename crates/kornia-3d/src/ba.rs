@@ -5,13 +5,29 @@
 //! analytical Jacobians.
 
 use kornia_algebra::optim::{
-    Factor, FactorError, FactorResult, LevenbergMarquardt, LinearizationResult, Problem, Variable,
-    VariableType,
+    Factor, FactorError, FactorResult, LevenbergMarquardt, LinearizationResult, OptimizerError,
+    Problem, ProblemError, Variable, VariableType,
 };
 use kornia_algebra::{Mat3AF32, Mat3F64, QuatF32, Vec3AF32, Vec3F64, SE3F32, SO3F32};
 
 use crate::camera::PinholeCamera;
 use crate::pose::Pose3d;
+
+/// Errors that can occur during bundle adjustment.
+#[derive(Debug, thiserror::Error)]
+pub enum BaError {
+    /// Failed to set up the optimization problem (e.g. duplicate variable).
+    #[error("Problem setup error: {0}")]
+    Problem(#[from] ProblemError),
+
+    /// The optimizer failed during solving.
+    #[error("Optimization error: {0}")]
+    Optimizer(#[from] OptimizerError),
+
+    /// Invalid input to bundle adjustment.
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+}
 
 /// A single observation linking a pose to a 3D point via a pixel measurement.
 pub struct BaObservation {
@@ -384,7 +400,7 @@ pub fn bundle_adjust(
     observations: &[BaObservation],
     camera: &PinholeCamera,
     params: &BaParams,
-) -> Result<BaResult, String> {
+) -> Result<BaResult, BaError> {
     let mut problem = Problem::new();
 
     // Track which poses are only used as fixed (never as free).
@@ -402,9 +418,7 @@ pub fn bundle_adjust(
         }
         let se3_params = pose_to_se3_params(pose);
         let var = Variable::new(format!("pose_{i}"), VariableType::SE3, vec![0.0; 7]);
-        problem
-            .add_variable(var, se3_params)
-            .map_err(|e| format!("BA: failed to add pose variable: {e}"))?;
+        problem.add_variable(var, se3_params)?;
     }
 
     // Precompute fixed pose params.
@@ -425,9 +439,7 @@ pub fn bundle_adjust(
     for (i, pt) in points.iter().enumerate() {
         let var = Variable::euclidean(format!("pt_{i}"), 3);
         let init = vec![pt.x as f32, pt.y as f32, pt.z as f32];
-        problem
-            .add_variable(var, init)
-            .map_err(|e| format!("BA: failed to add point variable: {e}"))?;
+        problem.add_variable(var, init)?;
     }
 
     // Add factors.
@@ -440,9 +452,7 @@ pub fn bundle_adjust(
         if obs.fixed_pose {
             if let Some(ref fp) = fixed_params[obs.pose_idx] {
                 let factor = Box::new(ReprojFactor::new_fixed_pose(obs.pixel, camera, *fp));
-                problem
-                    .add_factor(factor, vec![pt_name])
-                    .map_err(|e| format!("BA: failed to add factor: {e}"))?;
+                problem.add_factor(factor, vec![pt_name])?;
             } else {
                 // Pose is actually free but this observation wants it fixed — use current params.
                 let fp_arr: [f32; 7] = {
@@ -450,16 +460,12 @@ pub fn bundle_adjust(
                     [p[0], p[1], p[2], p[3], p[4], p[5], p[6]]
                 };
                 let factor = Box::new(ReprojFactor::new_fixed_pose(obs.pixel, camera, fp_arr));
-                problem
-                    .add_factor(factor, vec![pt_name])
-                    .map_err(|e| format!("BA: failed to add factor: {e}"))?;
+                problem.add_factor(factor, vec![pt_name])?;
             }
         } else {
             let pose_name = format!("pose_{}", obs.pose_idx);
             let factor = Box::new(ReprojFactor::new(obs.pixel, camera));
-            problem
-                .add_factor(factor, vec![pose_name, pt_name])
-                .map_err(|e| format!("BA: failed to add factor: {e}"))?;
+            problem.add_factor(factor, vec![pose_name, pt_name])?;
         }
     }
 
@@ -473,9 +479,7 @@ pub fn bundle_adjust(
         gradient_tolerance: params.gradient_tolerance,
     };
 
-    let result = optimizer
-        .optimize(&mut problem)
-        .map_err(|e| format!("BA optimization failed: {e}"))?;
+    let result = optimizer.optimize(&mut problem)?;
 
     let converged = matches!(
         result.termination_reason,
