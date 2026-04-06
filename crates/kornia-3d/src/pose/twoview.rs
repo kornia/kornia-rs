@@ -678,6 +678,108 @@ mod tests {
         );
     }
 
+    /// Helper to build a minimal TwoViewResult with given inlier_indices.
+    fn stub_result(inlier_indices: Vec<usize>) -> TwoViewResult {
+        TwoViewResult {
+            model: TwoViewModel::Fundamental(Mat3F64::IDENTITY),
+            rotation: Mat3F64::IDENTITY,
+            translation: Vec3F64::new(0.0, 0.0, 1.0),
+            points3d: Vec::new(),
+            inlier_indices,
+            inliers: Vec::new(),
+        }
+    }
+
+    fn test_camera() -> crate::camera::PinholeCamera {
+        crate::camera::PinholeCamera {
+            fx: 500.0,
+            fy: 500.0,
+            cx: 320.0,
+            cy: 240.0,
+            k1: 0.0,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        }
+    }
+
+    #[test]
+    fn test_median_parallax_empty_inliers() {
+        let result = stub_result(vec![]);
+        let cam = test_camera();
+        let x1 = vec![Vec2F64::new(320.0, 240.0)];
+        let x2 = vec![Vec2F64::new(330.0, 240.0)];
+        assert_eq!(result.median_parallax_deg(&x1, &x2, &cam), 0.0);
+    }
+
+    #[test]
+    fn test_median_parallax_identical_points() {
+        // Same pixel in both views → zero parallax.
+        let result = stub_result(vec![0]);
+        let cam = test_camera();
+        let x1 = vec![Vec2F64::new(400.0, 300.0)];
+        let x2 = vec![Vec2F64::new(400.0, 300.0)];
+        let angle = result.median_parallax_deg(&x1, &x2, &cam);
+        assert!(
+            angle.abs() < 1e-4,
+            "expected ~0 parallax for identical points, got {angle}"
+        );
+    }
+
+    #[test]
+    fn test_median_parallax_known_angle() {
+        // Construct a case where bearing vectors differ by a known angle.
+        // Camera: fx=fy=500, cx=320, cy=240.
+        // Point 1: at principal point → bearing (0, 0, 1).
+        // Point 2: shifted 500px in x → bearing (1, 0, 1)/sqrt(2).
+        // Angle = acos( (0*1 + 0*0 + 1*1) / (1 * sqrt(2)) ) = acos(1/sqrt(2)) = 45°.
+        let cam = test_camera();
+        let result = stub_result(vec![0]);
+        let x1 = vec![Vec2F64::new(320.0, 240.0)]; // principal point
+        let x2 = vec![Vec2F64::new(820.0, 240.0)]; // 500px right
+        let angle = result.median_parallax_deg(&x1, &x2, &cam);
+        assert!(
+            (angle - 45.0).abs() < 0.01,
+            "expected ~45° parallax, got {angle}"
+        );
+    }
+
+    #[test]
+    fn test_median_parallax_multiple_inliers() {
+        // 3 inliers: angles 0°, 45°, 45° → sorted [0, 45, 45], median = 45°.
+        let cam = test_camera();
+        let result = stub_result(vec![0, 1, 2]);
+        let x1 = vec![
+            Vec2F64::new(320.0, 240.0), // pp
+            Vec2F64::new(320.0, 240.0), // pp
+            Vec2F64::new(320.0, 240.0), // pp
+        ];
+        let x2 = vec![
+            Vec2F64::new(320.0, 240.0), // same → 0°
+            Vec2F64::new(820.0, 240.0), // +500px → 45°
+            Vec2F64::new(820.0, 240.0), // +500px → 45°
+        ];
+        let angle = result.median_parallax_deg(&x1, &x2, &cam);
+        assert!(
+            (angle - 45.0).abs() < 0.01,
+            "expected median ~45°, got {angle}"
+        );
+    }
+
+    #[test]
+    fn test_median_parallax_out_of_bounds_indices_ignored() {
+        // Inlier indices beyond x1/x2 length are filtered out.
+        let cam = test_camera();
+        let result = stub_result(vec![0, 99]); // index 99 doesn't exist
+        let x1 = vec![Vec2F64::new(320.0, 240.0)];
+        let x2 = vec![Vec2F64::new(820.0, 240.0)];
+        let angle = result.median_parallax_deg(&x1, &x2, &cam);
+        assert!(
+            (angle - 45.0).abs() < 0.01,
+            "expected ~45° (out-of-bounds index skipped), got {angle}"
+        );
+    }
+
     fn u8_to_f32_image(
         src: &kornia_image::Image<u8, 1, kornia_tensor::CpuAllocator>,
     ) -> kornia_image::Image<f32, 1, kornia_tensor::CpuAllocator> {
