@@ -2,6 +2,19 @@ use crate::camera::PinholeCamera;
 use crate::pose::Pose3d;
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 
+/// Errors returned by triangulation utilities.
+#[derive(Debug, thiserror::Error)]
+pub enum TriangulationError {
+    /// Point arrays have mismatched lengths.
+    #[error("Mismatched point array lengths: pts1 has {pts1_len} elements, pts2 has {pts2_len}")]
+    LengthMismatch {
+        /// Length of the first point array.
+        pts1_len: usize,
+        /// Length of the second point array.
+        pts2_len: usize,
+    },
+}
+
 /// Configuration for triangulation-backed pose validation.
 #[derive(Clone, Debug)]
 pub struct TriangulationConfig {
@@ -192,14 +205,19 @@ pub fn triangulate_matched_points(
     pose2: &Pose3d,
     camera: &PinholeCamera,
     config: &TriangulationConfig,
-) -> Vec<TriangulatedPoint> {
-    assert_eq!(pts1.len(), pts2.len());
+) -> Result<Vec<TriangulatedPoint>, TriangulationError> {
+    if pts1.len() != pts2.len() {
+        return Err(TriangulationError::LengthMismatch {
+            pts1_len: pts1.len(),
+            pts2_len: pts2.len(),
+        });
+    }
 
     let relative_pose = Pose3d::between(pose1, pose2);
     let r_rel = relative_pose.rotation;
     let t_rel = relative_pose.translation;
     if t_rel.length() <= 1e-8 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let pose1_inv = pose1.inverse();
@@ -271,7 +289,7 @@ pub fn triangulate_matched_points(
         });
     }
 
-    result
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -356,7 +374,8 @@ mod tests {
             min_cheirality_count: 1,
         };
 
-        let result = triangulate_matched_points(&pts1, &pts2, &pose1, &pose2, &camera, &config);
+        let result =
+            triangulate_matched_points(&pts1, &pts2, &pose1, &pose2, &camera, &config).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].pair_index, 0);
         assert!((result[0].position - Vec3F64::new(0.0, 0.0, 5.0)).length() < 0.05);
@@ -382,7 +401,8 @@ mod tests {
         let pts2 = vec![Vec2F64::new(320.0, 240.0)];
 
         let config = TriangulationConfig::default();
-        let result = triangulate_matched_points(&pts1, &pts2, &pose1, &pose2, &camera, &config);
+        let result =
+            triangulate_matched_points(&pts1, &pts2, &pose1, &pose2, &camera, &config).unwrap();
         assert!(result.is_empty());
     }
 }
