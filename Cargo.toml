@@ -26,20 +26,20 @@ include = ["Cargo.toml"]
 [workspace.dependencies]
 approx = "0.5"
 argh = "0.1"
-arrow = "57"
+arrow = "58"
 # TODO: update to version 3 but it requires some changes in the codebase
 bincode = { version = "2", features = ["derive"] }
-candle-core = { version = "0.9.1" }
-candle-examples = { version = "0.9.1" }
-candle-nn = { version = "0.9.1" }
-candle-transformers = { version = "0.9.1" }
+candle-core = { version = "0.10.2" }
+candle-examples = { version = "0.10.2" }
+candle-nn = { version = "0.10.2" }
+candle-transformers = { version = "0.10.2" }
 criterion = "0.8"
-ctrlc = "3.4"
+ctrlc = "3.5"
 env_logger = "0.11"
-faer = "=0.20.1"
+faer = "=0.22.6"
 half = { version = "2.7", features = ["num-traits"] }
-hf-hub = "0.4.2"
-indicatif = { version = "0.18.3", features = ["rayon"] }
+hf-hub = "0.5.0"
+indicatif = { version = "0.18.4", features = ["rayon"] }
 # NOTE: remember to update the kornia-py package version in `kornia-py/Cargo.toml` when updating the Rust package version
 kornia = { path = "crates/kornia", version = "0.1.11" }
 kornia-3d = { path = "crates/kornia-3d", version = "0.1.11" }
@@ -54,12 +54,12 @@ kornia-tensor-ops = { path = "crates/kornia-tensor-ops", version = "0.1.11" }
 kornia-vlm = { path = "crates/kornia-vlm", version = "0.1.11" }
 log = "0.4"
 num-traits = "0.2"
-rand = "0.9"
+rand = "0.10"
 rayon = "1.11"
-rerun = "0.28"
+rerun = "0.29"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tempfile = "3.10"
+tempfile = "3.27"
 thiserror = "2"
-tokenizers = { version = "0.21.1", features = ["http"] }
+tokenizers = { version = "0.22.2", features = ["http"] }
 walkdir = "2.5"
