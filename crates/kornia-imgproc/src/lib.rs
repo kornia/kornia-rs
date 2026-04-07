@@ -68,3 +68,6 @@ pub mod distance_transform;
 
 /// contours
 pub mod contours;
+
+/// Canny edge detection.
+pub mod canny;
