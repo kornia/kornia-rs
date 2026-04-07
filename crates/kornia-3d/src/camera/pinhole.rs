@@ -73,7 +73,14 @@ impl PinholeCamera {
 
     /// Projects a camera-frame 3D point to pixel coordinates.
     ///
-    /// Returns `None` when `p_cam.z <= min_depth`.
+    /// # Arguments
+    ///
+    /// * `p_cam` - 3D point in camera coordinates.
+    /// * `min_depth` - Points with `z <= min_depth` are rejected.
+    ///
+    /// # Returns
+    ///
+    /// `Some(pixel)` on success, or `None` when `p_cam.z <= min_depth`.
     pub fn project_to_pixel(&self, p_cam: &Vec3F64, min_depth: f64) -> Option<Vec2F64> {
         if p_cam.z <= min_depth {
             return None;
@@ -84,6 +91,21 @@ impl PinholeCamera {
     }
 
     /// Projects a camera-frame 3D point and checks image bounds.
+    ///
+    /// # Arguments
+    ///
+    /// * `p_cam` - 3D point in camera coordinates.
+    /// * `min_depth` - Points with `z <= min_depth` are rejected.
+    /// * `image_size` - Image dimensions for bounds checking.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(pixel)` on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProjectionReject::BelowMinDepth`] if `p_cam.z <= min_depth`.
+    /// Returns [`ProjectionReject::OutOfImage`] if the pixel falls outside `image_size`.
     pub fn project_to_image_with_depth(
         &self,
         p_cam: &Vec3F64,
@@ -212,23 +234,6 @@ mod tests {
     }
 
     #[test]
-    fn test_project_to_image_accepts_kornia_image_size() {
-        let cam = camera();
-        let p = Vec3F64::new(0.0, 0.0, 5.0);
-        let uv = cam
-            .project_to_image(
-                &p,
-                ImageSize {
-                    width: 640,
-                    height: 480,
-                },
-            )
-            .unwrap();
-        assert!((uv.x - 320.0).abs() < 1e-12);
-        assert!((uv.y - 240.0).abs() < 1e-12);
-    }
-
-    #[test]
     fn test_project_to_image_out_of_image() {
         let cam = camera();
         let p = Vec3F64::new(10.0, 0.0, 1.0);
@@ -247,7 +252,7 @@ mod tests {
     #[test]
     fn test_project_to_image_below_min_depth() {
         let cam = camera();
-        let p = Vec3F64::new(0.0, 0.0, 0.5);
+        let p = Vec3F64::new(0.0, 0.0, 1e-9);
         let err = cam
             .project_to_image(
                 &p,

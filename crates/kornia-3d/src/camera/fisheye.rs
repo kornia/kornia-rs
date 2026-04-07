@@ -100,6 +100,20 @@ impl FisheyeCamera {
     }
 
     /// Projects a camera-frame 3D point and checks image bounds.
+    ///
+    /// # Arguments
+    ///
+    /// * `p_cam` - 3D point in camera coordinates.
+    /// * `image_size` - Image dimensions for bounds checking.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(pixel)` on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProjectionReject::InvalidProjection`] if the point cannot be projected.
+    /// Returns [`ProjectionReject::OutOfImage`] if the pixel falls outside `image_size`.
     pub fn project_to_image_bounds(
         &self,
         p_cam: &Vec3F64,
@@ -121,7 +135,15 @@ impl FisheyeCamera {
 
     /// Computes squared reprojection error for a camera-frame 3D point.
     ///
-    /// Returns `None` when projection is invalid (optical center).
+    /// # Arguments
+    ///
+    /// * `p_cam` - 3D point in camera coordinates.
+    /// * `u_meas` - Measured pixel x coordinate.
+    /// * `v_meas` - Measured pixel y coordinate.
+    ///
+    /// # Returns
+    ///
+    /// `Some(error_sq)` on success, or `None` when projection is invalid (optical center).
     pub fn reprojection_error_sq_cam(
         &self,
         p_cam: &Vec3F64,
@@ -135,6 +157,20 @@ impl FisheyeCamera {
     }
 
     /// Computes squared reprojection error for a world-frame 3D point.
+    ///
+    /// Internally transforms `p_world` into camera frame using `pose_world_to_cam`
+    /// and then projects using the fisheye model.
+    ///
+    /// # Arguments
+    ///
+    /// * `pose_world_to_cam` - World-to-camera rigid body transform.
+    /// * `p_world` - 3D point in world coordinates.
+    /// * `u_meas` - Measured pixel x coordinate.
+    /// * `v_meas` - Measured pixel y coordinate.
+    ///
+    /// # Returns
+    ///
+    /// `Some(error_sq)` on success, or `None` when projection is invalid.
     pub fn reprojection_error_sq_world(
         &self,
         pose_world_to_cam: &Pose3d,
