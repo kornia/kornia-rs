@@ -1,6 +1,6 @@
 /// Hamming distance between two fixed-size byte descriptors.
 #[inline]
-fn hamming_distance(a: &[u8], b: &[u8]) -> u32 {
+pub fn hamming_distance<const N: usize>(a: &[u8; N], b: &[u8; N]) -> u32 {
     a.iter()
         .zip(b.iter())
         .map(|(&x, &y)| (x ^ y).count_ones())

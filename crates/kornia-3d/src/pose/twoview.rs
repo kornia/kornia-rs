@@ -33,6 +33,7 @@
 //! from two views alone — this is the SE(3) → essential manifold quotient in action.
 
 use crate::pose::fundamental::{fundamental_8point, sampson_distance, FundamentalError};
+use crate::pose::triangulation::{triangulate_inliers, TriangulateParams, TriangulationConfig};
 use crate::pose::{
     decompose_essential, decompose_homography, enforce_essential_constraints,
     essential_from_fundamental, homography_4pt2d, HomographyError,
@@ -116,8 +117,8 @@ pub struct TwoViewConfig {
     pub ransac_h: RansacParams,
     /// Prefer homography when it has this ratio of inliers vs fundamental.
     pub homography_inlier_ratio: f64,
-    /// Minimum parallax angle (degrees) for triangulated points.
-    pub min_parallax_deg: f64,
+    /// Triangulation-backed candidate-pose validation settings.
+    pub triangulation: TriangulationConfig,
 }
 
 impl Default for TwoViewConfig {
@@ -126,7 +127,7 @@ impl Default for TwoViewConfig {
             ransac_f: RansacParams::default(),
             ransac_h: RansacParams::default(),
             homography_inlier_ratio: 0.8,
-            min_parallax_deg: 1.0,
+            triangulation: TriangulationConfig::default(),
         }
     }
 }
@@ -146,6 +147,38 @@ pub struct TwoViewResult {
     pub inlier_indices: Vec<usize>,
     /// Inlier mask from the selected model's RANSAC.
     pub inliers: Vec<bool>,
+}
+
+impl TwoViewResult {
+    /// Median parallax angle in degrees between inlier bearing vectors.
+    ///
+    /// Converts each inlier point pair to normalized bearing vectors using the
+    /// camera intrinsics, then computes the angle between them. Returns the
+    /// median of these angles, or 0.0 if there are no valid inliers.
+    pub fn median_parallax_deg(
+        &self,
+        x1: &[Vec2F64],
+        x2: &[Vec2F64],
+        camera: &crate::camera::PinholeCamera,
+    ) -> f64 {
+        let (fx, fy, cx, cy) = camera.intrinsics();
+        let mut angles: Vec<f64> = self
+            .inlier_indices
+            .iter()
+            .filter(|&&i| i < x1.len() && i < x2.len())
+            .map(|&i| {
+                let b1 = Vec3F64::new((x1[i].x - cx) / fx, (x1[i].y - cy) / fy, 1.0).normalize();
+                let b2 = Vec3F64::new((x2[i].x - cx) / fx, (x2[i].y - cy) / fy, 1.0).normalize();
+                b1.dot(b2).clamp(-1.0, 1.0).acos().to_degrees()
+            })
+            .collect();
+        if angles.is_empty() {
+            return 0.0;
+        }
+        let mid = angles.len() / 2;
+        angles.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
+        angles[mid]
+    }
 }
 
 /// Estimate a fundamental matrix with RANSAC using the 8-point solver.
@@ -323,7 +356,7 @@ pub fn two_view_estimate(
     let tri_params = TriangulateParams {
         k1_inv: &k1_inv,
         k2_inv: &k2_inv,
-        min_parallax_deg: config.min_parallax_deg,
+        config: &config.triangulation,
     };
 
     let mut best_pose = None;
@@ -337,7 +370,7 @@ pub fn two_view_estimate(
         for (r, t) in &poses {
             let (count, points, indices) =
                 triangulate_inliers(x1, x2, &res_h.inliers, r, t, &tri_params);
-            if count > best_count {
+            if count >= config.triangulation.min_cheirality_count && count > best_count {
                 best_count = count;
                 best_pose = Some((*r, *t));
                 best_points = points;
@@ -353,7 +386,7 @@ pub fn two_view_estimate(
         for (r, t) in &poses {
             let (count, points, indices) =
                 triangulate_inliers(x1, x2, &res_f.inliers, r, t, &tri_params);
-            if count > best_count {
+            if count >= config.triangulation.min_cheirality_count && count > best_count {
                 best_count = count;
                 best_pose = Some((*r, *t));
                 best_points = points;
@@ -376,113 +409,6 @@ pub fn two_view_estimate(
         inlier_indices: best_indices,
         inliers,
     })
-}
-
-struct TriangulateParams<'a> {
-    k1_inv: &'a Mat3F64,
-    k2_inv: &'a Mat3F64,
-    min_parallax_deg: f64,
-}
-
-fn triangulate_inliers(
-    x1: &[Vec2F64],
-    x2: &[Vec2F64],
-    inliers: &[bool],
-    r: &Mat3F64,
-    t: &Vec3F64,
-    params: &TriangulateParams<'_>,
-) -> (usize, Vec<Vec3F64>, Vec<usize>) {
-    let mut count = 0usize;
-    let mut points = Vec::new();
-    let mut indices = Vec::new();
-
-    for i in 0..x1.len() {
-        if !inliers[i] {
-            continue;
-        }
-        let x1n = normalize_point(params.k1_inv, &x1[i]);
-        let x2n = normalize_point(params.k2_inv, &x2[i]);
-        if let Some(x) = triangulate_point_linear(&x1n, &x2n, r, t) {
-            let z1 = x.z;
-            let x2c = *r * x + *t;
-            let z2 = x2c.z;
-            // True parallax: angle between the two viewing rays in the WORLD frame.
-            // Ray from cam1 (at origin): x / |x|
-            // Ray from cam2 (at C2 = -Rᵀt) toward x: (x - C2) / |x - C2| = Rᵀ * x2c (unnorm)
-            // Using Rᵀ·x2c = x + Rᵀt removes the rotation-induced component that
-            // would otherwise make this angle ≈ rotation_angle regardless of depth.
-            let d2_world = r.transpose() * x2c;
-            if z1 > 0.0 && z2 > 0.0 && parallax_ok(&x, &d2_world, params.min_parallax_deg) {
-                points.push(x);
-                indices.push(i);
-                count += 1;
-            }
-        }
-    }
-
-    (count, points, indices)
-}
-
-fn parallax_ok(x1: &Vec3F64, x2: &Vec3F64, min_parallax_deg: f64) -> bool {
-    let dot = x1.dot(*x2);
-    let n1 = x1.length();
-    let n2 = x2.length();
-    if n1 <= 1e-12 || n2 <= 1e-12 {
-        return false;
-    }
-    let cos_angle = (dot / (n1 * n2)).clamp(-1.0, 1.0);
-    let angle = cos_angle.acos().to_degrees();
-    angle >= min_parallax_deg
-}
-
-fn normalize_point(k_inv: &Mat3F64, x: &Vec2F64) -> Vec2F64 {
-    let xh = Vec3F64::new(x.x, x.y, 1.0);
-    let xn = *k_inv * xh;
-    Vec2F64::new(xn.x / xn.z, xn.y / xn.z)
-}
-
-/// Triangulate a single point from two views using the DLT method.
-///
-/// P1 = [I | 0] (first camera at origin), P2 = [R | t].
-/// Builds the 4x4 linear system `A * X = 0` and solves via SVD.
-fn triangulate_point_linear(
-    x1: &Vec2F64,
-    x2: &Vec2F64,
-    r: &Mat3F64,
-    t: &Vec3F64,
-) -> Option<Vec3F64> {
-    let r_arr: [f64; 9] = (*r).into();
-
-    // P1 = [I|0], so rows of A for camera 1 simplify:
-    //   row 0: x1.x * P1_row3 - P1_row1 = [-1, 0, x1.x, 0]
-    //   row 1: x1.y * P1_row3 - P1_row2 = [0, -1, x1.y, 0]
-    let mut a = faer::Mat::<f64>::zeros(4, 4);
-    a.write(0, 0, -1.0);
-    a.write(0, 2, x1.x);
-    a.write(1, 1, -1.0);
-    a.write(1, 2, x1.y);
-
-    // r_arr is column-major: r_arr[j*3 + i] = R[i,j].
-    // P2 = [R | t], so P2[row, col] = R[row, col] for col < 3, t[row] for col = 3.
-    // P2 row 0: [R[0,0], R[0,1], R[0,2], tx] = [r_arr[0], r_arr[3], r_arr[6], tx]
-    // P2 row 1: [R[1,0], R[1,1], R[1,2], ty] = [r_arr[1], r_arr[4], r_arr[7], ty]
-    // P2 row 2: [R[2,0], R[2,1], R[2,2], tz] = [r_arr[2], r_arr[5], r_arr[8], tz]
-    let p2_2 = [r_arr[2], r_arr[5], r_arr[8], t.z];
-    for j in 0..4 {
-        let p2_0j = if j < 3 { r_arr[j * 3] } else { t.x };
-        let p2_1j = if j < 3 { r_arr[j * 3 + 1] } else { t.y };
-        a.write(2, j, x2.x * p2_2[j] - p2_0j);
-        a.write(3, j, x2.y * p2_2[j] - p2_1j);
-    }
-
-    let svd = a.svd();
-    let v = svd.v();
-    let xh = v.col(3);
-    let w = xh[3];
-    if w.abs() < 1e-12 {
-        return None;
-    }
-    Some(Vec3F64::new(xh[0] / w, xh[1] / w, xh[2] / w))
 }
 
 /// Computes the squared reprojection error for mapping `x1` to `x2` via the homography `h`.
@@ -602,13 +528,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parallax_ok_thresholds() {
-        let x1 = Vec3F64::new(1.0, 0.0, 0.0);
-        let x2 = Vec3F64::new(1.0, 0.0, 0.0);
-        assert!(!parallax_ok(&x1, &x2, 1.0));
-
-        let x3 = Vec3F64::new(0.0, 1.0, 0.0);
-        assert!(parallax_ok(&x1, &x3, 30.0));
+    fn test_two_view_config_default_nests_triangulation_defaults() {
+        let config = TwoViewConfig::default();
+        assert_eq!(config.triangulation.min_parallax_deg, 1.0);
+        assert_eq!(config.triangulation.max_midpoint_gap, 1.0);
+        assert_eq!(config.triangulation.max_reprojection_error, 2.0);
+        assert_eq!(config.triangulation.min_cheirality_count, 1);
     }
 
     /// End-to-end two-view pose estimation on real EuRoC MH_01_easy images.
@@ -710,7 +635,10 @@ mod tests {
                 random_seed: Some(42),
             },
             homography_inlier_ratio: 0.8,
-            min_parallax_deg: 0.5,
+            triangulation: TriangulationConfig {
+                min_parallax_deg: 0.5,
+                ..TriangulationConfig::default()
+            },
         };
 
         let result = two_view_estimate(&pts1, &pts2, &k, &k, &config).unwrap();
@@ -750,6 +678,108 @@ mod tests {
         );
     }
 
+    /// Helper to build a minimal TwoViewResult with given inlier_indices.
+    fn stub_result(inlier_indices: Vec<usize>) -> TwoViewResult {
+        TwoViewResult {
+            model: TwoViewModel::Fundamental(Mat3F64::IDENTITY),
+            rotation: Mat3F64::IDENTITY,
+            translation: Vec3F64::new(0.0, 0.0, 1.0),
+            points3d: Vec::new(),
+            inlier_indices,
+            inliers: Vec::new(),
+        }
+    }
+
+    fn test_camera() -> crate::camera::PinholeCamera {
+        crate::camera::PinholeCamera {
+            fx: 500.0,
+            fy: 500.0,
+            cx: 320.0,
+            cy: 240.0,
+            k1: 0.0,
+            k2: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+        }
+    }
+
+    #[test]
+    fn test_median_parallax_empty_inliers() {
+        let result = stub_result(vec![]);
+        let cam = test_camera();
+        let x1 = vec![Vec2F64::new(320.0, 240.0)];
+        let x2 = vec![Vec2F64::new(330.0, 240.0)];
+        assert_eq!(result.median_parallax_deg(&x1, &x2, &cam), 0.0);
+    }
+
+    #[test]
+    fn test_median_parallax_identical_points() {
+        // Same pixel in both views → zero parallax.
+        let result = stub_result(vec![0]);
+        let cam = test_camera();
+        let x1 = vec![Vec2F64::new(400.0, 300.0)];
+        let x2 = vec![Vec2F64::new(400.0, 300.0)];
+        let angle = result.median_parallax_deg(&x1, &x2, &cam);
+        assert!(
+            angle.abs() < 1e-4,
+            "expected ~0 parallax for identical points, got {angle}"
+        );
+    }
+
+    #[test]
+    fn test_median_parallax_known_angle() {
+        // Construct a case where bearing vectors differ by a known angle.
+        // Camera: fx=fy=500, cx=320, cy=240.
+        // Point 1: at principal point → bearing (0, 0, 1).
+        // Point 2: shifted 500px in x → bearing (1, 0, 1)/sqrt(2).
+        // Angle = acos( (0*1 + 0*0 + 1*1) / (1 * sqrt(2)) ) = acos(1/sqrt(2)) = 45°.
+        let cam = test_camera();
+        let result = stub_result(vec![0]);
+        let x1 = vec![Vec2F64::new(320.0, 240.0)]; // principal point
+        let x2 = vec![Vec2F64::new(820.0, 240.0)]; // 500px right
+        let angle = result.median_parallax_deg(&x1, &x2, &cam);
+        assert!(
+            (angle - 45.0).abs() < 0.01,
+            "expected ~45° parallax, got {angle}"
+        );
+    }
+
+    #[test]
+    fn test_median_parallax_multiple_inliers() {
+        // 3 inliers: angles 0°, 45°, 45° → sorted [0, 45, 45], median = 45°.
+        let cam = test_camera();
+        let result = stub_result(vec![0, 1, 2]);
+        let x1 = vec![
+            Vec2F64::new(320.0, 240.0), // pp
+            Vec2F64::new(320.0, 240.0), // pp
+            Vec2F64::new(320.0, 240.0), // pp
+        ];
+        let x2 = vec![
+            Vec2F64::new(320.0, 240.0), // same → 0°
+            Vec2F64::new(820.0, 240.0), // +500px → 45°
+            Vec2F64::new(820.0, 240.0), // +500px → 45°
+        ];
+        let angle = result.median_parallax_deg(&x1, &x2, &cam);
+        assert!(
+            (angle - 45.0).abs() < 0.01,
+            "expected median ~45°, got {angle}"
+        );
+    }
+
+    #[test]
+    fn test_median_parallax_out_of_bounds_indices_ignored() {
+        // Inlier indices beyond x1/x2 length are filtered out.
+        let cam = test_camera();
+        let result = stub_result(vec![0, 99]); // index 99 doesn't exist
+        let x1 = vec![Vec2F64::new(320.0, 240.0)];
+        let x2 = vec![Vec2F64::new(820.0, 240.0)];
+        let angle = result.median_parallax_deg(&x1, &x2, &cam);
+        assert!(
+            (angle - 45.0).abs() < 0.01,
+            "expected ~45° (out-of-bounds index skipped), got {angle}"
+        );
+    }
+
     fn u8_to_f32_image(
         src: &kornia_image::Image<u8, 1, kornia_tensor::CpuAllocator>,
     ) -> kornia_image::Image<f32, 1, kornia_tensor::CpuAllocator> {
@@ -784,19 +814,5 @@ mod tests {
             }
         }
         (out_kps, out_ori, out_desc)
-    }
-
-    #[test]
-    fn test_normalize_point_identity_and_scaled() {
-        let k = Mat3F64::from_cols(
-            Vec3F64::new(2.0, 0.0, 0.0),
-            Vec3F64::new(0.0, 3.0, 0.0),
-            Vec3F64::new(0.0, 0.0, 1.0),
-        );
-        let k_inv = k.inverse();
-        let x = Vec2F64::new(4.0, 6.0);
-        let xn = normalize_point(&k_inv, &x);
-        assert!((xn.x - 2.0).abs() < 1e-12);
-        assert!((xn.y - 2.0).abs() < 1e-12);
     }
 }
