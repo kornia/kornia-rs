@@ -46,7 +46,10 @@ impl CameraModel for PinholeCamera {
 
     fn unproject(&self, pixel: &Vec2F64) -> Option<Vec3F64> {
         let undistorted = self.undistort(pixel.x, pixel.y);
-        Some(Vec3F64::new(undistorted.x, undistorted.y, 1.0))
+        // Convert from pixel coordinates back to normalised camera-frame coordinates.
+        let x = (undistorted.x - self.cx) / self.fx;
+        let y = (undistorted.y - self.cy) / self.fy;
+        Some(Vec3F64::new(x, y, 1.0))
     }
 }
 
@@ -282,5 +285,60 @@ mod tests {
             .reprojection_error_sq_world(&pose, &p_world, 320.0, 240.0)
             .unwrap();
         assert!(err < 1e-12);
+    }
+
+    #[test]
+    fn test_unproject_principal_point() {
+        let cam = camera();
+        // Principal point should unproject to the on-axis ray (0, 0, 1).
+        let ray = cam.unproject(&Vec2F64::new(cam.cx, cam.cy)).unwrap();
+        assert!((ray.x).abs() < 1e-12);
+        assert!((ray.y).abs() < 1e-12);
+        assert!((ray.z - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_unproject_off_axis() {
+        let cam = camera();
+        // A pixel 200 pixels to the right of the principal point.
+        // With fx=200, expected normalised x = (520 - 320) / 200 = 1.0.
+        let ray = cam.unproject(&Vec2F64::new(520.0, 240.0)).unwrap();
+        assert!((ray.x - 1.0).abs() < 1e-8);
+        assert!((ray.y).abs() < 1e-12);
+        assert!((ray.z - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_project_unproject_roundtrip() {
+        let cam = camera();
+        // Project a 3D point to pixel, then unproject back to a camera-frame ray.
+        // The recovered direction should match the original.
+        let points = [
+            Vec3F64::new(1.0, 0.0, 5.0),
+            Vec3F64::new(0.0, 1.0, 5.0),
+            Vec3F64::new(0.5, -0.3, 2.0),
+            Vec3F64::new(0.0, 0.0, 3.0),
+        ];
+        for pt in &points {
+            let pixel = cam.project(pt).unwrap();
+            let ray = cam.unproject(&pixel).unwrap();
+            // Expected normalised direction: (x/z, y/z, 1).
+            let expected_x = pt.x / pt.z;
+            let expected_y = pt.y / pt.z;
+            assert!(
+                (ray.x - expected_x).abs() < 1e-8
+                    && (ray.y - expected_y).abs() < 1e-8
+                    && (ray.z - 1.0).abs() < 1e-12,
+                "Round-trip failed for point ({}, {}, {}): got ({}, {}, {}), expected ({}, {}, 1.0)",
+                pt.x,
+                pt.y,
+                pt.z,
+                ray.x,
+                ray.y,
+                ray.z,
+                expected_x,
+                expected_y,
+            );
+        }
     }
 }

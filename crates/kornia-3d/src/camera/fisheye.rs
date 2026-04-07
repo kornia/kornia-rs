@@ -188,18 +188,28 @@ impl FisheyeCamera {
     /// `theta_d = theta + k1·θ³ + k2·θ⁵ + k3·θ⁷ + k4·θ⁹`
     /// for `theta` using Newton-Raphson iteration, then constructs the 3D
     /// unit ray `(sin(theta)·cos(phi), sin(theta)·sin(phi), cos(theta))`.
-    pub fn unproject(&self, pixel: &Vec2F64) -> Vec3F64 {
+    ///
+    /// # Arguments
+    ///
+    /// * `pixel` - 2D pixel coordinate to unproject.
+    ///
+    /// # Returns
+    ///
+    /// `Some(bearing)` on success, or `None` if the Newton-Raphson solver
+    /// fails to converge within [`NEWTON_MAX_ITER`] iterations.
+    pub fn unproject(&self, pixel: &Vec2F64) -> Option<Vec3F64> {
         let mx = (pixel.x - self.cx) / self.fx;
         let my = (pixel.y - self.cy) / self.fy;
         let theta_d = (mx * mx + my * my).sqrt();
 
         // Pixel is at the principal point → on-axis ray.
         if theta_d < EPSILON {
-            return Vec3F64::new(0.0, 0.0, 1.0);
+            return Some(Vec3F64::new(0.0, 0.0, 1.0));
         }
 
         // Newton-Raphson: solve f(theta) = theta + k1·θ³ + k2·θ⁵ + k3·θ⁷ + k4·θ⁹ - theta_d = 0
         let mut theta = theta_d;
+        let mut converged = false;
         for _ in 0..NEWTON_MAX_ITER {
             let (theta_d_calc, f_prime) = self.distortion(theta);
             if f_prime.abs() < EPSILON {
@@ -209,15 +219,24 @@ impl FisheyeCamera {
             let delta = f / f_prime;
             theta -= delta;
             if delta.abs() < NEWTON_EPS {
+                converged = true;
                 break;
             }
+        }
+
+        if !converged {
+            return None;
         }
 
         // Recover the bearing direction from the azimuthal angle phi.
         let phi = my.atan2(mx);
         let sin_theta = theta.sin();
 
-        Vec3F64::new(sin_theta * phi.cos(), sin_theta * phi.sin(), theta.cos())
+        Some(Vec3F64::new(
+            sin_theta * phi.cos(),
+            sin_theta * phi.sin(),
+            theta.cos(),
+        ))
     }
 }
 
@@ -239,7 +258,7 @@ impl CameraModel for FisheyeCamera {
     }
 
     fn unproject(&self, pixel: &Vec2F64) -> Option<Vec3F64> {
-        Some(FisheyeCamera::unproject(self, pixel))
+        FisheyeCamera::unproject(self, pixel)
     }
 }
 
@@ -323,7 +342,7 @@ mod tests {
     fn test_fisheye_unproject_principal_point() {
         let cam = fisheye_camera_zero_distortion();
         // Principal point → on-axis bearing ray (0, 0, 1).
-        let ray = cam.unproject(&Vec2F64::new(cam.cx, cam.cy));
+        let ray = cam.unproject(&Vec2F64::new(cam.cx, cam.cy)).unwrap();
         assert!((ray.x).abs() < 1e-12);
         assert!((ray.y).abs() < 1e-12);
         assert!((ray.z - 1.0).abs() < 1e-12);
@@ -342,7 +361,7 @@ mod tests {
         ];
         for pt in &points {
             let (pixel, _) = cam.project_with_depth(pt).unwrap();
-            let ray = cam.unproject(&pixel);
+            let ray = cam.unproject(&pixel).unwrap();
             // Recover the original direction (normalize the input point).
             let len = (pt.x * pt.x + pt.y * pt.y + pt.z * pt.z).sqrt();
             let dir = Vec3F64::new(pt.x / len, pt.y / len, pt.z / len);
@@ -376,7 +395,7 @@ mod tests {
         ];
         for pt in &points {
             let (pixel, _) = cam.project_with_depth(pt).unwrap();
-            let ray = cam.unproject(&pixel);
+            let ray = cam.unproject(&pixel).unwrap();
             let len = (pt.x * pt.x + pt.y * pt.y + pt.z * pt.z).sqrt();
             let dir = Vec3F64::new(pt.x / len, pt.y / len, pt.z / len);
             assert!(
@@ -413,7 +432,7 @@ mod tests {
         // Point at ~80° from the optical axis.
         let p = Vec3F64::new(5.0, 0.0, 1.0);
         let (pixel, _) = cam.project_with_depth(&p).unwrap();
-        let ray = cam.unproject(&pixel);
+        let ray = cam.unproject(&pixel).unwrap();
         let len = (p.x * p.x + p.y * p.y + p.z * p.z).sqrt();
         let dir = Vec3F64::new(p.x / len, p.y / len, p.z / len);
         assert!((ray.x - dir.x).abs() < 1e-6);
