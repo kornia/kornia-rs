@@ -146,6 +146,9 @@ impl TagFamilyKind {
     }
 }
 
+/// Parses a built-in tag family kind from its canonical string name.
+///
+/// Returns an error if `s` does not match one of the supported built-in family names.
 impl FromStr for TagFamilyKind {
     type Err = String;
 
@@ -158,7 +161,7 @@ impl FromStr for TagFamilyKind {
     }
 }
 
-// Maps names to variants
+/// Returns the built-in tag family variant for a canonical family name.
 fn builtin_tag(name: &str) -> Option<TagFamilyKind> {
     match name {
         "tag16_h5" => Some(TagFamilyKind::Tag16H5),
@@ -194,9 +197,7 @@ impl From<&mut TagFamily> for TagFamilyKind {
 }
 
 fn to_tag_family_kind_impl(value: &TagFamily) -> TagFamilyKind {
-    if let Some(kind) = builtin_tag(&value.name) {
-        return kind;
-    }
+    // Preserve the exact user-provided family data instead of normalizing by name.
     TagFamilyKind::Custom(Arc::new(value.clone()))
 }
 
@@ -334,5 +335,17 @@ mod tests {
         } else {
             panic!("Safety Fail: The library ignored user data and returned the standard builtin.");
         }
+    }
+
+    #[test]
+    fn test_reference_conversions_preserve_user_data() {
+        let mut family = TagFamily::tag36_h11().unwrap();
+        family.width_at_border = 999;
+
+        let from_ref = TagFamilyKind::from(&family);
+        let from_mut = TagFamilyKind::from(&mut family);
+
+        assert!(matches!(from_ref, TagFamilyKind::Custom(_)));
+        assert!(matches!(from_mut, TagFamilyKind::Custom(_)));
     }
 }
