@@ -5269,6 +5269,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "645cbb3a84e60b7531617d5ae4e57f7e27308f6445f5abf653209ea76dec8dff"
 
 [[package]]
+name = "fisheye_rerun_viewer"
+version = "0.1.11"
+dependencies = [
+ "argh",
+ "kornia",
+ "rerun",
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
 name = "fixed"
 version = "1.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7960,6 +7971,25 @@ dependencies = [
  "kornia-io",
  "numpy",
  "pyo3",
+]
+
+[[package]]
+name = "kornia-slam"
+version = "0.1.11"
+dependencies = [
+ "argh",
+ "criterion",
+ "kornia-3d",
+ "kornia-algebra",
+ "kornia-image",
+ "kornia-imgproc",
+ "kornia-io",
+ "kornia-tensor",
+ "rerun",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.17",
 ]
 
 [[package]]

@@ -75,13 +75,21 @@ impl LinearizationResult {
 /// It computes the residual (error) and Jacobian for the current variable values,
 /// which are used by the optimizer to minimize the total cost.
 ///
+/// # Information matrix convention
+///
+/// The solver minimizes `Σ rᵢᵀ rᵢ` (unweighted). Factors that have a non-identity
+/// information matrix Ω must **pre-whiten** their outputs: return `L·e` and `L·J`
+/// where `Ω = LᵀL` (Cholesky). The solver then computes `(LJ)ᵀ(LJ) = JᵀΩJ`
+/// automatically. See [`super::whitening`] for helpers.
+///
 /// # Implementing Custom Factors
 ///
 /// To create a custom factor:
 /// 1. Implement this trait
 /// 2. Define the residual function `r(x)` (how to compute error from variable values)
 /// 3. Compute the Jacobian `J = ∂r/∂x` (analytically or numerically)
-/// 4. Return the residual dimension
+/// 4. If the factor has an information matrix, pre-whiten the residual and Jacobian
+/// 5. Return the residual dimension
 ///
 /// # Thread Safety
 ///

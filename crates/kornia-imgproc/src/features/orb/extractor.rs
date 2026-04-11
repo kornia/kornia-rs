@@ -18,6 +18,8 @@ pub struct OrbFeatures {
     pub orientations: Vec<f32>,
     /// Binary descriptors (256-bit, packed as 32 bytes each).
     pub descriptors: Vec<[u8; 32]>,
+    /// Scale factor (downscale^octave) at which each keypoint was detected.
+    pub scales: Vec<f32>,
 }
 
 /// ORB (Oriented FAST and Rotated BRIEF) feature detector and descriptor extractor.
@@ -420,15 +422,22 @@ impl OrbDetector {
         let mut keypoints_xy = Vec::with_capacity(descriptors.len());
         let mut valid_orientations = Vec::with_capacity(descriptors.len());
         let mut valid_descriptors = Vec::with_capacity(descriptors.len());
+        let mut valid_scales = Vec::with_capacity(descriptors.len());
 
         // `mask` has one entry per keypoint; `descriptors` has entries only
         // for keypoints where mask is true, so we track a separate index.
         let mut desc_idx = 0;
-        for (i, ((row, col), &ori)) in kps_rc.iter().zip(orientations.iter()).enumerate() {
+        for (i, (((row, col), &ori), &sc)) in kps_rc
+            .iter()
+            .zip(orientations.iter())
+            .zip(scales.iter())
+            .enumerate()
+        {
             if mask.get(i).copied().unwrap_or(false) {
                 keypoints_xy.push([*col, *row]);
                 valid_orientations.push(ori);
                 valid_descriptors.push(descriptors[desc_idx]);
+                valid_scales.push(sc);
                 desc_idx += 1;
             }
         }
@@ -437,6 +446,7 @@ impl OrbDetector {
             keypoints_xy,
             orientations: valid_orientations,
             descriptors: valid_descriptors,
+            scales: valid_scales,
         })
     }
 }
