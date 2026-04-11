@@ -14,11 +14,9 @@ pub struct PyDecodeTagsConfig(DecodeTagsConfig);
 #[pymethods]
 impl PyDecodeTagsConfig {
     #[new]
-    #[pyo3(signature = (tag_family_kinds=None))]
-    pub fn new(tag_family_kinds: Option<Vec<family::PyTagFamilyKind>>) -> PyResult<Self> {
-        let kinds = tag_family_kinds.unwrap_or_default();
-        let mut tag_families = Vec::with_capacity(kinds.len());
-        for py_kind in kinds {
+    pub fn new(tag_family_kinds: Vec<family::PyTagFamilyKind>) -> PyResult<Self> {
+        let mut tag_families = Vec::with_capacity(tag_family_kinds.len());
+        for py_kind in tag_family_kinds {
             tag_families.push(py_kind.0);
         }
         Ok(Self(DecodeTagsConfig::new(tag_families).map_err(|e| {

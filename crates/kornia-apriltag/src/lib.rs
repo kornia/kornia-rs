@@ -48,7 +48,7 @@ pub mod quad;
 pub mod decoder;
 
 /// Configuration for decoding AprilTags.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DecodeTagsConfig {
     /// List of tag families to detect.
     pub tag_families: Vec<TagFamilyKind>,
@@ -75,6 +75,10 @@ impl DecodeTagsConfig {
     pub fn new(tag_family_kinds: Vec<TagFamilyKind>) -> Result<Self, AprilTagError> {
         const DEFAULT_DOWNSCALE_FACTOR: usize = 2;
 
+        if tag_family_kinds.is_empty() {
+            return Err(AprilTagError::EmptyTagFamilies);
+        }
+
         let mut tag_families = Vec::with_capacity(tag_family_kinds.len());
         let mut normal_border = false;
         let mut reversed_border = false;
@@ -90,11 +94,6 @@ impl DecodeTagsConfig {
 
             tag_families.push(family_kind);
         }
-
-        if min_tag_width == usize::MAX {
-            min_tag_width = 9;
-        }
-
         min_tag_width /= DEFAULT_DOWNSCALE_FACTOR;
 
         if min_tag_width < 3 {
@@ -124,14 +123,10 @@ impl DecodeTagsConfig {
         // Inspect properties
         let (width, reversed) = match &kind {
             TagFamilyKind::Custom(arc) => (arc.width_at_border, arc.reversed_border),
-            _ => {
-                // For standard tags, check defaults.
-                if let Ok(temp_fam) = TagFamily::try_from(kind.clone()) {
-                    (temp_fam.width_at_border, temp_fam.reversed_border)
-                } else {
-                    (9, false)
-                }
-            }
+            _ => match TagFamily::try_from(&kind) {
+                Ok(family) => (family.width_at_border, family.reversed_border),
+                Err(err) => panic!("builtin tag family conversion failed: {err}"),
+            },
         };
 
         let search_width = (width / self.downscale_factor).max(3);
@@ -304,7 +299,7 @@ impl AprilTagDecoder {
 mod tests {
     use kornia_io::png::read_image_png_mono8;
 
-    use crate::{family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
+    use crate::{errors::AprilTagError, family::TagFamilyKind, AprilTagDecoder, DecodeTagsConfig};
     use kornia_algebra::Vec2F32;
 
     fn test_tags(
@@ -392,6 +387,12 @@ mod tests {
         )?;
 
         Ok(())
+    }
+
+    #[test]
+    fn test_empty_tag_families_config_rejected() {
+        let err = DecodeTagsConfig::new(Vec::new()).unwrap_err();
+        assert!(matches!(err, AprilTagError::EmptyTagFamilies));
     }
 
     #[test]

@@ -176,6 +176,7 @@ fn builtin_tag(name: &str) -> Option<TagFamilyKind> {
 
 impl From<TagFamily> for TagFamilyKind {
     fn from(value: TagFamily) -> Self {
+        // Preserve the exact user-provided family data instead of normalizing by name.
         TagFamilyKind::Custom(Arc::new(value))
     }
 }

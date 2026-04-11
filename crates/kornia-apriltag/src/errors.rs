@@ -21,6 +21,10 @@ pub enum AprilTagError {
     #[error("Too many codes for u16 IDs: {0}")]
     TooManyCodes(usize),
 
+    /// At least one tag family must be configured for decoding.
+    #[error("At least one tag family must be configured for decoding")]
+    EmptyTagFamilies,
+
     /// Allowed errors must be less than 4.
     #[error("Allowed errors must be less than 4, got {0}")]
     InvalidAllowedErrors(u8),
