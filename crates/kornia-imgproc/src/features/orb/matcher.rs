@@ -1,3 +1,5 @@
+use crate::features::hamming_distance;
+
 /// Configuration for ORB-style descriptor matching.
 #[derive(Clone, Copy, Debug)]
 pub struct OrbMatchConfig {
@@ -95,16 +97,6 @@ pub fn match_orb_descriptors(
         }
     }
     result
-}
-
-/// Compute Hamming distance between two 32-byte packed descriptors.
-/// Uses popcount on each byte and sums the results (max distance = 256).
-#[inline]
-fn hamming_distance(a: &[u8; 32], b: &[u8; 32]) -> u32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(&x, &y)| (x ^ y).count_ones())
-        .sum()
 }
 
 /// Return the indices of the three largest histogram bins, discarding any that
