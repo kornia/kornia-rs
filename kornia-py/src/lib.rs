@@ -234,7 +234,7 @@ pub fn resize_deprecated(
         py,
         "kornia_rs.resize is deprecated. Use kornia_rs.imgproc.resize.",
     )?;
-    resize::resize(py, image, new_size, interpolation)
+    resize::resize(py, image, new_size, interpolation, true)
 }
 
 // Warp
