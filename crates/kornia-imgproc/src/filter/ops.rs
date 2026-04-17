@@ -379,6 +379,325 @@ pub fn spatial_gradient_float_parallel<
     Ok(())
 }
 
+/// Resolve gaussian parameters to a validated (kernel_size, sigma) pair.
+/// Mirrors the auto-compute logic in `gaussian_blur` (f32 path).
+fn resolve_gaussian_params(
+    kernel_size: (usize, usize),
+    sigma: (f32, f32),
+) -> Result<((usize, usize), (f32, f32)), ImageError> {
+    let (mut kx, mut ky) = kernel_size;
+    let (mut sx, mut sy) = sigma;
+
+    if sy <= 0.0 {
+        sy = sx;
+    }
+    if kx == 0 && sx > 0.0 {
+        kx = (2.0 * (4.0 * sx).round() + 1.0) as usize | 1;
+    }
+    if ky == 0 && sy > 0.0 {
+        ky = (2.0 * (4.0 * sy).round() + 1.0) as usize | 1;
+    }
+    if !(kx > 0 && kx % 2 == 1 && ky > 0 && ky % 2 == 1) {
+        return Err(ImageError::InvalidSigmaValue(sx, sy));
+    }
+
+    sx = sx.max(0.0);
+    sy = sy.max(0.0);
+    if sx == 0.0 {
+        sx = (kx as f32 - 1.0) / 8.0;
+    }
+    if sy == 0.0 {
+        sy = (ky as f32 - 1.0) / 8.0;
+    }
+
+    Ok(((kx, ky), (sx, sy)))
+}
+
+/// Gaussian blur for u8 images (NEON-accelerated separable path).
+///
+/// Same parameter semantics as [`gaussian_blur`] but operates directly on u8,
+/// avoiding u8→f32 round-trips. Uses Q8 quantized 1D kernels summing to 256
+/// so the final right-shift by 16 produces the clamped u8 result.
+///
+/// * `src` - Source u8 image.
+/// * `dst` - Destination u8 image (same size as src).
+/// * `kernel_size` - Kernel size (width, height). Must be odd and positive.
+///   If zero, it is computed from `sigma`.
+/// * `sigma` - Gaussian sigma (sigma_x, sigma_y). If zero, it is computed
+///   from `kernel_size`.
+pub fn gaussian_blur_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, C, A1>,
+    dst: &mut Image<u8, C, A2>,
+    kernel_size: (usize, usize),
+    sigma: (f32, f32),
+) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    let ((kx, ky), (sx, sy)) = resolve_gaussian_params(kernel_size, sigma)?;
+
+    let ikx = quantize_kernel_256(&kernels::gaussian_kernel_1d(kx, sx));
+    let iky = quantize_kernel_256(&kernels::gaussian_kernel_1d(ky, sy));
+
+    // Strip-mined: process horizontal strips so u16 temp fits in L1 cache.
+    // Each strip processes `strip_h` output rows, reading `strip_h + 2*half_y`
+    // input rows for the horizontal pass.
+    separable_blur_u8_striped(
+        src.as_slice(),
+        dst.as_slice_mut(),
+        src.rows(),
+        src.cols(),
+        C,
+        &ikx,
+        kx / 2,
+        &iky,
+        ky / 2,
+    );
+
+    Ok(())
+}
+
+/// Quantize a float kernel (summing to 1.0) to u8 weights summing to 256.
+fn quantize_kernel_256(kernel: &[f32]) -> Vec<u8> {
+    let half = kernel.len() / 2;
+    let mut ik: Vec<u8> = kernel.iter().map(|&k| (k * 256.0 + 0.5) as u8).collect();
+    // Fix rounding: adjust center weight so weights sum to exactly 256
+    let sum: u16 = ik.iter().map(|&w| w as u16).sum();
+    if sum != 256 {
+        let center = ik[half] as i16 + (256 - sum as i16);
+        ik[half] = center.clamp(0, 255) as u8;
+    }
+    ik
+}
+
+/// Strip-mined separable blur: process horizontal strips so the u16 temp
+/// buffer fits in L1 cache (~32-64KB). Each strip does horizontal pass on
+/// a few rows, then immediately vertical pass while data is still hot.
+/// Strips are processed in parallel via rayon.
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+fn separable_blur_u8_striped(
+    src: &[u8],
+    dst: &mut [u8],
+    rows: usize,
+    cols: usize,
+    channels: usize,
+    kernel_x: &[u8],
+    half_x: usize,
+    kernel_y: &[u8],
+    half_y: usize,
+) {
+    use rayon::prelude::*;
+
+    let stride = cols * channels;
+    let ksize_y = kernel_y.len();
+
+    // Choose strip height so temp fits in L1.
+    // temp = (strip_h + 2*half_y) * stride * 2 bytes  (u16)
+    // Target: < 48KB to leave room for other data in 64KB L1.
+    // Solve: strip_h = 48KB / (stride * 2) - 2*half_y
+    // Balance: large enough that rayon dispatch amortizes; small enough to
+    // keep temp buffer in L2 at least. Tegra L2 is ~1MB per cluster, so cap
+    // temp at ~256KB and lower-bound strip_h by nthreads so every worker
+    // gets meaningful work.
+    let max_temp_bytes = 256 * 1024;
+    let nthreads = rayon::current_num_threads().max(1);
+    let ideal = max_temp_bytes / (stride * 2);
+    let min_strip = ((rows + nthreads - 1) / nthreads).max(32);
+    let strip_h = ideal.max(min_strip).min(rows);
+
+    // Build strip ranges for output rows
+    let strips: Vec<(usize, usize)> = (0..rows)
+        .step_by(strip_h)
+        .map(|start| (start, (start + strip_h).min(rows)))
+        .collect();
+
+    // Prepare padded-row stride for horizontal pass
+    let padded_stride = (cols + 2 * half_x) * channels;
+    let ksize_x = kernel_x.len();
+
+    // Split dst into contiguous, non-overlapping strip slices (one per strip).
+    let mut strip_slices: Vec<&mut [u8]> = dst.chunks_mut(strip_h * stride).collect();
+
+    // Process strips in parallel: each strip writes to its own region of dst.
+    strip_slices.par_iter_mut().zip(strips.par_iter()).for_each(
+        |(strip_dst, &(out_start, out_end))| {
+            let out_rows = out_end - out_start;
+
+            // Input rows needed: out_start - half_y .. out_end + half_y (clamped)
+            let total_h_rows = out_rows + 2 * half_y;
+
+            // Temp buffer for horizontal pass — fits in L1/L2.
+            let temp_len = total_h_rows * stride;
+            let mut temp: Vec<u16> = Vec::with_capacity(temp_len);
+            // Safety: the horizontal pass writes to every element before any
+            // vertical-pass read. Using uninitialized u16 is safe because u16
+            // has no invalid bit patterns.
+            unsafe { temp.set_len(temp_len) };
+
+            // Horizontal pass on each needed row
+            #[cfg(target_arch = "aarch64")]
+            let kvecs_x: Vec<_> = kernel_x
+                .iter()
+                .map(|&w| unsafe { std::arch::aarch64::vdup_n_u8(w) })
+                .collect();
+
+            let mut padded = vec![0u8; padded_stride];
+
+            for ti in 0..total_h_rows {
+                let src_r = (out_start as isize + ti as isize - half_y as isize)
+                    .max(0)
+                    .min(rows as isize - 1) as usize;
+
+                let row_src = &src[src_r * stride..(src_r + 1) * stride];
+                let temp_row = &mut temp[ti * stride..(ti + 1) * stride];
+
+                // Build padded row: replicate first/last pixel into left/right borders.
+                let first_px = &row_src[0..channels];
+                let last_px = &row_src[(cols - 1) * channels..cols * channels];
+                for i in 0..half_x {
+                    padded[i * channels..(i + 1) * channels].copy_from_slice(first_px);
+                    let off = (half_x + cols + i) * channels;
+                    padded[off..off + channels].copy_from_slice(last_px);
+                }
+                padded[half_x * channels..(half_x + cols) * channels].copy_from_slice(row_src);
+
+                // NEON horizontal convolution — 16 bytes per iteration
+                #[cfg(target_arch = "aarch64")]
+                unsafe {
+                    use std::arch::aarch64::*;
+                    let pp = padded.as_ptr();
+                    let dp = temp_row.as_mut_ptr();
+                    let bulk16 = stride & !15;
+                    let mut j = 0usize;
+
+                    while j < bulk16 {
+                        let s0 = vld1q_u8(pp.add(j));
+                        let mut acc_lo = vmull_u8(vget_low_u8(s0), kvecs_x[0]);
+                        let mut acc_hi = vmull_u8(vget_high_u8(s0), kvecs_x[0]);
+                        for ki in 1..ksize_x {
+                            let sk = vld1q_u8(pp.add(j + ki * channels));
+                            acc_lo = vmlal_u8(acc_lo, vget_low_u8(sk), kvecs_x[ki]);
+                            acc_hi = vmlal_u8(acc_hi, vget_high_u8(sk), kvecs_x[ki]);
+                        }
+                        vst1q_u16(dp.add(j), acc_lo);
+                        vst1q_u16(dp.add(j + 8), acc_hi);
+                        j += 16;
+                    }
+
+                    // Scalar tail
+                    while j < stride {
+                        let mut a = 0u32;
+                        for ki in 0..ksize_x {
+                            a += *pp.add(j + ki * channels) as u32 * kernel_x[ki] as u32;
+                        }
+                        *dp.add(j) = a as u16;
+                        j += 1;
+                    }
+                }
+
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    for j in 0..stride {
+                        let mut acc = 0u32;
+                        for ki in 0..ksize_x {
+                            acc += padded[j + ki * channels] as u32 * kernel_x[ki] as u32;
+                        }
+                        temp_row[j] = acc as u16;
+                    }
+                }
+            }
+
+            // Vertical pass: read from temp (L1-hot), write to output
+            #[cfg(target_arch = "aarch64")]
+            let kvecs_y: Vec<_> = kernel_y
+                .iter()
+                .map(|&w| unsafe { std::arch::aarch64::vdup_n_u16(w as u16) })
+                .collect();
+
+            for oi in 0..out_rows {
+                let out_row = &mut strip_dst[oi * stride..(oi + 1) * stride];
+
+                // Tap indices into temp: oi is at position half_y in the temp,
+                // so taps are temp rows oi..oi+ksize_y
+                let tap_base = oi;
+
+                #[cfg(target_arch = "aarch64")]
+                unsafe {
+                    use std::arch::aarch64::*;
+                    let sp = temp.as_ptr();
+                    let dp = out_row.as_mut_ptr();
+                    let bulk16 = stride & !15;
+                    let mut j = 0usize;
+
+                    // 16-value main loop (4× u32 accumulators → 16 u8 output)
+                    while j < bulk16 {
+                        let t0 = tap_base * stride + j;
+                        let mut a0 = vmull_u16(vld1_u16(sp.add(t0)), kvecs_y[0]);
+                        let mut a1 = vmull_u16(vld1_u16(sp.add(t0 + 4)), kvecs_y[0]);
+                        let mut a2 = vmull_u16(vld1_u16(sp.add(t0 + 8)), kvecs_y[0]);
+                        let mut a3 = vmull_u16(vld1_u16(sp.add(t0 + 12)), kvecs_y[0]);
+                        for ki in 1..ksize_y {
+                            let ti = (tap_base + ki) * stride + j;
+                            a0 = vmlal_u16(a0, vld1_u16(sp.add(ti)), kvecs_y[ki]);
+                            a1 = vmlal_u16(a1, vld1_u16(sp.add(ti + 4)), kvecs_y[ki]);
+                            a2 = vmlal_u16(a2, vld1_u16(sp.add(ti + 8)), kvecs_y[ki]);
+                            a3 = vmlal_u16(a3, vld1_u16(sp.add(ti + 12)), kvecs_y[ki]);
+                        }
+                        let n01 = vcombine_u16(vshrn_n_u32(a0, 16), vshrn_n_u32(a1, 16));
+                        let n23 = vcombine_u16(vshrn_n_u32(a2, 16), vshrn_n_u32(a3, 16));
+                        let out = vcombine_u8(vmovn_u16(n01), vmovn_u16(n23));
+                        vst1q_u8(dp.add(j), out);
+                        j += 16;
+                    }
+
+                    // 8-value remainder
+                    while j + 8 <= stride {
+                        let t0 = tap_base * stride + j;
+                        let mut acc_lo = vmull_u16(vld1_u16(sp.add(t0)), kvecs_y[0]);
+                        let mut acc_hi = vmull_u16(vld1_u16(sp.add(t0 + 4)), kvecs_y[0]);
+                        for ki in 1..ksize_y {
+                            let ti = (tap_base + ki) * stride + j;
+                            acc_lo = vmlal_u16(acc_lo, vld1_u16(sp.add(ti)), kvecs_y[ki]);
+                            acc_hi = vmlal_u16(acc_hi, vld1_u16(sp.add(ti + 4)), kvecs_y[ki]);
+                        }
+                        let narrow16 =
+                            vcombine_u16(vshrn_n_u32(acc_lo, 16), vshrn_n_u32(acc_hi, 16));
+                        vst1_u8(dp.add(j), vmovn_u16(narrow16));
+                        j += 8;
+                    }
+
+                    while j < stride {
+                        let mut acc = 0u32;
+                        for ki in 0..ksize_y {
+                            acc +=
+                                *sp.add((tap_base + ki) * stride + j) as u32 * kernel_y[ki] as u32;
+                        }
+                        *dp.add(j) = (acc >> 16) as u8;
+                        j += 1;
+                    }
+                }
+
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    for j in 0..stride {
+                        let mut acc = 0u32;
+                        for ki in 0..ksize_y {
+                            acc += temp[(tap_base + ki) * stride + j] as u32 * kernel_y[ki] as u32;
+                        }
+                        out_row[j] = (acc >> 16) as u8;
+                    }
+                }
+            }
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
