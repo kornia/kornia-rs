@@ -445,9 +445,24 @@ pub fn gaussian_blur_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     let ikx = quantize_kernel_256(&kernels::gaussian_kernel_1d(kx, sx));
     let iky = quantize_kernel_256(&kernels::gaussian_kernel_1d(ky, sy));
 
-    // Strip-mined: process horizontal strips so u16 temp fits in L1 cache.
-    // Each strip processes `strip_h` output rows, reading `strip_h + 2*half_y`
-    // input rows for the horizontal pass.
+    // k=5 fast path: column-tile rolling window — the 5 H-pass rows live in
+    // SIMD registers rather than a ring buffer in memory (OpenCV-style).
+    // Each src pixel is read once; each H result is reused 5x without ever
+    // touching L1.
+    #[cfg(target_arch = "aarch64")]
+    if kx == 5 && ky == 5 {
+        blur_u8_k5_rolling::<C>(
+            src.as_slice(),
+            dst.as_slice_mut(),
+            src.rows(),
+            src.cols(),
+            &ikx,
+            &iky,
+        );
+        return Ok(());
+    }
+
+    // General path: per-thread u8 ring buffer (Q8+Q8 decimated).
     separable_blur_u8_striped(
         src.as_slice(),
         dst.as_slice_mut(),
@@ -463,6 +478,191 @@ pub fn gaussian_blur_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     Ok(())
 }
 
+/// k=5 specialized separable blur with register-resident rolling window.
+///
+/// OpenCV's core trick for fixed-kernel separable filters: for a 5×5 blur,
+/// each output row's V-pass needs 5 H-pass rows, 4 of which are shared with
+/// the previous output row. Keep those in SIMD registers (b0..b4) and only
+/// compute 1 new H-pass tile per output row — no memory round-trip through
+/// a ring buffer.
+///
+/// Traversal: column-major outer (c step 16 bytes), row-major inner. Interior
+/// column tiles read src directly (no padding). Left/right border bytes
+/// (< `2*C` on each side) fall through to a scalar path with col/row
+/// clamping. Rayon parallelism partitions rows into per-thread strips.
+///
+/// Precision: Q8+Q8 (`>>8` after each pass), same truncation as the general
+/// ring-buffer path — ≤2 LSB vs full Q16.
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::needless_range_loop)]
+fn blur_u8_k5_rolling<const C: usize>(
+    src: &[u8],
+    dst: &mut [u8],
+    rows: usize,
+    cols: usize,
+    kernel_x: &[u8],
+    kernel_y: &[u8],
+) {
+    use rayon::prelude::*;
+    use std::arch::aarch64::*;
+
+    let stride = cols * C;
+    let half = 2usize;
+    let half_b = half * C; // half in bytes
+
+    let nthreads = rayon::current_num_threads().max(1);
+    let strip_h = rows.div_ceil(nthreads).max(1).min(rows);
+
+    let strips: Vec<(usize, usize)> = (0..rows)
+        .step_by(strip_h)
+        .map(|s| (s, (s + strip_h).min(rows)))
+        .collect();
+
+    let mut strip_slices: Vec<&mut [u8]> = dst.chunks_mut(strip_h * stride).collect();
+
+    strip_slices.par_iter_mut().zip(strips.par_iter()).for_each(
+        |(strip_dst, &(out_start, out_end))| {
+            let out_rows = out_end - out_start;
+            let src_ptr = src.as_ptr();
+            let dst_ptr = strip_dst.as_mut_ptr();
+
+            let kxv: [uint8x8_t; 5] = unsafe {
+                [
+                    vdup_n_u8(kernel_x[0]),
+                    vdup_n_u8(kernel_x[1]),
+                    vdup_n_u8(kernel_x[2]),
+                    vdup_n_u8(kernel_x[3]),
+                    vdup_n_u8(kernel_x[4]),
+                ]
+            };
+            let kyv: [uint8x8_t; 5] = unsafe {
+                [
+                    vdup_n_u8(kernel_y[0]),
+                    vdup_n_u8(kernel_y[1]),
+                    vdup_n_u8(kernel_y[2]),
+                    vdup_n_u8(kernel_y[3]),
+                    vdup_n_u8(kernel_y[4]),
+                ]
+            };
+
+            // Interior NEON range: c in [half_b, stride - 16 - half_b] step 16.
+            // At each c the 5 H-taps load from [c - 2C .. c + 2C + 15].
+            let c_start = half_b;
+
+            let clamp_row = |r: isize| -> usize {
+                r.max(0).min(rows as isize - 1) as usize
+            };
+
+            // H-pass tile: 5 u8×16 loads from src row at byte offset c,
+            // combined with kernel_x, Q8-decimated back to u8×16.
+            #[inline(always)]
+            unsafe fn hpass5_tile<const C: usize>(
+                src_ptr: *const u8,
+                row_clamped: usize,
+                stride: usize,
+                c: usize,
+                kxv: &[uint8x8_t; 5],
+            ) -> uint8x16_t {
+                let p = src_ptr.add(row_clamped * stride + c);
+                let s0 = vld1q_u8(p.sub(2 * C));
+                let s1 = vld1q_u8(p.sub(C));
+                let s2 = vld1q_u8(p);
+                let s3 = vld1q_u8(p.add(C));
+                let s4 = vld1q_u8(p.add(2 * C));
+                let mut acc_lo = vmull_u8(vget_low_u8(s0), kxv[0]);
+                let mut acc_hi = vmull_u8(vget_high_u8(s0), kxv[0]);
+                acc_lo = vmlal_u8(acc_lo, vget_low_u8(s1), kxv[1]);
+                acc_hi = vmlal_u8(acc_hi, vget_high_u8(s1), kxv[1]);
+                acc_lo = vmlal_u8(acc_lo, vget_low_u8(s2), kxv[2]);
+                acc_hi = vmlal_u8(acc_hi, vget_high_u8(s2), kxv[2]);
+                acc_lo = vmlal_u8(acc_lo, vget_low_u8(s3), kxv[3]);
+                acc_hi = vmlal_u8(acc_hi, vget_high_u8(s3), kxv[3]);
+                acc_lo = vmlal_u8(acc_lo, vget_low_u8(s4), kxv[4]);
+                acc_hi = vmlal_u8(acc_hi, vget_high_u8(s4), kxv[4]);
+                vcombine_u8(vshrn_n_u16(acc_lo, 8), vshrn_n_u16(acc_hi, 8))
+            }
+
+            // Interior columns: register-rolling over output rows.
+            let mut c = c_start;
+            while c + 16 + half_b <= stride {
+                unsafe {
+                    // Prime b0..b3 with H-pass for src rows out_start-2 .. out_start+1
+                    let r_m2 = clamp_row(out_start as isize - 2);
+                    let r_m1 = clamp_row(out_start as isize - 1);
+                    let r_0 = clamp_row(out_start as isize);
+                    let r_p1 = clamp_row(out_start as isize + 1);
+                    let mut b0 = hpass5_tile::<C>(src_ptr, r_m2, stride, c, &kxv);
+                    let mut b1 = hpass5_tile::<C>(src_ptr, r_m1, stride, c, &kxv);
+                    let mut b2 = hpass5_tile::<C>(src_ptr, r_0, stride, c, &kxv);
+                    let mut b3 = hpass5_tile::<C>(src_ptr, r_p1, stride, c, &kxv);
+
+                    for oi in 0..out_rows {
+                        let r_new = clamp_row(out_start as isize + oi as isize + 2);
+                        let b4 = hpass5_tile::<C>(src_ptr, r_new, stride, c, &kxv);
+
+                        // V-pass: 5-tap on b0..b4 with kernel_y, Q8-decimated.
+                        let mut acc_lo = vmull_u8(vget_low_u8(b0), kyv[0]);
+                        let mut acc_hi = vmull_u8(vget_high_u8(b0), kyv[0]);
+                        acc_lo = vmlal_u8(acc_lo, vget_low_u8(b1), kyv[1]);
+                        acc_hi = vmlal_u8(acc_hi, vget_high_u8(b1), kyv[1]);
+                        acc_lo = vmlal_u8(acc_lo, vget_low_u8(b2), kyv[2]);
+                        acc_hi = vmlal_u8(acc_hi, vget_high_u8(b2), kyv[2]);
+                        acc_lo = vmlal_u8(acc_lo, vget_low_u8(b3), kyv[3]);
+                        acc_hi = vmlal_u8(acc_hi, vget_high_u8(b3), kyv[3]);
+                        acc_lo = vmlal_u8(acc_lo, vget_low_u8(b4), kyv[4]);
+                        acc_hi = vmlal_u8(acc_hi, vget_high_u8(b4), kyv[4]);
+                        let packed = vcombine_u8(vshrn_n_u16(acc_lo, 8), vshrn_n_u16(acc_hi, 8));
+                        vst1q_u8(dst_ptr.add(oi * stride + c), packed);
+
+                        // Roll registers (free: register rename on OOO core).
+                        b0 = b1;
+                        b1 = b2;
+                        b2 = b3;
+                        b3 = b4;
+                    }
+                }
+                c += 16;
+            }
+            let c_after_interior = c;
+
+            // Scalar fallback for border bytes: [0, c_start) ∪ [c_after_interior, stride).
+            // Tiny (~16 bytes/row for 1080p 3-channel).
+            let border_ranges: [(usize, usize); 2] =
+                [(0, c_start), (c_after_interior, stride)];
+
+            for oi in 0..out_rows {
+                let out_r = out_start as isize + oi as isize;
+                let out_row = &mut strip_dst[oi * stride..(oi + 1) * stride];
+
+                for &(j_start, j_end) in &border_ranges {
+                    for j in j_start..j_end {
+                        let col = j / C;
+                        let ch = j % C;
+                        let mut acc_v = 0u32;
+                        for ky in 0..5 {
+                            let sr = (out_r + ky as isize - 2)
+                                .max(0)
+                                .min(rows as isize - 1) as usize;
+                            let row_base = sr * stride;
+                            let mut acc_h = 0u32;
+                            for kx in 0..5 {
+                                let cc = (col as isize + kx as isize - 2)
+                                    .max(0)
+                                    .min(cols as isize - 1)
+                                    as usize;
+                                acc_h += src[row_base + cc * C + ch] as u32
+                                    * kernel_x[kx] as u32;
+                            }
+                            acc_v += (acc_h >> 8) * kernel_y[ky] as u32;
+                        }
+                        out_row[j] = (acc_v >> 8) as u8;
+                    }
+                }
+            }
+        },
+    );
+}
+
 /// Quantize a float kernel (summing to 1.0) to u8 weights summing to 256.
 fn quantize_kernel_256(kernel: &[f32]) -> Vec<u8> {
     let half = kernel.len() / 2;
@@ -476,10 +676,94 @@ fn quantize_kernel_256(kernel: &[f32]) -> Vec<u8> {
     ik
 }
 
-/// Strip-mined separable blur: process horizontal strips so the u16 temp
-/// buffer fits in L1 cache (~32-64KB). Each strip does horizontal pass on
-/// a few rows, then immediately vertical pass while data is still hot.
-/// Strips are processed in parallel via rayon.
+/// Horizontal pass for a single source row (clamped to image bounds),
+/// writing `stride` u8 results (post Q8 shift-right-8) into `dst_row`.
+///
+/// Uses Q8 split — instead of storing the full Q16 accumulator (u16),
+/// we shift by 8 and store u8. This halves the ring-buffer footprint and
+/// lets the V-pass reuse the cheap `vmull_u8 / vmlal_u8` path (32 u8 per
+/// iter vs 16). The precision cost is ≤1 LSB per pass (≤2 total vs
+/// u16-intermediate).
+#[inline(always)]
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+fn hpass_u8_row(
+    src: &[u8],
+    src_row_abs: isize,
+    rows: usize,
+    cols: usize,
+    channels: usize,
+    stride: usize,
+    half_x: usize,
+    kernel_x: &[u8],
+    #[cfg(target_arch = "aarch64")] kvecs_x: &[std::arch::aarch64::uint8x8_t],
+    padded: &mut [u8],
+    dst_row: &mut [u8],
+) {
+    let ksize_x = kernel_x.len();
+    let src_r = src_row_abs.max(0).min(rows as isize - 1) as usize;
+    let row_src = &src[src_r * stride..(src_r + 1) * stride];
+    let first_px = &row_src[0..channels];
+    let last_px = &row_src[(cols - 1) * channels..cols * channels];
+    for i in 0..half_x {
+        padded[i * channels..(i + 1) * channels].copy_from_slice(first_px);
+        let off = (half_x + cols + i) * channels;
+        padded[off..off + channels].copy_from_slice(last_px);
+    }
+    padded[half_x * channels..(half_x + cols) * channels].copy_from_slice(row_src);
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        use std::arch::aarch64::*;
+        let pp = padded.as_ptr();
+        let dp = dst_row.as_mut_ptr();
+        let bulk16 = stride & !15;
+        let mut j = 0usize;
+        while j < bulk16 {
+            let s0 = vld1q_u8(pp.add(j));
+            let mut acc_lo = vmull_u8(vget_low_u8(s0), kvecs_x[0]);
+            let mut acc_hi = vmull_u8(vget_high_u8(s0), kvecs_x[0]);
+            for ki in 1..ksize_x {
+                let sk = vld1q_u8(pp.add(j + ki * channels));
+                acc_lo = vmlal_u8(acc_lo, vget_low_u8(sk), kvecs_x[ki]);
+                acc_hi = vmlal_u8(acc_hi, vget_high_u8(sk), kvecs_x[ki]);
+            }
+            let packed = vcombine_u8(vshrn_n_u16(acc_lo, 8), vshrn_n_u16(acc_hi, 8));
+            vst1q_u8(dp.add(j), packed);
+            j += 16;
+        }
+        while j < stride {
+            let mut a = 0u32;
+            for ki in 0..ksize_x {
+                a += *pp.add(j + ki * channels) as u32 * kernel_x[ki] as u32;
+            }
+            *dp.add(j) = (a >> 8) as u8;
+            j += 1;
+        }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for j in 0..stride {
+            let mut acc = 0u32;
+            for ki in 0..ksize_x {
+                acc += padded[j + ki * channels] as u32 * kernel_x[ki] as u32;
+            }
+            dst_row[j] = (acc >> 8) as u8;
+        }
+    }
+}
+
+/// Fused separable blur with per-thread u8 ring buffer (Q8+Q8 decimated).
+///
+/// For each output row `r`, the V-pass needs H-pass results for source rows
+/// `r - half_y ..= r + half_y`. Instead of pre-computing the entire H-pass
+/// into a large u16 temp buffer (which busts L2 at 1080p — ~2 MB/thread),
+/// we keep a rolling window of exactly `ksize_y` H-passed rows in a ring.
+/// The H-pass stores `>>8` of its u16 accumulator, so the ring holds u8
+/// (~29 KB at 1080p 5×5, L1-resident). The V-pass reuses the cheap
+/// `vmull_u8 / vmlal_u8` path — 32 u8 per iter, half the memory traffic
+/// of a u16 ring. The intermediate truncation costs ≤2 LSB of precision
+/// vs the full Q16 path; acceptable for image filtering.
 #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 fn separable_blur_u8_striped(
     src: &[u8],
@@ -496,189 +780,131 @@ fn separable_blur_u8_striped(
 
     let stride = cols * channels;
     let ksize_y = kernel_y.len();
+    let padded_stride = (cols + 2 * half_x) * channels;
 
-    // Choose strip height so temp fits in L1.
-    // temp = (strip_h + 2*half_y) * stride * 2 bytes  (u16)
-    // Target: < 48KB to leave room for other data in 64KB L1.
-    // Solve: strip_h = 48KB / (stride * 2) - 2*half_y
-    // Balance: large enough that rayon dispatch amortizes; small enough to
-    // keep temp buffer in L2 at least. Tegra L2 is ~1MB per cluster, so cap
-    // temp at ~256KB and lower-bound strip_h by nthreads so every worker
-    // gets meaningful work.
-    let max_temp_bytes = 256 * 1024;
+    // One strip per rayon worker — pure parallel partition.
     let nthreads = rayon::current_num_threads().max(1);
-    let ideal = max_temp_bytes / (stride * 2);
-    let min_strip = ((rows + nthreads - 1) / nthreads).max(32);
-    let strip_h = ideal.max(min_strip).min(rows);
+    let strip_h = rows.div_ceil(nthreads).max(1).min(rows);
 
-    // Build strip ranges for output rows
     let strips: Vec<(usize, usize)> = (0..rows)
         .step_by(strip_h)
         .map(|start| (start, (start + strip_h).min(rows)))
         .collect();
 
-    // Prepare padded-row stride for horizontal pass
-    let padded_stride = (cols + 2 * half_x) * channels;
-    let ksize_x = kernel_x.len();
-
-    // Split dst into contiguous, non-overlapping strip slices (one per strip).
     let mut strip_slices: Vec<&mut [u8]> = dst.chunks_mut(strip_h * stride).collect();
 
-    // Process strips in parallel: each strip writes to its own region of dst.
     strip_slices.par_iter_mut().zip(strips.par_iter()).for_each(
         |(strip_dst, &(out_start, out_end))| {
             let out_rows = out_end - out_start;
 
-            // Input rows needed: out_start - half_y .. out_end + half_y (clamped)
-            let total_h_rows = out_rows + 2 * half_y;
+            // u8 ring buffer: `ksize_y` H-passed-and-shifted rows. Source row
+            // with absolute index `r` lives at slot `r.rem_euclid(ksize_y)`.
+            let ring_len = ksize_y * stride;
+            let mut ring: Vec<u8> = Vec::with_capacity(ring_len);
+            // Safety: every slot is written by an H-pass before any V-pass read.
+            unsafe { ring.set_len(ring_len) };
 
-            // Temp buffer for horizontal pass — fits in L1/L2.
-            let temp_len = total_h_rows * stride;
-            let mut temp: Vec<u16> = Vec::with_capacity(temp_len);
-            // Safety: the horizontal pass writes to every element before any
-            // vertical-pass read. Using uninitialized u16 is safe because u16
-            // has no invalid bit patterns.
-            unsafe { temp.set_len(temp_len) };
+            let mut padded = vec![0u8; padded_stride];
 
-            // Horizontal pass on each needed row
             #[cfg(target_arch = "aarch64")]
             let kvecs_x: Vec<_> = kernel_x
                 .iter()
                 .map(|&w| unsafe { std::arch::aarch64::vdup_n_u8(w) })
                 .collect();
-
-            let mut padded = vec![0u8; padded_stride];
-
-            for ti in 0..total_h_rows {
-                let src_r = (out_start as isize + ti as isize - half_y as isize)
-                    .max(0)
-                    .min(rows as isize - 1) as usize;
-
-                let row_src = &src[src_r * stride..(src_r + 1) * stride];
-                let temp_row = &mut temp[ti * stride..(ti + 1) * stride];
-
-                // Build padded row: replicate first/last pixel into left/right borders.
-                let first_px = &row_src[0..channels];
-                let last_px = &row_src[(cols - 1) * channels..cols * channels];
-                for i in 0..half_x {
-                    padded[i * channels..(i + 1) * channels].copy_from_slice(first_px);
-                    let off = (half_x + cols + i) * channels;
-                    padded[off..off + channels].copy_from_slice(last_px);
-                }
-                padded[half_x * channels..(half_x + cols) * channels].copy_from_slice(row_src);
-
-                // NEON horizontal convolution — 16 bytes per iteration
-                #[cfg(target_arch = "aarch64")]
-                unsafe {
-                    use std::arch::aarch64::*;
-                    let pp = padded.as_ptr();
-                    let dp = temp_row.as_mut_ptr();
-                    let bulk16 = stride & !15;
-                    let mut j = 0usize;
-
-                    while j < bulk16 {
-                        let s0 = vld1q_u8(pp.add(j));
-                        let mut acc_lo = vmull_u8(vget_low_u8(s0), kvecs_x[0]);
-                        let mut acc_hi = vmull_u8(vget_high_u8(s0), kvecs_x[0]);
-                        for ki in 1..ksize_x {
-                            let sk = vld1q_u8(pp.add(j + ki * channels));
-                            acc_lo = vmlal_u8(acc_lo, vget_low_u8(sk), kvecs_x[ki]);
-                            acc_hi = vmlal_u8(acc_hi, vget_high_u8(sk), kvecs_x[ki]);
-                        }
-                        vst1q_u16(dp.add(j), acc_lo);
-                        vst1q_u16(dp.add(j + 8), acc_hi);
-                        j += 16;
-                    }
-
-                    // Scalar tail
-                    while j < stride {
-                        let mut a = 0u32;
-                        for ki in 0..ksize_x {
-                            a += *pp.add(j + ki * channels) as u32 * kernel_x[ki] as u32;
-                        }
-                        *dp.add(j) = a as u16;
-                        j += 1;
-                    }
-                }
-
-                #[cfg(not(target_arch = "aarch64"))]
-                {
-                    for j in 0..stride {
-                        let mut acc = 0u32;
-                        for ki in 0..ksize_x {
-                            acc += padded[j + ki * channels] as u32 * kernel_x[ki] as u32;
-                        }
-                        temp_row[j] = acc as u16;
-                    }
-                }
-            }
-
-            // Vertical pass: read from temp (L1-hot), write to output
             #[cfg(target_arch = "aarch64")]
             let kvecs_y: Vec<_> = kernel_y
                 .iter()
-                .map(|&w| unsafe { std::arch::aarch64::vdup_n_u16(w as u16) })
+                .map(|&w| unsafe { std::arch::aarch64::vdup_n_u8(w) })
                 .collect();
 
-            for oi in 0..out_rows {
-                let out_row = &mut strip_dst[oi * stride..(oi + 1) * stride];
+            // Prime: H-pass source rows `out_start - half_y .. out_start + half_y`
+            // (inclusive) into ring. After this, all taps for output row 0 are resident.
+            for k in 0..ksize_y {
+                let r_abs = out_start as isize + k as isize - half_y as isize;
+                let slot = r_abs.rem_euclid(ksize_y as isize) as usize;
+                let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
+                hpass_u8_row(
+                    src,
+                    r_abs,
+                    rows,
+                    cols,
+                    channels,
+                    stride,
+                    half_x,
+                    kernel_x,
+                    #[cfg(target_arch = "aarch64")]
+                    &kvecs_x,
+                    &mut padded,
+                    dst_row,
+                );
+            }
 
-                // Tap indices into temp: oi is at position half_y in the temp,
-                // so taps are temp rows oi..oi+ksize_y
-                let tap_base = oi;
+            for oi in 0..out_rows {
+                // Evict the oldest tap and install the new one (same ring slot).
+                if oi > 0 {
+                    let r_new = out_start as isize + oi as isize + half_y as isize;
+                    let slot = r_new.rem_euclid(ksize_y as isize) as usize;
+                    let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
+                    hpass_u8_row(
+                        src,
+                        r_new,
+                        rows,
+                        cols,
+                        channels,
+                        stride,
+                        half_x,
+                        kernel_x,
+                        #[cfg(target_arch = "aarch64")]
+                        &kvecs_x,
+                        &mut padded,
+                        dst_row,
+                    );
+                }
+
+                // Tap pointers: tap k = src row (out_start + oi - half_y + k),
+                // at ring slot `that.rem_euclid(ksize_y)`.
+                let mut tap_ptrs: [*const u8; 32] = [std::ptr::null(); 32];
+                let ring_ptr = ring.as_ptr();
+                for k in 0..ksize_y {
+                    let r_abs =
+                        out_start as isize + oi as isize - half_y as isize + k as isize;
+                    let slot = r_abs.rem_euclid(ksize_y as isize) as usize;
+                    tap_ptrs[k] = unsafe { ring_ptr.add(slot * stride) };
+                }
+
+                let out_row = &mut strip_dst[oi * stride..(oi + 1) * stride];
 
                 #[cfg(target_arch = "aarch64")]
                 unsafe {
                     use std::arch::aarch64::*;
-                    let sp = temp.as_ptr();
                     let dp = out_row.as_mut_ptr();
                     let bulk16 = stride & !15;
                     let mut j = 0usize;
 
-                    // 16-value main loop (4× u32 accumulators → 16 u8 output)
+                    // 16 u8 per iter, using vmull/vmlal u8 — same pattern as H-pass.
                     while j < bulk16 {
-                        let t0 = tap_base * stride + j;
-                        let mut a0 = vmull_u16(vld1_u16(sp.add(t0)), kvecs_y[0]);
-                        let mut a1 = vmull_u16(vld1_u16(sp.add(t0 + 4)), kvecs_y[0]);
-                        let mut a2 = vmull_u16(vld1_u16(sp.add(t0 + 8)), kvecs_y[0]);
-                        let mut a3 = vmull_u16(vld1_u16(sp.add(t0 + 12)), kvecs_y[0]);
+                        let t0 = tap_ptrs[0];
+                        let s0 = vld1q_u8(t0.add(j));
+                        let mut acc_lo = vmull_u8(vget_low_u8(s0), kvecs_y[0]);
+                        let mut acc_hi = vmull_u8(vget_high_u8(s0), kvecs_y[0]);
                         for ki in 1..ksize_y {
-                            let ti = (tap_base + ki) * stride + j;
-                            a0 = vmlal_u16(a0, vld1_u16(sp.add(ti)), kvecs_y[ki]);
-                            a1 = vmlal_u16(a1, vld1_u16(sp.add(ti + 4)), kvecs_y[ki]);
-                            a2 = vmlal_u16(a2, vld1_u16(sp.add(ti + 8)), kvecs_y[ki]);
-                            a3 = vmlal_u16(a3, vld1_u16(sp.add(ti + 12)), kvecs_y[ki]);
+                            let tk = tap_ptrs[ki];
+                            let sk = vld1q_u8(tk.add(j));
+                            acc_lo = vmlal_u8(acc_lo, vget_low_u8(sk), kvecs_y[ki]);
+                            acc_hi = vmlal_u8(acc_hi, vget_high_u8(sk), kvecs_y[ki]);
                         }
-                        let n01 = vcombine_u16(vshrn_n_u32(a0, 16), vshrn_n_u32(a1, 16));
-                        let n23 = vcombine_u16(vshrn_n_u32(a2, 16), vshrn_n_u32(a3, 16));
-                        let out = vcombine_u8(vmovn_u16(n01), vmovn_u16(n23));
-                        vst1q_u8(dp.add(j), out);
+                        let packed =
+                            vcombine_u8(vshrn_n_u16(acc_lo, 8), vshrn_n_u16(acc_hi, 8));
+                        vst1q_u8(dp.add(j), packed);
                         j += 16;
-                    }
-
-                    // 8-value remainder
-                    while j + 8 <= stride {
-                        let t0 = tap_base * stride + j;
-                        let mut acc_lo = vmull_u16(vld1_u16(sp.add(t0)), kvecs_y[0]);
-                        let mut acc_hi = vmull_u16(vld1_u16(sp.add(t0 + 4)), kvecs_y[0]);
-                        for ki in 1..ksize_y {
-                            let ti = (tap_base + ki) * stride + j;
-                            acc_lo = vmlal_u16(acc_lo, vld1_u16(sp.add(ti)), kvecs_y[ki]);
-                            acc_hi = vmlal_u16(acc_hi, vld1_u16(sp.add(ti + 4)), kvecs_y[ki]);
-                        }
-                        let narrow16 =
-                            vcombine_u16(vshrn_n_u32(acc_lo, 16), vshrn_n_u32(acc_hi, 16));
-                        vst1_u8(dp.add(j), vmovn_u16(narrow16));
-                        j += 8;
                     }
 
                     while j < stride {
                         let mut acc = 0u32;
                         for ki in 0..ksize_y {
-                            acc +=
-                                *sp.add((tap_base + ki) * stride + j) as u32 * kernel_y[ki] as u32;
+                            acc += *tap_ptrs[ki].add(j) as u32 * kernel_y[ki] as u32;
                         }
-                        *dp.add(j) = (acc >> 16) as u8;
+                        *dp.add(j) = (acc >> 8) as u8;
                         j += 1;
                     }
                 }
@@ -688,9 +914,10 @@ fn separable_blur_u8_striped(
                     for j in 0..stride {
                         let mut acc = 0u32;
                         for ki in 0..ksize_y {
-                            acc += temp[(tap_base + ki) * stride + j] as u32 * kernel_y[ki] as u32;
+                            acc += unsafe { *tap_ptrs[ki].add(j) } as u32
+                                * kernel_y[ki] as u32;
                         }
-                        out_row[j] = (acc >> 16) as u8;
+                        out_row[j] = (acc >> 8) as u8;
                     }
                 }
             }
