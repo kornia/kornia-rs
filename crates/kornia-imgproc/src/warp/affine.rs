@@ -237,21 +237,11 @@ pub fn warp_affine_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
                 x_hi = 0;
             }
 
-            // Left/right invalid ranges: zero-fill.
+            // Left/right invalid ranges: zero-fill via memset.
             let x_lo_u = x_lo as usize;
             let x_hi_u = x_hi as usize;
-            for x in 0..x_lo_u {
-                let off = x * C;
-                for ch in 0..C {
-                    dst_row[off + ch] = 0;
-                }
-            }
-            for x in x_hi_u..dst_w {
-                let off = x * C;
-                for ch in 0..C {
-                    dst_row[off + ch] = 0;
-                }
-            }
+            dst_row[..x_lo_u * C].fill(0);
+            dst_row[x_hi_u * C..].fill(0);
 
             if x_lo_u >= x_hi_u {
                 return;
