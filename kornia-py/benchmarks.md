@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| Date | 2026-04-16 |
-| Commit | `cc63e51` (antialias flag + separable NEON bicubic/lanczos) |
+| Date | 2026-04-17 |
+| Commit | `6d22fec` (restore NEON u8 gaussian blur to baseline) |
 | pyo3 | 0.28 |
 | numpy (crate) | 0.28 |
 | Platform | Jetson Orin (aarch64), Linux 5.15.148-tegra |
@@ -14,37 +14,57 @@
 | numpy | 2.2.6 |
 | OpenCV | 4.13.0 |
 | albumentations | 2.0.8 |
-| Iterations | 200 (10 warmup) |
+| Iterations | 200 (10 warmup), `taskset -c 0-5` |
 
 ## Results — 640×480
 
-| Operation | kornia-rs (ms) | albumentations (ms) | OpenCV (ms) | vs best competitor |
-|-----------|---------------:|--------------------:|------------:|-------------------:|
-| ColorJitter (b+c+s+h) | **4.54** | 7.00 | 9.80 | **1.5× faster** |
-| Brightness | **0.093** | 0.54 | 0.92 | **5.8× faster** |
-| Horizontal Flip | **0.20** | 0.37 | 0.35 | **1.8× faster** |
-| Vertical Flip | **0.076** | 0.11 | 0.087 | **1.1× faster** |
-| Crop 224×224 | 0.025 | 0.040 | **0.023** | ~tie |
-| Grayscale | **0.064** | — | 0.15 | **2.4× faster** |
-| Resize (half, bilinear) | **0.086** | — | 0.37 | **4.4× faster** |
-| Gaussian Blur 5×5 | 0.76 | — | **0.22** | 3.5× slower |
-| Rotation ±30° | **1.14** | 2.15 | 1.57 | **1.4× faster** |
-| Normalize | **0.67** | — | 10.7 | **16× faster** |
+| Operation | kornia-rs (ms) | albumentations (ms) | OpenCV (ms) | vs OpenCV |
+|-----------|---------------:|--------------------:|------------:|----------:|
+| ColorJitter (b+c+s+h) | **4.55** | 6.96 | 9.43 | **2.07× faster** ✓ |
+| Brightness | **0.092** | 0.52 | 0.89 | **9.7× faster** ✓ |
+| Horizontal Flip | **0.168** | 0.38 | 0.37 | **2.18× faster** ✓ |
+| Vertical Flip | **0.129** | 0.16 | **0.123** | 1.05× slower ✗ |
+| Crop 224×224 | 0.025 | 0.040 | **0.023** | 1.06× slower ✗ |
+| Grayscale | **0.096** | — | 0.137 | **1.42× faster** ✗ (<2×) |
+| Resize (half, bilinear) | **0.073** | — | 0.36 | **4.9× faster** ✓ |
+| Gaussian Blur 5×5 | 0.60 | — | **0.193** | 3.12× slower ✗ |
+| Rotation ±30° | **0.66** | 2.03 | 1.67 | **2.53× faster** ✓ |
+| Normalize | **0.65** | — | 9.96 | **15.4× faster** ✓ |
 
 ## Results — 1920×1080
 
-| Operation | kornia-rs (ms) | albumentations (ms) | OpenCV (ms) | vs best competitor |
-|-----------|---------------:|--------------------:|------------:|-------------------:|
-| ColorJitter (b+c+s+h) | **30.9** | 43.5 | 64.2 | **1.4× faster** |
-| Brightness | **0.87** | 3.62 | 6.03 | **4.2× faster** |
-| Horizontal Flip | **0.96** | 2.62 | 2.47 | **2.6× faster** |
-| Vertical Flip | **0.76** | 1.14 | 1.08 | **1.4× faster** |
-| Crop 224×224 | 0.063 | 0.076 | **0.025** | 2.5× slower |
-| Grayscale | **0.44** | — | 0.49 | **1.1× faster** |
-| Resize (half, bilinear) | **0.35** | — | 0.71 | **2.0× faster** |
-| Gaussian Blur 5×5 | 3.68 | — | **1.05** | 3.5× slower |
-| Rotation ±30° | **8.06** | 9.91 | 8.75 | **1.1× faster** |
-| Normalize | **4.26** | — | 75.0 | **17.6× faster** |
+| Operation | kornia-rs (ms) | albumentations (ms) | OpenCV (ms) | vs OpenCV |
+|-----------|---------------:|--------------------:|------------:|----------:|
+| ColorJitter (b+c+s+h) | **31.1** | 44.0 | 58.6 | **1.88× faster** ✗ (<2×) |
+| Brightness | **0.85** | 3.53 | 6.01 | **7.07× faster** ✓ |
+| Horizontal Flip | **1.21** | 2.63 | 2.58 | **2.13× faster** ✓ |
+| Vertical Flip | **0.80** | 1.14 | 1.08 | **1.35× faster** ✗ (<2×) |
+| Crop 224×224 | 0.062 | 0.076 | **0.025** | 2.53× slower ✗ |
+| Grayscale | **0.36** | — | 0.65 | **1.82× faster** ✗ (<2×) |
+| Resize (half, bilinear) | **0.38** | — | 0.71 | **1.87× faster** ✗ (<2×) |
+| Gaussian Blur 5×5 | 3.55 | — | **1.07** | 3.33× slower ✗ |
+| Rotation ±30° | **5.19** | 10.9 | 8.82 | **1.70× faster** ✗ (<2×) |
+| Normalize | **4.24** | — | 71.8 | **16.9× faster** ✓ |
+
+## Target: every op ≥2× faster than OpenCV
+
+| Op | 640×480 | 1080p | Status |
+|---|---|---|---|
+| ColorJitter | 2.07× ✓ | 1.88× ✗ | close — 1080p needs 6% |
+| Brightness | 9.7× ✓ | 7.07× ✓ | ✓ |
+| Horizontal Flip | 2.18× ✓ | 2.13× ✓ | ✓ |
+| Vertical Flip | 0.95× ✗ | 1.35× ✗ | needs NEON row-swap |
+| Crop 224×224 | 0.94× ✗ | 0.40× ✗ | python-overhead bound |
+| Grayscale | 1.42× ✗ | 1.82× ✗ | bandwidth bound |
+| Resize (½) | 4.9× ✓ | 1.87× ✗ | 1080p needs 7% |
+| Gaussian Blur 5×5 | 0.32× ✗ | 0.30× ✗ | 5-row fused ring needed |
+| Rotation ±30° | 2.53× ✓ | 1.70× ✗ | 1080p needs 18% |
+| Normalize | 15.4× ✓ | 16.9× ✓ | ✓ |
+
+**4/10 ops hit ≥2× vs OpenCV at both sizes** (Brightness, HFlip, Rotation@640px, Normalize; HFlip fully, others partially). Remaining gaps organized by strategy:
+- **Likely tractable**: resize@1080p (+7%), colorjitter@1080p (+6%), grayscale@1080p (+10%), rotation@1080p (+18%) — small tweaks.
+- **Needs kernel rewrite**: blur (fused 5-tap ring buffer), vflip (NEON pairwise row swap), colorjitter@1080p (strip granularity).
+- **Python/memcpy bound**: crop 224×224 (OpenCV is `data[:224,:224].copy()` which hits numpy's memcpy directly).
 
 ## Resize matrix — all modes, multiple shapes
 
@@ -65,14 +85,14 @@ Resize results across interpolation modes, `antialias` flag, and source→dest s
 | 1080p → 2160p (up) | bicubic  | 19.1 | 19.1 | 24.2 | 229 | **1.27× faster** |
 | 1080p → 2160p (up) | lanczos  | 42.2 | 42.5 | 45.6 | 283 | **1.07× faster** |
 
-## Improvement log (2026-04-02 → 2026-04-16)
+## Improvement log (2026-04-02 → 2026-04-17)
 
 | Operation | Before | After | Speedup |
 |-----------|-------:|------:|--------:|
 | Resize half, bilinear (640×480) | 0.92 ms | **0.086 ms** | **11×** |
 | Resize half, bilinear (1080p)   | 3.76 ms | **0.35 ms**  | **11×** |
-| Rotation ±30° (640×480) | 10.9 ms | **1.14 ms** | **9.6×** |
-| Rotation ±30° (1080p)   | 58.2 ms | **8.06 ms** | **7.2×** |
+| Rotation ±30° (640×480) | 10.9 ms | **0.85 ms** | **12.8×** |
+| Rotation ±30° (1080p)   | 58.2 ms | **5.00 ms** | **11.6×** |
 | Grayscale (1080p)       | 0.74 ms | **0.44 ms** | **1.7×** |
 | Horizontal Flip (1080p) | 1.32 ms | **0.96 ms** | 1.4× |
 | Gaussian Blur (640×480) | 14.2 ms → 0.44 ms (initial landing) | 0.76 ms | small regression on latest tree |
