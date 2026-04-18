@@ -358,13 +358,25 @@ fn pyrdown_2x_rgb_u8(src: &[u8], dst: &mut [u8], src_w: usize, src_h: usize) {
     let src_stride = src_w * 3;
     let dst_stride = dst_w * 3;
 
+    // Group 8 output rows per rayon task so small strides (e.g. 540p = 2.8 KB/row)
+    // amortize spawn overhead. At 1080p this yields ~68 tasks of 22 KB each,
+    // well above the ~10 KB threshold where rayon dispatch dominates.
+    const ROWS_PER_TASK: usize = 8;
+    let chunk_bytes = dst_stride * ROWS_PER_TASK;
+
     use rayon::prelude::*;
-    dst.par_chunks_exact_mut(dst_stride)
+    dst.par_chunks_mut(chunk_bytes)
         .enumerate()
-        .for_each(|(y, dst_row)| {
-            let r0 = &src[(2 * y) * src_stride..(2 * y + 1) * src_stride];
-            let r1 = &src[(2 * y + 1) * src_stride..(2 * y + 2) * src_stride];
-            pyrdown_2x_rgb_u8_row(r0, r1, dst_row, dst_w);
+        .for_each(|(ti, dst_chunk)| {
+            let y_base = ti * ROWS_PER_TASK;
+            let nrows = dst_chunk.len() / dst_stride;
+            for dy in 0..nrows {
+                let y = y_base + dy;
+                let r0 = &src[(2 * y) * src_stride..(2 * y + 1) * src_stride];
+                let r1 = &src[(2 * y + 1) * src_stride..(2 * y + 2) * src_stride];
+                let dst_row = &mut dst_chunk[dy * dst_stride..(dy + 1) * dst_stride];
+                pyrdown_2x_rgb_u8_row(r0, r1, dst_row, dst_w);
+            }
         });
 }
 
@@ -513,7 +525,14 @@ fn resize_fast_impl<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     let (dst_w, dst_h) = (dst.cols(), dst.rows());
     match interpolation {
         InterpolationMode::Nearest => {
-            resize_nearest_u8::<C>(src.as_slice(), src_w, src_h, dst.as_slice_mut(), dst_w, dst_h);
+            resize_nearest_u8::<C>(
+                src.as_slice(),
+                src_w,
+                src_h,
+                dst.as_slice_mut(),
+                dst_w,
+                dst_h,
+            );
         }
         InterpolationMode::Bilinear => {
             resize_bilinear_u8_nch::<C>(
@@ -730,7 +749,12 @@ unsafe fn horizontal_row_c3_x4_neon(
     ];
     let [mut o0, mut o1, mut o2, mut o3] = {
         let [a, b, c, d] = outs;
-        [a.as_mut_ptr(), b.as_mut_ptr(), c.as_mut_ptr(), d.as_mut_ptr()]
+        [
+            a.as_mut_ptr(),
+            b.as_mut_ptr(),
+            c.as_mut_ptr(),
+            d.as_mut_ptr(),
+        ]
     };
     let last_x = dst_w.saturating_sub(1);
     for x in 0..dst_w {
@@ -744,10 +768,26 @@ unsafe fn horizontal_row_c3_x4_neon(
             let w = *xw.get_unchecked(ibase + t);
             let safe = sx < last_sx_safe;
             let off = sx * 3;
-            let p0 = if safe { load_px(s0p.add(off)) } else { load_px_edge(s0p.add(off)) };
-            let p1 = if safe { load_px(s1p.add(off)) } else { load_px_edge(s1p.add(off)) };
-            let p2 = if safe { load_px(s2p.add(off)) } else { load_px_edge(s2p.add(off)) };
-            let p3 = if safe { load_px(s3p.add(off)) } else { load_px_edge(s3p.add(off)) };
+            let p0 = if safe {
+                load_px(s0p.add(off))
+            } else {
+                load_px_edge(s0p.add(off))
+            };
+            let p1 = if safe {
+                load_px(s1p.add(off))
+            } else {
+                load_px_edge(s1p.add(off))
+            };
+            let p2 = if safe {
+                load_px(s2p.add(off))
+            } else {
+                load_px_edge(s2p.add(off))
+            };
+            let p3 = if safe {
+                load_px(s3p.add(off))
+            } else {
+                load_px_edge(s3p.add(off))
+            };
             a0 = vmlal_n_s16(a0, p0, w);
             a1 = vmlal_n_s16(a1, p1, w);
             a2 = vmlal_n_s16(a2, p2, w);
@@ -887,10 +927,26 @@ fn horizontal_row<const C: usize>(
                         let w2 = *xw.get_unchecked(b2 + t);
                         let w3 = *xw.get_unchecked(b3 + t);
                         let base = src_row.as_ptr();
-                        let p0 = if sx0 < last_sx_safe { load_px(base.add(sx0 * 3)) } else { load_px_edge(base.add(sx0 * 3)) };
-                        let p1 = if sx1 < last_sx_safe { load_px(base.add(sx1 * 3)) } else { load_px_edge(base.add(sx1 * 3)) };
-                        let p2 = if sx2 < last_sx_safe { load_px(base.add(sx2 * 3)) } else { load_px_edge(base.add(sx2 * 3)) };
-                        let p3 = if sx3 < last_sx_safe { load_px(base.add(sx3 * 3)) } else { load_px_edge(base.add(sx3 * 3)) };
+                        let p0 = if sx0 < last_sx_safe {
+                            load_px(base.add(sx0 * 3))
+                        } else {
+                            load_px_edge(base.add(sx0 * 3))
+                        };
+                        let p1 = if sx1 < last_sx_safe {
+                            load_px(base.add(sx1 * 3))
+                        } else {
+                            load_px_edge(base.add(sx1 * 3))
+                        };
+                        let p2 = if sx2 < last_sx_safe {
+                            load_px(base.add(sx2 * 3))
+                        } else {
+                            load_px_edge(base.add(sx2 * 3))
+                        };
+                        let p3 = if sx3 < last_sx_safe {
+                            load_px(base.add(sx3 * 3))
+                        } else {
+                            load_px_edge(base.add(sx3 * 3))
+                        };
                         a0 = vmlal_n_s16(a0, p0, w0);
                         a1 = vmlal_n_s16(a1, p1, w1);
                         a2 = vmlal_n_s16(a2, p2, w2);
@@ -922,7 +978,11 @@ fn horizontal_row<const C: usize>(
                         let sx = *xsrc.get_unchecked(ibase + t) as usize;
                         let w = *xw.get_unchecked(ibase + t);
                         let p = src_row.as_ptr().add(sx * 3);
-                        let px = if sx < last_sx_safe { load_px(p) } else { load_px_edge(p) };
+                        let px = if sx < last_sx_safe {
+                            load_px(p)
+                        } else {
+                            load_px_edge(p)
+                        };
                         acc = vmlal_n_s16(acc, px, w);
                     }
                     let sat = vqmovn_s32(vshrq_n_s32::<14>(acc));
@@ -1098,10 +1158,8 @@ fn resize_separable_u8<const C: usize>(
         .map(|s| (s, (s + strip_h).min(dst_h)))
         .collect();
 
-    strip_slices
-        .par_iter_mut()
-        .zip(strips.par_iter())
-        .for_each(|(strip_dst, &(yo_start, yo_end))| {
+    strip_slices.par_iter_mut().zip(strips.par_iter()).for_each(
+        |(strip_dst, &(yo_start, yo_end))| {
             let n = dst_w * C;
 
             // Source-row span needed for this strip: [sy_min, sy_max).
@@ -1155,16 +1213,15 @@ fn resize_separable_u8<const C: usize>(
                     // Map global src index to band-local. Rows outside the
                     // band (edge replication) clamp to the nearest kept row.
                     let sy_global = (y0 + k as i32).clamp(0, src_h as i32 - 1) as usize;
-                    let sy_local = sy_global
-                        .min(sy_span_end - 1)
-                        .saturating_sub(sy_span_start);
+                    let sy_local = sy_global.min(sy_span_end - 1).saturating_sub(sy_span_start);
                     rows.push(&temp[sy_local * hbuf_row_len..(sy_local + 1) * hbuf_row_len]);
                     w.push(yw[yo * ky + k] as i16);
                 }
                 let dst_row = &mut strip_dst[oi * dst_stride..(oi + 1) * dst_stride];
                 vertical_single_row(&rows, &w, dst_row, n, round2);
             }
-        });
+        },
+    );
 }
 
 /// Vertical pass for one destination row.
@@ -1176,13 +1233,7 @@ fn resize_separable_u8<const C: usize>(
 /// across 4 rolling chains keeps all 4 vmlal issue slots busy per cycle, so
 /// the critical path drops to roughly `ky/4 * 4c + reduce` ≈ 10-15c per block.
 #[inline(always)]
-fn vertical_single_row(
-    rows: &[&[i16]],
-    w: &[i16],
-    dst_row: &mut [u8],
-    n: usize,
-    round2: i32,
-) {
+fn vertical_single_row(rows: &[&[i16]], w: &[i16], dst_row: &mut [u8], n: usize, round2: i32) {
     let ky = rows.len();
     let mut i = 0usize;
     #[cfg(target_arch = "aarch64")]
