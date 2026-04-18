@@ -121,6 +121,21 @@ where
     }
 
     let row_len = src.cols() * C;
+    let pixels = src.rows() * src.cols();
+
+    // Below ~500k pixels the rayon spawn tax dominates the row-memcpy.
+    if pixels < 500 * 1024 {
+        let rows = src.rows();
+        let src_s = src.as_slice();
+        let dst_s = dst.as_slice_mut();
+        for r in 0..rows {
+            let src_off = (rows - 1 - r) * row_len;
+            let dst_off = r * row_len;
+            dst_s[dst_off..dst_off + row_len]
+                .copy_from_slice(&src_s[src_off..src_off + row_len]);
+        }
+        return Ok(());
+    }
 
     dst.as_slice_mut()
         .par_chunks_exact_mut(row_len)
