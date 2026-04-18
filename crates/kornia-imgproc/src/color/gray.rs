@@ -109,10 +109,11 @@ pub fn gray_from_rgb_u8<A1: ImageAllocator, A2: ImageAllocator>(
 /// Parallelized over row-strips for large images; single-threaded SIMD below
 /// the threshold to avoid rayon dispatch overhead.
 pub fn rgb_to_gray_u8(src: &[u8], dst: &mut [u8], npixels: usize) {
-    // Parallelize above ~4M pixels. Single-threaded NEON runs at memory-BW
-    // already (~15 GB/s); rayon spawn adds overhead without helping until
-    // the work is big enough to saturate both cores' shared L2.
-    const PAR_THRESHOLD: usize = 4 * 1024 * 1024;
+    // Thread-dispatch only above ~1M px. At 640×480 (307k px) rayon's spawn
+    // cost exceeds the ~0.05ms compute budget, but at 1080p (~2M px) the
+    // work is big enough that splitting across the two A78AE perf cores
+    // recovers ~40% over single-thread NEON.
+    const PAR_THRESHOLD: usize = 1024 * 1024;
     if npixels < PAR_THRESHOLD {
         #[cfg(target_arch = "aarch64")]
         rgb_to_gray_u8_neon(src, dst, npixels);
