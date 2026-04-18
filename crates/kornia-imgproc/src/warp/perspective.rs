@@ -1,3 +1,4 @@
+use super::common::bilinear_sample_u8;
 use crate::{
     interpolation::{interpolate_pixel_fast, validate_interpolation, InterpolationMode},
     parallel,
@@ -121,6 +122,46 @@ pub fn warp_perspective<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
             }
         },
     );
+
+    Ok(())
+}
+
+/// u8 perspective warp with bilinear — direct u8 path (no f32 round-trip),
+/// Q10 fixed-point weights. Incremental numerator/denominator row update.
+pub fn warp_perspective_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, C, A1>,
+    dst: &mut Image<u8, C, A2>,
+    m: &[f32; 9],
+) -> Result<(), ImageError> {
+    use rayon::prelude::*;
+    let inv = inverse_perspective_matrix(m)?;
+    let src_w = src.cols() as i32;
+    let src_h = src.rows() as i32;
+    let src_stride = src.cols() * C;
+    let dst_w = dst.cols();
+    let dst_stride = dst_w * C;
+    let src_slice = src.as_slice();
+    let (dnx, dny, dnd) = (inv[0], inv[3], inv[6]);
+
+    dst.as_slice_mut()
+        .par_chunks_exact_mut(dst_stride)
+        .enumerate()
+        .for_each(|(y, dst_row)| {
+            let y_f = y as f32;
+            let mut nx = inv[1] * y_f + inv[2];
+            let mut ny = inv[4] * y_f + inv[5];
+            let mut nd = inv[7] * y_f + inv[8];
+
+            for x in 0..dst_w {
+                let xf = nx / nd;
+                let yf = ny / nd;
+                let dst_pixel = &mut dst_row[x * C..x * C + C];
+                bilinear_sample_u8::<C>(src_slice, src_w, src_h, src_stride, xf, yf, dst_pixel);
+                nx += dnx;
+                ny += dny;
+                nd += dnd;
+            }
+        });
 
     Ok(())
 }

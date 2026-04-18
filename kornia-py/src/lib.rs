@@ -250,7 +250,7 @@ pub fn warp_affine_deprecated(
         py,
         "kornia_rs.warp_affine is deprecated. Use kornia_rs.imgproc.warp_affine.",
     )?;
-    warp::warp_affine(py, image, m, new_size, interpolation)
+    warp::warp_affine(py, image, m, new_size, interpolation, None)
 }
 
 #[pyfunction(name = "warp_perspective")]
@@ -265,7 +265,7 @@ pub fn warp_perspective_deprecated(
         py,
         "kornia_rs.warp_perspective is deprecated. Use kornia_rs.imgproc.warp_perspective.",
     )?;
-    warp::warp_perspective(py, image, m, new_size, interpolation)
+    warp::warp_perspective(py, image, m, new_size, interpolation, None)
 }
 
 // Main Python Module Definition

@@ -557,6 +557,19 @@ fn crop_generic(
 }
 
 /// Rotate 90 degrees CCW, k times. Returns (data, new_h, new_w).
+/// Returns `Some(k)` where k ∈ {0,1,2,3} if `angle` is *exactly* a
+/// multiple of 90° (no epsilon — `90.0001` falls through to the general
+/// warp path). Enables snap-to-transpose for the common `rotate(90)` case
+/// without silently changing results for near-90° angles.
+fn exact_k90(angle: f64) -> Option<u8> {
+    let k = angle / 90.0;
+    if k == k.trunc() && k.is_finite() {
+        Some(((k as i64).rem_euclid(4)) as u8)
+    } else {
+        None
+    }
+}
+
 fn rot90_generic(src: &[u8], h: usize, w: usize, c: usize, k: i32) -> (Vec<u8>, usize, usize) {
     match k {
         1 => {
@@ -732,7 +745,11 @@ impl PyImageApi {
 
     /// Wrap a Vec<u8> result as a new `PyImageApi` with the current mode.
     fn wrap_vec(&self, py: Python<'_>, out: Vec<u8>, h: usize, w: usize, c: usize) -> Self {
-        Self::wrap(py, vec_to_pyarray(py, out, h, w, c), Some(self.mode.clone()))
+        Self::wrap(
+            py,
+            vec_to_pyarray(py, out, h, w, c),
+            Some(self.mode.clone()),
+        )
     }
 }
 
@@ -1228,31 +1245,51 @@ impl PyImageApi {
     }
 
     /// Rotate image by angle degrees (counter-clockwise).
+    ///
+    /// Fast paths (exact k·90° only, no epsilon):
+    ///  - 0°: copy
+    ///  - 180°: buffer-reversal (always; any H, W, C)
+    ///  - ±90°/±270° with H == W: transpose+flip (shape preserved)
+    /// Non-exact or non-square 90°/270°: general bilinear warp.
     pub fn rotate(&self, py: Python<'_>, angle: f64) -> PyResult<Self> {
         let s = self.data.bind(py).shape();
-        let c = s[2];
-        if c == 3 {
-            let (h, w) = (s[0] as f64, s[1] as f64);
-            let (cx, cy) = (w / 2.0, h / 2.0);
-            let rad = angle.to_radians();
-            let cos_a = rad.cos() as f32;
-            let sin_a = rad.sin() as f32;
-            let tx = (cx - cos_a as f64 * cx + sin_a as f64 * cy) as f32;
-            let ty = (cy - sin_a as f64 * cx - cos_a as f64 * cy) as f32;
-            let m = [cos_a, -sin_a, tx, sin_a, cos_a, ty];
-            let result =
-                crate::warp::warp_affine(py, self.data.clone_ref(py), m, (s[0], s[1]), "bilinear")?;
-            Ok(Self::wrap(py, result, Some(self.mode.clone())))
-        } else {
-            let k = ((angle / 90.0).round() as i32).rem_euclid(4);
-            if k == 0 {
-                return self.copy(py);
+        let (h, w, c) = (s[0], s[1], s[2]);
+
+        if let Some(k) = exact_k90(angle) {
+            match k {
+                0 => return self.copy(py),
+                2 => {
+                    let arr = self.data.bind(py);
+                    let (src, _, _, _) = pyarray_data(arr);
+                    let (out, _, _) = rot90_generic(src, h, w, c, 2);
+                    return Ok(self.wrap_vec(py, out, h, w, c));
+                }
+                1 | 3 if h == w => {
+                    let arr = self.data.bind(py);
+                    let (src, _, _, _) = pyarray_data(arr);
+                    let (out, nh, nw) = rot90_generic(src, h, w, c, k as i32);
+                    return Ok(self.wrap_vec(py, out, nh, nw, c));
+                }
+                _ => {} // fall through to warp for non-square 90/270
             }
-            let arr = self.data.bind(py);
-            let (src, h, w, _) = pyarray_data(arr);
-            let (out, new_h, new_w) = rot90_generic(src, h, w, c, k);
-            Ok(self.wrap_vec(py, out, new_h, new_w, c))
         }
+
+        let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
+        let rad = angle.to_radians();
+        let cos_a = rad.cos() as f32;
+        let sin_a = rad.sin() as f32;
+        let tx = (cx - cos_a as f64 * cx + sin_a as f64 * cy) as f32;
+        let ty = (cy - sin_a as f64 * cx - cos_a as f64 * cy) as f32;
+        let m = [cos_a, -sin_a, tx, sin_a, cos_a, ty];
+        let result = crate::warp::warp_affine(
+            py,
+            self.data.clone_ref(py),
+            m,
+            (h, w),
+            "bilinear",
+            None,
+        )?;
+        Ok(Self::wrap(py, result, Some(self.mode.clone())))
     }
 
     // --- Serialization for multiprocess (Ray Data, etc.) ---

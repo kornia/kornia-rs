@@ -185,10 +185,12 @@ pub fn warp_affine_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     let dsy = m_inv[3];
     let dsx_q = (dsx * Q_SCALE) as i32;
     let dsy_q = (dsy * Q_SCALE) as i32;
-    // Valid iff `xi+1 < src_w` i.e. `xi <= src_w - 2`, i.e. src coord in
-    // `[0, (src_w - 1) * Q_SCALE)`. Same for y.
-    let sx_upper = (src_w - 1) as f32;
-    let sy_upper = (src_h - 1) as f32;
+    // Valid iff `0 <= xi < src_w`, i.e. src coord in `[0, src_w)`. The
+    // sampler clamps `xi+1` to `src_w-1` (BORDER_REPLICATE), so exact-edge
+    // integer coords (fx=0) produce `src[yi, xi]` — matching the f32
+    // reference kernel's identity behavior. Same for y.
+    let sx_upper = src_w as f32;
+    let sy_upper = src_h as f32;
 
     dst.as_slice_mut()
         .par_chunks_exact_mut(dst_stride)
@@ -260,7 +262,7 @@ pub fn warp_affine_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
                 let fy_q10 = ((sy_q & 0xFFFF) as u32) >> 6;
                 let dst_pixel = unsafe { std::slice::from_raw_parts_mut(dst_pixel_ptr, C) };
                 bilinear_sample_u8_valid::<C>(
-                    src_slice, src_stride, xi, yi, fx_q10, fy_q10, dst_pixel,
+                    src_slice, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10, dst_pixel,
                 );
                 sx_q = sx_q.wrapping_add(dsx_q);
                 sy_q = sy_q.wrapping_add(dsy_q);
