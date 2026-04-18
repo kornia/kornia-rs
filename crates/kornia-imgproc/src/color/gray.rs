@@ -63,7 +63,6 @@ where
     let gw = T::from(GW).ok_or(ImageError::CastError)?;
     let bw = T::from(BW).ok_or(ImageError::CastError)?;
 
-    // parallelize the grayscale conversion by rows
     parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
         let r = src_pixel[0];
         let g = src_pixel[1];
@@ -99,14 +98,144 @@ pub fn gray_from_rgb_u8<A1: ImageAllocator, A2: ImageAllocator>(
         ));
     }
 
-    parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
-        let r = src_pixel[0] as u16;
-        let g = src_pixel[1] as u16;
-        let b = src_pixel[2] as u16;
-        dst_pixel[0] = ((r * 77 + g * 150 + b * 29) >> 8) as u8;
-    });
+    let npixels = src.rows() * src.cols();
+    rgb_to_gray_u8(src.as_slice(), dst.as_slice_mut(), npixels);
 
     Ok(())
+}
+
+/// RGB u8 to grayscale u8: gray = (77*R + 150*G + 29*B) >> 8.
+///
+/// Parallelized over row-strips for large images; single-threaded SIMD below
+/// the threshold to avoid rayon dispatch overhead.
+pub fn rgb_to_gray_u8(src: &[u8], dst: &mut [u8], npixels: usize) {
+    // Parallelize above ~4M pixels. Single-threaded NEON runs at memory-BW
+    // already (~15 GB/s); rayon spawn adds overhead without helping until
+    // the work is big enough to saturate both cores' shared L2.
+    const PAR_THRESHOLD: usize = 4 * 1024 * 1024;
+    if npixels < PAR_THRESHOLD {
+        #[cfg(target_arch = "aarch64")]
+        rgb_to_gray_u8_neon(src, dst, npixels);
+        #[cfg(not(target_arch = "aarch64"))]
+        rgb_to_gray_u8_scalar(src, dst, npixels);
+        return;
+    }
+
+    use rayon::prelude::*;
+    // Pick strip size so strips are cache-friendly but large enough to amortize
+    // rayon overhead. 32-pixel alignment keeps the SIMD fast-path intact.
+    let nthreads = rayon::current_num_threads().max(1);
+    let strip = ((npixels + nthreads - 1) / nthreads).next_multiple_of(32);
+
+    dst.par_chunks_mut(strip)
+        .enumerate()
+        .for_each(|(i, dchunk)| {
+            let start = i * strip;
+            let n = dchunk.len();
+            let sstart = start * 3;
+            let send = sstart + n * 3;
+            let schunk = &src[sstart..send];
+            #[cfg(target_arch = "aarch64")]
+            rgb_to_gray_u8_neon(schunk, dchunk, n);
+            #[cfg(not(target_arch = "aarch64"))]
+            rgb_to_gray_u8_scalar(schunk, dchunk, n);
+        });
+}
+
+#[cfg(target_arch = "aarch64")]
+fn rgb_to_gray_u8_neon(src: &[u8], dst: &mut [u8], npixels: usize) {
+    use std::arch::aarch64::*;
+    unsafe {
+        let w_r = vdup_n_u8(77);
+        let w_g = vdup_n_u8(150);
+        let w_b = vdup_n_u8(29);
+        let sp = src.as_ptr();
+        let dp = dst.as_mut_ptr();
+
+        // 32 pixels per iteration (2x vld3q_u8)
+        let bulk32 = npixels & !31;
+        let mut i = 0usize;
+        while i < bulk32 {
+            let rgb0 = vld3q_u8(sp.add(i * 3));
+            let rgb1 = vld3q_u8(sp.add((i + 16) * 3));
+
+            let a0_lo = vmlal_u8(
+                vmlal_u8(vmull_u8(vget_low_u8(rgb0.0), w_r), vget_low_u8(rgb0.1), w_g),
+                vget_low_u8(rgb0.2),
+                w_b,
+            );
+            let a1_lo = vmlal_u8(
+                vmlal_u8(vmull_u8(vget_low_u8(rgb1.0), w_r), vget_low_u8(rgb1.1), w_g),
+                vget_low_u8(rgb1.2),
+                w_b,
+            );
+            let a0_hi = vmlal_u8(
+                vmlal_u8(
+                    vmull_u8(vget_high_u8(rgb0.0), w_r),
+                    vget_high_u8(rgb0.1),
+                    w_g,
+                ),
+                vget_high_u8(rgb0.2),
+                w_b,
+            );
+            let a1_hi = vmlal_u8(
+                vmlal_u8(
+                    vmull_u8(vget_high_u8(rgb1.0), w_r),
+                    vget_high_u8(rgb1.1),
+                    w_g,
+                ),
+                vget_high_u8(rgb1.2),
+                w_b,
+            );
+
+            vst1q_u8(
+                dp.add(i),
+                vcombine_u8(vshrn_n_u16(a0_lo, 8), vshrn_n_u16(a0_hi, 8)),
+            );
+            vst1q_u8(
+                dp.add(i + 16),
+                vcombine_u8(vshrn_n_u16(a1_lo, 8), vshrn_n_u16(a1_hi, 8)),
+            );
+            i += 32;
+        }
+        // 16-pixel remainder
+        if i + 16 <= npixels {
+            let rgb = vld3q_u8(sp.add(i * 3));
+            let a_lo = vmlal_u8(
+                vmlal_u8(vmull_u8(vget_low_u8(rgb.0), w_r), vget_low_u8(rgb.1), w_g),
+                vget_low_u8(rgb.2),
+                w_b,
+            );
+            let a_hi = vmlal_u8(
+                vmlal_u8(vmull_u8(vget_high_u8(rgb.0), w_r), vget_high_u8(rgb.1), w_g),
+                vget_high_u8(rgb.2),
+                w_b,
+            );
+            vst1q_u8(
+                dp.add(i),
+                vcombine_u8(vshrn_n_u16(a_lo, 8), vshrn_n_u16(a_hi, 8)),
+            );
+            i += 16;
+        }
+        // Scalar tail
+        while i < npixels {
+            let si = i * 3;
+            *dp.add(i) = ((77 * *sp.add(si) as u32
+                + 150 * *sp.add(si + 1) as u32
+                + 29 * *sp.add(si + 2) as u32)
+                >> 8) as u8;
+            i += 1;
+        }
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn rgb_to_gray_u8_scalar(src: &[u8], dst: &mut [u8], npixels: usize) {
+    for i in 0..npixels {
+        let si = i * 3;
+        dst[i] =
+            ((77 * src[si] as u32 + 150 * src[si + 1] as u32 + 29 * src[si + 2] as u32) >> 8) as u8;
+    }
 }
 
 /// Convert a grayscale image to an RGB image by replicating the grayscale value across all three channels.
@@ -157,7 +286,6 @@ where
         ));
     }
 
-    // parallelize the grayscale conversion by rows
     parallel::par_iter_rows(src, dst, |src_pixel, dst_pixel| {
         dst_pixel[0] = src_pixel[0];
         dst_pixel[1] = src_pixel[0];
