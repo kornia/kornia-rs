@@ -123,8 +123,12 @@ where
     let row_len = src.cols() * C;
     let pixels = src.rows() * src.cols();
 
-    // Below ~500k pixels the rayon spawn tax dominates the row-memcpy.
-    if pixels < 500 * 1024 {
+    // vflip is a pure row-memcpy over the full image. A single core already
+    // saturates LPDDR bandwidth on A78AE (~15 GB/s), so rayon's cross-core
+    // dispatch pays spawn cost without ever helping. Empirically the
+    // single-thread path wins up through 1920×1080×3 (6 MB). Above 8 MP
+    // the extra L2 footprint lets parallel workers overlap a bit.
+    if pixels < 8 * 1024 * 1024 {
         let rows = src.rows();
         let src_s = src.as_slice();
         let dst_s = dst.as_slice_mut();
