@@ -43,7 +43,7 @@ pub fn horizontal_flip<T, const C: usize, A1: ImageAllocator, A2: ImageAllocator
     dst: &mut Image<T, C, A2>,
 ) -> Result<(), ImageError>
 where
-    T: Copy + Send + Sync,
+    T: Copy + Send + Sync + 'static,
 {
     if src.size() != dst.size() {
         return Err(ImageError::InvalidImageSize(
@@ -52,6 +52,29 @@ where
             dst.cols(),
             dst.rows(),
         ));
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        use std::any::TypeId;
+        if C == 3 && TypeId::of::<T>() == TypeId::of::<u8>() {
+            let cols = src.cols();
+            let row_bytes = cols * 3;
+            // Safety: byte view of u8 C=3 data.
+            let src_bytes = unsafe {
+                std::slice::from_raw_parts(src.as_slice().as_ptr() as *const u8, src.as_slice().len() * std::mem::size_of::<T>())
+            };
+            let dst_bytes = unsafe {
+                std::slice::from_raw_parts_mut(dst.as_slice_mut().as_mut_ptr() as *mut u8, dst.as_slice().len() * std::mem::size_of::<T>())
+            };
+            dst_bytes
+                .par_chunks_exact_mut(row_bytes)
+                .zip_eq(src_bytes.par_chunks_exact(row_bytes))
+                .for_each(|(dst_row, src_row)| {
+                    hflip_rgb_u8_neon(src_row, dst_row, cols);
+                });
+            return Ok(());
+        }
     }
 
     dst.as_slice_mut()
@@ -67,6 +90,47 @@ where
         });
 
     Ok(())
+}
+
+/// NEON RGB u8 horizontal flip. Reads 16 src pixels via vld3q_u8, reverses
+/// each channel register in place (vrev64q_u8 + vextq_u8), then writes them
+/// to the mirrored destination position via vst3q_u8.
+///
+/// The head (last) tail of dst is written first since we process src left→right,
+/// with the store position moving right→left. Any pixels that don't fit a
+/// 16-pixel batch are handled scalar.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn hflip_rgb_u8_neon(src: &[u8], dst: &mut [u8], cols: usize) {
+    use std::arch::aarch64::*;
+    unsafe {
+        let sp = src.as_ptr();
+        let dp = dst.as_mut_ptr();
+        // Process in batches of 16 pixels from the left.
+        let bulk = cols & !15;
+        let mut x = 0usize;
+        while x < bulk {
+            let v = vld3q_u8(sp.add(x * 3));
+            // Reverse 16 lanes: vrev64q swaps within each 64-bit half,
+            // then vextq_u8(hi, lo, 8) produces the fully reversed 128-bit vector.
+            let r_rev = vextq_u8(vrev64q_u8(v.0), vrev64q_u8(v.0), 8);
+            let g_rev = vextq_u8(vrev64q_u8(v.1), vrev64q_u8(v.1), 8);
+            let b_rev = vextq_u8(vrev64q_u8(v.2), vrev64q_u8(v.2), 8);
+            let out = uint8x16x3_t(r_rev, g_rev, b_rev);
+            // Destination position: src pixel x..x+16 maps to dst cols-x-16..cols-x.
+            vst3q_u8(dp.add((cols - x - 16) * 3), out);
+            x += 16;
+        }
+        // Scalar tail: whatever remains (last cols % 16 pixels of src → first pixels of dst).
+        while x < cols {
+            let s = sp.add(x * 3);
+            let d = dp.add((cols - 1 - x) * 3);
+            *d = *s;
+            *d.add(1) = *s.add(1);
+            *d.add(2) = *s.add(2);
+            x += 1;
+        }
+    }
 }
 
 /// Flip the input image vertically.
