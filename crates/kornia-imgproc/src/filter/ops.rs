@@ -379,12 +379,14 @@ pub fn spatial_gradient_float_parallel<
     Ok(())
 }
 
+type GaussianParams = ((usize, usize), (f32, f32));
+
 /// Resolve gaussian parameters to a validated (kernel_size, sigma) pair.
 /// Mirrors the auto-compute logic in `gaussian_blur` (f32 path).
 fn resolve_gaussian_params(
     kernel_size: (usize, usize),
     sigma: (f32, f32),
-) -> Result<((usize, usize), (f32, f32)), ImageError> {
+) -> Result<GaussianParams, ImageError> {
     let (mut kx, mut ky) = kernel_size;
     let (mut sx, mut sy) = sigma;
 
@@ -620,7 +622,10 @@ fn separable_blur_u8_striped(
             let ring_len = ksize_y * stride;
             let mut ring: Vec<u8> = Vec::with_capacity(ring_len);
             // Safety: every slot is written by an H-pass before any V-pass read.
-            unsafe { ring.set_len(ring_len) };
+            #[allow(clippy::uninit_vec)]
+            unsafe {
+                ring.set_len(ring_len)
+            };
 
             let mut padded = vec![0u8; padded_stride];
 
@@ -684,8 +689,7 @@ fn separable_blur_u8_striped(
                 let mut tap_ptrs: [*const u8; 32] = [std::ptr::null(); 32];
                 let ring_ptr = ring.as_ptr();
                 for k in 0..ksize_y {
-                    let r_abs =
-                        out_start as isize + oi as isize - half_y as isize + k as isize;
+                    let r_abs = out_start as isize + oi as isize - half_y as isize + k as isize;
                     let slot = r_abs.rem_euclid(ksize_y as isize) as usize;
                     tap_ptrs[k] = unsafe { ring_ptr.add(slot * stride) };
                 }
@@ -746,8 +750,14 @@ fn separable_blur_u8_striped(
                             ah = vmlal_u8(ah, vget_high_u8(a4), k4);
                             bl = vmlal_u8(bl, vget_low_u8(b4), k4);
                             bh = vmlal_u8(bh, vget_high_u8(b4), k4);
-                            vst1q_u8(dp.add(j), vcombine_u8(vshrn_n_u16(al, 8), vshrn_n_u16(ah, 8)));
-                            vst1q_u8(dp.add(j + 16), vcombine_u8(vshrn_n_u16(bl, 8), vshrn_n_u16(bh, 8)));
+                            vst1q_u8(
+                                dp.add(j),
+                                vcombine_u8(vshrn_n_u16(al, 8), vshrn_n_u16(ah, 8)),
+                            );
+                            vst1q_u8(
+                                dp.add(j + 16),
+                                vcombine_u8(vshrn_n_u16(bl, 8), vshrn_n_u16(bh, 8)),
+                            );
                             j += 32;
                         }
                         while j < bulk16 {
@@ -766,7 +776,10 @@ fn separable_blur_u8_striped(
                             ah = vmlal_u8(ah, vget_high_u8(s3), k3);
                             al = vmlal_u8(al, vget_low_u8(s4), k4);
                             ah = vmlal_u8(ah, vget_high_u8(s4), k4);
-                            vst1q_u8(dp.add(j), vcombine_u8(vshrn_n_u16(al, 8), vshrn_n_u16(ah, 8)));
+                            vst1q_u8(
+                                dp.add(j),
+                                vcombine_u8(vshrn_n_u16(al, 8), vshrn_n_u16(ah, 8)),
+                            );
                             j += 16;
                         }
                     } else {
@@ -804,8 +817,7 @@ fn separable_blur_u8_striped(
                     for j in 0..stride {
                         let mut acc = 0u32;
                         for ki in 0..ksize_y {
-                            acc += unsafe { *tap_ptrs[ki].add(j) } as u32
-                                * kernel_y[ki] as u32;
+                            acc += unsafe { *tap_ptrs[ki].add(j) } as u32 * kernel_y[ki] as u32;
                         }
                         out_row[j] = (acc >> 8) as u8;
                     }

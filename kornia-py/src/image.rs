@@ -1281,14 +1281,8 @@ impl PyImageApi {
         let tx = (cx - cos_a as f64 * cx + sin_a as f64 * cy) as f32;
         let ty = (cy - sin_a as f64 * cx - cos_a as f64 * cy) as f32;
         let m = [cos_a, -sin_a, tx, sin_a, cos_a, ty];
-        let result = crate::warp::warp_affine(
-            py,
-            self.data.clone_ref(py),
-            m,
-            (h, w),
-            "bilinear",
-            None,
-        )?;
+        let result =
+            crate::warp::warp_affine(py, self.data.clone_ref(py), m, (h, w), "bilinear", None)?;
         Ok(Self::wrap(py, result, Some(self.mode.clone())))
     }
 

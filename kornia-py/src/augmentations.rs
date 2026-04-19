@@ -4,29 +4,43 @@ use pyo3::types::PyDict;
 use rand::prelude::*;
 use rand::rngs::StdRng;
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use crate::image::{apply_brightness_sat, pyarray_data, PyImageApi, LUMINANCE_WEIGHTS};
 
-static GLOBAL_SEED: Mutex<Option<u64>> = Mutex::new(None);
+// Fast path: unseeded mode checks a single Relaxed atomic load, skipping the
+// Mutex entirely. The Mutex is only held briefly by `set_seed` to publish the
+// seed, with a Release/Acquire pair making sure the SEEDED_RNG reseed below
+// sees the new value.
+static SEEDED_FLAG: AtomicBool = AtomicBool::new(false);
+static GLOBAL_SEED: AtomicU64 = AtomicU64::new(0);
+static SEED_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 thread_local! {
     static SEEDED_RNG: RefCell<Option<StdRng>> = const { RefCell::new(None) };
+    // The thread-local RNG is reseeded when this generation counter doesn't
+    // match the global one. Avoids re-reading the global seed every call.
+    static SEEDED_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
+static SEED_GEN: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
 fn with_rng<T>(f: impl FnOnce(&mut dyn RngCore) -> T) -> T {
-    let seed = GLOBAL_SEED.lock().unwrap();
-    if let Some(s) = *seed {
-        drop(seed);
+    if SEEDED_FLAG.load(Ordering::Relaxed) {
         SEEDED_RNG.with(|cell| {
             let mut rng_opt = cell.borrow_mut();
-            if rng_opt.is_none() {
+            let cur_gen = SEED_GEN.load(Ordering::Acquire);
+            let local_gen = SEEDED_GEN.with(|c| c.get());
+            if rng_opt.is_none() || local_gen != cur_gen {
+                let s = GLOBAL_SEED.load(Ordering::Relaxed);
                 *rng_opt = Some(StdRng::seed_from_u64(s));
+                SEEDED_GEN.with(|c| c.set(cur_gen));
             }
             f(rng_opt.as_mut().unwrap())
         })
     } else {
-        drop(seed);
         f(&mut rand::rng())
     }
 }
@@ -38,11 +52,22 @@ fn with_rng<T>(f: impl FnOnce(&mut dyn RngCore) -> T) -> T {
 #[pyfunction]
 #[pyo3(signature = (seed=None))]
 pub fn set_seed(seed: Option<u64>) {
-    let mut global = GLOBAL_SEED.lock().unwrap();
-    *global = seed;
+    let _g = SEED_WRITE_LOCK.lock().unwrap();
+    match seed {
+        Some(s) => {
+            GLOBAL_SEED.store(s, Ordering::Relaxed);
+            SEED_GEN.fetch_add(1, Ordering::Release);
+            SEEDED_FLAG.store(true, Ordering::Release);
+        }
+        None => {
+            SEEDED_FLAG.store(false, Ordering::Release);
+            SEED_GEN.fetch_add(1, Ordering::Release);
+        }
+    }
     SEEDED_RNG.with(|cell| {
         *cell.borrow_mut() = seed.map(StdRng::seed_from_u64);
     });
+    SEEDED_GEN.with(|c| c.set(SEED_GEN.load(Ordering::Relaxed)));
 }
 
 /// Extract a required key from a params dict.
@@ -192,11 +217,7 @@ unsafe fn apply_saturation_neon(src: &[u8], dst: &mut [u8], npixels: usize, satu
             w_b,
         );
         let gray_hi = vmlal_u8(
-            vmlal_u8(
-                vmull_u8(vget_high_u8(rgb.0), w_r),
-                vget_high_u8(rgb.1),
-                w_g,
-            ),
+            vmlal_u8(vmull_u8(vget_high_u8(rgb.0), w_r), vget_high_u8(rgb.1), w_g),
             vget_high_u8(rgb.2),
             w_b,
         );
@@ -222,14 +243,8 @@ unsafe fn apply_saturation_neon(src: &[u8], dst: &mut [u8], npixels: usize, satu
             let mul_lo_hi = vmull_s16(vget_high_s16(delta_lo), vget_high_s16(sat_q8_s16));
             let mul_hi_lo = vmull_s16(vget_low_s16(delta_hi), vget_low_s16(sat_q8_s16));
             let mul_hi_hi = vmull_s16(vget_high_s16(delta_hi), vget_high_s16(sat_q8_s16));
-            let scaled_lo = vcombine_s16(
-                vrshrn_n_s32(mul_lo_lo, 8),
-                vrshrn_n_s32(mul_lo_hi, 8),
-            );
-            let scaled_hi = vcombine_s16(
-                vrshrn_n_s32(mul_hi_lo, 8),
-                vrshrn_n_s32(mul_hi_hi, 8),
-            );
+            let scaled_lo = vcombine_s16(vrshrn_n_s32(mul_lo_lo, 8), vrshrn_n_s32(mul_lo_hi, 8));
+            let scaled_hi = vcombine_s16(vrshrn_n_s32(mul_hi_lo, 8), vrshrn_n_s32(mul_hi_hi, 8));
             let out_lo = vaddq_s16(gray_s16_lo, scaled_lo);
             let out_hi = vaddq_s16(gray_s16_hi, scaled_hi);
             // Saturating narrow to u8 clamps negative → 0 and > 255 → 255.

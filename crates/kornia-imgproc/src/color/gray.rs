@@ -126,7 +126,7 @@ pub fn rgb_to_gray_u8(src: &[u8], dst: &mut [u8], npixels: usize) {
     // Pick strip size so strips are cache-friendly but large enough to amortize
     // rayon overhead. 32-pixel alignment keeps the SIMD fast-path intact.
     let nthreads = rayon::current_num_threads().max(1);
-    let strip = ((npixels + nthreads - 1) / nthreads).next_multiple_of(32);
+    let strip = npixels.div_ceil(nthreads).next_multiple_of(32);
 
     dst.par_chunks_mut(strip)
         .enumerate()

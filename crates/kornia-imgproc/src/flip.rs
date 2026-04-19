@@ -62,10 +62,16 @@ where
             let row_bytes = cols * 3;
             // Safety: byte view of u8 C=3 data.
             let src_bytes = unsafe {
-                std::slice::from_raw_parts(src.as_slice().as_ptr() as *const u8, src.as_slice().len() * std::mem::size_of::<T>())
+                std::slice::from_raw_parts(
+                    src.as_slice().as_ptr() as *const u8,
+                    std::mem::size_of_val(src.as_slice()),
+                )
             };
             let dst_bytes = unsafe {
-                std::slice::from_raw_parts_mut(dst.as_slice_mut().as_mut_ptr() as *mut u8, dst.as_slice().len() * std::mem::size_of::<T>())
+                std::slice::from_raw_parts_mut(
+                    dst.as_slice_mut().as_mut_ptr() as *mut u8,
+                    std::mem::size_of_val(dst.as_slice()),
+                )
             };
             dst_bytes
                 .par_chunks_exact_mut(row_bytes)
@@ -199,8 +205,7 @@ where
         for r in 0..rows {
             let src_off = (rows - 1 - r) * row_len;
             let dst_off = r * row_len;
-            dst_s[dst_off..dst_off + row_len]
-                .copy_from_slice(&src_s[src_off..src_off + row_len]);
+            dst_s[dst_off..dst_off + row_len].copy_from_slice(&src_s[src_off..src_off + row_len]);
         }
         return Ok(());
     }

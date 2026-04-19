@@ -624,6 +624,7 @@ impl FilterKind {
 /// When `antialias` is false (OpenCV INTER_CUBIC / INTER_LANCZOS4 semantics),
 /// `ksize` is fixed at twice the filter support (4 for bicubic, 6 for lanczos)
 /// regardless of scale. Much faster on strong downscale but aliases.
+#[allow(clippy::needless_range_loop)]
 fn precompute_contribs(
     src_size: usize,
     dst_size: usize,
@@ -684,6 +685,7 @@ fn precompute_contribs(
 
 /// Compact per-tap LUT: xsrc as u16, weight as i16. At kx=30 and dst_w=224
 /// the combined table fits L1 (27 KB) where u32/i32 would spill (54 KB).
+#[allow(clippy::needless_range_loop)]
 fn build_xsrc_lut(xofs: &[i32], dst_w: usize, kx: usize, src_w: usize) -> Vec<u16> {
     debug_assert!(src_w <= u16::MAX as usize);
     let mut xsrc = Vec::<u16>::with_capacity(dst_w * kx);
@@ -729,6 +731,7 @@ unsafe fn load_px_edge(p: *const u8) -> std::arch::aarch64::int16x4_t {
 /// + 4 lane-zeros — ~10 cycles faster per dst pixel on A78.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 unsafe fn horizontal_row_c3_x4_neon(
     src_rows: [&[u8]; 4],
     outs: [&mut [i16]; 4],
@@ -887,6 +890,7 @@ fn horizontal_batch<const C: usize>(
 }
 
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn horizontal_row<const C: usize>(
     src_row: &[u8],
     out: &mut [i16],
@@ -1079,6 +1083,7 @@ fn resize_global_two_pass<const C: usize>(
         });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resize_separable_u8<const C: usize>(
     src: &[u8],
     src_w: usize,
@@ -1165,8 +1170,7 @@ fn resize_separable_u8<const C: usize>(
             // Source-row span needed for this strip: [sy_min, sy_max).
             let mut sy_min = i32::MAX;
             let mut sy_max = i32::MIN;
-            for yo in yo_start..yo_end {
-                let y0 = yofs[yo];
+            for &y0 in &yofs[yo_start..yo_end] {
                 sy_min = sy_min.min(y0);
                 sy_max = sy_max.max(y0 + ky as i32);
             }
@@ -1183,7 +1187,10 @@ fn resize_separable_u8<const C: usize>(
             // global version, this stays in L1/L2 across H and V.
             let mut temp: Vec<i16> = Vec::with_capacity(band_rows * hbuf_row_len);
             // SAFETY: horizontal pass writes every element before any read.
-            unsafe { temp.set_len(band_rows * hbuf_row_len) };
+            #[allow(clippy::uninit_vec)]
+            unsafe {
+                temp.set_len(band_rows * hbuf_row_len)
+            };
 
             // Horizontal pass over the needed src rows only. Processes rows
             // in groups of 4 to share coefficient (xsrc/xw) loads and fill
