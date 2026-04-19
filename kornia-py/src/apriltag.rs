@@ -159,7 +159,7 @@ impl PyDecodeTagsConfig {
     }
 }
 
-#[pyclass(name = "FitQuadConfig", eq, get_all, set_all)]
+#[pyclass(name = "FitQuadConfig", eq, get_all, set_all, from_py_object)]
 #[derive(Default, PartialEq, Clone)]
 pub struct PyFitQuadConfig {
     pub cos_critical_rad: f32,
@@ -237,7 +237,7 @@ impl PyAprilTagDecoder {
     }
 }
 
-#[pyclass(name = "ApriltagDetection", eq, get_all, set_all)]
+#[pyclass(name = "ApriltagDetection", eq, get_all, set_all, from_py_object)]
 #[derive(PartialEq, Clone)]
 pub struct PyApriltagDetection {
     pub tag_family_kind: family::PyTagFamilyKind,
@@ -283,7 +283,7 @@ impl From<Detection> for PyApriltagDetection {
     }
 }
 
-#[pyclass(name = "Quad", eq, get_all, set_all)]
+#[pyclass(name = "Quad", eq, get_all, set_all, from_py_object)]
 #[derive(PartialEq, Clone)]
 pub struct PyQuad {
     pub corners: [(f32, f32); 4],
@@ -400,7 +400,7 @@ pub mod family {
         }
     }
 
-    #[pyclass(name = "QuickDecode")]
+    #[pyclass(name = "QuickDecode", from_py_object)]
     #[derive(Clone)]
     pub struct PyQuickDecode(pub QuickDecode);
 
@@ -428,7 +428,7 @@ pub mod family {
         }
     }
 
-    #[pyclass(name = "SharpeningBuffer")]
+    #[pyclass(name = "SharpeningBuffer", from_py_object)]
     #[derive(Clone)]
     pub struct PySharpeningBuffer(pub SharpeningBuffer);
 
@@ -444,7 +444,7 @@ pub mod family {
         }
     }
 
-    #[pyclass(name = "TagFamilyKind", eq)]
+    #[pyclass(name = "TagFamilyKind", eq, from_py_object)]
     #[derive(PartialEq, Clone)]
     pub struct PyTagFamilyKind(pub TagFamilyKind);
 

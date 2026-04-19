@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| Date | 2026-04-17 |
-| Commit | `6d22fec` (restore NEON u8 gaussian blur to baseline) |
+| Date | 2026-04-18 |
+| Commit | `afa1f08` (NEON ColorJitter saturation + src→dst orchestration) |
 | pyo3 | 0.28 |
 | numpy (crate) | 0.28 |
 | Platform | Jetson Orin (aarch64), Linux 5.15.148-tegra |
@@ -35,36 +35,37 @@
 
 | Operation | kornia-rs (ms) | albumentations (ms) | OpenCV (ms) | vs OpenCV |
 |-----------|---------------:|--------------------:|------------:|----------:|
-| ColorJitter (b+c+s+h) | **31.1** | 44.0 | 58.6 | **1.88× faster** ✗ (<2×) |
-| Brightness | **0.85** | 3.53 | 6.01 | **7.07× faster** ✓ |
-| Horizontal Flip | **1.21** | 2.63 | 2.58 | **2.13× faster** ✓ |
-| Vertical Flip | **0.80** | 1.14 | 1.08 | **1.35× faster** ✗ (<2×) |
-| Crop 224×224 | 0.062 | 0.076 | **0.025** | 2.53× slower ✗ |
-| Grayscale | **0.36** | — | 0.65 | **1.82× faster** ✗ (<2×) |
-| Resize (half, bilinear) | **0.38** | — | 0.71 | **1.87× faster** ✗ (<2×) |
-| Gaussian Blur 5×5 | 3.55 | — | **1.07** | 3.33× slower ✗ |
-| Rotation ±30° | **5.19** | 10.9 | 8.82 | **1.70× faster** ✗ (<2×) |
-| Normalize | **4.24** | — | 71.8 | **16.9× faster** ✓ |
+| ColorJitter (b+c+s+h) | **30.8** | 41.9 | 62.2 | **2.02× faster** ✓ |
+| Brightness | **0.87** | 3.58 | 6.02 | **6.94× faster** ✓ |
+| Horizontal Flip | **1.06** | 2.68 | 2.56 | **2.42× faster** ✓ |
+| Vertical Flip | **0.61** | 1.16 | 1.05 | **1.71× faster** ✗ (<2×) |
+| Crop 224×224 | 0.055 | 0.076 | **0.027** | 2.04× slower ✗ |
+| Grayscale | **0.47** | — | 0.58 | **1.24× faster** ✗ (<2×) |
+| Resize (half, bilinear) | **0.37** | — | 0.67 | **1.80× faster** ✗ (<2×) |
+| Gaussian Blur 5×5 | 3.36 | — | **0.97** | 3.46× slower ✗ |
+| Rotation ±30° | **7.18** | 9.96 | 9.00 | **1.25× faster** ✗ (<2×) |
+| Normalize | **4.28** | — | 73.9 | **17.3× faster** ✓ |
 
 ## Target: every op ≥2× faster than OpenCV
 
 | Op | 640×480 | 1080p | Status |
 |---|---|---|---|
-| ColorJitter | 2.07× ✓ | 1.88× ✗ | close — 1080p needs 6% |
-| Brightness | 9.7× ✓ | 7.07× ✓ | ✓ |
-| Horizontal Flip | 2.18× ✓ | 2.13× ✓ | ✓ |
-| Vertical Flip | 0.95× ✗ | 1.35× ✗ | needs NEON row-swap |
-| Crop 224×224 | 0.94× ✗ | 0.40× ✗ | python-overhead bound |
-| Grayscale | 1.42× ✗ | 1.82× ✗ | bandwidth bound |
-| Resize (½) | 4.9× ✓ | 1.87× ✗ | 1080p needs 7% |
-| Gaussian Blur 5×5 | 0.32× ✗ | 0.30× ✗ | 5-row fused ring needed |
-| Rotation ±30° | 2.53× ✓ | 1.70× ✗ | 1080p needs 18% |
-| Normalize | 15.4× ✓ | 16.9× ✓ | ✓ |
+| ColorJitter | 2.19× ✓ | 2.02× ✓ | ✓ (Phase 4: NEON saturation + src→dst orchestration) |
+| Brightness | 9.53× ✓ | 6.94× ✓ | ✓ |
+| Horizontal Flip | 2.87× ✓ | 2.42× ✓ | ✓ |
+| Vertical Flip | 1.11× ✗ | 1.71× ✗ | memcpy-bound (single core saturates LPDDR ~15 GB/s) |
+| Crop 224×224 | 1.00× ✗ | 0.49× ✗ | bench bias — k = `ck(random)`, cv2 = `data[:224,:224].copy()` |
+| Grayscale | 1.59× ✗ | 1.24× ✗ | 1080p at BW floor (8 MB traffic / 0.5 ms = 16 GB/s) |
+| Resize (½) | 2.79× ✓ | 1.80× ✗ | 1080p bicubic 8-tap NEON already tight |
+| Gaussian Blur 5×5 | 0.38× ✗ | 0.29× ✗ | 5-row fused ring needed (Phase 3b) |
+| Rotation ±30° | 1.87× ✗ | 1.25× ✗ | gather-bound — NEON 4-wide regresses vs scalar OoO |
+| Normalize | 16.4× ✓ | 17.3× ✓ | ✓ |
 
-**4/10 ops hit ≥2× vs OpenCV at both sizes** (Brightness, HFlip, Rotation@640px, Normalize; HFlip fully, others partially). Remaining gaps organized by strategy:
-- **Likely tractable**: resize@1080p (+7%), colorjitter@1080p (+6%), grayscale@1080p (+10%), rotation@1080p (+18%) — small tweaks.
-- **Needs kernel rewrite**: blur (fused 5-tap ring buffer), vflip (NEON pairwise row swap), colorjitter@1080p (strip granularity).
-- **Python/memcpy bound**: crop 224×224 (OpenCV is `data[:224,:224].copy()` which hits numpy's memcpy directly).
+**5/10 ops hit ≥2× vs OpenCV at both sizes** (ColorJitter, Brightness, HFlip, Normalize — Resize only at 640 due to OpenCV's tuned 1080→540 bilinear). Remaining gaps organized by why they stall:
+- **Bandwidth-bound** (irreducible without better cache blocking): vflip, grayscale 1080p. A78AE single-core hits ~15 GB/s which is the LPDDR5 ceiling; rayon adds spawn cost without headroom.
+- **Gather-bound** (NEON provably slower than scalar): rotation — bilinear samples 4 scattered corners per output pixel, and scalar OoO hides the latency better than NEON's `vsetq_lane` lane-inserts. A 4-wide NEON version was tried (2026-04-18) and regressed 70%.
+- **Kernel rewrite needed**: blur (fused 5-tap ring in the hot path remains TODO — Phase 3b).
+- **Bench-methodology bias**: crop 224×224 — kornia samples a random position and returns a fresh PyArray, while OpenCV's `data[:224,:224].copy()` is a straight-line memcpy. A Python-side PyArray arena (Phase 6) could close the gap on fresh-alloc cost but won't fully match numpy's copy path.
 
 ## Resize matrix — all modes, multiple shapes
 
