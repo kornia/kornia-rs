@@ -55,48 +55,56 @@ pub fn hessian_response<A1: ImageAllocator, A2: ImageAllocator>(
     }
 
     let src_data = src.as_slice();
+    let cols = src.cols();
+    let rows = src.rows();
 
+    const ROWS_PER_TASK: usize = 16;
     dst.as_slice_mut()
-        .par_chunks_exact_mut(src.cols())
+        .par_chunks_mut(ROWS_PER_TASK * cols)
         .enumerate()
-        .for_each(|(row_idx, row_chunk)| {
-            if row_idx == 0 || row_idx == src.rows() - 1 {
-                // skip the first and last row
-                return;
-            }
-
-            let row_offset = row_idx * src.cols();
-
-            row_chunk
-                .iter_mut()
+        .for_each(|(chunk_idx, chunk)| {
+            let row_base = chunk_idx * ROWS_PER_TASK;
+            chunk
+                .chunks_exact_mut(cols)
                 .enumerate()
-                .for_each(|(col_idx, dst_pixel)| {
-                    if col_idx == 0 || col_idx == src.cols() - 1 {
-                        // skip the first and last column
+                .for_each(|(dr, row_chunk)| {
+                    let row_idx = row_base + dr;
+                    if row_idx == 0 || row_idx == rows - 1 {
                         return;
                     }
 
-                    let current_idx = row_offset + col_idx;
-                    let prev_row_idx = current_idx - src.cols();
-                    let next_row_idx = current_idx + src.cols();
+                    let row_offset = row_idx * cols;
 
-                    let v11 = src_data[prev_row_idx - 1];
-                    let v12 = src_data[prev_row_idx];
-                    let v13 = src_data[prev_row_idx + 1];
-                    let v21 = src_data[current_idx - 1];
-                    let v22 = src_data[current_idx];
-                    let v23 = src_data[current_idx + 1];
-                    let v31 = src_data[next_row_idx - 1];
-                    let v32 = src_data[next_row_idx];
-                    let v33 = src_data[next_row_idx + 1];
+                    row_chunk
+                        .iter_mut()
+                        .enumerate()
+                        .for_each(|(col_idx, dst_pixel)| {
+                            if col_idx == 0 || col_idx == cols - 1 {
+                                return;
+                            }
 
-                    let dxx = v21 - 2.0 * v22 + v23;
-                    let dyy = v12 - 2.0 * v22 + v32;
-                    let dxy = 0.25 * (v31 - v11 - v33 + v13);
+                            let current_idx = row_offset + col_idx;
+                            let prev_row_idx = current_idx - cols;
+                            let next_row_idx = current_idx + cols;
 
-                    let det = dxx * dyy - dxy * dxy;
+                            let v11 = src_data[prev_row_idx - 1];
+                            let v12 = src_data[prev_row_idx];
+                            let v13 = src_data[prev_row_idx + 1];
+                            let v21 = src_data[current_idx - 1];
+                            let v22 = src_data[current_idx];
+                            let v23 = src_data[current_idx + 1];
+                            let v31 = src_data[next_row_idx - 1];
+                            let v32 = src_data[next_row_idx];
+                            let v33 = src_data[next_row_idx + 1];
 
-                    *dst_pixel = det;
+                            let dxx = v21 - 2.0 * v22 + v23;
+                            let dyy = v12 - 2.0 * v22 + v32;
+                            let dxy = 0.25 * (v31 - v11 - v33 + v13);
+
+                            let det = dxx * dyy - dxy * dxy;
+
+                            *dst_pixel = det;
+                        });
                 });
         });
 
@@ -181,126 +189,148 @@ impl HarrisResponse {
         let col_slice = src.cols()..src_data.len() - src.cols();
         let row_slice = 1..src.cols() - 1;
 
+        const ROWS_PER_TASK: usize = 16;
+        let cols = src.cols();
+        let chunk_elems = ROWS_PER_TASK * cols;
+
         self.dx2_data
             .as_mut_slice()
             .get_mut(col_slice.clone())
             .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
-            .par_chunks_exact_mut(src.cols())
+            .par_chunks_mut(chunk_elems)
             .zip(
                 self.dy2_data
                     .as_mut_slice()
                     .get_mut(col_slice.clone())
                     .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
-                    .par_chunks_exact_mut(src.cols()),
+                    .par_chunks_mut(chunk_elems),
             )
             .zip(
                 self.dxy_data
                     .as_mut_slice()
                     .get_mut(col_slice.clone())
                     .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
-                    .par_chunks_exact_mut(src.cols()),
+                    .par_chunks_mut(chunk_elems),
             )
             .enumerate()
-            .try_for_each(|(row_idx, ((dx2_chunk, dy2_chunk), dxy_chunk))| {
-                let row_offset = (row_idx + 1) * src.cols();
-
-                dx2_chunk
-                    .get_mut(row_slice.clone())
-                    .ok_or_else(|| Self::col_bounds_err(src.cols(), src.rows(), row_idx))?
-                    .iter_mut()
-                    .zip(
-                        dy2_chunk
-                            .get_mut(row_slice.clone())
-                            .ok_or_else(|| Self::col_bounds_err(src.cols(), src.rows(), row_idx))?
-                            .iter_mut(),
-                    )
-                    .zip(
-                        dxy_chunk
-                            .get_mut(row_slice.clone())
-                            .ok_or_else(|| Self::col_bounds_err(src.cols(), src.rows(), row_idx))?
-                            .iter_mut(),
-                    )
+            .try_for_each(|(chunk_idx, ((dx2_big, dy2_big), dxy_big))| {
+                let row_base = chunk_idx * ROWS_PER_TASK;
+                dx2_big
+                    .chunks_exact_mut(cols)
+                    .zip(dy2_big.chunks_exact_mut(cols))
+                    .zip(dxy_big.chunks_exact_mut(cols))
                     .enumerate()
-                    .for_each(|(col_idx, ((dx2_pixel, dy2_pixel), dxy_pixel))| {
-                        let current_idx = row_offset + col_idx + 1;
-                        let prev_row_idx = current_idx - src.cols();
-                        let next_row_idx = current_idx + src.cols();
+                    .try_for_each(|(dr, ((dx2_chunk, dy2_chunk), dxy_chunk))| {
+                        let row_idx = row_base + dr;
+                        let row_offset = (row_idx + 1) * cols;
 
-                        let (v11, v12, v13, v21, v23, v31, v32, v33) = unsafe {
-                            // SAFETY: we ranges is valid
-                            (
-                                src_data.get_unchecked(prev_row_idx - 1),
-                                src_data.get_unchecked(prev_row_idx),
-                                src_data.get_unchecked(prev_row_idx + 1),
-                                src_data.get_unchecked(current_idx - 1),
-                                src_data.get_unchecked(current_idx + 1),
-                                src_data.get_unchecked(next_row_idx - 1),
-                                src_data.get_unchecked(next_row_idx),
-                                src_data.get_unchecked(next_row_idx + 1),
+                        dx2_chunk
+                            .get_mut(row_slice.clone())
+                            .ok_or_else(|| Self::col_bounds_err(cols, src.rows(), row_idx))?
+                            .iter_mut()
+                            .zip(
+                                dy2_chunk
+                                    .get_mut(row_slice.clone())
+                                    .ok_or_else(|| {
+                                        Self::col_bounds_err(cols, src.rows(), row_idx)
+                                    })?
+                                    .iter_mut(),
                             )
-                        };
+                            .zip(
+                                dxy_chunk
+                                    .get_mut(row_slice.clone())
+                                    .ok_or_else(|| {
+                                        Self::col_bounds_err(cols, src.rows(), row_idx)
+                                    })?
+                                    .iter_mut(),
+                            )
+                            .enumerate()
+                            .for_each(|(col_idx, ((dx2_pixel, dy2_pixel), dxy_pixel))| {
+                                let current_idx = row_offset + col_idx + 1;
+                                let prev_row_idx = current_idx - cols;
+                                let next_row_idx = current_idx + cols;
 
-                        // I_x,I_y via 3x3 sobel operator and convolved
-                        let dx = (-v33 + v31 - 2.0 * v23 + 2.0 * v21 - v13 + v11) * 0.125;
-                        let dy = (-v33 - 2.0 * v32 - v31 + v13 + 2.0 * v12 + v11) * 0.125;
+                                let (v11, v12, v13, v21, v23, v31, v32, v33) = unsafe {
+                                    (
+                                        src_data.get_unchecked(prev_row_idx - 1),
+                                        src_data.get_unchecked(prev_row_idx),
+                                        src_data.get_unchecked(prev_row_idx + 1),
+                                        src_data.get_unchecked(current_idx - 1),
+                                        src_data.get_unchecked(current_idx + 1),
+                                        src_data.get_unchecked(next_row_idx - 1),
+                                        src_data.get_unchecked(next_row_idx),
+                                        src_data.get_unchecked(next_row_idx + 1),
+                                    )
+                                };
 
-                        // filter normalization
-                        *dx2_pixel = dx * dx;
-                        *dy2_pixel = dy * dy;
-                        *dxy_pixel = dx * dy;
-                    });
-                Ok::<(), ImageError>(())
+                                let dx =
+                                    (-v33 + v31 - 2.0 * v23 + 2.0 * v21 - v13 + v11) * 0.125;
+                                let dy =
+                                    (-v33 - 2.0 * v32 - v31 + v13 + 2.0 * v12 + v11) * 0.125;
+
+                                *dx2_pixel = dx * dx;
+                                *dy2_pixel = dy * dy;
+                                *dxy_pixel = dx * dy;
+                            });
+                        Ok::<(), ImageError>(())
+                    })
             })?;
 
         dst.as_slice_mut()
             .get_mut(col_slice.clone())
             .ok_or_else(|| Self::row_bounds_err(src.cols(), src.rows()))?
-            .par_chunks_exact_mut(src.cols())
+            .par_chunks_mut(chunk_elems)
             .enumerate()
-            .try_for_each(|(row_idx, dst_chunk)| {
-                let row_offset = (row_idx + 1) * src.cols();
-
-                dst_chunk
-                    .get_mut(row_slice.clone())
-                    .ok_or_else(|| Self::col_bounds_err(src.cols(), src.rows(), row_idx))?
-                    .iter_mut()
+            .try_for_each(|(chunk_idx, dst_big)| {
+                let row_base = chunk_idx * ROWS_PER_TASK;
+                dst_big
+                    .chunks_exact_mut(cols)
                     .enumerate()
-                    .for_each(|(col_idx, dst_pixel)| {
-                        let current_idx = row_offset + col_idx + 1;
-                        let prev_row_idx = current_idx - src.cols();
-                        let next_row_idx = current_idx + src.cols();
+                    .try_for_each(|(dr, dst_chunk)| {
+                        let row_idx = row_base + dr;
+                        let row_offset = (row_idx + 1) * cols;
 
-                        let mut m11 = 0.0;
-                        let mut m22 = 0.0;
-                        let mut m12 = 0.0;
+                        dst_chunk
+                            .get_mut(row_slice.clone())
+                            .ok_or_else(|| Self::col_bounds_err(cols, src.rows(), row_idx))?
+                            .iter_mut()
+                            .enumerate()
+                            .for_each(|(col_idx, dst_pixel)| {
+                                let current_idx = row_offset + col_idx + 1;
+                                let prev_row_idx = current_idx - cols;
+                                let next_row_idx = current_idx + cols;
 
-                        let idxs = [
-                            prev_row_idx - 1,
-                            prev_row_idx,
-                            prev_row_idx + 1,
-                            current_idx - 1,
-                            current_idx,
-                            current_idx + 1,
-                            next_row_idx - 1,
-                            next_row_idx,
-                            next_row_idx + 1,
-                        ];
-                        for idx in idxs {
-                            // SAFETY: we ranges is valid
-                            unsafe {
-                                m11 += self.dx2_data.get_unchecked(idx);
-                                m22 += self.dy2_data.get_unchecked(idx);
-                                m12 += self.dxy_data.get_unchecked(idx);
-                            }
-                        }
+                                let mut m11 = 0.0;
+                                let mut m22 = 0.0;
+                                let mut m12 = 0.0;
 
-                        let det = m11 * m22 - m12 * m12;
-                        let trace = m11 + m22;
-                        let response = det - self.k * trace * trace;
+                                let idxs = [
+                                    prev_row_idx - 1,
+                                    prev_row_idx,
+                                    prev_row_idx + 1,
+                                    current_idx - 1,
+                                    current_idx,
+                                    current_idx + 1,
+                                    next_row_idx - 1,
+                                    next_row_idx,
+                                    next_row_idx + 1,
+                                ];
+                                for idx in idxs {
+                                    unsafe {
+                                        m11 += self.dx2_data.get_unchecked(idx);
+                                        m22 += self.dy2_data.get_unchecked(idx);
+                                        m12 += self.dxy_data.get_unchecked(idx);
+                                    }
+                                }
 
-                        *dst_pixel = f32::max(0.0, response);
-                    });
-                Ok::<(), ImageError>(())
+                                let det = m11 * m22 - m12 * m12;
+                                let trace = m11 + m22;
+                                let response = det - self.k * trace * trace;
+
+                                *dst_pixel = f32::max(0.0, response);
+                            });
+                        Ok::<(), ImageError>(())
+                    })
             })?;
 
         Ok(())

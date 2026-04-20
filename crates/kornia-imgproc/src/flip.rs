@@ -73,26 +73,39 @@ where
                     std::mem::size_of_val(dst.as_slice()),
                 )
             };
+            const ROWS_PER_TASK: usize = 16;
             dst_bytes
-                .par_chunks_exact_mut(row_bytes)
-                .zip_eq(src_bytes.par_chunks_exact(row_bytes))
-                .for_each(|(dst_row, src_row)| {
-                    hflip_rgb_u8_neon(src_row, dst_row, cols);
+                .par_chunks_mut(ROWS_PER_TASK * row_bytes)
+                .zip_eq(src_bytes.par_chunks(ROWS_PER_TASK * row_bytes))
+                .for_each(|(dst_big, src_big)| {
+                    dst_big
+                        .chunks_exact_mut(row_bytes)
+                        .zip(src_big.chunks_exact(row_bytes))
+                        .for_each(|(dst_row, src_row)| {
+                            hflip_rgb_u8_neon(src_row, dst_row, cols);
+                        });
                 });
             return Ok(());
         }
     }
 
+    const ROWS_PER_TASK: usize = 16;
+    let row_len = src.cols() * C;
     dst.as_slice_mut()
-        .par_chunks_exact_mut(src.cols() * C)
-        .zip_eq(src.as_slice().par_chunks_exact(src.cols() * C))
-        .for_each(|(dst_row, src_row)| {
-            dst_row
-                .chunks_exact_mut(C)
-                .zip(src_row.chunks_exact(C).rev())
-                .for_each(|(dst_pixel, src_pixel)| {
-                    dst_pixel.copy_from_slice(src_pixel);
-                })
+        .par_chunks_mut(ROWS_PER_TASK * row_len)
+        .zip_eq(src.as_slice().par_chunks(ROWS_PER_TASK * row_len))
+        .for_each(|(dst_big, src_big)| {
+            dst_big
+                .chunks_exact_mut(row_len)
+                .zip(src_big.chunks_exact(row_len))
+                .for_each(|(dst_row, src_row)| {
+                    dst_row
+                        .chunks_exact_mut(C)
+                        .zip(src_row.chunks_exact(C).rev())
+                        .for_each(|(dst_pixel, src_pixel)| {
+                            dst_pixel.copy_from_slice(src_pixel);
+                        });
+                });
         });
 
     Ok(())
@@ -191,30 +204,41 @@ where
     }
 
     let row_len = src.cols() * C;
-    let pixels = src.rows() * src.cols();
+    let rows = src.rows();
 
-    // vflip is a pure row-memcpy over the full image. A single core already
-    // saturates LPDDR bandwidth on A78AE (~15 GB/s), so rayon's cross-core
-    // dispatch pays spawn cost without ever helping. Empirically the
-    // single-thread path wins up through 1920×1080×3 (6 MB). Above 8 MP
-    // the extra L2 footprint lets parallel workers overlap a bit.
-    if pixels < 8 * 1024 * 1024 {
-        let rows = src.rows();
-        let src_s = src.as_slice();
-        let dst_s = dst.as_slice_mut();
-        for r in 0..rows {
-            let src_off = (rows - 1 - r) * row_len;
-            let dst_off = r * row_len;
-            dst_s[dst_off..dst_off + row_len].copy_from_slice(&src_s[src_off..src_off + row_len]);
-        }
-        return Ok(());
-    }
+    // Group rows into coarse chunks so rayon task count stays ~O(cores×16),
+    // not O(rows). Per-row parallelism buries memcpy in spawn overhead at any
+    // resolution up to 8K. Within a chunk we use raw-ptr copy_nonoverlapping
+    // to skip per-row slice-bounds checks (visible at 1080p: ~100 μs of 930).
+    const ROWS_PER_TASK: usize = 16;
+    let chunk_elems = ROWS_PER_TASK * row_len;
 
-    dst.as_slice_mut()
-        .par_chunks_exact_mut(row_len)
-        .zip(src.as_slice().par_chunks_exact(row_len).rev())
-        .for_each(|(dst_row, src_row)| {
-            dst_row.copy_from_slice(src_row);
+    // Pass src as usize address; raw pointers aren't Send. Each rayon task
+    // reconstructs the pointer and reads its own disjoint row ranges.
+    let src_addr = src.as_slice().as_ptr() as usize;
+    let dst_slice = dst.as_slice_mut();
+
+    dst_slice
+        .par_chunks_mut(chunk_elems)
+        .enumerate()
+        .for_each(|(chunk_idx, dst_chunk)| {
+            let n_rows_in_chunk = dst_chunk.len() / row_len;
+            let dst_row_base = chunk_idx * ROWS_PER_TASK;
+            let dst_ptr = dst_chunk.as_mut_ptr();
+            let src_ptr = src_addr as *const T;
+            // SAFETY: src.size() == dst.size() was validated at entry; each
+            // rayon task owns a disjoint dst range, and src reads are also
+            // disjoint (one-to-one row mirror). No aliasing possible.
+            unsafe {
+                for r in 0..n_rows_in_chunk {
+                    let src_row_idx = rows - 1 - (dst_row_base + r);
+                    std::ptr::copy_nonoverlapping(
+                        src_ptr.add(src_row_idx * row_len),
+                        dst_ptr.add(r * row_len),
+                        row_len,
+                    );
+                }
+            }
         });
 
     Ok(())

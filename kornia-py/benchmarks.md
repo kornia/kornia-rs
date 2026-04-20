@@ -74,6 +74,8 @@
 
 Resize results across interpolation modes, `antialias` flag, and source→dest shape combinations. `antialias=True` matches PIL / torchvision semantics (kernel widens by scale; no aliasing on strong downscale). `antialias=False` matches OpenCV INTER_CUBIC / INTER_LANCZOS4 semantics (fixed 4/8-tap). `Bilinear` and `Nearest` are unaffected by the flag.
 
+**Note on Pillow-SIMD:** Pillow-SIMD (`pillow-simd` 9.5.0) gates all accelerated code paths on `__SSE4_2__` / `__AVX2__` in `src/libImaging/ImagingSIMD.h` — it is x86-only and ships no NEON path. On this Jetson Orin (aarch64) it would either fail to build or fall back to vanilla Pillow's scalar path, so it is not included in the matrix below. The vanilla PIL column is the only "Pillow" result available on ARM; on x86 hardware, Pillow-SIMD is typically 3–5× faster than vanilla PIL on resize, so the PIL column here overstates kornia's lead vs the best Python imaging baseline an x86 user would see.
+
 | Shape | Mode | k(aa=True) | k(aa=False) | OpenCV | PIL | `aa=False` vs OpenCV |
 |---|---|---:|---:|---:|---:|---:|
 | 1080p → 540p | bilinear | 0.49 | 0.42 | 0.82 | 19.0 | **1.97× faster** |
