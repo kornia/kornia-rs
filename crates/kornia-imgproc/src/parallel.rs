@@ -3,6 +3,13 @@ use rayon::prelude::*;
 use kornia_image::{allocator::ImageAllocator, Image};
 use kornia_tensor::{CpuAllocator, Tensor2};
 
+/// Row-group granularity for per-pixel rayon sharding. At 1 row per task,
+/// spawn overhead (~2-5 μs on the 8-core Orin pool) rivals per-row work for
+/// memory-bound ops like u8→f32 normalize, killing throughput. 16-row chunks
+/// put ~68 tasks on an 8-core pool for 1080p (~8 per worker) — enough for
+/// work-stealing balance without drowning in task overhead.
+const ROWS_PER_TASK: usize = 16;
+
 /// Apply a function to each pixel in the image in parallel.
 ///
 /// # Arguments
@@ -25,9 +32,11 @@ pub fn par_iter_rows<
     T1: Clone + Send + Sync,
     T2: Clone + Send + Sync,
 {
+    let src_row_len = C1 * src.cols();
+    let dst_row_len = C2 * src.cols();
     src.as_slice()
-        .par_chunks_exact(C1 * src.cols())
-        .zip(dst.as_slice_mut().par_chunks_exact_mut(C2 * src.cols()))
+        .par_chunks(ROWS_PER_TASK * src_row_len)
+        .zip(dst.as_slice_mut().par_chunks_mut(ROWS_PER_TASK * dst_row_len))
         .for_each(|(src_chunk, dst_chunk)| {
             src_chunk
                 .chunks_exact(C1)
@@ -54,9 +63,11 @@ pub fn par_iter_rows_val<
     T1: Clone + Send + Sync,
     T2: Clone + Send + Sync,
 {
+    let src_row_len = C1 * src.cols();
+    let dst_row_len = C2 * src.cols();
     src.as_slice()
-        .par_chunks_exact(C1 * src.cols())
-        .zip(dst.as_slice_mut().par_chunks_exact_mut(C2 * src.cols()))
+        .par_chunks(ROWS_PER_TASK * src_row_len)
+        .zip(dst.as_slice_mut().par_chunks_mut(ROWS_PER_TASK * dst_row_len))
         .for_each(|(src_chunk, dst_chunk)| {
             src_chunk
                 .iter()
@@ -88,10 +99,14 @@ pub fn par_iter_rows_val_two<
     T2: Clone + Send + Sync,
     T3: Clone + Send + Sync,
 {
+    let cols = src1.cols();
+    let s1_row = C1 * cols;
+    let s2_row = C2 * cols;
+    let d_row = C3 * cols;
     src1.as_slice()
-        .par_chunks_exact(C1 * src1.cols())
-        .zip(src2.as_slice().par_chunks_exact(C2 * src1.cols()))
-        .zip(dst.as_slice_mut().par_chunks_exact_mut(C3 * src1.cols()))
+        .par_chunks(ROWS_PER_TASK * s1_row)
+        .zip(src2.as_slice().par_chunks(ROWS_PER_TASK * s2_row))
+        .zip(dst.as_slice_mut().par_chunks_mut(ROWS_PER_TASK * d_row))
         .for_each(|((src1_chunk, src2_chunk), dst_chunk)| {
             src1_chunk
                 .iter()
@@ -116,9 +131,9 @@ pub fn par_iter_rows_resample<const C: usize, A: ImageAllocator>(
     let map_y_slice = map_y.as_slice();
 
     dst_slice
-        .par_chunks_exact_mut(C * cols)
-        .zip(map_x_slice.par_chunks_exact(cols))
-        .zip(map_y_slice.par_chunks_exact(cols))
+        .par_chunks_mut(ROWS_PER_TASK * C * cols)
+        .zip(map_x_slice.par_chunks(ROWS_PER_TASK * cols))
+        .zip(map_y_slice.par_chunks(ROWS_PER_TASK * cols))
         .for_each(|((dst_chunk, map_x_chunk), map_y_chunk)| {
             dst_chunk
                 .chunks_exact_mut(C)
@@ -134,18 +149,23 @@ pub fn par_iter_rows_spatial_mapping<const C: usize, A: ImageAllocator>(
     f: impl Fn(f32, f32, &mut [f32]) + Send + Sync,
 ) {
     let cols = dst.cols();
+    let row_len = C * cols;
     let dst_slice = dst.as_slice_mut();
 
     dst_slice
-        .par_chunks_exact_mut(C * cols)
+        .par_chunks_mut(ROWS_PER_TASK * row_len)
         .enumerate()
-        .for_each(|(r, dst_chunk)| {
+        .for_each(|(chunk_idx, dst_chunk)| {
+            let r_base = chunk_idx * ROWS_PER_TASK;
             dst_chunk
-                .chunks_exact_mut(C)
+                .chunks_exact_mut(row_len)
                 .enumerate()
-                .for_each(|(c, dst_pixel)| {
-                    let (x, y) = map_coord(c, r);
-                    f(x, y, dst_pixel)
-                })
+                .for_each(|(dr, row)| {
+                    let r = r_base + dr;
+                    row.chunks_exact_mut(C).enumerate().for_each(|(c, dst_pixel)| {
+                        let (x, y) = map_coord(c, r);
+                        f(x, y, dst_pixel)
+                    });
+                });
         });
 }

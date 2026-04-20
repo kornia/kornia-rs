@@ -45,6 +45,9 @@ pub mod interpolation;
 /// module containing parallelization utilities.
 pub mod parallel;
 
+/// SIMD dispatch primitives and runtime CPU feature probe.
+pub mod simd;
+
 /// image processing metrics module.
 pub mod metrics;
 

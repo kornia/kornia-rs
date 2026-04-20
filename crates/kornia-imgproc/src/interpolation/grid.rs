@@ -3,6 +3,8 @@ use num_traits::Float;
 use rayon::iter::ParallelIterator;
 use rayon::{iter::IndexedParallelIterator, slice::ParallelSliceMut};
 
+const ROWS_PER_TASK: usize = 16;
+
 /// Create a meshgrid of x and y coordinates using a custom function
 ///
 /// # Arguments
@@ -44,22 +46,28 @@ where
     let mut map_y = CpuTensor2::<T>::zeros([rows, cols], CpuAllocator);
 
     // fill the output tensors
+    let chunk_elems = ROWS_PER_TASK * cols;
     map_x
         .as_slice_mut()
-        .par_chunks_exact_mut(cols)
-        .zip_eq(map_y.as_slice_mut().par_chunks_exact_mut(cols))
+        .par_chunks_mut(chunk_elems)
+        .zip_eq(map_y.as_slice_mut().par_chunks_mut(chunk_elems))
         .enumerate()
-        .try_for_each(|(v, (row_x, row_y))| {
-            for (u, (x, y)) in row_x.iter_mut().zip(row_y.iter_mut()).enumerate() {
-                // apply the function to the indices
-                let (x_out, y_out) =
-                    f(u, v).map_err(|e| TensorError::UnsupportedOperation(e.to_string()))?;
-
-                // assign the output to the tensors
-                *x = x_out;
-                *y = y_out;
-            }
-            Ok::<(), TensorError>(())
+        .try_for_each(|(chunk_idx, (x_big, y_big))| {
+            let row_base = chunk_idx * ROWS_PER_TASK;
+            x_big
+                .chunks_exact_mut(cols)
+                .zip(y_big.chunks_exact_mut(cols))
+                .enumerate()
+                .try_for_each(|(dr, (row_x, row_y))| {
+                    let v = row_base + dr;
+                    for (u, (x, y)) in row_x.iter_mut().zip(row_y.iter_mut()).enumerate() {
+                        let (x_out, y_out) =
+                            f(u, v).map_err(|e| TensorError::UnsupportedOperation(e.to_string()))?;
+                        *x = x_out;
+                        *y = y_out;
+                    }
+                    Ok::<(), TensorError>(())
+                })
         })?;
 
     Ok((map_x, map_y))

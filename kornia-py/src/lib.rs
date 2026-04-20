@@ -11,6 +11,7 @@ mod icp;
 mod image;
 mod io;
 mod normalize;
+mod pipeline;
 mod pointcloud;
 mod resize;
 mod warp;
@@ -417,6 +418,15 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_submodule(&apriltag_mod)?;
 
+    // Pipeline submodule — fused preprocessing kernels.
+    let pipeline_mod = PyModule::new(py, "pipeline")?;
+    pipeline_mod.add_function(wrap_pyfunction!(
+        pipeline::resize_normalize_to_tensor,
+        &pipeline_mod
+    )?)?;
+    pipeline_mod.add_class::<pipeline::Preprocessor>()?;
+    m.add_submodule(&pipeline_mod)?;
+
     // Register submodules in sys.modules so `from kornia_rs.image import Image` works
     let modules =
         unsafe { pyo3::Bound::from_borrowed_ptr(py, pyo3::ffi::PyImport_GetModuleDict()) };
@@ -427,6 +437,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ("kornia_rs.k3d", &k3d_mod),
         ("kornia_rs.apriltag", &apriltag_mod),
         ("kornia_rs.augmentations", &aug_mod),
+        ("kornia_rs.pipeline", &pipeline_mod),
     ] {
         modules.set_item(name, submod)?;
     }

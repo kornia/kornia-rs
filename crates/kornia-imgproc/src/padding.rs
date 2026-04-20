@@ -124,17 +124,28 @@ impl PaddingMode {
         let right = padding.right;
         let row_stride = new_width * C;
 
+        const ROWS_PER_TASK: usize = 16;
+        let chunk_elems = ROWS_PER_TASK * row_stride;
+
         // top
         {
             let (top_section, rest) = new_data.split_at_mut(top * row_stride);
 
             top_section
-                .par_chunks_exact_mut(row_stride)
+                .par_chunks_mut(chunk_elems)
                 .enumerate()
-                .for_each(|(y, dst_row)| {
-                    let src_y = self.map_index(y as isize - top as isize, old_height);
-                    let src_row = &rest[src_y * row_stride..(src_y + 1) * row_stride];
-                    dst_row.copy_from_slice(src_row);
+                .for_each(|(chunk_idx, dst_chunk)| {
+                    let row_base = chunk_idx * ROWS_PER_TASK;
+                    dst_chunk
+                        .chunks_exact_mut(row_stride)
+                        .enumerate()
+                        .for_each(|(dr, dst_row)| {
+                            let y = row_base + dr;
+                            let src_y = self.map_index(y as isize - top as isize, old_height);
+                            let src_row =
+                                &rest[src_y * row_stride..(src_y + 1) * row_stride];
+                            dst_row.copy_from_slice(src_row);
+                        });
                 });
         }
 
@@ -144,33 +155,42 @@ impl PaddingMode {
             let (rest, bottom_section) = new_data.split_at_mut(split_point);
 
             bottom_section
-                .par_chunks_exact_mut(row_stride)
+                .par_chunks_mut(chunk_elems)
                 .enumerate()
-                .for_each(|(idx, dst_row)| {
-                    let y = new_height - bottom + idx;
-                    let src_y = self.map_index(y as isize - top as isize, old_height);
-                    let src_start = (src_y + top) * row_stride;
-                    let src_row = &rest[src_start..src_start + row_stride];
-                    dst_row.copy_from_slice(src_row);
+                .for_each(|(chunk_idx, dst_chunk)| {
+                    let row_base = chunk_idx * ROWS_PER_TASK;
+                    dst_chunk
+                        .chunks_exact_mut(row_stride)
+                        .enumerate()
+                        .for_each(|(dr, dst_row)| {
+                            let idx = row_base + dr;
+                            let y = new_height - bottom + idx;
+                            let src_y = self.map_index(y as isize - top as isize, old_height);
+                            let src_start = (src_y + top) * row_stride;
+                            let src_row = &rest[src_start..src_start + row_stride];
+                            dst_row.copy_from_slice(src_row);
+                        });
                 });
         }
 
-        new_data.par_chunks_exact_mut(row_stride).for_each(|row| {
-            // left
-            for x in 0..left {
-                let src_x = self.map_index(x as isize - left as isize, old_width);
-                let src_idx = (left + src_x) * C;
-                let dst_idx = x * C;
-                row.copy_within(src_idx..src_idx + C, dst_idx);
-            }
+        new_data.par_chunks_mut(chunk_elems).for_each(|dst_chunk| {
+            dst_chunk.chunks_exact_mut(row_stride).for_each(|row| {
+                // left
+                for x in 0..left {
+                    let src_x = self.map_index(x as isize - left as isize, old_width);
+                    let src_idx = (left + src_x) * C;
+                    let dst_idx = x * C;
+                    row.copy_within(src_idx..src_idx + C, dst_idx);
+                }
 
-            // right
-            for x in (new_width - right)..new_width {
-                let src_x = self.map_index(x as isize - left as isize, old_width);
-                let src_idx = (left + src_x) * C;
-                let dst_idx = x * C;
-                row.copy_within(src_idx..src_idx + C, dst_idx);
-            }
+                // right
+                for x in (new_width - right)..new_width {
+                    let src_x = self.map_index(x as isize - left as isize, old_width);
+                    let src_idx = (left + src_x) * C;
+                    let dst_idx = x * C;
+                    row.copy_within(src_idx..src_idx + C, dst_idx);
+                }
+            });
         });
     }
 }

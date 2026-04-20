@@ -139,12 +139,22 @@ where
             copy_row(&src_slice[offset..offset + dst_row_len], dst_row);
         }
     } else {
+        // 16-row chunks: O(cores) tasks instead of O(rows). Crop is pure
+        // memcpy, so per-row task overhead would otherwise dominate.
+        const ROWS_PER_TASK: usize = 16;
         dst.as_slice_mut()
-            .par_chunks_exact_mut(dst_row_len)
+            .par_chunks_mut(ROWS_PER_TASK * dst_row_len)
             .enumerate()
-            .for_each(|(i, dst_row)| {
-                let offset = (y + i) * src_cols * C + x * C;
-                copy_row(&src_slice[offset..offset + dst_row_len], dst_row);
+            .for_each(|(chunk_idx, dst_chunk)| {
+                let row_base = chunk_idx * ROWS_PER_TASK;
+                dst_chunk
+                    .chunks_exact_mut(dst_row_len)
+                    .enumerate()
+                    .for_each(|(dr, dst_row)| {
+                        let i = row_base + dr;
+                        let offset = (y + i) * src_cols * C + x * C;
+                        copy_row(&src_slice[offset..offset + dst_row_len], dst_row);
+                    });
             });
     }
 
