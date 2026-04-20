@@ -211,10 +211,41 @@ fn bench_sparse_noise(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_real_data(c: &mut Criterion) {
+    let mut group = c.benchmark_group("contours_real_data");
+
+    for img_name in ["dog.jpeg", "apriltags_tag36h11.jpg"].iter() {
+        let img_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../tests/data/{img_name}"));
+        let img_rgb8 = kornia_io::functional::read_image_any_rgb8(&img_path)
+            .unwrap_or_else(|_| panic!("Failed to load {img_name}"));
+
+        let new_size = img_rgb8.size();
+        let width = new_size.width;
+        let height = new_size.height;
+
+        let mut img_gray8 = Image::from_size_val(new_size, 0u8, CpuAllocator).unwrap();
+        kornia_imgproc::color::gray_from_rgb_u8(&img_rgb8, &mut img_gray8).unwrap();
+
+        let mut img_bin8 = Image::from_size_val(new_size, 0u8, CpuAllocator).unwrap();
+        kornia_imgproc::threshold::threshold_binary(&img_gray8, &mut img_bin8, 127, 255).unwrap();
+
+        group.throughput(Throughput::Elements((width * height) as u64));
+        let parameter_string = format!("{img_name}_{width}x{height}");
+
+        let cv_mat = opencv_mat(width, height, img_bin8.as_slice());
+
+        register_variants(&mut group, &parameter_string, &img_bin8, &cv_mat);
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_filled_square,
     bench_hollow_square,
-    bench_sparse_noise
+    bench_sparse_noise,
+    bench_real_data
 );
 criterion_main!(benches);

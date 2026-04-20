@@ -80,7 +80,7 @@ kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }
 num-traits = { workspace = true }
-opencv = { version = "0.98", optional = true }
+opencv = { version = "0.92", optional = true }
 rayon = { workspace = true }
 thiserror = { workspace = true }
 wide = "1.1.1"
