@@ -89,18 +89,8 @@ impl Paligemma {
     ///
     /// # Returns
     pub fn new(config: PaligemmaConfig) -> Result<Self, PaligemmaError> {
-        #[cfg(feature = "cuda")]
-        let (device, dtype) = match Device::cuda_if_available(0) {
-            Ok(device) => (device, DType::BF16),
-            Err(e) => {
-                log::warn!("CUDA not available, defaulting to CPU: {e}");
-                (Device::Cpu, DType::F32)
-            }
-        };
-
-        #[cfg(not(feature = "cuda"))]
-        let (device, dtype) = (Device::Cpu, DType::F32);
-
+        use crate::device::get_device_and_dtype;
+        let (device, dtype) = get_device_and_dtype();
         let (model, tokenizer) = Self::load_model(dtype, &device)?;
         let img_buf = Image::from_size_val([224, 224].into(), 0, CpuAllocator)?;
         let pipeline = TextGeneration::new(model, tokenizer, device, config.into());
