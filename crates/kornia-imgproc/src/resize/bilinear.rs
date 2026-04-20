@@ -65,10 +65,8 @@ pub(super) fn resize_bilinear_u8_nch<const C: usize>(
                     let fy = ((f * SCALE as f64).round() as u32).min(SCALE);
                     let fy1 = SCALE - fy;
 
-                    let row0 =
-                        &src[(yi as usize) * src_stride..(yi as usize + 1) * src_stride];
-                    let row1 = &src
-                        [(yi as usize + 1) * src_stride..(yi as usize + 2) * src_stride];
+                    let row0 = &src[(yi as usize) * src_stride..(yi as usize + 1) * src_stride];
+                    let row1 = &src[(yi as usize + 1) * src_stride..(yi as usize + 2) * src_stride];
 
                     let round = 1u64 << 27;
                     for x in 0..dst_w {
@@ -83,8 +81,7 @@ pub(super) fn resize_bilinear_u8_nch<const C: usize>(
                             let p11 = row1[off + C + ch] as u64;
                             let top = p00 * fx1 + p01 * fx;
                             let bot = p10 * fx1 + p11 * fx;
-                            let v = ((top * fy1 as u64 + bot * fy as u64 + round) >> 28)
-                                as u8;
+                            let v = ((top * fy1 as u64 + bot * fy as u64 + round) >> 28) as u8;
                             dst_row[x * C + ch] = v;
                         }
                     }

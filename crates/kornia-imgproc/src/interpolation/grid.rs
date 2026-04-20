@@ -61,8 +61,8 @@ where
                 .try_for_each(|(dr, (row_x, row_y))| {
                     let v = row_base + dr;
                     for (u, (x, y)) in row_x.iter_mut().zip(row_y.iter_mut()).enumerate() {
-                        let (x_out, y_out) =
-                            f(u, v).map_err(|e| TensorError::UnsupportedOperation(e.to_string()))?;
+                        let (x_out, y_out) = f(u, v)
+                            .map_err(|e| TensorError::UnsupportedOperation(e.to_string()))?;
                         *x = x_out;
                         *y = y_out;
                     }

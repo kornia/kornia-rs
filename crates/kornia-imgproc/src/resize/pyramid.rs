@@ -98,8 +98,7 @@ pub(super) fn pyrup_2x_rgb_u8(src: &[u8], dst: &mut [u8], src_w: usize, src_h: u
                     src_w,
                 );
 
-                let (dst_top, dst_bot) = inner_chunk
-                    [i * 2 * dst_stride..(i + 1) * 2 * dst_stride]
+                let (dst_top, dst_bot) = inner_chunk[i * 2 * dst_stride..(i + 1) * 2 * dst_stride]
                     .split_at_mut(dst_stride);
 
                 // dst row 2I+1 = 0.75·h_a + 0.25·h_b

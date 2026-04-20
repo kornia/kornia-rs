@@ -182,9 +182,7 @@ pub fn warp_perspective_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocato
                     let xf = nx * inv_nd;
                     let yf = ny * inv_nd;
                     let dst_pixel = &mut dst_row[x * C..x * C + C];
-                    bilinear_sample_u8::<C>(
-                        src_slice, src_w, src_h, src_stride, xf, yf, dst_pixel,
-                    );
+                    bilinear_sample_u8::<C>(src_slice, src_w, src_h, src_stride, xf, yf, dst_pixel);
                     nx += dnx;
                     ny += dny;
                     nd += dnd;
@@ -240,19 +238,9 @@ pub fn warp_perspective_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocato
             // nx + dnx*x >= 0
             apply_ge(dnx, nx0, &mut lo, &mut hi);
             // nx - src_w*nd + (dnx - src_w*dnd)*x < 0
-            apply_lt(
-                dnx - src_w_f * dnd,
-                nx0 - src_w_f * nd0,
-                &mut lo,
-                &mut hi,
-            );
+            apply_lt(dnx - src_w_f * dnd, nx0 - src_w_f * nd0, &mut lo, &mut hi);
             apply_ge(dny, ny0, &mut lo, &mut hi);
-            apply_lt(
-                dny - src_h_f * dnd,
-                ny0 - src_h_f * nd0,
-                &mut lo,
-                &mut hi,
-            );
+            apply_lt(dny - src_h_f * dnd, ny0 - src_h_f * nd0, &mut lo, &mut hi);
 
             let mut x_lo = lo.ceil().max(0.0) as usize;
             let mut x_hi = hi.ceil().min(dst_w as f32) as usize;
@@ -298,8 +286,8 @@ pub fn warp_perspective_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocato
             // sub-ULP reciprocal-refinement noise).
             if x_safe_lo < x_safe_hi {
                 process_perspective_span::<C>(
-                    src_slice, src_w, src_h, src_stride, dst_row, x_safe_lo, x_safe_hi, nx, ny,
-                    nd, dnx, dny, dnd,
+                    src_slice, src_w, src_h, src_stride, dst_row, x_safe_lo, x_safe_hi, nx, ny, nd,
+                    dnx, dny, dnd,
                 );
             }
 

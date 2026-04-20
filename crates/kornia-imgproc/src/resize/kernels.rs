@@ -608,13 +608,7 @@ pub(super) unsafe fn horizontal_rows_rgb_u8_x4(
 /// Consumes `rows.len()` i16 source rows (from the horizontal pass) weighted by
 /// `w`, produces `n` u8 destination bytes.
 #[inline(always)]
-pub(super) fn vertical_row(
-    rows: &[&[i16]],
-    w: &[i16],
-    dst_row: &mut [u8],
-    n: usize,
-    round2: i32,
-) {
+pub(super) fn vertical_row(rows: &[&[i16]], w: &[i16], dst_row: &mut [u8], n: usize, round2: i32) {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: NEON is architectural on aarch64; kernel reads `rows`/`w` and writes `dst_row`
     // within the bounds enforced by `n` and the calling `resize_separable_u8`.
@@ -640,13 +634,7 @@ fn vertical_row_scalar(rows: &[&[i16]], w: &[i16], dst_row: &mut [u8], n: usize,
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-unsafe fn vertical_row_neon(
-    rows: &[&[i16]],
-    w: &[i16],
-    dst_row: &mut [u8],
-    n: usize,
-    round2: i32,
-) {
+unsafe fn vertical_row_neon(rows: &[&[i16]], w: &[i16], dst_row: &mut [u8], n: usize, round2: i32) {
     use std::arch::aarch64::*;
     let ky = rows.len();
     let round_v = vdupq_n_s32(round2);

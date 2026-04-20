@@ -36,7 +36,10 @@ pub fn par_iter_rows<
     let dst_row_len = C2 * src.cols();
     src.as_slice()
         .par_chunks(ROWS_PER_TASK * src_row_len)
-        .zip(dst.as_slice_mut().par_chunks_mut(ROWS_PER_TASK * dst_row_len))
+        .zip(
+            dst.as_slice_mut()
+                .par_chunks_mut(ROWS_PER_TASK * dst_row_len),
+        )
         .for_each(|(src_chunk, dst_chunk)| {
             src_chunk
                 .chunks_exact(C1)
@@ -67,7 +70,10 @@ pub fn par_iter_rows_val<
     let dst_row_len = C2 * src.cols();
     src.as_slice()
         .par_chunks(ROWS_PER_TASK * src_row_len)
-        .zip(dst.as_slice_mut().par_chunks_mut(ROWS_PER_TASK * dst_row_len))
+        .zip(
+            dst.as_slice_mut()
+                .par_chunks_mut(ROWS_PER_TASK * dst_row_len),
+        )
         .for_each(|(src_chunk, dst_chunk)| {
             src_chunk
                 .iter()
@@ -162,10 +168,12 @@ pub fn par_iter_rows_spatial_mapping<const C: usize, A: ImageAllocator>(
                 .enumerate()
                 .for_each(|(dr, row)| {
                     let r = r_base + dr;
-                    row.chunks_exact_mut(C).enumerate().for_each(|(c, dst_pixel)| {
-                        let (x, y) = map_coord(c, r);
-                        f(x, y, dst_pixel)
-                    });
+                    row.chunks_exact_mut(C)
+                        .enumerate()
+                        .for_each(|(c, dst_pixel)| {
+                            let (x, y) = map_coord(c, r);
+                            f(x, y, dst_pixel)
+                        });
                 });
         });
 }

@@ -64,16 +64,7 @@ fn horizontal_batch<const C: usize>(
         let sy = sy_start + i;
         let src_row = &src[sy * src_stride..(sy + 1) * src_stride];
         let out_row = &mut out[i * hbuf_row_len..(i + 1) * hbuf_row_len];
-        horizontal_row_rgb_u8::<C>(
-            src_row,
-            out_row,
-            dst_w,
-            kx,
-            xsrc,
-            xw,
-            last_sx_safe,
-            round1,
-        );
+        horizontal_row_rgb_u8::<C>(src_row, out_row, dst_w, kx, xsrc, xw, last_sx_safe, round1);
         i += 1;
     }
 }

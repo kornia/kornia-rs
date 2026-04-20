@@ -38,7 +38,11 @@ fn main() {
         *b = (s >> 24) as u8;
     }
     // ImageNet normalization constants folded into scale/offset form.
-    let scale = [1.0 / (0.229 * 255.0), 1.0 / (0.224 * 255.0), 1.0 / (0.225 * 255.0)];
+    let scale = [
+        1.0 / (0.229 * 255.0),
+        1.0 / (0.224 * 255.0),
+        1.0 / (0.225 * 255.0),
+    ];
     let offset = [-0.485 / 0.229, -0.456 / 0.224, -0.406 / 0.225];
 
     let mut dst_vec = vec![0.0f32; npix * 3];
@@ -63,7 +67,10 @@ fn main() {
         }
     }
 
-    println!("Vectorized vs scalar: max |diff| = {:.3e} at index {}", max_abs, max_idx);
+    println!(
+        "Vectorized vs scalar: max |diff| = {:.3e} at index {}",
+        max_abs, max_idx
+    );
     if max_abs < 1e-4 {
         println!("PASS (within FMA rounding tolerance)");
     } else {
