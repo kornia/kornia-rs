@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 
 use kornia_imgproc::resize::{resize_normalize_to_tensor_u8_to_f32, NormalizeParams};
 
-use crate::image::{to_pyerr, PyImage};
+use crate::image::PyImage;
 
 /// Fused resize (2× exact downscale) + per-channel normalize + HWC→CHW layout
 /// convert, all in one NEON pass.
@@ -209,11 +209,4 @@ fn validate_shapes(src_h: usize, src_w: usize, dst_h: usize, dst_w: usize) -> Py
         )));
     }
     Ok(())
-}
-
-// Keep `to_pyerr` in scope so future additions (e.g. fallible variants) don't
-// need to re-import it.
-#[allow(dead_code)]
-fn _keep_import_alive(e: impl std::fmt::Display) -> PyErr {
-    to_pyerr(e)
 }

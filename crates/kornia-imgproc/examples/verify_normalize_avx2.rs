@@ -1,26 +1,12 @@
-//! Cross-arch sanity runner for `normalize_rgb_u8`.
+//! Cross-arch sanity runner for `normalize_rgb_u8`. Reports the dispatched
+//! SIMD path and max-abs-diff vs the scalar reference.
 //!
-//! Built as an example (not a test) to stay outside the dev-dep graph —
-//! that keeps the workspace build from pulling in `criterion`/`alloca`
-//! and their C-toolchain requirement under `qemu-x86_64` emulation.
+//! Built as an example (not a test) to keep `criterion` out of the
+//! cross-compile dep graph under `qemu-x86_64`.
 //!
-//! Run natively on aarch64 or cross under qemu:
-//!
-//! ```sh
-//! cargo run --release -p kornia-imgproc --example verify_normalize_avx2 \
-//!     --target x86_64-unknown-linux-gnu
-//! ```
-//!
-//! Expected output reports which SIMD path the dispatcher selected and
-//! max-abs-diff of the vectorized result vs scalar reference over a
-//! deterministic PRNG-seeded 1000-pixel input.
-//!
-//! qemu caveat: AVX2 TCG emulation landed in qemu 7.2. On Ubuntu 22.04
-//! jammy (`qemu-user-static` is 6.2) `-cpu max` advertises AVX2 to the
-//! feature probe so dispatch selects the AVX2 path, but the actual
-//! `vfmadd` traps with SIGILL. Cross-run under jammy therefore only
-//! verifies compile + link + dispatch-selection; execution correctness
-//! requires qemu ≥ 7.2 or native x86 hardware.
+//! qemu caveat: AVX2 TCG emulation requires qemu ≥ 7.2; under jammy's 6.2
+//! the dispatch selects AVX2 (advertised by `-cpu max`) but `vfmadd` traps
+//! with SIGILL — only compile+link+dispatch-selection is verified there.
 
 use kornia_imgproc::normalize::normalize_rgb_u8;
 use kornia_imgproc::simd::cpu_features;
@@ -58,9 +44,7 @@ fn main() {
     let mut dst_vec = vec![0.0f32; npix * 3];
     normalize_rgb_u8(&src, &mut dst_vec, npix, &scale, &offset);
 
-    // Hand-rolled scalar reference inline (can't call the private
-    // `normalize_rgb_u8_scalar` directly from outside the crate; this is a
-    // literal transcription of that function's body).
+    // Inline scalar reference (the crate-private `_scalar` fn isn't reachable here).
     let mut dst_ref = vec![0.0f32; npix * 3];
     for i in 0..npix {
         let base = i * 3;

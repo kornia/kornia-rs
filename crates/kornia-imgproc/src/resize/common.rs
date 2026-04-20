@@ -1,8 +1,4 @@
 //! Filter kinds and coefficient LUTs shared by bicubic/lanczos resize.
-//!
-//! The Q14 separable pipeline in [`super::separable`] consumes the output of
-//! [`precompute_contribs`] (per-row `(offset, weights, ksize)`) plus the packed
-//! `(xsrc, xw)` LUT produced by [`build_xsrc_lut`] + [`pack_xw_i16`].
 
 /// Which separable kernel to use. `Cubic` is bicubic (a = -0.5), `Lanczos3` is
 /// 3-lobe Lanczos.
