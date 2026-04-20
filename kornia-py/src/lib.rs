@@ -11,6 +11,7 @@ mod icp;
 mod image;
 mod io;
 mod normalize;
+mod orb;
 mod pipeline;
 mod pointcloud;
 mod resize;
@@ -392,6 +393,11 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_submodule(&imgproc_mod)?;
 
+    // Features submodule — feature detectors and descriptors.
+    let features_mod = PyModule::new(py, "features")?;
+    features_mod.add_function(wrap_pyfunction!(orb::orb_detect_and_compute, &features_mod)?)?;
+    m.add_submodule(&features_mod)?;
+
     // Augmentations submodule
     let aug_mod = PyModule::new(py, "augmentations")?;
     aug_mod.add_class::<augmentations::PyColorJitter>()?;
@@ -447,6 +453,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ("kornia_rs.apriltag", &apriltag_mod),
         ("kornia_rs.augmentations", &aug_mod),
         ("kornia_rs.pipeline", &pipeline_mod),
+        ("kornia_rs.features", &features_mod),
     ] {
         modules.set_item(name, submod)?;
     }

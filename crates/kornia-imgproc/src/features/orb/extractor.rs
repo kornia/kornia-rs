@@ -1,13 +1,15 @@
 use kornia_image::{allocator::ImageAllocator, Image, ImageError, ImageSize};
 use kornia_tensor::CpuAllocator;
+use rayon::prelude::*;
 
 use crate::{
     features::{FastDetector, HarrisResponse},
-    filter::gaussian_blur,
-    resize::resize_native,
+    filter::{gaussian_blur, gaussian_blur_u8},
+    interpolation::InterpolationMode,
+    resize::{resize_fast_u8, resize_native},
 };
 
-use super::pattern::{POS0, POS1};
+use super::pattern::{rotated_pattern, N_BUCKETS, POS0, POS1};
 
 /// ORB features extracted from a single frame.
 #[derive(Debug, Clone)]
@@ -405,6 +407,328 @@ impl OrbDetector {
         Ok((descriptors_list, mask_list))
     }
 
+    fn build_pyramid_u8<A: ImageAllocator>(
+        &self,
+        img: &Image<u8, 1, A>,
+    ) -> Result<Vec<Image<u8, 1, CpuAllocator>>, ImageError> {
+        let img = Image::from_size_slice(img.size(), img.as_slice(), CpuAllocator)?;
+
+        let mut pyramid = Vec::with_capacity(self.n_scales);
+        let mut current = img.clone();
+        pyramid.push(current.clone());
+
+        for _ in 1..self.n_scales {
+            let next = pyramid_reduce_u8(&current, self.downscale)?;
+            if next.size() == current.size() {
+                break;
+            }
+            pyramid.push(next.clone());
+            current = next;
+        }
+
+        Ok(pyramid)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn detect_u8_pyramid(
+        &self,
+        pyramid: &[Image<u8, 1, CpuAllocator>],
+    ) -> Result<(Vec<(f32, f32)>, Vec<f32>, Vec<f32>, Vec<f32>), ImageError> {
+        let features_per_level = self.features_per_level();
+        let trace = std::env::var("KORNIA_ORB_TRACE").is_ok();
+
+        const EDGE_THRESHOLD: usize = 19;
+        // Process octaves in parallel: each octave is fully independent.
+        // The inner FAST kernel also uses par_iter over rows, but with the
+        // outer 8-octave par_iter the work-stealing distributes rows across
+        // cores naturally. Attempts at finer chunking (splitting big octaves)
+        // regressed on this hardware due to rayon scheduler overhead.
+        let per_octave: Vec<_> = pyramid
+            .par_iter()
+            .enumerate()
+            .map(|(octave, octave_image)| -> Result<_, ImageError> {
+                let ta = std::time::Instant::now();
+                let mut candidates = crate::features::fast::fast_detect_rows_u8_serial(
+                    octave_image,
+                    self.ini_fast_threshold,
+                    self.fast_n,
+                    EDGE_THRESHOLD,
+                    0..octave_image.height(),
+                );
+
+                // Softer-threshold fallback if initial detection was too sparse.
+                if candidates.len() < 10 {
+                    let low_candidates = crate::features::fast::fast_detect_rows_u8_serial(
+                        octave_image,
+                        self.min_fast_threshold,
+                        self.fast_n,
+                        EDGE_THRESHOLD,
+                        0..octave_image.height(),
+                    );
+                    for cand in low_candidates {
+                        let [r0, c0] = cand.0;
+                        let dominated = candidates.iter().any(|&([r, c], _)| {
+                            let dr = (r as i32 - r0 as i32).abs();
+                            let dc = (c as i32 - c0 as i32).abs();
+                            dr <= 3 && dc <= 3
+                        });
+                        if !dominated {
+                            candidates.push(cand);
+                        }
+                    }
+                }
+
+                let raw_len = candidates.len();
+                if candidates.is_empty() {
+                    return Ok((
+                        Vec::<(f32, f32)>::new(),
+                        Vec::<f32>::new(),
+                        Vec::<f32>::new(),
+                        Vec::<f32>::new(),
+                    ));
+                }
+
+                let nms_cap = self.n_keypoints.saturating_mul(20).max(2048);
+                let mut fast_detector = FastDetector::new(
+                    octave_image.size(),
+                    self.ini_fast_threshold,
+                    self.fast_n,
+                    1,
+                )?;
+                let t_before_nms = std::time::Instant::now();
+                let kp_with_resp = fast_detector.suppress_direct(candidates, nms_cap);
+                let t_after_nms = std::time::Instant::now();
+                if trace {
+                    eprintln!(
+                        "  oct[{:4}x{:4}] fast={:.2} nms={:.2} kp_raw={} kp_filt={}",
+                        octave_image.width(),
+                        octave_image.height(),
+                        (t_before_nms - ta).as_secs_f64() * 1000.0,
+                        (t_after_nms - t_before_nms).as_secs_f64() * 1000.0,
+                        raw_len,
+                        kp_with_resp.len(),
+                    );
+                }
+                if kp_with_resp.is_empty() {
+                    return Ok((
+                        Vec::<(f32, f32)>::new(),
+                        Vec::<f32>::new(),
+                        Vec::<f32>::new(),
+                        Vec::<f32>::new(),
+                    ));
+                }
+                let (keypoints, responses): (Vec<[usize; 2]>, Vec<f32>) =
+                    kp_with_resp.into_iter().unzip();
+
+                let mut candidates: Vec<OrbCandidate> = keypoints
+                    .iter()
+                    .zip(responses.iter())
+                    .map(|(&[r, c], &response)| OrbCandidate {
+                        row: r,
+                        col: c,
+                        response,
+                        angle: 0.0,
+                    })
+                    .collect();
+
+                let target = features_per_level[octave];
+                let cap = (target.saturating_mul(20)).max(512);
+                if candidates.len() > cap {
+                    candidates.select_nth_unstable_by(cap, |a, b| {
+                        b.response
+                            .partial_cmp(&a.response)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    candidates.truncate(cap);
+                }
+
+                let t_before_octree = std::time::Instant::now();
+                let image_f32_size = octave_image.size();
+                let min_x = 19 - 3;
+                let min_y = 19 - 3;
+                let max_x = image_f32_size.width as i32 - 19 + 3;
+                let max_y = image_f32_size.height as i32 - 19 + 3;
+                let distributed =
+                    distribute_octree(&candidates, min_x, max_x, min_y, max_y, target);
+                let t_after_octree = std::time::Instant::now();
+
+                let survivor_positions: Vec<[usize; 2]> =
+                    distributed.iter().map(|c| [c.row, c.col]).collect();
+                // Serial here — the outer pyramid `par_iter` already saturates
+                // all cores. Nested parallelism would oversubscribe and hurt.
+                let survivor_harris: Vec<f32> = survivor_positions
+                    .iter()
+                    .map(|&[r, c]| harris_response_at_u8(octave_image, r, c, self.harris_k))
+                    .collect();
+                let survivor_orientations =
+                    corner_orientations_u8(octave_image, &survivor_positions);
+                let t_after_ori = std::time::Instant::now();
+
+                let scale = self.downscale.powi(octave as i32);
+                let mut kps = Vec::with_capacity(distributed.len());
+                let mut scales = Vec::with_capacity(distributed.len());
+                let mut oris = Vec::with_capacity(distributed.len());
+                let mut resps = Vec::with_capacity(distributed.len());
+                for ((cand, &angle), &harris) in distributed
+                    .iter()
+                    .zip(survivor_orientations.iter())
+                    .zip(survivor_harris.iter())
+                {
+                    kps.push((cand.row as f32 * scale, cand.col as f32 * scale));
+                    oris.push(angle);
+                    scales.push(scale);
+                    resps.push(harris);
+                }
+
+                if trace {
+                    eprintln!(
+                        "  pyramid[{octave}] octree={:.2} ori_post={:.2} survivors={}",
+                        (t_after_octree - t_before_octree).as_secs_f64() * 1000.0,
+                        (t_after_ori - t_after_octree).as_secs_f64() * 1000.0,
+                        distributed.len(),
+                    );
+                }
+
+                Ok((kps, scales, oris, resps))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut keypoints_list = Vec::new();
+        let mut scales_list = Vec::new();
+        let mut orientations_list = Vec::new();
+        let mut responses_list = Vec::new();
+        for (kps, scales, oris, resps) in per_octave {
+            keypoints_list.extend(kps);
+            scales_list.extend(scales);
+            orientations_list.extend(oris);
+            responses_list.extend(resps);
+        }
+
+        Ok((
+            keypoints_list,
+            scales_list,
+            orientations_list,
+            responses_list,
+        ))
+    }
+
+    fn extract_octave_u8<A: ImageAllocator>(
+        &self,
+        octave_image: &Image<u8, 1, A>,
+        keypoints: &[(i32, i32)],
+        orientations: &[f32],
+    ) -> Result<(Vec<[u8; 32]>, Vec<bool>), ImageError> {
+        let mask = mask_border_keypoints_i32(octave_image.size(), keypoints, 20);
+        let filtered_keypoints: Vec<_> = keypoints
+            .iter()
+            .zip(mask.iter())
+            .filter_map(|(kp, &m)| if m { Some(*kp) } else { None })
+            .collect();
+        let filtered_orientations: Vec<f32> = orientations
+            .iter()
+            .zip(mask.iter())
+            .filter_map(|(&o, &m)| if m { Some(o) } else { None })
+            .collect();
+
+        let mut blurred = Image::from_size_val(octave_image.size(), 0u8, CpuAllocator)?;
+        gaussian_blur_u8(octave_image, &mut blurred, (7, 7), (2.0, 2.0))?;
+
+        let descriptors = orb_loop_u8(&blurred, &filtered_keypoints, &filtered_orientations);
+        Ok((descriptors, mask))
+    }
+
+    fn extract_u8_pyramid(
+        &self,
+        pyramid: &[Image<u8, 1, CpuAllocator>],
+        keypoints: &[(f32, f32)],
+        scales: &[f32],
+        orientations: &[f32],
+    ) -> Result<(Vec<[u8; 32]>, Vec<bool>), ImageError> {
+        let mut descriptors_list: Vec<[u8; 32]> = Vec::new();
+        let mut mask_list: Vec<bool> = Vec::new();
+
+        let octaves: Vec<usize> = scales
+            .iter()
+            .map(|&s| (s.ln() / self.downscale.ln()).round() as usize)
+            .collect();
+
+        for (octave, octave_image) in pyramid.iter().enumerate() {
+            let octave_mask: Vec<bool> = octaves.iter().map(|&o| o == octave).collect();
+            let n_in_octave = octave_mask.iter().filter(|&&b| b).count();
+            if n_in_octave == 0 {
+                continue;
+            }
+
+            let mut octave_keypoints = Vec::with_capacity(n_in_octave);
+            let mut octave_orientations = Vec::with_capacity(n_in_octave);
+            for ((&(y, x), &ori), &is_in_octave) in
+                keypoints.iter().zip(orientations).zip(&octave_mask)
+            {
+                if is_in_octave {
+                    let scale = self.downscale.powi(octave as i32);
+                    octave_keypoints.push(((y / scale).round() as i32, (x / scale).round() as i32));
+                    octave_orientations.push(ori);
+                }
+            }
+
+            let (descriptors, mask) =
+                self.extract_octave_u8(octave_image, &octave_keypoints, &octave_orientations)?;
+            descriptors_list.extend(descriptors);
+            mask_list.extend(mask);
+        }
+
+        Ok((descriptors_list, mask_list))
+    }
+
+    /// Detect keypoints and compute descriptors on a u8 grayscale image.
+    ///
+    /// u8-native pipeline: the image stays u8 through pyramid build, FAST
+    /// detection, Harris scoring, orientation, and BRIEF. Matches OpenCV's
+    /// entry-point shape (u8 in, packed descriptors out).
+    pub fn detect_and_extract_u8<A: ImageAllocator>(
+        &self,
+        src: &Image<u8, 1, A>,
+    ) -> Result<OrbFeatures, ImageError> {
+        let trace = std::env::var("KORNIA_ORB_TRACE").is_ok();
+        let t0 = std::time::Instant::now();
+        let pyramid = self.build_pyramid_u8(src)?;
+        let t1 = std::time::Instant::now();
+        let (kps_rc, scales, orientations, _responses) = self.detect_u8_pyramid(&pyramid)?;
+        let t2 = std::time::Instant::now();
+        let (descriptors, mask) =
+            self.extract_u8_pyramid(&pyramid, &kps_rc, &scales, &orientations)?;
+        let t3 = std::time::Instant::now();
+        if trace {
+            eprintln!(
+                "orb_trace: pyramid={:.2}ms detect={:.2}ms extract={:.2}ms kps={}",
+                (t1 - t0).as_secs_f64() * 1000.0,
+                (t2 - t1).as_secs_f64() * 1000.0,
+                (t3 - t2).as_secs_f64() * 1000.0,
+                kps_rc.len(),
+            );
+        }
+
+        let mut keypoints_xy = Vec::with_capacity(descriptors.len());
+        let mut valid_orientations = Vec::with_capacity(descriptors.len());
+        let mut valid_descriptors = Vec::with_capacity(descriptors.len());
+
+        let mut desc_idx = 0;
+        for (i, ((row, col), &ori)) in kps_rc.iter().zip(orientations.iter()).enumerate() {
+            if mask.get(i).copied().unwrap_or(false) {
+                keypoints_xy.push([*col, *row]);
+                valid_orientations.push(ori);
+                valid_descriptors.push(descriptors[desc_idx]);
+                desc_idx += 1;
+            }
+        }
+
+        Ok(OrbFeatures {
+            keypoints_xy,
+            orientations: valid_orientations,
+            descriptors: valid_descriptors,
+        })
+    }
+
     /// Detect keypoints and compute descriptors in one call.
     ///
     /// Equivalent to calling [`detect`](Self::detect) then [`extract`](Self::extract),
@@ -439,6 +763,28 @@ impl OrbDetector {
             descriptors: valid_descriptors,
         })
     }
+}
+
+fn pyramid_reduce_u8<A: ImageAllocator>(
+    img: &Image<u8, 1, A>,
+    downscale: f32,
+) -> Result<Image<u8, 1, CpuAllocator>, ImageError> {
+    let sigma = 2.0 * downscale / 6.0;
+    let mut smoothed = Image::from_size_val(img.size(), 0u8, CpuAllocator)?;
+    gaussian_blur_u8(img, &mut smoothed, (0, 0), (sigma, 0.0))?;
+
+    let new_h = (smoothed.height() as f32 / downscale).ceil() as usize;
+    let new_w = (smoothed.width() as f32 / downscale).ceil() as usize;
+    let mut resized = Image::from_size_val(
+        ImageSize {
+            width: new_w,
+            height: new_h,
+        },
+        0u8,
+        CpuAllocator,
+    )?;
+    resize_fast_u8(&smoothed, &mut resized, InterpolationMode::Bilinear)?;
+    Ok(resized)
 }
 
 fn pyramid_reduce<A: ImageAllocator>(
@@ -657,6 +1003,103 @@ fn mask_border_keypoints_i32(
         .collect()
 }
 
+/// Per-keypoint Harris response on a u8 image.
+///
+/// Matches the full-image `HarrisResponse::compute_u8` pixel-for-pixel at (r0, c0):
+/// 3×3 Sobel at each position in a 3×3 neighborhood around (r0, c0), then sum
+/// dx², dy², dx·dy over those 9 positions — requires a 5×5 input window. Caller
+/// guarantees (r0, c0) is ≥ `EDGE_THRESHOLD` from every border.
+fn harris_response_at_u8<A: ImageAllocator>(
+    src: &Image<u8, 1, A>,
+    r0: usize,
+    c0: usize,
+    k: f32,
+) -> f32 {
+    let cols = src.cols();
+    let src_data = src.as_slice();
+    let mut m11 = 0f32;
+    let mut m22 = 0f32;
+    let mut m12 = 0f32;
+
+    let base = r0 * cols + c0;
+    // Offsets into the 3×3 neighborhood of (r0, c0): the positions at which
+    // we evaluate Sobel and accumulate squared gradients.
+    let neighbor_offsets = [
+        -(cols as isize) - 1,
+        -(cols as isize),
+        -(cols as isize) + 1,
+        -1,
+        0,
+        1,
+        (cols as isize) - 1,
+        cols as isize,
+        (cols as isize) + 1,
+    ];
+
+    for &off in &neighbor_offsets {
+        let idx = (base as isize + off) as usize;
+        let prev_row = idx - cols;
+        let next_row = idx + cols;
+        unsafe {
+            let v11 = *src_data.get_unchecked(prev_row - 1) as f32;
+            let v12 = *src_data.get_unchecked(prev_row) as f32;
+            let v13 = *src_data.get_unchecked(prev_row + 1) as f32;
+            let v21 = *src_data.get_unchecked(idx - 1) as f32;
+            let v23 = *src_data.get_unchecked(idx + 1) as f32;
+            let v31 = *src_data.get_unchecked(next_row - 1) as f32;
+            let v32 = *src_data.get_unchecked(next_row) as f32;
+            let v33 = *src_data.get_unchecked(next_row + 1) as f32;
+
+            let dx = (-v33 + v31 - 2.0 * v23 + 2.0 * v21 - v13 + v11) * 0.125;
+            let dy = (-v33 - 2.0 * v32 - v31 + v13 + 2.0 * v12 + v11) * 0.125;
+            m11 += dx * dx;
+            m22 += dy * dy;
+            m12 += dx * dy;
+        }
+    }
+
+    let det = m11 * m22 - m12 * m12;
+    let trace = m11 + m22;
+    (det - k * trace * trace).max(0.0)
+}
+
+fn corner_orientations_u8<A: ImageAllocator>(
+    src: &Image<u8, 1, A>,
+    corners: &[[usize; 2]],
+) -> Vec<f32> {
+    // Caller must have already filtered keypoints by border distance ≥ 15, so
+    // every (dr, dc) with |dr|, |dc| ≤ 15 is a valid image coordinate.
+    const HALF: i32 = 15;
+    const RADIUS2: i32 = HALF * HALF;
+
+    let cols = src.cols();
+    let src_slice = src.as_slice();
+
+    corners
+        .par_iter()
+        .map(|&[r0, c0]| {
+            let mut m01: i32 = 0;
+            let mut m10: i32 = 0;
+
+            for dr in -HALF..=HALF {
+                let mut m01_tmp: i32 = 0;
+                let row_base = (r0 as isize + dr as isize) as usize * cols + c0;
+                for dc in -HALF..=HALF {
+                    if dr * dr + dc * dc > RADIUS2 {
+                        continue;
+                    }
+                    let idx = (row_base as isize + dc as isize) as usize;
+                    let px = unsafe { *src_slice.get_unchecked(idx) } as i32;
+                    m10 += px * dc;
+                    m01_tmp += px;
+                }
+                m01 += m01_tmp * dr;
+            }
+            (m01 as f32).atan2(m10 as f32)
+        })
+        .collect()
+}
+
 fn corner_orientations<A: ImageAllocator>(
     src: &Image<f32, 1, A>,
     corners: &[[usize; 2]],
@@ -702,6 +1145,59 @@ fn corner_orientations<A: ImageAllocator>(
     }
 
     orientations
+}
+
+fn orb_loop_u8<A: ImageAllocator>(
+    src: &Image<u8, 1, A>,
+    keypoints: &[(i32, i32)],
+    orientation: &[f32],
+) -> Vec<[u8; 32]> {
+    let cols = src.cols();
+    let src_data = src.as_slice();
+    let table = rotated_pattern();
+    let inv_bucket = (N_BUCKETS as f32) / std::f32::consts::TAU;
+
+    keypoints
+        .par_iter()
+        .zip(orientation.par_iter())
+        .map(|(&(kr, kc), &angle)| {
+            let mut desc = [0u8; 32];
+            // atan2 returns [-π, π]; normalize to [0, 2π) then to an integer bucket.
+            let mut normalized = angle;
+            if normalized < 0.0 {
+                normalized += std::f32::consts::TAU;
+            }
+            let mut bucket = (normalized * inv_bucket).round() as usize;
+            if bucket >= N_BUCKETS {
+                bucket -= N_BUCKETS;
+            }
+            let row = &table[bucket];
+            let base = (kr as isize) * (cols as isize) + (kc as isize);
+
+            // Border mask at distance 20 guarantees all rotated offsets (≤ 18)
+            // land inside the image, so no per-bit bounds check is needed.
+            for (byte_idx, byte_out) in desc.iter_mut().enumerate() {
+                let mut byte_val = 0u8;
+                let pair_base = byte_idx * 8;
+                for bit_idx in 0..8 {
+                    let pair = row[pair_base + bit_idx];
+                    let off0 =
+                        base + (pair[0] as isize) * (cols as isize) + (pair[1] as isize);
+                    let off1 =
+                        base + (pair[2] as isize) * (cols as isize) + (pair[3] as isize);
+                    unsafe {
+                        let v0 = *src_data.get_unchecked(off0 as usize);
+                        let v1 = *src_data.get_unchecked(off1 as usize);
+                        if v0 < v1 {
+                            byte_val |= 1 << bit_idx;
+                        }
+                    }
+                }
+                *byte_out = byte_val;
+            }
+            desc
+        })
+        .collect()
 }
 
 /// Compute ORB descriptors packed into 32 bytes (256 bits) per keypoint.
