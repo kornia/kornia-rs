@@ -66,7 +66,12 @@ fn copy_row<T: Copy>(src_row: &[T], dst_row: &mut [T]) {
 
     #[cfg(target_arch = "aarch64")]
     {
-        if std::mem::size_of::<T>() == 1 && dst_row.len() >= 128 {
+        // The NEON path issues a `prfm pldl1strm, [src, #2048]` hint tuned
+        // for long contiguous reads. When the cropped row is under ~4KB,
+        // that offset overshoots the row boundary into unrelated pixels
+        // (next row sits at src_stride, not +2048), polluting L1 for no
+        // gain. Let LLVM's `copy_from_slice` memcpy handle small rows.
+        if std::mem::size_of::<T>() == 1 && dst_row.len() >= 4096 {
             // SAFETY: src/dst are distinct slices of equal length; T is 1 byte.
             unsafe {
                 copy_row_neon(
