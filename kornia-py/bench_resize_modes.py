@@ -19,7 +19,11 @@ modes = [
 
 for (h, w) in [(480, 640), (1080, 1920)]:
     data = np.random.randint(0, 256, (h, w, 3), dtype=np.uint8)
-    for tw, th, desc in [(w // 2, h // 2, "0.5x"), (224, 224, "224²")]:
+    for tw, th, desc in [
+        (w // 2, h // 2, "0.5x"),
+        (224, 224, "224²"),
+        (w * 2, h * 2, "2x up"),
+    ]:
         print(f"\n{w}x{h} → {tw}x{th} ({desc})")
         for name, kmode, cvmode in modes:
             k = bench(lambda: K.imgproc.resize(data, (th, tw), kmode, antialias=False))
