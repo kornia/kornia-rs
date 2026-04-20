@@ -57,6 +57,15 @@ pub mod resize;
 /// operations to threshold images.
 pub mod threshold;
 
+/// SIMD-accelerated image processing backend (proof-of-concept).
+///
+/// Gated by the default-on `simd` cargo feature. Provides hand-vectorized
+/// variants of selected scalar ops (`color::gray_from_rgb_u8`,
+/// `color::gray_from_rgb`, `threshold::threshold_binary`) built on the `wide`
+/// crate for portable SIMD. See `simd::gray_from_rgb_u8` etc. for entry points.
+#[cfg(feature = "simd")]
+pub mod simd;
+
 /// image geometric transformations module.
 pub mod warp;
 

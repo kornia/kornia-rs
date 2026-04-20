@@ -60,6 +60,10 @@ name = "bench_morphology"
 
 [[bench]]
 harness = false
+name = "bench_threshold"
+
+[[bench]]
+harness = false
 name = "bench_distance_transform"
 required-features = ["opencv_bench"]
 
@@ -94,4 +98,6 @@ ndarray = { version = "0.15", features = ["rayon"] }
 rand = { workspace = true }
 
 [features]
+default = ["simd"]
 opencv_bench = ["dep:opencv"]
+simd = []
