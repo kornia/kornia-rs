@@ -406,7 +406,7 @@ fn fast_detect_rows_u8_impl<A: ImageAllocator>(
             let mut scratch = [0f32; 16];
             unsafe {
                 while x + 16 <= col_end {
-                    fast_block_neon_16(
+                    let mut mask = fast_block_neon_16(
                         src_slice,
                         row_base + x,
                         &ring,
@@ -414,11 +414,13 @@ fn fast_detect_rows_u8_impl<A: ImageAllocator>(
                         n as u8,
                         scratch.as_mut_ptr(),
                     );
-                    for i in 0..16 {
-                        let r = scratch[i];
-                        if r > 0.0 {
-                            local.push(([y, x + i], r));
-                        }
+                    // Iterate only set bits via ctz — O(popcount) instead of
+                    // O(16) per block. Big win in dense-corner regions where
+                    // ~20% of pixels are FAST candidates.
+                    while mask != 0 {
+                        let i = mask.trailing_zeros() as usize;
+                        local.push(([y, x + i], scratch[i]));
+                        mask &= mask - 1;
                     }
                     x += 16;
                 }
@@ -528,6 +530,10 @@ fn fast_score_scalar(
 /// recurrence `run = (run + 1) & is_bright` (or dark), and tracks per-lane max
 /// via `vmaxq_u8`. A lane is a corner iff `max >= n` for either side; response
 /// is `Σ|ring - center| / 255`, masked to 0 where the arc check fails.
+///
+/// Returns a 16-bit mask with bit `i` set iff lane `i` is a corner — lets the
+/// caller iterate only surviving lanes via `trailing_zeros` instead of a fixed
+/// 16-iteration branch chain.
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn fast_block_neon_16(
@@ -537,7 +543,7 @@ unsafe fn fast_block_neon_16(
     threshold_u8: u8,
     n: u8,
     out_ptr: *mut f32,
-) {
+) -> u16 {
     use std::arch::aarch64::*;
 
     let base = src_slice.as_ptr().add(center_ix);
@@ -570,13 +576,8 @@ unsafe fn fast_block_neon_16(
     let any_pass = vorrq_u8(vcgeq_u8(b_count, min_card_v), vcgeq_u8(d_count, min_card_v));
 
     if vmaxvq_u8(any_pass) == 0 {
-        // All 16 lanes fail cardinal check → all zero.
-        let zero = vdupq_n_f32(0.0);
-        vst1q_f32(out_ptr, zero);
-        vst1q_f32(out_ptr.add(4), zero);
-        vst1q_f32(out_ptr.add(8), zero);
-        vst1q_f32(out_ptr.add(12), zero);
-        return;
+        // All 16 lanes fail cardinal check → mask = 0. Scores irrelevant.
+        return 0;
     }
 
     let one_v = vdupq_n_u8(1);
@@ -610,6 +611,16 @@ unsafe fn fast_block_neon_16(
     let n_v = vdupq_n_u8(n);
     let pass = vorrq_u8(vcgeq_u8(bright_max, n_v), vcgeq_u8(dark_max, n_v));
 
+    // Extract a 16-bit pass-mask from `pass` (uint8x16_t with 0x00 or 0xFF per
+    // byte). Multiply each byte by its bit-weight (1,2,4,...,128) and sum the
+    // low/high halves with vaddv_u8 — each half produces an 8-bit byte, which
+    // concatenate to the full 16-bit mask.
+    let weights = vld1q_u8(BIT_WEIGHTS.as_ptr());
+    let masked = vandq_u8(pass, weights);
+    let lo_mask = vaddv_u8(vget_low_u8(masked)) as u16;
+    let hi_mask = vaddv_u8(vget_high_u8(masked)) as u16;
+    let mask = (hi_mask << 8) | lo_mask;
+
     // Expand pass (u8, 0/0xFF per lane) to u16 (0/0xFFFF) via signed extension.
     let pass_lo_u16 =
         vreinterpretq_u16_s16(vmovl_s8(vreinterpret_s8_u8(vget_low_u8(pass))));
@@ -629,7 +640,12 @@ unsafe fn fast_block_neon_16(
     vst1q_f32(out_ptr.add(4), f1);
     vst1q_f32(out_ptr.add(8), f2);
     vst1q_f32(out_ptr.add(12), f3);
+
+    mask
 }
+
+#[cfg(target_arch = "aarch64")]
+static BIT_WEIGHTS: [u8; 16] = [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
 
 fn corner_fast_response(
     curr_pixel: f32,
