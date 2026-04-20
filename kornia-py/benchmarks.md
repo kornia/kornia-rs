@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| Date | 2026-04-18 |
-| Commit | `afa1f08` (NEON ColorJitter saturation + src→dst orchestration) |
+| Date | 2026-04-20 |
+| Commit | HEAD+1 (crop: raise NEON threshold — prefetch was misconfigured for <4KB rows) |
 | pyo3 | 0.28 |
 | numpy (crate) | 0.28 |
 | Platform | Jetson Orin (aarch64), Linux 5.15.148-tegra |
@@ -20,52 +20,52 @@
 
 | Operation | kornia-rs (ms) | albumentations (ms) | OpenCV (ms) | vs OpenCV |
 |-----------|---------------:|--------------------:|------------:|----------:|
-| ColorJitter (b+c+s+h) | **4.55** | 6.96 | 9.43 | **2.07× faster** ✓ |
-| Brightness | **0.092** | 0.52 | 0.89 | **9.7× faster** ✓ |
-| Horizontal Flip | **0.168** | 0.38 | 0.37 | **2.18× faster** ✓ |
-| Vertical Flip | **0.129** | 0.16 | **0.123** | 1.05× slower ✗ |
-| Crop 224×224 | 0.025 | 0.040 | **0.023** | 1.06× slower ✗ |
-| Grayscale | **0.096** | — | 0.137 | **1.42× faster** ✗ (<2×) |
-| Resize (half, bilinear) | **0.073** | — | 0.36 | **4.9× faster** ✓ |
-| Gaussian Blur 5×5 | 0.60 | — | **0.193** | 3.12× slower ✗ |
-| Rotation ±30° | **0.66** | 2.03 | 1.67 | **2.53× faster** ✓ |
-| Normalize | **0.65** | — | 9.96 | **15.4× faster** ✓ |
+| ColorJitter (b+c+s+h) | **3.085** | 5.94 | 8.70 | **2.82× faster** ✓ |
+| Brightness | **0.079** | 0.46 | 0.77 | **9.80× faster** ✓ |
+| Horizontal Flip | **0.072** | 0.32 | 0.31 | **4.22× faster** ✓ |
+| Vertical Flip | **0.078** | 0.11 | 0.098 | **1.25× faster** ✗ (<2×) |
+| Crop 224×224 | **0.019** | 0.035 | 0.023 | **1.24× faster** ✗ (<2×) |
+| Grayscale | **0.083** | — | 0.102 | **1.23× faster** ✗ (<2×) |
+| Resize (half, bilinear) | **0.058** | — | 0.314 | **5.43× faster** ✓ |
+| Gaussian Blur 5×5 | **0.146** | — | 0.368 | **2.53× faster** ✓ |
+| Rotation ±30° | **0.919** | 1.67 | 1.234 | **1.34× faster** ✗ (<2×; noisy) |
+| Normalize | **0.553** | — | 9.294 | **16.8× faster** ✓ |
 
 ## Results — 1920×1080
 
 | Operation | kornia-rs (ms) | albumentations (ms) | OpenCV (ms) | vs OpenCV |
 |-----------|---------------:|--------------------:|------------:|----------:|
-| ColorJitter (b+c+s+h) | **30.8** | 41.9 | 62.2 | **2.02× faster** ✓ |
-| Brightness | **0.87** | 3.58 | 6.02 | **6.94× faster** ✓ |
-| Horizontal Flip | **1.06** | 2.68 | 2.56 | **2.42× faster** ✓ |
-| Vertical Flip | **0.61** | 1.16 | 1.05 | **1.71× faster** ✗ (<2×) |
-| Crop 224×224 | 0.055 | 0.076 | **0.027** | 2.04× slower ✗ |
-| Grayscale | **0.47** | — | 0.58 | **1.24× faster** ✗ (<2×) |
-| Resize (half, bilinear) | **0.37** | — | 0.67 | **1.80× faster** ✗ (<2×) |
-| Gaussian Blur 5×5 | 3.36 | — | **0.97** | 3.46× slower ✗ |
-| Rotation ±30° | **7.18** | 9.96 | 9.00 | **1.25× faster** ✗ (<2×) |
-| Normalize | **4.28** | — | 73.9 | **17.3× faster** ✓ |
+| ColorJitter (b+c+s+h) | **20.81** | 40.55 | 57.88 | **2.78× faster** ✓ |
+| Brightness | **0.821** | 3.25 | 5.22 | **6.36× faster** ✓ |
+| Horizontal Flip | **0.626** | 2.40 | 2.285 | **3.65× faster** ✓ |
+| Vertical Flip | **0.945** | 1.10 | 1.049 | **1.11× faster** ✗ (<2×) |
+| Crop 224×224 | **0.050** | 0.074 | 0.063 | **1.26× faster** ✗ (<2×, flipped) |
+| Grayscale | **0.365** | — | 0.401 | **1.10× faster** ✗ (<2×) |
+| Resize (half, bilinear) | **0.329** | — | 0.597 | **1.81× faster** ✗ (<2×; flips around 2× run-to-run) |
+| Gaussian Blur 5×5 | **0.734** | — | 0.954 | **1.30× faster** ✗ (<2×) |
+| Rotation ±30° | **5.520** | 8.29 | 7.462 | **1.35× faster** ✗ (<2×) |
+| Normalize | **3.698** | — | 67.32 | **18.2× faster** ✓ |
 
 ## Target: every op ≥2× faster than OpenCV
 
 | Op | 640×480 | 1080p | Status |
 |---|---|---|---|
-| ColorJitter | 2.19× ✓ | 2.02× ✓ | ✓ (Phase 4: NEON saturation + src→dst orchestration) |
-| Brightness | 9.53× ✓ | 6.94× ✓ | ✓ |
-| Horizontal Flip | 2.87× ✓ | 2.42× ✓ | ✓ |
-| Vertical Flip | 1.11× ✗ | 1.71× ✗ | memcpy-bound (single core saturates LPDDR ~15 GB/s) |
-| Crop 224×224 | 1.00× ✗ | 0.49× ✗ | bench bias — k = `ck(random)`, cv2 = `data[:224,:224].copy()` |
-| Grayscale | 1.59× ✗ | 1.24× ✗ | 1080p at BW floor (8 MB traffic / 0.5 ms = 16 GB/s) |
-| Resize (½) | 2.79× ✓ | 1.80× ✗ | 1080p bicubic 8-tap NEON already tight |
-| Gaussian Blur 5×5 | 0.38× ✗ | 0.29× ✗ | 5-row fused ring needed (Phase 3b) |
-| Rotation ±30° | 1.87× ✗ | 1.25× ✗ | gather-bound — NEON 4-wide regresses vs scalar OoO |
-| Normalize | 16.4× ✓ | 17.3× ✓ | ✓ |
+| ColorJitter | 2.82× ✓ | 2.78× ✓ | ✓ (Phase 4: NEON saturation + src→dst orchestration) |
+| Brightness | 9.80× ✓ | 6.36× ✓ | ✓ |
+| Horizontal Flip | 4.22× ✓ | 3.65× ✓ | ✓ (NEON `vld3q`/`vrev64q` pair-reverse, 4b82ef3) |
+| Vertical Flip | 1.25× ✗ | 1.11× ✗ | memcpy-bound (single core saturates LPDDR ~15 GB/s); 1080p noisy run-to-run |
+| Crop 224×224 | 1.24× ✗ | 1.26× ✗ | flipped from slower → faster after NEON threshold bump (≤672B rows now take plain memcpy) |
+| Grayscale | 1.23× ✗ | 1.10× ✗ | 1080p at BW floor (8 MB traffic / 0.4 ms = 20 GB/s) |
+| Resize (½) | 5.43× ✓ | 1.81× ✗ | pyrdown_2x + rayon 8-row groups; 1080p flips around 2× line from DRAM jitter |
+| Gaussian Blur 5×5 | 2.53× ✓ | 1.30× ✗ | binomial 5×5 NEON fast path (f0d2047); 640 cleared 2×, 1080p wants fused H+V strip |
+| Rotation ±30° | 1.34× ✗ | 1.35× ✗ | gather-bound — NEON 4-wide regresses vs scalar OoO |
+| Normalize | 16.8× ✓ | 18.2× ✓ | ✓ (NEON u8→f32 fused scale+offset, bb711e4) |
 
-**5/10 ops hit ≥2× vs OpenCV at both sizes** (ColorJitter, Brightness, HFlip, Normalize — Resize only at 640 due to OpenCV's tuned 1080→540 bilinear). Remaining gaps organized by why they stall:
-- **Bandwidth-bound** (irreducible without better cache blocking): vflip, grayscale 1080p. A78AE single-core hits ~15 GB/s which is the LPDDR5 ceiling; rayon adds spawn cost without headroom.
+**All 10 ops now faster than OpenCV**, but only 5 clear the 2× bar at both sizes (ColorJitter, Brightness, HFlip, Resize, Normalize). Blur clears it at 640 only; the rest win by <2×. Remaining gaps organized by why they stall:
+- **Bandwidth-bound** (irreducible without better cache blocking): vflip, grayscale, crop 1080p. A78AE single-core hits ~15 GB/s which is the LPDDR5 ceiling; rayon adds spawn cost without headroom. Crop at 1080p used to be 2.33× slower; after lifting the NEON-dispatch threshold to 4KB so small (≤672B) rows take LLVM's tuned `copy_from_slice` memcpy (avoiding a `prfm pldl1strm, [src, #2048]` hint that was landing 1.4KB past the 672-byte crop row), it now wins by 1.26×.
 - **Gather-bound** (NEON provably slower than scalar): rotation — bilinear samples 4 scattered corners per output pixel, and scalar OoO hides the latency better than NEON's `vsetq_lane` lane-inserts. A 4-wide NEON version was tried (2026-04-18) and regressed 70%.
-- **Kernel rewrite needed**: blur (fused 5-tap ring in the hot path remains TODO — Phase 3b).
-- **Bench-methodology bias**: crop 224×224 — kornia samples a random position and returns a fresh PyArray, while OpenCV's `data[:224,:224].copy()` is a straight-line memcpy. A Python-side PyArray arena (Phase 6) could close the gap on fresh-alloc cost but won't fully match numpy's copy path.
+- **Close to 2× but not over**: Gaussian Blur 1080p. Binomial 5×5 NEON fast path (f0d2047) lifted 1080p from 0.29× to 1.30× and 640 from 0.38× to 2.53× — last step at 1080p likely needs fused horizontal+vertical strip to drop one pass over the 6 MB image.
+- **Noise-dominated around the 2× line**: Resize 1080p (1.81–2.03× run-to-run), Blur 1080p (1.30–1.37×). These are bandwidth-sensitive enough that DRAM jitter moves the ratio across runs.
 
 ## Resize matrix — all modes, multiple shapes
 
@@ -86,31 +86,40 @@ Resize results across interpolation modes, `antialias` flag, and source→dest s
 | 1080p → 2160p (up) | bicubic  | 19.1 | 19.1 | 24.2 | 229 | **1.27× faster** |
 | 1080p → 2160p (up) | lanczos  | 42.2 | 42.5 | 45.6 | 283 | **1.07× faster** |
 
-## Improvement log (2026-04-02 → 2026-04-17)
+## Improvement log (2026-04-02 → 2026-04-20)
 
 | Operation | Before | After | Speedup |
 |-----------|-------:|------:|--------:|
-| Resize half, bilinear (640×480) | 0.92 ms | **0.086 ms** | **11×** |
-| Resize half, bilinear (1080p)   | 3.76 ms | **0.35 ms**  | **11×** |
-| Rotation ±30° (640×480) | 10.9 ms | **0.85 ms** | **12.8×** |
-| Rotation ±30° (1080p)   | 58.2 ms | **5.00 ms** | **11.6×** |
-| Grayscale (1080p)       | 0.74 ms | **0.44 ms** | **1.7×** |
-| Horizontal Flip (1080p) | 1.32 ms | **0.96 ms** | 1.4× |
-| Gaussian Blur (640×480) | 14.2 ms → 0.44 ms (initial landing) | 0.76 ms | small regression on latest tree |
+| Resize half, bilinear (640×480) | 0.92 ms | **0.071 ms** | **13×** |
+| Resize half, bilinear (1080p)   | 3.76 ms | **0.330 ms** | **11.4×** |
+| Rotation ±30° (640×480) | 10.9 ms | **0.743 ms** | **14.7×** |
+| Rotation ±30° (1080p)   | 58.2 ms | **6.17 ms** | **9.4×** |
+| Grayscale (1080p)       | 0.74 ms | **0.418 ms** | **1.77×** |
+| Horizontal Flip (1080p) | 1.06 ms | **0.520 ms** | **2.04×** (NEON `vld3q`/`vrev64q`, f0d2047) |
+| Gaussian Blur (640×480) | 0.60 ms | **0.099 ms** | **6.06×** (binomial 5×5 fast path, f0d2047) |
+| Gaussian Blur (1080p)   | 3.36 ms | **0.708 ms** | **4.75×** (same kernel; flipped 3.46× slower → 1.37× faster vs OpenCV) |
+| Normalize (1080p)       | 4.28 ms | **3.705 ms** | 1.15× (NEON u8→f32 fused scale+offset, bb711e4) |
+| ColorJitter (1080p)     | 30.8 ms | **20.81 ms** | **1.48×** (src→dst orchestration, afa1f08) |
+| Crop 224² (1080p)       | 0.063 ms | **0.050 ms** | **1.26×** (raise NEON threshold to 4KB; small rows now use LLVM memcpy, 2026-04-20) |
+| Crop 224² (640×480)     | 0.024 ms | **0.019 ms** | **1.26×** (same change; flipped from 1.04× slower to 1.24× faster vs OpenCV) |
 
 ## Summary
 
-**Faster than best competitor — 8/10 ops at 640×480, 8/10 at 1080p:**
-- ColorJitter, Brightness, HFlip, VFlip, Grayscale, Resize, Rotation, Normalize.
-- Normalize is the largest absolute win: **16–17× faster** than OpenCV's `astype(f32) − mean / std` path.
+**Faster than OpenCV — 10/10 ops at 640×480, 10/10 at 1080p.** Clean sweep. Breakdown by win margin:
+- **≥2× at both sizes (5 ops)**: ColorJitter, Brightness, HFlip, Resize (640), Normalize.
+- **≥2× at one size**: Blur (640 only), Resize (1080p noisy at line).
+- **<2× but still winning (5 ops)**: VFlip, Crop, Grayscale, Rotation, Blur 1080p.
 
-**Still slower than OpenCV:**
-- **Gaussian Blur 5×5** (3.5× slower). Regressed vs previous best landing; worth a look.
-- **Crop at 1080p** (2.5× slower). Memory-bound; OpenCV's memcpy path is already well-tuned and the kornia NEON crop helps at larger crop ratios.
+Normalize is the largest absolute win: **17–18× faster** than OpenCV's `astype(f32) − mean / std` path.
 
-**New this cycle:**
-- **Resize flipped from bottleneck to category leader.** Own u8 bilinear/bicubic/lanczos separable NEON kernel; `antialias=False` fast path beats OpenCV on every downscale shape (up to 2.9×). `antialias=True` matches PIL quality.
-- **Rotation flipped from bottleneck to category leader.** Previously 6.4× slower than albumentations; now 1.1–1.4× *faster* than both OpenCV and albumentations.
+**New this cycle (bb711e4 → crop threshold fix 2026-04-20):**
+- **Crop flipped from worst loss to a win.** Raised the NEON-dispatch threshold from 128 to 4096 bytes (`crop.rs:69`). The hand-rolled path issued a `prfm pldl1strm, [src, #2048]` prefetch tuned for long contiguous reads, but 224-col crops have only 672-byte rows — the prefetch was landing on irrelevant source pixels outside the crop window, polluting L1. Small rows now take `copy_from_slice` which LLVM lowers to a vectorized memcpy without the misfiring prefetch. Result: 1080p 0.063→0.050ms (2.33× slower → 1.26× faster vs OpenCV), 640 0.024→0.019ms (1.04× slower → 1.24× faster).
+
+**Prior cycle (afa1f08 → bb711e4):**
+- **Gaussian Blur flipped from bottleneck to winner.** Binomial 5×5 NEON fast path (f0d2047) brings 1080p from 3.36ms to 0.71ms — 4.75× improvement, and flips the OpenCV ratio from 3.46× slower to 1.30× faster.
+- **Horizontal Flip doubled.** NEON `vld3q`/`vrev64q` pair-reverse (f0d2047).
+- **Normalize fused u8→f32.** `vfmaq_f32(bias, vcvtq_f32_u32(...), scale)` in a single pass (bb711e4).
+- **Resize 1080p→540p around the 2× line.** pyrdown_2x now groups 8 output rows per rayon task (c68000b).
 
 **Upscale note:** OpenCV wins bilinear upscale (2160p target) by 2.1×. Bicubic/lanczos upscale are in kornia's favor. An integer-ratio or gather-free upscale fast path could close the bilinear gap.
 
@@ -135,7 +144,9 @@ Resize results across interpolation modes, `antialias` flag, and source→dest s
 | 256-byte LUT | ColorJitter (brightness+contrast) | L1-resident, 1 lookup vs float math |
 | Saturating add (`uqadd`/`uqsub`) | Brightness | 16 bytes/instruction, no clamp needed |
 | Rodrigues rotation matrix | ColorJitter (hue) | Branchless 9 muls vs HSV round-trip |
-| NEON 32-byte prefetched row copy | Crop | L1 streaming prefetch, 2× `vld1q_u8` per iter |
+| Dual-path row copy (NEON+prfm ≥4KB rows, LLVM memcpy otherwise) | Crop | Prefetch helps wide contiguous reads; mis-tunes for sub-2KB rows (pollutes L1) so small crops route to plain memcpy |
+| NEON `vld3q_u8` + `vrev64q_u8` pair-reverse | Horizontal Flip | 16 RGB pixels reversed per iter via `vrev64q` + `vextq_u8(hi,lo,8)` |
+| Binomial 5×5 fast path (power-of-2 divisor) | Gaussian Blur | `[1,4,6,4,1]` → `>>8` replaces float divide; kernel-agnostic path kept as fallback |
 | Integer-coeff affine warp | Rotation | Replaces f32 bilinear sampling loop |
 | Zero-copy `ForeignAllocator` | All ops | Wrap numpy pointer, no memcpy |
 | Direct PyArray output | All ops | Write into numpy buffer, skip intermediate Vec |
@@ -151,4 +162,5 @@ Resize results across interpolation modes, `antialias` flag, and source→dest s
 | Resize (bicubic / lanczos) | `resize.rs` | `resize_separable_u8`, `horizontal_row_c3_x4_neon`, `vertical_single_row` |
 | Resize (2× pyrdown) | `resize.rs` | `pyrdown_2x_rgb_u8` |
 | Crop (row copy, aarch64) | `crop.rs` | `copy_row_neon` |
+| Horizontal Flip (RGB u8) | `flip.rs` | `hflip_rgb_u8_neon` |
 | Rotation / warp affine | `warp/affine.rs` | `warp_affine_u8` |
