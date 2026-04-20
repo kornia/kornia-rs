@@ -439,10 +439,11 @@ impl OrbDetector {
 
         const EDGE_THRESHOLD: usize = 19;
         // Process octaves in parallel: each octave is fully independent.
-        // The inner FAST kernel also uses par_iter over rows, but with the
-        // outer 8-octave par_iter the work-stealing distributes rows across
-        // cores naturally. Attempts at finer chunking (splitting big octaves)
-        // regressed on this hardware due to rayon scheduler overhead.
+        // Per-octave tasks let small octaves finish their FAST + NMS + Harris
+        // + BRIEF completely while oct 0 is still running, overlapping work
+        // naturally. A two-phase split (chunked FAST then per-octave rest)
+        // introduces a barrier that destroys this overlap and regresses
+        // end-to-end even though chunked FAST alone is faster.
         let per_octave: Vec<_> = pyramid
             .par_iter()
             .enumerate()
