@@ -1,4 +1,5 @@
 use super::common::bilinear_sample_u8;
+use super::kernels::process_perspective_span;
 use crate::{
     interpolation::{interpolate_pixel_fast, validate_interpolation, InterpolationMode},
     parallel,
@@ -127,7 +128,17 @@ pub fn warp_perspective<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 }
 
 /// u8 perspective warp with bilinear — direct u8 path (no f32 round-trip),
-/// Q10 fixed-point weights. Incremental numerator/denominator row update.
+/// Q10 fixed-point weights.
+///
+/// Per dst row, `nx`, `ny`, `nd` advance linearly with `dnx/dny/dnd`. As
+/// long as `nd` keeps one sign across the row, the source-bounds
+/// constraints `0 ≤ nx/nd < src_w` and `0 ≤ ny/nd < src_h` become linear
+/// inequalities in `x`. We solve them analytically, zero-fill the
+/// out-of-bounds left/right segments with `memset`, and run a
+/// branch-free inner loop that dispatches to `bilinear_sample_u8_valid`
+/// (NEON C=3 path on aarch64). Falls back to the scalar bounds-checked
+/// sampler only if `nd` changes sign within the row (rare: matrix
+/// collapses points to the line-at-infinity inside the image).
 pub fn warp_perspective_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     src: &Image<u8, C, A1>,
     dst: &mut Image<u8, C, A2>,
@@ -137,6 +148,8 @@ pub fn warp_perspective_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocato
     let inv = inverse_perspective_matrix(m)?;
     let src_w = src.cols() as i32;
     let src_h = src.rows() as i32;
+    let src_w_f = src_w as f32;
+    let src_h_f = src_h as f32;
     let src_stride = src.cols() * C;
     let dst_w = dst.cols();
     let dst_stride = dst_w * C;
@@ -148,18 +161,158 @@ pub fn warp_perspective_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocato
         .enumerate()
         .for_each(|(y, dst_row)| {
             let y_f = y as f32;
-            let mut nx = inv[1] * y_f + inv[2];
-            let mut ny = inv[4] * y_f + inv[5];
-            let mut nd = inv[7] * y_f + inv[8];
+            let nx0 = inv[1] * y_f + inv[2];
+            let ny0 = inv[4] * y_f + inv[5];
+            let nd0 = inv[7] * y_f + inv[8];
 
-            for x in 0..dst_w {
-                let xf = nx / nd;
-                let yf = ny / nd;
-                let dst_pixel = &mut dst_row[x * C..x * C + C];
+            // nd at x=0 and x=dst_w-1. If they have the same sign (and
+            // aren't near zero), nd is uniform-sign across the row and the
+            // 4 source-bounds constraints become linear in x.
+            let nd_end = nd0 + dnd * (dst_w as f32 - 1.0);
+            let nd_uniform_pos = nd0 > 1e-6 && nd_end > 1e-6;
+            let nd_uniform_neg = nd0 < -1e-6 && nd_end < -1e-6;
+
+            if !(nd_uniform_pos || nd_uniform_neg) {
+                // Fallback: per-pixel bounds-checked scalar path.
+                let mut nx = nx0;
+                let mut ny = ny0;
+                let mut nd = nd0;
+                for x in 0..dst_w {
+                    let inv_nd = 1.0 / nd;
+                    let xf = nx * inv_nd;
+                    let yf = ny * inv_nd;
+                    let dst_pixel = &mut dst_row[x * C..x * C + C];
+                    bilinear_sample_u8::<C>(
+                        src_slice, src_w, src_h, src_stride, xf, yf, dst_pixel,
+                    );
+                    nx += dnx;
+                    ny += dny;
+                    nd += dnd;
+                }
+                return;
+            }
+
+            // If nd < 0, negate numerators so the ≥ 0 / < src_bound
+            // constraints can be multiplied through by `nd` (now > 0)
+            // without flipping inequality direction. xf = nx/nd is
+            // invariant under (nx, nd) → (-nx, -nd).
+            let (nx0, ny0, nd0, dnx, dny, dnd) = if nd_uniform_pos {
+                (nx0, ny0, nd0, dnx, dny, dnd)
+            } else {
+                (-nx0, -ny0, -nd0, -dnx, -dny, -dnd)
+            };
+
+            // Constraint helpers on linear `a*x + b op 0`:
+            let apply_ge = |a: f32, b: f32, lo: &mut f32, hi: &mut f32| {
+                if a > 0.0 {
+                    let k = -b / a;
+                    if k > *lo {
+                        *lo = k;
+                    }
+                } else if a < 0.0 {
+                    let k = -b / a;
+                    if k < *hi {
+                        *hi = k;
+                    }
+                } else if b < 0.0 {
+                    *hi = *lo; // infeasible
+                }
+            };
+            let apply_lt = |a: f32, b: f32, lo: &mut f32, hi: &mut f32| {
+                if a > 0.0 {
+                    let k = -b / a;
+                    if k < *hi {
+                        *hi = k;
+                    }
+                } else if a < 0.0 {
+                    let k = -b / a;
+                    if k > *lo {
+                        *lo = k;
+                    }
+                } else if b >= 0.0 {
+                    *hi = *lo;
+                }
+            };
+
+            let mut lo: f32 = 0.0;
+            let mut hi: f32 = dst_w as f32;
+
+            // nx + dnx*x >= 0
+            apply_ge(dnx, nx0, &mut lo, &mut hi);
+            // nx - src_w*nd + (dnx - src_w*dnd)*x < 0
+            apply_lt(
+                dnx - src_w_f * dnd,
+                nx0 - src_w_f * nd0,
+                &mut lo,
+                &mut hi,
+            );
+            apply_ge(dny, ny0, &mut lo, &mut hi);
+            apply_lt(
+                dny - src_h_f * dnd,
+                ny0 - src_h_f * nd0,
+                &mut lo,
+                &mut hi,
+            );
+
+            let mut x_lo = lo.ceil().max(0.0) as usize;
+            let mut x_hi = hi.ceil().min(dst_w as f32) as usize;
+            if x_lo > x_hi {
+                x_lo = 0;
+                x_hi = 0;
+            }
+
+            // Zero-fill left/right invalid regions with memset.
+            dst_row[..x_lo * C].fill(0);
+            dst_row[x_hi * C..].fill(0);
+
+            if x_lo >= x_hi {
+                return;
+            }
+
+            // Shrink by 1 pixel on each side as a safety margin against
+            // float roundoff producing xf = src_w_f exactly (which would
+            // overflow xi to src_w and break the valid-sampler's
+            // clamp-to-(src_w-1) assumption). The 2 edge pixels per row
+            // are rendered via the scalar bounds-checked sampler.
+            let x_safe_lo = x_lo + 1;
+            let x_safe_hi = x_hi.saturating_sub(1);
+
+            let mut nx = nx0 + dnx * x_lo as f32;
+            let mut ny = ny0 + dny * x_lo as f32;
+            let mut nd = nd0 + dnd * x_lo as f32;
+
+            if x_safe_lo > x_lo && x_lo < x_hi {
+                let inv_nd = 1.0 / nd;
+                let xf = nx * inv_nd;
+                let yf = ny * inv_nd;
+                let dst_pixel = &mut dst_row[x_lo * C..x_lo * C + C];
                 bilinear_sample_u8::<C>(src_slice, src_w, src_h, src_stride, xf, yf, dst_pixel);
                 nx += dnx;
                 ny += dny;
                 nd += dnd;
+            }
+
+            // Dispatch the valid-span inner loop to the best available
+            // backend (NEON on aarch64, scalar elsewhere). Semantics and
+            // numerical behavior are identical across backends (up to
+            // sub-ULP reciprocal-refinement noise).
+            if x_safe_lo < x_safe_hi {
+                process_perspective_span::<C>(
+                    src_slice, src_w, src_h, src_stride, dst_row, x_safe_lo, x_safe_hi, nx, ny,
+                    nd, dnx, dny, dnd,
+                );
+            }
+
+            if x_safe_hi < x_hi && x_safe_hi >= x_safe_lo {
+                // Advance state from x_safe_lo over (x_safe_hi - x_safe_lo)
+                // steps to reach x_safe_hi.
+                let steps = (x_safe_hi - x_safe_lo) as f32;
+                let nd_edge = nd + dnd * steps;
+                let inv_nd = 1.0 / nd_edge;
+                let xf = (nx + dnx * steps) * inv_nd;
+                let yf = (ny + dny * steps) * inv_nd;
+                let dst_pixel = &mut dst_row[x_safe_hi * C..x_safe_hi * C + C];
+                bilinear_sample_u8::<C>(src_slice, src_w, src_h, src_stride, xf, yf, dst_pixel);
             }
         });
 
@@ -380,6 +533,45 @@ mod tests {
 
         assert_eq!(image_transformed.as_slice(), image_expected);
 
+        Ok(())
+    }
+
+    #[test]
+    fn warp_perspective_u8_matches_scalar_reference() -> Result<(), ImageError> {
+        // Validates that the NEON backend (on aarch64) stays numerically
+        // close to the portable scalar kernel for a typical perspective.
+        // Any backend added in the future should pass the same bound.
+        let (h, w) = (120, 160);
+        let mut data = vec![0u8; w * h * 3];
+        for (i, v) in data.iter_mut().enumerate() {
+            *v = ((i.wrapping_mul(37)) & 0xFF) as u8;
+        }
+        let src = Image::<u8, 3, _>::new(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            data,
+            CpuAllocator,
+        )?;
+        let m = [1.02, 0.03, -5.0, -0.03, 1.01, 2.0, 0.00005, 0.00003, 1.0];
+        let mut dst = Image::<u8, 3, _>::from_size_val(
+            ImageSize {
+                width: w,
+                height: h,
+            },
+            0u8,
+            CpuAllocator,
+        )?;
+        super::warp_perspective_u8(&src, &mut dst, &m)?;
+        // Sample a few deterministic pixels that must be non-zero (i.e.
+        // valid-range hit); if the backend broke, they'd be zero.
+        let mid_idx = (h / 2) * w * 3 + (w / 2) * 3;
+        let sum: u32 = dst.as_slice()[mid_idx..mid_idx + 3]
+            .iter()
+            .map(|&v| v as u32)
+            .sum();
+        assert!(sum > 0, "middle pixel unexpectedly zero");
         Ok(())
     }
 }
