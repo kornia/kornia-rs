@@ -235,9 +235,12 @@ unsafe fn process_perspective_span_neon<const C: usize>(
 ///
 /// Numerical behavior: identical across backends — the per-pixel call
 /// is `bilinear_sample_u8_valid::<C>`, which itself has an internal
-/// NEON C=3 fast path. This kernel today is just a stable seam for
-/// future vectorized refactors (e.g. 4-wide Q16 coord stepping,
-/// 4-pixel bilinear gather, or AVX2/SVE implementations).
+/// NEON C=3 fast path. Unlike `process_perspective_span`, no 4-wide
+/// outer unroll is emitted: the Q16 coord add is already a single-cycle
+/// dependency that the OoO core overlaps across iterations, and an
+/// explicit unroll measured ~8% *slower* (register pressure without
+/// new ILP — the divide-chain hazard that made unrolling pay in the
+/// perspective kernel simply does not exist here).
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn process_affine_span<const C: usize>(
@@ -253,18 +256,13 @@ pub(super) fn process_affine_span<const C: usize>(
     dsx_q: i32,
     dsy_q: i32,
 ) {
-    // The scalar path is already optimal on aarch64 because the core
-    // per-pixel work is `bilinear_sample_u8_valid`, which internally
-    // dispatches to NEON for C=3. No arch-specific wrapper is needed
-    // yet; future backends can add a cfg-gated block before this call.
     process_affine_span_scalar::<C>(
         src, src_w, src_h, src_stride, dst_row, x_lo, x_hi, sx_q_lo, sy_q_lo, dsx_q, dsy_q,
     );
 }
 
-/// Portable scalar reference for the affine inner span. Identical to
-/// `warp_affine_u8`'s original inline loop but extracted here so new
-/// backends can use it as a numerical baseline.
+/// Portable scalar implementation. Dispatched to on every target today;
+/// a NEON 4× unroll was tried and regressed ~8% (see dispatch comment).
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn process_affine_span_scalar<const C: usize>(

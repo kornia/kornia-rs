@@ -27,6 +27,49 @@ pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     Ok(())
 }
 
+/// Box blur for u8 images (NEON-accelerated separable path).
+///
+/// Same semantics as [`box_blur`] but operates directly on u8 via a Q8 uniform
+/// kernel summing to 256, reusing the same striped ring-buffer path as
+/// [`gaussian_blur_u8`]. The k=5 case hits the 32-u8/iter vmull/vmlal V-pass
+/// unroll.
+pub fn box_blur_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, C, A1>,
+    dst: &mut Image<u8, C, A2>,
+    kernel_size: (usize, usize),
+) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    let (kx, ky) = kernel_size;
+    if kx == 0 || ky == 0 || kx % 2 == 0 || ky % 2 == 0 {
+        return Err(ImageError::InvalidSigmaValue(kx as f32, ky as f32));
+    }
+
+    let ikx = quantize_kernel_256(&kernels::box_blur_kernel_1d(kx));
+    let iky = quantize_kernel_256(&kernels::box_blur_kernel_1d(ky));
+
+    separable_blur_u8_striped(
+        src.as_slice(),
+        dst.as_slice_mut(),
+        src.rows(),
+        src.cols(),
+        C,
+        &ikx,
+        kx / 2,
+        &iky,
+        ky / 2,
+    );
+
+    Ok(())
+}
+
 /// Blur an image using a gaussian blur filter
 ///
 /// # Arguments
