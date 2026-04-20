@@ -71,16 +71,13 @@ pub(super) fn process_perspective_span<const C: usize>(
     dnd: f32,
 ) {
     #[cfg(target_arch = "aarch64")]
-    {
-        // SAFETY: NEON is baseline on aarch64-unknown-linux-gnu. The
-        // helper requires `x_lo ≤ x_hi ≤ dst_row.len() / C` and the
-        // perspective-sample-in-bounds invariants documented above.
-        unsafe {
-            process_perspective_span_neon::<C>(
-                src, src_w, src_h, src_stride, dst_row, x_lo, x_hi, nx, ny, nd, dnx, dny, dnd,
-            );
-        }
-        return;
+    // SAFETY: NEON is baseline on aarch64-unknown-linux-gnu. The helper
+    // requires `x_lo ≤ x_hi ≤ dst_row.len() / C` and the perspective-sample-
+    // in-bounds invariants documented above.
+    unsafe {
+        process_perspective_span_neon::<C>(
+            src, src_w, src_h, src_stride, dst_row, x_lo, x_hi, nx, ny, nd, dnx, dny, dnd,
+        );
     }
 
     #[cfg(not(target_arch = "aarch64"))]

@@ -85,9 +85,9 @@ Resize results across interpolation modes, `antialias` flag, and source→dest s
 | 640² → 320²  | bilinear | 0.07 | 0.09 | 0.29 |  3.79 | **3.09× faster** |
 | 640² → 320²  | bicubic  | 1.43 | 0.93 | 1.48 |  6.22 | **1.60× faster** |
 | 640² → 320²  | lanczos  | 2.90 | 1.52 | 2.53 |  9.07 | **1.66× faster** |
-| 1080p → 2160p (up) | bilinear | 20.7 | 20.6 | **9.59** | 181 | 2.14× slower |
-| 1080p → 2160p (up) | bicubic  | 19.1 | 19.1 | 24.2 | 229 | **1.27× faster** |
-| 1080p → 2160p (up) | lanczos  | 42.2 | 42.5 | 45.6 | 283 | **1.07× faster** |
+| 1080p → 2160p (up) | bilinear | 1.78 | 1.78 | 9.80 | 181 | **5.52× faster** (exact-2× NEON `vrhaddq_u8` pair) |
+| 1080p → 2160p (up) | bicubic  | 17.9 | 17.9 | 21.6 | 229 | **1.21× faster** |
+| 1080p → 2160p (up) | lanczos  | 40.6 | 40.6 | 43.3 | 283 | **1.07× faster** |
 
 ## Improvement log (2026-04-02 → 2026-04-20)
 
@@ -106,6 +106,7 @@ Resize results across interpolation modes, `antialias` flag, and source→dest s
 | Crop 224² (1080p)       | 0.063 ms | **0.050 ms** | **1.26×** (raise NEON threshold to 4KB; small rows now use LLVM memcpy, 2026-04-20) |
 | Crop 224² (640×480)     | 0.024 ms | **0.019 ms** | **1.26×** (same change; flipped from 1.04× slower to 1.24× faster vs OpenCV) |
 | Warp Perspective (1080p) | 6.800 ms | **4.821 ms** | **1.41×** (NEON 4-wide reciprocal for per-pixel `nx/nd` + `ny/nd`, f1830ab) — ratio vs OpenCV: 1.41× → **2.00×** |
+| Resize 1080p→2160p (bilinear upscale) | 20.7 ms | **1.78 ms** | **11.6×** (exact-2× NEON `vrhaddq_u8` pair — fixed {0.25, 0.75} weights, no LUT, no float) — ratio vs OpenCV: **0.46× → 5.52×** |
 
 ## Summary
 
@@ -116,7 +117,8 @@ Resize results across interpolation modes, `antialias` flag, and source→dest s
 
 Normalize is the largest absolute win: **17–18× faster** than OpenCV's `astype(f32) − mean / std` path.
 
-**New this cycle (bb711e4 → crop threshold fix → perspective NEON 2026-04-20):**
+**New this cycle (bb711e4 → crop threshold fix → perspective NEON → pyrup 2× 2026-04-20):**
+- **Bilinear 2× upscale flipped from 2.14× loss to 5.52× win at 1080p.** The exact-2× case has fixed `{0.25, 0.75}` weights, which is exactly what `vrhaddq_u8(a, vrhaddq_u8(a, b))` computes (first rhadd is the 50/50 midpoint, second biases it back toward `a`). No LUT, no fractional arithmetic, no gather. The new `pyrup_2x_rgb_u8` kernel feeds each src row through a horizontal `vld3q_u8`/`vst3q_u8` upscale once; each upscaled row is then reused by two dst rows via a byte-wise vertical `blend_75_25_row`. At 1080p→2160p: kornia 20.7ms → **1.78ms** (internal 11.6×), vs OpenCV 9.80ms (ratio **0.46× → 5.52×**). This was the only bilinear case OpenCV was winning — clean sweep for bilinear now.
 - **Perspective crossed the 2× line at 1080p.** Commit f1830ab adds a NEON 4-wide reciprocal (`vrecpeq_f32` + one `vrecpsq_f32` Newton-Raphson refine) for the per-pixel `xf = nx/nd`, `yf = ny/nd` divides, combined with an analytical branch-free valid-range split (4 linear constraints intersected against `[0, src_w) × [0, src_h)`). OpenCV pays a serial scalar divide per pixel; amortizing across 4 lanes collapses the critical path. Side benefit: `vrecpeq` + 1 NR yields ~17-bit precision that happens to match OpenCV's Q-math closer than exact f32, so correctness vs the scalar reference improved (large-diff pixels: 20.13% → 4.85%). The same commit also extracted `warp/kernels.rs` with `_scalar` reference impls + `_neon` variants behind `cfg(target_arch = "aarch64")`, giving a stable seam for future AVX / WASM-SIMD / SVE backends.
 - **Crop flipped from worst loss to a win.** Raised the NEON-dispatch threshold from 128 to 4096 bytes (`crop.rs:69`). The hand-rolled path issued a `prfm pldl1strm, [src, #2048]` prefetch tuned for long contiguous reads, but 224-col crops have only 672-byte rows — the prefetch was landing on irrelevant source pixels outside the crop window, polluting L1. Small rows now take `copy_from_slice` which LLVM lowers to a vectorized memcpy without the misfiring prefetch. Result: 1080p 0.063→0.050ms (2.33× slower → 1.26× faster vs OpenCV), 640 0.024→0.019ms (1.04× slower → 1.24× faster).
 
@@ -126,7 +128,7 @@ Normalize is the largest absolute win: **17–18× faster** than OpenCV's `astyp
 - **Normalize fused u8→f32.** `vfmaq_f32(bias, vcvtq_f32_u32(...), scale)` in a single pass (bb711e4).
 - **Resize 1080p→540p around the 2× line.** pyrdown_2x now groups 8 output rows per rayon task (c68000b).
 
-**Upscale note:** OpenCV wins bilinear upscale (2160p target) by 2.1×. Bicubic/lanczos upscale are in kornia's favor. An integer-ratio or gather-free upscale fast path could close the bilinear gap.
+**Upscale note:** With the exact-2× bilinear upscale fast path (`pyrup_2x_rgb_u8`), kornia now wins bilinear upscale at 1080p→2160p by **5.5×** (1.78ms vs 9.80ms) — previously a 2.14× loss. The path uses a `vrhaddq_u8(a, vrhaddq_u8(a, b))` pair for the fixed {0.25, 0.75} weights (no LUT, no gather, no float math). Bicubic/lanczos upscales still win but by small margins; a similar integer-ratio path would help there too.
 
 ## Techniques used
 
@@ -138,6 +140,7 @@ Normalize is the largest absolute win: **17–18× faster** than OpenCV's `astyp
 | 4-rolling-accumulator vertical pass | Resize bicubic/lanczos | Hides 4c `vmlal` latency (Cortex-A78AE) |
 | `antialias=False` fixed-tap path | Resize bicubic/lanczos | 4×–5× fewer MACs at strong downscale (1080p→224²) |
 | 2× box-average fast path | Resize bilinear (exact 2:1) | Dedicated NEON pyrdown; replaces general bilinear |
+| 2× bilinear upscale fast path (`vrhaddq_u8` pair) | Resize bilinear (exact 1:2) | `vrhaddq_u8(a, vrhaddq_u8(a, b))` gives 0.75·a + 0.25·b with rounding — no LUT, no float, no gather. One horizontal-interp row feeds two dst rows via byte-wise vertical blend. |
 | Nearest-neighbor LUT dispatch | Resize nearest | Branch-free row/col index map |
 | Strip-mined separable filter | Gaussian Blur | u16 temp stays in L1 (~48KB strips) |
 | NEON `vmull_u8`/`vmlal_u8` | Gaussian Blur (horizontal) | Integer convolution, 16 bytes/iter |
@@ -169,6 +172,7 @@ Normalize is the largest absolute win: **17–18× faster** than OpenCV's `astyp
 | Resize (bilinear, N-ch) | `resize.rs` | `resize_bilinear_u8_nch` |
 | Resize (bicubic / lanczos) | `resize.rs` | `resize_separable_u8`, `horizontal_row_c3_x4_neon`, `vertical_single_row` |
 | Resize (2× pyrdown) | `resize.rs` | `pyrdown_2x_rgb_u8` |
+| Resize (2× pyrup, bilinear) | `resize.rs` | `pyrup_2x_rgb_u8`, `hinterp_row_rgb_u8_neon`, `blend_75_25_row_neon` |
 | Crop (row copy, aarch64) | `crop.rs` | `copy_row_neon` |
 | Horizontal Flip (RGB u8) | `flip.rs` | `hflip_rgb_u8_neon` |
 | Rotation / warp affine | `warp/affine.rs` | `warp_affine_u8` (dispatches to `kernels::process_affine_span`) |

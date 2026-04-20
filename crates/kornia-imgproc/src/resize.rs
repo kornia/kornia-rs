@@ -205,6 +205,18 @@ pub fn resize_fast_u8_aa<const C: usize, A1: ImageAllocator, A2: ImageAllocator>
         return Ok(());
     }
 
+    // 2x exact upscale → bilinear (0.75/0.25 blends) via `vrhaddq_u8` pair.
+    if matches!(interpolation, InterpolationMode::Bilinear)
+        && C == 3
+        && dst_w == src_w * 2
+        && dst_h == src_h * 2
+        && src_w >= 2
+        && src_h >= 2
+    {
+        pyrup_2x_rgb_u8(src.as_slice(), dst.as_slice_mut(), src_w, src_h);
+        return Ok(());
+    }
+
     // Nearest-neighbor fast-path: works for any C, any ratio.
     if matches!(interpolation, InterpolationMode::Nearest) && src_w >= 1 && src_h >= 1 {
         resize_nearest_u8::<C>(
@@ -463,6 +475,225 @@ fn pyrdown_2x_rgb_u8_row(r0: &[u8], r1: &[u8], dst: &mut [u8], dst_w: usize) {
                 + r1[(2 * x + 1) * 3 + ch] as u16;
             dst[x * 3 + ch] = ((sum + 2) >> 2) as u8;
         }
+    }
+}
+
+/// 2x exact bilinear upscale for RGB u8.
+///
+/// With pixel-center sampling (`sx = (x + 0.5) * 0.5 - 0.5`) the per-pixel
+/// weights collapse to a fixed {0.25, 0.75} pattern: each dst row is either a
+/// horizontally-interpolated edge row (first/last) or a 0.75/0.25 blend of two
+/// horizontally-interpolated neighbour rows. The 75/25 blend is computed via a
+/// `vrhaddq_u8(a, vrhaddq_u8(a, b))` pair — no fractional arithmetic, no LUT,
+/// no gather. One source row produces two output rows sharing the same
+/// horizontal-interpolation cost.
+fn pyrup_2x_rgb_u8(src: &[u8], dst: &mut [u8], src_w: usize, src_h: usize) {
+    let dst_w = src_w * 2;
+    let src_stride = src_w * 3;
+    let dst_stride = dst_w * 3;
+
+    // Layout: [edge_top (1 row) | inner (2·(src_h-1) rows) | edge_bot (1 row)].
+    let (edge_top, rest) = dst.split_at_mut(dst_stride);
+    let (inner, edge_bot) = rest.split_at_mut(2 * (src_h - 1) * dst_stride);
+
+    // Edge rows come from a single source row (clamped f=0/1 in the vertical direction),
+    // so they only need the horizontal pass.
+    hinterp_row_rgb_u8(&src[..src_stride], edge_top, src_w);
+    hinterp_row_rgb_u8(
+        &src[(src_h - 1) * src_stride..src_h * src_stride],
+        edge_bot,
+        src_w,
+    );
+
+    // Inner blocks: block I consumes src rows (I, I+1) and writes dst rows (2I+1, 2I+2).
+    // Group 64 blocks (128 dst rows) per rayon task. At 1080p→2160p that's ~2.9 MB per
+    // task — well above the ~10 KB rayon dispatch threshold and below L2 (3 MB on A78AE).
+    const BLOCKS_PER_TASK: usize = 64;
+    let chunk_bytes = BLOCKS_PER_TASK * 2 * dst_stride;
+
+    use rayon::prelude::*;
+    inner
+        .par_chunks_mut(chunk_bytes)
+        .enumerate()
+        .for_each(|(ti, inner_chunk)| {
+            let block_start = ti * BLOCKS_PER_TASK;
+            let blocks = inner_chunk.len() / (2 * dst_stride);
+
+            // Rolling 2-row scratch: horizontally-upscaled "prev" (h_a) and "next" (h_b)
+            // source rows. Both sit in L1 (~23 KB each at 1080p).
+            let mut h_a = vec![0u8; dst_stride];
+            let mut h_b = vec![0u8; dst_stride];
+
+            hinterp_row_rgb_u8(
+                &src[block_start * src_stride..(block_start + 1) * src_stride],
+                &mut h_a,
+                src_w,
+            );
+
+            for i in 0..blocks {
+                let src_next = block_start + i + 1;
+                hinterp_row_rgb_u8(
+                    &src[src_next * src_stride..(src_next + 1) * src_stride],
+                    &mut h_b,
+                    src_w,
+                );
+
+                let (dst_top, dst_bot) = inner_chunk
+                    [i * 2 * dst_stride..(i + 1) * 2 * dst_stride]
+                    .split_at_mut(dst_stride);
+
+                // dst row 2I+1 = 0.75·h_a + 0.25·h_b; dst row 2I+2 = 0.25·h_a + 0.75·h_b
+                // (same blend with swapped args).
+                blend_75_25_row(&h_a, &h_b, dst_top);
+                blend_75_25_row(&h_b, &h_a, dst_bot);
+
+                std::mem::swap(&mut h_a, &mut h_b);
+            }
+        });
+}
+
+/// Horizontally upscale one RGB u8 row by 2× with bilinear weights.
+///
+/// Emits `2·src_w` destination pixels: two edge pixels (clamped copies of
+/// `src[0]` and `src[src_w-1]`) plus `(src_w-1)` interior {0.75, 0.25} pairs.
+#[cfg(target_arch = "aarch64")]
+fn hinterp_row_rgb_u8(src: &[u8], dst: &mut [u8], src_w: usize) {
+    unsafe { hinterp_row_rgb_u8_neon(src, dst, src_w) }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn hinterp_row_rgb_u8_neon(src: &[u8], dst: &mut [u8], src_w: usize) {
+    use std::arch::aarch64::*;
+    let s = src.as_ptr();
+    let d = dst.as_mut_ptr();
+
+    // Edge: dst[0] ← src[0] (clamped f=0 for dst_x=0).
+    for ch in 0..3 {
+        *d.add(ch) = *s.add(ch);
+    }
+
+    // Bulk: 16 src pixel pairs per iter → 32 dst pixels via vld3q / vst3q.
+    // Each iter reads pixels [J..J+15] and [J+1..J+16], so needs J+16 ≤ src_w-1.
+    let mut j = 0usize;
+    while j + 17 <= src_w {
+        let s_a = vld3q_u8(s.add(j * 3));
+        let s_b = vld3q_u8(s.add((j + 1) * 3));
+
+        // For each channel: compute both 0.75a+0.25b and 0.25a+0.75b via the
+        // double-rhadd identity, then interleave so that adjacent dst pixels
+        // alternate (hi, lo) — matching the dst[2J+1], dst[2J+2] pattern.
+        let blend = |ac: uint8x16_t, bc: uint8x16_t| -> (uint8x16_t, uint8x16_t) {
+            let avg = vrhaddq_u8(ac, bc);
+            let hi = vrhaddq_u8(ac, avg); // 0.75·ac + 0.25·bc
+            let lo = vrhaddq_u8(bc, avg); // 0.25·ac + 0.75·bc
+            (vzip1q_u8(hi, lo), vzip2q_u8(hi, lo))
+        };
+
+        let (r_lo, r_hi) = blend(s_a.0, s_b.0);
+        let (g_lo, g_hi) = blend(s_a.1, s_b.1);
+        let (b_lo, b_hi) = blend(s_a.2, s_b.2);
+
+        let out_low = uint8x16x3_t(r_lo, g_lo, b_lo);
+        let out_high = uint8x16x3_t(r_hi, g_hi, b_hi);
+
+        vst3q_u8(d.add((2 * j + 1) * 3), out_low);
+        vst3q_u8(d.add((2 * j + 17) * 3), out_high);
+
+        j += 16;
+    }
+
+    // Scalar tail for the remaining (src_w - 1 - j) interior pairs.
+    while j + 1 < src_w {
+        let ja = j * 3;
+        let jb = (j + 1) * 3;
+        for ch in 0..3 {
+            let a = *s.add(ja + ch) as u16;
+            let b = *s.add(jb + ch) as u16;
+            let avg = (a + b + 1) >> 1;
+            *d.add((2 * j + 1) * 3 + ch) = ((a + avg + 1) >> 1) as u8;
+            *d.add((2 * j + 2) * 3 + ch) = ((b + avg + 1) >> 1) as u8;
+        }
+        j += 1;
+    }
+
+    // Edge: dst[2·src_w-1] ← src[src_w-1] (clamped f=1 for last dst_x).
+    for ch in 0..3 {
+        *d.add((2 * src_w - 1) * 3 + ch) = *s.add((src_w - 1) * 3 + ch);
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn hinterp_row_rgb_u8(src: &[u8], dst: &mut [u8], src_w: usize) {
+    for ch in 0..3 {
+        dst[ch] = src[ch];
+    }
+    for j in 0..src_w - 1 {
+        for ch in 0..3 {
+            let a = src[j * 3 + ch] as u16;
+            let b = src[(j + 1) * 3 + ch] as u16;
+            let avg = (a + b + 1) >> 1;
+            dst[(2 * j + 1) * 3 + ch] = ((a + avg + 1) >> 1) as u8;
+            dst[(2 * j + 2) * 3 + ch] = ((b + avg + 1) >> 1) as u8;
+        }
+    }
+    for ch in 0..3 {
+        dst[(2 * src_w - 1) * 3 + ch] = src[(src_w - 1) * 3 + ch];
+    }
+}
+
+/// Byte-wise 75/25 blend: `dst[i] = round(0.75·a[i] + 0.25·b[i])` via the
+/// `vrhaddq_u8(a, vrhaddq_u8(a, b))` identity. Used for the vertical pass
+/// in `pyrup_2x_rgb_u8` once both rows have been horizontally upscaled.
+#[cfg(target_arch = "aarch64")]
+fn blend_75_25_row(a: &[u8], b: &[u8], dst: &mut [u8]) {
+    unsafe { blend_75_25_row_neon(a, b, dst) }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn blend_75_25_row_neon(a: &[u8], b: &[u8], dst: &mut [u8]) {
+    use std::arch::aarch64::*;
+    let n = dst.len();
+    let bulk = n & !31; // unroll 2× for Cortex-A78AE dual-issue load pair
+    let mut i = 0;
+    while i < bulk {
+        let va0 = vld1q_u8(a.as_ptr().add(i));
+        let vb0 = vld1q_u8(b.as_ptr().add(i));
+        let va1 = vld1q_u8(a.as_ptr().add(i + 16));
+        let vb1 = vld1q_u8(b.as_ptr().add(i + 16));
+        let avg0 = vrhaddq_u8(va0, vb0);
+        let avg1 = vrhaddq_u8(va1, vb1);
+        let out0 = vrhaddq_u8(va0, avg0);
+        let out1 = vrhaddq_u8(va1, avg1);
+        vst1q_u8(dst.as_mut_ptr().add(i), out0);
+        vst1q_u8(dst.as_mut_ptr().add(i + 16), out1);
+        i += 32;
+    }
+    while i + 16 <= n {
+        let va = vld1q_u8(a.as_ptr().add(i));
+        let vb = vld1q_u8(b.as_ptr().add(i));
+        let avg = vrhaddq_u8(va, vb);
+        let out = vrhaddq_u8(va, avg);
+        vst1q_u8(dst.as_mut_ptr().add(i), out);
+        i += 16;
+    }
+    while i < n {
+        let av = a[i] as u16;
+        let bv = b[i] as u16;
+        let avg = (av + bv + 1) >> 1;
+        dst[i] = ((av + avg + 1) >> 1) as u8;
+        i += 1;
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn blend_75_25_row(a: &[u8], b: &[u8], dst: &mut [u8]) {
+    for i in 0..dst.len() {
+        let av = a[i] as u16;
+        let bv = b[i] as u16;
+        let avg = (av + bv + 1) >> 1;
+        dst[i] = ((av + avg + 1) >> 1) as u8;
     }
 }
 
@@ -1474,6 +1705,59 @@ mod tests {
         assert_eq!(image_resized.num_channels(), 3);
         assert_eq!(image_resized.size().width, 2);
         assert_eq!(image_resized.size().height, 3);
+        Ok(())
+    }
+
+    /// Sanity-check the exact-2× bilinear upscale fast path on sizes that exercise
+    /// both the NEON bulk loop (src_w ≥ 17) and the pure-tail path (small widths).
+    #[test]
+    fn resize_fast_2x_upscale() -> Result<(), ImageError> {
+        use kornia_image::{Image, ImageSize};
+
+        for (w, h) in [(2, 2), (3, 4), (17, 9), (32, 5), (33, 6)] {
+            let data: Vec<u8> = (0..w * h * 3).map(|x| (x % 251) as u8).collect();
+            let image = Image::<_, 3, _>::new(
+                ImageSize {
+                    width: w,
+                    height: h,
+                },
+                data,
+                CpuAllocator,
+            )?;
+            let mut dst = Image::<_, 3, _>::from_size_val(
+                ImageSize {
+                    width: 2 * w,
+                    height: 2 * h,
+                },
+                0u8,
+                CpuAllocator,
+            )?;
+            super::resize_fast_rgb(&image, &mut dst, super::InterpolationMode::Bilinear)?;
+
+            // Corner pixels must be preserved exactly (f=0/1 clamps on both axes).
+            let src_slice = image.as_slice();
+            let dst_slice = dst.as_slice();
+            let dst_w = 2 * w;
+            let dst_h = 2 * h;
+            for ch in 0..3 {
+                assert_eq!(dst_slice[ch], src_slice[ch], "top-left wxh={w}x{h} ch={ch}");
+                assert_eq!(
+                    dst_slice[(dst_w - 1) * 3 + ch],
+                    src_slice[(w - 1) * 3 + ch],
+                    "top-right wxh={w}x{h} ch={ch}"
+                );
+                assert_eq!(
+                    dst_slice[(dst_h - 1) * dst_w * 3 + ch],
+                    src_slice[(h - 1) * w * 3 + ch],
+                    "bottom-left wxh={w}x{h} ch={ch}"
+                );
+                assert_eq!(
+                    dst_slice[((dst_h - 1) * dst_w + (dst_w - 1)) * 3 + ch],
+                    src_slice[((h - 1) * w + (w - 1)) * 3 + ch],
+                    "bottom-right wxh={w}x{h} ch={ch}"
+                );
+            }
+        }
         Ok(())
     }
 }
