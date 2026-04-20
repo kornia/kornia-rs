@@ -511,9 +511,24 @@ fn fast_detect_rows_u8_impl<A: ImageAllocator>(
     };
 
     if parallel {
-        (row_start..row_end_y)
+        // Group rows into chunks so each rayon task does enough work to amortize
+        // spawn/join overhead. At 1080p one row is ~1920 px ≈ 30 us NEON work;
+        // 1080 single-row tasks bury the scheduler. 32-row chunks give ~1 ms
+        // tasks which land near rayon's sweet spot.
+        let chunk = 64usize;
+        let total = row_end_y - row_start;
+        let n_chunks = total.div_ceil(chunk);
+        (0..n_chunks)
             .into_par_iter()
-            .flat_map_iter(row_work)
+            .flat_map_iter(|c| {
+                let y0 = row_start + c * chunk;
+                let y1 = (y0 + chunk).min(row_end_y);
+                let mut out: Vec<([usize; 2], f32)> = Vec::new();
+                for y in y0..y1 {
+                    out.extend(row_work(y));
+                }
+                out
+            })
             .collect()
     } else {
         let mut out: Vec<([usize; 2], f32)> = Vec::new();
