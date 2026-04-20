@@ -450,13 +450,29 @@ impl OrbDetector {
             .enumerate()
             .map(|(octave, octave_image)| -> Result<_, ImageError> {
                 let ta = std::time::Instant::now();
-                let mut candidates = crate::features::fast::fast_detect_rows_u8_serial(
-                    octave_image,
-                    self.ini_fast_threshold,
-                    self.fast_n,
-                    EDGE_THRESHOLD,
-                    0..octave_image.height(),
-                );
+                // Selective nesting: oct 0 (>=900 rows) is the single-core
+                // wall. Allow rayon to steal into its row work from cores
+                // that finished smaller octaves. Oct 1+ stays serial — the
+                // spawn/join overhead of nested par_iter across too many
+                // octaves pushes wall time up even though individual cores
+                // do the same amount of compute.
+                let mut candidates = if octave_image.height() >= 900 {
+                    crate::features::fast::fast_detect_rows_u8(
+                        octave_image,
+                        self.ini_fast_threshold,
+                        self.fast_n,
+                        EDGE_THRESHOLD,
+                        0..octave_image.height(),
+                    )
+                } else {
+                    crate::features::fast::fast_detect_rows_u8_serial(
+                        octave_image,
+                        self.ini_fast_threshold,
+                        self.fast_n,
+                        EDGE_THRESHOLD,
+                        0..octave_image.height(),
+                    )
+                };
 
                 // Softer-threshold fallback if initial detection was too sparse.
                 if candidates.len() < 10 {
