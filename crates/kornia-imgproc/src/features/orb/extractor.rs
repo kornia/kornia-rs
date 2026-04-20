@@ -646,35 +646,38 @@ impl OrbDetector {
         scales: &[f32],
         orientations: &[f32],
     ) -> Result<(Vec<[u8; 32]>, Vec<bool>), ImageError> {
-        let mut descriptors_list: Vec<[u8; 32]> = Vec::new();
-        let mut mask_list: Vec<bool> = Vec::new();
-
+        // Pre-bucket keypoints per octave so each parallel task only sees
+        // its own kps (no Vec::with_capacity scan per task).
         let octaves: Vec<usize> = scales
             .iter()
             .map(|&s| (s.ln() / self.downscale.ln()).round() as usize)
             .collect();
 
-        for (octave, octave_image) in pyramid.iter().enumerate() {
-            let octave_mask: Vec<bool> = octaves.iter().map(|&o| o == octave).collect();
-            let n_in_octave = octave_mask.iter().filter(|&&b| b).count();
-            if n_in_octave == 0 {
-                continue;
-            }
+        let mut buckets: Vec<(Vec<(i32, i32)>, Vec<f32>)> =
+            (0..pyramid.len()).map(|_| (Vec::new(), Vec::new())).collect();
+        for ((&(y, x), &ori), &octave) in keypoints.iter().zip(orientations).zip(&octaves) {
+            let scale = self.downscale.powi(octave as i32);
+            buckets[octave].0.push(((y / scale).round() as i32, (x / scale).round() as i32));
+            buckets[octave].1.push(ori);
+        }
 
-            let mut octave_keypoints = Vec::with_capacity(n_in_octave);
-            let mut octave_orientations = Vec::with_capacity(n_in_octave);
-            for ((&(y, x), &ori), &is_in_octave) in
-                keypoints.iter().zip(orientations).zip(&octave_mask)
-            {
-                if is_in_octave {
-                    let scale = self.downscale.powi(octave as i32);
-                    octave_keypoints.push(((y / scale).round() as i32, (x / scale).round() as i32));
-                    octave_orientations.push(ori);
+        // Run extract per octave in parallel. Octaves with no keypoints skip
+        // both the blur and orb_loop entirely.
+        let per_octave: Vec<Result<(Vec<[u8; 32]>, Vec<bool>), ImageError>> = pyramid
+            .par_iter()
+            .zip(buckets.into_par_iter())
+            .map(|(octave_image, (octave_keypoints, octave_orientations))| {
+                if octave_keypoints.is_empty() {
+                    return Ok((Vec::new(), Vec::new()));
                 }
-            }
+                self.extract_octave_u8(octave_image, &octave_keypoints, &octave_orientations)
+            })
+            .collect();
 
-            let (descriptors, mask) =
-                self.extract_octave_u8(octave_image, &octave_keypoints, &octave_orientations)?;
+        let mut descriptors_list: Vec<[u8; 32]> = Vec::new();
+        let mut mask_list: Vec<bool> = Vec::new();
+        for r in per_octave {
+            let (descriptors, mask) = r?;
             descriptors_list.extend(descriptors);
             mask_list.extend(mask);
         }

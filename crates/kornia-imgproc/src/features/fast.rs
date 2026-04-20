@@ -209,18 +209,33 @@ impl FastDetector {
                 let mut x = 3;
 
                 // NEON block path: process 16 pixels at a time when available.
+                // The kernel emits raw u16 scores + a pass mask. For this
+                // dense-response API we need f32 output, so allocate a 16-u16
+                // scratch and convert lane-by-lane (zeroing lanes that fail
+                // the arc check).
                 #[cfg(target_arch = "aarch64")]
                 if std::env::var("KORNIA_FAST_NEON").map_or(true, |v| v != "0") {
+                    let scale = 1.0f32 / 255.0;
+                    let mut scratch = [0u16; 16];
                     unsafe {
                         while x + 16 <= row_end {
-                            fast_block_neon_16(
+                            let mask = fast_block_neon_16(
                                 src_slice,
                                 row_base + x,
                                 &ring,
                                 threshold_u8,
                                 n as u8,
-                                row.as_mut_ptr().add(x),
+                                scratch.as_mut_ptr(),
                             );
+                            let dst = row.as_mut_ptr().add(x);
+                            for i in 0..16 {
+                                let score = if (mask >> i) & 1 != 0 {
+                                    scratch[i] as f32 * scale
+                                } else {
+                                    0.0
+                                };
+                                *dst.add(i) = score;
+                            }
                             x += 16;
                         }
                     }
@@ -403,7 +418,8 @@ fn fast_detect_rows_u8_impl<A: ImageAllocator>(
 
         #[cfg(target_arch = "aarch64")]
         if use_neon {
-            let mut scratch = [0f32; 16];
+            let mut scratch = [0u16; 16];
+            let scale = 1.0f32 / 255.0;
             unsafe {
                 while x + 16 <= col_end {
                     let mut mask = fast_block_neon_16(
@@ -415,11 +431,13 @@ fn fast_detect_rows_u8_impl<A: ImageAllocator>(
                         scratch.as_mut_ptr(),
                     );
                     // Iterate only set bits via ctz — O(popcount) instead of
-                    // O(16) per block. Big win in dense-corner regions where
-                    // ~20% of pixels are FAST candidates.
+                    // O(16) per block. Raw u16 score → f32 here, only for
+                    // survivors (~3/16 on checker-dense regions). Skipping
+                    // the kernel-side 4× vcvtq_f32_u32 + vmulq_n_f32 saves
+                    // ~30 cycles per block.
                     while mask != 0 {
                         let i = mask.trailing_zeros() as usize;
-                        local.push(([y, x + i], scratch[i]));
+                        local.push(([y, x + i], scratch[i] as f32 * scale));
                         mask &= mask - 1;
                     }
                     x += 16;
@@ -528,12 +546,13 @@ fn fast_score_scalar(
 /// For 16 adjacent centers, loads the 16-pixel rings at each of the 16 Bresenham
 /// ring positions, maintains 16-lane "bright run"/"dark run" counters using the
 /// recurrence `run = (run + 1) & is_bright` (or dark), and tracks per-lane max
-/// via `vmaxq_u8`. A lane is a corner iff `max >= n` for either side; response
-/// is `Σ|ring - center| / 255`, masked to 0 where the arc check fails.
+/// via `vmaxq_u8`. A lane is a corner iff `max >= n` for either side; raw
+/// u16 score is `Σ|ring - center|`.
 ///
-/// Returns a 16-bit mask with bit `i` set iff lane `i` is a corner — lets the
-/// caller iterate only surviving lanes via `trailing_zeros` instead of a fixed
-/// 16-iteration branch chain.
+/// Returns `(mask, scores)`: the 16-bit pass mask (bit `i` set iff lane `i` is
+/// a corner) and 16 raw u16 scores written to `out_ptr`. The caller converts
+/// to f32 only at surviving lanes, skipping the vcvtq_f32_u32 + vmulq_n_f32
+/// pipeline for the ~80% of lanes that fail the arc check.
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn fast_block_neon_16(
@@ -542,7 +561,7 @@ unsafe fn fast_block_neon_16(
     ring: &[isize; 16],
     threshold_u8: u8,
     n: u8,
-    out_ptr: *mut f32,
+    out_ptr: *mut u16,
 ) -> u16 {
     use std::arch::aarch64::*;
 
@@ -576,7 +595,8 @@ unsafe fn fast_block_neon_16(
     let any_pass = vorrq_u8(vcgeq_u8(b_count, min_card_v), vcgeq_u8(d_count, min_card_v));
 
     if vmaxvq_u8(any_pass) == 0 {
-        // All 16 lanes fail cardinal check → mask = 0. Scores irrelevant.
+        // All 16 lanes fail cardinal check → mask = 0. Scores irrelevant,
+        // caller won't read them.
         return 0;
     }
 
@@ -621,25 +641,11 @@ unsafe fn fast_block_neon_16(
     let hi_mask = vaddv_u8(vget_high_u8(masked)) as u16;
     let mask = (hi_mask << 8) | lo_mask;
 
-    // Expand pass (u8, 0/0xFF per lane) to u16 (0/0xFFFF) via signed extension.
-    let pass_lo_u16 =
-        vreinterpretq_u16_s16(vmovl_s8(vreinterpret_s8_u8(vget_low_u8(pass))));
-    let pass_hi_u16 =
-        vreinterpretq_u16_s16(vmovl_s8(vreinterpret_s8_u8(vget_high_u8(pass))));
-
-    let acc_lo_m = vandq_u16(acc_lo, pass_lo_u16);
-    let acc_hi_m = vandq_u16(acc_hi, pass_hi_u16);
-
-    let scale = 1.0f32 / 255.0;
-    let f0 = vmulq_n_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(acc_lo_m))), scale);
-    let f1 = vmulq_n_f32(vcvtq_f32_u32(vmovl_u16(vget_high_u16(acc_lo_m))), scale);
-    let f2 = vmulq_n_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(acc_hi_m))), scale);
-    let f3 = vmulq_n_f32(vcvtq_f32_u32(vmovl_u16(vget_high_u16(acc_hi_m))), scale);
-
-    vst1q_f32(out_ptr, f0);
-    vst1q_f32(out_ptr.add(4), f1);
-    vst1q_f32(out_ptr.add(8), f2);
-    vst1q_f32(out_ptr.add(12), f3);
+    // We don't need to mask the stores — the caller iterates only lanes
+    // with bit set in `mask`, so zeroing acc lanes where pass=0 is wasted
+    // work. Just spill the raw u16 accumulators to scratch.
+    vst1q_u16(out_ptr, acc_lo);
+    vst1q_u16(out_ptr.add(8), acc_hi);
 
     mask
 }
