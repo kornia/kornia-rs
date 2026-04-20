@@ -142,8 +142,7 @@ impl PaddingMode {
                         .for_each(|(dr, dst_row)| {
                             let y = row_base + dr;
                             let src_y = self.map_index(y as isize - top as isize, old_height);
-                            let src_row =
-                                &rest[src_y * row_stride..(src_y + 1) * row_stride];
+                            let src_row = &rest[src_y * row_stride..(src_y + 1) * row_stride];
                             dst_row.copy_from_slice(src_row);
                         });
                 });

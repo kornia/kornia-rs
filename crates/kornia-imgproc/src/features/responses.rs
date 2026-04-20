@@ -231,17 +231,13 @@ impl HarrisResponse {
                             .zip(
                                 dy2_chunk
                                     .get_mut(row_slice.clone())
-                                    .ok_or_else(|| {
-                                        Self::col_bounds_err(cols, src.rows(), row_idx)
-                                    })?
+                                    .ok_or_else(|| Self::col_bounds_err(cols, src.rows(), row_idx))?
                                     .iter_mut(),
                             )
                             .zip(
                                 dxy_chunk
                                     .get_mut(row_slice.clone())
-                                    .ok_or_else(|| {
-                                        Self::col_bounds_err(cols, src.rows(), row_idx)
-                                    })?
+                                    .ok_or_else(|| Self::col_bounds_err(cols, src.rows(), row_idx))?
                                     .iter_mut(),
                             )
                             .enumerate()
@@ -263,10 +259,8 @@ impl HarrisResponse {
                                     )
                                 };
 
-                                let dx =
-                                    (-v33 + v31 - 2.0 * v23 + 2.0 * v21 - v13 + v11) * 0.125;
-                                let dy =
-                                    (-v33 - 2.0 * v32 - v31 + v13 + 2.0 * v12 + v11) * 0.125;
+                                let dx = (-v33 + v31 - 2.0 * v23 + 2.0 * v21 - v13 + v11) * 0.125;
+                                let dy = (-v33 - 2.0 * v32 - v31 + v13 + 2.0 * v12 + v11) * 0.125;
 
                                 *dx2_pixel = dx * dx;
                                 *dy2_pixel = dy * dy;

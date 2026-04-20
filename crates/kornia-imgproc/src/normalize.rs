@@ -359,16 +359,13 @@ unsafe fn normalize_rgb_u8_avx2(
     ];
     let o = [
         _mm256_setr_ps(
-            offset[0], offset[1], offset[2], offset[0], offset[1], offset[2], offset[0],
-            offset[1],
+            offset[0], offset[1], offset[2], offset[0], offset[1], offset[2], offset[0], offset[1],
         ),
         _mm256_setr_ps(
-            offset[2], offset[0], offset[1], offset[2], offset[0], offset[1], offset[2],
-            offset[0],
+            offset[2], offset[0], offset[1], offset[2], offset[0], offset[1], offset[2], offset[0],
         ),
         _mm256_setr_ps(
-            offset[1], offset[2], offset[0], offset[1], offset[2], offset[0], offset[1],
-            offset[2],
+            offset[1], offset[2], offset[0], offset[1], offset[2], offset[0], offset[1], offset[2],
         ),
     ];
 
@@ -575,7 +572,11 @@ mod tests {
             s = s.wrapping_mul(1664525).wrapping_add(1013904223);
             *b = (s >> 24) as u8;
         }
-        let scale = [1.0 / (0.229 * 255.0), 1.0 / (0.224 * 255.0), 1.0 / (0.225 * 255.0)];
+        let scale = [
+            1.0 / (0.229 * 255.0),
+            1.0 / (0.224 * 255.0),
+            1.0 / (0.225 * 255.0),
+        ];
         let offset = [-0.485 / 0.229, -0.456 / 0.224, -0.406 / 0.225];
 
         let mut dst_avx = vec![0.0f32; npix * 3];
@@ -586,7 +587,13 @@ mod tests {
         super::normalize_rgb_u8_scalar(&src, &mut dst_scalar, npix, &scale, &offset);
 
         for (i, (a, b)) in dst_avx.iter().zip(dst_scalar.iter()).enumerate() {
-            assert!((a - b).abs() < 1e-5, "mismatch at {}: avx={} scalar={}", i, a, b);
+            assert!(
+                (a - b).abs() < 1e-5,
+                "mismatch at {}: avx={} scalar={}",
+                i,
+                a,
+                b
+            );
         }
     }
 

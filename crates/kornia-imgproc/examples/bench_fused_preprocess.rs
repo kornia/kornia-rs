@@ -4,9 +4,11 @@
 
 use std::time::Instant;
 
-use kornia_imgproc::resize::{resize_fast_rgb, resize_normalize_to_tensor_u8_to_f32, NormalizeParams};
 use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 use kornia_imgproc::interpolation::InterpolationMode;
+use kornia_imgproc::resize::{
+    resize_fast_rgb, resize_normalize_to_tensor_u8_to_f32, NormalizeParams,
+};
 
 fn main() {
     let src_w = 1920;
@@ -45,7 +47,13 @@ fn main() {
     for _ in 0..20 {
         resize_fast_rgb(&src_img, &mut dst_u8, InterpolationMode::Bilinear).unwrap();
         resize_normalize_to_tensor_u8_to_f32(
-            &src_bytes, src_w, src_h, &mut dst_chw_f32, dst_w, dst_h, &params,
+            &src_bytes,
+            src_w,
+            src_h,
+            &mut dst_chw_f32,
+            dst_w,
+            dst_h,
+            &params,
         );
     }
 
@@ -58,27 +66,29 @@ fn main() {
     let t0 = Instant::now();
     for _ in 0..n {
         resize_fast_rgb(&src_img, &mut dst_u8, InterpolationMode::Bilinear).unwrap();
-        separate_normalize_hwc_to_chw(
-            dst_u8.as_slice(),
-            &mut dst_chw_f32,
-            dst_w,
-            dst_h,
-            mean,
-            std,
-        );
+        separate_normalize_hwc_to_chw(dst_u8.as_slice(), &mut dst_chw_f32, dst_w, dst_h, mean, std);
     }
     let separate_ms = t0.elapsed().as_secs_f64() / n as f64 * 1000.0;
 
     let t0 = Instant::now();
     for _ in 0..n {
         resize_normalize_to_tensor_u8_to_f32(
-            &src_bytes, src_w, src_h, &mut dst_chw_f32, dst_w, dst_h, &params,
+            &src_bytes,
+            src_w,
+            src_h,
+            &mut dst_chw_f32,
+            dst_w,
+            dst_h,
+            &params,
         );
     }
     let fused_ms = t0.elapsed().as_secs_f64() / n as f64 * 1000.0;
 
     println!("1080p → 540p, RGB u8 → f32 NCHW, ImageNet mean/std:");
-    println!("  pyrdown_2x (u8→u8, no norm):  {:>6.3} ms  (floor)", pyrdown_ms);
+    println!(
+        "  pyrdown_2x (u8→u8, no norm):  {:>6.3} ms  (floor)",
+        pyrdown_ms
+    );
     println!(
         "  separate: pyrdown + norm+layout: {:>6.3} ms  ({:.2}× pyrdown)",
         separate_ms,

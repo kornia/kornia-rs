@@ -138,8 +138,7 @@ fn fused_row_scalar(
     for x in 0..dst_w {
         let base0 = 2 * x * 3;
         let base1 = base0 + 3;
-        let sum_r =
-            r0[base0] as u32 + r0[base1] as u32 + r1[base0] as u32 + r1[base1] as u32;
+        let sum_r = r0[base0] as u32 + r0[base1] as u32 + r1[base0] as u32 + r1[base1] as u32;
         let sum_g = r0[base0 + 1] as u32
             + r0[base1 + 1] as u32
             + r1[base0 + 1] as u32
@@ -267,9 +266,7 @@ mod tests {
         let std = [0.229, 0.224, 0.225];
         let params = NormalizeParams::<3>::from_mean_std(mean, std);
 
-        resize_normalize_to_tensor_u8_to_f32(
-            &src, src_w, src_h, &mut dst, dst_w, dst_h, &params,
-        );
+        resize_normalize_to_tensor_u8_to_f32(&src, src_w, src_h, &mut dst, dst_w, dst_h, &params);
 
         // f64 reference: (avg(2x2)/255 - mean) / std, CHW layout.
         let plane = dst_h * dst_w;

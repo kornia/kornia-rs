@@ -47,7 +47,11 @@ fn main() {
         *b = (s >> 24) as u8;
     }
 
-    let scale = [1.0 / (0.229 * 255.0), 1.0 / (0.224 * 255.0), 1.0 / (0.225 * 255.0)];
+    let scale = [
+        1.0 / (0.229 * 255.0),
+        1.0 / (0.224 * 255.0),
+        1.0 / (0.225 * 255.0),
+    ];
     let offset = [-0.485 / 0.229, -0.456 / 0.224, -0.406 / 0.225];
 
     let mut dst_simd = vec![0.0f32; npix * 3];
@@ -87,10 +91,16 @@ fn main() {
 
     println!("Path     |   time/call |   throughput");
     println!("---------+-------------+-------------");
-    println!("scalar   | {:8.3} ms | {:7.1} MPix/s", t_scalar, mpix_scalar);
+    println!(
+        "scalar   | {:8.3} ms | {:7.1} MPix/s",
+        t_scalar, mpix_scalar
+    );
     println!("SIMD     | {:8.3} ms | {:7.1} MPix/s", t_simd, mpix_simd);
     println!();
-    println!("SIMD speedup over scalar on this arch: {:.2}×", t_scalar / t_simd);
+    println!(
+        "SIMD speedup over scalar on this arch: {:.2}×",
+        t_scalar / t_simd
+    );
 
     let mut max_diff = 0.0f32;
     for (a, b) in dst_simd.iter().zip(dst_scalar.iter()) {
@@ -99,5 +109,8 @@ fn main() {
             max_diff = d;
         }
     }
-    println!("Max |SIMD − scalar|: {:.3e} (FMA rounding noise expected ~1e-7)", max_diff);
+    println!(
+        "Max |SIMD − scalar|: {:.3e} (FMA rounding noise expected ~1e-7)",
+        max_diff
+    );
 }

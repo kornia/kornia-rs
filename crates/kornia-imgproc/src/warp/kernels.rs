@@ -184,10 +184,8 @@ unsafe fn process_perspective_span_neon<const C: usize>(
             let yf = vmulq_f32(ny_v, inv_nd);
             let xi_v = vcvtq_s32_f32(vrndmq_f32(xf));
             let yi_v = vcvtq_s32_f32(vrndmq_f32(yf));
-            let fx_v =
-                vcvtq_u32_f32(vmulq_f32(vsubq_f32(xf, vcvtq_f32_s32(xi_v)), q10_v));
-            let fy_v =
-                vcvtq_u32_f32(vmulq_f32(vsubq_f32(yf, vcvtq_f32_s32(yi_v)), q10_v));
+            let fx_v = vcvtq_u32_f32(vmulq_f32(vsubq_f32(xf, vcvtq_f32_s32(xi_v)), q10_v));
+            let fy_v = vcvtq_u32_f32(vmulq_f32(vsubq_f32(yf, vcvtq_f32_s32(yi_v)), q10_v));
             vst1q_s32(xs.as_mut_ptr(), xi_v);
             vst1q_s32(ys.as_mut_ptr(), yi_v);
             vst1q_u32(fxs.as_mut_ptr(), fx_v);

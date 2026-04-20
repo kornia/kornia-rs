@@ -34,8 +34,8 @@ pub(super) fn resize_nearest_u8<const C: usize>(
                 .enumerate()
                 .for_each(|(dr, dst_row)| {
                     let y = row_base + dr;
-                    let yi = (((y as f64 + 0.5) * sy).floor() as i64)
-                        .clamp(0, src_h as i64 - 1) as usize;
+                    let yi = (((y as f64 + 0.5) * sy).floor() as i64).clamp(0, src_h as i64 - 1)
+                        as usize;
                     let src_row = &src[yi * src_stride..(yi + 1) * src_stride];
                     for (x, xi) in xmap.iter().enumerate() {
                         let so = xi * C;
