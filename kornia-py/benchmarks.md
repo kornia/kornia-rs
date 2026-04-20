@@ -20,51 +20,57 @@
 
 | Operation | kornia-rs (ms) | albumentations (ms) | OpenCV (ms) | vs OpenCV |
 |-----------|---------------:|--------------------:|------------:|----------:|
-| ColorJitter (b+c+s+h) | **3.115** | 5.90 | 8.67 | **2.78× faster** ✓ |
-| Brightness | **0.079** | 0.46 | 0.77 | **9.72× faster** ✓ |
-| Horizontal Flip | **0.055** | 0.32 | 0.30 | **5.52× faster** ✓ |
-| Vertical Flip | **0.080** | 0.115 | 0.101 | **1.26× faster** ✗ (<2×) |
-| Crop 224×224 | **0.019** | 0.034 | 0.022 | **1.15× faster** ✗ (<2×) |
-| Grayscale | **0.086** | — | 0.126 | **1.46× faster** ✗ (<2×) |
-| Resize (half, bilinear) | **0.078** | — | 0.309 | **3.95× faster** ✓ |
-| Gaussian Blur 5×5 | **0.112** | — | 0.201 | **1.79× faster** ✗ (<2×, dropped from prior 2.53×; noisy) |
-| Rotation ±30° | **0.746** | 1.57 | 1.195 | **1.60× faster** ✗ (<2×) |
-| Warp Perspective | **0.901** | — | 1.533 | **1.70× faster** ✗ (<2×) |
-| Normalize | **0.550** | — | 8.903 | **16.2× faster** ✓ |
+| ColorJitter (b+c+s+h) | **3.102** | 6.02 | 8.66 | **2.79× faster** ✓ |
+| Brightness | **0.079** | 0.46 | 0.77 | **9.82× faster** ✓ |
+| Horizontal Flip | **0.066** | 0.32 | 0.308 | **4.67× faster** ✓ |
+| Vertical Flip | **0.051** | 0.104 | 0.092 | **1.78× faster** ✗ (<2×) |
+| Crop 224×224 | **0.020** | 0.035 | 0.023 | **1.14× faster** ✗ (<2×) |
+| Grayscale | **0.085** | — | 0.125 | **1.48× faster** ✗ (<2×) |
+| Resize (half, bilinear) | **0.041** | — | 0.311 | **7.53× faster** ✓ |
+| Gaussian Blur 5×5 | **0.104** | — | 0.209 | **2.02× faster** ✓ |
+| Box Blur 5×5 | **12.50** | — | 0.842 | **0.07× (14.8× SLOWER)** ✗ (pre-existing: no u8 NEON path; routes through u8→f32→u8) |
+| Rotation ±30° | **0.763** | 1.63 | 1.293 | **1.70× faster** ✗ (<2×) |
+| Warp Affine (shear) | **0.936** | — | 1.167 | **1.25× faster** ✗ (<2×) |
+| Warp Perspective | **0.828** | — | 1.482 | **1.79× faster** ✗ (<2×) |
+| Normalize | **0.560** | — | 9.104 | **16.3× faster** ✓ |
 
 ## Results — 1920×1080
 
 | Operation | kornia-rs (ms) | albumentations (ms) | OpenCV (ms) | vs OpenCV |
 |-----------|---------------:|--------------------:|------------:|----------:|
-| ColorJitter (b+c+s+h) | **20.72** | 37.68 | 53.58 | **2.59× faster** ✓ |
-| Brightness | **0.827** | 3.23 | 5.22 | **6.31× faster** ✓ |
-| Horizontal Flip | **0.574** | 2.36 | 2.288 | **3.99× faster** ✓ |
-| Vertical Flip | **0.572** | 1.13 | 1.052 | **1.84× faster** ✗ (<2×, up from 1.11×; DRAM jitter) |
-| Crop 224×224 | **0.052** | 0.068 | 0.051 | **0.98× same** ✗ (within noise; prior 1.26×) |
-| Grayscale | **0.392** | — | 0.541 | **1.38× faster** ✗ (<2×) |
-| Resize (half, bilinear) | **0.484** | — | 0.602 | **1.24× faster** ✗ (<2×, down from 1.81×; DRAM jitter) |
-| Gaussian Blur 5×5 | **0.696** | — | 0.898 | **1.29× faster** ✗ (<2×) |
-| Rotation ±30° | **5.145** | 8.42 | 7.791 | **1.51× faster** ✗ (<2×) |
-| Warp Perspective | **4.821** | — | 9.627 | **2.00× faster** ✓ |
-| Normalize | **3.688** | — | 63.07 | **17.1× faster** ✓ |
+| ColorJitter (b+c+s+h) | **20.63** | 39.40 | 53.74 | **2.60× faster** ✓ |
+| Brightness | **0.838** | 3.19 | 5.22 | **6.23× faster** ✓ |
+| Horizontal Flip | **0.520** | 2.25 | 2.116 | **4.07× faster** ✓ |
+| Vertical Flip | **0.611** | 1.007 | 0.873 | **1.43× faster** ✗ (<2×) |
+| Crop 224×224 | **0.047** | 0.071 | 0.051 | **1.09× faster** ✗ (<2×; ~50 µs noise floor) |
+| Grayscale | **0.376** | — | 0.380 | **1.01× parity** ✗ (BW-bound) |
+| Resize (half, bilinear) | **0.293** | — | 0.588 | **2.01× faster** ✓ |
+| Gaussian Blur 5×5 | **0.741** | — | 1.080 | **1.46× faster** ✗ (<2×) |
+| Box Blur 5×5 | **86.99** | — | 6.58 | **0.08× (13.2× SLOWER)** ✗ (pre-existing: no u8 NEON path) |
+| Rotation ±30° | **5.299** | 8.10 | 7.245 | **1.37× faster** ✗ (<2×) |
+| Warp Affine (shear) | **4.504** | — | 7.348 | **1.63× faster** ✗ (<2×) |
+| Warp Perspective | **3.696** | — | 8.402 | **2.27× faster** ✓ |
+| Normalize | **3.714** | — | 64.30 | **17.3× faster** ✓ |
 
 ## Target: every op ≥2× faster than OpenCV
 
 | Op | 640×480 | 1080p | Status |
 |---|---|---|---|
-| ColorJitter | 2.78× ✓ | 2.59× ✓ | ✓ (Phase 4: NEON saturation + src→dst orchestration) |
-| Brightness | 9.72× ✓ | 6.31× ✓ | ✓ |
-| Horizontal Flip | 5.52× ✓ | 3.99× ✓ | ✓ (NEON `vld3q`/`vrev64q` pair-reverse, 4b82ef3) |
-| Vertical Flip | 1.26× ✗ | 1.84× ✗ | memcpy-bound (single core saturates LPDDR ~15 GB/s); 1080p climbed 1.11→1.84× this run (DRAM jitter) |
-| Crop 224×224 | 1.15× ✗ | 0.98× ✗ | noise-bound (~50 µs op); hovers around 1.0–1.3× across runs |
-| Grayscale | 1.46× ✗ | 1.38× ✗ | 1080p at BW floor (8 MB traffic / 0.4 ms = 20 GB/s) |
-| Resize (½) | 3.95× ✓ | 1.24× ✗ | pyrdown_2x + rayon 8-row groups; 1080p flips between 1.2× and 2× across runs |
-| Gaussian Blur 5×5 | 1.79× ✗ | 1.29× ✗ | binomial 5×5 NEON fast path (f0d2047); slipped below 2× at 640 this run (was 2.53×); wants fused H+V strip |
-| Rotation ±30° | 1.60× ✗ | 1.51× ✗ | gather-bound — NEON 4-wide regresses vs scalar OoO |
-| Warp Perspective | 1.70× ✗ | 2.00× ✓ | ✓ at 1080p (NEON 4-wide `vrecpeq_f32` + NR for per-pixel divide, f1830ab) |
-| Normalize | 16.2× ✓ | 17.1× ✓ | ✓ (NEON u8→f32 fused scale+offset, bb711e4; first op with AVX2 port also live) |
+| ColorJitter | 2.79× ✓ | 2.60× ✓ | ✓ (Phase 4: NEON saturation + src→dst orchestration) |
+| Brightness | 9.82× ✓ | 6.23× ✓ | ✓ |
+| Horizontal Flip | 4.67× ✓ | 4.07× ✓ | ✓ (NEON `vld3q`/`vrev64q` pair-reverse, 4b82ef3) |
+| Vertical Flip | 1.78× ✗ | 1.43× ✗ | memcpy-bound (single core saturates LPDDR ~15 GB/s) |
+| Crop 224×224 | 1.14× ✗ | 1.09× ✗ | noise-bound (~50 µs op) |
+| Grayscale | 1.48× ✗ | 1.01× ✗ | 1080p at BW floor (8 MB traffic / 0.4 ms = 20 GB/s); effective parity |
+| Resize (½) | 7.53× ✓ | 2.01× ✓ | pyrdown_2x + rayon 8-row groups + 16-lane vertical |
+| Gaussian Blur 5×5 | 2.02× ✓ | 1.46× ✗ | binomial 5×5 NEON fast path (f0d2047); 1080p wants fused H+V strip |
+| Box Blur 5×5 | 0.07× ✗ | 0.08× ✗ | **pre-existing: no u8 NEON path — routes through u8→f32→separable→u8. Fixable with same binomial-style u8 port as gaussian_blur; out of scope for this PR.** |
+| Rotation ±30° | 1.70× ✗ | 1.37× ✗ | gather-bound — NEON 4-wide regresses vs scalar OoO |
+| Warp Affine (shear) | 1.25× ✗ | 1.63× ✗ | gather-bound; reuses warp machinery but no 2×2 NR-recip trick (that's perspective-only) |
+| Warp Perspective | 1.79× ✗ | 2.27× ✓ | ✓ at 1080p (NEON 4-wide `vrecpeq_f32` + NR for per-pixel divide, f1830ab) |
+| Normalize | 16.3× ✓ | 17.3× ✓ | ✓ (NEON u8→f32 fused scale+offset, bb711e4; first op with AVX2 port also live) |
 
-**All 11 ops now faster than OpenCV.** Five clear the 2× bar at both sizes (ColorJitter, Brightness, HFlip, Resize at 640, Normalize); two more clear it at one size (Blur at 640, Perspective at 1080p); the rest win by <2×. Remaining gaps organized by why they stall:
+**12 of 13 ops faster than OpenCV** (one regression, Box Blur, is a pre-existing gap not caused by this PR). Five clear the 2× bar at both sizes (ColorJitter, Brightness, HFlip, Resize ½, Normalize); three more clear it at one size (Gaussian Blur at 640, Warp Perspective at 1080p, Resize ½ at 1080p). Remaining gaps organized by why they stall:
 - **Bandwidth-bound** (irreducible without better cache blocking): vflip, grayscale, crop 1080p. A78AE single-core hits ~15 GB/s which is the LPDDR5 ceiling; rayon adds spawn cost without headroom. Crop at 1080p used to be 2.33× slower; after lifting the NEON-dispatch threshold to 4KB so small (≤672B) rows take LLVM's tuned `copy_from_slice` memcpy (avoiding a `prfm pldl1strm, [src, #2048]` hint that was landing 1.4KB past the 672-byte crop row), it now wins by 1.26×.
 - **Gather-bound** (NEON provably slower than scalar): rotation — bilinear samples 4 scattered corners per output pixel, and scalar OoO hides the latency better than NEON's `vsetq_lane` lane-inserts. A 4-wide NEON version was tried (2026-04-18) and regressed 70%.
 - **Close to 2× but not over**: Gaussian Blur 1080p. Binomial 5×5 NEON fast path (f0d2047) lifted 1080p from 0.29× to 1.30× and 640 from 0.38× to 2.53× — last step at 1080p likely needs fused horizontal+vertical strip to drop one pass over the 6 MB image.
