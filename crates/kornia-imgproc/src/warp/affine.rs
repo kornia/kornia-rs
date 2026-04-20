@@ -3,7 +3,7 @@ use std::f32::consts::PI;
 use kornia_image::allocator::ImageAllocator;
 use kornia_image::{Image, ImageError};
 
-use super::common::bilinear_sample_u8_valid;
+use super::kernels::process_affine_span;
 use crate::interpolation::{interpolate_pixel_fast, validate_interpolation, InterpolationMode};
 use crate::parallel;
 
@@ -250,23 +250,15 @@ pub fn warp_affine_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
             }
 
             // Q16 coord at x_lo.
-            let mut sx_q = ((sx0 + dsx * x_lo_u as f32) * Q_SCALE) as i32;
-            let mut sy_q = ((sy0 + dsy * x_lo_u as f32) * Q_SCALE) as i32;
+            let sx_q_lo = ((sx0 + dsx * x_lo_u as f32) * Q_SCALE) as i32;
+            let sy_q_lo = ((sy0 + dsy * x_lo_u as f32) * Q_SCALE) as i32;
 
-            // Branch-free inner loop over the valid region.
-            for x in x_lo_u..x_hi_u {
-                let dst_pixel_ptr = unsafe { dst_row.as_mut_ptr().add(x * C) };
-                let xi = sx_q >> Q;
-                let yi = sy_q >> Q;
-                let fx_q10 = ((sx_q & 0xFFFF) as u32) >> 6;
-                let fy_q10 = ((sy_q & 0xFFFF) as u32) >> 6;
-                let dst_pixel = unsafe { std::slice::from_raw_parts_mut(dst_pixel_ptr, C) };
-                bilinear_sample_u8_valid::<C>(
-                    src_slice, src_w, src_h, src_stride, xi, yi, fx_q10, fy_q10, dst_pixel,
-                );
-                sx_q = sx_q.wrapping_add(dsx_q);
-                sy_q = sy_q.wrapping_add(dsy_q);
-            }
+            // Branch-free inner loop over the valid region (dispatched
+            // to the best backend by the kernels module).
+            process_affine_span::<C>(
+                src_slice, src_w, src_h, src_stride, dst_row, x_lo_u, x_hi_u, sx_q_lo, sy_q_lo,
+                dsx_q, dsy_q,
+            );
         });
 
     Ok(())
