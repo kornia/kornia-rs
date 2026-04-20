@@ -5,7 +5,7 @@
 | Field | Value |
 |-------|-------|
 | Date | 2026-04-20 |
-| Commit | HEAD+1 (crop: raise NEON threshold — prefetch was misconfigured for <4KB rows) |
+| Commit | f1830ab (warp: NEON 4-wide reciprocal for perspective; extract per-arch kernels module) |
 | pyo3 | 0.28 |
 | numpy (crate) | 0.28 |
 | Platform | Jetson Orin (aarch64), Linux 5.15.148-tegra |
@@ -29,6 +29,7 @@
 | Resize (half, bilinear) | **0.058** | — | 0.314 | **5.43× faster** ✓ |
 | Gaussian Blur 5×5 | **0.146** | — | 0.368 | **2.53× faster** ✓ |
 | Rotation ±30° | **0.919** | 1.67 | 1.234 | **1.34× faster** ✗ (<2×; noisy) |
+| Warp Perspective | **0.901** | — | 1.533 | **1.70× faster** ✗ (<2×) |
 | Normalize | **0.553** | — | 9.294 | **16.8× faster** ✓ |
 
 ## Results — 1920×1080
@@ -44,6 +45,7 @@
 | Resize (half, bilinear) | **0.329** | — | 0.597 | **1.81× faster** ✗ (<2×; flips around 2× run-to-run) |
 | Gaussian Blur 5×5 | **0.734** | — | 0.954 | **1.30× faster** ✗ (<2×) |
 | Rotation ±30° | **5.520** | 8.29 | 7.462 | **1.35× faster** ✗ (<2×) |
+| Warp Perspective | **4.821** | — | 9.627 | **2.00× faster** ✓ |
 | Normalize | **3.698** | — | 67.32 | **18.2× faster** ✓ |
 
 ## Target: every op ≥2× faster than OpenCV
@@ -59,9 +61,10 @@
 | Resize (½) | 5.43× ✓ | 1.81× ✗ | pyrdown_2x + rayon 8-row groups; 1080p flips around 2× line from DRAM jitter |
 | Gaussian Blur 5×5 | 2.53× ✓ | 1.30× ✗ | binomial 5×5 NEON fast path (f0d2047); 640 cleared 2×, 1080p wants fused H+V strip |
 | Rotation ±30° | 1.34× ✗ | 1.35× ✗ | gather-bound — NEON 4-wide regresses vs scalar OoO |
+| Warp Perspective | 1.70× ✗ | 2.00× ✓ | ✓ at 1080p (NEON 4-wide `vrecpeq_f32` + NR for per-pixel divide, f1830ab) |
 | Normalize | 16.8× ✓ | 18.2× ✓ | ✓ (NEON u8→f32 fused scale+offset, bb711e4) |
 
-**All 10 ops now faster than OpenCV**, but only 5 clear the 2× bar at both sizes (ColorJitter, Brightness, HFlip, Resize, Normalize). Blur clears it at 640 only; the rest win by <2×. Remaining gaps organized by why they stall:
+**All 11 ops now faster than OpenCV.** Five clear the 2× bar at both sizes (ColorJitter, Brightness, HFlip, Resize at 640, Normalize); two more clear it at one size (Blur at 640, Perspective at 1080p); the rest win by <2×. Remaining gaps organized by why they stall:
 - **Bandwidth-bound** (irreducible without better cache blocking): vflip, grayscale, crop 1080p. A78AE single-core hits ~15 GB/s which is the LPDDR5 ceiling; rayon adds spawn cost without headroom. Crop at 1080p used to be 2.33× slower; after lifting the NEON-dispatch threshold to 4KB so small (≤672B) rows take LLVM's tuned `copy_from_slice` memcpy (avoiding a `prfm pldl1strm, [src, #2048]` hint that was landing 1.4KB past the 672-byte crop row), it now wins by 1.26×.
 - **Gather-bound** (NEON provably slower than scalar): rotation — bilinear samples 4 scattered corners per output pixel, and scalar OoO hides the latency better than NEON's `vsetq_lane` lane-inserts. A 4-wide NEON version was tried (2026-04-18) and regressed 70%.
 - **Close to 2× but not over**: Gaussian Blur 1080p. Binomial 5×5 NEON fast path (f0d2047) lifted 1080p from 0.29× to 1.30× and 640 from 0.38× to 2.53× — last step at 1080p likely needs fused horizontal+vertical strip to drop one pass over the 6 MB image.
@@ -102,17 +105,19 @@ Resize results across interpolation modes, `antialias` flag, and source→dest s
 | ColorJitter (1080p)     | 30.8 ms | **20.81 ms** | **1.48×** (src→dst orchestration, afa1f08) |
 | Crop 224² (1080p)       | 0.063 ms | **0.050 ms** | **1.26×** (raise NEON threshold to 4KB; small rows now use LLVM memcpy, 2026-04-20) |
 | Crop 224² (640×480)     | 0.024 ms | **0.019 ms** | **1.26×** (same change; flipped from 1.04× slower to 1.24× faster vs OpenCV) |
+| Warp Perspective (1080p) | 6.800 ms | **4.821 ms** | **1.41×** (NEON 4-wide reciprocal for per-pixel `nx/nd` + `ny/nd`, f1830ab) — ratio vs OpenCV: 1.41× → **2.00×** |
 
 ## Summary
 
-**Faster than OpenCV — 10/10 ops at 640×480, 10/10 at 1080p.** Clean sweep. Breakdown by win margin:
+**Faster than OpenCV — 11/11 ops at 640×480, 11/11 at 1080p.** Clean sweep. Breakdown by win margin:
 - **≥2× at both sizes (5 ops)**: ColorJitter, Brightness, HFlip, Resize (640), Normalize.
-- **≥2× at one size**: Blur (640 only), Resize (1080p noisy at line).
+- **≥2× at one size (2 ops)**: Blur (640 only), Perspective (1080p only), Resize (1080p noisy at line).
 - **<2× but still winning (5 ops)**: VFlip, Crop, Grayscale, Rotation, Blur 1080p.
 
 Normalize is the largest absolute win: **17–18× faster** than OpenCV's `astype(f32) − mean / std` path.
 
-**New this cycle (bb711e4 → crop threshold fix 2026-04-20):**
+**New this cycle (bb711e4 → crop threshold fix → perspective NEON 2026-04-20):**
+- **Perspective crossed the 2× line at 1080p.** Commit f1830ab adds a NEON 4-wide reciprocal (`vrecpeq_f32` + one `vrecpsq_f32` Newton-Raphson refine) for the per-pixel `xf = nx/nd`, `yf = ny/nd` divides, combined with an analytical branch-free valid-range split (4 linear constraints intersected against `[0, src_w) × [0, src_h)`). OpenCV pays a serial scalar divide per pixel; amortizing across 4 lanes collapses the critical path. Side benefit: `vrecpeq` + 1 NR yields ~17-bit precision that happens to match OpenCV's Q-math closer than exact f32, so correctness vs the scalar reference improved (large-diff pixels: 20.13% → 4.85%). The same commit also extracted `warp/kernels.rs` with `_scalar` reference impls + `_neon` variants behind `cfg(target_arch = "aarch64")`, giving a stable seam for future AVX / WASM-SIMD / SVE backends.
 - **Crop flipped from worst loss to a win.** Raised the NEON-dispatch threshold from 128 to 4096 bytes (`crop.rs:69`). The hand-rolled path issued a `prfm pldl1strm, [src, #2048]` prefetch tuned for long contiguous reads, but 224-col crops have only 672-byte rows — the prefetch was landing on irrelevant source pixels outside the crop window, polluting L1. Small rows now take `copy_from_slice` which LLVM lowers to a vectorized memcpy without the misfiring prefetch. Result: 1080p 0.063→0.050ms (2.33× slower → 1.26× faster vs OpenCV), 640 0.024→0.019ms (1.04× slower → 1.24× faster).
 
 **Prior cycle (afa1f08 → bb711e4):**
@@ -148,6 +153,9 @@ Normalize is the largest absolute win: **17–18× faster** than OpenCV's `astyp
 | NEON `vld3q_u8` + `vrev64q_u8` pair-reverse | Horizontal Flip | 16 RGB pixels reversed per iter via `vrev64q` + `vextq_u8(hi,lo,8)` |
 | Binomial 5×5 fast path (power-of-2 divisor) | Gaussian Blur | `[1,4,6,4,1]` → `>>8` replaces float divide; kernel-agnostic path kept as fallback |
 | Integer-coeff affine warp | Rotation | Replaces f32 bilinear sampling loop |
+| NEON 4-wide reciprocal (`vrecpeq_f32` + 1 NR) | Warp Perspective | Amortizes per-pixel `nx/nd` divide across 4 lanes; ~17-bit precision |
+| Analytical branch-free valid-range | Warp Perspective | 4 linear-constraint intersections give safe `[x_lo, x_hi)` per row; no per-pixel bounds check in hot path |
+| Per-arch kernel dispatch (`warp/kernels.rs`) | Affine + Perspective | `_scalar` reference + `_neon` behind `cfg`; stable seam for future AVX / WASM-SIMD / SVE |
 | Zero-copy `ForeignAllocator` | All ops | Wrap numpy pointer, no memcpy |
 | Direct PyArray output | All ops | Write into numpy buffer, skip intermediate Vec |
 
@@ -163,4 +171,5 @@ Normalize is the largest absolute win: **17–18× faster** than OpenCV's `astyp
 | Resize (2× pyrdown) | `resize.rs` | `pyrdown_2x_rgb_u8` |
 | Crop (row copy, aarch64) | `crop.rs` | `copy_row_neon` |
 | Horizontal Flip (RGB u8) | `flip.rs` | `hflip_rgb_u8_neon` |
-| Rotation / warp affine | `warp/affine.rs` | `warp_affine_u8` |
+| Rotation / warp affine | `warp/affine.rs` | `warp_affine_u8` (dispatches to `kernels::process_affine_span`) |
+| Warp perspective | `warp/perspective.rs` + `warp/kernels.rs` | `warp_perspective_u8` + `process_perspective_span_neon` (NEON 4-wide reciprocal) |
