@@ -456,7 +456,7 @@ impl OrbDetector {
                 // spawn/join overhead of nested par_iter across too many
                 // octaves pushes wall time up even though individual cores
                 // do the same amount of compute.
-                let mut candidates = if octave_image.height() >= 900 {
+                let mut candidates = if octave_image.height() >= 1000 {
                     crate::features::fast::fast_detect_rows_u8(
                         octave_image,
                         self.ini_fast_threshold,
@@ -507,14 +507,14 @@ impl OrbDetector {
                 }
 
                 let nms_cap = self.n_keypoints.saturating_mul(20).max(2048);
-                let mut fast_detector = FastDetector::new(
-                    octave_image.size(),
-                    self.ini_fast_threshold,
-                    self.fast_n,
-                    1,
-                )?;
                 let t_before_nms = std::time::Instant::now();
-                let kp_with_resp = fast_detector.suppress_direct(candidates, nms_cap);
+                let kp_with_resp = crate::features::fast::suppress_direct_standalone(
+                    candidates,
+                    nms_cap,
+                    octave_image.width(),
+                    octave_image.height(),
+                    1,
+                );
                 let t_after_nms = std::time::Instant::now();
                 if trace {
                     eprintln!(
