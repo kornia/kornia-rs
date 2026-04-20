@@ -2,6 +2,7 @@
 import json
 import time
 import numpy as np
+import kornia_rs as K
 from kornia_rs.image import Image
 from kornia_rs.augmentations import ColorJitter, RandomHorizontalFlip, RandomVerticalFlip, RandomCrop, RandomRotation
 
@@ -140,6 +141,31 @@ def run_benchmarks():
         res["normalize"] = {
             "kornia": bench("kornia-rs", lambda: img.normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))),
             "opencv": bench("opencv", lambda: (data.astype(np.float32) - mean_arr) / std_arr),
+        }
+
+        # Box Blur 5x5
+        print("\n--- Box Blur 5x5 ---")
+        res["box_blur"] = {
+            "kornia": bench("kornia-rs", lambda: img.box_blur(5)),
+            "opencv": bench("opencv", lambda: cv2.blur(data, (5, 5))),
+        }
+
+        # Warp Affine (non-rotation shear) — distinct from Rotation ±30°
+        print("\n--- Warp Affine (shear) ---")
+        affine_flat = [1.0, 0.3, 0.0, 0.0, 1.0, 0.0]
+        affine_cv = np.array([[1.0, 0.3, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+        res["warp_affine"] = {
+            "kornia": bench("kornia-rs", lambda: K.imgproc.warp_affine(data, affine_flat, (h, w), "bilinear")),
+            "opencv": bench("opencv", lambda: cv2.warpAffine(data, affine_cv, (w, h))),
+        }
+
+        # Warp Perspective
+        print("\n--- Warp Perspective ---")
+        persp_flat = [1.2, 0.1, -30.0, 0.05, 1.15, -20.0, 0.0005, 0.0002, 1.0]
+        persp_cv = np.array(persp_flat, dtype=np.float32).reshape(3, 3)
+        res["warp_perspective"] = {
+            "kornia": bench("kornia-rs", lambda: K.imgproc.warp_perspective(data, persp_flat, (h, w), "bilinear")),
+            "opencv": bench("opencv", lambda: cv2.warpPerspective(data, persp_cv, (w, h))),
         }
 
         results[label] = res
