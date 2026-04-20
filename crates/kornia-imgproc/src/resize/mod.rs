@@ -1,27 +1,10 @@
 //! Image resize — dispatcher + per-algorithm kernels.
 //!
-//! # Module layout
+//! Per-arch row primitives live in [`kernels`]; the algorithm files above
+//! it (bilinear, nearest, pyramid, separable, fused) stay free of
+//! `#[cfg(target_arch)]` pairs and call into kernels through a thin seam.
 //!
-//! - [`mod.rs`]          (this file) — public API and the top-level
-//!   `resize_fast_u8_aa` dispatcher that routes `(interpolation, shape,
-//!   channels)` to the fastest available kernel.
-//! - [`common`]          — `FilterKind` enum and shared coefficient LUTs
-//!   (`precompute_contribs`, `build_xsrc_lut`, `pack_xw_i16`).
-//! - [`nearest`]         — nearest-neighbor path.
-//! - [`bilinear`]        — general N-channel bilinear (scalar Q14). Exact-2×
-//!   cases go through [`pyramid`] instead.
-//! - [`pyramid`]         — integer-ratio fast paths: `pyrdown_2x_rgb_u8`
-//!   (2:1 downscale) and `pyrup_2x_rgb_u8` (1:2 upscale). Both wrap the NEON
-//!   row kernels in [`kernels`].
-//! - [`separable`]       — Q14 bicubic / lanczos pipeline. Picks between a
-//!   global two-pass plan and a strip-fused H→V plan based on L2 capacity.
-//! - [`kernels`]         — per-architecture row primitives with `_scalar` /
-//!   `_neon` internals. Algorithm code in the files above never carries its
-//!   own `#[cfg(target_arch)]` pairs.
-//!
-//! # Dispatch cascade (u8 path)
-//!
-//! `resize_fast_u8_aa` cascades in priority order:
+//! # Dispatch cascade (u8 path, in [`resize_fast_u8_aa`])
 //!
 //! 1. Bilinear + C=3 + exact 2× downscale → [`pyramid::pyrdown_2x_rgb_u8`].
 //! 2. Bilinear + C=3 + exact 2× upscale   → [`pyramid::pyrup_2x_rgb_u8`].
@@ -213,7 +196,6 @@ pub fn resize_fast_u8_aa<const C: usize, A1: ImageAllocator, A2: ImageAllocator>
     let (src_w, src_h) = (src.cols(), src.rows());
     let (dst_w, dst_h) = (dst.cols(), dst.rows());
 
-    // 2× exact downscale → box-average (equivalent to bilinear at 2×).
     if matches!(interpolation, InterpolationMode::Bilinear)
         && C == 3
         && src_w == dst_w * 2
@@ -225,7 +207,6 @@ pub fn resize_fast_u8_aa<const C: usize, A1: ImageAllocator, A2: ImageAllocator>
         return Ok(());
     }
 
-    // 2× exact upscale → bilinear ({0.75, 0.25} blends) via `vrhaddq_u8` pair.
     if matches!(interpolation, InterpolationMode::Bilinear)
         && C == 3
         && dst_w == src_w * 2
@@ -237,7 +218,6 @@ pub fn resize_fast_u8_aa<const C: usize, A1: ImageAllocator, A2: ImageAllocator>
         return Ok(());
     }
 
-    // Nearest-neighbor: works for any C, any ratio.
     if matches!(interpolation, InterpolationMode::Nearest) && src_w >= 1 && src_h >= 1 {
         nearest::resize_nearest_u8::<C>(
             src.as_slice(),
@@ -250,8 +230,6 @@ pub fn resize_fast_u8_aa<const C: usize, A1: ImageAllocator, A2: ImageAllocator>
         return Ok(());
     }
 
-    // General bilinear: our own u8 implementation with precomputed x-coefficient
-    // tables. Supports C ∈ {1, 3, 4}.
     if matches!(interpolation, InterpolationMode::Bilinear)
         && src_w >= 2
         && src_h >= 2

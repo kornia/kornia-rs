@@ -1,31 +1,12 @@
-//! Fused preprocessing kernels: `resize + normalize + layout-convert` in one pass.
+//! Fused `resize + normalize + layout-convert` kernels.
 //!
-//! Standard ML preprocessing materializes 3 intermediate buffers between
-//! `u8 [H×W×C]` input and `f32 [C×H×W]` tensor output. Each op reads+writes
-//! full-frame DRAM. These fused kernels collapse the chain to a single pass:
-//! every byte of input is touched once, every byte of output is written once,
-//! nothing in between lives outside L1.
+//! Collapses the standard 3-buffer ML preprocess chain into a single pass:
+//! every input byte touched once, every output byte written once, nothing
+//! in between leaves L1.
 //!
-//! # First brick
-//!
-//! [`resize_normalize_to_tensor_u8_to_f32`] — 2× exact downscale (bilinear) +
-//! per-channel `(x - mean) / std` + NCHW layout, in one NEON pass. This is
-//! the cleanest and hottest fused case: exact-2× doesn't need a coefficient
-//! LUT, and NCHW f32 is what ~90% of PyTorch consumers expect.
-//!
-//! # Numerical note
-//!
-//! Unlike the separate `resize → normalize` pipeline, which quantizes the
-//! 2×2 average to u8 before normalizing, this kernel keeps the 10-bit sum
-//! in f32 and folds the `/4` into `scale`. The output is therefore slightly
-//! *more* accurate than the separate pipeline, not less.
-//!
-//! # Planned extensions (not yet implemented)
-//!
-//! - Arbitrary-ratio fused bilinear (the real hot case for ImageNet/CLIP
-//!   pipelines, which resize from ~1-3MP JPEG-decoded input to 224/256).
-//! - `f16` / `bf16` output variants for GPU training stacks. bf16 is nearly
-//!   free (top-half extract of f32); f16 needs ARMv8.2 `vcvt_f16_f32`.
+//! Numerically *more* accurate than the separate pipeline because the 2×2
+//! average stays in f32 (the `/4` is folded into `scale`) instead of being
+//! requantized to u8 between resize and normalize.
 
 use rayon::prelude::*;
 
@@ -128,6 +109,7 @@ fn fused_row_rgb_u8_to_nchw_f32(
     params: &NormalizeParams<3>,
 ) {
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: NEON is architectural on aarch64.
     unsafe {
         fused_row_neon(r0, r1, r_out, g_out, b_out, dst_w, params);
     }
@@ -136,8 +118,8 @@ fn fused_row_rgb_u8_to_nchw_f32(
 }
 
 /// Scalar reference: f32-precise (no u8 quantization between avg and normalize).
+#[cfg(not(target_arch = "aarch64"))]
 #[inline]
-#[allow(dead_code)]
 fn fused_row_scalar(
     r0: &[u8],
     r1: &[u8],

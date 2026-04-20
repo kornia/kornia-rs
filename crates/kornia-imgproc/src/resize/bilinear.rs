@@ -1,10 +1,7 @@
 //! Generic N-channel bilinear u8 resize (scalar, Q14).
 //!
-//! This is the fallback path for arbitrary `src_w×src_h → dst_w×dst_h` bilinear
-//! when the exact-2× fast paths in [`super::pyramid`] don't match. It supports
-//! `C ∈ {1, 3, 4}`. NEON specialization for ML-common destination shapes
-//! (224, 256, 299, 384, 448, 512, 640) is a planned follow-up and will live in
-//! [`super::kernels`] alongside a thin dispatcher here.
+//! Fallback for arbitrary `src×dst` bilinear when the exact-2× paths in
+//! [`super::pyramid`] don't match. Supports `C ∈ {1, 3, 4}`.
 
 use rayon::prelude::*;
 
@@ -44,7 +41,6 @@ pub(super) fn resize_bilinear_u8_nch<const C: usize>(
 
     let src_stride = src_w * C;
     let dst_stride = dst_w * C;
-    let _ = dst_h;
 
     const ROWS_PER_TASK: usize = 16;
     dst.par_chunks_mut(ROWS_PER_TASK * dst_stride)

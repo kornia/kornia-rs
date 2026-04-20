@@ -1,13 +1,6 @@
-//! Micro-benchmark for the fused `resize + normalize + layout-convert` kernel.
-//!
-//! Compares three pipelines on a 1080p → 540p 3-channel u8 → f32 NCHW run:
-//!
-//! 1. `pyrdown_2x_rgb_u8` alone (u8 → u8, no normalize, no layout) — floor.
-//! 2. Separate pipeline: pyrdown + scalar normalize/layout-convert pass.
-//! 3. Fused `resize_normalize_to_tensor_u8_to_f32` — the new kernel.
-//!
-//! The fused number should land close to (1) since the normalize+layout math
-//! piggybacks on the same 2×2 average and happens entirely in registers.
+//! Micro-benchmark for the fused `resize + normalize + layout-convert` kernel
+//! on a 1080p → 540p 3-channel u8 → f32 NCHW run. Compares pyrdown alone
+//! (floor) vs separate pyrdown+normalize vs the fused kernel.
 
 use std::time::Instant;
 
@@ -49,7 +42,6 @@ fn main() {
 
     let n = 200;
 
-    // Warmup.
     for _ in 0..20 {
         resize_fast_rgb(&src_img, &mut dst_u8, InterpolationMode::Bilinear).unwrap();
         resize_normalize_to_tensor_u8_to_f32(
@@ -57,14 +49,12 @@ fn main() {
         );
     }
 
-    // 1. pyrdown alone (floor: pure resize cost).
     let t0 = Instant::now();
     for _ in 0..n {
         resize_fast_rgb(&src_img, &mut dst_u8, InterpolationMode::Bilinear).unwrap();
     }
     let pyrdown_ms = t0.elapsed().as_secs_f64() / n as f64 * 1000.0;
 
-    // 2. Separate: pyrdown + scalar normalize/layout pass.
     let t0 = Instant::now();
     for _ in 0..n {
         resize_fast_rgb(&src_img, &mut dst_u8, InterpolationMode::Bilinear).unwrap();
@@ -79,7 +69,6 @@ fn main() {
     }
     let separate_ms = t0.elapsed().as_secs_f64() / n as f64 * 1000.0;
 
-    // 3. Fused kernel.
     let t0 = Instant::now();
     for _ in 0..n {
         resize_normalize_to_tensor_u8_to_f32(
@@ -103,7 +92,6 @@ fn main() {
     );
 }
 
-/// Reference non-fused normalize + HWC→CHW pass (scalar, three passes).
 fn separate_normalize_hwc_to_chw(
     src: &[u8],
     dst: &mut [f32],

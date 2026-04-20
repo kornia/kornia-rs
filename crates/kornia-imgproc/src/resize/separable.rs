@@ -1,18 +1,9 @@
-//! Q14 separable bicubic / lanczos resize.
+//! Q14 separable bicubic / lanczos resize: horizontal pass into an `i16`
+//! intermediate, vertical pass narrows back to u8.
 //!
-//! Two passes over the image with an `i16` intermediate buffer:
-//!   1. **Horizontal** — for each source row, convolve with the per-dst-col
-//!      coefficient LUT to produce `dst_w` i16 intermediates per row.
-//!   2. **Vertical**   — for each destination row, reduce `ky` i16 rows with
-//!      the per-dst-row coefficient LUT and narrow/saturate to u8.
-//!
-//! The module picks one of two orchestrations based on whether the per-thread
-//! horizontal buffer fits L2:
-//!   - **Global two-pass** (`resize_global_two_pass`): cheap for small dst_w
-//!     where the whole intermediate fits L2 per thread.
-//!   - **Strip-fused H→V** (the `else` branch of `resize_separable_u8`): for
-//!     larger outputs, process a vertical strip at a time so `hbuf` stays
-//!     L2-hot across H and V.
+//! Picks one of two orchestrations based on whether the per-thread horizontal
+//! buffer fits L2: **global two-pass** for small dst_w, **strip-fused H→V**
+//! for larger outputs (so `hbuf` stays L2-hot across H and V).
 
 use rayon::prelude::*;
 
@@ -94,7 +85,7 @@ fn resize_global_two_pass<const C: usize>(
     src_h: usize,
     dst: &mut [u8],
     dst_w: usize,
-    dst_h: usize,
+    _dst_h: usize,
     xsrc: &[u16],
     xw: &[i16],
     kx: usize,
@@ -105,7 +96,6 @@ fn resize_global_two_pass<const C: usize>(
     round1: i32,
     round2: i32,
 ) {
-    let _ = dst_h;
     let src_stride = src_w * C;
     let dst_stride = dst_w * C;
     let hbuf_row_len = dst_w * C;

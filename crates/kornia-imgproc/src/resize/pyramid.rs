@@ -15,8 +15,7 @@ use super::kernels::{blend_75_25_row, hinterp_row_rgb_u8, pyrdown_row_rgb_u8};
 /// Equivalent to bilinear at exact 2:1 downscale and ~4× faster on aarch64
 /// thanks to the dedicated NEON row kernel. Groups 8 output rows per rayon
 /// task so small strides (e.g. 540p = 2.8 KB/row) amortize spawn overhead.
-pub(super) fn pyrdown_2x_rgb_u8(src: &[u8], dst: &mut [u8], src_w: usize, src_h: usize) {
-    let _ = src_h;
+pub(super) fn pyrdown_2x_rgb_u8(src: &[u8], dst: &mut [u8], src_w: usize, _src_h: usize) {
     let dst_w = src_w / 2;
     let src_stride = src_w * 3;
     let dst_stride = dst_w * 3;

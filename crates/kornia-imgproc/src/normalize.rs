@@ -230,15 +230,8 @@ where
 
 /// Normalize a u8 RGB image directly to f32: `out[i] = src[i] * scale[ch] + offset[ch]`.
 ///
-/// Fuses the u8→f32 cast with per-channel scale+offset in a single pass.
-/// Runtime-dispatches to the best available SIMD kernel for the host CPU:
-///
-/// - aarch64 + NEON: `normalize_rgb_u8_neon` (8 pixels/iter via vld3/vst3)
-/// - x86_64 + AVX2+FMA: `normalize_rgb_u8_avx2` (8 pixels/iter via 3×8-lane FMA)
-/// - otherwise: portable scalar
-///
-/// The feature probe is cached process-wide in [`crate::simd::cpu_features`],
-/// so per-call dispatch is a single branch on a pre-computed bool.
+/// Fuses the u8→f32 cast with per-channel scale+offset in a single pass and
+/// runtime-dispatches to NEON (aarch64), AVX2+FMA (x86_64), or scalar.
 ///
 /// # Arguments
 ///
@@ -256,8 +249,7 @@ pub fn normalize_rgb_u8(
 ) {
     #[cfg(target_arch = "aarch64")]
     {
-        // NEON is architectural on aarch64 — no runtime check needed.
-        // SAFETY: caller guarantees src.len() >= npixels*3, dst.len() >= npixels*3.
+        // SAFETY: NEON is architectural on aarch64; caller guarantees lengths.
         unsafe { normalize_rgb_u8_neon(src, dst, npixels, scale, offset) };
         return;
     }
@@ -266,8 +258,7 @@ pub fn normalize_rgb_u8(
     {
         let cpu = crate::simd::cpu_features();
         if cpu.has_avx2 && cpu.has_fma {
-            // SAFETY: AVX2+FMA feature flags confirmed by runtime probe;
-            // length preconditions same as scalar path.
+            // SAFETY: AVX2+FMA confirmed by the runtime probe above.
             unsafe { normalize_rgb_u8_avx2(src, dst, npixels, scale, offset) };
             return;
         }
@@ -277,11 +268,10 @@ pub fn normalize_rgb_u8(
     normalize_rgb_u8_scalar(src, dst, npixels, scale, offset);
 }
 
-/// aarch64 NEON implementation: 8 pixels per iteration via `vld3_u8` / `vst3q_f32`.
+/// 8 pixels/iter via `vld3_u8` / `vst3q_f32`.
 ///
 /// # Safety
 /// - `src.len() >= npixels * 3` and `dst.len() >= npixels * 3`.
-/// - NEON is baseline on aarch64-unknown-linux-gnu (no runtime check needed).
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn normalize_rgb_u8_neon(
@@ -332,22 +322,15 @@ unsafe fn normalize_rgb_u8_neon(
     }
 }
 
-/// x86_64 AVX2+FMA implementation. Processes 8 pixels (24 f32 outputs) per
-/// outer iteration as three 8-lane FMAs.
+/// 8 pixels (24 f32 outputs) per outer iter as three 8-lane FMAs.
 ///
-/// # Why not deinterleave like NEON's `vld3`?
-///
-/// AVX2 has no direct 3-way byte deinterleave. Instead we exploit the fact
-/// that RGB bytes cycle with period 3, and AVX2 lanes are 8-wide, so
-/// `lcm(8,3) = 24` — every 24 bytes the channel-pattern for an 8-lane FMA
-/// repeats. We precompute three scale/offset vectors with the RGB-cycled
-/// coefficients once, then the hot loop does a straight u8→u32→f32→FMA
-/// chain per 8 bytes. 8 bytes × 3 iterations = 24 bytes = 8 pixels per outer.
+/// AVX2 has no direct 3-way byte deinterleave; instead, since `lcm(8,3)=24`,
+/// the RGB channel pattern for an 8-lane FMA repeats every 24 bytes, so we
+/// precompute three RGB-cycled scale/offset vectors and apply them in turn.
 ///
 /// # Safety
 /// - `src.len() >= npixels * 3` and `dst.len() >= npixels * 3`.
-/// - Caller must ensure AVX2 and FMA are available (check
-///   [`crate::simd::cpu_features`] before calling).
+/// - Caller must ensure AVX2 and FMA are available.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn normalize_rgb_u8_avx2(
