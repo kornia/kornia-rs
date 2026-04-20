@@ -33,6 +33,7 @@
 | Warp Affine (shear) | **0.776** | — | 1.271 | **1.64× faster** ✗ (<2×) |
 | Warp Perspective | **0.828** | — | 1.664 | **2.01× faster** ✓ |
 | Normalize | **0.553** | — | 9.200 | **16.6× faster** ✓ |
+| ORB detect+compute | **5.751** | — | 34.597 | **6.02× faster** ✓ |
 
 ## Results — 1920×1080
 
@@ -51,6 +52,7 @@
 | Warp Affine (shear) | **4.533** | — | 7.404 | **1.63× faster** ✗ (<2×) |
 | Warp Perspective | **3.908** | — | 8.047 | **2.06× faster** ✓ |
 | Normalize | **3.671** | — | 63.69 | **17.35× faster** ✓ |
+| ORB detect+compute | **29.317** | — | 211.07 | **7.20× faster** ✓ |
 
 ## Target: every op ≥2× faster than OpenCV
 
@@ -115,6 +117,8 @@ Resize results across interpolation modes, `antialias` flag, and source→dest s
 | Crop 224² (640×480)     | 0.024 ms | **0.019 ms** | **1.26×** (same change; flipped from 1.04× slower to 1.24× faster vs OpenCV) |
 | Warp Perspective (1080p) | 6.800 ms | **4.821 ms** | **1.41×** (NEON 4-wide reciprocal for per-pixel `nx/nd` + `ny/nd`, f1830ab) — ratio vs OpenCV: 1.41× → **2.00×** |
 | Resize 1080p→2160p (bilinear upscale) | 20.7 ms | **1.78 ms** | **11.6×** (exact-2× NEON `vrhaddq_u8` pair — fixed {0.25, 0.75} weights, no LUT, no float) — ratio vs OpenCV: **0.46× → 5.52×** |
+| ORB detect+compute (1080p) | 50.4 ms | **29.3 ms** | **1.72×** internal (NEON FAST-9 kernel + per-octave parallelism + allocation elision) — ratio vs OpenCV: **4.2× → 7.2×** |
+| ORB detect+compute (640×480) | 9.55 ms | **5.75 ms** | **1.66×** internal — ratio vs OpenCV: **3.6× → 6.0×** |
 
 ## Summary
 
