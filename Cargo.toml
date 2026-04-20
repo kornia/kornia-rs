@@ -35,6 +35,7 @@ candle-nn = { version = "0.9.1" }
 candle-transformers = { version = "0.9.1" }
 criterion = "0.8"
 ctrlc = "3.4"
+cudarc = "0.11"
 env_logger = "0.11"
 faer = "=0.20.1"
 half = { version = "2.7", features = ["num-traits"] }

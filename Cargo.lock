@@ -2053,7 +2053,7 @@ checksum = "a9f51e2ecf6efe9737af8f993433c839f956d2b6ed4fd2dd4a7c6d8b0fa667ff"
 dependencies = [
  "byteorder",
  "candle-kernels",
- "cudarc",
+ "cudarc 0.16.6",
  "gemm 0.17.1",
  "half",
  "memmap2 0.9.9",
@@ -3253,6 +3253,15 @@ dependencies = [
  "cu29-clock",
  "ordered-float 5.1.0",
  "serde",
+]
+
+[[package]]
+name = "cudarc"
+version = "0.11.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a5bd4d1eee570c3b2ac64ed114125517dd1e541d88dd28fc259f1de4dba8d60"
+dependencies = [
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -7996,6 +8005,7 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "circular-buffer",
+ "cudarc 0.11.9",
  "env_logger",
  "hf-hub",
  "kornia-image",
@@ -16318,7 +16328,7 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "14053653d0b7fa7b21015aa9a62edc8af2f60aa6f9c54e66386ecce55f22ed29"
 dependencies = [
- "cudarc",
+ "cudarc 0.16.6",
  "half",
  "serde",
  "thiserror 1.0.69",
