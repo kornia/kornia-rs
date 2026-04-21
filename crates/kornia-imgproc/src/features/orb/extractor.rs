@@ -9,7 +9,7 @@ use crate::{
     resize::{resize_fast_u8, resize_native},
 };
 
-use super::pattern::{rotated_pattern, N_BUCKETS, POS0, POS1};
+use super::pattern::{POS0, POS1};
 
 /// ORB features extracted from a single frame.
 #[derive(Debug, Clone)]
@@ -648,6 +648,12 @@ impl OrbDetector {
             .filter_map(|(&o, &m)| if m { Some(o) } else { None })
             .collect();
 
+        // Pre-BRIEF blur. Note: the Q8-quantized kernel in `gaussian_blur_u8`
+        // drifts from OpenCV's u8 GaussianBlur by up to 10 levels on some
+        // pixels, which is a secondary source of Hamming distance versus
+        // cv2.ORB. Fixing this requires a Q16 (or f32) path that keeps NEON
+        // throughput — tracked as a follow-up; the current path is chosen
+        // for speed (3–4× faster than OpenCV at 640/1080).
         let mut blurred = Image::from_size_val(octave_image.size(), 0u8, CpuAllocator)?;
         gaussian_blur_u8(octave_image, &mut blurred, (7, 7), (2.0, 2.0))?;
 
@@ -1087,18 +1093,30 @@ fn harris_response_at_u8<A: ImageAllocator>(
 }
 
 /// Per-row disk mask: byte i is 0xFF iff the lane's (dr, dc) sits inside the
-/// radius-15 disk. Layout: 31 rows × 32 bytes. Each row holds two 16-lane
-/// windows — low covers dc ∈ [-16, -1], high covers dc ∈ [0, 15]. dc=-16 is
-/// always masked (outside the disk since 16² = 256 > 225). Generated at
-/// compile time so the branch vanishes at runtime.
+/// OpenCV's per-row half-widths for the ORB orientation disk (half_k = 15),
+/// indexed by |dr|. Derived once from `orb.cpp::ORB_Impl::Create`:
+///   Pass 1 (v = 0..=11): `umax[v] = round(sqrt(225 − v²))`
+///   Pass 2 (v = 15..=11, reverse): reflect via a `v0` counter that walks
+///     past run-equal regions — forces the mask to be symmetric across the
+///     45° diagonal, which a naive Euclidean disk is *not*.
+/// Final values: `[15,15,15,15,14,14,14,13,13,12,11,10,9,8,6,3]`.
+/// Using this exact table is what it takes to match OpenCV's orientation
+/// (and the rotated BRIEF descriptors that depend on it).
+const UMAX: [i32; 16] = [15, 15, 15, 15, 14, 14, 14, 13, 13, 12, 11, 10, 9, 8, 6, 3];
+
+/// Precomputed byte masks for the NEON orientation path. 31 rows × 32 bytes.
+/// Each row covers dc ∈ [-16, 15] split into two 16-lane windows; a lane is
+/// 0xFF iff dc ∈ [-UMAX[|dr|], UMAX[|dr|]]. Generated at compile time.
 const fn build_disk_masks() -> [[u8; 32]; 31] {
     let mut m = [[0u8; 32]; 31];
     let mut dr = -15i32;
     while dr <= 15 {
+        let v = if dr < 0 { -dr } else { dr };
+        let d = UMAX[v as usize];
         let mut lane = 0i32;
         while lane < 32 {
             let dc = lane - 16;
-            if dr * dr + dc * dc <= 225 {
+            if dc >= -d && dc <= d {
                 m[(dr + 15) as usize][lane as usize] = 0xFF;
             }
             lane += 1;
@@ -1174,10 +1192,8 @@ fn corner_orientations_u8<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     corners: &[[usize; 2]],
 ) -> Vec<f32> {
-    // Caller must have already filtered keypoints by border distance ≥ 15, so
-    // every (dr, dc) with |dr|, |dc| ≤ 15 is a valid image coordinate.
+    // Caller must have already filtered keypoints by border distance ≥ 15.
     const HALF: i32 = 15;
-    const RADIUS2: i32 = HALF * HALF;
 
     let cols = src.cols();
     let src_slice = src.as_slice();
@@ -1193,22 +1209,35 @@ fn corner_orientations_u8<A: ImageAllocator>(
                 return unsafe { orientation_kp_neon(src_slice, r0, c0, cols) };
             }
 
+            // Mirrors OpenCV's `ICAngles`: v=0 processed alone, then pairs
+            // (+v, -v) together with half-width UMAX[v]. Not a clean disk —
+            // see UMAX docstring for why.
             let mut m01: i32 = 0;
             let mut m10: i32 = 0;
+            let center = r0 as isize * cols as isize + c0 as isize;
 
-            for dr in -HALF..=HALF {
-                let mut m01_tmp: i32 = 0;
-                let row_base = (r0 as isize + dr as isize) as usize * cols + c0;
-                for dc in -HALF..=HALF {
-                    if dr * dr + dc * dc > RADIUS2 {
-                        continue;
-                    }
-                    let idx = (row_base as isize + dc as isize) as usize;
-                    let px = unsafe { *src_slice.get_unchecked(idx) } as i32;
-                    m10 += px * dc;
-                    m01_tmp += px;
+            for u in -HALF..=HALF {
+                let idx = (center + u as isize) as usize;
+                let px = unsafe { *src_slice.get_unchecked(idx) } as i32;
+                m10 += u * px;
+            }
+
+            for v in 1..=HALF {
+                let d = UMAX[v as usize];
+                let mut v_sum: i32 = 0;
+                let plus_base = center + (v as isize) * cols as isize;
+                let minus_base = center - (v as isize) * cols as isize;
+                for u in -d..=d {
+                    let val_plus =
+                        unsafe { *src_slice.get_unchecked((plus_base + u as isize) as usize) }
+                            as i32;
+                    let val_minus =
+                        unsafe { *src_slice.get_unchecked((minus_base + u as isize) as usize) }
+                            as i32;
+                    v_sum += val_plus - val_minus;
+                    m10 += u * (val_plus + val_minus);
                 }
-                m01 += m01_tmp * dr;
+                m01 += v * v_sum;
             }
             (m01 as f32).atan2(m10 as f32)
         })
@@ -1269,50 +1298,128 @@ fn orb_loop_u8<A: ImageAllocator>(
 ) -> Vec<[u8; 32]> {
     let cols = src.cols();
     let src_data = src.as_slice();
-    let table = rotated_pattern();
-    let inv_bucket = (N_BUCKETS as f32) / std::f32::consts::TAU;
 
     keypoints
         .par_iter()
         .zip(orientation.par_iter())
         .map(|(&(kr, kc), &angle)| {
-            let mut desc = [0u8; 32];
-            // atan2 returns [-π, π]; normalize to [0, 2π) then to an integer bucket.
-            let mut normalized = angle;
-            if normalized < 0.0 {
-                normalized += std::f32::consts::TAU;
-            }
-            let mut bucket = (normalized * inv_bucket).round() as usize;
-            if bucket >= N_BUCKETS {
-                bucket -= N_BUCKETS;
-            }
-            let row = &table[bucket];
             let base = (kr as isize) * (cols as isize) + (kc as isize);
-
-            // Border mask at distance 20 guarantees all rotated offsets (≤ 18)
-            // land inside the image, so no per-bit bounds check is needed.
-            for (byte_idx, byte_out) in desc.iter_mut().enumerate() {
-                let mut byte_val = 0u8;
-                let pair_base = byte_idx * 8;
-                for bit_idx in 0..8 {
-                    let pair = row[pair_base + bit_idx];
-                    let off0 =
-                        base + (pair[0] as isize) * (cols as isize) + (pair[1] as isize);
-                    let off1 =
-                        base + (pair[2] as isize) * (cols as isize) + (pair[3] as isize);
-                    unsafe {
-                        let v0 = *src_data.get_unchecked(off0 as usize);
-                        let v1 = *src_data.get_unchecked(off1 as usize);
-                        if v0 < v1 {
-                            byte_val |= 1 << bit_idx;
-                        }
-                    }
-                }
-                *byte_out = byte_val;
-            }
-            desc
+            let mut rotated = [[0i8; 4]; 256];
+            rotate_pattern_for_angle(angle, &mut rotated);
+            compute_brief_descriptor(src_data, cols, &rotated, base)
         })
         .collect()
+}
+
+/// Rotate the BRIEF pattern for a single orientation and store as i8 offsets.
+///
+/// Matches OpenCV's `computeOrbDescriptor` — per-keypoint continuous rotation
+/// (not a quantized bucket lookup). Cost: 256 pairs × 4 f32 muls + 4 rounds;
+/// shared `cos`/`sin` lifted out of the pair loop. This is what it takes to
+/// produce descriptors near byte-identical to `cv2.ORB.detectAndCompute`:
+/// the prior 30-bucket table introduced a 12°/bucket quantization that
+/// produced ≥5 bits of Hamming distance even on position/orientation-matched
+/// keypoints.
+#[inline]
+fn rotate_pattern_for_angle(angle: f32, out: &mut [[i8; 4]; 256]) {
+    // `round_ties_even` matches OpenCV's `cvRound` (banker's rounding). Using
+    // Rust's default `.round()` (ties-away-from-zero) produces different
+    // integer offsets on exact-half coordinates and shows up as stray Hamming
+    // bits versus `cv2.ORB.detectAndCompute`.
+    let sin_a = angle.sin();
+    let cos_a = angle.cos();
+    for j in 0..256 {
+        let pr0 = POS0[j][0] as f32;
+        let pc0 = POS0[j][1] as f32;
+        let pr1 = POS1[j][0] as f32;
+        let pc1 = POS1[j][1] as f32;
+        out[j][0] = (sin_a * pr0 + cos_a * pc0).round_ties_even() as i8;
+        out[j][1] = (cos_a * pr0 - sin_a * pc0).round_ties_even() as i8;
+        out[j][2] = (sin_a * pr1 + cos_a * pc1).round_ties_even() as i8;
+        out[j][3] = (cos_a * pr1 - sin_a * pc1).round_ties_even() as i8;
+    }
+}
+
+/// Build one 32-byte BRIEF descriptor from 256 pair comparisons.
+///
+/// Border mask at distance 20 (applied upstream) guarantees all rotated
+/// offsets (≤ 18) land inside the image, so no per-bit bounds check is
+/// needed here.
+#[inline(always)]
+fn compute_brief_descriptor(
+    src_data: &[u8],
+    cols: usize,
+    row: &[[i8; 4]; 256],
+    base: isize,
+) -> [u8; 32] {
+    // NEON path: process 16 pair-comparisons per iteration, producing 2
+    // output bytes at once. Replaces 16 `if v0 < v1 { b |= 1<<i }` branch
+    // chains with one `vcltq_u8` + bit-mask AND + two `vaddv_u8` reductions.
+    // Modest win (~5% at 640p, wash at 1080p) but proven bit-parity via
+    // `test_brief_neon_matches_scalar`.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        use std::arch::aarch64::*;
+        static BIT_MASK: [u8; 16] =
+            [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
+        let bitmask = vld1q_u8(BIT_MASK.as_ptr());
+        let cols_i = cols as isize;
+        let base_ptr = src_data.as_ptr().offset(base);
+        let mut v0_buf = [0u8; 16];
+        let mut v1_buf = [0u8; 16];
+        let mut desc = [0u8; 32];
+        for chunk in 0..16usize {
+            let pair_base = chunk * 16;
+            for i in 0..16 {
+                let pair = row[pair_base + i];
+                let off0 = (pair[0] as isize) * cols_i + (pair[1] as isize);
+                let off1 = (pair[2] as isize) * cols_i + (pair[3] as isize);
+                *v0_buf.get_unchecked_mut(i) = *base_ptr.offset(off0);
+                *v1_buf.get_unchecked_mut(i) = *base_ptr.offset(off1);
+            }
+            let v0 = vld1q_u8(v0_buf.as_ptr());
+            let v1 = vld1q_u8(v1_buf.as_ptr());
+            let cmp = vcltq_u8(v0, v1);
+            let anded = vandq_u8(cmp, bitmask);
+            desc[chunk * 2] = vaddv_u8(vget_low_u8(anded));
+            desc[chunk * 2 + 1] = vaddv_u8(vget_high_u8(anded));
+        }
+        return desc;
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        compute_brief_descriptor_scalar(src_data, cols, row, base)
+    }
+}
+
+/// Pure-scalar BRIEF reference — kept so bit-parity against the NEON path
+/// can be asserted in tests without compile-time dispatch.
+#[inline]
+fn compute_brief_descriptor_scalar(
+    src_data: &[u8],
+    cols: usize,
+    row: &[[i8; 4]; 256],
+    base: isize,
+) -> [u8; 32] {
+    let mut desc = [0u8; 32];
+    for (byte_idx, byte_out) in desc.iter_mut().enumerate() {
+        let mut byte_val = 0u8;
+        let pair_base = byte_idx * 8;
+        for bit_idx in 0..8 {
+            let pair = row[pair_base + bit_idx];
+            let off0 = base + (pair[0] as isize) * (cols as isize) + (pair[1] as isize);
+            let off1 = base + (pair[2] as isize) * (cols as isize) + (pair[3] as isize);
+            unsafe {
+                let v0 = *src_data.get_unchecked(off0 as usize);
+                let v1 = *src_data.get_unchecked(off1 as usize);
+                if v0 < v1 {
+                    byte_val |= 1 << bit_idx;
+                }
+            }
+        }
+        *byte_out = byte_val;
+    }
+    desc
 }
 
 /// Compute ORB descriptors packed into 32 bytes (256 bits) per keypoint.
@@ -1465,6 +1572,43 @@ mod tests {
         for (i, (n, s)) in neon.iter().zip(scalar.iter()).enumerate() {
             // atan2 of identical integer moments is bit-identical.
             assert_eq!(n.to_bits(), s.to_bits(), "kp {i}: neon={n} scalar={s}");
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn test_brief_neon_matches_scalar() {
+        use super::compute_brief_descriptor;
+        use super::compute_brief_descriptor_scalar;
+        use super::rotate_pattern_for_angle;
+
+        let w = 300usize;
+        let h = 300usize;
+        let mut data = vec![0u8; w * h];
+        let mut s: u64 = 0xdead_beef_cafe_babe;
+        for px in data.iter_mut() {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *px = (s >> 32) as u8;
+        }
+
+        // Sweep keypoints across the interior and a set of rotation angles.
+        let angles: Vec<f32> = (0..32)
+            .map(|k| (k as f32) * std::f32::consts::TAU / 32.0)
+            .collect();
+        for (angle_idx, &angle) in angles.iter().enumerate() {
+            let mut rotated = [[0i8; 4]; 256];
+            rotate_pattern_for_angle(angle, &mut rotated);
+            for kp_idx in 0..20 {
+                let kr = 30 + (kp_idx * 13) % (h - 60);
+                let kc = 30 + (kp_idx * 17) % (w - 60);
+                let base = (kr as isize) * (w as isize) + (kc as isize);
+                let neon = compute_brief_descriptor(&data, w, &rotated, base);
+                let scalar = compute_brief_descriptor_scalar(&data, w, &rotated, base);
+                assert_eq!(
+                    neon, scalar,
+                    "mismatch at angle_idx={angle_idx} kp=({kr},{kc})"
+                );
+            }
         }
     }
 }
