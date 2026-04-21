@@ -134,7 +134,9 @@ impl StreamCapture {
     /// # Returns
     ///
     /// An Option containing the last captured Image or None if no image has been captured yet.
-    pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3, GstAllocator>>, StreamCaptureError> {
+    pub fn grab<const C: usize>(
+        &mut self,
+    ) -> Result<Option<Image<u8, C, GstAllocator>>, StreamCaptureError> {
         let mut circular_buffer = self
             .circular_buffer
             .lock()
@@ -176,6 +178,33 @@ impl StreamCapture {
         }?;
 
         Ok(Some(image))
+    }
+
+    /// Grabs the last captured image frame as an RGB (3-channel) image.
+    ///
+    /// # Returns
+    ///
+    /// An Option containing the last captured Image or None if no image has been captured yet.
+    pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3, GstAllocator>>, StreamCaptureError> {
+        self.grab::<3>()
+    }
+
+    /// Grabs the last captured image frame as a mono (1-channel) image.
+    ///
+    /// # Returns
+    ///
+    /// An Option containing the last captured Image or None if no image has been captured yet.
+    pub fn grab_mono8(&mut self) -> Result<Option<Image<u8, 1, GstAllocator>>, StreamCaptureError> {
+        self.grab::<1>()
+    }
+
+    /// Grabs the last captured image frame as an RGBA (4-channel) image.
+    ///
+    /// # Returns
+    ///
+    /// An Option containing the last captured Image or None if no image has been captured yet.
+    pub fn grab_rgba8(&mut self) -> Result<Option<Image<u8, 4, GstAllocator>>, StreamCaptureError> {
+        self.grab::<4>()
     }
 
     /// Closes the stream capture pipeline.

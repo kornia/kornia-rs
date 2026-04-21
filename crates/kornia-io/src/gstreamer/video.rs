@@ -1,3 +1,29 @@
+//! Video I/O via GStreamer.
+//!
+//! # Supported codecs (writer)
+//!
+//! | Codec   | Encoder   | Container (file ext) |
+//! |---------|-----------|----------------------|
+//! | H264    | x264enc   | MP4 (`.mp4`)         |
+//! | H265    | x265enc   | MP4 (`.mp4`)         |
+//! | Mjpeg   | jpegenc   | Matroska (`.mkv`)    |
+//!
+//! The writer internally converts to `I420` before H.264/H.265 encoding.
+//! The caller is responsible for passing a path whose extension matches
+//! the chosen codec's container — no path/codec validation is performed yet.
+//!
+//! # Supported pixel formats (reader and writer)
+//!
+//! | ImageFormat | Channels | GStreamer caps format |
+//! |-------------|----------|-----------------------|
+//! | Rgb8        | 3        | `RGB`                 |
+//! | Mono8       | 1        | `GRAY8`               |
+//! | Bgr8        | 3        | `BGR`                 |
+//! | Rgba8       | 4        | `RGBA`                |
+//! | Bgra8       | 4        | `BGRA`                |
+//!
+//! Planar YUV formats (I420, NV12) are not exposed because
+//! `Image<u8, C, A>` models C interleaved channels per pixel.
 use super::{
     capture::StreamerState, error::VideoReaderError, GstAllocator, StreamCapture,
     StreamCaptureError,
@@ -9,19 +35,55 @@ use std::{path::Path, time::Duration};
 pub use gstreamer::SeekFlags;
 
 /// The codec to use for the video writer.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub enum VideoCodec {
-    /// H.264 codec.
+    /// H.264 codec (x264enc → h264parse → mp4mux).
     H264,
+    /// H.265 / HEVC codec (x265enc → h265parse → mp4mux).
+    H265,
+    /// Motion JPEG codec (jpegenc → jpegparse → matroskamux).
+    Mjpeg,
 }
 
 /// The format of the image to write to the video file.
 ///
 /// Usually will be the combination of the image format and the pixel type.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub enum ImageFormat {
-    /// 8-bit RGB format.
+    /// 8-bit RGB format (3 interleaved channels).
     Rgb8,
-    /// 8-bit mono format.
+    /// 8-bit mono/grayscale format (1 channel).
     Mono8,
+    /// 8-bit BGR format (3 interleaved channels).
+    Bgr8,
+    /// 8-bit RGBA format (4 interleaved channels).
+    Rgba8,
+    /// 8-bit BGRA format (4 interleaved channels).
+    Bgra8,
+}
+
+/// Returns (gst format string, channel count) for a given ImageFormat.
+fn format_info(format: &ImageFormat) -> (&'static str, usize) {
+    match format {
+        ImageFormat::Rgb8 => ("RGB", 3),
+        ImageFormat::Mono8 => ("GRAY8", 1),
+        ImageFormat::Bgr8 => ("BGR", 3),
+        ImageFormat::Rgba8 => ("RGBA", 4),
+        ImageFormat::Bgra8 => ("BGRA", 4),
+    }
+}
+
+/// Builds the encoder+parser+muxer portion of the gstreamer pipeline for a codec.
+/// H.264/H.265 force I420 conversion (x264enc/x265enc require it).
+/// MJPEG does not — jpegenc accepts RGB/BGR/GRAY8/etc. directly.
+fn codec_pipeline_segment(codec: &VideoCodec) -> &'static str {
+    match codec {
+        VideoCodec::H264 => "videoconvert ! video/x-raw,format=I420 ! x264enc ! video/x-h264,profile=main ! h264parse ! mp4mux",
+        VideoCodec::H265 => "videoconvert ! video/x-raw,format=I420 ! x265enc ! video/x-h265 ! h265parse ! mp4mux",
+        VideoCodec::Mjpeg => "videoconvert ! jpegenc ! jpegparse ! matroskamux",
+    }
 }
 
 /// A struct for writing video files.
@@ -56,33 +118,12 @@ impl VideoWriter {
             gstreamer::init()?;
         }
 
-        // TODO: Add support for other codecs
-        #[allow(unreachable_patterns)]
-        let _codec = match codec {
-            VideoCodec::H264 => "x264enc",
-            _ => {
-                return Err(StreamCaptureError::InvalidConfig(
-                    "Unsupported codec".to_string(),
-                ))
-            }
-        };
-
-        // TODO: Add support for other formats
-        let format_str = match format {
-            ImageFormat::Mono8 => "GRAY8",
-            ImageFormat::Rgb8 => "RGB",
-        };
-
+        let (format_str, _channels) = format_info(&format);
+        let codec_segment = codec_pipeline_segment(&codec);
         let path = path.as_ref().to_owned();
 
         let pipeline_str = format!(
-            "appsrc name=src ! \
-            videoconvert ! video/x-raw,format=I420 ! \
-            x264enc ! \
-            video/x-h264,profile=main ! \
-            h264parse ! \
-            mp4mux ! \
-            filesink location={}",
+            "appsrc name=src ! {codec_segment} ! filesink location={}",
             path.to_string_lossy()
         );
 
@@ -184,21 +225,12 @@ impl VideoWriter {
         img: &Image<u8, C, A>,
     ) -> Result<(), StreamCaptureError> {
         // check if the image channels are correct
-        match self.format {
-            ImageFormat::Mono8 => {
-                if C != 1 {
-                    return Err(StreamCaptureError::InvalidImageFormat(format!(
-                        "Invalid number of channels: expected 1, got {C}"
-                    )));
-                }
-            }
-            ImageFormat::Rgb8 => {
-                if C != 3 {
-                    return Err(StreamCaptureError::InvalidImageFormat(format!(
-                        "Invalid number of channels: expected 3, got {C}"
-                    )));
-                }
-            }
+        let (_, expected_channels) = format_info(&self.format);
+        if C != expected_channels {
+            return Err(StreamCaptureError::InvalidImageFormat(format!(
+                "Invalid number of channels: expected {expected_channels} (for format {:?}), got {C}",
+                self.format
+            )));
         }
 
         // TODO: verify is there is a cheaper way to copy the buffer
@@ -243,11 +275,7 @@ impl VideoReader {
     /// * `path` - The path to the video file to be read.
     /// * `format` - The expected image format.
     pub fn new(path: impl AsRef<Path>, format: ImageFormat) -> Result<Self, VideoReaderError> {
-        // TODO: Support more formats
-        let video_format = match format {
-            ImageFormat::Rgb8 => "RGB",
-            ImageFormat::Mono8 => "GRAY8",
-        };
+        let (video_format, _) = format_info(&format);
 
         let pipeline = format!(
             "filesrc location=\"{}\" ! \
@@ -302,6 +330,30 @@ impl VideoReader {
     pub fn grab_rgb8(&mut self) -> Result<Option<Image<u8, 3, GstAllocator>>, VideoReaderError> {
         self.0
             .grab_rgb8()
+            .map_err(VideoReaderError::StreamCaptureError)
+    }
+
+    /// Grabs the last captured image frame as a mono (1-channel) image.
+    ///
+    /// # Returns
+    ///
+    /// An Option containing the last captured Image or None if no image has been captured yet.
+    #[inline]
+    pub fn grab_mono8(&mut self) -> Result<Option<Image<u8, 1, GstAllocator>>, VideoReaderError> {
+        self.0
+            .grab_mono8()
+            .map_err(VideoReaderError::StreamCaptureError)
+    }
+
+    /// Grabs the last captured image frame as an RGBA (4-channel) image.
+    ///
+    /// # Returns
+    ///
+    /// An Option containing the last captured Image or None if no image has been captured yet.
+    #[inline]
+    pub fn grab_rgba8(&mut self) -> Result<Option<Image<u8, 4, GstAllocator>>, VideoReaderError> {
+        self.0
+            .grab_rgba8()
             .map_err(VideoReaderError::StreamCaptureError)
     }
 
@@ -472,6 +524,150 @@ mod tests {
         writer.close()?;
 
         assert!(file_path.exists(), "File does not exist: {file_path:?}");
+
+        Ok(())
+    }
+
+    #[ignore = "need gstreamer in CI"]
+    #[test]
+    fn video_writer_h265_rgb8u() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(tmp_dir.path())?;
+
+        let file_path = tmp_dir.path().join("test.mp4");
+
+        let size = ImageSize {
+            width: 6,
+            height: 4,
+        };
+
+        let mut writer =
+            VideoWriter::new(&file_path, VideoCodec::H265, ImageFormat::Rgb8, 30, size)?;
+        writer.start()?;
+
+        let img =
+            Image::<u8, 3, _>::new(size, vec![0; size.width * size.height * 3], CpuAllocator)?;
+        writer.write(&img)?;
+        writer.close()?;
+
+        assert!(file_path.exists(), "File does not exist: {file_path:?}");
+
+        Ok(())
+    }
+
+    #[ignore = "need gstreamer in CI"]
+    #[test]
+    fn video_writer_mjpeg_rgb8u() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(tmp_dir.path())?;
+
+        let file_path = tmp_dir.path().join("test.mkv");
+
+        let size = ImageSize {
+            width: 6,
+            height: 4,
+        };
+
+        let mut writer =
+            VideoWriter::new(&file_path, VideoCodec::Mjpeg, ImageFormat::Rgb8, 30, size)?;
+        writer.start()?;
+
+        let img =
+            Image::<u8, 3, _>::new(size, vec![0; size.width * size.height * 3], CpuAllocator)?;
+        writer.write(&img)?;
+        writer.close()?;
+
+        assert!(file_path.exists(), "File does not exist: {file_path:?}");
+
+        Ok(())
+    }
+
+    #[ignore = "need gstreamer in CI"]
+    #[test]
+    fn video_writer_bgr8u() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(tmp_dir.path())?;
+
+        let file_path = tmp_dir.path().join("test.mp4");
+
+        let size = ImageSize {
+            width: 6,
+            height: 4,
+        };
+
+        let mut writer =
+            VideoWriter::new(&file_path, VideoCodec::H264, ImageFormat::Bgr8, 30, size)?;
+        writer.start()?;
+
+        let img =
+            Image::<u8, 3, _>::new(size, vec![0; size.width * size.height * 3], CpuAllocator)?;
+        writer.write(&img)?;
+        writer.close()?;
+
+        assert!(file_path.exists(), "File does not exist: {file_path:?}");
+
+        Ok(())
+    }
+
+    #[ignore = "need gstreamer in CI"]
+    #[test]
+    fn video_writer_rgba8u() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(tmp_dir.path())?;
+
+        let file_path = tmp_dir.path().join("test.mp4");
+
+        let size = ImageSize {
+            width: 6,
+            height: 4,
+        };
+
+        let mut writer =
+            VideoWriter::new(&file_path, VideoCodec::H264, ImageFormat::Rgba8, 30, size)?;
+        writer.start()?;
+
+        let img =
+            Image::<u8, 4, _>::new(size, vec![0; size.width * size.height * 4], CpuAllocator)?;
+        writer.write(&img)?;
+        writer.close()?;
+
+        assert!(file_path.exists(), "File does not exist: {file_path:?}");
+
+        Ok(())
+    }
+
+    #[ignore = "need gstreamer in CI"]
+    #[test]
+    fn video_writer_channel_mismatch_returns_error() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp_dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(tmp_dir.path())?;
+
+        let file_path = tmp_dir.path().join("test.mp4");
+
+        let size = ImageSize {
+            width: 6,
+            height: 4,
+        };
+
+        // Writer expects 4 channels (Rgba8), but we push a 3-channel image
+        let mut writer =
+            VideoWriter::new(&file_path, VideoCodec::H264, ImageFormat::Rgba8, 30, size)?;
+        writer.start()?;
+
+        let img =
+            Image::<u8, 3, _>::new(size, vec![0; size.width * size.height * 3], CpuAllocator)?;
+        let result = writer.write(&img);
+
+        assert!(
+            result.is_err(),
+            "Expected error for channel mismatch, but got Ok"
+        );
+
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("Invalid"),
+            "Error message should mention 'Invalid', got: {err_str}"
+        );
 
         Ok(())
     }
