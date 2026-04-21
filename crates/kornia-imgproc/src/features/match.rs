@@ -1,6 +1,22 @@
 /// Hamming distance between two fixed-size byte descriptors.
 #[inline]
 pub fn hamming_distance<const N: usize>(a: &[u8; N], b: &[u8; N]) -> u32 {
+    // NEON specialization for ORB's 32-byte descriptor: two `veorq_u8` +
+    // `vcntq_u8` + `vaddvq_u8` cover the entire descriptor in ~6 cycles —
+    // the scalar byte-at-a-time XOR+popcount loop takes ~60+.
+    #[cfg(target_arch = "aarch64")]
+    if N == 32 {
+        use std::arch::aarch64::*;
+        unsafe {
+            let ap = a.as_ptr();
+            let bp = b.as_ptr();
+            let x0 = veorq_u8(vld1q_u8(ap), vld1q_u8(bp));
+            let x1 = veorq_u8(vld1q_u8(ap.add(16)), vld1q_u8(bp.add(16)));
+            let p0 = vcntq_u8(x0);
+            let p1 = vcntq_u8(x1);
+            return (vaddvq_u8(p0) as u32) + (vaddvq_u8(p1) as u32);
+        }
+    }
     a.iter()
         .zip(b.iter())
         .map(|(&x, &y)| (x ^ y).count_ones())

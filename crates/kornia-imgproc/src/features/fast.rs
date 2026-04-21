@@ -371,6 +371,15 @@ pub fn suppress_direct_standalone(
     }
     candidates.sort_unstable_by(cmp);
 
+    // Fast path: `min_distance == 1` collapses the suppression disk to a
+    // single cell (the candidate's own position), so the taken bitmap never
+    // blocks a neighbor — it just dedup-emits each coord once. Since the
+    // detector already emits each (y,x) at most once, the bitmap is pure
+    // overhead (a 2 MB alloc + write pass per octave at 1080p). Skip it.
+    if min_distance <= 1 {
+        return candidates;
+    }
+
     let mut taken = vec![false; width * height];
     let mut result = Vec::with_capacity(candidates.len());
     for ([y, x], r) in candidates {
@@ -464,6 +473,15 @@ fn fast_detect_rows_u8_impl<A: ImageAllocator>(
     #[cfg(target_arch = "aarch64")]
     let use_neon = std::env::var("KORNIA_FAST_NEON").map_or(true, |v| v != "0");
 
+    // Dense-corner images at large resolutions emit so many candidates that
+    // `Vec::push` / allocator pressure starts dominating the kernel wall
+    // time. A cheap in-block 1D local-max filter (pays only when mask≠0)
+    // cuts emission 2-3× on checker-like inputs. At smaller octaves
+    // candidates are sparser and the filter's branch overhead outweighs
+    // the savings, so we gate it on width.
+    #[cfg(target_arch = "aarch64")]
+    let use_inblock_filter = width >= 800;
+
     let row_cap = (col_end.saturating_sub(margin) / 6).max(64);
 
     let row_work = |y: usize| -> Vec<([usize; 2], f32)> {
@@ -485,11 +503,21 @@ fn fast_detect_rows_u8_impl<A: ImageAllocator>(
                         n as u8,
                         scratch.as_mut_ptr(),
                     );
-                    // Iterate only set bits via ctz — O(popcount) instead of
-                    // O(16) per block. Raw u16 score → f32 here, only for
-                    // survivors (~3/16 on checker-dense regions). Skipping
-                    // the kernel-side 4× vcvtq_f32_u32 + vmulq_n_f32 saves
-                    // ~30 cycles per block.
+                    if use_inblock_filter && mask != 0 {
+                        let mut filtered = 0u16;
+                        let mut m = mask;
+                        while m != 0 {
+                            let i = m.trailing_zeros() as usize;
+                            let s = scratch[i];
+                            let left = if i == 0 { 0 } else { scratch[i - 1] };
+                            let right = if i == 15 { 0 } else { scratch[i + 1] };
+                            if s > left && s > right {
+                                filtered |= 1 << i;
+                            }
+                            m &= m - 1;
+                        }
+                        mask = filtered;
+                    }
                     while mask != 0 {
                         let i = mask.trailing_zeros() as usize;
                         local.push(([y, x + i], scratch[i] as f32 * scale));
@@ -513,8 +541,9 @@ fn fast_detect_rows_u8_impl<A: ImageAllocator>(
     if parallel {
         // Group rows into chunks so each rayon task does enough work to amortize
         // spawn/join overhead. At 1080p one row is ~1920 px ≈ 30 us NEON work;
-        // 1080 single-row tasks bury the scheduler. 32-row chunks give ~1 ms
-        // tasks which land near rayon's sweet spot.
+        // 1080 single-row tasks bury the scheduler. Target ~2-3 ms tasks
+        // (~6 cores × 30 tasks = full schedule) — anything below ~1 ms pays
+        // more scheduler overhead than it reclaims.
         let chunk = 64usize;
         let total = row_end_y - row_start;
         let n_chunks = total.div_ceil(chunk);
@@ -676,17 +705,22 @@ unsafe fn fast_block_neon_16(
     let mut dark_run = vdupq_n_u8(0);
     let mut dark_max = vdupq_n_u8(0);
 
+    // Σ|ring - center| per lane, widened to u16 (max 16 × 255 = 4080).
+    // Used as FAST response for NMS ranking (matches scalar behavior and
+    // OpenCV's FAST score). Arc length alone (tried in a prior iteration)
+    // worked on textured images but collapsed on flat-textured SLAM imagery
+    // (e.g. EuRoC MH01) where many corners tie at arc-length==n, making
+    // top-K selection degenerate — overlap vs OpenCV fell from ~44% to ~10%.
+    let mut score_lo = vdupq_n_u16(0);
+    let mut score_hi = vdupq_n_u16(0);
+    let centers_lo = vget_low_u8(centers);
+    let centers_hi = vget_high_u8(centers);
+
     // 24 iterations = 16 + (9 - 1), enough to wrap any arc of length n ≤ 9.
     // Chain counters: bright_run advances while pixel > upper, resets
     // otherwise; bright_max tracks the longest run seen. Dark analogous.
-    //
-    // Score = vmaxq_u8(bright_max, dark_max) — the arc length itself. This
-    // replaces the prior sum-of-|v - center| accumulator, saving 48 NEON ops
-    // per block (16 iter × 3 ops × 2 halves). Arc length is a valid FAST
-    // response for NMS ranking: longer arcs = stronger corners. The corner
-    // SET is identical to the |diff| score (both trigger on bright_max>=n or
-    // dark_max>=n) — only the NMS tiebreaker changes, and only among
-    // geographically-close candidates.
+    // First 16 iterations also accumulate per-lane Σ|ring - center| via
+    // `vabal_u8` (one fused widening-absdiff-add per half, 2 ops / iter).
     for k in 0..24usize {
         let offset = ring[k % 16];
         let vals = vld1q_u8(base.offset(offset));
@@ -696,11 +730,14 @@ unsafe fn fast_block_neon_16(
         dark_run = vandq_u8(vaddq_u8(dark_run, one_v), is_dark);
         bright_max = vmaxq_u8(bright_max, bright_run);
         dark_max = vmaxq_u8(dark_max, dark_run);
+        if k < 16 {
+            score_lo = vabal_u8(score_lo, vget_low_u8(vals), centers_lo);
+            score_hi = vabal_u8(score_hi, vget_high_u8(vals), centers_hi);
+        }
     }
 
     let n_v = vdupq_n_u8(n);
     let pass = vorrq_u8(vcgeq_u8(bright_max, n_v), vcgeq_u8(dark_max, n_v));
-    let score = vmaxq_u8(bright_max, dark_max);
 
     // Extract a 16-bit pass-mask from `pass` (uint8x16_t with 0x00 or 0xFF per
     // byte). Multiply each byte by its bit-weight (1,2,4,...,128) and sum the
@@ -712,10 +749,6 @@ unsafe fn fast_block_neon_16(
     let hi_mask = vaddv_u8(vget_high_u8(masked)) as u16;
     let mask = (hi_mask << 8) | lo_mask;
 
-    // Widen u8 score to u16 to keep caller's scratch type (u16 allows future
-    // expansion if we ever want a denser score; u8 is trivially widened).
-    let score_lo = vmovl_u8(vget_low_u8(score));
-    let score_hi = vmovl_u8(vget_high_u8(score));
     vst1q_u16(out_ptr, score_lo);
     vst1q_u16(out_ptr.add(8), score_hi);
 

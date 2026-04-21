@@ -1086,6 +1086,90 @@ fn harris_response_at_u8<A: ImageAllocator>(
     (det - k * trace * trace).max(0.0)
 }
 
+/// Per-row disk mask: byte i is 0xFF iff the lane's (dr, dc) sits inside the
+/// radius-15 disk. Layout: 31 rows × 32 bytes. Each row holds two 16-lane
+/// windows — low covers dc ∈ [-16, -1], high covers dc ∈ [0, 15]. dc=-16 is
+/// always masked (outside the disk since 16² = 256 > 225). Generated at
+/// compile time so the branch vanishes at runtime.
+const fn build_disk_masks() -> [[u8; 32]; 31] {
+    let mut m = [[0u8; 32]; 31];
+    let mut dr = -15i32;
+    while dr <= 15 {
+        let mut lane = 0i32;
+        while lane < 32 {
+            let dc = lane - 16;
+            if dr * dr + dc * dc <= 225 {
+                m[(dr + 15) as usize][lane as usize] = 0xFF;
+            }
+            lane += 1;
+        }
+        dr += 1;
+    }
+    m
+}
+
+const DISK_MASKS: [[u8; 32]; 31] = build_disk_masks();
+
+const DC_LOW: [i16; 16] = [
+    -16, -15, -14, -13, -12, -11, -10, -9, -8, -7, -6, -5, -4, -3, -2, -1,
+];
+const DC_HIGH: [i16; 16] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+];
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn orientation_kp_neon(src_slice: &[u8], r0: usize, c0: usize, cols: usize) -> f32 {
+    use std::arch::aarch64::*;
+
+    let dc_low_0 = vld1q_s16(DC_LOW.as_ptr());
+    let dc_low_1 = vld1q_s16(DC_LOW.as_ptr().add(8));
+    let dc_high_0 = vld1q_s16(DC_HIGH.as_ptr());
+    let dc_high_1 = vld1q_s16(DC_HIGH.as_ptr().add(8));
+
+    let mut m01_acc: i32 = 0;
+    let mut m10_sum = vdupq_n_s32(0);
+
+    let base = src_slice.as_ptr();
+    for dr in -15i32..=15 {
+        let row_ptr = base.add(((r0 as isize + dr as isize) * cols as isize) as usize);
+        let mask_row = DISK_MASKS[(dr + 15) as usize].as_ptr();
+        let mask_low = vld1q_u8(mask_row);
+        let mask_high = vld1q_u8(mask_row.add(16));
+
+        // Two 16-byte loads centered at c0. Low: dc ∈ [-16, -1]. High: dc ∈ [0, 15].
+        let px_low = vandq_u8(vld1q_u8(row_ptr.offset(c0 as isize - 16)), mask_low);
+        let px_high = vandq_u8(vld1q_u8(row_ptr.offset(c0 as isize)), mask_high);
+
+        // m01 row sum: masked bytes widened-and-added across all lanes.
+        let row_sum = (vaddlvq_u8(px_low) + vaddlvq_u8(px_high)) as i32;
+        m01_acc += row_sum * dr;
+
+        // m10: Σ px * dc. Widen u8 → u16, reinterpret as s16 (safe: values ≤ 255
+        // fit in i16's positive range), multiply by dc using vmull_s16 to
+        // produce i32 partial products, accumulate.
+        let px_low_u16_0 = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(px_low)));
+        let px_low_u16_1 = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(px_low)));
+        let px_high_u16_0 = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(px_high)));
+        let px_high_u16_1 = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(px_high)));
+
+        let p0 = vmull_s16(vget_low_s16(px_low_u16_0), vget_low_s16(dc_low_0));
+        let p1 = vmull_high_s16(px_low_u16_0, dc_low_0);
+        let p2 = vmull_s16(vget_low_s16(px_low_u16_1), vget_low_s16(dc_low_1));
+        let p3 = vmull_high_s16(px_low_u16_1, dc_low_1);
+        let p4 = vmull_s16(vget_low_s16(px_high_u16_0), vget_low_s16(dc_high_0));
+        let p5 = vmull_high_s16(px_high_u16_0, dc_high_0);
+        let p6 = vmull_s16(vget_low_s16(px_high_u16_1), vget_low_s16(dc_high_1));
+        let p7 = vmull_high_s16(px_high_u16_1, dc_high_1);
+
+        m10_sum = vaddq_s32(m10_sum, vaddq_s32(vaddq_s32(p0, p1), vaddq_s32(p2, p3)));
+        m10_sum = vaddq_s32(m10_sum, vaddq_s32(vaddq_s32(p4, p5), vaddq_s32(p6, p7)));
+    }
+
+    let m10 = vaddvq_s32(m10_sum);
+    (m01_acc as f32).atan2(m10 as f32)
+}
+
 fn corner_orientations_u8<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     corners: &[[usize; 2]],
@@ -1098,9 +1182,17 @@ fn corner_orientations_u8<A: ImageAllocator>(
     let cols = src.cols();
     let src_slice = src.as_slice();
 
+    #[cfg(target_arch = "aarch64")]
+    let use_neon = std::env::var("KORNIA_ORB_ORI_NEON").map_or(true, |v| v != "0");
+
     corners
         .par_iter()
         .map(|&[r0, c0]| {
+            #[cfg(target_arch = "aarch64")]
+            if use_neon {
+                return unsafe { orientation_kp_neon(src_slice, r0, c0, cols) };
+            }
+
             let mut m01: i32 = 0;
             let mut m10: i32 = 0;
 
@@ -1339,5 +1431,40 @@ mod tests {
             (ori_y - expected).abs() < 0.1,
             "expected ~pi/2 rad, got {ori_y}"
         );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn test_orientation_neon_matches_scalar() {
+        // Random u8 image, random keypoint positions — ensure NEON and scalar
+        // produce bit-identical orientations.
+        let w = 200usize;
+        let h = 200usize;
+        let mut data = vec![0u8; w * h];
+        let mut s: u64 = 0x1234_5678_9abc_def0;
+        for px in data.iter_mut() {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *px = (s >> 32) as u8;
+        }
+        let img = Image::<u8, 1, _>::from_size_slice([w, h].into(), &data, CpuAllocator).unwrap();
+
+        let corners: Vec<[usize; 2]> = (0..50)
+            .map(|i| {
+                let r = 20 + (i * 7) % (h - 40);
+                let c = 20 + (i * 11) % (w - 40);
+                [r, c]
+            })
+            .collect();
+
+        std::env::set_var("KORNIA_ORB_ORI_NEON", "1");
+        let neon = corner_orientations_u8(&img, &corners);
+        std::env::set_var("KORNIA_ORB_ORI_NEON", "0");
+        let scalar = corner_orientations_u8(&img, &corners);
+        std::env::remove_var("KORNIA_ORB_ORI_NEON");
+
+        for (i, (n, s)) in neon.iter().zip(scalar.iter()).enumerate() {
+            // atan2 of identical integer moments is bit-identical.
+            assert_eq!(n.to_bits(), s.to_bits(), "kp {i}: neon={n} scalar={s}");
+        }
     }
 }
