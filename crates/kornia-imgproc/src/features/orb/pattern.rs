@@ -1,40 +1,9 @@
-use std::sync::OnceLock;
-
-/// Number of angle buckets in the pre-rotated BRIEF pattern.
-pub(super) const N_BUCKETS: usize = 30;
-
-/// Pre-rotated BRIEF pattern table: `N_BUCKETS` angle buckets × 256 pairs × 4 offsets
-/// `[spr0, spc0, spr1, spc1]` matching the rotation formula:
-///
-/// ```text
-/// spr = sin(a) * pr + cos(a) * pc
-/// spc = cos(a) * pr - sin(a) * pc
-/// ```
-///
-/// Max |pr|, |pc| ≤ 13; rotated offsets bounded by 13·√2 ≈ 18.4, so i8 fits and
-/// the border mask at distance 20 keeps all indices in range.
-pub(super) fn rotated_pattern() -> &'static [[[i8; 4]; 256]; N_BUCKETS] {
-    static PATTERN: OnceLock<Box<[[[i8; 4]; 256]; N_BUCKETS]>> = OnceLock::new();
-    PATTERN.get_or_init(|| {
-        let mut table: Box<[[[i8; 4]; 256]; N_BUCKETS]> = Box::new([[[0i8; 4]; 256]; N_BUCKETS]);
-        for (k, bucket) in table.iter_mut().enumerate() {
-            let angle = (k as f32) * std::f32::consts::TAU / (N_BUCKETS as f32);
-            let sin_a = angle.sin();
-            let cos_a = angle.cos();
-            for j in 0..256 {
-                let pr0 = POS0[j][0] as f32;
-                let pc0 = POS0[j][1] as f32;
-                let pr1 = POS1[j][0] as f32;
-                let pc1 = POS1[j][1] as f32;
-                bucket[j][0] = (sin_a * pr0 + cos_a * pc0).round() as i8;
-                bucket[j][1] = (cos_a * pr0 - sin_a * pc0).round() as i8;
-                bucket[j][2] = (sin_a * pr1 + cos_a * pc1).round() as i8;
-                bucket[j][3] = (cos_a * pr1 - sin_a * pc1).round() as i8;
-            }
-        }
-        table
-    })
-}
+//! OpenCV-aligned 256-pair BRIEF pattern (Rublee 2011, `bit_pattern_31_`).
+//!
+//! Rotation is applied per-keypoint at descriptor time with continuous
+//! `cos`/`sin` math (see `rotate_pattern_for_angle` in `extractor.rs`) — this
+//! matches OpenCV's `computeOrbDescriptor` exactly and is required to produce
+//! descriptors near byte-identical to `cv2.ORB.detectAndCompute`.
 
 pub(super) const POS0: [[i8; 2]; 256] = [
     [8, -3],
