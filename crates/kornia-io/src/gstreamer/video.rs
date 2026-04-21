@@ -475,7 +475,6 @@ mod tests {
     use super::{ImageFormat, VideoCodec, VideoWriter};
     use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
 
-    #[ignore = "need gstreamer in CI"]
     #[test]
     fn video_writer_rgb8u() -> Result<(), Box<dyn std::error::Error>> {
         let tmp_dir = tempfile::tempdir()?;
@@ -502,7 +501,6 @@ mod tests {
         Ok(())
     }
 
-    #[ignore = "need gstreamer in CI"]
     #[test]
     fn video_writer_mono8u() -> Result<(), Box<dyn std::error::Error>> {
         let tmp_dir = tempfile::tempdir()?;
@@ -528,7 +526,6 @@ mod tests {
         Ok(())
     }
 
-    #[ignore = "need gstreamer in CI"]
     #[test]
     fn video_writer_h265_rgb8u() -> Result<(), Box<dyn std::error::Error>> {
         let tmp_dir = tempfile::tempdir()?;
@@ -555,7 +552,6 @@ mod tests {
         Ok(())
     }
 
-    #[ignore = "need gstreamer in CI"]
     #[test]
     fn video_writer_mjpeg_rgb8u() -> Result<(), Box<dyn std::error::Error>> {
         let tmp_dir = tempfile::tempdir()?;
@@ -582,7 +578,6 @@ mod tests {
         Ok(())
     }
 
-    #[ignore = "need gstreamer in CI"]
     #[test]
     fn video_writer_bgr8u() -> Result<(), Box<dyn std::error::Error>> {
         let tmp_dir = tempfile::tempdir()?;
@@ -609,7 +604,6 @@ mod tests {
         Ok(())
     }
 
-    #[ignore = "need gstreamer in CI"]
     #[test]
     fn video_writer_rgba8u() -> Result<(), Box<dyn std::error::Error>> {
         let tmp_dir = tempfile::tempdir()?;
@@ -636,7 +630,6 @@ mod tests {
         Ok(())
     }
 
-    #[ignore = "need gstreamer in CI"]
     #[test]
     fn video_writer_channel_mismatch_returns_error() -> Result<(), Box<dyn std::error::Error>> {
         let tmp_dir = tempfile::tempdir()?;

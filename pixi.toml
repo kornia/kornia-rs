@@ -38,6 +38,8 @@ zlib = "*"
 gstreamer = "*"
 gst-plugins-base = "*"
 gst-plugins-good = "*"
+gst-plugins-bad = "*"
+gst-plugins-ugly = "*"
 nasm = "*"
 
 [feature.rust.activation]
