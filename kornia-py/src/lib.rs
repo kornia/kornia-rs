@@ -5,8 +5,10 @@ mod brightness;
 mod color;
 mod crop;
 mod enhance;
+mod feature_match;
 mod flip;
 mod histogram;
+mod homography;
 mod icp;
 mod image;
 mod io;
@@ -387,6 +389,18 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Features submodule — feature detectors and descriptors.
     let features_mod = PyModule::new(py, "features")?;
     features_mod.add_function(wrap_pyfunction!(orb::orb_detect_and_compute, &features_mod)?)?;
+    features_mod.add_function(wrap_pyfunction!(
+        feature_match::match_descriptors_py,
+        &features_mod
+    )?)?;
+    features_mod.add_function(wrap_pyfunction!(
+        homography::ransac_homography_py,
+        &features_mod
+    )?)?;
+    features_mod.add_function(wrap_pyfunction!(
+        homography::find_homography_py,
+        &features_mod
+    )?)?;
     m.add_submodule(&features_mod)?;
 
     // Augmentations submodule
