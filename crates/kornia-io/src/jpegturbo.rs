@@ -166,7 +166,7 @@ impl JpegTurboDecoder {
     pub fn decode_gray8(
         &self,
         jpeg_data: &[u8],
-    ) -> Result<Image<u8, 3, CpuAllocator>, JpegTurboError> {
+    ) -> Result<Image<u8, 1, CpuAllocator>, JpegTurboError> {
         self.decode(jpeg_data, turbojpeg::PixelFormat::GRAY)
     }
 
@@ -185,7 +185,7 @@ impl JpegTurboDecoder {
         let buf = turbojpeg::Image {
             pixels: pixels.as_mut_slice(),
             width: image_size.width,
-            pitch: 3 * image_size.width, // we use no padding between rows
+            pitch: C * image_size.width, // we use no padding between rows
             height: image_size.height,
             format,
         };
@@ -295,6 +295,17 @@ mod tests {
         assert_eq!(image.cols(), 258);
         assert_eq!(image.rows(), 195);
         assert_eq!(image.num_channels(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn image_decoder_gray8() -> Result<(), JpegTurboError> {
+        let jpeg_data = std::fs::read("../../tests/data/dog.jpeg").unwrap();
+        let image = JpegTurboDecoder::new()?.decode_gray8(&jpeg_data)?;
+        assert_eq!(image.cols(), 258);
+        assert_eq!(image.rows(), 195);
+        assert_eq!(image.num_channels(), 1);
+        assert_eq!(image.as_slice().len(), 258 * 195);
         Ok(())
     }
 
