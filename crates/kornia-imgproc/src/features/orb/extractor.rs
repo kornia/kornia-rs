@@ -506,7 +506,15 @@ impl OrbDetector {
                     ));
                 }
 
-                let nms_cap = self.n_keypoints.saturating_mul(20).max(2048);
+                // Cap NMS by the octave's share of the total budget rather than
+                // `n_keypoints * 20`, which over-provisions small octaves. Example:
+                // 500 total kp × 20 = 10k per octave, but octave 7 only needs ~30
+                // survivors — carrying 10k candidates through the sort wastes work.
+                // Per-octave: `features_per_level[octave] * 20`, floored at 512 so
+                // low-contrast octaves still give the octree distributor a usable
+                // pool. Saves ~1 ms/octave on dense-texture 1080p input, nothing
+                // on sparse input (FAST already emits < cap so the cap is inert).
+                let nms_cap = features_per_level[octave].saturating_mul(20).max(512);
                 let t_before_nms = std::time::Instant::now();
                 let kp_with_resp = crate::features::fast::suppress_direct_standalone(
                     candidates,
