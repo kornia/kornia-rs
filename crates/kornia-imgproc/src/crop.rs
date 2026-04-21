@@ -97,4 +97,63 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_crop_full_image() -> Result<(), ImageError> {
+        // Cropping the entire image (x=0, y=0, dst size == src size) must yield
+        // pixel-identical data to the original.
+        let image_size = ImageSize {
+            width: 3,
+            height: 2,
+        };
+
+        #[rustfmt::skip]
+        let data = vec![
+            10u8, 20, 30, 40, 50, 60,
+            70u8, 80, 90, 100, 110, 120,
+        ];
+
+        let image = Image::<_, 2, _>::new(image_size, data.clone(), CpuAllocator)?;
+        let mut dst = Image::<_, 2, _>::from_size_val(image_size, 0u8, CpuAllocator)?;
+
+        super::crop_image(&image, &mut dst, 0, 0)?;
+
+        assert_eq!(dst.as_slice(), data.as_slice());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_crop_single_pixel() -> Result<(), ImageError> {
+        // A 1x1 crop from a known location must return exactly that pixel's channels.
+        let image_size = ImageSize {
+            width: 4,
+            height: 4,
+        };
+
+        #[rustfmt::skip]
+        let image = Image::<_, 1, _>::new(
+            image_size,
+            vec![
+                 0u8,  1,  2,  3,
+                 4u8,  5,  6,  7,
+                 8u8,  9, 10, 11,
+                12u8, 13, 14, 15,
+            ],
+            CpuAllocator,
+        )?;
+
+        let crop_size = ImageSize {
+            width: 1,
+            height: 1,
+        };
+        let mut dst = Image::<_, 1, _>::from_size_val(crop_size, 0u8, CpuAllocator)?;
+
+        // Pixel at column 2, row 3 is value 14.
+        super::crop_image(&image, &mut dst, 2, 3)?;
+
+        assert_eq!(dst.as_slice(), &[14u8]);
+
+        Ok(())
+    }
 }
