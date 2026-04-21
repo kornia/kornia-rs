@@ -151,6 +151,8 @@ pub fn read_image_png_u16(file_path: &str, mode: &str) -> PyResult<PyImageU16> {
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive).
 /// * `Exception`: If the image format is incompatible or writing fails.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn write_image_png_u8(file_path: &str, image: PyImage, mode: &str) -> PyResult<()> {
     match mode {
@@ -200,6 +202,8 @@ pub fn write_image_png_u8(file_path: &str, image: PyImage, mode: &str) -> PyResu
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive).
 /// * `Exception`: If the image format is incompatible or writing fails.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn write_image_png_u16(file_path: &str, image: PyImageU16, mode: &str) -> PyResult<()> {
     match mode {
@@ -253,6 +257,8 @@ pub fn write_image_png_u16(file_path: &str, image: PyImageU16, mode: &str) -> Py
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive) or decoding fails.
 /// * `Exception`: If the image fails to convert to a Python tensor.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn decode_image_png_u8(
     src: &[u8],
@@ -336,6 +342,8 @@ pub fn decode_image_png_u8(
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive) or decoding fails.
 /// * `Exception`: If the image fails to convert to a Python tensor.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn decode_image_png_u16(
     src: &[u8],

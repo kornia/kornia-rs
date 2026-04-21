@@ -305,7 +305,16 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     image_mod.add_class::<PyImageLayout>()?;
     m.add_submodule(&image_mod)?;
 
-    // IO submodule
+    // ---------------------------------------------------------------------------
+    // IO submodule (Python-only)
+    //
+    // The helpers registered below (`kornia_rs.io.read_image`, `decode_image_*`,
+    // `write_image_*`) are Python-only convenience APIs. They are intentionally
+    // NOT part of the Rust public API of `kornia-io`. Rust consumers should use
+    // the typed per-format functions in `kornia_io::{jpeg, png, tiff}` directly,
+    // or `kornia_io::functional::read_image_any_rgb8` for a single generic RGB8
+    // path. See https://github.com/kornia/kornia-rs/issues/637.
+    // ---------------------------------------------------------------------------
     let io_mod = PyModule::new(py, "io")?;
 
     // NOTE:

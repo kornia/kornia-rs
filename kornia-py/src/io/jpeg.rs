@@ -69,6 +69,8 @@ pub fn read_image_jpeg(file_path: &str, mode: &str) -> PyResult<PyImage> {
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported, the image shape mismatches the mode,
 ///   or the file fails to write.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn write_image_jpeg(file_path: &str, image: PyImage, mode: &str, quality: u8) -> PyResult<()> {
     match mode {
@@ -110,6 +112,8 @@ pub fn write_image_jpeg(file_path: &str, image: PyImage, mode: &str, quality: u8
 /// # Exceptions
 /// * `ValueError`: If the byte data is invalid, decoding fails, or the
 ///   number of channels is unsupported.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
     let layout = J::decode_image_jpeg_layout(src)
