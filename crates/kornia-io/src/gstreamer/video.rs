@@ -2,11 +2,11 @@
 //!
 //! # Supported codecs (writer)
 //!
-//! | Codec   | Encoder   | Container (file ext) |
-//! |---------|-----------|----------------------|
-//! | H264    | x264enc   | MP4 (`.mp4`)         |
-//! | H265    | x265enc   | MP4 (`.mp4`)         |
-//! | Mjpeg   | jpegenc   | Matroska (`.mkv`)    |
+//! | Codec   | Encoder   | Parser     | Container (file ext) |
+//! |---------|-----------|------------|----------------------|
+//! | H264    | x264enc   | h264parse  | MP4 (`.mp4`)         |
+//! | H265    | x265enc   | h265parse  | MP4 (`.mp4`)         |
+//! | Mjpeg   | jpegenc   | —          | Matroska (`.mkv`)    |
 //!
 //! The writer internally converts to `I420` before H.264/H.265 encoding.
 //! The caller is responsible for passing a path whose extension matches
@@ -42,7 +42,7 @@ pub enum VideoCodec {
     H264,
     /// H.265 / HEVC codec (x265enc → h265parse → mp4mux).
     H265,
-    /// Motion JPEG codec (jpegenc → jpegparse → matroskamux).
+    /// Motion JPEG codec (jpegenc → matroskamux).
     Mjpeg,
 }
 
@@ -81,8 +81,8 @@ fn format_info(format: &ImageFormat) -> (&'static str, usize) {
 fn codec_pipeline_segment(codec: &VideoCodec) -> &'static str {
     match codec {
         VideoCodec::H264 => "videoconvert ! video/x-raw,format=I420 ! x264enc ! video/x-h264,profile=main ! h264parse ! mp4mux",
-        VideoCodec::H265 => "videoconvert ! video/x-raw,format=I420 ! x265enc ! video/x-h265 ! h265parse ! mp4mux",
-        VideoCodec::Mjpeg => "videoconvert ! jpegenc ! jpegparse ! matroskamux",
+        VideoCodec::H265 => "videoconvert ! video/x-raw,format=I420 ! x265enc ! h265parse ! mp4mux",
+        VideoCodec::Mjpeg => "videoconvert ! jpegenc ! matroskamux",
     }
 }
 
