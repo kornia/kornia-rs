@@ -7956,6 +7956,7 @@ name = "kornia-py"
 version = "0.1.11"
 dependencies = [
  "kornia-3d",
+ "kornia-algebra",
  "kornia-apriltag",
  "kornia-image",
  "kornia-imgproc",

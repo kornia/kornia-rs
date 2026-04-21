@@ -15,6 +15,7 @@ name = "kornia_rs"
 
 [dependencies]
 kornia-3d = { workspace = true }
+kornia-algebra = { workspace = true }
 kornia-apriltag = { workspace = true }
 kornia-image = { workspace = true }
 kornia-imgproc = { workspace = true }
