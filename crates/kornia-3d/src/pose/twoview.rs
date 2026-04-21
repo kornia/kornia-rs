@@ -36,7 +36,7 @@ use crate::pose::fundamental::{fundamental_8point, sampson_distance, Fundamental
 use crate::pose::triangulation::{triangulate_inliers, TriangulateParams, TriangulationConfig};
 use crate::pose::{
     decompose_essential, decompose_homography, enforce_essential_constraints,
-    essential_from_fundamental, homography_4pt2d, HomographyError,
+    essential_from_fundamental, homography_4pt2d, homography_dlt, HomographyError,
 };
 use kornia_algebra::{Mat3F64, Vec2F64, Vec3F64};
 use rand::prelude::*;
@@ -73,6 +73,11 @@ pub struct RansacParams {
     pub min_inliers: usize,
     /// Optional RNG seed for deterministic runs.
     pub random_seed: Option<u64>,
+    /// If true, after the main RANSAC loop refit the model across ALL inliers
+    /// using a least-squares solver (LO-RANSAC). The refit is kept only if it
+    /// improves the inlier reprojection score. Only `ransac_homography` honors
+    /// this flag today; default is `false` for bit-identical backward compat.
+    pub refit: bool,
 }
 
 impl Default for RansacParams {
@@ -82,6 +87,7 @@ impl Default for RansacParams {
             threshold: 1.0,
             min_inliers: 15,
             random_seed: Some(0),
+            refit: false,
         }
     }
 }
@@ -323,10 +329,40 @@ pub fn ransac_homography(
         }
     }
 
-    let model = match best_model {
+    let mut model = match best_model {
         Some(m) if best_count >= params.min_inliers => m,
         _ => return Err(TwoViewError::RansacFailure),
     };
+
+    // LO-RANSAC refit: the best 4-point sample passes many inliers but those
+    // 4 points may not be a well-conditioned basis for H. A DLT across the
+    // full inlier set averages out that variance. Keep the refit only if the
+    // squared-error score improves — otherwise the DLT may have overfit a
+    // borderline inlier that RANSAC rejected.
+    if params.refit && best_count >= 4 {
+        let inl_x1: Vec<Vec2F64> = x1
+            .iter()
+            .zip(best_inliers.iter())
+            .filter_map(|(p, k)| if *k { Some(*p) } else { None })
+            .collect();
+        let inl_x2: Vec<Vec2F64> = x2
+            .iter()
+            .zip(best_inliers.iter())
+            .filter_map(|(p, k)| if *k { Some(*p) } else { None })
+            .collect();
+        if let Ok(h_refit) = homography_dlt(&inl_x1, &inl_x2) {
+            let mut refit_score = 0.0;
+            for i in 0..n {
+                if best_inliers[i] {
+                    refit_score += homography_reproj_error(&h_refit, &x1[i], &x2[i]);
+                }
+            }
+            if refit_score < best_score {
+                model = h_refit;
+                best_score = refit_score;
+            }
+        }
+    }
 
     Ok(RansacResult {
         model,
@@ -453,6 +489,7 @@ mod tests {
             threshold: 1.0,
             min_inliers: 10,
             random_seed: Some(0),
+            refit: false,
         };
         let res = ransac_fundamental(&x1, &x2, &params).unwrap();
         assert!(res.inlier_count >= params.min_inliers);
@@ -503,6 +540,7 @@ mod tests {
             threshold: 1e-6,
             min_inliers: 12,
             random_seed: Some(0),
+            refit: false,
         };
         let res = ransac_homography(&x1, &x2, &params).unwrap();
         assert!(res.inlier_count >= params.min_inliers);
@@ -627,12 +665,14 @@ mod tests {
                 threshold: 1.0,
                 min_inliers: 15,
                 random_seed: Some(42),
+                refit: false,
             },
             ransac_h: RansacParams {
                 max_iterations: 2000,
                 threshold: 1.0,
                 min_inliers: 8,
                 random_seed: Some(42),
+                refit: false,
             },
             homography_inlier_ratio: 0.8,
             triangulation: TriangulationConfig {

@@ -398,6 +398,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Features submodule — feature detectors and descriptors.
     let features_mod = PyModule::new(py, "features")?;
     features_mod.add_function(wrap_pyfunction!(orb::orb_detect_and_compute, &features_mod)?)?;
+    features_mod.add_function(wrap_pyfunction!(orb::fast_detect, &features_mod)?)?;
     features_mod.add_function(wrap_pyfunction!(
         feature_match::match_descriptors_py,
         &features_mod
