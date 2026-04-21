@@ -32,6 +32,7 @@ pub struct VideoWriter {
     format: ImageFormat,
     counter: u64,
     handle: Option<std::thread::JoinHandle<()>>,
+    buffer_pool: gstreamer::BufferPool,
 }
 
 impl VideoWriter {
@@ -68,7 +69,7 @@ impl VideoWriter {
         };
 
         // TODO: Add support for other formats
-        let format_str = match format {
+        let format_str = match &format {
             ImageFormat::Mono8 => "GRAY8",
             ImageFormat::Rgb8 => "RGB",
         };
@@ -110,6 +111,23 @@ impl VideoWriter {
         appsrc.set_is_live(true);
         appsrc.set_property("block", false);
 
+        let channels = match format {
+            ImageFormat::Mono8 => 1usize,
+            ImageFormat::Rgb8 => 3usize,
+        };
+        let frame_size = (size.width * size.height * channels) as u32;
+
+        // Pre-allocate a pool of fixed-size buffers to avoid per-frame heap allocation.
+        let buffer_pool = gstreamer::BufferPool::new();
+        let mut pool_config = buffer_pool.config();
+        pool_config.set_params(Some(&caps), frame_size, 2, 0);
+        buffer_pool
+            .set_config(pool_config)
+            .map_err(|e| StreamCaptureError::InvalidConfig(e.to_string()))?;
+        buffer_pool
+            .set_active(true)
+            .map_err(|e| StreamCaptureError::InvalidConfig(e.to_string()))?;
+
         Ok(Self {
             pipeline,
             appsrc,
@@ -117,6 +135,7 @@ impl VideoWriter {
             format,
             counter: 0,
             handle: None,
+            buffer_pool,
         })
     }
 
@@ -163,6 +182,7 @@ impl VideoWriter {
     pub fn close(&mut self) -> Result<(), StreamCaptureError> {
         // send end of stream to the appsrc
         self.appsrc.end_of_stream()?;
+        self.buffer_pool.set_active(false).ok();
         self.pipeline.set_state(gstreamer::State::Null)?;
 
         if let Some(handle) = self.handle.take() {
@@ -201,8 +221,18 @@ impl VideoWriter {
             }
         }
 
-        // TODO: verify is there is a cheaper way to copy the buffer
-        let mut buffer = gstreamer::Buffer::from_mut_slice(img.as_slice().to_vec());
+        let mut buffer = self
+            .buffer_pool
+            .acquire_buffer(None)
+            .map_err(StreamCaptureError::from)?;
+
+        {
+            let buffer_ref = buffer.get_mut().ok_or(StreamCaptureError::GetBufferError)?;
+            let mut map = buffer_ref
+                .map_writable()
+                .map_err(|_| StreamCaptureError::GetBufferError)?;
+            map.as_mut_slice().copy_from_slice(img.as_slice());
+        }
 
         let pts =
             gstreamer::ClockTime::from_nseconds(self.counter * 1_000_000_000 / self.fps as u64);
