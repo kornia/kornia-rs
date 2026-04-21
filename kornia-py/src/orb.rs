@@ -2,7 +2,10 @@ use numpy::{PyArray, PyArray1, PyArray2, PyArray3, PyArrayMethods, PyUntypedArra
 use pyo3::prelude::*;
 
 use kornia_image::{allocator::CpuAllocator, Image, ImageSize};
-use kornia_imgproc::{color::gray_from_rgb_u8, features::OrbDetector};
+use kornia_imgproc::{
+    color::gray_from_rgb_u8,
+    features::{fast_detect_rows_u8, OrbDetector},
+};
 
 use crate::image::to_pyerr;
 
@@ -60,6 +63,63 @@ pub fn orb_detect_and_compute(
     let ori_arr: Py<PyArray1<f32>> = ori_arr.unbind();
     let desc_arr: Py<PyArray2<u8>> = desc_arr.unbind();
     Ok((kps_arr, ori_arr, desc_arr))
+}
+
+/// Run just the FAST-9 corner detector on a u8 image (no Harris, no orientation,
+/// no descriptor, no scale pyramid). This is the bare detector step, exposed
+/// separately so it can be benchmarked against OpenCV's `cv2.FastFeatureDetector`
+/// and VPI's `vpi.Image.fast_corners()` head-to-head.
+///
+/// Args:
+///     image: `HxW` uint8 gray or `HxWx3` uint8 RGB numpy array.
+///     threshold: intensity threshold in u8 space 0..255 (default 20, matches cv2
+///         default). Internally normalized to [0, 1] for the Rust FastDetector.
+///     arc_length: minimum arc length of contiguous bright/dark pixels (default 9 → FAST-9).
+///     border: pixel border skipped at image edges (default 3, the FAST circle radius).
+///
+/// Returns:
+///     `(keypoints_xy, responses)` where:
+///     * `keypoints_xy` — `(N, 2)` float32 array of corner (x, y) positions.
+///     * `responses` — `(N,)` float32 FAST score per corner.
+#[pyfunction]
+#[pyo3(signature = (image, threshold=20.0, arc_length=9, border=3))]
+pub fn fast_detect(
+    py: Python<'_>,
+    image: Bound<'_, pyo3::types::PyAny>,
+    threshold: f32,
+    arc_length: usize,
+    border: usize,
+) -> PyResult<(Py<PyArray2<f32>>, Py<PyArray1<f32>>)> {
+    let gray = image_to_gray_u8(py, image)?;
+    // FastDetector expects a normalized threshold in [0, 1]; cv2/VPI both take
+    // a u8-space 0..255 value. Convert so callers can pass the familiar "20".
+    let threshold_norm = (threshold / 255.0).clamp(0.0, 1.0);
+    // Call `fast_detect_rows_u8` directly rather than constructing a
+    // `FastDetector`: the latter allocates ~12 MB of scratch (response +
+    // mask + taken buffers) per call at 1080p that the fused single-pass
+    // path doesn't touch. That alloc dominates the FAST runtime for
+    // per-call benchmarks; avoiding it matches OpenCV/VPI's per-call cost.
+    let margin = border.max(3);
+    let h = gray.height();
+    let rows = margin..h.saturating_sub(margin);
+    let corners =
+        py.detach(|| fast_detect_rows_u8(&gray, threshold_norm, arc_length, border, rows));
+
+    let n = corners.len();
+    let (kps_arr, resp_arr) = unsafe {
+        let kps_arr = PyArray::<f32, _>::new(py, [n, 2], false);
+        let resp_arr = PyArray::<f32, _>::new(py, [n], false);
+        let kps_slice = std::slice::from_raw_parts_mut(kps_arr.data(), n * 2);
+        let resp_slice = std::slice::from_raw_parts_mut(resp_arr.data(), n);
+        for (i, ([row, col], score)) in corners.iter().enumerate() {
+            // Match the (x=col, y=row) convention used by `orb_detect_and_compute`.
+            kps_slice[i * 2] = *col as f32;
+            kps_slice[i * 2 + 1] = *row as f32;
+            resp_slice[i] = *score;
+        }
+        (kps_arr, resp_arr)
+    };
+    Ok((kps_arr.unbind(), resp_arr.unbind()))
 }
 
 fn image_to_gray_u8(

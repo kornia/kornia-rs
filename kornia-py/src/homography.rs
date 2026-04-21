@@ -92,6 +92,7 @@ pub fn ransac_homography_py(
         threshold,
         min_inliers,
         random_seed: seed,
+        refit: false,
     };
 
     let result = py
@@ -177,44 +178,24 @@ pub fn find_homography_py(
             (h, vec![true; n])
         }
         METHOD_RANSAC => {
+            // `refit: true` turns on LO-RANSAC in kornia-3d: after the main
+            // loop finds inliers from a 4-point minimal sample, H is re-fit
+            // via DLT across ALL inliers and kept iff the new score is lower.
+            // Without this, plain RANSAC picks H from 4 points that bracket
+            // many inliers but may not be a well-conditioned basis for H,
+            // and cv2.findHomography (which does the same refit internally)
+            // systematically beats us.
             let params = RansacParams {
                 max_iterations,
                 threshold: ransac_threshold,
                 min_inliers,
                 random_seed: seed,
+                refit: true,
             };
-            let (h, inl) = py
-                .detach(|| -> Result<(Mat3F64, Vec<bool>), String> {
-                    let res = ransac_homography_fn(&x1, &x2, &params)
-                        .map_err(|e| format!("{}", e))?;
-                    // LO-RANSAC: refit H via DLT across ALL inliers, then keep
-                    // whichever model (RANSAC-minimal or refit) has lower inlier
-                    // reprojection error. Plain RANSAC picks H from 4 points that
-                    // happen to bracket many inliers — those 4 may not be a
-                    // well-conditioned basis for H. Refitting on the full inlier
-                    // set closes most of the gap to cv2.findHomography.
-                    let inl_x1: Vec<Vec2F64> = x1
-                        .iter()
-                        .zip(res.inliers.iter())
-                        .filter_map(|(p, k)| if *k { Some(*p) } else { None })
-                        .collect();
-                    let inl_x2: Vec<Vec2F64> = x2
-                        .iter()
-                        .zip(res.inliers.iter())
-                        .filter_map(|(p, k)| if *k { Some(*p) } else { None })
-                        .collect();
-                    if inl_x1.len() >= 4 {
-                        if let Ok(h_refit) = homography_dlt_fn(&inl_x1, &inl_x2) {
-                            let score_refit = score_model(&h_refit, &x1, &x2, &res.inliers);
-                            if score_refit < res.score {
-                                return Ok((h_refit, res.inliers));
-                            }
-                        }
-                    }
-                    Ok((res.model, res.inliers))
-                })
-                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e))?;
-            (h, inl)
+            let res = py
+                .detach(|| ransac_homography_fn(&x1, &x2, &params))
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("{}", e)))?;
+            (res.model, res.inliers)
         }
         _ => {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
@@ -233,26 +214,4 @@ pub fn find_homography_py(
         arr
     };
     Ok((h_arr.unbind(), mask_arr.unbind()))
-}
-
-/// Sum of squared reprojection errors for an H applied to a set of correspondences,
-/// restricted to indices where `mask[i] == true`. Mirrors `homography_reproj_error`
-/// from kornia-3d but inlined here because that helper is private to twoview.rs.
-fn score_model(h: &Mat3F64, x1: &[Vec2F64], x2: &[Vec2F64], mask: &[bool]) -> f64 {
-    let cols = h.to_cols_array();
-    // column-major: H[r][c] = cols[c * 3 + r].
-    let mut score = 0.0;
-    for i in 0..x1.len() {
-        if !mask[i] {
-            continue;
-        }
-        let (u, v) = (x1[i].x, x1[i].y);
-        let w = cols[2] * u + cols[5] * v + cols[8];
-        let px = (cols[0] * u + cols[3] * v + cols[6]) / w;
-        let py = (cols[1] * u + cols[4] * v + cols[7]) / w;
-        let dx = px - x2[i].x;
-        let dy = py - x2[i].y;
-        score += dx * dx + dy * dy;
-    }
-    score
 }
