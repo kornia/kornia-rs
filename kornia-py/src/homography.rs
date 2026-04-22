@@ -95,7 +95,6 @@ pub fn ransac_homography_py(
         )));
     }
 
-    let n = s1[0];
     let x1 = unpack_pts(&pts1);
     let x2 = unpack_pts(&pts2);
 

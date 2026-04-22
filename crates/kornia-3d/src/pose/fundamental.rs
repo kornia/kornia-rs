@@ -35,6 +35,7 @@
 //!   `from_cols`, consecutive 3 elements give columns, not rows — grouping wrong gives Fᵀ.
 
 use kornia_algebra::{linalg::svd::svd3_f64, Mat3F64, Vec2F64, Vec3F64};
+use nalgebra::SMatrix;
 
 /// Error type for fundamental matrix estimation.
 #[derive(thiserror::Error, Debug)]
@@ -60,29 +61,41 @@ pub fn fundamental_8point(x1: &[Vec2F64], x2: &[Vec2F64]) -> Result<Mat3F64, Fun
     let (x2n, t2) = normalize_points_2d(x2);
 
     let n = x1n.len();
-    let mut a = faer::Mat::<f64>::zeros(n, 9);
+    // Accumulate M = AᵀA (9×9 symmetric) via rank-1 outer products instead of
+    // running full SVD on the N×9 A. Null vector of A ≡ eigenvector of M's
+    // smallest eigenvalue. See the longer note in `homography_dlt`.
+    let mut m = [[0.0f64; 9]; 9];
     for i in 0..n {
         let (x, y) = (x1n[i].x, x1n[i].y);
         let (xp, yp) = (x2n[i].x, x2n[i].y);
-        unsafe {
-            a.write_unchecked(i, 0, xp * x);
-            a.write_unchecked(i, 1, xp * y);
-            a.write_unchecked(i, 2, xp);
-            a.write_unchecked(i, 3, yp * x);
-            a.write_unchecked(i, 4, yp * y);
-            a.write_unchecked(i, 5, yp);
-            a.write_unchecked(i, 6, x);
-            a.write_unchecked(i, 7, y);
-            a.write_unchecked(i, 8, 1.0);
+        let row = [xp * x, xp * y, xp, yp * x, yp * y, yp, x, y, 1.0];
+        for a in 0..9 {
+            let ra = row[a];
+            for b in a..9 {
+                m[a][b] += ra * row[b];
+            }
+        }
+    }
+    for a in 0..9 {
+        for b in 0..a {
+            m[a][b] = m[b][a];
         }
     }
 
-    let svd = a.svd();
-    let v = svd.v();
-    if v.ncols() < 9 {
-        return Err(FundamentalError::SvdFailure);
+    let mtm = SMatrix::<f64, 9, 9>::from_fn(|r, c| m[r][c]);
+    let eig = mtm.symmetric_eigen();
+    let mut min_idx = 0usize;
+    let mut min_val = eig.eigenvalues[0];
+    for i in 1..9 {
+        if eig.eigenvalues[i] < min_val {
+            min_val = eig.eigenvalues[i];
+            min_idx = i;
+        }
     }
-    let fvec = v.col(v.ncols() - 1);
+    let fc = eig.eigenvectors.column(min_idx);
+    let fvec = [
+        fc[0], fc[1], fc[2], fc[3], fc[4], fc[5], fc[6], fc[7], fc[8],
+    ];
     let f = Mat3F64::from_cols(
         Vec3F64::new(fvec[0], fvec[3], fvec[6]),
         Vec3F64::new(fvec[1], fvec[4], fvec[7]),

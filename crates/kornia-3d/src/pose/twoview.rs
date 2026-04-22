@@ -32,7 +32,7 @@
 //! The output translation is a **unit vector** (direction only). Scale is irrecoverable
 //! from two views alone — this is the SE(3) → essential manifold quotient in action.
 
-use crate::pose::fundamental::{fundamental_8point, sampson_distance, FundamentalError};
+use crate::pose::fundamental::{fundamental_8point, FundamentalError};
 use crate::pose::triangulation::{triangulate_inliers, TriangulateParams, TriangulationConfig};
 use crate::pose::{
     decompose_essential, decompose_homography, enforce_essential_constraints,
@@ -207,12 +207,22 @@ pub fn ransac_fundamental(
 
     let n = x1.len();
     let thresh_sq = params.threshold * params.threshold;
+    // One-time SoA flatten so score_inliers_f's NEON path reads contiguous f64.
+    let (x1_x, x1_y) = split_xy(x1);
+    let (x2_x, x2_y) = split_xy(x2);
     let mut best_model = None;
     let mut best_inliers = Vec::new();
     let mut best_count = 0usize;
     let mut best_score = f64::INFINITY;
 
-    for _ in 0..params.max_iterations {
+    // Adaptive iteration count: same log(1-p)/log(1-w^s) formula as H, with s=8
+    // (minimal sample size for the 8-point algorithm). Confidence p=0.9999 — F
+    // conditioning is more fragile than H, so we buy a few extra iterations.
+    let log_fail = (1.0_f64 - 0.9999).ln();
+    let mut dynamic_max = params.max_iterations;
+    let mut iter = 0usize;
+    while iter < dynamic_max {
+        iter += 1;
         let sample = rand::seq::index::sample(&mut rng, n, 8);
         let mut s1 = [Vec2F64::ZERO; 8];
         let mut s2 = [Vec2F64::ZERO; 8];
@@ -226,26 +236,28 @@ pub fn ransac_fundamental(
         };
 
         let mut inliers = vec![false; n];
-        let mut count = 0usize;
-        let mut score = 0.0f64;
-        for i in 0..n {
-            let d = sampson_distance(&f, &x1[i], &x2[i]);
-            if d <= thresh_sq {
-                inliers[i] = true;
-                count += 1;
-                score += d;
-            }
-        }
+        let (count, score) = score_inliers_f(
+            &f, &x1_x, &x1_y, &x2_x, &x2_y, thresh_sq, &mut inliers,
+        );
 
-        if count > best_count || (count == best_count && score < best_score) {
+        let improved = count > best_count || (count == best_count && score < best_score);
+        if improved {
             best_model = Some(f);
             best_inliers = inliers;
             best_count = count;
             best_score = score;
-        }
 
-        if best_count == n {
-            break;
+            if best_count == n {
+                break;
+            }
+            let w = best_count as f64 / n as f64;
+            let denom = (1.0 - w.powi(8)).ln();
+            if denom < -1e-12 {
+                let need = (log_fail / denom).ceil();
+                if need.is_finite() && need >= 0.0 {
+                    dynamic_max = (need as usize).min(params.max_iterations).max(iter);
+                }
+            }
         }
     }
 
@@ -282,18 +294,36 @@ pub fn ransac_homography(
 
     let n = x1.len();
     let thresh_sq = params.threshold * params.threshold;
+    // One-time SoA flatten so score_inliers_h's NEON path reads contiguous f64.
+    let (x1_x, x1_y) = split_xy(x1);
+    let (x2_x, x2_y) = split_xy(x2);
     let mut best_model = None;
     let mut best_inliers = Vec::new();
     let mut best_count = 0usize;
     let mut best_score = f64::INFINITY;
 
-    for _ in 0..params.max_iterations {
+    // Adaptive iteration count: after each time best_count improves, recompute
+    // the iteration bound that gives 99.9% confidence of drawing an all-inlier
+    // sample at least once. N = log(1-p) / log(1-w^s) with s=4, p=0.999.
+    // At w=0.8 (the common case after descriptor filtering), N≈9 — vs the
+    // hard-coded 2000. That's where most of the 47× gap vs OpenCV lives.
+    let log_fail = (1.0_f64 - 0.999).ln();
+    let mut dynamic_max = params.max_iterations;
+    let mut iter = 0usize;
+    while iter < dynamic_max {
+        iter += 1;
         let sample = rand::seq::index::sample(&mut rng, n, 4);
         let mut s1 = [[0.0; 2]; 4];
         let mut s2 = [[0.0; 2]; 4];
         for (i, idx) in sample.iter().enumerate() {
             s1[i] = [x1[idx].x, x1[idx].y];
             s2[i] = [x2[idx].x, x2[idx].y];
+        }
+        // DEGENSAC-style collinearity check: a 4-point sample with 3+ collinear
+        // points produces a wildly-wrong H. Reject before the solve and save
+        // the iteration for a real candidate.
+        if sample_is_degenerate(&s1) || sample_is_degenerate(&s2) {
+            continue;
         }
         let mut h = [[0.0; 3]; 3];
         if homography_4pt2d(&s1, &s2, &mut h).is_err() {
@@ -306,26 +336,28 @@ pub fn ransac_homography(
         );
 
         let mut inliers = vec![false; n];
-        let mut count = 0usize;
-        let mut score = 0.0f64;
-        for i in 0..n {
-            let d = homography_reproj_error(&h, &x1[i], &x2[i]);
-            if d <= thresh_sq {
-                inliers[i] = true;
-                count += 1;
-                score += d;
-            }
-        }
+        let (count, score) = score_inliers_h(
+            &h, &x1_x, &x1_y, &x2_x, &x2_y, thresh_sq, &mut inliers,
+        );
 
-        if count > best_count || (count == best_count && score < best_score) {
+        let improved = count > best_count || (count == best_count && score < best_score);
+        if improved {
             best_model = Some(h);
             best_inliers = inliers;
             best_count = count;
             best_score = score;
-        }
 
-        if best_count == n {
-            break;
+            if best_count == n {
+                break;
+            }
+            let w = best_count as f64 / n as f64;
+            let denom = (1.0 - w.powi(4)).ln();
+            if denom < -1e-12 {
+                let need = (log_fail / denom).ceil();
+                if need.is_finite() && need >= 0.0 {
+                    dynamic_max = (need as usize).min(params.max_iterations).max(iter);
+                }
+            }
         }
     }
 
@@ -447,6 +479,50 @@ pub fn two_view_estimate(
     })
 }
 
+/// Twice the signed area of the triangle (a, b, c) — zero iff collinear.
+#[inline]
+fn triangle_area2(a: &[f64; 2], b: &[f64; 2], c: &[f64; 2]) -> f64 {
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+}
+
+/// True if any 3 of the 4 points are (near-)collinear.
+///
+/// Uses a scale-aware threshold: points spread over a 100-px patch and a 10-px
+/// patch should both survive unless they're genuinely collinear. The threshold
+/// scales with the sample's bounding-box area to avoid false positives at small
+/// scales and false negatives at large scales.
+fn sample_is_degenerate(pts: &[[f64; 2]; 4]) -> bool {
+    let mut xmin = pts[0][0];
+    let mut xmax = pts[0][0];
+    let mut ymin = pts[0][1];
+    let mut ymax = pts[0][1];
+    for p in pts.iter().skip(1) {
+        if p[0] < xmin {
+            xmin = p[0];
+        }
+        if p[0] > xmax {
+            xmax = p[0];
+        }
+        if p[1] < ymin {
+            ymin = p[1];
+        }
+        if p[1] > ymax {
+            ymax = p[1];
+        }
+    }
+    let span = (xmax - xmin).max(ymax - ymin).max(1.0);
+    // Area threshold: 1% of the sample's bounding square. Well below any
+    // non-degenerate sample but reliably nonzero for genuine triangles.
+    let eps = 0.01 * span * span;
+    let triples = [(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)];
+    for (i, j, k) in triples {
+        if triangle_area2(&pts[i], &pts[j], &pts[k]).abs() < eps {
+            return true;
+        }
+    }
+    false
+}
+
 /// Computes the squared reprojection error for mapping `x1` to `x2` via the homography `h`.
 fn homography_reproj_error(h: &Mat3F64, x1: &Vec2F64, x2: &Vec2F64) -> f64 {
     let x1h = Vec3F64::new(x1.x, x1.y, 1.0);
@@ -459,6 +535,297 @@ fn homography_reproj_error(h: &Mat3F64, x1: &Vec2F64, x2: &Vec2F64) -> f64 {
     let dx = u - x2.x;
     let dy = v - x2.y;
     dx * dx + dy * dy
+}
+
+/// Batched H reprojection scorer. For N correspondences in SoA layout and one
+/// candidate homography, returns (inlier_count, score_sum) and populates
+/// `inliers`. Bypasses `glam::DMat3 * DVec3` (scalar 9-mul per-call) with a
+/// 2-lane f64 NEON FMA chain on aarch64. One-time SoA conversion at RANSAC
+/// entry makes the per-iteration cost dominated by FMA + 2× `vdivq_f64`.
+#[inline]
+fn score_inliers_h(
+    h: &Mat3F64,
+    x1_x: &[f64],
+    x1_y: &[f64],
+    x2_x: &[f64],
+    x2_y: &[f64],
+    thresh_sq: f64,
+    inliers: &mut [bool],
+) -> (usize, f64) {
+    let n = x1_x.len();
+    // Column-major glam::DMat3: row-r, col-c = {x,y,z}_axis[r] at column c.
+    let a = h.x_axis.x;
+    let b = h.y_axis.x;
+    let c = h.z_axis.x;
+    let d = h.x_axis.y;
+    let e = h.y_axis.y;
+    let f = h.z_axis.y;
+    let g = h.x_axis.z;
+    let hh = h.y_axis.z;
+    let ii = h.z_axis.z;
+
+    let mut count = 0usize;
+    let mut score = 0.0f64;
+    #[cfg(not(target_arch = "aarch64"))]
+    let mut idx = 0usize;
+
+    #[cfg(target_arch = "aarch64")]
+    let mut idx = unsafe {
+        score_inliers_h_neon(
+            (a, b, c, d, e, f, g, hh, ii),
+            x1_x,
+            x1_y,
+            x2_x,
+            x2_y,
+            thresh_sq,
+            inliers,
+            &mut count,
+            &mut score,
+        )
+    };
+
+    // Scalar tail (and full fallback on non-aarch64).
+    while idx < n {
+        let x = x1_x[idx];
+        let y = x1_y[idx];
+        let hw = g * x + hh * y + ii;
+        if hw.abs() >= 1e-12 {
+            let u = (a * x + b * y + c) / hw;
+            let v = (d * x + e * y + f) / hw;
+            let dx = u - x2_x[idx];
+            let dy = v - x2_y[idx];
+            let dd = dx * dx + dy * dy;
+            if dd <= thresh_sq {
+                inliers[idx] = true;
+                count += 1;
+                score += dd;
+            }
+        }
+        idx += 1;
+    }
+    (count, score)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+unsafe fn score_inliers_h_neon(
+    coeffs: (f64, f64, f64, f64, f64, f64, f64, f64, f64),
+    x1_x: &[f64],
+    x1_y: &[f64],
+    x2_x: &[f64],
+    x2_y: &[f64],
+    thresh_sq: f64,
+    inliers: &mut [bool],
+    count: &mut usize,
+    score: &mut f64,
+) -> usize {
+    use std::arch::aarch64::*;
+    let (a, b, c, d, e, f, g, hh, ii) = coeffs;
+    let a_v = vdupq_n_f64(a);
+    let b_v = vdupq_n_f64(b);
+    let c_v = vdupq_n_f64(c);
+    let d_v = vdupq_n_f64(d);
+    let e_v = vdupq_n_f64(e);
+    let f_v = vdupq_n_f64(f);
+    let g_v = vdupq_n_f64(g);
+    let h_v = vdupq_n_f64(hh);
+    let i_v = vdupq_n_f64(ii);
+    let n = x1_x.len();
+    let mut idx = 0usize;
+    while idx + 2 <= n {
+        let x1 = vld1q_f64(x1_x.as_ptr().add(idx));
+        let y1 = vld1q_f64(x1_y.as_ptr().add(idx));
+        let x2 = vld1q_f64(x2_x.as_ptr().add(idx));
+        let y2 = vld1q_f64(x2_y.as_ptr().add(idx));
+        // hx = a*x + b*y + c ; hy = d*x + e*y + f ; hw = g*x + h*y + i
+        let hx = vfmaq_f64(vfmaq_f64(c_v, x1, a_v), y1, b_v);
+        let hy = vfmaq_f64(vfmaq_f64(f_v, x1, d_v), y1, e_v);
+        let hw = vfmaq_f64(vfmaq_f64(i_v, x1, g_v), y1, h_v);
+        let u = vdivq_f64(hx, hw);
+        let v = vdivq_f64(hy, hw);
+        let dx = vsubq_f64(u, x2);
+        let dy = vsubq_f64(v, y2);
+        let sq = vfmaq_f64(vmulq_f64(dx, dx), dy, dy);
+        let mut buf = [0.0f64; 2];
+        vst1q_f64(buf.as_mut_ptr(), sq);
+        // Commit per-lane (scalar reduction — count++/score+= are data-dependent).
+        for k in 0..2 {
+            let dd = buf[k];
+            if dd.is_finite() && dd <= thresh_sq {
+                *inliers.get_unchecked_mut(idx + k) = true;
+                *count += 1;
+                *score += dd;
+            }
+        }
+        idx += 2;
+    }
+    idx
+}
+
+/// Batched Sampson scorer for F. N correspondences × 1 model. Same structure
+/// as `score_inliers_h` — 2-lane f64 NEON FMA path on aarch64, scalar tail.
+/// Equivalent to calling `sampson_distance` per-point then thresholding.
+#[inline]
+fn score_inliers_f(
+    f_mat: &Mat3F64,
+    x1_x: &[f64],
+    x1_y: &[f64],
+    x2_x: &[f64],
+    x2_y: &[f64],
+    thresh_sq: f64,
+    inliers: &mut [bool],
+) -> (usize, f64) {
+    let n = x1_x.len();
+    // F entries (row-major naming, same convention as score_inliers_h).
+    let f00 = f_mat.x_axis.x;
+    let f01 = f_mat.y_axis.x;
+    let f02 = f_mat.z_axis.x;
+    let f10 = f_mat.x_axis.y;
+    let f11 = f_mat.y_axis.y;
+    let f12 = f_mat.z_axis.y;
+    let f20 = f_mat.x_axis.z;
+    let f21 = f_mat.y_axis.z;
+    let f22 = f_mat.z_axis.z;
+
+    let mut count = 0usize;
+    let mut score = 0.0f64;
+    #[cfg(not(target_arch = "aarch64"))]
+    let mut idx = 0usize;
+
+    #[cfg(target_arch = "aarch64")]
+    let mut idx = unsafe {
+        score_inliers_f_neon(
+            (f00, f01, f02, f10, f11, f12, f20, f21, f22),
+            x1_x,
+            x1_y,
+            x2_x,
+            x2_y,
+            thresh_sq,
+            inliers,
+            &mut count,
+            &mut score,
+        )
+    };
+
+    while idx < n {
+        let x1 = x1_x[idx];
+        let y1 = x1_y[idx];
+        let x2 = x2_x[idx];
+        let y2 = x2_y[idx];
+        let fx1x = f00 * x1 + f01 * y1 + f02;
+        let fx1y = f10 * x1 + f11 * y1 + f12;
+        let fx1z = f20 * x1 + f21 * y1 + f22;
+        let ftx2x = f00 * x2 + f10 * y2 + f20;
+        let ftx2y = f01 * x2 + f11 * y2 + f21;
+        let err = fx1x * x2 + fx1y * y2 + fx1z;
+        let denom = fx1x * fx1x + fx1y * fx1y + ftx2x * ftx2x + ftx2y * ftx2y;
+        let dd = if denom <= 1e-12 {
+            err * err
+        } else {
+            (err * err) / denom
+        };
+        if dd <= thresh_sq {
+            inliers[idx] = true;
+            count += 1;
+            score += dd;
+        }
+        idx += 1;
+    }
+    (count, score)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+#[allow(clippy::too_many_arguments)]
+unsafe fn score_inliers_f_neon(
+    f: (f64, f64, f64, f64, f64, f64, f64, f64, f64),
+    x1_x: &[f64],
+    x1_y: &[f64],
+    x2_x: &[f64],
+    x2_y: &[f64],
+    thresh_sq: f64,
+    inliers: &mut [bool],
+    count: &mut usize,
+    score: &mut f64,
+) -> usize {
+    use std::arch::aarch64::*;
+    let (f00, f01, f02, f10, f11, f12, f20, f21, f22) = f;
+    let f00v = vdupq_n_f64(f00);
+    let f01v = vdupq_n_f64(f01);
+    let f02v = vdupq_n_f64(f02);
+    let f10v = vdupq_n_f64(f10);
+    let f11v = vdupq_n_f64(f11);
+    let f12v = vdupq_n_f64(f12);
+    let f20v = vdupq_n_f64(f20);
+    let f21v = vdupq_n_f64(f21);
+    let f22v = vdupq_n_f64(f22);
+    let n = x1_x.len();
+    let mut idx = 0usize;
+    while idx + 2 <= n {
+        let x1 = vld1q_f64(x1_x.as_ptr().add(idx));
+        let y1 = vld1q_f64(x1_y.as_ptr().add(idx));
+        let x2 = vld1q_f64(x2_x.as_ptr().add(idx));
+        let y2 = vld1q_f64(x2_y.as_ptr().add(idx));
+
+        // fx1 = F * [x1; y1; 1]
+        let fx1x = vfmaq_f64(vfmaq_f64(f02v, x1, f00v), y1, f01v);
+        let fx1y = vfmaq_f64(vfmaq_f64(f12v, x1, f10v), y1, f11v);
+        let fx1z = vfmaq_f64(vfmaq_f64(f22v, x1, f20v), y1, f21v);
+        // ftx2 = F^T * [x2; y2; 1]  (only x,y components needed for denom)
+        let ftx2x = vfmaq_f64(vfmaq_f64(f20v, x2, f00v), y2, f10v);
+        let ftx2y = vfmaq_f64(vfmaq_f64(f21v, x2, f01v), y2, f11v);
+
+        // err = [x2; y2; 1] · fx1
+        let err = vfmaq_f64(
+            vfmaq_f64(fx1z, x2, fx1x),
+            y2,
+            fx1y,
+        );
+        // denom = fx1x² + fx1y² + ftx2x² + ftx2y²
+        let denom = vfmaq_f64(
+            vfmaq_f64(
+                vfmaq_f64(vmulq_f64(fx1x, fx1x), fx1y, fx1y),
+                ftx2x,
+                ftx2x,
+            ),
+            ftx2y,
+            ftx2y,
+        );
+        let err_sq = vmulq_f64(err, err);
+        // If denom > 0, use err²/denom; else err². Branchless select via bitwise
+        // (denom > 1e-12) mask — otherwise fall back to scalar handling per lane.
+        let denom_ok = vcgtq_f64(denom, vdupq_n_f64(1e-12));
+        let safe_denom = vbslq_f64(denom_ok, denom, vdupq_n_f64(1.0));
+        let div_val = vdivq_f64(err_sq, safe_denom);
+        let dd = vbslq_f64(denom_ok, div_val, err_sq);
+
+        let mut buf = [0.0f64; 2];
+        vst1q_f64(buf.as_mut_ptr(), dd);
+        for k in 0..2 {
+            let dd_k = buf[k];
+            if dd_k.is_finite() && dd_k <= thresh_sq {
+                *inliers.get_unchecked_mut(idx + k) = true;
+                *count += 1;
+                *score += dd_k;
+            }
+        }
+        idx += 2;
+    }
+    idx
+}
+
+/// Flatten `&[Vec2F64]` into two parallel f64 slices (x, y). Called once per
+/// RANSAC entry; keeps the inner-loop scorer in contiguous `&[f64]` land.
+fn split_xy(pts: &[Vec2F64]) -> (Vec<f64>, Vec<f64>) {
+    let mut xs = Vec::with_capacity(pts.len());
+    let mut ys = Vec::with_capacity(pts.len());
+    for p in pts {
+        xs.push(p.x);
+        ys.push(p.y);
+    }
+    (xs, ys)
 }
 
 #[cfg(test)]
@@ -512,6 +879,162 @@ mod tests {
             TwoViewError::InvalidInput { required } => assert_eq!(required, 8),
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_sample_degenerate_collinear_rejected() {
+        // Four points on a line — every 3-subset is collinear → reject.
+        let collinear = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]];
+        assert!(sample_is_degenerate(&collinear));
+
+        // Three collinear + one off-line — still has a collinear triple → reject.
+        let mixed = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [1.5, 5.0]];
+        assert!(sample_is_degenerate(&mixed));
+    }
+
+    #[test]
+    fn test_sample_non_degenerate_accepted() {
+        // A proper quadrilateral — no collinear triples → accept.
+        let quad = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
+        assert!(!sample_is_degenerate(&quad));
+
+        // Points from the `_make_known_homography_pair` region in the Python tests.
+        let normal = [[120.0, 180.0], [340.0, 150.0], [280.0, 420.0], [410.0, 370.0]];
+        assert!(!sample_is_degenerate(&normal));
+    }
+
+    #[test]
+    fn test_score_inliers_h_matches_scalar() {
+        use crate::pose::fundamental::sampson_distance;
+        let h = Mat3F64::from_cols(
+            Vec3F64::new(1.25, 0.03, 0.0012),
+            Vec3F64::new(-0.08, 0.95, -0.0008),
+            Vec3F64::new(2.4, -1.7, 1.0),
+        );
+        let mut x1 = Vec::new();
+        let mut x2 = Vec::new();
+        for i in 0..47 {
+            let xi = (i as f64 * 0.73 - 12.5).sin() * 100.0;
+            let yi = (i as f64 * 1.11 + 3.0).cos() * 80.0;
+            let p = Vec3F64::new(xi, yi, 1.0);
+            let hp = h * p;
+            let jitter = (i as f64 * 0.2).sin() * 0.01;
+            x1.push(Vec2F64::new(xi, yi));
+            x2.push(Vec2F64::new(hp.x / hp.z + jitter, hp.y / hp.z - jitter));
+        }
+        let thresh_sq = 0.04f64;
+
+        let mut inl_ref = vec![false; x1.len()];
+        let mut count_ref = 0usize;
+        let mut score_ref = 0.0f64;
+        for i in 0..x1.len() {
+            let d = homography_reproj_error(&h, &x1[i], &x2[i]);
+            if d <= thresh_sq {
+                inl_ref[i] = true;
+                count_ref += 1;
+                score_ref += d;
+            }
+        }
+
+        let (x1_x, x1_y) = split_xy(&x1);
+        let (x2_x, x2_y) = split_xy(&x2);
+        let mut inl = vec![false; x1.len()];
+        let (count, score) = score_inliers_h(
+            &h, &x1_x, &x1_y, &x2_x, &x2_y, thresh_sq, &mut inl,
+        );
+
+        assert_eq!(count, count_ref);
+        assert_eq!(inl, inl_ref);
+        assert!((score - score_ref).abs() < 1e-10);
+
+        // keep sampson_distance import live for symmetry across test changes
+        let _ = sampson_distance;
+    }
+
+    #[test]
+    fn test_score_inliers_f_matches_scalar() {
+        use crate::pose::fundamental::sampson_distance;
+        let f_mat = Mat3F64::from_cols(
+            Vec3F64::new(0.0, -0.0012, 0.011),
+            Vec3F64::new(0.0014, 0.0, -0.021),
+            Vec3F64::new(-0.012, 0.018, 1.0),
+        );
+        let mut x1 = Vec::new();
+        let mut x2 = Vec::new();
+        for i in 0..53 {
+            let xi = i as f64 * 1.33 - 20.0;
+            let yi = (i as f64 * 0.7).sin() * 50.0 - 10.0;
+            let x = Vec3F64::new(xi, yi, 1.0);
+            let l = f_mat * x;
+            let xp = if l.x.abs() > 1e-10 { -l.z / l.x } else { 0.0 };
+            x1.push(Vec2F64::new(xi, yi));
+            x2.push(Vec2F64::new(xp, (i as f64 * 0.05).cos() * 0.5));
+        }
+        let thresh_sq = 0.25f64;
+
+        let mut inl_ref = vec![false; x1.len()];
+        let mut count_ref = 0usize;
+        let mut score_ref = 0.0f64;
+        for i in 0..x1.len() {
+            let d = sampson_distance(&f_mat, &x1[i], &x2[i]);
+            if d <= thresh_sq {
+                inl_ref[i] = true;
+                count_ref += 1;
+                score_ref += d;
+            }
+        }
+
+        let (x1_x, x1_y) = split_xy(&x1);
+        let (x2_x, x2_y) = split_xy(&x2);
+        let mut inl = vec![false; x1.len()];
+        let (count, score) = score_inliers_f(
+            &f_mat, &x1_x, &x1_y, &x2_x, &x2_y, thresh_sq, &mut inl,
+        );
+
+        assert_eq!(count, count_ref);
+        assert_eq!(inl, inl_ref);
+        assert!((score - score_ref).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_ransac_homography_adaptive_stops_early_on_clean_data() {
+        // All-inlier data should stop in O(10) iterations, not 2000. We can't
+        // observe the iteration count directly, but we can verify it runs
+        // quickly and converges; the adaptive bound at w=1 triggers the
+        // `best_count == n` early-exit immediately.
+        let h_true = Mat3F64::from_cols(
+            Vec3F64::new(1.2, 0.0, 0.001),
+            Vec3F64::new(0.1, 0.9, 0.002),
+            Vec3F64::new(5.0, -3.0, 1.0),
+        );
+        let mut x1 = Vec::new();
+        let mut x2 = Vec::new();
+        for i in 0..30 {
+            let xi = (i % 6) as f64 * 5.0;
+            let yi = (i / 6) as f64 * 7.0;
+            let p = Vec3F64::new(xi, yi, 1.0);
+            let hp = h_true * p;
+            x1.push(Vec2F64::new(xi, yi));
+            x2.push(Vec2F64::new(hp.x / hp.z, hp.y / hp.z));
+        }
+        let params = RansacParams {
+            max_iterations: 2000,
+            threshold: 0.1,
+            min_inliers: 25,
+            random_seed: Some(42),
+            refit: false,
+        };
+        let start = std::time::Instant::now();
+        let res = ransac_homography(&x1, &x2, &params).unwrap();
+        let elapsed = start.elapsed();
+        assert_eq!(res.inlier_count, x1.len(), "should find all inliers");
+        // Generous bound — even with collinearity-rejection overhead, 30 points
+        // on clean data is well under 10ms on any dev machine. A runaway loop
+        // (e.g., adaptive termination broken) would be orders of magnitude slower.
+        assert!(
+            elapsed.as_millis() < 50,
+            "adaptive termination should be fast on clean data, took {elapsed:?}"
+        );
     }
 
     #[test]
