@@ -407,230 +407,243 @@ impl OrbDetector {
         Ok((descriptors_list, mask_list))
     }
 
-    fn build_pyramid_u8<A: ImageAllocator>(
+    #[allow(clippy::type_complexity)]
+    fn detect_octave_u8(
         &self,
-        img: &Image<u8, 1, A>,
-    ) -> Result<Vec<Image<u8, 1, CpuAllocator>>, ImageError> {
-        // Level 0 is the source. Avoid the double clone (one to
-        // CpuAllocator-backed `current`, one to push into the pyramid) by
-        // constructing level 0 directly from the input slice.
-        let level0 = Image::from_size_slice(img.size(), img.as_slice(), CpuAllocator)?;
+        octave: usize,
+        octave_image: &Image<u8, 1, CpuAllocator>,
+        features_per_level: &[usize],
+        trace: bool,
+    ) -> Result<(Vec<(f32, f32)>, Vec<f32>, Vec<f32>, Vec<f32>), ImageError> {
+        const EDGE_THRESHOLD: usize = 19;
+        let ta = std::time::Instant::now();
+        // Selective nesting: oct 0 (>=1000 rows) is the single-core wall.
+        // Let rayon steal into its row work from cores that finished smaller
+        // octaves. Oct 1+ stays serial — spawn/join overhead of nested
+        // par_iter across many small octaves regresses wall time.
+        let mut candidates = if octave_image.height() >= 1000 {
+            crate::features::fast::fast_detect_rows_u8(
+                octave_image,
+                self.ini_fast_threshold,
+                self.fast_n,
+                EDGE_THRESHOLD,
+                0..octave_image.height(),
+            )
+        } else {
+            crate::features::fast::fast_detect_rows_u8_serial(
+                octave_image,
+                self.ini_fast_threshold,
+                self.fast_n,
+                EDGE_THRESHOLD,
+                0..octave_image.height(),
+            )
+        };
 
-        let mut pyramid = Vec::with_capacity(self.n_scales);
-        pyramid.push(level0);
-
-        for _ in 1..self.n_scales {
-            let next = pyramid_reduce_u8(pyramid.last().unwrap(), self.downscale)?;
-            if next.size() == pyramid.last().unwrap().size() {
-                break;
+        if candidates.len() < 10 {
+            let low_candidates = crate::features::fast::fast_detect_rows_u8_serial(
+                octave_image,
+                self.min_fast_threshold,
+                self.fast_n,
+                EDGE_THRESHOLD,
+                0..octave_image.height(),
+            );
+            for cand in low_candidates {
+                let [r0, c0] = cand.0;
+                let dominated = candidates.iter().any(|&([r, c], _)| {
+                    let dr = (r as i32 - r0 as i32).abs();
+                    let dc = (c as i32 - c0 as i32).abs();
+                    dr <= 3 && dc <= 3
+                });
+                if !dominated {
+                    candidates.push(cand);
+                }
             }
-            pyramid.push(next);
         }
 
-        Ok(pyramid)
+        let raw_len = candidates.len();
+        if candidates.is_empty() {
+            return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+        }
+
+        // Scale NMS cap by the octave's budget share (floor at 512 so
+        // low-contrast octaves still feed the distributor a usable pool).
+        let nms_cap = features_per_level[octave].saturating_mul(20).max(512);
+        let t_before_nms = std::time::Instant::now();
+        let kp_with_resp = crate::features::fast::suppress_direct_standalone(
+            candidates,
+            nms_cap,
+            octave_image.width(),
+            octave_image.height(),
+            1,
+        );
+        let t_after_nms = std::time::Instant::now();
+        if trace {
+            eprintln!(
+                "  oct[{:4}x{:4}] fast={:.2} nms={:.2} kp_raw={} kp_filt={}",
+                octave_image.width(),
+                octave_image.height(),
+                (t_before_nms - ta).as_secs_f64() * 1000.0,
+                (t_after_nms - t_before_nms).as_secs_f64() * 1000.0,
+                raw_len,
+                kp_with_resp.len(),
+            );
+        }
+        if kp_with_resp.is_empty() {
+            return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+        }
+        let (keypoints, responses): (Vec<[usize; 2]>, Vec<f32>) =
+            kp_with_resp.into_iter().unzip();
+
+        let mut candidates: Vec<OrbCandidate> = keypoints
+            .iter()
+            .zip(responses.iter())
+            .map(|(&[r, c], &response)| OrbCandidate {
+                row: r,
+                col: c,
+                response,
+                angle: 0.0,
+            })
+            .collect();
+
+        let target = features_per_level[octave];
+        let cap = (target.saturating_mul(20)).max(512);
+        if candidates.len() > cap {
+            candidates.select_nth_unstable_by(cap, |a, b| {
+                b.response
+                    .partial_cmp(&a.response)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            candidates.truncate(cap);
+        }
+
+        let t_before_octree = std::time::Instant::now();
+        let image_f32_size = octave_image.size();
+        let min_x = 19 - 3;
+        let min_y = 19 - 3;
+        let max_x = image_f32_size.width as i32 - 19 + 3;
+        let max_y = image_f32_size.height as i32 - 19 + 3;
+        let distributed = distribute_octree(&candidates, min_x, max_x, min_y, max_y, target);
+        let t_after_octree = std::time::Instant::now();
+
+        let survivor_positions: Vec<[usize; 2]> =
+            distributed.iter().map(|c| [c.row, c.col]).collect();
+        // Serial — outer pipeline already saturates cores; nesting oversubscribes.
+        let survivor_harris: Vec<f32> = survivor_positions
+            .iter()
+            .map(|&[r, c]| harris_response_at_u8(octave_image, r, c, self.harris_k))
+            .collect();
+        let survivor_orientations = corner_orientations_u8(octave_image, &survivor_positions);
+        let t_after_ori = std::time::Instant::now();
+
+        let scale = self.downscale.powi(octave as i32);
+        let mut kps = Vec::with_capacity(distributed.len());
+        let mut scales = Vec::with_capacity(distributed.len());
+        let mut oris = Vec::with_capacity(distributed.len());
+        let mut resps = Vec::with_capacity(distributed.len());
+        for ((cand, &angle), &harris) in distributed
+            .iter()
+            .zip(survivor_orientations.iter())
+            .zip(survivor_harris.iter())
+        {
+            kps.push((cand.row as f32 * scale, cand.col as f32 * scale));
+            oris.push(angle);
+            scales.push(scale);
+            resps.push(harris);
+        }
+
+        if trace {
+            eprintln!(
+                "  pyramid[{octave}] octree={:.2} ori_post={:.2} survivors={}",
+                (t_after_octree - t_before_octree).as_secs_f64() * 1000.0,
+                (t_after_ori - t_after_octree).as_secs_f64() * 1000.0,
+                distributed.len(),
+            );
+        }
+
+        Ok((kps, scales, oris, resps))
     }
 
+    /// Build the pyramid while concurrently running detect+extract on each
+    /// completed level.
+    ///
+    /// For level N, `process_octave_u8` is spawned on a rayon worker the
+    /// moment level N is built; the main thread continues with
+    /// `pyramid_reduce_u8` for level N+1. This overlaps the serial reduce
+    /// chain with the full detect+extract work per octave — pyramid images
+    /// are consumed by the spawned tasks and aren't returned.
     #[allow(clippy::type_complexity)]
-    fn detect_u8_pyramid(
+    fn build_pyramid_and_process_u8<A: ImageAllocator>(
         &self,
-        pyramid: &[Image<u8, 1, CpuAllocator>],
-    ) -> Result<(Vec<(f32, f32)>, Vec<f32>, Vec<f32>, Vec<f32>), ImageError> {
-        let features_per_level = self.features_per_level();
+        img: &Image<u8, 1, A>,
+    ) -> Result<Vec<(Vec<[f32; 2]>, Vec<f32>, Vec<[u8; 32]>)>, ImageError> {
+        use std::sync::{Arc, OnceLock};
+
         let trace = std::env::var("KORNIA_ORB_TRACE").is_ok();
+        let features_per_level = self.features_per_level();
 
-        const EDGE_THRESHOLD: usize = 19;
-        // Process octaves in parallel: each octave is fully independent.
-        // Per-octave tasks let small octaves finish their FAST + NMS + Harris
-        // + BRIEF completely while oct 0 is still running, overlapping work
-        // naturally. A two-phase split (chunked FAST then per-octave rest)
-        // introduces a barrier that destroys this overlap and regresses
-        // end-to-end even though chunked FAST alone is faster.
-        let per_octave: Vec<_> = pyramid
-            .par_iter()
-            .enumerate()
-            .map(|(octave, octave_image)| -> Result<_, ImageError> {
-                let ta = std::time::Instant::now();
-                // Selective nesting: oct 0 (>=900 rows) is the single-core
-                // wall. Allow rayon to steal into its row work from cores
-                // that finished smaller octaves. Oct 1+ stays serial — the
-                // spawn/join overhead of nested par_iter across too many
-                // octaves pushes wall time up even though individual cores
-                // do the same amount of compute.
-                let mut candidates = if octave_image.height() >= 1000 {
-                    crate::features::fast::fast_detect_rows_u8(
-                        octave_image,
-                        self.ini_fast_threshold,
-                        self.fast_n,
-                        EDGE_THRESHOLD,
-                        0..octave_image.height(),
-                    )
-                } else {
-                    crate::features::fast::fast_detect_rows_u8_serial(
-                        octave_image,
-                        self.ini_fast_threshold,
-                        self.fast_n,
-                        EDGE_THRESHOLD,
-                        0..octave_image.height(),
-                    )
-                };
+        let level0 = Image::from_size_slice(img.size(), img.as_slice(), CpuAllocator)?;
+        let mut pyramid_arcs: Vec<Arc<Image<u8, 1, CpuAllocator>>> =
+            Vec::with_capacity(self.n_scales);
+        pyramid_arcs.push(Arc::new(level0));
 
-                // Softer-threshold fallback if initial detection was too sparse.
-                if candidates.len() < 10 {
-                    let low_candidates = crate::features::fast::fast_detect_rows_u8_serial(
-                        octave_image,
-                        self.min_fast_threshold,
-                        self.fast_n,
-                        EDGE_THRESHOLD,
-                        0..octave_image.height(),
-                    );
-                    for cand in low_candidates {
-                        let [r0, c0] = cand.0;
-                        let dominated = candidates.iter().any(|&([r, c], _)| {
-                            let dr = (r as i32 - r0 as i32).abs();
-                            let dc = (c as i32 - c0 as i32).abs();
-                            dr <= 3 && dc <= 3
-                        });
-                        if !dominated {
-                            candidates.push(cand);
-                        }
+        // OnceLock (not Mutex) — each slot is written by exactly one spawn and
+        // read once after scope join, so there's no contention to guard.
+        type ProcessedOctave = (Vec<[f32; 2]>, Vec<f32>, Vec<[u8; 32]>);
+        let slots: Vec<OnceLock<Result<ProcessedOctave, ImageError>>> =
+            (0..self.n_scales).map(|_| OnceLock::new()).collect();
+
+        let mut build_err: Option<ImageError> = None;
+
+        rayon::scope(|s| {
+            // Kick level-0 process immediately — its detect is the heaviest
+            // single task and can run in parallel with reduce(1..n).
+            let arc0 = pyramid_arcs[0].clone();
+            let slot0 = &slots[0];
+            let fpl = &features_per_level;
+            s.spawn(move |_| {
+                let _ = slot0.set(self.process_octave_u8(0, arc0.as_ref(), fpl, trace));
+            });
+
+            for octave in 1..self.n_scales {
+                let prev = pyramid_arcs[octave - 1].clone();
+                let next = match pyramid_reduce_u8(prev.as_ref(), self.downscale) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        build_err = Some(e);
+                        break;
                     }
+                };
+                if next.size() == prev.size() {
+                    break;
                 }
+                pyramid_arcs.push(Arc::new(next));
+                let arc = pyramid_arcs[octave].clone();
+                let slot = &slots[octave];
+                let fpl = &features_per_level;
+                s.spawn(move |_| {
+                    let _ = slot.set(self.process_octave_u8(octave, arc.as_ref(), fpl, trace));
+                });
+            }
+        });
 
-                let raw_len = candidates.len();
-                if candidates.is_empty() {
-                    return Ok((
-                        Vec::<(f32, f32)>::new(),
-                        Vec::<f32>::new(),
-                        Vec::<f32>::new(),
-                        Vec::<f32>::new(),
-                    ));
-                }
-
-                // Scale NMS cap by the octave's budget share (not total). Octave 7
-                // needs ~30 survivors, not `n_keypoints * 20`. Floor at 512 so
-                // low-contrast octaves still feed the distributor a usable pool.
-                let nms_cap = features_per_level[octave].saturating_mul(20).max(512);
-                let t_before_nms = std::time::Instant::now();
-                let kp_with_resp = crate::features::fast::suppress_direct_standalone(
-                    candidates,
-                    nms_cap,
-                    octave_image.width(),
-                    octave_image.height(),
-                    1,
-                );
-                let t_after_nms = std::time::Instant::now();
-                if trace {
-                    eprintln!(
-                        "  oct[{:4}x{:4}] fast={:.2} nms={:.2} kp_raw={} kp_filt={}",
-                        octave_image.width(),
-                        octave_image.height(),
-                        (t_before_nms - ta).as_secs_f64() * 1000.0,
-                        (t_after_nms - t_before_nms).as_secs_f64() * 1000.0,
-                        raw_len,
-                        kp_with_resp.len(),
-                    );
-                }
-                if kp_with_resp.is_empty() {
-                    return Ok((
-                        Vec::<(f32, f32)>::new(),
-                        Vec::<f32>::new(),
-                        Vec::<f32>::new(),
-                        Vec::<f32>::new(),
-                    ));
-                }
-                let (keypoints, responses): (Vec<[usize; 2]>, Vec<f32>) =
-                    kp_with_resp.into_iter().unzip();
-
-                let mut candidates: Vec<OrbCandidate> = keypoints
-                    .iter()
-                    .zip(responses.iter())
-                    .map(|(&[r, c], &response)| OrbCandidate {
-                        row: r,
-                        col: c,
-                        response,
-                        angle: 0.0,
-                    })
-                    .collect();
-
-                let target = features_per_level[octave];
-                let cap = (target.saturating_mul(20)).max(512);
-                if candidates.len() > cap {
-                    candidates.select_nth_unstable_by(cap, |a, b| {
-                        b.response
-                            .partial_cmp(&a.response)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    });
-                    candidates.truncate(cap);
-                }
-
-                let t_before_octree = std::time::Instant::now();
-                let image_f32_size = octave_image.size();
-                let min_x = 19 - 3;
-                let min_y = 19 - 3;
-                let max_x = image_f32_size.width as i32 - 19 + 3;
-                let max_y = image_f32_size.height as i32 - 19 + 3;
-                let distributed =
-                    distribute_octree(&candidates, min_x, max_x, min_y, max_y, target);
-                let t_after_octree = std::time::Instant::now();
-
-                let survivor_positions: Vec<[usize; 2]> =
-                    distributed.iter().map(|c| [c.row, c.col]).collect();
-                // Serial here — the outer pyramid `par_iter` already saturates
-                // all cores. Nested parallelism would oversubscribe and hurt.
-                let survivor_harris: Vec<f32> = survivor_positions
-                    .iter()
-                    .map(|&[r, c]| harris_response_at_u8(octave_image, r, c, self.harris_k))
-                    .collect();
-                let survivor_orientations =
-                    corner_orientations_u8(octave_image, &survivor_positions);
-                let t_after_ori = std::time::Instant::now();
-
-                let scale = self.downscale.powi(octave as i32);
-                let mut kps = Vec::with_capacity(distributed.len());
-                let mut scales = Vec::with_capacity(distributed.len());
-                let mut oris = Vec::with_capacity(distributed.len());
-                let mut resps = Vec::with_capacity(distributed.len());
-                for ((cand, &angle), &harris) in distributed
-                    .iter()
-                    .zip(survivor_orientations.iter())
-                    .zip(survivor_harris.iter())
-                {
-                    kps.push((cand.row as f32 * scale, cand.col as f32 * scale));
-                    oris.push(angle);
-                    scales.push(scale);
-                    resps.push(harris);
-                }
-
-                if trace {
-                    eprintln!(
-                        "  pyramid[{octave}] octree={:.2} ori_post={:.2} survivors={}",
-                        (t_after_octree - t_before_octree).as_secs_f64() * 1000.0,
-                        (t_after_ori - t_after_octree).as_secs_f64() * 1000.0,
-                        distributed.len(),
-                    );
-                }
-
-                Ok((kps, scales, oris, resps))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let mut keypoints_list = Vec::new();
-        let mut scales_list = Vec::new();
-        let mut orientations_list = Vec::new();
-        let mut responses_list = Vec::new();
-        for (kps, scales, oris, resps) in per_octave {
-            keypoints_list.extend(kps);
-            scales_list.extend(scales);
-            orientations_list.extend(oris);
-            responses_list.extend(resps);
+        if let Some(e) = build_err {
+            return Err(e);
         }
 
-        Ok((
-            keypoints_list,
-            scales_list,
-            orientations_list,
-            responses_list,
-        ))
+        // Pyramid images fully consumed by the spawned tasks; drop the Arcs.
+        let n_built = pyramid_arcs.len();
+        drop(pyramid_arcs);
+
+        let mut per_octave = Vec::with_capacity(n_built);
+        for (i, slot) in slots.into_iter().take(n_built).enumerate() {
+            match slot.into_inner() {
+                Some(Ok(r)) => per_octave.push(r),
+                Some(Err(e)) => return Err(e),
+                None => unreachable!("slot {i} was not written"),
+            }
+        }
+
+        Ok(per_octave)
     }
 
     fn extract_octave_u8<A: ImageAllocator>(
@@ -657,6 +670,12 @@ impl OrbDetector {
         // cv2.ORB. Fixing this requires a Q16 (or f32) path that keeps NEON
         // throughput — tracked as a follow-up; the current path is chosen
         // for speed (3–4× faster than OpenCV at 640/1080).
+        //
+        // Note: `rayon::join` to overlap this blur with FAST was tried and
+        // reverted — both kernels are already internally rayon-parallel, so
+        // running them concurrently just splits the same cores between them
+        // (no wall-time gain vs serial + extra scheduling overhead on small
+        // octaves).
         let mut blurred = Image::from_size_val(octave_image.size(), 0u8, CpuAllocator)?;
         gaussian_blur_u8(octave_image, &mut blurred, (7, 7), (2.0, 2.0))?;
 
@@ -664,50 +683,48 @@ impl OrbDetector {
         Ok((descriptors, mask))
     }
 
-    fn extract_u8_pyramid(
+    /// Detect + extract for one pyramid level in a single task.
+    ///
+    /// Returns the mask-filtered `(keypoints_xy_full_res, orientations,
+    /// descriptors)` triple — ready to concatenate across octaves. Fusing
+    /// the two phases here lets the pipeline overlap extract with the reduce
+    /// chain and with detect on neighboring octaves.
+    #[allow(clippy::type_complexity)]
+    fn process_octave_u8(
         &self,
-        pyramid: &[Image<u8, 1, CpuAllocator>],
-        keypoints: &[(f32, f32)],
-        scales: &[f32],
-        orientations: &[f32],
-    ) -> Result<(Vec<[u8; 32]>, Vec<bool>), ImageError> {
-        // Pre-bucket keypoints per octave so each parallel task only sees
-        // its own kps (no Vec::with_capacity scan per task).
-        let octaves: Vec<usize> = scales
+        octave: usize,
+        octave_image: &Image<u8, 1, CpuAllocator>,
+        features_per_level: &[usize],
+        trace: bool,
+    ) -> Result<(Vec<[f32; 2]>, Vec<f32>, Vec<[u8; 32]>), ImageError> {
+        let (kps_full, _scales, oris, _resps) =
+            self.detect_octave_u8(octave, octave_image, features_per_level, trace)?;
+        if kps_full.is_empty() {
+            return Ok((Vec::new(), Vec::new(), Vec::new()));
+        }
+
+        // extract_octave_u8 wants integer octave-local coords.
+        let scale = self.downscale.powi(octave as i32);
+        let inv_scale = 1.0 / scale;
+        let kps_local: Vec<(i32, i32)> = kps_full
             .iter()
-            .map(|&s| (s.ln() / self.downscale.ln()).round() as usize)
+            .map(|&(r, c)| ((r * inv_scale).round() as i32, (c * inv_scale).round() as i32))
             .collect();
 
-        let mut buckets: Vec<(Vec<(i32, i32)>, Vec<f32>)> =
-            (0..pyramid.len()).map(|_| (Vec::new(), Vec::new())).collect();
-        for ((&(y, x), &ori), &octave) in keypoints.iter().zip(orientations).zip(&octaves) {
-            let scale = self.downscale.powi(octave as i32);
-            buckets[octave].0.push(((y / scale).round() as i32, (x / scale).round() as i32));
-            buckets[octave].1.push(ori);
+        let (descriptors, mask) = self.extract_octave_u8(octave_image, &kps_local, &oris)?;
+
+        // Mask-filter kps+oris to align with the (already-filtered) descriptors.
+        let mut keypoints_xy = Vec::with_capacity(descriptors.len());
+        let mut orientations = Vec::with_capacity(descriptors.len());
+        for (i, &m) in mask.iter().enumerate() {
+            if m {
+                let (r, c) = kps_full[i];
+                keypoints_xy.push([c, r]);
+                orientations.push(oris[i]);
+            }
         }
 
-        // Run extract per octave in parallel. Octaves with no keypoints skip
-        // both the blur and orb_loop entirely.
-        let per_octave: Vec<Result<(Vec<[u8; 32]>, Vec<bool>), ImageError>> = pyramid
-            .par_iter()
-            .zip(buckets.into_par_iter())
-            .map(|(octave_image, (octave_keypoints, octave_orientations))| {
-                if octave_keypoints.is_empty() {
-                    return Ok((Vec::new(), Vec::new()));
-                }
-                self.extract_octave_u8(octave_image, &octave_keypoints, &octave_orientations)
-            })
-            .collect();
-
-        let mut descriptors_list: Vec<[u8; 32]> = Vec::new();
-        let mut mask_list: Vec<bool> = Vec::new();
-        for r in per_octave {
-            let (descriptors, mask) = r?;
-            descriptors_list.extend(descriptors);
-            mask_list.extend(mask);
-        }
-
-        Ok((descriptors_list, mask_list))
+        Ok((keypoints_xy, orientations, descriptors))
     }
 
     /// Detect keypoints and compute descriptors on a u8 grayscale image.
@@ -721,41 +738,31 @@ impl OrbDetector {
     ) -> Result<OrbFeatures, ImageError> {
         let trace = std::env::var("KORNIA_ORB_TRACE").is_ok();
         let t0 = std::time::Instant::now();
-        let pyramid = self.build_pyramid_u8(src)?;
+        let per_octave = self.build_pyramid_and_process_u8(src)?;
         let t1 = std::time::Instant::now();
-        let (kps_rc, scales, orientations, _responses) = self.detect_u8_pyramid(&pyramid)?;
-        let t2 = std::time::Instant::now();
-        let (descriptors, mask) =
-            self.extract_u8_pyramid(&pyramid, &kps_rc, &scales, &orientations)?;
-        let t3 = std::time::Instant::now();
-        if trace {
-            eprintln!(
-                "orb_trace: pyramid={:.2}ms detect={:.2}ms extract={:.2}ms kps={}",
-                (t1 - t0).as_secs_f64() * 1000.0,
-                (t2 - t1).as_secs_f64() * 1000.0,
-                (t3 - t2).as_secs_f64() * 1000.0,
-                kps_rc.len(),
-            );
+
+        let total: usize = per_octave.iter().map(|(k, _, _)| k.len()).sum();
+        let mut keypoints_xy = Vec::with_capacity(total);
+        let mut orientations = Vec::with_capacity(total);
+        let mut descriptors = Vec::with_capacity(total);
+        for (kps, oris, descs) in per_octave {
+            keypoints_xy.extend(kps);
+            orientations.extend(oris);
+            descriptors.extend(descs);
         }
 
-        let mut keypoints_xy = Vec::with_capacity(descriptors.len());
-        let mut valid_orientations = Vec::with_capacity(descriptors.len());
-        let mut valid_descriptors = Vec::with_capacity(descriptors.len());
-
-        let mut desc_idx = 0;
-        for (i, ((row, col), &ori)) in kps_rc.iter().zip(orientations.iter()).enumerate() {
-            if mask.get(i).copied().unwrap_or(false) {
-                keypoints_xy.push([*col, *row]);
-                valid_orientations.push(ori);
-                valid_descriptors.push(descriptors[desc_idx]);
-                desc_idx += 1;
-            }
+        if trace {
+            eprintln!(
+                "orb_trace: build_detect_extract={:.2}ms kps={}",
+                (t1 - t0).as_secs_f64() * 1000.0,
+                keypoints_xy.len(),
+            );
         }
 
         Ok(OrbFeatures {
             keypoints_xy,
-            orientations: valid_orientations,
-            descriptors: valid_descriptors,
+            orientations,
+            descriptors,
         })
     }
 
@@ -1041,6 +1048,12 @@ fn mask_border_keypoints_i32(
 /// 3×3 Sobel at each position in a 3×3 neighborhood around (r0, c0), then sum
 /// dx², dy², dx·dy over those 9 positions — requires a 5×5 input window. Caller
 /// guarantees (r0, c0) is ≥ `EDGE_THRESHOLD` from every border.
+///
+/// Loads the shared 5×5 window once (25 bytes, tight in L1D), then runs the 9
+/// Sobel evaluations against those values — the prior per-neighbor re-load did
+/// 72 u8 reads per call for the same pixels. Bit-exact with the old path because
+/// the Sobel expression and accumulation order are unchanged; only the source
+/// of the pixel values (register cache vs re-read) differs.
 fn harris_response_at_u8<A: ImageAllocator>(
     src: &Image<u8, 1, A>,
     r0: usize,
@@ -1049,38 +1062,33 @@ fn harris_response_at_u8<A: ImageAllocator>(
 ) -> f32 {
     let cols = src.cols();
     let src_data = src.as_slice();
+    let base = (r0 - 2) * cols + (c0 - 2);
+    let mut w = [0f32; 25];
+    unsafe {
+        for dr in 0..5 {
+            let row_start = base + dr * cols;
+            for dc in 0..5 {
+                w[dr * 5 + dc] = *src_data.get_unchecked(row_start + dc) as f32;
+            }
+        }
+    }
+
     let mut m11 = 0f32;
     let mut m22 = 0f32;
     let mut m12 = 0f32;
-
-    let base = r0 * cols + c0;
-    // Offsets into the 3×3 neighborhood of (r0, c0): the positions at which
-    // we evaluate Sobel and accumulate squared gradients.
-    let neighbor_offsets = [
-        -(cols as isize) - 1,
-        -(cols as isize),
-        -(cols as isize) + 1,
-        -1,
-        0,
-        1,
-        (cols as isize) - 1,
-        cols as isize,
-        (cols as isize) + 1,
-    ];
-
-    for &off in &neighbor_offsets {
-        let idx = (base as isize + off) as usize;
-        let prev_row = idx - cols;
-        let next_row = idx + cols;
-        unsafe {
-            let v11 = *src_data.get_unchecked(prev_row - 1) as f32;
-            let v12 = *src_data.get_unchecked(prev_row) as f32;
-            let v13 = *src_data.get_unchecked(prev_row + 1) as f32;
-            let v21 = *src_data.get_unchecked(idx - 1) as f32;
-            let v23 = *src_data.get_unchecked(idx + 1) as f32;
-            let v31 = *src_data.get_unchecked(next_row - 1) as f32;
-            let v32 = *src_data.get_unchecked(next_row) as f32;
-            let v33 = *src_data.get_unchecked(next_row + 1) as f32;
+    // 9 neighbor positions (ndr, ndc) ∈ {0,1,2}×{0,1,2} inside the 5×5 window
+    // map to the original (r0-1..=r0+1, c0-1..=c0+1) locations. Each neighbor's
+    // 3×3 Sobel stencil spans window rows (ndr..=ndr+2) × cols (ndc..=ndc+2).
+    for ndr in 0..3 {
+        for ndc in 0..3 {
+            let v11 = w[ndr * 5 + ndc];
+            let v12 = w[ndr * 5 + ndc + 1];
+            let v13 = w[ndr * 5 + ndc + 2];
+            let v21 = w[(ndr + 1) * 5 + ndc];
+            let v23 = w[(ndr + 1) * 5 + ndc + 2];
+            let v31 = w[(ndr + 2) * 5 + ndc];
+            let v32 = w[(ndr + 2) * 5 + ndc + 1];
+            let v33 = w[(ndr + 2) * 5 + ndc + 2];
 
             let dx = (-v33 + v31 - 2.0 * v23 + 2.0 * v21 - v13 + v11) * 0.125;
             let dy = (-v33 - 2.0 * v32 - v31 + v13 + 2.0 * v12 + v11) * 0.125;
