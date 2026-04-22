@@ -180,4 +180,36 @@ mod tests {
         assert_eq!(flipped.as_slice(), &data_expected);
         Ok(())
     }
+
+    #[test]
+    fn test_horizontal_flip_single_row() -> Result<(), ImageError> {
+        // A single-row (rows=1) image flipped horizontally must reverse the pixel order.
+        // Image layout: 1 row × 4 columns × 1 channel.
+        let image_size = ImageSize {
+            width: 4,
+            height: 1,
+        };
+        let image = Image::<_, 1, _>::new(image_size, vec![10u8, 20, 30, 40], CpuAllocator)?;
+        let mut flipped = Image::<_, 1, _>::from_size_val(image_size, 0u8, CpuAllocator)?;
+        super::horizontal_flip(&image, &mut flipped)?;
+        // Columns reversed: [40, 30, 20, 10]
+        assert_eq!(flipped.as_slice(), &[40u8, 30, 20, 10]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_vertical_flip_single_column() -> Result<(), ImageError> {
+        // A single-column (cols=1) image flipped vertically must reverse the row order.
+        // Image layout: 4 rows × 1 column × 1 channel.
+        let image_size = ImageSize {
+            width: 1,
+            height: 4,
+        };
+        let image = Image::<_, 1, _>::new(image_size, vec![10u8, 20, 30, 40], CpuAllocator)?;
+        let mut flipped = Image::<_, 1, _>::from_size_val(image_size, 0u8, CpuAllocator)?;
+        super::vertical_flip(&image, &mut flipped)?;
+        // Rows reversed: [40, 30, 20, 10]
+        assert_eq!(flipped.as_slice(), &[40u8, 30, 20, 10]);
+        Ok(())
+    }
 }
