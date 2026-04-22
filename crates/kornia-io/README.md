@@ -8,7 +8,7 @@
 
 ## 🚀 Overview
 
-`kornia-io` provides high-performance utilities for reading and writing images and video streams. It abstracts over common formats and libraries to provide a unified, type-safe API for getting visual data into your Rust applications. It supports standard image formats (JPEG, PNG, TIFF) and integrates with GStreamer and V4L2 for advanced video capture.
+`kornia-io` provides high-performance utilities for reading and writing images and video streams. It abstracts over common formats and libraries to provide a unified, type-safe API for getting visual data into your Rust applications. It supports standard image formats (JPEG, PNG, TIFF) and integrates with GStreamer and V4L2 for advanced video capture. The generic `read_image`/`decode_image`/`write_image` helpers exposed by the Python bindings (`kornia-py`) are Python-only; Rust users should call the typed per-format functions (`jpeg`, `png`, `tiff`) in this crate directly.
 
 ## 🔑 Key Features
 

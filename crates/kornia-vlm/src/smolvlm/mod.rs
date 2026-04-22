@@ -47,19 +47,8 @@ impl<A: ImageAllocator> SmolVlm<A> {
     ///
     /// # Returns
     pub fn new(config: SmolVlmConfig) -> Result<Self, SmolVlmError> {
-        #[cfg(feature = "cuda")]
-        let (device, dtype) = match Device::cuda_if_available(0) {
-            Ok(device) => (device, DType::BF16),
-            Err(e) => {
-                log::warn!("CUDA not available, defaulting to CPU: {e:?}");
-                (Device::Cpu, DType::F32)
-            }
-        };
-
-        #[cfg(not(feature = "cuda"))]
-        let (device, dtype) = (Device::Cpu, DType::F32);
-
-        // TODO: find a way to use FP32 if cuda is not available
+        use crate::device::get_device_and_dtype;
+        let (device, dtype) = get_device_and_dtype();
 
         let (model, tokenizer) = Self::load_model(dtype, &device)?;
         let image_token = tokenizer.encode("<image>", false)?;

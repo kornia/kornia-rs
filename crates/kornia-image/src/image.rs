@@ -38,6 +38,19 @@ pub enum PixelFormat {
     F32,
 }
 
+/// Interpolation mode for the image operations
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterpolationMode {
+    /// Bilinear interpolation
+    Bilinear,
+    /// Nearest neighbor interpolation
+    Nearest,
+    /// Lanczos interpolation
+    Lanczos,
+    /// Bicubic interpolation
+    Bicubic,
+}
+
 /// Image layout metadata (size, channels, pixel format).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImageLayout {
@@ -288,27 +301,52 @@ impl<T, const C: usize, A: ImageAllocator> Image<T, C, A> {
 
     /// Cast the pixel data of the image to a different type.
     ///
+    /// Each pixel value is converted using [`num_traits::NumCast`], which supports
+    /// lossy casts (e.g. `f32` → `u8` via truncation). If any value cannot be
+    /// represented in the target type, the entire operation returns
+    /// [`ImageError::CastError`].
+    ///
+    /// The output image has the same shape (height × width × channels) as the
+    /// source image and uses the same allocator.
+    ///
     /// # Returns
     ///
-    /// A new image with the pixel data cast to the given type.
+    /// A new image with the pixel data cast to the target type `U`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageError::CastError`] if any pixel value cannot be represented
+    /// as type `U` (e.g. `f32::MAX` cast to `u8`).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kornia_image::{Image, ImageSize};
+    /// use kornia_image::allocator::CpuAllocator;
+    ///
+    /// let image_u8 = Image::<u8, 3, CpuAllocator>::new(
+    ///     ImageSize { width: 2, height: 1 },
+    ///     vec![0u8, 128, 255, 10, 20, 30],
+    ///     CpuAllocator,
+    /// ).unwrap();
+    ///
+    /// let image_f32 = image_u8.cast::<f32>().unwrap();
+    /// assert_eq!(image_f32.as_slice()[2], 255.0f32);
+    /// ```
     pub fn cast<U>(&self) -> Result<Image<U, C, A>, ImageError>
     where
         U: num_traits::NumCast + Copy,
         T: num_traits::NumCast + Copy,
     {
-        // TODO: this needs to be optimized and reuse Tensor::cast
-        let casted_data = self
+        let data = self
             .as_slice()
             .iter()
-            .map(|&x| {
-                let xu = U::from(x).ok_or(ImageError::CastError)?;
-                Ok(xu)
-            })
+            .map(|&x| U::from(x).ok_or(ImageError::CastError))
             .collect::<Result<Vec<U>, ImageError>>()?;
 
-        let alloc = self.storage.alloc();
-
-        Image::new(self.size(), casted_data, alloc.clone())
+        let alloc = self.storage.alloc().clone();
+        let tensor = Tensor3::from_shape_vec(self.0.shape, data, alloc)?;
+        Ok(Image(tensor))
     }
 
     /// Get a channel of the image.
@@ -941,6 +979,76 @@ mod tests {
         assert_eq!(image_f32.num_channels(), 1);
         assert_eq!(image_f32.get([0, 0, 0]), Some(&2.0f32));
         assert_eq!(image_f32.get([1, 0, 0]), Some(&130.0f32));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cast_round_trip() -> Result<(), ImageError> {
+        // f32 → u8 → f32: values representable as u8 should survive the round trip.
+        let data_f32 = vec![0.0f32, 128.0, 255.0, 10.0, 20.0, 30.0];
+        let image_f32 = Image::<f32, 3, CpuAllocator>::new(
+            ImageSize {
+                height: 2,
+                width: 1,
+            },
+            data_f32.clone(),
+            CpuAllocator,
+        )?;
+
+        let image_u8 = image_f32.cast::<u8>()?;
+        let image_f32_rt = image_u8.cast::<f32>()?;
+
+        assert_eq!(image_f32_rt.size(), image_f32.size());
+        assert_eq!(image_f32_rt.num_channels(), 3);
+        for (original, round_tripped) in data_f32.iter().zip(image_f32_rt.as_slice()) {
+            assert!((*original - round_tripped).abs() < 1.0);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cast_out_of_range() -> Result<(), ImageError> {
+        // f32::MAX cannot be represented as u8, so cast must fail.
+        let image_f32 = Image::<f32, 1, CpuAllocator>::new(
+            ImageSize {
+                height: 1,
+                width: 1,
+            },
+            vec![f32::MAX],
+            CpuAllocator,
+        )?;
+
+        let result = image_f32.cast::<u8>();
+        assert!(
+            matches!(result, Err(ImageError::CastError)),
+            "expected CastError for out-of-range f32 value"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cast_shape_preservation() -> Result<(), ImageError> {
+        // Cast a 2×1 image with C=3; result must have identical size and correct values.
+        let data = vec![0u8, 64, 128, 192, 200, 255];
+        let image_u8 = Image::<u8, 3, CpuAllocator>::new(
+            ImageSize {
+                height: 2,
+                width: 1,
+            },
+            data.clone(),
+            CpuAllocator,
+        )?;
+
+        let image_f32 = image_u8.cast::<f32>()?;
+
+        assert_eq!(image_f32.size(), image_u8.size());
+        assert_eq!(image_f32.num_channels(), 3);
+        for (original, casted) in data.iter().zip(image_f32.as_slice()) {
+            assert_eq!(*casted, *original as f32);
+        }
 
         Ok(())
     }

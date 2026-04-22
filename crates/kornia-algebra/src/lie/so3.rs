@@ -344,6 +344,10 @@ mod tests {
     use approx::assert_relative_eq;
 
     const EPSILON: f32 = 1e-6;
+    // Roundtrip tests (rplus/rminus, lplus/lminus) compose exp + log on random inputs, which
+    // accumulates ~1 ULP per cos/sin/atan2 call and can land right at EPSILON under --release
+    // FMA fusion. Use a slightly looser tolerance for those to avoid intermittent f32 boundary flakes.
+    const ROUNDTRIP_EPSILON: f32 = 5e-6;
 
     #[test]
     fn test_identity() {
@@ -403,9 +407,9 @@ mod tests {
         let tau = Vec3AF32::new(0.4, -0.2, 0.7);
         let y = x.rplus(tau); // X ⊕ τ → Y
         let diff = x.rminus(&y); // Y ⊖ X → τ
-        assert_relative_eq!(diff.x, tau.x, epsilon = EPSILON);
-        assert_relative_eq!(diff.y, tau.y, epsilon = EPSILON);
-        assert_relative_eq!(diff.z, tau.z, epsilon = EPSILON);
+        assert_relative_eq!(diff.x, tau.x, epsilon = ROUNDTRIP_EPSILON);
+        assert_relative_eq!(diff.y, tau.y, epsilon = ROUNDTRIP_EPSILON);
+        assert_relative_eq!(diff.z, tau.z, epsilon = ROUNDTRIP_EPSILON);
     }
 
     #[test]
@@ -414,9 +418,9 @@ mod tests {
         let tau = Vec3AF32::new(-0.3, 1.1, 0.2);
         let y = SO3F32::lplus(tau, &x); // τ ⊕ X → Y
         let diff = SO3F32::lminus(&y, &x); // Y ⊖ X → τ
-        assert_relative_eq!(diff.x, tau.x, epsilon = EPSILON);
-        assert_relative_eq!(diff.y, tau.y, epsilon = EPSILON);
-        assert_relative_eq!(diff.z, tau.z, epsilon = EPSILON);
+        assert_relative_eq!(diff.x, tau.x, epsilon = ROUNDTRIP_EPSILON);
+        assert_relative_eq!(diff.y, tau.y, epsilon = ROUNDTRIP_EPSILON);
+        assert_relative_eq!(diff.z, tau.z, epsilon = ROUNDTRIP_EPSILON);
     }
 
     #[test]

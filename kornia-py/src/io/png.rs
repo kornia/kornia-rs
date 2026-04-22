@@ -8,6 +8,19 @@ use pyo3::prelude::*;
 use crate::image::{FromPyImage, FromPyImageU16, PyImage, PyImageU16, ToPyImage, ToPyImageU16};
 use kornia_io::png as P;
 
+/// Reads a PNG image from a file path into an 8-bit tensor.
+///
+/// # Arguments
+/// * `file_path` (str): The path to the PNG file to read.
+/// * `mode` (str): The color mode to decode the image into.
+///   Must be strictly lowercase: `"rgb"`, `"rgba"`, or `"mono"`.
+///
+/// # Returns
+/// * `numpy.ndarray`: The decoded 8-bit image tensor with dtype `uint8`.
+///
+/// # Exceptions
+/// * `ValueError`: If the mode is unsupported (case-sensitive) or the file fails to read.
+/// * `Exception`: If the image fails to convert to a Python tensor.
 #[pyfunction]
 pub fn read_image_png_u8(file_path: &str, mode: &str) -> PyResult<PyImage> {
     let result = match mode {
@@ -61,6 +74,19 @@ pub fn read_image_png_u8(file_path: &str, mode: &str) -> PyResult<PyImage> {
     Ok(result)
 }
 
+/// Reads a PNG image from a file path into a 16-bit tensor.
+///
+/// # Arguments
+/// * `file_path` (str): The path to the PNG file to read.
+/// * `mode` (str): The color mode to decode the image into.
+///   Must be strictly lowercase: `"rgb"`, `"rgba"`, or `"mono"`.
+///
+/// # Returns
+/// * `numpy.ndarray`: The decoded 16-bit image tensor with dtype `uint16`.
+///
+/// # Exceptions
+/// * `ValueError`: If the mode is unsupported (case-sensitive) or the file fails to read.
+/// * `Exception`: If the image fails to convert to a Python tensor.
 #[pyfunction]
 pub fn read_image_png_u16(file_path: &str, mode: &str) -> PyResult<PyImageU16> {
     let result = match mode {
@@ -114,6 +140,19 @@ pub fn read_image_png_u16(file_path: &str, mode: &str) -> PyResult<PyImageU16> {
     Ok(result)
 }
 
+/// Writes an 8-bit image tensor to a PNG file.
+///
+/// # Arguments
+/// * `file_path` (str): The path where the PNG file will be saved.
+/// * `image` (numpy.ndarray): The 8-bit image tensor to write with dtype `uint8`. For `"rgb"` mode, expected shape is `(H, W, 3)`. For `"rgba"` mode, expected shape is `(H, W, 4)`. For `"mono"` mode, expected shape is `(H, W, 1)`.
+/// * `mode` (str): The color mode of the image.
+///   Must be strictly lowercase: `"rgb"`, `"rgba"`, or `"mono"`.
+///
+/// # Exceptions
+/// * `ValueError`: If the mode is unsupported (case-sensitive).
+/// * `Exception`: If the image format is incompatible or writing fails.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn write_image_png_u8(file_path: &str, image: PyImage, mode: &str) -> PyResult<()> {
     match mode {
@@ -152,6 +191,19 @@ pub fn write_image_png_u8(file_path: &str, image: PyImage, mode: &str) -> PyResu
     Ok(())
 }
 
+/// Writes a 16-bit image tensor to a PNG file.
+///
+/// # Arguments
+/// * `file_path` (str): The path where the PNG file will be saved.
+/// * `image` (numpy.ndarray): The 16-bit image tensor to write with dtype `uint16`. For `"rgb"` mode, expected shape is `(H, W, 3)`. For `"rgba"` mode, expected shape is `(H, W, 4)`. For `"mono"` mode, expected shape is `(H, W, 1)`.
+/// * `mode` (str): The color mode of the image.
+///   Must be strictly lowercase: `"rgb"`, `"rgba"`, or `"mono"`.
+///
+/// # Exceptions
+/// * `ValueError`: If the mode is unsupported (case-sensitive).
+/// * `Exception`: If the image format is incompatible or writing fails.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn write_image_png_u16(file_path: &str, image: PyImageU16, mode: &str) -> PyResult<()> {
     match mode {
@@ -190,21 +242,23 @@ pub fn write_image_png_u16(file_path: &str, image: PyImageU16, mode: &str) -> Py
     Ok(())
 }
 
-/// Decodes the PNG Image from raw bytes.
+/// Decodes an 8-bit PNG image from raw bytes.
 ///
-/// The following modes are supported:
-/// 1. "rgb8" -> 8-bit RGB
-/// 2. "rgba8" -> 8-bit RGBA
-/// 3. "mono8" -> 8-bit Monochrome
-/// 4. "rgb16" -> 16-bit RGB
-/// 5. "rgba16" -> 16-bit RGBA
-/// 6. "mono16" -> 16-bit Monochrome
+/// # Arguments
+/// * `src` (bytes): Raw bytes containing the PNG encoded data.
+/// * `image_shape` (tuple of int): The expected dimensions of the image,
+///   strictly in `(height, width)` order.
+/// * `mode` (str): The target color mode.
+///   Must be strictly lowercase: `"rgb"`, `"rgba"`, or `"mono"`.
 ///
-/// ```py
-/// import kornia_rs as K
+/// # Returns
+/// * `numpy.ndarray`: The decoded 8-bit image tensor with dtype `uint8`.
 ///
-/// img = K.decode_image_png(bytes(img_data), (32, 32), "rgb8")
-/// ```
+/// # Exceptions
+/// * `ValueError`: If the mode is unsupported (case-sensitive) or decoding fails.
+/// * `Exception`: If the image fails to convert to a Python tensor.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn decode_image_png_u8(
     src: &[u8],
@@ -273,6 +327,23 @@ pub fn decode_image_png_u8(
     Ok(result)
 }
 
+/// Decodes a 16-bit PNG image from raw bytes.
+///
+/// # Arguments
+/// * `src` (bytes): Raw bytes containing the PNG encoded data.
+/// * `image_shape` (tuple of int): The expected dimensions of the image,
+///   strictly in `(height, width)` order.
+/// * `mode` (str): The target color mode.
+///   Must be strictly lowercase: `"rgb"`, `"rgba"`, or `"mono"`.
+///
+/// # Returns
+/// * `numpy.ndarray`: The decoded 16-bit image tensor with dtype `uint16`.
+///
+/// # Exceptions
+/// * `ValueError`: If the mode is unsupported (case-sensitive) or decoding fails.
+/// * `Exception`: If the image fails to convert to a Python tensor.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn decode_image_png_u16(
     src: &[u8],

@@ -57,6 +57,9 @@ pub enum SmolVlm2Error {
     #[error("Invalid encoding detected: {0}")]
     InvalidEncoding(String),
 
+    #[error("Image process error: {0}")]
+    ImageProcessError(String),
+
     #[error("Missing chat template: {0}")]
     MissingChatTemplate(String),
 
@@ -158,17 +161,8 @@ impl<const N: usize, A: ImageAllocator> SmolVlm2<N, A> {
     /// Create a new SmolVLM2 instance with the default configuration.
     /// This will download weights from HuggingFace Hub.
     pub fn new(config: SmolVlm2Config) -> Result<Self, SmolVlm2Error> {
-        #[cfg(feature = "cuda")]
-        let (device, dtype) = match Device::cuda_if_available(0) {
-            Ok(device) => (device, DType::BF16),
-            Err(e) => {
-                log::warn!("CUDA not available, defaulting to CPU: {e:?}");
-                (Device::Cpu, DType::F32)
-            }
-        };
-
-        #[cfg(not(feature = "cuda"))]
-        let (device, dtype) = (Device::Cpu, DType::F32);
+        use crate::device::get_device_and_dtype;
+        let (device, dtype) = get_device_and_dtype();
 
         let (model, txt_processor, img_processor, vid_processor) =
             Self::load_model(&config, dtype, &device)?;

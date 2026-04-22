@@ -3,6 +3,18 @@ use kornia_image::{allocator::CpuAllocator, Image};
 use kornia_io::jpeg as J;
 use pyo3::prelude::*;
 
+/// Reads a JPEG image from a file path.
+///
+/// # Arguments
+/// * `file_path` (str): The path to the JPEG file to read.
+/// * `mode` (str): The color mode to decode the image into.
+///   Supported values are strictly lowercase `"rgb"` (8-bit RGB) or `"mono"` (8-bit Grayscale).
+///
+/// # Returns
+/// * `numpy.ndarray`: The decoded image as a NumPy array (dtype `uint8`, shape `(H, W, C)` for `"rgb"` or `(H, W)` for `"mono"`).
+///
+/// # Exceptions
+/// * `ValueError`: If the mode is unsupported (case-sensitive) or if the image fails to decode.
 #[pyfunction]
 pub fn read_image_jpeg(file_path: &str, mode: &str) -> PyResult<PyImage> {
     let result = match mode {
@@ -44,6 +56,21 @@ pub fn read_image_jpeg(file_path: &str, mode: &str) -> PyResult<PyImage> {
     Ok(result)
 }
 
+/// Writes an image tensor to a JPEG file.
+///
+/// # Arguments
+/// * `file_path` (str): The path where the JPEG file will be saved.
+/// * `image` (numpy.ndarray): Image data as a contiguous NumPy array (dtype `uint8`). For `"rgb"` mode, expected shape is (H, W, 3). For `"mono"` mode, expected shape is (H, W, 1).
+/// * `mode` (str): The color mode of the image.
+///   Supported values are strictly lowercase `"rgb"` (8-bit RGB) or `"mono"` (8-bit Grayscale).
+/// * `quality` (int): The JPEG encoding quality. Must be in the range 0 to 100 inclusive
+///   (where 0 is the lowest quality and 100 is the highest quality).
+///
+/// # Exceptions
+/// * `ValueError`: If the mode is unsupported, the image shape mismatches the mode,
+///   or the file fails to write.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn write_image_jpeg(file_path: &str, image: PyImage, mode: &str, quality: u8) -> PyResult<()> {
     match mode {
@@ -74,14 +101,20 @@ pub fn write_image_jpeg(file_path: &str, image: PyImage, mode: &str, quality: u8
     Ok(())
 }
 
+/// Decodes a JPEG Image from raw bytes.
+///
+/// # Arguments
+/// * `src` (bytes): Raw bytes containing the JPEG encoded data.
+///
+/// # Returns
+/// * numpy.ndarray: The decoded image tensor with dtype uint8.
+///
+/// # Exceptions
+/// * `ValueError`: If the byte data is invalid, decoding fails, or the
+///   number of channels is unsupported.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
-/// Decodes the JPEG Image from raw bytes.
-///
-/// ```py
-/// import kornia_rs as K
-///
-/// img = K.decode_image_jpeg(bytes(img_data))
-/// ```
 pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
     let layout = J::decode_image_jpeg_layout(src)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
@@ -129,29 +162,18 @@ pub fn decode_image_jpeg(src: &[u8]) -> PyResult<PyImage> {
     Ok(result)
 }
 
-#[pyfunction]
 /// Encodes an RGB u8 image to JPEG bytes.
 ///
 /// # Arguments
-///
-/// * `image` - RGB image as numpy array (H, W, 3) with dtype uint8
-/// * `quality` - JPEG quality (0-100, where 100 is highest quality)
+/// * `image` (numpy.ndarray): RGB image array with shape (H, W, 3) and dtype `uint8`.
+/// * `quality` (int): JPEG encoding quality (0-100, where 100 is highest quality).
 ///
 /// # Returns
+/// * `bytes`: A byte array containing the JPEG-encoded image data.
 ///
-/// bytes containing JPEG-encoded image
-///
-/// # Example
-///
-/// ```py
-/// import kornia_rs as K
-/// import numpy as np
-///
-/// img = K.read_image_jpeg("dog.jpg", "rgb")
-/// jpeg_bytes = K.encode_image_jpeg(img, quality=95)
-/// with open("output.jpg", "wb") as f:
-///     f.write(jpeg_bytes)
-/// ```
+/// # Exceptions
+/// * `ValueError`: If the image format is incompatible or encoding fails.
+#[pyfunction]
 pub fn encode_image_jpeg(image: PyImage, quality: u8) -> PyResult<Vec<u8>> {
     let image = Image::<u8, 3, _>::from_pyimage(image)
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;

@@ -1,10 +1,17 @@
 mod apriltag;
+mod augmentations;
+mod blur;
+mod brightness;
 mod color;
+mod crop;
 mod enhance;
+mod flip;
 mod histogram;
 mod icp;
 mod image;
 mod io;
+mod normalize;
+mod pipeline;
 mod pointcloud;
 mod resize;
 mod warp;
@@ -52,7 +59,7 @@ pub fn rgb_from_gray_deprecated(py: Python<'_>, image: image::PyImage) -> PyResu
         py,
         "kornia_rs.rgb_from_gray is deprecated. Use kornia_rs.imgproc.rgb_from_gray.",
     )?;
-    color::rgb_from_gray(image)
+    color::rgb_from_gray(py, image)
 }
 
 #[pyfunction(name = "rgb_from_rgba")]
@@ -66,7 +73,7 @@ pub fn rgb_from_rgba_deprecated(
         py,
         "kornia_rs.rgb_from_rgba is deprecated. Use kornia_rs.imgproc.rgb_from_rgba.",
     )?;
-    color::rgb_from_rgba(image, background)
+    color::rgb_from_rgba(py, image, background)
 }
 
 #[pyfunction(name = "rgb_from_bgra")]
@@ -80,7 +87,7 @@ pub fn rgb_from_bgra_deprecated(
         py,
         "kornia_rs.rgb_from_bgra is deprecated. Use kornia_rs.imgproc.rgb_from_bgra.",
     )?;
-    color::rgb_from_bgra(image, background)
+    color::rgb_from_bgra(py, image, background)
 }
 
 #[pyfunction(name = "bgr_from_rgb")]
@@ -89,7 +96,7 @@ pub fn bgr_from_rgb_deprecated(py: Python<'_>, image: image::PyImage) -> PyResul
         py,
         "kornia_rs.bgr_from_rgb is deprecated. Use kornia_rs.imgproc.bgr_from_rgb.",
     )?;
-    color::bgr_from_rgb(image)
+    color::bgr_from_rgb(py, image)
 }
 
 #[pyfunction(name = "gray_from_rgb")]
@@ -98,7 +105,7 @@ pub fn gray_from_rgb_deprecated(py: Python<'_>, image: image::PyImage) -> PyResu
         py,
         "kornia_rs.gray_from_rgb is deprecated. Use kornia_rs.imgproc.gray_from_rgb.",
     )?;
-    color::gray_from_rgb(image)
+    color::gray_from_rgb(py, image)
 }
 
 // Enhance / Histogram
@@ -115,7 +122,7 @@ pub fn add_weighted_deprecated(
         py,
         "kornia_rs.add_weighted is deprecated. Use kornia_rs.imgproc.add_weighted.",
     )?;
-    enhance::add_weighted(src1, alpha, src2, beta, gamma)
+    enhance::add_weighted(py, src1, alpha, src2, beta, gamma)
 }
 
 #[pyfunction(name = "compute_histogram")]
@@ -128,7 +135,7 @@ pub fn compute_histogram_deprecated(
         py,
         "kornia_rs.compute_histogram is deprecated. Use kornia_rs.imgproc.compute_histogram.",
     )?;
-    histogram::compute_histogram(image, nbins)
+    histogram::compute_histogram(py, image, nbins)
 }
 
 // ICP
@@ -228,7 +235,7 @@ pub fn resize_deprecated(
         py,
         "kornia_rs.resize is deprecated. Use kornia_rs.imgproc.resize.",
     )?;
-    resize::resize(image, new_size, interpolation)
+    resize::resize(py, image, new_size, interpolation, true)
 }
 
 // Warp
@@ -244,7 +251,7 @@ pub fn warp_affine_deprecated(
         py,
         "kornia_rs.warp_affine is deprecated. Use kornia_rs.imgproc.warp_affine.",
     )?;
-    warp::warp_affine(image, m, new_size, interpolation)
+    warp::warp_affine(py, image, m, new_size, interpolation, None)
 }
 
 #[pyfunction(name = "warp_perspective")]
@@ -259,7 +266,7 @@ pub fn warp_perspective_deprecated(
         py,
         "kornia_rs.warp_perspective is deprecated. Use kornia_rs.imgproc.warp_perspective.",
     )?;
-    warp::warp_perspective(image, m, new_size, interpolation)
+    warp::warp_perspective(py, image, m, new_size, interpolation, None)
 }
 
 // Main Python Module Definition
@@ -303,9 +310,19 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     image_mod.add_class::<PyImageSize>()?;
     image_mod.add_class::<PyPixelFormat>()?;
     image_mod.add_class::<PyImageLayout>()?;
+    image_mod.add_class::<image::PyImageApi>()?;
     m.add_submodule(&image_mod)?;
 
-    // IO submodule
+    // ---------------------------------------------------------------------------
+    // IO submodule (Python-only)
+    //
+    // The helpers registered below (`kornia_rs.io.read_image`, `decode_image_*`,
+    // `write_image_*`) are Python-only convenience APIs. They are intentionally
+    // NOT part of the Rust public API of `kornia-io`. Rust consumers should use
+    // the typed per-format functions in `kornia_io::{jpeg, png, tiff}` directly,
+    // or `kornia_io::functional::read_image_any_rgb8` for a single generic RGB8
+    // path. See https://github.com/kornia/kornia-rs/issues/637.
+    // ---------------------------------------------------------------------------
     let io_mod = PyModule::new(py, "io")?;
 
     // NOTE:
@@ -360,7 +377,31 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     imgproc_mod.add_function(wrap_pyfunction!(resize::resize, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(warp::warp_affine, &imgproc_mod)?)?;
     imgproc_mod.add_function(wrap_pyfunction!(warp::warp_perspective, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(flip::horizontal_flip, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(flip::vertical_flip, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(crop::crop, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(blur::gaussian_blur, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(blur::box_blur, &imgproc_mod)?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(
+        brightness::adjust_brightness_py,
+        &imgproc_mod
+    )?)?;
+    imgproc_mod.add_function(wrap_pyfunction!(
+        normalize::normalize_mean_std,
+        &imgproc_mod
+    )?)?;
     m.add_submodule(&imgproc_mod)?;
+
+    // Augmentations submodule
+    let aug_mod = PyModule::new(py, "augmentations")?;
+    aug_mod.add_class::<augmentations::PyColorJitter>()?;
+    aug_mod.add_class::<augmentations::PyRandomHorizontalFlip>()?;
+    aug_mod.add_class::<augmentations::PyRandomVerticalFlip>()?;
+    aug_mod.add_class::<augmentations::PyRandomCrop>()?;
+    aug_mod.add_class::<augmentations::PyRandomRotation>()?;
+    aug_mod.add_class::<augmentations::PyCompose>()?;
+    aug_mod.add_function(wrap_pyfunction!(augmentations::set_seed, &aug_mod)?)?;
+    m.add_submodule(&aug_mod)?;
 
     // K3D submodule
     let k3d_mod = PyModule::new(py, "k3d")?;
@@ -385,6 +426,30 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     apriltag_mod.add_submodule(&apriltag_family_mod)?;
 
     m.add_submodule(&apriltag_mod)?;
+
+    // Pipeline submodule — fused preprocessing kernels.
+    let pipeline_mod = PyModule::new(py, "pipeline")?;
+    pipeline_mod.add_function(wrap_pyfunction!(
+        pipeline::resize_normalize_to_tensor,
+        &pipeline_mod
+    )?)?;
+    pipeline_mod.add_class::<pipeline::Preprocessor>()?;
+    m.add_submodule(&pipeline_mod)?;
+
+    // Register submodules in sys.modules so `from kornia_rs.image import Image` works
+    let modules =
+        unsafe { pyo3::Bound::from_borrowed_ptr(py, pyo3::ffi::PyImport_GetModuleDict()) };
+    for (name, submod) in [
+        ("kornia_rs.image", &image_mod),
+        ("kornia_rs.io", &io_mod),
+        ("kornia_rs.imgproc", &imgproc_mod),
+        ("kornia_rs.k3d", &k3d_mod),
+        ("kornia_rs.apriltag", &apriltag_mod),
+        ("kornia_rs.augmentations", &aug_mod),
+        ("kornia_rs.pipeline", &pipeline_mod),
+    ] {
+        modules.set_item(name, submod)?;
+    }
 
     Ok(())
 }

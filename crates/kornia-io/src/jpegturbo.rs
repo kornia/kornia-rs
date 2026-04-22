@@ -20,31 +20,25 @@ pub enum JpegTurboError {
     /// Error to create the image.
     #[error("Failed to create image")]
     ImageCreationError(#[from] ImageError),
+
+    /// Error when mutex is poisoned.
+    #[error("Mutex is poisoned")]
+    MutexPoisoned,
+
+    /// I/O error, e.g. when reading a JPEG file from disk.
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
 }
 
 /// A JPEG decoder using the turbojpeg library.
+/// **Note on migration:** The `Default` trait implementation was removed. Please use [`JpegTurboDecoder::new()`] instead.
 pub struct JpegTurboDecoder(Mutex<turbojpeg::Decompressor>);
 
 /// A JPEG encoder using the turbojpeg library.
+/// **Note on migration:** The `Default` trait implementation was removed. Please use [`JpegTurboEncoder::new()`] instead.
 pub struct JpegTurboEncoder(Mutex<turbojpeg::Compressor>);
 
-impl Default for JpegTurboDecoder {
-    fn default() -> Self {
-        match Self::new() {
-            Ok(decoder) => decoder,
-            Err(e) => panic!("Failed to create ImageDecoder: {e}"),
-        }
-    }
-}
-
-impl Default for JpegTurboEncoder {
-    fn default() -> Self {
-        match Self::new() {
-            Ok(encoder) => encoder,
-            Err(e) => panic!("Failed to create ImageEncoder: {e}"),
-        }
-    }
-}
+// Implementations for ImageDecoder and ImageEncoder
 
 /// Implementation of the ImageEncoder struct.
 impl JpegTurboEncoder {
@@ -91,7 +85,7 @@ impl JpegTurboEncoder {
         Ok(self
             .0
             .lock()
-            .expect("Failed to lock the compressor")
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
             .compress_to_vec(buf)?)
     }
 
@@ -104,7 +98,7 @@ impl JpegTurboEncoder {
         Ok(self
             .0
             .lock()
-            .expect("Failed to lock the compressor")
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
             .set_quality(quality)?)
     }
 }
@@ -139,7 +133,7 @@ impl JpegTurboDecoder {
         let header = self
             .0
             .lock()
-            .expect("Failed to lock the decompressor")
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
             .read_header(jpeg_data)?;
 
         Ok(ImageSize {
@@ -176,7 +170,7 @@ impl JpegTurboDecoder {
     pub fn decode_gray8(
         &self,
         jpeg_data: &[u8],
-    ) -> Result<Image<u8, 3, CpuAllocator>, JpegTurboError> {
+    ) -> Result<Image<u8, 1, CpuAllocator>, JpegTurboError> {
         self.decode(jpeg_data, turbojpeg::PixelFormat::GRAY)
     }
 
@@ -195,7 +189,7 @@ impl JpegTurboDecoder {
         let buf = turbojpeg::Image {
             pixels: pixels.as_mut_slice(),
             width: image_size.width,
-            pitch: 3 * image_size.width, // we use no padding between rows
+            pitch: C * image_size.width, // we use no padding between rows
             height: image_size.height,
             format,
         };
@@ -203,7 +197,7 @@ impl JpegTurboDecoder {
         // decompress the JPEG data
         self.0
             .lock()
-            .expect("Failed to lock the decompressor")
+            .map_err(|_| JpegTurboError::MutexPoisoned)?
             .decompress(jpeg_data, buf)?;
 
         Ok(Image::new(image_size, pixels, CpuAllocator)?)
@@ -295,7 +289,7 @@ mod tests {
 
     #[test]
     fn image_decoder() -> Result<(), JpegTurboError> {
-        let jpeg_data = std::fs::read("../../tests/data/dog.jpeg").unwrap();
+        let jpeg_data = std::fs::read("../../tests/data/dog.jpeg")?;
         // read the header
         let image_size = JpegTurboDecoder::new()?.read_header(&jpeg_data)?;
         assert_eq!(image_size.width, 258);
@@ -305,6 +299,17 @@ mod tests {
         assert_eq!(image.cols(), 258);
         assert_eq!(image.rows(), 195);
         assert_eq!(image.num_channels(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn image_decoder_gray8() -> Result<(), JpegTurboError> {
+        let jpeg_data = std::fs::read("../../tests/data/dog.jpeg")?;
+        let image = JpegTurboDecoder::new()?.decode_gray8(&jpeg_data)?;
+        assert_eq!(image.cols(), 258);
+        assert_eq!(image.rows(), 195);
+        assert_eq!(image.num_channels(), 1);
+        assert_eq!(image.as_slice().len(), 258 * 195);
         Ok(())
     }
 

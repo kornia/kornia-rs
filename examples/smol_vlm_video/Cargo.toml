@@ -12,10 +12,13 @@ gstreamer = "0.21"
 gstreamer-app = "0.21"
 gstreamer-video = "0.21"
 image = "0.24"
-kornia = { workspace = true, features = ["v4l"] }
+kornia = { workspace = true }
 kornia-vlm = { workspace = true }
 reqwest = { version = "0.12.15", features = ["blocking"] }
 rerun = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+kornia = { workspace = true, features = ["v4l"] }
 
 [features]
 cuda = ["kornia/cuda"]

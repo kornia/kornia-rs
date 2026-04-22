@@ -1,6 +1,5 @@
 #[cfg(target_os = "linux")]
 mod video_demo;
-#[cfg(target_os = "linux")]
 mod video_file_demo;
 
 use argh::FromArgs;
@@ -40,18 +39,23 @@ struct Args {
     debug: bool,
 }
 
-#[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
     let _pixel_format = args.pixel_format.as_deref().unwrap_or("MJPG");
     if args.video_file.is_some() {
         video_file_demo::video_file_demo(&args)
     } else {
-        video_demo::video_demo(&args)
+        #[cfg(target_os = "linux")]
+        {
+            video_demo::video_demo(&args)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(format!(
+                "webcam capture (camera_id={}, fps={}) requires Video4Linux and is only supported on Linux. \
+                 Hint: use --video-file to process a video file instead.",
+                args.camera_id, args.fps
+            ).into())
+        }
     }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn main() {
-    panic!("This example is only supported on Linux due to V4L dep.");
 }
