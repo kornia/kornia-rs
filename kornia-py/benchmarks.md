@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| Date | 2026-04-20 |
-| Commit | `HEAD` on `feat/pil-like-python-api` (post `box_blur_u8` u8 NEON fast path) |
+| Date | 2026-04-22 |
+| Commit | `051af88` on `perf/orb-beat-opencv` (rebased onto `origin/main` post-`feat/pil-like-python-api` squash-merge) |
 | pyo3 | 0.28 |
 | numpy (crate) | 0.28 |
 | Platform | Jetson Orin (aarch64), Linux 5.15.148-tegra |
@@ -55,6 +55,17 @@
 | Normalize | **3.671** | — | 63.69 | **17.35× faster** ✓ |
 | ORB detect+compute | **10.65** | — | 44.23 | **4.15× vs OpenCV**; parity with VPI CUDA (11.77 ms, cached src) |
 | FAST-9 detect (NMS=False) | **1.12** | — | 1.38 | **1.23× vs OpenCV**; 8.1× vs VPI CPU (9.03 ms), 6.1× vs VPI CUDA (6.86 ms) |
+
+## ORB end-to-end quality — homography round-trip
+
+The real-world metric for ORB is whether the produced descriptors recover a known homography after warping. `test_orb_e2e.py` warps an image with a random homography, runs full detect → describe → match → RANSAC on both copies, and measures corner reprojection error in pixels (lower is better). OpenCV's `BFMatcher` + `cv2.findHomography` is held constant across detector backends so only detector/descriptor quality is compared; `kornia-full` swaps both the matcher and RANSAC for the native kornia-rs implementations (`match_descriptors` + LO-RANSAC `find_homography`). Median over 5 random homographies.
+
+| Image (size) | kornia-rs | kornia-full | OpenCV | VPI-CPU | VPI-CUDA |
+|---|---:|---:|---:|---:|---:|
+| dog.jpeg (258×195) | 1.59 | **0.89** | 1.13 | 1.09 | 1.31 |
+| mh01_frame1.png (752×480) | 0.45 | **0.41** | 1.04 | 0.37 | 0.73 |
+
+kornia-rs median reprojection beats OpenCV on both images (even with the OpenCV matcher held constant); the fully-native `kornia-full` path is best on dog.jpeg and competitive with VPI-CPU on mh01. The VPI backends sample 3× more keypoints (1500 vs 500 at the same threshold) which helps their RANSAC have more inliers to choose from — a larger keypoint budget at the same detector threshold, not a higher-quality detector per keypoint.
 
 ## Per-op status against OpenCV (internal 2× target)
 
