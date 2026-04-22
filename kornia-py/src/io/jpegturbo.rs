@@ -152,6 +152,8 @@ impl PyImageEncoder {
 /// # Exceptions
 /// * `FileExistsError`: If the read operation fails (Note: mapped from upstream error).
 /// * `Exception`: If the image fails to convert.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn read_image_jpegturbo(file_path: &str) -> PyResult<PyImage> {
     let image = read_image_jpegturbo_rgb8(file_path)
@@ -171,6 +173,8 @@ pub fn read_image_jpegturbo(file_path: &str) -> PyResult<PyImage> {
 ///
 /// # Exceptions
 /// * `Exception`: If writing or encoding fails.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn write_image_jpegturbo(file_path: &str, image: PyImage, quality: u8) -> PyResult<()> {
     let image = Image::from_pyimage(image)
@@ -193,6 +197,8 @@ pub fn write_image_jpegturbo(file_path: &str, image: PyImage, quality: u8) -> Py
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive).
 /// * `Exception`: If decoding or image conversion fails.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn decode_image_jpegturbo(jpeg_data: &[u8], mode: &str) -> PyResult<PyImage> {
     let image = match mode {

@@ -56,6 +56,14 @@ pub fn read_image_any_deprecated(
 /// * `ValueError`: If the file extension is unsupported or decoding fails.
 /// * `IOError`: If an error occurs reading the file from disk.
 /// * `Exception`: If an unexpected error occurs while decoding the image or converting it into a Python tensor.
+///
+/// # Scope
+///
+/// This is a Python-only convenience helper provided by the `kornia-py` bindings.
+/// It is intentionally not part of the Rust public API of `kornia-io`. Rust
+/// consumers should use the typed per-format functions in
+/// `kornia_io::{jpeg, png, tiff}` directly, or `kornia_io::functional::read_image_any_rgb8`
+/// for a single generic RGB8 path.
 #[pyfunction]
 pub fn read_image(file_path: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     // Attempt to obtain a path-like object via PEP 519 (`__fspath__`)

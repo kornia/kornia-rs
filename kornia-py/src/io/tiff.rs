@@ -177,6 +177,8 @@ pub fn read_image_tiff_f32(file_path: &str, mode: &str) -> PyResult<PyImageF32> 
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive).
 /// * `Exception`: If the image format is incompatible or writing fails.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn write_image_tiff_u8(file_path: &str, image: PyImage, mode: &str) -> PyResult<()> {
     match mode {
@@ -219,6 +221,8 @@ pub fn write_image_tiff_u8(file_path: &str, image: PyImage, mode: &str) -> PyRes
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive).
 /// * `Exception`: If the image format is incompatible or writing fails.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn write_image_tiff_u16(file_path: &str, image: PyImageU16, mode: &str) -> PyResult<()> {
     match mode {
@@ -260,6 +264,8 @@ pub fn write_image_tiff_u16(file_path: &str, image: PyImageU16, mode: &str) -> P
 /// # Exceptions
 /// * `ValueError`: If the mode is unsupported (case-sensitive).
 /// * `Exception`: If the image format is incompatible or writing fails.
+///
+/// *Python-only helper; not part of kornia-io's Rust API.*
 #[pyfunction]
 pub fn write_image_tiff_f32(file_path: &str, image: PyImageF32, mode: &str) -> PyResult<()> {
     match mode {
