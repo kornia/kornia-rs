@@ -24,6 +24,10 @@ pub enum JpegTurboError {
     /// Error when mutex is poisoned.
     #[error("Mutex is poisoned")]
     MutexPoisoned,
+
+    /// I/O error, e.g. when reading a JPEG file from disk.
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
 }
 
 /// A JPEG decoder using the turbojpeg library.
@@ -285,7 +289,7 @@ mod tests {
 
     #[test]
     fn image_decoder() -> Result<(), JpegTurboError> {
-        let jpeg_data = std::fs::read("../../tests/data/dog.jpeg").unwrap();
+        let jpeg_data = std::fs::read("../../tests/data/dog.jpeg")?;
         // read the header
         let image_size = JpegTurboDecoder::new()?.read_header(&jpeg_data)?;
         assert_eq!(image_size.width, 258);
@@ -300,7 +304,7 @@ mod tests {
 
     #[test]
     fn image_decoder_gray8() -> Result<(), JpegTurboError> {
-        let jpeg_data = std::fs::read("../../tests/data/dog.jpeg").unwrap();
+        let jpeg_data = std::fs::read("../../tests/data/dog.jpeg")?;
         let image = JpegTurboDecoder::new()?.decode_gray8(&jpeg_data)?;
         assert_eq!(image.cols(), 258);
         assert_eq!(image.rows(), 195);
