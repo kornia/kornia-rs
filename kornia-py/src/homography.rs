@@ -6,7 +6,6 @@ use kornia_3d::pose::{
 };
 use kornia_algebra::{Mat3F64, Vec2F64};
 
-/// Matches cv2.RANSAC numeric value for the `method` argument of find_homography.
 const METHOD_RANSAC: i32 = 8;
 
 /// Copy (N, 2) f64 numpy array into a Vec<Vec2F64>. Caller guarantees shape.
@@ -30,6 +29,19 @@ fn mat3_to_py<'py>(py: Python<'py>, m: &Mat3F64) -> Bound<'py, PyArray2<f64>> {
             for c in 0..3 {
                 slice[r * 3 + c] = cols[c * 3 + r];
             }
+        }
+        arr
+    }
+}
+
+/// Pack a `&[bool]` inlier mask into a `(N,) uint8` numpy array (1/0).
+fn mask_to_py<'py>(py: Python<'py>, inliers: &[bool]) -> Bound<'py, PyArray1<u8>> {
+    let n = inliers.len();
+    unsafe {
+        let arr = PyArray::<u8, _>::new(py, [n], false);
+        let slice = std::slice::from_raw_parts_mut(arr.data(), n);
+        for (dst, src) in slice.iter_mut().zip(inliers.iter()) {
+            *dst = *src as u8;
         }
         arr
     }
@@ -92,7 +104,7 @@ pub fn ransac_homography_py(
         threshold,
         min_inliers,
         random_seed: seed,
-        refit: false,
+        ..Default::default()
     };
 
     let result = py
@@ -100,15 +112,7 @@ pub fn ransac_homography_py(
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("{}", e)))?;
 
     let h_arr = mat3_to_py(py, &result.model);
-    let mask_arr = unsafe {
-        let arr = PyArray::<u8, _>::new(py, [n], false);
-        let slice = std::slice::from_raw_parts_mut(arr.data(), n);
-        for (i, b) in result.inliers.iter().enumerate() {
-            slice[i] = if *b { 1 } else { 0 };
-        }
-        arr
-    };
-
+    let mask_arr = mask_to_py(py, &result.inliers);
     Ok((h_arr.unbind(), mask_arr.unbind(), result.inlier_count))
 }
 
@@ -168,8 +172,6 @@ pub fn find_homography_py(
     let x1 = unpack_pts(&pts1);
     let x2 = unpack_pts(&pts2);
 
-    // Method 0 = direct DLT over all points (cv2.findHomography(method=0)).
-    // Method 8 = RANSAC (cv2.RANSAC == 8) with a DLT refit on the inlier set.
     let (h, inliers) = match method {
         0 => {
             let h = py
@@ -178,13 +180,6 @@ pub fn find_homography_py(
             (h, vec![true; n])
         }
         METHOD_RANSAC => {
-            // `refit: true` turns on LO-RANSAC in kornia-3d: after the main
-            // loop finds inliers from a 4-point minimal sample, H is re-fit
-            // via DLT across ALL inliers and kept iff the new score is lower.
-            // Without this, plain RANSAC picks H from 4 points that bracket
-            // many inliers but may not be a well-conditioned basis for H,
-            // and cv2.findHomography (which does the same refit internally)
-            // systematically beats us.
             let params = RansacParams {
                 max_iterations,
                 threshold: ransac_threshold,
@@ -205,13 +200,6 @@ pub fn find_homography_py(
     };
 
     let h_arr = mat3_to_py(py, &h);
-    let mask_arr = unsafe {
-        let arr = PyArray::<u8, _>::new(py, [n], false);
-        let slice = std::slice::from_raw_parts_mut(arr.data(), n);
-        for (i, b) in inliers.iter().enumerate() {
-            slice[i] = if *b { 1 } else { 0 };
-        }
-        arr
-    };
+    let mask_arr = mask_to_py(py, &inliers);
     Ok((h_arr.unbind(), mask_arr.unbind()))
 }
