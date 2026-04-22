@@ -74,8 +74,7 @@ name = "bench_contours"
 required-features = ["opencv_bench"]
 
 [dependencies]
-# TODO: update to version but it requires some changes in the codebase
-fast_image_resize = { version = "=5.1", features = ["rayon"] }
+fast_image_resize = { version = "6.0", features = ["rayon"] }
 kornia-algebra = { workspace = true }
 kornia-image = { workspace = true }
 kornia-tensor = { workspace = true }

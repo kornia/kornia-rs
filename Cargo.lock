@@ -5189,9 +5189,9 @@ dependencies = [
 
 [[package]]
 name = "fast_image_resize"
-version = "5.1.4"
+version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d372ab3252d8f162d858d675a3d88a8c33ba24a6238837c50c8851911c7e89cd"
+checksum = "12dd43e5011e8d8411a3215a0d57a2ec5c68282fb90eb5d7221fab0113442174"
 dependencies = [
  "bytemuck",
  "cfg-if",
@@ -5199,7 +5199,7 @@ dependencies = [
  "image 0.25.9",
  "num-traits",
  "rayon",
- "thiserror 1.0.69",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
