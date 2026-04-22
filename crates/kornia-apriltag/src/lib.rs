@@ -13,7 +13,7 @@ use crate::{
     decoder::{decode_tags, Detection, GrayModelPair},
     errors::AprilTagError,
     family::{TagFamily, TagFamilyKind},
-    quad::{fit_quads, FitQuadConfig},
+    quad::{fit_quads, FitQuadConfig, LineFit, Quad},
     segmentation::{find_connected_components, find_gradient_clusters, GradientInfo},
     threshold::{adaptive_threshold, TileMinMax},
     union_find::UnionFind,
@@ -136,6 +136,9 @@ pub struct AprilTagDecoder {
     uf: UnionFind,
     clusters: HashMap<(usize, usize), Vec<GradientInfo>>,
     gray_model_pair: GrayModelPair,
+    quads: Vec<Quad>,
+    detections: Vec<Detection>,
+    lfps: Vec<LineFit>,
 }
 
 impl AprilTagDecoder {
@@ -188,6 +191,9 @@ impl AprilTagDecoder {
             uf,
             clusters: HashMap::new(),
             gray_model_pair: GrayModelPair::new(),
+            quads: Vec::new(),
+            detections: Vec::new(),
+            lfps: Vec::new(),
         })
     }
 
@@ -240,15 +246,23 @@ impl AprilTagDecoder {
         find_gradient_clusters(&self.bin_img, &mut self.uf, &mut self.clusters);
 
         // Step 3: Quad Fitting
-        let mut quads = fit_quads(&self.bin_img, &mut self.clusters, &self.config);
+        fit_quads(
+            &self.bin_img,
+            &mut self.clusters,
+            &self.config,
+            &mut self.quads,
+            &mut self.lfps,
+        );
 
         // Step 4: Tag Decoding
-        Ok(decode_tags(
+        decode_tags(
             src,
-            &mut quads,
+            &mut self.quads,
             &mut self.config,
             &mut self.gray_model_pair,
-        ))
+            &mut self.detections,
+        );
+        Ok(self.detections.clone())
     }
 
     /// Clears the internal state of the decoder for reuse.

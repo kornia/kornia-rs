@@ -117,14 +117,14 @@ impl Quad {
 /// # Returns
 ///
 /// A vector of detected `Quad` structures.
-// TODO: Support multiple tag families
 pub fn fit_quads<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     clusters: &mut HashMap<(usize, usize), Vec<GradientInfo>>,
     config: &DecodeTagsConfig,
-) -> Vec<Quad> {
-    // TODO: Avoid this allocation every time
-    let mut quads = Vec::new();
+    quads: &mut Vec<Quad>,
+    lfps: &mut Vec<LineFit>,
+) {
+    quads.clear();
 
     let max_cluster_len = 4 * (src.width() + src.height());
 
@@ -145,6 +145,7 @@ pub fn fit_quads<A: ImageAllocator>(
             config.normal_border,
             config.reversed_border,
             &config.fit_quad_config,
+            lfps,
         ) {
             if config.downscale_factor > 1 {
                 let downscale_factor = config.downscale_factor as f32;
@@ -157,8 +158,6 @@ pub fn fit_quads<A: ImageAllocator>(
             quads.push(quad);
         }
     });
-
-    quads
 }
 
 /// Fits a single quadrilateral (quad) to a cluster of gradient information in the image.
@@ -182,6 +181,7 @@ fn fit_single_quad<A: ImageAllocator>(
     normal_border: bool,
     reversed_border: bool,
     config: &FitQuadConfig,
+    lfps: &mut Vec<LineFit>,
 ) -> Option<Quad> {
     if cluster.len() < 24 {
         return None;
@@ -262,11 +262,11 @@ fn fit_single_quad<A: ImageAllocator>(
 
     cluster.sort_by(|a, b| a.slope.total_cmp(&b.slope));
 
-    let lfps = compute_line_fit_prefix_sums(src, cluster);
+    compute_line_fit_prefix_sums(src, cluster, lfps);
 
     let mut indices = [0usize; 4];
 
-    if !quad_segment_maxima(cluster, &lfps, &mut indices, config) {
+    if !quad_segment_maxima(cluster, lfps, &mut indices, config) {
         return None;
     }
 
@@ -277,7 +277,7 @@ fn fit_single_quad<A: ImageAllocator>(
         let i1 = indices[(i + 1) & 3];
 
         let mut mse = 0.0f32;
-        fit_line(&lfps, i0, i1, Some(&mut lines[i]), None, Some(&mut mse));
+        fit_line(lfps, i0, i1, Some(&mut lines[i]), None, Some(&mut mse));
 
         if mse > config.max_line_fit_mse {
             return ControlFlow::Break(());
@@ -381,7 +381,7 @@ fn fit_single_quad<A: ImageAllocator>(
 
 /// Stores prefix sums for weighted line fitting over a set of points.
 #[derive(Default, Debug, Clone)]
-struct LineFit {
+pub struct LineFit {
     /// Weighted sum of x coordinates ($\sum_i w_i x_i$)
     mx: f32,
     /// Weighted sum of y coordinates ($\sum_i w_i y_i$)
@@ -409,10 +409,11 @@ struct LineFit {
 fn compute_line_fit_prefix_sums<A: ImageAllocator>(
     src: &Image<Pixel, 1, A>,
     gradient_infos: &[GradientInfo],
-) -> Vec<LineFit> {
+    lfps: &mut Vec<LineFit>,
+) {
     let src_slice = src.as_slice();
-    // TODO: Find a way to avoid allocation
-    let mut lfps = vec![LineFit::default(); gradient_infos.len()];
+    lfps.clear();
+    lfps.resize(gradient_infos.len(), LineFit::default());
 
     gradient_infos.iter().enumerate().for_each(|(i, cluster)| {
         if i > 0 {
@@ -446,8 +447,6 @@ fn compute_line_fit_prefix_sums<A: ImageAllocator>(
         lfps[i].myy += w * fy * fy;
         lfps[i].w += w;
     });
-
-    lfps
 }
 
 /// Segments the gradient information into four maxima corresponding to the corners of a quadrilateral.
@@ -818,7 +817,15 @@ mod tests {
         let mut decode_tag_config = DecodeTagsConfig::new(vec![TagFamilyKind::Tag36H11])?;
         decode_tag_config.downscale_factor = 1;
 
-        let quads = fit_quads(&bin, &mut clusters, &decode_tag_config);
+        let mut quads = Vec::new();
+        let mut lfps = Vec::new();
+        fit_quads(
+            &bin,
+            &mut clusters,
+            &decode_tag_config,
+            &mut quads,
+            &mut lfps,
+        );
 
         let expected_quad = [[[27, 3], [27, 27], [3, 27], [3, 3]]];
 
@@ -914,7 +921,8 @@ mod tests {
             .unwrap();
 
         if largest_cluster.len() >= 24 {
-            let lfps = compute_line_fit_prefix_sums(&bin, largest_cluster);
+            let mut lfps = Vec::new();
+            compute_line_fit_prefix_sums(&bin, largest_cluster, &mut lfps);
             let mut indices = [0; 4];
 
             let result = quad_segment_maxima(
@@ -1058,7 +1066,8 @@ mod tests {
             gy: GradientDirection::TowardsBlack,
             slope: 0.0,
         }];
-        let lfps = compute_line_fit_prefix_sums(&img, &gradient_infos);
+        let mut lfps = Vec::new();
+        compute_line_fit_prefix_sums(&img, &gradient_infos, &mut lfps);
         assert_eq!(lfps.len(), 1);
         // The weighted mean should be close to the point's position (scaled by 0.5 + delta)
         let expected_x = 1.0 * 0.5 + 0.5;
@@ -1087,7 +1096,8 @@ mod tests {
                 slope: 0.0,
             },
         ];
-        let lfps = compute_line_fit_prefix_sums(&img, &gradient_infos);
+        let mut lfps = Vec::new();
+        compute_line_fit_prefix_sums(&img, &gradient_infos, &mut lfps);
         assert_eq!(lfps.len(), 3);
         // The last element should be the sum of all previous
         let last = &lfps[2];
@@ -1107,7 +1117,8 @@ mod tests {
 
         // Test 3: Empty input
         let gradient_infos = vec![];
-        let lfps = compute_line_fit_prefix_sums(&img, &gradient_infos);
+        let mut lfps = Vec::new();
+        compute_line_fit_prefix_sums(&img, &gradient_infos, &mut lfps);
         assert_eq!(lfps.len(), 0);
     }
 }

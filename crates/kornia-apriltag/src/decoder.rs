@@ -350,9 +350,9 @@ pub fn decode_tags<A: ImageAllocator>(
     quads: &mut [Quad],
     config: &mut DecodeTagsConfig,
     gray_model_pair: &mut GrayModelPair,
-) -> Vec<Detection> {
-    // TODO: Avoid allocations on every call
-    let mut detections = Vec::new();
+    detections: &mut Vec<Detection>,
+) {
+    detections.clear();
 
     quads.iter_mut().for_each(|quad| {
         if config.refine_edges_enabled {
@@ -409,8 +409,6 @@ pub fn decode_tags<A: ImageAllocator>(
             }
         });
     });
-
-    detections
 }
 
 /// Refines the edges of a quadrilateral in the image by adjusting its corners based on local image gradients.
@@ -950,7 +948,9 @@ mod tests {
         find_connected_components(&bin, &mut uf)?;
         find_gradient_clusters(&bin, &mut uf, &mut clusters);
 
-        let mut quads = fit_quads(&bin, &mut clusters, &config);
+        let mut quads = Vec::new();
+        let mut lfps = Vec::new();
+        fit_quads(&bin, &mut clusters, &config, &mut quads, &mut lfps);
 
         for quad in &mut quads {
             for corner in &mut quad.corners {
@@ -959,7 +959,14 @@ mod tests {
             }
         }
 
-        let tags = decode_tags(&src, &mut quads, &mut config, &mut gray_model_pair);
+        let mut tags = Vec::new();
+        decode_tags(
+            &src,
+            &mut quads,
+            &mut config,
+            &mut gray_model_pair,
+            &mut tags,
+        );
 
         assert_eq!(tags.len(), 1);
         assert_eq!(tags[0].id, 23);
