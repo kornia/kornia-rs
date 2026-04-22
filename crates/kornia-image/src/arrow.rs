@@ -160,7 +160,7 @@ mod tests {
         assert_eq!(image_arr.width(), 2);
         assert_eq!(image_arr.height(), 3);
         assert_eq!(image_arr.num_channels(), 1);
-        assert_eq!(image_arr.into_vec(), vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(image_arr.as_slice(), &[0, 1, 2, 3, 4, 5]);
 
         Ok(())
     }

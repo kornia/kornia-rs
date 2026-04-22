@@ -27,6 +27,49 @@ pub fn box_blur<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
     Ok(())
 }
 
+/// Box blur for u8 images (NEON-accelerated separable path).
+///
+/// Same semantics as [`box_blur`] but operates directly on u8 via a Q8 uniform
+/// kernel summing to 256, reusing the same striped ring-buffer path as
+/// [`gaussian_blur_u8`]. The k=5 case hits the 32-u8/iter vmull/vmlal V-pass
+/// unroll.
+pub fn box_blur_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, C, A1>,
+    dst: &mut Image<u8, C, A2>,
+    kernel_size: (usize, usize),
+) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    let (kx, ky) = kernel_size;
+    if kx == 0 || ky == 0 || kx % 2 == 0 || ky % 2 == 0 {
+        return Err(ImageError::InvalidSigmaValue(kx as f32, ky as f32));
+    }
+
+    let ikx = quantize_kernel_256(&kernels::box_blur_kernel_1d(kx));
+    let iky = quantize_kernel_256(&kernels::box_blur_kernel_1d(ky));
+
+    separable_blur_u8_striped(
+        src.as_slice(),
+        dst.as_slice_mut(),
+        src.rows(),
+        src.cols(),
+        C,
+        &ikx,
+        kx / 2,
+        &iky,
+        ky / 2,
+    );
+
+    Ok(())
+}
+
 /// Blur an image using a gaussian blur filter
 ///
 /// # Arguments
@@ -377,6 +420,628 @@ pub fn spatial_gradient_float_parallel<
         });
 
     Ok(())
+}
+
+type GaussianParams = ((usize, usize), (f32, f32));
+
+/// Resolve gaussian parameters to a validated (kernel_size, sigma) pair.
+/// Mirrors the auto-compute logic in `gaussian_blur` (f32 path).
+fn resolve_gaussian_params(
+    kernel_size: (usize, usize),
+    sigma: (f32, f32),
+) -> Result<GaussianParams, ImageError> {
+    let (mut kx, mut ky) = kernel_size;
+    let (mut sx, mut sy) = sigma;
+
+    if sy <= 0.0 {
+        sy = sx;
+    }
+    if kx == 0 && sx > 0.0 {
+        kx = (2.0 * (4.0 * sx).round() + 1.0) as usize | 1;
+    }
+    if ky == 0 && sy > 0.0 {
+        ky = (2.0 * (4.0 * sy).round() + 1.0) as usize | 1;
+    }
+    if !(kx > 0 && kx % 2 == 1 && ky > 0 && ky % 2 == 1) {
+        return Err(ImageError::InvalidSigmaValue(sx, sy));
+    }
+
+    sx = sx.max(0.0);
+    sy = sy.max(0.0);
+    if sx == 0.0 {
+        sx = (kx as f32 - 1.0) / 8.0;
+    }
+    if sy == 0.0 {
+        sy = (ky as f32 - 1.0) / 8.0;
+    }
+
+    Ok(((kx, ky), (sx, sy)))
+}
+
+/// Gaussian blur for u8 images (NEON-accelerated separable path).
+///
+/// Same parameter semantics as [`gaussian_blur`] but operates directly on u8,
+/// avoiding u8→f32 round-trips. Uses Q8 quantized 1D kernels summing to 256
+/// so the final right-shift by 16 produces the clamped u8 result.
+///
+/// * `src` - Source u8 image.
+/// * `dst` - Destination u8 image (same size as src).
+/// * `kernel_size` - Kernel size (width, height). Must be odd and positive.
+///   If zero, it is computed from `sigma`.
+/// * `sigma` - Gaussian sigma (sigma_x, sigma_y). If zero, it is computed
+///   from `kernel_size`.
+pub fn gaussian_blur_u8<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
+    src: &Image<u8, C, A1>,
+    dst: &mut Image<u8, C, A2>,
+    kernel_size: (usize, usize),
+    sigma: (f32, f32),
+) -> Result<(), ImageError> {
+    if src.size() != dst.size() {
+        return Err(ImageError::InvalidImageSize(
+            src.cols(),
+            src.rows(),
+            dst.cols(),
+            dst.rows(),
+        ));
+    }
+
+    let ((kx, ky), (sx, sy)) = resolve_gaussian_params(kernel_size, sigma)?;
+
+    // Binomial fast path for the common 5x5, sigma≈1 case. Two separable
+    // passes of [1,2,1]/4 convolve to [1,4,6,4,1]/16 — a close approximation
+    // of a true Gaussian with sigma≈1.0 that stays in u8 throughout (halving
+    // adds, no widen/pack). This is what OpenCV's cv2.GaussianBlur uses
+    // internally when sigma=0.
+    #[cfg(target_arch = "aarch64")]
+    if kx == 5 && ky == 5 && (0.7..=1.3).contains(&sx) && (0.7..=1.3).contains(&sy) {
+        gaussian_blur_5x5_binomial_u8::<C>(
+            src.as_slice(),
+            dst.as_slice_mut(),
+            src.rows(),
+            src.cols(),
+        );
+        return Ok(());
+    }
+
+    let ikx = quantize_kernel_256(&kernels::gaussian_kernel_1d(kx, sx));
+    let iky = quantize_kernel_256(&kernels::gaussian_kernel_1d(ky, sy));
+
+    // Unified path: per-thread u8 ring buffer (Q8+Q8 decimated).
+    //
+    // Note: an earlier k=5 register-rolling specialization was tried but
+    // consistently ran ~2.8× slower than this general path on A78AE — the
+    // column-major writes broke write-combining and the primed H-pass
+    // per-column overhead dominated. Removed 2026-04-18.
+    separable_blur_u8_striped(
+        src.as_slice(),
+        dst.as_slice_mut(),
+        src.rows(),
+        src.cols(),
+        C,
+        &ikx,
+        kx / 2,
+        &iky,
+        ky / 2,
+    );
+
+    Ok(())
+}
+/// Quantize a float kernel (summing to 1.0) to u8 weights summing to 256.
+fn quantize_kernel_256(kernel: &[f32]) -> Vec<u8> {
+    let half = kernel.len() / 2;
+    let mut ik: Vec<u8> = kernel.iter().map(|&k| (k * 256.0 + 0.5) as u8).collect();
+    // Fix rounding: adjust center weight so weights sum to exactly 256
+    let sum: u16 = ik.iter().map(|&w| w as u16).sum();
+    if sum != 256 {
+        let center = ik[half] as i16 + (256 - sum as i16);
+        ik[half] = center.clamp(0, 255) as u8;
+    }
+    ik
+}
+
+/// Horizontal pass for a single source row (clamped to image bounds),
+/// writing `stride` u8 results (post Q8 shift-right-8) into `dst_row`.
+///
+/// Uses Q8 split — instead of storing the full Q16 accumulator (u16),
+/// we shift by 8 and store u8. This halves the ring-buffer footprint and
+/// lets the V-pass reuse the cheap `vmull_u8 / vmlal_u8` path (32 u8 per
+/// iter vs 16). The precision cost is ≤1 LSB per pass (≤2 total vs
+/// u16-intermediate).
+#[inline(always)]
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+fn hpass_u8_row(
+    src: &[u8],
+    src_row_abs: isize,
+    rows: usize,
+    cols: usize,
+    channels: usize,
+    stride: usize,
+    half_x: usize,
+    kernel_x: &[u8],
+    #[cfg(target_arch = "aarch64")] kvecs_x: &[std::arch::aarch64::uint8x8_t],
+    padded: &mut [u8],
+    dst_row: &mut [u8],
+) {
+    let ksize_x = kernel_x.len();
+    let src_r = src_row_abs.max(0).min(rows as isize - 1) as usize;
+    let row_src = &src[src_r * stride..(src_r + 1) * stride];
+    let first_px = &row_src[0..channels];
+    let last_px = &row_src[(cols - 1) * channels..cols * channels];
+    for i in 0..half_x {
+        padded[i * channels..(i + 1) * channels].copy_from_slice(first_px);
+        let off = (half_x + cols + i) * channels;
+        padded[off..off + channels].copy_from_slice(last_px);
+    }
+    padded[half_x * channels..(half_x + cols) * channels].copy_from_slice(row_src);
+
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        use std::arch::aarch64::*;
+        let pp = padded.as_ptr();
+        let dp = dst_row.as_mut_ptr();
+        let bulk16 = stride & !15;
+        let mut j = 0usize;
+        while j < bulk16 {
+            let s0 = vld1q_u8(pp.add(j));
+            let mut acc_lo = vmull_u8(vget_low_u8(s0), kvecs_x[0]);
+            let mut acc_hi = vmull_u8(vget_high_u8(s0), kvecs_x[0]);
+            for ki in 1..ksize_x {
+                let sk = vld1q_u8(pp.add(j + ki * channels));
+                acc_lo = vmlal_u8(acc_lo, vget_low_u8(sk), kvecs_x[ki]);
+                acc_hi = vmlal_u8(acc_hi, vget_high_u8(sk), kvecs_x[ki]);
+            }
+            let packed = vcombine_u8(vshrn_n_u16(acc_lo, 8), vshrn_n_u16(acc_hi, 8));
+            vst1q_u8(dp.add(j), packed);
+            j += 16;
+        }
+        while j < stride {
+            let mut a = 0u32;
+            for ki in 0..ksize_x {
+                a += *pp.add(j + ki * channels) as u32 * kernel_x[ki] as u32;
+            }
+            *dp.add(j) = (a >> 8) as u8;
+            j += 1;
+        }
+    }
+
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        for j in 0..stride {
+            let mut acc = 0u32;
+            for ki in 0..ksize_x {
+                acc += padded[j + ki * channels] as u32 * kernel_x[ki] as u32;
+            }
+            dst_row[j] = (acc >> 8) as u8;
+        }
+    }
+}
+
+/// Fused separable blur with per-thread u8 ring buffer (Q8+Q8 decimated).
+///
+/// For each output row `r`, the V-pass needs H-pass results for source rows
+/// `r - half_y ..= r + half_y`. Instead of pre-computing the entire H-pass
+/// into a large u16 temp buffer (which busts L2 at 1080p — ~2 MB/thread),
+/// we keep a rolling window of exactly `ksize_y` H-passed rows in a ring.
+/// The H-pass stores `>>8` of its u16 accumulator, so the ring holds u8
+/// (~29 KB at 1080p 5×5, L1-resident). The V-pass reuses the cheap
+/// `vmull_u8 / vmlal_u8` path — 32 u8 per iter, half the memory traffic
+/// of a u16 ring. The intermediate truncation costs ≤2 LSB of precision
+/// vs the full Q16 path; acceptable for image filtering.
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+fn separable_blur_u8_striped(
+    src: &[u8],
+    dst: &mut [u8],
+    rows: usize,
+    cols: usize,
+    channels: usize,
+    kernel_x: &[u8],
+    half_x: usize,
+    kernel_y: &[u8],
+    half_y: usize,
+) {
+    use rayon::prelude::*;
+
+    let stride = cols * channels;
+    let ksize_y = kernel_y.len();
+    let padded_stride = (cols + 2 * half_x) * channels;
+
+    // One strip per rayon worker — pure parallel partition.
+    let nthreads = rayon::current_num_threads().max(1);
+    let strip_h = rows.div_ceil(nthreads).max(1).min(rows);
+
+    let strips: Vec<(usize, usize)> = (0..rows)
+        .step_by(strip_h)
+        .map(|start| (start, (start + strip_h).min(rows)))
+        .collect();
+
+    let mut strip_slices: Vec<&mut [u8]> = dst.chunks_mut(strip_h * stride).collect();
+
+    strip_slices.par_iter_mut().zip(strips.par_iter()).for_each(
+        |(strip_dst, &(out_start, out_end))| {
+            let out_rows = out_end - out_start;
+
+            // u8 ring buffer: `ksize_y` H-passed-and-shifted rows. Source row
+            // with absolute index `r` lives at slot `r.rem_euclid(ksize_y)`.
+            let ring_len = ksize_y * stride;
+            let mut ring: Vec<u8> = Vec::with_capacity(ring_len);
+            // Safety: every slot is written by an H-pass before any V-pass read.
+            #[allow(clippy::uninit_vec)]
+            unsafe {
+                ring.set_len(ring_len)
+            };
+
+            let mut padded = vec![0u8; padded_stride];
+
+            #[cfg(target_arch = "aarch64")]
+            let kvecs_x: Vec<_> = kernel_x
+                .iter()
+                .map(|&w| unsafe { std::arch::aarch64::vdup_n_u8(w) })
+                .collect();
+            #[cfg(target_arch = "aarch64")]
+            let kvecs_y: Vec<_> = kernel_y
+                .iter()
+                .map(|&w| unsafe { std::arch::aarch64::vdup_n_u8(w) })
+                .collect();
+
+            // Prime: H-pass source rows `out_start - half_y .. out_start + half_y`
+            // (inclusive) into ring. After this, all taps for output row 0 are resident.
+            for k in 0..ksize_y {
+                let r_abs = out_start as isize + k as isize - half_y as isize;
+                let slot = r_abs.rem_euclid(ksize_y as isize) as usize;
+                let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
+                hpass_u8_row(
+                    src,
+                    r_abs,
+                    rows,
+                    cols,
+                    channels,
+                    stride,
+                    half_x,
+                    kernel_x,
+                    #[cfg(target_arch = "aarch64")]
+                    &kvecs_x,
+                    &mut padded,
+                    dst_row,
+                );
+            }
+
+            for oi in 0..out_rows {
+                // Evict the oldest tap and install the new one (same ring slot).
+                if oi > 0 {
+                    let r_new = out_start as isize + oi as isize + half_y as isize;
+                    let slot = r_new.rem_euclid(ksize_y as isize) as usize;
+                    let dst_row = &mut ring[slot * stride..(slot + 1) * stride];
+                    hpass_u8_row(
+                        src,
+                        r_new,
+                        rows,
+                        cols,
+                        channels,
+                        stride,
+                        half_x,
+                        kernel_x,
+                        #[cfg(target_arch = "aarch64")]
+                        &kvecs_x,
+                        &mut padded,
+                        dst_row,
+                    );
+                }
+
+                // Tap pointers: tap k = src row (out_start + oi - half_y + k),
+                // at ring slot `that.rem_euclid(ksize_y)`.
+                let mut tap_ptrs: [*const u8; 32] = [std::ptr::null(); 32];
+                let ring_ptr = ring.as_ptr();
+                for k in 0..ksize_y {
+                    let r_abs = out_start as isize + oi as isize - half_y as isize + k as isize;
+                    let slot = r_abs.rem_euclid(ksize_y as isize) as usize;
+                    tap_ptrs[k] = unsafe { ring_ptr.add(slot * stride) };
+                }
+
+                let out_row = &mut strip_dst[oi * stride..(oi + 1) * stride];
+
+                #[cfg(target_arch = "aarch64")]
+                unsafe {
+                    use std::arch::aarch64::*;
+                    let dp = out_row.as_mut_ptr();
+                    let bulk16 = stride & !15;
+                    let mut j = 0usize;
+
+                    if ksize_y == 5 {
+                        // 32-byte-per-iter V-pass for the common 5-tap case.
+                        // Hoisting taps + kernel vectors out of the inner loop
+                        // and emitting 10 loads + 10 vmull/vmlal lets the OoO
+                        // core overlap 2 independent 16-byte lanes per iter.
+                        let t0 = tap_ptrs[0];
+                        let t1 = tap_ptrs[1];
+                        let t2 = tap_ptrs[2];
+                        let t3 = tap_ptrs[3];
+                        let t4 = tap_ptrs[4];
+                        let k0 = kvecs_y[0];
+                        let k1 = kvecs_y[1];
+                        let k2 = kvecs_y[2];
+                        let k3 = kvecs_y[3];
+                        let k4 = kvecs_y[4];
+                        let bulk32 = stride & !31;
+                        while j < bulk32 {
+                            let a0 = vld1q_u8(t0.add(j));
+                            let a1 = vld1q_u8(t1.add(j));
+                            let a2 = vld1q_u8(t2.add(j));
+                            let a3 = vld1q_u8(t3.add(j));
+                            let a4 = vld1q_u8(t4.add(j));
+                            let b0 = vld1q_u8(t0.add(j + 16));
+                            let b1 = vld1q_u8(t1.add(j + 16));
+                            let b2 = vld1q_u8(t2.add(j + 16));
+                            let b3 = vld1q_u8(t3.add(j + 16));
+                            let b4 = vld1q_u8(t4.add(j + 16));
+                            let mut al = vmull_u8(vget_low_u8(a0), k0);
+                            let mut ah = vmull_u8(vget_high_u8(a0), k0);
+                            let mut bl = vmull_u8(vget_low_u8(b0), k0);
+                            let mut bh = vmull_u8(vget_high_u8(b0), k0);
+                            al = vmlal_u8(al, vget_low_u8(a1), k1);
+                            ah = vmlal_u8(ah, vget_high_u8(a1), k1);
+                            bl = vmlal_u8(bl, vget_low_u8(b1), k1);
+                            bh = vmlal_u8(bh, vget_high_u8(b1), k1);
+                            al = vmlal_u8(al, vget_low_u8(a2), k2);
+                            ah = vmlal_u8(ah, vget_high_u8(a2), k2);
+                            bl = vmlal_u8(bl, vget_low_u8(b2), k2);
+                            bh = vmlal_u8(bh, vget_high_u8(b2), k2);
+                            al = vmlal_u8(al, vget_low_u8(a3), k3);
+                            ah = vmlal_u8(ah, vget_high_u8(a3), k3);
+                            bl = vmlal_u8(bl, vget_low_u8(b3), k3);
+                            bh = vmlal_u8(bh, vget_high_u8(b3), k3);
+                            al = vmlal_u8(al, vget_low_u8(a4), k4);
+                            ah = vmlal_u8(ah, vget_high_u8(a4), k4);
+                            bl = vmlal_u8(bl, vget_low_u8(b4), k4);
+                            bh = vmlal_u8(bh, vget_high_u8(b4), k4);
+                            vst1q_u8(
+                                dp.add(j),
+                                vcombine_u8(vshrn_n_u16(al, 8), vshrn_n_u16(ah, 8)),
+                            );
+                            vst1q_u8(
+                                dp.add(j + 16),
+                                vcombine_u8(vshrn_n_u16(bl, 8), vshrn_n_u16(bh, 8)),
+                            );
+                            j += 32;
+                        }
+                        while j < bulk16 {
+                            let s0 = vld1q_u8(t0.add(j));
+                            let s1 = vld1q_u8(t1.add(j));
+                            let s2 = vld1q_u8(t2.add(j));
+                            let s3 = vld1q_u8(t3.add(j));
+                            let s4 = vld1q_u8(t4.add(j));
+                            let mut al = vmull_u8(vget_low_u8(s0), k0);
+                            let mut ah = vmull_u8(vget_high_u8(s0), k0);
+                            al = vmlal_u8(al, vget_low_u8(s1), k1);
+                            ah = vmlal_u8(ah, vget_high_u8(s1), k1);
+                            al = vmlal_u8(al, vget_low_u8(s2), k2);
+                            ah = vmlal_u8(ah, vget_high_u8(s2), k2);
+                            al = vmlal_u8(al, vget_low_u8(s3), k3);
+                            ah = vmlal_u8(ah, vget_high_u8(s3), k3);
+                            al = vmlal_u8(al, vget_low_u8(s4), k4);
+                            ah = vmlal_u8(ah, vget_high_u8(s4), k4);
+                            vst1q_u8(
+                                dp.add(j),
+                                vcombine_u8(vshrn_n_u16(al, 8), vshrn_n_u16(ah, 8)),
+                            );
+                            j += 16;
+                        }
+                    } else {
+                        // 16 u8 per iter, using vmull/vmlal u8 — same pattern as H-pass.
+                        while j < bulk16 {
+                            let t0 = tap_ptrs[0];
+                            let s0 = vld1q_u8(t0.add(j));
+                            let mut acc_lo = vmull_u8(vget_low_u8(s0), kvecs_y[0]);
+                            let mut acc_hi = vmull_u8(vget_high_u8(s0), kvecs_y[0]);
+                            for ki in 1..ksize_y {
+                                let tk = tap_ptrs[ki];
+                                let sk = vld1q_u8(tk.add(j));
+                                acc_lo = vmlal_u8(acc_lo, vget_low_u8(sk), kvecs_y[ki]);
+                                acc_hi = vmlal_u8(acc_hi, vget_high_u8(sk), kvecs_y[ki]);
+                            }
+                            let packed =
+                                vcombine_u8(vshrn_n_u16(acc_lo, 8), vshrn_n_u16(acc_hi, 8));
+                            vst1q_u8(dp.add(j), packed);
+                            j += 16;
+                        }
+                    }
+
+                    while j < stride {
+                        let mut acc = 0u32;
+                        for ki in 0..ksize_y {
+                            acc += *tap_ptrs[ki].add(j) as u32 * kernel_y[ki] as u32;
+                        }
+                        *dp.add(j) = (acc >> 8) as u8;
+                        j += 1;
+                    }
+                }
+
+                #[cfg(not(target_arch = "aarch64"))]
+                {
+                    for j in 0..stride {
+                        let mut acc = 0u32;
+                        for ki in 0..ksize_y {
+                            acc += unsafe { *tap_ptrs[ki].add(j) } as u32 * kernel_y[ki] as u32;
+                        }
+                        out_row[j] = (acc >> 8) as u8;
+                    }
+                }
+            }
+        },
+    );
+}
+
+/// 5x5 binomial Gaussian approximation for u8 using halving-add cascades.
+///
+/// Convolves the image with [1,4,6,4,1]/16 in both dimensions, implemented as
+/// two separable passes of [1,2,1]/4. The 3-tap pass is `(a + 2b + c + 2) / 4`,
+/// computed via `vrhaddq_u8(vrhaddq_u8(a,b), vrhaddq_u8(b,c))`. This yields
+/// `(a + 2b + c + 3) / 4`, within ±1 LSB of the true binomial — the same trick
+/// OpenCV uses in its `cv2.GaussianBlur(sigma=0)` fast path.
+///
+/// Parallelized by row chunks; each worker keeps a rolling 3-row ring of H-passed
+/// rows in ~10-20 KB of L1 so the tmp buffer never hits DRAM.
+#[cfg(target_arch = "aarch64")]
+fn gaussian_blur_5x5_binomial_u8<const C: usize>(
+    src: &[u8],
+    dst: &mut [u8],
+    rows: usize,
+    cols: usize,
+) {
+    use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+    use rayon::slice::ParallelSliceMut;
+
+    let stride = cols * C;
+
+    // Small image: single-thread to skip rayon overhead.
+    if rows * cols < 256 * 1024 {
+        binomial_blur_chunk::<C>(src, dst, rows, cols, 0, rows);
+        return;
+    }
+
+    // Row-chunked parallelism. Each chunk does its own H-pass with 2-row overlap
+    // at boundaries (redundant work is O(rows/chunk), negligible).
+    let n_threads = rayon::current_num_threads().max(1);
+    let chunk_rows = rows.div_ceil(n_threads).max(16);
+
+    dst.par_chunks_mut(chunk_rows * stride)
+        .enumerate()
+        .for_each(|(chunk_idx, dst_chunk)| {
+            let start = chunk_idx * chunk_rows;
+            let end = (start + dst_chunk.len() / stride).min(rows);
+            binomial_blur_chunk::<C>(src, dst_chunk, rows, cols, start, end);
+        });
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn binomial_blur_chunk<const C: usize>(
+    src: &[u8],
+    dst_chunk: &mut [u8],
+    rows: usize,
+    cols: usize,
+    start: usize,
+    end: usize,
+) {
+    if start >= end {
+        return;
+    }
+    let stride = cols * C;
+    // 3-row ring. Fits in L1 for row up to ~10K pixels.
+    let mut ring = vec![0u8; 3 * stride];
+
+    let hprow = |y: usize, out: &mut [u8]| {
+        let src_row = &src[y * stride..y * stride + stride];
+        hpass_binomial_row::<C>(src_row, out, cols);
+    };
+
+    // Prefill ring[0] = H(start - 1 clamped), ring[1] = H(start).
+    {
+        let (r0, rest) = ring.split_at_mut(stride);
+        let (r1, _r2) = rest.split_at_mut(stride);
+        hprow(start.saturating_sub(1), r0);
+        hprow(start, r1);
+    }
+
+    for (i, drow) in dst_chunk.chunks_exact_mut(stride).enumerate() {
+        let y = start + i;
+        let yp1 = (y + 1).min(rows - 1);
+        let new_slot = (i + 2) % 3;
+        // Write ring[new_slot] = H(yp1)
+        let (new_lo, new_hi) = (new_slot * stride, new_slot * stride + stride);
+        hprow(yp1, &mut ring[new_lo..new_hi]);
+
+        // Read top=H(y-1), mid=H(y), bot=H(yp1) for V-pass
+        let ring_view: &[u8] = &ring;
+        let top_slot = i % 3;
+        let mid_slot = (i + 1) % 3;
+        let bot_slot = new_slot;
+        let top = &ring_view[top_slot * stride..top_slot * stride + stride];
+        let mid = &ring_view[mid_slot * stride..mid_slot * stride + stride];
+        let bot = &ring_view[bot_slot * stride..bot_slot * stride + stride];
+        vpass_binomial_row(top, mid, bot, drow);
+
+        // If y is the last row, bot must already equal mid (yp1 clamps).
+        // If i == 0 and start == 0, top must equal mid (y-1 clamps to 0).
+        // Both are handled by our saturating_sub / min calls above.
+        let _ = end;
+    }
+}
+
+/// H-pass [1,2,1]/4 on one row. Edge pixels replicate.
+/// For interleaved C-channel RGB storage, byte-strided by C gives per-channel neighbors.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn hpass_binomial_row<const C: usize>(src: &[u8], dst: &mut [u8], cols: usize) {
+    use std::arch::aarch64::*;
+    let stride = cols * C;
+
+    // First pixel: left neighbor replicates to self.
+    for c in 0..C {
+        let a = src[c] as u16;
+        let b = a;
+        let d = src[C + c] as u16;
+        dst[c] = ((a + 2 * b + d + 2) >> 2) as u8;
+    }
+
+    // Middle bytes: compute (src[i-C] + 2*src[i] + src[i+C] + 2) / 4 per byte.
+    unsafe {
+        let mut i = C;
+        // Vector bulk: need i >= C and i + 16 + C <= stride.
+        while i + 16 + C <= stride {
+            let a = vld1q_u8(src.as_ptr().add(i - C));
+            let b = vld1q_u8(src.as_ptr().add(i));
+            let d = vld1q_u8(src.as_ptr().add(i + C));
+            let ab = vrhaddq_u8(a, b);
+            let bd = vrhaddq_u8(b, d);
+            let out = vrhaddq_u8(ab, bd);
+            vst1q_u8(dst.as_mut_ptr().add(i), out);
+            i += 16;
+        }
+        // Scalar tail up to stride - C (last pixel handled below).
+        while i + C < stride {
+            let a = src[i - C] as u16;
+            let b = src[i] as u16;
+            let d = src[i + C] as u16;
+            dst[i] = ((a + 2 * b + d + 2) >> 2) as u8;
+            i += 1;
+        }
+    }
+
+    // Last pixel: right neighbor replicates to self.
+    for c in 0..C {
+        let a = src[stride - 2 * C + c] as u16;
+        let b = src[stride - C + c] as u16;
+        let d = b;
+        dst[stride - C + c] = ((a + 2 * b + d + 2) >> 2) as u8;
+    }
+}
+
+/// V-pass [1,2,1]/4 between 3 rows. All rows same length; byte-wise halving adds.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn vpass_binomial_row(top: &[u8], mid: &[u8], bot: &[u8], dst: &mut [u8]) {
+    use std::arch::aarch64::*;
+    let stride = dst.len();
+    unsafe {
+        let mut i = 0;
+        while i + 16 <= stride {
+            let a = vld1q_u8(top.as_ptr().add(i));
+            let b = vld1q_u8(mid.as_ptr().add(i));
+            let d = vld1q_u8(bot.as_ptr().add(i));
+            let ab = vrhaddq_u8(a, b);
+            let bd = vrhaddq_u8(b, d);
+            let out = vrhaddq_u8(ab, bd);
+            vst1q_u8(dst.as_mut_ptr().add(i), out);
+            i += 16;
+        }
+        while i < stride {
+            let a = top[i] as u16;
+            let b = mid[i] as u16;
+            let d = bot[i] as u16;
+            dst[i] = ((a + 2 * b + d + 2) >> 2) as u8;
+            i += 1;
+        }
+    }
 }
 
 #[cfg(test)]

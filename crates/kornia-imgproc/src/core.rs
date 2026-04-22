@@ -255,14 +255,22 @@ pub fn hconcat<const C: usize, A1: ImageAllocator, A2: ImageAllocator>(
 
     let dst_cols = dst.cols() * C;
 
-    // Copy each source image into the destination image
+    // Copy each source image into the destination image. 16-row chunks so
+    // rayon spawns O(cores) tasks, not O(rows) — concat is pure memcpy so
+    // per-row spawn overhead would otherwise dominate.
+    const ROWS_PER_TASK: usize = 16;
     for (i, img) in src.iter().enumerate() {
         let img_cols = img.cols() * C;
         dst.as_slice_mut()
-            .par_chunks_exact_mut(dst_cols)
-            .zip_eq(img.as_slice().par_chunks_exact(img_cols))
-            .for_each(|(dst_row, src_row)| {
-                dst_row[i * img_cols..(i + 1) * img_cols].copy_from_slice(src_row);
+            .par_chunks_mut(ROWS_PER_TASK * dst_cols)
+            .zip_eq(img.as_slice().par_chunks(ROWS_PER_TASK * img_cols))
+            .for_each(|(dst_big, src_big)| {
+                dst_big
+                    .chunks_exact_mut(dst_cols)
+                    .zip(src_big.chunks_exact(img_cols))
+                    .for_each(|(dst_row, src_row)| {
+                        dst_row[i * img_cols..(i + 1) * img_cols].copy_from_slice(src_row);
+                    });
             });
     }
 
