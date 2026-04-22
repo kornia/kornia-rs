@@ -59,7 +59,7 @@ dev = [
 ]
 
 [build-system]
-requires = ["maturin>=1,<2"]
+requires = ["maturin>=1.9,<2"]
 build-backend = "maturin"
 
 [tool.uv]

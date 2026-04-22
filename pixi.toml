@@ -72,7 +72,7 @@ rust-cross-test-aarch64-full = { cmd = "env -u CARGO -u RUSTC -u RUSTUP_HOME PAT
 [feature.python.dependencies]
 python = ">=3.8"
 uv = "*"
-maturin = "*"
+maturin = ">=1.9"
 pytest = "*"
 
 [feature.python.tasks]
@@ -114,7 +114,7 @@ python = "3.14.*"
 # Python 3.14t (free-threaded) - uses uv to provide Python since conda-forge doesn't have 3.14t yet
 [feature.py314t.dependencies]
 uv = "*"
-maturin = "*"
+maturin = ">=1.9"
 pytest = "*"
 
 [feature.py314t.activation]
