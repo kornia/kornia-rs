@@ -46,43 +46,51 @@ pub fn match_descriptors<const N: usize>(
     cross_check: bool,
     max_ratio: Option<f32>,
 ) -> Vec<(usize, usize)> {
-    let m = descriptors1.len();
-    let n = descriptors2.len();
-    if m == 0 || n == 0 {
+    if descriptors1.is_empty() || descriptors2.is_empty() {
         return vec![];
     }
 
-    // Forward pass: for each desc1[i], find best and second-best match in desc2.
-    let mut fwd_best_j = vec![0usize; m];
-    let mut fwd_best_dist = vec![u32::MAX; m];
-    let mut fwd_second_dist = vec![u32::MAX; m];
-
-    for (i, d1) in descriptors1.iter().enumerate() {
-        for (j, d2) in descriptors2.iter().enumerate() {
-            let dist = hamming_distance(d1, d2);
-            if dist < fwd_best_dist[i] {
-                fwd_second_dist[i] = fwd_best_dist[i];
-                fwd_best_dist[i] = dist;
-                fwd_best_j[i] = j;
-            } else if dist < fwd_second_dist[i] {
-                fwd_second_dist[i] = dist;
-            }
-        }
-    }
-
-    // Reverse pass (only if cross-check): for each desc2[j], find best match in desc1.
-    let rev_best_i = if cross_check {
-        let mut rev = vec![0usize; n];
-        let mut rev_dist = vec![u32::MAX; n];
-        for (i, d1) in descriptors1.iter().enumerate() {
+    // Forward pass: for each desc1[i], find best and second-best in desc2.
+    // Each row is independent — parallelize across descriptors1.
+    use rayon::prelude::*;
+    let fwd: Vec<(usize, u32, u32)> = descriptors1
+        .par_iter()
+        .map(|d1| {
+            let mut best_j = 0usize;
+            let mut best_dist = u32::MAX;
+            let mut second_dist = u32::MAX;
             for (j, d2) in descriptors2.iter().enumerate() {
                 let dist = hamming_distance(d1, d2);
-                if dist < rev_dist[j] {
-                    rev_dist[j] = dist;
-                    rev[j] = i;
+                if dist < best_dist {
+                    second_dist = best_dist;
+                    best_dist = dist;
+                    best_j = j;
+                } else if dist < second_dist {
+                    second_dist = dist;
                 }
             }
-        }
+            (best_j, best_dist, second_dist)
+        })
+        .collect();
+
+    // Reverse pass (only if cross-check): for each desc2[j], find best match in desc1.
+    // Parallelize across descriptors2 to mirror the forward pass.
+    let rev_best_i = if cross_check {
+        let rev: Vec<usize> = descriptors2
+            .par_iter()
+            .map(|d2| {
+                let mut best_i = 0usize;
+                let mut best_dist = u32::MAX;
+                for (i, d1) in descriptors1.iter().enumerate() {
+                    let dist = hamming_distance(d1, d2);
+                    if dist < best_dist {
+                        best_dist = dist;
+                        best_i = i;
+                    }
+                }
+                best_i
+            })
+            .collect();
         Some(rev)
     } else {
         None
@@ -90,10 +98,7 @@ pub fn match_descriptors<const N: usize>(
 
     // Build matches applying all filters in one pass.
     let mut matches = Vec::new();
-    for i in 0..m {
-        let j = fwd_best_j[i];
-        let best_dist = fwd_best_dist[i];
-
+    for (i, &(j, best_dist, second_dist)) in fwd.iter().enumerate() {
         if let Some(max_dist) = max_distance {
             if best_dist > max_dist {
                 continue;
@@ -108,11 +113,10 @@ pub fn match_descriptors<const N: usize>(
 
         if let Some(ratio) = max_ratio {
             if ratio < 1.0 {
-                let second = fwd_second_dist[i];
-                let denom = if second == 0 {
+                let denom = if second_dist == 0 {
                     f32::EPSILON
                 } else {
-                    second as f32
+                    second_dist as f32
                 };
                 if best_dist as f32 / denom >= ratio {
                     continue;

@@ -65,9 +65,12 @@ def bench_opencv_factory(threshold):
     return lambda img: det.detect(img)
 
 
-def bench_vpi_factory(threshold, backend):
-    def run(img):
-        src = vpi.asimage(img)
+def bench_vpi_factory(threshold, backend, src):
+    # `src` is a pre-wrapped vpi.Image cached outside the timed loop. A real
+    # pipeline wraps the frame once at ingest, not per call; re-wrapping here
+    # would add ~1-4 ms of pure harness overhead that a FAST kernel (<1 ms)
+    # cannot amortize.
+    def run():
         with backend:
             corners = src.fastcorners(
                 intensity_threshold=float(threshold),
@@ -117,13 +120,13 @@ def run_size(name, w, h, threshold, img):
     results.append(("opencv", time_loop(lambda: cv_fn(img), iters), o_n))
 
     if HAVE_VPI:
+        vpi_src = vpi.asimage(img)  # cached outside timed loop (see bench_vpi_factory)
         for be_name, be in [("vpi-cpu", vpi.Backend.CPU), ("vpi-cuda", vpi.Backend.CUDA)]:
             v_n = count_vpi(img, threshold, be)
-            fn = bench_vpi_factory(threshold, be)
-            fn(img)  # warm-up, especially important for CUDA (JIT / ctx init).
-            # VPI at 1080p emits thousands of corners; cap iters to keep runtime sane.
+            fn = bench_vpi_factory(threshold, be, vpi_src)
+            fn()  # warm-up, especially important for CUDA (JIT / ctx init).
             v_iters = iters if name == "640x480" else max(iters // 2, 10)
-            results.append((be_name, time_loop(lambda: fn(img), v_iters), v_n))
+            results.append((be_name, time_loop(fn, v_iters), v_n))
 
     # Report relative to OpenCV so the ratio is unambiguous.
     cv_ms = next(ms for (nm, ms, _) in results if nm == "opencv")

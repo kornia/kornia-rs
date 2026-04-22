@@ -91,14 +91,9 @@ pub fn fast_detect(
     border: usize,
 ) -> PyResult<(Py<PyArray2<f32>>, Py<PyArray1<f32>>)> {
     let gray = image_to_gray_u8(py, image)?;
-    // FastDetector expects a normalized threshold in [0, 1]; cv2/VPI both take
-    // a u8-space 0..255 value. Convert so callers can pass the familiar "20".
     let threshold_norm = (threshold / 255.0).clamp(0.0, 1.0);
-    // Call `fast_detect_rows_u8` directly rather than constructing a
-    // `FastDetector`: the latter allocates ~12 MB of scratch (response +
-    // mask + taken buffers) per call at 1080p that the fused single-pass
-    // path doesn't touch. That alloc dominates the FAST runtime for
-    // per-call benchmarks; avoiding it matches OpenCV/VPI's per-call cost.
+    // Skip FastDetector::new — it allocates ~12 MB of scratch (response/mask/
+    // taken buffers) per call that the fused single-pass path doesn't need.
     let margin = border.max(3);
     let h = gray.height();
     let rows = margin..h.saturating_sub(margin);
@@ -112,7 +107,6 @@ pub fn fast_detect(
         let kps_slice = std::slice::from_raw_parts_mut(kps_arr.data(), n * 2);
         let resp_slice = std::slice::from_raw_parts_mut(resp_arr.data(), n);
         for (i, ([row, col], score)) in corners.iter().enumerate() {
-            // Match the (x=col, y=row) convention used by `orb_detect_and_compute`.
             kps_slice[i * 2] = *col as f32;
             kps_slice[i * 2 + 1] = *row as f32;
             resp_slice[i] = *score;

@@ -40,8 +40,7 @@ pub fn match_descriptors_py(
 
     let (m, n) = (s1[0], s2[0]);
 
-    // Reinterpret (N, 32) as &[[u8; 32]] in place. PyArray guarantees the buffer
-    // is live for the duration of this call — no copy needed.
+    // Zero-copy reinterpret — the numpy buffer outlives this call.
     let d1: &[[u8; 32]] = unsafe {
         std::slice::from_raw_parts(descriptors1.data() as *const [u8; 32], m)
     };

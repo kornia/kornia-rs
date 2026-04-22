@@ -63,10 +63,7 @@ def test_match_descriptors_max_ratio():
     close = query.copy()
     close[:, 0] ^= np.uint8(0xFF)  # 8 flips → dist 8.
     far = query.copy()
-    far ^= np.uint8(0xFF)  # all 256 bits flipped, but we only flip ~half for dist=160.
-    # Flip exactly 160 bits: 20 bytes full (160 bits), leave 12 bytes intact.
-    far = query.copy()
-    far[:, :20] ^= np.uint8(0xFF)
+    far[:, :20] ^= np.uint8(0xFF)  # 160 flips → dist 160.
     candidates = np.concatenate([close, far])
     accepted = K.features.match_descriptors(query, candidates, max_ratio=0.5)
     assert len(accepted) == 4
