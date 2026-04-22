@@ -3,16 +3,21 @@ set -euo pipefail
 
 # Build kornia-py in the pixi py314t environment.
 #
-# Even with maturin >= 1.9 (which supports free-threaded CPython 3.14t
-# natively), conda-forge's rust package sets CARGO_BUILD_TARGET and
-# CARGO_TARGET_*_LINKER during pixi activation. Those env vars push
-# maturin into its cross-compile code path and it then rejects the
-# uv-provided 3.14t interpreter with:
-#   "Unsupported Python interpreter for cross-compilation"
+# Even on maturin >= 1.9 (which supports free-threaded CPython natively),
+# two problems appear inside pixi's py314t env:
 #
-# Unsetting them in the activation script is not sufficient because
-# pixi may re-apply rust-package activation after our hook runs.
-# Strip them in the same process that invokes maturin so they stay gone.
+# 1. conda-forge's rust package sets CARGO_BUILD_TARGET and
+#    CARGO_TARGET_*_LINKER, pushing maturin into its cross-compile path
+#    and rejecting the uv-provided interpreter.
+# 2. `maturin develop` can't discover the uv-venv's Python platform
+#    (prints "Failed to determine python platform") and falls back to
+#    cross-compile for the same reason as (1).
+#
+# Workaround: strip the env vars and use `maturin build -i $PYTHON` to
+# pass the interpreter explicitly, then install the resulting wheel with
+# uv pip. Both bypass maturin's environment-driven discovery.
+
+PYTHON="${VIRTUAL_ENV}/bin/python"
 
 unset CARGO_BUILD_TARGET
 while IFS='=' read -r key _; do
@@ -21,4 +26,7 @@ while IFS='=' read -r key _; do
     esac
 done < <(env)
 
-exec maturin develop --uv -m Cargo.toml --extras dev
+export PYO3_PYTHON="$PYTHON"
+
+maturin build -m Cargo.toml -i "$PYTHON"
+uv pip install --python "$PYTHON" --force-reinstall --no-deps target/wheels/*.whl
