@@ -47,7 +47,17 @@ impl PyDecodeTagsConfig {
         })
     }
 
-    // TODO: Add getter for tag_families
+    #[getter]
+    pub fn get_tag_families(&self) -> PyResult<Vec<Py<family::PyTagFamilyKind>>> {
+        Python::attach(|py| {
+            let mut out = Vec::with_capacity(self.0.tag_families.len());
+            for family in &self.0.tag_families {
+                let kind = TagFamilyKind::Custom(Box::new(family.clone()));
+                out.push(Py::new(py, family::PyTagFamilyKind(kind))?);
+            }
+            Ok(out)
+        })
+    }
 
     #[getter]
     pub fn get_fit_quad_config(&self) -> PyFitQuadConfig {
