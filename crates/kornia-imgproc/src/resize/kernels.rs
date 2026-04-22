@@ -159,9 +159,7 @@ pub(super) fn hinterp_row_rgb_u8(src: &[u8], dst: &mut [u8], src_w: usize) {
 #[cfg(not(target_arch = "aarch64"))]
 #[inline]
 fn hinterp_row_rgb_u8_scalar(src: &[u8], dst: &mut [u8], src_w: usize) {
-    for ch in 0..3 {
-        dst[ch] = src[ch];
-    }
+    dst[..3].copy_from_slice(&src[..3]);
     for j in 0..src_w - 1 {
         for ch in 0..3 {
             let a = src[j * 3 + ch] as u16;
@@ -171,9 +169,8 @@ fn hinterp_row_rgb_u8_scalar(src: &[u8], dst: &mut [u8], src_w: usize) {
             dst[(2 * j + 2) * 3 + ch] = ((b + avg + 1) >> 1) as u8;
         }
     }
-    for ch in 0..3 {
-        dst[(2 * src_w - 1) * 3 + ch] = src[(src_w - 1) * 3 + ch];
-    }
+    let tail = (2 * src_w - 1) * 3;
+    dst[tail..tail + 3].copy_from_slice(&src[(src_w - 1) * 3..(src_w - 1) * 3 + 3]);
 }
 
 #[cfg(target_arch = "aarch64")]

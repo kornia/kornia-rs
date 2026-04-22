@@ -4,70 +4,44 @@ use pyo3::types::PyDict;
 use rand::prelude::*;
 use rand::rngs::StdRng;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
 
 use crate::image::{apply_brightness_sat, pyarray_data, PyImageApi, LUMINANCE_WEIGHTS};
 
-// Fast path: unseeded mode checks a single Relaxed atomic load, skipping the
-// Mutex entirely. The Mutex is only held briefly by `set_seed` to publish the
-// seed, with a Release/Acquire pair making sure the SEEDED_RNG reseed below
-// sees the new value.
-static SEEDED_FLAG: AtomicBool = AtomicBool::new(false);
-static GLOBAL_SEED: AtomicU64 = AtomicU64::new(0);
-static SEED_WRITE_LOCK: Mutex<()> = Mutex::new(());
-
+// Thread-local seeded RNG. `None` means "use the system entropy source".
+//
+// Thread-locality is load-bearing under free-threaded Python (3.14t): with
+// `pytest-run-parallel` and the no-GIL interpreter, tests run concurrently on
+// real OS threads. A prior global-seed + generation-counter design raced —
+// thread A's `set_seed(77); transform()` could reseed from thread B's global
+// `set_seed(1)` if B wrote in between. Per-thread RNG state avoids that
+// entirely: each thread's seeded sequence lives and dies on that thread.
 thread_local! {
     static SEEDED_RNG: RefCell<Option<StdRng>> = const { RefCell::new(None) };
-    // The thread-local RNG is reseeded when this generation counter doesn't
-    // match the global one. Avoids re-reading the global seed every call.
-    static SEEDED_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
-
-static SEED_GEN: AtomicU64 = AtomicU64::new(0);
 
 #[inline]
 fn with_rng<T>(f: impl FnOnce(&mut dyn RngCore) -> T) -> T {
-    if SEEDED_FLAG.load(Ordering::Relaxed) {
-        SEEDED_RNG.with(|cell| {
-            let mut rng_opt = cell.borrow_mut();
-            let cur_gen = SEED_GEN.load(Ordering::Acquire);
-            let local_gen = SEEDED_GEN.with(|c| c.get());
-            if rng_opt.is_none() || local_gen != cur_gen {
-                let s = GLOBAL_SEED.load(Ordering::Relaxed);
-                *rng_opt = Some(StdRng::seed_from_u64(s));
-                SEEDED_GEN.with(|c| c.set(cur_gen));
-            }
-            f(rng_opt.as_mut().unwrap())
-        })
-    } else {
-        f(&mut rand::rng())
-    }
+    SEEDED_RNG.with(|cell| {
+        let mut rng_opt = cell.borrow_mut();
+        match rng_opt.as_mut() {
+            Some(rng) => f(rng),
+            None => f(&mut rand::rng()),
+        }
+    })
 }
 
-/// Set the random seed for all augmentation operations.
+/// Set the random seed for augmentation operations on this thread.
 ///
-/// After calling this, augmentations will produce reproducible results.
-/// Pass None to reset to non-deterministic mode.
+/// After calling this, augmentations on the calling thread will produce
+/// reproducible results. Pass ``None`` to reset this thread to
+/// non-deterministic (system-entropy) mode. Per-thread scope: `set_seed`
+/// on one thread does not affect other threads.
 #[pyfunction]
 #[pyo3(signature = (seed=None))]
 pub fn set_seed(seed: Option<u64>) {
-    let _g = SEED_WRITE_LOCK.lock().unwrap();
-    match seed {
-        Some(s) => {
-            GLOBAL_SEED.store(s, Ordering::Relaxed);
-            SEED_GEN.fetch_add(1, Ordering::Release);
-            SEEDED_FLAG.store(true, Ordering::Release);
-        }
-        None => {
-            SEEDED_FLAG.store(false, Ordering::Release);
-            SEED_GEN.fetch_add(1, Ordering::Release);
-        }
-    }
     SEEDED_RNG.with(|cell| {
         *cell.borrow_mut() = seed.map(StdRng::seed_from_u64);
     });
-    SEEDED_GEN.with(|c| c.set(SEED_GEN.load(Ordering::Relaxed)));
 }
 
 /// Extract a required key from a params dict.

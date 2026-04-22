@@ -232,9 +232,9 @@ fn rgb_to_gray_u8_neon(src: &[u8], dst: &mut [u8], npixels: usize) {
 
 #[cfg(not(target_arch = "aarch64"))]
 fn rgb_to_gray_u8_scalar(src: &[u8], dst: &mut [u8], npixels: usize) {
-    for i in 0..npixels {
+    for (i, out) in dst.iter_mut().take(npixels).enumerate() {
         let si = i * 3;
-        dst[i] =
+        *out =
             ((77 * src[si] as u32 + 150 * src[si + 1] as u32 + 29 * src[si + 2] as u32) >> 8) as u8;
     }
 }
