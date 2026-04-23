@@ -60,4 +60,16 @@ pub enum ImageError {
     /// Error when interpolation mode is unsupported.
     #[error("Unsupported interpolation mode: {0:?}")]
     UnsupportedInterpolation(crate::image::InterpolationMode),
+
+    /// Error when a resolution parameter is invalid (non-finite, non-positive, or too small).
+    #[error("Invalid resolution: {0}")]
+    InvalidResolution(&'static str),
+
+    /// Error when a threshold value is invalid (non-finite, negative, or misordered).
+    #[error("Invalid threshold: {0}")]
+    InvalidThreshold(&'static str),
+
+    /// Error when the image dimensions are too large to process safely.
+    #[error("Image too large: {0} rows × {1} cols overflows index arithmetic")]
+    ImageTooLarge(usize, usize),
 }

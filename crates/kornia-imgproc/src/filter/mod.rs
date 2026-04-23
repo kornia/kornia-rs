@@ -12,3 +12,7 @@ pub use ops::*;
 /// Separable filter operations
 mod separable_filter;
 pub use separable_filter::*;
+
+/// Canny edge detection
+mod canny;
+pub use canny::*;
