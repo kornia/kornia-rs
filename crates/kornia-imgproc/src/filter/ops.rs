@@ -609,7 +609,7 @@ fn hpass_u8_row(
                 acc_lo = vmlal_u8(acc_lo, vget_low_u8(sk), kvecs_x[ki]);
                 acc_hi = vmlal_u8(acc_hi, vget_high_u8(sk), kvecs_x[ki]);
             }
-            let packed = vcombine_u8(vshrn_n_u16(acc_lo, 8), vshrn_n_u16(acc_hi, 8));
+            let packed = vcombine_u8(vrshrn_n_u16(acc_lo, 8), vrshrn_n_u16(acc_hi, 8));
             vst1q_u8(dp.add(j), packed);
             j += 16;
         }
@@ -618,7 +618,7 @@ fn hpass_u8_row(
             for ki in 0..ksize_x {
                 a += *pp.add(j + ki * channels) as u32 * kernel_x[ki] as u32;
             }
-            *dp.add(j) = (a >> 8) as u8;
+            *dp.add(j) = ((a + 128) >> 8) as u8;
             j += 1;
         }
     }
@@ -630,7 +630,7 @@ fn hpass_u8_row(
             for ki in 0..ksize_x {
                 acc += padded[j + ki * channels] as u32 * kernel_x[ki] as u32;
             }
-            dst_row[j] = (acc >> 8) as u8;
+            dst_row[j] = ((acc + 128) >> 8) as u8;
         }
     }
 }
@@ -814,11 +814,11 @@ fn separable_blur_u8_striped(
                             bh = vmlal_u8(bh, vget_high_u8(b4), k4);
                             vst1q_u8(
                                 dp.add(j),
-                                vcombine_u8(vshrn_n_u16(al, 8), vshrn_n_u16(ah, 8)),
+                                vcombine_u8(vrshrn_n_u16(al, 8), vrshrn_n_u16(ah, 8)),
                             );
                             vst1q_u8(
                                 dp.add(j + 16),
-                                vcombine_u8(vshrn_n_u16(bl, 8), vshrn_n_u16(bh, 8)),
+                                vcombine_u8(vrshrn_n_u16(bl, 8), vrshrn_n_u16(bh, 8)),
                             );
                             j += 32;
                         }
@@ -840,7 +840,7 @@ fn separable_blur_u8_striped(
                             ah = vmlal_u8(ah, vget_high_u8(s4), k4);
                             vst1q_u8(
                                 dp.add(j),
-                                vcombine_u8(vshrn_n_u16(al, 8), vshrn_n_u16(ah, 8)),
+                                vcombine_u8(vrshrn_n_u16(al, 8), vrshrn_n_u16(ah, 8)),
                             );
                             j += 16;
                         }
@@ -858,7 +858,7 @@ fn separable_blur_u8_striped(
                                 acc_hi = vmlal_u8(acc_hi, vget_high_u8(sk), kvecs_y[ki]);
                             }
                             let packed =
-                                vcombine_u8(vshrn_n_u16(acc_lo, 8), vshrn_n_u16(acc_hi, 8));
+                                vcombine_u8(vrshrn_n_u16(acc_lo, 8), vrshrn_n_u16(acc_hi, 8));
                             vst1q_u8(dp.add(j), packed);
                             j += 16;
                         }
@@ -869,7 +869,7 @@ fn separable_blur_u8_striped(
                         for ki in 0..ksize_y {
                             acc += *tap_ptrs[ki].add(j) as u32 * kernel_y[ki] as u32;
                         }
-                        *dp.add(j) = (acc >> 8) as u8;
+                        *dp.add(j) = ((acc + 128) >> 8) as u8;
                         j += 1;
                     }
                 }
@@ -881,7 +881,7 @@ fn separable_blur_u8_striped(
                         for ki in 0..ksize_y {
                             acc += unsafe { *tap_ptrs[ki].add(j) } as u32 * kernel_y[ki] as u32;
                         }
-                        out_row[j] = (acc >> 8) as u8;
+                        out_row[j] = ((acc + 128) >> 8) as u8;
                     }
                 }
             }
@@ -1198,7 +1198,7 @@ fn gaussian_blur_7x7_sym_u8<const C: usize>(
                         ah = vmlaq_n_u16(ah, p2_hi, ky2);
                         al = vmlaq_n_u16(al, c_lo, ky3);
                         ah = vmlaq_n_u16(ah, c_hi, ky3);
-                        let packed = vcombine_u8(vshrn_n_u16(al, 8), vshrn_n_u16(ah, 8));
+                        let packed = vcombine_u8(vrshrn_n_u16(al, 8), vrshrn_n_u16(ah, 8));
                         vst1q_u8(dp.add(j), packed);
                         j += 16;
                     }
@@ -1209,7 +1209,7 @@ fn gaussian_blur_7x7_sym_u8<const C: usize>(
                         let d = *t3.add(j) as u32;
                         let acc =
                             a * ky0 as u32 + b * ky1 as u32 + c * ky2 as u32 + d * ky3 as u32;
-                        *dp.add(j) = (acc >> 8) as u8;
+                        *dp.add(j) = ((acc + 128) >> 8) as u8;
                         j += 1;
                     }
                 }
@@ -1279,7 +1279,7 @@ fn hpass_sym7_row<const C: usize>(
             ah = vmlaq_n_u16(ah, p2_hi, k2);
             al = vmlaq_n_u16(al, c_lo, k3);
             ah = vmlaq_n_u16(ah, c_hi, k3);
-            let packed = vcombine_u8(vshrn_n_u16(al, 8), vshrn_n_u16(ah, 8));
+            let packed = vcombine_u8(vrshrn_n_u16(al, 8), vrshrn_n_u16(ah, 8));
             vst1q_u8(dp.add(j), packed);
             j += 16;
         }
@@ -1289,7 +1289,7 @@ fn hpass_sym7_row<const C: usize>(
             let c = *pp.add(j + 2 * C) as u32 + *pp.add(j + 4 * C) as u32;
             let d = *pp.add(j + 3 * C) as u32;
             let acc = a * k0 as u32 + b * k1 as u32 + c * k2 as u32 + d * k3 as u32;
-            *dp.add(j) = (acc >> 8) as u8;
+            *dp.add(j) = ((acc + 128) >> 8) as u8;
             j += 1;
         }
     }
