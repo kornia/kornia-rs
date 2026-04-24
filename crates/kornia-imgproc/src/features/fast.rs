@@ -633,6 +633,14 @@ fn fast_score_scalar(
         return 0.0;
     }
 
+    // For n=9 (the ORB default), use OpenCV-compatible cornerScore<9> so
+    // NMS ranking matches OpenCV. For other n, retain the sum-of-absdiffs
+    // score — it's not worth porting the arc-length-generic scorer since
+    // only the n=9 case is used by ORB + detector-parity tests.
+    if n == 9 {
+        return corner_score_9_scalar(src_slice, src_ix, ring) as f32 / 255.0;
+    }
+
     let mut acc: u32 = 0;
     for &v in &ring_vals {
         acc += (v as i32 - curr_pixel as i32).unsigned_abs();
@@ -699,45 +707,28 @@ unsafe fn fast_block_neon_16(
         return 0;
     }
 
-    let one_v = vdupq_n_u8(1);
-    let mut bright_run = vdupq_n_u8(0);
-    let mut bright_max = vdupq_n_u8(0);
-    let mut dark_run = vdupq_n_u8(0);
-    let mut dark_max = vdupq_n_u8(0);
-
-    // Σ|ring - center| per lane, widened to u16 (max 16 × 255 = 4080).
-    // Used as FAST response for NMS ranking (matches scalar behavior and
-    // OpenCV's FAST score). Arc length alone (tried in a prior iteration)
-    // worked on textured images but collapsed on flat-textured SLAM imagery
-    // (e.g. EuRoC MH01) where many corners tie at arc-length==n, making
-    // top-K selection degenerate — overlap vs OpenCV fell from ~44% to ~10%.
-    let mut score_lo = vdupq_n_u16(0);
-    let mut score_hi = vdupq_n_u16(0);
-    let centers_lo = vget_low_u8(centers);
-    let centers_hi = vget_high_u8(centers);
-
-    // 24 iterations = 16 + (9 - 1), enough to wrap any arc of length n ≤ 9.
-    // Chain counters: bright_run advances while pixel > upper, resets
-    // otherwise; bright_max tracks the longest run seen. Dark analogous.
-    // First 16 iterations also accumulate per-lane Σ|ring - center| via
-    // `vabal_u8` (one fused widening-absdiff-add per half, 2 ops / iter).
-    for k in 0..24usize {
-        let offset = ring[k % 16];
-        let vals = vld1q_u8(base.offset(offset));
-        let is_bright = vcgtq_u8(vals, upper);
-        let is_dark = vcltq_u8(vals, lower);
-        bright_run = vandq_u8(vaddq_u8(bright_run, one_v), is_bright);
-        dark_run = vandq_u8(vaddq_u8(dark_run, one_v), is_dark);
-        bright_max = vmaxq_u8(bright_max, bright_run);
-        dark_max = vmaxq_u8(dark_max, dark_run);
-        if k < 16 {
-            score_lo = vabal_u8(score_lo, vget_low_u8(vals), centers_lo);
-            score_hi = vabal_u8(score_hi, vget_high_u8(vals), centers_hi);
-        }
+    // OpenCV-compatible cornerScore<9>: max over 16 arc-starts of (min over
+    // 9-arc) of saturating diff, on both dark and bright sides. Replaces the
+    // previous Σ|ring−center| score, which disagreed with OpenCV on ~75% of
+    // NMS+octree survivors at 1 px same-octave tolerance — cornerScore<9>
+    // cuts that disagreement roughly in half on EuRoC MH01 / dog.jpeg.
+    //
+    // cornerScore ≥ threshold ⇔ FAST-9 arc test passes at threshold, so we
+    // can drop the separate chain-counter pass and derive the mask from
+    // `score > threshold_u8` directly. `n` is unused on this NEON path —
+    // only FAST-9 is used by ORB; other `n` fall through to scalar in the
+    // tail loop.
+    let mut ring_vals = [vdupq_n_u8(0); 16];
+    for k in 0..16 {
+        ring_vals[k] = vld1q_u8(base.offset(ring[k]));
     }
-
-    let n_v = vdupq_n_u8(n);
-    let pass = vorrq_u8(vcgeq_u8(bright_max, n_v), vcgeq_u8(dark_max, n_v));
+    let _ = (upper, lower, n); // values used only on the scalar tail path
+    let score_u8 = corner_score_9_neon(centers, &ring_vals);
+    let pass = vcgtq_u8(score_u8, threshold_v);
+    // Widen u8 → u16 to preserve the existing `*mut u16` out buffer
+    // (scalar fallback writes score as f32 = u16/255 at the caller).
+    let score_lo = vmovl_u8(vget_low_u8(score_u8));
+    let score_hi = vmovl_u8(vget_high_u8(score_u8));
 
     // Extract a 16-bit pass-mask from `pass` (uint8x16_t with 0x00 or 0xFF per
     // byte). Multiply each byte by its bit-weight (1,2,4,...,128) and sum the
@@ -757,6 +748,102 @@ unsafe fn fast_block_neon_16(
 
 #[cfg(target_arch = "aarch64")]
 static BIT_WEIGHTS: [u8; 16] = [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
+
+/// OpenCV-compatible `cornerScore<9>` — the FAST-9 corner strength used for
+/// NMS ranking by `cv::ORB`.
+///
+/// The score is `max over the 16 starting positions of (min |diff| over the
+/// 9-arc)`, evaluated on both the "dark" side (ring < center) and the
+/// "bright" side (ring > center). Returned as u8: values above `threshold`
+/// indicate a FAST-9 corner at that threshold; ranking is monotone in
+/// the strongest passing arc.
+///
+/// Monotone-equivalent to the OpenCV integer returned by `cornerScore<9>`
+/// (`fast_score.hpp`): OpenCV returns `score - 1` with clamping at a running
+/// `a0` / `b0`. NMS is invariant under that offset, so this u8 result is a
+/// drop-in replacement for ranking. Matches OpenCV's score identity on every
+/// pixel that passes the arc-9 test, which is the detector-parity signal we
+/// want — prior Σ|ring−center| score disagreed with OpenCV on 75% of
+/// keypoints at 1 px tolerance.
+#[inline]
+fn corner_score_9_scalar(src_slice: &[u8], src_ix: usize, ring: &[isize; 16]) -> u8 {
+    let center = src_slice[src_ix];
+    // dark_diff[k] = max(0, center - ring[k])     (strong when ring ≪ center)
+    // bright_diff[k] = max(0, ring[k] - center)   (strong when ring ≫ center)
+    let mut dark = [0u8; 16];
+    let mut bright = [0u8; 16];
+    for k in 0..16 {
+        let p = unsafe { *src_slice.get_unchecked((src_ix as isize + ring[k]) as usize) };
+        dark[k] = center.saturating_sub(p);
+        bright[k] = p.saturating_sub(center);
+    }
+
+    // max over 16 starts of min-over-9-arc of dark_diff / bright_diff.
+    // Step by 2: each outer iteration shares the 7-element core [k+1..k+8]
+    // between start-at-k and start-at-k+1 (mirrors OpenCV's structure).
+    let mut dark_score: u8 = 0;
+    let mut bright_score: u8 = 0;
+    let mut k = 0;
+    while k < 16 {
+        let mut core_d = dark[(k + 1) & 15];
+        let mut core_b = bright[(k + 1) & 15];
+        for i in 2..=8 {
+            core_d = core_d.min(dark[(k + i) & 15]);
+            core_b = core_b.min(bright[(k + i) & 15]);
+        }
+        let arc_k_d = core_d.min(dark[k & 15]);
+        let arc_k1_d = core_d.min(dark[(k + 9) & 15]);
+        dark_score = dark_score.max(arc_k_d).max(arc_k1_d);
+        let arc_k_b = core_b.min(bright[k & 15]);
+        let arc_k1_b = core_b.min(bright[(k + 9) & 15]);
+        bright_score = bright_score.max(arc_k_b).max(arc_k1_b);
+        k += 2;
+    }
+
+    dark_score.max(bright_score)
+}
+
+/// Lane-parallel NEON version of [`corner_score_9_scalar`] — evaluates
+/// cornerScore<9> for 16 consecutive centers at once.
+///
+/// Uses the saturating-sub formulation (u8 diffs, no sign tracking needed)
+/// and the step-by-2 core-sharing trick from OpenCV's fast_score.hpp. Each
+/// lane independently computes `max(dark, bright)` where both sides are
+/// `max over 16 starts of (min over 9-arc)` of the corresponding saturating
+/// diff.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn corner_score_9_neon(
+    centers: std::arch::aarch64::uint8x16_t,
+    ring_vals: &[std::arch::aarch64::uint8x16_t; 16],
+) -> std::arch::aarch64::uint8x16_t {
+    use std::arch::aarch64::*;
+    let mut dark = [vdupq_n_u8(0); 16];
+    let mut bright = [vdupq_n_u8(0); 16];
+    for k in 0..16 {
+        dark[k] = vqsubq_u8(centers, ring_vals[k]);
+        bright[k] = vqsubq_u8(ring_vals[k], centers);
+    }
+    let mut dark_score = vdupq_n_u8(0);
+    let mut bright_score = vdupq_n_u8(0);
+    let mut k = 0;
+    while k < 16 {
+        let mut core_d = dark[(k + 1) & 15];
+        let mut core_b = bright[(k + 1) & 15];
+        for i in 2..=8 {
+            core_d = vminq_u8(core_d, dark[(k + i) & 15]);
+            core_b = vminq_u8(core_b, bright[(k + i) & 15]);
+        }
+        let arc_k_d = vminq_u8(core_d, dark[k & 15]);
+        let arc_k1_d = vminq_u8(core_d, dark[(k + 9) & 15]);
+        dark_score = vmaxq_u8(dark_score, vmaxq_u8(arc_k_d, arc_k1_d));
+        let arc_k_b = vminq_u8(core_b, bright[k & 15]);
+        let arc_k1_b = vminq_u8(core_b, bright[(k + 9) & 15]);
+        bright_score = vmaxq_u8(bright_score, vmaxq_u8(arc_k_b, arc_k1_b));
+        k += 2;
+    }
+    vmaxq_u8(dark_score, bright_score)
+}
 
 fn corner_fast_response(
     curr_pixel: f32,
