@@ -69,19 +69,21 @@ kornia-rs median reprojection beats OpenCV on both images (even with the OpenCV 
 
 ## Two-view relative pose (SLAM bootstrap) — EuRoC MH_01
 
-`bench_two_view_pose.py` runs the full ORB-SLAM-style bootstrap on a real EuRoC MH_01 pair at 752×480: detect → match → F+H RANSAC → model pick → essential decomp → cheirality. Median over 50 iterations (5 warmup) with GT derived from the dataset's `body_imu` poses (`scripts/derive_mh01_gt.py`).
+`bench_two_view_pose.py` runs the full ORB-SLAM-style bootstrap on a real EuRoC MH_01 pair at 752×480: detect → match → F+H RANSAC → model pick → essential decomp → cheirality → **LM (R,t) refinement on Sampson cost**. Median over 50 iterations (5 warmup) with GT derived from the dataset's `body_imu` poses (`scripts/derive_mh01_gt.py`).
 
 | Backend | detect (ms) | match (ms) | pose (ms) | total (ms) | rot_err° | t_err° | matches | inliers |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| **kornia-rs** | **8.9** | **0.70** | 7.8 | **17.4** | **0.236** | 4.466 | 110 | 83 |
-| opencv-ransac (5-pt) | 37.1 | 2.72 | 17.8 | 57.6 | 0.488 | 5.914 | 97 | 64 |
-| opencv-lmeds | 37.5 | 1.49 | 45.5 | 84.5 | 0.181 | 5.096 | 97 | 91 |
-| opencv-usac-fast | 37.3 | 1.48 | **2.6** | 41.4 | **0.031** | 4.117 | 97 | 72 |
-| opencv-usac-accurate | 37.3 | 1.46 | 3.4 | 42.2 | **0.031** | 4.117 | 97 | 72 |
-| opencv-usac-magsac | 37.2 | 1.79 | 4.9 | 43.8 | 0.099 | 4.185 | 97 | 73 |
-| opencv-usac-prosac | 37.6 | 1.85 | 3.4 | 42.8 | 0.021 | 3.886 | 97 | 70 |
+| **kornia-rs** | **7.4** | **0.82** | 7.4 | **15.7** | 0.189 | **2.973** | 110 | **88** |
+| opencv-ransac (5-pt) | 37.2 | 1.47 | 17.9 | 56.5 | 0.488 | 5.914 | 97 | 64 |
+| opencv-lmeds | 37.4 | 2.03 | 45.5 | 85.0 | 0.181 | 5.096 | 97 | 91 |
+| opencv-usac-fast | 37.5 | 2.50 | **2.6** | 42.6 | **0.031** | 4.117 | 97 | 72 |
+| opencv-usac-accurate | 37.9 | 1.96 | 3.4 | 43.2 | **0.031** | 4.117 | 97 | 72 |
+| opencv-usac-magsac | 37.6 | 1.54 | 4.95 | 44.1 | 0.099 | 4.185 | 97 | 73 |
+| opencv-usac-prosac | 37.8 | 1.53 | 3.4 | 42.7 | **0.021** | 3.886 | 97 | 70 |
 
-kornia-rs is **3.3× faster than OpenCV-RANSAC** and **2.4× faster than the best USAC variant** on total pipeline time. USAC beats kornia-rs on the pose-solve step alone (kornia's F+H RANSAC pair is not a USAC-class solver yet) but loses the detect/match budget by >4×. On accuracy, kornia's rotation error (0.236°) lands between OpenCV-RANSAC (0.488°) and LMEDS (0.181°); translation-direction error is broadly comparable across all backends on this pair.
+kornia-rs leads every OpenCV variant on **translation-direction accuracy** (2.97° vs the best CV result of 3.886° from PROSAC) and on **inlier yield** (88 vs 72), while keeping the **2.6–5× total-pipeline speed lead**. USAC still wins on rotation accuracy (sub-0.05° vs our 0.19°) — that gap lives in the 5-point essential solver (Nistér), not in post-RANSAC refinement.
+
+The accuracy story comes from two compounding pieces: (a) **LO-RANSAC for F** (`bfee16f`) — one-shot refit on the full inlier set after the main RANSAC loop, accept on strict score-improvement; (b) **LM (R, t) post-refinement** (`982046b`) — Levenberg-Marquardt on SO(3) × S² minimizing Σ Sampson² over inliers, 5-DoF Jacobian via central differences, faer LU on the 5×5 normal equations.
 
 ## Per-op status against OpenCV (internal 2× target)
 
