@@ -33,6 +33,7 @@
 //! from two views alone — this is the SE(3) → essential manifold quotient in action.
 
 use crate::pose::fundamental::{fundamental_8point, FundamentalError};
+use crate::pose::lm_pose::{refine_pose_lm, LmPoseConfig};
 use crate::pose::triangulation::{triangulate_inliers, TriangulateParams, TriangulationConfig};
 use crate::pose::{
     decompose_essential, decompose_homography, enforce_essential_constraints,
@@ -125,6 +126,12 @@ pub struct TwoViewConfig {
     pub homography_inlier_ratio: f64,
     /// Triangulation-backed candidate-pose validation settings.
     pub triangulation: TriangulationConfig,
+    /// Run Levenberg-Marquardt non-linear refinement of (R, t) over the inlier
+    /// Sampson cost after the cheirality winner is picked. Default `true` —
+    /// this is the final accuracy lever that closes the gap vs OpenCV USAC.
+    pub lm_enabled: bool,
+    /// LM refinement knobs. See [`LmPoseConfig`].
+    pub lm: LmPoseConfig,
 }
 
 impl Default for TwoViewConfig {
@@ -134,6 +141,8 @@ impl Default for TwoViewConfig {
             ransac_h: RansacParams::default(),
             homography_inlier_ratio: 0.8,
             triangulation: TriangulationConfig::default(),
+            lm_enabled: true,
+            lm: LmPoseConfig::default(),
         }
     }
 }
@@ -505,6 +514,32 @@ pub fn two_view_estimate(
     let (r, t) = match best_pose {
         Some(p) => p,
         None => return Err(TwoViewError::RansacFailure),
+    };
+
+    // Non-linear refinement of (R, t) over the full RANSAC inlier set's
+    // Sampson cost. Parameterized on SO(3) × S² (translation scale is
+    // unobservable), guaranteed never to return a worse pose than its input.
+    // We use *all* RANSAC inliers here rather than just the cheirality-winning
+    // subset: the extra correspondences improve Jacobian conditioning, and
+    // Sampson cost is well-defined for any inlier regardless of whether it
+    // triangulates cleanly (cheirality gates e.g. points with too little
+    // parallax — still useful epipolar constraints for pose).
+    let (r, t) = if config.lm_enabled {
+        let mut x1_inl: Vec<Vec2F64> = Vec::with_capacity(x1.len());
+        let mut x2_inl: Vec<Vec2F64> = Vec::with_capacity(x2.len());
+        for (i, &is_inl) in inliers.iter().enumerate() {
+            if is_inl {
+                x1_inl.push(x1[i]);
+                x2_inl.push(x2[i]);
+            }
+        }
+        if x1_inl.len() >= 6 {
+            refine_pose_lm(r, t, &x1_inl, &x2_inl, k1, k2, &config.lm)
+        } else {
+            (r, t)
+        }
+    } else {
+        (r, t)
     };
 
     Ok(TwoViewResult {
@@ -1348,6 +1383,8 @@ mod tests {
                 min_parallax_deg: 0.5,
                 ..TriangulationConfig::default()
             },
+            lm_enabled: true,
+            lm: LmPoseConfig::default(),
         };
 
         let result = two_view_estimate(&pts1, &pts2, &k, &k, &config).unwrap();
@@ -1358,25 +1395,27 @@ mod tests {
             "expected fundamental model"
         );
 
-        // Check rotation angle: GT is 2.7021°, allow 5° error.
+        // Check rotation angle: GT is 2.7021°. With LM polishing the
+        // post-cheirality pose, rotation error stays well below 1°.
         let r = result.rotation;
         let trace = r.col(0).x + r.col(1).y + r.col(2).z;
         let est_angle_rad = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
         let est_angle_deg = est_angle_rad.to_degrees();
         let gt_angle_deg = 2.7021;
         assert!(
-            (est_angle_deg - gt_angle_deg).abs() < 5.0,
+            (est_angle_deg - gt_angle_deg).abs() < 1.0,
             "rotation error too large: estimated {est_angle_deg:.2}°, GT {gt_angle_deg}°"
         );
 
         // Check translation direction: GT is [0.242, -0.233, 0.942].
-        // Translation can be recovered up to sign, so check both directions.
+        // Translation can be recovered up to sign. Pre-LM the error was ~8°;
+        // post-LM Sampson refinement pulls it under 5° on this pair.
         let t = result.translation.normalize();
         let gt_t = Vec3F64::new(0.2422, -0.2330, 0.9418).normalize();
         let cos_angle = t.dot(gt_t).clamp(-1.0, 1.0);
         let t_err_deg = cos_angle.abs().acos().to_degrees();
         assert!(
-            t_err_deg < 15.0,
+            t_err_deg < 5.0,
             "translation direction error too large: {t_err_deg:.2}°"
         );
 
@@ -1384,6 +1423,231 @@ mod tests {
         assert!(
             !result.points3d.is_empty(),
             "expected triangulated 3D points"
+        );
+    }
+
+    // -------- LM refinement tests --------
+
+    /// Construct a synthetic two-view setup: N 3D points in front of both
+    /// cameras, projected (with optional Gaussian-ish noise) into both views
+    /// through a shared K. Uses a deterministic LCG so tests are reproducible
+    /// without extra RNG dependencies.
+    ///
+    /// Returns (x1, x2, R_true, t_true_unit, K).
+    fn synthetic_two_view(
+        n_pts: usize,
+        noise_px: f64,
+        seed: u64,
+    ) -> (Vec<Vec2F64>, Vec<Vec2F64>, Mat3F64, Vec3F64, Mat3F64) {
+        // Fixed GT pose: small rotation about y-axis, translation mostly along x.
+        let angle = 5.0_f64.to_radians();
+        let (s, c) = angle.sin_cos();
+        let r = Mat3F64::from_cols(
+            Vec3F64::new(c, 0.0, -s),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(s, 0.0, c),
+        );
+        let t = Vec3F64::new(0.5, 0.1, 0.2);
+        let t_unit = t.normalize();
+
+        // Intrinsics: 640x480, fx=fy=500, principal point at center.
+        let k = Mat3F64::from_cols(
+            Vec3F64::new(500.0, 0.0, 0.0),
+            Vec3F64::new(0.0, 500.0, 0.0),
+            Vec3F64::new(320.0, 240.0, 1.0),
+        );
+
+        let mut lcg = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let mut next = || -> f64 {
+            lcg = lcg
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (lcg >> 32) as f64 / 4_294_967_296.0
+        };
+
+        let mut x1 = Vec::with_capacity(n_pts);
+        let mut x2 = Vec::with_capacity(n_pts);
+        for _ in 0..n_pts {
+            let xc = (next() - 0.5) * 3.0;
+            let yc = (next() - 0.5) * 2.0;
+            let zc = next() * 3.0 + 3.0; // 3-6 m depth
+            let p1 = Vec3F64::new(xc, yc, zc);
+            let p2_cam = r * p1 + t;
+            // Project through K.
+            let u1 = 500.0 * p1.x / p1.z + 320.0 + (next() - 0.5) * 2.0 * noise_px;
+            let v1 = 500.0 * p1.y / p1.z + 240.0 + (next() - 0.5) * 2.0 * noise_px;
+            let u2 = 500.0 * p2_cam.x / p2_cam.z + 320.0 + (next() - 0.5) * 2.0 * noise_px;
+            let v2 = 500.0 * p2_cam.y / p2_cam.z + 240.0 + (next() - 0.5) * 2.0 * noise_px;
+            x1.push(Vec2F64::new(u1, v1));
+            x2.push(Vec2F64::new(u2, v2));
+        }
+        (x1, x2, r, t_unit, k)
+    }
+
+    /// Sum of Sampson distances for F = K2^-T [t]x R K1^-1 over all pairs.
+    fn sampson_cost_rt(
+        r: &Mat3F64,
+        t: &Vec3F64,
+        k1: &Mat3F64,
+        k2: &Mat3F64,
+        x1: &[Vec2F64],
+        x2: &[Vec2F64],
+    ) -> f64 {
+        use crate::pose::fundamental::sampson_distance;
+        let skew = Mat3F64::from_cols(
+            Vec3F64::new(0.0, t.z, -t.y),
+            Vec3F64::new(-t.z, 0.0, t.x),
+            Vec3F64::new(t.y, -t.x, 0.0),
+        );
+        let e = skew * *r;
+        let f = k2.inverse().transpose() * e * k1.inverse();
+        x1.iter()
+            .zip(x2.iter())
+            .map(|(p1, p2)| sampson_distance(&f, p1, p2))
+            .sum()
+    }
+
+    fn rot_angle_deg(r_rel: &Mat3F64) -> f64 {
+        let tr = r_rel.col(0).x + r_rel.col(1).y + r_rel.col(2).z;
+        ((tr - 1.0) / 2.0).clamp(-1.0, 1.0).acos().to_degrees()
+    }
+
+    fn rot_err_deg(r_est: &Mat3F64, r_gt: &Mat3F64) -> f64 {
+        let r_diff = r_est.transpose() * *r_gt;
+        rot_angle_deg(&r_diff)
+    }
+
+    fn t_err_deg(t_est: &Vec3F64, t_gt: &Vec3F64) -> f64 {
+        let te = t_est.normalize();
+        let tg = t_gt.normalize();
+        te.dot(tg).abs().clamp(0.0, 1.0).acos().to_degrees()
+    }
+
+    /// Small rotation (~1°) + small translation-direction perturbation applied
+    /// to a GT pose, used to seed LM.
+    fn perturb_pose(r: Mat3F64, t: Vec3F64, rot_deg: f64, t_dir_deg: f64) -> (Mat3F64, Vec3F64) {
+        // Rotation perturbation: axis = Y (normalized), angle = rot_deg.
+        let angle = rot_deg.to_radians();
+        let (s, c) = angle.sin_cos();
+        let r_pert = Mat3F64::from_cols(
+            Vec3F64::new(c, 0.0, -s),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(s, 0.0, c),
+        );
+        let r_new = r * r_pert;
+
+        // Translation-direction perturbation: rotate t by t_dir_deg about an
+        // axis orthogonal to t. Pick e.g. world-X (unless t is near-parallel to
+        // it, then world-Y).
+        let t_u = t.normalize();
+        let seed_axis = if t_u.x.abs() < 0.9 {
+            Vec3F64::new(1.0, 0.0, 0.0)
+        } else {
+            Vec3F64::new(0.0, 1.0, 0.0)
+        };
+        let axis = Vec3F64::new(
+            t_u.y * seed_axis.z - t_u.z * seed_axis.y,
+            t_u.z * seed_axis.x - t_u.x * seed_axis.z,
+            t_u.x * seed_axis.y - t_u.y * seed_axis.x,
+        )
+        .normalize();
+        let ang = t_dir_deg.to_radians();
+        let (ss, cc) = ang.sin_cos();
+        // Rodrigues: v' = v cos + (k × v) sin + k (k·v)(1 - cos)
+        let kxv = Vec3F64::new(
+            axis.y * t_u.z - axis.z * t_u.y,
+            axis.z * t_u.x - axis.x * t_u.z,
+            axis.x * t_u.y - axis.y * t_u.x,
+        );
+        let kdotv = axis.dot(t_u);
+        let t_new = Vec3F64::new(
+            t_u.x * cc + kxv.x * ss + axis.x * kdotv * (1.0 - cc),
+            t_u.y * cc + kxv.y * ss + axis.y * kdotv * (1.0 - cc),
+            t_u.z * cc + kxv.z * ss + axis.z * kdotv * (1.0 - cc),
+        )
+        .normalize();
+        (r_new, t_new)
+    }
+
+    /// Noise-free synthetic setup: with perfect correspondences and a small
+    /// perturbation of GT pose, LM must recover the GT to numerical
+    /// precision.
+    #[test]
+    fn test_lm_pose_refine_synthetic_perfect() {
+        let (x1, x2, r_gt, t_gt, k) = synthetic_two_view(60, 0.0, 7);
+        let (r0, t0) = perturb_pose(r_gt, t_gt, 1.0, 5.0);
+
+        let cfg = LmPoseConfig::default();
+        let (r_ref, t_ref) = refine_pose_lm(r0, t0, &x1, &x2, &k, &k, &cfg);
+
+        let r_err = rot_err_deg(&r_ref, &r_gt);
+        let t_err = t_err_deg(&t_ref, &t_gt);
+        // With a finite-difference Jacobian the residual of LM is bounded by
+        // O(h²) ≈ 1e-12 on cost, but Sampson is scale-invariant in F; 1e-2° is
+        // the effective noise floor on R/t from numerical error.
+        assert!(
+            r_err < 1e-2,
+            "perfect-noise LM should recover R to ≤1e-2°, got {r_err:.6}°"
+        );
+        assert!(
+            t_err < 1e-2,
+            "perfect-noise LM should recover t_dir to ≤1e-2°, got {t_err:.6}°"
+        );
+    }
+
+    /// Noisy synthetic setup: LM must strictly reduce the Sampson cost and
+    /// never regress the rotation / translation error.
+    #[test]
+    fn test_lm_pose_refine_noisy_improves() {
+        let (x1, x2, r_gt, t_gt, k) = synthetic_two_view(120, 0.5, 42);
+        // Perturb GT by a non-trivial amount to ensure LM has work to do.
+        let (r0, t0) = perturb_pose(r_gt, t_gt, 2.0, 8.0);
+
+        let cost_before = sampson_cost_rt(&r0, &t0, &k, &k, &x1, &x2);
+        let r_err_before = rot_err_deg(&r0, &r_gt);
+        let t_err_before = t_err_deg(&t0, &t_gt);
+
+        let cfg = LmPoseConfig::default();
+        let (r1, t1) = refine_pose_lm(r0, t0, &x1, &x2, &k, &k, &cfg);
+
+        let cost_after = sampson_cost_rt(&r1, &t1, &k, &k, &x1, &x2);
+        let r_err_after = rot_err_deg(&r1, &r_gt);
+        let t_err_after = t_err_deg(&t1, &t_gt);
+
+        assert!(
+            cost_after < cost_before,
+            "Sampson cost did not decrease: before={cost_before:.6e}, after={cost_after:.6e}"
+        );
+        // With a finite-DoF linearized fit on noisy data we don't expect
+        // monotone improvement of the *pose errors* in general, but on this
+        // setup (large perturbation, low noise) they must not regress by more
+        // than a small margin.
+        assert!(
+            r_err_after <= r_err_before + 0.05,
+            "rotation error regressed: before={r_err_before:.4}°, after={r_err_after:.4}°"
+        );
+        assert!(
+            t_err_after <= t_err_before + 0.05,
+            "translation error regressed: before={t_err_before:.4}°, after={t_err_after:.4}°"
+        );
+    }
+
+    /// If we start from GT pose, LM must stay there (within numerical
+    /// tolerance) — an idempotency / no-harm guarantee.
+    #[test]
+    fn test_lm_pose_refine_does_no_harm_when_already_optimal() {
+        let (x1, x2, r_gt, t_gt, k) = synthetic_two_view(60, 0.0, 99);
+        let cfg = LmPoseConfig::default();
+        let (r_out, t_out) = refine_pose_lm(r_gt, t_gt, &x1, &x2, &k, &k, &cfg);
+        let r_err = rot_err_deg(&r_out, &r_gt);
+        let t_err = t_err_deg(&t_out, &t_gt);
+        assert!(
+            r_err < 1e-4,
+            "LM drifted from optimal R: err={r_err:.6}°"
+        );
+        assert!(
+            t_err < 1e-4,
+            "LM drifted from optimal t: err={t_err:.6}°"
         );
     }
 

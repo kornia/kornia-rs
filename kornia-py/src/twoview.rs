@@ -17,8 +17,8 @@ use numpy::{PyArray, PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
 use kornia_3d::pose::{
-    two_view_estimate as two_view_estimate_fn, RansacParams, TriangulationConfig, TwoViewConfig,
-    TwoViewModel,
+    two_view_estimate as two_view_estimate_fn, LmPoseConfig, RansacParams, TriangulationConfig,
+    TwoViewConfig, TwoViewModel,
 };
 use kornia_algebra::{Mat3F64, Vec2F64};
 
@@ -204,6 +204,8 @@ pub fn two_view_estimate_py(
             min_parallax_deg,
             ..TriangulationConfig::default()
         },
+        lm_enabled: true,
+        lm: LmPoseConfig::default(),
     };
 
     let result = py
