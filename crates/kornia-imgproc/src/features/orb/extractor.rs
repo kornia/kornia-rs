@@ -65,8 +65,13 @@ struct ExtractorNode {
 
 impl ExtractorNode {
     fn divide(&self, candidates: &[OrbCandidate]) -> [ExtractorNode; 4] {
-        let mid_x = (self.ul.0 + self.ur.0) / 2;
-        let mid_y = (self.ul.1 + self.bl.1) / 2;
+        // OpenCV DivideNode: halfX = ceil((UR.x - UL.x) / 2), mid = UL.x + halfX.
+        // Ceil (not floor) of half-width so odd-width nodes split at the same pixel
+        // OpenCV does; otherwise keypoints near the centre land in different children.
+        let half_x = ((self.ur.0 - self.ul.0) as f32 / 2.0).ceil() as i32;
+        let half_y = ((self.bl.1 - self.ul.1) as f32 / 2.0).ceil() as i32;
+        let mid_x = self.ul.0 + half_x;
+        let mid_y = self.ul.1 + half_y;
 
         let mut n1 = ExtractorNode {
             ul: self.ul,
@@ -299,7 +304,7 @@ impl OrbDetector {
                 .collect();
 
             let (min_x, max_x, min_y, max_y) = octave_bounds(octave_image);
-            let distributed = distribute_octree(
+            let mut distributed = distribute_octree(
                 &candidates,
                 min_x,
                 max_x,
@@ -307,6 +312,17 @@ impl OrbDetector {
                 max_y,
                 features_per_level[octave],
             );
+
+            // OpenCV runs KeyPointsFilter::retainBest(keypoints, featuresNum) per level.
+            // `distribute_octree` can overshoot by up to ~3 per divide; cap by response.
+            if distributed.len() > features_per_level[octave] {
+                distributed.sort_by(|a, b| {
+                    b.response
+                        .partial_cmp(&a.response)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                distributed.truncate(features_per_level[octave]);
+            }
 
             let scale = self.downscale.powi(octave as i32);
 
@@ -524,7 +540,17 @@ impl OrbDetector {
         let min_y = 19 - 3;
         let max_x = image_f32_size.width as i32 - 19 + 3;
         let max_y = image_f32_size.height as i32 - 19 + 3;
-        let distributed = distribute_octree(&candidates, min_x, max_x, min_y, max_y, target);
+        let mut distributed =
+            distribute_octree(&candidates, min_x, max_x, min_y, max_y, target);
+        // Match OpenCV: retainBest(featuresNum) per level. Octree can overshoot.
+        if distributed.len() > target {
+            distributed.sort_by(|a, b| {
+                b.response
+                    .partial_cmp(&a.response)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            distributed.truncate(target);
+        }
         let t_after_octree = std::time::Instant::now();
 
         let survivor_positions: Vec<[usize; 2]> =
@@ -942,69 +968,120 @@ fn distribute_octree(
         }
     }
 
-    while nodes.len() < n_features {
-        let expandable: Vec<usize> = nodes
+    // Match OpenCV's DistributeOctTree expansion loop structure precisely:
+    //   1. Each iteration, divide EVERY expandable node in one pass (expand-all).
+    //   2. Track only the newly-created still-expandable children in `last_expandables`.
+    //   3. If size ≥ N or no progress → done.
+    //   4. Else if projected size (before the pass) + nToExpand*3 > N, enter a sorted
+    //      subloop that splits the largest-by-size of those newly-created expandables
+    //      until we hit N.
+    //
+    // Subtle but kp-set-changing: kornia previously skipped step 1 when the
+    // projection would overshoot, and step 4 considered all live expandables
+    // rather than only the freshly-created ones. Both caused different nodes
+    // to be kept → different best-response picks per node → different keypoints.
+    loop {
+        if nodes.len() >= n_features {
+            break;
+        }
+
+        let prev_size = nodes.len();
+
+        let expandable_now: Vec<usize> = nodes
             .iter()
             .enumerate()
             .filter(|(_, n)| !n.no_more && n.keys.len() > 1)
             .map(|(i, _)| i)
             .collect();
 
-        if expandable.is_empty() {
+        if expandable_now.is_empty() {
             break;
         }
 
-        if nodes.len() + expandable.len() * 3 <= n_features {
-            let mut new_nodes = Vec::new();
-            let mut to_remove = Vec::new();
-            for idx in expandable {
-                let node = nodes[idx].clone();
-                let children = node.divide(candidates);
-                for mut child in children {
-                    if child.keys.is_empty() {
-                        continue;
-                    }
-                    child.no_more = child.keys.len() == 1;
-                    new_nodes.push(child);
+        let n_to_expand = expandable_now.len();
+        let mut new_nodes: Vec<ExtractorNode> = Vec::new();
+        let mut new_expandable_offsets: Vec<usize> = Vec::new();
+        for &idx in &expandable_now {
+            let children = nodes[idx].divide(candidates);
+            for mut child in children {
+                if child.keys.is_empty() {
+                    continue;
                 }
-                to_remove.push(idx);
+                child.no_more = child.keys.len() == 1;
+                if !child.no_more && child.keys.len() > 1 {
+                    new_expandable_offsets.push(new_nodes.len());
+                }
+                new_nodes.push(child);
             }
-            to_remove.sort_unstable_by(|a, b| b.cmp(a));
-            for idx in to_remove {
-                nodes.swap_remove(idx);
-            }
-            nodes.extend(new_nodes);
-        } else {
-            let mut expandable_sorted: Vec<(usize, usize)> = nodes
-                .iter()
-                .enumerate()
-                .filter(|(_, n)| !n.no_more && n.keys.len() > 1)
-                .map(|(i, n)| (i, n.keys.len()))
-                .collect();
-            expandable_sorted.sort_by_key(|(_, s)| *s);
+        }
 
-            let mut new_nodes = Vec::new();
-            let mut to_remove = Vec::new();
-            for (idx, _) in expandable_sorted.into_iter().rev() {
-                let node = nodes[idx].clone();
-                let children = node.divide(candidates);
-                for mut child in children {
-                    if child.keys.is_empty() {
-                        continue;
-                    }
-                    child.no_more = child.keys.len() == 1;
-                    new_nodes.push(child);
+        let mut to_remove = expandable_now.clone();
+        to_remove.sort_unstable_by(|a, b| b.cmp(a));
+        for idx in to_remove {
+            nodes.swap_remove(idx);
+        }
+        let append_base = nodes.len();
+        nodes.extend(new_nodes);
+        let mut last_expandables: Vec<usize> = new_expandable_offsets
+            .into_iter()
+            .map(|off| append_base + off)
+            .collect();
+
+        if nodes.len() >= n_features || nodes.len() == prev_size {
+            break;
+        }
+
+        if prev_size + n_to_expand * 3 > n_features {
+            loop {
+                let round_prev_size = nodes.len();
+                if last_expandables.is_empty() {
+                    break;
                 }
-                to_remove.push(idx);
-                if nodes.len() - to_remove.len() + new_nodes.len() >= n_features {
+
+                let mut sorted: Vec<(usize, usize)> = last_expandables
+                    .iter()
+                    .map(|&i| (i, nodes[i].keys.len()))
+                    .collect();
+                sorted.sort_by_key(|(_, s)| *s);
+
+                let mut to_remove: Vec<usize> = Vec::new();
+                let mut new_nodes: Vec<ExtractorNode> = Vec::new();
+                let mut next_expandable_offsets: Vec<usize> = Vec::new();
+                for (idx, _) in sorted.into_iter().rev() {
+                    let children = nodes[idx].divide(candidates);
+                    for mut child in children {
+                        if child.keys.is_empty() {
+                            continue;
+                        }
+                        child.no_more = child.keys.len() == 1;
+                        if !child.no_more && child.keys.len() > 1 {
+                            next_expandable_offsets.push(new_nodes.len());
+                        }
+                        new_nodes.push(child);
+                    }
+                    to_remove.push(idx);
+                    let projected_size = nodes.len() - to_remove.len() + new_nodes.len();
+                    if projected_size >= n_features {
+                        break;
+                    }
+                }
+
+                to_remove.sort_unstable_by(|a, b| b.cmp(a));
+                for idx in to_remove {
+                    nodes.swap_remove(idx);
+                }
+                let append_base = nodes.len();
+                nodes.extend(new_nodes);
+                last_expandables = next_expandable_offsets
+                    .into_iter()
+                    .map(|off| append_base + off)
+                    .collect();
+
+                if nodes.len() >= n_features || nodes.len() == round_prev_size {
                     break;
                 }
             }
-            to_remove.sort_unstable_by(|a, b| b.cmp(a));
-            for idx in to_remove {
-                nodes.swap_remove(idx);
-            }
-            nodes.extend(new_nodes);
+            break;
         }
     }
 
