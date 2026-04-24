@@ -190,14 +190,14 @@ pub fn two_view_estimate_py(
             threshold: ransac_threshold,
             min_inliers: min_inliers_f,
             random_seed: seed,
-            refit: false,
+            refit: true,
         },
         ransac_h: RansacParams {
             max_iterations,
             threshold: ransac_threshold,
             min_inliers: min_inliers_h,
             random_seed: seed,
-            refit: false,
+            refit: true,
         },
         homography_inlier_ratio,
         triangulation: TriangulationConfig {

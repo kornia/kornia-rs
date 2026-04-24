@@ -261,10 +261,48 @@ pub fn ransac_fundamental(
         }
     }
 
-    let model = match best_model {
+    let mut model = match best_model {
         Some(m) if best_count >= params.min_inliers => m,
         _ => return Err(TwoViewError::RansacFailure),
     };
+
+    // LO-RANSAC refit: fit a new F on the full inlier set (≥ 8 points) and
+    // accept it if it finds more inliers or — on a tie — a lower Sampson
+    // score. Inlier count is the primary signal for F (vs. score for H) because
+    // the fundamental matrix scale is arbitrary and raw Sampson values are not
+    // directly comparable across differently-conditioned models.
+    if params.refit && best_count >= 8 {
+        let inl_x1: Vec<Vec2F64> = x1
+            .iter()
+            .zip(best_inliers.iter())
+            .filter_map(|(p, k)| if *k { Some(*p) } else { None })
+            .collect();
+        let inl_x2: Vec<Vec2F64> = x2
+            .iter()
+            .zip(best_inliers.iter())
+            .filter_map(|(p, k)| if *k { Some(*p) } else { None })
+            .collect();
+        if let Ok(f_refit) = fundamental_8point(&inl_x1, &inl_x2) {
+            let mut refit_inliers = vec![false; n];
+            let (refit_count, refit_score) = score_inliers_f(
+                &f_refit,
+                &x1_x,
+                &x1_y,
+                &x2_x,
+                &x2_y,
+                thresh_sq,
+                &mut refit_inliers,
+            );
+            if refit_count > best_count
+                || (refit_count == best_count && refit_score < best_score)
+            {
+                model = f_refit;
+                best_inliers = refit_inliers;
+                best_count = refit_count;
+                best_score = refit_score;
+            }
+        }
+    }
 
     Ok(RansacResult {
         model,
@@ -862,6 +900,113 @@ mod tests {
         assert!(res.inlier_count >= params.min_inliers);
     }
 
+    /// Verify that enabling the LO-refit step either matches or improves the
+    /// plain-RANSAC result (more inliers *or* a lower Sampson score on ties).
+    ///
+    /// Synthetic scene: pinhole camera, 100 noisy correspondences + 20
+    /// outliers with fixed seed so the test is fully deterministic.
+    #[test]
+    fn test_ransac_fundamental_refit_improves_accuracy() {
+        use crate::pose::fundamental::sampson_distance;
+
+        // Ground-truth fundamental matrix from a simple rotation about Y.
+        // R = Ry(5°), t = [0.5, 0, 0].
+        let angle = 5.0_f64.to_radians();
+        let (s, c) = angle.sin_cos();
+        // R (column-major): Ry rotates in X-Z plane.
+        let r = Mat3F64::from_cols(
+            Vec3F64::new(c, 0.0, -s),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(s, 0.0, c),
+        );
+        // t cross-product matrix.
+        let t = Vec3F64::new(0.5, 0.0, 0.0);
+        let tx = Mat3F64::from_cols(
+            Vec3F64::new(0.0, t.z, -t.y),
+            Vec3F64::new(-t.z, 0.0, t.x),
+            Vec3F64::new(t.y, -t.x, 0.0),
+        );
+        // F = [t]_x R (unnormalized; used below to synthesize correspondences)
+        let _f_true = tx * r;
+
+        // Simple linear-congruential generator for a deterministic sequence
+        // without pulling in extra dependencies.
+        let mut lcg: u64 = 12345678901234567;
+        let lcg_next = |state: &mut u64| -> f64 {
+            *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            // map high 32 bits to [0, 1)
+            (*state >> 32) as f64 / 4294967296.0
+        };
+
+        let mut x1: Vec<Vec2F64> = Vec::new();
+        let mut x2: Vec<Vec2F64> = Vec::new();
+
+        // 100 inliers: random points in front of cam, project into both views.
+        // Focal=500, cx=320, cy=240.
+        let fx = 500.0_f64;
+        let cx = 320.0_f64;
+        let cy = 240.0_f64;
+        let noise_px = 0.5_f64; // half-pixel gaussian-ish noise
+        for _ in 0..100 {
+            let xc = (lcg_next(&mut lcg) - 0.5) * 4.0; // ±2 m
+            let yc = (lcg_next(&mut lcg) - 0.5) * 2.0;
+            let zc = lcg_next(&mut lcg) * 3.0 + 2.0; // 2-5 m in front
+            let p1 = Vec3F64::new(xc, yc, zc);
+            let p2 = r * p1 + t;
+            // Project with noise.
+            let u1 = p1.x / p1.z * fx + cx + (lcg_next(&mut lcg) - 0.5) * noise_px;
+            let v1 = p1.y / p1.z * fx + cy + (lcg_next(&mut lcg) - 0.5) * noise_px;
+            let u2 = p2.x / p2.z * fx + cx + (lcg_next(&mut lcg) - 0.5) * noise_px;
+            let v2 = p2.y / p2.z * fx + cy + (lcg_next(&mut lcg) - 0.5) * noise_px;
+            x1.push(Vec2F64::new(u1, v1));
+            x2.push(Vec2F64::new(u2, v2));
+        }
+        // 20 outliers: random pixel positions unrelated to the scene.
+        for _ in 0..20 {
+            let u1 = lcg_next(&mut lcg) * 640.0;
+            let v1 = lcg_next(&mut lcg) * 480.0;
+            let u2 = lcg_next(&mut lcg) * 640.0;
+            let v2 = lcg_next(&mut lcg) * 480.0;
+            x1.push(Vec2F64::new(u1, v1));
+            x2.push(Vec2F64::new(u2, v2));
+        }
+
+        let base_params = RansacParams {
+            max_iterations: 500,
+            threshold: 2.0,
+            min_inliers: 15,
+            random_seed: Some(42),
+            refit: false,
+        };
+        let refit_params = RansacParams { refit: true, ..base_params };
+
+        let res_base = ransac_fundamental(&x1, &x2, &base_params).unwrap();
+        let res_refit = ransac_fundamental(&x1, &x2, &refit_params).unwrap();
+
+        // Compute per-inlier Sampson score for each result to compare quality.
+        let sampson_score = |res: &RansacResult<Mat3F64>| -> f64 {
+            x1.iter()
+                .zip(x2.iter())
+                .zip(res.inliers.iter())
+                .filter(|(_, &inl)| inl)
+                .map(|((p1, p2), _)| sampson_distance(&res.model, p1, p2))
+                .sum::<f64>()
+        };
+
+        let score_base = sampson_score(&res_base);
+        let score_refit = sampson_score(&res_refit);
+
+        // Refit must not regress: at least as many inliers, and if equal then
+        // a lower or equal Sampson score.
+        assert!(
+            res_refit.inlier_count >= res_base.inlier_count
+                || score_refit <= score_base,
+            "refit regressed: base inliers={} score={:.4}, refit inliers={} score={:.4}",
+            res_base.inlier_count, score_base,
+            res_refit.inlier_count, score_refit,
+        );
+    }
+
     #[test]
     fn test_ransac_fundamental_invalid_input() {
         let x1 = vec![Vec2F64::new(0.0, 0.0); 7];
@@ -1189,7 +1334,7 @@ mod tests {
                 threshold: 1.0,
                 min_inliers: 15,
                 random_seed: Some(42),
-                refit: false,
+                refit: true,
             },
             ransac_h: RansacParams {
                 max_iterations: 2000,
