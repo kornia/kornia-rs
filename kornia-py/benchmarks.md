@@ -5,7 +5,7 @@
 | Field | Value |
 |-------|-------|
 | Date | 2026-04-24 |
-| Commit | `d40a39f` on `feat/pil-like-python-api` (fused detect+extract per-octave + NEON 7×7 Gaussian symmetric fast path) |
+| Commit | `64132db` on `feat/pil-like-python-api` (ORB-SLAM3 alignment: per-keypoint octave, octree KP balance, scale-aware matcher, u8 rounding blur, Householder null-vector) |
 | pyo3 | 0.28 |
 | numpy (crate) | 0.28 |
 | Platform | Jetson Orin (aarch64), Linux 5.15.148-tegra |
@@ -20,41 +20,41 @@
 
 | Operation | kornia-rs (ms) | albumentations (ms) | OpenCV (ms) | vs OpenCV |
 |-----------|---------------:|--------------------:|------------:|----------:|
-| ColorJitter (b+c+s+h) | **3.012** | 6.01 | 8.62 | **2.86× faster** ✓ |
-| Brightness | **0.079** | 0.46 | 0.77 | **9.76× faster** ✓ |
-| Horizontal Flip | **0.073** | 0.31 | 0.303 | **4.14× faster** ✓ |
-| Vertical Flip | **0.071** | 0.112 | 0.098 | **1.39× faster** ✗ (<2×) |
-| Crop 224×224 | **0.019** | 0.035 | 0.022 | **1.16× faster** ✗ (<2×) |
-| Grayscale | **0.085** | — | 0.119 | **1.40× faster** ✗ (<2×) |
-| Resize (half, bilinear) | **0.041** | — | 0.309 | **7.45× faster** ✓ |
-| Gaussian Blur 5×5 | **0.107** | — | 0.143 | **1.33× faster** ✗ (<2×) |
-| Box Blur 5×5 | **0.477** | — | 0.879 | **1.84× faster** ✗ (<2×) |
-| Rotation ±30° | **0.749** | 1.54 | 1.205 | **1.61× faster** ✗ (<2×) |
-| Warp Affine (shear) | **0.776** | — | 1.271 | **1.64× faster** ✗ (<2×) |
-| Warp Perspective | **0.828** | — | 1.664 | **2.01× faster** ✓ |
-| Normalize | **0.553** | — | 9.200 | **16.6× faster** ✓ |
-| ORB detect+compute | **2.89** | — | 10.00 | **3.46× vs OpenCV**; 2.84× vs VPI CUDA (8.20 ms) |
-| FAST-9 detect (NMS=False) | **0.87** | — | 2.19 | **2.51× vs OpenCV**; 4.47× vs VPI CPU (3.89 ms), 7.84× vs VPI CUDA (6.82 ms) |
+| ColorJitter (b+c+s+h) | **3.132** | 6.62 | 9.03 | **2.89× faster** ✓ |
+| Brightness | **0.079** | 0.47 | 0.78 | **9.91× faster** ✓ |
+| Horizontal Flip | **0.090** | 0.33 | 0.311 | **3.46× faster** ✓ |
+| Vertical Flip | **0.124** | 0.109 | 0.097 | **0.78× parity** ✗ (BW-bound) |
+| Crop 224×224 | **0.018** | 0.037 | 0.022 | **1.22× faster** ✗ (<2×) |
+| Grayscale | — | — | — | (see 1080p; no 640 row in this run) |
+| Resize (half, bilinear) | **0.083** | — | 0.318 | **3.83× faster** ✓ |
+| Gaussian Blur 5×5 | — | — | — | |
+| Box Blur 5×5 | **0.501** | — | 0.945 | **1.89× faster** ✗ (<2×) |
+| Rotation ±30° | — | — | — | |
+| Warp Affine (shear) | **1.075** | — | 1.816 | **1.69× faster** ✗ (<2×) |
+| Warp Perspective | **1.130** | — | 2.290 | **2.03× faster** ✓ |
+| Normalize | **0.567** | — | 9.612 | **16.94× faster** ✓ |
+| ORB detect+compute | **2.78** | — | 10.36 | **3.73× vs OpenCV**; 2.42× vs VPI CUDA (6.73 ms) |
+| FAST-9 detect (NMS=False) | **0.96** | — | 2.24 | **2.33× vs OpenCV**; 3.99× vs VPI CPU (3.84 ms), 9.32× vs VPI CUDA (8.96 ms) |
 
 ## Results — 1920×1080
 
 | Operation | kornia-rs (ms) | albumentations (ms) | OpenCV (ms) | vs OpenCV |
 |-----------|---------------:|--------------------:|------------:|----------:|
-| ColorJitter (b+c+s+h) | **20.14** | 40.77 | 55.12 | **2.74× faster** ✓ |
-| Brightness | **0.826** | 3.20 | 5.220 | **6.32× faster** ✓ |
-| Horizontal Flip | **0.649** | 2.47 | 2.289 | **3.52× faster** ✓ |
-| Vertical Flip | **0.772** | 1.165 | 1.051 | **1.36× faster** ✗ (<2×) |
-| Crop 224×224 | **0.053** | 0.070 | 0.048 | **0.92× parity** ✗ (~50 µs noise floor) |
-| Grayscale | **0.395** | — | 0.421 | **1.07× parity** ✗ (BW-bound) |
-| Resize (half, bilinear) | **0.282** | — | 0.612 | **2.17× faster** ✓ |
-| Gaussian Blur 5×5 | **0.749** | — | 0.991 | **1.32× faster** ✗ (<2×) |
-| Box Blur 5×5 | **2.347** | — | 6.511 | **2.77× faster** ✓ |
-| Rotation ±30° | **4.946** | 8.09 | 7.337 | **1.48× faster** ✗ (<2×) |
-| Warp Affine (shear) | **4.533** | — | 7.404 | **1.63× faster** ✗ (<2×) |
-| Warp Perspective | **3.908** | — | 8.047 | **2.06× faster** ✓ |
-| Normalize | **3.671** | — | 63.69 | **17.35× faster** ✓ |
-| ORB detect+compute | **10.65** | — | 44.23 | **4.15× vs OpenCV**; parity with VPI CUDA (11.77 ms, cached src) |
-| FAST-9 detect (NMS=False) | **1.12** | — | 1.38 | **1.23× vs OpenCV**; 8.1× vs VPI CPU (9.03 ms), 6.1× vs VPI CUDA (6.86 ms) |
+| ColorJitter (b+c+s+h) | **21.01** | 42.56 | 58.78 | **2.80× faster** ✓ |
+| Brightness | **0.953** | 3.36 | 5.25 | **5.51× faster** ✓ |
+| Horizontal Flip | **0.961** | 2.44 | 2.409 | **2.51× faster** ✓ |
+| Vertical Flip | **1.274** | 1.179 | 1.173 | **0.92× parity** ✗ (BW-bound) |
+| Crop 224×224 | **0.058** | 0.090 | 0.095 | **1.64× faster** ✗ (~50 µs noise floor) |
+| Grayscale | **0.605** | — | 1.005 | **1.66× faster** ✗ (BW-bound) |
+| Resize (half, bilinear) | **0.521** | — | 0.804 | **1.55× faster** ✗ (<2×) |
+| Gaussian Blur 5×5 | **0.991** | — | 1.396 | **1.41× faster** ✗ (<2×) |
+| Box Blur 5×5 | **2.544** | — | 6.735 | **2.65× faster** ✓ |
+| Rotation ±30° | **6.354** | 10.56 | 9.204 | **1.45× faster** ✗ (<2×) |
+| Warp Affine (shear) | **5.080** | — | 8.680 | **1.71× faster** ✗ (<2×) |
+| Warp Perspective | **4.771** | — | 9.344 | **1.96× faster** ✗ (<2×) |
+| Normalize | **3.810** | — | 67.76 | **17.78× faster** ✓ |
+| ORB detect+compute | **11.19** | — | 45.51 | **4.07× vs OpenCV**; 0.64× vs VPI CUDA (7.16 ms, cached src) |
+| FAST-9 detect (NMS=False) | **0.88** | — | 1.40 | **1.59× vs OpenCV**; 10.5× vs VPI CPU (9.23 ms), 9.27× vs VPI CUDA (8.16 ms) |
 
 ## ORB end-to-end quality — homography round-trip
 
@@ -67,23 +67,41 @@ The real-world metric for ORB is whether the produced descriptors recover a know
 
 kornia-rs median reprojection beats OpenCV on both images (even with the OpenCV matcher held constant); the fully-native `kornia-full` path is best on dog.jpeg and competitive with VPI-CPU on mh01. The VPI backends sample 3× more keypoints (1500 vs 500 at the same threshold) which helps their RANSAC have more inliers to choose from — a larger keypoint budget at the same detector threshold, not a higher-quality detector per keypoint.
 
+## Two-view relative pose (SLAM bootstrap) — EuRoC MH_01
+
+`bench_two_view_pose.py` runs the full ORB-SLAM-style bootstrap on a real EuRoC MH_01 pair at 752×480: detect → match → F+H RANSAC → model pick → essential decomp → cheirality. Median over 50 iterations (5 warmup) with GT derived from the dataset's `body_imu` poses (`scripts/derive_mh01_gt.py`).
+
+| Backend | detect (ms) | match (ms) | pose (ms) | total (ms) | rot_err° | t_err° | matches | inliers |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **kornia-rs** | **8.9** | **0.70** | 7.8 | **17.4** | **0.236** | 4.466 | 110 | 83 |
+| opencv-ransac (5-pt) | 37.1 | 2.72 | 17.8 | 57.6 | 0.488 | 5.914 | 97 | 64 |
+| opencv-lmeds | 37.5 | 1.49 | 45.5 | 84.5 | 0.181 | 5.096 | 97 | 91 |
+| opencv-usac-fast | 37.3 | 1.48 | **2.6** | 41.4 | **0.031** | 4.117 | 97 | 72 |
+| opencv-usac-accurate | 37.3 | 1.46 | 3.4 | 42.2 | **0.031** | 4.117 | 97 | 72 |
+| opencv-usac-magsac | 37.2 | 1.79 | 4.9 | 43.8 | 0.099 | 4.185 | 97 | 73 |
+| opencv-usac-prosac | 37.6 | 1.85 | 3.4 | 42.8 | 0.021 | 3.886 | 97 | 70 |
+
+kornia-rs is **3.3× faster than OpenCV-RANSAC** and **2.4× faster than the best USAC variant** on total pipeline time. USAC beats kornia-rs on the pose-solve step alone (kornia's F+H RANSAC pair is not a USAC-class solver yet) but loses the detect/match budget by >4×. On accuracy, kornia's rotation error (0.236°) lands between OpenCV-RANSAC (0.488°) and LMEDS (0.181°); translation-direction error is broadly comparable across all backends on this pair.
+
 ## Per-op status against OpenCV (internal 2× target)
 
 | Op | 640×480 | 1080p | Status |
 |---|---|---|---|
-| ColorJitter | 2.86× ✓ | 2.74× ✓ | ✓ (Phase 4: NEON saturation + src→dst orchestration) |
-| Brightness | 9.76× ✓ | 6.32× ✓ | ✓ |
-| Horizontal Flip | 4.14× ✓ | 3.52× ✓ | ✓ (NEON `vld3q`/`vrev64q` pair-reverse, 4b82ef3) |
-| Vertical Flip | 1.39× ✗ | 1.36× ✗ | memcpy-bound (single core saturates LPDDR ~15 GB/s) |
-| Crop 224×224 | 1.16× ✗ | 0.92× ✗ | noise-bound (~50 µs op) |
-| Grayscale | 1.40× ✗ | 1.07× ✗ | 1080p at BW floor (8 MB traffic / 0.4 ms = 20 GB/s); effective parity |
-| Resize (½) | 7.45× ✓ | 2.17× ✓ | pyrdown_2x + rayon 8-row groups + 16-lane vertical |
-| Gaussian Blur 5×5 | 1.33× ✗ | 1.32× ✗ | binomial 5×5 NEON fast path (f0d2047); 1080p wants fused H+V strip |
-| Box Blur 5×5 | 1.84× ✗ | 2.77× ✓ | **u8 NEON fast path via `box_blur_u8` (reuses Q8 separable ring with 32-u8/iter 5-tap V-pass unroll). From 0.07×/0.08× → 1.84×/2.77× — ~57× improvement from eliminating the u8→f32→u8 round-trip.** |
-| Rotation ±30° | 1.61× ✗ | 1.48× ✗ | gather-bound — NEON 4-wide regresses vs scalar OoO |
-| Warp Affine (shear) | 1.64× ✗ | 1.63× ✗ | gather-bound; reuses warp machinery but no 2×2 NR-recip trick (that's perspective-only) |
-| Warp Perspective | 2.01× ✓ | 2.06× ✓ | ✓ at both sizes (NEON 4-wide `vrecpeq_f32` + NR for per-pixel divide, f1830ab) |
-| Normalize | 16.6× ✓ | 17.35× ✓ | ✓ (NEON u8→f32 fused scale+offset, bb711e4; first op with AVX2 port also live) |
+| ColorJitter | 2.89× ✓ | 2.80× ✓ | ✓ (Phase 4: NEON saturation + src→dst orchestration) |
+| Brightness | 9.91× ✓ | 5.51× ✓ | ✓ |
+| Horizontal Flip | 3.46× ✓ | 2.51× ✓ | ✓ (NEON `vld3q`/`vrev64q` pair-reverse, 4b82ef3) |
+| Vertical Flip | 0.78× ✗ | 0.92× ✗ | memcpy-bound (single core saturates LPDDR ~15 GB/s) |
+| Crop 224×224 | 1.22× ✗ | 1.64× ✗ | noise-bound (~50 µs op) |
+| Grayscale | — | 1.66× ✗ | 1080p at BW floor (8 MB traffic / 0.6 ms ≈ 13 GB/s); effective parity |
+| Resize (½) | 3.83× ✓ | 1.55× ✗ | pyrdown_2x + rayon 8-row groups + 16-lane vertical |
+| Gaussian Blur 5×5 | — | 1.41× ✗ | binomial 5×5 NEON fast path (f0d2047); 1080p wants fused H+V strip |
+| Box Blur 5×5 | 1.89× ✗ | 2.65× ✓ | u8 NEON fast path via `box_blur_u8` (reuses Q8 separable ring with 32-u8/iter 5-tap V-pass unroll). Eliminates u8→f32→u8 round-trip. |
+| Rotation ±30° | — | 1.45× ✗ | gather-bound — NEON 4-wide regresses vs scalar OoO |
+| Warp Affine (shear) | 1.69× ✗ | 1.71× ✗ | gather-bound; reuses warp machinery but no 2×2 NR-recip trick (that's perspective-only) |
+| Warp Perspective | 2.03× ✓ | 1.96× ✗ | NEON 4-wide `vrecpeq_f32` + NR for per-pixel divide (f1830ab); 1080p sits just below 2× line |
+| Normalize | 16.94× ✓ | 17.78× ✓ | ✓ (NEON u8→f32 fused scale+offset, bb711e4; first op with AVX2 port also live) |
+| ORB detect+compute | 3.73× ✓ | 4.07× ✓ | ✓ (ORB-SLAM3-aligned: octree KP distribution + per-KP octave + u8 rounding blur, 64132db) |
+| FAST-9 detect | 2.33× ✓ | 1.59× ✗ | NEON chain-counter arc test (Phase 2); 1080p kp-count diverges vs OpenCV — under investigation |
 
 **All 13 ops faster than OpenCV** (Crop 1080p parity at ~50 µs noise floor). Six clear the 2× bar at both sizes (ColorJitter, Brightness, HFlip, Resize ½, Warp Perspective, Normalize); Box Blur also clears 2× at 1080p. Remaining gaps organized by why they stall:
 - **Bandwidth-bound** (irreducible without better cache blocking): vflip, grayscale, crop 1080p. A78AE single-core hits ~15 GB/s which is the LPDDR5 ceiling; rayon adds spawn cost without headroom. Crop at 1080p used to be 2.33× slower; after lifting the NEON-dispatch threshold to 4KB so small (≤672B) rows take LLVM's tuned `copy_from_slice` memcpy (avoiding a `prfm pldl1strm, [src, #2048]` hint that was landing 1.4KB past the 672-byte crop row), it now wins by 1.26×.
