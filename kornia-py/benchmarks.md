@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| Date | 2026-04-22 |
-| Commit | `051af88` on `perf/orb-beat-opencv` (rebased onto `origin/main` post-`feat/pil-like-python-api` squash-merge) |
+| Date | 2026-04-24 |
+| Commit | `d40a39f` on `feat/pil-like-python-api` (fused detect+extract per-octave + NEON 7×7 Gaussian symmetric fast path) |
 | pyo3 | 0.28 |
 | numpy (crate) | 0.28 |
 | Platform | Jetson Orin (aarch64), Linux 5.15.148-tegra |

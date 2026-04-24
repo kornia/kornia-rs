@@ -60,9 +60,9 @@ def corner_reproj_error(H_est, H_gt, w, h):
 
 
 def kornia_detect(img):
-    kps, _, desc = K.features.orb_detect_and_compute(img)
-    xy = np.asarray(kps, dtype=np.float32).reshape(-1, 2)
-    desc = np.asarray(desc, dtype=np.uint8)
+    feat = K.features.orb_detect_and_compute(img)
+    xy = np.asarray(feat.keypoints_xy, dtype=np.float32).reshape(-1, 2)
+    desc = np.asarray(feat.descriptors, dtype=np.uint8)
     return xy, desc
 
 

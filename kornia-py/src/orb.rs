@@ -9,14 +9,50 @@ use kornia_imgproc::{
 
 use crate::image::to_pyerr;
 
+/// ORB features extracted from a single frame.
+///
+/// Returned by [`orb_detect_and_compute`]. Attribute access keeps the call
+/// site self-documenting and lets us add new per-keypoint fields (e.g.
+/// responses, scales) later without breaking existing callers.
+#[pyclass(name = "OrbFeatures", module = "kornia_rs.features", frozen)]
+pub struct PyOrbFeatures {
+    /// `(N, 2)` float32 keypoint positions (column, row) in source pixels.
+    #[pyo3(get)]
+    pub keypoints_xy: Py<PyArray2<f32>>,
+    /// `(N,)` float32 orientation angles in radians.
+    #[pyo3(get)]
+    pub orientations: Py<PyArray1<f32>>,
+    /// `(N, 32)` uint8 BRIEF descriptors (256-bit packed).
+    #[pyo3(get)]
+    pub descriptors: Py<PyArray2<u8>>,
+    /// `(N,)` uint8 pyramid octave (0 = full resolution). Required by
+    /// ORB-SLAM-style scale-aware matchers to reject cross-octave pairs and
+    /// scale the search radius when projecting map points across frames.
+    #[pyo3(get)]
+    pub octaves: Py<PyArray1<u8>>,
+    /// Cached feature count — cheap to expose so callers don't have to
+    /// pay a numpy shape lookup.
+    #[pyo3(get)]
+    pub n: usize,
+}
+
+#[pymethods]
+impl PyOrbFeatures {
+    fn __len__(&self) -> usize {
+        self.n
+    }
+
+    fn __repr__(&self) -> String {
+        format!("OrbFeatures(n={})", self.n)
+    }
+}
+
 /// Detect ORB keypoints and compute descriptors on a u8 image.
 ///
 /// Accepts a 2D `HxW` gray or a 3D `HxWx3` RGB numpy array. 3D RGB is
-/// converted to gray first. Returns `(keypoints_xy, orientations, descriptors)`:
-///
-/// * `keypoints_xy` — `(N, 2)` float32 array, column/row in source pixels.
-/// * `orientations` — `(N,)` float32 radians.
-/// * `descriptors` — `(N, 32)` uint8 packed 256-bit descriptors.
+/// converted to gray first. Returns an [`OrbFeatures`] object with
+/// `.keypoints_xy`, `.orientations`, `.descriptors`, and `.octaves`
+/// attributes (all numpy arrays of length `N`).
 #[pyfunction]
 #[pyo3(signature = (image, n_keypoints=500, n_scales=8, downscale=1.2))]
 pub fn orb_detect_and_compute(
@@ -25,7 +61,7 @@ pub fn orb_detect_and_compute(
     n_keypoints: usize,
     n_scales: usize,
     downscale: f32,
-) -> PyResult<(Py<PyArray2<f32>>, Py<PyArray1<f32>>, Py<PyArray2<u8>>)> {
+) -> PyResult<PyOrbFeatures> {
     let gray = image_to_gray_u8(py, image)?;
 
     let detector = OrbDetector {
@@ -41,10 +77,11 @@ pub fn orb_detect_and_compute(
 
     let n = features.keypoints_xy.len();
 
-    let (kps_arr, ori_arr, desc_arr) = unsafe {
+    let (kps_arr, ori_arr, desc_arr, oct_arr) = unsafe {
         let kps_arr = PyArray::<f32, _>::new(py, [n, 2], false);
         let ori_arr = PyArray::<f32, _>::new(py, [n], false);
         let desc_arr = PyArray::<u8, _>::new(py, [n, 32], false);
+        let oct_arr = PyArray::<u8, _>::new(py, [n], false);
         let kps_slice = std::slice::from_raw_parts_mut(kps_arr.data(), n * 2);
         for (i, xy) in features.keypoints_xy.iter().enumerate() {
             kps_slice[i * 2] = xy[0];
@@ -56,24 +93,28 @@ pub fn orb_detect_and_compute(
         for (i, d) in features.descriptors.iter().enumerate() {
             desc_slice[i * 32..(i + 1) * 32].copy_from_slice(d);
         }
-        (kps_arr, ori_arr, desc_arr)
+        let oct_slice = std::slice::from_raw_parts_mut(oct_arr.data(), n);
+        oct_slice.copy_from_slice(&features.octaves);
+        (kps_arr, ori_arr, desc_arr, oct_arr)
     };
 
-    let kps_arr: Py<PyArray2<f32>> = kps_arr.unbind();
-    let ori_arr: Py<PyArray1<f32>> = ori_arr.unbind();
-    let desc_arr: Py<PyArray2<u8>> = desc_arr.unbind();
-    Ok((kps_arr, ori_arr, desc_arr))
+    Ok(PyOrbFeatures {
+        keypoints_xy: kps_arr.unbind(),
+        orientations: ori_arr.unbind(),
+        descriptors: desc_arr.unbind(),
+        octaves: oct_arr.unbind(),
+        n,
+    })
 }
 
 /// Run just the FAST-9 corner detector on a u8 image (no Harris, no orientation,
-/// no descriptor, no scale pyramid). This is the bare detector step, exposed
-/// separately so it can be benchmarked against OpenCV's `cv2.FastFeatureDetector`
-/// and VPI's `vpi.Image.fast_corners()` head-to-head.
+/// no descriptor, no scale pyramid). The bare detector step, exposed separately
+/// so callers can benchmark or compose it with other pipelines directly.
 ///
 /// Args:
 ///     image: `HxW` uint8 gray or `HxWx3` uint8 RGB numpy array.
-///     threshold: intensity threshold in u8 space 0..255 (default 20, matches cv2
-///         default). Internally normalized to [0, 1] for the Rust FastDetector.
+///     threshold: intensity threshold in u8 space 0..255 (default 20). Internally
+///         normalized to [0, 1] for the Rust FastDetector.
 ///     arc_length: minimum arc length of contiguous bright/dark pixels (default 9 → FAST-9).
 ///     border: pixel border skipped at image edges (default 3, the FAST circle radius).
 ///

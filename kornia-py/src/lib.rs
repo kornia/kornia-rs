@@ -17,6 +17,7 @@ mod orb;
 mod pipeline;
 mod pointcloud;
 mod resize;
+mod twoview;
 mod warp;
 
 use crate::icp::{PyICPConvergenceCriteria, PyICPResult};
@@ -397,6 +398,7 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Features submodule — feature detectors and descriptors.
     let features_mod = PyModule::new(py, "features")?;
+    features_mod.add_class::<orb::PyOrbFeatures>()?;
     features_mod.add_function(wrap_pyfunction!(orb::orb_detect_and_compute, &features_mod)?)?;
     features_mod.add_function(wrap_pyfunction!(orb::fast_detect, &features_mod)?)?;
     features_mod.add_function(wrap_pyfunction!(
@@ -409,6 +411,15 @@ pub fn kornia_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     features_mod.add_function(wrap_pyfunction!(
         homography::find_homography_py,
+        &features_mod
+    )?)?;
+    features_mod.add_function(wrap_pyfunction!(
+        homography::find_fundamental_py,
+        &features_mod
+    )?)?;
+    features_mod.add_class::<twoview::PyTwoViewPose>()?;
+    features_mod.add_function(wrap_pyfunction!(
+        twoview::two_view_estimate_py,
         &features_mod
     )?)?;
     m.add_submodule(&features_mod)?;

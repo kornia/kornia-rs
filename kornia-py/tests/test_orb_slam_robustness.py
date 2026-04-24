@@ -116,8 +116,11 @@ def _apply_motion_blur(img, kernel_size):
 
 
 def _detect(img):
-    kps, _, desc = K.features.orb_detect_and_compute(img)
-    return np.asarray(kps, dtype=np.float32).reshape(-1, 2), np.asarray(desc, dtype=np.uint8)
+    feat = K.features.orb_detect_and_compute(img)
+    return (
+        np.asarray(feat.keypoints_xy, dtype=np.float32).reshape(-1, 2),
+        np.asarray(feat.descriptors, dtype=np.uint8),
+    )
 
 
 def _estimate_h(xy_a, desc_a, xy_b, desc_b, ratio=0.8):

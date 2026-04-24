@@ -111,9 +111,9 @@ def quality_report():
         img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
         if img is None:
             continue
-        kps_k, _, _ = K.features.orb_detect_and_compute(img)
+        feat_k = K.features.orb_detect_and_compute(img)
         kps_cv, _ = orb_cv.detectAndCompute(img, None)
-        k_xy = np.asarray(kps_k, dtype=np.float32).reshape(-1, 2)
+        k_xy = np.asarray(feat_k.keypoints_xy, dtype=np.float32).reshape(-1, 2)
         cv_pts = cv_xy(kps_cv)
         ok = overlap_stats(k_xy, cv_pts)
 
@@ -149,9 +149,9 @@ def run_benchmarks():
                                  patchSize=31, fastThreshold=20)
 
         print(f"\n--- ORB detect + compute  (input: {os.path.basename(TEST_IMG)}) ---")
-        kps_k, _, _ = K.features.orb_detect_and_compute(gray)
+        feat_k = K.features.orb_detect_and_compute(gray)
         kps_cv, _ = orb_cv.detectAndCompute(gray, None)
-        k_xy = np.asarray(kps_k, dtype=np.float32).reshape(-1, 2)
+        k_xy = np.asarray(feat_k.keypoints_xy, dtype=np.float32).reshape(-1, 2)
         cv_pts = cv_xy(kps_cv)
         o_k = overlap_stats(k_xy, cv_pts)
         print(f"  kornia={len(k_xy)} kps, opencv={len(kps_cv)} kps")
