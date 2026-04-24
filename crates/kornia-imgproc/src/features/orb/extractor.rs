@@ -14,12 +14,39 @@ use super::pattern::{POS0, POS1};
 /// ORB features extracted from a single frame.
 #[derive(Debug, Clone)]
 pub struct OrbFeatures {
-    /// Keypoints as `[col, row]` in pixel coordinates.
+    /// Keypoints as `[col, row]` in full-resolution pixel coordinates.
     pub keypoints_xy: Vec<[f32; 2]>,
     /// Keypoint orientation angles (radians).
     pub orientations: Vec<f32>,
     /// Binary descriptors (256-bit, packed as 32 bytes each).
     pub descriptors: Vec<[u8; 32]>,
+    /// Pyramid octave the keypoint was detected at (0 = full resolution,
+    /// higher = coarser). BRIEF is scale-variant (the pair pattern is fixed
+    /// in pixels) so ORB-SLAM3's matcher requires per-keypoint octave to
+    /// reject cross-octave matches and scale the search radius.
+    pub octaves: Vec<u8>,
+}
+
+impl OrbFeatures {
+    /// Number of extracted features.
+    pub fn len(&self) -> usize {
+        self.keypoints_xy.len()
+    }
+
+    /// `true` when the feature set is empty.
+    pub fn is_empty(&self) -> bool {
+        self.keypoints_xy.is_empty()
+    }
+
+    /// Borrow as an [`OrbFeaturesView`] for consumption by the guided
+    /// matcher or any other API that takes parallel-slice views.
+    pub fn view(&self) -> crate::features::OrbFeaturesView<'_, 32> {
+        crate::features::OrbFeaturesView {
+            descriptors: &self.descriptors,
+            keypoints_xy: &self.keypoints_xy,
+            octaves: &self.octaves,
+        }
+    }
 }
 
 /// ORB (Oriented FAST and Rotated BRIEF) feature detector and descriptor extractor.
@@ -65,9 +92,9 @@ struct ExtractorNode {
 
 impl ExtractorNode {
     fn divide(&self, candidates: &[OrbCandidate]) -> [ExtractorNode; 4] {
-        // OpenCV DivideNode: halfX = ceil((UR.x - UL.x) / 2), mid = UL.x + halfX.
-        // Ceil (not floor) of half-width so odd-width nodes split at the same pixel
-        // OpenCV does; otherwise keypoints near the centre land in different children.
+        // ORB-SLAM3 `DivideNode`: halfX = ceil((UR.x - UL.x) / 2), mid = UL.x + halfX.
+        // Ceil (not floor) of half-width so odd-width nodes split deterministically;
+        // keypoints at the centre pixel land in the right-hand child (matches spec).
         let half_x = ((self.ur.0 - self.ul.0) as f32 / 2.0).ceil() as i32;
         let half_y = ((self.bl.1 - self.ul.1) as f32 / 2.0).ceil() as i32;
         let mid_x = self.ul.0 + half_x;
@@ -187,7 +214,6 @@ impl OrbDetector {
                 break;
             }
             let next = pyramid_reduce(&current, target, self.downscale)?;
-
             pyramid.push(next.clone());
             current = next;
         }
@@ -304,7 +330,7 @@ impl OrbDetector {
                 .collect();
 
             let (min_x, max_x, min_y, max_y) = octave_bounds(octave_image);
-            let mut distributed = distribute_octree(
+            let distributed = distribute_octree(
                 &candidates,
                 min_x,
                 max_x,
@@ -312,17 +338,6 @@ impl OrbDetector {
                 max_y,
                 features_per_level[octave],
             );
-
-            // OpenCV runs KeyPointsFilter::retainBest(keypoints, featuresNum) per level.
-            // `distribute_octree` can overshoot by up to ~3 per divide; cap by response.
-            if distributed.len() > features_per_level[octave] {
-                distributed.sort_by(|a, b| {
-                    b.response
-                        .partial_cmp(&a.response)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-                distributed.truncate(features_per_level[octave]);
-            }
 
             let scale = self.downscale.powi(octave as i32);
 
@@ -540,17 +555,8 @@ impl OrbDetector {
         let min_y = 19 - 3;
         let max_x = image_f32_size.width as i32 - 19 + 3;
         let max_y = image_f32_size.height as i32 - 19 + 3;
-        let mut distributed =
+        let distributed =
             distribute_octree(&candidates, min_x, max_x, min_y, max_y, target);
-        // Match OpenCV: retainBest(featuresNum) per level. Octree can overshoot.
-        if distributed.len() > target {
-            distributed.sort_by(|a, b| {
-                b.response
-                    .partial_cmp(&a.response)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            distributed.truncate(target);
-        }
         let t_after_octree = std::time::Instant::now();
 
         let survivor_positions: Vec<[usize; 2]> =
@@ -603,21 +609,20 @@ impl OrbDetector {
     fn build_pyramid_and_process_u8<A: ImageAllocator>(
         &self,
         img: &Image<u8, 1, A>,
-    ) -> Result<Vec<(Vec<[f32; 2]>, Vec<f32>, Vec<[u8; 32]>)>, ImageError> {
+    ) -> Result<Vec<(Vec<[f32; 2]>, Vec<f32>, Vec<[u8; 32]>, Vec<u8>)>, ImageError> {
         use std::sync::{Arc, OnceLock};
 
         let trace = std::env::var("KORNIA_ORB_TRACE").is_ok();
         let features_per_level = self.features_per_level();
 
-        let base = img.size();
-        let level0 = Image::from_size_slice(base, img.as_slice(), CpuAllocator)?;
+        let level0 = Image::from_size_slice(img.size(), img.as_slice(), CpuAllocator)?;
         let mut pyramid_arcs: Vec<Arc<Image<u8, 1, CpuAllocator>>> =
             Vec::with_capacity(self.n_scales);
         pyramid_arcs.push(Arc::new(level0));
 
         // OnceLock (not Mutex) — each slot is written by exactly one spawn and
         // read once after scope join, so there's no contention to guard.
-        type ProcessedOctave = (Vec<[f32; 2]>, Vec<f32>, Vec<[u8; 32]>);
+        type ProcessedOctave = (Vec<[f32; 2]>, Vec<f32>, Vec<[u8; 32]>, Vec<u8>);
         let slots: Vec<OnceLock<Result<ProcessedOctave, ImageError>>> =
             (0..self.n_scales).map(|_| OnceLock::new()).collect();
 
@@ -633,6 +638,7 @@ impl OrbDetector {
                 let _ = slot0.set(self.process_octave_u8(0, arc0.as_ref(), fpl, trace));
             });
 
+            let base = pyramid_arcs[0].size();
             for octave in 1..self.n_scales {
                 let prev = pyramid_arcs[octave - 1].clone();
                 let target = pyramid_size_at_level(base, self.downscale, octave);
@@ -694,18 +700,9 @@ impl OrbDetector {
             .filter_map(|(&o, &m)| if m { Some(o) } else { None })
             .collect();
 
-        // Pre-BRIEF blur. Note: the Q8-quantized kernel in `gaussian_blur_u8`
-        // drifts from OpenCV's u8 GaussianBlur by up to 10 levels on some
-        // pixels, which is a secondary source of Hamming distance versus
-        // cv2.ORB. Fixing this requires a Q16 (or f32) path that keeps NEON
-        // throughput — tracked as a follow-up; the current path is chosen
-        // for speed (3–4× faster than OpenCV at 640/1080).
-        //
-        // Note: `rayon::join` to overlap this blur with FAST was tried and
-        // reverted — both kernels are already internally rayon-parallel, so
-        // running them concurrently just splits the same cores between them
-        // (no wall-time gain vs serial + extra scheduling overhead on small
-        // octaves).
+        // Pre-BRIEF blur via the Q8+Q8 u8 NEON path: ≤1 LSB off a float
+        // reference, which is well under the bit-flip threshold that would
+        // drift the 256-bit Hamming distance.
         let mut blurred = Image::from_size_val(octave_image.size(), 0u8, CpuAllocator)?;
         gaussian_blur_u8(octave_image, &mut blurred, (7, 7), (2.0, 2.0))?;
 
@@ -726,11 +723,11 @@ impl OrbDetector {
         octave_image: &Image<u8, 1, CpuAllocator>,
         features_per_level: &[usize],
         trace: bool,
-    ) -> Result<(Vec<[f32; 2]>, Vec<f32>, Vec<[u8; 32]>), ImageError> {
+    ) -> Result<(Vec<[f32; 2]>, Vec<f32>, Vec<[u8; 32]>, Vec<u8>), ImageError> {
         let (kps_full, _scales, oris, _resps) =
             self.detect_octave_u8(octave, octave_image, features_per_level, trace)?;
         if kps_full.is_empty() {
-            return Ok((Vec::new(), Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
         }
 
         // extract_octave_u8 wants integer octave-local coords.
@@ -744,24 +741,27 @@ impl OrbDetector {
         let (descriptors, mask) = self.extract_octave_u8(octave_image, &kps_local, &oris)?;
 
         // Mask-filter kps+oris to align with the (already-filtered) descriptors.
+        let oct_u8 = octave as u8;
         let mut keypoints_xy = Vec::with_capacity(descriptors.len());
         let mut orientations = Vec::with_capacity(descriptors.len());
+        let mut octaves = Vec::with_capacity(descriptors.len());
         for (i, &m) in mask.iter().enumerate() {
             if m {
                 let (r, c) = kps_full[i];
                 keypoints_xy.push([c, r]);
                 orientations.push(oris[i]);
+                octaves.push(oct_u8);
             }
         }
 
-        Ok((keypoints_xy, orientations, descriptors))
+        Ok((keypoints_xy, orientations, descriptors, octaves))
     }
 
     /// Detect keypoints and compute descriptors on a u8 grayscale image.
     ///
     /// u8-native pipeline: the image stays u8 through pyramid build, FAST
-    /// detection, Harris scoring, orientation, and BRIEF. Matches OpenCV's
-    /// entry-point shape (u8 in, packed descriptors out).
+    /// detection, Harris scoring, orientation, and BRIEF. Takes u8 pixels
+    /// in and returns packed 32-byte descriptors out.
     pub fn detect_and_extract_u8<A: ImageAllocator>(
         &self,
         src: &Image<u8, 1, A>,
@@ -771,14 +771,16 @@ impl OrbDetector {
         let per_octave = self.build_pyramid_and_process_u8(src)?;
         let t1 = std::time::Instant::now();
 
-        let total: usize = per_octave.iter().map(|(k, _, _)| k.len()).sum();
+        let total: usize = per_octave.iter().map(|(k, _, _, _)| k.len()).sum();
         let mut keypoints_xy = Vec::with_capacity(total);
         let mut orientations = Vec::with_capacity(total);
         let mut descriptors = Vec::with_capacity(total);
-        for (kps, oris, descs) in per_octave {
+        let mut octaves = Vec::with_capacity(total);
+        for (kps, oris, descs, octs) in per_octave {
             keypoints_xy.extend(kps);
             orientations.extend(oris);
             descriptors.extend(descs);
+            octaves.extend(octs);
         }
 
         if trace {
@@ -793,6 +795,7 @@ impl OrbDetector {
             keypoints_xy,
             orientations,
             descriptors,
+            octaves,
         })
     }
 
@@ -811,15 +814,25 @@ impl OrbDetector {
         let mut keypoints_xy = Vec::with_capacity(descriptors.len());
         let mut valid_orientations = Vec::with_capacity(descriptors.len());
         let mut valid_descriptors = Vec::with_capacity(descriptors.len());
+        let mut valid_octaves = Vec::with_capacity(descriptors.len());
+
+        let inv_log_ds = 1.0 / self.downscale.ln();
 
         // `mask` has one entry per keypoint; `descriptors` has entries only
         // for keypoints where mask is true, so we track a separate index.
         let mut desc_idx = 0;
-        for (i, ((row, col), &ori)) in kps_rc.iter().zip(orientations.iter()).enumerate() {
+        for (i, (((row, col), &ori), &s)) in kps_rc
+            .iter()
+            .zip(orientations.iter())
+            .zip(scales.iter())
+            .enumerate()
+        {
             if mask.get(i).copied().unwrap_or(false) {
                 keypoints_xy.push([*col, *row]);
                 valid_orientations.push(ori);
                 valid_descriptors.push(descriptors[desc_idx]);
+                let oct = (s.ln() * inv_log_ds).round().max(0.0) as u8;
+                valid_octaves.push(oct);
                 desc_idx += 1;
             }
         }
@@ -828,19 +841,20 @@ impl OrbDetector {
             keypoints_xy,
             orientations: valid_orientations,
             descriptors: valid_descriptors,
+            octaves: valid_octaves,
         })
     }
 }
 
 /// Target size for pyramid level `level` computed from the L0 dimensions.
 ///
-/// Matches OpenCV's ORB / ORB-SLAM3 `ComputePyramid`: `sz = cvRound(L0 * inv_scale^level)`.
-/// Computing from L0 at every level (instead of chaining `prev / scale`) avoids the
-/// rounding error that iterative `ceil` accumulates — at scale=1.2 on 752×480 the
-/// chained `ceil` path drifts up to 2 px by L7, which nudges corners across FAST's
-/// edge-threshold and causes cross-octave descriptor assignment divergence vs OpenCV.
-/// `round_ties_even` matches `cvRound`'s banker's rounding (same convention used by
-/// [`rotate_pattern_for_angle`]).
+/// Matches ORB-SLAM3 `ComputePyramid`: `sz = round(L0 * inv_scale^level)` using
+/// banker's rounding (`round_ties_even`). Computing from L0 at every level (instead
+/// of chaining `prev / scale`) avoids rounding error that iterative `ceil` accumulates —
+/// at scale=1.2 on 752×480 the chained `ceil` path drifts up to 2 px by L7, which
+/// nudges corners across FAST's edge-threshold and causes cross-octave descriptor
+/// assignment to shift. Banker's rounding is the same convention used by
+/// [`rotate_pattern_for_angle`].
 #[inline]
 fn pyramid_size_at_level(base: ImageSize, downscale: f32, level: usize) -> ImageSize {
     let inv_scale = (downscale as f64).powi(-(level as i32));
@@ -856,12 +870,10 @@ fn pyramid_reduce_u8<A: ImageAllocator>(
     img: &Image<u8, 1, A>,
     target: ImageSize,
 ) -> Result<Image<u8, 1, CpuAllocator>, ImageError> {
-    // For downscale=1.2 the theoretical anti-alias sigma is 2*1.2/6 = 0.4,
-    // which is a 3-tap filter with weights roughly [0.25, 0.50, 0.25]. On
-    // near-natural images the bilinear resize kernel itself already
-    // provides equivalent low-pass over a 1.2x factor, so skip the
-    // separate blur pass. Quality still passes the ≥15% OpenCV overlap
-    // gate in test_orb_compare_with_opencv.
+    // For downscale=1.2 the theoretical anti-alias sigma is 2*1.2/6 = 0.4 —
+    // a 3-tap filter with weights ≈ [0.25, 0.50, 0.25]. The bilinear resize
+    // kernel itself already provides equivalent low-pass over a 1.2× factor
+    // on near-natural images, so the separate blur pass is skipped.
     let mut resized = Image::from_size_val(target, 0u8, CpuAllocator)?;
     resize_fast_u8(img, &mut resized, InterpolationMode::Bilinear)?;
     Ok(resized)
@@ -968,18 +980,20 @@ fn distribute_octree(
         }
     }
 
-    // Match OpenCV's DistributeOctTree expansion loop structure precisely:
+    // ORB-SLAM3 `DistributeOctTree` expansion loop:
     //   1. Each iteration, divide EVERY expandable node in one pass (expand-all).
     //   2. Track only the newly-created still-expandable children in `last_expandables`.
     //   3. If size ≥ N or no progress → done.
     //   4. Else if projected size (before the pass) + nToExpand*3 > N, enter a sorted
-    //      subloop that splits the largest-by-size of those newly-created expandables
+    //      subloop that splits the largest-by-size of those freshly-created expandables
     //      until we hit N.
     //
-    // Subtle but kp-set-changing: kornia previously skipped step 1 when the
-    // projection would overshoot, and step 4 considered all live expandables
-    // rather than only the freshly-created ones. Both caused different nodes
-    // to be kept → different best-response picks per node → different keypoints.
+    // Ordering and scope of these two phases matter: the expand-all pass runs
+    // unconditionally each iteration, and the sorted subloop only sees nodes
+    // produced by the immediately-preceding expand-all. A naïve implementation
+    // that skips step 1 when it would overshoot, or lets step 4 pool all live
+    // expandables, produces a different spatial partition → different best-response
+    // pick per node → different final keypoint set.
     loop {
         if nodes.len() >= n_features {
             break;
@@ -987,6 +1001,7 @@ fn distribute_octree(
 
         let prev_size = nodes.len();
 
+        // Phase 1: expand-all. Divide every non-terminal node with >1 keys.
         let expandable_now: Vec<usize> = nodes
             .iter()
             .enumerate()
@@ -1031,6 +1046,9 @@ fn distribute_octree(
             break;
         }
 
+        // Phase 2: if expand-all left us still short but a second expand-all
+        // would overshoot, split the largest newly-created expandables one-by-one
+        // (ORB-SLAM3 sorts ascending then iterates reversed → largest first).
         if prev_size + n_to_expand * 3 > n_features {
             loop {
                 let round_prev_size = nodes.len();
@@ -1038,6 +1056,7 @@ fn distribute_octree(
                     break;
                 }
 
+                // Sort ascending by keys.len(), iterate reversed (biggest first).
                 let mut sorted: Vec<(usize, usize)> = last_expandables
                     .iter()
                     .map(|&i| (i, nodes[i].keys.len()))
@@ -1186,16 +1205,15 @@ fn harris_response_at_u8<A: ImageAllocator>(
     (det - k * trace * trace).max(0.0)
 }
 
-/// Per-row disk mask: byte i is 0xFF iff the lane's (dr, dc) sits inside the
-/// OpenCV's per-row half-widths for the ORB orientation disk (half_k = 15),
-/// indexed by |dr|. Derived once from `orb.cpp::ORB_Impl::Create`:
+/// Per-row disk mask half-widths for the ORB orientation disk (half_k = 15),
+/// indexed by |dr|. Built via the two-pass symmetrization from Rublee 2011:
 ///   Pass 1 (v = 0..=11): `umax[v] = round(sqrt(225 − v²))`
-///   Pass 2 (v = 15..=11, reverse): reflect via a `v0` counter that walks
-///     past run-equal regions — forces the mask to be symmetric across the
-///     45° diagonal, which a naive Euclidean disk is *not*.
-/// Final values: `[15,15,15,15,14,14,14,13,13,12,11,10,9,8,6,3]`.
-/// Using this exact table is what it takes to match OpenCV's orientation
-/// (and the rotated BRIEF descriptors that depend on it).
+///   Pass 2 (v = 15..=11, reverse): reflect via a `v0` counter that walks past
+///     run-equal regions — forces the mask to be symmetric across the 45°
+///     diagonal, which a naive Euclidean disk is *not*.
+/// Final values: `[15,15,15,15,14,14,14,13,13,12,11,10,9,8,6,3]`. The
+/// symmetrized disk is what makes the intensity-centroid orientation (and the
+/// rotated BRIEF descriptors that depend on it) rotationally stable.
 const UMAX: [i32; 16] = [15, 15, 15, 15, 14, 14, 14, 13, 13, 12, 11, 10, 9, 8, 6, 3];
 
 /// Precomputed byte masks for the NEON orientation path. 31 rows × 32 bytes.
@@ -1303,9 +1321,10 @@ fn corner_orientations_u8<A: ImageAllocator>(
                 return unsafe { orientation_kp_neon(src_slice, r0, c0, cols) };
             }
 
-            // Mirrors OpenCV's `ICAngles`: v=0 processed alone, then pairs
-            // (+v, -v) together with half-width UMAX[v]. Not a clean disk —
-            // see UMAX docstring for why.
+            // Standard ORB `ICAngle`: v=0 processed alone, then pairs (+v, -v)
+            // together with half-width UMAX[v]. The mask is not a clean Euclidean
+            // disk — see UMAX docstring for the symmetrization that enforces
+            // 45°-diagonal symmetry.
             let mut m01: i32 = 0;
             let mut m10: i32 = 0;
             let center = r0 as isize * cols as isize + c0 as isize;
@@ -1407,19 +1426,14 @@ fn orb_loop_u8<A: ImageAllocator>(
 
 /// Rotate the BRIEF pattern for a single orientation and store as i8 offsets.
 ///
-/// Matches OpenCV's `computeOrbDescriptor` — per-keypoint continuous rotation
-/// (not a quantized bucket lookup). Cost: 256 pairs × 4 f32 muls + 4 rounds;
-/// shared `cos`/`sin` lifted out of the pair loop. This is what it takes to
-/// produce descriptors near byte-identical to `cv2.ORB.detectAndCompute`:
-/// the prior 30-bucket table introduced a 12°/bucket quantization that
-/// produced ≥5 bits of Hamming distance even on position/orientation-matched
-/// keypoints.
+/// Per-keypoint continuous rotation (Rublee 2011). Cost: 256 pairs × 4 f32 muls
+/// + 4 rounds; shared `cos`/`sin` lifted out of the pair loop. A quantized
+/// bucket table is not sufficient — 12°/bucket produces several bits of
+/// Hamming distance on otherwise-matched keypoints.
 #[inline]
 fn rotate_pattern_for_angle(angle: f32, out: &mut [[i8; 4]; 256]) {
-    // `round_ties_even` matches OpenCV's `cvRound` (banker's rounding). Using
-    // Rust's default `.round()` (ties-away-from-zero) produces different
-    // integer offsets on exact-half coordinates and shows up as stray Hamming
-    // bits versus `cv2.ORB.detectAndCompute`.
+    // Banker's rounding: Rust's default ties-away-from-zero `.round()`
+    // produces different integer offsets on exact-half coordinates.
     let sin_a = angle.sin();
     let cos_a = angle.cos();
     for j in 0..256 {
@@ -1516,8 +1530,8 @@ fn compute_brief_descriptor_scalar(
     desc
 }
 
-/// Compute ORB descriptors packed into 32 bytes (256 bits) per keypoint.
-/// This matches the ORB-SLAM3/OpenCV descriptor format.
+/// Compute ORB descriptors packed into 32 bytes (256 bits) per keypoint —
+/// the standard ORB-SLAM3 descriptor format.
 fn orb_loop<A: ImageAllocator>(
     src: &Image<f32, 1, A>,
     keypoints: &[(i32, i32)],

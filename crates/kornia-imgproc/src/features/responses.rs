@@ -18,9 +18,9 @@ pub enum GradsMode {
 fn _get_kernel_size(sigma: f32) -> usize {
     let mut ksize = (2.0 * 4.0 * sigma + 1.0) as usize;
 
-    // matches OpenCV, but may cause padding problem for small images
-    // PyTorch does not allow to pad more than original size.
-    // Therefore there is a hack in forward function
+    // Standard odd-radius rounding; may cause padding problems on small
+    // images because PyTorch does not allow padding larger than the input
+    // — callers handle that edge case in the forward function.
     if ksize % 2 == 0 {
         ksize += 1;
     }

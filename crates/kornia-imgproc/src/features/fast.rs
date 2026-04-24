@@ -633,10 +633,10 @@ fn fast_score_scalar(
         return 0.0;
     }
 
-    // For n=9 (the ORB default), use OpenCV-compatible cornerScore<9> so
-    // NMS ranking matches OpenCV. For other n, retain the sum-of-absdiffs
-    // score — it's not worth porting the arc-length-generic scorer since
-    // only the n=9 case is used by ORB + detector-parity tests.
+    // For n=9 (the ORB default) use the reference FAST-9 `cornerScore` —
+    // the max-over-arc-starts-of-min-over-arc saturating diff — so NMS ranking
+    // follows the canonical FAST-9 score. For other arc lengths fall back to
+    // the sum-of-absdiffs score; only the n=9 case is used by ORB in practice.
     if n == 9 {
         return corner_score_9_scalar(src_slice, src_ix, ring) as f32 / 255.0;
     }
@@ -707,13 +707,12 @@ unsafe fn fast_block_neon_16(
         return 0;
     }
 
-    // OpenCV-compatible cornerScore<9>: max over 16 arc-starts of (min over
-    // 9-arc) of saturating diff, on both dark and bright sides. Replaces the
-    // previous Σ|ring−center| score, which disagreed with OpenCV on ~75% of
-    // NMS+octree survivors at 1 px same-octave tolerance — cornerScore<9>
-    // cuts that disagreement roughly in half on EuRoC MH01 / dog.jpeg.
+    // Reference FAST-9 `cornerScore`: max over 16 arc-starts of (min over
+    // 9-arc) of saturating diff, on both dark and bright sides. Replaces an
+    // earlier Σ|ring−center| proxy score, which was a poor NMS ordering even
+    // though it agreed on the pass/fail decision.
     //
-    // cornerScore ≥ threshold ⇔ FAST-9 arc test passes at threshold, so we
+    // `cornerScore ≥ threshold ⇔ FAST-9 arc test passes at threshold`, so we
     // can drop the separate chain-counter pass and derive the mask from
     // `score > threshold_u8` directly. `n` is unused on this NEON path —
     // only FAST-9 is used by ORB; other `n` fall through to scalar in the
@@ -749,22 +748,21 @@ unsafe fn fast_block_neon_16(
 #[cfg(target_arch = "aarch64")]
 static BIT_WEIGHTS: [u8; 16] = [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
 
-/// OpenCV-compatible `cornerScore<9>` — the FAST-9 corner strength used for
-/// NMS ranking by `cv::ORB`.
+/// FAST-9 `cornerScore` — the canonical corner strength used by FAST for NMS
+/// ranking.
 ///
 /// The score is `max over the 16 starting positions of (min |diff| over the
 /// 9-arc)`, evaluated on both the "dark" side (ring < center) and the
 /// "bright" side (ring > center). Returned as u8: values above `threshold`
-/// indicate a FAST-9 corner at that threshold; ranking is monotone in
-/// the strongest passing arc.
+/// indicate a FAST-9 corner at that threshold; ranking is monotone in the
+/// strongest passing arc.
 ///
-/// Monotone-equivalent to the OpenCV integer returned by `cornerScore<9>`
-/// (`fast_score.hpp`): OpenCV returns `score - 1` with clamping at a running
-/// `a0` / `b0`. NMS is invariant under that offset, so this u8 result is a
-/// drop-in replacement for ranking. Matches OpenCV's score identity on every
-/// pixel that passes the arc-9 test, which is the detector-parity signal we
-/// want — prior Σ|ring−center| score disagreed with OpenCV on 75% of
-/// keypoints at 1 px tolerance.
+/// Monotone-equivalent (off by a running clamp of 1) to the integer form
+/// used in the canonical FAST-9 source — NMS is invariant under that offset,
+/// so this u8 result is a drop-in replacement for ranking. An earlier
+/// Σ|ring−center| proxy produced significantly different ranked order, so
+/// using the canonical score is important even when the pass/fail mask
+/// would be identical.
 #[inline]
 fn corner_score_9_scalar(src_slice: &[u8], src_ix: usize, ring: &[isize; 16]) -> u8 {
     let center = src_slice[src_ix];
@@ -780,7 +778,7 @@ fn corner_score_9_scalar(src_slice: &[u8], src_ix: usize, ring: &[isize; 16]) ->
 
     // max over 16 starts of min-over-9-arc of dark_diff / bright_diff.
     // Step by 2: each outer iteration shares the 7-element core [k+1..k+8]
-    // between start-at-k and start-at-k+1 (mirrors OpenCV's structure).
+    // between start-at-k and start-at-k+1 (canonical FAST-9 structure).
     let mut dark_score: u8 = 0;
     let mut bright_score: u8 = 0;
     let mut k = 0;
@@ -807,8 +805,8 @@ fn corner_score_9_scalar(src_slice: &[u8], src_ix: usize, ring: &[isize; 16]) ->
 /// cornerScore<9> for 16 consecutive centers at once.
 ///
 /// Uses the saturating-sub formulation (u8 diffs, no sign tracking needed)
-/// and the step-by-2 core-sharing trick from OpenCV's fast_score.hpp. Each
-/// lane independently computes `max(dark, bright)` where both sides are
+/// and the step-by-2 core-sharing trick from canonical FAST-9. Each lane
+/// independently computes `max(dark, bright)` where both sides are
 /// `max over 16 starts of (min over 9-arc)` of the corresponding saturating
 /// diff.
 #[cfg(target_arch = "aarch64")]
