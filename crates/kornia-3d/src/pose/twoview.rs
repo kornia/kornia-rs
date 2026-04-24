@@ -55,6 +55,24 @@ pub enum TwoViewError {
     /// RANSAC failed to find a valid model.
     #[error("RANSAC failed to find a valid model")]
     RansacFailure,
+    /// Two of the four E-decomposition candidates triangulate similar inlier
+    /// counts (within `cheirality_ambiguity_max`), so the recovered pose is
+    /// not uniquely determined — typical of pure-rotation, planar, or
+    /// near-zero-parallax motion. Caller should request another frame pair
+    /// rather than trust the winner.
+    #[error(
+        "cheirality ambiguous: second-best candidate has {second} of {best} inliers (ratio {ratio:.2} > {max_ratio:.2})"
+    )]
+    AmbiguousCheirality {
+        /// Best candidate's cheirality-inlier count.
+        best: usize,
+        /// Runner-up's cheirality-inlier count.
+        second: usize,
+        /// Observed second/best ratio.
+        ratio: f64,
+        /// Configured maximum allowed ratio.
+        max_ratio: f64,
+    },
     /// Fundamental estimation failed.
     #[error("Fundamental estimation error: {0}")]
     Fundamental(#[from] FundamentalError),
@@ -476,6 +494,7 @@ pub fn two_view_estimate(
 
     let mut best_pose = None;
     let mut best_count = 0usize;
+    let mut second_count = 0usize;
     let mut best_points = Vec::new();
     let mut best_indices = Vec::new();
 
@@ -485,11 +504,16 @@ pub fn two_view_estimate(
         for (r, t) in &poses {
             let (count, points, indices) =
                 triangulate_inliers(x1, x2, &res_h.inliers, r, t, &tri_params);
-            if count >= config.triangulation.min_cheirality_count && count > best_count {
-                best_count = count;
-                best_pose = Some((*r, *t));
-                best_points = points;
-                best_indices = indices;
+            if count >= config.triangulation.min_cheirality_count {
+                if count > best_count {
+                    second_count = best_count;
+                    best_count = count;
+                    best_pose = Some((*r, *t));
+                    best_points = points;
+                    best_indices = indices;
+                } else if count > second_count {
+                    second_count = count;
+                }
             }
         }
         (TwoViewModel::Homography(h), res_h.inliers)
@@ -501,11 +525,16 @@ pub fn two_view_estimate(
         for (r, t) in &poses {
             let (count, points, indices) =
                 triangulate_inliers(x1, x2, &res_f.inliers, r, t, &tri_params);
-            if count >= config.triangulation.min_cheirality_count && count > best_count {
-                best_count = count;
-                best_pose = Some((*r, *t));
-                best_points = points;
-                best_indices = indices;
+            if count >= config.triangulation.min_cheirality_count {
+                if count > best_count {
+                    second_count = best_count;
+                    best_count = count;
+                    best_pose = Some((*r, *t));
+                    best_points = points;
+                    best_indices = indices;
+                } else if count > second_count {
+                    second_count = count;
+                }
             }
         }
         (TwoViewModel::Fundamental(f), res_f.inliers)
@@ -515,6 +544,23 @@ pub fn two_view_estimate(
         Some(p) => p,
         None => return Err(TwoViewError::RansacFailure),
     };
+
+    // Ambiguity guard: if the runner-up triangulates nearly as many points as
+    // the winner, the decomposition is not uniquely determined and committing
+    // to the winner would be a coin flip. Skip the check when disabled
+    // (max == 1.0) or when best_count is zero (already handled above).
+    let ambiguity_max = config.triangulation.cheirality_ambiguity_max;
+    if ambiguity_max < 1.0 && best_count > 0 {
+        let ratio = second_count as f64 / best_count as f64;
+        if ratio > ambiguity_max {
+            return Err(TwoViewError::AmbiguousCheirality {
+                best: best_count,
+                second: second_count,
+                ratio,
+                max_ratio: ambiguity_max,
+            });
+        }
+    }
 
     // Non-linear refinement of (R, t) over the full RANSAC inlier set's
     // Sampson cost. Parameterized on SO(3) × S² (translation scale is
@@ -1275,6 +1321,7 @@ mod tests {
         assert_eq!(config.triangulation.max_midpoint_gap, 1.0);
         assert_eq!(config.triangulation.max_reprojection_error, 2.0);
         assert_eq!(config.triangulation.min_cheirality_count, 1);
+        assert_eq!(config.triangulation.cheirality_ambiguity_max, 0.7);
     }
 
     /// End-to-end two-view pose estimation on real EuRoC MH_01_easy images.
@@ -1424,6 +1471,143 @@ mod tests {
             !result.points3d.is_empty(),
             "expected triangulated 3D points"
         );
+    }
+
+    /// Guard should NOT fire on a well-conditioned general-motion scene.
+    /// The synthetic_two_view helper uses t=(0.5, 0.1, 0.2) at Z∈[3,6] — a
+    /// baseline/depth ratio around 0.1 that can be borderline. Here we
+    /// hand-build a wider-baseline scene (t magnitude ~1 m, depth ~5 m)
+    /// where one E candidate dominates cheirality decisively, so the
+    /// default 0.7 threshold must accept it.
+    #[test]
+    fn test_cheirality_ambiguity_guard_permissive_default() {
+        let k = Mat3F64::from_cols(
+            Vec3F64::new(500.0, 0.0, 0.0),
+            Vec3F64::new(0.0, 500.0, 0.0),
+            Vec3F64::new(320.0, 240.0, 1.0),
+        );
+        let angle = 6.0_f64.to_radians();
+        let (s, c) = angle.sin_cos();
+        let r = Mat3F64::from_cols(
+            Vec3F64::new(c, 0.0, -s),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(s, 0.0, c),
+        );
+        let t = Vec3F64::new(1.0, 0.0, 0.1);
+
+        let mut x1 = Vec::new();
+        let mut x2 = Vec::new();
+        for i in 0..50usize {
+            let fi = i as f64;
+            // Spread over a cube: x,y ∈ [-1.5, 1.5], z ∈ [4, 6].
+            let xc = (fi * 0.37).sin() * 1.5;
+            let yc = (fi * 0.53).cos() * 1.0;
+            let zc = 4.0 + (fi * 0.11).sin().abs() * 2.0;
+            let p1 = Vec3F64::new(xc, yc, zc);
+            let p2 = r * p1 + t;
+            x1.push(Vec2F64::new(
+                500.0 * p1.x / p1.z + 320.0,
+                500.0 * p1.y / p1.z + 240.0,
+            ));
+            x2.push(Vec2F64::new(
+                500.0 * p2.x / p2.z + 320.0,
+                500.0 * p2.y / p2.z + 240.0,
+            ));
+        }
+
+        let config = TwoViewConfig::default();
+        two_view_estimate(&x1, &x2, &k, &k, &config)
+            .expect("default 0.7 ambiguity threshold must accept well-conditioned motion");
+    }
+
+    /// With the threshold driven to 0.0, ANY runner-up candidate (even a
+    /// single borderline triangulated point) trips the guard. Used to
+    /// confirm the error path is reachable and the reported counts are sane.
+    /// On clean synthetic data the runner-up is usually 0, so we force the
+    /// degenerate case via a fronto-parallel plane + tiny translation —
+    /// the classic two-E-candidates-both-pass configuration.
+    #[test]
+    fn test_cheirality_ambiguity_guard_fires_on_degenerate_motion() {
+        // Fronto-parallel plane at Z=5, points spread over a 2×2 m patch.
+        let k = Mat3F64::from_cols(
+            Vec3F64::new(500.0, 0.0, 0.0),
+            Vec3F64::new(0.0, 500.0, 0.0),
+            Vec3F64::new(320.0, 240.0, 1.0),
+        );
+        // Small rotation about Y, near-zero translation. Pure rotation makes
+        // E ≈ 0; a tiny bit of translation gives RANSAC enough signal to find
+        // *some* F, but the resulting E's decomposition is poorly conditioned
+        // and commonly produces two candidates with similar cheirality.
+        let angle = 1.0_f64.to_radians();
+        let (s, c) = angle.sin_cos();
+        let r = Mat3F64::from_cols(
+            Vec3F64::new(c, 0.0, -s),
+            Vec3F64::new(0.0, 1.0, 0.0),
+            Vec3F64::new(s, 0.0, c),
+        );
+        let t = Vec3F64::new(0.02, 0.0, 0.0);
+
+        // Generate 30 points on the plane Z=5.
+        let mut x1 = Vec::new();
+        let mut x2 = Vec::new();
+        for i in 0..30 {
+            let xc = -1.0 + 0.1 * i as f64;
+            let yc = 0.4 * (i as f64 * 0.7).sin();
+            let p1 = Vec3F64::new(xc, yc, 5.0);
+            let p2 = r * p1 + t;
+            let u1 = 500.0 * p1.x / p1.z + 320.0;
+            let v1 = 500.0 * p1.y / p1.z + 240.0;
+            let u2 = 500.0 * p2.x / p2.z + 320.0;
+            let v2 = 500.0 * p2.y / p2.z + 240.0;
+            x1.push(Vec2F64::new(u1, v1));
+            x2.push(Vec2F64::new(u2, v2));
+        }
+
+        // Strict threshold: any non-zero runner-up trips it. If the scene
+        // ends up with second=0 (unambiguous), we'll take that as a signal
+        // to document that this path needs a stronger synthetic case — but
+        // typical runs of this near-pure-rotation setup produce multiple
+        // cheirality-passing candidates.
+        let config = TwoViewConfig {
+            ransac_f: RansacParams {
+                min_inliers: 8,
+                random_seed: Some(0),
+                ..RansacParams::default()
+            },
+            ransac_h: RansacParams {
+                min_inliers: 8,
+                random_seed: Some(0),
+                ..RansacParams::default()
+            },
+            triangulation: TriangulationConfig {
+                min_parallax_deg: 0.0,
+                cheirality_ambiguity_max: 0.0,
+                ..TriangulationConfig::default()
+            },
+            ..TwoViewConfig::default()
+        };
+
+        match two_view_estimate(&x1, &x2, &k, &k, &config) {
+            Err(TwoViewError::AmbiguousCheirality {
+                best,
+                second,
+                ratio,
+                max_ratio,
+            }) => {
+                assert!(best >= second);
+                assert!(ratio > max_ratio);
+                assert_eq!(max_ratio, 0.0);
+            }
+            Err(TwoViewError::RansacFailure) => {
+                // Acceptable: RANSAC may reject the F entirely when
+                // t is this small — the whole pipeline correctly bails.
+            }
+            Err(other) => panic!("unexpected error variant: {other:?}"),
+            Ok(r) => panic!(
+                "degenerate motion must not produce a confident pose; got inliers={}",
+                r.inliers.iter().filter(|b| **b).count()
+            ),
+        }
     }
 
     // -------- LM refinement tests --------
