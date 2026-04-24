@@ -1104,9 +1104,10 @@ mod tests {
     /// ground truth camera-frame pose.
     ///
     /// Frame pair: 1403636633263555584 → 1403636634263555584 (20 frames apart).
-    /// Ground truth camera-frame relative pose:
-    ///   - Rotation: 2.698°
-    ///   - Translation: 659mm, direction [0.242, -0.233, 0.942]
+    /// Ground truth camera-frame relative pose (Vicon-derived; see
+    /// `kornia-py/scripts/derive_mh01_gt.py` — Δ=0 ns match at both frames):
+    ///   - Rotation: 2.7021°
+    ///   - Translation: 658.5mm, direction [0.2422, -0.2330, 0.9418]
     #[test]
     fn test_two_view_euroc_mh01() {
         use kornia_imgproc::features::{match_orb_descriptors, OrbDetector, OrbMatchConfig};
@@ -1212,12 +1213,12 @@ mod tests {
             "expected fundamental model"
         );
 
-        // Check rotation angle: GT is 2.698°, allow 5° error.
+        // Check rotation angle: GT is 2.7021°, allow 5° error.
         let r = result.rotation;
         let trace = r.col(0).x + r.col(1).y + r.col(2).z;
         let est_angle_rad = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
         let est_angle_deg = est_angle_rad.to_degrees();
-        let gt_angle_deg = 2.698;
+        let gt_angle_deg = 2.7021;
         assert!(
             (est_angle_deg - gt_angle_deg).abs() < 5.0,
             "rotation error too large: estimated {est_angle_deg:.2}°, GT {gt_angle_deg}°"
