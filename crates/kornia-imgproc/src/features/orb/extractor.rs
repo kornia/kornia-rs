@@ -171,15 +171,17 @@ impl OrbDetector {
     ) -> Result<Vec<Image<f32, 1, CpuAllocator>>, ImageError> {
         let img = Image::from_size_slice(img.size(), img.as_slice(), CpuAllocator)?;
 
+        let base = img.size();
         let mut pyramid = Vec::with_capacity(self.n_scales);
         let mut current = img.clone();
         pyramid.push(current.clone());
 
-        for _ in 1..self.n_scales {
-            let next = pyramid_reduce(&current, self.downscale)?;
-            if next.size() == current.size() {
+        for level in 1..self.n_scales {
+            let target = pyramid_size_at_level(base, self.downscale, level);
+            if target == current.size() || target.width == 0 || target.height == 0 {
                 break;
             }
+            let next = pyramid_reduce(&current, target, self.downscale)?;
 
             pyramid.push(next.clone());
             current = next;
@@ -581,7 +583,8 @@ impl OrbDetector {
         let trace = std::env::var("KORNIA_ORB_TRACE").is_ok();
         let features_per_level = self.features_per_level();
 
-        let level0 = Image::from_size_slice(img.size(), img.as_slice(), CpuAllocator)?;
+        let base = img.size();
+        let level0 = Image::from_size_slice(base, img.as_slice(), CpuAllocator)?;
         let mut pyramid_arcs: Vec<Arc<Image<u8, 1, CpuAllocator>>> =
             Vec::with_capacity(self.n_scales);
         pyramid_arcs.push(Arc::new(level0));
@@ -606,16 +609,17 @@ impl OrbDetector {
 
             for octave in 1..self.n_scales {
                 let prev = pyramid_arcs[octave - 1].clone();
-                let next = match pyramid_reduce_u8(prev.as_ref(), self.downscale) {
+                let target = pyramid_size_at_level(base, self.downscale, octave);
+                if target == prev.size() || target.width == 0 || target.height == 0 {
+                    break;
+                }
+                let next = match pyramid_reduce_u8(prev.as_ref(), target) {
                     Ok(n) => n,
                     Err(e) => {
                         build_err = Some(e);
                         break;
                     }
                 };
-                if next.size() == prev.size() {
-                    break;
-                }
                 pyramid_arcs.push(Arc::new(next));
                 let arc = pyramid_arcs[octave].clone();
                 let slot = &slots[octave];
@@ -802,9 +806,29 @@ impl OrbDetector {
     }
 }
 
+/// Target size for pyramid level `level` computed from the L0 dimensions.
+///
+/// Matches OpenCV's ORB / ORB-SLAM3 `ComputePyramid`: `sz = cvRound(L0 * inv_scale^level)`.
+/// Computing from L0 at every level (instead of chaining `prev / scale`) avoids the
+/// rounding error that iterative `ceil` accumulates — at scale=1.2 on 752×480 the
+/// chained `ceil` path drifts up to 2 px by L7, which nudges corners across FAST's
+/// edge-threshold and causes cross-octave descriptor assignment divergence vs OpenCV.
+/// `round_ties_even` matches `cvRound`'s banker's rounding (same convention used by
+/// [`rotate_pattern_for_angle`]).
+#[inline]
+fn pyramid_size_at_level(base: ImageSize, downscale: f32, level: usize) -> ImageSize {
+    let inv_scale = (downscale as f64).powi(-(level as i32));
+    let w = (base.width as f64 * inv_scale).round_ties_even() as usize;
+    let h = (base.height as f64 * inv_scale).round_ties_even() as usize;
+    ImageSize {
+        width: w,
+        height: h,
+    }
+}
+
 fn pyramid_reduce_u8<A: ImageAllocator>(
     img: &Image<u8, 1, A>,
-    downscale: f32,
+    target: ImageSize,
 ) -> Result<Image<u8, 1, CpuAllocator>, ImageError> {
     // For downscale=1.2 the theoretical anti-alias sigma is 2*1.2/6 = 0.4,
     // which is a 3-tap filter with weights roughly [0.25, 0.50, 0.25]. On
@@ -812,22 +836,14 @@ fn pyramid_reduce_u8<A: ImageAllocator>(
     // provides equivalent low-pass over a 1.2x factor, so skip the
     // separate blur pass. Quality still passes the ≥15% OpenCV overlap
     // gate in test_orb_compare_with_opencv.
-    let new_h = (img.height() as f32 / downscale).ceil() as usize;
-    let new_w = (img.width() as f32 / downscale).ceil() as usize;
-    let mut resized = Image::from_size_val(
-        ImageSize {
-            width: new_w,
-            height: new_h,
-        },
-        0u8,
-        CpuAllocator,
-    )?;
+    let mut resized = Image::from_size_val(target, 0u8, CpuAllocator)?;
     resize_fast_u8(img, &mut resized, InterpolationMode::Bilinear)?;
     Ok(resized)
 }
 
 fn pyramid_reduce<A: ImageAllocator>(
     img: &Image<f32, 1, A>,
+    target: ImageSize,
     downscale: f32,
 ) -> Result<Image<f32, 1, CpuAllocator>, ImageError> {
     // ORB-SLAM3 builds pyramid by resizing the previous level with bilinear interpolation.
@@ -837,17 +853,7 @@ fn pyramid_reduce<A: ImageAllocator>(
     let mut smoothed = Image::from_size_val(img.size(), 0.0, CpuAllocator)?;
     gaussian_blur(img, &mut smoothed, (0, 0), (sigma, 0.0))?;
 
-    let new_h = (smoothed.height() as f32 / downscale).ceil() as usize;
-    let new_w = (smoothed.width() as f32 / downscale).ceil() as usize;
-
-    let mut resized = Image::from_size_val(
-        ImageSize {
-            width: new_w,
-            height: new_h,
-        },
-        0.0,
-        CpuAllocator,
-    )?;
+    let mut resized = Image::from_size_val(target, 0.0, CpuAllocator)?;
     resize_native(
         &smoothed,
         &mut resized,
