@@ -14,8 +14,20 @@ Tested backends: kornia-rs, OpenCV, VPI (CPU + CUDA if available). We use
 OpenCV's BFMatcher on all descriptor sets so the matcher is held constant
 and we're comparing only detector+descriptor quality.
 """
+import glob
+import os
 import sys
-sys.path.insert(0, "/opt/nvidia/vpi3/lib/aarch64-linux-gnu/python")
+from pathlib import Path
+
+# VPI ships its Python bindings outside the standard site-packages tree;
+# probe the usual install layout (or KORNIA_VPI_PYPATH override) and
+# silently fall through if VPI isn't installed.
+_vpi_path = os.environ.get("KORNIA_VPI_PYPATH") or next(
+    iter(glob.glob("/opt/nvidia/vpi*/lib/*/python")), None
+)
+if _vpi_path and os.path.isdir(_vpi_path):
+    sys.path.insert(0, _vpi_path)
+
 import cv2
 import numpy as np
 import kornia_rs as K
@@ -25,6 +37,8 @@ try:
     HAVE_VPI = True
 except ImportError:
     HAVE_VPI = False
+
+DATA_DIR = Path(__file__).resolve().parents[2] / "tests" / "data"
 
 
 def make_test_homography(w, h, seed=0):
@@ -147,8 +161,8 @@ def run_test(img, H_gt, name, detect_fn, estimator=estimate_homography_cv):
 
 def main():
     img_paths = [
-        "/home/nvidia/kornia-rs/tests/data/dog.jpeg",
-        "/home/nvidia/kornia-rs/tests/data/mh01_frame1.png",
+        str(DATA_DIR / "dog.jpeg"),
+        str(DATA_DIR / "mh01_frame1.png"),
     ]
     # Each backend = (name, detect_fn, estimator). cv2.BFMatcher + cv2.findHomography
     # is held constant across all detector backends; "kornia-full" swaps both the

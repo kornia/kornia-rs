@@ -16,13 +16,26 @@ and the timings would be apples-to-oranges.
 
 Usage: `taskset -c 0-5 python kornia-py/benchmarks/bench_fast.py`
 """
+import glob
+import os
 import sys
 import time
+from pathlib import Path
 
-sys.path.insert(0, "/opt/nvidia/vpi3/lib/aarch64-linux-gnu/python")
+# VPI ships its Python bindings outside the standard site-packages tree;
+# probe the usual install layout (or KORNIA_VPI_PYPATH override) and
+# silently fall through if VPI isn't installed.
+_vpi_path = os.environ.get("KORNIA_VPI_PYPATH") or next(
+    iter(glob.glob("/opt/nvidia/vpi*/lib/*/python")), None
+)
+if _vpi_path and os.path.isdir(_vpi_path):
+    sys.path.insert(0, _vpi_path)
+
 import cv2
 import numpy as np
 import kornia_rs as K
+
+DATA_DIR = Path(__file__).resolve().parents[2] / "tests" / "data"
 
 try:
     import vpi
@@ -138,14 +151,14 @@ def run_size(name, w, h, threshold, img):
 
 def main():
     # 640×480: a 3-ch photo converted to gray, similar to mh01 frames.
-    img_small = cv2.imread("/home/nvidia/kornia-rs/tests/data/mh01_frame1.png", cv2.IMREAD_GRAYSCALE)
+    img_small = cv2.imread(str(DATA_DIR / "mh01_frame1.png"), cv2.IMREAD_GRAYSCALE)
     assert img_small is not None, "missing mh01_frame1.png"
     # Crop/pad to 640×480 for a consistent size label.
     if img_small.shape != (480, 640):
         img_small = cv2.resize(img_small, (640, 480))
 
     # 1080p: upscale dog.jpeg (it's the closest real photo we have).
-    dog = cv2.imread("/home/nvidia/kornia-rs/tests/data/dog.jpeg", cv2.IMREAD_GRAYSCALE)
+    dog = cv2.imread(str(DATA_DIR / "dog.jpeg"), cv2.IMREAD_GRAYSCALE)
     assert dog is not None, "missing dog.jpeg"
     img_big = cv2.resize(dog, (1920, 1080))
 

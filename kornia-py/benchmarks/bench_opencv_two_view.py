@@ -10,21 +10,24 @@ against OpenCV 5.0.0-pre (via `opencv-python-rolling==5.0.0.20221015`, built
 from the opencv 5.x branch).
 
 Usage:
-    /tmp/cv413-venv/bin/python kornia-py/benchmarks/bench_opencv_two_view.py
-    /tmp/cv5-venv/bin/python  kornia-py/benchmarks/bench_opencv_two_view.py
-    N_ITERS=200 /tmp/cv5-venv/bin/python kornia-py/benchmarks/bench_opencv_two_view.py
+    python kornia-py/benchmarks/bench_opencv_two_view.py
+    N_ITERS=200 python kornia-py/benchmarks/bench_opencv_two_view.py
+
+Switch OpenCV versions by running under different venvs (e.g. one with
+`opencv-python==4.13` and one with `opencv-python-rolling==5.0.0.*`).
 """
 from __future__ import annotations
 
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
 
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__)).removesuffix("/kornia-py")
-DATA_DIR = os.path.join(REPO_ROOT, "tests", "data")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = REPO_ROOT / "tests" / "data"
 
 # EuRoC MH_01_easy cam0.
 K_MH01 = np.array(
@@ -133,8 +136,8 @@ def print_table(results: list[Result], version: str) -> None:
 
 
 def main() -> None:
-    img1 = cv2.imread(os.path.join(DATA_DIR, "mh01_frame1.png"), cv2.IMREAD_GRAYSCALE)
-    img2 = cv2.imread(os.path.join(DATA_DIR, "mh01_frame2.png"), cv2.IMREAD_GRAYSCALE)
+    img1 = cv2.imread(str(DATA_DIR / "mh01_frame1.png"), cv2.IMREAD_GRAYSCALE)
+    img2 = cv2.imread(str(DATA_DIR / "mh01_frame2.png"), cv2.IMREAD_GRAYSCALE)
     assert img1 is not None and img2 is not None, "missing MH01 frames"
 
     pts1, pts2 = orb_match(img1, img2)

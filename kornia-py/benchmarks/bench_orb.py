@@ -13,32 +13,42 @@ Reports:
 Tip: drop a KITTI odometry frame into tests/data/ and point ORB_BENCH_IMG
 at it for true outdoor imagery.
 """
+import glob
 import json
 import os
 import sys
 import time
+from pathlib import Path
+
 import numpy as np
 import kornia_rs as K
 import cv2
 
 # VPI ships its Python bindings outside the standard site-packages tree.
-sys.path.insert(0, "/opt/nvidia/vpi3/lib/aarch64-linux-gnu/python")
+# Honor an explicit override (KORNIA_VPI_PYPATH); otherwise probe the usual
+# `/opt/nvidia/vpi*/lib/<arch>/python` install layout. Skip silently if VPI
+# isn't installed — `HAVE_VPI` becomes False and the bench reports kornia
+# vs OpenCV only.
+_vpi_path = os.environ.get("KORNIA_VPI_PYPATH") or next(
+    iter(glob.glob("/opt/nvidia/vpi*/lib/*/python")), None
+)
+if _vpi_path and os.path.isdir(_vpi_path):
+    sys.path.insert(0, _vpi_path)
 try:
     import vpi
     HAVE_VPI = True
 except ImportError:
     HAVE_VPI = False
 
+DATA_DIR = Path(__file__).resolve().parents[2] / "tests" / "data"
+
 N_ITERS = int(os.environ.get("ORB_BENCH_N", "200"))
 N_WARMUP = int(os.environ.get("ORB_BENCH_WARMUP", "10"))
-TEST_IMG = os.environ.get(
-    "ORB_BENCH_IMG",
-    "/home/nvidia/kornia-rs/tests/data/dog.jpeg",
-)
+TEST_IMG = os.environ.get("ORB_BENCH_IMG", str(DATA_DIR / "dog.jpeg"))
 QUALITY_IMGS = [
-    "/home/nvidia/kornia-rs/tests/data/dog.jpeg",
-    "/home/nvidia/kornia-rs/tests/data/mh01_frame1.png",
-    "/home/nvidia/kornia-rs/tests/data/mh01_frame2.png",
+    str(DATA_DIR / "dog.jpeg"),
+    str(DATA_DIR / "mh01_frame1.png"),
+    str(DATA_DIR / "mh01_frame2.png"),
 ]
 
 # VPI ORB parameters — matches the sample defaults scaled up for 500 features.

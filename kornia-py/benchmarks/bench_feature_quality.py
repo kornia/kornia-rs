@@ -598,9 +598,10 @@ def main():
     args = ap.parse_args()
 
     if args.images is None:
+        data_dir = Path(__file__).resolve().parents[2] / "tests" / "data"
         args.images = [
-            "/home/nvidia/kornia-rs/tests/data/dog.jpeg",
-            "/home/nvidia/kornia-rs/tests/data/mh01_frame1.png",
+            str(data_dir / "dog.jpeg"),
+            str(data_dir / "mh01_frame1.png"),
         ]
 
     pipelines = [
